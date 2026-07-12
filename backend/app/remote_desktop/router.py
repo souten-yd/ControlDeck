@@ -122,13 +122,23 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         return
 
     # 双方向パイプ: guacd(TCP) <-> WebSocket(text)
+    # guacd の出力は UTF-8 テキスト（Guacamole プロトコル）。任意バイト境界で分割されるため
+    # インクリメンタルデコーダで multibyte 文字が途中で壊れないようにする（"Incomplete instruction" 防止）。
     async def guacd_to_ws() -> None:
+        import codecs
+
+        decoder = codecs.getincrementaldecoder("utf-8")()
         try:
             while True:
-                data = await reader.read(8192)
+                data = await reader.read(16384)
                 if not data:
+                    text = decoder.decode(b"", final=True)
+                    if text:
+                        await websocket.send_text(text)
                     break
-                await websocket.send_text(data.decode("utf-8", errors="replace"))
+                text = decoder.decode(data)
+                if text:
+                    await websocket.send_text(text)
         except (WebSocketDisconnect, RuntimeError, OSError):
             pass
 
