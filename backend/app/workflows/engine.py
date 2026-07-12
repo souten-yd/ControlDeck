@@ -55,6 +55,8 @@ def validate_definition(definition_json: str) -> None:
         ids.add(nid)
         if ntype == "trigger":
             triggers += 1
+        elif ntype == "control.loop":
+            pass  # エンジンが直接処理する制御ノード
         elif ntype not in NODE_EXECUTORS:
             raise DefinitionError(f"未知のノード種類: {ntype}")
     if nodes and triggers != 1:
@@ -64,6 +66,10 @@ def validate_definition(definition_json: str) -> None:
             raise DefinitionError("エッジの参照先ノードが存在しません")
 
 
+def _edge_branch(e: dict) -> str | None:
+    return e.get("branch") or e.get("sourceHandle") or None
+
+
 async def _execute_graph(nodes: list[dict], edges: list[dict], context: dict[str, Any]) -> None:
     node_by_id = {n["id"]: n for n in nodes}
     trigger = next((n for n in nodes if n.get("type") == "trigger"), None)
@@ -71,18 +77,23 @@ async def _execute_graph(nodes: list[dict], edges: list[dict], context: dict[str
         raise DefinitionError("トリガーノードがありません")
 
     steps = 0
-    visited: set[str] = set()
 
-    async def run_node(node_id: str) -> None:
+    async def run_node(node_id: str, visited: set[str]) -> None:
         nonlocal steps
         steps += 1
         if steps > MAX_STEPS:
             raise NodeError(f"ステップ数が上限（{MAX_STEPS}）を超えました")
         if node_id in visited:
-            return  # ループ防止
+            return  # 循環防止
         visited.add(node_id)
         node = node_by_id[node_id]
         ntype = node.get("type", "")
+
+        # ループノード: body ブランチを繰り返し実行してから done ブランチへ
+        if ntype == "control.loop":
+            await run_loop(node, visited)
+            return
+
         executor = NODE_EXECUTORS.get(ntype)
         if executor is None:
             raise NodeError(f"未知のノード種類: {ntype}")
@@ -111,14 +122,50 @@ async def _execute_graph(nodes: list[dict], edges: list[dict], context: dict[str
         outgoing = [e for e in edges if e.get("source") == node_id]
         if ntype == "condition.if":
             branch = "true" if entry["output"].get("result") else "false"
-            outgoing = [
-                e for e in outgoing
-                if (e.get("branch") or e.get("sourceHandle") or "true") == branch
-            ]
+            outgoing = [e for e in outgoing if (_edge_branch(e) or "true") == branch]
         for edge in outgoing:
-            await run_node(edge["target"])
+            await run_node(edge["target"], visited)
 
-    await run_node(trigger["id"])
+    async def run_loop(node: dict, visited: set[str]) -> None:
+        from app.workflows.nodes import render_template
+
+        node_id = node["id"]
+        config = node.get("config") or {}
+        mode = config.get("mode", "count")
+        entry: dict[str, Any] = {"status": "RUNNING", "started_at": utcnow().isoformat()}
+        context[node_id] = entry
+
+        items: list[Any]
+        if mode == "foreach":
+            raw = render_template(str(config.get("items", "")), context).strip()
+            try:
+                parsed = json.loads(raw)
+                items = parsed if isinstance(parsed, list) else [parsed]
+            except json.JSONDecodeError:
+                items = [line for line in raw.splitlines() if line.strip()]
+        else:
+            count = max(1, min(int(config.get("count", 1) or 1), 100))
+            items = list(range(count))
+        if len(items) > 100:
+            items = items[:100]
+
+        body_edges = [e for e in edges if e.get("source") == node_id and _edge_branch(e) == "body"]
+        done_edges = [e for e in edges if e.get("source") == node_id and _edge_branch(e) != "body"]
+
+        for index, item in enumerate(items):
+            entry["output"] = {"index": index, "item": item, "total": len(items)}
+            # body は反復ごとに再実行できるよう visited を分離する
+            for edge in body_edges:
+                await run_node(edge["target"], set(visited))
+        entry.update(
+            status="SUCCEEDED",
+            output={"index": len(items) - 1, "item": items[-1] if items else None, "total": len(items), "done": True},
+            finished_at=utcnow().isoformat(),
+        )
+        for edge in done_edges:
+            await run_node(edge["target"], visited)
+
+    await run_node(trigger["id"], set())
 
 
 async def run_workflow(workflow_id: int, trigger_type: str = "manual") -> int:
