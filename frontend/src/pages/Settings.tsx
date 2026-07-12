@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
@@ -119,10 +120,50 @@ export default function SettingsPage() {
 
       {can("system.view") && <AlertsSettings />}
 
+      {can("settings.manage") && <BackupSection />}
+
       <SessionsSection />
 
       {can("audit.view") && <AuditSection />}
     </div>
+  );
+}
+
+function BackupSection() {
+  const show = useToasts((s) => s.show);
+  const [busy, setBusy] = useState(false);
+  const download = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/v1/system/backup", { headers: { "X-Requested-With": "ControlDeck" }, credentials: "same-origin" });
+      if (!res.ok) throw new Error("バックアップに失敗しました");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = res.headers.get("content-disposition")?.match(/filename="?([^"]+)"?/)?.[1] ?? "control-deck-backup.tar.gz";
+      a.click();
+      URL.revokeObjectURL(url);
+      show("バックアップをダウンロードしました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "失敗しました", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
+      <h2 className="mb-3 text-sm font-semibold text-zinc-500">バックアップ</h2>
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm text-zinc-500">
+          DB・設定・暗号鍵・アプリ定義をまとめてダウンロードします。
+          <span className="mt-0.5 block text-xs text-zinc-400">復元は <code className="font-mono">./deck.sh restore &lt;ファイル&gt;</code> で行います。</span>
+        </p>
+        <button onClick={download} disabled={busy} className="shrink-0 rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+          {busy ? "作成中..." : "ダウンロード"}
+        </button>
+      </div>
+    </section>
   );
 }
 

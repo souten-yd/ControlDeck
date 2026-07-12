@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 
 import psutil
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
 from app.database import SessionLocal, get_db
@@ -44,6 +44,35 @@ def _os_release() -> str:
     except OSError:
         pass
     return platform.platform()
+
+
+@router.get("/backup")
+def download_backup(
+    request: Request,
+    user: User = Depends(require_permission("settings.manage")),
+    db=Depends(get_db),
+):
+    """DB / 設定 / ユニットを tar.gz にまとめてダウンロードする（管理操作）。"""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    from app.audit import service as audit
+    from app.config import REPO_ROOT
+
+    out_dir = Path(tempfile.mkdtemp(prefix="cd-backup-"))
+    script = REPO_ROOT / "scripts" / "backup.sh"
+    try:
+        subprocess.run(["bash", str(script), str(out_dir)], capture_output=True, text=True, timeout=120, check=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        raise HTTPException(status_code=500, detail=f"バックアップ生成に失敗しました: {e}")
+    archives = sorted(out_dir.glob("*.tar.gz"))
+    if not archives:
+        raise HTTPException(status_code=500, detail="バックアップファイルが生成されませんでした")
+    audit.record(db, "system.backup", user=user, resource_type="system", request=request)
+    return FileResponse(archives[-1], filename=archives[-1].name, media_type="application/gzip")
 
 
 @router.get("/self-status")
