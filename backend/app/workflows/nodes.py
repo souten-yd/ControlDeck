@@ -535,6 +535,113 @@ async def node_python_exec(config: dict, ctx: dict) -> dict:
     return await _run_command([sys.executable, "-I", "-c", code], cwd, timeout, input_text=stdin_text)
 
 
+# ---- RAG（埋め込み + SQLite ベクトルストア） ----
+
+
+async def node_rag_build(config: dict, ctx: dict) -> dict:
+    from app.workflows import rag
+
+    collection = str(config.get("collection", "default"))
+    text = render_template(str(config.get("text", "")), ctx)
+    # text が空でパスが指定されていればファイルから読む
+    if not text.strip() and config.get("path"):
+        from app.files.service import FileAccessError, read_text
+
+        try:
+            text = read_text(render_template(str(config["path"]), ctx))
+        except (FileAccessError, FileNotFoundError, OSError) as e:
+            raise NodeError(str(e))
+    try:
+        return await rag.build(
+            collection=collection,
+            text=text,
+            source=str(config.get("source", "workflow")),
+            base_url=str(config.get("base_url", "http://127.0.0.1:11434/v1")),
+            model=str(config.get("embed_model", "nomic-embed-text")),
+            api_key=str(config.get("api_key", "")),
+            reset=bool(config.get("reset")),
+        )
+    except (ValueError, RuntimeError) as e:
+        raise NodeError(f"RAG 構築失敗: {e}")
+
+
+async def node_rag_query(config: dict, ctx: dict) -> dict:
+    from app.workflows import rag
+
+    question = render_template(str(config.get("question", "")), ctx)
+    if not question.strip():
+        raise NodeError("質問が空です")
+    try:
+        return await rag.query(
+            collection=str(config.get("collection", "default")),
+            question=question,
+            top_k=int(config.get("top_k", 4)),
+            base_url=str(config.get("base_url", "http://127.0.0.1:11434/v1")),
+            model=str(config.get("embed_model", "nomic-embed-text")),
+            api_key=str(config.get("api_key", "")),
+        )
+    except (ValueError, RuntimeError) as e:
+        raise NodeError(f"RAG 検索失敗: {e}")
+
+
+# ---- データベース操作 ----
+
+_DDL_DML_RE = re.compile(r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH|PRAGMA|REPLACE)\b", re.IGNORECASE)
+
+
+async def node_db_query(config: dict, ctx: dict) -> dict:
+    """SQLite（許可ルート配下のファイル）または任意 SQLAlchemy URL に対して SQL を実行する。"""
+    from sqlalchemy import create_engine, text as sql_text
+
+    engine_kind = config.get("engine", "sqlite")
+    sql = render_template(str(config.get("query", "")), ctx).strip()
+    if not sql:
+        raise NodeError("SQL が空です")
+    if not _DDL_DML_RE.match(sql):
+        raise NodeError("先頭が SELECT/INSERT/UPDATE/DELETE/CREATE 等でない SQL は実行できません")
+
+    if engine_kind == "sqlite":
+        from app.files.service import FileAccessError, resolve
+
+        raw = render_template(str(config.get("path", "")), ctx)
+        try:
+            db_path = resolve(raw, must_exist=False)
+        except FileAccessError as e:
+            raise NodeError(f"DB パスが不正です: {e}")
+        url = f"sqlite:///{db_path}"
+    else:
+        url = render_template(str(config.get("url", "")), ctx).strip()
+        if not url:
+            raise NodeError("接続 URL が空です")
+
+    params_raw = config.get("params")
+    params: dict = {}
+    if isinstance(params_raw, str) and params_raw.strip():
+        try:
+            params = json.loads(render_template(params_raw, ctx))
+        except json.JSONDecodeError as e:
+            raise NodeError(f"パラメータ JSON が不正です: {e}")
+    elif isinstance(params_raw, dict):
+        params = params_raw
+
+    def run() -> dict:
+        eng = create_engine(url)
+        try:
+            with eng.begin() as conn:
+                result = conn.execute(sql_text(sql), params)
+                if result.returns_rows:
+                    rows = [dict(r._mapping) for r in result.fetchmany(500)]
+                    return {"rows": rows, "row_count": len(rows), "columns": list(result.keys())}
+                return {"rows": [], "row_count": result.rowcount, "affected": result.rowcount}
+        finally:
+            eng.dispose()
+
+    try:
+        return await asyncio.to_thread(run)
+    except Exception as e:
+        raise NodeError(f"DB エラー: {type(e).__name__}: {str(e)[:300]}")
+
+
 # ---- ブラウザ操作（Playwright があれば） ----
 
 
@@ -600,6 +707,9 @@ NODE_EXECUTORS = {
     "cmd.cpp_build": node_cpp_build,
     "cmd.python": node_python_exec,
     "web.browser": node_browser,
+    "rag.build": node_rag_build,
+    "rag.query": node_rag_query,
+    "db.query": node_db_query,
 }
 
 # ノードごとの既定タイムアウト（秒）
@@ -614,5 +724,8 @@ NODE_TIMEOUTS = {
     "cmd.cpp_build": 1820,
     "cmd.python": 620,
     "web.browser": 190,
+    "rag.build": 620,
+    "rag.query": 320,
+    "db.query": 320,
 }
 DEFAULT_NODE_TIMEOUT = 120
