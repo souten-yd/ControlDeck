@@ -1,0 +1,15 @@
+[Unit]
+Description=Ubuntu Control Deck Web
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=@REPO_ROOT@/backend
+ExecStart=@REPO_ROOT@/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+# セキュリティ強化
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
