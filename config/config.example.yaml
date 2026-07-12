@@ -1,0 +1,29 @@
+# Ubuntu Control Deck 設定例。config.yaml へコピーして使用する。
+server:
+  host: 127.0.0.1   # LAN 公開する場合のみ 0.0.0.0（Tailscale/WireGuard/HTTPS 推奨）
+  port: 8765
+
+security:
+  session_timeout_minutes: 480
+  allow_arbitrary_commands: false   # 任意コマンド実行は初期無効
+  secure_cookies: false             # HTTPS リバースプロキシ配下では true
+
+files:
+  allowed_roots: []   # 例: ["/home/souten/projects", "/data"]
+
+monitoring:
+  interval_seconds: 2
+  raw_retention_hours: 24
+  minute_retention_days: 30
+
+logs:
+  retention_days: 30
+  rotate_size_mb: 100
+
+ui:
+  app_name: "Ubuntu Control Deck"
+  accent_color: "#3b82f6"
+  default_theme: system   # system / dark / light
+  metric_refresh_seconds: 2
+
+# data_dir: ~/.local/share/control-deck
