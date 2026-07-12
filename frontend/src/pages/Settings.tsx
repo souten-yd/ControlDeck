@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { Skeleton } from "../components/ui";
+import { AlertsSettings } from "../features/alerts/AlertsSettings";
 
 interface SessionInfo {
   id: number;
@@ -117,6 +118,8 @@ export default function SettingsPage() {
           />
         </label>
       </section>
+
+      {can("system.view") && <AlertsSettings />}
 
       <SessionsSection />
 
