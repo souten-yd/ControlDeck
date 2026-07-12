@@ -48,13 +48,15 @@ def _register_local_desktop(db) -> None:
     port = int(os.environ.get("RDP_PORT", "3389"))
     username = os.environ.get("RDP_USERNAME", "")
     password = os.environ.get("RDP_PASSWORD", "")
+    security = os.environ.get("RDP_SECURITY", "any")
+    params = {"security": security} if security else {}
 
     conn = db.execute(select(RemoteConnection).where(RemoteConnection.name == name)).scalar_one_or_none()
     if conn is None:
-        conn = RemoteConnection(name=name, protocol="rdp", host=host, port=port, username=username, params_json=json.dumps({}))
+        conn = RemoteConnection(name=name, protocol="rdp", host=host, port=port, username=username, params_json=json.dumps(params))
         db.add(conn)
     else:
-        conn.host, conn.port, conn.username = host, port, username
+        conn.host, conn.port, conn.username, conn.params_json = host, port, username, json.dumps(params)
     service.set_secret_params(conn, {"password": password})
     db.commit()
     print(f"リモート接続「{name}」を登録しました（{host}:{port}）")

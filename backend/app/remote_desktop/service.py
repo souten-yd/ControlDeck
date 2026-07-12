@@ -27,6 +27,8 @@ def build_guacd_params(conn: RemoteConnection) -> dict[str, str]:
     if conn.protocol == "rdp":
         params.setdefault("ignore-cert", "true")
         params.setdefault("resize-method", "display-update")
+        # security 既定は "any"（xrdp と互換。Windows/NLA は接続設定で nla を選択）
+        params.setdefault("security", "any")
     # 機微パラメータ
     if conn.secret_params_encrypted:
         try:

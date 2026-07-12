@@ -26,6 +26,8 @@ class ConnectionBody(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=512)
+    # RDP セキュリティ: any/nla/tls/rdp/vmconnect（xrdp=any, Windows=nla）
+    security: str = Field(default="", max_length=16)
     params: dict = {}
 
 
@@ -49,10 +51,13 @@ def create_connection(
     user: User = Depends(require_permission("remote_desktop.use")),
     db: Session = Depends(get_db),
 ):
+    params = dict(body.params)
+    if body.security:
+        params["security"] = body.security
     conn = RemoteConnection(
         name=body.name, protocol=body.protocol, host=body.host,
         port=body.port or DEFAULT_PORTS[body.protocol], username=body.username,
-        params_json=json.dumps(body.params),
+        params_json=json.dumps(params),
     )
     service.set_secret_params(conn, {"password": body.password})
     db.add(conn)

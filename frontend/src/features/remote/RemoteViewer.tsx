@@ -26,8 +26,10 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
     const width = Math.floor(host.clientWidth || window.innerWidth);
     const height = Math.floor(host.clientHeight || window.innerHeight);
 
+    // 注意: WebSocketTunnel は connect() 時に "?" + データを URL へ付与するため、
+    // トンネル URL 自体にはクエリを付けず、寸法は connect データとして渡す。
     const tunnel = new Guacamole.WebSocketTunnel(
-      wsUrl(`/remote/connections/${connection.id}/tunnel?width=${width}&height=${height}&dpi=96`),
+      wsUrl(`/remote/connections/${connection.id}/tunnel`),
     );
     const client = new Guacamole.Client(tunnel);
     clientRef.current = client;
@@ -49,7 +51,7 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
       setStatus("disconnected");
     };
 
-    client.connect("");
+    client.connect(`width=${width}&height=${height}&dpi=96`);
 
     // マウス
     const mouse = new Guacamole.Mouse(displayEl);
