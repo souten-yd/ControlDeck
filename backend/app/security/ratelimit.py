@@ -9,17 +9,28 @@ _attempts: dict[str, deque[float]] = defaultdict(deque)
 _lock = Lock()
 
 
-def allow(key: str, max_attempts: int, window_seconds: float) -> bool:
-    """key に対する試行を記録し、ウィンドウ内の回数が上限以内なら True。"""
+def check(key: str, max_attempts: int, window_seconds: float) -> bool:
+    """ウィンドウ内の記録済み失敗回数が上限未満なら True（記録はしない）。"""
     now = time.monotonic()
     with _lock:
         q = _attempts[key]
         while q and now - q[0] > window_seconds:
             q.popleft()
-        if len(q) >= max_attempts:
-            return False
-        q.append(now)
-        return True
+        return len(q) < max_attempts
+
+
+def record(key: str) -> None:
+    """失敗を記録する。"""
+    with _lock:
+        _attempts[key].append(time.monotonic())
+
+
+def allow(key: str, max_attempts: int, window_seconds: float) -> bool:
+    """check + record を同時に行う（成功もカウントする用途向け）。"""
+    if not check(key, max_attempts, window_seconds):
+        return False
+    record(key)
+    return True
 
 
 def reset(key: str) -> None:

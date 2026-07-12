@@ -82,3 +82,20 @@ def test_viewer_cannot_edit_apps(client):
     assert r.status_code == 403
     assert client.post("/api/v1/system/reboot", headers=CSRF_HEADERS).status_code == 403
     client.cookies.clear()
+
+
+def test_login_bruteforce_rate_limited(client):
+    client.cookies.clear()
+    for _ in range(5):
+        r = client.post(
+            "/api/v1/auth/login",
+            json={"username": "nobody", "password": "wrong"},
+            headers=CSRF_HEADERS,
+        )
+        assert r.status_code == 401
+    r = client.post(
+        "/api/v1/auth/login",
+        json={"username": "nobody", "password": "wrong"},
+        headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 429  # 同一ユーザー名への失敗 5 回で制限

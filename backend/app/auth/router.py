@@ -41,7 +41,8 @@ def login(
     body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
 ):
     ip = request.client.host if request.client else "unknown"
-    if not ratelimit.allow(f"login:{ip}", max_attempts=10, window_seconds=60) or not ratelimit.allow(
+    # 失敗のみをカウントする（IP 単位 + IP×ユーザー名単位）
+    if not ratelimit.check(f"login:{ip}", max_attempts=20, window_seconds=60) or not ratelimit.check(
         f"login:{ip}:{body.username}", max_attempts=5, window_seconds=60
     ):
         audit.record(db, "login", username=body.username, result="rate_limited", request=request)
@@ -49,6 +50,8 @@ def login(
 
     user = db.execute(select(User).where(User.username == body.username)).scalar_one_or_none()
     if user is None or not user.is_active or not verify_password(user.password_hash, body.password):
+        ratelimit.record(f"login:{ip}")
+        ratelimit.record(f"login:{ip}:{body.username}")
         audit.record(db, "login", username=body.username, result="failure", request=request)
         raise HTTPException(status_code=401, detail="ユーザー名またはパスワードが正しくありません")
 
