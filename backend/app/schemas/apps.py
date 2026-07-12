@@ -34,6 +34,7 @@ class AppUpdate(BaseModel):
     executable_path: str | None = None
     script_path: str | None = None
     python_path: str | None = None
+    url: str | None = None
     arguments: list[str] | None = None
     environment: dict[str, str] | None = None
     auto_start: bool | None = None

@@ -127,6 +127,7 @@ def update_app(
                 executable_path=app.executable_path,
                 script_path=app.script_path,
                 python_path=app.python_path,
+                url=app.url,
                 arguments=json.loads(app.arguments_json or "[]"),
                 environment=apps.get_environment(app),
                 restart_policy=app.restart_policy,  # type: ignore[arg-type]

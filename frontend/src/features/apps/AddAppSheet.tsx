@@ -20,31 +20,32 @@ interface PythonCandidate {
   version: string | null;
 }
 
-export function AddAppSheet({ onClose }: { onClose: () => void }) {
-  const [step, setStep] = useState(1);
+export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp?: ManagedApp }) {
+  const editing = !!editApp;
+  const [step, setStep] = useState(editing ? 2 : 1); // 編集は手順1（種類選択）をスキップ
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
 
   // Step 1
-  const [name, setName] = useState("");
-  const [type, setType] = useState<AppType>("python_script");
+  const [name, setName] = useState(editApp?.name ?? "");
+  const [type, setType] = useState<AppType>((editApp?.application_type as AppType) ?? "python_script");
   const [projectDir, setProjectDir] = useState("");
   // Step 2
-  const [pythonPath, setPythonPath] = useState("");
-  const [scriptPath, setScriptPath] = useState("");
-  const [execPath, setExecPath] = useState("");
-  const [unitName, setUnitName] = useState("");
-  const [args, setArgs] = useState("");
-  const [workDir, setWorkDir] = useState("");
+  const [pythonPath, setPythonPath] = useState(editApp?.python_path ?? "");
+  const [scriptPath, setScriptPath] = useState(editApp?.script_path ?? "");
+  const [execPath, setExecPath] = useState(editApp?.executable_path ?? "");
+  const [unitName, setUnitName] = useState(editApp?.systemd_unit_name ?? "");
+  const [args, setArgs] = useState((editApp?.arguments ?? []).join(" "));
+  const [workDir, setWorkDir] = useState(editApp?.working_directory ?? "");
   // Step 3
-  const [autoStart, setAutoStart] = useState(false);
-  const [restartPolicy, setRestartPolicy] = useState("on-failure");
+  const [autoStart, setAutoStart] = useState(editApp?.auto_start ?? false);
+  const [restartPolicy, setRestartPolicy] = useState(editApp?.restart_policy ?? "on-failure");
   const [advanced, setAdvanced] = useState(false);
-  const [stopTimeout, setStopTimeout] = useState(20);
+  const [stopTimeout, setStopTimeout] = useState(editApp?.stop_timeout_seconds ?? 20);
   const [envText, setEnvText] = useState("");
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(editApp?.url ?? "");
 
   const [pythons, setPythons] = useState<PythonCandidate[]>([]);
   useEffect(() => {
@@ -87,31 +88,35 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
   const submit = async () => {
     setBusy(true);
     setError(null);
+    const payload: Record<string, unknown> = {
+      name,
+      working_directory: workDir || null,
+      python_path: type === "python_script" ? pythonPath : null,
+      script_path: type === "python_script" || type === "shell_script" ? scriptPath : null,
+      executable_path: type === "executable" ? execPath : null,
+      url: type === "url_shortcut" ? url : null,
+      arguments: args.trim() ? args.trim().split(/\s+/) : [],
+      auto_start: autoStart,
+      restart_policy: restartPolicy,
+      stop_timeout_seconds: stopTimeout,
+    };
+    // 環境変数は入力がある場合のみ更新（編集時に空で消さない）
+    const env = parseEnv();
+    if (!editing || Object.keys(env).length > 0) payload.environment = env;
     try {
-      await api<ManagedApp>("/apps", {
-        method: "POST",
-        json: {
-          name,
-          application_type: type,
-          working_directory: workDir || null,
-          python_path: type === "python_script" ? pythonPath : null,
-          script_path:
-            type === "python_script" || type === "shell_script" ? scriptPath : null,
-          executable_path: type === "executable" ? execPath : null,
-          systemd_unit_name: type === "systemd_service" ? unitName : null,
-          url: type === "url_shortcut" ? url : null,
-          arguments: args.trim() ? args.trim().split(/\s+/) : [],
-          environment: parseEnv(),
-          auto_start: autoStart,
-          restart_policy: restartPolicy,
-          stop_timeout_seconds: stopTimeout,
-        },
-      });
+      if (editing) {
+        await api<ManagedApp>(`/apps/${editApp!.id}`, { method: "PATCH", json: payload });
+      } else {
+        await api<ManagedApp>("/apps", {
+          method: "POST",
+          json: { ...payload, application_type: type, systemd_unit_name: type === "systemd_service" ? unitName : null, environment: env },
+        });
+      }
       qc.invalidateQueries({ queryKey: ["apps"] });
-      show(`「${name}」を登録しました`);
+      show(editing ? `「${name}」を更新しました` : `「${name}」を登録しました`);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "登録に失敗しました");
+      setError(e instanceof Error ? e.message : editing ? "更新に失敗しました" : "登録に失敗しました");
     } finally {
       setBusy(false);
     }
@@ -130,18 +135,20 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
             : unitName.trim() !== "";
 
   return (
-    <Drawer title={`アプリを追加 (${step}/3)`} onClose={onClose}>
-      {/* ステップインジケーター */}
-      <div className="mb-5 flex gap-1.5" aria-hidden>
-        {[1, 2, 3].map((s) => (
-          <div
-            key={s}
-            className={`h-1 flex-1 rounded-full ${
-              s <= step ? "bg-accent-500" : "bg-zinc-200 dark:bg-zinc-800"
-            }`}
-          />
-        ))}
-      </div>
+    <Drawer title={editing ? `「${editApp!.name}」を編集` : `アプリを追加 (${step}/3)`} onClose={onClose}>
+      {/* ステップインジケーター（新規登録時のみ） */}
+      {!editing && (
+        <div className="mb-5 flex gap-1.5" aria-hidden>
+          {[1, 2, 3].map((s) => (
+            <div
+              key={s}
+              className={`h-1 flex-1 rounded-full ${
+                s <= step ? "bg-accent-500" : "bg-zinc-200 dark:bg-zinc-800"
+              }`}
+            />
+          ))}
+        </div>
+      )}
 
       {step === 1 && (
         <div className="space-y-4">
@@ -186,6 +193,11 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
 
       {step === 2 && (
         <div className="space-y-4">
+          {editing && (
+            <Field label="アプリ名" required>
+              <TextInput value={name} onChange={setName} />
+            </Field>
+          )}
           {type === "python_script" && (
             <>
               <Field label="Python 実行ファイル" required>
@@ -325,12 +337,12 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
 
       <div className="mt-6 flex justify-between">
         <button
-          onClick={() => (step === 1 ? onClose() : setStep(step - 1))}
+          onClick={() => ((step === 1 || (editing && step === 2)) ? onClose() : setStep(step - 1))}
           className="rounded-xl px-4 py-2.5 text-sm font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
         >
-          {step === 1 ? "キャンセル" : "戻る"}
+          {step === 1 || (editing && step === 2) ? "キャンセル" : "戻る"}
         </button>
-        {step < 3 ? (
+        {(type === "url_shortcut" ? step < 2 : step < 3) ? (
           <button
             onClick={() => setStep(step + 1)}
             disabled={step === 1 ? !step1Valid : !step2Valid}
@@ -344,7 +356,7 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
             disabled={busy}
             className="rounded-xl bg-accent-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
           >
-            {busy ? "登録中..." : "登録する"}
+            {busy ? (editing ? "更新中..." : "登録中...") : editing ? "更新する" : "登録する"}
           </button>
         )}
       </div>
