@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
+import { TotpSettings } from "../features/auth/TotpSettings";
 
 interface SessionInfo {
   id: number;
@@ -49,13 +50,10 @@ export default function SettingsPage() {
             <dt className="w-28 text-zinc-400">ロール</dt>
             <dd>{user?.role}</dd>
           </div>
-          <div className="flex gap-4">
-            <dt className="w-28 text-zinc-400">二要素認証</dt>
-            <dd className="text-zinc-400">
-              {user?.totp_enabled ? "有効" : "未設定（Phase 7 で対応予定）"}
-            </dd>
-          </div>
         </dl>
+        <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+          <TotpSettings />
+        </div>
       </section>
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">

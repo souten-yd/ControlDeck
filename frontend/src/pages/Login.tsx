@@ -9,6 +9,8 @@ import type { UserInfo } from "../types";
 export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [needTotp, setNeedTotp] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
@@ -22,12 +24,18 @@ export default function LoginPage() {
     try {
       const user = await api<UserInfo>("/auth/login", {
         method: "POST",
-        json: { username, password },
+        json: { username, password, totp_code: totpCode || undefined },
       });
       setUser(user);
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "ログインに失敗しました");
+      const msg = err instanceof Error ? err.message : "ログインに失敗しました";
+      if (msg === "two_factor_required") {
+        setNeedTotp(true);
+        setError(null);
+      } else {
+        setError(msg);
+      }
     } finally {
       setBusy(false);
     }
@@ -66,9 +74,29 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
               required
-              className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+              disabled={needTotp}
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/30 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900"
             />
           </label>
+          {needTotp && (
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500">
+                認証コード（6 桁 / リカバリーコード）
+              </span>
+              <input
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                autoFocus
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="000000"
+                className="num w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-center text-lg tracking-widest outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+              />
+              <span className="mt-1 block text-xs text-zinc-400">
+                認証アプリのコードを入力してください
+              </span>
+            </label>
+          )}
           {error && (
             <p role="alert" className="text-sm text-red-600 dark:text-red-400">
               {error}
@@ -79,8 +107,17 @@ export default function LoginPage() {
             disabled={busy}
             className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-semibold text-white hover:bg-accent-700 disabled:opacity-50"
           >
-            {busy ? "ログイン中..." : "ログイン"}
+            {busy ? "確認中..." : needTotp ? "認証してログイン" : "ログイン"}
           </button>
+          {needTotp && (
+            <button
+              type="button"
+              onClick={() => { setNeedTotp(false); setTotpCode(""); setError(null); }}
+              className="w-full text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+            >
+              戻る
+            </button>
+          )}
         </div>
       </form>
     </div>

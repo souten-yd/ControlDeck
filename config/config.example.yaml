@@ -7,6 +7,7 @@ security:
   session_timeout_minutes: 480
   allow_arbitrary_commands: false   # 任意コマンド実行は初期無効
   secure_cookies: false             # HTTPS リバースプロキシ配下では true
+  require_totp_for_admin: false     # true で管理者に二要素認証を推奨（UI にバナー）
 
 files:
   allowed_roots: []   # 例: ["/home/souten/projects", "/data"]
