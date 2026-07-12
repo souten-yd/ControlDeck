@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useMeta } from "../api/hooks";
 import { useAuth } from "../stores";
+import { Logo } from "../components/Logo";
 import type { UserInfo } from "../types";
 
 export default function LoginPage() {
@@ -36,9 +37,7 @@ export default function LoginPage() {
     <div className="safe-top safe-bottom flex min-h-dvh items-center justify-center px-6">
       <form onSubmit={submit} className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <span className="grid h-14 w-14 place-items-center rounded-2xl bg-accent-600 text-2xl font-bold text-white">
-            {(meta?.app_name ?? "U")[0]}
-          </span>
+          <Logo size={56} />
           <h1 className="text-lg font-semibold">
             {meta?.app_name ?? "Ubuntu Control Deck"}
           </h1>
