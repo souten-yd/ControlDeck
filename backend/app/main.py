@@ -41,6 +41,10 @@ async def lifespan(app: FastAPI):
     logger.info("Control Deck 起動完了")
     yield
     task.cancel()
+    import contextlib
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)

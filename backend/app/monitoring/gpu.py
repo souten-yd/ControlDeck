@@ -45,15 +45,20 @@ class AmdSmiProvider(BaseProvider):
             return None
         try:
             data = json.loads(out)
+            # 実出力: {"gpu_data": [{"usage": {...}, "power": {...}, ...}]}
+            if isinstance(data, dict) and "gpu_data" in data:
+                data = data["gpu_data"]
             gpu = data[0] if isinstance(data, list) else data
-            usage = gpu.get("usage", {})
-            vram = gpu.get("mem_usage", {}) or gpu.get("vram", {})
-            temp = gpu.get("temperature", {})
-            power = gpu.get("power", {})
+            usage = gpu.get("usage") or {}
+            vram = gpu.get("mem_usage") or gpu.get("vram") or {}
+            temp = gpu.get("temperature") or {}
+            power = gpu.get("power") or {}
+            fan = gpu.get("fan") or {}
+            clock = gpu.get("clock") or {}
 
             def num(d, *keys):
                 for k in keys:
-                    v = d.get(k)
+                    v = d.get(k) if isinstance(d, dict) else None
                     if isinstance(v, dict):
                         v = v.get("value")
                     if isinstance(v, (int, float)):
@@ -62,7 +67,8 @@ class AmdSmiProvider(BaseProvider):
 
             vram_used = num(vram, "used_vram", "vram_used")
             vram_total = num(vram, "total_vram", "vram_total")
-            return GpuSample(
+            gfx0 = clock.get("gfx_0") if isinstance(clock.get("gfx_0"), dict) else {}
+            sample = GpuSample(
                 name="AMD GPU",
                 utilization_percent=num(usage, "gfx_activity", "gfx_usage"),
                 vram_used_bytes=vram_used * 1024 * 1024 if vram_used is not None else None,
@@ -71,9 +77,13 @@ class AmdSmiProvider(BaseProvider):
                 hotspot_c=num(temp, "hotspot", "sensor_hotspot", "junction"),
                 power_watts=num(power, "socket_power", "average_socket_power"),
                 power_cap_watts=num(power, "power_cap"),
-                fan_percent=None,
-                clock_mhz=None,
+                fan_percent=num(fan, "usage"),
+                clock_mhz=num(gfx0, "clk") if gfx0 else None,
             )
+            # すべて None ならパース失敗として扱い、次のプロバイダーへ譲る
+            if all(v is None for k, v in sample.items() if k != "name"):
+                return None
+            return sample
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
             logger.debug("amd-smi parse failed: %s", e)
             return None
