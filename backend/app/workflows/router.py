@@ -143,16 +143,23 @@ def delete_workflow(
     return {"ok": True}
 
 
+class RunBody(BaseModel):
+    input: dict = {}
+
+
 @router.post("/workflows/{workflow_id}/run")
 async def run_workflow(
     workflow_id: int,
     request: Request,
+    body: RunBody | None = None,
     user: User = Depends(require_permission("workflows.run")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
+    input_data = body.input if body else {}
+    trigger_type = "chat" if input_data.get("message") else "manual"
     try:
-        execution_id = await engine.run_workflow(workflow_id, trigger_type="manual")
+        execution_id = await engine.run_workflow(workflow_id, trigger_type=trigger_type, input_data=input_data)
     except engine.DefinitionError as e:
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "workflow.run", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request)
