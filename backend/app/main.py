@@ -89,6 +89,7 @@ from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
 from app.workflows.router import router as workflows_router  # noqa: E402
 from app.alerts.router import router as alerts_router  # noqa: E402
+from app.remote_desktop.router import router as remote_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -101,6 +102,7 @@ app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
 app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
+app.include_router(remote_router, prefix=API)
 
 
 @app.get("/api/v1/meta")

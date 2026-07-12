@@ -123,6 +123,11 @@ ensure_apt_packages() {
   local missing=()
   command -v tmux >/dev/null || missing+=(tmux)
   command -v tesseract >/dev/null || missing+=(tesseract-ocr tesseract-ocr-jpn)
+  # リモートデスクトップ用 guacd（config で有効時のみ導入を試みる）
+  if grep -qsE '^[[:space:]]*enabled:[[:space:]]*true' "$REPO_ROOT/config/config.yaml" 2>/dev/null \
+     && grep -qs 'remote_desktop' "$REPO_ROOT/config/config.yaml" 2>/dev/null; then
+    command -v guacd >/dev/null || missing+=(guacd)
+  fi
   [ ${#missing[@]} -eq 0 ] && return 0
   if command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
     info "システムパッケージを導入しています: ${missing[*]}"

@@ -12,8 +12,25 @@
 | Phase 3 — 監視 | ✅ 完了（アラート通知を含む） |
 | Phase 4 — ファイル + ターミナル | ✅ 完了（ごみ箱・チャンクアップロードは未対応） |
 | Phase 5 — ワークフロー | ✅ コア完了（下記参照） |
-| Phase 6 — リモートデスクトップ | 未着手 |
+| Phase 6 — リモートデスクトップ | ✅ コア完了（guacd トンネル + 接続管理 + ビューア） |
 | Phase 7 — TOTP ほか | ✅ コア完了（TOTP/PWA/バックアップ。WoL はワークフローノードで対応） |
+
+## Phase 6 リモートデスクトップ（2026-07-12）
+
+- **guacd トンネル**: WebSocket（guacamole-common-js）↔ guacd(TCP:4822) を橋渡し。接続開始時の
+  ハンドシェイク（select → args → size/audio/video/image → connect）をサーバー側で実施し、
+  以降は raw ストリームを双方向パイプ（guacamole-lite 相当を Python で実装、外部依存なし）
+- **接続管理**: RDP / VNC / SSH の接続 CRUD。パスワード等の機微パラメータは Fernet 暗号化保存、
+  API 応答には含めない（has_password フラグのみ）。RDP は ignore-cert / display-update を既定化
+- **ビューア**: guacamole-common-js（遅延ロード）。マウス + タッチパッド（タップ=クリック・長押し=右クリック）+
+  キーボード、Ctrl+Alt+Del、画面リサイズ追従、モバイルはソフトキーボード呼び出し
+- **導入**: `remote_desktop.enabled: true` のとき deck.sh が guacd の apt 導入を試みる。
+  未導入時は UI に案内を表示し接続ボタンを無効化
+- **バックアップ修正**: sqlite3 CLI 非依存に変更（venv Python の sqlite3 backup API で整合スナップショット）
+
+検証: pytest 79 件成功（命令エンコード/パーサ、モック guacd での select→args→connect ハンドシェイク、
+接続 CRUD、パスワード暗号化非漏洩）。Playwright で接続一覧・追加フォームを PC/モバイル確認。
+ライブ接続は guacd + 実ホストが必要なためこの環境では未実施。
 
 ## バックアップ / リストア（2026-07-12、Phase 7）
 
