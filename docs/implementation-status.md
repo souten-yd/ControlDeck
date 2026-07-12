@@ -15,6 +15,19 @@
 | Phase 6 — リモートデスクトップ | 未着手 |
 | Phase 7 — TOTP ほか | 🟡 進行中（TOTP 完了、PWA・バックアップ実装予定） |
 
+## PWA 対応（2026-07-12、Phase 7）
+
+- manifest.webmanifest（standalone、テーマ色、192/512/maskable アイコン）+ apple-touch-icon /
+  apple-mobile-web-app メタ。ホーム画面追加・フルスクリーン起動に対応
+- Service Worker（sw.js）: **アプリシェル（HTML/JS/CSS/アイコン）のみキャッシュ**。
+  `/api/`・WebSocket・認証は一切キャッシュしない（機密を Service Worker に保存しない方針）。
+  アセットは cache-first（ハッシュ付き名）、ナビゲーションは network-first + オフライン時シェルフォールバック
+- 本番ビルドのみ SW 登録（開発時は登録しない）。アイコンは Chromium で SVG ロゴから生成
+- TOTP リセット: `./deck.sh reset-totp <ユーザー名>`（`--all` で全員）でロックアウト復旧可能
+
+検証: SW 登録・アクティブ化・manifest 読込を Playwright で確認。オフライン再読み込みでアプリシェルが
+起動することを確認。
+
 ## TOTP 二要素認証（2026-07-12、Phase 7）
 
 - 有効化: setup（QR=SVG data URI、Pillow 不要）→ 6 桁 verify → リカバリーコード 10 個を 1 回表示

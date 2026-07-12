@@ -7,6 +7,7 @@
 #   ./deck.sh stop         サービス停止
 #   ./deck.sh status       サービス状態表示
 #   ./deck.sh admin <名前> 管理者ユーザー作成
+#   ./deck.sh reset-totp <名前>   二要素認証を解除（ロックアウト復旧用。--all で全員）
 #   ./deck.sh test         バックエンドテスト実行
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
@@ -212,6 +213,13 @@ cmd_admin() {
   exec "$VENV/bin/python" -m app.cli create-admin "$1"
 }
 
+cmd_reset_totp() {
+  [ $# -ge 1 ] || die "使用方法: ./deck.sh reset-totp <ユーザー名>|--all"
+  check_root; check_python; ensure_venv
+  cd "$REPO_ROOT/backend"
+  exec "$VENV/bin/python" -m app.cli reset-totp "$1"
+}
+
 cmd_test() {
   check_root; check_python; ensure_venv
   cd "$REPO_ROOT/backend"
@@ -224,6 +232,7 @@ case "${1:-start}" in
   stop)    cmd_stop ;;
   status)  cmd_status ;;
   admin)   shift; cmd_admin "$@" ;;
+  reset-totp) shift; cmd_reset_totp "$@" ;;
   test)    shift; cmd_test "$@" ;;
   -h|--help|help)
     sed -n '3,15p' "$0" ;;

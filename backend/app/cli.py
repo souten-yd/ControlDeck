@@ -2,6 +2,8 @@
 
   python -m app.cli create-admin <username>            # パスワードは対話入力
   python -m app.cli reset-password <username>
+  python -m app.cli reset-totp <username>              # 二要素認証を解除（ロックアウト復旧用）
+  python -m app.cli reset-totp --all                   # 全ユーザーの TOTP を解除
 """
 from __future__ import annotations
 
@@ -49,6 +51,24 @@ def main() -> None:
             user.password_hash = hash_password(_read_password())
             db.commit()
             print(f"{username} のパスワードを更新しました")
+        elif command == "reset-totp":
+            if username == "--all":
+                users = db.execute(select(User)).scalars().all()
+            else:
+                user = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
+                if user is None:
+                    print(f"ユーザー {username} が見つかりません", file=sys.stderr)
+                    sys.exit(1)
+                users = [user]
+            count = 0
+            for u in users:
+                if u.totp_enabled or u.totp_secret_encrypted:
+                    u.totp_enabled = False
+                    u.totp_secret_encrypted = None
+                    u.recovery_codes_encrypted = None
+                    count += 1
+            db.commit()
+            print(f"{count} 人のユーザーの二要素認証を解除しました")
         else:
             print(f"不明なコマンド: {command}", file=sys.stderr)
             sys.exit(1)
