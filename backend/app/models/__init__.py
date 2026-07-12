@@ -137,6 +137,23 @@ class WorkflowExecution(Base):
     context_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class RemoteConnection(Base):
+    __tablename__ = "remote_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    # rdp / vnc / ssh
+    protocol: Mapped[str] = mapped_column(String(8))
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer)
+    username: Mapped[str] = mapped_column(String(128), default="")
+    # パスワードや秘密鍵など機微なパラメータを暗号化した JSON
+    secret_params_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 非機微パラメータ（解像度・色深度など）の JSON
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class NotificationChannel(Base):
     __tablename__ = "notification_channels"
 

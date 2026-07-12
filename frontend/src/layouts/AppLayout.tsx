@@ -27,6 +27,7 @@ const NAV = [
   { to: "/workflows", label: "ワークフロー", icon: IconFlow },
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
+  { to: "/remote", label: "リモート", icon: IconRemote },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
@@ -42,6 +43,15 @@ function IconFlow(props: React.SVGProps<SVGSVGElement>) {
       <rect x="2" y="4" width="7" height="6" rx="1.5" />
       <rect x="15" y="14" width="7" height="6" rx="1.5" />
       <path d="M9 7h4a2 2 0 0 1 2 2v5" />
+    </svg>
+  );
+}
+
+function IconRemote(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
+      <rect x="2" y="4" width="20" height="13" rx="2" />
+      <path d="M8 21h8M12 17v4" />
     </svg>
   );
 }

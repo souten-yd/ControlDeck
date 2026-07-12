@@ -18,6 +18,7 @@ import SettingsPage from "./pages/Settings";
 import FilesPage from "./pages/Files";
 import TerminalPage from "./pages/Terminal";
 import WorkflowsPage from "./pages/Workflows";
+import RemotePage from "./pages/Remote";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -62,6 +63,7 @@ const router = createBrowserRouter([
       { path: "terminal", element: <TerminalPage /> },
       { path: "workflows", element: <WorkflowsPage /> },
       { path: "workflows/:id", element: <WorkflowsPage /> },
+      { path: "remote", element: <RemotePage /> },
       { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },

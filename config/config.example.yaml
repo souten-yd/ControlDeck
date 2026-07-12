@@ -21,6 +21,11 @@ logs:
   retention_days: 30
   rotate_size_mb: 100
 
+remote_desktop:
+  enabled: false          # true にすると deck.sh が guacd の導入を試みる
+  guacd_host: 127.0.0.1
+  guacd_port: 4822
+
 ui:
   app_name: "Ubuntu Control Deck"
   accent_color: "#3b82f6"
