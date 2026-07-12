@@ -137,6 +137,20 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     icon: "M↓",
     fields: [{ key: "text", label: "Markdown", type: "textarea", hint: TEMPLATE_HINT }],
   },
+  "db.query": {
+    label: "DB クエリ",
+    category: "データ",
+    color: "#6366f1",
+    icon: "🗄",
+    desc: "SQLite / PostgreSQL などへ SQL 実行",
+    fields: [
+      { key: "engine", label: "接続方法", type: "select", options: [{ value: "sqlite", label: "SQLite ファイル" }, { value: "url", label: "接続 URL" }] },
+      { key: "path", label: "SQLite パス", type: "text", hint: "許可ルート配下", showIf: { key: "engine", value: "sqlite" } },
+      { key: "url", label: "接続 URL", type: "text", placeholder: "postgresql+psycopg://user:pass@host/db", showIf: { key: "engine", value: "url" } },
+      { key: "query", label: "SQL", type: "code", placeholder: "SELECT * FROM t WHERE id = :id", hint: TEMPLATE_HINT },
+      { key: "params", label: "パラメータ（JSON）", type: "textarea", placeholder: '{"id": 1}' },
+    ],
+  },
 
   // ---- ファイル ----
   "file.read": { label: "ファイル読込", category: "ファイル", color: "#64748b", icon: "📄", fields: [{ key: "path", label: "パス", type: "text", hint: TEMPLATE_HINT }] },
@@ -190,6 +204,37 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     fields: [
       { key: "path", label: "画像パス", type: "text", hint: TEMPLATE_HINT },
       { key: "lang", label: "言語", type: "text", placeholder: "jpn+eng" },
+    ],
+  },
+  "rag.build": {
+    label: "RAG 構築",
+    category: "AI",
+    color: "#a855f7",
+    icon: "📚",
+    desc: "テキストを埋め込んでコレクションへ登録",
+    fields: [
+      { key: "collection", label: "コレクション名", type: "text", placeholder: "docs" },
+      { key: "text", label: "テキスト", type: "textarea", hint: `${TEMPLATE_HINT}（空ならパスから読込）` },
+      { key: "path", label: "またはファイルパス", type: "text", hint: TEMPLATE_HINT },
+      { key: "base_url", label: "埋め込みエンドポイント", type: "text", placeholder: "http://127.0.0.1:11434/v1" },
+      { key: "embed_model", label: "埋め込みモデル", type: "text", placeholder: "nomic-embed-text" },
+      { key: "api_key", label: "API キー（任意）", type: "text" },
+      { key: "reset", label: "既存を消去", type: "select", options: [{ value: "", label: "追記" }, { value: "1", label: "作り直す" }] },
+    ],
+  },
+  "rag.query": {
+    label: "RAG 検索",
+    category: "AI",
+    color: "#a855f7",
+    icon: "🔎",
+    desc: "コレクションから関連文脈を取得（{{ID.context}} を LLM へ）",
+    fields: [
+      { key: "collection", label: "コレクション名", type: "text", placeholder: "docs" },
+      { key: "question", label: "質問", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "top_k", label: "取得件数", type: "number", placeholder: "4" },
+      { key: "base_url", label: "埋め込みエンドポイント", type: "text", placeholder: "http://127.0.0.1:11434/v1" },
+      { key: "embed_model", label: "埋め込みモデル", type: "text", placeholder: "nomic-embed-text" },
+      { key: "api_key", label: "API キー（任意）", type: "text" },
     ],
   },
 
