@@ -30,6 +30,7 @@ def _apply_light_migrations() -> None:
     # (テーブル, カラム, 型定義)
     additions = [
         ("users", "recovery_codes_encrypted", "TEXT"),
+        ("managed_applications", "url", "VARCHAR(2048)"),
     ]
     with engine.begin() as conn:
         for table, column, coltype in additions:

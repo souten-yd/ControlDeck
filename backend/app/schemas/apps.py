@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ApplicationType = Literal["python_script", "shell_script", "executable", "systemd_service"]
+ApplicationType = Literal["python_script", "shell_script", "executable", "systemd_service", "url_shortcut"]
 RestartPolicy = Literal["no", "on-failure", "always", "on-success"]
 
 
@@ -17,6 +17,7 @@ class AppCreate(BaseModel):
     executable_path: str | None = None
     script_path: str | None = None
     python_path: str | None = None
+    url: str | None = None
     arguments: list[str] = []
     environment: dict[str, str] = {}
     auto_start: bool = False
@@ -60,6 +61,7 @@ class AppOut(BaseModel):
     executable_path: str | None
     script_path: str | None
     python_path: str | None
+    url: str | None = None
     arguments: list[str]
     environment_masked: dict[str, str]
     auto_start: bool

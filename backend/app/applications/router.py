@@ -52,6 +52,7 @@ def create_app(
         executable_path=body.executable_path,
         script_path=body.script_path,
         python_path=body.python_path,
+        url=body.url,
         arguments_json=json.dumps(body.arguments),
         auto_start=body.auto_start,
         restart_policy=body.restart_policy,
@@ -62,6 +63,8 @@ def create_app(
     db.flush()
     if body.application_type == "systemd_service":
         app.systemd_unit_name = body.systemd_unit_name or ""
+    elif body.application_type == "url_shortcut":
+        app.systemd_unit_name = ""
     else:
         app.systemd_unit_name = sd.unit_name_for(app.id)
     db.commit()

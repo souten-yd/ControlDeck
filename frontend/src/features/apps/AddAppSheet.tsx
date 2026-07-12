@@ -5,13 +5,14 @@ import { useToasts } from "../../stores";
 import { Drawer } from "../../components/ui";
 import type { ManagedApp } from "../../types";
 
-type AppType = "python_script" | "shell_script" | "executable" | "systemd_service";
+type AppType = "python_script" | "shell_script" | "executable" | "systemd_service" | "url_shortcut";
 
 const TYPE_LABELS: Record<AppType, string> = {
   python_script: "Python スクリプト",
   shell_script: "シェルスクリプト",
   executable: "実行ファイル",
   systemd_service: "既存 systemd サービス",
+  url_shortcut: "Web ページ / URL",
 };
 
 interface PythonCandidate {
@@ -43,6 +44,7 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
   const [advanced, setAdvanced] = useState(false);
   const [stopTimeout, setStopTimeout] = useState(20);
   const [envText, setEnvText] = useState("");
+  const [url, setUrl] = useState("");
 
   const [pythons, setPythons] = useState<PythonCandidate[]>([]);
   useEffect(() => {
@@ -97,6 +99,7 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
             type === "python_script" || type === "shell_script" ? scriptPath : null,
           executable_path: type === "executable" ? execPath : null,
           systemd_unit_name: type === "systemd_service" ? unitName : null,
+          url: type === "url_shortcut" ? url : null,
           arguments: args.trim() ? args.trim().split(/\s+/) : [],
           environment: parseEnv(),
           auto_start: autoStart,
@@ -122,7 +125,9 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
         ? scriptPath.trim() !== ""
         : type === "executable"
           ? execPath.trim() !== ""
-          : unitName.trim() !== "";
+          : type === "url_shortcut"
+            ? /^https?:\/\//.test(url.trim())
+            : unitName.trim() !== "";
 
   return (
     <Drawer title={`アプリを追加 (${step}/3)`} onClose={onClose}>
@@ -220,7 +225,12 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
               <TextInput value={unitName} onChange={setUnitName} placeholder="my-service.service" mono />
             </Field>
           )}
-          {type !== "systemd_service" && (
+          {type === "url_shortcut" && (
+            <Field label="URL" hint="ダッシュボードから開けるリンクとして登録します" required>
+              <TextInput value={url} onChange={setUrl} placeholder="https://example.com" mono />
+            </Field>
+          )}
+          {type !== "systemd_service" && type !== "url_shortcut" && (
             <>
               <Field label="起動引数" hint="空白区切り">
                 <TextInput value={args} onChange={setArgs} placeholder="--port 8000" mono />
@@ -235,7 +245,7 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
 
       {step === 3 && (
         <div className="space-y-4">
-          {type !== "systemd_service" && (
+          {type !== "systemd_service" && type !== "url_shortcut" && (
             <>
               <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 dark:border-zinc-700">
                 <span className="text-sm">PC 起動時に自動起動</span>
@@ -299,6 +309,7 @@ export function AddAppSheet({ onClose }: { onClose: () => void }) {
               )}
               {type === "executable" && <ConfirmRow k="実行ファイル" v={execPath} />}
               {type === "systemd_service" && <ConfirmRow k="ユニット" v={unitName} />}
+              {type === "url_shortcut" && <ConfirmRow k="URL" v={url} />}
               {args && <ConfirmRow k="引数" v={args} />}
               {workDir && <ConfirmRow k="作業Dir" v={workDir} />}
             </dl>

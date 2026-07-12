@@ -27,6 +27,7 @@ export default function AppsPage() {
 
   const primaryAction = (app: ManagedApp) => {
     const st = app.runtime.status;
+    if (app.application_type === "url_shortcut") return null; // 開くボタンで別処理
     if (st === "RUNNING" || st === "DEGRADED")
       return { label: "停止", icon: <IconStop />, action: "stop", perm: "apps.stop" };
     if (st === "FAILED")
@@ -98,6 +99,18 @@ export default function AppsPage() {
                     )}
                   </div>
                 </div>
+                {app.application_type === "url_shortcut" && app.url && (
+                  <a
+                    href={app.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`${app.name} を開く`}
+                    className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-accent-50 px-3.5 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
+                  >
+                    開く ↗
+                  </a>
+                )}
                 {primary && can(primary.perm) && (
                   <button
                     onClick={(e) => {

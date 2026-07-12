@@ -17,7 +17,8 @@ export type AppStatus =
   | "RESTARTING"
   | "FAILED"
   | "DEGRADED"
-  | "UNKNOWN";
+  | "UNKNOWN"
+  | "URL";
 
 export interface AppRuntime {
   status: AppStatus;
@@ -39,6 +40,7 @@ export interface ManagedApp {
   executable_path: string | null;
   script_path: string | null;
   python_path: string | null;
+  url: string | null;
   arguments: string[];
   environment_masked: Record<string, string>;
   auto_start: boolean;
