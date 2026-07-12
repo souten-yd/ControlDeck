@@ -23,3 +23,7 @@ data/
 .vscode/
 *.swp
 .DS_Store
+
+# Claude Code ローカル/一時ファイル
+.claude/settings.local.json
+.claude/*.tmp.*
