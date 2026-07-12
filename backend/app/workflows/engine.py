@@ -216,8 +216,11 @@ def _next_run_after(trigger_config: dict, last: datetime | None, now: datetime) 
 
 async def scheduler_loop() -> None:
     """30 秒ごとに有効なワークフローのスケジュールトリガーを評価する。"""
+    from app.maintenance.watchdog import beat
+
     while True:
         try:
+            beat("scheduler")
             await asyncio.sleep(30)
             now = datetime.now(timezone.utc)
 

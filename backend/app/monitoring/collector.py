@@ -159,6 +159,9 @@ class MetricsCollector:
                     self._subscribers.discard(q)
             except Exception as e:
                 logger.warning("metrics collection failed: %s", e)
+            from app.maintenance.watchdog import beat
+
+            beat("collector")
             await asyncio.sleep(self.interval)
 
     def _flush_minute(self) -> None:

@@ -15,6 +15,20 @@
 | Phase 6 — リモートデスクトップ | 未着手 |
 | Phase 7 — TOTP ほか | 未着手 |
 
+## 自己メンテナンス / ウォッチドッグ（2026-07-12、ユーザー要望で追加）
+
+- **systemd ウォッチドッグ**: `Type=notify` + `WatchdogSec=30` + `NotifyAccess=main`。
+  起動完了時に READY=1、内部ヘルスチェック（DB 接続 / メトリクス収集の鮮度 / スケジューラー心拍）が
+  正常な間のみ 15 秒間隔で WATCHDOG=1 を送信。ハング・内部異常時は systemd が SIGABRT → 自動再起動
+- **自己メンテナンスループ**（起動 5 分後 + 1 時間間隔）:
+  ログローテーション（copytruncate + gzip、`rotate_size_mb`/`rotate_generations`/`retention_days`、
+  仕様 §11.3 対応）/ 期限切れセッション purge / 監査ログ保持（`audit_retention_days` 既定 180 日）/
+  SQLite WAL checkpoint + optimize / ディスク残量自己点検（10% 未満で警告）
+- **自己状態 API/UI**: `GET /system/self-status` + システムページ「Control Deck 自己診断」セクション
+
+検証: pytest 43 件成功（ローテーション世代管理 / purge / ヘルスチェック / sd_notify フォールバック）。
+実機で SIGSTOP によるハング模擬 → 30 秒で `Watchdog timeout` → SIGABRT → 自動再起動 → 復旧を確認。
+
 ## Phase 5 実装内容（2026-07-12）
 
 - **エンジン**: ノードグラフ実行（トリガー → 逐次 + 条件分岐）。ノード別タイムアウト、

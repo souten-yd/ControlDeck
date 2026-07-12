@@ -3,7 +3,10 @@ Description=Ubuntu Control Deck Web
 After=network-online.target
 
 [Service]
-Type=exec
+# アプリが READY=1 を通知し、WATCHDOG=1 を送り続ける（ハング時は自動再起動）
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
 WorkingDirectory=@REPO_ROOT@/backend
 ExecStart=@REPO_ROOT@/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 Restart=on-failure
