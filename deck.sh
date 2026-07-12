@@ -255,11 +255,11 @@ cmd_enable_desktop() {
 
   # guacd（トンネルに必須）
   if ! command -v guacd >/dev/null; then
-    warn "guacd が未導入です。ブラウザからの接続に必要です"
-    if command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
-      sudo -n apt-get install -y -qq guacd || warn "guacd の導入に失敗しました"
+    info "guacd（ブラウザ接続に必須）を導入します（sudo が必要です）..."
+    if command -v apt-get >/dev/null; then
+      sudo apt-get install -y -qq guacd || warn "guacd の導入に失敗しました。手動で: sudo apt install guacd"
     else
-      warn "  導入: sudo apt install guacd"
+      warn "guacd を手動で導入してください: sudo apt install guacd"
     fi
   fi
 
@@ -273,26 +273,43 @@ cmd_enable_desktop() {
     chmod 600 "$key"
   fi
 
-  # 認証情報の入力
+  # 認証情報: 環境変数があれば非対話、なければ TTY で入力
   local rdp_user rdp_pass rdp_pass2
-  read -rp "RDP ユーザー名 [${USER}]: " rdp_user
-  rdp_user="${rdp_user:-$USER}"
-  read -rsp "RDP パスワード: " rdp_pass; echo
-  read -rsp "RDP パスワード（確認）: " rdp_pass2; echo
-  [ "$rdp_pass" = "$rdp_pass2" ] || die "パスワードが一致しません"
+  if [ -n "${RDP_USERNAME:-}" ] && [ -n "${RDP_PASSWORD:-}" ]; then
+    rdp_user="$RDP_USERNAME"; rdp_pass="$RDP_PASSWORD"
+  elif [ -t 0 ]; then
+    read -rp "RDP ユーザー名 [${USER}]: " rdp_user
+    rdp_user="${rdp_user:-$USER}"
+    read -rsp "RDP パスワード: " rdp_pass; echo
+    read -rsp "RDP パスワード（確認）: " rdp_pass2; echo
+    [ "$rdp_pass" = "$rdp_pass2" ] || die "パスワードが一致しません"
+  else
+    die "対話端末がありません。実端末で実行するか、環境変数 RDP_USERNAME / RDP_PASSWORD を指定してください"
+  fi
   [ -n "$rdp_pass" ] || die "パスワードは必須です"
 
-  # grdctl 設定（headless=--system / active=ユーザー）
-  local scope=""
-  [ "$mode" = "headless" ] && scope="--system"
-  info "GNOME Remote Desktop を設定しています（$mode）..."
-  grdctl $scope rdp set-tls-cert "$crt"
-  grdctl $scope rdp set-tls-key "$key"
-  grdctl $scope rdp set-credentials "$rdp_user" "$rdp_pass"
-  grdctl $scope rdp enable
   if [ "$mode" = "headless" ]; then
-    sudo systemctl enable --now gnome-remote-desktop.service 2>/dev/null \
-      || systemctl --user enable --now gnome-remote-desktop.service 2>/dev/null || true
+    # ヘッドレス: システム daemon（ユーザー gnome-remote-desktop）が読める場所へ証明書を配置
+    info "GNOME Remote Desktop を設定しています（headless、sudo が必要です）..."
+    local grd_user="gnome-remote-desktop"
+    local sys_crt="/etc/gnome-remote-desktop/control-deck-tls.crt"
+    local sys_key="/etc/gnome-remote-desktop/control-deck-tls.key"
+    getent passwd "$grd_user" >/dev/null || grd_user="root"
+    sudo install -d -m 755 /etc/gnome-remote-desktop
+    sudo install -o "$grd_user" -g "$grd_user" -m 644 "$crt" "$sys_crt"
+    sudo install -o "$grd_user" -g "$grd_user" -m 600 "$key" "$sys_key"
+    sudo grdctl --system rdp set-tls-cert "$sys_crt"
+    sudo grdctl --system rdp set-tls-key "$sys_key"
+    sudo grdctl --system rdp set-credentials "$rdp_user" "$rdp_pass"
+    sudo grdctl --system rdp enable
+    sudo systemctl restart gnome-remote-desktop.service
+  else
+    # アクティブセッション共有: ユーザー daemon（自セッションで動作）。証明書はホームで可
+    info "GNOME Remote Desktop を設定しています（active）..."
+    grdctl rdp set-tls-cert "$crt"
+    grdctl rdp set-tls-key "$key"
+    grdctl rdp set-credentials "$rdp_user" "$rdp_pass"
+    grdctl rdp enable
   fi
 
   # config を有効化
