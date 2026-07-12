@@ -177,7 +177,20 @@ async def node_file_exists(config: dict, ctx: dict) -> dict:
 
 
 async def node_trigger(config: dict, ctx: dict) -> dict:
-    return {"ok": True}
+    # チャットフロー等の入力を出力へ展開（{{trigger.message}} で参照可能）
+    inp = ctx.get("__input__") or {}
+    out = {"ok": True, "message": str(inp.get("message", ""))}
+    for k, v in inp.items():
+        if k != "message":
+            out[k] = v
+    return out
+
+
+async def node_signal_display(config: dict, ctx: dict) -> dict:
+    """信号表示ノード。入力値を記録し、チャットウィンドウへ表示するために出力へ格納する。"""
+    signal = str(config.get("signal", "output"))
+    value = render_template(str(config.get("value", "")), ctx)
+    return {"signal": signal, "value": value, "display": True}
 
 
 # ---- 変数・文字列・Markdown ----
@@ -682,6 +695,7 @@ async def node_browser(config: dict, ctx: dict) -> dict:
 
 NODE_EXECUTORS = {
     "trigger": node_trigger,
+    "signal.display": node_signal_display,
     "app.start": node_app_start,
     "app.stop": node_app_stop,
     "app.restart": node_app_restart,

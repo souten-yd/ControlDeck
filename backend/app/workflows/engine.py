@@ -168,8 +168,11 @@ async def _execute_graph(nodes: list[dict], edges: list[dict], context: dict[str
     await run_node(trigger["id"], set())
 
 
-async def run_workflow(workflow_id: int, trigger_type: str = "manual") -> int:
-    """実行レコードを作成しバックグラウンドで実行。実行 ID を返す。"""
+async def run_workflow(workflow_id: int, trigger_type: str = "manual", input_data: dict | None = None) -> int:
+    """実行レコードを作成しバックグラウンドで実行。実行 ID を返す。
+
+    input_data: チャットフロー等の入力（trigger ノードの出力へ展開される）。
+    """
     db = SessionLocal()
     try:
         wf = db.get(Workflow, workflow_id)
@@ -186,7 +189,7 @@ async def run_workflow(workflow_id: int, trigger_type: str = "manual") -> int:
         db.close()
 
     async def runner() -> None:
-        context: dict[str, Any] = {}
+        context: dict[str, Any] = {"__input__": input_data or {}}
         status = "SUCCEEDED"
         error = ""
         try:

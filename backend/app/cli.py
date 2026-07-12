@@ -51,12 +51,15 @@ def _register_local_desktop(db) -> None:
     security = os.environ.get("RDP_SECURITY", "any")
     params = {"security": security} if security else {}
 
-    conn = db.execute(select(RemoteConnection).where(RemoteConnection.name == name)).scalar_one_or_none()
+    # この PC 接続は is_self=True の既存レコードを優先的に更新（重複作成しない）
+    conn = db.execute(select(RemoteConnection).where(RemoteConnection.is_self.is_(True))).scalar_one_or_none()
     if conn is None:
-        conn = RemoteConnection(name=name, protocol="rdp", host=host, port=port, username=username, params_json=json.dumps(params))
+        conn = db.execute(select(RemoteConnection).where(RemoteConnection.name == name)).scalar_one_or_none()
+    if conn is None:
+        conn = RemoteConnection(name=name, protocol="rdp", host=host, port=port, username=username, params_json=json.dumps(params), is_self=True)
         db.add(conn)
     else:
-        conn.host, conn.port, conn.username, conn.params_json = host, port, username, json.dumps(params)
+        conn.name, conn.host, conn.port, conn.username, conn.params_json, conn.is_self = name, host, port, username, json.dumps(params), True
     service.set_secret_params(conn, {"password": password})
     db.commit()
     print(f"リモート接続「{name}」を登録しました（{host}:{port}）")

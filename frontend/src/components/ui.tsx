@@ -281,6 +281,7 @@ const STATUS_STYLE: Record<AppStatus, { label: string; cls: string; dot: string 
   FAILED: { label: "失敗", cls: "text-red-700 dark:text-red-400", dot: "bg-red-500" },
   DEGRADED: { label: "劣化", cls: "text-amber-700 dark:text-amber-400", dot: "bg-amber-500" },
   UNKNOWN: { label: "不明", cls: "text-zinc-400", dot: "bg-zinc-300 dark:bg-zinc-600" },
+  URL: { label: "リンク", cls: "text-sky-700 dark:text-sky-400", dot: "bg-sky-500" },
 };
 
 export function StatusBadge({ status }: { status: AppStatus }) {

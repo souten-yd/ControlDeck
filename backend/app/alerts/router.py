@@ -138,13 +138,40 @@ def update_rule(rule_id: int, body: RuleBody, request: Request, user: User = Dep
 
 @router.delete("/alert-rules/{rule_id}")
 def delete_rule(rule_id: int, request: Request, user: User = Depends(edit_dep), db: Session = Depends(get_db)):
+    from sqlalchemy import delete as sql_delete
+
     r = db.get(AlertRule, rule_id)
     if r is None:
         raise HTTPException(status_code=404, detail="ルールが見つかりません")
+    # 関連イベントも削除（残留したアラートがダッシュボードに残らないように）
+    db.execute(sql_delete(AlertEvent).where(AlertEvent.rule_id == rule_id))
     db.delete(r)
     db.commit()
     audit.record(db, "alert.rule_delete", user=user, resource_type="alert_rule", resource_id=str(rule_id), request=request)
     return {"ok": True}
+
+
+@router.post("/alert-events/dismiss")
+def dismiss_events(
+    request: Request,
+    event_id: int | None = None,
+    user: User = Depends(edit_dep),
+    db: Session = Depends(get_db),
+):
+    """アクティブなアラートを手動で解除する。event_id 未指定なら全 active を解除。"""
+    from sqlalchemy import update as sql_update
+
+    from app.models import utcnow
+
+    stmt = sql_update(AlertEvent).where(AlertEvent.status == "active").values(
+        status="dismissed", resolved_at=utcnow()
+    )
+    if event_id is not None:
+        stmt = stmt.where(AlertEvent.id == event_id)
+    result = db.execute(stmt)
+    db.commit()
+    audit.record(db, "alert.dismiss", user=user, resource_type="alert_event", resource_id=str(event_id or "all"), request=request)
+    return {"ok": True, "dismissed": result.rowcount}
 
 
 # ---- アラートイベント ----

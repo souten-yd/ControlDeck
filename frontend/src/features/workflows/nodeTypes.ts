@@ -340,6 +340,28 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     ],
   },
 
+  // ---- チャット ----
+  "signal.display": {
+    label: "信号表示",
+    category: "チャット",
+    color: "#14b8a6",
+    icon: "📡",
+    desc: "入力データを右側のチャットウィンドウに表示する",
+    fields: [
+      {
+        key: "signal", label: "記録する信号", type: "select",
+        options: [
+          { value: "reply", label: "返答 (reply)" },
+          { value: "output", label: "出力 (output)" },
+          { value: "status", label: "状態 (status)" },
+          { value: "log", label: "ログ (log)" },
+          { value: "chart", label: "チャート (chart)" },
+        ],
+      },
+      { key: "value", label: "表示する値", type: "textarea", hint: `${TEMPLATE_HINT}（例: {{llm.content}}）` },
+    ],
+  },
+
   // ---- 通知 ----
   "notify.webhook": {
     label: "Webhook 通知",
@@ -354,7 +376,7 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
   },
 };
 
-export const CATEGORY_ORDER = ["アプリ", "制御", "データ", "ファイル", "AI", "ネットワーク", "コマンド", "通知"];
+export const CATEGORY_ORDER = ["チャット", "アプリ", "制御", "データ", "ファイル", "AI", "ネットワーク", "コマンド", "通知"];
 
 export const DEFAULT_DEFINITION = {
   nodes: [

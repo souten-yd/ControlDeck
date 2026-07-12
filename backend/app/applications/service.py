@@ -59,6 +59,11 @@ def build_exec_argv(app: ManagedApplication) -> list[str]:
 
 
 def validate_fields(data: AppCreate) -> None:
+    if data.application_type == "url_shortcut":
+        url = (data.url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            raise AppValidationError("URL は http:// または https:// で指定してください")
+        return  # URL ショートカットはプロセスではないため以降の検証は不要
     if data.application_type == "python_script":
         _require_file(data.python_path, "Python 実行ファイル", executable=True)
         _require_file(data.script_path, "スクリプト")
@@ -101,8 +106,8 @@ def set_environment(app: ManagedApplication, env: dict[str, str]) -> None:
 
 def sync_unit(app: ManagedApplication) -> None:
     """ManagedApplication からユニットファイルを生成・更新する。"""
-    if app.application_type == "systemd_service":
-        return  # 既存ユニットはそのまま制御
+    if app.application_type in ("systemd_service", "url_shortcut"):
+        return  # 既存ユニット / URL ショートカットはユニット生成なし
     logs = app_logs_dir(app.id)
     content = sd.build_unit_content(
         name=app.name,
@@ -119,6 +124,8 @@ def sync_unit(app: ManagedApplication) -> None:
 
 
 def runtime_info(app: ManagedApplication) -> AppRuntime:
+    if app.application_type == "url_shortcut":
+        return AppRuntime(status="URL")  # プロセスではないので特別状態
     try:
         q = sd.query_status(app.systemd_unit_name)
     except Exception:
@@ -167,6 +174,7 @@ def to_out(app: ManagedApplication) -> AppOut:
         executable_path=app.executable_path,
         script_path=app.script_path,
         python_path=app.python_path,
+        url=app.url,
         arguments=json.loads(app.arguments_json or "[]"),
         environment_masked=mask_env(env),
         auto_start=app.auto_start,

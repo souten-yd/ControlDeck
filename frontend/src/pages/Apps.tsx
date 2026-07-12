@@ -18,6 +18,7 @@ export default function AppsPage() {
   const { data: apps, isLoading } = useApps();
   const [params, setParams] = useSearchParams();
   const [detail, setDetail] = useState<ManagedApp | null>(null);
+  const [editing, setEditing] = useState<ManagedApp | null>(null);
   const [deleting, setDeleting] = useState<ManagedApp | null>(null);
   const can = useAuth((s) => s.can);
   const action = useAppAction();
@@ -27,6 +28,7 @@ export default function AppsPage() {
 
   const primaryAction = (app: ManagedApp) => {
     const st = app.runtime.status;
+    if (app.application_type === "url_shortcut") return null; // 開くボタンで別処理
     if (st === "RUNNING" || st === "DEGRADED")
       return { label: "停止", icon: <IconStop />, action: "stop", perm: "apps.stop" };
     if (st === "FAILED")
@@ -98,6 +100,18 @@ export default function AppsPage() {
                     )}
                   </div>
                 </div>
+                {app.application_type === "url_shortcut" && app.url && (
+                  <a
+                    href={app.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`${app.name} を開く`}
+                    className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-accent-50 px-3.5 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
+                  >
+                    開く ↗
+                  </a>
+                )}
                 {primary && can(primary.perm) && (
                   <button
                     onClick={(e) => {
@@ -126,7 +140,10 @@ export default function AppsPage() {
                     ...(can("apps.stop") && app.runtime.status === "RUNNING"
                       ? [{ label: "強制終了", danger: true, onSelect: () => action.mutate({ id: app.id, action: "kill" }) }]
                       : []),
-                    { label: "詳細・設定", onSelect: () => setDetail(app) },
+                    { label: "詳細", onSelect: () => setDetail(app) },
+                    ...(can("apps.edit")
+                      ? [{ label: "設定を編集", onSelect: () => setEditing(app) }]
+                      : []),
                     ...(can("apps.delete")
                       ? [{ label: "削除", danger: true, onSelect: () => setDeleting(app) }]
                       : []),
@@ -150,11 +167,16 @@ export default function AppsPage() {
       )}
 
       {addOpen && <AddAppSheet onClose={() => setParams({})} />}
+      {editing && <AddAppSheet editApp={editing} onClose={() => setEditing(null)} />}
 
       {detail && (
         <AppDetailSheet
           app={apps?.find((a) => a.id === detail.id) ?? detail}
           onClose={() => setDetail(null)}
+          onEdit={() => {
+            setEditing(detail);
+            setDetail(null);
+          }}
           onDelete={() => {
             setDeleting(detail);
             setDetail(null);
@@ -181,17 +203,21 @@ export default function AppsPage() {
 function AppDetailSheet({
   app,
   onClose,
+  onEdit,
   onDelete,
 }: {
   app: ManagedApp;
   onClose: () => void;
+  onEdit: () => void;
   onDelete: () => void;
 }) {
   const can = useAuth((s) => s.can);
   const action = useAppAction();
   const navigate = useNavigate();
+  const isUrl = app.application_type === "url_shortcut";
   const rows: [string, string][] = [
     ["種類", app.application_type],
+    ...(isUrl ? ([["URL", app.url ?? "—"]] as [string, string][]) : []),
     ["状態", app.runtime.status],
     ["PID", app.runtime.pid?.toString() ?? "—"],
     ["稼働時間", formatUptime(app.runtime.uptime_seconds)],
@@ -209,22 +235,35 @@ function AppDetailSheet({
   return (
     <BottomSheet title={app.name} onClose={onClose} wide>
       <div className="mb-4 flex flex-wrap gap-2">
-        {can("apps.start") && app.runtime.status !== "RUNNING" && (
+        {isUrl && app.url && (
+          <a
+            href={app.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-xl bg-accent-50 px-3.5 py-2 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
+          >
+            開く ↗
+          </a>
+        )}
+        {!isUrl && can("apps.start") && app.runtime.status !== "RUNNING" && (
           <SheetButton onClick={() => action.mutate({ id: app.id, action: "start" })}>
             起動
           </SheetButton>
         )}
-        {can("apps.stop") && app.runtime.status === "RUNNING" && (
+        {!isUrl && can("apps.stop") && app.runtime.status === "RUNNING" && (
           <SheetButton onClick={() => action.mutate({ id: app.id, action: "stop" })}>
             停止
           </SheetButton>
         )}
-        {can("apps.start") && (
+        {!isUrl && can("apps.start") && (
           <SheetButton onClick={() => action.mutate({ id: app.id, action: "restart" })}>
             再起動
           </SheetButton>
         )}
-        <SheetButton onClick={() => navigate(`/logs?app=${app.id}`)}>ログ</SheetButton>
+        {!isUrl && <SheetButton onClick={() => navigate(`/logs?app=${app.id}`)}>ログ</SheetButton>}
+        {can("apps.edit") && (
+          <SheetButton onClick={onEdit}>設定を編集</SheetButton>
+        )}
         {can("apps.delete") && (
           <SheetButton danger onClick={onDelete}>
             削除

@@ -1,6 +1,7 @@
 /** React Flow ベースのワークフローエディター（遅延ロードチャンク）。
  * モダンなグラフィック: アイコン付きノード、カテゴリ色、グラデーションエッジ、ドットグリッド。 */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
@@ -43,6 +44,8 @@ interface DefNode {
   name?: string;
   config?: Record<string, unknown>;
   position?: { x: number; y: number };
+  rotation?: number; // 0/90/180/270
+  mirror?: boolean;
 }
 interface DefEdge { id?: string; source: string; target: string; branch?: string | null }
 interface WorkflowDetail {
@@ -67,8 +70,10 @@ function FlowNode({ data, selected }: NodeProps) {
         : d.running === "FAILED"
           ? "ring-2 ring-red-400"
           : "";
+  const transform = `${def.rotation ? `rotate(${def.rotation}deg)` : ""} ${def.mirror ? "scaleX(-1)" : ""}`.trim();
   return (
     <div
+      style={transform ? { transform } : undefined}
       className={`group relative min-w-40 overflow-hidden rounded-xl border bg-white shadow-sm transition-shadow hover:shadow-md dark:bg-zinc-900 ${
         selected ? "border-transparent ring-2 ring-accent-500" : "border-zinc-200 dark:border-zinc-700"
       } ${statusRing}`}
@@ -78,7 +83,11 @@ function FlowNode({ data, selected }: NodeProps) {
       )}
       {/* カラーバー */}
       <div className="h-1 w-full" style={{ backgroundColor: color }} />
-      <div className="flex items-center gap-2.5 px-3 py-2.5">
+      {/* 内容はミラー/回転を打ち消して可読性を維持 */}
+      <div
+        className="flex items-center gap-2.5 px-3 py-2.5"
+        style={transform ? { transform: `${def.mirror ? "scaleX(-1)" : ""} ${def.rotation ? `rotate(${-def.rotation}deg)` : ""}`.trim() } : undefined}
+      >
         <span
           className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm"
           style={{ backgroundColor: `${color}1a`, color }}
@@ -144,6 +153,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [executionsOpen, setExecutionsOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const readOnly = !can("workflows.edit");
@@ -271,6 +282,35 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     markDirty();
   };
 
+  const duplicateNode = (id: string) => {
+    const src = nodes.find((n) => n.id === id);
+    if (!src) return;
+    const srcDef = (src.data as FlowNodeData).def;
+    if (srcDef.type === "trigger") return show("トリガーは複製できません", "error");
+    const nid = newNodeId();
+    setNodes((ns) => [
+      ...ns,
+      {
+        id: nid,
+        type: "cdNode",
+        position: { x: src.position.x + 40, y: src.position.y + 40 },
+        data: { def: { ...srcDef, id: nid, name: `${srcDef.name || NODE_TYPES[srcDef.type]?.label} のコピー` } },
+      },
+    ]);
+    setSelected(nid);
+    markDirty();
+  };
+
+  const rotateNode = (id: string) => {
+    const def = (nodes.find((n) => n.id === id)?.data as FlowNodeData | undefined)?.def;
+    updateNodeDef(id, { rotation: (((def?.rotation ?? 0) + 90) % 360) });
+  };
+
+  const mirrorNode = (id: string) => {
+    const def = (nodes.find((n) => n.id === id)?.data as FlowNodeData | undefined)?.def;
+    updateNodeDef(id, { mirror: !def?.mirror });
+  };
+
   const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
 
   // 選択ノードをスニペットとして保存
@@ -375,7 +415,14 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           onEdgesChange={(c) => { onEdgesChange(c); if (c.some((ch) => ch.type === "remove")) markDirty(); }}
           onConnect={onConnect}
           onNodeClick={(_e, n) => setSelected(n.id)}
-          onPaneClick={() => setSelected(null)}
+          onPaneClick={() => { setSelected(null); setCtxMenu(null); }}
+          onNodeContextMenu={(e, n) => {
+            e.preventDefault();
+            if (readOnly) return;
+            setSelected(n.id);
+            setCtxMenu({ nodeId: n.id, x: e.clientX, y: e.clientY });
+          }}
+          onMoveStart={() => setCtxMenu(null)}
           nodeTypes={nodeTypes}
           nodesDraggable={!readOnly}
           nodesConnectable={!readOnly}
@@ -401,6 +448,38 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             <IconPlus />
           </button>
         )}
+
+        {/* 右側チャットボタン */}
+        <button
+          onClick={() => setChatOpen((v) => !v)}
+          aria-label="チャット"
+          className={`absolute right-4 top-4 z-10 flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
+            chatOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+          }`}
+        >
+          💬 チャット
+        </button>
+
+        {/* 右クリックコンテキストメニュー */}
+        {ctxMenu && (
+          <NodeContextMenu
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            isTrigger={(nodes.find((n) => n.id === ctxMenu.nodeId)?.data as FlowNodeData | undefined)?.def.type === "trigger"}
+            onClose={() => setCtxMenu(null)}
+            onAction={(act) => {
+              const id = ctxMenu.nodeId;
+              setCtxMenu(null);
+              if (act === "delete") removeNode(id);
+              else if (act === "duplicate") duplicateNode(id);
+              else if (act === "rotate") rotateNode(id);
+              else if (act === "mirror") mirrorNode(id);
+              else if (act === "config") setSelected(id);
+            }}
+          />
+        )}
+
+        {chatOpen && <ChatWindow workflowId={workflowId} onClose={() => setChatOpen(false)} dirty={dirty} onSave={save} />}
       </div>
 
       {paletteOpen && <NodePalette onAdd={addNode} onSnippet={insertSnippet} onClose={() => setPaletteOpen(false)} />}
@@ -669,5 +748,152 @@ function ExecutionsSheet({ workflowId, onClose }: { workflowId: number; onClose:
         <p className="py-6 text-center text-sm text-zinc-400">読み込み中...</p>
       )}
     </BottomSheet>
+  );
+}
+
+// ---- ノード右クリックメニュー ----
+function NodeContextMenu({
+  x, y, isTrigger, onClose, onAction,
+}: {
+  x: number;
+  y: number;
+  isTrigger: boolean;
+  onClose: () => void;
+  onAction: (action: "delete" | "duplicate" | "rotate" | "mirror" | "config") => void;
+}) {
+  useEffect(() => {
+    const close = () => onClose();
+    document.addEventListener("click", close);
+    document.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("scroll", close, true);
+    };
+  }, [onClose]);
+  const items: { label: string; action: "delete" | "duplicate" | "rotate" | "mirror" | "config"; danger?: boolean; icon: string }[] = [
+    { label: "設定を編集", action: "config", icon: "⚙" },
+    ...(isTrigger ? [] : [{ label: "複製", action: "duplicate" as const, icon: "⧉" }]),
+    { label: "回転", action: "rotate", icon: "↻" },
+    { label: "左右ミラー", action: "mirror", icon: "⇋" },
+    ...(isTrigger ? [] : [{ label: "削除", action: "delete" as const, danger: true, icon: "🗑" }]),
+  ];
+  return createPortal(
+    <div
+      style={{ left: x, top: y }}
+      onClick={(e) => e.stopPropagation()}
+      className="fixed z-[60] w-40 overflow-hidden rounded-xl border border-zinc-200 bg-white py-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800"
+    >
+      {items.map((it) => (
+        <button
+          key={it.action}
+          onClick={() => onAction(it.action)}
+          className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
+            it.danger ? "text-red-600 dark:text-red-400" : ""
+          }`}
+        >
+          <span className="w-4 text-center">{it.icon}</span>
+          {it.label}
+        </button>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
+// ---- フローティングチャットウィンドウ（チャットフロー） ----
+interface ChatMsg { role: "user" | "assistant"; text: string }
+
+function ChatWindow({
+  workflowId, onClose, dirty, onSave,
+}: {
+  workflowId: number;
+  onClose: () => void;
+  dirty: boolean;
+  onSave: () => Promise<void>;
+}) {
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const show = useToasts((s) => s.show);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  }, [messages]);
+
+  const send = async () => {
+    const msg = input.trim();
+    if (!msg || busy) return;
+    setInput("");
+    setMessages((m) => [...m, { role: "user", text: msg }]);
+    setBusy(true);
+    try {
+      if (dirty) await onSave();
+      const { execution_id } = await api<{ execution_id: number }>(`/workflows/${workflowId}/run`, {
+        method: "POST",
+        json: { input: { message: msg } },
+      });
+      // 実行完了までポーリングし、signal.display ノードの出力を返答として表示
+      let reply = "";
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 800));
+        const ex = await api<{ status: string; context: Record<string, { status: string; output?: { display?: boolean; value?: string; signal?: string } }> }>(
+          `/workflow-executions/${execution_id}`,
+        );
+        if (!["QUEUED", "RUNNING"].includes(ex.status)) {
+          const signals = Object.values(ex.context)
+            .filter((c) => c.output && c.output.display)
+            .map((c) => c.output!.value ?? "");
+          reply = signals.join("\n\n") || (ex.status === "SUCCEEDED" ? "(信号表示ノードがありません)" : `実行 ${ex.status}`);
+          break;
+        }
+      }
+      setMessages((m) => [...m, { role: "assistant", text: reply || "(応答なし)" }]);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "実行に失敗しました", "error");
+      setMessages((m) => [...m, { role: "assistant", text: "エラーが発生しました" }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="absolute bottom-4 right-4 top-16 z-20 flex w-[min(380px,calc(100%-2rem))] flex-col rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2.5 dark:border-zinc-800">
+        <span className="text-sm font-semibold">チャットフロー</span>
+        <button onClick={onClose} aria-label="閉じる" className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button>
+      </div>
+      <div ref={listRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+        {messages.length === 0 && (
+          <p className="mt-6 text-center text-xs text-zinc-400">
+            メッセージを送るとワークフローが実行されます。<br />
+            トリガーの出力 <code className="font-mono">{"{{trigger.message}}"}</code> で入力を参照し、<br />
+            「信号表示」ノードの値がここに返答として表示されます。
+          </p>
+        )}
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${
+              m.role === "user" ? "bg-accent-600 text-white" : "bg-zinc-100 dark:bg-zinc-800"
+            }`}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {busy && <div className="text-center text-xs text-zinc-400">実行中...</div>}
+      </div>
+      <div className="flex gap-2 border-t border-zinc-200 p-2.5 dark:border-zinc-800">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), send())}
+          placeholder="メッセージを入力..."
+          className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+        />
+        <button onClick={send} disabled={busy || !input.trim()} className="rounded-xl bg-accent-600 px-3.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+          送信
+        </button>
+      </div>
+    </div>
   );
 }

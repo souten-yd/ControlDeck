@@ -74,6 +74,8 @@ class ManagedApplication(Base):
     executable_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     script_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     python_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # url_shortcut タイプ用の URL
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     arguments_json: Mapped[str] = mapped_column(Text, default="[]")
     environment_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_as_user: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -151,6 +153,8 @@ class RemoteConnection(Base):
     secret_params_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 非機微パラメータ（解像度・色深度など）の JSON
     params_json: Mapped[str] = mapped_column(Text, default="{}")
+    # この PC 自身への接続（最上段固定・削除/追加不可の特別扱い）
+    is_self: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

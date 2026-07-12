@@ -40,7 +40,10 @@ def status(user: User = Depends(require_permission("remote_desktop.use"))):
 def list_connections(
     user: User = Depends(require_permission("remote_desktop.use")), db: Session = Depends(get_db)
 ):
-    rows = db.execute(select(RemoteConnection).order_by(RemoteConnection.name)).scalars().all()
+    # この PC（is_self）を最上段に、その後は名前順
+    rows = db.execute(
+        select(RemoteConnection).order_by(RemoteConnection.is_self.desc(), RemoteConnection.name)
+    ).scalars().all()
     return [service.to_out(c) for c in rows]
 
 
@@ -76,6 +79,8 @@ def delete_connection(
     conn = db.get(RemoteConnection, connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="接続が見つかりません")
+    if conn.is_self:
+        raise HTTPException(status_code=403, detail="この PC の接続は削除できません（deck.sh disable-desktop で無効化してください）")
     db.delete(conn)
     db.commit()
     audit.record(db, "remote.delete", user=user, resource_type="remote", resource_id=str(connection_id), request=request)
@@ -108,7 +113,11 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         await websocket.close(code=4502)  # guacd へ接続できない
         return
 
-    await websocket.accept()
+    # guacamole-common-js は WebSocket サブプロトコル "guacamole" を要求するため、
+    # accept 時に必ずエコーする（返さないとブラウザが 1006 で即切断する）
+    subprotocols = websocket.scope.get("subprotocols") or []
+    accept_proto = "guacamole" if "guacamole" in subprotocols else None
+    await websocket.accept(subprotocol=accept_proto)
     try:
         await guacd.perform_handshake(reader, writer, protocol, params, width, height, dpi)
     except (OSError, asyncio.TimeoutError, ConnectionError) as e:
@@ -118,13 +127,23 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         return
 
     # 双方向パイプ: guacd(TCP) <-> WebSocket(text)
+    # guacd の出力は UTF-8 テキスト（Guacamole プロトコル）。任意バイト境界で分割されるため
+    # インクリメンタルデコーダで multibyte 文字が途中で壊れないようにする（"Incomplete instruction" 防止）。
     async def guacd_to_ws() -> None:
+        import codecs
+
+        decoder = codecs.getincrementaldecoder("utf-8")()
         try:
             while True:
-                data = await reader.read(8192)
+                data = await reader.read(16384)
                 if not data:
+                    text = decoder.decode(b"", final=True)
+                    if text:
+                        await websocket.send_text(text)
                     break
-                await websocket.send_text(data.decode("utf-8", errors="replace"))
+                text = decoder.decode(data)
+                if text:
+                    await websocket.send_text(text)
         except (WebSocketDisconnect, RuntimeError, OSError):
             pass
 
