@@ -265,13 +265,24 @@ cmd_enable_desktop() {
       info "xrdp を導入します（sudo が必要です）..."
       sudo apt-get install -y -qq xrdp || die "xrdp の導入に失敗しました: sudo apt install xrdp"
     fi
+    # xrdp セッション用の軽量デスクトップ（XFCE）。GNOME の同時 1 セッション制約を避ける。
+    if ! command -v xfce4-session >/dev/null; then
+      info "xrdp セッション用に XFCE を導入します（sudo が必要です）..."
+      sudo apt-get install -y -qq xfce4 xfce4-goodies dbus-x11 || warn "XFCE の導入に失敗しました"
+    fi
+    # このユーザーの xrdp セッションで XFCE を起動する設定
+    if command -v xfce4-session >/dev/null; then
+      printf '#!/bin/sh\nexport XDG_SESSION_DESKTOP=xfce\nexec dbus-launch --exit-with-session xfce4-session\n' > "$HOME/.xsession"
+      chmod +x "$HOME/.xsession"
+      info "XFCE を xrdp セッションに設定しました（~/.xsession）。"
+    fi
     # GNOME Remote Desktop が 3389 を占有していれば解放
     if command -v grdctl >/dev/null; then
       sudo grdctl --system rdp disable 2>/dev/null || true
       sudo systemctl restart gnome-remote-desktop.service 2>/dev/null || true
     fi
     sudo systemctl enable --now xrdp || die "xrdp サービスを開始できませんでした"
-    info "xrdp を有効化しました（接続時に新規セッションを作成、ログインはシステムアカウント）。"
+    info "xrdp を有効化しました（接続時に XFCE の新規セッションを作成、ログインはシステムアカウント）。"
   else
     command -v grdctl >/dev/null || die "gnome-remote-desktop が必要です: sudo apt install gnome-remote-desktop"
     warn "アクティブセッション共有は GNOME Remote Desktop を使います。OS 同梱の guacd 1.3.0 とは"
