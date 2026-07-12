@@ -190,8 +190,7 @@ cmd_start() {
   else
     info "フォアグラウンドで起動します（サービス化するには ./deck.sh service）"
     cd "$REPO_ROOT/backend"
-    exec "$VENV/bin/python" -m uvicorn app.main:app \
-      --host "${CONTROL_DECK_HOST:-127.0.0.1}" --port "${CONTROL_DECK_PORT:-8765}"
+    exec "$VENV/bin/python" -m app.server
   fi
 }
 
