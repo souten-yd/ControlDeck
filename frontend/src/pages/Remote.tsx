@@ -111,7 +111,7 @@ export default function RemotePage() {
 function ConnectionForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const [form, setForm] = useState({ name: "", protocol: "rdp", host: "", port: "", username: "", password: "" });
+  const [form, setForm] = useState({ name: "", protocol: "rdp", host: "", port: "", username: "", password: "", security: "" });
   const create = useMutation({
     mutationFn: () =>
       api("/remote/connections", {
@@ -119,6 +119,7 @@ function ConnectionForm({ onClose }: { onClose: () => void }) {
         json: {
           name: form.name, protocol: form.protocol, host: form.host,
           port: form.port ? Number(form.port) : null, username: form.username, password: form.password,
+          security: form.protocol === "rdp" ? form.security : "",
         },
       }),
     onSuccess: () => { show("追加しました"); qc.invalidateQueries({ queryKey: ["remote-connections"] }); onClose(); },
@@ -140,6 +141,17 @@ function ConnectionForm({ onClose }: { onClose: () => void }) {
         </div>
         <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="ユーザー名" className={input} />
         <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="パスワード" autoComplete="new-password" className={input} />
+        {form.protocol === "rdp" && (
+          <label className="block text-xs text-zinc-500">
+            RDP セキュリティ
+            <select value={form.security} onChange={(e) => setForm({ ...form, security: e.target.value })} className={`${input} mt-1`}>
+              <option value="">自動（any／xrdp・多くのサーバー）</option>
+              <option value="nla">NLA（Windows 既定）</option>
+              <option value="tls">TLS</option>
+              <option value="rdp">標準 RDP</option>
+            </select>
+          </label>
+        )}
         <button onClick={() => create.mutate()} disabled={!form.name || !form.host || create.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           追加
         </button>

@@ -250,61 +250,55 @@ cmd_enable_desktop() {
   local mode="headless"
   [ "${1:-}" = "--active" ] && mode="active"
 
-  command -v grdctl >/dev/null || die "gnome-remote-desktop が必要です: sudo apt install gnome-remote-desktop"
   command -v openssl >/dev/null || die "openssl が必要です: sudo apt install openssl"
 
   # guacd（トンネルに必須）
   if ! command -v guacd >/dev/null; then
     info "guacd（ブラウザ接続に必須）を導入します（sudo が必要です）..."
-    if command -v apt-get >/dev/null; then
-      sudo apt-get install -y -qq guacd || warn "guacd の導入に失敗しました。手動で: sudo apt install guacd"
-    else
-      warn "guacd を手動で導入してください: sudo apt install guacd"
-    fi
+    sudo apt-get install -y -qq guacd || die "guacd の導入に失敗しました。手動で: sudo apt install guacd"
   fi
 
-  # TLS 証明書（RDP に必須）を生成
-  local data_dir; data_dir="$(cd "$REPO_ROOT/backend" && CONTROL_DECK_CONFIG="$REPO_ROOT/config/config.yaml" "$VENV/bin/python" -c 'from app.config import data_dir; print(data_dir())')"
-  local crt="$data_dir/grd-tls.crt" key="$data_dir/grd-tls.key"
-  if [ ! -f "$crt" ] || [ ! -f "$key" ]; then
-    info "TLS 証明書を生成しています ..."
-    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
-      -subj "/CN=control-deck-rdp" -out "$crt" -keyout "$key" 2>/dev/null
-    chmod 600 "$key"
+  if [ "$mode" = "headless" ]; then
+    # ヘッドレスは xrdp を使う（OS 同梱 guacd 1.3.0/FreeRDP2 と互換。
+    # GNOME Remote Desktop は FreeRDP3 系で OS 同梱 guacd と非互換のため使わない）。
+    if ! command -v xrdp >/dev/null; then
+      info "xrdp を導入します（sudo が必要です）..."
+      sudo apt-get install -y -qq xrdp || die "xrdp の導入に失敗しました: sudo apt install xrdp"
+    fi
+    # GNOME Remote Desktop が 3389 を占有していれば解放
+    if command -v grdctl >/dev/null; then
+      sudo grdctl --system rdp disable 2>/dev/null || true
+      sudo systemctl restart gnome-remote-desktop.service 2>/dev/null || true
+    fi
+    sudo systemctl enable --now xrdp || die "xrdp サービスを開始できませんでした"
+    info "xrdp を有効化しました（接続時に新規セッションを作成、ログインはシステムアカウント）。"
+  else
+    command -v grdctl >/dev/null || die "gnome-remote-desktop が必要です: sudo apt install gnome-remote-desktop"
+    warn "アクティブセッション共有は GNOME Remote Desktop を使います。OS 同梱の guacd 1.3.0 とは"
+    warn "  RDP 非互換の場合があります（動かない場合はヘッドレス=xrdp を使ってください）。"
+    local data_dir; data_dir="$(cd "$REPO_ROOT/backend" && CONTROL_DECK_CONFIG="$REPO_ROOT/config/config.yaml" "$VENV/bin/python" -c 'from app.config import data_dir; print(data_dir())')"
+    local crt="$data_dir/grd-tls.crt" key="$data_dir/grd-tls.key"
+    [ -f "$crt" ] || { openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/CN=control-deck-rdp" -out "$crt" -keyout "$key" 2>/dev/null; chmod 600 "$key"; }
   fi
 
   # 認証情報: 環境変数があれば非対話、なければ TTY で入力
-  local rdp_user rdp_pass rdp_pass2
+  # ヘッドレス(xrdp)はシステムアカウントで PAM 認証、active はGNOME RD の RDP 認証
+  local rdp_user rdp_pass rdp_pass2 prompt_user
+  [ "$mode" = "headless" ] && prompt_user="ログインユーザー名（システムアカウント）" || prompt_user="RDP ユーザー名"
   if [ -n "${RDP_USERNAME:-}" ] && [ -n "${RDP_PASSWORD:-}" ]; then
     rdp_user="$RDP_USERNAME"; rdp_pass="$RDP_PASSWORD"
   elif [ -t 0 ]; then
-    read -rp "RDP ユーザー名 [${USER}]: " rdp_user
+    read -rp "${prompt_user} [${USER}]: " rdp_user
     rdp_user="${rdp_user:-$USER}"
-    read -rsp "RDP パスワード: " rdp_pass; echo
-    read -rsp "RDP パスワード（確認）: " rdp_pass2; echo
+    read -rsp "パスワード: " rdp_pass; echo
+    read -rsp "パスワード（確認）: " rdp_pass2; echo
     [ "$rdp_pass" = "$rdp_pass2" ] || die "パスワードが一致しません"
   else
     die "対話端末がありません。実端末で実行するか、環境変数 RDP_USERNAME / RDP_PASSWORD を指定してください"
   fi
   [ -n "$rdp_pass" ] || die "パスワードは必須です"
 
-  if [ "$mode" = "headless" ]; then
-    # ヘッドレス: システム daemon（ユーザー gnome-remote-desktop）が読める場所へ証明書を配置
-    info "GNOME Remote Desktop を設定しています（headless、sudo が必要です）..."
-    local grd_user="gnome-remote-desktop"
-    local sys_crt="/etc/gnome-remote-desktop/control-deck-tls.crt"
-    local sys_key="/etc/gnome-remote-desktop/control-deck-tls.key"
-    getent passwd "$grd_user" >/dev/null || grd_user="root"
-    sudo install -d -m 755 /etc/gnome-remote-desktop
-    sudo install -o "$grd_user" -g "$grd_user" -m 644 "$crt" "$sys_crt"
-    sudo install -o "$grd_user" -g "$grd_user" -m 600 "$key" "$sys_key"
-    sudo grdctl --system rdp set-tls-cert "$sys_crt"
-    sudo grdctl --system rdp set-tls-key "$sys_key"
-    sudo grdctl --system rdp set-credentials "$rdp_user" "$rdp_pass"
-    sudo grdctl --system rdp enable
-    sudo systemctl restart gnome-remote-desktop.service
-  else
-    # アクティブセッション共有: ユーザー daemon（自セッションで動作）。証明書はホームで可
+  if [ "$mode" = "active" ]; then
     info "GNOME Remote Desktop を設定しています（active）..."
     grdctl rdp set-tls-cert "$crt"
     grdctl rdp set-tls-key "$key"
@@ -317,11 +311,12 @@ cmd_enable_desktop() {
     printf '\nremote_desktop:\n  enabled: true\n  guacd_host: 127.0.0.1\n  guacd_port: 4822\n' >> "$REPO_ROOT/config/config.yaml"
   fi
 
-  # Control Deck に接続を登録
+  # Control Deck に接続を登録（headless=xrdp は security=any、active=GNOME RD は tls）
+  local sec="any"; [ "$mode" = "active" ] && sec="tls"
   ( cd "$REPO_ROOT/backend" && \
     CONTROL_DECK_CONFIG="$REPO_ROOT/config/config.yaml" \
     RDP_NAME="この PC（${mode}）" RDP_HOST="127.0.0.1" RDP_PORT="3389" \
-    RDP_USERNAME="$rdp_user" RDP_PASSWORD="$rdp_pass" \
+    RDP_USERNAME="$rdp_user" RDP_PASSWORD="$rdp_pass" RDP_SECURITY="$sec" \
     "$VENV/bin/python" -m app.cli register-local-desktop )
 
   echo ""
@@ -332,11 +327,13 @@ cmd_enable_desktop() {
 }
 
 cmd_disable_desktop() {
-  command -v grdctl >/dev/null || die "grdctl が見つかりません"
-  local scope=""
-  [ "${1:-}" != "--active" ] && scope="--system"
-  grdctl $scope rdp disable && info "リモートデスクトップを無効化しました（$([ -n "$scope" ] && echo headless || echo active)）"
-  [ -n "$scope" ] && sudo systemctl disable --now gnome-remote-desktop.service 2>/dev/null || true
+  if [ "${1:-}" = "--active" ]; then
+    command -v grdctl >/dev/null && grdctl rdp disable && info "アクティブセッション共有を無効化しました"
+  else
+    # ヘッドレス=xrdp を停止
+    sudo systemctl disable --now xrdp 2>/dev/null && info "ヘッドレス（xrdp）を無効化しました" \
+      || warn "xrdp を停止できませんでした"
+  fi
 }
 
 cmd_restore() {
