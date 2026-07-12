@@ -7,6 +7,7 @@ import { useMetricsStream } from "../hooks/useMetricsStream";
 import {
   IconChart,
   IconChevronLeft,
+  IconFile,
   IconGrid,
   IconHome,
   IconLogs,
@@ -22,10 +23,16 @@ import { CommandPalette } from "../components/CommandPalette";
 const NAV = [
   { to: "/", label: "概要", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
+  { to: "/files", label: "ファイル", icon: IconFile },
+  { to: "/terminal", label: "ターミナル", icon: IconTerminal },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
 ];
+
+// モバイル下部ナビ（最大 5 項目、中央は操作ボタン）
+const MOBILE_NAV_LEFT = [NAV[0], NAV[1]];
+const MOBILE_NAV_RIGHT = [NAV[2], NAV[4]];
 
 export default function AppLayout() {
   const user = useAuth((s) => s.user);
@@ -187,7 +194,7 @@ export default function AppLayout() {
         className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden"
       >
         <div className="grid grid-cols-5">
-          {NAV.slice(0, 2).map((n) => (
+          {MOBILE_NAV_LEFT.map((n) => (
             <MobileNavLink key={n.to} {...n} />
           ))}
           <button
@@ -200,7 +207,7 @@ export default function AppLayout() {
             </span>
             <span className="text-[10px]">操作</span>
           </button>
-          {NAV.slice(2, 4).map((n) => (
+          {MOBILE_NAV_RIGHT.map((n) => (
             <MobileNavLink key={n.to} {...n} />
           ))}
         </div>
@@ -220,17 +227,33 @@ export default function AppLayout() {
                 }}
               />
             )}
+            {can("terminal.use") && (
+              <ActionItem
+                icon={<IconTerminal />}
+                label="ターミナル"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/terminal");
+                }}
+              />
+            )}
+            {can("files.edit") && (
+              <ActionItem
+                icon={<IconUpload />}
+                label="ファイルアップロード"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/files?upload=1");
+                }}
+              />
+            )}
             <ActionItem
-              icon={<IconTerminal />}
-              label="ターミナル"
-              hint="Phase 4 で対応予定"
-              disabled
-            />
-            <ActionItem
-              icon={<IconUpload />}
-              label="ファイルアップロード"
-              hint="Phase 4 で対応予定"
-              disabled
+              icon={<IconChart />}
+              label="システム監視"
+              onClick={() => {
+                setActionOpen(false);
+                navigate("/system");
+              }}
             />
             <ActionItem
               icon={<IconSettings />}

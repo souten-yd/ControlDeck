@@ -25,6 +25,13 @@ class SecurityConfig(BaseModel):
 
 class FilesConfig(BaseModel):
     allowed_roots: list[str] = []
+    max_upload_size_gb: int = 100
+
+
+class TerminalConfig(BaseModel):
+    enabled: bool = True
+    shell: str = "/bin/bash"
+    max_sessions: int = 10
 
 
 class MonitoringConfig(BaseModel):
@@ -49,6 +56,7 @@ class Config(BaseModel):
     server: ServerConfig = ServerConfig()
     security: SecurityConfig = SecurityConfig()
     files: FilesConfig = FilesConfig()
+    terminal: TerminalConfig = TerminalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
     logs: LogsConfig = LogsConfig()
     ui: UIConfig = UIConfig()

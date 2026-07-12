@@ -66,9 +66,11 @@ async def csrf_protect(request: Request, call_next):
 from app.applications.router import router as apps_router  # noqa: E402
 from app.audit.router import router as audit_router  # noqa: E402
 from app.auth.router import router as auth_router  # noqa: E402
+from app.files.router import router as files_router  # noqa: E402
 from app.logs.router import router as logs_router  # noqa: E402
 from app.monitoring.router import router as system_router  # noqa: E402
 from app.power.router import router as power_router  # noqa: E402
+from app.terminals.router import router as terminals_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -77,6 +79,8 @@ app.include_router(logs_router, prefix=API)
 app.include_router(system_router, prefix=API)
 app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
+app.include_router(files_router, prefix=API)
+app.include_router(terminals_router, prefix=API)
 
 
 @app.get("/api/v1/meta")

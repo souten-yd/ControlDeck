@@ -7,12 +7,17 @@ import pytest
 # app import 前にテスト用の隔離環境を設定する
 _tmp = tempfile.mkdtemp(prefix="cd-test-")
 _config = Path(_tmp) / "config.yaml"
+_sandbox = Path(_tmp) / "sandbox"
+_sandbox.mkdir()
 _config.write_text(
     f"""
 data_dir: {_tmp}/data
 server:
   host: 127.0.0.1
   port: 18765
+files:
+  allowed_roots:
+    - {_sandbox}
 """,
     encoding="utf-8",
 )

@@ -15,6 +15,8 @@ import AppsPage from "./pages/Apps";
 import LogsPage from "./pages/Logs";
 import SystemPage from "./pages/System";
 import SettingsPage from "./pages/Settings";
+import FilesPage from "./pages/Files";
+import TerminalPage from "./pages/Terminal";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -55,6 +57,8 @@ const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: "apps", element: <AppsPage /> },
       { path: "logs", element: <LogsPage /> },
+      { path: "files", element: <FilesPage /> },
+      { path: "terminal", element: <TerminalPage /> },
       { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },
