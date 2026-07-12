@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useApps, useOverview } from "../api/hooks";
-import { useMetrics } from "../stores";
+import { useAuth, useMetrics } from "../stores";
 import { formatBps, formatPercent, formatUptime } from "../lib/format";
 import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
@@ -162,10 +162,17 @@ interface AlertEvent {
 }
 
 function ActiveAlerts() {
+  const qc = useQueryClient();
+  const canManage = useAuth((s) => s.can)("settings.manage");
   const { data: alerts } = useQuery({
     queryKey: ["alert-events", "active"],
     queryFn: () => api<AlertEvent[]>("/alert-events?active_only=true&limit=10"),
     refetchInterval: 15_000,
+  });
+  const dismiss = useMutation({
+    mutationFn: (eventId?: number) =>
+      api(`/alert-events/dismiss${eventId ? `?event_id=${eventId}` : ""}`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-events", "active"] }),
   });
   if (!alerts || alerts.length === 0) return null;
   return (
@@ -173,6 +180,14 @@ function ActiveAlerts() {
       <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-red-700 dark:text-red-400">
         <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
         アクティブなアラート（{alerts.length}）
+        {canManage && (
+          <button
+            onClick={() => dismiss.mutate(undefined)}
+            className="ml-auto rounded-lg px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-900/40"
+          >
+            すべて解除
+          </button>
+        )}
       </h2>
       <ul className="space-y-1">
         {alerts.map((a) => (
@@ -181,7 +196,14 @@ function ActiveAlerts() {
               <span className="font-medium text-red-700 dark:text-red-400">{a.rule_name}</span>
               <span className="ml-2 num text-xs text-red-600/80 dark:text-red-400/80">{a.message}</span>
             </span>
-            <Link to="/settings" className="shrink-0 text-xs text-red-600 hover:underline dark:text-red-400">設定</Link>
+            {canManage && (
+              <button
+                onClick={() => dismiss.mutate(a.id)}
+                className="shrink-0 text-xs text-red-600 hover:underline dark:text-red-400"
+              >
+                解除
+              </button>
+            )}
           </li>
         ))}
       </ul>

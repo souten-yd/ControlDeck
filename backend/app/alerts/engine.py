@@ -11,7 +11,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.database import SessionLocal
 from app.models import AlertEvent, AlertRule, NotificationChannel, utcnow
@@ -119,13 +119,18 @@ async def evaluate_once() -> None:
             if value is None:
                 continue
             breached = OPERATORS.get(rule.operator, OPERATORS["gt"])(value, rule.threshold)
+            # active 判定は DB を正とする（再起動でメモリが消えても重複発火・残留しない）
+            active_event = db.execute(
+                select(AlertEvent)
+                .where(AlertEvent.rule_id == rule.id, AlertEvent.status == "active")
+                .order_by(AlertEvent.triggered_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
 
             if breached:
                 started = _breach_since.setdefault(rule.id, now)
                 sustained = now - started >= rule.duration_seconds
-                already_active = rule.id in _active_event
-                if sustained and not already_active:
-                    # クールダウン確認
+                if sustained and active_event is None:
                     last = rule.last_triggered_at
                     if last is not None and last.tzinfo is None:
                         last = last.replace(tzinfo=timezone.utc)
@@ -139,21 +144,21 @@ async def evaluate_once() -> None:
                     db.add(event)
                     rule.last_triggered_at = utcnow()
                     db.commit()
-                    _active_event[rule.id] = event.id
                     await _dispatch(rule, value, db)
                     event.notified = True
                     db.commit()
                     logger.warning("アラート発火: %s (%s=%.1f)", rule.name, rule.metric, value)
             else:
                 _breach_since.pop(rule.id, None)
-                event_id = _active_event.pop(rule.id, None)
-                if event_id is not None:
-                    event = db.get(AlertEvent, event_id)
-                    if event is not None and event.status == "active":
-                        event.status = "resolved"
-                        event.resolved_at = utcnow()
-                        db.commit()
-                        logger.info("アラート解消: %s", rule.name)
+                # 条件解消: この rule の active イベントをすべて resolved にする（残留防止）
+                if active_event is not None:
+                    db.execute(
+                        update(AlertEvent)
+                        .where(AlertEvent.rule_id == rule.id, AlertEvent.status == "active")
+                        .values(status="resolved", resolved_at=utcnow())
+                    )
+                    db.commit()
+                    logger.info("アラート解消: %s", rule.name)
     except Exception:
         logger.exception("alert evaluation error")
     finally:
