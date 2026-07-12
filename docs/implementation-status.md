@@ -15,6 +15,22 @@
 | Phase 6 — リモートデスクトップ | ✅ コア完了（guacd トンネル + 接続管理 + ビューア） |
 | Phase 7 — TOTP ほか | ✅ コア完了（TOTP/PWA/バックアップ。WoL はワークフローノードで対応） |
 
+## この PC のヘッドレスデスクトップ操作（2026-07-12、ユーザー要望）
+
+- **`./deck.sh enable-desktop`**（既定ヘッドレス）: GNOME Remote Desktop を `grdctl --system` で設定し、
+  この Ubuntu を Web から操作可能にする。TLS 証明書を openssl で自動生成、RDP 認証情報を対話入力、
+  guacd を導入、Control Deck に `127.0.0.1:3389` への接続「この PC（headless）」を自動登録
+- **ヘッドレス（既定）**: 接続時に仮想セッションを作成（物理画面不要、画面を閉じた運用向け）。
+  **リモート接続を有効化するまで仮想デスクトップは作られない**（enable-desktop を実行し、かつ
+  クライアントが接続したときのみ）
+- **`--active`**: 現在のログインセッションを共有（画面ミラー）。`grdctl`（ユーザー daemon）
+- **`./deck.sh disable-desktop`**: 無効化
+- 接続登録は `app.cli register-local-desktop`（パスワードは環境変数経由で argv に載せない、暗号化保存）
+- セキュリティ: RDP:3389 は Control Deck 経由での利用を前提。外部はファイアウォール/VPN で遮断を案内
+
+注: enable-desktop はシステム状態変更（サービス有効化・ポート開放・パスワード設定）を伴うため、
+ユーザーが明示実行する。アプリ側が勝手に仮想セッションを作ることはない。
+
 ## Phase 6 リモートデスクトップ（2026-07-12）
 
 - **guacd トンネル**: WebSocket（guacamole-common-js）↔ guacd(TCP:4822) を橋渡し。接続開始時の
