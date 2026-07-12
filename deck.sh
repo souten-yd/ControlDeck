@@ -8,6 +8,8 @@
 #   ./deck.sh status       サービス状態表示
 #   ./deck.sh admin <名前> 管理者ユーザー作成
 #   ./deck.sh reset-totp <名前>   二要素認証を解除（ロックアウト復旧用。--all で全員）
+#   ./deck.sh backup [出力先]      DB/設定/ユニットをバックアップ
+#   ./deck.sh restore <ファイル>   バックアップから復元
 #   ./deck.sh test         バックエンドテスト実行
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
@@ -226,6 +228,16 @@ cmd_test() {
   exec "$VENV/bin/python" -m pytest -q "$@"
 }
 
+cmd_backup() {
+  check_root
+  exec bash "$REPO_ROOT/scripts/backup.sh" "$@"
+}
+
+cmd_restore() {
+  check_root
+  exec bash "$REPO_ROOT/scripts/restore.sh" "$@"
+}
+
 case "${1:-start}" in
   start)   cmd_start ;;
   service) cmd_service ;;
@@ -233,6 +245,8 @@ case "${1:-start}" in
   status)  cmd_status ;;
   admin)   shift; cmd_admin "$@" ;;
   reset-totp) shift; cmd_reset_totp "$@" ;;
+  backup)  shift; cmd_backup "$@" ;;
+  restore) shift; cmd_restore "$@" ;;
   test)    shift; cmd_test "$@" ;;
   -h|--help|help)
     sed -n '3,15p' "$0" ;;

@@ -13,7 +13,15 @@
 | Phase 4 — ファイル + ターミナル | ✅ 完了（ごみ箱・チャンクアップロードは未対応） |
 | Phase 5 — ワークフロー | ✅ コア完了（下記参照） |
 | Phase 6 — リモートデスクトップ | 未着手 |
-| Phase 7 — TOTP ほか | 🟡 進行中（TOTP 完了、PWA・バックアップ実装予定） |
+| Phase 7 — TOTP ほか | ✅ コア完了（TOTP/PWA/バックアップ。WoL はワークフローノードで対応） |
+
+## バックアップ / リストア（2026-07-12、Phase 7）
+
+- `./deck.sh backup [出力先]`: DB / 設定 / 暗号鍵 / RAG / アプリの systemd ユニットを tar.gz に。
+  sqlite3 があれば WAL checkpoint 後にコピー（ログは容量のため既定除外）
+- `./deck.sh restore <ファイル>`: 復元前に自動退避コピー、確認プロンプトつき、daemon-reload
+- `GET /system/backup`（settings.manage）: 設定ページの「バックアップ」からブラウザで DL 可能
+- 検証: backup→DB 改変→restore で復旧＋退避コピー生成を確認。DL API も 200/gzip 確認
 
 ## PWA 対応（2026-07-12、Phase 7）
 
