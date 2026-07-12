@@ -135,6 +135,55 @@ class WorkflowExecution(Base):
     context_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class NotificationChannel(Base):
+    __tablename__ = "notification_channels"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    # discord / slack / webhook
+    channel_type: Mapped[str] = mapped_column(String(16))
+    url_encrypted: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AlertRule(Base):
+    __tablename__ = "alert_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    # cpu_percent / memory_percent / gpu_percent / vram_percent / gpu_temp_c /
+    # cpu_temp_c / disk_percent / app_down
+    metric: Mapped[str] = mapped_column(String(32))
+    # gt / gte / lt / lte
+    operator: Mapped[str] = mapped_column(String(4), default="gt")
+    threshold: Mapped[float] = mapped_column(Float, default=90.0)
+    # 継続時間（秒）: この時間しきい値を超え続けたら発火
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    # 同一アラートの連続通知を抑制するクールダウン（秒）
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    app_id: Mapped[int | None] = mapped_column(ForeignKey("managed_applications.id"), nullable=True)
+    channel_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AlertEvent(Base):
+    __tablename__ = "alert_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("alert_rules.id"), index=True)
+    rule_name: Mapped[str] = mapped_column(String(128), default="")
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    # active / resolved
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class MetricMinute(Base):
     """1 分平均のメトリクス履歴。"""
 

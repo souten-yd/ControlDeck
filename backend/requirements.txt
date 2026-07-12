@@ -13,3 +13,5 @@ httpx>=0.27
 croniter
 beautifulsoup4
 markdown
+numpy
+playwright

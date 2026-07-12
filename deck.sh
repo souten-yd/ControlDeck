@@ -115,6 +115,36 @@ check_tmux() {
     || warn "tmux が未インストールです。Web ターミナルのセッション永続化には 'sudo apt install tmux' を推奨します"
 }
 
+# apt パッケージを可能なら自動導入（パスワード不要 sudo のときのみ。無理なら案内）
+ensure_apt_packages() {
+  local missing=()
+  command -v tmux >/dev/null || missing+=(tmux)
+  command -v tesseract >/dev/null || missing+=(tesseract-ocr tesseract-ocr-jpn)
+  [ ${#missing[@]} -eq 0 ] && return 0
+  if command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
+    info "システムパッケージを導入しています: ${missing[*]}"
+    sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "${missing[@]}" \
+      || warn "一部パッケージの導入に失敗しました: ${missing[*]}"
+  else
+    warn "以下のワークフロー用パッケージが未導入です（任意）: ${missing[*]}"
+    warn "  導入するには: sudo apt install ${missing[*]}"
+  fi
+}
+
+# Playwright のブラウザ本体（OCR/ブラウザ操作ノード用、~/.cache へ。sudo 不要）
+ensure_playwright_browser() {
+  local stamp="$VENV/.playwright-stamp"
+  [ -f "$stamp" ] && return 0
+  if "$VENV/bin/python" -c "import playwright" 2>/dev/null; then
+    info "Playwright ブラウザ（Chromium）を導入しています ..."
+    if "$VENV/bin/python" -m playwright install chromium >/dev/null 2>&1; then
+      touch "$stamp"
+    else
+      warn "Playwright ブラウザの導入に失敗しました。ブラウザ操作ノードは利用できません"
+    fi
+  fi
+}
+
 ensure_ready() {
   check_root
   check_python
@@ -123,7 +153,8 @@ ensure_ready() {
   ensure_frontend
   ensure_linger
   ensure_admin
-  check_tmux
+  ensure_apt_packages
+  ensure_playwright_browser
 }
 
 service_installed() {

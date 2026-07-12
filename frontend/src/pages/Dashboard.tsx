@@ -1,4 +1,6 @@
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../api/client";
 import { useApps, useOverview } from "../api/hooks";
 import { useMetrics } from "../stores";
 import { formatBps, formatPercent, formatUptime } from "../lib/format";
@@ -85,6 +87,9 @@ export default function DashboardPage() {
         </div>
       </section>
 
+      {/* アクティブアラート */}
+      <ActiveAlerts />
+
       {/* CPU / RAM スパークライン */}
       <ChartSection />
 
@@ -145,6 +150,42 @@ export default function DashboardPage() {
         )}
       </section>
     </div>
+  );
+}
+
+interface AlertEvent {
+  id: number;
+  rule_name: string;
+  message: string;
+  status: string;
+  triggered_at: string;
+}
+
+function ActiveAlerts() {
+  const { data: alerts } = useQuery({
+    queryKey: ["alert-events", "active"],
+    queryFn: () => api<AlertEvent[]>("/alert-events?active_only=true&limit=10"),
+    refetchInterval: 15_000,
+  });
+  if (!alerts || alerts.length === 0) return null;
+  return (
+    <section className="rounded-2xl border border-red-200 bg-red-50/60 p-4 dark:border-red-900 dark:bg-red-950/30">
+      <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-red-700 dark:text-red-400">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+        アクティブなアラート（{alerts.length}）
+      </h2>
+      <ul className="space-y-1">
+        {alerts.map((a) => (
+          <li key={a.id} className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="min-w-0">
+              <span className="font-medium text-red-700 dark:text-red-400">{a.rule_name}</span>
+              <span className="ml-2 num text-xs text-red-600/80 dark:text-red-400/80">{a.message}</span>
+            </span>
+            <Link to="/settings" className="shrink-0 text-xs text-red-600 hover:underline dark:text-red-400">設定</Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

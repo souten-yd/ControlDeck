@@ -82,6 +82,15 @@ def _check_scheduler() -> tuple[bool, str]:
     return True, "ok"
 
 
+def _check_alerts() -> tuple[bool, str]:
+    age = heartbeat_age("alerts")
+    if age is None:
+        return True, "起動待ち"
+    if age > 120:
+        return False, f"アラート評価が {age:.0f} 秒停止"
+    return True, "ok"
+
+
 def health_checks() -> dict[str, dict]:
     """内部ヘルスチェック一式。すべて ok なら健全。"""
     results = {}
@@ -89,6 +98,7 @@ def health_checks() -> dict[str, dict]:
         ("database", _check_db),
         ("metrics_collector", _check_collector),
         ("workflow_scheduler", _check_scheduler),
+        ("alert_engine", _check_alerts),
     ):
         ok, detail = fn()
         results[name] = {"ok": ok, "detail": detail}
