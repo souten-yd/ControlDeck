@@ -108,7 +108,11 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         await websocket.close(code=4502)  # guacd へ接続できない
         return
 
-    await websocket.accept()
+    # guacamole-common-js は WebSocket サブプロトコル "guacamole" を要求するため、
+    # accept 時に必ずエコーする（返さないとブラウザが 1006 で即切断する）
+    subprotocols = websocket.scope.get("subprotocols") or []
+    accept_proto = "guacamole" if "guacamole" in subprotocols else None
+    await websocket.accept(subprotocol=accept_proto)
     try:
         await guacd.perform_handshake(reader, writer, protocol, params, width, height, dpi)
     except (OSError, asyncio.TimeoutError, ConnectionError) as e:
