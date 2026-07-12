@@ -10,6 +10,9 @@
 #   ./deck.sh reset-totp <名前>   二要素認証を解除（ロックアウト復旧用。--all で全員）
 #   ./deck.sh backup [出力先]      DB/設定/ユニットをバックアップ
 #   ./deck.sh restore <ファイル>   バックアップから復元
+#   ./deck.sh enable-desktop      この PC のリモートデスクトップを有効化（既定=ヘッドレス）
+#                                 --active で現在のログインセッション共有
+#   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
@@ -238,6 +241,87 @@ cmd_backup() {
   exec bash "$REPO_ROOT/scripts/backup.sh" "$@"
 }
 
+# GNOME Remote Desktop を設定してこの PC を Web から操作可能にする。
+# 既定はヘッドレス（--system: 接続時に仮想セッションを作成、物理画面は不要）。
+# --active で現在のログインセッションを共有する。
+cmd_enable_desktop() {
+  check_root; check_python; ensure_venv
+
+  local mode="headless"
+  [ "${1:-}" = "--active" ] && mode="active"
+
+  command -v grdctl >/dev/null || die "gnome-remote-desktop が必要です: sudo apt install gnome-remote-desktop"
+  command -v openssl >/dev/null || die "openssl が必要です: sudo apt install openssl"
+
+  # guacd（トンネルに必須）
+  if ! command -v guacd >/dev/null; then
+    warn "guacd が未導入です。ブラウザからの接続に必要です"
+    if command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
+      sudo -n apt-get install -y -qq guacd || warn "guacd の導入に失敗しました"
+    else
+      warn "  導入: sudo apt install guacd"
+    fi
+  fi
+
+  # TLS 証明書（RDP に必須）を生成
+  local data_dir; data_dir="$(cd "$REPO_ROOT/backend" && CONTROL_DECK_CONFIG="$REPO_ROOT/config/config.yaml" "$VENV/bin/python" -c 'from app.config import data_dir; print(data_dir())')"
+  local crt="$data_dir/grd-tls.crt" key="$data_dir/grd-tls.key"
+  if [ ! -f "$crt" ] || [ ! -f "$key" ]; then
+    info "TLS 証明書を生成しています ..."
+    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+      -subj "/CN=control-deck-rdp" -out "$crt" -keyout "$key" 2>/dev/null
+    chmod 600 "$key"
+  fi
+
+  # 認証情報の入力
+  local rdp_user rdp_pass rdp_pass2
+  read -rp "RDP ユーザー名 [${USER}]: " rdp_user
+  rdp_user="${rdp_user:-$USER}"
+  read -rsp "RDP パスワード: " rdp_pass; echo
+  read -rsp "RDP パスワード（確認）: " rdp_pass2; echo
+  [ "$rdp_pass" = "$rdp_pass2" ] || die "パスワードが一致しません"
+  [ -n "$rdp_pass" ] || die "パスワードは必須です"
+
+  # grdctl 設定（headless=--system / active=ユーザー）
+  local scope=""
+  [ "$mode" = "headless" ] && scope="--system"
+  info "GNOME Remote Desktop を設定しています（$mode）..."
+  grdctl $scope rdp set-tls-cert "$crt"
+  grdctl $scope rdp set-tls-key "$key"
+  grdctl $scope rdp set-credentials "$rdp_user" "$rdp_pass"
+  grdctl $scope rdp enable
+  if [ "$mode" = "headless" ]; then
+    sudo systemctl enable --now gnome-remote-desktop.service 2>/dev/null \
+      || systemctl --user enable --now gnome-remote-desktop.service 2>/dev/null || true
+  fi
+
+  # config を有効化
+  if ! grep -qs 'remote_desktop' "$REPO_ROOT/config/config.yaml" 2>/dev/null; then
+    printf '\nremote_desktop:\n  enabled: true\n  guacd_host: 127.0.0.1\n  guacd_port: 4822\n' >> "$REPO_ROOT/config/config.yaml"
+  fi
+
+  # Control Deck に接続を登録
+  ( cd "$REPO_ROOT/backend" && \
+    CONTROL_DECK_CONFIG="$REPO_ROOT/config/config.yaml" \
+    RDP_NAME="この PC（${mode}）" RDP_HOST="127.0.0.1" RDP_PORT="3389" \
+    RDP_USERNAME="$rdp_user" RDP_PASSWORD="$rdp_pass" \
+    "$VENV/bin/python" -m app.cli register-local-desktop )
+
+  echo ""
+  info "完了しました。Web の「リモート」から「この PC（${mode}）」に接続できます。"
+  warn "セキュリティ: RDP は 3389 番で待ち受けます。外部からのアクセスはファイアウォールや"
+  warn "  Tailscale/VPN で遮断し、必ず Control Deck 経由で利用してください。"
+  [ "$mode" = "headless" ] && info "ヘッドレス: 接続時に仮想セッションが作成されます（物理画面は不要）。"
+}
+
+cmd_disable_desktop() {
+  command -v grdctl >/dev/null || die "grdctl が見つかりません"
+  local scope=""
+  [ "${1:-}" != "--active" ] && scope="--system"
+  grdctl $scope rdp disable && info "リモートデスクトップを無効化しました（$([ -n "$scope" ] && echo headless || echo active)）"
+  [ -n "$scope" ] && sudo systemctl disable --now gnome-remote-desktop.service 2>/dev/null || true
+}
+
 cmd_restore() {
   check_root
   exec bash "$REPO_ROOT/scripts/restore.sh" "$@"
@@ -252,6 +336,8 @@ case "${1:-start}" in
   reset-totp) shift; cmd_reset_totp "$@" ;;
   backup)  shift; cmd_backup "$@" ;;
   restore) shift; cmd_restore "$@" ;;
+  enable-desktop)  shift; cmd_enable_desktop "$@" ;;
+  disable-desktop) shift; cmd_disable_desktop "$@" ;;
   test)    shift; cmd_test "$@" ;;
   -h|--help|help)
     sed -n '3,15p' "$0" ;;

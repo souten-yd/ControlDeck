@@ -4,6 +4,9 @@
   python -m app.cli reset-password <username>
   python -m app.cli reset-totp <username>              # 二要素認証を解除（ロックアウト復旧用）
   python -m app.cli reset-totp --all                   # 全ユーザーの TOTP を解除
+  python -m app.cli register-local-desktop             # この PC への RDP 接続を登録（deck.sh 用）
+                                                       # 値は環境変数 RDP_NAME/RDP_HOST/RDP_PORT/
+                                                       # RDP_USERNAME/RDP_PASSWORD で渡す
 """
 from __future__ import annotations
 
@@ -30,16 +33,51 @@ def _read_password() -> str:
     return pw
 
 
+def _register_local_desktop(db) -> None:
+    """この PC への RDP 接続を登録/更新する。値は環境変数で受け取る（argv に秘密を載せない）。"""
+    import json
+    import os
+
+    from sqlalchemy import select
+
+    from app.models import RemoteConnection
+    from app.remote_desktop import service
+
+    name = os.environ.get("RDP_NAME", "この PC（ヘッドレス）")
+    host = os.environ.get("RDP_HOST", "127.0.0.1")
+    port = int(os.environ.get("RDP_PORT", "3389"))
+    username = os.environ.get("RDP_USERNAME", "")
+    password = os.environ.get("RDP_PASSWORD", "")
+
+    conn = db.execute(select(RemoteConnection).where(RemoteConnection.name == name)).scalar_one_or_none()
+    if conn is None:
+        conn = RemoteConnection(name=name, protocol="rdp", host=host, port=port, username=username, params_json=json.dumps({}))
+        db.add(conn)
+    else:
+        conn.host, conn.port, conn.username = host, port, username
+    service.set_secret_params(conn, {"password": password})
+    db.commit()
+    print(f"リモート接続「{name}」を登録しました（{host}:{port}）")
+
+
 def main() -> None:
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
-    command, username = sys.argv[1], sys.argv[2]
+    command = sys.argv[1]
+    # username を取らないコマンド
+    if command not in ("register-local-desktop",):
+        if len(sys.argv) < 3:
+            print(__doc__)
+            sys.exit(1)
+        username = sys.argv[2]
     init_db()
     db = SessionLocal()
     try:
         seed_roles(db)
-        if command == "create-admin":
+        if command == "register-local-desktop":
+            _register_local_desktop(db)
+        elif command == "create-admin":
             password = _read_password()
             user = create_admin(db, username, password)
             print(f"管理者 {user.username} を作成しました")
