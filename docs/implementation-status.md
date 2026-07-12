@@ -15,6 +15,32 @@
 | Phase 6 — リモートデスクトップ | 未着手 |
 | Phase 7 — TOTP ほか | 未着手 |
 
+## ワークフロー拡張 v2（2026-07-12、ユーザー要望）
+
+- **ノード追加**（全 25 種）: ループ（回数 / foreach、body/done 2 出力、`{{ID.item}}`/`{{ID.index}}` 参照）、
+  変数セット、文字列操作（大小変換 / 置換 / 正規表現抽出 / 分割 / JSON 抽出 / テンプレート）、
+  Markdown→HTML、ファイル読込 / 出力（追記可）/ 操作（copy/move/delete/mkdir）、
+  LLM 生成（OpenAI 互換 = Ollama/vLLM/llama.cpp/OpenAI）、Web スクレイピング（CSS セレクター）、
+  ブラウザ操作（Playwright）、OCR（tesseract）、Wake-on-LAN、
+  SSH 実行（鍵認証 BatchMode、host 検証）、Git 操作（サブコマンド許可制）、C++ ビルド（CMake/Make）、
+  Python 実行（**初期無効**、`security.allow_arbitrary_commands` で許可、venv python の -I -c 実行）
+- **安全性**: すべて shell=False の配列実行。ファイル系は許可ルート検証を通す。SSH host / Git サブコマンドは
+  ホワイトリスト。任意シェル文字列ノードは非提供
+- **エディター刷新**: アイコン付きノード + カテゴリカラーバー、実行状態リング、ドットグリッド背景、
+  ミニマップ、矢印マーカーエッジ、ループの反復/完了ハンドル
+- **カスタムノード / スニペット**: 選択ノード群をスニペットとして localStorage 保存 → パレットから再挿入
+- **ワークフロー入出力**: 定義を JSON でエクスポート / インポート（他環境への持ち運び）
+
+検証: pytest 56 件成功（v2 ノード 13 件: 文字列 / 変数チェーン / Markdown / ファイル IO / WOL /
+Git 許可制 / SSH host 検証 / Python 無効 / ループ foreach・count / スクレイピング）。
+E2E で「foreach ループ → 大文字化 → ファイル追記」を実行し APPLE/BANANA/CHERRY 出力を確認。
+Playwright でダーク/ライト・PC/モバイルのエディターとパレットを確認、横スクロール 0・エラーなし。
+
+### RAG 構築 / 本格 DB 操作について
+
+外部依存（ベクトル DB / 埋め込みモデル / DB ドライバー）が大きいため次段階の計画として記録。
+現状は LLM ノード + HTTP ノード + ファイルノードの組み合わせで簡易 RAG（外部ベクトル API 呼び出し）は構成可能。
+
 ## 自己メンテナンス / ウォッチドッグ（2026-07-12、ユーザー要望で追加）
 
 - **systemd ウォッチドッグ**: `Type=notify` + `WatchdogSec=30` + `NotifyAccess=main`。
