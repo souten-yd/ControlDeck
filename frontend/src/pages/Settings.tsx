@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { useAuth, useTheme, useToasts, type Theme } from "../stores";
+import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { Skeleton } from "../components/ui";
 
 interface SessionInfo {
@@ -28,6 +28,10 @@ export default function SettingsPage() {
   const can = useAuth((s) => s.can);
   const theme = useTheme((s) => s.theme);
   const setTheme = useTheme((s) => s.setTheme);
+  const accent = useTheme((s) => s.accent);
+  const setAccent = useTheme((s) => s.setAccent);
+  const oled = useTheme((s) => s.oled);
+  const setOled = useTheme((s) => s.setOled);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-4 md:p-6">
@@ -55,11 +59,13 @@ export default function SettingsPage() {
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
         <h2 className="mb-3 text-sm font-semibold text-zinc-500">外観</h2>
+        <p className="mb-2 text-xs text-zinc-400">モード</p>
         <div className="flex gap-2">
           {(["system", "light", "dark"] as Theme[]).map((t) => (
             <button
               key={t}
               onClick={() => setTheme(t)}
+              aria-pressed={theme === t}
               className={`rounded-xl px-4 py-2 text-sm font-medium ${
                 theme === t
                   ? "bg-accent-600 text-white"
@@ -70,6 +76,46 @@ export default function SettingsPage() {
             </button>
           ))}
         </div>
+
+        <p className="mb-2 mt-5 text-xs text-zinc-400">アクセントカラー</p>
+        <div className="flex flex-wrap gap-3">
+          {ACCENTS.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => setAccent(a.id)}
+              aria-label={a.label}
+              aria-pressed={accent === a.id}
+              title={a.label}
+              className={`grid h-11 w-11 place-items-center rounded-full transition-transform hover:scale-105 ${
+                accent === a.id
+                  ? "ring-2 ring-offset-2 ring-zinc-400 dark:ring-zinc-500 dark:ring-offset-zinc-900"
+                  : ""
+              }`}
+              style={{ backgroundColor: a.color }}
+            >
+              {accent === a.id && (
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="m5 12 5 5L20 7" />
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <label className="mt-5 flex items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 dark:border-zinc-700">
+          <span>
+            <span className="block text-sm">OLED 完全黒</span>
+            <span className="block text-xs text-zinc-400">
+              ダークモード時に背景を純黒にします（有機 EL の省電力向け）
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={oled}
+            onChange={(e) => setOled(e.target.checked)}
+            className="h-5 w-5 accent-current"
+          />
+        </label>
       </section>
 
       <SessionsSection />

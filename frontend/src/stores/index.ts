@@ -16,31 +16,73 @@ export const useAuth = create<AuthState>((set, get) => ({
 
 // ---- テーマ ----
 export type Theme = "system" | "dark" | "light";
+export type Accent = "blue" | "violet" | "emerald" | "teal" | "orange" | "rose";
 
-function applyTheme(theme: Theme) {
+export const ACCENTS: { id: Accent; label: string; color: string }[] = [
+  { id: "blue", label: "ブルー", color: "#3b82f6" },
+  { id: "violet", label: "バイオレット", color: "#8b5cf6" },
+  { id: "emerald", label: "エメラルド", color: "#10b981" },
+  { id: "teal", label: "ティール", color: "#14b8a6" },
+  { id: "orange", label: "オレンジ", color: "#f97316" },
+  { id: "rose", label: "ローズ", color: "#f43f5e" },
+];
+
+function applyTheme(theme: Theme, accent: Accent, oled: boolean) {
+  const el = document.documentElement;
   const dark =
     theme === "dark" ||
     (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.classList.toggle("dark", dark);
+  el.classList.toggle("dark", dark);
+  if (accent === "blue") delete el.dataset.accent;
+  else el.dataset.accent = accent;
+  if (oled) el.dataset.oled = "1";
+  else delete el.dataset.oled;
+  // ブラウザ UI（アドレスバー等）の色も追従させる
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute("content", dark ? (oled ? "#000000" : "#09090b") : "#fafafa");
 }
 
 interface ThemeState {
   theme: Theme;
+  accent: Accent;
+  oled: boolean;
   setTheme: (t: Theme) => void;
+  setAccent: (a: Accent) => void;
+  setOled: (v: boolean) => void;
 }
 
-export const useTheme = create<ThemeState>((set) => ({
+export const useTheme = create<ThemeState>((set, get) => ({
   theme: (localStorage.getItem("cd-theme") as Theme) || "system",
+  accent: (localStorage.getItem("cd-accent") as Accent) || "blue",
+  oled: localStorage.getItem("cd-oled") === "1",
   setTheme: (theme) => {
     localStorage.setItem("cd-theme", theme);
-    applyTheme(theme);
     set({ theme });
+    const s = get();
+    applyTheme(s.theme, s.accent, s.oled);
+  },
+  setAccent: (accent) => {
+    localStorage.setItem("cd-accent", accent);
+    set({ accent });
+    const s = get();
+    applyTheme(s.theme, s.accent, s.oled);
+  },
+  setOled: (oled) => {
+    localStorage.setItem("cd-oled", oled ? "1" : "0");
+    set({ oled });
+    const s = get();
+    applyTheme(s.theme, s.accent, s.oled);
   },
 }));
 
-applyTheme(useTheme.getState().theme);
+{
+  const s = useTheme.getState();
+  applyTheme(s.theme, s.accent, s.oled);
+}
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  applyTheme(useTheme.getState().theme);
+  const s = useTheme.getState();
+  applyTheme(s.theme, s.accent, s.oled);
 });
 
 // ---- メトリクス（WebSocket から更新、セレクター経由で購読） ----

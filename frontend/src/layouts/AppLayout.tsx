@@ -19,6 +19,7 @@ import {
 } from "../components/icons";
 import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
+import { Logo } from "../components/Logo";
 
 const NAV = [
   { to: "/", label: "概要", icon: IconHome },
@@ -96,9 +97,7 @@ export default function AppLayout() {
         } transition-[width] duration-150`}
       >
         <div className="flex h-14 items-center gap-2 px-4">
-          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent-600 text-sm font-bold text-white">
-            {(meta?.app_name ?? "U")[0]}
-          </span>
+          <Logo size={28} className="shrink-0" />
           {!collapsed && (
             <span className="truncate text-sm font-semibold">
               {meta?.app_name ?? "Control Deck"}
@@ -143,9 +142,7 @@ export default function AppLayout() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="safe-top flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:h-14">
           <div className="flex items-center gap-2 md:hidden">
-            <span className="grid h-6 w-6 place-items-center rounded-md bg-accent-600 text-xs font-bold text-white">
-              {(meta?.app_name ?? "U")[0]}
-            </span>
+            <Logo size={24} />
           </div>
           <div className="hidden md:block">
             <button
