@@ -283,9 +283,20 @@ cmd_enable_desktop() {
     fi
     # このユーザーの xrdp セッションで XFCE を起動する設定
     if command -v xfce4-session >/dev/null; then
-      printf '#!/bin/sh\nexport XDG_SESSION_DESKTOP=xfce\nexec dbus-launch --exit-with-session xfce4-session\n' > "$HOME/.xsession"
+      # コンソール GNOME セッションと D-Bus/ディスプレイが競合しないよう、
+      # 分離した専用セッションバス(dbus-run-session)で XFCE を起動する。
+      {
+        echo '#!/bin/sh'
+        echo '# Control Deck: xrdp セッション用（分離 D-Bus で XFCE 起動）'
+        echo 'unset WAYLAND_DISPLAY'
+        echo 'unset DBUS_SESSION_BUS_ADDRESS'
+        echo 'export XDG_SESSION_TYPE=x11'
+        echo 'export XDG_CURRENT_DESKTOP=XFCE'
+        echo 'export XDG_SESSION_DESKTOP=xfce'
+        echo 'exec dbus-run-session -- xfce4-session'
+      } > "$HOME/.xsession"
       chmod +x "$HOME/.xsession"
-      info "XFCE を xrdp セッションに設定しました（~/.xsession）。"
+      info "XFCE を xrdp セッションに設定しました（~/.xsession、分離 D-Bus）。"
     fi
     # GNOME Remote Desktop が 3389 を占有していれば解放
     if command -v grdctl >/dev/null; then
