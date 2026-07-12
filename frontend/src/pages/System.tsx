@@ -201,6 +201,9 @@ export default function SystemPage() {
         )}
       </Section>
 
+      {/* Control Deck 自己状態 */}
+      <SelfStatusSection />
+
       {/* 上位プロセス */}
       <Section title="上位プロセス（CPU）">
         {!procs ? (
@@ -232,6 +235,58 @@ export default function SystemPage() {
       </Section>
     </div>
   );
+}
+
+interface SelfStatus {
+  watchdog_enabled: boolean;
+  checks: Record<string, { ok: boolean; detail: string }>;
+  maintenance: { last_run_at: string | null; last_results: Record<string, { ok: boolean }> };
+}
+
+const CHECK_LABELS: Record<string, string> = {
+  database: "データベース",
+  metrics_collector: "メトリクス収集",
+  workflow_scheduler: "スケジューラー",
+};
+
+function SelfStatusSection() {
+  const { data } = useQuery({
+    queryKey: ["self-status"],
+    queryFn: () => api<SelfStatus>("/system/self-status"),
+    refetchInterval: 30_000,
+  });
+  if (!data) return null;
+  return (
+    <Section title="Control Deck 自己診断">
+      <ul className="space-y-1.5 text-sm">
+        <li className="flex items-center gap-2">
+          <StatusDot ok={data.watchdog_enabled} warn={!data.watchdog_enabled} />
+          systemd ウォッチドッグ
+          <span className="text-xs text-zinc-400">
+            {data.watchdog_enabled ? "有効（ハング時自動再起動）" : "無効（./deck.sh service で有効化）"}
+          </span>
+        </li>
+        {Object.entries(data.checks).map(([key, c]) => (
+          <li key={key} className="flex items-center gap-2">
+            <StatusDot ok={c.ok} />
+            {CHECK_LABELS[key] ?? key}
+            <span className="text-xs text-zinc-400">{c.detail}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-xs text-zinc-400">
+        自己メンテナンス（ログローテーション / セッション整理 / DB 最適化）:{" "}
+        {data.maintenance.last_run_at
+          ? `最終実行 ${new Date(data.maintenance.last_run_at).toLocaleString("ja-JP")}`
+          : "起動 5 分後に初回実行されます"}
+      </p>
+    </Section>
+  );
+}
+
+function StatusDot({ ok, warn }: { ok: boolean; warn?: boolean }) {
+  const cls = ok ? "bg-emerald-500" : warn ? "bg-amber-500" : "bg-red-500";
+  return <span className={`h-2 w-2 shrink-0 rounded-full ${cls}`} aria-hidden />;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

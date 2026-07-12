@@ -31,6 +31,22 @@
 - 許可ルート限定ファイルマネージャー（一覧 / アップロード / ダウンロード / 編集 / コピー / 移動 / ごみ箱）
 - Monaco 遅延ロード、Web ターミナル（xterm.js + tmux、モバイル補助キーバー）
 
+### 自己メンテナンス / ウォッチドッグ（2026-07-12 ユーザー要望で追加）
+
+本体自身の健全性維持を自動化する。
+
+- **systemd ウォッチドッグ**: control-deck-web を `Type=notify` + `WatchdogSec=30` で運用。
+  アプリは内部ヘルスチェック（DB 接続 / メトリクス収集の鮮度 / スケジューラー心拍）が正常な間だけ
+  `WATCHDOG=1` を送信し、ハング・内部異常時は systemd が自動再起動する
+- **自己メンテナンスループ**（1 時間間隔 + 起動 5 分後に初回）:
+  - 管理アプリログのローテーション（copytruncate 方式 + gzip、`logs.rotate_size_mb` / 世代数 / 保持日数）
+  - 期限切れ・失効セッションの purge
+  - 監査ログの保持期間超過分の削除（`logs.audit_retention_days`、既定 180 日）
+  - SQLite の WAL checkpoint + PRAGMA optimize
+  - data_dir のディスク残量自己点検（10% 未満で警告ログ）
+- **自己状態 API**: `GET /system/self-status`（認証必須）でウォッチドッグ有無・各チェック結果・
+  最終メンテナンス実行時刻を確認できる
+
 ### Phase 5 — ワークフロー（React Flow）
 ### Phase 6 — リモートデスクトップ（Guacamole）
 ### Phase 7 — TOTP / 通知 / バックアップ / PostgreSQL / PWA / WoL / プラグイン

@@ -37,14 +37,22 @@ async def lifespan(app: FastAPI):
         seed_roles(db)
     finally:
         db.close()
+    from app.maintenance.service import maintenance_loop
+    from app.maintenance.watchdog import notify_ready, watchdog_loop
     from app.workflows.engine import scheduler_loop
 
     tasks = [
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),
+        asyncio.create_task(maintenance_loop()),
+        asyncio.create_task(watchdog_loop()),
     ]
+    notify_ready()
     logger.info("Control Deck 起動完了")
     yield
+    from app.maintenance.watchdog import sd_notify
+
+    sd_notify("STOPPING=1")
     import contextlib
 
     for task in tasks:

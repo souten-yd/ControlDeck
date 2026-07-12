@@ -46,6 +46,23 @@ def _os_release() -> str:
     return platform.platform()
 
 
+@router.get("/self-status")
+def self_status(user: User = Depends(require_permission("system.view"))):
+    """Control Deck 自身の健全性（ウォッチドッグ・内部チェック・自己メンテナンス）。"""
+    from app.maintenance.service import INTERVAL, last_run
+    from app.maintenance.watchdog import health_checks, watchdog_enabled
+
+    return {
+        "watchdog_enabled": watchdog_enabled(),
+        "checks": health_checks(),
+        "maintenance": {
+            "interval_seconds": INTERVAL,
+            "last_run_at": last_run["at"],
+            "last_results": last_run["results"],
+        },
+    }
+
+
 @router.get("/disk")
 def disk(user: User = Depends(require_permission("system.view"))):
     parts = []

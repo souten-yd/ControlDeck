@@ -43,6 +43,8 @@ class MonitoringConfig(BaseModel):
 class LogsConfig(BaseModel):
     retention_days: int = 30
     rotate_size_mb: int = 100
+    rotate_generations: int = 10
+    audit_retention_days: int = 180
 
 
 class UIConfig(BaseModel):
