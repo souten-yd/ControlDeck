@@ -104,6 +104,37 @@ class AuditLog(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class Workflow(Base):
+    __tablename__ = "workflows"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="")
+    # ノードグラフ {nodes: [...], edges: [...]}（トリガーもノードとして含む）
+    definition_json: Mapped[str] = mapped_column(Text, default="{}")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class WorkflowExecution(Base):
+    __tablename__ = "workflow_executions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    # QUEUED / RUNNING / SUCCEEDED / FAILED / CANCELED / TIMED_OUT
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED")
+    trigger_type: Mapped[str] = mapped_column(String(32), default="manual")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    # ノードごとの実行結果 {node_id: {status, output, error, started_at, finished_at}}
+    context_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class MetricMinute(Base):
     """1 分平均のメトリクス履歴。"""
 

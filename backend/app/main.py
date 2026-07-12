@@ -37,14 +37,20 @@ async def lifespan(app: FastAPI):
         seed_roles(db)
     finally:
         db.close()
-    task = asyncio.create_task(collector.run())
+    from app.workflows.engine import scheduler_loop
+
+    tasks = [
+        asyncio.create_task(collector.run()),
+        asyncio.create_task(scheduler_loop()),
+    ]
     logger.info("Control Deck 起動完了")
     yield
-    task.cancel()
     import contextlib
 
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    for task in tasks:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -71,6 +77,7 @@ from app.logs.router import router as logs_router  # noqa: E402
 from app.monitoring.router import router as system_router  # noqa: E402
 from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
+from app.workflows.router import router as workflows_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -81,6 +88,7 @@ app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
+app.include_router(workflows_router, prefix=API)
 
 
 @app.get("/api/v1/meta")

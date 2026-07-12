@@ -24,6 +24,7 @@ import { Logo } from "../components/Logo";
 const NAV = [
   { to: "/", label: "概要", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
+  { to: "/workflows", label: "ワークフロー", icon: IconFlow },
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
   { to: "/logs", label: "ログ", icon: IconLogs },
@@ -33,7 +34,17 @@ const NAV = [
 
 // モバイル下部ナビ（最大 5 項目、中央は操作ボタン）
 const MOBILE_NAV_LEFT = [NAV[0], NAV[1]];
-const MOBILE_NAV_RIGHT = [NAV[2], NAV[4]];
+const MOBILE_NAV_RIGHT = [NAV[3], NAV[5]];
+
+function IconFlow(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
+      <rect x="2" y="4" width="7" height="6" rx="1.5" />
+      <rect x="15" y="14" width="7" height="6" rx="1.5" />
+      <path d="M9 7h4a2 2 0 0 1 2 2v5" />
+    </svg>
+  );
+}
 
 export default function AppLayout() {
   const user = useAuth((s) => s.user);
@@ -221,6 +232,16 @@ export default function AppLayout() {
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/apps?add=1");
+                }}
+              />
+            )}
+            {can("workflows.run") && (
+              <ActionItem
+                icon={<IconFlow />}
+                label="ワークフロー"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/workflows");
                 }}
               />
             )}
