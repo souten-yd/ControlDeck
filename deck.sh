@@ -7,6 +7,7 @@
 #   ./deck.sh stop         サービス停止
 #   ./deck.sh status       サービス状態表示
 #   ./deck.sh admin <名前> 管理者ユーザー作成
+#   ./deck.sh passwd <名前> ログインパスワードを変更
 #   ./deck.sh reset-totp <名前>   二要素認証を解除（ロックアウト復旧用。--all で全員）
 #   ./deck.sh backup [出力先]      DB/設定/ユニットをバックアップ
 #   ./deck.sh restore <ファイル>   バックアップから復元
@@ -126,10 +127,14 @@ ensure_apt_packages() {
   local missing=()
   command -v tmux >/dev/null || missing+=(tmux)
   command -v tesseract >/dev/null || missing+=(tesseract-ocr tesseract-ocr-jpn)
-  # リモートデスクトップ用 guacd（config で有効時のみ導入を試みる）
+  # リモートデスクトップ関連（config で有効時のみ導入を試みる）
   if grep -qsE '^[[:space:]]*enabled:[[:space:]]*true' "$REPO_ROOT/config/config.yaml" 2>/dev/null \
      && grep -qs 'remote_desktop' "$REPO_ROOT/config/config.yaml" 2>/dev/null; then
     command -v guacd >/dev/null || missing+=(guacd)
+    # ヘッドレス（xrdp）を設定済みなら、セッション用 XFCE も揃える
+    if command -v xrdp >/dev/null && ! command -v xfce4-session >/dev/null; then
+      missing+=(xfce4 xfce4-goodies dbus-x11)
+    fi
   fi
   [ ${#missing[@]} -eq 0 ] && return 0
   if command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
@@ -221,6 +226,13 @@ cmd_admin() {
   check_root; check_python; ensure_venv
   cd "$REPO_ROOT/backend"
   exec "$VENV/bin/python" -m app.cli create-admin "$1"
+}
+
+cmd_passwd() {
+  [ $# -ge 1 ] || die "使用方法: ./deck.sh passwd <ユーザー名>"
+  check_root; check_python; ensure_venv
+  cd "$REPO_ROOT/backend"
+  exec "$VENV/bin/python" -m app.cli reset-password "$1"
 }
 
 cmd_reset_totp() {
@@ -358,6 +370,7 @@ case "${1:-start}" in
   stop)    cmd_stop ;;
   status)  cmd_status ;;
   admin)   shift; cmd_admin "$@" ;;
+  passwd)  shift; cmd_passwd "$@" ;;
   reset-totp) shift; cmd_reset_totp "$@" ;;
   backup)  shift; cmd_backup "$@" ;;
   restore) shift; cmd_restore "$@" ;;
