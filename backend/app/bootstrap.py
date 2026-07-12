@@ -31,6 +31,7 @@ def _apply_light_migrations() -> None:
     additions = [
         ("users", "recovery_codes_encrypted", "TEXT"),
         ("managed_applications", "url", "VARCHAR(2048)"),
+        ("remote_connections", "is_self", "BOOLEAN DEFAULT 0"),
     ]
     with engine.begin() as conn:
         for table, column, coltype in additions:

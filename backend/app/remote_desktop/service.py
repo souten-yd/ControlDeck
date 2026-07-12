@@ -55,5 +55,6 @@ def to_out(conn: RemoteConnection) -> dict:
         "username": conn.username,
         "params": json.loads(conn.params_json or "{}"),
         "has_password": has_secret,
+        "is_self": bool(conn.is_self),
         "created_at": conn.created_at,
     }

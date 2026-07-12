@@ -40,7 +40,10 @@ def status(user: User = Depends(require_permission("remote_desktop.use"))):
 def list_connections(
     user: User = Depends(require_permission("remote_desktop.use")), db: Session = Depends(get_db)
 ):
-    rows = db.execute(select(RemoteConnection).order_by(RemoteConnection.name)).scalars().all()
+    # この PC（is_self）を最上段に、その後は名前順
+    rows = db.execute(
+        select(RemoteConnection).order_by(RemoteConnection.is_self.desc(), RemoteConnection.name)
+    ).scalars().all()
     return [service.to_out(c) for c in rows]
 
 
@@ -76,6 +79,8 @@ def delete_connection(
     conn = db.get(RemoteConnection, connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="接続が見つかりません")
+    if conn.is_self:
+        raise HTTPException(status_code=403, detail="この PC の接続は削除できません（deck.sh disable-desktop で無効化してください）")
     db.delete(conn)
     db.commit()
     audit.record(db, "remote.delete", user=user, resource_type="remote", resource_id=str(connection_id), request=request)
