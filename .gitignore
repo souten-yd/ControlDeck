@@ -1,0 +1,25 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Data / runtime
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
