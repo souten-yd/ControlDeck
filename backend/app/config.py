@@ -21,6 +21,8 @@ class SecurityConfig(BaseModel):
     allow_arbitrary_commands: bool = False
     # HTTPS リバースプロキシ配下で true にする（Cookie に Secure を付与）
     secure_cookies: bool = False
+    # 管理者に二要素認証を推奨する（UI にバナー表示）
+    require_totp_for_admin: bool = False
 
 
 class FilesConfig(BaseModel):

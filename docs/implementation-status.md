@@ -13,7 +13,15 @@
 | Phase 4 — ファイル + ターミナル | ✅ 完了（ごみ箱・チャンクアップロードは未対応） |
 | Phase 5 — ワークフロー | ✅ コア完了（下記参照） |
 | Phase 6 — リモートデスクトップ | 未着手 |
-| Phase 7 — TOTP ほか | 未着手 |
+| Phase 7 — TOTP ほか | 🟡 進行中（TOTP 完了、PWA・バックアップ実装予定） |
+
+## TOTP 二要素認証（2026-07-12、Phase 7）
+
+- 有効化: setup（QR=SVG data URI、Pillow 不要）→ 6 桁 verify → リカバリーコード 10 個を 1 回表示
+- ログイン 2 段階: TOTP 有効時は `two_factor_required` → コード入力（6 桁 or 使い捨てリカバリー）
+- 無効化はコード確認つき。シークレット/リカバリーコードは Fernet 暗号化保存、使用時に消費
+- `require_totp_for_admin` で管理者に推奨バナー。bootstrap に SQLite 軽量マイグレーション追加
+- 検証: pytest 71 件、Playwright + pyotp で全フロー E2E
 
 ## アラート通知（2026-07-12、Phase 3 残り完了）
 

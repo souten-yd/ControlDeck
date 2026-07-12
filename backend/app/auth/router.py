@@ -5,10 +5,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
+from app.auth import totp
 from app.config import get_config
 from app.database import get_db
 from app.models import User, UserSession
-from app.schemas.auth import LoginRequest, SessionOut, UserOut
+from app.schemas.auth import (
+    LoginRequest,
+    SessionOut,
+    TotpSetupResponse,
+    TotpVerifyRequest,
+    UserOut,
+)
 from app.security import ratelimit
 from app.security.deps import get_current_user, user_permissions
 from app.security.passwords import verify_password
@@ -55,6 +62,20 @@ def login(
         audit.record(db, "login", username=body.username, result="failure", request=request)
         raise HTTPException(status_code=401, detail="ユーザー名またはパスワードが正しくありません")
 
+    # 二要素認証: 有効なら TOTP / リカバリーコードを要求
+    if user.totp_enabled:
+        if not body.totp_code:
+            # パスワードは正しいが 2FA が必要（クライアントはこのコードで入力欄を出す）
+            raise HTTPException(status_code=401, detail="two_factor_required")
+        secret = totp.get_secret(user)
+        code_ok = (secret is not None and totp.verify_code(secret, body.totp_code)) or totp.consume_recovery_code(
+            user, body.totp_code
+        )
+        if not code_ok:
+            ratelimit.record(f"login:{ip}:{body.username}")
+            audit.record(db, "login", user=user, result="totp_failure", request=request)
+            raise HTTPException(status_code=401, detail="認証コードが正しくありません")
+
     from app.models import utcnow
 
     user.last_login_at = utcnow()
@@ -80,6 +101,8 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
 
 
 def _user_out(user: User) -> UserOut:
+    cfg = get_config().security
+    required = getattr(cfg, "require_totp_for_admin", False) and user.role.name == "administrator"
     return UserOut(
         id=user.id,
         username=user.username,
@@ -87,12 +110,76 @@ def _user_out(user: User) -> UserOut:
         role=user.role.name,
         permissions=sorted(user_permissions(user)),
         totp_enabled=user.totp_enabled,
+        recovery_codes_remaining=totp.remaining_recovery_codes(user),
+        totp_required=required and not user.totp_enabled,
     )
 
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)) -> UserOut:
     return _user_out(user)
+
+
+# ---- TOTP 二要素認証 ----
+
+
+@router.post("/totp/setup")
+def totp_setup(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TotpSetupResponse:
+    """シークレットを生成して QR を返す。まだ有効化はしない（verify で確定）。"""
+    if user.totp_enabled:
+        raise HTTPException(status_code=409, detail="二要素認証は既に有効です")
+    secret = totp.generate_secret()
+    totp.store_secret(user, secret)  # 未確定シークレットを一時保存
+    db.commit()
+    uri = totp.provisioning_uri(secret, user.username)
+    return TotpSetupResponse(secret=secret, qr_data_uri=totp.qr_data_uri(uri), provisioning_uri=uri)
+
+
+@router.post("/totp/verify")
+def totp_verify(
+    body: TotpVerifyRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """6 桁コードで確認して有効化し、リカバリーコードを返す（この 1 回だけ表示）。"""
+    secret = totp.get_secret(user)
+    if secret is None:
+        raise HTTPException(status_code=409, detail="先に setup を実行してください")
+    if not totp.verify_code(secret, body.code):
+        raise HTTPException(status_code=400, detail="認証コードが正しくありません")
+    codes = totp.generate_recovery_codes()
+    totp.store_recovery_codes(user, codes)
+    user.totp_enabled = True
+    db.commit()
+    audit.record(db, "totp.enable", user=user, request=request)
+    return {"enabled": True, "recovery_codes": codes}
+
+
+@router.post("/totp/disable")
+def totp_disable(
+    body: TotpVerifyRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """現在のコードまたはリカバリーコードで確認してから無効化する。"""
+    if not user.totp_enabled:
+        raise HTTPException(status_code=409, detail="二要素認証は有効ではありません")
+    secret = totp.get_secret(user)
+    ok = (secret is not None and totp.verify_code(secret, body.code)) or totp.consume_recovery_code(user, body.code)
+    if not ok:
+        raise HTTPException(status_code=400, detail="認証コードが正しくありません")
+    user.totp_enabled = False
+    user.totp_secret_encrypted = None
+    user.recovery_codes_encrypted = None
+    db.commit()
+    audit.record(db, "totp.disable", user=user, request=request)
+    return {"enabled": False}
 
 
 @router.get("/sessions")

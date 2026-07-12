@@ -31,17 +31,17 @@ export async function api<T = unknown>(
     ...init,
     headers,
   });
-  if (res.status === 401) {
-    onUnauthorized?.();
-    throw new ApiError(401, "認証が必要です");
-  }
   if (!res.ok) {
-    let detail = `エラー (${res.status})`;
+    let detail = res.status === 401 ? "認証が必要です" : `エラー (${res.status})`;
     try {
       const body = await res.json();
       if (typeof body.detail === "string") detail = body.detail;
     } catch {
       /* JSON でないレスポンス */
+    }
+    // ログイン系以外の 401 はセッション失効としてグローバル処理する
+    if (res.status === 401 && !path.startsWith("/auth/login")) {
+      onUnauthorized?.();
     }
     throw new ApiError(res.status, detail);
   }

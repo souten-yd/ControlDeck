@@ -5,6 +5,8 @@ export interface UserInfo {
   role: string;
   permissions: string[];
   totp_enabled: boolean;
+  recovery_codes_remaining: number;
+  totp_required: boolean;
 }
 
 export type AppStatus =

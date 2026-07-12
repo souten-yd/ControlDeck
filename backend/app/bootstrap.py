@@ -14,6 +14,30 @@ from app.security.permissions import ROLE_PRESETS
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _apply_light_migrations()
+
+
+def _apply_light_migrations() -> None:
+    """SQLite 向けの軽量マイグレーション（不足カラムを ADD COLUMN で補う）。
+
+    Alembic 導入までの暫定。カラム追加のみを冪等に行う。
+    """
+    from sqlalchemy import inspect, text
+
+    if not engine.url.drivername.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    # (テーブル, カラム, 型定義)
+    additions = [
+        ("users", "recovery_codes_encrypted", "TEXT"),
+    ]
+    with engine.begin() as conn:
+        for table, column, coltype in additions:
+            if table not in inspector.get_table_names():
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))
 
 
 def seed_roles(db: Session) -> None:
