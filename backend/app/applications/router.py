@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -61,6 +63,9 @@ def create_app(
     apps.set_environment(app, body.environment)
     db.add(app)
     db.flush()
+    # インラインコードが指定されていれば保存し script_path を設定
+    if body.code is not None and body.application_type in ("python_script", "shell_script"):
+        apps.write_app_code(app, body.code)
     if body.application_type == "systemd_service":
         app.systemd_unit_name = body.systemd_unit_name or ""
     elif body.application_type == "url_shortcut":
@@ -90,6 +95,62 @@ def project_discovery(
     return discover_project(path)
 
 
+class TestRunBody(BaseModel):
+    application_type: str
+    python_path: str | None = None
+    code: str
+
+
+@router.post("/test-run")
+async def test_run(
+    body: TestRunBody,
+    user: User = Depends(require_permission("apps.edit")),
+):
+    """インラインコードを一時的に実行して動作確認する（stdout/stderr/終了コードを返す）。
+
+    apps.edit 権限が必要。30 秒でタイムアウト、出力は上限つき。shell=False。
+    """
+    import asyncio
+    import tempfile
+    from pathlib import Path as _Path
+
+    if body.application_type not in ("python_script", "shell_script"):
+        raise HTTPException(status_code=422, detail="コード実行は Python / シェルのみ対応です")
+    if body.application_type == "python_script":
+        py = body.python_path or "/usr/bin/python3"
+        if not _Path(py).is_file():
+            raise HTTPException(status_code=422, detail=f"Python 実行ファイルが見つかりません: {py}")
+
+    def run() -> dict:
+        suffix = ".py" if body.application_type == "python_script" else ".sh"
+        with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
+            f.write(body.code)
+            tmp = f.name
+        try:
+            argv = [body.python_path or "/usr/bin/python3", tmp] if body.application_type == "python_script" else ["/bin/bash", tmp]
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            return {"exit_code": r.returncode, "stdout": r.stdout[-16000:], "stderr": r.stderr[-8000:], "ok": r.returncode == 0}
+        finally:
+            _Path(tmp).unlink(missing_ok=True)
+
+    try:
+        return await asyncio.to_thread(run)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="実行がタイムアウトしました（30 秒）")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"実行に失敗しました: {e}")
+
+
+@router.get("/{app_id}/code")
+def get_app_code(
+    app_id: int,
+    user: User = Depends(require_permission("apps.edit")),
+    db: Session = Depends(get_db),
+):
+    app = _get_app(db, app_id)
+    return {"code": apps.read_app_code(app), "managed": apps.is_managed_code(app)}
+
+
 @router.get("/{app_id}")
 def get_app(
     app_id: int,
@@ -111,12 +172,16 @@ def update_app(
     data = body.model_dump(exclude_unset=True)
     env = data.pop("environment", None)
     args = data.pop("arguments", None)
+    code = data.pop("code", None)
     for key, value in data.items():
         setattr(app, key, value)
     if args is not None:
         app.arguments_json = json.dumps(args)
     if env is not None:
         apps.set_environment(app, env)
+    # インラインコードの更新（管理スクリプトへ書き込み）
+    if code is not None and app.application_type in ("python_script", "shell_script"):
+        apps.write_app_code(app, code)
     # 検証（更新後の値で AppCreate 相当を再チェック）
     try:
         apps.validate_fields(

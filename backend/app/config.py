@@ -107,6 +107,13 @@ def icons_dir() -> Path:
     return d
 
 
+def app_scripts_dir() -> Path:
+    """インラインコードで登録したアプリのスクリプト保存先。"""
+    d = data_dir() / "scripts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def db_url() -> str:
     override = os.environ.get("CONTROL_DECK_DB_URL")
     if override:

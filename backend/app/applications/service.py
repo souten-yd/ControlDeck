@@ -64,11 +64,14 @@ def validate_fields(data: AppCreate) -> None:
         if not url.startswith(("http://", "https://")):
             raise AppValidationError("URL は http:// または https:// で指定してください")
         return  # URL ショートカットはプロセスではないため以降の検証は不要
+    has_code = bool((data.code or "").strip())
     if data.application_type == "python_script":
         _require_file(data.python_path, "Python 実行ファイル", executable=True)
-        _require_file(data.script_path, "スクリプト")
+        if not has_code:
+            _require_file(data.script_path, "スクリプト")
     elif data.application_type == "shell_script":
-        _require_file(data.script_path, "シェルスクリプト")
+        if not has_code:
+            _require_file(data.script_path, "シェルスクリプト")
     elif data.application_type == "executable":
         _require_file(data.executable_path, "実行ファイル", executable=True)
     elif data.application_type == "systemd_service":
@@ -81,6 +84,38 @@ def validate_fields(data: AppCreate) -> None:
     for key in data.environment:
         if not sd.ENV_KEY_RE.match(key):
             raise AppValidationError(f"不正な環境変数名: {key}")
+
+
+def is_managed_code(app: ManagedApplication) -> bool:
+    """script_path が Control Deck 管理のインラインコードファイルか。"""
+    from app.config import app_scripts_dir
+
+    if not app.script_path:
+        return False
+    try:
+        return Path(app.script_path).resolve().parent == app_scripts_dir().resolve()
+    except OSError:
+        return False
+
+
+def write_app_code(app: ManagedApplication, code: str) -> None:
+    """インラインコードを data_dir/scripts へ保存し、script_path に設定する。"""
+    from app.config import app_scripts_dir
+
+    ext = "py" if app.application_type == "python_script" else "sh"
+    path = app_scripts_dir() / f"app-{app.id}.{ext}"
+    path.write_text(code, encoding="utf-8")
+    path.chmod(0o700)
+    app.script_path = str(path)
+
+
+def read_app_code(app: ManagedApplication) -> str | None:
+    if not is_managed_code(app):
+        return None
+    try:
+        return Path(app.script_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def env_warnings(env: dict[str, str]) -> list[str]:

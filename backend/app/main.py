@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_roles(db)
+        from app.bootstrap import seed_repair_app
+
+        seed_repair_app(db)
     finally:
         db.close()
     from app.alerts.engine import alert_loop

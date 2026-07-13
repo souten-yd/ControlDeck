@@ -35,7 +35,8 @@ const NAV = [
 
 // モバイル下部ナビ（最大 5 項目、中央は操作ボタン）
 const MOBILE_NAV_LEFT = [NAV[0], NAV[1]];
-const MOBILE_NAV_RIGHT = [NAV[3], NAV[5]];
+// ファイル→ターミナルへ入れ替え（下部ナビは ターミナル / ログ）
+const MOBILE_NAV_RIGHT = [NAV[4], NAV[5]];
 
 function IconFlow(props: React.SVGProps<SVGSVGElement>) {
   return (

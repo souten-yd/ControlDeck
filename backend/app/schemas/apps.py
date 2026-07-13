@@ -18,6 +18,8 @@ class AppCreate(BaseModel):
     script_path: str | None = None
     python_path: str | None = None
     url: str | None = None
+    # インラインコード（指定時は data_dir/scripts へ保存し script_path に設定）
+    code: str | None = None
     arguments: list[str] = []
     environment: dict[str, str] = {}
     auto_start: bool = False
@@ -35,6 +37,7 @@ class AppUpdate(BaseModel):
     script_path: str | None = None
     python_path: str | None = None
     url: str | None = None
+    code: str | None = None
     arguments: list[str] | None = None
     environment: dict[str, str] | None = None
     auto_start: bool | None = None
