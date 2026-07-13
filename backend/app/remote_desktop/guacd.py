@@ -68,6 +68,51 @@ class InstructionParser:
         return None, 0
 
 
+class InstructionSplitter:
+    """ストリームを Guacamole 命令境界で区切る。
+
+    guacamole-common-js の WebSocketTunnel は「各 WebSocket メッセージ内で命令が
+    完結している」前提でパースし、メッセージをまたぐバッファを持たない。
+    命令の途中で分割して送ると、その命令（初回全画面 PNG など）は黙って捨てられる。
+    そのため TCP チャンクをそのまま流さず、完全な命令列だけを切り出して送る。
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def feed(self, text: str) -> str:
+        """text を取り込み、完全な命令のみからなる先頭部分を返す。残りは持ち越す。"""
+        self._buf += text
+        buf = self._buf
+        n = len(buf)
+        end = 0  # 完全な命令列の終端
+        i = 0
+        while i < n:
+            dot = buf.find(".", i)
+            if dot == -1:
+                break
+            try:
+                length = int(buf[i:dot])
+            except ValueError:
+                # プロトコル違反: 同期不能なので全部流して切り詰め（安全弁）
+                end = n
+                break
+            term = dot + 1 + length
+            if term >= n:
+                break  # 要素本体または終端記号が未着
+            c = buf[term]
+            if c == ";":
+                end = term + 1
+                i = end
+            elif c == ",":
+                i = term + 1
+            else:
+                end = n  # プロトコル違反（安全弁）
+                break
+        self._buf = buf[end:]
+        return buf[:end]
+
+
 async def perform_handshake(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,

@@ -29,6 +29,11 @@ def build_guacd_params(conn: RemoteConnection) -> dict[str, str]:
         params.setdefault("resize-method", "display-update")
         # security 既定は "any"（xrdp と互換。Windows/NLA は接続設定で nla を選択）
         params.setdefault("security", "any")
+        # xrdp + FreeRDP2(guacd) はビットマップ/グリフキャッシュが噛み合わず、
+        # 「再描画イベントが起きた領域しか表示されない（他は黒）」状態になるため無効化する
+        params.setdefault("disable-bitmap-caching", "true")
+        params.setdefault("disable-offscreen-caching", "true")
+        params.setdefault("disable-glyph-caching", "true")
     # 機微パラメータ
     if conn.secret_params_encrypted:
         try:

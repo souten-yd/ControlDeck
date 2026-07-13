@@ -1,5 +1,9 @@
 /** guacamole-common-js を使ったリモートデスクトップ表示（遅延ロード）。
- * モバイル: タッチ操作（タップ=クリック、長押し=右クリック、2 本指スクロール）。 */
+ * タッチ操作（タッチパッド方式・相対移動）:
+ *   1本指移動=カーソル移動 / タップ=左クリック / 長押し→移動=ドラッグ
+ *   2本指タップ=右クリック / 2本指上下=スクロール / 3本指タップ=キーボード表示切替
+ * 表示: タッチ端末はリモート解像度を画面の2倍で確保し縮小表示
+ *   （ウィンドウが端末画面より大きくても収まる）。 */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 // @ts-expect-error 型定義なしパッケージ
@@ -23,8 +27,11 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
   useEffect(() => {
     const host = displayRef.current;
     if (!host) return;
-    const width = Math.floor(host.clientWidth || window.innerWidth);
-    const height = Math.floor(host.clientHeight || window.innerHeight);
+    // タッチ端末はリモート解像度を2倍で確保して縮小表示（大きいウィンドウ対策）
+    const isTouch = "ontouchstart" in window;
+    const FACTOR = isTouch ? 2 : 1;
+    const width = Math.floor((host.clientWidth || window.innerWidth) * FACTOR);
+    const height = Math.floor((host.clientHeight || window.innerHeight) * FACTOR);
 
     // 注意: WebSocketTunnel は connect() 時に "?" + データを URL へ付与するため、
     // トンネル URL 自体にはクエリを付けず、寸法は connect データとして渡す。
@@ -34,12 +41,26 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
     const client = new Guacamole.Client(tunnel);
     clientRef.current = client;
 
-    const displayEl = client.getDisplay().getElement();
+    const display = client.getDisplay();
+    const displayEl = display.getElement();
+    displayEl.style.margin = "0 auto";
     host.appendChild(displayEl);
+
+    // リモート画面全体がクライアントに収まるよう縮小（拡大はしない）
+    const rescale = () => {
+      const rw = display.getWidth();
+      const rh = display.getHeight();
+      if (!rw || !rh || !host.clientWidth) return;
+      display.scale(Math.min(host.clientWidth / rw, host.clientHeight / rh, 1));
+    };
+    display.onresize = rescale;
 
     client.onstatechange = (state: number) => {
       // 3 = CONNECTED, 5 = DISCONNECTED
-      if (state === 3) setStatus("connected");
+      if (state === 3) {
+        setStatus("connected");
+        rescale();
+      }
       if (state === 5) setStatus("disconnected");
     };
     client.onerror = (err: any) => {
@@ -53,31 +74,163 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
 
     client.connect(`width=${width}&height=${height}&dpi=96`);
 
-    // マウス
+    // マウス（デスクトップ）。縮小表示中は要素座標→リモート座標へ換算する
     const mouse = new Guacamole.Mouse(displayEl);
     mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = (state: any) => {
-      client.sendMouseState(state);
+      const s = display.getScale() || 1;
+      client.sendMouseState(
+        new Guacamole.Mouse.State(
+          state.x / s, state.y / s,
+          state.left, state.middle, state.right, state.up, state.down,
+        ),
+      );
     };
-    // タッチ（タップ=クリック、長押し=右クリック）
-    const touch = new Guacamole.Mouse.Touchpad(displayEl);
-    touch.onmousedown = touch.onmouseup = touch.onmousemove = (state: any) => {
-      client.sendMouseState(state);
+
+    // タッチ: タッチパッド方式（相対移動）のカスタム実装。
+    // Touchpad(ライブラリ) には長押しドラッグ/2本指右クリック/3本指がないため自前で扱う。
+    const cur = { x: width / 2, y: height / 2 }; // リモート座標のカーソル位置
+    let dragging = false; // 長押し後の左ボタン保持
+    let longPress: number | undefined;
+    let scrollAcc = 0;
+    let gesture: {
+      startT: number;
+      moved: number;
+      maxFingers: number;
+      scrolled: boolean;
+      lastX: number;
+      lastY: number;
+      last2Y: number;
+    } | null = null;
+
+    const sendPointer = (btn?: { left?: boolean; right?: boolean; up?: boolean; down?: boolean }) => {
+      client.sendMouseState(
+        new Guacamole.Mouse.State(
+          cur.x, cur.y,
+          dragging || !!btn?.left, false, !!btn?.right, !!btn?.up, !!btn?.down,
+        ),
+      );
     };
+
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      const t = e.touches;
+      const now = performance.now();
+      if (!gesture) {
+        gesture = {
+          startT: now, moved: 0, maxFingers: t.length, scrolled: false,
+          lastX: t[0].clientX, lastY: t[0].clientY,
+          last2Y: t.length >= 2 ? (t[0].clientY + t[1].clientY) / 2 : t[0].clientY,
+        };
+      } else {
+        gesture.maxFingers = Math.max(gesture.maxFingers, t.length);
+        gesture.lastX = t[0].clientX;
+        gesture.lastY = t[0].clientY;
+        if (t.length >= 2) gesture.last2Y = (t[0].clientY + t[1].clientY) / 2;
+      }
+      window.clearTimeout(longPress);
+      if (t.length === 1 && !dragging) {
+        // 静止したまま長押し → 左ボタンを押したままにする（以降の移動がドラッグになる）
+        longPress = window.setTimeout(() => {
+          dragging = true;
+          sendPointer();
+        }, 450);
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      if (!gesture) return;
+      const t = e.touches;
+      const dx = t[0].clientX - gesture.lastX;
+      const dy = t[0].clientY - gesture.lastY;
+      gesture.moved += Math.abs(dx) + Math.abs(dy);
+      gesture.lastX = t[0].clientX;
+      gesture.lastY = t[0].clientY;
+
+      if (t.length === 1) {
+        if (gesture.moved > 8 && !dragging) window.clearTimeout(longPress);
+        // 画面上の指の移動量とカーソルの見かけの移動が 1:1 になるようスケール換算
+        const s = display.getScale() || 1;
+        cur.x = Math.min(Math.max(cur.x + dx / s, 0), (display.getWidth() || width) - 1);
+        cur.y = Math.min(Math.max(cur.y + dy / s, 0), (display.getHeight() || height) - 1);
+        sendPointer();
+      } else if (t.length >= 2) {
+        window.clearTimeout(longPress);
+        const avgY = (t[0].clientY + t[1].clientY) / 2;
+        scrollAcc += avgY - gesture.last2Y;
+        gesture.last2Y = avgY;
+        // 30px ごとにホイール1ノッチ（指を下へ=上スクロール）
+        while (Math.abs(scrollAcc) >= 30) {
+          const up = scrollAcc > 0;
+          scrollAcc += up ? -30 : 30;
+          sendPointer(up ? { up: true } : { down: true });
+          sendPointer();
+          gesture.scrolled = true;
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      window.clearTimeout(longPress);
+      if (e.touches.length > 0 || !gesture) return; // 全ての指が離れたときだけ確定
+      const g = gesture;
+      gesture = null;
+      scrollAcc = 0;
+      if (dragging) {
+        dragging = false;
+        sendPointer(); // ドラッグ終了（左ボタン解放）
+        return;
+      }
+      const dur = performance.now() - g.startT;
+      if (!g.scrolled && g.moved < 12 && dur < 350) {
+        if (g.maxFingers === 1) {
+          sendPointer({ left: true });
+          sendPointer();
+        } else if (g.maxFingers === 2) {
+          sendPointer({ right: true });
+          sendPointer();
+        } else {
+          setShowKeyboard((v) => !v);
+        }
+      }
+    };
+
+    const onTouchCancel = () => {
+      window.clearTimeout(longPress);
+      gesture = null;
+      scrollAcc = 0;
+      if (dragging) {
+        dragging = false;
+        sendPointer();
+      }
+    };
+
+    host.addEventListener("touchstart", onTouchStart, { passive: false });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: false });
+    host.addEventListener("touchcancel", onTouchCancel);
+
     // キーボード
     const keyboard = new Guacamole.Keyboard(document);
     keyboard.onkeydown = (keysym: number) => client.sendKeyEvent(1, keysym);
     keyboard.onkeyup = (keysym: number) => client.sendKeyEvent(0, keysym);
 
     const onResize = () => {
-      const w = Math.floor(host.clientWidth);
-      const h = Math.floor(host.clientHeight);
+      const w = Math.floor(host.clientWidth * FACTOR);
+      const h = Math.floor(host.clientHeight * FACTOR);
       if (w && h) client.sendSize(w, h);
+      rescale();
     };
     const observer = new ResizeObserver(onResize);
     observer.observe(host);
 
     return () => {
       observer.disconnect();
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchCancel);
       keyboard.onkeydown = null;
       keyboard.onkeyup = null;
       try {
@@ -110,7 +263,7 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
         </div>
       </div>
 
-      <div ref={displayRef} className="relative min-h-0 flex-1 overflow-hidden [&_canvas]:mx-auto" />
+      <div ref={displayRef} className="relative min-h-0 flex-1 touch-none overflow-hidden" />
 
       {error && (
         <div className="shrink-0 bg-red-950/60 px-4 py-2 text-center text-xs text-red-300">{error}</div>
