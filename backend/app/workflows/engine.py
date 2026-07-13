@@ -105,6 +105,10 @@ async def _execute_graph(nodes: list[dict], edges: list[dict], context: dict[str
                 executor(node.get("config") or {}, context), timeout=timeout
             )
             entry.update(status="SUCCEEDED", output=output, finished_at=utcnow().isoformat())
+            # 出力変数名が設定されていれば {{vars.名前}} で参照できるよう保存
+            var_name = str((node.get("config") or {}).get("output_var") or "").strip()
+            if var_name:
+                context.setdefault("__vars__", {})[var_name] = output
         except asyncio.TimeoutError:
             entry.update(status="TIMED_OUT", error="タイムアウト", finished_at=utcnow().isoformat())
             raise NodeError(f"ノード {node.get('name') or node_id} がタイムアウトしました")
