@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     from app.maintenance.service import maintenance_loop
     from app.maintenance.watchdog import notify_ready, watchdog_loop
     from app.workflows.engine import scheduler_loop
+    from app.models_mgmt.ollama import idle_unload_loop
 
     tasks = [
         asyncio.create_task(collector.run()),
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(maintenance_loop()),
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(alert_loop()),
+        asyncio.create_task(idle_unload_loop()),
     ]
     notify_ready()
     logger.info("Control Deck 起動完了")
@@ -95,6 +97,7 @@ from app.alerts.router import router as alerts_router  # noqa: E402
 from app.remote_desktop.router import router as remote_router  # noqa: E402
 from app.gitrepos.router import router as gitrepos_router  # noqa: E402
 from app.workflows.knowledge_router import router as knowledge_router  # noqa: E402
+from app.models_mgmt.router import router as models_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -110,6 +113,7 @@ app.include_router(alerts_router, prefix=API)
 app.include_router(remote_router, prefix=API)
 app.include_router(gitrepos_router, prefix=API)
 app.include_router(knowledge_router, prefix=API)
+app.include_router(models_router, prefix=API)
 
 
 @app.get("/api/v1/meta")

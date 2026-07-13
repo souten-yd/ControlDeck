@@ -208,7 +208,7 @@ function CollectionSheet({ name, onClose }: { name: string; onClose: () => void 
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
-  const [tab, setTab] = useState<"docs" | "add" | "search" | "settings">("docs");
+  const [tab, setTab] = useState<"docs" | "add" | "search" | "graph" | "settings">("docs");
   const { data, isLoading } = useQuery({
     queryKey: ["knowledge", name],
     queryFn: () => api<{ collection: string; config: RagConfig; documents: Doc[] }>(`/knowledge/collections/${name}`),
@@ -220,7 +220,7 @@ function CollectionSheet({ name, onClose }: { name: string; onClose: () => void 
     onSuccess: () => { show("文書を削除しました"); refresh(); qc.invalidateQueries({ queryKey: ["knowledge"] }); },
   });
 
-  const tabs: [typeof tab, string][] = [["docs", "文書"], ["add", "取り込み"], ["search", "検索テスト"], ["settings", "設定"]];
+  const tabs: [typeof tab, string][] = [["docs", "文書"], ["add", "取り込み"], ["search", "検索テスト"], ["graph", "グラフ"], ["settings", "設定"]];
 
   return (
     <BottomSheet title={name} onClose={onClose} wide>
@@ -256,6 +256,8 @@ function CollectionSheet({ name, onClose }: { name: string; onClose: () => void 
         <AddDocForm name={name} onDone={() => { refresh(); qc.invalidateQueries({ queryKey: ["knowledge"] }); }} />
       ) : tab === "search" ? (
         <SearchForm name={name} defaultMode={data.config.search_mode} />
+      ) : tab === "graph" ? (
+        <GraphTab name={name} config={data.config} />
       ) : defaults ? (
         <SettingsForm name={name} config={data.config} defaults={defaults} onDone={refresh} />
       ) : null}
@@ -308,6 +310,51 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
   );
 }
 
+function GraphTab({ name, config }: { name: string; config: RagConfig }) {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [model, setModel] = useState("llama3.2");
+  const { data: stats } = useQuery({
+    queryKey: ["knowledge-graph", name],
+    queryFn: () => api<{ triples: number; entities: number; sample: { s: string; p: string; o: string }[] }>(`/knowledge/collections/${name}/graph`),
+  });
+  const build = useMutation({
+    mutationFn: () => api<{ triples: number; entities: number }>(`/knowledge/collections/${name}/graph`, { method: "POST", json: { base_url: config.embed_base_url.replace(/\/v1$/, "/v1"), model } }),
+    onSuccess: (r) => { show(`グラフ構築: ${r.triples} 事実 / ${r.entities} エンティティ`); qc.invalidateQueries({ queryKey: ["knowledge-graph", name] }); },
+    onError: (e) => show(e instanceof Error ? e.message : "構築失敗", "error"),
+  });
+  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  return (
+    <div className="space-y-3">
+      <p className="rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800/60">
+        GraphRAG: LLM で文書からエンティティと関係を抽出し知識グラフを構築します。検索時に「グラフ拡張」を選ぶと関連事実が文脈に加わります。
+      </p>
+      <L label="抽出に使う LLM モデル（Ollama 等の Chat モデル）">
+        <input value={model} onChange={(e) => setModel(e.target.value)} className={`${input} font-mono text-xs`} placeholder="llama3.2 / qwen2.5" />
+      </L>
+      <button onClick={() => build.mutate()} disabled={build.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        {build.isPending ? "構築中...（文書量により時間がかかります）" : "グラフを構築 / 再構築"}
+      </button>
+      {stats && (
+        <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <p className="num mb-2 text-xs text-zinc-500">{stats.triples} 事実 · {stats.entities} エンティティ</p>
+          {stats.sample.length === 0 ? (
+            <p className="text-xs text-zinc-400">まだグラフがありません。上のボタンで構築してください。</p>
+          ) : (
+            <ul className="max-h-56 space-y-1 overflow-y-auto">
+              {stats.sample.map((t, i) => (
+                <li key={i} className="text-xs text-zinc-600 dark:text-zinc-300">
+                  <span className="font-medium">{t.s}</span> <span className="text-zinc-400">—{t.p}→</span> <span className="font-medium">{t.o}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SearchForm({ name, defaultMode }: { name: string; defaultMode: string }) {
   const [q, setQ] = useState("");
   const [mode, setMode] = useState(defaultMode);
@@ -323,6 +370,7 @@ function SearchForm({ name, defaultMode }: { name: string; defaultMode: string }
           <option value="hybrid">ハイブリッド</option>
           <option value="vector">ベクトル</option>
           <option value="fulltext">全文</option>
+          <option value="graph">グラフ拡張</option>
         </select>
         <button onClick={() => search.mutate()} disabled={!q.trim() || search.isPending} className="shrink-0 rounded-xl bg-accent-600 px-3 text-white disabled:opacity-40"><IconSearch /></button>
       </div>

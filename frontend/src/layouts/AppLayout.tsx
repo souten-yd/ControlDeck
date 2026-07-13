@@ -9,6 +9,7 @@ import {
   IconBranch,
   IconChart,
   IconChevronLeft,
+  IconChip,
   IconFile,
   IconGrid,
   IconHome,
@@ -32,6 +33,7 @@ const NAV = [
   { to: "/remote", label: "リモート", icon: IconRemote },
   { to: "/github", label: "GitHub", icon: IconBranch },
   { to: "/knowledge", label: "Knowledge", icon: IconBook },
+  { to: "/models", label: "Model", icon: IconChip },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
@@ -296,6 +298,16 @@ export default function AppLayout() {
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/knowledge");
+                }}
+              />
+            )}
+            {can("workflows.run") && (
+              <ActionItem
+                icon={<IconChip />}
+                label="Model (Ollama)"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/models");
                 }}
               />
             )}

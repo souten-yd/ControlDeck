@@ -173,3 +173,39 @@ async def search(
         return await rag.search(name, body.question, body.top_k, api_key=body.api_key, mode_override=body.mode)
     except rag.RagError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+class GraphBuildBody(BaseModel):
+    base_url: str = "http://127.0.0.1:11434/v1"
+    model: str = "llama3.2"
+    api_key: str = ""
+    max_chunks: int = Field(default=200, ge=1, le=1000)
+
+
+@router.get("/collections/{name}/graph")
+def graph_stats(name: str, user: User = Depends(require_permission("workflows.run"))):
+    if not rag.collection_exists(name):
+        raise HTTPException(status_code=404, detail="コレクションが見つかりません")
+    from app.workflows import rag_graph
+
+    return rag_graph.graph_stats(name)
+
+
+@router.post("/collections/{name}/graph")
+async def build_graph(
+    name: str,
+    body: GraphBuildBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db=Depends(get_db),
+):
+    if not rag.collection_exists(name):
+        raise HTTPException(status_code=404, detail="コレクションが見つかりません")
+    from app.workflows import rag_graph
+
+    try:
+        out = await rag_graph.build_graph(name, body.base_url, body.model, body.api_key, body.max_chunks)
+    except rag.RagError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    audit.record(db, "knowledge.graph", user=user, resource_type="knowledge", resource_id=name, request=request)
+    return out

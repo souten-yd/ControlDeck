@@ -305,11 +305,12 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
           { value: "hybrid", label: "ハイブリッド（推奨）" },
           { value: "vector", label: "ベクトルのみ" },
           { value: "fulltext", label: "全文（キーワード）のみ" },
+          { value: "graph", label: "グラフ拡張（GraphRAG）" },
         ],
       },
       { key: "api_key", label: "API キー（任意）", type: "text" },
     ],
-    outputs: [{ key: "context", label: "関連文脈" }, { key: "matches", label: "マッチ一覧" }, { key: "count", label: "件数" }, { key: "mode", label: "使用した方式" }],
+    outputs: [{ key: "context", label: "関連文脈" }, { key: "matches", label: "マッチ一覧" }, { key: "facts", label: "グラフ事実" }, { key: "count", label: "件数" }, { key: "mode", label: "使用した方式" }],
   },
   "academic.search": {
     label: "学術検索",
