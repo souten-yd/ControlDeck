@@ -20,6 +20,13 @@ command -v tmux >/dev/null || { echo "tmux が必要です: sudo apt install tmu
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "既に起動しています（Web ターミナルの 'claude' セッションにアタッチしてください）"
 else
-  tmux new-session -d -s "$SESSION" -c "$REPO_ROOT" "$CLAUDE_BIN"
+  # tmux サーバーを呼び出し元の cgroup から切り離して起動する
+  # （control-deck-web やアプリユニットの再起動で tmux ごと殺されるのを防ぐ）
+  if command -v systemd-run >/dev/null; then
+    systemd-run --user --collect --scope -- tmux new-session -d -s "$SESSION" -c "$REPO_ROOT" "$CLAUDE_BIN" \
+      || tmux new-session -d -s "$SESSION" -c "$REPO_ROOT" "$CLAUDE_BIN"
+  else
+    tmux new-session -d -s "$SESSION" -c "$REPO_ROOT" "$CLAUDE_BIN"
+  fi
   echo "Claude 修復コンソールを起動しました（Web ターミナルの 'claude' セッションから利用）"
 fi

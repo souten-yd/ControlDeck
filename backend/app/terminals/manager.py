@@ -106,10 +106,19 @@ class TerminalManager:
         workdir = cwd or str(os.path.expanduser("~"))
         if tmux_available():
             name = TMUX_PREFIX + sid
-            r = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", name, "-c", workdir, cfg.shell],
-                capture_output=True, text=True, timeout=10,
-            )
+            base = ["tmux", "new-session", "-d", "-s", name, "-c", workdir, cfg.shell]
+            # tmux サーバーを本サービスの cgroup 外（独立 scope）で起動する。
+            # そうしないとサービス再起動時に systemd が cgroup ごと tmux を kill し、
+            # 「永続」のはずのセッションが全て消える。
+            if shutil.which("systemd-run"):
+                r = subprocess.run(
+                    ["systemd-run", "--user", "--collect", "--scope", "--"] + base,
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode != 0:  # systemd-run 不可の環境（コンテナ等）は直接起動
+                    r = subprocess.run(base, capture_output=True, text=True, timeout=10)
+            else:
+                r = subprocess.run(base, capture_output=True, text=True, timeout=10)
             if r.returncode != 0:
                 raise RuntimeError(f"tmux セッション作成に失敗: {r.stderr.strip()}")
             return {"id": sid, "name": name, "persistent": True}
