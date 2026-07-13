@@ -79,10 +79,15 @@ body,
 #root {
   height: 100%;
 }
-/* アプリシェルの高さ基準を #root に統一（iOS で下部ナビが浮く/隠れるのを防ぐ）。
-   dvh は動的ビューポート高でキーボード開閉にも追従する。非対応は 100% にフォールバック。 */
-#root {
-  height: 100dvh;
+/* iOS で下部ナビが浮く/隠れるのを根本的に防ぐ。
+   dvh/vh はリロード直後や toolbar 状態で可視領域とズレるため、body 自体を
+   可視ビューポート（レイアウトビューポート）へ固定し、#root=100% で正確に一致させる。
+   スクロールは各画面の overflow-y-auto コンテナ内で行う。 */
+body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
 body {
