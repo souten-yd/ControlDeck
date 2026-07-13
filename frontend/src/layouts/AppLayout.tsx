@@ -111,7 +111,7 @@ export default function AppLayout() {
   };
 
   return (
-    <div className="flex h-dvh">
+    <div className="flex h-full">
       {/* デスクトップサイドバー */}
       <aside
         className={`hidden shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800 md:flex ${
