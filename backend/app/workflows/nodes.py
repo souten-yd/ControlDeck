@@ -739,7 +739,21 @@ async def node_rag_query(config: dict, ctx: dict) -> dict:
     if not question.strip():
         raise NodeError("質問が空です")
     mode = str(config.get("search_mode", "") or "") or None
+    hyde = bool(config.get("hyde"))
     try:
+        mq = int(config.get("multi_query", 0) or 0)
+    except (TypeError, ValueError):
+        mq = 0
+    try:
+        if hyde or mq:
+            return await rag.search_enhanced(
+                collection=str(config.get("collection", "default")),
+                question=question, top_k=int(config.get("top_k", 4)),
+                api_key=str(config.get("api_key", "")), mode_override=mode,
+                hyde=hyde, multi_query=mq,
+                llm_base_url=str(config.get("llm_base_url", "http://127.0.0.1:11434/v1")),
+                llm_model=str(config.get("llm_model", "llama3.2")),
+            )
         return await rag.search(
             collection=str(config.get("collection", "default")),
             question=question,
@@ -751,73 +765,173 @@ async def node_rag_query(config: dict, ctx: dict) -> dict:
         raise NodeError(f"RAG 検索失敗: {e}")
 
 
-# ---- 学術検索（arXiv 論文 / Crossref 文献 を統合） ----
+# ---- Web 検索（SearXNG / DuckDuckGo）: Deep Search フローの部品 ----
+
+
+async def node_web_search(config: dict, ctx: dict) -> dict:
+    """Web 検索結果（タイトル/URL/スニペット）を返す。ワークフローで組み合わせやすい部品。
+
+    engine: searxng（自前/公開インスタンス, JSON API）/ duckduckgo（キー不要 HTML）
+    結果の url は web.scrape / http.download と繋いで本文取得できる。
+    """
+    query = render_template(str(config.get("query", "")), ctx).strip()
+    if not query:
+        raise NodeError("検索クエリが空です")
+    engine = str(config.get("engine", "duckduckgo"))
+    limit = max(1, min(int(config.get("max_results", 8) or 8), 30))
+    results: list[dict] = []
+
+    if engine == "searxng":
+        base = render_template(str(config.get("searxng_url", "")), ctx).strip().rstrip("/")
+        if not base:
+            raise NodeError("SearXNG の URL を指定してください（例: http://127.0.0.1:8888）")
+        params = {"q": query, "format": "json"}
+        cat = str(config.get("categories", "") or "").strip()
+        if cat:
+            params["categories"] = cat
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": "ControlDeck/1.0"}) as client:
+                r = await client.get(base + "/search", params=params)
+        except httpx.HTTPError as e:
+            raise NodeError(f"SearXNG 取得失敗: {e}")
+        if r.status_code >= 400:
+            raise NodeError(f"SearXNG エラー {r.status_code}（JSON 出力が有効か確認してください）")
+        for it in r.json().get("results", [])[:limit]:
+            results.append({"title": it.get("title", ""), "url": it.get("url", ""), "snippet": (it.get("content", "") or "")[:500]})
+    else:  # duckduckgo（キー不要）
+        from bs4 import BeautifulSoup
+
+        try:
+            async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 ControlDeck"}) as client:
+                r = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
+        except httpx.HTTPError as e:
+            raise NodeError(f"検索取得失敗: {e}")
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        def unwrap(href: str) -> str:
+            # DuckDuckGo のリダイレクト(/l/?uddg=...)を実 URL へ復元
+            if "uddg=" in href:
+                qs = parse_qs(urlparse(href).query)
+                if qs.get("uddg"):
+                    return unquote(qs["uddg"][0])
+            return href if href.startswith("http") else ("https:" + href if href.startswith("//") else href)
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        for res in soup.select(".result")[:limit]:
+            a = res.select_one("a.result__a")
+            if not a:
+                continue
+            snip = res.select_one(".result__snippet")
+            results.append({"title": a.get_text(" ", strip=True), "url": unwrap(a.get("href", "")),
+                            "snippet": snip.get_text(" ", strip=True)[:500] if snip else ""})
+
+    urls = [x["url"] for x in results if x["url"]]
+    combined = "\n\n".join(f"# {x['title']}\n{x['snippet']}\n{x['url']}" for x in results)
+    return {"results": results, "urls": urls, "count": len(results), "text": combined,
+            "first_url": urls[0] if urls else ""}
+
+
+# ---- Deep Research（反復探索エージェント。手軽な一括実行用） ----
+
+
+async def node_deep_research(config: dict, ctx: dict) -> dict:
+    """質問を分解し、選択ソースを反復的に探索して引用付きで統合する（Deep サーチ）。
+
+    ソース: rag(ナレッジ) / web(スクレイピング) / arxiv / crossref / patent / market。
+    LLM で サブ質問生成 → 各ソース検索 → 収集 → 統合レポート生成。
+    """
+    from app.workflows import external_search as ext
+    from app.workflows import rag as ragmod
+
+    topic = render_template(str(config.get("topic", "")), ctx).strip()
+    if not topic:
+        raise NodeError("調査テーマが空です")
+    llm_base = str(config.get("llm_base_url", "http://127.0.0.1:11434/v1"))
+    llm_model = str(config.get("llm_model", "llama3.2"))
+    api_key = str(config.get("api_key", ""))
+    sources = str(config.get("sources", "rag,arxiv") or "rag").split(",")
+    sources = [s.strip() for s in sources if s.strip()]
+    max_sub = max(1, min(int(config.get("sub_questions", 4) or 4), 8))
+    per_source = max(1, min(int(config.get("results_per_source", 4) or 4), 10))
+    collection = str(config.get("collection", "default"))
+
+    # 1. サブ質問生成
+    try:
+        raw = await ragmod._llm_complete(
+            f"調査テーマ「{topic}」を、体系的に調べるための具体的なサブ質問 {max_sub} 個に分解してください。"
+            "1行に1問、番号なしで出力。", llm_base, llm_model, api_key)
+    except ragmod.RagError as e:
+        raise NodeError(str(e))
+    sub_qs = [ln.strip("・-•*0123456789. \t") for ln in raw.splitlines() if ln.strip()][:max_sub] or [topic]
+
+    # 2. 各サブ質問 × 各ソースを収集
+    findings: list[dict] = []
+    for q in sub_qs:
+        for src in sources:
+            try:
+                if src == "rag":
+                    if not ragmod.collection_exists(collection):
+                        continue
+                    res = await ragmod.search(collection, q, per_source, api_key=api_key)
+                    for m in res["matches"]:
+                        findings.append({"q": q, "source": "rag", "title": collection, "text": m["context"][:800], "url": ""})
+                elif src == "web":
+                    web = await node_web_search(
+                        {"query": q, "max_results": per_source,
+                         "engine": config.get("web_engine", "duckduckgo"),
+                         "searxng_url": config.get("searxng_url", "")}, ctx)
+                    for it in web["results"]:
+                        findings.append({"q": q, "source": "web", "title": it["title"], "text": it.get("snippet", ""), "url": it["url"]})
+                else:
+                    items = await ext.search(src, q, per_source, api_key=api_key)
+                    for it in items:
+                        findings.append({"q": q, "source": src, "title": it["title"], "text": it.get("snippet", "")[:800], "url": it.get("url", "")})
+            except (ext.SearchError, ragmod.RagError, httpx.HTTPError, Exception):
+                continue
+
+    if not findings:
+        raise NodeError("収集結果がありません（ソース設定やコレクションを確認してください）")
+
+    # 3. 統合レポート生成（引用付き）
+    numbered = "\n".join(
+        f"[{i+1}] ({f['source']}) {f['title']}: {f['text'][:300]} {f['url']}"
+        for i, f in enumerate(findings[:40])
+    )
+    report = await ragmod._llm_complete(
+        f"あなたは調査アナリストです。テーマ「{topic}」について、以下の収集資料のみに基づき、"
+        "要点を体系的にまとめた日本語レポートを作成してください。主張には [番号] で出典を明記し、"
+        f"最後に参考一覧を付けてください。\n\n収集資料:\n{numbered}",
+        llm_base, llm_model, api_key, temperature=0.4)
+    return {
+        "report": report,
+        "sub_questions": sub_qs,
+        "findings": findings,
+        "count": len(findings),
+        "sources_used": sources,
+    }
+
+
+# ---- 外部検索（論文 / 文献 / 特許 / 市場調査 を統合） ----
 
 
 async def node_academic_search(config: dict, ctx: dict) -> dict:
-    """論文・文献をソース選択で検索する（arXiv / Crossref）。RAG 取り込みにも使える。"""
+    """論文・文献・特許・市場情報をソース選択で検索する。RAG 取り込みや要約に渡せる。
+
+    source: arxiv(論文) / crossref(文献) / patent(特許・要APIキー) / market(SEC EDGAR)
+    """
+    from app.workflows import external_search as ext
+
     source = str(config.get("source", "arxiv"))
     query = render_template(str(config.get("query", "")), ctx).strip()
     if not query:
         raise NodeError("検索クエリが空です")
-    limit = max(1, min(int(config.get("max_results", 10) or 10), 50))
-
-    if source == "arxiv":
-        import xml.etree.ElementTree as ET
-
-        params = {"search_query": f"all:{query}", "start": "0", "max_results": str(limit),
-                  "sortBy": "relevance", "sortOrder": "descending"}
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                r = await client.get("https://export.arxiv.org/api/query", params=params)
-        except httpx.HTTPError as e:
-            raise NodeError(f"arXiv 取得失敗: {e}")
-        ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-        try:
-            root = ET.fromstring(r.text)
-        except ET.ParseError as e:
-            raise NodeError(f"arXiv 応答の解析に失敗: {e}")
-        results = []
-        for e in root.findall("a:entry", ns):
-            pdf = ""
-            for link in e.findall("a:link", ns):
-                if link.get("title") == "pdf":
-                    pdf = link.get("href", "")
-            results.append({
-                "title": (e.findtext("a:title", "", ns) or "").strip(),
-                "authors": [a.findtext("a:name", "", ns) for a in e.findall("a:author", ns)],
-                "summary": (e.findtext("a:summary", "", ns) or "").strip(),
-                "published": e.findtext("a:published", "", ns),
-                "url": (e.findtext("a:id", "", ns) or "").strip(),
-                "pdf_url": pdf,
-            })
-    elif source == "crossref":
-        try:
-            async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "ControlDeck/1.0"}) as client:
-                r = await client.get("https://api.crossref.org/works", params={"query": query, "rows": str(limit)})
-        except httpx.HTTPError as e:
-            raise NodeError(f"Crossref 取得失敗: {e}")
-        if r.status_code >= 400:
-            raise NodeError(f"Crossref エラー {r.status_code}")
-        items = r.json().get("message", {}).get("items", [])
-        results = []
-        for it in items:
-            results.append({
-                "title": (it.get("title") or [""])[0],
-                "authors": [f"{a.get('given','')} {a.get('family','')}".strip() for a in it.get("author", [])],
-                "summary": it.get("abstract", "")[:2000],
-                "published": "-".join(str(x) for x in (it.get("published", {}).get("date-parts", [[None]])[0] or [])),
-                "url": it.get("URL", ""),
-                "doi": it.get("DOI", ""),
-                "container": (it.get("container-title") or [""])[0],
-            })
-    else:
-        raise NodeError(f"不明な検索ソース: {source}")
-
-    # まとめテキスト（そのまま RAG 取り込みや LLM 要約に渡せる）
+    limit = int(config.get("max_results", 10) or 10)
+    try:
+        results = await ext.search(source, query, limit, api_key=str(config.get("api_key", "")))
+    except ext.SearchError as e:
+        raise NodeError(str(e))
     combined = "\n\n".join(
-        f"# {x['title']}\n{', '.join(x.get('authors') or [])}\n{x.get('summary','')}\n{x.get('url','')}"
-        for x in results
+        f"# {x['title']}\n{x.get('snippet','')}\n{x.get('url','')}" for x in results
     )
     return {"results": results, "count": len(results), "text": combined, "source": source}
 
@@ -951,6 +1065,8 @@ NODE_EXECUTORS = {
     "rag.build": node_rag_build,
     "rag.query": node_rag_query,
     "academic.search": node_academic_search,
+    "web.search": node_web_search,
+    "research.deep": node_deep_research,
     "db.query": node_db_query,
 }
 
@@ -970,6 +1086,8 @@ NODE_TIMEOUTS = {
     "rag.build": 620,
     "rag.query": 320,
     "academic.search": 60,
+    "web.search": 60,
+    "research.deep": 1800,
     "db.query": 320,
 }
 DEFAULT_NODE_TIMEOUT = 120
