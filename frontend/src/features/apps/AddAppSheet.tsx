@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
 import { Drawer } from "../../components/ui";
+import { CodeEditor } from "./CodeEditor";
 import type { ManagedApp } from "../../types";
 
 type AppType = "python_script" | "shell_script" | "executable" | "systemd_service" | "url_shortcut";
@@ -46,6 +47,24 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const [stopTimeout, setStopTimeout] = useState(editApp?.stop_timeout_seconds ?? 20);
   const [envText, setEnvText] = useState("");
   const [url, setUrl] = useState(editApp?.url ?? "");
+  // インラインコード編集
+  const [codeMode, setCodeMode] = useState(false);
+  const [code, setCode] = useState("");
+
+  // 編集時: 管理コードなら読み込んでコードモードに
+  useEffect(() => {
+    if (editApp && (editApp.application_type === "python_script" || editApp.application_type === "shell_script")) {
+      api<{ code: string | null; managed: boolean }>(`/apps/${editApp.id}/code`)
+        .then((r) => {
+          if (r.managed && r.code != null) {
+            setCode(r.code);
+            setCodeMode(true);
+          }
+        })
+        .catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [pythons, setPythons] = useState<PythonCandidate[]>([]);
   useEffect(() => {
@@ -88,11 +107,12 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const submit = async () => {
     setBusy(true);
     setError(null);
+    const usingCode = codeMode && (type === "python_script" || type === "shell_script");
     const payload: Record<string, unknown> = {
       name,
       working_directory: workDir || null,
       python_path: type === "python_script" ? pythonPath : null,
-      script_path: type === "python_script" || type === "shell_script" ? scriptPath : null,
+      script_path: type === "python_script" || type === "shell_script" ? (usingCode ? null : scriptPath) : null,
       executable_path: type === "executable" ? execPath : null,
       url: type === "url_shortcut" ? url : null,
       arguments: args.trim() ? args.trim().split(/\s+/) : [],
@@ -100,6 +120,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
       restart_policy: restartPolicy,
       stop_timeout_seconds: stopTimeout,
     };
+    if (usingCode) payload.code = code;
     // 環境変数は入力がある場合のみ更新（編集時に空で消さない）
     const env = parseEnv();
     if (!editing || Object.keys(env).length > 0) payload.environment = env;
@@ -125,9 +146,9 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const step1Valid = name.trim().length > 0;
   const step2Valid =
     type === "python_script"
-      ? pythonPath.trim() !== "" && scriptPath.trim() !== ""
+      ? pythonPath.trim() !== "" && (codeMode ? code.trim() !== "" : scriptPath.trim() !== "")
       : type === "shell_script"
-        ? scriptPath.trim() !== ""
+        ? (codeMode ? code.trim() !== "" : scriptPath.trim() !== "")
         : type === "executable"
           ? execPath.trim() !== ""
           : type === "url_shortcut"
@@ -198,6 +219,25 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               <TextInput value={name} onChange={setName} />
             </Field>
           )}
+          {/* Python / Shell: ファイル指定 or コード直接入力の切替 */}
+          {(type === "python_script" || type === "shell_script") && (
+            <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+              <button
+                type="button"
+                onClick={() => setCodeMode(false)}
+                className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${!codeMode ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}
+              >
+                ファイルを指定
+              </button>
+              <button
+                type="button"
+                onClick={() => setCodeMode(true)}
+                className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${codeMode ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}
+              >
+                コードを書く
+              </button>
+            </div>
+          )}
           {type === "python_script" && (
             <>
               <Field label="Python 実行ファイル" required>
@@ -217,16 +257,27 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
                   </div>
                 )}
               </Field>
-              <Field label="スクリプト" required>
-                <TextInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/main.py" mono />
-              </Field>
+              {codeMode ? (
+                <Field label="コード" hint="動作確認ボタンで一時実行できます">
+                  <CodeEditor appType="python_script" pythonPath={pythonPath} code={code} onChange={setCode} />
+                </Field>
+              ) : (
+                <Field label="スクリプト" required>
+                  <TextInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/main.py" mono />
+                </Field>
+              )}
             </>
           )}
-          {type === "shell_script" && (
-            <Field label="シェルスクリプト" required>
-              <TextInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/run.sh" mono />
-            </Field>
-          )}
+          {type === "shell_script" &&
+            (codeMode ? (
+              <Field label="コード" hint="動作確認ボタンで一時実行できます">
+                <CodeEditor appType="shell_script" pythonPath="" code={code} onChange={setCode} />
+              </Field>
+            ) : (
+              <Field label="シェルスクリプト" required>
+                <TextInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/run.sh" mono />
+              </Field>
+            ))}
           {type === "executable" && (
             <Field label="実行ファイル" required>
               <TextInput value={execPath} onChange={setExecPath} placeholder="/usr/local/bin/myapp" mono />
