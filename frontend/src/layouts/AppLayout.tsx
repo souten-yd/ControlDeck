@@ -165,7 +165,7 @@ export default function AppLayout() {
 
       {/* メイン */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className={`safe-top h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:h-14 ${immersive ? "hidden md:flex" : "flex"}`}>
+        <header className="safe-top flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:h-14">
           <div className="flex items-center gap-2 md:hidden">
             <Logo size={24} />
           </div>
