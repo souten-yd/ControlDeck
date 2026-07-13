@@ -71,29 +71,18 @@ export default function RemotePage() {
           const canConnect = !!status?.guacd_available;
           return (
             <div className="space-y-4">
-              {/* この PC（最上段固定・削除不可） */}
+              {/* ServerPC（自ホスト、最上段固定・削除不可） */}
               {selfConn && (
-                <div className="rounded-2xl border-2 border-accent-300 bg-accent-50/40 p-4 dark:border-accent-800 dark:bg-accent-600/10">
-                  <div className="flex items-center gap-3">
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-600 text-white">🖥</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold">
-                        {selfConn.name}
-                        <span className="ml-2 rounded bg-accent-600/15 px-1.5 py-0.5 text-[10px] font-medium text-accent-700 dark:text-accent-300">この PC</span>
-                      </p>
-                      <p className="num truncate text-xs text-zinc-500 dark:text-zinc-400">自分のデスクトップ（ヘッドレス）</p>
-                    </div>
-                    <button
-                      onClick={() => setActive(selfConn)}
-                      disabled={!canConnect}
-                      className="rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
-                    >
-                      接続
-                    </button>
-                  </div>
-                  <p className="mt-2 text-[11px] text-zinc-400">
-                    この接続は deck.sh enable-desktop で管理され、削除・変更はできません。
-                  </p>
+                <div className="flex items-center gap-3 rounded-2xl border-2 border-accent-300 bg-accent-50/40 p-4 dark:border-accent-800 dark:bg-accent-600/10">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-600 text-white">🖥</span>
+                  <p className="min-w-0 flex-1 truncate text-sm font-semibold">{selfConn.name}</p>
+                  <button
+                    onClick={() => setActive(selfConn)}
+                    disabled={!canConnect}
+                    className="rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
+                  >
+                    接続
+                  </button>
                 </div>
               )}
 
@@ -126,10 +115,7 @@ export default function RemotePage() {
 
               {!selfConn && others.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-                  <p className="text-sm text-zinc-400">
-                    RDP / VNC / SSH の接続を追加してブラウザから操作できます。
-                    <br />この PC 自身は <code className="font-mono">./deck.sh enable-desktop</code> で追加されます。
-                  </p>
+                  <p className="text-sm text-zinc-400">RDP / VNC / SSH の接続を追加してブラウザから操作できます。</p>
                 </div>
               )}
             </div>

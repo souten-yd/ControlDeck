@@ -80,7 +80,7 @@ def delete_connection(
     if conn is None:
         raise HTTPException(status_code=404, detail="接続が見つかりません")
     if conn.is_self:
-        raise HTTPException(status_code=403, detail="この PC の接続は削除できません（deck.sh disable-desktop で無効化してください）")
+        raise HTTPException(status_code=403, detail="ServerPC 接続は削除できません（deck.sh disable-desktop で無効化してください）")
     db.delete(conn)
     db.commit()
     audit.record(db, "remote.delete", user=user, resource_type="remote", resource_id=str(connection_id), request=request)
