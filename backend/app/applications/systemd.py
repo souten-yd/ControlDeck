@@ -89,6 +89,9 @@ def build_unit_content(
         if not wd.is_absolute():
             raise ValueError("作業ディレクトリは絶対パスで指定してください")
         lines.append(f"WorkingDirectory={_escape_exec_arg(str(wd))[1:-1]}")
+    else:
+        # 未指定時はホームを明示（実行時のカレントを予測可能にする）
+        lines.append(f"WorkingDirectory={Path.home()}")
     for key, value in environment.items():
         if not ENV_KEY_RE.match(key):
             raise ValueError(f"不正な環境変数名: {key}")

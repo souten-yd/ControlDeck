@@ -49,6 +49,11 @@ export const IconFile = (p: SVGProps<SVGSVGElement>) => (
     <path d="M14 2v4h4" />
   </Icon>
 );
+export const IconFolder = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+  </Icon>
+);
 export const IconChart = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M4 20V10" />
