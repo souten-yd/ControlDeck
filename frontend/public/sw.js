@@ -1,7 +1,7 @@
 /* Ubuntu Control Deck Service Worker
  * 方針: アプリシェル（HTML/JS/CSS/アイコン）のみをキャッシュしオフライン起動を可能にする。
  * API レスポンス・ログ・ファイル内容など機密になりうるデータは一切キャッシュしない。 */
-const CACHE = "control-deck-shell-v7";
+const CACHE = "control-deck-shell-v10";
 const SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

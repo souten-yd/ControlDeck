@@ -4,20 +4,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./styles/index.css";
 
-// iOS standalone(ホーム画面アプリ)のリロード直後に 100dvh が一段短く評価され
-// 下部ナビが浮く問題への対策。standalone で正確な window.innerHeight を高さに反映する。
-// （visualViewport.height は standalone で短い値を返すため使わない。#root の高さ
-//  のみ更新し、スクロールは各画面内で行うため操作は妨げない）
-function setAppHeight() {
-  document.documentElement.style.setProperty("--app-vh", `${window.innerHeight}px`);
-}
-setAppHeight();
-// 起動直後の取りこぼし対策で数フレーム後にも再設定
-requestAnimationFrame(setAppHeight);
-setTimeout(setAppHeight, 200);
-window.addEventListener("resize", setAppHeight);
-window.addEventListener("orientationchange", setAppHeight);
-window.addEventListener("pageshow", setAppHeight);
+// iOS standalone(ホーム画面アプリ)ではリロード後に動的ビューポート高(dvh/innerHeight)が
+// 縮んだ値で固定され下部ナビが浮く。standalone では縮まない large viewport(100vh)を
+// 使うため html にクラスを付ける（CSS 側で #root の高さを切り替える）。
+const isStandalone =
+  (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
+  window.matchMedia("(display-mode: standalone)").matches;
+if (isStandalone) document.documentElement.classList.add("pwa-standalone");
 
 const queryClient = new QueryClient({
   defaultOptions: {
