@@ -79,12 +79,14 @@ body,
 #root {
   height: 100%;
 }
-/* アプリシェルの高さ基準を #root に統一。既定は dvh（キーボード追従）。
-   iOS standalone はリロード直後に dvh を一段短く評価するため、JS が実測した
-   innerHeight を --app-vh に入れて上書きする（scroll は各画面内で行うため影響なし）。 */
+/* アプリシェルの高さ基準を #root に統一。既定は dvh（ブラウザで toolbar 追従）。 */
 #root {
   height: 100dvh;
-  height: var(--app-vh, 100dvh);
+}
+/* iOS standalone(ホーム画面アプリ)はリロード後に dvh/innerHeight が縮んだ値で
+   固定され下部ナビが浮く。縮まない large viewport(100vh)で満寸に固定する。 */
+html.pwa-standalone #root {
+  height: 100vh;
 }
 
 body {
