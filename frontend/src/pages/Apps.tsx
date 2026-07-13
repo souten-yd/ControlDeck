@@ -12,7 +12,8 @@ import {
   Skeleton,
   StatusBadge,
 } from "../components/ui";
-import { IconDots, IconPlay, IconPlus, IconRestart, IconStop } from "../components/icons";
+import { createPortal } from "react-dom";
+import { IconDots, IconPlay, IconPlus, IconRestart, IconStop, IconX } from "../components/icons";
 import { AddAppSheet } from "../features/apps/AddAppSheet";
 import type { ManagedApp } from "../types";
 
@@ -23,6 +24,7 @@ export default function AppsPage() {
   const [editing, setEditing] = useState<ManagedApp | null>(null);
   const [deleting, setDeleting] = useState<ManagedApp | null>(null);
   const [portPick, setPortPick] = useState<ManagedApp | null>(null);
+  const [webView, setWebView] = useState<{ name: string; port: number } | null>(null);
   const can = useAuth((s) => s.can);
   const action = useAppAction();
   const deleteApp = useDeleteApp();
@@ -30,9 +32,10 @@ export default function AppsPage() {
   const qc = useQueryClient();
   const addOpen = params.get("add") === "1";
 
-  // Web ボタン: サーバーとして待ち受けているアプリをブラウザで開く
-  const openWeb = (port: number) => {
-    window.open(`http://${location.hostname}:${port}/`, "_blank", "noopener");
+  // Web ボタン: サーバーとして待ち受けているアプリを全画面ビューア（iframe）で開く。
+  // window.open だと PWA では iOS のアプリ内 Safari（ツールバー付き）になるため。
+  const openWeb = (name: string, port: number) => {
+    setWebView({ name, port });
   };
   const saveWebPort = (app: ManagedApp, port: number) => {
     api(`/apps/${app.id}`, { method: "PATCH", json: { web_port: port } })
@@ -41,9 +44,9 @@ export default function AppsPage() {
   };
   const handleWeb = (app: ManagedApp) => {
     const ports = app.runtime.listening_ports ?? [];
-    if (app.web_port) return openWeb(app.web_port);
+    if (app.web_port) return openWeb(app.name, app.web_port);
     if (ports.length === 1) {
-      openWeb(ports[0]);
+      openWeb(app.name, ports[0]);
       saveWebPort(app, ports[0]); // 次回からこのポートを開く
     } else if (ports.length > 1) {
       setPortPick(app); // 初回は選択、以降は保存されたポートを開く
@@ -224,6 +227,9 @@ export default function AppsPage() {
         />
       )}
 
+      {/* アプリ Web ビュー（全画面 iframe） */}
+      {webView && <WebViewOverlay name={webView.name} port={webView.port} onClose={() => setWebView(null)} />}
+
       {/* Web ポート選択（複数検出時の初回のみ。選択後は保存され次回から直接開く） */}
       {portPick && (
         <BottomSheet title="開くポートを選択" onClose={() => setPortPick(null)}>
@@ -235,7 +241,7 @@ export default function AppsPage() {
               <li key={p}>
                 <button
                   onClick={() => {
-                    openWeb(p);
+                    openWeb(portPick.name, p);
                     saveWebPort(portPick, p);
                     setPortPick(null);
                   }}
@@ -265,6 +271,40 @@ export default function AppsPage() {
         />
       )}
     </div>
+  );
+}
+
+/** アプリの Web UI を全画面 iframe で表示（下部ナビより手前）。
+ * PWA で window.open するとアプリ内 Safari のツールバーが出て全画面にならないため。 */
+function WebViewOverlay({ name, port, onClose }: { name: string; port: number; onClose: () => void }) {
+  const url = `http://${location.hostname}:${port}/`;
+  return createPortal(
+    <div className="fixed inset-0 z-40 flex flex-col bg-white dark:bg-zinc-950">
+      <div className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
+        <p className="min-w-0 flex-1 truncate text-sm font-medium">
+          {name}
+          <span className="num ml-2 text-xs text-zinc-400">:{port}</span>
+        </p>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="ブラウザで開く"
+          className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          ブラウザで開く ↗
+        </a>
+        <button
+          onClick={onClose}
+          aria-label="閉じる"
+          className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          <IconX />
+        </button>
+      </div>
+      <iframe src={url} title={name} className="min-h-0 w-full flex-1 border-0" allow="fullscreen" />
+    </div>,
+    document.body,
   );
 }
 
