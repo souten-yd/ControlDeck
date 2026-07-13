@@ -43,7 +43,7 @@ def _register_local_desktop(db) -> None:
     from app.models import RemoteConnection
     from app.remote_desktop import service
 
-    name = os.environ.get("RDP_NAME", "この PC（ヘッドレス）")
+    name = os.environ.get("RDP_NAME", "ServerPC")
     host = os.environ.get("RDP_HOST", "127.0.0.1")
     port = int(os.environ.get("RDP_PORT", "3389"))
     username = os.environ.get("RDP_USERNAME", "")

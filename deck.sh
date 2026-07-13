@@ -354,12 +354,12 @@ cmd_enable_desktop() {
   local sec="any"; [ "$mode" = "active" ] && sec="tls"
   ( cd "$REPO_ROOT/backend" && \
     CONTROL_DECK_CONFIG="$REPO_ROOT/config/config.yaml" \
-    RDP_NAME="この PC（${mode}）" RDP_HOST="127.0.0.1" RDP_PORT="3389" \
+    RDP_NAME="ServerPC" RDP_HOST="127.0.0.1" RDP_PORT="3389" \
     RDP_USERNAME="$rdp_user" RDP_PASSWORD="$rdp_pass" RDP_SECURITY="$sec" \
     "$VENV/bin/python" -m app.cli register-local-desktop )
 
   echo ""
-  info "完了しました。Web の「リモート」から「この PC（${mode}）」に接続できます。"
+  info "完了しました。Web の「リモート」から「ServerPC」に接続できます。"
   warn "セキュリティ: RDP は 3389 番で待ち受けます。外部からのアクセスはファイアウォールや"
   warn "  Tailscale/VPN で遮断し、必ず Control Deck 経由で利用してください。"
   [ "$mode" = "headless" ] && info "ヘッドレス: 接続時に仮想セッションが作成されます（物理画面は不要）。"
