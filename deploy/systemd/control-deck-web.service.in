@@ -12,8 +12,9 @@ WorkingDirectory=@REPO_ROOT@/backend
 ExecStart=@REPO_ROOT@/.venv/bin/python -m app.server
 Restart=on-failure
 RestartSec=3
-# セキュリティ強化
-NoNewPrivileges=true
+# 注: NoNewPrivileges は設定しない。Web ターミナルからの sudo（reboot/apt/systemctl 等）を
+# 許可するため（Control Deck はシステム管理ツールであり、これは正当な用途）。
+# 保護は認証 + RBAC(terminal.use) + 監査ログで担保する。
 
 [Install]
 WantedBy=default.target
