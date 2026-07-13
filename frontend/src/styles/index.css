@@ -79,6 +79,12 @@ body,
 #root {
   height: 100%;
 }
+/* アプリシェルの高さ基準を1つに統一（iOS で下部ナビが浮く/隠れるのを防ぐ）。
+   JS が実測した --app-h を最優先し、無い場合は dvh、さらに 100% にフォールバック。 */
+#root {
+  height: 100dvh;
+  height: var(--app-h, 100dvh);
+}
 
 body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
