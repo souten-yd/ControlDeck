@@ -21,8 +21,13 @@ function Overlay({
   align: "bottom" | "right" | "center";
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // onClose はインライン関数で渡されることが多く、依存に入れると親の再レンダー
+  // （ポーリング等）のたびに effect が再実行され ref.current.focus() が入力欄の
+  // フォーカスを奪う（iOS でキーボードが周期的に閉じるバグ）。マウント時のみ実行する。
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
     document.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
     ref.current?.focus();
@@ -30,7 +35,7 @@ function Overlay({
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
     };
-  }, [onClose]);
+  }, []);
   const alignCls = {
     bottom: "items-end sm:items-center justify-center",
     right: "items-stretch justify-end",
