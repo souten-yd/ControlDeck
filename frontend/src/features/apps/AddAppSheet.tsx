@@ -42,6 +42,8 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const [unitName, setUnitName] = useState(editApp?.systemd_unit_name ?? "");
   const [args, setArgs] = useState((editApp?.arguments ?? []).join(" "));
   const [workDir, setWorkDir] = useState(editApp?.working_directory ?? "");
+  const [webPort, setWebPort] = useState(editApp?.web_port != null ? String(editApp.web_port) : "");
+  const detectedPorts = editApp?.runtime?.listening_ports ?? [];
   // Step 3
   const [autoStart, setAutoStart] = useState(editApp?.auto_start ?? false);
   const [restartPolicy, setRestartPolicy] = useState(editApp?.restart_policy ?? "on-failure");
@@ -112,6 +114,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
     const usingCode = codeMode && (type === "python_script" || type === "shell_script");
     const payload: Record<string, unknown> = {
       name,
+      web_port: webPort ? Number(webPort) : null,
       working_directory: workDir || null,
       python_path: type === "python_script" ? pythonPath : null,
       script_path: type === "python_script" || type === "shell_script" ? (usingCode ? null : scriptPath) : null,
@@ -303,6 +306,27 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               </Field>
               <Field label="作業ディレクトリ" hint="未指定時はホームディレクトリで実行します">
                 <PathInput value={workDir} onChange={setWorkDir} placeholder="/home/user/projects/my-app" mode="dir" title="作業ディレクトリを選択" />
+              </Field>
+              <Field label="Web ポート" hint="サーバーアプリを Web ボタンで開くときのポート（空欄なら検出ポートから自動）">
+                <TextInput value={webPort} onChange={(v) => setWebPort(v.replace(/[^0-9]/g, ""))} placeholder="8000" mono />
+                {detectedPorts.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {detectedPorts.map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setWebPort(String(p))}
+                        className={`rounded-lg px-2 py-1 text-xs ${
+                          webPort === String(p)
+                            ? "bg-accent-600 text-white"
+                            : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400"
+                        }`}
+                      >
+                        検出: {p}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </Field>
             </>
           )}

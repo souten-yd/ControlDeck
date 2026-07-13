@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { api } from "../api/client";
 import { useAppAction, useApps, useDeleteApp } from "../api/hooks";
 import { useAuth } from "../stores";
 import { formatBytes, formatUptime } from "../lib/format";
@@ -20,11 +22,37 @@ export default function AppsPage() {
   const [detail, setDetail] = useState<ManagedApp | null>(null);
   const [editing, setEditing] = useState<ManagedApp | null>(null);
   const [deleting, setDeleting] = useState<ManagedApp | null>(null);
+  const [portPick, setPortPick] = useState<ManagedApp | null>(null);
   const can = useAuth((s) => s.can);
   const action = useAppAction();
   const deleteApp = useDeleteApp();
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const addOpen = params.get("add") === "1";
+
+  // Web ボタン: サーバーとして待ち受けているアプリをブラウザで開く
+  const openWeb = (port: number) => {
+    window.open(`http://${location.hostname}:${port}/`, "_blank", "noopener");
+  };
+  const saveWebPort = (app: ManagedApp, port: number) => {
+    api(`/apps/${app.id}`, { method: "PATCH", json: { web_port: port } })
+      .then(() => qc.invalidateQueries({ queryKey: ["apps"] }))
+      .catch(() => undefined);
+  };
+  const handleWeb = (app: ManagedApp) => {
+    const ports = app.runtime.listening_ports ?? [];
+    if (app.web_port) return openWeb(app.web_port);
+    if (ports.length === 1) {
+      openWeb(ports[0]);
+      saveWebPort(app, ports[0]); // 次回からこのポートを開く
+    } else if (ports.length > 1) {
+      setPortPick(app); // 初回は選択、以降は保存されたポートを開く
+    }
+  };
+  const hasWeb = (app: ManagedApp) =>
+    app.application_type !== "url_shortcut" &&
+    app.runtime.status === "RUNNING" &&
+    (app.web_port != null || (app.runtime.listening_ports ?? []).length > 0);
 
   const primaryAction = (app: ManagedApp) => {
     const st = app.runtime.status;
@@ -112,6 +140,18 @@ export default function AppsPage() {
                     開く ↗
                   </a>
                 )}
+                {hasWeb(app) && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleWeb(app);
+                    }}
+                    aria-label={`${app.name} を Web で開く`}
+                    className="flex min-h-11 items-center justify-center gap-1 rounded-xl bg-accent-50 px-3 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400 sm:px-3.5"
+                  >
+                    Web ↗
+                  </button>
+                )}
                 {primary && can(primary.perm) && (
                   <button
                     onClick={(e) => {
@@ -184,6 +224,34 @@ export default function AppsPage() {
         />
       )}
 
+      {/* Web ポート選択（複数検出時の初回のみ。選択後は保存され次回から直接開く） */}
+      {portPick && (
+        <BottomSheet title="開くポートを選択" onClose={() => setPortPick(null)}>
+          <p className="mb-3 text-xs text-zinc-400">
+            複数のポートを検出しました。選択したポートは保存され、次回から Web ボタンで直接開きます（アプリの設定編集で変更できます）。
+          </p>
+          <ul className="space-y-2">
+            {(portPick.runtime.listening_ports ?? []).map((p) => (
+              <li key={p}>
+                <button
+                  onClick={() => {
+                    openWeb(p);
+                    saveWebPort(portPick, p);
+                    setPortPick(null);
+                  }}
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 text-left text-sm hover:border-accent-400 dark:border-zinc-700"
+                >
+                  <span className="num font-medium">ポート {p}</span>
+                  <span className="num truncate pl-3 text-xs text-zinc-400">
+                    http://{location.hostname}:{p}/
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </BottomSheet>
+      )}
+
       {deleting && (
         <ConfirmDialog
           title={`「${deleting.name}」を削除しますか？`}
@@ -231,6 +299,12 @@ function AppDetailSheet({
     ["引数", app.arguments.join(" ") || "—"],
     ["自動起動", app.auto_start ? "有効" : "無効"],
     ["再起動ポリシー", app.restart_policy],
+    ...(!isUrl
+      ? ([
+          ["Web ポート", app.web_port != null ? String(app.web_port) : "—"],
+          ["待受ポート", (app.runtime.listening_ports ?? []).join(", ") || "—"],
+        ] as [string, string][])
+      : []),
   ];
   return (
     <BottomSheet title={app.name} onClose={onClose} wide>

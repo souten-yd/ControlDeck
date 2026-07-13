@@ -28,6 +28,7 @@ export interface AppRuntime {
   restart_count: number;
   cpu_percent: number | null;
   memory_bytes: number | null;
+  listening_ports: number[];
 }
 
 export interface ManagedApp {
@@ -41,6 +42,7 @@ export interface ManagedApp {
   script_path: string | null;
   python_path: string | null;
   url: string | null;
+  web_port: number | null;
   arguments: string[];
   environment_masked: Record<string, string>;
   auto_start: boolean;

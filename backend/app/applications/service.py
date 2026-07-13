@@ -167,6 +167,7 @@ def runtime_info(app: ManagedApplication) -> AppRuntime:
         return AppRuntime(status="UNKNOWN")
     cpu = None
     mem = None
+    ports: set[int] = set()
     pid = q.get("pid")
     if pid:
         try:
@@ -179,9 +180,11 @@ def runtime_info(app: ManagedApplication) -> AppRuntime:
             else:
                 cpu = proc.cpu_percent(None)
             mem = proc.memory_info().rss
+            _collect_listen_ports(proc, ports)
             for child in proc.children(recursive=True):
                 try:
                     mem += child.memory_info().rss
+                    _collect_listen_ports(child, ports)
                 except psutil.Error:
                     pass
         except psutil.Error:
@@ -194,7 +197,19 @@ def runtime_info(app: ManagedApplication) -> AppRuntime:
         restart_count=q.get("restart_count", 0),
         cpu_percent=cpu,
         memory_bytes=mem,
+        listening_ports=sorted(ports),
     )
+
+
+def _collect_listen_ports(proc: "psutil.Process", ports: set[int]) -> None:
+    """プロセスが LISTEN している TCP ポートを収集する（Web ボタン用）。"""
+    try:
+        conns_fn = getattr(proc, "net_connections", None) or proc.connections
+        for c in conns_fn(kind="tcp"):
+            if c.status == psutil.CONN_LISTEN and c.laddr:
+                ports.add(c.laddr.port)
+    except (psutil.Error, OSError):
+        pass
 
 
 def to_out(app: ManagedApplication) -> AppOut:
@@ -210,6 +225,7 @@ def to_out(app: ManagedApplication) -> AppOut:
         script_path=app.script_path,
         python_path=app.python_path,
         url=app.url,
+        web_port=app.web_port,
         arguments=json.loads(app.arguments_json or "[]"),
         environment_masked=mask_env(env),
         auto_start=app.auto_start,
