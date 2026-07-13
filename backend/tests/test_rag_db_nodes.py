@@ -10,14 +10,17 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_chunk_text():
-    from app.workflows.rag import chunk_text
+def test_chunkers():
+    from app.workflows import chunkers
 
-    assert chunk_text("") == []
-    assert chunk_text("short") == ["short"]
-    chunks = chunk_text("x" * 2000, size=800, overlap=100)
+    assert chunkers.chunk("", {"strategy": "fixed", "size": 800}) == []
+    assert [c.text for c in chunkers.chunk("short", {"strategy": "fixed", "size": 800})] == ["short"]
+    chunks = chunkers.chunk("x" * 2000, {"strategy": "fixed", "size": 800, "overlap": 100})
     assert len(chunks) >= 2
-    assert all(len(c) <= 800 for c in chunks)
+    assert all(len(c.text) <= 800 for c in chunks)
+    # parent_child は子が親テキストを保持する
+    pc = chunkers.chunk("段落一。文が続く。\n\n段落二。別の内容。", {"strategy": "parent_child", "size": 20, "parent_mode": "paragraph", "parent_size": 100})
+    assert pc and all(c.parent for c in pc)
 
 
 def test_rag_build_and_query(monkeypatch):
@@ -45,11 +48,14 @@ def test_rag_build_and_query(monkeypatch):
 
     monkeypatch.setattr(rag, "embed", fake_embed)
 
-    run(rag.build("testcol", "りんごは赤い果物\nばななは黄色い果物\ncar is a vehicle", "t", "http://x/v1", "m", "", reset=True))
-    result = run(rag.query("testcol", "りんご について", top_k=1, base_url="http://x/v1", model="m", api_key=""))
+    rag.delete_collection("testcol")
+    run(rag.build("testcol", "りんごは赤い果物\n\nばななは黄色い果物\n\ncar is a vehicle", "t", "http://x/v1", "m", "", reset=True))
+    # ベクトル検索で最上位が「りんご」チャンクになること
+    result = run(rag.query("testcol", "りんご", top_k=1, base_url="http://x/v1", model="m", api_key=""))
     assert result["count"] == 1
     assert "りんご" in result["matches"][0]["text"]
-    assert result["matches"][0]["score"] > 0.5
+    assert result["matches"][0]["score"] > 0
+    rag.delete_collection("testcol")
 
 
 def test_rag_invalid_collection():

@@ -20,6 +20,7 @@ import TerminalPage from "./pages/Terminal";
 import WorkflowsPage from "./pages/Workflows";
 import RemotePage from "./pages/Remote";
 import GitHubPage from "./pages/GitHub";
+import KnowledgePage from "./pages/Knowledge";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -66,6 +67,7 @@ const router = createBrowserRouter([
       { path: "workflows/:id", element: <WorkflowsPage /> },
       { path: "remote", element: <RemotePage /> },
       { path: "github", element: <GitHubPage /> },
+      { path: "knowledge", element: <KnowledgePage /> },
       { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "*", element: <Navigate to="/" replace /> },

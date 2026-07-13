@@ -5,6 +5,7 @@ import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
 import {
+  IconBook,
   IconBranch,
   IconChart,
   IconChevronLeft,
@@ -30,6 +31,7 @@ const NAV = [
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
   { to: "/remote", label: "リモート", icon: IconRemote },
   { to: "/github", label: "GitHub", icon: IconBranch },
+  { to: "/knowledge", label: "Knowledge", icon: IconBook },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
@@ -284,6 +286,16 @@ export default function AppLayout() {
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/github");
+                }}
+              />
+            )}
+            {can("workflows.run") && (
+              <ActionItem
+                icon={<IconBook />}
+                label="Knowledge (RAG)"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/knowledge");
                 }}
               />
             )}
