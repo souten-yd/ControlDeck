@@ -28,6 +28,7 @@ import { BottomSheet, DropdownMenu } from "../../components/ui";
 import { IconDots, IconPlay, IconPlus, IconX } from "../../components/icons";
 import {
   CATEGORY_ORDER,
+  JSON_SCHEMA_PRESETS,
   NODE_TYPES,
   deleteSnippet,
   loadSnippets,
@@ -35,7 +36,9 @@ import {
   saveSnippet,
   type FieldDef,
   type Snippet,
+  type TriggerInputDef,
 } from "./nodeTypes";
+import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
 
 interface DefNode {
@@ -211,15 +214,27 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     }
   };
 
-  const run = async () => {
-    if (dirty) await save();
+  const [runInputsOpen, setRunInputsOpen] = useState(false);
+
+  const doRun = async (input?: Record<string, unknown>) => {
     try {
-      await api(`/workflows/${workflowId}/run`, { method: "POST" });
+      await api(`/workflows/${workflowId}/run`, { method: "POST", json: input ? { input } : {} });
       show("実行を開始しました");
       setExecutionsOpen(true);
     } catch (e) {
       show(e instanceof Error ? e.message : "実行に失敗しました", "error");
     }
+  };
+
+  const run = async () => {
+    if (dirty) await save();
+    const trigger = nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger");
+    const inputs = (trigger?.config?.inputs as TriggerInputDef[] | undefined) ?? [];
+    if (inputs.length > 0) {
+      setRunInputsOpen(true); // 入力フィールドが定義されていれば値を聞いてから実行
+      return;
+    }
+    await doRun();
   };
 
   const addNode = (type: string, at?: { x: number; y: number }) => {
@@ -487,10 +502,23 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       {selectedDef && (
         <NodeConfigSheet
           def={selectedDef}
+          allDefs={nodes.map((n) => (n.data as FlowNodeData).def)}
+          edgeList={edges.map((e) => ({ source: e.source, target: e.target }))}
           readOnly={readOnly}
           onChange={(patch) => updateNodeDef(selectedDef.id, patch)}
           onDelete={selectedDef.type !== "trigger" ? () => removeNode(selectedDef.id) : undefined}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {runInputsOpen && (
+        <RunInputsSheet
+          inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
+          onRun={(values) => {
+            setRunInputsOpen(false);
+            void doRun(values);
+          }}
+          onClose={() => setRunInputsOpen(false)}
         />
       )}
 
@@ -570,14 +598,36 @@ function NodePalette({
 }
 
 // ---- ノード設定フォーム ----
+
+/** 対象ノードの上流ノード（データを参照できるノード）を逆向き BFS で求める */
+function upstreamDefs(nodeId: string, defs: DefNode[], edgeList: { source: string; target: string }[]): DefNode[] {
+  const byId = new Map(defs.map((d) => [d.id, d]));
+  const seen = new Set<string>();
+  const queue = edgeList.filter((e) => e.target === nodeId).map((e) => e.source);
+  const result: DefNode[] = [];
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const d = byId.get(id);
+    if (d) result.push(d);
+    queue.push(...edgeList.filter((e) => e.target === id).map((e) => e.source));
+  }
+  return result;
+}
+
 function NodeConfigSheet({
   def,
+  allDefs,
+  edgeList,
   readOnly,
   onChange,
   onDelete,
   onClose,
 }: {
   def: DefNode;
+  allDefs: DefNode[];
+  edgeList: { source: string; target: string }[];
   readOnly: boolean;
   onChange: (patch: Partial<DefNode>) => void;
   onDelete?: () => void;
@@ -592,6 +642,12 @@ function NodeConfigSheet({
   const config = def.config ?? {};
   const setConfig = (key: string, value: unknown) => onChange({ config: { ...config, [key]: value } });
   const visibleFields = (meta?.fields ?? []).filter((f) => !f.showIf || String(config[f.showIf.key] ?? "") === f.showIf.value);
+  const upstream = useMemo(() => upstreamDefs(def.id, allDefs, edgeList), [def.id, allDefs, edgeList]);
+  // 上流で定義された名前付き変数（出力変数名）
+  const namedVars = useMemo(
+    () => upstream.map((d) => String(d.config?.output_var ?? "").trim()).filter(Boolean),
+    [upstream],
+  );
 
   return (
     <BottomSheet title={meta?.label ?? def.type} onClose={onClose} wide>
@@ -600,11 +656,52 @@ function NodeConfigSheet({
         <Field label="表示名">
           <input value={def.name ?? ""} onChange={(e) => onChange({ name: e.target.value })} disabled={readOnly} className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         </Field>
+        {def.type === "llm.chat" && !readOnly && (
+          <LlmEndpointDetect
+            onPick={(base, model) => {
+              const next = { ...config, base_url: base } as Record<string, unknown>;
+              if (model) next.model = model;
+              onChange({ config: next });
+            }}
+          />
+        )}
         {visibleFields.map((f) => (
           <Field key={f.key} label={f.label} hint={f.hint}>
             <ConfigInput field={f} value={config[f.key]} disabled={readOnly} apps={apps} onChange={(v) => setConfig(f.key, v)} />
+            {f.key === "json_schema" && !readOnly && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {JSON_SCHEMA_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => setConfig("json_schema", JSON.stringify(p.schema, null, 2))}
+                    className="rounded-lg bg-zinc-100 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!readOnly && (f.type === "text" || f.type === "textarea" || f.type === "code") && (
+              <VarPicker
+                upstream={upstream}
+                namedVars={namedVars}
+                onInsert={(expr) => setConfig(f.key, `${String(config[f.key] ?? "")}${expr}`)}
+              />
+            )}
           </Field>
         ))}
+        {def.type !== "trigger" && (
+          <Field label="出力変数名（任意）" hint={"設定すると全後段から {{vars.名前.フィールド}} で参照できます"}>
+            <input
+              value={String(config.output_var ?? "")}
+              onChange={(e) => setConfig("output_var", e.target.value.replace(/[^\w-]/g, ""))}
+              disabled={readOnly}
+              placeholder="result"
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </Field>
+        )}
         <p className="text-xs text-zinc-400">
           ノード ID: <code className="font-mono">{def.id}</code>（他ノードから{" "}
           <code className="font-mono">{"{{"}{def.id}.フィールド{"}}"}</code> で参照）
@@ -619,6 +716,131 @@ function NodeConfigSheet({
   );
 }
 
+/** 変数ピッカー: 上流ノードの出力から選んで {{id.key}} を挿入する */
+function VarPicker({
+  upstream,
+  namedVars,
+  onInsert,
+}: {
+  upstream: DefNode[];
+  namedVars: string[];
+  onInsert: (expr: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (upstream.length === 0 && namedVars.length === 0) return null;
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs font-medium text-accent-600 dark:text-accent-400"
+      >
+        {open ? "▾ 変数を挿入" : "▸ 変数を挿入（前段ノードの出力から選択）"}
+      </button>
+      {open && (
+        <div className="mt-1.5 max-h-48 space-y-2 overflow-y-auto rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+          {upstream.map((d) => {
+            const m = NODE_TYPES[d.type];
+            // トリガーは定義済み入力フィールドも変数として提示
+            const extra: { key: string; label: string }[] =
+              d.type === "trigger"
+                ? ((d.config?.inputs as TriggerInputDef[] | undefined) ?? []).map((i) => ({ key: i.key, label: i.label || i.key }))
+                : [];
+            const outs = [...(m?.outputs ?? []), ...extra];
+            if (outs.length === 0) return null;
+            return (
+              <div key={d.id}>
+                <p className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-zinc-500">
+                  <span style={{ color: m?.color }}>{m?.icon}</span>
+                  {d.name || m?.label} <code className="font-mono text-[10px] text-zinc-400">{d.id}</code>
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {outs.map((o) => (
+                    <button
+                      key={o.key}
+                      type="button"
+                      onClick={() => onInsert(`{{${d.id}.${o.key}}}`)}
+                      title={`{{${d.id}.${o.key}}}`}
+                      className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600 hover:bg-accent-100 hover:text-accent-700 dark:bg-zinc-800 dark:text-zinc-300"
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {namedVars.length > 0 && (
+            <div>
+              <p className="mb-1 text-[11px] font-medium text-zinc-500">名前付き変数</p>
+              <div className="flex flex-wrap gap-1">
+                {namedVars.map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => onInsert(`{{vars.${v}}}`)}
+                    className="rounded-md bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-700 hover:bg-amber-100 dark:bg-amber-950/50 dark:text-amber-400"
+                  >
+                    vars.{v}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 稼働中の OpenAI 互換サーバー検出（LLM ノード用） */
+function LlmEndpointDetect({ onPick }: { onPick: (baseUrl: string, model?: string) => void }) {
+  const [results, setResults] = useState<{ base_url: string; models: string[] }[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const detect = async () => {
+    setBusy(true);
+    try {
+      setResults(await api<{ base_url: string; models: string[] }[]>("/workflows/llm-endpoints"));
+    } catch {
+      setResults([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/60">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-zinc-500">稼働中の LLM サーバー</span>
+        <button type="button" onClick={detect} disabled={busy} className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-accent-600 shadow-sm disabled:opacity-40 dark:bg-zinc-900 dark:text-accent-400">
+          {busy ? "検出中..." : "検出"}
+        </button>
+      </div>
+      {results !== null && (
+        results.length === 0 ? (
+          <p className="mt-1.5 text-xs text-zinc-400">見つかりませんでした（Ollama / llama.cpp / LM Studio 等の稼働を確認）</p>
+        ) : (
+          <div className="mt-1.5 space-y-1.5">
+            {results.map((r) => (
+              <div key={r.base_url}>
+                <button type="button" onClick={() => onPick(r.base_url)} className="font-mono text-xs font-medium text-accent-600 hover:underline dark:text-accent-400">
+                  {r.base_url}
+                </button>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {r.models.slice(0, 8).map((mo) => (
+                    <button key={mo} type="button" onClick={() => onPick(r.base_url, mo)} className="rounded-md bg-white px-1.5 py-0.5 font-mono text-[11px] text-zinc-600 shadow-sm hover:text-accent-700 dark:bg-zinc-900 dark:text-zinc-300">
+                      {mo}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
 function ConfigInput({
   field, value, disabled, apps, onChange,
 }: {
@@ -629,6 +851,9 @@ function ConfigInput({
   onChange: (v: unknown) => void;
 }) {
   const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  if (field.type === "inputs") {
+    return <TriggerInputsEditor value={(value as TriggerInputDef[]) ?? []} disabled={disabled} onChange={onChange} />;
+  }
   if (field.type === "select") {
     return (
       <select value={String(value ?? field.options?.[0]?.value ?? "")} onChange={(e) => onChange(e.target.value)} disabled={disabled} className={cls}>
@@ -666,6 +891,122 @@ function ConfigInput({
       placeholder={field.placeholder}
       className={cls}
     />
+  );
+}
+
+/** トリガーの入力フィールド定義エディタ（Dify の User Input 相当） */
+function TriggerInputsEditor({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: TriggerInputDef[];
+  disabled: boolean;
+  onChange: (v: TriggerInputDef[]) => void;
+}) {
+  const update = (i: number, patch: Partial<TriggerInputDef>) =>
+    onChange(value.map((v, j) => (j === i ? { ...v, ...patch } : v)));
+  const cls = "rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900";
+  return (
+    <div className="space-y-2">
+      {value.map((inp, i) => (
+        <div key={i} className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input value={inp.key} onChange={(e) => update(i, { key: e.target.value.replace(/[^\w-]/g, "") })} disabled={disabled} placeholder="変数名" className={`${cls} w-24 font-mono`} />
+            <input value={inp.label ?? ""} onChange={(e) => update(i, { label: e.target.value })} disabled={disabled} placeholder="ラベル" className={`${cls} min-w-0 flex-1`} />
+            <select value={inp.type} onChange={(e) => update(i, { type: e.target.value as TriggerInputDef["type"] })} disabled={disabled} className={cls}>
+              <option value="text">テキスト</option>
+              <option value="paragraph">長文</option>
+              <option value="number">数値</option>
+              <option value="select">選択</option>
+              <option value="file">ファイル</option>
+            </select>
+            <label className="flex items-center gap-1 text-[11px] text-zinc-500">
+              <input type="checkbox" checked={!!inp.required} onChange={(e) => update(i, { required: e.target.checked })} disabled={disabled} />必須
+            </label>
+            {!disabled && (
+              <button type="button" onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label="削除" className="px-1 text-zinc-400 hover:text-red-500">×</button>
+            )}
+          </div>
+          {inp.type === "select" && (
+            <input value={inp.options ?? ""} onChange={(e) => update(i, { options: e.target.value })} disabled={disabled} placeholder="選択肢（カンマ区切り: A,B,C）" className={`${cls} mt-1.5 w-full`} />
+          )}
+        </div>
+      ))}
+      {!disabled && (
+        <button
+          type="button"
+          onClick={() => onChange([...value, { key: `input${value.length + 1}`, label: "", type: "text" }])}
+          className="w-full rounded-xl border border-dashed border-zinc-300 py-2 text-xs font-medium text-zinc-500 hover:border-accent-400 hover:text-accent-600 dark:border-zinc-700"
+        >
+          + 入力フィールドを追加
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** 実行時の入力ダイアログ（トリガーの入力フィールド定義に基づく） */
+function RunInputsSheet({
+  inputs,
+  onRun,
+  onClose,
+}: {
+  inputs: TriggerInputDef[];
+  onRun: (values: Record<string, unknown>) => void;
+  onClose: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [filePick, setFilePick] = useState<string | null>(null);
+  const set = (k: string, v: unknown) => setValues((prev) => ({ ...prev, [k]: v }));
+  const missing = inputs.filter((i) => i.required && !String(values[i.key] ?? "").trim());
+  const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  return (
+    <BottomSheet title="実行時の入力" onClose={onClose}>
+      <div className="space-y-3">
+        {inputs.map((inp) => (
+          <Field key={inp.key} label={`${inp.label || inp.key}${inp.required ? " *" : ""}`}>
+            {inp.type === "paragraph" ? (
+              <textarea value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} rows={3} className={cls} />
+            ) : inp.type === "number" ? (
+              <input type="number" value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value === "" ? "" : Number(e.target.value))} className={cls} />
+            ) : inp.type === "select" ? (
+              <select value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls}>
+                <option value="">選択してください</option>
+                {(inp.options ?? "").split(",").map((o) => o.trim()).filter(Boolean).map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            ) : inp.type === "file" ? (
+              <div className="flex gap-1.5">
+                <input value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} placeholder="/path/to/file" className={`${cls} min-w-0 flex-1 font-mono text-xs`} />
+                <button type="button" onClick={() => setFilePick(inp.key)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+              </div>
+            ) : (
+              <input value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls} />
+            )}
+          </Field>
+        ))}
+        <button
+          onClick={() => onRun(values)}
+          disabled={missing.length > 0}
+          className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
+        >
+          実行
+        </button>
+      </div>
+      {filePick && (
+        <FilePicker
+          mode="file"
+          title="ファイルを選択"
+          onSelect={(p) => {
+            set(filePick, p);
+            setFilePick(null);
+          }}
+          onClose={() => setFilePick(null)}
+        />
+      )}
+    </BottomSheet>
   );
 }
 

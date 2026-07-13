@@ -16,14 +16,30 @@ TEMPLATE_RE = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
 
 
 def render_template(text: str, context: dict[str, Any]) -> str:
-    """{{nodeId.field.subfield}} を先行ノード出力で置換する。"""
+    """{{nodeId.field.subfield}} を先行ノード出力で置換する。
+
+    {{vars.名前}} / {{vars.名前.フィールド}} で名前付き変数（ノード設定の
+    「出力変数名」で保存された出力）も参照できる。
+    """
 
     def repl(m: re.Match) -> str:
         parts = m.group(1).split(".")
-        value: Any = context.get(parts[0], {}).get("output", {})
-        for part in parts[1:]:
+        if parts[0] == "vars":
+            if len(parts) < 2:
+                return ""
+            value: Any = (context.get("__vars__") or {}).get(parts[1])
+            rest = parts[2:]
+        else:
+            value = context.get(parts[0], {}).get("output", {})
+            rest = parts[1:]
+        for part in rest:
             if isinstance(value, dict):
                 value = value.get(part)
+            elif isinstance(value, list):
+                try:
+                    value = value[int(part)]
+                except (ValueError, IndexError):
+                    return ""
             else:
                 return ""
         if value is None:
@@ -299,12 +315,19 @@ async def node_file_op(config: dict, ctx: dict) -> dict:
 # ---- LLM（OpenAI 互換 Chat Completions: Ollama / vLLM / llama.cpp / OpenAI 等） ----
 
 
+def _strip_json_fences(text: str) -> str:
+    """```json ... ``` フェンスを剥がす（ローカル LLM が付けがち）。"""
+    m = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    return m.group(1).strip() if m else text.strip()
+
+
 async def node_llm(config: dict, ctx: dict) -> dict:
     base_url = str(config.get("base_url", "http://127.0.0.1:11434/v1")).rstrip("/")
     model = str(config.get("model", "llama3"))
     prompt = render_template(str(config.get("prompt", "")), ctx)
     system = render_template(str(config.get("system", "")), ctx)
     api_key = str(config.get("api_key", "") or "sk-no-key")
+    response_format = str(config.get("response_format", "") or "")
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -317,14 +340,44 @@ async def node_llm(config: dict, ctx: dict) -> dict:
     }
     if config.get("max_tokens"):
         payload["max_tokens"] = int(config["max_tokens"])
+    # 構造化出力（OpenAI 互換 response_format。非対応サーバーはエラーを返すので
+    # その場合はプロンプト指示のみで動くよう再送する）
+    schema_obj = None
+    if response_format == "json_object":
+        payload["response_format"] = {"type": "json_object"}
+    elif response_format == "json_schema":
+        raw_schema = render_template(str(config.get("json_schema", "")), ctx).strip()
+        if not raw_schema:
+            raise NodeError("JSON スキーマが空です")
+        try:
+            schema_obj = json.loads(raw_schema)
+        except json.JSONDecodeError as e:
+            raise NodeError(f"JSON スキーマが不正です: {e}")
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "output", "schema": schema_obj, "strict": True},
+        }
     timeout = min(float(config.get("timeout", 120)), 600)
-    try:
+
+    async def call(p: dict) -> httpx.Response:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.post(
+            return await client.post(
                 f"{base_url}/chat/completions",
-                json=payload,
+                json=p,
                 headers={"Authorization": f"Bearer {api_key}"},
             )
+
+    try:
+        r = await call(payload)
+        if r.status_code >= 400 and "response_format" in payload:
+            # response_format 非対応サーバー: スキーマをプロンプトに埋め込んで再送
+            fallback = dict(payload)
+            fallback.pop("response_format")
+            instruction = "必ず JSON のみで応答してください。"
+            if schema_obj is not None:
+                instruction += " スキーマ: " + json.dumps(schema_obj, ensure_ascii=False)
+            fallback["messages"] = [{"role": "system", "content": instruction}, *messages]
+            r = await call(fallback)
     except httpx.HTTPError as e:
         raise NodeError(f"LLM 接続失敗: {e}")
     if r.status_code >= 400:
@@ -335,7 +388,69 @@ async def node_llm(config: dict, ctx: dict) -> dict:
     except (KeyError, IndexError):
         raise NodeError("LLM 応答の解析に失敗しました")
     usage = data.get("usage", {})
-    return {"content": content, "model": model, "tokens": usage.get("total_tokens")}
+    out: dict = {"content": content, "model": model, "tokens": usage.get("total_tokens")}
+    if response_format in ("json_object", "json_schema"):
+        try:
+            out["json"] = json.loads(_strip_json_fences(content))
+        except json.JSONDecodeError:
+            out["json"] = None
+            out["json_error"] = "応答を JSON として解析できませんでした"
+    return out
+
+
+# ---- ユーティリティ ----
+
+
+async def node_now(config: dict, ctx: dict) -> dict:
+    """現在日時。format（strftime）で整形した文字列と各要素を返す。"""
+    from datetime import datetime
+
+    fmt = str(config.get("format", "") or "%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
+    try:
+        text = now.strftime(fmt)
+    except ValueError as e:
+        raise NodeError(f"日時フォーマットが不正です: {e}")
+    return {
+        "text": text,
+        "iso": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "timestamp": int(now.timestamp()),
+        "weekday": now.strftime("%a"),
+    }
+
+
+async def node_http_download(config: dict, ctx: dict) -> dict:
+    """URL の内容をファイルへ保存する（許可ルート配下のみ、上限 500MB）。"""
+    from app.files.service import FileAccessError, resolve
+
+    url = render_template(str(config.get("url", "")), ctx)
+    if not url.startswith(("http://", "https://")):
+        raise NodeError(f"不正な URL: {url}")
+    raw_path = render_template(str(config.get("path", "")), ctx)
+    try:
+        dest = resolve(raw_path, must_exist=False)
+    except FileAccessError as e:
+        raise NodeError(f"保存先が不正です: {e}")
+    limit = 500 * 1024 * 1024
+    timeout = min(float(config.get("timeout", 300)), 1800)
+    written = 0
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with client.stream("GET", url) as r:
+                if r.status_code >= 400:
+                    raise NodeError(f"ダウンロード失敗: HTTP {r.status_code}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with open(dest, "wb") as f:
+                    async for chunk in r.aiter_bytes(65536):
+                        written += len(chunk)
+                        if written > limit:
+                            raise NodeError("ファイルサイズが上限（500MB）を超えました")
+                        f.write(chunk)
+    except httpx.HTTPError as e:
+        raise NodeError(f"ダウンロード失敗: {e}")
+    return {"path": str(dest), "bytes": written, "url": url}
 
 
 # ---- Web スクレイピング ----
@@ -713,6 +828,8 @@ NODE_EXECUTORS = {
     "file.write": node_file_write,
     "file.op": node_file_op,
     "llm.chat": node_llm,
+    "util.now": node_now,
+    "http.download": node_http_download,
     "web.scrape": node_scrape,
     "media.ocr": node_ocr,
     "net.wol": node_wol,
@@ -730,6 +847,7 @@ NODE_EXECUTORS = {
 NODE_TIMEOUTS = {
     "util.wait": 3700,
     "http.request": 320,
+    "http.download": 1830,
     "llm.chat": 620,
     "web.scrape": 130,
     "media.ocr": 130,
