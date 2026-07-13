@@ -248,6 +248,11 @@ async def search(
     cfg = get_config(collection)
     mode = mode_override or cfg["search_mode"]
     top_k = max(1, min(int(top_k), 20))
+    if mode == "graph":
+        # グラフ拡張検索（ベクトル文脈 + グラフの関連事実）
+        from app.workflows import rag_graph
+
+        return await rag_graph.graph_search(collection, question, top_k, api_key=api_key)
     conn = _db(collection)
     try:
         rows = conn.execute("SELECT id, text, parent, embedding, dim FROM chunks").fetchall()
