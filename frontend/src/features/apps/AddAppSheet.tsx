@@ -3,6 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
 import { Drawer } from "../../components/ui";
+import { FilePicker } from "../../components/FilePicker";
+import { IconFolder } from "../../components/icons";
 import { CodeEditor } from "./CodeEditor";
 import type { ManagedApp } from "../../types";
 
@@ -201,11 +203,12 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           </Field>
           {type === "python_script" && (
             <Field label="プロジェクトフォルダ" hint="指定すると venv とエントリーポイントを自動提案します">
-              <TextInput
+              <PathInput
                 value={projectDir}
                 onChange={setProjectDir}
                 placeholder="/home/user/projects/my-app"
-                mono
+                mode="dir"
+                title="プロジェクトフォルダを選択"
               />
             </Field>
           )}
@@ -241,7 +244,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           {type === "python_script" && (
             <>
               <Field label="Python 実行ファイル" required>
-                <TextInput value={pythonPath} onChange={setPythonPath} placeholder="/usr/bin/python3" mono />
+                <PathInput value={pythonPath} onChange={setPythonPath} placeholder="/usr/bin/python3" mode="file" title="Python 実行ファイルを選択" />
                 {pythons.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {pythons.slice(0, 4).map((p) => (
@@ -259,11 +262,11 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               </Field>
               {codeMode ? (
                 <Field label="コード" hint="動作確認ボタンで一時実行できます">
-                  <CodeEditor appType="python_script" pythonPath={pythonPath} code={code} onChange={setCode} />
+                  <CodeEditor appType="python_script" pythonPath={pythonPath} workDir={workDir} code={code} onChange={setCode} />
                 </Field>
               ) : (
                 <Field label="スクリプト" required>
-                  <TextInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/main.py" mono />
+                  <PathInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/main.py" mode="file" title="スクリプトを選択" />
                 </Field>
               )}
             </>
@@ -271,16 +274,16 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           {type === "shell_script" &&
             (codeMode ? (
               <Field label="コード" hint="動作確認ボタンで一時実行できます">
-                <CodeEditor appType="shell_script" pythonPath="" code={code} onChange={setCode} />
+                <CodeEditor appType="shell_script" pythonPath="" workDir={workDir} code={code} onChange={setCode} />
               </Field>
             ) : (
               <Field label="シェルスクリプト" required>
-                <TextInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/run.sh" mono />
+                <PathInput value={scriptPath} onChange={setScriptPath} placeholder="/path/to/run.sh" mode="file" title="シェルスクリプトを選択" />
               </Field>
             ))}
           {type === "executable" && (
             <Field label="実行ファイル" required>
-              <TextInput value={execPath} onChange={setExecPath} placeholder="/usr/local/bin/myapp" mono />
+              <PathInput value={execPath} onChange={setExecPath} placeholder="/usr/local/bin/myapp" mode="file" title="実行ファイルを選択" />
             </Field>
           )}
           {type === "systemd_service" && (
@@ -298,8 +301,8 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               <Field label="起動引数" hint="空白区切り">
                 <TextInput value={args} onChange={setArgs} placeholder="--port 8000" mono />
               </Field>
-              <Field label="作業ディレクトリ">
-                <TextInput value={workDir} onChange={setWorkDir} placeholder="/home/user/projects/my-app" mono />
+              <Field label="作業ディレクトリ" hint="未指定時はホームディレクトリで実行します">
+                <PathInput value={workDir} onChange={setWorkDir} placeholder="/home/user/projects/my-app" mode="dir" title="作業ディレクトリを選択" />
               </Field>
             </>
           )}
@@ -458,6 +461,60 @@ function TextInput({
         mono ? "font-mono text-xs" : ""
       }`}
     />
+  );
+}
+
+/** パス入力 + 参照ボタン（サーバー上のファイル/フォルダ選択ダイアログ）。 */
+function PathInput({
+  value,
+  onChange,
+  placeholder,
+  mode,
+  title,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  mode: "file" | "dir";
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  // ファイル選択は現在値の親フォルダから開く
+  const initial = value.includes("/")
+    ? mode === "file"
+      ? value.slice(0, value.lastIndexOf("/")) || undefined
+      : value
+    : undefined;
+  return (
+    <div className="flex gap-1.5">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 font-mono text-xs outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+      />
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label="参照"
+        title="サーバー上から選択"
+        className="shrink-0 rounded-xl border border-zinc-300 px-3 text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      >
+        <IconFolder />
+      </button>
+      {open && (
+        <FilePicker
+          mode={mode}
+          title={title}
+          initialPath={initial}
+          onSelect={(p) => {
+            onChange(p);
+            setOpen(false);
+          }}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
   );
 }
 

@@ -27,8 +27,9 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
   useEffect(() => {
     const host = displayRef.current;
     if (!host) return;
-    // タッチ端末はリモート解像度を2倍で確保して縮小表示（大きいウィンドウ対策）
-    const isTouch = "ontouchstart" in window;
+    // タッチ主体の端末のみ2倍解像度+縮小表示。マウス主体（デスクトップ、
+    // タッチ対応ノート含む）は等倍・通常のマウス操作をそのまま受け付ける
+    const isTouch = window.matchMedia?.("(pointer: coarse)").matches ?? "ontouchstart" in window;
     const FACTOR = isTouch ? 2 : 1;
     const width = Math.floor((host.clientWidth || window.innerWidth) * FACTOR);
     const height = Math.floor((host.clientHeight || window.innerHeight) * FACTOR);

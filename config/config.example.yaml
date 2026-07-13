@@ -10,7 +10,7 @@ security:
   require_totp_for_admin: false     # true で管理者に二要素認証を推奨（UI にバナー）
 
 files:
-  allowed_roots: []   # 例: ["/home/souten/projects", "/data"]
+  allowed_roots: []   # 例: ["/home/USER"]（~/.ssh・~/.gnupg・DB・鍵は拒否リストで常に保護）
 
 monitoring:
   interval_seconds: 2

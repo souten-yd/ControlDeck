@@ -3,19 +3,20 @@ from __future__ import annotations
 import json
 import subprocess
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applications import service as apps
 from app.applications import systemd as sd
+from app.applications import testrun
 from app.applications.discovery import discover_project, discover_pythons
 from app.audit import service as audit
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import ManagedApplication, User
 from app.schemas.apps import AppCreate, AppOut, AppUpdate
-from app.security.deps import require_permission
+from app.security.deps import authenticate_websocket, require_permission
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 
@@ -99,6 +100,7 @@ class TestRunBody(BaseModel):
     application_type: str
     python_path: str | None = None
     code: str
+    working_directory: str | None = None
 
 
 @router.post("/test-run")
@@ -109,26 +111,21 @@ async def test_run(
     """インラインコードを一時的に実行して動作確認する（stdout/stderr/終了コードを返す）。
 
     apps.edit 権限が必要。30 秒でタイムアウト、出力は上限つき。shell=False。
+    継続実行するアプリの確認にはストリーミング版（WS /apps/test-run/stream）を使う。
     """
     import asyncio
-    import tempfile
     from pathlib import Path as _Path
 
-    if body.application_type not in ("python_script", "shell_script"):
-        raise HTTPException(status_code=422, detail="コード実行は Python / シェルのみ対応です")
-    if body.application_type == "python_script":
-        py = body.python_path or "/usr/bin/python3"
-        if not _Path(py).is_file():
-            raise HTTPException(status_code=422, detail=f"Python 実行ファイルが見つかりません: {py}")
+    try:
+        argv, tmp, cwd = testrun.prepare(
+            body.application_type, body.python_path, body.code, body.working_directory
+        )
+    except testrun.TestRunError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     def run() -> dict:
-        suffix = ".py" if body.application_type == "python_script" else ".sh"
-        with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
-            f.write(body.code)
-            tmp = f.name
         try:
-            argv = [body.python_path or "/usr/bin/python3", tmp] if body.application_type == "python_script" else ["/bin/bash", tmp]
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=30, cwd=cwd)
             return {"exit_code": r.returncode, "stdout": r.stdout[-16000:], "stderr": r.stderr[-8000:], "ok": r.returncode == 0}
         finally:
             _Path(tmp).unlink(missing_ok=True)
@@ -139,6 +136,48 @@ async def test_run(
         raise HTTPException(status_code=408, detail="実行がタイムアウトしました（30 秒）")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"実行に失敗しました: {e}")
+
+
+@router.websocket("/test-run/stream")
+async def test_run_stream(websocket: WebSocket):
+    """インラインコードをストリーミング実行する。
+
+    最初のメッセージ: {application_type, python_path?, code, working_directory?}
+    サーバー → {type: start|stdout|stderr|notice|exit|error, ...}
+    クライアント → {type: "stop"} で停止。切断時もプロセスを終了する。
+    """
+    import asyncio
+    import json as _json
+
+    db = SessionLocal()
+    try:
+        user = await authenticate_websocket(websocket, db, "apps.edit")
+        if user is None:
+            return
+    finally:
+        db.close()
+    await websocket.accept()
+    try:
+        first = await asyncio.wait_for(websocket.receive_text(), timeout=15)
+        body = _json.loads(first)
+        argv, tmp, cwd = testrun.prepare(
+            body.get("application_type", ""),
+            body.get("python_path") or None,
+            body.get("code", ""),
+            body.get("working_directory") or None,
+        )
+    except testrun.TestRunError as e:
+        await websocket.send_text(_json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False))
+        await websocket.close()
+        return
+    except (asyncio.TimeoutError, _json.JSONDecodeError):
+        await websocket.close(code=4400)
+        return
+    await testrun.stream_run(websocket, argv, tmp, cwd)
+    try:
+        await websocket.close()
+    except RuntimeError:
+        pass
 
 
 @router.get("/{app_id}/code")
