@@ -456,14 +456,29 @@ async def node_http_download(config: dict, ctx: dict) -> dict:
 # ---- Web スクレイピング ----
 
 
+def _extract_one(soup, selector: str, attr: str, multiple: bool) -> Any:
+    """1 つの抽出器を適用して値を返す（multiple なら配列、単体なら先頭のみ）。"""
+    elements = soup.select(selector) if selector else []
+
+    def value_of(el) -> str:
+        if attr == "text" or not attr:
+            return el.get_text(" ", strip=True)
+        if attr == "html":
+            return el.decode_contents()
+        return el.get(attr, "")
+
+    values = [value_of(el) for el in elements]
+    if multiple:
+        return values
+    return values[0] if values else ""
+
+
 async def node_scrape(config: dict, ctx: dict) -> dict:
     from bs4 import BeautifulSoup
 
     url = render_template(str(config.get("url", "")), ctx)
     if not url.startswith(("http://", "https://")):
         raise NodeError(f"不正な URL: {url}")
-    selector = str(config.get("selector", "")).strip()
-    attr = str(config.get("attribute", "")).strip()
     timeout = min(float(config.get("timeout", 30)), 120)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ControlDeck/1.0"}) as client:
@@ -471,13 +486,27 @@ async def node_scrape(config: dict, ctx: dict) -> dict:
     except httpx.HTTPError as e:
         raise NodeError(f"取得失敗: {e}")
     soup = BeautifulSoup(r.text, "html.parser")
+
+    # 複数抽出器（extractors）優先。無ければ単一 selector（後方互換）
+    extractors = config.get("extractors")
+    if isinstance(extractors, list) and extractors:
+        out: dict[str, Any] = {"status_code": r.status_code}
+        for ex in extractors:
+            if not isinstance(ex, dict):
+                continue
+            name = str(ex.get("name") or "").strip()
+            selector = str(ex.get("selector") or "").strip()
+            if not name or not selector:
+                continue
+            out[name] = _extract_one(soup, selector, str(ex.get("attribute") or "text"), bool(ex.get("multiple")))
+        return out
+
+    selector = str(config.get("selector", "")).strip()
+    attr = str(config.get("attribute", "")).strip()
     if not selector:
         return {"text": soup.get_text(" ", strip=True)[:20000], "status_code": r.status_code}
     elements = soup.select(selector)
-    if attr:
-        results = [el.get(attr, "") for el in elements]
-    else:
-        results = [el.get_text(" ", strip=True) for el in elements]
+    results = [el.get(attr, "") if attr else el.get_text(" ", strip=True) for el in elements]
     return {"results": results, "count": len(results), "first": results[0] if results else "", "status_code": r.status_code}
 
 

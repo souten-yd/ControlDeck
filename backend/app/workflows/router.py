@@ -72,6 +72,61 @@ def get_server_port() -> int:
     return get_config().server.port
 
 
+class ScrapeAnalyzeBody(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+@router.post("/workflows/scrape/analyze")
+async def scrape_analyze(
+    body: ScrapeAnalyzeBody, user: User = Depends(require_permission("workflows.edit"))
+):
+    """URL を取得し、候補セレクタ + ビューワ用サニタイズ HTML を返す。"""
+    from app.workflows import scrape_tools as st
+
+    try:
+        html, status, final_url = await st.fetch(body.url)
+    except st.ScrapeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {
+        "status_code": status,
+        "final_url": final_url,
+        "candidates": st.analyze(html),
+        "viewer_html": st.sanitize_for_viewer(html, final_url),
+    }
+
+
+class Extractor(BaseModel):
+    name: str = ""
+    selector: str = ""
+    attribute: str = "text"
+    multiple: bool = False
+
+
+class ScrapePreviewBody(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    extractors: list[Extractor] = Field(default_factory=list, max_length=30)
+
+
+@router.post("/workflows/scrape/preview")
+async def scrape_preview(
+    body: ScrapePreviewBody, user: User = Depends(require_permission("workflows.edit"))
+):
+    """URL を取得し、各抽出器の結果プレビュー（抽出ワード↔結果の対比）を返す。"""
+    from app.workflows import scrape_tools as st
+
+    try:
+        html, status, _ = await st.fetch(body.url)
+    except st.ScrapeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    results = {}
+    for ex in body.extractors:
+        key = ex.name or ex.selector
+        if not ex.selector:
+            continue
+        results[key] = st.preview(html, ex.selector, ex.attribute, ex.multiple)
+    return {"status_code": status, "results": results}
+
+
 class WorkflowBody(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = ""

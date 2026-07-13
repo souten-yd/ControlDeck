@@ -3,7 +3,7 @@
 export interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "number" | "select" | "textarea" | "app" | "code" | "inputs";
+  type: "text" | "number" | "select" | "textarea" | "app" | "code" | "inputs" | "extractors";
   options?: { value: string; label: string }[];
   placeholder?: string;
   hint?: string;
@@ -25,6 +25,14 @@ export interface NodeTypeDef {
   branches?: boolean; // true/false の 2 出力
   loop?: boolean; // body/done の 2 出力
   desc?: string;
+}
+
+/** Web スクレイピングの抽出項目（各項目が出力変数になる） */
+export interface ExtractorDef {
+  name: string;
+  selector: string;
+  attribute: string; // text | html | href | src | ...
+  multiple: boolean;
 }
 
 /** トリガーの入力フィールド定義（Dify の User Input 相当） */
@@ -315,12 +323,12 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     category: "ネットワーク",
     color: "#0ea5e9",
     icon: "🕸",
+    desc: "抽出ビューワでページから要素をクリック選択してセレクタを自動生成。複数出力対応",
     fields: [
       { key: "url", label: "URL", type: "text", hint: TEMPLATE_HINT },
-      { key: "selector", label: "CSS セレクター（空=全文）", type: "text", placeholder: "h1.title, .price" },
-      { key: "attribute", label: "属性（空=テキスト）", type: "text", placeholder: "href" },
+      { key: "extractors", label: "抽出項目", type: "extractors", hint: "「抽出ビューワを開く」でページから選択、または手動で追加。各項目が出力変数になります" },
     ],
-    outputs: [{ key: "first", label: "最初の一致" }, { key: "results", label: "一致リスト" }, { key: "count", label: "件数" }, { key: "text", label: "全文" }],
+    outputs: [{ key: "status_code", label: "ステータスコード" }],
   },
   "web.browser": {
     label: "ブラウザ操作",
