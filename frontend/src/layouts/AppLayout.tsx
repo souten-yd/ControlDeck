@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
@@ -69,7 +69,10 @@ export default function AppLayout() {
   const [powerAction, setPowerAction] = useState<"reboot" | "shutdown" | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const show = useToasts((s) => s.show);
+  // ワークフローエディタ（/workflows/:id）等は全画面表示（ヘッダー・下部ナビを隠す）
+  const immersive = /^\/workflows\/[^/]+$/.test(location.pathname);
 
   useMetricsStream(can("system.view"));
 
@@ -162,7 +165,7 @@ export default function AppLayout() {
 
       {/* メイン */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="safe-top flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:h-14">
+        <header className={`safe-top h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:h-14 ${immersive ? "hidden md:flex" : "flex"}`}>
           <div className="flex items-center gap-2 md:hidden">
             <Logo size={24} />
           </div>
@@ -206,10 +209,11 @@ export default function AppLayout() {
           <Outlet />
         </main>
 
-        {/* モバイル下部ナビ（フロー内配置で iOS の fixed 浮き上がりを回避） */}
+        {/* モバイル下部ナビ（フロー内配置で iOS の fixed 浮き上がりを回避）。
+            全画面ページ（エディタ等）では非表示にして没入表示にする。 */}
         <nav
           aria-label="メインナビゲーション"
-          className="safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden"
+          className={`safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 ${immersive ? "hidden" : "md:hidden"}`}
         >
           <div className="grid grid-cols-6">
             {MOBILE_NAV.map((n) => (

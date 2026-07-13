@@ -15,9 +15,13 @@ syncAppHeight();
 window.addEventListener("resize", syncAppHeight);
 window.addEventListener("orientationchange", syncAppHeight);
 window.visualViewport?.addEventListener("resize", syncAppHeight);
-// 復帰・フォーカス変化後にも再計測（キーボード閉じの取りこぼし対策）
+window.visualViewport?.addEventListener("scroll", syncAppHeight);
+// 復帰・フォーカス変化後にも再計測（キーボード閉じ・アプリ復帰の取りこぼし対策）
 window.addEventListener("pageshow", syncAppHeight);
 window.addEventListener("focusout", () => setTimeout(syncAppHeight, 100));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") setTimeout(syncAppHeight, 50);
+});
 
 const queryClient = new QueryClient({
   defaultOptions: {
