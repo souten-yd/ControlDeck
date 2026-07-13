@@ -361,6 +361,69 @@ def list_collections() -> list[dict]:
     return result
 
 
+# ---- 検索強化: HyDE / マルチクエリ（RAG-Fusion） ----
+
+
+async def _llm_complete(prompt: str, base_url: str, model: str, api_key: str, temperature: float = 0.3) -> str:
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            base_url.rstrip("/") + "/chat/completions",
+            json={"model": model, "messages": [{"role": "user", "content": prompt}],
+                  "temperature": temperature, "stream": False},
+            headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}"},
+        )
+    if r.status_code >= 400:
+        raise RagError(f"LLM エラー {r.status_code}: {r.text[:150]}")
+    return r.json()["choices"][0]["message"]["content"]
+
+
+async def search_enhanced(
+    collection: str, question: str, top_k: int, api_key: str = "", mode_override: str | None = None,
+    hyde: bool = False, multi_query: int = 0, llm_base_url: str = "", llm_model: str = "",
+) -> dict:
+    """HyDE / マルチクエリで検索を強化する。LLM を用いる（llm_base_url/model 必須）。"""
+    queries = [question]
+    if (hyde or multi_query) and llm_base_url and llm_model:
+        try:
+            if hyde:
+                # 仮想的な回答文を生成し、それを埋め込みクエリにする（HyDE）
+                hypo = await _llm_complete(
+                    f"次の質問に対する理想的な回答の本文を、事実に基づき簡潔に書いてください。\n質問: {question}",
+                    llm_base_url, llm_model, api_key)
+                queries.append(hypo[:1000])
+            if multi_query and multi_query > 0:
+                # 質問を複数の観点に分解（RAG-Fusion）
+                raw = await _llm_complete(
+                    f"次の質問を、検索に有効な別々の観点の検索クエリ {multi_query} 個に言い換えてください。"
+                    f"1行に1クエリ、番号なしで出力。\n質問: {question}",
+                    llm_base_url, llm_model, api_key)
+                queries += [ln.strip("・-•* \t") for ln in raw.splitlines() if ln.strip()][:multi_query]
+        except RagError:
+            pass  # 強化失敗時は元クエリのみで続行
+
+    if len(queries) == 1:
+        return await search(collection, question, top_k, api_key=api_key, mode_override=mode_override)
+
+    # 各クエリで検索し RRF で融合
+    fused: dict[str, float] = {}
+    payload: dict[str, dict] = {}
+    for q in queries:
+        res = await search(collection, q, top_k, api_key=api_key, mode_override=mode_override)
+        for rank, m in enumerate(res["matches"]):
+            key = m["context"]
+            fused[key] = fused.get(key, 0.0) + 1.0 / (60 + rank)
+            payload.setdefault(key, m)
+    ranked = sorted(fused.items(), key=lambda x: -x[1])[:top_k]
+    matches = [{**payload[k], "score": round(sc, 5)} for k, sc in ranked]
+    return {
+        "matches": matches,
+        "context": "\n\n---\n\n".join(m["context"] for m in matches),
+        "count": len(matches),
+        "mode": (mode_override or "hybrid") + ("+hyde" if hyde else "") + (f"+mq{multi_query}" if multi_query else ""),
+        "queries": queries,
+    }
+
+
 # ---- 後方互換 API（既存ノードが使用） ----
 
 
