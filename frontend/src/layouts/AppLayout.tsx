@@ -202,32 +202,32 @@ export default function AppLayout() {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto pb-20 md:pb-0">
+        <main className="min-h-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>
-      </div>
 
-      {/* モバイル下部ナビ（ホーム/アプリ/ワークフロー/ターミナル/リモート + 右端に操作） */}
-      <nav
-        aria-label="メインナビゲーション"
-        className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden"
-      >
-        <div className="grid grid-cols-6">
-          {MOBILE_NAV.map((n) => (
-            <MobileNavLink key={n.to} {...n} />
-          ))}
-          <button
-            onClick={() => setActionOpen(true)}
-            aria-label="操作メニュー"
-            className="flex flex-col items-center gap-0.5 py-2 text-zinc-600 dark:text-zinc-400"
-          >
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-600 text-white">
-              <IconPlus />
-            </span>
-            <span className="text-[10px]">操作</span>
-          </button>
-        </div>
-      </nav>
+        {/* モバイル下部ナビ（フロー内配置で iOS の fixed 浮き上がりを回避） */}
+        <nav
+          aria-label="メインナビゲーション"
+          className="safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden"
+        >
+          <div className="grid grid-cols-6">
+            {MOBILE_NAV.map((n) => (
+              <MobileNavLink key={n.to} {...n} />
+            ))}
+            <button
+              onClick={() => setActionOpen(true)}
+              aria-label="操作メニュー"
+              className="flex flex-col items-center gap-0.5 py-2 text-zinc-600 dark:text-zinc-400"
+            >
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-600 text-white">
+                <IconPlus />
+              </span>
+              <span className="text-[10px]">操作</span>
+            </button>
+          </div>
+        </nav>
+      </div>
 
       {/* グローバル操作シート */}
       {actionOpen && (

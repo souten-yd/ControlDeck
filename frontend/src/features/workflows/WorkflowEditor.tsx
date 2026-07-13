@@ -37,7 +37,9 @@ import {
   type FieldDef,
   type Snippet,
   type TriggerInputDef,
+  type ExtractorDef,
 } from "./nodeTypes";
+import { ScrapeViewer } from "./ScrapeViewer";
 import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
 
@@ -667,7 +669,7 @@ function NodeConfigSheet({
         )}
         {visibleFields.map((f) => (
           <Field key={f.key} label={f.label} hint={f.hint}>
-            <ConfigInput field={f} value={config[f.key]} disabled={readOnly} apps={apps} onChange={(v) => setConfig(f.key, v)} />
+            <ConfigInput field={f} value={config[f.key]} disabled={readOnly} apps={apps} scrapeUrl={String(config.url ?? "")} onChange={(v) => setConfig(f.key, v)} />
             {f.key === "json_schema" && !readOnly && (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {JSON_SCHEMA_PRESETS.map((p) => (
@@ -746,7 +748,13 @@ function VarPicker({
               d.type === "trigger"
                 ? ((d.config?.inputs as TriggerInputDef[] | undefined) ?? []).map((i) => ({ key: i.key, label: i.label || i.key }))
                 : [];
-            const outs = [...(m?.outputs ?? []), ...extra];
+            const scrapeOuts: { key: string; label: string }[] =
+              d.type === "web.scrape"
+                ? ((d.config?.extractors as ExtractorDef[] | undefined) ?? [])
+                    .filter((x) => x.name)
+                    .map((x) => ({ key: x.name, label: x.name }))
+                : [];
+            const outs = [...(m?.outputs ?? []), ...scrapeOuts, ...extra];
             if (outs.length === 0) return null;
             return (
               <div key={d.id}>
@@ -842,17 +850,21 @@ function LlmEndpointDetect({ onPick }: { onPick: (baseUrl: string, model?: strin
 }
 
 function ConfigInput({
-  field, value, disabled, apps, onChange,
+  field, value, disabled, apps, scrapeUrl, onChange,
 }: {
   field: FieldDef;
   value: unknown;
   disabled: boolean;
   apps?: ManagedApp[];
+  scrapeUrl?: string;
   onChange: (v: unknown) => void;
 }) {
   const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   if (field.type === "inputs") {
     return <TriggerInputsEditor value={(value as TriggerInputDef[]) ?? []} disabled={disabled} onChange={onChange} />;
+  }
+  if (field.type === "extractors") {
+    return <ExtractorsField value={(value as ExtractorDef[]) ?? []} url={scrapeUrl ?? ""} disabled={disabled} onChange={onChange} />;
   }
   if (field.type === "select") {
     return (
@@ -1007,6 +1019,53 @@ function RunInputsSheet({
         />
       )}
     </BottomSheet>
+  );
+}
+
+/** Web スクレイピングの抽出項目フィールド（コンパクト編集 + ビューワ起動） */
+function ExtractorsField({
+  value,
+  url,
+  disabled,
+  onChange,
+}: {
+  value: ExtractorDef[];
+  url: string;
+  disabled: boolean;
+  onChange: (v: ExtractorDef[]) => void;
+}) {
+  const [viewerOpen, setViewerOpen] = useState(false);
+  return (
+    <div className="space-y-2">
+      {value.length === 0 ? (
+        <p className="text-xs text-zinc-400">抽出項目がありません。ビューワでページから選択できます。</p>
+      ) : (
+        <ul className="space-y-1">
+          {value.map((ex, i) => (
+            <li key={i} className="flex items-center gap-2 rounded-lg border border-zinc-200 px-2 py-1.5 text-xs dark:border-zinc-700">
+              <code className="shrink-0 font-mono font-medium text-accent-600 dark:text-accent-400">{ex.name || "(無名)"}</code>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-400">{ex.selector}</span>
+              <span className="shrink-0 text-[10px] text-zinc-400">{ex.multiple ? "複数" : "単体"}</span>
+              {!disabled && (
+                <button onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label="削除" className="shrink-0 text-zinc-400 hover:text-red-500">×</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {!disabled && (
+        <button
+          type="button"
+          onClick={() => setViewerOpen(true)}
+          className="w-full rounded-xl bg-accent-50 py-2 text-xs font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
+        >
+          🔍 抽出ビューワを開く（クリックで選択・結果を確認）
+        </button>
+      )}
+      {viewerOpen && (
+        <ScrapeViewer url={url} extractors={value} onChange={onChange} onClose={() => setViewerOpen(false)} />
+      )}
+    </div>
   );
 }
 
