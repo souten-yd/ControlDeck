@@ -4,10 +4,10 @@ import asyncio
 def test_trigger_injects_chat_input():
     from app.workflows.nodes import node_trigger
 
-    ctx = {"__input__": {"message": "こんにちは", "user": "souten"}}
+    ctx = {"__input__": {"message": "こんにちは", "user": "user1"}}
     out = asyncio.run(node_trigger({}, ctx))
     assert out["message"] == "こんにちは"
-    assert out["user"] == "souten"
+    assert out["user"] == "user1"
 
 
 def test_signal_display_node():
