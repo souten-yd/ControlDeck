@@ -22,7 +22,7 @@ import { CommandPalette } from "../components/CommandPalette";
 import { Logo } from "../components/Logo";
 
 const NAV = [
-  { to: "/", label: "概要", icon: IconHome },
+  { to: "/", label: "ホーム", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
   { to: "/workflows", label: "ワークフロー", icon: IconFlow },
   { to: "/files", label: "ファイル", icon: IconFile },
@@ -33,10 +33,8 @@ const NAV = [
   { to: "/settings", label: "設定", icon: IconSettings },
 ];
 
-// モバイル下部ナビ（最大 5 項目、中央は操作ボタン）
-const MOBILE_NAV_LEFT = [NAV[0], NAV[1]];
-// ファイル→ターミナルへ入れ替え（下部ナビは ターミナル / ログ）
-const MOBILE_NAV_RIGHT = [NAV[4], NAV[5]];
+// モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / リモート + 右端に操作
+const MOBILE_NAV = [NAV[0], NAV[1], NAV[2], NAV[4], NAV[5]];
 
 function IconFlow(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -207,13 +205,13 @@ export default function AppLayout() {
         </main>
       </div>
 
-      {/* モバイル下部ナビ（5 項目、中央が操作） */}
+      {/* モバイル下部ナビ（ホーム/アプリ/ワークフロー/ターミナル/リモート + 右端に操作） */}
       <nav
         aria-label="メインナビゲーション"
         className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden"
       >
-        <div className="grid grid-cols-5">
-          {MOBILE_NAV_LEFT.map((n) => (
+        <div className="grid grid-cols-6">
+          {MOBILE_NAV.map((n) => (
             <MobileNavLink key={n.to} {...n} />
           ))}
           <button
@@ -226,9 +224,6 @@ export default function AppLayout() {
             </span>
             <span className="text-[10px]">操作</span>
           </button>
-          {MOBILE_NAV_RIGHT.map((n) => (
-            <MobileNavLink key={n.to} {...n} />
-          ))}
         </div>
       </nav>
 
@@ -263,6 +258,16 @@ export default function AppLayout() {
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/terminal");
+                }}
+              />
+            )}
+            {can("files.view") && (
+              <ActionItem
+                icon={<IconFile />}
+                label="ファイルマネージャー"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/files");
                 }}
               />
             )}
