@@ -696,11 +696,12 @@ async def node_python_exec(config: dict, ctx: dict) -> dict:
 
 
 async def node_rag_build(config: dict, ctx: dict) -> dict:
+    """RAG 取り込み。チャンク戦略はコレクション設定に従う（ナレッジ画面で設定）。
+    存在しないコレクションは設定を引き継いで自動作成する。"""
     from app.workflows import rag
 
     collection = str(config.get("collection", "default"))
     text = render_template(str(config.get("text", "")), ctx)
-    # text が空でパスが指定されていればファイルから読む
     if not text.strip() and config.get("path"):
         from app.files.service import FileAccessError, read_text
 
@@ -708,37 +709,117 @@ async def node_rag_build(config: dict, ctx: dict) -> dict:
             text = read_text(render_template(str(config["path"]), ctx))
         except (FileAccessError, FileNotFoundError, OSError) as e:
             raise NodeError(str(e))
+    # ノード側でチャンク戦略を上書き指定できる（コレクション設定へ反映）
+    override: dict = {}
+    for k in ("strategy", "size", "overlap", "parent_mode", "parent_size", "search_mode"):
+        if config.get(k) not in (None, ""):
+            override[k] = config[k]
+    override["embed_base_url"] = str(config.get("base_url", "http://127.0.0.1:11434/v1"))
+    override["embed_model"] = str(config.get("embed_model", "nomic-embed-text"))
     try:
-        return await rag.build(
+        if not rag.collection_exists(collection):
+            rag.create_collection(collection, override)
+        return await rag.add_document(
             collection=collection,
             text=text,
-            source=str(config.get("source", "workflow")),
-            base_url=str(config.get("base_url", "http://127.0.0.1:11434/v1")),
-            model=str(config.get("embed_model", "nomic-embed-text")),
+            source=render_template(str(config.get("source", "workflow")), ctx),
             api_key=str(config.get("api_key", "")),
+            config_override=override,
             reset=bool(config.get("reset")),
         )
-    except (ValueError, RuntimeError) as e:
+    except rag.RagError as e:
         raise NodeError(f"RAG 構築失敗: {e}")
 
 
 async def node_rag_query(config: dict, ctx: dict) -> dict:
+    """RAG 検索。検索方式（vector/fulltext/hybrid）を選択できる（空はコレクション設定）。"""
     from app.workflows import rag
 
     question = render_template(str(config.get("question", "")), ctx)
     if not question.strip():
         raise NodeError("質問が空です")
+    mode = str(config.get("search_mode", "") or "") or None
     try:
-        return await rag.query(
+        return await rag.search(
             collection=str(config.get("collection", "default")),
             question=question,
             top_k=int(config.get("top_k", 4)),
-            base_url=str(config.get("base_url", "http://127.0.0.1:11434/v1")),
-            model=str(config.get("embed_model", "nomic-embed-text")),
             api_key=str(config.get("api_key", "")),
+            mode_override=mode,
         )
-    except (ValueError, RuntimeError) as e:
+    except rag.RagError as e:
         raise NodeError(f"RAG 検索失敗: {e}")
+
+
+# ---- 学術検索（arXiv 論文 / Crossref 文献 を統合） ----
+
+
+async def node_academic_search(config: dict, ctx: dict) -> dict:
+    """論文・文献をソース選択で検索する（arXiv / Crossref）。RAG 取り込みにも使える。"""
+    source = str(config.get("source", "arxiv"))
+    query = render_template(str(config.get("query", "")), ctx).strip()
+    if not query:
+        raise NodeError("検索クエリが空です")
+    limit = max(1, min(int(config.get("max_results", 10) or 10), 50))
+
+    if source == "arxiv":
+        import xml.etree.ElementTree as ET
+
+        params = {"search_query": f"all:{query}", "start": "0", "max_results": str(limit),
+                  "sortBy": "relevance", "sortOrder": "descending"}
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                r = await client.get("https://export.arxiv.org/api/query", params=params)
+        except httpx.HTTPError as e:
+            raise NodeError(f"arXiv 取得失敗: {e}")
+        ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+        try:
+            root = ET.fromstring(r.text)
+        except ET.ParseError as e:
+            raise NodeError(f"arXiv 応答の解析に失敗: {e}")
+        results = []
+        for e in root.findall("a:entry", ns):
+            pdf = ""
+            for link in e.findall("a:link", ns):
+                if link.get("title") == "pdf":
+                    pdf = link.get("href", "")
+            results.append({
+                "title": (e.findtext("a:title", "", ns) or "").strip(),
+                "authors": [a.findtext("a:name", "", ns) for a in e.findall("a:author", ns)],
+                "summary": (e.findtext("a:summary", "", ns) or "").strip(),
+                "published": e.findtext("a:published", "", ns),
+                "url": (e.findtext("a:id", "", ns) or "").strip(),
+                "pdf_url": pdf,
+            })
+    elif source == "crossref":
+        try:
+            async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "ControlDeck/1.0"}) as client:
+                r = await client.get("https://api.crossref.org/works", params={"query": query, "rows": str(limit)})
+        except httpx.HTTPError as e:
+            raise NodeError(f"Crossref 取得失敗: {e}")
+        if r.status_code >= 400:
+            raise NodeError(f"Crossref エラー {r.status_code}")
+        items = r.json().get("message", {}).get("items", [])
+        results = []
+        for it in items:
+            results.append({
+                "title": (it.get("title") or [""])[0],
+                "authors": [f"{a.get('given','')} {a.get('family','')}".strip() for a in it.get("author", [])],
+                "summary": it.get("abstract", "")[:2000],
+                "published": "-".join(str(x) for x in (it.get("published", {}).get("date-parts", [[None]])[0] or [])),
+                "url": it.get("URL", ""),
+                "doi": it.get("DOI", ""),
+                "container": (it.get("container-title") or [""])[0],
+            })
+    else:
+        raise NodeError(f"不明な検索ソース: {source}")
+
+    # まとめテキスト（そのまま RAG 取り込みや LLM 要約に渡せる）
+    combined = "\n\n".join(
+        f"# {x['title']}\n{', '.join(x.get('authors') or [])}\n{x.get('summary','')}\n{x.get('url','')}"
+        for x in results
+    )
+    return {"results": results, "count": len(results), "text": combined, "source": source}
 
 
 # ---- データベース操作 ----
@@ -869,6 +950,7 @@ NODE_EXECUTORS = {
     "web.browser": node_browser,
     "rag.build": node_rag_build,
     "rag.query": node_rag_query,
+    "academic.search": node_academic_search,
     "db.query": node_db_query,
 }
 
@@ -887,6 +969,7 @@ NODE_TIMEOUTS = {
     "web.browser": 190,
     "rag.build": 620,
     "rag.query": 320,
+    "academic.search": 60,
     "db.query": 320,
 }
 DEFAULT_NODE_TIMEOUT = 120
