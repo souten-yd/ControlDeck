@@ -65,6 +65,8 @@ class Config(BaseModel):
     logs: LogsConfig = LogsConfig()
     ui: UIConfig = UIConfig()
     data_dir: str = "~/.local/share/control-deck"
+    # GitHub 管理でクローンするリポジトリの格納先
+    git_apps_dir: str = "~/ControlDeckApps"
 
 
 def _config_path() -> Path | None:

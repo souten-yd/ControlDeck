@@ -224,3 +224,15 @@ class MetricMinute(Base):
     disk_write_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
     net_rx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
     net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class GitRepository(Base):
+    """GitHub 管理: 登録リポジトリ（クローン先は config.git_apps_dir 配下）。"""
+
+    __tablename__ = "git_repositories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    url: Mapped[str] = mapped_column(String(2048))
+    path: Mapped[str] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

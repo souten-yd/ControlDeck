@@ -96,7 +96,9 @@ class TerminalManager:
             for s in self._fallback.values()
         ]
 
-    def create_session(self, cwd: str | None = None) -> dict:
+    def create_session(self, cwd: str | None = None, command: str | None = None) -> dict:
+        """セッションを作成する。command 指定時はシェルでそのコマンドを実行する
+        （例: gh auth login。継続利用するコマンド側で exec bash 等を付ける）。"""
         cfg = get_config().terminal
         if not cfg.enabled:
             raise RuntimeError("ターミナルは無効化されています")
@@ -106,7 +108,8 @@ class TerminalManager:
         workdir = cwd or str(os.path.expanduser("~"))
         if tmux_available():
             name = TMUX_PREFIX + sid
-            base = ["tmux", "new-session", "-d", "-s", name, "-c", workdir, cfg.shell]
+            # tmux はコマンドを 1 引数で渡すと sh -c で実行する（複数引数は空白結合されるため不可）
+            base = ["tmux", "new-session", "-d", "-s", name, "-c", workdir, command or cfg.shell]
             # tmux サーバーを本サービスの cgroup 外（独立 scope）で起動する。
             # そうしないとサービス再起動時に systemd が cgroup ごと tmux を kill し、
             # 「永続」のはずのセッションが全て消える。
@@ -132,7 +135,7 @@ class TerminalManager:
             "LANG": os.environ.get("LANG", "C.UTF-8"),
         }
         proc = subprocess.Popen(
-            [cfg.shell, "-l"],
+            ["bash", "-lc", command] if command else [cfg.shell, "-l"],
             stdin=slave, stdout=slave, stderr=slave,
             cwd=workdir, env=env, start_new_session=True, close_fds=True,
         )

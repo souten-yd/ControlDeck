@@ -148,6 +148,8 @@ check_tmux() {
 ensure_apt_packages() {
   local missing=()
   command -v tmux >/dev/null || missing+=(tmux)
+  command -v git >/dev/null || missing+=(git)
+  command -v gh >/dev/null || missing+=(gh)   # GitHub 管理（非公開リポジトリのログイン）用
   command -v tesseract >/dev/null || missing+=(tesseract-ocr tesseract-ocr-jpn)
   # リモートデスクトップ関連（config で有効時のみ導入を試みる）
   if grep -qsE '^[[:space:]]*enabled:[[:space:]]*true' "$REPO_ROOT/config/config.yaml" 2>/dev/null \
