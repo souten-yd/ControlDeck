@@ -27,6 +27,8 @@ class AppCreate(BaseModel):
     stop_timeout_seconds: int = Field(default=20, ge=1, le=600)
     # systemd_service タイプ用（既存ユーザーユニット名）
     systemd_unit_name: str | None = None
+    # Web ボタンで開くポート
+    web_port: int | None = Field(default=None, ge=1, le=65535)
 
 
 class AppUpdate(BaseModel):
@@ -43,6 +45,8 @@ class AppUpdate(BaseModel):
     auto_start: bool | None = None
     restart_policy: RestartPolicy | None = None
     stop_timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+    # Web ボタンで開くポート（null で未設定に戻す）
+    web_port: int | None = Field(default=None, ge=1, le=65535)
 
 
 class AppRuntime(BaseModel):
@@ -53,6 +57,8 @@ class AppRuntime(BaseModel):
     restart_count: int = 0
     cpu_percent: float | None = None
     memory_bytes: int | None = None
+    # プロセスツリーが LISTEN している TCP ポート（Web ボタン用）
+    listening_ports: list[int] = []
 
 
 class AppOut(BaseModel):
@@ -66,6 +72,7 @@ class AppOut(BaseModel):
     script_path: str | None
     python_path: str | None
     url: str | None = None
+    web_port: int | None = None
     arguments: list[str]
     environment_masked: dict[str, str]
     auto_start: bool

@@ -56,6 +56,7 @@ def create_app(
         script_path=body.script_path,
         python_path=body.python_path,
         url=body.url,
+        web_port=body.web_port,
         arguments_json=json.dumps(body.arguments),
         auto_start=body.auto_start,
         restart_policy=body.restart_policy,

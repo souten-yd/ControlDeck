@@ -76,6 +76,8 @@ class ManagedApplication(Base):
     python_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # url_shortcut タイプ用の URL
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Web ボタンで開くポート（サーバーアプリ用。未設定時は検出ポートから選択）
+    web_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     arguments_json: Mapped[str] = mapped_column(Text, default="[]")
     environment_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_as_user: Mapped[str | None] = mapped_column(String(64), nullable=True)
