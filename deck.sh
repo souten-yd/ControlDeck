@@ -37,16 +37,36 @@ check_root() {
   [ "$(id -u)" -ne 0 ] || die "root で実行しないでください（docs/security-model.md 参照）"
 }
 
+# apt パッケージを導入する。パスワード不要 sudo → そのまま、対話端末 → sudo を対話実行、
+# どちらも不可なら失敗を返す（呼び出し側が案内を出す）。
+apt_install() {
+  command -v apt-get >/dev/null || return 1
+  if sudo -n true 2>/dev/null; then
+    sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "$@"
+  elif [ -t 0 ]; then
+    info "不足パッケージを導入します: $*（sudo パスワードを求められる場合があります）"
+    sudo apt-get update -qq && sudo apt-get install -y -qq "$@"
+  else
+    return 1
+  fi
+}
+
 check_python() {
-  command -v "$PYTHON_BIN" >/dev/null || die "python3 が見つかりません: sudo apt install python3 python3-venv"
+  if ! command -v "$PYTHON_BIN" >/dev/null; then
+    apt_install python3 python3-venv || die "python3 が見つかりません: sudo apt install python3 python3-venv"
+  fi
   "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
-    || die "Python 3.11 以上が必要です（現在: $($PYTHON_BIN --version)）"
+    || die "Python 3.11 以上が必要です（現在: $($PYTHON_BIN --version)）。Ubuntu 24.04 以降を推奨します"
 }
 
 ensure_venv() {
   if [ ! -x "$VENV/bin/python" ]; then
     info "Python 仮想環境を構築しています (.venv) ..."
-    "$PYTHON_BIN" -m venv "$VENV" || die "venv 作成失敗: sudo apt install python3-venv"
+    if ! "$PYTHON_BIN" -m venv "$VENV" 2>/dev/null; then
+      rm -rf "$VENV"
+      apt_install python3-venv || die "venv 作成失敗: sudo apt install python3-venv"
+      "$PYTHON_BIN" -m venv "$VENV" || die "venv 作成失敗: sudo apt install python3-venv"
+    fi
   fi
   local req="$REPO_ROOT/backend/requirements.txt"
   local stamp="$VENV/.req-stamp"
@@ -70,7 +90,9 @@ ensure_frontend() {
     need_build=1
   fi
   if [ "$need_build" -eq 1 ]; then
-    command -v npm >/dev/null || die "フロントエンドのビルドに npm が必要です: sudo apt install nodejs npm"
+    if ! command -v npm >/dev/null; then
+      apt_install nodejs npm || die "フロントエンドのビルドに npm が必要です: sudo apt install nodejs npm"
+    fi
     if [ ! -d "$REPO_ROOT/frontend/node_modules" ]; then
       info "フロントエンド依存をインストールしています ..."
       (cd "$REPO_ROOT/frontend" && npm install --silent --no-fund --no-audit)
@@ -137,11 +159,8 @@ ensure_apt_packages() {
     fi
   fi
   [ ${#missing[@]} -eq 0 ] && return 0
-  if command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
-    info "システムパッケージを導入しています: ${missing[*]}"
-    sudo -n apt-get update -qq && sudo -n apt-get install -y -qq "${missing[@]}" \
-      || warn "一部パッケージの導入に失敗しました: ${missing[*]}"
-  else
+  info "システムパッケージを導入しています: ${missing[*]}"
+  if ! apt_install "${missing[@]}"; then
     warn "以下のワークフロー用パッケージが未導入です（任意）: ${missing[*]}"
     warn "  導入するには: sudo apt install ${missing[*]}"
   fi

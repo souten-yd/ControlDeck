@@ -281,7 +281,7 @@ xterm.js / WebSocket / PTY / tmux。複数タブ / タブ名変更 / bash・zsh 
   アップロードFAB / 操作はボトムシート / ツリーはドロワー。
 - プレビュー: テキスト / Markdown / JSON / YAML / 画像 / PDF / 音声 / 動画 / ログ。大容量はRange/ストリーミング。
 - 編集: Monaco Editor（遅延ロード）。モバイルは軽量エディター可。
-- 許可ルート例: /home/souten/projects, /data, /data1tb, /var/lib/control-deck/shared。
+- 許可ルート例: /home/USER/projects, /data, /data1tb, /var/lib/control-deck/shared。
   初期拒否: /etc/shadow, /root, /proc, /sys, /dev, 秘密鍵, ブラウザプロファイル, 認証情報。
   realpath正規化+許可ルート配下確認。
 - アップロード: D&D / 複数 / 進捗 / キャンセル / チャンク / 再開 / 上書き確認。iOS対応。
@@ -402,7 +402,7 @@ ui:
   metric_refresh_seconds: 2
 files:
   allowed_roots:
-    - /home/souten/projects
+    - /home/USER/projects
     - /data
     - /data1tb
   trash_enabled: true
