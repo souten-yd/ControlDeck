@@ -5,6 +5,7 @@ import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
 import {
+  IconBranch,
   IconChart,
   IconChevronLeft,
   IconFile,
@@ -28,6 +29,7 @@ const NAV = [
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
   { to: "/remote", label: "リモート", icon: IconRemote },
+  { to: "/github", label: "GitHub", icon: IconBranch },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
@@ -268,6 +270,16 @@ export default function AppLayout() {
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/files");
+                }}
+              />
+            )}
+            {can("apps.view") && (
+              <ActionItem
+                icon={<IconBranch />}
+                label="GitHub 管理"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/github");
                 }}
               />
             )}

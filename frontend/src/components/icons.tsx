@@ -49,6 +49,14 @@ export const IconFile = (p: SVGProps<SVGSVGElement>) => (
     <path d="M14 2v4h4" />
   </Icon>
 );
+export const IconBranch = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="6" cy="5" r="2.2" />
+    <circle cx="6" cy="19" r="2.2" />
+    <circle cx="18" cy="9" r="2.2" />
+    <path d="M6 7.2v9.6M18 11.2c0 3-3 4-6 4.3" />
+  </Icon>
+);
 export const IconFolder = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
