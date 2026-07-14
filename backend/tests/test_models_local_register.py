@@ -87,3 +87,46 @@ def test_model_config_crud(admin_client):
     admin_client.put("/api/v1/models/qwen2.5%3A7b/config", json={"keep_alive": "", "idle_exclude": False}, headers=CSRF_HEADERS)
     assert ollama.get_model_config("qwen2.5:7b") == {}
     assert ollama.effective_keep_alive("qwen2.5:7b") == ollama.get_settings()["default_keep_alive"]
+
+
+def test_model_options_typed_and_effective(admin_client):
+    """生成/ロードパラメータが型検証され、effective_options が options だけ返す。"""
+    from app.models_mgmt import ollama
+
+    admin_client.put(
+        "/api/v1/models/m%3Atest/config",
+        json={"num_ctx": "8192", "temperature": "0.3", "top_k": 40, "num_predict": -1,
+              "keep_alive": "1h", "idle_exclude": True, "bogus": 5},
+        headers=CSRF_HEADERS,
+    )
+    cfg = ollama.get_model_config("m:test")
+    assert cfg["num_ctx"] == 8192 and isinstance(cfg["num_ctx"], int)  # 文字列→int
+    assert cfg["temperature"] == 0.3 and isinstance(cfg["temperature"], float)
+    assert "bogus" not in cfg  # 未許可キーは無視
+    opts = ollama.effective_options("m:test")
+    assert opts == {"num_ctx": 8192, "temperature": 0.3, "top_k": 40, "num_predict": -1}
+    assert "keep_alive" not in opts and "idle_exclude" not in opts  # 運用フラグは options に含めない
+    # 掃除
+    from app.models_mgmt.ollama import _settings_path
+    import json as _json
+    s = ollama.get_settings(); s["model_configs"].pop("m:test", None)
+    _settings_path().write_text(_json.dumps(s))
+
+
+def test_kv_cache_settings_and_env(admin_client):
+    from app.models_mgmt import ollama
+
+    r = admin_client.put("/api/v1/models/settings",
+                         json={"kv_cache_type": "q8_0", "flash_attention": True}, headers=CSRF_HEADERS)
+    assert r.status_code == 200
+    assert ollama.get_settings()["kv_cache_type"] == "q8_0"
+    # 不正な値は 422
+    r = admin_client.put("/api/v1/models/settings", json={"kv_cache_type": "q2_0"}, headers=CSRF_HEADERS)
+    assert r.status_code == 422
+    # 診断 API は dict を返す（systemctl 不在でも落ちない）
+    env = admin_client.get("/api/v1/models/ollama-env").json()
+    assert set(env) >= {"flash_attention", "kv_cache_type"}
+    spec = admin_client.get("/api/v1/models/options-spec").json()
+    assert "num_ctx" in spec["int"] and "temperature" in spec["float"]
+    # 既定へ戻す
+    admin_client.put("/api/v1/models/settings", json={"kv_cache_type": "f16", "flash_attention": False}, headers=CSRF_HEADERS)

@@ -32,14 +32,49 @@ def _settings_path() -> Path:
     return data_dir() / "ollama-settings.json"
 
 
+# Ollama の /api options として渡せる生成/ロードパラメータ（モデル個別設定で保持）。
+# int / float を型で分けてバリデーションする。
+OPT_INT = {
+    "num_ctx",       # コンテキスト長
+    "num_predict",   # 出力トークン上限（-1=無制限, -2=コンテキストまで）
+    "num_gpu",       # GPU にオフロードする層数（-1=自動で全部）
+    "num_batch",     # バッチサイズ
+    "num_thread",    # CPU スレッド数
+    "num_keep",      # 先頭で保持するトークン数
+    "top_k",
+    "repeat_last_n",
+    "seed",
+    "mirostat",      # 0=無効 / 1 / 2
+}
+OPT_FLOAT = {
+    "temperature",
+    "top_p",
+    "min_p",
+    "typical_p",
+    "repeat_penalty",
+    "presence_penalty",
+    "frequency_penalty",
+    "mirostat_tau",
+    "mirostat_eta",
+}
+OPT_KEYS = OPT_INT | OPT_FLOAT
+# モデル個別設定として保存できる全キー（options + 運用フラグ）
+MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude"}
+
+# KV キャッシュ量子化の選択肢（サーバー全体・環境変数）
+KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
+
 DEFAULT_SETTINGS = {
     "base_url": DEFAULT_BASE_URL,
     "idle_unload_enabled": False,
     "idle_unload_minutes": 30,
     "default_keep_alive": "30m",  # ロード時の既定保持時間（大型モデルの都度ロードを防ぐ）
     "default_model": "",          # LLM ノードの既定に使える
-    # モデル別の詳細設定 {"モデル名": {"keep_alive": "1h", "idle_exclude": true, "num_ctx": 8192}}
+    # モデル別の詳細設定 {"モデル名": {"keep_alive": "1h", "idle_exclude": true, "num_ctx": 8192, ...}}
     "model_configs": {},
+    # サーバー全体（Ollama 環境変数で反映。適用は systemctl edit ollama + 再起動）
+    "kv_cache_type": "f16",       # f16 / q8_0 / q4_0（q系は flash_attention 必須）
+    "flash_attention": False,     # KV キャッシュ量子化を効かせるには true
 }
 
 
@@ -50,17 +85,28 @@ def get_model_config(model: str) -> dict:
 
 
 def set_model_config(model: str, patch: dict) -> dict:
-    """モデル個別設定を更新する。keep_alive/idle_exclude/num_ctx のみ許可。"""
-    allowed = {"keep_alive", "idle_exclude", "num_ctx"}
+    """モデル個別設定を更新する。MODEL_CONFIG_KEYS のみ許可・型検証。"""
     s = get_settings()
     cfgs = dict(s.get("model_configs") or {})
     cur = dict(cfgs.get(model, {}))
     for k, v in patch.items():
-        if k not in allowed:
+        if k not in MODEL_CONFIG_KEYS:
             continue
-        if v in (None, "", False) and k in cur:
-            cur.pop(k)  # 空指定はクリア
-        elif v not in (None, "", False):
+        # 空/None/False はクリア（既定へ戻す）
+        if v in (None, "", False):
+            cur.pop(k, None)
+            continue
+        if k in OPT_INT:
+            try:
+                cur[k] = int(v)
+            except (ValueError, TypeError):
+                continue
+        elif k in OPT_FLOAT:
+            try:
+                cur[k] = float(v)
+            except (ValueError, TypeError):
+                continue
+        else:  # keep_alive(str) / idle_exclude(bool)
             cur[k] = v
     if cur:
         cfgs[model] = cur
@@ -75,6 +121,40 @@ def effective_keep_alive(model: str) -> str | int:
     """モデル個別 keep_alive → なければ既定。"""
     cfg = get_model_config(model)
     return cfg.get("keep_alive") or get_settings().get("default_keep_alive", "30m")
+
+
+def effective_options(model: str) -> dict:
+    """モデル個別設定から Ollama の options dict を組み立てる（運用フラグは除く）。"""
+    cfg = get_model_config(model)
+    return {k: v for k, v in cfg.items() if k in OPT_KEYS}
+
+
+def runtime_env() -> dict:
+    """稼働中 Ollama サービスの KV キャッシュ関連環境変数を読む（診断・UI 表示用）。
+
+    root 権限なしで読める systemctl show を使う。取得できなければ空。
+    """
+    import shutil
+    import subprocess
+
+    out = {"flash_attention": None, "kv_cache_type": None, "source": ""}
+    if not shutil.which("systemctl"):
+        return out
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", "ollama", "-p", "Environment"],
+            capture_output=True, text=True, timeout=5,
+        )
+        env = r.stdout.strip()
+        for token in env.replace("Environment=", "").split():
+            if token.startswith("OLLAMA_FLASH_ATTENTION="):
+                out["flash_attention"] = token.split("=", 1)[1] in ("1", "true", "True")
+            elif token.startswith("OLLAMA_KV_CACHE_TYPE="):
+                out["kv_cache_type"] = token.split("=", 1)[1]
+        out["source"] = "systemd"
+    except Exception:
+        pass
+    return out
 
 
 def get_settings() -> dict:
@@ -181,13 +261,17 @@ async def delete(model: str) -> None:
         raise OllamaError(f"削除に失敗しました ({r.status_code}): {r.text[:200]}")
 
 
-async def load(model: str, keep_alive: str | int | None = None) -> dict:
+async def load(model: str, keep_alive: str | int | None = None, options: dict | None = None) -> dict:
     ka = keep_alive if keep_alive is not None else effective_keep_alive(model)
-    # 空プロンプトの generate でモデルだけロードする
-    r = await _post("/api/generate", {"model": model, "keep_alive": ka}, timeout=120)
+    opts = options if options is not None else effective_options(model)
+    # 空プロンプトの generate でモデルだけロードする（num_ctx 等はここで確定する）
+    payload: dict = {"model": model, "keep_alive": ka}
+    if opts:
+        payload["options"] = opts
+    r = await _post("/api/generate", payload, timeout=180)
     if r.status_code >= 400:
         raise OllamaError(f"ロードに失敗しました ({r.status_code}): {r.text[:200]}")
-    return {"model": model, "loaded": True, "keep_alive": ka}
+    return {"model": model, "loaded": True, "keep_alive": ka, "options": opts}
 
 
 async def unload(model: str) -> dict:

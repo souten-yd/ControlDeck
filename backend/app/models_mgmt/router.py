@@ -46,17 +46,33 @@ class SettingsBody(BaseModel):
     idle_unload_minutes: int | None = Field(default=None, ge=1, le=1440)
     default_keep_alive: str | None = None
     default_model: str | None = None
+    kv_cache_type: str | None = None
+    flash_attention: bool | None = None
 
 
 @router.put("/settings")
 def put_settings(body: SettingsBody, user: User = Depends(require_permission("workflows.edit"))):
-    return ollama.save_settings({k: v for k, v in body.model_dump().items() if v is not None})
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "kv_cache_type" in patch and patch["kv_cache_type"] not in ollama.KV_CACHE_TYPES:
+        raise HTTPException(status_code=422, detail=f"kv_cache_type は {ollama.KV_CACHE_TYPES} のいずれか")
+    return ollama.save_settings(patch)
 
 
+@router.get("/ollama-env")
+def ollama_env(user: User = Depends(require_permission("workflows.run"))):
+    """稼働中 Ollama の KV キャッシュ/Flash Attention 環境変数の実際の状態（診断用）。"""
+    return ollama.runtime_env()
+
+
+@router.get("/options-spec")
+def options_spec(user: User = Depends(require_permission("workflows.run"))):
+    """UI がフォームを描くための、設定可能な options キー一覧。"""
+    return {"int": sorted(ollama.OPT_INT), "float": sorted(ollama.OPT_FLOAT), "kv_cache_types": list(ollama.KV_CACHE_TYPES)}
+
+
+# モデル個別設定は自由キー（options 群）。ollama 側で許可キー・型を検証する
 class ModelConfigBody(BaseModel):
-    keep_alive: str | None = None   # "" でクリア（既定に戻す）
-    idle_exclude: bool | None = None  # アイドル自動アンロードから除外して常駐
-    num_ctx: int | None = Field(default=None, ge=0, le=131072)
+    model_config = {"extra": "allow"}
 
 
 @router.get("/{model:path}/config")
@@ -65,11 +81,20 @@ def get_model_config(model: str, user: User = Depends(require_permission("workfl
 
 
 @router.put("/{model:path}/config")
-def put_model_config(
-    model: str, body: ModelConfigBody,
+async def put_model_config(
+    model: str, body: dict,
+    reload: bool = False,
     user: User = Depends(require_permission("workflows.edit")),
 ):
-    return ollama.set_model_config(model, body.model_dump(exclude_none=True))
+    """モデル個別設定を保存。reload=true なら新しい設定で即ロードして反映する。"""
+    cfg = ollama.set_model_config(model, body)
+    result: dict = {"config": cfg}
+    if reload:
+        try:
+            result["loaded"] = await ollama.load(model)
+        except ollama.OllamaError as e:
+            result["reload_error"] = str(e)
+    return result
 
 
 @router.get("/hf-search")
