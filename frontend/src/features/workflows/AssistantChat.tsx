@@ -38,6 +38,7 @@ interface Msg {
   sources?: SourceItem[];
   gen?: GenData;
   build?: BuildState;
+  thinking?: string;
   streaming?: boolean;
 }
 
@@ -156,6 +157,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       ws.onmessage = (ev) => {
         const data = JSON.parse(ev.data);
         if (data.type === "delta") patchLast((m) => ({ ...m, content: m.content + data.content }));
+        else if (data.type === "thinking") patchLast((m) => ({ ...m, thinking: (m.thinking ?? "") + data.content }));
         else if (data.type === "error") patchLast((m) => ({ ...m, content: m.content + `\n⚠️ ${data.message}` }));
       };
       ws.onclose = () => {
@@ -561,6 +563,15 @@ function MessageBubble({
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] space-y-2 rounded-2xl rounded-bl-md border border-zinc-200 bg-zinc-50/60 px-3.5 py-2.5 text-sm dark:border-zinc-800 dark:bg-zinc-800/40 sm:max-w-[85%]">
+        {/* 思考トレース（推論モデル・折り畳み） */}
+        {msg.thinking && (
+          <details className="rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70" open={!msg.content && msg.streaming}>
+            <summary className="cursor-pointer text-[11px] font-medium text-zinc-500">
+              💭 思考プロセス{!msg.content && msg.streaming ? "（考え中…）" : ""}
+            </summary>
+            <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{msg.thinking}</p>
+          </details>
+        )}
         {msg.content && (
           <p className="whitespace-pre-wrap leading-relaxed">
             {msg.content}

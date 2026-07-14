@@ -130,3 +130,32 @@ def test_kv_cache_settings_and_env(admin_client):
     assert "num_ctx" in spec["int"] and "temperature" in spec["float"]
     # 既定へ戻す
     admin_client.put("/api/v1/models/settings", json={"kv_cache_type": "f16", "flash_attention": False}, headers=CSRF_HEADERS)
+
+
+def test_think_normalize_and_config(admin_client):
+    """think の正規化と個別設定の保存/クリア。"""
+    from app.models_mgmt import ollama
+
+    assert ollama.normalize_think("off") is False
+    assert ollama.normalize_think("on") is True
+    assert ollama.normalize_think("high") == "high"
+    assert ollama.normalize_think("auto") is None
+    assert ollama.normalize_think("") is None
+    assert ollama.normalize_think("garbage") is None
+
+    admin_client.put("/api/v1/models/r%3Ax/config", json={"think": "off"}, headers=CSRF_HEADERS)
+    assert ollama.get_model_config("r:x")["think"] == "off"
+    assert ollama.effective_think("r:x") is False
+    # options には含めない（think はトップレベルパラメータ）
+    assert "think" not in ollama.effective_options("r:x")
+    # auto でクリア
+    admin_client.put("/api/v1/models/r%3Ax/config", json={"think": "auto"}, headers=CSRF_HEADERS)
+    assert ollama.get_model_config("r:x") == {}
+
+
+def test_native_base_helper():
+    from app.workflows.chat_router import _native_base
+
+    assert _native_base("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434"
+    assert _native_base("http://127.0.0.1:11434/v1/") == "http://127.0.0.1:11434"
+    assert _native_base("http://example.com/openai") is None  # 非 /v1 は None

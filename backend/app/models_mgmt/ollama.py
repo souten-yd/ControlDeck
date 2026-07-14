@@ -58,8 +58,34 @@ OPT_FLOAT = {
     "mirostat_eta",
 }
 OPT_KEYS = OPT_INT | OPT_FLOAT
-# モデル個別設定として保存できる全キー（options + 運用フラグ）
-MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude"}
+# think（推論表示）の指定値。off/on はブール、low/medium/high/max はレベル
+THINK_VALUES = ("off", "on", "low", "medium", "high", "max")
+
+# モデル個別設定として保存できる全キー（options + 運用フラグ + think）
+MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude", "think"}
+
+
+def normalize_think(value) -> bool | str | None:
+    """think 設定値を Ollama API 用に正規化する。
+
+    None/""/"auto" → None（送らない＝モデル既定の自動）
+    "off"/"false" → False、"on"/"true" → True、level 文字列 → そのまま
+    """
+    if value in (None, "", "auto"):
+        return None
+    v = str(value).lower()
+    if v in ("off", "false", "0"):
+        return False
+    if v in ("on", "true", "1"):
+        return True
+    if v in ("low", "medium", "high", "max"):
+        return v
+    return None
+
+
+def effective_think(model: str) -> bool | str | None:
+    """モデル個別 think 設定を正規化して返す。"""
+    return normalize_think(get_model_config(model).get("think"))
 
 # KV キャッシュ量子化の選択肢（サーバー全体・環境変数）
 KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
@@ -91,6 +117,13 @@ def set_model_config(model: str, patch: dict) -> dict:
     cur = dict(cfgs.get(model, {}))
     for k, v in patch.items():
         if k not in MODEL_CONFIG_KEYS:
+            continue
+        # think は "off" も有効値。"auto"/空でクリア
+        if k == "think":
+            if normalize_think(v) is None:
+                cur.pop(k, None)
+            else:
+                cur[k] = str(v).lower()
             continue
         # 空/None/False はクリア（既定へ戻す）
         if v in (None, "", False):

@@ -40,7 +40,39 @@ def _keep_alive() -> str:
         return "30m"
 
 
+def _native_base(base_url: str) -> str | None:
+    """OpenAI 互換 URL(.../v1) から Ollama ネイティブ API のベースを導く。
+    think(思考オフ/レベル)は OpenAI 互換 API では効かず、ネイティブ /api でのみ効く。"""
+    b = base_url.rstrip("/")
+    if b.endswith("/v1"):
+        return b[:-3]  # http://host:11434
+    return None
+
+
+def _think_for(model: str):
+    try:
+        from app.models_mgmt import ollama
+
+        return ollama.effective_think(model)
+    except Exception:
+        return None
+
+
 async def _llm(messages: list[dict], base_url: str, model: str, api_key: str, temperature: float = 0.4) -> str:
+    think = _think_for(model)
+    native = _native_base(base_url) if think is not None else None
+    if native is not None:
+        # think 指定あり & Ollama → ネイティブ /api/chat（think が効く）
+        async with httpx.AsyncClient(timeout=300) as client:
+            r = await client.post(
+                native + "/api/chat",
+                json={"model": model, "messages": messages, "stream": False,
+                      "think": think, "keep_alive": _keep_alive(),
+                      "options": {"temperature": temperature}},
+            )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"LLM エラー {r.status_code}: {r.text[:150]}")
+        return r.json().get("message", {}).get("content", "")
     async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             base_url.rstrip("/") + "/chat/completions",
@@ -76,7 +108,39 @@ async def chat_stream(websocket: WebSocket):
     base = str(req.get("base_url") or "http://127.0.0.1:11434/v1").rstrip("/")
     model = str(req.get("model") or "llama3.2")
     messages = req.get("messages") or []
+    # think: リクエスト指定 > モデル個別設定
+    from app.models_mgmt import ollama as _ollama
+
+    think = _ollama.normalize_think(req.get("think")) if req.get("think") is not None else _think_for(model)
+    native = _native_base(base) if think is not None else None
     try:
+        if native is not None:
+            # think 指定 & Ollama → ネイティブ /api/chat ストリーム（JSON lines）。
+            # thinking(推論)は type:"thinking"、回答は type:"delta" で送る
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST", native + "/api/chat",
+                    json={"model": model, "messages": messages, "stream": True,
+                          "think": think, "keep_alive": _keep_alive()},
+                ) as r:
+                    if r.status_code >= 400:
+                        body = await r.aread()
+                        await websocket.send_text(json.dumps({"type": "error", "message": f"{r.status_code}: {body[:150]!r}"}))
+                        await websocket.close()
+                        return
+                    async for line in r.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            msg = json.loads(line).get("message", {})
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("thinking"):
+                            await websocket.send_text(json.dumps({"type": "thinking", "content": msg["thinking"]}))
+                        if msg.get("content"):
+                            await websocket.send_text(json.dumps({"type": "delta", "content": msg["content"]}))
+            await websocket.send_text(json.dumps({"type": "done"}))
+            return
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST", base + "/chat/completions",

@@ -421,6 +421,7 @@ function HFSearch({ onPull, running }: { onPull: (m: string) => void; running: b
 interface ModelConfig {
   keep_alive?: string;
   idle_exclude?: boolean;
+  think?: string;
   num_ctx?: number;
   num_predict?: number;
   num_gpu?: number;
@@ -562,8 +563,10 @@ function ModelConfigSection({ model }: { model: string }) {
     onError: (e) => show(e instanceof Error ? e.message : "保存失敗", "error"),
   });
   if (!eff || !can("workflows.edit")) return null;
+  const hasThinking = (caps?.capabilities ?? []).includes("thinking");
   // MTP（Multi-Token Prediction）対応判定: capabilities に completion 以外の特殊機能があるかで簡易判定
   const hasMtp = (caps?.capabilities ?? []).some((c) => /mtp|speculat/i.test(c));
+  const selCls = "w-full rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
   return (
     <div className="rounded-xl border border-zinc-200 dark:border-zinc-700">
@@ -573,6 +576,19 @@ function ModelConfigSection({ model }: { model: string }) {
         <L label="常駐時間 keep_alive"><PresetOrCustom value={eff.keep_alive} presets={KEEPALIVE_PRESETS} numeric={false} placeholder="30m / 1h" onChange={(v) => set("keep_alive", v)} /></L>
         <L label="コンテキスト長 num_ctx（大きいほどVRAM増）"><PresetOrCustom value={eff.num_ctx} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("num_ctx", v)} /></L>
         <L label="出力長 num_predict（最大生成トークン）"><PresetOrCustom value={eff.num_predict} presets={PREDICT_PRESETS} placeholder="512" onChange={(v) => set("num_predict", v)} /></L>
+        {hasThinking && (
+          <L label="思考（推論）think — オフで高速化・レベルで深さ調整">
+            <select value={eff.think ?? ""} onChange={(e) => set("think", e.target.value)} className={selCls}>
+              <option value="">既定（自動）</option>
+              <option value="off">オフ（思考なし・最速）</option>
+              <option value="on">オン</option>
+              <option value="low">低（浅い思考）</option>
+              <option value="medium">中</option>
+              <option value="high">高（深い思考）</option>
+              <option value="max">最大</option>
+            </select>
+          </L>
+        )}
         <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
           <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常駐させ再ロード待ちをなくす</span></span>
           <input type="checkbox" checked={!!eff.idle_exclude} onChange={(e) => set("idle_exclude", e.target.checked)} className="h-4 w-4" />
@@ -595,6 +611,7 @@ function ModelConfigSection({ model }: { model: string }) {
             </L>
             <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-400 dark:bg-zinc-800/60">
               KV キャッシュ量子化（メモリ削減）は⚙全体設定にあります（Ollama サーバー環境変数）。
+              {hasThinking && " 思考(think)はチャット/LLMノードに反映されます（Ollama 直結時）。"}
               {hasMtp
                 ? " このモデルは MTP/推測デコードに対応しています（Ollama が自動適用）。"
                 : " MTP（Multi-Token Prediction）は対応モデルで Ollama が自動適用します。個別 API 設定はありません。"}
