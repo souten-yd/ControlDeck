@@ -59,7 +59,9 @@ def test_condition_and_wait_graph():
     asyncio.run(_execute_graph(nodes, edges, ctx))
     assert ctx["c"]["output"]["result"] is True
     assert ctx["f"]["output"]["exists"] is True
-    assert "never" not in ctx  # false ブランチは実行されない
+    # v2: false ブランチは実行されず SKIPPED として記録される（dead-path 伝播）
+    assert ctx["never"]["status"] == "SKIPPED"
+    assert "output" not in ctx["never"]
 
 
 def test_workflow_api_crud_and_run(admin_client):

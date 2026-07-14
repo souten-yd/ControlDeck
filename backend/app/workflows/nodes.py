@@ -29,6 +29,12 @@ def render_template(text: str, context: dict[str, Any]) -> str:
                 return ""
             value: Any = (context.get("__vars__") or {}).get(parts[1])
             rest = parts[2:]
+        elif parts[0] == "secrets":
+            # {{secrets.名前}}: 暗号化ストアの値（engine が実行開始時に復号注入）
+            if len(parts) < 2:
+                return ""
+            value = (context.get("__secrets__") or {}).get(parts[1], "")
+            rest = parts[2:]
         else:
             value = context.get(parts[0], {}).get("output", {})
             rest = parts[1:]
@@ -327,6 +333,9 @@ async def node_llm(config: dict, ctx: dict) -> dict:
     prompt = render_template(str(config.get("prompt", "")), ctx)
     system = render_template(str(config.get("system", "")), ctx)
     api_key = str(config.get("api_key", "") or "sk-no-key")
+    if str(config.get("agent_tools", "") or "") == "1":
+        # エージェントモード: LLM が既存ノードをツールとして自律的に呼ぶ
+        return await _agent_llm(base_url, model, api_key, system, prompt, config, ctx)
     response_format = str(config.get("response_format", "") or "")
     messages = []
     if system:
@@ -396,6 +405,165 @@ async def node_llm(config: dict, ctx: dict) -> dict:
             out["json"] = None
             out["json_error"] = "応答を JSON として解析できませんでした"
     return out
+
+
+# ---- エージェントモード（llm.chat 拡張。既存ノードをツールとして公開） ----
+
+AGENT_TOOLS = [
+    {"type": "function", "function": {
+        "name": "web_search",
+        "description": "Web を検索してタイトル/URL/スニペットを得る",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "academic_search",
+        "description": "学術ソース（OpenAlex/arXiv/Crossref 等）を串刺し検索する",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "rag_query",
+        "description": "ローカルナレッジ（RAG）から関連文脈を検索する",
+        "parameters": {"type": "object", "properties": {
+            "collection": {"type": "string", "description": "コレクション名（既定 docs）"},
+            "question": {"type": "string"}}, "required": ["question"]}}},
+    {"type": "function", "function": {
+        "name": "http_get",
+        "description": "URL に GET リクエストして本文を得る（http/https のみ）",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+    {"type": "function", "function": {
+        "name": "read_file",
+        "description": "許可ルート配下のテキストファイルを読む",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+]
+
+
+async def _agent_call_tool(name: str, args: dict, ctx: dict) -> str:
+    """ツール呼び出しを既存ノード実装へ委譲する（安全なサブセットのみ）。"""
+    try:
+        if name == "web_search":
+            out = await node_web_search({"query": str(args.get("query", "")), "max_results": 6}, ctx)
+            return out["text"][:4000] or "(結果なし)"
+        if name == "academic_search":
+            from app.workflows import external_search as ext
+
+            fed = await ext.federated(str(args.get("query", "")), 5)
+            return "\n\n".join(
+                f"{x['title']} ({x.get('meta', {}).get('year', '')})\n{x.get('snippet', '')[:300]}\n{x.get('url', '')}"
+                for x in fed["results"][:8]) or "(結果なし)"
+        if name == "rag_query":
+            out = await node_rag_query({"collection": str(args.get("collection", "docs") or "docs"),
+                                        "question": str(args.get("question", ""))}, ctx)
+            return str(out.get("context", ""))[:4000] or "(該当なし)"
+        if name == "http_get":
+            out = await node_http_request({"method": "GET", "url": str(args.get("url", ""))}, ctx)
+            return str(out.get("body", ""))[:4000]
+        if name == "read_file":
+            out = await node_file_read({"path": str(args.get("path", ""))}, ctx)
+            return str(out.get("content", ""))[:4000]
+        return f"未知のツール: {name}"
+    except NodeError as e:
+        return f"ツールエラー: {e}"
+
+
+async def _agent_llm(
+    base_url: str, model: str, api_key: str, system: str, prompt: str, config: dict, ctx: dict
+) -> dict:
+    """tool calling で反復実行するエージェントループ。"""
+    max_rounds = max(1, min(int(config.get("agent_max_steps", 6) or 6), 12))
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    tool_log: list[dict] = []
+    timeout = min(float(config.get("timeout", 180)), 600)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for round_no in range(1, max_rounds + 1):
+            try:
+                r = await client.post(
+                    f"{base_url}/chat/completions",
+                    json={"model": model, "messages": messages, "tools": AGENT_TOOLS,
+                          "temperature": float(config.get("temperature", 0.4))},
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            except httpx.HTTPError as e:
+                raise NodeError(f"LLM 接続失敗: {e}")
+            if r.status_code >= 400:
+                raise NodeError(f"LLM エラー {r.status_code}（モデルが tool calling 非対応の可能性）: {r.text[:150]}")
+            msg = r.json()["choices"][0]["message"]
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                return {"content": msg.get("content", ""), "model": model,
+                        "tool_log": tool_log, "rounds": round_no}
+            messages.append(msg)
+            for tc in tool_calls[:4]:
+                fn = tc.get("function", {})
+                name = fn.get("name", "")
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result = await _agent_call_tool(name, args, ctx)
+                tool_log.append({"round": round_no, "tool": name, "args": args, "result": result[:500]})
+                messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
+    return {"content": "(ツール使用の上限に達しました)", "model": model, "tool_log": tool_log, "rounds": max_rounds}
+
+
+# ---- サブワークフロー呼び出し ----
+
+
+async def node_flow_call(config: dict, ctx: dict) -> dict:
+    """別のワークフローを実行し、完了を待って signal.display の出力を返す。"""
+    from app.database import SessionLocal
+    from app.models import WorkflowExecution
+    from app.workflows import engine
+
+    wf_id = config.get("workflow_id")
+    if not isinstance(wf_id, (int, float)) or int(wf_id) <= 0:
+        raise NodeError("呼び出すワークフローを選択してください")
+    depth = int(ctx.get("__depth__", 0))
+    message = render_template(str(config.get("message", "")), ctx)
+    extra: dict = {}
+    raw_input = render_template(str(config.get("input_json", "")), ctx).strip()
+    if raw_input:
+        try:
+            parsed = json.loads(raw_input)
+            if isinstance(parsed, dict):
+                extra = parsed
+        except json.JSONDecodeError as e:
+            raise NodeError(f"入力 JSON が不正です: {e}")
+    try:
+        exec_id = await engine.run_workflow(
+            int(wf_id), trigger_type="subflow",
+            input_data={"message": message, **extra}, depth=depth + 1)
+    except engine.DefinitionError as e:
+        raise NodeError(str(e))
+
+    wait_limit = max(10, min(int(config.get("timeout", 600) or 600), 3600))
+    import asyncio as _asyncio
+
+    deadline = _asyncio.get_event_loop().time() + wait_limit
+    while _asyncio.get_event_loop().time() < deadline:
+        await _asyncio.sleep(1.0)
+
+        def fetch() -> tuple[str, str, str]:
+            db = SessionLocal()
+            try:
+                row = db.get(WorkflowExecution, exec_id)
+                return (row.status, row.error or "", row.context_json or "{}") if row else ("FAILED", "実行消失", "{}")
+            finally:
+                db.close()
+
+        status, error, ctx_json = await _asyncio.to_thread(fetch)
+        if status not in ("RUNNING", "WAITING"):
+            sub_ctx = json.loads(ctx_json)
+            displays = [str(e.get("output", {}).get("value", ""))
+                        for e in sub_ctx.values()
+                        if isinstance(e, dict) and isinstance(e.get("output"), dict) and e["output"].get("display")]
+            if status != "SUCCEEDED":
+                raise NodeError(f"サブフローが {status}: {error}"[:300])
+            return {"execution_id": exec_id, "status": status,
+                    "result": "\n\n".join(d for d in displays if d), "count": len(displays)}
+    engine.cancel_execution(exec_id)
+    raise NodeError(f"サブフローが {wait_limit} 秒以内に完了しませんでした")
 
 
 # ---- ユーティリティ ----
@@ -782,9 +950,11 @@ async def node_web_search(config: dict, ctx: dict) -> dict:
     results: list[dict] = []
 
     if engine == "searxng":
-        base = render_template(str(config.get("searxng_url", "")), ctx).strip().rstrip("/")
-        if not base:
-            raise NodeError("SearXNG の URL を指定してください（例: http://127.0.0.1:8888）")
+        from app.workflows import searxng
+
+        # 未指定なら登録済みローカルインスタンスを自動検出。停止していれば自動起動を試みる
+        base = await searxng.resolve_url(render_template(str(config.get("searxng_url", "")), ctx))
+        await searxng.ensure_running(base)
         params = {"q": query, "format": "json"}
         cat = str(config.get("categories", "") or "").strip()
         if cat:
@@ -927,6 +1097,11 @@ async def node_academic_search(config: dict, ctx: dict) -> dict:
         raise NodeError("検索クエリが空です")
     limit = int(config.get("max_results", 10) or 10)
     try:
+        if source == "all":
+            fed = await ext.federated(query, limit)
+            results = fed["results"]
+            combined = "\n\n".join(f"# {x['title']} ({x.get('source','')})\n{x.get('snippet','')}\n{x.get('url','')}" for x in results)
+            return {"results": results, "count": len(results), "text": combined, "source": "all", "errors": fed["errors"]}
         results = await ext.search(source, query, limit, api_key=str(config.get("api_key", "")))
     except ext.SearchError as e:
         raise NodeError(str(e))
@@ -1068,6 +1243,7 @@ NODE_EXECUTORS = {
     "web.search": node_web_search,
     "research.deep": node_deep_research,
     "db.query": node_db_query,
+    "flow.call": node_flow_call,
 }
 
 # ノードごとの既定タイムアウト（秒）
@@ -1089,5 +1265,6 @@ NODE_TIMEOUTS = {
     "web.search": 60,
     "research.deep": 1800,
     "db.query": 320,
+    "flow.call": 3660,
 }
 DEFAULT_NODE_TIMEOUT = 120

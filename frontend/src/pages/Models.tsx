@@ -1,10 +1,12 @@
-/** Model（Ollama）管理。取得(HF含む)/削除/ロード/アンロード/詳細/設定/自動アンロード。 */
-import { useEffect, useRef, useState } from "react";
+/** Model（Ollama）管理。取得(HF含む)/削除/ロード/アンロード/詳細/設定/自動アンロード。
+ * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, wsUrl } from "../api/client";
+import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
-import { IconPlus, IconSearch, IconTrash } from "../components/icons";
+import { FilePicker } from "../components/FilePicker";
+import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 
 interface Model {
   name: string;
@@ -27,6 +29,66 @@ interface Settings {
 
 function gb(n: number): string {
   return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
+}
+
+interface JobInfo {
+  id: string;
+  kind: string;
+  title: string;
+  status: string; // running / succeeded / failed / canceled
+  progress: { status?: string; completed?: number | null; total?: number | null };
+  error: string;
+}
+
+/** サーバー側ジョブのポーリング（1 秒間隔・終了で停止） */
+function useJob(jobId: string | null) {
+  return useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => api<JobInfo>(`/jobs/${jobId}`),
+    enabled: jobId !== null,
+    refetchInterval: (q) => (q.state.data && q.state.data.status !== "running" ? false : 1000),
+  });
+}
+
+function JobProgress({ job }: { job: JobInfo }) {
+  const pct =
+    job.progress?.total && job.progress?.completed
+      ? Math.round((job.progress.completed / job.progress.total) * 100)
+      : null;
+  const label =
+    job.status === "succeeded" ? "完了" : job.status === "failed" ? `エラー: ${job.error}` : job.status === "canceled" ? "キャンセル" : job.progress?.status || "処理中...";
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="truncate text-xs text-zinc-500">{label}</p>
+      {pct !== null && job.status === "running" && (
+        <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+          <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      <p className="mt-1 text-[10px] text-zinc-400">サーバー側で実行中 — ブラウザを閉じても継続します</p>
+    </div>
+  );
+}
+
+/** ページ上部: 実行中のモデル系ジョブ（シートやブラウザを閉じても追える） */
+function ActiveModelJobs() {
+  const { data } = useQuery({
+    queryKey: ["model-jobs"],
+    queryFn: () => api<JobInfo[]>("/jobs?kind=model."),
+    refetchInterval: 2000,
+  });
+  const running = (data ?? []).filter((j) => j.status === "running");
+  if (running.length === 0) return null;
+  return (
+    <div className="mb-3 space-y-2">
+      {running.map((j) => (
+        <div key={j.id} className="rounded-2xl border border-accent-200 bg-accent-50/40 p-3 dark:border-accent-800 dark:bg-accent-600/10">
+          <p className="mb-1 text-xs font-medium">{j.title}</p>
+          <JobProgress job={j} />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function ModelsPage() {
@@ -82,6 +144,7 @@ export default function ModelsPage() {
         {status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
 
+      <ActiveModelJobs />
       {status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           Ollama（{status.base_url}）に接続できません。<code className="font-mono">ollama serve</code> の起動、または設定でエンドポイントを確認してください。
@@ -131,34 +194,28 @@ export default function ModelsPage() {
 
 function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const show = useToasts((s) => s.show);
-  const [tab, setTab] = useState<"registry" | "hf">("registry");
+  const [tab, setTab] = useState<"registry" | "hf" | "local">("registry");
   const [model, setModel] = useState("");
-  const [running, setRunning] = useState(false);
-  const [status, setStatus] = useState("");
-  const [pct, setPct] = useState<number | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  useEffect(() => () => wsRef.current?.close(), []);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { data: job } = useJob(jobId);
+  const running = job?.status === "running";
 
-  const start = (name: string) => {
+  useEffect(() => {
+    if (!job || job.status === "running") return;
+    if (job.status === "succeeded") { show(`${job.title} が完了しました`); onDone(); }
+    else if (job.status === "failed") show(job.error, "error");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status]);
+
+  const start = async (name: string) => {
     const target = name.trim();
-    if (!target) return;
-    setRunning(true); setStatus("接続中..."); setPct(null);
-    const ws = new WebSocket(wsUrl("/models/pull"));
-    wsRef.current = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ model: target }));
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.type === "progress") {
-        setStatus(m.status || "取得中...");
-        if (m.total && m.completed) setPct(Math.round((m.completed / m.total) * 100));
-      } else if (m.type === "done") {
-        setStatus("完了"); setRunning(false); show(`「${target}」を取得しました`); onDone();
-      } else if (m.type === "error") {
-        setStatus(`エラー: ${m.message}`); setRunning(false); show(m.message, "error");
-      }
-    };
-    ws.onclose = () => setRunning(false);
-    ws.onerror = () => { setStatus("接続エラー"); setRunning(false); };
+    if (!target || running) return;
+    try {
+      const r = await api<{ job_id: string }>("/models/pull-jobs", { method: "POST", json: { model: target } });
+      setJobId(r.job_id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "開始に失敗しました", "error");
+    }
   };
 
   return (
@@ -166,6 +223,7 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
       <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
         <button onClick={() => setTab("registry")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "registry" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>Ollama レジストリ</button>
         <button onClick={() => setTab("hf")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "hf" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>HuggingFace (GGUF)</button>
+        <button onClick={() => setTab("local")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "local" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>ローカル登録</button>
       </div>
 
       {tab === "registry" ? (
@@ -175,21 +233,156 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
             {running ? "取得中..." : "取得"}
           </button>
         </div>
-      ) : (
+      ) : tab === "hf" ? (
         <HFSearch onPull={start} running={running} />
+      ) : (
+        <LocalRegister onDone={onDone} />
       )}
 
-      {(running || status) && (
-        <div className="mt-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-          <p className="truncate text-xs text-zinc-500">{status}</p>
-          {pct !== null && (
-            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-              <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
-            </div>
-          )}
-        </div>
-      )}
+      {tab !== "local" && job && <div className="mt-3"><JobProgress job={job} /></div>}
     </BottomSheet>
+  );
+}
+
+/** ローカルにダウンロード済みの GGUF を Ollama モデルとして登録する。 */
+function LocalRegister({ onDone }: { onDone: () => void }) {
+  const show = useToasts((s) => s.show);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [dir, setDir] = useState("");
+  const [files, setFiles] = useState<{ name: string; path: string; size: number; suggest_name: string }[] | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [selected, setSelected] = useState<string>("");
+  const [name, setName] = useState("");
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { data: job } = useJob(jobId);
+  const running = job?.status === "running";
+
+  useEffect(() => {
+    if (!job || job.status === "running") return;
+    if (job.status === "succeeded") { show(`${job.title} が完了しました`); onDone(); }
+    else if (job.status === "failed") show(job.error, "error");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status]);
+
+  const scan = async (path: string) => {
+    setDir(path);
+    setScanning(true);
+    setScanError("");
+    setFiles(null);
+    setSelected("");
+    try {
+      const r = await api<{ files: { name: string; path: string; size: number; suggest_name: string }[] }>(
+        `/models/gguf-scan?path=${encodeURIComponent(path)}`,
+      );
+      setFiles(r.files);
+      if (r.files.length === 1) {
+        setSelected(r.files[0].path);
+        setName(r.files[0].suggest_name);
+      }
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : "スキャンに失敗しました");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const register = async () => {
+    if (!selected || !name.trim() || running) return;
+    try {
+      const r = await api<{ job_id: string }>("/models/register-jobs", {
+        method: "POST",
+        json: { name: name.trim(), path: selected },
+      });
+      setJobId(r.job_id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "開始に失敗しました", "error");
+    }
+  };
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-[11px] text-zinc-400">
+        ダウンロード済みの GGUF ファイルを Ollama に登録します（元ファイルは変更されません）。
+        選択できるのは許可ルート（設定 files.allowed_roots）配下のみです。
+      </p>
+
+      {/* フォルダ選択 */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setPickerOpen(true)}
+          className="flex shrink-0 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          <IconFolder className="h-4 w-4 text-amber-500" /> フォルダを選択
+        </button>
+        <p className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-400">{dir || "未選択"}</p>
+      </div>
+
+      {scanning && <p className="text-xs text-zinc-400">スキャン中...</p>}
+      {scanError && <p className="text-xs text-red-500">{scanError}</p>}
+      {files && files.length === 0 && (
+        <p className="rounded-xl border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-400 dark:border-zinc-700">
+          このフォルダに GGUF ファイルは見つかりませんでした（サブフォルダは 3 階層まで検索）
+        </p>
+      )}
+
+      {/* GGUF 一覧 */}
+      {files && files.length > 0 && (
+        <ul className="max-h-56 space-y-1.5 overflow-y-auto">
+          {files.map((f) => (
+            <li key={f.path}>
+              <label className={`flex cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-2 ${selected === f.path ? "border-accent-500 bg-accent-50/50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
+                <input
+                  type="radio"
+                  name="gguf"
+                  checked={selected === f.path}
+                  onChange={() => { setSelected(f.path); setName(f.suggest_name); }}
+                  className="accent-current"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-mono text-xs">{f.name}</p>
+                  <p className="num text-[10px] text-zinc-400">{gb(f.size)}</p>
+                </div>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* モデル名 + 登録 */}
+      {selected && (
+        <>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-zinc-500">登録名（Ollama モデル名。タグは : で指定）</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="例: qwen2.5-7b-instruct-q4_k_m"
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <button
+            onClick={register}
+            disabled={running || !name.trim()}
+            className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
+          >
+            {running ? "登録中..." : "Ollama に登録"}
+          </button>
+        </>
+      )}
+
+      {job && <JobProgress job={job} />}
+
+      {pickerOpen && (
+        <FilePicker
+          mode="dir"
+          title="GGUF のあるフォルダを選択"
+          initialPath={dir || undefined}
+          onSelect={(p) => { setPickerOpen(false); scan(p); }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </div>
   );
 }
 

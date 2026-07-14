@@ -40,6 +40,7 @@ import {
   type ExtractorDef,
 } from "./nodeTypes";
 import { ScrapeViewer } from "./ScrapeViewer";
+import { InfoPanel } from "./InfoPanel";
 import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
 
@@ -104,6 +105,19 @@ function FlowNode({ data, selected }: NodeProps) {
           <p className="truncate text-[10px] text-zinc-400">{meta?.label}</p>
         </div>
       </div>
+      {/* 承認ゲート/リトライのバッジ */}
+      {(def.config?.require_approval || Number(def.config?.retry_count) > 0) && (
+        <span className="pointer-events-none absolute left-1 top-1.5 text-[9px]">
+          {def.config?.require_approval ? "✋" : ""}{Number(def.config?.retry_count) > 0 ? "↻" : ""}
+        </span>
+      )}
+      {/* エラー分岐ハンドル（on_error=branch のとき） */}
+      {def.config?.on_error === "branch" && def.type !== "trigger" && (
+        <>
+          <Handle id="error" type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-red-500 dark:!border-zinc-900" />
+          <span className="pointer-events-none absolute bottom-0.5 left-1/2 -translate-x-[150%] text-[8px] font-medium text-red-500">失敗時</span>
+        </>
+      )}
       {meta?.branches ? (
         <>
           <Handle id="true" type="source" position={Position.Right} style={{ top: "45%" }} className="!h-3 !w-3 !border-2 !border-white !bg-emerald-500 dark:!border-zinc-900" />
@@ -159,6 +173,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [executionsOpen, setExecutionsOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -222,11 +237,27 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     try {
       await api(`/workflows/${workflowId}/run`, { method: "POST", json: input ? { input } : {} });
       show("実行を開始しました");
-      setExecutionsOpen(true);
+      setInfoOpen(true); // 情報パネルでライブ状況を表示
+      setChatOpen(false);
     } catch (e) {
       show(e instanceof Error ? e.message : "実行に失敗しました", "error");
     }
   };
+
+  // 情報パネルからのライブ状態をキャンバスのノードに反映（点灯）
+  const applyStatuses = useCallback(
+    (statuses: Record<string, string>) => {
+      setNodes((ns) =>
+        ns.map((n) => {
+          const s = statuses[n.id];
+          const mapped = s === "RETRYING" ? "RUNNING" : s === "TIMED_OUT" ? "FAILED" : s;
+          if ((n.data as FlowNodeData).running === mapped) return n;
+          return { ...n, data: { ...(n.data as FlowNodeData), running: mapped } };
+        }),
+      );
+    },
+    [setNodes],
+  );
 
   const run = async () => {
     if (dirty) await save();
@@ -466,16 +497,28 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           </button>
         )}
 
-        {/* 右側チャットボタン */}
-        <button
-          onClick={() => setChatOpen((v) => !v)}
-          aria-label="チャット"
-          className={`absolute right-4 top-4 z-10 flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
-            chatOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-          }`}
-        >
-          💬 チャット
-        </button>
+        {/* 右上ボタン群: ⓘ情報（実行状況/履歴/バージョン）+ チャット */}
+        <div className="absolute right-4 top-4 z-10 flex gap-2">
+          <button
+            onClick={() => { setInfoOpen((v) => !v); if (!infoOpen) setChatOpen(false); }}
+            aria-label="実行情報"
+            title="実行状況・処理内容・経過時間・強制停止・履歴・バージョン"
+            className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
+              infoOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+            }`}
+          >
+            ℹ️ 情報
+          </button>
+          <button
+            onClick={() => { setChatOpen((v) => !v); if (!chatOpen) setInfoOpen(false); }}
+            aria-label="チャット"
+            className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
+              chatOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+            }`}
+          >
+            💬 チャット
+          </button>
+        </div>
 
         {/* 右クリックコンテキストメニュー */}
         {ctxMenu && (
@@ -497,6 +540,19 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         )}
 
         {chatOpen && <ChatWindow workflowId={workflowId} onClose={() => setChatOpen(false)} dirty={dirty} onSave={save} />}
+        {infoOpen && (
+          <InfoPanel
+            workflowId={workflowId}
+            nodeNames={Object.fromEntries(
+              nodes.map((n) => {
+                const d = (n.data as FlowNodeData).def;
+                return [n.id, { name: d.name || NODE_TYPES[d.type]?.label || n.id, type: d.type }];
+              }),
+            )}
+            onStatuses={applyStatuses}
+            onClose={() => setInfoOpen(false)}
+          />
+        )}
       </div>
 
       {paletteOpen && <NodePalette onAdd={addNode} onSnippet={insertSnippet} onClose={() => setPaletteOpen(false)} />}
@@ -641,8 +697,23 @@ function NodeConfigSheet({
     queryFn: () => api<ManagedApp[]>("/apps"),
     enabled: meta?.fields.some((f) => f.type === "app") ?? false,
   });
+  const { data: workflowList } = useQuery({
+    queryKey: ["workflows"],
+    queryFn: () => api<{ id: number; name: string }[]>("/workflows"),
+    enabled: meta?.fields.some((f) => f.type === "workflow") ?? false,
+  });
   const config = def.config ?? {};
   const setConfig = (key: string, value: unknown) => onChange({ config: { ...config, [key]: value } });
+
+  // webhook トリガー: トークン未設定なら自動生成
+  useEffect(() => {
+    if (def.type === "trigger" && config.mode === "webhook" && !config.webhook_token && !readOnly) {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      setConfig("webhook_token", Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [def.type, config.mode]);
   const visibleFields = (meta?.fields ?? []).filter((f) => !f.showIf || String(config[f.showIf.key] ?? "") === f.showIf.value);
   const upstream = useMemo(() => upstreamDefs(def.id, allDefs, edgeList), [def.id, allDefs, edgeList]);
   // 上流で定義された名前付き変数（出力変数名）
@@ -669,7 +740,7 @@ function NodeConfigSheet({
         )}
         {visibleFields.map((f) => (
           <Field key={f.key} label={f.label} hint={f.hint}>
-            <ConfigInput field={f} value={config[f.key]} disabled={readOnly} apps={apps} scrapeUrl={String(config.url ?? "")} onChange={(v) => setConfig(f.key, v)} />
+            <ConfigInput field={f} value={config[f.key]} disabled={readOnly} apps={apps} workflows={workflowList} scrapeUrl={String(config.url ?? "")} onChange={(v) => setConfig(f.key, v)} />
             {f.key === "json_schema" && !readOnly && (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {JSON_SCHEMA_PRESETS.map((p) => (
@@ -704,6 +775,12 @@ function NodeConfigSheet({
             />
           </Field>
         )}
+        {def.type !== "trigger" && (
+          <ControlSection config={config} readOnly={readOnly} setConfig={setConfig} />
+        )}
+        {def.type !== "trigger" && def.type !== "control.loop" && !readOnly && (
+          <NodeTestRunner type={def.type} config={config} />
+        )}
         <p className="text-xs text-zinc-400">
           ノード ID: <code className="font-mono">{def.id}</code>（他ノードから{" "}
           <code className="font-mono">{"{{"}{def.id}.フィールド{"}}"}</code> で参照）
@@ -715,6 +792,110 @@ function NodeConfigSheet({
         )}
       </div>
     </BottomSheet>
+  );
+}
+
+/** 実行制御（全ノード共通）: リトライ / 失敗時の挙動 / 承認 / 合流 */
+function ControlSection({
+  config,
+  readOnly,
+  setConfig,
+}: {
+  config: Record<string, unknown>;
+  readOnly: boolean;
+  setConfig: (key: string, value: unknown) => void;
+}) {
+  const active =
+    Number(config.retry_count) > 0 || !!config.require_approval ||
+    (config.on_error && config.on_error !== "stop") || config.join === "all";
+  const [open, setOpen] = useState(false);
+  const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-3.5 py-2.5 text-xs font-medium text-zinc-600 dark:text-zinc-300"
+      >
+        <span>⚙ 実行制御（リトライ・失敗時・承認・合流）</span>
+        <span className="text-zinc-400">{active && !open ? "設定あり " : ""}{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-zinc-200 px-3.5 py-3 dark:border-zinc-700">
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="リトライ回数（0-5）">
+              <input type="number" min={0} max={5} value={String(config.retry_count ?? 0)} disabled={readOnly}
+                onChange={(e) => setConfig("retry_count", Math.max(0, Math.min(5, Number(e.target.value) || 0)))} className={cls} />
+            </Field>
+            <Field label="リトライ間隔（秒）">
+              <input type="number" min={0} value={String(config.retry_wait ?? 5)} disabled={readOnly}
+                onChange={(e) => setConfig("retry_wait", Number(e.target.value) || 0)} className={cls} />
+            </Field>
+          </div>
+          <Field label="失敗したとき" hint={config.on_error === "branch" ? "ノード下部に赤い「失敗時」ハンドルが現れます。エラー処理の枝を繋いでください" : undefined}>
+            <select value={String(config.on_error ?? "stop")} disabled={readOnly}
+              onChange={(e) => setConfig("on_error", e.target.value)} className={cls}>
+              <option value="stop">フロー全体を停止（既定）</option>
+              <option value="continue">無視して次へ進む</option>
+              <option value="branch">「失敗時」の枝へ分岐</option>
+            </select>
+          </Field>
+          <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+            <span className="text-xs">✋ 実行前に承認を求める<span className="block text-[10px] text-zinc-400">情報パネルから承認/却下するまで一時停止します</span></span>
+            <input type="checkbox" checked={!!config.require_approval} disabled={readOnly}
+              onChange={(e) => setConfig("require_approval", e.target.checked || undefined)} className="h-4 w-4" />
+          </label>
+          <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+            <span className="text-xs">⇥ 全入力を待って合流<span className="block text-[10px] text-zinc-400">複数の枝が全て終わってから 1 回だけ実行します（並列の待ち合わせ）</span></span>
+            <input type="checkbox" checked={config.join === "all"} disabled={readOnly}
+              onChange={(e) => setConfig("join", e.target.checked ? "all" : undefined)} className="h-4 w-4" />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** ノード単体テスト: 現在の設定でこのノードだけ実行して結果を確認する */
+function NodeTestRunner({ type, config }: { type: string; config: Record<string, unknown> }) {
+  const [result, setResult] = useState<{ ok: boolean; output?: unknown; error?: string; elapsed: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult(await api("/workflows/test-node", { method: "POST", json: { type, config } }));
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : "失敗しました", elapsed: 0 });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={run}
+        disabled={busy}
+        className="w-full rounded-xl bg-zinc-100 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-50 dark:bg-zinc-800 dark:text-zinc-300"
+      >
+        {busy ? "テスト実行中..." : "🧪 このノードをテスト実行（フロー全体は動かしません）"}
+      </button>
+      <p className="mt-1 text-[10px] text-zinc-400">テンプレート {"{{...}}"} は空として実行されます（{"{{secrets.*}}"} は解決されます）</p>
+      {result && (
+        <div className={`mt-1.5 rounded-xl border p-2.5 ${result.ok ? "border-emerald-300 dark:border-emerald-800" : "border-red-300 dark:border-red-800"}`}>
+          <p className={`text-xs font-medium ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+            {result.ok ? "✓ 成功" : "✗ 失敗"} <span className="num font-normal text-zinc-400">({result.elapsed}s)</span>
+          </p>
+          {result.error && <p className="mt-1 text-[11px] text-red-500">{result.error}</p>}
+          {result.output !== undefined && (
+            <pre className="mt-1 max-h-48 overflow-auto rounded bg-zinc-50 p-2 font-mono text-[10px] dark:bg-zinc-950">
+              {JSON.stringify(result.output, null, 1)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -850,18 +1031,27 @@ function LlmEndpointDetect({ onPick }: { onPick: (baseUrl: string, model?: strin
 }
 
 function ConfigInput({
-  field, value, disabled, apps, scrapeUrl, onChange,
+  field, value, disabled, apps, workflows, scrapeUrl, onChange,
 }: {
   field: FieldDef;
   value: unknown;
   disabled: boolean;
   apps?: ManagedApp[];
+  workflows?: { id: number; name: string }[];
   scrapeUrl?: string;
   onChange: (v: unknown) => void;
 }) {
   const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   if (field.type === "inputs") {
     return <TriggerInputsEditor value={(value as TriggerInputDef[]) ?? []} disabled={disabled} onChange={onChange} />;
+  }
+  if (field.type === "workflow") {
+    return (
+      <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} disabled={disabled} className={cls}>
+        <option value="">選択してください</option>
+        {workflows?.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+      </select>
+    );
   }
   if (field.type === "extractors") {
     return <ExtractorsField value={(value as ExtractorDef[]) ?? []} url={scrapeUrl ?? ""} disabled={disabled} onChange={onChange} />;

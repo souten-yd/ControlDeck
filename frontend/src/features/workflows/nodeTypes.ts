@@ -3,7 +3,7 @@
 export interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "number" | "select" | "textarea" | "app" | "code" | "inputs" | "extractors";
+  type: "text" | "number" | "select" | "textarea" | "app" | "code" | "inputs" | "extractors" | "workflow";
   options?: { value: string; label: string }[];
   placeholder?: string;
   hint?: string;
@@ -62,11 +62,15 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
           { value: "interval", label: "一定間隔" },
           { value: "daily", label: "毎日指定時刻" },
           { value: "cron", label: "Cron 式" },
+          { value: "webhook", label: "Webhook（外部から POST）" },
+          { value: "event", label: "イベント（アラート発火時）" },
         ],
       },
       { key: "interval_minutes", label: "間隔（分）", type: "number", placeholder: "60", showIf: { key: "mode", value: "interval" } },
       { key: "time", label: "時刻 (HH:MM)", type: "text", placeholder: "08:00", showIf: { key: "mode", value: "daily" } },
       { key: "cron", label: "Cron 式", type: "text", placeholder: "0 8 * * *", showIf: { key: "mode", value: "cron" } },
+      { key: "webhook_token", label: "Webhook トークン", type: "text", showIf: { key: "mode", value: "webhook" }, hint: "POST /api/v1/hooks/{トークン} で起動（16 文字以上・スケジュール有効化が必要）。ボディの JSON が {{トリガーID.キー}} になります" },
+      { key: "rule_filter", label: "アラート名フィルタ（任意・部分一致）", type: "text", showIf: { key: "mode", value: "event" }, hint: "空なら全アラートで起動。{{トリガーID.rule}} / {{トリガーID.value}} を参照可（スケジュール有効化が必要）" },
       { key: "inputs", label: "入力フィールド", type: "inputs", hint: "実行時に入力を求め、{{トリガーID.変数名}} で全後段ノードから参照できます" },
     ],
     outputs: [{ key: "message", label: "チャット入力" }],
@@ -235,12 +239,22 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "json_schema", label: "JSON スキーマ", type: "code", showIf: { key: "response_format", value: "json_schema" }, hint: "下のプリセットから雛形を挿入できます。結果は {{ID.json.フィールド}} で参照" },
       { key: "temperature", label: "温度", type: "number", placeholder: "0.7" },
       { key: "max_tokens", label: "最大トークン（任意）", type: "number" },
+      {
+        key: "agent_tools", label: "エージェントモード", type: "select",
+        options: [
+          { value: "", label: "無効（通常の 1 回生成）" },
+          { value: "1", label: "有効 — ツールを自律的に使う" },
+        ],
+        hint: "LLM が Web検索/学術検索/RAG検索/HTTP GET/ファイル読込 を必要に応じて反復実行します（tool calling 対応モデルが必要）",
+      },
+      { key: "agent_max_steps", label: "最大ツールラウンド数", type: "number", placeholder: "6", showIf: { key: "agent_tools", value: "1" } },
     ],
     outputs: [
       { key: "content", label: "応答テキスト" },
       { key: "json", label: "構造化出力(JSON)" },
       { key: "model", label: "モデル名" },
       { key: "tokens", label: "使用トークン" },
+      { key: "tool_log", label: "ツール実行ログ(エージェント)" },
     ],
   },
   "media.ocr": {
@@ -321,13 +335,19 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     category: "AI",
     color: "#a855f7",
     icon: "🎓",
-    desc: "論文/文献/特許/市場情報を検索（arXiv・Crossref・PatentsView・SEC EDGAR）。RAG 取り込みや要約へ",
+    desc: "論文/文献/特許/市場を検索。「串刺し」で複数学術ソースを並列検索。RAG取り込みや要約へ",
     fields: [
       {
         key: "source", label: "ソース", type: "select",
         options: [
-          { value: "arxiv", label: "arXiv（論文）" },
+          { value: "all", label: "串刺し（全学術ソース並列）" },
+          { value: "openalex", label: "OpenAlex（全分野・大規模）" },
+          { value: "arxiv", label: "arXiv（論文プレプリント）" },
           { value: "crossref", label: "Crossref（文献/DOI）" },
+          { value: "semanticscholar", label: "Semantic Scholar" },
+          { value: "europepmc", label: "Europe PMC（生医学）" },
+          { value: "doaj", label: "DOAJ（オープンアクセス誌）" },
+          { value: "dblp", label: "DBLP（計算機科学）" },
           { value: "patent", label: "特許（PatentsView・要APIキー）" },
           { value: "market", label: "市場調査（SEC EDGAR 企業開示）" },
         ],
@@ -347,7 +367,7 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     fields: [
       { key: "query", label: "検索クエリ", type: "text", hint: TEMPLATE_HINT },
       { key: "engine", label: "エンジン", type: "select", options: [{ value: "duckduckgo", label: "DuckDuckGo（キー不要）" }, { value: "searxng", label: "SearXNG（自前/公開）" }] },
-      { key: "searxng_url", label: "SearXNG URL", type: "text", placeholder: "http://127.0.0.1:8888", showIf: { key: "engine", value: "searxng" }, hint: "JSON 出力を有効化" },
+      { key: "searxng_url", label: "SearXNG URL", type: "text", placeholder: "http://127.0.0.1:8888", showIf: { key: "engine", value: "searxng" }, hint: "空ならローカル既定（./deck.sh searxng で導入・停止中は自動起動）" },
       { key: "categories", label: "カテゴリ（任意）", type: "text", placeholder: "general, science, news", showIf: { key: "engine", value: "searxng" } },
       { key: "max_results", label: "件数", type: "number", placeholder: "8" },
     ],
@@ -366,7 +386,7 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "sub_questions", label: "サブ質問数", type: "number", placeholder: "4" },
       { key: "results_per_source", label: "ソース毎の件数", type: "number", placeholder: "4" },
       { key: "web_engine", label: "Web エンジン", type: "select", options: [{ value: "duckduckgo", label: "DuckDuckGo" }, { value: "searxng", label: "SearXNG" }] },
-      { key: "searxng_url", label: "SearXNG URL", type: "text", showIf: { key: "web_engine", value: "searxng" } },
+      { key: "searxng_url", label: "SearXNG URL", type: "text", showIf: { key: "web_engine", value: "searxng" }, hint: "空ならローカル既定" },
       { key: "llm_base_url", label: "LLM エンドポイント", type: "text", placeholder: "http://127.0.0.1:11434/v1" },
       { key: "llm_model", label: "LLM モデル", type: "text", placeholder: "llama3.2" },
       { key: "api_key", label: "API キー（任意）", type: "text" },
@@ -534,6 +554,26 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     outputs: [{ key: "value", label: "表示値" }],
   },
 
+  // ---- 制御（サブフロー） ----
+  "flow.call": {
+    label: "サブフロー呼び出し",
+    category: "制御",
+    color: "#f59e0b",
+    icon: "🧩",
+    desc: "別のワークフローを実行して結果を受け取る。共通処理の部品化に",
+    fields: [
+      { key: "workflow_id", label: "呼び出すワークフロー", type: "workflow" },
+      { key: "message", label: "メッセージ入力（{{trigger.message}} へ）", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "input_json", label: "追加入力（JSON・任意）", type: "code", placeholder: '{"topic": "{{n1.content}}"}', hint: "トリガー入力フィールドへ渡す値" },
+      { key: "timeout", label: "待ち時間上限（秒）", type: "number", placeholder: "600" },
+    ],
+    outputs: [
+      { key: "result", label: "結果（信号表示の連結）" },
+      { key: "execution_id", label: "実行 ID" },
+      { key: "status", label: "実行ステータス" },
+    ],
+  },
+
   // ---- 通知 ----
   "notify.webhook": {
     label: "Webhook 通知",
@@ -570,6 +610,76 @@ export const JSON_SCHEMA_PRESETS: { label: string; schema: object }[] = [
 ];
 
 export const CATEGORY_ORDER = ["チャット", "アプリ", "制御", "データ", "ファイル", "AI", "ネットワーク", "コマンド", "通知"];
+
+/**
+ * ノードリファレンス用の詳細ドキュメント（Markdown ライクなプレーンテキスト）。
+ * サンプルブックの「ノードリファレンス」タブで NODE_TYPES とマージして表示する。
+ */
+export const NODE_DOCS: Record<string, string> = {
+  trigger:
+    "すべてのワークフローの起点。1 フローに必ず 1 つ置きます。\n\n■ 起動方法\n- 手動のみ: 実行ボタン/チャットから起動\n- 一定間隔・毎日・Cron: 一覧で「スケジュール有効化」すると自動実行\n\n■ 入力フィールド\n実行時にユーザーへ入力を求めるフォームを定義できます（Dify の User Input 相当）。入力値は {{トリガーID.キー}} で全ノードから参照できます。チャットから実行した場合、本文は {{トリガーID.message}} に入ります。",
+  "signal.display":
+    "値をチャットウィンドウへ表示する出力ノード。フローの「返答」を作る役割です。\n\n■ 使い方\n表示する値に {{llm.content}} など前段の出力を指定。信号種別（reply/output/status/log/chart)で表示スタイルが変わります。\n\n■ 組み合わせ\nLLM 生成 → 信号表示 が最小のチャットボット構成。AI アシスタントの自動生成フローでも最終ノードとして使われます。",
+  "app.start": "Apps ページに登録した管理対象アプリを起動します。\n\n■ 組み合わせ\nWake-on-LAN → 待機 → アプリ起動、条件分岐（停止中なら）→ 起動 など。",
+  "app.stop": "管理対象アプリを停止します。メンテナンス時間帯の自動停止などに。",
+  "app.restart": "管理対象アプリを再起動します。\n\n■ 組み合わせ\nアプリ状態取得 → 条件分岐（running でない）→ 再起動 → Webhook 通知 で自己修復フローになります（サンプル「アプリ死活監視・自動復旧」参照）。",
+  "app.status":
+    "アプリの状態（running/stopped 等）・PID・稼働秒数を取得します。\n\n■ 出力\n{{ID.status}} を条件分岐に渡すのが定番。{{ID.uptime_seconds}} で「起動直後は無視」などの制御も可能。",
+  "condition.if":
+    "左辺と右辺を比較し、true / false の 2 方向へ分岐します。\n\n■ 使い方\n左辺にテンプレート（例 {{n1.status_code}}）、演算子と右辺を設定。エッジは右側の緑ハンドル（true）と赤ハンドル（false)から引きます。\n\n■ ヒント\n数値比較は自動で数値化されます。「を含む」は部分文字列判定でキーワード監視に便利。",
+  "control.loop":
+    "body 側のノード列を繰り返し実行し、完了後に done 側へ進みます。\n\n■ モード\n- 回数指定: {{ID.index}} が 0..n-1\n- リスト each: JSON 配列 or 改行区切りを 1 件ずつ {{ID.item}} に\n\n■ 組み合わせ\nWeb 検索の {{search.urls}} を items に渡して URL ごとにスクレイピング、など。上限 100 回。",
+  "util.wait": "指定秒数待機します。Wake-on-LAN 後の起動待ち、API のレート制限対策などに。最大 1 時間。",
+  "var.set":
+    "値に名前を付けて保存します。output_var と違い、フロー途中で明示的に変数を作る用途。\n\n■ 参照\n{{vars.変数名}} でどのノードからでも参照できます。設定パネルの変数ピッカーにも表示されます。",
+  "string.op":
+    "テキスト加工の万能ノード。\n\n■ 主な操作\n- テンプレート展開: 複数出力の合成に\n- 置換 / 正規表現抽出 / 分割\n- JSON 抽出: LLM の JSON 応答から a.b.0 パスで値を取り出す\n\n■ 組み合わせ\nLLM 生成（JSON モード）→ 文字列操作(json_extract) → 条件分岐 が構造化パイプラインの定石。",
+  "text.markdown": "Markdown を HTML に変換します。レポートをメール/Web 表示用に整形する時に。",
+  "db.query":
+    "SQLite ファイルまたは接続 URL（PostgreSQL 等）へ SQL を実行します。\n\n■ 使い方\nSELECT は {{ID.rows}} に行データ（JSON）が入ります。パラメータは :name 形式 + JSON で安全にバインド。\n\n■ 組み合わせ\nDB クエリ → LLM 生成（要約/分析）→ 通知 で日次レポートが作れます。",
+  "file.read": "テキストファイルを読み込み {{ID.content}} に格納。許可ルート配下のみアクセス可能です。",
+  "file.write": "テキストをファイルへ書き込み（上書き/追記）。レポート保存やログ蓄積に。許可ルート配下のみ。",
+  "file.op": "コピー/移動/削除/フォルダ作成。ダウンロード後の整理などに。",
+  "file.exists": "ファイルの存在とサイズを確認。条件分岐と組み合わせて「初回だけ実行」を作れます。",
+  "llm.chat":
+    "OpenAI 互換 API（Ollama / vLLM / llama.cpp / OpenAI）でテキスト生成する中核ノード。\n\n■ 使い方\nエンドポイント/モデルは設定パネルで稼働中サーバーを自動検出できます。プロンプトに {{前段.出力}} を埋め込んで使います。\n\n■ 構造化出力\n出力形式を JSON スキーマ指定にすると {{ID.json.フィールド}} で値を直接参照でき、条件分岐や DB 保存と繋げやすくなります。\n\n■ 組み合わせ\nRAG 検索 → LLM（根拠付き回答）、Web 検索 → LLM（ダイジェスト）、DB → LLM（分析）。",
+  "media.ocr": "画像から文字を認識（tesseract）。スクリーンショット → OCR → LLM 整形 のような紙情報のデジタル化に。",
+  "rag.build":
+    "テキスト/ファイルをチャンク分割・埋め込みしてナレッジ（コレクション）へ登録します。\n\n■ チャンク戦略\n- recursive: 汎用（迷ったらこれ）\n- markdown: 見出し構造を保持\n- parent_child: 子チャンクで検索し親を文脈に（長文に強い）\n\n■ 組み合わせ\nWeb スクレイピング → RAG 構築 で記事の取り込み（サンプル「Web 記事をナレッジへ取り込み」）。Knowledge ページでも管理できます。",
+  "rag.query":
+    "ナレッジから関連文脈を検索します。RAG の検索段。\n\n■ 検索方式\n- hybrid: ベクトル+全文の融合（推奨）\n- vector / fulltext: 単独方式\n- graph: GraphRAG。知識グラフからエンティティ関係（{{ID.facts}}）も取得し、関係を問う質問に強い\n\n■ 精度向上\nHyDE（仮想文書）とマルチクエリ（RAG-Fusion）を有効にすると曖昧な質問への再現率が上がります（LLM 使用）。\n\n■ 組み合わせ\n{{ID.context}}（+ graph 時は {{ID.facts}}）を LLM 生成のプロンプトに渡して根拠付き回答を作ります。",
+  "academic.search":
+    "論文・文献・特許・市場情報の外部検索。\n\n■ ソース\n「串刺し」は OpenAlex / Crossref / arXiv / Europe PMC / DBLP / DOAJ を並列検索し、タイトルで重複統合・被引用数順に並べます。個別ソース指定も可能。特許（PatentsView）のみ無料 API キーが必要。\n\n■ 出力\n{{ID.text}} は LLM に渡しやすい整形済みテキスト、{{ID.results}} は構造化データ。\n\n■ 組み合わせ\n串刺し検索 → LLM 要約 → Webhook 通知 で論文ウォッチ（サンプルあり）。RAG 構築へ繋げば文献ナレッジも作れます。",
+  "web.search":
+    "Web 検索の結果（タイトル/URL/スニペット）を取得します。\n\n■ エンジン\n- DuckDuckGo: キー不要ですぐ使える\n- SearXNG: ./deck.sh searxng で直接導入済みなら URL 空欄でローカルインスタンス（127.0.0.1:8888）を使用。ControlDeck と同時に起動/停止し、停止中でも検索時に自動起動。カテゴリ絞り込み可\n\n■ 組み合わせ\n{{ID.urls}} をループ → Web スクレイピングで本文収集、{{ID.text}} を LLM でダイジェスト化。",
+  "research.deep":
+    "Deep Research を 1 ノードで実行する上位ノード。テーマをサブ質問に分解 → 複数ソース（rag/web/arxiv/crossref/patent/market）を反復探索 → 引用付き統合レポートを生成します。\n\n■ 使い方\n数分かかるため、結果は file.write で保存 + signal.display で表示が定番。sources に rag を含めると自分のナレッジも探索します。\n\n■ 使い分け\n単発の検索は web.search / academic.search、深掘り調査レポートはこのノード。",
+  "util.now": "現在日時を strftime 書式で取得。ファイル名（report_{{now.date}}.md）や通知メッセージに。",
+  "http.request":
+    "任意の HTTP API を呼び出します。\n\n■ 使い方\nGET でヘルスチェック、POST + JSON ボディで API 連携。期待ステータスを設定すると不一致で失敗扱いになり、条件分岐なしで異常検知できます。",
+  "web.scrape":
+    "ページから要素を抽出します。\n\n■ 抽出ビューワ\n「抽出ビューワを開く」でページを表示し、要素をクリックするだけでセレクタを自動生成。各抽出項目がそのまま出力変数になります。\n\n■ ヒント\nJavaScript 描画が必要なページはブラウザ操作ノード（Playwright）を使ってください。",
+  "web.browser": "ヘッドレス Chromium（Playwright）でページを開き、HTML 取得・要素テキスト・スクリーンショットを実行。JS レンダリングが必要なサイトはこちら。",
+  "net.wol": "Wake-on-LAN のマジックパケットを送信。待機 → SSH 実行 / アプリ起動と繋げてリモート PC の自動起動フローに。",
+  "http.download": "URL の内容をファイルへ保存（上限 500MB）。モデル/データセットの定期取得などに。",
+  "cmd.ssh": "リモートホストでコマンドを実行（鍵認証・非対話）。~/.ssh の鍵設定が前提。{{ID.stdout}} を LLM や通知へ渡せます。",
+  "cmd.git": "clone/pull/commit など Git 操作。許可ルート配下のリポジトリのみ。定期 pull → ビルド → 通知の CI 風フローに。",
+  "cmd.cpp_build": "CMake / Make でビルドを実行。Git 操作と組み合わせて更新→ビルド→結果通知を自動化。",
+  "cmd.python": "Python コードを実行します（セキュリティ設定 security.allow_arbitrary_commands の許可が必要）。標準ノードで足りない加工処理の最終手段。",
+  "notify.webhook":
+    "Discord / Slack / 汎用 JSON の Webhook へ通知します。\n\n■ 使い方\n形式を選んで URL を設定、メッセージにテンプレートで結果を埋め込みます。フローの「完了報告」や条件分岐の true 側の警報として最後に置くのが定番。",
+  "flow.call":
+    "別のワークフローをサブフローとして実行し、完了を待って結果を受け取ります。\n\n■ 使い方\n呼び出し先を選び、メッセージ（相手の {{trigger.message}} になる）や追加入力を渡します。相手側の「信号表示」ノードの値が {{ID.result}} として返ります。\n\n■ 組み合わせ\n「要約」「通知」などの共通処理を 1 つのワークフローにして部品化し、複数のフローから呼び出せます。ネストは 3 段まで。",
+};
+
+/**
+ * 全ノード共通の実行制御設定（エディタの「実行制御」セクションで編集）。
+ * - retry_count / retry_wait: 失敗時の自動リトライ
+ * - on_error: stop(全体停止) / continue(無視して続行) / branch(error ハンドルへ分岐)
+ * - require_approval: 実行前に承認を要求（情報パネルから承認/却下）
+ * - join: "all" で全入力エッジの完了を待つ合流ノードになる
+ */
+export const COMMON_CONTROL_KEYS = ["retry_count", "retry_wait", "on_error", "require_approval", "join"] as const;
 
 export const DEFAULT_DEFINITION = {
   nodes: [

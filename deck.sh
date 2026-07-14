@@ -15,6 +15,7 @@
 #                                 --active で現在のログインセッション共有
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
+#   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
 # 不足要素（venv / Node 依存 / フロントエンドビルド / 設定 / linger / 管理者）は
@@ -401,6 +402,11 @@ cmd_restore() {
   exec bash "$REPO_ROOT/scripts/restore.sh" "$@"
 }
 
+cmd_searxng() {
+  check_root
+  exec bash "$REPO_ROOT/scripts/setup-searxng.sh" "$@"
+}
+
 case "${1:-start}" in
   start)   cmd_start ;;
   service) cmd_service ;;
@@ -414,8 +420,9 @@ case "${1:-start}" in
   enable-desktop)  shift; cmd_enable_desktop "$@" ;;
   disable-desktop) shift; cmd_disable_desktop "$@" ;;
   test)    shift; cmd_test "$@" ;;
+  searxng) shift; cmd_searxng "$@" ;;
   -h|--help|help)
-    sed -n '3,15p' "$0" ;;
+    sed -n '3,16p' "$0" ;;
   *)
     die "不明なコマンド: $1（./deck.sh help を参照）" ;;
 esac

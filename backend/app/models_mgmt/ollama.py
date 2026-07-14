@@ -199,6 +199,131 @@ async def hf_search(query: str, limit: int = 20) -> list[dict]:
     return out
 
 
+# ---- ローカル GGUF の登録（既存ダウンロードモデルの取り込み） ----
+
+_CHUNK = 8 * 1024 * 1024
+_SCAN_MAX_DEPTH = 3
+_SCAN_MAX_FILES = 200
+
+
+def scan_gguf(dir_path: str) -> list[dict]:
+    """許可ルート配下のフォルダから GGUF ファイルを探す（深さ・件数制限あり）。"""
+    from app.files import service as files_service
+
+    root = files_service.resolve(dir_path)
+    if not root.is_dir():
+        raise OllamaError("フォルダを指定してください")
+    out: list[dict] = []
+
+    def walk(d: Path, depth: int) -> None:
+        if depth > _SCAN_MAX_DEPTH or len(out) >= _SCAN_MAX_FILES:
+            return
+        try:
+            entries = sorted(d.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            return
+        for p in entries:
+            if len(out) >= _SCAN_MAX_FILES:
+                return
+            if p.is_symlink():
+                continue
+            if p.is_dir():
+                walk(p, depth + 1)
+            elif p.suffix.lower() == ".gguf":
+                try:
+                    out.append({"name": p.name, "path": str(p), "size": p.stat().st_size})
+                except OSError:
+                    continue
+
+    walk(root, 0)
+    return out
+
+
+def suggest_model_name(filename: str) -> str:
+    """GGUF ファイル名から Ollama モデル名の候補を作る。"""
+    import re
+
+    stem = Path(filename).stem
+    name = re.sub(r"[^a-zA-Z0-9._-]+", "-", stem).strip("-._").lower()
+    return name or "local-model"
+
+
+async def register_gguf_stream(name: str, path: str) -> AsyncIterator[dict]:
+    """ローカル GGUF を Ollama へ登録する（ハッシュ → blob 転送 → create）。
+
+    進捗 {status, completed?, total?} を逐次 yield する。パスは files の
+    許可ルート配下のみ（FilePicker と同じ制約）。
+    """
+    import asyncio
+    import hashlib
+    import re
+
+    from app.files import service as files_service
+
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*(:[a-zA-Z0-9._-]+)?", name):
+        raise OllamaError("モデル名が不正です（英数字と . _ - 、タグは : で指定）")
+    p = files_service.resolve(path)
+    if p.suffix.lower() != ".gguf" or not p.is_file():
+        raise OllamaError("GGUF ファイルを指定してください")
+    total = p.stat().st_size
+
+    # 1. SHA-256（Ollama の blob ID）
+    h = hashlib.sha256()
+    done = 0
+    with p.open("rb") as f:
+        while True:
+            chunk = await asyncio.to_thread(f.read, _CHUNK)
+            if not chunk:
+                break
+            await asyncio.to_thread(h.update, chunk)
+            done += len(chunk)
+            yield {"status": "検証中（SHA-256 計算）", "completed": done, "total": total}
+    digest = f"sha256:{h.hexdigest()}"
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        # 2. blob が未登録なら転送
+        head = await client.head(f"{base_url()}/api/blobs/{digest}")
+        if head.status_code != 200:
+            progress = {"sent": 0}
+
+            async def body() -> AsyncIterator[bytes]:
+                with p.open("rb") as f2:
+                    while True:
+                        c = await asyncio.to_thread(f2.read, _CHUNK)
+                        if not c:
+                            return
+                        progress["sent"] += len(c)
+                        yield c
+
+            upload = asyncio.create_task(client.post(f"{base_url()}/api/blobs/{digest}", content=body()))
+            while not upload.done():
+                await asyncio.sleep(0.5)
+                yield {"status": "Ollama へ転送中", "completed": progress["sent"], "total": total}
+            r = upload.result()
+            if r.status_code >= 400:
+                raise OllamaError(f"転送に失敗しました ({r.status_code}): {r.text[:200]}")
+
+        # 3. create（新 API: files に blob を紐付け）
+        yield {"status": "モデルを作成中"}
+        async with client.stream(
+            "POST", base_url() + "/api/create",
+            json={"model": name, "files": {p.name: digest}, "stream": True},
+        ) as r:
+            if r.status_code >= 400:
+                text = await r.aread()
+                raise OllamaError(f"作成に失敗しました ({r.status_code}): {text[:200]!r}")
+            async for line in r.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("error"):
+                    raise OllamaError(str(data["error"])[:300])
+                yield data
+
+
 # ---- アイドル自動アンロード ----
 # モデルごとに (最終活動時刻, 前回観測した expires_at) を保持。
 # Ollama は推論アクセスのたびに expires_at を先送りするため、その変化で活動を検知する。

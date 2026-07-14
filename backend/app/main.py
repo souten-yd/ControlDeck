@@ -54,12 +54,17 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(alert_loop()),
         asyncio.create_task(idle_unload_loop()),
     ]
+    # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
+    from app.workflows import searxng
+
+    tasks.append(asyncio.create_task(searxng.idle_stop_loop()))
     notify_ready()
     logger.info("Control Deck 起動完了")
     yield
     from app.maintenance.watchdog import sd_notify
 
     sd_notify("STOPPING=1")
+    await searxng.lifecycle_stop()  # SearXNG も一緒に停止
     import contextlib
 
     for task in tasks:
@@ -74,8 +79,9 @@ app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, red
 @app.middleware("http")
 async def csrf_protect(request: Request, call_next):
     # Cookie セッションのため、状態変更 API はカスタムヘッダーを必須にする
+    # （/hooks/ は外部 Webhook 用: セッションを使わずトークンで保護されるため除外）
     if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        if request.headers.get("x-requested-with") != "ControlDeck":
+        if not request.url.path.startswith(f"{API}/hooks/") and request.headers.get("x-requested-with") != "ControlDeck":
             return JSONResponse(status_code=403, content={"detail": "CSRF チェックに失敗しました"})
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -97,6 +103,10 @@ from app.alerts.router import router as alerts_router  # noqa: E402
 from app.remote_desktop.router import router as remote_router  # noqa: E402
 from app.gitrepos.router import router as gitrepos_router  # noqa: E402
 from app.workflows.knowledge_router import router as knowledge_router  # noqa: E402
+from app.workflows.chat_router import router as chat_router  # noqa: E402
+from app.workflows.samplebook import router as samplebook_router  # noqa: E402
+from app.workflows.hooks_router import router as hooks_router  # noqa: E402
+from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.router import router as models_router  # noqa: E402
 
 API = "/api/v1"
@@ -108,11 +118,15 @@ app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
+app.include_router(samplebook_router, prefix=API)  # /workflows/samples は /workflows/{id} より先に登録
 app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
 app.include_router(remote_router, prefix=API)
 app.include_router(gitrepos_router, prefix=API)
 app.include_router(knowledge_router, prefix=API)
+app.include_router(chat_router, prefix=API)
+app.include_router(hooks_router, prefix=API)
+app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
 
 
