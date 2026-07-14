@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,10 +36,39 @@ class TerminalConfig(BaseModel):
     max_sessions: int = 10
 
 
+class ElectricityConfig(BaseModel):
+    enabled: bool = True
+    price_per_kwh_yen: float = 35.69
+    psu_efficiency: float = 0.85
+    persistence_interval_seconds: int = 600
+
+    @field_validator("price_per_kwh_yen")
+    @classmethod
+    def _price_nonneg(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("price_per_kwh_yen は 0 以上である必要があります")
+        return v
+
+    @field_validator("psu_efficiency")
+    @classmethod
+    def _eff_range(cls, v: float) -> float:
+        if not (0.50 <= v <= 1.00):
+            raise ValueError("psu_efficiency は 0.50〜1.00 の範囲である必要があります")
+        return v
+
+    @field_validator("persistence_interval_seconds")
+    @classmethod
+    def _interval_range(cls, v: int) -> int:
+        if not (60 <= v <= 3600):
+            raise ValueError("persistence_interval_seconds は 60〜3600 の範囲である必要があります")
+        return v
+
+
 class MonitoringConfig(BaseModel):
     interval_seconds: float = 2.0
     raw_retention_hours: int = 24
     minute_retention_days: int = 30
+    electricity: ElectricityConfig = ElectricityConfig()
 
 
 class LogsConfig(BaseModel):

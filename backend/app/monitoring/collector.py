@@ -103,15 +103,42 @@ class MetricsCollector:
                 "net_rx_bps": net_rx_bps,
                 "net_tx_bps": net_tx_bps,
             },
-            "power": {
-                "cpu_watts_estimated": cpu_power,
-                "gpu_watts": gpu_power,
-                "total_watts_estimated": total_power,
-                "is_estimate": True,
-            },
+            "power": self._power_section(cpu_power, gpu_power, total_power),
             "uptime_seconds": time.time() - psutil.boot_time(),
         }
         return snapshot
+
+    def _power_section(self, cpu_power, gpu_power, total_power) -> dict:
+        """ホーム画面の主電力は PSU 総出力（DC）。CPU/GPU 推定は参考値として併記する。"""
+        from app.monitoring.electricity import accumulator
+        from app.monitoring.psu import read_corsair_psu
+
+        psu = read_corsair_psu()
+        section: dict = {
+            # 参考: CPU/GPU 推定（GPU 詳細等で使う。ホームの主電力にはしない）
+            "cpu_watts_estimated": cpu_power,
+            "gpu_watts": gpu_power,
+            "total_watts_estimated": total_power,
+            "is_estimate": True,
+            # PSU 実測（主電力）
+            "available": psu["available"],
+            "source": psu.get("source"),
+            "output_power_w": psu.get("output_power_w"),
+            "vrm_temperature_c": psu.get("vrm_temperature_c"),
+            "case_temperature_c": psu.get("case_temperature_c"),
+            "fan_rpm": psu.get("fan_rpm"),
+        }
+        output_w = psu.get("output_power_w")
+        # 電気代積算（PSU 取得不能時は None を渡して欠測扱い）
+        accumulator.update(output_w if psu["available"] else None)
+        cfg = get_config().monitoring.electricity
+        if psu["available"] and output_w is not None:
+            section["estimated_input_power_w"] = round(output_w / cfg.psu_efficiency, 4)
+        else:
+            section["estimated_input_power_w"] = None
+        # 起動中/今日/今月の電力量・電気代 + 設定値
+        section.update(accumulator.snapshot())
+        return section
 
     _rapl_last: tuple[float, float] | None = None
 

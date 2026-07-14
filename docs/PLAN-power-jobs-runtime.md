@@ -1,0 +1,115 @@
+# 大規模計画：PSU電力/電気代 + サーバー主導ジョブ基盤 + llama.cpp/OpenCode
+
+> このドキュメントは大規模改修の設計・進捗・**Codex 等への引き継ぎ**用。
+> セッションのトークン制限で中断した場合、ここを起点に再開すること。
+
+## 進捗サマリ（随時更新）
+
+| 計画 | 状態 |
+|---|---|
+| A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
+| B. サーバー主導ジョブ基盤の汎用化 | ⬜ 未着手（既存 `app/jobs` は簡易版） |
+| C. 永続チャット（ブラウザを閉じても回答生成・復元） | ⬜ 未着手 |
+| D. チャットによるワークフロー生成の親子ジョブ化・厳格検証 | ⬜ 未着手 |
+| E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
+| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ⬜ 未着手 |
+| G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
+| H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ⬜ 一部済（v2エンジンで承認/リトライ/並列/flow.call/エージェント実装済み） |
+
+---
+
+## 既存資産（再利用前提。重複実装を避ける）
+
+- **メトリクス収集**: `backend/app/monitoring/collector.py` の `MetricsCollector`。
+  - `_collect_once()` が約2秒周期（`config.monitoring.interval_seconds`）。RAPL(CPU)/GPU/hwmon を読む。
+  - `run()` ループ、`_flush_minute()`（60秒毎にDB保存）、`subscribe/unsubscribe`（WS配信）。
+  - snapshot の `"power"` = `{cpu_watts_estimated, gpu_watts, total_watts_estimated, is_estimate}`。
+- **API**: `backend/app/monitoring/router.py` の `GET /api/v1/system/overview`、`WS /api/v1/system/metrics/stream`。
+- **ジョブ基盤（簡易）**: `backend/app/jobs/service.py`（プロセス内 dict、`Job` dataclass、`create/get/list/cancel/wait_events`）。**DB永続化なし・再起動で消える**。計画Bで DB化・復元対応が必要。
+- **ワークフローエンジン v2**: `backend/app/workflows/engine.py`。並列DAG/join/リトライ/on_error/承認/flow.call/イベント・Webhookトリガー実装済み。`docs`不要。
+- **チャット**: `backend/app/workflows/chat_router.py`。`/chat/stream`(WS)、`/chat/build`(WS・ジョブ化済み)。**通常チャットはWS所有で永続化なし**（計画Cで要修正）。
+- **LLM**: OpenAI互換 `/v1/chat/completions` 経由。think は Ollama ネイティブ `/api/chat` 経由（`_native_base`）。
+- **設定**: `backend/app/config.py`（pydantic）、`config/config.yaml`、`config/config.example.yaml`。
+- **暗号化**: `app/security/crypto.py`（Fernet）。**シークレット**は `WorkflowSecret`。
+- **DBモデル**: `backend/app/models/__init__.py`。テーブル追加は `create_all` で自動。**既存テーブルへの列追加は不可**（マイグレーション無し）→ 新テーブルで対応。
+
+---
+
+## 計画A：PSU電力監視 + 電気代（実装中）
+
+### 実機
+- `corsairpsu` は hwmon 番号可変（実測 hwmon6）。`/sys/class/hwmon/hwmon*/name` を探索。
+- `power1_label = "power total"`, `power1_input`(µW)。62000000 → 62.0W。
+- 電力は **PSUのDC総出力**。AC入力は `output/efficiency` で概算（効率既定0.85）。
+- `liquidctl`の`Estimated input power`/`v_in`は使わない。
+
+### 設計
+- `backend/app/monitoring/psu.py` — `read_corsair_psu()`：hwmon動的探索→power total等を dict、無ければ `{"available": False}`。`sensors`/`liquidctl`のサブプロセスは使わず sysfs 直読み。
+- `backend/app/monitoring/electricity.py` — `ElectricityAccumulator`：
+  - `time.monotonic()` で台形積分。`delta_kwh = ((prev+cur)/2)*dt/3_600_000`（W・秒）。
+  - boot_id（`/proc/sys/kernel/random/boot_id`）でセッション管理。boot_id変化で session リセット。
+  - 日別（`electricity_daily`）/月別（日別のSUM）。日付境界で積分区間分割。タイムゾーンはOS/設定。
+  - 異常間隔（>上限, 逆行, 欠測, サスペンド跨ぎ）は積算しない。
+  - 保存：メモリ積算 + 600秒毎チェックポイント + 日/月境界 + 終了時(lifespan) + 単価/効率変更時。
+- collector `_collect_once` で PSU 読取→accumulator.update→snapshot `"power"` に統合フィールド追加。
+- DB: `electricity_daily`(local_date PK, energy_kwh, cost_yen, price_per_kwh_yen, sample_duration_sec, first/last_sample_at, updated_at)、`electricity_state`(boot_id, session_energy_kwh, last_input_power_w, last_sample_wall_time, updated_at)。
+- config: `monitoring.electricity {enabled=true, price_per_kwh_yen=35.69, psu_efficiency=0.85, persistence_interval_seconds=600}`。検証: price>=0, 0.50<=eff<=1.00, 60<=interval<=3600。
+- API `power` 追加: output_power_w, estimated_input_power_w, session/today/month energy+cost, price_per_kwh_yen, psu_efficiency, persistence_interval_seconds, last_persisted_at, vrm/case温度, fan, available, source。
+- ホーム(Dashboard): PSU総出力 / コンセント側推定 / 起動中・今日・今月の電気代+kWh。取得不可(null)と0Wを区別。
+
+### 完了条件A
+- 実機で負荷変動に追従、起動中/今日/今月が増加、再起動で維持、OS再起動で起動中0、PSU消失で他監視継続。
+- 単価 35.69円/kWh に統一（旧31円を残さない）。2秒毎DB書込しない（10分チェックポイント）。
+
+---
+
+## 計画B〜G：サーバー主導ジョブ基盤ほか（未着手・設計メモ）
+
+### B. 汎用ジョブ基盤
+- `jobs`/`job_events`/`job_artifacts` テーブル新設。状態 queued..interrupted。ワーカーがDBから取得しブラウザ接続と無関係に実行。
+- 部分出力はメモリバッファ→0.5〜2秒/一定文字数でチャンク保存、完了時final。
+- 再起動時：running を種別に応じ復元/interrupted、重複実行防止（idempotency_key）、heartbeat。
+- API: `POST/GET /jobs`, `/jobs/{id}`, `/jobs/{id}/events`, `/jobs/{id}/cancel`, `WS /jobs/stream`。
+- **既存 `app/jobs/service.py` を DB永続化版へ拡張**（乱立させない）。既存の model.pull/register/workflow.build を移行。
+
+### C. 永続チャット
+- 送信時1トランザクションで user msg + assistant placeholder + chat_completion ジョブ作成。
+- ワーカーが生成、placeholder にチャンク保存、完了で final。**WS切断でcancelしない**（asyncio.Task を切らない）。
+- 会話履歴API で queued/generating/completed/failed/interrupted を復元。要 conversation/message テーブル（現状チャット履歴はlocalStorage）。
+- 根本原因（現状）: `/chat/stream` は WS ハンドラ内で LLM を直接 stream。切断＝生成中断、回答はブラウザのみ保持しDB未保存。
+
+### D. ワークフロー生成の親子ジョブ化
+- workflow_generation を子ジョブ（要件分析/生成/構造検証/意味検証/dry-run/実行/自動修正）に分割。
+- LLMへノード型/エッジ/変数/シークレット/capability を渡し JSON Schema 厳格出力。
+- 検証3段（構造/意味/dry-run+実動作）。自動修正上限3、各版を WorkflowVersion 保存。品質スコア表示。
+- 既存 `/chat/build` を土台に拡張。
+
+### E. LLMランタイム抽象
+- `LlmRuntimeProvider`（detect/install/list_models/start/stop/health/stream_chat/cancel/get_capabilities...）。
+- `OllamaRuntimeProvider` + `LlamaCppRuntimeProvider`。既存 Ollama 実装を provider 化。
+
+### F. llama.cpp 導入
+- 取得元: `https://github.com/souten-yd/llama-builder/releases/tag/llama-gpu-b10001`。GitHub Release API で asset 照合（Vulkan/ROCm・OS・arch）。SHA256無ければ計算・保存。
+- `~/.local/share/control-deck/runtimes/llama.cpp/<tag>/<backend>/`、`current` シンボリックリンク。
+- モデルインスタンス毎に systemd ユーザーユニット `control-deck-llama-<id>.service`（Web子プロセスにしない）。
+- 起動設定UIは選択肢中心+カスタム。`llama-server --help` を解析し実在オプションのみ提示。MTP/思考深度は対応時のみ。host既定127.0.0.1、0.0.0.0時警告、APIキー対応。
+
+### G. OpenCode（オプトインのみ）
+- **自動導入禁止**。`./deck.sh feature install/enable/disable/uninstall opencode`。
+- feature registry（installed/enabled/available/version/health）。未導入時はルート/メニュー/ノード/コマンドパレット/API能力に**登録しない**（CSS非表示でなく未登録）。直URLは404。
+- プラグイン境界: `backend/app/integrations/opencode/`, `frontend/src/features/opencode/`。汎用抽象 `CodeAgentProvider` 等にのみ依存。削除で他機能に影響しないこと。
+- llama.cpp の OpenAI互換エンドポイントを provider に選択可。ワークフローは統合ノード `code.agent`（operation: analyze/implement/fix/test/...）を feature 有効時のみ登録。
+
+### H. ノード超強化
+- 既存ノードに version/capability/side_effect/supports_*(retry/cancel/progress/dry_run)/型付き入出力/help を付与。重複は operation 化。
+- 便利ノード（parallel map/JSON transform/schema validate/csv/glob/health check/rerank/embedding/judge 等）は既存統合ノードと重複しない範囲で追加。
+- ノード検索/カテゴリ/お気に入り/導入済み機能のみ表示。単体テストUI強化。
+
+---
+
+## 実装順序（推奨）
+A（自己完結・実機あり）→ B（土台）→ C（Bに依存）→ D → E → F → G → H。
+各フェーズ完了ごとにテスト通過・PR/マージ。**冗長化を避け既存の改修・統合を優先**。
+
+## セキュリティ不変条件
+shell=False/引数配列/許可ルート/symlink脱出防止/RBAC/CSRF/Origin/監査ログ/シークレット暗号化/root非要求/出力上限/プロセスツリー終了。read_only原則（PSUは読取のみ、sudo/hidraw書込禁止）。

@@ -74,7 +74,7 @@ export default function DashboardPage() {
               <span>
                 実行中アプリ <span className="num font-medium text-zinc-700 dark:text-zinc-300">{running.length}</span>
               </span>
-              {m?.power.total_watts_estimated != null && (
+              {m?.power.available !== true && m?.power.total_watts_estimated != null && (
                 <span>
                   推定電力 <span className="num font-medium text-zinc-700 dark:text-zinc-300">{m.power.total_watts_estimated.toFixed(0)} W</span>
                 </span>
@@ -86,6 +86,9 @@ export default function DashboardPage() {
           )}
         </div>
       </section>
+
+      {/* PSU 総出力 + 起動中/今日/今月の電気代 */}
+      {m && <PowerCard power={m.power} />}
 
       {/* アクティブアラート */}
       <ActiveAlerts />
@@ -159,6 +162,73 @@ interface AlertEvent {
   message: string;
   status: string;
   triggered_at: string;
+}
+
+// 電気代表示のフォーマット（約○円・kWh）
+function fmtYen(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (v < 100) return `約${v.toFixed(2)}円`;
+  return `約${v.toFixed(1)}円`;
+}
+function fmtKwh(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return v < 0.001 ? `${v.toFixed(6)} kWh` : `${v.toFixed(3)} kWh`;
+}
+
+function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
+  const psuOk = power.available === true && power.output_power_w != null;
+  const tip =
+    "HX1500i が計測した DC 出力電力を、設定された PSU 効率でコンセント入力電力へ換算し、" +
+    `${power.price_per_kwh_yen}円/kWh で積算した概算です。コンセントのワットチェッカー実測値とは差が出る場合があります。`;
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900" title={tip}>
+      <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
+        {/* PSU 総出力 */}
+        <div className="min-w-[140px]">
+          <p className="text-xs text-zinc-500">PSU 総出力{power.source ? "" : ""}</p>
+          {psuOk ? (
+            <>
+              <p className="num mt-0.5 text-2xl font-semibold text-zinc-800 dark:text-zinc-100">
+                {power.output_power_w!.toFixed(0)} <span className="text-base font-normal text-zinc-400">W</span>
+              </p>
+              <p className="num text-[11px] text-zinc-400">
+                コンセント側推定 約{power.estimated_input_power_w != null ? power.estimated_input_power_w.toFixed(0) : "—"} W
+              </p>
+            </>
+          ) : (
+            <p className="mt-0.5 text-lg font-medium text-zinc-400">取得不可</p>
+          )}
+          {psuOk && (power.vrm_temperature_c != null || power.fan_rpm != null) && (
+            <p className="num mt-1 text-[10px] text-zinc-400">
+              {power.vrm_temperature_c != null && `VRM ${power.vrm_temperature_c}°C`}
+              {power.case_temperature_c != null && ` · ケース ${power.case_temperature_c}°C`}
+              {power.fan_rpm != null && ` · FAN ${power.fan_rpm} RPM`}
+            </p>
+          )}
+        </div>
+
+        {/* 電気代（起動中/今日/今月） */}
+        <div className="flex flex-1 flex-wrap gap-x-6 gap-y-3">
+          <CostItem label="今回の起動中" cost={power.session_cost_yen} kwh={power.session_energy_kwh} ok={psuOk} />
+          <CostItem label="今日" cost={power.today_cost_yen} kwh={power.today_energy_kwh} ok={psuOk} />
+          <CostItem label="今月" cost={power.month_cost_yen} kwh={power.month_energy_kwh} ok={psuOk} />
+        </div>
+      </div>
+      <p className="num mt-3 text-[10px] text-zinc-400">
+        {power.price_per_kwh_yen}円/kWh・効率{Math.round(power.psu_efficiency * 100)}%（概算。実測値とは差が出る場合があります）
+      </p>
+    </section>
+  );
+}
+
+function CostItem({ label, cost, kwh, ok }: { label: string; cost: number | null; kwh: number | null; ok: boolean }) {
+  return (
+    <div className="min-w-[92px]">
+      <p className="text-xs text-zinc-500">{label}</p>
+      <p className="num mt-0.5 text-lg font-semibold text-zinc-800 dark:text-zinc-100">{ok ? fmtYen(cost) : "概算不可"}</p>
+      {ok && <p className="num text-[10px] text-zinc-400">{fmtKwh(kwh)}</p>}
+    </div>
+  );
 }
 
 function ActiveAlerts() {
