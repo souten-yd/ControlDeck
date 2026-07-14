@@ -12,7 +12,7 @@
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（全モードサーバー側・実機切断試験済み、マージ済み） |
 | D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（既存 /chat/build を強化、マージ済み） |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
-| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ⬜ 未着手 |
+| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 F-1完了（backend・実機動作確認、マージ済み）／F-2 UI 未着手 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ⬜ 一部済（v2エンジンで承認/リトライ/並列/flow.call/エージェント実装済み） |
 
@@ -89,10 +89,13 @@
 - `OllamaRuntimeProvider` + `LlamaCppRuntimeProvider`。既存 Ollama 実装を provider 化。
 
 ### F. llama.cpp 導入
-- 取得元: `https://github.com/souten-yd/llama-builder/releases/tag/llama-gpu-b10001`。GitHub Release API で asset 照合（Vulkan/ROCm・OS・arch）。SHA256無ければ計算・保存。
-- `~/.local/share/control-deck/runtimes/llama.cpp/<tag>/<backend>/`、`current` シンボリックリンク。
-- モデルインスタンス毎に systemd ユーザーユニット `control-deck-llama-<id>.service`（Web子プロセスにしない）。
-- 起動設定UIは選択肢中心+カスタム。`llama-server --help` を解析し実在オプションのみ提示。MTP/思考深度は対応時のみ。host既定127.0.0.1、0.0.0.0時警告、APIキー対応。
+**F-1 完了（backend、実機動作確認済み）:**
+- `models_mgmt/llama.py`: リリース asset 照合（vulkan/rocm/cuda・Linux）、DL+展開+SHA256（ジョブ `llama.install`）、`~/.local/share/control-deck/runtimes/llama.cpp/<tag>/<backend>/` + `current` シンボリックリンク。
+- systemd ユニット `cdapp-llama.service`（cdapp- 前置で既存 systemd ヘルパー再利用）。**LD_LIBRARY_PATH=current** が必須（共有ライブラリ libllama-server-impl.so 等がバイナリ同階層）。
+- start/stop/health、`detect_options`（`llama-server --help` 解析で実在フラグ 316 件・`--draft-*`=MTP/speculative も検出）。
+- API: `/models/llama/{status,assets,install-jobs,config,start,stop,options}`。OpenAI 互換 `http://127.0.0.1:<port>/v1` として既存チャット/ワークフローから利用可（base_url 指定）。
+- **実機検証**: ROCm 版を DL→展開→27B GGUF で起動→health OK→/v1/chat/completions 200→停止まで確認。experimental フラグ付き。
+- 未実装(F-2): 設定 UI（ランタイム選択・導入・起動設定・MTP/思考深度・`--help` 由来の動的フォーム）、モデル別インスタンス複数管理。host は 127.0.0.1 固定。
 
 ### G. OpenCode（オプトインのみ）
 - **自動導入禁止**。`./deck.sh feature install/enable/disable/uninstall opencode`。

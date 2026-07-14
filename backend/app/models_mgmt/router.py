@@ -299,3 +299,100 @@ async def pull(websocket: WebSocket):
             await websocket.close()
         except RuntimeError:
             pass
+
+
+# ---- llama.cpp ランタイム（第一級プロバイダー） ----
+
+
+@router.get("/llama/status")
+async def llama_status(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import llama
+
+    st = llama.runtime_status()
+    if st["installed"]:
+        st["health"] = await llama.health()
+    return st
+
+
+@router.get("/llama/assets")
+async def llama_assets(user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import llama
+
+    try:
+        return {"tag": llama.DEFAULT_TAG, "assets": await llama.list_assets()}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"リリース情報の取得に失敗: {e}")
+
+
+class LlamaInstallBody(BaseModel):
+    backend: str = Field(pattern="^(vulkan|rocm|cuda)$")
+
+
+@router.post("/llama/install-jobs", status_code=201)
+async def llama_install(body: LlamaInstallBody, request: Request,
+                        user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """llama.cpp をサーバー側ジョブで導入する（ブラウザを閉じても継続）。"""
+    from app.models_mgmt import llama
+
+    backend = body.backend
+
+    async def run(job: jobs.Job):
+        return await llama.install_stream(job, backend)
+
+    job = jobs.create("llama.install", f"llama.cpp 導入: {backend}", run, owner_user_id=user.id)
+    audit.record(db, "llama.install", user=user, resource_type="runtime", resource_id=backend,
+                 request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.get("/llama/config")
+def llama_get_config(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import llama
+
+    return llama.get_config()
+
+
+class LlamaInstanceBody(BaseModel):
+    model_path: str | None = None
+    port: int | None = Field(default=None, ge=1024, le=65535)
+    n_gpu_layers: int | None = Field(default=None, ge=0, le=999)
+    ctx_size: int | None = Field(default=None, ge=0, le=1048576)
+    n_parallel: int | None = Field(default=None, ge=1, le=64)
+    flash_attn: bool | None = None
+    extra_args: str | None = None
+    alias: str | None = None
+
+
+@router.put("/llama/config")
+def llama_put_config(body: LlamaInstanceBody, user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import llama
+
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    return llama.save_config({"instance": patch})
+
+
+@router.post("/llama/start")
+async def llama_start(request: Request, user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    from app.models_mgmt import llama
+
+    ok, err = await asyncio.to_thread(llama.start_instance)
+    if not ok:
+        raise HTTPException(status_code=502, detail=err or "起動に失敗しました")
+    audit.record(db, "llama.start", user=user, resource_type="runtime", request=request)
+    return {"ok": True}
+
+
+@router.post("/llama/stop")
+async def llama_stop(user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import llama
+
+    ok, err = await asyncio.to_thread(llama.stop_instance)
+    return {"ok": ok, "error": err}
+
+
+@router.get("/llama/options")
+async def llama_options(user: User = Depends(require_permission("workflows.edit"))):
+    """稼働バイナリの --help から利用可能な引数を返す（実在オプションのみ UI 表示するため）。"""
+    from app.models_mgmt import llama
+
+    return {"flags": await llama.detect_options()}
