@@ -108,7 +108,7 @@ def test_generated_definition_validator():
     ok = {
         "nodes": [
             {"id": "trigger", "type": "trigger", "config": {"mode": "manual"}},
-            {"id": "s", "type": "signal.display", "config": {}},
+            {"id": "s", "type": "signal.display", "config": {"value": "ok"}},  # value 必須（意味検証）
         ],
         "edges": [{"source": "trigger", "target": "s"}],
     }
