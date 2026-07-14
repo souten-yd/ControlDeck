@@ -110,6 +110,32 @@ class AuditLog(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class WorkflowVersion(Base):
+    """ワークフロー定義のスナップショット（保存ごとに記録、ロールバック用）。"""
+
+    __tablename__ = "workflow_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    definition_json: Mapped[str] = mapped_column(Text, default="{}")
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkflowSecret(Base):
+    """{{secrets.名前}} で参照する暗号化シークレット（API キー等）。"""
+
+    __tablename__ = "workflow_secrets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    value_encrypted: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class Workflow(Base):
     __tablename__ = "workflows"
 

@@ -148,6 +148,17 @@ async def evaluate_once() -> None:
                     event.notified = True
                     db.commit()
                     logger.warning("アラート発火: %s (%s=%.1f)", rule.name, rule.metric, value)
+                    # イベントトリガーのワークフローを起動（自己修復フロー等）
+                    try:
+                        from app.workflows.engine import fire_event_triggers
+
+                        await fire_event_triggers("alert", {
+                            "message": f"アラート: {rule.name}（{label} = {value:.1f}）",
+                            "rule": rule.name, "metric": rule.metric,
+                            "value": value, "threshold": rule.threshold,
+                        })
+                    except Exception:
+                        logger.exception("event trigger dispatch error")
             else:
                 _breach_since.pop(rule.id, None)
                 # 条件解消: この rule の active イベントをすべて resolved にする（残留防止）

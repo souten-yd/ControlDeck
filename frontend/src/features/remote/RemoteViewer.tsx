@@ -9,7 +9,13 @@ import { createPortal } from "react-dom";
 // @ts-expect-error 型定義なしパッケージ
 import Guacamole from "guacamole-common-js";
 import { wsUrl } from "../../api/client";
+import { useToasts } from "../../stores";
 import { IconX } from "../../components/icons";
+
+// keysym: Ctrl 左 / C / V
+const K_CTRL = 0xffe3;
+const K_C = 0x63;
+const K_V = 0x76;
 
 interface Connection {
   id: number;
@@ -23,6 +29,80 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
   const [error, setError] = useState<string | null>(null);
   const [showKeyboard, setShowKeyboard] = useState(false);
+  const [clipBusy, setClipBusy] = useState<"" | "copy" | "paste">("");
+  const show = useToasts((s) => s.show);
+  // リモートからのクリップボード受信を待つための resolver（コピー操作時のみセット）
+  const clipWaitRef = useRef<((text: string) => void) | null>(null);
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** 修飾キー付きでキーを一発送る（例: Ctrl+C） */
+  const tapKey = async (mod: number, key: number) => {
+    const c = clientRef.current;
+    if (!c) return;
+    c.sendKeyEvent(1, mod);
+    c.sendKeyEvent(1, key);
+    await sleep(30);
+    c.sendKeyEvent(0, key);
+    c.sendKeyEvent(0, mod);
+  };
+
+  /** この端末 → リモートへテキストを送る（Guacamole clipboard ストリーム） */
+  const sendClipboard = (text: string) => {
+    const c = clientRef.current;
+    if (!c || !text) return;
+    const stream = c.createClipboardStream("text/plain");
+    const writer = new Guacamole.StringWriter(stream);
+    writer.sendText(text);
+    writer.sendEnd();
+  };
+
+  /** コピー: リモートで選択中のものを Ctrl+C させて受信 → この端末のクリップボードへ */
+  const copyFromRemote = async () => {
+    if (clipBusy) return;
+    setClipBusy("copy");
+    try {
+      const received = new Promise<string>((resolve, reject) => {
+        clipWaitRef.current = resolve;
+        setTimeout(() => reject(new Error("timeout")), 1500);
+      });
+      await tapKey(K_CTRL, K_C); // リモートに Ctrl+C
+      const text = await received.catch(() => "");
+      clipWaitRef.current = null;
+      if (!text) {
+        show("コピーできませんでした。リモート側でテキストを選択してから押してください", "error");
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      show(`コピーしました（${text.length} 文字）`);
+    } catch {
+      show("この端末のクリップボードへ書き込めませんでした", "error");
+    } finally {
+      clipWaitRef.current = null;
+      setClipBusy("");
+    }
+  };
+
+  /** ペースト: この端末のクリップボード → リモートへ送信 → Ctrl+V */
+  const pasteToRemote = async () => {
+    if (clipBusy) return;
+    setClipBusy("paste");
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) {
+        show("この端末のクリップボードが空です", "error");
+        return;
+      }
+      sendClipboard(text);
+      await sleep(120); // ストリーム転送がリモートに届くのを待ってから貼り付け
+      await tapKey(K_CTRL, K_V);
+      show(`ペーストしました（${text.length} 文字）`);
+    } catch {
+      show("クリップボードの読み取りが許可されませんでした", "error");
+    } finally {
+      setClipBusy("");
+    }
+  };
 
   useEffect(() => {
     const host = displayRef.current;
@@ -71,6 +151,20 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
     tunnel.onerror = (err: any) => {
       setError(err?.message || "トンネル接続に失敗しました（guacd 未起動の可能性）");
       setStatus("disconnected");
+    };
+
+    // リモート → この端末: クリップボード受信。コピー操作待ちがあれば解決する
+    client.onclipboard = (stream: any, mimetype: string) => {
+      if (!/^text\//.test(mimetype)) {
+        stream.sendAck("unsupported", 0x0100);
+        return;
+      }
+      const reader = new Guacamole.StringReader(stream);
+      let data = "";
+      reader.ontext = (t: string) => { data += t; };
+      reader.onend = () => {
+        if (clipWaitRef.current) clipWaitRef.current(data);
+      };
     };
 
     client.connect(`width=${width}&height=${height}&dpi=96`);
@@ -258,6 +352,22 @@ export default function RemoteViewer({ connection, onExit }: { connection: Conne
           {status === "connected" ? "接続中" : status === "disconnected" ? "切断" : "接続中..."}
         </span>
         <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={copyFromRemote}
+            disabled={status !== "connected" || !!clipBusy}
+            title="リモートで選択中のテキストをこの端末にコピー"
+            className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {clipBusy === "copy" ? "⏳" : "📋"}<span className="hidden sm:inline">コピー</span>
+          </button>
+          <button
+            onClick={pasteToRemote}
+            disabled={status !== "connected" || !!clipBusy}
+            title="この端末のクリップボードをリモートに貼り付け"
+            className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {clipBusy === "paste" ? "⏳" : "📥"}<span className="hidden sm:inline">貼付</span>
+          </button>
           <button onClick={sendCtrlAltDel} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800">Ctrl+Alt+Del</button>
           <button onClick={() => setShowKeyboard((v) => !v)} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 md:hidden">⌨</button>
           <button onClick={onExit} aria-label="切断して閉じる" className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"><IconX /></button>

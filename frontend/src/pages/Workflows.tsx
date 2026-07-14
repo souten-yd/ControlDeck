@@ -1,13 +1,15 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
 import { IconDots, IconPlay, IconPlus } from "../components/icons";
 import { DEFAULT_DEFINITION } from "../features/workflows/nodeTypes";
 
 const WorkflowEditor = lazy(() => import("../features/workflows/WorkflowEditor"));
+const SampleBook = lazy(() => import("../features/workflows/SampleBook"));
+const AssistantChat = lazy(() => import("../features/workflows/AssistantChat"));
 
 export interface WorkflowSummary {
   id: number;
@@ -56,6 +58,47 @@ function WorkflowList() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [deleting, setDeleting] = useState<WorkflowSummary | null>(null);
+  const [showSamples, setShowSamples] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+
+  const exportWorkflow = async (wf: WorkflowSummary) => {
+    const detail = await api<WorkflowSummary>(`/workflows/${wf.id}`);
+    const blob = new Blob(
+      [JSON.stringify({ name: detail.name, description: detail.description, definition: detail.definition }, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${detail.name || "workflow"}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importWorkflow = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        const wf = await api<WorkflowSummary>("/workflows", {
+          method: "POST",
+          json: {
+            name: String(data.name || file.name.replace(/\.json$/i, "")),
+            description: String(data.description || "インポート"),
+            definition: data.definition ?? data,
+          },
+        });
+        show(`「${wf.name}」をインポートしました`);
+        qc.invalidateQueries({ queryKey: ["workflows"] });
+        navigate(`/workflows/${wf.id}`);
+      } catch (e) {
+        show(e instanceof Error ? e.message : "インポートに失敗しました", "error");
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const { data: workflows, isLoading } = useQuery({
     queryKey: ["workflows"],
@@ -104,17 +147,50 @@ function WorkflowList() {
 
   return (
     <div className="mx-auto max-w-4xl p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">ワークフロー</h1>
-        {can("workflows.edit") && (
+        <div className="flex items-center gap-1.5">
           <button
-            onClick={() => create.mutate()}
-            disabled={create.isPending}
-            className="hidden items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700 md:flex"
+            onClick={() => setShowAssistant(true)}
+            className="flex min-h-10 items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
+            title="チャット・Web/学術/Deep 検索・ワークフロー自動生成"
           >
-            <IconPlus /> 新規ワークフロー
+            ✨<span className="hidden sm:inline"> アシスタント</span>
           </button>
-        )}
+          <button
+            onClick={() => setShowSamples(true)}
+            className="flex min-h-10 items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
+            title="サンプルワークフロー集とノードリファレンス"
+          >
+            📖<span className="hidden sm:inline"> サンプルブック</span>
+          </button>
+          {can("workflows.edit") && (
+            <>
+              <input
+                ref={importRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => { if (e.target.files?.[0]) importWorkflow(e.target.files[0]); e.target.value = ""; }}
+              />
+              <DropdownMenu
+                ariaLabel="ワークフローメニュー"
+                trigger={<IconDots />}
+                items={[
+                  { label: "📥 JSON をインポート", onSelect: () => importRef.current?.click() },
+                  { label: "🔑 シークレット管理", onSelect: () => setShowSecrets(true) },
+                ]}
+              />
+              <button
+                onClick={() => create.mutate()}
+                disabled={create.isPending}
+                className="hidden items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700 md:flex"
+              >
+                <IconPlus /> 新規ワークフロー
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {isLoading ? (
@@ -128,14 +204,22 @@ function WorkflowList() {
           <p className="text-sm text-zinc-400">
             ワークフローはまだありません。ノードをつないで PC 操作を自動化できます。
           </p>
-          {can("workflows.edit") && (
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <button
-              onClick={() => create.mutate()}
-              className="mt-3 rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
+              onClick={() => setShowSamples(true)}
+              className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
             >
-              最初のワークフローを作成
+              📖 サンプルから始める
             </button>
-          )}
+            {can("workflows.edit") && (
+              <button
+                onClick={() => create.mutate()}
+                className="rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
+              >
+                最初のワークフローを作成
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <ul className="space-y-3">
@@ -178,6 +262,7 @@ function WorkflowList() {
                   trigger={<IconDots />}
                   items={[
                     { label: "編集", onSelect: () => navigate(`/workflows/${wf.id}`) },
+                    { label: "エクスポート (JSON)", onSelect: () => void exportWorkflow(wf) },
                     ...(can("workflows.edit")
                       ? [
                           {
@@ -205,6 +290,17 @@ function WorkflowList() {
         </button>
       )}
 
+      {showSecrets && <SecretsSheet onClose={() => setShowSecrets(false)} />}
+      {showSamples && (
+        <Suspense fallback={null}>
+          <SampleBook onClose={() => setShowSamples(false)} />
+        </Suspense>
+      )}
+      {showAssistant && (
+        <Suspense fallback={null}>
+          <AssistantChat onClose={() => setShowAssistant(false)} />
+        </Suspense>
+      )}
       {deleting && (
         <ConfirmDialog
           title={`「${deleting.name}」を削除しますか？`}
@@ -216,5 +312,64 @@ function WorkflowList() {
         />
       )}
     </div>
+  );
+}
+
+/** シークレット管理: {{secrets.名前}} でワークフローから参照する暗号化値。値は表示できない */
+function SecretsSheet({ onClose }: { onClose: () => void }) {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const { data: secrets } = useQuery({
+    queryKey: ["wf-secrets"],
+    queryFn: () => api<{ name: string; updated_at: string }[]>("/workflows-secrets"),
+  });
+  const put = useMutation({
+    mutationFn: () => api(`/workflows-secrets/${encodeURIComponent(name.trim())}`, { method: "PUT", json: { value } }),
+    onSuccess: () => {
+      show(`「${name.trim()}」を保存しました`);
+      setName(""); setValue("");
+      qc.invalidateQueries({ queryKey: ["wf-secrets"] });
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "保存に失敗しました", "error"),
+  });
+  const del = useMutation({
+    mutationFn: (n: string) => api(`/workflows-secrets/${encodeURIComponent(n)}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["wf-secrets"] }),
+    onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
+  });
+  const cls = "rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  return (
+    <BottomSheet title="🔑 シークレット管理" onClose={onClose} wide>
+      <p className="mb-3 text-xs text-zinc-400">
+        API キーなどを暗号化して保存し、ノード設定から <code className="font-mono">{"{{secrets.名前}}"}</code> で参照できます。
+        定義 JSON に平文が残らず、エクスポートや共有が安全になります。値は保存後に表示できません。
+      </p>
+      <div className="mb-4 flex flex-wrap gap-2">
+        <input value={name} onChange={(e) => setName(e.target.value.replace(/[^A-Za-z0-9_]/g, ""))} placeholder="名前（例: OPENAI_KEY）" className={`${cls} w-44 font-mono text-xs`} />
+        <input value={value} onChange={(e) => setValue(e.target.value)} type="password" placeholder="値" className={`${cls} min-w-0 flex-1 font-mono text-xs`} />
+        <button
+          onClick={() => put.mutate()}
+          disabled={!name.trim() || !value || put.isPending}
+          className="rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
+        >
+          保存
+        </button>
+      </div>
+      {!secrets || secrets.length === 0 ? (
+        <p className="py-4 text-center text-xs text-zinc-400">シークレットはまだありません</p>
+      ) : (
+        <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
+          {secrets.map((s) => (
+            <li key={s.name} className="flex items-center gap-2 py-2">
+              <code className="min-w-0 flex-1 truncate font-mono text-xs">{"{{secrets." + s.name + "}}"}</code>
+              <span className="num text-[10px] text-zinc-400">{new Date(s.updated_at + (s.updated_at.endsWith("Z") ? "" : "Z")).toLocaleDateString("ja-JP")}</span>
+              <button onClick={() => del.mutate(s.name)} className="shrink-0 rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </BottomSheet>
   );
 }

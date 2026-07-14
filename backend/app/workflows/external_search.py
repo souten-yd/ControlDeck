@@ -85,6 +85,117 @@ async def patent(query: str, limit: int, api_key: str) -> list[dict]:
     return out
 
 
+async def openalex(query: str, limit: int) -> list[dict]:
+    """OpenAlex（2.5億件超・全分野・キー不要）。"""
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+        r = await client.get("https://api.openalex.org/works", params={"search": query, "per-page": limit, "mailto": "research@example.com"})
+    if r.status_code >= 400:
+        raise SearchError(f"OpenAlex エラー {r.status_code}")
+    out = []
+    for w in r.json().get("results", []):
+        # abstract は inverted index なので語順復元
+        inv = w.get("abstract_inverted_index") or {}
+        abstract = ""
+        if inv:
+            positions = sorted((pos, word) for word, poss in inv.items() for pos in poss)
+            abstract = " ".join(w for _, w in positions)[:1000]
+        out.append({
+            "title": w.get("title", "") or "",
+            "snippet": abstract,
+            "url": w.get("doi") or w.get("id", ""),
+            "meta": {"year": w.get("publication_year"), "cited_by": w.get("cited_by_count"),
+                     "authors": [a.get("author", {}).get("display_name", "") for a in (w.get("authorships") or [])][:8],
+                     "oa": (w.get("open_access") or {}).get("oa_url", "")},
+        })
+    return out
+
+
+async def semanticscholar(query: str, limit: int) -> list[dict]:
+    """Semantic Scholar（キー不要・レート制限あり）。"""
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+        r = await client.get("https://api.semanticscholar.org/graph/v1/paper/search",
+                             params={"query": query, "limit": limit, "fields": "title,abstract,url,year,authors,citationCount,openAccessPdf"})
+    if r.status_code == 429:
+        raise SearchError("Semantic Scholar が混雑しています（時間をおいて再試行）")
+    if r.status_code >= 400:
+        raise SearchError(f"Semantic Scholar エラー {r.status_code}")
+    out = []
+    for p in r.json().get("data", []) or []:
+        out.append({
+            "title": p.get("title", "") or "",
+            "snippet": (p.get("abstract") or "")[:1000],
+            "url": p.get("url", ""),
+            "meta": {"year": p.get("year"), "cited_by": p.get("citationCount"),
+                     "authors": [a.get("name", "") for a in (p.get("authors") or [])][:8],
+                     "pdf": (p.get("openAccessPdf") or {}).get("url", "")},
+        })
+    return out
+
+
+async def europepmc(query: str, limit: int) -> list[dict]:
+    """Europe PMC（生医学・ライフサイエンス中心・キー不要）。"""
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+        r = await client.get("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+                             params={"query": query, "format": "json", "pageSize": limit})
+    if r.status_code >= 400:
+        raise SearchError(f"Europe PMC エラー {r.status_code}")
+    out = []
+    for it in r.json().get("resultList", {}).get("result", []):
+        pmid = it.get("pmid", "")
+        out.append({
+            "title": it.get("title", "") or "",
+            "snippet": (it.get("abstractText") or "")[:1000],
+            "url": f"https://europepmc.org/article/{it.get('source','MED')}/{it.get('id','')}",
+            "meta": {"year": it.get("pubYear"), "journal": it.get("journalTitle", ""), "authors": it.get("authorString", ""), "pmid": pmid},
+        })
+    return out
+
+
+async def doaj(query: str, limit: int) -> list[dict]:
+    """DOAJ（オープンアクセス学術誌・キー不要）。"""
+    from urllib.parse import quote
+
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+        r = await client.get(f"https://doaj.org/api/search/articles/{quote(query)}", params={"pageSize": limit})
+    if r.status_code >= 400:
+        raise SearchError(f"DOAJ エラー {r.status_code}")
+    out = []
+    for it in r.json().get("results", []):
+        b = it.get("bibjson", {})
+        link = next((l.get("url", "") for l in b.get("link", []) if l.get("url")), "")
+        out.append({
+            "title": b.get("title", "") or "",
+            "snippet": (b.get("abstract") or "")[:1000],
+            "url": link,
+            "meta": {"year": b.get("year"), "journal": (b.get("journal") or {}).get("title", ""),
+                     "authors": [a.get("name", "") for a in (b.get("author") or [])][:8]},
+        })
+    return out
+
+
+async def dblp(query: str, limit: int) -> list[dict]:
+    """DBLP（計算機科学の書誌・キー不要）。"""
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+        r = await client.get("https://dblp.org/search/publ/api", params={"q": query, "format": "json", "h": limit})
+    if r.status_code >= 400:
+        raise SearchError(f"DBLP エラー {r.status_code}")
+    hits = r.json().get("result", {}).get("hits", {}).get("hit", [])
+    out = []
+    for h in hits:
+        info = h.get("info", {})
+        authors = info.get("authors", {}).get("author", [])
+        if isinstance(authors, dict):
+            authors = [authors]
+        out.append({
+            "title": info.get("title", "") or "",
+            "snippet": f"{info.get('venue','')} {info.get('year','')}",
+            "url": info.get("ee") or info.get("url", ""),
+            "meta": {"year": info.get("year"), "venue": info.get("venue", ""),
+                     "authors": [a.get("text", "") if isinstance(a, dict) else str(a) for a in authors][:8]},
+        })
+    return out
+
+
 async def market(query: str, limit: int) -> list[dict]:
     """SEC EDGAR 全文検索（企業の開示文書＝市場/競合調査に有用）。"""
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": UA}) as client:
@@ -108,7 +219,18 @@ async def market(query: str, limit: int) -> list[dict]:
     return out
 
 
-SOURCES = {"arxiv": arxiv, "crossref": crossref, "patent": patent, "market": market}
+SOURCES = {
+    "arxiv": arxiv, "crossref": crossref, "openalex": openalex,
+    "semanticscholar": semanticscholar, "europepmc": europepmc, "doaj": doaj,
+    "dblp": dblp, "patent": patent, "market": market,
+}
+# 串刺し検索（all）で並列に叩くキー不要の学術ソース
+FEDERATED_SOURCES = ["openalex", "crossref", "arxiv", "europepmc", "dblp", "doaj"]
+
+
+def _norm_title(t: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "", (t or "").lower())[:80]
 
 
 async def search(source: str, query: str, limit: int, api_key: str = "") -> list[dict]:
@@ -124,3 +246,30 @@ async def search(source: str, query: str, limit: int, api_key: str = "") -> list
         raise SearchError(f"{source} 取得失敗: {e}")
     except ET.ParseError as e:
         raise SearchError(f"{source} 応答の解析に失敗: {e}")
+
+
+async def federated(query: str, limit_per: int, sources: list[str] | None = None) -> dict:
+    """複数ソースを並列に叩き、タイトル/DOI で重複統合する串刺し検索。"""
+    import asyncio
+
+    srcs = sources or FEDERATED_SOURCES
+    limit_per = max(1, min(int(limit_per), 25))
+    results = await asyncio.gather(
+        *(search(s, query, limit_per) for s in srcs), return_exceptions=True
+    )
+    merged: list[dict] = []
+    seen: set[str] = set()
+    errors: dict[str, str] = {}
+    for src, res in zip(srcs, results):
+        if isinstance(res, Exception):
+            errors[src] = str(res)[:120]
+            continue
+        for item in res:
+            key = _norm_title(item.get("title", "")) or item.get("url", "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append({**item, "source": src})
+    # 被引用数があれば多い順、なければ元の順
+    merged.sort(key=lambda x: -(x.get("meta", {}).get("cited_by") or 0))
+    return {"results": merged, "count": len(merged), "sources": srcs, "errors": errors}
