@@ -415,6 +415,8 @@ function HFSearch({ onPull, running }: { onPull: (m: string) => void; running: b
   );
 }
 
+interface ModelConfig { keep_alive?: string; idle_exclude?: boolean; num_ctx?: number }
+
 function DetailSheet({ model, onClose }: { model: string; onClose: () => void }) {
   const { data, isLoading } = useQuery({
     queryKey: ["model-show", model],
@@ -426,6 +428,7 @@ function DetailSheet({ model, onClose }: { model: string; onClose: () => void })
         <Skeleton className="h-24" />
       ) : (
         <div className="space-y-3 text-sm">
+          <ModelConfigSection model={model} />
           <dl className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {data.context_length && <Row k="コンテキスト長" v={data.context_length.toLocaleString()} />}
             {data.capabilities?.length > 0 && <Row k="機能" v={data.capabilities.join(", ")} />}
@@ -446,6 +449,46 @@ function DetailSheet({ model, onClose }: { model: string; onClose: () => void })
         </div>
       )}
     </BottomSheet>
+  );
+}
+
+/** モデルごとの詳細設定（keep_alive / アイドル除外 / コンテキスト長）。 */
+function ModelConfigSection({ model }: { model: string }) {
+  const show = useToasts((s) => s.show);
+  const can = useAuth((s) => s.can);
+  const qc = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["model-config", model],
+    queryFn: () => api<ModelConfig>(`/models/${encodeURIComponent(model)}/config`),
+  });
+  const [cfg, setCfg] = useState<ModelConfig | null>(null);
+  const eff = cfg ?? data ?? null;
+  const save = useMutation({
+    mutationFn: () => api(`/models/${encodeURIComponent(model)}/config`, { method: "PUT", json: eff }),
+    onSuccess: () => { show("モデル設定を保存しました"); qc.invalidateQueries({ queryKey: ["model-config", model] }); qc.invalidateQueries({ queryKey: ["models"] }); },
+    onError: (e) => show(e instanceof Error ? e.message : "保存失敗", "error"),
+  });
+  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  if (!eff || !can("workflows.edit")) return null;
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="mb-2 text-xs font-semibold text-zinc-500">このモデルの個別設定</p>
+      <div className="space-y-2.5">
+        <L label="常駐時間 keep_alive（空=全体設定に従う）">
+          <input value={eff.keep_alive ?? ""} onChange={(e) => setCfg({ ...eff, keep_alive: e.target.value })} placeholder="30m / 1h / -1(無期限)" className={`${input} font-mono text-xs`} />
+        </L>
+        <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+          <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常に読み込んだままにして再ロード待ちをなくす</span></span>
+          <input type="checkbox" checked={!!eff.idle_exclude} onChange={(e) => setCfg({ ...eff, idle_exclude: e.target.checked })} className="h-4 w-4" />
+        </label>
+        <L label="コンテキスト長 num_ctx（任意・0=既定）">
+          <input type="number" value={eff.num_ctx ?? ""} onChange={(e) => setCfg({ ...eff, num_ctx: e.target.value === "" ? undefined : Number(e.target.value) })} placeholder="例: 8192" className={input} />
+        </L>
+        <button onClick={() => save.mutate()} disabled={save.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+          {save.isPending ? "保存中..." : "モデル設定を保存"}
+        </button>
+      </div>
+    </div>
   );
 }
 

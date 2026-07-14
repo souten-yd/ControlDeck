@@ -1,7 +1,7 @@
 """ローカル GGUF 登録（スキャン・名前提案・API）のテスト。"""
 import pytest
 
-from tests.conftest import _sandbox
+from tests.conftest import CSRF_HEADERS, _sandbox
 
 
 def _mk(path, size=16):
@@ -70,3 +70,20 @@ def test_register_rejects_bad_name_and_non_gguf():
         asyncio.run(consume("bad name!", str(_sandbox / "gguf-scan" / "a.gguf")))
     with pytest.raises(OllamaError):
         asyncio.run(consume("ok-name", str(_sandbox / "gguf-scan" / "note.txt")))
+
+
+def test_model_config_crud(admin_client):
+    """モデル個別設定（keep_alive/idle_exclude）の保存・取得・クリア。"""
+    from app.models_mgmt import ollama
+
+    r = admin_client.put("/api/v1/models/qwen2.5%3A7b/config",
+                         json={"keep_alive": "1h", "idle_exclude": True}, headers=CSRF_HEADERS)
+    assert r.status_code == 200, r.text
+    assert ollama.effective_keep_alive("qwen2.5:7b") == "1h"
+    assert ollama.get_model_config("qwen2.5:7b")["idle_exclude"] is True
+    got = admin_client.get("/api/v1/models/qwen2.5%3A7b/config").json()
+    assert got["keep_alive"] == "1h"
+    # 空指定でクリア → 既定へ
+    admin_client.put("/api/v1/models/qwen2.5%3A7b/config", json={"keep_alive": "", "idle_exclude": False}, headers=CSRF_HEADERS)
+    assert ollama.get_model_config("qwen2.5:7b") == {}
+    assert ollama.effective_keep_alive("qwen2.5:7b") == ollama.get_settings()["default_keep_alive"]

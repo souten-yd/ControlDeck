@@ -51,32 +51,33 @@ export default function SampleBook({ onClose }: { onClose: () => void }) {
         aria-label="サンプルブック"
         className="flex h-[92dvh] w-screen flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:h-[85dvh] sm:w-[880px] sm:rounded-2xl"
       >
-        <div className="flex items-center gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800 sm:px-5">
-          <h2 className="text-base font-semibold">📖 サンプルブック</h2>
-          <div className="ml-2 flex rounded-xl bg-zinc-100 p-0.5 text-sm dark:bg-zinc-800">
+        <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-5 sm:py-3">
+          <h2 className="shrink-0 text-base font-semibold">📖<span className="hidden sm:inline"> サンプルブック</span></h2>
+          <div className="flex min-w-0 rounded-xl bg-zinc-100 p-0.5 text-[13px] dark:bg-zinc-800 sm:ml-2 sm:text-sm">
             {(
               [
                 ["samples", "サンプル"],
-                ["nodes", "ノードリファレンス"],
+                ["nodes", "ノード"],
               ] as const
             ).map(([key, label]) => (
               <button
                 key={key}
                 onClick={() => setTab(key)}
-                className={`rounded-[10px] px-3 py-1.5 font-medium transition ${
+                className={`whitespace-nowrap rounded-[10px] px-3 py-1.5 font-medium transition ${
                   tab === key
                     ? "bg-white shadow-sm dark:bg-zinc-700"
                     : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
                 }`}
               >
                 {label}
+                {key === "nodes" && <span className="hidden sm:inline">リファレンス</span>}
               </button>
             ))}
           </div>
           <button
             onClick={onClose}
             aria-label="閉じる"
-            className="ml-auto rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className="ml-auto shrink-0 rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
             <IconX />
           </button>

@@ -347,6 +347,16 @@ async def node_llm(config: dict, ctx: dict) -> dict:
         "temperature": float(config.get("temperature", 0.7)),
         "stream": False,
     }
+    # モデル常駐時間（大型モデルの都度ロード＝数十秒を防ぐ）。設定値、ノードで上書き可
+    ka = config.get("keep_alive")
+    if not ka:
+        try:
+            from app.models_mgmt import ollama
+
+            ka = ollama.get_settings().get("default_keep_alive")
+        except Exception:
+            ka = "30m"
+    payload["keep_alive"] = ka or "30m"
     if config.get("max_tokens"):
         payload["max_tokens"] = int(config["max_tokens"])
     # 構造化出力（OpenAI 互換 response_format。非対応サーバーはエラーを返すので

@@ -29,11 +29,23 @@ from app.workflows.nodes import NodeError, node_web_search
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _keep_alive() -> str:
+    """モデル常駐時間。設定の default_keep_alive を使い、頻繁な再ロード（大型モデルは
+    数十秒のロードが都度発生）を防ぐ。Ollama 以外の OpenAI 互換サーバーは無視するだけ。"""
+    try:
+        from app.models_mgmt import ollama
+
+        return str(ollama.get_settings().get("default_keep_alive") or "30m")
+    except Exception:
+        return "30m"
+
+
 async def _llm(messages: list[dict], base_url: str, model: str, api_key: str, temperature: float = 0.4) -> str:
-    async with httpx.AsyncClient(timeout=180) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             base_url.rstrip("/") + "/chat/completions",
-            json={"model": model, "messages": messages, "temperature": temperature, "stream": False},
+            json={"model": model, "messages": messages, "temperature": temperature,
+                  "stream": False, "keep_alive": _keep_alive()},
             headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}"},
         )
     if r.status_code >= 400:
@@ -68,7 +80,7 @@ async def chat_stream(websocket: WebSocket):
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST", base + "/chat/completions",
-                json={"model": model, "messages": messages, "stream": True},
+                json={"model": model, "messages": messages, "stream": True, "keep_alive": _keep_alive()},
                 headers={"Authorization": "Bearer sk-no-key"},
             ) as r:
                 if r.status_code >= 400:

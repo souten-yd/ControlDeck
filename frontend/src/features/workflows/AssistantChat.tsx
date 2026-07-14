@@ -375,8 +375,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         className="flex h-[94dvh] w-screen flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:h-[88dvh] sm:w-[760px] sm:rounded-2xl"
       >
         {/* ヘッダー */}
-        <div className="flex items-center gap-2 border-b border-zinc-200 px-4 py-2.5 dark:border-zinc-800">
-          <h2 className="text-base font-semibold">✨ AI アシスタント</h2>
+        <div className="flex items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
+          <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> AI アシスタント</span></h2>
           {messages.length > 0 && (
             <button
               onClick={() => {
@@ -384,21 +384,24 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 localStorage.removeItem(LS_HISTORY);
               }}
               disabled={busy}
-              className="rounded-lg px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+              aria-label="会話履歴をクリア"
+              className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
               title="会話履歴をクリア"
             >
-              🗑 クリア
+              🗑<span className="hidden sm:inline"> クリア</span>
             </button>
           )}
           <button
             onClick={() => setShowSettings((v) => !v)}
-            className={`ml-auto rounded-lg px-2.5 py-1.5 text-xs font-medium ${
+            title={model || "設定"}
+            className={`ml-auto flex min-w-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium ${
               showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
             }`}
           >
-            {model ? `🧩 ${model}` : "⚙ 設定"}
+            <span className="shrink-0">🧩</span>
+            <span className="max-w-[9rem] truncate">{model || "設定"}</span>
           </button>
-          <button onClick={onClose} aria-label="閉じる" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+          <button onClick={onClose} aria-label="閉じる" className="shrink-0 rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
             <IconX />
           </button>
         </div>

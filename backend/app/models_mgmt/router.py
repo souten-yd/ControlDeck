@@ -53,6 +53,25 @@ def put_settings(body: SettingsBody, user: User = Depends(require_permission("wo
     return ollama.save_settings({k: v for k, v in body.model_dump().items() if v is not None})
 
 
+class ModelConfigBody(BaseModel):
+    keep_alive: str | None = None   # "" でクリア（既定に戻す）
+    idle_exclude: bool | None = None  # アイドル自動アンロードから除外して常駐
+    num_ctx: int | None = Field(default=None, ge=0, le=131072)
+
+
+@router.get("/{model:path}/config")
+def get_model_config(model: str, user: User = Depends(require_permission("workflows.run"))):
+    return ollama.get_model_config(model)
+
+
+@router.put("/{model:path}/config")
+def put_model_config(
+    model: str, body: ModelConfigBody,
+    user: User = Depends(require_permission("workflows.edit")),
+):
+    return ollama.set_model_config(model, body.model_dump(exclude_none=True))
+
+
 @router.get("/hf-search")
 async def hf_search(q: str, user: User = Depends(require_permission("workflows.edit"))):
     if not q.strip():

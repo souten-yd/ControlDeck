@@ -36,9 +36,45 @@ DEFAULT_SETTINGS = {
     "base_url": DEFAULT_BASE_URL,
     "idle_unload_enabled": False,
     "idle_unload_minutes": 30,
-    "default_keep_alive": "5m",  # ロード時の既定保持時間
-    "default_model": "",         # LLM ノードの既定に使える
+    "default_keep_alive": "30m",  # ロード時の既定保持時間（大型モデルの都度ロードを防ぐ）
+    "default_model": "",          # LLM ノードの既定に使える
+    # モデル別の詳細設定 {"モデル名": {"keep_alive": "1h", "idle_exclude": true, "num_ctx": 8192}}
+    "model_configs": {},
 }
+
+
+def get_model_config(model: str) -> dict:
+    """モデル個別設定（未設定なら空 dict）。"""
+    cfgs = get_settings().get("model_configs") or {}
+    return dict(cfgs.get(model, {}))
+
+
+def set_model_config(model: str, patch: dict) -> dict:
+    """モデル個別設定を更新する。keep_alive/idle_exclude/num_ctx のみ許可。"""
+    allowed = {"keep_alive", "idle_exclude", "num_ctx"}
+    s = get_settings()
+    cfgs = dict(s.get("model_configs") or {})
+    cur = dict(cfgs.get(model, {}))
+    for k, v in patch.items():
+        if k not in allowed:
+            continue
+        if v in (None, "", False) and k in cur:
+            cur.pop(k)  # 空指定はクリア
+        elif v not in (None, "", False):
+            cur[k] = v
+    if cur:
+        cfgs[model] = cur
+    else:
+        cfgs.pop(model, None)
+    s["model_configs"] = cfgs
+    _settings_path().write_text(json.dumps(s, ensure_ascii=False, indent=2))
+    return cur
+
+
+def effective_keep_alive(model: str) -> str | int:
+    """モデル個別 keep_alive → なければ既定。"""
+    cfg = get_model_config(model)
+    return cfg.get("keep_alive") or get_settings().get("default_keep_alive", "30m")
 
 
 def get_settings() -> dict:
@@ -146,7 +182,7 @@ async def delete(model: str) -> None:
 
 
 async def load(model: str, keep_alive: str | int | None = None) -> dict:
-    ka = keep_alive if keep_alive is not None else get_settings().get("default_keep_alive", "5m")
+    ka = keep_alive if keep_alive is not None else effective_keep_alive(model)
     # 空プロンプトの generate でモデルだけロードする
     r = await _post("/api/generate", {"model": model, "keep_alive": ka}, timeout=120)
     if r.status_code >= 400:
@@ -350,6 +386,10 @@ async def idle_unload_loop() -> None:
                     _activity.pop(name, None)
             for m in running:
                 name = m["name"]
+                # モデル個別設定でアイドルアンロード除外なら対象外（常駐させる）
+                if get_model_config(name).get("idle_exclude"):
+                    _activity.pop(name, None)
+                    continue
                 exp = str(m.get("expires_at", ""))
                 last_active, prev_exp = _activity.get(name, (now, exp))
                 if exp != prev_exp:  # expires_at が動いた = 直近で呼ばれた

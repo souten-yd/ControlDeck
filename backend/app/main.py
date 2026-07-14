@@ -159,7 +159,8 @@ if DIST.is_dir():
         candidate = (DIST / full_path).resolve()
         if full_path and candidate.is_file() and str(candidate).startswith(str(DIST)):
             return FileResponse(candidate)
-        return FileResponse(DIST / "index.html")
+        # index.html はキャッシュさせない（デプロイ後に旧チャンク参照が残るのを防ぐ）
+        return FileResponse(DIST / "index.html", headers={"Cache-Control": "no-cache"})
 else:
 
     @app.get("/", include_in_schema=False)

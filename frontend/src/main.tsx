@@ -12,6 +12,17 @@ const isStandalone =
   window.matchMedia("(display-mode: standalone)").matches;
 if (isStandalone) document.documentElement.classList.add("pwa-standalone");
 
+// デプロイ（再ビルド）後、開きっぱなしの旧画面が存在しない旧チャンクを遅延ロードして
+// 404 になる（ターミナル/リモート等が開けない）。失敗時は自動で 1 回だけ再読み込みする。
+window.addEventListener("vite:preloadError", (e) => {
+  const last = Number(sessionStorage.getItem("cd-chunk-reload") || 0);
+  if (Date.now() - last > 10_000) {
+    e.preventDefault();
+    sessionStorage.setItem("cd-chunk-reload", String(Date.now()));
+    location.reload();
+  }
+});
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
