@@ -340,7 +340,9 @@ def _extract_json(text: str) -> dict:
 
 
 def _validate_generated(definition: dict) -> list[str]:
-    """未知タイプ + エンジン検証。問題のリストを返す（空なら OK）。"""
+    """未知タイプ + 構造検証 + 意味検証（エラーのみ）。問題のリストを返す（空なら OK）。"""
+    from app.workflows.validation import semantic_check
+
     problems: list[str] = []
     unknown = sorted({str(n.get("type")) for n in definition.get("nodes", [])} - catalog.valid_types())
     if unknown:
@@ -349,7 +351,16 @@ def _validate_generated(definition: dict) -> list[str]:
         engine.validate_definition(json.dumps(definition))
     except engine.DefinitionError as e:
         problems.append(str(e))
+    if not problems:  # 構造 OK のときのみ意味検証（エラーだけ修正対象に）
+        errors, _ = semantic_check(definition.get("nodes", []), definition.get("edges", []))
+        problems.extend(errors)
     return problems
+
+
+def _quality(definition: dict, run_ok: bool | None = None) -> dict:
+    from app.workflows.validation import quality_score
+
+    return quality_score(definition.get("nodes", []), definition.get("edges", []), run_ok)
 
 
 @router.post("/generate-workflow")
@@ -366,11 +377,13 @@ async def generate_workflow(body: GenerateBody, user: User = Depends(require_per
         raise HTTPException(status_code=422, detail=f"生成 JSON の解析に失敗: {e}")
     definition = {"nodes": data.get("nodes", []), "edges": data.get("edges", [])}
     warnings = _validate_generated(definition)
+    quality = _quality(definition)
     return {
         "name": body.name or data.get("name", "生成ワークフロー"),
         "definition": definition,
         "valid": not warnings,
-        "warnings": warnings,
+        "warnings": warnings + quality["warnings"],
+        "quality": quality,
     }
 
 
@@ -553,7 +566,11 @@ async def _run_build_job(job, req: dict, user_id: int) -> dict:
                          f"実行したところ失敗しました。原因を直した完全な JSON のみを返してください。\n{summary}"}]
             definition = None
 
-        await emit({"type": "done", "status": status, "workflow_id": wf_id, "execution_id": exec_id, "name": name})
+        # 品質スコア（実動作の成否を反映）
+        run_ok = True if status == "SUCCEEDED" else (False if run_check else None)
+        quality = _quality(definition, run_ok) if definition else None
+        await emit({"type": "done", "status": status, "workflow_id": wf_id,
+                    "execution_id": exec_id, "name": name, "quality": quality})
     return {"status": status, "workflow_id": wf_id, "execution_id": exec_id, "name": name}
 
 

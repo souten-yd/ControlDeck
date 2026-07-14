@@ -28,8 +28,9 @@ const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: 
 ];
 
 interface SourceItem { title: string; url: string; snippet?: string; source?: string }
-interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string }
-interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean }
+interface Quality { score: number; label: string; breakdown: Record<string, number>; errors: string[]; warnings: string[] }
+interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string; quality?: Quality }
+interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean; quality?: Quality }
 
 interface PersistMsg {
   id: string;
@@ -339,7 +340,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           ok
             ? `🎉 完了: 「${d.name}」を登録${d.status === "SUCCEEDED" ? "し、動作確認に成功" : ""}しました`
             : "⚠️ 自動修正の上限に達しました。登録済みの定義をエディタで確認・修正してください",
-          { status: d.status, workflowId: d.workflow_id ?? undefined, done: true },
+          { status: d.status, workflowId: d.workflow_id ?? undefined, done: true, quality: d.quality ?? undefined },
         );
       } else if (d.type === "error") {
         push(`⚠️ ${d.message}`, { status: "FAILED", done: true });
@@ -625,6 +626,7 @@ function MessageBubble({
                 );
               })}
             </div>
+            {msg.gen.quality && <QualityBadge q={msg.gen.quality} />}
             {msg.gen.warnings.length > 0 && (
               <p className="mt-2 whitespace-pre-wrap rounded-lg bg-amber-50 p-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
                 {msg.gen.warnings.join("\n")}
@@ -657,6 +659,7 @@ function MessageBubble({
               ))}
             </ul>
             {!msg.build.done && <p className="mt-1.5 animate-pulse text-[11px] text-zinc-400">実行中...</p>}
+            {msg.build.quality && <QualityBadge q={msg.build.quality} />}
             {msg.build.done && msg.build.workflowId != null && (
               <button
                 onClick={() => onOpen(msg.build!.workflowId!)}
@@ -668,6 +671,36 @@ function MessageBubble({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 生成ワークフローの品質スコア表示（0-100 + 内訳 + 検証結果）。 */
+function QualityBadge({ q }: { q: Quality }) {
+  const color =
+    q.score >= 85 ? "text-emerald-600 dark:text-emerald-400" :
+    q.score >= 60 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400";
+  const bar =
+    q.score >= 85 ? "bg-emerald-500" : q.score >= 60 ? "bg-amber-500" : "bg-red-500";
+  return (
+    <div className="mt-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-700">
+      <div className="flex items-center gap-2">
+        <span className={`num text-sm font-bold ${color}`}>{q.score}</span>
+        <span className="text-[11px] text-zinc-500">/100 · {q.label}</span>
+        <div className="ml-auto h-1.5 w-24 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+          <div className={`h-full rounded-full ${bar}`} style={{ width: `${q.score}%` }} />
+        </div>
+      </div>
+      <details className="mt-1">
+        <summary className="cursor-pointer text-[10px] text-zinc-400">内訳と検証結果</summary>
+        <ul className="mt-1 space-y-0.5 text-[10px] text-zinc-500">
+          {Object.entries(q.breakdown).map(([k, v]) => (
+            <li key={k} className="flex justify-between"><span>{k}</span><span className="num">{v}</span></li>
+          ))}
+          {q.errors.map((e, i) => <li key={`e${i}`} className="text-red-500">⚠️ {e}</li>)}
+          {q.warnings.map((w, i) => <li key={`w${i}`} className="text-amber-500">・{w}</li>)}
+        </ul>
+      </details>
     </div>
   );
 }

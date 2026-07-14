@@ -10,7 +10,7 @@
 | A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
 | B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（DB永続化・再起動復元・API拡充、マージ済み） |
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（全モードサーバー側・実機切断試験済み、マージ済み） |
-| D. チャットによるワークフロー生成の親子ジョブ化・厳格検証 | ⬜ 未着手 |
+| D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（既存 /chat/build を強化、マージ済み） |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ⬜ 未着手 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
@@ -79,11 +79,10 @@
 - **UI**: AssistantChat の localStorage 履歴を廃止し DB 会話へ一本化。設定は⚙ボタンに集約（モデル/検索エンジン/SearXNG）。「🆕新規」で会話切替。マウント時に DB 復元 + generating 再購読。
 - **未対応（軽微）**: 会話一覧のUI（複数会話の切替ピッカー）は未実装（現状は単一「現在の会話」+新規）。gen モードの生成中プレビューは非永続（1 LLM 呼び出しで短い）。
 
-### D. ワークフロー生成の親子ジョブ化
-- workflow_generation を子ジョブ（要件分析/生成/構造検証/意味検証/dry-run/実行/自動修正）に分割。
-- LLMへノード型/エッジ/変数/シークレット/capability を渡し JSON Schema 厳格出力。
-- 検証3段（構造/意味/dry-run+実動作）。自動修正上限3、各版を WorkflowVersion 保存。品質スコア表示。
-- 既存 `/chat/build` を土台に拡張。
+### D. ワークフロー生成の意味検証・品質スコア ✅ 完了
+- **実装済み**: `validation.py` に `semantic_check`（到達不能ノード・存在しない変数参照・主要必須設定欠落・ループ/エージェント終了条件）と `quality_score`（構造/到達性/出力/エラー処理/実動作の 0-100 内訳）。
+- `chat_router._validate_generated` が構造検証の後に意味エラーも返し、自動ビルドの LLM 修正へフィードバック。生成 API と build 完了イベントに `quality` を付与。UI（AssistantChat）に品質スコアバッジ（内訳・検証結果の折り畳み）を表示。
+- **方針**: 完全な親子ジョブ分割ではなく、既存 `/chat/build`（既にジョブ化済み・generate→validate→register→run→自動修正）を強化する形（冗長化回避）。JSON Schema 厳格出力・dry-run 専用段は未実装（実動作確認で代替）。
 
 ### E. LLMランタイム抽象
 - `LlmRuntimeProvider`（detect/install/list_models/start/stop/health/stream_chat/cancel/get_capabilities...）。
