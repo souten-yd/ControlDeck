@@ -1,4 +1,4 @@
-"""バックグラウンドジョブの参照・キャンセル API。"""
+"""バックグラウンドジョブの参照・キャンセル API（メモリ + DB 永続化）。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,22 +11,31 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 @router.get("")
-def list_jobs(
+async def list_jobs(
     kind: str = "", limit: int = 30,
     user: User = Depends(require_permission("workflows.run")),
 ):
-    return [j.to_dict(with_events_from=len(j.events)) | {"events": []} for j in jobs.list_jobs(kind, min(limit, 100))]
+    # メモリ（実行中）+ DB（履歴・再起動後も残る）を統合。events は一覧では省く
+    items = await jobs.list_any(kind, min(limit, 100))
+    for it in items:
+        it["event_count"] = len(it.get("events", []))
+        it["events"] = []
+    return items
 
 
 @router.get("/{job_id}")
-def get_job(
+async def get_job(
     job_id: str, events_from: int = 0,
     user: User = Depends(require_permission("workflows.run")),
 ):
     job = jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="ジョブが見つかりません（サーバー再起動で履歴は消えます）")
-    return job.to_dict(with_events_from=max(0, events_from))
+    if job is not None:
+        return job.to_dict(with_events_from=max(0, events_from))
+    # メモリに無ければ DB から（再起動後の履歴。interrupted 等も見える）
+    persisted = await jobs.get_any(job_id)
+    if persisted is None:
+        raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+    return persisted
 
 
 @router.post("/{job_id}/cancel")

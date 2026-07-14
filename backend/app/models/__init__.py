@@ -136,6 +136,30 @@ class WorkflowSecret(Base):
     )
 
 
+class Job(Base):
+    """サーバー主導ジョブの永続レコード（再起動復元・履歴用）。
+
+    実行中の高速イベントストリームはメモリ（app/jobs/service.py）が担い、
+    ここには状態・進捗・結果・主要イベントのスナップショットを記録する。
+    """
+
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    # running/succeeded/failed/canceled/interrupted
+    status: Mapped[str] = mapped_column(String(24), default="running", index=True)
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    events_json: Mapped[str] = mapped_column(Text, default="[]")  # 末尾N件のスナップショット
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ElectricityDaily(Base):
     """日別の消費電力量・電気料金（電気代の正となる値。月別は日別の SUM）。"""
 

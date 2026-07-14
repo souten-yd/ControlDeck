@@ -128,7 +128,7 @@ async def start_pull_job(
                 job.log(status)
         return {"model": target}
 
-    job = jobs.create("model.pull", f"モデル取得: {target}", run)
+    job = jobs.create("model.pull", f"モデル取得: {target}", run, owner_user_id=user.id)
     audit.record(db, "model.pull", user=user, resource_type="model", resource_id=target,
                  request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
@@ -155,7 +155,7 @@ async def start_register_job(
                 job.log(status)
         return {"model": name}
 
-    job = jobs.create("model.register", f"ローカル登録: {name}", run)
+    job = jobs.create("model.register", f"ローカル登録: {name}", run, owner_user_id=user.id)
     audit.record(db, "model.register", user=user, resource_type="model", resource_id=name,
                  request=request, metadata={"job_id": job.id, "path": path})
     return {"job_id": job.id}
