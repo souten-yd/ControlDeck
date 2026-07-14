@@ -9,7 +9,7 @@
 |---|---|
 | A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
 | B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（DB永続化・再起動復元・API拡充、マージ済み） |
-| C. 永続チャット（ブラウザを閉じても回答生成・復元） | ⬜ 未着手 |
+| C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（全モードサーバー側・実機切断試験済み、マージ済み） |
 | D. チャットによるワークフロー生成の親子ジョブ化・厳格検証 | ⬜ 未着手 |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ⬜ 未着手 |
@@ -72,11 +72,12 @@
 - API: `GET /jobs`(list_any=メモリ+DB統合), `GET /jobs/{id}`(メモリ→DBフォールバック), `POST /jobs/{id}/cancel`。既存 model.pull/register/workflow.build は owner 付きで移行済み。
 - **未実装（計画C以降で追加予定）**: idempotency_key/heartbeat/優先度、WS /jobs/stream（現状は個別ジョブの WS は chat_router 側にある）。チャットの部分出力チェックポイントは計画C（ChatMessage）で対応。
 
-### C. 永続チャット
-- 送信時1トランザクションで user msg + assistant placeholder + chat_completion ジョブ作成。
-- ワーカーが生成、placeholder にチャンク保存、完了で final。**WS切断でcancelしない**（asyncio.Task を切らない）。
-- 会話履歴API で queued/generating/completed/failed/interrupted を復元。要 conversation/message テーブル（現状チャット履歴はlocalStorage）。
-- 根本原因（現状）: `/chat/stream` は WS ハンドラ内で LLM を直接 stream。切断＝生成中断、回答はブラウザのみ保持しDB未保存。
+### C. 永続チャット ✅ 完了
+- **根本原因**（従来 /chat/stream）: WS ハンドラ内で LLM を直接 stream → 切断＝中断、回答はブラウザのみ保持・DB未保存だった。
+- **実装済み**: `Conversation`/`ChatMessage` テーブル。`chat_persist.py` で送信時に user + assistant placeholder + chat.completion ジョブを DB 作成。ワーカーがサーバー側で生成し ChatMessage へ 1秒毎チェックポイント保存。WS(`/chat/messages/{id}/stream`)は通知のみで**切断してもジョブ継続**。再接続は job_id 購読、再オープンは履歴 API で復元（generating は snapshot + 継続）。
+- **全モードサーバー側**（ユーザー指示）: chat/web/academic/deep を全て永続パスへ。web/academic/deep は `_server_search`（chat_router の検索/`_deep_search` を再利用）がジョブ内で検索→LLM。出典は ChatMessage.meta_json に保存し WS "sources" で配信。gen/run は元々サーバー計算（run は workflow executions で永続）。
+- **UI**: AssistantChat の localStorage 履歴を廃止し DB 会話へ一本化。設定は⚙ボタンに集約（モデル/検索エンジン/SearXNG）。「🆕新規」で会話切替。マウント時に DB 復元 + generating 再購読。
+- **未対応（軽微）**: 会話一覧のUI（複数会話の切替ピッカー）は未実装（現状は単一「現在の会話」+新規）。gen モードの生成中プレビューは非永続（1 LLM 呼び出しで短い）。
 
 ### D. ワークフロー生成の親子ジョブ化
 - workflow_generation を子ジョブ（要件分析/生成/構造検証/意味検証/dry-run/実行/自動修正）に分割。

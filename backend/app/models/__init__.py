@@ -136,6 +136,39 @@ class WorkflowSecret(Base):
     )
 
 
+class Conversation(Base):
+    """永続チャットの会話。localStorage ではなく DB に保存し、端末間で共有・復元する。"""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200), default="新しい会話")
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ChatMessage(Base):
+    """会話内のメッセージ。assistant はサーバー側ジョブが生成し、部分出力を随時保存する。"""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    role: Mapped[str] = mapped_column(String(16))  # user / assistant
+    content: Mapped[str] = mapped_column(Text, default="")
+    thinking: Mapped[str] = mapped_column(Text, default="")  # 推論トレース（think 有効時）
+    # generating / completed / failed / interrupted / canceled（user は常に completed）
+    status: Mapped[str] = mapped_column(String(16), default="completed")
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str] = mapped_column(String(128), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    # モード別の付随データ（web/academic/deep の出典など） {"mode":..., "sources":[...]}
+    meta_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Job(Base):
     """サーバー主導ジョブの永続レコード（再起動復元・履歴用）。
 

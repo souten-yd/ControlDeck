@@ -118,6 +118,7 @@ from app.workflows.knowledge_router import router as knowledge_router  # noqa: E
 from app.workflows.chat_router import router as chat_router  # noqa: E402
 from app.workflows.samplebook import router as samplebook_router  # noqa: E402
 from app.workflows.hooks_router import router as hooks_router  # noqa: E402
+from app.workflows.chat_persist import router as chat_persist_router  # noqa: E402
 from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.router import router as models_router  # noqa: E402
 
@@ -137,6 +138,7 @@ app.include_router(remote_router, prefix=API)
 app.include_router(gitrepos_router, prefix=API)
 app.include_router(knowledge_router, prefix=API)
 app.include_router(chat_router, prefix=API)
+app.include_router(chat_persist_router, prefix=API)
 app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
