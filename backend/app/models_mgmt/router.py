@@ -325,7 +325,7 @@ async def llama_assets(user: User = Depends(require_permission("workflows.edit")
 
 
 class LlamaInstallBody(BaseModel):
-    backend: str = Field(pattern="^(vulkan|rocm|cuda)$")
+    backend: str = Field(pattern="^(vulkan|rocm)$")  # CUDA は Ollama 利用のため対象外
 
 
 @router.post("/llama/install-jobs", status_code=201)
@@ -343,6 +343,21 @@ async def llama_install(body: LlamaInstallBody, request: Request,
     audit.record(db, "llama.install", user=user, resource_type="runtime", resource_id=backend,
                  request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
+
+
+@router.post("/llama/switch")
+async def llama_switch(body: LlamaInstallBody, request: Request,
+                       user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """導入済みの別バックエンド（rocm/vulkan/cuda）へ切り替える（再ダウンロード不要）。"""
+    from app.models_mgmt import llama
+
+    try:
+        res = await asyncio.to_thread(llama.switch_backend, body.backend)
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    audit.record(db, "llama.switch", user=user, resource_type="runtime",
+                 resource_id=body.backend, request=request)
+    return res
 
 
 @router.get("/llama/config")
