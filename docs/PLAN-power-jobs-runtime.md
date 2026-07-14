@@ -8,7 +8,7 @@
 | 計画 | 状態 |
 |---|---|
 | A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
-| B. サーバー主導ジョブ基盤の汎用化 | ⬜ 未着手（既存 `app/jobs` は簡易版） |
+| B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（DB永続化・再起動復元・API拡充、マージ済み） |
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ⬜ 未着手 |
 | D. チャットによるワークフロー生成の親子ジョブ化・厳格検証 | ⬜ 未着手 |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
@@ -65,12 +65,12 @@
 
 ## 計画B〜G：サーバー主導ジョブ基盤ほか（未着手・設計メモ）
 
-### B. 汎用ジョブ基盤
-- `jobs`/`job_events`/`job_artifacts` テーブル新設。状態 queued..interrupted。ワーカーがDBから取得しブラウザ接続と無関係に実行。
-- 部分出力はメモリバッファ→0.5〜2秒/一定文字数でチャンク保存、完了時final。
-- 再起動時：running を種別に応じ復元/interrupted、重複実行防止（idempotency_key）、heartbeat。
-- API: `POST/GET /jobs`, `/jobs/{id}`, `/jobs/{id}/events`, `/jobs/{id}/cancel`, `WS /jobs/stream`。
-- **既存 `app/jobs/service.py` を DB永続化版へ拡張**（乱立させない）。既存の model.pull/register/workflow.build を移行。
+### B. 汎用ジョブ基盤 ✅ 完了
+- **実装済み**: `jobs` テーブル（冗長化回避のため job_events/artifacts は作らず events_json スナップショットに集約）。
+- メモリ(`_jobs`)=高速WSストリーム、DB(`Job`)=状態/進捗/結果/末尾50イベントを永続化。DB書き込みは作成・状態変化・終了の要所のみ（毎トークン書かない）。
+- 再起動時 `recover_on_startup()` が running→interrupted。owner_user_id 記録。
+- API: `GET /jobs`(list_any=メモリ+DB統合), `GET /jobs/{id}`(メモリ→DBフォールバック), `POST /jobs/{id}/cancel`。既存 model.pull/register/workflow.build は owner 付きで移行済み。
+- **未実装（計画C以降で追加予定）**: idempotency_key/heartbeat/優先度、WS /jobs/stream（現状は個別ジョブの WS は chat_router 側にある）。チャットの部分出力チェックポイントは計画C（ChatMessage）で対応。
 
 ### C. 永続チャット
 - 送信時1トランザクションで user msg + assistant placeholder + chat_completion ジョブ作成。

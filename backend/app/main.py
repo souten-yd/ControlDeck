@@ -44,6 +44,10 @@ async def lifespan(app: FastAPI):
     from app.monitoring.electricity import accumulator
 
     accumulator.load()
+    # 前回実行中のまま残ったジョブを interrupted にマーク（メモリは再起動で消える）
+    from app.jobs import service as jobs_service
+
+    jobs_service.recover_on_startup()
     from app.alerts.engine import alert_loop
     from app.maintenance.service import maintenance_loop
     from app.maintenance.watchdog import notify_ready, watchdog_loop

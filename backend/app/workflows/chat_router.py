@@ -596,7 +596,7 @@ async def build_workflow_stream(websocket: WebSocket):
             await websocket.close()
             return
         job = jobs_svc.create("workflow.build", f"自動ビルド: {goal[:60]}",
-                              lambda j: _run_build_job(j, req, user_id))
+                              lambda j: _run_build_job(j, req, user_id), owner_user_id=user_id)
 
     # ジョブのイベントをストリーム（切断してもジョブは続く。job_id で再接続可能）
     try:
