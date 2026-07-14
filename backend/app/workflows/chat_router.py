@@ -246,8 +246,11 @@ async def chat_search(body: SearchBody, user: User = Depends(require_permission(
 
     if body.mode != "deep":
         raise HTTPException(status_code=422, detail=f"未知の検索モード: {body.mode}")
+    return await _deep_search(body)
 
-    # ---- Deep サーチ: サブ質問分解 → Web 検索 → 本文収集 → 引用付き統合 ----
+
+async def _deep_search(body: SearchBody) -> dict:
+    """Deep サーチ: サブ質問分解 → Web 検索 → 本文収集 → 引用付き統合レポート。"""
     try:
         raw = await _llm(
             [{"role": "user", "content":
@@ -274,7 +277,7 @@ async def chat_search(body: SearchBody, user: User = Depends(require_permission(
     texts = await asyncio.gather(*(_page_text(x["url"]) for x in top))
     sources = []
     corpus = []
-    for i, (item, text) in enumerate(zip(top, texts), start=1):
+    for item, text in zip(top, texts):
         content = text or item.get("snippet", "")
         if not content:
             continue

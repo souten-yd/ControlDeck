@@ -31,6 +31,16 @@ interface SourceItem { title: string; url: string; snippet?: string; source?: st
 interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string }
 interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean }
 
+interface PersistMsg {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  thinking: string;
+  status: string;
+  job_id: string | null;
+  model: string;
+}
+
 interface Msg {
   role: "user" | "assistant";
   content: string;
@@ -40,30 +50,19 @@ interface Msg {
   build?: BuildState;
   thinking?: string;
   streaming?: boolean;
+  // 永続チャット（DB 会話）: assistant メッセージの ID と状態
+  messageId?: string;
+  persistStatus?: string; // generating / completed / failed / interrupted / canceled
 }
 
 const LS_KEY = "cd-assistant-settings";
-const LS_HISTORY = "cd-assistant-history";
+const LS_CONV = "cd-chat-conversation"; // 永続チャットの会話 ID（本文は DB に保存）
 
 function loadSettings() {
   try {
     return JSON.parse(localStorage.getItem(LS_KEY) || "{}");
   } catch {
     return {};
-  }
-}
-
-function loadHistory(): Msg[] {
-  try {
-    const arr = JSON.parse(localStorage.getItem(LS_HISTORY) || "[]");
-    // 復元時は途中状態を確定させる（streaming やビルド中フラグを落とす）
-    return (Array.isArray(arr) ? arr : []).map((m: Msg) => ({
-      ...m,
-      streaming: false,
-      build: m.build ? { ...m.build, done: true } : undefined,
-    }));
-  } catch {
-    return [];
   }
 }
 
@@ -74,7 +73,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
 
   const saved = useRef(loadSettings()).current;
   const [mode, setMode] = useState<Mode>("chat");
-  const [messages, setMessages] = useState<Msg[]>(loadHistory);
+  const [messages, setMessages] = useState<Msg[]>([]); // 会話本文は DB から復元
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -83,8 +82,52 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [engine, setEngine] = useState<string>(saved.engine || "duckduckgo");
   const [searxngUrl, setSearxngUrl] = useState<string>(saved.searxngUrl || "");
   const [runTarget, setRunTarget] = useState<number | "">("");
+  const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 永続チャット: マウント時に DB 会話を復元し、生成中メッセージがあれば購読を再開する。
+  // これにより、生成中にブラウザを閉じても回答はサーバー側で保存され、再度開くと続きが見える。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let id = convId;
+      try {
+        if (!id) {
+          const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
+          id = c.id;
+          localStorage.setItem(LS_CONV, id);
+          setConvId(id);
+          return; // 新規会話は空
+        }
+        const data = await api<{ messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
+        if (cancelled) return;
+        const restored: Msg[] = data.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          thinking: m.thinking || undefined,
+          messageId: m.id,
+          persistStatus: m.status,
+          streaming: m.status === "generating",
+        }));
+        if (restored.length > 0) setMessages(restored);
+        // 生成中のまま残っているメッセージを購読再開
+        const gen = data.messages.find((m) => m.role === "assistant" && m.status === "generating");
+        if (gen) {
+          setBusy(true);
+          streamMessage(gen.id).finally(() => setBusy(false));
+        }
+      } catch {
+        // 会話が消えていたら作り直す
+        localStorage.removeItem(LS_CONV);
+        setConvId("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, engine, searxngUrl }));
@@ -100,15 +143,6 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-    // 履歴を保存（直近 60 件・ストリーミング中フラグは保存しない）
-    try {
-      localStorage.setItem(
-        LS_HISTORY,
-        JSON.stringify(messages.slice(-60).map((m) => ({ ...m, streaming: false }))),
-      );
-    } catch {
-      /* 容量超過などは無視 */
-    }
   }, [messages]);
 
   useEffect(() => {
@@ -148,30 +182,29 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const patchLast = (fn: (m: Msg) => Msg) =>
     setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? fn(m) : m)));
 
-  /** WS 経由で LLM 応答をストリーミングし、最後のメッセージへ書き足す。 */
-  const streamLLM = (history: { role: string; content: string }[]) =>
+  /** 永続チャット: assistant メッセージの生成を購読する（切断してもサーバーは継続）。
+   * 対象メッセージ（messageId 一致）へ delta/thinking を書き込む。 */
+  const streamMessage = (messageId: string) =>
     new Promise<void>((resolve) => {
-      const ws = new WebSocket(wsUrl("/chat/stream"));
+      const ws = new WebSocket(wsUrl(`/chat/messages/${messageId}/stream`));
       wsRef.current = ws;
-      ws.onopen = () => ws.send(JSON.stringify({ messages: history, base_url: baseUrl, model }));
+      const patchMsg = (fn: (m: Msg) => Msg) =>
+        setMessages((prev) => prev.map((m) => (m.messageId === messageId ? fn(m) : m)));
       ws.onmessage = (ev) => {
-        const data = JSON.parse(ev.data);
-        if (data.type === "delta") patchLast((m) => ({ ...m, content: m.content + data.content }));
-        else if (data.type === "thinking") patchLast((m) => ({ ...m, thinking: (m.thinking ?? "") + data.content }));
-        else if (data.type === "error") patchLast((m) => ({ ...m, content: m.content + `\n⚠️ ${data.message}` }));
+        const d = JSON.parse(ev.data);
+        if (d.type === "snapshot") patchMsg((m) => ({ ...m, content: d.content, thinking: d.thinking || undefined }));
+        else if (d.type === "delta") patchMsg((m) => ({ ...m, content: m.content + d.content }));
+        else if (d.type === "thinking") patchMsg((m) => ({ ...m, thinking: (m.thinking ?? "") + d.content }));
+        else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
+        else if (d.type === "done") patchMsg((m) => ({ ...m, streaming: false, persistStatus: d.status }));
+        else if (d.type === "error") patchMsg((m) => ({ ...m, content: m.content + `\n⚠️ ${d.message}`, streaming: false }));
       };
       ws.onclose = () => {
-        patchLast((m) => ({ ...m, streaming: false }));
+        patchMsg((m) => ({ ...m, streaming: false }));
         resolve();
       };
       ws.onerror = () => ws.close();
     });
-
-  const textHistory = (extra: Msg[]) =>
-    [...messages, ...extra]
-      .filter((m) => (m.kind ?? "text") === "text" || m.kind === "sources")
-      .slice(-12)
-      .map((m) => ({ role: m.role, content: m.content }));
 
   const send = async () => {
     const text = input.trim();
@@ -185,52 +218,24 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     const userMsg: Msg = { role: "user", content: text };
     append(userMsg);
     try {
-      if (mode === "chat") {
-        append({ role: "assistant", content: "", streaming: true });
-        await streamLLM([
-          { role: "system", content: "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。" },
-          ...textHistory([userMsg]),
-        ]);
-      } else if (mode === "web" || mode === "academic") {
-        append({ role: "assistant", content: "🔎 検索中...", streaming: true });
-        const res = await api<{ results: SourceItem[] }>("/chat/search", {
-          method: "POST",
-          json: { query: text, mode, engine, searxng_url: searxngUrl, base_url: baseUrl, model },
-        });
-        const sources = (res.results || []).slice(0, 10);
-        if (!sources.length) {
-          patchLast((m) => ({ ...m, content: "検索結果が見つかりませんでした。", streaming: false }));
-          return;
+      if (mode === "chat" || mode === "web" || mode === "academic" || mode === "deep") {
+        // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
+        let cid = convId;
+        if (!cid) {
+          const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
+          cid = c.id;
+          localStorage.setItem(LS_CONV, cid);
+          setConvId(cid);
         }
-        patchLast((m) => ({ ...m, content: "", kind: "sources", sources }));
-        const ctx = sources
-          .map((s, i) => `[${i + 1}] ${s.title}\n${s.snippet || ""}\n${s.url}`)
-          .join("\n\n");
-        await streamLLM([
-          {
-            role: "system",
-            content:
-              "以下の検索結果を根拠に日本語で回答してください。主張には [番号] で出典を付けること。検索結果にない内容は推測と明示すること。\n\n" +
-              ctx,
-          },
-          { role: "user", content: text },
-        ]);
-      } else if (mode === "deep") {
-        append({ role: "assistant", content: "🔬 Deep サーチ中...（分解 → 検索 → 本文収集 → 統合。数分かかることがあります）", streaming: true });
-        const res = await api<{ report: string; sources: { n: number; title: string; url: string }[] }>(
-          "/chat/search",
-          {
-            method: "POST",
-            json: { query: text, mode: "deep", engine, searxng_url: searxngUrl, base_url: baseUrl, model },
-          },
-        );
-        patchLast((m) => ({
-          ...m,
-          content: res.report,
-          kind: "sources",
-          sources: res.sources.map((s) => ({ title: `[${s.n}] ${s.title}`, url: s.url })),
-          streaming: false,
-        }));
+        const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
+          method: "POST",
+          json: { content: text, mode, base_url: baseUrl, model, engine, searxng_url: searxngUrl },
+        });
+        const hint =
+          mode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
+          mode === "web" || mode === "academic" ? "🔎 検索中...（サーバー側で継続）" : "";
+        append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
+        await streamMessage(res.assistant_message_id);
       } else if (mode === "gen") {
         append({ role: "assistant", content: "⚙️ ワークフローを設計中...", streaming: true });
         const res = await api<Omit<GenData, "goal">>("/chat/generate-workflow", {
@@ -381,16 +386,23 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> AI アシスタント</span></h2>
           {messages.length > 0 && (
             <button
-              onClick={() => {
+              onClick={async () => {
+                // 新しい会話を開始（サーバー側の会話は残し、新規に切り替える）
                 setMessages([]);
-                localStorage.removeItem(LS_HISTORY);
+                try {
+                  const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
+                  localStorage.setItem(LS_CONV, c.id);
+                  setConvId(c.id);
+                } catch {
+                  /* 失敗時は次の送信で作成される */
+                }
               }}
               disabled={busy}
-              aria-label="会話履歴をクリア"
+              aria-label="新しい会話"
               className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
-              title="会話履歴をクリア"
+              title="新しい会話を開始"
             >
-              🗑<span className="hidden sm:inline"> クリア</span>
+              🆕<span className="hidden sm:inline"> 新規</span>
             </button>
           )}
           <button
