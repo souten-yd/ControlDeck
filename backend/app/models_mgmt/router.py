@@ -67,7 +67,8 @@ def ollama_env(user: User = Depends(require_permission("workflows.run"))):
 @router.get("/options-spec")
 def options_spec(user: User = Depends(require_permission("workflows.run"))):
     """UI がフォームを描くための、設定可能な options キー一覧。"""
-    return {"int": sorted(ollama.OPT_INT), "float": sorted(ollama.OPT_FLOAT), "kv_cache_types": list(ollama.KV_CACHE_TYPES)}
+    return {"int": sorted(ollama.OPT_INT), "float": sorted(ollama.OPT_FLOAT),
+            "kv_cache_types": list(ollama.KV_CACHE_TYPES), "think_values": list(ollama.THINK_VALUES)}
 
 
 # モデル個別設定は自由キー（options 群）。ollama 側で許可キー・型を検証する

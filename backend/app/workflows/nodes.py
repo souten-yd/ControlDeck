@@ -378,6 +378,32 @@ async def node_llm(config: dict, ctx: dict) -> dict:
         }
     timeout = min(float(config.get("timeout", 120)), 600)
 
+    # think(推論表示/オフ): 指定あり & Ollama ネイティブ & 構造化出力なし の場合に適用。
+    # OpenAI 互換 API では think が効かないためネイティブ /api/chat を使う
+    think = None
+    try:
+        from app.models_mgmt import ollama as _ol
+
+        tc = config.get("think")
+        think = _ol.normalize_think(tc) if tc not in (None, "") else _ol.effective_think(model)
+    except Exception:
+        think = None
+    if think is not None and not response_format and base_url.endswith("/v1"):
+        opts: dict = {"temperature": payload["temperature"]}
+        if config.get("max_tokens"):
+            opts["num_predict"] = int(config["max_tokens"])
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(base_url[:-3] + "/api/chat", json={
+                    "model": model, "messages": messages, "stream": False,
+                    "think": think, "keep_alive": payload["keep_alive"], "options": opts})
+        except httpx.HTTPError as e:
+            raise NodeError(f"LLM 接続失敗: {e}")
+        if r.status_code >= 400:
+            raise NodeError(f"LLM エラー {r.status_code}: {r.text[:200]}")
+        msg = r.json().get("message", {})
+        return {"content": msg.get("content", ""), "thinking": msg.get("thinking", "") or "", "model": model}
+
     async def call(p: dict) -> httpx.Response:
         async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.post(

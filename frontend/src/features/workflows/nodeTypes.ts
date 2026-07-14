@@ -240,6 +240,18 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "temperature", label: "温度", type: "number", placeholder: "0.7" },
       { key: "max_tokens", label: "最大トークン（任意）", type: "number" },
       {
+        key: "think", label: "思考 think（推論モデル・Ollama直結時）", type: "select",
+        options: [
+          { value: "", label: "モデル設定に従う" },
+          { value: "off", label: "オフ（思考なし・高速）" },
+          { value: "on", label: "オン" },
+          { value: "low", label: "低" },
+          { value: "medium", label: "中" },
+          { value: "high", label: "高" },
+        ],
+        hint: "思考をオフにすると高速化。構造化出力(JSON)使用時は無効",
+      },
+      {
         key: "agent_tools", label: "エージェントモード", type: "select",
         options: [
           { value: "", label: "無効（通常の 1 回生成）" },
@@ -252,6 +264,7 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     outputs: [
       { key: "content", label: "応答テキスト" },
       { key: "json", label: "構造化出力(JSON)" },
+      { key: "thinking", label: "思考トレース(推論モデル)" },
       { key: "model", label: "モデル名" },
       { key: "tokens", label: "使用トークン" },
       { key: "tool_log", label: "ツール実行ログ(エージェント)" },
