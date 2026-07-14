@@ -136,6 +136,37 @@ class WorkflowSecret(Base):
     )
 
 
+class ElectricityDaily(Base):
+    """日別の消費電力量・電気料金（電気代の正となる値。月別は日別の SUM）。"""
+
+    __tablename__ = "electricity_daily"
+
+    local_date: Mapped[str] = mapped_column(String(10), primary_key=True)  # YYYY-MM-DD
+    energy_kwh: Mapped[float] = mapped_column(Float, default=0.0)
+    cost_yen: Mapped[float] = mapped_column(Float, default=0.0)
+    # その日に実際に適用した単価（単価変更の履歴保持。過去料金を後から書き換えない）
+    price_per_kwh_yen: Mapped[float] = mapped_column(Float, default=35.69)
+    sample_duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    first_sample_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sample_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ElectricityState(Base):
+    """現在の起動セッション復元用（boot ID 単位）。単一行（id=1）。"""
+
+    __tablename__ = "electricity_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    boot_id: Mapped[str] = mapped_column(String(64), default="")
+    session_energy_kwh: Mapped[float] = mapped_column(Float, default=0.0)
+    session_cost_yen: Mapped[float] = mapped_column(Float, default=0.0)
+    last_input_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_sample_wall_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_persisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Workflow(Base):
     __tablename__ = "workflows"
 

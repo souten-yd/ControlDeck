@@ -95,6 +95,25 @@ export interface MetricsSnapshot {
     gpu_watts: number | null;
     total_watts_estimated: number | null;
     is_estimate: boolean;
+    // PSU 実測（Corsair HX1500i など corsair-psu hwmon）
+    available: boolean;
+    source: string | null;
+    output_power_w: number | null;
+    estimated_input_power_w: number | null;
+    vrm_temperature_c: number | null;
+    case_temperature_c: number | null;
+    fan_rpm: number | null;
+    // 電気代（起動中/今日/今月）
+    session_energy_kwh: number | null;
+    session_cost_yen: number | null;
+    today_energy_kwh: number | null;
+    today_cost_yen: number | null;
+    month_energy_kwh: number | null;
+    month_cost_yen: number | null;
+    price_per_kwh_yen: number;
+    psu_efficiency: number;
+    persistence_interval_seconds: number;
+    last_persisted_at: string | null;
   };
   uptime_seconds: number;
 }

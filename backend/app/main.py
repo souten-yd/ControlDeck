@@ -40,6 +40,10 @@ async def lifespan(app: FastAPI):
         seed_repair_app(db)
     finally:
         db.close()
+    # 電気代の起動セッション/日別を復元（同一 boot ID なら累積を引き継ぐ）
+    from app.monitoring.electricity import accumulator
+
+    accumulator.load()
     from app.alerts.engine import alert_loop
     from app.maintenance.service import maintenance_loop
     from app.maintenance.watchdog import notify_ready, watchdog_loop
@@ -64,6 +68,10 @@ async def lifespan(app: FastAPI):
     from app.maintenance.watchdog import sd_notify
 
     sd_notify("STOPPING=1")
+    # 電気代を即時保存（正常終了時。最大 persistence_interval 分の損失を防ぐ）
+    from app.monitoring.electricity import accumulator
+
+    await asyncio.to_thread(accumulator.persist, "shutdown")
     await searxng.lifecycle_stop()  # SearXNG も一緒に停止
     import contextlib
 

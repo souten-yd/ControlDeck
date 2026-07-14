@@ -16,6 +16,12 @@ monitoring:
   interval_seconds: 2
   raw_retention_hours: 24
   minute_retention_days: 30
+  # 電気代（Corsair HX1500i など corsair-psu hwmon 対応 PSU の DC 出力から概算）
+  electricity:
+    enabled: true
+    price_per_kwh_yen: 35.69   # 電力単価
+    psu_efficiency: 0.85       # PSU 効率（0.50〜1.00）。AC 入力電力の概算に使用
+    persistence_interval_seconds: 600  # DB へのチェックポイント間隔（SSD 書込抑制。60〜3600）
 
 logs:
   retention_days: 30
