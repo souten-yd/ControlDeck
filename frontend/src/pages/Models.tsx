@@ -148,6 +148,7 @@ export default function ModelsPage() {
       </p>
 
       <ActiveModelJobs />
+      {can("workflows.edit") && <LlamaRuntimeCard />}
       {status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           Ollama（{status.base_url}）に接続できません。<code className="font-mono">ollama serve</code> の起動、または設定でエンドポイントを確認してください。
@@ -745,4 +746,168 @@ function Row({ k, v }: { k: string; v: string }) {
 }
 function L({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block"><span className="mb-1 block text-xs font-medium text-zinc-500">{label}</span>{children}</label>;
+}
+
+interface LlamaStatus {
+  installed: boolean;
+  backend: string;
+  tag: string;
+  base_url: string | null;
+  port: number | null;
+  model_path: string;
+  experimental: boolean;
+  detected_backends: Record<string, boolean>;
+  installed_backends: string[];
+  selectable_backends: string[];
+  health?: { ok: boolean };
+}
+
+const BACKEND_LABEL: Record<string, string> = { rocm: "ROCm (AMD)", vulkan: "Vulkan (汎用GPU)", cuda: "CUDA (NVIDIA)" };
+
+/** llama.cpp ランタイム: 環境検出したバックエンドを選んで導入・切り替え・起動。 */
+function LlamaRuntimeCard() {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { data: job } = useJob(jobId);
+  const { data: st } = useQuery({
+    queryKey: ["llama-status"],
+    queryFn: () => api<LlamaStatus>("/models/llama/status"),
+    refetchInterval: (q) => (q.state.data?.installed ? 8000 : false),
+  });
+
+  useEffect(() => {
+    if (job && job.status !== "running") {
+      if (job.status === "succeeded") { show("llama.cpp を導入しました"); qc.invalidateQueries({ queryKey: ["llama-status"] }); }
+      else if (job.status === "failed") show(job.error, "error");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status]);
+
+  const install = async (backend: string) => {
+    try {
+      const r = await api<{ job_id: string }>("/models/llama/install-jobs", { method: "POST", json: { backend } });
+      setJobId(r.job_id);
+    } catch (e) { show(e instanceof Error ? e.message : "開始に失敗", "error"); }
+  };
+  const switchTo = async (backend: string) => {
+    try { await api("/models/llama/switch", { method: "POST", json: { backend } }); show(`${BACKEND_LABEL[backend]} に切り替えました`); qc.invalidateQueries({ queryKey: ["llama-status"] }); }
+    catch (e) { show(e instanceof Error ? e.message : "切り替え失敗", "error"); }
+  };
+
+  if (!st) return null;
+  const selectable = st.selectable_backends;
+
+  return (
+    <div className="mb-3 rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3 text-left">
+        <span className="text-sm font-semibold">🦙 llama.cpp ランタイム</span>
+        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
+        {st.installed ? (
+          <span className="text-xs text-emerald-600 dark:text-emerald-400">
+            {BACKEND_LABEL[st.backend] ?? st.backend} 導入済み
+            {st.health && (st.health.ok ? " · 稼働中" : "")}
+          </span>
+        ) : (
+          <span className="text-xs text-zinc-400">未導入</span>
+        )}
+        <span className="ml-auto text-zinc-400">{open ? "▾" : "▸"}</span>
+      </button>
+
+      {open && (
+        <div className="space-y-3 border-t border-zinc-100 px-4 py-3 dark:border-zinc-800">
+          <p className="text-xs text-zinc-500">
+            この PC で使えるバックエンドを検出して表示しています。CUDA(NVIDIA) は当面 Ollama をご利用ください。
+          </p>
+          {/* バックエンド選択（検出されたもののみ） */}
+          <div className="flex flex-wrap gap-2">
+            {selectable.length === 0 && <span className="text-xs text-zinc-400">対応 GPU バックエンドが検出されませんでした</span>}
+            {selectable.map((b) => {
+              const installed = st.installed_backends.includes(b);
+              const current = st.backend === b;
+              return (
+                <div key={b} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${current ? "border-accent-500 bg-accent-50/50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
+                  <div>
+                    <p className="text-xs font-medium">{BACKEND_LABEL[b] ?? b}</p>
+                    <p className="text-[10px] text-zinc-400">
+                      {current ? "使用中" : installed ? "導入済み" : "未導入"}
+                      {st.detected_backends[b] ? " · 対応" : ""}
+                    </p>
+                  </div>
+                  {current ? (
+                    <span className="text-emerald-500">✓</span>
+                  ) : installed ? (
+                    <button onClick={() => switchTo(b)} className="rounded-lg bg-zinc-100 px-2.5 py-1 text-[11px] font-medium hover:bg-zinc-200 dark:bg-zinc-800">切替</button>
+                  ) : (
+                    <button onClick={() => install(b)} disabled={job?.status === "running"} className="rounded-lg bg-accent-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-700 disabled:opacity-40">導入</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {job && job.status === "running" && <JobProgress job={job} />}
+
+          {st.installed && <LlamaInstanceControls st={st} onChanged={() => qc.invalidateQueries({ queryKey: ["llama-status"] })} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** llama.cpp のモデル起動設定と起動/停止。 */
+function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: () => void }) {
+  const show = useToasts((s) => s.show);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelPath, setModelPath] = useState(st.model_path);
+  const [ngl, setNgl] = useState<string>("999");
+  const [ctx, setCtx] = useState<string>("4096");
+  const [flash, setFlash] = useState(false);
+  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+
+  const saveAndStart = async () => {
+    if (!modelPath) { show("モデルファイルを選択してください", "error"); return; }
+    try {
+      await api("/models/llama/config", { method: "PUT", json: { model_path: modelPath, n_gpu_layers: Number(ngl), ctx_size: Number(ctx), flash_attn: flash } });
+      await api("/models/llama/start", { method: "POST" });
+      show("llama.cpp を起動しました（初回はモデル読み込みに時間がかかります）");
+      onChanged();
+    } catch (e) { show(e instanceof Error ? e.message : "起動に失敗", "error"); }
+  };
+  const stop = async () => {
+    try { await api("/models/llama/stop", { method: "POST" }); show("停止しました"); onChanged(); }
+    catch (e) { show(e instanceof Error ? e.message : "停止に失敗", "error"); }
+  };
+
+  return (
+    <div className="space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="text-xs font-semibold text-zinc-500">モデルを起動</p>
+      <div className="flex gap-1.5">
+        <input value={modelPath} onChange={(e) => setModelPath(e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+        <button onClick={() => setPickerOpen(true)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <L label="GPU 層数 (999=全部)"><input type="number" value={ngl} onChange={(e) => setNgl(e.target.value)} className={input} /></L>
+        <L label="コンテキスト長"><input type="number" value={ctx} onChange={(e) => setCtx(e.target.value)} className={input} /></L>
+      </div>
+      <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+        <span className="text-xs">Flash Attention</span>
+        <input type="checkbox" checked={flash} onChange={(e) => setFlash(e.target.checked)} className="h-4 w-4" />
+      </label>
+      <div className="flex gap-1.5">
+        <button onClick={saveAndStart} className="flex-1 rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700">起動</button>
+        <button onClick={stop} className="flex-1 rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">停止</button>
+      </div>
+      {st.base_url && (
+        <p className="text-[10px] text-zinc-400">
+          起動後はエンドポイント <code className="font-mono">{st.base_url}</code> をチャット/ワークフローの LLM 設定に指定して使えます。
+        </p>
+      )}
+      {pickerOpen && (
+        <FilePicker mode="file" title="GGUF モデルを選択" initialPath={modelPath || undefined}
+          onSelect={(p) => { setModelPath(p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />
+      )}
+    </div>
+  );
 }

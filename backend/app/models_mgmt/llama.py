@@ -35,6 +35,8 @@ BACKEND_PATTERNS = {
     "rocm": re.compile(r"linux.*rocm.*\.tar\.gz$", re.I),
     "cuda": re.compile(r"linux.*cuda.*\.tar\.gz$", re.I),
 }
+# llama.cpp としてユーザーに提示するバックエンド。CUDA(NVIDIA)は当面 Ollama を使う方針のため除外。
+SELECTABLE_BACKENDS = ("rocm", "vulkan")
 
 
 def runtimes_dir() -> Path:
@@ -107,13 +109,79 @@ def is_installed() -> bool:
     return server_path().exists() and os.access(server_path(), os.X_OK)
 
 
+# ---- 環境検出 / バックエンド切り替え ----
+
+
+def detect_backends() -> dict:
+    """このマシンで実際に使える GPU バックエンドを検出する。
+
+    使えないものは選択肢に出さない/警告するために使う。
+    - rocm: /dev/kfd（AMD ROCm カーネルドライバ）+ rocminfo/ライブラリ
+    - vulkan: vulkaninfo または libvulkan
+    - cuda: nvidia-smi または /usr/local/cuda
+    """
+    rocm = os.path.exists("/dev/kfd") and (
+        shutil.which("rocminfo") is not None or os.path.isdir("/opt/rocm")
+    )
+    vulkan = shutil.which("vulkaninfo") is not None or _has_lib("libvulkan.so")
+    cuda = shutil.which("nvidia-smi") is not None or any(
+        os.path.isdir(p) for p in ("/usr/local/cuda", "/opt/cuda")
+    )
+    return {"rocm": rocm, "vulkan": vulkan, "cuda": cuda}
+
+
+def _has_lib(name: str) -> bool:
+    import subprocess
+
+    try:
+        out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=5).stdout
+        return name in out
+    except Exception:
+        return False
+
+
+def _backend_root(backend: str, tag: str) -> Path:
+    return runtimes_dir() / tag / backend / "extracted"
+
+
+def installed_backends(tag: str = DEFAULT_TAG) -> list[str]:
+    """ダウンロード済み（展開済み）の backend 一覧。切り替え候補になる。"""
+    out = []
+    for b in BACKEND_PATTERNS:
+        if _find_binary(_backend_root(b, tag), "llama-server") is not None:
+            out.append(b)
+    return out
+
+
+def switch_backend(backend: str, tag: str = DEFAULT_TAG) -> dict:
+    """導入済みの別 backend へ current を張り替える（再ダウンロード不要）。"""
+    server = _find_binary(_backend_root(backend, tag), "llama-server")
+    if server is None:
+        raise RuntimeError(f"{backend} は未導入です。先に導入してください")
+    server.chmod(0o755)
+    link = current_link()
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(server.parent, target_is_directory=True)
+    save_config({"tag": tag, "backend": backend})
+    return {"backend": backend, "server": str(server_path())}
+
+
 def runtime_status() -> dict:
     cfg = get_config()
     inst = cfg["instance"]
+    detected = detect_backends()
+    installed = installed_backends()
+    # 選択肢: rocm/vulkan のうち検出された（=このマシンで動く）+ 導入済み。
+    # CUDA(NVIDIA) は当面 Ollama 利用のため llama.cpp の選択肢に出さない。
+    selectable = sorted(
+        {b for b in SELECTABLE_BACKENDS if detected.get(b)} | {b for b in installed if b in SELECTABLE_BACKENDS}
+    )
     return {
         "installed": is_installed(),
         "tag": cfg.get("tag", ""),
-        "backend": cfg.get("backend", ""),
+        "backend": cfg.get("backend", ""),  # 現在 current が指す backend
         "sha256": cfg.get("sha256", ""),
         "server_path": str(server_path()) if is_installed() else None,
         "port": inst.get("port"),
@@ -121,6 +189,9 @@ def runtime_status() -> dict:
         "alias": inst.get("alias", "llama"),
         "base_url": f"http://127.0.0.1:{inst.get('port', 8080)}/v1" if is_installed() else None,
         "experimental": True,  # ビルド環境依存のため実験的
+        "detected_backends": detected,       # {rocm/vulkan/cuda: bool}
+        "installed_backends": installed,     # 導入済み（切り替え可能）
+        "selectable_backends": selectable,   # UI に出す選択肢
     }
 
 

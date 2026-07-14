@@ -12,7 +12,7 @@
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（全モードサーバー側・実機切断試験済み、マージ済み） |
 | D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（既存 /chat/build を強化、マージ済み） |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
-| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 F-1完了（backend・実機動作確認、マージ済み）／F-2 UI 未着手 |
+| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 F-1/F-2完了（backend+UI・環境検出/切替、マージ済み）／MTP/思考深度の詳細UIは残 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ⬜ 一部済（v2エンジンで承認/リトライ/並列/flow.call/エージェント実装済み） |
 
@@ -95,7 +95,10 @@
 - start/stop/health、`detect_options`（`llama-server --help` 解析で実在フラグ 316 件・`--draft-*`=MTP/speculative も検出）。
 - API: `/models/llama/{status,assets,install-jobs,config,start,stop,options}`。OpenAI 互換 `http://127.0.0.1:<port>/v1` として既存チャット/ワークフローから利用可（base_url 指定）。
 - **実機検証**: ROCm 版を DL→展開→27B GGUF で起動→health OK→/v1/chat/completions 200→停止まで確認。experimental フラグ付き。
-- 未実装(F-2): 設定 UI（ランタイム選択・導入・起動設定・MTP/思考深度・`--help` 由来の動的フォーム）、モデル別インスタンス複数管理。host は 127.0.0.1 固定。
+**F-2 完了（UI、環境検出/切替）:**
+- Model 画面に「llama.cpp ランタイム」カード。`detect_backends` で **このマシンで使えるバックエンドのみ選択肢化**（ROCm=/dev/kfd+rocminfo、Vulkan=vulkaninfo/libvulkan）。CUDA は Ollama 案内で除外（ユーザー指示）。
+- 未導入=導入ボタン(DLジョブ)、導入済み=切替ボタン(`switch_backend` で current 張替・再DL不要)、使用中=✓。起動設定(モデルGGUF/GPU層数/ctx/flash-attn)+起動/停止。base_url を既存 LLM 設定に指定。
+- 未実装(残): MTP/思考深度の詳細フォーム(`--draft-*` の --help 由来動的UI)、モデル別複数インスタンス。host 127.0.0.1 固定。
 
 ### G. OpenCode（オプトインのみ）
 - **自動導入禁止**。`./deck.sh feature install/enable/disable/uninstall opencode`。
