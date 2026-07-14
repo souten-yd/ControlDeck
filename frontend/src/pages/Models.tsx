@@ -25,7 +25,10 @@ interface Settings {
   idle_unload_minutes: number;
   default_keep_alive: string;
   default_model: string;
+  kv_cache_type: string;
+  flash_attention: boolean;
 }
+interface OllamaEnv { flash_attention: boolean | null; kv_cache_type: string | null; source: string }
 
 function gb(n: number): string {
   return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
@@ -415,7 +418,68 @@ function HFSearch({ onPull, running }: { onPull: (m: string) => void; running: b
   );
 }
 
-interface ModelConfig { keep_alive?: string; idle_exclude?: boolean; num_ctx?: number }
+interface ModelConfig {
+  keep_alive?: string;
+  idle_exclude?: boolean;
+  num_ctx?: number;
+  num_predict?: number;
+  num_gpu?: number;
+  num_batch?: number;
+  temperature?: number;
+  top_k?: number;
+  top_p?: number;
+  min_p?: number;
+  repeat_penalty?: number;
+  seed?: number;
+  [k: string]: string | number | boolean | undefined;
+}
+
+/** 選択肢（プリセット）から選ぶ + 末尾の「カスタム」で手動入力するハイブリッド入力。 */
+function PresetOrCustom({
+  value,
+  presets,
+  placeholder,
+  numeric = true,
+  onChange,
+}: {
+  value: number | string | undefined;
+  presets: { v: number | string; label: string }[];
+  placeholder?: string;
+  numeric?: boolean;
+  onChange: (v: number | string | undefined) => void;
+}) {
+  const isPreset = value !== undefined && value !== "" && presets.some((p) => p.v === value);
+  const [custom, setCustom] = useState(!isPreset && value !== undefined && value !== "");
+  const sel = "rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  return (
+    <div className="flex gap-1.5">
+      <select
+        value={custom ? "__custom__" : value === undefined || value === "" ? "" : String(value)}
+        onChange={(e) => {
+          if (e.target.value === "__custom__") { setCustom(true); return; }
+          setCustom(false);
+          if (e.target.value === "") onChange(undefined);
+          else onChange(numeric ? Number(e.target.value) : e.target.value);
+        }}
+        className={`${sel} ${custom ? "w-28 shrink-0" : "min-w-0 flex-1"}`}
+      >
+        <option value="">既定</option>
+        {presets.map((p) => <option key={String(p.v)} value={String(p.v)}>{p.label}</option>)}
+        <option value="__custom__">カスタム入力…</option>
+      </select>
+      {custom && (
+        <input
+          type={numeric ? "number" : "text"}
+          value={value === undefined ? "" : String(value)}
+          onChange={(e) => onChange(e.target.value === "" ? undefined : numeric ? Number(e.target.value) : e.target.value)}
+          placeholder={placeholder}
+          autoFocus
+          className={`${sel} min-w-0 flex-1 font-mono text-xs`}
+        />
+      )}
+    </div>
+  );
+}
 
 function DetailSheet({ model, onClose }: { model: string; onClose: () => void }) {
   const { data, isLoading } = useQuery({
@@ -452,7 +516,24 @@ function DetailSheet({ model, onClose }: { model: string; onClose: () => void })
   );
 }
 
-/** モデルごとの詳細設定（keep_alive / アイドル除外 / コンテキスト長）。 */
+const CTX_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }));
+const PREDICT_PRESETS = [
+  { v: -1, label: "無制限 (-1)" }, { v: -2, label: "文脈まで (-2)" },
+  { v: 256, label: "256" }, { v: 512, label: "512" }, { v: 1024, label: "1024" },
+  { v: 2048, label: "2048" }, { v: 4096, label: "4096" },
+];
+const TEMP_PRESETS = [0, 0.2, 0.4, 0.7, 1.0, 1.3].map((v) => ({ v, label: v.toFixed(1) }));
+const TOPK_PRESETS = [10, 20, 40, 80, 100].map((v) => ({ v, label: String(v) }));
+const TOPP_PRESETS = [0.5, 0.8, 0.9, 0.95, 1.0].map((v) => ({ v, label: v.toFixed(2) }));
+const MINP_PRESETS = [0, 0.02, 0.05, 0.1].map((v) => ({ v, label: v.toFixed(2) }));
+const REPEAT_PRESETS = [1.0, 1.05, 1.1, 1.2].map((v) => ({ v, label: v.toFixed(2) }));
+const GPU_PRESETS = [{ v: -1, label: "全部 (-1)" }, { v: 0, label: "CPUのみ (0)" }, { v: 16, label: "16層" }, { v: 32, label: "32層" }, { v: 48, label: "48層" }];
+const KEEPALIVE_PRESETS = [
+  { v: "5m", label: "5分" }, { v: "30m", label: "30分" }, { v: "1h", label: "1時間" },
+  { v: "4h", label: "4時間" }, { v: "-1", label: "無期限 (-1)" }, { v: "0", label: "使用後すぐ解放 (0)" },
+];
+
+/** モデルごとの詳細設定（生成/ロードパラメータ一式）。 */
 function ModelConfigSection({ model }: { model: string }) {
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
@@ -461,32 +542,75 @@ function ModelConfigSection({ model }: { model: string }) {
     queryKey: ["model-config", model],
     queryFn: () => api<ModelConfig>(`/models/${encodeURIComponent(model)}/config`),
   });
+  const { data: caps } = useQuery({
+    queryKey: ["model-show", model],
+    queryFn: () => api<{ capabilities: string[] }>(`/models/${encodeURIComponent(model)}/show`),
+  });
   const [cfg, setCfg] = useState<ModelConfig | null>(null);
+  const [open, setOpen] = useState(false);
   const eff = cfg ?? data ?? null;
-  const save = useMutation({
-    mutationFn: () => api(`/models/${encodeURIComponent(model)}/config`, { method: "PUT", json: eff }),
-    onSuccess: () => { show("モデル設定を保存しました"); qc.invalidateQueries({ queryKey: ["model-config", model] }); qc.invalidateQueries({ queryKey: ["models"] }); },
+  const set = (k: keyof ModelConfig, v: number | string | boolean | undefined) => setCfg({ ...(eff ?? {}), [k]: v });
+
+  const saveMut = useMutation({
+    mutationFn: (reload: boolean) =>
+      api(`/models/${encodeURIComponent(model)}/config?reload=${reload}`, { method: "PUT", json: eff }),
+    onSuccess: (_d, reload) => {
+      show(reload ? "保存して新しい設定でロードしました" : "モデル設定を保存しました");
+      qc.invalidateQueries({ queryKey: ["model-config", model] });
+      qc.invalidateQueries({ queryKey: ["models"] });
+    },
     onError: (e) => show(e instanceof Error ? e.message : "保存失敗", "error"),
   });
-  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   if (!eff || !can("workflows.edit")) return null;
+  // MTP（Multi-Token Prediction）対応判定: capabilities に completion 以外の特殊機能があるかで簡易判定
+  const hasMtp = (caps?.capabilities ?? []).some((c) => /mtp|speculat/i.test(c));
+
   return (
-    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-      <p className="mb-2 text-xs font-semibold text-zinc-500">このモデルの個別設定</p>
-      <div className="space-y-2.5">
-        <L label="常駐時間 keep_alive（空=全体設定に従う）">
-          <input value={eff.keep_alive ?? ""} onChange={(e) => setCfg({ ...eff, keep_alive: e.target.value })} placeholder="30m / 1h / -1(無期限)" className={`${input} font-mono text-xs`} />
-        </L>
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700">
+      <p className="px-3 py-2.5 text-xs font-semibold text-zinc-500">このモデルの個別設定</p>
+      <div className="space-y-2.5 px-3 pb-3">
+        {/* よく使う */}
+        <L label="常駐時間 keep_alive"><PresetOrCustom value={eff.keep_alive} presets={KEEPALIVE_PRESETS} numeric={false} placeholder="30m / 1h" onChange={(v) => set("keep_alive", v)} /></L>
+        <L label="コンテキスト長 num_ctx（大きいほどVRAM増）"><PresetOrCustom value={eff.num_ctx} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("num_ctx", v)} /></L>
+        <L label="出力長 num_predict（最大生成トークン）"><PresetOrCustom value={eff.num_predict} presets={PREDICT_PRESETS} placeholder="512" onChange={(v) => set("num_predict", v)} /></L>
         <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
-          <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常に読み込んだままにして再ロード待ちをなくす</span></span>
-          <input type="checkbox" checked={!!eff.idle_exclude} onChange={(e) => setCfg({ ...eff, idle_exclude: e.target.checked })} className="h-4 w-4" />
+          <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常駐させ再ロード待ちをなくす</span></span>
+          <input type="checkbox" checked={!!eff.idle_exclude} onChange={(e) => set("idle_exclude", e.target.checked)} className="h-4 w-4" />
         </label>
-        <L label="コンテキスト長 num_ctx（任意・0=既定）">
-          <input type="number" value={eff.num_ctx ?? ""} onChange={(e) => setCfg({ ...eff, num_ctx: e.target.value === "" ? undefined : Number(e.target.value) })} placeholder="例: 8192" className={input} />
-        </L>
-        <button onClick={() => save.mutate()} disabled={save.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-          {save.isPending ? "保存中..." : "モデル設定を保存"}
+
+        {/* 詳細（折りたたみ） */}
+        <button type="button" onClick={() => setOpen((v) => !v)} className="text-xs font-medium text-accent-600 dark:text-accent-400">
+          {open ? "▾ 詳細パラメータを隠す" : "▸ 詳細パラメータ（生成品質・ハードウェア）"}
         </button>
+        {open && (
+          <div className="space-y-2.5 border-t border-zinc-100 pt-2.5 dark:border-zinc-800">
+            <L label="温度 temperature（低=堅実 / 高=多様）"><PresetOrCustom value={eff.temperature} presets={TEMP_PRESETS} placeholder="0.7" onChange={(v) => set("temperature", v)} /></L>
+            <L label="top_k"><PresetOrCustom value={eff.top_k} presets={TOPK_PRESETS} placeholder="40" onChange={(v) => set("top_k", v)} /></L>
+            <L label="top_p"><PresetOrCustom value={eff.top_p} presets={TOPP_PRESETS} placeholder="0.9" onChange={(v) => set("top_p", v)} /></L>
+            <L label="min_p"><PresetOrCustom value={eff.min_p} presets={MINP_PRESETS} placeholder="0.05" onChange={(v) => set("min_p", v)} /></L>
+            <L label="繰り返し抑制 repeat_penalty"><PresetOrCustom value={eff.repeat_penalty} presets={REPEAT_PRESETS} placeholder="1.1" onChange={(v) => set("repeat_penalty", v)} /></L>
+            <L label="GPU オフロード層数 num_gpu"><PresetOrCustom value={eff.num_gpu} presets={GPU_PRESETS} placeholder="-1" onChange={(v) => set("num_gpu", v)} /></L>
+            <L label="乱数シード seed（再現性・空=毎回ランダム）">
+              <input type="number" value={eff.seed ?? ""} onChange={(e) => set("seed", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="例: 42" className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+            </L>
+            <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-400 dark:bg-zinc-800/60">
+              KV キャッシュ量子化（メモリ削減）は⚙全体設定にあります（Ollama サーバー環境変数）。
+              {hasMtp
+                ? " このモデルは MTP/推測デコードに対応しています（Ollama が自動適用）。"
+                : " MTP（Multi-Token Prediction）は対応モデルで Ollama が自動適用します。個別 API 設定はありません。"}
+            </p>
+          </div>
+        )}
+
+        <div className="flex gap-1.5">
+          <button onClick={() => saveMut.mutate(false)} disabled={saveMut.isPending} className="flex-1 rounded-xl bg-zinc-100 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300">
+            保存のみ
+          </button>
+          <button onClick={() => saveMut.mutate(true)} disabled={saveMut.isPending} className="flex-1 rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+            {saveMut.isPending ? "適用中..." : "保存してロード（反映）"}
+          </button>
+        </div>
+        <p className="text-[10px] text-zinc-400">num_ctx / num_gpu 等はロード時に確定します。「保存してロード」で即反映されます。</p>
       </div>
     </div>
   );
@@ -532,11 +656,65 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
         <p className="text-xs text-zinc-400">
           モデルは API から呼び出されると自動ロードされます（Ollama 標準）。上の設定で未使用時の解放を制御できます。
         </p>
+
+        <KvCacheSettings eff={eff} setCfg={setCfg} input={input} />
+
         <button onClick={() => save.mutate()} disabled={save.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           {save.isPending ? "保存中..." : "保存"}
         </button>
       </div>
     </BottomSheet>
+  );
+}
+
+/** KV キャッシュ量子化 / Flash Attention（Ollama サーバー全体・環境変数）。 */
+function KvCacheSettings({ eff, setCfg, input }: { eff: Settings; setCfg: (s: Settings) => void; input: string }) {
+  const { data: env } = useQuery({ queryKey: ["ollama-env"], queryFn: () => api<OllamaEnv>("/models/ollama-env") });
+  // 保存値と実際の稼働環境がずれていれば適用コマンドを案内する
+  const applied =
+    env && (env.kv_cache_type ?? "f16") === eff.kv_cache_type &&
+    (env.flash_attention ?? false) === eff.flash_attention;
+  const needsFlash = eff.kv_cache_type !== "f16" && !eff.flash_attention;
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="mb-2 text-xs font-semibold text-zinc-500">KV キャッシュ量子化（サーバー全体・VRAM 削減）</p>
+      <div className="space-y-2.5">
+        <L label="キャッシュ精度 OLLAMA_KV_CACHE_TYPE">
+          <select value={eff.kv_cache_type} onChange={(e) => setCfg({ ...eff, kv_cache_type: e.target.value })} className={input}>
+            <option value="f16">f16（既定・最高精度）</option>
+            <option value="q8_0">q8_0（VRAM 約1/2・品質ほぼ同等・推奨）</option>
+            <option value="q4_0">q4_0（VRAM 約1/4・品質やや低下）</option>
+          </select>
+        </L>
+        <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+          <span className="text-xs">Flash Attention<span className="block text-[10px] text-zinc-400">量子化(q8_0/q4_0)を効かせるには必須</span></span>
+          <input type="checkbox" checked={eff.flash_attention} onChange={(e) => setCfg({ ...eff, flash_attention: e.target.checked })} className="h-4 w-4" />
+        </label>
+        {needsFlash && (
+          <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            量子化には Flash Attention が必要です。上のスイッチを ON にしてください。
+          </p>
+        )}
+        <div className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+          <p className="mb-1">
+            現在の稼働状態: {env?.flash_attention == null && env?.kv_cache_type == null
+              ? "既定（f16 / Flash Attention 無効）"
+              : `${env?.kv_cache_type ?? "f16"} / Flash Attention ${env?.flash_attention ? "有効" : "無効"}`}
+            {applied ? " ✓ 一致" : ""}
+          </p>
+          {!applied && (
+            <>
+              <p className="mb-1">これは Ollama サーバー（root 管理）の環境変数です。保存後、下記を実行して適用してください:</p>
+              <pre className="overflow-x-auto whitespace-pre rounded bg-zinc-100 p-1.5 font-mono text-[10px] dark:bg-zinc-950">{`sudo systemctl edit ollama
+# [Service] に追記:
+Environment="OLLAMA_FLASH_ATTENTION=${eff.flash_attention ? "1" : "0"}"
+Environment="OLLAMA_KV_CACHE_TYPE=${eff.kv_cache_type}"
+sudo systemctl restart ollama`}</pre>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
