@@ -112,9 +112,10 @@ body {
   height: 100%;
 }
 .terminal-xterm-host .xterm-viewport {
+  background-color: transparent !important;
+  overflow: hidden !important;
   overscroll-behavior-y: contain;
   touch-action: none;
-  -webkit-overflow-scrolling: touch;
 }
 
 /* mobile terminalの補助操作は横swipe可能な1行。scrollbarとSafe Areaを空の2段目にしない。 */
