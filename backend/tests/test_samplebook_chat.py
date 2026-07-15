@@ -116,3 +116,42 @@ def test_generated_definition_validator():
     bad = {"nodes": [{"id": "a", "type": "magic.node", "config": {}}], "edges": []}
     problems = _validate_generated(bad)
     assert problems and "magic.node" in problems[0]
+
+
+def test_workflow_generation_uses_bounded_schema_mode(admin_client, monkeypatch):
+    """reasoningを無制限に走らせず、構造化出力を要求する。"""
+    from app.workflows import chat_router
+
+    seen = {}
+
+    async def fake_llm(messages, base_url, model, api_key, temperature=0.4, **kwargs):
+        seen.update(kwargs)
+        return json.dumps({
+            "name": "生成テスト",
+            "nodes": [
+                {"id": "trigger", "type": "trigger", "config": {"mode": "manual"}},
+                {"id": "out", "type": "signal.display", "config": {"value": "ok"}},
+            ],
+            "edges": [{"source": "trigger", "target": "out"}],
+        })
+
+    monkeypatch.setattr(chat_router, "_llm", fake_llm)
+    r = admin_client.post(
+        "/api/v1/chat/generate-workflow",
+        json={"goal": "okを表示"},
+        headers=CSRF_HEADERS,
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["valid"] is True
+    assert seen["max_tokens"] == 800
+    assert seen["disable_thinking"] is True
+    assert seen["response_format"]["type"] == "json_schema"
+
+
+def test_persistent_chat_defaults_to_fast_non_thinking_mode():
+    from app.workflows.chat_persist import SendBody
+
+    body = SendBody(content="hello")
+    assert body.thinking is None
+    assert body.max_output_tokens is None

@@ -31,6 +31,20 @@
 約60%削減。1280pxで31秒確認しmetrics 16 frame（初回含む）、`/apps` 3回、console error・横スクロールなし。
 320pxのシステム画面も横スクロール・console errorなし、GPU値とmetrics WS継続を確認。
 
+## チャット生成遅延・runtime選択基盤（2026-07-15）
+
+- 実機Qwen3.6-27B + llama.cppでワークフロー生成を再現し、従来は内部推論がctx 2048まで1161 token続いて
+  47秒後に本文JSONなしで422となることを確認。ワークフロー生成をthinking off、最大800 token、JSON Schemaへ変更し、
+  11.55秒で有効JSON（quality 78）を返すようにした
+- 永続チャットを既定thinking offかつ有限出力に変更し、OpenAI互換の`reasoning_content`を本文と分離。
+  短文「1+1」の実機応答は初回出力・完了とも0.66秒、本文`2`、thinking 0文字を確認
+- GPU/導入済みruntimeから Ollama、llama.cpp/ROCm、llama.cpp/Vulkan の利用可能な構成だけを返す
+  RuntimePolicy APIを追加。選択状態、排他/共存、共通idle、チャット出力上限・思考、アシスタント名を保存し、
+  llama設定UIのハードコード初期値も保存済み値へ修正
+- AMD GPU電力上限を含む後続の詳細設計を`design-model-runtime-assistant.md`へ統合。電力制限機能自体は実装中
+
+検証: backend 183件成功、frontend本番ビルド成功。runtime policyの保存・範囲検証・排他切替を単体テスト済み。
+
 ## Phase 2 / Phase 4 残件対応（2026-07-15）
 
 - **アプリアイコン**: PNG / JPEG / WebP / SVG（2MB以下）を登録・更新画面からアップロード。実パスをAPIへ露出せず、
