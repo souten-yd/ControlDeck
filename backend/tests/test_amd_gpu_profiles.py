@@ -32,11 +32,11 @@ def test_quiet_lowers_mclk_by_exactly_one_level(monkeypatch):
     assert result.core_clock_mode == "auto"
 
 
-def test_other_profiles_keep_memory_clock_auto(monkeypatch):
+def test_presets_restore_auto_and_custom_keeps_explicit_clocks(monkeypatch):
     from app.models_mgmt import amd_gpu, runtime_policy
 
     monkeypatch.setattr(amd_gpu, "capabilities", _caps)
-    for name, watts in (("balanced", 255), ("full", 300), ("custom", 240)):
+    for name, watts in (("balanced", 255), ("full", 300)):
         policy = runtime_policy.RuntimePolicy(amd_gpu={
             "enabled": True, "profile": name, "power_limit_watts": watts,
             "memory_clock_mode": "limit", "memory_clock_level": 1,
@@ -44,8 +44,15 @@ def test_other_profiles_keep_memory_clock_auto(monkeypatch):
         })
         result = runtime_policy.normalize_gpu_profile(policy).amd_gpu
         assert result.memory_clock_mode == "auto"
-        if name == "custom":
-            assert result.core_clock_mode == "limit"
+
+    custom = runtime_policy.RuntimePolicy(amd_gpu={
+        "enabled": True, "profile": "custom", "power_limit_watts": 240,
+        "memory_clock_mode": "limit", "memory_clock_level": 1,
+        "core_clock_mode": "limit", "core_clock_level": 0,
+    })
+    result = runtime_policy.normalize_gpu_profile(custom).amd_gpu
+    assert result.memory_clock_mode == "limit" and result.memory_clock_level == 1
+    assert result.core_clock_mode == "limit" and result.core_clock_level == 0
 
 
 def test_apply_profile_uses_fixed_helper_argv(tmp_path, monkeypatch):

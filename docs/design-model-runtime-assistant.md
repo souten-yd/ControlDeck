@@ -141,9 +141,10 @@ AMD GPU の hwmon が `power1_cap` と範囲を公開する場合だけ、共通
 - `quiet`: 実機最小電力cap。MCLKは最大levelから1段だけ下げる（実機は1258→1124MHz）。SCLKは自動。
 - `balanced`: 電力cap範囲の中間。MCLK/SCLKは自動。
 - `full`: VBIOS既定電力cap。MCLK/SCLKは自動。
-- `custom`: 電力capと、実機DPM levelによるSCLK上限を選択。MCLKは自動のまま。
+- `custom`: 電力capと、実機DPM levelによるMCLK/SCLK上限を個別選択。autoへ戻す操作も提供する。
 
-MCLKを下げるのはquietだけとし、他profileへ切り替えた時は必ずautoへ戻す。SCLK手動level適用はdriverの仕様通り
+既定profileでMCLKを下げるのはquietだけとし、balanced/fullへ切り替えた時は必ずautoへ戻す。
+customはユーザーの明示操作としてMCLK/SCLKを変更できる。SCLK手動level適用はdriverの仕様通り
 performance levelを`manual`へ移してから行い、autoへ戻す操作も提供する。
 APU等でlevelが1個しかない、書込み非対応、対象dGPUでない場合はUIを表示しない。設定保存時にはlevel indexと
 読取周波数を保持するが、起動前に現在のlevel一覧と再照合し、不一致なら適用せず明示エラーにする。

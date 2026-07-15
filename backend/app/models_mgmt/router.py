@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.audit import service as audit
 from app.database import SessionLocal, get_db
@@ -476,7 +477,7 @@ async def llama_switch(body: LlamaInstallBody, request: Request,
     return res
 
 
-@router.get("/llama/config")
+@router.get("/llama/instance")
 def llama_get_config(user: User = Depends(require_permission("workflows.run"))):
     from app.models_mgmt import llama
 
@@ -484,21 +485,51 @@ def llama_get_config(user: User = Depends(require_permission("workflows.run"))):
 
 
 class LlamaInstanceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     model_path: str | None = None
     port: int | None = Field(default=None, ge=1024, le=65535)
     n_gpu_layers: int | None = Field(default=None, ge=0, le=999)
     ctx_size: int | None = Field(default=None, ge=0, le=1048576)
     n_parallel: int | None = Field(default=None, ge=1, le=64)
     flash_attn: bool | None = None
-    extra_args: str | None = None
-    alias: str | None = None
+    n_predict: int | None = Field(default=None, ge=-1, le=1048576)
+    batch_size: int | None = Field(default=None, ge=32, le=65536)
+    ubatch_size: int | None = Field(default=None, ge=32, le=65536)
+    cache_type_k: Literal["f32", "f16", "bf16", "q8_0", "q4_0"] | None = None
+    cache_type_v: Literal["f32", "f16", "bf16", "q8_0", "q4_0"] | None = None
+    threads: int | None = Field(default=None, ge=-1, le=1024)
+    threads_batch: int | None = Field(default=None, ge=-1, le=1024)
+    mmap: bool | None = None
+    mlock: bool | None = None
+    spec_type: Literal["none", "draft-simple", "draft-mtp", "ngram-simple"] | None = None
+    draft_max: int | None = Field(default=None, ge=1, le=128)
+    cpu_moe: bool | None = None
+    n_cpu_moe: int | None = Field(default=None, ge=0, le=256)
+    temperature: float | None = Field(default=None, ge=0, le=5)
+    top_k: int | None = Field(default=None, ge=0, le=10000)
+    top_p: float | None = Field(default=None, ge=0, le=1)
+    min_p: float | None = Field(default=None, ge=0, le=1)
+    repeat_penalty: float | None = Field(default=None, ge=0, le=10)
+    seed: int | None = Field(default=None, ge=-1, le=2147483647)
+    alias: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
-@router.put("/llama/config")
+@router.put("/llama/instance")
 def llama_put_config(body: LlamaInstanceBody, user: User = Depends(require_permission("workflows.edit"))):
     from app.models_mgmt import llama
 
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "model_path" in patch:
+        from app.files import service as files
+
+        try:
+            model_path = files.resolve(str(patch["model_path"]))
+        except (PermissionError, FileNotFoundError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        if not model_path.is_file() or model_path.suffix.lower() != ".gguf":
+            raise HTTPException(status_code=422, detail="llama.cppモデルは許可ルート内のGGUFファイルを指定してください")
+        patch["model_path"] = str(model_path)
     return llama.save_config({"instance": patch})
 
 

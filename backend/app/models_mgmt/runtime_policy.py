@@ -155,9 +155,9 @@ def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:
         settings.core_clock_mode = "auto"
         settings.core_clock_level = 0
     elif settings.profile == "custom":
-        # 要件: MCLKを下げるのは静音profileだけ。customでもdriver自動へ戻す。
-        settings.memory_clock_mode = "auto"
-        settings.memory_clock_level = 0
+        # customは実機DPM level内でMCLK/SCLKを個別指定できる。
+        # preset（balanced/full）へ戻した時は各分岐で必ずautoへ戻す。
+        pass
     if not pwr["min_watts"] <= settings.power_limit_watts <= pwr["max_watts"]:
         raise ValueError(f"AMD GPU電力上限は{pwr['min_watts']}〜{pwr['max_watts']}Wで指定してください")
     if settings.memory_clock_mode != "auto" and not caps["memory"]["supported"]:
