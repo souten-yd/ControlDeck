@@ -54,6 +54,7 @@
 ### Phase 5 — ワークフロー（React Flow）
 ### Phase 6 — リモートデスクトップ（Guacamole）
 ### Phase 7 — TOTP / 通知 / バックアップ / PostgreSQL / PWA / WoL / プラグイン
+- LLM runtime providerカタログ（Ollama / llama.cpp / LM Studio / OpenAI互換）と共通エンドポイント検出
 
 ## 環境構築方針（ユーザー追加要求）
 

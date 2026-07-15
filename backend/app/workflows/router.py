@@ -26,47 +26,9 @@ async def llm_endpoints(user: User = Depends(require_permission("workflows.edit"
     管理アプリの待受ポート + 代表的な LLM ポート（Ollama/llama.cpp/LM Studio 等）へ
     GET /v1/models を試し、応答したものをモデル一覧付きで返す。
     """
-    import asyncio
+    from app.models_mgmt.providers import list_providers
 
-    import httpx
-
-    ports: set[int] = {11434, 8080, 1234, 8000, 5001}
-    try:
-        from app.applications import service as apps_svc
-        from app.database import SessionLocal
-        from app.models import ManagedApplication
-
-        def app_ports() -> set[int]:
-            db = SessionLocal()
-            try:
-                found: set[int] = set()
-                for app in db.query(ManagedApplication).all():
-                    rt = apps_svc.runtime_info(app)
-                    found.update(rt.listening_ports or [])
-                return found
-            finally:
-                db.close()
-
-        ports |= await asyncio.to_thread(app_ports)
-    except Exception:
-        pass
-    ports.discard(get_server_port())
-
-    async def probe(port: int) -> dict | None:
-        base = f"http://127.0.0.1:{port}/v1"
-        try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
-                r = await client.get(f"{base}/models")
-            if r.status_code != 200:
-                return None
-            data = r.json()
-            models = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
-            return {"base_url": base, "models": [m for m in models if m][:50]}
-        except Exception:
-            return None
-
-    results = await asyncio.gather(*(probe(p) for p in sorted(ports)))
-    return [r for r in results if r]
+    return await list_providers(include_unavailable=False, exclude_port=get_server_port())
 
 
 def get_server_port() -> int:
