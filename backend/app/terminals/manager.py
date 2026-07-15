@@ -39,6 +39,11 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def _normalize_terminal_size(rows: int, cols: int) -> tuple[int, int]:
+    """PTYへ適用できる実用範囲へ正規化する（rows, cols）。"""
+    return max(3, min(rows, 500)), max(10, min(cols, 1000))
+
+
 def _target(sid: str) -> str:
     if not SESSION_ID_RE.fullmatch(sid):
         raise KeyError("セッションが見つかりません")
@@ -244,6 +249,7 @@ class TerminalManager:
     # ---- WS ブリッジ用の接続確立 ----
 
     def open_connection(self, sid: str, rows: int, cols: int) -> "TerminalConnection":
+        rows, cols = _normalize_terminal_size(rows, cols)
         if tmux_available():
             target = _target(sid)
             exists = subprocess.run(
@@ -284,7 +290,7 @@ class TerminalManager:
                 raise KeyError("セッションが見つかりません")
             replay, _ = _bounded_history(captured.stdout.replace(b"\n", b"\r\n"))
             return TerminalConnection(master_fd=master, pid=proc.pid, owns_process=True,
-                                      replay=replay, initial=initial)
+                                      replay=replay, initial=initial, rows=rows, cols=cols)
         s = self._fallback.get(sid)
         if s is None or not s.alive():
             raise KeyError("セッションが見つかりません")
@@ -293,6 +299,7 @@ class TerminalManager:
         return TerminalConnection(
             master_fd=s.master_fd, pid=s.pid, owns_process=False,
             replay=(HISTORY_TRUNCATED if s.buffer_truncated else b"") + bytes(s.buffer), session=s,
+            rows=rows, cols=cols,
         )
 
 
@@ -307,6 +314,8 @@ class TerminalConnection:
         replay: bytes = b"",
         initial: bytes = b"",
         session: PtySession | None = None,
+        rows: int = 24,
+        cols: int = 80,
     ) -> None:
         self.master_fd = master_fd
         self.pid = pid
@@ -314,12 +323,17 @@ class TerminalConnection:
         self.replay = replay
         self.initial = initial
         self.session = session
+        self._last_size = _normalize_terminal_size(rows, cols)
 
     def write(self, data: bytes) -> None:
         os.write(self.master_fd, data)
 
     def resize(self, rows: int, cols: int) -> None:
-        _set_winsize(self.master_fd, max(2, min(rows, 500)), max(2, min(cols, 1000)))
+        size = _normalize_terminal_size(rows, cols)
+        if size == self._last_size:
+            return
+        self._last_size = size
+        _set_winsize(self.master_fd, *size)
 
     async def read_loop(self, on_data) -> None:
         """PTY からの出力を非同期で on_data(bytes) へ渡す。EOF で終了。"""
