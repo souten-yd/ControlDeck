@@ -10,7 +10,7 @@ import psutil
 from app.applications import systemd as sd
 from app.config import app_logs_dir
 from app.models import ManagedApplication
-from app.schemas.apps import AppCreate, AppOut, AppRuntime, AppUpdate
+from app.schemas.apps import AppCreate, AppOut, AppRuntime, AppUpdate, HealthCheckConfig
 from app.security.crypto import decrypt_text, encrypt_text, mask_env
 
 # CPU% 計測用のプロセスキャッシュ（連続ポーリング間で有効な値を得るため）
@@ -84,6 +84,18 @@ def validate_fields(data: AppCreate) -> None:
     for key in data.environment:
         if not sd.ENV_KEY_RE.match(key):
             raise AppValidationError(f"不正な環境変数名: {key}")
+    health = data.health_check
+    if health.type == "tcp" and (not health.host.strip() or health.port is None):
+        raise AppValidationError("TCPヘルスチェックにはホストとポートが必要です")
+    if health.type == "http" and not health.url.startswith(("http://", "https://")):
+        raise AppValidationError("HTTPヘルスチェックには http:// または https:// のURLが必要です")
+    if health.type == "file":
+        from app.files import service as files
+
+        try:
+            files.resolve(health.path, must_exist=False)
+        except (OSError, files.FileAccessError) as e:
+            raise AppValidationError(str(e)) from e
 
 
 def is_managed_code(app: ManagedApplication) -> bool:
@@ -139,6 +151,17 @@ def set_environment(app: ManagedApplication, env: dict[str, str]) -> None:
     app.environment_json_encrypted = encrypt_text(json.dumps(env)) if env else None
 
 
+def get_health_check(app: ManagedApplication) -> HealthCheckConfig:
+    try:
+        return HealthCheckConfig.model_validate(json.loads(app.health_check_json or "{}"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return HealthCheckConfig()
+
+
+def set_health_check(app: ManagedApplication, config: HealthCheckConfig) -> None:
+    app.health_check_json = json.dumps(config.model_dump(), ensure_ascii=False)
+
+
 def sync_unit(app: ManagedApplication) -> None:
     """ManagedApplication からユニットファイルを生成・更新する。"""
     if app.application_type in ("systemd_service", "url_shortcut"):
@@ -158,7 +181,7 @@ def sync_unit(app: ManagedApplication) -> None:
     sd.set_enabled(app.systemd_unit_name, app.auto_start)
 
 
-def runtime_info(app: ManagedApplication) -> AppRuntime:
+def runtime_info(app: ManagedApplication, *, include_health: bool = True) -> AppRuntime:
     if app.application_type == "url_shortcut":
         return AppRuntime(status="URL")  # プロセスではないので特別状態
     try:
@@ -189,8 +212,16 @@ def runtime_info(app: ManagedApplication) -> AppRuntime:
                     pass
         except psutil.Error:
             pass
+    health = None
+    status = q["status"]
+    if include_health and get_health_check(app).type != "none":
+        from app.applications import health as app_health
+
+        health = app_health.cached(app.id)
+        if status == "RUNNING" and health is not None and not health.ok:
+            status = "DEGRADED"
     return AppRuntime(
-        status=q["status"],
+        status=status,
         pid=pid,
         uptime_seconds=q.get("uptime_seconds"),
         started_at=q.get("started_at"),
@@ -198,6 +229,7 @@ def runtime_info(app: ManagedApplication) -> AppRuntime:
         cpu_percent=cpu,
         memory_bytes=mem,
         listening_ports=sorted(ports),
+        health=health,
     )
 
 
@@ -232,6 +264,7 @@ def to_out(app: ManagedApplication) -> AppOut:
         auto_start=app.auto_start,
         restart_policy=app.restart_policy,
         stop_timeout_seconds=app.stop_timeout_seconds,
+        health_check=get_health_check(app),
         systemd_unit_name=app.systemd_unit_name,
         created_at=app.created_at,
         updated_at=app.updated_at,

@@ -32,6 +32,7 @@ def _apply_light_migrations() -> None:
         ("users", "recovery_codes_encrypted", "TEXT"),
         ("managed_applications", "url", "VARCHAR(2048)"),
         ("managed_applications", "web_port", "INTEGER"),
+        ("managed_applications", "health_check_json", "TEXT DEFAULT '{}'"),
         ("remote_connections", "is_self", "BOOLEAN DEFAULT 0"),
     ]
     with engine.begin() as conn:

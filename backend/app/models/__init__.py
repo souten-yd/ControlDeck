@@ -85,6 +85,7 @@ class ManagedApplication(Base):
     # no / on-failure / always / on-success
     restart_policy: Mapped[str] = mapped_column(String(32), default="no")
     stop_timeout_seconds: Mapped[int] = mapped_column(Integer, default=20)
+    health_check_json: Mapped[str] = mapped_column(Text, default="{}")
     # systemd 由来のキャッシュ状態（一覧の初期表示用。真の状態は都度 systemd へ問い合わせ）
     status: Mapped[str] = mapped_column(String(16), default="STOPPED")
     systemd_unit_name: Mapped[str] = mapped_column(String(128), default="")
