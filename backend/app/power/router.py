@@ -1,11 +1,7 @@
-"""PC 電源管理。実行は systemctl（logind 経由）。root では動作させない。
-
-予約はプロセス内タイマーで管理する（MVP 制約: Web 再起動で予約は失われる。
-将来 helper + systemd timer へ移行する）。
-"""
+"""PC電源管理。即時操作はlogind、予約は永続systemdユーザーtimerを使う。"""
 from __future__ import annotations
 
-import asyncio
+import logging
 import subprocess
 from datetime import datetime, timedelta, timezone
 
@@ -17,12 +13,10 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import User
 from app.security.deps import require_permission
+from app.power import scheduler
 
 router = APIRouter(prefix="/system", tags=["power"])
-
-_scheduled: dict | None = None
-_task: asyncio.Task | None = None
-
+logger = logging.getLogger(__name__)
 
 class PowerRequest(BaseModel):
     action: str = Field(pattern="^(reboot|shutdown)$")
@@ -60,41 +54,39 @@ def _power_now(action: str, request: Request, user: User, db: Session):
         metadata={} if ok else {"error": err[:300]},
     )
     if not ok:
+        logger.warning("power action failed: action=%s error=%s", action, err)
         raise HTTPException(
             status_code=502,
-            detail=f"{action} を実行できませんでした（権限不足の可能性）: {err or 'unknown'}",
+            detail=f"{action} を実行できませんでした。サーバーログを確認してください。",
         )
     return {"ok": True}
 
 
 @router.get("/power/schedule")
 def get_schedule(user: User = Depends(require_permission("power.manage"))):
-    return _scheduled
+    return scheduler.read_state()
 
 
 @router.post("/power/schedule")
-async def schedule_power(
+def schedule_power(
     body: ScheduleRequest,
     request: Request,
     user: User = Depends(require_permission("power.manage")),
     db: Session = Depends(get_db),
 ):
-    global _scheduled, _task
-    if _task and not _task.done():
-        _task.cancel()
     at = datetime.now(timezone.utc) + timedelta(minutes=body.delay_minutes)
-    _scheduled = {"action": body.action, "at": at.isoformat(), "by": user.username}
-
-    async def fire():
-        await asyncio.sleep(body.delay_minutes * 60)
-        _execute(body.action)
-
-    _task = asyncio.create_task(fire())
+    try:
+        state = scheduler.install(body.action, at, user.username)
+    except (OSError, RuntimeError, ValueError) as e:
+        logger.warning("power schedule setup failed: action=%s error=%s", body.action, e)
+        audit.record(db, "power.schedule", user=user, resource_type="system", result="failure",
+                     request=request, metadata={"action": body.action, "error": str(e)[:300]})
+        raise HTTPException(status_code=502, detail="電源予約を登録できませんでした。サーバーログを確認してください。") from e
     audit.record(
         db, "power.schedule", user=user, resource_type="system", request=request,
-        metadata={"action": body.action, "at": at.isoformat()},
+        metadata={"action": body.action, "at": at.isoformat(), "backend": "systemd-user-timer"},
     )
-    return _scheduled
+    return state
 
 
 @router.delete("/power/schedule")
@@ -103,10 +95,12 @@ def cancel_schedule(
     user: User = Depends(require_permission("power.manage")),
     db: Session = Depends(get_db),
 ):
-    global _scheduled, _task
-    if _task and not _task.done():
-        _task.cancel()
-    _scheduled = None
-    _task = None
+    try:
+        scheduler.cancel()
+    except (OSError, RuntimeError) as e:
+        logger.warning("power schedule cancellation failed: error=%s", e)
+        audit.record(db, "power.schedule_cancel", user=user, resource_type="system", result="failure",
+                     request=request, metadata={"error": str(e)[:300]})
+        raise HTTPException(status_code=502, detail="電源予約を取消できませんでした。サーバーログを確認してください。") from e
     audit.record(db, "power.schedule_cancel", user=user, resource_type="system", request=request)
     return {"ok": True}
