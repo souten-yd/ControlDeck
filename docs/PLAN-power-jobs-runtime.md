@@ -13,11 +13,11 @@
 | 計画 | 状態 |
 |---|---|
 | A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
-| B. サーバー主導ジョブ基盤の汎用化 | 🚧 再監査で不足確認（所有者分離・冪等性・heartbeat・priority・全体WS） |
-| C. 永続チャット（ブラウザを閉じても回答生成・復元） | 🚧 コア完了（会話一覧UI・生成preview永続化が残る） |
-| D. ワークフロー生成の意味検証・品質スコア | 🚧 コア完了（厳格schema出力・副作用なしdry-runが残る） |
+| B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（owner・冪等性・heartbeat・priority・全体WSを再実装/検証） |
+| C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（会話一覧/切替/改名/削除と生成checkpointを実装/実機検証） |
+| D. ワークフロー生成の意味検証・品質スコア | 🚧 厳格schemaまで完了（共通の副作用なしdry-runが残る） |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | 🚧 provider検出・共通モデル操作まで完了（実行/生成/cancel契約が残る） |
-| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 F-1/F-2完了（backend+UI・環境検出/切替、マージ済み）／MTP/思考深度の詳細UIは残 |
+| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 型付きMTP/KV/MoE等まで完了（複数GGUF catalog/instanceが残る） |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ⬜ 一部済（v2エンジンで承認/リトライ/並列/flow.call/エージェント実装済み） |
 
@@ -33,11 +33,11 @@
 | 領域 | 実装済みの根拠 | 完了を妨げる不足 |
 |---|---|---|
 | A 電力 | PSU sysfs、日/月/起動セッション積算、欠測処理、永続化テスト | なし（実機確認済み） |
-| B ジョブ | `Job` DB、再起動時interrupted、一覧/詳細/cancel | APIが所有者を分離しない。冪等キー、heartbeat、priority、全体イベントWSがない。`wait_events` が0.4秒poll |
-| C チャット | Conversation/Message DB、サーバージョブ、再接続 | 複数会話を選ぶUIとgen途中結果の永続化がない |
-| D 生成品質 | semantic check、quality score、自動修正 | LLM厳格JSON Schema指定と、副作用を実行しないdry-run段がない |
+| B ジョブ | `Job` DB、`JobControl`、owner、冪等キー、heartbeat、安定priority queue、queued/running cancel、全体WS | なし（再起動時queued/running→interruptedを含め検証） |
+| C チャット | Conversation/Message DB、サーバージョブ、再接続、会話一覧/切替/改名/削除 | なし（生成本文は1秒checkpoint、ワークフロー生成結果はjob resultへ永続化） |
+| D 生成品質 | semantic check、quality score、自動修正、LLM JSON Schema出力 | 副作用を実行しない共通dry-run段がない |
 | E provider | 共通catalog、capability、list/load/unload/delete adapter | providerの型付き契約、install/start/stop/health/stream/cancelの共通実装がない |
-| F llama.cpp | 導入、backend切替、systemd、単一GGUF起動 | `--draft-*`/思考深度の動的UI、モデル別複数instanceがない |
+| F llama.cpp | 導入、backend切替、systemd、型付きMTP/KV/MoE/cache/context/sampling設定 | モデル別複数GGUF catalog/instanceがない |
 | G OpenCode | なし | feature registry、deck.sh操作、未導入時の未登録境界、code.agentが未実装 |
 | H ノード | v2 DAG、retry/cancel/progress、25種超のノード | node metadata/capability/型、共通dry-run、検索/お気に入り、計画記載の一部ノードがない |
 
@@ -112,7 +112,7 @@
 
 ---
 
-## 計画A：PSU電力監視 + 電気代（実装中）
+## 計画A：PSU電力監視 + 電気代（完了）
 
 ### 実機
 - `corsairpsu` は hwmon 番号可変（実測 hwmon6）。`/sys/class/hwmon/hwmon*/name` を探索。
@@ -140,26 +140,28 @@
 
 ---
 
-## 計画B〜G：サーバー主導ジョブ基盤ほか（未着手・設計メモ）
+## 計画B〜G：サーバー主導ジョブ基盤ほか（実装状況・残件設計）
 
-### B. 汎用ジョブ基盤 ✅ 完了
-- **実装済み**: `jobs` テーブル（冗長化回避のため job_events/artifacts は作らず events_json スナップショットに集約）。
+### B. 汎用ジョブ基盤 ✅ 完了（2026-07-15再監査後に補完）
+- **実装済み**: `jobs` テーブル（events_jsonスナップショット）と、互換性を保つ追加`job_controls`テーブル。
 - メモリ(`_jobs`)=高速WSストリーム、DB(`Job`)=状態/進捗/結果/末尾50イベントを永続化。DB書き込みは作成・状態変化・終了の要所のみ（毎トークン書かない）。
-- 再起動時 `recover_on_startup()` が running→interrupted。owner_user_id 記録。
-- API: `GET /jobs`(list_any=メモリ+DB統合), `GET /jobs/{id}`(メモリ→DBフォールバック), `POST /jobs/{id}/cancel`。既存 model.pull/register/workflow.build は owner 付きで移行済み。
-- **未実装（計画C以降で追加予定）**: idempotency_key/heartbeat/優先度、WS /jobs/stream（現状は個別ジョブの WS は chat_router 側にある）。チャットの部分出力チェックポイントは計画C（ChatMessage）で対応。
+- `job_controls`にowner/idempotency_key/priority/heartbeat_at/revisionを保存。同一owner/kind/keyのqueued/running/succeededを再利用し、失敗系は履歴を残して再試行できる。
+- 最大4同時実行の安定priority queue（同値は作成順）。queued/running双方をcancelでき、定期heartbeatとevent/progress時revisionを記録。再起動時はqueued/runningをinterruptedへ移す。
+- API: `GET /jobs`、`GET /jobs/{id}`、`POST /jobs/{id}/cancel`、`WS /jobs/stream`。owner本人とownerなしsystem jobだけをREST/WSで返し、cancelを監査する。
+- 個別streamの0.4秒pollとModel画面の1〜2秒pollを廃止。通知Eventで待機し、全体WSは100ms coalesce後に最新revisionを配信する。
+- **検証**: owner隔離、snapshot、冪等性、priority順、queued cancel、DB復元を自動テスト。実ブラウザ12秒でModelのjobs RESTは初回1回、jobs WSは1接続、横overflow/console errorなし。
 
 ### C. 永続チャット ✅ 完了
 - **根本原因**（従来 /chat/stream）: WS ハンドラ内で LLM を直接 stream → 切断＝中断、回答はブラウザのみ保持・DB未保存だった。
 - **実装済み**: `Conversation`/`ChatMessage` テーブル。`chat_persist.py` で送信時に user + assistant placeholder + chat.completion ジョブを DB 作成。ワーカーがサーバー側で生成し ChatMessage へ 1秒毎チェックポイント保存。WS(`/chat/messages/{id}/stream`)は通知のみで**切断してもジョブ継続**。再接続は job_id 購読、再オープンは履歴 API で復元（generating は snapshot + 継続）。
 - **全モードサーバー側**（ユーザー指示）: chat/web/academic/deep を全て永続パスへ。web/academic/deep は `_server_search`（chat_router の検索/`_deep_search` を再利用）がジョブ内で検索→LLM。出典は ChatMessage.meta_json に保存し WS "sources" で配信。gen/run は元々サーバー計算（run は workflow executions で永続）。
-- **UI**: AssistantChat の localStorage 履歴を廃止し DB 会話へ一本化。設定は⚙ボタンに集約（モデル/検索エンジン/SearXNG）。「🆕新規」で会話切替。マウント時に DB 復元 + generating 再購読。
-- **未対応（軽微）**: 会話一覧のUI（複数会話の切替ピッカー）は未実装（現状は単一「現在の会話」+新規）。gen モードの生成中プレビューは非永続（1 LLM 呼び出しで短い）。
+- **UI**: AssistantChat の localStorage 履歴を廃止し DB 会話へ一本化。独立`/assistant` route、会話一覧・切替・新規・改名・削除、設定（モデル/検索）を実装。マウント時に DB 復元 + generating 再購読。
+- chat本文は1秒ごとに`ChatMessage`へcheckpoint。genの生成/検証結果はサーバーjob resultと会話履歴から復元できる。実機で生成→schema/意味検証→登録→エディタ遷移を確認済み。
 
 ### D. ワークフロー生成の意味検証・品質スコア ✅ 完了
 - **実装済み**: `validation.py` に `semantic_check`（到達不能ノード・存在しない変数参照・主要必須設定欠落・ループ/エージェント終了条件）と `quality_score`（構造/到達性/出力/エラー処理/実動作の 0-100 内訳）。
 - `chat_router._validate_generated` が構造検証の後に意味エラーも返し、自動ビルドの LLM 修正へフィードバック。生成 API と build 完了イベントに `quality` を付与。UI（AssistantChat）に品質スコアバッジ（内訳・検証結果の折り畳み）を表示。
-- **方針**: 完全な親子ジョブ分割ではなく、既存 `/chat/build`（既にジョブ化済み・generate→validate→register→run→自動修正）を強化する形（冗長化回避）。JSON Schema 厳格出力・dry-run 専用段は未実装（実動作確認で代替）。
+- **方針**: 完全な親子ジョブ分割ではなく、既存 `/chat/build`（既にジョブ化済み・generate→validate→register→run→自動修正）を強化する形（冗長化回避）。JSON Schema厳格出力は実装済み。副作用なしdry-run専用段は計画Hの共通node metadataと合わせて実装する。
 
 ### E. LLMランタイム抽象
 - `LlmRuntimeProvider`（detect/install/list_models/start/stop/health/stream_chat/cancel/get_capabilities...）。
@@ -175,7 +177,8 @@
 **F-2 完了（UI、環境検出/切替）:**
 - Model 画面に「llama.cpp ランタイム」カード。`detect_backends` で **このマシンで使えるバックエンドのみ選択肢化**（ROCm=/dev/kfd+rocminfo、Vulkan=vulkaninfo/libvulkan）。CUDA は Ollama 案内で除外（ユーザー指示）。
 - 未導入=導入ボタン(DLジョブ)、導入済み=切替ボタン(`switch_backend` で current 張替・再DL不要)、使用中=✓。起動設定(モデルGGUF/GPU層数/ctx/flash-attn)+起動/停止。base_url を既存 LLM 設定に指定。
-- 未実装(残): MTP/思考深度の詳細フォーム(`--draft-*` の --help 由来動的UI)、モデル別複数インスタンス。host 127.0.0.1 固定。
+- モデル個別の型付き設定としてMTP（draft model/ngram）、K/V cache量子化、MoE CPU配置、context/output、batch/thread/sampling等を実装。実バイナリ`--help`にある能力だけ表示する。
+- 未実装(残): 複数GGUFを同時管理するcatalog/複数instance。host 127.0.0.1 固定。
 
 ### G. OpenCode（オプトインのみ）
 - **自動導入禁止**。`./deck.sh feature install/enable/disable/uninstall opencode`。

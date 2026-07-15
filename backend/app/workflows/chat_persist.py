@@ -364,7 +364,7 @@ async def send_message(
     job = jobs.create(
         "chat.completion", f"{label}: {body.content[:40]}",
         lambda j: _run_chat_job(j, assistant_id, conv_id, history, params),
-        owner_user_id=user.id,
+        owner_user_id=user.id, idempotency_key=assistant_id, priority=10,
     )
     # assistant メッセージに job_id を紐付け（再接続時に購読を再開できる）
     db.query(ChatMessage).filter(ChatMessage.id == assistant_id).update({"job_id": job.id})
@@ -384,6 +384,9 @@ async def stream_message(websocket: WebSocket, message_id: str):
         if user is None:
             return
         msg = db.get(ChatMessage, message_id)
+        conversation = db.get(Conversation, msg.conversation_id) if msg else None
+        if msg is not None and (conversation is None or conversation.owner_user_id != user.id):
+            msg = None
         job_id = msg.job_id if msg else None
         saved_content = msg.content if msg else ""
         saved_thinking = msg.thinking if msg else ""
@@ -419,7 +422,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
                 elif ev.get("message") == "sources":
                     await websocket.send_text(json.dumps({"type": "sources", "sources": ev.get("sources", [])}, ensure_ascii=False))
             idx = new_len
-            if job.status != "running" and idx >= len(job.events):
+            if job.status not in ("queued", "running") and idx >= len(job.events):
                 break
         await websocket.send_text(json.dumps({"type": "done", "status": job.status, "error": job.error}))
     except WebSocketDisconnect:

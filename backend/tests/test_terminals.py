@@ -12,7 +12,13 @@ def test_fallback_pty_lifecycle():
     try:
         sessions = mgr.list_sessions()
         assert any(s["id"] == session["id"] for s in sessions)
-        if not tmux_available():
+        if tmux_available():
+            status = subprocess.run(
+                ["tmux", "show-options", "-v", "-t", f"cdterm-{session['id']}", "status"],
+                check=True, capture_output=True, text=True, timeout=10,
+            )
+            assert status.stdout.strip() == "off"
+        else:
             # フォールバック時は PTY へ書き込み→読み出しできる
             conn = mgr.open_connection(session["id"], rows=24, cols=80)
             conn.write(b"echo cd-test-$((6*7))\n")

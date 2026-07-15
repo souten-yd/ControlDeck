@@ -245,7 +245,8 @@ async def start_pull_job(
                 job.log(status)
         return {"model": target}
 
-    job = jobs.create("model.pull", f"モデル取得: {target}", run, owner_user_id=user.id)
+    job = jobs.create("model.pull", f"モデル取得: {target}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
     audit.record(db, "model.pull", user=user, resource_type="model", resource_id=target,
                  request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
@@ -272,7 +273,8 @@ async def start_register_job(
                 job.log(status)
         return {"model": name}
 
-    job = jobs.create("model.register", f"ローカル登録: {name}", run, owner_user_id=user.id)
+    job = jobs.create("model.register", f"ローカル登録: {name}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
     audit.record(db, "model.register", user=user, resource_type="model", resource_id=name,
                  request=request, metadata={"job_id": job.id, "path": path})
     return {"job_id": job.id}
@@ -456,7 +458,8 @@ async def llama_install(body: LlamaInstallBody, request: Request,
     async def run(job: jobs.Job):
         return await llama.install_stream(job, backend)
 
-    job = jobs.create("llama.install", f"llama.cpp 導入: {backend}", run, owner_user_id=user.id)
+    job = jobs.create("llama.install", f"llama.cpp 導入: {backend}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=-5)
     audit.record(db, "llama.install", user=user, resource_type="runtime", resource_id=backend,
                  request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
