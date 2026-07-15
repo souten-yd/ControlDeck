@@ -132,16 +132,29 @@ class RocmSmiProvider(BaseProvider):
 
 
 class SysfsAmdProvider(BaseProvider):
-    """amdgpu の sysfs 直読み。外部ツール不要のフォールバック。"""
+    """amdgpu の sysfs 直読み。
+
+    `amd-smi` を監視周期ごとに起動すると、それ自体が常時CPU負荷になるため、
+    通常の収集経路はこちらを使う。複数GPUではVRAM総量が最大のdeviceを選び、
+    dGPUを優先する。
+    """
 
     name = "sysfs-amdgpu"
 
     def __init__(self) -> None:
         self.device: Path | None = None
+        candidates: list[tuple[float, Path]] = []
         for card in sorted(glob.glob("/sys/class/drm/card[0-9]/device")):
-            if (Path(card) / "gpu_busy_percent").exists():
-                self.device = Path(card)
-                break
+            device = Path(card)
+            if not (device / "gpu_busy_percent").exists():
+                continue
+            try:
+                vram_total = float((device / "mem_info_vram_total").read_text().strip())
+            except (OSError, ValueError):
+                vram_total = 0.0
+            candidates.append((vram_total, device))
+        if candidates:
+            self.device = max(candidates, key=lambda item: item[0])[1]
 
     def _read_num(self, rel: str, scale: float = 1.0) -> float | None:
         if self.device is None:
@@ -216,6 +229,18 @@ class NvidiaSmiProvider(BaseProvider):
 
 
 def detect_provider() -> BaseProvider:
+    # AMDはsysfsで主要値が揃う場合、外部CLIを周期起動しないfast pathを使う。
+    # sysfsが不完全な環境だけamd-smi/rocm-smiへフォールバックする。
+    sysfs = SysfsAmdProvider()
+    if sysfs.device is not None:
+        sample = sysfs.sample()
+        if (
+            sample is not None
+            and sample.get("utilization_percent") is not None
+            and sample.get("vram_total_bytes") is not None
+        ):
+            logger.info("GPU provider: sysfs-amdgpu (%s)", sysfs.device)
+            return sysfs
     if shutil.which("amd-smi"):
         p = AmdSmiProvider()
         if p.sample() is not None:
@@ -226,7 +251,6 @@ def detect_provider() -> BaseProvider:
         if p.sample() is not None:
             logger.info("GPU provider: rocm-smi")
             return p
-    sysfs = SysfsAmdProvider()
     if sysfs.device is not None:
         logger.info("GPU provider: sysfs-amdgpu (%s)", sysfs.device)
         return sysfs

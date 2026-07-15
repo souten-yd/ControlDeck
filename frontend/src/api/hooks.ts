@@ -28,7 +28,9 @@ export function useApps() {
   return useQuery({
     queryKey: ["apps"],
     queryFn: () => api<ManagedApp[]>("/apps"),
-    refetchInterval: 5000,
+    // systemd/プロセスツリー/待受ポートを走査するため、常時の再取得は抑える。
+    // 操作時はuseAppActionが楽観更新し、完了後に明示invalidateする。
+    refetchInterval: 15_000,
     refetchIntervalInBackground: false,
   });
 }
