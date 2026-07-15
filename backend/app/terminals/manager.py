@@ -275,7 +275,7 @@ class TerminalManager:
             # attach初期描画をdrainした後にcaptureする。capture後の出力はPTYへ流れるため、
             # 接続確立中に生成された行もsnapshot/通常streamのどちらかへ必ず入る。
             captured = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-e", "-S", "-", "-t", target],
+                ["tmux", "capture-pane", "-p", "-e", "-J", "-S", "-", "-t", target],
                 capture_output=True, timeout=15,
             )
             if captured.returncode != 0:

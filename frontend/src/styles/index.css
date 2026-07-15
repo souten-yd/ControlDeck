@@ -113,10 +113,17 @@ body {
 }
 .terminal-xterm-host .xterm-viewport {
   overscroll-behavior-y: contain;
-  touch-action: pan-y;
+  touch-action: none;
   -webkit-overflow-scrolling: touch;
 }
 
+/* mobile terminalの補助操作は横swipe可能な1行。scrollbarとSafe Areaを空の2段目にしない。 */
+.terminal-helper-bar {
+  scrollbar-width: none;
+}
+.terminal-helper-bar::-webkit-scrollbar {
+  display: none;
+}
 /* スクロールバー（控えめ） */
 * {
   scrollbar-width: thin;

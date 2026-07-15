@@ -1,6 +1,6 @@
 # ターミナル: モバイルキーボードと長期履歴の詳細設計
 
-最終更新: 2026-07-15
+最終更新: 2026-07-16
 
 ## 1. 再監査結果と原因
 
@@ -65,3 +65,52 @@ PCとモバイル双方から先頭まで遡れることと定義する。上限
   入力欄の背景色変化ではないことをcomputed styleと撮影で確認した。
 - 実tmux sessionへ10,000行を出力し、320pxと1280pxの双方で1行目・10,000行目を確認。
   末尾行は各1回だけで、再生snapshotとattach初期画面の重複がない。PCヘッダーにも全文コピー導線を追加した。
+
+## 6. xterm.js 6のモバイル入力・指スクロール追補設計（2026-07-16）
+
+### 6.1 再現結果と原因
+
+実サービスのtmux sessionへ300行を出力し、Playwright Chromiumを`320x700 / hasTouch`で接続した。
+browser bufferと右端scrollbarには履歴が存在する一方、terminal面を指で下へ200px動かしても表示行が
+`261..300`から変化しなかった。
+
+- xterm.js 6は履歴位置をnativeな`.xterm-viewport.scrollTop`ではなく、内側の
+  `.xterm-scrollable-element`と独自scrollbarで管理する。従来の`.xterm-viewport { touch-action: pan-y }`
+  だけではtouch移動を`Terminal.scrollLines()`へ変換できず、履歴を指で遡れない。
+- 履歴をpage/wheel移動した際、41表示行の一部に同じ末尾行が現れる現象もPC・mobile双方で再現した。
+  tmux初期描画、`history_reset`、snapshotはWebSocket上では正しい順序だったが、`Terminal.write()`は非同期queueである。
+  初期描画のparse完了前に同期的な`Terminal.reset()`が追い越し、その後に初期描画の残りがsnapshotへ混ざっていた。
+  また初期描画中の端末能力queryへxtermが返した応答をtmuxへ即送信すると、snapshot後にtmuxが現在画面を再描画し、
+  history/visible境界の1行を再度scrollbackへ押し出していた。
+  既存の「重複解消済み」評価は末尾行の出現回数だけを見ており、履歴と現在画面の境界を検証できていなかった。
+- 補助キーバーは`overflow-x-auto`により横scroll用領域を確保し、全要素共通の細いscrollbarも適用されるため、
+  ボタンのない2段目に見える。さらに`.safe-bottom`がTailwindの`py-1.5`の下paddingを上書きし、
+  Safe Areaがある端末ではボタン外に空の帯を作る。
+- xtermの入力を複数chunkに分けて送っても、送信dataには改行を追加していない。再生bufferで確認した改行は、
+  39桁のPTYへ60文字を入力した際の通常のsoft wrapであり、chunk境界ではない。ただし現状は
+  `visualViewport.scroll`（keyboardの自動panやIME変換でも発生）ごとに`fit()`を実行するため、寸法が変わらなくても
+  入力中の再描画を起こし、soft wrapが離散的に動いて見える。
+
+### 6.2 改修方針
+
+1. terminal面の単指縦dragをcell高単位で`Terminal.scrollLines()`へ変換し、指の移動中に履歴を追従表示する。
+   8px未満のtapと複数指はscrollにせず、tap focusと補助キーバー横scrollを維持する。
+   xterm 6のtouch処理とは二重実行せず、縦dragを確定したtouchmoveを背景pageへ伝播させない。
+2. 補助キーバーは`flex-wrap: nowrap`を明示し、横scrollbarだけを視覚的に隠す。横swipe自体は維持する。
+   高さ40pxの1行へ固定し、Safe Area paddingによるボタン外の空帯を作らない。
+3. `visualViewport.scroll`はrootの座標だけ更新する。terminalの列・行再計算はhost寸法の変化時だけ行い、
+   `FitAddon.proposeDimensions()`が現在値と異なる場合だけresizeする。これによりIME入力chunk間の不要なreflowと
+   重複PTY resizeをなくす。物理幅を越えるcommandのsoft wrapは端末仕様として維持し、実改行は挿入しない。
+4. tmux初期描画、`history_reset`、snapshot、通常streamをPromise chainへ積み、各`Terminal.write()`のcallback完了後に
+   次のdata/resetを処理する。serverは`history_end`を明示し、それまではkeyboard入力と端末能力応答をtmuxへ返さない。
+   これにより初期描画を確実にresetしてから全履歴snapshotを1回だけ構築し、後発の再描画も防ぐ。
+5. tmux snapshotは`capture-pane -J`でsoft-wrapped物理行を論理行へ戻す。browser幅に応じた表示上の再wrapは許容するが、
+   コピー内容や再接続履歴へ画面幅由来の実改行を混入させない。browser bufferの`isWrapped`もコピー時に連結する。
+
+### 6.3 追加受入条件
+
+- 320pxで補助ボタンのtop/bottomが全て一致し、視覚的な横scrollbar・ボタン外の空行がない。
+- 300行出力後の単指drag中に表示位置が変わり、逆方向dragと新規入力で末尾へ戻れる。PCのwheel scrollも維持する。
+- history/visible境界でも連番が連続し、同じ末尾行群を二重表示しない。
+- 分割入力した長文の送信dataへCR/LFを追加しない。寸法不変のvisual viewport scrollではxterm/PTYをresizeしない。
+- keyboard相当のviewport縮小・offset移動後もroot、入力cursor、補助キーバーが可視範囲内に収まる。
