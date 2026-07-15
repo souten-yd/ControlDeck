@@ -16,7 +16,7 @@
 | B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（owner・冪等性・heartbeat・priority・全体WSを再実装/検証） |
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（会話一覧/切替/改名/削除と生成checkpointを実装/実機検証） |
 | D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（厳格schema・副作用なしdry-run・実機生成を検証） |
-| E. LLMランタイム抽象（Ollama/llama.cpp provider） | 🚧 provider検出・共通モデル操作/health/全runtime同時load上限まで完了（生成stream/cancel契約が残る） |
+| E. LLMランタイム抽象（Ollama/llama.cpp provider） | ✅ provider検出・モデル操作・health・生成・stream・cancel契約を統合 |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ✅ 複数GGUF catalog/instance・個別unit・自動起動/idle制御まで完了 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | 🚧 metadata/型/capability/dry-run完了（検索/お気に入りと追加ノードが残る） |
@@ -166,9 +166,16 @@
 - 36種のexecutor/control nodeすべてにversion、side_effect、capability、config/output型、retry/cancel/progress/dry-run対応をbackend metadataとして定義。LLM catalogとfrontend node集合の差を自動テストで禁止する。
 - 詳細設計と不変条件は[`design-workflow-dry-run-metadata.md`](design-workflow-dry-run-metadata.md)へ統合。
 
-### E. LLMランタイム抽象
-- `LlmRuntimeProvider`（detect/install/list_models/start/stop/health/stream_chat/cancel/get_capabilities...）。
-- `OllamaRuntimeProvider` + `LlamaCppRuntimeProvider`。既存 Ollama 実装を provider 化。
+### E. LLMランタイム抽象 ✅ 完了（2026-07-16再監査後に補完）
+- lifecycle側は既存provider catalog/adapterへ集約し、detect/list/load/unload/delete/configure/healthを共通化。
+- 生成側は`LlmRuntimeProvider`へ`complete/stream_chat/cancel/get_capabilities`を実装。
+  `OllamaRuntimeProvider`、`LlamaCppRuntimeProvider`、外部`OpenAICompatibleRuntimeProvider`が
+  content/thinking/usageを同じ型付きeventへ正規化する。
+- request IDごとのactive registryとcancel eventを持ち、明示取消・job task cancel・WebSocket切断の全経路で
+  HTTP stream contextとregistryをcleanupする。永続chatのjob IDを生成request IDとして共用する。
+- 非stream workflow生成と、永続/旧WebSocket chatの重複していたJSONL/SSE処理を共通providerへ移行。
+  provider catalogは稼働時だけ`chat/stream/cancel`能力を公開する。
+- 詳細設計と受け入れ条件は[`design-llm-runtime-chat-contract.md`](design-llm-runtime-chat-contract.md)。
 
 ### F. llama.cpp 導入 ✅ 完了（2026-07-15再監査後に補完）
 **F-1 完了（backend、実機動作確認済み）:**

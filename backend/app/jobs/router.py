@@ -46,13 +46,17 @@ async def get_job(
 
 
 @router.post("/{job_id}/cancel")
-def cancel_job(
+async def cancel_job(
     job_id: str, request: Request,
     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
 ):
     job = jobs.get(job_id)
     if job is None or not jobs.visible_to(job, user.id):
         raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+    if job.kind == "chat.completion":
+        from app.models_mgmt.runtime_provider import cancel_request
+
+        await cancel_request(job_id)
     if not jobs.cancel(job_id):
         raise HTTPException(status_code=409, detail="実行中のジョブではありません")
     audit.record(db, "job.cancel", user=user, resource_type="job", resource_id=job_id, request=request)
