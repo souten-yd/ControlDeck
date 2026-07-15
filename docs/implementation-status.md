@@ -15,6 +15,22 @@
 | Phase 6 — リモートデスクトップ | ✅ コア完了（guacd トンネル + 接続管理 + ビューア） |
 | Phase 7 — TOTP ほか | ✅ コア完了（TOTP/PWA/バックアップ。WoL はワークフローノードで対応） |
 
+## Web通信・監視処理の軽量化（2026-07-15）
+
+- 高周波の外向きpingはなく、常時通信は認証済みmetrics WebSocketの2秒更新だった。変更前の実ブラウザでは
+  12秒に6 frame、`GET /apps`は5秒周期で3回。`/apps`はsystemd状態・プロセスツリー・待受ポートを走査し、
+  平均28.7ms（最大39.1ms）だった
+- 主負荷は2秒ごとに起動する`amd-smi metric --json`。実機で1回40〜60ms CPU、最大RSS約25MB、
+  約23KB JSONを生成していた。複数AMD GPUからVRAM総量最大のdGPUを選び、同じ主要値
+  （使用率・VRAM・温度・hotspot・電力・power cap）をamdgpu sysfsから直読するfast pathへ変更。
+  sysfsが不完全な環境だけCLIへfallbackする
+- アプリ状態の共有queryを15秒周期へ変更。操作時の楽観更新と完了後invalidate、非表示タブ停止は維持
+
+検証: backend 181件成功、frontend本番ビルド成功。実サービスは`sysfs-amdgpu`で32GB dGPUを選択し、
+10秒のservice cgroup CPUは1.67%相当、`amd-smi`周期プロセス0。旧CLI実測分を加えた変更前推計4.2%から
+約60%削減。1280pxで31秒確認しmetrics 16 frame（初回含む）、`/apps` 3回、console error・横スクロールなし。
+320pxのシステム画面も横スクロール・console errorなし、GPU値とmetrics WS継続を確認。
+
 ## Phase 2 / Phase 4 残件対応（2026-07-15）
 
 - **アプリアイコン**: PNG / JPEG / WebP / SVG（2MB以下）を登録・更新画面からアップロード。実パスをAPIへ露出せず、

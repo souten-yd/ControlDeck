@@ -8,13 +8,83 @@
 | 計画 | 状態 |
 |---|---|
 | A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
-| B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（DB永続化・再起動復元・API拡充、マージ済み） |
-| C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（全モードサーバー側・実機切断試験済み、マージ済み） |
-| D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（既存 /chat/build を強化、マージ済み） |
-| E. LLMランタイム抽象（Ollama/llama.cpp provider） | ⬜ 未着手 |
+| B. サーバー主導ジョブ基盤の汎用化 | 🚧 再監査で不足確認（所有者分離・冪等性・heartbeat・priority・全体WS） |
+| C. 永続チャット（ブラウザを閉じても回答生成・復元） | 🚧 コア完了（会話一覧UI・生成preview永続化が残る） |
+| D. ワークフロー生成の意味検証・品質スコア | 🚧 コア完了（厳格schema出力・副作用なしdry-runが残る） |
+| E. LLMランタイム抽象（Ollama/llama.cpp provider） | 🚧 provider検出・共通モデル操作まで完了（実行/生成/cancel契約が残る） |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 F-1/F-2完了（backend+UI・環境検出/切替、マージ済み）／MTP/思考深度の詳細UIは残 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ⬜ 一部済（v2エンジンで承認/リトライ/並列/flow.call/エージェント実装済み） |
+
+---
+
+## 2026-07-15 再監査と完了設計（完了表記を信用しない再評価）
+
+### 実装照合結果
+
+コード、DBモデル、API、UI、テストを相互照合した。旧「既存資産」の記述には、すでにDB化したジョブや
+永続チャットを「未永続」とする古い説明も残っていたため、進捗サマリは実装事実に合わせて修正した。
+
+| 領域 | 実装済みの根拠 | 完了を妨げる不足 |
+|---|---|---|
+| A 電力 | PSU sysfs、日/月/起動セッション積算、欠測処理、永続化テスト | なし（実機確認済み） |
+| B ジョブ | `Job` DB、再起動時interrupted、一覧/詳細/cancel | APIが所有者を分離しない。冪等キー、heartbeat、priority、全体イベントWSがない。`wait_events` が0.4秒poll |
+| C チャット | Conversation/Message DB、サーバージョブ、再接続 | 複数会話を選ぶUIとgen途中結果の永続化がない |
+| D 生成品質 | semantic check、quality score、自動修正 | LLM厳格JSON Schema指定と、副作用を実行しないdry-run段がない |
+| E provider | 共通catalog、capability、list/load/unload/delete adapter | providerの型付き契約、install/start/stop/health/stream/cancelの共通実装がない |
+| F llama.cpp | 導入、backend切替、systemd、単一GGUF起動 | `--draft-*`/思考深度の動的UI、モデル別複数instanceがない |
+| G OpenCode | なし | feature registry、deck.sh操作、未導入時の未登録境界、code.agentが未実装 |
+| H ノード | v2 DAG、retry/cancel/progress、25種超のノード | node metadata/capability/型、共通dry-run、検索/お気に入り、計画記載の一部ノードがない |
+
+### Web軽量化の実測
+
+- 外向きの高周波pingはない。watchdogの15秒通知はローカルsystemd notify socketであり通信ではない。
+- ダッシュボード実測（12秒）: metrics WS 1接続/6受信、`GET /apps` 3回、その他初回REST各1回。
+  `/apps` は平均28.7ms、最大39.1ms。WSは意図した2秒更新を満たす。
+- Webプロセス待機負荷（10秒平均）: CPU 1.6〜1.7%、自発context switch 52〜60回/秒。
+- 主因は `amd-smi metric --json` の2秒ごとのプロセス起動。実機で1回40〜60ms CPU、最大RSS約25MB、
+  JSON約23KBだった。GPU/VRAM/温度/電力は同じamdgpu sysfsから取得可能。
+
+### 詳細設計: 通信・処理最適化
+
+機能の鮮度を落としすぎず、バックグラウンド負荷と不要通信を分離して削減する。
+
+1. **GPU fast path**: AMDは外部CLIより先にsysfs providerを選ぶ。複数GPUではVRAM総量が最大のdeviceを
+   primary GPUとし、busy/VRAM/hwmon温度/電力を直読する。必要な主要値が取れない場合だけ
+   amd-smi→rocm-smiへfallbackする。NVIDIAは現状互換を維持する。
+2. **画面polling**: metricsは単一WS・2秒周期を維持する。アプリ状態は共有TanStack Queryのまま15秒周期へし、
+   start/stop/restart/kill後は楽観更新+即時invalidateで操作応答性を維持する。非表示タブでは停止する。
+   model jobは全体job WSでquery cacheを更新し、idle時2秒pollを廃止する。
+3. **ジョブ通知**: `Job.log/set_progress/status` をrevision付き通知へ集約し、0.4秒sleep pollingを廃止する。
+   認証済み `WS /jobs/stream` は接続ユーザーが閲覧可能なジョブのsnapshot/updateだけを配信する。
+   過負荷時はbounded queueの古い中間更新を捨て、最終状態を必ず再取得できる設計とする。
+4. **性能受入条件**: 同一実機・アイドル時10秒平均でWeb CPUを変更前比50%以上削減、外部AMD監視CLIの
+   周期起動0回、ダッシュボード30秒の`/apps`を初回込み3回以下、metricsは15±1 frame/30秒、
+   タブ復帰・アプリ操作・ジョブ進捗の機能を維持する。
+
+### 詳細設計: ジョブ基盤完了
+
+- 既存`jobs`表は互換維持し、追加制御情報は新規`job_controls`表（job_id PK/FK、owner、idempotency_key、
+  priority、heartbeat_at、revision）へ置く。既存行はownerを`jobs.owner_user_id`からfallbackする。
+- `(owner_user_id, kind, idempotency_key)`を一意にし、同一要求は既存running/succeeded jobを返す。
+  failed/canceled/interruptedの再試行は新規jobを作り、以前のcontrolを履歴として残す。
+- priorityは高い値を先に実行する安定PriorityQueue（同値は作成順）で扱い、同時実行数を制限する。
+  cancelはqueued/running両方を扱う。heartbeatはprogress/eventと定期touchで更新し、stale判定を可能にする。
+- list/get/cancel/WSはownerを強制する。管理者であっても通常APIは他ユーザーの生成内容を返さず、
+  ownerなしのシステムjobだけ共通表示する。破壊的cancelは監査する。
+- サーバー再起動時はrunningだけでなくqueuedもinterruptedへ遷移し、DBに最終状態を残す。
+
+### 実装・PR分割
+
+1. GPU/sysfs fast path、polling削減、変更前後計測。
+2. ジョブ所有者分離、通知WS、冪等性/heartbeat/priority、UIのjob WS移行。
+3. C/Dの残件（会話picker、gen checkpoint、schema/dry-run）。
+4. E/Fの共通runtime契約とllama詳細/複数instance。
+5. Gのopt-in registry/OpenCode境界。
+6. Hのmetadata/型/dry-run/UI/不足ノード。
+
+各PRでbackend test、frontend build、実サービスAPI、1280px/320pxを確認し、
+`docs/implementation-status.md`へ測定値と残件を更新する。完了条件を満たさない項目は✅へ戻さない。
 
 ---
 
@@ -25,9 +95,11 @@
   - `run()` ループ、`_flush_minute()`（60秒毎にDB保存）、`subscribe/unsubscribe`（WS配信）。
   - snapshot の `"power"` = `{cpu_watts_estimated, gpu_watts, total_watts_estimated, is_estimate}`。
 - **API**: `backend/app/monitoring/router.py` の `GET /api/v1/system/overview`、`WS /api/v1/system/metrics/stream`。
-- **ジョブ基盤（簡易）**: `backend/app/jobs/service.py`（プロセス内 dict、`Job` dataclass、`create/get/list/cancel/wait_events`）。**DB永続化なし・再起動で消える**。計画Bで DB化・復元対応が必要。
+- **ジョブ基盤**: `backend/app/jobs/service.py`（メモリ + `Job` DB、再起動時interrupted化、一覧/詳細/cancel）。
+  再監査で確認した所有者分離・制御metadata・通知方式の不足は計画Bの残件として補完する。
 - **ワークフローエンジン v2**: `backend/app/workflows/engine.py`。並列DAG/join/リトライ/on_error/承認/flow.call/イベント・Webhookトリガー実装済み。`docs`不要。
-- **チャット**: `backend/app/workflows/chat_router.py`。`/chat/stream`(WS)、`/chat/build`(WS・ジョブ化済み)。**通常チャットはWS所有で永続化なし**（計画Cで要修正）。
+- **チャット**: `backend/app/workflows/chat_persist.py`で会話/メッセージ/生成jobを永続化済み。
+  `chat_router.py`の`/chat/build`もジョブ化済み。会話picker等は計画Cの残件として補完する。
 - **LLM**: OpenAI互換 `/v1/chat/completions` 経由。think は Ollama ネイティブ `/api/chat` 経由（`_native_base`）。
 - **設定**: `backend/app/config.py`（pydantic）、`config/config.yaml`、`config/config.example.yaml`。
 - **暗号化**: `app/security/crypto.py`（Fernet）。**シークレット**は `WorkflowSecret`。
