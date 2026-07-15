@@ -58,6 +58,7 @@ export default function XtermView({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const coarseMobile = window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
     const dark = document.documentElement.classList.contains("dark");
     const term = new Terminal({
       fontSize: 13,
@@ -95,6 +96,16 @@ export default function XtermView({
     let disposed = false;
     let retryTimer: number | undefined;
     let retryDelay = 500;
+    let scheduleFitAfterConnect = () => {};
+    let lastPtySize: { cols: number; rows: number } | null = null;
+    const notifyBackendTerminalSize = (cols: number, rows: number, force = false) => {
+      if (cols < 10 || rows < 3) return;
+      if (!force && lastPtySize?.cols === cols && lastPtySize.rows === rows) return;
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "resize", rows, cols }));
+      lastPtySize = { cols, rows };
+    };
 
     const connect = () => {
       if (disposed) return;
@@ -109,6 +120,9 @@ export default function XtermView({
       ws.onopen = () => {
         retryDelay = 500;
         setStatus("open");
+        // queryの寸法に加え、接続世代ごとに最後の有効寸法を明示同期する。
+        notifyBackendTerminalSize(term.cols, term.rows, true);
+        scheduleFitAfterConnect();
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
@@ -161,11 +175,7 @@ export default function XtermView({
       }
       send(data);
     });
-    term.onResize(({ rows, cols }) => {
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN)
-        ws.send(JSON.stringify({ type: "resize", rows, cols }));
-    });
+    term.onResize(({ rows, cols }) => notifyBackendTerminalSize(cols, rows));
 
     // タブ復帰時（iOS はバックグラウンドで WS が切れる）は待たずに即再接続
     const onVisible = () => {
@@ -180,7 +190,6 @@ export default function XtermView({
     document.addEventListener("visibilitychange", onVisible);
 
     const root = rootRef.current;
-    const coarseMobile = window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
     const bodyStyle = document.body.getAttribute("style");
     const htmlStyle = document.documentElement.getAttribute("style");
     if (coarseMobile) {
@@ -191,36 +200,107 @@ export default function XtermView({
       document.documentElement.style.overflow = "hidden";
       document.documentElement.style.overscrollBehavior = "none";
     }
-    let fitFrame = 0;
-    const syncViewport = () => {
+    const geometryDebug = window.localStorage.getItem("control-deck:terminal-geometry-debug") === "1";
+    let fitFrame1 = 0;
+    let fitFrame2 = 0;
+    let fitTimer: number | undefined;
+    let fitGeneration = 0;
+    let lastFitWidth = 0;
+    let lastFitHeight = 0;
+    const logGeometry = (reason: string) => {
+      if (!geometryDebug) return;
+      const rect = host.getBoundingClientRect();
+      console.debug("[terminal-geometry]", {
+        reason,
+        timestamp: performance.now(),
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        visualViewportWidth: window.visualViewport?.width,
+        visualViewportHeight: window.visualViewport?.height,
+        visualViewportOffsetTop: window.visualViewport?.offsetTop,
+        devicePixelRatio: window.devicePixelRatio,
+        containerWidth: rect.width,
+        containerHeight: rect.height,
+        terminalCols: term.cols,
+        terminalRows: term.rows,
+        documentVisibility: document.visibilityState,
+      });
+    };
+    const syncViewport = (includeSize: boolean) => {
       if (coarseMobile && root && window.visualViewport) {
         const viewport = window.visualViewport;
         root.style.left = `${viewport.offsetLeft}px`;
         root.style.top = `${viewport.offsetTop}px`;
-        root.style.width = `${viewport.width}px`;
-        root.style.height = `${viewport.height}px`;
+        if (includeSize) {
+          root.style.width = `${viewport.width}px`;
+          root.style.height = `${viewport.height}px`;
+        }
       }
     };
-    const scheduleFit = () => {
-      window.cancelAnimationFrame(fitFrame);
-      fitFrame = window.requestAnimationFrame(() => {
-        const dimensions = fit.proposeDimensions();
-        if (dimensions && (dimensions.cols !== term.cols || dimensions.rows !== term.rows)) {
-          term.resize(dimensions.cols, dimensions.rows);
+    const performFit = (reason: string, generation: number) => {
+      // PTY出力のparse中にresize/refreshを割り込ませず、受信順序と同じqueueで直列化する。
+      writeTail = writeTail.then(() => {
+        if (disposed || generation !== fitGeneration || !host.isConnected) return;
+        // viewportの中間寸法も捨て、確定した世代だけをDOMへ反映してから測定する。
+        syncViewport(true);
+        const rect = host.getBoundingClientRect();
+        if (
+          document.visibilityState !== "visible" ||
+          !Number.isFinite(rect.width) || !Number.isFinite(rect.height) ||
+          rect.width < 100 || rect.height < 80
+        ) {
+          logGeometry(`${reason}:skipped`);
+          return;
         }
+        logGeometry(`${reason}:before`);
+        const dimensions = fit.proposeDimensions();
+        if (!dimensions || dimensions.cols < 10 || dimensions.rows < 3) return;
+        const terminalSizeChanged = dimensions.cols !== term.cols || dimensions.rows !== term.rows;
+        const geometryChanged = Math.abs(rect.width - lastFitWidth) >= 0.5 || Math.abs(rect.height - lastFitHeight) >= 0.5;
+        if (terminalSizeChanged) term.resize(dimensions.cols, dimensions.rows);
+        // resizeが不要な端数変化でもrenderer layerを確定寸法へ同期する。
+        if (terminalSizeChanged || geometryChanged) term.refresh(0, Math.max(0, term.rows - 1));
+        lastFitWidth = rect.width;
+        lastFitHeight = rect.height;
+        logGeometry(`${reason}:after`);
       });
     };
-    const syncViewportAndFit = () => {
-      syncViewport();
-      scheduleFit();
+    const scheduleFit = (reason: string) => {
+      const generation = ++fitGeneration;
+      window.cancelAnimationFrame(fitFrame1);
+      window.cancelAnimationFrame(fitFrame2);
+      window.clearTimeout(fitTimer);
+      // iOS keyboard animation中の中間寸法を捨て、layoutが2 frame + 50ms安定してからfitする。
+      fitFrame1 = window.requestAnimationFrame(() => {
+        fitFrame2 = window.requestAnimationFrame(() => {
+          fitTimer = window.setTimeout(() => performFit(reason, generation), 50);
+        });
+      });
     };
-    syncViewportAndFit();
-    const observer = new ResizeObserver(scheduleFit);
+    scheduleFitAfterConnect = () => scheduleFit("websocket-open");
+    const syncViewportAndFit = () => {
+      scheduleFit("visual-viewport-resize");
+    };
+    syncViewport(true);
+    scheduleFit("initial-layout");
+    const observer = new ResizeObserver(() => scheduleFit("resize-observer"));
     observer.observe(host);
     // iOS/Android: keyboardで縮小・移動するvisual viewportへroot自体を追従。
     window.visualViewport?.addEventListener("resize", syncViewportAndFit);
     // keyboardの自動panは寸法を変えないため、座標だけ同期して入力中のreflowを避ける。
-    window.visualViewport?.addEventListener("scroll", syncViewport);
+    const syncViewportPosition = () => syncViewport(false);
+    window.visualViewport?.addEventListener("scroll", syncViewportPosition);
+    const onWindowResize = () => scheduleFit("window-resize");
+    window.addEventListener("resize", onWindowResize);
+    const onVisibilityFit = () => {
+      if (document.visibilityState !== "visible") return;
+      scheduleFit("visibility-visible");
+    };
+    const onPageShow = () => {
+      scheduleFit("pageshow");
+    };
+    document.addEventListener("visibilitychange", onVisibilityFit);
+    window.addEventListener("pageshow", onPageShow);
 
     // xterm.js 6の独自scrollbarはtouch dragをbuffer scrollへ変換しないため明示的に補う。
     let touchTracking = false;
@@ -299,10 +379,17 @@ export default function XtermView({
       window.clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", onVisible);
       observer.disconnect();
-      window.cancelAnimationFrame(fitFrame);
+      ++fitGeneration;
+      scheduleFitAfterConnect = () => {};
+      window.cancelAnimationFrame(fitFrame1);
+      window.cancelAnimationFrame(fitFrame2);
+      window.clearTimeout(fitTimer);
       window.cancelAnimationFrame(touchScrollFrame);
       window.visualViewport?.removeEventListener("resize", syncViewportAndFit);
-      window.visualViewport?.removeEventListener("scroll", syncViewport);
+      window.visualViewport?.removeEventListener("scroll", syncViewportPosition);
+      window.removeEventListener("resize", onWindowResize);
+      document.removeEventListener("visibilitychange", onVisibilityFit);
+      window.removeEventListener("pageshow", onPageShow);
       host.removeEventListener("touchstart", onTouchStart, true);
       host.removeEventListener("touchmove", onTouchMove, true);
       host.removeEventListener("touchend", onTouchEnd, true);
@@ -313,7 +400,15 @@ export default function XtermView({
         if (htmlStyle === null) document.documentElement.removeAttribute("style");
         else document.documentElement.setAttribute("style", htmlStyle);
       }
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+      }
+      wsRef.current = null;
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -437,9 +532,11 @@ export default function XtermView({
       </div>
 
       {/* ターミナル本体 */}
-      {/* overflow:hiddenはscroll containerになるため、IME確定時のtextarea自動scrollで全行がずれる。
-          clipは端数cellを切りつつscrollTopを持たない。 */}
-      <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-clip bg-white px-1 pt-1 dark:bg-zinc-950" />
+      {/* FitAddonは直接の親paddingを寸法から引かない。装飾paddingを外側へ分離し、hostは無paddingにする。 */}
+      <div className="flex min-h-0 flex-1 overflow-clip bg-white px-1 pt-1 dark:bg-zinc-950">
+        {/* clipは端数cellを切りつつ、IME textareaが親を自動scrollするscroll containerを作らない。 */}
+        <div ref={hostRef} className="terminal-xterm-host min-h-0 min-w-0 flex-1 overflow-clip" />
+      </div>
 
       {/* モバイル補助キーバー */}
       <div

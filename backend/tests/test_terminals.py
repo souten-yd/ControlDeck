@@ -2,7 +2,16 @@ import os
 import subprocess
 import time
 
-from app.terminals.manager import HISTORY_BYTES, HISTORY_TRUNCATED, TerminalManager, _bounded_history, _target, tmux_available
+from app.terminals.manager import (
+    HISTORY_BYTES,
+    HISTORY_TRUNCATED,
+    TerminalConnection,
+    TerminalManager,
+    _bounded_history,
+    _normalize_terminal_size,
+    _target,
+    tmux_available,
+)
 
 
 def test_fallback_pty_lifecycle():
@@ -70,6 +79,21 @@ def test_terminal_session_id_and_history_bounds():
     assert bounded.startswith(HISTORY_TRUNCATED)
     assert bounded.endswith(b"last\n")
     assert len(bounded) <= HISTORY_BYTES + len(HISTORY_TRUNCATED)
+
+
+def test_terminal_size_is_bounded_and_duplicate_resize_is_suppressed(monkeypatch):
+    assert _normalize_terminal_size(1, 1) == (3, 10)
+    assert _normalize_terminal_size(999, 9999) == (500, 1000)
+    calls: list[tuple[int, int, int]] = []
+    monkeypatch.setattr(
+        "app.terminals.manager._set_winsize",
+        lambda fd, rows, cols: calls.append((fd, rows, cols)),
+    )
+    conn = TerminalConnection(master_fd=123, pid=456, owns_process=False, rows=24, cols=80)
+    conn.resize(24, 80)
+    conn.resize(1, 1)
+    conn.resize(1, 1)
+    assert calls == [(123, 3, 10)]
 
 
 def test_tmux_replays_ten_thousand_lines():
