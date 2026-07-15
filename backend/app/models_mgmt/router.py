@@ -80,6 +80,18 @@ async def provider_models(provider_id: str, user: User = Depends(require_permiss
         raise HTTPException(status_code=502, detail=str(e)) from e
 
 
+@router.get("/providers/{provider_id}/health")
+async def provider_health(provider_id: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import provider_adapters
+
+    try:
+        return await provider_adapters.provider_health(provider_id)
+    except provider_adapters.ProviderNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except provider_adapters.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
 @router.post("/providers/{provider_id}/models/{model_id:path}/load")
 async def provider_load(provider_id: str, model_id: str, body: ProviderLoadBody, request: Request,
                         user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
@@ -516,12 +528,11 @@ class LlamaInstanceBody(BaseModel):
     repeat_penalty: float | None = Field(default=None, ge=0, le=10)
     seed: int | None = Field(default=None, ge=-1, le=2147483647)
     alias: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    auto_start: bool | None = None
+    idle_exclude: bool | None = None
 
 
-@router.put("/llama/instance")
-def llama_put_config(body: LlamaInstanceBody, user: User = Depends(require_permission("workflows.edit"))):
-    from app.models_mgmt import llama
-
+def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     if "model_path" in patch:
         from app.files import service as files
@@ -533,7 +544,104 @@ def llama_put_config(body: LlamaInstanceBody, user: User = Depends(require_permi
         if not model_path.is_file() or model_path.suffix.lower() != ".gguf":
             raise HTTPException(status_code=422, detail="llama.cppモデルは許可ルート内のGGUFファイルを指定してください")
         patch["model_path"] = str(model_path)
-    return llama.save_config({"instance": patch})
+    return patch
+
+
+@router.put("/llama/instance")
+def llama_put_config(
+    body: LlamaInstanceBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    patch = _llama_instance_patch(body)
+    try:
+        result = llama.save_config({"instance": patch})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_save", user=user, resource_type="runtime", request=request,
+                 metadata={"alias": result.get("selected_alias")})
+    return result
+
+
+@router.get("/llama/instances")
+async def llama_instances(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import llama
+
+    instances = llama.list_instances()
+    health = await asyncio.gather(*(llama.health(str(item["alias"])) for item in instances))
+    return [{**item, "health": state} for item, state in zip(instances, health, strict=True)]
+
+
+@router.post("/llama/instances", status_code=201)
+def llama_create_instance(
+    body: LlamaInstanceBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    patch = _llama_instance_patch(body)
+    alias = str(patch.get("alias") or "")
+    if not alias or not patch.get("model_path"):
+        raise HTTPException(status_code=422, detail="aliasとGGUFモデルファイルは必須です")
+    try:
+        result = llama.save_instance(alias, patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_create", user=user, resource_type="model", resource_id=alias,
+                 request=request, metadata={"port": patch.get("port", 8080)})
+    return result
+
+
+@router.put("/llama/instances/{alias}")
+def llama_update_instance(
+    alias: str, body: LlamaInstanceBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    try:
+        llama.get_instance(alias)
+        result = llama.save_instance(alias, _llama_instance_patch(body))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_save", user=user, resource_type="model", resource_id=alias,
+                 request=request)
+    return result
+
+
+@router.post("/llama/instances/{alias}/select")
+def llama_select_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    try:
+        result = llama.select_instance(alias)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_select", user=user, resource_type="model", resource_id=alias,
+                 request=request)
+    return result
+
+
+@router.post("/llama/instances/{alias}/delete")
+def llama_delete_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    try:
+        llama.delete_instance(alias)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_delete", user=user, resource_type="model", resource_id=alias,
+                 request=request, metadata={"gguf_deleted": False})
+    return {"ok": True, "gguf_deleted": False}
 
 
 @router.post("/llama/start")
@@ -548,10 +656,13 @@ async def llama_start(request: Request, user: User = Depends(require_permission(
 
 
 @router.post("/llama/stop")
-async def llama_stop(user: User = Depends(require_permission("workflows.edit"))):
+async def llama_stop(
+    request: Request, user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
     from app.models_mgmt import llama
 
     ok, err = await asyncio.to_thread(llama.stop_instance)
+    audit.record(db, "llama.stop", user=user, resource_type="runtime", request=request)
     return {"ok": ok, "error": err}
 
 

@@ -78,7 +78,7 @@ async def _llm(
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     try:
-        await asyncio.to_thread(ensure_gpu_profile)
+        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     think = False if disable_thinking else _think_for(model)
@@ -161,7 +161,7 @@ async def chat_stream(websocket: WebSocket):
     try:
         from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
-        await asyncio.to_thread(ensure_gpu_profile)
+        await asyncio.to_thread(ensure_gpu_profile, base_url=base)
         if native is not None:
             # think 指定 & Ollama → ネイティブ /api/chat ストリーム（JSON lines）。
             # thinking(推論)は type:"thinking"、回答は type:"delta" で送る

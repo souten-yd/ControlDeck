@@ -197,7 +197,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             raise
 
     try:
-        await asyncio.to_thread(ensure_gpu_profile)
+        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
         if native is not None:
             payload = {"model": model, "messages": history, "stream": True,
                        "think": think, "keep_alive": _keep_alive(),

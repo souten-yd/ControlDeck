@@ -139,7 +139,7 @@ async def embed(texts: list[str], base_url: str, model: str, api_key: str) -> li
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     try:
-        await asyncio.to_thread(ensure_gpu_profile)
+        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:
         raise RagError(str(exc)) from exc
     url = base_url.rstrip("/") + "/embeddings"
@@ -375,7 +375,7 @@ async def _llm_complete(prompt: str, base_url: str, model: str, api_key: str, te
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     try:
-        await asyncio.to_thread(ensure_gpu_profile)
+        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:
         raise RagError(str(exc)) from exc
     async with httpx.AsyncClient(timeout=120) as client:

@@ -108,6 +108,51 @@ def test_ollama_adapter_normalizes_models_and_lifecycle(monkeypatch):
     assert [call[0] for call in calls] == ["load", "unload", "delete"]
 
 
+def test_llama_adapter_lists_and_controls_each_catalog_instance(monkeypatch, tmp_path):
+    import asyncio
+    from app.models_mgmt import provider_adapters
+
+    provider = {
+        "id": "llama.cpp", "provider": "llama.cpp", "name": "llama.cpp", "managed": True,
+        "available": True, "models": ["a"],
+        "capabilities": ["list", "load", "unload", "delete", "configure", "health", "start", "stop"],
+    }
+
+    async def catalog(**kwargs):
+        return [provider]
+
+    model_a = tmp_path / "a.gguf"
+    model_b = tmp_path / "b.gguf"
+    model_a.write_bytes(b"a")
+    model_b.write_bytes(b"bb")
+    instances = [
+        {"alias": "a", "model_path": str(model_a), "port": 8100, "base_url": "http://127.0.0.1:8100/v1", "unit": "a.service", "runtime_status": "RUNNING"},
+        {"alias": "b", "model_path": str(model_b), "port": 8101, "base_url": "http://127.0.0.1:8101/v1", "unit": "b.service", "runtime_status": "STOPPED"},
+    ]
+    calls = []
+
+    async def health(alias=None):
+        return {"ok": alias == "a"}
+
+    monkeypatch.setattr(provider_adapters.providers, "list_providers", catalog)
+    monkeypatch.setattr(provider_adapters.llama, "get_config", lambda: {"backend": "rocm"})
+    monkeypatch.setattr(provider_adapters.llama, "list_instances", lambda: instances)
+    monkeypatch.setattr(provider_adapters.llama, "get_instance", lambda alias: next(item for item in instances if item["alias"] == alias))
+    monkeypatch.setattr(provider_adapters.llama, "health", health)
+    monkeypatch.setattr(provider_adapters.llama, "start_instance", lambda alias: (calls.append(("start", alias)) or (True, "")))
+    monkeypatch.setattr(provider_adapters.llama, "stop_instance", lambda alias: (calls.append(("stop", alias)) or (True, "")))
+    monkeypatch.setattr(provider_adapters.llama, "delete_instance", lambda alias: calls.append(("delete", alias)))
+    monkeypatch.setattr("app.models_mgmt.runtime_policy.ensure_gpu_profile", lambda **kwargs: {})
+
+    listed = asyncio.run(provider_adapters.list_models("llama.cpp"))
+    assert [item["id"] for item in listed] == ["a", "b"]
+    assert listed[0]["loaded"] is True and listed[1]["details"]["port"] == 8101
+    asyncio.run(provider_adapters.load_model("llama.cpp", "b"))
+    asyncio.run(provider_adapters.unload_model("llama.cpp", "a"))
+    asyncio.run(provider_adapters.delete_model("llama.cpp", "b"))
+    assert calls == [("start", "b"), ("stop", "a"), ("delete", "b")]
+
+
 async def _async_result(calls, call, result):
     calls.append(call)
     return result

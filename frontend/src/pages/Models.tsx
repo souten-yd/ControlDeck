@@ -181,7 +181,7 @@ export default function ModelsPage() {
       const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, string> }>>(`/models/providers/${selectedProvider}/models`);
       return common.map((m) => ({ id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "", family: "", loaded: !!m.loaded, expires_at: null, vram: null }));
     },
-    refetchInterval: 5000,
+    refetchInterval: 15000,
     enabled: !!runtimeEnv && (selectedProvider !== "ollama" || status?.available !== false),
   });
   const refresh = () => qc.invalidateQueries({ queryKey: ["models", selectedProvider] });
@@ -777,6 +777,9 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
           <input type="checkbox" checked={policy.idle_unload_enabled} onChange={(e) => setPolicyCfg({ ...policy, idle_unload_enabled: e.target.checked })} className="h-4 w-4" />
         </label>
         {policy.idle_unload_enabled && <L label="共通アイドル時間（分）"><PresetOrCustom value={policy.idle_unload_minutes} presets={[5, 15, 30, 60, 240].map((v) => ({ v, label: `${v}分` }))} placeholder="30" onChange={(v) => setPolicyCfg({ ...policy, idle_unload_minutes: Number(v ?? 30) })} /></L>}
+        <L label="全ランタイムの同時ロード上限">
+          <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
+        </L>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <L label="チャット出力token上限"><PresetOrCustom value={policy.chat.max_output_tokens} presets={PREDICT_PRESETS.filter((p) => Number(p.v) > 0)} placeholder="2048" onChange={(v) => setPolicyCfg({ ...policy, chat: { ...policy.chat, max_output_tokens: Number(v ?? 2048) } })} /></L>
           <L label="チャット思考">
@@ -959,6 +962,42 @@ function L({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block"><span className="mb-1 block text-xs font-medium text-zinc-500">{label}</span>{children}</label>;
 }
 
+interface LlamaInstanceConfig {
+  model_path: string;
+  port: number;
+  alias: string;
+  selected?: boolean;
+  loaded?: boolean;
+  runtime_status?: string;
+  base_url?: string;
+  auto_start: boolean;
+  idle_exclude: boolean;
+  last_used_at?: string;
+  n_gpu_layers: number;
+  ctx_size: number;
+  n_parallel: number;
+  flash_attn: boolean;
+  n_predict: number;
+  batch_size: number;
+  ubatch_size: number;
+  cache_type_k: string;
+  cache_type_v: string;
+  threads: number;
+  threads_batch: number;
+  mmap: boolean;
+  mlock: boolean;
+  spec_type: "none" | "draft-simple" | "draft-mtp" | "ngram-simple";
+  draft_max: number;
+  cpu_moe: boolean;
+  n_cpu_moe: number;
+  temperature: number;
+  top_k: number;
+  top_p: number;
+  min_p: number;
+  repeat_penalty: number;
+  seed: number;
+}
+
 interface LlamaStatus {
   installed: boolean;
   backend: string;
@@ -971,31 +1010,9 @@ interface LlamaStatus {
   detected_backends: Record<string, boolean>;
   installed_backends: string[];
   selectable_backends: string[];
-  instance: {
-    n_gpu_layers: number;
-    ctx_size: number;
-    n_parallel: number;
-    flash_attn: boolean;
-    n_predict: number;
-    batch_size: number;
-    ubatch_size: number;
-    cache_type_k: string;
-    cache_type_v: string;
-    threads: number;
-    threads_batch: number;
-    mmap: boolean;
-    mlock: boolean;
-    spec_type: "none" | "draft-simple" | "draft-mtp" | "ngram-simple";
-    draft_max: number;
-    cpu_moe: boolean;
-    n_cpu_moe: number;
-    temperature: number;
-    top_k: number;
-    top_p: number;
-    min_p: number;
-    repeat_penalty: number;
-    seed: number;
-  };
+  instance: LlamaInstanceConfig;
+  instances: LlamaInstanceConfig[];
+  selected_alias: string;
   health?: { ok: boolean };
 }
 
@@ -1006,15 +1023,17 @@ function LlamaRuntimePanel() {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const { data: job } = useJob(jobId);
   const { data: st } = useQuery({
     queryKey: ["llama-status"],
     queryFn: () => api<LlamaStatus>("/models/llama/status"),
-    refetchInterval: (q) => (q.state.data?.installed ? 8000 : false),
+    refetchInterval: (q) => (q.state.data?.installed ? 15000 : false),
   });
 
   useEffect(() => {
-    if (job && job.status !== "running") {
+    if (job && job.status !== "running" && job.status !== "queued") {
       if (job.status === "succeeded") { show("llama.cpp を導入しました"); qc.invalidateQueries({ queryKey: ["llama-status"] }); }
       else if (job.status === "failed") show(job.error, "error");
     }
@@ -1052,18 +1071,77 @@ function LlamaRuntimePanel() {
           </button>)}
         </div>
       </details>}
-      {job && job.status === "running" && <JobProgress job={job} />}
-      {st.installed && <LlamaInstanceControls st={st} onChanged={() => qc.invalidateQueries({ queryKey: ["llama-status"] })} />}
+      {job && (job.status === "running" || job.status === "queued") && <JobProgress job={job} />}
+      {st.installed && (
+        <div className="space-y-2.5">
+          <div className="flex gap-2">
+            <select
+              value={creating ? "__new__" : st.selected_alias}
+              onChange={async (event) => {
+                if (event.target.value === "__new__") { setCreating(true); return; }
+                await api(`/models/llama/instances/${encodeURIComponent(event.target.value)}/select`, { method: "POST", json: {} });
+                setCreating(false);
+                qc.invalidateQueries({ queryKey: ["llama-status"] });
+              }}
+              className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              {st.instances.map((instance) => (
+                <option key={instance.alias} value={instance.alias}>{instance.loaded ? "● " : "○ "}{instance.alias} · :{instance.port}</option>
+              ))}
+              {creating && <option value="__new__">新しいGGUF設定</option>}
+            </select>
+            <button onClick={() => setCreating(true)} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-2 text-xs font-medium dark:bg-zinc-800">+ GGUF設定</button>
+          </div>
+          {creating ? (
+            <LlamaInstanceControls
+              key="new"
+              initial={{ ...st.instance, model_path: "", alias: "", port: Math.max(8080, ...st.instances.map((item) => item.port)) + (st.instances.length ? 1 : 0), auto_start: false, idle_exclude: false }}
+              isNew
+              onCancel={() => setCreating(false)}
+              onChanged={() => { setCreating(false); qc.invalidateQueries({ queryKey: ["llama-status"] }); qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] }); }}
+            />
+          ) : st.instances.length > 0 ? (
+            <LlamaInstanceControls
+              key={st.selected_alias}
+              initial={st.instances.find((item) => item.alias === st.selected_alias) ?? st.instance}
+              onDelete={() => setDeleting(st.selected_alias)}
+              onChanged={() => { qc.invalidateQueries({ queryKey: ["llama-status"] }); qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] }); }}
+            />
+          ) : (
+            <button onClick={() => setCreating(true)} className="w-full rounded-xl border border-dashed border-zinc-300 py-5 text-xs text-zinc-500 dark:border-zinc-700">最初のGGUF設定を追加</button>
+          )}
+        </div>
+      )}
+      {deleting && <ConfirmDialog
+        title={`「${deleting}」の設定を削除しますか？`}
+        message="systemd unitと設定だけを削除します。GGUFファイル本体は削除しません。"
+        confirmLabel="設定を削除"
+        onConfirm={async () => {
+          try {
+            await api(`/models/llama/instances/${encodeURIComponent(deleting)}/delete`, { method: "POST", json: {} });
+            show("設定を削除しました（GGUF本体は保持）"); setDeleting(null);
+            qc.invalidateQueries({ queryKey: ["llama-status"] }); qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] });
+          } catch (error) { show(error instanceof Error ? error.message : "削除に失敗", "error"); }
+        }}
+        onClose={() => setDeleting(null)}
+      />}
     </div>
   );
 }
 
 /** llama.cpp のモデル起動設定と起動/停止。 */
-function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: () => void }) {
+function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onChanged }: {
+  initial: LlamaInstanceConfig;
+  isNew?: boolean;
+  onCancel?: () => void;
+  onDelete?: () => void;
+  onChanged: () => void;
+}) {
   const show = useToasts((s) => s.show);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const [cfg, setCfg] = useState({ ...st.instance, model_path: st.model_path, alias: st.alias || "llama" });
+  const [cfg, setCfg] = useState<LlamaInstanceConfig>({ ...initial });
+  const originalAlias = initial.alias;
   const { data: optionData } = useQuery({ queryKey: ["llama-options"], queryFn: () => api<{ flags: string[] }>("/models/llama/options") });
   const flags = new Set(optionData?.flags ?? []);
   const set = <K extends keyof typeof cfg>(key: K, value: (typeof cfg)[K]) => setCfg((current) => ({ ...current, [key]: value }));
@@ -1072,7 +1150,7 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
   const persist = async (start: boolean) => {
     if (!cfg.model_path) { show("モデルファイルを選択してください", "error"); return; }
     try {
-      await api("/models/llama/instance", { method: "PUT", json: cfg });
+      await api(isNew ? "/models/llama/instances" : `/models/llama/instances/${encodeURIComponent(originalAlias)}`, { method: isNew ? "POST" : "PUT", json: cfg });
       if (start) {
         await api(`/models/providers/llama.cpp/models/${encodeURIComponent(cfg.alias)}/load`, { method: "POST", json: {} });
         show("保存してllama.cppを起動しました（初回はモデル読み込みに時間がかかります）");
@@ -1083,14 +1161,14 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
     } catch (e) { show(e instanceof Error ? e.message : "保存に失敗", "error"); }
   };
   const stop = async () => {
-    try { await api(`/models/providers/llama.cpp/models/${encodeURIComponent(st.alias || "llama")}/unload`, { method: "POST" }); show("停止しました"); onChanged(); }
+    try { await api(`/models/providers/llama.cpp/models/${encodeURIComponent(cfg.alias)}/unload`, { method: "POST" }); show("停止しました"); onChanged(); }
     catch (e) { show(e instanceof Error ? e.message : "停止に失敗", "error"); }
   };
 
   return (
     <div className="space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
       <div>
-        <p className="text-xs font-semibold text-zinc-500">現在のllama.cppモデル個別設定</p>
+        <p className="text-xs font-semibold text-zinc-500">{isNew ? "新しい" : cfg.alias} · llama.cppモデル個別設定</p>
         <p className="mt-0.5 text-[10px] text-zinc-400">GGUFごとに必要なCTX・KV・MTP・MoE設定を保存し、起動時に反映します。</p>
       </div>
       <div className="flex gap-1.5">
@@ -1099,6 +1177,7 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
       </div>
       <div className="grid grid-cols-2 gap-2">
         <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
+        <L label="待受port"><input type="number" min={1024} max={65535} value={cfg.port} onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} /></L>
         <L label="コンテキスト長（CTX）"><PresetOrCustom value={cfg.ctx_size} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("ctx_size", Number(v ?? 4096))} /></L>
         <L label="最大出力トークン"><PresetOrCustom value={cfg.n_predict} presets={PREDICT_PRESETS} placeholder="2048" onChange={(v) => set("n_predict", Number(v ?? 2048))} /></L>
         <L label="GPUオフロード層"><PresetOrCustom value={cfg.n_gpu_layers} presets={GPU_PRESETS.map((p) => p.v === -1 ? { ...p, v: 999, label: "全部 (999)" } : p)} placeholder="999" onChange={(v) => set("n_gpu_layers", Number(v ?? 999))} /></L>
@@ -1146,15 +1225,21 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
         </div>
         <Toggle label="mmapでモデルを読む" hint="通常はON。OSのpage cacheを利用します" value={cfg.mmap} onChange={(value) => set("mmap", value)} />
         <Toggle label="モデルをRAMへ固定（mlock）" hint="swapを防ぎますが、十分なRAMが必要です" value={cfg.mlock} onChange={(value) => set("mlock", value)} />
+        <Toggle label="PC起動時に自動起動" hint="このinstanceのsystemd user unitをenableします。起動前にGPU profileを適用します" value={cfg.auto_start} onChange={(value) => set("auto_start", value)} />
+        <Toggle label="共通アイドル停止から除外" hint="直接endpointを使う外部clientは利用時刻を追跡できないため、常用時は除外を推奨" value={cfg.idle_exclude} onChange={(value) => set("idle_exclude", value)} />
       </div>}
-      <div className="grid grid-cols-3 gap-1.5">
-        <button onClick={() => persist(false)} className="rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">保存</button>
+      <div className={`grid gap-1.5 ${isNew ? "grid-cols-2" : "grid-cols-3"}`}>
+        <button onClick={() => persist(false)} className="rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">{isNew ? "登録" : "保存"}</button>
         <button onClick={() => persist(true)} className="rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700">保存して起動</button>
-        <button onClick={stop} className="rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">停止</button>
+        {!isNew && <button onClick={stop} className="rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">停止</button>}
       </div>
-      {st.base_url && (
+      <div className="flex gap-2">
+        {isNew && onCancel && <button onClick={onCancel} className="text-xs text-zinc-500">キャンセル</button>}
+        {!isNew && onDelete && <button onClick={onDelete} className="ml-auto text-xs text-red-500">この設定を削除</button>}
+      </div>
+      {cfg.port && (
         <p className="text-[10px] text-zinc-400">
-          起動後はエンドポイント <code className="font-mono">{st.base_url}</code> をチャット/ワークフローの LLM 設定に指定して使えます。
+          起動後はエンドポイント <code className="font-mono">http://127.0.0.1:{cfg.port}/v1</code> をチャット/ワークフローの LLM 設定に指定して使えます。
         </p>
       )}
       {pickerOpen && (
