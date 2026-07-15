@@ -448,17 +448,17 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[2px] sm:items-center"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      className="fixed inset-0 z-50 bg-white dark:bg-zinc-950"
       role="presentation"
     >
       <div
         role="dialog"
+        aria-modal="true"
         aria-label={assistantName}
-        className="flex h-[94dvh] w-screen flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:h-[88dvh] sm:w-[760px] sm:rounded-2xl"
+        className="flex h-[100dvh] w-full flex-col bg-white dark:bg-zinc-950"
       >
         {/* ヘッダー */}
-        <div className="flex items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
+        <div className="safe-top flex items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
           <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> {assistantName}</span></h2>
           <select
             value={convId}

@@ -77,12 +77,7 @@ export default function XtermView({
       host.dataset.terminalViewportY = String(term.buffer.active.viewportY);
     };
     updateViewportMarker();
-    let scrollRefreshFrame = 0;
-    term.onScroll(() => {
-      updateViewportMarker();
-      window.cancelAnimationFrame(scrollRefreshFrame);
-      scrollRefreshFrame = window.requestAnimationFrame(() => term.refresh(0, term.rows - 1));
-    });
+    term.onScroll(updateViewportMarker);
 
     const encoder = new TextEncoder();
     // xterm.writeは非同期queue。resetを直接呼ぶと先行するtmux初期描画を追い越すため、
@@ -306,7 +301,6 @@ export default function XtermView({
       observer.disconnect();
       window.cancelAnimationFrame(fitFrame);
       window.cancelAnimationFrame(touchScrollFrame);
-      window.cancelAnimationFrame(scrollRefreshFrame);
       window.visualViewport?.removeEventListener("resize", syncViewportAndFit);
       window.visualViewport?.removeEventListener("scroll", syncViewport);
       host.removeEventListener("touchstart", onTouchStart, true);
@@ -443,7 +437,7 @@ export default function XtermView({
       </div>
 
       {/* ターミナル本体 */}
-      <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-hidden px-1 pt-1" />
+      <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-hidden bg-white px-1 pt-1 dark:bg-zinc-950" />
 
       {/* モバイル補助キーバー */}
       <div

@@ -199,6 +199,9 @@ Webプロセスの子にはしない。旧単一`instance`設定は初回にcata
 
 - `/assistant`を独立routeとして追加し、PCサイドバー、モバイル操作シート、command paletteから直接開く。
   ワークフロー画面内の既存入口は同じcomponentを使う互換導線として維持する。
+- 独立routeとワークフロー内入口の双方で、PC/mobileとも`100dvh × 100%`の全画面表示とする。
+  背景overlayや画面外clickによる終了は使わず、他の没入機能と同じ明示的な閉じる操作、上部Safe Area、
+  下部入力Safe Areaを維持する。
 - `RuntimePolicy.assistant_name`をdialog見出しと空画面へ反映する。会話一覧・切替・新規・改名・削除を
   server DBへ一本化し、削除は確認dialogと監査ログを必須にする。
 - フロー生成は独立routeからも既存schema/semantic validatorを通し、品質表示後に登録または自動ビルドへ進む。
