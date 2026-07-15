@@ -153,4 +153,5 @@ export interface Meta {
   accent_color: string;
   default_theme: string;
   metric_refresh_seconds: number;
+  enabled_features: string[];
 }

@@ -270,6 +270,27 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "tool_log", label: "ツール実行ログ(エージェント)" },
     ],
   },
+  "code.agent": {
+    label: "OpenCode Agent",
+    category: "AI",
+    color: "#2563eb",
+    icon: "</>",
+    desc: "オプトインOpenCodeでリポジトリを分析・実装・修正・テスト・レビュー",
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "analyze", label: "分析（変更なし）" },
+        { value: "implement", label: "実装" },
+        { value: "fix", label: "不具合修正" },
+        { value: "test", label: "テスト" },
+        { value: "review", label: "レビュー（変更なし）" },
+      ] },
+      { key: "project_path", label: "プロジェクトパス", type: "text", hint: "許可ルート内の既存ディレクトリ" },
+      { key: "instruction", label: "指示", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "base_url", label: "LLM endpoint（空ならOpenCode共通設定）", type: "text" },
+      { key: "model", label: "モデル（空ならOpenCode共通設定）", type: "text" },
+    ],
+    outputs: [{ key: "output", label: "結果" }, { key: "events", label: "イベント数" }, { key: "operation", label: "操作" }],
+  },
   "media.ocr": {
     label: "OCR",
     category: "AI",

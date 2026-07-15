@@ -1308,4 +1308,14 @@ NODE_TIMEOUTS = {
     "db.query": 320,
     "flow.call": 3660,
 }
+
+# Optional integrationはfeature有効時だけexecutorへ登録する。通常起動ではimportもしない。
+from app.features.registry import is_enabled as _feature_enabled
+
+if _feature_enabled("opencode"):
+    from app.integrations.opencode.node import node_code_agent
+
+    NODE_EXECUTORS["code.agent"] = node_code_agent
+    NODE_TIMEOUTS["code.agent"] = 3660
+
 DEFAULT_NODE_TIMEOUT = 120

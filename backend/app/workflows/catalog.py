@@ -45,6 +45,15 @@ NODE_CATALOG: list[dict] = [
     {"type": "flow.call", "desc": "別ワークフローをサブフローとして実行し結果(result)を受け取る。workflow_id/message", "keys": ["workflow_id", "message", "input_json"]},
 ]
 
+from app.features.registry import is_enabled as _feature_enabled
+
+if _feature_enabled("opencode"):
+    NODE_CATALOG.append({
+        "type": "code.agent",
+        "desc": "OpenCode coding agent。operation(analyze/implement/fix/test/review)、project_path、instruction",
+        "keys": ["operation", "project_path", "instruction", "base_url", "model"],
+    })
+
 
 def catalog_prompt() -> str:
     """LLM プロンプトに埋め込むノード一覧テキスト。"""

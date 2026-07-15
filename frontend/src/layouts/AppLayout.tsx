@@ -24,7 +24,7 @@ import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { Logo } from "../components/Logo";
 
-const NAV = [
+const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; feature?: string }> = [
   { to: "/", label: "ホーム", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
   { to: "/workflows", label: "ワークフロー", icon: IconFlow },
@@ -35,6 +35,7 @@ const NAV = [
   { to: "/github", label: "GitHub", icon: IconBranch },
   { to: "/knowledge", label: "Knowledge", icon: IconBook },
   { to: "/models", label: "Model", icon: IconChip },
+  { to: "/opencode", label: "OpenCode", icon: IconTerminal, feature: "opencode" },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
@@ -77,6 +78,8 @@ export default function AppLayout() {
   const can = useAuth((s) => s.can);
   const connected = useMetrics((s) => s.connected);
   const { data: meta } = useMeta();
+  const enabledFeatures = new Set(meta?.enabled_features ?? []);
+  const visibleNav = NAV.filter((item) => !item.feature || enabledFeatures.has(item.feature));
   const [collapsed, setCollapsed] = useState(
     localStorage.getItem("cd-sidebar") === "min",
   );
@@ -150,7 +153,7 @@ export default function AppLayout() {
           )}
         </div>
         <nav className="flex-1 space-y-1 px-2 py-2">
-          {NAV.map(({ to, label, icon: Ico }) => (
+          {visibleNav.map(({ to, label, icon: Ico }) => (
             <NavLink
               key={to}
               to={to}

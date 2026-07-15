@@ -18,7 +18,7 @@
 | D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（厳格schema・副作用なしdry-run・実機生成を検証） |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ✅ provider検出・モデル操作・health・生成・stream・cancel契約を統合 |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ✅ 複数GGUF catalog/instance・個別unit・自動起動/idle制御まで完了 |
-| G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
+| G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ✅ 完了（既定無効・実機llama.cpp実行・PC/320px検証） |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | 🚧 metadata/型/capability/dry-run完了（検索/お気に入りと追加ノードが残る） |
 
 ---
@@ -38,7 +38,7 @@
 | D 生成品質 | semantic check、quality score、自動修正、LLM JSON Schema出力、副作用なしdry-run | なし |
 | E provider | 共通catalog、capability、list/load/unload/delete adapter | providerの型付き契約、install/start/stop/health/stream/cancelの共通実装がない |
 | F llama.cpp | 導入、backend切替、systemd、型付きMTP/KV/MoE/cache/context/sampling設定 | モデル別複数GGUF catalog/instanceがない |
-| G OpenCode | なし | feature registry、deck.sh操作、未導入時の未登録境界、code.agentが未実装 |
+| G OpenCode | feature registry、deck.sh操作、条件付きAPI/route/UI/node、systemd transient実行 | なし（2026-07-16に既定無効と有効時の双方を再検証） |
 | H ノード | v2 DAG、retry/cancel、36種node、backend metadata/capability/型、共通dry-run | 検索/お気に入り、progress対応node、計画記載の一部便利nodeがない |
 
 ### Web軽量化の実測
@@ -196,11 +196,19 @@
 - モデル個別の型付き設定としてMTP（draft model/ngram）、K/V cache量子化、MoE CPU配置、context/output、batch/thread/sampling等を実装。実バイナリ`--help`にある能力だけ表示する。
 - セキュリティ上、管理対象instanceのhostは127.0.0.1固定。外部providerは共通provider検出を利用する。
 
-### G. OpenCode（オプトインのみ）
+### G. OpenCode（オプトインのみ） ✅ 完了（2026-07-16）
 - **自動導入禁止**。`./deck.sh feature install/enable/disable/uninstall opencode`。
 - feature registry（installed/enabled/available/version/health）。未導入時はルート/メニュー/ノード/コマンドパレット/API能力に**登録しない**（CSS非表示でなく未登録）。直URLは404。
 - プラグイン境界: `backend/app/integrations/opencode/`, `frontend/src/features/opencode/`。汎用抽象 `CodeAgentProvider` 等にのみ依存。削除で他機能に影響しないこと。
 - llama.cpp の OpenAI互換エンドポイントを provider に選択可。ワークフローは統合ノード `code.agent`（operation: analyze/implement/fix/test/...）を feature 有効時のみ登録。
+- registry管理prefixとPATH上の外部導入を区別し、外部実体はenable時に保存してsystemd serviceのPATH差を吸収する。
+  uninstallは管理prefixだけを削除し、外部binary/config/dataを保持する。
+- promptは600権限のjob別一時ファイル、provider設定もjob別一時ファイルに置き、配列argvで
+  `systemd-run --user --wait --pipe --collect`へ渡す。完了・失敗・cancelの全経路で一時ファイルを消し、
+  cancelは対応するtransient unitを停止する。詳細は[`design-opencode-feature.md`](design-opencode-feature.md)。
+- 実機OpenCode 1.17.15からllama.cppへ接続してrepository見出し分析jobが成功（6 events）。2K CTXでは
+  8441 input tokenのcontext overflowを再現したため対象instanceを16Kへ設定。既定無効へ戻した後、
+  metaのenabled空、API/直route 404、`code.agent` catalog非掲載を確認した。
 
 ### H. ノード超強化
 - 既存ノードに version/capability/side_effect/supports_*(retry/cancel/progress/dry_run)/型付き入出力/help を付与。重複は operation 化。
