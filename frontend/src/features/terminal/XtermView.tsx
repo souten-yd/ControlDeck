@@ -437,7 +437,9 @@ export default function XtermView({
       </div>
 
       {/* ターミナル本体 */}
-      <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-hidden bg-white px-1 pt-1 dark:bg-zinc-950" />
+      {/* overflow:hiddenはscroll containerになるため、IME確定時のtextarea自動scrollで全行がずれる。
+          clipは端数cellを切りつつscrollTopを持たない。 */}
+      <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-clip bg-white px-1 pt-1 dark:bg-zinc-950" />
 
       {/* モバイル補助キーバー */}
       <div
