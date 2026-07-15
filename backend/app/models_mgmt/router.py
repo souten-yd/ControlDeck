@@ -17,6 +17,14 @@ from app.security.deps import authenticate_websocket, require_permission
 router = APIRouter(prefix="/models", tags=["models"])
 
 
+@router.get("/providers")
+async def providers(user: User = Depends(require_permission("workflows.run"))):
+    """管理対象と検出済みのLLMランタイムを共通形式で返す。"""
+    from app.models_mgmt.providers import list_providers
+
+    return await list_providers()
+
+
 @router.get("/status")
 async def status(user: User = Depends(require_permission("workflows.run"))):
     return await ollama.status()

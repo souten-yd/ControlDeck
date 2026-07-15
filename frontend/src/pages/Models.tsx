@@ -19,6 +19,10 @@ interface Model {
   vram: number | null;
 }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
+interface LLMProvider {
+  id: string; provider: string; name: string; base_url: string; managed: boolean;
+  installed: boolean | null; experimental: boolean; available: boolean; models: string[];
+}
 interface Settings {
   base_url: string;
   idle_unload_enabled: boolean;
@@ -133,7 +137,7 @@ export default function ModelsPage() {
         <h1 className="text-lg font-semibold">Model</h1>
         <div className="flex items-center gap-2">
           {can("workflows.edit") && (
-            <button onClick={() => setSettingsOpen(true)} aria-label="設定" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
+            <button onClick={() => setSettingsOpen(true)} aria-label="LLM ランタイム設定" title="LLM ランタイム設定（Ollama / llama.cpp）" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
           )}
           {can("workflows.edit") && (
             <button onClick={() => setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
@@ -148,7 +152,6 @@ export default function ModelsPage() {
       </p>
 
       <ActiveModelJobs />
-      {can("workflows.edit") && <LlamaRuntimeCard />}
       {status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           Ollama（{status.base_url}）に接続できません。<code className="font-mono">ollama serve</code> の起動、または設定でエンドポイントを確認してください。
@@ -637,7 +640,9 @@ function ModelConfigSection({ model }: { model: string }) {
 function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => void }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
+  const [tab, setTab] = useState<"ollama" | "llama">("ollama");
   const { data } = useQuery({ queryKey: ["ollama-settings"], queryFn: () => api<Settings>("/models/settings") });
+  const { data: providers = [] } = useQuery({ queryKey: ["llm-providers"], queryFn: () => api<LLMProvider[]>("/models/providers") });
   const [cfg, setCfg] = useState<Settings | null>(null);
   const eff = cfg ?? data ?? null;
   const save = useMutation({
@@ -648,7 +653,31 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   if (!eff) return null;
   return (
-    <BottomSheet title="Model 設定" onClose={onClose} wide>
+    <BottomSheet title="LLM ランタイム設定" onClose={onClose} wide>
+      {/* ランタイム切替タブ（Ollama / llama.cpp を1か所に統合） */}
+      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+        {([["ollama", "Ollama"], ["llama", "llama.cpp"]] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)}
+            className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === key ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {providers.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1.5" aria-label="検出済みLLMプロバイダー">
+          {providers.map((provider) => (
+            <span key={provider.id + provider.base_url} title={provider.base_url}
+              className="rounded-lg bg-zinc-100 px-2 py-1 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+              <span className={provider.available ? "text-emerald-500" : "text-zinc-400"}>●</span>{" "}
+              {provider.name}{provider.models.length > 0 ? ` · ${provider.models.length}モデル` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {tab === "llama" ? (
+        <LlamaRuntimePanel />
+      ) : (
       <div className="space-y-3">
         <L label="Ollama エンドポイント">
           <input value={eff.base_url} onChange={(e) => setCfg({ ...eff, base_url: e.target.value })} className={`${input} font-mono text-xs`} placeholder="http://127.0.0.1:11434" />
@@ -681,6 +710,7 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
           {save.isPending ? "保存中..." : "保存"}
         </button>
       </div>
+      )}
     </BottomSheet>
   );
 }
@@ -764,11 +794,10 @@ interface LlamaStatus {
 
 const BACKEND_LABEL: Record<string, string> = { rocm: "ROCm (AMD)", vulkan: "Vulkan (汎用GPU)", cuda: "CUDA (NVIDIA)" };
 
-/** llama.cpp ランタイム: 環境検出したバックエンドを選んで導入・切り替え・起動。 */
-function LlamaRuntimeCard() {
+/** llama.cpp ランタイムの管理 UI（LLM ランタイム設定タブ内で使う中身）。 */
+function LlamaRuntimePanel() {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const { data: job } = useJob(jobId);
   const { data: st } = useQuery({
@@ -796,62 +825,52 @@ function LlamaRuntimeCard() {
     catch (e) { show(e instanceof Error ? e.message : "切り替え失敗", "error"); }
   };
 
-  if (!st) return null;
+  if (!st) return <p className="text-xs text-zinc-400">読み込み中...</p>;
   const selectable = st.selectable_backends;
 
   return (
-    <div className="mb-3 rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3 text-left">
-        <span className="text-sm font-semibold">🦙 llama.cpp ランタイム</span>
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-semibold">llama.cpp</span>
         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
         {st.installed ? (
           <span className="text-xs text-emerald-600 dark:text-emerald-400">
-            {BACKEND_LABEL[st.backend] ?? st.backend} 導入済み
-            {st.health && (st.health.ok ? " · 稼働中" : "")}
+            {BACKEND_LABEL[st.backend] ?? st.backend} 導入済み{st.health?.ok ? " · 稼働中" : ""}
           </span>
         ) : (
           <span className="text-xs text-zinc-400">未導入</span>
         )}
-        <span className="ml-auto text-zinc-400">{open ? "▾" : "▸"}</span>
-      </button>
-
-      {open && (
-        <div className="space-y-3 border-t border-zinc-100 px-4 py-3 dark:border-zinc-800">
-          <p className="text-xs text-zinc-500">
-            この PC で使えるバックエンドを検出して表示しています。CUDA(NVIDIA) は当面 Ollama をご利用ください。
-          </p>
-          {/* バックエンド選択（検出されたもののみ） */}
-          <div className="flex flex-wrap gap-2">
-            {selectable.length === 0 && <span className="text-xs text-zinc-400">対応 GPU バックエンドが検出されませんでした</span>}
-            {selectable.map((b) => {
-              const installed = st.installed_backends.includes(b);
-              const current = st.backend === b;
-              return (
-                <div key={b} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${current ? "border-accent-500 bg-accent-50/50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
-                  <div>
-                    <p className="text-xs font-medium">{BACKEND_LABEL[b] ?? b}</p>
-                    <p className="text-[10px] text-zinc-400">
-                      {current ? "使用中" : installed ? "導入済み" : "未導入"}
-                      {st.detected_backends[b] ? " · 対応" : ""}
-                    </p>
-                  </div>
-                  {current ? (
-                    <span className="text-emerald-500">✓</span>
-                  ) : installed ? (
-                    <button onClick={() => switchTo(b)} className="rounded-lg bg-zinc-100 px-2.5 py-1 text-[11px] font-medium hover:bg-zinc-200 dark:bg-zinc-800">切替</button>
-                  ) : (
-                    <button onClick={() => install(b)} disabled={job?.status === "running"} className="rounded-lg bg-accent-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-700 disabled:opacity-40">導入</button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {job && job.status === "running" && <JobProgress job={job} />}
-
-          {st.installed && <LlamaInstanceControls st={st} onChanged={() => qc.invalidateQueries({ queryKey: ["llama-status"] })} />}
-        </div>
-      )}
+      </div>
+      <p className="text-xs text-zinc-500">
+        この PC で使えるバックエンドを検出して表示しています。CUDA(NVIDIA) は当面 Ollama をご利用ください。
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {selectable.length === 0 && <span className="text-xs text-zinc-400">対応 GPU バックエンドが検出されませんでした</span>}
+        {selectable.map((b) => {
+          const installed = st.installed_backends.includes(b);
+          const current = st.backend === b;
+          return (
+            <div key={b} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${current ? "border-accent-500 bg-accent-50/50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
+              <div>
+                <p className="text-xs font-medium">{BACKEND_LABEL[b] ?? b}</p>
+                <p className="text-[10px] text-zinc-400">
+                  {current ? "使用中" : installed ? "導入済み" : "未導入"}
+                  {st.detected_backends[b] ? " · 対応" : ""}
+                </p>
+              </div>
+              {current ? (
+                <span className="text-emerald-500">✓</span>
+              ) : installed ? (
+                <button onClick={() => switchTo(b)} className="rounded-lg bg-zinc-100 px-2.5 py-1 text-[11px] font-medium hover:bg-zinc-200 dark:bg-zinc-800">切替</button>
+              ) : (
+                <button onClick={() => install(b)} disabled={job?.status === "running"} className="rounded-lg bg-accent-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-700 disabled:opacity-40">導入</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {job && job.status === "running" && <JobProgress job={job} />}
+      {st.installed && <LlamaInstanceControls st={st} onChanged={() => qc.invalidateQueries({ queryKey: ["llama-status"] })} />}
     </div>
   );
 }
