@@ -19,7 +19,7 @@
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | ✅ provider検出・モデル操作・health・生成・stream・cancel契約を統合 |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ✅ 複数GGUF catalog/instance・個別unit・自動起動/idle制御まで完了 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ✅ 完了（既定無効・実機llama.cpp実行・PC/320px検証） |
-| H. ワークフローノード超強化（型/capability/dry-run/新ノード） | 🚧 metadata/型/capability/dry-run完了（検索/お気に入りと追加ノードが残る） |
+| H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ✅ 完了（検索/お気に入り/利用可能絞込・並列map修正・統合ノード） |
 
 ---
 
@@ -36,19 +36,21 @@
 | B ジョブ | `Job` DB、`JobControl`、owner、冪等キー、heartbeat、安定priority queue、queued/running cancel、全体WS | なし（再起動時queued/running→interruptedを含め検証） |
 | C チャット | Conversation/Message DB、サーバージョブ、再接続、会話一覧/切替/改名/削除 | なし（生成本文は1秒checkpoint、ワークフロー生成結果はjob resultへ永続化） |
 | D 生成品質 | semantic check、quality score、自動修正、LLM JSON Schema出力、副作用なしdry-run | なし |
-| E provider | 共通catalog、capability、list/load/unload/delete adapter | providerの型付き契約、install/start/stop/health/stream/cancelの共通実装がない |
-| F llama.cpp | 導入、backend切替、systemd、型付きMTP/KV/MoE/cache/context/sampling設定 | モデル別複数GGUF catalog/instanceがない |
+| E provider | lifecycle catalog/adapter、型付きcomplete/stream/cancel、health/capability | なし（生成経路も共通providerへ統合済み） |
+| F llama.cpp | 導入、backend切替、モデル別複数GGUF/systemd unit、型付きMTP/KV/MoE等 | なし（実機ROCm/Vulkan・複数instanceを確認） |
 | G OpenCode | feature registry、deck.sh操作、条件付きAPI/route/UI/node、systemd transient実行 | なし（2026-07-16に既定無効と有効時の双方を再検証） |
-| H ノード | v2 DAG、retry/cancel、36種node、backend metadata/capability/型、共通dry-run | 検索/お気に入り、progress対応node、計画記載の一部便利nodeがない |
+| H ノード | v2 DAG、retry/cancel、39種core node、metadata/型/dry-run/progress、検索/お気に入り | なし（optional OpenCode有効時は40種） |
 
 ### Web軽量化の実測
 
 - 外向きの高周波pingはない。watchdogの15秒通知はローカルsystemd notify socketであり通信ではない。
 - ダッシュボード実測（12秒）: metrics WS 1接続/6受信、`GET /apps` 3回、その他初回REST各1回。
   `/apps` は平均28.7ms、最大39.1ms。WSは意図した2秒更新を満たす。
-- Webプロセス待機負荷（10秒平均）: CPU 1.6〜1.7%、自発context switch 52〜60回/秒。
+- 変更前のWebプロセス待機負荷（10秒平均）: CPU 1.6〜1.7%、自発context switch 52〜60回/秒。
 - 主因は `amd-smi metric --json` の2秒ごとのプロセス起動。実機で1回40〜60ms CPU、最大RSS約25MB、
   JSON約23KBだった。GPU/VRAM/温度/電力は同じamdgpu sysfsから取得可能。
+- 全機能実装後の再測定: ブラウザ切断後10秒CPU 0.46%、ダッシュボード30秒はmetrics WS 1接続/15 frame、
+  `/apps` 2回。collectorは`sysfs-amdgpu`で外部CLI周期起動0を維持した。
 
 ### 詳細設計: 通信・処理最適化
 
@@ -101,10 +103,10 @@
   - snapshot の `"power"` = `{cpu_watts_estimated, gpu_watts, total_watts_estimated, is_estimate}`。
 - **API**: `backend/app/monitoring/router.py` の `GET /api/v1/system/overview`、`WS /api/v1/system/metrics/stream`。
 - **ジョブ基盤**: `backend/app/jobs/service.py`（メモリ + `Job` DB、再起動時interrupted化、一覧/詳細/cancel）。
-  再監査で確認した所有者分離・制御metadata・通知方式の不足は計画Bの残件として補完する。
+  所有者分離・制御metadata・通知Event/全体WSは計画Bで補完済み。
 - **ワークフローエンジン v2**: `backend/app/workflows/engine.py`。並列DAG/join/リトライ/on_error/承認/flow.call/イベント・Webhookトリガー実装済み。`docs`不要。
 - **チャット**: `backend/app/workflows/chat_persist.py`で会話/メッセージ/生成jobを永続化済み。
-  `chat_router.py`の`/chat/build`もジョブ化済み。会話picker等は計画Cの残件として補完する。
+  `chat_router.py`の`/chat/build`もジョブ化済み。会話picker/改名/削除/再接続も計画Cで補完済み。
 - **LLM**: OpenAI互換 `/v1/chat/completions` 経由。think は Ollama ネイティブ `/api/chat` 経由（`_native_base`）。
 - **設定**: `backend/app/config.py`（pydantic）、`config/config.yaml`、`config/config.example.yaml`。
 - **暗号化**: `app/security/crypto.py`（Fernet）。**シークレット**は `WorkflowSecret`。
@@ -140,7 +142,7 @@
 
 ---
 
-## 計画B〜G：サーバー主導ジョブ基盤ほか（実装状況・残件設計）
+## 計画B〜H：サーバー主導ジョブ基盤ほか（実装状況・残件設計）
 
 ### B. 汎用ジョブ基盤 ✅ 完了（2026-07-15再監査後に補完）
 - **実装済み**: `jobs` テーブル（events_jsonスナップショット）と、互換性を保つ追加`job_controls`テーブル。
@@ -163,7 +165,7 @@
 - `chat_router._validate_generated` が構造検証の後に意味エラーも返し、自動ビルドの LLM 修正へフィードバック。生成 API と build 完了イベントに `quality` を付与。UI（AssistantChat）に品質スコアバッジ（内訳・検証結果の折り畳み）を表示。
 - **方針**: 完全な親子ジョブ分割ではなく、既存 `/chat/build`（既にジョブ化済み・generate→validate→register→run→自動修正）を強化する形（冗長化回避）。JSON Schema厳格出力を実装済み。
 - executor、外部通信、process、DB更新、file write、secret復号を一切行わない静的dry-runを追加。保存済み/編集中definitionとnode単体の予定操作、副作用分類、capability、到達順、error/warningを返す。
-- 36種のexecutor/control nodeすべてにversion、side_effect、capability、config/output型、retry/cancel/progress/dry-run対応をbackend metadataとして定義。LLM catalogとfrontend node集合の差を自動テストで禁止する。
+- 39種のcore executor/control nodeすべてにversion、side_effect、capability、config/output型、retry/cancel/progress/dry-run対応をbackend metadataとして定義（OpenCode有効時40種）。LLM catalogとfrontend node集合の差を自動テストで禁止する。
 - 詳細設計と不変条件は[`design-workflow-dry-run-metadata.md`](design-workflow-dry-run-metadata.md)へ統合。
 
 ### E. LLMランタイム抽象 ✅ 完了（2026-07-16再監査後に補完）
@@ -210,10 +212,17 @@
   8441 input tokenのcontext overflowを再現したため対象instanceを16Kへ設定。既定無効へ戻した後、
   metaのenabled空、API/直route 404、`code.agent` catalog非掲載を確認した。
 
-### H. ノード超強化
+### H. ノード超強化 ✅ 完了（2026-07-16再監査後に補完）
 - 既存ノードに version/capability/side_effect/supports_*(retry/cancel/progress/dry_run)/型付き入出力/help を付与。重複は operation 化。
 - 便利ノード（parallel map/JSON transform/schema validate/csv/glob/health check/rerank/embedding/judge 等）は既存統合ノードと重複しない範囲で追加。
 - ノード検索/カテゴリ/お気に入り/導入済み機能のみ表示。単体テストUI強化。
+- `control.loop.parallel`が共有contextでitem/indexを競合させていたため、反復ごとの分離context、入力順results、
+  最終反復の互換mirrorへ修正。1〜5並列のmapとして実動作をテストした。
+- JSON parse/get/set、Draft 2020-12 schema検証、CSV相互変換は`data.transform`、allowed-root/symlink境界付きglobは
+  `file.glob`、embedding/rerank/judgeは`ai.utility`へoperation統合。HTTP healthは既存`http.request.expect_status`が
+  同じ役割を安全に満たすため重複nodeを作らない。
+- backend catalogを表示可否の正とし、検索、localStorageお気に入り、利用可能のみ（既定ON）、未導入optional確認を実装。
+  詳細設計は[`design-workflow-node-catalog.md`](design-workflow-node-catalog.md)。
 
 ---
 

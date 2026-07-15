@@ -633,25 +633,93 @@ function NodePalette({
   onClose: () => void;
 }) {
   const [snippets, setSnippets] = useState<Snippet[]>(loadSnippets());
+  const [search, setSearch] = useState("");
+  const [availableOnly, setAvailableOnly] = useState(true);
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem("control-deck.workflow-node-favorites") || "[]");
+      return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   const { data: backendMetadata } = useQuery({
     queryKey: ["workflow-node-catalog"],
     queryFn: () => api<NodeMetadata[]>("/workflows/node-catalog"),
     staleTime: Infinity,
   });
+  const registered = useMemo(() => new Set(backendMetadata?.map((item) => item.type) ?? []), [backendMetadata]);
+  const toggleFavorite = (type: string) => {
+    const next = favorites.includes(type) ? favorites.filter((item) => item !== type) : [...favorites, type];
+    setFavorites(next);
+    try {
+      localStorage.setItem("control-deck.workflow-node-favorites", JSON.stringify(next));
+    } catch {
+      // storageを無効化したブラウザでも、その画面内のお気に入り操作は維持する。
+    }
+  };
   const byCategory = useMemo(() => {
-    const map: Record<string, [string, (typeof NODE_TYPES)[string]][]> = {};
-    const registered = new Set(backendMetadata?.map((item) => item.type) ?? []);
+    const map: Record<string, [string, (typeof NODE_TYPES)[string], boolean][]> = {};
+    const needle = search.trim().toLocaleLowerCase();
     for (const [type, meta] of Object.entries(NODE_TYPES)) {
       if (type === "trigger") continue;
-      // Optional nodeはbackendに登録済みと確認できるまで候補へ出さない。
-      if (type === "code.agent" && !registered.has(type)) continue;
-      (map[meta.category] ??= []).push([type, meta]);
+      const available = registered.has(type);
+      if (availableOnly && !available) continue;
+      if (needle && !`${type} ${meta.label} ${meta.desc ?? ""} ${meta.category}`.toLocaleLowerCase().includes(needle)) continue;
+      (map[meta.category] ??= []).push([type, meta, available]);
     }
     return map;
-  }, [backendMetadata]);
+  }, [availableOnly, registered, search]);
+  const favoriteEntries = useMemo(
+    () => Object.values(byCategory).flat().filter(([type]) => favorites.includes(type)),
+    [byCategory, favorites],
+  );
+  const visibleCount = Object.values(byCategory).reduce((total, entries) => total + entries.length, 0);
+  const nodeCard = ([type, meta, available]: [string, (typeof NODE_TYPES)[string], boolean]) => (
+    <div key={type} className={`flex items-center rounded-xl border ${available ? "border-zinc-200 dark:border-zinc-700" : "border-dashed border-zinc-200 opacity-60 dark:border-zinc-700"}`}>
+      <button
+        onClick={() => available && onAdd(type)}
+        disabled={!available}
+        title={meta.desc}
+        className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 text-left hover:bg-accent-50/40 disabled:cursor-not-allowed dark:hover:bg-accent-600/10"
+      >
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm" style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}>
+          {meta.icon}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium">{meta.label}</span>
+          <span className="block truncate text-[10px] text-zinc-400">{available ? (meta.desc || type) : "未導入・利用不可"}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={() => toggleFavorite(type)}
+        aria-label={`${meta.label}を${favorites.includes(type) ? "お気に入りから削除" : "お気に入りに追加"}`}
+        className="mr-1 rounded-lg p-2 text-lg text-amber-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      >
+        {favorites.includes(type) ? "★" : "☆"}
+      </button>
+    </div>
+  );
 
   return (
     <BottomSheet title="ノードを追加" onClose={onClose} wide>
+      <div className="mb-4 space-y-2">
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          aria-label="ノードを検索"
+          placeholder="名前・type・説明・カテゴリを検索"
+          className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        />
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={availableOnly} onChange={(event) => setAvailableOnly(event.target.checked)} />
+            利用可能なノードのみ
+          </label>
+          <span>{backendMetadata ? `${visibleCount}件` : "利用可能ノードを確認中..."}</span>
+        </div>
+      </div>
       {snippets.length > 0 && (
         <div className="mb-4">
           <p className="mb-1 px-1 text-xs font-medium text-accent-600 dark:text-accent-400">マイスニペット</p>
@@ -673,29 +741,21 @@ function NodePalette({
           </div>
         </div>
       )}
+      {favoriteEntries.length > 0 && (
+        <div className="mb-3">
+          <p className="mb-1 px-1 text-xs font-medium text-amber-600 dark:text-amber-400">お気に入り</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{favoriteEntries.map(nodeCard)}</div>
+        </div>
+      )}
       {CATEGORY_ORDER.filter((c) => byCategory[c]).map((category) => (
         <div key={category} className="mb-3">
           <p className="mb-1 px-1 text-xs font-medium text-zinc-400">{category}</p>
-          <div className="grid grid-cols-2 gap-2">
-            {byCategory[category].map(([type, meta]) => (
-              <button
-                key={type}
-                onClick={() => onAdd(type)}
-                title={meta.desc}
-                className="flex items-center gap-2.5 rounded-xl border border-zinc-200 px-3 py-2.5 text-left hover:border-accent-400 hover:bg-accent-50/40 dark:border-zinc-700 dark:hover:bg-accent-600/10"
-              >
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm" style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}>
-                  {meta.icon}
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{meta.label}</span>
-                  {meta.desc && <span className="block truncate text-[10px] text-zinc-400">{meta.desc}</span>}
-                </span>
-              </button>
-            ))}
-          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{byCategory[category].map(nodeCard)}</div>
         </div>
       ))}
+      {backendMetadata && visibleCount === 0 && (
+        <p className="rounded-xl bg-zinc-50 p-4 text-center text-sm text-zinc-500 dark:bg-zinc-800/60">条件に一致するノードはありません</p>
+      )}
     </BottomSheet>
   );
 }

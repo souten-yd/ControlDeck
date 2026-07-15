@@ -36,7 +36,7 @@ REQUIRED_KEYS: dict[str, list[str]] = {
     "file.read": ["path"],
     "file.write": ["path"],
     "file.exists": ["path"],
-    "file.op": ["operation", "path"],
+    "file.op": ["op", "source"],
     "condition.if": ["left", "op"],
     "flow.call": ["workflow_id"],
     "signal.display": ["value"],
@@ -46,10 +46,13 @@ REQUIRED_KEYS: dict[str, list[str]] = {
     "net.wol": ["mac"],
     "cmd.ssh": ["host", "command"],
     "cmd.git": ["subcommand", "cwd"],
-    "cmd.cpp_build": ["path"],
+    "cmd.cpp_build": ["cwd"],
     "cmd.python": ["code"],
     "notify.webhook": ["url", "message"],
     "db.query": ["query"],
+    "data.transform": ["operation", "input"],
+    "file.glob": ["base_path", "pattern"],
+    "ai.utility": ["operation", "base_url", "model"],
 }
 
 
