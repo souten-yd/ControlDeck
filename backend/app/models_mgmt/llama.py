@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import tarfile
+import time
 from pathlib import Path
 
 import httpx
@@ -37,6 +38,8 @@ BACKEND_PATTERNS = {
 }
 # llama.cpp としてユーザーに提示するバックエンド。CUDA(NVIDIA)は当面 Ollama を使う方針のため除外。
 SELECTABLE_BACKENDS = ("rocm", "vulkan")
+ALIAS_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+MAX_INSTANCES = 8
 
 
 def runtimes_dir() -> Path:
@@ -61,13 +64,7 @@ def _config_path() -> Path:
     return data_dir() / "llama-runtime.json"
 
 
-DEFAULT_CONFIG = {
-    "tag": "",
-    "backend": "",          # vulkan / rocm / cuda
-    "sha256": "",
-    "installed_at": "",
-    # 現在選択中モデルの型付き起動設定。自由extra_argsは受け付けない。
-    "instance": {
+DEFAULT_INSTANCE = {
         "model_path": "",
         "port": 8080,
         "n_gpu_layers": 999,   # 全層 GPU（VRAM 不足時は下げる）
@@ -94,7 +91,20 @@ DEFAULT_CONFIG = {
         "repeat_penalty": 1.0,
         "seed": -1,
         "alias": "llama",
-    },
+        "auto_start": False,
+        "idle_exclude": False,
+        "last_used_at": "",
+}
+
+DEFAULT_CONFIG = {
+    "tag": "",
+    "backend": "",          # vulkan / rocm / cuda
+    "sha256": "",
+    "installed_at": "",
+    # legacy互換mirror。正はinstances[selected_alias]。
+    "instance": dict(DEFAULT_INSTANCE),
+    "instances": {},
+    "selected_alias": "",
 }
 
 
@@ -104,27 +114,176 @@ def get_config() -> dict:
     if p.exists():
         try:
             saved = json.loads(p.read_text())
-            # instanceを丸ごと置換すると、新版で追加した既定項目が旧設定から欠落する。
-            cfg.update({k: v for k, v in saved.items() if k in cfg and k != "instance"})
+            cfg.update({k: v for k, v in saved.items() if k in cfg and k not in ("instance", "instances")})
             if isinstance(saved.get("instance"), dict):
                 cfg["instance"].update({
                     key: value for key, value in saved["instance"].items()
                     if key in cfg["instance"]
                 })
+            if isinstance(saved.get("instances"), dict):
+                for alias, raw in list(saved["instances"].items())[:MAX_INSTANCES]:
+                    if not ALIAS_RE.fullmatch(str(alias)) or not isinstance(raw, dict):
+                        continue
+                    instance = dict(DEFAULT_INSTANCE)
+                    instance.update({key: value for key, value in raw.items() if key in instance})
+                    instance["alias"] = str(alias)
+                    cfg["instances"][str(alias)] = instance
         except (json.JSONDecodeError, OSError):
             pass
+    # 旧単一instanceを初回読込時にcatalogへ投影（ファイル保存は次の更新時）。
+    if not cfg["instances"] and cfg["instance"].get("model_path"):
+        alias = str(cfg["instance"].get("alias") or "llama")
+        if not ALIAS_RE.fullmatch(alias):
+            alias = "llama"
+        cfg["instance"]["alias"] = alias
+        cfg["instances"][alias] = dict(cfg["instance"])
+    selected = str(cfg.get("selected_alias") or "")
+    if selected not in cfg["instances"]:
+        legacy_alias = str(cfg["instance"].get("alias") or "")
+        selected = legacy_alias if legacy_alias in cfg["instances"] else next(iter(cfg["instances"]), "")
+    cfg["selected_alias"] = selected
+    if selected:
+        cfg["instance"] = dict(cfg["instances"][selected])
     return cfg
+
+
+def _write_config(cfg: dict) -> None:
+    path = _config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def save_config(patch: dict) -> dict:
+    """旧単一instance API互換。instance patchは選択中catalogへ反映する。"""
     cfg = get_config()
+    instance_patch: dict | None = None
     for k, v in patch.items():
         if k == "instance" and isinstance(v, dict):
-            cfg["instance"].update({ik: iv for ik, iv in v.items() if ik in cfg["instance"]})
-        elif k in cfg:
+            instance_patch = v
+        elif k in cfg and k not in ("instances", "selected_alias"):
             cfg[k] = v
-    _config_path().write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+    _write_config(cfg)
+    if instance_patch is not None:
+        selected = cfg.get("selected_alias") or str(cfg["instance"].get("alias") or "llama")
+        return save_instance(str(selected), instance_patch)
     return cfg
+
+
+def list_instances() -> list[dict]:
+    cfg = get_config()
+    from app.applications import systemd as sd
+
+    result = []
+    for alias, instance in cfg["instances"].items():
+        status = sd.query_status(unit_name(alias))
+        # 旧単一unitで稼働中の設定は、catalogを初めて保存/起動するまで
+        # 選択中instanceの状態として扱う。移行直後に「停止中」と誤表示しない。
+        if alias == cfg.get("selected_alias") and status.get("status", "UNKNOWN") == "UNKNOWN":
+            legacy = sd.query_status(f"{UNIT_PREFIX}.service")
+            if legacy.get("status") in ("RUNNING", "STARTING", "FAILED"):
+                status = legacy
+        result.append({
+            **instance,
+            "alias": alias,
+            "selected": alias == cfg.get("selected_alias"),
+            "unit": unit_name(alias),
+            "loaded": status.get("status") in ("RUNNING", "STARTING"),
+            "runtime_status": status.get("status", "UNKNOWN"),
+            "base_url": f"http://127.0.0.1:{instance.get('port', 8080)}/v1",
+        })
+    return result
+
+
+def get_instance(alias: str | None = None) -> dict:
+    cfg = get_config()
+    selected = alias or cfg.get("selected_alias")
+    if not selected or selected not in cfg["instances"]:
+        # 未登録の旧初期状態だけlegacy mirrorを返す。
+        if alias is None and cfg["instance"].get("model_path"):
+            return dict(cfg["instance"])
+        raise KeyError("llama.cppモデル設定が見つかりません")
+    return dict(cfg["instances"][selected])
+
+
+def save_instance(alias: str, patch: dict) -> dict:
+    """alias単位で型付き設定を保存。alias/port/pathの一意性を強制する。"""
+    if not ALIAS_RE.fullmatch(alias):
+        raise ValueError("aliasは英数字・._:-の1〜128文字で指定してください")
+    cfg = get_config()
+    exists = alias in cfg["instances"]
+    if not exists and len(cfg["instances"]) >= MAX_INSTANCES:
+        raise ValueError(f"llama.cppモデル設定は最大{MAX_INSTANCES}件です")
+    instance = dict(cfg["instances"].get(alias, DEFAULT_INSTANCE))
+    instance.update({key: value for key, value in patch.items() if key in DEFAULT_INSTANCE})
+    new_alias = str(instance.get("alias") or alias)
+    if not ALIAS_RE.fullmatch(new_alias):
+        raise ValueError("aliasは英数字・._:-の1〜128文字で指定してください")
+    if new_alias != alias and new_alias in cfg["instances"]:
+        raise ValueError(f"alias '{new_alias}' は登録済みです")
+    port = int(instance.get("port", 8080))
+    model_path = str(instance.get("model_path") or "")
+    for other_alias, other in cfg["instances"].items():
+        if other_alias == alias:
+            continue
+        if int(other.get("port", 8080)) == port:
+            raise ValueError(f"port {port} は '{other_alias}' が使用中です")
+        if model_path and str(other.get("model_path") or "") == model_path:
+            raise ValueError(f"同じGGUFは '{other_alias}' として登録済みです")
+    instance["alias"] = new_alias
+    if new_alias != alias:
+        if exists:
+            stop_instance(alias)
+            from app.applications import systemd as sd
+
+            sd.remove_unit(unit_name(alias))
+        cfg["instances"].pop(alias, None)
+    cfg["instances"][new_alias] = instance
+    cfg["selected_alias"] = new_alias
+    cfg["instance"] = dict(instance)
+    _write_config(cfg)
+    sync_instance_unit(new_alias)
+    return cfg
+
+
+def select_instance(alias: str) -> dict:
+    cfg = get_config()
+    if alias not in cfg["instances"]:
+        raise KeyError("llama.cppモデル設定が見つかりません")
+    cfg["selected_alias"] = alias
+    cfg["instance"] = dict(cfg["instances"][alias])
+    _write_config(cfg)
+    return cfg
+
+
+def delete_instance(alias: str) -> None:
+    cfg = get_config()
+    if alias not in cfg["instances"]:
+        raise KeyError("llama.cppモデル設定が見つかりません")
+    stop_instance(alias)
+    from app.applications import systemd as sd
+
+    sd.remove_unit(unit_name(alias))
+    cfg["instances"].pop(alias)
+    cfg["selected_alias"] = next(iter(cfg["instances"]), "")
+    cfg["instance"] = dict(cfg["instances"].get(cfg["selected_alias"], DEFAULT_INSTANCE))
+    _write_config(cfg)
+
+
+def sync_instance_unit(alias: str) -> None:
+    """設定保存時にunitとauto-start enable状態を同期する（起動はしない）。"""
+    if not is_installed():
+        return
+    try:
+        instance = get_instance(alias)
+    except KeyError:
+        return
+    if not Path(str(instance.get("model_path") or "")).is_file():
+        return
+    from app.applications import systemd as sd
+
+    name = unit_name(alias)
+    sd.write_unit(name, _unit_content(alias))
+    sd.set_enabled(name, bool(instance.get("auto_start")))
 
 
 def is_installed() -> bool:
@@ -193,6 +352,7 @@ def switch_backend(backend: str, tag: str = DEFAULT_TAG) -> dict:
 def runtime_status() -> dict:
     cfg = get_config()
     inst = cfg["instance"]
+    instances = list_instances()
     detected = detect_backends()
     installed = installed_backends()
     # 選択肢: rocm/vulkan のうち検出された（=このマシンで動く）+ 導入済み。
@@ -210,6 +370,8 @@ def runtime_status() -> dict:
         "model_path": inst.get("model_path", ""),
         "alias": inst.get("alias", "llama"),
         "instance": dict(inst),
+        "instances": instances,
+        "selected_alias": cfg.get("selected_alias", ""),
         "base_url": f"http://127.0.0.1:{inst.get('port', 8080)}/v1" if is_installed() else None,
         "experimental": True,  # ビルド環境依存のため実験的
         "detected_backends": detected,       # {rocm/vulkan/cuda: bool}
@@ -322,15 +484,20 @@ def _now_iso() -> str:
 # ---- インスタンス（systemd） ----
 
 
-def unit_name() -> str:
-    return f"{UNIT_PREFIX}.service"
+def unit_name(alias: str | None = None) -> str:
+    if alias is None:
+        alias = str(get_config().get("selected_alias") or "")
+    if not alias:
+        return f"{UNIT_PREFIX}.service"  # 未移行状態の互換名
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", alias).strip("-.")[:32] or "model"
+    digest = hashlib.sha256(alias.encode("utf-8")).hexdigest()[:8]
+    return f"{UNIT_PREFIX}-{safe}-{digest}.service"
 
 
-def _unit_content() -> str:
+def _unit_content(alias: str | None = None) -> str:
     from app.applications.systemd import _escape_exec_arg
 
-    cfg = get_config()
-    inst = cfg["instance"]
+    inst = get_instance(alias)
     if not inst.get("model_path"):
         raise RuntimeError("モデルファイルが未設定です")
     args = [
@@ -377,7 +544,7 @@ def _unit_content() -> str:
     preflight_commands = amd_gpu.preflight_argvs(get_policy().amd_gpu)
     lines = [
         "[Unit]",
-        "Description=Control Deck llama.cpp server",
+        f"Description=Control Deck llama.cpp server ({inst.get('alias', 'llama')})",
         "After=network.target",
         "",
         "[Service]",
@@ -393,8 +560,8 @@ def _unit_content() -> str:
         "RestartSec=3",
         "TimeoutStopSec=20",
         "KillSignal=SIGTERM",
-        f"StandardOutput=append:{log_dir}/llama-server.log",
-        f"StandardError=append:{log_dir}/llama-server.log",
+        f"StandardOutput=append:{log_dir}/{unit_name(str(inst.get('alias'))).removesuffix('.service')}.log",
+        f"StandardError=append:{log_dir}/{unit_name(str(inst.get('alias'))).removesuffix('.service')}.log",
         "",
         "[Install]",
         "WantedBy=default.target",
@@ -403,21 +570,27 @@ def _unit_content() -> str:
     return "\n".join(lines)
 
 
-def start_instance() -> tuple[bool, str]:
+def start_instance(alias: str | None = None) -> tuple[bool, str]:
     from app.applications import systemd as sd
 
     if not is_installed():
         return False, "llama.cpp が未導入です"
-    if not Path(get_config()["instance"].get("model_path", "")).is_file():
+    try:
+        inst = get_instance(alias)
+    except KeyError as exc:
+        return False, str(exc)
+    alias = str(inst.get("alias") or alias or "llama")
+    if not Path(inst.get("model_path", "")).is_file():
         return False, "モデルファイルが存在しません"
+    mark_used_by_base_url(f"http://127.0.0.1:{inst.get('port', 8080)}/v1")
     try:
         from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
         ensure_gpu_profile(force=True)
     except RuntimeError as exc:
         return False, str(exc)
-    name = unit_name()
-    content = _unit_content()
+    name = unit_name(alias)
+    content = _unit_content(alias)
     path = sd.user_unit_dir() / name
     try:
         changed = not path.exists() or path.read_text(encoding="utf-8") != content
@@ -425,20 +598,35 @@ def start_instance() -> tuple[bool, str]:
         changed = True
     sd.write_unit(name, content)
     sd.reset_failed(name)
+    sd.set_enabled(name, bool(inst.get("auto_start")))
+    # 旧単一unitが残っている場合はport競合を避ける。catalog unit以外には触れない。
+    if name != f"{UNIT_PREFIX}.service":
+        sd.stop(f"{UNIT_PREFIX}.service")
     active = sd.query_status(name).get("status") == "RUNNING"
     # 保存後のloadで既に稼働中なら、新しい型付き設定を確実に反映する。
     return sd.restart(name) if active and changed else sd.start(name)
 
 
-def stop_instance() -> tuple[bool, str]:
+def stop_instance(alias: str | None = None) -> tuple[bool, str]:
     from app.applications import systemd as sd
 
-    return sd.stop(unit_name())
+    selected = str(get_config().get("selected_alias") or "")
+    resolved = str(alias or selected or "llama")
+    current = sd.stop(unit_name(resolved))
+    # catalog移行前の旧単一unitも、選択中モデルの停止操作に含める。
+    if resolved == selected:
+        legacy = sd.stop(f"{UNIT_PREFIX}.service")
+        if legacy[0]:
+            return legacy
+    return current
 
 
-async def health() -> dict:
+async def health(alias: str | None = None) -> dict:
     """llama-server の /health を叩く。"""
-    inst = get_config()["instance"]
+    try:
+        inst = get_instance(alias)
+    except KeyError:
+        return {"ok": False, "status_code": None}
     url = f"http://127.0.0.1:{inst.get('port', 8080)}/health"
     try:
         async with httpx.AsyncClient(timeout=3) as client:
@@ -446,6 +634,60 @@ async def health() -> dict:
         return {"ok": r.status_code == 200, "status_code": r.status_code}
     except httpx.HTTPError:
         return {"ok": False, "status_code": None}
+
+
+def mark_used_by_base_url(base_url: str) -> str | None:
+    """Control Deck経由の生成直前にinstanceの最終利用時刻を記録する。"""
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(base_url)
+        if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+    cfg = get_config()
+    alias = next((name for name, item in cfg["instances"].items() if int(item.get("port", 0)) == port), None)
+    if alias is None:
+        return None
+    cfg["instances"][alias]["last_used_at"] = _now_iso()
+    if cfg.get("selected_alias") == alias:
+        cfg["instance"] = dict(cfg["instances"][alias])
+    _write_config(cfg)
+    return alias
+
+
+async def idle_unload_loop() -> None:
+    """共通runtime policyに従い、Control Deck利用のないllama instanceを停止する。"""
+    import asyncio
+    from datetime import datetime
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            from app.models_mgmt.runtime_policy import get_policy
+
+            policy = get_policy()
+            if not policy.idle_unload_enabled:
+                continue
+            deadline = time.time() - policy.idle_unload_minutes * 60
+            for item in list_instances():
+                if not item.get("loaded") or item.get("idle_exclude"):
+                    continue
+                raw = str(item.get("last_used_at") or "")
+                try:
+                    last = datetime.fromisoformat(raw).timestamp()
+                except ValueError:
+                    # 利用時刻不明の既存unitを勝手に止めない。
+                    continue
+                if last < deadline:
+                    await asyncio.to_thread(stop_instance, str(item["alias"]))
+                    logger.info("idle llama.cpp instance unloaded: %s", item["alias"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("llama idle unload loop error")
 
 
 async def detect_options() -> list[str]:

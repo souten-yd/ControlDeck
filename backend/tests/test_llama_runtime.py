@@ -52,6 +52,36 @@ def test_old_config_is_migrated_with_new_typed_defaults(monkeypatch, tmp_path):
     assert instance["model_path"] == "/models/old.gguf" and instance["ctx_size"] == 2048
     assert instance["n_predict"] == 2048 and instance["cache_type_k"] == "f16"
     assert "extra_args" not in instance
+    cfg = llama.get_config()
+    assert cfg["selected_alias"] == "llama" and cfg["instances"]["llama"]["model_path"] == "/models/old.gguf"
+
+
+def test_multi_instance_catalog_uniqueness_and_unit_names(monkeypatch, tmp_path):
+    import pytest
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "multi.json")
+    first = llama.save_instance("model-a", {"alias": "model-a", "model_path": "/models/a.gguf", "port": 8080})
+    second = llama.save_instance("model-b", {"alias": "model-b", "model_path": "/models/b.gguf", "port": 8081})
+    assert set(second["instances"]) == {"model-a", "model-b"}
+    assert second["selected_alias"] == "model-b"
+    assert first["instances"]["model-a"]["auto_start"] is False
+    assert llama.unit_name("model-a") != llama.unit_name("model-b")
+    assert llama.unit_name("model-a").startswith("cdapp-llama-model-a-")
+    with pytest.raises(ValueError, match="port 8080"):
+        llama.save_instance("model-c", {"alias": "model-c", "model_path": "/models/c.gguf", "port": 8080})
+    with pytest.raises(ValueError, match="同じGGUF"):
+        llama.save_instance("model-c", {"alias": "model-c", "model_path": "/models/a.gguf", "port": 8082})
+
+
+def test_mark_used_matches_local_instance_port(monkeypatch, tmp_path):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "usage.json")
+    llama.save_instance("used", {"alias": "used", "model_path": "/models/u.gguf", "port": 8123})
+    assert llama.mark_used_by_base_url("http://127.0.0.1:8123/v1") == "used"
+    assert llama.get_instance("used")["last_used_at"]
+    assert llama.mark_used_by_base_url("https://remote.example/v1") is None
 
 
 def test_status_shape():
@@ -129,3 +159,42 @@ def test_llama_config_api_rejects_untyped_args_and_bad_values(admin_client):
         "/api/v1/models/llama/instance", json={"model_path": "../../etc/passwd"}, headers=headers,
     )
     assert response.status_code == 422
+
+
+def test_llama_multi_instance_api(admin_client, monkeypatch):
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+    from tests.conftest import CSRF_HEADERS, _sandbox
+
+    config_path = _sandbox / "llama-multi-test.json"
+    gguf_a = _sandbox / "catalog-a.gguf"
+    gguf_b = _sandbox / "catalog-b.gguf"
+    gguf_a.write_bytes(b"GGUF-a")
+    gguf_b.write_bytes(b"GGUF-b")
+    monkeypatch.setattr(llama, "_config_path", lambda: config_path)
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias=None: (True, ""))
+    monkeypatch.setattr(sd, "remove_unit", lambda name: None)
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "STOPPED"})
+
+    first = admin_client.post("/api/v1/models/llama/instances", json={
+        "alias": "catalog-a", "model_path": str(gguf_a), "port": 8201,
+    }, headers=CSRF_HEADERS)
+    assert first.status_code == 201, first.text
+    second = admin_client.post("/api/v1/models/llama/instances", json={
+        "alias": "catalog-b", "model_path": str(gguf_b), "port": 8202,
+        "cache_type_k": "q8_0", "idle_exclude": True,
+    }, headers=CSRF_HEADERS)
+    assert second.status_code == 201, second.text
+    listed = admin_client.get("/api/v1/models/llama/instances")
+    assert listed.status_code == 200
+    assert {item["alias"] for item in listed.json()} == {"catalog-a", "catalog-b"}
+    gguf_c = _sandbox / "catalog-c.gguf"
+    gguf_c.write_bytes(b"GGUF-c")
+    duplicate = admin_client.post("/api/v1/models/llama/instances", json={
+        "alias": "catalog-c", "model_path": str(gguf_c), "port": 8202,
+    }, headers=CSRF_HEADERS)
+    assert duplicate.status_code == 422 and "port 8202" in duplicate.text
+    deleted = admin_client.post("/api/v1/models/llama/instances/catalog-b/delete", headers=CSRF_HEADERS)
+    assert deleted.status_code == 200 and deleted.json()["gguf_deleted"] is False
+    assert gguf_b.exists()

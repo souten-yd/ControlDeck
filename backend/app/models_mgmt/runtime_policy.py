@@ -1,6 +1,7 @@
 """LLM runtime横断の選択・共通運用ポリシー。"""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Literal
@@ -74,11 +75,16 @@ def save_policy(policy: RuntimePolicy) -> RuntimePolicy:
     return policy
 
 
-def ensure_gpu_profile(*, force: bool = False) -> dict:
+def ensure_gpu_profile(*, force: bool = False, base_url: str = "") -> dict:
     """すべてのLLMロード/生成経路から呼ぶ共通preflight。"""
     from app.models_mgmt import amd_gpu
 
-    return amd_gpu.apply_profile(get_policy().amd_gpu, force=force)
+    result = amd_gpu.apply_profile(get_policy().amd_gpu, force=force)
+    if base_url:
+        from app.models_mgmt import llama
+
+        llama.mark_used_by_base_url(base_url)
+    return result
 
 
 async def environment() -> dict:
@@ -89,7 +95,10 @@ async def environment() -> dict:
     installed = set(llama.installed_backends())
     ollama_status = await ollama.status()
     llama_status = llama.runtime_status()
-    health = await llama.health() if llama_status["installed"] else {"ok": False}
+    health_states = await asyncio.gather(*(
+        llama.health(str(item["alias"])) for item in llama_status.get("instances", [])
+    )) if llama_status["installed"] else []
+    any_llama_running = any(state.get("ok") for state in health_states)
     runtimes = [{
         "id": "ollama", "runtime": "ollama", "backend": "auto", "label": "Ollama",
         "available": bool(ollama_status.get("available")), "installed": True,
@@ -103,7 +112,7 @@ async def environment() -> dict:
             "label": label, "available": bool(detected.get(backend)),
             "installed": backend in installed,
             "selected": policy.selected_runtime == "llama.cpp" and policy.selected_backend == backend,
-            "running": bool(health.get("ok")) and llama_status.get("backend") == backend,
+            "running": any_llama_running and llama_status.get("backend") == backend,
         })
     gpu_caps = amd_gpu.capabilities()
     if gpu_caps:
@@ -184,19 +193,23 @@ async def apply_selection(policy: RuntimePolicy) -> None:
             raise ValueError(f"llama.cpp / {policy.selected_backend} は未導入です")
         current = llama.get_config().get("backend")
         if current != policy.selected_backend:
-            was_running = (await llama.health()).get("ok", False)
-            if was_running:
-                llama.stop_instance()
+            running = [str(item["alias"]) for item in llama.list_instances() if item.get("loaded")]
+            for alias in running:
+                llama.stop_instance(alias)
             llama.switch_backend(policy.selected_backend)
-            if was_running:
-                ok, detail = llama.start_instance()
+            for alias in running:
+                ok, detail = llama.start_instance(alias)
                 if not ok:
-                    raise RuntimeError(detail or "backend切替後の起動に失敗しました")
+                    raise RuntimeError(detail or f"backend切替後の起動に失敗しました: {alias}")
         if policy.coexistence == "exclusive":
             for model in await ollama.running_models():
                 name = str(model.get("name") or model.get("model") or "")
                 if name:
                     await ollama.unload(name)
     elif policy.coexistence == "exclusive":
-        if (await llama.health()).get("ok", False):
+        instances = llama.list_instances()
+        for item in instances:
+            if item.get("loaded"):
+                llama.stop_instance(str(item["alias"]))
+        if not instances and (await llama.health()).get("ok", False):
             llama.stop_instance()

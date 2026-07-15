@@ -16,8 +16,8 @@
 | B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（owner・冪等性・heartbeat・priority・全体WSを再実装/検証） |
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（会話一覧/切替/改名/削除と生成checkpointを実装/実機検証） |
 | D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（厳格schema・副作用なしdry-run・実機生成を検証） |
-| E. LLMランタイム抽象（Ollama/llama.cpp provider） | 🚧 provider検出・共通モデル操作まで完了（実行/生成/cancel契約が残る） |
-| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 型付きMTP/KV/MoE等まで完了（複数GGUF catalog/instanceが残る） |
+| E. LLMランタイム抽象（Ollama/llama.cpp provider） | 🚧 provider検出・共通モデル操作/health/全runtime同時load上限まで完了（生成stream/cancel契約が残る） |
+| F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | ✅ 複数GGUF catalog/instance・個別unit・自動起動/idle制御まで完了 |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
 | H. ワークフローノード超強化（型/capability/dry-run/新ノード） | 🚧 metadata/型/capability/dry-run完了（検索/お気に入りと追加ノードが残る） |
 
@@ -170,7 +170,7 @@
 - `LlmRuntimeProvider`（detect/install/list_models/start/stop/health/stream_chat/cancel/get_capabilities...）。
 - `OllamaRuntimeProvider` + `LlamaCppRuntimeProvider`。既存 Ollama 実装を provider 化。
 
-### F. llama.cpp 導入
+### F. llama.cpp 導入 ✅ 完了（2026-07-15再監査後に補完）
 **F-1 完了（backend、実機動作確認済み）:**
 - `models_mgmt/llama.py`: リリース asset 照合（vulkan/rocm/cuda・Linux）、DL+展開+SHA256（ジョブ `llama.install`）、`~/.local/share/control-deck/runtimes/llama.cpp/<tag>/<backend>/` + `current` シンボリックリンク。
 - systemd ユニット `cdapp-llama.service`（cdapp- 前置で既存 systemd ヘルパー再利用）。**LD_LIBRARY_PATH=current** が必須（共有ライブラリ libllama-server-impl.so 等がバイナリ同階層）。
@@ -179,9 +179,15 @@
 - **実機検証**: ROCm 版を DL→展開→27B GGUF で起動→health OK→/v1/chat/completions 200→停止まで確認。experimental フラグ付き。
 **F-2 完了（UI、環境検出/切替）:**
 - Model 画面に「llama.cpp ランタイム」カード。`detect_backends` で **このマシンで使えるバックエンドのみ選択肢化**（ROCm=/dev/kfd+rocminfo、Vulkan=vulkaninfo/libvulkan）。CUDA は Ollama 案内で除外（ユーザー指示）。
+- 複数GGUFはalias/port/pathを一意制約付きcatalogとして保存し、選択中aliasを従来の単一instance設定へmirrorする。
+  既存設定は読み込み時に無損失移行し、1モデル=1個のhash付きsystemd user unitで独立起動する。
+- モデルごとに自動起動、共通idle unloadからの除外、最終利用時刻、CTX/KV/MTP/MoE等を保存する。
+  チャット、ワークフロー、RAGを含むLLM呼び出しでendpointに対応するinstanceの利用時刻を更新する。
+- provider共通healthと、Ollama/llama.cppを合算する同時ロード上限を追加。詳細設計は
+  [`design-llama-multi-instance.md`](design-llama-multi-instance.md)。
 - 未導入=導入ボタン(DLジョブ)、導入済み=切替ボタン(`switch_backend` で current 張替・再DL不要)、使用中=✓。起動設定(モデルGGUF/GPU層数/ctx/flash-attn)+起動/停止。base_url を既存 LLM 設定に指定。
 - モデル個別の型付き設定としてMTP（draft model/ngram）、K/V cache量子化、MoE CPU配置、context/output、batch/thread/sampling等を実装。実バイナリ`--help`にある能力だけ表示する。
-- 未実装(残): 複数GGUFを同時管理するcatalog/複数instance。host 127.0.0.1 固定。
+- セキュリティ上、管理対象instanceのhostは127.0.0.1固定。外部providerは共通provider検出を利用する。
 
 ### G. OpenCode（オプトインのみ）
 - **自動導入禁止**。`./deck.sh feature install/enable/disable/uninstall opencode`。

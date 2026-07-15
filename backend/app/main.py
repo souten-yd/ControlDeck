@@ -52,7 +52,8 @@ async def lifespan(app: FastAPI):
     from app.maintenance.service import maintenance_loop
     from app.maintenance.watchdog import notify_ready, watchdog_loop
     from app.workflows.engine import scheduler_loop
-    from app.models_mgmt.ollama import idle_unload_loop
+    from app.models_mgmt.ollama import idle_unload_loop as ollama_idle_unload_loop
+    from app.models_mgmt.llama import idle_unload_loop as llama_idle_unload_loop
     from app.applications.health import health_check_loop
 
     tasks = [
@@ -61,7 +62,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(maintenance_loop()),
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(alert_loop()),
-        asyncio.create_task(idle_unload_loop()),
+        asyncio.create_task(ollama_idle_unload_loop()),
+        asyncio.create_task(llama_idle_unload_loop()),
         asyncio.create_task(health_check_loop()),
     ]
     # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する

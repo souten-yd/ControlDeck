@@ -22,7 +22,7 @@ def capabilities(kind: str, *, managed: bool) -> list[str]:
     if managed and kind == "ollama":
         return ["list", "load", "unload", "delete", "pull", "configure"]
     if managed and kind == "llama.cpp":
-        return ["list", "load", "unload", "configure"]
+        return ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return ["list"]
 
 
@@ -66,6 +66,14 @@ async def _candidates() -> list[dict]:
         port = int(llama_status.get("port") or 8080)
         add(f"http://127.0.0.1:{port}", "llama.cpp", "llama.cpp", managed=True,
             installed=False, experimental=True)
+    # 複数instanceは各portが独立OpenAI endpoint。選択中は上のmanaged providerへ
+    # mergeし、それ以外もLLM endpoint pickerから選べるよう検出候補に加える。
+    for instance in llama_status.get("instances", []):
+        add(
+            str(instance.get("base_url") or f"http://127.0.0.1:{instance.get('port', 8080)}"),
+            "llama.cpp-instance", f"llama.cpp · {instance.get('alias')}",
+            installed=bool(llama_status.get("installed")), experimental=True,
+        )
 
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)
