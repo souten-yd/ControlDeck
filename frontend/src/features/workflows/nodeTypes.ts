@@ -121,8 +121,9 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       },
       { key: "count", label: "回数", type: "number", placeholder: "5", showIf: { key: "mode", value: "count" } },
       { key: "items", label: "リスト", type: "textarea", placeholder: '["a","b"] または改行区切り', showIf: { key: "mode", value: "foreach" }, hint: TEMPLATE_HINT },
+      { key: "parallel", label: "並列数（1〜5）", type: "number", placeholder: "1", hint: "各反復は分離contextで実行し、入力順の results を返します" },
     ],
-    outputs: [{ key: "item", label: "現在の要素" }, { key: "index", label: "インデックス" }, { key: "total", label: "総数" }],
+    outputs: [{ key: "item", label: "現在の要素" }, { key: "index", label: "インデックス" }, { key: "total", label: "総数" }, { key: "results", label: "全反復結果" }],
   },
   "util.wait": { label: "待機", category: "制御", color: "#f59e0b", icon: "⏱", fields: [{ key: "seconds", label: "秒数", type: "number", placeholder: "10" }], outputs: [{ key: "waited_seconds", label: "待機秒数" }] },
 
@@ -162,6 +163,31 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "path", label: "JSON パス（a.b.0）", type: "text", showIf: { key: "op", value: "json_extract" } },
     ],
     outputs: [{ key: "result", label: "結果" }, { key: "text", label: "元テキスト" }],
+  },
+  "data.transform": {
+    label: "JSON・CSV変換",
+    category: "データ",
+    color: "#6366f1",
+    icon: "⇄",
+    desc: "JSON変換・抽出・更新・Schema検証とCSV相互変換",
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "json_parse", label: "JSONを解析" },
+        { value: "json_get", label: "JSON pathを抽出" },
+        { value: "json_set", label: "JSON pathを更新" },
+        { value: "schema_validate", label: "JSON Schema検証" },
+        { value: "csv_to_json", label: "CSV → JSON" },
+        { value: "json_to_csv", label: "JSON → CSV" },
+      ] },
+      { key: "input", label: "入力", type: "code", hint: TEMPLATE_HINT },
+      { key: "path", label: "path（a.b.0）", type: "text", showIf: { key: "operation", value: "json_get" } },
+      { key: "path", label: "path（a.b.0）", type: "text", showIf: { key: "operation", value: "json_set" } },
+      { key: "value", label: "設定値（JSONまたは文字列）", type: "code", showIf: { key: "operation", value: "json_set" }, hint: TEMPLATE_HINT },
+      { key: "schema", label: "JSON Schema (Draft 2020-12)", type: "code", showIf: { key: "operation", value: "schema_validate" } },
+      { key: "delimiter", label: "CSV区切り文字", type: "text", placeholder: ",", showIf: { key: "operation", value: "csv_to_json" } },
+      { key: "delimiter", label: "CSV区切り文字", type: "text", placeholder: ",", showIf: { key: "operation", value: "json_to_csv" } },
+    ],
+    outputs: [{ key: "value", label: "変換値" }, { key: "valid", label: "検証結果" }, { key: "errors", label: "検証エラー" }, { key: "rows", label: "行" }, { key: "csv", label: "CSV" }, { key: "count", label: "件数" }],
   },
   "text.markdown": {
     label: "Markdown→HTML",
@@ -210,10 +236,26 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "op", label: "操作", type: "select", options: [{ value: "copy", label: "コピー" }, { value: "move", label: "移動" }, { value: "delete", label: "削除" }, { value: "mkdir", label: "フォルダ作成" }] },
       { key: "source", label: "対象パス", type: "text", hint: TEMPLATE_HINT },
       { key: "dest_dir", label: "移動/コピー先", type: "text", showIf: { key: "op", value: "copy" } },
+      { key: "dest_dir", label: "移動/コピー先", type: "text", showIf: { key: "op", value: "move" } },
     ],
-    outputs: [{ key: "path", label: "結果パス" }],
+    outputs: [{ key: "path", label: "結果パス" }, { key: "deleted", label: "削除したパス" }, { key: "created", label: "作成したパス" }],
   },
   "file.exists": { label: "ファイル存在確認", category: "ファイル", color: "#64748b", icon: "🔍", fields: [{ key: "path", label: "パス", type: "text", hint: TEMPLATE_HINT }], outputs: [{ key: "exists", label: "存在するか" }, { key: "size", label: "サイズ" }] },
+  "file.glob": {
+    label: "ファイル検索",
+    category: "ファイル",
+    color: "#64748b",
+    icon: "✣",
+    desc: "許可ルート内を相対glob patternで検索",
+    fields: [
+      { key: "base_path", label: "基準フォルダ", type: "text", hint: TEMPLATE_HINT },
+      { key: "pattern", label: "パターン", type: "text", placeholder: "*.json", hint: "絶対pathと .. は使用不可" },
+      { key: "recursive", label: "サブフォルダも検索", type: "select", options: [{ value: "", label: "しない" }, { value: "1", label: "する" }] },
+      { key: "kind", label: "対象", type: "select", options: [{ value: "all", label: "すべて" }, { value: "files", label: "ファイルのみ" }, { value: "directories", label: "フォルダのみ" }] },
+      { key: "limit", label: "最大件数（1〜1000）", type: "number", placeholder: "100" },
+    ],
+    outputs: [{ key: "matches", label: "詳細一覧" }, { key: "paths", label: "パス一覧" }, { key: "count", label: "件数" }],
+  },
 
   // ---- AI ----
   "llm.chat": {
@@ -290,6 +332,31 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "model", label: "モデル（空ならOpenCode共通設定）", type: "text" },
     ],
     outputs: [{ key: "output", label: "結果" }, { key: "events", label: "イベント数" }, { key: "operation", label: "操作" }],
+  },
+  "ai.utility": {
+    label: "AI補助処理",
+    category: "AI",
+    color: "#a855f7",
+    icon: "◇",
+    desc: "Embedding・Rerank・LLM評価を1ノードで切替",
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "embedding", label: "Embedding" },
+        { value: "rerank", label: "Rerank" },
+        { value: "judge", label: "LLM Judge" },
+      ] },
+      { key: "base_url", label: "エンドポイント", type: "text", placeholder: "http://127.0.0.1:11434/v1" },
+      { key: "model", label: "モデル", type: "text" },
+      { key: "api_key", label: "APIキー（任意）", type: "text" },
+      { key: "input", label: "入力", type: "textarea", showIf: { key: "operation", value: "embedding" }, hint: "1行1件またはJSON文字列配列" },
+      { key: "input", label: "評価対象", type: "textarea", showIf: { key: "operation", value: "judge" }, hint: TEMPLATE_HINT },
+      { key: "query", label: "検索query", type: "textarea", showIf: { key: "operation", value: "rerank" }, hint: TEMPLATE_HINT },
+      { key: "documents", label: "候補文書", type: "code", showIf: { key: "operation", value: "rerank" }, hint: "JSON文字列配列または1行1件" },
+      { key: "top_n", label: "返す件数", type: "number", showIf: { key: "operation", value: "rerank" } },
+      { key: "rubric", label: "評価基準", type: "textarea", showIf: { key: "operation", value: "judge" }, hint: TEMPLATE_HINT },
+      { key: "timeout", label: "timeout（秒）", type: "number", placeholder: "120" },
+    ],
+    outputs: [{ key: "vectors", label: "ベクトル" }, { key: "dim", label: "次元" }, { key: "results", label: "Rerank結果" }, { key: "score", label: "評価スコア" }, { key: "reason", label: "評価理由" }],
   },
   "media.ocr": {
     label: "OCR",
@@ -662,12 +729,13 @@ export const NODE_DOCS: Record<string, string> = {
   "condition.if":
     "左辺と右辺を比較し、true / false の 2 方向へ分岐します。\n\n■ 使い方\n左辺にテンプレート（例 {{n1.status_code}}）、演算子と右辺を設定。エッジは右側の緑ハンドル（true）と赤ハンドル（false)から引きます。\n\n■ ヒント\n数値比較は自動で数値化されます。「を含む」は部分文字列判定でキーワード監視に便利。",
   "control.loop":
-    "body 側のノード列を繰り返し実行し、完了後に done 側へ進みます。\n\n■ モード\n- 回数指定: {{ID.index}} が 0..n-1\n- リスト each: JSON 配列 or 改行区切りを 1 件ずつ {{ID.item}} に\n\n■ 組み合わせ\nWeb 検索の {{search.urls}} を items に渡して URL ごとにスクレイピング、など。上限 100 回。",
+    "body 側のノード列を繰り返し実行し、完了後に done 側へ進みます。\n\n■ モード\n- 回数指定: {{ID.index}} が 0..n-1\n- リスト each: JSON 配列 or 改行区切りを 1 件ずつ {{ID.item}} に\n- 並列数: 1〜5。反復ごとにcontextを分離し、{{ID.results}}へ入力順で集約\n\n■ 組み合わせ\nWeb 検索の {{search.urls}} を items に渡して URL ごとにスクレイピング、など。上限 100 回。",
   "util.wait": "指定秒数待機します。Wake-on-LAN 後の起動待ち、API のレート制限対策などに。最大 1 時間。",
   "var.set":
     "値に名前を付けて保存します。output_var と違い、フロー途中で明示的に変数を作る用途。\n\n■ 参照\n{{vars.変数名}} でどのノードからでも参照できます。設定パネルの変数ピッカーにも表示されます。",
   "string.op":
     "テキスト加工の万能ノード。\n\n■ 主な操作\n- テンプレート展開: 複数出力の合成に\n- 置換 / 正規表現抽出 / 分割\n- JSON 抽出: LLM の JSON 応答から a.b.0 パスで値を取り出す\n\n■ 組み合わせ\nLLM 生成（JSON モード）→ 文字列操作(json_extract) → 条件分岐 が構造化パイプラインの定石。",
+  "data.transform": "JSONの解析・path抽出/更新、Draft 2020-12 Schema検証、CSV相互変換を1ノードで扱います。入力/出力は2MiB、行は10000件が上限です。",
   "text.markdown": "Markdown を HTML に変換します。レポートをメール/Web 表示用に整形する時に。",
   "db.query":
     "SQLite ファイルまたは接続 URL（PostgreSQL 等）へ SQL を実行します。\n\n■ 使い方\nSELECT は {{ID.rows}} に行データ（JSON）が入ります。パラメータは :name 形式 + JSON で安全にバインド。\n\n■ 組み合わせ\nDB クエリ → LLM 生成（要約/分析）→ 通知 で日次レポートが作れます。",
@@ -675,8 +743,10 @@ export const NODE_DOCS: Record<string, string> = {
   "file.write": "テキストをファイルへ書き込み（上書き/追記）。レポート保存やログ蓄積に。許可ルート配下のみ。",
   "file.op": "コピー/移動/削除/フォルダ作成。ダウンロード後の整理などに。",
   "file.exists": "ファイルの存在とサイズを確認。条件分岐と組み合わせて「初回だけ実行」を作れます。",
+  "file.glob": "許可ルート内の基準フォルダから相対globで検索します。絶対pathと ..、symlinkによる基準外脱出を拒否します。",
   "llm.chat":
     "OpenAI 互換 API（Ollama / vLLM / llama.cpp / OpenAI）でテキスト生成する中核ノード。\n\n■ 使い方\nエンドポイント/モデルは設定パネルで稼働中サーバーを自動検出できます。プロンプトに {{前段.出力}} を埋め込んで使います。\n\n■ 構造化出力\n出力形式を JSON スキーマ指定にすると {{ID.json.フィールド}} で値を直接参照でき、条件分岐や DB 保存と繋げやすくなります。\n\n■ 組み合わせ\nRAG 検索 → LLM（根拠付き回答）、Web 検索 → LLM（ダイジェスト）、DB → LLM（分析）。",
+  "ai.utility": "OpenAI互換Embedding、/rerank API、LLM Judgeを切り替える補助ノードです。大量入力は件数・文字数上限を設け、秘密のAPI keyを結果へ含めません。",
   "media.ocr": "画像から文字を認識（tesseract）。スクリーンショット → OCR → LLM 整形 のような紙情報のデジタル化に。",
   "rag.build":
     "テキスト/ファイルをチャンク分割・埋め込みしてナレッジ（コレクション）へ登録します。\n\n■ チャンク戦略\n- recursive: 汎用（迷ったらこれ）\n- markdown: 見出し構造を保持\n- parent_child: 子チャンクで検索し親を文脈に（長文に強い）\n\n■ 組み合わせ\nWeb スクレイピング → RAG 構築 で記事の取り込み（サンプル「Web 記事をナレッジへ取り込み」）。Knowledge ページでも管理できます。",

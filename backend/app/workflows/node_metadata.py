@@ -22,8 +22,9 @@ SIDE_EFFECTS: dict[str, str] = {
     "http.request": "external", "notify.webhook": "external", "llm.chat": "external",
     "web.scrape": "external", "web.browser": "external", "web.search": "external",
     "academic.search": "external", "research.deep": "external", "code.agent": "process",
+    "ai.utility": "external",
     # ローカル読み取り
-    "app.status": "read", "file.read": "read", "file.exists": "read",
+    "app.status": "read", "file.read": "read", "file.exists": "read", "file.glob": "read",
     "media.ocr": "read", "rag.query": "read",
 }
 
@@ -31,12 +32,14 @@ CAPABILITIES: dict[str, list[str]] = {
     "app.start": ["apps.control"], "app.stop": ["apps.control"],
     "app.restart": ["apps.control"], "app.status": ["apps.read"],
     "file.read": ["filesystem.read"], "file.exists": ["filesystem.read"],
+    "file.glob": ["filesystem.read"],
     "file.write": ["filesystem.write"], "file.op": ["filesystem.write"],
     "http.download": ["network", "filesystem.write"],
     "http.request": ["network"], "notify.webhook": ["network", "notification"],
     "web.scrape": ["network"], "web.browser": ["network", "browser"],
     "web.search": ["network"], "academic.search": ["network"],
     "research.deep": ["network", "llm"], "llm.chat": ["network", "llm"],
+    "ai.utility": ["network", "llm"],
     "media.ocr": ["filesystem.read", "process.exec"],
     "rag.build": ["knowledge.write", "llm"], "rag.query": ["knowledge.read", "llm"],
     "db.query": ["database"], "cmd.ssh": ["network", "process.exec"],
@@ -55,36 +58,39 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "app.restart": {"app": "string", "status": "string"},
     "app.status": {"app": "string", "status": "string", "pid": "integer", "uptime_seconds": "number"},
     "condition.if": {"result": "boolean", "left": "any", "right": "any"},
-    "control.loop": {"index": "integer", "item": "any", "total": "integer", "done": "boolean"},
+    "control.loop": {"index": "integer", "item": "any", "total": "integer", "done": "boolean", "results": "array"},
     "util.wait": {"waited_seconds": "number"}, "util.now": {"text": "string", "date": "string", "time": "string"},
     "var.set": {"value": "any"}, "string.op": {"result": "any"}, "text.markdown": {"html": "string"},
+    "data.transform": {"value": "any", "valid": "boolean", "errors": "array", "csv": "string", "rows": "array", "count": "integer"},
     "file.read": {"content": "string", "path": "string"},
     "file.write": {"path": "string", "bytes": "integer"},
-    "file.op": {"ok": "boolean", "path": "string"}, "file.exists": {"exists": "boolean", "size": "integer"},
+    "file.op": {"path": "string", "deleted": "string", "created": "string"}, "file.exists": {"exists": "boolean", "size": "integer"},
+    "file.glob": {"matches": "array", "paths": "array", "count": "integer"},
     "llm.chat": {"content": "string", "thinking": "string", "usage": "object"},
     "media.ocr": {"text": "string"}, "rag.build": {"collection": "string", "chunks": "integer"},
     "rag.query": {"context": "string", "results": "array"},
     "academic.search": {"results": "array", "text": "string"},
     "web.search": {"results": "array", "urls": "array", "text": "string"},
     "research.deep": {"report": "string", "sources": "array"},
-    "http.request": {"status_code": "integer", "body": "string", "headers": "object"},
+    "http.request": {"status_code": "integer", "ok": "boolean", "body": "string"},
     "http.download": {"path": "string", "bytes": "integer"},
     "web.scrape": {"status_code": "integer", "url": "string"},
     "web.browser": {"url": "string", "title": "string", "content": "string"},
-    "net.wol": {"sent": "boolean"}, "cmd.ssh": {"stdout": "string", "stderr": "string", "returncode": "integer"},
-    "cmd.git": {"stdout": "string", "stderr": "string", "returncode": "integer"},
-    "cmd.cpp_build": {"stdout": "string", "stderr": "string", "returncode": "integer"},
-    "cmd.python": {"stdout": "string", "stderr": "string", "returncode": "integer"},
+    "net.wol": {"sent": "boolean"}, "cmd.ssh": {"stdout": "string", "stderr": "string", "exit_code": "integer"},
+    "cmd.git": {"stdout": "string", "stderr": "string", "exit_code": "integer"},
+    "cmd.cpp_build": {"stdout": "string", "stderr": "string", "exit_code": "integer"},
+    "cmd.python": {"stdout": "string", "stderr": "string", "exit_code": "integer"},
     "db.query": {"rows": "array", "row_count": "integer", "affected": "integer"},
     "signal.display": {"signal": "string", "value": "any"},
     "flow.call": {"execution_id": "integer", "result": "object"},
     "notify.webhook": {"status_code": "integer", "ok": "boolean"},
     "code.agent": {"output": "string", "events": "integer", "operation": "string", "project_path": "string"},
+    "ai.utility": {"vectors": "array", "dim": "integer", "results": "array", "score": "number", "reason": "string"},
 }
 
-_INTEGER_KEYS = {"app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps"}
+_INTEGER_KEYS = {"app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps", "limit", "top_n"}
 _NUMBER_KEYS = {"seconds", "timeout"}
-_BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query"}
+_BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive"}
 _ARRAY_KEYS = {"inputs", "extractors", "sources"}
 
 
@@ -125,7 +131,7 @@ def node_catalog() -> list[dict[str, Any]]:
             "supports": {
                 "retry": node_type not in ("trigger", "control.loop"),
                 "cancel": True,
-                "progress": False,
+                "progress": node_type in {"control.loop", "data.transform", "file.glob", "ai.utility"},
                 "dry_run": True,
             },
         })

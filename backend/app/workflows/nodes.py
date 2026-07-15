@@ -6,13 +6,26 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import csv
+import contextvars
+import heapq
+import io
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 TEMPLATE_RE = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
+_progress_reporter: contextvars.ContextVar[Any] = contextvars.ContextVar("workflow_node_progress", default=None)
+
+
+def report_progress(message: str, current: int = 0, total: int = 0) -> None:
+    reporter = _progress_reporter.get()
+    if reporter is not None:
+        reporter(message, current, total)
 
 
 def render_template(text: str, context: dict[str, Any]) -> str:
@@ -265,6 +278,108 @@ async def node_markdown(config: dict, ctx: dict) -> dict:
     return {"html": html, "markdown": text}
 
 
+MAX_TRANSFORM_BYTES = 2 * 1024 * 1024
+
+
+def _json_value(raw: Any, ctx: dict, *, label: str = "JSON") -> Any:
+    if isinstance(raw, (dict, list, int, float, bool)) or raw is None:
+        return copy.deepcopy(raw)
+    text = render_template(str(raw or ""), ctx)
+    if len(text.encode("utf-8")) > MAX_TRANSFORM_BYTES:
+        raise NodeError(f"{label}が2MiB上限を超えました")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise NodeError(f"{label}が不正です: {exc}") from exc
+
+
+def _path_parts(raw: Any) -> list[str]:
+    parts = [part for part in str(raw or "").split(".") if part]
+    if not parts:
+        raise NodeError("pathを指定してください")
+    return parts
+
+
+async def node_data_transform(config: dict, ctx: dict) -> dict:
+    report_progress("データを変換中", 0, 1)
+    operation = str(config.get("operation") or "json_parse")
+    raw_input = config.get("input", "")
+    if operation == "json_parse":
+        value = _json_value(raw_input, ctx)
+        return {"value": value, "valid": True}
+    if operation in {"json_get", "json_set", "schema_validate", "json_to_csv"}:
+        value = _json_value(raw_input, ctx)
+    if operation == "json_get":
+        result = value
+        try:
+            for part in _path_parts(config.get("path")):
+                result = result[int(part)] if isinstance(result, list) else result[part]
+        except (KeyError, IndexError, ValueError, TypeError) as exc:
+            raise NodeError(f"JSON pathが見つかりません: {exc}") from exc
+        return {"value": result, "valid": True}
+    if operation == "json_set":
+        result = copy.deepcopy(value)
+        parts = _path_parts(config.get("path"))
+        target = result
+        try:
+            for part in parts[:-1]:
+                target = target[int(part)] if isinstance(target, list) else target[part]
+            new_value_raw = render_template(str(config.get("value", "null")), ctx)
+            if len(new_value_raw.encode("utf-8")) > MAX_TRANSFORM_BYTES:
+                raise NodeError("設定値が2MiB上限を超えました")
+            try:
+                new_value = json.loads(new_value_raw)
+            except json.JSONDecodeError:
+                new_value = new_value_raw
+            if isinstance(target, list):
+                target[int(parts[-1])] = new_value
+            elif isinstance(target, dict):
+                target[parts[-1]] = new_value
+            else:
+                raise TypeError("更新対象がobject/arrayではありません")
+        except (KeyError, IndexError, ValueError, TypeError) as exc:
+            raise NodeError(f"JSON更新失敗: {exc}") from exc
+        return {"value": result, "valid": True}
+    if operation == "schema_validate":
+        from jsonschema import Draft202012Validator, SchemaError
+
+        schema = _json_value(config.get("schema", ""), ctx, label="JSON Schema")
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError as exc:
+            raise NodeError(f"JSON Schemaが不正です: {exc.message}") from exc
+        errors = sorted(Draft202012Validator(schema).iter_errors(value), key=lambda item: list(item.path))
+        messages = [f"{'/'.join(str(x) for x in error.path) or '$'}: {error.message}"[:500] for error in errors[:50]]
+        return {"value": value, "valid": not errors, "errors": messages}
+    if operation == "csv_to_json":
+        text = render_template(str(raw_input or ""), ctx)
+        if len(text.encode("utf-8")) > MAX_TRANSFORM_BYTES:
+            raise NodeError("CSVが2MiB上限を超えました")
+        try:
+            rows = list(csv.DictReader(io.StringIO(text), delimiter=str(config.get("delimiter") or ",")[:1]))
+        except csv.Error as exc:
+            raise NodeError(f"CSV解析失敗: {exc}") from exc
+        if len(rows) > 10_000:
+            raise NodeError("CSV行数が10000件上限を超えました")
+        return {"value": rows, "rows": rows, "count": len(rows), "valid": True}
+    if operation == "json_to_csv":
+        if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+            raise NodeError("json_to_csvのinputはobject配列にしてください")
+        if len(value) > 10_000:
+            raise NodeError("JSON行数が10000件上限を超えました")
+        fields = list(dict.fromkeys(str(key) for row in value for key in row))
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore",
+                                delimiter=str(config.get("delimiter") or ",")[:1])
+        writer.writeheader()
+        writer.writerows(value)
+        text = output.getvalue()
+        if len(text.encode("utf-8")) > MAX_TRANSFORM_BYTES:
+            raise NodeError("CSV出力が2MiB上限を超えました")
+        return {"value": text, "csv": text, "count": len(value), "valid": True}
+    raise NodeError(f"未対応のデータ変換です: {operation}")
+
+
 # ---- ファイル入出力（許可ルート検証を通す） ----
 
 
@@ -316,6 +431,57 @@ async def node_file_op(config: dict, ctx: dict) -> dict:
         raise NodeError(f"不明なファイル操作: {op}")
     except (files.FileAccessError, FileNotFoundError, FileExistsError, OSError) as e:
         raise NodeError(f"ファイル操作失敗: {e}")
+
+
+async def node_file_glob(config: dict, ctx: dict) -> dict:
+    from app.files import service as files
+
+    base_raw = render_template(str(config.get("base_path") or ""), ctx)
+    pattern = render_template(str(config.get("pattern") or "*"), ctx).strip()
+    pattern_path = Path(pattern)
+    if pattern_path.is_absolute() or ".." in pattern_path.parts:
+        raise NodeError("glob patternはbase_pathからの相対指定にしてください")
+    if bool(config.get("recursive")) and "**" not in pattern_path.parts:
+        pattern = f"**/{pattern}"
+    kind = str(config.get("kind") or "all")
+    if kind not in {"all", "files", "directories"}:
+        raise NodeError("kindが不正です")
+    limit = max(1, min(int(config.get("limit") or 100), 1000))
+    try:
+        base = files.resolve(base_raw)
+    except (files.FileAccessError, FileNotFoundError) as exc:
+        raise NodeError(f"base pathが不正です: {exc}") from exc
+    if not base.is_dir():
+        raise NodeError("base pathはディレクトリを指定してください")
+    report_progress("ファイルを検索中", 0, limit)
+
+    def scan() -> list[dict]:
+        def validated():
+            for candidate in base.glob(pattern):
+                try:
+                    resolved = files.resolve(str(candidate))
+                except (files.FileAccessError, FileNotFoundError, OSError):
+                    continue
+                if not resolved.is_relative_to(base):
+                    continue
+                is_dir = resolved.is_dir()
+                if (kind == "files" and is_dir) or (kind == "directories" and not is_dir):
+                    continue
+                stat = resolved.stat()
+                yield {
+                    "path": str(resolved), "relative_path": str(resolved.relative_to(base)),
+                    "name": resolved.name, "size": stat.st_size, "is_dir": is_dir,
+                }
+
+        try:
+            matches = heapq.nsmallest(limit, validated(), key=lambda item: item["path"])
+        except (OSError, ValueError) as exc:
+            raise NodeError(f"glob検索失敗: {exc}") from exc
+        report_progress("ファイル検索完了", len(matches), len(matches))
+        return matches
+
+    matches = await asyncio.to_thread(scan)
+    return {"matches": matches, "paths": [item["path"] for item in matches], "count": len(matches)}
 
 
 # ---- LLM（OpenAI 互換 Chat Completions: Ollama / vLLM / llama.cpp / OpenAI 等） ----
@@ -446,6 +612,99 @@ async def node_llm(config: dict, ctx: dict) -> dict:
             out["json"] = None
             out["json_error"] = "応答を JSON として解析できませんでした"
     return out
+
+
+async def node_ai_utility(config: dict, ctx: dict) -> dict:
+    from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+    operation = str(config.get("operation") or "embedding")
+    if operation not in {"embedding", "rerank", "judge"}:
+        raise NodeError(f"未対応のAI補助操作です: {operation}")
+    base_url = render_template(str(config.get("base_url") or "http://127.0.0.1:11434/v1"), ctx).rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise NodeError("base_urlはhttp(s) URLで指定してください")
+    model = render_template(str(config.get("model") or ""), ctx).strip()
+    if not model:
+        raise NodeError("modelを指定してください")
+    api_key = str(config.get("api_key") or "sk-no-key")
+    timeout = max(5.0, min(float(config.get("timeout") or 120), 300.0))
+    report_progress("AI補助処理を準備中", 0, 2)
+    try:
+        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
+    except RuntimeError as exc:
+        raise NodeError(str(exc)) from exc
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if operation == "embedding":
+        raw = render_template(str(config.get("input") or ""), ctx)
+        try:
+            parsed = json.loads(raw)
+            inputs = parsed if isinstance(parsed, list) else [parsed]
+        except json.JSONDecodeError:
+            inputs = [line for line in raw.splitlines() if line.strip()] or [raw]
+        if not inputs or len(inputs) > 100 or any(not isinstance(item, str) or not item.strip() or len(item) > 32_768 for item in inputs):
+            raise NodeError("embedding inputは文字列100件以内・各32KiB以内です")
+        endpoint, payload = f"{base_url}/embeddings", {"model": model, "input": inputs}
+    elif operation == "rerank":
+        query = render_template(str(config.get("query") or ""), ctx).strip()
+        raw_docs = render_template(str(config.get("documents") or ""), ctx)
+        try:
+            documents = json.loads(raw_docs)
+        except json.JSONDecodeError:
+            documents = [line for line in raw_docs.splitlines() if line.strip()]
+        if not query or not isinstance(documents, list) or not documents:
+            raise NodeError("rerankにはqueryとdocuments配列が必要です")
+        if len(documents) > 100 or any(not isinstance(item, str) or len(item) > 32_768 for item in documents):
+            raise NodeError("rerank documentsは文字列100件以内・各32KiB以内です")
+        top_n = max(1, min(int(config.get("top_n") or len(documents)), len(documents)))
+        endpoint = f"{base_url}/rerank"
+        payload = {"model": model, "query": query, "documents": documents, "top_n": top_n}
+    else:
+        subject = render_template(str(config.get("input") or ""), ctx).strip()
+        rubric = render_template(str(config.get("rubric") or "正確性・関連性・明瞭さを評価"), ctx).strip()
+        if not subject or len(subject) > 65_536 or len(rubric) > 16_384:
+            raise NodeError("judge input/rubricの長さが不正です")
+        endpoint = f"{base_url}/chat/completions"
+        payload = {
+            "model": model, "stream": False, "temperature": 0,
+            "max_tokens": max(64, min(int(config.get("max_tokens") or 512), 2048)),
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": "評価者として0〜100のscoreと簡潔なreasonをJSON objectだけで返してください。"},
+                {"role": "user", "content": f"評価基準:\n{rubric}\n\n評価対象:\n{subject}"},
+            ],
+        }
+    try:
+        report_progress("AI補助APIを実行中", 1, 2)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(endpoint, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        raise NodeError(f"AI補助APIへ接続できません: {type(exc).__name__}") from exc
+    if len(response.content) > 2 * 1024 * 1024:
+        raise NodeError("AI補助API応答が2MiB上限を超えました")
+    if response.status_code >= 400:
+        raise NodeError(f"AI補助APIエラー {response.status_code}")
+    try:
+        data = response.json()
+        if operation == "embedding":
+            vectors = [item["embedding"] for item in data.get("data", [])]
+            return {"vectors": vectors, "count": len(vectors), "dim": len(vectors[0]) if vectors else 0,
+                    "model": data.get("model") or model}
+        if operation == "rerank":
+            normalized = []
+            for item in data.get("results", []):
+                index = int(item.get("index"))
+                if index < 0 or index >= len(documents):
+                    raise ValueError("rerank indexが範囲外です")
+                normalized.append({"index": index, "score": item.get("relevance_score", item.get("score")),
+                                   "document": item.get("document", documents[index] if index < len(documents) else "")})
+            return {"results": normalized, "count": len(normalized), "model": model}
+        content = data["choices"][0]["message"]["content"]
+        judged = json.loads(_strip_json_fences(content))
+        score = max(0.0, min(float(judged["score"]), 100.0))
+        return {"score": score, "reason": str(judged.get("reason") or "")[:4000], "model": model}
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise NodeError("AI補助API応答を解析できません") from exc
 
 
 # ---- エージェントモード（llm.chat 拡張。既存ノードをツールとして公開） ----
@@ -1263,11 +1522,14 @@ NODE_EXECUTORS = {
     # v2 追加
     "var.set": node_set_variable,
     "string.op": node_string_op,
+    "data.transform": node_data_transform,
     "text.markdown": node_markdown,
     "file.read": node_file_read,
     "file.write": node_file_write,
     "file.op": node_file_op,
+    "file.glob": node_file_glob,
     "llm.chat": node_llm,
+    "ai.utility": node_ai_utility,
     "util.now": node_now,
     "http.download": node_http_download,
     "web.scrape": node_scrape,
@@ -1293,6 +1555,7 @@ NODE_TIMEOUTS = {
     "http.request": 320,
     "http.download": 1830,
     "llm.chat": 620,
+    "ai.utility": 320,
     "web.scrape": 130,
     "media.ocr": 130,
     "cmd.ssh": 620,

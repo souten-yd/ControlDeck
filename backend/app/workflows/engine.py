@@ -154,7 +154,7 @@ async def _execute_graph(
     for e in edges:
         outgoing.setdefault(e["source"], []).append(e)
 
-    async def run_single(node: dict) -> dict:
+    async def run_single(node: dict, run_context: dict[str, Any]) -> dict:
         """1 ノードの実行（承認ゲート → リトライ付き実行 → 記録）。"""
         nid, ntype = node["id"], node.get("type", "")
         config = node.get("config") or {}
@@ -165,7 +165,7 @@ async def _execute_graph(
         if executor is None:
             raise NodeError(f"未知のノード種類: {ntype}")
         entry: dict[str, Any] = {"status": "PENDING", "name": node.get("name") or nid, "type": ntype}
-        context[nid] = entry
+        run_context[nid] = entry
 
         # 実行前承認ゲート（任意ノードに設定可能）
         if config.get("require_approval") and ntype != "trigger" and execution_id is not None:
@@ -194,16 +194,23 @@ async def _execute_graph(
         entry.update(status="RUNNING", started_at=utcnow().isoformat())
         while True:
             attempt += 1
+            from app.workflows import nodes as workflow_nodes
+
+            token = workflow_nodes._progress_reporter.set(
+                lambda message, current=0, total=0: entry.update(
+                    progress={"message": str(message)[:200], "current": int(current), "total": int(total)}
+                )
+            )
             try:
                 if ntype in _UNMETERED:
-                    output = await asyncio.wait_for(executor(config, context), timeout=timeout)
+                    output = await asyncio.wait_for(executor(config, run_context), timeout=timeout)
                 else:
                     async with sem:
-                        output = await asyncio.wait_for(executor(config, context), timeout=timeout)
+                        output = await asyncio.wait_for(executor(config, run_context), timeout=timeout)
                 entry.update(status="SUCCEEDED", output=output, finished_at=utcnow().isoformat(), attempts=attempt)
                 var_name = str(config.get("output_var") or "").strip()
                 if var_name:
-                    context.setdefault("__vars__", {})[var_name] = output
+                    run_context.setdefault("__vars__", {})[var_name] = output
                 return entry
             except asyncio.CancelledError:
                 entry.update(status="CANCELED", finished_at=utcnow().isoformat())
@@ -214,6 +221,8 @@ async def _execute_graph(
                 err, final_status = str(e), "FAILED"
             except Exception as e:  # 想定外もリトライ対象にする
                 err, final_status = f"{type(e).__name__}: {e}", "FAILED"
+            finally:
+                workflow_nodes._progress_reporter.reset(token)
             if attempt <= retries:
                 entry.update(status="RETRYING", error=err, attempts=attempt)
                 await asyncio.sleep(retry_wait)
@@ -227,8 +236,9 @@ async def _execute_graph(
     class DagRun:
         """発火カウント方式の DAG 実行状態（メイン/ループ反復ごとに 1 つ）。"""
 
-        def __init__(self, tg: asyncio.TaskGroup):
+        def __init__(self, tg: asyncio.TaskGroup, run_context: dict[str, Any]):
             self.tg = tg
+            self.context = run_context
             self.lock = asyncio.Lock()
             self.received: dict[str, int] = {}
             self.live_received: dict[str, int] = {}
@@ -264,7 +274,7 @@ async def _execute_graph(
                 self.tg.create_task(self.exec_node(target))
             else:
                 # 全入力が dead → このノードは実行されない。下流へ dead を伝播
-                context.setdefault(target, {"status": "SKIPPED"})
+                self.context.setdefault(target, {"status": "SKIPPED"})
                 for e in outgoing.get(target, []):
                     await self.fire(e["target"], live=False)
 
@@ -280,14 +290,14 @@ async def _execute_graph(
             if node is None:
                 return
             if node.get("type") == "control.loop":
-                await run_loop(node)
+                await run_loop(node, self.context)
                 for e in outgoing.get(nid, []):
                     br = _edge_branch(e)
                     if br == "body":
                         continue
                     await self.fire(e["target"], live=br != "error")
                 return
-            entry = await run_single(node)
+            entry = await run_single(node, self.context)
             failed = entry["status"] in ("FAILED", "TIMED_OUT")
             on_error = str((node.get("config") or {}).get("on_error", "stop"))
             outs = outgoing.get(nid, [])
@@ -302,7 +312,7 @@ async def _execute_graph(
                 for e in outs:
                     await self.fire(e["target"], live=_edge_branch(e) != "error")
 
-    async def run_loop(node: dict) -> None:
+    async def run_loop(node: dict, parent_context: dict[str, Any]) -> None:
         from app.workflows.nodes import render_template
 
         node_id = node["id"]
@@ -310,11 +320,11 @@ async def _execute_graph(
         mode = config.get("mode", "count")
         entry: dict[str, Any] = {"status": "RUNNING", "started_at": utcnow().isoformat(),
                                  "name": node.get("name") or node_id, "type": "control.loop"}
-        context[node_id] = entry
+        parent_context[node_id] = entry
 
         items: list[Any]
         if mode == "foreach":
-            raw = render_template(str(config.get("items", "")), context).strip()
+            raw = render_template(str(config.get("items", "")), parent_context).strip()
             try:
                 parsed = json.loads(raw)
                 items = parsed if isinstance(parsed, list) else [parsed]
@@ -327,30 +337,53 @@ async def _execute_graph(
         parallel = max(1, min(int(config.get("parallel", 1) or 1), 5))
         body_edges = [e for e in outgoing.get(node_id, []) if _edge_branch(e) == "body"]
 
-        async def one_iteration(index: int, item: Any) -> None:
-            entry["output"] = {"index": index, "item": item, "total": len(items)}
+        async def one_iteration(index: int, item: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+            iteration_context = dict(parent_context)
+            iteration_context["__vars__"] = dict(parent_context.get("__vars__") or {})
+            iteration_context[node_id] = {
+                "status": "RUNNING", "name": entry["name"], "type": "control.loop",
+                "output": {"index": index, "item": item, "total": len(items)},
+            }
             async with asyncio.TaskGroup() as tg2:
-                sub = DagRun(tg2)
+                sub = DagRun(tg2, iteration_context)
                 for e in body_edges:
                     await sub.start(e["target"])
+            outputs = {
+                key: value.get("output")
+                for key, value in iteration_context.items()
+                if (key not in parent_context or value is not parent_context[key])
+                and isinstance(value, dict) and "output" in value
+            }
+            return {"index": index, "item": item, "outputs": outputs}, iteration_context
 
         if parallel <= 1:
+            completed = []
             for index, item in enumerate(items):
-                await one_iteration(index, item)
+                completed.append(await one_iteration(index, item))
+                entry["progress"] = {"message": "ループ実行中", "current": index + 1, "total": len(items)}
         else:
-            # 並列 foreach: item/index はイテレーションで共有 context を上書きするため、
-            # 並列時は {{ID.item}} の参照が不定になる。バッチごとに逐次上書きして実行する
+            completed = []
             for base in range(0, len(items), parallel):
                 batch = list(enumerate(items))[base : base + parallel]
-                await asyncio.gather(*(one_iteration(i, it) for i, it in batch))
+                completed.extend(await asyncio.gather(*(one_iteration(i, it) for i, it in batch)))
+                entry["progress"] = {"message": "並列ループ実行中", "current": min(base + len(batch), len(items)), "total": len(items)}
+        if completed:
+            # 従来互換: done側からbody nodeを参照する場合は最後の反復結果を見せる。
+            last_context = completed[-1][1]
+            for key, value in last_context.items():
+                if key not in {"__secrets__", "__input__", "__depth__", "__vars__", node_id}:
+                    parent_context[key] = value
+            parent_context["__vars__"] = last_context.get("__vars__", parent_context.get("__vars__", {}))
+        results = [result for result, _iteration_context in completed]
         entry.update(
             status="SUCCEEDED",
-            output={"index": len(items) - 1, "item": items[-1] if items else None, "total": len(items), "done": True},
+            output={"index": len(items) - 1, "item": items[-1] if items else None,
+                    "total": len(items), "done": True, "results": results},
             finished_at=utcnow().isoformat(),
         )
 
     async with asyncio.TaskGroup() as tg:
-        dag = DagRun(tg)
+        dag = DagRun(tg, context)
         await dag.start(trigger["id"])
 
 
