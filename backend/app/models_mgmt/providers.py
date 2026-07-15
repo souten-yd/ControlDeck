@@ -18,6 +18,14 @@ _KNOWN_LOCAL = {
 }
 
 
+def capabilities(kind: str, *, managed: bool) -> list[str]:
+    if managed and kind == "ollama":
+        return ["list", "load", "unload", "delete", "pull", "configure"]
+    if managed and kind == "llama.cpp":
+        return ["list", "load", "unload", "configure"]
+    return ["list"]
+
+
 def _openai_base(url: str) -> str:
     base = url.rstrip("/")
     return base if base.endswith("/v1") else base + "/v1"
@@ -100,10 +108,12 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
                 raise httpx.HTTPStatusError("unexpected status", request=response.request, response=response)
             payload = response.json()
             models = [m.get("id", "") for m in payload.get("data", []) if isinstance(m, dict)]
-            return {**item, "available": True, "models": [m for m in models if m][:50]}
+            return {**item, "available": True, "models": [m for m in models if m][:50],
+                    "capabilities": capabilities(item["provider"], managed=item["managed"])}
         except (httpx.HTTPError, ValueError, TypeError):
             if include_unavailable and item.get("managed"):
-                return {**item, "available": False, "models": []}
+                return {**item, "available": False, "models": [],
+                        "capabilities": capabilities(item["provider"], managed=item["managed"])}
             return None
 
     results = await asyncio.gather(*(probe(item) for item in candidates))

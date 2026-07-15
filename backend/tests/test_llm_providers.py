@@ -62,6 +62,7 @@ def test_provider_api_and_workflow_compatibility(admin_client, monkeypatch):
         "id": "llama.cpp", "provider": "llama.cpp", "name": "llama.cpp",
         "base_url": "http://127.0.0.1:8080/v1", "managed": True,
         "installed": True, "experimental": True, "available": True, "models": ["local"],
+        "capabilities": ["list", "load", "unload", "configure"],
     }]
 
     async def fake_list(**kwargs):
@@ -73,3 +74,77 @@ def test_provider_api_and_workflow_compatibility(admin_client, monkeypatch):
     assert workflow.status_code == 200
     assert workflow.json()[0]["base_url"] == "http://127.0.0.1:8080/v1"
     assert workflow.json()[0]["models"] == ["local"]
+
+
+def test_ollama_adapter_normalizes_models_and_lifecycle(monkeypatch):
+    import asyncio
+    from app.models_mgmt import provider_adapters
+
+    provider = {
+        "id": "ollama", "provider": "ollama", "name": "Ollama", "managed": True,
+        "available": True, "models": ["qwen"],
+        "capabilities": ["list", "load", "unload", "delete", "pull", "configure"],
+    }
+
+    async def catalog(**kwargs):
+        return [provider]
+
+    async def models():
+        return [{"name": "qwen", "size": 123, "modified_at": "now", "loaded": True,
+                 "family": "qwen", "parameter_size": "7B", "quantization": "Q4", "vram": 45}]
+
+    calls = []
+    monkeypatch.setattr(provider_adapters.providers, "list_providers", catalog)
+    monkeypatch.setattr(provider_adapters.ollama, "list_models", models)
+    monkeypatch.setattr(provider_adapters.ollama, "load", lambda *args: _async_result(calls, ("load", args), {"loaded": True}))
+    monkeypatch.setattr(provider_adapters.ollama, "unload", lambda *args: _async_result(calls, ("unload", args), {"loaded": False}))
+    monkeypatch.setattr(provider_adapters.ollama, "delete", lambda *args: _async_result(calls, ("delete", args), None))
+
+    listed = asyncio.run(provider_adapters.list_models("ollama"))
+    assert listed[0]["id"] == "qwen" and listed[0]["size_bytes"] == 123 and listed[0]["loaded"] is True
+    assert asyncio.run(provider_adapters.load_model("ollama", "qwen", "1h"))["loaded"] is True
+    assert asyncio.run(provider_adapters.unload_model("ollama", "qwen"))["loaded"] is False
+    asyncio.run(provider_adapters.delete_model("ollama", "qwen"))
+    assert [call[0] for call in calls] == ["load", "unload", "delete"]
+
+
+async def _async_result(calls, call, result):
+    calls.append(call)
+    return result
+
+
+def test_external_provider_rejects_mutation(monkeypatch):
+    import asyncio
+    import pytest
+    from app.models_mgmt import provider_adapters
+
+    async def catalog(**kwargs):
+        return [{
+            "id": "external", "provider": "openai-compatible", "managed": False,
+            "available": True, "models": ["remote"], "capabilities": ["list"],
+        }]
+
+    monkeypatch.setattr(provider_adapters.providers, "list_providers", catalog)
+    listed = asyncio.run(provider_adapters.list_models("external"))
+    assert listed[0]["id"] == "remote"
+    with pytest.raises(provider_adapters.UnsupportedOperation):
+        asyncio.run(provider_adapters.load_model("external", "remote"))
+
+
+def test_common_provider_api_routes(admin_client, monkeypatch):
+    from app.models_mgmt import provider_adapters
+
+    async def listed(provider_id):
+        return [{"id": "m", "name": "m", "size_bytes": 1, "modified_at": "", "loaded": False, "details": {}}]
+
+    async def loaded(provider_id, model_id, keep_alive=None):
+        return {"model": model_id, "loaded": True}
+
+    monkeypatch.setattr(provider_adapters, "list_models", listed)
+    monkeypatch.setattr(provider_adapters, "load_model", loaded)
+    assert admin_client.get("/api/v1/models/providers/ollama/models").json()[0]["id"] == "m"
+    response = admin_client.post(
+        "/api/v1/models/providers/ollama/models/m/load",
+        json={"keep_alive": "1h"}, headers={"X-Requested-With": "ControlDeck"},
+    )
+    assert response.status_code == 200 and response.json()["loaded"] is True
