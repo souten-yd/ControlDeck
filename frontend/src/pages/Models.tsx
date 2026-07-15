@@ -21,7 +21,7 @@ interface Model {
 interface OllamaStatus { available: boolean; version: string; base_url: string }
 interface LLMProvider {
   id: string; provider: string; name: string; base_url: string; managed: boolean;
-  installed: boolean | null; experimental: boolean; available: boolean; models: string[];
+  installed: boolean | null; experimental: boolean; available: boolean; models: string[]; capabilities: string[];
 }
 interface Settings {
   base_url: string;
@@ -118,7 +118,7 @@ export default function ModelsPage() {
 
   const act = async (name: string, action: "load" | "unload") => {
     try {
-      await api(`/models/${encodeURIComponent(name)}/${action}`, { method: "POST", json: {} });
+      await api(`/models/providers/ollama/models/${encodeURIComponent(name)}/${action}`, { method: "POST", json: {} });
       show(action === "load" ? "ロードしました" : "アンロードしました");
       refresh();
     } catch (e) {
@@ -126,7 +126,7 @@ export default function ModelsPage() {
     }
   };
   const del = useMutation({
-    mutationFn: (name: string) => api(`/models/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    mutationFn: (name: string) => api(`/models/providers/ollama/models/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => { show("削除しました"); setDeleting(null); refresh(); },
     onError: (e) => show(e instanceof Error ? e.message : "削除失敗", "error"),
   });
@@ -785,6 +785,7 @@ interface LlamaStatus {
   base_url: string | null;
   port: number | null;
   model_path: string;
+  alias: string;
   experimental: boolean;
   detected_backends: Record<string, boolean>;
   installed_backends: string[];
@@ -889,13 +890,13 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
     if (!modelPath) { show("モデルファイルを選択してください", "error"); return; }
     try {
       await api("/models/llama/config", { method: "PUT", json: { model_path: modelPath, n_gpu_layers: Number(ngl), ctx_size: Number(ctx), flash_attn: flash } });
-      await api("/models/llama/start", { method: "POST" });
+      await api(`/models/providers/llama.cpp/models/${encodeURIComponent(st.alias || "llama")}/load`, { method: "POST", json: {} });
       show("llama.cpp を起動しました（初回はモデル読み込みに時間がかかります）");
       onChanged();
     } catch (e) { show(e instanceof Error ? e.message : "起動に失敗", "error"); }
   };
   const stop = async () => {
-    try { await api("/models/llama/stop", { method: "POST" }); show("停止しました"); onChanged(); }
+    try { await api(`/models/providers/llama.cpp/models/${encodeURIComponent(st.alias || "llama")}/unload`, { method: "POST" }); show("停止しました"); onChanged(); }
     catch (e) { show(e instanceof Error ? e.message : "停止に失敗", "error"); }
   };
 

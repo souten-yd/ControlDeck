@@ -55,6 +55,7 @@
 ### Phase 6 — リモートデスクトップ（Guacamole）
 ### Phase 7 — TOTP / 通知 / バックアップ / PostgreSQL / PWA / WoL / プラグイン
 - LLM runtime providerカタログ（Ollama / llama.cpp / LM Studio / OpenAI互換）と共通エンドポイント検出
+- capability付きモデルadapter（共通一覧 / ロード / アンロード / 削除。未対応操作は明示的に拒否）
 
 ## 環境構築方針（ユーザー追加要求）
 

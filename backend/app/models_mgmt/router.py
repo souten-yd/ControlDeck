@@ -17,12 +17,82 @@ from app.security.deps import authenticate_websocket, require_permission
 router = APIRouter(prefix="/models", tags=["models"])
 
 
+class ProviderLoadBody(BaseModel):
+    keep_alive: str | int | None = None
+
+
 @router.get("/providers")
 async def providers(user: User = Depends(require_permission("workflows.run"))):
     """管理対象と検出済みのLLMランタイムを共通形式で返す。"""
     from app.models_mgmt.providers import list_providers
 
     return await list_providers()
+
+
+@router.get("/providers/{provider_id}/models")
+async def provider_models(provider_id: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import provider_adapters
+
+    try:
+        return await provider_adapters.list_models(provider_id)
+    except provider_adapters.ProviderNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except provider_adapters.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post("/providers/{provider_id}/models/{model_id:path}/load")
+async def provider_load(provider_id: str, model_id: str, body: ProviderLoadBody, request: Request,
+                        user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    from app.models_mgmt import provider_adapters
+
+    try:
+        result = await provider_adapters.load_model(provider_id, model_id, body.keep_alive)
+    except provider_adapters.ProviderNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except provider_adapters.UnsupportedOperation as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except provider_adapters.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    audit.record(db, "model.load", user=user, resource_type="model", resource_id=model_id,
+                 request=request, metadata={"provider": provider_id})
+    return result
+
+
+@router.post("/providers/{provider_id}/models/{model_id:path}/unload")
+async def provider_unload(provider_id: str, model_id: str, request: Request,
+                          user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    from app.models_mgmt import provider_adapters
+
+    try:
+        result = await provider_adapters.unload_model(provider_id, model_id)
+    except provider_adapters.ProviderNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except provider_adapters.UnsupportedOperation as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except provider_adapters.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    audit.record(db, "model.unload", user=user, resource_type="model", resource_id=model_id,
+                 request=request, metadata={"provider": provider_id})
+    return result
+
+
+@router.delete("/providers/{provider_id}/models/{model_id:path}")
+async def provider_delete(provider_id: str, model_id: str, request: Request,
+                          user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    from app.models_mgmt import provider_adapters
+
+    try:
+        await provider_adapters.delete_model(provider_id, model_id)
+    except provider_adapters.ProviderNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except provider_adapters.UnsupportedOperation as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except provider_adapters.ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    audit.record(db, "model.delete", user=user, resource_type="model", resource_id=model_id,
+                 request=request, metadata={"provider": provider_id})
+    return {"ok": True}
 
 
 @router.get("/status")
