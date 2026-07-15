@@ -18,12 +18,13 @@ _KNOWN_LOCAL = {
 }
 
 
-def capabilities(kind: str, *, managed: bool) -> list[str]:
+def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[str]:
+    generation = ["chat", "stream", "cancel"] if available else []
     if managed and kind == "ollama":
-        return ["list", "load", "unload", "delete", "pull", "configure"]
+        return generation + ["list", "load", "unload", "delete", "pull", "configure"]
     if managed and kind == "llama.cpp":
-        return ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
-    return ["list"]
+        return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
+    return generation + ["list"]
 
 
 def _openai_base(url: str) -> str:
@@ -121,7 +122,7 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
         except (httpx.HTTPError, ValueError, TypeError):
             if include_unavailable and item.get("managed"):
                 return {**item, "available": False, "models": [],
-                        "capabilities": capabilities(item["provider"], managed=item["managed"])}
+                        "capabilities": capabilities(item["provider"], managed=item["managed"], available=False)}
             return None
 
     results = await asyncio.gather(*(probe(item) for item in candidates))

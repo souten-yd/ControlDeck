@@ -15,7 +15,6 @@ import asyncio
 import json
 import uuid
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -27,7 +26,7 @@ from app.jobs import service as jobs
 from app.models import ChatMessage, Conversation, User
 from app.models import utcnow
 from app.security.deps import authenticate_websocket, require_permission
-from app.workflows.chat_router import _keep_alive, _native_base, _think_for
+from app.workflows.chat_router import _keep_alive, _think_for
 
 router = APIRouter(prefix="/chat", tags=["chat-persist"])
 
@@ -151,9 +150,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     mode = params.get("mode", "chat")
     thinking_mode = str(params.get("thinking", "off"))
     max_output_tokens = int(params.get("max_output_tokens", 2048))
-    from app.models_mgmt.runtime_policy import ensure_gpu_profile
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_base_url
     think = False if thinking_mode == "off" else _think_for(model)
-    native = _native_base(base_url) if think is not None else None
+    provider = provider_for_base_url(base_url)
+    request_id = job.id
     buf = {"content": "", "thinking": "", "last_ckpt": 0.0, "meta": {}}
 
     def checkpoint(final: bool = False, status: str = "generating", error: str = "") -> None:
@@ -197,62 +197,25 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             raise
 
     try:
-        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
-        if native is not None:
-            payload = {"model": model, "messages": history, "stream": True,
-                       "think": think, "keep_alive": _keep_alive(),
-                       "options": {"num_predict": max_output_tokens}}
-            url = native + "/api/chat"
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", url, json=payload) as r:
-                    if r.status_code >= 400:
-                        raise RuntimeError(f"LLM エラー {r.status_code}")
-                    async for line in r.aiter_lines():
-                        if not line.strip():
-                            continue
-                        msg = json.loads(line).get("message", {})
-                        if msg.get("thinking"):
-                            buf["thinking"] += msg["thinking"]
-                            job.log("thinking", delta=msg["thinking"])
-                        if msg.get("content"):
-                            buf["content"] += msg["content"]
-                            job.log("delta", delta=msg["content"])
-                        await maybe_ckpt()
-        else:
-            payload = {"model": model, "messages": history, "stream": True,
-                       "keep_alive": _keep_alive(), "max_tokens": max_output_tokens}
-            if thinking_mode == "off":
-                payload["chat_template_kwargs"] = {"enable_thinking": False}
-            url = base_url.rstrip("/") + "/chat/completions"
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", url, json=payload,
-                                         headers={"Authorization": "Bearer sk-no-key"}) as r:
-                    if r.status_code >= 400:
-                        raise RuntimeError(f"LLM エラー {r.status_code}")
-                    async for line in r.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            item = json.loads(data)["choices"][0]["delta"]
-                            reasoning = item.get("reasoning_content", "")
-                            delta = item.get("content", "")
-                        except (json.JSONDecodeError, KeyError, IndexError):
-                            continue
-                        if reasoning:
-                            buf["thinking"] += reasoning
-                            job.log("thinking", delta=reasoning)
-                        if delta:
-                            buf["content"] += delta
-                            job.log("delta", delta=delta)
-                            await maybe_ckpt()
+        runtime_request = RuntimeChatRequest(
+            base_url=base_url, model=model, messages=history,
+            max_tokens=max_output_tokens, thinking=think,
+            disable_thinking=thinking_mode == "off", keep_alive=_keep_alive(),
+        )
+        async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
+            if chunk.type == "thinking":
+                buf["thinking"] += chunk.content
+                job.log("thinking", delta=chunk.content)
+            elif chunk.type == "content":
+                buf["content"] += chunk.content
+                job.log("delta", delta=chunk.content)
+                await maybe_ckpt()
         await asyncio.to_thread(checkpoint, True, "completed")
         # 会話タイトルを最初の user 発話から自動設定
         await asyncio.to_thread(_maybe_title, conv_id)
         return {"assistant_message_id": assistant_id, "chars": len(buf["content"])}
     except asyncio.CancelledError:
+        await provider.cancel(request_id)
         await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
         raise
     except Exception as e:

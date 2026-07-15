@@ -75,59 +75,21 @@ async def _llm(
     reasoning modelが回答を出さないままcontext上限まで走らないよう、全呼び出しに
     max tokenを設定する。構造化生成ではthinkingを止め、schemaを優先する。
     """
-    from app.models_mgmt.runtime_policy import ensure_gpu_profile
+    from app.models_mgmt.runtime_provider import (
+        RuntimeChatRequest, RuntimeProviderError, provider_for_base_url,
+    )
 
-    try:
-        await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
     think = False if disable_thinking else _think_for(model)
-    native = _native_base(base_url) if think is not None else None
-    if native is not None and response_format is None:
-        # think 指定あり & Ollama → ネイティブ /api/chat（think が効く）
-        async with httpx.AsyncClient(timeout=300) as client:
-            r = await client.post(
-                native + "/api/chat",
-                json={"model": model, "messages": messages, "stream": False,
-                      "think": think, "keep_alive": _keep_alive(),
-                      "options": {"temperature": temperature, "num_predict": max_tokens}},
-            )
-        if r.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"LLM エラー {r.status_code}: {r.text[:150]}")
-        return r.json().get("message", {}).get("content", "")
-    payload: dict = {
-        "model": model, "messages": messages, "temperature": temperature,
-        "stream": False, "keep_alive": _keep_alive(), "max_tokens": max_tokens,
-    }
-    if disable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
-    if response_format is not None:
-        payload["response_format"] = response_format
-
-    async def call(body: dict) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=300) as client:
-            return await client.post(
-                base_url.rstrip("/") + "/chat/completions", json=body,
-                headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}"},
-            )
-
-    r = await call(payload)
-    if r.status_code >= 400 and response_format is not None:
-        # providerごとの差を吸収: llama.cpp形式 → OpenAI標準形式 → prompt制約。
-        standard = dict(payload)
-        standard["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": "workflow", "schema": response_format["schema"], "strict": True},
-        }
-        r = await call(standard)
-        if r.status_code >= 400:
-            fallback = dict(payload)
-            fallback.pop("response_format", None)
-            r = await call(fallback)
-    if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"LLM エラー {r.status_code}: {r.text[:150]}")
-    message = r.json()["choices"][0]["message"]
-    return message.get("content", "")
+    request = RuntimeChatRequest(
+        base_url=base_url, model=model, messages=messages, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens,
+        thinking=think, disable_thinking=disable_thinking,
+        response_format=response_format, keep_alive=_keep_alive(),
+    )
+    try:
+        return await provider_for_base_url(base_url).complete(request)
+    except RuntimeProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 # ---- チャット（ストリーミング） ----
@@ -157,69 +119,26 @@ async def chat_stream(websocket: WebSocket):
     from app.models_mgmt import ollama as _ollama
 
     think = _ollama.normalize_think(req.get("think")) if req.get("think") is not None else _think_for(model)
-    native = _native_base(base) if think is not None else None
-    try:
-        from app.models_mgmt.runtime_policy import ensure_gpu_profile
+    from app.models_mgmt.runtime_provider import (
+        GenerationCancelled, RuntimeChatRequest, provider_for_base_url,
+    )
 
-        await asyncio.to_thread(ensure_gpu_profile, base_url=base)
-        if native is not None:
-            # think 指定 & Ollama → ネイティブ /api/chat ストリーム（JSON lines）。
-            # thinking(推論)は type:"thinking"、回答は type:"delta" で送る
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST", native + "/api/chat",
-                    json={"model": model, "messages": messages, "stream": True,
-                          "think": think, "keep_alive": _keep_alive()},
-                ) as r:
-                    if r.status_code >= 400:
-                        body = await r.aread()
-                        await websocket.send_text(json.dumps({"type": "error", "message": f"{r.status_code}: {body[:150]!r}"}))
-                        await websocket.close()
-                        return
-                    async for line in r.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            msg = json.loads(line).get("message", {})
-                        except json.JSONDecodeError:
-                            continue
-                        if msg.get("thinking"):
-                            await websocket.send_text(json.dumps({"type": "thinking", "content": msg["thinking"]}))
-                        if msg.get("content"):
-                            await websocket.send_text(json.dumps({"type": "delta", "content": msg["content"]}))
-            await websocket.send_text(json.dumps({"type": "done"}))
-            return
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST", base + "/chat/completions",
-            json={"model": model, "messages": messages, "stream": True,
-                  "keep_alive": _keep_alive(), "max_tokens": 2048,
-                  "chat_template_kwargs": {"enable_thinking": False}},
-                headers={"Authorization": "Bearer sk-no-key"},
-            ) as r:
-                if r.status_code >= 400:
-                    body = await r.aread()
-                    await websocket.send_text(json.dumps({"type": "error", "message": f"{r.status_code}: {body[:150]!r}"}))
-                    await websocket.close()
-                    return
-                async for line in r.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        item = json.loads(data)["choices"][0]["delta"]
-                        reasoning = item.get("reasoning_content", "")
-                        delta = item.get("content", "")
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
-                    if reasoning:
-                        await websocket.send_text(json.dumps({"type": "thinking", "content": reasoning}))
-                    if delta:
-                        await websocket.send_text(json.dumps({"type": "delta", "content": delta}))
+    provider = provider_for_base_url(base)
+    request_id = f"legacy-ws-{id(websocket)}"
+    runtime_request = RuntimeChatRequest(
+        base_url=base, model=model, messages=messages, max_tokens=2048,
+        thinking=think, disable_thinking=think is None, keep_alive=_keep_alive(),
+    )
+    try:
+        async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
+            if chunk.type == "thinking":
+                await websocket.send_text(json.dumps({"type": "thinking", "content": chunk.content}))
+            elif chunk.type == "content":
+                await websocket.send_text(json.dumps({"type": "delta", "content": chunk.content}))
         await websocket.send_text(json.dumps({"type": "done"}))
     except WebSocketDisconnect:
+        return
+    except GenerationCancelled:
         return
     except Exception as e:
         try:
@@ -227,6 +146,7 @@ async def chat_stream(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        await provider.cancel(request_id)
         try:
             await websocket.close()
         except RuntimeError:
