@@ -16,6 +16,8 @@
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
+#   ./deck.sh feature <status|install|enable|disable|uninstall> opencode
+#                                オプション機能を明示的に管理（通常起動では自動導入しない）
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
 # 不足要素（venv / Node 依存 / フロントエンドビルド / 設定 / linger / 管理者）は
@@ -440,6 +442,22 @@ cmd_searxng() {
   exec bash "$REPO_ROOT/scripts/setup-searxng.sh" "$@"
 }
 
+cmd_feature() {
+  [ $# -ge 1 ] || die "使用方法: ./deck.sh feature <status|install|enable|disable|uninstall> opencode"
+  local action="$1"
+  local feature="${2:-opencode}"
+  case "$action" in status|install|enable|disable|uninstall) ;; *)
+    die "feature操作は status/install/enable/disable/uninstall のいずれかです" ;;
+  esac
+  [ "$feature" = "opencode" ] || die "未対応のfeatureです: $feature"
+  check_root; check_python; ensure_venv; ensure_config
+  (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.features.cli "$action" "$feature")
+  if [ "$action" != "status" ] && service_installed && systemctl --user is-active --quiet "$SERVICE"; then
+    info "feature登録状態を反映するためWebサービスを再起動します"
+    systemctl --user restart "$SERVICE"
+  fi
+}
+
 case "${1:-start}" in
   start)   cmd_start ;;
   service) cmd_service ;;
@@ -454,6 +472,7 @@ case "${1:-start}" in
   disable-desktop) shift; cmd_disable_desktop "$@" ;;
   test)    shift; cmd_test "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;
+  feature) shift; cmd_feature "$@" ;;
   -h|--help|help)
     sed -n '3,16p' "$0" ;;
   *)

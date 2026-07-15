@@ -125,6 +125,8 @@ from app.workflows.hooks_router import router as hooks_router  # noqa: E402
 from app.workflows.chat_persist import router as chat_persist_router  # noqa: E402
 from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.router import router as models_router  # noqa: E402
+from app.features.router import router as features_router  # noqa: E402
+from app.features.registry import is_enabled as feature_enabled  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -146,17 +148,25 @@ app.include_router(chat_persist_router, prefix=API)
 app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
+app.include_router(features_router, prefix=API)
+if feature_enabled("opencode"):
+    from app.integrations.opencode.router import router as opencode_router
+
+    app.include_router(opencode_router, prefix=API)
 
 
 @app.get("/api/v1/meta")
 def meta():
     """ログイン画面用の公開メタ情報（秘密情報を含めない）。"""
     ui = get_config().ui
+    from app.features.registry import list_features
+
     return {
         "app_name": ui.app_name,
         "accent_color": ui.accent_color,
         "default_theme": ui.default_theme,
         "metric_refresh_seconds": ui.metric_refresh_seconds,
+        "enabled_features": [item["id"] for item in list_features() if item["enabled"]],
     }
 
 
@@ -174,8 +184,13 @@ if DIST.is_dir():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str):
+        # 未登録APIをSPAへfallbackするとoptional featureの不存在を隠して200になる。
+        if full_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        if full_path.rstrip("/") == "opencode" and not feature_enabled("opencode"):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
         candidate = (DIST / full_path).resolve()
-        if full_path and candidate.is_file() and str(candidate).startswith(str(DIST)):
+        if full_path and candidate.is_file() and candidate.is_relative_to(DIST.resolve()):
             return FileResponse(candidate)
         # index.html はキャッシュさせない（デプロイ後に旧チャンク参照が残るのを防ぐ）
         return FileResponse(DIST / "index.html", headers={"Cache-Control": "no-cache"})

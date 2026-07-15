@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect, useMemo } from "react";
 import {
   createBrowserRouter,
   Navigate,
@@ -6,7 +6,7 @@ import {
   useLocation,
 } from "react-router-dom";
 import { setUnauthorizedHandler } from "./api/client";
-import { useMe } from "./api/hooks";
+import { useMe, useMeta } from "./api/hooks";
 import { useAuth } from "./stores";
 import AppLayout from "./layouts/AppLayout";
 import LoginPage from "./pages/Login";
@@ -23,6 +23,8 @@ import GitHubPage from "./pages/GitHub";
 import KnowledgePage from "./pages/Knowledge";
 import ModelsPage from "./pages/Models";
 import AssistantPage from "./pages/Assistant";
+
+const OpenCodePage = lazy(() => import("./features/opencode/OpenCodePage"));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -50,7 +52,15 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-const router = createBrowserRouter([
+function buildRouter(enabledFeatures: string[]) {
+  const featureRoutes = [];
+  if (enabledFeatures.includes("opencode")) {
+    featureRoutes.push({
+      path: "opencode",
+      element: <Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage /></Suspense>,
+    });
+  }
+  return createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
   {
     path: "/",
@@ -74,11 +84,17 @@ const router = createBrowserRouter([
       { path: "assistant", element: <AssistantPage /> },
       { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
+      ...featureRoutes,
       { path: "*", element: <Navigate to="/" replace /> },
     ],
   },
-]);
+  ]);
+}
 
 export default function App() {
+  const { data: meta, isLoading } = useMeta();
+  const featureKey = (meta?.enabled_features ?? []).slice().sort().join(",");
+  const router = useMemo(() => buildRouter(featureKey ? featureKey.split(",") : []), [featureKey]);
+  if (isLoading) return <div className="grid h-dvh place-items-center text-sm text-zinc-400">読み込み中...</div>;
   return <RouterProvider router={router} />;
 }

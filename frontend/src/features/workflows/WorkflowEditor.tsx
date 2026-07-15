@@ -633,14 +633,22 @@ function NodePalette({
   onClose: () => void;
 }) {
   const [snippets, setSnippets] = useState<Snippet[]>(loadSnippets());
+  const { data: backendMetadata } = useQuery({
+    queryKey: ["workflow-node-catalog"],
+    queryFn: () => api<NodeMetadata[]>("/workflows/node-catalog"),
+    staleTime: Infinity,
+  });
   const byCategory = useMemo(() => {
     const map: Record<string, [string, (typeof NODE_TYPES)[string]][]> = {};
+    const registered = new Set(backendMetadata?.map((item) => item.type) ?? []);
     for (const [type, meta] of Object.entries(NODE_TYPES)) {
       if (type === "trigger") continue;
+      // Optional nodeはbackendに登録済みと確認できるまで候補へ出さない。
+      if (type === "code.agent" && !registered.has(type)) continue;
       (map[meta.category] ??= []).push([type, meta]);
     }
     return map;
-  }, []);
+  }, [backendMetadata]);
 
   return (
     <BottomSheet title="ノードを追加" onClose={onClose} wide>

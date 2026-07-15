@@ -21,7 +21,7 @@ SIDE_EFFECTS: dict[str, str] = {
     # 外部通信・計算資源を使用する（GETでも相手側へ通信するためnoneにはしない）
     "http.request": "external", "notify.webhook": "external", "llm.chat": "external",
     "web.scrape": "external", "web.browser": "external", "web.search": "external",
-    "academic.search": "external", "research.deep": "external",
+    "academic.search": "external", "research.deep": "external", "code.agent": "process",
     # ローカル読み取り
     "app.status": "read", "file.read": "read", "file.exists": "read",
     "media.ocr": "read", "rag.query": "read",
@@ -44,6 +44,7 @@ CAPABILITIES: dict[str, list[str]] = {
     "cmd.cpp_build": ["filesystem.write", "process.exec"],
     "cmd.python": ["process.exec"], "net.wol": ["network"],
     "flow.call": ["workflow.call"],
+    "code.agent": ["filesystem.read", "filesystem.write", "process.exec", "llm"],
 }
 
 # 代表出力。値はJSON Schema風の型名（UIの変数pickerとdry-run説明用）。
@@ -78,6 +79,7 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "signal.display": {"signal": "string", "value": "any"},
     "flow.call": {"execution_id": "integer", "result": "object"},
     "notify.webhook": {"status_code": "integer", "ok": "boolean"},
+    "code.agent": {"output": "string", "events": "integer", "operation": "string", "project_path": "string"},
 }
 
 _INTEGER_KEYS = {"app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps"}

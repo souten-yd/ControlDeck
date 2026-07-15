@@ -1,0 +1,61 @@
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from app.audit import service as audit
+from app.database import get_db
+from app.features import registry
+from app.integrations.opencode import provider as opencode
+from app.jobs import service as jobs
+from app.models import User
+from app.security.deps import require_permission
+
+router = APIRouter(prefix="/opencode", tags=["opencode"])
+
+
+class SettingsBody(BaseModel):
+    base_url: str = Field(min_length=8, max_length=2048)
+    model: str = Field(min_length=1, max_length=200)
+    project_path: str = Field(default="", max_length=4096)
+
+
+class RunBody(SettingsBody):
+    operation: str
+    instruction: str = Field(min_length=1, max_length=32_000)
+
+
+@router.get("/status")
+def status(user: User = Depends(require_permission("workflows.run"))):
+    return {"feature": registry.status("opencode"), "settings": opencode.get_settings()}
+
+
+@router.put("/settings")
+def settings(
+    body: SettingsBody, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    try:
+        result = opencode.save_settings(body.model_dump())
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "feature.opencode.settings", user=user, resource_type="feature",
+                 resource_id="opencode", request=request,
+                 metadata={"base_url": result["base_url"], "model": result["model"]})
+    return result
+
+
+@router.post("/run", status_code=202)
+async def run(
+    body: RunBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    if body.operation not in opencode.OPERATIONS:
+        raise HTTPException(status_code=422, detail="未対応のoperationです")
+
+    async def worker(job):
+        return await opencode.provider.run(job, **body.model_dump())
+
+    job = jobs.create("opencode.run", f"OpenCode {body.operation}", worker, owner_user_id=user.id)
+    audit.record(db, "feature.opencode.run", user=user, resource_type="feature",
+                 resource_id="opencode", request=request,
+                 metadata={"operation": body.operation, "project_path": body.project_path})
+    return {"job_id": job.id}

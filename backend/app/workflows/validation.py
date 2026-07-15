@@ -20,6 +20,7 @@ def _as_int(value, default: int = 0) -> int:
 
 # ノード種別ごとの「これが空だと動かない」主要必須キー
 REQUIRED_KEYS: dict[str, list[str]] = {
+    "code.agent": ["operation", "project_path", "instruction"],
     "app.start": ["app_id"],
     "app.stop": ["app_id"],
     "app.restart": ["app_id"],

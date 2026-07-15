@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { useApps, useAppAction } from "../api/hooks";
+import { useApps, useAppAction, useMeta } from "../api/hooks";
 import { useAuth } from "../stores";
 import { IconSearch } from "./icons";
 
@@ -25,6 +25,7 @@ export function CommandPalette({
   const navigate = useNavigate();
   const can = useAuth((s) => s.can);
   const { data: apps } = useApps();
+  const { data: meta } = useMeta();
   const action = useAppAction();
 
   useEffect(() => inputRef.current?.focus(), []);
@@ -39,6 +40,8 @@ export function CommandPalette({
       { id: "nav-system", label: "システム監視を開く", run: () => navigate("/system") },
       { id: "nav-settings", label: "設定を開く", run: () => navigate("/settings") },
     ];
+    if (meta?.enabled_features.includes("opencode"))
+      list.push({ id: "nav-opencode", label: "OpenCodeを開く", run: () => navigate("/opencode") });
     if (can("apps.edit"))
       list.push({ id: "app-add", label: "アプリを追加", run: () => navigate("/apps?add=1") });
     for (const app of apps ?? []) {
@@ -66,7 +69,7 @@ export function CommandPalette({
       list.push({ id: "power-shutdown", label: "PC をシャットダウン", hint: "要確認", run: () => onPower("shutdown") });
     }
     return list;
-  }, [apps, can, navigate, action, onPower]);
+  }, [apps, can, navigate, action, onPower, meta?.enabled_features]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
