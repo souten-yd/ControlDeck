@@ -1,7 +1,8 @@
 import os
+import subprocess
 import time
 
-from app.terminals.manager import TerminalManager, tmux_available
+from app.terminals.manager import HISTORY_BYTES, HISTORY_TRUNCATED, TerminalManager, _bounded_history, _target, tmux_available
 
 
 def test_fallback_pty_lifecycle():
@@ -46,3 +47,51 @@ def test_terminal_api_admin(admin_client):
     sid = r.json()["id"]
     r = admin_client.delete(f"/api/v1/terminals/{sid}", headers=CSRF_HEADERS)
     assert r.status_code == 200
+
+
+def test_terminal_session_id_and_history_bounds():
+    assert _target("0123abcd") == "cdterm-0123abcd"
+    try:
+        _target("../../server")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("invalid tmux target was accepted")
+
+    raw = b"old\n" + b"x" * HISTORY_BYTES + b"\nlast\n"
+    bounded, truncated = _bounded_history(raw)
+    assert truncated is True
+    assert bounded.startswith(HISTORY_TRUNCATED)
+    assert bounded.endswith(b"last\n")
+    assert len(bounded) <= HISTORY_BYTES + len(HISTORY_TRUNCATED)
+
+
+def test_tmux_replays_ten_thousand_lines():
+    if not tmux_available():
+        return
+    mgr = TerminalManager()
+    session = mgr.create_session()
+    target = "cdterm-" + session["id"]
+    conn = None
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", target, "seq -f 'HIST-%05g' 1 10000", "Enter"],
+            check=True, capture_output=True, timeout=10,
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            captured = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-S", "-", "-t", target],
+                capture_output=True, timeout=10,
+            ).stdout
+            if b"HIST-10000" in captured:
+                break
+            time.sleep(0.05)
+        conn = mgr.open_connection(session["id"], rows=24, cols=80)
+        assert b"HIST-00001" in conn.replay
+        assert b"HIST-10000" in conn.replay
+        assert conn.replay.count(b"HIST-00001") == 1
+    finally:
+        if conn is not None:
+            conn.close()
+        mgr.kill_session(session["id"])

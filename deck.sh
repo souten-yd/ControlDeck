@@ -196,7 +196,8 @@ ensure_ready() {
 }
 
 service_installed() {
-  systemctl --user list-unit-files "$SERVICE.service" 2>/dev/null | grep -q "$SERVICE"
+  # pipefail + grep -qではsystemctlがSIGPIPE(141)となり登録済みを誤判定する。
+  systemctl --user cat "$SERVICE.service" >/dev/null 2>&1
 }
 
 install_hw_helper() {

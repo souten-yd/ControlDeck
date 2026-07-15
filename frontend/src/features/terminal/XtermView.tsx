@@ -42,6 +42,7 @@ export default function XtermView({
   onExit: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const ctrlArmed = useRef(false);
@@ -61,7 +62,7 @@ export default function XtermView({
       fontSize: 13,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       cursorBlink: true,
-      scrollback: 5000,
+      scrollback: 100_000,
       theme: dark
         ? { background: "#09090b", foreground: "#e4e4e7" }
         : { background: "#ffffff", foreground: "#18181b", cursor: "#18181b" },
@@ -94,7 +95,20 @@ export default function XtermView({
         term.focus();
       };
       ws.onmessage = (ev) => {
-        term.write(typeof ev.data === "string" ? ev.data : decoder.decode(ev.data));
+        if (typeof ev.data === "string") {
+          try {
+            const control = JSON.parse(ev.data);
+            if (control.type === "history_reset") {
+              term.reset();
+              return;
+            }
+          } catch {
+            // 旧backend等の通常文字列はそのまま表示する。
+          }
+          term.write(ev.data);
+          return;
+        }
+        term.write(decoder.decode(ev.data));
       };
       ws.onclose = (ev) => {
         if (disposed) return;
@@ -142,18 +156,51 @@ export default function XtermView({
     };
     document.addEventListener("visibilitychange", onVisible);
 
-    const refit = () => fit.fit();
+    const root = rootRef.current;
+    const coarseMobile = window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
+    const bodyStyle = document.body.getAttribute("style");
+    const htmlStyle = document.documentElement.getAttribute("style");
+    if (coarseMobile) {
+      // body位置の固定はbrowserのkeyboard自動panと二重になり欠落を生む。
+      // layout位置はbrowserに任せ、背景pageのscrollだけを止める。
+      document.body.style.overflow = "hidden";
+      document.body.style.overscrollBehavior = "none";
+      document.documentElement.style.overflow = "hidden";
+      document.documentElement.style.overscrollBehavior = "none";
+    }
+    let fitFrame = 0;
+    const refit = () => {
+      if (coarseMobile && root && window.visualViewport) {
+        const viewport = window.visualViewport;
+        root.style.left = `${viewport.offsetLeft}px`;
+        root.style.top = `${viewport.offsetTop}px`;
+        root.style.width = `${viewport.width}px`;
+        root.style.height = `${viewport.height}px`;
+      }
+      window.cancelAnimationFrame(fitFrame);
+      fitFrame = window.requestAnimationFrame(() => fit.fit());
+    };
+    refit();
     const observer = new ResizeObserver(refit);
     observer.observe(host);
-    // iOS ソフトウェアキーボード対応
+    // iOS/Android: keyboardで縮小・移動するvisual viewportへroot自体を追従。
     window.visualViewport?.addEventListener("resize", refit);
+    window.visualViewport?.addEventListener("scroll", refit);
 
     return () => {
       disposed = true;
       window.clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", onVisible);
       observer.disconnect();
+      window.cancelAnimationFrame(fitFrame);
       window.visualViewport?.removeEventListener("resize", refit);
+      window.visualViewport?.removeEventListener("scroll", refit);
+      if (coarseMobile) {
+        if (bodyStyle === null) document.body.removeAttribute("style");
+        else document.body.setAttribute("style", bodyStyle);
+        if (htmlStyle === null) document.documentElement.removeAttribute("style");
+        else document.documentElement.setAttribute("style", htmlStyle);
+      }
       wsRef.current?.close();
       term.dispose();
     };
@@ -235,7 +282,7 @@ export default function XtermView({
 
   // 下部ナビより手前の全画面表示（モバイルで画面全体を使う）
   return createPortal(
-    <div className="fixed inset-0 z-40 flex flex-col bg-white dark:bg-zinc-950">
+    <div ref={rootRef} data-terminal-root className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
       {/* ヘッダー */}
       <div className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
         <select
@@ -256,16 +303,22 @@ export default function XtermView({
           {status === "open" ? "接続中" : status === "closed" ? "再接続中..." : status === "gone" ? "終了済み" : "接続中..."}
         </span>
         <button
+          onClick={openCopy}
+          className="ml-auto hidden rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
+        >
+          コピー
+        </button>
+        <button
           onClick={onExit}
           aria-label="ターミナルを閉じる"
-          className="ml-auto rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:ml-0"
         >
           <IconX />
         </button>
       </div>
 
       {/* ターミナル本体 */}
-      <div ref={hostRef} className="min-h-0 flex-1 px-1 pt-1" />
+      <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-hidden px-1 pt-1" />
 
       {/* モバイル補助キーバー */}
       <div className="safe-bottom flex shrink-0 gap-1 overflow-x-auto border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 md:hidden">

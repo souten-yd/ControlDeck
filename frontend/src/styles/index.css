@@ -106,6 +106,17 @@ body {
   padding-top: env(safe-area-inset-top);
 }
 
+/* xtermの履歴はページではなくterminal viewport内で指スクロールする。 */
+.terminal-xterm-host .xterm,
+.terminal-xterm-host .xterm-screen {
+  height: 100%;
+}
+.terminal-xterm-host .xterm-viewport {
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* スクロールバー（控えめ） */
 * {
   scrollbar-width: thin;
