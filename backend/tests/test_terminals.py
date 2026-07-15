@@ -81,6 +81,10 @@ def test_tmux_replays_ten_thousand_lines():
     conn = None
     try:
         subprocess.run(
+            ["tmux", "send-keys", "-t", target, "printf 'WRAP-%0120d-END\\n' 0", "Enter"],
+            check=True, capture_output=True, timeout=10,
+        )
+        subprocess.run(
             ["tmux", "send-keys", "-t", target, "seq -f 'HIST-%05g' 1 10000", "Enter"],
             check=True, capture_output=True, timeout=10,
         )
@@ -97,6 +101,7 @@ def test_tmux_replays_ten_thousand_lines():
         assert b"HIST-00001" in conn.replay
         assert b"HIST-10000" in conn.replay
         assert conn.replay.count(b"HIST-00001") == 1
+        assert b"WRAP-" + b"0" * 120 + b"-END" in conn.replay
     finally:
         if conn is not None:
             conn.close()

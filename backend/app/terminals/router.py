@@ -84,6 +84,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
     await websocket.send_text(json.dumps({"type": "history_reset"}))
     if conn.replay:
         await websocket.send_bytes(conn.replay)
+    await websocket.send_text(json.dumps({"type": "history_end"}))
 
     async def pump_output() -> None:
         await conn.read_loop(websocket.send_bytes)

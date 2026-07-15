@@ -45,6 +45,7 @@ export default function XtermView({
   const rootRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const historyReadyRef = useRef(false);
   const ctrlArmed = useRef(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const copyRef = useRef<HTMLTextAreaElement>(null);
@@ -72,9 +73,29 @@ export default function XtermView({
     term.open(host);
     fit.fit();
     termRef.current = term;
+    const updateViewportMarker = () => {
+      host.dataset.terminalViewportY = String(term.buffer.active.viewportY);
+    };
+    updateViewportMarker();
+    let scrollRefreshFrame = 0;
+    term.onScroll(() => {
+      updateViewportMarker();
+      window.cancelAnimationFrame(scrollRefreshFrame);
+      scrollRefreshFrame = window.requestAnimationFrame(() => term.refresh(0, term.rows - 1));
+    });
 
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+    // xterm.writeは非同期queue。resetを直接呼ぶと先行するtmux初期描画を追い越すため、
+    // data/resetをWebSocketの受信順どおり完了させる。
+    let writeTail = Promise.resolve();
+    const enqueueWrite = (data: string | Uint8Array) => {
+      writeTail = writeTail.then(() => new Promise<void>((resolve) => term.write(data, resolve)));
+    };
+    const enqueueReset = () => {
+      writeTail = writeTail.then(() => {
+        term.reset();
+      });
+    };
     // セッションは tmux でサーバー側に永続。WS が切れても明示的に閉じるまで自動再接続する
     let disposed = false;
     let retryTimer: number | undefined;
@@ -82,6 +103,7 @@ export default function XtermView({
 
     const connect = () => {
       if (disposed) return;
+      historyReadyRef.current = false;
       setStatus("connecting");
       const ws = new WebSocket(
         wsUrl(`/terminals/${sessionId}/connect?rows=${term.rows}&cols=${term.cols}`),
@@ -92,23 +114,29 @@ export default function XtermView({
       ws.onopen = () => {
         retryDelay = 500;
         setStatus("open");
-        term.focus();
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
           try {
             const control = JSON.parse(ev.data);
             if (control.type === "history_reset") {
-              term.reset();
+              enqueueReset();
+              return;
+            }
+            if (control.type === "history_end") {
+              writeTail = writeTail.then(() => {
+                historyReadyRef.current = true;
+                term.focus();
+              });
               return;
             }
           } catch {
             // 旧backend等の通常文字列はそのまま表示する。
           }
-          term.write(ev.data);
+          enqueueWrite(ev.data);
           return;
         }
-        term.write(decoder.decode(ev.data));
+        enqueueWrite(new Uint8Array(ev.data));
       };
       ws.onclose = (ev) => {
         if (disposed) return;
@@ -127,7 +155,7 @@ export default function XtermView({
 
     const send = (data: string) => {
       const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      if (historyReadyRef.current && ws?.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
     };
     term.onData((data) => {
       if (ctrlArmed.current && data.length === 1 && /[a-z]/i.test(data)) {
@@ -169,7 +197,7 @@ export default function XtermView({
       document.documentElement.style.overscrollBehavior = "none";
     }
     let fitFrame = 0;
-    const refit = () => {
+    const syncViewport = () => {
       if (coarseMobile && root && window.visualViewport) {
         const viewport = window.visualViewport;
         root.style.left = `${viewport.offsetLeft}px`;
@@ -177,24 +205,114 @@ export default function XtermView({
         root.style.width = `${viewport.width}px`;
         root.style.height = `${viewport.height}px`;
       }
-      window.cancelAnimationFrame(fitFrame);
-      fitFrame = window.requestAnimationFrame(() => fit.fit());
     };
-    refit();
-    const observer = new ResizeObserver(refit);
+    const scheduleFit = () => {
+      window.cancelAnimationFrame(fitFrame);
+      fitFrame = window.requestAnimationFrame(() => {
+        const dimensions = fit.proposeDimensions();
+        if (dimensions && (dimensions.cols !== term.cols || dimensions.rows !== term.rows)) {
+          term.resize(dimensions.cols, dimensions.rows);
+        }
+      });
+    };
+    const syncViewportAndFit = () => {
+      syncViewport();
+      scheduleFit();
+    };
+    syncViewportAndFit();
+    const observer = new ResizeObserver(scheduleFit);
     observer.observe(host);
     // iOS/Android: keyboardで縮小・移動するvisual viewportへroot自体を追従。
-    window.visualViewport?.addEventListener("resize", refit);
-    window.visualViewport?.addEventListener("scroll", refit);
+    window.visualViewport?.addEventListener("resize", syncViewportAndFit);
+    // keyboardの自動panは寸法を変えないため、座標だけ同期して入力中のreflowを避ける。
+    window.visualViewport?.addEventListener("scroll", syncViewport);
+
+    // xterm.js 6の独自scrollbarはtouch dragをbuffer scrollへ変換しないため明示的に補う。
+    let touchTracking = false;
+    let touchScrolling = false;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchLastY = 0;
+    let touchRemainder = 0;
+    let touchScrollFrame = 0;
+    const flushTouchScroll = () => {
+      touchScrollFrame = 0;
+      const lines = Math.trunc(touchRemainder);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        touchRemainder -= lines;
+      }
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        touchTracking = false;
+        return;
+      }
+      // xterm 6自身の未完なtouch scroll stateと二重処理しない。tap focusはtouchendで復元する。
+      event.preventDefault();
+      event.stopPropagation();
+      const touch = event.touches[0];
+      touchTracking = true;
+      touchScrolling = false;
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchLastY = touch.clientY;
+      touchRemainder = 0;
+      window.cancelAnimationFrame(touchScrollFrame);
+      touchScrollFrame = 0;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (!touchTracking || event.touches.length !== 1) return;
+      event.stopPropagation();
+      const touch = event.touches[0];
+      if (!touchScrolling) {
+        const distanceX = Math.abs(touch.clientX - touchStartX);
+        const distanceY = Math.abs(touch.clientY - touchStartY);
+        if (Math.max(distanceX, distanceY) < 8) return;
+        if (distanceX >= distanceY) {
+          touchTracking = false;
+          return;
+        }
+        touchScrolling = true;
+      }
+
+      event.preventDefault();
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      const cellHeight = screen && term.rows > 0
+        ? screen.getBoundingClientRect().height / term.rows
+        : term.options.fontSize ?? 13;
+      touchRemainder += (touchLastY - touch.clientY) / Math.max(cellHeight, 1);
+      if (!touchScrollFrame) touchScrollFrame = window.requestAnimationFrame(flushTouchScroll);
+      touchLastY = touch.clientY;
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      event.stopPropagation();
+      const wasScrolling = touchScrolling;
+      if (touchScrolling && !touchScrollFrame) flushTouchScroll();
+      touchTracking = false;
+      touchScrolling = false;
+      if (!wasScrolling) term.focus();
+    };
+    host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
+    host.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
+    host.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: true });
 
     return () => {
       disposed = true;
+      historyReadyRef.current = false;
       window.clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", onVisible);
       observer.disconnect();
       window.cancelAnimationFrame(fitFrame);
-      window.visualViewport?.removeEventListener("resize", refit);
-      window.visualViewport?.removeEventListener("scroll", refit);
+      window.cancelAnimationFrame(touchScrollFrame);
+      window.cancelAnimationFrame(scrollRefreshFrame);
+      window.visualViewport?.removeEventListener("resize", syncViewportAndFit);
+      window.visualViewport?.removeEventListener("scroll", syncViewport);
+      host.removeEventListener("touchstart", onTouchStart, true);
+      host.removeEventListener("touchmove", onTouchMove, true);
+      host.removeEventListener("touchend", onTouchEnd, true);
+      host.removeEventListener("touchcancel", onTouchEnd, true);
       if (coarseMobile) {
         if (bodyStyle === null) document.body.removeAttribute("style");
         else document.body.setAttribute("style", bodyStyle);
@@ -208,7 +326,7 @@ export default function XtermView({
   }, [sessionId]);
 
   const sendSeq = (seq: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (historyReadyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(new TextEncoder().encode(seq));
     }
     termRef.current?.focus();
@@ -240,7 +358,14 @@ export default function XtermView({
       const buf = termRef.current?.buffer.active;
       const lines: string[] = [];
       for (let i = 0; i < (buf?.length ?? 0); i++) {
-        lines.push(buf!.getLine(i)?.translateToString(true) ?? "");
+        const line = buf!.getLine(i);
+        const text = line?.translateToString(true) ?? "";
+        if (line?.isWrapped && lines.length > 0) {
+          // 画面幅によるsoft wrapを実改行としてコピーしない。
+          lines[lines.length - 1] += text;
+        } else {
+          lines.push(text);
+        }
       }
       setCopyText(lines.join("\n").replace(/\n+$/, ""));
     }
@@ -321,7 +446,10 @@ export default function XtermView({
       <div ref={hostRef} className="terminal-xterm-host min-h-0 flex-1 overflow-hidden px-1 pt-1" />
 
       {/* モバイル補助キーバー */}
-      <div className="safe-bottom flex shrink-0 gap-1 overflow-x-auto border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 md:hidden">
+      <div
+        data-terminal-helper
+        className="terminal-helper-bar flex h-10 shrink-0 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 md:hidden"
+      >
         <button
           onClick={doPaste}
           className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
