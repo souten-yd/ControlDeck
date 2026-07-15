@@ -14,6 +14,11 @@ def test_conversation_crud(admin_client):
     assert r.status_code == 201
     conv_id = r.json()["id"]
     assert any(c["id"] == conv_id for c in admin_client.get("/api/v1/chat/conversations").json())
+
+    renamed = admin_client.patch(
+        f"/api/v1/chat/conversations/{conv_id}", json={"title": "調査メモ"}, headers=CSRF_HEADERS,
+    )
+    assert renamed.status_code == 200 and renamed.json()["title"] == "調査メモ"
     # 空の会話メッセージ一覧
     r = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages")
     assert r.status_code == 200 and r.json()["messages"] == []

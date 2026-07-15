@@ -195,6 +195,14 @@ Webプロセスの子にはしない。旧単一`instance`設定は初回にcata
 - 選択中runtime/model、thinking中、最初のtoken待ち、cancelを明示する。
 - 生成/通常応答ともサーバージョブで継続し、ブラウザ再接続で復元する。
 
+実装補足（2026-07-15）:
+
+- `/assistant`を独立routeとして追加し、PCサイドバー、モバイル操作シート、command paletteから直接開く。
+  ワークフロー画面内の既存入口は同じcomponentを使う互換導線として維持する。
+- `RuntimePolicy.assistant_name`をdialog見出しと空画面へ反映する。会話一覧・切替・新規・改名・削除を
+  server DBへ一本化し、削除は確認dialogと監査ログを必須にする。
+- フロー生成は独立routeからも既存schema/semantic validatorを通し、品質表示後に登録または自動ビルドへ進む。
+
 ## 6. ワークフロー生成の修正と受入条件
 
 生成schemaは`name/nodes/edges`、node typeはcatalog enum、必須構造を制約する。ただし各node configは種類ごとに異なるため、

@@ -8,11 +8,12 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
 import { IconX } from "../../components/icons";
+import { ConfirmDialog } from "../../components/ui";
 import { NODE_TYPES } from "./nodeTypes";
 import type { WorkflowSummary } from "../../pages/Workflows";
 
@@ -31,6 +32,7 @@ interface SourceItem { title: string; url: string; snippet?: string; source?: st
 interface Quality { score: number; label: string; breakdown: Record<string, number>; errors: string[]; warnings: string[] }
 interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string; quality?: Quality }
 interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean; quality?: Quality }
+interface ConversationSummary { id: string; title: string; updated_at: string }
 
 interface PersistMsg {
   id: string;
@@ -71,6 +73,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const can = useAuth((s) => s.can);
   const show = useToasts((s) => s.show);
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   const saved = useRef(loadSettings()).current;
   const [mode, setMode] = useState<Mode>("chat");
@@ -84,8 +87,25 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [searxngUrl, setSearxngUrl] = useState<string>(saved.searxngUrl || "");
   const [runTarget, setRunTarget] = useState<number | "">("");
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
+  const [conversationTitle, setConversationTitle] = useState("新しい会話");
+  const [deletingConversation, setDeletingConversation] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const { data: runtimeEnvironment } = useQuery({
+    queryKey: ["runtime-environment"],
+    queryFn: () => api<{ policy: { assistant_name: string } }>("/models/runtime-environment"),
+  });
+  const assistantName = runtimeEnvironment?.policy.assistant_name || "AIアシスタント";
+  const { data: conversations } = useQuery({
+    queryKey: ["chat-conversations"],
+    queryFn: () => api<ConversationSummary[]>("/chat/conversations"),
+  });
+
+  useEffect(() => {
+    const current = conversations?.find((conversation) => conversation.id === convId);
+    if (current) setConversationTitle(current.title);
+  }, [conversations, convId]);
 
   // 永続チャット: マウント時に DB 会話を復元し、生成中メッセージがあれば購読を再開する。
   // これにより、生成中にブラウザを閉じても回答はサーバー側で保存され、再度開くと続きが見える。
@@ -99,6 +119,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           id = c.id;
           localStorage.setItem(LS_CONV, id);
           setConvId(id);
+          qc.invalidateQueries({ queryKey: ["chat-conversations"] });
           return; // 新規会話は空
         }
         const data = await api<{ messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
@@ -206,6 +227,60 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       };
       ws.onerror = () => ws.close();
     });
+
+  const openConversation = async (id: string) => {
+    if (!id || id === convId || busy) return;
+    wsRef.current?.close();
+    const data = await api<{ conversation: ConversationSummary; messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
+    const restored: Msg[] = data.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      thinking: message.thinking || undefined,
+      messageId: message.id,
+      persistStatus: message.status,
+      streaming: message.status === "generating",
+    }));
+    localStorage.setItem(LS_CONV, id);
+    setConvId(id);
+    setConversationTitle(data.conversation.title);
+    setMessages(restored);
+    const generating = data.messages.find((message) => message.role === "assistant" && message.status === "generating");
+    if (generating) {
+      setBusy(true);
+      streamMessage(generating.id).finally(() => setBusy(false));
+    }
+  };
+
+  const newConversation = async () => {
+    if (busy) return;
+    const conversation = await api<ConversationSummary>("/chat/conversations", { method: "POST" });
+    localStorage.setItem(LS_CONV, conversation.id);
+    setConvId(conversation.id);
+    setConversationTitle(conversation.title);
+    setMessages([]);
+    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+  };
+
+  const renameConversation = async () => {
+    const title = conversationTitle.trim();
+    if (!convId || !title) return;
+    await api(`/chat/conversations/${convId}`, { method: "PATCH", json: { title } });
+    show("会話名を変更しました");
+    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+  };
+
+  const deleteConversation = async () => {
+    if (!convId) return;
+    await api(`/chat/conversations/${convId}`, { method: "DELETE" });
+    setDeletingConversation(false);
+    const conversation = await api<ConversationSummary>("/chat/conversations", { method: "POST" });
+    localStorage.setItem(LS_CONV, conversation.id);
+    setConvId(conversation.id);
+    setConversationTitle(conversation.title);
+    setMessages([]);
+    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+    show("会話を削除しました");
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -379,25 +454,23 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     >
       <div
         role="dialog"
-        aria-label="AI アシスタント"
+        aria-label={assistantName}
         className="flex h-[94dvh] w-screen flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:h-[88dvh] sm:w-[760px] sm:rounded-2xl"
       >
         {/* ヘッダー */}
         <div className="flex items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
-          <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> AI アシスタント</span></h2>
+          <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> {assistantName}</span></h2>
+          <select
+            value={convId}
+            onChange={(event) => void openConversation(event.target.value)}
+            aria-label="会話を切替"
+            className="min-w-0 max-w-36 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900 sm:max-w-52"
+          >
+            {(conversations ?? []).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
+          </select>
           {messages.length > 0 && (
             <button
-              onClick={async () => {
-                // 新しい会話を開始（サーバー側の会話は残し、新規に切り替える）
-                setMessages([]);
-                try {
-                  const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
-                  localStorage.setItem(LS_CONV, c.id);
-                  setConvId(c.id);
-                } catch {
-                  /* 失敗時は次の送信で作成される */
-                }
-              }}
+              onClick={() => void newConversation()}
               disabled={busy}
               aria-label="新しい会話"
               className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
@@ -424,6 +497,15 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         {/* 設定パネル */}
         {showSettings && (
           <div className="grid gap-2.5 border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-800/40 sm:grid-cols-2">
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-zinc-500">現在の会話名</span>
+              <div className="flex gap-1.5">
+                <input value={conversationTitle} onChange={(event) => setConversationTitle(event.target.value)} maxLength={200}
+                  className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900" />
+                <button onClick={() => void renameConversation()} className="rounded-lg bg-zinc-200 px-3 text-xs font-medium dark:bg-zinc-700">名前を保存</button>
+                <button onClick={() => setDeletingConversation(true)} className="rounded-lg px-3 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+              </div>
+            </label>
             <label className="block">
               <span className="mb-1 block text-xs text-zinc-500">LLM モデル（稼働中サーバーを自動検出）</span>
               {modelOptions.length ? (
@@ -487,7 +569,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           {messages.length === 0 && (
             <div className="mx-auto max-w-md pt-10 text-center">
               <p className="text-3xl">{currentMode.icon}</p>
-              <p className="mt-2 text-sm font-medium">{currentMode.label}</p>
+              <p className="mt-2 text-sm font-medium">{assistantName} · {currentMode.label}</p>
               <p className="mt-1 text-xs leading-relaxed text-zinc-400">{currentMode.hint}</p>
               {mode === "gen" && (
                 <p className="mt-3 rounded-xl bg-zinc-50 p-3 text-left text-xs leading-relaxed text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400">
@@ -548,6 +630,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       </div>
+      {deletingConversation && <ConfirmDialog
+        title="この会話を削除しますか？"
+        message="会話内のメッセージと生成履歴が削除されます。この操作は取り消せません。"
+        confirmLabel="削除する"
+        onConfirm={() => void deleteConversation()}
+        onClose={() => setDeletingConversation(false)}
+      />}
     </div>,
     document.body,
   );

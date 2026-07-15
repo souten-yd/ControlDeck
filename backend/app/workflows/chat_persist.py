@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
+from app.audit import service as audit
 from app.jobs import service as jobs
 from app.models import ChatMessage, Conversation, User
 from app.models import utcnow
@@ -68,14 +69,39 @@ def list_conversations(user: User = Depends(require_permission("workflows.run"))
     return [_conv_out(c) for c in rows]
 
 
+class ConversationUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+@router.patch("/conversations/{conv_id}")
+def update_conversation(
+    conv_id: str, body: ConversationUpdate, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    conv.title = body.title.strip()
+    conv.updated_at = utcnow()
+    db.commit()
+    audit.record(db, "chat.conversation.rename", user=user, resource_type="conversation",
+                 resource_id=conv_id, request=request)
+    return _conv_out(conv)
+
+
 @router.delete("/conversations/{conv_id}", status_code=204)
-def delete_conversation(conv_id: str, user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)):
+def delete_conversation(
+    conv_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
     conv = db.get(Conversation, conv_id)
     if conv is None or conv.owner_user_id != user.id:
         raise HTTPException(status_code=404, detail="会話が見つかりません")
     db.query(ChatMessage).filter(ChatMessage.conversation_id == conv_id).delete()
     db.delete(conv)
     db.commit()
+    audit.record(db, "chat.conversation.delete", user=user, resource_type="conversation",
+                 resource_id=conv_id, request=request)
 
 
 def _msg_out(m: ChatMessage) -> dict:
