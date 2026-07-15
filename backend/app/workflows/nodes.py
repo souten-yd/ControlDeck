@@ -357,8 +357,8 @@ async def node_llm(config: dict, ctx: dict) -> dict:
         except Exception:
             ka = "30m"
     payload["keep_alive"] = ka or "30m"
-    if config.get("max_tokens"):
-        payload["max_tokens"] = int(config["max_tokens"])
+    # 無指定でも有限にする。reasoning modelが回答なしでcontext上限まで走るのを防ぐ。
+    payload["max_tokens"] = int(config.get("max_tokens") or 2048)
     # 構造化出力（OpenAI 互換 response_format。非対応サーバーはエラーを返すので
     # その場合はプロンプト指示のみで動くよう再送する）
     schema_obj = None
@@ -390,8 +390,7 @@ async def node_llm(config: dict, ctx: dict) -> dict:
         think = None
     if think is not None and not response_format and base_url.endswith("/v1"):
         opts: dict = {"temperature": payload["temperature"]}
-        if config.get("max_tokens"):
-            opts["num_predict"] = int(config["max_tokens"])
+        opts["num_predict"] = payload["max_tokens"]
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.post(base_url[:-3] + "/api/chat", json={

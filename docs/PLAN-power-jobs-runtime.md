@@ -2,6 +2,9 @@
 
 > このドキュメントは大規模改修の設計・進捗・**Codex 等への引き継ぎ**用。
 > セッションのトークン制限で中断した場合、ここを起点に再開すること。
+>
+> Model runtime、モデル別設定、独立AIアシスタント、生成遅延/失敗の詳細設計は
+> [`design-model-runtime-assistant.md`](design-model-runtime-assistant.md) に統合した。
 
 ## 進捗サマリ（随時更新）
 

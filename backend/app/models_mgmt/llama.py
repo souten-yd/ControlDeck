@@ -187,6 +187,7 @@ def runtime_status() -> dict:
         "port": inst.get("port"),
         "model_path": inst.get("model_path", ""),
         "alias": inst.get("alias", "llama"),
+        "instance": dict(inst),
         "base_url": f"http://127.0.0.1:{inst.get('port', 8080)}/v1" if is_installed() else None,
         "experimental": True,  # ビルド環境依存のため実験的
         "detected_backends": detected,       # {rocm/vulkan/cuda: bool}

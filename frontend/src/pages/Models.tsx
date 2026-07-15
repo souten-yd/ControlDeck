@@ -19,10 +19,6 @@ interface Model {
   vram: number | null;
 }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
-interface LLMProvider {
-  id: string; provider: string; name: string; base_url: string; managed: boolean;
-  installed: boolean | null; experimental: boolean; available: boolean; models: string[]; capabilities: string[];
-}
 interface Settings {
   base_url: string;
   idle_unload_enabled: boolean;
@@ -33,6 +29,23 @@ interface Settings {
   flash_attention: boolean;
 }
 interface OllamaEnv { flash_attention: boolean | null; kv_cache_type: string | null; source: string }
+interface RuntimePolicy {
+  selected_runtime: "ollama" | "llama.cpp";
+  selected_backend: "rocm" | "vulkan" | "";
+  coexistence: "exclusive" | "coexist";
+  idle_unload_enabled: boolean;
+  idle_unload_minutes: number;
+  max_loaded_models: number;
+  default_model_ref: string;
+  assistant_name: string;
+  chat: { max_output_tokens: number; reasoning: "off" | "auto" | "on"; timeout_seconds: number };
+}
+interface RuntimeEnvironment {
+  platform: string;
+  gpu: string;
+  runtimes: Array<{ id: string; runtime: "ollama" | "llama.cpp"; backend: string; label: string; available: boolean; installed: boolean; selected: boolean; running?: boolean }>;
+  policy: RuntimePolicy;
+}
 
 function gb(n: number): string {
   return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
@@ -640,42 +653,83 @@ function ModelConfigSection({ model }: { model: string }) {
 function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => void }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"ollama" | "llama">("ollama");
   const { data } = useQuery({ queryKey: ["ollama-settings"], queryFn: () => api<Settings>("/models/settings") });
-  const { data: providers = [] } = useQuery({ queryKey: ["llm-providers"], queryFn: () => api<LLMProvider[]>("/models/providers") });
+  const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
   const [cfg, setCfg] = useState<Settings | null>(null);
+  const [policyCfg, setPolicyCfg] = useState<RuntimePolicy | null>(null);
   const eff = cfg ?? data ?? null;
+  const policy = policyCfg ?? runtimeEnv?.policy ?? null;
   const save = useMutation({
     mutationFn: () => api("/models/settings", { method: "PUT", json: eff }),
     onSuccess: () => { show("設定を保存しました"); qc.invalidateQueries({ queryKey: ["ollama-settings"] }); onClose(); },
     onError: (e) => show(e instanceof Error ? e.message : "保存失敗", "error"),
   });
+  const savePolicy = useMutation({
+    mutationFn: (patch: Partial<RuntimePolicy>) => api<RuntimeEnvironment>("/models/runtime-policy", { method: "PUT", json: patch }),
+    onSuccess: (next) => {
+      setPolicyCfg(next.policy);
+      qc.setQueryData(["runtime-environment"], next);
+      qc.invalidateQueries({ queryKey: ["llama-status"] });
+      show("LLMランタイム設定を適用しました");
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "ランタイム設定の適用に失敗", "error"),
+  });
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  if (!eff) return null;
+  if (!eff || !policy || !runtimeEnv) return null;
+  const chooseRuntime = (item: RuntimeEnvironment["runtimes"][number]) => {
+    if (!item.installed) return;
+    savePolicy.mutate({
+      selected_runtime: item.runtime,
+      selected_backend: item.runtime === "llama.cpp" ? item.backend as "rocm" | "vulkan" : "",
+    });
+  };
   return (
     <BottomSheet title="LLM ランタイム設定" onClose={onClose} wide>
-      {/* ランタイム切替タブ（Ollama / llama.cpp を1か所に統合） */}
-      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        {([["ollama", "Ollama"], ["llama", "llama.cpp"]] as const).map(([key, label]) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === key ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-            {label}
-          </button>
-        ))}
-      </div>
-      {providers.length > 0 && (
-        <div className="mb-3 flex flex-wrap gap-1.5" aria-label="検出済みLLMプロバイダー">
-          {providers.map((provider) => (
-            <span key={provider.id + provider.base_url} title={provider.base_url}
-              className="rounded-lg bg-zinc-100 px-2 py-1 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-              <span className={provider.available ? "text-emerald-500" : "text-zinc-400"}>●</span>{" "}
-              {provider.name}{provider.models.length > 0 ? ` · ${provider.models.length}モデル` : ""}
-            </span>
-          ))}
+      <div className="mb-4 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+        <p className="mb-2 text-xs font-semibold text-zinc-500">このPCで利用するランタイム</p>
+        <p className="mb-2 text-[10px] text-zinc-400">{runtimeEnv.platform} · {runtimeEnv.gpu} GPU。利用可能な構成だけを表示しています。</p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {runtimeEnv.runtimes.filter((r) => r.available).map((item) => {
+            const selected = policy.selected_runtime === item.runtime && (item.runtime === "ollama" || policy.selected_backend === item.backend);
+            return (
+              <button key={item.id} type="button" onClick={() => chooseRuntime(item)} disabled={!item.installed || savePolicy.isPending}
+                className={`rounded-xl border p-3 text-left disabled:opacity-50 ${selected ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-500 dark:bg-accent-600/10" : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700"}`}>
+                <span className="block text-sm font-semibold">{item.label}</span>
+                <span className={`mt-1 block text-[10px] ${selected ? "text-accent-600 dark:text-accent-400" : "text-zinc-400"}`}>
+                  {selected ? "● 使用中" : !item.installed ? "導入が必要" : item.running ? "稼働中 · 選択する" : "利用可能 · 選択する"}
+                </span>
+              </button>
+            );
+          })}
         </div>
-      )}
+      </div>
 
-      {tab === "llama" ? (
+      <div className="mb-4 space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+        <p className="text-xs font-semibold text-zinc-500">全ランタイム共通</p>
+        <L label="利用方式">
+          <select value={policy.coexistence} onChange={(e) => setPolicyCfg({ ...policy, coexistence: e.target.value as RuntimePolicy["coexistence"] })} className={input}>
+            <option value="exclusive">排他（推奨・VRAM競合を防ぐ）</option>
+            <option value="coexist">共存（上級者向け）</option>
+          </select>
+        </L>
+        <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+          <span className="text-xs">アイドル時に自動アンロード</span>
+          <input type="checkbox" checked={policy.idle_unload_enabled} onChange={(e) => setPolicyCfg({ ...policy, idle_unload_enabled: e.target.checked })} className="h-4 w-4" />
+        </label>
+        {policy.idle_unload_enabled && <L label="共通アイドル時間（分）"><PresetOrCustom value={policy.idle_unload_minutes} presets={[5, 15, 30, 60, 240].map((v) => ({ v, label: `${v}分` }))} placeholder="30" onChange={(v) => setPolicyCfg({ ...policy, idle_unload_minutes: Number(v ?? 30) })} /></L>}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <L label="チャット出力token上限"><PresetOrCustom value={policy.chat.max_output_tokens} presets={PREDICT_PRESETS.filter((p) => Number(p.v) > 0)} placeholder="2048" onChange={(v) => setPolicyCfg({ ...policy, chat: { ...policy.chat, max_output_tokens: Number(v ?? 2048) } })} /></L>
+          <L label="チャット思考">
+            <select value={policy.chat.reasoning} onChange={(e) => setPolicyCfg({ ...policy, chat: { ...policy.chat, reasoning: e.target.value as RuntimePolicy["chat"]["reasoning"] } })} className={input}>
+              <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
+            </select>
+          </L>
+        </div>
+        <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
+        <button onClick={() => savePolicy.mutate(policy)} disabled={savePolicy.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white disabled:opacity-40">共通設定を適用</button>
+      </div>
+
+      {policy.selected_runtime === "llama.cpp" ? (
         <LlamaRuntimePanel />
       ) : (
       <div className="space-y-3">
@@ -790,6 +844,12 @@ interface LlamaStatus {
   detected_backends: Record<string, boolean>;
   installed_backends: string[];
   selectable_backends: string[];
+  instance: {
+    n_gpu_layers: number;
+    ctx_size: number;
+    n_parallel: number;
+    flash_attn: boolean;
+  };
   health?: { ok: boolean };
 }
 
@@ -881,9 +941,9 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
   const show = useToasts((s) => s.show);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [modelPath, setModelPath] = useState(st.model_path);
-  const [ngl, setNgl] = useState<string>("999");
-  const [ctx, setCtx] = useState<string>("4096");
-  const [flash, setFlash] = useState(false);
+  const [ngl, setNgl] = useState<string>(String(st.instance.n_gpu_layers));
+  const [ctx, setCtx] = useState<string>(String(st.instance.ctx_size));
+  const [flash, setFlash] = useState(st.instance.flash_attn);
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
   const saveAndStart = async () => {

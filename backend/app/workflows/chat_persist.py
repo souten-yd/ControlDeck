@@ -113,6 +113,8 @@ class SendBody(BaseModel):
     engine: str = "duckduckgo"  # web/deep 用
     searxng_url: str = ""
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
+    thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
+    max_output_tokens: int | None = Field(default=None, ge=64, le=131072)
 
 
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
@@ -121,7 +123,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     base_url = params["base_url"]
     model = params["model"]
     mode = params.get("mode", "chat")
-    think = _think_for(model)
+    thinking_mode = str(params.get("thinking", "off"))
+    max_output_tokens = int(params.get("max_output_tokens", 2048))
+    think = False if thinking_mode == "off" else _think_for(model)
     native = _native_base(base_url) if think is not None else None
     buf = {"content": "", "thinking": "", "last_ckpt": 0.0, "meta": {}}
 
@@ -168,7 +172,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     try:
         if native is not None:
             payload = {"model": model, "messages": history, "stream": True,
-                       "think": think, "keep_alive": _keep_alive()}
+                       "think": think, "keep_alive": _keep_alive(),
+                       "options": {"num_predict": max_output_tokens}}
             url = native + "/api/chat"
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", url, json=payload) as r:
@@ -186,7 +191,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                             job.log("delta", delta=msg["content"])
                         await maybe_ckpt()
         else:
-            payload = {"model": model, "messages": history, "stream": True, "keep_alive": _keep_alive()}
+            payload = {"model": model, "messages": history, "stream": True,
+                       "keep_alive": _keep_alive(), "max_tokens": max_output_tokens}
+            if thinking_mode == "off":
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
             url = base_url.rstrip("/") + "/chat/completions"
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", url, json=payload,
@@ -200,9 +208,14 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         if data == "[DONE]":
                             break
                         try:
-                            delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+                            item = json.loads(data)["choices"][0]["delta"]
+                            reasoning = item.get("reasoning_content", "")
+                            delta = item.get("content", "")
                         except (json.JSONDecodeError, KeyError, IndexError):
                             continue
+                        if reasoning:
+                            buf["thinking"] += reasoning
+                            job.log("thinking", delta=reasoning)
                         if delta:
                             buf["content"] += delta
                             job.log("delta", delta=delta)
@@ -312,8 +325,13 @@ async def send_message(
     db.commit()
     assistant_id = assistant.id
 
+    from app.models_mgmt.runtime_policy import get_policy
+
+    chat_defaults = get_policy().chat
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
-              "engine": body.engine, "searxng_url": body.searxng_url}
+              "engine": body.engine, "searxng_url": body.searxng_url,
+              "thinking": body.thinking or chat_defaults.reasoning,
+              "max_output_tokens": body.max_output_tokens or chat_defaults.max_output_tokens}
     label = {"chat": "チャット生成", "web": "Web検索", "academic": "学術検索", "deep": "Deepサーチ"}.get(body.mode, "生成")
     job = jobs.create(
         "chat.completion", f"{label}: {body.content[:40]}",

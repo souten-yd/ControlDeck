@@ -17,6 +17,39 @@ from app.security.deps import authenticate_websocket, require_permission
 router = APIRouter(prefix="/models", tags=["models"])
 
 
+@router.get("/runtime-environment")
+async def runtime_environment(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import runtime_policy
+
+    return await runtime_policy.environment()
+
+
+@router.put("/runtime-policy")
+async def put_runtime_policy(
+    body: dict, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import runtime_policy
+
+    current = runtime_policy.get_policy().model_dump()
+    merged = {**current, **body}
+    if isinstance(current.get("chat"), dict) and isinstance(body.get("chat"), dict):
+        merged["chat"] = {**current["chat"], **body["chat"]}
+    try:
+        policy = runtime_policy.RuntimePolicy.model_validate(merged)
+        await runtime_policy.apply_selection(policy)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    runtime_policy.save_policy(policy)
+    audit.record(db, "model.runtime_policy", user=user, resource_type="model-runtime",
+                 request=request, metadata={"runtime": policy.selected_runtime,
+                                            "backend": policy.selected_backend,
+                                            "coexistence": policy.coexistence})
+    return await runtime_policy.environment()
+
+
 class ProviderLoadBody(BaseModel):
     keep_alive: str | int | None = None
 
