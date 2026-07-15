@@ -45,6 +45,22 @@
 
 検証: backend 183件成功、frontend本番ビルド成功。runtime policyの保存・範囲検証・排他切替を単体テスト済み。
 
+### AMD GPU 静音プロファイル
+
+- 最大VRAMを持つAMD dGPUを選び、実機の電力cap、MCLK/SCLK DPM levelを読んで設定範囲を生成。
+  AMD以外および変更非対応GPUではUIを表示しない
+- 静音（最小210W・MCLK最大から1段低下）、バランス（255W・clock自動）、フルパワー（既定300W・clock自動）、
+  カスタム（実機範囲の電力・SCLK上限）をRuntimePolicyとしてサーバー保存。静音以外はMCLKを必ずautoへ戻す
+- チャット、ワークフロー生成、永続チャット、LLM node、RAG、Ollama手動load、llama.cpp手動startおよび
+  systemd `ExecStartPre`の全経路で、モデル起動・生成前に同じpreflightを適用
+- `deck.sh service`の初回sudo認証でroot所有の専用helperと限定NOPASSWD sudoersを登録。
+  Webプロセスはroot化せず、任意パス/コマンドや範囲外値を受け付けない
+
+実機では静音profileを適用し、power cap 210W、MCLK設定上限1124MHz、負荷中最大875MHzを確認。
+81 completion tokenは4.48秒。カスタムSCLK 500MHz制限時は実測最大583MHz、同等生成8.98秒となり、
+性能低下を確認後に静音profile（SCLK自動）へ復帰してサーバー保存。1280px/320pxとも全profile・210W・1124MHzを表示し、
+横スクロール・console errorなし。backend 191件成功、frontend本番ビルド成功。
+
 ## Phase 2 / Phase 4 残件対応（2026-07-15）
 
 - **アプリアイコン**: PNG / JPEG / WebP / SVG（2MB以下）を登録・更新画面からアップロード。実パスをAPIへ露出せず、

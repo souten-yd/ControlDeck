@@ -33,10 +33,14 @@ async def put_runtime_policy(
 
     current = runtime_policy.get_policy().model_dump()
     merged = {**current, **body}
-    if isinstance(current.get("chat"), dict) and isinstance(body.get("chat"), dict):
-        merged["chat"] = {**current["chat"], **body["chat"]}
+    for nested in ("chat", "amd_gpu"):
+        if isinstance(current.get(nested), dict) and isinstance(body.get(nested), dict):
+            merged[nested] = {**current[nested], **body[nested]}
     try:
         policy = runtime_policy.RuntimePolicy.model_validate(merged)
+        policy = runtime_policy.normalize_gpu_profile(policy)
+        from app.models_mgmt import amd_gpu
+        amd_gpu.apply_profile(policy.amd_gpu, force=True)
         await runtime_policy.apply_selection(policy)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
@@ -46,7 +50,8 @@ async def put_runtime_policy(
     audit.record(db, "model.runtime_policy", user=user, resource_type="model-runtime",
                  request=request, metadata={"runtime": policy.selected_runtime,
                                             "backend": policy.selected_backend,
-                                            "coexistence": policy.coexistence})
+                                            "coexistence": policy.coexistence,
+                                            "gpu_profile": policy.amd_gpu.profile if policy.amd_gpu.enabled else "disabled"})
     return await runtime_policy.environment()
 
 

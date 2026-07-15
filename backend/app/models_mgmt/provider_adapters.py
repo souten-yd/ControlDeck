@@ -70,6 +70,12 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
     provider = await _provider(provider_id)
     if "load" not in provider["capabilities"]:
         raise UnsupportedOperation("このproviderはモデルのロード操作に対応していません")
+    try:
+        from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+        await asyncio.to_thread(ensure_gpu_profile, force=True)
+    except RuntimeError as e:
+        raise ProviderError(str(e)) from e
     if provider["provider"] == "ollama":
         try:
             return await ollama.load(model_id, keep_alive)
