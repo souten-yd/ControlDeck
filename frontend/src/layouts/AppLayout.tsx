@@ -97,11 +97,16 @@ export default function AppLayout() {
     localStorage.setItem("cd-sidebar", next ? "min" : "full");
   };
 
-  const doPower = async () => {
+  const doPower = async (delayMinutes: number) => {
     if (!powerAction) return;
     try {
-      await api(`/system/${powerAction}`, { method: "POST" });
-      show(powerAction === "reboot" ? "再起動を実行しました" : "シャットダウンを実行しました", "info");
+      if (delayMinutes > 0) {
+        await api("/system/power/schedule", { method: "POST", json: { action: powerAction, delay_minutes: delayMinutes } });
+        show(`${delayMinutes}分後の${powerAction === "reboot" ? "再起動" : "シャットダウン"}を予約しました`, "info");
+      } else {
+        await api(`/system/${powerAction}`, { method: "POST" });
+        show(powerAction === "reboot" ? "再起動を実行しました" : "シャットダウンを実行しました", "info");
+      }
     } catch (e) {
       show(e instanceof Error ? e.message : "電源操作に失敗しました", "error");
     }
@@ -456,32 +461,46 @@ function ActionItem({
   );
 }
 
-function PowerConfirm({
-  action,
-  onConfirm,
-  onClose,
-}: {
+function PowerConfirm({ action, onConfirm, onClose }: {
   action: "reboot" | "shutdown";
-  onConfirm: () => void;
+  onConfirm: (delayMinutes: number) => void;
   onClose: () => void;
 }) {
   const [runningApps, setRunningApps] = useState<number | null>(null);
+  const [delay, setDelay] = useState(0);
+  const [scheduled, setScheduled] = useState<{ action: string; at: string; status: string } | null>(null);
+  const show = useToasts((s) => s.show);
   useEffect(() => {
     api<{ runtime: { status: string } }[]>("/apps")
-      .then((apps) =>
-        setRunningApps(apps.filter((a) => a.runtime.status === "RUNNING").length),
-      )
+      .then((apps) => setRunningApps(apps.filter((a) => a.runtime.status === "RUNNING").length))
       .catch(() => setRunningApps(null));
+    api<{ action: string; at: string; status: string } | null>("/system/power/schedule").then(setScheduled).catch(() => undefined);
   }, []);
   const label = action === "reboot" ? "再起動" : "シャットダウン";
   return (
     <ConfirmDialog
-      title={`PC を${label}しますか？`}
-      message={`この操作は取り消せません。接続中のセッションはすべて切断されます。`}
-      confirmLabel={`${label}する`}
-      onConfirm={onConfirm}
+      title={delay ? `PC の${label}を予約しますか？` : `PC を${label}しますか？`}
+      message={delay ? "予約はWebサービスを再起動してもsystemd timerに保持されます。" : "接続中のセッションはすべて切断されます。"}
+      confirmLabel={delay ? `${delay}分後に予約` : `${label}する`}
+      onConfirm={() => onConfirm(delay)}
       onClose={onClose}
     >
+      <label className="mt-3 block text-xs text-zinc-500">実行タイミング
+        <select value={delay} onChange={(e) => setDelay(Number(e.target.value))}
+          className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <option value={0}>今すぐ</option><option value={15}>15分後</option><option value={30}>30分後</option>
+          <option value={60}>1時間後</option><option value={180}>3時間後</option><option value={480}>8時間後</option>
+        </select>
+      </label>
+      {scheduled && ["scheduled", "executing"].includes(scheduled.status) && (
+        <div className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+          現在の予約: {scheduled.action === "reboot" ? "再起動" : "シャットダウン"} · {new Date(scheduled.at).toLocaleString("ja-JP")}
+          <button className="ml-2 underline" onClick={async () => {
+            try { await api("/system/power/schedule", { method: "DELETE" }); setScheduled(null); show("電源予約を取消しました"); }
+            catch (e) { show(e instanceof Error ? e.message : "取消に失敗しました", "error"); }
+          }}>取消</button>
+        </div>
+      )}
       {runningApps != null && runningApps > 0 && (
         <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
           実行中のアプリが {runningApps} 件あります
