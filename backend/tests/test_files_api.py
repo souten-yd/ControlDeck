@@ -118,3 +118,73 @@ def test_viewer_cannot_write(client):
     )
     assert r.status_code == 403  # viewer に files.edit はない
     client.cookies.clear()
+
+
+def test_trash_restore_and_permanent_delete(admin_client):
+    base = str(_sandbox)
+    path = f"{base}/trash-me.txt"
+    admin_client.put("/api/v1/files/text", json={"path": path, "content": "restore me"}, headers=CSRF_HEADERS)
+
+    r = admin_client.request("DELETE", f"/api/v1/files?path={path}", headers=CSRF_HEADERS)
+    assert r.status_code == 200
+    assert r.json()["trashed"] is True
+    trash_id = r.json()["trash_id"]
+    assert not (_sandbox / "trash-me.txt").exists()
+
+    rows = admin_client.get("/api/v1/files/trash").json()
+    assert any(row["id"] == trash_id and row["original_path"] == path for row in rows)
+    r = admin_client.post(f"/api/v1/files/trash/{trash_id}/restore", headers=CSRF_HEADERS)
+    assert r.status_code == 200, r.text
+    assert (_sandbox / "trash-me.txt").read_text() == "restore me"
+
+    r = admin_client.request("DELETE", f"/api/v1/files?path={path}", headers=CSRF_HEADERS)
+    trash_id = r.json()["trash_id"]
+    assert admin_client.delete(f"/api/v1/files/trash/{trash_id}", headers=CSRF_HEADERS).status_code == 200
+    assert all(row["id"] != trash_id for row in admin_client.get("/api/v1/files/trash").json())
+
+
+def test_resumable_upload_roundtrip_and_offset_guard(admin_client):
+    base = str(_sandbox)
+    content = b"first chunk-second chunk"
+    r = admin_client.post(
+        "/api/v1/files/uploads",
+        json={"directory": base, "filename": "resumable.bin", "size": len(content)},
+        headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 201, r.text
+    upload_id = r.json()["id"]
+
+    first = content[:11]
+    r = admin_client.put(
+        f"/api/v1/files/uploads/{upload_id}/chunk?offset=0", content=first, headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["received"] == len(first)
+    assert admin_client.get(f"/api/v1/files/uploads/{upload_id}").json()["received"] == len(first)
+
+    # 再送や順序違いでファイルを壊さない
+    r = admin_client.put(
+        f"/api/v1/files/uploads/{upload_id}/chunk?offset=0", content=b"bad", headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 403
+
+    r = admin_client.put(
+        f"/api/v1/files/uploads/{upload_id}/chunk?offset={len(first)}",
+        content=content[len(first):], headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 200
+    r = admin_client.post(f"/api/v1/files/uploads/{upload_id}/complete", headers=CSRF_HEADERS)
+    assert r.status_code == 200, r.text
+    assert (_sandbox / "resumable.bin").read_bytes() == content
+    admin_client.request("DELETE", f"/api/v1/files?path={base}/resumable.bin&permanent=true", headers=CSRF_HEADERS)
+
+
+def test_resumable_upload_cancel(admin_client):
+    r = admin_client.post(
+        "/api/v1/files/uploads",
+        json={"directory": str(_sandbox), "filename": "cancel.bin", "size": 3},
+        headers=CSRF_HEADERS,
+    )
+    upload_id = r.json()["id"]
+    assert admin_client.delete(f"/api/v1/files/uploads/{upload_id}", headers=CSRF_HEADERS).status_code == 204
+    assert admin_client.get(f"/api/v1/files/uploads/{upload_id}").status_code == 404

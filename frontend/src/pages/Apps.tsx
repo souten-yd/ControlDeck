@@ -111,9 +111,7 @@ export default function AppsPage() {
                 className="flex cursor-pointer items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
                 onClick={() => setDetail(app)}
               >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-zinc-100 text-base font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                  {app.name[0]}
-                </span>
+                <AppAvatar app={app} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{app.name}</p>
                   <div className="mt-0.5 flex items-center gap-3">
@@ -305,6 +303,16 @@ function WebViewOverlay({ name, port, onClose }: { name: string; port: number; o
       <iframe src={url} title={name} className="min-h-0 w-full flex-1 border-0" allow="fullscreen" />
     </div>,
     document.body,
+  );
+}
+
+function AppAvatar({ app }: { app: ManagedApp }) {
+  return app.icon_path ? (
+    <img src={app.icon_path} alt="" className="h-10 w-10 shrink-0 rounded-xl bg-zinc-100 object-cover dark:bg-zinc-800" />
+  ) : (
+    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-zinc-100 text-base font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+      {app.name[0]}
+    </span>
   );
 }
 

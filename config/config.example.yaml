@@ -11,6 +11,10 @@ security:
 
 files:
   allowed_roots: []   # 例: ["/home/USER"]（~/.ssh・~/.gnupg・DB・鍵は拒否リストで常に保護）
+  max_upload_size_gb: 100
+  trash_enabled: true
+  trash_retention_days: 30
+  trash_max_size_gb: 10
 
 monitoring:
   interval_seconds: 2

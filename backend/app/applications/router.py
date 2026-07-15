@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, WebSocket
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,12 +17,50 @@ from app.applications import systemd as sd
 from app.applications import testrun
 from app.applications.discovery import discover_project, discover_pythons
 from app.audit import service as audit
+from app.config import icons_dir
 from app.database import SessionLocal, get_db
 from app.models import ManagedApplication, User
 from app.schemas.apps import AppCreate, AppOut, AppUpdate
 from app.security.deps import authenticate_websocket, require_permission
 
 router = APIRouter(prefix="/apps", tags=["apps"])
+
+_ICON_TYPES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/svg+xml": ".svg",
+}
+_SVG_BLOCKED_TAGS = {"script", "foreignObject", "iframe", "object", "embed", "audio", "video"}
+
+
+def _sanitize_svg(data: bytes) -> bytes:
+    """SVG から実行要素・イベント属性・外部参照を除去する。"""
+    try:
+        root = ET.fromstring(data)
+    except (ET.ParseError, ValueError) as e:
+        raise HTTPException(status_code=422, detail="SVG を解析できません") from e
+    if root.tag.rsplit("}", 1)[-1] != "svg":
+        raise HTTPException(status_code=422, detail="SVG ルート要素がありません")
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag.rsplit("}", 1)[-1] in _SVG_BLOCKED_TAGS:
+                parent.remove(child)
+        for key, value in list(parent.attrib.items()):
+            local = key.rsplit("}", 1)[-1].lower()
+            lowered = value.strip().lower()
+            if local.startswith("on") or "javascript:" in lowered:
+                del parent.attrib[key]
+            elif local == "href" and re.match(r"^(?:https?:|//|data:)", lowered):
+                del parent.attrib[key]
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _validate_raster(data: bytes, media_type: str) -> None:
+    signatures = {
+        "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg": data.startswith(b"\xff\xd8\xff"),
+        "image/webp": len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
+    }
+    if not signatures.get(media_type, False):
+        raise HTTPException(status_code=422, detail="画像データと Content-Type が一致しません")
 
 
 def _get_app(db: Session, app_id: int) -> ManagedApplication:
@@ -191,6 +233,63 @@ def get_app_code(
     return {"code": apps.read_app_code(app), "managed": apps.is_managed_code(app)}
 
 
+@router.get("/{app_id}/icon")
+def get_app_icon(app_id: int, user: User = Depends(require_permission("apps.view")), db: Session = Depends(get_db)):
+    app = _get_app(db, app_id)
+    if not app.icon_path:
+        raise HTTPException(status_code=404, detail="アイコンがありません")
+    path = Path(app.icon_path).resolve()
+    if path.parent != icons_dir().resolve() or not path.is_file():
+        raise HTTPException(status_code=404, detail="アイコンがありません")
+    media_type = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml"}.get(path.suffix.lower())
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/{app_id}/icon")
+async def upload_app_icon(
+    app_id: int, file: UploadFile, request: Request,
+    user: User = Depends(require_permission("apps.edit")), db: Session = Depends(get_db),
+) -> AppOut:
+    app = _get_app(db, app_id)
+    media_type = (file.content_type or "").lower()
+    suffix = _ICON_TYPES.get(media_type)
+    if suffix is None:
+        raise HTTPException(status_code=415, detail="PNG / JPEG / WebP / SVG のみ使用できます")
+    data = await file.read(2 * 1024 * 1024 + 1)
+    if not data:
+        raise HTTPException(status_code=422, detail="空の画像です")
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="アイコンは 2MB 以下にしてください")
+    data = _sanitize_svg(data) if media_type == "image/svg+xml" else data
+    if media_type != "image/svg+xml":
+        _validate_raster(data, media_type)
+    root = icons_dir().resolve()
+    target = root / f"app-{app.id}{suffix}"
+    for old in root.glob(f"app-{app.id}.*"):
+        if old != target:
+            old.unlink(missing_ok=True)
+    target.write_bytes(data)
+    app.icon_path = str(target)
+    db.commit()
+    audit.record(db, "app.icon_upload", user=user, resource_type="app", resource_id=str(app.id), request=request,
+                 metadata={"content_type": media_type, "size": len(data)})
+    return apps.to_out(app)
+
+
+@router.delete("/{app_id}/icon", status_code=204)
+def delete_app_icon(
+    app_id: int, request: Request, user: User = Depends(require_permission("apps.edit")), db: Session = Depends(get_db),
+):
+    app = _get_app(db, app_id)
+    if app.icon_path:
+        path = Path(app.icon_path).resolve()
+        if path.parent == icons_dir().resolve():
+            path.unlink(missing_ok=True)
+    app.icon_path = None
+    db.commit()
+    audit.record(db, "app.icon_delete", user=user, resource_type="app", resource_id=str(app.id), request=request)
+
+
 @router.get("/{app_id}")
 def get_app(
     app_id: int,
@@ -257,6 +356,10 @@ def delete_app(
     db: Session = Depends(get_db),
 ):
     app = _get_app(db, app_id)
+    if app.icon_path:
+        icon = Path(app.icon_path).resolve()
+        if icon.parent == icons_dir().resolve():
+            icon.unlink(missing_ok=True)
     if app.application_type != "systemd_service" and app.systemd_unit_name:
         sd.stop(app.systemd_unit_name)
         try:

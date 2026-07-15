@@ -28,6 +28,9 @@ class SecurityConfig(BaseModel):
 class FilesConfig(BaseModel):
     allowed_roots: list[str] = []
     max_upload_size_gb: int = 100
+    trash_enabled: bool = True
+    trash_retention_days: int = 30
+    trash_max_size_gb: int = 10
 
 
 class TerminalConfig(BaseModel):
