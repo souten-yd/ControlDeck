@@ -61,6 +61,24 @@ interface WorkflowDetail {
   definition: { nodes: DefNode[]; edges: DefEdge[] };
 }
 type FlowNodeData = { def: DefNode; running?: string };
+interface NodeMetadata {
+  type: string;
+  side_effect: "none" | "read" | "write" | "external" | "process";
+  capabilities: string[];
+  supports: { retry: boolean; cancel: boolean; progress: boolean; dry_run: boolean };
+}
+interface DryRunResult {
+  valid: boolean;
+  dry_run: boolean;
+  errors: string[];
+  warnings: string[];
+  notice: string;
+  summary: { nodes: number; reachable: number; side_effects: Record<string, number> };
+  plan: Array<{
+    id: string; name: string; type: string; wave: number | null;
+    status: "SIMULATED" | "UNREACHABLE"; side_effect: string; capabilities: string[];
+  }>;
+}
 
 // ---- カスタムノード（アイコン + カテゴリ色 + 状態） ----
 function FlowNode({ data, selected }: NodeProps) {
@@ -176,6 +194,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [infoOpen, setInfoOpen] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [dryRunBusy, setDryRunBusy] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const readOnly = !can("workflows.edit");
 
@@ -268,6 +288,21 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       return;
     }
     await doRun();
+  };
+
+  const dryRun = async () => {
+    setDryRunBusy(true);
+    try {
+      const result = await api<DryRunResult>("/workflows/dry-run-definition", {
+        method: "POST",
+        json: { definition: buildDefinition(), input: {} },
+      });
+      setDryRunResult(result);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "ドライランに失敗しました", "error");
+    } finally {
+      setDryRunBusy(false);
+    }
   };
 
   const addNode = (type: string, at?: { x: number; y: number }) => {
@@ -435,6 +470,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           trigger={<IconDots />}
           items={[
             { label: "実行履歴", onSelect: () => setExecutionsOpen(true) },
+            ...(can("workflows.run") ? [{ label: dryRunBusy ? "ドライラン中..." : "安全ドライラン", onSelect: () => { if (!dryRunBusy) void dryRun(); } }] : []),
             { label: "JSON を出力", onSelect: exportJson },
             ...(readOnly ? [] : [
               { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
@@ -581,6 +617,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       )}
 
       {executionsOpen && <ExecutionsSheet workflowId={workflowId} onClose={() => setExecutionsOpen(false)} />}
+      {dryRunResult && <DryRunSheet result={dryRunResult} onClose={() => setDryRunResult(null)} />}
     </div>
   );
 }
@@ -692,6 +729,12 @@ function NodeConfigSheet({
   onClose: () => void;
 }) {
   const meta = NODE_TYPES[def.type];
+  const { data: backendMetadata } = useQuery({
+    queryKey: ["workflow-node-catalog"],
+    queryFn: () => api<NodeMetadata[]>("/workflows/node-catalog"),
+    staleTime: Infinity,
+  });
+  const nodeMetadata = backendMetadata?.find((item) => item.type === def.type);
   const { data: apps } = useQuery({
     queryKey: ["apps"],
     queryFn: () => api<ManagedApp[]>("/apps"),
@@ -725,6 +768,18 @@ function NodeConfigSheet({
   return (
     <BottomSheet title={meta?.label ?? def.type} onClose={onClose} wide>
       {meta?.desc && <p className="mb-3 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800/60">{meta.desc}</p>}
+      {nodeMetadata && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">
+          <span className={`rounded-full px-2 py-1 font-medium ${
+            nodeMetadata.side_effect === "none" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400" :
+            nodeMetadata.side_effect === "read" ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-400" :
+            "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+          }`}>副作用: {nodeMetadata.side_effect}</span>
+          {nodeMetadata.capabilities.map((capability) => (
+            <span key={capability} className="rounded-full bg-zinc-100 px-2 py-1 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{capability}</span>
+          ))}
+        </div>
+      )}
       <div className="space-y-4">
         <Field label="表示名">
           <input value={def.name ?? ""} onChange={(e) => onChange({ name: e.target.value })} disabled={readOnly} className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
@@ -858,15 +913,15 @@ function ControlSection({
 
 /** ノード単体テスト: 現在の設定でこのノードだけ実行して結果を確認する */
 function NodeTestRunner({ type, config }: { type: string; config: Record<string, unknown> }) {
-  const [result, setResult] = useState<{ ok: boolean; output?: unknown; error?: string; elapsed: number } | null>(null);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [busy, setBusy] = useState(false);
   const run = async () => {
     setBusy(true);
     setResult(null);
     try {
-      setResult(await api("/workflows/test-node", { method: "POST", json: { type, config } }));
+      setResult(await api("/workflows/test-node", { method: "POST", json: { type, config, dry_run: true } }));
     } catch (e) {
-      setResult({ ok: false, error: e instanceof Error ? e.message : "失敗しました", elapsed: 0 });
+      setResult({ ok: false, error: e instanceof Error ? e.message : "失敗しました" });
     } finally {
       setBusy(false);
     }
@@ -879,20 +934,16 @@ function NodeTestRunner({ type, config }: { type: string; config: Record<string,
         disabled={busy}
         className="w-full rounded-xl bg-zinc-100 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-50 dark:bg-zinc-800 dark:text-zinc-300"
       >
-        {busy ? "テスト実行中..." : "🧪 このノードをテスト実行（フロー全体は動かしません）"}
+        {busy ? "確認中..." : "🛡 このノードを安全プレビュー"}
       </button>
-      <p className="mt-1 text-[10px] text-zinc-400">テンプレート {"{{...}}"} は空として実行されます（{"{{secrets.*}}"} は解決されます）</p>
+      <p className="mt-1 text-[10px] text-zinc-400">executor・外部通信・書き込み・secret復号は行いません</p>
       {result && (
         <div className={`mt-1.5 rounded-xl border p-2.5 ${result.ok ? "border-emerald-300 dark:border-emerald-800" : "border-red-300 dark:border-red-800"}`}>
           <p className={`text-xs font-medium ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-            {result.ok ? "✓ 成功" : "✗ 失敗"} <span className="num font-normal text-zinc-400">({result.elapsed}s)</span>
+            {result.ok ? "✓ 実行可能な設定" : "✗ 設定を確認してください"}
           </p>
-          {result.error && <p className="mt-1 text-[11px] text-red-500">{result.error}</p>}
-          {result.output !== undefined && (
-            <pre className="mt-1 max-h-48 overflow-auto rounded bg-zinc-50 p-2 font-mono text-[10px] dark:bg-zinc-950">
-              {JSON.stringify(result.output, null, 1)}
-            </pre>
-          )}
+          {typeof result.error === "string" && <p className="mt-1 text-[11px] text-red-500">{result.error}</p>}
+          <pre className="mt-1 max-h-48 overflow-auto rounded bg-zinc-50 p-2 font-mono text-[10px] dark:bg-zinc-950">{JSON.stringify(result, null, 1)}</pre>
         </div>
       )}
     </div>
@@ -1208,6 +1259,59 @@ function RunInputsSheet({
           onClose={() => setFilePick(null)}
         />
       )}
+    </BottomSheet>
+  );
+}
+
+/** executorを呼ばない全体dry-run結果。実行成功ではなく予定操作として表示する。 */
+function DryRunSheet({ result, onClose }: { result: DryRunResult; onClose: () => void }) {
+  const sideEffectLabels: Record<string, string> = {
+    read: "読取", write: "書込", external: "外部通信", process: "プロセス/状態変更",
+  };
+  return (
+    <BottomSheet title="安全ドライラン" onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className={`rounded-xl border p-3 ${result.valid ? "border-emerald-300 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/20" : "border-red-300 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20"}`}>
+          <p className={`text-sm font-semibold ${result.valid ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-400"}`}>
+            {result.valid ? "✓ 定義を実行できます" : "✗ 実行前に修正が必要です"}
+          </p>
+          <p className="mt-1 text-[11px] text-zinc-500">{result.notice}</p>
+          <p className="mt-2 text-xs text-zinc-500">
+            到達可能 {result.summary.reachable}/{result.summary.nodes} ノード
+          </p>
+          {Object.keys(result.summary.side_effects).length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {Object.entries(result.summary.side_effects).map(([kind, count]) => (
+                <span key={kind} className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                  {sideEffectLabels[kind] ?? kind}: {count}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        {(result.errors.length > 0 || result.warnings.length > 0) && (
+          <div className="space-y-2 text-xs">
+            {result.errors.map((message, index) => <p key={`e-${index}`} className="rounded-lg bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-400">{message}</p>)}
+            {result.warnings.map((message, index) => <p key={`w-${index}`} className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">{message}</p>)}
+          </div>
+        )}
+        <div>
+          <h3 className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">実行予定（実際には未実行）</h3>
+          <ol className="space-y-2">
+            {result.plan.map((item) => (
+              <li key={item.id} className={`rounded-xl border p-3 ${item.status === "UNREACHABLE" ? "border-zinc-200 opacity-60 dark:border-zinc-800" : "border-zinc-200 dark:border-zinc-700"}`}>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="num grid h-6 w-6 shrink-0 place-items-center rounded-full bg-zinc-100 text-[10px] text-zinc-500 dark:bg-zinc-800">{item.wave ?? "–"}</span>
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.name}</span>
+                  {item.side_effect !== "none" && <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[9px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">{sideEffectLabels[item.side_effect] ?? item.side_effect}</span>}
+                </div>
+                <p className="mt-1 font-mono text-[10px] text-zinc-400">{item.type} · {item.status}</p>
+                {item.capabilities.length > 0 && <p className="mt-1 text-[10px] text-zinc-400">必要: {item.capabilities.join(", ")}</p>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
     </BottomSheet>
   );
 }

@@ -11,8 +11,19 @@ import re
 # {{nodeId.field...}} / {{vars.x}} / {{secrets.x}} を拾う
 _TEMPLATE_RE = re.compile(r"\{\{\s*([\w.\-]+)\s*\}\}")
 
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 # ノード種別ごとの「これが空だと動かない」主要必須キー
 REQUIRED_KEYS: dict[str, list[str]] = {
+    "app.start": ["app_id"],
+    "app.stop": ["app_id"],
+    "app.restart": ["app_id"],
+    "app.status": ["app_id"],
     "llm.chat": ["model", "prompt"],
     "rag.query": ["collection", "question"],
     "rag.build": ["collection"],
@@ -23,10 +34,21 @@ REQUIRED_KEYS: dict[str, list[str]] = {
     "http.download": ["url", "path"],
     "file.read": ["path"],
     "file.write": ["path"],
+    "file.exists": ["path"],
+    "file.op": ["operation", "path"],
     "condition.if": ["left", "op"],
     "flow.call": ["workflow_id"],
     "signal.display": ["value"],
     "research.deep": ["topic"],
+    "media.ocr": ["path"],
+    "web.browser": ["url"],
+    "net.wol": ["mac"],
+    "cmd.ssh": ["host", "command"],
+    "cmd.git": ["subcommand", "cwd"],
+    "cmd.cpp_build": ["path"],
+    "cmd.python": ["code"],
+    "notify.webhook": ["url", "message"],
+    "db.query": ["query"],
 }
 
 
@@ -108,7 +130,7 @@ def semantic_check(nodes: list[dict], edges: list[dict]) -> tuple[list[str], lis
             if config.get("mode") == "count" and not str(config.get("count", "") or "").strip():
                 warnings.append(f"ループ '{n.get('name') or n.get('id')}' の回数が未設定です")
         if n.get("type") == "llm.chat" and str(config.get("agent_tools", "") or "") == "1":
-            steps = int(config.get("agent_max_steps", 6) or 6)
+            steps = _as_int(config.get("agent_max_steps", 6) or 6, 6)
             if steps > 12:
                 warnings.append(f"エージェント '{n.get('name') or n.get('id')}' の最大ラウンド数が大きすぎます（{steps}）")
 
@@ -132,7 +154,7 @@ def quality_score(nodes: list[dict], edges: list[dict], run_ok: bool | None = No
     # エラー処理（on_error 設定 or リトライのあるノードが 1 つ以上）
     has_err_handling = any(
         (n.get("config") or {}).get("on_error") not in (None, "", "stop")
-        or int((n.get("config") or {}).get("retry_count", 0) or 0) > 0
+        or _as_int((n.get("config") or {}).get("retry_count", 0) or 0) > 0
         for n in non_trigger
     )
     breakdown["エラー処理"] = 15 if has_err_handling else 5

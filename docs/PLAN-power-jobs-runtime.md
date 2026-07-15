@@ -15,11 +15,11 @@
 | A. PSU電力監視 + 電気代（起動中/日/月） | ✅ 完了（実機検証済み・マージ済み） |
 | B. サーバー主導ジョブ基盤の汎用化 | ✅ 完了（owner・冪等性・heartbeat・priority・全体WSを再実装/検証） |
 | C. 永続チャット（ブラウザを閉じても回答生成・復元） | ✅ 完了（会話一覧/切替/改名/削除と生成checkpointを実装/実機検証） |
-| D. ワークフロー生成の意味検証・品質スコア | 🚧 厳格schemaまで完了（共通の副作用なしdry-runが残る） |
+| D. ワークフロー生成の意味検証・品質スコア | ✅ 完了（厳格schema・副作用なしdry-run・実機生成を検証） |
 | E. LLMランタイム抽象（Ollama/llama.cpp provider） | 🚧 provider検出・共通モデル操作まで完了（実行/生成/cancel契約が残る） |
 | F. llama.cpp 導入（Vulkan/ROCm・systemd・MTP・思考深度） | 🚧 型付きMTP/KV/MoE等まで完了（複数GGUF catalog/instanceが残る） |
 | G. OpenCode オプトイン統合（feature registry・プラグイン境界） | ⬜ 未着手 |
-| H. ワークフローノード超強化（型/capability/dry-run/新ノード） | ⬜ 一部済（v2エンジンで承認/リトライ/並列/flow.call/エージェント実装済み） |
+| H. ワークフローノード超強化（型/capability/dry-run/新ノード） | 🚧 metadata/型/capability/dry-run完了（検索/お気に入りと追加ノードが残る） |
 
 ---
 
@@ -35,11 +35,11 @@
 | A 電力 | PSU sysfs、日/月/起動セッション積算、欠測処理、永続化テスト | なし（実機確認済み） |
 | B ジョブ | `Job` DB、`JobControl`、owner、冪等キー、heartbeat、安定priority queue、queued/running cancel、全体WS | なし（再起動時queued/running→interruptedを含め検証） |
 | C チャット | Conversation/Message DB、サーバージョブ、再接続、会話一覧/切替/改名/削除 | なし（生成本文は1秒checkpoint、ワークフロー生成結果はjob resultへ永続化） |
-| D 生成品質 | semantic check、quality score、自動修正、LLM JSON Schema出力 | 副作用を実行しない共通dry-run段がない |
+| D 生成品質 | semantic check、quality score、自動修正、LLM JSON Schema出力、副作用なしdry-run | なし |
 | E provider | 共通catalog、capability、list/load/unload/delete adapter | providerの型付き契約、install/start/stop/health/stream/cancelの共通実装がない |
 | F llama.cpp | 導入、backend切替、systemd、型付きMTP/KV/MoE/cache/context/sampling設定 | モデル別複数GGUF catalog/instanceがない |
 | G OpenCode | なし | feature registry、deck.sh操作、未導入時の未登録境界、code.agentが未実装 |
-| H ノード | v2 DAG、retry/cancel/progress、25種超のノード | node metadata/capability/型、共通dry-run、検索/お気に入り、計画記載の一部ノードがない |
+| H ノード | v2 DAG、retry/cancel、36種node、backend metadata/capability/型、共通dry-run | 検索/お気に入り、progress対応node、計画記載の一部便利nodeがない |
 
 ### Web軽量化の実測
 
@@ -161,7 +161,10 @@
 ### D. ワークフロー生成の意味検証・品質スコア ✅ 完了
 - **実装済み**: `validation.py` に `semantic_check`（到達不能ノード・存在しない変数参照・主要必須設定欠落・ループ/エージェント終了条件）と `quality_score`（構造/到達性/出力/エラー処理/実動作の 0-100 内訳）。
 - `chat_router._validate_generated` が構造検証の後に意味エラーも返し、自動ビルドの LLM 修正へフィードバック。生成 API と build 完了イベントに `quality` を付与。UI（AssistantChat）に品質スコアバッジ（内訳・検証結果の折り畳み）を表示。
-- **方針**: 完全な親子ジョブ分割ではなく、既存 `/chat/build`（既にジョブ化済み・generate→validate→register→run→自動修正）を強化する形（冗長化回避）。JSON Schema厳格出力は実装済み。副作用なしdry-run専用段は計画Hの共通node metadataと合わせて実装する。
+- **方針**: 完全な親子ジョブ分割ではなく、既存 `/chat/build`（既にジョブ化済み・generate→validate→register→run→自動修正）を強化する形（冗長化回避）。JSON Schema厳格出力を実装済み。
+- executor、外部通信、process、DB更新、file write、secret復号を一切行わない静的dry-runを追加。保存済み/編集中definitionとnode単体の予定操作、副作用分類、capability、到達順、error/warningを返す。
+- 36種のexecutor/control nodeすべてにversion、side_effect、capability、config/output型、retry/cancel/progress/dry-run対応をbackend metadataとして定義。LLM catalogとfrontend node集合の差を自動テストで禁止する。
+- 詳細設計と不変条件は[`design-workflow-dry-run-metadata.md`](design-workflow-dry-run-metadata.md)へ統合。
 
 ### E. LLMランタイム抽象
 - `LlmRuntimeProvider`（detect/install/list_models/start/stop/health/stream_chat/cancel/get_capabilities...）。

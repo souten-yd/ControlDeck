@@ -95,13 +95,37 @@ async def scrape_preview(
 class WorkflowBody(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = ""
-    definition: dict = {}
+    definition: dict = Field(default_factory=dict)
 
 
 class WorkflowPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
     definition: dict | None = None
+
+
+class DryRunBody(BaseModel):
+    definition: dict
+    input: dict = Field(default_factory=dict)
+
+
+@router.get("/workflows/node-catalog")
+def workflow_node_catalog(user: User = Depends(require_permission("workflows.run"))):
+    """backendを正とする全nodeの型・capability・副作用metadata。"""
+    from app.workflows.node_metadata import node_catalog
+
+    return node_catalog()
+
+
+@router.post("/workflows/dry-run-definition")
+def dry_run_definition(
+    body: DryRunBody,
+    user: User = Depends(require_permission("workflows.run")),
+):
+    """編集中definitionを保存/実行せず静的シミュレーションする。"""
+    from app.workflows.dry_run import simulate_definition
+
+    return simulate_definition(body.definition, body.input)
 
 
 def _get(db: Session, workflow_id: int) -> Workflow:
@@ -316,15 +340,24 @@ def delete_secret(
 
 class TestNodeBody(BaseModel):
     type: str = Field(min_length=1, max_length=64)
-    config: dict = {}
+    config: dict = Field(default_factory=dict)
+    dry_run: bool = False  # 既存API互換。新UIは明示的にtrueを送る。
 
 
 @router.post("/workflows/test-node")
 async def test_node(body: TestNodeBody, user: User = Depends(require_permission("workflows.edit"))):
-    """1 ノードだけを与えられた設定で実行する（エディタのデバッグ用）。"""
+    """dry_run=trueは副作用なしpreview。falseは既存の実executorテスト。"""
     import asyncio
 
     from app.workflows.nodes import DEFAULT_NODE_TIMEOUT, NODE_EXECUTORS, NODE_TIMEOUTS, NodeError
+
+    if body.dry_run:
+        from app.workflows.dry_run import simulate_node
+
+        try:
+            return simulate_node(body.type, body.config)
+        except engine.DefinitionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if body.type in ("trigger", "control.loop"):
         raise HTTPException(status_code=422, detail="このノードは単体テストできません")
@@ -366,7 +399,25 @@ def delete_workflow(
 
 
 class RunBody(BaseModel):
-    input: dict = {}
+    input: dict = Field(default_factory=dict)
+
+
+@router.post("/workflows/{workflow_id}/dry-run")
+def dry_run_workflow(
+    workflow_id: int,
+    body: RunBody | None = None,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """保存済みworkflowをExecution作成なしで静的シミュレーションする。"""
+    from app.workflows.dry_run import simulate_definition
+
+    workflow = _get(db, workflow_id)
+    try:
+        definition = json.loads(workflow.definition_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"定義JSONが不正です: {exc}") from exc
+    return simulate_definition(definition, body.input if body else {})
 
 
 @router.post("/workflows/{workflow_id}/run")
