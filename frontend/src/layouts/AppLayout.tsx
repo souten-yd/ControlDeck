@@ -28,6 +28,7 @@ const NAV = [
   { to: "/", label: "ホーム", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
   { to: "/workflows", label: "ワークフロー", icon: IconFlow },
+  { to: "/assistant", label: "AIアシスタント", icon: IconAssistant },
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
   { to: "/remote", label: "リモート", icon: IconRemote },
@@ -40,7 +41,7 @@ const NAV = [
 ];
 
 // モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / リモート + 右端に操作
-const MOBILE_NAV = [NAV[0], NAV[1], NAV[2], NAV[4], NAV[5]];
+const MOBILE_NAV = [NAV[0], NAV[1], NAV[2], NAV[5], NAV[6]];
 
 function IconFlow(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -57,6 +58,16 @@ function IconRemote(props: React.SVGProps<SVGSVGElement>) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
       <rect x="2" y="4" width="20" height="13" rx="2" />
       <path d="M8 21h8M12 17v4" />
+    </svg>
+  );
+}
+
+function IconAssistant(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
+      <path d="M12 3l1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4L12 3z" />
+      <path d="M18.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z" />
+      <path d="M5 15l.6 1.7 1.7.6-1.7.6L5 19.5l-.6-1.6-1.7-.6 1.7-.6L5 15z" />
     </svg>
   );
 }
@@ -266,6 +277,16 @@ export default function AppLayout() {
                 }}
               />
             )}
+            {can("workflows.run") && (
+              <ActionItem
+                icon={<IconAssistant />}
+                label="AIアシスタント"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/assistant");
+                }}
+              />
+            )}
             {can("terminal.use") && (
               <ActionItem
                 icon={<IconTerminal />}
@@ -309,7 +330,7 @@ export default function AppLayout() {
             {can("workflows.run") && (
               <ActionItem
                 icon={<IconChip />}
-                label="Model (Ollama)"
+                label="Model / LLM設定"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/models");

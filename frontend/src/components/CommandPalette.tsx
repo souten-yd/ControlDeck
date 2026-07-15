@@ -33,6 +33,8 @@ export function CommandPalette({
     const list: Command[] = [
       { id: "nav-home", label: "概要を開く", run: () => navigate("/") },
       { id: "nav-apps", label: "アプリ一覧を開く", run: () => navigate("/apps") },
+      { id: "nav-assistant", label: "AIアシスタントを開く", run: () => navigate("/assistant") },
+      { id: "nav-workflows", label: "ワークフローを開く", run: () => navigate("/workflows") },
       { id: "nav-logs", label: "ログを開く", run: () => navigate("/logs") },
       { id: "nav-system", label: "システム監視を開く", run: () => navigate("/system") },
       { id: "nav-settings", label: "設定を開く", run: () => navigate("/settings") },
