@@ -534,7 +534,7 @@ async def _run_build_job(job, req: dict, user_id: int) -> dict:
     """自動ビルド本体（サーバー側ジョブ。ブラウザを閉じても継続する）。"""
 
     async def emit(payload: dict) -> None:
-        job.events.append(payload)
+        job.emit(payload)
         if payload.get("type") == "phase":
             job.set_progress(str(payload.get("phase", "")))
 
@@ -693,7 +693,7 @@ async def build_workflow_stream(websocket: WebSocket):
     job = None
     if req.get("job_id"):
         job = jobs_svc.get(str(req["job_id"]))
-        if job is None or job.kind != "workflow.build":
+        if job is None or job.kind != "workflow.build" or not jobs_svc.visible_to(job, user_id):
             await websocket.send_text(json.dumps({"type": "error", "message": "ジョブが見つかりません"}))
             await websocket.close()
             return
@@ -704,7 +704,8 @@ async def build_workflow_stream(websocket: WebSocket):
             await websocket.close()
             return
         job = jobs_svc.create("workflow.build", f"自動ビルド: {goal[:60]}",
-                              lambda j: _run_build_job(j, req, user_id), owner_user_id=user_id)
+                              lambda j: _run_build_job(j, req, user_id), owner_user_id=user_id,
+                              idempotency_key=str(req.get("idempotency_key") or "") or None, priority=5)
 
     # ジョブのイベントをストリーム（切断してもジョブは続く。job_id で再接続可能）
     try:
@@ -715,7 +716,7 @@ async def build_workflow_stream(websocket: WebSocket):
             for ev in job.events[idx:new_len]:
                 await websocket.send_text(json.dumps(ev, ensure_ascii=False))
             idx = new_len
-            if job.status != "running" and idx >= len(job.events):
+            if job.status not in ("queued", "running") and idx >= len(job.events):
                 if job.status == "failed":
                     await websocket.send_text(json.dumps({"type": "error", "message": job.error}, ensure_ascii=False))
                 break

@@ -2,7 +2,7 @@
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { api, wsUrl } from "../api/client";
 import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
@@ -79,13 +79,45 @@ interface JobInfo {
   error: string;
 }
 
-/** サーバー側ジョブのポーリング（1 秒間隔・終了で停止） */
+/** 所有者分離済み全体WSでジョブqueryを更新し、1秒pollを使わない。 */
+function useModelJobsStream() {
+  const qc = useQueryClient();
+  useEffect(() => {
+    let disposed = false;
+    let retry: number | undefined;
+    let ws: WebSocket | null = null;
+    const connect = () => {
+      if (disposed) return;
+      ws = new WebSocket(wsUrl("/jobs/stream"));
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "snapshot") {
+          const all = data.jobs as JobInfo[];
+          qc.setQueryData(["model-jobs"], all.filter((job) => job.kind.startsWith("model.")));
+          for (const job of all) qc.setQueryData(["job", job.id], job);
+        } else if (data.type === "update") {
+          const job = data.job as JobInfo;
+          qc.setQueryData(["job", job.id], job);
+          if (job.kind.startsWith("model.")) {
+            qc.setQueryData<JobInfo[]>(["model-jobs"], (current = []) =>
+              [job, ...current.filter((item) => item.id !== job.id)].slice(0, 30),
+            );
+          }
+        }
+      };
+      ws.onclose = () => { if (!disposed) retry = window.setTimeout(connect, 1000); };
+    };
+    connect();
+    return () => { disposed = true; window.clearTimeout(retry); ws?.close(); };
+  }, [qc]);
+}
+
+/** 初回取得後はページ単位のWebSocketで更新する。 */
 function useJob(jobId: string | null) {
   return useQuery({
     queryKey: ["job", jobId],
     queryFn: () => api<JobInfo>(`/jobs/${jobId}`),
     enabled: jobId !== null,
-    refetchInterval: (q) => (q.state.data && q.state.data.status !== "running" ? false : 1000),
   });
 }
 
@@ -95,7 +127,7 @@ function JobProgress({ job }: { job: JobInfo }) {
       ? Math.round((job.progress.completed / job.progress.total) * 100)
       : null;
   const label =
-    job.status === "succeeded" ? "完了" : job.status === "failed" ? `エラー: ${job.error}` : job.status === "canceled" ? "キャンセル" : job.progress?.status || "処理中...";
+    job.status === "succeeded" ? "完了" : job.status === "failed" ? `エラー: ${job.error}` : job.status === "canceled" ? "キャンセル" : job.status === "queued" ? "開始待ち" : job.progress?.status || "処理中...";
   return (
     <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
       <p className="truncate text-xs text-zinc-500">{label}</p>
@@ -114,9 +146,8 @@ function ActiveModelJobs() {
   const { data } = useQuery({
     queryKey: ["model-jobs"],
     queryFn: () => api<JobInfo[]>("/jobs?kind=model."),
-    refetchInterval: 2000,
   });
-  const running = (data ?? []).filter((j) => j.status === "running");
+  const running = (data ?? []).filter((j) => j.status === "queued" || j.status === "running");
   if (running.length === 0) return null;
   return (
     <div className="mb-3 space-y-2">
@@ -131,6 +162,7 @@ function ActiveModelJobs() {
 }
 
 export default function ModelsPage() {
+  useModelJobsStream();
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);

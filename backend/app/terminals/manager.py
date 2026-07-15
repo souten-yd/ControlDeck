@@ -190,6 +190,13 @@ class TerminalManager:
                 r = subprocess.run(base, capture_output=True, text=True, timeout=10)
             if r.returncode != 0:
                 raise RuntimeError(f"tmux セッション作成に失敗: {r.stderr.strip()}")
+            # tmuxの既定status bar（緑色）は、モバイルでソフトキーボード表示時に
+            # 入力欄のように見えるうえ表示領域を1行消費する。セッション切替はWeb UI側に
+            # あるためControl Deckセッションだけ非表示にする（他のtmux sessionへ影響させない）。
+            subprocess.run(
+                ["tmux", "set-option", "-t", name, "status", "off"],
+                capture_output=True, timeout=10,
+            )
             return {"id": sid, "name": name, "persistent": True}
         # フォールバック: プロセス内 PTY
         master, slave = pty.openpty()
@@ -244,6 +251,11 @@ class TerminalManager:
             )
             if exists.returncode != 0:
                 raise KeyError("セッションが見つかりません")
+            # 改修前から残る永続sessionにも接続時に同じ表示設定を適用する。
+            subprocess.run(
+                ["tmux", "set-option", "-t", target, "status", "off"],
+                capture_output=True, timeout=10,
+            )
             master, slave = pty.openpty()
             env = {
                 "TERM": "xterm-256color",

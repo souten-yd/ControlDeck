@@ -31,6 +31,23 @@
 約60%削減。1280pxで31秒確認しmetrics 16 frame（初回含む）、`/apps` 3回、console error・横スクロールなし。
 320pxのシステム画面も横スクロール・console errorなし、GPU値とmetrics WS継続を確認。
 
+### 汎用ジョブ制御・Model進捗通信
+
+- 互換用`jobs`表へ`job_controls`表を追加し、owner、冪等キー、priority、heartbeat、revisionを永続化。
+  最大4同時実行の安定priority queue、queued/running cancel、再起動時interrupted化を実装
+- REST、cancel、全体`WS /jobs/stream`でowner本人とownerなしsystem jobだけを返す。cancelは監査対象
+- 個別ジョブstreamの0.4秒pollとModel画面の1〜2秒pollを通知Eventへ置換。全体WS更新を100msで束ね、
+  高頻度token/eventでも中間通知を増幅させず最新revisionと最終状態を保持
+- Playwright Chromiumの1280px/320pxで12秒撮影・通信計測し、jobs RESTは初回1回、jobs WSは1接続、
+  横overflow 0、console error 0を確認。backend 198件、本番build成功
+
+### ターミナルの緑色入力欄・画面欠落の追加再現
+
+- Playwrightの320px touch viewportをキーボード相当の高さ390pxへ縮小して撮影。緑色部分は入力textareaではなく、
+  永続化用tmuxの既定status barが最下段で入力欄のように見えていたものと特定
+- Control Deckは上部にセッション切替UIを持つため、Control Deckのtmux sessionだけstatus barを非表示化。
+  既存の永続sessionにも次回接続時に適用し、表示を1行増やす。他のユーザーtmux sessionへは影響しない
+
 ## チャット生成遅延・runtime選択基盤（2026-07-15）
 
 - 実機Qwen3.6-27B + llama.cppでワークフロー生成を再現し、従来は内部推論がctx 2048まで1161 token続いて
