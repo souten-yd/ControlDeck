@@ -7,6 +7,25 @@ from pydantic import BaseModel, Field
 
 ApplicationType = Literal["python_script", "shell_script", "executable", "systemd_service", "url_shortcut"]
 RestartPolicy = Literal["no", "on-failure", "always", "on-success"]
+HealthCheckType = Literal["none", "process", "tcp", "http", "file"]
+
+
+class HealthCheckConfig(BaseModel):
+    type: HealthCheckType = "none"
+    host: str = "127.0.0.1"
+    port: int | None = Field(default=None, ge=1, le=65535)
+    url: str = ""
+    expected_status: int = Field(default=200, ge=100, le=599)
+    body_contains: str = Field(default="", max_length=500)
+    path: str = ""
+    timeout_seconds: float = Field(default=3, ge=0.2, le=30)
+
+
+class HealthCheckResult(BaseModel):
+    ok: bool
+    message: str
+    checked_at: str
+    latency_ms: float
 
 
 class AppCreate(BaseModel):
@@ -29,6 +48,7 @@ class AppCreate(BaseModel):
     systemd_unit_name: str | None = None
     # Web ボタンで開くポート
     web_port: int | None = Field(default=None, ge=1, le=65535)
+    health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
 
 
 class AppUpdate(BaseModel):
@@ -47,6 +67,7 @@ class AppUpdate(BaseModel):
     stop_timeout_seconds: int | None = Field(default=None, ge=1, le=600)
     # Web ボタンで開くポート（null で未設定に戻す）
     web_port: int | None = Field(default=None, ge=1, le=65535)
+    health_check: HealthCheckConfig | None = None
 
 
 class AppRuntime(BaseModel):
@@ -59,6 +80,7 @@ class AppRuntime(BaseModel):
     memory_bytes: int | None = None
     # プロセスツリーが LISTEN している TCP ポート（Web ボタン用）
     listening_ports: list[int] = []
+    health: HealthCheckResult | None = None
 
 
 class AppOut(BaseModel):
@@ -78,6 +100,7 @@ class AppOut(BaseModel):
     auto_start: bool
     restart_policy: str
     stop_timeout_seconds: int
+    health_check: HealthCheckConfig
     systemd_unit_name: str
     created_at: datetime
     updated_at: datetime

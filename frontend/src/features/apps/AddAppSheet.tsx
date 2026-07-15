@@ -52,6 +52,13 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const [stopTimeout, setStopTimeout] = useState(editApp?.stop_timeout_seconds ?? 20);
   const [envText, setEnvText] = useState("");
   const [url, setUrl] = useState(editApp?.url ?? "");
+  const [healthType, setHealthType] = useState(editApp?.health_check.type ?? "none");
+  const [healthHost, setHealthHost] = useState(editApp?.health_check.host ?? "127.0.0.1");
+  const [healthPort, setHealthPort] = useState(editApp?.health_check.port != null ? String(editApp.health_check.port) : "");
+  const [healthUrl, setHealthUrl] = useState(editApp?.health_check.url ?? "");
+  const [healthStatus, setHealthStatus] = useState(String(editApp?.health_check.expected_status ?? 200));
+  const [healthBody, setHealthBody] = useState(editApp?.health_check.body_contains ?? "");
+  const [healthPath, setHealthPath] = useState(editApp?.health_check.path ?? "");
   // インラインコード編集
   const [codeMode, setCodeMode] = useState(false);
   const [code, setCode] = useState("");
@@ -125,6 +132,16 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
       auto_start: autoStart,
       restart_policy: restartPolicy,
       stop_timeout_seconds: stopTimeout,
+      health_check: {
+        type: healthType,
+        host: healthHost,
+        port: healthPort ? Number(healthPort) : null,
+        url: healthUrl,
+        expected_status: Number(healthStatus) || 200,
+        body_contains: healthBody,
+        path: healthPath,
+        timeout_seconds: 3,
+      },
     };
     if (usingCode) payload.code = code;
     // 環境変数は入力がある場合のみ更新（編集時に空で消さない）
@@ -349,6 +366,31 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               </Field>
             </>
           )}
+          {type === "systemd_service" && (
+            <>
+              <Field label="ヘルスチェック" hint="失敗すると実行中の状態をDEGRADEDとして表示します">
+                <select value={healthType} onChange={(e) => setHealthType(e.target.value as ManagedApp["health_check"]["type"])}
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                  <option value="none">なし</option><option value="process">プロセス存在</option>
+                  <option value="tcp">TCPポート</option><option value="http">HTTP GET</option><option value="file">ファイル存在</option>
+                </select>
+              </Field>
+              {healthType === "tcp" && <div className="grid grid-cols-[1fr_7rem] gap-2">
+                <Field label="ホスト"><TextInput value={healthHost} onChange={setHealthHost} mono /></Field>
+                <Field label="ポート"><TextInput value={healthPort} onChange={(v) => setHealthPort(v.replace(/[^0-9]/g, ""))} mono /></Field>
+              </div>}
+              {healthType === "http" && <div className="space-y-3">
+                <Field label="確認URL"><TextInput value={healthUrl} onChange={setHealthUrl} placeholder="http://127.0.0.1:8000/health" mono /></Field>
+                <div className="grid grid-cols-[7rem_1fr] gap-2">
+                  <Field label="期待status"><TextInput value={healthStatus} onChange={(v) => setHealthStatus(v.replace(/[^0-9]/g, ""))} mono /></Field>
+                  <Field label="本文に含む文字（任意）"><TextInput value={healthBody} onChange={setHealthBody} mono /></Field>
+                </div>
+              </div>}
+              {healthType === "file" && <Field label="確認ファイル" hint="設定の許可ルート内だけを確認できます">
+                <PathInput value={healthPath} onChange={setHealthPath} placeholder="/path/to/ready" mode="file" title="確認ファイルを選択" />
+              </Field>}
+            </>
+          )}
         </div>
       )}
 
@@ -377,6 +419,36 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
                   <option value="on-success">正常終了時のみ再起動</option>
                 </select>
               </Field>
+              <Field label="ヘルスチェック" hint="失敗すると実行中の状態をDEGRADEDとして表示します">
+                <select value={healthType} onChange={(e) => setHealthType(e.target.value as ManagedApp["health_check"]["type"])}
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                  <option value="none">なし</option>
+                  <option value="process">プロセス存在</option>
+                  <option value="tcp">TCPポート</option>
+                  <option value="http">HTTP GET</option>
+                  <option value="file">ファイル存在</option>
+                </select>
+              </Field>
+              {healthType === "tcp" && (
+                <div className="grid grid-cols-[1fr_7rem] gap-2">
+                  <Field label="ホスト"><TextInput value={healthHost} onChange={setHealthHost} mono /></Field>
+                  <Field label="ポート"><TextInput value={healthPort} onChange={(v) => setHealthPort(v.replace(/[^0-9]/g, ""))} placeholder={webPort || "8000"} mono /></Field>
+                </div>
+              )}
+              {healthType === "http" && (
+                <div className="space-y-3">
+                  <Field label="確認URL"><TextInput value={healthUrl} onChange={setHealthUrl} placeholder="http://127.0.0.1:8000/health" mono /></Field>
+                  <div className="grid grid-cols-[7rem_1fr] gap-2">
+                    <Field label="期待status"><TextInput value={healthStatus} onChange={(v) => setHealthStatus(v.replace(/[^0-9]/g, ""))} mono /></Field>
+                    <Field label="本文に含む文字（任意）"><TextInput value={healthBody} onChange={setHealthBody} mono /></Field>
+                  </div>
+                </div>
+              )}
+              {healthType === "file" && (
+                <Field label="確認ファイル" hint="設定の許可ルート内だけを確認できます">
+                  <PathInput value={healthPath} onChange={setHealthPath} placeholder="/path/to/ready" mode="file" title="確認ファイルを選択" />
+                </Field>
+              )}
               <button
                 type="button"
                 onClick={() => setAdvanced((v) => !v)}

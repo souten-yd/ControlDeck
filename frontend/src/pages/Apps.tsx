@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAppAction, useApps, useDeleteApp } from "../api/hooks";
-import { useAuth } from "../stores";
+import { useAuth, useToasts } from "../stores";
 import { formatBytes, formatUptime } from "../lib/format";
 import {
   BottomSheet,
@@ -330,6 +330,8 @@ function AppDetailSheet({
   const can = useAuth((s) => s.can);
   const action = useAppAction();
   const navigate = useNavigate();
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
   const isUrl = app.application_type === "url_shortcut";
   const rows: [string, string][] = [
     ["種類", app.application_type],
@@ -347,6 +349,8 @@ function AppDetailSheet({
     ["引数", app.arguments.join(" ") || "—"],
     ["自動起動", app.auto_start ? "有効" : "無効"],
     ["再起動ポリシー", app.restart_policy],
+    ["ヘルスチェック", app.health_check.type === "none" ? "未設定" : app.health_check.type],
+    ...(app.runtime.health ? ([["確認結果", `${app.runtime.health.ok ? "正常" : "異常"} · ${app.runtime.health.message}`]] as [string, string][]) : []),
     ...(!isUrl
       ? ([
           ["Web ポート", app.web_port != null ? String(app.web_port) : "—"],
@@ -383,6 +387,15 @@ function AppDetailSheet({
           </SheetButton>
         )}
         {!isUrl && <SheetButton onClick={() => navigate(`/logs?app=${app.id}`)}>ログ</SheetButton>}
+        {!isUrl && app.health_check.type !== "none" && (
+          <SheetButton onClick={async () => {
+            try {
+              const result = await api<{ ok: boolean; message: string }>(`/apps/${app.id}/health-check`, { method: "POST" });
+              show(result.ok ? `ヘルスチェック正常: ${result.message}` : `ヘルスチェック異常: ${result.message}`, result.ok ? "success" : "error");
+              qc.invalidateQueries({ queryKey: ["apps"] });
+            } catch (e) { show(e instanceof Error ? e.message : "ヘルスチェックに失敗しました", "error"); }
+          }}>ヘルスチェック</SheetButton>
+        )}
         {can("apps.edit") && (
           <SheetButton onClick={onEdit}>設定を編集</SheetButton>
         )}

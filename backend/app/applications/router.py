@@ -15,12 +15,13 @@ from sqlalchemy.orm import Session
 from app.applications import service as apps
 from app.applications import systemd as sd
 from app.applications import testrun
+from app.applications import health as app_health
 from app.applications.discovery import discover_project, discover_pythons
 from app.audit import service as audit
 from app.config import icons_dir
 from app.database import SessionLocal, get_db
 from app.models import ManagedApplication, User
-from app.schemas.apps import AppCreate, AppOut, AppUpdate
+from app.schemas.apps import AppCreate, AppOut, AppUpdate, HealthCheckResult
 from app.security.deps import authenticate_websocket, require_permission
 
 router = APIRouter(prefix="/apps", tags=["apps"])
@@ -105,6 +106,7 @@ def create_app(
         stop_timeout_seconds=body.stop_timeout_seconds,
     )
     apps.set_environment(app, body.environment)
+    apps.set_health_check(app, body.health_check)
     db.add(app)
     db.flush()
     # インラインコードが指定されていれば保存し script_path を設定
@@ -312,12 +314,16 @@ def update_app(
     env = data.pop("environment", None)
     args = data.pop("arguments", None)
     code = data.pop("code", None)
+    health_check = data.pop("health_check", None)
     for key, value in data.items():
         setattr(app, key, value)
     if args is not None:
         app.arguments_json = json.dumps(args)
     if env is not None:
         apps.set_environment(app, env)
+    if health_check is not None:
+        apps.set_health_check(app, health_check)
+        app_health.clear(app.id)
     # インラインコードの更新（管理スクリプトへ書き込み）
     if code is not None and app.application_type in ("python_script", "shell_script"):
         apps.write_app_code(app, code)
@@ -337,6 +343,7 @@ def update_app(
                 restart_policy=app.restart_policy,  # type: ignore[arg-type]
                 stop_timeout_seconds=app.stop_timeout_seconds,
                 systemd_unit_name=app.systemd_unit_name or None,
+                health_check=apps.get_health_check(app),
             )
         )
         apps.sync_unit(app)
@@ -367,10 +374,23 @@ def delete_app(
         except ValueError:
             pass
     name = app.name
+    app_health.clear(app.id)
     db.delete(app)
     db.commit()
     audit.record(db, "app.delete", user=user, resource_type="app", resource_id=str(app_id), request=request, metadata={"name": name})
     return {"ok": True}
+
+
+@router.post("/{app_id}/health-check")
+def run_health_check(
+    app_id: int,
+    user: User = Depends(require_permission("apps.view")),
+    db: Session = Depends(get_db),
+) -> HealthCheckResult:
+    app = _get_app(db, app_id)
+    if apps.get_health_check(app).type == "none":
+        raise HTTPException(status_code=409, detail="ヘルスチェックが設定されていません")
+    return app_health.check_app(app)
 
 
 def _control(

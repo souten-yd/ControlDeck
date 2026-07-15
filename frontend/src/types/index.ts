@@ -29,6 +29,25 @@ export interface AppRuntime {
   cpu_percent: number | null;
   memory_bytes: number | null;
   listening_ports: number[];
+  health: HealthCheckResult | null;
+}
+
+export interface HealthCheckConfig {
+  type: "none" | "process" | "tcp" | "http" | "file";
+  host: string;
+  port: number | null;
+  url: string;
+  expected_status: number;
+  body_contains: string;
+  path: string;
+  timeout_seconds: number;
+}
+
+export interface HealthCheckResult {
+  ok: boolean;
+  message: string;
+  checked_at: string;
+  latency_ms: number;
 }
 
 export interface ManagedApp {
@@ -48,6 +67,7 @@ export interface ManagedApp {
   auto_start: boolean;
   restart_policy: string;
   stop_timeout_seconds: number;
+  health_check: HealthCheckConfig;
   systemd_unit_name: string;
   created_at: string;
   updated_at: string;
