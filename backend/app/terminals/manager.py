@@ -11,7 +11,9 @@ import asyncio
 import fcntl
 import os
 import pty
+import re
 import secrets
+import select
 import shutil
 import signal
 import struct
@@ -20,9 +22,13 @@ import termios
 import time
 from dataclasses import dataclass, field
 
-from app.config import get_config
+from app.config import data_dir, get_config
 
 TMUX_PREFIX = "cdterm-"
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+HISTORY_LINES = 100_000
+HISTORY_BYTES = 16 * 1024 * 1024
+HISTORY_TRUNCATED = b"\r\n\x1b[33m[Control Deck: history older than 16 MiB was truncated]\x1b[0m\r\n"
 
 
 def tmux_available() -> bool:
@@ -31,6 +37,58 @@ def tmux_available() -> bool:
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def _target(sid: str) -> str:
+    if not SESSION_ID_RE.fullmatch(sid):
+        raise KeyError("セッションが見つかりません")
+    return TMUX_PREFIX + sid
+
+
+def _bounded_history(data: bytes) -> tuple[bytes, bool]:
+    if len(data) <= HISTORY_BYTES:
+        return data, False
+    cut = len(data) - HISTORY_BYTES
+    newline = data.find(b"\n", cut, min(len(data), cut + 65_536))
+    if newline >= 0:
+        cut = newline + 1
+    return HISTORY_TRUNCATED + data[cut:], True
+
+
+def _tmux_config_path() -> str:
+    path = data_dir() / "terminal-tmux.conf"
+    content = f"set -g history-limit {HISTORY_LINES}\n"
+    try:
+        if not path.exists() or path.read_text(encoding="utf-8") != content:
+            path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
+    except OSError as exc:
+        raise RuntimeError(f"tmux履歴設定を保存できません: {exc}") from exc
+    return str(path.resolve())
+
+
+def _initial_pty_output(fd: int) -> bytes:
+    """tmux attach直後の端末初期化/全画面描画を履歴snapshotより先に処理する。"""
+    chunks: list[bytes] = []
+    deadline = time.monotonic() + 0.75
+    received = False
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if not ready:
+            if received:
+                break
+            continue
+        try:
+            data = os.read(fd, 65_536)
+        except (BlockingIOError, OSError):
+            break
+        if not data:
+            break
+        chunks.append(data)
+        received = True
+        if sum(map(len, chunks)) >= 1_048_576:
+            break
+    return b"".join(chunks)
 
 
 @dataclass
@@ -43,6 +101,7 @@ class PtySession:
     pid: int
     created_at: float = field(default_factory=time.time)
     buffer: bytearray = field(default_factory=bytearray)  # 再接続時のリプレイ用
+    buffer_truncated: bool = False
     attached: bool = False
 
     def alive(self) -> bool:
@@ -108,8 +167,15 @@ class TerminalManager:
         workdir = cwd or str(os.path.expanduser("~"))
         if tmux_available():
             name = TMUX_PREFIX + sid
+            config_path = _tmux_config_path()
+            # 既存tmux serverには次に作るpane用のglobal値を先に反映する。
+            subprocess.run(
+                ["tmux", "set-option", "-g", "history-limit", str(HISTORY_LINES)],
+                capture_output=True, timeout=10,
+            )
             # tmux はコマンドを 1 引数で渡すと sh -c で実行する（複数引数は空白結合されるため不可）
-            base = ["tmux", "new-session", "-d", "-s", name, "-c", workdir, command or cfg.shell]
+            base = ["tmux", "-f", config_path, "new-session", "-d", "-s", name, "-c", workdir,
+                    command or cfg.shell]
             # tmux サーバーを本サービスの cgroup 外（独立 scope）で起動する。
             # そうしないとサービス再起動時に systemd が cgroup ごと tmux を kill し、
             # 「永続」のはずのセッションが全て消える。
@@ -148,7 +214,7 @@ class TerminalManager:
     def kill_session(self, sid: str) -> None:
         if tmux_available():
             subprocess.run(
-                ["tmux", "kill-session", "-t", TMUX_PREFIX + sid],
+                ["tmux", "kill-session", "-t", _target(sid)],
                 capture_output=True, timeout=10,
             )
             return
@@ -172,6 +238,12 @@ class TerminalManager:
 
     def open_connection(self, sid: str, rows: int, cols: int) -> "TerminalConnection":
         if tmux_available():
+            target = _target(sid)
+            exists = subprocess.run(
+                ["tmux", "has-session", "-t", target], capture_output=True, timeout=10,
+            )
+            if exists.returncode != 0:
+                raise KeyError("セッションが見つかりません")
             master, slave = pty.openpty()
             env = {
                 "TERM": "xterm-256color",
@@ -180,14 +252,27 @@ class TerminalManager:
                 "LANG": os.environ.get("LANG", "C.UTF-8"),
             }
             proc = subprocess.Popen(
-                ["tmux", "attach-session", "-t", TMUX_PREFIX + sid],
+                ["tmux", "attach-session", "-t", target],
                 stdin=slave, stdout=slave, stderr=slave,
                 env=env, start_new_session=True, close_fds=True,
             )
             os.close(slave)
             os.set_blocking(master, False)
             _set_winsize(master, rows, cols)
-            return TerminalConnection(master_fd=master, pid=proc.pid, owns_process=True)
+            initial = _initial_pty_output(master)
+            # attach初期描画をdrainした後にcaptureする。capture後の出力はPTYへ流れるため、
+            # 接続確立中に生成された行もsnapshot/通常streamのどちらかへ必ず入る。
+            captured = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-e", "-S", "-", "-t", target],
+                capture_output=True, timeout=15,
+            )
+            if captured.returncode != 0:
+                os.close(master)
+                os.killpg(os.getpgid(proc.pid), signal.SIGHUP)
+                raise KeyError("セッションが見つかりません")
+            replay, _ = _bounded_history(captured.stdout.replace(b"\n", b"\r\n"))
+            return TerminalConnection(master_fd=master, pid=proc.pid, owns_process=True,
+                                      replay=replay, initial=initial)
         s = self._fallback.get(sid)
         if s is None or not s.alive():
             raise KeyError("セッションが見つかりません")
@@ -195,7 +280,7 @@ class TerminalManager:
         s.attached = True
         return TerminalConnection(
             master_fd=s.master_fd, pid=s.pid, owns_process=False,
-            replay=bytes(s.buffer), session=s,
+            replay=(HISTORY_TRUNCATED if s.buffer_truncated else b"") + bytes(s.buffer), session=s,
         )
 
 
@@ -208,12 +293,14 @@ class TerminalConnection:
         pid: int,
         owns_process: bool,
         replay: bytes = b"",
+        initial: bytes = b"",
         session: PtySession | None = None,
     ) -> None:
         self.master_fd = master_fd
         self.pid = pid
         self.owns_process = owns_process  # True: 切断時に attach プロセスを終了（tmux 側は継続）
         self.replay = replay
+        self.initial = initial
         self.session = session
 
     def write(self, data: bytes) -> None:
@@ -237,8 +324,11 @@ class TerminalConnection:
             if data:
                 if self.session is not None:
                     self.session.buffer.extend(data)
-                    if len(self.session.buffer) > 200_000:
-                        del self.session.buffer[:-100_000]
+                    if len(self.session.buffer) > HISTORY_BYTES:
+                        overflow = len(self.session.buffer) - HISTORY_BYTES
+                        newline = self.session.buffer.find(b"\n", overflow, min(len(self.session.buffer), overflow + 65_536))
+                        del self.session.buffer[:newline + 1 if newline >= 0 else overflow]
+                        self.session.buffer_truncated = True
                 try:
                     queue.put_nowait(data)
                 except asyncio.QueueFull:

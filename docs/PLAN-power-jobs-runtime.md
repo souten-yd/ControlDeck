@@ -5,6 +5,8 @@
 >
 > Model runtime、モデル別設定、独立AIアシスタント、生成遅延/失敗の詳細設計は
 > [`design-model-runtime-assistant.md`](design-model-runtime-assistant.md) に統合した。
+> ターミナルのモバイルキーボード追従とPC/モバイル共通の長期履歴は
+> [`design-terminal-mobile-history.md`](design-terminal-mobile-history.md) に統合した。
 
 ## 進捗サマリ（随時更新）
 

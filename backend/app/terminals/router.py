@@ -47,7 +47,10 @@ def delete_terminal(
     user: User = Depends(require_permission("terminal.use")),
     db: Session = Depends(get_db),
 ):
-    manager.kill_session(session_id)
+    try:
+        manager.kill_session(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="セッションが見つかりません") from exc
     audit.record(
         db, "terminal.kill", user=user, resource_type="terminal",
         resource_id=session_id, request=request,
@@ -76,6 +79,9 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
         return
 
     await websocket.accept()
+    if conn.initial:
+        await websocket.send_bytes(conn.initial)
+    await websocket.send_text(json.dumps({"type": "history_reset"}))
     if conn.replay:
         await websocket.send_bytes(conn.replay)
 
