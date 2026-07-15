@@ -199,6 +199,35 @@ service_installed() {
   systemctl --user list-unit-files "$SERVICE.service" 2>/dev/null | grep -q "$SERVICE"
 }
 
+install_hw_helper() {
+  local helper_src="$REPO_ROOT/helper/control-deck-hw-helper.py"
+  local sudoers_src="$REPO_ROOT/deploy/sudoers/control-deck-hw-helper.in"
+  local sudoers_tmp
+  local install_user
+  install_user="$(id -un)"
+  [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*[$]?$ ]] || {
+    warn "sudoersへ安全に登録できないユーザー名です"
+    return 1
+  }
+  sudoers_tmp="$(mktemp)"
+  sed "s|@USER@|$install_user|g" "$sudoers_src" > "$sudoers_tmp"
+  chmod 0440 "$sudoers_tmp"
+  if ! sudo -n true 2>/dev/null; then
+    info "AMD GPU制御helperの初回登録にsudo認証が必要です"
+    if ! sudo -v; then
+      rm -f "$sudoers_tmp"
+      warn "AMD GPU制御helperを登録できませんでした"
+      return 1
+    fi
+  fi
+  sudo install -d -m 0755 /usr/local/libexec
+  sudo install -o root -g root -m 0755 "$helper_src" /usr/local/libexec/control-deck-hw-helper
+  sudo visudo -cf "$sudoers_tmp" >/dev/null
+  sudo install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/control-deck-hw-helper
+  rm -f "$sudoers_tmp"
+  info "AMD GPU制御helperを登録しました"
+}
+
 # ---------- コマンド ----------
 
 cmd_start() {
@@ -218,12 +247,15 @@ cmd_start() {
 
 cmd_service() {
   ensure_ready
+  install_hw_helper || true
   local unit_dir="$HOME/.config/systemd/user"
   mkdir -p "$unit_dir"
   sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
       "$REPO_ROOT/deploy/systemd/control-deck-web.service.in" > "$unit_dir/$SERVICE.service"
   systemctl --user daemon-reload
   systemctl --user enable --now "$SERVICE.service"
+  # 既にactiveの場合も、更新したbackend/frontend/unitを確実に反映する。
+  systemctl --user restart "$SERVICE.service"
   sleep 1
   systemctl --user --no-pager --lines=3 status "$SERVICE" || true
   info "登録完了。OS 起動時に自動起動します。URL: http://127.0.0.1:8765"

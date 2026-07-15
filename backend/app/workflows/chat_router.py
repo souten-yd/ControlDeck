@@ -75,6 +75,12 @@ async def _llm(
     reasoning modelが回答を出さないままcontext上限まで走らないよう、全呼び出しに
     max tokenを設定する。構造化生成ではthinkingを止め、schemaを優先する。
     """
+    from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+    try:
+        await asyncio.to_thread(ensure_gpu_profile)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     think = False if disable_thinking else _think_for(model)
     native = _native_base(base_url) if think is not None else None
     if native is not None and response_format is None:
@@ -153,6 +159,9 @@ async def chat_stream(websocket: WebSocket):
     think = _ollama.normalize_think(req.get("think")) if req.get("think") is not None else _think_for(model)
     native = _native_base(base) if think is not None else None
     try:
+        from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+        await asyncio.to_thread(ensure_gpu_profile)
         if native is not None:
             # think 指定 & Ollama → ネイティブ /api/chat ストリーム（JSON lines）。
             # thinking(推論)は type:"thinking"、回答は type:"delta" で送る

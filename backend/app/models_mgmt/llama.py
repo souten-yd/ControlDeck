@@ -327,6 +327,10 @@ def _unit_content() -> str:
     args += extra
     log_dir = data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    from app.models_mgmt import amd_gpu
+    from app.models_mgmt.runtime_policy import get_policy
+
+    preflight_commands = amd_gpu.preflight_argvs(get_policy().amd_gpu)
     lines = [
         "[Unit]",
         "Description=Control Deck llama.cpp server",
@@ -336,6 +340,10 @@ def _unit_content() -> str:
         "Type=simple",
         # 共有ライブラリ（libllama-server-impl.so 等）はバイナリと同じ場所にある
         f'Environment="LD_LIBRARY_PATH={_lib_dir()}"',
+    ]
+    for preflight in preflight_commands:
+        lines.append("ExecStartPre=" + " ".join(_escape_exec_arg(a) for a in preflight))
+    lines += [
         "ExecStart=" + " ".join(_escape_exec_arg(a) for a in args),
         "Restart=on-failure",
         "RestartSec=3",
@@ -358,6 +366,12 @@ def start_instance() -> tuple[bool, str]:
         return False, "llama.cpp が未導入です"
     if not Path(get_config()["instance"].get("model_path", "")).is_file():
         return False, "モデルファイルが存在しません"
+    try:
+        from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+        ensure_gpu_profile(force=True)
+    except RuntimeError as exc:
+        return False, str(exc)
     sd.write_unit(unit_name(), _unit_content())
     sd.reset_failed(unit_name())
     return sd.start(unit_name())

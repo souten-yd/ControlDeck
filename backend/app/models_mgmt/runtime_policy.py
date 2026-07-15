@@ -16,6 +16,16 @@ class ChatDefaults(BaseModel):
     timeout_seconds: int = Field(default=300, ge=10, le=1800)
 
 
+class AmdGpuSettings(BaseModel):
+    enabled: bool = False
+    profile: Literal["quiet", "balanced", "full", "custom"] = "quiet"
+    power_limit_watts: int = Field(default=210, ge=1, le=2000)
+    memory_clock_mode: Literal["auto", "minimum", "limit"] = "auto"
+    memory_clock_level: int = Field(default=0, ge=0, le=63)
+    core_clock_mode: Literal["auto", "limit"] = "auto"
+    core_clock_level: int = Field(default=0, ge=0, le=63)
+
+
 class RuntimePolicy(BaseModel):
     selected_runtime: Literal["ollama", "llama.cpp"] = "ollama"
     selected_backend: Literal["rocm", "vulkan", ""] = ""
@@ -26,6 +36,7 @@ class RuntimePolicy(BaseModel):
     default_model_ref: str = Field(default="", max_length=512)
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
+    amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
 
 
 def _path() -> Path:
@@ -63,8 +74,15 @@ def save_policy(policy: RuntimePolicy) -> RuntimePolicy:
     return policy
 
 
+def ensure_gpu_profile(*, force: bool = False) -> dict:
+    """すべてのLLMロード/生成経路から呼ぶ共通preflight。"""
+    from app.models_mgmt import amd_gpu
+
+    return amd_gpu.apply_profile(get_policy().amd_gpu, force=force)
+
+
 async def environment() -> dict:
-    from app.models_mgmt import llama, ollama
+    from app.models_mgmt import amd_gpu, llama, ollama
 
     policy = get_policy()
     detected = llama.detect_backends()
@@ -87,10 +105,74 @@ async def environment() -> dict:
             "selected": policy.selected_runtime == "llama.cpp" and policy.selected_backend == backend,
             "running": bool(health.get("ok")) and llama_status.get("backend") == backend,
         })
+    gpu_caps = amd_gpu.capabilities()
+    if gpu_caps:
+        pwr = gpu_caps["power"]
+        gpu_caps["presets"] = {
+            "quiet": {"power_limit_watts": pwr["min_watts"],
+                      "memory_clock_mode": "limit" if gpu_caps["memory"]["supported"] else "auto",
+                      "memory_clock_level": max(0, len(gpu_caps["memory"]["levels"]) - 2),
+                      "core_clock_mode": "auto", "core_clock_level": 0},
+            "balanced": {"power_limit_watts": round((pwr["min_watts"] + pwr["max_watts"]) / 2),
+                         "memory_clock_mode": "auto", "memory_clock_level": 0,
+                         "core_clock_mode": "auto", "core_clock_level": 0},
+            "full": {"power_limit_watts": pwr["default_watts"], "memory_clock_mode": "auto",
+                     "memory_clock_level": 0, "core_clock_mode": "auto", "core_clock_level": 0},
+        }
     return {
         "platform": "Linux", "gpu": "AMD" if detected.get("rocm") else "GPU",
-        "runtimes": runtimes, "policy": policy.model_dump(),
+        "runtimes": runtimes, "policy": policy.model_dump(), "amd_gpu": gpu_caps,
     }
+
+
+def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:
+    """presetを実機能力から具体値へ解決して、サーバー保存値を自己完結させる。"""
+    from app.models_mgmt import amd_gpu
+
+    settings = policy.amd_gpu
+    if not settings.enabled:
+        return policy
+    caps = amd_gpu.capabilities()
+    if caps is None:
+        raise ValueError("電力・VRAM周波数制御に対応するAMD GPUがありません")
+    pwr = caps["power"]
+    if settings.profile == "quiet":
+        settings.power_limit_watts = pwr["min_watts"]
+        settings.memory_clock_mode = "limit" if caps["memory"]["supported"] else "auto"
+        settings.memory_clock_level = max(0, len(caps["memory"]["levels"]) - 2)
+        settings.core_clock_mode = "auto"
+        settings.core_clock_level = 0
+    elif settings.profile == "balanced":
+        settings.power_limit_watts = round((pwr["min_watts"] + pwr["max_watts"]) / 2)
+        settings.memory_clock_mode = "auto"
+        settings.memory_clock_level = 0
+        settings.core_clock_mode = "auto"
+        settings.core_clock_level = 0
+    elif settings.profile == "full":
+        settings.power_limit_watts = pwr["default_watts"]
+        settings.memory_clock_mode = "auto"
+        settings.memory_clock_level = 0
+        settings.core_clock_mode = "auto"
+        settings.core_clock_level = 0
+    elif settings.profile == "custom":
+        # 要件: MCLKを下げるのは静音profileだけ。customでもdriver自動へ戻す。
+        settings.memory_clock_mode = "auto"
+        settings.memory_clock_level = 0
+    if not pwr["min_watts"] <= settings.power_limit_watts <= pwr["max_watts"]:
+        raise ValueError(f"AMD GPU電力上限は{pwr['min_watts']}〜{pwr['max_watts']}Wで指定してください")
+    if settings.memory_clock_mode != "auto" and not caps["memory"]["supported"]:
+        raise ValueError("このAMD GPUはVRAM周波数levelの変更に対応していません")
+    levels = caps["memory"]["levels"]
+    if settings.memory_clock_mode == "limit" and not any(
+        item["level"] == settings.memory_clock_level for item in levels
+    ):
+        raise ValueError("VRAM周波数levelが実機の範囲外です")
+    core_levels = caps["core"]["levels"]
+    if settings.core_clock_mode == "limit" and not any(
+        item["level"] == settings.core_clock_level for item in core_levels
+    ):
+        raise ValueError("GPUコア周波数levelが実機の範囲外です")
+    return policy
 
 
 async def apply_selection(policy: RuntimePolicy) -> None:

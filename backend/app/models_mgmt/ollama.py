@@ -9,6 +9,7 @@ HuggingFace(GGUF) 検索、アイドル自動アンロードを提供する。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -295,6 +296,9 @@ async def delete(model: str) -> None:
 
 
 async def load(model: str, keep_alive: str | int | None = None, options: dict | None = None) -> dict:
+    from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+    await asyncio.to_thread(ensure_gpu_profile)
     ka = keep_alive if keep_alive is not None else effective_keep_alive(model)
     opts = options if options is not None else effective_options(model)
     # 空プロンプトの generate でモデルだけロードする（num_ctx 等はここで確定する）

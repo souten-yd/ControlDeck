@@ -328,6 +328,12 @@ def _strip_json_fences(text: str) -> str:
 
 
 async def node_llm(config: dict, ctx: dict) -> dict:
+    from app.models_mgmt.runtime_policy import ensure_gpu_profile
+
+    try:
+        await asyncio.to_thread(ensure_gpu_profile)
+    except RuntimeError as e:
+        raise NodeError(str(e)) from e
     base_url = str(config.get("base_url", "http://127.0.0.1:11434/v1")).rstrip("/")
     model = str(config.get("model", "llama3"))
     prompt = render_template(str(config.get("prompt", "")), ctx)

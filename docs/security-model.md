@@ -11,6 +11,7 @@
 |---|---|
 | root で動作させない | web は一般ユーザー。setup/install スクリプトは root 起動を拒否 |
 | 特権操作の分離 | 再起動/シャットダウンは systemd `systemctl reboot` 相当を helper 経由（Phase 電源管理で導入、polkit ルールで限定） |
+| AMD GPU制御 | Webは一般ユーザー。`deck.sh service`がroot所有の専用helperと限定NOPASSWD規則を登録。helperはAMD BDF・実機cap/DPM levelを再検証し、電力/MCLK/SCLK属性以外を変更しない |
 | 任意コマンド初期無効 | `security.allow_arbitrary_commands: false`。登録済みアプリ実行のみ |
 | shell=True 禁止 | subprocess はすべて配列引数。CI/レビューで検査 |
 | パス検証 | すべてのファイルパスは `Path(p).resolve(strict=...)` で正規化し、許可ルート配下（`os.path.commonpath`）を検証。symlink は resolve 後の実体で判定 |

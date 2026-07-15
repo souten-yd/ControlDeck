@@ -125,6 +125,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     mode = params.get("mode", "chat")
     thinking_mode = str(params.get("thinking", "off"))
     max_output_tokens = int(params.get("max_output_tokens", 2048))
+    from app.models_mgmt.runtime_policy import ensure_gpu_profile
     think = False if thinking_mode == "off" else _think_for(model)
     native = _native_base(base_url) if think is not None else None
     buf = {"content": "", "thinking": "", "last_ckpt": 0.0, "meta": {}}
@@ -170,6 +171,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             raise
 
     try:
+        await asyncio.to_thread(ensure_gpu_profile)
         if native is not None:
             payload = {"model": model, "messages": history, "stream": True,
                        "think": think, "keep_alive": _keep_alive(),
