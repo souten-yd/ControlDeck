@@ -33,6 +33,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
 
   // Step 1
   const [name, setName] = useState(editApp?.name ?? "");
+  const [icon, setIcon] = useState<File | null>(null);
   const [type, setType] = useState<AppType>((editApp?.application_type as AppType) ?? "python_script");
   const [projectDir, setProjectDir] = useState("");
   // Step 2
@@ -130,13 +131,19 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
     const env = parseEnv();
     if (!editing || Object.keys(env).length > 0) payload.environment = env;
     try {
+      let saved: ManagedApp;
       if (editing) {
-        await api<ManagedApp>(`/apps/${editApp!.id}`, { method: "PATCH", json: payload });
+        saved = await api<ManagedApp>(`/apps/${editApp!.id}`, { method: "PATCH", json: payload });
       } else {
-        await api<ManagedApp>("/apps", {
+        saved = await api<ManagedApp>("/apps", {
           method: "POST",
           json: { ...payload, application_type: type, systemd_unit_name: type === "systemd_service" ? unitName : null, environment: env },
         });
+      }
+      if (icon) {
+        const form = new FormData();
+        form.append("file", icon);
+        await api(`/apps/${saved.id}/icon`, { method: "POST", body: form });
       }
       qc.invalidateQueries({ queryKey: ["apps"] });
       show(editing ? `「${name}」を更新しました` : `「${name}」を登録しました`);
@@ -181,6 +188,11 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           <Field label="アプリ名" required>
             <TextInput value={name} onChange={setName} placeholder="My LLM Server" />
           </Field>
+          <Field label="アイコン" hint="PNG / JPEG / WebP / SVG、2MB以下">
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"
+              onChange={(e) => setIcon(e.target.files?.[0] ?? null)}
+              className="block w-full text-xs text-zinc-500 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-xs file:font-medium dark:file:bg-zinc-800" />
+          </Field>
           <Field label="種類">
             <div className="grid grid-cols-1 gap-2">
               {(Object.keys(TYPE_LABELS) as AppType[]).map((t) => (
@@ -221,9 +233,16 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
       {step === 2 && (
         <div className="space-y-4">
           {editing && (
-            <Field label="アプリ名" required>
-              <TextInput value={name} onChange={setName} />
-            </Field>
+            <>
+              <Field label="アプリ名" required>
+                <TextInput value={name} onChange={setName} />
+              </Field>
+              <Field label="アイコン" hint="選択すると現在のアイコンを置き換えます">
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  onChange={(e) => setIcon(e.target.files?.[0] ?? null)}
+                  className="block w-full text-xs text-zinc-500 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-xs file:font-medium dark:file:bg-zinc-800" />
+              </Field>
+            </>
           )}
           {/* Python / Shell: ファイル指定 or コード直接入力の切替 */}
           {(type === "python_script" || type === "shell_script") && (

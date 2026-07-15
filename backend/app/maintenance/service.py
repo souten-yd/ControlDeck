@@ -139,10 +139,19 @@ def _check_disk() -> dict:
     return {"free_percent": round(percent_free, 1)}
 
 
+def _purge_file_trash() -> dict:
+    from app.files.service import enforce_trash_limits, purge_expired_trash
+
+    removed = purge_expired_trash()
+    enforce_trash_limits()
+    return {"purged": removed, "retention_days": get_config().files.trash_retention_days}
+
+
 TASKS = {
     "rotate_app_logs": _rotate_app_logs,
     "purge_sessions": _purge_sessions,
     "purge_audit_logs": _purge_audit_logs,
+    "purge_file_trash": _purge_file_trash,
     "optimize_db": _optimize_db,
     "check_disk": _check_disk,
 }

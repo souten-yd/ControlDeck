@@ -126,6 +126,97 @@ async def upload(
     return {"ok": True, "path": str(dst), "size": written}
 
 
+class UploadCreateBody(BaseModel):
+    directory: str
+    filename: str
+    size: int
+    overwrite: bool = False
+
+
+@router.post("/uploads", status_code=201)
+def create_resumable_upload(
+    body: UploadCreateBody, request: Request,
+    user: User = Depends(require_permission("files.edit")), db: Session = Depends(get_db),
+):
+    result = _wrap(files.create_upload, body.directory, body.filename, body.size, body.overwrite, user.id)
+    audit.record(db, "files.upload_start", user=user, resource_type="file", resource_id=body.filename,
+                 request=request, metadata={"upload_id": result["id"], "size": body.size})
+    return result
+
+
+@router.get("/uploads/{upload_id}")
+def resumable_upload_status(upload_id: str, user: User = Depends(require_permission("files.edit"))):
+    _, _, result = _wrap(files.upload_meta, upload_id, user.id)
+    return result
+
+
+@router.put("/uploads/{upload_id}/chunk")
+async def resumable_upload_chunk(
+    upload_id: str, request: Request, offset: int = Query(ge=0),
+    user: User = Depends(require_permission("files.edit")),
+):
+    chunk = await request.body()
+    if not chunk:
+        raise HTTPException(status_code=422, detail="空のチャンクです")
+    return _wrap(files.append_upload, upload_id, user.id, offset, chunk)
+
+
+@router.post("/uploads/{upload_id}/complete")
+def finish_resumable_upload(
+    upload_id: str, request: Request,
+    user: User = Depends(require_permission("files.edit")), db: Session = Depends(get_db),
+):
+    result = _wrap(files.complete_upload, upload_id, user.id)
+    audit.record(db, "files.upload", user=user, resource_type="file", resource_id=result["path"],
+                 request=request, metadata={"size": result["size"], "resumable": True})
+    return {"ok": True, **result}
+
+
+@router.delete("/uploads/{upload_id}", status_code=204)
+def cancel_resumable_upload(
+    upload_id: str, request: Request,
+    user: User = Depends(require_permission("files.edit")), db: Session = Depends(get_db),
+):
+    _wrap(files.cancel_upload, upload_id, user.id)
+    audit.record(db, "files.upload_cancel", user=user, resource_type="upload", resource_id=upload_id, request=request)
+
+
+@router.get("/trash")
+def list_trash(user: User = Depends(require_permission("files.view"))):
+    if not get_config().files.trash_enabled:
+        return []
+    return _wrap(files.list_trash, user.id)
+
+
+@router.post("/trash/{item_id}/restore")
+def restore_trash(
+    item_id: str, request: Request,
+    user: User = Depends(require_permission("files.delete")), db: Session = Depends(get_db),
+):
+    path = _wrap(files.restore_trash, item_id, user.id)
+    audit.record(db, "files.restore", user=user, resource_type="file", resource_id=path, request=request)
+    return {"ok": True, "path": path}
+
+
+@router.delete("/trash/{item_id}")
+def permanently_delete_trash(
+    item_id: str, request: Request,
+    user: User = Depends(require_permission("files.delete")), db: Session = Depends(get_db),
+):
+    _wrap(files.delete_trash, item_id, user.id)
+    audit.record(db, "files.delete_permanent", user=user, resource_type="trash", resource_id=item_id, request=request)
+    return {"ok": True}
+
+
+@router.delete("/trash")
+def empty_trash(
+    request: Request, user: User = Depends(require_permission("files.delete")), db: Session = Depends(get_db),
+):
+    count = _wrap(files.empty_trash, user.id)
+    audit.record(db, "files.trash_empty", user=user, resource_type="trash", request=request, metadata={"count": count})
+    return {"ok": True, "count": count}
+
+
 class PathBody(BaseModel):
     path: str
 
@@ -192,9 +283,15 @@ def rename_path(
 def delete_path(
     path: str,
     request: Request,
+    permanent: bool = False,
     user: User = Depends(require_permission("files.delete")),
     db: Session = Depends(get_db),
 ):
+    if get_config().files.trash_enabled and not permanent:
+        item = _wrap(files.move_to_trash, path, user.id)
+        audit.record(db, "files.trash", user=user, resource_type="file", resource_id=path, request=request,
+                     metadata={"trash_id": item["id"]})
+        return {"ok": True, "trashed": True, "trash_id": item["id"]}
     _wrap(files.delete, path)
-    audit.record(db, "files.delete", user=user, resource_type="file", resource_id=path, request=request)
-    return {"ok": True}
+    audit.record(db, "files.delete_permanent", user=user, resource_type="file", resource_id=path, request=request)
+    return {"ok": True, "trashed": False}

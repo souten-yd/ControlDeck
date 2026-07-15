@@ -219,7 +219,8 @@ def to_out(app: ManagedApplication) -> AppOut:
         name=app.name,
         description=app.description,
         application_type=app.application_type,
-        icon_path=app.icon_path,
+        # 保存先の実パスは API へ露出しない。認証・権限確認付き配信 URL のみ返す。
+        icon_path=(f"/api/v1/apps/{app.id}/icon?v={int(app.updated_at.timestamp())}" if app.icon_path else None),
         working_directory=app.working_directory,
         executable_path=app.executable_path,
         script_path=app.script_path,

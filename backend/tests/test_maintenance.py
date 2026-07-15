@@ -63,7 +63,8 @@ def test_run_maintenance_all_tasks_ok(client):
 
     results = run_maintenance()
     assert set(results) == {
-        "rotate_app_logs", "purge_sessions", "purge_audit_logs", "optimize_db", "check_disk",
+        "rotate_app_logs", "purge_sessions", "purge_audit_logs", "purge_file_trash",
+        "optimize_db", "check_disk",
     }
     assert all(r["ok"] for r in results.values()), results
 
@@ -90,9 +91,11 @@ def test_self_status_api(admin_client):
     assert admin_client.get("/api/v1/system/self-status").status_code == 401
 
 
-def test_sd_notify_without_socket():
+def test_sd_notify_without_socket(monkeypatch):
     from app.maintenance.watchdog import sd_notify, watchdog_enabled
 
-    # NOTIFY_SOCKET なしでは何もせず False（例外を出さない）
+    # systemd サービス配下でテストを実行しても親の通知環境を継承しない。
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    monkeypatch.delenv("WATCHDOG_USEC", raising=False)
     assert sd_notify("READY=1") is False
     assert watchdog_enabled() is False
