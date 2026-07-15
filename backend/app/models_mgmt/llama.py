@@ -66,7 +66,7 @@ DEFAULT_CONFIG = {
     "backend": "",          # vulkan / rocm / cuda
     "sha256": "",
     "installed_at": "",
-    # 単一インスタンスの起動設定（F-2 で拡張）
+    # 現在選択中モデルの型付き起動設定。自由extra_argsは受け付けない。
     "instance": {
         "model_path": "",
         "port": 8080,
@@ -74,7 +74,25 @@ DEFAULT_CONFIG = {
         "ctx_size": 4096,
         "n_parallel": 1,
         "flash_attn": False,
-        "extra_args": "",      # 上級者向けの追加引数（空白区切り）
+        "n_predict": 2048,
+        "batch_size": 2048,
+        "ubatch_size": 512,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16",
+        "threads": -1,
+        "threads_batch": -1,
+        "mmap": True,
+        "mlock": False,
+        "spec_type": "none",
+        "draft_max": 16,
+        "cpu_moe": False,
+        "n_cpu_moe": 0,
+        "temperature": 0.8,
+        "top_k": 40,
+        "top_p": 0.95,
+        "min_p": 0.05,
+        "repeat_penalty": 1.0,
+        "seed": -1,
         "alias": "llama",
     },
 }
@@ -86,9 +104,13 @@ def get_config() -> dict:
     if p.exists():
         try:
             saved = json.loads(p.read_text())
-            cfg.update({k: v for k, v in saved.items() if k in cfg})
+            # instanceを丸ごと置換すると、新版で追加した既定項目が旧設定から欠落する。
+            cfg.update({k: v for k, v in saved.items() if k in cfg and k != "instance"})
             if isinstance(saved.get("instance"), dict):
-                cfg["instance"].update(saved["instance"])
+                cfg["instance"].update({
+                    key: value for key, value in saved["instance"].items()
+                    if key in cfg["instance"]
+                })
         except (json.JSONDecodeError, OSError):
             pass
     return cfg
@@ -320,11 +342,33 @@ def _unit_content() -> str:
         "--ctx-size", str(inst.get("ctx_size", 4096)),
         "--parallel", str(inst.get("n_parallel", 1)),
         "--alias", inst.get("alias", "llama"),
+        "--n-predict", str(inst.get("n_predict", 2048)),
+        "--batch-size", str(inst.get("batch_size", 2048)),
+        "--ubatch-size", str(inst.get("ubatch_size", 512)),
+        "--cache-type-k", str(inst.get("cache_type_k", "f16")),
+        "--cache-type-v", str(inst.get("cache_type_v", "f16")),
+        "--threads", str(inst.get("threads", -1)),
+        "--threads-batch", str(inst.get("threads_batch", -1)),
+        "--temp", str(inst.get("temperature", 0.8)),
+        "--top-k", str(inst.get("top_k", 40)),
+        "--top-p", str(inst.get("top_p", 0.95)),
+        "--min-p", str(inst.get("min_p", 0.05)),
+        "--repeat-penalty", str(inst.get("repeat_penalty", 1.0)),
+        "--seed", str(inst.get("seed", -1)),
     ]
     if inst.get("flash_attn"):
         args += ["--flash-attn"]
-    extra = str(inst.get("extra_args", "") or "").split()
-    args += extra
+    if not inst.get("mmap", True):
+        args += ["--no-mmap"]
+    if inst.get("mlock"):
+        args += ["--mlock"]
+    spec_type = str(inst.get("spec_type", "none"))
+    if spec_type != "none":
+        args += ["--spec-type", spec_type, "--draft-max", str(inst.get("draft_max", 16))]
+    if inst.get("cpu_moe"):
+        args += ["--cpu-moe"]
+    elif int(inst.get("n_cpu_moe", 0)) > 0:
+        args += ["--n-cpu-moe", str(inst["n_cpu_moe"])]
     log_dir = data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     from app.models_mgmt import amd_gpu
@@ -372,9 +416,18 @@ def start_instance() -> tuple[bool, str]:
         ensure_gpu_profile(force=True)
     except RuntimeError as exc:
         return False, str(exc)
-    sd.write_unit(unit_name(), _unit_content())
-    sd.reset_failed(unit_name())
-    return sd.start(unit_name())
+    name = unit_name()
+    content = _unit_content()
+    path = sd.user_unit_dir() / name
+    try:
+        changed = not path.exists() or path.read_text(encoding="utf-8") != content
+    except OSError:
+        changed = True
+    sd.write_unit(name, content)
+    sd.reset_failed(name)
+    active = sd.query_status(name).get("status") == "RUNNING"
+    # 保存後のloadで既に稼働中なら、新しい型付き設定を確実に反映する。
+    return sd.restart(name) if active and changed else sd.start(name)
 
 
 def stop_instance() -> tuple[bool, str]:

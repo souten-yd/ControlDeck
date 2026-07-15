@@ -1,4 +1,4 @@
-/** Model（Ollama）管理。取得(HF含む)/削除/ロード/アンロード/詳細/設定/自動アンロード。
+/** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,6 +9,7 @@ import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 
 interface Model {
+  id?: string;
   name: string;
   size: number;
   parameter_size: string;
@@ -139,17 +140,23 @@ export default function ModelsPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
+  const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
+  const selectedProvider = runtimeEnv?.policy.selected_runtime === "llama.cpp" ? "llama.cpp" : "ollama";
   const { data: models, isLoading } = useQuery({
-    queryKey: ["models"],
-    queryFn: () => api<Model[]>("/models"),
+    queryKey: ["models", selectedProvider],
+    queryFn: async () => {
+      if (selectedProvider === "ollama") return api<Model[]>("/models");
+      const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, string> }>>(`/models/providers/${selectedProvider}/models`);
+      return common.map((m) => ({ id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "", family: "", loaded: !!m.loaded, expires_at: null, vram: null }));
+    },
     refetchInterval: 5000,
-    enabled: status?.available !== false,
+    enabled: !!runtimeEnv && (selectedProvider !== "ollama" || status?.available !== false),
   });
-  const refresh = () => qc.invalidateQueries({ queryKey: ["models"] });
+  const refresh = () => qc.invalidateQueries({ queryKey: ["models", selectedProvider] });
 
-  const act = async (name: string, action: "load" | "unload") => {
+  const act = async (id: string, action: "load" | "unload") => {
     try {
-      await api(`/models/providers/ollama/models/${encodeURIComponent(name)}/${action}`, { method: "POST", json: {} });
+      await api(`/models/providers/${selectedProvider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
       show(action === "load" ? "ロードしました" : "アンロードしました");
       refresh();
     } catch (e) {
@@ -171,19 +178,19 @@ export default function ModelsPage() {
             <button onClick={() => setSettingsOpen(true)} aria-label="LLM ランタイム設定" title="LLM ランタイム設定（Ollama / llama.cpp）" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
           )}
           {can("workflows.edit") && (
-            <button onClick={() => setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              <IconPlus /> モデル取得
+            <button onClick={() => selectedProvider === "llama.cpp" ? setSettingsOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
+              <IconPlus /> {selectedProvider === "llama.cpp" ? "GGUF登録" : "モデル取得"}
             </button>
           )}
         </div>
       </div>
       <p className="mb-4 text-xs text-zinc-400">
-        Ollama のモデル管理。取得（Ollama / HuggingFace GGUF）・ロード・アンロード・削除・詳細設定。
-        {status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
+        選択中: {selectedProvider === "llama.cpp" ? `llama.cpp / ${runtimeEnv?.policy.selected_backend.toUpperCase()}` : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
+        {selectedProvider === "ollama" && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
 
       <ActiveModelJobs />
-      {status && !status.available ? (
+      {selectedProvider === "ollama" && status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           Ollama（{status.base_url}）に接続できません。<code className="font-mono">ollama serve</code> の起動、または設定でエンドポイントを確認してください。
         </div>
@@ -196,22 +203,22 @@ export default function ModelsPage() {
       ) : (
         <ul className="space-y-3">
           {models.map((m) => (
-            <li key={m.name} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <li key={m.id ?? m.name} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-3">
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
-                <button onClick={() => setDetail(m.name)} className="min-w-0 flex-1 text-left">
+                <button onClick={() => selectedProvider === "llama.cpp" ? setSettingsOpen(true) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
                   <p className="truncate text-sm font-semibold">{m.name}</p>
                   <p className="num truncate text-xs text-zinc-400">
-                    {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
+                    {selectedProvider === "llama.cpp" ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
                     {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
                   </p>
                 </button>
                 {can("workflows.edit") && (
                   <>
-                    <button onClick={() => act(m.name, m.loaded ? "unload" : "load")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
+                    <button onClick={() => act(m.id ?? m.name, m.loaded ? "unload" : "load")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
                       {m.loaded ? "アンロード" : "ロード"}
                     </button>
-                    <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>
+                    {selectedProvider === "ollama" && <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>}
                   </>
                 )}
               </div>
@@ -823,7 +830,7 @@ function AmdGpuProfilePanel({ env, policy, onChange }: {
             {gpu.profile === "quiet" && `静音: ${env.power.min_watts}W・MCLK上限 ${env.memory.levels[Math.max(0, env.memory.levels.length - 2)]?.mhz}MHz（最大から1段だけ低下）。`}
             {gpu.profile === "balanced" && `バランス: ${env.presets.balanced.power_limit_watts}W・MCLK自動。アイドル時は最低周波数へ戻ります。`}
             {gpu.profile === "full" && `フルパワー: 既定${env.power.default_watts}W・MCLK自動。性能優先です。`}
-            {gpu.profile === "custom" && "実機が公開する安全範囲内で電力とGPUコア上限を指定します。MCLKは自動です。"}
+            {gpu.profile === "custom" && "実機が公開する安全範囲内で電力、VRAMクロック、GPUコア上限を個別指定します。"}
           </p>
           {gpu.profile === "custom" && (
             <div className="space-y-2.5">
@@ -831,6 +838,14 @@ function AmdGpuProfilePanel({ env, policy, onChange }: {
                 <input type="range" min={env.power.min_watts} max={env.power.max_watts} step={1} value={gpu.power_limit_watts}
                   onChange={(e) => setGpu({ power_limit_watts: Number(e.target.value) })} className="w-full accent-current" />
               </L>
+              {env.memory.supported && <L label="VRAMクロック上限（MCLK）">
+                <select value={gpu.memory_clock_mode === "auto" ? "auto" : String(gpu.memory_clock_level)}
+                  onChange={(e) => e.target.value === "auto" ? setGpu({ memory_clock_mode: "auto", memory_clock_level: 0 }) : setGpu({ memory_clock_mode: "limit", memory_clock_level: Number(e.target.value) })}
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                  <option value="auto">自動（既定・アイドル時は最低へ低下）</option>
+                  {env.memory.levels.map((item) => <option key={item.level} value={item.level}>{item.mhz}MHz 以下</option>)}
+                </select>
+              </L>}
               {env.core.supported && <L label="GPUコアクロック上限（SCLK）">
                 <select value={gpu.core_clock_mode === "auto" ? "auto" : String(gpu.core_clock_level)}
                   onChange={(e) => e.target.value === "auto" ? setGpu({ core_clock_mode: "auto", core_clock_level: 0 }) : setGpu({ core_clock_mode: "limit", core_clock_level: Number(e.target.value) })}
@@ -929,6 +944,25 @@ interface LlamaStatus {
     ctx_size: number;
     n_parallel: number;
     flash_attn: boolean;
+    n_predict: number;
+    batch_size: number;
+    ubatch_size: number;
+    cache_type_k: string;
+    cache_type_v: string;
+    threads: number;
+    threads_batch: number;
+    mmap: boolean;
+    mlock: boolean;
+    spec_type: "none" | "draft-simple" | "draft-mtp" | "ngram-simple";
+    draft_max: number;
+    cpu_moe: boolean;
+    n_cpu_moe: number;
+    temperature: number;
+    top_k: number;
+    top_p: number;
+    min_p: number;
+    repeat_penalty: number;
+    seed: number;
   };
   health?: { ok: boolean };
 }
@@ -961,13 +995,8 @@ function LlamaRuntimePanel() {
       setJobId(r.job_id);
     } catch (e) { show(e instanceof Error ? e.message : "開始に失敗", "error"); }
   };
-  const switchTo = async (backend: string) => {
-    try { await api("/models/llama/switch", { method: "POST", json: { backend } }); show(`${BACKEND_LABEL[backend]} に切り替えました`); qc.invalidateQueries({ queryKey: ["llama-status"] }); }
-    catch (e) { show(e instanceof Error ? e.message : "切り替え失敗", "error"); }
-  };
-
   if (!st) return <p className="text-xs text-zinc-400">読み込み中...</p>;
-  const selectable = st.selectable_backends;
+  const missing = st.selectable_backends.filter((backend) => !st.installed_backends.includes(backend));
 
   return (
     <div className="space-y-3">
@@ -982,34 +1011,15 @@ function LlamaRuntimePanel() {
           <span className="text-xs text-zinc-400">未導入</span>
         )}
       </div>
-      <p className="text-xs text-zinc-500">
-        この PC で使えるバックエンドを検出して表示しています。CUDA(NVIDIA) は当面 Ollama をご利用ください。
-      </p>
-      <div className="flex flex-wrap gap-2">
-        {selectable.length === 0 && <span className="text-xs text-zinc-400">対応 GPU バックエンドが検出されませんでした</span>}
-        {selectable.map((b) => {
-          const installed = st.installed_backends.includes(b);
-          const current = st.backend === b;
-          return (
-            <div key={b} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${current ? "border-accent-500 bg-accent-50/50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
-              <div>
-                <p className="text-xs font-medium">{BACKEND_LABEL[b] ?? b}</p>
-                <p className="text-[10px] text-zinc-400">
-                  {current ? "使用中" : installed ? "導入済み" : "未導入"}
-                  {st.detected_backends[b] ? " · 対応" : ""}
-                </p>
-              </div>
-              {current ? (
-                <span className="text-emerald-500">✓</span>
-              ) : installed ? (
-                <button onClick={() => switchTo(b)} className="rounded-lg bg-zinc-100 px-2.5 py-1 text-[11px] font-medium hover:bg-zinc-200 dark:bg-zinc-800">切替</button>
-              ) : (
-                <button onClick={() => install(b)} disabled={job?.status === "running"} className="rounded-lg bg-accent-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-700 disabled:opacity-40">導入</button>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {missing.length > 0 && <details className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+        <summary className="cursor-pointer text-xs font-medium text-zinc-500">別backendを追加導入</summary>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {missing.map((backend) => <button key={backend} onClick={() => install(backend)} disabled={job?.status === "running"}
+            className="rounded-lg bg-zinc-100 px-2.5 py-1.5 text-[11px] font-medium dark:bg-zinc-800">
+            {BACKEND_LABEL[backend] ?? backend} を導入
+          </button>)}
+        </div>
+      </details>}
       {job && job.status === "running" && <JobProgress job={job} />}
       {st.installed && <LlamaInstanceControls st={st} onChanged={() => qc.invalidateQueries({ queryKey: ["llama-status"] })} />}
     </div>
@@ -1020,20 +1030,25 @@ function LlamaRuntimePanel() {
 function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: () => void }) {
   const show = useToasts((s) => s.show);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [modelPath, setModelPath] = useState(st.model_path);
-  const [ngl, setNgl] = useState<string>(String(st.instance.n_gpu_layers));
-  const [ctx, setCtx] = useState<string>(String(st.instance.ctx_size));
-  const [flash, setFlash] = useState(st.instance.flash_attn);
+  const [advanced, setAdvanced] = useState(false);
+  const [cfg, setCfg] = useState({ ...st.instance, model_path: st.model_path, alias: st.alias || "llama" });
+  const { data: optionData } = useQuery({ queryKey: ["llama-options"], queryFn: () => api<{ flags: string[] }>("/models/llama/options") });
+  const flags = new Set(optionData?.flags ?? []);
+  const set = <K extends keyof typeof cfg>(key: K, value: (typeof cfg)[K]) => setCfg((current) => ({ ...current, [key]: value }));
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
-  const saveAndStart = async () => {
-    if (!modelPath) { show("モデルファイルを選択してください", "error"); return; }
+  const persist = async (start: boolean) => {
+    if (!cfg.model_path) { show("モデルファイルを選択してください", "error"); return; }
     try {
-      await api("/models/llama/config", { method: "PUT", json: { model_path: modelPath, n_gpu_layers: Number(ngl), ctx_size: Number(ctx), flash_attn: flash } });
-      await api(`/models/providers/llama.cpp/models/${encodeURIComponent(st.alias || "llama")}/load`, { method: "POST", json: {} });
-      show("llama.cpp を起動しました（初回はモデル読み込みに時間がかかります）");
+      await api("/models/llama/instance", { method: "PUT", json: cfg });
+      if (start) {
+        await api(`/models/providers/llama.cpp/models/${encodeURIComponent(cfg.alias)}/load`, { method: "POST", json: {} });
+        show("保存してllama.cppを起動しました（初回はモデル読み込みに時間がかかります）");
+      } else {
+        show("モデル個別設定をサーバーへ保存しました");
+      }
       onChanged();
-    } catch (e) { show(e instanceof Error ? e.message : "起動に失敗", "error"); }
+    } catch (e) { show(e instanceof Error ? e.message : "保存に失敗", "error"); }
   };
   const stop = async () => {
     try { await api(`/models/providers/llama.cpp/models/${encodeURIComponent(st.alias || "llama")}/unload`, { method: "POST" }); show("停止しました"); onChanged(); }
@@ -1042,22 +1057,68 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
 
   return (
     <div className="space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-      <p className="text-xs font-semibold text-zinc-500">モデルを起動</p>
+      <div>
+        <p className="text-xs font-semibold text-zinc-500">現在のllama.cppモデル個別設定</p>
+        <p className="mt-0.5 text-[10px] text-zinc-400">GGUFごとに必要なCTX・KV・MTP・MoE設定を保存し、起動時に反映します。</p>
+      </div>
       <div className="flex gap-1.5">
-        <input value={modelPath} onChange={(e) => setModelPath(e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+        <input value={cfg.model_path} onChange={(e) => set("model_path", e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
         <button onClick={() => setPickerOpen(true)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <L label="GPU 層数 (999=全部)"><input type="number" value={ngl} onChange={(e) => setNgl(e.target.value)} className={input} /></L>
-        <L label="コンテキスト長"><input type="number" value={ctx} onChange={(e) => setCtx(e.target.value)} className={input} /></L>
+        <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
+        <L label="コンテキスト長（CTX）"><PresetOrCustom value={cfg.ctx_size} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("ctx_size", Number(v ?? 4096))} /></L>
+        <L label="最大出力トークン"><PresetOrCustom value={cfg.n_predict} presets={PREDICT_PRESETS} placeholder="2048" onChange={(v) => set("n_predict", Number(v ?? 2048))} /></L>
+        <L label="GPUオフロード層"><PresetOrCustom value={cfg.n_gpu_layers} presets={GPU_PRESETS.map((p) => p.v === -1 ? { ...p, v: 999, label: "全部 (999)" } : p)} placeholder="999" onChange={(v) => set("n_gpu_layers", Number(v ?? 999))} /></L>
       </div>
-      <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
-        <span className="text-xs">Flash Attention</span>
-        <input type="checkbox" checked={flash} onChange={(e) => setFlash(e.target.checked)} className="h-4 w-4" />
-      </label>
-      <div className="flex gap-1.5">
-        <button onClick={saveAndStart} className="flex-1 rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700">起動</button>
-        <button onClick={stop} className="flex-1 rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">停止</button>
+      {flags.has("--flash-attn") && <Toggle label="Flash Attention" hint="KVキャッシュ削減と速度改善。量子化KVでは有効化を推奨" value={cfg.flash_attn} onChange={(value) => set("flash_attn", value)} />}
+
+      {(flags.has("--cache-type-k") || flags.has("--cache-type-v")) && <div className="grid grid-cols-2 gap-2">
+        <L label="Kキャッシュ量子化"><CacheTypeSelect value={cfg.cache_type_k} onChange={(value) => set("cache_type_k", value)} input={input} /></L>
+        <L label="Vキャッシュ量子化"><CacheTypeSelect value={cfg.cache_type_v} onChange={(value) => set("cache_type_v", value)} input={input} /></L>
+      </div>}
+
+      {flags.has("--spec-type") && <div className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+        <L label="推測デコード / MTP">
+          <select value={cfg.spec_type} onChange={(e) => set("spec_type", e.target.value as typeof cfg.spec_type)} className={input}>
+            <option value="none">無効（互換性優先）</option>
+            <option value="draft-mtp">MTP（対応GGUFのみ）</option>
+            <option value="draft-simple">Draft simple</option>
+            <option value="ngram-simple">N-gram（追加モデル不要）</option>
+          </select>
+        </L>
+        {cfg.spec_type !== "none" && <L label="先読みトークン上限"><PresetOrCustom value={cfg.draft_max} presets={[4, 8, 16, 32, 64].map((v) => ({ v, label: String(v) }))} placeholder="16" onChange={(v) => set("draft_max", Number(v ?? 16))} /></L>}
+        {cfg.spec_type === "draft-mtp" && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">MTP層を含まないモデルでは起動に失敗するため、その場合は無効へ戻してください。</p>}
+      </div>}
+
+      {(flags.has("--cpu-moe") || flags.has("--n-cpu-moe")) && <div className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+        <Toggle label="MoE expertをCPUへ配置" hint="VRAMを節約する代わりに生成速度が低下します" value={cfg.cpu_moe} onChange={(value) => set("cpu_moe", value)} />
+        {!cfg.cpu_moe && <L label="CPUへ置く先頭MoE層数（0=無効）"><PresetOrCustom value={cfg.n_cpu_moe} presets={[0, 8, 16, 24, 32].map((v) => ({ v, label: String(v) }))} placeholder="0" onChange={(v) => set("n_cpu_moe", Number(v ?? 0))} /></L>}
+      </div>}
+
+      <button type="button" onClick={() => setAdvanced((value) => !value)} className="text-xs font-medium text-accent-600 dark:text-accent-400">
+        {advanced ? "▾ 上級設定を隠す" : "▸ 上級設定（batch・thread・sampling・RAM）"}
+      </button>
+      {advanced && <div className="space-y-2.5 border-t border-zinc-100 pt-2.5 dark:border-zinc-800">
+        <div className="grid grid-cols-2 gap-2">
+          <L label="batch size"><PresetOrCustom value={cfg.batch_size} presets={[512, 1024, 2048, 4096].map((v) => ({ v, label: String(v) }))} placeholder="2048" onChange={(v) => set("batch_size", Number(v ?? 2048))} /></L>
+          <L label="ubatch size"><PresetOrCustom value={cfg.ubatch_size} presets={[128, 256, 512, 1024].map((v) => ({ v, label: String(v) }))} placeholder="512" onChange={(v) => set("ubatch_size", Number(v ?? 512))} /></L>
+          <L label="生成thread（-1=自動）"><PresetOrCustom value={cfg.threads} presets={[-1, 4, 8, 12, 16].map((v) => ({ v, label: String(v) }))} placeholder="-1" onChange={(v) => set("threads", Number(v ?? -1))} /></L>
+          <L label="batch thread（-1=自動）"><PresetOrCustom value={cfg.threads_batch} presets={[-1, 4, 8, 12, 16].map((v) => ({ v, label: String(v) }))} placeholder="-1" onChange={(v) => set("threads_batch", Number(v ?? -1))} /></L>
+          <L label="temperature"><PresetOrCustom value={cfg.temperature} presets={TEMP_PRESETS} placeholder="0.8" onChange={(v) => set("temperature", Number(v ?? 0.8))} /></L>
+          <L label="top-k"><PresetOrCustom value={cfg.top_k} presets={TOPK_PRESETS} placeholder="40" onChange={(v) => set("top_k", Number(v ?? 40))} /></L>
+          <L label="top-p"><PresetOrCustom value={cfg.top_p} presets={TOPP_PRESETS} placeholder="0.95" onChange={(v) => set("top_p", Number(v ?? 0.95))} /></L>
+          <L label="min-p"><PresetOrCustom value={cfg.min_p} presets={MINP_PRESETS} placeholder="0.05" onChange={(v) => set("min_p", Number(v ?? 0.05))} /></L>
+          <L label="repeat penalty"><PresetOrCustom value={cfg.repeat_penalty} presets={REPEAT_PRESETS} placeholder="1.0" onChange={(v) => set("repeat_penalty", Number(v ?? 1))} /></L>
+          <L label="seed（-1=ランダム）"><input type="number" value={cfg.seed} onChange={(e) => set("seed", Number(e.target.value))} className={input} /></L>
+        </div>
+        <Toggle label="mmapでモデルを読む" hint="通常はON。OSのpage cacheを利用します" value={cfg.mmap} onChange={(value) => set("mmap", value)} />
+        <Toggle label="モデルをRAMへ固定（mlock）" hint="swapを防ぎますが、十分なRAMが必要です" value={cfg.mlock} onChange={(value) => set("mlock", value)} />
+      </div>}
+      <div className="grid grid-cols-3 gap-1.5">
+        <button onClick={() => persist(false)} className="rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">保存</button>
+        <button onClick={() => persist(true)} className="rounded-xl bg-accent-600 py-2 text-xs font-medium text-white hover:bg-accent-700">保存して起動</button>
+        <button onClick={stop} className="rounded-xl bg-zinc-100 py-2 text-xs font-medium hover:bg-zinc-200 dark:bg-zinc-800">停止</button>
       </div>
       {st.base_url && (
         <p className="text-[10px] text-zinc-400">
@@ -1065,9 +1126,26 @@ function LlamaInstanceControls({ st, onChanged }: { st: LlamaStatus; onChanged: 
         </p>
       )}
       {pickerOpen && (
-        <FilePicker mode="file" title="GGUF モデルを選択" initialPath={modelPath || undefined}
-          onSelect={(p) => { setModelPath(p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />
+        <FilePicker mode="file" title="GGUF モデルを選択" initialPath={cfg.model_path || undefined}
+          onSelect={(p) => { set("model_path", p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />
       )}
     </div>
   );
+}
+
+function Toggle({ label, hint, value, onChange }: { label: string; hint?: string; value: boolean; onChange: (value: boolean) => void }) {
+  return <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+    <span className="text-xs">{label}{hint && <span className="block text-[10px] font-normal text-zinc-400">{hint}</span>}</span>
+    <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 shrink-0" />
+  </label>;
+}
+
+function CacheTypeSelect({ value, onChange, input }: { value: string; onChange: (value: string) => void; input: string }) {
+  return <select value={value} onChange={(e) => onChange(e.target.value)} className={input}>
+    <option value="f16">f16（最高精度）</option>
+    <option value="bf16">bf16</option>
+    <option value="q8_0">q8_0（約1/2・推奨）</option>
+    <option value="q4_0">q4_0（約1/4）</option>
+    <option value="f32">f32（最大）</option>
+  </select>;
 }
