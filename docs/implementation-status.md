@@ -106,6 +106,17 @@ MTP/K/V/MoEが各1箇所、横overflow・console errorなし。複数GGUF catalo
 Playwright Chromiumの1280pxで直接route、会話名server保存、生成・登録を確認。320pxでは会話selectorと全モード、
 入力欄が可視範囲内で、横overflow・console errorなし。チャット本文生成の既存実測は0.66秒。
 
+### ワークフロー副作用なしdry-run・node metadata
+
+- 従来の「ノード単体テスト」は実executorを呼び、app停止/file書込/Webhook等の副作用を起こし得たため、
+  UI既定をexecutorを呼ばない「安全プレビュー」へ変更。既存APIの明示的実テスト互換は維持
+- 編集中/保存済みworkflowを永続化や実行なしで静的走査し、構造/意味error、warning、到達wave、
+  条件分岐/loop、予定副作用と必要capabilityを返すdry-run APIと結果sheetを追加。secret名/値もredact
+- backend executor 35種とcontrol.loopの計36種にversion、side effect、capability、主要config/output型、
+  retry/cancel/progress/dry-run対応metadataを追加。LLM catalogで欠落していた5種も統合し、集合差をテスト
+- Playwright Chromium 1280px/320pxでfile.write→Webhookを撮影し、書込1/外部通信1の予定表示、
+  executor未実行の明記、横overflow 0、console error 0を確認。詳細設計は`design-workflow-dry-run-metadata.md`
+
 ## Phase 2 / Phase 4 残件対応（2026-07-15）
 
 - **アプリアイコン**: PNG / JPEG / WebP / SVG（2MB以下）を登録・更新画面からアップロード。実パスをAPIへ露出せず、
