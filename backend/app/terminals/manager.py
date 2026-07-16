@@ -337,6 +337,22 @@ class TerminalConnection:
     def write(self, data: bytes) -> None:
         os.write(self.master_fd, data)
 
+    def capture_replay(self) -> bytes:
+        """resume journal範囲外時だけ現在のbounded snapshotを取得する。"""
+        if self.tmux_target:
+            captured = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-e", "-J", "-S", "-", "-t", self.tmux_target],
+                capture_output=True, timeout=15,
+            )
+            if captured.returncode != 0:
+                raise OSError("tmux history capture failed")
+            replay, _ = _bounded_history(captured.stdout.replace(b"\n", b"\r\n"))
+            return replay
+        if self.session is None:
+            return self.replay
+        prefix = HISTORY_TRUNCATED if self.session.buffer_truncated else b""
+        return prefix + bytes(self.session.buffer)
+
     def resize(self, rows: int, cols: int) -> tuple[int, int]:
         size = _normalize_terminal_size(rows, cols)
         if size == self._last_size:

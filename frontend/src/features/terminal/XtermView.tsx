@@ -12,6 +12,7 @@ import { useToasts } from "../../stores";
 import { IconX } from "../../components/icons";
 import { TerminalGeometryController } from "./controllers/TerminalGeometryController";
 import { TerminalDiagnostics } from "./controllers/TerminalDiagnostics";
+import { TerminalConnectionController } from "./controllers/TerminalConnectionController";
 import { TerminalImeController } from "./controllers/TerminalImeController";
 import { TerminalResizeBarrier, type TerminalResizeAck } from "./controllers/TerminalResizeBarrier";
 import { TerminalWriteQueue } from "./controllers/TerminalWriteQueue";
@@ -53,7 +54,6 @@ export default function XtermView({
   const helperRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const historyReadyRef = useRef(false);
   const inputSenderRef = useRef<((data: string) => void) | null>(null);
   const ctrlArmed = useRef(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
@@ -103,12 +103,16 @@ export default function XtermView({
     let geometryController: TerminalGeometryController | null = null;
     let diagnostics: TerminalDiagnostics;
     let resizeBarrier: TerminalResizeBarrier;
+    let connectionController: TerminalConnectionController;
     let connectionGeneration = 0;
     let resizeGeneration = 0;
+    let everConnected = false;
+    let pendingOutputSequence: number | null = null;
+    const clientInstanceId = crypto.randomUUID().replaceAll("-", "");
     let lastPtySize: { cols: number; rows: number } | null = null;
     const sendNow = (data: string): void => {
       const ws = wsRef.current;
-      if (!historyReadyRef.current || ws?.readyState !== WebSocket.OPEN) return;
+      if (ws?.readyState !== WebSocket.OPEN) return;
       ws.send(encoder.encode(data));
       diagnostics?.record("input-sent", {
         connectionGeneration,
@@ -151,19 +155,33 @@ export default function XtermView({
 
     const connect = () => {
       if (disposed) return;
+      const current = wsRef.current;
+      if (current?.readyState === WebSocket.OPEN || current?.readyState === WebSocket.CONNECTING) return;
+      window.clearTimeout(retryTimer);
       connectionGeneration += 1;
       const thisConnectionGeneration = connectionGeneration;
+      const attachMode = everConnected ? "resume" : "initial";
       resizeBarrier.resetConnection(thisConnectionGeneration);
-      historyReadyRef.current = false;
+      connectionController.begin(thisConnectionGeneration, attachMode);
       setStatus("connecting");
+      const query = new URLSearchParams({
+        rows: String(term.rows),
+        cols: String(term.cols),
+        clientInstanceId,
+        connectionGeneration: String(thisConnectionGeneration),
+        attachMode,
+        lastSequence: String(connectionController.getLastSequence()),
+      });
       const ws = new WebSocket(
-        wsUrl(`/terminals/${sessionId}/connect?rows=${term.rows}&cols=${term.cols}`),
+        wsUrl(`/terminals/${sessionId}/connect?${query.toString()}`),
       );
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       ws.onopen = () => {
         if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
+        if (!connectionController.opened(thisConnectionGeneration, attachMode)) return;
+        everConnected = true;
         retryDelay = 500;
         lastPtySize = null;
         setStatus("open");
@@ -183,15 +201,44 @@ export default function XtermView({
               diagnostics.record("size-probe-result", control);
               return;
             }
+            if (control.type === "output") {
+              if (control.connectionGeneration === thisConnectionGeneration
+                && Number.isSafeInteger(control.sequence)) pendingOutputSequence = control.sequence;
+              return;
+            }
             if (control.type === "history_reset") {
+              if (!connectionController.historyReset(control.connectionGeneration ?? thisConnectionGeneration)) return;
               writeQueue.enqueueReset();
               return;
             }
             if (control.type === "history_end") {
               writeQueue.enqueueTask(() => {
-                historyReadyRef.current = true;
+                connectionController.markLive(
+                  control.connectionGeneration ?? thisConnectionGeneration,
+                  Number(control.sequence ?? 0),
+                  "history-end-received",
+                );
                 term.focus();
               }, "history-end");
+              return;
+            }
+            if (control.type === "resume_ready") {
+              connectionController.resumeReady(control.connectionGeneration);
+              return;
+            }
+            if (control.type === "resume_reset_required") {
+              connectionController.resumeResetRequired(control.connectionGeneration);
+              return;
+            }
+            if (control.type === "resume_end") {
+              writeQueue.enqueueTask(() => {
+                connectionController.markLive(
+                  control.connectionGeneration,
+                  Number(control.sequence ?? 0),
+                  "resume-end-received",
+                );
+                term.focus();
+              }, "resume-end");
               return;
             }
           } catch {
@@ -206,15 +253,20 @@ export default function XtermView({
           return;
         }
         const data = new Uint8Array(ev.data);
+        const sequence = pendingOutputSequence;
+        pendingOutputSequence = null;
+        connectionController.historyFrame(data.byteLength);
         const token = resizeBarrier.captureFrameAfterAck();
         diagnostics.recordPty("pty-frame-received", data, { connectionGeneration, token });
         writeQueue.enqueueWrite(data, () => {
           diagnostics.record("pty-write-complete", { connectionGeneration, token });
+          if (sequence !== null) connectionController.outputDrawn(thisConnectionGeneration, sequence);
           if (token) resizeBarrier.completePtyFrame(token);
         });
       };
       ws.onclose = (ev) => {
         if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
+        if (!connectionController.closed(thisConnectionGeneration, ev)) return;
         resizeBarrier.resetConnection(connectionGeneration);
         if (disposed) return;
         if (ev.code === 4404) {
@@ -224,14 +276,15 @@ export default function XtermView({
           return;
         }
         setStatus("closed");
+        connectionController.reconnectScheduled(retryDelay);
         retryTimer = window.setTimeout(connect, retryDelay);
         retryDelay = Math.min(retryDelay * 2, 5000);
       };
+      ws.onerror = () => connectionController.error(thisConnectionGeneration);
     };
 
     const send = (data: string) => {
-      const ws = wsRef.current;
-      if (historyReadyRef.current && ws?.readyState === WebSocket.OPEN) resizeBarrier.sendOrQueue(data);
+      connectionController.sendOrQueue(data);
     };
     inputSenderRef.current = send;
     const dataDisposable = term.onData((data) => {
@@ -277,6 +330,17 @@ export default function XtermView({
       helper,
       enabled: geometryDebug,
       isComposing: imeController.isComposing,
+    });
+    connectionController = new TerminalConnectionController({
+      debug: geometryDebug,
+      sendNow: (data) => resizeBarrier.sendOrQueue(data),
+      snapshot: () => ({
+        documentVisibility: document.visibilityState,
+        visualViewportWidth: window.visualViewport?.width,
+        visualViewportHeight: window.visualViewport?.height,
+        rows: term.rows,
+        cols: term.cols,
+      }),
     });
     resizeBarrier = new TerminalResizeBarrier({
       sendNow,
@@ -338,6 +402,11 @@ export default function XtermView({
       sendInputForTest: (data: string) => void;
       resetBarrierForTest: () => void;
       connectionGeneration: () => number;
+      connectionState: () => Record<string, unknown>;
+      connectionLog: () => readonly Record<string, unknown>[];
+      historyReplayCounters: () => ReturnType<TerminalConnectionController["getCounters"]>;
+      closeWebSocketForTest: () => void;
+      setLastSequenceForTest: (sequence: number) => void;
       controllerListenerCount: number;
     };
     const testWindow = window as typeof window & { __controlDeckTerminalTest?: TerminalTestHook };
@@ -368,6 +437,11 @@ export default function XtermView({
         sendInputForTest: (data) => resizeBarrier.sendOrQueue(data),
         resetBarrierForTest: () => resizeBarrier.resetConnection(connectionGeneration),
         connectionGeneration: () => connectionGeneration,
+        connectionState: () => connectionController.getState(),
+        connectionLog: () => connectionController.getLog(),
+        historyReplayCounters: () => connectionController.getCounters(),
+        closeWebSocketForTest: () => wsRef.current?.close(4001, "playwright reconnect"),
+        setLastSequenceForTest: (sequence) => connectionController.setLastSequenceForTest(sequence),
         // geometry 5 + IME textarea 7 + host focusin 1。observer/touch/xterm内部は別集計。
         controllerListenerCount: 13,
       };
@@ -448,7 +522,6 @@ export default function XtermView({
 
     return () => {
       disposed = true;
-      historyReadyRef.current = false;
       inputSenderRef.current = null;
       window.clearTimeout(retryTimer);
       geometryController?.dispose();

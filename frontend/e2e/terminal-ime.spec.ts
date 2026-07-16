@@ -68,6 +68,27 @@ declare global {
       sendInputForTest: (data: string) => void;
       resetBarrierForTest: () => void;
       connectionGeneration: () => number;
+      connectionState: () => {
+        state: string;
+        connectionGeneration: number;
+        lastSequence: number;
+      };
+      connectionLog: () => readonly Record<string, unknown>[];
+      historyReplayCounters: () => {
+        historyReset: number;
+        historyEnd: number;
+        resumeReady: number;
+        resumeResetRequired: number;
+        replayFrames: number;
+        replayBytes: number;
+        websocketCreated: number;
+        websocketOpened: number;
+        websocketClosed: number;
+        reconnectScheduled: number;
+        reconnectStarted: number;
+      };
+      closeWebSocketForTest: () => void;
+      setLastSequenceForTest: (sequence: number) => void;
       controllerListenerCount: number;
     };
   }
@@ -156,6 +177,104 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(finalDiagnostics?.ptyCols).toBe(finalSize.cols);
     expect(finalDiagnostics?.tmuxWindow).toBe(`${finalSize.cols}x${finalSize.rows}`);
     expect(finalDiagnostics?.tmuxClients).toContain(`${finalSize.cols}x${finalSize.rows}`);
+  });
+
+  test("keyboard open and close ten times keeps one websocket and no history replay", async ({ page }) => {
+    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+      await page.setViewportSize({ width: 320, height: 430 });
+      await page.waitForTimeout(90);
+      await page.setViewportSize({ width: 320, height: 700 });
+      await page.waitForTimeout(90);
+    }
+    const after = await page.evaluate(() => ({
+      history: window.__controlDeckTerminalTest!.historyReplayCounters(),
+      connection: window.__controlDeckTerminalTest!.connectionState(),
+      xterms: document.querySelectorAll(".xterm").length,
+      textareas: document.querySelectorAll(".xterm-helper-textarea").length,
+    }));
+    expect(after.history.websocketCreated).toBe(before.websocketCreated);
+    expect(after.history.websocketClosed).toBe(before.websocketClosed);
+    expect(after.history.historyReset).toBe(before.historyReset);
+    expect(after.history.replayBytes).toBe(before.replayBytes);
+    expect(after.connection.state).toBe("LIVE");
+    expect(after.xterms).toBe(1);
+    expect(after.textareas).toBe(1);
+  });
+
+  test("reconnect resumes only missing journal output without resetting scrollback", async ({ page }) => {
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.pressSequentially("printf 'RESUME-BEFORE\\n'; (sleep 0.2; printf 'RESUME-DURING\\n') &", { delay: 1 });
+    await textarea.press("Enter");
+    await expect(page.locator(".xterm-rows")).toContainText("RESUME-BEFORE");
+    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
+    await page.evaluate(() => window.__controlDeckTerminalTest!.closeWebSocketForTest());
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.connectionState().state), {
+      timeout: 5_000,
+    }).toBe("LIVE");
+    await expect(page.locator(".xterm-rows")).toContainText("RESUME-DURING");
+    const after = await page.evaluate(() => ({
+      history: window.__controlDeckTerminalTest!.historyReplayCounters(),
+      bufferText: window.__controlDeckTerminalTest!.captureRenderState().visibleBufferRows.join("\n"),
+    }));
+    expect(after.history.websocketCreated).toBe(before.websocketCreated + 1);
+    expect(after.history.resumeReady).toBe(before.resumeReady + 1);
+    expect(after.history.historyReset).toBe(before.historyReset);
+    expect(after.history.replayBytes).toBe(before.replayBytes);
+    expect(after.bufferText.match(/RESUME-BEFORE/g)?.length).toBe(1);
+    expect(after.bufferText.match(/RESUME-DURING/g)?.length).toBe(1);
+  });
+
+  test("journal range miss falls back to one bounded reset", async ({ page }) => {
+    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
+    await page.evaluate(() => {
+      window.__controlDeckTerminalTest!.setLastSequenceForTest(Number.MAX_SAFE_INTEGER - 1);
+      window.__controlDeckTerminalTest!.closeWebSocketForTest();
+    });
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.connectionState().state), {
+      timeout: 5_000,
+    }).toBe("LIVE");
+    const after = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
+    expect(after.resumeResetRequired).toBe(before.resumeResetRequired + 1);
+    expect(after.historyReset).toBe(before.historyReset + 1);
+    expect(after.historyEnd).toBe(before.historyEnd + 1);
+  });
+
+  test("full page reload creates a new client and performs initial replay", async ({ page }) => {
+    const sessionId = await page.locator("[data-terminal-header] select").inputValue();
+    await page.reload();
+    const sessionRow = page.locator("li").filter({ hasText: `cdterm-${sessionId}` });
+    await expect(sessionRow).toBeVisible();
+    await sessionRow.getByRole("button", { name: "接続", exact: true }).click();
+    await expect(page.locator("[data-terminal-root]")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state)).toBe("LIVE");
+    const countersAfterReload = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
+    expect(countersAfterReload.websocketCreated).toBe(1);
+    expect(countersAfterReload.historyReset).toBe(1);
+    expect(countersAfterReload.historyEnd).toBe(1);
+  });
+
+  test("session switch never mixes the previous terminal history", async ({ page }) => {
+    const firstSessionId = await page.locator("[data-terminal-header] select").inputValue();
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.pressSequentially("echo FIRST_SESSION_ONLY", { delay: 1 });
+    await textarea.press("Enter");
+    await expect(page.locator(".xterm-rows")).toContainText("FIRST_SESSION_ONLY");
+    const created = await page.context().request.post("/api/v1/terminals", {
+      headers: { "X-Requested-With": "ControlDeck" },
+    });
+    expect(created.ok()).toBe(true);
+    const secondSession = await created.json() as { id: string };
+    await page.reload();
+    const secondRow = page.locator("li").filter({ hasText: `cdterm-${secondSession.id}` });
+    await secondRow.getByRole("button", { name: "接続", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state)).toBe("LIVE");
+    const secondBuffer = await page.evaluate(() =>
+      window.__controlDeckTerminalTest!.captureRenderState().visibleBufferRows.join("\n"));
+    expect(secondBuffer).not.toContain("FIRST_SESSION_ONLY");
+    await page.context().request.delete(`/api/v1/terminals/${firstSessionId}`, {
+      headers: { "X-Requested-With": "ControlDeck" },
+    });
   });
 
   test("blocks geometry during composition and flushes once", async ({ page }) => {
@@ -368,6 +487,7 @@ test.describe("terminal mobile IME and geometry", () => {
   test("keeps writes and controller resources bounded across ten keyboard cycles", async ({ page }) => {
     test.setTimeout(25_000);
     const textarea = page.locator(".xterm-helper-textarea");
+    const historyBefore = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
     await page.evaluate(() => window.__controlDeckTerminalTest!.resetCounters());
     await textarea.pressSequentially("i=1; while [ $i -le 200 ]; do printf '\\rWorking %03d' $i; sleep .05; i=$((i+1)); done; echo; echo WORKING_DONE_200", { delay: 1 });
     await textarea.press("Enter");
@@ -383,14 +503,18 @@ test.describe("terminal mobile IME and geometry", () => {
     await expect(page.locator(".xterm-rows")).toContainText("INPUT_OK");
     const result = await counters(page);
     const barrier = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
+    const historyAfter = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
     if (process.env.CONTROL_DECK_E2E_REPORT === "1") {
-      console.log("AP3_RESULT", JSON.stringify({ ...result, barrier: barrier.counters }));
+      console.log("AP3_RESULT", JSON.stringify({ ...result, barrier: barrier.counters, historyBefore, historyAfter }));
     }
     expect(result.maxGeometryTasksPending).toBeLessThanOrEqual(1);
     expect(result.refreshExecuted).toBe(0);
     expect(barrier.counters.started).toBe(result.ptyResizeSent);
     expect(barrier.counters.ackAccepted).toBe(result.ptyResizeSent);
     expect(barrier.counters.timeoutReleased).toBe(0);
+    expect(historyAfter.websocketCreated).toBe(historyBefore.websocketCreated);
+    expect(historyAfter.historyReset).toBe(historyBefore.historyReset);
+    expect(historyAfter.replayBytes).toBe(historyBefore.replayBytes);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.controllerListenerCount)).toBe(13);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.textareaCount())).toBe(1);
   });

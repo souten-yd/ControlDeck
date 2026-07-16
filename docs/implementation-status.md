@@ -550,6 +550,19 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
   `window-size=latest`一致を実測。さらにlocal xterm resizeをbackend ACK前からACK handlerのwrite queue commitへ移し、ACK前の旧size
   PTY frame→local resize→ACK後SIGWINCH frameの順を保証した。これにより旧41行前提のANSI cursor/Working出力を23行xtermへ
   解釈させる世代跨ぎを防止する。
+- PR #77後の「keyboard開閉で全履歴再読込に見える」現象を接続診断で分類。実ControlDeck Webの320px keyboard相当開閉10回では
+  WebSocket created/close増加0、history_reset増加0、replay増加0であり、接続維持中の実size変更18回に対するtmux/TUIの
+  SIGWINCH全画面再描画だった。一方、意図的なWebSocket切断では従来、新attach作成と`history_reset + capture-pane全量`が必ず発生した。
+- 再接続を`clientInstanceId + connectionGeneration + lastSequence`による差分resumeへ変更。同じbrowser instanceのtmux attachを
+  切断後30秒保持し、4MiB/4096 chunkのsequence journalへ切断中も1回だけ記録する。journal範囲内は既存xterm bufferを維持して差分だけ、
+  範囲外/backend再起動/完全reloadだけ`resume_reset_required`後のbounded snapshotへfallbackする。接続状態を
+  DISCONNECTED/CONNECTING/INITIAL_REPLAY/RESUMING/LIVE/CLOSEDで管理し、LIVE前inputをFIFO保持。新世代接続後に旧socketのfinallyが
+  cleanupを予約する競合も防止した。
+- 検証: terminal backend 12件・backend全231件成功、frontend本番build成功。実ControlDeck Web Chromiumは14件成功
+  （10分soak 1件skip）。keyboard開閉10回は接続1、
+  history_reset 1→1、replay 1016B→1016B、full refresh 0、geometry queue最大1、Long Task 0。Working 50ms×200回中も接続/replay増加0。
+  意図的切断1回はresume_ready 1、history_reset増加0、切断中2 chunkを順序どおり差分描画し、入力欠落・重複0。journal範囲外は
+  reset/fallback各1、完全reloadはinitial replay 1、session切替は履歴混在0。
 
 ## 実装済み機能
 
