@@ -527,7 +527,29 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 - ロールバック後の自動検証: frontend build成功、backend 225件成功、Playwright Chromiumはmobile 320pxのcomposition/geometry、
   xterm DOM row高さ・間隔一定かつtransformなし、50ms Working 200回 + keyboard相当10往復、desktop wheel/copy/remountの5件成功
   （10分soakのみ通常skip）。ControlDeckによるcomposition後textarea inline style変更0、full refresh 0。物理iPhoneでの
-  英字/日本語/削除/Working/keyboard開閉10回は再確認待ちであり、その結果までresize ACKやroot top/left変更を追加しない。
+  英字/日本語/削除/Working/keyboard開閉10回は再確認待ちとし、この時点ではresize ACKやroot top/left変更を追加しなかった。
+- PR #76後の物理iPhoneでも通常PTY文字の分散、placeholder二重化、空白画面化が再現したため、保留していた世代付きPTY resize
+  transactionを実装。frontendはconnection/resize generation付き要求を送り、backendは`TIOCSWINSZ`成功後だけACKする。
+  backendのbinary/ACK送信を接続単位lockで直列化し、frontendはACK後に受信した最初のPTY frameを単一write queueで描画完了してから、
+  保留inputを`term.onData()`受信単位のFIFOで解放する。出力しないshellだけ125ms fail-safe、上限256 chunk/256KiB、再接続/disposeで
+  旧queue破棄。同一geometry、position-only、force syncはbarrierを作らない。
+- fixed rootへVisual Viewport offsetTop/Leftを再適用する二重panを撤去。size変更だけroot寸法とfitへ反映し、transaction中の新geometryは
+  最新1件へ集約。resize完了後にbuffer/DOM cursor周辺だけを比較し、不一致時のみ同一resize世代1回・cursor前後1行をrefreshする。
+  通常input/Backspace/WorkingではDOM比較・refreshなし。PTY制御要約、世代時系列、tmux/PTY size、明示buffer/DOM snapshotを
+  opt-in最大300件診断へ追加し、通常時は本文decode/DOM計測/subprocess診断を行わない。
+- 検証: backend 226件成功、frontend build成功。Playwright Chromium 320pxは9件成功（10分soak 1件skip）。古いACK破棄、ACK前
+  3 input chunk（絵文字含む）保持、ACKだけでは未解放、次PTY write callback後FIFO解放、再接続世代で旧input破棄、position-only/
+  同一geometry barrier 0、placeholder buffer/DOM各1・mismatch 0、xterm/textarea各1を確認。Working 50ms×200回 + keyboard相当10往復は
+  resize/PTY/ACK各18、timeout 0、full refresh 0、geometry queue最大1、Long Task 0、出力/入力欠落0。PC wheel/copy/remountも成功。
+  Playwright WebKit 26.5は取得済みだが、ホストに`libevent-2.1-7t64`、`libavif16`、`libwoff1`がなく、sudoersも対話認証を
+  要求するため、この環境では起動不可。物理iPhoneの縦横回転・background復帰を含む10セットは新transaction反映後の確認対象で、
+  Chromium成功と区別して未完了扱いとする。
+- 実サービスの世代診断で根本原因を追加確定。keyboard相当resize要求`38x23`に対し、従来はACK/125ms後もPTY=`38x23`、
+  tmux client/window=`38x41`で、独立process groupの`tmux attach-session`へSIGWINCHが伝播していなかった。ioctl成功後に
+  ControlDeck所有attach process groupへ明示SIGWINCHを送るよう修正し、ACK時点・transaction後probeともPTY/client/window=`38x23`、
+  `window-size=latest`一致を実測。さらにlocal xterm resizeをbackend ACK前からACK handlerのwrite queue commitへ移し、ACK前の旧size
+  PTY frame→local resize→ACK後SIGWINCH frameの順を保証した。これにより旧41行前提のANSI cursor/Working出力を23行xtermへ
+  解釈させる世代跨ぎを防止する。
 
 ## 実装済み機能
 

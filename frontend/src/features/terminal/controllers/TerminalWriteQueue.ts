@@ -10,9 +10,14 @@ export class TerminalWriteQueue {
     private readonly debug = false,
   ) {}
 
-  enqueueWrite(data: string | Uint8Array): void {
+  enqueueWrite(data: string | Uint8Array, onComplete?: () => void): void {
     this.enqueueTask(
-      () => new Promise<void>((resolve) => this.terminal.write(data, resolve)),
+      () => new Promise<void>((resolve) => {
+        this.terminal.write(data, () => {
+          onComplete?.();
+          resolve();
+        });
+      }),
       "write",
     );
   }
