@@ -31,8 +31,6 @@ declare global {
       cols: () => number;
       viewportY: () => number;
       baseY: () => number;
-      cursorX: () => number;
-      cursorY: () => number;
       controllerListenerCount: number;
     };
   }
@@ -98,6 +96,7 @@ test.describe("terminal mobile IME and geometry", () => {
 
   test("blocks geometry during composition and flushes once", async ({ page }) => {
     const textarea = page.locator(".xterm-helper-textarea");
+    const textareaStyleBefore = await textarea.getAttribute("style");
     const rootBefore = await page.locator("[data-terminal-root]").evaluate((node) => node.getAttribute("style"));
     await page.evaluate(() => window.__controlDeckTerminalTest!.resetCounters());
     await textarea.dispatchEvent("compositionstart", { data: "こ" });
@@ -128,18 +127,8 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(after.ptyResizeSent).toBeLessThanOrEqual(1);
     expect(after.refreshExecuted).toBe(0);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.textareaCount())).toBe(1);
-    const settledLayout = await page.evaluate(() => {
-      const textarea = document.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!.getBoundingClientRect();
-      const host = document.querySelector<HTMLElement>("[data-terminal-host]")!.getBoundingClientRect();
-      const helper = document.querySelector<HTMLElement>("[data-terminal-helper]")!.getBoundingClientRect();
-      const screen = document.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
-      const rows = window.__controlDeckTerminalTest!.rows();
-      const expectedTop = screen.top + window.__controlDeckTerminalTest!.cursorY() * screen.height / rows;
-      return { textareaTop: textarea.top, textareaBottom: textarea.bottom, expectedTop, hostBottom: host.bottom, helperTop: helper.top };
-    });
-    expect(Math.abs(settledLayout.textareaTop - settledLayout.expectedTop)).toBeLessThanOrEqual(0.5);
-    expect(settledLayout.textareaBottom).toBeLessThanOrEqual(settledLayout.hostBottom);
-    expect(settledLayout.textareaBottom).toBeLessThanOrEqual(settledLayout.helperTop);
+    // ControlDeckはcomposition settle後にxterm所有textareaのinline styleを変更しない。
+    expect(await textarea.getAttribute("style")).toBe(textareaStyleBefore);
   });
 
   test("keeps terminal screen above the single-line helper bar", async ({ page }) => {
@@ -151,6 +140,17 @@ test.describe("terminal mobile IME and geometry", () => {
       const host = rect("[data-terminal-host]");
       const helper = rect("[data-terminal-helper]");
       const screen = rect(".xterm-screen");
+      const rows = [...document.querySelectorAll<HTMLElement>(".xterm-rows > div")].map((row) => {
+        const rowRect = row.getBoundingClientRect();
+        const style = getComputedStyle(row);
+        return {
+          top: rowRect.top,
+          height: rowRect.height,
+          transform: style.transform,
+          lineHeight: style.lineHeight,
+        };
+      });
+      const rowGaps = rows.slice(1).map((row, index) => row.top - rows[index].top);
       return {
         heightDelta: Math.abs(header.height + body.height + helper.height - root.height),
         bodyBottom: body.bottom,
@@ -159,6 +159,9 @@ test.describe("terminal mobile IME and geometry", () => {
         helperTop: helper.top,
         helperHeight: helper.height,
         textareaCount: document.querySelectorAll(".xterm-helper-textarea").length,
+        rowHeights: rows.map((row) => row.height),
+        rowGaps,
+        rowTransforms: rows.map((row) => row.transform),
       };
     });
     expect(layout.heightDelta).toBeLessThanOrEqual(1.5);
@@ -167,6 +170,9 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(layout.screenBottom).toBeLessThanOrEqual(layout.helperTop + 2);
     expect(layout.helperHeight).toBe(40);
     expect(layout.textareaCount).toBe(1);
+    expect(Math.max(...layout.rowHeights) - Math.min(...layout.rowHeights)).toBeLessThanOrEqual(0.01);
+    expect(Math.max(...layout.rowGaps) - Math.min(...layout.rowGaps)).toBeLessThanOrEqual(0.01);
+    expect(layout.rowTransforms.every((value) => value === "none")).toBe(true);
   });
 
   test("keeps writes and controller resources bounded across ten keyboard cycles", async ({ page }) => {
