@@ -15,6 +15,7 @@ from app.terminals.manager import (
     _target,
     tmux_available,
 )
+from app.terminals.stream import OutputJournal, TerminalStreamRegistry
 
 
 def test_fallback_pty_lifecycle():
@@ -136,9 +137,11 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
 
     conn = FakeConnection()
     monkeypatch.setattr("app.terminals.router.manager.open_connection", lambda *_args, **_kwargs: conn)
-    with admin_client.websocket_connect("/api/v1/terminals/0123abcd/connect?rows=24&cols=80") as websocket:
-        assert websocket.receive_json() == {"type": "history_reset"}
-        assert websocket.receive_json() == {"type": "history_end"}
+    url = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80"
+           "&clientInstanceId=backendtestclient0001&connectionGeneration=3&attachMode=initial&lastSequence=0")
+    with admin_client.websocket_connect(url) as websocket:
+        assert websocket.receive_json() == {"type": "history_reset", "connectionGeneration": 3}
+        assert websocket.receive_json() == {"type": "history_end", "connectionGeneration": 3, "sequence": 0}
         websocket.send_text(json.dumps({
             "type": "resize",
             "rows": 19,
@@ -179,6 +182,206 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
         assert failed["type"] == "resize_ack"
         assert failed["success"] is False
         assert failed["resizeGeneration"] == 13
+
+
+def test_output_journal_bounds_and_sequence_lookup():
+    journal = OutputJournal(max_bytes=6, max_chunks=3)
+    first = journal.append(b"aa")
+    second = journal.append(b"bb")
+    third = journal.append(b"cc")
+    assert [entry.sequence for entry in journal.after(0) or []] == [first.sequence, second.sequence, third.sequence]
+    fourth = journal.append(b"dd")
+    assert journal.byte_count == 6
+    assert journal.chunk_count == 3
+    assert journal.oldest_sequence == second.sequence
+    assert journal.after(0) is None
+    assert [entry.data for entry in journal.after(second.sequence) or []] == [b"cc", b"dd"]
+    assert journal.after(fourth.sequence + 1) is None
+
+
+def test_terminal_websocket_resume_sends_only_sequence_delta(admin_client, monkeypatch):
+    class FakeConnection:
+        initial = b""
+        replay = b"FULL-HISTORY"
+
+        def write(self, _data: bytes) -> None:
+            pass
+
+        def resize(self, rows: int, cols: int) -> tuple[int, int]:
+            return rows, cols
+
+        def close(self) -> None:
+            pass
+
+    class FakeStream:
+        connection = FakeConnection()
+        connection_generation = 2
+        journal = OutputJournal()
+
+    stream = FakeStream()
+    stream.journal.append(b"already-drawn")
+    delta = stream.journal.append(b"only-delta")
+
+    class FakeRegistry:
+        def acquire(self, *_args):
+            stream.connection_generation = 2
+            return stream, False, asyncio.Queue()
+
+        def release(self, *_args) -> None:
+            pass
+
+    monkeypatch.setattr("app.terminals.router.streams", FakeRegistry())
+    url = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80"
+           "&clientInstanceId=resumetestclient0001&connectionGeneration=2&attachMode=resume&lastSequence=1")
+    with admin_client.websocket_connect(url) as websocket:
+        ready = websocket.receive_json()
+        assert ready["type"] == "resume_ready"
+        assert ready["throughSequence"] == delta.sequence
+        output = websocket.receive_json()
+        assert output == {"type": "output", "sequence": delta.sequence, "connectionGeneration": 2}
+        assert websocket.receive_bytes() == b"only-delta"
+        assert websocket.receive_json() == {
+            "type": "resume_end", "connectionGeneration": 2, "sequence": delta.sequence,
+        }
+
+
+def test_terminal_websocket_resume_outside_journal_falls_back_once(admin_client, monkeypatch):
+    class FakeConnection:
+        initial = b""
+        replay = b""
+
+        def capture_replay(self) -> bytes:
+            return b"BOUNDED-SNAPSHOT"
+
+        def write(self, _data: bytes) -> None:
+            pass
+
+        def resize(self, rows: int, cols: int) -> tuple[int, int]:
+            return rows, cols
+
+        def close(self) -> None:
+            pass
+
+    class FakeStream:
+        connection = FakeConnection()
+        connection_generation = 5
+        journal = OutputJournal(max_bytes=4, max_chunks=2)
+
+    stream = FakeStream()
+    stream.journal.append(b"aa")
+    stream.journal.append(b"bb")
+    stream.journal.append(b"cc")
+
+    class FakeRegistry:
+        def acquire(self, *_args):
+            return stream, False, asyncio.Queue()
+
+        def release(self, *_args) -> None:
+            pass
+
+    monkeypatch.setattr("app.terminals.router.streams", FakeRegistry())
+    url = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80"
+           "&clientInstanceId=fallbacktestclient01&connectionGeneration=5&attachMode=resume&lastSequence=0")
+    with admin_client.websocket_connect(url) as websocket:
+        assert websocket.receive_json()["type"] == "resume_reset_required"
+        assert websocket.receive_json() == {"type": "history_reset", "connectionGeneration": 5}
+        assert websocket.receive_bytes() == b"BOUNDED-SNAPSHOT"
+        end = websocket.receive_json()
+        assert end["type"] == "history_end"
+        assert end["connectionGeneration"] == 5
+        assert end["sequence"] == stream.journal.latest_sequence
+
+
+def test_terminal_stream_rejects_stale_generation_and_cleans_session():
+    class FakeConnection:
+        initial = b""
+        replay = b""
+
+        def __init__(self):
+            self.closed = 0
+
+        async def read_loop(self, _on_data):
+            await asyncio.Future()
+
+        def close(self) -> None:
+            self.closed += 1
+
+    class FakeManager:
+        def __init__(self):
+            self.connection = FakeConnection()
+
+        def open_connection(self, *_args):
+            return self.connection
+
+    async def scenario() -> None:
+        fake_manager = FakeManager()
+        registry = TerminalStreamRegistry(fake_manager)  # type: ignore[arg-type]
+        stream, created, queue = registry.acquire("0123abcd", "streamtestclient0001", 1, 24, 80)
+        assert created is True
+        registry.release(stream, queue)
+        try:
+            registry.acquire("0123abcd", "streamtestclient0001", 1, 24, 80)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("stale connection generation was accepted")
+        resumed, created_again, new_queue = registry.acquire("0123abcd", "streamtestclient0001", 2, 24, 80)
+        assert resumed is stream and created_again is False
+        registry.release(stream, queue)  # 旧世代finallyは新世代のcleanupを予約しない
+        assert stream.subscriber is new_queue
+        assert stream.cleanup_handle is None
+        stream.journal.append(b"pending")
+        registry.close_session("0123abcd")
+        await asyncio.sleep(0)
+        assert registry.stream_count() == 0
+        assert stream.journal.byte_count == 0
+        assert fake_manager.connection.closed == 1
+
+    asyncio.run(scenario())
+
+
+def test_terminal_stream_journals_disconnected_output_in_order():
+    class FakeConnection:
+        initial = b""
+        replay = b""
+
+        def __init__(self):
+            self.output: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        async def read_loop(self, on_data):
+            while True:
+                data = await self.output.get()
+                if data is None:
+                    return
+                await on_data(data)
+
+        def close(self) -> None:
+            pass
+
+    class FakeManager:
+        def __init__(self):
+            self.connection = FakeConnection()
+
+        def open_connection(self, *_args):
+            return self.connection
+
+    async def scenario() -> None:
+        fake_manager = FakeManager()
+        registry = TerminalStreamRegistry(fake_manager)  # type: ignore[arg-type]
+        stream, _, queue = registry.acquire("0123abcd", "journaltestclient001", 1, 24, 80)
+        registry.release(stream, queue)
+        await fake_manager.connection.output.put(b"during-1")
+        await fake_manager.connection.output.put(b"during-2")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        entries = stream.journal.after(0)
+        assert entries is not None
+        assert [entry.data for entry in entries] == [b"during-1", b"during-2"]
+        resumed, created, _ = registry.acquire("0123abcd", "journaltestclient001", 2, 24, 80)
+        assert resumed is stream and created is False
+        registry.close_session("0123abcd")
+
+    asyncio.run(scenario())
 
 
 def test_tmux_replays_ten_thousand_lines():

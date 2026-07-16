@@ -382,3 +382,35 @@ buffer正常でDOMだけ異なる場合はrendererと分類する。確認後は
 ```js
 localStorage.removeItem("control-deck:terminal-geometry-debug");
 ```
+
+### 6.9 WebSocket resumeと差分履歴（2026-07-16）
+
+#### 現象の分類
+
+keyboard開閉で大量描画が見える場合は、接続を維持したままSIGWINCH後にTUIが再描画する経路と、WebSocket再接続時に
+`history_reset + capture-pane全量`を適用する経路を分ける。geometry/IME eventは接続を変更せず、debug時だけ接続生成・close、
+reconnect、history reset/end、replay frame/byte、世代、viewport、rows/colsを最大300件へ記録する。
+
+#### client streamとjournal
+
+tmuxの出力はclientのrows/colsに応じたANSI cursor制御を含むため、異なる画面サイズのattach出力をsession共通journalへ混ぜられない。
+`sessionId + clientInstanceId`を一意なstreamとし、WebSocket切断後も30秒は同じtmux attachとreaderを保持する。readerはWebSocketから
+独立してPTYを読み続け、byte上限付きjournalへ`sequence + chunk`を1回だけ登録する。複数WebSocketが同じstreamを同時利用せず、より
+新しいconnection generationだけが購読できる。session削除・猶予切れ・PTY EOFでreader、journal、attachを破棄する。
+
+初回mountは`attachMode=initial`とし、従来のbounded capture、`history_reset`、replay、`history_end`を1回だけ適用する。接続復帰は
+`attachMode=resume`と最後にxterm write callbackまで完了した`lastSequence`を送る。journal範囲内ならbufferをresetせず、
+`resume_ready`、不足sequenceのframe、`resume_end`だけを順序送信する。範囲外またはbackend再起動でstreamが失われた場合のみ
+`resume_reset_required`後に新しいbounded captureへfallbackする。fallback capture中はevent loop上のPTY readerを進めないため、
+capture時点以後のPTY byteはOS bufferから後続journalへ入り、snapshotとの境界を保持する。
+
+各live/delta frameは直前の`output` controlにsequenceを持たせ、frontendは次のbinary frameと対応させる。描画完了sequenceは
+`TerminalWriteQueue`のwrite callbackでのみ進める。接続状態は`DISCONNECTED → CONNECTING → INITIAL_REPLAY|RESUMING → LIVE → CLOSED`
+とし、LIVE以外のinputは受信単位FIFOへ保留する。resize ACKによるlocal resizeも同じwrite queueに入るため、history/delta、resize、
+live output、input解放の受信順を崩さない。
+
+#### 性能条件
+
+keyboard geometry eventからconnect、capture-pane、reset、journal走査を呼ばない。同一rows/colsは既存`_last_size`でioctl/SIGWINCH前に終了する。
+journalは4MiB/4096 chunk上限で、sequenceから開始indexを算出して必要な差分だけ列挙する。通常PTY frameはReact stateとDOM計測を行わず、
+接続・履歴診断objectもdebug無効時は生成しない。xterm scrollback 100,000、touch/wheel/copy/paste、PR #77のresize transactionを維持する。

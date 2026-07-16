@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
@@ -12,10 +13,13 @@ from app.database import SessionLocal, get_db
 from app.models import User
 from app.security.deps import authenticate_websocket, require_permission
 from app.terminals.manager import manager, tmux_available
+from app.terminals.stream import JournalEntry, TerminalClientStream, TerminalStreamRegistry
 
 logger = logging.getLogger("control_deck.terminals")
 
 router = APIRouter(prefix="/terminals", tags=["terminals"])
+streams = TerminalStreamRegistry(manager)
+CLIENT_INSTANCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
 
 
 @router.get("")
@@ -41,13 +45,14 @@ def create_terminal(
 
 
 @router.delete("/{session_id}")
-def delete_terminal(
+async def delete_terminal(
     session_id: str,
     request: Request,
     user: User = Depends(require_permission("terminal.use")),
     db: Session = Depends(get_db),
 ):
     try:
+        streams.close_session(session_id)
         manager.kill_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="セッションが見つかりません") from exc
@@ -59,7 +64,16 @@ def delete_terminal(
 
 
 @router.websocket("/{session_id}/connect")
-async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, cols: int = 80):
+async def terminal_ws(
+    websocket: WebSocket,
+    session_id: str,
+    rows: int = 24,
+    cols: int = 80,
+    client_instance_id: str = Query("", alias="clientInstanceId"),
+    connection_generation: int = Query(1, alias="connectionGeneration"),
+    attach_mode: str = Query("initial", alias="attachMode"),
+    last_sequence: int = Query(0, alias="lastSequence"),
+):
     db = SessionLocal()
     try:
         user = await authenticate_websocket(websocket, db, "terminal.use")
@@ -68,15 +82,29 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
     finally:
         db.close()
 
+    if not CLIENT_INSTANCE_RE.fullmatch(client_instance_id) or attach_mode not in {"initial", "resume"}:
+        await websocket.close(code=4400)
+        return
+    if not 1 <= connection_generation <= 2_147_483_647 or not 0 <= last_sequence <= 9_007_199_254_740_991:
+        await websocket.close(code=4400)
+        return
+
     try:
-        conn = manager.open_connection(session_id, rows, cols)
+        stream, created, output_queue = streams.acquire(
+            session_id, client_instance_id, connection_generation, rows, cols,
+        )
     except KeyError:
         await websocket.close(code=4404)
+        return
+    except ValueError:
+        await websocket.close(code=4409)
         return
     except OSError as e:
         logger.warning("terminal open failed: %s", e)
         await websocket.close(code=4500)
         return
+
+    conn = stream.connection
 
     await websocket.accept()
     send_lock = asyncio.Lock()
@@ -89,20 +117,89 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
         async with send_lock:
             await websocket.send_text(json.dumps(payload, separators=(",", ":")))
 
-    if conn.initial:
-        await send_bytes(conn.initial)
-    await send_control({"type": "history_reset"})
-    if conn.replay:
-        await send_bytes(conn.replay)
-    await send_control({"type": "history_end"})
+    async def send_output(entry: JournalEntry) -> None:
+        async with send_lock:
+            await websocket.send_text(json.dumps({
+                "type": "output",
+                "sequence": entry.sequence,
+                "connectionGeneration": connection_generation,
+            }, separators=(",", ":")))
+            await websocket.send_bytes(entry.data)
+
+    async def send_snapshot(replay: bytes, baseline: int, created_stream: bool) -> None:
+        await send_control({
+            "type": "history_reset",
+            "connectionGeneration": connection_generation,
+        })
+        if replay:
+            await send_bytes(replay)
+        # 新規attachではcapture完了後にreaderが得たbyteをsnapshotの後へ連結する。
+        if created_stream:
+            entries = stream.journal.after(0, baseline) or []
+            for entry in entries:
+                await send_output(entry)
+        await send_control({
+            "type": "history_end",
+            "connectionGeneration": connection_generation,
+            "sequence": baseline,
+        })
+
+    skip_through = 0
+    resumed = attach_mode == "resume" and not created
+    if resumed:
+        resume_through = stream.journal.latest_sequence
+        delta = stream.journal.after(last_sequence, resume_through)
+        if delta is not None:
+            await send_control({
+                "type": "resume_ready",
+                "connectionGeneration": connection_generation,
+                "fromSequence": last_sequence,
+                "throughSequence": resume_through,
+            })
+            for entry in delta:
+                await send_output(entry)
+            await send_control({
+                "type": "resume_end",
+                "connectionGeneration": connection_generation,
+                "sequence": resume_through,
+            })
+            skip_through = resume_through
+        else:
+            await send_control({
+                "type": "resume_reset_required",
+                "connectionGeneration": connection_generation,
+                "oldestSequence": stream.journal.oldest_sequence,
+                "latestSequence": stream.journal.latest_sequence,
+            })
+            replay = conn.capture_replay()
+            skip_through = stream.journal.latest_sequence
+            await send_snapshot(replay, skip_through, False)
+    else:
+        if attach_mode == "resume":
+            await send_control({
+                "type": "resume_reset_required",
+                "connectionGeneration": connection_generation,
+                "oldestSequence": stream.journal.oldest_sequence,
+                "latestSequence": stream.journal.latest_sequence,
+            })
+        if conn.initial:
+            await send_bytes(conn.initial)
+        baseline = stream.journal.latest_sequence
+        await send_snapshot(conn.replay, baseline, True)
+        skip_through = baseline
 
     async def pump_output() -> None:
-        await conn.read_loop(send_bytes)
-        # PTY 側 EOF（tmux detach / シェル終了）
-        try:
-            await websocket.close()
-        except RuntimeError:
-            pass
+        while True:
+            entry = await output_queue.get()
+            if entry is None:
+                try:
+                    await websocket.close()
+                except RuntimeError:
+                    pass
+                return
+            if entry.sequence <= skip_through:
+                continue
+            await send_output(entry)
 
     output_task = asyncio.create_task(pump_output())
     try:
@@ -111,6 +208,8 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
             if msg.get("type") == "websocket.disconnect":
                 break
             if (data := msg.get("bytes")) is not None:
+                if connection_generation != stream.connection_generation:
+                    break
                 conn.write(data)
             elif (text := msg.get("text")) is not None:
                 # 制御メッセージ（リサイズ）は JSON テキストで受ける
@@ -118,11 +217,13 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
                     ctrl = json.loads(text)
                     if ctrl.get("type") == "resize":
                         resize_generation = int(ctrl["resizeGeneration"])
-                        connection_generation = int(ctrl["connectionGeneration"])
+                        message_connection_generation = int(ctrl["connectionGeneration"])
                         if not 0 <= resize_generation <= 2_147_483_647:
                             raise ValueError("invalid resize generation")
-                        if not 0 <= connection_generation <= 2_147_483_647:
+                        if not 0 <= message_connection_generation <= 2_147_483_647:
                             raise ValueError("invalid connection generation")
+                        if message_connection_generation != stream.connection_generation:
+                            raise ValueError("stale connection generation")
                         received_at = asyncio.get_running_loop().time() * 1000
                         try:
                             applied_rows, applied_cols = conn.resize(int(ctrl["rows"]), int(ctrl["cols"]))
@@ -132,7 +233,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
                                 "rows": applied_rows,
                                 "cols": applied_cols,
                                 "resizeGeneration": resize_generation,
-                                "connectionGeneration": connection_generation,
+                                "connectionGeneration": message_connection_generation,
                                 "success": True,
                             }
                             if ctrl.get("debug") is True:
@@ -149,20 +250,22 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
                                 "rows": int(ctrl["rows"]),
                                 "cols": int(ctrl["cols"]),
                                 "resizeGeneration": resize_generation,
-                                "connectionGeneration": connection_generation,
+                                "connectionGeneration": message_connection_generation,
                                 "success": False,
                             })
                     elif ctrl.get("type") == "size_probe":
                         resize_generation = int(ctrl["resizeGeneration"])
-                        connection_generation = int(ctrl["connectionGeneration"])
+                        message_connection_generation = int(ctrl["connectionGeneration"])
                         if not 0 <= resize_generation <= 2_147_483_647:
                             raise ValueError("invalid resize generation")
-                        if not 0 <= connection_generation <= 2_147_483_647:
+                        if not 0 <= message_connection_generation <= 2_147_483_647:
                             raise ValueError("invalid connection generation")
+                        if message_connection_generation != stream.connection_generation:
+                            raise ValueError("stale connection generation")
                         await send_control({
                             "type": "size_probe_result",
                             "resizeGeneration": resize_generation,
-                            "connectionGeneration": connection_generation,
+                            "connectionGeneration": message_connection_generation,
                             "diagnostics": conn.size_diagnostics(),
                         })
                 except (json.JSONDecodeError, KeyError, ValueError):
@@ -171,4 +274,4 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
         pass
     finally:
         output_task.cancel()
-        conn.close()
+        streams.release(stream, output_queue)
