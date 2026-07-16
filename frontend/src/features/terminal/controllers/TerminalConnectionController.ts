@@ -7,8 +7,6 @@ export type TerminalConnectionState =
   | "CLOSED";
 
 const DEBUG_LOG_LIMIT = 300;
-const MAX_INPUT_CHUNKS = 256;
-const MAX_INPUT_BYTES = 256 * 1024;
 
 export interface HistoryReplayCounters {
   historyReset: number;
@@ -143,8 +141,7 @@ export class TerminalConnectionController {
       this.options.sendNow(data);
       return;
     }
-    const bytes = data.length * 2;
-    if (this.queuedInput.length >= MAX_INPUT_CHUNKS || this.queuedBytes + bytes > MAX_INPUT_BYTES) return;
+    const bytes = new TextEncoder().encode(data).byteLength;
     this.queuedInput.push(data);
     this.queuedBytes += bytes;
   }
@@ -155,6 +152,7 @@ export class TerminalConnectionController {
       connectionGeneration: this.connectionGeneration,
       lastSequence: this.lastSequence,
       queuedInputChunks: this.queuedInput.length,
+      queuedInputBytes: this.queuedBytes,
     };
   }
 

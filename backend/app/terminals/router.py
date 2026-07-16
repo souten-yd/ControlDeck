@@ -20,6 +20,7 @@ logger = logging.getLogger("control_deck.terminals")
 router = APIRouter(prefix="/terminals", tags=["terminals"])
 streams = TerminalStreamRegistry(manager)
 CLIENT_INSTANCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
+MAX_INPUT_CHUNK_BYTES = 16 * 1024
 
 
 @router.get("")
@@ -202,6 +203,7 @@ async def terminal_ws(
             await send_output(entry)
 
     output_task = asyncio.create_task(pump_output())
+    pending_input: dict[str, int | bool] | None = None
     try:
         while True:
             msg = await websocket.receive()
@@ -210,12 +212,74 @@ async def terminal_ws(
             if (data := msg.get("bytes")) is not None:
                 if connection_generation != stream.connection_generation:
                     break
-                conn.write(data)
+                if pending_input is None:
+                    # 旧frontendの通常キー入力との互換経路。
+                    await asyncio.to_thread(conn.write, data)
+                    continue
+                metadata = pending_input
+                pending_input = None
+                if len(data) != metadata["byteLength"]:
+                    await websocket.close(code=4400, reason="input byte length mismatch")
+                    break
+                input_sequence = int(metadata["inputSequence"])
+                paste_id = int(metadata["pasteId"])
+                chunk_index = int(metadata["chunkIndex"])
+                existing = stream.input_ack(input_sequence)
+                if existing is not None:
+                    if (existing.paste_id != paste_id or existing.chunk_index != chunk_index
+                            or existing.written_bytes != len(data)):
+                        await websocket.close(code=4400, reason="input sequence conflict")
+                        break
+                    written = existing.written_bytes
+                else:
+                    if not stream.validate_new_input_sequence(input_sequence):
+                        await websocket.close(code=4400, reason="input sequence out of order")
+                        break
+                    try:
+                        written = await asyncio.to_thread(conn.write, data)
+                    except OSError as exc:
+                        logger.warning("terminal input write failed: %s", exc)
+                        await send_control({
+                            "type": "input_error", "inputSequence": input_sequence,
+                            "pasteId": paste_id, "chunkIndex": chunk_index,
+                            "connectionGeneration": connection_generation,
+                            "reason": "pty-write-failed",
+                        })
+                        continue
+                    stream.record_input_ack(input_sequence, paste_id, chunk_index, written)
+                await send_control({
+                    "type": "input_ack", "inputSequence": input_sequence,
+                    "pasteId": paste_id, "chunkIndex": chunk_index,
+                    "writtenBytes": written, "connectionGeneration": connection_generation,
+                })
             elif (text := msg.get("text")) is not None:
                 # 制御メッセージ（リサイズ）は JSON テキストで受ける
                 try:
                     ctrl = json.loads(text)
-                    if ctrl.get("type") == "resize":
+                    if ctrl.get("type") == "input":
+                        if pending_input is not None:
+                            raise ValueError("input control without binary frame")
+                        input_sequence = int(ctrl["inputSequence"])
+                        paste_id = int(ctrl["pasteId"])
+                        chunk_index = int(ctrl["chunkIndex"])
+                        byte_length = int(ctrl["byteLength"])
+                        message_connection_generation = int(ctrl["connectionGeneration"])
+                        if not 1 <= input_sequence <= 9_007_199_254_740_991:
+                            raise ValueError("invalid input sequence")
+                        if not 1 <= paste_id <= 2_147_483_647 or not 0 <= chunk_index <= 2_147_483_647:
+                            raise ValueError("invalid paste metadata")
+                        if not 1 <= byte_length <= MAX_INPUT_CHUNK_BYTES:
+                            raise ValueError("invalid input byte length")
+                        if message_connection_generation != stream.connection_generation:
+                            raise ValueError("stale connection generation")
+                        if not isinstance(ctrl.get("final"), bool):
+                            raise ValueError("invalid final flag")
+                        pending_input = {
+                            "inputSequence": input_sequence, "pasteId": paste_id,
+                            "chunkIndex": chunk_index, "byteLength": byte_length,
+                            "final": ctrl["final"],
+                        }
+                    elif ctrl.get("type") == "resize":
                         resize_generation = int(ctrl["resizeGeneration"])
                         message_connection_generation = int(ctrl["connectionGeneration"])
                         if not 0 <= resize_generation <= 2_147_483_647:
@@ -268,8 +332,9 @@ async def terminal_ws(
                             "connectionGeneration": message_connection_generation,
                             "diagnostics": conn.size_diagnostics(),
                         })
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    pass
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    await websocket.close(code=4400, reason="malformed terminal control")
+                    break
     except WebSocketDisconnect:
         pass
     finally:

@@ -1,6 +1,4 @@
 const BARRIER_TIMEOUT_MS = 125;
-const MAX_QUEUED_CHUNKS = 256;
-const MAX_QUEUED_BYTES = 256 * 1024;
 const DEBUG_LOG_LIMIT = 300;
 
 export interface TerminalResizeAck {
@@ -61,13 +59,14 @@ export class TerminalResizeBarrier {
 
   constructor(private readonly options: {
     sendNow: (data: string) => void;
+    requeue: (data: string) => void;
     onAckAccepted: (resizeGeneration: number, cols: number, rows: number) => void;
     onSettled: (resizeGeneration: number, reason: string) => void;
     debug: boolean;
   }) {}
 
   resetConnection(connectionGeneration: number): void {
-    this.discardActive("connection-reset");
+    this.requeueActive("connection-reset");
     this.connectionGeneration = connectionGeneration;
     this.record("connection-reset", { connectionGeneration });
   }
@@ -158,15 +157,7 @@ export class TerminalResizeBarrier {
       this.options.sendNow(data);
       return;
     }
-    // UTF-16 code unitの2倍を保守的なbyte上限として扱い、文字列自体は分割しない。
-    const bytes = data.length * 2;
-    if (active.queuedInput.length >= MAX_QUEUED_CHUNKS
-      || active.queuedBytes + bytes > MAX_QUEUED_BYTES) {
-      this.counters.overflowReleased += 1;
-      this.release("overflow");
-      this.options.sendNow(data);
-      return;
-    }
+    const bytes = new TextEncoder().encode(data).byteLength;
     active.queuedInput.push(data);
     active.queuedBytes += bytes;
     this.counters.inputQueued += 1;
@@ -218,6 +209,18 @@ export class TerminalResizeBarrier {
       releasedChunks: active.queuedInput.length,
     });
     this.options.onSettled(active.resizeGeneration, reason);
+  }
+
+  private requeueActive(reason: string): void {
+    const active = this.active;
+    if (!active) return;
+    window.clearTimeout(active.timeout);
+    this.active = undefined;
+    for (const data of active.queuedInput) this.options.requeue(data);
+    this.record("resize-barrier-requeue", {
+      resizeGeneration: active.resizeGeneration, connectionGeneration: active.connectionGeneration,
+      reason, requeuedChunks: active.queuedInput.length,
+    });
   }
 
   private discardActive(reason: string): void {

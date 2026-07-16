@@ -8,12 +8,16 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { wsUrl } from "../../api/client";
+import { createUuid } from "../../lib/clientId";
 import { useToasts } from "../../stores";
 import { IconX } from "../../components/icons";
 import { TerminalGeometryController } from "./controllers/TerminalGeometryController";
 import { TerminalDiagnostics } from "./controllers/TerminalDiagnostics";
 import { TerminalConnectionController } from "./controllers/TerminalConnectionController";
 import { TerminalImeController } from "./controllers/TerminalImeController";
+import {
+  prepareTerminalPaste, TerminalInputController, type InputAck, type InputError, type PasteProgress,
+} from "./controllers/TerminalInputController";
 import { TerminalResizeBarrier, type TerminalResizeAck } from "./controllers/TerminalResizeBarrier";
 import { TerminalWriteQueue } from "./controllers/TerminalWriteQueue";
 
@@ -55,6 +59,9 @@ export default function XtermView({
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const inputSenderRef = useRef<((data: string) => void) | null>(null);
+  const pasteSenderRef = useRef<((text: string) => void) | null>(null);
+  const pasteCancelRef = useRef<(() => void) | null>(null);
+  const pasteRetryRef = useRef<(() => void) | null>(null);
   const ctrlArmed = useRef(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const copyRef = useRef<HTMLTextAreaElement>(null);
@@ -63,6 +70,7 @@ export default function XtermView({
   const [ctrlOn, setCtrlOn] = useState(false);
   const [sheet, setSheet] = useState<"paste" | "copy" | null>(null);
   const [copyText, setCopyText] = useState("");
+  const [pasteProgress, setPasteProgress] = useState<PasteProgress | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -104,12 +112,34 @@ export default function XtermView({
     let diagnostics: TerminalDiagnostics;
     let resizeBarrier: TerminalResizeBarrier;
     let connectionController: TerminalConnectionController;
+    let inputController: TerminalInputController;
     let connectionGeneration = 0;
     let resizeGeneration = 0;
     let everConnected = false;
     let pendingOutputSequence: number | null = null;
-    const clientInstanceId = crypto.randomUUID().replaceAll("-", "");
+    // effectごとに1回だけ生成し、同一mount内の再接続では同じIDを維持する。
+    const clientInstanceId = createUuid();
     let lastPtySize: { cols: number; rows: number } | null = null;
+    let progressTimer: number | undefined;
+    let pendingProgress: PasteProgress | null = null;
+    let lastProgressUpdate = 0;
+    const reportPasteProgress = (progress: PasteProgress | null) => {
+      pendingProgress = progress;
+      const now = performance.now();
+      const immediate = !progress || progress.state === "completed" || progress.state === "failed"
+        || progress.state === "cancelled" || now - lastProgressUpdate >= 100;
+      const flush = () => {
+        progressTimer = undefined;
+        lastProgressUpdate = performance.now();
+        setPasteProgress(pendingProgress);
+      };
+      if (immediate) {
+        window.clearTimeout(progressTimer);
+        flush();
+      } else if (progressTimer === undefined) {
+        progressTimer = window.setTimeout(flush, Math.max(0, 100 - (now - lastProgressUpdate)));
+      }
+    };
     const sendNow = (data: string): void => {
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
@@ -163,6 +193,7 @@ export default function XtermView({
       const attachMode = everConnected ? "resume" : "initial";
       resizeBarrier.resetConnection(thisConnectionGeneration);
       connectionController.begin(thisConnectionGeneration, attachMode);
+      inputController.connectionChanged();
       setStatus("connecting");
       const query = new URLSearchParams({
         rows: String(term.rows),
@@ -192,6 +223,14 @@ export default function XtermView({
         if (typeof ev.data === "string") {
           try {
             const control = JSON.parse(ev.data);
+            if (control.type === "input_ack") {
+              inputController.handleAck(control as InputAck);
+              return;
+            }
+            if (control.type === "input_error") {
+              inputController.handleError(control as InputError);
+              return;
+            }
             if (control.type === "resize_ack") {
               diagnostics.record("resize-ack-received", control);
               resizeBarrier.handleAck(control as TerminalResizeAck);
@@ -218,6 +257,7 @@ export default function XtermView({
                   Number(control.sequence ?? 0),
                   "history-end-received",
                 );
+                inputController.availabilityChanged();
                 term.focus();
               }, "history-end");
               return;
@@ -237,6 +277,7 @@ export default function XtermView({
                   Number(control.sequence ?? 0),
                   "resume-end-received",
                 );
+                inputController.availabilityChanged();
                 term.focus();
               }, "resume-end");
               return;
@@ -267,6 +308,7 @@ export default function XtermView({
       ws.onclose = (ev) => {
         if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
         if (!connectionController.closed(thisConnectionGeneration, ev)) return;
+        inputController.connectionChanged();
         resizeBarrier.resetConnection(connectionGeneration);
         if (disposed) return;
         if (ev.code === 4404) {
@@ -344,6 +386,7 @@ export default function XtermView({
     });
     resizeBarrier = new TerminalResizeBarrier({
       sendNow,
+      requeue: (data) => connectionController.sendOrQueue(data),
       debug: geometryDebug,
       onAckAccepted: (acceptedResizeGeneration, cols, rows) => {
         geometryController?.commitAcknowledgedResize(acceptedResizeGeneration, cols, rows);
@@ -364,8 +407,51 @@ export default function XtermView({
           }));
         }
         geometryController?.onResizeTransactionSettled(settledResizeGeneration, reason);
+        inputController.availabilityChanged();
       },
     });
+    inputController = new TerminalInputController({
+      canSend: () => connectionController.getState().state === "LIVE"
+        && !resizeBarrier.isActive() && wsRef.current?.readyState === WebSocket.OPEN,
+      connectionGeneration: () => connectionGeneration,
+      bufferedAmount: () => wsRef.current?.bufferedAmount ?? Number.POSITIVE_INFINITY,
+      sendFrame: (control, bytes) => {
+        const ws = wsRef.current;
+        if (ws?.readyState !== WebSocket.OPEN) return false;
+        try {
+          ws.send(JSON.stringify(control));
+          ws.send(bytes);
+          diagnostics.record("paste-frame-sent", {
+            pasteId: control.pasteId, chunkIndex: control.chunkIndex,
+            inputSequence: control.inputSequence, byteLength: bytes.byteLength,
+            connectionGeneration, bufferedAmount: ws.bufferedAmount,
+          });
+          return true;
+        } catch {
+          diagnostics.record("paste-frame-send-failed", { connectionGeneration });
+          ws.close(1011, "paste send failed");
+          return false;
+        }
+      },
+      onProgress: reportPasteProgress,
+      record: (event, details) => diagnostics.record(event, details),
+    });
+    const enqueuePaste = (text: string) => {
+      const normalized = prepareTerminalPaste(text, term.modes.bracketedPasteMode);
+      inputController.enqueuePaste(text, normalized);
+    };
+    pasteSenderRef.current = enqueuePaste;
+    pasteCancelRef.current = () => inputController.cancelCurrent();
+    pasteRetryRef.current = () => inputController.retryCurrent();
+    const onPaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text/plain");
+      if (text === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      enqueuePaste(text);
+    };
+    host.addEventListener("paste", onPaste, true);
+
     geometryController = new TerminalGeometryController({
       root,
       header,
@@ -400,8 +486,11 @@ export default function XtermView({
       ackBarrierForTest: (ack: TerminalResizeAck) => boolean;
       enqueuePtyFrameForTest: (data: string) => boolean;
       sendInputForTest: (data: string) => void;
+      enqueuePasteForTest: (text: string) => void;
+      pasteState: () => Record<string, unknown>;
       resetBarrierForTest: () => void;
       connectionGeneration: () => number;
+      clientInstanceId: () => string;
       connectionState: () => Record<string, unknown>;
       connectionLog: () => readonly Record<string, unknown>[];
       historyReplayCounters: () => ReturnType<TerminalConnectionController["getCounters"]>;
@@ -435,8 +524,11 @@ export default function XtermView({
           return true;
         },
         sendInputForTest: (data) => resizeBarrier.sendOrQueue(data),
+        enqueuePasteForTest: enqueuePaste,
+        pasteState: () => inputController.getState(),
         resetBarrierForTest: () => resizeBarrier.resetConnection(connectionGeneration),
         connectionGeneration: () => connectionGeneration,
+        clientInstanceId: () => clientInstanceId,
         connectionState: () => connectionController.getState(),
         connectionLog: () => connectionController.getLog(),
         historyReplayCounters: () => connectionController.getCounters(),
@@ -523,7 +615,13 @@ export default function XtermView({
     return () => {
       disposed = true;
       inputSenderRef.current = null;
+      pasteSenderRef.current = null;
+      pasteCancelRef.current = null;
+      pasteRetryRef.current = null;
+      host.removeEventListener("paste", onPaste, true);
+      inputController.dispose();
       window.clearTimeout(retryTimer);
+      window.clearTimeout(progressTimer);
       geometryController?.dispose();
       imeController.dispose();
       delete testWindow.__controlDeckTerminalTest;
@@ -567,7 +665,7 @@ export default function XtermView({
       if (navigator.clipboard?.readText) {
         const text = await navigator.clipboard.readText();
         if (text) {
-          termRef.current?.paste(text);
+          pasteSenderRef.current?.(text);
           termRef.current?.focus();
           return;
         }
@@ -630,7 +728,7 @@ export default function XtermView({
   const submitPaste = () => {
     const text = pasteRef.current?.value ?? "";
     setSheet(null);
-    if (text) termRef.current?.paste(text);
+    if (text) pasteSenderRef.current?.(text);
     termRef.current?.focus();
   };
 
@@ -677,6 +775,21 @@ export default function XtermView({
         {/* clipは端数cellを切りつつ、IME textareaが親を自動scrollするscroll containerを作らない。 */}
         <div ref={hostRef} data-terminal-host className="terminal-xterm-host min-h-0 min-w-0 flex-1 overflow-clip" />
       </div>
+
+      {pasteProgress && pasteProgress.totalBytes >= 32 * 1024
+        && pasteProgress.state !== "cancelled" && (
+        <div data-terminal-paste-progress className="flex shrink-0 items-center gap-2 border-t border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+          <span className="tabular-nums">
+            {pasteProgress.state === "completed" ? "貼り付け完了" : pasteProgress.state === "failed" ? "貼り付け失敗" : "貼り付け送信中"}
+            {" "}{Math.ceil(pasteProgress.acknowledgedBytes / 1024)} KB / {Math.ceil(pasteProgress.totalBytes / 1024)} KB
+          </span>
+          {pasteProgress.state === "failed" ? (
+            <button onClick={() => pasteRetryRef.current?.()} className="ml-auto rounded px-2 py-0.5 font-medium text-accent-600">再試行</button>
+          ) : pasteProgress.state !== "completed" ? (
+            <button onClick={() => pasteCancelRef.current?.()} className="ml-auto rounded px-2 py-0.5 font-medium text-zinc-500">キャンセル</button>
+          ) : null}
+        </div>
+      )}
 
       {/* モバイル補助キーバー */}
       <div
