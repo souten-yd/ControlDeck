@@ -50,13 +50,11 @@ export class TerminalGeometryController {
   private frame1 = 0;
   private frame2 = 0;
   private measureFrame = 0;
-  private completionFrame = 0;
   private settleTimer: number | undefined;
   private pendingInvalidations = new Set<GeometryInvalidation>();
   private pendingReasons = new Set<string>();
   private geometryTaskQueued = false;
   private forcePtySync = false;
-  private afterCompositionFlush?: () => void;
   private lastHostWidth = 0;
   private lastHostHeight = 0;
   private lastViewportWidth = 0;
@@ -119,9 +117,8 @@ export class TerminalGeometryController {
     this.invalidate("renderer", "websocket-open");
   }
 
-  flushAfterComposition(onFlushed?: () => void): void {
+  flushAfterComposition(): void {
     if (this.disposed) return;
-    this.afterCompositionFlush = onFlushed;
     if (this.pendingInvalidations.size === 0) this.pendingInvalidations.add("size");
     this.recordReason("composition-end");
     this.scheduleStableFlush();
@@ -218,7 +215,6 @@ export class TerminalGeometryController {
     if (!needsSize && !needsRenderer) {
       this.pendingInvalidations.clear();
       this.pendingReasons.clear();
-      this.finishCompositionFlush();
       return;
     }
     const rootRect = this.options.root.getBoundingClientRect();
@@ -264,7 +260,6 @@ export class TerminalGeometryController {
     if (!dimensions && !needsRenderer && !this.forcePtySync) {
       this.counters.fitSkipped += 1;
       this.publishCounters();
-      this.finishCompositionFlush();
       return;
     }
     this.queueGeometryTask({
@@ -355,20 +350,7 @@ export class TerminalGeometryController {
       this.recoverRendererIfNeeded(task.rendererInvalid, task.generation);
       this.publishCounters();
       if (this.pendingInvalidations.size > 0) this.scheduleStableFlush();
-      else this.finishCompositionFlush();
     }, "geometry");
-  }
-
-  private finishCompositionFlush(): void {
-    const callback = this.afterCompositionFlush;
-    if (!callback) return;
-    this.afterCompositionFlush = undefined;
-    window.cancelAnimationFrame(this.completionFrame);
-    // resizeのrenderer更新後に、xterm自身へtextarea/cursor位置を再同期させる。
-    this.completionFrame = window.requestAnimationFrame(() => {
-      this.completionFrame = 0;
-      if (!this.disposed) callback();
-    });
   }
 
   private recoverRendererIfNeeded(invalid: boolean, generation: number): void {
@@ -430,7 +412,6 @@ export class TerminalGeometryController {
     window.cancelAnimationFrame(this.frame1);
     window.cancelAnimationFrame(this.frame2);
     window.cancelAnimationFrame(this.measureFrame);
-    window.cancelAnimationFrame(this.completionFrame);
     window.clearTimeout(this.settleTimer);
     window.visualViewport?.removeEventListener("resize", this.onViewportResize);
     window.visualViewport?.removeEventListener("scroll", this.onViewportScroll);
@@ -440,6 +421,5 @@ export class TerminalGeometryController {
     this.longTaskObserver?.disconnect();
     this.pendingInvalidations.clear();
     this.pendingReasons.clear();
-    this.afterCompositionFlush = undefined;
   }
 }

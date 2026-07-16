@@ -519,6 +519,15 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
   textareaを同期するため、最終geometry完了後に内部と同じセル座標式を1回適用する追補修正を実施。composition中はtop=643px、
   host bottom=660px、helper top=660pxを固定。終了後はtextarea top/bottom=373/388px、host bottom=390px、helper top=390pxへ同期し、
   textarea 1、rows/cols=23/38、terminal runtime console error 0を実測。composition/PC回帰2件も成功
+- その後の物理iPhone報告で、keyboard表示中の通常PTY文字まで`Working`が文字単位・複数座標へ分散する重大回帰を確認。
+  Chromiumでは再現せず、PR #75で追加したscreen外寸近似によるhelper textareaの`left/top/width/height/lineHeight`直接変更と、
+  composition flush後の無条件focusがiOS Safariのviewport/合成layerを再駆動する最有力要因と判断した。原因を混ぜない緊急対応として
+  PR #75の独自同期、専用completion RAF、無条件focusだけを撤去し、PR #74のcomposition lock、単一geometry scheduler、write queue、
+  通常fit refresh 0、touch/copy/reconnect/100,000行scrollbackは維持した。
+- ロールバック後の自動検証: frontend build成功、backend 225件成功、Playwright Chromiumはmobile 320pxのcomposition/geometry、
+  xterm DOM row高さ・間隔一定かつtransformなし、50ms Working 200回 + keyboard相当10往復、desktop wheel/copy/remountの5件成功
+  （10分soakのみ通常skip）。ControlDeckによるcomposition後textarea inline style変更0、full refresh 0。物理iPhoneでの
+  英字/日本語/削除/Working/keyboard開閉10回は再確認待ちであり、その結果までresize ACKやroot top/left変更を追加しない。
 
 ## 実装済み機能
 

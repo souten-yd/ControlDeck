@@ -195,16 +195,13 @@ export default function XtermView({
       document.documentElement.style.overflow = "hidden";
       document.documentElement.style.overscrollBehavior = "none";
     }
-    let imeController: TerminalImeController;
-    imeController = new TerminalImeController({
+    const imeController = new TerminalImeController({
       host,
       terminal: term,
       debug: geometryDebug,
       collectGeometryDebug: () => geometryController?.getDebugState() ?? {},
-      onCompositionSettled: () => geometryController?.flushAfterComposition(() => {
-        imeController.syncTextareaToCursor();
-        term.focus();
-      }),
+      // composition終了後もtextareaのstyle/focusへ触れず、保留geometryだけを確定する。
+      onCompositionSettled: () => geometryController?.flushAfterComposition(),
     });
     geometryController = new TerminalGeometryController({
       root,
@@ -231,8 +228,6 @@ export default function XtermView({
       cols: () => number;
       viewportY: () => number;
       baseY: () => number;
-      cursorX: () => number;
-      cursorY: () => number;
       controllerListenerCount: number;
     };
     const testWindow = window as typeof window & { __controlDeckTerminalTest?: TerminalTestHook };
@@ -247,8 +242,6 @@ export default function XtermView({
         cols: () => term.cols,
         viewportY: () => term.buffer.active.viewportY,
         baseY: () => term.buffer.active.baseY,
-        cursorX: () => term.buffer.active.cursorX,
-        cursorY: () => term.buffer.active.cursorY,
         // geometry 5 + IME textarea 7 + host focusin 1。observer/touch/xterm内部は別集計。
         controllerListenerCount: 13,
       };
