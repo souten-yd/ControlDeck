@@ -110,6 +110,20 @@ class LlmRuntimeProvider(ABC):
 class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
     kind = "openai-compatible"
 
+    @staticmethod
+    def _response_format(value: dict[str, Any]) -> dict[str, Any]:
+        """内部の簡略schema表現をOpenAI互換の標準payloadへ正規化する。"""
+        if value.get("type") == "json_schema" and "schema" in value:
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": str(value.get("name") or "structured_output"),
+                    "schema": value["schema"],
+                    "strict": bool(value.get("strict", True)),
+                },
+            }
+        return value
+
     def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": request.model,
@@ -123,7 +137,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         if request.disable_thinking:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         if request.response_format is not None:
-            payload["response_format"] = request.response_format
+            payload["response_format"] = self._response_format(request.response_format)
         return payload
 
     async def _post(self, request: RuntimeChatRequest, payload: dict[str, Any]) -> httpx.Response:
@@ -138,18 +152,10 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         payload = self._payload(request, stream=False)
         response = await self._post(request, payload)
         if response.status_code >= 400 and request.response_format is not None:
-            schema = request.response_format.get("schema")
-            if schema is not None:
-                standard = dict(payload)
-                standard["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {"name": "workflow", "schema": schema, "strict": True},
-                }
-                response = await self._post(request, standard)
-            if response.status_code >= 400:
-                fallback = dict(payload)
-                fallback.pop("response_format", None)
-                response = await self._post(request, fallback)
+            # 構造化出力非対応providerだけ、schemaを外して通常生成へfallbackする。
+            fallback = dict(payload)
+            fallback.pop("response_format", None)
+            response = await self._post(request, fallback)
         if response.status_code >= 400:
             raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
         try:

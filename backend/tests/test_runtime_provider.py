@@ -71,7 +71,7 @@ def test_complete_structured_output_falls_back_without_leaking_key(monkeypatch):
 
     def handler(request):
         calls.append(json.loads(request.content))
-        if len(calls) < 3:
+        if len(calls) < 2:
             return httpx.Response(400, text="secret-provider-body")
         return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
 
@@ -82,7 +82,13 @@ def test_complete_structured_output_falls_back_without_leaking_key(monkeypatch):
         response_format={"type": "json_schema", "schema": {"type": "object"}},
     )
     result = asyncio.run(rp.OpenAICompatibleRuntimeProvider().complete(request))
-    assert result == "{}" and len(calls) == 3
+    assert result == "{}" and len(calls) == 2
+    assert calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "structured_output", "schema": {"type": "object"}, "strict": True,
+        },
+    }
     assert "response_format" not in calls[-1]
 
 

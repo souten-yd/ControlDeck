@@ -104,6 +104,8 @@ def test_generated_definition_validator():
 
     data = _extract_json('前置き {"name":"x","nodes":[],"edges":[]} 後置き')
     assert data["name"] == "x"
+    fenced = _extract_json('説明 {未完}\n```json\n{"name":"fenced","nodes":[],"edges":[]}\n```')
+    assert fenced["name"] == "fenced"
 
     ok = {
         "nodes": [
@@ -118,7 +120,7 @@ def test_generated_definition_validator():
     assert problems and "magic.node" in problems[0]
 
 
-def test_workflow_generation_uses_bounded_schema_mode(admin_client, monkeypatch):
+def test_workflow_generation_uses_configured_schema_mode(admin_client, monkeypatch):
     """reasoningを無制限に走らせず、構造化出力を要求する。"""
     from app.workflows import chat_router
 
@@ -136,6 +138,7 @@ def test_workflow_generation_uses_bounded_schema_mode(admin_client, monkeypatch)
         })
 
     monkeypatch.setattr(chat_router, "_llm", fake_llm)
+    monkeypatch.setattr(chat_router, "_workflow_max_tokens", lambda: 32768)
     r = admin_client.post(
         "/api/v1/chat/generate-workflow",
         json={"goal": "okを表示"},
@@ -144,7 +147,7 @@ def test_workflow_generation_uses_bounded_schema_mode(admin_client, monkeypatch)
 
     assert r.status_code == 200, r.text
     assert r.json()["valid"] is True
-    assert seen["max_tokens"] == 800
+    assert seen["max_tokens"] == 32768
     assert seen["disable_thinking"] is True
     assert seen["response_format"]["type"] == "json_schema"
 
