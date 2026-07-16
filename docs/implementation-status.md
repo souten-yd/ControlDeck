@@ -618,7 +618,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 履歴
 
-- 2026-07-17: 共通ナビゲーションのリモートデスクトップとAIアシスタントの位置を交換
+- 2026-07-17: モバイル下部ナビのリモートデスクトップと操作シートのAIアシスタントを交換
 - 2026-07-16: LLM runtimeのcomplete/stream/cancel契約を統合し、永続chatとworkflow生成の重複処理を置換
 - 2026-07-16: OpenCodeを既定無効featureとして条件登録し、実機llama.cpp分析、cancel、PC/320pxを検証
 - 2026-07-16: ワークフロー並列mapを分離context化し、検索/お気に入りとdata/glob/AI統合nodeを完成
