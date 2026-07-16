@@ -183,3 +183,90 @@ keyboardを閉じた後も配置が復元されること。処理中に確定し
 追加受入条件はkeyboard表示/非表示10回、80ms Working更新を同時実行し、各安定後にhostとscreenの寸法、行の等間隔、
 cursor、入力結果、PTY resize列を確認すること。0/極小・重複・古いPTY寸法を送らず、再接続・background復帰後も
 最終寸法と表示を復旧し、mobile touch/PC wheel履歴を維持することとする。
+
+### 6.7 iOS IME compositionとfullscreen TUIの同期設計（2026-07-16）
+
+#### 再監査対象
+
+PR #73でVisual Viewportの中間寸法、PTY write中のfit、無効・重複resizeは抑止した。一方、xtermの
+`.xterm-helper-textarea`がcomposition中かどうかは管理していないため、Codex/Claude Code/vim等のfullscreen TUIが
+status/input行を更新している間にも、予約済みfit、全行refresh、Visual Viewport panによるroot移動が実行できる。
+IME未確定文字はbrowserがtextarea座標へ別描画するため、xterm cursorとroot geometryを別時点で動かすと残像・重なりになる。
+
+独自CSSでtextareaを移動・置換せず、xtermが持つtextareaを常に1個だけ使用する。WebGL addonは使用せず、xterm 6標準の
+DOM rendererを維持する。文字列やstatus行数、特定TUIへ依存する例外処理は設けない。
+
+#### controller構成
+
+`XtermView`はTerminal/FitAddon/WebSocket/React state/UIとcontrollerの組み立てだけを担当する。
+
+- `TerminalWriteQueue`: write/reset/resize/recoveryを受信順に直列化する。dispose後はtaskを実行せず、例外後も後続queueを維持する。
+- `TerminalImeController`: textarea取得、composition/beforeinput/input/focus/blur、2 RAFのIME settle、最大200件のopt-in診断を担当する。
+- `TerminalGeometryController`: viewport/observer/window/pageshow/visibility、fit世代、安定待ち、root geometry、PTY通知、scroll位置、
+  layout検証、条件付きrenderer recoveryとcleanupを担当する。
+
+依存は`XtermView → 各controller`とし、IME controllerはgeometry controllerを直接参照しない。XtermViewがcomposition settleを
+geometryの`flushAfterComposition()`へcallback接続する。cleanup順はgeometry → IME → WebSocket → write queue → Terminalとする。
+
+#### 状態遷移と禁止操作
+
+```
+IDLE → COMPOSING → COMPOSING_WITH_PENDING_GEOMETRY → IME_SETTLING
+     → GEOMETRY_SETTLING → FIT_QUEUED → IDLE
+```
+
+- `compositionstart`から`compositionend + 2 RAF`まではgeometry lockとする。
+- lock中はterm.resize、term.refresh、rootのtop/left/width/height変更、PTY resizeを行わない。
+- lock中のfit reasonは最大16種＋集約表示へ制限し、viewport位置同期とrenderer recoveryはtype集合の1件だけ保持する。
+- composition終了後2 RAFで位置同期を1回行い、既存の2 RAF + 50ms安定待ちを通してfitを1回だけqueueへ積む。
+- focus復元はIME settle後に1回だけ行い、そこで発生するviewport eventも同じschedulerへ集約する。
+
+#### fit・scroll・renderer方針
+
+通常fitは有効寸法でcols/rowsが変わる場合だけ`term.resize()`し、全行`term.refresh()`は呼ばない。normal bufferではfit前の
+`viewportY/baseY`を記録し、末尾閲覧中だけ`scrollToBottom()`、履歴閲覧中は可能な範囲で元のlineへ戻す。alternate bufferでは
+scroll操作を加えない。
+
+renderer recoveryはpageshow/visibility/再接続/明示診断時でも、screenが非finite・0サイズ・hostを2px超過する実測不一致時だけ
+write queue経由で1回refreshする。composition中は延期する。単なる端数geometry、observer、Working、focusではrefreshしない。
+
+#### 診断とlayout契約
+
+`control-deck:terminal-geometry-debug=1`のときだけ、IME/geometryイベントを最大200件のring bufferへ保存しconsole debugへ出す。
+event/data/inputType、composition/fit世代、pending reason、buffer type、cursor/base/viewport、textarea/screen/host/root/helper rect、
+Visual Viewport、textarea数・activeElement・cursor推定差を記録する。通常時はconsole出力しない。
+
+DOMへ`data-terminal-header/body/host/helper`を付け、各確定fitで次を検証する。
+
+- `abs(header.height + body.height + helper.height - root.height) <= 1.5px`
+- `body.bottom <= helper.top + 1px`、`host.bottom <= helper.top + 1px`、`screen.bottom <= helper.top + 2px`
+- textareaは1個で、composition中もhost外/helper内へ残留しない。再mount/session切替でも旧textareaを残さない。
+
+#### 自動・実機受入条件
+
+Playwrightではcompositionstart中にviewport/observer/window/pageshowとPTY出力を発生させ、200ms後のresize/refresh/PTYを0、
+compositionend後のfitを1、PTYを最大1、refreshを0とする。keyboard相当開閉10回、textarea一意性、helper非重複、session再mount、
+touch/wheel/copy/paste、PCを回帰する。
+
+PlaywrightはiOS Safariの候補UIを再現できないため、最終完了には実iPhone Safari（可能ならPWA）で日本語未確定3秒、候補変更、
+英数字追加入力、開閉10回、background復帰、回線再接続を画面録画で確認する。実機結果が得られるまでは自動試験成功と区別して
+`実機確認待ち`と記録し、完了扱いにしない。
+
+#### 機能を維持する性能設計
+
+Visual Viewport resize/scroll、window resize、ResizeObserver、pageshow、visibility、再接続、composition settleは
+`invalidate(type, reason)`へ集約する。typeはsize/position/renderer/connectionの小さな集合、reasonもSetで保持し、同一frameの
+多重eventはcontroller全体で1組だけ持つ2 RAF + 50ms schedulerへまとめる。composition lock中はscheduler/queueへtaskを積まず、
+pending集合だけを更新する。queue投入済みgeometry taskも最大1件とし、世代が古ければ寸法を適用せず最新世代を1回だけ再予約する。
+
+DOM処理はviewport値の読取→root style一括書込→次frameにroot/header/body/host/helper/screenを各1回計測→計算→resize queueの順とする。
+同じflush内でread/writeを交互に行わない。0.5px未満、position-only、同一host寸法では`proposeDimensions()`、style更新、resize、PTY通知を
+行わない。通常fitの全行refreshは0回とし、renderer実測不一致時だけ1秒cooldown・同一世代1回で復旧する。
+
+composition/beforeinput/input、fit世代、counter、viewport値はcontroller内部変数としReact stateへ入れない。通常入力は既存WebSocket送信
+以外のDOM計測を行わず、診断object/rect/cursor推定/console/Long Task observerはdebug有効時だけ使用する。touchmoveは座標差分・加算・RAF予約
+だけとし、cell高はtouchstartで1回計測する。scrollback 100,000、touch/wheel/copy/paste、再接続、background/pageshow復帰は維持する。
+
+性能回帰は処理時間ではなく回数を主判定とする。keyboard相当のsize 25件 + position 10件を集中発火して実fit/resize/PTYを各最大1、
+refresh 0、composition中100件でfit/resize/refresh/PTY/DOM readを0、終了後fit 1、queue最大1とする。50ms出力200回と開閉10回、
+任意の10分soakでmemory、listener、RAF/timer、Terminal/textarea/WebSocket残留も確認する。
