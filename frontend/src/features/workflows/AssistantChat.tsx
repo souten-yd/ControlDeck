@@ -448,17 +448,17 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-white dark:bg-zinc-950"
+      className="fixed inset-0 z-50 max-w-full overflow-hidden bg-white dark:bg-zinc-950"
       role="presentation"
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={assistantName}
-        className="flex h-[100dvh] w-full flex-col bg-white dark:bg-zinc-950"
+        className="flex h-[100dvh] w-full min-w-0 max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950"
       >
         {/* ヘッダー */}
-        <div className="safe-top flex items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
+        <div className="safe-top flex min-w-0 shrink-0 items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
           <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> {assistantName}</span></h2>
           <select
             value={convId}
@@ -496,14 +496,14 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
 
         {/* 設定パネル */}
         {showSettings && (
-          <div className="grid gap-2.5 border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-800/40 sm:grid-cols-2">
+          <div className="grid min-w-0 shrink-0 gap-2.5 overflow-x-hidden border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-800/40 sm:grid-cols-2">
             <label className="block sm:col-span-2">
               <span className="mb-1 block text-xs text-zinc-500">現在の会話名</span>
-              <div className="flex gap-1.5">
+              <div className="flex min-w-0 flex-wrap gap-1.5 sm:flex-nowrap">
                 <input value={conversationTitle} onChange={(event) => setConversationTitle(event.target.value)} maxLength={200}
-                  className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900" />
-                <button onClick={() => void renameConversation()} className="rounded-lg bg-zinc-200 px-3 text-xs font-medium dark:bg-zinc-700">名前を保存</button>
-                <button onClick={() => setDeletingConversation(true)} className="rounded-lg px-3 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+                  className="min-w-0 basis-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:flex-1 sm:basis-auto sm:text-sm" />
+                <button onClick={() => void renameConversation()} className="shrink-0 rounded-lg bg-zinc-200 px-3 py-1.5 text-xs font-medium dark:bg-zinc-700">名前を保存</button>
+                <button onClick={() => setDeletingConversation(true)} className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
               </div>
             </label>
             <label className="block">
@@ -516,7 +516,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                     setBaseUrl(b);
                     setModel(m);
                   }}
-                  className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900"
+                  className="w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm"
                 >
                   {modelOptions.map((o) => (
                     <option key={`${o.base}|${o.model}`} value={`${o.base}|${o.model}`}>
@@ -525,21 +525,21 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                   ))}
                 </select>
               ) : (
-                <div className="flex gap-1.5">
-                  <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:11434/v1" className="w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900" />
-                  <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="llama3.2" className="w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900" />
+                <div className="flex min-w-0 gap-1.5">
+                  <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:11434/v1" className="min-w-0 w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
+                  <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="llama3.2" className="min-w-0 w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
                 </div>
               )}
             </label>
             <label className="block">
               <span className="mb-1 block text-xs text-zinc-500">Web 検索エンジン</span>
-              <div className="flex gap-1.5">
+              <div className="flex min-w-0 gap-1.5">
                 <select value={engine} onChange={(e) => setEngine(e.target.value)} className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900">
                   <option value="duckduckgo">DuckDuckGo</option>
                   <option value="searxng">SearXNG</option>
                 </select>
                 {engine === "searxng" && (
-                  <input value={searxngUrl} onChange={(e) => setSearxngUrl(e.target.value)} placeholder="空 = ローカル既定 (127.0.0.1:8888)" className="flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900" />
+                  <input value={searxngUrl} onChange={(e) => setSearxngUrl(e.target.value)} placeholder="空 = ローカル既定 (127.0.0.1:8888)" className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
                 )}
               </div>
             </label>
@@ -565,7 +565,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* メッセージ */}
-        <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        <div ref={scrollRef} className="min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-4 py-4">
           {messages.length === 0 && (
             <div className="mx-auto max-w-md pt-10 text-center">
               <p className="text-3xl">{currentMode.icon}</p>
@@ -585,7 +585,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* 入力欄 */}
-        <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800 safe-bottom">
+        <div className="safe-bottom min-w-0 max-w-full shrink-0 overflow-x-hidden border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
           {mode === "run" && (
             <select
               value={runTarget}
@@ -600,7 +600,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           )}
-          <div className="flex items-end gap-2">
+          <div className="flex w-full min-w-0 items-end gap-2">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -618,12 +618,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                     ? "ワークフローへの入力（{{trigger.message}}）..."
                     : "メッセージを入力..."
               }
-              className="max-h-32 flex-1 resize-none rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900"
+              className="max-h-32 w-0 min-w-0 flex-1 resize-none rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-base outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm"
             />
             <button
               onClick={send}
               disabled={busy || !input.trim()}
-              className="rounded-xl bg-accent-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
+              className="shrink-0 rounded-xl bg-accent-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
             >
               {busy ? "…" : "送信"}
             </button>
@@ -655,16 +655,16 @@ function MessageBubble({
 }) {
   if (msg.role === "user") {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white">
+      <div className="flex min-w-0 justify-end">
+        <div className="min-w-0 max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
           {msg.content}
         </div>
       </div>
     );
   }
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[92%] space-y-2 rounded-2xl rounded-bl-md border border-zinc-200 bg-zinc-50/60 px-3.5 py-2.5 text-sm dark:border-zinc-800 dark:bg-zinc-800/40 sm:max-w-[85%]">
+    <div className="flex min-w-0 justify-start">
+      <div className="min-w-0 max-w-[92%] space-y-2 break-words rounded-2xl rounded-bl-md border border-zinc-200 bg-zinc-50/60 px-3.5 py-2.5 text-sm [overflow-wrap:anywhere] dark:border-zinc-800 dark:bg-zinc-800/40 sm:max-w-[85%]">
         {/* 思考トレース（推論モデル・折り畳み） */}
         {msg.thinking && (
           <details className="rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70" open={!msg.content && msg.streaming}>
