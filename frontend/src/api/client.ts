@@ -36,6 +36,18 @@ export async function api<T = unknown>(
     try {
       const body = await res.json();
       if (typeof body.detail === "string") detail = body.detail;
+      else if (Array.isArray(body.detail)) {
+        const issues = body.detail.flatMap((issue: unknown) => {
+          if (!issue || typeof issue !== "object") return [];
+          const item = issue as { loc?: unknown; msg?: unknown };
+          if (typeof item.msg !== "string") return [];
+          const location = Array.isArray(item.loc)
+            ? item.loc.filter((part) => part !== "body").map(String).join(".")
+            : "";
+          return [location ? `${location}: ${item.msg}` : item.msg];
+        });
+        if (issues.length > 0) detail = issues.join(" / ");
+      }
     } catch {
       /* JSON でないレスポンス */
     }

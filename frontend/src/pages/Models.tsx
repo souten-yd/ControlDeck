@@ -970,6 +970,7 @@ interface LlamaInstanceConfig {
   loaded?: boolean;
   runtime_status?: string;
   base_url?: string;
+  unit?: string;
   auto_start: boolean;
   idle_exclude: boolean;
   last_used_at?: string;
@@ -996,6 +997,18 @@ interface LlamaInstanceConfig {
   min_p: number;
   repeat_penalty: number;
   seed: number;
+}
+
+const LLAMA_INSTANCE_WRITE_KEYS = [
+  "model_path", "port", "alias", "auto_start", "idle_exclude",
+  "n_gpu_layers", "ctx_size", "n_parallel", "flash_attn", "n_predict",
+  "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
+  "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
+  "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
+] as const satisfies readonly (keyof LlamaInstanceConfig)[];
+
+function llamaInstanceWriteBody(config: LlamaInstanceConfig): Record<string, unknown> {
+  return Object.fromEntries(LLAMA_INSTANCE_WRITE_KEYS.map((key) => [key, config[key]]));
 }
 
 interface LlamaStatus {
@@ -1150,7 +1163,10 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
   const persist = async (start: boolean) => {
     if (!cfg.model_path) { show("モデルファイルを選択してください", "error"); return; }
     try {
-      await api(isNew ? "/models/llama/instances" : `/models/llama/instances/${encodeURIComponent(originalAlias)}`, { method: isNew ? "POST" : "PUT", json: cfg });
+      await api(isNew ? "/models/llama/instances" : `/models/llama/instances/${encodeURIComponent(originalAlias)}`, {
+        method: isNew ? "POST" : "PUT",
+        json: llamaInstanceWriteBody(cfg),
+      });
       if (start) {
         await api(`/models/providers/llama.cpp/models/${encodeURIComponent(cfg.alias)}/load`, { method: "POST", json: {} });
         show("保存してllama.cppを起動しました（初回はモデル読み込みに時間がかかります）");
