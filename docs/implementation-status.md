@@ -94,6 +94,19 @@
 health 200と短文応答`2`（completion 2 token）を確認。Playwright Chromiumの1280px/320px双方で使用中runtime badgeが1個、
 MTP/K/V/MoEが各1箇所、横overflow・console errorなし。複数GGUF catalog/router化は次段の残件。
 
+### llama.cppモデル個別設定の保存422修正（2026-07-16）
+
+- 実サービスで設定保存を再現し、`PUT /models/llama/instances/llama`が422になることを確認。
+  GET応答のinstanceをfrontendがそのままPUTし、`selected/loaded/unit/runtime_status/base_url/last_used_at`という
+  読取り専用statusフィールドまで含めていたため、backendの`extra="forbid"`に拒否されていた
+- frontendは書込み可能な型付き28フィールドだけを明示的に選んで送信。backendの未知フィールド拒否は維持し、
+  将来status情報が増えても保存payloadへ混入しない境界にした
+- FastAPIの配列形式validation detailをAPI clientで`field: message`へ整形し、数値だけのエラー表示も解消
+
+検証: 修正前は同一instance保存が422で6種の`extra_forbidden`。修正後は実サービスで`n_predict`を
+2048→2049へ変更して200・永続化を確認し、200で2048へ復元。専用Playwrightで読取り専用field非送信と
+validation message表示を確認。frontend本番build、backend全テスト成功。
+
 ### 独立AIアシスタント・ワークフロー生成の再評価
 
 - `/assistant`を独立routeとして追加し、PCサイドバー、モバイル操作シート、command paletteから2step以内で起動。
