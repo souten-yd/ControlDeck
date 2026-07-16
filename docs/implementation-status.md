@@ -1,6 +1,6 @@
 # 実装状況
 
-最終更新: 2026-07-16
+最終更新: 2026-07-17
 
 ## サマリー
 
@@ -14,6 +14,34 @@
 | Phase 5 — ワークフロー | ✅ コア完了（下記参照） |
 | Phase 6 — リモートデスクトップ | ✅ コア完了（guacd トンネル + 接続管理 + ビューア） |
 | Phase 7 — TOTP ほか | ✅ コア完了（TOTP/PWA/バックアップ。WoL はワークフローノードで対応） |
+
+## README の現行機能反映（2026-07-17）
+
+- 2026-07-13以降に追加された独立AIアシスタント、LLM provider / llama.cpp複数GGUF管理、Knowledge/RAG、
+  ワークフロー安全プレビュー、ジョブ基盤、ファイル・アプリ管理強化、モバイル改善を主機能と直近追加へ反映
+- OpenCodeについて、通常起動では導入・有効化しないオプトイン境界、管理prefixへの導入、PATH上の既存導入、
+  有効化後のendpoint/model/project/operation設定、disable/uninstallの違いをREADMEへ追加
+- `deck.sh` の現行サブコマンドとOpenCode実装・詳細設計を照合し、READMEから設計文書への導線を追加
+- ワークフローは標準39ノードと条件登録の`code.agent`を区別し、生成時の意味検証・品質スコア、catalog、
+  安全preview、並列map、scrape viewer、RAG/Deep Researchなど2026-07-13以降の追加内容をREADMEへ反映
+
+### AIワークフロー生成の空JSON応答・出力上限修正（2026-07-17）
+
+- Qwen3.6-27B + OllamaでAIアシスタントの最小ワークフロー生成を再現。従来の簡略`response_format`では
+  HTTP 200でも本文0文字となり、「有効なJSONを返しませんでした」になることを確認
+- OpenAI互換の標準`json_schema` payloadを初回から送り、非対応providerだけschemaなしへfallbackするよう修正。
+  JSON抽出もgreedyな正規表現から完全なobjectを順にdecodeする方式へ変更
+- ワークフロー生成の固定800 tokenを廃止し、Model画面の共通出力上限（最低4096、最大131072）を使用。
+  UIへ8K〜131K出力と256K CTX presetを追加。CTXと最大出力は独立設定のまま維持
+
+検証: 修正前の同一最小フローはHTTP 200・本文0文字で再現。標準schema化後は実機Qwen3.6-27B + Ollamaで
+本文711文字、3ノード・2エッジを生成し、JSON抽出・構造/意味検証とも問題0。backend 235件、frontend本番build、
+再起動後のhealth APIを確認。Playwright Chromiumの320px/1280pxで131072 token presetの表示、横overflow 0を確認。
+診断でロードしたOllamaモデルは検証後にアンロードした。
+
+追加検証: 静音profile 210Wで20ノード一括生成を試し、厳密JSON SchemaとJSON objectの両方式が300秒でtimeout。
+LLMに18段の処理設計を短いJSONで生成させ、サーバー側でtrigger/resultを含む正規定義へ合成する分割方式では約22秒で成功した。
+20ノード・19エッジ、構造/意味error 0、品質78の「LLM 20ノード・テキスト処理デモ 0717-0753」をworkflow ID 2へ登録し、未実行のまま内容確認用に保持。
 
 ## Web通信・監視処理の軽量化（2026-07-15）
 

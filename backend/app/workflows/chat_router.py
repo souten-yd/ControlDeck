@@ -333,12 +333,29 @@ def _gen_system(base_url: str, model: str) -> str:
 
 
 def _extract_json(text: str) -> dict:
-    import re
+    """説明文やcode fenceが混じっても、最初の完全なJSON objectを取り出す。"""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("LLM が完全な JSON object を返しませんでした")
 
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        raise ValueError("LLM が有効な JSON を返しませんでした")
-    return json.loads(m.group(0))
+
+def _workflow_max_tokens() -> int:
+    """Model画面の共通出力上限を使う。schema生成には最低4Kを確保する。"""
+    try:
+        from app.models_mgmt.runtime_policy import get_policy
+
+        configured = get_policy().chat.max_output_tokens
+    except Exception:
+        configured = 4096
+    return min(131072, max(4096, int(configured)))
 
 
 def _validate_generated(definition: dict) -> list[str]:
@@ -372,7 +389,7 @@ async def generate_workflow(body: GenerateBody, user: User = Depends(require_per
         [{"role": "system", "content": _gen_system(body.base_url, body.model)},
          {"role": "user", "content": body.goal}],
         body.base_url, body.model, body.api_key, temperature=0.2,
-        max_tokens=800, disable_thinking=True,
+        max_tokens=_workflow_max_tokens(), disable_thinking=True,
         response_format={"type": "json_schema", "schema": WORKFLOW_SCHEMA},
     )
     try:
@@ -482,7 +499,7 @@ async def _run_build_job(job, req: dict, user_id: int) -> dict:
                 try:
                     content = await _llm(
                         history, base_url, model, api_key, temperature=0.2,
-                        max_tokens=800, disable_thinking=True,
+                        max_tokens=_workflow_max_tokens(), disable_thinking=True,
                         response_format={"type": "json_schema", "schema": WORKFLOW_SCHEMA},
                     )
                 except HTTPException as e:

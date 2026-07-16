@@ -591,11 +591,13 @@ function DetailSheet({ model, onClose }: { model: string; onClose: () => void })
   );
 }
 
-const CTX_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }));
+const CTX_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144].map((v) => ({ v, label: v.toLocaleString() }));
 const PREDICT_PRESETS = [
   { v: -1, label: "無制限 (-1)" }, { v: -2, label: "文脈まで (-2)" },
   { v: 256, label: "256" }, { v: 512, label: "512" }, { v: 1024, label: "1024" },
-  { v: 2048, label: "2048" }, { v: 4096, label: "4096" },
+  { v: 2048, label: "2048" }, { v: 4096, label: "4096" }, { v: 8192, label: "8192" },
+  { v: 16384, label: "16,384" }, { v: 32768, label: "32,768" },
+  { v: 65536, label: "65,536" }, { v: 131072, label: "131,072" },
 ];
 const TEMP_PRESETS = [0, 0.2, 0.4, 0.7, 1.0, 1.3].map((v) => ({ v, label: v.toFixed(1) }));
 const TOPK_PRESETS = [10, 20, 40, 80, 100].map((v) => ({ v, label: String(v) }));
@@ -781,7 +783,7 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
           <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
         </L>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <L label="チャット出力token上限"><PresetOrCustom value={policy.chat.max_output_tokens} presets={PREDICT_PRESETS.filter((p) => Number(p.v) > 0)} placeholder="2048" onChange={(v) => setPolicyCfg({ ...policy, chat: { ...policy.chat, max_output_tokens: Number(v ?? 2048) } })} /></L>
+          <L label="チャット・ワークフロー生成の出力token上限"><PresetOrCustom value={policy.chat.max_output_tokens} presets={PREDICT_PRESETS.filter((p) => Number(p.v) > 0)} placeholder="4096" onChange={(v) => setPolicyCfg({ ...policy, chat: { ...policy.chat, max_output_tokens: Number(v ?? 4096) } })} /></L>
           <L label="チャット思考">
             <select value={policy.chat.reasoning} onChange={(e) => setPolicyCfg({ ...policy, chat: { ...policy.chat, reasoning: e.target.value as RuntimePolicy["chat"]["reasoning"] } })} className={input}>
               <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
