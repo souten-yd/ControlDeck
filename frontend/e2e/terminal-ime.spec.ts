@@ -31,6 +31,8 @@ declare global {
       cols: () => number;
       viewportY: () => number;
       baseY: () => number;
+      cursorX: () => number;
+      cursorY: () => number;
       controllerListenerCount: number;
     };
   }
@@ -126,6 +128,18 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(after.ptyResizeSent).toBeLessThanOrEqual(1);
     expect(after.refreshExecuted).toBe(0);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.textareaCount())).toBe(1);
+    const settledLayout = await page.evaluate(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!.getBoundingClientRect();
+      const host = document.querySelector<HTMLElement>("[data-terminal-host]")!.getBoundingClientRect();
+      const helper = document.querySelector<HTMLElement>("[data-terminal-helper]")!.getBoundingClientRect();
+      const screen = document.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
+      const rows = window.__controlDeckTerminalTest!.rows();
+      const expectedTop = screen.top + window.__controlDeckTerminalTest!.cursorY() * screen.height / rows;
+      return { textareaTop: textarea.top, textareaBottom: textarea.bottom, expectedTop, hostBottom: host.bottom, helperTop: helper.top };
+    });
+    expect(Math.abs(settledLayout.textareaTop - settledLayout.expectedTop)).toBeLessThanOrEqual(0.5);
+    expect(settledLayout.textareaBottom).toBeLessThanOrEqual(settledLayout.hostBottom);
+    expect(settledLayout.textareaBottom).toBeLessThanOrEqual(settledLayout.helperTop);
   });
 
   test("keeps terminal screen above the single-line helper bar", async ({ page }) => {

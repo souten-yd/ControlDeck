@@ -51,6 +51,39 @@ export class TerminalImeController {
     return this.debugLog;
   }
 
+  /**
+   * xterm 6.0.0はcursor move時だけhelper textareaを同期し、resize時は同期しない。
+   * composition終了後の最終resizeに限り、xterm自身の_syncTextAreaと同じセル座標式で追従させる。
+   */
+  syncTextareaToCursor(): boolean {
+    if (this.disposed || this.isGeometryLocked()) return false;
+    if ((!this.textarea || !this.textarea.isConnected) && !this.attachTextarea()) return false;
+    const textarea = this.textarea;
+    const screen = this.options.host.querySelector<HTMLElement>(".xterm-screen");
+    if (!textarea || !screen || this.options.terminal.rows <= 0 || this.options.terminal.cols <= 0) return false;
+    const screenRect = screen.getBoundingClientRect();
+    if (!Number.isFinite(screenRect.width) || !Number.isFinite(screenRect.height)
+      || screenRect.width <= 0 || screenRect.height <= 0) return false;
+    const buffer = this.options.terminal.buffer.active;
+    const cursorX = Math.min(buffer.cursorX, this.options.terminal.cols - 1);
+    const cursorY = Math.min(buffer.cursorY, this.options.terminal.rows - 1);
+    const cellWidth = screenRect.width / this.options.terminal.cols;
+    const cellHeight = screenRect.height / this.options.terminal.rows;
+    const cursorCellWidth = Math.max(buffer.getLine(buffer.baseY + cursorY)?.getCell(cursorX)?.getWidth() ?? 1, 1);
+    const left = cursorX * cellWidth;
+    const top = cursorY * cellHeight;
+    const currentLeft = Number.parseFloat(textarea.style.left);
+    const currentTop = Number.parseFloat(textarea.style.top);
+    if (Math.abs(currentLeft - left) < 0.5 && Math.abs(currentTop - top) < 0.5) return false;
+    textarea.style.left = `${left}px`;
+    textarea.style.top = `${top}px`;
+    textarea.style.width = `${Math.max(cellWidth * cursorCellWidth, 1)}px`;
+    textarea.style.height = `${Math.max(cellHeight, 1)}px`;
+    textarea.style.lineHeight = `${Math.max(cellHeight, 1)}px`;
+    this.log("textarea-cursor-synced");
+    return true;
+  }
+
   private findTextarea(): HTMLTextAreaElement | null {
     return this.options.host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
   }
@@ -116,7 +149,6 @@ export class TerminalImeController {
         if (this.disposed || generation !== this.compositionGeneration) return;
         this.settling = false;
         this.options.onCompositionSettled();
-        this.options.terminal.focus();
         this.log("composition-settled");
       });
     });

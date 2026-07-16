@@ -220,6 +220,9 @@ IDLE → COMPOSING → COMPOSING_WITH_PENDING_GEOMETRY → IME_SETTLING
 - lock中のfit reasonは最大16種＋集約表示へ制限し、viewport位置同期とrenderer recoveryはtype集合の1件だけ保持する。
 - composition終了後2 RAFで位置同期を1回行い、既存の2 RAF + 50ms安定待ちを通してfitを1回だけqueueへ積む。
 - focus復元はIME settle後に1回だけ行い、そこで発生するviewport eventも同じschedulerへ集約する。
+- xterm 6.0.0はhelper textareaのセル座標同期をcursor move時だけ行いresize時には行わない。最新版でも残るため、composition後の
+  最終resize完了時だけ、xterm内部と同じ`cursorX/Y × screen cell width/height`でtextareaを同期してからfocusする。
+  fixed/transform/画面外移動は使わず、通常入力とcomposition中にはstyleを変更しない。
 
 #### fit・scroll・renderer方針
 

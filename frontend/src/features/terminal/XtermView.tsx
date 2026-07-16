@@ -201,7 +201,10 @@ export default function XtermView({
       terminal: term,
       debug: geometryDebug,
       collectGeometryDebug: () => geometryController?.getDebugState() ?? {},
-      onCompositionSettled: () => geometryController?.flushAfterComposition(),
+      onCompositionSettled: () => geometryController?.flushAfterComposition(() => {
+        imeController.syncTextareaToCursor();
+        term.focus();
+      }),
     });
     geometryController = new TerminalGeometryController({
       root,
@@ -228,6 +231,8 @@ export default function XtermView({
       cols: () => number;
       viewportY: () => number;
       baseY: () => number;
+      cursorX: () => number;
+      cursorY: () => number;
       controllerListenerCount: number;
     };
     const testWindow = window as typeof window & { __controlDeckTerminalTest?: TerminalTestHook };
@@ -242,6 +247,8 @@ export default function XtermView({
         cols: () => term.cols,
         viewportY: () => term.buffer.active.viewportY,
         baseY: () => term.buffer.active.baseY,
+        cursorX: () => term.buffer.active.cursorX,
+        cursorY: () => term.buffer.active.cursorY,
         // geometry 5 + IME textarea 7 + host focusin 1。observer/touch/xterm内部は別集計。
         controllerListenerCount: 13,
       };
