@@ -15,7 +15,7 @@ from app.terminals.manager import (
     _target,
     tmux_available,
 )
-from app.terminals.stream import OutputJournal, TerminalStreamRegistry
+from app.terminals.stream import OutputJournal, TerminalClientStream, TerminalStreamRegistry
 
 
 def test_fallback_pty_lifecycle():
@@ -109,6 +109,34 @@ def test_terminal_size_is_bounded_and_duplicate_resize_is_suppressed(monkeypatch
     tmux_conn = TerminalConnection(master_fd=124, pid=500, owns_process=True, rows=24, cols=80)
     assert tmux_conn.resize(30, 100) == (30, 100)
     assert signals == [(501, signal.SIGWINCH)]
+
+
+def test_terminal_write_retries_partial_and_interrupted_writes(monkeypatch):
+    calls: list[bytes] = []
+    results: list[object] = [InterruptedError(), 2, 1, 3]
+
+    def fake_write(_fd: int, data: memoryview) -> int:
+        calls.append(bytes(data))
+        result = results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return int(result)
+
+    monkeypatch.setattr("app.terminals.manager.os.write", fake_write)
+    conn = TerminalConnection(master_fd=123, pid=456, owns_process=False)
+    assert conn.write(b"abcdef") == 6
+    assert calls == [b"abcdef", b"abcdef", b"cdef", b"def"]
+
+
+def test_terminal_write_rejects_zero_progress(monkeypatch):
+    monkeypatch.setattr("app.terminals.manager.os.write", lambda *_args: 0)
+    conn = TerminalConnection(master_fd=123, pid=456, owns_process=False)
+    try:
+        conn.write(b"data")
+    except OSError as exc:
+        assert "no progress" in str(exc)
+    else:
+        raise AssertionError("zero-byte PTY write was accepted")
 
 
 def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypatch):
@@ -290,6 +318,84 @@ def test_terminal_websocket_resume_outside_journal_falls_back_once(admin_client,
         assert end["type"] == "history_end"
         assert end["connectionGeneration"] == 5
         assert end["sequence"] == stream.journal.latest_sequence
+
+
+def test_terminal_websocket_paste_ack_is_exact_and_deduplicated(admin_client, monkeypatch):
+    class FakeConnection:
+        initial = b""
+        replay = b""
+
+        def __init__(self):
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(data)
+            return len(data)
+
+        def close(self) -> None:
+            pass
+
+    conn = FakeConnection()
+    stream = TerminalClientStream("0123abcd", "pastebackendclient01", conn)  # type: ignore[arg-type]
+
+    class FakeRegistry:
+        def acquire(self, _sid, _client, generation, _rows, _cols):
+            return stream, False, stream.attach(generation)
+
+        def release(self, active, queue) -> None:
+            active.detach(queue)
+
+    monkeypatch.setattr("app.terminals.router.streams", FakeRegistry())
+    base = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80"
+            "&clientInstanceId=pastebackendclient01&attachMode=initial&lastSequence=0")
+    payload = b"START-" + b"x" * (320 * 1024) + b"-END"
+    chunks = [payload[offset:offset + 8192] for offset in range(0, len(payload), 8192)]
+    with admin_client.websocket_connect(base + "&connectionGeneration=1") as websocket:
+        assert websocket.receive_json()["type"] == "history_reset"
+        assert websocket.receive_json()["type"] == "history_end"
+        for index, chunk in enumerate(chunks):
+            websocket.send_text(json.dumps({
+                "type": "input", "inputSequence": index + 1, "pasteId": 1,
+                "chunkIndex": index, "final": index == len(chunks) - 1,
+                "byteLength": len(chunk), "connectionGeneration": 1,
+            }))
+            websocket.send_bytes(chunk)
+            ack = websocket.receive_json()
+            assert ack["type"] == "input_ack"
+            assert ack["writtenBytes"] == len(chunk)
+    assert b"".join(conn.writes) == payload
+
+    with admin_client.websocket_connect(
+        base.replace("attachMode=initial", "attachMode=resume") + "&connectionGeneration=2"
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "resume_ready"
+        assert websocket.receive_json()["type"] == "resume_end"
+        index = len(chunks) - 1
+        chunk = chunks[index]
+        websocket.send_text(json.dumps({
+            "type": "input", "inputSequence": index + 1, "pasteId": 1,
+            "chunkIndex": index, "final": True, "byteLength": len(chunk),
+            "connectionGeneration": 2,
+        }))
+        websocket.send_bytes(chunk)
+        assert websocket.receive_json()["type"] == "input_ack"
+    assert b"".join(conn.writes) == payload
+
+
+def test_terminal_input_sequence_and_cleanup():
+    class FakeConnection:
+        initial = b""
+        replay = b""
+        def close(self) -> None:
+            pass
+
+    stream = TerminalClientStream("0123abcd", "inputsequencetest01", FakeConnection())  # type: ignore[arg-type]
+    assert stream.validate_new_input_sequence(1) is True
+    stream.record_input_ack(1, 7, 0, 8192)
+    assert stream.validate_new_input_sequence(3) is False
+    assert stream.input_ack(1) is not None
+    stream.close()
+    assert stream.input_ack(1) is None
 
 
 def test_terminal_stream_rejects_stale_generation_and_cleans_session():

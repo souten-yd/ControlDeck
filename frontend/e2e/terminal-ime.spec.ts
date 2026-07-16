@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;
@@ -66,8 +67,11 @@ declare global {
       ackBarrierForTest: (ack: ResizeAck) => boolean;
       enqueuePtyFrameForTest: (data: string) => boolean;
       sendInputForTest: (data: string) => void;
+      enqueuePasteForTest: (text: string) => void;
+      pasteState: () => { state: string; acknowledgedBytes: number; totalBytes: number };
       resetBarrierForTest: () => void;
       connectionGeneration: () => number;
+      clientInstanceId: () => string;
       connectionState: () => {
         state: string;
         connectionGeneration: number;
@@ -114,6 +118,33 @@ async function openTerminal(page: Page): Promise<void> {
   await page.waitForTimeout(250);
 }
 
+test("mounts over HTTP when crypto.randomUUID is unavailable", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis.crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  await page.setViewportSize({ width: 320, height: 700 });
+  await openTerminal(page);
+
+  const initialId = await page.evaluate(() => window.__controlDeckTerminalTest!.clientInstanceId());
+  expect(initialId).toMatch(/^[A-Za-z0-9_-]{16,80}$/);
+  await page.evaluate(() => window.__controlDeckTerminalTest!.closeWebSocketForTest());
+  await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.connectionState().state), {
+    timeout: 5_000,
+  }).toBe("LIVE");
+  expect(await page.evaluate(() => window.__controlDeckTerminalTest!.clientInstanceId())).toBe(initialId);
+  expect(pageErrors).toEqual([]);
+
+  const sessionId = await page.locator("[data-terminal-header] select").inputValue();
+  await page.context().request.delete(`/api/v1/terminals/${sessionId}`, {
+    headers: { "X-Requested-With": "ControlDeck" },
+  });
+});
+
 const counters = (page: Page) => page.evaluate(() => ({ ...window.__controlDeckTerminalTest!.counters() }));
 
 test.describe("terminal mobile IME and geometry", () => {
@@ -129,6 +160,54 @@ test.describe("terminal mobile IME and geometry", () => {
         headers: { "X-Requested-With": "ControlDeck" },
       });
     }
+  });
+
+  test("delivers 100KB, 300KB and UTF-8 paste without loss", async ({ page }) => {
+    test.setTimeout(90_000);
+    const textarea = page.locator(".xterm-helper-textarea");
+    const verify = async (payload: string, disruption?: "resize" | "reconnect") => {
+      const normalized = payload.replace(/\r?\n/g, "\r");
+      const bytes = Buffer.from(normalized);
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      const command = `printf "\\033[?2004l"; python3 -c "import sys,tty,hashlib; tty.setraw(0); n=int(sys.stdin.buffer.read(10)); d=sys.stdin.buffer.read(n); print(chr(13)+chr(10)+'PASTE_RESULT:'+str(len(d))+':'+hashlib.sha256(d).hexdigest(),flush=True)"`;
+      await textarea.pressSequentially(command, { delay: 1 });
+      await textarea.press("Enter");
+      await page.waitForTimeout(150);
+      const barrier = disruption === "resize" ? await page.evaluate(() => {
+        const hook = window.__controlDeckTerminalTest!;
+        const resizeGeneration = 910_000;
+        return { resizeGeneration, connectionGeneration: hook.connectionGeneration(),
+          cols: hook.cols(), rows: hook.rows(),
+          started: hook.startBarrierForTest(resizeGeneration, hook.cols(), hook.rows()) };
+      }) : null;
+      expect(barrier?.started ?? true).toBe(true);
+      await page.evaluate(({ text, length }) => {
+        window.__controlDeckTerminalTest!.enqueuePasteForTest(String(length).padStart(10, "0") + text);
+      }, { text: normalized, length: bytes.length });
+      if (disruption === "resize" && barrier) {
+        for (let cycle = 0; cycle < 10; cycle += 1) {
+          await page.setViewportSize({ width: 320, height: 430 });
+          await page.setViewportSize({ width: 320, height: 700 });
+        }
+        await page.evaluate((value) => {
+          const hook = window.__controlDeckTerminalTest!;
+          hook.ackBarrierForTest({ type: "resize_ack", success: true, ...value });
+          hook.enqueuePtyFrameForTest("\r");
+        }, barrier);
+      } else if (disruption === "reconnect") {
+        await page.evaluate(() => window.__controlDeckTerminalTest!.closeWebSocketForTest());
+        await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.connectionState().state), {
+          timeout: 10_000,
+        }).toBe("LIVE");
+      }
+      await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.pasteState().state), {
+        timeout: 30_000,
+      }).toBe("idle");
+      await expect(page.locator(".xterm-rows")).toContainText(`PASTE_RESULT:${bytes.length}:${hash}`, { timeout: 15_000 });
+    };
+    await verify("ASCII_START_" + "a".repeat(100 * 1024) + "_ASCII_END", "resize");
+    await verify("OVER_LIMIT_START_" + "b".repeat(300 * 1024) + "_OVER_LIMIT_END", "reconnect");
+    await verify("日本語😀🧑‍💻_START_" + "あいうえお🌸".repeat(5_500) + "_UTF8_END");
   });
 
   test("coalesces keyboard geometry event bursts", async ({ page }) => {
@@ -386,20 +465,17 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(finalState.counters.maxQueuedChunks).toBeGreaterThanOrEqual(3);
   });
 
-  test("discards old queued input on reconnect generation reset", async ({ page }) => {
-    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState().counters.inputReleased);
+  test("requeues pending resize input on connection generation reset", async ({ page }) => {
     await page.evaluate(() => {
       const hook = window.__controlDeckTerminalTest!;
       hook.startBarrierForTest(900_002, hook.cols(), hook.rows());
-      hook.sendInputForTest("echo OLD_BARRIER_INPUT_MUST_NOT_RUN\r");
+      hook.sendInputForTest("echo REQUEUED_BARRIER_INPUT_OK\r");
       hook.resetBarrierForTest();
     });
     const state = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
     expect(state.active).toBe(false);
     expect(state.queuedChunks).toBe(0);
-    expect(state.counters.inputReleased).toBe(before);
-    await page.waitForTimeout(180);
-    expect(await page.locator(".xterm-rows").textContent()).not.toContain("OLD_BARRIER_INPUT_MUST_NOT_RUN");
+    await expect(page.locator(".xterm-rows")).toContainText("REQUEUED_BARRIER_INPUT_OK");
   });
 
   test("does not create a resize barrier for position-only or unchanged geometry", async ({ page }) => {

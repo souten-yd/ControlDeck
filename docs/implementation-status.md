@@ -576,6 +576,26 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
   history_reset 1→1、replay 1016B→1016B、full refresh 0、geometry queue最大1、Long Task 0。Working 50ms×200回中も接続/replay増加0。
   意図的切断1回はresume_ready 1、history_reset増加0、切断中2 chunkを順序どおり差分描画し、入力欠落・重複0。journal範囲外は
   reset/fallback各1、完全reloadはinitial replay 1、session切替は履歴混在0。
+- PR #78で追加した`crypto.randomUUID()`がiOS Safariの非secure HTTP contextで未定義となり、XtermViewのeffect初期化が例外終了する
+  回帰を修正。共通`createUuid()`を`src/lib/clientId.ts`へ分離し、randomUUID→getRandomValuesによるUUID v4→時刻・
+  Math.randomの一時IDの順にfallbackする。全経路でbackend契約を満たし、crypto自体が未定義でも例外にしない。IDはXtermViewのeffectごとに1回生成し、
+  同一mount内のWebSocket再接続では維持する。Playwright runnerの生成試験4件（cryptoなし1000件一意性を含む）、frontend本番build、
+  backend全235件が成功。サービス再起動後の`/api/v1/health`は127.0.0.1とTailscale HTTP `100.82.8.44:8765`の双方で成功した。
+  認証付きChromium 16件成功（soak 1件skip）。randomUUIDを無効化したHTTP上のmount・再接続維持・画面例外なしに加え、
+  320px keyboard 10往復、差分resume、desktop wheel/copy/remountも確認。物理iPhone Safari/PWA確認は未完了扱いとする。
+  Service Worker cacheをv14へ更新し、旧shell/assets cacheをactivate時に削除する。
+
+- Webターミナルの長文paste欠落を修正。接続前FIFOとresize FIFOの256 chunk/256KiB上限による無言破棄を廃止し、pasteを通常キー入力から
+  分離した`TerminalInputController`へ移行。全文をUTF-8化して8KiBずつ、未ACK 1 chunkで送信し、`bufferedAmount`、LIVE状態、resize barrierに
+  基づきpause/resumeする。backendはinput control+binaryを検証し、PTY全量書込み後だけsequence ACKを返す。ACKはclient streamへ5分/8192件
+  保持し、再接続時の同一sequence再送は二重書込みせず再ACKする。stale世代ACKは無視し、session切替/disposeは残りをcancelする。
+- `TerminalConnection.write()`は単発`os.write()`から、部分書込み・InterruptedError・non-blocking書込み可能待ち・0 byte異常を扱う全量書込みへ変更。
+  長文表示は32KiB以上だけ100ms throttleの進捗、キャンセル、失敗時再試行を表示。xterm標準と同じCR変換とbracketed pasteをpaste全体へ1回だけ適用。
+  opt-in診断はpaste/chunk/sequence/文字・byte数/累積量/世代/bufferedAmount/hash/マスク値だけを記録し、本文は保存しない。
+- 検証: backend全235件、frontend本番build、controller/ID Playwright 7件成功。実サービス再起動後health成功。認証付きChromium実サービスで
+  100KB ASCII（102422B）、300KB ASCII（307232B）、日本語+絵文字（104540B）をraw PTY受信機の長さ+SHA-256で完全一致確認し、欠落・重複・
+  replacement character 0。100KB送信中の320px keyboard geometry 10往復+resize barrier、300KB送信中のWebSocket切断+差分resumeも同じhashで完了。
+  PC幅のwheel/copy/remount、session切替、従来resize FIFOも成功。物理iPhone Safari/PWAでのbrowser pasteイベント分割数だけ未計測。
 
 ## 実装済み機能
 

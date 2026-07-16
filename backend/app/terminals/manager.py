@@ -334,8 +334,25 @@ class TerminalConnection:
         self._last_size = _normalize_terminal_size(rows, cols)
         self.tmux_target = tmux_target
 
-    def write(self, data: bytes) -> None:
-        os.write(self.master_fd, data)
+    def write(self, data: bytes) -> int:
+        """PTYへ全byteを書き切る。呼出元はevent loop外で実行すること。"""
+        view = memoryview(data)
+        total = 0
+        while total < len(view):
+            try:
+                written = os.write(self.master_fd, view[total:])
+            except InterruptedError:
+                continue
+            except BlockingIOError:
+                # PTY masterはnon-blocking。固定sleepではなく書込み可能通知を待つ。
+                _, writable, _ = select.select([], [self.master_fd], [], 1.0)
+                if not writable:
+                    raise TimeoutError("PTY write timed out")
+                continue
+            if written <= 0:
+                raise OSError("PTY write returned no progress")
+            total += written
+        return total
 
     def capture_replay(self) -> bytes:
         """resume journal範囲外時だけ現在のbounded snapshotを取得する。"""

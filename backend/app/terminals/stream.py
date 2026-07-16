@@ -5,6 +5,7 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass
 from itertools import islice
+import time
 from typing import Callable
 
 from app.terminals.manager import TerminalConnection, TerminalManager
@@ -12,12 +13,23 @@ from app.terminals.manager import TerminalConnection, TerminalManager
 JOURNAL_MAX_BYTES = 4 * 1024 * 1024
 JOURNAL_MAX_CHUNKS = 4096
 STREAM_GRACE_SECONDS = 30.0
+INPUT_ACK_TTL_SECONDS = 300.0
+INPUT_ACK_MAX_ENTRIES = 8192
 
 
 @dataclass(frozen=True)
 class JournalEntry:
     sequence: int
     data: bytes
+
+
+@dataclass(frozen=True)
+class InputAckRecord:
+    input_sequence: int
+    paste_id: int
+    chunk_index: int
+    written_bytes: int
+    recorded_at: float
 
 
 class OutputJournal:
@@ -83,6 +95,9 @@ class TerminalClientStream:
         self.reader_task: asyncio.Task[None] | None = None
         self.cleanup_handle: asyncio.TimerHandle | None = None
         self.closed = False
+        self._input_acks: dict[int, InputAckRecord] = {}
+        self._input_ack_order: deque[int] = deque()
+        self._next_input_sequence = 1
 
     def start(self, on_eof: Callable[[], None]) -> None:
         if self.reader_task is not None:
@@ -133,6 +148,38 @@ class TerminalClientStream:
         if self.subscriber is queue:
             self.subscriber = None
 
+    def input_ack(self, input_sequence: int) -> InputAckRecord | None:
+        self._prune_input_acks()
+        return self._input_acks.get(input_sequence)
+
+    def validate_new_input_sequence(self, input_sequence: int) -> bool:
+        self._prune_input_acks()
+        return input_sequence == self._next_input_sequence
+
+    def record_input_ack(
+        self, input_sequence: int, paste_id: int, chunk_index: int, written_bytes: int,
+    ) -> InputAckRecord:
+        record = InputAckRecord(
+            input_sequence=input_sequence, paste_id=paste_id, chunk_index=chunk_index,
+            written_bytes=written_bytes, recorded_at=time.monotonic(),
+        )
+        self._input_acks[input_sequence] = record
+        self._input_ack_order.append(input_sequence)
+        self._next_input_sequence = input_sequence + 1
+        self._prune_input_acks()
+        return record
+
+    def _prune_input_acks(self) -> None:
+        cutoff = time.monotonic() - INPUT_ACK_TTL_SECONDS
+        while self._input_ack_order:
+            sequence = self._input_ack_order[0]
+            record = self._input_acks.get(sequence)
+            if (record is not None and len(self._input_ack_order) <= INPUT_ACK_MAX_ENTRIES
+                    and record.recorded_at >= cutoff):
+                break
+            self._input_ack_order.popleft()
+            self._input_acks.pop(sequence, None)
+
     def close(self) -> None:
         if self.closed:
             return
@@ -144,6 +191,8 @@ class TerminalClientStream:
             self.reader_task.cancel()
         self.connection.close()
         self.journal.clear()
+        self._input_acks.clear()
+        self._input_ack_order.clear()
 
 
 class TerminalStreamRegistry:
