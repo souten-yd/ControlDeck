@@ -280,13 +280,13 @@ export default function AppLayout() {
                 }}
               />
             )}
-            {can("workflows.run") && (
+            {can("remote_desktop.use") && (
               <ActionItem
-                icon={<IconAssistant />}
-                label="AIアシスタント"
+                icon={<IconRemote />}
+                label="リモートデスクトップ"
                 onClick={() => {
                   setActionOpen(false);
-                  navigate("/assistant");
+                  navigate("/remote");
                 }}
               />
             )}
