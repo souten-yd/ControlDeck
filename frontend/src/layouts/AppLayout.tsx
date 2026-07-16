@@ -28,10 +28,10 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SV
   { to: "/", label: "ホーム", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
   { to: "/workflows", label: "ワークフロー", icon: IconFlow },
-  { to: "/assistant", label: "AIアシスタント", icon: IconAssistant },
+  { to: "/remote", label: "リモート", icon: IconRemote },
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
-  { to: "/remote", label: "リモート", icon: IconRemote },
+  { to: "/assistant", label: "AIアシスタント", icon: IconAssistant },
   { to: "/github", label: "GitHub", icon: IconBranch },
   { to: "/knowledge", label: "Knowledge", icon: IconBook },
   { to: "/models", label: "Model", icon: IconChip },
@@ -41,7 +41,7 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SV
   { to: "/settings", label: "設定", icon: IconSettings },
 ];
 
-// モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / リモート + 右端に操作
+// モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / AIアシスタント + 右端に操作
 const MOBILE_NAV = [NAV[0], NAV[1], NAV[2], NAV[5], NAV[6]];
 
 function IconFlow(props: React.SVGProps<SVGSVGElement>) {
