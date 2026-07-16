@@ -32,7 +32,8 @@ interface TerminalGeometryControllerOptions {
   coarseMobile: boolean;
   debug: boolean;
   isGeometryLocked: () => boolean;
-  sendPtyResize: (cols: number, rows: number) => boolean;
+  isResizeTransactionActive: () => boolean;
+  sendPtyResize: (cols: number, rows: number, createBarrier: boolean) => number | null;
   resumeConnection: () => void;
 }
 
@@ -50,19 +51,28 @@ export class TerminalGeometryController {
   private frame1 = 0;
   private frame2 = 0;
   private measureFrame = 0;
+  private recoveryFrame = 0;
   private settleTimer: number | undefined;
   private pendingInvalidations = new Set<GeometryInvalidation>();
   private pendingReasons = new Set<string>();
   private geometryTaskQueued = false;
+  private pendingLocalResize?: {
+    resizeGeneration: number;
+    cols: number;
+    rows: number;
+    isNormal: boolean;
+    wasAtBottom: boolean;
+    previousViewportY: number;
+    commitQueued: boolean;
+  };
   private forcePtySync = false;
   private lastHostWidth = 0;
   private lastHostHeight = 0;
   private lastViewportWidth = 0;
   private lastViewportHeight = 0;
-  private lastViewportTop = 0;
-  private lastViewportLeft = 0;
   private lastRecoveryAt = 0;
   private lastRecoveryGeneration = -1;
+  private lastRecoveryResizeGeneration = -1;
   private longTaskObserver?: PerformanceObserver;
   private readonly debugLog: Record<string, unknown>[] = [];
   private readonly observer: ResizeObserver;
@@ -107,7 +117,7 @@ export class TerminalGeometryController {
     this.recordReason(reason);
     this.counters.fitRequested += type === "size" || type === "connection" ? 1 : 0;
     this.publishCounters();
-    if (this.options.isGeometryLocked()) return;
+    if (this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
     this.scheduleStableFlush();
   }
 
@@ -122,6 +132,50 @@ export class TerminalGeometryController {
     if (this.pendingInvalidations.size === 0) this.pendingInvalidations.add("size");
     this.recordReason("composition-end");
     this.scheduleStableFlush();
+  }
+
+  onResizeTransactionSettled(resizeGeneration: number, reason: string): void {
+    if (this.disposed) return;
+    const pending = this.pendingLocalResize;
+    if (pending?.resizeGeneration === resizeGeneration) {
+      if (pending.commitQueued) return;
+      // ACK前のtimeout/failureではlocal xtermを変更せず、安定geometryを再要求する。
+      this.pendingLocalResize = undefined;
+      this.lastHostWidth = 0;
+      this.lastHostHeight = 0;
+      this.pendingInvalidations.add("size");
+    }
+    if (reason === "pty-write-complete" && this.lastRecoveryResizeGeneration !== resizeGeneration) {
+      window.cancelAnimationFrame(this.recoveryFrame);
+      this.recoveryFrame = window.requestAnimationFrame(() => {
+        this.recoveryFrame = 0;
+        this.recoverCursorRowsIfMismatched(resizeGeneration);
+      });
+    }
+    if (this.pendingInvalidations.size > 0 && !this.options.isGeometryLocked()) this.scheduleStableFlush();
+  }
+
+  /** ACK message処理中にqueueへ積み、後続のACK後PTY frameより先にlocal rows/colsを確定する。 */
+  commitAcknowledgedResize(resizeGeneration: number, cols: number, rows: number): void {
+    const pending = this.pendingLocalResize;
+    if (this.disposed || !pending || pending.commitQueued
+      || pending.resizeGeneration !== resizeGeneration
+      || pending.cols !== cols || pending.rows !== rows) return;
+    pending.commitQueued = true;
+    this.options.writeQueue.enqueueTask(() => {
+      const current = this.pendingLocalResize;
+      if (this.disposed || !current || current.resizeGeneration !== resizeGeneration) return;
+      if (this.options.terminal.cols !== cols || this.options.terminal.rows !== rows) {
+        this.options.terminal.resize(cols, rows);
+        this.counters.resizeExecuted += 1;
+        if (current.isNormal) {
+          if (current.wasAtBottom) this.options.terminal.scrollToBottom();
+          else this.options.terminal.scrollToLine(current.previousViewportY);
+        }
+      }
+      this.pendingLocalResize = undefined;
+      this.publishCounters();
+    }, "resize-ack-local-commit");
   }
 
   getDebugState(): Record<string, unknown> {
@@ -150,6 +204,7 @@ export class TerminalGeometryController {
   }
 
   private scheduleStableFlush(): void {
+    if (this.disposed || this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
     const generation = ++this.generation;
     window.cancelAnimationFrame(this.frame1);
     window.cancelAnimationFrame(this.frame2);
@@ -174,23 +229,16 @@ export class TerminalGeometryController {
 
   private prepareFlush(generation: number): void {
     if (this.disposed || generation !== this.generation) return;
-    if (this.options.isGeometryLocked()) return;
+    if (this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
     const viewport = window.visualViewport;
     const viewportWidth = viewport?.width ?? window.innerWidth;
     const viewportHeight = viewport?.height ?? window.innerHeight;
-    const viewportTop = viewport?.offsetTop ?? 0;
-    const viewportLeft = viewport?.offsetLeft ?? 0;
-    const positionChanged = changed(viewportTop, this.lastViewportTop)
-      || changed(viewportLeft, this.lastViewportLeft);
     const viewportSizeChanged = changed(viewportWidth, this.lastViewportWidth)
       || changed(viewportHeight, this.lastViewportHeight);
 
-    // DOM writeは一括し、次frameのDOM readと交互にしない。
+    // Safari自身のVisual Viewport panと二重移動させない。fixed rootのtop/leftはCSSの0を維持する。
+    // DOM writeはsizeだけを一括し、次frameのDOM readと交互にしない。
     if (this.options.coarseMobile) {
-      if (positionChanged) {
-        this.options.root.style.left = `${viewportLeft}px`;
-        this.options.root.style.top = `${viewportTop}px`;
-      }
       if (viewportSizeChanged) {
         this.options.root.style.width = `${viewportWidth}px`;
         this.options.root.style.height = `${viewportHeight}px`;
@@ -198,8 +246,6 @@ export class TerminalGeometryController {
     }
     this.lastViewportWidth = viewportWidth;
     this.lastViewportHeight = viewportHeight;
-    this.lastViewportTop = viewportTop;
-    this.lastViewportLeft = viewportLeft;
     this.measureFrame = window.requestAnimationFrame(() => {
       this.measureFrame = 0;
       this.measureAndQueue(generation, viewportSizeChanged);
@@ -207,7 +253,8 @@ export class TerminalGeometryController {
   }
 
   private measureAndQueue(generation: number, viewportSizeChanged: boolean): void {
-    if (this.disposed || generation !== this.generation || this.options.isGeometryLocked()) return;
+    if (this.disposed || generation !== this.generation
+      || this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
     const needsSize = this.pendingInvalidations.has("size")
       || this.pendingInvalidations.has("connection")
       || viewportSizeChanged;
@@ -311,7 +358,8 @@ export class TerminalGeometryController {
     this.options.writeQueue.enqueueTask(() => {
       this.geometryTaskQueued = false;
       this.counters.geometryTasksPending = 0;
-      if (this.disposed || task.generation !== this.generation || this.options.isGeometryLocked()) {
+      if (this.disposed || task.generation !== this.generation
+        || this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) {
         this.pendingInvalidations.add("size");
         this.publishCounters();
         if (!this.disposed && !this.options.isGeometryLocked()) this.scheduleStableFlush();
@@ -330,20 +378,24 @@ export class TerminalGeometryController {
           const isNormal = buffer.type === "normal";
           const wasAtBottom = buffer.viewportY >= buffer.baseY;
           const previousViewportY = buffer.viewportY;
-          this.options.terminal.resize(dimensions.cols, dimensions.rows);
-          this.counters.resizeExecuted += 1;
-          if (isNormal) {
-            if (wasAtBottom) this.options.terminal.scrollToBottom();
-            else this.options.terminal.scrollToLine(previousViewportY);
-          }
-          if (this.options.sendPtyResize(dimensions.cols, dimensions.rows)) {
+          const sentGeneration = this.options.sendPtyResize(dimensions.cols, dimensions.rows, true);
+          if (sentGeneration !== null) {
+            this.pendingLocalResize = {
+              resizeGeneration: sentGeneration,
+              cols: dimensions.cols,
+              rows: dimensions.rows,
+              isNormal,
+              wasAtBottom,
+              previousViewportY,
+              commitQueued: false,
+            };
             this.counters.ptyResizeSent += 1;
             ptySizeSent = true;
           }
         }
       }
       if (!ptySizeSent && this.forcePtySync
-        && this.options.sendPtyResize(this.options.terminal.cols, this.options.terminal.rows)) {
+        && this.options.sendPtyResize(this.options.terminal.cols, this.options.terminal.rows, false) !== null) {
         this.counters.ptyResizeSent += 1;
       }
       this.forcePtySync = false;
@@ -357,10 +409,42 @@ export class TerminalGeometryController {
     if (!invalid || this.options.isGeometryLocked()) return;
     const now = performance.now();
     if (this.lastRecoveryGeneration === generation || now - this.lastRecoveryAt < RECOVERY_COOLDOWN_MS) return;
-    this.options.terminal.refresh(0, Math.max(0, this.options.terminal.rows - 1));
+    const cursorRow = Math.min(this.options.terminal.buffer.active.cursorY, this.options.terminal.rows - 1);
+    this.options.terminal.refresh(Math.max(0, cursorRow - 1), Math.min(this.options.terminal.rows - 1, cursorRow + 1));
     this.counters.refreshExecuted += 1;
     this.lastRecoveryAt = now;
     this.lastRecoveryGeneration = generation;
+  }
+
+  /** resize transaction後だけbufferとDOM cursor周辺を比較し、不一致行だけを同一世代1回復旧する。 */
+  private recoverCursorRowsIfMismatched(resizeGeneration: number): void {
+    if (this.disposed || this.options.isGeometryLocked() || this.options.isResizeTransactionActive()
+      || this.lastRecoveryResizeGeneration === resizeGeneration) return;
+    this.lastRecoveryResizeGeneration = resizeGeneration;
+    const terminal = this.options.terminal;
+    const buffer = terminal.buffer.active;
+    const domRows = [...this.options.host.querySelectorAll<HTMLElement>(".xterm-rows > div")];
+    if (domRows.length !== terminal.rows) return;
+    const normalize = (value: string): string => value.replace(/\u00a0/g, " ").trimEnd();
+    const cursorRow = Math.min(buffer.cursorY, terminal.rows - 1);
+    const start = Math.max(0, cursorRow - 1);
+    const end = Math.min(terminal.rows - 1, cursorRow + 1);
+    let mismatch = false;
+    for (let row = start; row <= end; row += 1) {
+      const expected = normalize(buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? "");
+      const actual = normalize(domRows[row].textContent ?? "");
+      if (expected !== actual) {
+        mismatch = true;
+        break;
+      }
+    }
+    if (!mismatch) return;
+    this.options.writeQueue.enqueueTask(() => {
+      if (this.disposed || this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
+      terminal.refresh(start, end);
+      this.counters.refreshExecuted += 1;
+      this.publishCounters();
+    }, "resize-renderer-recovery");
   }
 
   private readonly onObservedResize = (): void => {
@@ -412,6 +496,7 @@ export class TerminalGeometryController {
     window.cancelAnimationFrame(this.frame1);
     window.cancelAnimationFrame(this.frame2);
     window.cancelAnimationFrame(this.measureFrame);
+    window.cancelAnimationFrame(this.recoveryFrame);
     window.clearTimeout(this.settleTimer);
     window.visualViewport?.removeEventListener("resize", this.onViewportResize);
     window.visualViewport?.removeEventListener("scroll", this.onViewportScroll);
@@ -421,5 +506,6 @@ export class TerminalGeometryController {
     this.longTaskObserver?.disconnect();
     this.pendingInvalidations.clear();
     this.pendingReasons.clear();
+    this.pendingLocalResize = undefined;
   }
 }

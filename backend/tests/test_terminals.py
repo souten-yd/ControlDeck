@@ -1,4 +1,7 @@
+import asyncio
+import json
 import os
+import signal
 import subprocess
 import time
 
@@ -89,11 +92,93 @@ def test_terminal_size_is_bounded_and_duplicate_resize_is_suppressed(monkeypatch
         "app.terminals.manager._set_winsize",
         lambda fd, rows, cols: calls.append((fd, rows, cols)),
     )
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.terminals.manager.os.getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(
+        "app.terminals.manager.os.killpg",
+        lambda pgid, sig: signals.append((pgid, sig)),
+    )
     conn = TerminalConnection(master_fd=123, pid=456, owns_process=False, rows=24, cols=80)
-    conn.resize(24, 80)
-    conn.resize(1, 1)
-    conn.resize(1, 1)
+    assert conn.resize(24, 80) == (24, 80)
+    assert conn.resize(1, 1) == (3, 10)
+    assert conn.resize(1, 1) == (3, 10)
     assert calls == [(123, 3, 10)]
+    assert signals == []
+
+    tmux_conn = TerminalConnection(master_fd=124, pid=500, owns_process=True, rows=24, cols=80)
+    assert tmux_conn.resize(30, 100) == (30, 100)
+    assert signals == [(501, signal.SIGWINCH)]
+
+
+def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypatch):
+    class FakeConnection:
+        initial = b""
+        replay = b""
+
+        def __init__(self):
+            self.resize_calls: list[tuple[int, int]] = []
+            self.fail = False
+
+        async def read_loop(self, _on_data):
+            await asyncio.Future()
+
+        def resize(self, rows: int, cols: int) -> tuple[int, int]:
+            if self.fail:
+                raise OSError("test resize failure")
+            self.resize_calls.append((rows, cols))
+            return _normalize_terminal_size(rows, cols)
+
+        def size_diagnostics(self) -> dict[str, object]:
+            return {"ptyRows": 19, "ptyCols": 44}
+
+        def close(self) -> None:
+            pass
+
+    conn = FakeConnection()
+    monkeypatch.setattr("app.terminals.router.manager.open_connection", lambda *_args, **_kwargs: conn)
+    with admin_client.websocket_connect("/api/v1/terminals/0123abcd/connect?rows=24&cols=80") as websocket:
+        assert websocket.receive_json() == {"type": "history_reset"}
+        assert websocket.receive_json() == {"type": "history_end"}
+        websocket.send_text(json.dumps({
+            "type": "resize",
+            "rows": 19,
+            "cols": 44,
+            "resizeGeneration": 12,
+            "connectionGeneration": 3,
+            "debug": True,
+        }))
+        ack = websocket.receive_json()
+        assert ack["type"] == "resize_ack"
+        assert ack["success"] is True
+        assert ack["rows"] == 19 and ack["cols"] == 44
+        assert ack["resizeGeneration"] == 12
+        assert ack["connectionGeneration"] == 3
+        assert ack["diagnostics"]["ptyRows"] == 19
+        assert conn.resize_calls == [(19, 44)]
+
+        websocket.send_text(json.dumps({
+            "type": "size_probe",
+            "resizeGeneration": 12,
+            "connectionGeneration": 3,
+        }))
+        probe = websocket.receive_json()
+        assert probe["type"] == "size_probe_result"
+        assert probe["resizeGeneration"] == 12
+        assert probe["connectionGeneration"] == 3
+        assert probe["diagnostics"] == {"ptyRows": 19, "ptyCols": 44}
+
+        conn.fail = True
+        websocket.send_text(json.dumps({
+            "type": "resize",
+            "rows": 20,
+            "cols": 45,
+            "resizeGeneration": 13,
+            "connectionGeneration": 3,
+        }))
+        failed = websocket.receive_json()
+        assert failed["type"] == "resize_ack"
+        assert failed["success"] is False
+        assert failed["resizeGeneration"] == 13
 
 
 def test_tmux_replays_ten_thousand_lines():

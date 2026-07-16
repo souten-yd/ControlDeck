@@ -19,6 +19,15 @@ type PerfCounters = {
   longTasks: number;
 };
 
+type ResizeAck = {
+  type: "resize_ack";
+  cols: number;
+  rows: number;
+  resizeGeneration: number;
+  connectionGeneration: number;
+  success: boolean;
+};
+
 declare global {
   interface Window {
     __controlDeckTerminalTest?: {
@@ -31,6 +40,34 @@ declare global {
       cols: () => number;
       viewportY: () => number;
       baseY: () => number;
+      resizeBarrierState: () => {
+        active: boolean;
+        acked: boolean;
+        queuedChunks: number;
+        counters: {
+          started: number;
+          ackAccepted: number;
+          ackIgnored: number;
+          inputQueued: number;
+          inputReleased: number;
+          timeoutReleased: number;
+          maxQueuedChunks: number;
+        };
+      };
+      resizeBarrierLog: () => readonly Record<string, unknown>[];
+      terminalLog: () => readonly Record<string, unknown>[];
+      captureRenderState: () => {
+        visibleBufferRows: string[];
+        domRows: { text: string }[];
+        mismatchedRows: number[];
+        textareaCount: number;
+      };
+      startBarrierForTest: (generation: number, cols: number, rows: number) => boolean;
+      ackBarrierForTest: (ack: ResizeAck) => boolean;
+      enqueuePtyFrameForTest: (data: string) => boolean;
+      sendInputForTest: (data: string) => void;
+      resetBarrierForTest: () => void;
+      connectionGeneration: () => number;
       controllerListenerCount: number;
     };
   }
@@ -85,18 +122,44 @@ test.describe("terminal mobile IME and geometry", () => {
     await page.setViewportSize({ width: 320, height: 430 });
     await page.waitForTimeout(250);
     const result = await counters(page);
-    if (process.env.CONTROL_DECK_E2E_REPORT === "1") console.log("AP1_RESULT", JSON.stringify(result));
+    const barrier = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
+    const acceptedAck = await page.evaluate(() => [...window.__controlDeckTerminalTest!.resizeBarrierLog()]
+      .reverse().find((entry) => entry.event === "resize-ack-accepted"));
+    const sizeProbe = await page.evaluate(() => [...window.__controlDeckTerminalTest!.terminalLog()]
+      .reverse().find((entry) => entry.event === "size-probe-result"));
+    const finalSize = await page.evaluate(() => ({
+      rows: window.__controlDeckTerminalTest!.rows(),
+      cols: window.__controlDeckTerminalTest!.cols(),
+    }));
+    if (process.env.CONTROL_DECK_E2E_REPORT === "1") {
+      console.log("AP1_RESULT", JSON.stringify({ ...result, acceptedAck, sizeProbe }));
+    }
     expect(result.fitRequested).toBeGreaterThanOrEqual(25);
     expect(result.fitExecuted).toBeLessThanOrEqual(1);
     expect(result.resizeExecuted).toBeLessThanOrEqual(1);
     expect(result.ptyResizeSent).toBeLessThanOrEqual(1);
     expect(result.refreshExecuted).toBe(0);
     expect(result.maxGeometryTasksPending).toBeLessThanOrEqual(1);
+    expect(barrier.counters.started).toBe(1);
+    expect(barrier.counters.ackAccepted).toBe(1);
+    expect(acceptedAck).toBeTruthy();
+    const diagnostics = acceptedAck?.diagnostics as { ptyRows?: number; ptyCols?: number } | undefined;
+    expect(diagnostics?.ptyRows).toBe(finalSize.rows);
+    expect(diagnostics?.ptyCols).toBe(finalSize.cols);
+    const finalDiagnostics = sizeProbe?.diagnostics as {
+      ptyRows?: number;
+      ptyCols?: number;
+      tmuxWindow?: string;
+      tmuxClients?: string;
+    } | undefined;
+    expect(finalDiagnostics?.ptyRows).toBe(finalSize.rows);
+    expect(finalDiagnostics?.ptyCols).toBe(finalSize.cols);
+    expect(finalDiagnostics?.tmuxWindow).toBe(`${finalSize.cols}x${finalSize.rows}`);
+    expect(finalDiagnostics?.tmuxClients).toContain(`${finalSize.cols}x${finalSize.rows}`);
   });
 
   test("blocks geometry during composition and flushes once", async ({ page }) => {
     const textarea = page.locator(".xterm-helper-textarea");
-    const textareaStyleBefore = await textarea.getAttribute("style");
     const rootBefore = await page.locator("[data-terminal-root]").evaluate((node) => node.getAttribute("style"));
     await page.evaluate(() => window.__controlDeckTerminalTest!.resetCounters());
     await textarea.dispatchEvent("compositionstart", { data: "こ" });
@@ -127,8 +190,131 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(after.ptyResizeSent).toBeLessThanOrEqual(1);
     expect(after.refreshExecuted).toBe(0);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.textareaCount())).toBe(1);
-    // ControlDeckはcomposition settle後にxterm所有textareaのinline styleを変更しない。
-    expect(await textarea.getAttribute("style")).toBe(textareaStyleBefore);
+    const textareaLayout = await page.evaluate(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
+      const textareaRect = textarea.getBoundingClientRect();
+      const hostRect = document.querySelector<HTMLElement>("[data-terminal-host]")!.getBoundingClientRect();
+      const style = getComputedStyle(textarea);
+      return {
+        position: style.position,
+        transform: style.transform,
+        insideHost: textareaRect.left >= hostRect.left - 1
+          && textareaRect.right <= hostRect.right + 1
+          && textareaRect.top >= hostRect.top - 1
+          && textareaRect.bottom <= hostRect.bottom + 1,
+      };
+    });
+    // SIGWINCH後のcursor moveによるxterm標準同期は許可し、ControlDeck独自のfixed/transformは使わない。
+    expect(textareaLayout.position).toBe("absolute");
+    expect(textareaLayout.transform).toBe("none");
+    expect(textareaLayout.insideHost).toBe(true);
+  });
+
+  test("holds FIFO input until matching ACK and the following PTY write complete", async ({ page }) => {
+    const setup = await page.evaluate(() => {
+      const hook = window.__controlDeckTerminalTest!;
+      const cols = hook.cols();
+      const rows = hook.rows();
+      const connectionGeneration = hook.connectionGeneration();
+      const resizeGeneration = 900_001;
+      return {
+        cols,
+        rows,
+        connectionGeneration,
+        resizeGeneration,
+        started: hook.startBarrierForTest(resizeGeneration, cols, rows),
+      };
+    });
+    expect(setup.started).toBe(true);
+    await page.evaluate(() => {
+      const hook = window.__controlDeckTerminalTest!;
+      hook.sendInputForTest("printf '");
+      hook.sendInputForTest("BARRIER_😀_ORDER_OK\\n'");
+      hook.sendInputForTest("\r");
+    });
+    expect((await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState())).queuedChunks).toBe(3);
+
+    const oldAccepted = await page.evaluate((values) => window.__controlDeckTerminalTest!.ackBarrierForTest({
+      type: "resize_ack",
+      cols: values.cols,
+      rows: values.rows,
+      resizeGeneration: values.resizeGeneration - 1,
+      connectionGeneration: values.connectionGeneration,
+      success: true,
+    }), setup);
+    expect(oldAccepted).toBe(false);
+    expect((await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState())).active).toBe(true);
+
+    const matchingAccepted = await page.evaluate((values) => window.__controlDeckTerminalTest!.ackBarrierForTest({
+      type: "resize_ack",
+      cols: values.cols,
+      rows: values.rows,
+      resizeGeneration: values.resizeGeneration,
+      connectionGeneration: values.connectionGeneration,
+      success: true,
+    }), setup);
+    expect(matchingAccepted).toBe(true);
+    expect((await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState())).acked).toBe(true);
+    await page.waitForTimeout(20);
+    expect((await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState())).active).toBe(true);
+
+    expect(await page.evaluate(() => window.__controlDeckTerminalTest!.enqueuePtyFrameForTest("\r"))).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState().active)).toBe(false);
+    await expect(page.locator(".xterm-rows")).toContainText("BARRIER_😀_ORDER_OK");
+    const finalState = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
+    expect(finalState.counters.ackIgnored).toBeGreaterThanOrEqual(1);
+    expect(finalState.counters.inputReleased).toBeGreaterThanOrEqual(3);
+    expect(finalState.counters.maxQueuedChunks).toBeGreaterThanOrEqual(3);
+  });
+
+  test("discards old queued input on reconnect generation reset", async ({ page }) => {
+    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState().counters.inputReleased);
+    await page.evaluate(() => {
+      const hook = window.__controlDeckTerminalTest!;
+      hook.startBarrierForTest(900_002, hook.cols(), hook.rows());
+      hook.sendInputForTest("echo OLD_BARRIER_INPUT_MUST_NOT_RUN\r");
+      hook.resetBarrierForTest();
+    });
+    const state = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
+    expect(state.active).toBe(false);
+    expect(state.queuedChunks).toBe(0);
+    expect(state.counters.inputReleased).toBe(before);
+    await page.waitForTimeout(180);
+    expect(await page.locator(".xterm-rows").textContent()).not.toContain("OLD_BARRIER_INPUT_MUST_NOT_RUN");
+  });
+
+  test("does not create a resize barrier for position-only or unchanged geometry", async ({ page }) => {
+    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState().counters.started);
+    await page.evaluate(() => {
+      const hook = window.__controlDeckTerminalTest!;
+      hook.resetCounters();
+      for (let index = 0; index < 20; index += 1) hook.invalidate("position", `position-only-${index}`);
+      hook.invalidate("size", "same-size");
+    });
+    await page.waitForTimeout(250);
+    const after = await page.evaluate(() => ({
+      barrier: window.__controlDeckTerminalTest!.resizeBarrierState(),
+      perf: window.__controlDeckTerminalTest!.counters(),
+    }));
+    expect(after.barrier.counters.started).toBe(before);
+    expect(after.perf.resizeExecuted).toBe(0);
+    expect(after.perf.ptyResizeSent).toBe(0);
+  });
+
+  test("keeps one placeholder in matching buffer and DOM rows", async ({ page }) => {
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.pressSequentially("printf 'Write tests for @filename\\n'", { delay: 1 });
+    await textarea.press("Enter");
+    await expect(page.locator(".xterm-rows")).toContainText("Write tests for @filename");
+    await page.waitForTimeout(100);
+    const snapshot = await page.evaluate(() => window.__controlDeckTerminalTest!.captureRenderState());
+    const bufferCount = snapshot.visibleBufferRows.filter((row) => row.includes("Write tests for @filename")).length;
+    const domCount = snapshot.domRows.filter((row) => row.text.includes("Write tests for @filename")).length;
+    expect(bufferCount).toBe(1);
+    expect(domCount).toBe(1);
+    expect(snapshot.mismatchedRows).toEqual([]);
+    expect(snapshot.textareaCount).toBe(1);
+    expect(await page.locator(".xterm").count()).toBe(1);
   });
 
   test("keeps terminal screen above the single-line helper bar", async ({ page }) => {
@@ -162,6 +348,8 @@ test.describe("terminal mobile IME and geometry", () => {
         rowHeights: rows.map((row) => row.height),
         rowGaps,
         rowTransforms: rows.map((row) => row.transform),
+        rootInlineTop: document.querySelector<HTMLElement>("[data-terminal-root]")!.style.top,
+        rootInlineLeft: document.querySelector<HTMLElement>("[data-terminal-root]")!.style.left,
       };
     });
     expect(layout.heightDelta).toBeLessThanOrEqual(1.5);
@@ -173,6 +361,8 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(Math.max(...layout.rowHeights) - Math.min(...layout.rowHeights)).toBeLessThanOrEqual(0.01);
     expect(Math.max(...layout.rowGaps) - Math.min(...layout.rowGaps)).toBeLessThanOrEqual(0.01);
     expect(layout.rowTransforms.every((value) => value === "none")).toBe(true);
+    expect(layout.rootInlineTop).toBe("");
+    expect(layout.rootInlineLeft).toBe("");
   });
 
   test("keeps writes and controller resources bounded across ten keyboard cycles", async ({ page }) => {
@@ -192,9 +382,15 @@ test.describe("terminal mobile IME and geometry", () => {
     await textarea.press("Enter");
     await expect(page.locator(".xterm-rows")).toContainText("INPUT_OK");
     const result = await counters(page);
-    if (process.env.CONTROL_DECK_E2E_REPORT === "1") console.log("AP3_RESULT", JSON.stringify(result));
+    const barrier = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
+    if (process.env.CONTROL_DECK_E2E_REPORT === "1") {
+      console.log("AP3_RESULT", JSON.stringify({ ...result, barrier: barrier.counters }));
+    }
     expect(result.maxGeometryTasksPending).toBeLessThanOrEqual(1);
     expect(result.refreshExecuted).toBe(0);
+    expect(barrier.counters.started).toBe(result.ptyResizeSent);
+    expect(barrier.counters.ackAccepted).toBe(result.ptyResizeSent);
+    expect(barrier.counters.timeoutReleased).toBe(0);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.controllerListenerCount)).toBe(13);
     expect(await page.evaluate(() => window.__controlDeckTerminalTest!.textareaCount())).toBe(1);
   });

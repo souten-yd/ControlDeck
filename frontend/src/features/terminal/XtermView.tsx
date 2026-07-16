@@ -11,7 +11,9 @@ import { wsUrl } from "../../api/client";
 import { useToasts } from "../../stores";
 import { IconX } from "../../components/icons";
 import { TerminalGeometryController } from "./controllers/TerminalGeometryController";
+import { TerminalDiagnostics } from "./controllers/TerminalDiagnostics";
 import { TerminalImeController } from "./controllers/TerminalImeController";
+import { TerminalResizeBarrier, type TerminalResizeAck } from "./controllers/TerminalResizeBarrier";
 import { TerminalWriteQueue } from "./controllers/TerminalWriteQueue";
 
 interface SessionInfo {
@@ -52,6 +54,7 @@ export default function XtermView({
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const historyReadyRef = useRef(false);
+  const inputSenderRef = useRef<((data: string) => void) | null>(null);
   const ctrlArmed = useRef(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const copyRef = useRef<HTMLTextAreaElement>(null);
@@ -98,19 +101,59 @@ export default function XtermView({
     let retryTimer: number | undefined;
     let retryDelay = 500;
     let geometryController: TerminalGeometryController | null = null;
+    let diagnostics: TerminalDiagnostics;
+    let resizeBarrier: TerminalResizeBarrier;
+    let connectionGeneration = 0;
+    let resizeGeneration = 0;
     let lastPtySize: { cols: number; rows: number } | null = null;
-    const notifyBackendTerminalSize = (cols: number, rows: number): boolean => {
-      if (cols < 10 || rows < 3) return false;
-      if (lastPtySize?.cols === cols && lastPtySize.rows === rows) return false;
+    const sendNow = (data: string): void => {
       const ws = wsRef.current;
-      if (ws?.readyState !== WebSocket.OPEN) return false;
-      ws.send(JSON.stringify({ type: "resize", rows, cols }));
+      if (!historyReadyRef.current || ws?.readyState !== WebSocket.OPEN) return;
+      ws.send(encoder.encode(data));
+      diagnostics?.record("input-sent", {
+        connectionGeneration,
+        length: data.length,
+      });
+    };
+    const notifyBackendTerminalSize = (cols: number, rows: number, createBarrier: boolean): number | null => {
+      if (cols < 10 || rows < 3) return null;
+      if (lastPtySize?.cols === cols && lastPtySize.rows === rows) return null;
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return null;
+      const nextResizeGeneration = ++resizeGeneration;
+      if (createBarrier
+        && !resizeBarrier.startResize(nextResizeGeneration, connectionGeneration, cols, rows)) return null;
+      try {
+        ws.send(JSON.stringify({
+          type: "resize",
+          rows,
+          cols,
+          resizeGeneration: nextResizeGeneration,
+          connectionGeneration,
+          debug: geometryDebug,
+        }));
+      } catch (error) {
+        if (createBarrier) resizeBarrier.abort("resize-send-failed");
+        diagnostics?.record("resize-send-failed", { nextResizeGeneration, connectionGeneration });
+        console.error("[terminal-resize] send failed", error);
+        return null;
+      }
       lastPtySize = { cols, rows };
-      return true;
+      diagnostics?.record("resize-sent", {
+        resizeGeneration: nextResizeGeneration,
+        connectionGeneration,
+        cols,
+        rows,
+        createBarrier,
+      });
+      return nextResizeGeneration;
     };
 
     const connect = () => {
       if (disposed) return;
+      connectionGeneration += 1;
+      const thisConnectionGeneration = connectionGeneration;
+      resizeBarrier.resetConnection(thisConnectionGeneration);
       historyReadyRef.current = false;
       setStatus("connecting");
       const ws = new WebSocket(
@@ -120,15 +163,26 @@ export default function XtermView({
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
         retryDelay = 500;
         lastPtySize = null;
         setStatus("open");
         geometryController?.onConnectionOpen();
       };
       ws.onmessage = (ev) => {
+        if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
         if (typeof ev.data === "string") {
           try {
             const control = JSON.parse(ev.data);
+            if (control.type === "resize_ack") {
+              diagnostics.record("resize-ack-received", control);
+              resizeBarrier.handleAck(control as TerminalResizeAck);
+              return;
+            }
+            if (control.type === "size_probe_result") {
+              diagnostics.record("size-probe-result", control);
+              return;
+            }
             if (control.type === "history_reset") {
               writeQueue.enqueueReset();
               return;
@@ -143,12 +197,25 @@ export default function XtermView({
           } catch {
             // 旧backend等の通常文字列はそのまま表示する。
           }
-          writeQueue.enqueueWrite(ev.data);
+          const token = resizeBarrier.captureFrameAfterAck();
+          diagnostics.recordPty("pty-frame-received", ev.data, { connectionGeneration, token });
+          writeQueue.enqueueWrite(ev.data, () => {
+            diagnostics.record("pty-write-complete", { connectionGeneration, token });
+            if (token) resizeBarrier.completePtyFrame(token);
+          });
           return;
         }
-        writeQueue.enqueueWrite(new Uint8Array(ev.data));
+        const data = new Uint8Array(ev.data);
+        const token = resizeBarrier.captureFrameAfterAck();
+        diagnostics.recordPty("pty-frame-received", data, { connectionGeneration, token });
+        writeQueue.enqueueWrite(data, () => {
+          diagnostics.record("pty-write-complete", { connectionGeneration, token });
+          if (token) resizeBarrier.completePtyFrame(token);
+        });
       };
       ws.onclose = (ev) => {
+        if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
+        resizeBarrier.resetConnection(connectionGeneration);
         if (disposed) return;
         if (ev.code === 4404) {
           // セッション自体が存在しない（終了済み）→ 再接続しない
@@ -161,13 +228,13 @@ export default function XtermView({
         retryDelay = Math.min(retryDelay * 2, 5000);
       };
     };
-    connect();
 
     const send = (data: string) => {
       const ws = wsRef.current;
-      if (historyReadyRef.current && ws?.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      if (historyReadyRef.current && ws?.readyState === WebSocket.OPEN) resizeBarrier.sendOrQueue(data);
     };
-    term.onData((data) => {
+    inputSenderRef.current = send;
+    const dataDisposable = term.onData((data) => {
       if (ctrlArmed.current && data.length === 1 && /[a-z]/i.test(data)) {
         ctrlArmed.current = false;
         setCtrlOn(false);
@@ -203,6 +270,38 @@ export default function XtermView({
       // composition終了後もtextareaのstyle/focusへ触れず、保留geometryだけを確定する。
       onCompositionSettled: () => geometryController?.flushAfterComposition(),
     });
+    diagnostics = new TerminalDiagnostics({
+      terminal: term,
+      host,
+      root,
+      helper,
+      enabled: geometryDebug,
+      isComposing: imeController.isComposing,
+    });
+    resizeBarrier = new TerminalResizeBarrier({
+      sendNow,
+      debug: geometryDebug,
+      onAckAccepted: (acceptedResizeGeneration, cols, rows) => {
+        geometryController?.commitAcknowledgedResize(acceptedResizeGeneration, cols, rows);
+      },
+      onSettled: (settledResizeGeneration, reason) => {
+        diagnostics.record("resize-transaction-settled", {
+          resizeGeneration: settledResizeGeneration,
+          connectionGeneration,
+          reason,
+        });
+        if (reason === "timeout-before-ack" || reason === "ack-failure") lastPtySize = null;
+        const ws = wsRef.current;
+        if (geometryDebug && ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "size_probe",
+            resizeGeneration: settledResizeGeneration,
+            connectionGeneration,
+          }));
+        }
+        geometryController?.onResizeTransactionSettled(settledResizeGeneration, reason);
+      },
+    });
     geometryController = new TerminalGeometryController({
       root,
       header,
@@ -215,6 +314,7 @@ export default function XtermView({
       coarseMobile,
       debug: geometryDebug,
       isGeometryLocked: imeController.isGeometryLocked,
+      isResizeTransactionActive: resizeBarrier.isActive,
       sendPtyResize: notifyBackendTerminalSize,
       resumeConnection,
     });
@@ -228,6 +328,16 @@ export default function XtermView({
       cols: () => number;
       viewportY: () => number;
       baseY: () => number;
+      resizeBarrierState: () => Record<string, unknown>;
+      resizeBarrierLog: () => readonly Record<string, unknown>[];
+      terminalLog: () => readonly Record<string, unknown>[];
+      captureRenderState: () => Record<string, unknown>;
+      startBarrierForTest: (generation: number, cols: number, rows: number) => boolean;
+      ackBarrierForTest: (ack: TerminalResizeAck) => boolean;
+      enqueuePtyFrameForTest: (data: string) => boolean;
+      sendInputForTest: (data: string) => void;
+      resetBarrierForTest: () => void;
+      connectionGeneration: () => number;
       controllerListenerCount: number;
     };
     const testWindow = window as typeof window & { __controlDeckTerminalTest?: TerminalTestHook };
@@ -242,10 +352,27 @@ export default function XtermView({
         cols: () => term.cols,
         viewportY: () => term.buffer.active.viewportY,
         baseY: () => term.buffer.active.baseY,
+        resizeBarrierState: () => resizeBarrier.getState(),
+        resizeBarrierLog: () => resizeBarrier.getDebugLog(),
+        terminalLog: () => diagnostics.getLog(),
+        captureRenderState: () => diagnostics.captureRenderState(),
+        startBarrierForTest: (generation, cols, rows) =>
+          resizeBarrier.startResize(generation, connectionGeneration, cols, rows),
+        ackBarrierForTest: (ack) => resizeBarrier.handleAck(ack),
+        enqueuePtyFrameForTest: (data) => {
+          const token = resizeBarrier.captureFrameAfterAck();
+          if (!token) return false;
+          writeQueue.enqueueWrite(data, () => resizeBarrier.completePtyFrame(token));
+          return true;
+        },
+        sendInputForTest: (data) => resizeBarrier.sendOrQueue(data),
+        resetBarrierForTest: () => resizeBarrier.resetConnection(connectionGeneration),
+        connectionGeneration: () => connectionGeneration,
         // geometry 5 + IME textarea 7 + host focusin 1。observer/touch/xterm内部は別集計。
         controllerListenerCount: 13,
       };
     }
+    connect();
 
     // xterm.js 6の独自scrollbarはtouch dragをbuffer scrollへ変換しないため明示的に補う。
     let touchTracking = false;
@@ -322,6 +449,7 @@ export default function XtermView({
     return () => {
       disposed = true;
       historyReadyRef.current = false;
+      inputSenderRef.current = null;
       window.clearTimeout(retryTimer);
       geometryController?.dispose();
       imeController.dispose();
@@ -346,6 +474,8 @@ export default function XtermView({
         ws.close();
       }
       wsRef.current = null;
+      resizeBarrier.dispose();
+      dataDisposable.dispose();
       scrollDisposable.dispose();
       writeQueue.dispose();
       term.dispose();
@@ -354,9 +484,7 @@ export default function XtermView({
   }, [sessionId]);
 
   const sendSeq = (seq: string) => {
-    if (historyReadyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(new TextEncoder().encode(seq));
-    }
+    inputSenderRef.current?.(seq);
     termRef.current?.focus();
   };
 

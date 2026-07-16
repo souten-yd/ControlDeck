@@ -39,6 +39,12 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def _get_winsize(fd: int) -> tuple[int, int]:
+    packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+    rows, cols, _, _ = struct.unpack("HHHH", packed)
+    return rows, cols
+
+
 def _normalize_terminal_size(rows: int, cols: int) -> tuple[int, int]:
     """PTYへ適用できる実用範囲へ正規化する（rows, cols）。"""
     return max(3, min(rows, 500)), max(10, min(cols, 1000))
@@ -290,7 +296,8 @@ class TerminalManager:
                 raise KeyError("セッションが見つかりません")
             replay, _ = _bounded_history(captured.stdout.replace(b"\n", b"\r\n"))
             return TerminalConnection(master_fd=master, pid=proc.pid, owns_process=True,
-                                      replay=replay, initial=initial, rows=rows, cols=cols)
+                                      replay=replay, initial=initial, rows=rows, cols=cols,
+                                      tmux_target=target)
         s = self._fallback.get(sid)
         if s is None or not s.alive():
             raise KeyError("セッションが見つかりません")
@@ -316,6 +323,7 @@ class TerminalConnection:
         session: PtySession | None = None,
         rows: int = 24,
         cols: int = 80,
+        tmux_target: str | None = None,
     ) -> None:
         self.master_fd = master_fd
         self.pid = pid
@@ -324,16 +332,49 @@ class TerminalConnection:
         self.initial = initial
         self.session = session
         self._last_size = _normalize_terminal_size(rows, cols)
+        self.tmux_target = tmux_target
 
     def write(self, data: bytes) -> None:
         os.write(self.master_fd, data)
 
-    def resize(self, rows: int, cols: int) -> None:
+    def resize(self, rows: int, cols: int) -> tuple[int, int]:
         size = _normalize_terminal_size(rows, cols)
         if size == self._last_size:
-            return
-        self._last_size = size
+            return size
         _set_winsize(self.master_fd, *size)
+        # start_new_sessionで起動したtmux attachは、このPTY構成ではioctlだけで
+        # SIGWINCHを受けない場合がある。ControlDeck所有process groupへ明示通知する。
+        if self.owns_process:
+            try:
+                os.killpg(os.getpgid(self.pid), signal.SIGWINCH)
+            except OSError:
+                pass
+        self._last_size = size
+        return size
+
+    def size_diagnostics(self) -> dict[str, object]:
+        """明示debug resize時だけ取得する。通常resizeのhot pathではsubprocessを実行しない。"""
+        rows, cols = _get_winsize(self.master_fd)
+        result: dict[str, object] = {"ptyRows": rows, "ptyCols": cols}
+        if not self.tmux_target:
+            return result
+        commands = {
+            "tmuxWindow": [
+                "tmux", "display-message", "-p", "-t", self.tmux_target,
+                "#{window_width}x#{window_height}",
+            ],
+            "tmuxClients": [
+                "tmux", "list-clients", "-t", self.tmux_target, "-F",
+                "#{client_width}x#{client_height}",
+            ],
+            "tmuxWindowSizePolicy": [
+                "tmux", "show-options", "-gvw", "-t", self.tmux_target, "window-size",
+            ],
+        }
+        for key, argv in commands.items():
+            completed = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+            result[key] = completed.stdout.strip() if completed.returncode == 0 else "N/A"
+        return result
 
     async def read_loop(self, on_data) -> None:
         """PTY からの出力を非同期で on_data(bytes) へ渡す。EOF で終了。"""

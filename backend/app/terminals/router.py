@@ -79,15 +79,25 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
         return
 
     await websocket.accept()
+    send_lock = asyncio.Lock()
+
+    async def send_bytes(data: bytes) -> None:
+        async with send_lock:
+            await websocket.send_bytes(data)
+
+    async def send_control(payload: dict[str, object]) -> None:
+        async with send_lock:
+            await websocket.send_text(json.dumps(payload, separators=(",", ":")))
+
     if conn.initial:
-        await websocket.send_bytes(conn.initial)
-    await websocket.send_text(json.dumps({"type": "history_reset"}))
+        await send_bytes(conn.initial)
+    await send_control({"type": "history_reset"})
     if conn.replay:
-        await websocket.send_bytes(conn.replay)
-    await websocket.send_text(json.dumps({"type": "history_end"}))
+        await send_bytes(conn.replay)
+    await send_control({"type": "history_end"})
 
     async def pump_output() -> None:
-        await conn.read_loop(websocket.send_bytes)
+        await conn.read_loop(send_bytes)
         # PTY 側 EOF（tmux detach / シェル終了）
         try:
             await websocket.close()
@@ -107,7 +117,54 @@ async def terminal_ws(websocket: WebSocket, session_id: str, rows: int = 24, col
                 try:
                     ctrl = json.loads(text)
                     if ctrl.get("type") == "resize":
-                        conn.resize(int(ctrl["rows"]), int(ctrl["cols"]))
+                        resize_generation = int(ctrl["resizeGeneration"])
+                        connection_generation = int(ctrl["connectionGeneration"])
+                        if not 0 <= resize_generation <= 2_147_483_647:
+                            raise ValueError("invalid resize generation")
+                        if not 0 <= connection_generation <= 2_147_483_647:
+                            raise ValueError("invalid connection generation")
+                        received_at = asyncio.get_running_loop().time() * 1000
+                        try:
+                            applied_rows, applied_cols = conn.resize(int(ctrl["rows"]), int(ctrl["cols"]))
+                            applied_at = asyncio.get_running_loop().time() * 1000
+                            ack: dict[str, object] = {
+                                "type": "resize_ack",
+                                "rows": applied_rows,
+                                "cols": applied_cols,
+                                "resizeGeneration": resize_generation,
+                                "connectionGeneration": connection_generation,
+                                "success": True,
+                            }
+                            if ctrl.get("debug") is True:
+                                ack["diagnostics"] = {
+                                    "serverReceivedAtMs": received_at,
+                                    "winsizeAppliedAtMs": applied_at,
+                                    **conn.size_diagnostics(),
+                                }
+                            await send_control(ack)
+                        except OSError as exc:
+                            logger.warning("terminal resize failed: %s", exc)
+                            await send_control({
+                                "type": "resize_ack",
+                                "rows": int(ctrl["rows"]),
+                                "cols": int(ctrl["cols"]),
+                                "resizeGeneration": resize_generation,
+                                "connectionGeneration": connection_generation,
+                                "success": False,
+                            })
+                    elif ctrl.get("type") == "size_probe":
+                        resize_generation = int(ctrl["resizeGeneration"])
+                        connection_generation = int(ctrl["connectionGeneration"])
+                        if not 0 <= resize_generation <= 2_147_483_647:
+                            raise ValueError("invalid resize generation")
+                        if not 0 <= connection_generation <= 2_147_483_647:
+                            raise ValueError("invalid connection generation")
+                        await send_control({
+                            "type": "size_probe_result",
+                            "resizeGeneration": resize_generation,
+                            "connectionGeneration": connection_generation,
+                            "diagnostics": conn.size_diagnostics(),
+                        })
                 except (json.JSONDecodeError, KeyError, ValueError):
                     pass
     except WebSocketDisconnect:
