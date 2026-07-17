@@ -44,6 +44,65 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
+# モデル最大コンテキストのキャッシュ（Ollama /api/show は毎回呼ばない）
+_CTX_CACHE: dict[str, int] = {}
+
+
+async def _context_max(base_url: str, model: str) -> int | None:
+    """生成統計表示用の最大コンテキスト。llama.cppは/slotsのn_ctx（parallel分割後の実値）、
+    Ollamaはモデル個別num_ctx → モデル上限の順で解決する。外部endpointはNone。"""
+    import httpx
+
+    from app.models_mgmt import llama, ollama
+
+    normalized = base_url.rstrip("/").removesuffix("/v1").rstrip("/")
+    try:
+        if normalized == ollama.base_url().rstrip("/"):
+            num_ctx = ollama.get_model_config(model).get("num_ctx")
+            if num_ctx:
+                return int(num_ctx)
+            key = f"ollama:{model}"
+            if key not in _CTX_CACHE:
+                shown = await ollama.show(model)
+                if shown.get("context_length"):
+                    _CTX_CACHE[key] = int(shown["context_length"])
+            return _CTX_CACHE.get(key)
+        from urllib.parse import urlsplit
+
+        port = urlsplit(base_url).port
+        if any(int(item.get("port", 0)) == port for item in llama.list_instances()):
+            async with httpx.AsyncClient(timeout=2) as client:
+                response = await client.get(f"http://127.0.0.1:{port}/slots")
+            slots = response.json()
+            if isinstance(slots, list) and slots:
+                return int(slots[0].get("n_ctx") or 0) or None
+    except Exception:
+        return None
+    return None
+
+
+async def _prompt_tokens_probe(base_url: str) -> int | None:
+    """llama.cppの処理中slotから実測プロンプトトークン数を得る（他runtimeはNone）。"""
+    import httpx
+
+    from app.models_mgmt import llama
+
+    try:
+        from urllib.parse import urlsplit
+
+        port = urlsplit(base_url).port
+        if not any(int(item.get("port", 0)) == port for item in llama.list_instances()):
+            return None
+        async with httpx.AsyncClient(timeout=2) as client:
+            response = await client.get(f"http://127.0.0.1:{port}/slots")
+        for slot in response.json():
+            if slot.get("is_processing"):
+                return int(slot.get("n_prompt_tokens") or 0) or None
+    except Exception:
+        return None
+    return None
+
+
 # ---- 会話 CRUD ----
 
 
@@ -297,14 +356,56 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             max_tokens=max_output_tokens, thinking=think,
             disable_thinking=think is False, keep_alive=_keep_alive(),
         )
+        # 生成統計（フェーズ / tok/s / コンテキスト使用量）。1チャンク≒1トークンとして
+        # 直近4秒窓で速度を算出し、usage chunk到着時に実測値へ置き換える。
+        stats = {"phase": "", "gen_tokens": 0, "prompt_tokens": None,
+                 "context_max": await _context_max(base_url, model),
+                 "start": 0.0, "last_emit": 0.0, "recent": []}
+        prompt_probe: asyncio.Task | None = None
+
+        def emit_stats(final: bool = False) -> None:
+            now = asyncio.get_event_loop().time()
+            window = [t for t in stats["recent"] if now - t <= 4.0]
+            elapsed = max(now - stats["start"], 0.25) if stats["start"] else 0.25
+            rate = (stats["gen_tokens"] / elapsed) if final else len(window) / min(4.0, elapsed)
+            job.log("stats", phase="done" if final else stats["phase"],
+                    tok_per_sec=round(rate, 1), gen_tokens=stats["gen_tokens"],
+                    prompt_tokens=stats["prompt_tokens"], context_max=stats["context_max"])
+
         async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
+            if chunk.type == "usage":
+                usage = chunk.usage or {}
+                if usage.get("prompt_tokens"):
+                    stats["prompt_tokens"] = int(usage["prompt_tokens"])
+                if usage.get("completion_tokens"):
+                    stats["gen_tokens"] = int(usage["completion_tokens"])
+                continue
             if chunk.type == "thinking":
                 buf["thinking"] += chunk.content
                 job.log("thinking", delta=chunk.content)
+                stats["phase"] = "thinking"
             elif chunk.type == "content":
                 buf["content"] += chunk.content
                 job.log("delta", delta=chunk.content)
+                stats["phase"] = "answer"
                 await maybe_ckpt()
+            now = asyncio.get_event_loop().time()
+            if not stats["start"]:
+                stats["start"] = now
+                # llama.cppは処理中slotから実測プロンプトトークン数を並行取得する
+                async def fill_prompt() -> None:
+                    stats["prompt_tokens"] = await _prompt_tokens_probe(base_url) or stats["prompt_tokens"]
+                prompt_probe = asyncio.get_event_loop().create_task(fill_prompt())
+            stats["gen_tokens"] += 1
+            stats["recent"].append(now)
+            if len(stats["recent"]) > 512:
+                del stats["recent"][:256]
+            if now - stats["last_emit"] >= 1.0:
+                stats["last_emit"] = now
+                emit_stats()
+        if prompt_probe is not None:
+            await prompt_probe
+        emit_stats(final=True)
         await asyncio.to_thread(checkpoint, True, "completed")
         # 会話タイトルを最初の user 発話から自動設定
         await asyncio.to_thread(_maybe_title, conv_id)
@@ -667,6 +768,12 @@ async def stream_message(websocket: WebSocket, message_id: str):
                         "type": "progress", "phase": ev.get("phase", ""), "label": ev.get("label", ""),
                         "iteration": ev.get("iteration", 0), "details": ev.get("details", {}),
                     }, ensure_ascii=False))
+                elif ev.get("message") == "stats":
+                    await websocket.send_text(json.dumps({
+                        "type": "stats", "phase": ev.get("phase", ""),
+                        "tok_per_sec": ev.get("tok_per_sec"), "gen_tokens": ev.get("gen_tokens"),
+                        "prompt_tokens": ev.get("prompt_tokens"), "context_max": ev.get("context_max"),
+                    }))
             cursor = next_cursor
             if job.status not in ("queued", "running") and cursor >= job.event_sequence:
                 break

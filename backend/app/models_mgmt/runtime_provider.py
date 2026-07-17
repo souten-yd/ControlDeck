@@ -203,6 +203,8 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         self, request: RuntimeChatRequest, cancel_event: asyncio.Event,
     ) -> AsyncIterator[RuntimeChunk]:
         payload = self._payload(request, stream=True)
+        # 最終chunkで正確なprompt/completionトークン数を得る（OpenAI標準。未対応serverは無視する）
+        payload["stream_options"] = {"include_usage": True}
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST", normalize_openai_base(request.base_url) + "/chat/completions",
@@ -364,6 +366,12 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
                         yield RuntimeChunk("thinking", content=thinking)
                     if content:
                         yield RuntimeChunk("content", content=content)
+                    if item.get("done"):
+                        # native APIの最終chunkにある実測トークン数をOpenAI形式へ揃えて流す
+                        yield RuntimeChunk("usage", usage={
+                            "prompt_tokens": item.get("prompt_eval_count"),
+                            "completion_tokens": item.get("eval_count"),
+                        })
 
 
 _OLLAMA = OllamaRuntimeProvider()
