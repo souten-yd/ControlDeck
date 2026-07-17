@@ -200,7 +200,6 @@ class SendBody(BaseModel):
     searxng_url: str = ""
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
-    max_output_tokens: int | None = Field(default=None, ge=64, le=131072)
 
 
 class RouteBody(BaseModel):
@@ -227,7 +226,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     model = params["model"]
     mode = params.get("mode", "chat")
     thinking_mode = str(params.get("thinking", "off"))
-    max_output_tokens = int(params.get("max_output_tokens", 2048))
+    max_output_tokens = int(params["max_output_tokens"])
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_base_url
     think = False if thinking_mode == "off" else _think_for(model)
     provider = provider_for_base_url(base_url)
@@ -577,13 +576,13 @@ async def send_message(
     db.commit()
     assistant_id = assistant.id
 
-    from app.models_mgmt.runtime_policy import get_policy
+    from app.models_mgmt.runtime_policy import get_policy, model_output_tokens
 
     chat_defaults = get_policy().chat
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "thinking": body.thinking or chat_defaults.reasoning,
-              "max_output_tokens": body.max_output_tokens or chat_defaults.max_output_tokens,
+              "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査"}.get(body.mode, "生成")

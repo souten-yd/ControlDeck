@@ -29,7 +29,7 @@ interface RuntimePolicy {
   max_loaded_models: number;
   default_model_ref: string;
   assistant_name: string;
-  chat: { max_output_tokens: number; reasoning: "off" | "auto" | "on"; timeout_seconds: number };
+  chat: { reasoning: "off" | "auto" | "on"; timeout_seconds: number };
   deep_research: {
     evidence_context_chars: number;
     max_report_tokens: number;
@@ -597,7 +597,7 @@ const PREDICT_PRESETS = [
   { v: 256, label: "256" }, { v: 512, label: "512" }, { v: 1024, label: "1024" },
   { v: 2048, label: "2048" }, { v: 4096, label: "4096" }, { v: 8192, label: "8192" },
   { v: 16384, label: "16,384" }, { v: 32768, label: "32,768" },
-  { v: 65536, label: "65,536" }, { v: 131072, label: "131,072" },
+  { v: 65536, label: "65,536" }, { v: 131072, label: "131,072" }, { v: 262144, label: "262,144" },
 ];
 const TEMP_PRESETS = [0, 0.2, 0.4, 0.7, 1.0, 1.3].map((v) => ({ v, label: v.toFixed(1) }));
 const TOPK_PRESETS = [10, 20, 40, 80, 100].map((v) => ({ v, label: String(v) }));
@@ -780,14 +780,11 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <L label="全ランタイムの同時ロード上限">
           <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
         </L>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <L label="チャット・ワークフロー生成の出力token上限"><PresetOrCustom value={policy.chat.max_output_tokens} presets={PREDICT_PRESETS.filter((p) => Number(p.v) > 0)} placeholder="4096" onChange={(v) => setPolicyCfg({ ...policy, chat: { ...policy.chat, max_output_tokens: Number(v ?? 4096) } })} /></L>
-          <L label="チャット思考">
-            <select value={policy.chat.reasoning} onChange={(e) => setPolicyCfg({ ...policy, chat: { ...policy.chat, reasoning: e.target.value as RuntimePolicy["chat"]["reasoning"] } })} className={input}>
-              <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
-            </select>
-          </L>
-        </div>
+        <L label="チャット思考">
+          <select value={policy.chat.reasoning} onChange={(e) => setPolicyCfg({ ...policy, chat: { ...policy.chat, reasoning: e.target.value as RuntimePolicy["chat"]["reasoning"] } })} className={input}>
+            <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
+          </select>
+        </L>
         <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50/40 p-3 dark:border-violet-900 dark:bg-violet-950/20">
           <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">Deep Research共通設定</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -795,7 +792,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
               <PresetOrCustom value={policy.deep_research.evidence_context_chars} presets={[30000, 60000, 90000, 150000, 300000].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="90000" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, evidence_context_chars: Number(v ?? 90000) } })} />
             </L>
             <L label="レポート総出力token上限">
-              <PresetOrCustom value={policy.deep_research.max_report_tokens} presets={[8192, 16384, 24576, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="32768" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, max_report_tokens: Number(v ?? 32768) } })} />
+              <PresetOrCustom value={policy.deep_research.max_report_tokens} presets={[8192, 16384, 24576, 32768, 65536, 131072, 262144].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="32768" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, max_report_tokens: Number(v ?? 32768) } })} />
             </L>
             <L label="Deep Research生成timeout（秒）">
               <PresetOrCustom value={policy.deep_research.timeout_seconds} presets={[300, 600, 1200, 1800, 3600].map((v) => ({ v, label: `${v}秒` }))} placeholder="1800" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, timeout_seconds: Number(v ?? 1800) } })} />
