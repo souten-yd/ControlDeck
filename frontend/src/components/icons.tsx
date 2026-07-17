@@ -170,3 +170,15 @@ export const IconTrash = (p: SVGProps<SVGSVGElement>) => (
     <path d="M6 7l1 13h10l1-13" />
   </Icon>
 );
+export const IconMic = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+  </Icon>
+);
+export const IconSend = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="m3 11 18-8-8 18-2.5-7.5z" />
+    <path d="M10.5 13.5 21 3" />
+  </Icon>
+);

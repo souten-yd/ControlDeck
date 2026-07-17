@@ -39,6 +39,10 @@ class Job:
     status: str = "queued"  # queued / running / succeeded / failed / canceled / interrupted
     progress: dict = field(default_factory=dict)  # {status, completed, total}
     events: list[dict] = field(default_factory=list)
+    # events は bounded journal。配列 index ではなく単調増加 cursor で購読する。
+    # event_offset は現在保持している先頭イベントの直前の sequence。
+    event_offset: int = 0
+    event_sequence: int = 0
     result: Any = None
     error: str = ""
     owner_user_id: int | None = None
@@ -56,9 +60,13 @@ class Job:
 
     def emit(self, payload: dict) -> None:
         payload.setdefault("t", time.time())
+        self.event_sequence += 1
+        payload["_seq"] = self.event_sequence
         self.events.append(payload)
         if len(self.events) > MAX_EVENTS:
-            del self.events[: len(self.events) - MAX_EVENTS]
+            removed = len(self.events) - MAX_EVENTS
+            del self.events[:removed]
+            self.event_offset += removed
         _notify_job(self)
 
     def set_progress(self, status: str, completed: int | None = None, total: int | None = None) -> None:
@@ -66,14 +74,17 @@ class Job:
         _notify_job(self)
 
     def to_dict(self, with_events_from: int = 0) -> dict:
+        retained, next_cursor, truncated = self.events_since(with_events_from)
         return {
             "id": self.id,
             "kind": self.kind,
             "title": self.title,
             "status": self.status,
             "progress": self.progress,
-            "events": self.events[with_events_from:],
-            "event_count": len(self.events),
+            "events": retained,
+            "event_count": self.event_sequence,
+            "event_cursor": next_cursor,
+            "events_truncated": truncated,
             "result": self.result,
             "error": self.error,
             "created_at": self.created_at,
@@ -83,6 +94,13 @@ class Job:
             "revision": self.revision,
             "heartbeat_at": self.heartbeat_at,
         }
+
+    def events_since(self, cursor: int) -> tuple[list[dict], int, bool]:
+        """絶対cursorより後の保持イベントを返す。遅延時はtruncatedを明示する。"""
+        cursor = max(0, int(cursor))
+        truncated = cursor < self.event_offset
+        start = max(cursor, self.event_offset) - self.event_offset
+        return self.events[start:], self.event_sequence, truncated
 
 
 _jobs: OrderedDict[str, Job] = OrderedDict()
@@ -263,9 +281,13 @@ def _retire_failed_idempotency(owner_user_id: int | None, kind: str, key: str) -
 
 
 def _dict_to_job(data: dict) -> Job:
+    events = data.get("events") or []
+    event_sequence = int(data.get("event_count") or len(events))
     return Job(
         id=data["id"], kind=data["kind"], title=data["title"], status=data["status"],
-        progress=data.get("progress") or {}, events=data.get("events") or [], result=data.get("result"),
+        progress=data.get("progress") or {}, events=events,
+        event_offset=max(0, event_sequence - len(events)), event_sequence=event_sequence,
+        result=data.get("result"),
         error=data.get("error") or "", owner_user_id=data.get("owner_user_id"),
         priority=data.get("priority") or 0, revision=data.get("revision") or 0,
         created_at=data.get("created_at") or time.time(), finished_at=data.get("finished_at"),
@@ -372,16 +394,16 @@ def visible_to(job: Job | dict, owner_user_id: int) -> bool:
     return owner is None or owner == owner_user_id
 
 
-async def wait_events(job: Job, from_index: int, timeout: float = 25.0) -> int:
+async def wait_events(job: Job, cursor: int, timeout: float = 25.0) -> int:
     """pollせず通知eventでイベント追加/状態変化を待つ。"""
-    if len(job.events) <= from_index and job.status in ("queued", "running"):
+    if job.event_sequence <= cursor and job.status in ("queued", "running"):
         job.changed.clear()
-        if len(job.events) <= from_index and job.status in ("queued", "running"):
+        if job.event_sequence <= cursor and job.status in ("queued", "running"):
             try:
                 await asyncio.wait_for(job.changed.wait(), timeout=timeout)
             except TimeoutError:
                 pass
-    return len(job.events)
+    return job.event_sequence
 
 
 async def wait_global(from_revision: int, timeout: float = 25.0) -> int:

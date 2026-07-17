@@ -23,7 +23,7 @@ async def list_jobs(
     # メモリ（実行中）+ DB（履歴・再起動後も残る）を統合。events は一覧では省く
     items = await jobs.list_any(kind, max(1, min(limit, 100)), user.id)
     for it in items:
-        it["event_count"] = len(it.get("events", []))
+        it["event_count"] = int(it.get("event_count") or len(it.get("events", [])))
         it["events"] = []
     return items
 

@@ -36,6 +36,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
 
 
 async def _extract(text: str, base_url: str, model: str, api_key: str) -> list[dict]:
+    from app.models_mgmt.runtime_provider import response_format_candidates
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     try:
@@ -54,22 +55,22 @@ async def _extract(text: str, base_url: str, model: str, api_key: str) -> list[d
         "response_format": {"type": "json_object"},
     }
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                base_url.rstrip("/") + "/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}"},
-            )
-        if r.status_code >= 400:
-            # response_format 非対応なら外して再試行
-            payload.pop("response_format", None)
+        r: httpx.Response | None = None
+        for candidate in response_format_candidates(payload["response_format"]):
+            attempt = dict(payload)
+            if candidate is None:
+                attempt.pop("response_format", None)
+            else:
+                attempt["response_format"] = candidate
             async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.post(
                     base_url.rstrip("/") + "/chat/completions",
-                    json=payload,
+                    json=attempt,
                     headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}"},
                 )
-        if r.status_code >= 400:
+            if r.status_code < 400 or r.status_code not in {400, 404, 415, 422, 501}:
+                break
+        if r is None or r.status_code >= 400:
             return []
         content = r.json()["choices"][0]["message"]["content"]
     except (httpx.HTTPError, KeyError, IndexError):

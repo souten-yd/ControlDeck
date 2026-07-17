@@ -2,6 +2,8 @@
 import asyncio
 import time
 
+from app.jobs import service as jobs
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -9,8 +11,6 @@ def _run(coro):
 
 def test_job_persisted_to_db(client):
     """ジョブ作成→完了が DB に記録され、get_any で再取得できる。"""
-    from app.jobs import service as jobs
-
     async def work(job):
         job.set_progress("処理中", 1, 2)
         job.log("開始")
@@ -27,14 +27,33 @@ def test_job_persisted_to_db(client):
 
     job_id = _run(scenario())
     # DB からも取得できる（メモリを消しても残る）
-    from app.jobs import service as jobs
-
     jobs._jobs.pop(job_id, None)  # メモリから消す
     got = _run(jobs.get_any(job_id))
     assert got is not None
     assert got["status"] == "succeeded"
     assert got["result"]["answer"] == 42
     assert got.get("persisted") is True
+
+
+def test_bounded_event_journal_uses_monotonic_cursor():
+    """300件で先頭を捨ててもcursorが止まらず、新規deltaを購読できる。"""
+    job = jobs.Job(id="bounded", kind="chat.completion", title="long answer")
+    for number in range(jobs.MAX_EVENTS + 50):
+        job.log("delta", delta=str(number))
+
+    assert len(job.events) == jobs.MAX_EVENTS
+    assert job.event_offset == 50
+    assert job.event_sequence == jobs.MAX_EVENTS + 50
+    retained, cursor, truncated = job.events_since(0)
+    assert truncated is True
+    assert retained[0]["delta"] == "50"
+    assert cursor == 350
+
+    job.log("delta", delta="next")
+    fresh, next_cursor, truncated = job.events_since(cursor)
+    assert truncated is False
+    assert [event["delta"] for event in fresh] == ["next"]
+    assert next_cursor == 351
 
 
 def test_recover_on_startup_marks_interrupted():

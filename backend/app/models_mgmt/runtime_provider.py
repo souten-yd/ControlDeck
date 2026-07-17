@@ -47,6 +47,36 @@ def normalize_openai_base(base_url: str) -> str:
     return base if base.endswith("/v1") else base + "/v1"
 
 
+def normalize_response_format(value: dict[str, Any]) -> dict[str, Any]:
+    """内部の簡略schema表現をOpenAI互換の標準payloadへ正規化する。"""
+    if value.get("type") == "json_schema" and "schema" in value:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": str(value.get("name") or "structured_output"),
+                "schema": value["schema"],
+                "strict": bool(value.get("strict", True)),
+            },
+        }
+    return value
+
+
+def response_format_candidates(value: dict[str, Any] | None) -> list[dict[str, Any] | None]:
+    """provider差を吸収する構造化出力dialectの優先順。
+
+    OpenAI標準JSON Schemaを第一候補にし、未対応runtimeではJSON Object、最後に
+    prompt制約のみへ段階的に退避する。Ollama/llama.cpp/vLLM/外部OpenAI互換で共有する。
+    """
+    if value is None:
+        return [None]
+    normalized = normalize_response_format(value)
+    if normalized.get("type") == "json_schema":
+        return [normalized, {"type": "json_object"}, None]
+    if normalized.get("type") == "json_object":
+        return [normalized, None]
+    return [normalized, None]
+
+
 class LlmRuntimeProvider(ABC):
     kind = "unknown"
 
@@ -112,17 +142,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
 
     @staticmethod
     def _response_format(value: dict[str, Any]) -> dict[str, Any]:
-        """内部の簡略schema表現をOpenAI互換の標準payloadへ正規化する。"""
-        if value.get("type") == "json_schema" and "schema" in value:
-            return {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": str(value.get("name") or "structured_output"),
-                    "schema": value["schema"],
-                    "strict": bool(value.get("strict", True)),
-                },
-            }
-        return value
+        return normalize_response_format(value)
 
     def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -150,12 +170,21 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
 
     async def _complete_impl(self, request: RuntimeChatRequest) -> str:
         payload = self._payload(request, stream=False)
-        response = await self._post(request, payload)
-        if response.status_code >= 400 and request.response_format is not None:
-            # 構造化出力非対応providerだけ、schemaを外して通常生成へfallbackする。
-            fallback = dict(payload)
-            fallback.pop("response_format", None)
-            response = await self._post(request, fallback)
+        response: httpx.Response | None = None
+        for candidate in response_format_candidates(request.response_format):
+            attempt = dict(payload)
+            if candidate is None:
+                attempt.pop("response_format", None)
+            else:
+                attempt["response_format"] = candidate
+            response = await self._post(request, attempt)
+            if response.status_code < 400:
+                break
+            # 認証失敗、rate limit、provider内部障害はdialect差ではないので再送しない。
+            if response.status_code not in {400, 404, 415, 422, 501}:
+                break
+        if response is None:
+            raise RuntimeProviderError("LLM応答がありません")
         if response.status_code >= 400:
             raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
         try:
@@ -217,9 +246,15 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         return base[:-3].rstrip("/")
 
     def _use_native(self, request: RuntimeChatRequest) -> bool:
-        return request.thinking is not None and request.response_format is None
+        # Ollama native APIはthink無効化とJSON Schema(format)を同時に扱える。
+        # OpenAI互換APIでは一部thinking modelがchat_template_kwargsを無視し、推論だけで
+        # max_tokensを使い切ってJSONが途中切れになるため、どちらか必要ならnativeを使う。
+        return request.thinking is not None or request.response_format is not None
 
-    def _native_payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
+    def _native_payload(
+        self, request: RuntimeChatRequest, *, stream: bool,
+        response_format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         options: dict[str, Any] = {
             "temperature": request.temperature,
             "num_predict": request.max_tokens,
@@ -230,16 +265,31 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         }
         if request.keep_alive is not None:
             payload["keep_alive"] = request.keep_alive
+        if response_format is not None:
+            if response_format.get("type") == "json_schema":
+                schema = response_format.get("schema")
+                if schema is None and isinstance(response_format.get("json_schema"), dict):
+                    schema = response_format["json_schema"].get("schema")
+                if isinstance(schema, dict):
+                    payload["format"] = schema
+            elif response_format.get("type") == "json_object":
+                payload["format"] = "json"
         return payload
 
     async def _complete_impl(self, request: RuntimeChatRequest) -> str:
         if not self._use_native(request):
             return await super()._complete_impl(request)
-        async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(
-                self._native_base(request.base_url) + "/api/chat",
-                json=self._native_payload(request, stream=False),
-            )
+        response: httpx.Response | None = None
+        for candidate in response_format_candidates(request.response_format):
+            async with httpx.AsyncClient(timeout=300) as client:
+                response = await client.post(
+                    self._native_base(request.base_url) + "/api/chat",
+                    json=self._native_payload(request, stream=False, response_format=candidate),
+                )
+            if response.status_code < 400 or response.status_code not in {400, 404, 415, 422, 501}:
+                break
+        if response is None:
+            raise RuntimeProviderError("LLM応答がありません")
         if response.status_code >= 400:
             raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
         try:
@@ -257,7 +307,7 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST", self._native_base(request.base_url) + "/api/chat",
-                json=self._native_payload(request, stream=True),
+                json=self._native_payload(request, stream=True, response_format=request.response_format),
             ) as response:
                 if response.status_code >= 400:
                     raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")

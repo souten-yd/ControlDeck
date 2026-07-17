@@ -12,18 +12,18 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
-import { IconX } from "../../components/icons";
-import { ConfirmDialog } from "../../components/ui";
+import { IconMic, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
 import { NODE_TYPES } from "./nodeTypes";
 import type { WorkflowSummary } from "../../pages/Workflows";
-
-type Mode = "chat" | "web" | "academic" | "deep" | "gen" | "run";
+import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
+import { useAssistantAsr } from "./useAssistantAsr";
 
 const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: boolean }[] = [
   { id: "chat", icon: "💬", label: "チャット", hint: "LLM と自由に対話します" },
   { id: "web", icon: "🌐", label: "Web検索", hint: "Web 検索（DuckDuckGo / SearXNG）の結果を根拠に回答します" },
   { id: "academic", icon: "🎓", label: "学術検索", hint: "学術ソース串刺し検索（OpenAlex/arXiv 等）を根拠に回答します" },
   { id: "deep", icon: "🔬", label: "Deepサーチ", hint: "テーマを分解して収集し、引用付きレポートを生成します（数分かかります）" },
+  { id: "research", icon: "🧭", label: "複合調査", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
   { id: "gen", icon: "⚙️", label: "フロー生成", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
   { id: "run", icon: "▶", label: "フロー実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
 ];
@@ -33,6 +33,9 @@ interface Quality { score: number; label: string; breakdown: Record<string, numb
 interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string; quality?: Quality }
 interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean; quality?: Quality }
 interface ConversationSummary { id: string; title: string; updated_at: string }
+interface ResearchStep { tool: "web" | "academic"; query: string }
+interface AssistantPlan { mode: "chat" | "web" | "academic" | "deep" | "research"; reason: string; steps: ResearchStep[]; max_iterations: number; decided_by: "rule" | "llm" | "fallback" }
+interface ResearchProgress { phase: string; label: string; iteration: number }
 
 interface PersistMsg {
   id: string;
@@ -42,6 +45,7 @@ interface PersistMsg {
   status: string;
   job_id: string | null;
   model: string;
+  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[] };
 }
 
 interface Msg {
@@ -56,6 +60,9 @@ interface Msg {
   // 永続チャット（DB 会話）: assistant メッセージの ID と状態
   messageId?: string;
   persistStatus?: string; // generating / completed / failed / interrupted / canceled
+  connectionState?: "live" | "reconnecting";
+  plan?: AssistantPlan;
+  progress?: ResearchProgress[];
 }
 
 const LS_KEY = "cd-assistant-settings";
@@ -76,7 +83,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
 
   const saved = useRef(loadSettings()).current;
-  const [mode, setMode] = useState<Mode>("chat");
+  const [modeChoice, setModeChoice] = useState<AssistantModeChoice>("auto");
   const [messages, setMessages] = useState<Msg[]>([]); // 会話本文は DB から復元
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -88,9 +95,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [runTarget, setRunTarget] = useState<number | "">("");
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
   const [conversationTitle, setConversationTitle] = useState("新しい会話");
-  const [deletingConversation, setDeletingConversation] = useState(false);
+  const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
+  const [routing, setRouting] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
 
   const { data: runtimeEnvironment } = useQuery({
     queryKey: ["runtime-environment"],
@@ -115,12 +124,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       let id = convId;
       try {
         if (!id) {
-          const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
-          id = c.id;
-          localStorage.setItem(LS_CONV, id);
-          setConvId(id);
-          qc.invalidateQueries({ queryKey: ["chat-conversations"] });
-          return; // 新規会話は空
+          return; // 空の下書きは送信されるまでDBへ登録しない
         }
         const data = await api<{ messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
         if (cancelled) return;
@@ -131,6 +135,10 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           messageId: m.id,
           persistStatus: m.status,
           streaming: m.status === "generating",
+          sources: m.meta?.sources,
+          kind: m.meta?.sources?.length ? "sources" : "text",
+          plan: m.meta?.plan,
+          progress: m.meta?.progress,
         }));
         if (restored.length > 0) setMessages(restored);
         // 生成中のまま残っているメッセージを購読再開
@@ -158,13 +166,19 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // SearXNG は基本停止・使う時だけ起動。検索系モード + SearXNG 選択時に先読み起動して
   // 実際の検索でコールドスタート（2〜3 秒）を待たずに済むようにする
   useEffect(() => {
-    if ((mode === "web" || mode === "deep") && engine === "searxng" && !searxngUrl) {
+    const detected = modeChoice === "auto" ? detectAssistantMode(input, [], can("workflows.edit")).mode : modeChoice;
+    if ((detected === "web" || detected === "deep" || detected === "research") && engine === "searxng" && !searxngUrl) {
       api("/chat/searxng-warmup", { method: "POST" }).catch(() => {});
     }
-  }, [mode, engine, searxngUrl]);
+  }, [modeChoice, input, engine, searxngUrl, can]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      const element = scrollRef.current;
+      if (element) element.scrollTop = element.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
   }, [messages]);
 
   useEffect(() => {
@@ -197,8 +211,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const { data: workflows } = useQuery({
     queryKey: ["workflows"],
     queryFn: () => api<WorkflowSummary[]>("/workflows"),
-    enabled: mode === "run",
+    enabled: can("workflows.run"),
   });
+
+  const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"));
+  const displayedDecision = input.trim() ? autoDecision : (resolvedDecision ?? autoDecision);
+  const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode : modeChoice;
 
   const append = (m: Msg) => setMessages((prev) => [...prev, m]);
   const patchLast = (fn: (m: Msg) => Msg) =>
@@ -208,24 +226,79 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
    * 対象メッセージ（messageId 一致）へ delta/thinking を書き込む。 */
   const streamMessage = (messageId: string) =>
     new Promise<void>((resolve) => {
-      const ws = new WebSocket(wsUrl(`/chat/messages/${messageId}/stream`));
-      wsRef.current = ws;
       const patchMsg = (fn: (m: Msg) => Msg) =>
         setMessages((prev) => prev.map((m) => (m.messageId === messageId ? fn(m) : m)));
-      ws.onmessage = (ev) => {
-        const d = JSON.parse(ev.data);
-        if (d.type === "snapshot") patchMsg((m) => ({ ...m, content: d.content, thinking: d.thinking || undefined }));
-        else if (d.type === "delta") patchMsg((m) => ({ ...m, content: m.content + d.content }));
-        else if (d.type === "thinking") patchMsg((m) => ({ ...m, thinking: (m.thinking ?? "") + d.content }));
-        else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
-        else if (d.type === "done") patchMsg((m) => ({ ...m, streaming: false, persistStatus: d.status }));
-        else if (d.type === "error") patchMsg((m) => ({ ...m, content: m.content + `\n⚠️ ${d.message}`, streaming: false }));
+      let attempts = 0;
+      let settled = false;
+      let pendingContent = "";
+      let pendingThinking = "";
+      let flushTimer = 0;
+      const flush = () => {
+        window.clearTimeout(flushTimer);
+        flushTimer = 0;
+        if (!pendingContent && !pendingThinking) return;
+        const content = pendingContent;
+        const thinking = pendingThinking;
+        pendingContent = "";
+        pendingThinking = "";
+        patchMsg((m) => ({
+          ...m, content: m.content + content,
+          thinking: (m.thinking ?? "") + thinking,
+        }));
       };
-      ws.onclose = () => {
-        patchMsg((m) => ({ ...m, streaming: false }));
-        resolve();
+      const scheduleFlush = () => {
+        if (!flushTimer) flushTimer = window.setTimeout(flush, 40);
       };
-      ws.onerror = () => ws.close();
+      const connect = () => {
+        const ws = new WebSocket(wsUrl(`/chat/messages/${messageId}/stream`));
+        wsRef.current = ws;
+        let receivedDone = false;
+        ws.onopen = () => patchMsg((m) => ({ ...m, connectionState: "live", streaming: true }));
+        ws.onmessage = (ev) => {
+          const d = JSON.parse(ev.data);
+          if (d.type === "snapshot") {
+            flush();
+            patchMsg((m) => ({ ...m, content: d.content, thinking: d.thinking || undefined }));
+          } else if (d.type === "delta") {
+            pendingContent += d.content;
+            scheduleFlush();
+          } else if (d.type === "thinking") {
+            pendingThinking += d.content;
+            scheduleFlush();
+          } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
+          else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
+          else if (d.type === "progress") patchMsg((m) => ({
+            ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration }],
+          }));
+          else if (d.type === "done") {
+            receivedDone = true;
+            flush();
+            patchMsg((m) => ({ ...m, streaming: false, persistStatus: d.status, connectionState: "live" }));
+          } else if (d.type === "error") {
+            receivedDone = true;
+            flush();
+            patchMsg((m) => ({ ...m, content: m.content + `\n⚠️ ${d.message}`, streaming: false }));
+          }
+        };
+        ws.onclose = () => {
+          flush();
+          if (receivedDone || settled) {
+            if (!settled) { settled = true; resolve(); }
+            return;
+          }
+          if (attempts < 5) {
+            attempts += 1;
+            patchMsg((m) => ({ ...m, connectionState: "reconnecting", streaming: true }));
+            window.setTimeout(connect, Math.min(500 * 2 ** (attempts - 1), 5000));
+          } else {
+            settled = true;
+            patchMsg((m) => ({ ...m, streaming: false, connectionState: "reconnecting" }));
+            resolve();
+          }
+        };
+        ws.onerror = () => ws.close();
+      };
+      connect();
     });
 
   const openConversation = async (id: string) => {
@@ -239,6 +312,10 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       messageId: message.id,
       persistStatus: message.status,
       streaming: message.status === "generating",
+      sources: message.meta?.sources,
+      kind: message.meta?.sources?.length ? "sources" : "text",
+      plan: message.meta?.plan,
+      progress: message.meta?.progress,
     }));
     localStorage.setItem(LS_CONV, id);
     setConvId(id);
@@ -253,12 +330,10 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
 
   const newConversation = async () => {
     if (busy) return;
-    const conversation = await api<ConversationSummary>("/chat/conversations", { method: "POST" });
-    localStorage.setItem(LS_CONV, conversation.id);
-    setConvId(conversation.id);
-    setConversationTitle(conversation.title);
+    localStorage.removeItem(LS_CONV);
+    setConvId("");
+    setConversationTitle("新しい会話");
     setMessages([]);
-    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
   };
 
   const renameConversation = async () => {
@@ -272,29 +347,41 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const deleteConversation = async () => {
     if (!convId) return;
     await api(`/chat/conversations/${convId}`, { method: "DELETE" });
-    setDeletingConversation(false);
-    const conversation = await api<ConversationSummary>("/chat/conversations", { method: "POST" });
-    localStorage.setItem(LS_CONV, conversation.id);
-    setConvId(conversation.id);
-    setConversationTitle(conversation.title);
+    localStorage.removeItem(LS_CONV);
+    setConvId("");
+    setConversationTitle("新しい会話");
     setMessages([]);
     qc.invalidateQueries({ queryKey: ["chat-conversations"] });
     show("会話を削除しました");
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (providedText?: string) => {
+    const text = (providedText ?? input).trim();
     if (!text || busy) return;
-    if (mode === "run" && runTarget === "") {
+    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"));
+    let selectedMode = modeChoice === "auto" ? decision.mode : modeChoice;
+    let selectedPlan: AssistantPlan | undefined;
+    const selectedRunTarget = runTarget || decision.workflowId || "";
+    if (selectedMode === "run" && selectedRunTarget === "") {
       show("実行するワークフローを選択してください", "error");
       return;
     }
     setInput("");
     setBusy(true);
+    let buildContinues = false;
     const userMsg: Msg = { role: "user", content: text };
     append(userMsg);
     try {
-      if (mode === "chat" || mode === "web" || mode === "academic" || mode === "deep") {
+      if (modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run") {
+        setRouting(true);
+        selectedPlan = await api<AssistantPlan>("/chat/route", {
+          method: "POST", json: { content: text, base_url: baseUrl, model },
+        });
+        selectedMode = selectedPlan.mode;
+        setResolvedDecision(selectedPlan);
+        setRouting(false);
+      }
+      if (selectedMode === "chat" || selectedMode === "web" || selectedMode === "academic" || selectedMode === "deep" || selectedMode === "research") {
         // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
         let cid = convId;
         if (!cid) {
@@ -305,32 +392,26 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         }
         const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
-          json: { content: text, mode, base_url: baseUrl, model, engine, searxng_url: searxngUrl },
+          json: { content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model, engine, searxng_url: searxngUrl },
         });
         const hint =
-          mode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
-          mode === "web" || mode === "academic" ? "🔎 検索中...（サーバー側で継続）" : "";
+          selectedMode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
+          selectedMode === "research" ? "🧭 調査計画に沿って複数ソースを確認中..." :
+          selectedMode === "web" || selectedMode === "academic" ? "🔎 検索中...（サーバー側で継続）" : "";
         append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
-      } else if (mode === "gen") {
-        append({ role: "assistant", content: "⚙️ ワークフローを設計中...", streaming: true });
-        const res = await api<Omit<GenData, "goal">>("/chat/generate-workflow", {
-          method: "POST",
-          json: { goal: text, base_url: baseUrl, model },
-        });
-        patchLast((m) => ({
-          ...m,
-          content: res.valid
-            ? `「${res.name}」の設計ができました。内容を確認して登録してください。`
-            : `設計しましたが検証で問題が見つかりました。「自動ビルド」なら修正しながら登録まで進められます。`,
-          kind: "gen",
-          gen: { ...res, goal: text },
-          streaming: false,
-        }));
-      } else if (mode === "run") {
-        const wf = workflows?.find((w) => w.id === runTarget);
-        append({ role: "assistant", content: `▶ 「${wf?.name ?? runTarget}」を実行中...`, kind: "run", streaming: true });
-        const { execution_id } = await api<{ execution_id: number }>(`/workflows/${runTarget}/run`, {
+      } else if (selectedMode === "gen") {
+        // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
+        // サーバージョブで生成・登録・動作確認・自動修正へ進める。
+        buildContinues = true;
+        window.setTimeout(() => autoBuild({
+          name: "", definition: { nodes: [], edges: [] }, valid: false,
+          warnings: [], goal: text,
+        }, false), 0);
+      } else if (selectedMode === "run") {
+        const wf = workflows?.find((w) => w.id === selectedRunTarget);
+        append({ role: "assistant", content: `▶ 「${wf?.name ?? selectedRunTarget}」を実行中...`, kind: "run", streaming: true });
+        const { execution_id } = await api<{ execution_id: number }>(`/workflows/${selectedRunTarget}/run`, {
           method: "POST",
           json: { input: { message: text } },
         });
@@ -344,9 +425,19 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           : m,
       );
     } finally {
-      setBusy(false);
+      setRouting(false);
+      if (!buildContinues) setBusy(false);
     }
   };
+
+  const asr = useAssistantAsr({
+    busy,
+    onTranscript: async (text) => {
+      setInput(text);
+      await send(text);
+    },
+    onError: (message) => show(message, "error"),
+  });
 
   /** 実行完了までポーリングし、signal.display の値を集めて返す。 */
   const pollExecution = async (execId: number): Promise<string> => {
@@ -442,55 +533,89 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const currentMode = MODES.find((m) => m.id === mode)!;
+  const currentMode = MODES.find((m) => m.id === effectiveMode)!;
   const modelOptions =
     endpoints?.flatMap((ep) => ep.models.map((m) => ({ base: ep.base_url, model: m }))) ?? [];
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 max-w-full overflow-hidden bg-white dark:bg-zinc-950"
+      className="fixed inset-0 z-50 max-w-full overflow-hidden bg-zinc-100 dark:bg-zinc-950"
       role="presentation"
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={assistantName}
-        className="flex h-[100dvh] w-full min-w-0 max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950"
+        className="flex h-[100dvh] w-full min-w-0 max-w-full flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950"
       >
         {/* ヘッダー */}
-        <div className="safe-top flex min-w-0 shrink-0 items-center gap-1.5 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-4">
-          <h2 className="shrink-0 text-base font-semibold">✨<span className="hidden sm:inline"> {assistantName}</span></h2>
-          <select
-            value={convId}
-            onChange={(event) => void openConversation(event.target.value)}
-            aria-label="会話を切替"
-            className="min-w-0 max-w-36 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900 sm:max-w-52"
-          >
-            {(conversations ?? []).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
-          </select>
+        <div className="safe-top flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-zinc-200/80 bg-white/90 px-3 py-2.5 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/90 sm:flex-nowrap sm:px-5">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-600 text-white shadow-sm" aria-hidden="true">✦</div>
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-semibold">{assistantName}</h2>
+              <p className="truncate text-[11px] font-medium text-accent-700 dark:text-accent-300" aria-label="現在の機能" aria-live="polite">
+                {modeChoice === "auto" ? routing ? "自動判定: 計画中…" : `自動判定: ${currentMode.label}` : `選択: ${currentMode.label}`}
+              </p>
+            </div>
+          </div>
+          <div className="order-last flex min-w-0 basis-full items-center gap-1 sm:order-none sm:w-[26rem] sm:basis-auto">
+            <select
+              value={modeChoice}
+              onChange={(event) => setModeChoice(event.target.value as AssistantModeChoice)}
+              aria-label="処理モード"
+              title="処理モード"
+              className="h-11 w-28 shrink-0 rounded-xl border border-zinc-200 bg-zinc-50 px-2 text-xs font-medium outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800 sm:w-32"
+            >
+              <option value="auto">✦ 自動判定</option>
+              {MODES.filter((item) => !item.needsEdit || can("workflows.edit")).map((item) => (
+                <option key={item.id} value={item.id}>{item.icon} {item.label}</option>
+              ))}
+            </select>
+            <select
+              value={convId}
+              onChange={(event) => void openConversation(event.target.value)}
+              aria-label="会話を切替"
+              className="min-w-0 flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-xs outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800"
+            >
+              {!convId && <option value="">履歴を選択</option>}
+              {(conversations ?? []).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
+            </select>
+            <button
+              type="button"
+              onClick={() => void deleteConversation()}
+              disabled={busy || !convId}
+              aria-label="選択中の会話を削除"
+              title="選択中の会話を削除"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-red-50 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500/30 disabled:opacity-40 dark:hover:bg-red-950/40"
+            >
+              <IconTrash className="text-lg" />
+            </button>
+          </div>
           {messages.length > 0 && (
             <button
               onClick={() => void newConversation()}
               disabled={busy}
               aria-label="新しい会話"
-              className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+              className="hidden shrink-0 rounded-xl px-2.5 py-2 text-xs font-medium text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800 sm:block"
               title="新しい会話を開始"
             >
-              🆕<span className="hidden sm:inline"> 新規</span>
+              ＋ 新規
             </button>
           )}
           <button
             onClick={() => setShowSettings((v) => !v)}
             title={model || "設定"}
-            className={`ml-auto flex min-w-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium ${
+            className={`ml-auto flex min-h-11 min-w-0 items-center gap-1 rounded-xl px-3 py-2 text-xs font-medium transition ${
               showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
             }`}
           >
             <span className="shrink-0">🧩</span>
             <span className="max-w-[9rem] truncate">{model || "設定"}</span>
           </button>
-          <button onClick={onClose} aria-label="閉じる" className="shrink-0 rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-            <IconX />
+          <button onClick={onClose} aria-label="AIアシスタントを閉じる" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 shadow-sm transition hover:border-zinc-400 hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700">
+            <IconX className="text-lg" />
+            <span className="hidden sm:inline">閉じる</span>
           </button>
         </div>
 
@@ -503,7 +628,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 <input value={conversationTitle} onChange={(event) => setConversationTitle(event.target.value)} maxLength={200}
                   className="min-w-0 basis-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:flex-1 sm:basis-auto sm:text-sm" />
                 <button onClick={() => void renameConversation()} className="shrink-0 rounded-lg bg-zinc-200 px-3 py-1.5 text-xs font-medium dark:bg-zinc-700">名前を保存</button>
-                <button onClick={() => setDeletingConversation(true)} className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+                <button onClick={() => void deleteConversation()} disabled={busy} className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950/40">削除</button>
               </div>
             </label>
             <label className="block">
@@ -546,32 +671,21 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {/* モード切替 */}
-        <div className="flex gap-1.5 overflow-x-auto border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-          {MODES.filter((m) => !m.needsEdit || can("workflows.edit")).map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setMode(m.id)}
-              title={m.hint}
-              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition ${
-                mode === m.id
-                  ? "bg-accent-600 text-white"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-              }`}
-            >
-              {m.icon} {m.label}
-            </button>
-          ))}
-        </div>
-
         {/* メッセージ */}
-        <div ref={scrollRef} className="min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-4 py-4">
+        <div
+          ref={scrollRef}
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+          }}
+          className="min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-3 py-5 sm:px-5"
+        >
           {messages.length === 0 && (
             <div className="mx-auto max-w-md pt-10 text-center">
               <p className="text-3xl">{currentMode.icon}</p>
               <p className="mt-2 text-sm font-medium">{assistantName} · {currentMode.label}</p>
               <p className="mt-1 text-xs leading-relaxed text-zinc-400">{currentMode.hint}</p>
-              {mode === "gen" && (
+              {effectiveMode === "gen" && (
                 <p className="mt-3 rounded-xl bg-zinc-50 p-3 text-left text-xs leading-relaxed text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400">
                   例:「毎朝 8 時に arXiv で LLM の論文を検索して要約を Discord に送る」
                   「URL を入力すると本文を要約してナレッジに登録するフロー」
@@ -579,14 +693,17 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               )}
             </div>
           )}
-          {messages.map((m, i) => (
-            <MessageBubble key={i} msg={m} onRegister={registerOnly} onAutoBuild={autoBuild} onOpen={(id) => { onClose(); navigate(`/workflows/${id}`); }} />
-          ))}
+          <div className="mx-auto max-w-5xl space-y-4">
+            {messages.map((m, i) => (
+              <MessageBubble key={m.messageId ?? i} msg={m} onRegister={registerOnly} onAutoBuild={autoBuild} onOpen={(id) => { onClose(); navigate(`/workflows/${id}`); }} />
+            ))}
+          </div>
         </div>
 
         {/* 入力欄 */}
-        <div className="safe-bottom min-w-0 max-w-full shrink-0 overflow-x-hidden border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          {mode === "run" && (
+        <div className="safe-bottom min-w-0 max-w-full shrink-0 overflow-x-hidden border-t border-zinc-200 bg-white px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900 sm:px-5">
+          <div className="mx-auto max-w-5xl">
+          {effectiveMode === "run" && (
             <select
               value={runTarget}
               onChange={(e) => setRunTarget(e.target.value ? Number(e.target.value) : "")}
@@ -600,43 +717,57 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           )}
-          <div className="flex w-full min-w-0 items-end gap-2">
+          <div className="flex w-full min-w-0 items-end gap-1.5 rounded-2xl border border-zinc-300 bg-zinc-50 p-1.5 shadow-sm transition-within focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
+            <button
+              type="button"
+              onClick={() => void asr.toggle()}
+              disabled={busy || !["idle", "error", "listening"].includes(asr.phase)}
+              aria-label={asr.listening ? "音声認識を停止" : "音声で入力"}
+              aria-pressed={asr.listening}
+              title={asr.phase === "installing" ? "音声入力モデルを導入中" : asr.listening ? "停止して認識" : "音声で入力"}
+              className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-xl text-lg transition focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50 ${
+                asr.listening ? "bg-red-600 text-white shadow-sm" : "text-zinc-600 hover:bg-white dark:text-zinc-300 dark:hover:bg-zinc-700"
+              }`}
+            >
+              {asr.listening ? <IconStop /> : <IconMic />}
+              {asr.listening && <span className="absolute inset-0 -z-10 rounded-xl bg-red-400 opacity-40" style={{ transform: `scale(${1 + asr.level * 0.35})` }} />}
+            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
-                  send();
+                  void send();
                 }
               }}
               rows={input.includes("\n") ? 3 : 1}
               placeholder={
-                mode === "gen"
+                effectiveMode === "gen"
                   ? "作りたいワークフローを日本語で説明..."
-                  : mode === "run"
+                  : effectiveMode === "run"
                     ? "ワークフローへの入力（{{trigger.message}}）..."
                     : "メッセージを入力..."
               }
-              className="max-h-32 w-0 min-w-0 flex-1 resize-none rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-base outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm"
+              className="max-h-32 w-0 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-base outline-none placeholder:text-zinc-400 sm:text-sm"
             />
             <button
-              onClick={send}
+              onClick={() => void send()}
               disabled={busy || !input.trim()}
-              className="shrink-0 rounded-xl bg-accent-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
+              aria-label="送信"
+              className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50"
             >
-              {busy ? "…" : "送信"}
+              {busy ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
+              <span className="hidden sm:inline">送信</span>
             </button>
+          </div>
+          <div className="mt-1.5 flex min-h-4 items-center justify-between px-1 text-[11px] text-zinc-500" aria-live="polite">
+            <span>{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.phase === "listening" ? "聞いています。1.2秒の無音で送信します" : asr.phase === "transcribing" ? "音声を文字に変換中…" : busy ? "回答中はマイクをミュートしています" : "Enterで送信 · Shift+Enterで改行"}</span>
+            {asr.listening && <button onClick={() => asr.stop()} className="font-medium text-red-600">停止</button>}
+          </div>
           </div>
         </div>
       </div>
-      {deletingConversation && <ConfirmDialog
-        title="この会話を削除しますか？"
-        message="会話内のメッセージと生成履歴が削除されます。この操作は取り消せません。"
-        confirmLabel="削除する"
-        onConfirm={() => void deleteConversation()}
-        onClose={() => setDeletingConversation(false)}
-      />}
     </div>,
     document.body,
   );
@@ -664,7 +795,25 @@ function MessageBubble({
   }
   return (
     <div className="flex min-w-0 justify-start">
-      <div className="min-w-0 max-w-[92%] space-y-2 break-words rounded-2xl rounded-bl-md border border-zinc-200 bg-zinc-50/60 px-3.5 py-2.5 text-sm [overflow-wrap:anywhere] dark:border-zinc-800 dark:bg-zinc-800/40 sm:max-w-[85%]">
+      <div className="min-w-0 max-w-[96%] space-y-2 break-words rounded-2xl rounded-bl-md border border-zinc-200 bg-white px-4 py-3 text-sm shadow-sm [overflow-wrap:anywhere] dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[88%]">
+        {msg.connectionState === "reconnecting" && (
+          <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400" role="status">接続を復旧しています。生成はサーバー側で継続中です…</p>
+        )}
+        {(msg.plan || (msg.progress && msg.progress.length > 0)) && (
+          <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20" open={msg.streaming}>
+            <summary className="cursor-pointer text-xs font-semibold text-accent-700 dark:text-accent-300">
+              🧭 {msg.plan?.reason ?? "調査計画"}{msg.streaming ? "（実行中）" : ""}
+            </summary>
+            {msg.plan?.steps && msg.plan.steps.length > 0 && (
+              <ol className="mt-2 space-y-1 text-[11px] text-zinc-600 dark:text-zinc-300">
+                {msg.plan.steps.map((step, index) => <li key={`${step.tool}-${index}`}>{index + 1}. {step.tool === "web" ? "Web" : "学術"}: {step.query}</li>)}
+              </ol>
+            )}
+            {msg.progress && msg.progress.length > 0 && (
+              <p className="mt-2 text-[11px] text-zinc-500">最新: {msg.progress[msg.progress.length - 1].label}</p>
+            )}
+          </details>
+        )}
         {/* 思考トレース（推論モデル・折り畳み） */}
         {msg.thinking && (
           <details className="rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70" open={!msg.content && msg.streaming}>

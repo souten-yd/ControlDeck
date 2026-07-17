@@ -354,7 +354,7 @@ def _workflow_max_tokens() -> int:
 
         configured = get_policy().chat.max_output_tokens
     except Exception:
-        configured = 4096
+        configured = 8192
     return min(131072, max(4096, int(configured)))
 
 
@@ -647,13 +647,18 @@ async def build_workflow_stream(websocket: WebSocket):
     # ジョブのイベントをストリーム（切断してもジョブは続く。job_id で再接続可能）
     try:
         await websocket.send_text(json.dumps({"type": "job", "job_id": job.id}, ensure_ascii=False))
-        idx = 0
+        cursor = job.event_offset
         while True:
-            new_len = await jobs_svc.wait_events(job, idx)
-            for ev in job.events[idx:new_len]:
+            await jobs_svc.wait_events(job, cursor)
+            events, next_cursor, truncated = job.events_since(cursor)
+            if truncated:
+                await websocket.send_text(json.dumps({
+                    "type": "log", "message": "一部の詳細ログを省略し、最新状態へ追いつきました",
+                }, ensure_ascii=False))
+            for ev in events:
                 await websocket.send_text(json.dumps(ev, ensure_ascii=False))
-            idx = new_len
-            if job.status not in ("queued", "running") and idx >= len(job.events):
+            cursor = next_cursor
+            if job.status not in ("queued", "running") and cursor >= job.event_sequence:
                 if job.status == "failed":
                     await websocket.send_text(json.dumps({"type": "error", "message": job.error}, ensure_ascii=False))
                 break

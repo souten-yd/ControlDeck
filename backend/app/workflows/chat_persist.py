@@ -25,6 +25,7 @@ from app.audit import service as audit
 from app.jobs import service as jobs
 from app.models import ChatMessage, Conversation, User
 from app.models import utcnow
+from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
 from app.workflows.chat_router import _keep_alive, _think_for
 
@@ -132,7 +133,8 @@ def list_messages(conv_id: str, user: User = Depends(require_permission("workflo
 
 class SendBody(BaseModel):
     content: str = Field(min_length=1, max_length=32000)
-    mode: str = "chat"  # chat / web / academic / deep（全てサーバー側ジョブで処理）
+    mode: str = "chat"  # auto / chat / web / academic / deep / research
+    plan: AssistantPlan | None = None
     base_url: str = "http://127.0.0.1:11434/v1"
     model: str = "llama3.2"
     engine: str = "duckduckgo"  # web/deep 用
@@ -140,6 +142,23 @@ class SendBody(BaseModel):
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
     max_output_tokens: int | None = Field(default=None, ge=64, le=131072)
+
+
+class RouteBody(BaseModel):
+    content: str = Field(min_length=1, max_length=32000)
+    base_url: str = "http://127.0.0.1:11434/v1"
+    model: str = "llama3.2"
+
+
+@router.post("/route")
+async def route_message(
+    body: RouteBody, user: User = Depends(require_permission("workflows.run")),
+):
+    """明確な依頼はルール、曖昧な依頼はLLMで構造化判定する。"""
+    del user
+    from app.workflows.assistant_planner import decide
+
+    return (await decide(body.content, body.base_url, body.model)).model_dump()
 
 
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
@@ -179,11 +198,29 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             buf["last_ckpt"] = now
             await asyncio.to_thread(checkpoint)
 
-    # ---- 検索モード（web/academic/deep）: サーバー側で検索し履歴を組み立てる ----
-    if mode in ("web", "academic", "deep"):
+    # APIからautoが直接送られた場合もサーバー側で判定する。UIが先にroute APIで判定した
+    # 場合は、検証済みplanを再利用して余分なLLM呼び出しを避ける。
+    plan_data = params.get("plan")
+    plan = AssistantPlan.model_validate(plan_data) if plan_data else None
+    if mode == "auto" and plan is None:
+        from app.workflows.assistant_planner import decide
+
+        plan = await decide(history[-1]["content"], base_url, model)
+        mode = plan.mode
+    elif mode == "auto" and plan is not None:
+        mode = plan.mode
+    if plan is not None:
+        buf["meta"] = {"mode": mode, "plan": plan.model_dump(), "progress": []}
+        job.log("plan", plan=plan.model_dump())
+
+    # ---- 検索モード: サーバー側で検索し履歴を組み立てる ----
+    if mode in ("web", "academic", "deep", "research"):
         try:
             query = history[-1]["content"]
-            search_history = await _server_search(job, buf, mode, query, params)
+            if mode == "research":
+                search_history = await _server_research(job, buf, query, params, plan)
+            else:
+                search_history = await _server_search(job, buf, mode, query, params)
             if search_history is None:  # deep はここで完結（レポートを content に保存済み）
                 await asyncio.to_thread(checkpoint, True, "completed")
                 await asyncio.to_thread(_maybe_title, conv_id)
@@ -270,6 +307,96 @@ async def _server_search(job: jobs.Job, buf: dict, mode: str, query: str, params
     return None
 
 
+def _source_key(source: dict) -> str:
+    return str(source.get("url") or source.get("title") or "").strip().lower()
+
+
+async def _server_research(
+    job: jobs.Job, buf: dict, query: str, params: dict, plan: AssistantPlan | None,
+) -> list[dict]:
+    """Web/学術を組み合わせ、不足評価を挟みながら根拠を集める。"""
+    from app.workflows import chat_router as cr
+    from app.workflows import external_search as ext
+    from app.workflows.assistant_planner import evaluate
+
+    if plan is None:
+        plan = AssistantPlan(
+            mode="research", reason="Webと学術情報を組み合わせる調査",
+            steps=[ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)],
+            decided_by="fallback",
+        )
+    max_iterations = min(max(plan.max_iterations, 1), 5)
+    pending = list(plan.steps) or [ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)]
+    sources: list[dict] = []
+    evidence: list[str] = []
+    seen_sources: set[str] = set()
+    seen_steps: set[tuple[str, str]] = set()
+    calls = 0
+    iteration_count = 0
+
+    def progress(phase: str, label: str, *, iteration: int) -> None:
+        item = {"phase": phase, "label": label, "iteration": iteration}
+        buf.setdefault("meta", {}).setdefault("progress", []).append(item)
+        job.log("progress", **item)
+
+    for iteration in range(1, max_iterations + 1):
+        iteration_count = iteration
+        progress("iteration", f"調査 {iteration}/{max_iterations} 回目", iteration=iteration)
+        current = pending
+        pending = []
+        for step in current:
+            step_key = (step.tool, step.query.strip().lower())
+            if calls >= 8 or step_key in seen_steps:
+                continue
+            seen_steps.add(step_key)
+            calls += 1
+            progress("search", f"{step.tool}: {step.query}", iteration=iteration)
+            if step.tool == "academic":
+                results = (await ext.federated(step.query, 8))["results"][:10]
+            else:
+                body = cr.SearchBody(
+                    query=step.query, mode="web", engine=params.get("engine", "duckduckgo"),
+                    searxng_url=params.get("searxng_url", ""), base_url=params["base_url"], model=params["model"],
+                )
+                results = await cr._web_results(body, step.query, 8)
+            for result in results:
+                source = {
+                    "title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
+                    "source": str(result.get("source") or step.tool),
+                }
+                key = _source_key(source)
+                if not key or key in seen_sources:
+                    continue
+                seen_sources.add(key)
+                sources.append(source)
+                snippet = str(result.get("snippet") or result.get("abstract") or "")[:700]
+                evidence.append(f"{source['title']}\n{snippet}\n{source['url']}")
+        if iteration >= max_iterations or calls >= 8:
+            break
+        progress("evaluate", "収集結果の不足を評価中", iteration=iteration)
+        assessment = await evaluate(query, "\n\n".join(evidence), params["base_url"], params["model"])
+        if assessment.sufficient:
+            progress("sufficient", assessment.reason or "回答に必要な根拠が揃いました", iteration=iteration)
+            break
+        pending = [step for step in assessment.next_steps if (step.tool, step.query.strip().lower()) not in seen_steps]
+        if not pending:
+            break
+
+    buf["meta"] = {
+        **buf.get("meta", {}), "mode": "research", "sources": sources,
+        "iterations": iteration_count,
+    }
+    job.log("sources", sources=sources)
+    progress("summarize", f"{len(sources)}件の出典を要約中", iteration=min(max_iterations, 5))
+    context = "\n\n".join(f"[{index}] {item}" for index, item in enumerate(evidence, 1))
+    return [
+        {"role": "system", "content":
+         "以下はWeb・学術検索を組み合わせて収集した根拠です。利用者の依頼へ日本語で要約し、"
+         "主要な主張には必ず [番号] を付けてください。根拠にない内容は推測と明記してください。\n\n" + context},
+        {"role": "user", "content": query},
+    ]
+
+
 def _maybe_title(conv_id: str) -> None:
     db = SessionLocal()
     try:
@@ -296,6 +423,11 @@ async def send_message(
     conv = db.get(Conversation, conv_id)
     if conv is None or conv.owner_user_id != user.id:
         raise HTTPException(status_code=404, detail="会話が見つかりません")
+    allowed_modes = {"auto", "chat", "web", "academic", "deep", "research"}
+    if body.mode not in allowed_modes:
+        raise HTTPException(status_code=422, detail="未対応のチャットモードです")
+    if body.plan is not None and body.mode not in ("auto", body.plan.mode):
+        raise HTTPException(status_code=422, detail="モードと調査計画が一致しません")
     # 履歴（system + 過去 + 今回）
     past = db.execute(
         select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
@@ -322,8 +454,10 @@ async def send_message(
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "thinking": body.thinking or chat_defaults.reasoning,
-              "max_output_tokens": body.max_output_tokens or chat_defaults.max_output_tokens}
-    label = {"chat": "チャット生成", "web": "Web検索", "academic": "学術検索", "deep": "Deepサーチ"}.get(body.mode, "生成")
+              "max_output_tokens": body.max_output_tokens or chat_defaults.max_output_tokens,
+              "plan": body.plan.model_dump() if body.plan is not None else None}
+    label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
+             "deep": "Deepサーチ", "research": "複合調査"}.get(body.mode, "生成")
     job = jobs.create(
         "chat.completion", f"{label}: {body.content[:40]}",
         lambda j: _run_chat_job(j, assistant_id, conv_id, history, params),
@@ -362,7 +496,8 @@ async def stream_message(websocket: WebSocket, message_id: str):
         await websocket.close()
         return
 
-    # まず現在までの保存済み内容を送る（再接続時の即時復元）
+    # まず現在までの保存済み内容を送る（再接続時の即時復元）。snapshotを送った場合は
+    # それ以前のdeltaを再送しない。最終snapshotでもDB内容へ必ず収束させる。
     if saved_content:
         await websocket.send_text(json.dumps({"type": "snapshot", "content": saved_content, "thinking": saved_thinking}))
 
@@ -374,19 +509,48 @@ async def stream_message(websocket: WebSocket, message_id: str):
         return
 
     try:
-        idx = 0
+        cursor = job.event_sequence if saved_content else job.event_offset
         while True:
-            new_len = await jobs.wait_events(job, idx)
-            for ev in job.events[idx:new_len]:
+            await jobs.wait_events(job, cursor)
+            events, next_cursor, truncated = job.events_since(cursor)
+            if truncated:
+                # 購読処理より生成が速くbounded journalを追い越した。DB checkpointを
+                # 全文置換snapshotとして送り、古いdeltaの欠落/重複を解消する。
+                with SessionLocal() as snapshot_db:
+                    current = snapshot_db.get(ChatMessage, message_id)
+                    if current is not None:
+                        await websocket.send_text(json.dumps({
+                            "type": "snapshot", "content": current.content,
+                            "thinking": current.thinking or "",
+                        }, ensure_ascii=False))
+                cursor = next_cursor
+                continue
+            for ev in events:
                 if ev.get("message") == "delta":
                     await websocket.send_text(json.dumps({"type": "delta", "content": ev.get("delta", "")}))
                 elif ev.get("message") == "thinking":
                     await websocket.send_text(json.dumps({"type": "thinking", "content": ev.get("delta", "")}))
                 elif ev.get("message") == "sources":
                     await websocket.send_text(json.dumps({"type": "sources", "sources": ev.get("sources", [])}, ensure_ascii=False))
-            idx = new_len
-            if job.status not in ("queued", "running") and idx >= len(job.events):
+                elif ev.get("message") == "plan":
+                    await websocket.send_text(json.dumps({"type": "plan", "plan": ev.get("plan", {})}, ensure_ascii=False))
+                elif ev.get("message") == "progress":
+                    await websocket.send_text(json.dumps({
+                        "type": "progress", "phase": ev.get("phase", ""), "label": ev.get("label", ""),
+                        "iteration": ev.get("iteration", 0),
+                    }, ensure_ascii=False))
+            cursor = next_cursor
+            if job.status not in ("queued", "running") and cursor >= job.event_sequence:
                 break
+        # checkpointはジョブ完了より先にcommitされる。最後に全文を再送し、再接続や
+        # journal切詰めがあっても表示をDBの正本へ収束させる。
+        with SessionLocal() as final_db:
+            final = final_db.get(ChatMessage, message_id)
+            if final is not None:
+                await websocket.send_text(json.dumps({
+                    "type": "snapshot", "content": final.content,
+                    "thinking": final.thinking or "",
+                }, ensure_ascii=False))
         await websocket.send_text(json.dumps({"type": "done", "status": job.status, "error": job.error}))
     except WebSocketDisconnect:
         return  # 切断してもジョブは継続（DB に保存され続ける）

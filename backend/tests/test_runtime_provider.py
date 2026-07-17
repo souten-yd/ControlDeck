@@ -66,12 +66,33 @@ def test_ollama_native_stream_normalizes_json_lines(monkeypatch):
     assert [(item.type, item.content) for item in chunks] == [("thinking", "検討"), ("content", "完了")]
 
 
-def test_complete_structured_output_falls_back_without_leaking_key(monkeypatch):
+def test_ollama_structured_output_uses_native_format_and_disables_thinking(monkeypatch):
+    schema = {"type": "object", "properties": {"mode": {"type": "string"}}}
+
+    def handler(request):
+        assert request.url.path == "/api/chat"
+        payload = json.loads(request.content)
+        assert payload["think"] is False
+        assert payload["format"] == schema
+        assert payload["options"]["num_predict"] == 768
+        return httpx.Response(200, json={"message": {"content": '{"mode":"research"}'}})
+
+    _client_factory(monkeypatch, handler)
+    monkeypatch.setattr(rp.LlmRuntimeProvider, "_prepare", lambda self, request: _async_none())
+    request = rp.RuntimeChatRequest(
+        "http://127.0.0.1:11434/v1", "m", [], thinking=False, disable_thinking=True,
+        max_tokens=768, response_format={"type": "json_schema", "schema": schema},
+    )
+    result = asyncio.run(rp.OllamaRuntimeProvider().complete(request))
+    assert result == '{"mode":"research"}'
+
+
+def test_complete_structured_output_uses_generic_dialect_fallbacks(monkeypatch):
     calls = []
 
     def handler(request):
         calls.append(json.loads(request.content))
-        if len(calls) < 2:
+        if len(calls) < 3:
             return httpx.Response(400, text="secret-provider-body")
         return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
 
@@ -82,14 +103,64 @@ def test_complete_structured_output_falls_back_without_leaking_key(monkeypatch):
         response_format={"type": "json_schema", "schema": {"type": "object"}},
     )
     result = asyncio.run(rp.OpenAICompatibleRuntimeProvider().complete(request))
-    assert result == "{}" and len(calls) == 2
+    assert result == "{}" and len(calls) == 3
     assert calls[0]["response_format"] == {
         "type": "json_schema",
         "json_schema": {
             "name": "structured_output", "schema": {"type": "object"}, "strict": True,
         },
     }
-    assert "response_format" not in calls[-1]
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[2]
+
+
+def test_llama_cpp_structured_output_uses_openai_schema_without_backend_dependency(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok":true}'}}]})
+
+    _client_factory(monkeypatch, handler)
+    monkeypatch.setattr(rp.LlmRuntimeProvider, "_prepare", lambda self, request: _async_none())
+    schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+    request = rp.RuntimeChatRequest(
+        "http://127.0.0.1:8080/v1", "m", [], thinking=False, disable_thinking=True,
+        response_format={"type": "json_schema", "name": "test", "schema": schema},
+    )
+    result = asyncio.run(rp.LlamaCppRuntimeProvider().complete(request))
+    assert result == '{"ok":true}'
+    assert calls[0]["response_format"]["json_schema"]["schema"] == schema
+    assert calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_structured_dialect_error_does_not_retry_server_failure(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(500, text="internal")
+
+    _client_factory(monkeypatch, handler)
+    monkeypatch.setattr(rp.LlmRuntimeProvider, "_prepare", lambda self, request: _async_none())
+    request = rp.RuntimeChatRequest(
+        "http://127.0.0.1:9999/v1", "m", [],
+        response_format={"type": "json_schema", "schema": {"type": "object"}},
+    )
+    with pytest.raises(rp.RuntimeProviderError, match="500"):
+        asyncio.run(rp.OpenAICompatibleRuntimeProvider().complete(request))
+    assert len(calls) == 1
+
+
+def test_llama_cpp_provider_selection_is_same_for_vulkan_and_rocm(monkeypatch):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"port": 8100, "backend": "vulkan"}, {"port": 8101, "backend": "rocm"},
+    ])
+    monkeypatch.setattr("app.models_mgmt.ollama.base_url", lambda: "http://127.0.0.1:11434")
+    assert rp.provider_for_base_url("http://127.0.0.1:8100/v1").kind == "llama.cpp"
+    assert rp.provider_for_base_url("http://127.0.0.1:8101/v1").kind == "llama.cpp"
 
 
 def test_explicit_cancel_and_task_cancel_cleanup_active_registry():
