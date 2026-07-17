@@ -9,13 +9,13 @@ def test_runtime_policy_roundtrip(tmp_path, monkeypatch):
         selected_runtime="llama.cpp",
         selected_backend="vulkan",
         assistant_name="Local AI",
-        chat={"max_output_tokens": 512, "reasoning": "off", "timeout_seconds": 60},
+        chat={"reasoning": "off", "timeout_seconds": 60},
     )
     runtime_policy.save_policy(policy)
 
     loaded = runtime_policy.get_policy()
     assert loaded == policy
-    assert loaded.chat.max_output_tokens == 512
+    assert loaded.chat.timeout_seconds == 60
 
 
 def test_apply_exclusive_llama_unloads_ollama(monkeypatch):
@@ -61,8 +61,26 @@ def test_runtime_policy_rejects_invalid_limits():
     from app.models_mgmt.runtime_policy import RuntimePolicy
 
     try:
-        RuntimePolicy(chat={"max_output_tokens": 0})
+        RuntimePolicy(deep_research={"max_report_tokens": 262145})
     except ValidationError:
         pass
     else:
-        raise AssertionError("invalid max_output_tokens was accepted")
+        raise AssertionError("invalid max_report_tokens was accepted")
+
+
+def test_model_output_tokens_uses_ollama_model_config(monkeypatch):
+    from app.models_mgmt import llama, ollama, runtime_policy
+
+    monkeypatch.setattr(ollama, "base_url", lambda: "http://127.0.0.1:11434")
+    monkeypatch.setattr(ollama, "get_model_config", lambda model: {"num_predict": 131072})
+    monkeypatch.setattr(llama, "list_instances", lambda: [])
+    assert runtime_policy.model_output_tokens("http://127.0.0.1:11434/v1", "qwen") == 131072
+
+
+def test_model_output_tokens_uses_llama_instance_and_caps_unlimited(monkeypatch):
+    from app.models_mgmt import llama, ollama, runtime_policy
+
+    monkeypatch.setattr(ollama, "base_url", lambda: "http://127.0.0.1:11434")
+    monkeypatch.setattr(llama, "list_instances", lambda: [{"port": 8080, "n_predict": -1}])
+    assert runtime_policy.model_output_tokens("http://127.0.0.1:8080/v1", "m") == 262144
+    assert runtime_policy.model_output_tokens("https://external.example/v1", "m") == 8192

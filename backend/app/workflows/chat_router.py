@@ -418,15 +418,11 @@ def _extract_json(text: str) -> dict:
     raise ValueError("LLM が完全な JSON object を返しませんでした")
 
 
-def _workflow_max_tokens() -> int:
-    """Model画面の共通出力上限を使う。schema生成には最低4Kを確保する。"""
-    try:
-        from app.models_mgmt.runtime_policy import get_policy
+def _workflow_max_tokens(base_url: str, model: str) -> int:
+    """ワークフローJSONも選択モデルの個別出力上限へ従う。"""
+    from app.models_mgmt.runtime_policy import model_output_tokens
 
-        configured = get_policy().chat.max_output_tokens
-    except Exception:
-        configured = 8192
-    return min(131072, max(4096, int(configured)))
+    return model_output_tokens(base_url, model)
 
 
 def _validate_generated(definition: dict) -> list[str]:
@@ -460,7 +456,7 @@ async def generate_workflow(body: GenerateBody, user: User = Depends(require_per
         [{"role": "system", "content": _gen_system(body.base_url, body.model)},
          {"role": "user", "content": body.goal}],
         body.base_url, body.model, body.api_key, temperature=0.2,
-        max_tokens=_workflow_max_tokens(), disable_thinking=True,
+        max_tokens=_workflow_max_tokens(body.base_url, body.model), disable_thinking=True,
         response_format={"type": "json_schema", "schema": WORKFLOW_SCHEMA},
     )
     try:
@@ -570,7 +566,7 @@ async def _run_build_job(job, req: dict, user_id: int) -> dict:
                 try:
                     content = await _llm(
                         history, base_url, model, api_key, temperature=0.2,
-                        max_tokens=_workflow_max_tokens(), disable_thinking=True,
+                        max_tokens=_workflow_max_tokens(base_url, model), disable_thinking=True,
                         response_format={"type": "json_schema", "schema": WORKFLOW_SCHEMA},
                     )
                 except HTTPException as e:

@@ -12,16 +12,13 @@ from app.config import data_dir
 
 
 class ChatDefaults(BaseModel):
-    # 長文回答と20ノード級のworkflow JSONを途中で切らない初期値。モデル/VRAMに
-    # 合わせてModel画面から64〜131072の範囲で変更できる。
-    max_output_tokens: int = Field(default=8192, ge=64, le=131072)
     reasoning: Literal["off", "auto", "on"] = "off"
     timeout_seconds: int = Field(default=300, ge=10, le=1800)
 
 
 class DeepResearchSettings(BaseModel):
     evidence_context_chars: int = Field(default=90000, ge=12000, le=500000)
-    max_report_tokens: int = Field(default=32768, ge=8192, le=131072)
+    max_report_tokens: int = Field(default=32768, ge=8192, le=262144)
     timeout_seconds: int = Field(default=1800, ge=300, le=7200)
 
 
@@ -94,6 +91,44 @@ def ensure_gpu_profile(*, force: bool = False, base_url: str = "") -> dict:
 
         llama.mark_used_by_base_url(base_url)
     return result
+
+
+MAX_OUTPUT_TOKENS = 262_144
+DEFAULT_OUTPUT_TOKENS = 8_192
+
+
+def model_output_tokens(base_url: str, model: str) -> int:
+    """runtime/model個別の出力上限を解決する。外部・未設定だけ内部既定へ戻す。"""
+    from urllib.parse import urlsplit
+
+    from app.models_mgmt import llama, ollama
+
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+    configured: int | None = None
+    if normalized == ollama.base_url().rstrip("/"):
+        try:
+            value = ollama.get_model_config(model).get("num_predict")
+            configured = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            configured = None
+    else:
+        parsed = urlsplit(base_url)
+        if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
+            instance = next(
+                (item for item in llama.list_instances() if int(item.get("port", 0)) == parsed.port),
+                None,
+            )
+            if instance is not None:
+                try:
+                    configured = int(instance.get("n_predict"))
+                except (TypeError, ValueError):
+                    configured = None
+    # Ollamaの-1/-2、llama.cppの-1は実質無制限なのでplatform安全上限へ正規化。
+    if configured is not None and configured <= 0:
+        return MAX_OUTPUT_TOKENS
+    return min(MAX_OUTPUT_TOKENS, max(64, configured or DEFAULT_OUTPUT_TOKENS))
 
 
 async def environment() -> dict:

@@ -96,7 +96,7 @@ IP単位のrate limitがあるため、1リポジトリあたりmetadata/treeの
 | 最終根拠 | 36 |
 | 1根拠の保存抜粋 | 6,000文字 |
 | 最終LLM根拠context | 90,000文字 |
-| レポート総出力 | 既定32,768 token（設定上限131,072） |
+| レポート総出力 | 既定32,768 token（設定上限262,144） |
 
 最終根拠は既存の会話内文献レジストリへ登録し、後続ターンでは`[R1]`等で必要な文献だけを再展開する。
 
@@ -107,7 +107,7 @@ Deep Researchだから一律256Kへ変更する共通policyは持たない。Mod
 - Ollama: `deep_research_num_ctx`（未設定時は同じモデルの通常`num_ctx`）
 - llama.cpp: `deep_research_ctx_size`（0/未設定時は同じinstanceの通常`ctx_size`）
 - runtime共通policy: 根拠文字数`evidence_context_chars`、HTTP待機上限`timeout_seconds`、
-  レポート総出力`max_report_tokens`（既定32K、最大128K）だけを保持
+  レポート総出力`max_report_tokens`（既定32K、最大256K）だけを保持
 
 Ollamaはrequest単位の`num_ctx`を使い、通常値と異なる場合は完了後に実行前のロード状態と通常optionsへ戻す。
 管理中llama.cppはserver起動時にCTXが固定されるため、値が異なる場合だけ開始前に専用CTXで再ロードし、

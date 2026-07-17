@@ -138,7 +138,7 @@ def test_workflow_generation_uses_configured_schema_mode(admin_client, monkeypat
         })
 
     monkeypatch.setattr(chat_router, "_llm", fake_llm)
-    monkeypatch.setattr(chat_router, "_workflow_max_tokens", lambda: 32768)
+    monkeypatch.setattr(chat_router, "_workflow_max_tokens", lambda base_url, model: 32768)
     r = admin_client.post(
         "/api/v1/chat/generate-workflow",
         json={"goal": "okを表示"},
@@ -157,4 +157,4 @@ def test_persistent_chat_defaults_to_fast_non_thinking_mode():
 
     body = SendBody(content="hello")
     assert body.thinking is None
-    assert body.max_output_tokens is None
+    assert not hasattr(body, "max_output_tokens")

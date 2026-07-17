@@ -24,9 +24,11 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   const common = page.getByRole("dialog", { name: "LLM 共通設定" });
   await expect(common.getByText("全ランタイム共通")).toBeVisible();
   await expect(common.getByText("Deep Research専用CTX")).toHaveCount(0);
+  await expect(common.getByText("チャット・ワークフロー生成の出力token上限")).toHaveCount(0);
   await expect(common.getByLabel("統合する根拠文字数上限")).toHaveValue("90000");
-  await expect(common.getByLabel("レポート総出力token上限")).toHaveValue("32768");
-  await expect(common.getByLabel("Deep Research生成timeout（秒）")).toHaveValue("1800");
+  await expect(common.getByLabel("レポート総出力token上限")).toHaveValue("262144");
+  await expect(common.getByLabel("レポート総出力token上限").locator("option[value='262144']")).toHaveCount(1);
+  expect(["300", "600", "1200", "1800", "3600"]).toContain(await common.getByLabel("Deep Research生成timeout（秒）").inputValue());
   await common.getByRole("button", { name: "閉じる" }).click();
 
   const status = await page.evaluate(async () => (await fetch("/api/v1/models/llama/status")).json());
@@ -34,6 +36,8 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   await page.getByRole("listitem").first().getByRole("button").first().click();
   const sheet = page.getByRole("dialog", { name: `${alias} · モデル個別設定` });
   await expect(sheet.getByText("Deep Research専用CTX", { exact: true })).toBeVisible();
+  await expect(sheet.getByLabel("コンテキスト長（CTX）").locator("option[value='262144']")).toHaveCount(1);
+  await expect(sheet.getByLabel("最大出力トークン").locator("option[value='262144']")).toHaveCount(1);
   await expect(sheet.getByText("通常CTXへ自動復元")).toBeVisible();
   await sheet.getByRole("button", { name: "保存", exact: true }).click();
   await expect.poll(() => submitted).not.toBeNull();
