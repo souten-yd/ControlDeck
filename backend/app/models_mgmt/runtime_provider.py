@@ -33,6 +33,9 @@ class RuntimeChatRequest:
     disable_thinking: bool = False
     response_format: dict[str, Any] | None = None
     keep_alive: str | int | None = None
+    # Deep Research等の大規模入力で要求するcontext。providerがrequest単位で対応する場合だけ使う。
+    context_window: int | None = None
+    timeout_seconds: int = 300
 
 
 @dataclass(slots=True)
@@ -161,7 +164,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         return payload
 
     async def _post(self, request: RuntimeChatRequest, payload: dict[str, Any]) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
             return await client.post(
                 normalize_openai_base(request.base_url) + "/chat/completions",
                 json=payload,
@@ -249,7 +252,7 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         # Ollama native APIはthink無効化とJSON Schema(format)を同時に扱える。
         # OpenAI互換APIでは一部thinking modelがchat_template_kwargsを無視し、推論だけで
         # max_tokensを使い切ってJSONが途中切れになるため、どちらか必要ならnativeを使う。
-        return request.thinking is not None or request.response_format is not None
+        return request.thinking is not None or request.response_format is not None or request.context_window is not None
 
     def _native_payload(
         self, request: RuntimeChatRequest, *, stream: bool,
@@ -259,6 +262,8 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
             "temperature": request.temperature,
             "num_predict": request.max_tokens,
         }
+        if request.context_window is not None:
+            options["num_ctx"] = request.context_window
         payload: dict[str, Any] = {
             "model": request.model, "messages": request.messages, "stream": stream,
             "think": request.thinking, "options": options,
@@ -281,7 +286,7 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
             return await super()._complete_impl(request)
         response: httpx.Response | None = None
         for candidate in response_format_candidates(request.response_format):
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
                 response = await client.post(
                     self._native_base(request.base_url) + "/api/chat",
                     json=self._native_payload(request, stream=False, response_format=candidate),

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, get_db
 from app.audit import service as audit
 from app.jobs import service as jobs
-from app.models import ChatMessage, Conversation, User
+from app.models import ChatMessage, ChatReference, Conversation, User
 from app.models import utcnow
 from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
@@ -33,6 +33,11 @@ router = APIRouter(prefix="/chat", tags=["chat-persist"])
 
 # 部分出力のチェックポイント間隔（秒）。毎トークン DB 書き込みはしない
 CHECKPOINT_SEC = 1.0
+REFERENCE_SYSTEM_GUIDANCE = (
+    "この会話の検索資料には R1、RA、R10 のような会話内文献IDがあります。"
+    "文献を根拠にする場合は [R1] の形式で引用してください。"
+    "利用者が文献IDを指定した場合、別の資料と推測で置き換えないでください。"
+)
 
 
 def _new_id() -> str:
@@ -97,6 +102,7 @@ def delete_conversation(
     conv = db.get(Conversation, conv_id)
     if conv is None or conv.owner_user_id != user.id:
         raise HTTPException(status_code=404, detail="会話が見つかりません")
+    db.query(ChatReference).filter(ChatReference.conversation_id == conv_id).delete()
     db.query(ChatMessage).filter(ChatMessage.conversation_id == conv_id).delete()
     db.delete(conv)
     db.commit()
@@ -126,6 +132,59 @@ def list_messages(conv_id: str, user: User = Depends(require_permission("workflo
         .order_by(ChatMessage.created_at)
     ).scalars().all()
     return {"conversation": _conv_out(conv), "messages": [_msg_out(m) for m in rows]}
+
+
+class ReferenceResolveBody(BaseModel):
+    reference_ids: list[str] = Field(min_length=1, max_length=12)
+
+
+def _owned_conversation(db: Session, conv_id: str, user: User) -> Conversation:
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    return conv
+
+
+@router.get("/conversations/{conv_id}/references")
+def list_references(
+    conv_id: str, user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """会話内の文献カタログ。本文はpreviewだけにしてレスポンスを小さく保つ。"""
+    from app.workflows.reference_registry import reference_out
+
+    _owned_conversation(db, conv_id, user)
+    rows = db.execute(select(ChatReference).where(
+        ChatReference.conversation_id == conv_id,
+    ).order_by(ChatReference.sequence)).scalars().all()
+    return {"references": [reference_out(ref) for ref in rows]}
+
+
+@router.get("/conversations/{conv_id}/references/{reference_id}")
+def get_reference(
+    conv_id: str, reference_id: str,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """文献IDを1件解決する、エージェントツール向けの最小API。"""
+    from app.workflows.reference_registry import reference_out, resolve_references
+
+    _owned_conversation(db, conv_id, user)
+    refs = resolve_references(db, conv_id, [reference_id])
+    if not refs:
+        raise HTTPException(status_code=404, detail="文献が見つかりません")
+    return reference_out(refs[0], include_excerpt=True)
+
+
+@router.post("/conversations/{conv_id}/references/resolve")
+def resolve_reference_tool(
+    conv_id: str, body: ReferenceResolveBody,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """複数の短い文献IDを一括解決する。provider固有tool callingは要求しない。"""
+    from app.workflows.reference_registry import reference_out, resolve_references
+
+    _owned_conversation(db, conv_id, user)
+    refs = resolve_references(db, conv_id, body.reference_ids)
+    return {"references": [reference_out(ref, include_excerpt=True) for ref in refs]}
 
 
 # ---- 送信（サーバー側生成ジョブ） ----
@@ -218,9 +277,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         try:
             query = history[-1]["content"]
             if mode == "research":
-                search_history = await _server_research(job, buf, query, params, plan)
+                search_history = await _server_research(job, buf, conv_id, query, params, plan)
             else:
-                search_history = await _server_search(job, buf, mode, query, params)
+                search_history = await _server_search(job, buf, conv_id, mode, query, params, checkpoint)
             if search_history is None:  # deep はここで完結（レポートを content に保存済み）
                 await asyncio.to_thread(checkpoint, True, "completed")
                 await asyncio.to_thread(_maybe_title, conv_id)
@@ -260,7 +319,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         raise
 
 
-async def _server_search(job: jobs.Job, buf: dict, mode: str, query: str, params: dict):
+async def _server_search(
+    job: jobs.Job, buf: dict, conv_id: str, mode: str, query: str, params: dict,
+    checkpoint_fn=None,
+):
     """Web/学術/Deep 検索をサーバー側で実行。web/academic は LLM 生成用の history を返し、
     deep はレポートを buf["content"] に保存して None を返す（呼び出し側で完結）。"""
     from app.workflows import chat_router as cr
@@ -270,14 +332,21 @@ async def _server_search(job: jobs.Job, buf: dict, mode: str, query: str, params
     if mode == "academic":
         fed = await ext.federated(query, 8)
         results = fed["results"][:12]
-        sources = [{"title": r.get("title", ""), "url": r.get("url", ""), "source": r.get("source", "")} for r in results]
+        raw_sources = [{
+            "title": r.get("title", ""), "url": r.get("url", ""), "source": r.get("source", ""),
+            "snippet": r.get("snippet", "") or r.get("abstract", ""), "kind": "paper",
+        } for r in results]
+        sources = await asyncio.to_thread(_register_conversation_sources, conv_id, raw_sources)
         buf["meta"] = {"mode": "academic", "sources": sources}
         job.log("sources", sources=sources)
-        ctx = "\n\n".join(f"[{i+1}] {r.get('title','')}\n{r.get('snippet','')[:400]}\n{r.get('url','')}"
-                          for i, r in enumerate(results))
+        ctx = "\n\n".join(
+            f"[{source['reference_id']}] {result.get('title','')}\n"
+            f"{str(result.get('snippet','') or result.get('abstract',''))[:400]}\n{result.get('url','')}"
+            for source, result in zip(sources, results)
+        )
         return [
             {"role": "system", "content":
-             "以下の学術検索結果を根拠に日本語で回答してください。主張には [番号] で出典を付けること。\n\n" + ctx},
+             "以下の学術検索結果を根拠に日本語で回答してください。主張には [R英数字] で出典を付けること。\n\n" + ctx},
             {"role": "user", "content": query},
         ]
 
@@ -287,23 +356,46 @@ async def _server_search(job: jobs.Job, buf: dict, mode: str, query: str, params
                        base_url=params["base_url"], model=params["model"])
     if mode == "web":
         results = await cr._web_results(sb, query, 8)
-        sources = [{"title": r.get("title", ""), "url": r.get("url", "")} for r in results]
+        raw_sources = [{
+            "title": r.get("title", ""), "url": r.get("url", ""),
+            "snippet": r.get("snippet", ""), "source": r.get("source", "web"), "kind": "page",
+        } for r in results]
+        sources = await asyncio.to_thread(_register_conversation_sources, conv_id, raw_sources)
         buf["meta"] = {"mode": "web", "sources": sources}
         job.log("sources", sources=sources)
-        ctx = "\n\n".join(f"[{i+1}] {r['title']}\n{r.get('snippet','')}\n{r['url']}" for i, r in enumerate(results))
+        ctx = "\n\n".join(
+            f"[{source['reference_id']}] {result['title']}\n{result.get('snippet','')}\n{result['url']}"
+            for source, result in zip(sources, results)
+        )
         return [
             {"role": "system", "content":
-             "以下の検索結果を根拠に日本語で回答してください。主張には [番号] で出典を付けること。"
+             "以下の検索結果を根拠に日本語で回答してください。主張には [R英数字] で出典を付けること。"
              "検索結果にない内容は推測と明示すること。\n\n" + ctx},
             {"role": "user", "content": query},
         ]
 
     # deep: 既存の Deep サーチ（分解→収集→引用付きレポート）をサーバー側で実行
-    res = await cr._deep_search(sb)  # {"report","sources"}
-    buf["content"] = res["report"]
-    buf["meta"] = {"mode": "deep", "sources": res.get("sources", [])}
-    job.log("delta", delta=res["report"])
-    job.log("sources", sources=res.get("sources", []))
+    def deep_progress(phase: str, label: str, iteration: int, details: dict) -> None:
+        item = {"phase": phase, "label": label, "iteration": iteration, "details": details}
+        buf.setdefault("meta", {}).setdefault("progress", []).append(item)
+        job.log("progress", **item)
+        if checkpoint_fn is not None:
+            checkpoint_fn()
+
+    res = await cr._deep_search(sb, progress=deep_progress)
+    raw_sources = res.get("sources", [])
+    sources = await asyncio.to_thread(_register_conversation_sources, conv_id, raw_sources)
+    report = str(res["report"])
+    # Deep Searchは内部で一時的な連番を使うため、会話内の永続IDへ置換する。
+    for index in range(len(sources), 0, -1):
+        report = report.replace(f"[{index}]", f"[{sources[index - 1]['reference_id']}]")
+    buf["content"] = report
+    buf["meta"] = {
+        **buf.get("meta", {}), "mode": "deep", "sources": sources,
+        "research": res.get("research", {}),
+    }
+    job.log("delta", delta=report)
+    job.log("sources", sources=sources)
     return None
 
 
@@ -311,8 +403,15 @@ def _source_key(source: dict) -> str:
     return str(source.get("url") or source.get("title") or "").strip().lower()
 
 
+def _register_conversation_sources(conv_id: str, sources: list[dict]) -> list[dict]:
+    from app.workflows.reference_registry import register_sources
+
+    with SessionLocal() as db:
+        return register_sources(db, conv_id, sources)
+
+
 async def _server_research(
-    job: jobs.Job, buf: dict, query: str, params: dict, plan: AssistantPlan | None,
+    job: jobs.Job, buf: dict, conv_id: str, query: str, params: dict, plan: AssistantPlan | None,
 ) -> list[dict]:
     """Web/学術を組み合わせ、不足評価を挟みながら根拠を集める。"""
     from app.workflows import chat_router as cr
@@ -363,6 +462,8 @@ async def _server_research(
                 source = {
                     "title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
                     "source": str(result.get("source") or step.tool),
+                    "snippet": str(result.get("snippet") or result.get("abstract") or "")[:700],
+                    "kind": "paper" if step.tool == "academic" else "page",
                 }
                 key = _source_key(source)
                 if not key or key in seen_sources:
@@ -382,17 +483,20 @@ async def _server_research(
         if not pending:
             break
 
+    sources = await asyncio.to_thread(_register_conversation_sources, conv_id, sources)
     buf["meta"] = {
         **buf.get("meta", {}), "mode": "research", "sources": sources,
         "iterations": iteration_count,
     }
     job.log("sources", sources=sources)
     progress("summarize", f"{len(sources)}件の出典を要約中", iteration=min(max_iterations, 5))
-    context = "\n\n".join(f"[{index}] {item}" for index, item in enumerate(evidence, 1))
+    context = "\n\n".join(
+        f"[{source['reference_id']}] {item}" for source, item in zip(sources, evidence)
+    )
     return [
         {"role": "system", "content":
          "以下はWeb・学術検索を組み合わせて収集した根拠です。利用者の依頼へ日本語で要約し、"
-         "主要な主張には必ず [番号] を付けてください。根拠にない内容は推測と明記してください。\n\n" + context},
+         "主要な主張には必ず [R英数字] を付けてください。根拠にない内容は推測と明記してください。\n\n" + context},
         {"role": "user", "content": query},
     ]
 
@@ -432,7 +536,32 @@ async def send_message(
     past = db.execute(
         select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
     ).scalars().all()
-    history = [{"role": "system", "content": body.system}]
+    from app.workflows.reference_registry import (
+        build_reference_context, extract_reference_ids, resolve_references,
+    )
+
+    history = [{"role": "system", "content": body.system + "\n\n" + REFERENCE_SYSTEM_GUIDANCE}]
+    requested_ids = extract_reference_ids(body.content)
+    requested_refs = resolve_references(db, conv_id, requested_ids)
+    if requested_refs:
+        history.append({
+            "role": "system",
+            "content": (
+                "利用者が指定した会話内文献を以下に展開します。この資料だけを必要に応じて参照し、"
+                "回答の根拠には対応する文献IDを付けてください。\n\n"
+                + build_reference_context(requested_refs)
+            ),
+        })
+    resolved_ids = {ref.short_id for ref in requested_refs}
+    missing_ids = [reference_id for reference_id in requested_ids if reference_id not in resolved_ids]
+    if missing_ids:
+        history.append({
+            "role": "system",
+            "content": (
+                f"指定された文献ID {', '.join(missing_ids)} はこの会話に存在しません。"
+                "内容を推測せず、必要なら利用者へIDの確認を求めてください。"
+            ),
+        })
     for m in past:
         if m.role in ("user", "assistant") and m.content:
             history.append({"role": m.role, "content": m.content})
@@ -537,7 +666,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
                 elif ev.get("message") == "progress":
                     await websocket.send_text(json.dumps({
                         "type": "progress", "phase": ev.get("phase", ""), "label": ev.get("label", ""),
-                        "iteration": ev.get("iteration", 0),
+                        "iteration": ev.get("iteration", 0), "details": ev.get("details", {}),
                     }, ensure_ascii=False))
             cursor = next_cursor
             if job.status not in ("queued", "running") and cursor >= job.event_sequence:

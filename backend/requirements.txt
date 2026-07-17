@@ -18,3 +18,4 @@ numpy
 playwright
 pyotp
 qrcode
+pypdf>=5.0

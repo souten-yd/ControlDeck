@@ -93,6 +93,10 @@ def test_research_combines_sources_and_deduplicates(monkeypatch):
     monkeypatch.setattr(chat_router, "_web_results", fake_web)
     monkeypatch.setattr(external_search, "federated", fake_academic)
     monkeypatch.setattr(planner, "evaluate", fake_evaluate)
+    monkeypatch.setattr(
+        chat, "_register_conversation_sources",
+        lambda _conv_id, sources: [dict(source, reference_id=f"R{i:X}") for i, source in enumerate(sources, 1)],
+    )
 
     class FakeJob:
         def __init__(self):
@@ -108,9 +112,10 @@ def test_research_combines_sources_and_deduplicates(monkeypatch):
     job = FakeJob()
     buf = {"meta": {"plan": plan.model_dump(), "progress": []}}
     history = asyncio.run(chat._server_research(
-        job, buf, "q", {"base_url": "http://local/v1", "model": "m", "engine": "duckduckgo"}, plan,
+        job, buf, "conversation", "q",
+        {"base_url": "http://local/v1", "model": "m", "engine": "duckduckgo"}, plan,
     ))
     assert len(buf["meta"]["sources"]) == 3
     assert len({source["url"] for source in buf["meta"]["sources"]}) == 3
-    assert "[1]" in history[0]["content"]
+    assert "[R1]" in history[0]["content"]
     assert any(message == "progress" and data["phase"] == "sufficient" for message, data in job.events)

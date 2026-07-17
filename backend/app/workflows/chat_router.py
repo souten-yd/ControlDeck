@@ -69,6 +69,7 @@ async def _llm(
     messages: list[dict], base_url: str, model: str, api_key: str,
     temperature: float = 0.4, *, max_tokens: int = 2048,
     disable_thinking: bool = False, response_format: dict | None = None,
+    context_window: int | None = None, timeout_seconds: int = 300,
 ) -> str:
     """OpenAI互換/Ollama共通の有限生成。
 
@@ -84,7 +85,8 @@ async def _llm(
         base_url=base_url, model=model, messages=messages, api_key=api_key,
         temperature=temperature, max_tokens=max_tokens,
         thinking=think, disable_thinking=disable_thinking,
-        response_format=response_format, keep_alive=_keep_alive(),
+        response_format=response_format, keep_alive=_keep_alive(), context_window=context_window,
+        timeout_seconds=timeout_seconds,
     )
     try:
         return await provider_for_base_url(base_url).complete(request)
@@ -175,16 +177,72 @@ async def _web_results(body: SearchBody, query: str, limit: int) -> list[dict]:
 
 
 async def _page_text(url: str, limit_chars: int = 3500) -> str:
-    """ページ本文をテキスト抽出（Deep サーチの引用元）。失敗時は空文字。"""
+    """公開ページ/PDF本文を有限長で抽出。private addressとredirect SSRFを拒否する。"""
+    import ipaddress
+    import io
+    import socket
+    from urllib.parse import urljoin, urlsplit
+
     from bs4 import BeautifulSoup
 
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True,
+        async def validate_public(target: str) -> None:
+            parsed = urlsplit(target)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise ValueError("HTTP(S)公開URLではありません")
+            default_port = 443 if parsed.scheme == "https" else 80
+            infos = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or default_port, type=socket.SOCK_STREAM)
+            addresses = {ipaddress.ip_address(info[4][0]) for info in infos}
+            if not addresses or any(
+                address.is_private or address.is_loopback or address.is_link_local
+                or address.is_multicast or address.is_reserved or address.is_unspecified
+                for address in addresses
+            ):
+                raise ValueError("非公開addressは取得できません")
+
+        current = url
+        content = b""
+        content_type = ""
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False,
                                      headers={"User-Agent": "Mozilla/5.0 ControlDeck"}) as client:
-            r = await client.get(url)
-        if r.status_code >= 400 or "text/html" not in r.headers.get("content-type", "text/html"):
+            for _ in range(5):
+                await validate_public(current)
+                async with client.stream("GET", current) as response:
+                    if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                        current = urljoin(current, response.headers["location"])
+                        continue
+                    if response.status_code >= 400:
+                        return ""
+                    content_type = response.headers.get("content-type", "text/html").casefold()
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > 20 * 1024 * 1024:
+                            return ""
+                        chunks.append(chunk)
+                    content = b"".join(chunks)
+                    break
+            else:
+                return ""
+        if "pdf" in content_type or current.casefold().endswith(".pdf"):
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(content))
+            pages: list[str] = []
+            used = 0
+            for page in reader.pages[:80]:
+                text = page.extract_text() or ""
+                pages.append(text)
+                used += len(text)
+                if used >= limit_chars:
+                    break
+            return "\n".join(pages)[:limit_chars]
+        if "html" not in content_type and "text/" not in content_type:
             return ""
-        soup = BeautifulSoup(r.text, "html.parser")
+        encoding = "utf-8"
+        text_content = content.decode(encoding, errors="replace")
+        soup = BeautifulSoup(text_content, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
             tag.decompose()
         text = " ".join(soup.get_text(" ", strip=True).split())
@@ -223,48 +281,53 @@ async def chat_search(body: SearchBody, user: User = Depends(require_permission(
     return await _deep_search(body)
 
 
-async def _deep_search(body: SearchBody) -> dict:
-    """Deep サーチ: サブ質問分解 → Web 検索 → 本文収集 → 引用付き統合レポート。"""
+async def _deep_search(body: SearchBody, progress=None) -> dict:
+    """反復型Deep Research。検索実装とruntimeを共通engineへ注入する。"""
+    from app.models_mgmt import runtime_policy
+    from app.workflows import deep_research
+    from app.workflows.engine import _load_secrets
+
+    settings = runtime_policy.get_policy().deep_research
+    context_state = await runtime_policy.prepare_deep_research_context(body.base_url)
+    request_context = context_state.get("request_context_tokens")
+    if progress:
+        progress(
+            "context", f"Deep Research CTX: {context_state.get('reason') or '未適用'}", 0,
+            {"context_profile": context_state},
+        )
+
+    async def complete(messages: list[dict], *, max_tokens: int, response_format: dict | None = None) -> str:
+        return await _llm(
+            messages, body.base_url, body.model, body.api_key, temperature=0.25,
+            max_tokens=max_tokens, disable_thinking=response_format is not None,
+            response_format=response_format, context_window=request_context,
+            timeout_seconds=settings.timeout_seconds,
+        )
+
+    async def web_search(query: str, limit: int) -> list[dict]:
+        return await _web_results(body, query, limit)
+
+    async def academic_search(query: str, limit: int) -> list[dict]:
+        result = await ext.federated(query, limit)
+        return result.get("results", [])[: max(12, limit * 3)]
+
+    secrets = await asyncio.to_thread(_load_secrets)
+
+    async def specialized_search(source_type: str, query: str, limit: int) -> list[dict]:
+        api_key = secrets.get("PATENTSVIEW_API_KEY", "") if source_type == "patent" else ""
+        return await ext.search(source_type, query, limit, api_key=api_key)
+
     try:
-        raw = await _llm(
-            [{"role": "user", "content":
-              f"調査テーマ「{body.query}」を Web で調べるための検索クエリを 3 個、1行1個・番号なしで出力。"}],
-            body.base_url, body.model, body.api_key, temperature=0.3)
-        sub_qs = [ln.strip("・-•*0123456789. \t") for ln in raw.splitlines() if ln.strip()][:3] or [body.query]
-    except HTTPException:
-        sub_qs = [body.query]
-
-    seen: set[str] = set()
-    candidates: list[dict] = []
-    for q in sub_qs:
-        try:
-            for it in await _web_results(body, q, 6):
-                if it["url"] and it["url"] not in seen:
-                    seen.add(it["url"])
-                    candidates.append(it)
-        except NodeError:
-            continue
-    if not candidates:
-        raise HTTPException(status_code=502, detail="Web 検索結果が得られませんでした")
-
-    top = candidates[:8]
-    texts = await asyncio.gather(*(_page_text(x["url"]) for x in top))
-    sources = []
-    corpus = []
-    for item, text in zip(top, texts):
-        content = text or item.get("snippet", "")
-        if not content:
-            continue
-        sources.append({"n": len(sources) + 1, "title": item["title"], "url": item["url"]})
-        corpus.append(f"[{len(sources)}] {item['title']}\n{content}")
-
-    report = await _llm(
-        [{"role": "system", "content":
-          "あなたはリサーチアシスタントです。与えられた出典のみを根拠に、日本語で構造化されたレポートを"
-          "Markdown で書いてください。本文中の主張には必ず [番号] で出典を付け、末尾に出典一覧は書かないこと。"},
-         {"role": "user", "content": f"テーマ: {body.query}\n\n出典:\n\n" + "\n\n---\n\n".join(corpus)}],
-        body.base_url, body.model, body.api_key, temperature=0.3)
-    return {"mode": "deep", "report": report, "sources": sources, "sub_questions": sub_qs}
+        result = await deep_research.run_deep_research(
+            body.query, complete=complete, web_search=web_search, academic_search=academic_search,
+            specialized_search=specialized_search, page_fetch=_page_text, progress=progress,
+            max_rounds=4, max_search_calls=24,
+            max_evidence_chars=settings.evidence_context_chars,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    result["research"]["context_profile"] = context_state
+    return result
 
 
 # ---- ワークフロー生成 ----

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;
 const password = process.env.CONTROL_DECK_E2E_PASSWORD;
+const referenceConversation = process.env.CONTROL_DECK_E2E_REFERENCE_CONV;
 
 test("assistant input never expands beyond a 320px viewport", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
@@ -116,4 +117,46 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
   await dialog.getByRole("button", { name: "音声認識を停止" }).click();
   await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
+});
+
+test("shows compact conversation references and inserts one into the prompt", async ({ page }) => {
+  test.skip(!username || !password || !referenceConversation, "reference fixture is required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto("/assistant");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+  await page.evaluate((id) => localStorage.setItem("cd-chat-conversation", id), referenceConversation!);
+  await page.goto("/assistant");
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("会話内文献（1 件）")).toBeVisible();
+  await dialog.locator("details").first().locator("summary").click();
+  await expect(dialog.getByText("探索 4 round")).toBeVisible();
+  await expect(dialog.getByText("CTX 256K 適用")).toBeVisible();
+  await expect(dialog.getByRole("listitem").getByText("[R1]", { exact: true })).toBeVisible();
+  const referenceButton = dialog.getByRole("button", { name: "R1を入力欄で参照" });
+  await expect(referenceButton).toBeVisible();
+  await expect(referenceButton).toHaveCSS("height", "36px");
+  await referenceButton.click();
+  await expect(dialog.locator('textarea[placeholder="メッセージを入力..."]')).toHaveValue("[R1] ");
+
+  const widths = await dialog.locator("ol").last().evaluate((list) => ({
+    viewport: window.innerWidth,
+    document: document.documentElement.scrollWidth,
+    right: list.getBoundingClientRect().right,
+  }));
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.right).toBeLessThanOrEqual(widths.viewport - 12);
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(dialog.getByRole("listitem").getByText("[R1]", { exact: true })).toBeVisible();
+  const desktop = await dialog.locator("ol").last().evaluate((list) => ({
+    viewport: window.innerWidth,
+    document: document.documentElement.scrollWidth,
+    right: list.getBoundingClientRect().right,
+  }));
+  expect(desktop.document).toBeLessThanOrEqual(desktop.viewport);
+  expect(desktop.right).toBeLessThanOrEqual(desktop.viewport - 12);
 });
