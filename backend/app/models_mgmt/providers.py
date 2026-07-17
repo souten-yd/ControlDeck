@@ -102,9 +102,26 @@ async def _candidates() -> list[dict]:
     return list(candidates.values())
 
 
+def _selected_runtime() -> str:
+    from app.models_mgmt.runtime_policy import get_policy
+
+    try:
+        return str(get_policy().selected_runtime)
+    except Exception:
+        return "ollama"
+
+
 async def list_providers(*, include_unavailable: bool = True, exclude_port: int | None = None) -> list[dict]:
-    """候補の `/v1/models` を並列確認し、共通provider形式で返す。"""
+    """候補の `/v1/models` を並列確認し、共通provider形式で返す。
+
+    ⚙️で選択中のruntimeには selected=true を付け、チャット等の既定接続先が
+    ランタイム選択に追従できるようにする。選択中のmanaged providerは停止中でも
+    一覧へ残す（llama.cppは生成時にオンデマンド起動されるため選択肢として有効）。
+    """
     candidates = await _candidates()
+    selected_runtime = _selected_runtime()
+    for item in candidates:
+        item["selected"] = bool(item.get("managed")) and item.get("provider") == selected_runtime
 
     async def probe(item: dict) -> dict | None:
         parsed = urlsplit(item["base_url"])
@@ -120,10 +137,17 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
             return {**item, "available": True, "models": [m for m in models if m][:50],
                     "capabilities": capabilities(item["provider"], managed=item["managed"])}
         except (httpx.HTTPError, ValueError, TypeError):
-            if include_unavailable and item.get("managed"):
-                return {**item, "available": False, "models": [],
+            if item.get("managed") and (include_unavailable or item.get("selected")):
+                models: list[str] = []
+                if item.get("provider") == "llama.cpp":
+                    # 停止中でも登録済みaliasを提示する（--alias がモデルIDになる）
+                    from app.models_mgmt import llama
+
+                    models = [str(inst["alias"]) for inst in llama.list_instances()]
+                return {**item, "available": False, "models": models,
                         "capabilities": capabilities(item["provider"], managed=item["managed"], available=False)}
             return None
 
     results = await asyncio.gather(*(probe(item) for item in candidates))
-    return sorted((item for item in results if item is not None), key=lambda x: (not x["managed"], x["name"], x["base_url"]))
+    return sorted((item for item in results if item is not None),
+                  key=lambda x: (not x.get("selected"), not x["managed"], x["name"], x["base_url"]))

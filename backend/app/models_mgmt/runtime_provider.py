@@ -239,6 +239,35 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
 class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
     kind = "llama.cpp"
 
+    # モデル読み込み（大型GGUFで数十秒〜数分）を待つ上限
+    _READY_TIMEOUT_SECONDS = 240
+
+    async def _prepare(self, request: RuntimeChatRequest) -> None:
+        await super()._prepare(request)
+        # Ollamaの暗黙ロードと同等に、停止中のinstanceは生成前に自動起動して
+        # /health 200（モデル読み込み完了）まで待つ。
+        from app.models_mgmt import llama
+
+        parsed = urlsplit(normalize_openai_base(request.base_url))
+        instances = llama.get_config()["instances"]
+        alias = next(
+            (name for name, item in instances.items() if int(item.get("port", 0)) == parsed.port),
+            None,
+        )
+        if alias is None:
+            return
+        if (await llama.health(alias)).get("ok"):
+            return
+        ok, error = await asyncio.to_thread(llama.start_instance, alias)
+        if not ok:
+            raise RuntimeProviderError(f"llama.cppの自動起動に失敗しました: {error}")
+        deadline = asyncio.get_event_loop().time() + self._READY_TIMEOUT_SECONDS
+        while asyncio.get_event_loop().time() < deadline:
+            if (await llama.health(alias)).get("ok"):
+                return
+            await asyncio.sleep(2)
+        raise RuntimeProviderError("llama.cppのモデル読み込みが時間内に完了しませんでした")
+
 
 class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
     kind = "ollama"

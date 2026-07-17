@@ -135,7 +135,9 @@ def test_unit_content_typed_mtp_moe_and_cache(monkeypatch, tmp_path):
     content = llama._unit_content()
     assert "--cache-type-k" in content and "q8_0" in content
     assert "--cache-type-v" in content and "q4_0" in content
-    assert "--spec-type" in content and "draft-mtp" in content and "--draft-max" in content
+    assert "--spec-type" in content and "draft-mtp" in content and "--spec-draft-n-max" in content
+    assert "--draft-max" not in content  # b10001で削除された旧引数を出さない
+    assert '"--flash-attn" "off"' in content  # 値必須形式（裸フラグは起動エラーになる）
     assert "--cpu-moe" in content and "--no-mmap" in content and "--mlock" in content
 
 
