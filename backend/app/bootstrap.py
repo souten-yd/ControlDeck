@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import subprocess
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,6 +13,8 @@ from app.database import Base, engine
 from app.models import ManagedApplication, Role, User
 from app.security.passwords import hash_password
 from app.security.permissions import ROLE_PRESETS
+
+logger = logging.getLogger("control_deck.bootstrap")
 
 
 def init_db() -> None:
@@ -55,42 +60,37 @@ def seed_roles(db: Session) -> None:
     db.commit()
 
 
-def seed_repair_app(db: Session) -> None:
-    """Control Deck 自身を Claude で修復するためのアプリを登録（冪等）。
-
-    起動すると ~/ControlDeck 上で Claude Code を tmux(cdterm-claude) で立ち上げ、
-    Web ターミナルからアタッチして改修できる。再起動後も残る。
-    """
-    from app.applications import service as apps
+def remove_retired_repair_app(db: Session) -> int:
+    """旧seed由来のClaude修復コンソールと管理unitを一度だけ撤去する。"""
+    from app.applications import health as app_health
     from app.applications import systemd as sd
-    from app.config import REPO_ROOT
+    from app.audit import service as audit
 
     name = "Claude 修復コンソール"
-    existing = db.execute(
+    candidates = db.execute(
         select(ManagedApplication).where(ManagedApplication.name == name)
-    ).scalar_one_or_none()
-    if existing is not None:
-        return
-    script = REPO_ROOT / "scripts" / "claude-repair.sh"
-    if not script.exists():
-        return
-    app = ManagedApplication(
-        name=name,
-        description="起動すると Claude Code が Web ターミナルの 'claude' セッションに現れ、Control Deck を改修できます。",
-        application_type="shell_script",
-        script_path=str(script),
-        working_directory=str(REPO_ROOT),
-        arguments_json="[]",
-        restart_policy="no",
-    )
-    db.add(app)
-    db.flush()
-    app.systemd_unit_name = sd.unit_name_for(app.id)
-    db.commit()
-    try:
-        apps.sync_unit(app)
-    except (ValueError, OSError):
-        pass
+    ).scalars().all()
+    retired = [
+        app for app in candidates
+        if app.application_type == "shell_script"
+        and Path(app.script_path or "").name == "claude-repair.sh"
+    ]
+    for app in retired:
+        if app.systemd_unit_name:
+            try:
+                sd.stop(app.systemd_unit_name)
+                sd.remove_unit(app.systemd_unit_name)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                logger.warning("旧Claude修復unitの撤去に失敗しました: %s", exc)
+        app_id = app.id
+        app_health.clear(app_id)
+        db.delete(app)
+        db.commit()
+        audit.record(
+            db, "app.retired_remove", resource_type="app", resource_id=str(app_id),
+            metadata={"name": name},
+        )
+    return len(retired)
 
 
 def create_admin(db: Session, username: str, password: str, display_name: str = "") -> User:

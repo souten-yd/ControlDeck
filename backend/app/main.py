@@ -35,9 +35,11 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_roles(db)
-        from app.bootstrap import seed_repair_app
+        from app.bootstrap import remove_retired_repair_app
 
-        seed_repair_app(db)
+        removed = remove_retired_repair_app(db)
+        if removed:
+            logger.info("旧Claude修復コンソールを%d件撤去しました", removed)
     finally:
         db.close()
     # 電気代の起動セッション/日別を復元（同一 boot ID なら累積を引き継ぐ）
@@ -123,6 +125,7 @@ from app.workflows.chat_router import router as chat_router  # noqa: E402
 from app.workflows.samplebook import router as samplebook_router  # noqa: E402
 from app.workflows.hooks_router import router as hooks_router  # noqa: E402
 from app.workflows.chat_persist import router as chat_persist_router  # noqa: E402
+from app.workflows.asr import router as chat_asr_router  # noqa: E402
 from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
@@ -145,6 +148,7 @@ app.include_router(gitrepos_router, prefix=API)
 app.include_router(knowledge_router, prefix=API)
 app.include_router(chat_router, prefix=API)
 app.include_router(chat_persist_router, prefix=API)
+app.include_router(chat_asr_router, prefix=API)
 app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)

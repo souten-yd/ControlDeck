@@ -2,6 +2,63 @@
 
 最終更新: 2026-07-17
 
+## AIチャット UI・自動モード・長文ストリーム・音声入力（2026-07-17）
+
+- 詳細設計を`docs/design-ai-chat-auto-mode-asr.md`へ記録。利用者の追補指定に従い、長時間処理を含む
+  実行前確認は挟まず、自動判定後に開始する。モードは通常「自動」で、入力からchat/Web/学術/Deep/
+  ワークフロー生成・実行を判定し、理由を表示する。必要な場合は単一メニューで明示上書きできる
+- AI画面を他タブと同じzinc/accent、中央コンテンツ幅、段階開示、Safe Areaへ統一。右上の閉じる操作は
+  44pxタッチ領域、枠・影・強いコントラスト、PCの「閉じる」ラベル、focus ringを持つデザインへ変更
+- 常設の6モードpill列を廃止し、自動判定status + mode menuへ集約。ワークフロー生成意図は確認なしで
+  server jobによる生成→検証→登録→動作確認→最大4回の自動修正へ進む
+- 自動判定を決定論ルール + LLMプランナーの二段構成へ拡張。明確な依頼は即時判定し、曖昧・複合的な依頼は
+  temperature 0/thinking off/JSON Schemaで`chat/Web/学術/複合調査`と検索手順を生成する。不正JSONやprovider失敗時は
+  通常対話へフォールバックする。Ollamaはnative `format`へJSON Schemaを渡し、thinking modelが推論だけで出力上限を
+  使い切ってJSONを途中切断する問題も修正
+- 構造化出力dialectをruntime provider共通層へ集約。OpenAI標準JSON Schema → JSON Object → prompt制約のみの
+  段階fallbackをOllama、llama.cpp Vulkan/ROCm、その他OpenAI互換で共有し、LLMノードとGraphRAG抽出にも適用。
+  Ollama native `format`はprovider固有の最適化として残し、契約自体は依存させない
+- 複合調査はWeb・学術検索を併用し、URLで出典を重複排除。LLMが情報不足を再評価して標準3回/上限5回、
+  検索呼び出し合計8回まで追加調査し、引用付きで要約する。判定計画・検索・評価・要約の進捗は永続jobと
+  chat message metaへ保存し、画面再接続後も復元・表示する
+- ヘッダー左上へ現在機能を常時表示。自動時は`自動判定: Web検索`、明示選択時は`選択: 学術検索`の形式とし、
+  右側のmode menuと役割を分離した。320pxでは会話切替をヘッダー2段目へ配置して44px操作領域を維持する
+- 機能選択menuを会話履歴の左へ移し、機能選択・狭幅履歴・履歴削除を同じ行へ統合。左上概略と重複していた
+  判定理由のContext barは行全体を削除し、会話本文の表示領域を広げた
+- 会話切替の右端へ44pxのゴミ箱ボタンを追加。選択中の履歴を確認なしで即時削除し、新しい空の会話へ切り替える。
+  設定内の削除操作も同じ確認なしの挙動へ統一
+- 削除後に空会話を即DB作成して「新しい会話」が履歴へ残る不具合を修正。初期表示・新規・削除後は未保存下書きとし、
+  最初の送信時だけ会話をDB登録する
+- 長文出力が約300 deltaで止まる原因を、bounded `Job.events`の配列長をcursorに使っていた不整合と特定。
+  単調増加event sequence/offsetへ変更し、購読遅延時と完了時はDB全文snapshotへ収束する。
+  frontendも40ms単位のdelta反映、最大5回の指数backoff再接続、利用者が末尾付近にいる場合だけの追従へ変更
+- 入力欄左に44pxのマイク/停止ボタンを追加。1.2秒無音または30秒上限で確定し、ローカル認識結果を
+  直接送信する。LLM回答中はミュートし、停止/unmount/失敗時にMediaStream、AudioContext、timerを解放する
+- 初回マイク操作でwhisper.cpp v1.9.1と日本語精度を優先した多言語`large-v3-turbo`モデルをbackground job導入する。
+  保存先はGit管理外の`~/.local/share/control-deck/runtimes/whisper.cpp/v1.9.1`。モデルは1,624,555,275 bytesと固定SHA-256を検証し、
+  静的linkしたruntimeのinstall revisionも一致する場合だけ再利用する。音声は25MiB上限で一時領域へ保存し、
+  ffmpegで16kHz mono PCM化、認識後は成功・失敗とも削除する
+- 通常回答とワークフロー生成の出力上限は新規環境の既定を8,192 tokenへ変更。この端末は16,384 tokenへ拡張し、
+  131,072まで設定可能な既存契約と256K CTX設定は維持する
+
+検証: backend全251件成功、frontend本番build成功。実機でwhisper.cppをsource buildし、`large-v3-turbo`モデル取得・hash検証に成功。
+2回目は0.33秒で既存runtime/modelを再利用した。Wikimedia Commonsの公開日本語音声`Ja-happyou.ogg`を
+同じ変換・認識関数へ通し、6.92秒で`発表`と認識。実サービス再起動とhealthを確認。認証付きPlaywright Chromiumで
+320x700/1280x800の横overflow 0、textarea 16px、マイク/閉じる/履歴削除44px、自動Web/フロー生成判定、
+履歴の確認なし削除→新規会話切替、無音MediaStreamで録音開始→停止→idle復帰、console errorなしを確認した。
+実機Qwen3.6-27B + Ollamaでは曖昧な依頼を12.67秒で`research`、Web/学術4手順、最大4反復として有効JSON判定。
+Web+学術各1手順の実ジョブも46.22秒で完了し、出典18件、本文1,421文字、計画・進捗4件をDBへ保存した。
+
+## Claude修復コンソールの撤去（2026-07-17）
+
+- Web起動のたびに`seed_repair_app()`が「Claude 修復コンソール」を再登録していた処理を廃止
+- 専用`scripts/claude-repair.sh`を削除。既存環境では旧seed由来と判定できる登録だけを起動時に削除し、
+  `cdapp-*` systemd user unitの停止・撤去と監査ログ記録を行う
+- 同名でも専用scriptを参照しないユーザー登録アプリは削除しない
+
+検証: backend 236件成功。実サービス再起動で旧app ID 5、`cdapp-5.service`、専用scriptを撤去し、
+`app.retired_remove`監査ログ1件を確認。2回目の再起動後も登録0件・監査ログ1件のままで再作成されないことを確認。
+
 ## サマリー
 
 | Phase | 状態 |
@@ -140,7 +197,7 @@ validation message表示を確認。frontend本番build、backend全テスト成
 - `/assistant`を独立routeとして追加し、PCサイドバー、モバイル操作シート、command paletteから2step以内で起動。
   ワークフロー画面の既存入口も同じcomponentとして維持
 - RuntimePolicyで保存したアシスタント表示名を画面へ反映。server DBの会話一覧を選択でき、新規・改名・削除を追加。
-  改名/削除は所有者検証し、破壊的な削除だけ確認dialogを出して監査ログへ記録
+  改名/削除は所有者検証し、削除は利用者指定により確認なしで実行して監査ログへ記録
 - 独立routeから実機Qwen3.6-27B + llama.cppで副作用のない最小フローを生成し、10.87秒、品質78/100、
   schema/意味検証済みの開始→結果表示フローとして登録・エディタ遷移を確認。検証用会話/フローは終了後に削除
 

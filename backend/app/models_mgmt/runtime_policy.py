@@ -12,7 +12,9 @@ from app.config import data_dir
 
 
 class ChatDefaults(BaseModel):
-    max_output_tokens: int = Field(default=2048, ge=64, le=131072)
+    # 長文回答と20ノード級のworkflow JSONを途中で切らない初期値。モデル/VRAMに
+    # 合わせてModel画面から64〜131072の範囲で変更できる。
+    max_output_tokens: int = Field(default=8192, ge=64, le=131072)
     reasoning: Literal["off", "auto", "on"] = "off"
     timeout_seconds: int = Field(default=300, ge=10, le=1800)
 

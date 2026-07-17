@@ -494,6 +494,7 @@ def _strip_json_fences(text: str) -> str:
 
 
 async def node_llm(config: dict, ctx: dict) -> dict:
+    from app.models_mgmt.runtime_provider import response_format_candidates
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     base_url = str(config.get("base_url", "http://127.0.0.1:11434/v1")).rstrip("/")
@@ -584,18 +585,26 @@ async def node_llm(config: dict, ctx: dict) -> dict:
             )
 
     try:
-        r = await call(payload)
-        if r.status_code >= 400 and "response_format" in payload:
-            # response_format 非対応サーバー: スキーマをプロンプトに埋め込んで再送
-            fallback = dict(payload)
-            fallback.pop("response_format")
-            instruction = "必ず JSON のみで応答してください。"
-            if schema_obj is not None:
-                instruction += " スキーマ: " + json.dumps(schema_obj, ensure_ascii=False)
-            fallback["messages"] = [{"role": "system", "content": instruction}, *messages]
-            r = await call(fallback)
+        r: httpx.Response | None = None
+        candidates = response_format_candidates(payload.get("response_format"))
+        for index, candidate in enumerate(candidates):
+            attempt = dict(payload)
+            if candidate is None:
+                attempt.pop("response_format", None)
+            else:
+                attempt["response_format"] = candidate
+            if index > 0:
+                instruction = "必ず JSON のみで応答してください。"
+                if schema_obj is not None:
+                    instruction += " スキーマ: " + json.dumps(schema_obj, ensure_ascii=False)
+                attempt["messages"] = [{"role": "system", "content": instruction}, *messages]
+            r = await call(attempt)
+            if r.status_code < 400 or r.status_code not in {400, 404, 415, 422, 501}:
+                break
     except httpx.HTTPError as e:
         raise NodeError(f"LLM 接続失敗: {e}")
+    if r is None:
+        raise NodeError("LLM 応答がありません")
     if r.status_code >= 400:
         raise NodeError(f"LLM エラー {r.status_code}: {r.text[:200]}")
     data = r.json()

@@ -93,9 +93,13 @@ def test_ollama_adapter_normalizes_models_and_lifecycle(monkeypatch):
         return [{"name": "qwen", "size": 123, "modified_at": "now", "loaded": True,
                  "family": "qwen", "parameter_size": "7B", "quantization": "Q4", "vram": 45}]
 
+    async def no_running_models():
+        return []
+
     calls = []
     monkeypatch.setattr(provider_adapters.providers, "list_providers", catalog)
     monkeypatch.setattr(provider_adapters.ollama, "list_models", models)
+    monkeypatch.setattr(provider_adapters.ollama, "running_models", no_running_models)
     monkeypatch.setattr(provider_adapters.ollama, "load", lambda *args: _async_result(calls, ("load", args), {"loaded": True}))
     monkeypatch.setattr(provider_adapters.ollama, "unload", lambda *args: _async_result(calls, ("unload", args), {"loaded": False}))
     monkeypatch.setattr(provider_adapters.ollama, "delete", lambda *args: _async_result(calls, ("delete", args), None))
@@ -134,7 +138,11 @@ def test_llama_adapter_lists_and_controls_each_catalog_instance(monkeypatch, tmp
     async def health(alias=None):
         return {"ok": alias == "a"}
 
+    async def no_running_models():
+        return []
+
     monkeypatch.setattr(provider_adapters.providers, "list_providers", catalog)
+    monkeypatch.setattr(provider_adapters.ollama, "running_models", no_running_models)
     monkeypatch.setattr(provider_adapters.llama, "get_config", lambda: {"backend": "rocm"})
     monkeypatch.setattr(provider_adapters.llama, "list_instances", lambda: instances)
     monkeypatch.setattr(provider_adapters.llama, "get_instance", lambda alias: next(item for item in instances if item["alias"] == alias))
