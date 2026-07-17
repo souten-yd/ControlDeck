@@ -527,11 +527,15 @@ async def idle_unload_loop() -> None:
     while True:
         try:
             await asyncio.sleep(60)
-            s = get_settings()
-            if not s.get("idle_unload_enabled"):
+            # アイドルアンロードは⚙️共通設定（runtime policy）を正とする。
+            # llama.cppのidle loopと同じ設定を読み、両ランタイムで挙動を揃える。
+            from app.models_mgmt.runtime_policy import get_policy
+
+            policy = get_policy()
+            if not policy.idle_unload_enabled:
                 _activity.clear()
                 continue
-            limit = max(1, int(s.get("idle_unload_minutes", 30))) * 60
+            limit = max(1, int(policy.idle_unload_minutes)) * 60
             now = time.time()
             running = await running_models()
             current = {m["name"] for m in running}

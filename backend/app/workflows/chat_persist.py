@@ -27,7 +27,7 @@ from app.models import ChatMessage, ChatReference, Conversation, User
 from app.models import utcnow
 from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
-from app.workflows.chat_router import _keep_alive, _think_for
+from app.workflows.chat_router import _keep_alive, _resolve_think
 
 router = APIRouter(prefix="/chat", tags=["chat-persist"])
 
@@ -228,7 +228,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     thinking_mode = str(params.get("thinking", "off"))
     max_output_tokens = int(params["max_output_tokens"])
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_base_url
-    think = False if thinking_mode == "off" else _think_for(model)
+    think = _resolve_think(thinking_mode, model)
     provider = provider_for_base_url(base_url)
     request_id = job.id
     buf = {"content": "", "thinking": "", "last_ckpt": 0.0, "meta": {}}
@@ -295,7 +295,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         runtime_request = RuntimeChatRequest(
             base_url=base_url, model=model, messages=history,
             max_tokens=max_output_tokens, thinking=think,
-            disable_thinking=thinking_mode == "off", keep_alive=_keep_alive(),
+            disable_thinking=think is False, keep_alive=_keep_alive(),
         )
         async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
             if chunk.type == "thinking":

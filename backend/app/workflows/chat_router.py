@@ -65,6 +65,20 @@ def _think_for(model: str):
         return None
 
 
+def _resolve_think(mode: str, model: str) -> bool | str | None:
+    """共通設定(off/auto/on)とモデル個別thinkを解決する。
+
+    off は強制オフ。on はモデル個別設定（レベル等）があればそれを優先し、
+    なければ強制オン。auto はモデル個別設定 → モデル既定の順。
+    """
+    if mode == "off":
+        return False
+    model_think = _think_for(model)
+    if mode == "on" and model_think is None:
+        return True
+    return model_think
+
+
 async def _llm(
     messages: list[dict], base_url: str, model: str, api_key: str,
     temperature: float = 0.4, *, max_tokens: int = 2048,
@@ -120,7 +134,12 @@ async def chat_stream(websocket: WebSocket):
     # think: リクエスト指定 > モデル個別設定
     from app.models_mgmt import ollama as _ollama
 
-    think = _ollama.normalize_think(req.get("think")) if req.get("think") is not None else _think_for(model)
+    if req.get("think") is not None:
+        think = _ollama.normalize_think(req.get("think"))
+    else:
+        from app.models_mgmt.runtime_policy import get_policy
+
+        think = _resolve_think(get_policy().chat.reasoning, model)
     from app.models_mgmt.runtime_provider import (
         GenerationCancelled, RuntimeChatRequest, provider_for_base_url,
     )
@@ -129,7 +148,7 @@ async def chat_stream(websocket: WebSocket):
     request_id = f"legacy-ws-{id(websocket)}"
     runtime_request = RuntimeChatRequest(
         base_url=base, model=model, messages=messages, max_tokens=2048,
-        thinking=think, disable_thinking=think is None, keep_alive=_keep_alive(),
+        thinking=think, disable_thinking=think is False, keep_alive=_keep_alive(),
     )
     try:
         async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
