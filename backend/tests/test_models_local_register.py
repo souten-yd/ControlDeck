@@ -42,6 +42,38 @@ def test_suggest_model_name():
     assert suggest_model_name("日本語モデル.gguf") == "local-model"
 
 
+def test_list_models_matches_running_alias_and_digest(monkeypatch):
+    """tagsとpsの表記差があってもロード状態を失わない。"""
+    import asyncio
+
+    from app.models_mgmt import ollama
+
+    class TagsResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"models": [
+                {"name": "Qwen:latest", "digest": "ABC", "details": {}},
+                {"name": "digest-only:latest", "digest": "DEF", "details": {}},
+            ]}
+
+    async def tags(_path):
+        return TagsResponse()
+
+    async def running():
+        return [
+            {"model": "qwen", "size_vram": 10},
+            {"name": "renamed:latest", "digest": "def", "size_vram": 20},
+        ]
+
+    monkeypatch.setattr(ollama, "_get", tags)
+    monkeypatch.setattr(ollama, "running_models", running)
+    models = asyncio.run(ollama.list_models())
+    assert [(item["loaded"], item["vram"]) for item in models] == [(True, 10), (True, 20)]
+    assert ollama.normalize_model_name("hf.co/Org/Model") == "hf.co/org/model:latest"
+
+
 def test_gguf_scan_endpoint(admin_client):
     base = _sandbox / "gguf-scan"
     _mk(base / "a.gguf", 8)

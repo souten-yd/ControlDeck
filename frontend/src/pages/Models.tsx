@@ -18,7 +18,9 @@ interface Model {
   loaded: boolean;
   expires_at: string | null;
   vram: number | null;
+  digest?: string;
 }
+interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
 interface RuntimePolicy {
   selected_runtime: "ollama" | "llama.cpp";
@@ -63,6 +65,13 @@ interface RuntimeEnvironment {
 
 function gb(n: number): string {
   return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
+}
+
+function ollamaModelKey(value?: string): string {
+  const name = (value ?? "").trim().toLowerCase();
+  if (!name) return "";
+  const leaf = name.split("/").pop() ?? name;
+  return leaf.includes(":") ? name : `${name}:latest`;
 }
 
 interface JobInfo {
@@ -167,13 +176,14 @@ export default function ModelsPage() {
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
   const [llamaManagerOpen, setLlamaManagerOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [acting, setActing] = useState<string | null>(null);
 
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
   const selectedProvider = runtimeEnv?.policy.selected_runtime === "llama.cpp" ? "llama.cpp" : "ollama";
   const { data: models, isLoading } = useQuery({
     queryKey: ["models", selectedProvider],
-    queryFn: async () => {
+    queryFn: async (): Promise<Model[]> => {
       if (selectedProvider === "ollama") return api<Model[]>("/models");
       const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, string> }>>(`/models/providers/${selectedProvider}/models`);
       return common.map((m) => ({ id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "", family: "", loaded: !!m.loaded, expires_at: null, vram: null }));
@@ -181,15 +191,48 @@ export default function ModelsPage() {
     refetchInterval: 15000,
     enabled: !!runtimeEnv && (selectedProvider !== "ollama" || status?.available !== false),
   });
-  const refresh = () => qc.invalidateQueries({ queryKey: ["models", selectedProvider] });
+  // チャット等からOllamaが暗黙ロードされるため、重いmodel一覧とは別に軽量な/api/psを追跡する。
+  // これがないと最大15秒、インジケータと操作ボタンがロード前のまま残る。
+  const { data: runningModels } = useQuery({
+    queryKey: ["ollama-running"],
+    queryFn: () => api<RunningModel[]>("/models/running"),
+    enabled: selectedProvider === "ollama" && status?.available !== false,
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: "always",
+  });
+  const liveModels = models?.map((model) => {
+    if (selectedProvider !== "ollama" || runningModels === undefined) return model;
+    const key = ollamaModelKey(model.name);
+    const digest = model.digest?.toLowerCase();
+    const active = runningModels.find((item) =>
+      ollamaModelKey(item.name ?? item.model) === key
+      || (!!digest && item.digest?.toLowerCase() === digest),
+    );
+    return { ...model, loaded: !!active, expires_at: active?.expires_at ?? null, vram: active?.size_vram ?? null };
+  });
+  const refresh = async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["models", selectedProvider] }),
+      selectedProvider === "ollama" ? qc.invalidateQueries({ queryKey: ["ollama-running"] }) : Promise.resolve(),
+    ]);
+  };
 
   const act = async (id: string, action: "load" | "unload") => {
+    setActing(id);
     try {
       await api(`/models/providers/${selectedProvider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
+      if (selectedProvider === "ollama") {
+        qc.setQueryData<RunningModel[]>(["ollama-running"], (current = []) => action === "load"
+          ? [...current.filter((item) => ollamaModelKey(item.name ?? item.model) !== ollamaModelKey(id)), { name: id, model: id }]
+          : current.filter((item) => ollamaModelKey(item.name ?? item.model) !== ollamaModelKey(id)));
+      }
       show(action === "load" ? "ロードしました" : "アンロードしました");
-      refresh();
+      await refresh();
     } catch (e) {
       show(e instanceof Error ? e.message : "失敗しました", "error");
+    } finally {
+      setActing(null);
     }
   };
   const del = useMutation({
@@ -225,13 +268,13 @@ export default function ModelsPage() {
         </div>
       ) : isLoading ? (
         <Skeleton className="h-24" />
-      ) : !models || models.length === 0 ? (
+      ) : !liveModels || liveModels.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
           <p className="text-sm text-zinc-400">モデルがありません。「モデル取得」から追加してください。</p>
         </div>
       ) : (
         <ul className="space-y-3">
-          {models.map((m) => (
+          {liveModels.map((m) => (
             <li key={m.id ?? m.name} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-3">
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
@@ -244,8 +287,8 @@ export default function ModelsPage() {
                 </button>
                 {can("workflows.edit") && (
                   <>
-                    <button onClick={() => act(m.id ?? m.name, m.loaded ? "unload" : "load")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
-                      {m.loaded ? "アンロード" : "ロード"}
+                    <button disabled={acting === (m.id ?? m.name)} onClick={() => act(m.id ?? m.name, m.loaded ? "unload" : "load")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
+                      {acting === (m.id ?? m.name) ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
                     {selectedProvider === "ollama" && <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>}
                   </>
