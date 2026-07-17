@@ -744,13 +744,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* 入力欄 */}
-        <div className="safe-bottom relative min-w-0 max-w-full shrink-0 border-t border-zinc-200 bg-white px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900 sm:px-5">
-          {/* 生成統計（右下フローティング）: 思考状態 / tok/s / コンテキスト */}
-          {(genStats || busy) && (
-            <div className="pointer-events-none absolute -top-10 right-3 z-10 sm:right-5">
-              <GenStatsBadge stats={genStats} busy={busy} />
-            </div>
-          )}
+        <div className="safe-bottom min-w-0 max-w-full shrink-0 overflow-x-hidden border-t border-zinc-200 bg-white px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900 sm:px-5">
           <div className="mx-auto max-w-5xl">
           {effectiveMode === "run" && (
             <select
@@ -810,9 +804,14 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               <span className="hidden sm:inline">送信</span>
             </button>
           </div>
-          <div className="mt-1.5 flex min-h-4 items-center justify-between px-1 text-[11px] text-zinc-500" aria-live="polite">
-            <span>{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.phase === "listening" ? "聞いています。1.2秒の無音で送信します" : asr.phase === "transcribing" ? "音声を文字に変換中…" : busy ? "回答中はマイクをミュートしています" : "Enterで送信 · Shift+Enterで改行"}</span>
-            {asr.listening && <button onClick={() => asr.stop()} className="font-medium text-red-600">停止</button>}
+          {/* 左下: 音声入力中はその状態、それ以外は生成統計ピル（固定ヒント文は表示しない） */}
+          <div className="mt-1.5 flex min-h-4 items-center justify-between gap-2 px-1 text-[11px] text-zinc-500" aria-live="polite">
+            {asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
+              <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
+            ) : (
+              <GenStatsBadge stats={genStats} busy={busy} />
+            )}
+            {asr.listening && <button onClick={() => asr.stop()} className="shrink-0 font-medium text-red-600">停止</button>}
           </div>
           </div>
         </div>
