@@ -250,22 +250,47 @@ async def list_models() -> list[dict]:
     if r.status_code >= 400:
         raise OllamaError(f"一覧取得に失敗しました ({r.status_code})")
     models = r.json().get("models", [])
-    running = {m["name"]: m for m in await running_models()}
+    running_items = await running_models()
+    running_by_name: dict[str, dict] = {}
+    running_by_digest: dict[str, dict] = {}
+    for item in running_items:
+        for field in ("name", "model"):
+            key = normalize_model_name(item.get(field))
+            if key:
+                running_by_name[key] = item
+        digest = str(item.get("digest") or "").strip().lower()
+        if digest:
+            running_by_digest[digest] = item
     out = []
     for m in models:
         details = m.get("details", {})
+        name = str(m.get("name") or m.get("model") or "")
+        digest = str(m.get("digest") or "").strip().lower()
+        active = running_by_name.get(normalize_model_name(name))
+        if active is None and digest:
+            active = running_by_digest.get(digest)
         out.append({
-            "name": m.get("name", ""),
+            "name": name,
+            "digest": m.get("digest", ""),
             "size": m.get("size", 0),
             "modified_at": m.get("modified_at", ""),
             "family": details.get("family", ""),
             "parameter_size": details.get("parameter_size", ""),
             "quantization": details.get("quantization_level", ""),
-            "loaded": m.get("name") in running,
-            "expires_at": running.get(m.get("name"), {}).get("expires_at"),
-            "vram": running.get(m.get("name"), {}).get("size_vram"),
+            "loaded": active is not None,
+            "expires_at": (active or {}).get("expires_at"),
+            "vram": (active or {}).get("size_vram"),
         })
     return out
+
+
+def normalize_model_name(value: object) -> str:
+    """Ollamaのname/model表記を比較用に正規化する（省略tagはlatest）。"""
+    name = str(value or "").strip().lower()
+    if not name:
+        return ""
+    leaf = name.rsplit("/", 1)[-1]
+    return name if ":" in leaf else f"{name}:latest"
 
 
 async def running_models() -> list[dict]:

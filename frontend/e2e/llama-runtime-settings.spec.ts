@@ -56,3 +56,44 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   await sheet.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText("deep_research_ctx_size: 入力値を確認してください")).toBeVisible();
 });
+
+test("Ollama running state updates the indicator and lifecycle button", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+
+  await page.goto("/models");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+
+  let loaded = false;
+  await page.route("**/api/v1/models/runtime-environment", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ policy: { selected_runtime: "ollama", selected_backend: "rocm" }, runtimes: [] }),
+  }));
+  await page.route("**/api/v1/models/status", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ available: true, version: "test", base_url: "http://127.0.0.1:11434" }),
+  }));
+  await page.route("**/api/v1/models/running", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify(loaded ? [{ model: "qwen3.6-27b-q5_k_m", digest: "abc", size_vram: 123 }] : []),
+  }));
+  await page.route("**/api/v1/models", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify([{ name: "qwen3.6-27b-q5_k_m:latest", digest: "abc", size: 456, loaded: false, parameter_size: "27B", quantization: "Q5", family: "qwen", expires_at: null, vram: null }]),
+  }));
+
+  await page.goto("/models");
+  const row = page.getByRole("listitem").filter({ hasText: "qwen3.6-27b" });
+  await expect(row.locator('[title="未ロード"]')).toBeVisible();
+  await expect(row.getByRole("button", { name: "ロード", exact: true })).toBeVisible();
+
+  loaded = true;
+  await expect(row.locator('[title="ロード中"]')).toBeVisible({ timeout: 5_000 });
+  await expect(row.getByRole("button", { name: "アンロード", exact: true })).toBeVisible();
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(row.locator('[title="ロード中"]')).toBeVisible();
+  await expect(row.getByRole("button", { name: "アンロード", exact: true })).toBeVisible();
+});
