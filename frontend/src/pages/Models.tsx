@@ -20,16 +20,6 @@ interface Model {
   vram: number | null;
 }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
-interface Settings {
-  base_url: string;
-  idle_unload_enabled: boolean;
-  idle_unload_minutes: number;
-  default_keep_alive: string;
-  default_model: string;
-  kv_cache_type: string;
-  flash_attention: boolean;
-}
-interface OllamaEnv { flash_attention: boolean | null; kv_cache_type: string | null; source: string }
 interface RuntimePolicy {
   selected_runtime: "ollama" | "llama.cpp";
   selected_backend: "rocm" | "vulkan" | "";
@@ -41,10 +31,8 @@ interface RuntimePolicy {
   assistant_name: string;
   chat: { max_output_tokens: number; reasoning: "off" | "auto" | "on"; timeout_seconds: number };
   deep_research: {
-    context_auto_switch_enabled: boolean;
-    context_tokens: number;
     evidence_context_chars: number;
-    auto_resize_managed_runtime: boolean;
+    max_report_tokens: number;
     timeout_seconds: number;
   };
   amd_gpu: {
@@ -176,6 +164,8 @@ export default function ModelsPage() {
   const [pulling, setPulling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
+  const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
+  const [llamaManagerOpen, setLlamaManagerOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
@@ -214,10 +204,10 @@ export default function ModelsPage() {
         <h1 className="text-lg font-semibold">Model</h1>
         <div className="flex items-center gap-2">
           {can("workflows.edit") && (
-            <button onClick={() => setSettingsOpen(true)} aria-label="LLM ランタイム設定" title="LLM ランタイム設定（Ollama / llama.cpp）" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
+            <button onClick={() => setSettingsOpen(true)} aria-label="LLM 共通設定" title="LLM 共通設定" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
           )}
           {can("workflows.edit") && (
-            <button onClick={() => selectedProvider === "llama.cpp" ? setSettingsOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
+            <button onClick={() => selectedProvider === "llama.cpp" ? setLlamaManagerOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
               <IconPlus /> {selectedProvider === "llama.cpp" ? "GGUF登録" : "モデル取得"}
             </button>
           )}
@@ -245,7 +235,7 @@ export default function ModelsPage() {
             <li key={m.id ?? m.name} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-3">
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
-                <button onClick={() => selectedProvider === "llama.cpp" ? setSettingsOpen(true) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
+                <button onClick={() => selectedProvider === "llama.cpp" ? setLlamaDetail(m.id ?? m.name) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
                   <p className="truncate text-sm font-semibold">{m.name}</p>
                   <p className="num truncate text-xs text-zinc-400">
                     {selectedProvider === "llama.cpp" ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
@@ -267,8 +257,10 @@ export default function ModelsPage() {
       )}
 
       {pulling && <PullSheet onClose={() => setPulling(false)} onDone={refresh} />}
-      {settingsOpen && <SettingsSheet models={models ?? []} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
+      {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
+      {llamaManagerOpen && <BottomSheet title="llama.cpp GGUF登録" onClose={() => setLlamaManagerOpen(false)} wide><LlamaRuntimePanel registrationOnly /></BottomSheet>}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
       )}
@@ -504,6 +496,7 @@ interface ModelConfig {
   idle_exclude?: boolean;
   think?: string;
   num_ctx?: number;
+  deep_research_num_ctx?: number;
   num_predict?: number;
   num_gpu?: number;
   num_batch?: number;
@@ -658,6 +651,12 @@ function ModelConfigSection({ model }: { model: string }) {
         {/* よく使う */}
         <L label="常駐時間 keep_alive"><PresetOrCustom value={eff.keep_alive} presets={KEEPALIVE_PRESETS} numeric={false} placeholder="30m / 1h" onChange={(v) => set("keep_alive", v)} /></L>
         <L label="コンテキスト長 num_ctx（大きいほどVRAM増）"><PresetOrCustom value={eff.num_ctx} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("num_ctx", v)} /></L>
+        <L label="Deep Research専用CTX">
+          <PresetOrCustom value={eff.deep_research_num_ctx} presets={CTX_PRESETS} placeholder="例: 262144" onChange={(v) => set("deep_research_num_ctx", v)} />
+        </L>
+        <p className="text-[10px] leading-relaxed text-zinc-400">
+          未設定なら通常CTXをそのまま使用します。異なる場合はDeep Research中だけrequestへ適用し、完了後に通常CTXへ戻します。
+        </p>
         <L label="出力長 num_predict（最大生成トークン）"><PresetOrCustom value={eff.num_predict} presets={PREDICT_PRESETS} placeholder="512" onChange={(v) => set("num_predict", v)} /></L>
         {hasThinking && (
           <L label="思考（推論）think — オフで高速化・レベルで深さ調整">
@@ -716,20 +715,12 @@ function ModelConfigSection({ model }: { model: string }) {
   );
 }
 
-function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => void }) {
+function SettingsSheet({ onClose }: { onClose: () => void }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ["ollama-settings"], queryFn: () => api<Settings>("/models/settings") });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
-  const [cfg, setCfg] = useState<Settings | null>(null);
   const [policyCfg, setPolicyCfg] = useState<RuntimePolicy | null>(null);
-  const eff = cfg ?? data ?? null;
   const policy = policyCfg ?? runtimeEnv?.policy ?? null;
-  const save = useMutation({
-    mutationFn: () => api("/models/settings", { method: "PUT", json: eff }),
-    onSuccess: () => { show("設定を保存しました"); qc.invalidateQueries({ queryKey: ["ollama-settings"] }); onClose(); },
-    onError: (e) => show(e instanceof Error ? e.message : "保存失敗", "error"),
-  });
   const savePolicy = useMutation({
     mutationFn: (patch: Partial<RuntimePolicy>) => api<RuntimeEnvironment>("/models/runtime-policy", { method: "PUT", json: patch }),
     onSuccess: (next) => {
@@ -741,7 +732,7 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
     onError: (e) => show(e instanceof Error ? e.message : "ランタイム設定の適用に失敗", "error"),
   });
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  if (!eff || !policy || !runtimeEnv) return null;
+  if (!policy || !runtimeEnv) return null;
   const chooseRuntime = (item: RuntimeEnvironment["runtimes"][number]) => {
     if (!item.installed) return;
     savePolicy.mutate({
@@ -750,7 +741,7 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
     });
   };
   return (
-    <BottomSheet title="LLM ランタイム設定" onClose={onClose} wide>
+    <BottomSheet title="LLM 共通設定" onClose={onClose} wide>
       <div className="mb-4 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
         <p className="mb-2 text-xs font-semibold text-zinc-500">このPCで利用するランタイム</p>
         <p className="mb-2 text-[10px] text-zinc-400">{runtimeEnv.platform} · {runtimeEnv.gpu} GPU。利用可能な構成だけを表示しています。</p>
@@ -798,99 +789,24 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
           </L>
         </div>
         <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50/40 p-3 dark:border-violet-900 dark:bg-violet-950/20">
-          <label className="flex items-center justify-between gap-3">
-            <span>
-              <span className="block text-xs font-semibold text-violet-700 dark:text-violet-300">Deep Research専用CTX</span>
-              <span className="mt-0.5 block text-[10px] text-zinc-500">実行時だけ大規模contextを要求します</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={policy.deep_research.context_auto_switch_enabled}
-              onChange={(e) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, context_auto_switch_enabled: e.target.checked } })}
-              className="h-4 w-4"
-            />
-          </label>
-          {policy.deep_research.context_auto_switch_enabled && (
-            <>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <L label="要求CTX token">
-                  <PresetOrCustom
-                    value={policy.deep_research.context_tokens}
-                    presets={CTX_PRESETS}
-                    placeholder="262144"
-                    onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, context_tokens: Number(v ?? 262144) } })}
-                  />
-                </L>
-                <L label="根拠context上限（文字）">
-                  <PresetOrCustom
-                    value={policy.deep_research.evidence_context_chars}
-                    presets={[30000, 60000, 90000, 150000, 300000].map((v) => ({ v, label: v.toLocaleString() }))}
-                    placeholder="90000"
-                    onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, evidence_context_chars: Number(v ?? 90000) } })}
-                  />
-                </L>
-              </div>
-              <label className="flex items-center justify-between rounded-lg border border-violet-200 px-2.5 py-2 dark:border-violet-900">
-                <span className="text-[11px]">管理中llama.cppを必要時に再ロード</span>
-                <input
-                  type="checkbox"
-                  checked={policy.deep_research.auto_resize_managed_runtime}
-                  onChange={(e) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, auto_resize_managed_runtime: e.target.checked } })}
-                  className="h-4 w-4"
-                />
-              </label>
-              <L label="Deep Research生成timeout（秒）">
-                <PresetOrCustom
-                  value={policy.deep_research.timeout_seconds}
-                  presets={[300, 600, 1200, 1800, 3600].map((v) => ({ v, label: `${v}秒` }))}
-                  placeholder="1800"
-                  onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, timeout_seconds: Number(v ?? 1800) } })}
-                />
-              </L>
-              <p className="text-[10px] text-zinc-500">Ollamaはrequestのnum_ctxへ適用。管理中llama.cppはCTX不足時に再ロードし、失敗時は元設定へ復元します。</p>
-            </>
-          )}
+          <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">Deep Research共通設定</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <L label="統合する根拠文字数上限">
+              <PresetOrCustom value={policy.deep_research.evidence_context_chars} presets={[30000, 60000, 90000, 150000, 300000].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="90000" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, evidence_context_chars: Number(v ?? 90000) } })} />
+            </L>
+            <L label="レポート総出力token上限">
+              <PresetOrCustom value={policy.deep_research.max_report_tokens} presets={[8192, 16384, 24576, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="32768" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, max_report_tokens: Number(v ?? 32768) } })} />
+            </L>
+            <L label="Deep Research生成timeout（秒）">
+              <PresetOrCustom value={policy.deep_research.timeout_seconds} presets={[300, 600, 1200, 1800, 3600].map((v) => ({ v, label: `${v}秒` }))} placeholder="1800" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, timeout_seconds: Number(v ?? 1800) } })} />
+            </L>
+          </div>
+          <p className="text-[10px] text-zinc-500">専用CTXは全体へ強制せず、Ollama / llama.cppそれぞれのモデル個別設定で指定します。</p>
         </div>
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
         <button onClick={() => savePolicy.mutate(policy)} disabled={savePolicy.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white disabled:opacity-40">共通設定を適用</button>
       </div>
 
-      {policy.selected_runtime === "llama.cpp" ? (
-        <LlamaRuntimePanel />
-      ) : (
-      <div className="space-y-3">
-        <L label="Ollama エンドポイント">
-          <input value={eff.base_url} onChange={(e) => setCfg({ ...eff, base_url: e.target.value })} className={`${input} font-mono text-xs`} placeholder="http://127.0.0.1:11434" />
-        </L>
-        <L label="既定モデル（LLM ノードの候補に使用）">
-          <select value={eff.default_model} onChange={(e) => setCfg({ ...eff, default_model: e.target.value })} className={input}>
-            <option value="">未設定</option>
-            {models.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
-          </select>
-        </L>
-        <L label="ロード時の保持時間 (keep_alive)">
-          <input value={eff.default_keep_alive} onChange={(e) => setCfg({ ...eff, default_keep_alive: e.target.value })} className={`${input} font-mono text-xs`} placeholder="5m / 30m / -1(無期限)" />
-        </L>
-        <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 dark:border-zinc-700">
-          <span className="text-sm">アイドル時に自動アンロード</span>
-          <input type="checkbox" checked={eff.idle_unload_enabled} onChange={(e) => setCfg({ ...eff, idle_unload_enabled: e.target.checked })} className="h-5 w-5 accent-current" />
-        </label>
-        {eff.idle_unload_enabled && (
-          <L label="アイドル判定（分）— この時間 API 呼び出しが無ければアンロード">
-            <input type="number" value={eff.idle_unload_minutes} onChange={(e) => setCfg({ ...eff, idle_unload_minutes: Number(e.target.value) })} className={input} min={1} max={1440} />
-          </L>
-        )}
-        <p className="text-xs text-zinc-400">
-          モデルは API から呼び出されると自動ロードされます（Ollama 標準）。上の設定で未使用時の解放を制御できます。
-        </p>
-
-        <KvCacheSettings eff={eff} setCfg={setCfg} input={input} />
-
-        <button onClick={() => save.mutate()} disabled={save.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-          {save.isPending ? "保存中..." : "保存"}
-        </button>
-      </div>
-      )}
     </BottomSheet>
   );
 }
@@ -962,57 +878,6 @@ function AmdGpuProfilePanel({ env, policy, onChange }: {
   );
 }
 
-/** KV キャッシュ量子化 / Flash Attention（Ollama サーバー全体・環境変数）。 */
-function KvCacheSettings({ eff, setCfg, input }: { eff: Settings; setCfg: (s: Settings) => void; input: string }) {
-  const { data: env } = useQuery({ queryKey: ["ollama-env"], queryFn: () => api<OllamaEnv>("/models/ollama-env") });
-  // 保存値と実際の稼働環境がずれていれば適用コマンドを案内する
-  const applied =
-    env && (env.kv_cache_type ?? "f16") === eff.kv_cache_type &&
-    (env.flash_attention ?? false) === eff.flash_attention;
-  const needsFlash = eff.kv_cache_type !== "f16" && !eff.flash_attention;
-  return (
-    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-      <p className="mb-2 text-xs font-semibold text-zinc-500">KV キャッシュ量子化（サーバー全体・VRAM 削減）</p>
-      <div className="space-y-2.5">
-        <L label="キャッシュ精度 OLLAMA_KV_CACHE_TYPE">
-          <select value={eff.kv_cache_type} onChange={(e) => setCfg({ ...eff, kv_cache_type: e.target.value })} className={input}>
-            <option value="f16">f16（既定・最高精度）</option>
-            <option value="q8_0">q8_0（VRAM 約1/2・品質ほぼ同等・推奨）</option>
-            <option value="q4_0">q4_0（VRAM 約1/4・品質やや低下）</option>
-          </select>
-        </L>
-        <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
-          <span className="text-xs">Flash Attention<span className="block text-[10px] text-zinc-400">量子化(q8_0/q4_0)を効かせるには必須</span></span>
-          <input type="checkbox" checked={eff.flash_attention} onChange={(e) => setCfg({ ...eff, flash_attention: e.target.checked })} className="h-4 w-4" />
-        </label>
-        {needsFlash && (
-          <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-            量子化には Flash Attention が必要です。上のスイッチを ON にしてください。
-          </p>
-        )}
-        <div className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
-          <p className="mb-1">
-            現在の稼働状態: {env?.flash_attention == null && env?.kv_cache_type == null
-              ? "既定（f16 / Flash Attention 無効）"
-              : `${env?.kv_cache_type ?? "f16"} / Flash Attention ${env?.flash_attention ? "有効" : "無効"}`}
-            {applied ? " ✓ 一致" : ""}
-          </p>
-          {!applied && (
-            <>
-              <p className="mb-1">これは Ollama サーバー（root 管理）の環境変数です。保存後、下記を実行して適用してください:</p>
-              <pre className="overflow-x-auto whitespace-pre rounded bg-zinc-100 p-1.5 font-mono text-[10px] dark:bg-zinc-950">{`sudo systemctl edit ollama
-# [Service] に追記:
-Environment="OLLAMA_FLASH_ATTENTION=${eff.flash_attention ? "1" : "0"}"
-Environment="OLLAMA_KV_CACHE_TYPE=${eff.kv_cache_type}"
-sudo systemctl restart ollama`}</pre>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Row({ k, v }: { k: string; v: string }) {
   return (
     <div className="flex gap-4 py-2">
@@ -1039,6 +904,7 @@ interface LlamaInstanceConfig {
   last_used_at?: string;
   n_gpu_layers: number;
   ctx_size: number;
+  deep_research_ctx_size: number;
   n_parallel: number;
   flash_attn: boolean;
   n_predict: number;
@@ -1064,14 +930,22 @@ interface LlamaInstanceConfig {
 
 const LLAMA_INSTANCE_WRITE_KEYS = [
   "model_path", "port", "alias", "auto_start", "idle_exclude",
-  "n_gpu_layers", "ctx_size", "n_parallel", "flash_attn", "n_predict",
+  "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
-function llamaInstanceWriteBody(config: LlamaInstanceConfig): Record<string, unknown> {
-  return Object.fromEntries(LLAMA_INSTANCE_WRITE_KEYS.map((key) => [key, config[key]]));
+const LLAMA_PARAMETER_WRITE_KEYS = [
+  "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
+  "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
+  "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
+  "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
+] as const satisfies readonly (keyof LlamaInstanceConfig)[];
+
+function llamaInstanceWriteBody(config: LlamaInstanceConfig, includeIdentity: boolean): Record<string, unknown> {
+  const keys = includeIdentity ? LLAMA_INSTANCE_WRITE_KEYS : LLAMA_PARAMETER_WRITE_KEYS;
+  return Object.fromEntries(keys.map((key) => [key, config[key]]));
 }
 
 interface LlamaStatus {
@@ -1094,12 +968,31 @@ interface LlamaStatus {
 
 const BACKEND_LABEL: Record<string, string> = { rocm: "ROCm (AMD)", vulkan: "Vulkan (汎用GPU)", cuda: "CUDA (NVIDIA)" };
 
-/** llama.cpp ランタイムの管理 UI（LLM ランタイム設定タブ内で使う中身）。 */
-function LlamaRuntimePanel() {
+function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data: st } = useQuery({ queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status") });
+  const instance = st?.instances.find((item) => item.alias === alias);
+  return (
+    <BottomSheet title={`${alias} · モデル個別設定`} onClose={onClose} wide>
+      {!instance ? <p className="text-xs text-zinc-400">読み込み中...</p> : (
+        <LlamaInstanceControls
+          initial={instance}
+          onChanged={() => {
+            qc.invalidateQueries({ queryKey: ["llama-status"] });
+            qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] });
+          }}
+        />
+      )}
+    </BottomSheet>
+  );
+}
+
+/** llama.cpp GGUFの新規登録。共通設定や既存モデル個別設定は扱わない。 */
+function LlamaRuntimePanel({ registrationOnly = false }: { registrationOnly?: boolean }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(registrationOnly);
   const [deleting, setDeleting] = useState<string | null>(null);
   const { data: job } = useJob(jobId);
   const { data: st } = useQuery({
@@ -1148,7 +1041,19 @@ function LlamaRuntimePanel() {
         </div>
       </details>}
       {job && (job.status === "running" || job.status === "queued") && <JobProgress job={job} />}
-      {st.installed && (
+      {st.installed && registrationOnly && creating && (
+        <LlamaInstanceControls
+          key="new"
+          initial={{ ...st.instance, model_path: "", alias: "", port: Math.max(8080, ...st.instances.map((item) => item.port)) + (st.instances.length ? 1 : 0), auto_start: false, idle_exclude: false }}
+          isNew
+          onCancel={() => setCreating(false)}
+          onChanged={() => { setCreating(false); qc.invalidateQueries({ queryKey: ["llama-status"] }); qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] }); }}
+        />
+      )}
+      {st.installed && registrationOnly && !creating && (
+        <p className="rounded-xl bg-emerald-50 p-3 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">GGUF設定を登録しました。この画面を閉じるとモデル一覧へ反映されます。</p>
+      )}
+      {st.installed && !registrationOnly && (
         <div className="space-y-2.5">
           <div className="flex gap-2">
             <select
@@ -1228,7 +1133,7 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
     try {
       await api(isNew ? "/models/llama/instances" : `/models/llama/instances/${encodeURIComponent(originalAlias)}`, {
         method: isNew ? "POST" : "PUT",
-        json: llamaInstanceWriteBody(cfg),
+        json: llamaInstanceWriteBody(cfg, isNew),
       });
       if (start) {
         await api(`/models/providers/llama.cpp/models/${encodeURIComponent(cfg.alias)}/load`, { method: "POST", json: {} });
@@ -1250,17 +1155,23 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
         <p className="text-xs font-semibold text-zinc-500">{isNew ? "新しい" : cfg.alias} · llama.cppモデル個別設定</p>
         <p className="mt-0.5 text-[10px] text-zinc-400">GGUFごとに必要なCTX・KV・MTP・MoE設定を保存し、起動時に反映します。</p>
       </div>
-      <div className="flex gap-1.5">
-        <input value={cfg.model_path} onChange={(e) => set("model_path", e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
-        <button onClick={() => setPickerOpen(true)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
-      </div>
+      {isNew && <>
+        <div className="flex gap-1.5">
+          <input value={cfg.model_path} onChange={(e) => set("model_path", e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+          <button onClick={() => setPickerOpen(true)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
+          <L label="待受port"><input type="number" min={1024} max={65535} value={cfg.port} onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} /></L>
+        </div>
+      </>}
       <div className="grid grid-cols-2 gap-2">
-        <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
-        <L label="待受port"><input type="number" min={1024} max={65535} value={cfg.port} onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} /></L>
         <L label="コンテキスト長（CTX）"><PresetOrCustom value={cfg.ctx_size} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("ctx_size", Number(v ?? 4096))} /></L>
+        <L label="Deep Research専用CTX"><PresetOrCustom value={cfg.deep_research_ctx_size || undefined} presets={CTX_PRESETS} placeholder="例: 262144" onChange={(v) => set("deep_research_ctx_size", Number(v ?? 0))} /></L>
         <L label="最大出力トークン"><PresetOrCustom value={cfg.n_predict} presets={PREDICT_PRESETS} placeholder="2048" onChange={(v) => set("n_predict", Number(v ?? 2048))} /></L>
         <L label="GPUオフロード層"><PresetOrCustom value={cfg.n_gpu_layers} presets={GPU_PRESETS.map((p) => p.v === -1 ? { ...p, v: 999, label: "全部 (999)" } : p)} placeholder="999" onChange={(v) => set("n_gpu_layers", Number(v ?? 999))} /></L>
       </div>
+      <p className="text-[10px] leading-relaxed text-zinc-400">Deep Research専用CTXが通常CTXと異なる場合、開始前に再ロードし、完了・失敗後は通常CTXへ自動復元します。</p>
       {flags.has("--flash-attn") && <Toggle label="Flash Attention" hint="KVキャッシュ削減と速度改善。量子化KVでは有効化を推奨" value={cfg.flash_attn} onChange={(value) => set("flash_attn", value)} />}
 
       {(flags.has("--cache-type-k") || flags.has("--cache-type-v")) && <div className="grid grid-cols-2 gap-2">

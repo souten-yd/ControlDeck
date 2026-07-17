@@ -55,6 +55,7 @@ class MetricsCollector:
         self._last_disk, self._last_net, self._last_time = disk_io, net_io, now
 
         cpu_temp = None
+        cpu_fan_rpm = None
         try:
             temps = psutil.sensors_temperatures()
             for key in ("k10temp", "coretemp", "zenpower", "cpu_thermal"):
@@ -62,6 +63,19 @@ class MetricsCollector:
                     cpu_temp = temps[key][0].current
                     break
         except Exception:
+            pass
+        try:
+            # chip/labelがCPUを明示するセンサーだけを採用する。筐体/PSU/GPU fanを
+            # CPU fanとして誤表示しない。不明な環境はN/Aのままにする。
+            for chip, fans in psutil.sensors_fans().items():
+                for fan in fans:
+                    identity = f"{chip} {fan.label}".casefold().replace(" ", "_")
+                    if any(token in identity for token in ("cpu_fan", "cpufan", "cpu_opt")):
+                        cpu_fan_rpm = int(fan.current) if fan.current is not None else None
+                        break
+                if cpu_fan_rpm is not None:
+                    break
+        except (AttributeError, OSError, RuntimeError):
             pass
 
         gpu_sample = None
@@ -84,6 +98,7 @@ class MetricsCollector:
                 "load": [load1, load5, load15],
                 "freq_mhz": freq.current if freq else None,
                 "temperature_c": cpu_temp,
+                "fan_rpm": cpu_fan_rpm,
                 "cores": len(per_cpu),
             },
             "memory": {

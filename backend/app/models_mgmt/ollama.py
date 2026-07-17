@@ -63,7 +63,7 @@ OPT_KEYS = OPT_INT | OPT_FLOAT
 THINK_VALUES = ("off", "on", "low", "medium", "high", "max")
 
 # モデル個別設定として保存できる全キー（options + 運用フラグ + think）
-MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude", "think"}
+MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude", "think", "deep_research_num_ctx"}
 
 
 def normalize_think(value) -> bool | str | None:
@@ -129,6 +129,14 @@ def set_model_config(model: str, patch: dict) -> dict:
         # 空/None/False はクリア（既定へ戻す）
         if v in (None, "", False):
             cur.pop(k, None)
+            continue
+        if k == "deep_research_num_ctx":
+            try:
+                tokens = int(v)
+            except (ValueError, TypeError):
+                continue
+            if 0 < tokens <= 1_048_576:
+                cur[k] = tokens
             continue
         if k in OPT_INT:
             try:

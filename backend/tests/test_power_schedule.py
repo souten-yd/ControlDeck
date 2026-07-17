@@ -60,6 +60,22 @@ def test_power_schedule_api_uses_persistent_backend(admin_client, monkeypatch):
     assert cancelled == [True]
 
 
+def test_platform_reload_is_scheduled_as_user_systemd_unit(admin_client, monkeypatch):
+    from app.power import router
+
+    calls = []
+    monkeypatch.setattr(router.subprocess, "run", lambda argv, **kwargs: (
+        calls.append((argv, kwargs)) or SimpleNamespace(returncode=0, stdout="", stderr="")
+    ))
+    response = admin_client.post("/api/v1/system/platform/reload", headers=CSRF_HEADERS)
+    assert response.status_code == 202, response.text
+    argv, kwargs = calls[0]
+    assert argv[:2] == ["systemd-run", "--user"]
+    assert argv[-4:] == ["/usr/bin/systemctl", "--user", "restart", "control-deck-web.service"]
+    assert kwargs["timeout"] == 10
+    assert "/bin/sh" not in argv
+
+
 def test_power_worker_records_failure(monkeypatch):
     from app.power import worker
 

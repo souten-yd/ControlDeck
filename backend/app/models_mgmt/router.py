@@ -506,6 +506,7 @@ class LlamaInstanceBody(BaseModel):
     port: int | None = Field(default=None, ge=1024, le=65535)
     n_gpu_layers: int | None = Field(default=None, ge=0, le=999)
     ctx_size: int | None = Field(default=None, ge=0, le=1048576)
+    deep_research_ctx_size: int | None = Field(default=None, ge=0, le=1048576)
     n_parallel: int | None = Field(default=None, ge=1, le=64)
     flash_attn: bool | None = None
     n_predict: int | None = Field(default=None, ge=-1, le=1048576)

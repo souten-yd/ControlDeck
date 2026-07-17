@@ -85,6 +85,7 @@ export default function AppLayout() {
   );
   const [actionOpen, setActionOpen] = useState(false);
   const [powerAction, setPowerAction] = useState<"reboot" | "shutdown" | null>(null);
+  const [platformReloading, setPlatformReloading] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -125,6 +126,31 @@ export default function AppLayout() {
       show(e instanceof Error ? e.message : "電源操作に失敗しました", "error");
     }
     setPowerAction(null);
+  };
+
+  const reloadPlatform = async () => {
+    setActionOpen(false);
+    setPlatformReloading(true);
+    try {
+      await api("/system/platform/reload", { method: "POST" });
+      show("Control Deckを再読み込みしています…", "info");
+      await new Promise((resolve) => window.setTimeout(resolve, 1800));
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        try {
+          const response = await fetch("/api/v1/health", { cache: "no-store", credentials: "same-origin" });
+          if (response.ok) {
+            window.location.reload();
+            return;
+          }
+        } catch { /* service再起動中 */ }
+        await new Promise((resolve) => window.setTimeout(resolve, 700));
+      }
+      throw new Error("サービスの復帰確認がタイムアウトしました。ブラウザを手動更新してください");
+    } catch (error) {
+      setPlatformReloading(false);
+      show(error instanceof Error ? error.message : "再読み込みに失敗しました", "error");
+    }
   };
 
   const logout = async () => {
@@ -372,6 +398,11 @@ export default function AppLayout() {
               <div className="my-3 border-t border-zinc-200 dark:border-zinc-800" />
               <p className="mb-1 px-1 text-xs text-zinc-400">電源</p>
               <div className="space-y-1">
+                <ActionItem
+                  icon={<IconRestartPower />}
+                  label={platformReloading ? "Control Deckを再読み込み中…" : "Control Deckを再読み込み"}
+                  onClick={reloadPlatform}
+                />
                 <ActionItem
                   icon={<IconRestartPower />}
                   label="PC を再起動"

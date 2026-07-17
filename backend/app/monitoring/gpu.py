@@ -26,7 +26,7 @@ def _run(argv: list[str], timeout: float = 5.0) -> str | None:
 
 class GpuSample(dict):
     """keys: name, utilization_percent, vram_used_bytes, vram_total_bytes,
-    temperature_c, hotspot_c, power_watts, power_cap_watts, fan_percent, clock_mhz"""
+    temperature_c, hotspot_c, power_watts, power_cap_watts, fan_percent, fan_rpm, clock_mhz"""
 
 
 class BaseProvider:
@@ -78,6 +78,7 @@ class AmdSmiProvider(BaseProvider):
                 power_watts=num(power, "socket_power", "average_socket_power"),
                 power_cap_watts=num(power, "power_cap"),
                 fan_percent=num(fan, "usage"),
+                fan_rpm=num(fan, "speed", "rpm"),
                 clock_mhz=num(gfx0, "clk") if gfx0 else None,
             )
             # すべて None ならパース失敗として扱い、次のプロバイダーへ譲る
@@ -124,6 +125,7 @@ class RocmSmiProvider(BaseProvider):
                 ),
                 power_cap_watts=fnum("Max Graphics Package Power (W)"),
                 fan_percent=None,
+                fan_rpm=None,
                 clock_mhz=None,
             )
         except (json.JSONDecodeError, StopIteration, TypeError) as e:
@@ -189,6 +191,7 @@ class SysfsAmdProvider(BaseProvider):
             power_watts=self._hwmon_num("power1_average", 1e-6),
             power_cap_watts=self._hwmon_num("power1_cap", 1e-6),
             fan_percent=None,
+            fan_rpm=self._hwmon_num("fan1_input"),
             clock_mhz=None,
         )
 
@@ -221,6 +224,7 @@ class NvidiaSmiProvider(BaseProvider):
                 power_watts=num(5),
                 power_cap_watts=num(6),
                 fan_percent=num(7),
+                fan_rpm=None,
                 clock_mhz=num(8),
             )
         except (IndexError, ValueError) as e:
