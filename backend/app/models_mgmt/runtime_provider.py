@@ -157,8 +157,11 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         }
         if request.keep_alive is not None:
             payload["keep_alive"] = request.keep_alive
-        if request.disable_thinking:
+        if request.disable_thinking or request.thinking is False:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif request.thinking is True or isinstance(request.thinking, str):
+            # 共通設定「オン」/レベル指定。llama.cpp等のjinjaテンプレートへ思考有効を明示する
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
         if request.response_format is not None:
             payload["response_format"] = self._response_format(request.response_format)
         return payload
