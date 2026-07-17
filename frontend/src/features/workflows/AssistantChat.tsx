@@ -28,14 +28,25 @@ const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: 
   { id: "run", icon: "▶", label: "フロー実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
 ];
 
-interface SourceItem { title: string; url: string; snippet?: string; source?: string }
+interface SourceItem { reference_id?: string; title: string; url: string; snippet?: string; source?: string; kind?: string }
 interface Quality { score: number; label: string; breakdown: Record<string, number>; errors: string[]; warnings: string[] }
 interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string; quality?: Quality }
 interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean; quality?: Quality }
 interface ConversationSummary { id: string; title: string; updated_at: string }
 interface ResearchStep { tool: "web" | "academic"; query: string }
 interface AssistantPlan { mode: "chat" | "web" | "academic" | "deep" | "research"; reason: string; steps: ResearchStep[]; max_iterations: number; decided_by: "rule" | "llm" | "fallback" }
-interface ResearchProgress { phase: string; label: string; iteration: number }
+interface ResearchProgress { phase: string; label: string; iteration: number; details?: Record<string, unknown> }
+interface DeepResearchResult {
+  rounds: number;
+  search_calls: number;
+  sources_discovered: number;
+  sources_selected: number;
+  repositories_inspected: number;
+  coverage?: { coverage_score?: number; gaps?: string[]; contradictions?: string[] };
+  citation_metrics?: { citation_coverage?: number; cited_sources?: number; report_chars?: number; revised?: boolean };
+  coverage_limits?: string[];
+  context_profile?: { enabled?: boolean; requested_tokens?: number; applied?: boolean; runtime?: string; reason?: string };
+}
 
 interface PersistMsg {
   id: string;
@@ -45,7 +56,7 @@ interface PersistMsg {
   status: string;
   job_id: string | null;
   model: string;
-  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[] };
+  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult };
 }
 
 interface Msg {
@@ -63,6 +74,7 @@ interface Msg {
   connectionState?: "live" | "reconnecting";
   plan?: AssistantPlan;
   progress?: ResearchProgress[];
+  research?: DeepResearchResult;
 }
 
 const LS_KEY = "cd-assistant-settings";
@@ -139,6 +151,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           kind: m.meta?.sources?.length ? "sources" : "text",
           plan: m.meta?.plan,
           progress: m.meta?.progress,
+          research: m.meta?.research,
         }));
         if (restored.length > 0) setMessages(restored);
         // 生成中のまま残っているメッセージを購読再開
@@ -268,7 +281,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
           else if (d.type === "progress") patchMsg((m) => ({
-            ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration }],
+            ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration, details: d.details }],
           }));
           else if (d.type === "done") {
             receivedDone = true;
@@ -316,6 +329,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       kind: message.meta?.sources?.length ? "sources" : "text",
       plan: message.meta?.plan,
       progress: message.meta?.progress,
+      research: message.meta?.research,
     }));
     localStorage.setItem(LS_CONV, id);
     setConvId(id);
@@ -695,7 +709,16 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           )}
           <div className="mx-auto max-w-5xl space-y-4">
             {messages.map((m, i) => (
-              <MessageBubble key={m.messageId ?? i} msg={m} onRegister={registerOnly} onAutoBuild={autoBuild} onOpen={(id) => { onClose(); navigate(`/workflows/${id}`); }} />
+              <MessageBubble
+                key={m.messageId ?? i}
+                msg={m}
+                onRegister={registerOnly}
+                onAutoBuild={autoBuild}
+                onOpen={(id) => { onClose(); navigate(`/workflows/${id}`); }}
+                onReference={(referenceId) => {
+                  setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
+                }}
+              />
             ))}
           </div>
         </div>
@@ -778,11 +801,13 @@ function MessageBubble({
   onRegister,
   onAutoBuild,
   onOpen,
+  onReference,
 }: {
   msg: Msg;
   onRegister: (g: GenData) => void;
   onAutoBuild: (g: GenData, useExisting: boolean) => void;
   onOpen: (id: number) => void;
+  onReference: (referenceId: string) => void;
 }) {
   if (msg.role === "user") {
     return (
@@ -799,7 +824,7 @@ function MessageBubble({
         {msg.connectionState === "reconnecting" && (
           <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400" role="status">接続を復旧しています。生成はサーバー側で継続中です…</p>
         )}
-        {(msg.plan || (msg.progress && msg.progress.length > 0)) && (
+        {(msg.plan || msg.research || (msg.progress && msg.progress.length > 0)) && (
           <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20" open={msg.streaming}>
             <summary className="cursor-pointer text-xs font-semibold text-accent-700 dark:text-accent-300">
               🧭 {msg.plan?.reason ?? "調査計画"}{msg.streaming ? "（実行中）" : ""}
@@ -811,6 +836,20 @@ function MessageBubble({
             )}
             {msg.progress && msg.progress.length > 0 && (
               <p className="mt-2 text-[11px] text-zinc-500">最新: {msg.progress[msg.progress.length - 1].label}</p>
+            )}
+            {msg.research && (
+              <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] text-zinc-600 dark:text-zinc-300 sm:grid-cols-4">
+                <span>探索 {msg.research.rounds} round</span>
+                <span>検索 {msg.research.search_calls} 回</span>
+                <span>発見 {msg.research.sources_discovered} 件</span>
+                <span>採用 {msg.research.sources_selected} 件</span>
+                {msg.research.repositories_inspected > 0 && <span>GitHub {msg.research.repositories_inspected} repo</span>}
+                {msg.research.coverage?.coverage_score !== undefined && <span>coverage {msg.research.coverage.coverage_score}%</span>}
+                {msg.research.citation_metrics?.citation_coverage !== undefined && <span>引用段落 {Math.round(msg.research.citation_metrics.citation_coverage * 100)}%</span>}
+                {msg.research.context_profile?.requested_tokens && (
+                  <span>CTX {Math.round(msg.research.context_profile.requested_tokens / 1024)}K {msg.research.context_profile.applied ? "適用" : "未適用"}</span>
+                )}
+              </div>
             )}
           </details>
         )}
@@ -833,14 +872,31 @@ function MessageBubble({
         {/* 出典リスト */}
         {msg.sources && msg.sources.length > 0 && (
           <div className="rounded-xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900">
-            <p className="mb-1 text-[11px] font-semibold text-zinc-400">出典（{msg.sources.length} 件）</p>
+            <p className="mb-1 text-[11px] font-semibold text-zinc-400">会話内文献（{msg.sources.length} 件）</p>
             <ol className="space-y-1">
               {msg.sources.map((s, i) => (
-                <li key={i} className="truncate text-xs">
-                  <a href={s.url} target="_blank" rel="noreferrer" className="text-accent-600 hover:underline dark:text-accent-400">
-                    {s.title || s.url}
-                  </a>
-                  {s.source && <span className="ml-1 text-zinc-400">({s.source})</span>}
+                <li key={s.reference_id ?? i} className="flex min-w-0 items-center gap-1.5 text-xs">
+                  {s.reference_id && (
+                    <span className="shrink-0 rounded-md bg-accent-50 px-1.5 py-0.5 font-mono font-semibold text-accent-700 dark:bg-accent-950/50 dark:text-accent-300">
+                      [{s.reference_id}]
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    <a href={s.url} target="_blank" rel="noreferrer" className="text-accent-600 hover:underline dark:text-accent-400">
+                      {s.title || s.url}
+                    </a>
+                    {s.source && <span className="ml-1 text-zinc-400">({s.source})</span>}
+                  </span>
+                  {s.reference_id && (
+                    <button
+                      type="button"
+                      onClick={() => onReference(s.reference_id!)}
+                      className="h-9 shrink-0 rounded-md px-1.5 font-medium text-zinc-500 hover:bg-zinc-100 hover:text-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:hover:bg-zinc-800 dark:hover:text-accent-300"
+                      aria-label={`${s.reference_id}を入力欄で参照`}
+                    >
+                      参照
+                    </button>
+                  )}
                 </li>
               ))}
             </ol>

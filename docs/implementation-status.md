@@ -2,6 +2,54 @@
 
 最終更新: 2026-07-17
 
+## AIアシスタント Deep Research超強化（2026-07-17）
+
+- 数件の資料提示で停止していた原因を、固定3クエリ・本文8件・単発要約・最終生成HTTP timeout 300秒と特定。
+  `docs/design-deep-research-engine.md`へ調査状態機械、source portfolio、有限資源、引用品質、CTX切替を詳細設計した
+- LLMによる調査計画から、最低2/最大4ラウンドでcoverage、未解決点、矛盾を評価し、検索語をpivotするagentic loopへ変更。
+  最大24検索、120候補、本文32件、最終根拠36件、根拠context 90,000文字、レポート8,192 tokenとし、
+  進捗と品質指標をserver job/message metaへcheckpointする
+- Webに加えてOpenAlex/Crossref/arXiv/Europe PMC/DBLP/DOAJ、PatentsView特許、SEC EDGAR、直接URL、
+  HTML/text/PDFをsource portfolio化。失敗sourceは調査全体を落とさずcoverage limitへ明示する。
+  PatentsView keyは暗号化Workflow Secret `PATENTSVIEW_API_KEY`を再利用し、ログへ出さない
+- GitHub URLを検出するとrepository metadata、recursive tree、README/manifest、主要source、test、CIを取得。
+  Python ASTとTypeScript/JavaScriptの保守的静的抽出で関数、クラス、変数、import/export、API route、
+  観測可能な呼び出しを索引化し、構造・データフロー・既存機能の統合可能性をpath付きで評価する
+- 引用番号の実在、引用資料数、根拠付き段落率、本文長を決定論的に評価し、coverage 55%未満等は根拠を増やさず
+  1回だけ引用修正する。最終資料は会話内文献ID `R1…`へ変換し、後続会話で必要分だけ再展開する
+- runtime共通policyへDeep Research専用設定を追加。既定256K CTX自動切替、根拠量、managed llama.cpp再ロード、
+  1,800秒timeoutを管理画面から有効/無効・変更できる。Ollamaはrequestの`num_ctx`、管理下llama.cppは不足時の
+  設定更新・再起動・health確認・失敗時rollback、外部OpenAI互換は非対応理由の記録として汎用化した
+- AI画面の詳細へround、検索回数、候補/採用資料、GitHub解析数、coverage、引用段落率、CTX適用を表示する
+
+検証: backend全260件成功、frontend本番build成功。Model設定E2Eと、認証付きAssistant E2Eの320x700 / 1280x800で
+256K CTX表示、探索指標、文献ID、横overflowなしを確認。実機Ollama Qwen3.6-27Bで`num_ctx=262144`、
+Web・専門検索・GitHub構造取得を4ラウンド/検索24回実行し、81件の証拠候補から23件を最終選定。
+20分6秒で5,860文字、引用101箇所/12資料、不正引用0、引用段落率100%のレポート生成を完了した。
+従来の300秒timeoutを実機再現して1,800秒へ修正した。公開GitHub branchがローカル最新実装より古く、モデル評価が
+現行実装と食い違うsource freshness限界も検出したため、公開時点・取得限界をcoverageへ残す運用とした。
+
+## AIアシスタント 会話内文献レジストリ（2026-07-17）
+
+- 詳細設計を`docs/design-ai-chat-reference-registry.md`へ記録。Webページ、論文、資料等を会話単位の
+  `chat_references`へ永続化し、`R1…R9, RA…RZ, R10…`の短い36進IDを割り当てる
+- URL正規化+SHA-256キー（URLなしはタイトル+provider）で会話内重複を排除。同じ出典を複数回の調査で
+  取得してもIDを維持し、会話削除時は文献も削除する。同時登録はDB unique制約を正本に最大3回再評価する
+- Web・学術・Deep・複合調査のLLM根拠、回答引用、message meta、WebSocket sourcesを`[R英数字]`へ統一。
+  Deep Search内部の一時連番も永続IDへ変換してから保存する
+- 後続入力の`R1` / `@RA` / `[RA]`を検出し、同じ会話に存在する指定文献だけをLLMへ展開する。
+  保存抜粋6,000文字/件、最大12件、合計18,000文字で制限し、全出典本文の常時注入によるCTX圧迫を避ける。
+  存在しないIDは推測で補わないsystem指示を追加した
+- provider非依存の文献ツール境界として、軽量一覧、1件取得、最大12件の一括解決APIを追加。
+  Ollama、llama.cpp Vulkan/ROCm、その他OpenAI互換runtimeで共通利用し、将来のfunction callingも同じserviceへ接続できる
+- 出典カードを「会話内文献」へ変更し、短いIDバッジと36pxの「参照」操作を追加。押すと入力欄へ
+  `[R1] `を挿入し、そのまま後続質問を書ける
+
+検証: backend全254件成功、frontend本番build成功。実サービス再起動後に`chat_references`作成とhealthを確認。
+認証付きPlaywright Chromiumの320x700 / 1280x800で文献ID・参照操作を表示し、入力への`[R1]`挿入、
+document横overflowなしを確認。採番境界`R9→RA` / `RZ→R10`、URL重複、一覧/個別/一括解決、
+選択文献だけのコンテキスト注入、会話削除を自動テストした。
+
 ## AIチャット UI・自動モード・長文ストリーム・音声入力（2026-07-17）
 
 - 詳細設計を`docs/design-ai-chat-auto-mode-asr.md`へ記録。利用者の追補指定に従い、長時間処理を含む

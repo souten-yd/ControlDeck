@@ -23,6 +23,10 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   await page.getByRole("button", { name: "LLM ランタイム設定" }).click();
   const sheet = page.getByRole("dialog", { name: "LLM ランタイム設定" });
   await expect(sheet.getByText("llama.cppモデル個別設定")).toBeVisible();
+  await expect(sheet.getByText("Deep Research専用CTX")).toBeVisible();
+  await expect(sheet.getByLabel("要求CTX token")).toHaveValue("262144");
+  await expect(sheet.getByLabel("根拠context上限（文字）")).toHaveValue("90000");
+  await expect(sheet.getByLabel("Deep Research生成timeout（秒）")).toHaveValue("1800");
   await sheet.getByRole("button", { name: "保存", exact: true }).click();
   await expect.poll(() => submitted).not.toBeNull();
 

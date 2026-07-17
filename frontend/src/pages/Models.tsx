@@ -40,6 +40,13 @@ interface RuntimePolicy {
   default_model_ref: string;
   assistant_name: string;
   chat: { max_output_tokens: number; reasoning: "off" | "auto" | "on"; timeout_seconds: number };
+  deep_research: {
+    context_auto_switch_enabled: boolean;
+    context_tokens: number;
+    evidence_context_chars: number;
+    auto_resize_managed_runtime: boolean;
+    timeout_seconds: number;
+  };
   amd_gpu: {
     enabled: boolean;
     profile: "quiet" | "balanced" | "full" | "custom";
@@ -789,6 +796,60 @@ function SettingsSheet({ models, onClose }: { models: Model[]; onClose: () => vo
               <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
             </select>
           </L>
+        </div>
+        <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50/40 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+          <label className="flex items-center justify-between gap-3">
+            <span>
+              <span className="block text-xs font-semibold text-violet-700 dark:text-violet-300">Deep Research専用CTX</span>
+              <span className="mt-0.5 block text-[10px] text-zinc-500">実行時だけ大規模contextを要求します</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={policy.deep_research.context_auto_switch_enabled}
+              onChange={(e) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, context_auto_switch_enabled: e.target.checked } })}
+              className="h-4 w-4"
+            />
+          </label>
+          {policy.deep_research.context_auto_switch_enabled && (
+            <>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <L label="要求CTX token">
+                  <PresetOrCustom
+                    value={policy.deep_research.context_tokens}
+                    presets={CTX_PRESETS}
+                    placeholder="262144"
+                    onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, context_tokens: Number(v ?? 262144) } })}
+                  />
+                </L>
+                <L label="根拠context上限（文字）">
+                  <PresetOrCustom
+                    value={policy.deep_research.evidence_context_chars}
+                    presets={[30000, 60000, 90000, 150000, 300000].map((v) => ({ v, label: v.toLocaleString() }))}
+                    placeholder="90000"
+                    onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, evidence_context_chars: Number(v ?? 90000) } })}
+                  />
+                </L>
+              </div>
+              <label className="flex items-center justify-between rounded-lg border border-violet-200 px-2.5 py-2 dark:border-violet-900">
+                <span className="text-[11px]">管理中llama.cppを必要時に再ロード</span>
+                <input
+                  type="checkbox"
+                  checked={policy.deep_research.auto_resize_managed_runtime}
+                  onChange={(e) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, auto_resize_managed_runtime: e.target.checked } })}
+                  className="h-4 w-4"
+                />
+              </label>
+              <L label="Deep Research生成timeout（秒）">
+                <PresetOrCustom
+                  value={policy.deep_research.timeout_seconds}
+                  presets={[300, 600, 1200, 1800, 3600].map((v) => ({ v, label: `${v}秒` }))}
+                  placeholder="1800"
+                  onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, timeout_seconds: Number(v ?? 1800) } })}
+                />
+              </L>
+              <p className="text-[10px] text-zinc-500">Ollamaはrequestのnum_ctxへ適用。管理中llama.cppはCTX不足時に再ロードし、失敗時は元設定へ復元します。</p>
+            </>
+          )}
         </div>
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
         <button onClick={() => savePolicy.mutate(policy)} disabled={savePolicy.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white disabled:opacity-40">共通設定を適用</button>

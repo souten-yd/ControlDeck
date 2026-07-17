@@ -170,6 +170,31 @@ class ChatMessage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class ChatReference(Base):
+    """会話内で再利用する文献。短いIDは会話内だけで一意とする。"""
+
+    __tablename__ = "chat_references"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence", name="uq_chat_reference_sequence"),
+        UniqueConstraint("conversation_id", "short_id", name="uq_chat_reference_short_id"),
+        UniqueConstraint("conversation_id", "canonical_key", name="uq_chat_reference_canonical"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    short_id: Mapped[str] = mapped_column(String(12))
+    canonical_key: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(24), default="page")
+    title: Mapped[str] = mapped_column(String(500), default="")
+    url: Mapped[str] = mapped_column(String(2048), default="")
+    provider: Mapped[str] = mapped_column(String(128), default="")
+    excerpt: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Job(Base):
     """サーバー主導ジョブの永続レコード（再起動復元・履歴用）。
 

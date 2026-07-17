@@ -87,6 +87,20 @@ def test_ollama_structured_output_uses_native_format_and_disables_thinking(monke
     assert result == '{"mode":"research"}'
 
 
+def test_ollama_native_request_applies_deep_context_window(monkeypatch):
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["options"]["num_ctx"] == 262144
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    _client_factory(monkeypatch, handler)
+    monkeypatch.setattr(rp.LlmRuntimeProvider, "_prepare", lambda self, request: _async_none())
+    request = rp.RuntimeChatRequest(
+        "http://127.0.0.1:11434/v1", "m", [], context_window=262144,
+    )
+    assert asyncio.run(rp.OllamaRuntimeProvider().complete(request)) == "ok"
+
+
 def test_complete_structured_output_uses_generic_dialect_fallbacks(monkeypatch):
     calls = []
 

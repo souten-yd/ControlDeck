@@ -34,7 +34,7 @@ async def put_runtime_policy(
 
     current = runtime_policy.get_policy().model_dump()
     merged = {**current, **body}
-    for nested in ("chat", "amd_gpu"):
+    for nested in ("chat", "deep_research", "amd_gpu"):
         if isinstance(current.get(nested), dict) and isinstance(body.get(nested), dict):
             merged[nested] = {**current[nested], **body[nested]}
     try:

@@ -19,6 +19,14 @@ class ChatDefaults(BaseModel):
     timeout_seconds: int = Field(default=300, ge=10, le=1800)
 
 
+class DeepResearchSettings(BaseModel):
+    context_auto_switch_enabled: bool = True
+    context_tokens: int = Field(default=262144, ge=8192, le=1048576)
+    evidence_context_chars: int = Field(default=90000, ge=12000, le=500000)
+    auto_resize_managed_runtime: bool = True
+    timeout_seconds: int = Field(default=1800, ge=300, le=7200)
+
+
 class AmdGpuSettings(BaseModel):
     enabled: bool = False
     profile: Literal["quiet", "balanced", "full", "custom"] = "quiet"
@@ -39,6 +47,7 @@ class RuntimePolicy(BaseModel):
     default_model_ref: str = Field(default="", max_length=512)
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
+    deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
     amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
 
 
@@ -215,3 +224,69 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                 llama.stop_instance(str(item["alias"]))
         if not instances and (await llama.health()).get("ok", False):
             llama.stop_instance()
+
+
+async def prepare_deep_research_context(base_url: str) -> dict:
+    """Deep Research専用CTXを適用する。通常chat policy自体は変更しない。"""
+    from urllib.parse import urlsplit
+
+    from app.models_mgmt import llama, ollama
+
+    settings = get_policy().deep_research
+    result = {
+        "enabled": settings.context_auto_switch_enabled,
+        "requested_tokens": settings.context_tokens,
+        "applied": False,
+        "runtime": "unknown",
+        "request_context_tokens": None,
+        "reason": "",
+    }
+    if not settings.context_auto_switch_enabled:
+        result["reason"] = "管理設定で無効"
+        return result
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+    if normalized == ollama.base_url().rstrip("/"):
+        result.update({
+            "applied": True, "runtime": "ollama", "request_context_tokens": settings.context_tokens,
+            "reason": "Ollama native requestのnum_ctxへ適用",
+        })
+        return result
+
+    parsed = urlsplit(base_url)
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        result["reason"] = "外部OpenAI互換runtimeはrequest単位CTX変更を保証できません"
+        return result
+    instance = next((item for item in llama.list_instances() if int(item.get("port", 0)) == parsed.port), None)
+    if instance is None:
+        result["reason"] = "管理対象runtimeではありません"
+        return result
+    result["runtime"] = "llama.cpp"
+    alias = str(instance.get("alias") or "")
+    current = int(instance.get("ctx_size") or 0)
+    result["previous_tokens"] = current
+    if current >= settings.context_tokens:
+        result.update({"applied": True, "reason": "既存llama.cpp instanceが要求CTX以上"})
+        return result
+    if not settings.auto_resize_managed_runtime:
+        result["reason"] = "管理対象runtimeの自動再ロードが無効"
+        return result
+
+    try:
+        llama.save_instance(alias, {"ctx_size": settings.context_tokens})
+        ok, detail = await asyncio.to_thread(llama.start_instance, alias)
+        if not ok:
+            raise RuntimeError(detail or "llama.cppの再起動に失敗")
+        for _ in range(90):
+            if (await llama.health(alias)).get("ok"):
+                result.update({"applied": True, "reason": "llama.cppを要求CTXで再ロード"})
+                return result
+            await asyncio.sleep(1)
+        raise RuntimeError("要求CTXで再ロード後、health確認がtimeout")
+    except Exception as exc:
+        # OOMやmodel上限の場合は元のCTXへ戻し、通常利用を壊さない。
+        llama.save_instance(alias, {"ctx_size": current})
+        await asyncio.to_thread(llama.start_instance, alias)
+        result["reason"] = f"適用失敗のため復元: {type(exc).__name__}"
+        return result
