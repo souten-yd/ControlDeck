@@ -326,6 +326,16 @@ export default function AppLayout() {
                 }}
               />
             )}
+            {enabledFeatures.has("opencode") && can("workflows.run") && (
+              <ActionItem
+                icon={<IconTerminal />}
+                label="OpenCode"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/opencode");
+                }}
+              />
+            )}
             {can("files.view") && (
               <ActionItem
                 icon={<IconFile />}
