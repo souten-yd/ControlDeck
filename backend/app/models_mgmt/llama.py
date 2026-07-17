@@ -69,6 +69,8 @@ DEFAULT_INSTANCE = {
         "port": 8080,
         "n_gpu_layers": 999,   # 全層 GPU（VRAM 不足時は下げる）
         "ctx_size": 4096,
+        # 0は通常CTXと同じ。異なる値の場合だけDeep Research開始前後に再ロードする。
+        "deep_research_ctx_size": 0,
         "n_parallel": 1,
         "flash_attn": False,
         "n_predict": 2048,

@@ -232,9 +232,24 @@ def citation_metrics(report: str, source_count: int) -> dict:
     }
 
 
+SECTION_COMPLETE = "<!-- CONTROLDECK_SECTION_COMPLETE -->"
+
+
+def _merge_continuation(previous: str, continuation: str) -> str:
+    """継続生成が末尾を繰り返した場合、最大400文字の重複を除いて結合する。"""
+    next_text = continuation.replace(SECTION_COMPLETE, "").strip()
+    base = previous.rstrip()
+    max_overlap = min(400, len(base), len(next_text))
+    for size in range(max_overlap, 19, -1):
+        if base[-size:] == next_text[:size]:
+            return base + next_text[size:]
+    return base + "\n\n" + next_text
+
+
 async def _synthesize(
     query: str, plan: DeepPlan, sources: list[dict], assessment: DeepAssessment,
     coverage_limits: list[str], complete: Complete, *, max_context_chars: int = 90_000,
+    max_report_tokens: int = 32_768,
 ) -> tuple[str, dict]:
     corpus = _build_corpus(sources, max_chars=max_context_chars)
     system = (
@@ -244,15 +259,67 @@ async def _synthesize(
         "既存構成から実現可能な統合機能、接続点、制約、追加実装を具体化します。静的観測と推論を区別し、"
         "根拠のない実装詳細は断定しません。末尾の出典一覧はUIが生成するため不要です。"
     )
-    user = (
+    common_user = (
         f"調査依頼: {query}\n\n目的: {plan.objective}\n\nサブ質問:\n- " + "\n- ".join(plan.sub_questions) +
         "\n\n最終coverage評価:\n" + json.dumps(assessment.model_dump(), ensure_ascii=False) +
         "\n\n取得上の制限:\n- " + ("\n- ".join(coverage_limits) if coverage_limits else "特記事項なし") +
-        "\n\n次の章立てを基本にしてください: エグゼクティブサマリー、調査範囲と方法、主要分析、"
-        "構造・機能・統合評価（該当時）、矛盾と不確実性、結論と次の行動。\n\n根拠:\n" + corpus
+        "\n\n根拠:\n" + corpus
     )
-    report = await complete([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens=8192)
+    section_specs = [
+        ("エグゼクティブサマリー", "重要な結論、判断根拠、利用者への影響を先にまとめる"),
+        ("調査範囲と方法", "検索範囲、資料種別、評価方法、取得限界を監査可能に示す"),
+        ("主要分析", "サブ質問を漏れなく横断し、複数資料を比較・反証する"),
+        ("構造・機能・統合評価", "コード、関数、変数、データフロー、依存、テスト、統合可能性を詳述する"),
+        ("矛盾と不確実性", "資料間の食い違い、source freshness、未確認事項、推論を区別する"),
+        ("結論と次の行動", "優先順位付きの結論、実施案、検証方法を具体化する"),
+    ]
+    sections: list[str] = []
+    incomplete: list[str] = []
+    requested_tokens = 0
+    section_budget = max_report_tokens // len(section_specs)
+    for index, (title, instruction) in enumerate(section_specs):
+        # 総予算を6章へ均等配分する。一章だけが使い切って後半章を欠落させない。
+        # 128K設定では一章あたり約21Kまで継続できる。
+        initial_tokens = min(4096, max(1024, section_budget - min(4096, section_budget // 3)))
+        prompt = (
+            f"{common_user}\n\nこの応答では「## {title}」章だけを書いてください。{instruction}。"
+            "他章へ進まず、章を省略・途中終了しないでください。完結した末尾に必ず " + SECTION_COMPLETE + " を付けます。"
+        )
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        text = await complete(messages, max_tokens=initial_tokens)
+        requested_tokens += initial_tokens
+        section_used = initial_tokens
+        complete_marker = SECTION_COMPLETE in text
+        merged = text.replace(SECTION_COMPLETE, "").strip()
+        continuation_count = 0
+        while not complete_marker and continuation_count < 8:
+            available = section_budget - section_used
+            if available < 512:
+                break
+            continuation_tokens = min(4096, available)
+            followup = (
+                "直前の章が出力上限で途切れました。新しい見出しや前置きを付けず、最後の文の続きから同じ章だけを完結させ、"
+                f"末尾に{SECTION_COMPLETE}を付けてください。"
+            )
+            continuation = await complete(
+                messages + [{"role": "assistant", "content": merged}, {"role": "user", "content": followup}],
+                max_tokens=continuation_tokens,
+            )
+            requested_tokens += continuation_tokens
+            section_used += continuation_tokens
+            complete_marker = SECTION_COMPLETE in continuation
+            merged = _merge_continuation(merged, continuation)
+            continuation_count += 1
+        if not complete_marker:
+            incomplete.append(title)
+        sections.append(merged)
+    report = "\n\n".join(sections).strip()
     metrics = citation_metrics(report, len(sources))
+    section_metrics = {
+        "section_count": len(sections), "completed_sections": len(sections) - len(incomplete),
+        "possibly_truncated_sections": incomplete, "requested_token_budget": requested_tokens,
+    }
+    metrics.update(section_metrics)
     min_diversity = min(6, len(sources))
     if metrics["invalid_citations"] or metrics["citation_coverage"] < 0.55 or metrics["cited_sources"] < min_diversity:
         revision = (
@@ -263,10 +330,11 @@ async def _synthesize(
         try:
             revised = await complete([{"role": "system", "content": system}, {"role": "user", "content": revision}], max_tokens=8192)
             revised_metrics = citation_metrics(revised, len(sources))
-            if not revised_metrics["invalid_citations"] and (
+            if len(revised) >= int(len(report) * 0.85) and not revised_metrics["invalid_citations"] and (
                 revised_metrics["citation_coverage"], revised_metrics["cited_sources"]
             ) >= (metrics["citation_coverage"], metrics["cited_sources"]):
                 report, metrics = revised, revised_metrics
+                metrics.update(section_metrics)
                 metrics["revised"] = True
         except Exception:
             pass
@@ -279,7 +347,7 @@ async def run_deep_research(
     page_fetch: Fetch, specialized_search: SpecializedSearch | None = None,
     progress: Progress | None = None,
     max_rounds: int = 4, max_search_calls: int = 24,
-    max_evidence_chars: int = 90_000,
+    max_evidence_chars: int = 90_000, max_report_tokens: int = 32_768,
 ) -> dict:
     def emit(phase: str, label: str, round_number: int = 0, **details: Any) -> None:
         if progress:
@@ -413,7 +481,7 @@ async def run_deep_research(
     emit("synthesize", f"{len(selected)}件の根拠からレポートを統合", rounds)
     report, metrics = await _synthesize(
         query, plan, selected, assessment, coverage_limits, complete,
-        max_context_chars=max_evidence_chars,
+        max_context_chars=max_evidence_chars, max_report_tokens=max_report_tokens,
     )
     emit("verify", f"引用coverage {metrics['citation_coverage'] * 100:.0f}%", rounds, metrics=metrics)
     return {

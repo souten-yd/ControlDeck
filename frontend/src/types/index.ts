@@ -83,6 +83,7 @@ export interface MetricsSnapshot {
     load: number[];
     freq_mhz: number | null;
     temperature_c: number | null;
+    fan_rpm: number | null;
     cores: number;
   };
   memory: {
@@ -103,6 +104,7 @@ export interface MetricsSnapshot {
     hotspot_c: number | null;
     power_watts: number | null;
     power_cap_watts: number | null;
+    fan_rpm: number | null;
   } | null;
   io: {
     disk_read_bps: number;

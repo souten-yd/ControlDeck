@@ -20,10 +20,8 @@ class ChatDefaults(BaseModel):
 
 
 class DeepResearchSettings(BaseModel):
-    context_auto_switch_enabled: bool = True
-    context_tokens: int = Field(default=262144, ge=8192, le=1048576)
     evidence_context_chars: int = Field(default=90000, ge=12000, le=500000)
-    auto_resize_managed_runtime: bool = True
+    max_report_tokens: int = Field(default=32768, ge=8192, le=131072)
     timeout_seconds: int = Field(default=1800, ge=300, le=7200)
 
 
@@ -226,31 +224,63 @@ async def apply_selection(policy: RuntimePolicy) -> None:
             llama.stop_instance()
 
 
-async def prepare_deep_research_context(base_url: str) -> dict:
-    """Deep Research専用CTXを適用する。通常chat policy自体は変更しない。"""
+async def _wait_llama_health(alias: str, seconds: int = 90) -> bool:
+    from app.models_mgmt import llama
+
+    for _ in range(seconds):
+        if (await llama.health(alias)).get("ok"):
+            return True
+        await asyncio.sleep(1)
+    return False
+
+
+async def prepare_deep_research_context(base_url: str, model: str) -> dict:
+    """モデル個別のDeep Research CTXを適用し、復元に必要な状態を返す。"""
     from urllib.parse import urlsplit
 
     from app.models_mgmt import llama, ollama
 
-    settings = get_policy().deep_research
     result = {
-        "enabled": settings.context_auto_switch_enabled,
-        "requested_tokens": settings.context_tokens,
+        "enabled": False,
+        "model": model,
+        "requested_tokens": None,
         "applied": False,
         "runtime": "unknown",
         "request_context_tokens": None,
+        "previous_tokens": None,
+        "changed": False,
+        "was_loaded": False,
         "reason": "",
     }
-    if not settings.context_auto_switch_enabled:
-        result["reason"] = "管理設定で無効"
-        return result
     normalized = base_url.rstrip("/")
     if normalized.endswith("/v1"):
         normalized = normalized[:-3].rstrip("/")
     if normalized == ollama.base_url().rstrip("/"):
+        config = ollama.get_model_config(model)
+        requested = int(config.get("deep_research_num_ctx") or 0)
+        normal = int(config.get("num_ctx") or 0)
+        result.update({"runtime": "ollama", "requested_tokens": requested or None,
+                       "previous_tokens": normal or None})
+        if requested <= 0:
+            result.update({
+                "applied": normal > 0, "request_context_tokens": normal or None,
+                "reason": "専用CTX未設定のためモデル個別の通常CTXを使用",
+            })
+            return result
+        if requested == normal:
+            result.update({
+                "enabled": True, "applied": True, "request_context_tokens": requested,
+                "reason": "通常CTXと同じため切替不要",
+            })
+            return result
+        running = await ollama.running_models()
+        result["was_loaded"] = any(
+            str(item.get("name") or item.get("model") or "") == model for item in running
+        )
         result.update({
-            "applied": True, "runtime": "ollama", "request_context_tokens": settings.context_tokens,
-            "reason": "Ollama native requestのnum_ctxへ適用",
+            "enabled": True, "applied": True, "request_context_tokens": requested,
+            "changed": requested != normal,
+            "reason": "モデル個別Deep Research CTXをOllama requestへ適用",
         })
         return result
 
@@ -265,28 +295,66 @@ async def prepare_deep_research_context(base_url: str) -> dict:
     result["runtime"] = "llama.cpp"
     alias = str(instance.get("alias") or "")
     current = int(instance.get("ctx_size") or 0)
-    result["previous_tokens"] = current
-    if current >= settings.context_tokens:
-        result.update({"applied": True, "reason": "既存llama.cpp instanceが要求CTX以上"})
+    requested = int(instance.get("deep_research_ctx_size") or 0)
+    result.update({"model": alias, "requested_tokens": requested or None,
+                   "previous_tokens": current, "was_loaded": bool(instance.get("loaded"))})
+    if requested <= 0:
+        result["reason"] = "モデル個別設定なし（通常CTXを使用）"
         return result
-    if not settings.auto_resize_managed_runtime:
-        result["reason"] = "管理対象runtimeの自動再ロードが無効"
+    result["enabled"] = True
+    if current == requested:
+        result.update({"applied": True, "reason": "通常CTXと同じため再ロード不要"})
         return result
 
     try:
-        llama.save_instance(alias, {"ctx_size": settings.context_tokens})
+        llama.save_instance(alias, {"ctx_size": requested})
         ok, detail = await asyncio.to_thread(llama.start_instance, alias)
         if not ok:
             raise RuntimeError(detail or "llama.cppの再起動に失敗")
-        for _ in range(90):
-            if (await llama.health(alias)).get("ok"):
-                result.update({"applied": True, "reason": "llama.cppを要求CTXで再ロード"})
-                return result
-            await asyncio.sleep(1)
-        raise RuntimeError("要求CTXで再ロード後、health確認がtimeout")
+        if not await _wait_llama_health(alias):
+            raise RuntimeError("要求CTXで再ロード後、health確認がtimeout")
+        result.update({"applied": True, "changed": True,
+                       "reason": "モデル個別Deep Research CTXでllama.cppを再ロード"})
+        return result
     except Exception as exc:
-        # OOMやmodel上限の場合は元のCTXへ戻し、通常利用を壊さない。
         llama.save_instance(alias, {"ctx_size": current})
-        await asyncio.to_thread(llama.start_instance, alias)
+        if result["was_loaded"]:
+            await asyncio.to_thread(llama.start_instance, alias)
+        else:
+            llama.stop_instance(alias)
         result["reason"] = f"適用失敗のため復元: {type(exc).__name__}"
         return result
+
+
+async def restore_deep_research_context(state: dict) -> dict:
+    """Deep ResearchでCTXを変更した場合だけ、実行前の通常モデル状態へ戻す。"""
+    from app.models_mgmt import llama, ollama
+
+    restored = {"restored": False, "restore_reason": "変更なし"}
+    if not state.get("changed"):
+        return restored
+    try:
+        if state.get("runtime") == "ollama":
+            model = str(state.get("model") or "")
+            await ollama.unload(model)
+            if state.get("was_loaded"):
+                await ollama.load(model, options=ollama.effective_options(model))
+            restored.update({"restored": True, "restore_reason": "通常モデルCTXへ復元"})
+            return restored
+        if state.get("runtime") == "llama.cpp":
+            alias = str(state.get("model") or "")
+            previous = int(state.get("previous_tokens") or 0)
+            llama.save_instance(alias, {"ctx_size": previous})
+            if state.get("was_loaded"):
+                ok, detail = await asyncio.to_thread(llama.start_instance, alias)
+                if not ok:
+                    raise RuntimeError(detail or "通常CTXへの再起動に失敗")
+                if not await _wait_llama_health(alias):
+                    raise RuntimeError("通常CTXへ再ロード後、health確認がtimeout")
+            else:
+                llama.stop_instance(alias)
+            restored.update({"restored": True, "restore_reason": "通常モデルCTXへ復元"})
+            return restored
+    except Exception as exc:
+        restored["restore_reason"] = f"復元失敗: {type(exc).__name__}"
+    return restored

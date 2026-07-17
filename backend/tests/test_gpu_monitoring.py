@@ -14,6 +14,7 @@ def _fake_card(root: Path, name: str, *, vram: int, busy: int = 3) -> Path:
     (device / "mem_info_vram_total").write_text(str(vram))
     (hwmon / "temp1_input").write_text("42000")
     (hwmon / "power1_average").write_text("18000000")
+    (hwmon / "fan1_input").write_text("1280")
     return device
 
 
@@ -31,6 +32,7 @@ def test_sysfs_provider_selects_gpu_with_largest_vram(tmp_path, monkeypatch):
     assert sample["vram_total_bytes"] == 32 * 1024**3
     assert sample["temperature_c"] == 42
     assert sample["power_watts"] == 18
+    assert sample["fan_rpm"] == 1280
 
 
 def test_detect_provider_prefers_complete_sysfs_without_cli(tmp_path, monkeypatch):

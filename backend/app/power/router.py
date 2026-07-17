@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -44,6 +45,34 @@ def reboot(request: Request, user: User = Depends(require_permission("power.mana
 @router.post("/shutdown")
 def shutdown(request: Request, user: User = Depends(require_permission("power.manage")), db: Session = Depends(get_db)):
     return _power_now("shutdown", request, user, db)
+
+
+@router.post("/platform/reload", status_code=202)
+def reload_platform(
+    request: Request,
+    user: User = Depends(require_permission("power.manage")),
+    db: Session = Depends(get_db),
+):
+    """応答後にsystemd user serviceを再起動する。Webプロセスの子として常駐させない。"""
+    unit = f"control-deck-web-reload-{time.time_ns()}"
+    argv = [
+        "systemd-run", "--user", f"--unit={unit}", "--on-active=1s", "--collect",
+        "/usr/bin/systemctl", "--user", "restart", "control-deck-web.service",
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        ok, error = result.returncode == 0, result.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        ok, error = False, str(exc)
+    audit.record(
+        db, "platform.reload", user=user, resource_type="system",
+        result="success" if ok else "failure", request=request,
+        metadata={} if ok else {"error": error[:300]},
+    )
+    if not ok:
+        logger.warning("platform reload schedule failed: %s", error)
+        raise HTTPException(status_code=502, detail="Control Deckの再読み込みを予約できませんでした")
+    return {"ok": True, "reload_after_ms": 1000}
 
 
 def _power_now(action: str, request: Request, user: User, db: Session):

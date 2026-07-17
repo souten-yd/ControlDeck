@@ -29,7 +29,7 @@ export default function DashboardPage() {
           <MetricTile
             label="CPU"
             value={m ? formatPercent(m.cpu.percent) : null}
-            sub={m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : undefined}
+            sub={`${m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : "N/A"} · FAN ${m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm} RPM` : "N/A"}`}
             percent={m?.cpu.percent ?? null}
           />
           <MetricTile
@@ -41,7 +41,7 @@ export default function DashboardPage() {
           <MetricTile
             label="GPU"
             value={m?.gpu ? formatPercent(m.gpu.utilization_percent) : "N/A"}
-            sub={m?.gpu?.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : undefined}
+            sub={`${m?.gpu?.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : "N/A"} · FAN ${m?.gpu?.fan_rpm != null ? `${m.gpu.fan_rpm} RPM` : "N/A"}`}
             percent={m?.gpu?.utilization_percent ?? null}
           />
           <MetricTile

@@ -17,17 +17,35 @@
   観測可能な呼び出しを索引化し、構造・データフロー・既存機能の統合可能性をpath付きで評価する
 - 引用番号の実在、引用資料数、根拠付き段落率、本文長を決定論的に評価し、coverage 55%未満等は根拠を増やさず
   1回だけ引用修正する。最終資料は会話内文献ID `R1…`へ変換し、後続会話で必要分だけ再展開する
-- runtime共通policyへDeep Research専用設定を追加。既定256K CTX自動切替、根拠量、managed llama.cpp再ロード、
-  1,800秒timeoutを管理画面から有効/無効・変更できる。Ollamaはrequestの`num_ctx`、管理下llama.cppは不足時の
-  設定更新・再起動・health確認・失敗時rollback、外部OpenAI互換は非対応理由の記録として汎用化した
+- 一律256Kへ変える共通CTX設定を撤去し、Ollama/llama.cppの各モデル個別設定へDeep Research専用CTXを追加。
+  未指定なら同じモデルの通常CTXを使用して何も変更しない。異なる場合、Ollamaはrequest単位で適用後に通常optionsへ、
+  llama.cppは開始前に専用CTXで再ロードし、成功・失敗・キャンセル後に通常CTXと元の稼働状態へ必ず復元する
 - AI画面の詳細へround、検索回数、候補/採用資料、GitHub解析数、coverage、引用段落率、CTX適用を表示する
+- 最終レポートが単発8,192 token上限で途中終了しても検出していなかった不具合を修正。6章を独立生成し、
+  完結markerが無い章は続きから最大8回生成して重複除去・結合する。総出力は既定32K/最大128K token、
+  各章へ均等配分し、完結章数と未完結候補をUIへ表示する。短い改稿で長い草稿を置換しない長さ検証も追加
 
-検証: backend全260件成功、frontend本番build成功。Model設定E2Eと、認証付きAssistant E2Eの320x700 / 1280x800で
+検証: backend全264件成功、frontend本番build成功。Model設定E2Eと、認証付きAssistant E2Eの320x700 / 1280x800で
 256K CTX表示、探索指標、文献ID、横overflowなしを確認。実機Ollama Qwen3.6-27Bで`num_ctx=262144`、
 Web・専門検索・GitHub構造取得を4ラウンド/検索24回実行し、81件の証拠候補から23件を最終選定。
 20分6秒で5,860文字、引用101箇所/12資料、不正引用0、引用段落率100%のレポート生成を完了した。
 従来の300秒timeoutを実機再現して1,800秒へ修正した。公開GitHub branchがローカル最新実装より古く、モデル評価が
 現行実装と食い違うsource freshness限界も検出したため、公開時点・取得限界をcoverageへ残す運用とした。
+途切れ不具合は実機Qwen3.6-27Bへ128 tokenで長文を要求し、`done_reason=length`、完結markerなし、253文字で終了する形で再現。
+章の初回出力が同様に途切れるfixtureで全6章が継続・完結する回帰テストを追加した。
+
+## Model設定分離・ファン表示・プラットフォーム再読み込み（2026-07-17）
+
+- Model画面の⚙を全runtime共通設定だけに限定し、共通CTX項目とprovider/モデル個別設定を撤去。
+  Ollama/llama.cppのモデル行から開く画面には、そのモデル固有の生成・ハードウェア・通常/Deep Research CTXだけを表示する
+- GPUはAMD sysfsの`fan1_input`とamd-smiのRPMを取得し、ホームのGPU使用率カードへ温度と併記。
+  CPUはpsutil hwmonでCPUと明示されたfanだけを採用し、筐体/PSU/GPUの誤表示を避け、取得不能時は`N/A`とする
+- 操作シートの電源付近へ「Control Deckを再読み込み」を追加。固定引数のsystemd user transient unitで
+  Webサービスを応答後に再起動し、ブラウザはhealth復帰を監視して自動reloadする。実行は認可し監査ログへ記録する
+
+検証: backend全264件成功、frontend本番build成功。認証付きPlaywrightでModel個別/共通分離とDashboard fan表示を確認し、
+320x700 / 1280x800とも横overflowなし。実機GPU fan 889 RPM、CPU fanセンサー非公開のためN/Aを確認。
+platform reload APIは202応答後にservice PID `1607245→1609074`、health復帰を確認した。
 
 ## AIアシスタント 会話内文献レジストリ（2026-07-17）
 

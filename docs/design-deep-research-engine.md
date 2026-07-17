@@ -96,24 +96,23 @@ IP単位のrate limitがあるため、1リポジトリあたりmetadata/treeの
 | 最終根拠 | 36 |
 | 1根拠の保存抜粋 | 6,000文字 |
 | 最終LLM根拠context | 90,000文字 |
-| レポート出力 | 最大8,192 token |
+| レポート総出力 | 既定32,768 token（設定上限131,072） |
 
 最終根拠は既存の会話内文献レジストリへ登録し、後続ターンでは`[R1]`等で必要な文献だけを再展開する。
 
-### Deep Research専用CTXプロファイル
+### モデル個別Deep Research CTX
 
-Model管理のruntime共通policyへ次を追加する。
+Deep Researchだから一律256Kへ変更する共通policyは持たない。Model画面の各モデル個別設定だけに専用CTXを置く。
 
-- `context_auto_switch_enabled`: 自動CTX切替の有効/無効（既定有効）
-- `context_tokens`: 要求CTX（既定262,144 token）
-- `evidence_context_chars`: 最終統合へ渡す根拠文字数（既定90,000）
-- `auto_resize_managed_runtime`: 管理中llama.cppをCTX不足時に再ロードするか
-- `timeout_seconds`: 大型CTX・長文統合のHTTP待機上限（既定1,800秒、最大7,200秒）
+- Ollama: `deep_research_num_ctx`（未設定時は同じモデルの通常`num_ctx`）
+- llama.cpp: `deep_research_ctx_size`（0/未設定時は同じinstanceの通常`ctx_size`）
+- runtime共通policy: 根拠文字数`evidence_context_chars`、HTTP待機上限`timeout_seconds`、
+  レポート総出力`max_report_tokens`（既定32K、最大128K）だけを保持
 
-OllamaはDeep Researchのnative requestへ`num_ctx`を付与する。管理中llama.cppは現在の`ctx_size`が不足する場合、
-instance設定を更新して再ロードし、health確認に失敗した場合は元のCTXへ戻す。外部OpenAI互換endpointは
-request単位のCTX変更を保証できないため設定を送らず、未適用理由を結果へ記録する。通常chatの出力/CTX policyは変更しない。
-実際の適用可否、runtime、要求token、理由はprogressと最終research metadataへ保存する。
+Ollamaはrequest単位の`num_ctx`を使い、通常値と異なる場合は完了後に実行前のロード状態と通常optionsへ戻す。
+管理中llama.cppはserver起動時にCTXが固定されるため、値が異なる場合だけ開始前に専用CTXで再ロードし、
+成功・失敗・キャンセルのいずれでも`finally`で通常`ctx_size`と実行前の稼働状態へ復元する。同値なら再ロードしない。
+外部OpenAI互換endpointはrequest単位変更を保証できないため変更せず、理由をmetadataへ記録する。
 
 ## 6. Source portfolio
 
@@ -145,6 +144,10 @@ planは問いごとに`web / academic / github / patent / market / direct`を選
 coverageが55%未満、または主要根拠数に対して引用source diversityが不足する場合は、同じ根拠だけを使って1回修正する。
 検証値はmessage metaへ保存し、UIとテストから評価可能にする。
 
+最終レポートは単発8,192 token生成に依存せず、固定6章を独立生成する。各章末尾の完結markerが無い場合は
+その章の続きだけを最大8回生成し、末尾重複を除去して結合する。総token予算は章へ均等配分し、前半章だけで
+使い切らない。完結章数と未完結の可能性がある章名をmetadata/UIへ出し、短い改稿結果で長い草稿を置換しない。
+
 ## 8. 進捗・中断・永続化
 
 既存のserver jobを維持し、WebSocket切断後も調査を続行する。plan、各round、検索、本文取得、coverage評価、
@@ -161,7 +164,7 @@ GitHub解析、統合、引用検証をprogress eventとして表示・checkpoin
 
 ### 9.1 実機評価結果（2026-07-17）
 
-Ollama Qwen3.6-27B Q5_K_Mを`num_ctx=262144`で使用し、公開GitHub repositoryを含むコード評価を実行した。
+Ollama Qwen3.6-27B Q5_K_Mのモデル個別設定を`deep_research_num_ctx=262144`として、公開GitHub repositoryを含むコード評価を実行した。
 4ラウンド、検索24回、発見81件、GitHub 1 repository、最終23件を使い、1,206.7秒で5,860文字の
 レポートを生成した。引用101箇所、引用資料12件、不正引用0、引用段落率100%だった。
 

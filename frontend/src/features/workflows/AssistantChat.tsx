@@ -43,7 +43,7 @@ interface DeepResearchResult {
   sources_selected: number;
   repositories_inspected: number;
   coverage?: { coverage_score?: number; gaps?: string[]; contradictions?: string[] };
-  citation_metrics?: { citation_coverage?: number; cited_sources?: number; report_chars?: number; revised?: boolean };
+  citation_metrics?: { citation_coverage?: number; cited_sources?: number; report_chars?: number; revised?: boolean; section_count?: number; completed_sections?: number; possibly_truncated_sections?: string[] };
   coverage_limits?: string[];
   context_profile?: { enabled?: boolean; requested_tokens?: number; applied?: boolean; runtime?: string; reason?: string };
 }
@@ -846,10 +846,14 @@ function MessageBubble({
                 {msg.research.repositories_inspected > 0 && <span>GitHub {msg.research.repositories_inspected} repo</span>}
                 {msg.research.coverage?.coverage_score !== undefined && <span>coverage {msg.research.coverage.coverage_score}%</span>}
                 {msg.research.citation_metrics?.citation_coverage !== undefined && <span>引用段落 {Math.round(msg.research.citation_metrics.citation_coverage * 100)}%</span>}
+                {msg.research.citation_metrics?.section_count !== undefined && <span>完結章 {msg.research.citation_metrics.completed_sections}/{msg.research.citation_metrics.section_count}</span>}
                 {msg.research.context_profile?.requested_tokens && (
                   <span>CTX {Math.round(msg.research.context_profile.requested_tokens / 1024)}K {msg.research.context_profile.applied ? "適用" : "未適用"}</span>
                 )}
               </div>
+            )}
+            {(msg.research?.citation_metrics?.possibly_truncated_sections?.length ?? 0) > 0 && (
+              <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">未完結の可能性: {msg.research!.citation_metrics!.possibly_truncated_sections!.join("、")}</p>
             )}
           </details>
         )}

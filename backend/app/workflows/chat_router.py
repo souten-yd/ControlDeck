@@ -288,7 +288,8 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
     from app.workflows.engine import _load_secrets
 
     settings = runtime_policy.get_policy().deep_research
-    context_state = await runtime_policy.prepare_deep_research_context(body.base_url)
+    secrets = await asyncio.to_thread(_load_secrets)
+    context_state = await runtime_policy.prepare_deep_research_context(body.base_url, body.model)
     request_context = context_state.get("request_context_tokens")
     if progress:
         progress(
@@ -311,8 +312,6 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
         result = await ext.federated(query, limit)
         return result.get("results", [])[: max(12, limit * 3)]
 
-    secrets = await asyncio.to_thread(_load_secrets)
-
     async def specialized_search(source_type: str, query: str, limit: int) -> list[dict]:
         api_key = secrets.get("PATENTSVIEW_API_KEY", "") if source_type == "patent" else ""
         return await ext.search(source_type, query, limit, api_key=api_key)
@@ -323,9 +322,18 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
             specialized_search=specialized_search, page_fetch=_page_text, progress=progress,
             max_rounds=4, max_search_calls=24,
             max_evidence_chars=settings.evidence_context_chars,
+            max_report_tokens=settings.max_report_tokens,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        restore_state = await runtime_policy.restore_deep_research_context(context_state)
+        context_state.update(restore_state)
+        if progress:
+            progress(
+                "context_restore", f"Deep Research CTX: {restore_state['restore_reason']}", 0,
+                {"context_profile": context_state},
+            )
     result["research"]["context_profile"] = context_state
     return result
 
