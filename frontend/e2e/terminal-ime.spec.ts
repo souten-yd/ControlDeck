@@ -162,6 +162,18 @@ test.describe("terminal mobile IME and geometry", () => {
     }
   });
 
+  test("shows the close action at the right edge with a 44px touch target", async ({ page }) => {
+    const layout = await page.evaluate(() => {
+      const header = document.querySelector<HTMLElement>("[data-terminal-header]")!.getBoundingClientRect();
+      const close = document.querySelector<HTMLElement>('[aria-label="ターミナルを閉じる"]')!.getBoundingClientRect();
+      return { header: header.toJSON(), close: close.toJSON(), viewport: window.innerWidth };
+    });
+    expect(layout.close.width).toBeGreaterThanOrEqual(44);
+    expect(layout.close.height).toBeGreaterThanOrEqual(44);
+    expect(layout.close.right).toBeLessThanOrEqual(layout.viewport - 12);
+    expect(layout.header.right - layout.close.right).toBe(12);
+  });
+
   test("delivers 100KB, 300KB and UTF-8 paste without loss", async ({ page }) => {
     test.setTimeout(90_000);
     const textarea = page.locator(".xterm-helper-textarea");
