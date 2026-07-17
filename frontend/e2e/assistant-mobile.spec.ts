@@ -84,8 +84,11 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
   expect(layout.close.width).toBeGreaterThanOrEqual(44);
   expect(layout.trash.width).toBeGreaterThanOrEqual(44);
   expect(layout.mode.right).toBeLessThanOrEqual(layout.history.left);
+  expect(layout.mode.height).toBe(layout.history.height);
+  expect(layout.mode.width).toBe(112);
   expect(layout.history.width).toBeGreaterThanOrEqual(60);
-  expect(layout.history.width).toBeLessThan(140);
+  expect(layout.history.width).toBe(132);
+  expect(layout.mode.height).toBe(36);
   expect(layout.inputFontSize).toBeGreaterThanOrEqual(16);
   expect(layout.inputMinWidth).toBe("0px");
 

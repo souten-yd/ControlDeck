@@ -763,9 +763,10 @@ export default function XtermView({
         <button
           onClick={onExit}
           aria-label="ターミナルを閉じる"
-          className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:ml-0"
+          className="ml-auto flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 shadow-sm transition hover:border-zinc-400 hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700 md:ml-0"
         >
-          <IconX />
+          <IconX className="text-lg" />
+          <span className="hidden sm:inline">閉じる</span>
         </button>
       </div>
 

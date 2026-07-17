@@ -565,7 +565,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               onChange={(event) => setModeChoice(event.target.value as AssistantModeChoice)}
               aria-label="処理モード"
               title="処理モード"
-              className="h-11 w-28 shrink-0 rounded-xl border border-zinc-200 bg-zinc-50 px-2 text-xs font-medium outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800 sm:w-32"
+              className="h-9 w-28 shrink-0 rounded-xl border border-zinc-200 bg-zinc-50 px-2 text-xs font-medium shadow-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800 sm:w-32"
             >
               <option value="auto">✦ 自動判定</option>
               {MODES.filter((item) => !item.needsEdit || can("workflows.edit")).map((item) => (
@@ -576,7 +576,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               value={convId}
               onChange={(event) => void openConversation(event.target.value)}
               aria-label="会話を切替"
-              className="min-w-0 flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-xs outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800"
+              className="h-9 min-w-0 flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-2.5 text-xs shadow-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800"
             >
               {!convId && <option value="">履歴を選択</option>}
               {(conversations ?? []).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
