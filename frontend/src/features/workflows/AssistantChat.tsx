@@ -111,6 +111,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [conversationTitle, setConversationTitle] = useState("新しい会話");
   const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
   const [routing, setRouting] = useState(false);
+  // 生成統計（右下表示）: フェーズ / tok/s / コンテキスト使用量
+  const [genStats, setGenStats] = useState<{
+    phase: string; tokPerSec: number; genTokens: number;
+    promptTokens: number | null; contextMax: number | null;
+  } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -287,6 +292,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           } else if (d.type === "thinking") {
             pendingThinking += d.content;
             scheduleFlush();
+          } else if (d.type === "stats") {
+            setGenStats({
+              phase: d.phase || "", tokPerSec: d.tok_per_sec ?? 0, genTokens: d.gen_tokens ?? 0,
+              promptTokens: d.prompt_tokens ?? null, contextMax: d.context_max ?? null,
+            });
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
           else if (d.type === "progress") patchMsg((m) => ({
@@ -391,6 +401,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     }
     setInput("");
     setBusy(true);
+    setGenStats(null);
     let buildContinues = false;
     const userMsg: Msg = { role: "user", content: text };
     append(userMsg);
@@ -733,7 +744,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* 入力欄 */}
-        <div className="safe-bottom min-w-0 max-w-full shrink-0 overflow-x-hidden border-t border-zinc-200 bg-white px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900 sm:px-5">
+        <div className="safe-bottom relative min-w-0 max-w-full shrink-0 border-t border-zinc-200 bg-white px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900 sm:px-5">
+          {/* 生成統計（右下フローティング）: 思考状態 / tok/s / コンテキスト */}
+          {(genStats || busy) && (
+            <div className="pointer-events-none absolute -top-10 right-3 z-10 sm:right-5">
+              <GenStatsBadge stats={genStats} busy={busy} />
+            </div>
+          )}
           <div className="mx-auto max-w-5xl">
           {effectiveMode === "run" && (
             <select
@@ -802,6 +819,54 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       </div>
     </div>,
     document.body,
+  );
+}
+
+/** トークン数の短縮表記（3214 → 3.2K）。 */
+function fmtTok(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1)}K`;
+  return `${Math.round(n / 1000)}K`;
+}
+
+/** 生成統計の右下フローティングピル: 思考状態 / tok/s / コンテキスト使用量。 */
+function GenStatsBadge({ stats, busy }: {
+  stats: { phase: string; tokPerSec: number; genTokens: number; promptTokens: number | null; contextMax: number | null } | null;
+  busy: boolean;
+}) {
+  const pill = "num flex items-center gap-2 whitespace-nowrap rounded-full border border-zinc-200/70 bg-white/85 px-3 py-1.5 text-[11px] font-medium text-zinc-600 shadow-sm backdrop-blur-md dark:border-zinc-700/70 dark:bg-zinc-900/85 dark:text-zinc-300";
+  const sep = <span className="text-zinc-300 dark:text-zinc-600">·</span>;
+  if (!stats) {
+    if (!busy) return null;
+    return (
+      <span className={pill}>
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />応答待ち
+      </span>
+    );
+  }
+  const done = stats.phase === "done" || !busy;
+  const phaseLabel = done ? "完了" : stats.phase === "thinking" ? "思考中" : "回答中";
+  const dot = done ? "bg-zinc-400" : stats.phase === "thinking" ? "animate-pulse bg-violet-500" : "animate-pulse bg-emerald-500";
+  const used = (stats.promptTokens ?? 0) + stats.genTokens;
+  const pct = stats.contextMax ? Math.min(100, (used / stats.contextMax) * 100) : 0;
+  return (
+    <span className={`${pill} ${done ? "opacity-70" : ""}`}>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+      {phaseLabel}
+      {sep}
+      {stats.tokPerSec.toFixed(1)} tok/s
+      {sep}
+      {stats.contextMax ? (
+        <span className="flex items-center gap-1.5" title={`コンテキスト ${used.toLocaleString()} / ${stats.contextMax.toLocaleString()} トークン`}>
+          <span className="h-1 w-10 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+            <span className="block h-full rounded-full bg-accent-500 transition-[width] duration-500" style={{ width: `${pct}%` }} />
+          </span>
+          {fmtTok(used)}/{fmtTok(stats.contextMax)}
+        </span>
+      ) : (
+        <span>{fmtTok(stats.genTokens)} tok</span>
+      )}
+    </span>
   );
 }
 

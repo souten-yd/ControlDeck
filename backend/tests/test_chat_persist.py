@@ -136,3 +136,61 @@ def test_checkpoint_saves_partial_on_cancel(client, monkeypatch):
         assert m.status == "canceled"
     finally:
         db.close()
+
+
+def test_run_chat_job_emits_generation_stats(client, monkeypatch):
+    """生成中に stats イベント（フェーズ/tok/s/コンテキスト）が流れ、最終値は実測usageで確定する。"""
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.jobs import service as jobs
+    from app.models import ChatMessage, Conversation
+    from app.models_mgmt.runtime_provider import RuntimeChunk
+
+    db = SessionLocal()
+    try:
+        db.add(Conversation(id="cvs", owner_user_id=None))
+        db.flush()
+        db.add(ChatMessage(id="ams", conversation_id="cvs", role="assistant", status="generating"))
+        db.commit()
+    finally:
+        db.close()
+
+    class FakeProvider:
+        async def stream_chat(self, request, request_id=None):
+            yield RuntimeChunk("thinking", content="考")
+            yield RuntimeChunk("content", content="答")
+            yield RuntimeChunk("usage", usage={"prompt_tokens": 12, "completion_tokens": 2})
+
+        async def cancel(self, request_id):
+            return False
+
+    monkeypatch.setattr(
+        "app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: FakeProvider(),
+    )
+
+    async def fake_ctx(base_url, model):
+        return 8192
+
+    monkeypatch.setattr(cp, "_context_max", fake_ctx)
+
+    async def scenario():
+        job = jobs.create("chat.completion", "t", lambda j: cp._run_chat_job(
+            j, "ams", "cvs", [{"role": "user", "content": "hi"}],
+            {"base_url": "http://127.0.0.1:9/v1", "model": "m", "mode": "chat",
+             "thinking": "off", "max_output_tokens": 128},
+        ))
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if job.status not in ("queued", "running"):
+                break
+        return job
+
+    job = asyncio.run(scenario())
+    assert job.status == "succeeded", job.error
+    stats = [e for e in job.events if e.get("message") == "stats"]
+    assert stats, "statsイベントが流れていない"
+    final = stats[-1]
+    assert final["phase"] == "done"
+    assert final["prompt_tokens"] == 12 and final["gen_tokens"] == 2  # usageの実測値で確定
+    assert final["context_max"] == 8192
+    assert final["tok_per_sec"] >= 0

@@ -63,7 +63,9 @@ def test_ollama_native_stream_normalizes_json_lines(monkeypatch):
         return [chunk async for chunk in provider.stream_chat(request)]
 
     chunks = asyncio.run(collect())
-    assert [(item.type, item.content) for item in chunks] == [("thinking", "検討"), ("content", "完了")]
+    assert [(item.type, item.content) for item in chunks[:2]] == [("thinking", "検討"), ("content", "完了")]
+    # done行の実測トークン数はusage chunkとして流れる（生成統計表示用）
+    assert chunks[2].type == "usage"
 
 
 def test_ollama_structured_output_uses_native_format_and_disables_thinking(monkeypatch):
