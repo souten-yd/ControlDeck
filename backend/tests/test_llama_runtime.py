@@ -127,7 +127,7 @@ def test_unit_content_typed_mtp_moe_and_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "c.json")
     monkeypatch.setattr(llama, "current_link", lambda: tmp_path / "current")
     (tmp_path / "current").mkdir()
-    llama.save_config({"instance": {
+    llama.save_config({"backend": "rocm", "instance": {
         "model_path": "/models/mtp.gguf", "cache_type_k": "q8_0", "cache_type_v": "q4_0",
         "spec_type": "draft-mtp", "draft_max": 8, "cpu_moe": True,
         "mmap": False, "mlock": True,
@@ -139,6 +139,8 @@ def test_unit_content_typed_mtp_moe_and_cache(monkeypatch, tmp_path):
     assert "--draft-max" not in content  # b10001で削除された旧引数を出さない
     assert '"--flash-attn" "off"' in content  # 値必須形式（裸フラグは起動エラーになる）
     assert "--cpu-moe" in content and "--no-mmap" in content and "--mlock" in content
+    # ROCmはHIPストリーム複数時のアイドル100%バグ回避（ROCm/ROCm#2625）
+    assert 'Environment="GPU_MAX_HW_QUEUES=1"' in content
 
 
 def test_llama_api_status(admin_client):
