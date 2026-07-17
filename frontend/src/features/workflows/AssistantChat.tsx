@@ -102,6 +102,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [showSettings, setShowSettings] = useState(false);
   const [baseUrl, setBaseUrl] = useState<string>(saved.baseUrl || "http://127.0.0.1:11434/v1");
   const [model, setModel] = useState<string>(saved.model || "");
+  // ⚙️で選択中runtimeのendpoint（最後に追従した値）。変わったら手動選択より優先して切り替える。
+  const [autoBase, setAutoBase] = useState<string>(saved.autoBase || "");
   const [engine, setEngine] = useState<string>(saved.engine || "duckduckgo");
   const [searxngUrl, setSearxngUrl] = useState<string>(saved.searxngUrl || "");
   const [runTarget, setRunTarget] = useState<number | "">("");
@@ -173,8 +175,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, engine, searxngUrl }));
-  }, [baseUrl, model, engine, searxngUrl]);
+    localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, engine, searxngUrl, autoBase }));
+  }, [baseUrl, model, engine, searxngUrl, autoBase]);
 
   // SearXNG は基本停止・使う時だけ起動。検索系モード + SearXNG 選択時に先読み起動して
   // 実際の検索でコールドスタート（2〜3 秒）を待たずに済むようにする
@@ -209,16 +211,23 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // LLM エンドポイント自動検出
   const { data: endpoints } = useQuery({
     queryKey: ["llm-endpoints"],
-    queryFn: () => api<{ base_url: string; models: string[] }[]>("/workflows/llm-endpoints"),
+    queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean }[]>("/workflows/llm-endpoints"),
     staleTime: 60_000,
     enabled: can("workflows.edit"),
   });
+  // ⚙️の選択runtime（selected=true）へ追従する。選択が前回追従時から変わったら
+  // 保存済みendpointを上書きし、同じ選択のままなら手動指定を尊重する。
   useEffect(() => {
-    if (!model && endpoints?.length && endpoints[0].models.length) {
-      setBaseUrl(endpoints[0].base_url);
-      setModel(endpoints[0].models[0]);
+    if (!endpoints?.length) return;
+    const preferred = endpoints.find((ep) => ep.selected) ?? endpoints[0];
+    if (!preferred) return;
+    if (preferred.base_url !== autoBase || !model) {
+      setAutoBase(preferred.base_url);
+      setBaseUrl(preferred.base_url);
+      if (!preferred.models.includes(model)) setModel(preferred.models[0] ?? "");
     }
-  }, [endpoints, model]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endpoints]);
 
   // フロー実行モード用のワークフロー一覧
   const { data: workflows } = useQuery({

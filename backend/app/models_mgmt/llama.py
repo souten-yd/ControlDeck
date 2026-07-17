@@ -525,15 +525,16 @@ def _unit_content(alias: str | None = None) -> str:
         "--repeat-penalty", str(inst.get("repeat_penalty", 1.0)),
         "--seed", str(inst.get("seed", -1)),
     ]
-    if inst.get("flash_attn"):
-        args += ["--flash-attn"]
+    # b10001 以降は --flash-attn が on|off|auto の値必須（旧フラグ形式はエラーで即終了する）
+    args += ["--flash-attn", "on" if inst.get("flash_attn") else "off"]
     if not inst.get("mmap", True):
         args += ["--no-mmap"]
     if inst.get("mlock"):
         args += ["--mlock"]
     spec_type = str(inst.get("spec_type", "none"))
     if spec_type != "none":
-        args += ["--spec-type", spec_type, "--draft-max", str(inst.get("draft_max", 16))]
+        # --draft-max は削除済み。後継は --spec-draft-n-max
+        args += ["--spec-type", spec_type, "--spec-draft-n-max", str(inst.get("draft_max", 16))]
     if inst.get("cpu_moe"):
         args += ["--cpu-moe"]
     elif int(inst.get("n_cpu_moe", 0)) > 0:
@@ -572,6 +573,18 @@ def _unit_content(alias: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def _log_tail(alias: str, max_chars: int = 300) -> str:
+    """instanceログ末尾の要点（起動失敗理由をUIへ返すため）。"""
+    path = data_dir() / "logs" / f"{unit_name(alias).removesuffix('.service')}.log"
+    try:
+        lines = [ln.strip() for ln in path.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    error_lines = [ln for ln in lines[-40:] if re.search(r"error|failed|abort", ln, re.I)]
+    tail = error_lines[-2:] if error_lines else lines[-2:]
+    return " / ".join(tail)[-max_chars:]
+
+
 def start_instance(alias: str | None = None) -> tuple[bool, str]:
     from app.applications import systemd as sd
 
@@ -606,7 +619,27 @@ def start_instance(alias: str | None = None) -> tuple[bool, str]:
         sd.stop(f"{UNIT_PREFIX}.service")
     active = sd.query_status(name).get("status") == "RUNNING"
     # 保存後のloadで既に稼働中なら、新しい型付き設定を確実に反映する。
-    return sd.restart(name) if active and changed else sd.start(name)
+    ok, err = sd.restart(name) if active and changed else sd.start(name)
+    if not ok:
+        return ok, err
+    # Type=simple は起動成功が即返るため、引数エラー等の即時クラッシュを検知できない。
+    # 短時間監視し、クラッシュ（FAILED / 終了 / 自動再起動）を検出したらログ末尾を添えて
+    # 失敗として返す。ExecStartPre 実行中（STARTING）は待つ。
+    stable = 0
+    for _ in range(10):
+        time.sleep(1)
+        state = sd.query_status(name)
+        crashed = state.get("status") in ("FAILED", "STOPPED") or state.get("sub_state") == "auto-restart"
+        if crashed:
+            detail = _log_tail(alias)
+            return False, "llama-server が起動直後に停止しました" + (f": {detail}" if detail else "")
+        if state.get("status") == "RUNNING":
+            stable += 1
+            if stable >= 3:
+                return True, ""
+        else:
+            stable = 0
+    return True, ""
 
 
 def stop_instance(alias: str | None = None) -> tuple[bool, str]:

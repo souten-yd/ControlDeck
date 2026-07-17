@@ -75,7 +75,9 @@ async def list_models(provider_id: str) -> list[dict]:
             result.append({
                 "id": str(config["alias"]), "name": path.name or str(config["alias"]),
                 "size_bytes": path.stat().st_size if path.is_file() else 0,
-                "modified_at": "", "loaded": bool(state.get("ok")),
+                # health(200) はモデル読み込み完了後のみ。読み込み中も unit 稼働なら loaded 扱いにし、
+                # ロード操作直後にインジケータ/ボタンが未ロード表示のまま残らないようにする。
+                "modified_at": "", "loaded": bool(state.get("ok")) or bool(config.get("loaded")),
                 "details": {
                     "path": model_path, "backend": backend, "port": config.get("port"),
                     "base_url": config.get("base_url"), "unit": config.get("unit"),
