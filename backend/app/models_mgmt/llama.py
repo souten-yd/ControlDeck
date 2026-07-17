@@ -555,6 +555,11 @@ def _unit_content(alias: str | None = None) -> str:
         # 共有ライブラリ（libllama-server-impl.so 等）はバイナリと同じ場所にある
         f'Environment="LD_LIBRARY_PATH={_lib_dir()}"',
     ]
+    # ROCm既知バグ: HIPストリームが2本以上あるとアイドルでもGPU busy 100%・
+    # 高消費電力が続く（ROCm/ROCm#2625）。spec-type等が追加ストリームを作ると発症する。
+    # HWキューを1本に制限すると解消し、生成速度への影響は実測で無し。
+    # HIP専用の環境変数のためVulkan等の他バックエンドでは無視される。全unitへ適用する。
+    lines.append('Environment="GPU_MAX_HW_QUEUES=1"')
     for preflight in preflight_commands:
         lines.append("ExecStartPre=" + " ".join(_escape_exec_arg(a) for a in preflight))
     lines += [
