@@ -26,7 +26,7 @@ export default function AppsPage() {
   const [editing, setEditing] = useState<ManagedApp | null>(null);
   const [deleting, setDeleting] = useState<ManagedApp | null>(null);
   const [portPick, setPortPick] = useState<ManagedApp | null>(null);
-  const [webView, setWebView] = useState<{ name: string; port: number } | null>(null);
+  const [webView, setWebView] = useState<{ id: number; name: string; port: number } | null>(null);
   const can = useAuth((s) => s.can);
   const action = useAppAction();
   const deleteApp = useDeleteApp();
@@ -36,8 +36,8 @@ export default function AppsPage() {
 
   // Web ボタン: サーバーとして待ち受けているアプリを全画面ビューア（iframe）で開く。
   // window.open だと PWA では iOS のアプリ内 Safari（ツールバー付き）になるため。
-  const openWeb = (name: string, port: number) => {
-    setWebView({ name, port });
+  const openWeb = (id: number, name: string, port: number) => {
+    setWebView({ id, name, port });
   };
   const saveWebPort = (app: ManagedApp, port: number) => {
     api(`/apps/${app.id}`, { method: "PATCH", json: { web_port: port } })
@@ -46,9 +46,9 @@ export default function AppsPage() {
   };
   const handleWeb = (app: ManagedApp) => {
     const ports = app.runtime.listening_ports ?? [];
-    if (app.web_port) return openWeb(app.name, app.web_port);
+    if (app.web_port) return openWeb(app.id, app.name, app.web_port);
     if (ports.length === 1) {
-      openWeb(app.name, ports[0]);
+      openWeb(app.id, app.name, ports[0]);
       saveWebPort(app, ports[0]); // 次回からこのポートを開く
     } else if (ports.length > 1) {
       setPortPick(app); // 初回は選択、以降は保存されたポートを開く
@@ -228,7 +228,7 @@ export default function AppsPage() {
       )}
 
       {/* アプリ Web ビュー（全画面 iframe） */}
-      {webView && <WebViewOverlay name={webView.name} port={webView.port} onClose={() => setWebView(null)} />}
+      {webView && <WebViewOverlay appId={webView.id} name={webView.name} port={webView.port} onClose={() => setWebView(null)} />}
 
       {/* Web ポート選択（複数検出時の初回のみ。選択後は保存され次回から直接開く） */}
       {portPick && (
@@ -241,7 +241,7 @@ export default function AppsPage() {
               <li key={p}>
                 <button
                   onClick={() => {
-                    openWeb(portPick.name, p);
+                    openWeb(portPick.id, portPick.name, p);
                     saveWebPort(portPick, p);
                     setPortPick(null);
                   }}
@@ -276,8 +276,11 @@ export default function AppsPage() {
 
 /** アプリの Web UI を全画面 iframe で表示（下部ナビより手前）。
  * PWA で window.open するとアプリ内 Safari のツールバーが出て全画面にならないため。 */
-function WebViewOverlay({ name, port, onClose }: { name: string; port: number; onClose: () => void }) {
-  const url = `http://${location.hostname}:${port}/`;
+function WebViewOverlay({ appId, name, port, onClose }: { appId: number; name: string; port: number; onClose: () => void }) {
+  // 同一オリジンのreverse proxyで表示する。HTTPS（Tailscale Serve等）経由でも
+  // 混在コンテンツにならず、認証（セッションcookie）も同一オリジンで効く。
+  const url = `/appview/${appId}/`;
+  const directUrl = `http://${location.hostname}:${port}/`;
   return createPortal(
     <div className="fixed inset-0 z-40 flex flex-col bg-white dark:bg-zinc-950">
       <div className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
@@ -286,7 +289,7 @@ function WebViewOverlay({ name, port, onClose }: { name: string; port: number; o
           <span className="num ml-2 text-xs text-zinc-400">:{port}</span>
         </p>
         <a
-          href={url}
+          href={directUrl}
           target="_blank"
           rel="noopener noreferrer"
           aria-label="ブラウザで開く"
