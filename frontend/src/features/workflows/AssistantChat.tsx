@@ -505,6 +505,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder },
         });
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
+        // 新規作成したプロジェクトを以後の既定として維持し、モードもOpenCodeのまま継続する
+        if (codeProject === "__new__" && codeProjectName) {
+          setCodeProject(codeProjectName);
+          setCodeNewName("");
+        }
+        setModeChoice("code");
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "gen") {
@@ -975,6 +981,16 @@ function GenStatsBadge({ stats, busy }: {
     );
   }
   const done = stats.phase === "done" || !busy;
+  if (!done && stats.phase === "code") {
+    return (
+      <span className={row}>
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-violet-500" />
+        OpenCode実行中
+        {sep}
+        {stats.genTokens.toLocaleString()} イベント
+      </span>
+    );
+  }
   const phaseLabel = done ? "完了" : stats.phase === "thinking" ? "思考中" : "回答中";
   const dot = done ? "bg-zinc-400" : stats.phase === "thinking" ? "animate-pulse bg-violet-500" : "animate-pulse bg-emerald-500";
   const used = (stats.promptTokens ?? 0) + stats.genTokens;
@@ -1032,7 +1048,7 @@ function MessageBubble({
           /* 機能選択判断は選択結果のみ表示し、理由・計画・統計はタップで展開する */
           <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20">
             <summary className="cursor-pointer text-xs font-semibold text-accent-700 dark:text-accent-300">
-              🧭 {MODES.find((m) => m.id === msg.plan?.mode)?.label ?? "調査"}{msg.streaming ? "（実行中）" : ""}
+              {msg.progress?.[0]?.phase === "opencode" ? "⌨️ OpenCode" : `🧭 ${MODES.find((m) => m.id === msg.plan?.mode)?.label ?? "調査"}`}{msg.streaming ? "（実行中）" : ""}
             </summary>
             {msg.plan?.reason && (
               <p className="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300">判断理由: {msg.plan.reason}</p>

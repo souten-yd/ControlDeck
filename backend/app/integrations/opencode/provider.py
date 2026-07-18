@@ -264,7 +264,7 @@ def _find_session_id(value: Any) -> str:
 
 async def run_chat(
     job: Job, *, instruction: str, project_name: str = "", project_path: str = "",
-    session_id: str = "", on_text=None,
+    session_id: str = "", on_text=None, on_event=None,
 ) -> dict:
     """AIチャット用のheadless実行。JSONイベントを逐次読み、本文テキストを
 
@@ -336,6 +336,8 @@ async def run_chat(
             except json.JSONDecodeError:
                 continue
             events += 1
+            if on_event is not None:
+                await on_event(str(event.get("type") or ""), events)
             if not found_session:
                 found_session = _find_session_id(event)
             if event.get("type") == "error":
