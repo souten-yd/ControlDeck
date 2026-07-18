@@ -106,9 +106,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [model, setModel] = useState<string>(saved.model || "");
   // ⚙️で選択中runtimeのendpoint（最後に追従した値）。変わったら手動選択より優先して切り替える。
   const [autoBase, setAutoBase] = useState<string>(saved.autoBase || "");
-  // Web検索エンジンはSearXNG既定（ローカル・オンデマンド起動）。問題なければ将来固定化する
-  const [engine, setEngine] = useState<string>(saved.engine || "searxng");
-  const [searxngUrl, setSearxngUrl] = useState<string>(saved.searxngUrl || "");
+  // Web検索エンジンはSearXNG固定（ローカル・オンデマンド起動）
+  const engine = "searxng";
+  const searxngUrl = "";
   const [runTarget, setRunTarget] = useState<number | "">("");
   // OpenCodeモード: CodeDEVプロジェクト選択（"__new__"は名前入力で新規作成）
   const [codeProject, setCodeProject] = useState("");
@@ -197,8 +197,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, engine, searxngUrl, autoBase }));
-  }, [baseUrl, model, engine, searxngUrl, autoBase]);
+    localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, autoBase }));
+  }, [baseUrl, model, autoBase]);
 
   // SearXNG は基本停止・使う時だけ起動。検索系モード + SearXNG 選択時に先読み起動して
   // 実際の検索でコールドスタート（2〜3 秒）を待たずに済むようにする
@@ -754,18 +754,6 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                   <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="llama3.2" className="min-w-0 w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
                 </div>
               )}
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs text-zinc-500">Web 検索エンジン</span>
-              <div className="flex min-w-0 gap-1.5">
-                <select value={engine} onChange={(e) => setEngine(e.target.value)} className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-900">
-                  <option value="duckduckgo">DuckDuckGo</option>
-                  <option value="searxng">SearXNG</option>
-                </select>
-                {engine === "searxng" && (
-                  <input value={searxngUrl} onChange={(e) => setSearxngUrl(e.target.value)} placeholder="空 = ローカル既定 (127.0.0.1:8888)" className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
-                )}
-              </div>
             </label>
           </div>
         )}

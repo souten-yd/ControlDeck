@@ -18,7 +18,7 @@ import {
   IconPower,
   IconSettings,
   IconTerminal,
-  IconUpload,
+  IconLogout,
 } from "../components/icons";
 import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
@@ -245,21 +245,14 @@ export default function AppLayout() {
                 再接続中
               </span>
             )}
-            {can("power.manage") && (
-              <button
-                onClick={() => setActionOpen(true)}
-                aria-label="グローバル操作"
-                className="hidden rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
-              >
-                <IconPower />
-              </button>
-            )}
             <button
-              onClick={logout}
-              className="text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+              onClick={() => setActionOpen(true)}
+              aria-label="グローバル操作"
+              className="hidden rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
             >
-              {user?.display_name} ログアウト
+              <IconPower />
             </button>
+            <span className="text-xs text-zinc-400">{user?.display_name}</span>
           </div>
         </header>
 
@@ -385,16 +378,6 @@ export default function AppLayout() {
                 }}
               />
             )}
-            {can("files.edit") && (
-              <ActionItem
-                icon={<IconUpload />}
-                label="ファイルアップロード"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/files?upload=1");
-                }}
-              />
-            )}
             <ActionItem
               icon={<IconChart />}
               label="システム監視"
@@ -412,10 +395,18 @@ export default function AppLayout() {
               }}
             />
           </div>
+          <div className="my-3 border-t border-zinc-200 dark:border-zinc-800" />
+          <ActionItem
+            icon={<IconLogout />}
+            label={`ログアウト（${user?.display_name ?? ""}）`}
+            onClick={() => {
+              setActionOpen(false);
+              void logout();
+            }}
+          />
           {can("power.manage") && (
             <>
-              <div className="my-3 border-t border-zinc-200 dark:border-zinc-800" />
-              <p className="mb-1 px-1 text-xs text-zinc-400">電源</p>
+              <p className="mb-1 mt-3 px-1 text-xs text-zinc-400">電源</p>
               <div className="space-y-1">
                 <ActionItem
                   icon={<IconRestartPower />}

@@ -170,6 +170,13 @@ export const IconTrash = (p: SVGProps<SVGSVGElement>) => (
     <path d="M6 7l1 13h10l1-13" />
   </Icon>
 );
+export const IconLogout = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="m16 17 5-5-5-5" />
+    <path d="M21 12H9" />
+  </Icon>
+);
 export const IconPaperclip = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="m21 11.6-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.8-8.8a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.85 1.85 0 0 1-2.6-2.6l8.1-8.1" />
