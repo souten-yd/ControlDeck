@@ -503,6 +503,7 @@ class LlamaInstanceBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_path: str | None = None
+    mmproj_path: str | None = None
     role: Literal["llm", "embedding", "reranker"] | None = None
     port: int | None = Field(default=None, ge=1024, le=65535)
     n_gpu_layers: int | None = Field(default=None, ge=0, le=999)
@@ -536,16 +537,21 @@ class LlamaInstanceBody(BaseModel):
 
 def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
-    if "model_path" in patch:
-        from app.files import service as files
+    from app.files import service as files
 
+    for key in ("model_path", "mmproj_path"):
+        if key not in patch:
+            continue
+        raw = str(patch[key])
+        if key == "mmproj_path" and raw == "":  # 空文字はmmproj解除
+            continue
         try:
-            model_path = files.resolve(str(patch["model_path"]))
+            resolved = files.resolve(raw)
         except (PermissionError, FileNotFoundError) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
-        if not model_path.is_file() or model_path.suffix.lower() != ".gguf":
-            raise HTTPException(status_code=422, detail="llama.cppモデルは許可ルート内のGGUFファイルを指定してください")
-        patch["model_path"] = str(model_path)
+        if not resolved.is_file() or resolved.suffix.lower() != ".gguf":
+            raise HTTPException(status_code=422, detail="許可ルート内のGGUFファイルを指定してください")
+        patch[key] = str(resolved)
     return patch
 
 
@@ -666,6 +672,36 @@ async def llama_stop(
     ok, err = await asyncio.to_thread(llama.stop_instance)
     audit.record(db, "llama.stop", user=user, resource_type="runtime", request=request)
     return {"ok": ok, "error": err}
+
+
+@router.get("/llama/role-presets")
+def llama_role_presets(user: User = Depends(require_permission("workflows.run"))):
+    """Embed/Reranker 推奨プリセットの導入・稼働状態。"""
+    from app.models_mgmt import role_presets
+
+    return {"presets": role_presets.preset_status()}
+
+
+@router.post("/llama/role-presets/{preset_id}/install-jobs", status_code=201)
+async def llama_role_preset_install(
+    preset_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """プリセットのGGUFダウンロード+instance登録をサーバー側ジョブで行う。"""
+    from app.models_mgmt import role_presets
+
+    preset = role_presets.ROLE_PRESETS.get(preset_id)
+    if preset is None:
+        raise HTTPException(status_code=404, detail="未知のプリセットです")
+
+    async def run(job: jobs.Job):
+        return await role_presets.install(job, preset_id)
+
+    job = jobs.create("model.preset", f"導入: {preset['label']}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
+    audit.record(db, "model.preset_install", user=user, resource_type="model",
+                 resource_id=preset_id, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
 
 
 @router.get("/llama/options")

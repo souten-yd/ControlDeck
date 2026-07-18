@@ -68,6 +68,8 @@ DEFAULT_INSTANCE = {
         "model_path": "",
         # llm: チャット/生成 / embedding: /v1/embeddings 専用 / reranker: /v1/rerank 専用
         "role": "llm",
+        # VLM用 multimodal projector（GGUF）。設定時のみ --mmproj を付ける
+        "mmproj_path": "",
         "port": 8080,
         "n_gpu_layers": 999,   # 全層 GPU（VRAM 不足時は下げる）
         "ctx_size": 4096,
@@ -242,8 +244,10 @@ def save_instance(alias: str, patch: dict) -> dict:
             sd.remove_unit(unit_name(alias))
         cfg["instances"].pop(alias, None)
     cfg["instances"][new_alias] = instance
-    cfg["selected_alias"] = new_alias
-    cfg["instance"] = dict(instance)
+    # embedding/reranker はチャットの既定instance（selected）を奪わない
+    if str(instance.get("role", "llm")) == "llm" or not cfg.get("selected_alias"):
+        cfg["selected_alias"] = new_alias
+        cfg["instance"] = dict(instance)
     _write_config(cfg)
     sync_instance_unit(new_alias)
     return cfg
@@ -534,6 +538,8 @@ def _unit_content(alias: str | None = None) -> str:
     if inst.get("mlock"):
         args += ["--mlock"]
     role = str(inst.get("role", "llm"))
+    if role == "llm" and inst.get("mmproj_path"):
+        args += ["--mmproj", str(inst["mmproj_path"])]
     if role == "embedding":
         # 埋め込み専用（BGE-M3等）。/v1/embeddings を提供する
         args += ["--embedding", "--pooling", "mean"]
