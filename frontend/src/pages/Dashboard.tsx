@@ -7,11 +7,41 @@ import { formatBps, formatPercent, formatUptime } from "../lib/format";
 import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
 
+interface HistorySample {
+  timestamp: string;
+  cpu_percent: number;
+  memory_percent: number;
+  gpu_percent: number | null;
+  vram_percent: number | null;
+}
+
 export default function DashboardPage() {
   const latest = useMetrics((s) => s.latest);
   const history = useMetrics((s) => s.history);
+  const can = useAuth((s) => s.can);
   const { data: overview, isLoading } = useOverview();
   const { data: apps } = useApps();
+  // グラフはサーバー側保持の履歴でシードし、ブラウザを閉じていた間も空白にしない
+  const { data: seeded } = useQuery({
+    queryKey: ["metrics-history-seed"],
+    queryFn: () => api<{ samples: HistorySample[] }>("/system/metrics/history?minutes=5"),
+    enabled: can("system.view"),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const firstLiveTs = history[0]?.timestamp ?? "";
+  const seedSamples = (seeded?.samples ?? []).filter((s) => !firstLiveTs || s.timestamp < firstLiveTs);
+  const cpuValues = [...seedSamples.map((s) => s.cpu_percent), ...history.map((h) => h.cpu.percent)];
+  const ramValues = [...seedSamples.map((s) => s.memory_percent), ...history.map((h) => h.memory.percent)];
+  const gpuValues = [...seedSamples.map((s) => s.gpu_percent), ...history.map((h) => h.gpu?.utilization_percent ?? null)];
+  const vramValues = [
+    ...seedSamples.map((s) => s.vram_percent),
+    ...history.map((h) =>
+      h.gpu?.vram_used_bytes != null && h.gpu.vram_total_bytes
+        ? (h.gpu.vram_used_bytes / h.gpu.vram_total_bytes) * 100
+        : null,
+    ),
+  ];
 
   const m: MetricsSnapshot | null =
     latest ??
@@ -31,7 +61,7 @@ export default function DashboardPage() {
             label="CPU"
             value={m ? formatPercent(m.cpu.percent) : null}
             percent={m?.cpu.percent ?? null}
-            values={history.map((h) => h.cpu.percent)}
+            values={cpuValues}
             temp={m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : undefined}
             fan={m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm}` : undefined}
           />
@@ -39,14 +69,14 @@ export default function DashboardPage() {
             label="RAM"
             value={m ? formatPercent(m.memory.percent) : null}
             percent={m?.memory.percent ?? null}
-            values={history.map((h) => h.memory.percent)}
+            values={ramValues}
             sub={m ? `${(m.memory.used / 1024 ** 3).toFixed(1)} / ${(m.memory.total / 1024 ** 3).toFixed(0)} GB` : undefined}
           />
           <MetricTile
             label="GPU"
             value={m?.gpu ? formatPercent(m.gpu.utilization_percent) : "N/A"}
             percent={m?.gpu?.utilization_percent ?? null}
-            values={history.map((h) => h.gpu?.utilization_percent ?? null)}
+            values={gpuValues}
             temp={m?.gpu?.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : undefined}
             fan={m?.gpu?.fan_rpm != null ? `${m.gpu.fan_rpm}` : undefined}
           />
@@ -62,11 +92,7 @@ export default function DashboardPage() {
                 ? (m.gpu.vram_used_bytes / m.gpu.vram_total_bytes) * 100
                 : null
             }
-            values={history.map((h) =>
-              h.gpu?.vram_used_bytes != null && h.gpu.vram_total_bytes
-                ? (h.gpu.vram_used_bytes / h.gpu.vram_total_bytes) * 100
-                : null,
-            )}
+            values={vramValues}
             sub={
               m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
                 ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(1)} / ${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)} GB`
