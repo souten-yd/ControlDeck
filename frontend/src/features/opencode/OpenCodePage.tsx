@@ -22,6 +22,7 @@ interface FeatureState {
 interface Settings { base_url: string; model: string; project_path: string }
 interface Status { feature: FeatureState; settings: Settings }
 interface TerminalSession { id: string; name: string; created_at: number; attached: boolean; persistent: boolean }
+interface CodeProject { name: string; path: string; git: boolean; modified_at: number }
 
 const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900";
 const LS_SESSIONS = "cd-opencode-sessions"; // このページで開始したセッションID（表示の絞り込み用）
@@ -40,8 +41,16 @@ export default function OpenCodePage() {
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
   const { data } = useQuery({ queryKey: ["opencode-status"], queryFn: () => api<Status>("/opencode/status"), staleTime: 30_000 });
+  const { data: projectsData } = useQuery({
+    queryKey: ["opencode-projects"],
+    queryFn: () => api<{ root: string; projects: CodeProject[] }>("/opencode/projects"),
+  });
   const [form, setForm] = useState<Settings>({ base_url: "", model: "", project_path: "" });
   const [prompt, setPrompt] = useState("");
+  // プロジェクト選択: CodeDEVプロジェクト名 / "__new__"（名前入力で新規） / "__other__"（任意フォルダ）
+  const [projectChoice, setProjectChoice] = useState("");
+  const [newName, setNewName] = useState("");
+  const [otherPath, setOtherPath] = useState("");
   const [picker, setPicker] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [own, setOwn] = useState<string[]>(loadOwnSessions);
@@ -68,15 +77,24 @@ export default function OpenCodePage() {
     onError: (error) => show(error instanceof Error ? error.message : "設定保存に失敗", "error"),
   });
 
+  const startDisabled =
+    (projectChoice === "" ) ||
+    (projectChoice === "__new__" && !newName.trim()) ||
+    (projectChoice === "__other__" && !otherPath.trim());
   const start = useMutation({
     mutationFn: () => api<{ id: string }>("/opencode/sessions", {
       method: "POST",
-      json: { project_path: form.project_path, prompt, base_url: form.base_url, model: form.model },
+      json: {
+        project_name: projectChoice !== "__new__" && projectChoice !== "__other__" ? projectChoice : projectChoice === "__new__" ? newName.trim() : "",
+        project_path: projectChoice === "__other__" ? otherPath : "",
+        prompt, base_url: form.base_url, model: form.model,
+      },
     }),
     onSuccess: ({ id }) => {
       setOwn((prev) => [...prev.filter((v) => v !== id), id]);
       setPrompt("");
       qc.invalidateQueries({ queryKey: ["terminals"] });
+      qc.invalidateQueries({ queryKey: ["opencode-projects"] });
       setActive(id);
     },
     onError: (error) => show(error instanceof Error ? error.message : "セッション開始に失敗", "error"),
@@ -146,16 +164,29 @@ export default function OpenCodePage() {
 
       {/* セッション開始 */}
       <section className="space-y-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-        <label className="block text-xs text-zinc-500">プロジェクト
-          <div className="mt-1 flex gap-2">
-            <input value={form.project_path} onChange={(e) => setForm({ ...form, project_path: e.target.value })} placeholder="~（未指定はホーム）" className={`${input} min-w-0 font-mono`} />
+        <label className="block text-xs text-zinc-500">プロジェクト（CodeDEVで管理: {projectsData?.root ?? "~/CodeDEV"}）
+          <select value={projectChoice} onChange={(e) => setProjectChoice(e.target.value)} className={`${input} mt-1`}>
+            <option value="">プロジェクトを選択...</option>
+            {(projectsData?.projects ?? []).map((p) => (
+              <option key={p.name} value={p.name}>{p.name}{p.git ? " · git" : ""}</option>
+            ))}
+            <option value="__new__">➕ 新規プロジェクトを作成（名前を入力）</option>
+            <option value="__other__">📁 その他のフォルダ（既存プロジェクト）...</option>
+          </select>
+        </label>
+        {projectChoice === "__new__" && (
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="プロジェクト名（例: my-app）— CodeDEV配下に作成し git init します" className={`${input} font-mono`} autoFocus />
+        )}
+        {projectChoice === "__other__" && (
+          <div className="flex gap-2">
+            <input value={otherPath} onChange={(e) => setOtherPath(e.target.value)} placeholder="既存プロジェクトのパス" className={`${input} min-w-0 font-mono`} />
             <button onClick={() => setPicker(true)} className="flex shrink-0 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 text-xs dark:border-zinc-700"><IconFolder className="h-4 w-4 text-amber-500" />選択</button>
           </div>
-        </label>
+        )}
         <label className="block text-xs text-zinc-500">最初の指示（任意 — 起動と同時に送信）
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={2} className={`${input} mt-1 resize-y`} placeholder="空のままでもOK。TUI内でいつでも指示できます" />
         </label>
-        <button onClick={() => start.mutate()} disabled={start.isPending}
+        <button onClick={() => start.mutate()} disabled={start.isPending || startDisabled}
           className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           <IconPlus /> {start.isPending ? "起動中..." : "OpenCodeセッションを開始"}
         </button>
@@ -186,7 +217,7 @@ export default function OpenCodePage() {
         </section>
       )}
 
-      {picker && <FilePicker mode="dir" title="プロジェクトを選択" initialPath={form.project_path || undefined} onSelect={(path) => { setForm({ ...form, project_path: path }); setPicker(false); }} onClose={() => setPicker(false)} />}
+      {picker && <FilePicker mode="dir" title="既存プロジェクトを選択" initialPath={otherPath || undefined} onSelect={(path) => { setOtherPath(path); setPicker(false); }} onClose={() => setPicker(false)} />}
       {killing && (
         <ConfirmDialog title="OpenCodeセッションを終了しますか？" message="TUIと実行中の処理は終了します。この操作は取り消せません。" confirmLabel="終了する" onConfirm={() => kill(killing)} onClose={() => setKilling(null)} />
       )}

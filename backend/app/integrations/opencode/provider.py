@@ -91,6 +91,51 @@ def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
     return path
 
 
+def codedev_root() -> Path:
+    """OpenCodeプロジェクトの既定ルート（~/CodeDEV）。
+
+    ControlDeckのデータ領域やリポジトリ内ではなくホーム直下に置くことで、
+    ファイルマネージャ・ターミナル・Git から普通のプロジェクトとして扱える。
+    """
+    root = Path.home() / "CodeDEV"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+def list_projects() -> list[dict]:
+    """CodeDEV配下のプロジェクト一覧（更新の新しい順）。"""
+    projects = []
+    for path in codedev_root().iterdir():
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        projects.append({
+            "name": path.name, "path": str(path),
+            "git": (path / ".git").is_dir(), "modified_at": mtime,
+        })
+    return sorted(projects, key=lambda item: -float(item["modified_at"]))
+
+
+def ensure_project(name: str) -> dict:
+    """プロジェクト名からCodeDEV配下のフォルダを取得（無ければ作成 + git init）。"""
+    import subprocess
+
+    cleaned = name.strip()
+    if (not cleaned or len(cleaned) > 64 or cleaned in (".", "..")
+            or cleaned.startswith(".") or any(c in cleaned for c in "/\\\0")):
+        raise CodeAgentError("プロジェクト名は64文字以内で、/ や先頭の . は使えません")
+    path = codedev_root() / cleaned
+    created = not path.exists()
+    path.mkdir(exist_ok=True)
+    if created and shutil.which("git"):
+        subprocess.run(["git", "init", "-q"], cwd=path, capture_output=True, timeout=15)
+    return {"name": cleaned, "path": str(path), "created": created,
+            "git": (path / ".git").is_dir()}
+
+
 def tui_command(*, project_path: str, prompt: str = "", base_url: str = "", model: str = "") -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
 
