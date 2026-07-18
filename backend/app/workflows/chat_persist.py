@@ -467,11 +467,25 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             job.log("delta", delta=text + "\n\n")
             await maybe_ckpt()
 
+        # ツール実行等のイベントを間引いて進捗表示（作業中に無反応にならないように）
+        event_state = {"last": 0.0}
+
+        async def on_event(event_type: str, events: int) -> None:
+            now = asyncio.get_event_loop().time()
+            if now - event_state["last"] < 1.5:
+                return
+            event_state["last"] = now
+            label = {"tool_use": "ツール実行", "tool_result": "ツール結果", "step-start": "ステップ開始",
+                     "step-finish": "ステップ完了", "message": "応答生成", "text": "応答生成"}.get(event_type, event_type or "処理中")
+            job.log("progress", phase="opencode", label=f"{label}（{events}イベント）", iteration=events, details={})
+            job.log("stats", phase="code", tok_per_sec=0.0, gen_tokens=events,
+                    prompt_tokens=None, context_max=None)
+
         try:
             result = await opencode_provider.run_chat(
                 job, instruction=query, project_name=params.get("code_project", ""),
                 project_path=params.get("code_project_path", ""),
-                session_id=previous_session, on_text=on_text,
+                session_id=previous_session, on_text=on_text, on_event=on_event,
             )
         except asyncio.CancelledError:
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
