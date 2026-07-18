@@ -77,8 +77,11 @@ class SessionBody(BaseModel):
     model: str = Field(default="", max_length=200)
 
 
+_llm_warmup_tasks: set = set()
+
+
 @router.post("/sessions", status_code=201)
-def create_session(
+async def create_session(
     body: SessionBody, request: Request,
     user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
 ):
@@ -86,7 +89,19 @@ def create_session(
 
     AIチャット等からも {project_path, prompt} を渡して起動できる共通入口。
     """
+    import asyncio
+
     from app.terminals.manager import manager as terminals
+
+    # opencodeは外部クライアントでControl Deck内部のondemand起動hookを通らないため、
+    # セッション開始時に対象LLM endpoint（llama.cpp instance）を裏で起動しておく。
+    # TUIを待たせないようfire-and-forget（Ollamaはリクエスト時に自動ロードされる）。
+    endpoint = (body.base_url or opencode.get_settings()["base_url"]).strip().rstrip("/")
+    from app.models_mgmt import llama
+
+    warmup = asyncio.create_task(llama.ensure_ready_by_base_url(endpoint))
+    _llm_warmup_tasks.add(warmup)
+    warmup.add_done_callback(_llm_warmup_tasks.discard)
 
     try:
         # project_name指定はCodeDEV配下のフォルダ（無ければ作成）を使う
