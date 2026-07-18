@@ -196,6 +196,129 @@ def _extract_text(value: Any) -> list[str]:
     return found
 
 
+def _find_session_id(value: Any) -> str:
+    """opencode JSONイベントからセッションIDを再帰探索する（継続対話用）。"""
+    if isinstance(value, dict):
+        for key in ("sessionID", "session_id", "sessionId"):
+            found = value.get(key)
+            if isinstance(found, str) and found:
+                return found
+        for child in value.values():
+            found = _find_session_id(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_session_id(child)
+            if found:
+                return found
+    return ""
+
+
+async def run_chat(
+    job: Job, *, instruction: str, project_name: str = "", project_path: str = "",
+    session_id: str = "", on_text=None,
+) -> dict:
+    """AIチャット用のheadless実行。JSONイベントを逐次読み、本文テキストを
+
+    on_text コールバックへストリームする（Codex/Claude風のチャット内コーディング）。
+    session_id 指定で前回のopencodeセッションを継続する。
+    """
+    if not registry.is_enabled("opencode"):
+        raise CodeAgentError("OpenCode featureが有効ではありません")
+    if not instruction.strip():
+        raise CodeAgentError("指示が空です")
+    binary = registry.executable("opencode")
+    systemd_run = shutil.which("systemd-run")
+    systemctl = shutil.which("systemctl")
+    if binary is None or systemd_run is None or systemctl is None:
+        raise CodeAgentError("OpenCodeまたはsystemd user managerを利用できません")
+    settings = get_settings()
+    if project_name.strip():
+        project = Path(ensure_project(project_name)["path"])
+    else:
+        raw = project_path or settings.get("project_path") or ""
+        if not raw:
+            raise CodeAgentError("プロジェクトを指定してください")
+        project = files.resolve(raw)
+    if not project.is_dir():
+        raise CodeAgentError("project pathはディレクトリを指定してください")
+    endpoint = str(settings["base_url"]).rstrip("/")
+    model_id = str(settings["model"]).strip()
+    runtime_config = _runtime_config(f"chat-{job.id}", endpoint, model_id)
+    # LLM endpoint（llama.cpp instance）はondemand hookを通らないため先に起動保証する
+    from app.models_mgmt import llama
+
+    await llama.ensure_ready_by_base_url(endpoint)
+    unit = f"cdfeature-opencode-{re.sub(r'[^a-zA-Z0-9_-]', '', job.id)[:24]}"
+    argv = [
+        systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
+        f"--unit={unit}", f"--working-directory={project}",
+        f"--setenv=OPENCODE_CONFIG={runtime_config}",
+        str(binary), "run", instruction[:32_000],
+        "--format", "json", "--auto",
+        "--model", f"controldeck/{model_id}", "--dir", str(project),
+    ]
+    if session_id:
+        argv += ["--session", session_id]
+    job.set_progress("OpenCodeを起動", 0, 1)
+    events = 0
+    emitted: set[str] = set()
+    found_session = ""
+    reported_error = ""
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,
+        )
+
+        async def drain_stderr() -> bytes:
+            assert proc is not None and proc.stderr is not None
+            return await proc.stderr.read()
+
+        stderr_task = asyncio.create_task(drain_stderr())
+        assert proc.stdout is not None
+        async for raw_line in proc.stdout:
+            try:
+                event = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            events += 1
+            if not found_session:
+                found_session = _find_session_id(event)
+            if event.get("type") == "error":
+                reported_error = str(event.get("error", {}).get("name") or "provider error")[:100]
+            for text in _extract_text(event):
+                cleaned = text.strip()
+                if not cleaned or cleaned in emitted:
+                    continue
+                emitted.add(cleaned)
+                if on_text is not None:
+                    await on_text(cleaned)
+            if events % 5 == 0:
+                job.set_progress("OpenCode実行中", events, 0)
+        await stderr_task
+        await proc.wait()
+    except asyncio.CancelledError:
+        stop = await asyncio.create_subprocess_exec(
+            systemctl, "--user", "stop", f"{unit}.service",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await stop.wait()
+        raise
+    finally:
+        runtime_config.unlink(missing_ok=True)
+    if reported_error:
+        raise CodeAgentError(f"OpenCode provider error: {reported_error}")
+    if proc is None or proc.returncode != 0:
+        raise CodeAgentError(f"OpenCode実行失敗（終了コード {proc.returncode if proc else 'unknown'}）")
+    output = "\n\n".join(emitted)
+    job.set_progress("完了", 1, 1)
+    return {"output": output[-100_000:], "events": events,
+            "session_id": found_session, "project_path": str(project)}
+
+
 class OpenCodeProvider:
     async def run(
         self, job: Job, *, operation: str, project_path: str, instruction: str,

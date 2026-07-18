@@ -262,6 +262,8 @@ class SendBody(BaseModel):
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
     # 画像添付（/attachments でアップロード済みのID）。VLM有効モデルで画像入力に使う
     attachments: list[str] = Field(default_factory=list, max_length=8)
+    # OpenCodeチャット実行（mode=code）用のCodeDEVプロジェクト名
+    code_project: str = Field(default="", max_length=64)
 
 
 # ---- 添付（画像=VLM入力 / 文書=会話別RAGコレクション登録） ----
@@ -426,6 +428,59 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         if now - buf["last_ckpt"] >= CHECKPOINT_SEC:
             buf["last_ckpt"] = now
             await asyncio.to_thread(checkpoint)
+
+    # ---- OpenCodeチャット実行: TUIへ遷移せずheadlessで実行し、本文をストリームする ----
+    if mode == "code":
+        from app.integrations.opencode import provider as opencode_provider
+
+        query = str(history[-1].get("content") or "") if history else ""
+
+        def _last_code_session() -> str:
+            """この会話の直近のopencodeセッションID（継続対話用）。"""
+            db = SessionLocal()
+            try:
+                rows = db.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+                    ).order_by(ChatMessage.created_at.desc()).limit(20)
+                ).scalars().all()
+                for row in rows:
+                    try:
+                        meta = json.loads(row.meta_json or "{}")
+                    except json.JSONDecodeError:
+                        continue
+                    session = str(meta.get("opencode_session") or "")
+                    if session:
+                        return session
+                return ""
+            finally:
+                db.close()
+
+        previous_session = await asyncio.to_thread(_last_code_session)
+
+        async def on_text(text: str) -> None:
+            buf["content"] += text + "\n\n"
+            job.log("delta", delta=text + "\n\n")
+            await maybe_ckpt()
+
+        try:
+            result = await opencode_provider.run_chat(
+                job, instruction=query, project_name=params.get("code_project", ""),
+                session_id=previous_session, on_text=on_text,
+            )
+        except asyncio.CancelledError:
+            await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
+            raise
+        except opencode_provider.CodeAgentError as e:
+            await asyncio.to_thread(checkpoint, True, "failed", str(e))
+            raise
+        buf["meta"] = {"mode": "code", "opencode_session": result.get("session_id", ""),
+                       "project_path": result.get("project_path", "")}
+        if not buf["content"].strip():
+            buf["content"] = result.get("output") or "（OpenCodeからの出力はありませんでした）"
+        await asyncio.to_thread(checkpoint, True, "completed")
+        await asyncio.to_thread(_maybe_title, conv_id)
+        return {"assistant_message_id": assistant_id, "opencode_session": result.get("session_id", "")}
 
     # APIからautoが直接送られた場合もサーバー側で判定する。UIが先にroute APIで判定した
     # 場合は、検証済みplanを再利用して余分なLLM呼び出しを避ける。
@@ -787,7 +842,7 @@ async def send_message(
     conv = db.get(Conversation, conv_id)
     if conv is None or conv.owner_user_id != user.id:
         raise HTTPException(status_code=404, detail="会話が見つかりません")
-    allowed_modes = {"auto", "chat", "web", "academic", "deep", "research"}
+    allowed_modes = {"auto", "chat", "web", "academic", "deep", "research", "code"}
     if body.mode not in allowed_modes:
         raise HTTPException(status_code=422, detail="未対応のチャットモードです")
     if body.plan is not None and body.mode not in ("auto", body.plan.mode):
@@ -845,9 +900,10 @@ async def send_message(
               "thinking": body.thinking or chat_defaults.reasoning,
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "attachments": body.attachments,
+              "code_project": body.code_project,
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
-             "deep": "Deepサーチ", "research": "複合調査"}.get(body.mode, "生成")
+             "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")
     job = jobs.create(
         "chat.completion", f"{label}: {body.content[:40]}",
         lambda j: _run_chat_job(j, assistant_id, conv_id, history, params),

@@ -1,5 +1,5 @@
 /** Knowledge（RAG）管理ページ。コレクション/ドキュメントの登録・削除・検索テスト・設定。 */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
@@ -121,38 +121,44 @@ export default function KnowledgePage() {
 /** チャンク戦略・検索方式などの共通フォーム */
 function ConfigForm({ cfg, defaults, onChange }: { cfg: RagConfig; defaults: Defaults; onChange: (patch: Partial<RagConfig>) => void }) {
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  // Model画面（Embed/Rerankerタブ）で管理しているモデルから選べるようにする
+  // Model画面（Embed/Rerankerタブ）で管理しているモデルから選ぶ（手動入力なし）。
+  // 現在値が管理モデルに無い場合は推奨（先頭=BGE-M3等のllama instance優先）を自動選択する。
   const { data: embedOptions } = useQuery({
     queryKey: ["embedding-endpoints"],
     queryFn: () => api<{ endpoints: { label: string; base_url: string; model: string }[] }>("/models/embedding-endpoints"),
     staleTime: 30_000,
   });
-  const selectedManaged = (embedOptions?.endpoints ?? []).find(
+  const endpoints = embedOptions?.endpoints ?? [];
+  const selectedManaged = endpoints.find(
     (ep) => ep.base_url === cfg.embed_base_url && ep.model === cfg.embed_model,
   );
+  useEffect(() => {
+    if (!selectedManaged && endpoints.length > 0) {
+      onChange({ embed_base_url: endpoints[0].base_url, embed_model: endpoints[0].model });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedOptions]);
   return (
     <div className="space-y-3">
-      <L label="埋め込みモデル（Model画面の管理モデルから選択）">
-        <select
-          value={selectedManaged ? `${selectedManaged.base_url}|${selectedManaged.model}` : "__custom__"}
-          onChange={(e) => {
-            if (e.target.value === "__custom__") return;
-            const [base, model] = e.target.value.split("|");
-            onChange({ embed_base_url: base, embed_model: model });
-          }}
-          className={input}
-        >
-          {(embedOptions?.endpoints ?? []).map((ep) => (
-            <option key={`${ep.base_url}|${ep.model}`} value={`${ep.base_url}|${ep.model}`}>{ep.label}</option>
-          ))}
-          <option value="__custom__">カスタム（下で直接指定）</option>
-        </select>
-      </L>
-      <L label="埋め込みエンドポイント">
-        <input value={cfg.embed_base_url} onChange={(e) => onChange({ embed_base_url: e.target.value })} className={`${input} font-mono text-xs`} placeholder="http://127.0.0.1:11434/v1" />
-      </L>
-      <L label="埋め込みモデル名">
-        <input value={cfg.embed_model} onChange={(e) => onChange({ embed_model: e.target.value })} className={`${input} font-mono text-xs`} placeholder="nomic-embed-text" />
+      <L label="埋め込みモデル（Model画面で管理・推奨を自動選択）">
+        {endpoints.length > 0 ? (
+          <select
+            value={selectedManaged ? `${selectedManaged.base_url}|${selectedManaged.model}` : ""}
+            onChange={(e) => {
+              const [base, model] = e.target.value.split("|");
+              onChange({ embed_base_url: base, embed_model: model });
+            }}
+            className={input}
+          >
+            {endpoints.map((ep) => (
+              <option key={`${ep.base_url}|${ep.model}`} value={`${ep.base_url}|${ep.model}`}>{ep.label}</option>
+            ))}
+          </select>
+        ) : (
+          <p className="rounded-xl border border-dashed border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
+            埋め込みモデルが未導入です。Model画面の「Embed / Reranker」タブから BGE-M3 を導入してください。
+          </p>
+        )}
       </L>
       <L label="チャンク戦略">
         <select value={cfg.strategy} onChange={(e) => onChange({ strategy: e.target.value })} className={input}>

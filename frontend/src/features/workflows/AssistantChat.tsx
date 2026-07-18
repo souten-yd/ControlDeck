@@ -27,7 +27,7 @@ const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: 
   { id: "research", icon: "🧭", label: "複合調査", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
   { id: "gen", icon: "⚙️", label: "フロー生成", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
   { id: "run", icon: "▶", label: "フロー実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
-  { id: "code", icon: "⌨️", label: "OpenCode", hint: "コーディングエージェント（OpenCode）にこの指示で作業を開始させ、フル機能TUIへ切り替えます" },
+  { id: "code", icon: "⌨️", label: "OpenCode", hint: "コーディングエージェント（OpenCode）がこのチャット内で作業し、進捗と結果を表示します（同じ会話で継続対話。フル操作はOpenCode画面から）" },
 ];
 
 interface SourceItem { reference_id?: string; title: string; url: string; snippet?: string; source?: string; kind?: string }
@@ -492,14 +492,17 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "code") {
-        // OpenCode起動: 選択したCodeDEVプロジェクト（新規名なら作成）で、この指示を
-        // 最初のプロンプトとしてTUIセッションを開始し、画面を切り替える。
-        const res = await api<{ id: string; project_path?: string }>("/opencode/sessions", {
-          method: "POST", json: { prompt: text, project_name: codeProjectName },
+        // OpenCodeチャット実行: TUIへ遷移せず、サーバー側でheadless実行して
+        // 進捗・結果をこのチャットへストリームする（Codex/Claude風）。
+        // 同じ会話では前回のopencodeセッションを自動継続する。
+        const cid = await ensureConversation();
+        const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
+          method: "POST",
+          json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName },
         });
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
-        append({ role: "assistant", content: `⌨️ OpenCodeセッションを開始しました（${res.project_path ?? codeProjectName}）。TUIへ切り替えます…` });
-        window.setTimeout(() => { onClose(); navigate(`/opencode?session=${res.id}`); }, 600);
+        append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
+        await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "gen") {
         // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
         // サーバージョブで生成・登録・動作確認・自動修正へ進める。
