@@ -288,7 +288,7 @@ function CollectionSheet({ name, onClose }: { name: string; onClose: () => void 
       ) : tab === "search" ? (
         <SearchForm name={name} defaultMode={data.config.search_mode} />
       ) : tab === "graph" ? (
-        <GraphTab name={name} config={data.config} />
+        <GraphTab name={name} />
       ) : defaults ? (
         <SettingsForm name={name} config={data.config} defaults={defaults} onDone={refresh} />
       ) : null}
@@ -341,16 +341,33 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
   );
 }
 
-function GraphTab({ name, config }: { name: string; config: RagConfig }) {
+function GraphTab({ name }: { name: string }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
-  const [model, setModel] = useState("llama3.2");
+  // 抽出LLMはModel設定の稼働API（選択中ランタイム優先）から選ぶ
+  const { data: endpoints } = useQuery({
+    queryKey: ["llm-endpoints"],
+    queryFn: () => api<{ base_url: string; models: string[]; selected?: boolean }[]>("/workflows/llm-endpoints"),
+    staleTime: 60_000,
+  });
+  const llmOptions = (endpoints ?? []).flatMap((ep) =>
+    ep.models.map((m) => ({ base: ep.base_url, model: m, selected: !!ep.selected })),
+  );
+  const [choice, setChoice] = useState("");
+  useEffect(() => {
+    if (!choice && llmOptions.length > 0) {
+      const preferred = llmOptions.find((o) => o.selected) ?? llmOptions[0];
+      setChoice(`${preferred.base}|${preferred.model}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endpoints]);
+  const [llmBase, llmModel] = choice.split("|");
   const { data: stats } = useQuery({
     queryKey: ["knowledge-graph", name],
     queryFn: () => api<{ triples: number; entities: number; sample: { s: string; p: string; o: string }[] }>(`/knowledge/collections/${name}/graph`),
   });
   const build = useMutation({
-    mutationFn: () => api<{ triples: number; entities: number }>(`/knowledge/collections/${name}/graph`, { method: "POST", json: { base_url: config.embed_base_url.replace(/\/v1$/, "/v1"), model } }),
+    mutationFn: () => api<{ triples: number; entities: number }>(`/knowledge/collections/${name}/graph`, { method: "POST", json: { base_url: llmBase, model: llmModel } }),
     onSuccess: (r) => { show(`グラフ構築: ${r.triples} 事実 / ${r.entities} エンティティ`); qc.invalidateQueries({ queryKey: ["knowledge-graph", name] }); },
     onError: (e) => show(e instanceof Error ? e.message : "構築失敗", "error"),
   });
@@ -360,10 +377,15 @@ function GraphTab({ name, config }: { name: string; config: RagConfig }) {
       <p className="rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800/60">
         GraphRAG: LLM で文書からエンティティと関係を抽出し知識グラフを構築します。検索時に「グラフ拡張」を選ぶと関連事実が文脈に加わります。
       </p>
-      <L label="抽出に使う LLM モデル（Ollama 等の Chat モデル）">
-        <input value={model} onChange={(e) => setModel(e.target.value)} className={`${input} font-mono text-xs`} placeholder="llama3.2 / qwen2.5" />
+      <L label="抽出に使う LLM（Model設定の稼働APIから選択・停止中は自動起動）">
+        <select value={choice} onChange={(e) => setChoice(e.target.value)} className={input}>
+          {llmOptions.length === 0 && <option value="">稼働中のLLMがありません</option>}
+          {llmOptions.map((o) => (
+            <option key={`${o.base}|${o.model}`} value={`${o.base}|${o.model}`}>{o.model} — {o.base}</option>
+          ))}
+        </select>
       </L>
-      <button onClick={() => build.mutate()} disabled={build.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+      <button onClick={() => build.mutate()} disabled={build.isPending || !choice} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
         {build.isPending ? "構築中...（文書量により時間がかかります）" : "グラフを構築 / 再構築"}
       </button>
       {stats && (

@@ -402,6 +402,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     max_output_tokens = int(params["max_output_tokens"])
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_base_url
     think = _resolve_think(thinking_mode, model)
+    # 元のユーザー発話（検索モードではhistoryが差し替わるため先に控える）
+    user_query = str(history[-1].get("content") or "") if history else ""
     provider = provider_for_base_url(base_url)
     request_id = job.id
     buf = {"content": "", "thinking": "", "last_ckpt": 0.0, "meta": {}}
@@ -622,6 +624,21 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await prompt_probe
         emit_stats(final=True)
         await asyncio.to_thread(checkpoint, True, "completed")
+        # 調査系モードは最終回答と参照文献一覧も会話コレクションへ保存し、後続の
+        # 質問・別会話からの再利用（RAG検索）に使えるようにする
+        if mode in ("web", "academic", "research"):
+            source_hint = user_query[:60] if user_query else mode
+            try:
+                await register_chat_document(conv_id, buf["content"], f"{mode}回答: {source_hint}")
+                sources = (buf.get("meta") or {}).get("sources") or []
+                if sources:
+                    lines = [
+                        f"[{s.get('reference_id', '')}] {s.get('title', '')} — {s.get('url', '')}"
+                        for s in sources
+                    ]
+                    await register_chat_document(conv_id, "\n".join(lines), f"参照文献: {source_hint}")
+            except Exception:
+                pass  # 埋め込み未導入等では登録スキップ（回答の保存には影響なし）
         # 会話タイトルを最初の user 発話から自動設定
         await asyncio.to_thread(_maybe_title, conv_id)
         return {"assistant_message_id": assistant_id, "chars": len(buf["content"])}

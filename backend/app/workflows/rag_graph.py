@@ -91,6 +91,10 @@ async def _extract(text: str, base_url: str, model: str, api_key: str) -> list[d
 
 
 async def build_graph(collection: str, base_url: str, model: str, api_key: str, max_chunks: int = 200) -> dict:
+    # 抽出LLM（llama.cpp instance）が停止中ならオンデマンド起動する
+    from app.models_mgmt import llama
+
+    await llama.ensure_ready_by_base_url(base_url)
     """コレクションの全チャンク（親子なら親を優先）からトリプルを抽出してグラフ構築する。"""
     if not rag.collection_exists(collection):
         raise rag.RagError(f"コレクションが存在しません: {collection}")
