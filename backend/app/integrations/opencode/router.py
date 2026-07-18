@@ -104,10 +104,14 @@ async def create_session(
     warmup.add_done_callback(_llm_warmup_tasks.discard)
 
     try:
-        # project_name指定はCodeDEV配下のフォルダ（無ければ作成）を使う
+        # project_name指定はCodeDEV配下のフォルダ（無ければ作成）を使う。
+        # project_path指定でCodeDEV外の場合はコピーして取り込む（管理領域へ集約）。
         project_path = body.project_path
         if body.project_name.strip():
             project_path = opencode.ensure_project(body.project_name)["path"]
+        elif project_path.strip():
+            imported = await asyncio.to_thread(opencode.import_project, project_path)
+            project_path = imported["path"]
         command, project = opencode.tui_command(
             project_path=project_path, prompt=body.prompt,
             base_url=body.base_url, model=body.model,
