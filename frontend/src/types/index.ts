@@ -73,6 +73,8 @@ export interface ManagedApp {
   updated_at: string;
   runtime: AppRuntime;
   env_warnings: string[];
+  /** サーバー側が起動/停止を完全管理するインフラアプリ（SearXNG等）。UIでは非表示 */
+  system_managed?: boolean;
 }
 
 export interface MetricsSnapshot {
