@@ -90,12 +90,13 @@ async def _extract(text: str, base_url: str, model: str, api_key: str) -> list[d
     return out
 
 
-async def build_graph(collection: str, base_url: str, model: str, api_key: str, max_chunks: int = 200) -> dict:
+async def build_graph(collection: str, base_url: str, model: str, api_key: str,
+                      max_chunks: int = 200, on_progress=None) -> dict:
+    """コレクションの全チャンク（親子なら親を優先）からトリプルを抽出してグラフ構築する。"""
     # 抽出LLM（llama.cpp instance）が停止中ならオンデマンド起動する
     from app.models_mgmt import llama
 
     await llama.ensure_ready_by_base_url(base_url)
-    """コレクションの全チャンク（親子なら親を優先）からトリプルを抽出してグラフ構築する。"""
     if not rag.collection_exists(collection):
         raise rag.RagError(f"コレクションが存在しません: {collection}")
     conn = rag._db(collection)
@@ -114,7 +115,9 @@ async def build_graph(collection: str, base_url: str, model: str, api_key: str, 
         units = units[:max_chunks]
         conn.execute("DELETE FROM triples")
         total = 0
-        for cid, unit in units:
+        for index, (cid, unit) in enumerate(units):
+            if on_progress is not None:
+                on_progress(index, len(units))
             triples = await _extract(unit, base_url, model, api_key)
             for t in triples:
                 try:

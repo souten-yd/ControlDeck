@@ -246,3 +246,14 @@ def test_ollama_native_messages_converts_image_content():
     assert converted[0] == {"role": "system", "content": "sys"}
     assert converted[1]["content"] == "この画像は？"
     assert converted[1]["images"] == ["QUJD"]
+
+
+def test_rag_ingest_job_endpoint(admin_client, monkeypatch):
+    """RAG取り込みはサーバー側ジョブとして開始される（未存在コレクションは404）。"""
+    from tests.conftest import CSRF_HEADERS
+
+    r = admin_client.post(
+        "/api/v1/knowledge/collections/no-such-collection/ingest-jobs",
+        json={"text": "テスト"}, headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 404

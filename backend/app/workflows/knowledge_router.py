@@ -151,6 +151,54 @@ async def add_document(
     return out
 
 
+@router.post("/collections/{name}/ingest-jobs", status_code=201)
+async def ingest_job(
+    name: str,
+    body: DocumentAdd,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db=Depends(get_db),
+):
+    """取り込みをサーバー側ジョブで実行する（URL取得・埋め込み中にブラウザを閉じても継続）。"""
+    from app.jobs import service as jobs
+
+    if not rag.collection_exists(name):
+        raise HTTPException(status_code=404, detail="コレクションが見つかりません")
+    if not (body.text.strip() or body.url.strip() or body.path.strip()):
+        raise HTTPException(status_code=422, detail="取り込むテキスト・URL・ファイルのいずれかを指定してください")
+
+    async def run(job: jobs.Job) -> dict:
+        text, source = body.text, body.source
+        if body.url:
+            job.set_progress("URLを取得中", 0, 3)
+            from bs4 import BeautifulSoup
+
+            from app.workflows import scrape_tools as st
+
+            html, _, final = await st.fetch(body.url)
+            text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
+            source = source or final
+        elif body.path:
+            job.set_progress("ファイルを読み込み中", 0, 3)
+            from app.files.service import read_text
+
+            text = read_text(body.path)
+            source = source or body.path
+        if not text.strip():
+            raise rag.RagError("取り込むテキストがありません")
+        job.set_progress("チャンク分割・埋め込み中", 1, 3)
+        out = await rag.add_document(name, text, source or "document", api_key=body.api_key, reset=body.reset)
+        job.set_progress("完了", 3, 3)
+        return out
+
+    job = jobs.create("rag.ingest", f"RAG取り込み: {name}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "knowledge.add_doc", user=user, resource_type="knowledge",
+                 resource_id=name, request=request,
+                 metadata={"job_id": job.id, "source": body.source or body.url or body.path})
+    return {"job_id": job.id}
+
+
 @router.delete("/collections/{name}/documents/{doc_id}")
 def delete_document(
     name: str,
@@ -209,3 +257,31 @@ async def build_graph(
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "knowledge.graph", user=user, resource_type="knowledge", resource_id=name, request=request)
     return out
+
+
+@router.post("/collections/{name}/graph-jobs", status_code=201)
+async def build_graph_job(
+    name: str,
+    body: GraphBuildBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db=Depends(get_db),
+):
+    """グラフ構築をサーバー側ジョブで実行する（LLM抽出中にブラウザを閉じても継続）。"""
+    from app.jobs import service as jobs
+
+    if not rag.collection_exists(name):
+        raise HTTPException(status_code=404, detail="コレクションが見つかりません")
+    from app.workflows import rag_graph
+
+    async def run(job: jobs.Job) -> dict:
+        return await rag_graph.build_graph(
+            name, body.base_url, body.model, body.api_key, body.max_chunks,
+            on_progress=lambda done, total: job.set_progress("グラフ抽出中", done, total),
+        )
+
+    job = jobs.create("rag.graph", f"グラフ構築: {name}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "knowledge.graph", user=user, resource_type="knowledge",
+                 resource_id=name, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
