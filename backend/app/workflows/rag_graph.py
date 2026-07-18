@@ -53,6 +53,9 @@ async def _extract(text: str, base_url: str, model: str, api_key: str) -> list[d
         "stream": False,
         "max_tokens": 2048,
         "response_format": {"type": "json_object"},
+        # 思考モデルが推論だけでmax_tokensを使い切りcontentが空になるのを防ぐ
+        # （llama.cppのjinjaテンプレート/Ollama互換とも未対応サーバーでは無視される）
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
         r: httpx.Response | None = None

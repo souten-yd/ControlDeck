@@ -89,6 +89,24 @@ def collection_exists(collection: str) -> bool:
     return (_rag_dir() / f"{collection}.db").exists()
 
 
+def _managed_embed_defaults() -> dict:
+    """管理中の埋め込みモデル（role=embedding instance）を既定として動的解決する。
+
+    レガシー既定（nomic-embed-text@Ollama）はモデル未導入だと機能しないため、
+    明示設定されていないコレクションはModel画面で管理する推奨埋め込みへ自動追従する。
+    """
+    try:
+        from app.models_mgmt import llama
+
+        instance = llama.find_role_instance("embedding")
+        if instance is not None:
+            return {"embed_base_url": str(instance["base_url"]),
+                    "embed_model": str(instance["alias"])}
+    except Exception:
+        pass
+    return {}
+
+
 def get_config(collection: str) -> dict:
     conn = _db(collection)
     try:
@@ -101,6 +119,10 @@ def get_config(collection: str) -> dict:
             cfg.update(json.loads(row[0]))
         except json.JSONDecodeError:
             pass
+    # 埋め込みが既定値のまま（=明示設定なし）なら管理中の推奨モデルへ動的追従
+    if (cfg["embed_base_url"] == DEFAULT_CONFIG["embed_base_url"]
+            and cfg["embed_model"] == DEFAULT_CONFIG["embed_model"]):
+        cfg.update(_managed_embed_defaults())
     return cfg
 
 
