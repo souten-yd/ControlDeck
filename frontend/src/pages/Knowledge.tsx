@@ -305,15 +305,11 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
   const [source, setSource] = useState("");
   const [pick, setPick] = useState(false);
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  const [jobId, setJobId] = useState<string | null>(null);
   const add = useMutation({
-    mutationFn: () => api(`/knowledge/collections/${name}/documents`, { method: "POST", json: { source, text: src === "text" ? text : "", url: src === "url" ? url : "", path: src === "file" ? path : "" } }),
-    onSuccess: (r: unknown) => {
-      const d = r as { added_chunks: number };
-      show(`${d.added_chunks} チャンクを取り込みました`);
-      setText(""); setUrl(""); setPath("");
-      onDone();
-    },
-    onError: (e) => show(e instanceof Error ? e.message : "取り込みに失敗しました", "error"),
+    mutationFn: () => api<{ job_id: string }>(`/knowledge/collections/${name}/ingest-jobs`, { method: "POST", json: { source, text: src === "text" ? text : "", url: src === "url" ? url : "", path: src === "file" ? path : "" } }),
+    onSuccess: ({ job_id }) => setJobId(job_id),
+    onError: (e) => show(e instanceof Error ? e.message : "取り込み開始に失敗しました", "error"),
   });
   return (
     <div className="space-y-3">
@@ -333,9 +329,24 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
         </div>
       )}
       <input value={source} onChange={(e) => setSource(e.target.value)} placeholder="出典名（任意）" className={input} />
-      <button onClick={() => add.mutate()} disabled={add.isPending || (src === "text" ? !text.trim() : src === "url" ? !url.trim() : !path.trim())} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-        {add.isPending ? "取り込み中..." : "取り込む"}
+      <button onClick={() => add.mutate()} disabled={add.isPending || jobId !== null || (src === "text" ? !text.trim() : src === "url" ? !url.trim() : !path.trim())} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        {jobId !== null ? "取り込み中...（サーバー側で継続）" : "取り込む"}
       </button>
+      {jobId && (
+        <RagJobProgress
+          jobId={jobId}
+          onFinished={(job) => {
+            setJobId(null);
+            if (job.status === "succeeded") {
+              show(`${(job.result as { added_chunks?: number } | undefined)?.added_chunks ?? "?"} チャンクを取り込みました`);
+              setText(""); setUrl(""); setPath("");
+              onDone();
+            } else {
+              show(job.error || "取り込みに失敗しました", "error");
+            }
+          }}
+        />
+      )}
       {pick && <FilePicker mode="file" title="ファイルを選択" onSelect={(p) => { setPath(p); setPick(false); }} onClose={() => setPick(false)} />}
     </div>
   );
@@ -366,10 +377,11 @@ function GraphTab({ name }: { name: string }) {
     queryKey: ["knowledge-graph", name],
     queryFn: () => api<{ triples: number; entities: number; sample: { s: string; p: string; o: string }[] }>(`/knowledge/collections/${name}/graph`),
   });
+  const [jobId, setJobId] = useState<string | null>(null);
   const build = useMutation({
-    mutationFn: () => api<{ triples: number; entities: number }>(`/knowledge/collections/${name}/graph`, { method: "POST", json: { base_url: llmBase, model: llmModel } }),
-    onSuccess: (r) => { show(`グラフ構築: ${r.triples} 事実 / ${r.entities} エンティティ`); qc.invalidateQueries({ queryKey: ["knowledge-graph", name] }); },
-    onError: (e) => show(e instanceof Error ? e.message : "構築失敗", "error"),
+    mutationFn: () => api<{ job_id: string }>(`/knowledge/collections/${name}/graph-jobs`, { method: "POST", json: { base_url: llmBase, model: llmModel } }),
+    onSuccess: ({ job_id }) => setJobId(job_id),
+    onError: (e) => show(e instanceof Error ? e.message : "構築開始に失敗", "error"),
   });
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   return (
@@ -385,9 +397,24 @@ function GraphTab({ name }: { name: string }) {
           ))}
         </select>
       </L>
-      <button onClick={() => build.mutate()} disabled={build.isPending || !choice} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-        {build.isPending ? "構築中...（文書量により時間がかかります）" : "グラフを構築 / 再構築"}
+      <button onClick={() => build.mutate()} disabled={build.isPending || jobId !== null || !choice} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        {jobId !== null ? "構築中...（サーバー側で継続）" : "グラフを構築 / 再構築"}
       </button>
+      {jobId && (
+        <RagJobProgress
+          jobId={jobId}
+          onFinished={(job) => {
+            setJobId(null);
+            if (job.status === "succeeded") {
+              const r = job.result as { triples?: number; entities?: number } | undefined;
+              show(`グラフ構築: ${r?.triples ?? "?"} 事実 / ${r?.entities ?? "?"} エンティティ`);
+              qc.invalidateQueries({ queryKey: ["knowledge-graph", name] });
+            } else {
+              show(job.error || "構築に失敗しました", "error");
+            }
+          }}
+        />
+      )}
       {stats && (
         <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
           <p className="num mb-2 text-xs text-zinc-500">{stats.triples} 事実 · {stats.entities} エンティティ</p>
@@ -473,5 +500,39 @@ function L({ label, children }: { label: string; children: React.ReactNode }) {
       <span className="mb-1 block text-xs font-medium text-zinc-500">{label}</span>
       {children}
     </label>
+  );
+}
+
+
+/** RAGジョブ（取り込み/グラフ構築）の進捗表示。サーバー側で継続実行される。 */
+function RagJobProgress({ jobId, onFinished }: {
+  jobId: string;
+  onFinished: (job: { status: string; error: string; result?: Record<string, unknown> }) => void;
+}) {
+  const { data: job } = useQuery({
+    queryKey: ["rag-job", jobId],
+    queryFn: () => api<{ status: string; error: string; result?: Record<string, unknown>; progress?: { status?: string; completed?: number | null; total?: number | null } }>(`/jobs/${jobId}`),
+    refetchInterval: (q) => (q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1200),
+  });
+  const status = job?.status;
+  useEffect(() => {
+    if (job && status && !["queued", "running"].includes(status)) onFinished(job);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+  if (!job) return null;
+  const pct = job.progress?.total ? Math.round(((job.progress.completed ?? 0) / job.progress.total) * 100) : null;
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="truncate text-xs text-zinc-500">
+        {job.status === "queued" ? "開始待ち" : job.progress?.status || "処理中..."}
+        {pct !== null && ` · ${pct}%`}
+      </p>
+      {pct !== null && (
+        <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+          <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      <p className="mt-1 text-[10px] text-zinc-400">サーバー側で実行中 — ブラウザを閉じても継続します</p>
+    </div>
   );
 }
