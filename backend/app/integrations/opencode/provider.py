@@ -91,6 +91,40 @@ def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
     return path
 
 
+def tui_command(*, project_path: str, prompt: str = "", base_url: str = "", model: str = "") -> tuple[str, str]:
+    """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
+
+    ターミナル基盤（tmux）の上でopencode TUIをそのまま動かす。設定は永続config
+    （Control Deck LLM provider）を都度再生成して渡す。
+    """
+    import shlex
+
+    if not registry.is_enabled("opencode"):
+        raise CodeAgentError("OpenCode featureが有効ではありません")
+    binary = registry.executable("opencode")
+    if binary is None:
+        raise CodeAgentError("OpenCodeを利用できません")
+    settings = get_settings()
+    endpoint = (base_url or settings["base_url"]).strip().rstrip("/")
+    model_id = (model or settings["model"]).strip()
+    if not endpoint.startswith(("http://", "https://")) or not model_id:
+        raise CodeAgentError("LLM endpointとmodelを設定してください")
+    raw_project = project_path or settings.get("project_path") or str(Path.home())
+    try:
+        project = files.resolve(raw_project)
+    except (files.FileAccessError, FileNotFoundError) as exc:
+        raise CodeAgentError(str(exc)) from exc
+    if not project.is_dir():
+        raise CodeAgentError("project pathはディレクトリを指定してください")
+    config = _runtime_config("tui", endpoint, model_id)
+    argv = [str(binary), "--model", f"controldeck/{model_id}"]
+    if prompt.strip():
+        argv += ["--prompt", prompt.strip()]
+    argv.append(str(project))
+    command = f"OPENCODE_CONFIG={shlex.quote(str(config))} exec " + " ".join(shlex.quote(a) for a in argv)
+    return command, str(project)
+
+
 def _prompt(operation: str, instruction: str) -> str:
     labels = {
         "analyze": "コードを読み取り、問題点と改善案を分析してください。ファイルは変更しないでください。",

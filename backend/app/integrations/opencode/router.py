@@ -43,6 +43,41 @@ def settings(
     return result
 
 
+class SessionBody(BaseModel):
+    project_path: str = Field(default="", max_length=4096)
+    prompt: str = Field(default="", max_length=32_000)
+    base_url: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=200)
+
+
+@router.post("/sessions", status_code=201)
+def create_session(
+    body: SessionBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """opencode TUIの対話セッションをターミナル基盤（tmux永続・再接続対応）上で開始する。
+
+    AIチャット等からも {project_path, prompt} を渡して起動できる共通入口。
+    """
+    from app.terminals.manager import manager as terminals
+
+    try:
+        command, project = opencode.tui_command(
+            project_path=body.project_path, prompt=body.prompt,
+            base_url=body.base_url, model=body.model,
+        )
+        session = terminals.create_session(cwd=project, command=command)
+    except opencode.CodeAgentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(db, "feature.opencode.session", user=user, resource_type="feature",
+                 resource_id="opencode", request=request,
+                 metadata={"terminal_id": session["id"], "project_path": project,
+                           "with_prompt": bool(body.prompt.strip())})
+    return {**session, "project_path": project}
+
+
 @router.post("/run", status_code=202)
 async def run(
     body: RunBody, request: Request,

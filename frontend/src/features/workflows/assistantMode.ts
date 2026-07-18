@@ -1,4 +1,4 @@
-export type AssistantMode = "chat" | "web" | "academic" | "deep" | "research" | "gen" | "run";
+export type AssistantMode = "chat" | "web" | "academic" | "deep" | "research" | "gen" | "run" | "code";
 export type AssistantModeChoice = "auto" | AssistantMode;
 
 export interface ModeDecision {
@@ -16,10 +16,14 @@ export function detectAssistantMode(
   input: string,
   workflows: NamedWorkflow[] = [],
   canEditWorkflow = false,
+  opencodeAvailable = false,
 ): ModeDecision {
   const text = input.trim().toLocaleLowerCase("ja");
   if (!text) return { mode: "chat", reason: "入力後に自動判定します" };
 
+  if (opencodeAvailable && includesAny(text, ["opencode", "オープンコード", "コーディングエージェント"])) {
+    return { mode: "code", reason: "OpenCodeによるコーディング作業" };
+  }
   const mentionsWorkflow = includesAny(text, ["ワークフロー", "workflow", "フロー"]);
   const wantsRun = includesAny(text, ["実行して", "実行する", "走らせて", "起動して", "run "]);
   if (mentionsWorkflow && wantsRun) {
