@@ -804,8 +804,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               <span className="hidden sm:inline">送信</span>
             </button>
           </div>
-          {/* 左下: 音声入力中はその状態、それ以外は生成統計ピル（固定ヒント文は表示しない） */}
-          <div className="mt-1.5 flex min-h-4 items-center justify-between gap-2 px-1 text-[11px] text-zinc-500" aria-live="polite">
+          {/* 左下: 音声入力中はその状態、それ以外は生成統計（枠なし・行高固定で入力欄を動かさない） */}
+          <div className="mt-1.5 flex h-4 items-center justify-between gap-2 px-1 text-[11px] text-zinc-500" aria-live="polite">
             {asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
               <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
             ) : (
@@ -828,18 +828,19 @@ function fmtTok(n: number): string {
   return `${Math.round(n / 1000)}K`;
 }
 
-/** 生成統計の右下フローティングピル: 思考状態 / tok/s / コンテキスト使用量。 */
+/** 生成統計の左下表示: 思考状態 / tok/s / コンテキスト使用量。
+ * ヒント文と同じ行高に収まる枠なしのプレーン表示（入力欄の位置を動かさない）。 */
 function GenStatsBadge({ stats, busy }: {
   stats: { phase: string; tokPerSec: number; genTokens: number; promptTokens: number | null; contextMax: number | null } | null;
   busy: boolean;
 }) {
-  const pill = "num flex items-center gap-2 whitespace-nowrap rounded-full border border-zinc-200/70 bg-white/85 px-3 py-1.5 text-[11px] font-medium text-zinc-600 shadow-sm backdrop-blur-md dark:border-zinc-700/70 dark:bg-zinc-900/85 dark:text-zinc-300";
+  const row = "num flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap";
   const sep = <span className="text-zinc-300 dark:text-zinc-600">·</span>;
   if (!stats) {
     if (!busy) return null;
     return (
-      <span className={pill}>
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />応答待ち
+      <span className={row}>
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />応答待ち
       </span>
     );
   }
@@ -849,7 +850,7 @@ function GenStatsBadge({ stats, busy }: {
   const used = (stats.promptTokens ?? 0) + stats.genTokens;
   const pct = stats.contextMax ? Math.min(100, (used / stats.contextMax) * 100) : 0;
   return (
-    <span className={`${pill} ${done ? "opacity-70" : ""}`}>
+    <span className={`${row} ${done ? "opacity-60" : ""}`}>
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
       {phaseLabel}
       {sep}
@@ -857,7 +858,7 @@ function GenStatsBadge({ stats, busy }: {
       {sep}
       {stats.contextMax ? (
         <span className="flex items-center gap-1.5" title={`コンテキスト ${used.toLocaleString()} / ${stats.contextMax.toLocaleString()} トークン`}>
-          <span className="h-1 w-10 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+          <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <span className="block h-full rounded-full bg-accent-500 transition-[width] duration-500" style={{ width: `${pct}%` }} />
           </span>
           {fmtTok(used)}/{fmtTok(stats.contextMax)}
