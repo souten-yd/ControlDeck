@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
+import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
 import { IconMic, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
 import { NODE_TYPES } from "./nodeTypes";
@@ -26,6 +27,7 @@ const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: 
   { id: "research", icon: "🧭", label: "複合調査", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
   { id: "gen", icon: "⚙️", label: "フロー生成", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
   { id: "run", icon: "▶", label: "フロー実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
+  { id: "code", icon: "⌨️", label: "OpenCode", hint: "コーディングエージェント（OpenCode）にこの指示で作業を開始させ、フル機能TUIへ切り替えます" },
 ];
 
 interface SourceItem { reference_id?: string; title: string; url: string; snippet?: string; source?: string; kind?: string }
@@ -125,6 +127,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     queryFn: () => api<{ policy: { assistant_name: string } }>("/models/runtime-environment"),
   });
   const assistantName = runtimeEnvironment?.policy.assistant_name || "AIアシスタント";
+  const { data: appMeta } = useMeta();
+  const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode") && can("terminal.use");
   const { data: conversations } = useQuery({
     queryKey: ["chat-conversations"],
     queryFn: () => api<ConversationSummary[]>("/chat/conversations"),
@@ -186,7 +190,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // SearXNG は基本停止・使う時だけ起動。検索系モード + SearXNG 選択時に先読み起動して
   // 実際の検索でコールドスタート（2〜3 秒）を待たずに済むようにする
   useEffect(() => {
-    const detected = modeChoice === "auto" ? detectAssistantMode(input, [], can("workflows.edit")).mode : modeChoice;
+    const detected = modeChoice === "auto" ? detectAssistantMode(input, [], can("workflows.edit"), opencodeAvailable).mode : modeChoice;
     if ((detected === "web" || detected === "deep" || detected === "research") && engine === "searxng" && !searxngUrl) {
       api("/chat/searxng-warmup", { method: "POST" }).catch(() => {});
     }
@@ -241,7 +245,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     enabled: can("workflows.run"),
   });
 
-  const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"));
+  const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable);
   const displayedDecision = input.trim() ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode : modeChoice;
 
@@ -391,7 +395,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const send = async (providedText?: string) => {
     const text = (providedText ?? input).trim();
     if (!text || busy) return;
-    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"));
+    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable);
     let selectedMode = modeChoice === "auto" ? decision.mode : modeChoice;
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
@@ -406,7 +410,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     const userMsg: Msg = { role: "user", content: text };
     append(userMsg);
     try {
-      if (modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run") {
+      if (modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") {
         setRouting(true);
         selectedPlan = await api<AssistantPlan>("/chat/route", {
           method: "POST", json: { content: text, base_url: baseUrl, model },
@@ -434,6 +438,14 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           selectedMode === "web" || selectedMode === "academic" ? "🔎 検索中...（サーバー側で継続）" : "";
         append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
+      } else if (selectedMode === "code") {
+        // OpenCode起動: この指示を最初のプロンプトとしてTUIセッションを開始し、画面を切り替える。
+        // プロジェクトはOpenCode設定の既定を使う（TUI内でいつでも変更・継続指示できる）。
+        const res = await api<{ id: string; project_path?: string }>("/opencode/sessions", {
+          method: "POST", json: { prompt: text },
+        });
+        append({ role: "assistant", content: `⌨️ OpenCodeセッションを開始しました（${res.project_path ?? "既定プロジェクト"}）。TUIへ切り替えます…` });
+        window.setTimeout(() => { onClose(); navigate(`/opencode?session=${res.id}`); }, 600);
       } else if (selectedMode === "gen") {
         // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
         // サーバージョブで生成・登録・動作確認・自動修正へ進める。
@@ -602,7 +614,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               className="h-9 w-28 shrink-0 rounded-xl border border-zinc-200 bg-zinc-50 px-2 text-xs font-medium shadow-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800 sm:w-32"
             >
               <option value="auto">✦ 自動判定</option>
-              {MODES.filter((item) => !item.needsEdit || can("workflows.edit")).map((item) => (
+              {MODES.filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable)).map((item) => (
                 <option key={item.id} value={item.id}>{item.icon} {item.label}</option>
               ))}
             </select>
