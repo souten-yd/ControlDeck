@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re as _re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.bootstrap import init_db, seed_roles
@@ -103,9 +104,32 @@ async def csrf_protect(request: Request, call_next):
             return JSONResponse(status_code=403, content={"detail": "CSRF チェックに失敗しました"})
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    # /appview はアプリ内Webビュー（同一オリジンiframe）で表示するため DENY にしない
+    if request.url.path.startswith("/appview/"):
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    else:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     return response
+
+
+# アプリ内Webビュー: /appview/{id}/ を起点に読み込まれたページの絶対パス参照
+# （/static 等）を、referer を手掛かりに proxy へ戻す。Control Deck 自身の
+# API/資産(/api/v1, /assets)とproxy自身は対象外。
+_APPVIEW_REFERER_RE = _re.compile(r"/appview/(\d+)/")
+
+
+@app.middleware("http")
+async def appview_referer_fallback(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith(("/appview/", "/api/v1/", "/assets/")):
+        match = _APPVIEW_REFERER_RE.search(request.headers.get("referer", ""))
+        if match:
+            target = f"/appview/{match.group(1)}{path}"
+            if request.url.query:
+                target += f"?{request.url.query}"
+            return RedirectResponse(target, status_code=307)
+    return await call_next(request)
 
 
 from app.applications.router import router as apps_router  # noqa: E402
@@ -134,6 +158,10 @@ from app.features.registry import is_enabled as feature_enabled  # noqa: E402
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
 app.include_router(apps_router, prefix=API)
+# アプリ内Webビュー proxy（同一オリジン・iframe用のためAPI prefixなし）
+from app.applications.webview import router as appview_router  # noqa: E402
+
+app.include_router(appview_router)
 app.include_router(logs_router, prefix=API)
 app.include_router(system_router, prefix=API)
 app.include_router(power_router, prefix=API)
