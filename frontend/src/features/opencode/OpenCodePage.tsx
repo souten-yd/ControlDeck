@@ -57,6 +57,7 @@ export default function OpenCodePage() {
   const [own, setOwn] = useState<string[]>(loadOwnSessions);
   const [active, setActive] = useState<string | null>(params.get("session"));
   const [killing, setKilling] = useState<string | null>(null);
+  const [deletingProject, setDeletingProject] = useState<string | null>(null);
 
   useEffect(() => { if (data) setForm(data.settings); }, [data]);
   useEffect(() => { localStorage.setItem(LS_SESSIONS, JSON.stringify(own.slice(-20))); }, [own]);
@@ -190,12 +191,24 @@ export default function OpenCodePage() {
           <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="プロジェクト名（例: my-app）— CodeDEV配下に作成し git init します" className={`${input} font-mono`} autoFocus />
         )}
         {projectMode === "existing" && (
-          <select value={existingName} onChange={(e) => setExistingName(e.target.value)} className={input}>
-            <option value="">CodeDEVのプロジェクトを選択...</option>
-            {(projectsData?.projects ?? []).map((p) => (
-              <option key={p.name} value={p.name}>{p.name}{p.git ? " · git" : ""}</option>
-            ))}
-          </select>
+          <div className="flex gap-1.5">
+            <select value={existingName} onChange={(e) => setExistingName(e.target.value)} className={`${input} min-w-0 flex-1`}>
+              <option value="">CodeDEVのプロジェクトを選択...</option>
+              {(projectsData?.projects ?? []).map((p) => (
+                <option key={p.name} value={p.name}>{p.name}{p.git ? " · git" : ""}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => existingName && setDeletingProject(existingName)}
+              disabled={!existingName}
+              aria-label="選択中のプロジェクトを削除"
+              title="選択中のプロジェクトをフォルダごと削除"
+              className="grid w-11 shrink-0 place-items-center rounded-xl border border-zinc-300 text-zinc-400 hover:border-red-300 hover:text-red-600 disabled:opacity-40 dark:border-zinc-700 dark:hover:border-red-800"
+            >
+              <IconTrash />
+            </button>
+          </div>
         )}
         {projectMode === "folder" && (
           <div className="space-y-1">
@@ -243,6 +256,25 @@ export default function OpenCodePage() {
       {picker && <FilePicker mode="dir" title="既存プロジェクトを選択" initialPath={otherPath || undefined} onSelect={(path) => { setOtherPath(path); setPicker(false); }} onClose={() => setPicker(false)} />}
       {killing && (
         <ConfirmDialog title="OpenCodeセッションを終了しますか？" message="TUIと実行中の処理は終了します。この操作は取り消せません。" confirmLabel="終了する" onConfirm={() => kill(killing)} onClose={() => setKilling(null)} />
+      )}
+      {deletingProject && (
+        <ConfirmDialog
+          title={`プロジェクト「${deletingProject}」を削除しますか？`}
+          message={`~/CodeDEV/${deletingProject} をフォルダごと完全に削除します。Git履歴を含む全ファイルが消え、取り消せません。`}
+          confirmLabel="フォルダごと削除する"
+          onConfirm={async () => {
+            try {
+              await api(`/opencode/projects/${encodeURIComponent(deletingProject)}`, { method: "DELETE" });
+              show(`「${deletingProject}」を削除しました`);
+              if (existingName === deletingProject) setExistingName("");
+              qc.invalidateQueries({ queryKey: ["opencode-projects"] });
+            } catch (error) {
+              show(error instanceof Error ? error.message : "削除に失敗しました", "error");
+            }
+            setDeletingProject(null);
+          }}
+          onClose={() => setDeletingProject(null)}
+        />
       )}
     </div>
   );
