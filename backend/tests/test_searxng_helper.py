@@ -75,8 +75,8 @@ def test_ensure_running_noop_for_remote_and_unregistered():
     asyncio.run(ensure_running("http://127.0.0.1:59999"))
 
 
-def test_idle_check_only_stops_when_started_by_us(monkeypatch):
-    """自動起動分のみアイドル停止。手動起動・直近利用は停止しない。"""
+def test_idle_check_stops_regardless_of_starter(monkeypatch):
+    """起動元を問わずアイドル停止する。利用時刻不明時は猶予を仕切り直す。"""
     import time
 
     from app.workflows import searxng
@@ -88,18 +88,19 @@ def test_idle_check_only_stops_when_started_by_us(monkeypatch):
     monkeypatch.setattr(searxng, "_alive", alive_true)
     monkeypatch.setattr(searxng, "_stop_registered_app", lambda: stopped.__setitem__("n", stopped["n"] + 1))
 
-    # 手動起動扱い（フラグなし）→ 何もしない
+    # 利用時刻不明（backend再起動直後）→ 停止せず猶予を仕切り直す
     monkeypatch.setattr(searxng, "_started_by_us", False)
     monkeypatch.setattr(searxng, "_last_used", 0.0)
     assert asyncio.run(searxng._idle_check_once()) is False
+    assert searxng._last_used > 0.0  # 猶予起点がセットされる
+    assert stopped["n"] == 0
 
-    # 自動起動 + 直近利用 → 停止しない
-    monkeypatch.setattr(searxng, "_started_by_us", True)
+    # 直近利用あり → 停止しない
     monkeypatch.setattr(searxng, "_last_used", time.time())
     assert asyncio.run(searxng._idle_check_once()) is False
     assert stopped["n"] == 0
 
-    # 自動起動 + アイドル閾値超過 → 停止してフラグ解除
+    # アイドル閾値超過 → 起動元を問わず停止
     monkeypatch.setattr(searxng, "_last_used", time.time() - searxng.IDLE_STOP_MINUTES * 60 - 1)
     assert asyncio.run(searxng._idle_check_once()) is True
     assert stopped["n"] == 1

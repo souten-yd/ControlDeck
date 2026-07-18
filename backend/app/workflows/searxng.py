@@ -180,15 +180,22 @@ async def ensure_running(url: str) -> None:
 
 
 async def _idle_check_once(now: float | None = None) -> bool:
-    """自動起動分がアイドル閾値を超えていれば停止する。停止したら True。"""
-    global _started_by_us
-    if not _started_by_us:
-        return False
-    if (now or time.time()) - _last_used < IDLE_STOP_MINUTES * 60:
-        return False
+    """ローカル SearXNG がアイドル閾値を超えていれば停止する。停止したら True。
+
+    SearXNG はサーバー側完全管理（Apps からの手動起動経路なし）のため、
+    起動元を問わず自動停止の対象とする。backend 再起動で利用時刻が失われた
+    場合は、初回チェック時刻を起点にアイドル猶予を仕切り直す。
+    """
+    global _last_used, _started_by_us
+    current = now or time.time()
     url = await asyncio.to_thread(default_url_sync)
-    if not await _alive(url):  # 既に落ちている（手動停止など）
+    if not await _alive(url):  # 稼働していない
         _started_by_us = False
+        return False
+    if _last_used == 0.0:  # 再起動直後など利用時刻不明 → 猶予を仕切り直す
+        _last_used = current
+        return False
+    if current - _last_used < IDLE_STOP_MINUTES * 60:
         return False
     await asyncio.to_thread(_stop_registered_app)
     _started_by_us = False
