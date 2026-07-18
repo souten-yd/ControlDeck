@@ -9,6 +9,7 @@ import type { MetricsSnapshot } from "../types";
 
 export default function DashboardPage() {
   const latest = useMetrics((s) => s.latest);
+  const history = useMetrics((s) => s.history);
   const { data: overview, isLoading } = useOverview();
   const { data: apps } = useApps();
 
@@ -29,20 +30,25 @@ export default function DashboardPage() {
           <MetricTile
             label="CPU"
             value={m ? formatPercent(m.cpu.percent) : null}
-            sub={`${m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : "N/A"} · FAN ${m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm} RPM` : "N/A"}`}
             percent={m?.cpu.percent ?? null}
+            values={history.map((h) => h.cpu.percent)}
+            temp={m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : undefined}
+            fan={m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm}` : undefined}
           />
           <MetricTile
             label="RAM"
             value={m ? formatPercent(m.memory.percent) : null}
-            sub={m ? `${(m.memory.used / 1024 ** 3).toFixed(1)} / ${(m.memory.total / 1024 ** 3).toFixed(0)} GB` : undefined}
             percent={m?.memory.percent ?? null}
+            values={history.map((h) => h.memory.percent)}
+            sub={m ? `${(m.memory.used / 1024 ** 3).toFixed(1)} / ${(m.memory.total / 1024 ** 3).toFixed(0)} GB` : undefined}
           />
           <MetricTile
             label="GPU"
             value={m?.gpu ? formatPercent(m.gpu.utilization_percent) : "N/A"}
-            sub={`${m?.gpu?.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : "N/A"} · FAN ${m?.gpu?.fan_rpm != null ? `${m.gpu.fan_rpm} RPM` : "N/A"}`}
             percent={m?.gpu?.utilization_percent ?? null}
+            values={history.map((h) => h.gpu?.utilization_percent ?? null)}
+            temp={m?.gpu?.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : undefined}
+            fan={m?.gpu?.fan_rpm != null ? `${m.gpu.fan_rpm}` : undefined}
           />
           <MetricTile
             label="VRAM"
@@ -51,15 +57,20 @@ export default function DashboardPage() {
                 ? formatPercent((m.gpu.vram_used_bytes / m.gpu.vram_total_bytes) * 100)
                 : "N/A"
             }
-            sub={
-              m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
-                ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(1)} / ${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)} GB`
-                : undefined
-            }
             percent={
               m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
                 ? (m.gpu.vram_used_bytes / m.gpu.vram_total_bytes) * 100
                 : null
+            }
+            values={history.map((h) =>
+              h.gpu?.vram_used_bytes != null && h.gpu.vram_total_bytes
+                ? (h.gpu.vram_used_bytes / h.gpu.vram_total_bytes) * 100
+                : null,
+            )}
+            sub={
+              m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
+                ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(1)} / ${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)} GB`
+                : undefined
             }
           />
         </div>
@@ -92,9 +103,6 @@ export default function DashboardPage() {
 
       {/* アクティブアラート */}
       <ActiveAlerts />
-
-      {/* CPU / RAM スパークライン */}
-      <ChartSection />
 
       {/* 異常アプリ */}
       {failed.length > 0 && (
@@ -281,72 +289,62 @@ function ActiveAlerts() {
   );
 }
 
+/** 統合メトリクスカード: 使用率 + 変化スパークライン + 温度/FAN を1枚に集約。 */
 function MetricTile({
   label,
   value,
-  sub,
   percent,
+  values,
+  sub,
+  temp,
+  fan,
 }: {
   label: string;
   value: string | null;
-  sub?: string;
   percent: number | null;
+  values: (number | null)[];
+  sub?: string;
+  temp?: string;
+  fan?: string;
 }) {
-  const barColor =
+  const tone =
     percent == null
-      ? ""
+      ? "text-zinc-300 dark:text-zinc-600"
       : percent >= 90
-        ? "bg-red-500"
+        ? "text-red-500"
         : percent >= 70
-          ? "bg-amber-500"
-          : "bg-accent-500";
+          ? "text-amber-500"
+          : "text-accent-500";
   return (
     <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <p className="text-xs font-medium text-zinc-400">{label}</p>
-      {value === null ? (
-        <Skeleton className="mt-1 h-7 w-16" />
-      ) : (
-        <p className="num mt-0.5 text-2xl font-semibold tracking-tight">{value}</p>
-      )}
-      <p className="num mt-0.5 h-4 truncate text-xs text-zinc-400">{sub ?? ""}</p>
-      <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-        {percent != null && (
-          <div
-            className={`h-full rounded-full transition-[width] duration-300 ${barColor}`}
-            style={{ width: `${Math.min(100, percent)}%` }}
-          />
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-xs font-medium text-zinc-400">{label}</p>
+        {value === null ? (
+          <Skeleton className="h-7 w-14" />
+        ) : (
+          <p className="num text-2xl font-semibold tracking-tight">{value}</p>
         )}
       </div>
-    </div>
-  );
-}
-
-function ChartSection() {
-  const history = useMetrics((s) => s.history);
-  if (history.length < 2) return null;
-  const cpu = history.map((h) => h.cpu.percent);
-  const ram = history.map((h) => h.memory.percent);
-  const gpu = history.map((h) => h.gpu?.utilization_percent ?? null);
-  const hasGpu = gpu.some((v) => v != null);
-  return (
-    <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <SparkCard label="CPU" values={cpu} />
-      <SparkCard label="RAM" values={ram} />
-      {hasGpu && <SparkCard label="GPU" values={gpu} />}
-    </section>
-  );
-}
-
-function SparkCard({ label, values }: { label: string; values: (number | null)[] }) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="mb-1 flex items-baseline justify-between">
-        <span className="text-xs font-medium text-zinc-400">{label}</span>
-        <span className="num text-sm font-semibold">
-          {values[values.length - 1]?.toFixed(0) ?? "—"}%
-        </span>
+      <div className="mt-2">
+        {values.filter((v) => v != null).length >= 2 ? (
+          <Sparkline values={values} fill className={tone} />
+        ) : (
+          <div className="h-7 rounded-md bg-zinc-50 dark:bg-zinc-800/40" />
+        )}
       </div>
-      <Sparkline values={values} className="text-accent-500" />
+      <p className="num mt-1.5 flex h-4 items-center gap-2 overflow-hidden text-[11px] text-zinc-400">
+        {sub && <span className="truncate">{sub}</span>}
+        {temp && <span className="shrink-0">{temp}</span>}
+        {fan && (
+          <span className="flex shrink-0 items-center gap-1 font-medium text-sky-500 dark:text-sky-400">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" width="0.85em" height="0.85em" aria-hidden>
+              <circle cx="12" cy="12" r="2.2" />
+              <path d="M12 9.8c0-3.2 1.6-5 3.4-5 1.5 0 2.4 1.2 2.4 2.4 0 1.9-2.6 2.6-5.8 2.6zM12 14.2c0 3.2-1.6 5-3.4 5-1.5 0-2.4-1.2-2.4-2.4 0-1.9 2.6-2.6 5.8-2.6zM9.8 12c-3.2 0-5-1.6-5-3.4 0-1.5 1.2-2.4 2.4-2.4 1.9 0 2.6 2.6 2.6 5.8zM14.2 12c3.2 0 5 1.6 5 3.4 0 1.5-1.2 2.4-2.4 2.4-1.9 0-2.6-2.6-2.6-5.8z" />
+            </svg>
+            {fan} <span className="font-normal opacity-70">RPM</span>
+          </span>
+        )}
+      </p>
     </div>
   );
 }

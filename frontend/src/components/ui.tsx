@@ -304,10 +304,13 @@ export function Sparkline({
   values,
   max = 100,
   className = "",
+  fill = false,
 }: {
   values: (number | null)[];
   max?: number;
   className?: string;
+  /** 折れ線の下を currentColor の淡い面で塗る（統合メトリクスカード用） */
+  fill?: boolean;
 }) {
   const w = 100;
   const h = 28;
@@ -327,6 +330,9 @@ export function Sparkline({
       className={`block h-7 w-full ${className}`}
       aria-hidden
     >
+      {pts && fill && (
+        <polygon points={`0,${h} ${pts} ${w},${h}`} fill="currentColor" opacity="0.1" />
+      )}
       {pts && (
         <polyline
           points={pts}
