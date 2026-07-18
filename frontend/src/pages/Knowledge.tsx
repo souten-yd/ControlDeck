@@ -388,6 +388,9 @@ function GraphTab({ name }: { name: string }) {
     <div className="space-y-3">
       <p className="rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800/60">
         GraphRAG: LLM で文書からエンティティと関係を抽出し知識グラフを構築します。検索時に「グラフ拡張」を選ぶと関連事実が文脈に加わります。
+        <span className="mt-1 block text-[10px] text-zinc-400">
+          ※ 抽出は文章生成タスクのためチャット用LLMを使います。埋め込み（BGE-M3）は設定タブ、リランカーは検索時に自動適用され、ここでは使いません。
+        </span>
       </p>
       <L label="抽出に使う LLM（Model設定の稼働APIから選択・停止中は自動起動）">
         <select value={choice} onChange={(e) => setChoice(e.target.value)} className={input}>
