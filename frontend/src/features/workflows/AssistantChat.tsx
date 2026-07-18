@@ -14,6 +14,7 @@ import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
 import { IconMic, IconPaperclip, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
+import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import type { WorkflowSummary } from "../../pages/Workflows";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
@@ -110,9 +111,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const engine = "searxng";
   const searxngUrl = "";
   const [runTarget, setRunTarget] = useState<number | "">("");
-  // OpenCodeモード: CodeDEVプロジェクト選択（"__new__"は名前入力で新規作成）
-  const [codeProject, setCodeProject] = useState("");
+  // OpenCodeモード: 新規（既定）/ CodeDEV既存 / 📁フォルダ（CodeDEV外はコピー取込）
+  const [codeProject, setCodeProject] = useState("__new__");
   const [codeNewName, setCodeNewName] = useState("");
+  const [codeFolderPath, setCodeFolderPath] = useState("");
+  const [codePicker, setCodePicker] = useState(false);
   // 📎添付: 画像は次の送信でVLMへ、文書はアップロード時に会話コレクションへRAG登録済み
   const [attachments, setAttachments] = useState<{ id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready" }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -455,9 +458,10 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       show("実行するワークフローを選択してください", "error");
       return;
     }
-    const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject;
-    if (selectedMode === "code" && !codeProjectName) {
-      show("OpenCodeのプロジェクトを選択（または新規作成名を入力）してください", "error");
+    const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
+    const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    if (selectedMode === "code" && !codeProjectName && !codeFolder) {
+      show("OpenCodeのプロジェクトを指定してください（新規名の入力・既存の選択・📁フォルダ）", "error");
       return;
     }
     setInput("");
@@ -498,7 +502,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         const cid = await ensureConversation();
         const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
-          json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName },
+          json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder },
         });
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
@@ -821,24 +825,39 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               <select
                 value={codeProject}
                 onChange={(e) => setCodeProject(e.target.value)}
-                className={`rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 ${codeProject === "__new__" ? "w-40 shrink-0" : "min-w-0 flex-1"}`}
+                className={`rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 ${codeProject === "__new__" ? "w-32 shrink-0" : "min-w-0 flex-1"}`}
               >
-                <option value="">プロジェクトを選択（~/CodeDEV）...</option>
+                <option value="__new__">➕ 新規作成</option>
                 {(codeProjects?.projects ?? []).map((p) => (
-                  <option key={p.name} value={p.name}>{p.name}</option>
+                  <option key={p.name} value={p.name}>📚 {p.name}</option>
                 ))}
-                <option value="__new__">➕ 新規プロジェクト</option>
+                {codeFolderPath && <option value="__folder__">📁 {codeFolderPath}</option>}
               </select>
               {codeProject === "__new__" && (
                 <input
                   value={codeNewName}
                   onChange={(e) => setCodeNewName(e.target.value)}
                   placeholder="プロジェクト名（例: my-app）"
-                  autoFocus
                   className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
                 />
               )}
+              <button
+                type="button"
+                onClick={() => setCodePicker(true)}
+                aria-label="フォルダから選択"
+                title="フォルダから選択（CodeDEV外はコピーして取り込みます）"
+                className="grid w-10 shrink-0 place-items-center rounded-lg border border-zinc-300 text-base dark:border-zinc-700"
+              >📁</button>
             </div>
+          )}
+          {codePicker && (
+            <FilePicker
+              mode="dir"
+              title="プロジェクトフォルダを選択（CodeDEV外はコピーして取り込み）"
+              initialPath={codeFolderPath || undefined}
+              onSelect={(p) => { setCodeFolderPath(p); setCodeProject("__folder__"); setCodePicker(false); }}
+              onClose={() => setCodePicker(false)}
+            />
           )}
           {attachments.length > 0 && (
             <div className="mb-1.5 flex flex-wrap gap-1.5">

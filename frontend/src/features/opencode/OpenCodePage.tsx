@@ -47,9 +47,10 @@ export default function OpenCodePage() {
   });
   const [form, setForm] = useState<Settings>({ base_url: "", model: "", project_path: "" });
   const [prompt, setPrompt] = useState("");
-  // プロジェクト選択: CodeDEVプロジェクト名 / "__new__"（名前入力で新規） / "__other__"（任意フォルダ）
-  const [projectChoice, setProjectChoice] = useState("");
+  // プロジェクト選択: 新規（既定）/ CodeDEV既存一覧 / 📁フォルダ（CodeDEV外はコピー取込）
+  const [projectMode, setProjectMode] = useState<"new" | "existing" | "folder">("new");
   const [newName, setNewName] = useState("");
+  const [existingName, setExistingName] = useState("");
   const [otherPath, setOtherPath] = useState("");
   const [picker, setPicker] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -78,15 +79,15 @@ export default function OpenCodePage() {
   });
 
   const startDisabled =
-    (projectChoice === "" ) ||
-    (projectChoice === "__new__" && !newName.trim()) ||
-    (projectChoice === "__other__" && !otherPath.trim());
+    (projectMode === "new" && !newName.trim()) ||
+    (projectMode === "existing" && !existingName) ||
+    (projectMode === "folder" && !otherPath.trim());
   const start = useMutation({
     mutationFn: () => api<{ id: string }>("/opencode/sessions", {
       method: "POST",
       json: {
-        project_name: projectChoice !== "__new__" && projectChoice !== "__other__" ? projectChoice : projectChoice === "__new__" ? newName.trim() : "",
-        project_path: projectChoice === "__other__" ? otherPath : "",
+        project_name: projectMode === "new" ? newName.trim() : projectMode === "existing" ? existingName : "",
+        project_path: projectMode === "folder" ? otherPath : "",
         prompt, base_url: form.base_url, model: form.model,
       },
     }),
@@ -164,23 +165,45 @@ export default function OpenCodePage() {
 
       {/* セッション開始 */}
       <section className="space-y-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-        <label className="block text-xs text-zinc-500">プロジェクト（CodeDEVで管理: {projectsData?.root ?? "~/CodeDEV"}）
-          <select value={projectChoice} onChange={(e) => setProjectChoice(e.target.value)} className={`${input} mt-1`}>
-            <option value="">プロジェクトを選択...</option>
+        <div className="block text-xs text-zinc-500">
+          <p>プロジェクト（CodeDEVで管理: {projectsData?.root ?? "~/CodeDEV"}）</p>
+          <div className="mt-1 flex gap-1.5">
+            <div className="flex flex-1 gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+              <button type="button" onClick={() => setProjectMode("new")}
+                className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${projectMode === "new" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+                ➕ 新規作成
+              </button>
+              <button type="button" onClick={() => setProjectMode("existing")}
+                className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${projectMode === "existing" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+                📚 既存のプロジェクト
+              </button>
+            </div>
+            <button type="button" onClick={() => { setProjectMode("folder"); setPicker(true); }}
+              aria-label="フォルダから選択"
+              title="フォルダから選択（CodeDEV外はコピーして取り込みます）"
+              className={`grid w-11 shrink-0 place-items-center rounded-xl border text-base ${projectMode === "folder" ? "border-accent-500 bg-accent-50/60 dark:bg-accent-600/10" : "border-zinc-300 dark:border-zinc-700"}`}>
+              <IconFolder className="h-4 w-4 text-amber-500" />
+            </button>
+          </div>
+        </div>
+        {projectMode === "new" && (
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="プロジェクト名（例: my-app）— CodeDEV配下に作成し git init します" className={`${input} font-mono`} autoFocus />
+        )}
+        {projectMode === "existing" && (
+          <select value={existingName} onChange={(e) => setExistingName(e.target.value)} className={input}>
+            <option value="">CodeDEVのプロジェクトを選択...</option>
             {(projectsData?.projects ?? []).map((p) => (
               <option key={p.name} value={p.name}>{p.name}{p.git ? " · git" : ""}</option>
             ))}
-            <option value="__new__">➕ 新規プロジェクトを作成（名前を入力）</option>
-            <option value="__other__">📁 その他のフォルダ（既存プロジェクト）...</option>
           </select>
-        </label>
-        {projectChoice === "__new__" && (
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="プロジェクト名（例: my-app）— CodeDEV配下に作成し git init します" className={`${input} font-mono`} autoFocus />
         )}
-        {projectChoice === "__other__" && (
-          <div className="flex gap-2">
-            <input value={otherPath} onChange={(e) => setOtherPath(e.target.value)} placeholder="既存プロジェクトのパス" className={`${input} min-w-0 font-mono`} />
-            <button onClick={() => setPicker(true)} className="flex shrink-0 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 text-xs dark:border-zinc-700"><IconFolder className="h-4 w-4 text-amber-500" />選択</button>
+        {projectMode === "folder" && (
+          <div className="space-y-1">
+            <div className="flex gap-2">
+              <input value={otherPath} onChange={(e) => setOtherPath(e.target.value)} placeholder="フォルダのパス（📁で選択）" className={`${input} min-w-0 font-mono`} />
+              <button onClick={() => setPicker(true)} className="flex shrink-0 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 text-xs dark:border-zinc-700"><IconFolder className="h-4 w-4 text-amber-500" />選択</button>
+            </div>
+            <p className="text-[10px] text-zinc-400">CodeDEV外のフォルダは ~/CodeDEV へコピーして取り込みます（node_modules等の依存物は除外）</p>
           </div>
         )}
         <label className="block text-xs text-zinc-500">最初の指示（任意 — 起動と同時に送信）

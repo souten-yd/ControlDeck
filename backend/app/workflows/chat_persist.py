@@ -264,6 +264,8 @@ class SendBody(BaseModel):
     attachments: list[str] = Field(default_factory=list, max_length=8)
     # OpenCodeチャット実行（mode=code）用のCodeDEVプロジェクト名
     code_project: str = Field(default="", max_length=64)
+    # 任意フォルダ指定（CodeDEV外はサーバー側でコピー取り込み）
+    code_project_path: str = Field(default="", max_length=4096)
 
 
 # ---- 添付（画像=VLM入力 / 文書=会話別RAGコレクション登録） ----
@@ -468,6 +470,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         try:
             result = await opencode_provider.run_chat(
                 job, instruction=query, project_name=params.get("code_project", ""),
+                project_path=params.get("code_project_path", ""),
                 session_id=previous_session, on_text=on_text,
             )
         except asyncio.CancelledError:
@@ -918,6 +921,7 @@ async def send_message(
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "attachments": body.attachments,
               "code_project": body.code_project,
+              "code_project_path": body.code_project_path,
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")

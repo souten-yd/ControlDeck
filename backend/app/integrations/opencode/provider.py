@@ -136,6 +136,37 @@ def ensure_project(name: str) -> dict:
             "git": (path / ".git").is_dir()}
 
 
+def import_project(source_path: str) -> dict:
+    """CodeDEV外のフォルダをCodeDEVへコピーして取り込む（管理下は素通し）。
+
+    依存物などの重量ディレクトリ（node_modules/.venv等）は再生成可能なため
+    コピー対象から除外する。名前衝突時は -2, -3 と連番を付ける。
+    """
+    import shutil as _shutil
+
+    source = files.resolve(source_path)
+    if not source.is_dir():
+        raise CodeAgentError("フォルダを指定してください")
+    root = codedev_root()
+    if source == root:
+        raise CodeAgentError("CodeDEVルート自体は開けません。プロジェクトを選択してください")
+    if source.is_relative_to(root):
+        return {"name": source.name, "path": str(source), "imported": False}
+    base = source.name or "project"
+    destination = root / base
+    counter = 2
+    while destination.exists():
+        destination = root / f"{base}-{counter}"
+        counter += 1
+    _shutil.copytree(
+        source, destination,
+        ignore=_shutil.ignore_patterns("node_modules", ".venv", "venv", "__pycache__",
+                                       ".mypy_cache", ".pytest_cache"),
+        symlinks=True,
+    )
+    return {"name": destination.name, "path": str(destination), "imported": True}
+
+
 def tui_command(*, project_path: str, prompt: str = "", base_url: str = "", model: str = "") -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
 
@@ -236,8 +267,12 @@ async def run_chat(
     settings = get_settings()
     if project_name.strip():
         project = Path(ensure_project(project_name)["path"])
+    elif (project_path or "").strip():
+        # CodeDEV外のフォルダはコピーして取り込んでから開く
+        imported = await asyncio.to_thread(import_project, project_path)
+        project = Path(imported["path"])
     else:
-        raw = project_path or settings.get("project_path") or ""
+        raw = settings.get("project_path") or ""
         if not raw:
             raise CodeAgentError("プロジェクトを指定してください")
         project = files.resolve(raw)
