@@ -194,3 +194,55 @@ def test_run_chat_job_emits_generation_stats(client, monkeypatch):
     assert final["prompt_tokens"] == 12 and final["gen_tokens"] == 2  # usageの実測値で確定
     assert final["context_max"] == 8192
     assert final["tok_per_sec"] >= 0
+
+
+def test_upload_attachment_image_and_document(admin_client, monkeypatch):
+    """📎添付: 画像は保存されID返却、文書は会話コレクションへRAG登録される。"""
+    import app.workflows.chat_persist as cp
+    from tests.conftest import CSRF_HEADERS
+
+    conv = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()
+
+    # 画像（1x1 PNG 相当のダミーバイト列でも保存経路は同じ）
+    r = admin_client.post(
+        f"/api/v1/chat/conversations/{conv['id']}/attachments",
+        files={"file": ("photo.png", b"\x89PNG-fake-bytes", "image/png")},
+        headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 201, r.text
+    image = r.json()
+    assert image["kind"] == "image" and image["id"].endswith(".png")
+    assert (cp._attachment_dir(conv["id"]) / image["id"]).is_file()
+
+    # 文書（埋め込みAPIはモック）
+    async def fake_register(conv_id, text, source):
+        assert "テスト本文" in text
+        return {"added_chunks": 3}
+
+    monkeypatch.setattr(cp, "register_chat_document", fake_register)
+    r = admin_client.post(
+        f"/api/v1/chat/conversations/{conv['id']}/attachments",
+        files={"file": ("notes.md", ("テスト本文" * 30).encode(), "text/markdown")},
+        headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 201, r.text
+    doc = r.json()
+    assert doc["kind"] == "document" and doc["chunks"] == 3
+    assert doc["collection"] == f"chat-{conv['id']}"
+
+
+def test_ollama_native_messages_converts_image_content():
+    """OpenAI互換のcontent配列がOllama native形式（content+images）へ変換される。"""
+    from app.models_mgmt.runtime_provider import OllamaRuntimeProvider
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "この画像は？"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+        ]},
+    ]
+    converted = OllamaRuntimeProvider._native_messages(messages)
+    assert converted[0] == {"role": "system", "content": "sys"}
+    assert converted[1]["content"] == "この画像は？"
+    assert converted[1]["images"] == ["QUJD"]

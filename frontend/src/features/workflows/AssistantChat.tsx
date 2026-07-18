@@ -13,7 +13,7 @@ import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
-import { IconMic, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
+import { IconMic, IconPaperclip, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
 import { NODE_TYPES } from "./nodeTypes";
 import type { WorkflowSummary } from "../../pages/Workflows";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
@@ -113,6 +113,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // OpenCodeモード: CodeDEVプロジェクト選択（"__new__"は名前入力で新規作成）
   const [codeProject, setCodeProject] = useState("");
   const [codeNewName, setCodeNewName] = useState("");
+  // 📎添付: 画像は次の送信でVLMへ、文書はアップロード時に会話コレクションへRAG登録済み
+  const [attachments, setAttachments] = useState<{ id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready" }[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
   const [conversationTitle, setConversationTitle] = useState("新しい会話");
   const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
@@ -402,6 +405,45 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     show("会話を削除しました");
   };
 
+  const ensureConversation = async (): Promise<string> => {
+    if (convId) return convId;
+    const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
+    localStorage.setItem(LS_CONV, c.id);
+    setConvId(c.id);
+    return c.id;
+  };
+
+  /** 📎添付アップロード。画像→保存（送信時にVLMへ）、文書/PDF→会話コレクションへ即RAG登録。 */
+  const attachFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    let cid: string;
+    try {
+      cid = await ensureConversation();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "会話の作成に失敗しました", "error");
+      return;
+    }
+    for (const file of Array.from(files).slice(0, 8)) {
+      const tempId = `up-${Date.now()}-${file.name}`;
+      setAttachments((prev) => [...prev, { id: tempId, name: file.name, kind: file.type.startsWith("image/") ? "image" : "document", status: "uploading" }]);
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const response = await fetch(`/api/v1/chat/conversations/${cid}/attachments`, {
+          method: "POST", body: form, credentials: "same-origin",
+          headers: { "X-Requested-With": "ControlDeck" },
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail ?? `アップロード失敗 (${response.status})`);
+        const data = (await response.json()) as { kind: "image" | "document"; id: string; name: string; chunks?: number };
+        setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready" } : a)));
+        if (data.kind === "document") show(`「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
+      } catch (e) {
+        setAttachments((prev) => prev.filter((a) => a.id !== tempId));
+        show(e instanceof Error ? e.message : "添付に失敗しました", "error");
+      }
+    }
+  };
+
   const send = async (providedText?: string) => {
     const text = (providedText ?? input).trim();
     if (!text || busy) return;
@@ -436,17 +478,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       }
       if (selectedMode === "chat" || selectedMode === "web" || selectedMode === "academic" || selectedMode === "deep" || selectedMode === "research") {
         // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
-        let cid = convId;
-        if (!cid) {
-          const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
-          cid = c.id;
-          localStorage.setItem(LS_CONV, cid);
-          setConvId(cid);
-        }
+        const cid = await ensureConversation();
+        const imageIds = attachments.filter((a) => a.kind === "image" && a.status === "ready").map((a) => a.id);
         const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
-          json: { content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model, engine, searxng_url: searxngUrl },
+          json: { content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model, engine, searxng_url: searxngUrl, attachments: imageIds },
         });
+        setAttachments([]);
         const hint =
           selectedMode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
           selectedMode === "research" ? "🧭 調査計画に沿って複数ソースを確認中..." :
@@ -811,7 +849,38 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               )}
             </div>
           )}
+          {attachments.length > 0 && (
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {attachments.map((a) => (
+                <span key={a.id} className="flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white py-1 pl-2.5 pr-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                  <span aria-hidden>{a.kind === "image" ? "🖼️" : "📄"}</span>
+                  <span className="max-w-[10rem] truncate">{a.name}</span>
+                  {a.status === "uploading" ? (
+                    <span className="animate-pulse pr-1.5 text-zinc-400">…</span>
+                  ) : a.kind === "document" ? (
+                    <span className="pr-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">資料登録済</span>
+                  ) : (
+                    <button type="button" onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                      aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+          <input ref={fileInputRef} type="file" multiple className="hidden"
+            accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql"
+            onChange={(e) => { void attachFiles(e.target.files); e.target.value = ""; }} />
           <div className="flex w-full min-w-0 items-end gap-1.5 rounded-2xl border border-zinc-300 bg-zinc-50 p-1.5 shadow-sm transition-within focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              aria-label="ファイルを添付（画像はVLM、文書は会話の資料へ）"
+              title="ファイルを添付 — 画像はVLMへ、コード/文書/PDFは会話の資料（RAG）へ登録"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-lg text-zinc-600 transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              <IconPaperclip />
+            </button>
             <button
               type="button"
               onClick={() => void asr.toggle()}
