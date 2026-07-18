@@ -78,9 +78,10 @@ export default function AppsPage() {
         {can("apps.edit") && (
           <button
             onClick={() => setParams({ add: "1" })}
-            className="hidden items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700 md:flex"
+            aria-label="アプリを追加"
+            className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-700"
           >
-            <IconPlus /> アプリを追加
+            <IconPlus /><span className="hidden sm:inline"> アプリを追加</span>
           </button>
         )}
       </div>
@@ -199,15 +200,6 @@ export default function AppsPage() {
       )}
 
       {/* モバイル FAB */}
-      {can("apps.edit") && (
-        <button
-          onClick={() => setParams({ add: "1" })}
-          aria-label="アプリを追加"
-          className="fixed bottom-24 right-4 z-20 grid h-13 w-13 place-items-center rounded-2xl bg-accent-600 p-3.5 text-xl text-white shadow-lg hover:bg-accent-700 md:hidden"
-        >
-          <IconPlus />
-        </button>
-      )}
 
       {addOpen && <AddAppSheet onClose={() => setParams({})} />}
       {editing && <AddAppSheet editApp={editing} onClose={() => setEditing(null)} />}

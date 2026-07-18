@@ -190,6 +190,16 @@ export default function FilesPage() {
             </span>
           ))}
         </nav>
+        {can("files.edit") && (
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            aria-label="ファイルをアップロード"
+            title="ファイルをアップロード"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-600 text-white shadow-sm hover:bg-accent-700"
+          >
+            <IconUpload />
+          </button>
+        )}
         <DropdownMenu
           ariaLabel="ファイル操作メニュー"
           trigger={<IconDots />}
@@ -284,7 +294,6 @@ export default function FilesPage() {
         )}
       </div>
 
-      {/* アップロード FAB */}
       {can("files.edit") && (
         <>
           <input
@@ -297,13 +306,6 @@ export default function FilesPage() {
               e.target.value = "";
             }}
           />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="ファイルをアップロード"
-            className="fixed bottom-24 right-4 z-20 grid place-items-center rounded-2xl bg-accent-600 p-3.5 text-xl text-white shadow-lg hover:bg-accent-700 md:bottom-8"
-          >
-            <IconUpload />
-          </button>
         </>
       )}
 
