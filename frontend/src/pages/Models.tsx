@@ -1,6 +1,7 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { useAuth, useToasts } from "../stores";
@@ -170,6 +171,8 @@ export default function ModelsPage() {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get("tab") ?? "llm") as "llm" | "embed" | "tts";
   const [pulling, setPulling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
@@ -256,12 +259,26 @@ export default function ModelsPage() {
           )}
         </div>
       </div>
+      {/* タブ: LLM/VLM・Embed/Reranker・TTS */}
+      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+        {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"], ["tts", "TTS"]] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
+            className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${tab === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "llm" && (
       <p className="mb-4 text-xs text-zinc-400">
         選択中: {selectedProvider === "llama.cpp" ? `llama.cpp / ${runtimeEnv?.policy.selected_backend.toUpperCase()}` : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
         {selectedProvider === "ollama" && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
+      )}
 
       <ActiveModelJobs />
+      {tab === "embed" && <EmbedRerankPanel />}
+      {tab === "tts" && <TtsPanel />}
+      {tab === "llm" && (<>
       {selectedProvider === "ollama" && status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           Ollama（{status.base_url}）に接続できません。<code className="font-mono">ollama serve</code> の起動、または設定でエンドポイントを確認してください。
@@ -298,6 +315,7 @@ export default function ModelsPage() {
           ))}
         </ul>
       )}
+      </>)}
 
       {pulling && <PullSheet onClose={() => setPulling(false)} onDone={refresh} />}
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
@@ -537,6 +555,7 @@ function HFSearch({ onPull, running }: { onPull: (m: string) => void; running: b
 interface ModelConfig {
   keep_alive?: string;
   idle_exclude?: boolean;
+  vlm_enabled?: boolean;
   think?: string;
   num_ctx?: number;
   deep_research_num_ctx?: number;
@@ -718,6 +737,12 @@ function ModelConfigSection({ model }: { model: string }) {
           <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常駐させ再ロード待ちをなくす</span></span>
           <input type="checkbox" checked={!!eff.idle_exclude} onChange={(e) => set("idle_exclude", e.target.checked)} className="h-4 w-4" />
         </label>
+        {(caps?.capabilities ?? []).includes("vision") && (
+          <label className="flex items-center justify-between rounded-xl border border-violet-200 bg-violet-50/40 px-3 py-2.5 dark:border-violet-900 dark:bg-violet-950/20">
+            <span className="text-xs">VLM（画像入力）を有効化<span className="block text-[10px] text-zinc-400">チャットの📎から画像を添付できるようにする</span></span>
+            <input type="checkbox" checked={!!eff.vlm_enabled} onChange={(e) => set("vlm_enabled", e.target.checked)} className="h-4 w-4" />
+          </label>
+        )}
 
         {/* 詳細（折りたたみ） */}
         <button type="button" onClick={() => setOpen((v) => !v)} className="text-xs font-medium text-accent-600 dark:text-accent-400">
@@ -932,6 +957,7 @@ function L({ label, children }: { label: string; children: React.ReactNode }) {
 
 interface LlamaInstanceConfig {
   model_path: string;
+  mmproj_path?: string;
   port: number;
   alias: string;
   selected?: boolean;
@@ -969,7 +995,7 @@ interface LlamaInstanceConfig {
 }
 
 const LLAMA_INSTANCE_WRITE_KEYS = [
-  "model_path", "port", "alias", "auto_start", "idle_exclude",
+  "model_path", "mmproj_path", "port", "alias", "auto_start", "idle_exclude",
   "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
@@ -977,7 +1003,7 @@ const LLAMA_INSTANCE_WRITE_KEYS = [
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 const LLAMA_PARAMETER_WRITE_KEYS = [
-  "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
+  "mmproj_path", "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
@@ -1253,6 +1279,10 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
           <L label="repeat penalty"><PresetOrCustom value={cfg.repeat_penalty} presets={REPEAT_PRESETS} placeholder="1.0" onChange={(v) => set("repeat_penalty", Number(v ?? 1))} /></L>
           <L label="seed（-1=ランダム）"><input type="number" value={cfg.seed} onChange={(e) => set("seed", Number(e.target.value))} className={input} /></L>
         </div>
+        <L label="VLM用 mmproj（GGUF・空で無効）">
+          <input value={cfg.mmproj_path ?? ""} onChange={(e) => set("mmproj_path", e.target.value)} placeholder="multimodal projector（*.mmproj*.gguf）のパス" className={`${input} font-mono text-xs`} />
+        </L>
+        <p className="text-[10px] leading-relaxed text-zinc-400">mmprojを設定すると画像入力（VLM）が有効になり、チャットの📎から画像を添付できます。</p>
         <Toggle label="mmapでモデルを読む" hint="通常はON。OSのpage cacheを利用します" value={cfg.mmap} onChange={(value) => set("mmap", value)} />
         <Toggle label="モデルをRAMへ固定（mlock）" hint="swapを防ぎますが、十分なRAMが必要です" value={cfg.mlock} onChange={(value) => set("mlock", value)} />
         <Toggle label="PC起動時に自動起動" hint="このinstanceのsystemd user unitをenableします。起動前にGPU profileを適用します" value={cfg.auto_start} onChange={(value) => set("auto_start", value)} />
@@ -1295,4 +1325,111 @@ function CacheTypeSelect({ value, onChange, input }: { value: string; onChange: 
     <option value="q4_0">q4_0（約1/4）</option>
     <option value="f32">f32（最大）</option>
   </select>;
+}
+
+interface RolePreset {
+  id: string; label: string; description: string; role: string; alias: string;
+  file_exists: boolean; installed: boolean; loaded: boolean; idle_exclude: boolean;
+  runtime_status: string;
+}
+
+/** Embed / Reranker タブ: 推奨プリセットのワンタップ導入と稼働管理。 */
+function EmbedRerankPanel() {
+  const show = useToasts((s) => s.show);
+  const can = useAuth((s) => s.can);
+  const qc = useQueryClient();
+  const [acting, setActing] = useState<string | null>(null);
+  const { data } = useQuery({
+    queryKey: ["role-presets"],
+    queryFn: () => api<{ presets: RolePreset[] }>("/models/llama/role-presets"),
+    refetchInterval: 8000,
+  });
+  const { data: llamaSt } = useQuery({ queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status") });
+
+  const install = async (preset: RolePreset) => {
+    try {
+      await api(`/models/llama/role-presets/${preset.id}/install-jobs`, { method: "POST", json: {} });
+      show(`${preset.label} の導入を開始しました（サーバー側で継続）`, "info");
+    } catch (e) { show(e instanceof Error ? e.message : "導入開始に失敗", "error"); }
+  };
+  const act = async (preset: RolePreset, action: "load" | "unload") => {
+    setActing(preset.id);
+    try {
+      await api(`/models/providers/llama.cpp/models/${encodeURIComponent(preset.alias)}/${action}`, { method: "POST", json: {} });
+      show(action === "load" ? "ロードしました" : "アンロードしました");
+      qc.invalidateQueries({ queryKey: ["role-presets"] });
+    } catch (e) { show(e instanceof Error ? e.message : "失敗しました", "error"); }
+    finally { setActing(null); }
+  };
+  const toggleResident = async (preset: RolePreset, value: boolean) => {
+    try {
+      await api(`/models/llama/instances/${encodeURIComponent(preset.alias)}`, { method: "PUT", json: { idle_exclude: value } });
+      show(value ? "GPU常駐を有効にしました" : "アイドル時に自動アンロードします");
+      qc.invalidateQueries({ queryKey: ["role-presets"] });
+    } catch (e) { show(e instanceof Error ? e.message : "設定に失敗", "error"); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-zinc-400">
+        RAG検索の品質を上げる補助モデルです。RAG利用時に自動ロードされ、アイドルで自動アンロードされます（常駐も選択可）。
+      </p>
+      {llamaSt && !llamaSt.installed && (
+        <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-4 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
+          llama.cpp が未導入です。LLM/VLMタブの「GGUF登録」→ 導入から先にセットアップしてください。
+        </div>
+      )}
+      {(data?.presets ?? []).map((preset) => {
+        const running = preset.runtime_status === "RUNNING" || preset.loaded;
+        return (
+          <div key={preset.id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex items-center gap-3">
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${running ? "bg-emerald-500" : preset.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
+                title={running ? "稼働中" : preset.installed ? "停止中" : "未導入"} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">{preset.label}
+                  <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${preset.role === "embedding" ? "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300" : "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"}`}>
+                    {preset.role === "embedding" ? "埋め込み" : "再ランク"}
+                  </span>
+                </p>
+                <p className="mt-0.5 text-xs text-zinc-400">{preset.description}</p>
+              </div>
+              {can("workflows.edit") && (
+                preset.installed ? (
+                  <button disabled={acting === preset.id} onClick={() => act(preset, running ? "unload" : "load")}
+                    className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 disabled:cursor-wait disabled:opacity-60 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
+                    {acting === preset.id ? "..." : running ? "アンロード" : "ロード"}
+                  </button>
+                ) : (
+                  <button onClick={() => install(preset)} disabled={!llamaSt?.installed}
+                    className="shrink-0 rounded-xl bg-accent-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+                    導入
+                  </button>
+                )
+              )}
+            </div>
+            {preset.installed && can("workflows.edit") && (
+              <label className="mt-3 flex items-center justify-between rounded-xl border border-zinc-100 px-3 py-2 dark:border-zinc-800">
+                <span className="text-xs">GPU常駐（アイドル自動アンロードから除外）
+                  <span className="block text-[10px] text-zinc-400">RAGの初回応答を速くする代わりにVRAMを使い続けます</span>
+                </span>
+                <input type="checkbox" checked={preset.idle_exclude} onChange={(e) => toggleResident(preset, e.target.checked)} className="h-4 w-4" />
+              </label>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** TTS タブ（今後対応のプレースホルダー）。 */
+function TtsPanel() {
+  return (
+    <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
+      <p className="text-2xl">🔊</p>
+      <p className="mt-2 text-sm font-medium">TTS（音声合成）</p>
+      <p className="mt-1 text-xs text-zinc-400">今後のアップデートで対応予定です。モデル管理・音声設定はこのタブに追加されます。</p>
+    </div>
+  );
 }

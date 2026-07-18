@@ -63,7 +63,7 @@ OPT_KEYS = OPT_INT | OPT_FLOAT
 THINK_VALUES = ("off", "on", "low", "medium", "high", "max")
 
 # モデル個別設定として保存できる全キー（options + 運用フラグ + think）
-MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude", "think", "deep_research_num_ctx"}
+MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude", "think", "deep_research_num_ctx", "vlm_enabled"}
 
 
 def normalize_think(value) -> bool | str | None:

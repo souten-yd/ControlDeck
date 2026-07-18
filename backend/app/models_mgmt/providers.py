@@ -69,7 +69,10 @@ async def _candidates() -> list[dict]:
             installed=False, experimental=True)
     # 複数instanceは各portが独立OpenAI endpoint。選択中は上のmanaged providerへ
     # mergeし、それ以外もLLM endpoint pickerから選べるよう検出候補に加える。
+    # embedding/rerankerはチャット先ではないため候補に出さない。
     for instance in llama_status.get("instances", []):
+        if str(instance.get("role", "llm")) != "llm":
+            continue
         add(
             str(instance.get("base_url") or f"http://127.0.0.1:{instance.get('port', 8080)}"),
             "llama.cpp-instance", f"llama.cpp · {instance.get('alias')}",

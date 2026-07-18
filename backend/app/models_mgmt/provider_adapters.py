@@ -40,12 +40,20 @@ def _ollama_model(model: dict) -> dict:
 
 
 async def _enforce_load_limit(provider_kind: str, model_id: str) -> None:
-    """全runtime共通の同時load上限。既にload済みの対象再要求は許可する。"""
+    """全runtime共通の同時load上限。既にload済みの対象再要求は許可する。
+
+    embedding/reranker（小型・RAG補助）はLLMの上限枠に数えず、対象にもしない。
+    """
     from app.models_mgmt.runtime_policy import get_policy
 
+    llm_instances = [item for item in llama.list_instances() if str(item.get("role", "llm")) == "llm"]
+    if provider_kind == "llama.cpp":
+        target = next((item for item in llama.list_instances() if str(item["alias"]) == model_id), None)
+        if target is not None and str(target.get("role", "llm")) != "llm":
+            return
     ollama_running = await ollama.running_models()
     ollama_names = {str(item.get("name") or item.get("model") or "") for item in ollama_running}
-    llama_running = {str(item["alias"]) for item in llama.list_instances() if item.get("loaded")}
+    llama_running = {str(item["alias"]) for item in llm_instances if item.get("loaded")}
     already = model_id in (ollama_names if provider_kind == "ollama" else llama_running)
     if already:
         return
@@ -66,7 +74,8 @@ async def list_models(provider_id: str) -> list[dict]:
             raise ProviderError(str(e)) from e
     if provider["provider"] == "llama.cpp" and provider["managed"]:
         backend = llama.get_config().get("backend", "")
-        instances = llama.list_instances()
+        # embedding/rerankerはLLM一覧に混ぜない（Embed/Rerankerタブで管理）
+        instances = [item for item in llama.list_instances() if str(item.get("role", "llm")) == "llm"]
         health = await asyncio.gather(*(llama.health(str(item["alias"])) for item in instances))
         result = []
         for config, state in zip(instances, health, strict=True):
