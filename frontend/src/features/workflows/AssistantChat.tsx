@@ -950,10 +950,14 @@ function MessageBubble({
           <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400" role="status">接続を復旧しています。生成はサーバー側で継続中です…</p>
         )}
         {(msg.plan || msg.research || (msg.progress && msg.progress.length > 0)) && (
-          <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20" open={msg.streaming}>
+          /* 機能選択判断は選択結果のみ表示し、理由・計画・統計はタップで展開する */
+          <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20">
             <summary className="cursor-pointer text-xs font-semibold text-accent-700 dark:text-accent-300">
-              🧭 {msg.plan?.reason ?? "調査計画"}{msg.streaming ? "（実行中）" : ""}
+              🧭 {MODES.find((m) => m.id === msg.plan?.mode)?.label ?? "調査"}{msg.streaming ? "（実行中）" : ""}
             </summary>
+            {msg.plan?.reason && (
+              <p className="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300">判断理由: {msg.plan.reason}</p>
+            )}
             {msg.plan?.steps && msg.plan.steps.length > 0 && (
               <ol className="mt-2 space-y-1 text-[11px] text-zinc-600 dark:text-zinc-300">
                 {msg.plan.steps.map((step, index) => <li key={`${step.tool}-${index}`}>{index + 1}. {step.tool === "web" ? "Web" : "学術"}: {step.query}</li>)}
@@ -998,11 +1002,13 @@ function MessageBubble({
           </p>
         )}
 
-        {/* 出典リスト */}
+        {/* 出典リスト（既定は最小化。タップで開閉） */}
         {msg.sources && msg.sources.length > 0 && (
-          <div className="rounded-xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-700 dark:bg-zinc-900">
-            <p className="mb-1 text-[11px] font-semibold text-zinc-400">会話内文献（{msg.sources.length} 件）</p>
-            <ol className="space-y-1">
+          <details className="rounded-xl border border-zinc-200 bg-white px-2.5 py-2 dark:border-zinc-700 dark:bg-zinc-900">
+            <summary className="cursor-pointer text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+              📚 参照文献（{msg.sources.length} 件）
+            </summary>
+            <ol className="mt-1.5 space-y-1">
               {msg.sources.map((s, i) => (
                 <li key={s.reference_id ?? i} className="flex min-w-0 items-center gap-1.5 text-xs">
                   {s.reference_id && (
@@ -1029,7 +1035,7 @@ function MessageBubble({
                 </li>
               ))}
             </ol>
-          </div>
+          </details>
         )}
 
         {/* 生成プレビュー */}
