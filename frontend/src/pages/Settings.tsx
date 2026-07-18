@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
-import { Skeleton } from "../components/ui";
+import { ConfirmDialog, Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
 import { TotpSettings } from "../features/auth/TotpSettings";
 
@@ -117,6 +117,8 @@ export default function SettingsPage() {
           />
         </label>
       </section>
+
+      {can("settings.manage") && <AddonsSection />}
 
       {can("system.view") && <AlertsSettings />}
 
@@ -265,6 +267,162 @@ function AuditSection() {
             </tbody>
           </table>
         </div>
+      )}
+    </section>
+  );
+}
+
+
+interface AddonState {
+  id: string; name: string; available: boolean; installed: boolean; managed: boolean;
+  enabled: boolean; requested_enabled: boolean; version: string; health: string;
+  error: string; executable: string;
+}
+
+/** アドオン管理: 導入（npmユーザー空間・sudo不要）/有効化/無効化/アンインストールをワンタップで。 */
+function AddonsSection() {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [uninstalling, setUninstalling] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const { data: addons } = useQuery({
+    queryKey: ["features"],
+    queryFn: () => api<AddonState[]>("/features"),
+    refetchInterval: jobId ? false : 15_000,
+  });
+  const { data: job } = useQuery({
+    queryKey: ["feature-job", jobId],
+    queryFn: () => api<{ status: string; error: string; progress?: { status?: string } }>(`/jobs/${jobId}`),
+    enabled: jobId !== null,
+    refetchInterval: (q) => (q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1200),
+  });
+  const jobStatus = job?.status;
+  useEffect(() => {
+    if (!jobId || !job || !jobStatus || ["queued", "running"].includes(jobStatus)) return;
+    setJobId(null);
+    if (jobStatus === "succeeded") {
+      show("導入が完了しました。「有効化」で利用を開始できます");
+      qc.invalidateQueries({ queryKey: ["features"] });
+    } else {
+      show(job.error || "導入に失敗しました", "error");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobStatus]);
+
+  /** 有効化/無効化/アンインストール後の反映（ルート再登録）に既存の再読み込み機構を使う。 */
+  const reloadPlatform = async () => {
+    setReloading(true);
+    try {
+      await api("/system/platform/reload", { method: "POST" });
+      await new Promise((resolve) => window.setTimeout(resolve, 1800));
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        try {
+          const response = await fetch("/api/v1/health", { cache: "no-store", credentials: "same-origin" });
+          if (response.ok) {
+            window.location.reload();
+            return;
+          }
+        } catch { /* 再起動中 */ }
+        await new Promise((resolve) => window.setTimeout(resolve, 700));
+      }
+      throw new Error("復帰確認がタイムアウトしました。手動で再読み込みしてください");
+    } catch (error) {
+      setReloading(false);
+      show(error instanceof Error ? error.message : "再読み込みに失敗しました", "error");
+    }
+  };
+
+  const install = async (addon: AddonState) => {
+    try {
+      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: {} });
+      setJobId(r.job_id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "導入開始に失敗しました", "error");
+    }
+  };
+  const act = async (addon: AddonState, action: "enable" | "disable" | "uninstall") => {
+    try {
+      const r = await api<{ requires_reload?: boolean }>(`/features/${addon.id}/${action}`, { method: "POST", json: {} });
+      show(action === "enable" ? "有効化しました。反映のため再読み込みします…" : action === "disable" ? "無効化しました。反映のため再読み込みします…" : "アンインストールしました。再読み込みします…", "info");
+      qc.invalidateQueries({ queryKey: ["features"] });
+      if (r.requires_reload) await reloadPlatform();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "操作に失敗しました", "error");
+    }
+  };
+
+  const btn = "rounded-xl px-3.5 py-2 text-xs font-medium";
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
+      <h2 className="mb-1 text-sm font-semibold text-zinc-500">アドオン</h2>
+      <p className="mb-3 text-xs text-zinc-400">オプトイン機能の導入と管理。導入はユーザー領域へのインストールでパスワードは不要です。</p>
+      <div className="space-y-2.5">
+        {(addons ?? []).map((addon) => (
+          <div key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
+                title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">{addon.name}
+                  {addon.version && <span className="num ml-2 text-[10px] font-normal text-zinc-400">v{addon.version.replace(/^v/, "")}</span>}
+                </p>
+                <p className="text-[11px] text-zinc-400">
+                  {addon.enabled ? "有効 — OpenCode画面とAIチャットのcodeモードで利用できます"
+                    : addon.installed ? "導入済み（無効）— 有効化すると画面とチャットに表示されます"
+                    : addon.available ? "未導入 — ワンタップで導入できます（npm・1〜2分）"
+                    : "npmが見つかりません。Node.jsの導入が必要です"}
+                  {addon.error && ` · ${addon.error}`}
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-1.5">
+                {!addon.installed && (
+                  <button onClick={() => void install(addon)} disabled={!addon.available || jobId !== null}
+                    className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
+                    {jobId !== null ? "導入中…" : "導入"}
+                  </button>
+                )}
+                {addon.installed && !addon.enabled && (
+                  <button onClick={() => void act(addon, "enable")} disabled={reloading}
+                    className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>有効化</button>
+                )}
+                {addon.installed && addon.enabled && (
+                  <button onClick={() => void act(addon, "disable")} disabled={reloading}
+                    className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
+                )}
+                {addon.installed && (
+                  <button onClick={() => setUninstalling(addon.id)} disabled={reloading}
+                    className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>削除</button>
+                )}
+              </div>
+            </div>
+            {jobId !== null && !addon.installed && (
+              <p className="mt-2 animate-pulse text-[11px] text-zinc-400">
+                {job?.progress?.status || "導入中…"} — サーバー側で実行中。この画面を閉じても継続します
+              </p>
+            )}
+          </div>
+        ))}
+        {addons?.length === 0 && <p className="text-xs text-zinc-400">利用可能なアドオンはありません</p>}
+      </div>
+      {reloading && (
+        <p className="mt-3 animate-pulse rounded-xl bg-accent-50 px-3 py-2 text-xs text-accent-700 dark:bg-accent-600/10 dark:text-accent-300">
+          Control Deckを再読み込みして反映しています…
+        </p>
+      )}
+      {uninstalling && (
+        <ConfirmDialog
+          title="アドオンをアンインストールしますか？"
+          message="ランタイム一式（管理領域のnode_modules）を削除します。CodeDEVのプロジェクトと外部のOpenCode設定には触れません。"
+          confirmLabel="アンインストールする"
+          onConfirm={() => {
+            const target = (addons ?? []).find((a) => a.id === uninstalling);
+            setUninstalling(null);
+            if (target) void act(target, "uninstall");
+          }}
+          onClose={() => setUninstalling(null)}
+        />
       )}
     </section>
   );
