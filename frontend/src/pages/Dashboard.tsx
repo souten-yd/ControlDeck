@@ -190,50 +190,47 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
     `${power.price_per_kwh_yen}円/kWh で積算した概算です。コンセントのワットチェッカー実測値とは差が出る場合があります。`;
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900" title={tip}>
-      <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
-        {/* PSU 総出力 */}
-        <div className="min-w-[140px]">
-          <p className="text-xs text-zinc-500">PSU 総出力{power.source ? "" : ""}</p>
+      {/* PSU出力と電気代を同じ高さのstatとして横一列に並べ、空欄を作らない */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+        <div>
+          <p className="text-xs text-zinc-500">PSU 総出力</p>
           {psuOk ? (
             <>
-              <p className="num mt-0.5 text-2xl font-semibold text-zinc-800 dark:text-zinc-100">
+              <p className="num mt-0.5 text-2xl font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">
                 {power.output_power_w!.toFixed(0)} <span className="text-base font-normal text-zinc-400">W</span>
               </p>
-              <p className="num text-[11px] text-zinc-400">
-                コンセント側推定 約{power.estimated_input_power_w != null ? power.estimated_input_power_w.toFixed(0) : "—"} W
+              <p className="num text-[10px] text-zinc-400">
+                コンセント側 約{power.estimated_input_power_w != null ? power.estimated_input_power_w.toFixed(0) : "—"} W
               </p>
             </>
           ) : (
             <p className="mt-0.5 text-lg font-medium text-zinc-400">取得不可</p>
           )}
-          {psuOk && (power.vrm_temperature_c != null || power.fan_rpm != null) && (
-            <p className="num mt-1 text-[10px] text-zinc-400">
-              {power.vrm_temperature_c != null && `VRM ${power.vrm_temperature_c}°C`}
-              {power.case_temperature_c != null && ` · ケース ${power.case_temperature_c}°C`}
-              {power.fan_rpm != null && ` · FAN ${power.fan_rpm} RPM`}
-            </p>
-          )}
         </div>
-
-        {/* 電気代（起動中/今日/今月） */}
-        <div className="flex flex-1 flex-wrap gap-x-6 gap-y-3">
-          <CostItem label="今回の起動中" cost={power.session_cost_yen} kwh={power.session_energy_kwh} ok={psuOk} />
-          <CostItem label="今日" cost={power.today_cost_yen} kwh={power.today_energy_kwh} ok={psuOk} />
-          <CostItem label="今月" cost={power.month_cost_yen} kwh={power.month_energy_kwh} ok={psuOk} />
-        </div>
+        <CostItem label="今回の起動中" cost={power.session_cost_yen} kwh={power.session_energy_kwh} ok={psuOk} />
+        <CostItem label="今日" cost={power.today_cost_yen} kwh={power.today_energy_kwh} ok={psuOk} />
+        <CostItem label="今月" cost={power.month_cost_yen} kwh={power.month_energy_kwh} ok={psuOk} />
       </div>
-      <p className="num mt-3 text-[10px] text-zinc-400">
-        {power.price_per_kwh_yen}円/kWh・効率{Math.round(power.psu_efficiency * 100)}%（概算。実測値とは差が出る場合があります）
-      </p>
+      {/* 温度/FAN と単価情報は下端の1行に集約（FANはスカイブルーで区別） */}
+      <div className="num mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-zinc-100 pt-2.5 text-[10px] text-zinc-400 dark:border-zinc-800">
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {psuOk && power.vrm_temperature_c != null && <span>VRM {power.vrm_temperature_c}°C</span>}
+          {psuOk && power.case_temperature_c != null && <span>ケース {power.case_temperature_c}°C</span>}
+          {psuOk && power.fan_rpm != null && (
+            <span className="font-medium text-sky-500 dark:text-sky-400">FAN {power.fan_rpm} RPM</span>
+          )}
+        </span>
+        <span>{power.price_per_kwh_yen}円/kWh・効率{Math.round(power.psu_efficiency * 100)}%（概算）</span>
+      </div>
     </section>
   );
 }
 
 function CostItem({ label, cost, kwh, ok }: { label: string; cost: number | null; kwh: number | null; ok: boolean }) {
   return (
-    <div className="min-w-[92px]">
+    <div>
       <p className="text-xs text-zinc-500">{label}</p>
-      <p className="num mt-0.5 text-lg font-semibold text-zinc-800 dark:text-zinc-100">{ok ? fmtYen(cost) : "概算不可"}</p>
+      <p className="num mt-0.5 text-xl font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">{ok ? fmtYen(cost) : "概算不可"}</p>
       {ok && <p className="num text-[10px] text-zinc-400">{fmtKwh(kwh)}</p>}
     </div>
   );
