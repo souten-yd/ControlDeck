@@ -18,7 +18,9 @@ import { AddAppSheet } from "../features/apps/AddAppSheet";
 import type { ManagedApp } from "../types";
 
 export default function AppsPage() {
-  const { data: apps, isLoading } = useApps();
+  const { data: allApps, isLoading } = useApps();
+  // SearXNG等のインフラアプリはサーバー側が全自動管理するため、操作対象として表示しない
+  const apps = allApps?.filter((app) => !app.system_managed);
   const [params, setParams] = useSearchParams();
   const [detail, setDetail] = useState<ManagedApp | null>(null);
   const [editing, setEditing] = useState<ManagedApp | null>(null);

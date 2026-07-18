@@ -106,3 +106,5 @@ class AppOut(BaseModel):
     updated_at: datetime
     runtime: AppRuntime
     env_warnings: list[str] = []
+    # サーバー側が起動/停止を完全管理するインフラアプリ（SearXNG等）。UIは操作を出さない
+    system_managed: bool = False

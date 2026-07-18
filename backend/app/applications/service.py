@@ -270,4 +270,7 @@ def to_out(app: ManagedApplication) -> AppOut:
         updated_at=app.updated_at,
         runtime=runtime_info(app),
         env_warnings=env_warnings(env),
+        # SearXNG は API 利用時にサーバー側でオンデマンド起動・アイドル停止するため、
+        # ユーザー操作対象から外す（Apps 画面では非表示）。
+        system_managed=app.name.strip().lower() == "searxng",
     )
