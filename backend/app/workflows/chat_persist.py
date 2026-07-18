@@ -255,7 +255,7 @@ class SendBody(BaseModel):
     plan: AssistantPlan | None = None
     base_url: str = "http://127.0.0.1:11434/v1"
     model: str = "llama3.2"
-    engine: str = "duckduckgo"  # web/deep 用
+    engine: str = "searxng"  # web/deep 用（SearXNG既定）
     searxng_url: str = ""
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。

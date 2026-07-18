@@ -9,7 +9,6 @@ import { DEFAULT_DEFINITION } from "../features/workflows/nodeTypes";
 
 const WorkflowEditor = lazy(() => import("../features/workflows/WorkflowEditor"));
 const SampleBook = lazy(() => import("../features/workflows/SampleBook"));
-const AssistantChat = lazy(() => import("../features/workflows/AssistantChat"));
 
 export interface WorkflowSummary {
   id: number;
@@ -59,7 +58,6 @@ function WorkflowList() {
   const navigate = useNavigate();
   const [deleting, setDeleting] = useState<WorkflowSummary | null>(null);
   const [showSamples, setShowSamples] = useState(false);
-  const [showAssistant, setShowAssistant] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -150,13 +148,16 @@ function WorkflowList() {
       <div className="mb-4 flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">ワークフロー</h1>
         <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setShowAssistant(true)}
-            className="flex min-h-10 items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
-            title="チャット・Web/学術/Deep 検索・ワークフロー自動生成"
-          >
-            ✨<span className="hidden sm:inline"> アシスタント</span>
-          </button>
+          {can("workflows.edit") && (
+            <button
+              onClick={() => create.mutate()}
+              aria-label="新規ワークフロー"
+              title="新規ワークフロー"
+              className="grid h-10 w-10 place-items-center rounded-xl bg-accent-600 text-white shadow-sm hover:bg-accent-700 md:hidden"
+            >
+              <IconPlus />
+            </button>
+          )}
           <button
             onClick={() => setShowSamples(true)}
             className="flex min-h-10 items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
@@ -280,25 +281,10 @@ function WorkflowList() {
         </ul>
       )}
 
-      {can("workflows.edit") && (
-        <button
-          onClick={() => create.mutate()}
-          aria-label="新規ワークフロー"
-          className="fixed bottom-24 right-4 z-20 grid place-items-center rounded-2xl bg-accent-600 p-3.5 text-xl text-white shadow-lg hover:bg-accent-700 md:hidden"
-        >
-          <IconPlus />
-        </button>
-      )}
-
       {showSecrets && <SecretsSheet onClose={() => setShowSecrets(false)} />}
       {showSamples && (
         <Suspense fallback={null}>
           <SampleBook onClose={() => setShowSamples(false)} />
-        </Suspense>
-      )}
-      {showAssistant && (
-        <Suspense fallback={null}>
-          <AssistantChat onClose={() => setShowAssistant(false)} />
         </Suspense>
       )}
       {deleting && (

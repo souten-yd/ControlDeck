@@ -106,7 +106,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [model, setModel] = useState<string>(saved.model || "");
   // ⚙️で選択中runtimeのendpoint（最後に追従した値）。変わったら手動選択より優先して切り替える。
   const [autoBase, setAutoBase] = useState<string>(saved.autoBase || "");
-  const [engine, setEngine] = useState<string>(saved.engine || "duckduckgo");
+  // Web検索エンジンはSearXNG既定（ローカル・オンデマンド起動）。問題なければ将来固定化する
+  const [engine, setEngine] = useState<string>(saved.engine || "searxng");
   const [searxngUrl, setSearxngUrl] = useState<string>(saved.searxngUrl || "");
   const [runTarget, setRunTarget] = useState<number | "">("");
   // OpenCodeモード: CodeDEVプロジェクト選択（"__new__"は名前入力で新規作成）
@@ -644,6 +645,16 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             </select>
             <button
               type="button"
+              onClick={() => void newConversation()}
+              disabled={busy || (!convId && messages.length === 0)}
+              aria-label="新しい会話を開始"
+              title="新しい会話を開始"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-accent-50 hover:text-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500/30 disabled:opacity-40 dark:hover:bg-accent-600/15 dark:hover:text-accent-400"
+            >
+              <span className="text-lg font-semibold" aria-hidden>＋</span>
+            </button>
+            <button
+              type="button"
               onClick={() => void deleteConversation()}
               disabled={busy || !convId}
               aria-label="選択中の会話を削除"
@@ -653,17 +664,6 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               <IconTrash className="text-lg" />
             </button>
           </div>
-          {messages.length > 0 && (
-            <button
-              onClick={() => void newConversation()}
-              disabled={busy}
-              aria-label="新しい会話"
-              className="hidden shrink-0 rounded-xl px-2.5 py-2 text-xs font-medium text-zinc-500 hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800 sm:block"
-              title="新しい会話を開始"
-            >
-              ＋ 新規
-            </button>
-          )}
           <button
             onClick={() => setShowSettings((v) => !v)}
             title={model || "設定"}
