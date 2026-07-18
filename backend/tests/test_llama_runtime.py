@@ -202,3 +202,36 @@ def test_llama_multi_instance_api(admin_client, monkeypatch):
     deleted = admin_client.post("/api/v1/models/llama/instances/catalog-b/delete", headers=CSRF_HEADERS)
     assert deleted.status_code == 200 and deleted.json()["gguf_deleted"] is False
     assert gguf_b.exists()
+
+
+def test_unit_content_role_embedding_and_reranker(monkeypatch, tmp_path):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(llama, "current_link", lambda: tmp_path / "current")
+    monkeypatch.setattr(llama, "sync_instance_unit", lambda alias: None)
+    (tmp_path / "current").mkdir()
+    llama.save_instance("embed", {"alias": "embed", "model_path": "/models/bge-m3.gguf",
+                                  "role": "embedding", "port": 8091, "spec_type": "draft-mtp"})
+    llama.save_instance("rerank", {"alias": "rerank", "model_path": "/models/qwen3-reranker.gguf",
+                                   "role": "reranker", "port": 8092})
+    embed_unit = llama._unit_content("embed")
+    assert "--embedding" in embed_unit and "--pooling" in embed_unit
+    # embedding/reranker では投機的デコーディングを付けない
+    assert "--spec-type" not in embed_unit
+    rerank_unit = llama._unit_content("rerank")
+    assert "--rerank" in rerank_unit and "--embedding" not in rerank_unit
+
+
+def test_find_role_instance(monkeypatch, tmp_path):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "c.json")
+    monkeypatch.setattr(llama, "sync_instance_unit", lambda alias: None)
+    llama.save_instance("chatm", {"alias": "chatm", "model_path": "/models/chat.gguf", "port": 8090})
+    llama.save_instance("embed", {"alias": "embed", "model_path": "/models/bge.gguf",
+                                  "role": "embedding", "port": 8091})
+    found = llama.find_role_instance("embedding")
+    assert found is not None and found["alias"] == "embed"
+    assert llama.find_role_instance("reranker") is None
+    assert llama.find_role_instance("llm")["alias"] == "chatm"

@@ -136,12 +136,15 @@ def delete_collection(collection: str) -> None:
 
 
 async def embed(texts: list[str], base_url: str, model: str, api_key: str) -> list[np.ndarray]:
+    from app.models_mgmt import llama
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     try:
         await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:
         raise RagError(str(exc)) from exc
+    # llama.cppの埋め込みinstance（BGE-M3等）は停止していればオンデマンド起動する
+    await llama.ensure_ready_by_base_url(base_url)
     url = base_url.rstrip("/") + "/embeddings"
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
@@ -323,10 +326,11 @@ async def search(
                 scores[cid] = scores.get(cid, 0) + (1 - w) / (K + rank)
 
         ranked = sorted(scores.items(), key=lambda x: -x[1])
+        # rerank用に多め（top_k*4）の候補を集め、reranker未登録時は先頭top_kを使う
         matches = []
         seen_parents: set[str] = set()
         for cid, sc in ranked:
-            if len(matches) >= top_k:
+            if len(matches) >= top_k * 4:
                 break
             text, parent = text_by_id[cid]
             # parent_child のときは親を文脈にする（重複親は1回だけ）
@@ -339,8 +343,39 @@ async def search(
     finally:
         conn.close()
 
-    context = "\n\n---\n\n".join(m["context"] for m in matches)
-    return {"matches": matches, "context": context, "count": len(matches), "mode": mode}
+    reranked = await _maybe_rerank(question, matches, top_k)
+    context = "\n\n---\n\n".join(m["context"] for m in reranked)
+    return {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
+            "reranked": len(reranked) != len(matches) or any("rerank_score" in m for m in reranked)}
+
+
+async def _maybe_rerank(question: str, matches: list[dict], top_k: int) -> list[dict]:
+    """role=reranker のllama instance（Qwen3-Reranker等）が登録済みなら /v1/rerank で
+    上位top_kを選び直す。未登録・停止起動失敗・APIエラー時は先頭top_kへフォールバック。"""
+    from app.models_mgmt import llama
+
+    if len(matches) <= top_k or llama.find_role_instance("reranker") is None:
+        return matches[:top_k]
+    base = await llama.ensure_role_ready("reranker")
+    if base is None:
+        return matches[:top_k]
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(base.rstrip("/") + "/rerank", json={
+                "model": "reranker", "query": question,
+                "documents": [m["text"] for m in matches], "top_n": top_k,
+            })
+        if response.status_code >= 400:
+            return matches[:top_k]
+        results = response.json().get("results", [])
+        picked = []
+        for item in results[:top_k]:
+            index = int(item.get("index", -1))
+            if 0 <= index < len(matches):
+                picked.append({**matches[index], "rerank_score": round(float(item.get("relevance_score", 0.0)), 5)})
+        return picked or matches[:top_k]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return matches[:top_k]
 
 
 def list_collections() -> list[dict]:
