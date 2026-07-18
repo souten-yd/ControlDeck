@@ -121,12 +121,37 @@ export default function KnowledgePage() {
 /** チャンク戦略・検索方式などの共通フォーム */
 function ConfigForm({ cfg, defaults, onChange }: { cfg: RagConfig; defaults: Defaults; onChange: (patch: Partial<RagConfig>) => void }) {
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  // Model画面（Embed/Rerankerタブ）で管理しているモデルから選べるようにする
+  const { data: embedOptions } = useQuery({
+    queryKey: ["embedding-endpoints"],
+    queryFn: () => api<{ endpoints: { label: string; base_url: string; model: string }[] }>("/models/embedding-endpoints"),
+    staleTime: 30_000,
+  });
+  const selectedManaged = (embedOptions?.endpoints ?? []).find(
+    (ep) => ep.base_url === cfg.embed_base_url && ep.model === cfg.embed_model,
+  );
   return (
     <div className="space-y-3">
+      <L label="埋め込みモデル（Model画面の管理モデルから選択）">
+        <select
+          value={selectedManaged ? `${selectedManaged.base_url}|${selectedManaged.model}` : "__custom__"}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") return;
+            const [base, model] = e.target.value.split("|");
+            onChange({ embed_base_url: base, embed_model: model });
+          }}
+          className={input}
+        >
+          {(embedOptions?.endpoints ?? []).map((ep) => (
+            <option key={`${ep.base_url}|${ep.model}`} value={`${ep.base_url}|${ep.model}`}>{ep.label}</option>
+          ))}
+          <option value="__custom__">カスタム（下で直接指定）</option>
+        </select>
+      </L>
       <L label="埋め込みエンドポイント">
         <input value={cfg.embed_base_url} onChange={(e) => onChange({ embed_base_url: e.target.value })} className={`${input} font-mono text-xs`} placeholder="http://127.0.0.1:11434/v1" />
       </L>
-      <L label="埋め込みモデル">
+      <L label="埋め込みモデル名">
         <input value={cfg.embed_model} onChange={(e) => onChange({ embed_model: e.target.value })} className={`${input} font-mono text-xs`} placeholder="nomic-embed-text" />
       </L>
       <L label="チャンク戦略">
