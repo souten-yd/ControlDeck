@@ -52,6 +52,22 @@
   最終メンテナンス実行時刻を確認できる
 
 ### Phase 5 — ワークフロー（React Flow）
+
+### Phase 5b — ワークフロー統合開発環境（2026-07-19 追加）
+
+既存 Phase 5 の実行基盤を維持しながら、入力 → preview/test → node 入出力検査 → 部分再実行 → 公開を一体化する。
+監査結果、データモデル、API、後方互換、Phase/PR 分割は
+[`design-workflow-integrated-ide.md`](design-workflow-integrated-ide.md) を正とする。
+
+1. UX 基盤: Preview Workspace、統一 inspector、debug panel、live canvas、過去入力 load
+2. 再現性: published version、execution snapshot、node run、test case、pin、retry/resume、event stream
+3. typed output / node / error route: output.render、approval/merge/try、data nodes、system trigger
+4. large flow: group/collapse/subflow/outline/layout/performance
+5. AI: diagnose/patch/runtime route/Project Intelligence
+6. sample/docs: 15 以上の実用 sample、全 node 詳細説明、回帰 E2E
+
+mock による決定的回帰に加え、LLM/RAG/AI 関連は利用可能なローカル model を必要に応じて実行し、
+品質、token、latency、cancel/timeout、fallback、VRAM route まで評価する。
 ### Phase 6 — リモートデスクトップ（Guacamole）
 ### Phase 7 — TOTP / 通知 / バックアップ / PostgreSQL / PWA / WoL / プラグイン
 - LLM runtime providerカタログ（Ollama / llama.cpp / LM Studio / OpenAI互換）と共通エンドポイント検出

@@ -169,6 +169,7 @@ llama.cpp、LM Studio などの OpenAI 互換 LLM endpoint を用意したうえ
 - [OpenCode オプトイン feature 詳細設計](docs/design-opencode-feature.md)
 - [ワークフロー dry-run / metadata 詳細設計](docs/design-workflow-dry-run-metadata.md)
 - [ワークフローノード catalog 詳細設計](docs/design-workflow-node-catalog.md)
+- [ワークフロー統合開発環境 監査・詳細実装仕様](docs/design-workflow-integrated-ide.md)
 
 ## セキュリティ原則（抜粋）
 
