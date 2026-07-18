@@ -35,7 +35,7 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SV
   { to: "/github", label: "GitHub", icon: IconBranch },
   { to: "/knowledge", label: "Knowledge", icon: IconBook },
   { to: "/models", label: "Model", icon: IconChip },
-  { to: "/opencode", label: "OpenCode", icon: IconTerminal, feature: "opencode" },
+  { to: "/opencode", label: "OpenCode", icon: IconCode, feature: "opencode" },
   { to: "/logs", label: "ログ", icon: IconLogs },
   { to: "/system", label: "システム", icon: IconChart },
   { to: "/settings", label: "設定", icon: IconSettings },
@@ -50,6 +50,15 @@ function IconFlow(props: React.SVGProps<SVGSVGElement>) {
       <rect x="2" y="4" width="7" height="6" rx="1.5" />
       <rect x="15" y="14" width="7" height="6" rx="1.5" />
       <path d="M9 7h4a2 2 0 0 1 2 2v5" />
+    </svg>
+  );
+}
+
+function IconCode(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
     </svg>
   );
 }
@@ -285,7 +294,7 @@ export default function AppLayout() {
       {/* グローバル操作シート */}
       {actionOpen && (
         <BottomSheet title="操作" onClose={() => setActionOpen(false)}>
-          <div className="space-y-1">
+          <div className="grid grid-cols-2 gap-1">
             {can("apps.edit") && (
               <ActionItem
                 icon={<IconPlus />}
@@ -328,7 +337,7 @@ export default function AppLayout() {
             )}
             {enabledFeatures.has("opencode") && can("workflows.run") && (
               <ActionItem
-                icon={<IconTerminal />}
+                icon={<IconCode />}
                 label="OpenCode"
                 onClick={() => {
                   setActionOpen(false);

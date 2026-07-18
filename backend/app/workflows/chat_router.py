@@ -180,7 +180,7 @@ async def chat_stream(websocket: WebSocket):
 class SearchBody(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     mode: str = "web"  # web | academic | deep
-    engine: str = "duckduckgo"  # web/deep 用: duckduckgo | searxng
+    engine: str = "searxng"  # web/deep 用: searxng（既定・ローカル） | duckduckgo
     searxng_url: str = ""
     max_results: int = 8
     # deep 用 LLM
