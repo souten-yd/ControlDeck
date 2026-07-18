@@ -253,25 +253,11 @@ class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
         # /health 200（モデル読み込み完了）まで待つ。
         from app.models_mgmt import llama
 
-        parsed = urlsplit(normalize_openai_base(request.base_url))
-        instances = llama.get_config()["instances"]
-        alias = next(
-            (name for name, item in instances.items() if int(item.get("port", 0)) == parsed.port),
-            None,
+        ok = await llama.ensure_ready_by_base_url(
+            normalize_openai_base(request.base_url), timeout_seconds=self._READY_TIMEOUT_SECONDS,
         )
-        if alias is None:
-            return
-        if (await llama.health(alias)).get("ok"):
-            return
-        ok, error = await asyncio.to_thread(llama.start_instance, alias)
         if not ok:
-            raise RuntimeProviderError(f"llama.cppの自動起動に失敗しました: {error}")
-        deadline = asyncio.get_event_loop().time() + self._READY_TIMEOUT_SECONDS
-        while asyncio.get_event_loop().time() < deadline:
-            if (await llama.health(alias)).get("ok"):
-                return
-            await asyncio.sleep(2)
-        raise RuntimeProviderError("llama.cppのモデル読み込みが時間内に完了しませんでした")
+            raise RuntimeProviderError("llama.cppの自動起動またはモデル読み込みに失敗しました")
 
 
 class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):

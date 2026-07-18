@@ -66,6 +66,8 @@ def _config_path() -> Path:
 
 DEFAULT_INSTANCE = {
         "model_path": "",
+        # llm: チャット/生成 / embedding: /v1/embeddings 専用 / reranker: /v1/rerank 専用
+        "role": "llm",
         "port": 8080,
         "n_gpu_layers": 999,   # 全層 GPU（VRAM 不足時は下げる）
         "ctx_size": 4096,
@@ -531,8 +533,15 @@ def _unit_content(alias: str | None = None) -> str:
         args += ["--no-mmap"]
     if inst.get("mlock"):
         args += ["--mlock"]
+    role = str(inst.get("role", "llm"))
+    if role == "embedding":
+        # 埋め込み専用（BGE-M3等）。/v1/embeddings を提供する
+        args += ["--embedding", "--pooling", "mean"]
+    elif role == "reranker":
+        # 再ランク専用（Qwen3-Reranker等）。/v1/rerank を提供する
+        args += ["--rerank"]
     spec_type = str(inst.get("spec_type", "none"))
-    if spec_type != "none":
+    if spec_type != "none" and role == "llm":
         # --draft-max は削除済み。後継は --spec-draft-n-max
         args += ["--spec-type", spec_type, "--spec-draft-n-max", str(inst.get("draft_max", 16))]
     if inst.get("cpu_moe"):
@@ -674,6 +683,69 @@ async def health(alias: str | None = None) -> dict:
         return {"ok": r.status_code == 200, "status_code": r.status_code}
     except httpx.HTTPError:
         return {"ok": False, "status_code": None}
+
+
+def find_role_instance(role: str) -> dict | None:
+    """指定roleの最初のinstance設定を返す（未登録ならNone）。"""
+    for item in list_instances():
+        if str(item.get("role", "llm")) == role and item.get("model_path"):
+            return item
+    return None
+
+
+async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
+    """instanceを必要ならオンデマンド起動し、/health 200（モデル読込完了）まで待つ。
+
+    チャット・埋め込み・再ランクの全経路で共通に使う（Ollamaの暗黙ロード相当）。
+    """
+    import asyncio
+
+    try:
+        inst = get_instance(alias)
+        # 利用時刻を記録し、使用中のembedding/rerankerがidle unloadで落ちないようにする
+        mark_used_by_base_url(f"http://127.0.0.1:{inst.get('port', 8080)}/v1")
+    except KeyError:
+        return False
+    if (await health(alias)).get("ok"):
+        return True
+    ok, error = await asyncio.to_thread(start_instance, alias)
+    if not ok:
+        logger.warning("llama instance %s の自動起動に失敗: %s", alias, error)
+        return False
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while asyncio.get_event_loop().time() < deadline:
+        if (await health(alias)).get("ok"):
+            return True
+        await asyncio.sleep(2)
+    logger.warning("llama instance %s のモデル読込が時間内に完了しませんでした", alias)
+    return False
+
+
+async def ensure_ready_by_base_url(base_url: str, *, timeout_seconds: int = 240) -> bool:
+    """base_urlのportが管理instanceならensure_readyする。対象外はTrue（素通し）。"""
+    from urllib.parse import urlsplit
+
+    try:
+        port = urlsplit(base_url).port
+    except ValueError:
+        return True
+    alias = next(
+        (str(item["alias"]) for item in list_instances() if int(item.get("port", 0)) == port),
+        None,
+    )
+    if alias is None:
+        return True
+    return await ensure_ready(alias, timeout_seconds=timeout_seconds)
+
+
+async def ensure_role_ready(role: str, *, timeout_seconds: int = 240) -> str | None:
+    """指定roleのinstanceを起動保証し、base_urlを返す（未登録/失敗はNone）。"""
+    instance = find_role_instance(role)
+    if instance is None:
+        return None
+    if await ensure_ready(str(instance["alias"]), timeout_seconds=timeout_seconds):
+        return str(instance["base_url"])
+    return None
 
 
 def mark_used_by_base_url(base_url: str) -> str | None:

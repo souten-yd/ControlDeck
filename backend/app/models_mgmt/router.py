@@ -503,6 +503,7 @@ class LlamaInstanceBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_path: str | None = None
+    role: Literal["llm", "embedding", "reranker"] | None = None
     port: int | None = Field(default=None, ge=1024, le=65535)
     n_gpu_layers: int | None = Field(default=None, ge=0, le=999)
     ctx_size: int | None = Field(default=None, ge=0, le=1048576)
