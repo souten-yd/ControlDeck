@@ -109,6 +109,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [engine, setEngine] = useState<string>(saved.engine || "duckduckgo");
   const [searxngUrl, setSearxngUrl] = useState<string>(saved.searxngUrl || "");
   const [runTarget, setRunTarget] = useState<number | "">("");
+  // OpenCodeモード: CodeDEVプロジェクト選択（"__new__"は名前入力で新規作成）
+  const [codeProject, setCodeProject] = useState("");
+  const [codeNewName, setCodeNewName] = useState("");
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
   const [conversationTitle, setConversationTitle] = useState("新しい会話");
   const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
@@ -129,6 +132,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const assistantName = runtimeEnvironment?.policy.assistant_name || "AIアシスタント";
   const { data: appMeta } = useMeta();
   const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode") && can("terminal.use");
+  const { data: codeProjects } = useQuery({
+    queryKey: ["opencode-projects"],
+    queryFn: () => api<{ root: string; projects: { name: string; path: string; git: boolean }[] }>("/opencode/projects"),
+    enabled: opencodeAvailable,
+    staleTime: 30_000,
+  });
   const { data: conversations } = useQuery({
     queryKey: ["chat-conversations"],
     queryFn: () => api<ConversationSummary[]>("/chat/conversations"),
@@ -403,6 +412,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       show("実行するワークフローを選択してください", "error");
       return;
     }
+    const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject;
+    if (selectedMode === "code" && !codeProjectName) {
+      show("OpenCodeのプロジェクトを選択（または新規作成名を入力）してください", "error");
+      return;
+    }
     setInput("");
     setBusy(true);
     setGenStats(null);
@@ -439,12 +453,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "code") {
-        // OpenCode起動: この指示を最初のプロンプトとしてTUIセッションを開始し、画面を切り替える。
-        // プロジェクトはOpenCode設定の既定を使う（TUI内でいつでも変更・継続指示できる）。
+        // OpenCode起動: 選択したCodeDEVプロジェクト（新規名なら作成）で、この指示を
+        // 最初のプロンプトとしてTUIセッションを開始し、画面を切り替える。
         const res = await api<{ id: string; project_path?: string }>("/opencode/sessions", {
-          method: "POST", json: { prompt: text },
+          method: "POST", json: { prompt: text, project_name: codeProjectName },
         });
-        append({ role: "assistant", content: `⌨️ OpenCodeセッションを開始しました（${res.project_path ?? "既定プロジェクト"}）。TUIへ切り替えます…` });
+        qc.invalidateQueries({ queryKey: ["opencode-projects"] });
+        append({ role: "assistant", content: `⌨️ OpenCodeセッションを開始しました（${res.project_path ?? codeProjectName}）。TUIへ切り替えます…` });
         window.setTimeout(() => { onClose(); navigate(`/opencode?session=${res.id}`); }, 600);
       } else if (selectedMode === "gen") {
         // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
@@ -771,6 +786,30 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
+          )}
+          {effectiveMode === "code" && (
+            <div className="mb-2 flex min-w-0 gap-1.5">
+              <select
+                value={codeProject}
+                onChange={(e) => setCodeProject(e.target.value)}
+                className={`rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 ${codeProject === "__new__" ? "w-40 shrink-0" : "min-w-0 flex-1"}`}
+              >
+                <option value="">プロジェクトを選択（~/CodeDEV）...</option>
+                {(codeProjects?.projects ?? []).map((p) => (
+                  <option key={p.name} value={p.name}>{p.name}</option>
+                ))}
+                <option value="__new__">➕ 新規プロジェクト</option>
+              </select>
+              {codeProject === "__new__" && (
+                <input
+                  value={codeNewName}
+                  onChange={(e) => setCodeNewName(e.target.value)}
+                  placeholder="プロジェクト名（例: my-app）"
+                  autoFocus
+                  className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                />
+              )}
+            </div>
           )}
           <div className="flex w-full min-w-0 items-end gap-1.5 rounded-2xl border border-zinc-300 bg-zinc-50 p-1.5 shadow-sm transition-within focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
             <button

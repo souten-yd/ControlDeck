@@ -43,8 +43,35 @@ def settings(
     return result
 
 
+@router.get("/projects")
+def list_projects(user: User = Depends(require_permission("workflows.run"))):
+    """CodeDEV（~/CodeDEV）配下の管理プロジェクト一覧。"""
+    return {"root": str(opencode.codedev_root()), "projects": opencode.list_projects()}
+
+
+class ProjectBody(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/projects", status_code=201)
+def create_project(
+    body: ProjectBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """CodeDEV配下にプロジェクトフォルダを作成する（既存名なら再利用）。"""
+    try:
+        project = opencode.ensure_project(body.name)
+    except opencode.CodeAgentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "feature.opencode.project", user=user, resource_type="feature",
+                 resource_id="opencode", request=request,
+                 metadata={"name": project["name"], "created": project["created"]})
+    return project
+
+
 class SessionBody(BaseModel):
     project_path: str = Field(default="", max_length=4096)
+    project_name: str = Field(default="", max_length=64)
     prompt: str = Field(default="", max_length=32_000)
     base_url: str = Field(default="", max_length=2048)
     model: str = Field(default="", max_length=200)
@@ -62,8 +89,12 @@ def create_session(
     from app.terminals.manager import manager as terminals
 
     try:
+        # project_name指定はCodeDEV配下のフォルダ（無ければ作成）を使う
+        project_path = body.project_path
+        if body.project_name.strip():
+            project_path = opencode.ensure_project(body.project_name)["path"]
         command, project = opencode.tui_command(
-            project_path=body.project_path, prompt=body.prompt,
+            project_path=project_path, prompt=body.prompt,
             base_url=body.base_url, model=body.model,
         )
         session = terminals.create_session(cwd=project, command=command)
