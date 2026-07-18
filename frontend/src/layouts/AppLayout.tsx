@@ -256,7 +256,8 @@ export default function AppLayout() {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
+        {/* overflow-x-hidden: リロード直後等に幅超過要素があってもページ全体を横に広げない */}
+        <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <Outlet />
         </main>
 
