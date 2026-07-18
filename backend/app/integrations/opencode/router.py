@@ -69,6 +69,21 @@ def create_project(
     return project
 
 
+@router.delete("/projects/{name}")
+def delete_project(
+    name: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """CodeDEV配下のプロジェクトをフォルダごと削除する（UI側で確認済みの前提）。"""
+    try:
+        result = opencode.delete_project(name)
+    except opencode.CodeAgentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "feature.opencode.project_delete", user=user, resource_type="feature",
+                 resource_id="opencode", request=request, metadata={"name": result["name"]})
+    return {"ok": True, "name": result["name"]}
+
+
 class SessionBody(BaseModel):
     project_path: str = Field(default="", max_length=4096)
     project_name: str = Field(default="", max_length=64)

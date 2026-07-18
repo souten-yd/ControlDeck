@@ -136,6 +136,22 @@ def ensure_project(name: str) -> dict:
             "git": (path / ".git").is_dir()}
 
 
+def delete_project(name: str) -> dict:
+    """CodeDEV配下のプロジェクトをフォルダごと削除する（配下チェック付き）。"""
+    cleaned = name.strip()
+    if (not cleaned or len(cleaned) > 64 or cleaned in (".", "..")
+            or cleaned.startswith(".") or any(c in cleaned for c in "/\\\0")):
+        raise CodeAgentError("プロジェクト名が不正です")
+    root = codedev_root()
+    path = (root / cleaned).resolve()
+    if not path.is_relative_to(root) or path == root:
+        raise CodeAgentError("CodeDEV配下のプロジェクトのみ削除できます")
+    if not path.is_dir():
+        raise CodeAgentError("プロジェクトが見つかりません")
+    shutil.rmtree(path)
+    return {"name": cleaned, "path": str(path)}
+
+
 def import_project(source_path: str) -> dict:
     """CodeDEV外のフォルダをCodeDEVへコピーして取り込む（管理下は素通し）。
 
