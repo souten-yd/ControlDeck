@@ -28,8 +28,10 @@ ROLE_PRESETS: dict[str, dict] = {
         "label": "Qwen3-Reranker-4B（Q4_K_M）",
         "description": "検索候補を質問との関連度で並べ直す再ランクモデル（約2.5GB）",
         "role": "reranker",
-        "repo": "dengcao/Qwen3-Reranker-4B-GGUF",
-        "file": "Qwen3-Reranker-4B-q4_k_m.gguf",
+        # 注意: コミュニティ変換の多くは cls.output.weight（rankヘッド）欠落で
+        # near-zeroスコアになる。公式convert_hf_to_gguf.pyで変換された本repoを使う
+        "repo": "Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp",
+        "file": "Qwen3-Reranker-4B-Q4_K_M.gguf",
         "alias": "rerank-qwen3-4b",
         "port": 8095,
         "instance": {"ctx_size": 8192, "n_parallel": 1, "flash_attn": False,
