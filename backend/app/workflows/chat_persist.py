@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -259,6 +260,103 @@ class SendBody(BaseModel):
     searxng_url: str = ""
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
+    # 画像添付（/attachments でアップロード済みのID）。VLM有効モデルで画像入力に使う
+    attachments: list[str] = Field(default_factory=list, max_length=8)
+
+
+# ---- 添付（画像=VLM入力 / 文書=会話別RAGコレクション登録） ----
+
+ATTACHMENT_IMAGE_TYPES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
+}
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_ATTACHMENT_ID_RE = re.compile(r"^[0-9a-f]{16}\.(png|jpg|webp|gif)$")
+
+
+def conversation_collection(conv_id: str) -> str:
+    """会話別RAGコレクション名。添付文書・検索資料・レポートをここへ蓄積する。"""
+    return f"chat-{conv_id}"
+
+
+def _attachment_dir(conv_id: str):
+    from app.config import data_dir
+
+    root = (data_dir() / "chat-uploads" / conv_id).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _collection_embed_override() -> dict:
+    """埋め込みは role=embedding instance（BGE-M3等）があればそれを既定にする。"""
+    from app.models_mgmt import llama
+
+    instance = llama.find_role_instance("embedding")
+    if instance is None:
+        return {}
+    return {"embed_base_url": str(instance["base_url"]), "embed_model": str(instance["alias"])}
+
+
+def _extract_document_text(filename: str, content_type: str, data: bytes) -> str:
+    if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+        import io
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+    return data.decode("utf-8", errors="replace")
+
+
+async def register_chat_document(conv_id: str, text: str, source: str) -> dict | None:
+    """会話コレクションへ文書を登録する（呼び出し側は失敗を致命にしない）。"""
+    from app.workflows import rag
+
+    cleaned = (text or "").strip()
+    if len(cleaned) < 80:
+        return None
+    return await rag.add_document(
+        conversation_collection(conv_id), cleaned[:800_000], source,
+        config_override={"description": "AIチャットの会話資料（自動登録）",
+                         **_collection_embed_override()},
+    )
+
+
+@router.post("/conversations/{conv_id}/attachments", status_code=201)
+async def upload_attachment(
+    conv_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """📎添付: 画像は保存してVLM入力に、コード/文書/PDFは会話コレクションへRAG登録する。"""
+    conv = db.get(Conversation, conv_id)
+    if conv is None or (conv.owner_user_id is not None and conv.owner_user_id != user.id):
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    data = await file.read()
+    if len(data) == 0:
+        raise HTTPException(status_code=422, detail="ファイルが空です")
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="添付は20MiB以内にしてください")
+    content_type = (file.content_type or "").lower()
+    name = file.filename or "attachment"
+    if content_type in ATTACHMENT_IMAGE_TYPES:
+        attachment_id = uuid.uuid4().hex[:16] + ATTACHMENT_IMAGE_TYPES[content_type]
+        (_attachment_dir(conv_id) / attachment_id).write_bytes(data)
+        return {"kind": "image", "id": attachment_id, "name": name}
+    from app.workflows import rag
+
+    try:
+        text = _extract_document_text(name, content_type, data)
+        result = await register_chat_document(conv_id, text, name)
+    except rag.RagError as exc:
+        raise HTTPException(status_code=422, detail=f"RAG登録に失敗: {exc}") from exc
+    except Exception as exc:  # pypdf等の解析失敗
+        raise HTTPException(status_code=422, detail=f"文書を読み取れません: {exc}") from exc
+    if result is None:
+        raise HTTPException(status_code=422, detail="テキストを抽出できませんでした（80文字未満）")
+    return {"kind": "document", "id": name, "name": name,
+            "collection": conversation_collection(conv_id),
+            "chunks": result.get("added_chunks")}
 
 
 class RouteBody(BaseModel):
@@ -339,9 +437,21 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             else:
                 search_history = await _server_search(job, buf, conv_id, mode, query, params, checkpoint)
             if search_history is None:  # deep はここで完結（レポートを content に保存済み）
+                # レポートを会話コレクションへ登録し、以後の会話・別質問で再利用できるようにする
+                try:
+                    await register_chat_document(conv_id, buf["content"], f"{mode}: {query[:60]}")
+                except Exception:
+                    pass  # 埋め込み未導入等では登録スキップ（本文は保存済み）
                 await asyncio.to_thread(checkpoint, True, "completed")
                 await asyncio.to_thread(_maybe_title, conv_id)
                 return {"assistant_message_id": assistant_id}
+            # 検索資料（システム文脈の抜粋）も会話コレクションへ蓄積する
+            try:
+                await register_chat_document(
+                    conv_id, str(search_history[0].get("content") or ""), f"{mode}検索: {query[:60]}",
+                )
+            except Exception:
+                pass
             history = search_history
         except asyncio.CancelledError:
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
@@ -349,6 +459,42 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         except Exception as e:
             await asyncio.to_thread(checkpoint, True, "failed", f"{type(e).__name__}: {e}")
             raise
+
+    # 会話コレクション（📎添付・過去の検索資料・レポート）があれば、関連抜粋を文脈に加える
+    if mode == "chat":
+        try:
+            from app.workflows import rag
+
+            collection = conversation_collection(conv_id)
+            question = next(
+                (str(m.get("content")) for m in reversed(history)
+                 if m.get("role") == "user" and isinstance(m.get("content"), str)), "",
+            )
+            if question and rag.collection_exists(collection):
+                found = await rag.search(collection=collection, question=question, top_k=4)
+                if found.get("context"):
+                    history = [{"role": "system", "content":
+                                "この会話に添付・収集された資料の関連抜粋です。回答の根拠に使ってください:\n\n"
+                                + str(found["context"])[:12_000]}, *history]
+        except Exception:
+            pass  # 資料検索の失敗は通常チャットへフォールバック
+
+    # 画像添付（VLM）: 最後のuser発話をOpenAI互換のcontent配列（text+image_url）へ変換
+    attachment_ids = [str(a) for a in (params.get("attachments") or []) if _ATTACHMENT_ID_RE.fullmatch(str(a))]
+    if attachment_ids and history and history[-1].get("role") == "user":
+        import base64
+
+        mime_by_ext = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+        parts: list[dict] = [{"type": "text", "text": str(history[-1].get("content") or "")}]
+        for attachment_id in attachment_ids:
+            path = _attachment_dir(conv_id) / attachment_id
+            if not path.is_file():
+                continue
+            encoded = base64.b64encode(path.read_bytes()).decode()
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:{mime_by_ext[path.suffix]};base64,{encoded}"}})
+        if len(parts) > 1:
+            history[-1] = {**history[-1], "content": parts}
 
     try:
         runtime_request = RuntimeChatRequest(
@@ -684,6 +830,7 @@ async def send_message(
               "engine": body.engine, "searxng_url": body.searxng_url,
               "thinking": body.thinking or chat_defaults.reasoning,
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
+              "attachments": body.attachments,
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査"}.get(body.mode, "生成")

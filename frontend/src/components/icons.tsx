@@ -170,6 +170,11 @@ export const IconTrash = (p: SVGProps<SVGSVGElement>) => (
     <path d="M6 7l1 13h10l1-13" />
   </Icon>
 );
+export const IconPaperclip = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="m21 11.6-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.8-8.8a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.85 1.85 0 0 1-2.6-2.6l8.1-8.1" />
+  </Icon>
+);
 export const IconMic = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <rect x="9" y="3" width="6" height="11" rx="3" />

@@ -274,6 +274,33 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         # max_tokensを使い切ってJSONが途中切れになるため、どちらか必要ならnativeを使う。
         return request.thinking is not None or request.response_format is not None or request.context_window is not None
 
+    @staticmethod
+    def _native_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """OpenAI互換のcontent配列（text+image_url data URL）をnative形式へ変換する。
+
+        Ollama native /api/chat は content文字列 + images(base64配列) を取る。
+        """
+        converted: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                converted.append(message)
+                continue
+            text = "".join(str(part.get("text") or "") for part in content
+                           if isinstance(part, dict) and part.get("type") == "text")
+            images: list[str] = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    continue
+                url = str((part.get("image_url") or {}).get("url") or "")
+                if "base64," in url:
+                    images.append(url.split("base64,", 1)[1])
+            entry = {**message, "content": text}
+            if images:
+                entry["images"] = images
+            converted.append(entry)
+        return converted
+
     def _native_payload(
         self, request: RuntimeChatRequest, *, stream: bool,
         response_format: dict[str, Any] | None = None,
@@ -285,8 +312,8 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         if request.context_window is not None:
             options["num_ctx"] = request.context_window
         payload: dict[str, Any] = {
-            "model": request.model, "messages": request.messages, "stream": stream,
-            "think": request.thinking, "options": options,
+            "model": request.model, "messages": self._native_messages(request.messages),
+            "stream": stream, "think": request.thinking, "options": options,
         }
         if request.keep_alive is not None:
             payload["keep_alive"] = request.keep_alive
