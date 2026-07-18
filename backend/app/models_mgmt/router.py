@@ -674,6 +674,36 @@ async def llama_stop(
     return {"ok": ok, "error": err}
 
 
+@router.get("/embedding-endpoints")
+async def embedding_endpoints(user: User = Depends(require_permission("workflows.run"))):
+    """RAG設定用の埋め込みモデル候補（管理済みモデルから選択できるようにする）。
+
+    role=embedding のllama.cpp instance（自動起動対応）と、Ollamaの埋め込み系
+    モデル（名前ヒューリスティック）を返す。
+    """
+    import re as _re
+
+    from app.models_mgmt import llama
+
+    endpoints = []
+    for item in llama.list_instances():
+        if str(item.get("role", "llm")) == "embedding":
+            endpoints.append({
+                "label": f"{item['alias']}（llama.cpp・自動起動）",
+                "base_url": str(item["base_url"]), "model": str(item["alias"]),
+            })
+    try:
+        for m in await ollama.list_models():
+            if _re.search(r"embed|bge|e5|gte|minilm", str(m["name"]), _re.I):
+                endpoints.append({
+                    "label": f"{m['name']}（Ollama）",
+                    "base_url": ollama.base_url() + "/v1", "model": str(m["name"]),
+                })
+    except ollama.OllamaError:
+        pass
+    return {"endpoints": endpoints}
+
+
 @router.get("/llama/role-presets")
 def llama_role_presets(user: User = Depends(require_permission("workflows.run"))):
     """Embed/Reranker 推奨プリセットの導入・稼働状態。"""

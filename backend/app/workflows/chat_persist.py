@@ -308,16 +308,30 @@ def _extract_document_text(filename: str, content_type: str, data: bytes) -> str
 
 
 async def register_chat_document(conv_id: str, text: str, source: str) -> dict | None:
-    """会話コレクションへ文書を登録する（呼び出し側は失敗を致命にしない）。"""
+    """会話コレクションへ文書を登録する（呼び出し側は失敗を致命にしない）。
+
+    コレクション名はID固定（chat-<id>）だが、表示用descriptionへ会話タイトルを
+    反映し、Knowledge画面でチャット名として識別できるようにする。
+    """
     from app.workflows import rag
 
     cleaned = (text or "").strip()
     if len(cleaned) < 80:
         return None
+
+    def _conversation_title() -> str:
+        db = SessionLocal()
+        try:
+            conv = db.get(Conversation, conv_id)
+            return str(conv.title) if conv is not None else ""
+        finally:
+            db.close()
+
+    title = await asyncio.to_thread(_conversation_title)
+    description = f"会話「{title}」の資料（自動登録）" if title else "AIチャットの会話資料（自動登録）"
     return await rag.add_document(
         conversation_collection(conv_id), cleaned[:800_000], source,
-        config_override={"description": "AIチャットの会話資料（自動登録）",
-                         **_collection_embed_override()},
+        config_override={"description": description, **_collection_embed_override()},
     )
 
 
