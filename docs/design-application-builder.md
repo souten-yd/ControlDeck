@@ -206,6 +206,12 @@ F1はbackend catalog／検証とfrontend editorを分割する。最初の単位
 
 Pageは任意のframework classではなく再帰的な`root` semantic component treeを持つ。component IDの全Page横断一意性、unknown type、primitiveへのchildren、binding prefix、lock schemaを保存前とvalidate APIで検証する。既存のrootを持たないPage辞書は後方互換で読み書きできる。次のF1.2 UIはcatalogを取得してpalette/tree/inspector/previewを構築し、component一覧をfrontendへ直書きしない。
 
+### Phase F1.2 — Component Editor（2026-07-19実装）
+
+Application Editorはschema APIのcatalogからpaletteを生成し、Page rootを起点とするTree、Preview選択、Binding／Properties Inspectorを同じ編集stateへ接続する。追加先は選択中container、primitive選択時はPage rootとする。Desktopのdragはcontainerへのreparent、touch／keyboardは明示的なMove操作を使い、dragだけに依存しない。
+
+編集operationは最大50 snapshotのUndo／Redo履歴を持ち、Saveまではlocal draft、Save時は既存PATCH APIのbackend validationを必ず通す。Previewはsemantic componentを直接React classへ保存せず、320／768／desktop frameで決定的に描画する。現段階はstatic previewであり、Workflow実行、network、DB、secret解決を行わない。
+
 ## 12. Phase A acceptance
 
 - legacy definition → IRのinput/output/branch/merge/retry/timeout/secret名/side effect。
