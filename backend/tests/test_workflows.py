@@ -66,8 +66,9 @@ def test_condition_and_wait_graph():
 
 def test_workflow_api_crud_and_run(admin_client):
     definition = _definition(
-        [TRIGGER, {"id": "w", "type": "util.wait", "name": "待機", "config": {"seconds": 0.05}}],
-        [{"source": "t", "target": "w"}],
+        [TRIGGER, {"id": "w", "type": "util.wait", "name": "待機", "config": {"seconds": 0.05}},
+         {"id": "out", "type": "signal.display", "config": {"signal": "done", "value": "{{w.waited_seconds}}"}}],
+        [{"source": "t", "target": "w"}, {"source": "w", "target": "out"}],
     )
     r = admin_client.post(
         "/api/v1/workflows",
@@ -84,6 +85,8 @@ def test_workflow_api_crud_and_run(admin_client):
         headers=CSRF_HEADERS,
     )
     assert r.status_code == 422
+
+    assert admin_client.post(f"/api/v1/workflows/{wf_id}/publish", headers=CSRF_HEADERS).status_code == 200
 
     # 実行 → 完了までポーリング
     r = admin_client.post(f"/api/v1/workflows/{wf_id}/run", headers=CSRF_HEADERS)
@@ -405,6 +408,50 @@ def test_workflow_regression_test_cases_batch_and_assertions(admin_client):
     assert admin_client.delete(
         f"/api/v1/workflows/{workflow_id}/test-cases/{passing.json()['id']}", headers=CSRF_HEADERS,
     ).status_code == 204
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_publish_separates_production_from_draft_and_blocks_pins(admin_client):
+    import time
+
+    def wait_for(execution_id: int) -> dict:
+        for _ in range(60):
+            detail = admin_client.get(f"/api/v1/workflow-executions/{execution_id}").json()
+            if detail["status"] not in ("QUEUED", "RUNNING", "WAITING"):
+                return detail
+            time.sleep(0.05)
+        return detail
+
+    old = _definition([TRIGGER, {"id": "out", "type": "signal.display", "config": {
+        "signal": "answer", "value": "old",
+    }}], [{"source": "t", "target": "out"}])
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "publish boundary", "definition": old}, headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/run", headers=CSRF_HEADERS).status_code == 422
+    published = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
+    assert published.status_code == 200, published.text
+    assert admin_client.get(f"/api/v1/workflows/{workflow_id}").json()["state"] == "published"
+
+    new = json.loads(json.dumps(old))
+    new["nodes"][1]["config"]["value"] = "new"
+    admin_client.patch(f"/api/v1/workflows/{workflow_id}", json={"definition": new}, headers=CSRF_HEADERS)
+    detail = admin_client.get(f"/api/v1/workflows/{workflow_id}").json()
+    assert detail["state"] == "draft" and detail["published_version"] == published.json()["version"]
+    production = admin_client.post(f"/api/v1/workflows/{workflow_id}/run", headers=CSRF_HEADERS)
+    draft_test = admin_client.post(f"/api/v1/workflows/{workflow_id}/test", headers=CSRF_HEADERS)
+    assert wait_for(production.json()["execution_id"])["outputs"]["answer"]["value"] == "old"
+    assert wait_for(draft_test.json()["execution_id"])["outputs"]["answer"]["value"] == "new"
+
+    admin_client.put(
+        f"/api/v1/workflows/{workflow_id}/nodes/out/pinned-data",
+        json={"output": {"display": True, "signal": "answer", "value": "fixed"}}, headers=CSRF_HEADERS,
+    )
+    blocked = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
+    assert blocked.status_code == 409 and "固定データ" in str(blocked.json()["detail"]["blocking"])
+    admin_client.delete(f"/api/v1/workflows/{workflow_id}/nodes/out/pinned-data", headers=CSRF_HEADERS)
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 

@@ -113,6 +113,9 @@ test("integrates trigger input, safe preview, test result, and past input at 320
 
     await page.setViewportSize({ width: 320, height: 700 });
     await page.getByRole("button", { name: "その他メニュー" }).click();
+    await page.getByRole("menuitem", { name: "公開" }).click();
+    await expect(page.getByText(/バージョン \d+ を公開しました/)).toBeVisible();
+    await page.getByRole("button", { name: "その他メニュー" }).click();
     await page.getByRole("menuitem", { name: "実行履歴" }).click();
     const history = page.getByRole("dialog", { name: "実行履歴" });
     await expect(history).toBeVisible();

@@ -72,6 +72,6 @@ async def fire_webhook(token: str, request: Request):
         raw = (await request.body())[:4000]
         body = {"payload": raw.decode(errors="replace")} if raw else {}
     body.setdefault("message", json.dumps(body.get("payload", body), ensure_ascii=False)[:2000] if body else "")
-    execution_id = await engine.run_workflow(wf_id, trigger_type="webhook", input_data=body)
+    execution_id = await engine.run_workflow(wf_id, trigger_type="webhook", input_data=body, published_only=True)
     logger.info("webhook fired workflow %s (execution %s)", wf_id, execution_id)
     return {"execution_id": execution_id}

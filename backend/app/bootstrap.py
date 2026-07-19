@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import hashlib
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
-from app.models import ManagedApplication, Role, User
+from app.models import ManagedApplication, Role, User, Workflow, WorkflowVersion, utcnow
 from app.security.passwords import hash_password
 from app.security.permissions import ROLE_PRESETS
 
@@ -20,6 +21,37 @@ logger = logging.getLogger("control_deck.bootstrap")
 def init_db() -> None:
     Base.metadata.create_all(engine)
     _apply_light_migrations()
+    _publish_legacy_enabled_workflows()
+
+
+def _publish_legacy_enabled_workflows() -> None:
+    """公開境界導入前から有効な自動実行workflowだけを一度baseline化する。"""
+    from app.workflows.engine import safe_definition_snapshot
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        workflows = db.execute(select(Workflow).where(Workflow.enabled.is_(True))).scalars().all()
+        migrated = 0
+        for workflow in workflows:
+            published = db.execute(select(WorkflowVersion.id).where(
+                WorkflowVersion.workflow_id == workflow.id, WorkflowVersion.published_at.is_not(None),
+            ).limit(1)).scalar_one_or_none()
+            if published is not None:
+                continue
+            latest = db.execute(select(WorkflowVersion.version).where(
+                WorkflowVersion.workflow_id == workflow.id,
+            ).order_by(WorkflowVersion.version.desc()).limit(1)).scalar_one_or_none() or 0
+            definition = workflow.definition_json or "{}"
+            db.add(WorkflowVersion(
+                workflow_id=workflow.id, version=latest + 1, name=workflow.name,
+                definition_json=json.dumps(safe_definition_snapshot(json.loads(definition)), ensure_ascii=False),
+                checksum=hashlib.sha256(definition.encode()).hexdigest(), note="公開境界導入時のlegacy baseline",
+                published_at=utcnow(),
+            ))
+            migrated += 1
+        if migrated:
+            db.commit()
+            logger.info("legacy enabled workflows published as baseline: %s", migrated)
 
 
 def _apply_light_migrations() -> None:

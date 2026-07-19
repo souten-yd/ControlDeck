@@ -604,6 +604,7 @@ async def run_workflow(
     *, definition_json: str | None = None, workflow_version_id: int | None = None,
     start_node_id: str | None = None, seed_context: dict[str, Any] | None = None,
     stop_node_id: str | None = None,
+    published_only: bool = False,
 ) -> int:
     """実行レコードを作成しバックグラウンドで実行。実行 ID を返す。
 
@@ -617,6 +618,17 @@ async def run_workflow(
         wf = db.get(Workflow, workflow_id)
         if wf is None:
             raise DefinitionError("ワークフローが見つかりません")
+        if published_only and definition_json is None:
+            published = db.execute(
+                select(WorkflowVersion).where(
+                    WorkflowVersion.workflow_id == workflow_id,
+                    WorkflowVersion.published_at.is_not(None),
+                ).order_by(WorkflowVersion.published_at.desc()).limit(1)
+            ).scalar_one_or_none()
+            if published is None:
+                raise DefinitionError("公開済みバージョンがありません。先にワークフローを公開してください")
+            definition_json = published.definition_json
+            workflow_version_id = published.id
         definition = definition_json if definition_json is not None else wf.definition_json
         nodes, edges = parse_definition(definition)
         snapshot_nodes = nodes
@@ -818,7 +830,7 @@ async def scheduler_loop() -> None:
 
             for wf_id, _config in await asyncio.to_thread(find_due):
                 logger.info("scheduled workflow %s triggered", wf_id)
-                await run_workflow(wf_id, trigger_type="schedule")
+                await run_workflow(wf_id, trigger_type="schedule", published_only=True)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -860,7 +872,7 @@ async def fire_event_triggers(event_source: str, payload: dict) -> list[int]:
     execution_ids = []
     for wf_id in await asyncio.to_thread(find_targets):
         try:
-            execution_ids.append(await run_workflow(wf_id, trigger_type="event", input_data=payload))
+            execution_ids.append(await run_workflow(wf_id, trigger_type="event", input_data=payload, published_only=True))
             logger.info("event trigger (%s) fired workflow %s", event_source, wf_id)
         except DefinitionError:
             continue
