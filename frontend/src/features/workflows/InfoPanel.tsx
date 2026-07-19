@@ -36,7 +36,7 @@ interface LiveExec {
   finished_at: string | null;
   error: string;
   context: Record<string, NodeEntry>;
-  pending_approvals: string[];
+  pending_approvals: Array<{ node_id: string; message: string; approver: string; expires_at?: string | null }>;
   total_tokens: number;
 }
 interface VersionRow { id: number; name: string; note: string; created_at: string; node_count: number }
@@ -293,25 +293,25 @@ function ExecDetail({
       </div>
 
       {/* 承認待ち */}
-      {live.pending_approvals.map((nid) => (
-        <div key={nid} className="rounded-xl border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/40">
-          <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
-            ✋ 「{live.context[nid]?.name ?? nodeNames[nid]?.name ?? nid}」が承認を待っています
-          </p>
-          {live.context[nid]?.approval?.message && (
-            <p className="mt-1 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-200">{live.context[nid].approval?.message}</p>
-          )}
-          {live.context[nid]?.approval?.approver && (
-            <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">承認者: {live.context[nid].approval?.approver}</p>
-          )}
-          {onApprove && (
-            <div className="mt-2 flex gap-2">
-              <button onClick={() => onApprove(nid, true)} className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">承認して続行</button>
-              <button onClick={() => onApprove(nid, false)} className="flex-1 rounded-lg bg-zinc-200 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200">却下</button>
-            </div>
-          )}
-        </div>
-      ))}
+      {live.pending_approvals.map((approval) => {
+        const nid = approval.node_id;
+        return (
+          <div key={nid} className="rounded-xl border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/40">
+            <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+              ✋ 「{live.context[nid]?.name ?? nodeNames[nid]?.name ?? nid}」が承認を待っています
+            </p>
+            <p className="mt-1 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-200">{approval.message}</p>
+            {approval.approver && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">承認者: {approval.approver}</p>}
+            {approval.expires_at && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">期限: {new Date(approval.expires_at).toLocaleString("ja-JP")}</p>}
+            {onApprove && (
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => onApprove(nid, true)} className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">承認して続行</button>
+                <button onClick={() => onApprove(nid, false)} className="flex-1 rounded-lg bg-zinc-200 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200">却下</button>
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {/* ノードごとの状況 */}
       {entries.length === 0 && <p className="py-4 text-center text-xs text-zinc-400">ノードの記録はまだありません</p>}
