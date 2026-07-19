@@ -18,7 +18,7 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
 
   await page.goto("/");
   await page.getByRole("button", { name: "操作メニュー" }).click();
-  await page.getByRole("button", { name: "ランナー", exact: true }).click();
+  await page.getByRole("button", { name: "公開アプリ", exact: true }).click();
   await expect(page).toHaveURL(/\/runner$/);
 
   const workflowId = await page.evaluate(async () => {
@@ -50,8 +50,11 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
   });
 
   try {
-    await page.goto("/runner");
-    await page.getByRole("button", { name: /E2E 公開ランナー/ }).last().click();
+    await page.goto("/workflows");
+    await page.getByRole("button", { name: "E2E 公開ランナー の公開版を開く" }).click();
+    await expect(page).toHaveURL(new RegExp(`/runner\\?workflow=${workflowId}$`));
+    await expect(page.getByRole("heading", { name: "E2E 公開ランナー" })).toBeVisible();
+    await page.reload();
     await expect(page.getByRole("heading", { name: "E2E 公開ランナー" })).toBeVisible();
     await expect(page.locator(".react-flow")).toHaveCount(0);
     await expect(page.getByText("内部トリガー")).toHaveCount(0);

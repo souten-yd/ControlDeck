@@ -16,6 +16,8 @@ export interface WorkflowSummary {
   description: string;
   definition: { nodes: unknown[]; edges: unknown[] };
   enabled: boolean;
+  state: "draft" | "published";
+  published_version: number | null;
   last_execution: {
     id: number;
     status: string;
@@ -115,15 +117,6 @@ function WorkflowList() {
       navigate(`/workflows/${wf.id}`);
     },
     onError: (e) => show(e instanceof Error ? e.message : "作成に失敗しました", "error"),
-  });
-
-  const run = useMutation({
-    mutationFn: (id: number) => api(`/workflows/${id}/run`, { method: "POST" }),
-    onSuccess: () => {
-      show("実行を開始しました");
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["workflows"] }), 800);
-    },
-    onError: (e) => show(e instanceof Error ? e.message : "実行に失敗しました", "error"),
   });
 
   const toggle = useMutation({
@@ -245,17 +238,17 @@ function WorkflowList() {
                     {wf.enabled && " · スケジュール有効"}
                   </p>
                 </div>
-                {can("workflows.run") && (
+                {can("workflows.run") && wf.published_version !== null && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      run.mutate(wf.id);
+                      navigate(`/runner?workflow=${wf.id}`);
                     }}
-                    aria-label={`${wf.name} を実行`}
+                    aria-label={`${wf.name} の公開版を開く`}
                     className="flex min-h-11 items-center gap-1.5 rounded-xl bg-accent-50 px-3.5 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
                   >
                     <IconPlay />
-                    <span className="hidden sm:inline">実行</span>
+                    <span className="hidden sm:inline">公開版を開く</span>
                   </button>
                 )}
                 <DropdownMenu

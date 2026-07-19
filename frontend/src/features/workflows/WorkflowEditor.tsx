@@ -339,13 +339,30 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     setPublishing(true);
     try {
       const result = await api<{ version: number; warnings: string[] }>(`/workflows/${workflowId}/publish`, { method: "POST" });
-      await qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["workflow", workflowId] }),
+        qc.invalidateQueries({ queryKey: ["workflow-runner"] }),
+      ]);
       show(`バージョン ${result.version} を公開しました${result.warnings.length ? `（警告 ${result.warnings.length}件）` : ""}`);
+      return result;
     } catch (error) {
       show(error instanceof Error ? error.message : "公開検証に失敗しました", "error");
+      return null;
     } finally {
       setPublishing(false);
     }
+  };
+
+  const openPublishedApp = async () => {
+    if (readOnly) {
+      navigate(`/runner?workflow=${workflowId}`);
+      return;
+    }
+    if (wf?.state !== "published" || dirty) {
+      const result = await publish();
+      if (!result) return;
+    }
+    navigate(`/runner?workflow=${workflowId}`);
   };
 
   const [runInputsOpen, setRunInputsOpen] = useState(false);
@@ -577,6 +594,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             ...(readOnly ? [] : [
               { label: "アプリ化", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
               { label: "実行せず公開", onSelect: () => void publish() },
+              ...(can("workflows.run") ? [{ label: "公開して直接実行", onSelect: () => void run() }] : []),
               { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
               { label: "選択をスニペット保存", onSelect: saveAsSnippet },
             ]),
@@ -592,14 +610,19 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           <button
             onClick={() => { setPreviewOpen(true); setInfoOpen(false); }}
             aria-label="確認・テストを開く"
-            className="min-h-9 rounded-xl border border-accent-300 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30"
+            className="hidden min-h-9 rounded-xl border border-accent-300 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30 sm:block"
           >
             確認・テスト
           </button>
         )}
         {can("workflows.run") && (
-          <button onClick={run} disabled={startingRun || publishing} className="flex items-center gap-1 rounded-xl bg-accent-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50">
-            <IconPlay /> {startingRun ? "確認中…" : readOnly ? "公開版を実行" : "検証して実行"}
+          <button
+            onClick={() => void openPublishedApp()}
+            disabled={startingRun || publishing || saving}
+            aria-label={wf?.state === "published" && !dirty ? "公開アプリを開く" : "最新の内容を公開してアプリを開く"}
+            className="flex min-h-9 shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-accent-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
+          >
+            <IconPlay /> {publishing || saving ? "確認中…" : wf?.state === "published" && !dirty ? "アプリを開く" : "更新して開く"}
           </button>
         )}
       </div>

@@ -99,8 +99,8 @@ _INTEGER_KEYS = {
     "app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps", "limit", "top_n",
     "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens", "retry_count", "quorum",
 }
-_NUMBER_KEYS = {"seconds", "timeout", "retry_wait", "node_timeout", "approval_timeout_seconds"}
-_BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive"}
+_NUMBER_KEYS = {"seconds", "timeout", "startup_timeout", "retry_wait", "node_timeout", "approval_timeout_seconds"}
+_BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive", "auto_load"}
 _ARRAY_KEYS = {"inputs", "extractors", "sources"}
 
 RECOMMENDED_CONFIG: dict[str, Any] = {
@@ -121,6 +121,9 @@ CONFIG_REASONS: dict[str, str] = {
     "max_results": "精度と処理時間・後段token量のバランスがよい初期件数です。",
     "top_k": "RAG文脈を確保しつつ、無関係な断片とtoken消費を抑える推奨値です。",
     "parallel": "ローカル資源と外部rate limitを圧迫しにくい並列数です。",
+    "auto_load": "管理中のローカルLLMを実行直前に起動・ロードし、準備完了まで待ちます。通常は有効のまま使用します。",
+    "startup_timeout": "大型モデルのロード待ち上限です。短すぎると正常な初回ロードも失敗するため240秒を推奨します。",
+    "keep_alive": "実行後にモデルを保持する時間です。連続実行の再ロードを避けたい場合だけ指定します。",
 }
 
 # 新規ノードへ安全に投入できる決定的な初期値。URL・path・secret・モデル名など、
@@ -141,7 +144,7 @@ INITIAL_CONFIGS: dict[str, dict[str, Any]] = {
     "data.aggregate": {"operation": "count"},
     "file.write": {"append": ""},
     "file.glob": {"pattern": "*", "recursive": False, "kind": "all", "limit": 100},
-    "llm.chat": {"response_format": "text"},
+    "llm.chat": {"response_format": "text", "auto_load": True, "startup_timeout": 240},
     "rag.query": {"search_mode": "hybrid", "top_k": 4, "hyde": False, "multi_query": False},
     "academic.search": {"source": "all", "max_results": 8},
     "web.search": {"engine": "searxng", "max_results": 8},
@@ -189,7 +192,7 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
 
 QUICK_STARTS: dict[str, str] = {
     "output.render": "valueへ上流変数を挿入し、用途に合うrendererを選びます。nameはフロー内で一意にします。",
-    "llm.chat": "モデルを検出し、promptへ上流の本文を挿入します。迷った場合はtext出力のままで開始できます。",
+    "llm.chat": "モデルを検出し、promptへ上流の本文を挿入します。ローカルモデルは既定で自動起動・ロードし、準備完了まで待つため、通常は事前起動不要です。",
     "http.request": "URLを入力します。読み取りはGETのまま試し、送信時だけmethodとbodyを変更します。",
     "research.deep": "topicへ調査テーマを挿入します。まず標準深度で試し、不足時だけ詳細・徹底へ上げます。",
 }
@@ -278,7 +281,7 @@ def node_catalog() -> list[dict[str, Any]]:
             "supports": {
                 "retry": node_type not in ("trigger", "control.loop", "human.approval"),
                 "cancel": True,
-                "progress": node_type in {"control.loop", "data.transform", "data.filter", "data.aggregate", "file.glob", "ai.utility"},
+                "progress": node_type in {"control.loop", "data.transform", "data.filter", "data.aggregate", "file.glob", "ai.utility", "llm.chat"},
                 "dry_run": True,
             },
         })

@@ -306,8 +306,10 @@ CPU・GPU・ログ条件 / Webhook。
 実行状態: QUEUED / RUNNING / SUCCEEDED / FAILED / CANCELED / TIMED_OUT / WAITING。ノードごとの入出力・時刻・エラー保存。
 - 実行履歴はノードごとの実入力、実出力、開始・終了・経過時間、retry、token、log、error、artifact参照、入出力sizeを表示し、並列性とbottleneckをタイムラインで確認できる。
 - エディタの確認操作は「実行前チェック」と「下書きをテスト」を区別する。両方で同じ構造検証、副作用、公開可否を表示し、前者はexecutor・Secret復号・外部通信・書込を行わず、後者だけがdraftを実実行する。
-- エディタの主実行は、未保存変更を保存し、blockingがなければ現在draftを差分時だけ公開し、そのimmutable version IDを固定して実行する。変更がない場合はversionを増やさない。
-- schedule、Webhook、system event、外部API、Runnerはdraftを暗黙公開せず、明示済み公開版だけを実行する。実行を伴わない公開はその他操作として残す。
+- エディタの主操作は「更新して開く」とし、未保存変更を保存してblockingがなければ現在draftを差分時だけ公開し、公開アプリ画面へ移る。変更がない場合は「アプリを開く」と表示しversionを増やさない。
+- 公開アプリは入力・進捗・承認・型付き出力・履歴だけを扱い、編集定義を返さない専用APIを使う。workflow IDをURLへ保持し、再読込後も選択を復元する。エディタ内の直接実行は高度なデバッグ操作としてその他メニューへ置く。
+- schedule、Webhook、system event、外部API、公開アプリはdraftを暗黙公開せず、明示済み公開版だけを実行する。ワークフロー一覧から既存公開版を開いても、編集中draftを更新しない。
+- LLM生成ノードは、ControlDeck管理下のローカルruntimeが停止・unload中なら生成前に正規のモデル管理境界から起動・ロードし、有限のstartup timeout内でhealth完了を待つ。同一modelの並列起動をまとめ、外部endpointは勝手に操作しない。自動準備は既定有効とし、進捗と起動／load／timeoutの失敗理由をNodeRunへ残す。
 
 # 19. 認証
 

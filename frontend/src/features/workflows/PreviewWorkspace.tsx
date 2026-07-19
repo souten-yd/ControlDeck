@@ -422,7 +422,7 @@ export function PreviewWorkspace({
                 <ResultNotice
                   ok={publishCheck.publishable}
                   title={publishCheck.publishable ? "公開できます" : "このままでは公開できません"}
-                  detail={`品質スコア ${publishCheck.quality.score}。「検証して実行」と同じ公開規則です。draftテストは公開不可でも構造上実行可能なら開始できます。`}
+                  detail={`品質スコア ${publishCheck.quality.score}。「更新して開く」と同じ公開規則です。draftテストは公開不可でも構造上実行可能なら開始できます。`}
                 />
                 <IssueList errors={publishCheck.blocking} warnings={publishCheck.warnings} />
               </section>

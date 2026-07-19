@@ -28,7 +28,7 @@ import { Logo } from "../components/Logo";
 const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; feature?: string; permission?: string }> = [
   { to: "/", label: "ホーム", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
-  { to: "/runner", label: "ランナー", icon: IconPlay, permission: "workflows.run" },
+  { to: "/runner", label: "公開アプリ", icon: IconPlay, permission: "workflows.run" },
   { to: "/workflows", label: "ワークフロー", icon: IconFlow, permission: "workflows.edit" },
   { to: "/applications", label: "アプリ設計", icon: IconGrid, permission: "application_builder.view" },
   { to: "/project-lab", label: "Project Lab", icon: IconCode, permission: "project_lab.view" },
@@ -306,7 +306,7 @@ export default function AppLayout() {
             {can("workflows.run") && (
               <ActionItem
                 icon={<IconPlay />}
-                label="ランナー"
+                label="公開アプリ"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/runner");

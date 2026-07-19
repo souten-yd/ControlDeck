@@ -8,7 +8,7 @@ from __future__ import annotations
 # (type, 用途, config キー例, 分岐/ループの有無)
 NODE_CATALOG: list[dict] = [
     {"type": "trigger", "desc": "開始トリガー。config.mode=manual/interval/daily/cron。inputs で実行時入力を定義", "keys": ["mode", "inputs"]},
-    {"type": "llm.chat", "desc": "LLM 生成(OpenAI互換)。prompt/system/base_url/model/response_format", "keys": ["base_url", "model", "system", "prompt", "response_format"]},
+    {"type": "llm.chat", "desc": "LLM 生成(OpenAI互換)。管理中のローカルmodelは必要時に自動ロードして待機", "keys": ["base_url", "model", "system", "prompt", "response_format", "auto_load", "startup_timeout", "keep_alive"]},
     {"type": "rag.build", "desc": "テキストをナレッジに取り込み。collection/text/strategy", "keys": ["collection", "text", "path", "strategy"]},
     {"type": "rag.query", "desc": "ナレッジ検索。collection/question/search_mode(hybrid/vector/fulltext/graph)/hyde/multi_query。出力 context", "keys": ["collection", "question", "search_mode", "top_k", "hyde", "multi_query"]},
     {"type": "academic.search", "desc": "論文/文献/特許/市場を検索。source(all/openalex/arxiv/crossref/semanticscholar/europepmc/doaj/dblp/patent/market)/query。出力 results,text", "keys": ["source", "query", "max_results"]},
