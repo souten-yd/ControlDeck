@@ -1314,79 +1314,55 @@ async def node_web_search(config: dict, ctx: dict) -> dict:
 
 
 async def node_deep_research(config: dict, ctx: dict) -> dict:
-    """質問を分解し、選択ソースを反復的に探索して引用付きで統合する（Deep サーチ）。
-
-    ソース: rag(ナレッジ) / web(スクレイピング) / arxiv / crossref / patent / market。
-    LLM で サブ質問生成 → 各ソース検索 → 収集 → 統合レポート生成。
-    """
-    from app.workflows import external_search as ext
-    from app.workflows import rag as ragmod
+    """AIアシスタントと同じ反復Deep Researchエンジンをワークフローから実行する。"""
+    from app.workflows import chat_router
 
     topic = render_template(str(config.get("topic", "")), ctx).strip()
     if not topic:
         raise NodeError("調査テーマが空です")
-    llm_base = str(config.get("llm_base_url", "http://127.0.0.1:11434/v1"))
-    llm_model = str(config.get("llm_model", "llama3.2"))
-    api_key = str(config.get("api_key", ""))
-    sources = str(config.get("sources", "rag,arxiv") or "rag").split(",")
-    sources = [s.strip() for s in sources if s.strip()]
-    max_sub = max(1, min(int(config.get("sub_questions", 4) or 4), 8))
-    per_source = max(1, min(int(config.get("results_per_source", 4) or 4), 10))
-    collection = str(config.get("collection", "default"))
+    aliases = {"arxiv": "academic", "crossref": "academic", "local": "local_code"}
+    source_types = [
+        aliases.get(value.strip(), value.strip())
+        for value in str(config.get("sources") or "web,academic,github,direct").split(",")
+        if value.strip()
+    ]
 
-    # 1. サブ質問生成
-    try:
-        raw = await ragmod._llm_complete(
-            f"調査テーマ「{topic}」を、体系的に調べるための具体的なサブ質問 {max_sub} 個に分解してください。"
-            "1行に1問、番号なしで出力。", llm_base, llm_model, api_key)
-    except ragmod.RagError as e:
-        raise NodeError(str(e))
-    sub_qs = [ln.strip("・-•*0123456789. \t") for ln in raw.splitlines() if ln.strip()][:max_sub] or [topic]
+    def integer(key: str) -> int:
+        try:
+            return int(config.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
 
-    # 2. 各サブ質問 × 各ソースを収集
-    findings: list[dict] = []
-    for q in sub_qs:
-        for src in sources:
-            try:
-                if src == "rag":
-                    if not ragmod.collection_exists(collection):
-                        continue
-                    res = await ragmod.search(collection, q, per_source, api_key=api_key)
-                    for m in res["matches"]:
-                        findings.append({"q": q, "source": "rag", "title": collection, "text": m["context"][:800], "url": ""})
-                elif src == "web":
-                    web = await node_web_search(
-                        {"query": q, "max_results": per_source,
-                         "engine": config.get("web_engine", "duckduckgo"),
-                         "searxng_url": config.get("searxng_url", "")}, ctx)
-                    for it in web["results"]:
-                        findings.append({"q": q, "source": "web", "title": it["title"], "text": it.get("snippet", ""), "url": it["url"]})
-                else:
-                    items = await ext.search(src, q, per_source, api_key=api_key)
-                    for it in items:
-                        findings.append({"q": q, "source": src, "title": it["title"], "text": it.get("snippet", "")[:800], "url": it.get("url", "")})
-            except (ext.SearchError, ragmod.RagError, httpx.HTTPError, Exception):
-                continue
-
-    if not findings:
-        raise NodeError("収集結果がありません（ソース設定やコレクションを確認してください）")
-
-    # 3. 統合レポート生成（引用付き）
-    numbered = "\n".join(
-        f"[{i+1}] ({f['source']}) {f['title']}: {f['text'][:300]} {f['url']}"
-        for i, f in enumerate(findings[:40])
+    body = chat_router.SearchBody(
+        query=topic, mode="deep",
+        engine=str(config.get("web_engine") or "searxng"),
+        searxng_url=str(config.get("searxng_url") or ""),
+        categories=str(config.get("categories") or "general,science,news"),
+        base_url=str(config.get("llm_base_url") or "http://127.0.0.1:11434/v1"),
+        model=str(config.get("llm_model") or "llama3.2"),
+        api_key=render_template(str(config.get("api_key") or ""), ctx),
+        depth=str(config.get("depth") or "deep"), source_types=source_types,
+        rag_collection=str(config.get("collection") or ""),
+        local_project_path=render_template(str(config.get("project_path") or ""), ctx),
+        max_rounds=integer("max_rounds"), max_search_calls=integer("max_search_calls"),
+        max_evidence_chars=integer("max_evidence_chars"), max_report_tokens=integer("max_report_tokens"),
     )
-    report = await ragmod._llm_complete(
-        f"あなたは調査アナリストです。テーマ「{topic}」について、以下の収集資料のみに基づき、"
-        "要点を体系的にまとめた日本語レポートを作成してください。主張には [番号] で出典を明記し、"
-        f"最後に参考一覧を付けてください。\n\n収集資料:\n{numbered}",
-        llm_base, llm_model, api_key, temperature=0.4)
+    try:
+        result = await chat_router._deep_search(
+            body,
+            progress=lambda phase, label, round_number, details: report_progress(
+                label, round_number, body.max_rounds or 4,
+            ),
+        )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None)
+        raise NodeError(str(detail or exc)) from exc
+    sources = result.get("sources", [])
     return {
-        "report": report,
-        "sub_questions": sub_qs,
-        "findings": findings,
-        "count": len(findings),
-        "sources_used": sources,
+        **result,
+        "findings": sources,
+        "count": len(sources),
+        "sources_used": source_types,
     }
 
 

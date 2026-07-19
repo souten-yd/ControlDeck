@@ -258,6 +258,10 @@ class SendBody(BaseModel):
     model: str = "llama3.2"
     engine: str = "searxng"  # web/deep 用（SearXNG既定）
     searxng_url: str = ""
+    deep_depth: str = "deep"
+    deep_sources: list[str] = Field(
+        default_factory=lambda: ["web", "academic", "github", "direct", "rag"], max_length=8,
+    )
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
     # 画像添付（/attachments でアップロード済みのID）。VLM有効モデルで画像入力に使う
@@ -700,9 +704,13 @@ async def _server_search(
         ]
 
     # web / deep 共通の Web 検索パラメータ
-    sb = cr.SearchBody(query=query, mode=mode, engine=params.get("engine", "duckduckgo"),
+    sb = cr.SearchBody(query=query, mode=mode, engine=params.get("engine", "searxng"),
                        searxng_url=params.get("searxng_url", ""),
-                       base_url=params["base_url"], model=params["model"])
+                       base_url=params["base_url"], model=params["model"],
+                       depth=params.get("deep_depth", "deep"),
+                       source_types=params.get("deep_sources") or [],
+                       rag_collection=conversation_collection(conv_id),
+                       local_project_path=params.get("code_project_path", ""))
     if mode == "web":
         results = await cr._web_results(sb, query, 8)
         raw_sources = [{
@@ -931,6 +939,7 @@ async def send_message(
     chat_defaults = get_policy().chat
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
               "engine": body.engine, "searxng_url": body.searxng_url,
+              "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,
               "thinking": body.thinking or chat_defaults.reasoning,
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "attachments": body.attachments,

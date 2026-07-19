@@ -182,15 +182,27 @@ class SearchBody(BaseModel):
     mode: str = "web"  # web | academic | deep
     engine: str = "searxng"  # web/deep 用: searxng（既定・ローカル） | duckduckgo
     searxng_url: str = ""
+    categories: str = "general,science,news"
     max_results: int = 8
     # deep 用 LLM
     base_url: str = "http://127.0.0.1:11434/v1"
     model: str = "llama3.2"
     api_key: str = ""
+    depth: str = "deep"  # quick | standard | deep | exhaustive | custom
+    source_types: list[str] = Field(default_factory=list, max_length=8)
+    rag_collection: str = Field(default="", max_length=128)
+    local_project_path: str = Field(default="", max_length=4096)
+    max_rounds: int = Field(default=0, ge=0, le=6)
+    max_search_calls: int = Field(default=0, ge=0, le=48)
+    max_evidence_chars: int = Field(default=0, ge=0, le=500000)
+    max_report_tokens: int = Field(default=0, ge=0, le=262144)
 
 
 async def _web_results(body: SearchBody, query: str, limit: int) -> list[dict]:
-    config = {"query": query, "engine": body.engine, "searxng_url": body.searxng_url, "max_results": limit}
+    config = {
+        "query": query, "engine": body.engine, "searxng_url": body.searxng_url,
+        "categories": body.categories, "max_results": limit,
+    }
     out = await node_web_search(config, {})
     return out["results"]
 
@@ -310,6 +322,18 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
     secrets = await asyncio.to_thread(_load_secrets)
     context_state = await runtime_policy.prepare_deep_research_context(body.base_url, body.model)
     request_context = context_state.get("request_context_tokens")
+    presets = {
+        "quick": (2, 8, 30_000, 8_192),
+        "standard": (3, 16, 60_000, 16_384),
+        "deep": (4, 24, settings.evidence_context_chars, settings.max_report_tokens),
+        "exhaustive": (6, 36, min(300_000, settings.evidence_context_chars * 2), min(131_072, settings.max_report_tokens * 2)),
+    }
+    preset = presets.get(body.depth, presets["deep"])
+    max_rounds = body.max_rounds or preset[0]
+    max_search_calls = body.max_search_calls or preset[1]
+    evidence_chars = body.max_evidence_chars or preset[2]
+    report_tokens = body.max_report_tokens or preset[3]
+    requested_sources = body.source_types or ["web", "academic", "github", "direct"]
     if progress:
         progress(
             "context", f"Deep Research CTX: {context_state.get('reason') or '未適用'}", 0,
@@ -332,6 +356,24 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
         return result.get("results", [])[: max(12, limit * 3)]
 
     async def specialized_search(source_type: str, query: str, limit: int) -> list[dict]:
+        if source_type == "rag":
+            from app.workflows import rag
+
+            if not body.rag_collection or not rag.collection_exists(body.rag_collection):
+                return []
+            result = await rag.search(body.rag_collection, query, limit, api_key=body.api_key)
+            return [{
+                "title": f"RAG: {body.rag_collection}", "url": "", "source": "RAG",
+                "kind": "document", "snippet": str(item.get("context") or ""),
+                "meta": {"collection": body.rag_collection, "score": item.get("score")},
+            } for item in result.get("matches", [])]
+        if source_type == "local_code":
+            if not body.local_project_path:
+                return []
+            from app.workflows.local_research import inspect_local_project
+
+            result = await asyncio.to_thread(inspect_local_project, body.local_project_path, query)
+            return result["sources"][:limit]
         api_key = secrets.get("PATENTSVIEW_API_KEY", "") if source_type == "patent" else ""
         return await ext.search(source_type, query, limit, api_key=api_key)
 
@@ -339,9 +381,9 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
         result = await deep_research.run_deep_research(
             body.query, complete=complete, web_search=web_search, academic_search=academic_search,
             specialized_search=specialized_search, page_fetch=_page_text, progress=progress,
-            max_rounds=4, max_search_calls=24,
-            max_evidence_chars=settings.evidence_context_chars,
-            max_report_tokens=settings.max_report_tokens,
+            max_rounds=max_rounds, max_search_calls=max_search_calls,
+            max_evidence_chars=evidence_chars, max_report_tokens=report_tokens,
+            requested_source_types=requested_sources,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

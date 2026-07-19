@@ -13,7 +13,7 @@ NODE_CATALOG: list[dict] = [
     {"type": "rag.query", "desc": "ナレッジ検索。collection/question/search_mode(hybrid/vector/fulltext/graph)/hyde/multi_query。出力 context", "keys": ["collection", "question", "search_mode", "hyde", "multi_query"]},
     {"type": "academic.search", "desc": "論文/文献/特許/市場を検索。source(all/openalex/arxiv/crossref/semanticscholar/europepmc/doaj/dblp/patent/market)/query。出力 results,text", "keys": ["source", "query", "max_results"]},
     {"type": "web.search", "desc": "Web検索。query/engine(duckduckgo/searxng)。出力 urls,results,text", "keys": ["query", "engine", "searxng_url"]},
-    {"type": "research.deep", "desc": "Deep Research。topic を分解し多ソース反復探索→引用付きレポート。出力 report", "keys": ["topic", "sources", "collection", "llm_model"]},
+    {"type": "research.deep", "desc": "共有Deep Researchエンジン。Web/PDF/学術/GitHub/RAG/local codeを反復探索し引用検証済みレポートを返す", "keys": ["topic", "depth", "sources", "web_engine", "searxng_url", "categories", "collection", "project_path", "llm_base_url", "llm_model", "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens"]},
     {"type": "web.scrape", "desc": "URL本文/要素抽出。url/extractors。出力は抽出項目名", "keys": ["url", "extractors"]},
     {"type": "http.request", "desc": "HTTPリクエスト。method/url/body。出力 status_code,body", "keys": ["method", "url", "body"]},
     {"type": "http.download", "desc": "URLをファイル保存。url/path", "keys": ["url", "path"]},

@@ -230,3 +230,111 @@ def test_deep_context_profile_resizes_managed_llamacpp(monkeypatch):
     restored = run(runtime_policy.restore_deep_research_context(result))
     assert restored["restored"] is True
     assert changes == [262144, 32768]
+
+
+def test_requested_local_sources_skip_web_search():
+    from app.workflows.deep_research import run_deep_research
+
+    web_calls = 0
+    assessments = 0
+
+    async def complete(messages, *, max_tokens, response_format=None):
+        nonlocal assessments
+        name = (response_format or {}).get("name")
+        if name == "deep_research_plan":
+            return json.dumps({
+                "objective": "local code", "sub_questions": ["structure", "tests"],
+                "search_queries": ["local architecture", "local tests"],
+                "evaluation_criteria": ["implementation"], "source_types": ["web"],
+            })
+        if name == "deep_research_assessment":
+            assessments += 1
+            return json.dumps({
+                "sufficient": assessments >= 2, "coverage_score": 90,
+                "gaps": [], "contradictions": [],
+                "next_queries": ["local integration", "local risks"],
+            })
+        return "根拠に基づく分析。[1][2]\n<!-- CONTROLDECK_SECTION_COMPLETE -->"
+
+    async def web(query, limit):
+        nonlocal web_calls
+        web_calls += 1
+        return []
+
+    async def specialized(kind, query, limit):
+        assert kind == "local_code"
+        return [{
+            "title": f"{query}-{index}", "source": "Local code", "snippet": "code evidence " * 80,
+        } for index in range(limit)]
+
+    async def empty(query, limit):
+        return []
+
+    result = run(run_deep_research(
+        "inspect local", complete=complete, web_search=web, academic_search=empty,
+        specialized_search=specialized, page_fetch=lambda url, limit: empty(url, limit),
+        requested_source_types=["local_code"], max_report_tokens=8192,
+    ))
+    assert web_calls == 0
+    assert result["research"]["plan"]["source_types"] == ["local_code"]
+    assert result["research"]["sources_selected"] >= 4
+
+
+def test_sources_without_urls_deduplicate_by_title_not_root_path():
+    from app.workflows.deep_research import _normalize_source, _source_key
+
+    first = _normalize_source({"title": "local: app.py", "url": ""}, "Local code", "query")
+    second = _normalize_source({"title": "local: test_app.py", "url": ""}, "Local code", "query")
+    assert _source_key(first) != _source_key(second)
+    assert _source_key(first) != "/"
+
+
+def test_local_project_adapter_excludes_secrets_dependencies_and_symlinks(tmp_path, monkeypatch):
+    from app.files import service as files
+    from app.workflows.local_research import inspect_local_project
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("TOKEN = 'public-placeholder'\ndef run():\n    return 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_main.py").write_text("def test_run():\n    assert True\n")
+    (tmp_path / ".env").write_text("SECRET=must-not-appear")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "large.js").write_text("ignored")
+    (tmp_path / "linked.py").symlink_to(tmp_path / "src" / "main.py")
+    monkeypatch.setattr(files, "resolve", lambda path: tmp_path.resolve())
+
+    result = inspect_local_project(str(tmp_path), "run tests")
+    combined = "\n".join(str(source.get("snippet") or "") for source in result["sources"])
+    titles = "\n".join(str(source.get("title") or "") for source in result["sources"])
+    assert "run()" in combined and "test_run" in combined
+    assert "must-not-appear" not in combined
+    assert ".env" not in titles and "node_modules" not in combined and "linked.py" not in titles
+    assert ".pytest_cache" not in titles
+
+
+def test_workflow_deep_node_uses_shared_assistant_engine(monkeypatch):
+    from app.workflows import chat_router
+    from app.workflows.nodes import node_deep_research
+
+    captured = {}
+
+    async def shared(body, progress=None):
+        captured["body"] = body
+        if progress:
+            progress("round", "探索中", 1, {})
+        return {
+            "mode": "deep", "report": "shared report", "sources": [{"title": "source"}],
+            "sub_questions": ["q"], "research": {"rounds": 2},
+        }
+
+    monkeypatch.setattr(chat_router, "_deep_search", shared)
+    result = run(node_deep_research({
+        "topic": "{{trigger.topic}}", "depth": "exhaustive",
+        "sources": "web,github,local", "project_path": "/allowed/project",
+        "llm_model": "model-x", "max_search_calls": 30,
+    }, {"trigger": {"output": {"topic": "統合を調査"}}}))
+    body = captured["body"]
+    assert body.query == "統合を調査" and body.depth == "exhaustive"
+    assert body.source_types == ["web", "github", "local_code"]
+    assert body.max_search_calls == 30 and body.model == "model-x"
+    assert result["report"] == "shared report" and result["count"] == 1
