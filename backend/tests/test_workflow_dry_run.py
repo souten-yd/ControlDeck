@@ -109,3 +109,17 @@ def test_dry_run_api_does_not_create_execution(admin_client):
     assert node.json()["status"] == "SIMULATED"
     assert admin_client.get("/api/v1/workflows/node-catalog").status_code == 200
     admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS)
+
+
+def test_redaction_masks_sensitive_values_when_copied_to_other_fields():
+    from app.workflows.redaction import collect_sensitive_values, redact
+
+    payload = {
+        "input": {"password": "secret-value"},
+        "output": {"value": "prefix secret-value suffix"},
+        "authorization": "Bearer abc",
+    }
+    redacted = redact(payload, sensitive_values=collect_sensitive_values(payload))
+    assert redacted["input"]["password"] == "***"
+    assert redacted["output"]["value"] == "prefix *** suffix"
+    assert redacted["authorization"] == "***"

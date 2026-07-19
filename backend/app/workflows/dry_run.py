@@ -1,16 +1,13 @@
 """副作用を一切起こさないワークフロー静的シミュレーション。"""
 from __future__ import annotations
 
-import re
 from collections import Counter, deque
 from typing import Any
 
 from app.workflows.engine import DefinitionError, parse_definition, validate_definition
 from app.workflows.node_metadata import metadata_by_type
+from app.workflows.redaction import redact
 from app.workflows.validation import REQUIRED_KEYS, quality_score, semantic_check
-
-_SENSITIVE_KEY = re.compile(r"(password|passwd|token|secret|authorization|api[_-]?key)", re.I)
-_SECRET_TEMPLATE = re.compile(r"\{\{\s*secrets\.[^}]+\}\}", re.I)
 
 
 def _bounded_int(value: Any, low: int, high: int, default: int = 0) -> int:
@@ -19,18 +16,6 @@ def _bounded_int(value: Any, low: int, high: int, default: int = 0) -> int:
     except (TypeError, ValueError):
         parsed = default
     return max(low, min(parsed, high))
-
-
-def _redact(value: Any, key: str = "") -> Any:
-    if _SENSITIVE_KEY.search(key):
-        return "***"
-    if isinstance(value, dict):
-        return {str(k): _redact(v, str(k)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact(v) for v in value]
-    if isinstance(value, str):
-        return _SECRET_TEMPLATE.sub("{{secrets.***}}", value)
-    return value
 
 
 def simulate_node(node_type: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -50,7 +35,7 @@ def simulate_node(node_type: str, config: dict[str, Any]) -> dict[str, Any]:
         "description": metadata["description"],
         "side_effect": metadata["side_effect"],
         "capabilities": metadata["capabilities"],
-        "config": _redact(config),
+        "config": redact(config),
         "would_output": metadata["output_schema"],
         "errors": errors,
         "notice": "executorは呼び出していません。外部操作・書き込みは発生していません。",
@@ -124,7 +109,7 @@ def simulate_definition(definition: dict[str, Any], input_data: dict[str, Any] |
             "description": meta.get("description", ""),
             "side_effect": meta.get("side_effect", "none"),
             "capabilities": meta.get("capabilities", []),
-            "config": _redact(config),
+            "config": redact(config),
             "would_output": meta.get("output_schema", {}),
             "control": {
                 "retry_count": _bounded_int(config.get("retry_count", 0) or 0, 0, 5),
@@ -146,7 +131,7 @@ def simulate_definition(definition: dict[str, Any], input_data: dict[str, Any] |
         "dry_run": True,
         "errors": errors,
         "warnings": warnings,
-        "input": _redact(input_data or {}),
+        "input": redact(input_data or {}),
         "summary": {
             "nodes": len(nodes),
             "reachable": len(reachable),

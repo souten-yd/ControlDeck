@@ -39,9 +39,14 @@ export interface ExtractorDef {
 export interface TriggerInputDef {
   key: string;
   label?: string;
-  type: "text" | "paragraph" | "number" | "select" | "file";
+  type: "text" | "paragraph" | "number" | "boolean" | "select" | "multi_select" | "date" | "datetime" | "file" | "file_list" | "json" | "key_value" | "secret_reference";
   required?: boolean;
   options?: string; // select 用（改行区切り）
+  description?: string;
+  default?: unknown;
+  placeholder?: string;
+  maxLength?: number;
+  sample?: unknown;
 }
 
 const TEMPLATE_HINT = "{{ノードID.フィールド}} で前段の出力を参照できます";
