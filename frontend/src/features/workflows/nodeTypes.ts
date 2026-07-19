@@ -3,7 +3,7 @@
 export interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "number" | "select" | "textarea" | "app" | "code" | "inputs" | "extractors" | "workflow";
+  type: "text" | "number" | "select" | "textarea" | "app" | "code" | "inputs" | "extractors" | "workflow" | "checkbox";
   options?: { value: string; label: string }[];
   placeholder?: string;
   hint?: string;
@@ -643,6 +643,38 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
   },
 
   // ---- チャット ----
+  "output.render": {
+    label: "型付き出力",
+    category: "チャット",
+    color: "#0d9488",
+    icon: "▣",
+    desc: "API・スケジュール・チャットで共通の型付き最終出力を返す",
+    fields: [
+      { key: "name", label: "出力名", type: "text", placeholder: "answer" },
+      { key: "title", label: "タイトル", type: "text", hint: TEMPLATE_HINT },
+      { key: "description", label: "説明", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "value", label: "出力値", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "renderer", label: "表示形式", type: "select", options: [
+        { value: "auto", label: "Auto" }, { value: "text", label: "Plain text" },
+        { value: "markdown", label: "Markdown" }, { value: "json_tree", label: "JSON tree" },
+        { value: "json_raw", label: "JSON raw" }, { value: "table", label: "Table" },
+        { value: "key_value", label: "Key-value" }, { value: "code", label: "Code" },
+        { value: "image", label: "Image" }, { value: "image_gallery", label: "Image gallery" },
+        { value: "audio", label: "Audio" }, { value: "video", label: "Video" },
+        { value: "file", label: "File download" }, { value: "link", label: "Link" },
+        { value: "status", label: "Status card" }, { value: "metric", label: "Metric" },
+        { value: "progress", label: "Progress" }, { value: "citation_list", label: "Citation list" },
+      ] },
+      { key: "schema", label: "出力schema JSON", type: "code", placeholder: '{"type":"string"}' },
+      { key: "filename", label: "ファイル名", type: "text", hint: TEMPLATE_HINT },
+      { key: "mime_type", label: "MIME type", type: "text", placeholder: "text/markdown" },
+      { key: "downloadable", label: "ダウンロード可", type: "checkbox" },
+      { key: "copyable", label: "コピー可", type: "checkbox" },
+      { key: "collapsible", label: "折り畳み可", type: "checkbox" },
+      { key: "sensitive", label: "機密値（保存時に非表示）", type: "checkbox" },
+    ],
+    outputs: [{ key: "value", label: "出力値" }, { key: "renderer", label: "表示形式" }, { key: "name", label: "出力名" }],
+  },
   "signal.display": {
     label: "信号表示",
     category: "チャット",
@@ -730,7 +762,9 @@ export const NODE_DOCS: Record<string, string> = {
   trigger:
     "すべてのワークフローの起点。1 フローに必ず 1 つ置きます。\n\n■ 起動方法\n- 手動のみ: 実行ボタン/チャットから起動\n- 一定間隔・毎日・Cron: 一覧で「スケジュール有効化」すると自動実行\n\n■ 入力フィールド\n実行時にユーザーへ入力を求めるフォームを定義できます（Dify の User Input 相当）。入力値は {{トリガーID.キー}} で全ノードから参照できます。チャットから実行した場合、本文は {{トリガーID.message}} に入ります。",
   "signal.display":
-    "値をチャットウィンドウへ表示する出力ノード。フローの「返答」を作る役割です。\n\n■ 使い方\n表示する値に {{llm.content}} など前段の出力を指定。信号種別（reply/output/status/log/chart)で表示スタイルが変わります。\n\n■ 組み合わせ\nLLM 生成 → 信号表示 が最小のチャットボット構成。AI アシスタントの自動生成フローでも最終ノードとして使われます。",
+    "旧形式との互換用出力ノードです。既存フローはそのまま動作します。新規フローでは、Markdown・JSON・表・画像・ファイル等の型と正式なoutput contractを持つ「型付き出力（output.render）」を推奨します。",
+  "output.render":
+    "ワークフロー全体の正式な型付き最終出力を定義します。API、手動実行、スケジュール、チャット、サブフローで同じname/type/value契約を返します。\n\n■ 表示形式\nAuto、text、Markdown、JSON tree/raw、Table、Key-value、Code、画像/ギャラリー、音声、動画、ファイル、リンク、Status、Metric、Progress、引用一覧に対応します。\n\n■ 安全性\nsensitiveを有効にすると実行中の値は後段で利用できますが、実行履歴・DB・API結果では値を***へ置換します。出力名はフロー内で一意にしてください。",
   "app.start": "Apps ページに登録した管理対象アプリを起動します。\n\n■ 組み合わせ\nWake-on-LAN → 待機 → アプリ起動、条件分岐（停止中なら）→ 起動 など。",
   "app.stop": "管理対象アプリを停止します。メンテナンス時間帯の自動停止などに。",
   "app.restart": "管理対象アプリを再起動します。\n\n■ 組み合わせ\nアプリ状態取得 → 条件分岐（running でない）→ 再起動 → Webhook 通知 で自己修復フローになります（サンプル「アプリ死活監視・自動復旧」参照）。",

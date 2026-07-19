@@ -32,7 +32,10 @@ def redact(value: Any, key: str = "", sensitive_values: set[str] | None = None) 
     if _SENSITIVE_KEY.search(key):
         return "***"
     if isinstance(value, dict):
-        return {str(k): redact(v, str(k), sensitive_values) for k, v in value.items()}
+        return {
+            str(k): ("***" if value.get("sensitive") is True and str(k) == "value" else redact(v, str(k), sensitive_values))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [redact(item, sensitive_values=sensitive_values) for item in value]
     if isinstance(value, tuple):

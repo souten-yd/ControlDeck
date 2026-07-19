@@ -1289,9 +1289,12 @@ def _final_outputs(context: dict) -> dict[str, dict]:
             name = f"{base}_{suffix}"
             suffix += 1
         outputs[name] = {
-            "type": "text",
+            "type": str(output.get("renderer") or output.get("type") or "text"),
             "value": output.get("value"),
             "source_node_id": node_id,
+            **({key: output.get(key) for key in (
+                "title", "description", "downloadable", "copyable", "collapsible", "sensitive", "filename", "mime_type",
+            )} if output.get("output_contract") else {}),
         }
     return outputs
 

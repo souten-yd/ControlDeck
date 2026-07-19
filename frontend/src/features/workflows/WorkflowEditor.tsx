@@ -1467,6 +1467,9 @@ function ConfigInput({
       </select>
     );
   }
+  if (field.type === "checkbox") {
+    return <label className="flex min-h-11 items-center justify-between rounded-xl border border-zinc-300 px-3 dark:border-zinc-700"><span className="text-xs text-zinc-500">{value ? "有効" : "無効"}</span><input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-5 w-5" /></label>;
+  }
   if (field.type === "app") {
     return (
       <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} disabled={disabled} className={cls}>

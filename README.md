@@ -29,7 +29,7 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - 自動再接続、モバイル補助キーバー（Esc / Tab / Ctrl / 矢印 / ^C…）、コピー / 貼り付けシート
 
 ### 🔀 ワークフロー自動化（Dify / n8n 風）
-- React Flow ベースのビジュアルエディタ。標準 39 種類 + OpenCode 有効時の `code.agent` ノード:
+- React Flow ベースのビジュアルエディタ。標準 40 種類 + OpenCode 有効時の `code.agent` ノード:
   アプリ制御 / 条件分岐 / ループ / 変数 / 文字列操作 / ファイル入出力 / HTTP / ダウンロード /
   スクレイピング / ブラウザ操作（Playwright）/ LLM / RAG / Deep Research / OCR / DB クエリ / SSH / Git / C++ ビルド / WOL / Webhook 通知 / 現在日時 など
 - **トリガー入力フィールド**: テキスト / 長文 / 数値 / 選択 / ファイルの型付き入力を定義し、実行時ダイアログで受け取る
@@ -78,6 +78,39 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - ワークフロー生成を標準 JSON Schema payloadへ修正し、固定800 tokenではなくModel画面の共通出力上限を使用
 
 詳細と検証結果は [実装状況](docs/implementation-status.md) を参照。
+
+## ワークフローの基本的な使い方
+
+ControlDeckのエディタは「配置して保存」で終わらず、入力→安全確認→テスト→観測→部分再実行→回帰テスト→公開を
+1つの開発ループとして扱う。
+
+1. ワークフローを作り、トリガーノードで入力名・型・必須・初期値・説明を定義する。
+2. ノードを接続し、設定欄の変数ピッカーから`{{上流ノードID.フィールド}}`を挿入する。
+3. 「プレビュー」を開き、入力値を設定して「安全プレビュー」を実行する。この段階ではexecutor、LLM、外部通信、書込み、secret復号を行わない。
+4. 通常テストへ切り替え、同じ画面で型付き最終出力と各ノードの結果を確認する。
+5. ノードの「実行」タブで、最新成功実行・指定実行・手動JSON・固定データを入力源にして単体実行する。上流を再計算せずに問題を切り分けられる。
+6. 必要なら「このノードまで実行」「このノードから再実行」を使う。途中再実行は当時版／現在版を選択できる。
+7. 入力と成功結果を回帰テストケースとして保存し、変更後に一括実行する。期待値との差はpath・期待値・実値で表示される。
+8. 「公開」でpreflightを通す。保存中draftと公開版は分離され、schedule、Webhook、system event、API実行、サブフローは公開版だけを使う。
+
+### 型付き最終出力 `output.render`
+
+新規フローの最終段には`output.render`を推奨する。旧`signal.display`は既存定義との互換用として継続利用できる。
+出力名、タイトル、説明、値、renderer、schema、ファイル名、MIME type、コピー／ダウンロード／折り畳み／機密指定を持ち、
+手動実行・API・schedule・chat・サブフローで共通の`name / type / value / source_node_id`契約を返す。
+
+主なrendererはAuto、Plain text、Markdown、JSON tree/raw、Table、Key-value、Code、Image/Gallery、Audio、Video、
+File、Link、Status、Metric、Progress、Citation list。JSON・Table・Key-value等はJSON文字列を型付き値へ変換する。
+`sensitive`を有効にした値は実行中の後段参照には使えるが、履歴・DB・API応答へ保存するときに`***`へ置換される。
+
+### draft、公開版、固定データの違い
+
+- draft: エディタで自動保存される開発中定義。Previewの通常テスト、単体実行、回帰テストが使用する。
+- 公開版: 公開時点のimmutableなWorkflowVersion。本番経路が使用し、その後draftを編集しても変化しない。
+- 固定データ: 下流テスト用にノード出力を一時固定する開発補助。公開版には含まれず、残っている場合は公開を停止する。
+
+公開時は構造・意味、最終出力、出力名重複、secret存在、固定データ、回帰テスト状態、品質スコアを検査する。
+blocking errorがある場合はスコアが高くても公開しない。
 
 ## 必要環境
 
