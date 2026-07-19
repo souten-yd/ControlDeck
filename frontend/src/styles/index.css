@@ -82,6 +82,10 @@ body,
   max-width: 100%;
   overflow-x: clip;
 }
+:root {
+  /* テスト時にも上部Safe Areaを再現できるようCSS変数を境界にする。 */
+  --cd-safe-area-top: env(safe-area-inset-top);
+}
 /* アプリシェルの高さ基準を #root に統一。既定は dvh（ブラウザで toolbar 追従）。 */
 #root {
   height: 100dvh;
@@ -116,7 +120,7 @@ body {
   padding-bottom: env(safe-area-inset-bottom);
 }
 .safe-top {
-  padding-top: env(safe-area-inset-top);
+  padding-top: var(--cd-safe-area-top);
 }
 
 /* AI入力欄はdynamic viewportの下端へ直接置く。

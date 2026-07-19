@@ -57,3 +57,28 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
     }
   }
 });
+
+test("keeps Play below the logo with an iPhone standalone safe area", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/runner");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+
+  await page.evaluate(() => {
+    document.documentElement.classList.add("pwa-standalone");
+    document.documentElement.style.setProperty("--cd-safe-area-top", "47px");
+  });
+
+  const bounds = await page.evaluate(() => {
+    const logo = document.querySelector("header svg");
+    const page = document.querySelector("main > div");
+    if (!logo || !page) throw new Error("Play shell was not rendered");
+    const logoRect = logo.getBoundingClientRect();
+    const pageRect = page.getBoundingClientRect();
+    return { logoBottom: logoRect.bottom, pageTop: pageRect.top };
+  });
+  expect(bounds.pageTop).toBeGreaterThanOrEqual(bounds.logoBottom);
+});

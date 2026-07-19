@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-19
 
+## iPhone standalone Play header境界修正（2026-07-19）
+
+- 共通headerが`height: 48px`へ固定されたまま上部Safe Areaを内側へ加算していたため、ホーム画面から全画面起動したiPhoneではLogoがheader外へ押し出され、直後のPlay背景と重なっていた。
+- headerを固定高からSafe Area込みで自然に伸びる`min-height`へ変更。Playだけへ例外余白を加えず、全通常ページでLogo、本文、下部navigationの領域境界を維持する。
+- Safe AreaをCSS変数境界にまとめ、実機相当47pxを自動テストで再現可能にした。
+
+検証: frontend production build成功。認証付きPlaywright 2件で通常15ページの320×700／1280×800統一レイアウトと、390×844・上部Safe Area 47pxでLogo下端よりPlay背景開始位置が下になることを確認。実ControlDeck serviceへ反映済み。
+
 ## Navigation naming／page layout統一（2026-07-19）
 
 - グローバルnavigation、mobile navigation、Quick Actions、Command Palette、各機能menuを英語名へ統一。公開Workflowの実行面は短く幅を取らない`Play`、Application BuilderのUI製品名は将来の設計・編集機能を含む`App Studio`とした。
