@@ -8,9 +8,14 @@
   約34pxのpaddingを加えて入力カード全体を持ち上げていた。通常browserのviewport検証ではSafe Areaが0のため再現しない条件差を特定。
 - `/assistant`をアプリshellの全画面routeへ追加してモバイル下部navigationの予約領域を除去し、composerの追加下paddingを0へ変更。
   入力カード背景をdialog最下端まで連続させ、空白帯を作らない。
+- 追加確認で、standalone PWAでは外側のfixed shellと内側`100dvh` dialogが異なる高さになり、shellの黒背景が
+  下端へ露出する条件を確認。dialogをshell基準の`height: 100%`へ統一し、shell／dialog／composerの下端を一致させた。
+- token生成／音声状態行を条件付きmountから固定16px slotへ戻し、入力カードの上側へ配置。状態の出現／消失で
+  composer高を変えず、入力カードは常に画面最下端へ置くため、黒い空欄と上下移動を同時に防ぐ。
 - Playwrightを`navigator.standalone=true`で起動し、320×700とiPhone相当390×844のscreenshotを目視確認。
-  390px条件で`dialogBottom = composerBottom = inputRowBottom = 844px`、composer padding 0px、document幅390px、
-  モバイル下部navigation非表示を実ControlDeck serviceで確認。frontend production build成功。
+  dark themeの390px条件で`shellBottom = dialogBottom = composerBottom = inputRowBottom = 844px`、composer padding 0px、
+  document幅390pxを実測。音声状態の表示前後も入力カードtop座標が不変で、黒帯なしをscreenshot確認。
+  モバイル下部navigation非表示、frontend production build、実ControlDeck service再起動も成功。
 
 ## モバイル横overflow・ターミナル右端タッチ修正（2026-07-19）
 
