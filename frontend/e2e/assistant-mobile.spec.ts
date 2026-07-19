@@ -85,6 +85,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       inputFontSize: Number.parseFloat(getComputedStyle(input).fontSize),
       inputMinWidth: getComputedStyle(input).minWidth,
       composer: rect(document.querySelector("[data-assistant-composer]")!).toJSON(),
+      inputCard: rect(document.querySelector("[data-assistant-input-card]")!).toJSON(),
       inputRow: rect(document.querySelector("[data-assistant-input-row]")!).toJSON(),
       statusRow: rect(document.querySelector("[data-assistant-composer-status]")!).toJSON(),
       statusRows: document.querySelectorAll("[data-assistant-composer-status]").length,
@@ -110,8 +111,10 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   expect(layout.statusRows).toBe(1);
   expect(layout.shell.bottom).toBe(layout.dialog.bottom);
   expect(layout.composer.bottom).toBe(layout.dialog.bottom);
-  expect(layout.inputRow.bottom).toBe(layout.dialog.bottom);
-  expect(layout.statusRow.bottom).toBeLessThanOrEqual(layout.inputRow.top);
+  expect(layout.inputCard.bottom).toBe(layout.dialog.bottom);
+  expect(layout.statusRow.top).toBeGreaterThanOrEqual(layout.inputRow.bottom);
+  expect(layout.inputCard.bottom - layout.statusRow.bottom).toBeLessThanOrEqual(1);
+  await expect(dialog.getByText("Enterで送信 · Shift+Enterで改行")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "メインナビゲーション" })).toBeHidden();
 
   const idleInputTop = layout.inputRow.top;
@@ -135,12 +138,17 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
     const shell = document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect();
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!.getBoundingClientRect();
     const composer = document.querySelector<HTMLElement>("[data-assistant-composer]")!;
+    const card = document.querySelector<HTMLElement>("[data-assistant-input-card]")!.getBoundingClientRect();
     const row = document.querySelector<HTMLElement>("[data-assistant-input-row]")!.getBoundingClientRect();
+    const status = document.querySelector<HTMLElement>("[data-assistant-composer-status]")!.getBoundingClientRect();
     return {
       shellBottom: shell.bottom,
       dialogBottom: dialog.bottom,
       composerBottom: composer.getBoundingClientRect().bottom,
+      cardBottom: card.bottom,
       rowBottom: row.bottom,
+      statusTop: status.top,
+      statusBottom: status.bottom,
       composerPaddingBottom: Number.parseFloat(getComputedStyle(composer).paddingBottom),
       documentScrollWidth: document.documentElement.scrollWidth,
     };
@@ -149,7 +157,9 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   expect(iphoneLayout.documentScrollWidth).toBeLessThanOrEqual(390);
   expect(iphoneLayout.shellBottom).toBe(iphoneLayout.dialogBottom);
   expect(iphoneLayout.composerBottom).toBe(iphoneLayout.dialogBottom);
-  expect(iphoneLayout.rowBottom).toBe(iphoneLayout.dialogBottom);
+  expect(iphoneLayout.cardBottom).toBe(iphoneLayout.dialogBottom);
+  expect(iphoneLayout.statusTop).toBeGreaterThanOrEqual(iphoneLayout.rowBottom);
+  expect(iphoneLayout.cardBottom - iphoneLayout.statusBottom).toBeLessThanOrEqual(1);
   expect(iphoneLayout.composerPaddingBottom).toBe(0);
   await testInfo.attach("assistant-mobile-390x844", {
     body: await page.screenshot(),
