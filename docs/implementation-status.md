@@ -36,11 +36,12 @@ trigger入力→filter→aggregate→template→typed outputを実行して`kept
   入力カード背景をdialog最下端まで連続させ、空白帯を作らない。
 - 追加確認で、standalone PWAでは外側のfixed shellと内側`100dvh` dialogが異なる高さになり、shellの黒背景が
   下端へ露出する条件を確認。dialogをshell基準の`height: 100%`へ統一し、shell／dialog／composerの下端を一致させた。
-- token生成／音声状態行を条件付きmountから固定16px slotへ戻し、入力カードの上側へ配置。状態の出現／消失で
-  composer高を変えず、入力カードは常に画面最下端へ置くため、黒い空欄と上下移動を同時に防ぐ。
+- token生成／音声状態行を入力カード内の固定24px footerとして入力欄の下側へ統合。待機時も同じ領域へ
+  keyboard hintを表示し、状態の出現／消失でcomposer高や入力欄の座標を変えない。footerは入力カードと同じ背景を使い、
+  dialog最下端まで連続させるため、独立した黒い空欄を作らない。
 - Playwrightを`navigator.standalone=true`で起動し、320×700とiPhone相当390×844のscreenshotを目視確認。
-  dark themeの390px条件で`shellBottom = dialogBottom = composerBottom = inputRowBottom = 844px`、composer padding 0px、
-  document幅390pxを実測。音声状態の表示前後も入力カードtop座標が不変で、黒帯なしをscreenshot確認。
+  dark themeの390px条件で`shellBottom = dialogBottom = composerBottom = inputCardBottom = 844px`、composer padding 0px、
+  document幅390pxを実測。音声状態の表示前後も入力欄top座標が不変で、状態footerが入力欄の下にあることを確認。
   モバイル下部navigation非表示、frontend production build、実ControlDeck service再起動も成功。
 
 ## モバイル横overflow・ターミナル右端タッチ修正（2026-07-19）

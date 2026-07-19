@@ -944,16 +944,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           <input ref={fileInputRef} type="file" multiple className="hidden"
             accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql"
             onChange={(e) => { void attachFiles(e.target.files); e.target.value = ""; }} />
-          {/* token/音声状態の有無でcomposer高を変えず、入力欄の上下移動を防ぐ。 */}
-          <div data-assistant-composer-status className="mb-1.5 flex h-4 items-center justify-between gap-2 px-1 text-[11px] text-zinc-500" aria-live="polite">
-            {showComposerStatus && (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
-              <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
-            ) : (
-              <GenStatsBadge stats={genStats} busy={busy} />
-            ))}
-            {asr.listening && <button onClick={() => asr.stop()} className="shrink-0 font-medium text-red-600">停止</button>}
-          </div>
-          <div data-assistant-input-row className="flex w-full min-w-0 items-end gap-1.5 rounded-2xl border border-zinc-300 bg-zinc-50 p-1.5 shadow-sm transition-within focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
+          {/* 状態は入力欄の下に固定高で置き、表示切替でも入力位置を変えない。 */}
+          <div data-assistant-input-card className="w-full min-w-0 overflow-hidden rounded-2xl border border-zinc-300 bg-zinc-50 shadow-sm transition focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
+            <div data-assistant-input-row className="flex w-full min-w-0 items-end gap-1.5 p-1.5">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -1006,6 +999,16 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               {busy ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
               <span className="hidden sm:inline">送信</span>
             </button>
+            </div>
+            <div data-assistant-composer-status className="flex h-6 min-w-0 items-center gap-2 border-t border-zinc-200/80 px-2 text-[10px] leading-none text-zinc-500 dark:border-zinc-700" aria-live="polite">
+              {showComposerStatus ? (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
+                <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
+              ) : (
+                <GenStatsBadge stats={genStats} busy={busy} />
+              )) : (
+                <span className="min-w-0 truncate">Enterで送信 · Shift+Enterで改行</span>
+              )}
+            </div>
           </div>
           </div>
         </div>
