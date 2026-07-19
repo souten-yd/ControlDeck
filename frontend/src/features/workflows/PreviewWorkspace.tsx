@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { IconX } from "../../components/icons";
 import type { TriggerInputDef } from "./nodeTypes";
+import { initialRuntimeValues, RuntimeField, RuntimeOutputView } from "./RuntimeComponents";
 
 interface DefinitionNode {
   id: string;
@@ -88,11 +89,7 @@ const SIDE_EFFECT_LABEL: Record<string, string> = {
 };
 
 function initialValues(inputs: TriggerInputDef[]): Record<string, unknown> {
-  return Object.fromEntries(
-    inputs
-      .filter((input) => input.key)
-      .map((input) => [input.key, input.default ?? (input.type === "boolean" ? false : "")]),
-  );
+  return initialRuntimeValues(inputs);
 }
 
 function stringify(value: unknown): string {
@@ -315,7 +312,7 @@ export function PreviewWorkspace({
           ) : (
             <div className="space-y-3">
               {inputs.map((input) => (
-                <PreviewField key={input.key} input={input} value={values[input.key]} onChange={(value) => setValues((current) => ({ ...current, [input.key]: value }))} />
+                <RuntimeField key={input.key} input={input} value={values[input.key]} onChange={(value) => setValues((current) => ({ ...current, [input.key]: value }))} />
               ))}
             </div>
           )}
@@ -425,25 +422,6 @@ export function PreviewWorkspace({
   );
 }
 
-function PreviewField({ input, value, onChange }: { input: TriggerInputDef; value: unknown; onChange: (value: unknown) => void }) {
-  const id = `preview-input-${input.key}`;
-  const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950";
-  const options = (input.options || "").split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
-  return (
-    <label htmlFor={id} className="block">
-      <span className="mb-1 block text-xs font-medium">{input.label || input.key}{input.required ? " *" : ""}</span>
-      {input.description && <span className="mb-1 block text-[10px] text-zinc-400">{input.description}</span>}
-      {input.type === "paragraph" ? <textarea id={id} rows={3} value={String(value ?? "")} maxLength={input.maxLength} placeholder={input.placeholder} onChange={(event) => onChange(event.target.value)} className={cls} />
-        : input.type === "number" ? <input id={id} type="number" value={String(value ?? "")} placeholder={input.placeholder} onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))} className={cls} />
-          : input.type === "boolean" ? <input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} className="h-5 w-5" />
-            : input.type === "select" ? <select id={id} value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} className={cls}><option value="">選択してください</option>{options.map((option) => <option key={option}>{option}</option>)}</select>
-              : input.type === "multi_select" ? <select id={id} multiple value={Array.isArray(value) ? value.map(String) : []} onChange={(event) => onChange(Array.from(event.target.selectedOptions, (option) => option.value))} className={cls}>{options.map((option) => <option key={option}>{option}</option>)}</select>
-                : input.type === "json" || input.type === "key_value" ? <textarea id={id} rows={4} value={String(value ?? "")} placeholder={input.placeholder || "{}"} onChange={(event) => onChange(event.target.value)} className={`${cls} font-mono text-xs`} />
-                  : <input id={id} type={input.type === "date" ? "date" : input.type === "datetime" ? "datetime-local" : input.type === "secret_reference" ? "password" : "text"} value={String(value ?? "")} maxLength={input.maxLength} placeholder={input.placeholder} onChange={(event) => onChange(event.target.value)} className={cls} />}
-    </label>
-  );
-}
-
 function ModeButton({ active, title, description, onClick }: { active: boolean; title: string; description: string; onClick: () => void }) {
   return <button type="button" role="radio" aria-checked={active} onClick={onClick} className={`min-h-16 rounded-xl border p-2 text-left ${active ? "border-accent-500 bg-accent-50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}><span className="block text-xs font-medium">{title}</span><span className="text-[10px] text-zinc-400">{description}</span></button>;
 }
@@ -472,21 +450,7 @@ function NodePlan({ plan }: { plan: PreviewResult["plan"] }) {
   return <ol className="mt-2 space-y-1.5">{plan.map((item) => <li key={item.id} className="rounded-lg border border-zinc-200 p-2 text-[11px] dark:border-zinc-700"><div className="flex gap-2"><span className="num text-zinc-400">{item.wave ?? "–"}</span><strong className="min-w-0 flex-1 truncate">{item.name}</strong>{item.side_effect !== "none" && <span className="text-amber-600">{SIDE_EFFECT_LABEL[item.side_effect] ?? item.side_effect}</span>}</div><code className="text-[9px] text-zinc-400">{item.type} · {item.status}</code></li>)}</ol>;
 }
 
-function TypedOutput({ output }: { output: ExecutionDetail["outputs"][string] }) {
-  const value = output.value;
-  if (output.type === "image" && typeof value === "string") return <img src={value} alt={output.title || "出力画像"} className="mt-2 max-h-72 max-w-full rounded-lg object-contain" />;
-  if (output.type === "link" && typeof value === "string") return <a href={value} target="_blank" rel="noreferrer" className="mt-2 block break-all text-xs text-accent-600 underline">{value}</a>;
-  if (output.type === "table" && Array.isArray(value) && value.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
-    const columns = Array.from(new Set(value.flatMap((row) => Object.keys(row as Record<string, unknown>))));
-    return <div className="mt-2 overflow-auto"><table className="min-w-full text-left text-[10px]"><thead><tr>{columns.map((column) => <th key={column} className="border-b p-1.5">{column}</th>)}</tr></thead><tbody>{value.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column} className="border-b border-zinc-100 p-1.5 dark:border-zinc-800">{stringify((row as Record<string, unknown>)[column])}</td>)}</tr>)}</tbody></table></div>;
-  }
-  if ((output.type === "audio" || output.type === "video") && typeof value === "string") {
-    return output.type === "audio" ? <audio className="mt-2 w-full" controls src={value} /> : <video className="mt-2 max-h-72 w-full" controls src={value} />;
-  }
-  return <pre className={`mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-2 text-xs dark:bg-zinc-950 ${output.type === "code" || output.type.startsWith("json") ? "font-mono" : ""}`}>{stringify(value)}</pre>;
-}
-
 function ExecutionResult({ execution }: { execution: ExecutionDetail }) {
   const running = ["QUEUED", "RUNNING", "WAITING"].includes(execution.status);
-  return <section aria-live="polite"><h3 className="mb-2 text-xs font-semibold">実行結果 <span className="num font-normal text-zinc-400">#{execution.id}</span></h3><ResultNotice ok={execution.status === "SUCCEEDED"} title={running ? "実行中…" : execution.status === "SUCCEEDED" ? "テストに成功しました" : `実行 ${execution.status}`} detail={execution.error || (running ? "ノードの完了を待っています" : "最終出力とノード結果を確認できます")} />{!running && <div className="mt-3 space-y-2">{Object.keys(execution.outputs).length === 0 ? <p className="text-xs text-amber-600">最終出力はありません。</p> : Object.entries(execution.outputs).map(([name, output]) => <article key={name} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><div className="flex gap-2"><strong className="min-w-0 flex-1 text-xs">{output.title || name}</strong><code className="text-[10px] text-zinc-400">{output.type}</code></div>{output.description && <p className="mt-1 text-[10px] text-zinc-400">{output.description}</p>}<TypedOutput output={output} /></article>)}<details><summary className="cursor-pointer text-xs text-zinc-500">ノードごとの結果 ({Object.keys(execution.context).length})</summary><div className="mt-2 space-y-1.5">{Object.entries(execution.context).map(([id, item]) => <div key={id} className="rounded-lg border border-zinc-200 p-2 text-[11px] dark:border-zinc-700"><div className="flex gap-2"><strong className="min-w-0 flex-1 truncate">{item.name || id}</strong><span>{item.status}</span></div>{item.error && <p className="mt-1 text-red-500">{item.error}</p>}{item.output !== undefined && <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-500">{stringify(item.output)}</pre>}</div>)}</div></details></div>}</section>;
+  return <section aria-live="polite"><h3 className="mb-2 text-xs font-semibold">実行結果 <span className="num font-normal text-zinc-400">#{execution.id}</span></h3><ResultNotice ok={execution.status === "SUCCEEDED"} title={running ? "実行中…" : execution.status === "SUCCEEDED" ? "テストに成功しました" : `実行 ${execution.status}`} detail={execution.error || (running ? "ノードの完了を待っています" : "最終出力とノード結果を確認できます")} />{!running && <div className="mt-3 space-y-2">{Object.keys(execution.outputs).length === 0 ? <p className="text-xs text-amber-600">最終出力はありません。</p> : Object.entries(execution.outputs).map(([name, output]) => <article key={name} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><div className="flex gap-2"><strong className="min-w-0 flex-1 text-xs">{output.title || name}</strong><code className="text-[10px] text-zinc-400">{output.type}</code></div>{output.description && <p className="mt-1 text-[10px] text-zinc-400">{output.description}</p>}<RuntimeOutputView output={output} /></article>)}<details><summary className="cursor-pointer text-xs text-zinc-500">ノードごとの結果 ({Object.keys(execution.context).length})</summary><div className="mt-2 space-y-1.5">{Object.entries(execution.context).map(([id, item]) => <div key={id} className="rounded-lg border border-zinc-200 p-2 text-[11px] dark:border-zinc-700"><div className="flex gap-2"><strong className="min-w-0 flex-1 truncate">{item.name || id}</strong><span>{item.status}</span></div>{item.error && <p className="mt-1 text-red-500">{item.error}</p>}{item.output !== undefined && <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-500">{stringify(item.output)}</pre>}</div>)}</div></details></div>}</section>;
 }

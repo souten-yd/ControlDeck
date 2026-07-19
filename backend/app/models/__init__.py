@@ -120,6 +120,7 @@ class WorkflowVersion(Base):
     workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
     definition_json: Mapped[str] = mapped_column(Text, default="{}")
     input_schema_json: Mapped[str] = mapped_column(Text, default="{}")
     output_schema_json: Mapped[str] = mapped_column(Text, default="{}")

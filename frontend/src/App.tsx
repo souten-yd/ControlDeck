@@ -18,6 +18,7 @@ import SettingsPage from "./pages/Settings";
 import FilesPage from "./pages/Files";
 import TerminalPage from "./pages/Terminal";
 import WorkflowsPage from "./pages/Workflows";
+import WorkflowRunnerPage from "./pages/WorkflowRunner";
 import RemotePage from "./pages/Remote";
 import GitHubPage from "./pages/GitHub";
 import KnowledgePage from "./pages/Knowledge";
@@ -76,6 +77,7 @@ function buildRouter(enabledFeatures: string[]) {
       { path: "files", element: <FilesPage /> },
       { path: "terminal", element: <TerminalPage /> },
       { path: "workflows", element: <WorkflowsPage /> },
+      { path: "runner", element: <WorkflowRunnerPage /> },
       { path: "workflows/:id", element: <WorkflowsPage /> },
       { path: "remote", element: <RemotePage /> },
       { path: "github", element: <GitHubPage /> },

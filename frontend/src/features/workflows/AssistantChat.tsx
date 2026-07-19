@@ -16,7 +16,6 @@ import { useAuth, useToasts } from "../../stores";
 import { IconMic, IconPaperclip, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
-import type { WorkflowSummary } from "../../pages/Workflows";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 
@@ -262,7 +261,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // フロー実行モード用のワークフロー一覧
   const { data: workflows } = useQuery({
     queryKey: ["workflows"],
-    queryFn: () => api<WorkflowSummary[]>("/workflows"),
+    queryFn: () => api<Array<{ id: number; name: string }>>("/workflow-runner"),
     enabled: can("workflows.run"),
   });
 
@@ -534,7 +533,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       } else if (selectedMode === "run") {
         const wf = workflows?.find((w) => w.id === selectedRunTarget);
         append({ role: "assistant", content: `▶ 「${wf?.name ?? selectedRunTarget}」を実行中...`, kind: "run", streaming: true });
-        const { execution_id } = await api<{ execution_id: number }>(`/workflows/${selectedRunTarget}/run`, {
+        const { execution_id } = await api<{ execution_id: number }>(`/workflow-runner/${selectedRunTarget}/runs`, {
           method: "POST",
           json: { input: { message: text } },
         });
@@ -566,14 +565,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const pollExecution = async (execId: number): Promise<string> => {
     for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-      const ex = await api<{ status: string; error: string; context: Record<string, { output?: { display?: boolean; signal?: string; value?: string } }> }>(
-        `/workflow-executions/${execId}`,
+      const ex = await api<{ status: string; error: string; outputs: Record<string, { value?: unknown }> }>(
+        `/workflow-runner/executions/${execId}`,
       );
-      if (ex.status === "RUNNING") continue;
-      const displays = Object.values(ex.context || {})
-        .filter((e) => e?.output?.display)
-        .map((e) => e.output!.value)
-        .filter(Boolean);
+      if (["QUEUED", "RUNNING", "WAITING"].includes(ex.status)) continue;
+      const displays = Object.values(ex.outputs || {}).map((entry) => entry.value).filter((value) => value !== undefined && value !== null).map((value) => typeof value === "string" ? value : JSON.stringify(value, null, 2));
       if (ex.status === "SUCCEEDED")
         return displays.length ? displays.join("\n\n") : "✅ 実行が完了しました（表示ノードなし）";
       return `❌ 実行が ${ex.status} で終了しました${ex.error ? `: ${ex.error}` : ""}${displays.length ? `\n\n${displays.join("\n\n")}` : ""}`;

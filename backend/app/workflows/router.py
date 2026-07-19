@@ -19,6 +19,7 @@ from app.models import (
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
 from app.workflows import engine
+from app.workflows.contracts import build_input_schema, build_output_schema, final_outputs
 from app.workflows.redaction import collect_sensitive_values, redact
 
 MAX_VERSIONS_PER_WORKFLOW = 20
@@ -173,7 +174,8 @@ def _out(wf: Workflow, db: Session) -> dict:
         "description": wf.description,
         "definition": json.loads(wf.definition_json or "{}"),
         "enabled": wf.enabled,
-        "state": "published" if published and published.checksum == draft_checksum else "draft",
+        "state": "published" if published and published.checksum == draft_checksum
+        and published.name == wf.name and published.description == wf.description else "draft",
         "published_version": published.version if published else None,
         "published_version_id": published.id if published else None,
         "created_at": wf.created_at,
@@ -191,7 +193,7 @@ def _out(wf: Workflow, db: Session) -> dict:
 
 @router.get("/workflows")
 def list_workflows(
-    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)
+    user: User = Depends(require_permission("workflows.edit")), db: Session = Depends(get_db)
 ):
     rows = db.execute(select(Workflow).order_by(Workflow.name)).scalars().all()
     return [_out(w, db) for w in rows]
@@ -222,7 +224,7 @@ def create_workflow(
 @router.get("/workflows/{workflow_id}")
 def get_workflow(
     workflow_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     return _out(_get(db, workflow_id), db)
@@ -270,6 +272,7 @@ def _snapshot_version(db: Session, wf: Workflow, note: str = "") -> None:
     safe_definition = engine.safe_definition_snapshot(json.loads(wf.definition_json or "{}"))
     db.add(WorkflowVersion(
         workflow_id=wf.id, version=latest_number + 1, name=wf.name,
+        description=wf.description,
         definition_json=json.dumps(safe_definition, ensure_ascii=False), checksum=checksum, note=note,
     ))
     olds = db.execute(
@@ -285,7 +288,7 @@ def _snapshot_version(db: Session, wf: Workflow, note: str = "") -> None:
 @router.get("/workflows/{workflow_id}/versions")
 def list_versions(
     workflow_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
@@ -332,7 +335,7 @@ def restore_version(
 def get_version(
     workflow_id: int,
     version_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
@@ -402,6 +405,8 @@ def publish_workflow(
     if blocking:
         raise HTTPException(status_code=409, detail={"blocking": blocking, "warnings": warnings, "quality": quality})
     version = engine._ensure_execution_version(db, workflow)
+    version.input_schema_json = json.dumps(build_input_schema(definition), ensure_ascii=False)
+    version.output_schema_json = json.dumps(build_output_schema(definition), ensure_ascii=False)
     version.published_at = utcnow()
     version.note = "公開版"
     db.commit()
@@ -1142,7 +1147,7 @@ def list_executions(
 @router.get("/workflow-executions/{execution_id}")
 def get_execution(
     execution_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     r = db.get(WorkflowExecution, execution_id)
@@ -1162,7 +1167,7 @@ def get_execution(
         "definition_snapshot": json.loads(r.definition_snapshot_json or "{}"),
         "runtime_snapshot": json.loads(r.runtime_snapshot_json or "{}"),
         "input": context.get("__input__", {}),
-        "outputs": _final_outputs(context),
+        "outputs": final_outputs(context),
         "context": {key: value for key, value in context.items() if not key.startswith("__")},
     }
 
@@ -1171,7 +1176,7 @@ def get_execution(
 def get_execution_nodes(
     workflow_id: int,
     execution_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
@@ -1274,29 +1279,8 @@ async def resume_execution_from_node(
 
 
 def _final_outputs(context: dict) -> dict[str, dict]:
-    """Build the phase-1 output contract from legacy signal.display node results."""
-    outputs: dict[str, dict] = {}
-    for node_id, entry in context.items():
-        if node_id.startswith("__") or not isinstance(entry, dict):
-            continue
-        output = entry.get("output")
-        if not isinstance(output, dict) or not output.get("display"):
-            continue
-        name = str(output.get("signal") or node_id)
-        base = name
-        suffix = 2
-        while name in outputs:
-            name = f"{base}_{suffix}"
-            suffix += 1
-        outputs[name] = {
-            "type": str(output.get("renderer") or output.get("type") or "text"),
-            "value": output.get("value"),
-            "source_node_id": node_id,
-            **({key: output.get(key) for key in (
-                "title", "description", "downloadable", "copyable", "collapsible", "sensitive", "filename", "mime_type",
-            )} if output.get("output_contract") else {}),
-        }
-    return outputs
+    """後方互換用。新規コードはcontracts.final_outputsを利用する。"""
+    return final_outputs(context)
 
 
 @router.post("/workflows/{workflow_id}/executions/{execution_id}/load-inputs")
@@ -1319,7 +1303,7 @@ def load_execution_inputs(
 @router.get("/workflow-executions/{execution_id}/live")
 def get_execution_live(
     execution_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     """実行中コンテキストのライブ参照（3 秒フラッシュを待たずに現在の状態を返す）。"""
