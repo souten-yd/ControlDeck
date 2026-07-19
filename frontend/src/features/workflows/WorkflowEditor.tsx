@@ -60,6 +60,9 @@ interface WorkflowDetail {
   id: number;
   name: string;
   enabled: boolean;
+  state: "draft" | "published";
+  published_version: number | null;
+  published_version_id: number | null;
   definition: { nodes: DefNode[]; edges: DefEdge[] };
 }
 type FlowNodeData = { def: DefNode; running?: string; pinned?: boolean };
@@ -200,6 +203,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [infoOpen, setInfoOpen] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const readOnly = !can("workflows.edit");
 
@@ -271,10 +275,26 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       setDirty(false);
       show("保存しました");
       qc.invalidateQueries({ queryKey: ["workflows"] });
+      return true;
     } catch (e) {
       show(e instanceof Error ? e.message : "保存に失敗しました", "error");
+      return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const publish = async () => {
+    if (dirty && !await save()) return;
+    setPublishing(true);
+    try {
+      const result = await api<{ version: number; warnings: string[] }>(`/workflows/${workflowId}/publish`, { method: "POST" });
+      await qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
+      show(`バージョン ${result.version} を公開しました${result.warnings.length ? `（警告 ${result.warnings.length}件）` : ""}`);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "公開検証に失敗しました", "error");
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -483,6 +503,9 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-sm font-medium hover:border-zinc-200 focus:border-accent-500 focus:outline-none dark:hover:border-zinc-700"
         />
         <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) importJson(e.target.files[0]); e.target.value = ""; }} />
+        <span className={`hidden shrink-0 rounded-full px-2 py-1 text-[9px] font-semibold sm:inline ${wf?.state === "published" && !dirty ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"}`}>
+          {wf?.state === "published" && !dirty ? `公開 v${wf.published_version}` : "編集中"}
+        </span>
         <DropdownMenu
           ariaLabel="その他メニュー"
           trigger={<IconDots />}
@@ -491,6 +514,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             ...(can("workflows.run") ? [{ label: "実行プレビュー", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
             { label: "JSON を出力", onSelect: exportJson },
             ...(readOnly ? [] : [
+              { label: "公開", onSelect: () => void publish() },
               { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
               { label: "選択をスニペット保存", onSelect: saveAsSnippet },
             ]),
@@ -509,6 +533,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             className="min-h-9 rounded-xl border border-accent-300 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30"
           >
             プレビュー
+          </button>
+        )}
+        {!readOnly && (
+          <button onClick={() => void publish()} disabled={publishing} className="hidden min-h-9 rounded-xl border border-zinc-300 px-3 text-sm font-medium disabled:opacity-50 dark:border-zinc-700 sm:block">
+            {publishing ? "検証中…" : "公開"}
           </button>
         )}
         {can("workflows.run") && (
@@ -624,7 +653,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             definition={buildDefinition()}
             inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
             dirty={dirty}
-            onSave={save}
+            onSave={async () => { await save(); }}
             onExecution={() => { setInfoOpen(false); }}
             onClose={() => setPreviewOpen(false)}
           />
@@ -655,7 +684,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           readOnly={readOnly}
           onChange={(patch) => updateNodeDef(selectedDef.id, patch)}
           dirty={dirty}
-          onSave={save}
+          onSave={async () => { await save(); }}
           onDelete={selectedDef.type !== "trigger" ? () => removeNode(selectedDef.id) : undefined}
           onClose={() => setSelected(null)}
         />

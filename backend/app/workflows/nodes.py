@@ -842,7 +842,7 @@ async def node_flow_call(config: dict, ctx: dict) -> dict:
     try:
         exec_id = await engine.run_workflow(
             int(wf_id), trigger_type="subflow",
-            input_data={"message": message, **extra}, depth=depth + 1)
+            input_data={"message": message, **extra}, depth=depth + 1, published_only=True)
     except engine.DefinitionError as e:
         raise NodeError(str(e))
 

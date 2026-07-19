@@ -183,6 +183,7 @@ def test_webhook_trigger_fires(admin_client):
     }
     r = admin_client.post("/api/v1/workflows", json={"name": "webhookテスト", "definition": definition}, headers=CSRF_HEADERS)
     wf_id = r.json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{wf_id}/publish", headers=CSRF_HEADERS).status_code == 200
     admin_client.post(f"/api/v1/workflows/{wf_id}/enable", headers=CSRF_HEADERS)
 
     # CSRF ヘッダーなし（外部からの呼び出しを模擬）
@@ -210,6 +211,7 @@ def test_flow_call_subflow(admin_client):
         "edges": [{"source": "t", "target": "s"}],
     }
     sub_id = admin_client.post("/api/v1/workflows", json={"name": "サブ", "definition": sub_def}, headers=CSRF_HEADERS).json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{sub_id}/publish", headers=CSRF_HEADERS).status_code == 200
     main_def = {
         "nodes": [
             {"id": "t", "type": "trigger", "config": {"mode": "manual"}},
@@ -219,6 +221,7 @@ def test_flow_call_subflow(admin_client):
         "edges": [{"source": "t", "target": "call"}, {"source": "call", "target": "out"}],
     }
     main_id = admin_client.post("/api/v1/workflows", json={"name": "メイン", "definition": main_def}, headers=CSRF_HEADERS).json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{main_id}/publish", headers=CSRF_HEADERS).status_code == 200
     exec_id = admin_client.post(f"/api/v1/workflows/{main_id}/run", json={}, headers=CSRF_HEADERS).json()["execution_id"]
     for _ in range(100):
         time.sleep(0.15)
@@ -236,10 +239,12 @@ def test_approval_gate_approve_and_reject(admin_client):
             {"id": "t", "type": "trigger", "config": {"mode": "manual"}},
             {"id": "gate", "type": "string.op",
              "config": {"op": "template", "text": "approved!", "require_approval": True}},
+            {"id": "out", "type": "signal.display", "config": {"signal": "answer", "value": "{{gate.result}}"}},
         ],
-        "edges": [{"source": "t", "target": "gate"}],
+        "edges": [{"source": "t", "target": "gate"}, {"source": "gate", "target": "out"}],
     }
     wf_id = admin_client.post("/api/v1/workflows", json={"name": "承認テスト", "definition": definition}, headers=CSRF_HEADERS).json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{wf_id}/publish", headers=CSRF_HEADERS).status_code == 200
     exec_id = admin_client.post(f"/api/v1/workflows/{wf_id}/run", json={}, headers=CSRF_HEADERS).json()["execution_id"]
     # 承認待ちになる
     pending = []

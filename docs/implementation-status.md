@@ -128,6 +128,23 @@ case/workflow削除を確認。frontend本番buildと実サービス再起動に
 320px Playwrightで通常テスト結果からcase作成→一括実行→成功判定→入力再読込、横overflowなし、console errorなしを確認した。
 検証用workflow/case/userは削除済み。
 
+## ワークフローdraft／公開版分離（2026-07-19）
+
+- workflow本体の`definition_json`を自動保存draft、`WorkflowVersion.published_at`が付いたimmutable snapshotを公開版として分離。
+  checksum比較から`編集中`／`公開 vN`を返し、保存後に公開版との差が生じても公開snapshotを変更しない
+- `POST /workflows/{id}/publish`を追加。構造・意味検証、最終output有無と名前重複、secret存在、pinned data残存、
+  回帰テスト状態、quality scoreをpreflightし、blocking issueが1件でもあれば409で公開しない。公開操作は監査する
+- 通常の「実行」、schedule、Webhook、system event、`flow.call`は公開版だけを選択し、未公開workflowは明示エラーにする。
+  Preview Workspaceの通常テスト、test case、node run-to/resumeはdraft開発経路として分離を維持する
+- 後方互換migrationとして、導入時点ですでに`enabled`だった自動実行workflowだけは起動時に現在定義をlegacy baseline公開版へ
+  1回移行する。新規workflowは公開前にenableできず、再起動を利用した検証回避はできない
+- desktop command barに状態badgeと公開button、mobileの三点menuに公開actionを追加。未保存変更は先に保存し、保存失敗時は公開を中断する
+
+検証: backend全286件成功。未公開本番実行の拒否、公開後の本番出力、draft変更後も旧公開版を実行すること、draft testは新値を使うこと、
+pin残存時の公開拒否、解除後の再公開、Webhook/subflow/approvalの公開版回帰を確認。frontend本番buildと実サービス再起動に成功。
+320px Playwrightで回帰case合格後のmobile公開、公開toast、横overflowなし、console errorなしを確認した。
+検証用workflow/version/case/userは削除済み。
+
 ## AIアシスタント Deep Research超強化（2026-07-17）
 
 - 数件の資料提示で停止していた原因を、固定3クエリ・本文8件・単発要約・最終生成HTTP timeout 300秒と特定。

@@ -14,7 +14,7 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import (
     User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowPinnedData, WorkflowSecret, WorkflowTestCase,
-    WorkflowVersion,
+    WorkflowVersion, utcnow,
 )
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
@@ -161,12 +161,21 @@ def _out(wf: Workflow, db: Session) -> dict:
         .order_by(WorkflowExecution.started_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    published = db.execute(
+        select(WorkflowVersion).where(
+            WorkflowVersion.workflow_id == wf.id, WorkflowVersion.published_at.is_not(None),
+        ).order_by(WorkflowVersion.published_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    draft_checksum = hashlib.sha256((wf.definition_json or "{}").encode()).hexdigest()
     return {
         "id": wf.id,
         "name": wf.name,
         "description": wf.description,
         "definition": json.loads(wf.definition_json or "{}"),
         "enabled": wf.enabled,
+        "state": "published" if published and published.checksum == draft_checksum else "draft",
+        "published_version": published.version if published else None,
+        "published_version_id": published.id if published else None,
         "created_at": wf.created_at,
         "updated_at": wf.updated_at,
         "last_execution": {
@@ -337,6 +346,72 @@ def get_version(
         "output_schema": json.loads(version.output_schema_json or "{}"),
         "checksum": version.checksum, "note": version.note,
         "created_at": version.created_at, "published_at": version.published_at,
+    }
+
+
+@router.post("/workflows/{workflow_id}/publish")
+def publish_workflow(
+    workflow_id: int,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    """現在のdraftを検証済みimmutable versionとして本番経路へ固定する。"""
+    import re
+
+    from app.workflows.validation import quality_score, semantic_check
+
+    workflow = _get(db, workflow_id)
+    try:
+        engine.validate_definition(workflow.definition_json)
+        definition = json.loads(workflow.definition_json or "{}")
+    except (engine.DefinitionError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail={"blocking": [str(exc)], "warnings": []}) from exc
+    nodes, edges = definition.get("nodes", []), definition.get("edges", [])
+    blocking, warnings = semantic_check(nodes, edges)
+    if not any(node.get("type") in ("signal.display", "output.render", "flow.return") for node in nodes):
+        blocking.append("正式な最終出力ノードがありません")
+    output_names = [
+        str((node.get("config") or {}).get("signal") or (node.get("config") or {}).get("name") or node.get("id"))
+        for node in nodes if node.get("type") in ("signal.display", "output.render", "flow.return")
+    ]
+    duplicates = sorted({name for name in output_names if output_names.count(name) > 1})
+    if duplicates:
+        blocking.append(f"最終出力名が重複しています: {', '.join(duplicates)}")
+    references = set(re.findall(r"\{\{\s*secrets\.([A-Za-z0-9_.-]+)\s*\}\}", workflow.definition_json or ""))
+    available = set(db.execute(select(WorkflowSecret.name)).scalars().all())
+    missing = sorted(references - available)
+    if missing:
+        blocking.append(f"未登録のsecretがあります: {', '.join(missing)}")
+    pin_count = len(db.execute(select(WorkflowPinnedData.id).where(
+        WorkflowPinnedData.workflow_id == workflow_id,
+    )).scalars().all())
+    if pin_count:
+        blocking.append(f"固定データが{pin_count}件残っています。解除してから公開してください")
+    cases = db.execute(select(WorkflowTestCase).where(
+        WorkflowTestCase.workflow_id == workflow_id,
+    )).scalars().all()
+    failed_cases = [case.name for case in cases if case.last_status in ("FAILED", "ERROR", "RUNNING")]
+    if failed_cases:
+        blocking.append(f"未合格の回帰テストがあります: {', '.join(failed_cases)}")
+    if not cases:
+        warnings.append("回帰テストケースがありません")
+    elif any(case.last_status == "NEVER" for case in cases):
+        warnings.append("未実行の回帰テストケースがあります")
+    quality = quality_score(nodes, edges)
+    if blocking:
+        raise HTTPException(status_code=409, detail={"blocking": blocking, "warnings": warnings, "quality": quality})
+    version = engine._ensure_execution_version(db, workflow)
+    version.published_at = utcnow()
+    version.note = "公開版"
+    db.commit()
+    audit.record(
+        db, "workflow.publish", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"version_id": version.id, "version": version.version, "warnings": len(warnings)},
+    )
+    return {
+        "workflow_id": workflow_id, "version_id": version.id, "version": version.version,
+        "published_at": version.published_at, "warnings": warnings, "quality": quality,
     }
 
 
@@ -945,7 +1020,9 @@ async def run_workflow(
     input_data = body.input if body else {}
     trigger_type = "chat" if input_data.get("message") else "manual"
     try:
-        execution_id = await engine.run_workflow(workflow_id, trigger_type=trigger_type, input_data=input_data)
+        execution_id = await engine.run_workflow(
+            workflow_id, trigger_type=trigger_type, input_data=input_data, published_only=True,
+        )
     except engine.DefinitionError as e:
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "workflow.run", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request)
@@ -1012,6 +1089,11 @@ def enable_workflow(
     db: Session = Depends(get_db),
 ):
     wf = _get(db, workflow_id)
+    published = db.execute(select(WorkflowVersion.id).where(
+        WorkflowVersion.workflow_id == workflow_id, WorkflowVersion.published_at.is_not(None),
+    ).limit(1)).scalar_one_or_none()
+    if published is None:
+        raise HTTPException(status_code=409, detail="先にワークフローを公開してください")
     wf.enabled = True
     db.commit()
     audit.record(db, "workflow.enable", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request)
