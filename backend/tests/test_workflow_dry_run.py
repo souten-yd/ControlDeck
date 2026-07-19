@@ -88,7 +88,27 @@ def test_node_metadata_matches_executor_catalog_and_frontend():
     merge = next(item for item in catalog if item["type"] == "control.merge")
     assert merge["config_schema"]["quorum"]["type"] == "integer"
     assert merge["output_schema"]["items"] == "array"
-    trigger_schema = next(item for item in catalog if item["type"] == "trigger")["config_schema"]
+
+
+def test_node_metadata_guided_configuration_is_safe_and_consistent():
+    from app.workflows.node_metadata import node_catalog
+
+    catalog = {item["type"]: item for item in node_catalog()}
+    assert catalog["http.request"]["initial_config"] == {"method": "GET", "timeout": 30}
+    assert catalog["http.request"]["ui_hints"]["primary_input"] == "url"
+    assert catalog["http.request"]["ui_hints"]["primary_output"] == "body"
+    assert catalog["output.render"]["initial_config"]["renderer"] == "auto"
+    assert catalog["output.render"]["ui_hints"]["examples"][0]["config"]["renderer"] == "markdown"
+    assert catalog["research.deep"]["initial_config"]["depth"] == "standard"
+    assert catalog["research.deep"]["config_schema"]["depth"]["recommended"] == "standard"
+    assert catalog["control.loop"]["config_schema"]["parallel"]["recommended"] == 3
+    for metadata in catalog.values():
+        assert set(metadata["initial_config"]) <= set(metadata["config_schema"])
+        serialized = str(metadata["initial_config"]).lower()
+        assert "api_key" not in serialized
+        assert "password" not in serialized
+        assert "secret" not in serialized
+    trigger_schema = catalog["trigger"]["config_schema"]
     assert "node_timeout" not in trigger_schema
 
 
