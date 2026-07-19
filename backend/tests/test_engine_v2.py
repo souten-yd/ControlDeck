@@ -50,6 +50,33 @@ def test_join_all_waits_for_both_inputs():
     assert ctx["j"]["started_at"] >= ctx["b"]["finished_at"]
 
 
+def test_control_merge_modes_collect_direct_upstreams():
+    base_nodes = [
+        TRIGGER,
+        {"id": "a", "type": "util.wait", "config": {"seconds": 0.02}},
+        {"id": "b", "type": "util.wait", "config": {"seconds": 0.05}},
+        {"id": "c", "type": "util.wait", "config": {"seconds": 0.15}},
+    ]
+    base_edges = [
+        {"source": "t", "target": "a"}, {"source": "t", "target": "b"}, {"source": "t", "target": "c"},
+    ]
+
+    for mode, expected_count in (("wait_all", 3), ("collect", 3), ("first_success", 1), ("first_complete", 1)):
+        merge = {"id": "merge", "type": "control.merge", "config": {"mode": mode}}
+        edges = [*base_edges, *({"source": source, "target": "merge"} for source in ("a", "b", "c"))]
+        ctx = _run([*base_nodes, merge], edges)
+        output = ctx["merge"]["output"]
+        assert output["mode"] == mode and output["count"] == expected_count
+        assert output["items"][0]["node_id"] == "a"
+        assert output["succeeded"] == expected_count
+
+    quorum = {"id": "merge", "type": "control.merge", "config": {"mode": "quorum", "quorum": 2}}
+    edges = [*base_edges, *({"source": source, "target": "merge"} for source in ("a", "b", "c"))]
+    ctx = _run([*base_nodes, quorum], edges)
+    assert ctx["merge"]["output"]["count"] == 2
+    assert [item["node_id"] for item in ctx["merge"]["output"]["items"]] == ["a", "b"]
+
+
 def test_retry_then_success_counts_attempts(tmp_path):
     """初回失敗 → リトライで成功（file.read: リトライ待ちの間にファイルを作る）。"""
     target = _sandbox / "retry-me.txt"
@@ -272,13 +299,13 @@ def test_flow_call_subflow(admin_client):
 
 
 def test_approval_gate_approve_and_reject(admin_client):
-    """require_approval ノードは承認まで待ち、approve API で再開する。"""
+    """human.approvalは承認者とmessageを表示し、approve APIで再開する。"""
     definition = {
         "nodes": [
             {"id": "t", "type": "trigger", "config": {"mode": "manual"}},
-            {"id": "gate", "type": "string.op",
-             "config": {"op": "template", "text": "approved!", "require_approval": True}},
-            {"id": "out", "type": "signal.display", "config": {"signal": "answer", "value": "{{gate.result}}"}},
+            {"id": "gate", "type": "human.approval",
+             "config": {"message": "{{t.message}}を承認しますか？", "approver": "admin", "approval_timeout_seconds": 10}},
+            {"id": "out", "type": "signal.display", "config": {"signal": "answer", "value": "{{gate.approved}}"}},
         ],
         "edges": [{"source": "t", "target": "gate"}, {"source": "gate", "target": "out"}],
     }
@@ -295,6 +322,7 @@ def test_approval_gate_approve_and_reject(admin_client):
             break
     assert pending == ["gate"]
     assert live["context"]["gate"]["status"] == "WAITING_APPROVAL"
+    assert live["context"]["gate"]["approval"] == {"message": "を承認しますか？", "approver": "admin"}
     # 承認 → 完了
     r = admin_client.post(f"/api/v1/workflow-executions/{exec_id}/approve",
                           json={"node_id": "gate", "approve": True}, headers=CSRF_HEADERS)
@@ -305,7 +333,81 @@ def test_approval_gate_approve_and_reject(admin_client):
         if ex["status"] not in ("RUNNING", "WAITING"):
             break
     assert ex["status"] == "SUCCEEDED"
-    assert ex["context"]["gate"]["output"]["result"] == "approved!"
+    assert ex["context"]["gate"]["output"]["approved"] is True
+
+    # 同じ明示gateを却下すると標準Error Contextで停止する。
+    rejected_id = admin_client.post(f"/api/v1/workflows/{wf_id}/run", json={}, headers=CSRF_HEADERS).json()["execution_id"]
+    for _ in range(50):
+        time.sleep(0.1)
+        rejected_live = admin_client.get(f"/api/v1/workflow-executions/{rejected_id}/live").json()
+        if rejected_live["pending_approvals"]:
+            break
+    rejected = admin_client.post(
+        f"/api/v1/workflow-executions/{rejected_id}/approve",
+        json={"node_id": "gate", "approve": False}, headers=CSRF_HEADERS,
+    )
+    assert rejected.status_code == 200
+    for _ in range(50):
+        time.sleep(0.1)
+        rejected_ex = admin_client.get(f"/api/v1/workflow-executions/{rejected_id}").json()
+        if rejected_ex["status"] not in ("RUNNING", "WAITING"):
+            break
+    assert rejected_ex["status"] == "FAILED"
+    assert rejected_ex["context"]["gate"]["output"]["error"]["code"] == "APPROVAL_REJECTED"
+
+
+def test_human_approval_timeout_uses_timeout_route(admin_client):
+    definition = {
+        "nodes": [
+            {"id": "t", "type": "trigger", "config": {"mode": "manual"}},
+            {"id": "gate", "type": "human.approval", "config": {
+                "message": "短い承認期限", "approval_timeout_seconds": 0.1, "on_error": "branch",
+            }},
+            {"id": "timed", "type": "signal.display", "config": {"signal": "result", "value": "{{gate.error.code}}"}},
+        ],
+        "edges": [
+            {"source": "t", "target": "gate"},
+            {"source": "gate", "target": "timed", "branch": "timeout"},
+        ],
+    }
+    wf_id = admin_client.post("/api/v1/workflows", json={"name": "承認期限テスト", "definition": definition}, headers=CSRF_HEADERS).json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{wf_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    exec_id = admin_client.post(f"/api/v1/workflows/{wf_id}/run", json={}, headers=CSRF_HEADERS).json()["execution_id"]
+    for _ in range(50):
+        time.sleep(0.1)
+        ex = admin_client.get(f"/api/v1/workflow-executions/{exec_id}").json()
+        if ex["status"] not in ("RUNNING", "WAITING"):
+            break
+    assert ex["status"] == "SUCCEEDED"
+    assert ex["context"]["gate"]["status"] == "TIMED_OUT"
+    assert ex["context"]["timed"]["output"]["value"] == "APPROVAL_TIMEOUT"
+
+
+def test_human_approval_rejects_wrong_assignee(admin_client):
+    definition = {
+        "nodes": [
+            {"id": "t", "type": "trigger", "config": {"mode": "manual"}},
+            {"id": "gate", "type": "human.approval", "config": {
+                "message": "担当者限定", "approver": "another-user", "approval_timeout_seconds": 10,
+            }},
+            {"id": "out", "type": "output.render", "config": {"name": "result", "value": "{{gate.approved}}"}},
+        ],
+        "edges": [{"source": "t", "target": "gate"}, {"source": "gate", "target": "out"}],
+    }
+    wf_id = admin_client.post("/api/v1/workflows", json={"name": "承認者制限", "definition": definition}, headers=CSRF_HEADERS).json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{wf_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    exec_id = admin_client.post(f"/api/v1/workflows/{wf_id}/run", json={}, headers=CSRF_HEADERS).json()["execution_id"]
+    for _ in range(50):
+        time.sleep(0.1)
+        live = admin_client.get(f"/api/v1/workflow-executions/{exec_id}/live").json()
+        if live["pending_approvals"]:
+            break
+    denied = admin_client.post(
+        f"/api/v1/workflow-executions/{exec_id}/approve",
+        json={"node_id": "gate", "approve": True}, headers=CSRF_HEADERS,
+    )
+    assert denied.status_code == 403
+    assert admin_client.post(f"/api/v1/workflow-executions/{exec_id}/cancel", headers=CSRF_HEADERS).status_code == 200
 
 
 def test_jobs_api_lifecycle(admin_client):

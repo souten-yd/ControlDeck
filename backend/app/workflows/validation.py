@@ -164,6 +164,27 @@ def semantic_check(nodes: list[dict], edges: list[dict]) -> tuple[list[str], lis
                 warnings.append(f"ノード '{name}' は失敗分岐が有効ですが「失敗」経路が未接続です")
             if branches.count("error") > 1 or branches.count("timeout") > 1:
                 warnings.append(f"ノード '{name}' の失敗／時間切れ経路が複数接続されています")
+        if n.get("type") == "human.approval":
+            raw_timeout = config.get("approval_timeout_seconds")
+            if raw_timeout not in (None, ""):
+                try:
+                    if float(raw_timeout) < 0.1:
+                        errors.append(f"承認ノード '{name}' の承認期限は0.1秒以上にしてください")
+                except (TypeError, ValueError):
+                    errors.append(f"承認ノード '{name}' の承認期限は数値で指定してください")
+        if n.get("type") == "control.merge":
+            incoming_count = sum(1 for edge in edges if edge.get("target") == n.get("id"))
+            mode = str(config.get("mode") or "wait_all")
+            if incoming_count < 2:
+                warnings.append(f"合流ノード '{name}' には2本以上の入力を接続してください")
+            if mode not in {"wait_all", "first_success", "first_complete", "quorum", "collect"}:
+                errors.append(f"合流ノード '{name}' の合流方式 '{mode}' は無効です")
+            if mode == "quorum":
+                quorum = _as_int(config.get("quorum"), 0)
+                if quorum < 1:
+                    errors.append(f"合流ノード '{name}' のquorumは1以上にしてください")
+                elif incoming_count and quorum > incoming_count:
+                    errors.append(f"合流ノード '{name}' のquorumが入力数を超えています（{quorum}/{incoming_count}）")
 
     return errors, warnings
 

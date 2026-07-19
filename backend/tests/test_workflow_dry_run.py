@@ -82,6 +82,12 @@ def test_node_metadata_matches_executor_catalog_and_frontend():
     assert wait_schema["retry_wait"]["type"] == "number"
     assert wait_schema["node_timeout"]["type"] == "number"
     assert wait_schema["on_error"]["type"] == "string"
+    approval = next(item for item in catalog if item["type"] == "human.approval")
+    assert approval["supports"]["retry"] is False
+    assert approval["config_schema"]["approval_timeout_seconds"]["type"] == "number"
+    merge = next(item for item in catalog if item["type"] == "control.merge")
+    assert merge["config_schema"]["quorum"]["type"] == "integer"
+    assert merge["output_schema"]["items"] == "array"
     trigger_schema = next(item for item in catalog if item["type"] == "trigger")["config_schema"]
     assert "node_timeout" not in trigger_schema
 

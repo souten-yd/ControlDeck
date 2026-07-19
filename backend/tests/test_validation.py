@@ -66,6 +66,27 @@ def test_validates_error_routes_and_node_timeout():
     assert not any("経路が未接続" in item for item in warnings)
 
 
+def test_validates_human_approval_and_merge_contracts():
+    from app.workflows.validation import semantic_check
+
+    nodes = [
+        _t(),
+        {"id": "a", "type": "util.now", "config": {}},
+        {"id": "gate", "type": "human.approval", "config": {"approval_timeout_seconds": "bad"}},
+        {"id": "merge", "type": "control.merge", "config": {"mode": "quorum", "quorum": 3}},
+    ]
+    edges = [
+        {"source": "trigger", "target": "a"},
+        {"source": "a", "target": "gate"},
+        {"source": "a", "target": "merge"},
+        {"source": "gate", "target": "merge"},
+    ]
+    errors, warnings = semantic_check(nodes, edges)
+    assert any("承認期限は数値" in item for item in errors)
+    assert any("quorumが入力数を超えています" in item for item in errors)
+    assert not any("2本以上" in item for item in warnings)
+
+
 def test_quality_score_ranges():
     from app.workflows.validation import quality_score
 

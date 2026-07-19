@@ -130,6 +130,37 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     ],
     outputs: [{ key: "item", label: "現在の要素" }, { key: "index", label: "インデックス" }, { key: "total", label: "総数" }, { key: "results", label: "全反復結果" }],
   },
+  "human.approval": {
+    label: "人の承認",
+    category: "制御",
+    color: "#d97706",
+    icon: "✋",
+    desc: "承認または却下されるまで実行を一時停止する明示的なhuman gate",
+    fields: [
+      { key: "message", label: "承認メッセージ", type: "textarea", placeholder: "この変更を適用しますか？", hint: TEMPLATE_HINT },
+      { key: "approver", label: "承認者（ユーザー名・任意）", type: "text", hint: "空欄ならworkflows.run権限を持つユーザー。指定時はそのユーザーだけが操作できます" },
+      { key: "approval_timeout_seconds", label: "承認期限（秒）", type: "number", placeholder: "86400", hint: "期限切れはtimeout経路へ送られます" },
+    ],
+    outputs: [{ key: "approved", label: "承認済み" }, { key: "message", label: "承認メッセージ" }, { key: "approver", label: "承認者" }],
+  },
+  "control.merge": {
+    label: "分岐を合流",
+    category: "制御",
+    color: "#f59e0b",
+    icon: "⇉",
+    desc: "複数の直接上流を待機条件に従って1本へ合流し、到着順を保った配列を返す",
+    fields: [
+      { key: "mode", label: "合流方式", type: "select", options: [
+        { value: "wait_all", label: "すべて完了を待つ" },
+        { value: "first_success", label: "最初の成功" },
+        { value: "first_complete", label: "最初の完了" },
+        { value: "quorum", label: "成功数 quorum" },
+        { value: "collect", label: "全結果を収集" },
+      ] },
+      { key: "quorum", label: "必要な成功数", type: "number", placeholder: "2", showIf: { key: "mode", value: "quorum" } },
+    ],
+    outputs: [{ key: "items", label: "node・状態・出力" }, { key: "values", label: "出力配列" }, { key: "value", label: "単一／出力配列" }, { key: "count", label: "合流数" }, { key: "succeeded", label: "成功数" }],
+  },
   "util.wait": { label: "待機", category: "制御", color: "#f59e0b", icon: "⏱", fields: [{ key: "seconds", label: "秒数", type: "number", placeholder: "10" }], outputs: [{ key: "waited_seconds", label: "待機秒数" }] },
 
   // ---- 変数・文字列・テキスト ----
@@ -831,6 +862,10 @@ export const NODE_DOCS: Record<string, string> = {
     "左辺と右辺を比較し、true / false の 2 方向へ分岐します。\n\n■ 使い方\n左辺にテンプレート（例 {{n1.status_code}}）、演算子と右辺を設定。エッジは右側の緑ハンドル（true）と赤ハンドル（false)から引きます。\n\n■ ヒント\n数値比較は自動で数値化されます。「を含む」は部分文字列判定でキーワード監視に便利。",
   "control.loop":
     "body 側のノード列を繰り返し実行し、完了後に done 側へ進みます。\n\n■ モード\n- 回数指定: {{ID.index}} が 0..n-1\n- リスト each: JSON 配列 or 改行区切りを 1 件ずつ {{ID.item}} に\n- 並列数: 1〜5。反復ごとにcontextを分離し、{{ID.results}}へ入力順で集約\n\n■ 組み合わせ\nWeb 検索の {{search.urls}} を items に渡して URL ごとにスクレイピング、など。上限 100 回。",
+  "human.approval":
+    "後続処理を人が確認するまで実行を一時停止します。情報パネルに承認文、指定承認者、承認／却下操作を表示し、操作は監査ログへ記録します。\n\n■ 経路\n承認時は通常出力、却下時はerror、期限切れはtimeoutへ進みます。on_errorをbranchにして各handleを接続してください。\n\n■ 安全性\n承認者をユーザー名で限定できます。message内のresolved secretは表示前に伏せ字化されます。サービス再起動をまたぐ永続pause tokenと修正入力は次のWorkflowPause migrationで追加予定です。",
+  "control.merge":
+    "複数の直接上流を1本へまとめます。wait_allは全入力の解決待ち、first_successは最初の成功、first_completeは最初の生きた完了、quorumは指定成功数、collectは成功・失敗を含む全結果を扱います。\n\n■ 出力\nitemsはnode_id/status/output、valuesはoutputだけの配列です。first系ではvalueから単一結果を参照できます。\n\n■ 注意\nquorum未達とfirst_successで成功0件は明示的に失敗し、error routeへ送れます。",
   "util.wait": "指定秒数待機します。Wake-on-LAN 後の起動待ち、API のレート制限対策などに。最大 1 時間。",
   "var.set":
     "値に名前を付けて保存します。output_var と違い、フロー途中で明示的に変数を作る用途。\n\n■ 参照\n{{vars.変数名}} でどのノードからでも参照できます。設定パネルの変数ピッカーにも表示されます。",
@@ -890,7 +925,7 @@ export const NODE_DOCS: Record<string, string> = {
  * - require_approval: 実行前に承認を要求（情報パネルから承認/却下）
  * - join: "all" で全入力エッジの完了を待つ合流ノードになる
  */
-export const COMMON_CONTROL_KEYS = ["retry_count", "retry_wait", "on_error", "require_approval", "join"] as const;
+export const COMMON_CONTROL_KEYS = ["retry_count", "retry_wait", "node_timeout", "on_error", "require_approval", "join"] as const;
 
 export const DEFAULT_DEFINITION = {
   nodes: [

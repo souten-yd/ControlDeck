@@ -19,6 +19,8 @@ NODE_CATALOG: list[dict] = [
     {"type": "http.download", "desc": "URLをファイル保存。url/path", "keys": ["url", "path"]},
     {"type": "condition.if", "desc": "条件分岐(true/false 2出力)。left/op/right", "keys": ["left", "op", "right"], "branches": True},
     {"type": "control.loop", "desc": "順次/並列mapループ(body/done 2出力)。反復結果はresults", "keys": ["mode", "count", "items", "parallel"], "loop": True},
+    {"type": "human.approval", "desc": "人の承認まで実行を一時停止。message/approver/approval_timeout_seconds。承認・却下は監査記録", "keys": ["message", "approver", "approval_timeout_seconds"]},
+    {"type": "control.merge", "desc": "複数分岐をwait_all/first_success/first_complete/quorum/collectで合流", "keys": ["mode", "quorum"]},
     {"type": "util.wait", "desc": "待機。seconds", "keys": ["seconds"]},
     {"type": "util.now", "desc": "現在日時。format。出力 text,date,time", "keys": ["format"]},
     {"type": "var.set", "desc": "変数セット。name/value。出力 value", "keys": ["name", "value"]},
