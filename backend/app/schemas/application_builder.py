@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +25,29 @@ class ApplicationValidateBody(BaseModel):
     workflow_id: int | None = Field(default=None, ge=1)
     workflow_version_id: int | None = Field(default=None, ge=1)
     target: str = Field(default="csharp", pattern="^(csharp|cpp)$")
+
+
+class ApplicationPatchOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    op: Literal["add", "remove", "replace", "move"]
+    path: str = Field(min_length=1, max_length=2048)
+    from_path: str | None = Field(default=None, alias="from", max_length=2048)
+    value: Any = None
+
+
+class ApplicationPatchPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
+    patches: list[ApplicationPatchOperation] = Field(min_length=1, max_length=200)
+
+
+class ApplicationPatchApplyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    patches: list[ApplicationPatchOperation] = Field(min_length=1, max_length=200)
 
 
 class WorkflowApplicationCreate(BaseModel):

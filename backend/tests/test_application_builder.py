@@ -108,6 +108,69 @@ def test_semantic_component_catalog_and_tree_validation():
     assert {"COMPONENT_CHILDREN_FORBIDDEN", "COMPONENT_ID_DUPLICATE", "COMPONENT_TYPE_UNKNOWN"} <= codes
 
 
+def _component_spec():
+    from app.application_builder.compiler import default_spec
+
+    spec = default_spec("PatchApp", "", None)
+    spec["pages"] = [{"id": "home", "title": "Home", "root": {
+        "id": "root", "type": "layout.stack", "locked": {}, "children": [
+            {"id": "title", "type": "display.text", "properties": {"text": "Before"}, "locked": {}},
+            {"id": "card", "type": "layout.card", "locked": {}, "children": []},
+        ],
+    }}]
+    return spec
+
+
+def test_application_patch_preview_applies_move_and_preserves_input():
+    from app.application_builder.patch_service import preview_patches, spec_checksum
+    from app.schemas.application_builder import ApplicationPatchOperation
+
+    spec = _component_spec()
+    before = json.dumps(spec, sort_keys=True)
+    operations = [
+        ApplicationPatchOperation(op="replace", path="/pages/0/root/children/0/properties/text", value="After"),
+        ApplicationPatchOperation.model_validate({
+            "op": "move", "from": "/pages/0/root/children/0", "path": "/pages/0/root/children/0/children/-",
+        }),
+    ]
+    result = preview_patches(spec, operations)
+    assert result["valid"] is True
+    assert result["baseChecksum"] == spec_checksum(spec)
+    assert result["resultChecksum"] != result["baseChecksum"]
+    assert result["patchedSpec"]["pages"][0]["root"]["children"][0]["children"][0]["properties"]["text"] == "After"
+    assert json.dumps(spec, sort_keys=True) == before
+
+
+def test_application_patch_rejects_locks_scope_and_invalid_result():
+    from app.application_builder.patch_service import preview_patches
+    from app.schemas.application_builder import ApplicationPatchOperation
+
+    spec = _component_spec()
+    spec["pages"][0]["root"]["children"][0]["locked"] = {"content": True}
+    locked = preview_patches(spec, [ApplicationPatchOperation(
+        op="replace", path="/pages/0/root/children/0/properties/text", value="Blocked",
+    )])
+    assert locked["valid"] is False
+    assert locked["diagnostics"][0]["code"] == "PATCH_LOCK_VIOLATION"
+    spec["pages"][0]["root"]["children"][0]["locked"] = {"style": True}
+    style_bypass = preview_patches(spec, [ApplicationPatchOperation(
+        op="replace", path="/pages/0/root/children/0/properties", value={"text": "Same", "color": "danger"},
+    )])
+    assert style_bypass["diagnostics"][0]["code"] == "PATCH_LOCK_VIOLATION"
+    spec["pages"][0]["root"]["children"][0]["locked"] = {"binding": True}
+    binding_bypass = preview_patches(spec, [ApplicationPatchOperation(
+        op="replace", path="/pages/0/root/children/0", value={
+            "id": "title", "type": "display.text", "binding": "constant:changed", "properties": {"text": "Before"},
+        },
+    )])
+    assert binding_bypass["diagnostics"][0]["code"] == "PATCH_LOCK_VIOLATION"
+    forbidden = preview_patches(spec, [ApplicationPatchOperation(op="add", path="/__proto__/polluted", value=True)])
+    assert forbidden["diagnostics"][0]["code"] == "PATCH_PATH_FORBIDDEN"
+    secret = preview_patches(spec, [ApplicationPatchOperation(op="add", path="/application/apiKey", value="literal-secret")])
+    assert secret["valid"] is False
+    assert any(item["code"] == "SECRET_LITERAL_FORBIDDEN" for item in secret["diagnostics"])
+
+
 def test_application_builder_schema_capability_validate_and_crud(admin_client, monkeypatch):
     from app.workflows import nodes
 
@@ -192,3 +255,36 @@ def test_application_builder_schema_capability_validate_and_crud(admin_client, m
     assert admin_client.delete(f"/api/v1/application-projects/{project['id']}", headers=CSRF_HEADERS).status_code == 204
     assert admin_client.delete(f"/api/v1/application-projects/{published_project.json()['id']}", headers=CSRF_HEADERS).status_code == 204
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_application_patch_preview_atomic_apply_and_stale_guard(admin_client):
+    from app.application_builder.patch_service import spec_checksum
+
+    spec = _component_spec()
+    created = admin_client.post(
+        "/api/v1/application-projects",
+        json={"name": "Patch Project", "spec": spec}, headers=CSRF_HEADERS,
+    )
+    assert created.status_code == 201, created.text
+    project_id = created.json()["id"]
+    patches = [{"op": "replace", "path": "/pages/0/root/children/0/properties/text", "value": "Applied"}]
+    preview = admin_client.post(
+        "/api/v1/application-builder/patches/preview",
+        json={"spec": spec, "patches": patches}, headers=CSRF_HEADERS,
+    )
+    assert preview.status_code == 200 and preview.json()["valid"] is True
+    base_checksum = preview.json()["baseChecksum"]
+    assert base_checksum == spec_checksum(spec)
+    applied = admin_client.post(
+        f"/api/v1/application-projects/{project_id}/patches/apply",
+        json={"base_checksum": base_checksum, "patches": patches}, headers=CSRF_HEADERS,
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["project"]["spec"]["pages"][0]["root"]["children"][0]["properties"]["text"] == "Applied"
+    stale = admin_client.post(
+        f"/api/v1/application-projects/{project_id}/patches/apply",
+        json={"base_checksum": base_checksum, "patches": patches}, headers=CSRF_HEADERS,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "PATCH_BASE_CHANGED"
+    assert admin_client.delete(f"/api/v1/application-projects/{project_id}", headers=CSRF_HEADERS).status_code == 204
