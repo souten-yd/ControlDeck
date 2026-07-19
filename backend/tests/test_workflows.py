@@ -465,6 +465,73 @@ def test_publish_separates_production_from_draft_and_blocks_pins(admin_client):
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 
+def test_validate_publish_run_publishes_only_changed_draft_and_returns_diagnostics(admin_client):
+    import time
+
+    definition = _definition([TRIGGER, {
+        "id": "out", "type": "output.render",
+        "config": {"name": "answer", "renderer": "text", "value": "first"},
+    }], [{"source": "t", "target": "out"}])
+    created = admin_client.post(
+        "/api/v1/workflows",
+        json={"name": "validate publish run", "definition": definition},
+        headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+
+    first = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/validate-publish-run",
+        json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["published"] is True
+    assert first.json()["quality"]["score"] >= 0
+    first_version = first.json()["version"]
+
+    unchanged = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/validate-publish-run",
+        json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    assert unchanged.status_code == 200, unchanged.text
+    assert unchanged.json()["published"] is False
+    assert unchanged.json()["version"] == first_version
+
+    changed = json.loads(json.dumps(definition))
+    changed["nodes"][1]["config"]["value"] = "second"
+    assert admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": changed}, headers=CSRF_HEADERS,
+    ).status_code == 200
+    second = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/validate-publish-run",
+        json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["published"] is True
+    assert second.json()["version"] > first_version
+    execution_id = second.json()["execution_id"]
+    for _ in range(60):
+        detail = admin_client.get(f"/api/v1/workflow-executions/{execution_id}").json()
+        if detail["status"] not in ("QUEUED", "RUNNING", "WAITING"):
+            break
+        time.sleep(0.05)
+    assert detail["status"] == "SUCCEEDED"
+    assert detail["outputs"]["answer"]["value"] == "second"
+
+    admin_client.put(
+        f"/api/v1/workflows/{workflow_id}/nodes/out/pinned-data",
+        json={"output": {"answer": "fixed"}}, headers=CSRF_HEADERS,
+    )
+    blocked = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/validate-publish-run",
+        json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["publishable"] is False
+    assert "固定データ" in " ".join(blocked.json()["detail"]["blocking"])
+    admin_client.delete(f"/api/v1/workflows/{workflow_id}/nodes/out/pinned-data", headers=CSRF_HEADERS)
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
 def test_publish_check_explains_missing_output(admin_client):
     definition = _definition([
         TRIGGER,

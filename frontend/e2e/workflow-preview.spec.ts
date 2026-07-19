@@ -35,15 +35,15 @@ test("shows the exact publish blocker instead of a generic 409", async ({ page }
   });
   try {
     await page.goto(`/workflows/${workflowId}`);
-    await page.getByRole("button", { name: "実行プレビューを開く" }).click();
-    const preview = page.getByRole("complementary", { name: "実行プレビュー" });
-    await preview.getByRole("button", { name: "安全プレビューを実行" }).click();
+    await page.getByRole("button", { name: "確認・テストを開く" }).click();
+    const preview = page.getByRole("complementary", { name: "確認・テスト" });
+    await preview.getByRole("button", { name: "実行せず確認" }).click();
     await expect(preview.getByText("構造上は実行可能です")).toBeVisible();
     await expect(preview.getByText("このままでは公開できません")).toBeVisible();
     await expect(preview.getByText(/output\.render（推奨）/)).toBeVisible();
     await preview.getByRole("button", { name: "プレビューを閉じる" }).click();
     await page.getByRole("button", { name: "その他メニュー" }).click();
-    await page.getByRole("menuitem", { name: "公開" }).click();
+    await page.getByRole("menuitem", { name: "実行せず公開" }).click();
     await expect(page.getByText(/公開できません: 正式な最終出力ノードがありません/)).toBeVisible();
   } finally {
     await page.evaluate(async (id) => {
@@ -100,17 +100,18 @@ test("integrates trigger input, safe preview, test result, and past input at 320
 
   try {
     await page.goto(`/workflows/${workflowId}`);
-    await page.getByRole("button", { name: "実行プレビューを開く" }).click();
-    const preview = page.getByRole("complementary", { name: "実行プレビュー" });
+    await page.getByRole("button", { name: "確認・テストを開く" }).click();
+    const preview = page.getByRole("complementary", { name: "確認・テスト" });
     await expect(preview).toBeVisible();
     await preview.getByLabel("質問 *").fill("ControlDeck preview");
-    await preview.getByRole("button", { name: "安全プレビューを実行" }).click();
+    await preview.getByRole("button", { name: "実行せず確認" }).click();
     await expect(preview.getByText("構造上は実行可能です")).toBeVisible();
     await expect(preview.getByText("公開できます")).toBeVisible();
     await expect(preview.getByText("answer", { exact: true })).toBeVisible();
 
-    await preview.getByRole("radio", { name: /通常テスト実行/ }).click();
-    await preview.getByRole("button", { name: "テスト実行", exact: true }).click();
+    await preview.getByRole("radio", { name: /下書きをテスト/ }).click();
+    await preview.getByRole("button", { name: "確認してdraftをテスト", exact: true }).click();
+    await expect(preview.getByText("公開できます")).toBeVisible();
     await expect(preview.getByText("テストに成功しました")).toBeVisible({ timeout: 10_000 });
     await expect(preview.getByText("回答: ControlDeck preview", { exact: true })).toBeVisible();
 
@@ -130,7 +131,7 @@ test("integrates trigger input, safe preview, test result, and past input at 320
       viewport: window.innerWidth,
       document: document.documentElement.scrollWidth,
       body: document.body.scrollWidth,
-      previewRight: document.querySelector<HTMLElement>('[aria-label="実行プレビュー"]')?.getBoundingClientRect().right,
+      previewRight: document.querySelector<HTMLElement>('[aria-label="確認・テスト"]')?.getBoundingClientRect().right,
     }));
     expect(mobileLayout.document).toBeLessThanOrEqual(mobileLayout.viewport);
     expect(mobileLayout.body).toBeLessThanOrEqual(mobileLayout.viewport);
@@ -149,7 +150,7 @@ test("integrates trigger input, safe preview, test result, and past input at 320
         viewport: window.innerWidth,
         document: document.documentElement.scrollWidth,
         body: document.body.scrollWidth,
-        previewRight: document.querySelector<HTMLElement>('[aria-label="実行プレビュー"]')?.getBoundingClientRect().right,
+        previewRight: document.querySelector<HTMLElement>('[aria-label="確認・テスト"]')?.getBoundingClientRect().right,
       }));
       expect(layout.document).toBeLessThanOrEqual(layout.viewport);
       expect(layout.body).toBeLessThanOrEqual(layout.viewport);
@@ -160,9 +161,18 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     await preview.getByRole("button", { name: "プレビューを閉じる" }).click();
 
     await page.setViewportSize({ width: 320, height: 700 });
-    await page.getByRole("button", { name: "その他メニュー" }).click();
-    await page.getByRole("menuitem", { name: "公開" }).click();
-    await expect(page.getByText(/バージョン \d+ を公開しました/)).toBeVisible();
+    await page.getByRole("button", { name: "検証して実行" }).click();
+    const runInputs = page.getByRole("dialog", { name: "実行時の入力" });
+    await runInputs.getByLabel("質問 *").fill("ControlDeck published run");
+    await runInputs.getByRole("button", { name: "実行", exact: true }).click();
+    const debugPanel = page.locator('[aria-label="実行デバッグパネル"]');
+    await expect(debugPanel).toBeVisible();
+    await expect.poll(async () => page.evaluate(async (id) => {
+      const response = await fetch(`/api/v1/workflows/${id}`, { credentials: "same-origin" });
+      const workflow = await response.json() as { state: string; published_version: number | null };
+      return workflow.state === "published" && workflow.published_version !== null;
+    }, workflowId)).toBe(true);
+    await debugPanel.getByRole("button", { name: "閉じる" }).click();
     await page.getByRole("button", { name: "その他メニュー" }).click();
     await page.getByRole("menuitem", { name: "実行履歴" }).click();
     const history = page.getByRole("dialog", { name: "実行履歴" });

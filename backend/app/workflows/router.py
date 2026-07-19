@@ -17,7 +17,7 @@ from app.models import (
     WorkflowVersion, utcnow,
 )
 from app.security.crypto import encrypt_text
-from app.security.deps import require_permission
+from app.security.deps import require_permission, require_permissions
 from app.workflows import engine
 from app.workflows.contracts import build_input_schema, build_output_schema, final_outputs
 from app.workflows.publish_validation import check_publishability
@@ -366,11 +366,7 @@ def publish_workflow(
     check = check_publishability(db, workflow, definition)
     if not check["publishable"]:
         raise HTTPException(status_code=409, detail=check)
-    version = engine._ensure_execution_version(db, workflow)
-    version.input_schema_json = json.dumps(build_input_schema(definition), ensure_ascii=False)
-    version.output_schema_json = json.dumps(build_output_schema(definition), ensure_ascii=False)
-    version.published_at = utcnow()
-    version.note = "公開版"
+    version, _ = _ensure_current_published(db, workflow, definition)
     db.commit()
     audit.record(
         db, "workflow.publish", user=user, resource_type="workflow", resource_id=str(workflow_id),
@@ -380,6 +376,29 @@ def publish_workflow(
         "workflow_id": workflow_id, "version_id": version.id, "version": version.version,
         "published_at": version.published_at, "warnings": check["warnings"], "quality": check["quality"],
     }
+
+
+def _ensure_current_published(
+    db: Session, workflow: Workflow, definition: dict[str, Any],
+) -> tuple[WorkflowVersion, bool]:
+    """現在のdraftと同じ版が最新公開でなければ、その版だけを公開する。"""
+    version = engine._ensure_execution_version(db, workflow)
+    latest = db.execute(
+        select(WorkflowVersion)
+        .where(
+            WorkflowVersion.workflow_id == workflow.id,
+            WorkflowVersion.published_at.is_not(None),
+        )
+        .order_by(WorkflowVersion.published_at.desc(), WorkflowVersion.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    published = latest is not None and latest.id == version.id
+    if not published:
+        version.input_schema_json = json.dumps(build_input_schema(definition), ensure_ascii=False)
+        version.output_schema_json = json.dumps(build_output_schema(definition), ensure_ascii=False)
+        version.published_at = utcnow()
+        version.note = "公開版"
+    return version, not published
 
 
 class PublishCheckBody(BaseModel):
@@ -980,6 +999,53 @@ def delete_workflow(
 
 class RunBody(BaseModel):
     input: dict = Field(default_factory=dict)
+
+
+@router.post("/workflows/{workflow_id}/validate-publish-run")
+async def validate_publish_run(
+    workflow_id: int,
+    request: Request,
+    body: RunBody | None = None,
+    user: User = Depends(require_permissions("workflows.edit", "workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """現在の保存済みdraftを検証し、必要時だけ公開して、その固定版を実行する。"""
+    workflow = _get(db, workflow_id)
+    try:
+        definition = json.loads(workflow.definition_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=409, detail={
+            "publishable": False, "blocking": [f"定義JSONが不正です: {exc}"],
+            "warnings": [], "quality": {"score": 0, "label": "invalid"},
+        }) from exc
+    check = check_publishability(db, workflow, definition)
+    if not check["publishable"]:
+        raise HTTPException(status_code=409, detail=check)
+    version, published = _ensure_current_published(db, workflow, definition)
+    db.commit()
+
+    input_data = body.input if body else {}
+    trigger_type = "chat" if input_data.get("message") else "manual"
+    try:
+        execution_id = await engine.run_workflow(
+            workflow_id,
+            trigger_type=trigger_type,
+            input_data=input_data,
+            definition_json=version.definition_json,
+            workflow_version_id=version.id,
+        )
+    except engine.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db, "workflow.validate_publish_run", user=user, resource_type="workflow",
+        resource_id=str(workflow_id), request=request,
+        metadata={"version_id": version.id, "version": version.version, "published": published,
+                  "warnings": len(check["warnings"])},
+    )
+    return {
+        "execution_id": execution_id, "version_id": version.id, "version": version.version,
+        "published": published, "warnings": check["warnings"], "quality": check["quality"],
+    }
 
 
 @router.post("/workflows/{workflow_id}/dry-run")

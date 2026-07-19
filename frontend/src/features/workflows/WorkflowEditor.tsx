@@ -348,15 +348,25 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   };
 
   const [runInputsOpen, setRunInputsOpen] = useState(false);
+  const [startingRun, setStartingRun] = useState(false);
 
   const doRun = async (input?: Record<string, unknown>) => {
+    setStartingRun(true);
     try {
-      await api(`/workflows/${workflowId}/run`, { method: "POST", json: input ? { input } : {} });
-      show("実行を開始しました");
+      const result = await api<{ execution_id: number; version?: number; published?: boolean }>(
+        readOnly ? `/workflows/${workflowId}/run` : `/workflows/${workflowId}/validate-publish-run`,
+        { method: "POST", json: input ? { input } : {} },
+      );
+      if (!readOnly) await qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
+      show(result.published
+        ? `最新の下書きを v${result.version} として公開し、実行を開始しました`
+        : readOnly ? "公開版の実行を開始しました" : `公開中の v${result.version} を実行しました`);
       setInfoOpen(true); // 情報パネルでライブ状況を表示
       setPreviewOpen(false);
     } catch (e) {
       show(e instanceof Error ? e.message : "実行に失敗しました", "error");
+    } finally {
+      setStartingRun(false);
     }
   };
 
@@ -376,7 +386,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   );
 
   const run = async () => {
-    if (dirty) await save();
+    if (dirty && !await save()) return;
     const trigger = nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger");
     const inputs = (trigger?.config?.inputs as TriggerInputDef[] | undefined) ?? [];
     if (inputs.length > 0) {
@@ -561,11 +571,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           trigger={<IconDots />}
           items={[
             { label: "実行履歴", onSelect: () => setExecutionsOpen(true) },
-            ...(can("workflows.run") ? [{ label: "実行プレビュー", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
+            ...(can("workflows.run") ? [{ label: "確認・テスト", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
             { label: "JSON を出力", onSelect: exportJson },
             ...(readOnly ? [] : [
               { label: "アプリ化", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
-              { label: "公開", onSelect: () => void publish() },
+              { label: "実行せず公開", onSelect: () => void publish() },
               { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
               { label: "選択をスニペット保存", onSelect: saveAsSnippet },
             ]),
@@ -580,20 +590,15 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         {can("workflows.run") && (
           <button
             onClick={() => { setPreviewOpen(true); setInfoOpen(false); }}
-            aria-label="実行プレビューを開く"
+            aria-label="確認・テストを開く"
             className="min-h-9 rounded-xl border border-accent-300 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30"
           >
-            プレビュー
-          </button>
-        )}
-        {!readOnly && (
-          <button onClick={() => void publish()} disabled={publishing} className="hidden min-h-9 rounded-xl border border-zinc-300 px-3 text-sm font-medium disabled:opacity-50 dark:border-zinc-700 sm:block">
-            {publishing ? "検証中…" : "公開"}
+            確認・テスト
           </button>
         )}
         {can("workflows.run") && (
-          <button onClick={run} className="flex items-center gap-1 rounded-xl bg-accent-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-accent-700">
-            <IconPlay /> 実行
+          <button onClick={run} disabled={startingRun || publishing} className="flex items-center gap-1 rounded-xl bg-accent-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50">
+            <IconPlay /> {startingRun ? "確認中…" : readOnly ? "公開版を実行" : "検証して実行"}
           </button>
         )}
       </div>
@@ -704,7 +709,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             definition={buildDefinition()}
             inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
             dirty={dirty}
-            onSave={async () => { await save(); }}
+            onSave={save}
             onExecution={() => { setInfoOpen(false); }}
             onClose={() => setPreviewOpen(false)}
           />
@@ -1775,11 +1780,11 @@ function RunInputsSheet({
         {inputs.map((inp) => (
           <Field key={inp.key} label={`${inp.label || inp.key}${inp.required ? " *" : ""}`}>
             {inp.type === "paragraph" ? (
-              <textarea value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} rows={3} className={cls} />
+              <textarea aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} rows={3} className={cls} />
             ) : inp.type === "number" ? (
-              <input type="number" value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value === "" ? "" : Number(e.target.value))} className={cls} />
+              <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} type="number" value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value === "" ? "" : Number(e.target.value))} className={cls} />
             ) : inp.type === "select" ? (
-              <select value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls}>
+              <select aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls}>
                 <option value="">選択してください</option>
                 {(inp.options ?? "").split(",").map((o) => o.trim()).filter(Boolean).map((o) => (
                   <option key={o} value={o}>{o}</option>
@@ -1787,11 +1792,11 @@ function RunInputsSheet({
               </select>
             ) : inp.type === "file" ? (
               <div className="flex gap-1.5">
-                <input value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} placeholder="/path/to/file" className={`${cls} min-w-0 flex-1 font-mono text-xs`} />
-                <button type="button" onClick={() => setFilePick(inp.key)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+                <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} placeholder="/path/to/file" className={`${cls} min-w-0 flex-1 font-mono text-xs`} />
+                <button type="button" aria-label={`${inp.label || inp.key}を選択`} onClick={() => setFilePick(inp.key)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
               </div>
             ) : (
-              <input value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls} />
+              <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls} />
             )}
           </Field>
         ))}
