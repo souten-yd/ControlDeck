@@ -118,10 +118,15 @@ class WorkflowVersion(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
     name: Mapped[str] = mapped_column(String(128), default="")
     definition_json: Mapped[str] = mapped_column(Text, default="{}")
+    input_schema_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_schema_json: Mapped[str] = mapped_column(Text, default="{}")
+    checksum: Mapped[str] = mapped_column(String(64), default="")
     note: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WorkflowSecret(Base):
@@ -297,6 +302,35 @@ class WorkflowExecution(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     # ノードごとの実行結果 {node_id: {status, output, error, started_at, finished_at}}
     context_json: Mapped[str] = mapped_column(Text, default="{}")
+    workflow_version_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_versions.id"), nullable=True)
+    definition_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    runtime_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class WorkflowNodeRun(Base):
+    """再現・単体再実行に使うノード単位のredact済み実行記録。"""
+
+    __tablename__ = "workflow_node_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[int] = mapped_column(ForeignKey("workflow_executions.id"), index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    node_type: Mapped[str] = mapped_column(String(64))
+    node_version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    resolved_inputs_json: Mapped[str] = mapped_column(Text, default="{}")
+    outputs_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_json: Mapped[str] = mapped_column(Text, default="{}")
+    logs_json: Mapped[str] = mapped_column(Text, default="[]")
+    artifacts_json: Mapped[str] = mapped_column(Text, default="[]")
+    token_usage_json: Mapped[str] = mapped_column(Text, default="{}")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    cache_source: Mapped[str] = mapped_column(String(64), default="")
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class RemoteConnection(Base):

@@ -177,6 +177,84 @@ def test_preview_test_outputs_and_historical_inputs_are_integrated_and_redacted(
     admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS)
 
 
+def test_execution_snapshot_node_runs_and_current_or_historical_retry(admin_client):
+    import time
+
+    def wait_for(execution_id: int) -> dict:
+        detail = {}
+        for _ in range(80):
+            response = admin_client.get(f"/api/v1/workflow-executions/{execution_id}")
+            detail = response.json()
+            if detail.get("status") not in ("QUEUED", "RUNNING", "WAITING"):
+                return detail
+            time.sleep(0.05)
+        return detail
+
+    old_definition = _definition([
+        TRIGGER,
+        {"id": "result", "type": "signal.display", "name": "出力", "config": {
+            "signal": "answer", "value": "old {{t.message}}",
+            "api_key": "literal-must-not-enter-snapshot", "auth": "{{secrets.SERVICE_TOKEN}}",
+        }},
+    ], [{"source": "t", "target": "result"}])
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "replay", "definition": old_definition}, headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/test", json={"input": {"message": "hello"}}, headers=CSRF_HEADERS,
+    )
+    original_id = started.json()["execution_id"]
+    original = wait_for(original_id)
+    assert original["status"] == "SUCCEEDED"
+    assert original["outputs"]["answer"]["value"] == "old hello"
+    serialized = json.dumps(original, ensure_ascii=False)
+    assert "literal-must-not-enter-snapshot" not in serialized
+    assert "{{secrets.SERVICE_TOKEN}}" in serialized
+    assert original["workflow_version_id"]
+    assert original["runtime_snapshot"]["node_versions"] == {"t": 1, "result": 1}
+
+    node_runs = admin_client.get(
+        f"/api/v1/workflows/{workflow_id}/executions/{original_id}/nodes"
+    )
+    assert node_runs.status_code == 200, node_runs.text
+    rows = node_runs.json()
+    assert [row["node_id"] for row in rows] == ["t", "result"]
+    assert all(row["status"] == "SUCCEEDED" and row["elapsed_ms"] is not None for row in rows)
+    assert "literal-must-not-enter-snapshot" not in json.dumps(rows, ensure_ascii=False)
+
+    version = admin_client.get(
+        f"/api/v1/workflows/{workflow_id}/versions/{original['workflow_version_id']}"
+    )
+    assert version.status_code == 200
+    assert version.json()["checksum"] and "literal-must-not-enter-snapshot" not in version.text
+
+    new_definition = json.loads(json.dumps(old_definition))
+    new_definition["nodes"][1]["config"]["value"] = "new {{t.message}}"
+    patched = admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": new_definition}, headers=CSRF_HEADERS,
+    )
+    assert patched.status_code == 200
+
+    historical = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/executions/{original_id}/retry",
+        json={"version_mode": "historical"}, headers=CSRF_HEADERS,
+    )
+    current = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/executions/{original_id}/retry",
+        json={"version_mode": "current"}, headers=CSRF_HEADERS,
+    )
+    assert historical.status_code == 200 and current.status_code == 200
+    historical_detail = wait_for(historical.json()["execution_id"])
+    current_detail = wait_for(current.json()["execution_id"])
+    assert historical_detail["outputs"]["answer"]["value"] == "old hello"
+    assert current_detail["outputs"]["answer"]["value"] == "new hello"
+    assert historical_detail["workflow_version_id"] == original["workflow_version_id"]
+    assert current_detail["workflow_version_id"] != original["workflow_version_id"]
+
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
 def test_viewer_cannot_run_workflows(client):
     client.cookies.clear()
     r = client.post(
