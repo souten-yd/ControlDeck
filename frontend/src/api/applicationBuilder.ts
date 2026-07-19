@@ -50,6 +50,22 @@ export interface ApplicationSchemaCatalog {
   };
 }
 
+export interface ApplicationPatchOperation {
+  op: "add" | "remove" | "replace" | "move";
+  path: string;
+  from?: string;
+  value?: unknown;
+}
+
+export interface ApplicationPatchPreview {
+  valid: boolean;
+  baseChecksum: string;
+  resultChecksum: string;
+  patchedSpec: Record<string, unknown>;
+  appliedPatches: ApplicationPatchOperation[];
+  diagnostics: Diagnostic[];
+}
+
 export interface FrameworkCapability {
   id: string;
   label: string;
@@ -98,4 +114,10 @@ export const applicationBuilderApi = {
   validate: (project: ApplicationProject) => api<ValidationResult>("/application-builder/validate", {
     method: "POST", json: { spec: project.spec, workflow_id: project.workflow_id, target: project.target },
   }),
+  previewPatches: (spec: Record<string, unknown>, patches: ApplicationPatchOperation[]) =>
+    api<ApplicationPatchPreview>("/application-builder/patches/preview", { method: "POST", json: { spec, patches } }),
+  applyPatches: (projectId: number, baseChecksum: string, patches: ApplicationPatchOperation[]) =>
+    api<{ project: ApplicationProject; patch: ApplicationPatchPreview }>(`/application-projects/${projectId}/patches/apply`, {
+      method: "POST", json: { base_checksum: baseChecksum, patches },
+    }),
 };

@@ -220,6 +220,14 @@ AI提案と手動差分の共通境界としてRFC 6902の`add/remove/replace/mo
 
 `POST /application-projects/{id}/patches/apply`はPreviewが返したbase checksumを必須とし、保存済みSpecとの差異を409 `PATCH_BASE_CHANGED`で拒否する。全operationと完成Specが有効な場合だけ1 transactionで保存し、patch件数とchecksumを監査する。structure/binding/style/position/content lockは対象componentとancestorの双方で検証し、AIが先にlock自体を解除するPatchも禁止する。F2.2 frontendはこのPreview結果だけを差分・部分選択UIへ表示する。
 
+### Phase F2.2 — Patch Review／部分適用（2026-07-19実装）
+
+Application Editorの`Review Patch`は、保存済みApplication Specをbaseとして1〜200件の構造化Patchを読み込む高度編集入口である。frontendは`add/remove/replace/move`以外を候補として受け付けず、各operationをcheckboxで部分選択できる。依存関係のあるoperationをfrontendだけで推測せず、選択された正確なsubsetをPreview APIへ送り直す。
+
+PreviewはBefore／AfterのPage数・Component数、structured diagnostic、base/result checksumを表示する。選択内容を変更した時点で以前のPreviewを破棄し、同一subsetの再Previewが成功するまでApplyを無効にする。ApplyはPreview時のbase checksumと選択subsetを送るため、並行更新と画面上の見かけだけの成功を防ぐ。
+
+Component Inspectorからstructure／binding／style／position／content lockを設定できる。lockはApplication Specへ保存され、Patch Reviewでもbackendが強制する。`PATCH_LOCK_VIOLATION`はApply前に表示し、変更操作を無効化する。現段階のBefore／Afterは構造summaryであり、視覚diff・3案比較・LLM提案生成はF2.3以降として未実装状態を明示する。
+
 ## 12. Phase A acceptance
 
 - legacy definition → IRのinput/output/branch/merge/retry/timeout/secret名/side effect。

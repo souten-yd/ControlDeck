@@ -2,6 +2,16 @@
 
 最終更新: 2026-07-19
 
+## App Studio F2.2 Patch Review／部分適用（2026-07-19）
+
+- Application Editorへ`Review Patch`を追加。1〜200件の`add/remove/replace/move` JSON Patchを読み込み、operation単位で選択して正確なsubsetだけをbackend Previewへ送る。
+- Before／AfterのPage・Component数、structured diagnostic、base/result checksumを表示。選択変更後は旧Previewを破棄し、再PreviewまでApplyを無効化する。
+- 有効な選択差分だけをchecksum付きApply APIで原子的に保存し、Project queryを再取得してPreview／Tree／Inspectorへ反映する。dirtyなlocal Designがある間はReviewを停止し、先に明示Saveを要求する。
+- Inspectorへstructure／binding／style／position／content lock編集を追加。保存したcontent lockによる表示値変更拒否をPreview上で確認でき、`PATCH_LOCK_VIOLATION`時はApplyできない。
+- AI提案生成、視覚diff、3案比較は未実装。高度なstructured Patch importだけを提供し、fake AIやdummy build操作は追加していない。
+
+検証: backend全328件、frontend production build成功。認証付きE2Eで320pxから2件のPatchを読み込み、1件だけを選択・Preview・Apply、非選択Component非追加、保存後のcontent lock設定、ロック対象Patch拒否、320／390／768／1280の横overflowなし、fake build UIなしを確認。実ControlDeck serviceへ反映してhealthを確認した。
+
 ## App Studio F2.1 Structured Patch foundation（2026-07-19）
 
 - AI設計提案を自由codeではなくApplication Spec JSON Patchへ限定するbackend基盤を追加。`add/remove/replace/move`、最大200 operation、JSON Pointer深度64をschema化した。

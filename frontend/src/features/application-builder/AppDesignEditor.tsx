@@ -4,6 +4,7 @@ import type { ApplicationProject, ComponentDefinition, SemanticComponent } from 
 import { applicationBuilderApi } from "../../api/applicationBuilder";
 import { useToasts } from "../../stores";
 import { findComponent, pagesOf, parentOf, removeComponent, uniqueComponentId, updateComponent, type AppPage } from "./editorModel";
+import { ProposalDiffPanel } from "./ProposalDiffPanel";
 
 type Viewport = "mobile" | "tablet" | "desktop";
 
@@ -15,6 +16,7 @@ export function AppDesignEditor({ project, catalog }: { project: ApplicationProj
   const [future, setFuture] = useState<Record<string, unknown>[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewport, setViewport] = useState<Viewport>("desktop");
+  const [patchReviewOpen, setPatchReviewOpen] = useState(false);
   const pages = pagesOf(spec);
   const page = pages[0];
   const root = page?.root ?? null;
@@ -79,6 +81,7 @@ export function AppDesignEditor({ project, catalog }: { project: ApplicationProj
       <strong className="mr-auto text-sm">Design</strong>
       <button onClick={undo} disabled={!past.length} className="min-h-10 rounded-lg px-3 text-xs disabled:opacity-30">Undo</button>
       <button onClick={redo} disabled={!future.length} className="min-h-10 rounded-lg px-3 text-xs disabled:opacity-30">Redo</button>
+      <button onClick={() => setPatchReviewOpen(true)} disabled={dirty} title={dirty ? "先に現在のDesignを保存してください" : "構造化Spec Patchを確認"} className="min-h-10 rounded-lg border border-zinc-300 px-3 text-xs disabled:opacity-35 dark:border-zinc-700">Review Patch</button>
       {(["mobile", "tablet", "desktop"] as Viewport[]).map((item) => <button key={item} onClick={() => setViewport(item)} aria-pressed={viewport === item} className={`min-h-10 rounded-lg px-2 text-[11px] capitalize ${viewport === item ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" : "bg-zinc-100 dark:bg-zinc-800"}`}>{item}</button>)}
       <button onClick={() => save.mutate()} disabled={!dirty || save.isPending} className="min-h-10 rounded-lg bg-accent-600 px-4 text-xs font-semibold text-white disabled:opacity-40">{save.isPending ? "Saving…" : "Save"}</button>
     </div>
@@ -88,6 +91,7 @@ export function AppDesignEditor({ project, catalog }: { project: ApplicationProj
       <div className="min-w-0 overflow-auto bg-zinc-100 p-3 dark:bg-zinc-950"><div data-testid="app-responsive-preview" className={`mx-auto min-h-96 overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm transition-[max-width] dark:border-zinc-700 dark:bg-zinc-900 ${viewport === "mobile" ? "max-w-[320px]" : viewport === "tablet" ? "max-w-[768px]" : "max-w-[1100px]"}`}><div className="border-b border-zinc-200 px-4 py-3 text-sm font-semibold dark:border-zinc-800">{page.title || page.id}</div><div className="p-4">{root && <PreviewNode item={root} definitions={definitions} selectedId={selectedId} onSelect={setSelectedId} />}</div></div></div>
       <aside className="border-t border-zinc-200 p-3 dark:border-zinc-800 lg:border-l lg:border-t-0"><h3 className="mb-3 text-xs font-semibold text-zinc-500">Inspector</h3>{selected ? <Inspector item={selected} definition={definitions.get(selected.type)} onPatch={patchSelected} onMove={move} onRemove={removeSelected} root={selected.id === root?.id} /> : <p className="text-xs text-zinc-400">部品を選択してください。</p>}</aside>
     </div>}
+    {patchReviewOpen && <ProposalDiffPanel project={project} onClose={() => setPatchReviewOpen(false)} />}
   </section>;
 }
 
@@ -108,5 +112,6 @@ function Inspector({ item, definition, onPatch, onMove, onRemove, root }: { item
   const [json, setJson] = useState(JSON.stringify(item.properties ?? {}, null, 2)); const [error, setError] = useState("");
   useEffect(() => { setJson(JSON.stringify(item.properties ?? {}, null, 2)); setError(""); }, [item.id, item.properties]);
   const applyJson = () => { try { const value = JSON.parse(json); if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(); onPatch({ properties: value }); setError(""); } catch { setError("JSON objectを入力してください"); } };
-  return <div className="space-y-3"><div><span className="text-[10px] text-zinc-400">ID</span><code className="block break-all text-xs">{item.id}</code></div><div><span className="text-[10px] text-zinc-400">Type</span><p className="text-xs font-medium">{definition?.label ?? item.type}</p></div><label className="block text-[10px] text-zinc-400">Binding<input value={typeof item.binding === "string" ? item.binding : ""} onChange={(event) => onPatch({ binding: event.target.value || null })} placeholder="workflow-output:answer" className="mt-1 min-h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-2 text-xs dark:border-zinc-700" /></label><label className="block text-[10px] text-zinc-400">Properties JSON<textarea value={json} onChange={(event) => setJson(event.target.value)} onBlur={applyJson} rows={7} className="mt-1 w-full rounded-lg border border-zinc-300 bg-transparent p-2 font-mono text-[11px] dark:border-zinc-700" /></label>{error && <p role="alert" className="text-[10px] text-red-500">{error}</p>}<div className="grid grid-cols-2 gap-2"><button onClick={() => onMove(-1)} disabled={root} className="min-h-11 rounded-lg border border-zinc-300 text-xs disabled:opacity-30 dark:border-zinc-700">Move up</button><button onClick={() => onMove(1)} disabled={root} className="min-h-11 rounded-lg border border-zinc-300 text-xs disabled:opacity-30 dark:border-zinc-700">Move down</button></div><button onClick={onRemove} disabled={root} className="min-h-11 w-full rounded-lg text-xs text-red-600 disabled:opacity-30">Remove component</button></div>;
+  const lockKeys = ["structure", "binding", "style", "position", "content"] as const;
+  return <div className="space-y-3"><div><span className="text-[10px] text-zinc-400">ID</span><code className="block break-all text-xs">{item.id}</code></div><div><span className="text-[10px] text-zinc-400">Type</span><p className="text-xs font-medium">{definition?.label ?? item.type}</p></div><label className="block text-[10px] text-zinc-400">Binding<input value={typeof item.binding === "string" ? item.binding : ""} onChange={(event) => onPatch({ binding: event.target.value || null })} placeholder="workflow-output:answer" className="mt-1 min-h-11 w-full rounded-lg border border-zinc-300 bg-transparent px-2 text-xs dark:border-zinc-700" /></label><label className="block text-[10px] text-zinc-400">Properties JSON<textarea value={json} onChange={(event) => setJson(event.target.value)} onBlur={applyJson} rows={7} className="mt-1 w-full rounded-lg border border-zinc-300 bg-transparent p-2 font-mono text-[11px] dark:border-zinc-700" /></label>{error && <p role="alert" className="text-[10px] text-red-500">{error}</p>}<fieldset><legend className="mb-1 text-[10px] text-zinc-400">AI redesign locks</legend><div className="grid grid-cols-2 gap-1">{lockKeys.map((key) => <label key={key} className="flex min-h-10 items-center gap-2 rounded-lg bg-zinc-50 px-2 text-[10px] capitalize dark:bg-zinc-800"><input type="checkbox" checked={Boolean(item.locked?.[key])} onChange={(event) => onPatch({ locked: { ...(item.locked ?? {}), [key]: event.target.checked } })} className="h-4 w-4" />{key}</label>)}</div></fieldset><div className="grid grid-cols-2 gap-2"><button onClick={() => onMove(-1)} disabled={root} className="min-h-11 rounded-lg border border-zinc-300 text-xs disabled:opacity-30 dark:border-zinc-700">Move up</button><button onClick={() => onMove(1)} disabled={root} className="min-h-11 rounded-lg border border-zinc-300 text-xs disabled:opacity-30 dark:border-zinc-700">Move down</button></div><button onClick={onRemove} disabled={root} className="min-h-11 w-full rounded-lg text-xs text-red-600 disabled:opacity-30">Remove component</button></div>;
 }
