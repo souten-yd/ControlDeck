@@ -66,6 +66,24 @@ export interface ApplicationPatchPreview {
   diagnostics: Diagnostic[];
 }
 
+export interface ApplicationDesignProposal {
+  id: string;
+  direction: "simple" | "balanced" | "dense";
+  title: string;
+  summary: string;
+  rationale: string[];
+  patches: ApplicationPatchOperation[];
+  warnings: string[];
+  preview: ApplicationPatchPreview;
+}
+
+export interface LlmEndpoint {
+  base_url: string;
+  models: string[];
+  managed?: boolean;
+  selected?: boolean;
+}
+
 export interface FrameworkCapability {
   id: string;
   label: string;
@@ -120,4 +138,9 @@ export const applicationBuilderApi = {
     api<{ project: ApplicationProject; patch: ApplicationPatchPreview }>(`/application-projects/${projectId}/patches/apply`, {
       method: "POST", json: { base_checksum: baseChecksum, patches },
     }),
+  llmEndpoints: () => api<LlmEndpoint[]>("/workflows/llm-endpoints"),
+  designProposals: (projectId: number, body: {
+    instruction: string; scope: "application" | "page" | "component" | "mobile";
+    target_id?: string; mode: "preserve" | "balanced" | "redesign"; base_url: string; model: string;
+  }) => api<{ proposals: ApplicationDesignProposal[] }>(`/application-projects/${projectId}/design-proposals`, { method: "POST", json: body }),
 };

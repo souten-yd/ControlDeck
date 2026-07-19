@@ -194,6 +194,13 @@ def validate_application_spec(spec: dict[str, Any]) -> list[Diagnostic]:
         framework = str(target.get("framework") or "") if isinstance(target, dict) else ""
         if framework not in known_frameworks:
             issues.append(diagnostic("TARGET_UNKNOWN", "error", f"framework '{framework}' は未登録です", path=f"targets.{index}.framework"))
+    llm_runtime = spec.get("llmRuntime") if isinstance(spec.get("llmRuntime"), dict) else {}
+    if llm_runtime.get("mode") == "external" and llm_runtime.get("bundleRuntime") is True:
+        issues.append(diagnostic(
+            "LLM_RUNTIME_BUNDLE_CONFLICT", "error", "External providerではLLM runtimeを同梱できません",
+            path="llmRuntime.bundleRuntime", source="target-validator",
+            suggested_fix="bundleRuntimeをfalseにし、LM StudioまたはOllamaへ接続してください",
+        ))
     _scan_security_and_bindings(spec, issues)
     _validate_component_trees(spec, issues)
     if not spec.get("pages"):
@@ -249,6 +256,8 @@ def default_spec(
         "navigation": {"type": "sidebar", "items": []}, "pages": [], "entities": [],
         "apiEndpoints": [], "backgroundJobs": [], "workflows": workflows, "permissions": [],
         "targets": [{"id": "web", "platforms": ["web"], "framework": "aspnet-blazor"}],
+        "llmRuntime": {"mode": "none", "provider": None, "bundleRuntime": False,
+                       "baseUrlEnvironment": "LLM_BASE_URL", "modelEnvironment": "LLM_MODEL"},
     }
 
 

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ApplicationProject, ComponentDefinition, SemanticComponent } from "../../api/applicationBuilder";
+import type { ApplicationPatchOperation, ApplicationProject, ComponentDefinition, SemanticComponent } from "../../api/applicationBuilder";
 import { applicationBuilderApi } from "../../api/applicationBuilder";
 import { useToasts } from "../../stores";
 import { findComponent, pagesOf, parentOf, removeComponent, uniqueComponentId, updateComponent, type AppPage } from "./editorModel";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
+import { DesignProposalGallery } from "./DesignProposalGallery";
 
 type Viewport = "mobile" | "tablet" | "desktop";
 
@@ -17,6 +18,8 @@ export function AppDesignEditor({ project, catalog }: { project: ApplicationProj
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [patchReviewOpen, setPatchReviewOpen] = useState(false);
+  const [aiDesignOpen, setAiDesignOpen] = useState(false);
+  const [proposalOperations, setProposalOperations] = useState<ApplicationPatchOperation[]>([]);
   const pages = pagesOf(spec);
   const page = pages[0];
   const root = page?.root ?? null;
@@ -81,6 +84,7 @@ export function AppDesignEditor({ project, catalog }: { project: ApplicationProj
       <strong className="mr-auto text-sm">Design</strong>
       <button onClick={undo} disabled={!past.length} className="min-h-10 rounded-lg px-3 text-xs disabled:opacity-30">Undo</button>
       <button onClick={redo} disabled={!future.length} className="min-h-10 rounded-lg px-3 text-xs disabled:opacity-30">Redo</button>
+      <button onClick={() => setAiDesignOpen(true)} disabled={dirty} title={dirty ? "先に現在のDesignを保存してください" : "構造化AI設計案を生成"} className="min-h-10 rounded-lg bg-violet-600 px-3 text-xs font-semibold text-white disabled:opacity-35">AI Design</button>
       <button onClick={() => setPatchReviewOpen(true)} disabled={dirty} title={dirty ? "先に現在のDesignを保存してください" : "構造化Spec Patchを確認"} className="min-h-10 rounded-lg border border-zinc-300 px-3 text-xs disabled:opacity-35 dark:border-zinc-700">Review Patch</button>
       {(["mobile", "tablet", "desktop"] as Viewport[]).map((item) => <button key={item} onClick={() => setViewport(item)} aria-pressed={viewport === item} className={`min-h-10 rounded-lg px-2 text-[11px] capitalize ${viewport === item ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" : "bg-zinc-100 dark:bg-zinc-800"}`}>{item}</button>)}
       <button onClick={() => save.mutate()} disabled={!dirty || save.isPending} className="min-h-10 rounded-lg bg-accent-600 px-4 text-xs font-semibold text-white disabled:opacity-40">{save.isPending ? "Saving…" : "Save"}</button>
@@ -91,7 +95,8 @@ export function AppDesignEditor({ project, catalog }: { project: ApplicationProj
       <div className="min-w-0 overflow-auto bg-zinc-100 p-3 dark:bg-zinc-950"><div data-testid="app-responsive-preview" className={`mx-auto min-h-96 overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm transition-[max-width] dark:border-zinc-700 dark:bg-zinc-900 ${viewport === "mobile" ? "max-w-[320px]" : viewport === "tablet" ? "max-w-[768px]" : "max-w-[1100px]"}`}><div className="border-b border-zinc-200 px-4 py-3 text-sm font-semibold dark:border-zinc-800">{page.title || page.id}</div><div className="p-4">{root && <PreviewNode item={root} definitions={definitions} selectedId={selectedId} onSelect={setSelectedId} />}</div></div></div>
       <aside className="border-t border-zinc-200 p-3 dark:border-zinc-800 lg:border-l lg:border-t-0"><h3 className="mb-3 text-xs font-semibold text-zinc-500">Inspector</h3>{selected ? <Inspector item={selected} definition={definitions.get(selected.type)} onPatch={patchSelected} onMove={move} onRemove={removeSelected} root={selected.id === root?.id} /> : <p className="text-xs text-zinc-400">部品を選択してください。</p>}</aside>
     </div>}
-    {patchReviewOpen && <ProposalDiffPanel project={project} onClose={() => setPatchReviewOpen(false)} />}
+    {aiDesignOpen && <DesignProposalGallery project={project} selectedComponentId={selectedId} onClose={() => setAiDesignOpen(false)} onReview={(patches) => { setProposalOperations(patches); setAiDesignOpen(false); setPatchReviewOpen(true); }} />}
+    {patchReviewOpen && <ProposalDiffPanel project={project} initialOperations={proposalOperations} onClose={() => { setPatchReviewOpen(false); setProposalOperations([]); }} />}
   </section>;
 }
 

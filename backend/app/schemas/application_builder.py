@@ -50,6 +50,35 @@ class ApplicationPatchApplyBody(BaseModel):
     patches: list[ApplicationPatchOperation] = Field(min_length=1, max_length=200)
 
 
+class ApplicationDesignProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(min_length=3, max_length=4000)
+    scope: Literal["application", "page", "component", "mobile"] = "application"
+    target_id: str | None = Field(default=None, max_length=128)
+    mode: Literal["preserve", "balanced", "redesign"] = "balanced"
+    base_url: str = Field(min_length=8, max_length=512)
+    model: str = Field(min_length=1, max_length=256)
+
+
+class ApplicationDesignProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    direction: Literal["simple", "balanced", "dense"]
+    title: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=1000)
+    rationale: list[str] = Field(default_factory=list, max_length=8)
+    patches: list[ApplicationPatchOperation] = Field(min_length=1, max_length=200)
+    warnings: list[str] = Field(default_factory=list, max_length=8)
+
+
+class ApplicationDesignProposalEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposals: list[ApplicationDesignProposal] = Field(min_length=3, max_length=3)
+
+
 class WorkflowApplicationCreate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=4000)
@@ -73,6 +102,16 @@ class TargetProfileV1(BaseModel):
     id: str
     platforms: list[str]
     framework: str
+
+
+class LlmRuntimeV1(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    mode: Literal["none", "external", "embedded", "remote"] = "none"
+    provider: Literal["ollama", "lmstudio", "openai-compatible", "controldeck"] | None = None
+    bundleRuntime: bool = False
+    baseUrlEnvironment: str = "LLM_BASE_URL"
+    modelEnvironment: str = "LLM_MODEL"
 
 
 class ComponentLockV1(BaseModel):
@@ -125,3 +164,4 @@ class ApplicationSpecV1(BaseModel):
     workflows: list[dict[str, Any]] = Field(default_factory=list)
     permissions: list[Any] = Field(default_factory=list)
     targets: list[TargetProfileV1] = Field(default_factory=list)
+    llmRuntime: LlmRuntimeV1 = Field(default_factory=LlmRuntimeV1)

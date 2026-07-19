@@ -4,12 +4,12 @@ import { applicationBuilderApi, type ApplicationPatchOperation, type Application
 import { BottomSheet } from "../../components/ui";
 import { useToasts } from "../../stores";
 
-export function ProposalDiffPanel({ project, onClose }: { project: ApplicationProject; onClose: () => void }) {
+export function ProposalDiffPanel({ project, onClose, initialOperations = [] }: { project: ApplicationProject; onClose: () => void; initialOperations?: ApplicationPatchOperation[] }) {
   const qc = useQueryClient();
   const show = useToasts((state) => state.show);
-  const [source, setSource] = useState("");
-  const [operations, setOperations] = useState<ApplicationPatchOperation[]>([]);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [source, setSource] = useState(() => initialOperations.length ? JSON.stringify(initialOperations, null, 2) : "");
+  const [operations, setOperations] = useState<ApplicationPatchOperation[]>(initialOperations);
+  const [selected, setSelected] = useState<Set<number>>(() => new Set(initialOperations.map((_item, index) => index)));
   const [parseError, setParseError] = useState("");
   const [preview, setPreview] = useState<ApplicationPatchPreview | null>(null);
   const selectedOperations = useMemo(() => operations.filter((_item, index) => selected.has(index)), [operations, selected]);
