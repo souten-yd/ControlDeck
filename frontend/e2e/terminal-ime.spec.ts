@@ -111,7 +111,7 @@ async function openTerminal(page: Page): Promise<void> {
   await page.getByRole("button", { name: "ログイン" }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/terminal");
-  await expect(page.getByRole("heading", { name: "ターミナル" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Terminal" })).toBeVisible();
   await page.getByRole("button", { name: "新規セッション" }).click();
   await expect(page.locator("[data-terminal-root]")).toBeVisible();
   await expect(page.locator(".xterm-helper-textarea")).toHaveCount(1);

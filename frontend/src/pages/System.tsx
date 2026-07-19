@@ -4,6 +4,7 @@ import { useOverview } from "../api/hooks";
 import { useMetrics } from "../stores";
 import { formatBps, formatBytes, formatUptime } from "../lib/format";
 import { Skeleton } from "../components/ui";
+import { PageHeader } from "../components/PageHeader";
 
 interface DiskInfo {
   device: string;
@@ -55,7 +56,7 @@ export default function SystemPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
-      <h1 className="text-lg font-semibold">システム</h1>
+      <PageHeader title="System" />
 
       {/* ホスト情報 */}
       <Section title="ホスト">

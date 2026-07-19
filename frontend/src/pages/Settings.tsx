@@ -5,6 +5,7 @@ import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { ConfirmDialog, Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
 import { TotpSettings } from "../features/auth/TotpSettings";
+import { PageHeader } from "../components/PageHeader";
 
 interface SessionInfo {
   id: number;
@@ -38,7 +39,7 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-4 md:p-6">
-      <h1 className="text-lg font-semibold">設定</h1>
+      <PageHeader title="Settings" />
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
         <h2 className="mb-3 text-sm font-semibold text-zinc-500">アカウント</h2>

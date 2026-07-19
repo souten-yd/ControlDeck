@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useApps, useAppAction, useMeta } from "../api/hooks";
 import { useAuth } from "../stores";
 import { IconSearch } from "./icons";
+import { PRODUCT_NAMES } from "../constants/productNames";
 
 interface Command {
   id: string;
@@ -32,42 +33,42 @@ export function CommandPalette({
 
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [
-      { id: "nav-home", label: "概要を開く", run: () => navigate("/") },
-      { id: "nav-apps", label: "アプリ一覧を開く", run: () => navigate("/apps") },
-      { id: "nav-assistant", label: "AIアシスタントを開く", run: () => navigate("/assistant") },
-      { id: "nav-workflows", label: "ワークフローを開く", run: () => navigate("/workflows") },
-      { id: "nav-runner", label: "公開アプリを開く", run: () => navigate("/runner") },
-      { id: "nav-logs", label: "ログを開く", run: () => navigate("/logs") },
-      { id: "nav-system", label: "システム監視を開く", run: () => navigate("/system") },
-      { id: "nav-settings", label: "設定を開く", run: () => navigate("/settings") },
+      { id: "nav-home", label: "Open Home", run: () => navigate("/") },
+      { id: "nav-apps", label: "Open Apps", run: () => navigate("/apps") },
+      { id: "nav-assistant", label: "Open AI Assistant", run: () => navigate("/assistant") },
+      { id: "nav-workflows", label: "Open Workflows", run: () => navigate("/workflows") },
+      { id: "nav-runner", label: `Open ${PRODUCT_NAMES.workflowApps}`, run: () => navigate("/runner") },
+      { id: "nav-logs", label: "Open Logs", run: () => navigate("/logs") },
+      { id: "nav-system", label: "Open System", run: () => navigate("/system") },
+      { id: "nav-settings", label: "Open Settings", run: () => navigate("/settings") },
     ];
     if (meta?.enabled_features.includes("opencode"))
-      list.push({ id: "nav-opencode", label: "OpenCodeを開く", run: () => navigate("/opencode") });
+      list.push({ id: "nav-opencode", label: "Open OpenCode", run: () => navigate("/opencode") });
     if (can("apps.edit"))
-      list.push({ id: "app-add", label: "アプリを追加", run: () => navigate("/apps?add=1") });
+      list.push({ id: "app-add", label: "Add App", run: () => navigate("/apps?add=1") });
     for (const app of apps ?? []) {
       const running = app.runtime.status === "RUNNING";
       list.push({
         id: `app-${app.id}`,
-        label: `${app.name} のログ`,
+        label: `${app.name} Logs`,
         run: () => navigate(`/logs?app=${app.id}`),
       });
       if (running && can("apps.stop"))
         list.push({
           id: `stop-${app.id}`,
-          label: `${app.name} を停止`,
+          label: `Stop ${app.name}`,
           run: () => action.mutate({ id: app.id, action: "stop" }),
         });
       if (!running && can("apps.start"))
         list.push({
           id: `start-${app.id}`,
-          label: `${app.name} を起動`,
+          label: `Start ${app.name}`,
           run: () => action.mutate({ id: app.id, action: "start" }),
         });
     }
     if (can("power.manage")) {
-      list.push({ id: "power-reboot", label: "PC を再起動", hint: "要確認", run: () => onPower("reboot") });
-      list.push({ id: "power-shutdown", label: "PC をシャットダウン", hint: "要確認", run: () => onPower("shutdown") });
+      list.push({ id: "power-reboot", label: "Restart PC", hint: "Confirmation required", run: () => onPower("reboot") });
+      list.push({ id: "power-shutdown", label: "Shut Down PC", hint: "Confirmation required", run: () => onPower("shutdown") });
     }
     return list;
   }, [apps, can, navigate, action, onPower, meta?.enabled_features]);

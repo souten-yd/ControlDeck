@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 
 interface RepoStatus {
   ok: boolean;
@@ -89,9 +90,7 @@ export default function GitHubPage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">GitHub</h1>
-        <div className="flex items-center gap-2">
+      <PageHeader title="GitHub" actions={<div className="flex items-center gap-2">
           {auth?.available && !auth.logged_in && can("apps.edit") && (
             <button onClick={login} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
               GitHub にログイン
@@ -105,8 +104,7 @@ export default function GitHubPage() {
               <IconPlus /> リポジトリを追加
             </button>
           )}
-        </div>
-      </div>
+        </div>} />
 
       {isLoading ? (
         <Skeleton className="h-24" />

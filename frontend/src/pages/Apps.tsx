@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import { IconDots, IconPlay, IconPlus, IconRestart, IconStop, IconX } from "../components/icons";
 import { AddAppSheet } from "../features/apps/AddAppSheet";
 import type { ManagedApp } from "../types";
+import { PageHeader } from "../components/PageHeader";
 
 export default function AppsPage() {
   const { data: allApps, isLoading } = useApps();
@@ -73,9 +74,7 @@ export default function AppsPage() {
 
   return (
     <div className="mx-auto max-w-5xl p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">アプリ</h1>
-        {can("apps.edit") && (
+      <PageHeader title="Apps" actions={can("apps.edit") && (
           <button
             onClick={() => setParams({ add: "1" })}
             aria-label="アプリを追加"
@@ -83,8 +82,7 @@ export default function AppsPage() {
           >
             <IconPlus /><span className="hidden sm:inline"> アプリを追加</span>
           </button>
-        )}
-      </div>
+        )} />
 
       {isLoading ? (
         <div className="space-y-3">
@@ -177,19 +175,19 @@ export default function AppsPage() {
                   ariaLabel={`${app.name} のメニュー`}
                   trigger={<IconDots />}
                   items={[
-                    { label: "ログ", onSelect: () => navigate(`/logs?app=${app.id}`) },
+                    { label: "Logs", onSelect: () => navigate(`/logs?app=${app.id}`) },
                     ...(can("apps.start")
-                      ? [{ label: "再起動", onSelect: () => action.mutate({ id: app.id, action: "restart" }) }]
+                      ? [{ label: "Restart", onSelect: () => action.mutate({ id: app.id, action: "restart" }) }]
                       : []),
                     ...(can("apps.stop") && app.runtime.status === "RUNNING"
-                      ? [{ label: "強制終了", danger: true, onSelect: () => action.mutate({ id: app.id, action: "kill" }) }]
+                      ? [{ label: "Force Stop", danger: true, onSelect: () => action.mutate({ id: app.id, action: "kill" }) }]
                       : []),
-                    { label: "詳細", onSelect: () => setDetail(app) },
+                    { label: "Details", onSelect: () => setDetail(app) },
                     ...(can("apps.edit")
-                      ? [{ label: "設定を編集", onSelect: () => setEditing(app) }]
+                      ? [{ label: "Edit Settings", onSelect: () => setEditing(app) }]
                       : []),
                     ...(can("apps.delete")
-                      ? [{ label: "削除", danger: true, onSelect: () => setDeleting(app) }]
+                      ? [{ label: "Delete", danger: true, onSelect: () => setDeleting(app) }]
                       : []),
                   ]}
                 />

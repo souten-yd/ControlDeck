@@ -6,6 +6,7 @@ import { useAuth, useMetrics } from "../stores";
 import { formatBps, formatPercent, formatUptime } from "../lib/format";
 import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
+import { PageHeader } from "../components/PageHeader";
 
 interface HistorySample {
   timestamp: string;
@@ -54,6 +55,7 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
+      <PageHeader title="Home" description="PCとControlDeckの現在の状態をまとめて確認します。" className="mb-0" />
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

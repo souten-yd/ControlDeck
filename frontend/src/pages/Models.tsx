@@ -8,6 +8,7 @@ import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 
 interface Model {
   id?: string;
@@ -246,9 +247,7 @@ export default function ModelsPage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <div className="mb-1 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Model</h1>
-        <div className="flex items-center gap-2">
+      <PageHeader title="Models" actions={<div className="flex items-center gap-2">
           {can("workflows.edit") && (
             <button onClick={() => setSettingsOpen(true)} aria-label="LLM 共通設定" title="LLM 共通設定" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
           )}
@@ -257,8 +256,7 @@ export default function ModelsPage() {
               <IconPlus /> {selectedProvider === "llama.cpp" ? "GGUF登録" : "モデル取得"}
             </button>
           )}
-        </div>
-      </div>
+        </div>} />
       {/* タブ: LLM/VLM・Embed/Reranker・TTS */}
       <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
         {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"], ["tts", "TTS"]] as const).map(([id, label]) => (

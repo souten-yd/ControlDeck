@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { useToasts } from "../stores";
 import { ConfirmDialog, Skeleton } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 
 const XtermView = lazy(() => import("../features/terminal/XtermView"));
 
@@ -68,15 +69,12 @@ export default function TerminalPage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">ターミナル</h1>
-        <button
+      <PageHeader title="Terminal" actions={<button
           onClick={create}
           className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700"
         >
           <IconPlus /> 新規セッション
-        </button>
-      </div>
+        </button>} />
 
       {data && !data.tmux && (
         <p className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">

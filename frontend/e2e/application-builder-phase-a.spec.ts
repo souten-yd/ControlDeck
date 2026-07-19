@@ -37,9 +37,9 @@ test("creates and validates a Phase A project from Workflow without fake build U
   let projectId: number | null = null;
   try {
     await page.goto(`/workflows/${workflowId}`);
-    await page.getByRole("button", { name: "その他メニュー" }).click();
-    await page.getByRole("menuitem", { name: "アプリ化" }).click();
-    await expect(page.getByRole("heading", { name: "ワークフローをアプリ化" })).toBeVisible();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Open in App Studio" }).click();
+    await expect(page.getByRole("heading", { name: "Create in App Studio" })).toBeVisible();
     await page.getByRole("button", { name: "現在のDraftから作成" }).click();
     await expect(page.getByRole("heading", { name: "E2E Application Source App" })).toBeVisible();
     projectId = Number(page.url().split("/").pop());

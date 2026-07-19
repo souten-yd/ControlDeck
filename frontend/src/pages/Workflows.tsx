@@ -6,6 +6,7 @@ import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
 import { IconDots, IconPlay, IconPlus } from "../components/icons";
 import { DEFAULT_DEFINITION } from "../features/workflows/nodeTypes";
+import { PageHeader } from "../components/PageHeader";
 
 const WorkflowEditor = lazy(() => import("../features/workflows/WorkflowEditor"));
 const SampleBook = lazy(() => import("../features/workflows/SampleBook"));
@@ -138,9 +139,7 @@ function WorkflowList() {
 
   return (
     <div className="mx-auto max-w-4xl p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold">ワークフロー</h1>
-        <div className="flex items-center gap-1.5">
+      <PageHeader title="Workflows" actions={<div className="flex items-center gap-1.5">
           {can("workflows.edit") && (
             <button
               onClick={() => create.mutate()}
@@ -168,11 +167,11 @@ function WorkflowList() {
                 onChange={(e) => { if (e.target.files?.[0]) importWorkflow(e.target.files[0]); e.target.value = ""; }}
               />
               <DropdownMenu
-                ariaLabel="ワークフローメニュー"
+                ariaLabel="Workflow menu"
                 trigger={<IconDots />}
                 items={[
-                  { label: "📥 JSON をインポート", onSelect: () => importRef.current?.click() },
-                  { label: "🔑 シークレット管理", onSelect: () => setShowSecrets(true) },
+                  { label: "📥 Import JSON", onSelect: () => importRef.current?.click() },
+                  { label: "🔑 Secret Manager", onSelect: () => setShowSecrets(true) },
                 ]}
               />
               <button
@@ -184,8 +183,7 @@ function WorkflowList() {
               </button>
             </>
           )}
-        </div>
-      </div>
+        </div>} />
 
       {isLoading ? (
         <div className="space-y-3">
@@ -252,18 +250,18 @@ function WorkflowList() {
                   </button>
                 )}
                 <DropdownMenu
-                  ariaLabel={`${wf.name} のメニュー`}
+                  ariaLabel={`${wf.name} menu`}
                   trigger={<IconDots />}
                   items={[
-                    { label: "編集", onSelect: () => navigate(`/workflows/${wf.id}`) },
-                    { label: "エクスポート (JSON)", onSelect: () => void exportWorkflow(wf) },
+                    { label: "Edit", onSelect: () => navigate(`/workflows/${wf.id}`) },
+                    { label: "Export JSON", onSelect: () => void exportWorkflow(wf) },
                     ...(can("workflows.edit")
                       ? [
                           {
-                            label: wf.enabled ? "スケジュール無効化" : "スケジュール有効化",
+                            label: wf.enabled ? "Disable Schedule" : "Enable Schedule",
                             onSelect: () => toggle.mutate({ id: wf.id, enabled: !wf.enabled }),
                           },
-                          { label: "削除", danger: true, onSelect: () => setDeleting(wf) },
+                          { label: "Delete", danger: true, onSelect: () => setDeleting(wf) },
                         ]
                       : []),
                   ]}

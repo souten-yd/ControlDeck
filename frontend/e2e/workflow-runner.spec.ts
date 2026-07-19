@@ -17,8 +17,8 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
   runtimeErrors.length = 0;
 
   await page.goto("/");
-  await page.getByRole("button", { name: "操作メニュー" }).click();
-  await page.getByRole("button", { name: "公開アプリ", exact: true }).click();
+  await page.getByRole("button", { name: "More" }).click();
+  await page.getByRole("button", { name: "Play", exact: true }).click();
   await expect(page).toHaveURL(/\/runner$/);
 
   const workflowId = await page.evaluate(async () => {

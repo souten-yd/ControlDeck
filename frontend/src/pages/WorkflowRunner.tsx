@@ -6,6 +6,7 @@ import { IconChevronLeft, IconPlay, IconSearch, IconStop } from "../components/i
 import { initialRuntimeValues, RuntimeField, RuntimeOutputView, type RuntimeOutput } from "../features/workflows/RuntimeComponents";
 import type { TriggerInputDef } from "../features/workflows/nodeTypes";
 import { useToasts } from "../stores";
+import { PRODUCT_NAMES } from "../constants/productNames";
 
 interface RunnerApp {
   id: number;
@@ -59,12 +60,11 @@ export default function WorkflowRunnerPage() {
     <div className="mx-auto flex h-full min-h-0 max-w-[1500px] overflow-hidden md:p-4">
       <aside className={`${selectedId ? "hidden md:flex" : "flex"} min-h-0 w-full flex-col border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 md:w-80 md:shrink-0 md:rounded-l-2xl md:border`}>
         <header className="shrink-0 border-b border-zinc-200 p-4 dark:border-zinc-800">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent-600">Published workflows</p>
-          <h1 className="mt-1 text-xl font-semibold">公開アプリ</h1>
+          <h1 className="text-xl font-semibold leading-7 tracking-tight">{PRODUCT_NAMES.workflowApps}</h1>
           <p className="mt-1 text-xs leading-relaxed text-zinc-500">公開済みの処理を、入力と結果だけで安全に操作します。</p>
           <label className="mt-3 flex min-h-11 items-center gap-2 rounded-xl bg-zinc-100 px-3 dark:bg-zinc-900">
             <IconSearch className="shrink-0 text-zinc-400" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="公開アプリを検索" placeholder="名前・説明を検索" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label={`Search ${PRODUCT_NAMES.workflowApps}`} placeholder="名前・説明を検索" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
           </label>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">

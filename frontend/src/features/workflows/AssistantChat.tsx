@@ -20,13 +20,13 @@ import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoi
 import { useAssistantAsr } from "./useAssistantAsr";
 
 const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: boolean }[] = [
-  { id: "chat", icon: "💬", label: "チャット", hint: "LLM と自由に対話します" },
-  { id: "web", icon: "🌐", label: "Web検索", hint: "Web 検索（DuckDuckGo / SearXNG）の結果を根拠に回答します" },
-  { id: "academic", icon: "🎓", label: "学術検索", hint: "学術ソース串刺し検索（OpenAlex/arXiv 等）を根拠に回答します" },
-  { id: "deep", icon: "🔬", label: "Deepサーチ", hint: "テーマを分解して収集し、引用付きレポートを生成します（数分かかります）" },
-  { id: "research", icon: "🧭", label: "複合調査", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
-  { id: "gen", icon: "⚙️", label: "フロー生成", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
-  { id: "run", icon: "▶", label: "フロー実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
+  { id: "chat", icon: "💬", label: "Chat", hint: "LLM と自由に対話します" },
+  { id: "web", icon: "🌐", label: "Web Search", hint: "Web 検索（DuckDuckGo / SearXNG）の結果を根拠に回答します" },
+  { id: "academic", icon: "🎓", label: "Academic", hint: "学術ソース串刺し検索（OpenAlex/arXiv 等）を根拠に回答します" },
+  { id: "deep", icon: "🔬", label: "Deep Research", hint: "テーマを分解して収集し、引用付きレポートを生成します（数分かかります）" },
+  { id: "research", icon: "🧭", label: "Research", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
+  { id: "gen", icon: "⚙️", label: "Generate Flow", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
+  { id: "run", icon: "▶", label: "Run Flow", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
   { id: "code", icon: "⌨️", label: "OpenCode", hint: "コーディングエージェント（OpenCode）がこのチャット内で作業し、進捗と結果を表示します（同じ会話で継続対話。フル操作はOpenCode画面から）" },
 ];
 

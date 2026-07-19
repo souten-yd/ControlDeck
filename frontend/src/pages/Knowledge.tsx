@@ -6,6 +6,7 @@ import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 
 interface Collection {
   collection: string;
@@ -61,17 +62,11 @@ export default function KnowledgePage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <div className="mb-1 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Knowledge</h1>
-        {can("workflows.edit") && (
+      <PageHeader title="Knowledge" description="RAG 用ナレッジベース。文書を取り込み、チャンク戦略・検索方式を設定して、ワークフローの RAG 検索ノードから利用できます。" actions={can("workflows.edit") && (
           <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
             <IconPlus /> コレクション作成
           </button>
-        )}
-      </div>
-      <p className="mb-4 text-xs text-zinc-400">
-        RAG 用ナレッジベース。文書を取り込み、チャンク戦略・検索方式を設定して、ワークフローの RAG 検索ノードから利用できます。
-      </p>
+        )} />
 
       {isLoading ? (
         <Skeleton className="h-24" />

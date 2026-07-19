@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-19
 
+## Navigation naming／page layout統一（2026-07-19）
+
+- グローバルnavigation、mobile navigation、Quick Actions、Command Palette、各機能menuを英語名へ統一。公開Workflowの実行面は短く幅を取らない`Play`、Application BuilderのUI製品名は将来の設計・編集機能を含む`App Studio`とした。
+- 通常ページへ共通`PageHeader`を導入し、titleを20px／line-height 28px、同じ上端・説明・action配置へ統一。AI Chat、Workflow Editor、接続中Terminal、Remote Viewerは独立表示として維持する。
+- mobile navigation itemへ`min-width:0`とtruncateを追加し、英語名が320px gridの列幅を押し広げないようにした。
+
+検証: frontend production build成功。認証付きPlaywright 4件でApp Studio導線、Playの実行／承認、320×700と1280×800の通常15ページを確認し、全page titleが20px／28px、document/body横overflow 0となることを確認した。
+
 ## Remote Desktop service health（2026-07-19）
 
 - Remote画面の状態確認をguacd単体から、ServerPC接続先のTCP待受確認まで拡張した。guacd／WebSocketが正常でもxrdpが停止している状態を区別し、接続を繰り返さずSSHで実行する復旧コマンドを表示する。
