@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import service as audit
 from app.database import get_db
-from app.models import User, Workflow, WorkflowExecution, WorkflowSecret, WorkflowVersion
+from app.models import User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowSecret, WorkflowVersion
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
 from app.workflows import engine
@@ -244,7 +245,18 @@ def update_workflow(
 
 def _snapshot_version(db: Session, wf: Workflow, note: str = "") -> None:
     """現在の定義をスナップショットとして保存し、上限を超えた古い版を削除する。"""
-    db.add(WorkflowVersion(workflow_id=wf.id, name=wf.name, definition_json=wf.definition_json, note=note))
+    latest_number = db.execute(
+        select(WorkflowVersion.version)
+        .where(WorkflowVersion.workflow_id == wf.id)
+        .order_by(WorkflowVersion.version.desc())
+        .limit(1)
+    ).scalar_one_or_none() or 0
+    checksum = hashlib.sha256((wf.definition_json or "{}").encode()).hexdigest()
+    safe_definition = engine.safe_definition_snapshot(json.loads(wf.definition_json or "{}"))
+    db.add(WorkflowVersion(
+        workflow_id=wf.id, version=latest_number + 1, name=wf.name,
+        definition_json=json.dumps(safe_definition, ensure_ascii=False), checksum=checksum, note=note,
+    ))
     olds = db.execute(
         select(WorkflowVersion)
         .where(WorkflowVersion.workflow_id == wf.id)
@@ -273,7 +285,11 @@ def list_versions(
             node_count = len(json.loads(v.definition_json or "{}").get("nodes", []))
         except json.JSONDecodeError:
             node_count = 0
-        out.append({"id": v.id, "name": v.name, "note": v.note, "created_at": v.created_at, "node_count": node_count})
+        out.append({
+            "id": v.id, "version": v.version, "name": v.name, "note": v.note,
+            "checksum": v.checksum, "created_at": v.created_at,
+            "published_at": v.published_at, "node_count": node_count,
+        })
     return out
 
 
@@ -295,6 +311,27 @@ def restore_version(
     audit.record(db, "workflow.restore", user=user, resource_type="workflow",
                  resource_id=str(workflow_id), request=request, metadata={"version_id": version_id})
     return _out(wf, db)
+
+
+@router.get("/workflows/{workflow_id}/versions/{version_id}")
+def get_version(
+    workflow_id: int,
+    version_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    version = db.get(WorkflowVersion, version_id)
+    if version is None or version.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="バージョンが見つかりません")
+    return {
+        "id": version.id, "workflow_id": version.workflow_id, "version": version.version,
+        "name": version.name, "definition": json.loads(version.definition_json or "{}"),
+        "input_schema": json.loads(version.input_schema_json or "{}"),
+        "output_schema": json.loads(version.output_schema_json or "{}"),
+        "checksum": version.checksum, "note": version.note,
+        "created_at": version.created_at, "published_at": version.published_at,
+    }
 
 
 # ---- シークレット（{{secrets.名前}}） ----
@@ -403,7 +440,10 @@ def delete_workflow(
     name = wf.name
     from sqlalchemy import delete as sql_delete
 
+    execution_ids = select(WorkflowExecution.id).where(WorkflowExecution.workflow_id == workflow_id)
+    db.execute(sql_delete(WorkflowNodeRun).where(WorkflowNodeRun.execution_id.in_(execution_ids)))
     db.execute(sql_delete(WorkflowExecution).where(WorkflowExecution.workflow_id == workflow_id))
+    db.execute(sql_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == workflow_id))
     db.delete(wf)
     db.commit()
     audit.record(db, "workflow.delete", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request, metadata={"name": name})
@@ -550,10 +590,79 @@ def get_execution(
         "started_at": r.started_at,
         "finished_at": r.finished_at,
         "error": str(redact(r.error, sensitive_values=collect_sensitive_values(raw_context))),
+        "workflow_version_id": r.workflow_version_id,
+        "definition_snapshot": json.loads(r.definition_snapshot_json or "{}"),
+        "runtime_snapshot": json.loads(r.runtime_snapshot_json or "{}"),
         "input": context.get("__input__", {}),
         "outputs": _final_outputs(context),
         "context": {key: value for key, value in context.items() if not key.startswith("__")},
     }
+
+
+@router.get("/workflows/{workflow_id}/executions/{execution_id}/nodes")
+def get_execution_nodes(
+    workflow_id: int,
+    execution_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    execution = db.get(WorkflowExecution, execution_id)
+    if execution is None or execution.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="実行が見つかりません")
+    rows = db.execute(
+        select(WorkflowNodeRun)
+        .where(WorkflowNodeRun.execution_id == execution_id)
+        .order_by(WorkflowNodeRun.started_at, WorkflowNodeRun.id)
+    ).scalars().all()
+    return [{
+        "id": row.id, "execution_id": row.execution_id, "node_id": row.node_id,
+        "node_type": row.node_type, "node_version": row.node_version, "status": row.status,
+        "resolved_inputs": json.loads(row.resolved_inputs_json or "{}"),
+        "outputs": json.loads(row.outputs_json or "{}"),
+        "error": json.loads(row.error_json or "{}"),
+        "logs": json.loads(row.logs_json or "[]"), "artifacts": json.loads(row.artifacts_json or "[]"),
+        "token_usage": json.loads(row.token_usage_json or "{}"),
+        "started_at": row.started_at, "finished_at": row.finished_at, "elapsed_ms": row.elapsed_ms,
+        "attempt": row.attempt, "retry_count": row.retry_count,
+        "cache_source": row.cache_source, "schema_version": row.schema_version,
+    } for row in rows]
+
+
+class RetryExecutionBody(BaseModel):
+    version_mode: str = Field(default="current", pattern="^(current|historical)$")
+
+
+@router.post("/workflows/{workflow_id}/executions/{execution_id}/retry")
+async def retry_execution(
+    workflow_id: int,
+    execution_id: int,
+    body: RetryExecutionBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    previous = db.get(WorkflowExecution, execution_id)
+    if previous is None or previous.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="実行が見つかりません")
+    context = json.loads(previous.context_json or "{}")
+    inputs = context.get("__input__") if isinstance(context.get("__input__"), dict) else {}
+    definition = previous.definition_snapshot_json if body.version_mode == "historical" else None
+    version_id = previous.workflow_version_id if body.version_mode == "historical" else None
+    try:
+        new_execution_id = await engine.run_workflow(
+            workflow_id, trigger_type=f"retry:{body.version_mode}", input_data=inputs,
+            definition_json=definition, workflow_version_id=version_id,
+        )
+    except engine.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db, "workflow.retry", user=user, resource_type="workflow_execution",
+        resource_id=str(execution_id), request=request,
+        metadata={"new_execution_id": new_execution_id, "version_mode": body.version_mode},
+    )
+    return {"execution_id": new_execution_id, "source_execution_id": execution_id, "version_mode": body.version_mode}
 
 
 def _final_outputs(context: dict) -> dict[str, dict]:

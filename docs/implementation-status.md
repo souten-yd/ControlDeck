@@ -77,6 +77,25 @@ ControlDeck自身を`local_code`限定・quick budgetで評価し、295.9秒、2
 秘密・symlink・依存/cache除外も決定論的に再確認した。
 ローカルSearXNGもオンデマンド起動し、`general,it`カテゴリ指定で3件のJSON検索結果を実取得した。
 
+## ワークフロー実行スナップショット・当時版再実行基盤（2026-07-19）
+
+- `WorkflowVersion`へ連番、input/output schema、checksum、published_atを追加し、同一定義checksumは実行間で再利用。
+  `WorkflowExecution`へversion ID、redact済みdefinition snapshot、runtime snapshotを追加した
+- runtime snapshotにはnode version、LLM endpoint/model/sampling、Python version、利用可能なsecret名だけを保存。
+  定義へ直書きされたpassword/token/API keyは`***`にし、`{{secrets.NAME}}`は値を持たない参照名として残す
+- `WorkflowNodeRun`を追加し、node ID/type/version、status、redact済み上流入力、出力、error、token usage、開始/終了、
+  elapsed、attempt/retry、cache source、schema versionをノードごとに独立保存。巨大化防止の有限JSON上限も設けた
+- `GET /workflows/{id}/versions/{version_id}`、`GET /workflows/{id}/executions/{execution_id}/nodes`、
+  `POST /workflows/{id}/executions/{execution_id}/retry`を追加。retryは`current/historical`を明示選択し、入力を再利用する
+- 実行履歴sheetへ「現在のフローで再実行」「当時のフローで再実行」を追加し、node runの時間・retry・実出力を表示。
+  Workflow削除時はnode run → execution → versionの順に削除してFK整合を維持する
+- SQLite軽量migrationへ既存version/executionの追加columnを登録。`workflow_node_runs`は`create_all`で冪等作成する
+
+検証: backend全283件成功。current/historicalで異なる出力になるAPI回帰、秘密値非保存、node run、version detail、
+削除順序を確認。frontend本番build成功。実サービス再起動で既存SQLiteへ追加5 version column、3 execution column、
+`workflow_node_runs`テーブルが作成されたことをinspection。Playwrightでpreview/test/過去入力に加え、履歴sheetのnode run、
+現在版/当時版再実行ボタン、320×700で横overflowなしを確認した。
+
 ## AIアシスタント Deep Research超強化（2026-07-17）
 
 - 数件の資料提示で停止していた原因を、固定3クエリ・本文8件・単発要約・最終生成HTTP timeout 300秒と特定。

@@ -11,15 +11,17 @@ v2 の実行モデル:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import platform
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import Workflow, WorkflowExecution, utcnow
+from app.models import Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowSecret, WorkflowVersion, utcnow
 from app.workflows.nodes import (
     DEFAULT_NODE_TIMEOUT,
     NODE_EXECUTORS,
@@ -138,6 +140,82 @@ def _load_secrets() -> dict[str, str]:
         db.close()
 
 
+def _json_limited(value: Any, limit: int) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return text
+    return json.dumps({"truncated": True, "preview": text[:limit]}, ensure_ascii=False)
+
+
+def safe_definition_snapshot(value: Any, key: str = "") -> Any:
+    """secret参照名は再現用に残し、定義へ直書きされた秘密値だけを除く。"""
+    import re
+
+    sensitive_key = re.search(r"(password|passwd|passphrase|token|secret|authorization|cookie|api[_-]?key)", key, re.I)
+    if sensitive_key:
+        if isinstance(value, str) and "{{secrets." in value:
+            return value
+        return "***"
+    if isinstance(value, dict):
+        return {str(child_key): safe_definition_snapshot(child, str(child_key)) for child_key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [safe_definition_snapshot(child) for child in value]
+    return value
+
+
+def _start_node_run(execution_id: int, node: dict, context: dict[str, Any]) -> int | None:
+    """秘密値を除いた上流snapshotを保存する。保存失敗で本体実行は落とさない。"""
+    try:
+        sensitive = collect_sensitive_values(context)
+        sensitive.update(str(value) for value in (context.get("__secrets__") or {}).values() if value)
+        upstream = redact(
+            {key: value for key, value in context.items() if not key.startswith("__") and key != node["id"]},
+            sensitive_values=sensitive,
+        )
+        config = redact(node.get("config") or {}, sensitive_values=sensitive)
+        with SessionLocal() as db:
+            row = WorkflowNodeRun(
+                execution_id=execution_id, node_id=str(node["id"]), node_type=str(node.get("type") or ""),
+                node_version=int(node.get("version") or 1), status="RUNNING",
+                resolved_inputs_json=_json_limited({"config": config, "upstream": upstream}, 256_000),
+                started_at=utcnow(),
+            )
+            db.add(row)
+            db.commit()
+            return row.id
+    except Exception:
+        logger.exception("node run start persistence failed: execution=%s node=%s", execution_id, node.get("id"))
+        return None
+
+
+def _finish_node_run(node_run_id: int | None, entry: dict[str, Any]) -> None:
+    if node_run_id is None:
+        return
+    try:
+        with SessionLocal() as db:
+            row = db.get(WorkflowNodeRun, node_run_id)
+            if row is None:
+                return
+            output = entry.get("output") if isinstance(entry.get("output"), dict) else {}
+            usage = output.get("usage") if isinstance(output, dict) and isinstance(output.get("usage"), dict) else {}
+            row.status = str(entry.get("status") or "FAILED")
+            row.outputs_json = _json_limited(output, 1_000_000)
+            row.error_json = _json_limited({"message": str(entry.get("error") or "")}, 32_000)
+            row.token_usage_json = _json_limited(usage, 32_000)
+            row.attempt = int(entry.get("attempts") or 0)
+            row.retry_count = max(0, row.attempt - 1)
+            row.finished_at = utcnow()
+            if row.started_at is not None:
+                started = row.started_at
+                finished = row.finished_at
+                if started.tzinfo is None and finished.tzinfo is not None:
+                    started = started.replace(tzinfo=finished.tzinfo)
+                row.elapsed_ms = max(0, int((finished - started).total_seconds() * 1000))
+            db.commit()
+    except Exception:
+        logger.exception("node run finish persistence failed: node_run=%s", node_run_id)
+
+
 # ---- v2 DAG 実行 ----
 
 
@@ -167,6 +245,7 @@ async def _execute_graph(
             raise NodeError(f"未知のノード種類: {ntype}")
         entry: dict[str, Any] = {"status": "PENDING", "name": node.get("name") or nid, "type": ntype}
         run_context[nid] = entry
+        node_run_id = await asyncio.to_thread(_start_node_run, execution_id, node, run_context) if execution_id is not None else None
 
         # 実行前承認ゲート（任意ノードに設定可能）
         if config.get("require_approval") and ntype != "trigger" and execution_id is not None:
@@ -178,12 +257,14 @@ async def _execute_graph(
                 approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT)
             except asyncio.TimeoutError:
                 entry.update(status="FAILED", error="承認待ちがタイムアウトしました", finished_at=utcnow().isoformat())
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
                 raise NodeError(f"ノード {entry['name']} の承認待ちがタイムアウトしました")
             finally:
                 _approvals.pop((execution_id, nid), None)
                 await asyncio.to_thread(_set_exec_status, execution_id, "RUNNING")
             if not approved:
                 entry.update(status="FAILED", error="実行が却下されました", finished_at=utcnow().isoformat())
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
                 if str(config.get("on_error", "stop")) == "stop":
                     raise NodeError(f"ノード {entry['name']} が却下されました")
                 return entry
@@ -212,9 +293,11 @@ async def _execute_graph(
                 var_name = str(config.get("output_var") or "").strip()
                 if var_name:
                     run_context.setdefault("__vars__", {})[var_name] = output
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
                 return entry
             except asyncio.CancelledError:
                 entry.update(status="CANCELED", finished_at=utcnow().isoformat())
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
                 raise
             except asyncio.TimeoutError:
                 err, final_status = "タイムアウト", "TIMED_OUT"
@@ -230,6 +313,7 @@ async def _execute_graph(
                 entry["status"] = "RUNNING"
                 continue
             entry.update(status=final_status, error=err, finished_at=utcnow().isoformat(), attempts=attempt)
+            await asyncio.to_thread(_finish_node_run, node_run_id, entry)
             if str(config.get("on_error", "stop")) == "stop":
                 raise NodeError(f"ノード {entry['name']} が失敗しました: {err}")
             return entry
@@ -391,8 +475,58 @@ async def _execute_graph(
 # ---- 実行管理 ----
 
 
+def _ensure_execution_version(db, wf: Workflow) -> WorkflowVersion:
+    definition = wf.definition_json or "{}"
+    checksum = hashlib.sha256(definition.encode()).hexdigest()
+    existing = db.execute(
+        select(WorkflowVersion)
+        .where(WorkflowVersion.workflow_id == wf.id, WorkflowVersion.checksum == checksum)
+        .order_by(WorkflowVersion.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    latest = db.execute(
+        select(WorkflowVersion.version)
+        .where(WorkflowVersion.workflow_id == wf.id)
+        .order_by(WorkflowVersion.version.desc())
+        .limit(1)
+    ).scalar_one_or_none() or 0
+    version = WorkflowVersion(
+        workflow_id=wf.id, version=latest + 1, name=wf.name,
+        definition_json=json.dumps(safe_definition_snapshot(json.loads(definition)), ensure_ascii=False),
+        checksum=checksum, note="実行スナップショット",
+    )
+    db.add(version)
+    db.flush()
+    return version
+
+
+def _runtime_snapshot(db, nodes: list[dict]) -> dict[str, Any]:
+    models = []
+    node_versions = {}
+    for node in nodes:
+        node_id = str(node.get("id") or "")
+        node_versions[node_id] = int(node.get("version") or 1)
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if config.get("model") or config.get("llm_model"):
+            models.append({
+                "node_id": node_id,
+                "endpoint": str(config.get("base_url") or config.get("llm_base_url") or ""),
+                "model": str(config.get("model") or config.get("llm_model") or ""),
+                "sampling": {
+                    key: config[key] for key in ("temperature", "top_p", "top_k", "seed") if key in config
+                },
+            })
+    return {
+        "python": platform.python_version(), "node_versions": node_versions, "models": models,
+        "secret_names": [row.name for row in db.query(WorkflowSecret).order_by(WorkflowSecret.name).all()],
+    }
+
+
 async def run_workflow(
-    workflow_id: int, trigger_type: str = "manual", input_data: dict | None = None, depth: int = 0
+    workflow_id: int, trigger_type: str = "manual", input_data: dict | None = None, depth: int = 0,
+    *, definition_json: str | None = None, workflow_version_id: int | None = None,
 ) -> int:
     """実行レコードを作成しバックグラウンドで実行。実行 ID を返す。
 
@@ -406,9 +540,21 @@ async def run_workflow(
         wf = db.get(Workflow, workflow_id)
         if wf is None:
             raise DefinitionError("ワークフローが見つかりません")
-        nodes, edges = parse_definition(wf.definition_json)
+        definition = definition_json if definition_json is not None else wf.definition_json
+        nodes, edges = parse_definition(definition)
+        if workflow_version_id is not None:
+            version = db.get(WorkflowVersion, workflow_version_id)
+            if version is None or version.workflow_id != workflow_id:
+                raise DefinitionError("実行するワークフローバージョンが見つかりません")
+        else:
+            version = _ensure_execution_version(db, wf)
+        definition_object = json.loads(definition or "{}")
+        safe_definition = safe_definition_snapshot(definition_object)
         execution = WorkflowExecution(
-            workflow_id=workflow_id, status="RUNNING", trigger_type=trigger_type
+            workflow_id=workflow_id, workflow_version_id=version.id,
+            status="RUNNING", trigger_type=trigger_type,
+            definition_snapshot_json=json.dumps(safe_definition, ensure_ascii=False),
+            runtime_snapshot_json=json.dumps(_runtime_snapshot(db, nodes), ensure_ascii=False),
         )
         db.add(execution)
         db.commit()

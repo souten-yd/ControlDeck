@@ -39,6 +39,14 @@ def _apply_light_migrations() -> None:
         ("managed_applications", "web_port", "INTEGER"),
         ("managed_applications", "health_check_json", "TEXT DEFAULT '{}'"),
         ("remote_connections", "is_self", "BOOLEAN DEFAULT 0"),
+        ("workflow_versions", "version", "INTEGER DEFAULT 1"),
+        ("workflow_versions", "input_schema_json", "TEXT DEFAULT '{}'"),
+        ("workflow_versions", "output_schema_json", "TEXT DEFAULT '{}'"),
+        ("workflow_versions", "checksum", "VARCHAR(64) DEFAULT ''"),
+        ("workflow_versions", "published_at", "DATETIME"),
+        ("workflow_executions", "workflow_version_id", "INTEGER"),
+        ("workflow_executions", "definition_snapshot_json", "TEXT DEFAULT '{}'"),
+        ("workflow_executions", "runtime_snapshot_json", "TEXT DEFAULT '{}'"),
     ]
     with engine.begin() as conn:
         for table, column, coltype in additions:

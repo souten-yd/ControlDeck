@@ -99,6 +99,28 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     await page.setViewportSize({ width: 390, height: 844 });
     await preview.getByRole("button", { name: "プレビューを閉じる" }).click();
 
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.getByRole("button", { name: "その他メニュー" }).click();
+    await page.getByRole("menuitem", { name: "実行履歴" }).click();
+    const history = page.getByRole("dialog", { name: "実行履歴" });
+    await expect(history).toBeVisible();
+    await history.getByRole("button").filter({ hasText: "SUCCEEDED" }).first().click();
+    const execution = page.getByRole("dialog", { name: /実行 #/ });
+    await expect(execution.getByRole("button", { name: "現在のフローで再実行" })).toBeVisible();
+    await expect(execution.getByRole("button", { name: "当時のフローで再実行" })).toBeVisible();
+    await expect(execution.getByText("answer", { exact: true })).toBeVisible();
+    const replayLayout = await execution.evaluate((element) => ({
+      right: element.getBoundingClientRect().right,
+      documentWidth: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(replayLayout.right).toBeLessThanOrEqual(replayLayout.viewport);
+    expect(replayLayout.documentWidth).toBeLessThanOrEqual(replayLayout.viewport);
+    await execution.getByRole("button", { name: "閉じる" }).click();
+    await page.getByRole("dialog", { name: "実行履歴" }).getByRole("button", { name: "閉じる" }).click();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+
     // 接続線は太い透明hit areaから選択でき、端点の付け替え案内と削除を同じtoolbarへ集約する。
     const flowNodes = page.locator(".react-flow__node");
     const sourceBox = await flowNodes.nth(0).boundingBox();

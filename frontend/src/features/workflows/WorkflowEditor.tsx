@@ -1496,8 +1496,24 @@ interface ExecutionSummary {
   error: string;
 }
 
+interface ExecutionNodeRun {
+  id: number;
+  node_id: string;
+  node_type: string;
+  status: string;
+  outputs: unknown;
+  error: { message?: string };
+  elapsed_ms: number | null;
+  attempt: number;
+  retry_count: number;
+  token_usage: Record<string, unknown>;
+}
+
 function ExecutionsSheet({ workflowId, onClose }: { workflowId: number; onClose: () => void }) {
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState<"current" | "historical" | null>(null);
+  const qc = useQueryClient();
+  const show = useToasts((state) => state.show);
   const { data: executions } = useQuery({
     queryKey: ["executions", workflowId],
     queryFn: () => api<ExecutionSummary[]>(`/workflow-executions?workflow_id=${workflowId}`),
@@ -1505,10 +1521,32 @@ function ExecutionsSheet({ workflowId, onClose }: { workflowId: number; onClose:
   });
   const { data: detail } = useQuery({
     queryKey: ["execution", detailId],
-    queryFn: () => api<ExecutionSummary & { context: Record<string, { status: string; output?: unknown; error?: string }> }>(`/workflow-executions/${detailId}`),
+    queryFn: () => api<ExecutionSummary & { workflow_version_id: number | null; context: Record<string, { status: string; output?: unknown; error?: string }> }>(`/workflow-executions/${detailId}`),
     enabled: detailId !== null,
     refetchInterval: (q) => (q.state.data && ["QUEUED", "RUNNING"].includes(q.state.data.status) ? 1500 : false),
   });
+  const { data: nodeRuns } = useQuery({
+    queryKey: ["execution-node-runs", workflowId, detailId],
+    queryFn: () => api<ExecutionNodeRun[]>(`/workflows/${workflowId}/executions/${detailId}/nodes`),
+    enabled: detailId !== null,
+    refetchInterval: detail && ["QUEUED", "RUNNING", "WAITING"].includes(detail.status) ? 1500 : false,
+  });
+  const retryExecution = async (versionMode: "current" | "historical") => {
+    if (detailId === null) return;
+    setRetrying(versionMode);
+    try {
+      const result = await api<{ execution_id: number }>(`/workflows/${workflowId}/executions/${detailId}/retry`, {
+        method: "POST", json: { version_mode: versionMode },
+      });
+      await qc.invalidateQueries({ queryKey: ["executions", workflowId] });
+      setDetailId(result.execution_id);
+      show(versionMode === "historical" ? "当時のフローで再実行しました" : "現在のフローで再実行しました");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "再実行に失敗しました", "error");
+    } finally {
+      setRetrying(null);
+    }
+  };
   const statusCls: Record<string, string> = {
     SUCCEEDED: "text-emerald-600 dark:text-emerald-400",
     FAILED: "text-red-600 dark:text-red-400",
@@ -1536,17 +1574,28 @@ function ExecutionsSheet({ workflowId, onClose }: { workflowId: number; onClose:
         )
       ) : detail ? (
         <div className="space-y-3">
-          <p className={`text-sm font-medium ${statusCls[detail.status] ?? ""}`}>{detail.status}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className={`text-sm font-medium ${statusCls[detail.status] ?? ""}`}>{detail.status}</p>
+            {detail.workflow_version_id && <span className="rounded-full bg-zinc-100 px-2 py-1 font-mono text-[10px] text-zinc-500 dark:bg-zinc-800">version #{detail.workflow_version_id}</span>}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" disabled={retrying !== null} onClick={() => void retryExecution("current")} className="min-h-11 rounded-xl bg-accent-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{retrying === "current" ? "再実行中…" : "現在のフローで再実行"}</button>
+            <button type="button" disabled={retrying !== null || !detail.workflow_version_id} onClick={() => void retryExecution("historical")} className="min-h-11 rounded-xl border border-zinc-300 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-zinc-700">{retrying === "historical" ? "再実行中…" : "当時のフローで再実行"}</button>
+          </div>
           {detail.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400">{detail.error}</p>}
-          {Object.entries(detail.context).map(([nodeId, r]) => (
-            <div key={nodeId} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+          {(nodeRuns ?? Object.entries(detail.context).map(([node_id, row], index) => ({
+            id: index, node_id, node_type: "", status: row.status, outputs: row.output,
+            error: { message: row.error }, elapsed_ms: null, attempt: 0, retry_count: 0, token_usage: {},
+          }))).map((run) => (
+            <div key={run.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
               <p className="mb-1 flex items-center justify-between text-xs font-medium">
-                <code className="font-mono">{nodeId}</code>
-                <span className={statusCls[r.status] ?? "text-zinc-400"}>{r.status}</span>
+                <code className="font-mono">{run.node_id}</code>
+                <span className={statusCls[run.status] ?? "text-zinc-400"}>{run.status}</span>
               </p>
-              {r.error && <p className="text-xs text-red-500">{r.error}</p>}
-              {r.output !== undefined && (
-                <pre className="mt-1 max-h-32 overflow-auto rounded bg-zinc-50 p-2 font-mono text-[11px] dark:bg-zinc-950">{JSON.stringify(r.output, null, 1)}</pre>
+              <p className="mb-1 text-[10px] text-zinc-400">{run.node_type}{run.elapsed_ms !== null ? ` · ${run.elapsed_ms}ms` : ""}{run.retry_count ? ` · retry ${run.retry_count}` : ""}</p>
+              {run.error?.message && <p className="text-xs text-red-500">{run.error.message}</p>}
+              {run.outputs !== undefined && Object.keys((run.outputs as Record<string, unknown>) ?? {}).length > 0 && (
+                <pre className="mt-1 max-h-32 overflow-auto rounded bg-zinc-50 p-2 font-mono text-[11px] dark:bg-zinc-950">{JSON.stringify(run.outputs, null, 1)}</pre>
               )}
             </div>
           ))}
