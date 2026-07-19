@@ -10,12 +10,14 @@ from sqlalchemy.orm import Session
 from app.application_builder.capabilities import capability_catalog
 from app.application_builder.compiler import default_spec, validate_application_spec
 from app.application_builder.design_system.components import component_catalog
+from app.application_builder.patch_service import preview_patches, spec_checksum
 from app.application_builder.service import create_default_project, get_project, project_out, validate_payload, workflow_source
 from app.audit import service as audit
 from app.database import get_db
 from app.models import ApplicationProject, User
 from app.schemas.application_builder import (
-    ApplicationProjectCreate, ApplicationProjectUpdate, ApplicationValidateBody, WorkflowApplicationCreate,
+    ApplicationPatchApplyBody, ApplicationPatchPreviewBody, ApplicationProjectCreate,
+    ApplicationProjectUpdate, ApplicationValidateBody, WorkflowApplicationCreate,
 )
 from app.security.deps import require_permission
 
@@ -24,7 +26,7 @@ router = APIRouter(tags=["application-builder"])
 
 @router.get("/application-builder/schema")
 def application_schema(user: User = Depends(require_permission("application_builder.view"))):
-    from app.schemas.application_builder import ApplicationSpecV1, ApplicationValidateBody
+    from app.schemas.application_builder import ApplicationPatchOperation, ApplicationSpecV1, ApplicationValidateBody
 
     sample = default_spec("ExampleApplication", "", None)
     return {
@@ -38,6 +40,7 @@ def application_schema(user: User = Depends(require_permission("application_buil
         ],
         "statuses": ["draft", "archived"],
         "semanticComponents": component_catalog(),
+        "patchOperationSchema": ApplicationPatchOperation.model_json_schema(),
     }
 
 
@@ -57,6 +60,15 @@ def validate_application(
         db, body.spec, workflow_id=body.workflow_id,
         workflow_version_id=body.workflow_version_id, target=body.target,
     )
+
+
+@router.post("/application-builder/patches/preview")
+def preview_application_patches(
+    body: ApplicationPatchPreviewBody,
+    user: User = Depends(require_permission("application_builder.view")),
+):
+    """副作用なしでPatch、lock、結果Specを検証する。"""
+    return preview_patches(body.spec, body.patches)
 
 
 @router.get("/application-projects")
@@ -148,6 +160,46 @@ def update_project(
     db.refresh(row)
     audit.record(db, "application_project.update", user=user, resource_type="application_project", resource_id=str(row.id), request=request, metadata={})
     return project_out(row)
+
+
+@router.post("/application-projects/{project_id}/patches/apply")
+def apply_project_patches(
+    project_id: int, body: ApplicationPatchApplyBody, request: Request,
+    user: User = Depends(require_permission("application_builder.edit")), db: Session = Depends(get_db),
+):
+    row = get_project(db, project_id)
+    try:
+        current_spec = json.loads(row.application_spec_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=409, detail="保存済みApplication Specが不正です") from exc
+    current_checksum = spec_checksum(current_spec)
+    if current_checksum != body.base_checksum:
+        raise HTTPException(status_code=409, detail={
+            "code": "PATCH_BASE_CHANGED",
+            "message": "編集中にApplication Specが更新されました。最新状態で差分を再確認してください。",
+            "currentChecksum": current_checksum,
+        })
+    result = preview_patches(current_spec, body.patches)
+    if not result["valid"]:
+        raise HTTPException(status_code=422, detail={"diagnostics": result["diagnostics"]})
+    patched_spec = result["patchedSpec"]
+    row.application_spec_json = json.dumps(patched_spec, ensure_ascii=False)
+    row.schema_version = int(patched_spec.get("schemaVersion") or 1)
+    app = patched_spec.get("application") or {}
+    row.application_type = str(app.get("applicationType") or row.application_type)
+    target_profile = next(iter(patched_spec.get("targets") or []), {})
+    row.ui_framework = str(target_profile.get("framework") or row.ui_framework)
+    db.commit()
+    db.refresh(row)
+    audit.record(
+        db, "application_project.patch_apply", user=user,
+        resource_type="application_project", resource_id=str(row.id), request=request,
+        metadata={
+            "patch_count": len(body.patches), "base_checksum": current_checksum,
+            "result_checksum": result["resultChecksum"],
+        },
+    )
+    return {"project": project_out(row), "patch": result}
 
 
 @router.delete("/application-projects/{project_id}", status_code=204)

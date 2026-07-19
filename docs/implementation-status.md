@@ -2,6 +2,16 @@
 
 最終更新: 2026-07-19
 
+## App Studio F2.1 Structured Patch foundation（2026-07-19）
+
+- AI設計提案を自由codeではなくApplication Spec JSON Patchへ限定するbackend基盤を追加。`add/remove/replace/move`、最大200 operation、JSON Pointer深度64をschema化した。
+- 副作用なしPreview APIでdeep copyへPatchを適用し、base/result checksum、patched Spec、適用済みoperation、structured diagnosticを返す。完成Specは既存のcomponent、binding、secret、target検証を再通過する。
+- structure／binding／style／position／content lockをcomponentとancestorの双方で強制。lock変更、prototype pollution token、不正escape、範囲外index、Spec外scopeを拒否する。
+- ProjectへのApply APIはbase checksumによる楽観排他を必須にし、stale差分を409で停止。全Patchが有効な場合だけatomic commitし、patch件数とchecksumを監査する。
+- F2.2の比較・部分適用UIとF2.3のLLM 3案生成はこのAPIを利用する。現時点でfake AI提案UIは追加しない。
+
+検証: backend全328件、Application Builder unit 10件成功。replace＋move、入力Spec不変、content lock、scope/prototype拒否、secret literal拒否、Preview checksum、atomic apply、reload済みSpec、stale checksum 409を確認。
+
 ## App Studio F1.2 Component Editor（2026-07-19）
 
 - backend Semantic Component catalogから生成するPalette、再帰Component Tree、Preview選択、Binding／Properties InspectorをApplication Editorへ統合。frontendへ部品一覧を二重定義しない。
