@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from app.project_lab import service
+from app.project_lab import runs, service
 from app.schemas.project_lab import ProjectManifest
 
 
@@ -143,7 +144,83 @@ def test_project_lab_permission_is_available_to_operator_only():
 
     assert "project_lab.view" in ROLE_PRESETS["administrator"]
     assert "project_lab.view" in ROLE_PRESETS["operator"]
+    assert "project_lab.run" in ROLE_PRESETS["operator"]
     assert "project_lab.view" not in ROLE_PRESETS["viewer"]
+    assert "project_lab.run" not in ROLE_PRESETS["viewer"]
+
+
+def test_project_run_uses_systemd_argv_tracks_artifacts_and_redacts_logs(admin_client, tmp_path, monkeypatch):
+    from app.database import SessionLocal
+    from app.models import ProjectRun, ProjectRunArtifact
+
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    project = _project(root)
+    manifest_path = project / ".controldeck" / "project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["profiles"] = [{
+        "id": "test", "label": "Test", "type": "test",
+        "command": ["python3", "main.py"], "cwd": ".",
+        "environment": {"MODE": "test"}, "secret_refs": [], "artifacts": ["reports/*"],
+    }]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
+    monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0].endswith("systemd-run"):
+            assert kwargs.get("shell") is None
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[0].endswith("systemctl") and "show" in argv:
+            return SimpleNamespace(returncode=0, stdout="LoadState=loaded\nActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\n", stderr="")
+        if argv[0].endswith("journalctl"):
+            return SimpleNamespace(returncode=0, stdout=b"done api_token=must-not-leak\n", stderr=b"")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(runs.subprocess, "run", fake_run)
+    with SessionLocal() as db:
+        row = runs.start_run(db, project_id="demo", profile_id="test", timeout_seconds=45, created_by=None)
+        (project / "reports" / "new.json").write_text('{"ok": true}', encoding="utf-8")
+        payload = runs.run_out(db, row, include_logs=True)
+        assert payload["status"] == "SUCCEEDED"
+        assert payload["logs"] == "done api_token=***\n"
+        assert payload["artifacts"][0]["path"] == "reports/new.json"
+        assert payload["artifacts"][0]["changeType"] == "created"
+        db.query(ProjectRunArtifact).filter(ProjectRunArtifact.run_id == row.id).delete()
+        db.delete(row)
+        db.commit()
+    launch = calls[0]
+    assert isinstance(launch, list)
+    assert "--property=NoNewPrivileges=yes" in launch
+    assert "--property=ProtectSystem=strict" in launch
+    assert "--property=RemainAfterExit=yes" in launch
+    assert f"--property=ReadWritePaths={project}" in launch
+    assert "--setenv=MODE=test" in launch
+    assert Path(launch[-2]).name.startswith("python3") and launch[-1] == "main.py"
+
+
+def test_project_run_rejects_secrets_and_non_sdk(tmp_path, monkeypatch, admin_client):
+    from app.database import SessionLocal
+
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    project = _project(root)
+    manifest_path = project / ".controldeck" / "project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["profiles"] = [
+        {"id": "secret", "label": "Secret", "type": "cli", "command": ["python3", "main.py"], "secret_refs": ["API_TOKEN"]},
+        {"id": "binary", "label": "Binary", "type": "cli", "command": ["curl", "https://example.invalid"]},
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    with SessionLocal() as db:
+        with pytest.raises(runs.ProjectRunError, match="Secret"):
+            runs.start_run(db, project_id="demo", profile_id="secret", timeout_seconds=10, created_by=None)
+        with pytest.raises(runs.ProjectRunError, match="許可SDK"):
+            runs.start_run(db, project_id="demo", profile_id="binary", timeout_seconds=10, created_by=None)
 
 
 def test_project_lab_api_enforces_operator_and_viewer_permissions(client, tmp_path, monkeypatch):

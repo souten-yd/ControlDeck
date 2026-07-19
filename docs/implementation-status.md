@@ -1117,6 +1117,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 履歴
 
+- 2026-07-19: Project Lab durable runを実装。`ProjectRun`/`ProjectRunArtifact`、CLI/test profileの許可SDK・path検証、配列argvの`systemd-run --user`隔離実行、timeout/resource/concurrency制限、DB状態復元、cancel、1MiB上限・秘密伏せ字log、生成/変更artifact差分とchecksum、監査、operator権限、実行履歴UIを追加。Secret参照は安全なcredential分離まで明示拒否。ランナーをグローバル「操作」シートへ追加し、run権限だけの利用者を編集画面へ送らないよう権限も分離。backend全315件、frontend本番build、実サービスsystemd run→SUCCEEDED/exit 0/artifact/log、Runner 320/390/768/1280px E2E成功
 - 2026-07-19: Workflow guided configurationを実装。node metadata v3へ安全な`initial_config`、全設定fieldの推奨値/理由、主要入出力、型付き出力、最短手順、構成例を追加。新規ノードの初期設定、空欄だけへの推奨値適用、接続時の主要入力補完、検索・直前/その他上流・型・直近サンプル付き変数picker、カーソル位置挿入、設定内helpを追加。外部URL/path/model/Secretは自動推測しない。backend全308件、frontend本番build、実サービス再起動、390/320px E2E、横overflow/console errorなしを確認
 - 2026-07-19: Application Builder Phase A完了。ApplicationProject、Application Spec v1、Workflow/Application IR、portable type system、structured diagnostics、target/framework/node capability registry、静的validate/CRUD API、ワークフローの「アプリ化」入口と基本Project画面を追加。source生成・build・artifact・自由code LLMは未実装として明示し、dummy成功UIを置かない。node metadata v3へ推奨初期値・理由・help・変数picker hintの互換fieldを追加。backend全307件、frontend本番build、実サービスmigration/health、320/390/768/1280px E2E、横overflowなしを確認
 - 2026-07-19: ワークフローの安全プレビューと公開判定を共通preflightへ統一。409の構造化blocking理由を画面表示し、最終出力不足には`output.render`追加を案内する。全サンプルをコピー直後に安全プレビュー・公開前検証・公開できる回帰テストを追加し、既存の監視／復旧／Gitサンプルへ型付き出力を補完。外部サービス不要でfilter・sort・aggregate・並列Table/JSON/Metric出力を扱う「受注データ分析」複合サンプルを追加

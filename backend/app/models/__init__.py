@@ -483,3 +483,44 @@ class GitRepository(Base):
     url: Mapped[str] = mapped_column(String(2048))
     path: Mapped[str] = mapped_column(String(1024))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProjectRun(Base):
+    """Project Labのbrowser接続と独立したsystemd user service実行記録。"""
+
+    __tablename__ = "project_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(128), index=True)
+    project_name: Mapped[str] = mapped_column(String(128), default="")
+    profile_id: Mapped[str] = mapped_column(String(64))
+    profile_type: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(24), default="QUEUED", index=True)
+    unit_name: Mapped[str] = mapped_column(String(128), unique=True, default="")
+    command_json: Mapped[str] = mapped_column(Text, default="[]")
+    environment_names_json: Mapped[str] = mapped_column(Text, default="[]")
+    working_directory: Mapped[str] = mapped_column(String(1024), default="")
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    initial_artifacts_json: Mapped[str] = mapped_column(Text, default="{}")
+    result: Mapped[str] = mapped_column(String(64), default="")
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_redacted: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProjectRunArtifact(Base):
+    """ProjectRun開始後に作成・変更された成果物metadata。巨大file本文はDBへ保存しない。"""
+
+    __tablename__ = "project_run_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("project_runs.id"), index=True)
+    path: Mapped[str] = mapped_column(String(2048))
+    kind: Mapped[str] = mapped_column(String(32))
+    mime_type: Mapped[str] = mapped_column(String(256), default="application/octet-stream")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    checksum: Mapped[str] = mapped_column(String(64), default="")
+    change_type: Mapped[str] = mapped_column(String(16), default="created")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

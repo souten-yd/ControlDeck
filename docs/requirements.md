@@ -457,12 +457,14 @@ deploy/（systemd, caddy, nginx）、docs/、AGENTS.md、README.md、LICENSE。
 # 29.2 Project Lab
 
 - `~/CodeDEV`直下のprojectを設定なしで検出し、Python、Node/Web、CMake、Rust、.NET、静的HTML、Git状態を表示する。
-- 検出だけではprogramやscriptを起動しない。実行未実装段階にdummy成功UIを置かない。
+- 検出だけではprogramやscriptを起動しない。CLI/testはユーザーの明示操作でのみ、browserから独立した制限付きsystemd user unitとして実行する。
 - `.controldeck/project.json`はversioned schemaで検証し、command文字列を禁止してargv配列、project内cwd、非秘密environment、Secret名参照を使用する。
 - HTML、画像、CSV/TSV、JSON、Markdown、PDF、audio/video、log/textを型別表示し、巨大text/表にはpreview上限を設ける。
 - CodeDEV外path、symlink escape、秘密file名、`.env`、source code、依存cacheを成果物として公開しない。
 - HTMLはCSPとsandbox iframe、artifactは認証・権限・MIME検査・path containmentを必須とする。
 - JSON、表、log/textのinline previewでは秘密らしいkey/valueを伏せ字化する。
+- 実行履歴には終了状態、終了code、時間、redact済みlog、生成・変更artifact metadataを保存し、Secret値と巨大artifact本文をDBへ保存しない。
+- Secret参照profileは安全なcredential注入が利用できるまで実行拒否し、未対応を成功扱いにしない。
 
 # 30. MVP完了条件
 

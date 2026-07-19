@@ -16,6 +16,11 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0;
 
+  await page.goto("/");
+  await page.getByRole("button", { name: "操作メニュー" }).click();
+  await page.getByRole("button", { name: "ランナー", exact: true }).click();
+  await expect(page).toHaveURL(/\/runner$/);
+
   const workflowId = await page.evaluate(async () => {
     const headers = { "Content-Type": "application/json", "X-Requested-With": "ControlDeck" };
     const created = await fetch("/api/v1/workflows", {

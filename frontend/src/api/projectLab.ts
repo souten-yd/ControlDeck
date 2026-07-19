@@ -35,9 +35,44 @@ export interface ProjectLabDetail extends Omit<ProjectLabSummary, "artifactCount
   artifacts: ProjectLabArtifact[];
 }
 
+export interface ProjectLabRunArtifact {
+  id: number;
+  path: string;
+  kind: string;
+  mimeType: string;
+  size: number;
+  checksum: string;
+  changeType: "created" | "modified";
+}
+
+export interface ProjectLabRun {
+  id: number;
+  projectId: string;
+  projectName: string;
+  profileId: string;
+  profileType: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELED" | "TIMED_OUT" | "INTERRUPTED";
+  command: string[];
+  environmentNames: string[];
+  timeoutSeconds: number;
+  result: string;
+  exitCode: number | null;
+  error: string;
+  startedAt: string;
+  finishedAt: string | null;
+  elapsedMs: number | null;
+  artifacts: ProjectLabRunArtifact[];
+}
+
 export const projectLabApi = {
   list: () => api<ProjectLabSummary[]>("/project-lab/projects"),
   detail: (id: string) => api<ProjectLabDetail>(`/project-lab/projects/${encodeURIComponent(id)}`),
+  runs: (id: string) => api<ProjectLabRun[]>(`/project-lab/runs?project_id=${encodeURIComponent(id)}`),
+  startRun: (id: string, profileId: string) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/runs`, {
+    method: "POST", json: { profile_id: profileId, timeout_seconds: 600 },
+  }),
+  cancelRun: (runId: number) => api<ProjectLabRun>(`/project-lab/runs/${runId}/cancel`, { method: "POST" }),
+  runLogs: (runId: number) => api<{ runId: number; logs: string }>(`/project-lab/runs/${runId}/logs`),
   preview: (id: string, path: string) => api<Pick<ProjectLabArtifact, "path" | "previewText" | "structuredPreview">>(
     `/project-lab/projects/${encodeURIComponent(id)}/previews/${path.split("/").map(encodeURIComponent).join("/")}`,
   ),

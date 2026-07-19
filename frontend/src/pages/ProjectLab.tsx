@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { projectLabApi, type ProjectLabArtifact, type ProjectLabDetail } from "../api/projectLab";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { projectLabApi, type ProjectLabArtifact, type ProjectLabDetail, type ProjectLabRun } from "../api/projectLab";
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -42,7 +42,13 @@ export default function ProjectLabPage() {
 }
 
 function ProjectWorkspace({ projectId, onBack }: { projectId: string; onBack: () => void }) {
+  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: ["project-lab", projectId], queryFn: () => projectLabApi.detail(projectId) });
+  const runsQuery = useQuery({ queryKey: ["project-lab-runs", projectId], queryFn: () => projectLabApi.runs(projectId), refetchInterval: 2000 });
+  const startRun = useMutation({
+    mutationFn: (profileId: string) => projectLabApi.startRun(projectId, profileId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["project-lab-runs", projectId] }),
+  });
   const [artifactPath, setArtifactPath] = useState<string | null>(null);
   useEffect(() => setArtifactPath(null), [projectId]);
   const selectedArtifact = useMemo(() => data?.artifacts.find((item) => item.path === artifactPath) ?? data?.artifacts[0], [artifactPath, data]);
@@ -52,22 +58,64 @@ function ProjectWorkspace({ projectId, onBack }: { projectId: string; onBack: ()
     <button type="button" onClick={onBack} className="mb-3 min-h-11 rounded-xl px-2 text-sm text-accent-600 md:hidden">← プロジェクト一覧</button>
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0"><h2 className="truncate text-xl font-semibold">{data.name}</h2><p className="mt-1 break-all font-mono text-[10px] text-zinc-400">{data.path}</p>{data.description && <p className="mt-2 text-sm text-zinc-500">{data.description}</p>}</div>
-      <span className="rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">Read-only · 自動実行なし</span>
+      <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">成果物preview · 明示実行</span>
     </div>
     {data.diagnostics.map((diagnostic) => <div key={`${diagnostic.code}-${diagnostic.message}`} className="mt-3 rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300"><strong>{diagnostic.code}</strong> {diagnostic.message}</div>)}
     <section className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <InfoCard label="技術" value={data.technologies.join(" · ") || "未検出"} />
       <InfoCard label="Git" value={data.git ? `${data.git.branch}${data.git.dirty ? "（変更あり）" : data.git.dirty === false ? "（clean）" : ""}` : "未使用"} />
-      <InfoCard label="実行profile" value={`${data.manifest?.profiles.length ?? 0}（実行は次Phase）`} />
+      <InfoCard label="実行profile" value={`${data.manifest?.profiles.filter((item) => ["cli", "test"].includes(item.type)).length ?? 0}（CLI / test）`} />
       <InfoCard label="成果物" value={`${data.artifacts.length} files`} />
     </section>
-    {data.manifest?.profiles.length ? <section className="mt-4"><h3 className="mb-2 text-sm font-semibold">検出したprofile</h3><div className="grid gap-2 md:grid-cols-2">{data.manifest.profiles.map((profile) => <div key={profile.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"><div className="flex items-center justify-between gap-2"><strong className="text-sm">{profile.label}</strong><span className="rounded bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{profile.type}</span></div><p className="mt-1 break-all font-mono text-[10px] text-zinc-400">{profile.command.length ? profile.command.join(" ") : "commandなし"}</p></div>)}</div></section> : null}
+    {data.manifest?.profiles.length ? <section className="mt-4"><h3 className="mb-2 text-sm font-semibold">検出したprofile</h3><div className="grid gap-2 md:grid-cols-2">{data.manifest.profiles.map((profile) => {
+      const runnable = ["cli", "test"].includes(profile.type) && profile.command.length > 0 && profile.secretRefs.length === 0;
+      return <div key={profile.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"><div className="flex items-center justify-between gap-2"><strong className="text-sm">{profile.label}</strong><span className="rounded bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{profile.type}</span></div><p className="mt-1 break-all font-mono text-[10px] text-zinc-400">{profile.command.length ? profile.command.join(" ") : "commandなし"}</p><div className="mt-2 flex items-center justify-between gap-2"><span className="text-[10px] text-zinc-500">{profile.secretRefs.length ? "Secret注入は後続Phase" : runnable ? "隔離されたsystemd user serviceで実行" : "このprofileはpreview専用"}</span><button type="button" disabled={!runnable || startRun.isPending} onClick={() => startRun.mutate(profile.id)} className="min-h-11 shrink-0 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">実行</button></div></div>;
+    })}</div>{startRun.error && <p className="mt-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{startRun.error.message}</p>}</section> : null}
+    <RunHistory projectId={projectId} runs={runsQuery.data ?? []} />
     <section className="mt-5"><h3 className="mb-2 text-sm font-semibold">成果物</h3>{data.artifacts.length === 0 ? <p className="rounded-xl border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700">HTML、画像、CSV、JSON、Markdown、PDF、audio/video、logなどの成果物はまだありません。</p> : <div className="grid min-w-0 gap-3 lg:grid-cols-[17rem_minmax(0,1fr)]"><div className="max-h-96 space-y-1 overflow-y-auto rounded-xl border border-zinc-200 p-2 dark:border-zinc-800">{data.artifacts.map((artifact) => <button key={artifact.path} type="button" onClick={() => setArtifactPath(artifact.path)} className={`min-h-11 w-full rounded-lg px-2.5 py-2 text-left ${selectedArtifact?.path === artifact.path ? "bg-accent-50 text-accent-800 dark:bg-accent-950/30 dark:text-accent-300" : "hover:bg-zinc-50 dark:hover:bg-zinc-900"}`}><span className="block truncate text-xs font-medium">{artifact.name}</span><span className="mt-0.5 block truncate font-mono text-[9px] text-zinc-400">{artifact.kind} · {formatBytes(artifact.size)} · {artifact.path}</span></button>)}</div>{selectedArtifact && <ArtifactPreview project={data} artifact={selectedArtifact} />}</div>}</section>
   </div>;
 }
 
 function InfoCard({ label, value }: { label: string; value: string }) {
   return <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"><p className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">{label}</p><p className="mt-1 break-words text-sm">{value}</p></div>;
+}
+
+function RunHistory({ projectId, runs }: { projectId: string; runs: ProjectLabRun[] }) {
+  const queryClient = useQueryClient();
+  const [openRun, setOpenRun] = useState<number | null>(null);
+  const logs = useQuery({
+    queryKey: ["project-lab-run-logs", openRun],
+    queryFn: () => projectLabApi.runLogs(openRun as number),
+    enabled: openRun !== null,
+    refetchInterval: openRun !== null && runs.some((run) => run.id === openRun && ["QUEUED", "RUNNING"].includes(run.status)) ? 1500 : false,
+  });
+  const cancel = useMutation({
+    mutationFn: projectLabApi.cancelRun,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["project-lab-runs", projectId] }),
+  });
+  if (runs.length === 0) return null;
+  return <section className="mt-5">
+    <h3 className="mb-2 text-sm font-semibold">実行履歴</h3>
+    <div className="space-y-2">{runs.map((run) => {
+      const active = ["QUEUED", "RUNNING"].includes(run.status);
+      const okay = run.status === "SUCCEEDED";
+      return <div key={run.id} className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+        <div className="flex min-h-11 flex-wrap items-center gap-2 px-3 py-2">
+          <button type="button" onClick={() => setOpenRun(openRun === run.id ? null : run.id)} className="min-h-11 min-w-0 flex-1 text-left">
+            <span className="block truncate text-xs font-semibold">#{run.id} · {run.profileId}</span>
+            <span className="block text-[10px] text-zinc-500">{new Date(run.startedAt).toLocaleString()} · {run.elapsedMs === null ? "実行中" : `${run.elapsedMs} ms`}</span>
+          </button>
+          <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${okay ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : active ? "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300" : "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300"}`}>{run.status}</span>
+          {active && <button type="button" onClick={() => cancel.mutate(run.id)} disabled={cancel.isPending} className="min-h-11 rounded-xl px-3 text-xs font-medium text-red-600 disabled:opacity-40">停止</button>}
+        </div>
+        {openRun === run.id && <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
+          {run.error && <p className="mb-2 rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{run.error}</p>}
+          {run.artifacts.length > 0 && <div className="mb-2 flex flex-wrap gap-1">{run.artifacts.map((artifact) => <span key={artifact.id} className="rounded bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{artifact.changeType}: {artifact.path}</span>)}</div>}
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-950 p-3 font-mono text-[11px] text-zinc-100">{logs.isLoading ? "ログを読み込み中..." : logs.data?.logs || "ログはありません"}</pre>
+        </div>}
+      </div>;
+    })}</div>
+  </section>;
 }
 
 function ArtifactPreview({ project, artifact }: { project: ProjectLabDetail; artifact: ProjectLabArtifact }) {

@@ -78,3 +78,10 @@ class ProjectManifest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=2000)
     profiles: list[ProjectProfile] = Field(default_factory=list, max_length=32)
+
+
+class ProjectRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str = Field(min_length=1, max_length=64)
+    timeout_seconds: int = Field(default=600, ge=1, le=3600)

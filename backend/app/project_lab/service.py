@@ -38,7 +38,9 @@ ARTIFACT_KINDS = {
 }
 STATIC_RESOURCE_TYPES = {".css", ".woff", ".woff2", ".ttf", ".otf", ".ico"}
 SENSITIVE_NAME = re.compile(r"(^|[._-])(secret|secrets|credential|credentials|private[_-]?key|id_rsa|id_ed25519)([._-]|$)", re.I)
-SENSITIVE_TEXT = re.compile(r"(?im)^([ \t]*(?:authorization|password|passwd|token|secret|api[_-]?key)[ \t]*[:=][ \t]*)([^\r\n]+)")
+SENSITIVE_TEXT = re.compile(
+    r"(?im)(\b(?:authorization|password|passwd|token|secret|api[_-]?token|api[_-]?key)\b[ \t]*[:=][ \t]*)([^\s,;&]+)"
+)
 
 
 class ProjectLabError(ValueError):
@@ -109,6 +111,18 @@ def _read_manifest(project: Path) -> tuple[ProjectManifest | None, list[dict[str
         return None, [{"code": "MANIFEST_INVALID", "severity": "error", "message": "manifestを安全に読み込めません"}]
     except ProjectLabError as exc:
         return None, [{"code": "MANIFEST_INVALID", "severity": "error", "message": str(exc)}]
+
+
+def load_manifest(project: Path) -> ProjectManifest:
+    manifest, diagnostics = _read_manifest(project)
+    if manifest is None:
+        message = diagnostics[0]["message"] if diagnostics else ".controldeck/project.jsonがありません"
+        raise ProjectLabError(message)
+    return manifest
+
+
+def redact_text(value: str) -> str:
+    return SENSITIVE_TEXT.sub(r"\1***", value)
 
 
 def _manifest_out(manifest: ProjectManifest | None) -> dict[str, Any] | None:
@@ -213,7 +227,7 @@ def _text_preview(path: Path, kind: str) -> tuple[str | None, Any | None]:
             sensitive_columns = {index for index, header in enumerate(headers) if SENSITIVE_TEXT.search(f"{header}=value")}
             data_rows = [["***" if index in sensitive_columns else cell for index, cell in enumerate(row)] for row in rows[1:MAX_CSV_ROWS + 1]]
             return None, {"headers": headers, "rows": data_rows, "truncated": len(rows) > MAX_CSV_ROWS}
-        return SENSITIVE_TEXT.sub(r"\1***", text[:MAX_INLINE_TEXT_BYTES]), None
+        return redact_text(text[:MAX_INLINE_TEXT_BYTES]), None
     except (OSError, json.JSONDecodeError, csv.Error):
         return None, None
 

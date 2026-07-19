@@ -1,11 +1,16 @@
-"""Project Lab read-only API。実行APIはdurable run Phaseまで追加しない。"""
+"""Project Lab API。成果物閲覧とbrowser非依存のdurable runを提供する。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.models import User
-from app.project_lab import service
+from app.audit import service as audit
+from app.database import get_db
+from app.models import ProjectRun, User
+from app.project_lab import runs, service
+from app.schemas.project_lab import ProjectRunCreate
 from app.security.deps import require_permission
 
 router = APIRouter(prefix="/project-lab", tags=["project-lab"])
@@ -64,3 +69,84 @@ def artifact_preview(
     if metadata is None:
         raise HTTPException(status_code=404, detail="artifact previewを生成できません")
     return {"path": metadata["path"], "previewText": metadata["previewText"], "structuredPreview": metadata["structuredPreview"]}
+
+
+def _run_or_404(db: Session, run_id: int) -> ProjectRun:
+    row = db.get(ProjectRun, run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project runが見つかりません")
+    return row
+
+
+@router.post("/projects/{project_id}/runs", status_code=201)
+def start_project_run(
+    project_id: str, body: ProjectRunCreate, request: Request,
+    user: User = Depends(require_permission("project_lab.run")), db: Session = Depends(get_db),
+):
+    try:
+        row = runs.start_run(
+            db, project_id=project_id, profile_id=body.profile_id,
+            timeout_seconds=body.timeout_seconds, created_by=user.id,
+        )
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    except runs.ProjectRunError as exc:
+        audit.record(
+            db, "project_lab.run.start", user=user, resource_type="project",
+            resource_id=project_id, request=request, result="failure",
+            metadata={"profile_id": body.profile_id},
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(
+        db, "project_lab.run.start", user=user, resource_type="project_run",
+        resource_id=str(row.id), request=request,
+        metadata={"project_id": project_id, "profile_id": body.profile_id},
+    )
+    return runs.run_out(db, row)
+
+
+@router.get("/runs")
+def project_runs(
+    project_id: str | None = Query(None, max_length=128), limit: int = Query(30, ge=1, le=100),
+    user: User = Depends(require_permission("project_lab.view")), db: Session = Depends(get_db),
+):
+    query = select(ProjectRun)
+    if project_id:
+        query = query.where(ProjectRun.project_id == project_id)
+    rows = db.execute(query.order_by(ProjectRun.id.desc()).limit(limit)).scalars().all()
+    return [runs.run_out(db, row) for row in rows]
+
+
+@router.get("/runs/{run_id}")
+def project_run(
+    run_id: int, user: User = Depends(require_permission("project_lab.view")),
+    db: Session = Depends(get_db),
+):
+    return runs.run_out(db, _run_or_404(db, run_id))
+
+
+@router.get("/runs/{run_id}/logs")
+def project_run_logs(
+    run_id: int, user: User = Depends(require_permission("project_lab.view")),
+    db: Session = Depends(get_db),
+):
+    row = _run_or_404(db, run_id)
+    runs.refresh_run(db, row)
+    return {"runId": row.id, "logs": runs.run_logs(row)}
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_project_run(
+    run_id: int, request: Request, user: User = Depends(require_permission("project_lab.run")),
+    db: Session = Depends(get_db),
+):
+    row = _run_or_404(db, run_id)
+    try:
+        runs.cancel_run(db, row)
+    except runs.ProjectRunError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(
+        db, "project_lab.run.cancel", user=user, resource_type="project_run",
+        resource_id=str(row.id), request=request,
+    )
+    return runs.run_out(db, row)

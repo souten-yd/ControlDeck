@@ -21,8 +21,7 @@ test("discovers CodeDEV artifacts and previews them safely from mobile to deskto
   await expect(page.getByRole("heading", { name: "Project Lab" })).toBeVisible();
   await page.getByRole("button", { name: /Codex Project Lab E2E/ }).click();
   await expect(page.getByRole("heading", { name: "Codex Project Lab E2E" })).toBeVisible();
-  await expect(page.getByText("Read-only · 自動実行なし")).toBeVisible();
-  await expect(page.getByText("実行は次Phase", { exact: false })).toBeVisible();
+  await expect(page.getByText("成果物preview · 明示実行")).toBeVisible();
   await page.getByRole("button", { name: /result.json/ }).click();
   await expect(page.getByText('"api_token": "***"', { exact: false })).toBeVisible();
   await expect(page.getByText("must-not-leak")).toHaveCount(0);
