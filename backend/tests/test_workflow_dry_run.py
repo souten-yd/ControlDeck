@@ -153,8 +153,14 @@ def test_redaction_masks_sensitive_values_when_copied_to_other_fields():
         "input": {"password": "secret-value"},
         "output": {"value": "prefix secret-value suffix"},
         "authorization": "Bearer abc",
+        "api_token": "api-secret",
+        "usage": {"total_tokens": 42, "prompt_tokens": 30, "completion_tokens": 12},
+        "max_tokens": 1024,
     }
     redacted = redact(payload, sensitive_values=collect_sensitive_values(payload))
     assert redacted["input"]["password"] == "***"
     assert redacted["output"]["value"] == "prefix *** suffix"
     assert redacted["authorization"] == "***"
+    assert redacted["api_token"] == "***"
+    assert redacted["usage"] == {"total_tokens": 42, "prompt_tokens": 30, "completion_tokens": 12}
+    assert redacted["max_tokens"] == 1024

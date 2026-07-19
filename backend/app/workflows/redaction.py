@@ -8,12 +8,23 @@ _SENSITIVE_KEY = re.compile(
     r"(password|passwd|passphrase|token|secret|authorization|cookie|api[_-]?key)", re.I
 )
 _SECRET_TEMPLATE = re.compile(r"\{\{\s*secrets\.[^}]+\}\}", re.I)
+_TOKEN_METRIC_KEYS = {
+    "token_usage", "total_tokens", "prompt_tokens", "completion_tokens",
+    "input_tokens", "output_tokens", "generated_tokens", "max_tokens", "max_report_tokens",
+    "requested_tokens", "context_tokens",
+}
+
+
+def is_sensitive_key(key: str) -> bool:
+    """認証tokenとtoken使用量metadataを区別する。"""
+    normalized = key.strip().lower().replace("-", "_")
+    return normalized not in _TOKEN_METRIC_KEYS and _SENSITIVE_KEY.search(normalized) is not None
 
 
 def collect_sensitive_values(value: Any, key: str = "") -> set[str]:
     """Collect non-empty values that are stored under a sensitive key."""
     found: set[str] = set()
-    if _SENSITIVE_KEY.search(key) and isinstance(value, (str, int, float)):
+    if is_sensitive_key(key) and isinstance(value, (str, int, float)):
         raw = str(value)
         if raw and raw != "***":
             found.add(raw)
@@ -29,7 +40,7 @@ def collect_sensitive_values(value: Any, key: str = "") -> set[str]:
 
 def redact(value: Any, key: str = "", sensitive_values: set[str] | None = None) -> Any:
     """Return a recursively redacted copy without mutating live executor context."""
-    if _SENSITIVE_KEY.search(key):
+    if is_sensitive_key(key):
         return "***"
     if isinstance(value, dict):
         return {

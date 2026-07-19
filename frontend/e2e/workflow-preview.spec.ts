@@ -181,7 +181,14 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     const execution = page.getByRole("dialog", { name: /実行 #/ });
     await expect(execution.getByRole("button", { name: "現在のフローで再実行" })).toBeVisible();
     await expect(execution.getByRole("button", { name: "当時のフローで再実行" })).toBeVisible();
-    await expect(execution.getByText("answer", { exact: true })).toBeVisible();
+    const nodeObservation = execution.getByLabel("ノード実行の観測");
+    await expect(nodeObservation.getByText("実行タイムライン")).toBeVisible();
+    await nodeObservation.getByRole("button", { name: "answer SUCCEEDED" }).click();
+    const answerDetail = nodeObservation.getByLabel("ノード answer の詳細");
+    await answerDetail.getByText("実入力", { exact: true }).click();
+    await expect(answerDetail.getByText(/upstream/)).toBeVisible();
+    await answerDetail.getByText("実出力", { exact: true }).click();
+    await expect(answerDetail.getByText(/"signal": "answer"/).last()).toBeVisible();
     const replayLayout = await execution.evaluate((element) => ({
       right: element.getBoundingClientRect().right,
       documentWidth: document.documentElement.scrollWidth,

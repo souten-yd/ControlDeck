@@ -1251,6 +1251,8 @@ def get_execution_nodes(
         "token_usage": json.loads(row.token_usage_json or "{}"),
         "started_at": row.started_at, "finished_at": row.finished_at, "elapsed_ms": row.elapsed_ms,
         "attempt": row.attempt, "retry_count": row.retry_count,
+        "input_size": len((row.resolved_inputs_json or "{}").encode("utf-8")),
+        "output_size": len((row.outputs_json or "{}").encode("utf-8")),
         "cache_source": row.cache_source, "schema_version": row.schema_version,
     } for row in rows]
 
