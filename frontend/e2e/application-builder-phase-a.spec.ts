@@ -63,6 +63,42 @@ test("creates and validates a Phase A project from Workflow without fake build U
     await expect(editor.getByRole("button", { name: "Save" })).toBeDisabled();
     await page.reload();
     await expect(page.getByText("Hello App Studio", { exact: true })).toBeVisible();
+    const reloadedEditor = page.getByRole("region", { name: "App Design Editor" });
+    await reloadedEditor.getByRole("button", { name: "Review Patch" }).click();
+    const review = page.getByRole("dialog", { name: "Review Spec Patch" });
+    await review.getByLabel("JSON Patch proposal").fill(JSON.stringify([
+      { op: "replace", path: "/pages/0/root/children/0/properties/text", value: "Patched App Studio" },
+      { op: "add", path: "/pages/0/root/children/-", value: { id: "skipped-card", type: "layout.card", children: [] } },
+    ]));
+    await review.getByRole("button", { name: "Load proposal" }).click();
+    const patchOperations = review.getByRole("region", { name: "Patch operations" });
+    await expect(patchOperations.getByRole("checkbox")).toHaveCount(2);
+    await patchOperations.getByRole("checkbox").nth(1).uncheck();
+    await expect(review.getByText("1 / 2", { exact: true })).toBeVisible();
+    await review.getByRole("button", { name: "Preview selected" }).click();
+    await expect(review.getByRole("region", { name: "Patch preview" })).toBeVisible();
+    await review.getByRole("button", { name: "Apply selected changes" }).click();
+    await expect(review).toBeHidden();
+    await expect(page.getByText("Patched App Studio", { exact: true })).toBeVisible();
+    await expect(page.getByText("skipped-card", { exact: true })).toHaveCount(0);
+
+    await reloadedEditor.getByRole("button", { name: "display-text-1 display.text" }).click();
+    const locks = reloadedEditor.getByRole("group", { name: "AI redesign locks" });
+    await locks.getByRole("checkbox", { name: "content" }).check();
+    await reloadedEditor.getByRole("button", { name: "Save" }).click();
+    await expect(reloadedEditor.getByRole("button", { name: "Save" })).toBeDisabled();
+    await reloadedEditor.getByRole("button", { name: "Review Patch" }).click();
+    const lockedReview = page.getByRole("dialog", { name: "Review Spec Patch" });
+    await lockedReview.getByLabel("JSON Patch proposal").fill(JSON.stringify([
+      { op: "replace", path: "/pages/0/root/children/0/properties/text", value: "Blocked App Studio" },
+    ]));
+    await lockedReview.getByRole("button", { name: "Load proposal" }).click();
+    await lockedReview.getByRole("button", { name: "Preview selected" }).click();
+    await expect(lockedReview.getByText("PATCH_LOCK_VIOLATION", { exact: false })).toBeVisible();
+    await expect(lockedReview.getByRole("button", { name: "Apply selected changes" })).toBeDisabled();
+    await lockedReview.getByRole("button", { name: "閉じる" }).click();
+    await expect(page.getByText("Patched App Studio", { exact: true })).toBeVisible();
+    await expect(page.getByText("Blocked App Studio", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Source生成: 未実装")).toBeVisible();
     await expect(page.getByText("Build: 未実装")).toBeVisible();
     await expect(page.getByRole("button", { name: /ビルド|生成|公開/ })).toHaveCount(0);

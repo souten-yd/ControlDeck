@@ -208,7 +208,11 @@ blocking/warning/suggestionを確認する。Application Spec、型、framework/
 
 F1ではbackend catalogを正とするSemantic Component Editorを提供する。Pageを作成し、Stack／Grid／Card、入力、表示、実行button、table、chartを追加して、Component Tree、Inspector、Desktop／Tablet／Mobile Previewから同じApplication Specを編集できる。Desktopではcontainerへのdrag、touch／keyboardでは明示的なMove操作を使い、Undo／Redo後に保存できる。Workflow接続ProjectからはOpen Workflowで処理設計へ戻れる。
 
-source生成、build、package、artifact、AI GUI設計はまだ提供しない。未実装機能を成功するdummy buttonで見せない。
+保存済みDesignでは「Review Patch」から構造化JSON Patchを読み込み、変更operationを個別に選択して、選択した差分だけをbackendで再検証できる。Before／AfterのPage・Component数、structured diagnostic、Spec checksumを確認した後、有効な差分だけを原子的に適用する。選択を変えた場合はPreviewを無効化して再検証を要求し、別画面でSpecが更新された場合はstale checksumとして停止する。
+
+Inspectorのstructure／binding／style／position／content lockは、今後のAI再設計と現在のPatch Reviewの双方に適用される。たとえばcontentを固定した部品の表示値変更や、bindingを固定した部品の接続変更はPreview段階で拒否される。ロックはユーザーの直接編集を禁止するものではなく、AI提案が保護境界を越えないための指定である。
+
+source生成、build、package、artifact、AI GUI設計案の生成はまだ提供しない。Patch Reviewは構造化提案を安全に確認・適用する境界であり、AIが生成したように見せるdummy提案は置かない。
 後続PhaseでC# Console、ASP.NET、GUI/DB、構造化AI提案の順に実装する。LLMは自由なGUI codeではなく、検証可能なApplication Spec Patchだけを提案する。
 
 ノードmetadataは推奨初期値とその理由、詳細help、変数picker対応を返す。危険な対象値を除いて新規ノードへ初期投入し、
