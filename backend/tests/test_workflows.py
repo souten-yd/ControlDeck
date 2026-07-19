@@ -224,7 +224,25 @@ def test_execution_snapshot_node_runs_and_current_or_historical_retry(admin_clie
     rows = node_runs.json()
     assert [row["node_id"] for row in rows] == ["t", "result"]
     assert all(row["status"] == "SUCCEEDED" and row["elapsed_ms"] is not None for row in rows)
+    assert all(row["input_size"] > 0 and row["output_size"] > 0 for row in rows)
     assert "literal-must-not-enter-snapshot" not in json.dumps(rows, ensure_ascii=False)
+
+    from app.workflows import engine
+
+    engine._finish_node_run(rows[-1]["id"], {
+        "status": "SUCCEEDED", "attempts": 2,
+        "output": {
+            "tokens": 42, "path": "/tmp/report.json",
+            "logs": ["token=secret-node-run-value"], "value": "secret-node-run-value",
+        },
+    }, {"__secrets__": {"SERVICE_TOKEN": "secret-node-run-value"}})
+    observed = admin_client.get(
+        f"/api/v1/workflows/{workflow_id}/executions/{original_id}/nodes"
+    ).json()[-1]
+    assert observed["token_usage"]["total_tokens"] == 42
+    assert observed["retry_count"] == 1
+    assert observed["artifacts"] == [{"path": "/tmp/report.json"}]
+    assert "secret-node-run-value" not in json.dumps(observed, ensure_ascii=False)
 
     version = admin_client.get(
         f"/api/v1/workflows/{workflow_id}/versions/{original['workflow_version_id']}"

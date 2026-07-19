@@ -43,6 +43,7 @@ import {
 import { ScrapeViewer } from "./ScrapeViewer";
 import { InfoPanel } from "./InfoPanel";
 import { PreviewWorkspace } from "./PreviewWorkspace";
+import { ExecutionNodeRuns, type ExecutionNodeRun } from "./ExecutionNodeRuns";
 import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
 
@@ -1890,19 +1891,6 @@ interface ExecutionSummary {
   error: string;
 }
 
-interface ExecutionNodeRun {
-  id: number;
-  node_id: string;
-  node_type: string;
-  status: string;
-  outputs: unknown;
-  error: { message?: string };
-  elapsed_ms: number | null;
-  attempt: number;
-  retry_count: number;
-  token_usage: Record<string, unknown>;
-}
-
 function ExecutionsSheet({ workflowId, onClose }: { workflowId: number; onClose: () => void }) {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [retrying, setRetrying] = useState<"current" | "historical" | null>(null);
@@ -1977,22 +1965,12 @@ function ExecutionsSheet({ workflowId, onClose }: { workflowId: number; onClose:
             <button type="button" disabled={retrying !== null || !detail.workflow_version_id} onClick={() => void retryExecution("historical")} className="min-h-11 rounded-xl border border-zinc-300 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-zinc-700">{retrying === "historical" ? "再実行中…" : "当時のフローで再実行"}</button>
           </div>
           {detail.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400">{detail.error}</p>}
-          {(nodeRuns ?? Object.entries(detail.context).map(([node_id, row], index) => ({
+          <ExecutionNodeRuns runs={nodeRuns ?? Object.entries(detail.context).map(([node_id, row], index) => ({
             id: index, node_id, node_type: "", status: row.status, outputs: row.output,
-            error: { message: row.error }, elapsed_ms: null, attempt: 0, retry_count: 0, token_usage: {},
-          }))).map((run) => (
-            <div key={run.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
-              <p className="mb-1 flex items-center justify-between text-xs font-medium">
-                <code className="font-mono">{run.node_id}</code>
-                <span className={statusCls[run.status] ?? "text-zinc-400"}>{run.status}</span>
-              </p>
-              <p className="mb-1 text-[10px] text-zinc-400">{run.node_type}{run.elapsed_ms !== null ? ` · ${run.elapsed_ms}ms` : ""}{run.retry_count ? ` · retry ${run.retry_count}` : ""}</p>
-              {run.error?.message && <p className="text-xs text-red-500">{run.error.message}</p>}
-              {run.outputs !== undefined && Object.keys((run.outputs as Record<string, unknown>) ?? {}).length > 0 && (
-                <pre className="mt-1 max-h-32 overflow-auto rounded bg-zinc-50 p-2 font-mono text-[11px] dark:bg-zinc-950">{JSON.stringify(run.outputs, null, 1)}</pre>
-              )}
-            </div>
-          ))}
+            resolved_inputs: {}, error: { message: row.error }, logs: [], artifacts: [],
+            started_at: null, finished_at: null, elapsed_ms: null, attempt: 0, retry_count: 0,
+            token_usage: {}, input_size: 0, output_size: 0, cache_source: "",
+          }))} statusClass={statusCls} />
         </div>
       ) : (
         <p className="py-6 text-center text-sm text-zinc-400">読み込み中...</p>

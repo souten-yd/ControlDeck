@@ -29,7 +29,7 @@ from app.workflows.nodes import (
     NodeError,
     render_template,
 )
-from app.workflows.redaction import collect_sensitive_values, redact
+from app.workflows.redaction import collect_sensitive_values, is_sensitive_key, redact
 
 logger = logging.getLogger("control_deck.workflows")
 
@@ -192,10 +192,7 @@ def _build_error_context(
 
 def safe_definition_snapshot(value: Any, key: str = "") -> Any:
     """secret参照名は再現用に残し、定義へ直書きされた秘密値だけを除く。"""
-    import re
-
-    sensitive_key = re.search(r"(password|passwd|passphrase|token|secret|authorization|cookie|api[_-]?key)", key, re.I)
-    if sensitive_key:
+    if is_sensitive_key(key):
         if isinstance(value, str) and "{{secrets." in value:
             return value
         return "***"
@@ -231,7 +228,9 @@ def _start_node_run(execution_id: int, node: dict, context: dict[str, Any]) -> i
         return None
 
 
-def _finish_node_run(node_run_id: int | None, entry: dict[str, Any]) -> None:
+def _finish_node_run(
+    node_run_id: int | None, entry: dict[str, Any], context: dict[str, Any] | None = None,
+) -> None:
     if node_run_id is None:
         return
     try:
@@ -240,14 +239,31 @@ def _finish_node_run(node_run_id: int | None, entry: dict[str, Any]) -> None:
             if row is None:
                 return
             output = entry.get("output") if isinstance(entry.get("output"), dict) else {}
-            usage = output.get("usage") if isinstance(output, dict) and isinstance(output.get("usage"), dict) else {}
+            raw_token_count = output.get("tokens") if isinstance(output.get("tokens"), (int, float)) else None
+            sensitive = collect_sensitive_values(context or {})
+            sensitive.update(str(value) for value in ((context or {}).get("__secrets__") or {}).values() if value)
+            safe_output = redact(output, sensitive_values=sensitive)
+            usage = safe_output.get("usage") if isinstance(safe_output.get("usage"), dict) else {}
+            if raw_token_count is not None and "total_tokens" not in usage:
+                usage = {**usage, "total_tokens": raw_token_count}
+            raw_logs = safe_output.get("logs")
+            logs = raw_logs if isinstance(raw_logs, list) else ([raw_logs] if isinstance(raw_logs, str) else [])
+            raw_artifacts = safe_output.get("artifacts")
+            artifacts = raw_artifacts if isinstance(raw_artifacts, list) else []
+            if isinstance(safe_output.get("path"), str):
+                artifacts = [*artifacts, {"path": safe_output["path"]}]
             row.status = str(entry.get("status") or "FAILED")
-            row.outputs_json = _json_limited(output, 1_000_000)
+            row.outputs_json = _json_limited(safe_output, 1_000_000)
             error_context = entry.get("error_context")
             row.error_json = _json_limited(
-                error_context if isinstance(error_context, dict) else {"message": str(entry.get("error") or "")},
+                redact(
+                    error_context if isinstance(error_context, dict) else {"message": str(entry.get("error") or "")},
+                    sensitive_values=sensitive,
+                ),
                 64_000,
             )
+            row.logs_json = _json_limited(redact(logs, sensitive_values=sensitive), 256_000)
+            row.artifacts_json = _json_limited(redact(artifacts, sensitive_values=sensitive), 256_000)
             row.token_usage_json = _json_limited(usage, 32_000)
             row.attempt = int(entry.get("attempts") or 0)
             row.retry_count = max(0, row.attempt - 1)
@@ -328,7 +344,7 @@ async def _execute_graph(
                 approved = await asyncio.wait_for(fut, timeout=approval_timeout)
             except asyncio.TimeoutError:
                 fail_entry("承認待ちがタイムアウトしました", "APPROVAL_TIMEOUT", "TIMED_OUT", 1, retryable=False)
-                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry, run_context)
                 if str(config.get("on_error", "stop")) == "stop":
                     raise NodeError(f"ノード {entry['name']} の承認待ちがタイムアウトしました")
                 return entry
@@ -337,7 +353,7 @@ async def _execute_graph(
                 await asyncio.to_thread(_set_exec_status, execution_id, "RUNNING")
             if not approved:
                 fail_entry("実行が却下されました", "APPROVAL_REJECTED", "FAILED", 1, retryable=False)
-                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry, run_context)
                 if str(config.get("on_error", "stop")) == "stop":
                     raise NodeError(f"ノード {entry['name']} が却下されました")
                 return entry
@@ -370,11 +386,11 @@ async def _execute_graph(
                 var_name = str(config.get("output_var") or "").strip()
                 if var_name:
                     run_context.setdefault("__vars__", {})[var_name] = output
-                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry, run_context)
                 return entry
             except asyncio.CancelledError:
                 entry.update(status="CANCELED", finished_at=utcnow().isoformat())
-                await asyncio.to_thread(_finish_node_run, node_run_id, entry)
+                await asyncio.to_thread(_finish_node_run, node_run_id, entry, run_context)
                 raise
             except asyncio.TimeoutError:
                 err, final_status, error_code = "タイムアウト", "TIMED_OUT", "NODE_TIMEOUT"
@@ -390,7 +406,7 @@ async def _execute_graph(
                 entry["status"] = "RUNNING"
                 continue
             fail_entry(err, error_code, final_status, attempt, retryable=True)
-            await asyncio.to_thread(_finish_node_run, node_run_id, entry)
+            await asyncio.to_thread(_finish_node_run, node_run_id, entry, run_context)
             if str(config.get("on_error", "stop")) == "stop":
                 raise NodeError(f"ノード {entry['name']} が失敗しました: {err}")
             return entry

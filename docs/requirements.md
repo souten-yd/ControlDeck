@@ -304,6 +304,7 @@ CPU・GPU・ログ条件 / Webhook。
 コマンド（登録済みのみ、任意シェルは初期無効）、ファイル、ネットワーク（HTTP GET/POST/Webhook/TCP/Ping）、
 条件・制御（If/Switch/AND/OR/NOT/待機/再試行/タイムアウト/並列/順次/エラーハンドラー/終了）。
 実行状態: QUEUED / RUNNING / SUCCEEDED / FAILED / CANCELED / TIMED_OUT / WAITING。ノードごとの入出力・時刻・エラー保存。
+- 実行履歴はノードごとの実入力、実出力、開始・終了・経過時間、retry、token、log、error、artifact参照、入出力sizeを表示し、並列性とbottleneckをタイムラインで確認できる。
 - エディタの確認操作は「実行前チェック」と「下書きをテスト」を区別する。両方で同じ構造検証、副作用、公開可否を表示し、前者はexecutor・Secret復号・外部通信・書込を行わず、後者だけがdraftを実実行する。
 - エディタの主実行は、未保存変更を保存し、blockingがなければ現在draftを差分時だけ公開し、そのimmutable version IDを固定して実行する。変更がない場合はversionを増やさない。
 - schedule、Webhook、system event、外部API、Runnerはdraftを暗黙公開せず、明示済み公開版だけを実行する。実行を伴わない公開はその他操作として残す。
