@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-19
 
+## Remote Desktop service health（2026-07-19）
+
+- Remote画面の状態確認をguacd単体から、ServerPC接続先のTCP待受確認まで拡張した。guacd／WebSocketが正常でもxrdpが停止している状態を区別し、接続を繰り返さずSSHで実行する復旧コマンドを表示する。
+- 状態は10秒ごとに再確認し、xrdp復旧後は警告を自動解除する。秘密値は送信せず、保存済みself connectionのhost／portへの有限TCP接続だけを使う。
+- 実機調査ではControlDeck→WebSocket→guacdは成功し、OSのxrdp／xrdp-sesmanがinactive、localhost:3389が閉じていたことを確認した。起動にはroot権限が必要なため、Webプロセスからsystem serviceを直接操作しない。
+
+検証: remote backend test 9件、frontend production build成功。実機の停止状態でlocalhost:3389 unavailableと復旧案内を確認。
+
 ## Project Lab core（2026-07-19）
 
 - `/project-lab`へCodeDEV成果物評価画面を追加。`~/CodeDEV`直下のproject、Python/Node/Vite/React/CMake/Rust/.NET/static-web、Git branch/dirty、manifest profileを設定なしで検出する。

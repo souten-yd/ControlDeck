@@ -139,7 +139,26 @@ def test_connection_crud_api(admin_client):
     assert any(c["id"] == cid for c in admin_client.get("/api/v1/remote/connections").json())
     r = admin_client.get("/api/v1/remote/status")
     assert "guacd_available" in r.json()
+    assert "self_connection_configured" in r.json()
+    assert "self_connection_available" in r.json()
+    assert "recovery_hint" in r.json()
     assert admin_client.delete(f"/api/v1/remote/connections/{cid}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_endpoint_available_reports_open_and_closed_tcp_ports():
+    import socket
+
+    from app.remote_desktop.service import endpoint_available
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        assert endpoint_available("127.0.0.1", port)
+    finally:
+        server.close()
+    assert not endpoint_available("127.0.0.1", port)
 
 
 def test_remote_requires_permission(client):

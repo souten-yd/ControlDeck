@@ -18,6 +18,15 @@ interface Connection {
   is_self: boolean;
 }
 
+interface RemoteStatus {
+  guacd_available: boolean;
+  self_connection_configured: boolean;
+  self_connection_available: boolean | null;
+  self_connection_protocol: string | null;
+  self_connection_port: number | null;
+  recovery_hint: string | null;
+}
+
 const PROTO_LABEL: Record<string, string> = { rdp: "RDP", vnc: "VNC", ssh: "SSH" };
 
 export default function RemotePage() {
@@ -28,7 +37,7 @@ export default function RemotePage() {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<Connection | null>(null);
 
-  const { data: status } = useQuery({ queryKey: ["remote-status"], queryFn: () => api<{ guacd_available: boolean }>("/remote/status") });
+  const { data: status } = useQuery({ queryKey: ["remote-status"], queryFn: () => api<RemoteStatus>("/remote/status"), refetchInterval: 10_000 });
   const { data: connections, isLoading } = useQuery({ queryKey: ["remote-connections"], queryFn: () => api<Connection[]>("/remote/connections") });
 
   const remove = useMutation({
@@ -60,6 +69,13 @@ export default function RemotePage() {
           guacd が見つかりません。リモート接続には <code className="font-mono">sudo apt install guacd</code> が必要です
           （<code className="font-mono">./deck.sh</code> 実行時に自動導入を試みます）。
         </p>
+      )}
+      {status?.guacd_available && status.self_connection_configured && status.self_connection_available === false && (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+          <strong className="block">ServerPCのRDPサービスが停止しています</strong>
+          <p className="mt-1 leading-relaxed">ControlDeckとguacdは正常ですが、localhost:{status.self_connection_port}が待受していません。SSHターミナルで次を実行すると、この表示は自動で消えます。</p>
+          {status.recovery_hint && <code className="mt-2 block select-all overflow-x-auto rounded-lg bg-white/70 p-2 font-mono text-[11px] dark:bg-black/20">{status.recovery_hint}</code>}
+        </div>
       )}
 
       {isLoading ? (

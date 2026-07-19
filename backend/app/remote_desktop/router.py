@@ -32,8 +32,35 @@ class ConnectionBody(BaseModel):
 
 
 @router.get("/status")
-def status(user: User = Depends(require_permission("remote_desktop.use"))):
-    return {"guacd_available": guacd.guacd_available()}
+def status(
+    user: User = Depends(require_permission("remote_desktop.use")), db: Session = Depends(get_db),
+):
+    self_connection = db.execute(
+        select(RemoteConnection).where(RemoteConnection.is_self.is_(True)).limit(1)
+    ).scalar_one_or_none()
+    self_available = (
+        service.endpoint_available(self_connection.host, self_connection.port)
+        if self_connection is not None else None
+    )
+    try:
+        params = json.loads(self_connection.params_json or "{}") if self_connection is not None else {}
+    except (json.JSONDecodeError, TypeError):
+        params = {}
+    recovery_hint = None
+    if self_connection is not None and not self_available:
+        recovery_hint = (
+            "sudo systemctl start xrdp"
+            if self_connection.protocol == "rdp" and params.get("security", "any") == "any"
+            else "./deck.sh enable-desktop"
+        )
+    return {
+        "guacd_available": guacd.guacd_available(),
+        "self_connection_configured": self_connection is not None,
+        "self_connection_available": self_available,
+        "self_connection_protocol": self_connection.protocol if self_connection is not None else None,
+        "self_connection_port": self_connection.port if self_connection is not None else None,
+        "recovery_hint": recovery_hint,
+    }
 
 
 @router.get("/connections")
