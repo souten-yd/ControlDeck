@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.database import get_db
 from app.models import (
-    User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowPinnedData, WorkflowSecret, WorkflowVersion,
+    User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowPinnedData, WorkflowSecret, WorkflowTestCase,
+    WorkflowVersion,
 )
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
@@ -597,6 +598,296 @@ def delete_pinned_data(
     )
 
 
+class WorkflowTestCaseBody(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    inputs: dict = Field(default_factory=dict)
+    mocks: dict = Field(default_factory=dict)
+    expected_outputs: dict = Field(default_factory=dict)
+    assertions: list[dict] = Field(default_factory=list)
+
+
+def _test_case_out(row: WorkflowTestCase) -> dict:
+    return {
+        "id": row.id, "workflow_id": row.workflow_id, "name": row.name,
+        "inputs": json.loads(row.inputs_json or "{}"), "mocks": json.loads(row.mocks_json or "{}"),
+        "expected_outputs": json.loads(row.expected_outputs_json or "{}"),
+        "assertions": json.loads(row.assertions_json or "[]"),
+        "last_execution_id": row.last_execution_id, "last_status": row.last_status,
+        "last_result": json.loads(row.last_result_json or "{}"),
+        "created_at": row.created_at, "updated_at": row.updated_at,
+    }
+
+
+def _replace_sensitive_literals(value: Any, sensitive: set[str]) -> Any:
+    """secret参照名は再現用に残し、別fieldへ複製されたliteral値だけも除去する。"""
+    if isinstance(value, dict):
+        return {str(key): _replace_sensitive_literals(child, sensitive) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_replace_sensitive_literals(child, sensitive) for child in value]
+    if isinstance(value, str):
+        import re
+
+        references = re.findall(r"\{\{\s*secrets\.[^}]+\}\}", value, flags=re.I)
+        result = value
+        for index, reference in enumerate(references):
+            result = result.replace(reference, f"__CONTROL_DECK_SECRET_REF_{index}__", 1)
+        for secret in sensitive:
+            if secret:
+                result = result.replace(secret, "***")
+        for index, reference in enumerate(references):
+            result = result.replace(f"__CONTROL_DECK_SECRET_REF_{index}__", reference)
+        return result
+    return value
+
+
+def _set_test_case(row: WorkflowTestCase, body: WorkflowTestCaseBody) -> None:
+    sensitive = collect_sensitive_values(body.model_dump())
+    safe_inputs = _replace_sensitive_literals(engine.safe_definition_snapshot(body.inputs), sensitive)
+    payloads = {
+        "inputs_json": safe_inputs, "mocks_json": redact(body.mocks, sensitive_values=sensitive),
+        "expected_outputs_json": redact(body.expected_outputs, sensitive_values=sensitive),
+        "assertions_json": redact(body.assertions, sensitive_values=sensitive),
+    }
+    for field, value in payloads.items():
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+        if len(serialized) > 1_000_000:
+            raise HTTPException(status_code=413, detail="テストケースの各データは1MB以内にしてください")
+        setattr(row, field, serialized)
+    row.name = body.name.strip()
+
+
+@router.get("/workflows/{workflow_id}/test-cases")
+def list_workflow_test_cases(
+    workflow_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    rows = db.execute(select(WorkflowTestCase).where(
+        WorkflowTestCase.workflow_id == workflow_id,
+    ).order_by(WorkflowTestCase.created_at)).scalars().all()
+    recovered = False
+    for row in rows:
+        if row.last_status != "RUNNING" or row.last_execution_id is None:
+            continue
+        execution = db.get(WorkflowExecution, row.last_execution_id)
+        if execution is not None and execution.status not in ("QUEUED", "RUNNING", "WAITING"):
+            result = _evaluate_test_case(row, execution)
+            row.last_result_json = json.dumps(result, ensure_ascii=False, default=str)
+            row.last_status = "PASSED" if result["passed"] else "FAILED"
+            recovered = True
+    if recovered:
+        db.commit()
+    return [_test_case_out(row) for row in rows]
+
+
+@router.post("/workflows/{workflow_id}/test-cases", status_code=201)
+def create_workflow_test_case(
+    workflow_id: int,
+    body: WorkflowTestCaseBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    row = WorkflowTestCase(workflow_id=workflow_id, name=body.name.strip())
+    _set_test_case(row, body)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    audit.record(
+        db, "workflow.test_case_create", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"test_case_id": row.id},
+    )
+    return _test_case_out(row)
+
+
+@router.put("/workflows/{workflow_id}/test-cases/{case_id}")
+def update_workflow_test_case(
+    workflow_id: int,
+    case_id: int,
+    body: WorkflowTestCaseBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    row = db.get(WorkflowTestCase, case_id)
+    if row is None or row.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="テストケースが見つかりません")
+    _set_test_case(row, body)
+    row.last_status = "NEVER"
+    row.last_execution_id = None
+    row.last_result_json = "{}"
+    db.commit()
+    audit.record(
+        db, "workflow.test_case_update", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"test_case_id": case_id},
+    )
+    return _test_case_out(row)
+
+
+@router.delete("/workflows/{workflow_id}/test-cases/{case_id}", status_code=204)
+def delete_workflow_test_case(
+    workflow_id: int,
+    case_id: int,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    row = db.get(WorkflowTestCase, case_id)
+    if row is None or row.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="テストケースが見つかりません")
+    db.delete(row)
+    db.commit()
+    audit.record(
+        db, "workflow.test_case_delete", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"test_case_id": case_id},
+    )
+
+
+def _value_at_path(root: Any, path: str) -> tuple[bool, Any]:
+    current = root
+    for part in [item for item in path.split(".") if item]:
+        if not isinstance(current, dict) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def _evaluate_test_case(row: WorkflowTestCase, execution: WorkflowExecution) -> dict:
+    context = json.loads(execution.context_json or "{}")
+    outputs = _final_outputs(context)
+    expected = json.loads(row.expected_outputs_json or "{}")
+    assertions = json.loads(row.assertions_json or "[]")
+    checks: list[dict] = []
+    for name, wanted in expected.items():
+        actual = outputs.get(name, {}).get("value")
+        checks.append({"path": f"outputs.{name}.value", "operator": "equals", "expected": wanted,
+                       "actual": actual, "passed": actual == wanted})
+    root = {"outputs": outputs, "context": context}
+    for assertion in assertions:
+        path = str(assertion.get("path") or "")
+        operator = str(assertion.get("operator") or "equals")
+        wanted = assertion.get("expected")
+        found, actual = _value_at_path(root, path)
+        passed = False
+        if operator == "exists":
+            passed = found
+        elif operator == "not_exists":
+            passed = not found
+        elif operator == "equals":
+            passed = found and actual == wanted
+        elif operator == "contains":
+            passed = found and ((isinstance(actual, str) and str(wanted) in actual) or
+                                (isinstance(actual, list) and wanted in actual))
+        elif operator in ("gt", "gte", "lt", "lte"):
+            try:
+                left, right = float(actual), float(wanted)
+                passed = {"gt": left > right, "gte": left >= right, "lt": left < right, "lte": left <= right}[operator]
+            except (TypeError, ValueError):
+                passed = False
+        else:
+            checks.append({"path": path, "operator": operator, "expected": wanted, "actual": actual,
+                           "passed": False, "error": "未対応のoperatorです"})
+            continue
+        checks.append({"path": path, "operator": operator, "expected": wanted, "actual": actual, "passed": passed})
+    passed = execution.status == "SUCCEEDED" and all(check["passed"] for check in checks)
+    return {
+        "passed": passed, "execution_status": execution.status, "checks": redact(checks),
+        "summary": {"passed": sum(1 for check in checks if check["passed"]), "total": len(checks)},
+    }
+
+
+async def _complete_test_case(case_id: int, execution_id: int) -> None:
+    import asyncio
+
+    for _ in range(3600):
+        await asyncio.sleep(0.5)
+        with engine.SessionLocal() as db:
+            execution = db.get(WorkflowExecution, execution_id)
+            row = db.get(WorkflowTestCase, case_id)
+            if execution is None or row is None or row.last_execution_id != execution_id:
+                return
+            if execution.status in ("QUEUED", "RUNNING", "WAITING"):
+                continue
+            result = _evaluate_test_case(row, execution)
+            row.last_result_json = json.dumps(result, ensure_ascii=False, default=str)
+            row.last_status = "PASSED" if result["passed"] else "FAILED"
+            db.commit()
+            return
+    with engine.SessionLocal() as db:
+        row = db.get(WorkflowTestCase, case_id)
+        if row is not None and row.last_execution_id == execution_id:
+            row.last_status = "ERROR"
+            row.last_result_json = json.dumps({"passed": False, "error": "評価待機がタイムアウトしました"}, ensure_ascii=False)
+            db.commit()
+
+
+async def _start_test_case(workflow_id: int, row: WorkflowTestCase) -> int:
+    inputs = json.loads(row.inputs_json or "{}")
+    execution_id = await engine.run_workflow(workflow_id, trigger_type=f"test_case:{row.id}", input_data=inputs)
+    row.last_execution_id = execution_id
+    row.last_status = "RUNNING"
+    row.last_result_json = "{}"
+    return execution_id
+
+
+@router.post("/workflows/{workflow_id}/test-cases/{case_id}/run")
+async def run_workflow_test_case(
+    workflow_id: int,
+    case_id: int,
+    request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    row = db.get(WorkflowTestCase, case_id)
+    if row is None or row.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="テストケースが見つかりません")
+    try:
+        execution_id = await _start_test_case(workflow_id, row)
+    except engine.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.commit()
+    import asyncio
+    asyncio.create_task(_complete_test_case(case_id, execution_id))
+    audit.record(
+        db, "workflow.test_case_run", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"test_case_id": case_id, "execution_id": execution_id},
+    )
+    return {"test_case_id": case_id, "execution_id": execution_id, "status": "RUNNING"}
+
+
+@router.post("/workflows/{workflow_id}/test-cases/run-batch")
+async def run_workflow_test_case_batch(
+    workflow_id: int,
+    request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    rows = db.execute(select(WorkflowTestCase).where(
+        WorkflowTestCase.workflow_id == workflow_id,
+    ).order_by(WorkflowTestCase.created_at)).scalars().all()
+    if not rows:
+        raise HTTPException(status_code=422, detail="テストケースがありません")
+    started = []
+    for row in rows:
+        execution_id = await _start_test_case(workflow_id, row)
+        started.append({"test_case_id": row.id, "execution_id": execution_id})
+    db.commit()
+    import asyncio
+    for item in started:
+        asyncio.create_task(_complete_test_case(item["test_case_id"], item["execution_id"]))
+    audit.record(
+        db, "workflow.test_case_batch", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"count": len(started), "execution_ids": [item["execution_id"] for item in started]},
+    )
+    return {"started": started}
+
+
 @router.delete("/workflows/{workflow_id}")
 def delete_workflow(
     workflow_id: int,
@@ -609,6 +900,7 @@ def delete_workflow(
     from sqlalchemy import delete as sql_delete
 
     execution_ids = select(WorkflowExecution.id).where(WorkflowExecution.workflow_id == workflow_id)
+    db.execute(sql_delete(WorkflowTestCase).where(WorkflowTestCase.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowPinnedData).where(WorkflowPinnedData.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowNodeRun).where(WorkflowNodeRun.execution_id.in_(execution_ids)))
     db.execute(sql_delete(WorkflowExecution).where(WorkflowExecution.workflow_id == workflow_id))
