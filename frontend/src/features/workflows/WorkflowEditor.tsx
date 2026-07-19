@@ -585,18 +585,18 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           {wf?.state === "published" && !dirty ? `公開 v${wf.published_version}` : "編集中"}
         </span>
         <DropdownMenu
-          ariaLabel="その他メニュー"
+          ariaLabel="More"
           trigger={<IconDots />}
           items={[
-            { label: "実行履歴", onSelect: () => setExecutionsOpen(true) },
-            ...(can("workflows.run") ? [{ label: "確認・テスト", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
-            { label: "JSON を出力", onSelect: exportJson },
+            { label: "Execution History", onSelect: () => setExecutionsOpen(true) },
+            ...(can("workflows.run") ? [{ label: "Preview & Test", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
+            { label: "Export JSON", onSelect: exportJson },
             ...(readOnly ? [] : [
-              { label: "アプリ化", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
-              { label: "実行せず公開", onSelect: () => void publish() },
-              ...(can("workflows.run") ? [{ label: "公開して直接実行", onSelect: () => void run() }] : []),
-              { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
-              { label: "選択をスニペット保存", onSelect: saveAsSnippet },
+              { label: "Open in App Studio", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
+              { label: "Publish Only", onSelect: () => void publish() },
+              ...(can("workflows.run") ? [{ label: "Publish & Debug Run", onSelect: () => void run() }] : []),
+              { label: "Import JSON", onSelect: () => fileRef.current?.click() },
+              { label: "Save Selection as Snippet", onSelect: saveAsSnippet },
             ]),
           ]}
         />
@@ -2022,11 +2022,11 @@ function NodeContextMenu({
     };
   }, [onClose]);
   const items: { label: string; action: "delete" | "duplicate" | "rotate" | "mirror" | "config"; danger?: boolean; icon: string }[] = [
-    { label: "設定を編集", action: "config", icon: "⚙" },
-    ...(isTrigger ? [] : [{ label: "複製", action: "duplicate" as const, icon: "⧉" }]),
-    { label: "回転", action: "rotate", icon: "↻" },
-    { label: "左右ミラー", action: "mirror", icon: "⇋" },
-    ...(isTrigger ? [] : [{ label: "削除", action: "delete" as const, danger: true, icon: "🗑" }]),
+    { label: "Edit Settings", action: "config", icon: "⚙" },
+    ...(isTrigger ? [] : [{ label: "Duplicate", action: "duplicate" as const, icon: "⧉" }]),
+    { label: "Rotate", action: "rotate", icon: "↻" },
+    { label: "Mirror", action: "mirror", icon: "⇋" },
+    ...(isTrigger ? [] : [{ label: "Delete", action: "delete" as const, danger: true, icon: "🗑" }]),
   ];
   return createPortal(
     <div

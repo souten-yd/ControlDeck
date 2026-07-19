@@ -24,25 +24,26 @@ import {
 import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { Logo } from "../components/Logo";
+import { PRODUCT_NAMES } from "../constants/productNames";
 
 const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; feature?: string; permission?: string }> = [
-  { to: "/", label: "ホーム", icon: IconHome },
-  { to: "/apps", label: "アプリ", icon: IconGrid },
-  { to: "/runner", label: "公開アプリ", icon: IconPlay, permission: "workflows.run" },
-  { to: "/workflows", label: "ワークフロー", icon: IconFlow, permission: "workflows.edit" },
-  { to: "/applications", label: "アプリ設計", icon: IconGrid, permission: "application_builder.view" },
+  { to: "/", label: "Home", icon: IconHome },
+  { to: "/apps", label: "Apps", icon: IconGrid },
+  { to: "/runner", label: PRODUCT_NAMES.workflowApps, icon: IconPlay, permission: "workflows.run" },
+  { to: "/workflows", label: "Workflows", icon: IconFlow, permission: "workflows.edit" },
+  { to: "/applications", label: PRODUCT_NAMES.appStudio, icon: IconGrid, permission: "application_builder.view" },
   { to: "/project-lab", label: "Project Lab", icon: IconCode, permission: "project_lab.view" },
-  { to: "/remote", label: "リモート", icon: IconRemote },
-  { to: "/files", label: "ファイル", icon: IconFile },
-  { to: "/terminal", label: "ターミナル", icon: IconTerminal },
-  { to: "/assistant", label: "AIアシスタント", icon: IconAssistant },
+  { to: "/remote", label: "Remote", icon: IconRemote },
+  { to: "/files", label: "Files", icon: IconFile },
+  { to: "/terminal", label: "Terminal", icon: IconTerminal },
+  { to: "/assistant", label: "AI Assistant", icon: IconAssistant },
   { to: "/github", label: "GitHub", icon: IconBranch },
   { to: "/knowledge", label: "Knowledge", icon: IconBook },
-  { to: "/models", label: "Model", icon: IconChip },
+  { to: "/models", label: "Models", icon: IconChip },
   { to: "/opencode", label: "OpenCode", icon: IconCode, feature: "opencode" },
-  { to: "/logs", label: "ログ", icon: IconLogs },
-  { to: "/system", label: "システム", icon: IconChart },
-  { to: "/settings", label: "設定", icon: IconSettings },
+  { to: "/logs", label: "Logs", icon: IconLogs },
+  { to: "/system", label: "System", icon: IconChart },
+  { to: "/settings", label: "Settings", icon: IconSettings },
 ];
 
 // モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / AIアシスタント + 右端に操作
@@ -236,7 +237,7 @@ export default function AppLayout() {
               onClick={() => setPaletteOpen(true)}
               className="flex w-64 items-center gap-2 rounded-xl border border-zinc-200 px-3 py-1.5 text-sm text-zinc-400 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
             >
-              検索・コマンド
+              Search or run a command
               <kbd className="ml-auto rounded bg-zinc-100 px-1.5 text-[10px] text-zinc-500 dark:bg-zinc-800">
                 Ctrl K
               </kbd>
@@ -251,7 +252,7 @@ export default function AppLayout() {
             )}
             <button
               onClick={() => setActionOpen(true)}
-              aria-label="グローバル操作"
+              aria-label="Quick Actions"
               className="hidden rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
             >
               <IconPower />
@@ -268,7 +269,7 @@ export default function AppLayout() {
         {/* モバイル下部ナビ（フロー内配置で iOS の fixed 浮き上がりを回避）。
             全画面ページ（エディタ等）では非表示にして没入表示にする。 */}
         <nav
-          aria-label="メインナビゲーション"
+          aria-label="Main navigation"
           className={`safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 ${immersive ? "hidden" : "md:hidden"}`}
         >
           <div className="grid grid-cols-6">
@@ -277,13 +278,13 @@ export default function AppLayout() {
             ))}
             <button
               onClick={() => setActionOpen(true)}
-              aria-label="操作メニュー"
-              className="flex flex-col items-center gap-0.5 py-2 text-zinc-600 dark:text-zinc-400"
+              aria-label="More"
+              className="flex min-w-0 flex-col items-center gap-0.5 py-2 text-zinc-600 dark:text-zinc-400"
             >
               <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-600 text-white">
                 <IconPlus />
               </span>
-              <span className="text-[10px]">操作</span>
+              <span className="max-w-full truncate px-0.5 text-[10px]">More</span>
             </button>
           </div>
         </nav>
@@ -291,12 +292,12 @@ export default function AppLayout() {
 
       {/* グローバル操作シート */}
       {actionOpen && (
-        <BottomSheet title="操作" onClose={() => setActionOpen(false)}>
+        <BottomSheet title="Quick Actions" onClose={() => setActionOpen(false)}>
           <div className="grid grid-cols-2 gap-1">
             {can("apps.edit") && (
               <ActionItem
                 icon={<IconPlus />}
-                label="アプリを追加"
+                label="Add App"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/apps?add=1");
@@ -306,7 +307,7 @@ export default function AppLayout() {
             {can("workflows.run") && (
               <ActionItem
                 icon={<IconPlay />}
-                label="公開アプリ"
+                label={PRODUCT_NAMES.workflowApps}
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/runner");
@@ -316,7 +317,7 @@ export default function AppLayout() {
             {can("workflows.edit") && (
               <ActionItem
                 icon={<IconFlow />}
-                label="ワークフロー"
+                label="Workflows"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/workflows");
@@ -326,7 +327,7 @@ export default function AppLayout() {
             {can("application_builder.view") && (
               <ActionItem
                 icon={<IconGrid />}
-                label="Application Builder"
+                label={PRODUCT_NAMES.appStudio}
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/applications");
@@ -346,7 +347,7 @@ export default function AppLayout() {
             {can("remote_desktop.use") && (
               <ActionItem
                 icon={<IconRemote />}
-                label="リモートデスクトップ"
+                label="Remote Desktop"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/remote");
@@ -356,7 +357,7 @@ export default function AppLayout() {
             {can("terminal.use") && (
               <ActionItem
                 icon={<IconTerminal />}
-                label="ターミナル"
+                label="Terminal"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/terminal");
@@ -376,7 +377,7 @@ export default function AppLayout() {
             {can("files.view") && (
               <ActionItem
                 icon={<IconFile />}
-                label="ファイルマネージャー"
+                label="File Manager"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/files");
@@ -386,7 +387,7 @@ export default function AppLayout() {
             {can("apps.view") && (
               <ActionItem
                 icon={<IconBranch />}
-                label="GitHub 管理"
+                label="GitHub"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/github");
@@ -406,7 +407,7 @@ export default function AppLayout() {
             {can("workflows.run") && (
               <ActionItem
                 icon={<IconChip />}
-                label="Model / LLM設定"
+                label="Models & LLM"
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/models");
@@ -415,7 +416,7 @@ export default function AppLayout() {
             )}
             <ActionItem
               icon={<IconChart />}
-              label="システム監視"
+              label="System Monitor"
               onClick={() => {
                 setActionOpen(false);
                 navigate("/system");
@@ -423,7 +424,7 @@ export default function AppLayout() {
             />
             <ActionItem
               icon={<IconSettings />}
-              label="設定"
+              label="Settings"
               onClick={() => {
                 setActionOpen(false);
                 navigate("/settings");
@@ -433,7 +434,7 @@ export default function AppLayout() {
           <div className="my-3 border-t border-zinc-200 dark:border-zinc-800" />
           <ActionItem
             icon={<IconLogout />}
-            label={`ログアウト（${user?.display_name ?? ""}）`}
+            label={`Sign Out (${user?.display_name ?? ""})`}
             onClick={() => {
               setActionOpen(false);
               void logout();
@@ -441,16 +442,16 @@ export default function AppLayout() {
           />
           {can("power.manage") && (
             <>
-              <p className="mb-1 mt-3 px-1 text-xs text-zinc-400">電源</p>
+              <p className="mb-1 mt-3 px-1 text-xs text-zinc-400">Power</p>
               <div className="space-y-1">
                 <ActionItem
                   icon={<IconRestartPower />}
-                  label={platformReloading ? "Control Deckを再読み込み中…" : "Control Deckを再読み込み"}
+                  label={platformReloading ? "Reloading ControlDeck…" : "Reload ControlDeck"}
                   onClick={reloadPlatform}
                 />
                 <ActionItem
                   icon={<IconRestartPower />}
-                  label="PC を再起動"
+                  label="Restart PC"
                   danger
                   onClick={() => {
                     setActionOpen(false);
@@ -459,7 +460,7 @@ export default function AppLayout() {
                 />
                 <ActionItem
                   icon={<IconPower />}
-                  label="PC をシャットダウン"
+                  label="Shut Down PC"
                   danger
                   onClick={() => {
                     setActionOpen(false);
@@ -516,7 +517,7 @@ function MobileNavLink({
       to={to}
       end={to === "/"}
       className={({ isActive }) =>
-        `flex min-h-[52px] flex-col items-center justify-center gap-0.5 py-1.5 ${
+        `flex min-h-[52px] min-w-0 flex-col items-center justify-center gap-0.5 py-1.5 ${
           isActive
             ? "text-accent-600 dark:text-accent-400"
             : "text-zinc-500 dark:text-zinc-400"
@@ -524,7 +525,7 @@ function MobileNavLink({
       }
     >
       <Ico className="text-xl" />
-      <span className="text-[10px]">{label}</span>
+      <span className="max-w-full truncate px-0.5 text-[10px]">{label}</span>
     </NavLink>
   );
 }

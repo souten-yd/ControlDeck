@@ -6,6 +6,7 @@ import { useAuth, useToasts } from "../stores";
 import { formatBytes } from "../lib/format";
 import { BottomSheet, DropdownMenu, Skeleton } from "../components/ui";
 import { IconDots, IconFile, IconTrash, IconUpload } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 
 const TextEditor = lazy(() => import("../features/files/TextEditor"));
 
@@ -161,6 +162,7 @@ export default function FilesPage() {
         if (can("files.edit")) upload(e.dataTransfer.files);
       }}
     >
+      <PageHeader title="Files" />
       {/* パンくず + 操作 */}
       <div className="mb-3 flex items-center gap-2">
         <nav aria-label="パス" className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-sm">
@@ -201,15 +203,15 @@ export default function FilesPage() {
           </button>
         )}
         <DropdownMenu
-          ariaLabel="ファイル操作メニュー"
+          ariaLabel="File menu"
           trigger={<IconDots />}
           items={[
             { label: showHidden ? "隠しファイルを隠す" : "隠しファイルを表示", onSelect: () => setShowHidden(!showHidden) },
             ...(can("files.edit")
-              ? [{ label: "新しいフォルダ", onSelect: () => setDialog({ kind: "mkdir" }) }]
+              ? [{ label: "New Folder", onSelect: () => setDialog({ kind: "mkdir" }) }]
               : []),
-            { label: "ごみ箱", onSelect: () => setTrashOpen(true) },
-            { label: "再読み込み", onSelect: refresh },
+            { label: "Trash", onSelect: () => setTrashOpen(true) },
+            { label: "Refresh", onSelect: refresh },
           ]}
         />
       </div>
@@ -262,21 +264,21 @@ export default function FilesPage() {
                   trigger={<IconDots />}
                   items={[
                     ...(!e.is_dir
-                      ? [{ label: "ダウンロード", onSelect: () => window.open(`/api/v1/files/download?path=${encodeURIComponent(e.path)}`, "_blank") }]
+                      ? [{ label: "Download", onSelect: () => window.open(`/api/v1/files/download?path=${encodeURIComponent(e.path)}`, "_blank") }]
                       : []),
                     ...(!e.is_dir && can("files.edit")
-                      ? [{ label: "編集", onSelect: () => setEditing(e.path) }]
+                      ? [{ label: "Edit", onSelect: () => setEditing(e.path) }]
                       : []),
                     ...(can("files.edit")
                       ? [
-                          { label: "名前を変更", onSelect: () => setDialog({ kind: "rename", entry: e }) },
-                          { label: "コピー", onSelect: () => setDialog({ kind: "copy", entry: e }) },
-                          { label: "移動", onSelect: () => setDialog({ kind: "move", entry: e }) },
+                          { label: "Rename", onSelect: () => setDialog({ kind: "rename", entry: e }) },
+                          { label: "Copy", onSelect: () => setDialog({ kind: "copy", entry: e }) },
+                          { label: "Move", onSelect: () => setDialog({ kind: "move", entry: e }) },
                         ]
                       : []),
-                    { label: "情報", onSelect: () => setDetail(e) },
+                    { label: "Info", onSelect: () => setDetail(e) },
                     ...(can("files.delete")
-                      ? [{ label: "ごみ箱に移動", onSelect: async () => {
+                      ? [{ label: "Move to Trash", onSelect: async () => {
                           try {
                             await api(`/files?path=${encodeURIComponent(e.path)}`, { method: "DELETE" });
                             show("ごみ箱に移動しました");
@@ -344,9 +346,9 @@ export default function FilesPage() {
                     <p className="truncate text-sm">{item.name}</p>
                     <p className="truncate text-xs text-zinc-400">{item.original_path} · {new Date(item.deleted_at * 1000).toLocaleString("ja-JP")}</p>
                   </div>
-                  {can("files.delete") && <DropdownMenu ariaLabel={`${item.name} のごみ箱操作`} trigger={<IconDots />} items={[
-                    { label: "復元", onSelect: async () => { try { await api(`/files/trash/${item.id}/restore`, { method: "POST" }); await refreshTrash(); refresh(); show("復元しました"); } catch (e) { show(e instanceof Error ? e.message : "復元失敗", "error"); } } },
-                    { label: "完全に削除", danger: true, onSelect: async () => { if (!confirm("完全に削除しますか？")) return; await api(`/files/trash/${item.id}`, { method: "DELETE" }); await refreshTrash(); show("完全に削除しました"); } },
+                  {can("files.delete") && <DropdownMenu ariaLabel={`${item.name} trash actions`} trigger={<IconDots />} items={[
+                    { label: "Restore", onSelect: async () => { try { await api(`/files/trash/${item.id}/restore`, { method: "POST" }); await refreshTrash(); refresh(); show("復元しました"); } catch (e) { show(e instanceof Error ? e.message : "復元失敗", "error"); } } },
+                    { label: "Delete Permanently", danger: true, onSelect: async () => { if (!confirm("完全に削除しますか？")) return; await api(`/files/trash/${item.id}`, { method: "DELETE" }); await refreshTrash(); show("完全に削除しました"); } },
                   ]} />}
                 </li>
               ))}

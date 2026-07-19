@@ -166,7 +166,7 @@ ControlDeckのエディタは「配置して保存」で終わらず、入力→
 6. 必要なら「このノードまで実行」「このノードから再実行」を使う。途中再実行は当時版／現在版を選択できる。
 7. 実行履歴でノードを選び、実入力・実出力・時間・retry・token・ログ・エラー・artifactを確認する。タイムラインでは並列実行と最長ノードを把握できる。
 8. 入力と成功結果を回帰テストケースとして保存し、変更後に一括実行する。期待値との差はpath・期待値・実値で表示される。
-9. 主ボタンの「更新して開く」を押す。保存と公開前検証を行い、問題がなければ最新内容を公開して「公開アプリ」画面を開く。公開内容と編集中内容が同じ場合は「アプリを開く」と表示され、versionを増やさず直接開く。
+9. 主ボタンの「更新して開く」を押す。保存と公開前検証を行い、問題がなければ最新内容を公開して「Play」画面を開く。公開内容と編集中内容が同じ場合は「アプリを開く」と表示され、versionを増やさず直接開く。
 10. 入力フォームから公開版を実行し、同じ画面で進捗、承認、結果、最近の実行を確認する。エディタ内で直ちに実行してノード状態まで観測する高度な操作は「その他 → 公開して直接実行」を使う。
 
 各ノード設定では、必須表示、推奨値、その値を勧める理由、最短手順、主な入出力、副作用、構成例をその場で確認できる。
@@ -190,9 +190,9 @@ systemd user unitで起動して`/health`完了まで待つ。事前起動は通
 並列出力までを一度に確認できる。入門用の直列フローだけでなく、サイト監視、アプリ復旧、Deep Research、RAG、定期論文収集など、
 分岐・副作用・エラー設定・複数output contractを組み合わせた実用例も収録している。
 
-### 公開ワークフローを「公開アプリ」で使う
+### 公開ワークフローを「Play」で使う
 
-左メニューまたはiPhone下部ナビの「公開アプリ」は、公開済みワークフローを業務アプリのように使う実行専用画面である。内部route `/runner` は既存リンクとの互換性のため維持する。
+左メニューまたはiPhone下部ナビの「Play」は、公開済みワークフローを業務アプリのように使う実行専用画面である。内部route `/runner` とAPI上のWorkflow Runner名は既存リンクとの互換性のため維持する。
 公開アプリを選び、生成された入力フォームへ値を入れ、同じ画面で状態、承認、型付き最終出力、最近の実行を確認できる。`human.approval`で待機すると承認文、担当者、期限、承認／却下を表示し、キャンバスへ戻らず処理を再開できる。
 ワークフロー一覧では公開履歴がある項目に「公開版を開く」を表示する。編集中の差分があっても既存公開版は維持され、エディタの「更新して開く」を明示的に押すまで本番版は変わらない。選択中のworkflow IDはURLへ保存されるため、リロードやホーム画面からの再起動でも同じ公開アプリへ戻れる。
 過去入力は「入力を再利用」でフォームへ戻せる。キャンバス、ノード、接続、config、definition/runtime snapshotは公開アプリAPIから返さない。
@@ -200,10 +200,10 @@ systemd user unitで起動して`/health`完了まで待つ。事前起動は通
 `operator`など`workflows.run`だけの利用者は公開アプリを使用する。draft、ノード実値、途中再実行、version差分等の開発情報は
 `workflows.edit`を持つ利用者だけがエディタとデバッグAPIで参照できる。公開アプリは常にimmutableな公開版を実行し、draft変更は再公開まで反映しない。
 
-### Application Builder（Phase A）
+### App Studio（Application Builder Phase A）
 
 ワークフローの「その他 → アプリ化」から、Workflow DefinitionをportableなWorkflow IRへ変換し、独立したApplication Spec v1 Projectを作成できる。
-Application Builder画面ではtrigger input、typed output、node/edge、capability、side effect、target互換性、Application page/entity/API/targetの件数、
+UI上の「App Studio」ではtrigger input、typed output、node/edge、capability、side effect、target互換性、Application page/entity/API/targetの件数、
 blocking/warning/suggestionを確認する。Application Spec、型、framework/node capabilityはバックエンドschema/registryを正とし、未知fieldを保存時に失わない。
 
 Phase Aは設計・検証基盤だけであり、source生成、build、package、artifact、AI GUI設計はまだ提供しない。未実装機能を成功するdummy buttonで見せない。

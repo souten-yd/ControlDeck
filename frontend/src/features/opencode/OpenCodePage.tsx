@@ -12,6 +12,7 @@ import { FilePicker } from "../../components/FilePicker";
 import { ConfirmDialog, Skeleton } from "../../components/ui";
 import { IconFolder, IconPlus, IconTrash } from "../../components/icons";
 import { useToasts } from "../../stores";
+import { PageHeader } from "../../components/PageHeader";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -145,16 +146,8 @@ export default function OpenCodePage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
-      <header className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h1 className="text-lg font-semibold">OpenCode</h1>
-          <p className="mt-0.5 text-xs text-zinc-400">
-            {data?.feature.version ? `v${data.feature.version.replace(/^v/, "")}` : "確認中"} · CLIそのままの対話TUI（tmux永続・再接続可）
-          </p>
-        </div>
-        <button onClick={() => setSettingsOpen((v) => !v)} aria-label="OpenCode設定" title="LLM endpoint / モデル設定"
-          className={`rounded-xl border px-3 py-2 text-sm ${settingsOpen ? "border-accent-500 text-accent-600" : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"}`}>⚙</button>
-      </header>
+      <PageHeader title="OpenCode" description={`${data?.feature.version ? `v${data.feature.version.replace(/^v/, "")}` : "確認中"} · CLIそのままの対話TUI（tmux永続・再接続可）`} actions={<button onClick={() => setSettingsOpen((v) => !v)} aria-label="OpenCode Settings" title="LLM endpoint / model settings"
+        className={`min-h-11 rounded-xl border px-3 py-2 text-sm ${settingsOpen ? "border-accent-500 text-accent-600" : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"}`}>⚙</button>} />
 
       {settingsOpen && (
         <section className="grid gap-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800 sm:grid-cols-2">

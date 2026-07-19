@@ -310,6 +310,7 @@ CPU・GPU・ログ条件 / Webhook。
 - 公開アプリは入力・進捗・承認・型付き出力・履歴だけを扱い、編集定義を返さない専用APIを使う。承認待ちはnode ID、redact済み承認文、担当者、ISO 8601期限を共通contractで返し、公開アプリ内の承認／却下で再開できる。workflow IDをURLへ保持し、再読込後も選択を復元する。エディタ内の直接実行は高度なデバッグ操作としてその他メニューへ置く。
 - schedule、Webhook、system event、外部API、公開アプリはdraftを暗黙公開せず、明示済み公開版だけを実行する。ワークフロー一覧から既存公開版を開いても、編集中draftを更新しない。
 - LLM生成ノードは、ControlDeck管理下のローカルruntimeが停止・unload中なら生成前に正規のモデル管理境界から起動・ロードし、有限のstartup timeout内でhealth完了を待つ。同一modelの並列起動をまとめ、外部endpointは勝手に操作しない。自動準備は既定有効とし、進捗と起動／load／timeoutの失敗理由をNodeRunへ残す。
+- グローバルnavigation、Quick Actions、command palette、機能ページ名は短い英語名へ統一する。公開Workflow実行面は`Play`、Application BuilderのUI製品名は`App Studio`とし、route／API／設計上のtechnical nameは後方互換のため維持する。通常ページは共通PageHeaderを使い、titleを20px／28px、同じ余白・説明・action配置にする。AI Chat、Workflow Editor、接続中Terminal、Remote Viewer等の独立画面は対象外とする。
 
 # 19. 認証
 

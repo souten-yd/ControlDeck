@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { projectLabApi, type ProjectLabArtifact, type ProjectLabDetail, type ProjectLabRun } from "../api/projectLab";
+import { PageHeader } from "../components/PageHeader";
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -16,10 +17,7 @@ export default function ProjectLabPage() {
   }, [projects, selected]);
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800 md:px-6">
-        <h1 className="text-lg font-semibold">Project Lab</h1>
-        <p className="mt-0.5 text-xs text-zinc-500">~/CodeDEVの開発成果物を自動検出し、安全なread-only previewで評価します。</p>
-      </header>
+      <PageHeader title="Project Lab" description="~/CodeDEVの開発成果物を自動検出し、安全なread-only previewで評価します。" className="mb-0 shrink-0 border-b border-zinc-200 px-4 py-4 dark:border-zinc-800 md:px-6" />
       <div className="grid min-h-0 flex-1 md:grid-cols-[20rem_minmax(0,1fr)]">
         <aside className={`${selected ? "hidden md:block" : "block"} min-h-0 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800`} aria-label="CodeDEVプロジェクト一覧">
           {isLoading && <p className="p-3 text-sm text-zinc-400">検出中...</p>}

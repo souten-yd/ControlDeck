@@ -11,6 +11,7 @@ import { useApps } from "../api/hooks";
 import { useAuth, useToasts } from "../stores";
 import { BottomSheet, DropdownMenu } from "../components/ui";
 import { IconDots, IconPause, IconPlay, IconSearch } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 
 const MAX_LINES = 20000;
 const ROW_HEIGHT = 20;
@@ -123,6 +124,7 @@ export default function LogsPage() {
 
   return (
     <div className="flex h-full flex-col">
+      <PageHeader title="Logs" className="mb-0 shrink-0 border-b border-zinc-200 px-4 py-4 dark:border-zinc-800" />
       {/* ツールバー（常時表示は最小限） */}
       <div className="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
         <select
@@ -158,20 +160,20 @@ export default function LogsPage() {
           {paused ? <IconPlay /> : <IconPause />}
         </button>
         <DropdownMenu
-          ariaLabel="ログメニュー"
+          ariaLabel="Log menu"
           trigger={<IconDots />}
           items={[
             {
-              label: stream === "stdout" ? "stderr へ切替" : "stdout へ切替",
+              label: stream === "stdout" ? "Switch to stderr" : "Switch to stdout",
               onSelect: () =>
                 appId != null &&
                 setParams({ app: String(appId), stream: stream === "stdout" ? "stderr" : "stdout" }),
             },
-            { label: wrap ? "折り返しを解除" : "行を折り返す", onSelect: () => setWrap(!wrap) },
-            { label: "ダウンロード", onSelect: download },
-            { label: "全文コピー", onSelect: copyAll },
+            { label: wrap ? "Disable Line Wrap" : "Wrap Lines", onSelect: () => setWrap(!wrap) },
+            { label: "Download", onSelect: download },
+            { label: "Copy All", onSelect: copyAll },
             ...(can("logs.delete")
-              ? [{ label: "ログを削除", danger: true, onSelect: () => setConfirmDelete(true) }]
+              ? [{ label: "Delete Logs", danger: true, onSelect: () => setConfirmDelete(true) }]
               : []),
           ]}
         />

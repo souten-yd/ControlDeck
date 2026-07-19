@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { applicationBuilderApi, type Diagnostic } from "../api/applicationBuilder";
+import { PageHeader } from "../components/PageHeader";
 
 const severityStyle = { error: "border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300", warning: "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300", suggestion: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300" };
 
@@ -17,7 +18,7 @@ export default function ApplicationEditorPage() {
   const app = (project.data.spec.application ?? {}) as Record<string, unknown>;
   const diagnostics = validation.data?.diagnostics ?? [];
   return <main className="min-h-0 flex-1 overflow-y-auto p-3 pb-24 md:p-6"><div className="mx-auto max-w-6xl">
-    <header className="mb-4 flex items-start gap-3"><button onClick={() => navigate("/applications")} className="min-h-10 shrink-0 text-sm text-zinc-500">← 一覧</button><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h1 className="truncate text-xl font-semibold">{project.data.name}</h1><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">Draft</span><span className="rounded-full bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">Phase A</span></div><p className="mt-1 text-xs text-zinc-500">仕様・IR・互換性の静的検証。生成やbuildを成功扱いにする機能はありません。</p></div></header>
+    <PageHeader leading={<button onClick={() => navigate("/applications")} aria-label="Back to App Studio" className="grid min-h-11 min-w-11 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900">←</button>} title={<span className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate">{project.data.name}</span><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-semibold leading-5 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">Draft</span><span className="rounded-full bg-zinc-100 px-2 py-1 text-[10px] font-medium leading-5 dark:bg-zinc-800">Phase A</span></span>} description="仕様・IR・互換性の静的検証。生成やbuildを成功扱いにする機能はありません。" />
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.7fr)]">
       <div className="space-y-4">
         <Panel title="概要"><Info label="Application" value={String(app.displayName || app.name || project.data.name)} /><Info label="形式" value={project.data.application_type} /><Info label="Workflow" value={project.data.workflow_id ? `#${project.data.workflow_id}` : "未接続"} /><Info label="Spec" value={`v${project.data.schema_version}`} /></Panel>
