@@ -233,7 +233,7 @@ score は issue と独立した説明値とし、publish 可否は `blocking.len
 
 ## 14. New nodes / ControlDeck differentiators
 
-Phase 3 は output.render、human.approval、control.merge/try/delay、data.template/filter/aggregate、flow.return/error/note、trigger.webhook/file/system/email boundary を優先する。
+Phase 3 は output.render、human.approval、control.merge/try/delay、data.template/filter/aggregate、flow.return/error/note、trigger.webhook/file/system/email boundary を優先する。`output.render`と`data.template/filter/aggregate`は実装済み。approval/merge/try/delay、flow制御、system trigger、typed error handleを次の機能単位とする。
 
 次段階は human.form、queue/cache/state/event、subworkflow map、batch/rate/circuit breaker、document/PDF/image/audio、unified notification、test.assert。
 

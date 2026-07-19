@@ -62,6 +62,9 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "util.wait": {"waited_seconds": "number"}, "util.now": {"text": "string", "date": "string", "time": "string"},
     "var.set": {"value": "any"}, "string.op": {"result": "any"}, "text.markdown": {"html": "string"},
     "data.transform": {"value": "any", "valid": "boolean", "errors": "array", "csv": "string", "rows": "array", "count": "integer"},
+    "data.template": {"text": "string", "value": "any", "format": "string"},
+    "data.filter": {"items": "array", "count": "integer", "original_count": "integer"},
+    "data.aggregate": {"result": "any", "groups": "array", "count": "integer", "operation": "string"},
     "file.read": {"content": "string", "path": "string"},
     "file.write": {"path": "string", "bytes": "integer"},
     "file.op": {"path": "string", "deleted": "string", "created": "string"}, "file.exists": {"exists": "boolean", "size": "integer"},
@@ -135,7 +138,7 @@ def node_catalog() -> list[dict[str, Any]]:
             "supports": {
                 "retry": node_type not in ("trigger", "control.loop"),
                 "cancel": True,
-                "progress": node_type in {"control.loop", "data.transform", "file.glob", "ai.utility"},
+                "progress": node_type in {"control.loop", "data.transform", "data.filter", "data.aggregate", "file.glob", "ai.utility"},
                 "dry_run": True,
             },
         })

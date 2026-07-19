@@ -29,7 +29,7 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - 自動再接続、モバイル補助キーバー（Esc / Tab / Ctrl / 矢印 / ^C…）、コピー / 貼り付けシート
 
 ### 🔀 ワークフロー自動化（Dify / n8n 風）
-- React Flow ベースのビジュアルエディタ。標準 40 種類 + OpenCode 有効時の `code.agent` ノード:
+- React Flow ベースのビジュアルエディタ。標準 43 種類 + OpenCode 有効時の `code.agent` ノード:
   アプリ制御 / 条件分岐 / ループ / 変数 / 文字列操作 / ファイル入出力 / HTTP / ダウンロード /
   スクレイピング / ブラウザ操作（Playwright）/ LLM / RAG / Deep Research / OCR / DB クエリ / SSH / Git / C++ ビルド / WOL / Webhook 通知 / 現在日時 など
 - **トリガー入力フィールド**: テキスト / 長文 / 数値 / 選択 / ファイルの型付き入力を定義し、実行時ダイアログで受け取る
@@ -71,9 +71,10 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - OpenCode を既定無効のオプトイン feature として統合
 - 独立 AI アシスタント、永続会話、ジョブの優先度・進捗 stream・cancel を追加
 - llama.cpp の複数 GGUF 管理と Ollama / 外部 OpenAI 互換 provider の共通モデル操作を追加
-- ワークフローを標準40ノードへ拡張し、生成時の意味検証・品質スコア、安全プレビュー、並列map、型・side effect metadata、検索・お気に入りを追加
+- ワークフローを標準43ノードへ拡張し、生成時の意味検証・品質スコア、安全プレビュー、並列map、型・side effect metadata、検索・お気に入りを追加
 - 実行snapshot、node run、単体／部分再実行、固定データ、回帰テスト、draft／公開版分離、型付き`output.render`を追加
 - AIアシスタントと`research.deep`を反復型Deep Research共有エンジンへ統合し、SearXNG、PDF、学術、GitHub、RAG、ローカルコード、特許、市場資料に対応
+- LLMを使わない確定的な`data.template`、arrayのfilter/sort/unique/limitを行う`data.filter`、group集計対応の`data.aggregate`を追加
 - アプリアイコン、TCP / HTTP / ファイルのヘルスチェック、ごみ箱、再開可能アップロード、永続電源予約を追加
 - AMD GPU 監視を sysfs fast path へ移行し、Web ポーリングとジョブ通知を軽量化
 - AI アシスタントと Web ターミナルの 320px / iOS 向け入力・再接続・履歴復元を改善

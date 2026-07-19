@@ -405,6 +405,172 @@ async def node_data_transform(config: dict, ctx: dict) -> dict:
     raise NodeError(f"未対応のデータ変換です: {operation}")
 
 
+def _data_path(value: Any, raw_path: Any) -> Any:
+    """object/arrayからdot pathを安全に取得する。空pathは値全体を返す。"""
+    path = str(raw_path or "").strip()
+    if not path:
+        return value
+    current = value
+    try:
+        for part in path.split("."):
+            current = current[int(part)] if isinstance(current, list) else current[part]
+    except (KeyError, IndexError, ValueError, TypeError):
+        return None
+    return current
+
+
+def _template_literal(raw: Any, ctx: dict[str, Any]) -> Any:
+    if not isinstance(raw, str):
+        return copy.deepcopy(raw)
+    rendered = render_template(raw, ctx)
+    try:
+        return json.loads(rendered)
+    except json.JSONDecodeError:
+        return rendered
+
+
+async def node_data_template(config: dict, ctx: dict) -> dict:
+    """コード実行なしの確定的なMustache/Jinja風テンプレート整形。"""
+    template = str(config.get("template") or "")
+    if len(template.encode("utf-8")) > MAX_TRANSFORM_BYTES:
+        raise NodeError("テンプレートが2MiB上限を超えました")
+    raw_data = config.get("data")
+    data = {} if raw_data in (None, "") else _json_value(raw_data, ctx, label="テンプレートdata")
+    template_ctx = dict(ctx)
+    template_ctx["data"] = {"status": "SUCCEEDED", "output": data}
+    text = render_template(template, template_ctx)
+    if len(text.encode("utf-8")) > MAX_TRANSFORM_BYTES:
+        raise NodeError("テンプレート出力が2MiB上限を超えました")
+    output_format = str(config.get("output_format") or "text")
+    if output_format == "json":
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise NodeError(f"テンプレート出力が不正なJSONです: {exc}") from exc
+    elif output_format == "text":
+        value = text
+    else:
+        raise NodeError(f"未対応の出力形式です: {output_format}")
+    return {"text": text, "value": value, "format": output_format}
+
+
+def _filter_match(actual: Any, operator: str, expected: Any) -> bool:
+    if operator == "exists":
+        return actual is not None
+    if operator == "truthy":
+        return bool(actual)
+    if operator == "equals":
+        return actual == expected
+    if operator == "not_equals":
+        return actual != expected
+    if operator == "contains":
+        if isinstance(actual, dict):
+            return expected in actual
+        if isinstance(actual, (list, tuple, set)):
+            return expected in actual
+        return str(expected) in str(actual or "")
+    if operator in {"gt", "gte", "lt", "lte"}:
+        try:
+            left, right = float(actual), float(expected)
+        except (TypeError, ValueError) as exc:
+            raise NodeError("数値比較の対象をnumberへ変換できません") from exc
+        return {"gt": left > right, "gte": left >= right, "lt": left < right, "lte": left <= right}[operator]
+    raise NodeError(f"未対応のfilter演算子です: {operator}")
+
+
+def _stable_sort_key(value: Any) -> tuple[int, Any]:
+    if value is None:
+        return (4, "")
+    if isinstance(value, bool):
+        return (1, int(value))
+    if isinstance(value, (int, float)):
+        return (0, float(value))
+    if isinstance(value, str):
+        return (2, value.casefold())
+    return (3, json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+
+
+async def node_data_filter(config: dict, ctx: dict) -> dict:
+    value = _json_value(config.get("input", ""), ctx, label="filter input")
+    if not isinstance(value, list):
+        raise NodeError("filter inputはarrayにしてください")
+    if len(value) > 10_000:
+        raise NodeError("filter inputは10000件上限です")
+    operator = str(config.get("operator") or "truthy")
+    field = config.get("field")
+    expected = _template_literal(config.get("value", ""), ctx)
+    items = [item for item in value if _filter_match(_data_path(item, field), operator, expected)]
+
+    unique_by = str(config.get("unique_by") or "").strip()
+    if unique_by:
+        unique: list[Any] = []
+        seen: set[str] = set()
+        for item in items:
+            key = json.dumps(_data_path(item, unique_by), ensure_ascii=False, sort_keys=True, default=str)
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+        items = unique
+
+    sort_by = str(config.get("sort_by") or "").strip()
+    if sort_by:
+        items.sort(
+            key=lambda item: _stable_sort_key(_data_path(item, sort_by)),
+            reverse=str(config.get("sort_order") or "asc") == "desc",
+        )
+    limit = max(0, min(int(config.get("limit") or 0), 10_000))
+    if limit:
+        items = items[:limit]
+    return {"items": items, "count": len(items), "original_count": len(value)}
+
+
+async def node_data_aggregate(config: dict, ctx: dict) -> dict:
+    value = _json_value(config.get("input", ""), ctx, label="aggregate input")
+    if not isinstance(value, list):
+        raise NodeError("aggregate inputはarrayにしてください")
+    if len(value) > 10_000:
+        raise NodeError("aggregate inputは10000件上限です")
+    operation = str(config.get("operation") or "count")
+    if operation not in {"count", "sum", "avg", "min", "max"}:
+        raise NodeError(f"未対応の集計です: {operation}")
+    field = str(config.get("field") or "").strip()
+    if operation != "count" and not field:
+        raise NodeError(f"{operation}にはfieldを指定してください")
+    group_by = str(config.get("group_by") or "").strip()
+
+    grouped: dict[str, tuple[Any, list[Any]]] = {}
+    for item in value:
+        group_value = _data_path(item, group_by) if group_by else None
+        group_key = json.dumps(group_value, ensure_ascii=False, sort_keys=True, default=str)
+        grouped.setdefault(group_key, (group_value, []))[1].append(item)
+
+    def aggregate(items: list[Any]) -> int | float | None:
+        if operation == "count":
+            return len(items)
+        numbers: list[float] = []
+        for item in items:
+            raw = _data_path(item, field)
+            if raw is None:
+                continue
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise NodeError(f"field '{field}' にnumber以外が含まれています")
+            numbers.append(float(raw))
+        if not numbers:
+            return None
+        if operation == "sum":
+            return sum(numbers)
+        if operation == "avg":
+            return sum(numbers) / len(numbers)
+        return min(numbers) if operation == "min" else max(numbers)
+
+    groups = [
+        {"group": group_value, "value": aggregate(items), "count": len(items)}
+        for group_value, items in (entry for entry in grouped.values())
+    ]
+    result = groups if group_by else (groups[0]["value"] if groups else (0 if operation == "count" else None))
+    return {"result": result, "groups": groups if group_by else [], "count": len(value), "operation": operation}
+
+
 # ---- ファイル入出力（許可ルート検証を通す） ----
 
 
@@ -1534,6 +1700,9 @@ NODE_EXECUTORS = {
     "var.set": node_set_variable,
     "string.op": node_string_op,
     "data.transform": node_data_transform,
+    "data.template": node_data_template,
+    "data.filter": node_data_filter,
+    "data.aggregate": node_data_aggregate,
     "text.markdown": node_markdown,
     "file.read": node_file_read,
     "file.write": node_file_write,

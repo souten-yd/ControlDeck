@@ -52,6 +52,9 @@ REQUIRED_KEYS: dict[str, list[str]] = {
     "notify.webhook": ["url", "message"],
     "db.query": ["query"],
     "data.transform": ["operation", "input"],
+    "data.template": ["template"],
+    "data.filter": ["input", "operator"],
+    "data.aggregate": ["input", "operation"],
     "file.glob": ["base_path", "pattern"],
     "ai.utility": ["operation", "base_url", "model"],
 }

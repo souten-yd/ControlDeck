@@ -2,9 +2,24 @@
 
 最終更新: 2026-07-19
 
+## Workflow Phase 3 確定的data node（2026-07-19）
+
+- `data.template`を追加。既存の上流変数と任意JSON `data`をMustache/Jinja風`{{...}}`で展開し、textまたは
+  構文検証済みJSONを返す。式、関数、attribute access、任意codeは実行せず、入力／出力を2MiBに制限。
+- `data.filter`を追加。最大10000件のarrayへnested fieldのtruthy/exists/equality/contains/数値比較、
+  unique、stable sort、limitを順に適用し、結果／入力件数を返す。異種値sortも決定的な順序に正規化。
+- `data.aggregate`を追加。最大10000件のarrayを任意fieldでgroup化し、count/sum/avg/min/maxを返す。
+  count以外はnumberを要求し、文字列の暗黙変換による誤集計を拒否。
+- executor、LLM catalog、required config、metadata、output schema、frontend node definition／詳細説明を同時更新し、
+  consistency testの集合一致を維持。標準nodeは43種類となった。
+
+検証: backend全289件成功、frontend production build成功。実ControlDeck serviceを再起動し、390×844 E2Eで
+trigger入力→filter→aggregate→template→typed outputを実行して`kept=2, sum=30.0`を確認。mobile node libraryで
+3 nodeの検索・表示、横overflow 0も確認し、test workflowと一時userは削除済み。
+
 ## README機能ガイド拡充（2026-07-19）
 
-- READMEの直近追加を現行実装へ更新し、標準40ノード、実行snapshot、node run、部分再実行、固定データ、
+- READMEの直近追加を現行実装へ更新し、標準43ノード、実行snapshot、node run、部分再実行、固定データ、
   回帰テスト、draft／公開版、`output.render`、共有Deep Researchエンジンを反映。
 - ダッシュボード／監視、アプリ／health check、Web terminal、remote desktop、AI assistant、Deep Research、
   model、Knowledge/RAG、file、GitHub、power、security、PC／iPhone navigationについて、特徴だけでなく
