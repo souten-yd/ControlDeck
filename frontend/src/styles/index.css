@@ -119,9 +119,12 @@ body {
   padding-top: env(safe-area-inset-top);
 }
 
-/* idle時は小さな操作余白、ホームインジケータがある端末ではSafe Areaを優先する。 */
+/* AI入力欄はdynamic viewportの下端へ直接置く。
+   env(safe-area-inset-bottom)を足すとiPhoneで34px前後の空白帯になり、
+   入力欄全体が持ち上がる。ブラウザUIはinteractive-widget=resizes-contentで
+   viewportから除外されるため、ここでは追加の下余白を作らない。 */
 .assistant-composer-safe {
-  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  padding-bottom: 0;
 }
 
 /* xtermの履歴はページではなくterminal viewport内で指スクロールする。 */

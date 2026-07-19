@@ -2,6 +2,16 @@
 
 最終更新: 2026-07-19
 
+## AIアシスタント standalone PWA下端余白修正（2026-07-19）
+
+- ホーム画面追加から全画面起動するiPhoneでは`env(safe-area-inset-bottom)`が有効になり、AI入力composerの外側へ
+  約34pxのpaddingを加えて入力カード全体を持ち上げていた。通常browserのviewport検証ではSafe Areaが0のため再現しない条件差を特定。
+- `/assistant`をアプリshellの全画面routeへ追加してモバイル下部navigationの予約領域を除去し、composerの追加下paddingを0へ変更。
+  入力カード背景をdialog最下端まで連続させ、空白帯を作らない。
+- Playwrightを`navigator.standalone=true`で起動し、320×700とiPhone相当390×844のscreenshotを目視確認。
+  390px条件で`dialogBottom = composerBottom = inputRowBottom = 844px`、composer padding 0px、document幅390px、
+  モバイル下部navigation非表示を実ControlDeck serviceで確認。frontend production build成功。
+
 ## モバイル横overflow・ターミナル右端タッチ修正（2026-07-19）
 
 - iPhone Safariで16px未満のinput/select/textareaへfocusするとVisual Viewportが自動拡大し、keyboard表示後に
@@ -1011,7 +1021,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 履歴
 
-- 2026-07-19: AIアシスタントの入力欄下に空の生成状態行（16px + margin 6px）が常時残る問題を修正。状態表示は音声処理・生成中・統計表示時だけ描画し、通常時はホームインジケータ対応のSafe Area（最低8px）のみに統一。実サービスを再起動し、Playwrightで320×700/1280×800の下端一致・横overflowなしを確認
+- 2026-07-19: AIアシスタントの空の生成状態行を条件描画化。さらにstandalone PWAでだけ有効になるSafe Area paddingとアプリshell下部navigation予約を除去し、入力カードをdialog下端へ密着。実サービスを再起動し、standalone条件の320×700／390×844 screenshot、1280×800、横overflowなしを確認
 - 2026-07-17: モバイル下部ナビのリモートデスクトップと操作シートのAIアシスタントを交換
 - 2026-07-16: LLM runtimeのcomplete/stream/cancel契約を統合し、永続chatとworkflow生成の重複処理を置換
 - 2026-07-16: OpenCodeを既定無効featureとして条件登録し、実機llama.cpp分析、cancel、PC/320pxを検証
