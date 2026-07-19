@@ -94,9 +94,9 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
 
 _INTEGER_KEYS = {
     "app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps", "limit", "top_n",
-    "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens",
+    "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens", "retry_count",
 }
-_NUMBER_KEYS = {"seconds", "timeout"}
+_NUMBER_KEYS = {"seconds", "timeout", "retry_wait", "node_timeout"}
 _BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive"}
 _ARRAY_KEYS = {"inputs", "extractors", "sources"}
 
@@ -123,7 +123,8 @@ def node_catalog() -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for node_type in types:
         required = set(REQUIRED_KEYS.get(node_type, []))
-        config_keys = list(dict.fromkeys([*keys.get(node_type, []), *required]))
+        common_keys = [] if node_type == "trigger" else ["retry_count", "retry_wait", "node_timeout", "on_error"]
+        config_keys = list(dict.fromkeys([*keys.get(node_type, []), *required, *common_keys]))
         result.append({
             "type": node_type,
             "version": 1,

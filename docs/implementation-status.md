@@ -2,6 +2,21 @@
 
 最終更新: 2026-07-19
 
+## Workflow Phase 3 型付きError Context／視覚的error route（2026-07-19）
+
+- node失敗時の共通出力を`error` objectへ統一し、node ID/type、message、code、retryable、attempt、
+  redact済みinput summary、timestampを後段へ渡す。node runの`error_json`にも同じ有限snapshotを保存する。
+- `on_error=branch`のnodeへ赤い「失敗」と橙の「時間切れ」handleを分離して表示し、edgeも赤破線／橙点線で識別する。
+  timeout専用edgeがない既存definitionは従来のerror edgeへ流す後方互換fallbackを維持する。
+- inspectorに共通node timeout、retry、失敗動作と直近Error Contextを集約。変数pickerから
+  `error.message/code/retryable/attempt/timestamp/input_summary`を挿入できるようにした。
+- semantic checkへ無効な`on_error`、0.1秒未満／非数値timeout、未接続error route、重複error routeの検査を追加。
+  backend metadataにも共通実行制御schemaを公開し、frontend固有の暗黙設定にしない。
+
+検証: backend全291件、frontend production build、実ControlDeck service再起動に成功。320px起点のPlaywright E2Eで
+preview／通常実行／回帰test／公開／履歴／node単体実行／部分再実行／pinned dataに加え、390px inspectorから
+node timeoutとerror branchを設定し、失敗／時間切れhandleの表示、横overflow 0、console error 0を確認した。
+
 ## Workflow Phase 3 確定的data node（2026-07-19）
 
 - `data.template`を追加。既存の上流変数と任意JSON `data`をMustache/Jinja風`{{...}}`で展開し、textまたは

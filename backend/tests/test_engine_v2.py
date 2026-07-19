@@ -80,23 +80,62 @@ def test_retry_then_success_counts_attempts(tmp_path):
 
 
 def test_on_error_branch_routes_to_error_edge():
-    """失敗ノードの on_error=branch は error エッジのみ生かす。"""
+    """error edgeへredact済み標準Error Contextを渡す。"""
     nodes = [
         TRIGGER,
         {"id": "bad", "type": "file.read",
-         "config": {"path": str(_sandbox / "no-such-file.txt"), "on_error": "branch"}},
+         "config": {"path": str(_sandbox / "no-such-file.txt"), "on_error": "branch",
+                    "api_token": "literal-must-not-leak", "auth": "{{secrets.SERVICE_TOKEN}}"}},
         {"id": "ok_path", "type": "string.op", "config": {"op": "template", "text": "ok"}},
-        {"id": "err_path", "type": "string.op", "config": {"op": "template", "text": "error handled"}},
+        {"id": "err_path", "type": "string.op", "config": {
+            "op": "template", "text": "{{bad.error.code}}:{{bad.error.message}}",
+        }},
     ]
     edges = [
         {"source": "t", "target": "bad"},
         {"source": "bad", "target": "ok_path"},
         {"source": "bad", "target": "err_path", "branch": "error"},
     ]
-    ctx = _run(nodes, edges)
+    ctx = _run(nodes, edges, {"__secrets__": {"SERVICE_TOKEN": "secret-must-not-leak"}})
     assert ctx["bad"]["status"] == "FAILED"
+    error = ctx["bad"]["output"]["error"]
+    assert error["node_id"] == "bad" and error["node_type"] == "file.read"
+    assert error["code"] == "NODE_ERROR" and error["retryable"] is True and error["attempt"] == 1
+    assert error["timestamp"] and error["input_summary"]
+    serialized = json.dumps(error, ensure_ascii=False)
+    assert "literal-must-not-leak" not in serialized and "secret-must-not-leak" not in serialized
     assert ctx["err_path"]["status"] == "SUCCEEDED"
+    assert ctx["err_path"]["output"]["result"].startswith("NODE_ERROR:")
     assert ctx["ok_path"]["status"] == "SKIPPED"
+
+
+def test_timeout_uses_dedicated_route_and_keeps_error_fallback_compatible():
+    nodes = [
+        TRIGGER,
+        {"id": "slow", "type": "util.wait", "config": {
+            "seconds": 0.2, "node_timeout": 0.1, "on_error": "branch",
+        }},
+        {"id": "timeout_path", "type": "string.op", "config": {
+            "op": "template", "text": "{{slow.error.code}}",
+        }},
+        {"id": "error_path", "type": "string.op", "config": {"op": "template", "text": "wrong"}},
+    ]
+    edges = [
+        {"source": "t", "target": "slow"},
+        {"source": "slow", "target": "timeout_path", "branch": "timeout"},
+        {"source": "slow", "target": "error_path", "branch": "error"},
+    ]
+    ctx = _run(nodes, edges)
+    assert ctx["slow"]["status"] == "TIMED_OUT"
+    assert ctx["slow"]["output"]["error"]["code"] == "NODE_TIMEOUT"
+    assert ctx["timeout_path"]["output"]["result"] == "NODE_TIMEOUT"
+    assert ctx["error_path"]["status"] == "SKIPPED"
+
+    fallback_nodes = [TRIGGER, nodes[1], {"id": "legacy", "type": "string.op", "config": {"op": "template", "text": "legacy"}}]
+    fallback = _run(fallback_nodes, [
+        {"source": "t", "target": "slow"}, {"source": "slow", "target": "legacy", "branch": "error"},
+    ])
+    assert fallback["legacy"]["status"] == "SUCCEEDED"
 
 
 def test_on_error_continue_proceeds():

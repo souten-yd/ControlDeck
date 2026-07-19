@@ -45,6 +45,27 @@ def test_detects_unreachable():
     assert any("到達できません" in w and "orphan" in w for w in warnings)
 
 
+def test_validates_error_routes_and_node_timeout():
+    from app.workflows.validation import semantic_check
+
+    nodes = [_t(), {"id": "a", "type": "util.wait", "config": {
+        "seconds": 1, "node_timeout": 0.01, "on_error": "branch",
+    }}]
+    edges = [{"source": "trigger", "target": "a"}]
+    errors, warnings = semantic_check(nodes, edges)
+    assert any("timeoutは0.1秒以上" in item for item in errors)
+    assert any("「失敗」経路が未接続" in item for item in warnings)
+
+    nodes[1]["config"]["node_timeout"] = 0.5
+    edges.extend([
+        {"source": "a", "target": "trigger", "branch": "error"},
+        {"source": "a", "target": "trigger", "branch": "timeout"},
+    ])
+    errors, warnings = semantic_check(nodes, edges)
+    assert not any("timeout" in item for item in errors)
+    assert not any("経路が未接続" in item for item in warnings)
+
+
 def test_quality_score_ranges():
     from app.workflows.validation import quality_score
 
