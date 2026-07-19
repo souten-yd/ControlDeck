@@ -368,6 +368,26 @@ class WorkflowTestCase(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class ApplicationProject(Base):
+    """Application Builderの独立draft。生成物・build状態はPhase Aでは持たない。"""
+
+    __tablename__ = "application_projects"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"), nullable=True, index=True)
+    application_spec_json: Mapped[str] = mapped_column(Text, default="{}")
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    target: Mapped[str] = mapped_column(String(32), default="csharp")
+    application_type: Mapped[str] = mapped_column(String(32), default="web")
+    ui_framework: Mapped[str] = mapped_column(String(64), default="aspnet-blazor")
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class RemoteConnection(Base):
     __tablename__ = "remote_connections"
 

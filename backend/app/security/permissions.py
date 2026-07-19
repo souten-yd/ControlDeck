@@ -15,6 +15,8 @@ ALL_PERMISSIONS: list[str] = [
     "terminal.use",
     "workflows.edit",
     "workflows.run",
+    "application_builder.view",
+    "application_builder.edit",
     "system.view",
     "power.manage",
     "remote_desktop.use",
