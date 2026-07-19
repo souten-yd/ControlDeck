@@ -2,6 +2,17 @@
 
 最終更新: 2026-07-19
 
+## README機能ガイド拡充（2026-07-19）
+
+- READMEの直近追加を現行実装へ更新し、標準40ノード、実行snapshot、node run、部分再実行、固定データ、
+  回帰テスト、draft／公開版、`output.render`、共有Deep Researchエンジンを反映。
+- ダッシュボード／監視、アプリ／health check、Web terminal、remote desktop、AI assistant、Deep Research、
+  model、Knowledge/RAG、file、GitHub、power、security、PC／iPhone navigationについて、特徴だけでなく
+  操作の開始点、使い分け、安全境界、mobile gesture、運用上の注意を機能別ガイドとして追加。
+- workflowは入力定義→安全preview→通常test→node単体／部分実行→回帰test→公開の8stepへ整理し、
+  typed final output、draft／published／pinned dataの役割と公開preflightをREADMEだけで追えるようにした。
+- README内の相対linkの存在とMarkdown差分を確認。実装の詳細・検証証跡は本ファイルと各design documentへ誘導する。
+
 ## AIアシスタント standalone PWA下端余白修正（2026-07-19）
 
 - ホーム画面追加から全画面起動するiPhoneでは`env(safe-area-inset-bottom)`が有効になり、AI入力composerの外側へ

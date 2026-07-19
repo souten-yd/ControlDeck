@@ -66,18 +66,88 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - ログ管理（アプリ別ストリーム表示・ローテーション）、監査ログ、RBAC（管理者 / 操作者 / 閲覧者）
 - TOTP 二要素認証、PWA（ホーム画面追加）、ダーク / ライトテーマ、バックアップ / リストア
 
-## 最近の主な追加（2026-07-15〜17）
+## 最近の主な追加（2026-07-15〜19）
 
 - OpenCode を既定無効のオプトイン feature として統合
 - 独立 AI アシスタント、永続会話、ジョブの優先度・進捗 stream・cancel を追加
 - llama.cpp の複数 GGUF 管理と Ollama / 外部 OpenAI 互換 provider の共通モデル操作を追加
-- ワークフローを標準39ノードへ拡張し、生成時の意味検証・品質スコア、安全プレビュー、並列 map、型・side effect metadata、検索・お気に入りを追加
+- ワークフローを標準40ノードへ拡張し、生成時の意味検証・品質スコア、安全プレビュー、並列map、型・side effect metadata、検索・お気に入りを追加
+- 実行snapshot、node run、単体／部分再実行、固定データ、回帰テスト、draft／公開版分離、型付き`output.render`を追加
+- AIアシスタントと`research.deep`を反復型Deep Research共有エンジンへ統合し、SearXNG、PDF、学術、GitHub、RAG、ローカルコード、特許、市場資料に対応
 - アプリアイコン、TCP / HTTP / ファイルのヘルスチェック、ごみ箱、再開可能アップロード、永続電源予約を追加
 - AMD GPU 監視を sysfs fast path へ移行し、Web ポーリングとジョブ通知を軽量化
 - AI アシスタントと Web ターミナルの 320px / iOS 向け入力・再接続・履歴復元を改善
 - ワークフロー生成を標準 JSON Schema payloadへ修正し、固定800 tokenではなくModel画面の共通出力上限を使用
 
 詳細と検証結果は [実装状況](docs/implementation-status.md) を参照。
+
+## 機能別ガイド
+
+### ダッシュボードとシステム監視
+
+ログイン直後のダッシュボードでは、CPU、RAM、GPU、VRAM、温度、電力、ディスク、ネットワークと、実行中／異常アプリをまとめて確認できる。
+詳細なコア別使用率、GPUセンサー、ディスク、ネットワーク、上位プロセスは「システム」で見る。センサー取得に失敗した項目は`N/A`となり、監視全体は停止しない。
+
+継続的な監視が必要な場合は、設定からしきい値、継続時間、再通知までのクールダウン、Discord／Slack／汎用Webhook通知先を登録する。
+一時的なスパイクを継続時間で除外でき、同じ異常を短時間に連投しない。GPUがないPCでもCPU／RAM／ディスク監視は利用できる。
+
+### アプリ登録、起動、ログ、ヘルスチェック
+
+「アプリを追加」でPython、shell script、実行ファイル、既存systemd service、URL shortcutを選び、実行パス、作業ディレクトリ、引数、環境変数を設定する。
+パスはサーバー側ファイル選択から選べる。Pythonプロジェクトはvenvとentry point候補を検出し、登録前のストリーミング動作確認でstdout/stderrを確認できる。
+
+登録後の主操作は起動／停止の1つに絞り、再起動、強制終了、編集、ログ、削除はその他メニューへまとめている。実プロセスはsystemd user unitで動き、WebサービスやSSHを閉じても継続する。
+TCP、HTTP status／本文、許可ルート内ファイル、processのヘルスチェックを設定すると、単なるPID存在ではなく`RUNNING / DEGRADED / FAILED`を判別できる。
+待受ポートを持つアプリは「Web」から開き、複数ポートがある場合は初回に選択して記憶する。環境変数の秘密値は暗号化保存され、画面とログではマスクされる。
+
+### Webターミナル
+
+新規セッションはtmuxとして作成されるため、画面遷移、リロード、通信切断、ControlDeck再起動後も履歴とprocessを復元できる。
+PCでは通常のwheel／keyboard、iPhoneでは補助キー、コピー／貼り付けsheet、terminal面の上下swipe、右端overlay履歴バーを使う。
+右端バーはtapで対応位置へ移動、dragで連続移動し、その操作だけではIMEを開かない。長文pasteはchunk ACK、再接続差分resume、hash検証可能な全量送信を使い、送信中もcancelできる。
+
+### リモートデスクトップ
+
+このPCを操作する場合は`./deck.sh enable-desktop`でヘッドレスRDP環境を登録し、「リモート」から接続する。外部のRDP／VNC／SSH接続も登録可能。
+iPhoneでは1本指をtouchpad移動、tapを左click、長押し移動をdrag、2本指tapを右click、2本指上下をscroll、3本指tapをsoftware keyboardとして扱う。
+接続情報のpasswordは暗号化し、guacd tunnelとWebSocketの双方で認証／Originを検証する。
+
+### AIアシスタント
+
+「AIアシスタント」でendpointとmodelを選び、通常チャット、添付資料を使う質問、ワークフロー生成、Deep Researchを実行する。
+会話とjobはサーバーへ保存されるため、ブラウザを閉じても生成を継続し、再接続後にprogress、thinking、本文、usageを復元できる。不要なjobはcancelできる。
+ワークフロー生成は要求からJSON Schema準拠定義を作り、構造／意味検証と品質スコアを通してから登録する。
+
+### Deep Research
+
+Deep Researchは単発検索要約ではなく、計画→サブ質問→反復検索→coverage再評価→不足query追加→引用検証→章分割レポート生成を行う。
+検索深度はquick／standard／deep／exhaustiveから選び、round、検索回数、根拠文字数、最終tokenをcustom設定できる。
+
+資料源はSearXNG Web／PDF、直接URL、OpenAlex・Crossref・arXiv等の学術情報、GitHub repository、添付／Knowledge RAG、許可ルート内ローカルコード、特許、SEC等の市場情報から選択する。
+ローカルコード調査はsymlink、秘密ファイル、依存物、cacheを除外し、静的索引だけを作ってコードを実行しない。SearXNGは`./deck.sh searxng`で導入できる。
+結果には引用ID、source一覧、coverage、未解決点、引用整合性が残る。速い概観はquick、設計／競合／技術選定はdeep以上が目安。
+
+### ModelとKnowledge／RAG
+
+「Model」ではOllama、llama.cpp、外部OpenAI互換providerを横断してmodelの検出、pull、load、unload、削除、既定model設定を行う。
+llama.cppはGGUFごとに独立systemd user unitを持ち、Context、batch、K/V cache、GPU offload、MTP、MoE、sampling、通常／Deep Research用CTXを個別設定する。
+VRAM不足を避けるため、まず小さいCTXでloadを確認してから拡張する。AMD対応環境では電力／clock profileも選べる。
+
+「Knowledge」ではcollectionを作り、text、URL、fileを取り込む。recursive／fixed／sentence／paragraph／Markdown／parent-childのchunk方式と、vector／full-text／hybrid／graph検索を選ぶ。
+日本語や固有名詞はhybrid、関係性探索はgraph、質問の言い換えが必要ならHyDE／multi-queryが有効。検索testで根拠を確認してからLLMやworkflowへ接続する。
+
+### ファイル、GitHub、電源、セキュリティ
+
+ファイル画面は許可ルート内の閲覧、再開可能upload、download、text編集、preview、ごみ箱を提供する。削除はまずごみ箱へ移し、完全削除だけを破壊的操作として確認する。
+GitHub画面はclone、pull、commit、履歴からのrevert、登録削除を扱う。private repositoryは`gh` device flowで認証し、tokenを画面へ貼り付けない。
+
+電源操作は再起動／shutdown／予約／取消を提供し、予約はsystemd user timerへ永続化する。重要操作は監査ログへ記録される。
+administrator／operator／viewerのRBAC、HttpOnly session、CSRF、Origin検証、TOTP、session失効を組み合わせる。外部公開は避け、Tailscale／WireGuard内での利用を推奨する。
+
+### PCとiPhoneでのナビゲーション
+
+PCは左sidebarと`Ctrl/Cmd+K` command palette、iPhoneは下部navigationとbottom sheetを使う。主要操作は原則2step以内、touch targetは約44px、Safe Areaと320px幅に対応する。
+入力時にiOS Safariが自動zoomしないfont size、sheetの`100dvw`上限、reduced motion、dark／light themeを共通適用している。
 
 ## ワークフローの基本的な使い方
 
