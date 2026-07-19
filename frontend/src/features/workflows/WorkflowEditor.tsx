@@ -79,8 +79,19 @@ interface NodeMetadata {
   description: string;
   side_effect: "none" | "read" | "write" | "external" | "process";
   capabilities: string[];
-  config_schema: Record<string, { type: string; required?: boolean }>;
+  config_schema: Record<string, { type: string; required?: boolean; default?: unknown; recommended?: unknown; reason?: string }>;
+  initial_config: Record<string, unknown>;
+  input_schema: Record<string, string>;
   output_schema: Record<string, string>;
+  ui_hints: {
+    help?: string;
+    quick_start?: string;
+    variable_picker?: boolean;
+    show_recommended_defaults?: boolean;
+    primary_input?: string | null;
+    primary_output?: string | null;
+    examples?: Array<{ title: string; config: Record<string, unknown> }>;
+  };
   supports: { retry: boolean; cancel: boolean; progress: boolean; dry_run: boolean };
 }
 // ---- カスタムノード（アイコン + カテゴリ色 + 状態） ----
@@ -220,6 +231,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     queryFn: () => api<WorkflowDetail>(`/workflows/${workflowId}`),
     staleTime: Infinity,
   });
+  const { data: nodeCatalog } = useQuery({
+    queryKey: ["workflow-node-catalog"],
+    queryFn: () => api<NodeMetadata[]>("/workflows/node-catalog"),
+    staleTime: Infinity,
+  });
   const { data: pinnedData } = useQuery({
     queryKey: ["workflow-pinned-data", workflowId],
     queryFn: () => api<PinnedData[]>(`/workflows/${workflowId}/pinned-data`),
@@ -251,9 +267,34 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       setEdges((eds) =>
         addEdge({ ...conn, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: edgeStyle(conn.sourceHandle) }, eds),
       );
+      if (conn.source && conn.target) {
+        setNodes((current) => {
+          const source = current.find((node) => node.id === conn.source);
+          const target = current.find((node) => node.id === conn.target);
+          if (!source || !target) return current;
+          const sourceDef = (source.data as FlowNodeData).def;
+          const targetDef = (target.data as FlowNodeData).def;
+          const targetMeta = nodeCatalog?.find((item) => item.type === targetDef.type);
+          const inputKey = targetMeta?.ui_hints.primary_input;
+          if (!inputKey || targetDef.config?.[inputKey] !== undefined && targetDef.config?.[inputKey] !== "") return current;
+          const triggerInput = sourceDef.type === "trigger"
+            ? ((sourceDef.config?.inputs as TriggerInputDef[] | undefined) ?? [])[0]?.key
+            : undefined;
+          const sourceMeta = nodeCatalog?.find((item) => item.type === sourceDef.type);
+          const outputKey = triggerInput ?? sourceMeta?.ui_hints.primary_output ?? Object.keys(sourceMeta?.output_schema ?? {})[0];
+          if (!outputKey) return current;
+          return current.map((node) => node.id !== conn.target ? node : {
+            ...node,
+            data: {
+              ...(node.data as FlowNodeData),
+              def: { ...targetDef, config: { ...targetDef.config, [inputKey]: `{{${sourceDef.id}.${outputKey}}}` } },
+            },
+          });
+        });
+      }
       markDirty();
     },
-    [setEdges, markDirty],
+    [setEdges, setNodes, markDirty, nodeCatalog],
   );
 
   const onReconnect = useCallback(
@@ -348,7 +389,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const addNode = (type: string, at?: { x: number; y: number }) => {
     const id = newNodeId();
     const meta = NODE_TYPES[type];
-    const def: DefNode = { id, type, name: meta.label, config: {} };
+    const initialConfig = nodeCatalog?.find((item) => item.type === type)?.initial_config ?? {};
+    const def: DefNode = { id, type, name: meta.label, config: structuredClone(initialConfig) };
     setNodes((ns) => [
       ...ns,
       { id, type: "cdNode", position: at ?? { x: 140 + ns.length * 30, y: 100 + ns.length * 40 }, data: { def } },
@@ -915,6 +957,31 @@ function NodeConfigSheet({
   });
   const config = def.config ?? {};
   const setConfig = (key: string, value: unknown) => onChange({ config: { ...config, [key]: value } });
+  const applyRecommended = () => {
+    if (!nodeMetadata) return;
+    const next = { ...config };
+    for (const [key, value] of Object.entries(nodeMetadata.initial_config ?? {})) {
+      if (next[key] === undefined || next[key] === "" || next[key] === null) next[key] = structuredClone(value);
+    }
+    for (const [key, schema] of Object.entries(nodeMetadata.config_schema)) {
+      if ((next[key] === undefined || next[key] === "" || next[key] === null) && schema.recommended !== undefined) {
+        next[key] = structuredClone(schema.recommended);
+      }
+    }
+    onChange({ config: next });
+  };
+  const insertAtCursor = (key: string, expression: string) => {
+    const element = document.getElementById(`node-config-${def.id}-${key}`) as HTMLInputElement | HTMLTextAreaElement | null;
+    const current = String(config[key] ?? "");
+    const start = element?.selectionStart ?? current.length;
+    const end = element?.selectionEnd ?? start;
+    setConfig(key, `${current.slice(0, start)}${expression}${current.slice(end)}`);
+    requestAnimationFrame(() => {
+      const nextElement = document.getElementById(`node-config-${def.id}-${key}`) as HTMLInputElement | HTMLTextAreaElement | null;
+      nextElement?.focus();
+      nextElement?.setSelectionRange(start + expression.length, start + expression.length);
+    });
+  };
 
   // webhook トリガー: トークン未設定なら自動生成
   useEffect(() => {
@@ -988,6 +1055,23 @@ function NodeConfigSheet({
         </div>
       )}
       {tab === "settings" && <div className="space-y-4">
+        {nodeMetadata && !readOnly && (
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-accent-200 bg-accent-50/50 p-3 dark:border-accent-800 dark:bg-accent-950/20">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-accent-800 dark:text-accent-300">迷ったら推奨設定で開始</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">空欄だけを補完します。入力済みの値、URL、Secret、環境固有設定は変更しません。</p>
+            </div>
+            <button type="button" onClick={applyRecommended} className="min-h-11 shrink-0 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white">推奨値を適用</button>
+          </div>
+        )}
+        {nodeMetadata && (
+          <details className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+            <summary className="cursor-pointer text-xs font-semibold text-zinc-700 dark:text-zinc-200">このノードの使い方・推奨理由・構成例</summary>
+            <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-zinc-500">{nodeMetadata.ui_hints.help || nodeMetadata.description}</p>
+            {nodeMetadata.ui_hints.quick_start && <p className="mt-2 rounded-lg bg-accent-50 p-2.5 text-xs leading-relaxed text-accent-800 dark:bg-accent-950/30 dark:text-accent-300"><strong>最短手順:</strong> {nodeMetadata.ui_hints.quick_start}</p>}
+            {(nodeMetadata.ui_hints.examples ?? []).length > 0 && <p className="mt-2 text-[11px] text-zinc-400">具体的な設定例は「詳細」タブから確認・反映できます。</p>}
+          </details>
+        )}
         <Field label="表示名">
           <input value={def.name ?? ""} onChange={(e) => onChange({ name: e.target.value })} disabled={readOnly} className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         </Field>
@@ -1000,9 +1084,17 @@ function NodeConfigSheet({
             }}
           />
         )}
-        {visibleFields.map((f) => (
-          <Field key={f.key} label={f.label} hint={f.hint}>
-            <ConfigInput field={f} value={config[f.key]} disabled={readOnly} apps={apps} workflows={workflowList} scrapeUrl={String(config.url ?? "")} onChange={(v) => setConfig(f.key, v)} />
+        {visibleFields.map((f) => {
+          const schema = nodeMetadata?.config_schema[f.key];
+          return (
+          <Field key={f.key} label={`${f.label}${schema?.required ? "（必須）" : ""}`} hint={f.hint}>
+            <ConfigInput inputId={`node-config-${def.id}-${f.key}`} field={f} value={config[f.key]} disabled={readOnly} apps={apps} workflows={workflowList} scrapeUrl={String(config.url ?? "")} onChange={(v) => setConfig(f.key, v)} />
+            {(schema?.recommended !== undefined || schema?.reason) && (
+              <div className="mt-1.5 rounded-lg bg-zinc-50 px-2.5 py-2 text-[11px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+                {schema.recommended !== undefined && <p><strong className="text-zinc-600 dark:text-zinc-300">推奨:</strong> <code className="break-all font-mono">{typeof schema.recommended === "string" ? schema.recommended : JSON.stringify(schema.recommended)}</code></p>}
+                {schema.reason && <p className={schema.recommended !== undefined ? "mt-1" : ""}><strong className="text-zinc-600 dark:text-zinc-300">理由:</strong> {schema.reason}</p>}
+              </div>
+            )}
             {f.key === "json_schema" && !readOnly && (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {JSON_SCHEMA_PRESETS.map((p) => (
@@ -1021,11 +1113,15 @@ function NodeConfigSheet({
               <VarPicker
                 upstream={upstream}
                 namedVars={namedVars}
-                onInsert={(expr) => setConfig(f.key, `${String(config[f.key] ?? "")}${expr}`)}
+                directIds={new Set(edgeList.filter((edge) => edge.target === def.id).map((edge) => edge.source))}
+                metadata={backendMetadata ?? []}
+                executionContext={latestExecution?.context}
+                expectedType={schema?.type}
+                onInsert={(expr) => insertAtCursor(f.key, expr)}
               />
             )}
           </Field>
-        ))}
+        )})}
         {def.type !== "trigger" && (
           <Field label="出力変数名（任意）" hint={"設定すると全後段から {{vars.名前.フィールド}} で参照できます"}>
             <input
@@ -1081,6 +1177,20 @@ function NodeConfigSheet({
       ))}
       {tab === "details" && (
         <div className="space-y-3 text-xs">
+          {nodeMetadata && (
+            <section className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+              <h3 className="font-semibold text-zinc-700 dark:text-zinc-200">使い方と構成例</h3>
+              {nodeMetadata.ui_hints.help && <p className="mt-2 whitespace-pre-wrap leading-relaxed text-zinc-500">{nodeMetadata.ui_hints.help}</p>}
+              {nodeMetadata.ui_hints.quick_start && <p className="mt-2 rounded-lg bg-accent-50 p-2.5 leading-relaxed text-accent-800 dark:bg-accent-950/30 dark:text-accent-300"><strong>最短手順:</strong> {nodeMetadata.ui_hints.quick_start}</p>}
+              {(nodeMetadata.ui_hints.examples ?? []).map((example) => (
+                <div key={example.title} className="mt-2 rounded-lg bg-zinc-50 p-2.5 dark:bg-zinc-950">
+                  <p className="font-medium">{example.title}</p>
+                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-500">{JSON.stringify(example.config, null, 2)}</pre>
+                  {!readOnly && <button type="button" onClick={() => onChange({ config: { ...config, ...example.config } })} className="mt-2 min-h-9 rounded-lg border border-zinc-300 px-2.5 text-[11px] font-medium dark:border-zinc-700">この例を設定へ反映</button>}
+                </div>
+              ))}
+            </section>
+          )}
           <dl className="grid grid-cols-[7rem_1fr] gap-x-2 gap-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><dt className="text-zinc-400">node ID</dt><dd className="break-all font-mono">{def.id}</dd><dt className="text-zinc-400">type</dt><dd className="font-mono">{def.type}</dd><dt className="text-zinc-400">version</dt><dd className="num">{nodeMetadata?.version ?? 1}</dd><dt className="text-zinc-400">side effect</dt><dd>{nodeMetadata?.side_effect ?? "unknown"}</dd><dt className="text-zinc-400">capabilities</dt><dd>{nodeMetadata?.capabilities.join(", ") || "なし"}</dd></dl>
           <Field label="JSON 設定"><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-zinc-50 p-3 font-mono text-xs dark:bg-zinc-950">{JSON.stringify(def, null, 2)}</pre></Field>
           <p className="text-zinc-400">参照式: <code className="font-mono">{"{{"}{def.id}.フィールド{"}}"}</code></p>
@@ -1332,14 +1442,93 @@ function NodeTestRunner({
 function VarPicker({
   upstream,
   namedVars,
+  directIds,
+  metadata,
+  executionContext,
+  expectedType,
   onInsert,
 }: {
   upstream: DefNode[];
   namedVars: string[];
+  directIds: Set<string>;
+  metadata: NodeMetadata[];
+  executionContext?: Record<string, { output?: unknown; status: string }>;
+  expectedType?: string;
   onInsert: (expr: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
   if (upstream.length === 0 && namedVars.length === 0) return null;
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const renderNode = (d: DefNode) => {
+    const m = NODE_TYPES[d.type];
+    const nodeMeta = metadata.find((item) => item.type === d.type);
+    // トリガーは定義済み入力フィールドも変数として提示
+    const extra: { key: string; label: string; type?: string }[] =
+      d.type === "trigger"
+        ? ((d.config?.inputs as TriggerInputDef[] | undefined) ?? []).map((i) => ({ key: i.key, label: i.label || i.key, type: i.type }))
+        : [];
+    const scrapeOuts: { key: string; label: string; type?: string }[] =
+      d.type === "web.scrape"
+        ? ((d.config?.extractors as ExtractorDef[] | undefined) ?? [])
+            .filter((x) => x.name)
+            .map((x) => ({ key: x.name, label: x.name, type: "string" }))
+        : [];
+    const errorOuts: { key: string; label: string; type?: string }[] =
+      d.config?.on_error === "branch"
+        ? [
+            { key: "error.message", label: "error.message", type: "string" },
+            { key: "error.code", label: "error.code", type: "string" },
+            { key: "error.retryable", label: "error.retryable", type: "boolean" },
+            { key: "error.attempt", label: "error.attempt", type: "integer" },
+            { key: "error.timestamp", label: "error.timestamp", type: "datetime" },
+            { key: "error.input_summary", label: "error.input_summary", type: "object" },
+          ]
+        : [];
+    const catalogOuts = Object.entries(nodeMeta?.output_schema ?? {}).map(([key, type]) => ({
+      key, label: m?.outputs?.find((item) => item.key === key)?.label ?? key, type,
+    }));
+    const known = new Set(catalogOuts.map((item) => item.key));
+    const legacyOuts = (m?.outputs ?? []).filter((item) => !known.has(item.key)).map((item) => ({ ...item, type: "any" }));
+    const outs = [...catalogOuts, ...legacyOuts, ...scrapeOuts, ...extra, ...errorOuts].filter((output) => {
+      if (!normalizedSearch) return true;
+      return `${d.name ?? ""} ${d.id} ${d.type} ${output.key} ${output.label} ${output.type ?? ""}`.toLocaleLowerCase().includes(normalizedSearch);
+    });
+    if (outs.length === 0) return null;
+    const outputValue = executionContext?.[d.id]?.output;
+    return (
+      <div key={d.id}>
+        <p className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-zinc-500">
+          <span style={{ color: m?.color }}>{m?.icon}</span>
+          <span className="min-w-0 truncate">{d.name || m?.label}</span> <code className="font-mono text-[10px] text-zinc-400">{d.id}</code>
+        </p>
+        <div className="space-y-1">
+          {outs.map((o) => {
+            const sample = o.key.includes(".")
+              ? undefined
+              : outputValue && typeof outputValue === "object" ? (outputValue as Record<string, unknown>)[o.key] : undefined;
+            return (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => onInsert(`{{${d.id}.${o.key}}}`)}
+                title={`{{${d.id}.${o.key}}}`}
+                className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-zinc-50 px-2.5 text-left hover:bg-accent-100 dark:bg-zinc-800 dark:hover:bg-accent-950/40"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[11px] text-zinc-700 dark:text-zinc-200">{o.label}</span>
+                  <span className="block truncate font-mono text-[9px] text-zinc-400">{`{{${d.id}.${o.key}}}`}{sample !== undefined ? ` · ${JSON.stringify(sample).slice(0, 80)}` : ""}</span>
+                </span>
+                <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] ${expectedType && o.type && expectedType !== "string" && expectedType !== o.type && o.type !== "any" ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300" : "bg-zinc-200 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-300"}`}>{o.type ?? "any"}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+  const direct = upstream.filter((node) => directIds.has(node.id));
+  const other = upstream.filter((node) => !directIds.has(node.id));
   return (
     <div className="mt-1">
       <button
@@ -1350,55 +1539,11 @@ function VarPicker({
         {open ? "▾ 変数を挿入" : "▸ 変数を挿入（前段ノードの出力から選択）"}
       </button>
       {open && (
-        <div className="mt-1.5 max-h-48 space-y-2 overflow-y-auto rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
-          {upstream.map((d) => {
-            const m = NODE_TYPES[d.type];
-            // トリガーは定義済み入力フィールドも変数として提示
-            const extra: { key: string; label: string }[] =
-              d.type === "trigger"
-                ? ((d.config?.inputs as TriggerInputDef[] | undefined) ?? []).map((i) => ({ key: i.key, label: i.label || i.key }))
-                : [];
-            const scrapeOuts: { key: string; label: string }[] =
-              d.type === "web.scrape"
-                ? ((d.config?.extractors as ExtractorDef[] | undefined) ?? [])
-                    .filter((x) => x.name)
-                    .map((x) => ({ key: x.name, label: x.name }))
-                : [];
-            const errorOuts: { key: string; label: string }[] =
-              d.config?.on_error === "branch"
-                ? [
-                    { key: "error.message", label: "error.message" },
-                    { key: "error.code", label: "error.code" },
-                    { key: "error.retryable", label: "error.retryable" },
-                    { key: "error.attempt", label: "error.attempt" },
-                    { key: "error.timestamp", label: "error.timestamp" },
-                    { key: "error.input_summary", label: "error.input_summary" },
-                  ]
-                : [];
-            const outs = [...(m?.outputs ?? []), ...scrapeOuts, ...extra, ...errorOuts];
-            if (outs.length === 0) return null;
-            return (
-              <div key={d.id}>
-                <p className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-zinc-500">
-                  <span style={{ color: m?.color }}>{m?.icon}</span>
-                  {d.name || m?.label} <code className="font-mono text-[10px] text-zinc-400">{d.id}</code>
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {outs.map((o) => (
-                    <button
-                      key={o.key}
-                      type="button"
-                      onClick={() => onInsert(`{{${d.id}.${o.key}}}`)}
-                      title={`{{${d.id}.${o.key}}}`}
-                      className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600 hover:bg-accent-100 hover:text-accent-700 dark:bg-zinc-800 dark:text-zinc-300"
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+        <div className="mt-1.5 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ノード名・変数名・型で検索" aria-label="上流変数を検索" className="mb-2 min-h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-xs dark:border-zinc-700 dark:bg-zinc-900" />
+          <div className="max-h-72 space-y-3 overflow-y-auto overscroll-contain pr-1">
+            {direct.length > 0 && <section><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-accent-600">直前ノード</p><div className="space-y-2">{direct.map(renderNode)}</div></section>}
+            {other.length > 0 && <section><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">その他の上流ノード</p><div className="space-y-2">{other.map(renderNode)}</div></section>}
           {namedVars.length > 0 && (
             <div>
               <p className="mb-1 text-[11px] font-medium text-zinc-500">名前付き変数</p>
@@ -1416,6 +1561,7 @@ function VarPicker({
               </div>
             </div>
           )}
+          </div>
         </div>
       )}
     </div>
@@ -1471,8 +1617,9 @@ function LlmEndpointDetect({ onPick }: { onPick: (baseUrl: string, model?: strin
 }
 
 function ConfigInput({
-  field, value, disabled, apps, workflows, scrapeUrl, onChange,
+  inputId, field, value, disabled, apps, workflows, scrapeUrl, onChange,
 }: {
+  inputId?: string;
   field: FieldDef;
   value: unknown;
   disabled: boolean;
@@ -1517,6 +1664,7 @@ function ConfigInput({
   if (field.type === "textarea" || field.type === "code") {
     return (
       <textarea
+        id={inputId}
         value={String(value ?? "")}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
@@ -1529,6 +1677,7 @@ function ConfigInput({
   }
   return (
     <input
+      id={inputId}
       type={field.type === "number" ? "number" : "text"}
       value={String(value ?? "")}
       onChange={(e) => onChange(field.type === "number" ? (e.target.value === "" ? null : Number(e.target.value)) : e.target.value)}

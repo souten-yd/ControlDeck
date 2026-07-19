@@ -268,6 +268,14 @@ Phase 3 は output.render、human.approval、control.merge/try/delay、data.temp
 
 各 node doc は purpose、when/when-not-to-use、全 config、typed inputs/outputs、変数例、副作用、権限、secret、retry/timeout/error route、代表 error、performance/cost、2 以上の recipe、migration note を持つ。backend metadata を正とし SampleBook、inspector help、AI catalog で共用する。
 
+### 17.1 Guided configuration（2026-07-19実装）
+
+`node_catalog()`のmetadata v3を正として、`initial_config`、config fieldごとの`default`/`recommended`/`reason`、`primary_input`/`primary_output`、`quick_start`、`examples`を返す。新規ノードは`initial_config`を複製して開始し、「推奨値を適用」は未入力fieldだけへ反映する。外部URL、path、model、Secret、管理対象IDのような環境依存値は自動生成しない。
+
+edge接続時はtargetの`primary_input`が空の場合だけ、sourceの`primary_output`またはtriggerの先頭typed inputを参照式として設定する。変数pickerは逆向きBFSで到達可能な上流だけを扱い、直前ノードとその他上流を分離し、backend output schemaの型、dynamic trigger/scrape/error output、直近実行サンプルを検索表示する。挿入は文字列末尾固定ではなく、現在のselection rangeへ行う。
+
+Inspectorの設定面には必須表示、推奨値、理由、最短手順を置き、詳細面では構成例を確認・反映できる。既存definition、ユーザー入力値、Secret参照は自動migrationや推奨適用で上書きしない。
+
 ## 18. Phase / PR plan
 
 - **PR 0**: 本監査・仕様、implementation plan/status、README 導線。
