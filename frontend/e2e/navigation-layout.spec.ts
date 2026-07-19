@@ -31,6 +31,12 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
   await page.getByRole("button", { name: "ログイン" }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
+  await page.getByRole("button", { name: "More" }).click();
+  const quickActions = page.getByRole("dialog", { name: "Quick Actions" });
+  await expect(quickActions.getByRole("button", { name: "AI Assistant", exact: true })).toBeVisible();
+  await quickActions.getByRole("button", { name: "AI Assistant", exact: true }).click();
+  await expect(page).toHaveURL(/\/assistant$/);
+
   for (const viewport of [{ width: 320, height: 700 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(viewport);
     for (const [path, title] of pages) {

@@ -364,6 +364,14 @@ export default function AppLayout() {
                 }}
               />
             )}
+            <ActionItem
+              icon={<IconAssistant />}
+              label="AI Assistant"
+              onClick={() => {
+                setActionOpen(false);
+                navigate("/assistant");
+              }}
+            />
             {enabledFeatures.has("opencode") && can("workflows.run") && (
               <ActionItem
                 icon={<IconCode />}

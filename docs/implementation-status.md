@@ -7,6 +7,7 @@
 - 共通headerが`height: 48px`へ固定されたまま上部Safe Areaを内側へ加算していたため、ホーム画面から全画面起動したiPhoneではLogoがheader外へ押し出され、直後のPlay背景と重なっていた。
 - headerを固定高からSafe Area込みで自然に伸びる`min-height`へ変更。Playだけへ例外余白を加えず、全通常ページでLogo、本文、下部navigationの領域境界を維持する。
 - Safe AreaをCSS変数境界にまとめ、実機相当47pxを自動テストで再現可能にした。
+- 下部navigationだけでなくMoreのQuick ActionsからもAI Assistantを開ける導線を復元し、主要機能の入口を一貫させた。
 
 検証: frontend production build成功。認証付きPlaywright 2件で通常15ページの320×700／1280×800統一レイアウトと、390×844・上部Safe Area 47pxでLogo下端よりPlay背景開始位置が下になることを確認。実ControlDeck serviceへ反映済み。
 
