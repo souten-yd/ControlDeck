@@ -29,7 +29,7 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - 自動再接続、モバイル補助キーバー（Esc / Tab / Ctrl / 矢印 / ^C…）、コピー / 貼り付けシート
 
 ### 🔀 ワークフロー自動化（Dify / n8n 風）
-- React Flow ベースのビジュアルエディタ。標準 43 種類 + OpenCode 有効時の `code.agent` ノード:
+- React Flow ベースのビジュアルエディタ。標準 45 種類 + OpenCode 有効時の `code.agent` ノード:
   アプリ制御 / 条件分岐 / ループ / 変数 / 文字列操作 / ファイル入出力 / HTTP / ダウンロード /
   スクレイピング / ブラウザ操作（Playwright）/ LLM / RAG / Deep Research / OCR / DB クエリ / SSH / Git / C++ ビルド / WOL / Webhook 通知 / 現在日時 など
 - **トリガー入力フィールド**: テキスト / 長文 / 数値 / 選択 / ファイルの型付き入力を定義し、実行時ダイアログで受け取る
@@ -40,6 +40,7 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - **AI 生成の検証**: 生成したフローを構造・意味の両面で検証し、品質スコアと修正点を表示してから登録
 - **ノードカタログ**: 検索、カテゴリ、localStorage お気に入り、利用可能ノード絞り込み、未導入機能の案内。実行中は対応ノードの進捗を表示
 - JSON / CSV 変換、Schema 検証、許可ルート内 glob、embedding / rerank / LLM judge、分離 context による並列 map に対応
+- `human.approval`で承認者・期限付きの人手確認、`control.merge`でwait-all／first-success／first-complete／quorum／collect合流に対応
 - Web スクレイピングは sandbox iframe 上で要素を選び、CSS selector を作成して複数項目を名前付き出力可能
 - RAG は6種類のチャンク戦略、vector / full-text / hybrid / graph 検索、HyDE / multi-query、Web・学術検索から引用付きレポートを作る Deep Research に対応
 - スケジュール実行（間隔 / 毎日 / cron）、チャットフロー（チャット入力→信号表示ノードで応答）
@@ -71,10 +72,11 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 - OpenCode を既定無効のオプトイン feature として統合
 - 独立 AI アシスタント、永続会話、ジョブの優先度・進捗 stream・cancel を追加
 - llama.cpp の複数 GGUF 管理と Ollama / 外部 OpenAI 互換 provider の共通モデル操作を追加
-- ワークフローを標準43ノードへ拡張し、生成時の意味検証・品質スコア、安全プレビュー、並列map、型・side effect metadata、検索・お気に入りを追加
+- ワークフローを標準45ノードへ拡張し、生成時の意味検証・品質スコア、安全プレビュー、並列map、型・side effect metadata、検索・お気に入りを追加
 - 実行snapshot、node run、単体／部分再実行、固定データ、回帰テスト、draft／公開版分離、型付き`output.render`を追加
 - AIアシスタントと`research.deep`を反復型Deep Research共有エンジンへ統合し、SearXNG、PDF、学術、GitHub、RAG、ローカルコード、特許、市場資料に対応
 - LLMを使わない確定的な`data.template`、arrayのfilter/sort/unique/limitを行う`data.filter`、group集計対応の`data.aggregate`を追加
+- 承認文・承認者・期限を持つ`human.approval`と、5方式で分岐を合流する`control.merge`を追加
 - アプリアイコン、TCP / HTTP / ファイルのヘルスチェック、ごみ箱、再開可能アップロード、永続電源予約を追加
 - AMD GPU 監視を sysfs fast path へ移行し、Web ポーリングとジョブ通知を軽量化
 - AI アシスタントと Web ターミナルの 320px / iOS 向け入力・再接続・履歴復元を改善

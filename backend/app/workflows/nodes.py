@@ -182,6 +182,60 @@ async def node_wait(config: dict, ctx: dict) -> dict:
     return {"waited_seconds": seconds}
 
 
+async def node_human_approval(config: dict, ctx: dict) -> dict:
+    """承認後にだけ実行される明示的なhuman gate。待機自体はengineが管理する。"""
+    from app.workflows.redaction import collect_sensitive_values, redact
+
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(value) for value in (ctx.get("__secrets__") or {}).values() if value)
+    return {
+        "approved": True,
+        "message": redact(
+            render_template(str(config.get("message") or "承認されました"), ctx),
+            sensitive_values=sensitive,
+        ),
+        "approver": str(config.get("approver") or ""),
+    }
+
+
+async def node_control_merge(config: dict, ctx: dict) -> dict:
+    """engineが確定した直接上流だけを、到着順を保って型付きで合流する。"""
+    mode = str(config.get("mode") or "wait_all")
+    if mode not in {"wait_all", "first_success", "first_complete", "quorum", "collect"}:
+        raise NodeError(f"不正な合流方式: {mode}")
+    source_ids = [str(value) for value in config.get("__merge_source_ids", [])]
+    items = []
+    for node_id in source_ids:
+        entry = ctx.get(node_id)
+        if not isinstance(entry, dict):
+            continue
+        items.append({
+            "node_id": node_id,
+            "status": str(entry.get("status") or "UNKNOWN"),
+            "output": entry.get("output"),
+        })
+    successful = [item for item in items if item["status"] == "SUCCEEDED"]
+    if mode == "first_success" and not successful:
+        raise NodeError("成功した入力がありません")
+    if mode == "quorum":
+        quorum = max(1, min(int(config.get("quorum") or 1), 100))
+        if len(successful) < quorum:
+            raise NodeError(f"成功入力がquorumに未達です: {len(successful)}/{quorum}")
+        items = successful[:quorum]
+    elif mode == "first_success":
+        items = successful[:1]
+    elif mode == "first_complete":
+        items = items[:1]
+    return {
+        "mode": mode,
+        "items": items,
+        "values": [item["output"] for item in items],
+        "count": len(items),
+        "succeeded": sum(item["status"] == "SUCCEEDED" for item in items),
+        "value": items[0]["output"] if len(items) == 1 else [item["output"] for item in items],
+    }
+
+
 async def node_webhook(config: dict, ctx: dict) -> dict:
     url = str(config.get("url", ""))
     if not url.startswith(("http://", "https://")):
@@ -1693,6 +1747,8 @@ NODE_EXECUTORS = {
     "app.status": node_app_status,
     "http.request": node_http_request,
     "condition.if": node_condition,
+    "human.approval": node_human_approval,
+    "control.merge": node_control_merge,
     "util.wait": node_wait,
     "notify.webhook": node_webhook,
     "file.exists": node_file_exists,

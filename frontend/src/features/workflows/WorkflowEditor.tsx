@@ -127,9 +127,9 @@ function FlowNode({ data, selected }: NodeProps) {
         </div>
       </div>
       {/* 承認ゲート/リトライのバッジ */}
-      {(def.config?.require_approval || Number(def.config?.retry_count) > 0) && (
+      {(def.type === "human.approval" || def.config?.require_approval || Number(def.config?.retry_count) > 0) && (
         <span className="pointer-events-none absolute left-1 top-1.5 text-[9px]">
-          {def.config?.require_approval ? "✋" : ""}{Number(def.config?.retry_count) > 0 ? "↻" : ""}
+          {def.type === "human.approval" || def.config?.require_approval ? "✋" : ""}{Number(def.config?.retry_count) > 0 ? "↻" : ""}
         </span>
       )}
       {d.pinned && (
@@ -1054,7 +1054,7 @@ function NodeConfigSheet({
       )}
       {tab === "run" && (
         <div className="space-y-3">
-          {def.type !== "trigger" && def.type !== "control.loop" && !readOnly ? (
+          {def.type !== "trigger" && def.type !== "control.loop" && def.type !== "human.approval" && !readOnly ? (
             <NodeTestRunner
               workflowId={workflowId}
               nodeId={def.id}

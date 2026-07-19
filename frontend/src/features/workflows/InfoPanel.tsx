@@ -26,6 +26,7 @@ interface NodeEntry {
   started_at?: string;
   finished_at?: string;
   output?: Record<string, unknown>;
+  approval?: { message?: string; approver?: string };
 }
 interface LiveExec {
   id: number;
@@ -297,6 +298,12 @@ function ExecDetail({
           <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
             ✋ 「{live.context[nid]?.name ?? nodeNames[nid]?.name ?? nid}」が承認を待っています
           </p>
+          {live.context[nid]?.approval?.message && (
+            <p className="mt-1 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-200">{live.context[nid].approval?.message}</p>
+          )}
+          {live.context[nid]?.approval?.approver && (
+            <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">承認者: {live.context[nid].approval?.approver}</p>
+          )}
           {onApprove && (
             <div className="mt-2 flex gap-2">
               <button onClick={() => onApprove(nid, true)} className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">承認して続行</button>

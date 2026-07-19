@@ -27,6 +27,7 @@ from app.workflows.nodes import (
     NODE_EXECUTORS,
     NODE_TIMEOUTS,
     NodeError,
+    render_template,
 )
 from app.workflows.redaction import collect_sensitive_values, redact
 
@@ -101,6 +102,13 @@ def live_context(execution_id: int) -> dict | None:
 
 def pending_approvals(execution_id: int) -> list[str]:
     return [nid for (eid, nid) in _approvals if eid == execution_id]
+
+
+def approval_details(execution_id: int, node_id: str) -> dict[str, Any] | None:
+    live = _live.get(execution_id)
+    entry = live.get(node_id) if isinstance(live, dict) else None
+    details = entry.get("approval") if isinstance(entry, dict) else None
+    return details if isinstance(details, dict) else None
 
 
 def resolve_approval(execution_id: int, node_id: str, approve: bool) -> bool:
@@ -296,13 +304,28 @@ async def _execute_graph(
             )
 
         # 実行前承認ゲート（任意ノードに設定可能）
-        if config.get("require_approval") and ntype != "trigger" and execution_id is not None:
-            entry.update(status="WAITING_APPROVAL", waiting_since=utcnow().isoformat())
+        requires_approval = bool(config.get("require_approval")) or ntype == "human.approval"
+        if requires_approval and ntype != "trigger" and execution_id is not None:
+            sensitive = collect_sensitive_values(run_context)
+            sensitive.update(str(value) for value in (run_context.get("__secrets__") or {}).values() if value)
+            prompt = redact(
+                render_template(str(config.get("message") or "この処理を続行しますか？"), run_context),
+                sensitive_values=sensitive,
+            )
+            approver = str(config.get("approver") or "").strip()
+            entry.update(
+                status="WAITING_APPROVAL", waiting_since=utcnow().isoformat(),
+                approval={"message": prompt, "approver": approver},
+            )
             await asyncio.to_thread(_set_exec_status, execution_id, "WAITING")
             fut: asyncio.Future = asyncio.get_event_loop().create_future()
             _approvals[(execution_id, nid)] = fut
             try:
-                approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT)
+                approval_timeout = max(0.1, min(float(config.get("approval_timeout_seconds") or APPROVAL_TIMEOUT), APPROVAL_TIMEOUT))
+            except (TypeError, ValueError):
+                approval_timeout = float(APPROVAL_TIMEOUT)
+            try:
+                approved = await asyncio.wait_for(fut, timeout=approval_timeout)
             except asyncio.TimeoutError:
                 fail_entry("承認待ちがタイムアウトしました", "APPROVAL_TIMEOUT", "TIMED_OUT", 1, retryable=False)
                 await asyncio.to_thread(_finish_node_run, node_run_id, entry)
@@ -381,25 +404,47 @@ async def _execute_graph(
             self.lock = asyncio.Lock()
             self.received: dict[str, int] = {}
             self.live_received: dict[str, int] = {}
+            self.arrivals: dict[str, list[str]] = {}
+            self.successful_arrivals: dict[str, list[str]] = {}
             self.ran: set[str] = set()
             self.incoming = {nid: 0 for nid in node_by_id}
+            self.incoming_sources: dict[str, list[str]] = {nid: [] for nid in node_by_id}
             for e in edges:
                 self.incoming[e["target"]] = self.incoming.get(e["target"], 0) + 1
+                self.incoming_sources.setdefault(e["target"], []).append(str(e["source"]))
 
-        async def fire(self, target: str, live: bool) -> None:
+        async def fire(self, target: str, live: bool, source: str | None = None) -> None:
             node = node_by_id.get(target)
             if node is None:
                 return
-            join_all = str((node.get("config") or {}).get("join", "")) == "all"
+            config = node.get("config") or {}
+            merge_mode = str(config.get("mode") or "wait_all") if node.get("type") == "control.merge" else ""
+            join_all = str(config.get("join", "")) == "all" or merge_mode in {"wait_all", "collect"}
             async with self.lock:
                 self.received[target] = self.received.get(target, 0) + 1
                 if live:
                     self.live_received[target] = self.live_received.get(target, 0) + 1
+                    if source and source not in self.arrivals.setdefault(target, []):
+                        self.arrivals[target].append(source)
+                    source_entry = self.context.get(source or "")
+                    if source and isinstance(source_entry, dict) and source_entry.get("status") == "SUCCEEDED":
+                        if source not in self.successful_arrivals.setdefault(target, []):
+                            self.successful_arrivals[target].append(source)
                 if target in self.ran:
                     return
                 resolved = self.received[target] >= self.incoming.get(target, 0)
                 lives = self.live_received.get(target, 0)
-                if join_all:
+                successes = len(self.successful_arrivals.get(target, []))
+                if merge_mode == "first_success":
+                    run = successes >= 1 or resolved
+                    if not run:
+                        return
+                elif merge_mode == "quorum":
+                    quorum = max(1, min(int(config.get("quorum") or 1), max(1, self.incoming.get(target, 1))))
+                    run = successes >= quorum or resolved
+                    if not run:
+                        return
+                elif join_all:
                     if not resolved:
                         return  # 全入力が揃うまで待つ
                     run = lives > 0
@@ -415,7 +460,7 @@ async def _execute_graph(
                 # 全入力が dead → このノードは実行されない。下流へ dead を伝播
                 self.context.setdefault(target, {"status": "SKIPPED"})
                 for e in outgoing.get(target, []):
-                    await self.fire(e["target"], live=False)
+                    await self.fire(e["target"], live=False, source=target)
 
         async def start(self, node_id: str) -> None:
             async with self.lock:
@@ -434,16 +479,26 @@ async def _execute_graph(
                     br = _edge_branch(e)
                     if br == "body":
                         continue
-                    await self.fire(e["target"], live=br not in {"error", "timeout"})
+                    await self.fire(e["target"], live=br not in {"error", "timeout"}, source=nid)
                 return
-            entry = await run_single(node, self.context)
+            run_node = node
+            if node.get("type") == "control.merge":
+                mode = str((node.get("config") or {}).get("mode") or "wait_all")
+                if mode in {"wait_all", "collect"}:
+                    source_ids = self.incoming_sources.get(nid, [])
+                elif mode in {"first_success", "quorum"}:
+                    source_ids = self.successful_arrivals.get(nid, [])
+                else:
+                    source_ids = self.arrivals.get(nid, [])
+                run_node = {**node, "config": {**(node.get("config") or {}), "__merge_source_ids": source_ids}}
+            entry = await run_single(run_node, self.context)
             failed = entry["status"] in ("FAILED", "TIMED_OUT")
             on_error = str((node.get("config") or {}).get("on_error", "stop"))
             outs = outgoing.get(nid, [])
             if node.get("type") == "condition.if" and not failed:
                 branch = "true" if (entry.get("output") or {}).get("result") else "false"
                 for e in outs:
-                    await self.fire(e["target"], live=(_edge_branch(e) or "true") == branch)
+                    await self.fire(e["target"], live=(_edge_branch(e) or "true") == branch, source=nid)
             elif failed and on_error == "branch":
                 failure_branch = "timeout" if entry["status"] == "TIMED_OUT" else "error"
                 has_timeout_route = any(_edge_branch(edge) == "timeout" for edge in outs)
@@ -453,10 +508,10 @@ async def _execute_graph(
                     live = branch == failure_branch or (
                         failure_branch == "timeout" and not has_timeout_route and branch == "error"
                     )
-                    await self.fire(e["target"], live=live)
+                    await self.fire(e["target"], live=live, source=nid)
             else:  # 成功、または continue で失敗を無視して先へ
                 for e in outs:
-                    await self.fire(e["target"], live=_edge_branch(e) not in {"error", "timeout"})
+                    await self.fire(e["target"], live=_edge_branch(e) not in {"error", "timeout"}, source=nid)
 
     async def run_loop(node: dict, parent_context: dict[str, Any]) -> None:
         from app.workflows.nodes import render_template

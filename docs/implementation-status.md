@@ -2,6 +2,22 @@
 
 最終更新: 2026-07-19
 
+## Workflow Phase 3 human approval／control merge（2026-07-19）
+
+- 隠し共通設定だった承認gateを正式な`human.approval` nodeへ昇格。上流変数を使う承認文、ユーザー名による
+  承認者限定、0.1秒〜24時間の期限、承認／却下の監査、承認後のtyped outputをcatalog・metadata・UIへ統合した。
+- 承認待ち情報を実行パネルに表示。resolved secretは表示・node output前にredactし、却下は
+  `APPROVAL_REJECTED`、期限切れは`APPROVAL_TIMEOUT` Error Contextとしてerror／timeout routeへ渡す。
+- `control.merge`を追加し、wait_all、first_success、first_complete、quorum、collectをengineの到着順・成功状態と統合。
+  直接上流だけを`items[{node_id,status,output}]`、`values`、`value`へまとめ、成功0件／quorum未達は明示errorにする。
+- semantic checkに承認期限、merge方式、入力本数、quorum範囲を追加。node referenceとREADMEを標準45 nodeへ更新した。
+- 現段階の承認待ちは既存engineと同じprocess memory上にあり、service再起動をまたぐ永続pause tokenと修正入力は
+  `WorkflowPause` migrationを伴う次の機能単位で実装する。
+
+検証: backend全295件、frontend production build、実ControlDeck service再起動に成功。390×844 E2Eで
+公開版のtrigger→2並列node→wait_all merge→指定ユーザーのhuman approval→typed status outputを実行し、
+承認文と承認者表示、Web UIからの再開、merge count=2、横overflow 0、console error 0を確認した。
+
 ## Workflow Phase 3 型付きError Context／視覚的error route（2026-07-19）
 
 - node失敗時の共通出力を`error` objectへ統一し、node ID/type、message、code、retryable、attempt、
@@ -54,6 +70,8 @@ trigger入力→filter→aggregate→template→typed outputを実行して`kept
 - token生成／音声状態行を入力カード内の固定24px footerとして入力欄の下側へ統合。待機時も同じ領域へ
   keyboard hintを表示し、状態の出現／消失でcomposer高や入力欄の座標を変えない。footerは入力カードと同じ背景を使い、
   dialog最下端まで連続させるため、独立した黒い空欄を作らない。
+- 入力カードを少し囲っていたcomposer外面の背景色と上borderを撤去して透明化。入力カードと固定status footerだけを
+  操作surfaceとして残し、周囲に別の薄い帯や箱が見えない構成へ整理した。
 - Playwrightを`navigator.standalone=true`で起動し、320×700とiPhone相当390×844のscreenshotを目視確認。
   dark themeの390px条件で`shellBottom = dialogBottom = composerBottom = inputCardBottom = 844px`、composer padding 0px、
   document幅390pxを実測。音声状態の表示前後も入力欄top座標が不変で、状態footerが入力欄の下にあることを確認。

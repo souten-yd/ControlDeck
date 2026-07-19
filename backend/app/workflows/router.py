@@ -1368,6 +1368,12 @@ def approve_execution_node(
     db: Session = Depends(get_db),
 ):
     """承認待ちノードを承認/却下して実行を再開する。"""
+    details = engine.approval_details(execution_id, body.node_id)
+    if details is None:
+        raise HTTPException(status_code=409, detail="このノードは承認待ちではありません")
+    approver = str(details.get("approver") or "").strip()
+    if approver and approver != user.username:
+        raise HTTPException(status_code=403, detail=f"この承認はユーザー '{approver}' に割り当てられています")
     if not engine.resolve_approval(execution_id, body.node_id, body.approve):
         raise HTTPException(status_code=409, detail="このノードは承認待ちではありません")
     audit.record(db, "workflow.approve" if body.approve else "workflow.reject", user=user,

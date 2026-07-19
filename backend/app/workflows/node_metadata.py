@@ -47,6 +47,7 @@ CAPABILITIES: dict[str, list[str]] = {
     "cmd.cpp_build": ["filesystem.write", "process.exec"],
     "cmd.python": ["process.exec"], "net.wol": ["network"],
     "flow.call": ["workflow.call"],
+    "human.approval": ["human.interaction"],
     "code.agent": ["filesystem.read", "filesystem.write", "process.exec", "llm"],
 }
 
@@ -59,6 +60,8 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "app.status": {"app": "string", "status": "string", "pid": "integer", "uptime_seconds": "number"},
     "condition.if": {"result": "boolean", "left": "any", "right": "any"},
     "control.loop": {"index": "integer", "item": "any", "total": "integer", "done": "boolean", "results": "array"},
+    "human.approval": {"approved": "boolean", "message": "string", "approver": "string"},
+    "control.merge": {"mode": "string", "items": "array", "values": "array", "count": "integer", "succeeded": "integer", "value": "any"},
     "util.wait": {"waited_seconds": "number"}, "util.now": {"text": "string", "date": "string", "time": "string"},
     "var.set": {"value": "any"}, "string.op": {"result": "any"}, "text.markdown": {"html": "string"},
     "data.transform": {"value": "any", "valid": "boolean", "errors": "array", "csv": "string", "rows": "array", "count": "integer"},
@@ -94,9 +97,9 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
 
 _INTEGER_KEYS = {
     "app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps", "limit", "top_n",
-    "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens", "retry_count",
+    "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens", "retry_count", "quorum",
 }
-_NUMBER_KEYS = {"seconds", "timeout", "retry_wait", "node_timeout"}
+_NUMBER_KEYS = {"seconds", "timeout", "retry_wait", "node_timeout", "approval_timeout_seconds"}
 _BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive"}
 _ARRAY_KEYS = {"inputs", "extractors", "sources"}
 
@@ -137,7 +140,7 @@ def node_catalog() -> list[dict[str, Any]]:
             },
             "output_schema": OUTPUT_SCHEMAS.get(node_type, {}),
             "supports": {
-                "retry": node_type not in ("trigger", "control.loop"),
+                "retry": node_type not in ("trigger", "control.loop", "human.approval"),
                 "cancel": True,
                 "progress": node_type in {"control.loop", "data.transform", "data.filter", "data.aggregate", "file.glob", "ai.utility"},
                 "dry_run": True,
