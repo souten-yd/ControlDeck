@@ -88,3 +88,32 @@ test("keeps Play below the logo with an iPhone standalone safe area", async ({ p
   });
   expect(bounds.pageTop).toBeGreaterThanOrEqual(bounds.logoBottom);
 });
+
+test("configures up to six mobile destinations while keeping More fixed", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto("/settings");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+  await page.goto("/settings");
+
+  const settings = page.getByRole("region", { name: "Bottom Navigation" });
+  await expect(settings.getByText("5 / 6", { exact: true })).toBeVisible();
+  await settings.getByRole("button", { name: /Workflows/ }).click();
+  await expect(settings.getByText("6 / 6", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("button", { name: /Files/ })).toBeDisabled();
+
+  for (let index = 0; index < 5; index += 1) {
+    await settings.getByRole("button", { name: "Workflowsを上へ移動" }).click();
+  }
+  await page.reload();
+
+  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(navigation.locator("a")).toHaveCount(6);
+  await expect(navigation.locator("a").first()).toContainText("Workflows");
+  await expect(navigation.getByRole("button", { name: "More" })).toBeVisible();
+  const overflow = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
+  expect(overflow.document).toBeLessThanOrEqual(overflow.viewport);
+});

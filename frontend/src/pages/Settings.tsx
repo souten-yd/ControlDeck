@@ -6,6 +6,7 @@ import { ConfirmDialog, Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
 import { TotpSettings } from "../features/auth/TotpSettings";
 import { PageHeader } from "../components/PageHeader";
+import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
 
 interface SessionInfo {
   id: number;
@@ -118,6 +119,8 @@ export default function SettingsPage() {
           />
         </label>
       </section>
+
+      <MobileNavigationSettings />
 
       {can("settings.manage") && <AddonsSection />}
 

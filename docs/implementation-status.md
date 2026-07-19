@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-19
 
+## Mobile bottom navigation customization（2026-07-19）
+
+- Settingsへ`Bottom Navigation`設定を追加。現在の権限と導入済みfeatureから利用可能な画面だけを候補にし、端末ごとに0〜6件を有効化できる。
+- 選択項目は44px以上の上下buttonで安全に並べ替え、即時保存する。ResetでHome／Apps／Play／Terminal／AI Assistantの推奨構成へ戻せる。
+- Moreは選択数に含めず常に右端へ固定。選択項目が少ない場合は各項目を最大96pxに抑え、6項目＋Moreでも320pxを横overflowしないflex配置とした。
+- navigation metadataを共通catalogへ抽出し、desktop sidebar、mobile navigation、Settings候補のlabel／permission／feature判定を二重管理しない。
+
+検証: backend全324件、frontend production build成功。認証付きPlaywright 3件で320×700から6項目選択、7列相当表示、上端への並べ替え、reload後の復元、7件目候補の無効化、More固定、横overflowなしを確認。
+
 ## iPhone standalone Play header境界修正（2026-07-19）
 
 - 共通headerが`height: 48px`へ固定されたまま上部Safe Areaを内側へ加算していたため、ホーム画面から全画面起動したiPhoneではLogoがheader外へ押し出され、直後のPlay背景と重なっていた。

@@ -12,8 +12,6 @@ import {
   IconChip,
   IconFile,
   IconGrid,
-  IconHome,
-  IconLogs,
   IconPlus,
   IconPlay,
   IconPower,
@@ -25,67 +23,8 @@ import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { Logo } from "../components/Logo";
 import { PRODUCT_NAMES } from "../constants/productNames";
-
-const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; feature?: string; permission?: string }> = [
-  { to: "/", label: "Home", icon: IconHome },
-  { to: "/apps", label: "Apps", icon: IconGrid },
-  { to: "/runner", label: PRODUCT_NAMES.workflowApps, icon: IconPlay, permission: "workflows.run" },
-  { to: "/workflows", label: "Workflows", icon: IconFlow, permission: "workflows.edit" },
-  { to: "/applications", label: PRODUCT_NAMES.appStudio, icon: IconGrid, permission: "application_builder.view" },
-  { to: "/project-lab", label: "Project Lab", icon: IconCode, permission: "project_lab.view" },
-  { to: "/remote", label: "Remote", icon: IconRemote },
-  { to: "/files", label: "Files", icon: IconFile },
-  { to: "/terminal", label: "Terminal", icon: IconTerminal },
-  { to: "/assistant", label: "AI Assistant", icon: IconAssistant },
-  { to: "/github", label: "GitHub", icon: IconBranch },
-  { to: "/knowledge", label: "Knowledge", icon: IconBook },
-  { to: "/models", label: "Models", icon: IconChip },
-  { to: "/opencode", label: "OpenCode", icon: IconCode, feature: "opencode" },
-  { to: "/logs", label: "Logs", icon: IconLogs },
-  { to: "/system", label: "System", icon: IconChart },
-  { to: "/settings", label: "Settings", icon: IconSettings },
-];
-
-// モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / AIアシスタント + 右端に操作
-const MOBILE_NAV = ["/", "/apps", "/runner", "/terminal", "/assistant"].map((path) => NAV.find((item) => item.to === path)!);
-
-function IconFlow(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
-      <rect x="2" y="4" width="7" height="6" rx="1.5" />
-      <rect x="15" y="14" width="7" height="6" rx="1.5" />
-      <path d="M9 7h4a2 2 0 0 1 2 2v5" />
-    </svg>
-  );
-}
-
-function IconCode(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
-  );
-}
-
-function IconRemote(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
-      <rect x="2" y="4" width="20" height="13" rx="2" />
-      <path d="M8 21h8M12 17v4" />
-    </svg>
-  );
-}
-
-function IconAssistant(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}>
-      <path d="M12 3l1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4L12 3z" />
-      <path d="M18.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z" />
-      <path d="M5 15l.6 1.7 1.7.6-1.7.6L5 19.5l-.6-1.6-1.7-.6 1.7-.6L5 15z" />
-    </svg>
-  );
-}
+import { IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
+import { useMobileNavigation } from "../stores/mobileNavigation";
 
 export default function AppLayout() {
   const user = useAuth((s) => s.user);
@@ -93,7 +32,9 @@ export default function AppLayout() {
   const connected = useMetrics((s) => s.connected);
   const { data: meta } = useMeta();
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
-  const visibleNav = NAV.filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && (!item.permission || can(item.permission)));
+  const visibleNav = NAVIGATION.filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && (!item.permission || can(item.permission)));
+  const mobilePaths = useMobileNavigation((state) => state.paths);
+  const mobileNav = mobilePaths.map((path) => visibleNav.find((item) => item.to === path)).filter((item) => item !== undefined);
   const [collapsed, setCollapsed] = useState(
     localStorage.getItem("cd-sidebar") === "min",
   );
@@ -272,14 +213,14 @@ export default function AppLayout() {
           aria-label="Main navigation"
           className={`safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 ${immersive ? "hidden" : "md:hidden"}`}
         >
-          <div className="grid grid-cols-6">
-            {MOBILE_NAV.filter((item) => !item.permission || can(item.permission)).map((n) => (
+          <div className="flex justify-around">
+            {mobileNav.map((n) => (
               <MobileNavLink key={n.to} {...n} />
             ))}
             <button
               onClick={() => setActionOpen(true)}
               aria-label="More"
-              className="flex min-w-0 flex-col items-center gap-0.5 py-2 text-zinc-600 dark:text-zinc-400"
+              className="flex min-h-[52px] min-w-0 max-w-24 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-zinc-600 dark:text-zinc-400"
             >
               <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-600 text-white">
                 <IconPlus />
@@ -525,7 +466,7 @@ function MobileNavLink({
       to={to}
       end={to === "/"}
       className={({ isActive }) =>
-        `flex min-h-[52px] min-w-0 flex-col items-center justify-center gap-0.5 py-1.5 ${
+        `flex min-h-[52px] min-w-0 max-w-24 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 ${
           isActive
             ? "text-accent-600 dark:text-accent-400"
             : "text-zinc-500 dark:text-zinc-400"
