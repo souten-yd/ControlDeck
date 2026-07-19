@@ -107,6 +107,76 @@ def test_workflow_api_crud_and_run(admin_client):
     assert admin_client.delete(f"/api/v1/workflows/{wf_id}", headers=CSRF_HEADERS).status_code == 200
 
 
+def test_preview_test_outputs_and_historical_inputs_are_integrated_and_redacted(admin_client):
+    definition = _definition(
+        [
+            TRIGGER,
+            {
+                "id": "result",
+                "type": "signal.display",
+                "name": "結果",
+                "config": {"signal": "answer", "value": "{{t.message}} / {{t.password}}"},
+            },
+        ],
+        [{"source": "t", "target": "result"}],
+    )
+    created = admin_client.post(
+        "/api/v1/workflows",
+        json={"name": "preview-loop", "definition": definition},
+        headers=CSRF_HEADERS,
+    )
+    assert created.status_code == 201, created.text
+    workflow_id = created.json()["id"]
+
+    preview = admin_client.post(
+        "/api/v1/workflows/preview-definition",
+        json={"definition": definition, "input": {"message": "hello", "api_token": "hidden"}},
+        headers=CSRF_HEADERS,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["dry_run"] is True
+    assert preview.json()["input"]["api_token"] == "***"
+
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/test",
+        json={"input": {"message": "hello", "password": "do-not-store"}},
+        headers=CSRF_HEADERS,
+    )
+    assert started.status_code == 200, started.text
+    execution_id = started.json()["execution_id"]
+
+    import time
+
+    detail = None
+    for _ in range(50):
+        response = admin_client.get(f"/api/v1/workflow-executions/{execution_id}")
+        detail = response.json()
+        if detail["status"] not in ("QUEUED", "RUNNING"):
+            break
+        time.sleep(0.1)
+    assert detail is not None and detail["status"] == "SUCCEEDED", detail
+    assert detail["input"] == {"message": "hello", "password": "***"}
+    assert detail["outputs"]["answer"]["value"] == "hello / ***"
+    assert "do-not-store" not in json.dumps(detail, ensure_ascii=False)
+
+    loaded = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/executions/{execution_id}/load-inputs",
+        headers=CSRF_HEADERS,
+    )
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json()["input"] == {"message": "hello", "password": "***"}
+
+    from app.database import SessionLocal
+    from app.models import WorkflowExecution
+
+    with SessionLocal() as db:
+        stored = db.get(WorkflowExecution, execution_id)
+        assert stored is not None
+        assert "do-not-store" not in stored.context_json
+
+    admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS)
+
+
 def test_viewer_cannot_run_workflows(client):
     client.cookies.clear()
     r = client.post(

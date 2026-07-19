@@ -26,6 +26,7 @@ from app.workflows.nodes import (
     NODE_TIMEOUTS,
     NodeError,
 )
+from app.workflows.redaction import collect_sensitive_values, redact
 
 logger = logging.getLogger("control_deck.workflows")
 
@@ -431,11 +432,18 @@ async def run_workflow(
                 row = db2.get(WorkflowExecution, execution_id)
                 if row is None:
                     return
-                saved = {k: v for k, v in context.items() if k not in ("__secrets__",)}
+                sensitive_values = collect_sensitive_values(context)
+                sensitive_values.update(
+                    str(value) for value in (context.get("__secrets__") or {}).values() if value
+                )
+                saved = redact(
+                    {k: v for k, v in context.items() if k not in ("__secrets__",)},
+                    sensitive_values=sensitive_values,
+                )
                 row.context_json = json.dumps(saved, ensure_ascii=False, default=str)
                 if final_status is not None:
                     row.status = final_status
-                    row.error = error
+                    row.error = str(redact(error, sensitive_values=sensitive_values))
                     row.finished_at = utcnow()
                 db2.commit()
             finally:

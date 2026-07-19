@@ -13,6 +13,7 @@ from app.models import User, Workflow, WorkflowExecution, WorkflowSecret, Workfl
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
 from app.workflows import engine
+from app.workflows.redaction import collect_sensitive_values, redact
 
 MAX_VERSIONS_PER_WORKFLOW = 20
 
@@ -123,6 +124,17 @@ def dry_run_definition(
     user: User = Depends(require_permission("workflows.run")),
 ):
     """編集中definitionを保存/実行せず静的シミュレーションする。"""
+    from app.workflows.dry_run import simulate_definition
+
+    return simulate_definition(body.definition, body.input)
+
+
+@router.post("/workflows/preview-definition")
+def preview_definition(
+    body: DryRunBody,
+    user: User = Depends(require_permission("workflows.run")),
+):
+    """Canonical editor preview endpoint; never creates an execution or calls an executor."""
     from app.workflows.dry_run import simulate_definition
 
     return simulate_definition(body.definition, body.input)
@@ -439,6 +451,33 @@ async def run_workflow(
     return {"execution_id": execution_id}
 
 
+@router.post("/workflows/{workflow_id}/test")
+async def test_workflow(
+    workflow_id: int,
+    request: Request,
+    body: RunBody | None = None,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """Run the saved draft explicitly as a test execution."""
+    _get(db, workflow_id)
+    try:
+        execution_id = await engine.run_workflow(
+            workflow_id, trigger_type="test", input_data=body.input if body else {}
+        )
+    except engine.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db,
+        "workflow.test",
+        user=user,
+        resource_type="workflow",
+        resource_id=str(workflow_id),
+        request=request,
+    )
+    return {"execution_id": execution_id}
+
+
 @router.post("/workflows/{workflow_id}/enable")
 def enable_workflow(
     workflow_id: int,
@@ -501,6 +540,8 @@ def get_execution(
     r = db.get(WorkflowExecution, execution_id)
     if r is None:
         raise HTTPException(status_code=404, detail="実行が見つかりません")
+    raw_context = json.loads(r.context_json or "{}")
+    context = redact(raw_context, sensitive_values=collect_sensitive_values(raw_context))
     return {
         "id": r.id,
         "workflow_id": r.workflow_id,
@@ -508,9 +549,51 @@ def get_execution(
         "trigger_type": r.trigger_type,
         "started_at": r.started_at,
         "finished_at": r.finished_at,
-        "error": r.error,
-        "context": json.loads(r.context_json or "{}"),
+        "error": str(redact(r.error, sensitive_values=collect_sensitive_values(raw_context))),
+        "input": context.get("__input__", {}),
+        "outputs": _final_outputs(context),
+        "context": {key: value for key, value in context.items() if not key.startswith("__")},
     }
+
+
+def _final_outputs(context: dict) -> dict[str, dict]:
+    """Build the phase-1 output contract from legacy signal.display node results."""
+    outputs: dict[str, dict] = {}
+    for node_id, entry in context.items():
+        if node_id.startswith("__") or not isinstance(entry, dict):
+            continue
+        output = entry.get("output")
+        if not isinstance(output, dict) or not output.get("display"):
+            continue
+        name = str(output.get("signal") or node_id)
+        base = name
+        suffix = 2
+        while name in outputs:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        outputs[name] = {
+            "type": "text",
+            "value": output.get("value"),
+            "source_node_id": node_id,
+        }
+    return outputs
+
+
+@router.post("/workflows/{workflow_id}/executions/{execution_id}/load-inputs")
+def load_execution_inputs(
+    workflow_id: int,
+    execution_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """Load redacted trigger inputs from a past execution into the preview form."""
+    _get(db, workflow_id)
+    execution = db.get(WorkflowExecution, execution_id)
+    if execution is None or execution.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="実行が見つかりません")
+    raw_context = json.loads(execution.context_json or "{}")
+    context = redact(raw_context, sensitive_values=collect_sensitive_values(raw_context))
+    return {"execution_id": execution.id, "input": context.get("__input__", {})}
 
 
 @router.get("/workflow-executions/{execution_id}/live")
@@ -524,9 +607,12 @@ def get_execution_live(
     if r is None:
         raise HTTPException(status_code=404, detail="実行が見つかりません")
     live = engine.live_context(execution_id)
-    context = ({k: v for k, v in live.items() if not k.startswith("__")}
-               if live is not None else json.loads(r.context_json or "{}"))
-    context = {k: v for k, v in context.items() if not k.startswith("__")}
+    raw_context = live if live is not None else json.loads(r.context_json or "{}")
+    sensitive_values = collect_sensitive_values(raw_context)
+    if live is not None:
+        sensitive_values.update(str(value) for value in (live.get("__secrets__") or {}).values() if value)
+    context = {k: v for k, v in raw_context.items() if not k.startswith("__")}
+    context = redact(context, sensitive_values=sensitive_values)
     # LLM ノードのトークン合計（コスト把握用）
     total_tokens = 0
     for entry in context.values():
@@ -541,7 +627,7 @@ def get_execution_live(
         "running": live is not None,
         "started_at": r.started_at,
         "finished_at": r.finished_at,
-        "error": r.error,
+        "error": str(redact(r.error, sensitive_values=sensitive_values)),
         "context": context,
         "pending_approvals": engine.pending_approvals(execution_id),
         "total_tokens": total_tokens,

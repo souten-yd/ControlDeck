@@ -41,6 +41,7 @@ import {
 } from "./nodeTypes";
 import { ScrapeViewer } from "./ScrapeViewer";
 import { InfoPanel } from "./InfoPanel";
+import { PreviewWorkspace } from "./PreviewWorkspace";
 import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
 
@@ -63,23 +64,14 @@ interface WorkflowDetail {
 type FlowNodeData = { def: DefNode; running?: string };
 interface NodeMetadata {
   type: string;
+  version: number;
+  description: string;
   side_effect: "none" | "read" | "write" | "external" | "process";
   capabilities: string[];
+  config_schema: Record<string, { type: string; required?: boolean }>;
+  output_schema: Record<string, string>;
   supports: { retry: boolean; cancel: boolean; progress: boolean; dry_run: boolean };
 }
-interface DryRunResult {
-  valid: boolean;
-  dry_run: boolean;
-  errors: string[];
-  warnings: string[];
-  notice: string;
-  summary: { nodes: number; reachable: number; side_effects: Record<string, number> };
-  plan: Array<{
-    id: string; name: string; type: string; wave: number | null;
-    status: "SIMULATED" | "UNREACHABLE"; side_effect: string; capabilities: string[];
-  }>;
-}
-
 // ---- カスタムノード（アイコン + カテゴリ色 + 状態） ----
 function FlowNode({ data, selected }: NodeProps) {
   const d = data as FlowNodeData;
@@ -190,12 +182,10 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [executionsOpen, setExecutionsOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [dryRunBusy, setDryRunBusy] = useState(false);
-  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const readOnly = !can("workflows.edit");
 
@@ -258,7 +248,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       await api(`/workflows/${workflowId}/run`, { method: "POST", json: input ? { input } : {} });
       show("実行を開始しました");
       setInfoOpen(true); // 情報パネルでライブ状況を表示
-      setChatOpen(false);
+      setPreviewOpen(false);
     } catch (e) {
       show(e instanceof Error ? e.message : "実行に失敗しました", "error");
     }
@@ -288,21 +278,6 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       return;
     }
     await doRun();
-  };
-
-  const dryRun = async () => {
-    setDryRunBusy(true);
-    try {
-      const result = await api<DryRunResult>("/workflows/dry-run-definition", {
-        method: "POST",
-        json: { definition: buildDefinition(), input: {} },
-      });
-      setDryRunResult(result);
-    } catch (e) {
-      show(e instanceof Error ? e.message : "ドライランに失敗しました", "error");
-    } finally {
-      setDryRunBusy(false);
-    }
   };
 
   const addNode = (type: string, at?: { x: number; y: number }) => {
@@ -470,7 +445,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           trigger={<IconDots />}
           items={[
             { label: "実行履歴", onSelect: () => setExecutionsOpen(true) },
-            ...(can("workflows.run") ? [{ label: dryRunBusy ? "ドライラン中..." : "安全ドライラン", onSelect: () => { if (!dryRunBusy) void dryRun(); } }] : []),
+            ...(can("workflows.run") ? [{ label: "実行プレビュー", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
             { label: "JSON を出力", onSelect: exportJson },
             ...(readOnly ? [] : [
               { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
@@ -479,8 +454,18 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           ]}
         />
         {!readOnly && (
-          <button onClick={save} disabled={saving || !dirty} className="rounded-xl bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300">
+          <button onClick={save} disabled={saving || !dirty} className="hidden rounded-xl bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300 sm:block">
             {saving ? "保存中..." : dirty ? "保存" : "保存済み"}
+          </button>
+        )}
+        {!readOnly && <span className={`shrink-0 text-[9px] sm:hidden ${dirty ? "text-amber-600" : "text-zinc-400"}`}>{saving ? "保存中" : dirty ? "未保存" : "保存済"}</span>}
+        {can("workflows.run") && (
+          <button
+            onClick={() => { setPreviewOpen(true); setInfoOpen(false); }}
+            aria-label="実行プレビューを開く"
+            className="min-h-9 rounded-xl border border-accent-300 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30"
+          >
+            プレビュー
           </button>
         )}
         {can("workflows.run") && (
@@ -533,26 +518,17 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           </button>
         )}
 
-        {/* 右上ボタン群: ⓘ情報（実行状況/履歴/バージョン）+ チャット */}
+        {/* 実行デバッグパネル */}
         <div className="absolute right-4 top-4 z-10 flex gap-2">
           <button
-            onClick={() => { setInfoOpen((v) => !v); if (!infoOpen) setChatOpen(false); }}
+            onClick={() => { setInfoOpen((v) => !v); if (!infoOpen) setPreviewOpen(false); }}
             aria-label="実行情報"
             title="実行状況・処理内容・経過時間・強制停止・履歴・バージョン"
             className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
               infoOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
             }`}
           >
-            ℹ️ 情報
-          </button>
-          <button
-            onClick={() => { setChatOpen((v) => !v); if (!chatOpen) setInfoOpen(false); }}
-            aria-label="チャット"
-            className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
-              chatOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-            }`}
-          >
-            💬 チャット
+            実行・デバッグ
           </button>
         </div>
 
@@ -575,7 +551,17 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           />
         )}
 
-        {chatOpen && <ChatWindow workflowId={workflowId} onClose={() => setChatOpen(false)} dirty={dirty} onSave={save} />}
+        {previewOpen && (
+          <PreviewWorkspace
+            workflowId={workflowId}
+            definition={buildDefinition()}
+            inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
+            dirty={dirty}
+            onSave={save}
+            onExecution={() => { setInfoOpen(false); }}
+            onClose={() => setPreviewOpen(false)}
+          />
+        )}
         {infoOpen && (
           <InfoPanel
             workflowId={workflowId}
@@ -595,6 +581,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
 
       {selectedDef && (
         <NodeConfigSheet
+          workflowId={workflowId}
           def={selectedDef}
           allDefs={nodes.map((n) => (n.data as FlowNodeData).def)}
           edgeList={edges.map((e) => ({ source: e.source, target: e.target }))}
@@ -617,7 +604,6 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       )}
 
       {executionsOpen && <ExecutionsSheet workflowId={workflowId} onClose={() => setExecutionsOpen(false)} />}
-      {dryRunResult && <DryRunSheet result={dryRunResult} onClose={() => setDryRunResult(null)} />}
     </div>
   );
 }
@@ -780,6 +766,7 @@ function upstreamDefs(nodeId: string, defs: DefNode[], edgeList: { source: strin
 }
 
 function NodeConfigSheet({
+  workflowId,
   def,
   allDefs,
   edgeList,
@@ -788,6 +775,7 @@ function NodeConfigSheet({
   onDelete,
   onClose,
 }: {
+  workflowId: number;
   def: DefNode;
   allDefs: DefNode[];
   edgeList: { source: string; target: string }[];
@@ -796,6 +784,7 @@ function NodeConfigSheet({
   onDelete?: () => void;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<"settings" | "input" | "output" | "run" | "error" | "details">("settings");
   const meta = NODE_TYPES[def.type];
   const { data: backendMetadata } = useQuery({
     queryKey: ["workflow-node-catalog"],
@@ -832,9 +821,30 @@ function NodeConfigSheet({
     () => upstream.map((d) => String(d.config?.output_var ?? "").trim()).filter(Boolean),
     [upstream],
   );
+  const { data: latestExecutions } = useQuery({
+    queryKey: ["executions", workflowId],
+    queryFn: () => api<Array<{ id: number }>>(`/workflow-executions?workflow_id=${workflowId}&limit=1`),
+  });
+  const latestExecutionId = latestExecutions?.[0]?.id;
+  const { data: latestExecution } = useQuery({
+    queryKey: ["execution", latestExecutionId],
+    queryFn: () => api<{ context: Record<string, { output?: unknown; status: string; finished_at?: string }> }>(`/workflow-executions/${latestExecutionId}`),
+    enabled: latestExecutionId !== undefined,
+  });
+  const lastEntry = latestExecution?.context[def.id];
+
+  const inspectorTabs = [
+    ["settings", "設定"], ["input", "入力"], ["output", "出力"],
+    ["run", "実行"], ["error", "エラー"], ["details", "詳細"],
+  ] as const;
 
   return (
     <BottomSheet title={meta?.label ?? def.type} onClose={onClose} wide>
+      <div className="-mx-1 mb-3 flex gap-1 overflow-x-auto pb-1" role="tablist" aria-label="ノードインスペクタ">
+        {inspectorTabs.map(([key, label]) => (
+          <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium ${tab === key ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}>{label}</button>
+        ))}
+      </div>
       {meta?.desc && <p className="mb-3 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800/60">{meta.desc}</p>}
       {nodeMetadata && (
         <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">
@@ -848,7 +858,7 @@ function NodeConfigSheet({
           ))}
         </div>
       )}
-      <div className="space-y-4">
+      {tab === "settings" && <div className="space-y-4">
         <Field label="表示名">
           <input value={def.name ?? ""} onChange={(e) => onChange({ name: e.target.value })} disabled={readOnly} className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         </Field>
@@ -898,22 +908,44 @@ function NodeConfigSheet({
             />
           </Field>
         )}
-        {def.type !== "trigger" && (
-          <ControlSection config={config} readOnly={readOnly} setConfig={setConfig} />
-        )}
-        {def.type !== "trigger" && def.type !== "control.loop" && !readOnly && (
-          <NodeTestRunner type={def.type} config={config} />
-        )}
-        <p className="text-xs text-zinc-400">
-          ノード ID: <code className="font-mono">{def.id}</code>（他ノードから{" "}
-          <code className="font-mono">{"{{"}{def.id}.フィールド{"}}"}</code> で参照）
-        </p>
         {onDelete && !readOnly && (
           <button onClick={onDelete} className="w-full rounded-xl bg-red-50 py-2.5 text-sm font-medium text-red-600 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-400">
             このノードを削除
           </button>
         )}
-      </div>
+      </div>}
+      {tab === "input" && (
+        <div className="space-y-2">
+          <p className="text-xs text-zinc-400">このノードへ到達できる上流変数と、直近実行の値です。</p>
+          {upstream.length === 0 ? <p className="rounded-xl border border-dashed border-zinc-300 p-3 text-xs text-zinc-400 dark:border-zinc-700">上流ノードはありません。</p> : upstream.map((node) => {
+            const entry = latestExecution?.context[node.id];
+            return <div key={node.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><div className="flex gap-2 text-xs"><strong className="min-w-0 flex-1 truncate">{node.name || NODE_TYPES[node.type]?.label || node.id}</strong><code className="text-[10px] text-zinc-400">{node.type}</code></div><p className="mt-1 font-mono text-[10px] text-zinc-400">{node.id} · {entry?.status || "未実行"}</p>{entry?.output !== undefined && <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-2 font-mono text-[10px] dark:bg-zinc-950">{JSON.stringify(entry.output, null, 2)}</pre>}</div>;
+          })}
+        </div>
+      )}
+      {tab === "output" && (
+        <div className="space-y-3">
+          <Field label="出力 schema"><pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-zinc-50 p-3 font-mono text-xs dark:bg-zinc-950">{JSON.stringify(nodeMetadata?.output_schema ?? Object.fromEntries((meta?.outputs ?? []).map((item) => [item.key, "unknown"])), null, 2)}</pre></Field>
+          <Field label="直近実行値">{lastEntry?.output !== undefined ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-zinc-50 p-3 font-mono text-xs dark:bg-zinc-950">{JSON.stringify(lastEntry.output, null, 2)}</pre> : <p className="rounded-xl border border-dashed border-zinc-300 p-3 text-xs text-zinc-400 dark:border-zinc-700">実行値はまだありません。</p>}</Field>
+        </div>
+      )}
+      {tab === "run" && (
+        <div className="space-y-3">
+          {def.type !== "trigger" && def.type !== "control.loop" && !readOnly ? <NodeTestRunner type={def.type} config={config} /> : <p className="text-xs text-zinc-400">このノードは単体previewの対象外です。</p>}
+          <div className="grid grid-cols-2 gap-2">
+            {["このノードまで実行", "このノードだけ実行", "このノードから実行", "入力を編集して実行"].map((label) => <button key={label} type="button" disabled title="再現性Phaseで有効になります" className="min-h-11 rounded-xl border border-zinc-200 px-2 text-xs text-zinc-400 disabled:opacity-60 dark:border-zinc-700">{label}</button>)}
+          </div>
+          <p className="text-[10px] text-zinc-400">上流cacheを使う実行と途中再開は再現性Phaseで有効になります。</p>
+        </div>
+      )}
+      {tab === "error" && (def.type === "trigger" ? <p className="text-xs text-zinc-400">トリガーにはノード単位のエラー処理設定はありません。</p> : <ControlSection config={config} readOnly={readOnly} setConfig={setConfig} />)}
+      {tab === "details" && (
+        <div className="space-y-3 text-xs">
+          <dl className="grid grid-cols-[7rem_1fr] gap-x-2 gap-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><dt className="text-zinc-400">node ID</dt><dd className="break-all font-mono">{def.id}</dd><dt className="text-zinc-400">type</dt><dd className="font-mono">{def.type}</dd><dt className="text-zinc-400">version</dt><dd className="num">{nodeMetadata?.version ?? 1}</dd><dt className="text-zinc-400">side effect</dt><dd>{nodeMetadata?.side_effect ?? "unknown"}</dd><dt className="text-zinc-400">capabilities</dt><dd>{nodeMetadata?.capabilities.join(", ") || "なし"}</dd></dl>
+          <Field label="JSON 設定"><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-zinc-50 p-3 font-mono text-xs dark:bg-zinc-950">{JSON.stringify(def, null, 2)}</pre></Field>
+          <p className="text-zinc-400">参照式: <code className="font-mono">{"{{"}{def.id}.フィールド{"}}"}</code></p>
+        </div>
+      )}
     </BottomSheet>
   );
 }
@@ -1239,8 +1271,16 @@ function TriggerInputsEditor({
               <option value="text">テキスト</option>
               <option value="paragraph">長文</option>
               <option value="number">数値</option>
+              <option value="boolean">真偽</option>
               <option value="select">選択</option>
+              <option value="multi_select">複数選択</option>
+              <option value="date">日付</option>
+              <option value="datetime">日時</option>
               <option value="file">ファイル</option>
+              <option value="file_list">複数ファイル</option>
+              <option value="json">JSON</option>
+              <option value="key_value">Key-value</option>
+              <option value="secret_reference">Secret参照</option>
             </select>
             <label className="flex items-center gap-1 text-[11px] text-zinc-500">
               <input type="checkbox" checked={!!inp.required} onChange={(e) => update(i, { required: e.target.checked })} disabled={disabled} />必須
@@ -1249,9 +1289,15 @@ function TriggerInputsEditor({
               <button type="button" onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label="削除" className="px-1 text-zinc-400 hover:text-red-500">×</button>
             )}
           </div>
-          {inp.type === "select" && (
+          {(inp.type === "select" || inp.type === "multi_select") && (
             <input value={inp.options ?? ""} onChange={(e) => update(i, { options: e.target.value })} disabled={disabled} placeholder="選択肢（カンマ区切り: A,B,C）" className={`${cls} mt-1.5 w-full`} />
           )}
+          <div className="mt-1.5 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+            <input value={inp.description ?? ""} onChange={(e) => update(i, { description: e.target.value })} disabled={disabled} placeholder="説明" className={cls} />
+            <input value={inp.placeholder ?? ""} onChange={(e) => update(i, { placeholder: e.target.value })} disabled={disabled} placeholder="placeholder" className={cls} />
+            <input value={typeof inp.default === "string" || typeof inp.default === "number" ? String(inp.default) : ""} onChange={(e) => update(i, { default: inp.type === "number" && e.target.value !== "" ? Number(e.target.value) : e.target.value })} disabled={disabled} placeholder="初期値" className={cls} />
+            <input type="number" min={1} value={inp.maxLength ?? ""} onChange={(e) => update(i, { maxLength: e.target.value ? Number(e.target.value) : undefined })} disabled={disabled} placeholder="最大長" className={cls} />
+          </div>
         </div>
       ))}
       {!disabled && (
@@ -1327,59 +1373,6 @@ function RunInputsSheet({
           onClose={() => setFilePick(null)}
         />
       )}
-    </BottomSheet>
-  );
-}
-
-/** executorを呼ばない全体dry-run結果。実行成功ではなく予定操作として表示する。 */
-function DryRunSheet({ result, onClose }: { result: DryRunResult; onClose: () => void }) {
-  const sideEffectLabels: Record<string, string> = {
-    read: "読取", write: "書込", external: "外部通信", process: "プロセス/状態変更",
-  };
-  return (
-    <BottomSheet title="安全ドライラン" onClose={onClose} wide>
-      <div className="space-y-4">
-        <div className={`rounded-xl border p-3 ${result.valid ? "border-emerald-300 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/20" : "border-red-300 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20"}`}>
-          <p className={`text-sm font-semibold ${result.valid ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-400"}`}>
-            {result.valid ? "✓ 定義を実行できます" : "✗ 実行前に修正が必要です"}
-          </p>
-          <p className="mt-1 text-[11px] text-zinc-500">{result.notice}</p>
-          <p className="mt-2 text-xs text-zinc-500">
-            到達可能 {result.summary.reachable}/{result.summary.nodes} ノード
-          </p>
-          {Object.keys(result.summary.side_effects).length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {Object.entries(result.summary.side_effects).map(([kind, count]) => (
-                <span key={kind} className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-                  {sideEffectLabels[kind] ?? kind}: {count}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-        {(result.errors.length > 0 || result.warnings.length > 0) && (
-          <div className="space-y-2 text-xs">
-            {result.errors.map((message, index) => <p key={`e-${index}`} className="rounded-lg bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-400">{message}</p>)}
-            {result.warnings.map((message, index) => <p key={`w-${index}`} className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">{message}</p>)}
-          </div>
-        )}
-        <div>
-          <h3 className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">実行予定（実際には未実行）</h3>
-          <ol className="space-y-2">
-            {result.plan.map((item) => (
-              <li key={item.id} className={`rounded-xl border p-3 ${item.status === "UNREACHABLE" ? "border-zinc-200 opacity-60 dark:border-zinc-800" : "border-zinc-200 dark:border-zinc-700"}`}>
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="num grid h-6 w-6 shrink-0 place-items-center rounded-full bg-zinc-100 text-[10px] text-zinc-500 dark:bg-zinc-800">{item.wave ?? "–"}</span>
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.name}</span>
-                  {item.side_effect !== "none" && <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[9px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">{sideEffectLabels[item.side_effect] ?? item.side_effect}</span>}
-                </div>
-                <p className="mt-1 font-mono text-[10px] text-zinc-400">{item.type} · {item.status}</p>
-                {item.capabilities.length > 0 && <p className="mt-1 text-[10px] text-zinc-400">必要: {item.capabilities.join(", ")}</p>}
-              </li>
-            ))}
-          </ol>
-        </div>
-      </div>
     </BottomSheet>
   );
 }
@@ -1559,103 +1552,5 @@ function NodeContextMenu({
       ))}
     </div>,
     document.body,
-  );
-}
-
-// ---- フローティングチャットウィンドウ（チャットフロー） ----
-interface ChatMsg { role: "user" | "assistant"; text: string }
-
-function ChatWindow({
-  workflowId, onClose, dirty, onSave,
-}: {
-  workflowId: number;
-  onClose: () => void;
-  dirty: boolean;
-  onSave: () => Promise<void>;
-}) {
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const show = useToasts((s) => s.show);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages]);
-
-  const send = async () => {
-    const msg = input.trim();
-    if (!msg || busy) return;
-    setInput("");
-    setMessages((m) => [...m, { role: "user", text: msg }]);
-    setBusy(true);
-    try {
-      if (dirty) await onSave();
-      const { execution_id } = await api<{ execution_id: number }>(`/workflows/${workflowId}/run`, {
-        method: "POST",
-        json: { input: { message: msg } },
-      });
-      // 実行完了までポーリングし、signal.display ノードの出力を返答として表示
-      let reply = "";
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 800));
-        const ex = await api<{ status: string; context: Record<string, { status: string; output?: { display?: boolean; value?: string; signal?: string } }> }>(
-          `/workflow-executions/${execution_id}`,
-        );
-        if (!["QUEUED", "RUNNING"].includes(ex.status)) {
-          const signals = Object.values(ex.context)
-            .filter((c) => c.output && c.output.display)
-            .map((c) => c.output!.value ?? "");
-          reply = signals.join("\n\n") || (ex.status === "SUCCEEDED" ? "(信号表示ノードがありません)" : `実行 ${ex.status}`);
-          break;
-        }
-      }
-      setMessages((m) => [...m, { role: "assistant", text: reply || "(応答なし)" }]);
-    } catch (e) {
-      show(e instanceof Error ? e.message : "実行に失敗しました", "error");
-      setMessages((m) => [...m, { role: "assistant", text: "エラーが発生しました" }]);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="absolute bottom-4 right-4 top-16 z-20 flex w-[min(380px,calc(100%-2rem))] flex-col rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
-      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2.5 dark:border-zinc-800">
-        <span className="text-sm font-semibold">チャットフロー</span>
-        <button onClick={onClose} aria-label="閉じる" className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button>
-      </div>
-      <div ref={listRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
-        {messages.length === 0 && (
-          <p className="mt-6 text-center text-xs text-zinc-400">
-            メッセージを送るとワークフローが実行されます。<br />
-            トリガーの出力 <code className="font-mono">{"{{trigger.message}}"}</code> で入力を参照し、<br />
-            「信号表示」ノードの値がここに返答として表示されます。
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${
-              m.role === "user" ? "bg-accent-600 text-white" : "bg-zinc-100 dark:bg-zinc-800"
-            }`}>
-              {m.text}
-            </div>
-          </div>
-        ))}
-        {busy && <div className="text-center text-xs text-zinc-400">実行中...</div>}
-      </div>
-      <div className="flex gap-2 border-t border-zinc-200 p-2.5 dark:border-zinc-800">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), send())}
-          placeholder="メッセージを入力..."
-          className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-        />
-        <button onClick={send} disabled={busy || !input.trim()} className="rounded-xl bg-accent-600 px-3.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-          送信
-        </button>
-      </div>
-    </div>
   );
 }

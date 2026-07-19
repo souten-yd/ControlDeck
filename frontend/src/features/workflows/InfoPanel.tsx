@@ -150,7 +150,7 @@ export function InfoPanel({
   const detail = live && targetId !== null ? live : null;
 
   return (
-    <div className="absolute bottom-4 right-4 top-16 z-20 flex w-[min(420px,calc(100%-2rem))] flex-col rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+    <div aria-label="実行デバッグパネル" className="absolute inset-x-2 bottom-2 z-20 flex h-[min(46%,26rem)] flex-col rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 sm:inset-x-4">
       <div className="flex items-center gap-1 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
         {([["live", "実行状況"], ["history", "履歴"], ["versions", "バージョン"]] as const).map(([key, label]) => (
           <button

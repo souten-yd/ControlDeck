@@ -1,7 +1,7 @@
 # ワークフロー統合開発環境 詳細実装仕様
 
 最終更新: 2026-07-19  
-状態: 実装仕様確定・Phase 1 着手前  
+状態: 実装仕様確定・Phase 1 UX 基盤コア完了
 対象: 既存ワークフロー定義との後方互換を維持する段階的改修
 
 ## 1. 目的
@@ -294,4 +294,3 @@ release blocker は、同一 Preview surface の input/result、node 実 input/o
 - optional `code.agent` の feature registry 境界を維持する。
 - SQLite migration 前に backup/disk check、失敗時は明示 error。
 - definition unknown fields を落とさず、v1/v2 round-trip fixture を強制する。
-
