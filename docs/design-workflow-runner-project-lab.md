@@ -2,7 +2,7 @@
 
 最終更新: 2026-07-19
 
-実装状況: Runner完了。Project Lab core discovery／manifest／read-only artifact browser完了。durable run以降は未着手。
+実装状況: Runner完了。Project Lab core discovery／manifest／artifact browser／durable CLI・test run完了。Web proxyとLLM評価は後続Phase。
 
 ## 1. 目的と境界
 
@@ -93,11 +93,23 @@ LLM評価は任意操作とし、ソース、ログ、artifact metadata、テス
 
 全APIは`project_lab.view`を要求する。summary/detailで全artifact本文をReact stateやAPI payloadへ載せず、選択時だけ256KiB以下のtext、JSON、最大200行の表を解析する。binaryと巨大fileはstreaming responseまたはdownloadを使う。
 
+### 4.6 Durable run API（実装済み）
+
+- `POST /project-lab/projects/{id}/runs`: manifestの`cli` / `test` profileを明示起動する。
+- `GET /project-lab/runs?project_id={id}`: DBへ永続化した最近のrunと生成・変更artifactを返す。
+- `GET /project-lab/runs/{run_id}`: systemdの現在状態を再取得してrun snapshotを返す。
+- `GET /project-lab/runs/{run_id}/logs`: journalを最大1MiB、2000行まで取得し秘密候補を伏せ字化する。
+- `POST /project-lab/runs/{run_id}/cancel`: transient unitを停止しartifact差分を確定する。
+
+起動は`systemd-run --user`へ配列argvを渡し、`shell=True`やshell文字列を使用しない。実行fileはPython、Node、npm系、.NET、CMake/CTest、Make/Ninjaの許可SDKへ限定する。cwdとproject相対実行fileはresolve後にproject包含を検証する。`NoNewPrivileges`、`PrivateTmp`、read-only system/home、projectだけの書込、2GiB、128 task、CPU 200%、timeoutを設定し、全体3件・同一project 1件へ制限する。
+
+Secret値をargv、unit environment、DB、ログへ載せないため、`secret_refs`を持つprofileはcredential分離が完成するまで明示的に拒否する。非秘密environmentもAPIには名前だけを返す。run終了時には開始前後のartifact metadataを比較し、created/modified、size、SHA-256だけをDBへ保存する。巨大artifact本文は従来のartifact storage（project file）から配信する。
+
 ## 5. 実装順
 
 1. 公開schema固定、専用Runner API/UI、入力・出力・承認・履歴、PC/390/320 E2E。
 2. Project Lab core discovery、manifest schema、read-only artifact browser。**完了**
-3. durable ProjectRun/ProjectArtifact migration、systemd CLI/test、stream/cancel/error。
+3. durable ProjectRun/ProjectArtifact migration、systemd CLI/test、log/cancel/error。**完了**
 4. Web proxy/static HTML/graph renderer、artifact差分。
 5. LLM評価、OpenCode patch preview、回帰評価。
 

@@ -305,6 +305,16 @@ export default function AppLayout() {
             )}
             {can("workflows.run") && (
               <ActionItem
+                icon={<IconPlay />}
+                label="ランナー"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/runner");
+                }}
+              />
+            )}
+            {can("workflows.edit") && (
+              <ActionItem
                 icon={<IconFlow />}
                 label="ワークフロー"
                 onClick={() => {
