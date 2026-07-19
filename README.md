@@ -200,13 +200,15 @@ systemd user unitで起動して`/health`完了まで待つ。事前起動は通
 `operator`など`workflows.run`だけの利用者は公開アプリを使用する。draft、ノード実値、途中再実行、version差分等の開発情報は
 `workflows.edit`を持つ利用者だけがエディタとデバッグAPIで参照できる。公開アプリは常にimmutableな公開版を実行し、draft変更は再公開まで反映しない。
 
-### App Studio（Application Builder Phase A）
+### App Studio（Application Builder F1）
 
 ワークフローの「その他 → アプリ化」から、Workflow DefinitionをportableなWorkflow IRへ変換し、独立したApplication Spec v1 Projectを作成できる。
 UI上の「App Studio」ではtrigger input、typed output、node/edge、capability、side effect、target互換性、Application page/entity/API/targetの件数、
 blocking/warning/suggestionを確認する。Application Spec、型、framework/node capabilityはバックエンドschema/registryを正とし、未知fieldを保存時に失わない。
 
-Phase Aは設計・検証基盤だけであり、source生成、build、package、artifact、AI GUI設計はまだ提供しない。未実装機能を成功するdummy buttonで見せない。
+F1ではbackend catalogを正とするSemantic Component Editorを提供する。Pageを作成し、Stack／Grid／Card、入力、表示、実行button、table、chartを追加して、Component Tree、Inspector、Desktop／Tablet／Mobile Previewから同じApplication Specを編集できる。Desktopではcontainerへのdrag、touch／keyboardでは明示的なMove操作を使い、Undo／Redo後に保存できる。Workflow接続ProjectからはOpen Workflowで処理設計へ戻れる。
+
+source生成、build、package、artifact、AI GUI設計はまだ提供しない。未実装機能を成功するdummy buttonで見せない。
 後続PhaseでC# Console、ASP.NET、GUI/DB、構造化AI提案の順に実装する。LLMは自由なGUI codeではなく、検証可能なApplication Spec Patchだけを提案する。
 
 ノードmetadataは推奨初期値とその理由、詳細help、変数picker対応を返す。危険な対象値を除いて新規ノードへ初期投入し、

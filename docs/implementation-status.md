@@ -2,6 +2,16 @@
 
 最終更新: 2026-07-19
 
+## App Studio F1.2 Component Editor（2026-07-19）
+
+- backend Semantic Component catalogから生成するPalette、再帰Component Tree、Preview選択、Binding／Properties InspectorをApplication Editorへ統合。frontendへ部品一覧を二重定義しない。
+- Page＋responsive Stackの初期作成、選択containerへの部品追加、primitive選択時のroot追加、上下移動、削除、Desktop dragによるcontainer変更を実装。touch／keyboardでは44px以上の明示buttonを使える。
+- Desktop／Tablet／320px Mobile Previewを同じApplication Specから描画。Stack、Row、Grid、Card、Text、Markdown、Metric、Text Input、Workflow Run、Table、Line Chartをstatic sampleで確認できる。
+- 最大50操作のUndo／Redo、dirty判定、backend validationを通す明示Save、保存後reload復元、接続Workflowへの導線を追加。static previewはexecutor、network、DB、LLM、secretを実行しない。
+- source生成／build／packageのdummy操作は追加していない。
+
+検証: backend全325件、frontend production build成功。認証付きE2Eで320pxからWorkflow→App Studio Project作成、Page／Text追加、Properties編集、Undo／Redo、Mobile Preview、Save、reload復元、320／390／768／1280の横overflowなし、fake build UIなしを確認。
+
 ## App Studio F1.1 Semantic Component foundation（2026-07-19）
 
 - framework固有classを保存しないSemantic Component catalogをbackendへ追加。layout、display、input、action、table、chartの初期11部品と決定的default、container可否、Design Token enum、binding sourceをschema APIから配信する。

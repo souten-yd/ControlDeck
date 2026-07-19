@@ -25,6 +25,31 @@ export interface ApplicationProject {
   updated_at: string;
 }
 
+export interface SemanticComponent {
+  id: string;
+  type: string;
+  properties?: Record<string, unknown>;
+  binding?: string | Record<string, unknown> | null;
+  events?: Record<string, unknown>;
+  responsive?: Record<string, unknown>;
+  locked?: Record<string, boolean>;
+  children?: SemanticComponent[];
+}
+
+export interface ComponentDefinition {
+  type: string; label: string; category: string; container: boolean; defaults: Record<string, unknown>;
+}
+
+export interface ApplicationSchemaCatalog {
+  schemaVersion: number;
+  semanticComponents: {
+    schemaVersion: number;
+    components: ComponentDefinition[];
+    designTokens: Record<string, string[]>;
+    bindingSources: string[];
+  };
+}
+
 export interface FrameworkCapability {
   id: string;
   label: string;
@@ -66,6 +91,10 @@ export const applicationBuilderApi = {
     api<ApplicationProject>(`/application-projects/${id}`, { method: "PATCH", json: body }),
   remove: (id: number) => api<void>(`/application-projects/${id}`, { method: "DELETE" }),
   capabilities: () => api<CapabilityCatalog>("/application-builder/capabilities"),
+  schema: () => api<ApplicationSchemaCatalog>("/application-builder/schema"),
+  validateSpec: (project: ApplicationProject, spec: Record<string, unknown>) => api<ValidationResult>("/application-builder/validate", {
+    method: "POST", json: { spec, workflow_id: project.workflow_id, target: project.target },
+  }),
   validate: (project: ApplicationProject) => api<ValidationResult>("/application-builder/validate", {
     method: "POST", json: { spec: project.spec, workflow_id: project.workflow_id, target: project.target },
   }),
