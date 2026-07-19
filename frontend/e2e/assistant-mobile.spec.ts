@@ -4,12 +4,13 @@ const username = process.env.CONTROL_DECK_E2E_USER;
 const password = process.env.CONTROL_DECK_E2E_PASSWORD;
 const referenceConversation = process.env.CONTROL_DECK_E2E_REFERENCE_CONV;
 
-test("assistant input never expands beyond a 320px viewport", async ({ page }) => {
+test("assistant input stays flush in standalone iPhone viewports", async ({ page }, testInfo) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   const runtimeErrors: string[] = [];
   page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.addInitScript(() => {
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
     Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
       configurable: true,
       value: async () => {
@@ -36,6 +37,7 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
   });
   await page.evaluate((id) => localStorage.setItem("cd-chat-conversation", id), conversationId);
   await page.reload();
+  await expect(page.locator("html")).toHaveClass(/pwa-standalone/);
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("button", { name: "AIアシスタントを閉じる" })).toBeVisible();
@@ -104,7 +106,35 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
   expect(layout.inputMinWidth).toBe("0px");
   expect(layout.statusRows).toBe(0);
   expect(layout.composer.bottom).toBe(layout.dialog.bottom);
-  expect(layout.composer.bottom - layout.inputRow.bottom).toBeLessThanOrEqual(9);
+  expect(layout.composer.bottom - layout.inputRow.bottom).toBeLessThanOrEqual(1);
+  await expect(page.getByRole("navigation", { name: "メインナビゲーション" })).toBeHidden();
+  await testInfo.attach("assistant-mobile-320x700", {
+    body: await page.screenshot(),
+    contentType: "image/png",
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const iphoneLayout = await page.evaluate(() => {
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!.getBoundingClientRect();
+    const composer = document.querySelector<HTMLElement>("[data-assistant-composer]")!;
+    const row = document.querySelector<HTMLElement>("[data-assistant-input-row]")!.getBoundingClientRect();
+    return {
+      dialogBottom: dialog.bottom,
+      composerBottom: composer.getBoundingClientRect().bottom,
+      rowBottom: row.bottom,
+      composerPaddingBottom: Number.parseFloat(getComputedStyle(composer).paddingBottom),
+      documentScrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  console.log("ASSISTANT_IPHONE_LAYOUT", JSON.stringify(iphoneLayout));
+  expect(iphoneLayout.documentScrollWidth).toBeLessThanOrEqual(390);
+  expect(iphoneLayout.composerBottom).toBe(iphoneLayout.dialogBottom);
+  expect(iphoneLayout.rowBottom).toBe(iphoneLayout.dialogBottom);
+  expect(iphoneLayout.composerPaddingBottom).toBe(0);
+  await testInfo.attach("assistant-mobile-390x844", {
+    body: await page.screenshot(),
+    contentType: "image/png",
+  });
 
   await page.setViewportSize({ width: 1280, height: 800 });
   const desktopLayout = await page.evaluate(() => ({

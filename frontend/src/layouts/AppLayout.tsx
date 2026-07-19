@@ -100,7 +100,7 @@ export default function AppLayout() {
   const location = useLocation();
   const show = useToasts((s) => s.show);
   // ワークフローエディタ（/workflows/:id）等は全画面表示（ヘッダー・下部ナビを隠す）
-  const immersive = /^\/workflows\/[^/]+$/.test(location.pathname);
+  const immersive = location.pathname === "/assistant" || /^\/workflows\/[^/]+$/.test(location.pathname);
 
   useMetricsStream(can("system.view"));
 
