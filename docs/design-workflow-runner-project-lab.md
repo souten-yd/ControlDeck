@@ -95,7 +95,7 @@ LLM評価は任意操作とし、ソース、ログ、artifact metadata、テス
 
 ### 4.6 Durable run API（実装済み）
 
-- `POST /project-lab/projects/{id}/runs`: manifestの`cli` / `test` profileを明示起動する。
+- `POST /project-lab/projects/{id}/runs`: manifestの`cli` / `test` / `web` profileを明示起動する。
 - `GET /project-lab/runs?project_id={id}`: DBへ永続化した最近のrunと生成・変更artifactを返す。
 - `GET /project-lab/runs/{run_id}`: systemdの現在状態を再取得してrun snapshotを返す。
 - `GET /project-lab/runs/{run_id}/logs`: journalを最大1MiB、2000行まで取得し秘密候補を伏せ字化する。
@@ -105,12 +105,20 @@ LLM評価は任意操作とし、ソース、ログ、artifact metadata、テス
 
 Secret値をargv、unit environment、DB、ログへ載せないため、`secret_refs`を持つprofileはcredential分離が完成するまで明示的に拒否する。非秘密environmentもAPIには名前だけを返す。run終了時には開始前後のartifact metadataを比較し、created/modified、size、SHA-256だけをDBへ保存する。巨大artifact本文は従来のartifact storage（project file）から配信する。
 
+### 4.7 Web live preview（実装済み）
+
+Web profileではcommand argv内の`{host}`を`127.0.0.1`、`{port}`を空きloopback portへ置換し、同じ値を`HOST`/`PORT`、Flask、Streamlit用の非秘密environmentとしても渡す。生portはUIへ公開せず、`previewUrl`だけを返す。
+
+`/project-view/{run_id}/{path}`は、runが実行中であり、systemdの`MainPID`またはその子processが割当portをTCP LISTENしている場合だけ`127.0.0.1`へproxyする。任意host/portの指定、終了runへの接続、別processが偶然使用するportへの接続を拒否する。requestのCookie、Authorization、CSRF tokenを上流へ転送せず、応答のSet-Cookieも破棄する。request bodyは16MiB、接続/読取timeoutを制限し、redirectと絶対path resourceはrun prefixを維持する。
+
+iframeは`allow-same-origin`を付けないsandboxとし、script、form、downloadだけを明示許可する。これにより未信頼の開発成果物がControlDeck parent DOMやsessionへ到達することを防ぐ。別originを必要とする高度なWebSocket/CORSアプリは、専用preview originを導入する後続Phaseの対象とする。
+
 ## 5. 実装順
 
 1. 公開schema固定、専用Runner API/UI、入力・出力・承認・履歴、PC/390/320 E2E。
 2. Project Lab core discovery、manifest schema、read-only artifact browser。**完了**
 3. durable ProjectRun/ProjectArtifact migration、systemd CLI/test、log/cancel/error。**完了**
-4. Web proxy/static HTML/graph renderer、artifact差分。
+4. Web proxy/static HTML/graph renderer、artifact差分。**Web proxyとartifact差分完了**
 5. LLM評価、OpenCode patch preview、回帰評価。
 
 各段階を独立PRとし、既存workflow/app/OpenCode APIを壊さない。

@@ -501,6 +501,7 @@ class ProjectRun(Base):
     environment_names_json: Mapped[str] = mapped_column(Text, default="[]")
     working_directory: Mapped[str] = mapped_column(String(1024), default="")
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    web_port: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     initial_artifacts_json: Mapped[str] = mapped_column(Text, default="{}")
     result: Mapped[str] = mapped_column(String(64), default="")
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

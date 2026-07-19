@@ -108,6 +108,7 @@ def _apply_light_migrations() -> None:
     inspector = inspect(engine)
     # (テーブル, カラム, 型定義)
     additions = [
+        ("project_runs", "web_port", "INTEGER"),
         ("users", "recovery_codes_encrypted", "TEXT"),
         ("managed_applications", "url", "VARCHAR(2048)"),
         ("managed_applications", "web_port", "INTEGER"),

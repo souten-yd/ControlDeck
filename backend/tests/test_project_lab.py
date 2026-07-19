@@ -90,8 +90,8 @@ def test_project_discovery_manifest_artifacts_and_containment(tmp_path, monkeypa
     assert detail["name"] == "Demo Dashboard"
     assert {"python", "node", "vite", "react", "static-web"} <= set(detail["technologies"])
     assert detail["capabilities"] == {
-        "discovery": True, "artifactPreview": True, "execution": False,
-        "webProxy": False, "llmEvaluation": False,
+        "discovery": True, "artifactPreview": True, "execution": True,
+        "webProxy": True, "llmEvaluation": False,
     }
     paths = {item["path"] for item in detail["artifacts"]}
     assert {"index.html", "reports/result.json", "reports/metrics.csv", "reports/chart.png"} <= paths
@@ -221,6 +221,81 @@ def test_project_run_rejects_secrets_and_non_sdk(tmp_path, monkeypatch, admin_cl
             runs.start_run(db, project_id="demo", profile_id="secret", timeout_seconds=10, created_by=None)
         with pytest.raises(runs.ProjectRunError, match="許可SDK"):
             runs.start_run(db, project_id="demo", profile_id="binary", timeout_seconds=10, created_by=None)
+
+
+def test_web_run_allocates_localhost_port_and_substitutes_argv(admin_client, tmp_path, monkeypatch):
+    from app.database import SessionLocal
+    from app.models import ProjectRun
+
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    project = _project(root)
+    manifest_path = project / ".controldeck" / "project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["profiles"] = [{
+        "id": "web", "label": "Web", "type": "web",
+        "command": ["python3", "-m", "http.server", "{port}", "--bind", "{host}"],
+        "cwd": ".", "environment": {}, "secret_refs": [], "artifacts": [],
+    }]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
+    monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runs.subprocess, "run", fake_run)
+    with SessionLocal() as db:
+        row = runs.start_run(db, project_id="demo", profile_id="web", timeout_seconds=120, created_by=None)
+        assert row.profile_type == "web" and row.web_port
+        command = json.loads(row.command_json)
+        assert command[-3:] == [str(row.web_port), "--bind", "127.0.0.1"]
+        launch = calls[0]
+        assert f"--setenv=PORT={row.web_port}" in launch
+        assert "--setenv=HOST=127.0.0.1" in launch
+        db.delete(row)
+        db.commit()
+
+
+def test_web_preview_requires_unit_owned_listen_port(monkeypatch):
+    from app.models import ProjectRun
+
+    row = ProjectRun(id=42, profile_type="web", web_port=32123, status="RUNNING", unit_name="unit")
+    monkeypatch.setattr(runs, "_show", lambda name: {"ActiveState": "active", "MainPID": "123"})
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def children(self, recursive=False):
+            return []
+
+        def net_connections(self, kind="tcp"):
+            return [SimpleNamespace(status=runs.psutil.CONN_LISTEN, laddr=SimpleNamespace(port=32123))]
+
+    monkeypatch.setattr(runs.psutil, "Process", FakeProcess)
+    assert runs.web_preview_ready(row) is True
+    row.web_port = 32124
+    assert runs.web_preview_ready(row) is False
+
+
+def test_project_web_proxy_strips_control_deck_credentials():
+    from starlette.requests import Request
+
+    from app.project_lab.webview import _upstream_headers
+
+    request = Request({
+        "type": "http", "method": "GET", "path": "/", "query_string": b"",
+        "headers": [
+            (b"cookie", b"control_deck_session=secret; app=value"),
+            (b"authorization", b"Bearer secret"), (b"x-csrf-token", b"secret"),
+            (b"accept", b"text/html"),
+        ],
+    })
+    assert _upstream_headers(request) == {"accept": "text/html"}
 
 
 def test_project_lab_api_enforces_operator_and_viewer_permissions(client, tmp_path, monkeypatch):
