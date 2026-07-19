@@ -907,6 +907,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 履歴
 
+- 2026-07-19: AIアシスタントの入力欄下に空の生成状態行（16px + margin 6px）が常時残る問題を修正。状態表示は音声処理・生成中・統計表示時だけ描画し、通常時はホームインジケータ対応のSafe Area（最低8px）のみに統一。実サービスを再起動し、Playwrightで320×700/1280×800の下端一致・横overflowなしを確認
 - 2026-07-17: モバイル下部ナビのリモートデスクトップと操作シートのAIアシスタントを交換
 - 2026-07-16: LLM runtimeのcomplete/stream/cancel契約を統合し、永続chatとworkflow生成の重複処理を置換
 - 2026-07-16: OpenCodeを既定無効featureとして条件登録し、実機llama.cpp分析、cancel、PC/320pxを検証

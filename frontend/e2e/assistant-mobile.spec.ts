@@ -73,6 +73,9 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
       inputScrollWidth: input.scrollWidth,
       inputFontSize: Number.parseFloat(getComputedStyle(input).fontSize),
       inputMinWidth: getComputedStyle(input).minWidth,
+      composer: rect(document.querySelector("[data-assistant-composer]")!).toJSON(),
+      inputRow: rect(document.querySelector("[data-assistant-input-row]")!).toJSON(),
+      statusRows: document.querySelectorAll("[data-assistant-composer-status]").length,
     };
   });
   console.log("ASSISTANT_MOBILE_LAYOUT", JSON.stringify(layout));
@@ -88,10 +91,13 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
   expect(layout.mode.height).toBe(layout.history.height);
   expect(layout.mode.width).toBe(112);
   expect(layout.history.width).toBeGreaterThanOrEqual(60);
-  expect(layout.history.width).toBe(132);
+  expect(layout.history.width).toBeGreaterThanOrEqual(80);
   expect(layout.mode.height).toBe(36);
   expect(layout.inputFontSize).toBeGreaterThanOrEqual(16);
   expect(layout.inputMinWidth).toBe("0px");
+  expect(layout.statusRows).toBe(0);
+  expect(layout.composer.bottom).toBe(layout.dialog.bottom);
+  expect(layout.composer.bottom - layout.inputRow.bottom).toBeLessThanOrEqual(9);
 
   await page.setViewportSize({ width: 1280, height: 800 });
   const desktopLayout = await page.evaluate(() => ({

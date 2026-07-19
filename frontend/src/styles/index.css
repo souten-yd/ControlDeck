@@ -119,6 +119,11 @@ body {
   padding-top: env(safe-area-inset-top);
 }
 
+/* idle時は小さな操作余白、ホームインジケータがある端末ではSafe Areaを優先する。 */
+.assistant-composer-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
 /* xtermの履歴はページではなくterminal viewport内で指スクロールする。 */
 .terminal-xterm-host .xterm,
 .terminal-xterm-host .xterm-screen {
