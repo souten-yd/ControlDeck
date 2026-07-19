@@ -2,12 +2,22 @@
 from __future__ import annotations
 
 import json
+import socket
 
 from app.models import RemoteConnection
 from app.security.crypto import decrypt_text, encrypt_text
 
 # guacd へ渡すパラメータ名（プロトコル別）
 SECRET_KEYS = {"password", "private-key", "passphrase"}
+
+
+def endpoint_available(host: str, port: int, timeout: float = 0.25) -> bool:
+    """保存済み接続先がTCP待受中かだけを確認する。認証情報は送らない。"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, TimeoutError):
+        return False
 
 
 def build_guacd_params(conn: RemoteConnection) -> dict[str, str]:
