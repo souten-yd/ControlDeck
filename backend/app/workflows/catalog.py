@@ -44,6 +44,7 @@ NODE_CATALOG: list[dict] = [
     {"type": "net.wol", "desc": "Wake-on-LAN。mac", "keys": ["mac"]},
     {"type": "notify.webhook", "desc": "Webhook通知。url/format(discord/slack/generic)/message", "keys": ["url", "format", "message"]},
     {"type": "signal.display", "desc": "チャットフローで値を返答表示。signal/value", "keys": ["signal", "value"]},
+    {"type": "output.render", "desc": "型付き最終出力。Markdown/JSON/table/image/file/link/status/metric/citation等を共通contractで返す", "keys": ["name", "title", "description", "value", "renderer", "schema", "downloadable", "copyable", "sensitive", "filename", "mime_type"]},
     {"type": "flow.call", "desc": "別ワークフローをサブフローとして実行し結果(result)を受け取る。workflow_id/message", "keys": ["workflow_id", "message", "input_json"]},
     {"type": "ai.utility", "desc": "embedding/rerank/LLM judgeを共通endpointで実行", "keys": ["operation", "base_url", "model", "input", "query", "documents", "rubric", "top_n", "timeout"]},
 ]

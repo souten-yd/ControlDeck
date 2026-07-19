@@ -228,6 +228,31 @@ async def node_signal_display(config: dict, ctx: dict) -> dict:
     return {"signal": signal, "value": value, "display": True}
 
 
+async def node_output_render(config: dict, ctx: dict) -> dict:
+    """型付き最終出力。API/手動/schedule/chatで同じcontractを返す。"""
+    name = str(config.get("name") or config.get("signal") or "output").strip() or "output"
+    renderer = str(config.get("renderer") or "auto").strip().lower()
+    raw = render_template(str(config.get("value", "")), ctx)
+    value: Any = raw
+    if renderer in {"json", "json_tree", "json_raw", "table", "key_value", "image_gallery", "citation_list"}:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = raw
+    return {
+        "display": True, "output_contract": True, "signal": name, "name": name,
+        "type": renderer, "renderer": renderer, "value": value,
+        "title": render_template(str(config.get("title", "")), ctx),
+        "description": render_template(str(config.get("description", "")), ctx),
+        "downloadable": bool(config.get("downloadable", False)),
+        "copyable": bool(config.get("copyable", True)),
+        "collapsible": bool(config.get("collapsible", False)),
+        "sensitive": bool(config.get("sensitive", False)),
+        "filename": render_template(str(config.get("filename", "")), ctx),
+        "mime_type": str(config.get("mime_type", "")),
+    }
+
+
 # ---- 変数・文字列・Markdown ----
 
 
@@ -1495,6 +1520,7 @@ async def node_browser(config: dict, ctx: dict) -> dict:
 NODE_EXECUTORS = {
     "trigger": node_trigger,
     "signal.display": node_signal_display,
+    "output.render": node_output_render,
     "app.start": node_app_start,
     "app.stop": node_app_stop,
     "app.restart": node_app_restart,

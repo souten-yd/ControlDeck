@@ -40,6 +40,7 @@ REQUIRED_KEYS: dict[str, list[str]] = {
     "condition.if": ["left", "op"],
     "flow.call": ["workflow_id"],
     "signal.display": ["value"],
+    "output.render": ["name", "value"],
     "research.deep": ["topic"],
     "media.ocr": ["path"],
     "web.browser": ["url"],
@@ -153,7 +154,7 @@ def quality_score(nodes: list[dict], edges: list[dict], run_ok: bool | None = No
     unreachable = sum(1 for w in warnings if "到達できません" in w)
     breakdown["到達性"] = 20 if unreachable == 0 else max(0, 20 - unreachable * 10)
     # 出力の存在（signal.display / file.write / notify.webhook などの出力ノード）
-    output_types = {"signal.display", "file.write", "notify.webhook", "http.request", "rag.build"}
+    output_types = {"signal.display", "output.render", "file.write", "notify.webhook", "http.request", "rag.build"}
     breakdown["出力の明確さ"] = 15 if any(n.get("type") in output_types for n in nodes) else 5
     # エラー処理（on_error 設定 or リトライのあるノードが 1 つ以上）
     has_err_handling = any(

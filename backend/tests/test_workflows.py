@@ -455,6 +455,35 @@ def test_publish_separates_production_from_draft_and_blocks_pins(admin_client):
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 
+def test_output_render_typed_contract_and_sensitive_redaction(admin_client):
+    import time
+
+    definition = _definition([
+        TRIGGER,
+        {"id": "table", "type": "output.render", "config": {
+            "name": "rows", "title": "結果表", "renderer": "table", "value": '[{"name":"Deck","score":9}]',
+        }},
+        {"id": "hidden", "type": "output.render", "config": {
+            "name": "private", "renderer": "text", "value": "hidden-value", "sensitive": True,
+        }},
+    ], [{"source": "t", "target": "table"}, {"source": "t", "target": "hidden"}])
+    workflow_id = admin_client.post(
+        "/api/v1/workflows", json={"name": "typed output", "definition": definition}, headers=CSRF_HEADERS,
+    ).json()["id"]
+    started = admin_client.post(f"/api/v1/workflows/{workflow_id}/test", headers=CSRF_HEADERS)
+    for _ in range(60):
+        detail = admin_client.get(f"/api/v1/workflow-executions/{started.json()['execution_id']}").json()
+        if detail["status"] not in ("QUEUED", "RUNNING"):
+            break
+        time.sleep(0.05)
+    assert detail["outputs"]["rows"]["type"] == "table"
+    assert detail["outputs"]["rows"]["title"] == "結果表"
+    assert detail["outputs"]["rows"]["value"] == [{"name": "Deck", "score": 9}]
+    assert detail["outputs"]["private"]["value"] == "***"
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
 def test_viewer_cannot_run_workflows(client):
     client.cookies.clear()
     r = client.post(

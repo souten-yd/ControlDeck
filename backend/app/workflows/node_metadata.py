@@ -82,6 +82,7 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "cmd.python": {"stdout": "string", "stderr": "string", "exit_code": "integer"},
     "db.query": {"rows": "array", "row_count": "integer", "affected": "integer"},
     "signal.display": {"signal": "string", "value": "any"},
+    "output.render": {"name": "string", "type": "string", "renderer": "string", "value": "any"},
     "flow.call": {"execution_id": "integer", "result": "object"},
     "notify.webhook": {"status_code": "integer", "ok": "boolean"},
     "code.agent": {"output": "string", "events": "integer", "operation": "string", "project_path": "string"},
