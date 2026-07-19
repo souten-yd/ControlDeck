@@ -7,11 +7,13 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import psutil
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,7 +26,7 @@ MAX_CONCURRENT_RUNS = 3
 MAX_LOG_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 512 * 1024 * 1024
 ALLOWED_EXECUTABLE = re.compile(
-    r"^(python(?:3(?:\.\d+)?)?|pytest|node|npm|npx|pnpm|yarn|dotnet|cmake|ctest|make|ninja)$", re.I,
+    r"^(python(?:3(?:\.\d+)?)?|pytest|uvicorn|gunicorn|flask|streamlit|node|npm|npx|pnpm|yarn|dotnet|cmake|ctest|make|ninja)$", re.I,
 )
 
 
@@ -100,6 +102,26 @@ def _systemd_tools() -> tuple[str, str, str]:
     return systemd_run, systemctl, journalctl
 
 
+def _allocate_web_port(db: Session) -> int:
+    """localhostの空きportを候補として割り当てる。proxy時にunit所有も再検証する。"""
+    used = set(db.execute(select(ProjectRun.web_port).where(
+        ProjectRun.web_port.is_not(None), ProjectRun.status.in_(RUNNING_STATES),
+    )).scalars().all())
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+            candidate.bind(("127.0.0.1", 0))
+            port = int(candidate.getsockname()[1])
+        if port not in used:
+            return port
+    raise ProjectRunError("Web preview用portを割り当てられません")
+
+
+def _command_with_runtime(command: list[str], *, web_port: int | None) -> list[str]:
+    if web_port is None:
+        return list(command)
+    return [item.replace("{port}", str(web_port)).replace("{host}", "127.0.0.1") for item in command]
+
+
 def start_run(
     db: Session, *, project_id: str, profile_id: str, timeout_seconds: int, created_by: int | None,
 ) -> ProjectRun:
@@ -108,8 +130,8 @@ def start_run(
     profile = next((item for item in manifest.profiles if item.id == profile_id), None)
     if profile is None:
         raise ProjectRunError("実行profileが見つかりません")
-    if profile.type not in {"cli", "test"}:
-        raise ProjectRunError("このPhaseで実行できるprofileはcli/testだけです")
+    if profile.type not in {"cli", "test", "web"}:
+        raise ProjectRunError("実行できるprofileはcli/test/webです")
     if not profile.command:
         raise ProjectRunError("profile commandが空です")
     if profile.secret_refs:
@@ -117,7 +139,9 @@ def start_run(
     cwd = (project / profile.cwd).resolve()
     if not cwd.is_dir() or not _inside(cwd, project):
         raise ProjectRunError("profile cwdがproject外か、存在しません")
-    executable = _resolve_executable(profile.command[0], cwd, project)
+    web_port = _allocate_web_port(db) if profile.type == "web" else None
+    command = _command_with_runtime(profile.command, web_port=web_port)
+    executable = _resolve_executable(command[0], cwd, project)
     systemd_run, _, _ = _systemd_tools()
     for row in db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all():
         refresh_run(db, row)
@@ -130,9 +154,9 @@ def start_run(
     snapshot = _artifact_snapshot(project, manifest)
     row = ProjectRun(
         project_id=project_id, project_name=manifest.name, profile_id=profile.id,
-        profile_type=profile.type, status="QUEUED", command_json=json.dumps(profile.command, ensure_ascii=False),
+        profile_type=profile.type, status="QUEUED", command_json=json.dumps(command, ensure_ascii=False),
         environment_names_json=json.dumps(sorted(profile.environment), ensure_ascii=False),
-        working_directory=str(cwd), timeout_seconds=timeout_seconds,
+        working_directory=str(cwd), timeout_seconds=timeout_seconds, web_port=web_port,
         initial_artifacts_json=json.dumps(snapshot, ensure_ascii=False), created_by=created_by,
     )
     db.add(row)
@@ -152,7 +176,13 @@ def start_run(
     ]
     for key, value in sorted(profile.environment.items()):
         argv.append(f"--setenv={key}={value}")
-    argv.extend([executable, *profile.command[1:]])
+    if web_port is not None:
+        argv.extend([
+            "--setenv=HOST=127.0.0.1", f"--setenv=PORT={web_port}",
+            "--setenv=FLASK_RUN_HOST=127.0.0.1", f"--setenv=FLASK_RUN_PORT={web_port}",
+            "--setenv=STREAMLIT_SERVER_ADDRESS=127.0.0.1", f"--setenv=STREAMLIT_SERVER_PORT={web_port}",
+        ])
+    argv.extend([executable, *command[1:]])
     result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
     if result.returncode != 0:
         row.status = "FAILED"
@@ -171,12 +201,32 @@ def _show(unit_name: str) -> dict[str, str] | None:
     result = subprocess.run(
         [systemctl, "--user", "show", f"{unit_name}.service", "--no-pager",
          "--property=LoadState", "--property=ActiveState", "--property=SubState",
-         "--property=Result", "--property=ExecMainStatus"],
+         "--property=Result", "--property=ExecMainStatus", "--property=MainPID"],
         capture_output=True, text=True, timeout=5, check=False,
     )
     if result.returncode != 0:
         return None
     return {key: value for line in result.stdout.splitlines() if "=" in line for key, value in [line.split("=", 1)]}
+
+
+def web_preview_ready(row: ProjectRun) -> bool:
+    """割当portをrun unitのmain processか子processが実際にLISTEN中か検査する。"""
+    if row.profile_type != "web" or not row.web_port or row.status not in RUNNING_STATES:
+        return False
+    state = _show(row.unit_name)
+    if not state or state.get("ActiveState") != "active":
+        return False
+    try:
+        pid = int(state.get("MainPID", "0"))
+        root = psutil.Process(pid)
+        for process in [root, *root.children(recursive=True)]:
+            connections = (getattr(process, "net_connections", None) or process.connections)(kind="tcp")
+            if any(connection.status == psutil.CONN_LISTEN and connection.laddr
+                   and connection.laddr.port == row.web_port for connection in connections):
+                return True
+    except (ValueError, psutil.Error, OSError):
+        return False
+    return False
 
 
 def _finalize_artifacts(db: Session, row: ProjectRun) -> None:
@@ -277,6 +327,8 @@ def run_out(db: Session, row: ProjectRun, *, include_logs: bool = False) -> dict
         "profileId": row.profile_id, "profileType": row.profile_type, "status": row.status,
         "command": json.loads(row.command_json or "[]"), "environmentNames": json.loads(row.environment_names_json or "[]"),
         "workingDirectory": row.working_directory, "timeoutSeconds": row.timeout_seconds,
+        "previewUrl": f"/project-view/{row.id}/" if row.profile_type == "web" else None,
+        "previewReady": web_preview_ready(row) if row.profile_type == "web" else False,
         "result": row.result, "exitCode": row.exit_code, "error": row.error_redacted,
         "startedAt": row.started_at.isoformat(), "finishedAt": row.finished_at.isoformat() if row.finished_at else None,
         "elapsedMs": elapsed_ms,

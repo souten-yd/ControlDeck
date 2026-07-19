@@ -269,7 +269,7 @@ def project_detail(project_id: str) -> dict[str, Any]:
         "manifest": _manifest_out(manifest),
         "diagnostics": diagnostics,
         "artifacts": artifacts,
-        "capabilities": {"discovery": True, "artifactPreview": True, "execution": False, "webProxy": False, "llmEvaluation": False},
+        "capabilities": {"discovery": True, "artifactPreview": True, "execution": True, "webProxy": True, "llmEvaluation": False},
     }
 
 
@@ -291,7 +291,7 @@ def list_projects() -> list[dict[str, Any]]:
                 "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                 "technologies": _technologies(resolved), "git": _git_summary(resolved),
                 "diagnostics": diagnostics,
-                "capabilities": {"discovery": True, "artifactPreview": True, "execution": False, "webProxy": False, "llmEvaluation": False},
+                "capabilities": {"discovery": True, "artifactPreview": True, "execution": True, "webProxy": True, "llmEvaluation": False},
                 "artifactCount": len(_artifact_candidates(resolved, manifest)),
                 "profileCount": len(manifest.profiles) if manifest else 0,
             })

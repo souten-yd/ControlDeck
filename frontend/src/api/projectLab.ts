@@ -61,6 +61,8 @@ export interface ProjectLabRun {
   startedAt: string;
   finishedAt: string | null;
   elapsedMs: number | null;
+  previewUrl: string | null;
+  previewReady: boolean;
   artifacts: ProjectLabRunArtifact[];
 }
 
@@ -68,8 +70,8 @@ export const projectLabApi = {
   list: () => api<ProjectLabSummary[]>("/project-lab/projects"),
   detail: (id: string) => api<ProjectLabDetail>(`/project-lab/projects/${encodeURIComponent(id)}`),
   runs: (id: string) => api<ProjectLabRun[]>(`/project-lab/runs?project_id=${encodeURIComponent(id)}`),
-  startRun: (id: string, profileId: string) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/runs`, {
-    method: "POST", json: { profile_id: profileId, timeout_seconds: 600 },
+  startRun: (id: string, profileId: string, timeoutSeconds = 600) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/runs`, {
+    method: "POST", json: { profile_id: profileId, timeout_seconds: timeoutSeconds },
   }),
   cancelRun: (runId: number) => api<ProjectLabRun>(`/project-lab/runs/${runId}/cancel`, { method: "POST" }),
   runLogs: (runId: number) => api<{ runId: number; logs: string }>(`/project-lab/runs/${runId}/logs`),
