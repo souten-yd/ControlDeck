@@ -867,7 +867,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         {/* 入力欄 */}
         <div
           data-assistant-composer
-          className="assistant-composer-safe min-w-0 max-w-full shrink-0 overflow-x-hidden border-t border-zinc-200 bg-white px-3 pt-3 dark:border-zinc-800 dark:bg-zinc-900 sm:px-5"
+          className="assistant-composer-safe min-w-0 max-w-full shrink-0 overflow-x-hidden bg-transparent px-3 pt-3 sm:px-5"
         >
           <div className="mx-auto max-w-5xl">
           {effectiveMode === "run" && (
