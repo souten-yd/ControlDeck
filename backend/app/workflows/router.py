@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -10,13 +12,16 @@ from sqlalchemy.orm import Session
 
 from app.audit import service as audit
 from app.database import get_db
-from app.models import User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowSecret, WorkflowVersion
+from app.models import (
+    User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowPinnedData, WorkflowSecret, WorkflowVersion,
+)
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
 from app.workflows import engine
 from app.workflows.redaction import collect_sensitive_values, redact
 
 MAX_VERSIONS_PER_WORKFLOW = 20
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["workflows"])
 
@@ -429,6 +434,169 @@ async def test_node(body: TestNodeBody, user: User = Depends(require_permission(
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "elapsed": round(_time.time() - t0, 2)}
 
 
+class WorkflowNodeTestBody(BaseModel):
+    input_mode: str = Field(default="latest_success", pattern="^(latest_success|execution|manual|pinned)$")
+    execution_id: int | None = None
+    manual_context: dict = Field(default_factory=dict)
+    config_override: dict = Field(default_factory=dict)
+
+
+def _definition_node(workflow: Workflow, node_id: str) -> tuple[dict, dict]:
+    definition = json.loads(workflow.definition_json or "{}")
+    node = next((item for item in definition.get("nodes", []) if str(item.get("id")) == node_id), None)
+    if node is None:
+        raise HTTPException(status_code=404, detail="ノードが見つかりません")
+    return definition, node
+
+
+@router.post("/workflows/{workflow_id}/nodes/{node_id}/test")
+async def test_workflow_node(
+    workflow_id: int,
+    node_id: str,
+    body: WorkflowNodeTestBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """保存済み上流context、手動context、またはpinned outputで単一ノードを検証する。"""
+    import asyncio
+    import time as _time
+
+    from app.workflows.nodes import DEFAULT_NODE_TIMEOUT, NODE_EXECUTORS, NODE_TIMEOUTS, NodeError
+
+    workflow = _get(db, workflow_id)
+    _, node = _definition_node(workflow, node_id)
+    node_type = str(node.get("type") or "")
+    if node_type in ("trigger", "control.loop") or node_type not in NODE_EXECUTORS:
+        raise HTTPException(status_code=422, detail="このノードは単体テストできません")
+    if body.input_mode == "pinned":
+        pinned = db.execute(select(WorkflowPinnedData).where(
+            WorkflowPinnedData.workflow_id == workflow_id, WorkflowPinnedData.node_id == node_id,
+        )).scalar_one_or_none()
+        if pinned is None:
+            raise HTTPException(status_code=404, detail="固定データがありません")
+        return {
+            "ok": True, "output": json.loads(pinned.output_json or "{}"), "elapsed": 0,
+            "status": "CACHED", "cache_source": f"pinned:{pinned.id}",
+        }
+
+    execution: WorkflowExecution | None = None
+    if body.input_mode == "execution":
+        execution = db.get(WorkflowExecution, body.execution_id) if body.execution_id is not None else None
+        if execution is None or execution.workflow_id != workflow_id:
+            raise HTTPException(status_code=404, detail="指定実行が見つかりません")
+    elif body.input_mode == "latest_success":
+        execution = db.execute(
+            select(WorkflowExecution).where(
+                WorkflowExecution.workflow_id == workflow_id, WorkflowExecution.status == "SUCCEEDED",
+            ).order_by(WorkflowExecution.started_at.desc()).limit(1)
+        ).scalar_one_or_none()
+    context = dict(body.manual_context)
+    if execution is not None:
+        context = json.loads(execution.context_json or "{}")
+    context["__secrets__"] = await asyncio.to_thread(engine._load_secrets)
+    context.setdefault("__vars__", {})
+    config = {**(node.get("config") or {}), **body.config_override}
+    timeout = min(NODE_TIMEOUTS.get(node_type, DEFAULT_NODE_TIMEOUT), 180)
+    started = _time.perf_counter()
+    try:
+        output = await asyncio.wait_for(NODE_EXECUTORS[node_type](config, context), timeout=timeout)
+        sensitive = collect_sensitive_values(context)
+        sensitive.update(str(value) for value in context.get("__secrets__", {}).values() if value)
+        safe_output = redact(output, sensitive_values=sensitive)
+        audit.record(
+            db, "workflow.node_test", user=user, resource_type="workflow", resource_id=str(workflow_id),
+            request=request, metadata={"node_id": node_id, "input_mode": body.input_mode},
+        )
+        return {
+            "ok": True, "output": safe_output, "elapsed": round(_time.perf_counter() - started, 3),
+            "status": "SUCCEEDED", "source_execution_id": execution.id if execution else None,
+        }
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"タイムアウト（{timeout} 秒）", "status": "TIMED_OUT"}
+    except NodeError as exc:
+        return {"ok": False, "error": str(exc), "status": "FAILED"}
+    except Exception:
+        logger.exception("workflow node test failed: workflow=%s node=%s", workflow_id, node_id)
+        return {"ok": False, "error": "ノード実行に失敗しました。内部ログを確認してください", "status": "FAILED"}
+
+
+class PinDataBody(BaseModel):
+    output: Any
+    source_execution_id: int | None = None
+
+
+@router.get("/workflows/{workflow_id}/pinned-data")
+def list_pinned_data(
+    workflow_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    rows = db.execute(select(WorkflowPinnedData).where(WorkflowPinnedData.workflow_id == workflow_id)).scalars().all()
+    return [{
+        "id": row.id, "node_id": row.node_id, "output": json.loads(row.output_json or "{}"),
+        "source_execution_id": row.source_execution_id, "updated_at": row.updated_at,
+    } for row in rows]
+
+
+@router.put("/workflows/{workflow_id}/nodes/{node_id}/pinned-data")
+def put_pinned_data(
+    workflow_id: int,
+    node_id: str,
+    body: PinDataBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    workflow = _get(db, workflow_id)
+    _definition_node(workflow, node_id)
+    if body.source_execution_id is not None:
+        execution = db.get(WorkflowExecution, body.source_execution_id)
+        if execution is None or execution.workflow_id != workflow_id:
+            raise HTTPException(status_code=404, detail="固定元の実行が見つかりません")
+    safe_output = redact(body.output, sensitive_values=collect_sensitive_values(body.output))
+    serialized = json.dumps(safe_output, ensure_ascii=False, default=str)
+    if len(serialized) > 1_000_000:
+        raise HTTPException(status_code=413, detail="固定データは1MB以内にしてください")
+    row = db.execute(select(WorkflowPinnedData).where(
+        WorkflowPinnedData.workflow_id == workflow_id, WorkflowPinnedData.node_id == node_id,
+    )).scalar_one_or_none()
+    if row is None:
+        row = WorkflowPinnedData(workflow_id=workflow_id, node_id=node_id)
+        db.add(row)
+    row.output_json = serialized
+    row.source_execution_id = body.source_execution_id
+    db.commit()
+    audit.record(
+        db, "workflow.pin", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"node_id": node_id, "source_execution_id": body.source_execution_id},
+    )
+    return {"id": row.id, "node_id": node_id, "output": safe_output}
+
+
+@router.delete("/workflows/{workflow_id}/nodes/{node_id}/pinned-data", status_code=204)
+def delete_pinned_data(
+    workflow_id: int,
+    node_id: str,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    row = db.execute(select(WorkflowPinnedData).where(
+        WorkflowPinnedData.workflow_id == workflow_id, WorkflowPinnedData.node_id == node_id,
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="固定データがありません")
+    db.delete(row)
+    db.commit()
+    audit.record(
+        db, "workflow.unpin", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"node_id": node_id},
+    )
+
+
 @router.delete("/workflows/{workflow_id}")
 def delete_workflow(
     workflow_id: int,
@@ -441,6 +609,7 @@ def delete_workflow(
     from sqlalchemy import delete as sql_delete
 
     execution_ids = select(WorkflowExecution.id).where(WorkflowExecution.workflow_id == workflow_id)
+    db.execute(sql_delete(WorkflowPinnedData).where(WorkflowPinnedData.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowNodeRun).where(WorkflowNodeRun.execution_id.in_(execution_ids)))
     db.execute(sql_delete(WorkflowExecution).where(WorkflowExecution.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == workflow_id))
@@ -488,6 +657,31 @@ async def run_workflow(
     except engine.DefinitionError as e:
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "workflow.run", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request)
+    return {"execution_id": execution_id}
+
+
+@router.post("/workflows/{workflow_id}/nodes/{node_id}/run-to")
+async def run_workflow_to_node(
+    workflow_id: int,
+    node_id: str,
+    request: Request,
+    body: RunBody | None = None,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    """トリガーから対象ノードまでを実行し、下流の副作用は起動しない。"""
+    workflow = _get(db, workflow_id)
+    _definition_node(workflow, node_id)
+    try:
+        execution_id = await engine.run_workflow(
+            workflow_id, trigger_type="node_test", input_data=body.input if body else {}, stop_node_id=node_id,
+        )
+    except engine.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db, "workflow.run_to_node", user=user, resource_type="workflow", resource_id=str(workflow_id),
+        request=request, metadata={"node_id": node_id},
+    )
     return {"execution_id": execution_id}
 
 
@@ -663,6 +857,46 @@ async def retry_execution(
         metadata={"new_execution_id": new_execution_id, "version_mode": body.version_mode},
     )
     return {"execution_id": new_execution_id, "source_execution_id": execution_id, "version_mode": body.version_mode}
+
+
+@router.post("/workflows/{workflow_id}/executions/{execution_id}/resume-from/{node_id}")
+async def resume_execution_from_node(
+    workflow_id: int,
+    execution_id: int,
+    node_id: str,
+    body: RetryExecutionBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    workflow = _get(db, workflow_id)
+    previous = db.get(WorkflowExecution, execution_id)
+    if previous is None or previous.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="実行が見つかりません")
+    definition = previous.definition_snapshot_json if body.version_mode == "historical" else workflow.definition_json
+    parsed = json.loads(definition or "{}")
+    if not any(str(node.get("id")) == node_id for node in parsed.get("nodes", [])):
+        raise HTTPException(status_code=404, detail="再開ノードが対象バージョンにありません")
+    previous_context = json.loads(previous.context_json or "{}")
+    inputs = previous_context.get("__input__") if isinstance(previous_context.get("__input__"), dict) else {}
+    try:
+        new_execution_id = await engine.run_workflow(
+            workflow_id, trigger_type=f"resume:{body.version_mode}:{node_id}", input_data=inputs,
+            definition_json=definition if body.version_mode == "historical" else None,
+            workflow_version_id=previous.workflow_version_id if body.version_mode == "historical" else None,
+            start_node_id=node_id, seed_context=previous_context,
+        )
+    except engine.DefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db, "workflow.resume_from", user=user, resource_type="workflow_execution",
+        resource_id=str(execution_id), request=request,
+        metadata={"new_execution_id": new_execution_id, "node_id": node_id, "version_mode": body.version_mode},
+    )
+    return {
+        "execution_id": new_execution_id, "source_execution_id": execution_id,
+        "node_id": node_id, "version_mode": body.version_mode,
+    }
 
 
 def _final_outputs(context: dict) -> dict[str, dict]:

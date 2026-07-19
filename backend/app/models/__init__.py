@@ -333,6 +333,21 @@ class WorkflowNodeRun(Base):
     schema_version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class WorkflowPinnedData(Base):
+    """draftテスト専用の固定出力。WorkflowVersion/公開定義には含めない。"""
+
+    __tablename__ = "workflow_pinned_data"
+    __table_args__ = (UniqueConstraint("workflow_id", "node_id", name="uq_workflow_pinned_node"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    node_id: Mapped[str] = mapped_column(String(64))
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    source_execution_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_executions.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class RemoteConnection(Base):
     __tablename__ = "remote_connections"
 

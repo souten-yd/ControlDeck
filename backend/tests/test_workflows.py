@@ -255,6 +255,100 @@ def test_execution_snapshot_node_runs_and_current_or_historical_retry(admin_clie
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 
+def test_node_test_pinned_data_and_resume_from_cached_upstream(admin_client):
+    import time
+
+    def wait_for(execution_id: int) -> dict:
+        for _ in range(80):
+            detail = admin_client.get(f"/api/v1/workflow-executions/{execution_id}").json()
+            if detail.get("status") not in ("QUEUED", "RUNNING", "WAITING"):
+                return detail
+            time.sleep(0.05)
+        return detail
+
+    definition = _definition([
+        TRIGGER,
+        {"id": "a", "type": "string.op", "name": "上流", "config": {
+            "op": "upper", "text": "old {{t.message}}", "output_var": "cached_a",
+        }},
+        {"id": "b", "type": "string.op", "name": "再開点", "config": {
+            "op": "upper", "text": "{{a.result}} b-old",
+        }},
+        {"id": "out", "type": "signal.display", "name": "出力", "config": {
+            "signal": "answer", "value": "{{b.result}}",
+        }},
+    ], [
+        {"source": "t", "target": "a"}, {"source": "a", "target": "b"},
+        {"source": "b", "target": "out"},
+    ])
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "node replay", "definition": definition}, headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/test", json={"input": {"message": "hello"}}, headers=CSRF_HEADERS,
+    )
+    original_id = started.json()["execution_id"]
+    original = wait_for(original_id)
+    assert original["outputs"]["answer"]["value"] == "OLD HELLO B-OLD"
+
+    tested = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/nodes/b/test",
+        json={"input_mode": "execution", "execution_id": original_id}, headers=CSRF_HEADERS,
+    )
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["output"]["result"] == "OLD HELLO B-OLD"
+    assert tested.json()["source_execution_id"] == original_id
+
+    run_to = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/nodes/b/run-to",
+        json={"input": {"message": "until"}}, headers=CSRF_HEADERS,
+    )
+    assert run_to.status_code == 200, run_to.text
+    run_to_detail = wait_for(run_to.json()["execution_id"])
+    assert run_to_detail["status"] == "SUCCEEDED"
+    assert run_to_detail["context"]["b"]["output"]["result"] == "OLD UNTIL B-OLD"
+    assert "out" not in run_to_detail["context"]
+    assert run_to_detail["runtime_snapshot"]["run_to_node_id"] == "b"
+
+    pinned = admin_client.put(
+        f"/api/v1/workflows/{workflow_id}/nodes/a/pinned-data",
+        json={"output": {"result": "fixed", "api_token": "must-redact"}, "source_execution_id": original_id},
+        headers=CSRF_HEADERS,
+    )
+    assert pinned.status_code == 200 and pinned.json()["output"]["api_token"] == "***"
+    cached = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/nodes/a/test",
+        json={"input_mode": "pinned"}, headers=CSRF_HEADERS,
+    )
+    assert cached.json()["status"] == "CACHED" and cached.json()["output"]["result"] == "fixed"
+
+    changed = json.loads(json.dumps(definition))
+    changed["nodes"][1]["config"]["text"] = "new {{t.message}}"
+    changed["nodes"][2]["config"]["text"] = "{{a.result}} b-new"
+    assert admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": changed}, headers=CSRF_HEADERS,
+    ).status_code == 200
+    resumed = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/executions/{original_id}/resume-from/b",
+        json={"version_mode": "current"}, headers=CSRF_HEADERS,
+    )
+    assert resumed.status_code == 200, resumed.text
+    resumed_detail = wait_for(resumed.json()["execution_id"])
+    assert resumed_detail["outputs"]["answer"]["value"] == "OLD HELLO B-NEW"
+    assert resumed_detail["context"]["a"]["output"]["result"] == "OLD HELLO"
+    resumed_runs = admin_client.get(
+        f"/api/v1/workflows/{workflow_id}/executions/{resumed.json()['execution_id']}/nodes"
+    ).json()
+    assert [row["node_id"] for row in resumed_runs] == ["t", "b", "out"]
+    assert resumed_detail["runtime_snapshot"]["resume_from_node_id"] == "b"
+
+    assert admin_client.delete(
+        f"/api/v1/workflows/{workflow_id}/nodes/a/pinned-data", headers=CSRF_HEADERS,
+    ).status_code == 204
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
 def test_viewer_cannot_run_workflows(client):
     client.cookies.clear()
     r = client.post(

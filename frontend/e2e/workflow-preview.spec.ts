@@ -121,6 +121,21 @@ test("integrates trigger input, safe preview, test result, and past input at 320
 
     await page.setViewportSize({ width: 390, height: 844 });
 
+    // 直近実行のcacheを使った単体実行、固定データ、部分実行を同じインスペクタで扱える。
+    await page.locator(".react-flow__node").filter({ hasText: "回答" }).click();
+    let inspector = page.getByRole("dialog", { name: "信号表示" });
+    await inspector.getByRole("tab", { name: "実行", exact: true }).click();
+    await inspector.getByRole("button", { name: "このノードだけ実行", exact: true }).click();
+    await expect(inspector.getByText("✓ 実行可能な設定")).toBeVisible();
+    await inspector.getByRole("button", { name: "出力を固定" }).click();
+    await expect(inspector.getByRole("button", { name: "📌 固定を解除" })).toBeVisible();
+    await expect(page.locator(".react-flow__node").filter({ hasText: "回答" }).getByText("📌 固定")).toBeVisible();
+    await inspector.getByRole("button", { name: "このノードまで実行" }).click();
+    await expect(page.getByText(/このノードまで実行を開始しました/)).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "このノードから再実行" })).toBeEnabled();
+    await inspector.getByRole("button", { name: "📌 固定を解除" }).click();
+    await inspector.getByRole("button", { name: "閉じる" }).click();
+
     // 接続線は太い透明hit areaから選択でき、端点の付け替え案内と削除を同じtoolbarへ集約する。
     const flowNodes = page.locator(".react-flow__node");
     const sourceBox = await flowNodes.nth(0).boundingBox();
@@ -139,7 +154,7 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     await expect(page.locator(".react-flow__edge")).toHaveCount(0);
 
     await page.locator(".react-flow__node").filter({ hasText: "回答" }).click();
-    const inspector = page.getByRole("dialog", { name: "信号表示" });
+    inspector = page.getByRole("dialog", { name: "信号表示" });
     await expect(inspector).toBeVisible();
     const settingsRect = await inspector.boundingBox();
     expect(settingsRect).not.toBeNull();
