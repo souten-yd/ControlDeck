@@ -78,6 +78,9 @@ html,
 body,
 #root {
   height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
 }
 /* アプリシェルの高さ基準を #root に統一。既定は dvh（ブラウザで toolbar 追従）。 */
 #root {
@@ -92,6 +95,16 @@ html.pwa-standalone #root {
 body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* iOS Safariは16px未満のフォームへfocusするとVisual Viewportを自動拡大し、
+   keyboard表示後も右方向へpanした状態が残る。モバイルだけ実効font-sizeを固定する。 */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
 }
 
 .num {
@@ -116,6 +129,27 @@ body {
   overflow: hidden !important;
   overscroll-behavior-y: contain;
   touch-action: none;
+}
+
+/* xterm標準scrollbarはiPhoneでdragしにくいため、文字幅を削らないoverlay trackへ置換する。 */
+@media (max-width: 767px) and (pointer: coarse) {
+  .terminal-xterm-host .xterm-scrollable-element > .scrollbar.vertical {
+    display: none !important;
+  }
+}
+
+.terminal-history-track {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.terminal-history-thumb {
+  min-height: 44px;
+  transition: width 120ms ease, opacity 120ms ease;
+}
+.terminal-history-track[data-active="true"] .terminal-history-thumb {
+  width: 0.5rem;
+  opacity: 0.9;
 }
 
 /* mobile terminalの補助操作は横swipe可能な1行。scrollbarとSafe Areaを空の2段目にしない。 */
@@ -166,6 +200,35 @@ body {
   height: 0.85rem;
   max-width: none;
   max-height: none;
+}
+
+/* 見た目は小さいhandleのまま、touch hit areaだけを広げる。nodeの外側も接続開始に使える。 */
+.workflow-node-handle::after {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  border-radius: 9999px;
+}
+.react-flow__node.selected .workflow-node-handle {
+  box-shadow: 0 0 0 4px rgb(59 130 246 / 0.16);
+}
+.react-flow__edge-interaction {
+  stroke-width: 20;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-accent-500);
+  stroke-width: 3.5;
+}
+@media (max-width: 767px) and (pointer: coarse) {
+  .workflow-node-handle::after {
+    inset: -16px;
+  }
+  .react-flow__edge-interaction {
+    stroke-width: 32;
+  }
+  .react-flow__edgeupdater {
+    r: 12;
+  }
 }
 .dark .react-flow__controls {
   border-color: rgb(63 63 70); /* zinc-700 */

@@ -14,6 +14,7 @@ import {
   Position,
   ReactFlow,
   addEdge,
+  reconnectEdge,
   useEdgesState,
   useNodesState,
   type Connection,
@@ -25,7 +26,7 @@ import "@xyflow/react/dist/style.css";
 import { api } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, DropdownMenu } from "../../components/ui";
-import { IconDots, IconPlay, IconPlus, IconX } from "../../components/icons";
+import { IconDots, IconPlay, IconPlus, IconTrash, IconX } from "../../components/icons";
 import {
   CATEGORY_ORDER,
   JSON_SCHEMA_PRESETS,
@@ -90,15 +91,15 @@ function FlowNode({ data, selected }: NodeProps) {
   return (
     <div
       style={transform ? { transform } : undefined}
-      className={`group relative min-w-40 overflow-hidden rounded-xl border bg-white shadow-sm transition-shadow hover:shadow-md dark:bg-zinc-900 ${
+      className={`group relative min-w-40 rounded-xl border bg-white shadow-sm transition-shadow hover:shadow-md dark:bg-zinc-900 ${
         selected ? "border-transparent ring-2 ring-accent-500" : "border-zinc-200 dark:border-zinc-700"
       } ${statusRing}`}
     >
       {def.type !== "trigger" && (
-        <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
+        <Handle type="target" position={Position.Left} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
       )}
       {/* カラーバー */}
-      <div className="h-1 w-full" style={{ backgroundColor: color }} />
+      <div className="h-1 w-full rounded-t-[11px]" style={{ backgroundColor: color }} />
       {/* 内容はミラー/回転を打ち消して可読性を維持 */}
       <div
         className="flex items-center gap-2.5 px-3 py-2.5"
@@ -124,25 +125,25 @@ function FlowNode({ data, selected }: NodeProps) {
       {/* エラー分岐ハンドル（on_error=branch のとき） */}
       {def.config?.on_error === "branch" && def.type !== "trigger" && (
         <>
-          <Handle id="error" type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-red-500 dark:!border-zinc-900" />
+          <Handle id="error" type="source" position={Position.Bottom} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-red-500 dark:!border-zinc-900" />
           <span className="pointer-events-none absolute bottom-0.5 left-1/2 -translate-x-[150%] text-[8px] font-medium text-red-500">失敗時</span>
         </>
       )}
       {meta?.branches ? (
         <>
-          <Handle id="true" type="source" position={Position.Right} style={{ top: "45%" }} className="!h-3 !w-3 !border-2 !border-white !bg-emerald-500 dark:!border-zinc-900" />
-          <Handle id="false" type="source" position={Position.Right} style={{ top: "75%" }} className="!h-3 !w-3 !border-2 !border-white !bg-red-400 dark:!border-zinc-900" />
+          <Handle id="true" type="source" position={Position.Right} style={{ top: "45%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-emerald-500 dark:!border-zinc-900" />
+          <Handle id="false" type="source" position={Position.Right} style={{ top: "75%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-red-400 dark:!border-zinc-900" />
           <span className="pointer-events-none absolute right-1 top-[38%] text-[8px] font-medium text-emerald-500">真</span>
           <span className="pointer-events-none absolute right-1 top-[68%] text-[8px] font-medium text-red-400">偽</span>
         </>
       ) : meta?.loop ? (
         <>
-          <Handle id="body" type="source" position={Position.Right} style={{ top: "45%" }} className="!h-3 !w-3 !border-2 !border-white !bg-amber-500 dark:!border-zinc-900" />
-          <Handle id="done" type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
+          <Handle id="body" type="source" position={Position.Right} style={{ top: "45%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-amber-500 dark:!border-zinc-900" />
+          <Handle id="done" type="source" position={Position.Bottom} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
           <span className="pointer-events-none absolute right-1 top-[38%] text-[8px] font-medium text-amber-500">反復</span>
         </>
       ) : (
-        <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
+        <Handle type="source" position={Position.Right} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
       )}
     </div>
   );
@@ -180,6 +181,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [name, setName] = useState("");
   const [dirty, setDirty] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [executionsOpen, setExecutionsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -214,6 +216,15 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       markDirty();
     },
     [setEdges, markDirty],
+  );
+
+  const onReconnect = useCallback(
+    (oldEdge: Edge, connection: Connection) => {
+      setEdges((current) => reconnectEdge(oldEdge, connection, current));
+      setSelectedEdge(oldEdge.id);
+      markDirty();
+    },
+    [markDirty, setEdges],
   );
 
   const buildDefinition = useCallback(() => {
@@ -330,6 +341,12 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     setNodes((ns) => ns.filter((n) => n.id !== id));
     setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
     setSelected(null);
+    markDirty();
+  };
+
+  const removeEdge = (id: string) => {
+    setEdges((current) => current.filter((edge) => edge.id !== id));
+    setSelectedEdge(null);
     markDirty();
   };
 
@@ -483,8 +500,10 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           onNodesChange={(c) => { onNodesChange(c); if (c.some((ch) => ch.type === "position" || ch.type === "remove")) markDirty(); }}
           onEdgesChange={(c) => { onEdgesChange(c); if (c.some((ch) => ch.type === "remove")) markDirty(); }}
           onConnect={onConnect}
-          onNodeClick={(_e, n) => setSelected(n.id)}
-          onPaneClick={() => { setSelected(null); setCtxMenu(null); }}
+          onReconnect={onReconnect}
+          onNodeClick={(_e, n) => { setSelectedEdge(null); setSelected(n.id); }}
+          onEdgeClick={(_e, edge) => { setSelected(null); setSelectedEdge(edge.id); }}
+          onPaneClick={() => { setSelected(null); setSelectedEdge(null); setCtxMenu(null); }}
           onNodeContextMenu={(e, n) => {
             e.preventDefault();
             if (readOnly) return;
@@ -495,6 +514,10 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           nodeTypes={nodeTypes}
           nodesDraggable={!readOnly}
           nodesConnectable={!readOnly}
+          edgesReconnectable={!readOnly}
+          edgesFocusable
+          connectionRadius={32}
+          reconnectRadius={36}
           fitView
           minZoom={0.2}
           proOptions={{ hideAttribution: true }}
@@ -516,6 +539,24 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           <button onClick={() => setPaletteOpen(true)} aria-label="ノードを追加" className="absolute bottom-6 right-4 z-10 grid place-items-center rounded-2xl bg-accent-600 p-3.5 text-xl text-white shadow-lg hover:bg-accent-700">
             <IconPlus />
           </button>
+        )}
+
+        {selectedEdge && !readOnly && edges.some((edge) => edge.id === selectedEdge) && (
+          <div
+            role="toolbar"
+            aria-label="接続線の操作"
+            className="absolute bottom-20 left-1/2 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl border border-zinc-200 bg-white/95 p-1.5 pl-3 shadow-xl backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
+          >
+            <span className="truncate text-xs text-zinc-500">端の丸をドラッグして付け替え</span>
+            <button
+              type="button"
+              onClick={() => removeEdge(selectedEdge)}
+              aria-label="選択した接続線を削除"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+            >
+              <IconTrash />
+            </button>
+          </div>
         )}
 
         {/* 実行デバッグパネル */}
@@ -839,7 +880,23 @@ function NodeConfigSheet({
   ] as const;
 
   return (
-    <BottomSheet title={meta?.label ?? def.type} onClose={onClose} wide>
+    <BottomSheet
+      title={meta?.label ?? def.type}
+      onClose={onClose}
+      wide
+      stable
+      headerActions={onDelete && !readOnly ? (
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label="このノードを削除"
+          title="このノードを削除"
+          className="grid h-11 w-11 place-items-center rounded-xl text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+        >
+          <IconTrash />
+        </button>
+      ) : undefined}
+    >
       <div className="-mx-1 mb-3 flex gap-1 overflow-x-auto pb-1" role="tablist" aria-label="ノードインスペクタ">
         {inspectorTabs.map(([key, label]) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium ${tab === key ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}>{label}</button>
@@ -907,11 +964,6 @@ function NodeConfigSheet({
               className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
             />
           </Field>
-        )}
-        {onDelete && !readOnly && (
-          <button onClick={onDelete} className="w-full rounded-xl bg-red-50 py-2.5 text-sm font-medium text-red-600 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-400">
-            このノードを削除
-          </button>
         )}
       </div>}
       {tab === "input" && (

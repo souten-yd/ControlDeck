@@ -98,16 +98,47 @@ test("integrates trigger input, safe preview, test result, and past input at 320
 
     await page.setViewportSize({ width: 390, height: 844 });
     await preview.getByRole("button", { name: "プレビューを閉じる" }).click();
+
+    // 接続線は太い透明hit areaから選択でき、端点の付け替え案内と削除を同じtoolbarへ集約する。
+    const flowNodes = page.locator(".react-flow__node");
+    const sourceBox = await flowNodes.nth(0).boundingBox();
+    const targetBox = await flowNodes.nth(1).boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(targetBox).not.toBeNull();
+    await page.mouse.click(
+      (sourceBox!.x + sourceBox!.width + targetBox!.x) / 2,
+      sourceBox!.y + sourceBox!.height / 2,
+    );
+    const edgeToolbar = page.getByRole("toolbar", { name: "接続線の操作" });
+    await expect(edgeToolbar).toBeVisible();
+    await expect(edgeToolbar.getByText("端の丸をドラッグして付け替え")).toBeVisible();
+    await expect(page.locator(".react-flow__edgeupdater")).toHaveCount(2);
+    await edgeToolbar.getByRole("button", { name: "選択した接続線を削除" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(0);
+
     await page.locator(".react-flow__node").filter({ hasText: "回答" }).click();
     const inspector = page.getByRole("dialog", { name: "信号表示" });
     await expect(inspector).toBeVisible();
+    const settingsRect = await inspector.boundingBox();
+    expect(settingsRect).not.toBeNull();
     for (const tab of ["設定", "入力", "出力", "実行", "エラー", "詳細"]) {
       await expect(inspector.getByRole("tab", { name: tab, exact: true })).toBeVisible();
     }
     await inspector.getByRole("tab", { name: "出力", exact: true }).click();
     await expect(inspector.getByText("出力 schema")).toBeVisible();
+    const outputRect = await inspector.boundingBox();
+    expect(outputRect).not.toBeNull();
+    expect(Math.abs(outputRect!.y - settingsRect!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(outputRect!.height - settingsRect!.height)).toBeLessThanOrEqual(1);
     await inspector.getByRole("tab", { name: "詳細", exact: true }).click();
     await expect(inspector.getByText("node ID")).toBeVisible();
+    const handleHitArea = await page.locator(".workflow-node-handle").first().evaluate((node) => ({
+      inset: getComputedStyle(node, "::after").inset,
+    }));
+    expect(handleHitArea.inset).toBe("-16px");
+    await inspector.getByRole("button", { name: "このノードを削除" }).click();
+    await expect(inspector).toBeHidden();
+    await expect(page.locator(".react-flow__node")).toHaveCount(1);
     expect(runtimeErrors).toEqual([]);
   } finally {
     await page.evaluate(async (id) => {

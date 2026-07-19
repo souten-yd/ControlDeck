@@ -231,7 +231,11 @@ export class TerminalGeometryController {
     if (this.disposed || generation !== this.generation) return;
     if (this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
     const viewport = window.visualViewport;
-    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const measuredViewportWidth = viewport?.width ?? window.innerWidth;
+    // iOSのfocus pan/zoom中にVisual Viewportがlayout viewportより大きい値を返しても、
+    // fixed terminal rootがdocument幅を押し広げないよう上限を設ける。
+    const layoutViewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportWidth = Math.min(measuredViewportWidth, layoutViewportWidth);
     const viewportHeight = viewport?.height ?? window.innerHeight;
     const viewportSizeChanged = changed(viewportWidth, this.lastViewportWidth)
       || changed(viewportHeight, this.lastViewportHeight);

@@ -49,7 +49,7 @@ export default function SampleBook({ onClose }: { onClose: () => void }) {
       <div
         role="dialog"
         aria-label="サンプルブック"
-        className="flex h-[92dvh] w-screen flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:h-[85dvh] sm:w-[880px] sm:rounded-2xl"
+        className="flex h-[92dvh] w-full max-w-[100dvw] flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:h-[85dvh] sm:w-[880px] sm:rounded-2xl"
       >
         <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800 sm:px-5 sm:py-3">
           <h2 className="shrink-0 text-base font-semibold">📖<span className="hidden sm:inline"> サンプルブック</span></h2>

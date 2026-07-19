@@ -61,24 +61,30 @@ export function BottomSheet({
   onClose,
   children,
   wide,
+  stable,
+  headerActions,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  /** inspector等、内容によって位置・高さを変えたくない編集surface向け。 */
+  stable?: boolean;
+  headerActions?: ReactNode;
 }) {
   return (
     <Overlay onClose={onClose} align="bottom">
       <div
         role="dialog"
         aria-label={title}
-        className={`flex w-screen flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:rounded-2xl ${
+        className={`flex w-full max-w-[100dvw] flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:rounded-2xl ${
           wide ? "sm:w-[640px]" : "sm:w-[480px]"
-        } max-h-[85dvh] safe-bottom`}
+        } ${stable ? "h-[88dvh] sm:h-[min(760px,88dvh)]" : "max-h-[85dvh]"} safe-bottom`}
       >
-        <div className="flex items-center justify-between px-5 pt-4 pb-2">
+        <div className="relative flex shrink-0 items-center gap-2 px-5 pt-4 pb-2">
           <div className="mx-auto h-1 w-9 rounded-full bg-zinc-300 dark:bg-zinc-700 sm:hidden absolute left-1/2 -translate-x-1/2 top-2" />
-          <h2 className="text-base font-semibold">{title}</h2>
+          <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
+          {headerActions && <div className="flex shrink-0 items-center gap-1">{headerActions}</div>}
           <button
             onClick={onClose}
             aria-label="閉じる"
@@ -87,7 +93,7 @@ export function BottomSheet({
             <IconX />
           </button>
         </div>
-        <div className="overflow-y-auto px-5 pb-6">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">{children}</div>
       </div>
     </Overlay>
   );
@@ -108,7 +114,7 @@ export function Drawer({
       <div
         role="dialog"
         aria-label={title}
-        className="flex h-dvh w-screen flex-col bg-white shadow-xl dark:bg-zinc-900 sm:w-[520px]"
+        className="flex h-dvh w-full max-w-[100dvw] flex-col bg-white shadow-xl dark:bg-zinc-900 sm:w-[520px]"
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800 safe-top">
           <h2 className="text-base font-semibold">{title}</h2>
