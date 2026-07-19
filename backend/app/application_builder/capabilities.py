@@ -67,6 +67,7 @@ def capability_catalog() -> dict[str, Any]:
         "phase": "A",
         "generationAvailable": False,
         "buildAvailable": False,
+        "designProposalAvailable": True,
         "frameworks": FRAMEWORKS,
         "nodes": nodes,
         "host": {

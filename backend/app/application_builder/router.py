@@ -11,12 +11,13 @@ from app.application_builder.capabilities import capability_catalog
 from app.application_builder.compiler import default_spec, validate_application_spec
 from app.application_builder.design_system.components import component_catalog
 from app.application_builder.patch_service import preview_patches, spec_checksum
+from app.application_builder.proposal_service import ProposalGenerationError, ProposalInputError, generate_design_proposals
 from app.application_builder.service import create_default_project, get_project, project_out, validate_payload, workflow_source
 from app.audit import service as audit
 from app.database import get_db
 from app.models import ApplicationProject, User
 from app.schemas.application_builder import (
-    ApplicationPatchApplyBody, ApplicationPatchPreviewBody, ApplicationProjectCreate,
+    ApplicationDesignProposalRequest, ApplicationPatchApplyBody, ApplicationPatchPreviewBody, ApplicationProjectCreate,
     ApplicationProjectUpdate, ApplicationValidateBody, WorkflowApplicationCreate,
 )
 from app.security.deps import require_permission
@@ -26,7 +27,9 @@ router = APIRouter(tags=["application-builder"])
 
 @router.get("/application-builder/schema")
 def application_schema(user: User = Depends(require_permission("application_builder.view"))):
-    from app.schemas.application_builder import ApplicationPatchOperation, ApplicationSpecV1, ApplicationValidateBody
+    from app.schemas.application_builder import (
+        ApplicationDesignProposalRequest, ApplicationPatchOperation, ApplicationSpecV1, ApplicationValidateBody,
+    )
 
     sample = default_spec("ExampleApplication", "", None)
     return {
@@ -41,6 +44,7 @@ def application_schema(user: User = Depends(require_permission("application_buil
         "statuses": ["draft", "archived"],
         "semanticComponents": component_catalog(),
         "patchOperationSchema": ApplicationPatchOperation.model_json_schema(),
+        "designProposalRequestSchema": ApplicationDesignProposalRequest.model_json_schema(),
     }
 
 
@@ -200,6 +204,40 @@ def apply_project_patches(
         },
     )
     return {"project": project_out(row), "patch": result}
+
+
+@router.post("/application-projects/{project_id}/design-proposals")
+async def create_design_proposals(
+    project_id: int, body: ApplicationDesignProposalRequest, request: Request,
+    user: User = Depends(require_permission("application_builder.edit")), db: Session = Depends(get_db),
+):
+    """実codeを生成せず、3つのApplication Spec Patch案を生成・静的検証する。"""
+    row = get_project(db, project_id)
+    try:
+        spec = json.loads(row.application_spec_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=409, detail="保存済みApplication Specが不正です") from exc
+    from app.models_mgmt.providers import list_providers
+
+    providers = await list_providers(include_unavailable=True)
+    endpoint = next((item for item in providers if str(item.get("base_url", "")).rstrip("/") == body.base_url.rstrip("/")), None)
+    if endpoint is None or body.model not in endpoint.get("models", []):
+        raise HTTPException(status_code=422, detail="登録済みLLM endpointとmodelを選択してください")
+    try:
+        result = await generate_design_proposals(spec, body)
+    except ProposalInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProposalGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    audit.record(
+        db, "application_project.design_proposals", user=user,
+        resource_type="application_project", resource_id=str(row.id), request=request,
+        metadata={
+            "scope": body.scope, "mode": body.mode, "proposal_count": len(result["proposals"]),
+            "provider": str(endpoint.get("provider") or "unknown"), "model": body.model,
+        },
+    )
+    return result
 
 
 @router.delete("/application-projects/{project_id}", status_code=204)

@@ -99,6 +99,16 @@ test("creates and validates a Phase A project from Workflow without fake build U
     await lockedReview.getByRole("button", { name: "閉じる" }).click();
     await expect(page.getByText("Patched App Studio", { exact: true })).toBeVisible();
     await expect(page.getByText("Blocked App Studio", { exact: true })).toHaveCount(0);
+    await page.getByLabel("LLM runtime integration").selectOption("external");
+    await expect(page.getByLabel("External LLM provider")).toBeVisible();
+    await page.getByLabel("External LLM provider").selectOption("lmstudio");
+    await expect(page.getByLabel("LLM runtime integration")).toHaveValue("external");
+    await expect(page.getByLabel("External LLM provider")).toHaveValue("lmstudio");
+    await reloadedEditor.getByRole("button", { name: "AI Design" }).click();
+    const aiDesign = page.getByRole("dialog", { name: "AI Design Proposals" });
+    await expect(aiDesign.getByLabel("AI design request")).toBeVisible();
+    await expect(aiDesign.getByRole("button", { name: "Generate 3 proposals" })).toBeDisabled();
+    await aiDesign.getByRole("button", { name: "閉じる" }).click();
     await expect(page.getByText("Source生成: 未実装")).toBeVisible();
     await expect(page.getByText("Build: 未実装")).toBeVisible();
     await expect(page.getByRole("button", { name: /ビルド|生成|公開/ })).toHaveCount(0);

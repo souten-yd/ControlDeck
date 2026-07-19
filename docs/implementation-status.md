@@ -2,6 +2,17 @@
 
 最終更新: 2026-07-19
 
+## App Studio F2.3 Structured AI Design Proposals（2026-07-19）
+
+- App Studioへ`AI Design`を追加。要求、application／mobile／選択component scope、Preserve／Balanced／Redesign mode、検出済みmodelを指定し、Simple／Balanced／Denseの3案を生成する。
+- 既存共通runtime providerを再利用し、Ollama／llama.cpp／LM Studio等の登録済みendpoint/modelだけを許可。llama.cppは停止時の自動起動・model load待機を継承する。
+- LLMへはredact・文字数制限済みApplication Specとbackend catalogのSemantic Component／Design Token／Binding Sourceだけを送る。自由code、Secret、任意file、DB実データは送信しない。
+- LLM応答を3案の説明と`add/remove/replace/move`へ限定。Patch値を`valueJson`としてschema拘束後、backendで再parseし、各案をF2.1 Previewへ通す。案の選択後もF2.2 Patch Reviewで部分選択・差分・lock・checksumを再確認する。
+- Application Spec v1へ`llmRuntime`を追加。`None`と`External provider · not bundled`を編集でき、Ollama／LM Studio／OpenAI互換を選択可能。Externalでruntime同梱を指定するとblocking diagnosticとし、接続先/modelは環境変数で注入する。
+- source generator、build、Embedded Runtime、Remote ControlDeck、視覚diff、案の合成は未実装として選択不可／非表示を維持する。
+
+検証: backend全330件、Application Builder unit 12件成功、frontend production build成功。実Ollama `qwen3.6-27b-q5_k_m`で3案生成を実施し、3方向のschema parse、正式Patch変換、案ごとのPreview診断を確認（1案valid、2案は未知component／不正pathとして安全にApply不可）。認証付き320px E2EでExternal LM Studio非同梱設定、AI Design dialog、未入力時Generate停止、既存Patch／lock／overflow回帰を確認。
+
 ## App Studio F2.2 Patch Review／部分適用（2026-07-19）
 
 - Application Editorへ`Review Patch`を追加。1〜200件の`add/remove/replace/move` JSON Patchを読み込み、operation単位で選択して正確なsubsetだけをbackend Previewへ送る。

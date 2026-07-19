@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from tests.conftest import CSRF_HEADERS
@@ -106,6 +107,9 @@ def test_semantic_component_catalog_and_tree_validation():
     spec["pages"][0]["root"]["children"][0]["children"] = [{"id": "run", "type": "missing.widget"}]
     codes = {item.code for item in validate_application_spec(spec)}
     assert {"COMPONENT_CHILDREN_FORBIDDEN", "COMPONENT_ID_DUPLICATE", "COMPONENT_TYPE_UNKNOWN"} <= codes
+    spec = default_spec("ExternalLlmApp", "", None)
+    spec["llmRuntime"] = {"mode": "external", "provider": "ollama", "bundleRuntime": True}
+    assert "LLM_RUNTIME_BUNDLE_CONFLICT" in {item.code for item in validate_application_spec(spec)}
 
 
 def _component_spec():
@@ -176,6 +180,7 @@ def test_application_builder_schema_capability_validate_and_crud(admin_client, m
 
     schema = admin_client.get("/api/v1/application-builder/schema")
     assert schema.status_code == 200 and schema.json()["schemaVersion"] == 1
+    assert "instruction" in schema.json()["designProposalRequestSchema"]["properties"]
     semantic = schema.json()["semanticComponents"]
     assert any(item["type"] == "layout.stack" and item["container"] for item in semantic["components"])
     assert any(item["type"] == "chart.line" for item in semantic["components"])
@@ -183,6 +188,7 @@ def test_application_builder_schema_capability_validate_and_crud(admin_client, m
     assert capabilities.status_code == 200
     assert capabilities.json()["generationAvailable"] is False
     assert capabilities.json()["buildAvailable"] is False
+    assert capabilities.json()["designProposalAvailable"] is True
     assert any(item["id"] == "avalonia" and item["status"] == "planned" for item in capabilities.json()["frameworks"])
     http_capability = next(item for item in capabilities.json()["nodes"] if item["type"] == "http.request")["targets"]["csharp"]
     assert http_capability["support"] == "manual"
@@ -287,4 +293,82 @@ def test_application_patch_preview_atomic_apply_and_stale_guard(admin_client):
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "PATCH_BASE_CHANGED"
+    assert admin_client.delete(f"/api/v1/application-projects/{project_id}", headers=CSRF_HEADERS).status_code == 204
+
+
+def test_application_design_proposals_are_structured_redacted_and_prevalidated():
+    from app.application_builder.proposal_service import ProposalInputError, generate_design_proposals
+    from app.schemas.application_builder import ApplicationDesignProposalRequest
+
+    spec = _component_spec()
+    spec["application"]["apiKey"] = "super-secret-value"
+    spec["application"]["description"] = "never expose super-secret-value"
+    captured = {}
+
+    async def complete(messages, schema):
+        captured["messages"] = messages
+        captured["schema"] = schema
+        proposals = []
+        for direction, text in (("simple", "Simple"), ("balanced", "Balanced"), ("dense", "Dense")):
+            proposals.append({
+                "id": direction, "direction": direction, "title": text, "summary": f"{text} proposal",
+                "rationale": ["Keep semantic components"], "warnings": [],
+                "patches": [{"op": "replace", "path": "/pages/0/root/children/0/properties/text", "from": None, "valueJson": json.dumps(text)}],
+            })
+        return json.dumps({"proposals": proposals})
+
+    request = ApplicationDesignProposalRequest(
+        instruction="Make the page easier to scan", scope="application", mode="balanced",
+        base_url="http://127.0.0.1:11434/v1", model="local-model",
+    )
+    result = asyncio.run(generate_design_proposals(spec, request, complete=complete))
+    assert [item["direction"] for item in result["proposals"]] == ["simple", "balanced", "dense"]
+    assert all("preview" in item for item in result["proposals"])
+    prompt = json.dumps(captured["messages"], ensure_ascii=False)
+    assert "super-secret-value" not in prompt and "***" in prompt
+    assert captured["schema"]["properties"]["proposals"]["minItems"] == 3
+    invalid_scope = request.model_copy(update={"scope": "component", "target_id": "missing"})
+    try:
+        asyncio.run(generate_design_proposals(spec, invalid_scope, complete=complete))
+        raise AssertionError("missing component must be rejected before LLM")
+    except ProposalInputError:
+        pass
+
+
+def test_application_design_proposal_api_requires_registered_model(admin_client, monkeypatch):
+    from app.application_builder import router as application_router
+    from app.models_mgmt import providers
+
+    spec = _component_spec()
+    created = admin_client.post(
+        "/api/v1/application-projects", json={"name": "AI Design", "spec": spec}, headers=CSRF_HEADERS,
+    )
+    project_id = created.json()["id"]
+
+    async def fake_providers(**_kwargs):
+        return [{
+            "base_url": "http://127.0.0.1:11434/v1", "models": ["design-model"],
+            "provider": "ollama", "available": True,
+        }]
+
+    async def fake_generate(current_spec, body):
+        assert current_spec == spec and body.model == "design-model"
+        return {"proposals": [{"direction": item} for item in ("simple", "balanced", "dense")]}
+
+    monkeypatch.setattr(providers, "list_providers", fake_providers)
+    monkeypatch.setattr(application_router, "generate_design_proposals", fake_generate)
+    body = {
+        "instruction": "Make a dashboard", "scope": "application", "mode": "balanced",
+        "base_url": "http://127.0.0.1:11434/v1", "model": "design-model",
+    }
+    generated = admin_client.post(
+        f"/api/v1/application-projects/{project_id}/design-proposals", json=body, headers=CSRF_HEADERS,
+    )
+    assert generated.status_code == 200, generated.text
+    assert len(generated.json()["proposals"]) == 3
+    body["model"] = "unregistered"
+    blocked = admin_client.post(
+        f"/api/v1/application-projects/{project_id}/design-proposals", json=body, headers=CSRF_HEADERS,
+    )
+    assert blocked.status_code == 422
     assert admin_client.delete(f"/api/v1/application-projects/{project_id}", headers=CSRF_HEADERS).status_code == 204

@@ -228,6 +228,18 @@ PreviewはBefore／AfterのPage数・Component数、structured diagnostic、base
 
 Component Inspectorからstructure／binding／style／position／content lockを設定できる。lockはApplication Specへ保存され、Patch Reviewでもbackendが強制する。`PATCH_LOCK_VIOLATION`はApply前に表示し、変更操作を無効化する。現段階のBefore／Afterは構造summaryであり、視覚diff・3案比較・LLM提案生成はF2.3以降として未実装状態を明示する。
 
+### Phase F2.3 — Structured AI Design Proposals（2026-07-19実装）
+
+`POST /application-projects/{id}/design-proposals`は、登録済みLLM endpoint/model、3〜4000文字の要求、application/page/component/mobile scope、Preserve/Balanced/Redesign modeを受け取る。任意URLを直接呼ばず、既存provider catalogに登録されたendpoint/modelだけを許可する。共通runtime providerを通すため、管理中llama.cppは停止中でも起動・model load完了を待ち、Ollamaはnative structured outputを利用する。
+
+LLM contextはApplication Specから秘密らしいkey/valueとsecret templateをredactし、各文字列2000文字、全体60000文字へ制限する。加えてbackend catalogのSemantic Component、Design Token、Binding Sourceだけを許可部品として渡す。source code、Secret値、DB実データ、任意fileは送らない。
+
+LLM応答はSimple／Balanced／Denseの3案、説明、理由、警告、RFC 6902 subsetに限定する。任意JSON値はgrammar差を避けて`valueJson`文字列として受け、backendで再parseして正式なApplicationPatchOperationへ変換する。OpenAI互換runtimeが単一要素arrayを文字列化した場合は理由／警告の文字列だけを決定的に正規化し、未知field・code・不正Patchを自由に受理しない。各案はF2.1 Previewで独立検証し、自動適用しない。
+
+frontendは要望、scope、mode、検出modelを選び、3案をカード比較する。案を選ぶとF2.2 Patch Reviewへ移動し、operation部分選択、checksum、lock、Applyを再確認する。現段階は構造案比較であり、Desktop/Mobileの視覚差分合成、案の部分合成、AI自動修復は後続F2.xとする。
+
+Application Spec v1の`llmRuntime`は`none/external/embedded/remote`を区別する。現在正式に編集できるのは`none`と`external`で、External providerはOllama／LM Studio／OpenAI互換を選び、`bundleRuntime=false`を必須とする。接続は`LLM_BASE_URL`／`LLM_MODEL`で注入し、runtime binaryやSecretを生成物へ埋め込まない。Embedded／Remoteはgenerator未実装のためUIでplannedかつ選択不可とする。
+
 ## 12. Phase A acceptance
 
 - legacy definition → IRのinput/output/branch/merge/retry/timeout/secret名/side effect。

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { applicationBuilderApi, type Diagnostic } from "../api/applicationBuilder";
+import { applicationBuilderApi, type ApplicationProject, type Diagnostic } from "../api/applicationBuilder";
 import { PageHeader } from "../components/PageHeader";
 import { AppDesignEditor } from "../features/application-builder/AppDesignEditor";
 
@@ -10,6 +10,7 @@ const severityStyle = { error: "border-red-300 bg-red-50 text-red-700 dark:borde
 export default function ApplicationEditorPage() {
   const projectId = Number(useParams().id);
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const project = useQuery({ queryKey: ["application-project", projectId], queryFn: () => applicationBuilderApi.get(projectId), enabled: Number.isFinite(projectId) });
   const capabilities = useQuery({ queryKey: ["application-capabilities"], queryFn: applicationBuilderApi.capabilities });
   const schema = useQuery({ queryKey: ["application-builder-schema"], queryFn: applicationBuilderApi.schema });
@@ -20,11 +21,12 @@ export default function ApplicationEditorPage() {
   const app = (project.data.spec.application ?? {}) as Record<string, unknown>;
   const diagnostics = validation.data?.diagnostics ?? [];
   return <main className="min-h-0 flex-1 overflow-y-auto p-3 pb-24 md:p-6"><div className="mx-auto max-w-6xl">
-    <PageHeader leading={<button onClick={() => navigate("/applications")} aria-label="Back to App Studio" className="grid min-h-11 min-w-11 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900">←</button>} title={<span className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate">{project.data.name}</span><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-semibold leading-5 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">Draft</span><span className="rounded-full bg-zinc-100 px-2 py-1 text-[10px] font-medium leading-5 dark:bg-zinc-800">F1.2</span></span>} description="Semantic componentsでresponsive UIを設計します。生成やbuildはまだ実行しません。" actions={project.data.workflow_id ? <button onClick={() => navigate(`/workflows/${project.data.workflow_id}`)} className="min-h-11 rounded-xl border border-zinc-300 px-3 text-xs font-medium dark:border-zinc-700">Open Workflow</button> : undefined} />
+    <PageHeader leading={<button onClick={() => navigate("/applications")} aria-label="Back to App Studio" className="grid min-h-11 min-w-11 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900">←</button>} title={<span className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate">{project.data.name}</span><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-semibold leading-5 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">Draft</span><span className="rounded-full bg-zinc-100 px-2 py-1 text-[10px] font-medium leading-5 dark:bg-zinc-800">F2.3</span></span>} description="Semantic componentsと構造化AI提案でresponsive UIを反復設計します。source生成やbuildはまだ実行しません。" actions={project.data.workflow_id ? <button onClick={() => navigate(`/workflows/${project.data.workflow_id}`)} className="min-h-11 rounded-xl border border-zinc-300 px-3 text-xs font-medium dark:border-zinc-700">Open Workflow</button> : undefined} />
     {schema.data ? <AppDesignEditor project={project.data} catalog={schema.data.semanticComponents.components} /> : <div className="mb-4 h-52 animate-pulse rounded-2xl bg-zinc-100 dark:bg-zinc-900" />}
     <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.7fr)]">
       <div className="space-y-4">
         <Panel title="概要"><Info label="Application" value={String(app.displayName || app.name || project.data.name)} /><Info label="形式" value={project.data.application_type} /><Info label="Workflow" value={project.data.workflow_id ? `#${project.data.workflow_id}` : "未接続"} /><Info label="Spec" value={`v${project.data.schema_version}`} /></Panel>
+        <LlmRuntimeSettings project={project.data} onSaved={() => qc.invalidateQueries({ queryKey: ["application-project", projectId] })} />
         <Panel title="Application IR"><div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Count label="Pages" value={validation.data?.applicationIr.pages.length ?? 0} /><Count label="Entities" value={validation.data?.applicationIr.entities.length ?? 0} /><Count label="API" value={validation.data?.applicationIr.api_endpoints.length ?? 0} /><Count label="Targets" value={validation.data?.applicationIr.targets.length ?? 0} /></div></Panel>
         {validation.data?.workflowIr && <Panel title="Workflow IR"><div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Count label="Inputs" value={validation.data.workflowIr.inputs.length} /><Count label="Outputs" value={validation.data.workflowIr.outputs.length} /><Count label="Nodes" value={validation.data.workflowIr.nodes.length} /><Count label="Edges" value={validation.data.workflowIr.edges.length} /></div><p className="mt-3 text-[11px] text-zinc-500">Capability: {validation.data.workflowIr.capabilities.join(", ") || "なし"}</p></Panel>}
       </div>
@@ -40,3 +42,16 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 function Info({ label, value }: { label: string; value: string }) { return <div className="flex gap-3 border-b border-zinc-100 py-2 text-xs last:border-0 dark:border-zinc-800"><span className="w-24 shrink-0 text-zinc-400">{label}</span><strong className="min-w-0 break-words font-medium">{value}</strong></div>; }
 function Count({ label, value }: { label: string; value: number }) { return <div className="rounded-xl bg-zinc-50 p-3 text-center dark:bg-zinc-950"><strong className="block text-xl tabular-nums">{value}</strong><span className="text-[10px] text-zinc-400">{label}</span></div>; }
 function DiagnosticCard({ item }: { item: Diagnostic }) { return <article className={`rounded-xl border p-3 text-xs ${severityStyle[item.severity]}`}><div className="flex gap-2"><strong className="min-w-0 flex-1">{item.message}</strong><code className="text-[9px] opacity-70">{item.code}</code></div>{item.path && <p className="mt-1 break-all font-mono text-[9px] opacity-70">{item.path}</p>}{item.suggestedFix && <p className="mt-2 text-[10px]">推奨: {item.suggestedFix}</p>}</article>; }
+
+function LlmRuntimeSettings({ project, onSaved }: { project: ApplicationProject; onSaved: () => Promise<unknown> }) {
+  const current = (project.spec.llmRuntime ?? {}) as Record<string, unknown>;
+  const mode = String(current.mode ?? "none");
+  const provider = String(current.provider ?? "ollama");
+  const save = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => applicationBuilderApi.update(project.id, {
+      spec: { ...project.spec, llmRuntime: { ...current, ...patch, bundleRuntime: false, baseUrlEnvironment: "LLM_BASE_URL", modelEnvironment: "LLM_MODEL" } },
+    }),
+    onSuccess: onSaved,
+  });
+  return <Panel title="LLM Runtime"><p className="mb-3 text-xs leading-relaxed text-zinc-500">生成アプリへmodelやruntimeを同梱せず、LM Studio／Ollamaへ接続する構成を選べます。</p><label className="block text-xs text-zinc-500">Integration<select aria-label="LLM runtime integration" value={mode} onChange={(event) => save.mutate({ mode: event.target.value, provider: event.target.value === "external" ? provider : null })} disabled={save.isPending} className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-transparent px-3 dark:border-zinc-700"><option value="none">None</option><option value="external">External provider · not bundled</option><option value="embedded" disabled>Embedded runtime · planned</option><option value="remote" disabled>Remote ControlDeck · planned</option></select></label>{mode === "external" && <label className="mt-3 block text-xs text-zinc-500">Provider<select aria-label="External LLM provider" value={provider} onChange={(event) => save.mutate({ mode: "external", provider: event.target.value })} disabled={save.isPending} className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-transparent px-3 dark:border-zinc-700"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option><option value="openai-compatible">OpenAI compatible</option></select></label>}<p className="mt-3 text-[10px] text-zinc-400">接続先とmodelは生成時にLLM_BASE_URL／LLM_MODELから受け取り、Secretやruntime binaryは成果物へ保存しません。</p></Panel>;
+}
