@@ -302,8 +302,13 @@ SAMPLES: list[dict] = [
                     "op": "contains", "right": "入荷"}, 620),
                 _n("notify", "notify.webhook", "通知", {"url": "https://discord.com/api/webhooks/XXXX/XXXX",
                     "format": "discord", "message": "🔔 キーワードを検出しました: https://example.com/news"}, 900, 80),
+                _n("result", "output.render", "監視結果", {"name": "monitor_status", "title": "サイト監視結果",
+                    "renderer": "status", "value": "キーワード判定: {{hit.result}}"}, 900, 260),
+                _n("alert", "output.render", "検出結果", {"name": "monitor_alert", "title": "キーワードを検出",
+                    "renderer": "status", "value": "キーワードを検出し、通知処理を完了しました"}, 1180, 80),
             ],
-            "edges": [_e("trigger", "scrape"), _e("scrape", "hit"), _e("hit", "notify", "true")],
+            "edges": [_e("trigger", "scrape"), _e("scrape", "hit"), _e("hit", "notify", "true"),
+                      _e("notify", "alert"), _e("hit", "result", "false")],
         },
     },
     # ---- 運用自動化 ----
@@ -325,14 +330,19 @@ SAMPLES: list[dict] = [
         "definition": {
             "nodes": [
                 _n("trigger", "trigger", "5 分ごと", {"mode": "interval", "interval_minutes": 5}, 60),
-                _n("status", "app.status", "状態確認", {"app_id": ""}, 340),
+                _n("status", "app.status", "状態確認", {"app_id": 1}, 340),
                 _n("down", "condition.if", "停止している?", {"left": "{{status.status}}",
                     "op": "ne", "right": "running"}, 620),
-                _n("restart", "app.restart", "再起動", {"app_id": ""}, 900, 80),
+                _n("restart", "app.restart", "再起動", {"app_id": 1}, 900, 80),
                 _n("notify", "notify.webhook", "復旧通知", {"url": "https://discord.com/api/webhooks/XXXX/XXXX",
                     "format": "discord", "message": "🔄 {{status.app}} が停止していたため再起動しました"}, 1180, 80),
+                _n("result", "output.render", "監視結果", {"name": "application_status", "title": "アプリ監視結果",
+                    "renderer": "status", "value": "{{status.app}}: {{status.status}}"}, 900, 260),
+                _n("recovered", "output.render", "復旧結果", {"name": "recovery_status", "title": "アプリ復旧結果",
+                    "renderer": "status", "value": "{{status.app}} を再起動し、通知処理を完了しました"}, 1460, 80),
             ],
-            "edges": [_e("trigger", "status"), _e("status", "down"), _e("down", "restart", "true"), _e("restart", "notify")],
+            "edges": [_e("trigger", "status"), _e("status", "down"), _e("down", "restart", "true"),
+                      _e("restart", "notify"), _e("notify", "recovered"), _e("down", "result", "false")],
         },
     },
     {
@@ -356,8 +366,52 @@ SAMPLES: list[dict] = [
                 _n("git", "cmd.git", "git pull", {"subcommand": "pull", "args": "", "cwd": "/home/user/repo"}, 340),
                 _n("notify", "notify.webhook", "結果通知", {"url": "https://discord.com/api/webhooks/XXXX/XXXX",
                     "format": "discord", "message": "⎇ git pull 結果 (exit {{git.exit_code}})\n{{git.stdout}}"}, 620),
+                _n("result", "output.render", "Git結果", {"name": "git_result", "title": "Git pull結果",
+                    "renderer": "code", "value": "exit={{git.exit_code}}\n{{git.stdout}}"}, 900, 260),
             ],
-            "edges": [_e("trigger", "git"), _e("git", "notify")],
+            "edges": [_e("trigger", "git"), _e("git", "notify"), _e("git", "result")],
+        },
+    },
+    {
+        "id": "order-analysis",
+        "title": "受注データ分析 — 抽出・集計・型付きダッシュボード",
+        "icon": "📊",
+        "category": "データ処理",
+        "desc": "JSON受注データを金額で抽出し、地域別集計・表・KPIへ並列出力する複合フロー。外部サービス不要。",
+        "usage": (
+            "型付き入力、配列filter、group集計、並列分岐、複数のoutput contractを組み合わせた実用例です。\n\n"
+            "■ 動かし方\n"
+            "1. 受注データへJSON配列を入力（初期サンプルをそのまま利用できます）\n"
+            "2. 最低金額以上の注文だけを抽出し、金額降順に並べます\n"
+            "3. 地域別の売上集計を作り、対象注文をTable、集計をJSON、件数をMetricで同時表示します\n\n"
+            "■ 学べること\n"
+            "- {{trigger.orders}} の型付き入力を後段のarray処理へ渡す方法\n"
+            "- 1つの出力から複数ノードへ分岐して並列処理する方法\n"
+            "- output.renderを複数置き、APIでもGUIでも同じ正式出力を返す方法"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "受注データ入力", {"mode": "manual", "inputs": [
+                    {"key": "orders", "label": "受注データ", "type": "JSON", "required": True,
+                     "default": [{"id": "A-101", "region": "東日本", "amount": 12000},
+                                 {"id": "A-102", "region": "西日本", "amount": 4800},
+                                 {"id": "A-103", "region": "東日本", "amount": 8600}]},
+                    {"key": "minimum", "label": "最低金額", "type": "number", "required": True, "default": 5000},
+                ]}, 40),
+                _n("filter", "data.filter", "対象注文を抽出", {"input": "{{trigger.orders}}", "field": "amount",
+                    "operator": "gte", "value": "{{trigger.minimum}}", "unique_by": "id",
+                    "sort_by": "amount", "sort_order": "desc"}, 320),
+                _n("aggregate", "data.aggregate", "地域別売上を集計", {"input": "{{filter.items}}",
+                    "operation": "sum", "field": "amount", "group_by": "region"}, 600, 80),
+                _n("table", "output.render", "対象注文テーブル", {"name": "orders", "title": "対象注文",
+                    "renderer": "table", "value": "{{filter.items}}", "schema": '{"type":"array"}'}, 600, 300),
+                _n("groups", "output.render", "地域別集計", {"name": "sales_by_region", "title": "地域別売上",
+                    "renderer": "json_tree", "value": "{{aggregate.groups}}", "schema": '{"type":"array"}'}, 880, 60),
+                _n("count", "output.render", "対象件数", {"name": "order_count", "title": "対象件数",
+                    "renderer": "metric", "value": "{{filter.count}}", "schema": '{"type":"integer"}'}, 880, 300),
+            ],
+            "edges": [_e("trigger", "filter"), _e("filter", "aggregate"), _e("filter", "table"),
+                      _e("aggregate", "groups"), _e("filter", "count")],
         },
     },
 ]

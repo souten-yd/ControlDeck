@@ -3,17 +3,64 @@ import { expect, test } from "@playwright/test";
 const username = process.env.CONTROL_DECK_E2E_USER;
 const password = process.env.CONTROL_DECK_E2E_PASSWORD;
 
+async function login(page: import("@playwright/test").Page) {
+  await page.goto("/workflows");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+}
+
+test("shows the exact publish blocker instead of a generic 409", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await login(page);
+  const workflowId = await page.evaluate(async () => {
+    const response = await fetch("/api/v1/workflows", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "ControlDeck" },
+      body: JSON.stringify({
+        name: "E2E Publish Blocker",
+        definition: {
+          nodes: [
+            { id: "trigger", type: "trigger", config: { mode: "manual" }, position: { x: 80, y: 160 } },
+            { id: "wait", type: "util.wait", config: { seconds: 0 }, position: { x: 340, y: 160 } },
+          ],
+          edges: [{ source: "trigger", target: "wait" }],
+        },
+      }),
+    });
+    return (await response.json()).id as number;
+  });
+  try {
+    await page.goto(`/workflows/${workflowId}`);
+    await page.getByRole("button", { name: "実行プレビューを開く" }).click();
+    const preview = page.getByRole("complementary", { name: "実行プレビュー" });
+    await preview.getByRole("button", { name: "安全プレビューを実行" }).click();
+    await expect(preview.getByText("構造上は実行可能です")).toBeVisible();
+    await expect(preview.getByText("このままでは公開できません")).toBeVisible();
+    await expect(preview.getByText(/output\.render（推奨）/)).toBeVisible();
+    await preview.getByRole("button", { name: "プレビューを閉じる" }).click();
+    await page.getByRole("button", { name: "その他メニュー" }).click();
+    await page.getByRole("menuitem", { name: "公開" }).click();
+    await expect(page.getByText(/公開できません: 正式な最終出力ノードがありません/)).toBeVisible();
+  } finally {
+    await page.evaluate(async (id) => {
+      await fetch(`/api/v1/workflows/${id}`, {
+        method: "DELETE", credentials: "same-origin", headers: { "X-Requested-With": "ControlDeck" },
+      });
+    }, workflowId);
+  }
+});
+
 test("integrates trigger input, safe preview, test result, and past input at 320px", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   const runtimeErrors: string[] = [];
   page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.setViewportSize({ width: 320, height: 700 });
-  await page.goto("/workflows");
-  await page.getByLabel("ユーザー名").fill(username!);
-  await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
-  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+  await login(page);
   runtimeErrors.length = 0;
 
   const workflowId = await page.evaluate(async () => {
@@ -58,7 +105,8 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     await expect(preview).toBeVisible();
     await preview.getByLabel("質問 *").fill("ControlDeck preview");
     await preview.getByRole("button", { name: "安全プレビューを実行" }).click();
-    await expect(preview.getByText("実行可能な定義です")).toBeVisible();
+    await expect(preview.getByText("構造上は実行可能です")).toBeVisible();
+    await expect(preview.getByText("公開できます")).toBeVisible();
     await expect(preview.getByText("answer", { exact: true })).toBeVisible();
 
     await preview.getByRole("radio", { name: /通常テスト実行/ }).click();

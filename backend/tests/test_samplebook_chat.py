@@ -49,6 +49,73 @@ def test_samples_list_and_install(admin_client):
     assert r.status_code == 404
 
 
+def test_every_sample_is_safe_previewable_and_publishable(admin_client):
+    """サンプルが見本だけで終わらず、コピー直後に公開できることを保証する。"""
+    samples = admin_client.get("/api/v1/workflows/samples").json()
+    assert any(sample["id"] == "order-analysis" and sample["node_count"] >= 6 for sample in samples)
+    for sample in samples:
+        preview = admin_client.post(
+            "/api/v1/workflows/preview-definition",
+            json={"definition": sample["definition"], "input": {}},
+            headers=CSRF_HEADERS,
+        )
+        assert preview.status_code == 200, f"{sample['id']}: {preview.text}"
+        assert preview.json()["valid"] is True, f"{sample['id']}: {preview.json()['errors']}"
+
+        installed = admin_client.post(
+            f"/api/v1/workflows/samples/{sample['id']}/install", headers=CSRF_HEADERS,
+        )
+        assert installed.status_code == 201, f"{sample['id']}: {installed.text}"
+        workflow_id = installed.json()["id"]
+        checked = admin_client.post(
+            f"/api/v1/workflows/{workflow_id}/publish-check",
+            json={"definition": sample["definition"]},
+            headers=CSRF_HEADERS,
+        )
+        assert checked.status_code == 200
+        assert checked.json()["publishable"] is True, f"{sample['id']}: {checked.json()['blocking']}"
+        published = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
+        assert published.status_code == 200, f"{sample['id']}: {published.text}"
+        assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_complex_order_sample_executes_with_typed_outputs(admin_client):
+    """複合サンプルは公開できるだけでなく、外部依存なしで最終出力まで実行できる。"""
+    import time
+
+    installed = admin_client.post(
+        "/api/v1/workflows/samples/order-analysis/install", headers=CSRF_HEADERS,
+    )
+    workflow_id = installed.json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/run",
+        json={"input": {
+            "orders": [
+                {"id": "A", "region": "東", "amount": 9000},
+                {"id": "B", "region": "西", "amount": 3000},
+                {"id": "C", "region": "東", "amount": 7000},
+            ],
+            "minimum": 5000,
+        }},
+        headers=CSRF_HEADERS,
+    )
+    assert started.status_code == 200, started.text
+    execution_id = started.json()["execution_id"]
+    for _ in range(100):
+        execution = admin_client.get(f"/api/v1/workflow-executions/{execution_id}").json()
+        if execution["status"] not in ("QUEUED", "RUNNING", "WAITING"):
+            break
+        time.sleep(0.03)
+    assert execution["status"] == "SUCCEEDED", execution
+    assert execution["outputs"]["order_count"]["value"] == "2"
+    assert len(execution["outputs"]["orders"]["value"]) == 2
+    assert execution["outputs"]["sales_by_region"]["value"] == [
+        {"group": "東", "value": 16000.0, "count": 2},
+    ]
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
 def test_install_substitutes_llm_model(admin_client):
     """コピー時に base_url/model を渡すとサンプル既定 LLM が差し替わる。"""
     r = admin_client.post(

@@ -41,6 +41,13 @@ interface PreviewResult {
   }>;
 }
 
+interface PublishCheckResult {
+  publishable: boolean;
+  blocking: string[];
+  warnings: string[];
+  quality: { score: number; label: string };
+}
+
 interface ExecutionSummary {
   id: number;
   status: string;
@@ -118,6 +125,7 @@ export function PreviewWorkspace({
   const [values, setValues] = useState<Record<string, unknown>>(() => initialValues(inputs));
   const [mode, setMode] = useState<"safe" | "test">("safe");
   const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [publishCheck, setPublishCheck] = useState<PublishCheckResult | null>(null);
   const [executionId, setExecutionId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -180,10 +188,18 @@ export function PreviewWorkspace({
     try {
       if (mode === "safe") {
         setExecutionId(null);
-        setPreview(await api<PreviewResult>("/workflows/preview-definition", {
-          method: "POST",
-          json: { definition, input: values },
-        }));
+        const [previewResult, publishResult] = await Promise.all([
+          api<PreviewResult>("/workflows/preview-definition", {
+            method: "POST",
+            json: { definition, input: values },
+          }),
+          api<PublishCheckResult>(`/workflows/${workflowId}/publish-check`, {
+            method: "POST",
+            json: { definition },
+          }),
+        ]);
+        setPreview(previewResult);
+        setPublishCheck(publishResult);
       } else {
         if (dirty) await onSave();
         const started = await api<{ execution_id: number }>(`/workflows/${workflowId}/test`, {
@@ -395,10 +411,21 @@ export function PreviewWorkspace({
             </section>
             <section>
               <h3 className="mb-2 text-xs font-semibold">安全プレビュー結果</h3>
-              <ResultNotice ok={preview.valid} title={preview.valid ? "実行可能な定義です" : "修正が必要です"} detail={preview.notice} />
+              <ResultNotice ok={preview.valid} title={preview.valid ? "構造上は実行可能です" : "実行前に修正が必要です"} detail={preview.notice} />
               <IssueList errors={preview.errors} warnings={preview.warnings} />
               <details className="mt-2"><summary className="cursor-pointer text-xs text-zinc-500">ノードごとの実行予定 ({preview.summary.reachable}/{preview.summary.nodes})</summary><NodePlan plan={preview.plan} /></details>
             </section>
+            {publishCheck && (
+              <section>
+                <h3 className="mb-2 text-xs font-semibold">公開前検証</h3>
+                <ResultNotice
+                  ok={publishCheck.publishable}
+                  title={publishCheck.publishable ? "公開できます" : "このままでは公開できません"}
+                  detail={`品質スコア ${publishCheck.quality.score}。公開ボタンと同じ規則で確認しています。`}
+                />
+                <IssueList errors={publishCheck.blocking} warnings={publishCheck.warnings} />
+              </section>
+            )}
           </>
         )}
 
