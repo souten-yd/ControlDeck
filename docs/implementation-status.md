@@ -1,6 +1,34 @@
 # 実装状況
 
-最終更新: 2026-07-17
+最終更新: 2026-07-19
+
+## モバイル横overflow・ターミナル右端タッチ修正（2026-07-19）
+
+- iPhone Safariで16px未満のinput/select/textareaへfocusするとVisual Viewportが自動拡大し、keyboard表示後に
+  右へpanした状態が残ることを横はみ出しの主因として特定。767px以下ではフォームの実効font-sizeを16px以上へ統一した
+- `w-screen`（100vw）がscrollbar幅やVisual Viewportとの差分を含んでsheet/drawerをdocument幅より広げるため、
+  BottomSheet、Drawer、workflow SampleBookを`width: 100%`かつ`100dvw`上限へ変更。html/body/rootもdocument幅でclipする
+- terminal rootのVisual Viewport追従幅をlayout viewport以下へclamp。xtermの右scrollbarはcoarse pointerのモバイルで
+  1px予約へ縮小し、文字領域を削らない20px幅のoverlay履歴barへ置換。barのtapは対応位置へjumpし、dragは
+  指位置へ連続追従するがIME textareaへfocusさせない。端以外のtap入力とterminal面全体の上下swipeも維持する
+- 320x700 / 390x844でreload後と文字入力focus後のdocument横overflow、実効font-sizeを確認するE2Eと、
+  terminal右端touchではkeyboard入力へfocusせず中央touchではfocusするE2Eを追加した
+
+検証: backend全278件成功、frontend本番build成功。実サービスを`./deck.sh`で再起動し、Playwright Chromiumの
+terminal回帰18件成功・任意10分soak 1件skip。320px/390pxとも横overflow 0、overlay barのtap/drag、
+IME、100/300KB・UTF-8 paste、keyboard 10回開閉、再接続、履歴、desktop wheelを確認。テスト用ユーザーは削除済み。
+
+## ワークフローキャンバスのiPhone操作統一（2026-07-19）
+
+- node inspectorを88dvhの固定surfaceへ変更し、node種別や設定/input/output/error tabの内容量が変わっても
+  sheetのtop/heightを維持。削除を設定末尾からheaderの44px actionへ移し、どのtabからも同じ位置で操作できる
+- node handleは12pxの見た目を保ったままmobileの透明hit areaを周囲16pxへ拡大し、node外へ出た領域をclipしない
+- edgeの透明選択幅をmobileで32pxへ拡大。選択時にaccent強調と固定toolbarを表示し、44px削除action、
+  source/target端点の36px reconnect radiusによる付け替えを追加。変更は既存definition形式のままdirty管理する
+- 操作契約を`docs/design-workflow-integrated-ide.md`へ記録し、常時buttonをnodeへ載せず選択時だけ段階表示する
+
+検証: frontend本番build成功、実サービス再起動成功。320px E2Eでedge選択、source/target reconnect端点、edge削除、
+handle hit area、inspectorのtab切替前後のtop/height一致、headerからのnode削除、横overflow 0、console error 0を確認。
 
 ## Model画面のOllamaロード状態追従修正（2026-07-17）
 

@@ -66,6 +66,7 @@ declare global {
       startBarrierForTest: (generation: number, cols: number, rows: number) => boolean;
       ackBarrierForTest: (ack: ResizeAck) => boolean;
       enqueuePtyFrameForTest: (data: string) => boolean;
+      writeForTest: (data: string) => Promise<void>;
       sendInputForTest: (data: string) => void;
       enqueuePasteForTest: (text: string) => void;
       pasteState: () => { state: string; acknowledgedBytes: number; totalBytes: number };
@@ -172,6 +173,138 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(layout.close.height).toBeGreaterThanOrEqual(44);
     expect(layout.close.right).toBeLessThanOrEqual(layout.viewport - 12);
     expect(layout.header.right - layout.close.right).toBe(12);
+  });
+
+  test("jumps and drags with the overlay history bar without opening terminal input", async ({ page }) => {
+    const textarea = page.locator(".xterm-helper-textarea");
+    await page.evaluate(async () => {
+      const rows = Array.from({ length: 120 }, (_, index) => `TOUCH_HISTORY_${index + 1}`).join("\r\n");
+      await window.__controlDeckTerminalTest!.writeForTest(`${rows}\r\n`);
+    });
+    await expect(page.locator(".xterm-rows")).toContainText("TOUCH_HISTORY_120");
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.baseY())).toBeGreaterThan(40);
+    await textarea.evaluate((node: HTMLTextAreaElement) => node.blur());
+    await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+      .toBe(false);
+
+    const track = page.locator("[data-terminal-history-track]");
+    await expect(track).toHaveCSS("pointer-events", "auto");
+    const baseY = await page.evaluate(() => window.__controlDeckTerminalTest!.baseY());
+
+    // track tapは対応する履歴位置へjumpする。
+    await track.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      const point = new Touch({
+        identifier: 1,
+        target: node,
+        clientX: rect.right - 2,
+        clientY: rect.top + rect.height * 0.25,
+      });
+      node.dispatchEvent(new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        touches: [point],
+        targetTouches: [point],
+        changedTouches: [point],
+      }));
+      node.dispatchEvent(new TouchEvent("touchend", {
+        bubbles: true,
+        cancelable: true,
+        touches: [],
+        targetTouches: [],
+        changedTouches: [point],
+      }));
+    });
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.viewportY()))
+      .toBeLessThan(baseY / 2);
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+      .toBe(false);
+
+    // drag中は指位置へ連続追従し、下側へ移動できる。
+    await track.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      const start = new Touch({
+        identifier: 2,
+        target: node,
+        clientX: rect.right - 2,
+        clientY: rect.top + rect.height * 0.25,
+      });
+      const moved = new Touch({
+        identifier: 2,
+        target: node,
+        clientX: rect.right - 2,
+        clientY: rect.top + rect.height * 0.8,
+      });
+      node.dispatchEvent(new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        touches: [start],
+        targetTouches: [start],
+        changedTouches: [start],
+      }));
+      node.dispatchEvent(new TouchEvent("touchmove", {
+        bubbles: true,
+        cancelable: true,
+        touches: [moved],
+        targetTouches: [moved],
+        changedTouches: [moved],
+      }));
+      node.dispatchEvent(new TouchEvent("touchend", {
+        bubbles: true,
+        cancelable: true,
+        touches: [],
+        targetTouches: [],
+        changedTouches: [moved],
+      }));
+    });
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.viewportY()))
+      .toBeGreaterThan(baseY / 2);
+    await expect(track).toHaveAttribute("data-active", "false");
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+      .toBe(false);
+    const overlayLayout = await page.evaluate(() => {
+      const host = document.querySelector<HTMLElement>("[data-terminal-host]")!.getBoundingClientRect();
+      const screen = document.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
+      const track = document.querySelector<HTMLElement>("[data-terminal-history-track]")!;
+      const nativeScrollbar = document.querySelector<HTMLElement>(
+        ".terminal-xterm-host .xterm-scrollable-element > .scrollbar.vertical",
+      );
+      return {
+        unusedRightWidth: host.right - screen.right,
+        trackPosition: getComputedStyle(track).position,
+        nativeScrollbarDisplay: nativeScrollbar ? getComputedStyle(nativeScrollbar).display : "missing",
+      };
+    });
+    expect(overlayLayout.unusedRightWidth).toBeLessThan(12);
+    expect(overlayLayout.trackPosition).toBe("absolute");
+    expect(overlayLayout.nativeScrollbarDisplay).toBe("none");
+
+    // overlay以外の通常tapは従来どおり入力へfocusできる。
+    await page.locator("[data-terminal-host]").evaluate((host) => {
+      const rect = host.getBoundingClientRect();
+      const point = new Touch({
+        identifier: 3,
+        target: host,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      });
+      host.dispatchEvent(new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        touches: [point],
+        targetTouches: [point],
+        changedTouches: [point],
+      }));
+      host.dispatchEvent(new TouchEvent("touchend", {
+        bubbles: true,
+        cancelable: true,
+        touches: [],
+        targetTouches: [],
+        changedTouches: [point],
+      }));
+    });
+    await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+      .toBe(true);
   });
 
   test("delivers 100KB, 300KB and UTF-8 paste without loss", async ({ page }) => {

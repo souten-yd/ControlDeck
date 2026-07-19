@@ -93,6 +93,15 @@ Desktop は `WorkflowCommandBar`、`NodeLibrary`、`WorkflowCanvas`、`NodeInspe
 
 Mobile は戻る、短縮名、保存状態、preview、run、more だけを常設する。library、inspector、history、variables、issues、debugger は 1 つの bottom sheet 内で切り替える。固定 bottom tab bar は置かず、safe area、44px touch target、focus restore、320×700 の横 overflow 0 を満たす。
 
+### 4.1 Mobile canvas interaction contract
+
+- node tap は常に同じ高さ・同じ位置の inspector を開く。node typeやtabの内容量でsheetを移動・伸縮させず、内部だけscrollする。
+- node削除は設定tab末尾へ隠さずinspector headerの44px actionへ置く。triggerなど削除不可nodeではaction自体を表示しない。
+- handleは12pxの視覚サイズを維持しつつ、coarse pointerでは周囲16pxを含む44px相当の透明hit areaを持つ。nodeの`overflow`でhit areaをclipしない。
+- edgeは32pxの透明hit pathで選択できる。選択時はaccentで強調し、固定toolbarに「端点をdragして付け替え」と削除を表示する。
+- reconnect endpointのhit radiusは36pxとし、source/targetのどちらもdragで別handleへ付け替えられる。edge削除とreconnectはdefinitionをdirtyにする。
+- canvas上の主要actionは選択対象の近くか固定位置にだけ出し、node cardを大型化したり全nodeへ常時buttonを並べたりしない。
+
 ## 5. Preview Workspace
 
 editor 内 chat と `RunInputsSheet` / `DryRunSheet` を置換し、同じ surface で以下を扱う。

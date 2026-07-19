@@ -56,6 +56,8 @@ export default function XtermView({
   const headerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const helperRef = useRef<HTMLDivElement>(null);
+  const historyTrackRef = useRef<HTMLDivElement>(null);
+  const historyThumbRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const inputSenderRef = useRef<((data: string) => void) | null>(null);
@@ -78,7 +80,9 @@ export default function XtermView({
     const header = headerRef.current;
     const body = bodyRef.current;
     const helper = helperRef.current;
-    if (!host || !root || !header || !body || !helper) return;
+    const historyTrack = historyTrackRef.current;
+    const historyThumb = historyThumbRef.current;
+    if (!host || !root || !header || !body || !helper || !historyTrack || !historyThumb) return;
     const coarseMobile = window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
     const dark = document.documentElement.classList.contains("dark");
     const term = new Terminal({
@@ -86,6 +90,9 @@ export default function XtermView({
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       cursorBlink: true,
       scrollback: 100_000,
+      // FitAddonはscrollback有効時に常に14pxを予約する。モバイルは独自overlay barを
+      // 使うため1pxだけ予約し、右端の文字列へ利用可能な幅を戻す。
+      ...(coarseMobile ? { overviewRuler: { width: 1 } } : {}),
       theme: dark
         ? { background: "#09090b", foreground: "#e4e4e7" }
         : { background: "#ffffff", foreground: "#18181b", cursor: "#18181b" },
@@ -95,11 +102,33 @@ export default function XtermView({
     term.open(host);
     fit.fit();
     termRef.current = term;
+    const updateHistoryTrack = () => {
+      const buffer = term.buffer.active;
+      const trackHeight = historyTrack.getBoundingClientRect().height;
+      const historyRows = buffer.baseY;
+      const totalRows = historyRows + term.rows;
+      historyTrack.setAttribute("aria-valuemax", String(historyRows));
+      historyTrack.setAttribute("aria-valuenow", String(buffer.viewportY));
+      if (!coarseMobile || historyRows <= 0 || trackHeight <= 0) {
+        historyTrack.style.opacity = "0";
+        historyTrack.style.pointerEvents = "none";
+        return;
+      }
+      const thumbHeight = Math.min(trackHeight, Math.max(44, trackHeight * term.rows / totalRows));
+      const travel = Math.max(0, trackHeight - thumbHeight);
+      const top = historyRows > 0 ? travel * buffer.viewportY / historyRows : 0;
+      historyTrack.style.opacity = "1";
+      historyTrack.style.pointerEvents = "auto";
+      historyThumb.style.height = `${thumbHeight}px`;
+      historyThumb.style.transform = `translateY(${top}px)`;
+    };
     const updateViewportMarker = () => {
       host.dataset.terminalViewportY = String(term.buffer.active.viewportY);
+      updateHistoryTrack();
     };
     updateViewportMarker();
     const scrollDisposable = term.onScroll(updateViewportMarker);
+    const historyResizeDisposable = term.onResize(updateHistoryTrack);
 
     const encoder = new TextEncoder();
     const geometryDebug = window.localStorage.getItem("control-deck:terminal-geometry-debug") === "1";
@@ -485,6 +514,7 @@ export default function XtermView({
       startBarrierForTest: (generation: number, cols: number, rows: number) => boolean;
       ackBarrierForTest: (ack: TerminalResizeAck) => boolean;
       enqueuePtyFrameForTest: (data: string) => boolean;
+      writeForTest: (data: string) => Promise<void>;
       sendInputForTest: (data: string) => void;
       enqueuePasteForTest: (text: string) => void;
       pasteState: () => Record<string, unknown>;
@@ -523,6 +553,7 @@ export default function XtermView({
           writeQueue.enqueueWrite(data, () => resizeBarrier.completePtyFrame(token));
           return true;
         },
+        writeForTest: (data) => new Promise<void>((resolve) => term.write(data, resolve)),
         sendInputForTest: (data) => resizeBarrier.sendOrQueue(data),
         enqueuePasteForTest: enqueuePaste,
         pasteState: () => inputController.getState(),
@@ -600,6 +631,7 @@ export default function XtermView({
       touchLastY = touch.clientY;
     };
     const onTouchEnd = (event: TouchEvent) => {
+      event.preventDefault();
       event.stopPropagation();
       const wasScrolling = touchScrolling;
       if (touchScrolling && !touchScrollFrame) flushTouchScroll();
@@ -609,8 +641,38 @@ export default function XtermView({
     };
     host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
     host.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
-    host.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
-    host.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: true });
+    host.addEventListener("touchend", onTouchEnd, { capture: true, passive: false });
+    host.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: false });
+
+    const scrollHistoryToClientY = (clientY: number) => {
+      const rect = historyTrack.getBoundingClientRect();
+      const maxLine = term.buffer.active.baseY;
+      if (rect.height <= 0 || maxLine <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+      term.scrollToLine(Math.round(maxLine * ratio));
+    };
+    const onHistoryTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      historyTrack.dataset.active = "true";
+      scrollHistoryToClientY(event.touches[0].clientY);
+    };
+    const onHistoryTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 1 || historyTrack.dataset.active !== "true") return;
+      event.preventDefault();
+      event.stopPropagation();
+      scrollHistoryToClientY(event.touches[0].clientY);
+    };
+    const onHistoryTouchEnd = (event: TouchEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      historyTrack.dataset.active = "false";
+    };
+    historyTrack.addEventListener("touchstart", onHistoryTouchStart, { passive: false });
+    historyTrack.addEventListener("touchmove", onHistoryTouchMove, { passive: false });
+    historyTrack.addEventListener("touchend", onHistoryTouchEnd, { passive: false });
+    historyTrack.addEventListener("touchcancel", onHistoryTouchEnd, { passive: false });
 
     return () => {
       disposed = true;
@@ -626,10 +688,15 @@ export default function XtermView({
       imeController.dispose();
       delete testWindow.__controlDeckTerminalTest;
       window.cancelAnimationFrame(touchScrollFrame);
+      historyResizeDisposable.dispose();
       host.removeEventListener("touchstart", onTouchStart, true);
       host.removeEventListener("touchmove", onTouchMove, true);
       host.removeEventListener("touchend", onTouchEnd, true);
       host.removeEventListener("touchcancel", onTouchEnd, true);
+      historyTrack.removeEventListener("touchstart", onHistoryTouchStart);
+      historyTrack.removeEventListener("touchmove", onHistoryTouchMove);
+      historyTrack.removeEventListener("touchend", onHistoryTouchEnd);
+      historyTrack.removeEventListener("touchcancel", onHistoryTouchEnd);
       if (coarseMobile) {
         if (bodyStyle === null) document.body.removeAttribute("style");
         else document.body.setAttribute("style", bodyStyle);
@@ -734,7 +801,7 @@ export default function XtermView({
 
   // 下部ナビより手前の全画面表示（モバイルで画面全体を使う）
   return createPortal(
-    <div ref={rootRef} data-terminal-root className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
+    <div ref={rootRef} data-terminal-root className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
       {/* ヘッダー */}
       <div ref={headerRef} data-terminal-header className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
         <select
@@ -772,9 +839,26 @@ export default function XtermView({
 
       {/* ターミナル本体 */}
       {/* FitAddonは直接の親paddingを寸法から引かない。装飾paddingを外側へ分離し、hostは無paddingにする。 */}
-      <div ref={bodyRef} data-terminal-body className="flex min-h-0 flex-1 overflow-clip bg-white px-1 pt-1 dark:bg-zinc-950">
+      <div ref={bodyRef} data-terminal-body className="relative flex min-h-0 flex-1 overflow-clip bg-white px-1 pt-1 dark:bg-zinc-950">
         {/* clipは端数cellを切りつつ、IME textareaが親を自動scrollするscroll containerを作らない。 */}
         <div ref={hostRef} data-terminal-host className="terminal-xterm-host min-h-0 min-w-0 flex-1 overflow-clip" />
+        <div
+          ref={historyTrackRef}
+          data-terminal-history-track
+          data-active="false"
+          role="scrollbar"
+          aria-label="ターミナル履歴位置"
+          aria-orientation="vertical"
+          aria-valuemin={0}
+          aria-valuemax={0}
+          aria-valuenow={0}
+          className="terminal-history-track absolute inset-y-1 right-0 z-20 block w-5 opacity-0 md:hidden"
+        >
+          <div
+            ref={historyThumbRef}
+            className="terminal-history-thumb ml-auto mr-0.5 w-1 rounded-full bg-zinc-500/70 opacity-70 dark:bg-zinc-300/70"
+          />
+        </div>
       </div>
 
       {pasteProgress && pasteProgress.totalBytes >= 32 * 1024
