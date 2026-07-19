@@ -454,6 +454,16 @@ deploy/（systemd, caddy, nginx）、docs/、AGENTS.md、README.md、LICENSE。
 - ノード設定内から、用途、必須設定、主な出力、副作用、最短手順、構成例、各設定値の理由を参照できる。
 - 推奨値と構成例の適用は1操作で行えるが、既存値とSecretを暗黙に変更しない。
 
+# 29.2 Project Lab
+
+- `~/CodeDEV`直下のprojectを設定なしで検出し、Python、Node/Web、CMake、Rust、.NET、静的HTML、Git状態を表示する。
+- 検出だけではprogramやscriptを起動しない。実行未実装段階にdummy成功UIを置かない。
+- `.controldeck/project.json`はversioned schemaで検証し、command文字列を禁止してargv配列、project内cwd、非秘密environment、Secret名参照を使用する。
+- HTML、画像、CSV/TSV、JSON、Markdown、PDF、audio/video、log/textを型別表示し、巨大text/表にはpreview上限を設ける。
+- CodeDEV外path、symlink escape、秘密file名、`.env`、source code、依存cacheを成果物として公開しない。
+- HTMLはCSPとsandbox iframe、artifactは認証・権限・MIME検査・path containmentを必須とする。
+- JSON、表、log/textのinline previewでは秘密らしいkey/valueを伏せ字化する。
+
 # 30. MVP完了条件
 
 1. Ubuntu起動時に自動起動する

@@ -201,8 +201,18 @@ blocking/warning/suggestionを確認する。Application Spec、型、framework/
 Phase Aは設計・検証基盤だけであり、source生成、build、package、artifact、AI GUI設計はまだ提供しない。未実装機能を成功するdummy buttonで見せない。
 後続PhaseでC# Console、ASP.NET、GUI/DB、構造化AI提案の順に実装する。LLMは自由なGUI codeではなく、検証可能なApplication Spec Patchだけを提案する。
 
-ノードmetadataは推奨初期値とその理由、詳細help、変数picker対応を返す。危険な対象値を除き、将来のschema駆動Inspectorでは推奨値を初期投入し、
-入力欄から型の合う上流変数を検索・preview・挿入できるようにする。frontendへnodeごとの推奨値を二重定義しない。
+ノードmetadataは推奨初期値とその理由、詳細help、変数picker対応を返す。危険な対象値を除いて新規ノードへ初期投入し、
+入力欄から型の合う上流変数を検索・sample確認・カーソル位置へ挿入できる。frontendへnodeごとの推奨値を二重定義しない。
+
+### Project Lab（read-only discovery）
+
+「Project Lab」は`~/CodeDEV`直下のPython、Node/Vite/React、静的Web、CMake、Rust、.NET projectを自動検出し、開発成果物をまとめて評価する画面である。
+HTML、画像、CSV/TSV、JSON、Markdown、PDF、audio/video、log/textを型別previewし、Git branch・dirty状態と明示manifestのprofileも確認できる。
+
+任意の`.controldeck/project.json`では`cli`、`web`、`static_html`、`test`、`artifact` profileを宣言できる。commandはargv配列、cwdとartifact globはproject内相対path、秘密値は`secret_refs`の名前参照だけを許可する。
+現Phaseは読み取り専用で、自動検出を理由にprogramを起動しない。画面にも実行成功を装うbuttonを置かない。durableなCLI/test実行、Web proxy、LLM評価は後続Phaseで追加する。
+
+CodeDEV外path、symlink escape、秘密file名、`.env`、source code、`node_modules`等は成果物previewから除外する。HTMLは認証付き同一origin配信、CSP、script無効のsandbox iframeで表示し、JSON/CSV/text previewの秘密らしいfieldを伏せ字化する。
 
 ### 型付き最終出力 `output.render`
 

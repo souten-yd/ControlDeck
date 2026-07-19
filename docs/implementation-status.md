@@ -2,6 +2,16 @@
 
 最終更新: 2026-07-19
 
+## Project Lab core（2026-07-19）
+
+- `/project-lab`へCodeDEV成果物評価画面を追加。`~/CodeDEV`直下のproject、Python/Node/Vite/React/CMake/Rust/.NET/static-web、Git branch/dirty、manifest profileを設定なしで検出する。
+- `.controldeck/project.json` v1をstrict Pydantic schema化。command文字列、project外cwd/glob、秘密environment直書きを拒否し、argv配列とSecret名参照だけを受け付ける。
+- HTML、画像、CSV/TSV、JSON、Markdown、PDF、audio/video、log/textをread-only artifactとしてcatalog化。HTMLは認証付き配信、CSP、script無効sandbox iframe、その他は型別preview/downloadを使用する。
+- CodeDEV外/symlink escape、秘密file名、`.env`、source、`.git`、`.venv`、node_modules、build cacheを除外。inline JSON/CSV/textの秘密らしい値をredactする。
+- `project_lab.view`をadmin/operatorへ追加。現Phaseはdiscoveryとpreviewだけで、programの自動起動、run成功dummy UI、任意port proxy、LLM送信を実装しない。
+
+検証: backend全313件、frontend production build成功。実ControlDeck serviceへ反映し、隔離した`~/CodeDEV/codex-project-lab-e2e`でHTML sandbox、redact済みJSON、CSV tableを操作確認。320×700、390×844、1280×800で横overflow 0、sandboxによる意図的script block以外のconsole/page error 0。検証project、user、session、auditは確認後に削除した。
+
 ## 公開ワークフロー・ランナー（2026-07-19）
 
 - 公開済みWorkflowをキャンバスなしで操作する「ワークフロー・ランナー」を`/runner`へ追加。公開版の入力form、
