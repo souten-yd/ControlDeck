@@ -39,6 +39,22 @@ def require_permission(permission: str):
     return checker
 
 
+def require_permissions(*permissions: str):
+    """指定した全権限を要求する。複合操作の片側だけを許可しない。"""
+    required = tuple(dict.fromkeys(permissions))
+
+    def checker(user: User = Depends(get_current_user)) -> User:
+        missing = [permission for permission in required if permission not in user_permissions(user)]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"権限がありません: {', '.join(missing)}",
+            )
+        return user
+
+    return checker
+
+
 async def authenticate_websocket(
     websocket: WebSocket, db: Session, permission: str
 ) -> User | None:

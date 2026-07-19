@@ -117,7 +117,7 @@ export function PreviewWorkspace({
   definition: Definition;
   inputs: TriggerInputDef[];
   dirty: boolean;
-  onSave: () => Promise<void>;
+  onSave: () => Promise<boolean>;
   onExecution: (executionId: number) => void;
   onClose: () => void;
 }) {
@@ -186,30 +186,31 @@ export function PreviewWorkspace({
     setBusy(true);
     setError("");
     try {
-      if (mode === "safe") {
-        setExecutionId(null);
-        const [previewResult, publishResult] = await Promise.all([
-          api<PreviewResult>("/workflows/preview-definition", {
-            method: "POST",
-            json: { definition, input: values },
-          }),
-          api<PublishCheckResult>(`/workflows/${workflowId}/publish-check`, {
-            method: "POST",
-            json: { definition },
-          }),
-        ]);
-        setPreview(previewResult);
-        setPublishCheck(publishResult);
-      } else {
-        if (dirty) await onSave();
-        const started = await api<{ execution_id: number }>(`/workflows/${workflowId}/test`, {
+      setExecutionId(null);
+      const [previewResult, publishResult] = await Promise.all([
+        api<PreviewResult>("/workflows/preview-definition", {
           method: "POST",
-          json: { input: values },
-        });
-        setPreview(null);
-        setExecutionId(started.execution_id);
-        onExecution(started.execution_id);
+          json: { definition, input: values },
+        }),
+        api<PublishCheckResult>(`/workflows/${workflowId}/publish-check`, {
+          method: "POST",
+          json: { definition },
+        }),
+      ]);
+      setPreview(previewResult);
+      setPublishCheck(publishResult);
+      if (mode === "safe") return;
+      if (!previewResult.valid) {
+        setError("構造上の問題があるため、draftテストは開始しませんでした。上の問題を修正してください。");
+        return;
       }
+      if (dirty && !await onSave()) return;
+      const started = await api<{ execution_id: number }>(`/workflows/${workflowId}/test`, {
+        method: "POST",
+        json: { input: values },
+      });
+      setExecutionId(started.execution_id);
+      onExecution(started.execution_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "実行に失敗しました");
     } finally {
@@ -290,13 +291,13 @@ export function PreviewWorkspace({
 
   return (
     <aside
-      aria-label="実行プレビュー"
+      aria-label="確認・テスト"
       className="absolute inset-x-2 bottom-2 top-2 z-30 flex flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 sm:left-auto sm:w-[min(520px,calc(100%-2rem))]"
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold">実行プレビュー</h2>
-          <p className="text-[10px] text-zinc-400">入力、予定操作、最終出力を同じ画面で確認</p>
+          <h2 className="text-sm font-semibold">確認・テスト</h2>
+          <p className="text-[10px] text-zinc-400">どちらも同じ公開可否検証を行い、executor実行の有無だけが異なります</p>
         </div>
         <button onClick={onClose} aria-label="プレビューを閉じる" className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button>
       </header>
@@ -381,8 +382,8 @@ export function PreviewWorkspace({
         <section>
           <h3 className="mb-2 text-xs font-semibold">実行モード</h3>
           <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="実行モード">
-            <ModeButton active={mode === "safe"} title="安全プレビュー" description="executorを呼ばない" onClick={() => setMode("safe")} />
-            <ModeButton active={mode === "test"} title="通常テスト実行" description="保存後に実行する" onClick={() => setMode("test")} />
+            <ModeButton active={mode === "safe"} title="実行前チェック" description="処理を動かさず公開可否を確認" onClick={() => setMode("safe")} />
+            <ModeButton active={mode === "test"} title="下書きをテスト" description="draftを実行・公開版は変更しない" onClick={() => setMode("test")} />
           </div>
           <p className="mt-1.5 text-[10px] text-zinc-400">選択ノードまで／ノードからの実行はノードインスペクタの「実行」タブで選べます。</p>
         </section>
@@ -410,7 +411,7 @@ export function PreviewWorkspace({
               )}
             </section>
             <section>
-              <h3 className="mb-2 text-xs font-semibold">安全プレビュー結果</h3>
+              <h3 className="mb-2 text-xs font-semibold">実行前チェック結果</h3>
               <ResultNotice ok={preview.valid} title={preview.valid ? "構造上は実行可能です" : "実行前に修正が必要です"} detail={preview.notice} />
               <IssueList errors={preview.errors} warnings={preview.warnings} />
               <details className="mt-2"><summary className="cursor-pointer text-xs text-zinc-500">ノードごとの実行予定 ({preview.summary.reachable}/{preview.summary.nodes})</summary><NodePlan plan={preview.plan} /></details>
@@ -421,7 +422,7 @@ export function PreviewWorkspace({
                 <ResultNotice
                   ok={publishCheck.publishable}
                   title={publishCheck.publishable ? "公開できます" : "このままでは公開できません"}
-                  detail={`品質スコア ${publishCheck.quality.score}。公開ボタンと同じ規則で確認しています。`}
+                  detail={`品質スコア ${publishCheck.quality.score}。「検証して実行」と同じ公開規則です。draftテストは公開不可でも構造上実行可能なら開始できます。`}
                 />
                 <IssueList errors={publishCheck.blocking} warnings={publishCheck.warnings} />
               </section>
@@ -441,7 +442,7 @@ export function PreviewWorkspace({
           disabled={busy || missing.length > 0}
           className="min-h-11 w-full rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
         >
-          {busy ? "準備中…" : mode === "safe" ? "安全プレビューを実行" : "テスト実行"}
+          {busy ? "準備中…" : mode === "safe" ? "実行せず確認" : "確認してdraftをテスト"}
         </button>
         {missing.length > 0 && <p className="mt-1 text-[10px] text-red-500">必須入力: {missing.map((item) => item.label || item.key).join("、")}</p>}
       </footer>
