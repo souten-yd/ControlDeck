@@ -29,6 +29,7 @@ const OpenCodePage = lazy(() => import("./features/opencode/OpenCodePage"));
 const ApplicationsPage = lazy(() => import("./pages/Applications"));
 const ApplicationEditorPage = lazy(() => import("./pages/ApplicationEditor"));
 const ApplicationFromWorkflowPage = lazy(() => import("./pages/ApplicationFromWorkflow"));
+const ProjectLabPage = lazy(() => import("./pages/ProjectLab"));
 
 function LazyPage({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div className="p-6 text-sm text-zinc-400">読み込み中...</div>}>{children}</Suspense>;
@@ -89,6 +90,7 @@ function buildRouter(enabledFeatures: string[]) {
       { path: "workflows/:id/app", element: <LazyPage><ApplicationFromWorkflowPage /></LazyPage> },
       { path: "applications", element: <LazyPage><ApplicationsPage /></LazyPage> },
       { path: "applications/:id", element: <LazyPage><ApplicationEditorPage /></LazyPage> },
+      { path: "project-lab", element: <LazyPage><ProjectLabPage /></LazyPage> },
       { path: "remote", element: <RemotePage /> },
       { path: "github", element: <GitHubPage /> },
       { path: "knowledge", element: <KnowledgePage /> },

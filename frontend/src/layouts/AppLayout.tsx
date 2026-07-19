@@ -31,6 +31,7 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SV
   { to: "/runner", label: "ランナー", icon: IconPlay, permission: "workflows.run" },
   { to: "/workflows", label: "ワークフロー", icon: IconFlow, permission: "workflows.edit" },
   { to: "/applications", label: "アプリ設計", icon: IconGrid, permission: "application_builder.view" },
+  { to: "/project-lab", label: "Project Lab", icon: IconCode, permission: "project_lab.view" },
   { to: "/remote", label: "リモート", icon: IconRemote },
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
@@ -319,6 +320,16 @@ export default function AppLayout() {
                 onClick={() => {
                   setActionOpen(false);
                   navigate("/applications");
+                }}
+              />
+            )}
+            {can("project_lab.view") && (
+              <ActionItem
+                icon={<IconCode />}
+                label="Project Lab"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/project-lab");
                 }}
               />
             )}

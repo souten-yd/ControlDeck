@@ -104,8 +104,9 @@ async def csrf_protect(request: Request, call_next):
             return JSONResponse(status_code=403, content={"detail": "CSRF チェックに失敗しました"})
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    # /appview はアプリ内Webビュー（同一オリジンiframe）で表示するため DENY にしない
-    if request.url.path.startswith("/appview/"):
+    # appview / Project Lab成果物は認証済み同一origin iframeで表示するためDENYにしない。
+    project_artifact = request.url.path.startswith(f"{API}/project-lab/projects/") and "/artifacts/" in request.url.path
+    if request.url.path.startswith("/appview/") or project_artifact:
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     else:
         response.headers.setdefault("X-Frame-Options", "DENY")
@@ -143,6 +144,7 @@ from app.terminals.router import router as terminals_router  # noqa: E402
 from app.workflows.router import router as workflows_router  # noqa: E402
 from app.workflows.runner_router import router as workflow_runner_router  # noqa: E402
 from app.application_builder.router import router as application_builder_router  # noqa: E402
+from app.project_lab.router import router as project_lab_router  # noqa: E402
 from app.alerts.router import router as alerts_router  # noqa: E402
 from app.remote_desktop.router import router as remote_router  # noqa: E402
 from app.gitrepos.router import router as gitrepos_router  # noqa: E402
@@ -173,6 +175,7 @@ app.include_router(terminals_router, prefix=API)
 app.include_router(samplebook_router, prefix=API)  # /workflows/samples は /workflows/{id} より先に登録
 app.include_router(workflow_runner_router, prefix=API)
 app.include_router(application_builder_router, prefix=API)
+app.include_router(project_lab_router, prefix=API)
 app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
 app.include_router(remote_router, prefix=API)
