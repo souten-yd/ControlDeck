@@ -2,6 +2,27 @@
 
 最終更新: 2026-07-19
 
+## 公開ワークフロー・ランナー（2026-07-19）
+
+- 公開済みWorkflowをキャンバスなしで操作する「ワークフロー・ランナー」を`/runner`へ追加。公開版の入力form、
+  想定output contract、副作用区分、実行、停止、human approval、typed output、最近の実行、過去入力再利用を同じ画面へ統合した。
+- 専用`/workflow-runner` APIは公開名・説明・version・input/output schema・結果だけを返し、definition、node/edge/config、
+  runtime snapshot、source node IDを返さない。draft/test executionもRunnerから参照できない。従来のdefinition／node debug APIは
+  `workflows.edit`へ制限し、`workflows.run`だけのoperatorは公開Runner APIを利用する境界へ修正した。
+- 公開時にtrigger inputsと`output.render`からJSON Schemaを生成してimmutable `WorkflowVersion`へ保存。versioned description列を
+  SQLite light migrationへ追加し、既存公開版の空contractは起動時に安全なsnapshotからbackfillする。draftの定義・説明変更は再公開まで
+  Runnerへ反映されない。
+- editor PreviewとRunnerで13入力型とtyped rendererを共有する`RuntimeComponents`を追加。iPhone下部navigationのWorkflowをRunnerへ置換し、
+  editorはedit権限の利用者だけに表示する。AI assistantの公開workflow実行もRunner APIへ移行した。
+- Project LabとApplication Builderの新規要件を監査し、`docs/design-workflow-runner-project-lab.md`と
+  `docs/design-application-builder.md`へ共通IR、決定的generator、Phase A限定初回PR、反復GUI editor、structured AI patch、
+  design system、platform advisor、Web/Avalonia/Tauri優先、build/artifact境界を記録した。
+
+検証: backend全298件、frontend production build成功。実ControlDeck serviceを再起動し、実DB migrationとhealthを確認。
+認証付きPlaywrightで320×700から公開workflowを作成・公開し、Runnerでparagraph入力→Markdown output、過去入力再利用、
+キャンバス／内部node名非表示を確認。320×700、390×844、768×1024、1280×800でdocument/body横overflow 0、console error 0。
+backend testではrun-only operatorがRunnerを利用でき、definition/list/debug execution APIは403になることを確認した。
+
 ## Workflow Phase 3 human approval／control merge（2026-07-19）
 
 - 隠し共通設定だった承認gateを正式な`human.approval` nodeへ昇格。上流変数を使う承認文、ユーザー名による
@@ -1086,6 +1107,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 履歴
 
+- 2026-07-19: ワークフローの安全プレビューと公開判定を共通preflightへ統一。409の構造化blocking理由を画面表示し、最終出力不足には`output.render`追加を案内する。全サンプルをコピー直後に安全プレビュー・公開前検証・公開できる回帰テストを追加し、既存の監視／復旧／Gitサンプルへ型付き出力を補完。外部サービス不要でfilter・sort・aggregate・並列Table/JSON/Metric出力を扱う「受注データ分析」複合サンプルを追加
 - 2026-07-19: AIアシスタントの空の生成状態行を条件描画化。さらにstandalone PWAでだけ有効になるSafe Area paddingとアプリshell下部navigation予約を除去し、入力カードをdialog下端へ密着。実サービスを再起動し、standalone条件の320×700／390×844 screenshot、1280×800、横overflowなしを確認
 - 2026-07-17: モバイル下部ナビのリモートデスクトップと操作シートのAIアシスタントを交換
 - 2026-07-16: LLM runtimeのcomplete/stream/cancel契約を統合し、永続chatとworkflow生成の重複処理を置換

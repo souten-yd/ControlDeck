@@ -15,6 +15,7 @@ import {
   IconHome,
   IconLogs,
   IconPlus,
+  IconPlay,
   IconPower,
   IconSettings,
   IconTerminal,
@@ -24,10 +25,11 @@ import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { Logo } from "../components/Logo";
 
-const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; feature?: string }> = [
+const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; feature?: string; permission?: string }> = [
   { to: "/", label: "ホーム", icon: IconHome },
   { to: "/apps", label: "アプリ", icon: IconGrid },
-  { to: "/workflows", label: "ワークフロー", icon: IconFlow },
+  { to: "/runner", label: "ランナー", icon: IconPlay, permission: "workflows.run" },
+  { to: "/workflows", label: "ワークフロー", icon: IconFlow, permission: "workflows.edit" },
   { to: "/remote", label: "リモート", icon: IconRemote },
   { to: "/files", label: "ファイル", icon: IconFile },
   { to: "/terminal", label: "ターミナル", icon: IconTerminal },
@@ -42,7 +44,7 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<React.SV
 ];
 
 // モバイル下部ナビ: ホーム / アプリ / ワークフロー / ターミナル / AIアシスタント + 右端に操作
-const MOBILE_NAV = [NAV[0], NAV[1], NAV[2], NAV[5], NAV[6]];
+const MOBILE_NAV = ["/", "/apps", "/runner", "/terminal", "/assistant"].map((path) => NAV.find((item) => item.to === path)!);
 
 function IconFlow(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -88,7 +90,7 @@ export default function AppLayout() {
   const connected = useMetrics((s) => s.connected);
   const { data: meta } = useMeta();
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
-  const visibleNav = NAV.filter((item) => !item.feature || enabledFeatures.has(item.feature));
+  const visibleNav = NAV.filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && (!item.permission || can(item.permission)));
   const [collapsed, setCollapsed] = useState(
     localStorage.getItem("cd-sidebar") === "min",
   );
@@ -268,7 +270,7 @@ export default function AppLayout() {
           className={`safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 ${immersive ? "hidden" : "md:hidden"}`}
         >
           <div className="grid grid-cols-6">
-            {MOBILE_NAV.map((n) => (
+            {MOBILE_NAV.filter((item) => !item.permission || can(item.permission)).map((n) => (
               <MobileNavLink key={n.to} {...n} />
             ))}
             <button

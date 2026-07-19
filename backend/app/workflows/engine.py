@@ -596,7 +596,10 @@ def _ensure_execution_version(db, wf: Workflow) -> WorkflowVersion:
     checksum = hashlib.sha256(definition.encode()).hexdigest()
     existing = db.execute(
         select(WorkflowVersion)
-        .where(WorkflowVersion.workflow_id == wf.id, WorkflowVersion.checksum == checksum)
+        .where(
+            WorkflowVersion.workflow_id == wf.id, WorkflowVersion.checksum == checksum,
+            WorkflowVersion.name == wf.name, WorkflowVersion.description == wf.description,
+        )
         .order_by(WorkflowVersion.version.desc())
         .limit(1)
     ).scalar_one_or_none()
@@ -610,6 +613,7 @@ def _ensure_execution_version(db, wf: Workflow) -> WorkflowVersion:
     ).scalar_one_or_none() or 0
     version = WorkflowVersion(
         workflow_id=wf.id, version=latest + 1, name=wf.name,
+        description=wf.description,
         definition_json=json.dumps(safe_definition_snapshot(json.loads(definition)), ensure_ascii=False),
         checksum=checksum, note="実行スナップショット",
     )

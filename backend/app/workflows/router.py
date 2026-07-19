@@ -19,6 +19,8 @@ from app.models import (
 from app.security.crypto import encrypt_text
 from app.security.deps import require_permission
 from app.workflows import engine
+from app.workflows.contracts import build_input_schema, build_output_schema, final_outputs
+from app.workflows.publish_validation import check_publishability
 from app.workflows.redaction import collect_sensitive_values, redact
 
 MAX_VERSIONS_PER_WORKFLOW = 20
@@ -173,7 +175,8 @@ def _out(wf: Workflow, db: Session) -> dict:
         "description": wf.description,
         "definition": json.loads(wf.definition_json or "{}"),
         "enabled": wf.enabled,
-        "state": "published" if published and published.checksum == draft_checksum else "draft",
+        "state": "published" if published and published.checksum == draft_checksum
+        and published.name == wf.name and published.description == wf.description else "draft",
         "published_version": published.version if published else None,
         "published_version_id": published.id if published else None,
         "created_at": wf.created_at,
@@ -191,7 +194,7 @@ def _out(wf: Workflow, db: Session) -> dict:
 
 @router.get("/workflows")
 def list_workflows(
-    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)
+    user: User = Depends(require_permission("workflows.edit")), db: Session = Depends(get_db)
 ):
     rows = db.execute(select(Workflow).order_by(Workflow.name)).scalars().all()
     return [_out(w, db) for w in rows]
@@ -222,7 +225,7 @@ def create_workflow(
 @router.get("/workflows/{workflow_id}")
 def get_workflow(
     workflow_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     return _out(_get(db, workflow_id), db)
@@ -270,6 +273,7 @@ def _snapshot_version(db: Session, wf: Workflow, note: str = "") -> None:
     safe_definition = engine.safe_definition_snapshot(json.loads(wf.definition_json or "{}"))
     db.add(WorkflowVersion(
         workflow_id=wf.id, version=latest_number + 1, name=wf.name,
+        description=wf.description,
         definition_json=json.dumps(safe_definition, ensure_ascii=False), checksum=checksum, note=note,
     ))
     olds = db.execute(
@@ -285,7 +289,7 @@ def _snapshot_version(db: Session, wf: Workflow, note: str = "") -> None:
 @router.get("/workflows/{workflow_id}/versions")
 def list_versions(
     workflow_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
@@ -332,7 +336,7 @@ def restore_version(
 def get_version(
     workflow_id: int,
     version_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
@@ -357,62 +361,41 @@ def publish_workflow(
     db: Session = Depends(get_db),
 ):
     """現在のdraftを検証済みimmutable versionとして本番経路へ固定する。"""
-    import re
-
-    from app.workflows.validation import quality_score, semantic_check
-
     workflow = _get(db, workflow_id)
-    try:
-        engine.validate_definition(workflow.definition_json)
-        definition = json.loads(workflow.definition_json or "{}")
-    except (engine.DefinitionError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=409, detail={"blocking": [str(exc)], "warnings": []}) from exc
-    nodes, edges = definition.get("nodes", []), definition.get("edges", [])
-    blocking, warnings = semantic_check(nodes, edges)
-    if not any(node.get("type") in ("signal.display", "output.render", "flow.return") for node in nodes):
-        blocking.append("正式な最終出力ノードがありません")
-    output_names = [
-        str((node.get("config") or {}).get("signal") or (node.get("config") or {}).get("name") or node.get("id"))
-        for node in nodes if node.get("type") in ("signal.display", "output.render", "flow.return")
-    ]
-    duplicates = sorted({name for name in output_names if output_names.count(name) > 1})
-    if duplicates:
-        blocking.append(f"最終出力名が重複しています: {', '.join(duplicates)}")
-    references = set(re.findall(r"\{\{\s*secrets\.([A-Za-z0-9_.-]+)\s*\}\}", workflow.definition_json or ""))
-    available = set(db.execute(select(WorkflowSecret.name)).scalars().all())
-    missing = sorted(references - available)
-    if missing:
-        blocking.append(f"未登録のsecretがあります: {', '.join(missing)}")
-    pin_count = len(db.execute(select(WorkflowPinnedData.id).where(
-        WorkflowPinnedData.workflow_id == workflow_id,
-    )).scalars().all())
-    if pin_count:
-        blocking.append(f"固定データが{pin_count}件残っています。解除してから公開してください")
-    cases = db.execute(select(WorkflowTestCase).where(
-        WorkflowTestCase.workflow_id == workflow_id,
-    )).scalars().all()
-    failed_cases = [case.name for case in cases if case.last_status in ("FAILED", "ERROR", "RUNNING")]
-    if failed_cases:
-        blocking.append(f"未合格の回帰テストがあります: {', '.join(failed_cases)}")
-    if not cases:
-        warnings.append("回帰テストケースがありません")
-    elif any(case.last_status == "NEVER" for case in cases):
-        warnings.append("未実行の回帰テストケースがあります")
-    quality = quality_score(nodes, edges)
-    if blocking:
-        raise HTTPException(status_code=409, detail={"blocking": blocking, "warnings": warnings, "quality": quality})
+    definition = json.loads(workflow.definition_json or "{}")
+    check = check_publishability(db, workflow, definition)
+    if not check["publishable"]:
+        raise HTTPException(status_code=409, detail=check)
     version = engine._ensure_execution_version(db, workflow)
+    version.input_schema_json = json.dumps(build_input_schema(definition), ensure_ascii=False)
+    version.output_schema_json = json.dumps(build_output_schema(definition), ensure_ascii=False)
     version.published_at = utcnow()
     version.note = "公開版"
     db.commit()
     audit.record(
         db, "workflow.publish", user=user, resource_type="workflow", resource_id=str(workflow_id),
-        request=request, metadata={"version_id": version.id, "version": version.version, "warnings": len(warnings)},
+        request=request, metadata={"version_id": version.id, "version": version.version, "warnings": len(check["warnings"])},
     )
     return {
         "workflow_id": workflow_id, "version_id": version.id, "version": version.version,
-        "published_at": version.published_at, "warnings": warnings, "quality": quality,
+        "published_at": version.published_at, "warnings": check["warnings"], "quality": check["quality"],
     }
+
+
+class PublishCheckBody(BaseModel):
+    definition: dict
+
+
+@router.post("/workflows/{workflow_id}/publish-check")
+def check_workflow_publishability(
+    workflow_id: int,
+    body: PublishCheckBody,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    """現在の編集内容を、実際の公開処理と同じ規則で副作用なし検証する。"""
+    workflow = _get(db, workflow_id)
+    return check_publishability(db, workflow, body.definition)
 
 
 # ---- シークレット（{{secrets.名前}}） ----
@@ -1142,7 +1125,7 @@ def list_executions(
 @router.get("/workflow-executions/{execution_id}")
 def get_execution(
     execution_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     r = db.get(WorkflowExecution, execution_id)
@@ -1162,7 +1145,7 @@ def get_execution(
         "definition_snapshot": json.loads(r.definition_snapshot_json or "{}"),
         "runtime_snapshot": json.loads(r.runtime_snapshot_json or "{}"),
         "input": context.get("__input__", {}),
-        "outputs": _final_outputs(context),
+        "outputs": final_outputs(context),
         "context": {key: value for key, value in context.items() if not key.startswith("__")},
     }
 
@@ -1171,7 +1154,7 @@ def get_execution(
 def get_execution_nodes(
     workflow_id: int,
     execution_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     _get(db, workflow_id)
@@ -1274,29 +1257,8 @@ async def resume_execution_from_node(
 
 
 def _final_outputs(context: dict) -> dict[str, dict]:
-    """Build the phase-1 output contract from legacy signal.display node results."""
-    outputs: dict[str, dict] = {}
-    for node_id, entry in context.items():
-        if node_id.startswith("__") or not isinstance(entry, dict):
-            continue
-        output = entry.get("output")
-        if not isinstance(output, dict) or not output.get("display"):
-            continue
-        name = str(output.get("signal") or node_id)
-        base = name
-        suffix = 2
-        while name in outputs:
-            name = f"{base}_{suffix}"
-            suffix += 1
-        outputs[name] = {
-            "type": str(output.get("renderer") or output.get("type") or "text"),
-            "value": output.get("value"),
-            "source_node_id": node_id,
-            **({key: output.get(key) for key in (
-                "title", "description", "downloadable", "copyable", "collapsible", "sensitive", "filename", "mime_type",
-            )} if output.get("output_contract") else {}),
-        }
-    return outputs
+    """後方互換用。新規コードはcontracts.final_outputsを利用する。"""
+    return final_outputs(context)
 
 
 @router.post("/workflows/{workflow_id}/executions/{execution_id}/load-inputs")
@@ -1319,7 +1281,7 @@ def load_execution_inputs(
 @router.get("/workflow-executions/{execution_id}/live")
 def get_execution_live(
     execution_id: int,
-    user: User = Depends(require_permission("workflows.run")),
+    user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
     """実行中コンテキストのライブ参照（3 秒フラッシュを待たずに現在の状態を返す）。"""

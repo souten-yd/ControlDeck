@@ -430,6 +430,11 @@ def test_publish_separates_production_from_draft_and_blocks_pins(admin_client):
     )
     workflow_id = created.json()["id"]
     assert admin_client.post(f"/api/v1/workflows/{workflow_id}/run", headers=CSRF_HEADERS).status_code == 422
+    preflight = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/publish-check", json={"definition": old}, headers=CSRF_HEADERS,
+    )
+    assert preflight.status_code == 200
+    assert preflight.json()["publishable"] is True
     published = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
     assert published.status_code == 200, published.text
     assert admin_client.get(f"/api/v1/workflows/{workflow_id}").json()["state"] == "published"
@@ -450,8 +455,34 @@ def test_publish_separates_production_from_draft_and_blocks_pins(admin_client):
     )
     blocked = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
     assert blocked.status_code == 409 and "固定データ" in str(blocked.json()["detail"]["blocking"])
+    pin_check = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/publish-check", json={"definition": new}, headers=CSRF_HEADERS,
+    ).json()
+    assert pin_check["publishable"] is False
+    assert pin_check["blocking"] == blocked.json()["detail"]["blocking"]
     admin_client.delete(f"/api/v1/workflows/{workflow_id}/nodes/out/pinned-data", headers=CSRF_HEADERS)
     assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_publish_check_explains_missing_output(admin_client):
+    definition = _definition([
+        TRIGGER,
+        {"id": "wait", "type": "util.wait", "config": {"seconds": 0}},
+    ], [{"source": "t", "target": "wait"}])
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "missing output", "definition": definition}, headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+    checked = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/publish-check", json={"definition": definition}, headers=CSRF_HEADERS,
+    )
+    assert checked.status_code == 200
+    assert checked.json()["publishable"] is False
+    assert "output.render（推奨）" in checked.json()["blocking"][0]
+    blocked = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["blocking"] == checked.json()["blocking"]
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 

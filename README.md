@@ -166,11 +166,34 @@ ControlDeckのエディタは「配置して保存」で終わらず、入力→
 7. 入力と成功結果を回帰テストケースとして保存し、変更後に一括実行する。期待値との差はpath・期待値・実値で表示される。
 8. 「公開」でpreflightを通す。保存中draftと公開版は分離され、schedule、Webhook、system event、API実行、サブフローは公開版だけを使う。
 
+安全プレビューの結果には「構造上は実行可能」と「公開できます」を分けて表示する。公開前検証は公開ボタンと同じ判定を使い、
+最終出力不足、出力名重複、未登録secret、固定データ、未合格回帰テストを具体的な修正案付きで示す。HTTP 409は単なる番号ではなく、
+阻害理由を画面へ表示する。
+
+### サンプルブック
+
+サンプルブックの全ワークフローは、コピー直後の安全プレビュー・公開前検証・公開を自動テストしている。LLM、RAG、Webhook、
+管理対象アプリなど環境依存ノードを実行する場合は、各サンプルの「事前準備」に従ってendpoint、model、通知先、対象アプリを確認する。
+公開自体に必要な正式な型付き出力契約は、すべてのサンプルに含まれる。
+
+「受注データ分析」サンプルは外部サービスを使わず、JSON入力 → 金額filter・重複除去・sort → 地域別sum集計 → Table／JSON tree／Metricの
+並列出力までを一度に確認できる。入門用の直列フローだけでなく、サイト監視、アプリ復旧、Deep Research、RAG、定期論文収集など、
+分岐・副作用・エラー設定・複数output contractを組み合わせた実用例も収録している。
+
+### 公開ワークフローを「ランナー」で使う
+
+左メニューまたはiPhone下部ナビの「ランナー」は、公開済みワークフローを業務アプリのように使う実行専用画面である。
+公開アプリを選び、生成された入力フォームへ値を入れ、同じ画面で状態、承認、型付き最終出力、最近の実行を確認できる。
+過去入力は「入力を再利用」でフォームへ戻せる。キャンバス、ノード、接続、config、definition/runtime snapshotはランナーAPIから返さない。
+
+`operator`など`workflows.run`だけの利用者はランナーを使用する。draft、ノード実値、途中再実行、version差分等の開発情報は
+`workflows.edit`を持つ利用者だけがエディタとデバッグAPIで参照できる。ランナーは常にimmutableな公開版を実行し、draft変更は再公開まで反映しない。
+
 ### 型付き最終出力 `output.render`
 
 新規フローの最終段には`output.render`を推奨する。旧`signal.display`は既存定義との互換用として継続利用できる。
 出力名、タイトル、説明、値、renderer、schema、ファイル名、MIME type、コピー／ダウンロード／折り畳み／機密指定を持ち、
-手動実行・API・schedule・chat・サブフローで共通の`name / type / value / source_node_id`契約を返す。
+手動実行・API・schedule・chat・サブフローで共通の`name / type / value`契約を返す。編集デバッグAPIだけは追跡用`source_node_id`も返す。
 
 主なrendererはAuto、Plain text、Markdown、JSON tree/raw、Table、Key-value、Code、Image/Gallery、Audio、Video、
 File、Link、Status、Metric、Progress、Citation list。JSON・Table・Key-value等はJSON文字列を型付き値へ変換する。
@@ -277,6 +300,8 @@ llama.cpp、LM Studio などの OpenAI 互換 LLM endpoint を用意したうえ
 - [ワークフロー dry-run / metadata 詳細設計](docs/design-workflow-dry-run-metadata.md)
 - [ワークフローノード catalog 詳細設計](docs/design-workflow-node-catalog.md)
 - [ワークフロー統合開発環境 監査・詳細実装仕様](docs/design-workflow-integrated-ide.md)
+- [公開ワークフロー・ランナー / Project Lab 詳細設計](docs/design-workflow-runner-project-lab.md)
+- [Workflow Application Builder 詳細設計](docs/design-application-builder.md)
 
 ## セキュリティ原則（抜粋）
 

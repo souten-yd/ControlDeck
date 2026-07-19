@@ -22,6 +22,7 @@ def init_db() -> None:
     Base.metadata.create_all(engine)
     _apply_light_migrations()
     _publish_legacy_enabled_workflows()
+    _backfill_workflow_contracts()
 
 
 def _publish_legacy_enabled_workflows() -> None:
@@ -44,6 +45,7 @@ def _publish_legacy_enabled_workflows() -> None:
             definition = workflow.definition_json or "{}"
             db.add(WorkflowVersion(
                 workflow_id=workflow.id, version=latest + 1, name=workflow.name,
+                description=workflow.description,
                 definition_json=json.dumps(safe_definition_snapshot(json.loads(definition)), ensure_ascii=False),
                 checksum=hashlib.sha256(definition.encode()).hexdigest(), note="公開境界導入時のlegacy baseline",
                 published_at=utcnow(),
@@ -52,6 +54,46 @@ def _publish_legacy_enabled_workflows() -> None:
         if migrated:
             db.commit()
             logger.info("legacy enabled workflows published as baseline: %s", migrated)
+
+
+def _backfill_workflow_contracts() -> None:
+    """既存公開版へ表示説明と生成可能な入出力contractを補完する。"""
+    from app.database import SessionLocal
+    from app.workflows.contracts import build_input_schema, build_output_schema
+
+    with SessionLocal() as db:
+        versions = db.execute(select(WorkflowVersion).where(
+            WorkflowVersion.published_at.is_not(None),
+        )).scalars().all()
+        changed = 0
+        for version in versions:
+            workflow = db.get(Workflow, version.workflow_id)
+            if workflow is None:
+                continue
+            try:
+                definition = json.loads(version.definition_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not version.description:
+                version.description = workflow.description
+                changed += 1
+            try:
+                input_schema = json.loads(version.input_schema_json or "{}")
+            except json.JSONDecodeError:
+                input_schema = {}
+            if not input_schema:
+                version.input_schema_json = json.dumps(build_input_schema(definition), ensure_ascii=False)
+                changed += 1
+            try:
+                output_schema = json.loads(version.output_schema_json or "{}")
+            except json.JSONDecodeError:
+                output_schema = {}
+            if not output_schema:
+                version.output_schema_json = json.dumps(build_output_schema(definition), ensure_ascii=False)
+                changed += 1
+        if changed:
+            db.commit()
+            logger.info("published workflow contracts backfilled: %s", changed)
 
 
 def _apply_light_migrations() -> None:
@@ -72,6 +114,7 @@ def _apply_light_migrations() -> None:
         ("managed_applications", "health_check_json", "TEXT DEFAULT '{}'"),
         ("remote_connections", "is_self", "BOOLEAN DEFAULT 0"),
         ("workflow_versions", "version", "INTEGER DEFAULT 1"),
+        ("workflow_versions", "description", "TEXT DEFAULT ''"),
         ("workflow_versions", "input_schema_json", "TEXT DEFAULT '{}'"),
         ("workflow_versions", "output_schema_json", "TEXT DEFAULT '{}'"),
         ("workflow_versions", "checksum", "VARCHAR(64) DEFAULT ''"),

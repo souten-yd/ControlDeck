@@ -2,9 +2,11 @@
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  detail: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -33,8 +35,10 @@ export async function api<T = unknown>(
   });
   if (!res.ok) {
     let detail = res.status === 401 ? "認証が必要です" : `エラー (${res.status})`;
+    let responseDetail: unknown;
     try {
       const body = await res.json();
+      responseDetail = body.detail;
       if (typeof body.detail === "string") detail = body.detail;
       else if (Array.isArray(body.detail)) {
         const issues = body.detail.flatMap((issue: unknown) => {
@@ -47,6 +51,11 @@ export async function api<T = unknown>(
           return [location ? `${location}: ${item.msg}` : item.msg];
         });
         if (issues.length > 0) detail = issues.join(" / ");
+      } else if (body.detail && typeof body.detail === "object") {
+        const structured = body.detail as { blocking?: unknown; warnings?: unknown };
+        if (Array.isArray(structured.blocking) && structured.blocking.every((item) => typeof item === "string")) {
+          detail = `公開できません: ${structured.blocking.join(" / ")}`;
+        }
       }
     } catch {
       /* JSON でないレスポンス */
@@ -55,7 +64,7 @@ export async function api<T = unknown>(
     if (res.status === 401 && !path.startsWith("/auth/login")) {
       onUnauthorized?.();
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, responseDetail);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
