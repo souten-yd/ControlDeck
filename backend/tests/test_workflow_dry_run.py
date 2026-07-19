@@ -68,13 +68,22 @@ def test_node_metadata_matches_executor_catalog_and_frontend():
     from app.workflows.nodes import NODE_EXECUTORS
 
     expected = set(NODE_EXECUTORS) | {"control.loop"}
-    metadata = {item["type"] for item in node_catalog()}
+    catalog = node_catalog()
+    metadata = {item["type"] for item in catalog}
     assert metadata == expected
     assert expected <= valid_types()
 
     source = (Path(__file__).parents[2] / "frontend/src/features/workflows/nodeTypes.ts").read_text(encoding="utf-8")
     frontend = set(re.findall(r'^  "([a-z][\w.]*)"\s*:', source, re.MULTILINE)) | {"trigger"}
     assert expected <= frontend
+
+    wait_schema = next(item for item in catalog if item["type"] == "util.wait")["config_schema"]
+    assert wait_schema["retry_count"]["type"] == "integer"
+    assert wait_schema["retry_wait"]["type"] == "number"
+    assert wait_schema["node_timeout"]["type"] == "number"
+    assert wait_schema["on_error"]["type"] == "string"
+    trigger_schema = next(item for item in catalog if item["type"] == "trigger")["config_schema"]
+    assert "node_timeout" not in trigger_schema
 
 
 def test_dry_run_api_does_not_create_execution(admin_client):

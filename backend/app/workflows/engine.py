@@ -4,8 +4,8 @@ v2 の実行モデル:
 - ノードは「最初の生きた入力」で発火（従来互換）。config.join=="all" で全入力待ち合流。
 - 分岐で選ばれなかった経路には dead 信号を伝播し、合流ノードの待ちを解決する。
 - 独立した枝は並列実行（同時実行ノード数は MAX_PARALLEL_NODES で制限）。
-- ノード共通設定: retry_count / retry_wait / on_error(stop|continue|branch) /
-  require_approval(実行前承認) / join。エラー分岐は branch=="error" のエッジへ。
+- ノード共通設定: retry_count / retry_wait / node_timeout / on_error(stop|continue|branch) /
+  require_approval(実行前承認) / join。失敗はerror、時間切れはtimeout edgeへ分岐する。
 - 実行中コンテキストは _live からライブ参照でき、定期的に DB へフラッシュされる。
 """
 from __future__ import annotations
@@ -147,6 +147,41 @@ def _json_limited(value: Any, limit: int) -> str:
     return json.dumps({"truncated": True, "preview": text[:limit]}, ensure_ascii=False)
 
 
+def _build_error_context(
+    node: dict[str, Any], run_context: dict[str, Any], *, message: str, code: str,
+    retryable: bool, attempt: int,
+) -> dict[str, Any]:
+    """error routeへ渡す有限・redact済みの標準Error Context。"""
+    sensitive = collect_sensitive_values(run_context)
+    sensitive.update(str(value) for value in (run_context.get("__secrets__") or {}).values() if value)
+    upstream = {
+        str(key): {
+            "status": value.get("status"),
+            "output": value.get("output"),
+        }
+        for key, value in run_context.items()
+        if not str(key).startswith("__") and key != node.get("id") and isinstance(value, dict)
+    }
+    summary = redact(
+        {"config": node.get("config") or {}, "upstream": upstream},
+        sensitive_values=sensitive,
+    )
+    try:
+        limited_summary = json.loads(_json_limited(summary, 64_000))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        limited_summary = {"truncated": True}
+    return {
+        "node_id": str(node.get("id") or ""),
+        "node_type": str(node.get("type") or ""),
+        "message": redact(str(message), sensitive_values=sensitive),
+        "code": str(code),
+        "retryable": bool(retryable),
+        "attempt": max(1, int(attempt)),
+        "input_summary": limited_summary,
+        "timestamp": utcnow().isoformat(),
+    }
+
+
 def safe_definition_snapshot(value: Any, key: str = "") -> Any:
     """secret参照名は再現用に残し、定義へ直書きされた秘密値だけを除く。"""
     import re
@@ -200,7 +235,11 @@ def _finish_node_run(node_run_id: int | None, entry: dict[str, Any]) -> None:
             usage = output.get("usage") if isinstance(output, dict) and isinstance(output.get("usage"), dict) else {}
             row.status = str(entry.get("status") or "FAILED")
             row.outputs_json = _json_limited(output, 1_000_000)
-            row.error_json = _json_limited({"message": str(entry.get("error") or "")}, 32_000)
+            error_context = entry.get("error_context")
+            row.error_json = _json_limited(
+                error_context if isinstance(error_context, dict) else {"message": str(entry.get("error") or "")},
+                64_000,
+            )
             row.token_usage_json = _json_limited(usage, 32_000)
             row.attempt = int(entry.get("attempts") or 0)
             row.retry_count = max(0, row.attempt - 1)
@@ -247,6 +286,15 @@ async def _execute_graph(
         run_context[nid] = entry
         node_run_id = await asyncio.to_thread(_start_node_run, execution_id, node, run_context) if execution_id is not None else None
 
+        def fail_entry(message: str, code: str, status: str, attempt: int, *, retryable: bool) -> None:
+            error_context = _build_error_context(
+                node, run_context, message=message, code=code, retryable=retryable, attempt=attempt,
+            )
+            entry.update(
+                status=status, error=error_context["message"], error_context=error_context,
+                output={"error": error_context}, finished_at=utcnow().isoformat(), attempts=max(1, attempt),
+            )
+
         # 実行前承認ゲート（任意ノードに設定可能）
         if config.get("require_approval") and ntype != "trigger" and execution_id is not None:
             entry.update(status="WAITING_APPROVAL", waiting_since=utcnow().isoformat())
@@ -256,14 +304,16 @@ async def _execute_graph(
             try:
                 approved = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT)
             except asyncio.TimeoutError:
-                entry.update(status="FAILED", error="承認待ちがタイムアウトしました", finished_at=utcnow().isoformat())
+                fail_entry("承認待ちがタイムアウトしました", "APPROVAL_TIMEOUT", "TIMED_OUT", 1, retryable=False)
                 await asyncio.to_thread(_finish_node_run, node_run_id, entry)
-                raise NodeError(f"ノード {entry['name']} の承認待ちがタイムアウトしました")
+                if str(config.get("on_error", "stop")) == "stop":
+                    raise NodeError(f"ノード {entry['name']} の承認待ちがタイムアウトしました")
+                return entry
             finally:
                 _approvals.pop((execution_id, nid), None)
                 await asyncio.to_thread(_set_exec_status, execution_id, "RUNNING")
             if not approved:
-                entry.update(status="FAILED", error="実行が却下されました", finished_at=utcnow().isoformat())
+                fail_entry("実行が却下されました", "APPROVAL_REJECTED", "FAILED", 1, retryable=False)
                 await asyncio.to_thread(_finish_node_run, node_run_id, entry)
                 if str(config.get("on_error", "stop")) == "stop":
                     raise NodeError(f"ノード {entry['name']} が却下されました")
@@ -271,7 +321,11 @@ async def _execute_graph(
 
         retries = max(0, min(int(config.get("retry_count", 0) or 0), 5))
         retry_wait = max(0.0, min(float(config.get("retry_wait", 5) or 5), 300.0))
-        timeout = NODE_TIMEOUTS.get(ntype, DEFAULT_NODE_TIMEOUT)
+        default_timeout = NODE_TIMEOUTS.get(ntype, DEFAULT_NODE_TIMEOUT)
+        try:
+            timeout = max(0.1, min(float(config.get("node_timeout") or default_timeout), EXECUTION_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = float(default_timeout)
         attempt = 0
         entry.update(status="RUNNING", started_at=utcnow().isoformat())
         while True:
@@ -300,11 +354,11 @@ async def _execute_graph(
                 await asyncio.to_thread(_finish_node_run, node_run_id, entry)
                 raise
             except asyncio.TimeoutError:
-                err, final_status = "タイムアウト", "TIMED_OUT"
+                err, final_status, error_code = "タイムアウト", "TIMED_OUT", "NODE_TIMEOUT"
             except NodeError as e:
-                err, final_status = str(e), "FAILED"
+                err, final_status, error_code = str(e), "FAILED", "NODE_ERROR"
             except Exception as e:  # 想定外もリトライ対象にする
-                err, final_status = f"{type(e).__name__}: {e}", "FAILED"
+                err, final_status, error_code = f"{type(e).__name__}: {e}", "FAILED", "UNEXPECTED_ERROR"
             finally:
                 workflow_nodes._progress_reporter.reset(token)
             if attempt <= retries:
@@ -312,7 +366,7 @@ async def _execute_graph(
                 await asyncio.sleep(retry_wait)
                 entry["status"] = "RUNNING"
                 continue
-            entry.update(status=final_status, error=err, finished_at=utcnow().isoformat(), attempts=attempt)
+            fail_entry(err, error_code, final_status, attempt, retryable=True)
             await asyncio.to_thread(_finish_node_run, node_run_id, entry)
             if str(config.get("on_error", "stop")) == "stop":
                 raise NodeError(f"ノード {entry['name']} が失敗しました: {err}")
@@ -380,7 +434,7 @@ async def _execute_graph(
                     br = _edge_branch(e)
                     if br == "body":
                         continue
-                    await self.fire(e["target"], live=br != "error")
+                    await self.fire(e["target"], live=br not in {"error", "timeout"})
                 return
             entry = await run_single(node, self.context)
             failed = entry["status"] in ("FAILED", "TIMED_OUT")
@@ -391,11 +445,18 @@ async def _execute_graph(
                 for e in outs:
                     await self.fire(e["target"], live=(_edge_branch(e) or "true") == branch)
             elif failed and on_error == "branch":
+                failure_branch = "timeout" if entry["status"] == "TIMED_OUT" else "error"
+                has_timeout_route = any(_edge_branch(edge) == "timeout" for edge in outs)
                 for e in outs:
-                    await self.fire(e["target"], live=_edge_branch(e) == "error")
+                    branch = _edge_branch(e)
+                    # 後方互換: timeout専用edgeがない既存flowではerror edgeがtimeoutも受ける。
+                    live = branch == failure_branch or (
+                        failure_branch == "timeout" and not has_timeout_route and branch == "error"
+                    )
+                    await self.fire(e["target"], live=live)
             else:  # 成功、または continue で失敗を無視して先へ
                 for e in outs:
-                    await self.fire(e["target"], live=_edge_branch(e) != "error")
+                    await self.fire(e["target"], live=_edge_branch(e) not in {"error", "timeout"})
 
     async def run_loop(node: dict, parent_context: dict[str, Any]) -> None:
         from app.workflows.nodes import render_template

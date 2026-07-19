@@ -142,6 +142,29 @@ def semantic_check(nodes: list[dict], edges: list[dict]) -> tuple[list[str], lis
             if steps > 12:
                 warnings.append(f"エージェント '{n.get('name') or n.get('id')}' の最大ラウンド数が大きすぎます（{steps}）")
 
+    # 5. 視覚的error routeと共通実行制御
+    for n in nodes:
+        if n.get("type") == "trigger":
+            continue
+        name = n.get("name") or n.get("id")
+        config = n.get("config") or {}
+        on_error = str(config.get("on_error") or "stop")
+        if on_error not in {"stop", "continue", "branch"}:
+            errors.append(f"ノード '{name}' の失敗時設定 '{on_error}' は無効です")
+        timeout = config.get("node_timeout")
+        if timeout not in (None, ""):
+            try:
+                if float(timeout) < 0.1:
+                    errors.append(f"ノード '{name}' のtimeoutは0.1秒以上にしてください")
+            except (TypeError, ValueError):
+                errors.append(f"ノード '{name}' のtimeoutは数値で指定してください")
+        if on_error == "branch":
+            branches = [str(e.get("branch") or e.get("sourceHandle") or "") for e in edges if e.get("source") == n.get("id")]
+            if "error" not in branches:
+                warnings.append(f"ノード '{name}' は失敗分岐が有効ですが「失敗」経路が未接続です")
+            if branches.count("error") > 1 or branches.count("timeout") > 1:
+                warnings.append(f"ノード '{name}' の失敗／時間切れ経路が複数接続されています")
+
     return errors, warnings
 
 

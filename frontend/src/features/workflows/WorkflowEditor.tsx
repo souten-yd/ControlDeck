@@ -140,8 +140,10 @@ function FlowNode({ data, selected }: NodeProps) {
       {/* エラー分岐ハンドル（on_error=branch のとき） */}
       {def.config?.on_error === "branch" && def.type !== "trigger" && (
         <>
-          <Handle id="error" type="source" position={Position.Bottom} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-red-500 dark:!border-zinc-900" />
-          <span className="pointer-events-none absolute bottom-0.5 left-1/2 -translate-x-[150%] text-[8px] font-medium text-red-500">失敗時</span>
+          <Handle id="error" type="source" position={Position.Bottom} style={{ left: "35%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-red-500 dark:!border-zinc-900" />
+          <Handle id="timeout" type="source" position={Position.Bottom} style={{ left: "65%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-amber-500 dark:!border-zinc-900" />
+          <span className="pointer-events-none absolute bottom-0.5 left-[35%] -translate-x-1/2 text-[8px] font-medium text-red-500">失敗</span>
+          <span className="pointer-events-none absolute bottom-0.5 left-[65%] -translate-x-1/2 text-[8px] font-medium text-amber-500">時間切れ</span>
         </>
       )}
       {meta?.branches ? (
@@ -166,6 +168,12 @@ function FlowNode({ data, selected }: NodeProps) {
 
 const nodeTypes = { cdNode: FlowNode };
 
+function edgeStyle(branch?: string | null): React.CSSProperties {
+  if (branch === "error") return { strokeWidth: 2, stroke: "#ef4444", strokeDasharray: "6 4" };
+  if (branch === "timeout") return { strokeWidth: 2, stroke: "#f59e0b", strokeDasharray: "3 4" };
+  return { strokeWidth: 2 };
+}
+
 function toFlow(def: WorkflowDetail["definition"]): { nodes: Node[]; edges: Edge[] } {
   return {
     nodes: (def.nodes ?? []).map((n, i) => ({
@@ -181,7 +189,7 @@ function toFlow(def: WorkflowDetail["definition"]): { nodes: Node[]; edges: Edge
       sourceHandle: e.branch ?? undefined,
       animated: true,
       markerEnd: { type: MarkerType.ArrowClosed },
-      style: { strokeWidth: 2 },
+      style: edgeStyle(e.branch),
     })),
   };
 }
@@ -241,7 +249,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const onConnect = useCallback(
     (conn: Connection) => {
       setEdges((eds) =>
-        addEdge({ ...conn, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 2 } }, eds),
+        addEdge({ ...conn, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: edgeStyle(conn.sourceHandle) }, eds),
       );
       markDirty();
     },
@@ -375,7 +383,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           sourceHandle: e.branch ?? undefined,
           animated: true,
           markerEnd: { type: MarkerType.ArrowClosed },
-          style: { strokeWidth: 2 },
+          style: edgeStyle(e.branch),
         })),
     ]);
     setPaletteOpen(false);
@@ -930,10 +938,12 @@ function NodeConfigSheet({
   const latestExecutionId = latestExecutions?.[0]?.id;
   const { data: latestExecution } = useQuery({
     queryKey: ["execution", latestExecutionId],
-    queryFn: () => api<{ context: Record<string, { output?: unknown; status: string; finished_at?: string }> }>(`/workflow-executions/${latestExecutionId}`),
+    queryFn: () => api<{ context: Record<string, { output?: unknown; status: string; finished_at?: string; error?: string; error_context?: Record<string, unknown> }> }>(`/workflow-executions/${latestExecutionId}`),
     enabled: latestExecutionId !== undefined,
   });
   const lastEntry = latestExecution?.context[def.id];
+  const lastErrorContext = lastEntry?.error_context
+    ?? (lastEntry?.output as { error?: unknown } | undefined)?.error;
 
   const inspectorTabs = [
     ["settings", "設定"], ["input", "入力"], ["output", "出力"],
@@ -1058,7 +1068,16 @@ function NodeConfigSheet({
           ) : <p className="text-xs text-zinc-400">このノードは単体previewの対象外です。</p>}
         </div>
       )}
-      {tab === "error" && (def.type === "trigger" ? <p className="text-xs text-zinc-400">トリガーにはノード単位のエラー処理設定はありません。</p> : <ControlSection config={config} readOnly={readOnly} setConfig={setConfig} />)}
+      {tab === "error" && (def.type === "trigger" ? <p className="text-xs text-zinc-400">トリガーにはノード単位のエラー処理設定はありません。</p> : (
+        <div className="space-y-3">
+          <ControlSection config={config} readOnly={readOnly} setConfig={setConfig} />
+          {lastErrorContext !== undefined && lastErrorContext !== null && (
+            <Field label="直近の Error Context" hint="secret・Authorization・API keyは保存前に伏せ字化されます">
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-red-50 p-3 font-mono text-[10px] text-red-800 dark:bg-red-950/30 dark:text-red-200">{JSON.stringify(lastErrorContext, null, 2)}</pre>
+            </Field>
+          )}
+        </div>
+      ))}
       {tab === "details" && (
         <div className="space-y-3 text-xs">
           <dl className="grid grid-cols-[7rem_1fr] gap-x-2 gap-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><dt className="text-zinc-400">node ID</dt><dd className="break-all font-mono">{def.id}</dd><dt className="text-zinc-400">type</dt><dd className="font-mono">{def.type}</dd><dt className="text-zinc-400">version</dt><dd className="num">{nodeMetadata?.version ?? 1}</dd><dt className="text-zinc-400">side effect</dt><dd>{nodeMetadata?.side_effect ?? "unknown"}</dd><dt className="text-zinc-400">capabilities</dt><dd>{nodeMetadata?.capabilities.join(", ") || "なし"}</dd></dl>
@@ -1082,7 +1101,7 @@ function ControlSection({
 }) {
   const active =
     Number(config.retry_count) > 0 || !!config.require_approval ||
-    (config.on_error && config.on_error !== "stop") || config.join === "all";
+    Number(config.node_timeout) > 0 || (config.on_error && config.on_error !== "stop") || config.join === "all";
   const [open, setOpen] = useState(false);
   const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   return (
@@ -1107,7 +1126,12 @@ function ControlSection({
                 onChange={(e) => setConfig("retry_wait", Number(e.target.value) || 0)} className={cls} />
             </Field>
           </div>
-          <Field label="失敗したとき" hint={config.on_error === "branch" ? "ノード下部に赤い「失敗時」ハンドルが現れます。エラー処理の枝を繋いでください" : undefined}>
+          <Field label="ノードのtimeout（秒）" hint="空欄はノード種別ごとの安全な既定値。0.1〜ワークフロー上限へ制限されます">
+            <input type="number" min={0.1} step={0.1} value={String(config.node_timeout ?? "")} disabled={readOnly}
+              placeholder="既定値を使用"
+              onChange={(e) => setConfig("node_timeout", e.target.value === "" ? undefined : Math.max(0.1, Number(e.target.value) || 0.1))} className={cls} />
+          </Field>
+          <Field label="失敗したとき" hint={config.on_error === "branch" ? "ノード下部の赤い「失敗」と橙の「時間切れ」を個別に接続できます。時間切れ未接続時は失敗経路へ合流します" : undefined}>
             <select value={String(config.on_error ?? "stop")} disabled={readOnly}
               onChange={(e) => setConfig("on_error", e.target.value)} className={cls}>
               <option value="stop">フロー全体を停止（既定）</option>
@@ -1339,7 +1363,18 @@ function VarPicker({
                     .filter((x) => x.name)
                     .map((x) => ({ key: x.name, label: x.name }))
                 : [];
-            const outs = [...(m?.outputs ?? []), ...scrapeOuts, ...extra];
+            const errorOuts: { key: string; label: string }[] =
+              d.config?.on_error === "branch"
+                ? [
+                    { key: "error.message", label: "error.message" },
+                    { key: "error.code", label: "error.code" },
+                    { key: "error.retryable", label: "error.retryable" },
+                    { key: "error.attempt", label: "error.attempt" },
+                    { key: "error.timestamp", label: "error.timestamp" },
+                    { key: "error.input_summary", label: "error.input_summary" },
+                  ]
+                : [];
+            const outs = [...(m?.outputs ?? []), ...scrapeOuts, ...extra, ...errorOuts];
             if (outs.length === 0) return null;
             return (
               <div key={d.id}>

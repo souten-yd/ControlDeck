@@ -176,6 +176,13 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     for (const tab of ["設定", "入力", "出力", "実行", "エラー", "詳細"]) {
       await expect(inspector.getByRole("tab", { name: tab, exact: true })).toBeVisible();
     }
+    await inspector.getByRole("tab", { name: "エラー", exact: true }).click();
+    await inspector.getByRole("button", { name: /実行制御/ }).click();
+    await inspector.getByText("ノードのtimeout（秒）").locator("..").locator('input[type="number"]').fill("2.5");
+    await inspector.getByText("失敗したとき", { exact: true }).locator("..").locator("select").selectOption("branch");
+    await expect(page.locator('.react-flow__handle[data-handleid="error"]')).toHaveCount(1);
+    await expect(page.locator('.react-flow__handle[data-handleid="timeout"]')).toHaveCount(1);
+    await expect(page.locator(".react-flow__node").filter({ hasText: "回答" }).getByText("時間切れ")).toBeVisible();
     await inspector.getByRole("tab", { name: "出力", exact: true }).click();
     await expect(inspector.getByText("出力 schema")).toBeVisible();
     const outputRect = await inspector.boundingBox();
