@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-19
 
+## App Studio F1.1 Semantic Component foundation（2026-07-19）
+
+- framework固有classを保存しないSemantic Component catalogをbackendへ追加。layout、display、input、action、table、chartの初期11部品と決定的default、container可否、Design Token enum、binding sourceをschema APIから配信する。
+- Application Spec v1へ再帰component tree、Page root、structure／binding／style／position／content lockを後方互換で追加。root未定義の既存Pageは引き続きround-tripできる。
+- 全Page横断のcomponent ID重複、unknown type、primitiveへのchildren、不正children型をstructured Diagnosticとして検出。frontend editorが独自の部品対応表を持たない境界を確立した。
+- 本PRはF1 frontend editorの基盤に限定し、生成／build／dummy成功、LLM自由code生成は追加しない。
+
+検証: backend全325件、Application Builder unit 7件成功。既存Spec互換、正常component tree、重複ID、unknown type、children制約、schema API catalogを確認。
+
 ## Mobile bottom navigation customization（2026-07-19）
 
 - Settingsへ`Bottom Navigation`設定を追加。現在の権限と導入済みfeatureから利用可能な画面だけを候補にし、端末ごとに0〜6件を有効化できる。

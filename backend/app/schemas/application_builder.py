@@ -52,6 +52,40 @@ class TargetProfileV1(BaseModel):
     framework: str
 
 
+class ComponentLockV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    structure: bool = False
+    binding: bool = False
+    style: bool = False
+    position: bool = False
+    content: bool = False
+
+
+class SemanticComponentV1(BaseModel):
+    """Framework名を含まない、generator間で共有するUI部品。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1, max_length=128)
+    type: str = Field(min_length=1, max_length=128)
+    properties: dict[str, Any] = Field(default_factory=dict)
+    binding: str | dict[str, Any] | None = None
+    events: dict[str, Any] = Field(default_factory=dict)
+    responsive: dict[str, Any] = Field(default_factory=dict)
+    locked: ComponentLockV1 = Field(default_factory=ComponentLockV1)
+    children: list["SemanticComponentV1"] = Field(default_factory=list)
+
+
+class ApplicationPageV1(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1, max_length=128)
+    title: str = ""
+    description: str = ""
+    root: SemanticComponentV1 | None = None
+
+
 class ApplicationSpecV1(BaseModel):
     """未知fieldを許容し、後続schema versionの情報をround-tripで保持する。"""
 
@@ -61,7 +95,7 @@ class ApplicationSpecV1(BaseModel):
     application: ApplicationInfoV1
     theme: dict[str, Any] = Field(default_factory=dict)
     navigation: dict[str, Any] = Field(default_factory=dict)
-    pages: list[dict[str, Any]] = Field(default_factory=list)
+    pages: list[ApplicationPageV1] = Field(default_factory=list)
     entities: list[dict[str, Any]] = Field(default_factory=list)
     apiEndpoints: list[dict[str, Any]] = Field(default_factory=list)
     backgroundJobs: list[dict[str, Any]] = Field(default_factory=list)

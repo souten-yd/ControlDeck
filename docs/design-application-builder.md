@@ -200,6 +200,12 @@ Project Labは生成物と`~/CodeDEV`の実行・評価面を兼ねる。CLI、W
 - G1: advisor/framework/build matrix/comparison。
 - G2: Web、Avalonia、Tauriの順にstable generator。
 
+### Phase F1.1 — Semantic Component foundation（2026-07-19実装）
+
+F1はbackend catalog／検証とfrontend editorを分割する。最初の単位では`layout.stack/row/grid/card`、`display.text/markdown/metric`、`input.text`、`action.workflow-run`、`data.table`、`chart.line`をframework非依存typeとして登録する。各定義はcategory、container可否、決定的defaultを持ち、`GET /application-builder/schema`から配信する。
+
+Pageは任意のframework classではなく再帰的な`root` semantic component treeを持つ。component IDの全Page横断一意性、unknown type、primitiveへのchildren、binding prefix、lock schemaを保存前とvalidate APIで検証する。既存のrootを持たないPage辞書は後方互換で読み書きできる。次のF1.2 UIはcatalogを取得してpalette/tree/inspector/previewを構築し、component一覧をfrontendへ直書きしない。
+
 ## 12. Phase A acceptance
 
 - legacy definition → IRのinput/output/branch/merge/retry/timeout/secret名/side effect。

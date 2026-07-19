@@ -92,11 +92,30 @@ def test_spec_validation_references_bindings_targets_and_secrets():
     assert {"SPEC_ID_DUPLICATE", "PAGE_REFERENCE_MISSING", "TARGET_UNKNOWN", "SECRET_LITERAL_FORBIDDEN", "BINDING_SOURCE_UNKNOWN"} <= codes
 
 
+def test_semantic_component_catalog_and_tree_validation():
+    from app.application_builder.compiler import default_spec, validate_application_spec
+
+    spec = default_spec("ComponentApp", "", None)
+    spec["pages"] = [{"id": "home", "title": "Home", "root": {
+        "id": "root", "type": "layout.stack", "children": [
+            {"id": "title", "type": "display.text", "properties": {"text": "Hello"}},
+            {"id": "run", "type": "action.workflow-run", "binding": "workflow-output:answer"},
+        ],
+    }}]
+    assert not [item for item in validate_application_spec(spec) if item.severity == "error"]
+    spec["pages"][0]["root"]["children"][0]["children"] = [{"id": "run", "type": "missing.widget"}]
+    codes = {item.code for item in validate_application_spec(spec)}
+    assert {"COMPONENT_CHILDREN_FORBIDDEN", "COMPONENT_ID_DUPLICATE", "COMPONENT_TYPE_UNKNOWN"} <= codes
+
+
 def test_application_builder_schema_capability_validate_and_crud(admin_client, monkeypatch):
     from app.workflows import nodes
 
     schema = admin_client.get("/api/v1/application-builder/schema")
     assert schema.status_code == 200 and schema.json()["schemaVersion"] == 1
+    semantic = schema.json()["semanticComponents"]
+    assert any(item["type"] == "layout.stack" and item["container"] for item in semantic["components"])
+    assert any(item["type"] == "chart.line" for item in semantic["components"])
     capabilities = admin_client.get("/api/v1/application-builder/capabilities")
     assert capabilities.status_code == 200
     assert capabilities.json()["generationAvailable"] is False
