@@ -524,9 +524,86 @@ def _runtime_snapshot(db, nodes: list[dict]) -> dict[str, Any]:
     }
 
 
+def _partial_replay_graph(
+    nodes: list[dict], edges: list[dict], start_node_id: str, seed_context: dict[str, Any],
+) -> tuple[list[dict], list[dict], dict[str, Any]]:
+    node_by_id = {str(node.get("id") or ""): node for node in nodes}
+    if start_node_id not in node_by_id:
+        raise DefinitionError("再開ノードが現在の定義に存在しません")
+    trigger = next((node for node in nodes if node.get("type") == "trigger"), None)
+    if trigger is None or start_node_id == trigger.get("id"):
+        return nodes, edges, {}
+
+    outgoing: dict[str, list[str]] = {}
+    incoming: dict[str, list[str]] = {}
+    for edge in edges:
+        source, target = str(edge.get("source") or ""), str(edge.get("target") or "")
+        outgoing.setdefault(source, []).append(target)
+        incoming.setdefault(target, []).append(source)
+
+    descendants = {start_node_id}
+    stack = [start_node_id]
+    while stack:
+        for target in outgoing.get(stack.pop(), []):
+            if target not in descendants:
+                descendants.add(target)
+                stack.append(target)
+    ancestors: set[str] = set()
+    stack = [start_node_id]
+    while stack:
+        for source in incoming.get(stack.pop(), []):
+            if source not in ancestors:
+                ancestors.add(source)
+                stack.append(source)
+
+    trigger_id = str(trigger["id"])
+    partial_nodes = [trigger] + [node for node in nodes if str(node.get("id")) in descendants]
+    partial_edges = [
+        edge for edge in edges
+        if str(edge.get("source")) in descendants and str(edge.get("target")) in descendants
+    ]
+    partial_edges.insert(0, {"id": f"__resume__{start_node_id}", "source": trigger_id, "target": start_node_id})
+    retained = {
+        key: value for key, value in seed_context.items()
+        if key in ancestors and key != trigger_id and isinstance(value, dict)
+    }
+    variables: dict[str, Any] = {}
+    for node_id in ancestors:
+        node = node_by_id.get(node_id) or {}
+        name = str((node.get("config") or {}).get("output_var") or "").strip()
+        entry = seed_context.get(node_id)
+        if name and isinstance(entry, dict) and "output" in entry:
+            variables[name] = entry["output"]
+    retained["__vars__"] = variables
+    return partial_nodes, partial_edges, retained
+
+
+def _run_to_graph(nodes: list[dict], edges: list[dict], target_node_id: str) -> tuple[list[dict], list[dict]]:
+    """対象ノードへ到達する祖先だけを残し、下流の副作用を実行しない。"""
+    node_ids = {str(node.get("id") or "") for node in nodes}
+    if target_node_id not in node_ids:
+        raise DefinitionError("対象ノードが現在の定義に存在しません")
+    incoming: dict[str, list[str]] = {}
+    for edge in edges:
+        incoming.setdefault(str(edge.get("target") or ""), []).append(str(edge.get("source") or ""))
+    retained = {target_node_id}
+    stack = [target_node_id]
+    while stack:
+        for source in incoming.get(stack.pop(), []):
+            if source not in retained:
+                retained.add(source)
+                stack.append(source)
+    return (
+        [node for node in nodes if str(node.get("id") or "") in retained],
+        [edge for edge in edges if str(edge.get("source") or "") in retained and str(edge.get("target") or "") in retained],
+    )
+
+
 async def run_workflow(
     workflow_id: int, trigger_type: str = "manual", input_data: dict | None = None, depth: int = 0,
     *, definition_json: str | None = None, workflow_version_id: int | None = None,
+    start_node_id: str | None = None, seed_context: dict[str, Any] | None = None,
+    stop_node_id: str | None = None,
 ) -> int:
     """実行レコードを作成しバックグラウンドで実行。実行 ID を返す。
 
@@ -542,6 +619,14 @@ async def run_workflow(
             raise DefinitionError("ワークフローが見つかりません")
         definition = definition_json if definition_json is not None else wf.definition_json
         nodes, edges = parse_definition(definition)
+        snapshot_nodes = nodes
+        retained_context: dict[str, Any] = {}
+        if start_node_id:
+            nodes, edges, retained_context = _partial_replay_graph(
+                nodes, edges, start_node_id, seed_context or {},
+            )
+        if stop_node_id:
+            nodes, edges = _run_to_graph(nodes, edges, stop_node_id)
         if workflow_version_id is not None:
             version = db.get(WorkflowVersion, workflow_version_id)
             if version is None or version.workflow_id != workflow_id:
@@ -554,7 +639,10 @@ async def run_workflow(
             workflow_id=workflow_id, workflow_version_id=version.id,
             status="RUNNING", trigger_type=trigger_type,
             definition_snapshot_json=json.dumps(safe_definition, ensure_ascii=False),
-            runtime_snapshot_json=json.dumps(_runtime_snapshot(db, nodes), ensure_ascii=False),
+            runtime_snapshot_json=json.dumps({
+                **_runtime_snapshot(db, snapshot_nodes), "resume_from_node_id": start_node_id,
+                "run_to_node_id": stop_node_id,
+            }, ensure_ascii=False),
         )
         db.add(execution)
         db.commit()
@@ -564,10 +652,12 @@ async def run_workflow(
 
     async def runner() -> None:
         context: dict[str, Any] = {
+            **retained_context,
             "__input__": input_data or {},
             "__depth__": depth,
             "__secrets__": await asyncio.to_thread(_load_secrets),
         }
+        context.setdefault("__vars__", {})
         _live[execution_id] = context
         status = "SUCCEEDED"
         error = ""

@@ -62,7 +62,14 @@ interface WorkflowDetail {
   enabled: boolean;
   definition: { nodes: DefNode[]; edges: DefEdge[] };
 }
-type FlowNodeData = { def: DefNode; running?: string };
+type FlowNodeData = { def: DefNode; running?: string; pinned?: boolean };
+interface PinnedData {
+  id: number;
+  node_id: string;
+  output: unknown;
+  source_execution_id: number | null;
+  updated_at: string;
+}
 interface NodeMetadata {
   type: string;
   version: number;
@@ -120,6 +127,11 @@ function FlowNode({ data, selected }: NodeProps) {
       {(def.config?.require_approval || Number(def.config?.retry_count) > 0) && (
         <span className="pointer-events-none absolute left-1 top-1.5 text-[9px]">
           {def.config?.require_approval ? "✋" : ""}{Number(def.config?.retry_count) > 0 ? "↻" : ""}
+        </span>
+      )}
+      {d.pinned && (
+        <span className="pointer-events-none absolute right-2 top-2 rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 shadow-sm dark:bg-amber-950/70 dark:text-amber-300" aria-label="固定データを使用中">
+          📌 固定
         </span>
       )}
       {/* エラー分岐ハンドル（on_error=branch のとき） */}
@@ -196,6 +208,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     queryFn: () => api<WorkflowDetail>(`/workflows/${workflowId}`),
     staleTime: Infinity,
   });
+  const { data: pinnedData } = useQuery({
+    queryKey: ["workflow-pinned-data", workflowId],
+    queryFn: () => api<PinnedData[]>(`/workflows/${workflowId}/pinned-data`),
+    enabled: can("workflows.run"),
+  });
 
   useEffect(() => {
     if (!wf) return;
@@ -205,6 +222,15 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     setName(wf.name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wf]);
+
+  useEffect(() => {
+    const pinnedIds = new Set((pinnedData ?? []).map((item) => item.node_id));
+    setNodes((current) => current.map((node) => {
+      const data = node.data as FlowNodeData;
+      const pinned = pinnedIds.has(node.id);
+      return data.pinned === pinned ? node : { ...node, data: { ...data, pinned } };
+    }));
+  }, [pinnedData, setNodes]);
 
   const markDirty = useCallback(() => setDirty(true), []);
 
@@ -352,7 +378,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
 
   const updateNodeDef = (id: string, patch: Partial<DefNode>) => {
     setNodes((ns) =>
-      ns.map((n) => (n.id === id ? { ...n, data: { def: { ...(n.data as FlowNodeData).def, ...patch } } } : n)),
+      ns.map((n) => (n.id === id ? { ...n, data: { ...(n.data as FlowNodeData), def: { ...(n.data as FlowNodeData).def, ...patch } } } : n)),
     );
     markDirty();
   };
@@ -628,6 +654,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           edgeList={edges.map((e) => ({ source: e.source, target: e.target }))}
           readOnly={readOnly}
           onChange={(patch) => updateNodeDef(selectedDef.id, patch)}
+          dirty={dirty}
+          onSave={save}
           onDelete={selectedDef.type !== "trigger" ? () => removeNode(selectedDef.id) : undefined}
           onClose={() => setSelected(null)}
         />
@@ -812,6 +840,8 @@ function NodeConfigSheet({
   allDefs,
   edgeList,
   readOnly,
+  dirty,
+  onSave,
   onChange,
   onDelete,
   onClose,
@@ -821,6 +851,8 @@ function NodeConfigSheet({
   allDefs: DefNode[];
   edgeList: { source: string; target: string }[];
   readOnly: boolean;
+  dirty: boolean;
+  onSave: () => Promise<void>;
   onChange: (patch: Partial<DefNode>) => void;
   onDelete?: () => void;
   onClose: () => void;
@@ -983,11 +1015,18 @@ function NodeConfigSheet({
       )}
       {tab === "run" && (
         <div className="space-y-3">
-          {def.type !== "trigger" && def.type !== "control.loop" && !readOnly ? <NodeTestRunner type={def.type} config={config} /> : <p className="text-xs text-zinc-400">このノードは単体previewの対象外です。</p>}
-          <div className="grid grid-cols-2 gap-2">
-            {["このノードまで実行", "このノードだけ実行", "このノードから実行", "入力を編集して実行"].map((label) => <button key={label} type="button" disabled title="再現性Phaseで有効になります" className="min-h-11 rounded-xl border border-zinc-200 px-2 text-xs text-zinc-400 disabled:opacity-60 dark:border-zinc-700">{label}</button>)}
-          </div>
-          <p className="text-[10px] text-zinc-400">上流cacheを使う実行と途中再開は再現性Phaseで有効になります。</p>
+          {def.type !== "trigger" && def.type !== "control.loop" && !readOnly ? (
+            <NodeTestRunner
+              workflowId={workflowId}
+              nodeId={def.id}
+              type={def.type}
+              config={config}
+              latestExecutionId={latestExecutionId}
+              latestOutput={lastEntry?.output}
+              dirty={dirty}
+              onSave={onSave}
+            />
+          ) : <p className="text-xs text-zinc-400">このノードは単体previewの対象外です。</p>}
         </div>
       )}
       {tab === "error" && (def.type === "trigger" ? <p className="text-xs text-zinc-400">トリガーにはノード単位のエラー処理設定はありません。</p> : <ControlSection config={config} readOnly={readOnly} setConfig={setConfig} />)}
@@ -1063,11 +1102,36 @@ function ControlSection({
   );
 }
 
-/** ノード単体テスト: 現在の設定でこのノードだけ実行して結果を確認する */
-function NodeTestRunner({ type, config }: { type: string; config: Record<string, unknown> }) {
+/** ノード単体テスト: 安全preview、cache入力、固定データ、途中再開を同じ場所で扱う。 */
+function NodeTestRunner({
+  workflowId, nodeId, type, config, latestExecutionId, latestOutput, dirty, onSave,
+}: {
+  workflowId: number;
+  nodeId: string;
+  type: string;
+  config: Record<string, unknown>;
+  latestExecutionId?: number;
+  latestOutput?: unknown;
+  dirty: boolean;
+  onSave: () => Promise<void>;
+}) {
+  const qc = useQueryClient();
+  const show = useToasts((state) => state.show);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [testedOutput, setTestedOutput] = useState<{ value: unknown; sourceExecutionId: number | null } | null>(null);
   const [busy, setBusy] = useState(false);
-  const run = async () => {
+  const [inputMode, setInputMode] = useState<"latest_success" | "execution" | "manual" | "pinned">("latest_success");
+  const [manualText, setManualText] = useState("{}");
+  const [versionMode, setVersionMode] = useState<"current" | "historical">("current");
+  const { data: pins } = useQuery({
+    queryKey: ["workflow-pinned-data", workflowId],
+    queryFn: () => api<PinnedData[]>(`/workflows/${workflowId}/pinned-data`),
+  });
+  const pin = pins?.find((item) => item.node_id === nodeId);
+  const pinnableOutput = testedOutput?.value ?? latestOutput;
+  const pinSourceExecutionId = testedOutput ? testedOutput.sourceExecutionId : latestExecutionId;
+
+  const safePreview = async () => {
     setBusy(true);
     setResult(null);
     try {
@@ -1078,17 +1142,125 @@ function NodeTestRunner({ type, config }: { type: string; config: Record<string,
       setBusy(false);
     }
   };
+
+  const nodeTest = async () => {
+    let manualContext: Record<string, unknown> = {};
+    if (inputMode === "manual") {
+      try {
+        const parsed: unknown = JSON.parse(manualText);
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error();
+        manualContext = parsed as Record<string, unknown>;
+      } catch {
+        show("手動入力はJSON objectで指定してください", "error");
+        return;
+      }
+    }
+    setBusy(true);
+    setResult(null);
+    try {
+      const response = await api<Record<string, unknown>>(`/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/test`, {
+        method: "POST",
+        json: {
+          input_mode: inputMode,
+          execution_id: inputMode === "execution" ? latestExecutionId : undefined,
+          manual_context: manualContext,
+          config_override: config,
+        },
+      });
+      setResult(response);
+      if (response.ok && "output" in response) {
+        setTestedOutput({
+          value: response.output,
+          sourceExecutionId: typeof response.source_execution_id === "number" ? response.source_execution_id : null,
+        });
+      }
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : "単体実行に失敗しました" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runGraph = async (kind: "to" | "from") => {
+    if (dirty) await onSave();
+    setBusy(true);
+    try {
+      const path = kind === "to"
+        ? `/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/run-to`
+        : `/workflows/${workflowId}/executions/${latestExecutionId}/resume-from/${encodeURIComponent(nodeId)}`;
+      const json = kind === "to" ? {} : { version_mode: versionMode };
+      const response = await api<{ execution_id: number }>(path, { method: "POST", json });
+      await qc.invalidateQueries({ queryKey: ["executions", workflowId] });
+      show(`${kind === "to" ? "このノードまで" : "このノードから"}実行を開始しました（#${response.execution_id}）`);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "部分実行に失敗しました", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const togglePin = async () => {
+    setBusy(true);
+    try {
+      if (pin) {
+        await api(`/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/pinned-data`, { method: "DELETE" });
+        show("固定データを解除しました");
+      } else {
+        await api(`/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/pinned-data`, {
+          method: "PUT", json: { output: pinnableOutput, source_execution_id: pinSourceExecutionId },
+        });
+        show("ノード出力を固定しました");
+        setInputMode("pinned");
+      }
+      await qc.invalidateQueries({ queryKey: ["workflow-pinned-data", workflowId] });
+    } catch (error) {
+      show(error instanceof Error ? error.message : "固定データの更新に失敗しました", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <div>
+    <div className="space-y-3">
       <button
         type="button"
-        onClick={run}
+        onClick={safePreview}
         disabled={busy}
         className="w-full rounded-xl bg-zinc-100 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-50 dark:bg-zinc-800 dark:text-zinc-300"
       >
         {busy ? "確認中..." : "🛡 このノードを安全プレビュー"}
       </button>
       <p className="mt-1 text-[10px] text-zinc-400">executor・外部通信・書き込み・secret復号は行いません</p>
+      <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+        <Field label="単体実行に使う入力">
+          <select value={inputMode} onChange={(event) => setInputMode(event.target.value as typeof inputMode)} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900">
+            <option value="latest_success">最新の成功実行</option>
+            <option value="execution" disabled={!latestExecutionId}>直近の実行 #{latestExecutionId ?? "なし"}</option>
+            <option value="manual">手動JSON入力</option>
+            <option value="pinned" disabled={!pin}>固定データ{pin ? ` #${pin.id}` : "（なし）"}</option>
+          </select>
+        </Field>
+        {inputMode === "manual" && (
+          <textarea aria-label="単体実行の手動JSON入力" value={manualText} onChange={(event) => setManualText(event.target.value)} rows={5} spellCheck={false} className="mt-2 w-full rounded-xl border border-zinc-300 bg-white p-3 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900" />
+        )}
+        <button type="button" onClick={nodeTest} disabled={busy || (inputMode === "execution" && !latestExecutionId) || (inputMode === "pinned" && !pin)} className="mt-2 min-h-11 w-full rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white disabled:opacity-50">
+          {busy ? "実行中…" : inputMode === "manual" ? "編集した入力でこのノードだけ実行" : "このノードだけ実行"}
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => void runGraph("to")} disabled={busy} className="min-h-11 rounded-xl border border-zinc-300 px-2 text-xs font-medium dark:border-zinc-700">このノードまで実行</button>
+        <button type="button" onClick={togglePin} disabled={busy || (!pin && pinnableOutput === undefined)} className="min-h-11 rounded-xl border border-zinc-300 px-2 text-xs font-medium disabled:opacity-50 dark:border-zinc-700">{pin ? "📌 固定を解除" : "出力を固定"}</button>
+      </div>
+      <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+        <Field label="途中から再実行する定義">
+          <select value={versionMode} onChange={(event) => setVersionMode(event.target.value as typeof versionMode)} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900">
+            <option value="current">現在のフロー</option>
+            <option value="historical">当時のフロー</option>
+          </select>
+        </Field>
+        <button type="button" onClick={() => void runGraph("from")} disabled={busy || !latestExecutionId} className="mt-2 min-h-11 w-full rounded-xl border border-accent-300 px-3 text-xs font-semibold text-accent-700 disabled:opacity-50 dark:border-accent-700 dark:text-accent-300">このノードから再実行</button>
+        <p className="mt-1 text-[10px] text-zinc-400">上流は実行 #{latestExecutionId ?? "-"} の保存済み入力を使い、このノード以降だけを再計算します。</p>
+      </div>
       {result && (
         <div className={`mt-1.5 rounded-xl border p-2.5 ${result.ok ? "border-emerald-300 dark:border-emerald-800" : "border-red-300 dark:border-red-800"}`}>
           <p className={`text-xs font-medium ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
