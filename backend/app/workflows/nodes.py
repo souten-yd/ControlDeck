@@ -739,6 +739,7 @@ def _strip_json_fences(text: str) -> str:
 
 
 async def node_llm(config: dict, ctx: dict) -> dict:
+    from app.models_mgmt.runtime_lifecycle import RuntimeStartupError, ensure_chat_model_ready
     from app.models_mgmt.runtime_provider import response_format_candidates
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
@@ -748,6 +749,19 @@ async def node_llm(config: dict, ctx: dict) -> dict:
     except RuntimeError as e:
         raise NodeError(str(e)) from e
     model = str(config.get("model", "llama3"))
+    auto_load = str(config.get("auto_load", True)).lower() not in {"0", "false", "off", "no"}
+    if auto_load:
+        report_progress("LLMを起動・ロード中", 0, 1)
+        try:
+            await ensure_chat_model_ready(
+                base_url,
+                model,
+                keep_alive=config.get("keep_alive"),
+                timeout_seconds=float(config.get("startup_timeout") or 240),
+            )
+        except (RuntimeStartupError, ValueError) as exc:
+            raise NodeError(f"LLM準備失敗: {exc}") from exc
+        report_progress("LLMの準備完了", 1, 1)
     prompt = render_template(str(config.get("prompt", "")), ctx)
     system = render_template(str(config.get("system", "")), ctx)
     api_key = str(config.get("api_key", "") or "sk-no-key")

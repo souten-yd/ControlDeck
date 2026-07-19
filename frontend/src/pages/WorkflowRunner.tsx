@@ -59,12 +59,12 @@ export default function WorkflowRunnerPage() {
     <div className="mx-auto flex h-full min-h-0 max-w-[1500px] overflow-hidden md:p-4">
       <aside className={`${selectedId ? "hidden md:flex" : "flex"} min-h-0 w-full flex-col border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 md:w-80 md:shrink-0 md:rounded-l-2xl md:border`}>
         <header className="shrink-0 border-b border-zinc-200 p-4 dark:border-zinc-800">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent-600">Published apps</p>
-          <h1 className="mt-1 text-xl font-semibold">ワークフロー・ランナー</h1>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent-600">Published workflows</p>
+          <h1 className="mt-1 text-xl font-semibold">公開アプリ</h1>
           <p className="mt-1 text-xs leading-relaxed text-zinc-500">公開済みの処理を、入力と結果だけで安全に操作します。</p>
           <label className="mt-3 flex min-h-11 items-center gap-2 rounded-xl bg-zinc-100 px-3 dark:bg-zinc-900">
             <IconSearch className="shrink-0 text-zinc-400" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="公開ワークフローを検索" placeholder="名前・説明を検索" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="公開アプリを検索" placeholder="名前・説明を検索" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
           </label>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
@@ -78,7 +78,7 @@ export default function WorkflowRunnerPage() {
         </div>
       </aside>
       <main className={`${selectedId ? "flex" : "hidden md:flex"} min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-900/50 md:rounded-r-2xl md:border md:border-l-0 md:border-zinc-200 md:dark:border-zinc-800`}>
-        {selectedId ? <RunnerWorkspace workflowId={selectedId} onBack={() => select(null)} /> : <div className="grid h-full place-items-center p-8 text-center text-sm text-zinc-400">左から公開ワークフローを選択してください</div>}
+        {selectedId ? <RunnerWorkspace workflowId={selectedId} onBack={() => select(null)} /> : <div className="grid h-full place-items-center p-8 text-center text-sm text-zinc-400">左から公開アプリを選択してください</div>}
       </main>
     </div>
   );
@@ -94,7 +94,7 @@ function RunnerWorkspace({ workflowId, onBack }: { workflowId: number; onBack: (
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [executionId, setExecutionId] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const { data: detail, isLoading } = useQuery({ queryKey: ["workflow-runner", workflowId], queryFn: () => api<RunnerDetail>(`/workflow-runner/${workflowId}`) });
+  const { data: detail, isLoading, error: detailError } = useQuery({ queryKey: ["workflow-runner", workflowId], queryFn: () => api<RunnerDetail>(`/workflow-runner/${workflowId}`), retry: false });
   const fields = useMemo(() => detail?.input_schema["x-control-deck-fields"] ?? [], [detail]);
   const expected = detail?.output_schema["x-control-deck-outputs"] ?? [];
   useEffect(() => { if (detail) { setValues(initialRuntimeValues(fields)); setExecutionId(null); setError(""); } }, [detail, fields]);
@@ -127,7 +127,8 @@ function RunnerWorkspace({ workflowId, onBack }: { workflowId: number; onBack: (
   };
   const missing = fields.filter((field) => field.required && (values[field.key] === "" || values[field.key] == null || (Array.isArray(values[field.key]) && (values[field.key] as unknown[]).length === 0)));
 
-  if (isLoading || !detail) return <div className="grid h-full place-items-center text-sm text-zinc-400">読み込み中…</div>;
+  if (isLoading) return <div className="grid h-full place-items-center text-sm text-zinc-400">読み込み中…</div>;
+  if (detailError || !detail) return <div className="grid h-full place-items-center p-6"><div className="max-w-sm text-center"><p className="text-sm font-semibold">公開アプリを開けません</p><p className="mt-2 text-xs leading-relaxed text-zinc-500">削除または非公開になった可能性があります。ワークフローの公開状態を確認してください。</p><button onClick={onBack} className="mt-4 min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white">公開アプリ一覧へ戻る</button></div></div>;
   return <>
     <header className="flex min-h-16 shrink-0 items-center gap-2 border-b border-zinc-200 bg-white px-3 dark:border-zinc-800 dark:bg-zinc-950 md:px-5">
       <button onClick={onBack} aria-label="公開アプリ一覧へ戻る" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-900 md:hidden"><IconChevronLeft /></button>

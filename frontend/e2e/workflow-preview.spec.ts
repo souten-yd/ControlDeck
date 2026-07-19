@@ -35,7 +35,8 @@ test("shows the exact publish blocker instead of a generic 409", async ({ page }
   });
   try {
     await page.goto(`/workflows/${workflowId}`);
-    await page.getByRole("button", { name: "確認・テストを開く" }).click();
+    await page.getByRole("button", { name: "その他メニュー" }).click();
+    await page.getByRole("menuitem", { name: "確認・テスト" }).click();
     const preview = page.getByRole("complementary", { name: "確認・テスト" });
     await preview.getByRole("button", { name: "実行せず確認" }).click();
     await expect(preview.getByText("構造上は実行可能です")).toBeVisible();
@@ -55,6 +56,7 @@ test("shows the exact publish blocker instead of a generic 409", async ({ page }
 });
 
 test("integrates trigger input, safe preview, test result, and past input at 320px", async ({ page }) => {
+  test.setTimeout(60_000);
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   const runtimeErrors: string[] = [];
   page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
@@ -100,7 +102,8 @@ test("integrates trigger input, safe preview, test result, and past input at 320
 
   try {
     await page.goto(`/workflows/${workflowId}`);
-    await page.getByRole("button", { name: "確認・テストを開く" }).click();
+    await page.getByRole("button", { name: "その他メニュー" }).click();
+    await page.getByRole("menuitem", { name: "確認・テスト" }).click();
     const preview = page.getByRole("complementary", { name: "確認・テスト" });
     await expect(preview).toBeVisible();
     await preview.getByLabel("質問 *").fill("ControlDeck preview");
@@ -161,18 +164,17 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     await preview.getByRole("button", { name: "プレビューを閉じる" }).click();
 
     await page.setViewportSize({ width: 320, height: 700 });
-    await page.getByRole("button", { name: "検証して実行" }).click();
-    const runInputs = page.getByRole("dialog", { name: "実行時の入力" });
-    await runInputs.getByLabel("質問 *").fill("ControlDeck published run");
-    await runInputs.getByRole("button", { name: "実行", exact: true }).click();
-    const debugPanel = page.locator('[aria-label="実行デバッグパネル"]');
-    await expect(debugPanel).toBeVisible();
+    await page.getByRole("button", { name: "最新の内容を公開してアプリを開く" }).click();
+    await expect(page).toHaveURL(new RegExp(`/runner\\?workflow=${workflowId}$`));
+    await page.getByLabel("質問 *").fill("ControlDeck published run");
+    await page.getByRole("button", { name: "公開版を実行" }).click();
+    await expect(page.getByText("ControlDeck published run", { exact: true })).toBeVisible({ timeout: 10_000 });
     await expect.poll(async () => page.evaluate(async (id) => {
       const response = await fetch(`/api/v1/workflows/${id}`, { credentials: "same-origin" });
       const workflow = await response.json() as { state: string; published_version: number | null };
       return workflow.state === "published" && workflow.published_version !== null;
     }, workflowId)).toBe(true);
-    await debugPanel.getByRole("button", { name: "閉じる" }).click();
+    await page.goto(`/workflows/${workflowId}`);
     await page.getByRole("button", { name: "その他メニュー" }).click();
     await page.getByRole("menuitem", { name: "実行履歴" }).click();
     const history = page.getByRole("dialog", { name: "実行履歴" });

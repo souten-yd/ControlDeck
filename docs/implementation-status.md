@@ -12,26 +12,29 @@
 
 検証: backend全313件、frontend production build成功。実ControlDeck serviceへ反映し、隔離した`~/CodeDEV/codex-project-lab-e2e`でHTML sandbox、redact済みJSON、CSV tableを操作確認。320×700、390×844、1280×800で横overflow 0、sandboxによる意図的script block以外のconsole/page error 0。検証project、user、session、auditは確認後に削除した。
 
-## 公開ワークフロー・ランナー（2026-07-19）
+## 公開アプリ（Workflow Runner）（2026-07-19）
 
-- 公開済みWorkflowをキャンバスなしで操作する「ワークフロー・ランナー」を`/runner`へ追加。公開版の入力form、
+- 公開済みWorkflowをキャンバスなしで操作する「公開アプリ」を`/runner`へ追加。公開版の入力form、
   想定output contract、副作用区分、実行、停止、human approval、typed output、最近の実行、過去入力再利用を同じ画面へ統合した。
 - 専用`/workflow-runner` APIは公開名・説明・version・input/output schema・結果だけを返し、definition、node/edge/config、
-  runtime snapshot、source node IDを返さない。draft/test executionもRunnerから参照できない。従来のdefinition／node debug APIは
-  `workflows.edit`へ制限し、`workflows.run`だけのoperatorは公開Runner APIを利用する境界へ修正した。
+  runtime snapshot、source node IDを返さない。draft/test executionも公開アプリから参照できない。従来のdefinition／node debug APIは
+  `workflows.edit`へ制限し、`workflows.run`だけのoperatorは公開アプリAPIを利用する境界へ修正した。
 - 公開時にtrigger inputsと`output.render`からJSON Schemaを生成してimmutable `WorkflowVersion`へ保存。versioned description列を
   SQLite light migrationへ追加し、既存公開版の空contractは起動時に安全なsnapshotからbackfillする。draftの定義・説明変更は再公開まで
-  Runnerへ反映されない。
+  公開アプリへ反映されない。
 - editor PreviewとRunnerで13入力型とtyped rendererを共有する`RuntimeComponents`を追加。iPhone下部navigationのWorkflowをRunnerへ置換し、
-  editorはedit権限の利用者だけに表示する。AI assistantの公開workflow実行もRunner APIへ移行した。
+  editorはedit権限の利用者だけに表示する。AI assistantの公開workflow実行も公開アプリAPIへ移行した。
+- エディタの主操作を「更新して開く／アプリを開く」、日常実行面を「公開アプリ」へ整理。差分がある場合だけ保存・公開検証・version更新してdeep linkへ移り、公開済みならversionを増やさず開く。ワークフロー一覧は公開履歴があれば既存公開版を開け、編集中draftを暗黙更新しない。URL queryで選択を再読込後も復元し、存在しない／非公開IDは無限loadingにせず復帰案内を表示する。
+- `llm.chat`は管理中のOllamaを既存provider adapter経由で自動ロードし、llama.cppはsystemd user unit起動とhealth完了を待つ。既定有効、startup timeout 240秒（10〜600秒）、同一endpoint/modelの多重起動抑止、進捗表示、外部endpoint素通しを実装した。
 - Project LabとApplication Builderの新規要件を監査し、`docs/design-workflow-runner-project-lab.md`と
   `docs/design-application-builder.md`へ共通IR、決定的generator、Phase A限定初回PR、反復GUI editor、structured AI patch、
   design system、platform advisor、Web/Avalonia/Tauri優先、build/artifact境界を記録した。
 
-検証: backend全298件、frontend production build成功。実ControlDeck serviceを再起動し、実DB migrationとhealthを確認。
-認証付きPlaywrightで320×700から公開workflowを作成・公開し、Runnerでparagraph入力→Markdown output、過去入力再利用、
+検証: backend全322件、frontend production build成功。実ControlDeck serviceを再起動し、healthを確認。
+認証付きPlaywright 3件で320×700から公開workflowを作成・公開し、公開アプリでparagraph入力→Markdown output、過去入力再利用、一覧の公開版button、deep link、reload復元、
 キャンバス／内部node名非表示を確認。320×700、390×844、768×1024、1280×800でdocument/body横overflow 0、console error 0。
 backend testではrun-only operatorがRunnerを利用でき、definition/list/debug execution APIは403になることを確認した。
+実機では未ロードの`qwen3.6-27b-q5_k_m`を`llm.chat`から起動し、provider load→loaded確認→本文生成に成功。確認後は元のunloaded状態へ復元した。
 
 ## Workflow Phase 3 human approval／control merge（2026-07-19）
 
@@ -1117,6 +1120,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 履歴
 
+- 2026-07-19: WorkflowとRunnerを「作成・デバッグ」と「公開アプリ」に役割整理。editor主操作を更新して開く／アプリを開く、一覧へ公開版button、URL deep link/reload復元、無効ID復帰表示を追加。`llm.chat`は管理Ollamaをprovider adapterで自動load、llama.cppをsystemd user起動してhealth待機し、外部endpointは非操作。backend全322件、frontend本番build、実サービス、Playwright 3件、未load実機27B modelのload→生成→unload復元を確認
 - 2026-07-19: 実行履歴のNodeRun観測を強化。並列性を読めるGantt風timeline、node/total token、bottleneck、入出力size、実入力・実出力・log・error・artifactの選択式詳細を追加。LLMの`tokens`を`total_tokens`へ正規化し、path/log/artifactを有限長保存。NodeRun出力もSecret値で再redactし、認証tokenと`total_tokens`/`max_tokens`等の数値metadataを区別する共通規則へ修正。backend全319件、frontend本番build、実サービス再起動、320/390/768/1280px Playwright 2件でtimeline・実入力・実出力・横overflowを確認
 - 2026-07-19: ワークフロー実行UXを「実行前チェック」「下書きをテスト」「検証して実行」へ整理。前2者は同じ静的preview・公開可否を必ず表示し、draftテストだけがexecutorと副作用を実行する。editor主操作は保存→公開blocking検証→差分時のみversion公開→その固定version実行を1操作化し、変更なしではversionを増やさない。明示的な配備のみは「実行せず公開」へ移動し、Runner等の本番入口は公開版限定を維持。実行入力へaccessibility名も追加。backend全319件、frontend本番build、実サービス再起動、320/390/768/1280pxと公開・draft実行を含むPlaywright 2件成功を確認
 - 2026-07-19: Project Lab Web live previewを実装。Web profileの`{host}`/`{port}`自動割当、systemd process treeのLISTEN所有確認、run ID限定同一origin proxy、Cookie/Authorization/CSRF/Set-Cookie遮断、16MiB request上限、sandbox iframe、redirect/絶対path resource、起動待ち・停止を追加。`project_runs.web_port`軽量migrationを追加。backend全318件、frontend本番build、実サービスでpython http.server起動→proxy HTML/CSS→停止後409、320/390/1280px Playwright E2E成功を確認
