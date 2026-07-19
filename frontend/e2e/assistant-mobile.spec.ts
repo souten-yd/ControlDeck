@@ -11,6 +11,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
+    localStorage.setItem("cd-theme", "dark");
     Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
       configurable: true,
       value: async () => {
@@ -71,6 +72,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       viewportWidth: window.innerWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
       bodyScrollWidth: document.body.scrollWidth,
+      shell: rect(document.querySelector("[data-assistant-shell]")!).toJSON(),
       dialog: rect(dialog).toJSON(),
       row: rect(row).toJSON(),
       input: rect(input).toJSON(),
@@ -84,6 +86,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       inputMinWidth: getComputedStyle(input).minWidth,
       composer: rect(document.querySelector("[data-assistant-composer]")!).toJSON(),
       inputRow: rect(document.querySelector("[data-assistant-input-row]")!).toJSON(),
+      statusRow: rect(document.querySelector("[data-assistant-composer-status]")!).toJSON(),
       statusRows: document.querySelectorAll("[data-assistant-composer-status]").length,
     };
   });
@@ -104,10 +107,24 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   expect(layout.mode.height).toBe(36);
   expect(layout.inputFontSize).toBeGreaterThanOrEqual(16);
   expect(layout.inputMinWidth).toBe("0px");
-  expect(layout.statusRows).toBe(0);
+  expect(layout.statusRows).toBe(1);
+  expect(layout.shell.bottom).toBe(layout.dialog.bottom);
   expect(layout.composer.bottom).toBe(layout.dialog.bottom);
-  expect(layout.composer.bottom - layout.inputRow.bottom).toBeLessThanOrEqual(1);
+  expect(layout.inputRow.bottom).toBe(layout.dialog.bottom);
+  expect(layout.statusRow.bottom).toBeLessThanOrEqual(layout.inputRow.top);
   await expect(page.getByRole("navigation", { name: "メインナビゲーション" })).toBeHidden();
+
+  const idleInputTop = layout.inputRow.top;
+  await dialog.getByRole("button", { name: "音声で入力" }).click();
+  await expect(dialog.getByText("聞いています。1.2秒の無音で送信します")).toBeVisible();
+  const activeInputTop = await dialog.locator("[data-assistant-input-row]").evaluate((element) => element.getBoundingClientRect().top);
+  expect(activeInputTop).toBe(idleInputTop);
+  await testInfo.attach("assistant-mobile-status-active", {
+    body: await page.screenshot(),
+    contentType: "image/png",
+  });
+  await dialog.getByRole("button", { name: "音声認識を停止" }).click();
+  await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
   await testInfo.attach("assistant-mobile-320x700", {
     body: await page.screenshot(),
     contentType: "image/png",
@@ -115,10 +132,12 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
 
   await page.setViewportSize({ width: 390, height: 844 });
   const iphoneLayout = await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect();
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!.getBoundingClientRect();
     const composer = document.querySelector<HTMLElement>("[data-assistant-composer]")!;
     const row = document.querySelector<HTMLElement>("[data-assistant-input-row]")!.getBoundingClientRect();
     return {
+      shellBottom: shell.bottom,
       dialogBottom: dialog.bottom,
       composerBottom: composer.getBoundingClientRect().bottom,
       rowBottom: row.bottom,
@@ -128,6 +147,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   });
   console.log("ASSISTANT_IPHONE_LAYOUT", JSON.stringify(iphoneLayout));
   expect(iphoneLayout.documentScrollWidth).toBeLessThanOrEqual(390);
+  expect(iphoneLayout.shellBottom).toBe(iphoneLayout.dialogBottom);
   expect(iphoneLayout.composerBottom).toBe(iphoneLayout.dialogBottom);
   expect(iphoneLayout.rowBottom).toBe(iphoneLayout.dialogBottom);
   expect(iphoneLayout.composerPaddingBottom).toBe(0);
