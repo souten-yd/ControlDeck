@@ -71,7 +71,7 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "rag.query": {"context": "string", "results": "array"},
     "academic.search": {"results": "array", "text": "string"},
     "web.search": {"results": "array", "urls": "array", "text": "string"},
-    "research.deep": {"report": "string", "sources": "array"},
+    "research.deep": {"report": "string", "sources": "array", "research": "object", "sub_questions": "array", "count": "integer"},
     "http.request": {"status_code": "integer", "ok": "boolean", "body": "string"},
     "http.download": {"path": "string", "bytes": "integer"},
     "web.scrape": {"status_code": "integer", "url": "string"},
@@ -88,7 +88,10 @@ OUTPUT_SCHEMAS: dict[str, dict[str, str]] = {
     "ai.utility": {"vectors": "array", "dim": "integer", "results": "array", "score": "number", "reason": "string"},
 }
 
-_INTEGER_KEYS = {"app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps", "limit", "top_n"}
+_INTEGER_KEYS = {
+    "app_id", "count", "parallel", "max_results", "workflow_id", "agent_max_steps", "limit", "top_n",
+    "max_rounds", "max_search_calls", "max_evidence_chars", "max_report_tokens",
+}
 _NUMBER_KEYS = {"seconds", "timeout"}
 _BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive"}
 _ARRAY_KEYS = {"inputs", "extractors", "sources"}

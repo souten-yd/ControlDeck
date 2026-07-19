@@ -51,6 +51,13 @@ test("assistant input never expands beyond a 320px viewport", async ({ page }) =
   await dialog.getByLabel("処理モード").selectOption("auto");
   await textarea.fill("20ノードのワークフローを作って");
   await expect(dialog.getByLabel("現在の機能")).toHaveText("自動判定: フロー生成");
+  await dialog.getByLabel("処理モード").selectOption("deep");
+  await dialog.getByRole("button", { name: "AI設定を開く" }).click();
+  await expect(dialog.getByText("Deep Research 検索深度")).toBeVisible();
+  await expect(dialog.getByText("添付PDF・文書は会話RAGから再利用します。", { exact: false })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await dialog.getByRole("button", { name: "AI設定を閉じる" }).click();
+  await dialog.getByLabel("処理モード").selectOption("auto");
   await textarea.fill("mobile-overflow-" + "abcdefghijklmnopqrstuvwxyz0123456789".repeat(30));
 
   const layout = await page.evaluate(() => {

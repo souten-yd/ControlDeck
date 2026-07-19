@@ -110,6 +110,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // Web検索エンジンはSearXNG固定（ローカル・オンデマンド起動）
   const engine = "searxng";
   const searxngUrl = "";
+  const [deepDepth, setDeepDepth] = useState<string>(saved.deepDepth || "deep");
+  const [deepSources, setDeepSources] = useState<string[]>(
+    Array.isArray(saved.deepSources) ? saved.deepSources : ["web", "academic", "github", "direct", "rag"],
+  );
+  const [deepProjectPath, setDeepProjectPath] = useState<string>(saved.deepProjectPath || "");
   const [runTarget, setRunTarget] = useState<number | "">("");
   // OpenCodeモード: 新規（既定）/ CodeDEV既存 / 📁フォルダ（CodeDEV外はコピー取込）
   const [codeProject, setCodeProject] = useState("__new__");
@@ -200,8 +205,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, autoBase }));
-  }, [baseUrl, model, autoBase]);
+    localStorage.setItem(LS_KEY, JSON.stringify({ baseUrl, model, autoBase, deepDepth, deepSources, deepProjectPath }));
+  }, [baseUrl, model, autoBase, deepDepth, deepSources, deepProjectPath]);
 
   // SearXNG は基本停止・使う時だけ起動。検索系モード + SearXNG 選択時に先読み起動して
   // 実際の検索でコールドスタート（2〜3 秒）を待たずに済むようにする
@@ -486,7 +491,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         const imageIds = attachments.filter((a) => a.kind === "image" && a.status === "ready").map((a) => a.id);
         const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
-          json: { content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model, engine, searxng_url: searxngUrl, attachments: imageIds },
+          json: {
+            content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model,
+            engine, searxng_url: searxngUrl, attachments: imageIds,
+            deep_depth: deepDepth, deep_sources: deepSources,
+            code_project_path: deepSources.includes("local_code") ? deepProjectPath : "",
+          },
         });
         setAttachments([]);
         const hint =
@@ -719,6 +729,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           </div>
           <button
             onClick={() => setShowSettings((v) => !v)}
+            aria-label={showSettings ? "AI設定を閉じる" : "AI設定を開く"}
             title={model || "設定"}
             className={`ml-auto flex min-h-11 min-w-0 items-center gap-1 rounded-xl px-3 py-2 text-xs font-medium transition ${
               showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
@@ -770,6 +781,47 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 </div>
               )}
             </label>
+            {effectiveMode === "deep" && (
+              <div className="space-y-2 sm:col-span-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-zinc-500">Deep Research 検索深度</span>
+                    <select value={deepDepth} onChange={(event) => setDeepDepth(event.target.value)} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm">
+                      <option value="quick">クイック · 2周 / 8検索</option>
+                      <option value="standard">標準 · 3周 / 16検索</option>
+                      <option value="deep">詳細 · 4周 / 24検索</option>
+                      <option value="exhaustive">徹底 · 最大6周 / 36検索</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-zinc-500">ローカルコードproject（任意）</span>
+                    <input value={deepProjectPath} onChange={(event) => setDeepProjectPath(event.target.value)} placeholder="files.allowed_roots 配下の絶対path" className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
+                  </label>
+                </div>
+                <fieldset>
+                  <legend className="mb-1 text-xs text-zinc-500">調査ソース</legend>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      ["web", "Web / PDF"], ["academic", "学術"], ["github", "GitHub"],
+                      ["direct", "直接URL"], ["rag", "添付 / RAG"], ["local_code", "ローカルコード"],
+                      ["patent", "特許"], ["market", "市場"],
+                    ].map(([value, label]) => (
+                      <label key={value} className="flex min-h-9 items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900">
+                        <input
+                          type="checkbox"
+                          checked={deepSources.includes(value)}
+                          onChange={(event) => setDeepSources((current) => event.target.checked
+                            ? [...current, value]
+                            : current.filter((item) => item !== value))}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">添付PDF・文書は会話RAGから再利用します。ローカルコードは許可root配下を読み取り専用で静的解析します。</p>
+                </fieldset>
+              </div>
+            )}
           </div>
         )}
 

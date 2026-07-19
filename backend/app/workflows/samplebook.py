@@ -191,23 +191,25 @@ SAMPLES: list[dict] = [
         "title": "Deep Research レポート生成",
         "icon": "🧠",
         "category": "AI・RAG",
-        "desc": "テーマを分解し Web と arXiv を反復探索、引用付きレポートを生成して保存。",
+        "desc": "Web・PDF・学術・GitHubを反復探索し、引用検証済みレポートを生成して保存。",
         "usage": (
-            "Deep Research ノード 1 つで「サブ質問生成 → 多ソース検索 → 統合レポート」まで実行します。\n\n"
+            "AIアシスタントと同じDeep Researchエンジンで「計画 → 反復検索 → 本文/PDF取得 → coverage再評価 → 引用検証」まで実行します。\n\n"
             "■ 動かし方\n"
             "1. 実行時に調査テーマを入力\n"
             "2. レポートを /tmp/research.md に保存し、チャットにも表示\n\n"
             "■ カスタマイズ\n"
-            "- sources に rag を加えると自分のナレッジも探索対象になります（collection 指定）\n"
-            "- Web エンジンを SearXNG にすると検索品質と安定性が向上\n"
-            "- 実行には数分かかることがあります（タイムアウト 30 分）"
+            "- depthをquick/standard/deep/exhaustiveから選び、探索時間と網羅性を調整\n"
+            "- sourcesにragを加えると自分のナレッジ、local_codeを加えると許可root内projectも静的解析\n"
+            "- research.coverage/citation_metrics/coverage_limitsを後段の品質判定に利用可能\n"
+            "- 詳細・徹底は長時間かかるため、まずstandardでテストしてから深度を上げる"
         ),
         "definition": {
             "nodes": [
                 _n("trigger", "trigger", "テーマ入力", {"mode": "manual", "inputs": [
                     {"key": "topic", "label": "調査テーマ", "type": "paragraph", "required": True}]}, 60),
                 _n("deep", "research.deep", "Deep Research", {"topic": "{{trigger.topic}}",
-                    "sources": "web,arxiv", "sub_questions": 4, "results_per_source": 4,
+                    "depth": "standard", "sources": "web,academic,github,direct",
+                    "web_engine": "searxng", "categories": "general,science,news",
                     "llm_base_url": OLLAMA, "llm_model": MODEL}, 340),
                 _n("save", "file.write", "レポート保存", {"path": "/tmp/research.md",
                     "content": "{{deep.report}}"}, 620, 60),

@@ -43,7 +43,7 @@ PLAN_SCHEMA = {
         "evaluation_criteria": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 300}},
         "source_types": {
             "type": "array", "minItems": 1, "maxItems": 6, "uniqueItems": True,
-            "items": {"type": "string", "enum": ["web", "academic", "github", "patent", "market", "direct"]},
+            "items": {"type": "string", "enum": ["web", "academic", "github", "patent", "market", "direct", "rag", "local_code"]},
         },
     },
 }
@@ -93,7 +93,7 @@ async def _make_plan(query: str, complete: Complete) -> DeepPlan:
         "複雑な依頼を深く調査する計画を作ってください。単なる言い換えではなく、事実、仕組み、比較、"
         "限界・反証、実装や構造、統合可能性を検証できる問いへ分解します。GitHub URLやコード調査を含む場合は、"
         "repository構造、関数・変数、依存関係、テスト、CI、統合点も対象にします。"
-        "source_typesは必要に応じweb/academic/github/patent/market/directから選びます。"
+        "source_typesは必要に応じweb/academic/github/patent/market/direct/rag/local_codeから選びます。"
         "技術・科学はacademic、発明・競合技術はpatent、企業動向はmarketを積極的に併用します。指定JSONだけを返してください。"
     )
     try:
@@ -108,8 +108,12 @@ async def _make_plan(query: str, complete: Complete) -> DeepPlan:
 
 
 def _canonical_url(url: str) -> str:
+    if not url.strip():
+        return ""
     try:
         parts = urlsplit(url.strip())
+        if not parts.scheme and not parts.netloc:
+            return url.strip()
         return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/") or "/", parts.query, ""))
     except ValueError:
         return url.strip()
@@ -191,8 +195,9 @@ def _select_evidence(sources: list[dict], max_sources: int = 36) -> list[dict]:
     )
     for source in ranked:
         hostname = urlsplit(str(source.get("url") or "")).hostname or "no-domain"
-        is_github_analysis = str(source.get("source") or "").startswith("GitHub")
-        cap = 16 if is_github_analysis else 4
+        provider = str(source.get("source") or "")
+        is_code_analysis = provider.startswith(("GitHub", "Local"))
+        cap = 16 if is_code_analysis else 4
         if domain_counts.get(hostname, 0) >= cap:
             continue
         selected.append(source)
@@ -348,6 +353,8 @@ async def run_deep_research(
     progress: Progress | None = None,
     max_rounds: int = 4, max_search_calls: int = 24,
     max_evidence_chars: int = 90_000, max_report_tokens: int = 32_768,
+    requested_source_types: list[str] | None = None,
+    initial_sources: list[dict] | None = None,
 ) -> dict:
     def emit(phase: str, label: str, round_number: int = 0, **details: Any) -> None:
         if progress:
@@ -355,6 +362,11 @@ async def run_deep_research(
 
     emit("plan", "調査計画を作成中")
     plan = await _make_plan(query, complete)
+    if requested_source_types:
+        allowed = {"web", "academic", "github", "patent", "market", "direct", "rag", "local_code"}
+        selected_types = [value for value in requested_source_types if value in allowed]
+        if selected_types:
+            plan.source_types = list(dict.fromkeys(selected_types))[:6]
     emit("plan_ready", f"{len(plan.sub_questions)}個の検証項目を計画", details=plan.model_dump())
     pending = list(plan.search_queries)
     seen_queries: set[str] = set()
@@ -365,6 +377,12 @@ async def run_deep_research(
     search_calls = 0
     rounds = 0
     assessment = DeepAssessment()
+
+    for item in initial_sources or []:
+        source = _normalize_source(item, str(item.get("source") or "provided"), query)
+        key = _source_key(source)
+        if key:
+            source_by_key[key] = source
 
     url_re = re.compile(r"https?://[^\s<>()\]\[\"']+")
     for url in url_re.findall(query):
@@ -392,11 +410,12 @@ async def run_deep_research(
         rounds = round_number
         emit("round", f"探索ラウンド {round_number}/{max_rounds}", round_number, queries=queries)
         tasks: list[Awaitable[list[dict]]] = []
-        for search_query in queries:
-            if search_calls >= max_search_calls:
-                break
-            tasks.append(safe_search(web_search, search_query, 8, "web"))
-            search_calls += 1
+        if "web" in plan.source_types:
+            for search_query in queries:
+                if search_calls >= max_search_calls:
+                    break
+                tasks.append(safe_search(web_search, search_query, 8, "web"))
+                search_calls += 1
         if "academic" in plan.source_types:
             for search_query in queries[:3]:
                 if search_calls >= max_search_calls:
@@ -404,7 +423,7 @@ async def run_deep_research(
                 tasks.append(safe_search(academic_search, search_query, 4, "academic"))
                 search_calls += 1
         if specialized_search is not None:
-            for source_type in ("patent", "market"):
+            for source_type in ("patent", "market", "rag", "local_code"):
                 if source_type not in plan.source_types:
                     continue
                 for search_query in queries[:2]:
@@ -429,7 +448,7 @@ async def run_deep_research(
         repo_inputs = [query] + [f"{source.get('url','')} {source.get('title','')}" for source in source_by_key.values()]
         # 既に調査済みのURLが入力先頭に残っていても、後続roundで発見した候補を
         # 上限より手前で切り捨てない。抽出後に既調査分を除外し、残枠だけを使う。
-        repository_slots = max(0, 3 - len(inspected_repositories))
+        repository_slots = max(0, 3 - len(inspected_repositories)) if "github" in plan.source_types else 0
         repos = [
             repo for repo in extract_repositories(repo_inputs, 12)
             if repo not in inspected_repositories
@@ -453,9 +472,15 @@ async def run_deep_research(
         ][:8]
         if fetch_candidates:
             emit("fetch", f"{len(fetch_candidates)}ページの本文を取得", round_number)
-        texts = await asyncio.gather(*(page_fetch(str(source["url"]), 6000) for source in fetch_candidates))
+        texts = await asyncio.gather(
+            *(page_fetch(str(source["url"]), 6000) for source in fetch_candidates),
+            return_exceptions=True,
+        )
         for source, text in zip(fetch_candidates, texts):
             fetched_urls.add(str(source["url"]))
+            if isinstance(text, BaseException):
+                coverage_limits.append(f"本文取得「{str(source['url'])[:120]}」: {type(text).__name__}")
+                continue
             if text and len(text) > len(str(source.get("snippet") or "")):
                 source["snippet"] = text[:12_000]
 
