@@ -90,3 +90,72 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
     }, workflowId);
   }
 });
+
+test("approves a published workflow from the mobile public app", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const runtimeErrors: string[] = [];
+  page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
+  page.on("pageerror", (error) => runtimeErrors.push(error.message));
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto("/runner");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+  runtimeErrors.length = 0;
+
+  const workflowId = await page.evaluate(async ({ approver }) => {
+    const headers = { "Content-Type": "application/json", "X-Requested-With": "ControlDeck" };
+    const created = await fetch("/api/v1/workflows", {
+      method: "POST", credentials: "same-origin", headers,
+      body: JSON.stringify({
+        name: "E2E 公開承認", description: "公開アプリから人の承認を行います",
+        definition: {
+          nodes: [
+            { id: "start", type: "trigger", name: "開始", config: { mode: "manual" } },
+            { id: "gate", type: "human.approval", name: "公開承認", config: {
+              message: "公開処理を続けますか？", approver, approval_timeout_seconds: 30,
+            } },
+            { id: "result", type: "output.render", name: "結果", config: {
+              name: "result", title: "承認結果", renderer: "status", value: "{{gate.approved}}",
+            } },
+          ],
+          edges: [{ source: "start", target: "gate" }, { source: "gate", target: "result" }],
+        },
+      }),
+    });
+    if (!created.ok) throw new Error(await created.text());
+    const id = (await created.json()).id as number;
+    const published = await fetch(`/api/v1/workflows/${id}/publish`, {
+      method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "ControlDeck" },
+    });
+    if (!published.ok) throw new Error(await published.text());
+    return id;
+  }, { approver: username! });
+
+  try {
+    await page.goto(`/runner?workflow=${workflowId}`);
+    await page.getByRole("button", { name: "公開版を実行" }).click();
+    await expect(page.getByText("承認が必要です", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("公開処理を続けますか？", { exact: true })).toBeVisible();
+    await expect(page.getByText(`担当: ${username}`)).toBeVisible();
+    await expect(page.getByText(/^期限:/)).toBeVisible();
+    await page.getByRole("button", { name: "承認", exact: true }).click();
+    await expect(page.getByText("成功", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("true", { exact: true })).toBeVisible();
+    const layout = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+    }));
+    expect(layout.document).toBeLessThanOrEqual(layout.viewport);
+    expect(layout.body).toBeLessThanOrEqual(layout.viewport);
+    expect(runtimeErrors).toEqual([]);
+  } finally {
+    await page.evaluate(async (id) => {
+      await fetch(`/api/v1/workflows/${id}`, {
+        method: "DELETE", credentials: "same-origin", headers: { "X-Requested-With": "ControlDeck" },
+      });
+    }, workflowId);
+  }
+});

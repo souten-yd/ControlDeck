@@ -26,6 +26,21 @@ def _definition(value: str = "{{start.question}}") -> dict:
     }
 
 
+def _approval_definition() -> dict:
+    return {
+        "nodes": [
+            {"id": "start", "type": "trigger", "name": "開始", "config": {"mode": "manual"}},
+            {"id": "gate", "type": "human.approval", "name": "公開承認", "config": {
+                "message": "公開処理を続けますか？", "approver": "admin", "approval_timeout_seconds": 30,
+            }},
+            {"id": "result", "type": "output.render", "name": "結果", "config": {
+                "name": "result", "renderer": "status", "value": "{{gate.approved}}",
+            }},
+        ],
+        "edges": [{"source": "start", "target": "gate"}, {"source": "gate", "target": "result"}],
+    }
+
+
 def test_runner_exposes_only_published_contract_and_runs_immutable_version(admin_client):
     created = admin_client.post(
         "/api/v1/workflows",
@@ -110,6 +125,43 @@ def test_runner_rejects_unpublished_workflow(admin_client):
     assert admin_client.post(
         f"/api/v1/workflow-runner/{workflow_id}/runs", json={"input": {"question": "x"}}, headers=CSRF_HEADERS,
     ).status_code == 404
+
+
+def test_runner_exposes_and_resolves_typed_approval(admin_client):
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "公開承認", "definition": _approval_definition()}, headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    execution_id = admin_client.post(
+        f"/api/v1/workflow-runner/{workflow_id}/runs", json={"input": {}}, headers=CSRF_HEADERS,
+    ).json()["execution_id"]
+
+    for _ in range(50):
+        response = admin_client.get(f"/api/v1/workflow-runner/executions/{execution_id}")
+        assert response.status_code == 200, response.text
+        pending = response.json()["pending_approvals"]
+        if pending:
+            break
+        time.sleep(0.05)
+    assert pending == [{
+        "approval_id": "gate", "message": "公開処理を続けますか？", "approver": "admin",
+        "expires_at": pending[0]["expires_at"],
+    }]
+    assert pending[0]["expires_at"]
+
+    approved = admin_client.post(
+        f"/api/v1/workflow-runner/executions/{execution_id}/approval",
+        json={"approval_id": "gate", "approve": True}, headers=CSRF_HEADERS,
+    )
+    assert approved.status_code == 200, approved.text
+    for _ in range(50):
+        body = admin_client.get(f"/api/v1/workflow-runner/executions/{execution_id}").json()
+        if body["status"] not in ("RUNNING", "WAITING"):
+            break
+        time.sleep(0.05)
+    assert body["status"] == "SUCCEEDED"
+    assert body["outputs"]["result"]["value"] == "true"
 
 
 def test_run_only_operator_uses_runner_without_definition_access(admin_client):

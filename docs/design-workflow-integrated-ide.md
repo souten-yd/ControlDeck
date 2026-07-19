@@ -241,7 +241,7 @@ score は issue と独立した説明値とし、publish 可否は `blocking.len
 
 ## 14. New nodes / ControlDeck differentiators
 
-Phase 3 は output.render、human.approval、control.merge/try/delay、data.template/filter/aggregate、flow.return/error/note、trigger.webhook/file/system/email boundary を優先する。`output.render`、`human.approval`のruntime gate、`control.merge`の5方式、`data.template/filter/aggregate`、typed error/timeout routeは実装済み。approvalの永続pause／修正入力、try/delay、flow制御、system triggerを次の機能単位とする。
+Phase 3 は output.render、human.approval、control.merge/try/delay、data.template/filter/aggregate、flow.return/error/note、trigger.webhook/file/system/email boundary を優先する。`output.render`、`human.approval`のruntime gate、`control.merge`の5方式、`data.template/filter/aggregate`、typed error/timeout routeは実装済み。承認待ちはeditor／公開アプリ共通の型付きcontract（node ID、redact済み承認文、担当者、ISO 8601期限）を使用し、公開アプリから承認／却下できる。approvalの永続pause／修正入力、try/delay、flow制御、system triggerを次の機能単位とする。
 
 次段階は human.form、queue/cache/state/event、subworkflow map、batch/rate/circuit breaker、document/PDF/image/audio、unified notification、test.assert。
 

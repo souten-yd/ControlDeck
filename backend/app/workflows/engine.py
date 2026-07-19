@@ -100,8 +100,20 @@ def live_context(execution_id: int) -> dict | None:
     return _live.get(execution_id)
 
 
-def pending_approvals(execution_id: int) -> list[str]:
-    return [nid for (eid, nid) in _approvals if eid == execution_id]
+def pending_approvals(execution_id: int) -> list[dict[str, Any]]:
+    """UI/API共通の承認待ちcontract。内部Futureは公開しない。"""
+    pending: list[dict[str, Any]] = []
+    for eid, node_id in _approvals:
+        if eid != execution_id:
+            continue
+        details = approval_details(execution_id, node_id) or {}
+        pending.append({
+            "node_id": node_id,
+            "message": str(details.get("message") or "承認が必要です"),
+            "approver": str(details.get("approver") or ""),
+            "expires_at": details.get("expires_at"),
+        })
+    return pending
 
 
 def approval_details(execution_id: int, node_id: str) -> dict[str, Any] | None:
@@ -329,17 +341,22 @@ async def _execute_graph(
                 sensitive_values=sensitive,
             )
             approver = str(config.get("approver") or "").strip()
-            entry.update(
-                status="WAITING_APPROVAL", waiting_since=utcnow().isoformat(),
-                approval={"message": prompt, "approver": approver},
-            )
-            await asyncio.to_thread(_set_exec_status, execution_id, "WAITING")
-            fut: asyncio.Future = asyncio.get_event_loop().create_future()
-            _approvals[(execution_id, nid)] = fut
             try:
                 approval_timeout = max(0.1, min(float(config.get("approval_timeout_seconds") or APPROVAL_TIMEOUT), APPROVAL_TIMEOUT))
             except (TypeError, ValueError):
                 approval_timeout = float(APPROVAL_TIMEOUT)
+            waiting_since = utcnow()
+            entry.update(
+                status="WAITING_APPROVAL", waiting_since=waiting_since.isoformat(),
+                approval={
+                    "message": prompt,
+                    "approver": approver,
+                    "expires_at": (waiting_since + timedelta(seconds=approval_timeout)).isoformat(),
+                },
+            )
+            await asyncio.to_thread(_set_exec_status, execution_id, "WAITING")
+            fut: asyncio.Future = asyncio.get_event_loop().create_future()
+            _approvals[(execution_id, nid)] = fut
             try:
                 approved = await asyncio.wait_for(fut, timeout=approval_timeout)
             except asyncio.TimeoutError:

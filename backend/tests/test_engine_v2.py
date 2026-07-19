@@ -320,9 +320,14 @@ def test_approval_gate_approve_and_reject(admin_client):
         pending = live["pending_approvals"]
         if pending:
             break
-    assert pending == ["gate"]
+    assert pending[0]["node_id"] == "gate"
+    assert pending[0]["message"] == "を承認しますか？"
+    assert pending[0]["approver"] == "admin"
+    assert pending[0]["expires_at"]
     assert live["context"]["gate"]["status"] == "WAITING_APPROVAL"
-    assert live["context"]["gate"]["approval"] == {"message": "を承認しますか？", "approver": "admin"}
+    assert live["context"]["gate"]["approval"]["message"] == "を承認しますか？"
+    assert live["context"]["gate"]["approval"]["approver"] == "admin"
+    assert live["context"]["gate"]["approval"]["expires_at"]
     # 承認 → 完了
     r = admin_client.post(f"/api/v1/workflow-executions/{exec_id}/approve",
                           json={"node_id": "gate", "approve": True}, headers=CSRF_HEADERS)
