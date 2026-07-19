@@ -1,7 +1,7 @@
 # ControlDeck Application Builder 詳細実装仕様
 
 最終更新: 2026-07-19
-状態: 要求整理・コード監査完了、Phase A 実装待ち
+状態: 要求整理・コード監査・Phase A実装/検証完了、Phase B未着手
 
 ## 1. 目的と不変条件
 
@@ -213,3 +213,25 @@ Project Labは生成物と`~/CodeDEV`の実行・評価面を兼ねる。CLI、W
 - backend全test、frontend build、320/390/768/1280 E2E、実サービス確認。
 
 最終Phaseでは、部品配置、keyboard reorder、3案比較、partial apply、lock、atomic undo、320〜1920 preview、全状態preview、platform recommendation/override、incompatibility preflight、deterministic generation、secret非混入を完了条件へ追加する。
+
+## 13. 推奨値・ゼロ設定・インラインガイダンス（2026-07-19追加）
+
+設定項目を増やすほど利用者へ判断を押し付けないよう、すべてのnode/component schemaは次を表現できるようにする。
+
+- `default`: executorが省略時にも使う決定的な初期値
+- `recommended`: 用途・side effect・targetを踏まえた推奨値
+- `reason`: 推奨理由、性能・安全性・コスト上のtrade-off
+- `examples`: 最小例、標準例、他nodeと組み合わせた実用例
+- `help`: 詳細な使い方、入力契約、出力契約、失敗時の挙動
+- `uiHints.variablePicker`: 上流、trigger、workflow、loop、error、secret等の候補を型付きで検索するeditor
+
+新規node追加時は必須値を空欄の巨大formへせず、危険な対象URL、path、secret、app ID等を除いて安全な推奨値を初期投入する。
+network nodeはtimeout/retry/backoff、LLMはendpoint/modelの稼働候補、検索は件数/depth、loopは上限、outputは名前/renderer/schemaを推奨する。
+副作用を伴う対象値を勝手に推測して実行してはならない。
+
+入力editorは単なるtextareaではなく、入力先が要求する型を起点に、直前node、他の上流node、trigger input、workflow variable、
+loop item、error context、secret name、前回実行値を検索・preview・挿入できるようにする。不一致は候補から除外または警告し、
+安全な変換候補か`data.transform`追加を提案する。変数候補とhelpはbackend metadata/schemaを正とし、frontendへ再定義しない。
+
+Phase Aではmetadataが`default/recommended/reason/help/examples/input/output/security`を返す互換基盤を追加する。既存Workflow Inspectorの
+schema駆動化、初期値migration、型付き変数editor、インライン構成例はApplication Builder PRへ混在させず、独立Workflow UX PRで実装する。

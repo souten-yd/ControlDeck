@@ -522,6 +522,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             ...(can("workflows.run") ? [{ label: "実行プレビュー", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
             { label: "JSON を出力", onSelect: exportJson },
             ...(readOnly ? [] : [
+              { label: "アプリ化", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
               { label: "公開", onSelect: () => void publish() },
               { label: "JSON を読み込み", onSelect: () => fileRef.current?.click() },
               { label: "選択をスニペット保存", onSelect: saveAsSnippet },

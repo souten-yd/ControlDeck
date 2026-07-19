@@ -103,6 +103,26 @@ _NUMBER_KEYS = {"seconds", "timeout", "retry_wait", "node_timeout", "approval_ti
 _BOOLEAN_KEYS = {"multiple", "full_page", "hyde", "multi_query", "recursive"}
 _ARRAY_KEYS = {"inputs", "extractors", "sources"}
 
+RECOMMENDED_CONFIG: dict[str, Any] = {
+    "retry_count": 1, "retry_wait": 1, "node_timeout": 60, "on_error": "stop",
+    "max_results": 8, "top_k": 4, "top_n": 5, "limit": 100,
+    "parallel": 3, "max_rounds": 3, "max_search_calls": 16,
+}
+
+EXECUTOR_DEFAULTS: dict[str, Any] = {
+    "retry_count": 0, "retry_wait": 0, "on_error": "stop",
+}
+
+CONFIG_REASONS: dict[str, str] = {
+    "retry_count": "一時的な通信・runtime失敗を吸収します。副作用ノードでは重複実行に注意してください。",
+    "retry_wait": "即時再試行による連続失敗と外部サービスへの集中を避けます。",
+    "node_timeout": "停止した外部処理がワークフロー全体を占有し続けることを防ぎます。",
+    "on_error": "既定は安全側の停止です。継続・error branchは失敗後の契約を確認して選びます。",
+    "max_results": "精度と処理時間・後段token量のバランスがよい初期件数です。",
+    "top_k": "RAG文脈を確保しつつ、無関係な断片とtoken消費を抑える推奨値です。",
+    "parallel": "ローカル資源と外部rate limitを圧迫しにくい並列数です。",
+}
+
 
 def _config_type(key: str) -> str:
     if key in _INTEGER_KEYS:
@@ -131,14 +151,32 @@ def node_catalog() -> list[dict[str, Any]]:
         result.append({
             "type": node_type,
             "version": 1,
+            "metadata_version": 3,
             "description": descriptions.get(node_type, ""),
             "side_effect": SIDE_EFFECTS.get(node_type, "none"),
             "capabilities": CAPABILITIES.get(node_type, []),
             "config_schema": {
-                key: {"type": _config_type(key), "required": key in required}
+                key: {
+                    "type": _config_type(key), "required": key in required,
+                    **({"default": EXECUTOR_DEFAULTS[key]} if key in EXECUTOR_DEFAULTS else {}),
+                    **({"recommended": RECOMMENDED_CONFIG[key]} if key in RECOMMENDED_CONFIG else {}),
+                    **({"reason": CONFIG_REASONS[key]} if key in CONFIG_REASONS else {}),
+                }
                 for key in config_keys
             },
+            "input_schema": {},
             "output_schema": OUTPUT_SCHEMAS.get(node_type, {}),
+            "ui_hints": {
+                "help": descriptions.get(node_type, ""),
+                "quick_start": "必須項目を設定し、変数ピッカーから上流出力を挿入してください。",
+                "variable_picker": True,
+                "show_recommended_defaults": True,
+                "examples": [],
+            },
+            "security": {
+                "allowed_in_generated_app": node_type not in {"cmd.python", "cmd.ssh", "code.agent"},
+                "requires_secret_reference": False,
+            },
             "supports": {
                 "retry": node_type not in ("trigger", "control.loop", "human.approval"),
                 "cancel": True,

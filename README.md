@@ -189,6 +189,18 @@ ControlDeckのエディタは「配置して保存」で終わらず、入力→
 `operator`など`workflows.run`だけの利用者はランナーを使用する。draft、ノード実値、途中再実行、version差分等の開発情報は
 `workflows.edit`を持つ利用者だけがエディタとデバッグAPIで参照できる。ランナーは常にimmutableな公開版を実行し、draft変更は再公開まで反映しない。
 
+### Application Builder（Phase A）
+
+ワークフローの「その他 → アプリ化」から、Workflow DefinitionをportableなWorkflow IRへ変換し、独立したApplication Spec v1 Projectを作成できる。
+Application Builder画面ではtrigger input、typed output、node/edge、capability、side effect、target互換性、Application page/entity/API/targetの件数、
+blocking/warning/suggestionを確認する。Application Spec、型、framework/node capabilityはバックエンドschema/registryを正とし、未知fieldを保存時に失わない。
+
+Phase Aは設計・検証基盤だけであり、source生成、build、package、artifact、AI GUI設計はまだ提供しない。未実装機能を成功するdummy buttonで見せない。
+後続PhaseでC# Console、ASP.NET、GUI/DB、構造化AI提案の順に実装する。LLMは自由なGUI codeではなく、検証可能なApplication Spec Patchだけを提案する。
+
+ノードmetadataは推奨初期値とその理由、詳細help、変数picker対応を返す。危険な対象値を除き、将来のschema駆動Inspectorでは推奨値を初期投入し、
+入力欄から型の合う上流変数を検索・preview・挿入できるようにする。frontendへnodeごとの推奨値を二重定義しない。
+
 ### 型付き最終出力 `output.render`
 
 新規フローの最終段には`output.render`を推奨する。旧`signal.display`は既存定義との互換用として継続利用できる。

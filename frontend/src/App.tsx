@@ -26,6 +26,13 @@ import ModelsPage from "./pages/Models";
 import AssistantPage from "./pages/Assistant";
 
 const OpenCodePage = lazy(() => import("./features/opencode/OpenCodePage"));
+const ApplicationsPage = lazy(() => import("./pages/Applications"));
+const ApplicationEditorPage = lazy(() => import("./pages/ApplicationEditor"));
+const ApplicationFromWorkflowPage = lazy(() => import("./pages/ApplicationFromWorkflow"));
+
+function LazyPage({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<div className="p-6 text-sm text-zinc-400">読み込み中...</div>}>{children}</Suspense>;
+}
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuth((s) => s.user);
@@ -79,6 +86,9 @@ function buildRouter(enabledFeatures: string[]) {
       { path: "workflows", element: <WorkflowsPage /> },
       { path: "runner", element: <WorkflowRunnerPage /> },
       { path: "workflows/:id", element: <WorkflowsPage /> },
+      { path: "workflows/:id/app", element: <LazyPage><ApplicationFromWorkflowPage /></LazyPage> },
+      { path: "applications", element: <LazyPage><ApplicationsPage /></LazyPage> },
+      { path: "applications/:id", element: <LazyPage><ApplicationEditorPage /></LazyPage> },
       { path: "remote", element: <RemotePage /> },
       { path: "github", element: <GitHubPage /> },
       { path: "knowledge", element: <KnowledgePage /> },
