@@ -85,6 +85,8 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       inputFontSize: Number.parseFloat(getComputedStyle(input).fontSize),
       inputMinWidth: getComputedStyle(input).minWidth,
       composer: rect(document.querySelector("[data-assistant-composer]")!).toJSON(),
+      composerBackground: getComputedStyle(document.querySelector("[data-assistant-composer]")!).backgroundColor,
+      composerBorderTop: getComputedStyle(document.querySelector("[data-assistant-composer]")!).borderTopWidth,
       inputCard: rect(document.querySelector("[data-assistant-input-card]")!).toJSON(),
       inputRow: rect(document.querySelector("[data-assistant-input-row]")!).toJSON(),
       statusRow: rect(document.querySelector("[data-assistant-composer-status]")!).toJSON(),
@@ -111,6 +113,8 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   expect(layout.statusRows).toBe(1);
   expect(layout.shell.bottom).toBe(layout.dialog.bottom);
   expect(layout.composer.bottom).toBe(layout.dialog.bottom);
+  expect(layout.composerBackground).toBe("rgba(0, 0, 0, 0)");
+  expect(layout.composerBorderTop).toBe("0px");
   expect(layout.inputCard.bottom).toBe(layout.dialog.bottom);
   expect(layout.statusRow.top).toBeGreaterThanOrEqual(layout.inputRow.bottom);
   expect(layout.inputCard.bottom - layout.statusRow.bottom).toBeLessThanOrEqual(1);
