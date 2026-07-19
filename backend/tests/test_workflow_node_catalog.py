@@ -81,6 +81,58 @@ def test_data_transform_json_schema_and_csv():
     assert "name,n" in csv_out["csv"] and csv_out["count"] == 2
 
 
+def test_deterministic_template_filter_and_aggregate_nodes():
+    from app.workflows.nodes import node_data_aggregate, node_data_filter, node_data_template
+
+    context = {"source": {"status": "SUCCEEDED", "output": {"name": "ControlDeck", "score": 9}}}
+    templated = run(node_data_template({
+        "data": '{"title":"{{source.name}}","score":{{source.score}}}',
+        "template": '{"label":"{{data.title}}","score":{{data.score}}}',
+        "output_format": "json",
+    }, context))
+    assert templated == {
+        "text": '{"label":"ControlDeck","score":9}',
+        "value": {"label": "ControlDeck", "score": 9},
+        "format": "json",
+    }
+
+    rows = [
+        {"id": "a", "category": "x", "score": 7, "amount": 10},
+        {"id": "b", "category": "x", "score": 9, "amount": 20},
+        {"id": "b", "category": "x", "score": 8, "amount": 30},
+        {"id": "c", "category": "y", "score": 4, "amount": 5},
+    ]
+    filtered = run(node_data_filter({
+        "input": rows, "field": "score", "operator": "gte", "value": 7,
+        "unique_by": "id", "sort_by": "score", "sort_order": "desc", "limit": 2,
+    }, {}))
+    assert [item["id"] for item in filtered["items"]] == ["b", "a"]
+    assert filtered["count"] == 2 and filtered["original_count"] == 4
+
+    grouped = run(node_data_aggregate({
+        "input": rows, "operation": "sum", "field": "amount", "group_by": "category",
+    }, {}))
+    assert grouped["count"] == 4
+    assert grouped["groups"] == [
+        {"group": "x", "value": 60.0, "count": 3},
+        {"group": "y", "value": 5.0, "count": 1},
+    ]
+    assert run(node_data_aggregate({"input": [], "operation": "count"}, {}))["result"] == 0
+
+
+def test_deterministic_data_nodes_reject_unsafe_or_invalid_inputs():
+    from app.workflows.nodes import NodeError, node_data_aggregate, node_data_filter, node_data_template
+
+    safe = run(node_data_template({"template": "{{data.__class__}} {{cycler.__init__}}", "data": {"x": 1}}, {}))
+    assert safe["text"] == " "
+    with pytest.raises(NodeError, match="不正なJSON"):
+        run(node_data_template({"template": "{bad", "output_format": "json"}, {}))
+    with pytest.raises(NodeError, match="array"):
+        run(node_data_filter({"input": {"not": "array"}, "operator": "truthy"}, {}))
+    with pytest.raises(NodeError, match="number以外"):
+        run(node_data_aggregate({"input": [{"n": "1"}], "operation": "sum", "field": "n"}, {}))
+
+
 def test_file_glob_filters_symlink_escape():
     from app.workflows.nodes import NodeError, node_file_glob
 

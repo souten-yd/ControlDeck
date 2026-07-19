@@ -194,6 +194,63 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     ],
     outputs: [{ key: "value", label: "変換値" }, { key: "valid", label: "検証結果" }, { key: "errors", label: "検証エラー" }, { key: "rows", label: "行" }, { key: "csv", label: "CSV" }, { key: "count", label: "件数" }],
   },
+  "data.template": {
+    label: "テンプレート整形",
+    category: "データ",
+    color: "#6366f1",
+    icon: "{}",
+    desc: "LLMやコード実行なしで確定的にtext/JSONを整形",
+    fields: [
+      { key: "template", label: "テンプレート", type: "code", hint: "{{上流ID.field}}または{{data.field}}を使用。式・関数・コードは実行しません" },
+      { key: "data", label: "data（任意JSON）", type: "code", placeholder: '{"name":"{{trigger.name}}"}', hint: "ここで定義した値を{{data.name}}として参照" },
+      { key: "output_format", label: "出力形式", type: "select", options: [
+        { value: "text", label: "Text" }, { value: "json", label: "JSON（構文も検証）" },
+      ] },
+    ],
+    outputs: [{ key: "text", label: "整形済みtext" }, { key: "value", label: "型付き値" }, { key: "format", label: "出力形式" }],
+  },
+  "data.filter": {
+    label: "配列フィルター",
+    category: "データ",
+    color: "#6366f1",
+    icon: "▽",
+    desc: "arrayをfilter・unique・sort・limit",
+    fields: [
+      { key: "input", label: "入力array", type: "code", hint: TEMPLATE_HINT },
+      { key: "field", label: "判定field path", type: "text", placeholder: "score", hint: "空欄ならitem全体" },
+      { key: "operator", label: "条件", type: "select", options: [
+        { value: "truthy", label: "Truthy" }, { value: "exists", label: "存在する" },
+        { value: "equals", label: "等しい" }, { value: "not_equals", label: "等しくない" },
+        { value: "contains", label: "含む" }, { value: "gt", label: ">" }, { value: "gte", label: ">=" },
+        { value: "lt", label: "<" }, { value: "lte", label: "<=" },
+      ] },
+      { key: "value", label: "比較値（JSONまたはtext）", type: "code", hint: TEMPLATE_HINT },
+      { key: "unique_by", label: "重複除去field", type: "text", placeholder: "id" },
+      { key: "sort_by", label: "並び替えfield", type: "text", placeholder: "score" },
+      { key: "sort_order", label: "並び順", type: "select", options: [
+        { value: "asc", label: "昇順" }, { value: "desc", label: "降順" },
+      ] },
+      { key: "limit", label: "最大件数（0=全件）", type: "number", placeholder: "0" },
+    ],
+    outputs: [{ key: "items", label: "結果array" }, { key: "count", label: "結果件数" }, { key: "original_count", label: "入力件数" }],
+  },
+  "data.aggregate": {
+    label: "配列集計",
+    category: "データ",
+    color: "#6366f1",
+    icon: "Σ",
+    desc: "arrayをgroup化してcount/sum/avg/min/max",
+    fields: [
+      { key: "input", label: "入力array", type: "code", hint: TEMPLATE_HINT },
+      { key: "operation", label: "集計", type: "select", options: [
+        { value: "count", label: "件数" }, { value: "sum", label: "合計" },
+        { value: "avg", label: "平均" }, { value: "min", label: "最小" }, { value: "max", label: "最大" },
+      ] },
+      { key: "field", label: "数値field path", type: "text", placeholder: "amount", hint: "count以外で必須" },
+      { key: "group_by", label: "group field path（任意）", type: "text", placeholder: "category" },
+    ],
+    outputs: [{ key: "result", label: "集計結果" }, { key: "groups", label: "group別結果" }, { key: "count", label: "入力件数" }, { key: "operation", label: "集計種別" }],
+  },
   "text.markdown": {
     label: "Markdown→HTML",
     category: "データ",
@@ -780,6 +837,12 @@ export const NODE_DOCS: Record<string, string> = {
   "string.op":
     "テキスト加工の万能ノード。\n\n■ 主な操作\n- テンプレート展開: 複数出力の合成に\n- 置換 / 正規表現抽出 / 分割\n- JSON 抽出: LLM の JSON 応答から a.b.0 パスで値を取り出す\n\n■ 組み合わせ\nLLM 生成（JSON モード）→ 文字列操作(json_extract) → 条件分岐 が構造化パイプラインの定石。",
   "data.transform": "JSONの解析・path抽出/更新、Draft 2020-12 Schema検証、CSV相互変換を1ノードで扱います。入力/出力は2MiB、行は10000件が上限です。",
+  "data.template":
+    "LLMを使わず、同じ入力から常に同じtextまたはJSONを作る安全なテンプレートノードです。{{上流ID.field}}と{{data.field}}だけを展開し、式・関数・任意コードは実行しません。\n\n■ 適した用途\n通知本文、Markdown、API payload、file名などの確定的整形。創造的な文章生成や曖昧な分類にはLLMノードを使います。\n\n■ 上限とerror\ntemplate/data/outputは2MiBまで。JSON形式では整形後の構文を検証し、不正ならerror branchへ送れます。",
+  "data.filter":
+    "JSON arrayをfield条件で絞り込み、重複除去、安定sort、件数制限を1回で適用します。式やPythonは実行しません。\n\n■ 条件\nTruthy／存在／等値／非等値／含む／数値比較に対応。nested fieldはscore.totalのようなdot pathで指定します。\n\n■ Recipe\nHTTP結果→score >= 0.8→idでunique→score降順→上位10件。入力は最大10000件で、元件数と結果件数を返します。",
+  "data.aggregate":
+    "JSON arrayへcount、sum、avg、min、maxを適用します。group fieldを指定するとcategory別などの集計表を返します。\n\n■ 型\ncount以外はnumber field専用で、文字列の暗黙数値変換はしません。型が混在した場合は明示errorにしてdata.transform等での修正を促します。\n\n■ Recipe\nfile.glob→parallel loop結果→statusでgroup count、DB rows→department別amount合計→Table出力。最大10000件。",
   "text.markdown": "Markdown を HTML に変換します。レポートをメール/Web 表示用に整形する時に。",
   "db.query":
     "SQLite ファイルまたは接続 URL（PostgreSQL 等）へ SQL を実行します。\n\n■ 使い方\nSELECT は {{ID.rows}} に行データ（JSON）が入ります。パラメータは :name 形式 + JSON で安全にバインド。\n\n■ 組み合わせ\nDB クエリ → LLM 生成（要約/分析）→ 通知 で日次レポートが作れます。",
