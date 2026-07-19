@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from app.application_builder.capabilities import FRAMEWORKS, node_support
+from app.application_builder.design_system.components import COMPONENT_BY_TYPE
 from app.application_builder.diagnostics import Diagnostic, diagnostic
 from app.application_builder.ir import (
     ApplicationIR, EdgeIR, ExecutionPolicyIR, NodeCodegenIR, NodeIR, PortIR,
@@ -194,9 +195,40 @@ def validate_application_spec(spec: dict[str, Any]) -> list[Diagnostic]:
         if framework not in known_frameworks:
             issues.append(diagnostic("TARGET_UNKNOWN", "error", f"framework '{framework}' は未登録です", path=f"targets.{index}.framework"))
     _scan_security_and_bindings(spec, issues)
+    _validate_component_trees(spec, issues)
     if not spec.get("pages"):
         issues.append(diagnostic("GUI_EMPTY", "suggestion", "ページはまだありません", path="pages", source="gui-validator"))
     return issues
+
+
+def _validate_component_trees(spec: dict[str, Any], issues: list[Diagnostic]) -> None:
+    seen: set[str] = set()
+
+    def visit(component: Any, path: str) -> None:
+        if not isinstance(component, dict):
+            issues.append(diagnostic("COMPONENT_INVALID", "error", "componentはobjectで指定してください", path=path, source="gui-validator"))
+            return
+        component_id = str(component.get("id") or "")
+        component_type = str(component.get("type") or "")
+        if component_id in seen:
+            issues.append(diagnostic("COMPONENT_ID_DUPLICATE", "error", f"component id '{component_id}' が重複しています", path=f"{path}.id", source="gui-validator"))
+        elif component_id:
+            seen.add(component_id)
+        definition = COMPONENT_BY_TYPE.get(component_type)
+        if definition is None:
+            issues.append(diagnostic("COMPONENT_TYPE_UNKNOWN", "error", f"component type '{component_type}' は未登録です", path=f"{path}.type", source="gui-validator"))
+        children = component.get("children") or []
+        if not isinstance(children, list):
+            issues.append(diagnostic("COMPONENT_CHILDREN_INVALID", "error", "childrenはarrayで指定してください", path=f"{path}.children", source="gui-validator"))
+            return
+        if definition is not None and not definition["container"] and children:
+            issues.append(diagnostic("COMPONENT_CHILDREN_FORBIDDEN", "error", f"{component_type} は子部品を持てません", path=f"{path}.children", source="gui-validator"))
+        for index, child in enumerate(children):
+            visit(child, f"{path}.children.{index}")
+
+    for page_index, page in enumerate(spec.get("pages") or []):
+        if isinstance(page, dict) and page.get("root") is not None:
+            visit(page["root"], f"pages.{page_index}.root")
 
 
 def default_spec(

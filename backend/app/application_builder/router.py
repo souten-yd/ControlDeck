@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.application_builder.capabilities import capability_catalog
 from app.application_builder.compiler import default_spec, validate_application_spec
+from app.application_builder.design_system.components import component_catalog
 from app.application_builder.service import create_default_project, get_project, project_out, validate_payload, workflow_source
 from app.audit import service as audit
 from app.database import get_db
@@ -36,6 +37,7 @@ def application_schema(user: User = Depends(require_permission("application_buil
             "state", "route", "form", "system", "constant",
         ],
         "statuses": ["draft", "archived"],
+        "semanticComponents": component_catalog(),
     }
 
 
