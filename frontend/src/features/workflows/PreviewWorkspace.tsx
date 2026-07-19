@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { IconX } from "../../components/icons";
 import type { TriggerInputDef } from "./nodeTypes";
@@ -65,6 +65,20 @@ interface ExecutionDetail {
   }>;
 }
 
+interface WorkflowTestCase {
+  id: number;
+  name: string;
+  inputs: Record<string, unknown>;
+  expected_outputs: Record<string, unknown>;
+  assertions: Array<{ path: string; operator: string; expected?: unknown }>;
+  last_execution_id: number | null;
+  last_status: "NEVER" | "RUNNING" | "PASSED" | "FAILED" | "ERROR";
+  last_result: {
+    summary?: { passed: number; total: number };
+    checks?: Array<{ path: string; passed: boolean; actual?: unknown; expected?: unknown }>;
+  };
+}
+
 const SIDE_EFFECT_LABEL: Record<string, string> = {
   none: "なし",
   read: "読取",
@@ -103,12 +117,17 @@ export function PreviewWorkspace({
   onExecution: (executionId: number) => void;
   onClose: () => void;
 }) {
+  const qc = useQueryClient();
   const [values, setValues] = useState<Record<string, unknown>>(() => initialValues(inputs));
   const [mode, setMode] = useState<"safe" | "test">("safe");
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [executionId, setExecutionId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [caseEditorOpen, setCaseEditorOpen] = useState(false);
+  const [caseName, setCaseName] = useState("");
+  const [expectedText, setExpectedText] = useState("{}");
+  const [assertionsText, setAssertionsText] = useState("[]");
 
   useEffect(() => setValues((current) => ({ ...initialValues(inputs), ...current })), [inputs]);
 
@@ -126,6 +145,11 @@ export function PreviewWorkspace({
       const status = query.state.data?.status;
       return !status || ["QUEUED", "RUNNING", "WAITING"].includes(status) ? 800 : false;
     },
+  });
+  const { data: testCases } = useQuery({
+    queryKey: ["workflow-test-cases", workflowId],
+    queryFn: () => api<WorkflowTestCase[]>(`/workflows/${workflowId}/test-cases`),
+    refetchInterval: (query) => query.state.data?.some((item) => item.last_status === "RUNNING") ? 800 : false,
   });
 
   const expectedOutputs = useMemo(
@@ -193,6 +217,64 @@ export function PreviewWorkspace({
     }
   };
 
+  const openCaseEditor = () => {
+    const expected = execution?.status === "SUCCEEDED"
+      ? Object.fromEntries(Object.entries(execution.outputs).map(([name, output]) => [name, output.value]))
+      : {};
+    setCaseName(`テスト ${new Date().toLocaleString("ja-JP")}`);
+    setExpectedText(JSON.stringify(expected, null, 2));
+    setAssertionsText("[]");
+    setCaseEditorOpen(true);
+  };
+
+  const saveTestCase = async () => {
+    try {
+      const expected: unknown = JSON.parse(expectedText);
+      const assertions: unknown = JSON.parse(assertionsText);
+      if (!expected || Array.isArray(expected) || typeof expected !== "object" || !Array.isArray(assertions)) {
+        throw new Error("期待出力はobject、追加アサーションはarrayで指定してください");
+      }
+      await api(`/workflows/${workflowId}/test-cases`, {
+        method: "POST",
+        json: { name: caseName, inputs: values, expected_outputs: expected, assertions },
+      });
+      await qc.invalidateQueries({ queryKey: ["workflow-test-cases", workflowId] });
+      setCaseEditorOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "テストケースの保存に失敗しました");
+    }
+  };
+
+  const runTestCase = async (caseId: number) => {
+    setError("");
+    try {
+      await api(`/workflows/${workflowId}/test-cases/${caseId}/run`, { method: "POST" });
+      await qc.invalidateQueries({ queryKey: ["workflow-test-cases", workflowId] });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "テストケースの実行に失敗しました");
+    }
+  };
+
+  const runAllTestCases = async () => {
+    setError("");
+    try {
+      await api(`/workflows/${workflowId}/test-cases/run-batch`, { method: "POST" });
+      await qc.invalidateQueries({ queryKey: ["workflow-test-cases", workflowId] });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "回帰テストの開始に失敗しました");
+    }
+  };
+
+  const deleteTestCase = async (testCase: WorkflowTestCase) => {
+    if (!window.confirm(`テストケース「${testCase.name}」を削除しますか？`)) return;
+    try {
+      await api(`/workflows/${workflowId}/test-cases/${testCase.id}`, { method: "DELETE" });
+      await qc.invalidateQueries({ queryKey: ["workflow-test-cases", workflowId] });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "テストケースの削除に失敗しました");
+    }
+  };
+
   return (
     <aside
       aria-label="実行プレビュー"
@@ -239,13 +321,57 @@ export function PreviewWorkspace({
           )}
         </section>
 
+        <section aria-labelledby="regression-tests-heading" className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <h3 id="regression-tests-heading" className="text-xs font-semibold">回帰テスト</h3>
+              <p className="text-[10px] text-zinc-400">保存入力と期待出力を変更後にまとめて再検証</p>
+            </div>
+            <button type="button" onClick={openCaseEditor} className="min-h-9 shrink-0 rounded-lg border border-zinc-300 px-2 text-[11px] font-medium dark:border-zinc-700">現在値を保存</button>
+          </div>
+          {caseEditorOpen && (
+            <div className="mt-3 space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-950">
+              <label className="block text-[10px] font-medium text-zinc-500">テストケース名<input aria-label="テストケース名" value={caseName} onChange={(event) => setCaseName(event.target.value)} className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900" /></label>
+              <label className="block text-[10px] font-medium text-zinc-500">期待出力 JSON<textarea aria-label="期待出力 JSON" value={expectedText} onChange={(event) => setExpectedText(event.target.value)} rows={4} spellCheck={false} className="mt-1 w-full rounded-lg border border-zinc-300 bg-white p-2 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-900" /></label>
+              <label className="block text-[10px] font-medium text-zinc-500">追加アサーション JSON<textarea aria-label="追加アサーション JSON" value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} rows={3} spellCheck={false} className="mt-1 w-full rounded-lg border border-zinc-300 bg-white p-2 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-900" /></label>
+              <p className="text-[9px] text-zinc-400">例: {`[{"path":"outputs.answer.value","operator":"contains","expected":"完了"}]`}</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setCaseEditorOpen(false)} className="min-h-10 rounded-lg border border-zinc-300 text-xs dark:border-zinc-700">取消</button>
+                <button type="button" onClick={() => void saveTestCase()} disabled={!caseName.trim()} className="min-h-10 rounded-lg bg-accent-600 text-xs font-semibold text-white disabled:opacity-40">保存</button>
+              </div>
+            </div>
+          )}
+          {testCases && testCases.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              <button type="button" onClick={() => void runAllTestCases()} disabled={testCases.some((item) => item.last_status === "RUNNING")} className="min-h-10 w-full rounded-xl bg-zinc-900 text-xs font-semibold text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900">全{testCases.length}件を一括実行</button>
+              {testCases.map((testCase) => (
+                <article key={testCase.id} className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+                  <div className="flex items-center gap-2">
+                    <strong className="min-w-0 flex-1 truncate text-xs">{testCase.name}</strong>
+                    <TestCaseStatus status={testCase.last_status} />
+                  </div>
+                  {testCase.last_result.summary && <p className="mt-1 text-[10px] text-zinc-400">assertion {testCase.last_result.summary.passed}/{testCase.last_result.summary.total} · execution #{testCase.last_execution_id}</p>}
+                  {testCase.last_result.checks?.some((check) => !check.passed) && (
+                    <details className="mt-1 text-[10px]"><summary className="cursor-pointer text-red-500">失敗差分を表示</summary>{testCase.last_result.checks.filter((check) => !check.passed).map((check, index) => <pre key={index} className="mt-1 overflow-auto rounded bg-red-50 p-2 font-mono text-[9px] text-red-600 dark:bg-red-950/30 dark:text-red-300">{stringify(check)}</pre>)}</details>
+                  )}
+                  <div className="mt-2 grid grid-cols-3 gap-1.5">
+                    <button type="button" onClick={() => setValues({ ...initialValues(inputs), ...testCase.inputs })} className="min-h-9 rounded-lg border border-zinc-300 text-[10px] dark:border-zinc-700">入力を読込</button>
+                    <button type="button" onClick={() => void runTestCase(testCase.id)} disabled={testCase.last_status === "RUNNING"} className="min-h-9 rounded-lg border border-accent-300 text-[10px] font-medium text-accent-700 disabled:opacity-50 dark:border-accent-700 dark:text-accent-300">{testCase.last_status === "RUNNING" ? "実行中…" : "実行"}</button>
+                    <button type="button" onClick={() => void deleteTestCase(testCase)} className="min-h-9 rounded-lg text-[10px] text-red-600 dark:text-red-400">削除</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : <p className="mt-3 rounded-lg border border-dashed border-zinc-300 p-2 text-[10px] text-zinc-400 dark:border-zinc-700">まだテストケースはありません。現在の入力、または成功結果を保存できます。</p>}
+        </section>
+
         <section>
           <h3 className="mb-2 text-xs font-semibold">実行モード</h3>
           <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="実行モード">
             <ModeButton active={mode === "safe"} title="安全プレビュー" description="executorを呼ばない" onClick={() => setMode("safe")} />
             <ModeButton active={mode === "test"} title="通常テスト実行" description="保存後に実行する" onClick={() => setMode("test")} />
           </div>
-          <p className="mt-1.5 text-[10px] text-zinc-400">選択ノードまで／ノードから再実行／mock は再現性Phaseで追加します。</p>
+          <p className="mt-1.5 text-[10px] text-zinc-400">選択ノードまで／ノードからの実行はノードインスペクタの「実行」タブで選べます。</p>
         </section>
 
         <section>
@@ -320,6 +446,18 @@ function PreviewField({ input, value, onChange }: { input: TriggerInputDef; valu
 
 function ModeButton({ active, title, description, onClick }: { active: boolean; title: string; description: string; onClick: () => void }) {
   return <button type="button" role="radio" aria-checked={active} onClick={onClick} className={`min-h-16 rounded-xl border p-2 text-left ${active ? "border-accent-500 bg-accent-50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}><span className="block text-xs font-medium">{title}</span><span className="text-[10px] text-zinc-400">{description}</span></button>;
+}
+
+function TestCaseStatus({ status }: { status: WorkflowTestCase["last_status"] }) {
+  const style = status === "PASSED"
+    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+    : status === "FAILED" || status === "ERROR"
+      ? "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+      : status === "RUNNING"
+        ? "bg-accent-50 text-accent-700 dark:bg-accent-950/40 dark:text-accent-300"
+        : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800";
+  const label = { NEVER: "未実行", RUNNING: "実行中", PASSED: "成功", FAILED: "失敗", ERROR: "エラー" }[status];
+  return <span className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-semibold ${style}`}>{label}</span>;
 }
 
 function ResultNotice({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {

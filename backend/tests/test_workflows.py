@@ -349,6 +349,65 @@ def test_node_test_pinned_data_and_resume_from_cached_upstream(admin_client):
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 
+def test_workflow_regression_test_cases_batch_and_assertions(admin_client):
+    import time
+
+    definition = _definition([
+        {"id": "t", "type": "trigger", "name": "入力", "config": {"mode": "manual"}},
+        {"id": "out", "type": "signal.display", "name": "出力", "config": {
+            "signal": "answer", "value": "Hello {{t.name}}",
+        }},
+    ], [{"source": "t", "target": "out"}])
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "regression", "definition": definition}, headers=CSRF_HEADERS,
+    )
+    workflow_id = created.json()["id"]
+    passing = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/test-cases",
+        json={
+            "name": "基本応答", "inputs": {
+                "name": "Deck", "password": "never-store", "copied": "value=never-store",
+                "secret_reference": "{{secrets.TEST_API_KEY}}",
+            },
+            "expected_outputs": {"answer": "Hello Deck"},
+            "assertions": [
+                {"path": "outputs.answer.value", "operator": "contains", "expected": "Deck"},
+                {"path": "context.out.status", "operator": "equals", "expected": "SUCCEEDED"},
+            ],
+        }, headers=CSRF_HEADERS,
+    )
+    failing = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/test-cases",
+        json={"name": "差分検知", "inputs": {"name": "Changed"}, "expected_outputs": {"answer": "old"}},
+        headers=CSRF_HEADERS,
+    )
+    assert passing.status_code == 201 and failing.status_code == 201
+    assert passing.json()["inputs"]["password"] == "***"
+    assert passing.json()["inputs"]["copied"] == "value=***"
+    assert passing.json()["inputs"]["secret_reference"] == "{{secrets.TEST_API_KEY}}"
+
+    batch = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/test-cases/run-batch", headers=CSRF_HEADERS,
+    )
+    assert batch.status_code == 200 and len(batch.json()["started"]) == 2
+    cases = []
+    for _ in range(100):
+        cases = admin_client.get(f"/api/v1/workflows/{workflow_id}/test-cases").json()
+        if all(item["last_status"] not in ("NEVER", "RUNNING") for item in cases):
+            break
+        time.sleep(0.05)
+    by_name = {item["name"]: item for item in cases}
+    assert by_name["基本応答"]["last_status"] == "PASSED"
+    assert by_name["基本応答"]["last_result"]["summary"] == {"passed": 3, "total": 3}
+    assert by_name["差分検知"]["last_status"] == "FAILED"
+    assert by_name["差分検知"]["last_result"]["checks"][0]["actual"] == "Hello Changed"
+
+    assert admin_client.delete(
+        f"/api/v1/workflows/{workflow_id}/test-cases/{passing.json()['id']}", headers=CSRF_HEADERS,
+    ).status_code == 204
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
 def test_viewer_cannot_run_workflows(client):
     client.cookies.clear()
     r = client.post(

@@ -66,6 +66,18 @@ test("integrates trigger input, safe preview, test result, and past input at 320
     await expect(preview.getByText("テストに成功しました")).toBeVisible({ timeout: 10_000 });
     await expect(preview.getByText("回答: ControlDeck preview", { exact: true })).toBeVisible();
 
+    await preview.getByRole("button", { name: "現在値を保存" }).click();
+    await preview.getByLabel("テストケース名").fill("E2E 回帰ケース");
+    await expect(preview.getByLabel("期待出力 JSON")).toContainText("ControlDeck preview");
+    await preview.getByRole("button", { name: "保存", exact: true }).click();
+    const regressionCase = preview.locator("article").filter({ hasText: "E2E 回帰ケース" });
+    await expect(regressionCase).toBeVisible();
+    await preview.getByRole("button", { name: "全1件を一括実行" }).click();
+    await expect(regressionCase.getByText("成功", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(regressionCase.getByText(/assertion 1\/1/)).toBeVisible();
+    await regressionCase.getByRole("button", { name: "入力を読込" }).click();
+    await expect(preview.getByLabel("質問 *")).toHaveValue("ControlDeck preview");
+
     const mobileLayout = await page.evaluate(() => ({
       viewport: window.innerWidth,
       document: document.documentElement.scrollWidth,

@@ -348,6 +348,25 @@ class WorkflowPinnedData(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class WorkflowTestCase(Base):
+    """保存入力と期待値を用いるworkflow回帰テスト。"""
+
+    __tablename__ = "workflow_test_cases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    inputs_json: Mapped[str] = mapped_column(Text, default="{}")
+    mocks_json: Mapped[str] = mapped_column(Text, default="{}")
+    expected_outputs_json: Mapped[str] = mapped_column(Text, default="{}")
+    assertions_json: Mapped[str] = mapped_column(Text, default="[]")
+    last_execution_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_executions.id"), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(16), default="NEVER")
+    last_result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class RemoteConnection(Base):
     __tablename__ = "remote_connections"
 
