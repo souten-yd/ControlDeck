@@ -17,9 +17,10 @@
 | 許可コマンドHC | ローカル設定の固定ID→固定argvだけを選択可能。APIへargvを返さず、認証語を拒否し、出力破棄・resource上限付きsystemd user transient unitで最大4並列実行 |
 | shell=True 禁止 | subprocess はすべて配列引数。CI/レビューで検査 |
 | パス検証 | すべてのファイルパスは `Path(p).resolve(strict=...)` で正規化し、許可ルート配下（`os.path.commonpath`）を検証。symlink は resolve 後の実体で判定 |
-| アーカイブ | ZIP／tar.gzの作成・展開は許可root内の一時pathへ実行し、Linux `renameat2(RENAME_NOREPLACE)`で原子的公開。`..`／絶対path／重複・競合path、symlink／hardlink／特殊file、10万項目超、設定size上限超、16MiBを超える200倍超の展開率、空き容量不足を拒否し、既存pathを上書きしない |
+| アーカイブ | ZIP／tar.gzの作成・展開は許可root内の一時pathへ実行し、Linux `renameat2(RENAME_NOREPLACE)`で原子的公開。`..`／絶対path／重複・競合path、symlink／hardlink／特殊file、10万項目超、設定size上限超、16MiBを超える200倍超の展開率、空き容量不足を拒否し、既存pathを上書きしない。管理backup restoreも既知root・通常file／directory限定の同等境界で展開する |
 | 監査ログ | ログイン成功/失敗、アプリ登録/編集/削除/起動/停止/強制終了、ログ削除、電源操作、ユーザー/権限/設定変更を AuditLog へ記録 |
 | 秘密情報のマスキング | 環境変数の値のうち TOKEN/SECRET/PASSWORD/PASS/API_KEY/PRIVATE_KEY/AUTH/COOKIE を含むキーは表示・ログ出力時にマスク。DB 保存時は暗号化（Fernet、鍵は data_dir 内 0600） |
+| PostgreSQL credential | URLはYAML／unit本文へ書かず、固定`config/database.env`だけに保存。起動前に`O_NOFOLLOW`、通常file、実行user owner、0600、4KiB、固定1行、SQLite／PostgreSQL方言を検査。診断はbackend／host／port／databaseだけを表示し、pg_dump／pg_restoreはpasswordをargvへ渡さない |
 | ネットワーク | 既定 127.0.0.1:8765。0.0.0.0 設定時は起動ログと UI に警告。HTTPS はリバースプロキシ（Caddy/Nginx 設定例を deploy/ に用意） |
 
 ## 認証

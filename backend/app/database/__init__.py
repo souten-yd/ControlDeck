@@ -12,12 +12,15 @@ class Base(DeclarativeBase):
     pass
 
 
+_database_url = db_url()
+_sqlite = _database_url.startswith("sqlite")
 engine = create_engine(
-    db_url(),
-    connect_args={"check_same_thread": False} if db_url().startswith("sqlite") else {},
+    _database_url,
+    connect_args={"check_same_thread": False} if _sqlite else {},
+    pool_pre_ping=not _sqlite,
 )
 
-if db_url().startswith("sqlite"):
+if _sqlite:
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, _record):  # noqa: ANN001

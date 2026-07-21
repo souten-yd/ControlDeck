@@ -6,7 +6,10 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+
+import pytest
 
 
 def _run(database: Path, code: str) -> subprocess.CompletedProcess[str]:
@@ -176,3 +179,84 @@ command.downgrade(_alembic_config(), "b7e1d94c2f60")
         }
         assert "workflow_business_events" not in tables
         assert "workflow_event_deliveries" not in tables
+
+
+def test_postgresql_offline_migrations_render_to_head_without_sqlite_statements():
+    env = os.environ.copy()
+    env["CONTROL_DECK_DB_URL"] = "postgresql+psycopg://user:secret@127.0.0.1/control_deck"
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CREATE TABLE users" in result.stdout
+    assert "d91a2c7f4e80" in result.stdout
+    assert "PRAGMA" not in result.stdout
+    assert "sqlite_master" not in result.stdout
+    assert "secret" not in result.stderr
+
+
+def test_postgresql_migration_uses_advisory_lock(monkeypatch):
+    from app.database import migrations
+
+    calls: list[str] = []
+
+    class Url:
+        @staticmethod
+        def get_backend_name():
+            return "postgresql"
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def execute(self, statement, parameters):
+            calls.append(str(statement))
+
+    class Engine:
+        url = Url()
+
+        @staticmethod
+        def connect():
+            return Connection()
+
+    monkeypatch.setattr(migrations, "engine", Engine())
+    with migrations._migration_lock():
+        calls.append("migration")
+    assert "pg_advisory_lock" in calls[0]
+    assert calls[1] == "migration"
+    assert "pg_advisory_unlock" in calls[2]
+
+
+def test_unversioned_nonempty_postgresql_schema_is_not_auto_stamped(monkeypatch):
+    from app.database import migrations
+
+    class Url:
+        @staticmethod
+        def get_backend_name():
+            return "postgresql"
+
+    class Engine:
+        url = Url()
+
+    prepared = False
+
+    def prepare():
+        nonlocal prepared
+        prepared = True
+
+    monkeypatch.setattr(migrations, "engine", Engine())
+    monkeypatch.setattr(migrations, "_migration_lock", nullcontext)
+    monkeypatch.setattr(migrations, "_table_names", lambda: {"users"})
+    monkeypatch.setattr(migrations, "_current_revisions", lambda: [])
+    with pytest.raises(RuntimeError, match="migration"):
+        migrations.migrate_database(prepare)
+    assert prepared is False

@@ -8,6 +8,10 @@ Type=notify
 NotifyAccess=main
 WatchdogSec=30
 WorkingDirectory=@REPO_ROOT@/backend
+# PostgreSQL切替時だけ存在する0600の専用設定。値はログやunit本文へ展開しない。
+EnvironmentFile=-@REPO_ROOT@/config/database.env
+# 起動前にowner／mode／symlink／URL方言を検査する。未作成（SQLite既定）は成功。
+ExecStartPre=@REPO_ROOT@/.venv/bin/python -m app.database.cli validate-env-file @REPO_ROOT@/config/database.env
 # 待受ホスト/ポートは config.yaml（server.host/port）から読む
 ExecStart=@REPO_ROOT@/.venv/bin/python -m app.server
 Restart=on-failure

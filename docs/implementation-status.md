@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-21
 
+## Phase 7 PostgreSQL運用切替 実装完了（2026-07-21 13:45 JST、実server確認待ち）
+
+- `psycopg 3`を標準依存へ追加し、Control Deck本体DB URLをSQLite／PostgreSQLだけに制限した。`./deck.sh database status|postgresql|sqlite`を追加し、PostgreSQLは非表示入力または一時環境変数から接続を先に確認する。現行SQLiteを整合backupしてから固定`config/database.env`へ0600で原子的に保存し、service migration／起動失敗時は直前設定へ戻して再起動する。SQLite復帰時も旧PostgreSQL設定を0600で退避し、既存dataを暗黙移送しない。
+- systemd user unitはURLを本文へ展開せずoptional EnvironmentFileを読む。ExecStartPreとforeground起動は同じ検査で、`O_NOFOLLOW`、通常file、実行user owner、group／other permissionなし、4KiB上限、UTF-8固定1行、対応方言／psycopgを強制する。診断と例外はpasswordを表示しない。
+- PostgreSQL migrationは固定advisory lockで複数instanceの同時upgradeを直列化し、version情報のない非空schemaを安全確認なしでhead stampしない。Alembic全revisionをPostgreSQL offline SQLへ生成する回帰を追加した。backup／restoreはcustom formatの`pg_dump`／`pg_restore`を固定配列argvで実行し、passwordは子process環境だけへ渡す。restore前に現DBのsafety dumpを作成し、Web serviceを停止してからclean restoreする。backup archive自体も既知rootの通常file／directoryだけを展開し、traversal、重複、symlink／hardlink／特殊file、件数／size／圧縮率超過を拒否する。
+
+検証: database／migration集中18件、backend全453件、frontend TypeScript／production build、bash構文、diff whitespace、PostgreSQL offline head SQLに成功。実機の既定SQLiteで`database status`、整合backup作成／manifestの`database_backend: sqlite`、安全な再展開、一時archive清掃を確認した。更新systemd unitは最終PID `448633`でExecStartPre成功、active／health 200。不足client時の`database postgresql`は設定fileを作らず失敗し、SQLite／service継続を確認した。実機にPostgreSQL server／clientがないため、実接続・online migration・pg_dump／pg_restoreは未実施であり、これを実server確認待ちとして残す。既存Terminalには接続・入力・停止していない。
+
 ## Phase 7 provider共通pull／モデル設定管理 完了（2026-07-21 13:30 JST）
 
 - capability付きprovider adapterへ`pull`、モデル設定の取得／保存、操作開始前のcapability検査を追加した。Ollamaのpullは既存のブラウザ非依存durable Jobへ接続し、進捗と同じevent IDを維持する。llama.cppは登録済みaliasの生成／runtime設定だけを共通routeから変更でき、alias、GGUF path、mmproj、role、portは専用登録APIに限定する。
@@ -1714,7 +1722,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 ## 既知の制約 / 次の作業
 
 1. system service helper／root catalogの初回導入は`./deck.sh service`で対話sudo認証が必要。コード・境界・自動／ブラウザ回帰は完了したが、この実機でのhelper操作確認は導入後に行う
-2. PostgreSQL の運用切替、汎用プラグインSDKは未完（provider共通pull／設定管理とOpenCode向けfeature境界は実装済み）
+2. PostgreSQL運用切替コードは完了したが、この実機にserver／clientがなくonline migration／backup／restoreは確認待ち。汎用プラグインSDKは未完
 3. 電源 reboot/shutdown は API 実装済みだが、破壊的な実機実行は未検証
 
 ## 履歴

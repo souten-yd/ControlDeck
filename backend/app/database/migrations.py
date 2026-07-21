@@ -23,6 +23,7 @@ from app.database import Base, engine
 
 logger = logging.getLogger("control_deck.database.migrations")
 _MIN_FREE_BYTES = 16 * 1024 * 1024
+_POSTGRES_MIGRATION_LOCK_ID = 4_855_879_457_231_118_907
 
 
 def _alembic_config() -> Config:
@@ -54,6 +55,22 @@ def _sqlite_path() -> Path | None:
 def _migration_lock() -> Iterator[None]:
     database = _sqlite_path()
     if database is None:
+        if engine.url.get_backend_name() == "postgresql":
+            # 複数Web instanceの同時起動でもAlembicを1本化する。session-level lockは
+            # migrationが使う別connection／transactionを跨いで保持できる。
+            with engine.connect() as connection:
+                connection.execute(
+                    text("SELECT pg_advisory_lock(:lock_id)"),
+                    {"lock_id": _POSTGRES_MIGRATION_LOCK_ID},
+                )
+                try:
+                    yield
+                finally:
+                    connection.execute(
+                        text("SELECT pg_advisory_unlock(:lock_id)"),
+                        {"lock_id": _POSTGRES_MIGRATION_LOCK_ID},
+                    )
+            return
         yield
         return
     database.parent.mkdir(parents=True, exist_ok=True)
@@ -213,6 +230,11 @@ def migrate_database(prepare_legacy: Callable[[], None]) -> None:
         revisions = _current_revisions()
         try:
             if legacy_tables and not revisions:
+                if engine.url.get_backend_name() != "sqlite":
+                    raise RuntimeError(
+                        "version情報のない既存PostgreSQL schemaは自動採用できません。"
+                        "空databaseを使用するか、検証済みのAlembic revisionを明示してください"
+                    )
                 backup_path = _backup_sqlite("pre-alembic")
                 prepare_legacy()
                 command.stamp(_alembic_config(), "head")

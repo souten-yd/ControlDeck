@@ -9,6 +9,7 @@
 #   ./deck.sh admin <名前> 管理者ユーザー作成
 #   ./deck.sh passwd <名前> ログインパスワードを変更
 #   ./deck.sh reset-totp <名前>   二要素認証を解除（ロックアウト復旧用。--all で全員）
+#   ./deck.sh database <status|postgresql|sqlite>  本体DBの確認・安全な切替
 #   ./deck.sh backup [出力先]      DB/設定/ユニットをバックアップ
 #   ./deck.sh restore <ファイル>   バックアップから復元
 #   ./deck.sh enable-desktop      この PC のリモートデスクトップを有効化（既定=ヘッドレス）
@@ -29,6 +30,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$REPO_ROOT/.venv"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SERVICE=control-deck-web
+DATABASE_ENV="$REPO_ROOT/config/database.env"
 
 info() { echo -e "\033[36m[deck]\033[0m $*"; }
 warn() { echo -e "\033[33m[deck] 警告:\033[0m $*" >&2; }
@@ -81,6 +83,23 @@ ensure_venv() {
     "$VENV/bin/pip" install --quiet -r "$req"
     echo "$current" > "$stamp"
   fi
+}
+
+load_database_env() {
+  [ -e "$DATABASE_ENV" ] || return 0
+  local database_url
+  if ! database_url="$(cd "$REPO_ROOT/backend" && "$VENV/bin/python" - "$DATABASE_ENV" <<'PY'
+import sys
+from pathlib import Path
+from app.database.runtime import read_database_env
+value = read_database_env(Path(sys.argv[1]), required=True)
+if value:
+    print(value)
+PY
+)"; then
+    die "config/database.envが安全要件を満たしません（通常file、実行user所有、mode 0600、固定1行）"
+  fi
+  export CONTROL_DECK_DB_URL="$database_url"
 }
 
 ensure_frontend() {
@@ -199,6 +218,7 @@ ensure_ready() {
   check_root
   check_python
   ensure_venv
+  load_database_env
   ensure_config
   ensure_frontend
   ensure_linger
@@ -210,6 +230,18 @@ ensure_ready() {
 service_installed() {
   # pipefail + grep -qではsystemctlがSIGPIPE(141)となり登録済みを誤判定する。
   systemctl --user cat "$SERVICE.service" >/dev/null 2>&1
+}
+
+install_web_unit() {
+  local unit_dir="$HOME/.config/systemd/user"
+  local unit_tmp
+  mkdir -p "$unit_dir"
+  unit_tmp="$(mktemp "$unit_dir/.control-deck-web.service.XXXXXX")"
+  sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
+      "$REPO_ROOT/deploy/systemd/control-deck-web.service.in" > "$unit_tmp"
+  chmod 0644 "$unit_tmp"
+  mv "$unit_tmp" "$unit_dir/$SERVICE.service"
+  systemctl --user daemon-reload
 }
 
 install_hw_helper() {
@@ -257,6 +289,7 @@ cmd_start() {
   ensure_ready
   if service_installed && systemctl --user is-enabled --quiet "$SERVICE" 2>/dev/null; then
     info "サービスが登録済みのため再起動して反映します"
+    install_web_unit
     systemctl --user restart "$SERVICE"
     sleep 2
     systemctl --user --no-pager --lines=3 status "$SERVICE" || true
@@ -271,11 +304,7 @@ cmd_start() {
 cmd_service() {
   ensure_ready
   install_hw_helper || true
-  local unit_dir="$HOME/.config/systemd/user"
-  mkdir -p "$unit_dir"
-  sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
-      "$REPO_ROOT/deploy/systemd/control-deck-web.service.in" > "$unit_dir/$SERVICE.service"
-  systemctl --user daemon-reload
+  install_web_unit
   systemctl --user enable --now "$SERVICE.service"
   # 既にactiveの場合も、更新したbackend/frontend/unitを確実に反映する。
   systemctl --user restart "$SERVICE.service"
@@ -318,6 +347,129 @@ cmd_reset_totp() {
   exec "$VENV/bin/python" -m app.cli reset-totp "$1"
 }
 
+restart_after_database_change() {
+  if ! service_installed; then
+    info "DB設定を保存しました。次回 ./deck.sh 起動時に適用します"
+    return 0
+  fi
+  install_web_unit
+  if ! systemctl --user restart "$SERVICE.service" || ! systemctl --user is-active --quiet "$SERVICE.service"; then
+    return 1
+  fi
+  sleep 2
+  systemctl --user is-active --quiet "$SERVICE.service"
+}
+
+cmd_database() {
+  local action="${1:-status}"
+  check_root; check_python; ensure_venv; ensure_config
+  case "$action" in
+    status)
+      load_database_env
+      (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.database.cli status) \
+        || die "DBへ接続できません（credentialは表示しません）"
+      ;;
+    postgresql)
+      local candidate="${CONTROL_DECK_POSTGRES_URL:-}"
+      local previous=""
+      local had_previous=0
+      local env_tmp
+      local current_backend
+      if ! command -v pg_dump >/dev/null || ! command -v pg_restore >/dev/null; then
+        apt_install postgresql-client \
+          || die "PostgreSQL backup／restore用にpostgresql-clientが必要です: sudo apt install postgresql-client"
+      fi
+      if [ -z "$candidate" ]; then
+        [ -t 0 ] || die "対話端末でURLを入力するか、CONTROL_DECK_POSTGRES_URLを設定してください"
+        read -rsp "PostgreSQL URL: " candidate; echo
+      fi
+      if [ -e "$DATABASE_ENV" ]; then
+        (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.database.cli validate-env-file "$DATABASE_ENV") \
+          || die "既存config/database.envが安全要件を満たしません"
+      fi
+      (cd "$REPO_ROOT/backend" && CONTROL_DECK_CANDIDATE_DB_URL="$candidate" \
+        "$VENV/bin/python" -m app.database.cli check-candidate) \
+        || die "PostgreSQLへ接続できません。DB、権限、URLを確認してください"
+      # 現行SQLiteは切替前に整合backupを作る。PostgreSQL間の移行は自動実行しない。
+      load_database_env
+      current_backend="$(cd "$REPO_ROOT/backend" && "$VENV/bin/python" -c 'from app.config import db_url; from app.database.runtime import validate_database_url; print(validate_database_url(db_url()).get_backend_name())')"
+      if [ "$current_backend" = "sqlite" ] && [ -f "$(cd "$REPO_ROOT/backend" && "$VENV/bin/python" -c 'from app.config import data_dir; print(data_dir() / "control-deck.db")')" ]; then
+        info "切替前のSQLite backupを作成します"
+        bash "$REPO_ROOT/scripts/backup.sh" "$REPO_ROOT/backups"
+      fi
+      if [ -f "$DATABASE_ENV" ]; then
+        previous="$(mktemp)"
+        cp "$DATABASE_ENV" "$previous"
+        chmod 0600 "$previous"
+        had_previous=1
+      elif [ -n "${CONTROL_DECK_DB_URL:-}" ]; then
+        previous="$(mktemp)"
+        chmod 0600 "$previous"
+        if ! (cd "$REPO_ROOT/backend" && "$VENV/bin/python" - "$previous" <<'PY'
+import os
+import sys
+from pathlib import Path
+from app.database.runtime import normalized_database_url
+value = normalized_database_url(os.environ["CONTROL_DECK_DB_URL"])
+Path(sys.argv[1]).write_text(f"CONTROL_DECK_DB_URL={value}\n", encoding="utf-8")
+PY
+        ); then
+          rm -f "$previous"
+          die "現在のDB設定を安全に退避できませんでした"
+        fi
+        had_previous=1
+      fi
+      mkdir -p "$REPO_ROOT/config"
+      env_tmp="$(mktemp "$REPO_ROOT/config/.database.env.XXXXXX")"
+      chmod 0600 "$env_tmp"
+      if ! (cd "$REPO_ROOT/backend" && CONTROL_DECK_CANDIDATE_DB_URL="$candidate" "$VENV/bin/python" - "$env_tmp" <<'PY'
+import os
+import sys
+from pathlib import Path
+from app.database.runtime import normalized_database_url
+value = normalized_database_url(os.environ["CONTROL_DECK_CANDIDATE_DB_URL"])
+Path(sys.argv[1]).write_text(f"CONTROL_DECK_DB_URL={value}\n", encoding="utf-8")
+PY
+      ); then
+        rm -f "$env_tmp"
+        [ -z "$previous" ] || rm -f "$previous"
+        die "PostgreSQL設定を安全に保存できませんでした"
+      fi
+      mv "$env_tmp" "$DATABASE_ENV"
+      chmod 0600 "$DATABASE_ENV"
+      if ! restart_after_database_change; then
+        warn "PostgreSQL適用に失敗したため直前のDB設定へ戻します"
+        if [ "$had_previous" -eq 1 ]; then cp "$previous" "$DATABASE_ENV"; else rm -f "$DATABASE_ENV"; fi
+        [ -z "$previous" ] || rm -f "$previous"
+        restart_after_database_change || true
+        die "PostgreSQL migration／起動に失敗しました"
+      fi
+      [ -z "$previous" ] || rm -f "$previous"
+      unset CONTROL_DECK_POSTGRES_URL candidate
+      info "PostgreSQLへ切り替えました。既存SQLite dataは自動移送していません"
+      ;;
+    sqlite)
+      if [ ! -f "$DATABASE_ENV" ]; then
+        info "既に既定SQLiteを使用しています"
+        return 0
+      fi
+      (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.database.cli validate-env-file "$DATABASE_ENV") \
+        || die "既存config/database.envが安全要件を満たしません"
+      local disabled="$REPO_ROOT/config/database.env.disabled-$(date +%Y%m%d-%H%M%S)"
+      mv "$DATABASE_ENV" "$disabled"
+      chmod 0600 "$disabled"
+      unset CONTROL_DECK_DB_URL
+      if ! restart_after_database_change; then
+        mv "$disabled" "$DATABASE_ENV"
+        restart_after_database_change || true
+        die "SQLiteへの復帰に失敗したためPostgreSQL設定を戻しました"
+      fi
+      info "既定SQLiteへ切り替えました。以前のPostgreSQL設定はmode 0600で退避しました"
+      ;;
+    *) die "使用方法: ./deck.sh database <status|postgresql|sqlite>" ;;
+  esac
+}
+
 cmd_test() {
   check_root; check_python; ensure_venv
   cd "$REPO_ROOT/backend"
@@ -325,7 +477,7 @@ cmd_test() {
 }
 
 cmd_backup() {
-  check_root
+  check_root; check_python; ensure_venv; load_database_env
   exec bash "$REPO_ROOT/scripts/backup.sh" "$@"
 }
 
@@ -453,7 +605,7 @@ cmd_disable_desktop() {
 }
 
 cmd_restore() {
-  check_root
+  check_root; check_python; ensure_venv; load_database_env
   exec bash "$REPO_ROOT/scripts/restore.sh" "$@"
 }
 
@@ -486,6 +638,7 @@ case "${1:-start}" in
   admin)   shift; cmd_admin "$@" ;;
   passwd)  shift; cmd_passwd "$@" ;;
   reset-totp) shift; cmd_reset_totp "$@" ;;
+  database) shift; cmd_database "$@" ;;
   backup)  shift; cmd_backup "$@" ;;
   restore) shift; cmd_restore "$@" ;;
   enable-desktop)  shift; cmd_enable_desktop "$@" ;;

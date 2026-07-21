@@ -233,7 +233,9 @@ def workflow_artifacts_dir() -> Path:
 
 
 def db_url() -> str:
+    from app.database.runtime import normalized_database_url
+
     override = os.environ.get("CONTROL_DECK_DB_URL")
     if override:
-        return override
+        return normalized_database_url(override)
     return f"sqlite:///{data_dir() / 'control-deck.db'}"
