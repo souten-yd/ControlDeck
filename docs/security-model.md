@@ -30,6 +30,10 @@
 - セッション: 128bit 乱数トークン。DB には SHA-256 ハッシュのみ保存。
   Cookie 属性: `HttpOnly; SameSite=Lax; Path=/`（HTTPS 時 `Secure`）。有効期限は設定（既定 480 分）。
 - TOTP（Phase 7）: RFC 6238、シークレットは暗号化保存。リカバリーコード対応。
+- `security.totp_requirement`は`optional`／`administrators`／`all`。必須対象が未設定の場合は、認証済みsessionを
+  enrollment専用の`me`／`setup`／`verify`／`logout`だけへ制限し、その他RESTを403、WebSocketを4403で拒否する。
+  設定完了後に通常権限へ戻し、必須対象によるTOTP無効化は監査付きで拒否する。legacyの
+  `require_totp_for_admin: true`は`administrators`と同じ強制として扱う。
 - ログイン試行はレート制限し、失敗を監査ログへ記録する。
 - パスワード変更は現在のパスワードで再認証し、成功時に本人の全セッションを失効する。失敗は接続元+user単位5回/15分、
   TOTP有効化確認／無効化は各5回/5分に制限し、成功／失敗／制限を秘密値なしで監査する。
