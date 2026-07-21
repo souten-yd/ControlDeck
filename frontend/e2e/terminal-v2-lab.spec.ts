@@ -37,7 +37,12 @@ test("uses V2 only for this tab's dedicated Lab session and resumes its local hi
   test.setTimeout(60_000);
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   const runtimeErrors: string[] = [];
-  page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    // WebKitは未対応のviewport hintを仕様どおり無視するが、console error分類で通知する。
+    if (message.text() === 'Viewport argument key "interactive-widget" not recognized and ignored.') return;
+    runtimeErrors.push(message.text());
+  });
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
 
   await page.setViewportSize({ width: 320, height: 700 });
@@ -49,26 +54,32 @@ test("uses V2 only for this tab's dedicated Lab session and resumes its local hi
   await page.goto("/terminal?terminalLab=v2");
   runtimeErrors.length = 0;
 
-  const before = await page.evaluate(async () => {
-    const response = await fetch("/api/v1/terminals", { credentials: "same-origin" });
-    return (await response.json()).sessions.map((session: { id: string }) => session.id) as string[];
-  });
-  await expect(page.getByRole("status").filter({ hasText: "Terminal V2 Lab" })).toBeVisible();
-  await page.getByRole("button", { name: "V2検証セッション" }).click();
-
-  const root = page.locator("[data-terminal-root][data-terminal-engine='v2']");
-  await expect(root).toBeVisible();
-  await expect(root.getByText("Live", { exact: true })).toBeVisible({ timeout: 4_000 });
-  const createdId = await page.getByLabel("セッションを切替").inputValue();
-  const ownedIds = [createdId];
-  expect(before).not.toContain(createdId);
-  const contract = await page.evaluate(async (id) => {
-    const response = await fetch("/api/v1/terminals", { credentials: "same-origin" });
-    return (await response.json()).sessions.find((session: { id: string }) => session.id === id);
-  }, createdId);
-  expect(contract.engine).toBe("v2-lab");
-
+  const ownedIds: string[] = [];
   try {
+    const before = await page.evaluate(async () => {
+      const response = await fetch("/api/v1/terminals", { credentials: "same-origin" });
+      return (await response.json()).sessions.map((session: { id: string }) => session.id) as string[];
+    });
+    await expect(page.getByRole("status").filter({ hasText: "Terminal V2 Lab" })).toBeVisible();
+    const firstCreateResponse = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname.endsWith("/api/v1/terminals")
+      && new URL(response.url()).searchParams.get("engine") === "v2-lab");
+    await page.getByRole("button", { name: "V2検証セッション" }).click();
+    const createdId = String((await (await firstCreateResponse).json() as { id: string }).id);
+    ownedIds.push(createdId);
+    expect(before).not.toContain(createdId);
+
+    const root = page.locator("[data-terminal-root][data-terminal-engine='v2']");
+    await expect(root).toBeVisible();
+    await expect(root.getByText("Live", { exact: true })).toBeVisible({ timeout: 4_000 });
+    await expect(page.getByLabel("セッションを切替")).toHaveValue(createdId);
+    const contract = await page.evaluate(async (id) => {
+      const response = await fetch("/api/v1/terminals", { credentials: "same-origin" });
+      return (await response.json()).sessions.find((session: { id: string }) => session.id === id);
+    }, createdId);
+    expect(contract.engine).toBe("v2-lab");
+
     const marker = `V2_LAB_${Date.now()}`;
     await page.evaluate((value) => {
       const api = (window as typeof window & { __controlDeckTerminalV2Test?: V2TestApi }).__controlDeckTerminalV2Test;
@@ -290,10 +301,15 @@ test("uses V2 only for this tab's dedicated Lab session and resumes its local hi
     }
 
     await page.getByRole("button", { name: "ターミナルを閉じる" }).click();
+    const secondCreateResponse = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname.endsWith("/api/v1/terminals")
+      && new URL(response.url()).searchParams.get("engine") === "v2-lab");
     await page.getByRole("button", { name: "V2検証セッション" }).click();
-    const secondId = await page.getByLabel("セッションを切替").inputValue();
+    const secondId = String((await (await secondCreateResponse).json() as { id: string }).id);
     ownedIds.push(secondId);
     expect(secondId).not.toBe(createdId);
+    await expect(page.getByLabel("セッションを切替")).toHaveValue(secondId);
     await page.getByLabel("セッションを切替").selectOption(createdId);
     await expect(page.locator("[data-terminal-root][data-terminal-engine='v2']")).toBeVisible();
     await expect(page.getByLabel("セッションを切替")).toHaveValue(createdId);
