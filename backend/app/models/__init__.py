@@ -622,7 +622,7 @@ class NotificationChannel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    # discord / slack / webhook
+    # discord / slack / webhook / email
     channel_type: Mapped[str] = mapped_column(String(16))
     url_encrypted: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
