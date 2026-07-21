@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## AI Workflow→App Studio GUI 3件再検証（2026-07-21 18:04 JST、1件不具合検出）
+
+- 実Ollama `qwen3.6-27b-q5_k_m:latest`の`POST /chat/generate-workflow`へ、大文字変換、前後空白除去、文字置換の3要件を渡した。最初の3案は必須config欠落を意味検証がすべて拒否し、必須configを具体化して再生成した3案は警告0で登録された。入力付きdraft実行は大文字変換`hello`→`HELLO`、空白除去`  hello  `→`hello`が期待どおり成功した。
+- 3 WorkflowからApp Studioの契約ベースGUIを自動構成し、各20 fileのASP.NET Core + Blazor source preview、network deniedの隔離systemd user Build Job、warning-as-error build、生成source self-testを実行した。Project #2〜#4／Build #1〜#3はすべて`completed`となり、source／binary artifactとSHA-256を取得した。
+- ビルド済みDLLを管理対象.NET 8 SDKと明示content rootで専用一時systemd user unitへ起動した。App Studioの3 completed buildを320×700／1280×800で確認し横overflow 0。生成GUI自身の両幅でフォーム送信、完了表示、typed result、横overflow 0、console／page errorなしを検証し、大文字変換と空白除去は成功した。
+- 文字置換だけはAIが`string.op`へ`old`／`new`を生成したが、実executor／UI／C# generatorは`find`／`replace`を要求する。現行のcatalog promptと意味検証がこの不一致を見逃し、Control Deck実行は入力を無変換で`SUCCEEDED`、生成GUIは空の`oldValue`によりHTTP 500となった。AI node catalogのconfig key、条件付き意味検証、Python／C# runtime parityを修正して再確認する必要がある。
+
+検証: AI生成6応答（初回3件を正しく拒否、再生成3件を登録）、入力付きWorkflow実行3件、App Studio source preview／隔離build 3件、App Studio workspace E2E 1件成功、生成GUI E2Eは2件成功／文字置換1件で期待どおり不具合を再現。Control Deck Terminal／tmuxには接続・入力・停止・削除していない。検証用Workflow／Execution／Project／Build／build directory／一時unit／user／session／auditは終了後0件に清掃済み。
+
 ## Phase 1 ユーザー／Customロール／権限管理 完了（2026-07-21）
 
 - `users.manage`権限を要求するユーザー一覧／作成／更新APIと、Role一覧／利用可能権限一覧／Custom Role作成・更新・削除APIを追加した。usernameは英字始まりの限定文字、passwordはArgon2idでhash化し、API／auditへpassword／hashを返さない。
