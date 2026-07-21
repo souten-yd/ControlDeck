@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-21
 
+## Phase 1 API／download／WebSocketレート制限 完了（2026-07-21）
+
+- `/api/v1`全体へ接続元別sliding-window上限を追加した。既定は一般API 5,000回/分、GET download／artifact 300回/分、WebSocket handshake 300回/分で、設定から変更できる。死活監視用health／metaは除外する。
+- HTTP超過は429と`Retry-After`、WebSocket超過は認証処理より前に4429で拒否する。未設定の`X-Forwarded-For`等を信用せずASGIの直接peerだけをkeyにするため、外部から送った転送headerで上限を回避できない。
+- limiterはthread-safeなprocess内sliding windowとし、接続元bucketを最大20,000件へ制限する。古いbucketから破棄するため、攻撃的なkey増加でmemoryを無制限に消費しない。ログイン／電源TOTPにある既存の個別制限は維持する。
+
+検証: sliding window、retry秒、bucket上限、直接peer、health除外、download分類、WebSocket 4429の集中テスト11件、backend全489件中Terminal系29件を除く最新460件、Python compile、frontend TypeScript／production build、diff whitespace検査に成功。Web serviceは通常停止タイムアウト後PID `641315`でactive、health 200。Playwright Chromium 320×700／1280×800のHomeで通常APIとmetrics WebSocket、横overflow 0、429誤発生 0、console／page error 0を確認した。一時user／login session／auditは0件に清掃済み。既存Terminalには接続・入力・停止・削除していない。
+
 ## Phase 2／11 systemd journal・指定ログファイル 完了（2026-07-21）
 
 - Logs画面のsourceへstdout／stderrに加えて、登録済みアプリのsystemd journalと最大16件の指定ログファイルを追加した。journalは2秒ごとの有界snapshot、指定fileは既存WebSocket追従を使い、検索・一時停止・折返し・copy・downloadを共通利用する。journalはControl Deckから削除できず、指定fileのtruncateだけ`logs.delete`権限と監査を要求する。
