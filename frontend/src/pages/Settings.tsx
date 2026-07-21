@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
@@ -9,6 +9,8 @@ import { TotpSettings } from "../features/auth/TotpSettings";
 import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
+
+const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
 interface SessionInfo {
   id: number;
@@ -80,6 +82,12 @@ export default function SettingsPage() {
           <PasswordSettings />
         </div>
       </section>
+
+      {can("users.manage") && (
+        <Suspense fallback={<Skeleton className="h-40 rounded-2xl" />}>
+          <AccessManagement />
+        </Suspense>
+      )}
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
         <h2 className="mb-3 text-sm font-semibold text-zinc-500">外観</h2>

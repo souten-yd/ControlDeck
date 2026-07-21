@@ -21,6 +21,7 @@
 | 監査ログ | ログイン成功/失敗、アプリ登録/編集/削除/起動/停止/強制終了、ログ削除、電源操作、ユーザー/権限/設定変更を AuditLog へ記録 |
 | 秘密情報のマスキング | 環境変数の値のうち TOKEN/SECRET/PASSWORD/PASS/API_KEY/PRIVATE_KEY/AUTH/COOKIE を含むキーは表示・ログ出力時にマスク。DB 保存時は暗号化（Fernet、鍵は data_dir 内 0600） |
 | レート制限 | 直接peer IPごとにAPI 5,000回/分、download 300回/分、WebSocket handshake 300回/分（設定可能）。HTTP超過は429 + Retry-After、WebSocketは4429で拒否。未設定の転送headerは信用せず、bucket数も20,000へ制限 |
+| ユーザー／Role管理 | `users.manage`必須。Custom roleへ付与・ユーザーへ割当可能な権限は操作者自身の権限subsetだけ。preset role不変、最後の有効administratorと自分自身の管理画面経由降格／無効化／password resetを拒否。role・状態・password・Custom role権限変更時は対象sessionを失効 |
 | PostgreSQL credential | URLはYAML／unit本文へ書かず、固定`config/database.env`だけに保存。起動前に`O_NOFOLLOW`、通常file、実行user owner、0600、4KiB、固定1行、SQLite／PostgreSQL方言を検査。診断はbackend／host／port／databaseだけを表示し、pg_dump／pg_restoreはpasswordをargvへ渡さない |
 | ネットワーク | 既定 127.0.0.1:8765。0.0.0.0 設定時は起動ログと UI に警告。HTTPS はリバースプロキシ（Caddy/Nginx 設定例を deploy/ に用意） |
 
@@ -41,6 +42,8 @@
 - 全APIには接続元別の共通上限を置き、ダウンロードとWebSocket接続は別の低い上限を使う。
   `/health`と`/meta`は死活監視を妨げないよう除外する。リバースプロキシ利用時も、信頼済みproxyの明示設定を実装するまでは
   `X-Forwarded-For`等をrate-limit keyへ使わず、ASGI serverが確定した直接peerを使う。
+- ユーザー作成／表示名・role・有効状態・password変更とCustom role作成／権限変更／削除は監査する。
+  password hashや入力値、permission本文は監査metadataへ含めず、変更field名、件数、session失効有無だけを記録する。
 
 ## CSRF
 

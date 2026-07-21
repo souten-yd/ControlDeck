@@ -11,6 +11,7 @@
 - ✅ 現在password再認証付きpassword変更、全session失効、TOTP verify／disable個別失敗制限、成功／失敗／制限監査
 - 管理者作成 CLI（scripts/create-admin.sh）
 - RBAC（administrator / operator / viewer + 権限依存性）
+- ✅ `users.manage`によるユーザー／Customロール管理。権限subset境界、preset不変、最後の管理者保護、credential／role変更時session失効、変更監査
 - 監査ログ基盤
 - React + Vite + Tailwind。デスクトップサイドバー / モバイル下部ナビ / グローバル操作シート
 - 基本ダッシュボード

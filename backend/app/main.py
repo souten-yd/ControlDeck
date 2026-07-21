@@ -169,6 +169,7 @@ async def appview_referer_fallback(request: Request, call_next):
 from app.applications.router import router as apps_router  # noqa: E402
 from app.audit.router import router as audit_router  # noqa: E402
 from app.auth.router import router as auth_router  # noqa: E402
+from app.access.router import router as access_router  # noqa: E402
 from app.files.router import router as files_router  # noqa: E402
 from app.logs.router import router as logs_router  # noqa: E402
 from app.monitoring.router import router as system_router  # noqa: E402
@@ -196,6 +197,7 @@ from app.plugins.router import router as plugins_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
+app.include_router(access_router, prefix=API)
 app.include_router(apps_router, prefix=API)
 # アプリ内Webビュー proxy（同一オリジン・iframe用のためAPI prefixなし）
 from app.applications.webview import router as appview_router  # noqa: E402
