@@ -361,7 +361,7 @@ updated_at。他モデルも同様）
 - ログ: GET /apps/{id}/logs, GET /apps/{id}/logs/download, DELETE /apps/{id}/logs, WS /apps/{id}/logs/stream
 - システム: GET /system/overview|cpu|memory|gpu|disk|network|processes|metrics/history, WS /system/metrics/stream
 - 電源: POST /system/reboot, /system/shutdown, /system/power/schedule, DELETE /system/power/schedule
-- ファイル: GET /files/list|info|download|preview|text, POST /files/upload|directory|copy|move, PATCH /files/rename, DELETE /files, PUT /files/text
+- ファイル: GET /files/list|info|download|preview|text, POST /files/upload|directory|copy|move|archive|extract, PATCH /files/rename, DELETE /files, PUT /files/text
 - ターミナル: POST/GET /terminals, DELETE /terminals/{id}, WS /terminals/{id}/connect。Snippet／実行／予約: CRUD /terminal-automation/snippets, POST /terminal-automation/preview|runs, GET /terminal-automation/runs, CRUD /terminal-automation/schedules, POST /terminal-automation/schedules/{id}/run-now
 - ワークフロー: GET/POST /workflows, GET/PATCH/DELETE /workflows/{id}, POST /workflows/{id}/run|enable|disable,
   GET /workflow-executions, GET /workflow-executions/{id}, POST /workflow-executions/{id}/cancel

@@ -31,6 +31,14 @@ interface TrashEntry {
 
 const TEXT_EXT = /\.(txt|md|json|ya?ml|toml|ini|cfg|conf|py|sh|js|ts|tsx|jsx|css|html|xml|csv|log|env|service|sql|rs|go|c|h|cpp)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i;
+const PDF_EXT = /\.pdf$/i;
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|flac|oga|ogg|opus)$/i;
+const VIDEO_EXT = /\.(mp4|m4v|webm|ogv|mov)$/i;
+const ARCHIVE_EXT = /\.(zip|tar\.gz|tgz)$/i;
+
+function isPreviewable(name: string) {
+  return IMAGE_EXT.test(name) || PDF_EXT.test(name) || AUDIO_EXT.test(name) || VIDEO_EXT.test(name);
+}
 
 export default function FilesPage() {
   const can = useAuth((s) => s.can);
@@ -41,6 +49,7 @@ export default function FilesPage() {
   const [detail, setDetail] = useState<Entry | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState<Entry | null>(null);
+  const [archiveDialog, setArchiveDialog] = useState<{ kind: "create" | "extract"; entry: Entry } | null>(null);
   const [trashOpen, setTrashOpen] = useState(false);
   const [uploading, setUploading] = useState<{ name: string; received: number; total: number } | null>(null);
   const [dialog, setDialog] = useState<
@@ -123,8 +132,8 @@ export default function FilesPage() {
 
   const openEntry = (e: Entry) => {
     if (e.is_dir) return setPath(e.path);
-    if (IMAGE_EXT.test(e.name)) return setPreviewing(e);
-    if (TEXT_EXT.test(e.name) || e.size < 256 * 1024) return setEditing(e.path);
+    if (isPreviewable(e.name)) return setPreviewing(e);
+    if (TEXT_EXT.test(e.name)) return setEditing(e.path);
     setDetail(e);
   };
 
@@ -266,11 +275,18 @@ export default function FilesPage() {
                     ...(!e.is_dir
                       ? [{ label: "Download", onSelect: () => window.open(`/api/v1/files/download?path=${encodeURIComponent(e.path)}`, "_blank") }]
                       : []),
-                    ...(!e.is_dir && can("files.edit")
+                    ...(!e.is_dir && isPreviewable(e.name)
+                      ? [{ label: "Preview", onSelect: () => setPreviewing(e) }]
+                      : []),
+                    ...(!e.is_dir && TEXT_EXT.test(e.name) && can("files.edit")
                       ? [{ label: "Edit", onSelect: () => setEditing(e.path) }]
                       : []),
                     ...(can("files.edit")
                       ? [
+                          { label: "Compress", onSelect: () => setArchiveDialog({ kind: "create", entry: e }) },
+                          ...(ARCHIVE_EXT.test(e.name) && !e.is_dir
+                            ? [{ label: "Extract", onSelect: () => setArchiveDialog({ kind: "extract" as const, entry: e }) }]
+                            : []),
                           { label: "Rename", onSelect: () => setDialog({ kind: "rename", entry: e }) },
                           { label: "Copy", onSelect: () => setDialog({ kind: "copy", entry: e }) },
                           { label: "Move", onSelect: () => setDialog({ kind: "move", entry: e }) },
@@ -323,6 +339,17 @@ export default function FilesPage() {
           }}
         />
       )}
+      {archiveDialog && (
+        <ArchiveDialog
+          dialog={archiveDialog}
+          currentPath={path}
+          onClose={() => setArchiveDialog(null)}
+          onDone={() => {
+            setArchiveDialog(null);
+            refresh();
+          }}
+        />
+      )}
       {trashOpen && (
         <BottomSheet title="ごみ箱" onClose={() => setTrashOpen(false)}>
           <div className="mb-3 flex items-center justify-between gap-3 text-xs text-zinc-500">
@@ -367,12 +394,23 @@ export default function FilesPage() {
         </BottomSheet>
       )}
       {previewing && (
-        <BottomSheet title={previewing.name} onClose={() => setPreviewing(null)} wide>
-          <img
-            src={`/api/v1/files/preview?path=${encodeURIComponent(previewing.path)}`}
-            alt={previewing.name}
-            className="mx-auto max-h-[65dvh] max-w-full rounded-lg object-contain"
-          />
+        <BottomSheet
+          title={previewing.name}
+          onClose={() => setPreviewing(null)}
+          wide
+          stable
+          sideOnDesktop
+          headerActions={
+            <a
+              href={`/api/v1/files/download?path=${encodeURIComponent(previewing.path)}`}
+              aria-label={`${previewing.name} をダウンロード`}
+              className="rounded-lg px-3 py-2 text-xs font-medium text-accent-600 hover:bg-accent-50 dark:hover:bg-accent-950/30"
+            >
+              Download
+            </a>
+          }
+        >
+          <FilePreview entry={previewing} />
         </BottomSheet>
       )}
       {editing && (
@@ -387,6 +425,102 @@ export default function FilesPage() {
         </Suspense>
       )}
     </div>
+  );
+}
+
+function FilePreview({ entry }: { entry: Entry }) {
+  const source = `/api/v1/files/preview?path=${encodeURIComponent(entry.path)}`;
+  if (PDF_EXT.test(entry.name)) {
+    return <iframe title={`${entry.name} PDF preview`} src={source} sandbox="" className="h-full min-h-[60dvh] w-full rounded-lg border border-zinc-200 bg-white dark:border-zinc-700" />;
+  }
+  if (AUDIO_EXT.test(entry.name)) {
+    return (
+      <div className="grid h-full min-h-48 place-items-center">
+        <audio aria-label={`${entry.name} audio preview`} src={source} controls preload="metadata" className="w-full" />
+      </div>
+    );
+  }
+  if (VIDEO_EXT.test(entry.name)) {
+    return <video aria-label={`${entry.name} video preview`} src={source} controls preload="metadata" className="mx-auto max-h-full max-w-full rounded-lg bg-black" />;
+  }
+  return <img src={source} alt={entry.name} className="mx-auto max-h-full max-w-full rounded-lg object-contain" />;
+}
+
+function archiveBaseName(name: string) {
+  return name.replace(/\.(?:tar\.gz|tgz|zip)$/i, "") || "archive";
+}
+
+function ArchiveDialog({
+  dialog,
+  currentPath,
+  onClose,
+  onDone,
+}: {
+  dialog: { kind: "create" | "extract"; entry: Entry };
+  currentPath: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const show = useToasts((state) => state.show);
+  const [format, setFormat] = useState<"zip" | "tar.gz">("zip");
+  const [destination, setDestination] = useState(
+    dialog.kind === "create"
+      ? `${currentPath}/${dialog.entry.name}.zip`
+      : `${currentPath}/${archiveBaseName(dialog.entry.name)}`,
+  );
+  const [busy, setBusy] = useState(false);
+
+  const changeFormat = (next: "zip" | "tar.gz") => {
+    setFormat(next);
+    setDestination((value) => value.replace(/\.(?:tar\.gz|tgz|zip)$/i, "") + `.${next}`);
+  };
+  const run = async () => {
+    setBusy(true);
+    try {
+      if (dialog.kind === "create") {
+        await api("/files/archive", {
+          method: "POST",
+          json: { source: dialog.entry.path, destination, format },
+        });
+        show("圧縮しました");
+      } else {
+        await api("/files/extract", {
+          method: "POST",
+          json: { archive: dialog.entry.path, destination },
+        });
+        show("展開しました");
+      }
+      onDone();
+    } catch (error) {
+      show(error instanceof Error ? error.message : "アーカイブ操作に失敗しました", "error");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <BottomSheet title={dialog.kind === "create" ? "圧縮" : "展開"} onClose={onClose}>
+      <p className="mb-3 break-all text-xs text-zinc-500">対象: {dialog.entry.path}</p>
+      {dialog.kind === "create" && (
+        <label className="mb-3 block text-sm">
+          <span className="mb-1 block text-xs text-zinc-500">形式</span>
+          <select aria-label="アーカイブ形式" value={format} onChange={(event) => changeFormat(event.target.value as "zip" | "tar.gz")} className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-900">
+            <option value="zip">ZIP</option>
+            <option value="tar.gz">tar.gz</option>
+          </select>
+        </label>
+      )}
+      <label className="block text-sm">
+        <span className="mb-1 block text-xs text-zinc-500">{dialog.kind === "create" ? "保存先" : "展開先（新規フォルダ）"}</span>
+        <input aria-label={dialog.kind === "create" ? "アーカイブ保存先" : "アーカイブ展開先"} value={destination} onChange={(event) => setDestination(event.target.value)} className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+      </label>
+      <p className="mt-2 text-xs text-zinc-500">既存項目は上書きしません。リンク・特殊ファイル・危険な展開パスは拒否します。</p>
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} className="min-h-11 rounded-xl px-4 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800">キャンセル</button>
+        <button onClick={run} disabled={busy || !destination.trim()} className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
+          {busy ? "処理中..." : dialog.kind === "create" ? "圧縮する" : "展開する"}
+        </button>
+      </div>
+    </BottomSheet>
   );
 }
 
