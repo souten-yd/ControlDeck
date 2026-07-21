@@ -12,6 +12,7 @@
 | root で動作させない | web は一般ユーザー。setup/install スクリプトは root 起動を拒否 |
 | 特権操作の分離 | 再起動/シャットダウンは systemd `systemctl reboot` 相当を helper 経由（Phase 電源管理で導入、polkit ルールで限定） |
 | AMD GPU制御 | Webは一般ユーザー。`deck.sh service`がroot所有の専用helperと限定NOPASSWD規則を登録。helperはAMD BDF・実機cap/DPM levelを再検証し、電力/MCLK/SCLK属性以外を変更しない |
+| system service制御 | Webは一般ユーザー。設定の固定ID／unit／start・stop・restartをroot所有catalogへ導入し、root所有・非symlink helperが固定`/usr/bin/systemctl`だけを配列実行。APIから任意unit／action／shellを渡せず、killも禁止 |
 | 任意コマンド初期無効 | `security.allow_arbitrary_commands: false`。登録済みアプリ実行のみ |
 | 許可コマンドHC | ローカル設定の固定ID→固定argvだけを選択可能。APIへargvを返さず、認証語を拒否し、出力破棄・resource上限付きsystemd user transient unitで最大4並列実行 |
 | shell=True 禁止 | subprocess はすべて配列引数。CI/レビューで検査 |

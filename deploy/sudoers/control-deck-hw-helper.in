@@ -1,1 +1,2 @@
 @USER@ ALL=(root) NOPASSWD: /usr/local/libexec/control-deck-hw-helper apply-amd *
+@USER@ ALL=(root) NOPASSWD: /usr/local/libexec/control-deck-hw-helper system-service *

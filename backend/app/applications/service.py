@@ -61,6 +61,10 @@ def build_exec_argv(app: ManagedApplication) -> list[str]:
 
 
 def validate_fields(data: AppCreate) -> None:
+    if data.application_type != "systemd_service" and (
+        data.systemd_scope != "user" or data.system_service_id is not None
+    ):
+        raise AppValidationError("systemd scopeは既存systemd serviceだけに指定できます")
     if data.application_type == "url_shortcut":
         url = (data.url or "").strip()
         if not url.startswith(("http://", "https://")):
@@ -77,11 +81,7 @@ def validate_fields(data: AppCreate) -> None:
     elif data.application_type == "executable":
         _require_file(data.executable_path, "実行ファイル", executable=True)
     elif data.application_type == "systemd_service":
-        name = data.systemd_unit_name or ""
-        if not sd.UNIT_NAME_RE.match(name):
-            raise AppValidationError(f"不正なユニット名です: {name}")
-        if name.startswith(sd.UNIT_PREFIX):
-            raise AppValidationError("Control Deck 管理ユニットは直接登録できません")
+        resolve_systemd_target(data.systemd_scope, data.system_service_id, data.systemd_unit_name)
     _require_dir(data.working_directory, "作業ディレクトリ")
     for key in data.environment:
         if not sd.ENV_KEY_RE.match(key):
@@ -103,6 +103,56 @@ def validate_fields(data: AppCreate) -> None:
 
         if not health.command_id or health.command_id not in get_config().applications.health_commands:
             raise AppValidationError("登録済みの許可コマンドを選択してください")
+
+
+def resolve_systemd_target(scope: str, service_id: str | None, requested_unit: str | None) -> str:
+    if scope == "system":
+        if not service_id:
+            raise AppValidationError("登録済みのsystem serviceを選択してください")
+        from app.applications import system_services
+
+        try:
+            definition = system_services.require_service(service_id)
+        except system_services.SystemServiceError as exc:
+            raise AppValidationError(str(exc)) from exc
+        if requested_unit and requested_unit != definition.unit:
+            raise AppValidationError("system serviceのunit名はroot所有catalogと一致しません")
+        return definition.unit
+    if scope != "user":
+        raise AppValidationError("不正なsystemd scopeです")
+    if service_id is not None:
+        raise AppValidationError("user serviceへsystem service IDは指定できません")
+    name = requested_unit or ""
+    if not sd.UNIT_NAME_RE.match(name):
+        raise AppValidationError(f"不正なユニット名です: {name}")
+    if name.startswith(sd.UNIT_PREFIX):
+        raise AppValidationError("Control Deck 管理ユニットは直接登録できません")
+    return name
+
+
+def systemd_actions(app: ManagedApplication) -> list[str]:
+    if app.systemd_scope != "system":
+        return ["start", "stop", "restart", "kill"]
+    if not app.system_service_id:
+        return []
+    from app.applications import system_services
+
+    try:
+        return list(system_services.require_service(app.system_service_id).actions)
+    except system_services.SystemServiceError:
+        return []
+
+
+def systemd_unit_name(app: ManagedApplication) -> str:
+    """system scopeは変更可能なDB cacheではなくroot catalogを表示上も正とする。"""
+    if app.systemd_scope != "system" or not app.system_service_id:
+        return app.systemd_unit_name
+    from app.applications import system_services
+
+    try:
+        return system_services.require_service(app.system_service_id).unit
+    except system_services.SystemServiceError:
+        return app.systemd_unit_name
 
 
 def is_managed_code(app: ManagedApplication) -> bool:
@@ -192,7 +242,12 @@ def runtime_info(app: ManagedApplication, *, include_health: bool = True) -> App
     if app.application_type == "url_shortcut":
         return AppRuntime(status="URL")  # プロセスではないので特別状態
     try:
-        q = sd.query_status(app.systemd_unit_name)
+        if app.systemd_scope == "system":
+            from app.applications import system_services
+
+            q = system_services.query_status(app.system_service_id or "")
+        else:
+            q = sd.query_status(app.systemd_unit_name)
     except Exception:
         return AppRuntime(status="UNKNOWN")
     cpu = None
@@ -247,6 +302,7 @@ def runtime_info(app: ManagedApplication, *, include_health: bool = True) -> App
         uptime_seconds=q.get("uptime_seconds"),
         started_at=q.get("started_at"),
         restart_count=q.get("restart_count", 0),
+        enabled=q.get("enabled"),
         cpu_percent=cpu,
         memory_bytes=mem,
         gpu_percent=gpu_percent,
@@ -269,6 +325,7 @@ def _collect_listen_ports(proc: "psutil.Process", ports: set[int]) -> None:
 
 def to_out(app: ManagedApplication) -> AppOut:
     env = get_environment(app)
+    runtime = runtime_info(app)
     return AppOut(
         id=app.id,
         name=app.name,
@@ -284,14 +341,17 @@ def to_out(app: ManagedApplication) -> AppOut:
         web_port=app.web_port,
         arguments=json.loads(app.arguments_json or "[]"),
         environment_masked=mask_env(env),
-        auto_start=app.auto_start,
+        auto_start=runtime.enabled if app.application_type == "systemd_service" and runtime.enabled is not None else app.auto_start,
         restart_policy=app.restart_policy,
         stop_timeout_seconds=app.stop_timeout_seconds,
         health_check=get_health_check(app),
-        systemd_unit_name=app.systemd_unit_name,
+        systemd_unit_name=systemd_unit_name(app),
+        systemd_scope=app.systemd_scope if app.systemd_scope in ("user", "system") else "user",
+        system_service_id=app.system_service_id,
+        systemd_actions=systemd_actions(app),
         created_at=app.created_at,
         updated_at=app.updated_at,
-        runtime=runtime_info(app),
+        runtime=runtime,
         env_warnings=env_warnings(env),
         # SearXNG は API 利用時にサーバー側でオンデマンド起動・アイドル停止するため、
         # ユーザー操作対象から外す（Apps 画面では非表示）。

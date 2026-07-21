@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Control Deck hardware helper.
+"""Control Deck minimal privileged helper.
 
-Root権限が必要なAMD GPU sysfs属性だけを、固定コマンドと厳格な値検証で変更する。
-任意パス・任意コマンドは受け付けない。
+Root権限が必要なAMD GPU sysfs属性と、root所有catalogで固定したsystemd
+serviceだけを、固定コマンドと厳格な値検証で操作する。任意path／unit／commandは受け付けない。
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
 PCI_ROOT = Path("/sys/bus/pci/devices").resolve()
 SYS_DEVICES = Path("/sys/devices").resolve()
 BDF_RE = re.compile(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$")
+SERVICE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+UNIT_RE = re.compile(r"^[A-Za-z0-9@_.-]+\.service$")
+CATALOG_PATH = Path("/etc/control-deck/system-services.json")
+SYSTEMCTL = Path("/usr/bin/systemctl")
+SYSTEM_ACTIONS = {"start", "stop", "restart"}
+MAX_CATALOG_BYTES = 64 * 1024
 
 
 def fail(message: str) -> "NoReturn":
@@ -121,10 +130,74 @@ def apply_amd(bdf: str, watts_text: str, memory_mode: str, memory_level_text: st
                       "core_mode": core_mode, "core_level": core_level}))
 
 
+def system_service_catalog() -> dict:
+    try:
+        descriptor = os.open(CATALOG_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        fail("system service catalogを読み取れません")
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            fail("system service catalogの所有権または権限が不正です")
+        if info.st_size > MAX_CATALOG_BYTES:
+            fail("system service catalogが大きすぎます")
+        data = os.read(descriptor, MAX_CATALOG_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        catalog = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("system service catalogを解析できません")
+    if not isinstance(catalog, dict) or catalog.get("version") != 1 or not isinstance(catalog.get("services"), dict):
+        fail("system service catalogの形式が不正です")
+    if len(catalog["services"]) > 64:
+        fail("system service catalogの件数が上限を超えています")
+    return catalog["services"]
+
+
+def control_system_service(action: str, service_id: str) -> None:
+    if action not in SYSTEM_ACTIONS or not SERVICE_ID_RE.fullmatch(service_id):
+        fail("不正なsystem service操作です")
+    definition = system_service_catalog().get(service_id)
+    if not isinstance(definition, dict):
+        fail("system serviceが許可されていません")
+    unit, actions = definition.get("unit"), definition.get("actions")
+    if (
+        not isinstance(unit, str) or not UNIT_RE.fullmatch(unit)
+        or not isinstance(actions, list) or action not in actions
+        or len(actions) > 3 or len(set(actions)) != len(actions)
+        or any(item not in SYSTEM_ACTIONS for item in actions)
+    ):
+        fail("system service定義または操作が許可されていません")
+    if not SYSTEMCTL.is_file() or SYSTEMCTL.is_symlink():
+        fail("固定systemctlを利用できません")
+    try:
+        if action == "start":
+            subprocess.run(
+                [str(SYSTEMCTL), "--no-ask-password", "reset-failed", "--", unit],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=15, check=False,
+            )
+        result = subprocess.run(
+            [str(SYSTEMCTL), "--no-ask-password", action, "--", unit],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        fail("systemctlを実行できません")
+    if result.returncode != 0:
+        fail(f"systemctl {action}が失敗しました（終了コード {result.returncode}）")
+    print(json.dumps({"ok": True, "service_id": service_id, "action": action}))
+
+
 def main() -> None:
-    if len(sys.argv) != 8 or sys.argv[1] != "apply-amd":
-        fail("usage: control-deck-hw-helper apply-amd BDF WATTS MEM_MODE MEM_LEVEL CORE_MODE CORE_LEVEL")
-    apply_amd(*sys.argv[2:])
+    if len(sys.argv) == 8 and sys.argv[1] == "apply-amd":
+        apply_amd(*sys.argv[2:])
+        return
+    if len(sys.argv) == 4 and sys.argv[1] == "system-service":
+        control_system_service(sys.argv[2], sys.argv[3])
+        return
+    fail("usage: control-deck-hw-helper apply-amd ... | system-service ACTION ID")
 
 
 if __name__ == "__main__":

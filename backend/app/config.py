@@ -113,8 +113,25 @@ class HealthCommandDefinition(BaseModel):
         return value
 
 
+class SystemServiceDefinition(BaseModel):
+    """root所有catalogへ明示導入するsystem service操作定義。"""
+
+    label: str = Field(min_length=1, max_length=80)
+    unit: str = Field(pattern=r"^[A-Za-z0-9@_.-]+\.service$", max_length=128)
+    actions: list[str] = Field(default_factory=lambda: ["start", "stop", "restart"], min_length=1, max_length=3)
+
+    @field_validator("actions")
+    @classmethod
+    def _safe_actions(cls, value: list[str]) -> list[str]:
+        allowed = {"start", "stop", "restart"}
+        if len(set(value)) != len(value) or any(action not in allowed for action in value):
+            raise ValueError("system service actionsは重複なしのstart/stop/restartだけです")
+        return value
+
+
 class ApplicationsConfig(BaseModel):
     health_commands: dict[str, HealthCommandDefinition] = Field(default_factory=dict)
+    system_services: dict[str, SystemServiceDefinition] = Field(default_factory=dict)
 
     @field_validator("health_commands")
     @classmethod
@@ -125,6 +142,17 @@ class ApplicationsConfig(BaseModel):
             raise ValueError("health commandは最大64件です")
         if any(re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) is None for key in value):
             raise ValueError("health command IDは英小文字で始まる英数字・_-、最大64文字です")
+        return value
+
+    @field_validator("system_services")
+    @classmethod
+    def _system_service_ids(cls, value: dict[str, SystemServiceDefinition]) -> dict[str, SystemServiceDefinition]:
+        import re
+
+        if len(value) > 64:
+            raise ValueError("system serviceは最大64件です")
+        if any(re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) is None for key in value):
+            raise ValueError("system service IDは英小文字で始まる英数字・_-、最大64文字です")
         return value
 
 

@@ -26,6 +26,7 @@ export interface AppRuntime {
   uptime_seconds: number | null;
   started_at: string | null;
   restart_count: number;
+  enabled: boolean | null;
   cpu_percent: number | null;
   memory_bytes: number | null;
   gpu_percent: number | null;
@@ -72,6 +73,9 @@ export interface ManagedApp {
   stop_timeout_seconds: number;
   health_check: HealthCheckConfig;
   systemd_unit_name: string;
+  systemd_scope: "user" | "system";
+  system_service_id: string | null;
+  systemd_actions: Array<"start" | "stop" | "restart" | "kill">;
   created_at: string;
   updated_at: string;
   runtime: AppRuntime;

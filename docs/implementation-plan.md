@@ -22,6 +22,7 @@
 - アプリ一覧カード UI（PC / モバイル）、アプリ追加フロー（3 ステップ）
 - アプリアイコン（PNG / JPEG / WebP / サニタイズ済みSVG、認証付き配信）
 - 15秒間隔および手動のヘルスチェック（プロセス / TCP / HTTP status・本文 / 許可ルート内ファイル / 固定catalogの許可コマンド）、失敗時DEGRADED
+- ✅ 既存system serviceはroot所有catalogの固定ID／unit／start・stop・restartだけを最小特権helperで操作。Webは非root、任意unit／action／shell禁止、kill禁止、監査、320px／PC catalog選択UI
 
 ### Phase 3 — 監視
 - CPU / RAM / ディスク / ネットワーク / 稼働時間（psutil）

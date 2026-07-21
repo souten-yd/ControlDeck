@@ -54,5 +54,13 @@ applications:
   #   my-app-self-check:
   #     label: My App self-check
   #     argv: ["/home/USER/bin/my-app", "health"]
+  # system scopeのserviceは、ここで固定したID／unit／操作だけをroot所有catalogへ導入します。
+  # Web APIから任意unit名を渡すことはできません。変更後は ./deck.sh service を再実行してください。
+  system_services: {}
+  # system_services:
+  #   remote-desktop:
+  #     label: Remote Desktop (xrdp)
+  #     unit: xrdp.service
+  #     actions: [start, stop, restart]
 
 # data_dir: ~/.local/share/control-deck
