@@ -21,6 +21,7 @@ monitoring:
   interval_seconds: 2
   raw_retention_hours: 24
   minute_retention_days: 30
+  hour_retention_days: 365
   # 電気代（Corsair HX1500i など corsair-psu hwmon 対応 PSU の DC 出力から概算）
   electricity:
     enabled: true

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
@@ -10,22 +11,41 @@ import { PageHeader } from "../components/PageHeader";
 
 interface HistorySample {
   timestamp: string;
-  cpu_percent: number;
-  memory_percent: number;
+  cpu_percent: number | null;
+  memory_percent: number | null;
   gpu_percent: number | null;
   vram_percent: number | null;
 }
 
+interface HistoryResponse {
+  resolution: "raw" | "minute" | "hour";
+  samples: HistorySample[];
+}
+
+const HISTORY_RANGES = [
+  [15, "15分"],
+  [60, "1時間"],
+  [360, "6時間"],
+  [1440, "24時間"],
+  [10080, "7日"],
+  [43200, "30日"],
+  [129600, "90日"],
+  [525600, "1年"],
+] as const;
+
 export default function DashboardPage() {
   const latest = useMetrics((s) => s.latest);
   const history = useMetrics((s) => s.history);
+  const [historyMinutes, setHistoryMinutes] = useState(15);
+  const [rangeChoice, setRangeChoice] = useState("15");
+  const [customMinutes, setCustomMinutes] = useState("15");
   const can = useAuth((s) => s.can);
   const { data: overview, isLoading } = useOverview();
   const { data: apps } = useApps();
   // グラフはサーバー側保持の履歴でシードし、ブラウザを閉じていた間も空白にしない
-  const { data: seeded } = useQuery({
-    queryKey: ["metrics-history-seed"],
-    queryFn: () => api<{ samples: HistorySample[] }>("/system/metrics/history?minutes=5"),
+  const { data: seeded, isFetching: historyFetching } = useQuery({
+    queryKey: ["metrics-history", historyMinutes],
+    queryFn: () => api<HistoryResponse>(`/system/metrics/history?minutes=${historyMinutes}`),
     enabled: can("system.view"),
     staleTime: Infinity,
     refetchOnWindowFocus: false,
@@ -58,6 +78,52 @@ export default function DashboardPage() {
       <PageHeader title="Home" description="PCとControlDeckの現在の状態をまとめて確認します。" className="mb-0" />
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
+        <div className="mb-2 flex min-h-11 flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <label htmlFor="metrics-range" className="text-xs font-medium text-zinc-500">履歴期間</label>
+            <select
+              id="metrics-range"
+              value={rangeChoice}
+              onChange={(event) => {
+                const choice = event.target.value;
+                setRangeChoice(choice);
+                if (choice !== "custom") setHistoryMinutes(Number(choice));
+              }}
+              className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              {HISTORY_RANGES.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
+              <option value="custom">任意…</option>
+            </select>
+          </div>
+          {rangeChoice === "custom" ? (
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const minutes = Math.min(525600, Math.max(15, Number(customMinutes) || 15));
+                setCustomMinutes(String(minutes));
+                setHistoryMinutes(minutes);
+              }}
+            >
+              <label htmlFor="metrics-custom-minutes" className="sr-only">任意の履歴期間（分）</label>
+              <input
+                id="metrics-custom-minutes"
+                type="number"
+                min={15}
+                max={525600}
+                value={customMinutes}
+                onChange={(event) => setCustomMinutes(event.target.value)}
+                className="h-11 w-28 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              />
+              <span className="text-xs text-zinc-500">分</span>
+              <button type="submit" className="h-11 rounded-xl bg-accent-600 px-3 text-sm font-medium text-white hover:bg-accent-700">適用</button>
+            </form>
+          ) : (
+            <span className="text-xs text-zinc-400" aria-live="polite">
+              {historyFetching ? "履歴を取得中…" : seeded ? `${seeded.resolution === "raw" ? "生データ" : seeded.resolution === "minute" ? "1分平均" : "1時間平均"} · ${seeded.samples.length}点` : ""}
+            </span>
+          )}
+        </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <MetricTile
             label="CPU"

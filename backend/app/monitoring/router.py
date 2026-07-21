@@ -10,8 +10,9 @@ import psutil
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
+from app.config import get_config
 from app.database import SessionLocal, get_db
-from app.models import MetricMinute, User
+from app.models import MetricHour, MetricMinute, User
 from app.monitoring.collector import collector
 from app.security.deps import authenticate_websocket, require_permission
 
@@ -166,12 +167,13 @@ def top_processes(
 
 @router.get("/metrics/history")
 def metrics_history(
-    minutes: int = Query(default=15, ge=1, le=60 * 24 * 30),
+    minutes: int = Query(default=15, ge=1, le=60 * 24 * 365),
     user: User = Depends(require_permission("system.view")),
     db=Depends(get_db),
 ):
-    """15 分以内はインメモリ生データ、それ以上は 1 分平均を返す。"""
-    if minutes <= 60:
+    """生24時間、1分平均30日、1時間平均1年を期間に応じて返す。"""
+    cfg = get_config().monitoring
+    if minutes <= cfg.raw_retention_hours * 60:
         cutoff = datetime.now(timezone.utc).timestamp() - minutes * 60
         samples = [
             {
@@ -187,21 +189,24 @@ def metrics_history(
             if datetime.fromisoformat(s["timestamp"]).timestamp() >= cutoff
         ]
         # モバイル向けに最大 600 点へ間引き
-        step = max(1, len(samples) // 600)
+        step = max(1, (len(samples) + 599) // 600)
         return {"resolution": "raw", "samples": samples[::step]}
 
     from datetime import timedelta
 
     cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    model = MetricMinute if minutes <= cfg.minute_retention_days * 24 * 60 else MetricHour
     rows = (
         db.execute(
-            select(MetricMinute).where(MetricMinute.timestamp >= cutoff_dt).order_by(MetricMinute.timestamp)
+            select(model).where(model.timestamp >= cutoff_dt).order_by(model.timestamp)
         )
         .scalars()
         .all()
     )
+    step = max(1, (len(rows) + 1999) // 2000)
+    rows = rows[::step]
     return {
-        "resolution": "minute",
+        "resolution": "minute" if model is MetricMinute else "hour",
         "samples": [
             {
                 "timestamp": r.timestamp.isoformat(),

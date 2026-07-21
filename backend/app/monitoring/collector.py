@@ -1,5 +1,5 @@
 """メトリクス収集。バックグラウンド asyncio タスクが定期収集し、
-最新スナップショット + インメモリ履歴（生データ）+ 1 分平均（SQLite）を保持する。
+最新スナップショット + インメモリ履歴（生データ）+ 1 分／1 時間平均を保持する。
 """
 from __future__ import annotations
 
@@ -16,6 +16,10 @@ from app.config import get_config
 from app.monitoring.gpu import BaseProvider, detect_provider
 
 logger = logging.getLogger("control_deck.monitoring")
+METRIC_FIELDS = (
+    "cpu_percent", "memory_percent", "gpu_percent", "vram_percent",
+    "disk_read_bps", "disk_write_bps", "net_rx_bps", "net_tx_bps",
+)
 
 
 class MetricsCollector:
@@ -216,7 +220,7 @@ class MetricsCollector:
             return sum(vals) / len(vals) if vals else None
 
         from app.database import SessionLocal
-        from app.models import MetricMinute
+        from app.models import MetricHour, MetricMinute
 
         gpu_pct = avg(lambda s: (s.get("gpu") or {}).get("utilization_percent"))
         vram_pct = avg(
@@ -228,9 +232,10 @@ class MetricsCollector:
         )
         db = SessionLocal()
         try:
+            timestamp = datetime.now(timezone.utc)
             db.add(
                 MetricMinute(
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=timestamp,
                     cpu_percent=avg(lambda s: s["cpu"]["percent"]),
                     memory_percent=avg(lambda s: s["memory"]["percent"]),
                     gpu_percent=gpu_pct,
@@ -241,6 +246,8 @@ class MetricsCollector:
                     net_tx_bps=avg(lambda s: s["io"]["net_tx_bps"]),
                 )
             )
+            db.flush()
+            self._update_hour(db, timestamp)
             # 保持期間を超えた行を削除
             cutoff = datetime.now(timezone.utc) - timedelta(
                 days=get_config().monitoring.minute_retention_days
@@ -248,9 +255,36 @@ class MetricsCollector:
             from sqlalchemy import delete
 
             db.execute(delete(MetricMinute).where(MetricMinute.timestamp < cutoff))
+            hour_cutoff = timestamp - timedelta(days=get_config().monitoring.hour_retention_days)
+            db.execute(delete(MetricHour).where(MetricHour.timestamp < hour_cutoff))
             db.commit()
         finally:
             db.close()
+
+    @staticmethod
+    def _update_hour(db, timestamp: datetime) -> None:
+        """同じUTC時間のminute行からhour行を再計算し、再起動途中でも冪等にする。"""
+        from sqlalchemy import select
+
+        from app.models import MetricHour, MetricMinute
+
+        start = timestamp.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        end = start + timedelta(hours=1)
+        minutes = db.execute(
+            select(MetricMinute).where(
+                MetricMinute.timestamp >= start, MetricMinute.timestamp < end,
+            ).order_by(MetricMinute.timestamp)
+        ).scalars().all()
+        if not minutes:
+            return
+        hour = db.execute(select(MetricHour).where(MetricHour.timestamp == start)).scalar_one_or_none()
+        if hour is None:
+            hour = MetricHour(timestamp=start)
+            db.add(hour)
+        hour.minute_count = len(minutes)
+        for field in METRIC_FIELDS:
+            values = [value for row in minutes if (value := getattr(row, field)) is not None]
+            setattr(hour, field, sum(values) / len(values) if values else None)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=5)

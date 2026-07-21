@@ -27,7 +27,7 @@
 ### Phase 3 — 監視
 - CPU / RAM / ディスク / ネットワーク / 稼働時間（psutil）
 - GPU / VRAM（AMDは低負荷sysfs fast path → amd-smi / rocm-smi fallback、NVIDIAはnvidia-smi、失敗時 N/A）とsystemd process tree別のDRM GPU / VRAM使用量
-- 消費電力推定、単一メトリクス WS ストリーム、履歴（生 24h / 1 分平均 30 日）
+- ✅ 消費電力推定、単一メトリクス WS ストリーム、履歴（生 24h / 1 分平均 30 日 / 1 時間平均 1 年）、15分〜任意期間UI
 - アラート（しきい値 + 通知センター）
 - 電源予約は予約時だけ systemd ユーザーtimerを生成（Web再起動・SSH切断後も継続、期限切れは再実行せず、取消時削除）
 - ✅ 電源確認は実行中App／Workflowと接続中Terminal／Remote Desktopの件数を非本文で表示。通常systemd停止／明示的な即時実行、設定可能なTOTP再認証、失敗監査を実装
