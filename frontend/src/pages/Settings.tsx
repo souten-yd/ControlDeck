@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { ConfirmDialog, Skeleton } from "../components/ui";
@@ -122,6 +123,8 @@ export default function SettingsPage() {
 
       <MobileNavigationSettings />
 
+      {can("settings.manage") && <TerminalV2PhysicalCheckSection />}
+
       {can("settings.manage") && <AddonsSection />}
 
       {can("system.view") && <AlertsSettings />}
@@ -132,6 +135,59 @@ export default function SettingsPage() {
 
       {can("audit.view") && <AuditSection />}
     </div>
+  );
+}
+
+function TerminalV2PhysicalCheckSection() {
+  const navigate = useNavigate();
+  const standalone =
+    (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    || window.matchMedia("(display-mode: standalone)").matches;
+
+  return (
+    <section aria-labelledby="terminal-v2-physical-check-title" className="rounded-2xl border border-sky-200 bg-sky-50/60 p-4 dark:border-sky-900 dark:bg-sky-950/20 md:p-5">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 id="terminal-v2-physical-check-title" className="text-sm font-semibold text-sky-900 dark:text-sky-200">
+            Terminal V2 Physical Check
+          </h2>
+          <p className="mt-1 text-xs leading-relaxed text-sky-800/80 dark:text-sky-300/80">
+            物理iPhone Safari／ホーム画面PWA専用のLab入口です。既存SessionはV1のまま開き、明示的に作成したV2検証Sessionだけを使用します。
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-1.5 text-[10px] font-semibold">
+          <span className={`rounded-full px-2 py-1 ${window.isSecureContext ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"}`}>
+            {window.isSecureContext ? "Secure context" : "HTTPS required"}
+          </span>
+          <span className={`rounded-full px-2 py-1 ${standalone ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-white text-sky-700 dark:bg-sky-950 dark:text-sky-300"}`}>
+            {standalone ? "Standalone PWA" : "Browser"}
+          </span>
+        </div>
+      </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+        SafariではHTTPS URLを開いて確認後「ホーム画面に追加」し、PWAではこのSettingsから再度Labへ入ってください。Labを開くだけではTerminalの作成・接続・終了を行いません。
+      </p>
+      <details className="mt-2 rounded-xl border border-sky-200 bg-white/70 px-3 dark:border-sky-900 dark:bg-zinc-950/40">
+        <summary className="flex min-h-11 cursor-pointer items-center text-xs font-semibold text-sky-800 dark:text-sky-300">
+          Physical check手順
+        </summary>
+        <ol className="mb-3 list-decimal space-y-1.5 pl-5 text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+          <li>SafariとStandalone PWAで別々のV2検証Sessionを作り、表示されたSession IDを記録する。</li>
+          <li>日本語変換の確定、Backspace、Enter、全helper key、Paste／上swipe Copyを確認する。</li>
+          <li>100KB／300KB／絵文字入りPasteの完了、cancel、retryを確認する。</li>
+          <li>本文swipeと右端bar、縦横回転、keyboard開閉10往復で文字ずれ・横overflow・二重textareaがないことを確認する。</li>
+          <li>background復帰、回線切断復帰、page reload後も同じSession ID／最新画面／実processを維持する。</li>
+          <li>終了する場合は、この手順で自分が作成して記録したSession IDだけを対象にする。</li>
+        </ol>
+      </details>
+      <button
+        type="button"
+        onClick={() => navigate("/terminal?terminalLab=v2")}
+        className="mt-3 min-h-11 w-full rounded-xl bg-sky-600 px-4 text-sm font-semibold text-white hover:bg-sky-700 sm:w-auto"
+      >
+        Open Terminal V2 Lab
+      </button>
+    </section>
   );
 }
 
