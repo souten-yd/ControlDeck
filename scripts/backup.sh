@@ -21,7 +21,12 @@ mkdir -p "$STAGE/data" "$STAGE/config" "$STAGE/systemd"
 # DB は WAL を確定してからコピー。sqlite3 CLI に依存せず venv Python で checkpoint する。
 # さらに sqlite3 の backup API で整合性のあるスナップショットを取得する。
 DB_SRC="$DATA_DIR/control-deck.db"
-if [ -f "$DB_SRC" ] && [ -x "$VENV/bin/python" ]; then
+DB_BACKEND="$(cd "$REPO_ROOT/backend" && "$VENV/bin/python" -c 'from app.config import db_url; from app.database.runtime import validate_database_url; print(validate_database_url(db_url()).get_backend_name())')"
+if [ "$DB_BACKEND" = "postgresql" ]; then
+  (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.database.pg_tools dump "$STAGE/data/control-deck.postgresql.dump") \
+    || { echo "PostgreSQL backupに失敗しました（pg_dumpと接続設定を確認してください）" >&2; exit 1; }
+  DB_COPIED=1
+elif [ -f "$DB_SRC" ] && [ -x "$VENV/bin/python" ]; then
   "$VENV/bin/python" - "$DB_SRC" "$STAGE/data/control-deck.db" <<'PY' || cp "$DB_SRC" "$STAGE/data/control-deck.db"
 import sqlite3, sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -55,6 +60,7 @@ Ubuntu Control Deck backup
 created: $(date -Iseconds)
 host: $(hostname)
 data_dir: $DATA_DIR
+database_backend: $DB_BACKEND
 EOF
 
 tar -czf "$ARCHIVE" -C "$TMP" control-deck-backup

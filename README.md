@@ -277,6 +277,9 @@ git clone https://github.com/souten-yd/ControlDeck.git && cd ControlDeck
 ./deck.sh admin <名前>    # 管理者を追加
 ./deck.sh passwd <名前>   # パスワード変更
 ./deck.sh reset-totp <名前> # 二要素認証の解除（ロックアウト復旧）
+./deck.sh database status  # 本体DBの接続先と疎通を秘密値なしで確認
+./deck.sh database postgresql # PostgreSQL URLを非表示入力して切替
+./deck.sh database sqlite  # 既定SQLiteへ復帰（PostgreSQL設定は0600で退避）
 ./deck.sh backup         # DB / 設定 / ユニットのバックアップ
 ./deck.sh restore <file> # 復元
 ./deck.sh enable-desktop # この PC のリモートデスクトップを有効化（ヘッドレス）
@@ -292,6 +295,13 @@ git clone https://github.com/souten-yd/ControlDeck.git && cd ControlDeck
 デフォルトでは `http://127.0.0.1:8765` で待ち受ける。スマホから使う場合は
 `config/config.yaml` の `server.host` を変更して Tailscale / WireGuard 経由でのアクセスを推奨
 （`files.allowed_roots` などの設定も同ファイル。例は `config/config.example.yaml`）。
+
+Control Deck本体DBは既定SQLiteに加えてPostgreSQLへ切り替えられる。`database postgresql`は接続を先に確認し、
+現行SQLiteをbackupしてから、credentialを`config/database.env`（実行ユーザー所有・0600）へ保存する。
+systemd unit本文、YAML、ログにはURLを展開しない。起動時Alembic migrationに失敗した場合は直前のDB設定へ
+自動復帰する。既存SQLite dataのPostgreSQLへの自動移送は行わないため、空databaseまたは別途検証した移行を使う。
+PostgreSQL利用時の`deck.sh backup`／`restore`は`pg_dump`／`pg_restore`のcustom archiveを使い、接続passwordを
+argvへ含めない。非対話設定では`CONTROL_DECK_POSTGRES_URL`を一時環境変数として指定できる。
 
 ## OpenCode の導入と使い方
 
