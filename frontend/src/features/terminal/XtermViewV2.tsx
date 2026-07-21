@@ -21,6 +21,44 @@ interface SessionInfo {
   workload?: "idle" | "running";
 }
 
+interface TerminalV2VerificationSnapshot {
+  capturedAt: string;
+  displayMode: "browser" | "standalone";
+  secureContext: boolean;
+  viewport: {
+    width: number;
+    height: number;
+    visualWidth: number;
+    visualHeight: number;
+    visualOffsetLeft: number;
+    visualOffsetTop: number;
+    documentWidth: number;
+    horizontalOverflow: number;
+  };
+  terminal: {
+    rows: number;
+    cols: number;
+    textareaCount: number;
+    rootWithinViewport: boolean;
+  };
+  metrics: {
+    replayMeasured: boolean;
+    replayMs: number;
+    replayWriteMs: number;
+    replayPaintMs: number;
+    replayBytes: number;
+    replayChunks: number;
+    echoP95Ms: number;
+    echoMaxMs: number;
+    echoSamples: number;
+    scrollP95Ms: number;
+    scrollMaxMs: number;
+    scrollSamples: number;
+    resizeCount: number;
+    reconnectCount: number;
+  };
+}
+
 type ConnectionState = "CONNECTING" | "REPLAYING" | "LIVE" | "RECONNECTING" | "CLOSED";
 
 const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl" }[] = [
@@ -60,9 +98,13 @@ export default function XtermViewV2({
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyText, setCopyText] = useState("");
   const [pasteProgress, setPasteProgress] = useState<PasteProgress | null>(null);
+  const [verificationOpen, setVerificationOpen] = useState(false);
+  const [verification, setVerification] = useState<TerminalV2VerificationSnapshot | null>(null);
   const current = sessions.find((session) => session.id === sessionId);
 
   useEffect(() => {
+    setVerificationOpen(false);
+    setVerification(null);
     const root = rootRef.current;
     const host = hostRef.current;
     const helper = helperRef.current;
@@ -550,6 +592,25 @@ export default function XtermViewV2({
     if (document.execCommand("copy")) { show("コピーしました"); setCopyOpen(false); }
     else show("自動コピーできません。選択範囲をコピーしてください", "error");
   };
+  const refreshVerification = () => {
+    const root = rootRef.current;
+    const terminal = termRef.current;
+    if (!root || !terminal) return;
+    setVerification(captureTerminalV2Verification(root, terminal));
+  };
+  const openVerification = () => {
+    refreshVerification();
+    setVerificationOpen(true);
+  };
+  const copyVerification = async () => {
+    if (!verification) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(verification, null, 2));
+      show("本文を含まないV2検証レポートをコピーしました");
+    } catch {
+      show("検証レポートをコピーできませんでした", "error");
+    }
+  };
 
   return createPortal(<div ref={rootRef} data-terminal-root data-terminal-engine="v2" className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
     <div data-terminal-header className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
@@ -564,6 +625,7 @@ export default function XtermViewV2({
         </div>
       </div>
       <button onClick={openCopy} className="ml-auto hidden min-h-11 rounded-lg px-2.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block">コピー</button>
+      <button onPointerDown={(event) => event.preventDefault()} onClick={openVerification} aria-label="V2 Lab検証レポート" className="min-h-11 shrink-0 rounded-lg px-2.5 text-xs font-semibold text-sky-600 hover:bg-sky-50 dark:text-sky-400 dark:hover:bg-sky-950/40">Lab</button>
       {onAutomation && <button onPointerDown={(event) => event.preventDefault()} onClick={onAutomation} aria-label="Automation settings" title="Snippets and schedules" className="grid h-11 min-w-11 shrink-0 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconSettings /></button>}
       <button onClick={onExit} aria-label="ターミナルを閉じる" className="ml-auto flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 md:ml-0"><IconX /><span className="hidden sm:inline">閉じる</span></button>
     </div>
@@ -579,7 +641,133 @@ export default function XtermViewV2({
       {HELPER_KEYS.map((key) => <button key={key.label} aria-label={key.label} onPointerDown={(event) => event.preventDefault()} onClick={() => { if (key.modifier) { ctrlArmed.current = !ctrlArmed.current; setCtrlOn(ctrlArmed.current); } else if (key.seq) sendSeq(key.seq); }} className={`min-h-11 shrink-0 rounded-lg px-3 font-mono text-xs font-medium ${key.modifier && ctrlOn ? "bg-accent-600 text-white" : "bg-white text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}>{key.label}</button>)}
     </div></div>
     {copyOpen && <div className="absolute inset-0 z-40 flex items-end bg-black/40" onClick={() => setCopyOpen(false)}><div role="dialog" aria-label="コピー" className="safe-bottom w-full rounded-t-2xl bg-white p-4 dark:bg-zinc-900" onClick={(event) => event.stopPropagation()}><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold">コピー</h2><button onClick={() => setCopyOpen(false)} aria-label="閉じる" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button></div><textarea ref={copyAreaRef} readOnly rows={10} value={copyText} className="w-full resize-none rounded-xl border border-zinc-300 bg-zinc-50 p-3 font-mono text-base dark:border-zinc-700 dark:bg-zinc-950" /><p className="mt-1 text-xs text-zinc-400">選択した文字がある場合は選択範囲、それ以外は履歴全体です。</p><button onClick={() => void copyAll()} className="mt-2 min-h-11 w-full rounded-xl bg-accent-600 text-sm font-medium text-white hover:bg-accent-700">コピーする</button></div></div>}
+    {verificationOpen && <TerminalV2VerificationSheet
+      snapshot={verification}
+      onRefresh={refreshVerification}
+      onCopy={() => void copyVerification()}
+      onClose={() => setVerificationOpen(false)}
+    />}
   </div>, document.body);
+}
+
+function captureTerminalV2Verification(root: HTMLElement, terminal: Terminal): TerminalV2VerificationSnapshot {
+  const visualViewport = window.visualViewport;
+  const rootRect = root.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const visualLeft = visualViewport?.offsetLeft ?? 0;
+  const visualTop = visualViewport?.offsetTop ?? 0;
+  const visualRight = visualLeft + (visualViewport?.width ?? viewportWidth);
+  const visualBottom = visualTop + (visualViewport?.height ?? viewportHeight);
+  const standalone =
+    (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    || window.matchMedia("(display-mode: standalone)").matches;
+  const numberFromDataset = (name: string) => {
+    const value = Number(root.dataset[name]);
+    return Number.isFinite(value) ? value : 0;
+  };
+  return {
+    capturedAt: new Date().toISOString(),
+    displayMode: standalone ? "standalone" : "browser",
+    secureContext: window.isSecureContext,
+    viewport: {
+      width: viewportWidth,
+      height: viewportHeight,
+      visualWidth: Math.round(visualViewport?.width ?? viewportWidth),
+      visualHeight: Math.round(visualViewport?.height ?? viewportHeight),
+      visualOffsetLeft: Math.round(visualViewport?.offsetLeft ?? 0),
+      visualOffsetTop: Math.round(visualViewport?.offsetTop ?? 0),
+      documentWidth: document.documentElement.scrollWidth,
+      horizontalOverflow: Math.max(0, document.documentElement.scrollWidth - viewportWidth),
+    },
+    terminal: {
+      rows: terminal.rows,
+      cols: terminal.cols,
+      textareaCount: root.querySelectorAll(".xterm-helper-textarea").length,
+      rootWithinViewport:
+        rootRect.left >= visualLeft - 1
+        && rootRect.top >= visualTop - 1
+        && rootRect.right <= visualRight + 1
+        && rootRect.bottom <= visualBottom + 1,
+    },
+    metrics: {
+      replayMeasured: root.dataset.terminalV2ReplayMs !== undefined,
+      replayMs: numberFromDataset("terminalV2ReplayMs"),
+      replayWriteMs: numberFromDataset("terminalV2ReplayWriteMs"),
+      replayPaintMs: numberFromDataset("terminalV2ReplayPaintMs"),
+      replayBytes: numberFromDataset("terminalV2ReplayBytes"),
+      replayChunks: numberFromDataset("terminalV2ReplayChunks"),
+      echoP95Ms: numberFromDataset("terminalV2EchoP95Ms"),
+      echoMaxMs: numberFromDataset("terminalV2EchoMaxMs"),
+      echoSamples: numberFromDataset("terminalV2EchoSamples"),
+      scrollP95Ms: numberFromDataset("terminalV2ScrollP95Ms"),
+      scrollMaxMs: numberFromDataset("terminalV2ScrollMaxMs"),
+      scrollSamples: numberFromDataset("terminalV2ScrollSamples"),
+      resizeCount: numberFromDataset("terminalV2ResizeCount"),
+      reconnectCount: numberFromDataset("terminalV2ReconnectCount"),
+    },
+  };
+}
+
+function TerminalV2VerificationSheet({
+  snapshot, onRefresh, onCopy, onClose,
+}: {
+  snapshot: TerminalV2VerificationSnapshot | null;
+  onRefresh: () => void;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  const checks = snapshot ? [
+    { label: "HTTPS secure context", pass: snapshot.secureContext },
+    { label: "横overflow 0px", pass: snapshot.viewport.horizontalOverflow === 0 },
+    { label: "Terminal rootがviewport内", pass: snapshot.terminal.rootWithinViewport },
+    { label: "IME textareaが1個", pass: snapshot.terminal.textareaCount === 1 },
+    { label: "Replay計測済み・4秒未満", pass: snapshot.metrics.replayMeasured && snapshot.metrics.replayMs < 4_000 },
+    { label: "Echo 20 sample以上", pass: snapshot.metrics.echoSamples >= 20 },
+    { label: "Echo p95 50ms未満", pass: snapshot.metrics.echoSamples >= 20 && snapshot.metrics.echoP95Ms < 50 },
+    { label: "Echo最大250ms未満", pass: snapshot.metrics.echoSamples >= 20 && snapshot.metrics.echoMaxMs < 250 },
+    { label: "Scroll sample取得", pass: snapshot.metrics.scrollSamples > 0 },
+    { label: "Scroll最大100ms未満", pass: snapshot.metrics.scrollSamples > 0 && snapshot.metrics.scrollMaxMs < 100 },
+  ] : [];
+  return <div className="absolute inset-0 z-50 flex items-end bg-black/40" onClick={onClose}>
+    <div role="dialog" aria-label="V2 Lab検証レポート" className="safe-bottom max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 dark:bg-zinc-900 sm:mx-auto sm:max-w-xl" onClick={(event) => event.stopPropagation()}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">V2 Lab検証レポート</h2>
+          <p className="mt-0.5 text-[11px] text-zinc-500">画面本文・入力・Clipboard・cwd・コマンド・tokenは収集しません。</p>
+        </div>
+        <button onClick={onClose} aria-label="検証レポートを閉じる" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button>
+      </div>
+      {snapshot && <>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+          <VerificationValue label="Mode" value={snapshot.displayMode === "standalone" ? "Standalone PWA" : "Safari / Browser"} />
+          <VerificationValue label="Viewport" value={`${snapshot.viewport.width}×${snapshot.viewport.height}`} />
+          <VerificationValue label="Visual viewport" value={`${snapshot.viewport.visualWidth}×${snapshot.viewport.visualHeight}`} />
+          <VerificationValue label="Terminal" value={`${snapshot.terminal.cols} cols × ${snapshot.terminal.rows} rows`} />
+          <VerificationValue label="Replay" value={`${snapshot.metrics.replayMs.toFixed(1)} ms`} />
+          <VerificationValue label="Resize / reconnect" value={`${snapshot.metrics.resizeCount} / ${snapshot.metrics.reconnectCount}`} />
+          <VerificationValue label="Echo p95 / max" value={`${snapshot.metrics.echoP95Ms.toFixed(1)} / ${snapshot.metrics.echoMaxMs.toFixed(1)} ms (${snapshot.metrics.echoSamples})`} />
+          <VerificationValue label="Scroll p95 / max" value={`${snapshot.metrics.scrollP95Ms.toFixed(1)} / ${snapshot.metrics.scrollMaxMs.toFixed(1)} ms (${snapshot.metrics.scrollSamples})`} />
+          <VerificationValue label="Overflow / textarea" value={`${snapshot.viewport.horizontalOverflow}px / ${snapshot.terminal.textareaCount}`} />
+        </div>
+        <ul className="mt-3 grid gap-1.5 text-xs sm:grid-cols-2">
+          {checks.map((check) => <li key={check.label} className={`flex min-h-8 items-center gap-2 rounded-lg px-2.5 ${check.pass ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300"}`}><span aria-hidden="true">{check.pass ? "✓" : "○"}</span>{check.label}</li>)}
+        </ul>
+        <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">日本語変換、helper key、Paste／Copy、回転、keyboard 10往復、background／回線復帰、reloadは操作結果を別途確認してください。SafariとStandalone PWAの両方のレポートが必要です。</p>
+      </>}
+      <div className="mt-3 flex gap-2">
+        <button onClick={onRefresh} className="min-h-11 flex-1 rounded-xl border border-zinc-300 px-3 text-sm font-semibold dark:border-zinc-700">再計測</button>
+        <button onClick={onCopy} disabled={!snapshot} className="min-h-11 flex-1 rounded-xl bg-sky-600 px-3 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-40">JSONをコピー</button>
+      </div>
+    </div>
+  </div>;
+}
+
+function VerificationValue({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 rounded-lg bg-zinc-100 px-2.5 py-2 dark:bg-zinc-800">
+    <p className="text-[10px] text-zinc-500">{label}</p>
+    <p className="mt-0.5 truncate font-mono tabular-nums" title={value}>{value}</p>
+  </div>;
 }
 
 function openCopyFromTerminal(

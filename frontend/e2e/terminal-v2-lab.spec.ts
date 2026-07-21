@@ -204,6 +204,19 @@ test("uses V2 only for this tab's dedicated Lab session and resumes its local hi
     expect(initialMetrics.scrollP95Ms).toBeLessThan(100);
     expect(initialMetrics.scrollMaxMs).toBeLessThan(100);
 
+    await page.getByRole("button", { name: "V2 Lab検証レポート" }).click();
+    const verificationReport = page.getByRole("dialog", { name: "V2 Lab検証レポート" });
+    await expect(verificationReport).toBeVisible();
+    await expect(verificationReport).toContainText("Safari / Browser");
+    await expect(verificationReport).toContainText("320×700");
+    await expect(verificationReport).toContainText("横overflow 0px");
+    await expect(verificationReport).toContainText("IME textareaが1個");
+    await expect(verificationReport).toContainText("Echo 20 sample以上");
+    await expect(verificationReport).toContainText("Scroll sample取得");
+    await expect(verificationReport).not.toContainText(marker);
+    await expect(verificationReport).not.toContainText("V2_PASTE_RESULT");
+    await verificationReport.getByRole("button", { name: "検証レポートを閉じる" }).click();
+
     await page.getByRole("button", { name: "ターミナルを閉じる" }).click();
     await page.reload();
     const ownCard = page.locator("li").filter({ hasText: `#${createdId}` });
