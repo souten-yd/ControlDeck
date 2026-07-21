@@ -97,6 +97,7 @@ export default function XtermViewV2({
     let live = false;
     let replayStartedAt = 0;
     let replayBytes = 0;
+    let replayChunks = 0;
     let lastSequence = 0;
     let pendingOutputSequence: number | null = null;
     let lastSize: { cols: number; rows: number } | null = null;
@@ -105,7 +106,38 @@ export default function XtermViewV2({
     let composing = false;
     let scrollFrame = 0;
     let historyHeight = track.clientHeight;
+    let pendingEchoStartedAt: number | null = null;
+    let resizeCount = 0;
+    let reconnectCount = 0;
+    const echoSamples: number[] = [];
+    const scrollSamples: number[] = [];
     const clientInstanceId = createUuid();
+
+    const percentile95 = (samples: number[]) => {
+      if (!samples.length) return 0;
+      const sorted = [...samples].sort((left, right) => left - right);
+      return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
+    };
+    const recordSample = (samples: number[], value: number, metric: "Echo" | "Scroll") => {
+      samples.push(value);
+      if (samples.length > 128) samples.shift();
+      root.dataset[`terminalV2${metric}P95Ms`] = percentile95(samples).toFixed(1);
+      root.dataset[`terminalV2${metric}MaxMs`] = Math.max(...samples).toFixed(1);
+      root.dataset[`terminalV2${metric}Samples`] = String(samples.length);
+    };
+    const markInputSent = () => {
+      if (pendingEchoStartedAt === null) pendingEchoStartedAt = performance.now();
+    };
+    const markOutputReceived = () => {
+      if (pendingEchoStartedAt === null) return;
+      recordSample(echoSamples, performance.now() - pendingEchoStartedAt, "Echo");
+      pendingEchoStartedAt = null;
+    };
+    const measureScroll = (action: () => void) => {
+      const startedAt = performance.now();
+      action();
+      requestAnimationFrame(() => recordSample(scrollSamples, performance.now() - startedAt, "Scroll"));
+    };
 
     const bodyStyle = document.body.getAttribute("style");
     const htmlStyle = document.documentElement.getAttribute("style");
@@ -139,6 +171,10 @@ export default function XtermViewV2({
       if (lastSize?.cols === dimensions.cols && lastSize.rows === dimensions.rows) return;
       lastSize = dimensions;
       if (ws?.readyState === WebSocket.OPEN) {
+        resizeCount += 1;
+        root.dataset.terminalV2ResizeCount = String(resizeCount);
+        root.dataset.terminalV2Cols = String(dimensions.cols);
+        root.dataset.terminalV2Rows = String(dimensions.rows);
         ws.send(JSON.stringify({
           type: "resize", cols: dimensions.cols, rows: dimensions.rows,
           resizeGeneration: ++resizeGeneration, connectionGeneration,
@@ -180,6 +216,7 @@ export default function XtermViewV2({
     const finalizeReplay = async (sequence: number) => {
       await writes.drain();
       if (disposed) return;
+      const writeEndedAt = performance.now();
       terminal.scrollToBottom();
       await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       if (disposed) return;
@@ -191,7 +228,10 @@ export default function XtermViewV2({
       inputController.availabilityChanged();
       if (!coarseMobile) terminal.focus();
       root.dataset.terminalV2ReplayMs = String(Math.round(performance.now() - replayStartedAt));
+      root.dataset.terminalV2ReplayWriteMs = String(Math.round(writeEndedAt - replayStartedAt));
+      root.dataset.terminalV2ReplayPaintMs = String(Math.round(performance.now() - writeEndedAt));
       root.dataset.terminalV2ReplayBytes = String(replayBytes);
+      root.dataset.terminalV2ReplayChunks = String(replayChunks);
     };
 
     const inputController = new TerminalInputController({
@@ -212,9 +252,14 @@ export default function XtermViewV2({
       connectionGeneration += 1;
       const generation = connectionGeneration;
       const attachMode = everConnected ? "resume" : "initial";
+      if (everConnected) {
+        reconnectCount += 1;
+        root.dataset.terminalV2ReconnectCount = String(reconnectCount);
+      }
       live = false;
       replayStartedAt = performance.now();
       replayBytes = 0;
+      replayChunks = 0;
       setState(everConnected ? "RECONNECTING" : "CONNECTING");
       host.style.opacity = "0";
       host.style.pointerEvents = "none";
@@ -246,6 +291,7 @@ export default function XtermViewV2({
             if (control.type === "history_reset") {
               live = false;
               replayBytes = 0;
+              replayChunks = 0;
               setState("REPLAYING");
               writes.reset();
               return;
@@ -262,7 +308,11 @@ export default function XtermViewV2({
           return;
         }
         const bytes = new Uint8Array(event.data as ArrayBuffer);
-        replayBytes += live ? 0 : bytes.byteLength;
+        if (live) markOutputReceived();
+        else {
+          replayBytes += bytes.byteLength;
+          replayChunks += 1;
+        }
         const sequence = pendingOutputSequence;
         pendingOutputSequence = null;
         writes.write(bytes, () => {
@@ -285,7 +335,10 @@ export default function XtermViewV2({
     };
     const send = (data: string) => {
       leaveHistory();
-      if (live && ws?.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      if (live && ws?.readyState === WebSocket.OPEN) {
+        markInputSent();
+        ws.send(encoder.encode(data));
+      }
     };
     sendRef.current = send;
     const onData = terminal.onData((data) => {
@@ -339,7 +392,10 @@ export default function XtermViewV2({
     const flushTouch = () => {
       touchFrame = 0;
       const lines = Math.trunc(remainder);
-      if (lines) { terminal.scrollLines(Math.max(-100, Math.min(100, lines))); remainder -= lines; }
+      if (lines) {
+        measureScroll(() => terminal.scrollLines(Math.max(-100, Math.min(100, lines))));
+        remainder -= lines;
+      }
     };
     const touchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
@@ -380,7 +436,9 @@ export default function XtermViewV2({
     const scrollToClientY = (clientY: number) => {
       const rect = track.getBoundingClientRect();
       if (!rect.height || !terminal.buffer.active.baseY) return;
-      terminal.scrollToLine(Math.round(terminal.buffer.active.baseY * Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))));
+      measureScroll(() => terminal.scrollToLine(Math.round(
+        terminal.buffer.active.baseY * Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)),
+      )));
     };
     const trackStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
@@ -406,7 +464,31 @@ export default function XtermViewV2({
       send: (data: string) => send(data),
       paste: (data: string) => pasteRef.current(data),
       pasteState: () => inputController.getState(),
-      scrollLines: (lines: number) => terminal.scrollLines(lines),
+      scrollLines: (lines: number) => measureScroll(() => terminal.scrollLines(lines)),
+      metrics: () => ({
+        replayMs: Number(root.dataset.terminalV2ReplayMs ?? 0),
+        replayWriteMs: Number(root.dataset.terminalV2ReplayWriteMs ?? 0),
+        replayPaintMs: Number(root.dataset.terminalV2ReplayPaintMs ?? 0),
+        replayBytes: Number(root.dataset.terminalV2ReplayBytes ?? 0),
+        replayChunks: Number(root.dataset.terminalV2ReplayChunks ?? 0),
+        echoP95Ms: Number(root.dataset.terminalV2EchoP95Ms ?? 0),
+        echoMaxMs: Number(root.dataset.terminalV2EchoMaxMs ?? 0),
+        echoSamples: Number(root.dataset.terminalV2EchoSamples ?? 0),
+        scrollP95Ms: Number(root.dataset.terminalV2ScrollP95Ms ?? 0),
+        scrollMaxMs: Number(root.dataset.terminalV2ScrollMaxMs ?? 0),
+        scrollSamples: Number(root.dataset.terminalV2ScrollSamples ?? 0),
+        resizeCount,
+        reconnectCount,
+        rows: terminal.rows,
+        cols: terminal.cols,
+      }),
+      resetEchoMetrics: () => {
+        echoSamples.length = 0;
+        pendingEchoStartedAt = null;
+        delete root.dataset.terminalV2EchoP95Ms;
+        delete root.dataset.terminalV2EchoMaxMs;
+        delete root.dataset.terminalV2EchoSamples;
+      },
       openCopy: () => openCopyFromTerminal(terminal, setCopyText, setCopyOpen),
       close: () => ws?.close(4001, "v2 test reconnect"),
     };
@@ -472,7 +554,7 @@ export default function XtermViewV2({
   return createPortal(<div ref={rootRef} data-terminal-root data-terminal-engine="v2" className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
     <div data-terminal-header className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
       <div className="min-w-0 flex-1">
-        <select value={sessionId} onChange={(event) => onSwitch(event.target.value)} aria-label="セッションを切替" className="h-8 max-w-full rounded-lg border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900">
+        <select value={sessionId} onChange={(event) => onSwitch(event.target.value)} aria-label="セッションを切替" className="h-11 max-w-full rounded-lg border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900">
           {sessions.map((session) => <option key={session.id} value={session.id}>{session.program || session.name} · {session.cwd || `#${session.id}`}</option>)}
         </select>
         <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px]">
@@ -491,10 +573,10 @@ export default function XtermViewV2({
       <div ref={trackRef} data-terminal-history-track data-active="false" role="scrollbar" aria-label="ターミナル履歴位置" aria-orientation="vertical" aria-valuemin={0} aria-valuemax={0} aria-valuenow={0} className="terminal-history-track absolute inset-y-1 right-0 z-20 block w-5 opacity-0 md:hidden"><div ref={thumbRef} className="terminal-history-thumb ml-auto mr-0.5 w-1 rounded-full bg-zinc-500/70 opacity-70 dark:bg-zinc-300/70" /></div>
     </div>
     {pasteProgress && pasteProgress.totalBytes >= 32 * 1024 && pasteProgress.state !== "cancelled" && <div data-terminal-paste-progress className="flex shrink-0 items-center gap-2 border-t border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"><span className="tabular-nums">{pasteProgress.state === "completed" ? "貼り付け完了" : pasteProgress.state === "failed" ? "貼り付け失敗" : "貼り付け送信中"} {Math.ceil(pasteProgress.acknowledgedBytes / 1024)} KB / {Math.ceil(pasteProgress.totalBytes / 1024)} KB</span>{pasteProgress.state === "failed" ? <button onClick={() => retryPasteRef.current()} className="ml-auto min-h-11 px-2 font-medium text-accent-600">再試行</button> : pasteProgress.state !== "completed" ? <button onClick={() => cancelPasteRef.current()} className="ml-auto min-h-11 px-2 text-zinc-500">キャンセル</button> : null}</div>}
-    <div className="relative shrink-0 md:hidden"><div ref={helperRef} data-terminal-helper className="terminal-helper-bar flex h-10 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900">
-      <button onPointerDown={(event) => event.preventDefault()} onClick={() => { if (suppressPasteClick.current) { suppressPasteClick.current = false; return; } void doPaste(); }} onTouchStart={(event) => { if (event.touches.length === 1) pasteGesture.current = { startY: event.touches[0].clientY, copied: false }; }} onTouchMove={(event) => { if (event.touches.length !== 1 || pasteGesture.current.copied || pasteGesture.current.startY - event.touches[0].clientY < 28) return; event.preventDefault(); pasteGesture.current.copied = true; suppressPasteClick.current = true; openCopy(); }} onTouchEnd={() => { if (pasteGesture.current.copied) setTimeout(() => { suppressPasteClick.current = false; }, 0); pasteGesture.current = { startY: 0, copied: false }; }} onTouchCancel={() => { pasteGesture.current = { startY: 0, copied: false }; suppressPasteClick.current = false; }} onContextMenu={(event) => { event.preventDefault(); openCopy(); }} onKeyDown={(event) => { if (event.key === "ArrowUp") { event.preventDefault(); openCopy(); } }} aria-haspopup="dialog" aria-label="貼付。上へスワイプでコピー" title="タップ: 貼付 / 上へスワイプ: コピー" className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">貼付</button>
-      <button onPointerDown={(event) => event.preventDefault()} onClick={() => sendSeq("\r")} aria-label="Enter" className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">Enter</button>
-      {HELPER_KEYS.map((key) => <button key={key.label} aria-label={key.label} onPointerDown={(event) => event.preventDefault()} onClick={() => { if (key.modifier) { ctrlArmed.current = !ctrlArmed.current; setCtrlOn(ctrlArmed.current); } else if (key.seq) sendSeq(key.seq); }} className={`shrink-0 rounded-lg px-3 py-1.5 font-mono text-xs font-medium ${key.modifier && ctrlOn ? "bg-accent-600 text-white" : "bg-white text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}>{key.label}</button>)}
+    <div className="relative shrink-0 md:hidden"><div ref={helperRef} data-terminal-helper className="terminal-helper-bar flex h-12 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-0.5 dark:border-zinc-800 dark:bg-zinc-900">
+      <button onPointerDown={(event) => event.preventDefault()} onClick={() => { if (suppressPasteClick.current) { suppressPasteClick.current = false; return; } void doPaste(); }} onTouchStart={(event) => { if (event.touches.length === 1) pasteGesture.current = { startY: event.touches[0].clientY, copied: false }; }} onTouchMove={(event) => { if (event.touches.length !== 1 || pasteGesture.current.copied || pasteGesture.current.startY - event.touches[0].clientY < 28) return; event.preventDefault(); pasteGesture.current.copied = true; suppressPasteClick.current = true; openCopy(); }} onTouchEnd={() => { if (pasteGesture.current.copied) setTimeout(() => { suppressPasteClick.current = false; }, 0); pasteGesture.current = { startY: 0, copied: false }; }} onTouchCancel={() => { pasteGesture.current = { startY: 0, copied: false }; suppressPasteClick.current = false; }} onContextMenu={(event) => { event.preventDefault(); openCopy(); }} onKeyDown={(event) => { if (event.key === "ArrowUp") { event.preventDefault(); openCopy(); } }} aria-haspopup="dialog" aria-label="貼付。上へスワイプでコピー" title="タップ: 貼付 / 上へスワイプ: コピー" className="min-h-11 shrink-0 rounded-lg bg-white px-3 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">貼付</button>
+      <button onPointerDown={(event) => event.preventDefault()} onClick={() => sendSeq("\r")} aria-label="Enter" className="min-h-11 shrink-0 rounded-lg bg-white px-3 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">Enter</button>
+      {HELPER_KEYS.map((key) => <button key={key.label} aria-label={key.label} onPointerDown={(event) => event.preventDefault()} onClick={() => { if (key.modifier) { ctrlArmed.current = !ctrlArmed.current; setCtrlOn(ctrlArmed.current); } else if (key.seq) sendSeq(key.seq); }} className={`min-h-11 shrink-0 rounded-lg px-3 font-mono text-xs font-medium ${key.modifier && ctrlOn ? "bg-accent-600 text-white" : "bg-white text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}>{key.label}</button>)}
     </div></div>
     {copyOpen && <div className="absolute inset-0 z-40 flex items-end bg-black/40" onClick={() => setCopyOpen(false)}><div role="dialog" aria-label="コピー" className="safe-bottom w-full rounded-t-2xl bg-white p-4 dark:bg-zinc-900" onClick={(event) => event.stopPropagation()}><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold">コピー</h2><button onClick={() => setCopyOpen(false)} aria-label="閉じる" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button></div><textarea ref={copyAreaRef} readOnly rows={10} value={copyText} className="w-full resize-none rounded-xl border border-zinc-300 bg-zinc-50 p-3 font-mono text-base dark:border-zinc-700 dark:bg-zinc-950" /><p className="mt-1 text-xs text-zinc-400">選択した文字がある場合は選択範囲、それ以外は履歴全体です。</p><button onClick={() => void copyAll()} className="mt-2 min-h-11 w-full rounded-xl bg-accent-600 text-sm font-medium text-white hover:bg-accent-700">コピーする</button></div></div>}
   </div>, document.body);
