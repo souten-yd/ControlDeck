@@ -2,6 +2,16 @@
 
 最終更新: 2026-07-21
 
+## Phase 1 ユーザー／Customロール／権限管理 完了（2026-07-21）
+
+- `users.manage`権限を要求するユーザー一覧／作成／更新APIと、Role一覧／利用可能権限一覧／Custom Role作成・更新・削除APIを追加した。usernameは英字始まりの限定文字、passwordはArgon2idでhash化し、API／auditへpassword／hashを返さない。
+- Custom Roleへ付与できる権限とユーザーへ割り当てできるRoleは、操作者自身が持つ権限のsubsetだけに制限した。`users.manage`だけを持つCustom Roleから`power.manage`を付与したり、administratorを無効化する権限昇格／妨害を403で拒否する。
+- administrator／operator／viewer presetは変更・削除不可。最後の有効administratorは、同等権限を持つ別Custom Role操作者からも無効化・降格できない。自分自身のrole／有効状態／passwordは管理画面経由で変更せず、本人用password変更APIを使う。
+- role、is_active、管理者password reset、Custom Role権限変更時は対象の全server-side sessionを失効する。利用中Custom Roleは削除不可。user.create／user.update／role.create／role.update／role.deleteを、username、変更field名、permission件数、session失効有無だけで監査する。
+- SettingsへユーザーとRoleを同一sectionで追加した。各行は編集1操作だけを表示し、詳細はmobile bottom sheet／PC modal、Custom Role権限はscroll可能なchecklist、削除だけ確認dialogとする。管理UIは8.48KBの遅延chunkへ分離し、初期index chunkを598.31KBに維持した。
+
+検証: Custom Role／user lifecycle、password reset、role権限変更時session失効、preset不変、自分自身変更禁止、最後のadministrator保護、権限昇格拒否、viewer拒否、監査を含む集中11件、backend全497件中Terminal系29件を除く最新468件、Python compile、frontend TypeScript／production build、diff whitespace検査に成功。実service PID `691854`、active、health 200。Playwright Chromium 320×700で`apps.view`だけのCustom Role作成、1280×800でuser作成・表示名／password更新、旧credential 401／新credential 200／Apps 200、横overflow 0、console／page error 0を確認した。一時user／role／session／auditは0件に清掃済み。既存Terminalには接続・入力・停止・削除していない。
+
 ## Phase 7 TOTP必須ポリシー強制 完了（2026-07-21）
 
 - `security.totp_requirement`へ`optional`／`administrators`／`all`を追加し、要求仕様§19の任意／管理者必須／全ユーザー必須を実装した。既存`require_totp_for_admin: true`は後方互換で管理者必須として扱う。
