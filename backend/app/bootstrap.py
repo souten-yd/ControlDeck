@@ -122,6 +122,8 @@ def _apply_light_migrations() -> None:
         ("managed_applications", "url", "VARCHAR(2048)"),
         ("managed_applications", "web_port", "INTEGER"),
         ("managed_applications", "health_check_json", "TEXT DEFAULT '{}'"),
+        ("managed_applications", "systemd_scope", "VARCHAR(16) DEFAULT 'user'"),
+        ("managed_applications", "system_service_id", "VARCHAR(64)"),
         ("remote_connections", "is_self", "BOOLEAN DEFAULT 0"),
         ("workflow_versions", "version", "INTEGER DEFAULT 1"),
         ("workflow_versions", "description", "TEXT DEFAULT ''"),

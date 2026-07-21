@@ -16,6 +16,7 @@ from app.applications import service as apps
 from app.applications import systemd as sd
 from app.applications import testrun
 from app.applications import health as app_health
+from app.applications import system_services
 from app.applications.discovery import discover_project, discover_pythons
 from app.audit import service as audit
 from app.config import icons_dir
@@ -90,6 +91,9 @@ def create_app(
         apps.validate_fields(body)
     except apps.AppValidationError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    unit_name = body.systemd_unit_name or ""
+    if body.application_type == "systemd_service":
+        unit_name = apps.resolve_systemd_target(body.systemd_scope, body.system_service_id, body.systemd_unit_name)
     app = ManagedApplication(
         name=body.name,
         description=body.description,
@@ -104,6 +108,8 @@ def create_app(
         auto_start=body.auto_start,
         restart_policy=body.restart_policy,
         stop_timeout_seconds=body.stop_timeout_seconds,
+        systemd_scope=body.systemd_scope,
+        system_service_id=body.system_service_id,
     )
     apps.set_environment(app, body.environment)
     apps.set_health_check(app, body.health_check)
@@ -113,7 +119,7 @@ def create_app(
     if body.code is not None and body.application_type in ("python_script", "shell_script"):
         apps.write_app_code(app, body.code)
     if body.application_type == "systemd_service":
-        app.systemd_unit_name = body.systemd_unit_name or ""
+        app.systemd_unit_name = unit_name
     elif body.application_type == "url_shortcut":
         app.systemd_unit_name = ""
     else:
@@ -145,6 +151,12 @@ def project_discovery(
 def health_commands(user: User = Depends(require_permission("apps.edit"))) -> list[dict[str, str]]:
     """argvを公開せず、選択可能な固定コマンドIDと表示名だけを返す。"""
     return app_health.command_catalog()
+
+
+@router.get("/system-services")
+def installed_system_services(user: User = Depends(require_permission("apps.edit"))) -> list[dict[str, object]]:
+    """root所有catalogに導入済みのsafe metadataだけを返す。"""
+    return system_services.catalog_for_api()
 
 
 class TestRunBody(BaseModel):
@@ -323,6 +335,10 @@ def update_app(
     health_check = data.pop("health_check", None)
     for key, value in data.items():
         setattr(app, key, value)
+    if app.application_type == "systemd_service":
+        scope = app.systemd_scope or "user"
+        requested_unit = None if scope == "system" else app.systemd_unit_name
+        app.systemd_unit_name = apps.resolve_systemd_target(scope, app.system_service_id, requested_unit)
     if args is not None:
         app.arguments_json = json.dumps(args)
     if env is not None:
@@ -349,6 +365,8 @@ def update_app(
                 restart_policy=app.restart_policy,  # type: ignore[arg-type]
                 stop_timeout_seconds=app.stop_timeout_seconds,
                 systemd_unit_name=app.systemd_unit_name or None,
+                systemd_scope=app.systemd_scope or "user",  # type: ignore[arg-type]
+                system_service_id=app.system_service_id,
                 health_check=apps.get_health_check(app),
             )
         )
@@ -410,7 +428,17 @@ def _control(
     app = _get_app(db, app_id)
     if not app.systemd_unit_name:
         raise HTTPException(status_code=409, detail="このアプリには systemd ユニットがありません")
-    ok, err = fn(app.systemd_unit_name)
+    if app.systemd_scope == "system":
+        if action not in apps.systemd_actions(app):
+            audit.record(
+                db, f"app.{action}", user=user, resource_type="app", resource_id=str(app_id),
+                result="failure", request=request,
+                metadata={"name": app.name, "error": "action-not-allowlisted"},
+            )
+            raise HTTPException(status_code=409, detail="このsystem serviceでは操作が許可されていません")
+        ok, err = system_services.control(app.system_service_id or "", action)
+    else:
+        ok, err = fn(app.systemd_unit_name)
     audit.record(
         db,
         f"app.{action}",
@@ -437,7 +465,8 @@ def start_app(app_id: int, request: Request, user: User = Depends(require_permis
             apps.sync_unit(app)  # 起動前に定義を最新化
         except (ValueError, OSError) as e:
             raise HTTPException(status_code=422, detail=str(e))
-    sd.reset_failed(app.systemd_unit_name)
+    if app.systemd_scope != "system":
+        sd.reset_failed(app.systemd_unit_name)
     return _control("start", app_id, request, user, db, sd.start)
 
 
@@ -453,4 +482,7 @@ def restart_app(app_id: int, request: Request, user: User = Depends(require_perm
 
 @router.post("/{app_id}/kill")
 def kill_app(app_id: int, request: Request, user: User = Depends(require_permission("apps.stop")), db: Session = Depends(get_db)) -> AppOut:
+    app = _get_app(db, app_id)
+    if app.systemd_scope == "system":
+        raise HTTPException(status_code=409, detail="system serviceの強制終了は許可されていません")
     return _control("kill", app_id, request, user, db, sd.kill)

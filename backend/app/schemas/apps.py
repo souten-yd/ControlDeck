@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 ApplicationType = Literal["python_script", "shell_script", "executable", "systemd_service", "url_shortcut"]
 RestartPolicy = Literal["no", "on-failure", "always", "on-success"]
 HealthCheckType = Literal["none", "process", "tcp", "http", "file", "command"]
+SystemdScope = Literal["user", "system"]
 
 
 class HealthCheckConfig(BaseModel):
@@ -47,6 +48,8 @@ class AppCreate(BaseModel):
     stop_timeout_seconds: int = Field(default=20, ge=1, le=600)
     # systemd_service タイプ用（既存ユーザーユニット名）
     systemd_unit_name: str | None = None
+    systemd_scope: SystemdScope = "user"
+    system_service_id: str | None = Field(default=None, max_length=64)
     # Web ボタンで開くポート
     web_port: int | None = Field(default=None, ge=1, le=65535)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
@@ -69,6 +72,9 @@ class AppUpdate(BaseModel):
     # Web ボタンで開くポート（null で未設定に戻す）
     web_port: int | None = Field(default=None, ge=1, le=65535)
     health_check: HealthCheckConfig | None = None
+    systemd_unit_name: str | None = None
+    systemd_scope: SystemdScope | None = None
+    system_service_id: str | None = Field(default=None, max_length=64)
 
 
 class AppRuntime(BaseModel):
@@ -77,6 +83,7 @@ class AppRuntime(BaseModel):
     uptime_seconds: float | None = None
     started_at: str | None = None
     restart_count: int = 0
+    enabled: bool | None = None
     cpu_percent: float | None = None
     memory_bytes: int | None = None
     gpu_percent: float | None = None
@@ -105,6 +112,9 @@ class AppOut(BaseModel):
     stop_timeout_seconds: int
     health_check: HealthCheckConfig
     systemd_unit_name: str
+    systemd_scope: SystemdScope
+    system_service_id: str | None
+    systemd_actions: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     runtime: AppRuntime

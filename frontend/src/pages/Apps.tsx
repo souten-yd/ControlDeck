@@ -33,6 +33,10 @@ function formatStartedAt(value: string | null): string {
   }).format(date)}`;
 }
 
+function canRunSystemdAction(app: ManagedApp, action: "start" | "stop" | "restart" | "kill"): boolean {
+  return app.systemd_scope !== "system" || (app.systemd_actions ?? []).includes(action);
+}
+
 export default function AppsPage() {
   const { data: allApps, isLoading } = useApps();
   // SearXNG等のインフラアプリはサーバー側が全自動管理するため、操作対象として表示しない
@@ -78,11 +82,11 @@ export default function AppsPage() {
   const primaryAction = (app: ManagedApp) => {
     const st = app.runtime.status;
     if (app.application_type === "url_shortcut") return null; // 開くボタンで別処理
-    if (st === "RUNNING" || st === "DEGRADED")
+    if ((st === "RUNNING" || st === "DEGRADED") && canRunSystemdAction(app, "stop"))
       return { label: "停止", icon: <IconStop />, action: "stop", perm: "apps.stop" };
-    if (st === "FAILED")
+    if (st === "FAILED" && canRunSystemdAction(app, "restart"))
       return { label: "再起動", icon: <IconRestart />, action: "restart", perm: "apps.start" };
-    if (st === "STOPPED" || st === "UNKNOWN")
+    if ((st === "STOPPED" || st === "UNKNOWN") && canRunSystemdAction(app, "start"))
       return { label: "起動", icon: <IconPlay />, action: "start", perm: "apps.start" };
     return null; // 遷移中
   };
@@ -141,10 +145,10 @@ export default function AppsPage() {
                     trigger={<IconDots />}
                     items={[
                       { label: "Logs", onSelect: () => navigate(`/logs?app=${app.id}`) },
-                      ...(can("apps.start")
+                      ...(can("apps.start") && canRunSystemdAction(app, "restart")
                         ? [{ label: "Restart", onSelect: () => action.mutate({ id: app.id, action: "restart" }) }]
                         : []),
-                      ...(can("apps.stop") && app.runtime.status === "RUNNING"
+                      ...(can("apps.stop") && app.runtime.status === "RUNNING" && canRunSystemdAction(app, "kill")
                         ? [{ label: "Force Stop", danger: true, onSelect: () => action.mutate({ id: app.id, action: "kill" }) }]
                         : []),
                       { label: "Details", onSelect: () => setDetail(app) },
@@ -340,6 +344,7 @@ function AppDetailSheet({
     ["VRAM", app.runtime.vram_bytes != null ? formatBytes(app.runtime.vram_bytes) : "N/A"],
     ["再起動回数", String(app.runtime.restart_count)],
     ["ユニット", app.systemd_unit_name || "—"],
+    ...(app.application_type === "systemd_service" ? ([["scope", app.systemd_scope]] as [string, string][]) : []),
     ["Python", app.python_path ?? "—"],
     ["スクリプト", app.script_path ?? app.executable_path ?? "—"],
     ["作業ディレクトリ", app.working_directory ?? "—"],
@@ -368,17 +373,17 @@ function AppDetailSheet({
             開く ↗
           </a>
         )}
-        {!isUrl && can("apps.start") && app.runtime.status !== "RUNNING" && (
+        {!isUrl && can("apps.start") && app.runtime.status !== "RUNNING" && canRunSystemdAction(app, "start") && (
           <SheetButton onClick={() => action.mutate({ id: app.id, action: "start" })}>
             起動
           </SheetButton>
         )}
-        {!isUrl && can("apps.stop") && app.runtime.status === "RUNNING" && (
+        {!isUrl && can("apps.stop") && app.runtime.status === "RUNNING" && canRunSystemdAction(app, "stop") && (
           <SheetButton onClick={() => action.mutate({ id: app.id, action: "stop" })}>
             停止
           </SheetButton>
         )}
-        {!isUrl && can("apps.start") && (
+        {!isUrl && can("apps.start") && canRunSystemdAction(app, "restart") && (
           <SheetButton onClick={() => action.mutate({ id: app.id, action: "restart" })}>
             再起動
           </SheetButton>

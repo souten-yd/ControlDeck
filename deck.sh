@@ -216,6 +216,7 @@ install_hw_helper() {
   local helper_src="$REPO_ROOT/helper/control-deck-hw-helper.py"
   local sudoers_src="$REPO_ROOT/deploy/sudoers/control-deck-hw-helper.in"
   local sudoers_tmp
+  local catalog_tmp
   local install_user
   install_user="$(id -un)"
   [[ "$install_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*[$]?$ ]] || {
@@ -223,22 +224,31 @@ install_hw_helper() {
     return 1
   }
   sudoers_tmp="$(mktemp)"
+  catalog_tmp="$(mktemp)"
   sed "s|@USER@|$install_user|g" "$sudoers_src" > "$sudoers_tmp"
+  if ! (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.applications.system_services --render-config) > "$catalog_tmp"; then
+    rm -f "$sudoers_tmp" "$catalog_tmp"
+    warn "system service catalogを生成できませんでした"
+    return 1
+  fi
   chmod 0440 "$sudoers_tmp"
+  chmod 0644 "$catalog_tmp"
   if ! sudo -n true 2>/dev/null; then
-    info "AMD GPU制御helperの初回登録にsudo認証が必要です"
+    info "特権helperの初回登録にsudo認証が必要です"
     if ! sudo -v; then
-      rm -f "$sudoers_tmp"
-      warn "AMD GPU制御helperを登録できませんでした"
+      rm -f "$sudoers_tmp" "$catalog_tmp"
+      warn "特権helperを登録できませんでした"
       return 1
     fi
   fi
   sudo install -d -m 0755 /usr/local/libexec
+  sudo install -d -o root -g root -m 0755 /etc/control-deck
   sudo install -o root -g root -m 0755 "$helper_src" /usr/local/libexec/control-deck-hw-helper
+  sudo install -o root -g root -m 0644 "$catalog_tmp" /etc/control-deck/system-services.json
   sudo visudo -cf "$sudoers_tmp" >/dev/null
   sudo install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/control-deck-hw-helper
-  rm -f "$sudoers_tmp"
-  info "AMD GPU制御helperを登録しました"
+  rm -f "$sudoers_tmp" "$catalog_tmp"
+  info "特権helperとsystem service allowlistを登録しました"
 }
 
 # ---------- コマンド ----------

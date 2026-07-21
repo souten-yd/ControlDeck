@@ -113,8 +113,13 @@ def build_unit_content(
 
 
 def _systemctl(*args: str, check: bool = False) -> subprocess.CompletedProcess:
+    return _systemctl_scope(True, *args, check=check)
+
+
+def _systemctl_scope(user_scope: bool, *args: str, check: bool = False) -> subprocess.CompletedProcess:
+    prefix = ["systemctl", "--user"] if user_scope else ["systemctl"]
     return subprocess.run(
-        ["systemctl", "--user", *args],
+        [*prefix, *args],
         capture_output=True,
         text=True,
         timeout=30,
@@ -169,9 +174,10 @@ def set_enabled(unit_name: str, enabled: bool) -> None:
     _systemctl("enable" if enabled else "disable", unit_name)
 
 
-def query_status(unit_name: str) -> dict:
+def query_status(unit_name: str, *, user_scope: bool = True) -> dict:
     """systemd の状態をアプリ状態へマッピングして返す。"""
-    r = _systemctl(
+    r = _systemctl_scope(
+        user_scope,
         "show",
         unit_name,
         "--property=ActiveState,SubState,MainPID,ExecMainStatus,NRestarts,LoadState,UnitFileState",

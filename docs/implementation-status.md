@@ -2,6 +2,21 @@
 
 最終更新: 2026-07-21
 
+## Phase 2 system scope systemd service 最小特権境界 実装完了（2026-07-21 13:15 JST、root導入確認待ち）
+
+- Appsの既存systemd serviceへ`user`／`system` scopeを追加した。system scopeはAPIからunit名を自由入力できず、ローカル設定の固定ID、表示名、unit、許可操作を`./deck.sh service`がroot所有`/etc/control-deck/system-services.json`へ導入した項目だけを登録できる。DBにはcatalog IDとscopeを保存し、unit名はcatalogから再解決するため、作成・編集requestによる別unitへの差し替えを拒否する。
+- Web processはrootで動かさず、状態取得だけを非特権`systemctl show`で行う。start／stop／restartはroot所有・非group/world writable・非symlinkの固定helperを`/usr/bin/sudo -n`で呼ぶ。helperは`O_NOFOLLOW`でroot所有catalogを再読込し、固定`/usr/bin/systemctl`、固定action、固定unitだけを配列引数で実行する。killはsystem scopeで禁止し、catalogが許可しない操作はhelper呼出前に409＋失敗監査とする。sudoersはこのhelperの2引数commandだけをNOPASSWD許可し、任意systemctl／shell／unit名を許可しない。
+- Apps追加UIはユーザー／システムを段階選択し、system scopeでは導入済みcatalogのselectだけを表示する。App APIは実行可能actionを返し、カード／詳細の主操作・menuから許可外操作を隠す。320px／PCのいずれも主操作1個＋その他menuを維持する。Alembicと軽量migrationへscope／catalog IDを追加した。
+
+検証: backend全439件、system service集中4件、frontend TypeScript／production build、diff whitespace検査に成功。symlink catalog、未知ID、unit差替え、許可外action、固定helper argv、system→user切替を確認した。実Control DeckをPID `394387`へ再起動しhealth 200、認証付きChromiumで320／1280pxのcatalog限定select、自由unit入力なし、root allowlist説明、横overflowなしを確認した。一時user／login session／auditは清掃済み。実機にはxrdp.serviceがactive／enabledで存在するが、この環境のsudoは対話password必須でhelper／catalogをまだroot導入できないため、実helperによるstart／stop／restart確認だけは`./deck.sh service`の対話sudo実行後に継続する。
+
+## AI Workflow→AppBuilder GUI 3件実動作確認（2026-07-21 13:00 JST）
+
+- ローカルQwen3.6 27Bへ自然言語でtext、number、selectの3 Workflowを生成させ、生成定義を登録、公開版として実入力で実行した。初回text出力は`output.render.config.name`が欠落したため、検証結果を同じAIへ返す再生成が必要だった。AI生成後の構造・意味・入出力契約検証を省略しない運用境界を実データで確認した。
+- 各WorkflowからApp Studioのresponsive GUIを自動構成し、保存済みSourceを隔離systemd user Build JobでASP.NET Coreへ実ビルド／self-testした。ビルド済み主DLLを専用一時systemd user unitで起動し、生成アプリ自身のAPIとGUIへ入力して同じ値が結果表示されることを確認した。
+
+検証: 3件すべてでStudio previewと生成実アプリを320×700／1280×800で確認し、横overflow、console／page errorなし。作成したWorkflow／Execution／Application Project／Build、build directory、一時systemd unit、一時user／login session／auditは終了後0件に清掃し、既存Terminalには接続・入力・停止していない。
+
 ## Phase 4 ファイル圧縮／安全展開・高度preview 完了（2026-07-21 12:40 JST）
 
 - 許可root内の通常file／directoryをZIPまたはtar.gzへ圧縮し、ZIP／tar.gz／tgzを新規directoryへ展開するAPIとFilesメニューを追加した。source／destinationは既存のrealpath＋許可root／deny-root検証を必ず通し、圧縮先と展開先は既存pathを上書きしない。作成・展開はいずれも同じ親directoryの予測不能な一時pathへ完了させ、Linux `renameat2(RENAME_NOREPLACE)`で既存pathへ上書きせず原子的公開するため、失敗時に部分archive／部分展開を公開しない。成功時は形式、項目数、非圧縮byte数だけを監査する。
@@ -1652,7 +1667,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
   CSRF（X-Requested-With 必須）/ ログインレート制限 / セッション一覧・失効
 - RBAC: administrator / operator / viewer。REST・WebSocket 双方で権限依存性を強制
 - 監査ログ: ログイン成功・失敗 / アプリ登録・編集・削除・起動・停止・強制終了 / ログ削除 / 電源操作
-- アプリ管理: python_script / shell_script / executable / systemd_service（ユーザーユニット）
+- アプリ管理: python_script / shell_script / executable / systemd_service（ユーザーユニット＋固定root allowlistのsystem service）
   - systemd ユーザーユニット生成（`cdapp-{id}.service`、引数エスケープ + インジェクション対策 + StartLimit 再起動ループ検出）
   - start / stop / restart / kill、8 状態マッピング、PID / 稼働時間 / CPU / RAM 取得
   - 環境変数は Fernet 暗号化保存、表示時は秘密キーをマスク
@@ -1691,7 +1706,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 
 ## 既知の制約 / 次の作業
 
-1. system レベルの systemd サービス制御は未対応。helper / polkit の権限境界設計が必要
+1. system service helper／root catalogの初回導入は`./deck.sh service`で対話sudo認証が必要。コード・境界・自動／ブラウザ回帰は完了したが、この実機でのhelper操作確認は導入後に行う
 2. PostgreSQL の運用切替、汎用プラグインSDK、provider共通pull/設定管理は未完（OpenCode向けfeature境界は実装済み）
 3. 電源 reboot/shutdown は API 実装済みだが、破壊的な実機実行は未検証
 

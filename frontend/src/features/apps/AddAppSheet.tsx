@@ -28,6 +28,13 @@ interface HealthCommandOption {
   label: string;
 }
 
+interface SystemServiceOption {
+  id: string;
+  label: string;
+  unit: string;
+  actions: Array<"start" | "stop" | "restart">;
+}
+
 export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp?: ManagedApp }) {
   const editing = !!editApp;
   const [step, setStep] = useState(editing ? 2 : 1); // 編集は手順1（種類選択）をスキップ
@@ -46,6 +53,9 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const [scriptPath, setScriptPath] = useState(editApp?.script_path ?? "");
   const [execPath, setExecPath] = useState(editApp?.executable_path ?? "");
   const [unitName, setUnitName] = useState(editApp?.systemd_unit_name ?? "");
+  const [systemdScope, setSystemdScope] = useState<"user" | "system">(editApp?.systemd_scope ?? "user");
+  const [systemServiceId, setSystemServiceId] = useState(editApp?.system_service_id ?? "");
+  const [systemServices, setSystemServices] = useState<SystemServiceOption[]>([]);
   const [args, setArgs] = useState((editApp?.arguments ?? []).join(" "));
   const [workDir, setWorkDir] = useState(editApp?.working_directory ?? "");
   const [webPort, setWebPort] = useState(editApp?.web_port != null ? String(editApp.web_port) : "");
@@ -93,6 +103,16 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
         .catch(() => setPythons([]));
     }
   }, [type]);
+
+  useEffect(() => {
+    if (type !== "systemd_service") return;
+    api<SystemServiceOption[]>("/apps/system-services")
+      .then((items) => {
+        setSystemServices(items);
+        if (systemdScope === "system" && !systemServiceId && items.length > 0) setSystemServiceId(items[0].id);
+      })
+      .catch(() => setSystemServices([]));
+  }, [type, systemdScope, systemServiceId]);
 
   useEffect(() => {
     api<HealthCommandOption[]>("/apps/health-commands")
@@ -157,6 +177,11 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
         timeout_seconds: 3,
       },
     };
+    if (type === "systemd_service") {
+      payload.systemd_scope = systemdScope;
+      payload.system_service_id = systemdScope === "system" ? systemServiceId : null;
+      payload.systemd_unit_name = systemdScope === "user" ? unitName : null;
+    }
     if (usingCode) payload.code = code;
     // 環境変数は入力がある場合のみ更新（編集時に空で消さない）
     const env = parseEnv();
@@ -168,7 +193,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
       } else {
         saved = await api<ManagedApp>("/apps", {
           method: "POST",
-          json: { ...payload, application_type: type, systemd_unit_name: type === "systemd_service" ? unitName : null, environment: env },
+          json: { ...payload, application_type: type, environment: env },
         });
       }
       if (icon) {
@@ -197,7 +222,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           ? execPath.trim() !== ""
           : type === "url_shortcut"
             ? /^https?:\/\//.test(url.trim())
-            : unitName.trim() !== "" && healthValid;
+            : (systemdScope === "system" ? systemServiceId.trim() !== "" : unitName.trim() !== "") && healthValid;
 
   return (
     <Drawer title={editing ? `「${editApp!.name}」を編集` : `アプリを追加 (${step}/3)`} onClose={onClose}>
@@ -341,9 +366,28 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
             </Field>
           )}
           {type === "systemd_service" && (
-            <Field label="ユニット名" hint="ユーザーユニット (systemctl --user) のみ" required>
-              <TextInput value={unitName} onChange={setUnitName} placeholder="my-service.service" mono />
-            </Field>
+            <>
+              <Field label="systemd scope">
+                <div className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+                  <button type="button" onClick={() => setSystemdScope("user")} className={`min-h-11 rounded-lg px-3 text-xs font-medium ${systemdScope === "user" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>ユーザー</button>
+                  <button type="button" onClick={() => setSystemdScope("system")} className={`min-h-11 rounded-lg px-3 text-xs font-medium ${systemdScope === "system" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>システム</button>
+                </div>
+              </Field>
+              {systemdScope === "user" ? (
+                <Field label="ユニット名" hint="systemctl --userで操作する既存ユーザーユニット" required>
+                  <TextInput value={unitName} onChange={setUnitName} placeholder="my-service.service" mono />
+                </Field>
+              ) : (
+                <Field label="許可済みシステムサービス" hint="root所有allowlistに導入済みのサービスだけを操作できます" required>
+                  <select aria-label="許可済みシステムサービス" value={systemServiceId} onChange={(event) => setSystemServiceId(event.target.value)} className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                    <option value="">選択してください</option>
+                    {systemServices.map((service) => <option key={service.id} value={service.id}>{service.label} · {service.unit}</option>)}
+                    {systemServiceId && !systemServices.some((service) => service.id === systemServiceId) && <option value={systemServiceId}>現在の設定（利用不可）</option>}
+                  </select>
+                  {systemServices.length === 0 && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">設定ファイルへsystem serviceを追加し、./deck.sh serviceでroot所有allowlistを導入してください。</p>}
+                </Field>
+              )}
+            </>
           )}
           {type === "url_shortcut" && (
             <Field label="URL" hint="ダッシュボードから開けるリンクとして登録します" required>
@@ -522,7 +566,8 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
                 <ConfirmRow k="スクリプト" v={scriptPath} />
               )}
               {type === "executable" && <ConfirmRow k="実行ファイル" v={execPath} />}
-              {type === "systemd_service" && <ConfirmRow k="ユニット" v={unitName} />}
+              {type === "systemd_service" && <ConfirmRow k="scope" v={systemdScope} />}
+              {type === "systemd_service" && <ConfirmRow k="ユニット" v={systemdScope === "system" ? (systemServices.find((service) => service.id === systemServiceId)?.unit ?? systemServiceId) : unitName} />}
               {type === "url_shortcut" && <ConfirmRow k="URL" v={url} />}
               {args && <ConfirmRow k="引数" v={args} />}
               {workDir && <ConfirmRow k="作業Dir" v={workDir} />}

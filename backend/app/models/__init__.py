@@ -89,6 +89,9 @@ class ManagedApplication(Base):
     # systemd 由来のキャッシュ状態（一覧の初期表示用。真の状態は都度 systemd へ問い合わせ）
     status: Mapped[str] = mapped_column(String(16), default="STOPPED")
     systemd_unit_name: Mapped[str] = mapped_column(String(128), default="")
+    # user: systemctl --user / system: root所有allowlist + privileged helper
+    systemd_scope: Mapped[str] = mapped_column(String(16), default="user")
+    system_service_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

@@ -101,6 +101,8 @@ Ubuntu PC を Web ブラウザ（PC / iPhone）から一元管理するセルフ
 パスはサーバー側ファイル選択から選べる。Pythonプロジェクトはvenvとentry point候補を検出し、登録前のストリーミング動作確認でstdout/stderrを確認できる。
 
 登録後の主操作は起動／停止の1つに絞り、再起動、強制終了、編集、ログ、削除はその他メニューへまとめている。実プロセスはsystemd user unitで動き、WebサービスやSSHを閉じても継続する。
+
+既存のsystem scope serviceも、`config/config.yaml`の`applications.system_services`へ固定ID／unit／許可操作を明示し、`./deck.sh service`でroot所有allowlistを導入したものだけAppsから管理できる。Web processは非rootのままで、任意unit名や任意systemctlは実行しない。
 TCP、HTTP status／本文、許可ルート内ファイル、processのヘルスチェックを設定すると、単なるPID存在ではなく`RUNNING / DEGRADED / FAILED`を判別できる。
 待受ポートを持つアプリは「Web」から開き、複数ポートがある場合は初回に選択して記憶する。環境変数の秘密値は暗号化保存され、画面とログではマスクされる。
 
