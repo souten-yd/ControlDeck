@@ -147,7 +147,7 @@ VRAM不足を避けるため、まず小さいCTXでloadを確認してから拡
 ファイル画面は許可ルート内の閲覧、再開可能upload、download、text編集、preview、ごみ箱を提供する。削除はまずごみ箱へ移し、完全削除だけを破壊的操作として確認する。
 GitHub画面はclone、pull、commit、履歴からのrevert、登録削除を扱う。private repositoryは`gh` device flowで認証し、tokenを画面へ貼り付けない。
 
-電源操作は再起動／shutdown／予約／取消を提供し、予約はsystemd user timerへ永続化する。重要操作は監査ログへ記録される。
+電源操作は再起動／shutdown／予約／取消を提供し、予約はsystemd user timerへ永続化する。確認画面には実行中App／Workflowと接続中Terminal／Remote Desktopの件数を表示し、通常停止または明示的な即時実行を選ぶ。`security.require_totp_for_power: true`では実行直前のTOTP再認証も必須になる。重要操作は監査ログへ記録される。
 administrator／operator／viewerのRBAC、HttpOnly session、CSRF、Origin検証、TOTP、session失効を組み合わせる。外部公開は避け、Tailscale／WireGuard内での利用を推奨する。
 
 ### PCとiPhoneでのナビゲーション

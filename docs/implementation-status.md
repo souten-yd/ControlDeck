@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 3／14 電源安全確認・TOTP再認証 完了（2026-07-21）
+
+- `GET /system/power/safety`を追加し、実行中App／Workflow、接続中Terminal WebSocket／Remote Desktop tunnelの件数とTOTP要否だけを返す。Terminal／RDのSession ID、接続先、画面本文、入力内容は列挙・返却しない。確認情報を取得できない場合はUIをfail closedで実行不可にする。
+- 即時電源APIは既定の`graceful`で通常の`systemctl reboot|poweroff`を使い、利用者が確認画面で危険性を読んで選んだ場合だけ固定argvの`systemctl --force reboot|poweroff`を使う。shell、任意command／argumentは受け取らず、modeを監査する。予約は常に通常停止とする。
+- `security.require_totp_for_power`を追加した。有効時は即時操作と予約の直前にTOTPまたは1回限りのrecovery codeで再認証し、IP／user単位5回/分の失敗制限をかける。未設定・不正code・超過は電源command前に拒否して理由だけを監査し、codeやsecretはlog／auditへ残さない。
+- PC／mobile共通の破壊的確認dialogへ4件数、実行時刻、通常停止／即時実行、TOTP入力、既存予約取消を段階表示する。320pxではdialog自体をviewport内scrollにしてSafe Areaを維持する。
+
+検証: 電源／Remote／Auth集中25件、backend全464件中Terminal系29件を除く最新435件を3分割で成功（Terminal系は既存Session非接触条件のため直前成功記録を維持）、frontend TypeScript／production build、固定argv、TOTP成功／失敗、接続詳細を返さないsummaryを確認。実service PID `509291`でhealth 200。Chromium 1280／320pxで4件数、通常／即時・予約、viewport containment、横overflow 0、console error 0を確認し、確定buttonは押していない。実reboot／shutdown／forceは破壊的なため実行せず、mock境界までとする。
+
 ## Phase 7 PostgreSQL運用切替 実装完了（2026-07-21 13:45 JST、実server確認待ち）
 
 - `psycopg 3`を標準依存へ追加し、Control Deck本体DB URLをSQLite／PostgreSQLだけに制限した。`./deck.sh database status|postgresql|sqlite`を追加し、PostgreSQLは非表示入力または一時環境変数から接続を先に確認する。現行SQLiteを整合backupしてから固定`config/database.env`へ0600で原子的に保存し、service migration／起動失敗時は直前設定へ戻して再起動する。SQLite復帰時も旧PostgreSQL設定を0600で退避し、既存dataを暗黙移送しない。

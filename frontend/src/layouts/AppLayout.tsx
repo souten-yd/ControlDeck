@@ -66,14 +66,16 @@ export default function AppLayout() {
     localStorage.setItem("cd-sidebar", next ? "min" : "full");
   };
 
-  const doPower = async (delayMinutes: number) => {
+  const doPower = async ({ delayMinutes, mode, totpCode }: {
+    delayMinutes: number; mode: "graceful" | "immediate"; totpCode: string;
+  }) => {
     if (!powerAction) return;
     try {
       if (delayMinutes > 0) {
-        await api("/system/power/schedule", { method: "POST", json: { action: powerAction, delay_minutes: delayMinutes } });
+        await api("/system/power/schedule", { method: "POST", json: { action: powerAction, delay_minutes: delayMinutes, totp_code: totpCode } });
         show(`${delayMinutes}分後の${powerAction === "reboot" ? "再起動" : "シャットダウン"}を予約しました`, "info");
       } else {
-        await api(`/system/${powerAction}`, { method: "POST" });
+        await api(`/system/${powerAction}`, { method: "POST", json: { mode, totp_code: totpCode } });
         show(powerAction === "reboot" ? "再起動を実行しました" : "シャットダウンを実行しました", "info");
       }
     } catch (e) {
@@ -526,35 +528,71 @@ function ActionItem({
 
 function PowerConfirm({ action, onConfirm, onClose }: {
   action: "reboot" | "shutdown";
-  onConfirm: (delayMinutes: number) => void;
+  onConfirm: (value: { delayMinutes: number; mode: "graceful" | "immediate"; totpCode: string }) => void;
   onClose: () => void;
 }) {
-  const [runningApps, setRunningApps] = useState<number | null>(null);
+  const [safety, setSafety] = useState<{
+    running_apps: number; running_workflows: number; connected_terminals: number;
+    connected_remote_desktops: number; totp_required: boolean; totp_enabled: boolean;
+  } | null>(null);
+  const [safetyError, setSafetyError] = useState(false);
   const [delay, setDelay] = useState(0);
+  const [mode, setMode] = useState<"graceful" | "immediate">("graceful");
+  const [totpCode, setTotpCode] = useState("");
   const [scheduled, setScheduled] = useState<{ action: string; at: string; status: string } | null>(null);
   const show = useToasts((s) => s.show);
   useEffect(() => {
-    api<{ runtime: { status: string } }[]>("/apps")
-      .then((apps) => setRunningApps(apps.filter((a) => a.runtime.status === "RUNNING").length))
-      .catch(() => setRunningApps(null));
+    api<typeof safety>("/system/power/safety")
+      .then((value) => setSafety(value))
+      .catch(() => setSafetyError(true));
     api<{ action: string; at: string; status: string } | null>("/system/power/schedule").then(setScheduled).catch(() => undefined);
   }, []);
   const label = action === "reboot" ? "再起動" : "シャットダウン";
+  const disabled = safety === null || (safety.totp_required && (!safety.totp_enabled || totpCode.trim().length === 0));
+  const counts = safety ? [
+    ["実行中アプリ", safety.running_apps], ["実行中Workflow", safety.running_workflows],
+    ["接続中Terminal", safety.connected_terminals], ["接続中RD", safety.connected_remote_desktops],
+  ] as const : [];
   return (
     <ConfirmDialog
       title={delay ? `PC の${label}を予約しますか？` : `PC を${label}しますか？`}
-      message={delay ? "予約はWebサービスを再起動してもsystemd timerに保持されます。" : "接続中のセッションはすべて切断されます。"}
-      confirmLabel={delay ? `${delay}分後に予約` : `${label}する`}
-      onConfirm={() => onConfirm(delay)}
+      message={delay ? "予約はWebサービスを再起動してもsystemd timerに保持されます。" : mode === "graceful" ? "systemdがサービスを正常停止してから実行します。接続中のセッションは切断されます。" : "サービスの正常停止を待たず即時実行します。データ消失の危険があります。"}
+      confirmLabel={delay ? `${delay}分後に予約` : mode === "graceful" ? `正常停止して${label}` : `即時${label}`}
+      onConfirm={() => onConfirm({ delayMinutes: delay, mode, totpCode: totpCode.trim() })}
       onClose={onClose}
+      disabled={disabled}
     >
       <label className="mt-3 block text-xs text-zinc-500">実行タイミング
-        <select value={delay} onChange={(e) => setDelay(Number(e.target.value))}
+        <select value={delay} onChange={(e) => { setDelay(Number(e.target.value)); setMode("graceful"); }}
           className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
           <option value={0}>今すぐ</option><option value={15}>15分後</option><option value={30}>30分後</option>
           <option value={60}>1時間後</option><option value={180}>3時間後</option><option value={480}>8時間後</option>
         </select>
       </label>
+      {delay === 0 && <fieldset className="mt-3">
+        <legend className="text-xs text-zinc-500">実行方式</legend>
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          <label className={`rounded-xl border p-3 text-xs ${mode === "graceful" ? "border-accent-500 bg-accent-50 dark:bg-accent-950/20" : "border-zinc-200 dark:border-zinc-700"}`}>
+            <input type="radio" name="power-mode" value="graceful" checked={mode === "graceful"} onChange={() => setMode("graceful")} className="mr-2" />正常停止
+            <span className="mt-1 block pl-5 text-[10px] text-zinc-400">推奨・systemd管理</span>
+          </label>
+          <label className={`rounded-xl border p-3 text-xs ${mode === "immediate" ? "border-red-500 bg-red-50 dark:bg-red-950/20" : "border-zinc-200 dark:border-zinc-700"}`}>
+            <input type="radio" name="power-mode" value="immediate" checked={mode === "immediate"} onChange={() => setMode("immediate")} className="mr-2" />即時実行
+            <span className="mt-1 block pl-5 text-[10px] text-red-500">正常停止を待たない</span>
+          </label>
+        </div>
+      </fieldset>}
+      {safety && <div className="mt-3 grid grid-cols-2 gap-2" aria-label="現在の稼働状況">
+        {counts.map(([name, count]) => <div key={name} className={`rounded-lg px-3 py-2 ${count ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400" : "bg-zinc-50 text-zinc-500 dark:bg-zinc-800/70"}`}>
+          <span className="block text-[10px]">{name}</span><span className="num text-sm font-semibold">{count} 件</span>
+        </div>)}
+      </div>}
+      {safetyError && <p role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400">稼働状況を確認できないため、電源操作を実行できません。</p>}
+      {safety?.totp_required && <label className="mt-3 block text-xs text-zinc-500">TOTP再認証
+        <input value={totpCode} onChange={(event) => setTotpCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6桁コードまたはリカバリーコード"
+          className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-base dark:border-zinc-700 dark:bg-zinc-900" />
+        {!safety.totp_enabled && <span className="mt-1 block text-red-600">設定画面でTOTPを有効化するまで電源操作できません。</span>}
+      </label>}
       {scheduled && ["scheduled", "executing"].includes(scheduled.status) && (
         <div className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
           現在の予約: {scheduled.action === "reboot" ? "再起動" : "シャットダウン"} · {new Date(scheduled.at).toLocaleString("ja-JP")}
@@ -563,11 +601,6 @@ function PowerConfirm({ action, onConfirm, onClose }: {
             catch (e) { show(e instanceof Error ? e.message : "取消に失敗しました", "error"); }
           }}>取消</button>
         </div>
-      )}
-      {runningApps != null && runningApps > 0 && (
-        <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
-          実行中のアプリが {runningApps} 件あります
-        </p>
       )}
     </ConfirmDialog>
   );

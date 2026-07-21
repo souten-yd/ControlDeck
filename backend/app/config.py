@@ -23,6 +23,8 @@ class SecurityConfig(BaseModel):
     secure_cookies: bool = False
     # 管理者に二要素認証を推奨する（UI にバナー表示）
     require_totp_for_admin: bool = False
+    # 電源の即時操作・予約時に、ログイン済みsessionとは別にTOTP再認証を要求する。
+    require_totp_for_power: bool = False
 
 
 class FilesConfig(BaseModel):

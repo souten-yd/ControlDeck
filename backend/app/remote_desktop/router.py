@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.database import SessionLocal, get_db
 from app.models import RemoteConnection, User
-from app.remote_desktop import guacd, service
+from app.remote_desktop import activity, guacd, service
 from app.security.deps import authenticate_websocket, require_permission
 
 router = APIRouter(prefix="/remote", tags=["remote_desktop"])
@@ -153,6 +153,8 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         writer.close()
         return
 
+    activity.connected()
+
     # 双方向パイプ: guacd(TCP) <-> WebSocket(text)
     # guacd の出力は UTF-8 テキスト（Guacamole プロトコル）。任意バイト境界で分割されるため
     # インクリメンタルデコーダで multibyte 文字を保護しつつ、InstructionSplitter で
@@ -191,6 +193,7 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
     finally:
         t1.cancel()
         t2.cancel()
+        activity.disconnected()
         writer.close()
         try:
             await websocket.close()

@@ -145,6 +145,7 @@ export function ConfirmDialog({
   confirmLabel,
   danger = true,
   busy,
+  disabled,
   onConfirm,
   onClose,
   children,
@@ -154,6 +155,7 @@ export function ConfirmDialog({
   confirmLabel: string;
   danger?: boolean;
   busy?: boolean;
+  disabled?: boolean;
   onConfirm: () => void;
   onClose: () => void;
   children?: ReactNode;
@@ -163,7 +165,7 @@ export function ConfirmDialog({
       <div
         role="alertdialog"
         aria-label={title}
-        className="mx-4 w-[min(420px,90vw)] rounded-2xl bg-white p-6 shadow-xl dark:bg-zinc-900"
+        className="safe-bottom mx-4 max-h-[calc(100dvh-2rem)] w-[min(420px,90vw)] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-zinc-900"
       >
         <h2 className="text-base font-semibold">{title}</h2>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
@@ -177,7 +179,7 @@ export function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || disabled}
             className={`rounded-xl px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
               danger ? "bg-red-600 hover:bg-red-700" : "bg-accent-600 hover:bg-accent-700"
             }`}
