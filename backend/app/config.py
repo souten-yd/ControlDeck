@@ -73,6 +73,7 @@ class MonitoringConfig(BaseModel):
     interval_seconds: float = 2.0
     raw_retention_hours: int = 24
     minute_retention_days: int = 30
+    hour_retention_days: int = 365
     electricity: ElectricityConfig = ElectricityConfig()
 
 

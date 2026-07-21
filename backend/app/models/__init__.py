@@ -683,6 +683,24 @@ class MetricMinute(Base):
     net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class MetricHour(Base):
+    """1 時間平均の長期メトリクス履歴。"""
+
+    __tablename__ = "metrics_hour"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), unique=True, index=True)
+    minute_count: Mapped[int] = mapped_column(Integer, default=0)
+    cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    memory_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vram_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    disk_read_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    disk_write_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_rx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
 class GitRepository(Base):
     """GitHub 管理: 登録リポジトリ（クローン先は config.git_apps_dir 配下）。"""
 

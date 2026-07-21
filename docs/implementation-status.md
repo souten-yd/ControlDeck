@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 3 メトリクス長期履歴 完了（2026-07-21）
+
+- 生メトリクス24時間、1分平均30日、1時間平均1年の3段階保持を実装した。minute保存のたびに同じUTC時間のhour行を再計算するため、途中再起動後も既存hour行を重複させず更新する。minute／hourは設定された保持期間を越えた行を同じtransactionで削除する。
+- `GET /system/metrics/history`は1分〜1年を受け付け、要求期間に応じてraw／minute／hourを選ぶ。rawは最大600点、DB履歴は最大2,000点へ均等間引きし、320pxを含むブラウザへ過大なpayload／SVG点数を送らない。
+- HomeのCPU／RAM／GPU／VRAM履歴へ15分、1／6／24時間、7／30／90日、1年と、15〜525,600分の任意期間を追加した。現在値のWebSocket更新は維持し、履歴線だけを選択期間へ切り替える。取得中、解像度、点数を本文を含まない状態表示で確認できる。
+- Alembicへ`metrics_hour`を追加し、SQLite／PostgreSQL両方のoffline head SQL生成を確認した。設定初期値は`hour_retention_days: 365`。
+
+検証: 長期履歴／migration集中12件、GPU／alertを含む集中12件、backend全468件中Terminal系29件を除く最新439件、frontend TypeScript／production build、SQLite／PostgreSQL Alembic offline SQL、diff whitespace検査に成功。実SQLiteはupgrade前backup後にrevision `e4f1a7b9c203`へ移行し、既存12,425分を219時間へ集約した。実service PID `520755`、health 200。認証付きAPIで24時間=`raw`、30日=`minute`、30日+1分／1年=`hour`を確認した。Chromium 320×700／1280×800で1年選択と任意44,640分を適用し、横overflow 0、console／page error 0。一時user／login session／auditは清掃済み。既存Terminalには接続・入力・停止していない。
+
 ## Phase 3／14 電源安全確認・TOTP再認証 完了（2026-07-21）
 
 - `GET /system/power/safety`を追加し、実行中App／Workflow、接続中Terminal WebSocket／Remote Desktop tunnelの件数とTOTP要否だけを返す。Terminal／RDのSession ID、接続先、画面本文、入力内容は列挙・返却しない。確認情報を取得できない場合はUIをfail closedで実行不可にする。

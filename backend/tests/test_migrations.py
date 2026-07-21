@@ -181,6 +181,38 @@ command.downgrade(_alembic_config(), "b7e1d94c2f60")
         assert "workflow_event_deliveries" not in tables
 
 
+def test_hourly_metrics_migration_backfills_existing_minutes(tmp_path: Path):
+    database = tmp_path / "hourly-metrics.db"
+    baseline = _run(database, """
+from alembic import command
+from app.database.migrations import _alembic_config
+command.upgrade(_alembic_config(), "d91a2c7f4e80")
+""")
+    assert baseline.returncode == 0, baseline.stderr
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO metrics_minute (timestamp, cpu_percent, memory_percent) VALUES (?, ?, ?)",
+            [
+                ("2026-07-21 10:05:00.000000", 10, 40),
+                ("2026-07-21 10:55:00.000000", 30, 60),
+                ("2026-07-21 11:05:00.000000", 50, 80),
+            ],
+        )
+        connection.commit()
+
+    upgraded = _run(database, """
+from alembic import command
+from app.database.migrations import _alembic_config
+command.upgrade(_alembic_config(), "head")
+""")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            "SELECT minute_count, cpu_percent, memory_percent FROM metrics_hour ORDER BY timestamp"
+        ).fetchall()
+    assert rows == [(2, 20.0, 50.0), (1, 50.0, 80.0)]
+
+
 def test_postgresql_offline_migrations_render_to_head_without_sqlite_statements():
     env = os.environ.copy()
     env["CONTROL_DECK_DB_URL"] = "postgresql+psycopg://user:secret@127.0.0.1/control_deck"
@@ -196,6 +228,7 @@ def test_postgresql_offline_migrations_render_to_head_without_sqlite_statements(
     assert result.returncode == 0, result.stderr
     assert "CREATE TABLE users" in result.stdout
     assert "d91a2c7f4e80" in result.stdout
+    assert "e4f1a7b9c203" in result.stdout
     assert "PRAGMA" not in result.stdout
     assert "sqlite_master" not in result.stdout
     assert "secret" not in result.stderr
