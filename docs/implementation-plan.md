@@ -28,7 +28,7 @@
 - ✅ CPU / RAM / ディスク（容量／R/W速度／IO wait／SMART／温度）/ ネットワーク / 稼働時間（psutil、取得不可はN/A）
 - GPU / VRAM（AMDは低負荷sysfs fast path → amd-smi / rocm-smi fallback、NVIDIAはnvidia-smi、失敗時 N/A）とsystemd process tree別のDRM GPU / VRAM使用量
 - ✅ 消費電力推定、単一メトリクス WS ストリーム、履歴（生 24h / 1 分平均 30 日 / 1 時間平均 1 年）、15分〜任意期間UI
-- ✅ アラート（しきい値 + Web通知センター + 暗号化メール／Discord／Slack／Webhookチャンネル）
+- ✅ アラート（CPU／RAM／GPU／VRAM／温度／disk／アプリ停止・HC失敗・再起動、Web通知センター + 暗号化メール／Discord／Slack／Webhook）
 - 電源予約は予約時だけ systemd ユーザーtimerを生成（Web再起動・SSH切断後も継続、期限切れは再実行せず、取消時削除）
 - ✅ 電源確認は実行中App／Workflowと接続中Terminal／Remote Desktopの件数を非本文で表示。通常systemd停止／明示的な即時実行、設定可能なTOTP再認証、失敗監査を実装
 

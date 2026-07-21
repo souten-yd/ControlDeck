@@ -35,7 +35,11 @@ const METRICS = [
   { value: "vram_percent", label: "VRAM 使用率 (%)" },
   { value: "disk_percent", label: "ディスク使用率 (%)" },
   { value: "app_down", label: "アプリ停止" },
+  { value: "app_health_failed", label: "アプリのヘルスチェック失敗" },
+  { value: "app_restart_loop", label: "アプリの再起動回数" },
 ];
+const APP_METRICS = new Set(["app_down", "app_health_failed", "app_restart_loop"]);
+const BOOLEAN_METRICS = new Set(["app_down", "app_health_failed"]);
 const OPERATORS = [
   { value: "gt", label: ">" },
   { value: "gte", label: "≥" },
@@ -225,7 +229,7 @@ function RulesSection({ canEdit }: { canEdit: boolean }) {
               <div className="min-w-0 flex-1">
                 <p className="truncate">{r.name}</p>
                 <p className="num truncate text-xs text-zinc-400">
-                  {r.metric_label} {OPERATORS.find((o) => o.value === r.operator)?.label} {r.metric !== "app_down" ? r.threshold : ""}
+                  {r.metric_label} {!BOOLEAN_METRICS.has(r.metric) && `${OPERATORS.find((o) => o.value === r.operator)?.label ?? r.operator} ${r.threshold}`}
                   {r.duration_seconds > 0 && ` · ${r.duration_seconds}秒継続`}
                 </p>
               </div>
@@ -276,26 +280,41 @@ function RuleForm({ rule, onClose }: { rule: Rule | null; onClose: () => void })
     onError: (e) => show(e instanceof Error ? e.message : "保存に失敗しました", "error"),
   });
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  const isAppDown = form.metric === "app_down";
+  const isAppMetric = APP_METRICS.has(form.metric);
+  const isBooleanMetric = BOOLEAN_METRICS.has(form.metric);
 
   return (
     <BottomSheet title={rule ? "ルールを編集" : "アラートルールを追加"} onClose={onClose} wide>
       <div className="space-y-3">
         <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ルール名" className={input} />
-        <select value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} className={input}>
+        <select
+          value={form.metric}
+          onChange={(e) => {
+            const metric = e.target.value;
+            setForm({
+              ...form,
+              metric,
+              app_id: APP_METRICS.has(metric) ? form.app_id : null,
+              operator: BOOLEAN_METRICS.has(metric) ? "gte" : form.operator,
+              threshold: BOOLEAN_METRICS.has(metric) ? 1 : metric === "app_restart_loop" && form.threshold === 90 ? 3 : form.threshold,
+            });
+          }}
+          className={input}
+        >
           {METRICS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>
-        {isAppDown ? (
+        {isAppMetric && (
           <select value={form.app_id ?? ""} onChange={(e) => setForm({ ...form, app_id: e.target.value ? Number(e.target.value) : null })} className={input}>
             <option value="">アプリを選択</option>
             {apps?.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
-        ) : (
+        )}
+        {!isBooleanMetric && (
           <div className="flex gap-2">
             <select value={form.operator} onChange={(e) => setForm({ ...form, operator: e.target.value })} className={`${input} w-24`}>
               {OPERATORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <input type="number" value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} placeholder="しきい値" className={input} />
+            <input type="number" min={form.metric === "app_restart_loop" ? 1 : undefined} value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} placeholder={form.metric === "app_restart_loop" ? "再起動回数" : "しきい値"} className={input} />
           </div>
         )}
         <label className="block text-xs text-zinc-500">
@@ -328,7 +347,7 @@ function RuleForm({ rule, onClose }: { rule: Rule | null; onClose: () => void })
           <span className="text-sm">有効</span>
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} className="h-5 w-5 accent-current" />
         </label>
-        <button onClick={() => save.mutate()} disabled={!form.name || save.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        <button onClick={() => save.mutate()} disabled={!form.name || (isAppMetric && form.app_id == null) || save.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           保存
         </button>
       </div>

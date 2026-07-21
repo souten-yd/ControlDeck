@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-21
 
+## Phase 3 アプリ状態アラート修正・拡張 完了（2026-07-21）
+
+- `app_down`が0／1を返す一方、従来UIはしきい値を隠したまま既定`gt 90`を保存しており発火不能だった。アプリ停止／ヘルス失敗をboolean条件としてstored comparatorに依存せず1=trueで評価し、既存ruleをmigrationなしで動作させる。
+- `app_health_failed`と`app_restart_loop`を追加した。前者はcached healthが失敗してruntimeがDEGRADEDの場合、後者はsystemd `NRestarts`の実値をしきい値と比較する。停止／FAILED／UNKNOWN、health failure、再起動回数を別条件として選択できる。
+- 3条件は登録済み対象アプリを必須とし、存在しないapp IDをcreate／updateとも422で拒否する。UIはアプリ条件だけ対象selectを表示し、停止／HC失敗では比較・しきい値を隠し、再起動だけ回数比較を表示する。対象未選択では保存不可にする。
+
+検証: alert／app health集中20件、backend全480件中Terminal系29件を除く最新451件、frontend TypeScript／production build、diff whitespace検査に成功。既存`gt 90`停止ruleの実発火、STOPPED／DEGRADED／restart_count=6、未知app／再起動しきい値1未満の拒否を確認した。最終実service PID `583994`、health 200。実APIで一時URL shortcutを対象に3 ruleを作成し、Chromium 320×700／1280×800で対象選択、boolean／numeric段階表示、横overflow 0、console／page error 0。一時app／rule／event／user／login session／auditは清掃済み。既存Terminalには接続・入力・停止していない。
+
 ## Phase 3 ディスクhealth／IO監視 完了（2026-07-21）
 
 - `GET /system/disk`へ物理block device、ディスク別read／write Bps、全体IO wait、温度sensor／℃、SMART available／passed・failed・unknown・unavailableを追加した。partitionは`Path.resolve()`後に`/dev`配下のblock deviceであることを確認し、sysfsの親deviceへ正規化する。通常file、許可root外、壊れたsymlinkはtelemetry対象にしない。

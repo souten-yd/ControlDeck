@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.alerts.engine import METRIC_LABELS
+from app.alerts.engine import APP_METRICS, METRIC_LABELS
 from app.audit import service as audit
 from app.database import get_db
-from app.models import AlertEvent, AlertRule, NotificationChannel, User
+from app.models import AlertEvent, AlertRule, ManagedApplication, NotificationChannel, User
 from app.security.crypto import decrypt_text, encrypt_text
 from app.security.deps import require_permission
 
@@ -152,7 +152,7 @@ def delete_channel(channel_id: int, request: Request, user: User = Depends(edit_
 # ---- アラートルール ----
 class RuleBody(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    metric: str = Field(pattern="^(cpu_percent|memory_percent|cpu_temp_c|gpu_percent|gpu_temp_c|vram_percent|disk_percent|app_down)$")
+    metric: str = Field(pattern="^(cpu_percent|memory_percent|cpu_temp_c|gpu_percent|gpu_temp_c|vram_percent|disk_percent|app_down|app_health_failed|app_restart_loop)$")
     operator: str = Field(default="gt", pattern="^(gt|gte|lt|lte)$")
     threshold: float = 90.0
     duration_seconds: int = Field(default=60, ge=0, le=86400)
@@ -179,12 +179,11 @@ def list_rules(user: User = Depends(view_dep), db: Session = Depends(get_db)):
 
 @router.post("/alert-rules", status_code=201)
 def create_rule(body: RuleBody, request: Request, user: User = Depends(edit_dep), db: Session = Depends(get_db)):
-    if body.metric == "app_down" and body.app_id is None:
-        raise HTTPException(status_code=422, detail="アプリ停止アラートには対象アプリが必要です")
+    app_id = _validated_rule_app(body, db)
     r = AlertRule(
         name=body.name, metric=body.metric, operator=body.operator, threshold=body.threshold,
         duration_seconds=body.duration_seconds, cooldown_seconds=body.cooldown_seconds,
-        app_id=body.app_id, channel_ids_json=json.dumps(body.channel_ids), enabled=body.enabled,
+        app_id=app_id, channel_ids_json=json.dumps(body.channel_ids), enabled=body.enabled,
     )
     db.add(r)
     db.commit()
@@ -197,12 +196,23 @@ def update_rule(rule_id: int, body: RuleBody, request: Request, user: User = Dep
     r = db.get(AlertRule, rule_id)
     if r is None:
         raise HTTPException(status_code=404, detail="ルールが見つかりません")
+    app_id = _validated_rule_app(body, db)
     r.name, r.metric, r.operator, r.threshold = body.name, body.metric, body.operator, body.threshold
-    r.duration_seconds, r.cooldown_seconds, r.app_id = body.duration_seconds, body.cooldown_seconds, body.app_id
+    r.duration_seconds, r.cooldown_seconds, r.app_id = body.duration_seconds, body.cooldown_seconds, app_id
     r.channel_ids_json, r.enabled = json.dumps(body.channel_ids), body.enabled
     db.commit()
     audit.record(db, "alert.rule_update", user=user, resource_type="alert_rule", resource_id=str(rule_id), request=request)
     return _rule_out(r)
+
+
+def _validated_rule_app(body: RuleBody, db: Session) -> int | None:
+    if body.metric not in APP_METRICS:
+        return None
+    if body.app_id is None or db.get(ManagedApplication, body.app_id) is None:
+        raise HTTPException(status_code=422, detail="アプリ監視アラートには登録済みの対象アプリが必要です")
+    if body.metric == "app_restart_loop" and body.threshold < 1:
+        raise HTTPException(status_code=422, detail="再起動回数のしきい値は1以上にしてください")
+    return body.app_id
 
 
 @router.delete("/alert-rules/{rule_id}")
