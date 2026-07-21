@@ -1103,7 +1103,7 @@ export default function XtermView({
             value={sessionId}
             onChange={(e) => onSwitch(e.target.value)}
             aria-label="セッションを切替"
-            className="h-8 max-w-full rounded-lg border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+            className="h-11 max-w-full rounded-lg border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
           >
             {sessions.map((s) => (
               <option key={s.id} value={s.id}>{s.program || s.name} · {s.cwd || `#${s.id}`}</option>
@@ -1188,7 +1188,7 @@ export default function XtermView({
         <div
           ref={helperRef}
           data-terminal-helper
-          className="terminal-helper-bar flex h-10 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+          className="terminal-helper-bar flex h-12 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-0.5 dark:border-zinc-800 dark:bg-zinc-900"
         >
           <button
             onPointerDown={(event) => event.preventDefault()}
@@ -1208,7 +1208,7 @@ export default function XtermView({
             aria-haspopup="dialog"
             aria-label="貼付。上へスワイプでコピー"
             title="タップ: 貼付 / 上へスワイプ: コピー"
-            className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+            className="min-h-11 shrink-0 rounded-lg bg-white px-3 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
           >
             貼付
           </button>
@@ -1216,7 +1216,7 @@ export default function XtermView({
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => sendSeq("\r")}
           aria-label="Enter"
-          className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+          className="min-h-11 shrink-0 rounded-lg bg-white px-3 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
         >
           Enter
         </button>
@@ -1232,7 +1232,7 @@ export default function XtermView({
                 sendSeq(k.seq);
               }
             }}
-            className={`shrink-0 rounded-lg px-3 py-1.5 font-mono text-xs font-medium ${
+            className={`min-h-11 shrink-0 rounded-lg px-3 font-mono text-xs font-medium ${
               k.modifier === "ctrl" && ctrlOn
                 ? "bg-accent-600 text-white"
                 : "bg-white text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"

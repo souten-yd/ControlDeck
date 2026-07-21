@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-21
 
+## Terminal V2 Phase 4c-4 自動viewport／latency回帰 完了（2026-07-21 11:36 JST）
+
+- V2 rootへ本文・入力内容を含まないmount内telemetryを追加した。initial／resumeごとのreplay総時間、write drain、最終2 paint、履歴byte／chunk、通常入力送信から次のPTY outputまでのp95／max／sample数、local scrollのpaint時間、resize／reconnect回数、最終rows／colsだけを保持する。最大128 sampleの数値だけを有界保持し、文字、Clipboard、cwd、command、tokenは記録しない。
+- 320×700、390×844、768×1024、1280×800を同じ専用Lab Sessionで再mountし、各幅でLIVE、入力echo、Visual Viewport containment、横overflow 0、単一IME textarea、最小rows／cols、mobile helper表示／desktop非表示を検証する自動回帰を追加した。390pxでは高さ430pxへ縮めるkeyboard相当のgeometry変化と復帰を行い、root／helper下端、PTY resize、textarea個数を確認する。
+- 設計の44px touch targetに対して、V1／V2双方のsession selectorとmobile Paste／Enter／helper keyが32〜40pxだった不一致を修正した。全viewportで可視button／selectを実寸検査し、V1のPaste／Copy／helper focus、geometry event集約、keyboard開閉10往復も同時回帰した。
+
+検証: Terminal backend集中29件、frontend TypeScript／production build成功。実ControlDeck serviceを`./deck.sh`で再起動し、Playwright ChromiumのV2 Lab 1件で4 viewport、20回の1-byte echo p95 50ms未満／max 250ms未満、scroll p95／max 100ms未満、replay 4秒未満、履歴scroll→WebSocket resume、page reload、keyboard相当resize、全可視操作44px以上、横overflowなし、console／page errorなしを確認した。V1代表回帰3件も成功した。検証用Session／user／session／audit／一時credentialは清掃済み。物理iPhone Safari／PWAはChromium emulationと区別して未完了であり、証拠が得られるまでcanary／既定化へ進めない。
+
 ## Terminal V2 Phase 4c-3 UI／操作同等化 完了（2026-07-21 11:16 JST）
 
 - V2専用Lab SessionへV1と同じTerminal workspace契約を接続した。PC Copy、モバイルPasteタップ／上swipe Copy、Enter、Esc、Tab、Ctrl、矢印、`^C`／`^D`／`^Z`／`^L`、Clipboard paste、32KiB以上のchunk／ACK／cancel／retry進捗、本文swipe、右端history bar、Snippet／Automation panel、session switchを同じaccessible nameと操作位置で提供する。

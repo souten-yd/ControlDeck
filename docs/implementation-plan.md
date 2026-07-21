@@ -53,8 +53,9 @@
 1. ✅ UI契約、責務分割、Lab/canary/ロールバック、合格基準、非本文telemetry境界を固定
 2. ✅ V2 connection/renderer/input/geometry/historyコアと専用sessionのLab切替
 3. ✅ V1と同じUI契約、Paste／Copy／helper／swipe／Automation／session switchの実装
-4. ⬜ 320／390／768／1280px自動回帰、履歴／入力／keyboard／scroll／reload計測、物理iPhone Safari／PWA確認
-5. ⬜ canary後にV2既定化、V1即時復帰確認、ロールバック期間後の整理
+4. ✅ 320／390／768／1280px自動回帰、履歴／入力／keyboard／scroll／reload計測
+5. ⬜ 物理iPhone Safari／PWA確認
+6. ⬜ canary後にV2既定化、V1即時復帰確認、ロールバック期間後の整理
 
 ### 自己メンテナンス / ウォッチドッグ（2026-07-12 ユーザー要望で追加）
 
