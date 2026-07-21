@@ -31,7 +31,11 @@ export default function AppLayout() {
   const connected = useMetrics((s) => s.connected);
   const { data: meta } = useMeta();
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
-  const visibleNav = NAVIGATION.filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && canAccessNavigationItem(item, can));
+  const enrollmentPending = Boolean(user?.totp_required && !user.totp_enabled);
+  const visibleNav = NAVIGATION.filter((item) =>
+    (!enrollmentPending || item.to === "/settings")
+    && (!item.feature || enabledFeatures.has(item.feature))
+    && canAccessNavigationItem(item, can));
   const mobilePaths = useMobileNavigation((state) => state.paths);
   const mobileNav = mobilePaths.map((path) => visibleNav.find((item) => item.to === path)).filter((item) => item !== undefined);
   const [collapsed, setCollapsed] = useState(
@@ -47,7 +51,7 @@ export default function AppLayout() {
   // ワークフローエディタ（/workflows/:id）等は全画面表示（ヘッダー・下部ナビを隠す）
   const immersive = location.pathname === "/assistant" || /^\/workflows\/[^/]+$/.test(location.pathname);
 
-  useMetricsStream(can("system.view"));
+  useMetricsStream(can("system.view") && !enrollmentPending);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

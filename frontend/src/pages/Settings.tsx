@@ -40,6 +40,23 @@ export default function SettingsPage() {
   const oled = useTheme((s) => s.oled);
   const setOled = useTheme((s) => s.setOled);
 
+  if (user?.totp_required && !user.totp_enabled) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-6 p-4 md:p-6">
+        <PageHeader title="Settings" />
+        <section className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-900 dark:bg-amber-950/20 md:p-5">
+          <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">二要素認証の設定が必要です</h2>
+          <p className="mt-1 text-xs leading-relaxed text-amber-800/80 dark:text-amber-300/80">
+            管理者がTOTPを必須にしています。設定が完了するまで、ほかの機能とWebSocket接続は利用できません。
+          </p>
+          <div className="mt-4 border-t border-amber-200 pt-4 dark:border-amber-900">
+            <TotpSettings />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-4 md:p-6">
       <PageHeader title="Settings" />

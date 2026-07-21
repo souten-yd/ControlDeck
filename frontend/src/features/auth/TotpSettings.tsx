@@ -79,14 +79,16 @@ export function TotpSettings() {
           {user?.totp_enabled ? (
             <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">有効</span>
           ) : user?.totp_required ? (
-            <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">推奨</span>
+            <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">設定必須</span>
           ) : null}
         </p>
         {user?.totp_enabled && (
           <p className="mt-0.5 text-xs text-zinc-400">リカバリーコード残り {user.recovery_codes_remaining} 個</p>
         )}
       </div>
-      {user?.totp_enabled ? (
+      {user?.totp_enabled && user.totp_required ? (
+        <span className="shrink-0 text-xs font-medium text-zinc-400">ポリシーにより必須</span>
+      ) : user?.totp_enabled ? (
         <button onClick={() => setDisabling(true)} className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40">
           無効化
         </button>

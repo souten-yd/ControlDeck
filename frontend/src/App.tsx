@@ -49,7 +49,13 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     setUnauthorizedHandler(() => setUser(null));
   }, [setUser]);
 
-  if (user) return <>{children}</>;
+  const resolvedUser = user ?? data;
+  if (resolvedUser) {
+    if (resolvedUser.totp_required && !resolvedUser.totp_enabled && location.pathname !== "/settings") {
+      return <Navigate to="/settings" replace />;
+    }
+    return <>{children}</>;
+  }
   if (isLoading)
     return (
       <div className="grid h-dvh place-items-center text-sm text-zinc-400">

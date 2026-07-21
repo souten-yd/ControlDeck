@@ -6,10 +6,18 @@ import json
 from fastapi import Depends, HTTPException, Request, WebSocket, status
 from sqlalchemy.orm import Session
 
+from app.auth.policy import totp_required_for
 from app.database import get_db
 from app.models import User
-from app.security.sessions import SESSION_COOKIE, resolve_session
 from app.security.rate_limit import api_rate_limiter
+from app.security.sessions import SESSION_COOKIE, resolve_session
+
+_TOTP_ENROLLMENT_PATHS = {
+    "/api/v1/auth/me",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/totp/setup",
+    "/api/v1/auth/totp/verify",
+}
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -18,6 +26,11 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if resolved is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="認証が必要です")
     _, user = resolved
+    if totp_required_for(user) and not user.totp_enabled and request.url.path not in _TOTP_ENROLLMENT_PATHS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="totp_setup_required",
+        )
     return user
 
 
@@ -85,6 +98,9 @@ async def authenticate_websocket(
         await websocket.close(code=4401)
         return None
     _, user = resolved
+    if totp_required_for(user) and not user.totp_enabled:
+        await websocket.close(code=4403, reason="totp setup required")
+        return None
     if permission not in user_permissions(user):
         await websocket.close(code=4403)
         return None

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import service as audit
 from app.auth import totp
+from app.auth.policy import totp_required_for
 from app.config import get_config
 from app.database import get_db
 from app.models import User, UserSession
@@ -130,8 +131,7 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
 
 
 def _user_out(user: User) -> UserOut:
-    cfg = get_config().security
-    required = getattr(cfg, "require_totp_for_admin", False) and user.role.name == "administrator"
+    required = totp_required_for(user)
     return UserOut(
         id=user.id,
         username=user.username,
@@ -140,7 +140,7 @@ def _user_out(user: User) -> UserOut:
         permissions=sorted(user_permissions(user)),
         totp_enabled=user.totp_enabled,
         recovery_codes_remaining=totp.remaining_recovery_codes(user),
-        totp_required=required and not user.totp_enabled,
+        totp_required=required,
     )
 
 
@@ -237,6 +237,9 @@ def totp_disable(
     db: Session = Depends(get_db),
 ):
     """現在のコードまたはリカバリーコードで確認してから無効化する。"""
+    if totp_required_for(user):
+        audit.record(db, "totp.disable", user=user, result="policy_denied", request=request)
+        raise HTTPException(status_code=409, detail="組織の認証ポリシーにより二要素認証は必須です")
     key = _check_credential_limit(
         "totp.disable", request, user, db, window_seconds=_TOTP_WINDOW_SECONDS,
     )

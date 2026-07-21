@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -21,8 +22,10 @@ class SecurityConfig(BaseModel):
     allow_arbitrary_commands: bool = False
     # HTTPS リバースプロキシ配下で true にする（Cookie に Secure を付与）
     secure_cookies: bool = False
-    # 管理者に二要素認証を推奨する（UI にバナー表示）
+    # 旧設定。trueなら管理者へ二要素認証を必須化する。
     require_totp_for_admin: bool = False
+    # optional / administrators / all。legacy require_totp_for_admin=trueも管理者必須として扱う。
+    totp_requirement: Literal["optional", "administrators", "all"] = "optional"
     # 電源の即時操作・予約時に、ログイン済みsessionとは別にTOTP再認証を要求する。
     require_totp_for_power: bool = False
     # 直接接続元IPごとの共通保護。login等は別のより厳しい制限も併用する。
