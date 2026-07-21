@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 3 アラートメール通知 完了（2026-07-21）
+
+- 既存のWeb通知センター／Discord／Slack／WebhookへSMTPメールを追加した。host、port、STARTTLS／TLS／内部SMTP向け保護なし、任意username／password、送信元、最大20宛先を管理者だけが登録でき、接続設定全体を既存Fernet鍵で暗号化保存する。API／一覧はpasswordや宛先を返さず、送信元を伏せ字、宛先を件数だけで表示する。
+- SMTPは標準`EmailMessage`と`SMTP`／`SMTP_SSL`を別threadで実行し、STARTTLSは証明書検証付きcontextを使う。HTTP／SMTP失敗logは例外本文、URL、SMTP応答、認証情報を出さずchannel種別と例外classだけを残す。テスト送信はsuccess／failureを監査し、設定値はmetadataへ含めない。
+- 外部送信の成否をAlertEventの`notified`へ正しく反映するよう修正した。外部チャンネルが失敗してもWeb通知センターのイベントは作成し、センサー／評価loop全体を停止しない。
+- Settingsの通知追加sheetはメール選択時だけSMTP項目を段階表示する。passwordは常にpassword inputで、保護なしは信頼できる内部SMTP専用と明記した。
+
+検証: alert集中10件、backend全472件中Terminal系29件を除く最新443件、frontend TypeScript／production build、diff whitespace検査に成功。全回帰の初回だけ既存Workflow event testの別event-loop lock競合が1件発生したが、該当test単独2回と全回帰再実行は成功した。最終実service PID `542445`、health 200。127.0.0.1の隔離SMTPへAPIのテストメール1通（252 bytes）を実送信し、成功監査、秘密値非反射、チャンネル削除を確認した。Chromium 320×700／1280×800で全SMTP項目、sheet内scroll、password型、横overflow 0、console／page error 0。一時channel／user／login session／auditとSMTP受信器は清掃・終了済み。既存Terminalには接続・入力・停止していない。
+
 ## Phase 3 メトリクス長期履歴 完了（2026-07-21）
 
 - 生メトリクス24時間、1分平均30日、1時間平均1年の3段階保持を実装した。minute保存のたびに同じUTC時間のhour行を再計算するため、途中再起動後も既存hour行を重複させず更新する。minute／hourは設定された保持期間を越えた行を同じtransactionで削除する。

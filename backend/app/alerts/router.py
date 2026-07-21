@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from email.utils import parseaddr
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -15,6 +17,7 @@ from app.security.crypto import decrypt_text, encrypt_text
 from app.security.deps import require_permission
 
 router = APIRouter(tags=["alerts"])
+logger = logging.getLogger("control_deck.alerts")
 
 # 監視の閲覧は全ロール、編集は設定権限
 view_dep = require_permission("system.view")
@@ -24,15 +27,55 @@ edit_dep = require_permission("settings.manage")
 # ---- 通知チャンネル ----
 class ChannelBody(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    channel_type: str = Field(pattern="^(discord|slack|webhook)$")
-    url: str = Field(min_length=8, max_length=1024)
+    channel_type: str = Field(pattern="^(discord|slack|webhook|email)$")
+    url: str = Field(default="", max_length=2048)
+    smtp_host: str = Field(default="", max_length=255)
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_security: str = Field(default="starttls", pattern="^(starttls|tls|none)$")
+    smtp_username: str = Field(default="", max_length=320)
+    # 秘密値はPydantic field errorのinputへ反射させずendpoint内で長さだけ検証する。
+    smtp_password: str = ""
+    from_address: str = Field(default="", max_length=320)
+    to_addresses: list[str] = Field(default_factory=list, max_length=20)
     enabled: bool = True
+
+def _valid_email(value: str) -> bool:
+    if not value or len(value) > 320 or any(c in value for c in "\r\n\x00"):
+        return False
+    name, address = parseaddr(value)
+    return not name and address == value and address.count("@") == 1
+
+
+def _email_destination(body: ChannelBody) -> str:
+    return json.dumps(
+        {
+            "host": body.smtp_host,
+            "port": body.smtp_port,
+            "security": body.smtp_security,
+            "username": body.smtp_username,
+            "password": body.smtp_password,
+            "from_address": body.from_address,
+            "to_addresses": body.to_addresses,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _masked_email(value: str) -> str:
+    local, _, domain = value.partition("@")
+    return f"{local[:1]}***@{domain}" if local and domain else "***"
 
 
 def _channel_out(ch: NotificationChannel) -> dict:
     try:
-        url = decrypt_text(ch.url_encrypted)
-        masked = url[:24] + "…" if len(url) > 24 else url
+        destination = decrypt_text(ch.url_encrypted)
+        if ch.channel_type == "email":
+            settings = json.loads(destination)
+            recipients = settings.get("to_addresses", [])
+            masked = f"{_masked_email(settings.get('from_address', ''))} → {len(recipients)}件"
+        else:
+            masked = destination[:24] + "…" if len(destination) > 24 else destination
     except Exception:
         masked = "(復号失敗)"
     return {"id": ch.id, "name": ch.name, "channel_type": ch.channel_type, "url_preview": masked, "enabled": ch.enabled}
@@ -46,11 +89,23 @@ def list_channels(user: User = Depends(view_dep), db: Session = Depends(get_db))
 
 @router.post("/alert-channels", status_code=201)
 def create_channel(body: ChannelBody, request: Request, user: User = Depends(edit_dep), db: Session = Depends(get_db)):
-    if not body.url.startswith(("http://", "https://")):
+    if body.channel_type == "email":
+        invalid = (
+            not body.smtp_host
+            or any(c in body.smtp_host for c in "/\\\r\n\x00")
+            or len(body.smtp_password) > 1024
+            or not _valid_email(body.from_address)
+            or not body.to_addresses
+            or any(not _valid_email(value) for value in body.to_addresses)
+        )
+        if invalid:
+            raise HTTPException(status_code=422, detail="メール通知設定を正しく指定してください")
+    elif not body.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="URL は http(s) で指定してください")
+    destination = _email_destination(body) if body.channel_type == "email" else body.url
     ch = NotificationChannel(
         name=body.name, channel_type=body.channel_type,
-        url_encrypted=encrypt_text(body.url), enabled=body.enabled,
+        url_encrypted=encrypt_text(destination), enabled=body.enabled,
     )
     db.add(ch)
     db.commit()
@@ -59,13 +114,27 @@ def create_channel(body: ChannelBody, request: Request, user: User = Depends(edi
 
 
 @router.post("/alert-channels/{channel_id}/test")
-async def test_channel(channel_id: int, user: User = Depends(edit_dep), db: Session = Depends(get_db)):
+async def test_channel(channel_id: int, request: Request, user: User = Depends(edit_dep), db: Session = Depends(get_db)):
     ch = db.get(NotificationChannel, channel_id)
     if ch is None:
         raise HTTPException(status_code=404, detail="チャンネルが見つかりません")
     from app.alerts.notify import send_notification
 
-    ok = await send_notification(ch.channel_type, decrypt_text(ch.url_encrypted), "Control Deck テスト通知", "この通知が届けば設定は正常です。")
+    try:
+        destination = decrypt_text(ch.url_encrypted)
+    except Exception as error:
+        logger.warning("通知設定の復号失敗 (%s, %s)", ch.channel_type, type(error).__name__)
+        audit.record(
+            db, "alert.channel_test", user=user, resource_type="channel", resource_id=str(ch.id),
+            result="failure", request=request, metadata={"channel_type": ch.channel_type, "reason": "decrypt"},
+        )
+        raise HTTPException(status_code=500, detail="チャンネル設定を読み込めません") from None
+    ok = await send_notification(ch.channel_type, destination, "Control Deck テスト通知", "この通知が届けば設定は正常です。")
+    audit.record(
+        db, "alert.channel_test", user=user, resource_type="channel", resource_id=str(ch.id),
+        result="success" if ok else "failure", request=request,
+        metadata={"channel_type": ch.channel_type},
+    )
     return {"ok": ok}
 
 

@@ -83,10 +83,10 @@ METRIC_LABELS = {
 }
 
 
-async def _dispatch(rule: AlertRule, value: float | None, db) -> None:
+async def _dispatch(rule: AlertRule, value: float | None, db) -> bool:
     channel_ids = json.loads(rule.channel_ids_json or "[]")
     if not channel_ids:
-        return
+        return False
     from app.alerts.notify import send_notification
 
     label = METRIC_LABELS.get(rule.metric, rule.metric)
@@ -95,15 +95,21 @@ async def _dispatch(rule: AlertRule, value: float | None, db) -> None:
         message = f"{label} を検知しました"
     else:
         message = f"{label} が {value:.1f}（しきい値 {rule.operator} {rule.threshold}）"
+    attempted = False
+    all_sent = True
     for cid in channel_ids:
         ch = db.get(NotificationChannel, cid)
         if ch is None or not ch.enabled:
             continue
+        attempted = True
         try:
             url = decrypt_text(ch.url_encrypted)
         except Exception:
+            all_sent = False
             continue
-        await send_notification(ch.channel_type, url, title, message)
+        if not await send_notification(ch.channel_type, url, title, message):
+            all_sent = False
+    return attempted and all_sent
 
 
 async def evaluate_once() -> None:
@@ -144,8 +150,7 @@ async def evaluate_once() -> None:
                     db.add(event)
                     rule.last_triggered_at = utcnow()
                     db.commit()
-                    await _dispatch(rule, value, db)
-                    event.notified = True
+                    event.notified = await _dispatch(rule, value, db)
                     db.commit()
                     logger.warning("アラート発火: %s (%s=%.1f)", rule.name, rule.metric, value)
                     # イベントトリガーのワークフローを起動（自己修復フロー等）

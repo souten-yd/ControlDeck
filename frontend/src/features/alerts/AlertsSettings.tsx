@@ -82,7 +82,7 @@ function ChannelsSection({ canEdit }: { canEdit: boolean }) {
       {!channels ? (
         <Skeleton className="h-12" />
       ) : channels.length === 0 ? (
-        <p className="text-sm text-zinc-400">Discord / Slack / Webhook を追加すると通知を受け取れます</p>
+        <p className="text-sm text-zinc-400">メール / Discord / Slack / Webhook を追加すると通知を受け取れます</p>
       ) : (
         <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
           {channels.map((c) => (
@@ -113,8 +113,29 @@ function ChannelForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [type, setType] = useState("discord");
   const [url, setUrl] = useState("");
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpSecurity, setSmtpSecurity] = useState("starttls");
+  const [smtpUsername, setSmtpUsername] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [fromAddress, setFromAddress] = useState("");
+  const [toAddresses, setToAddresses] = useState("");
+  const isEmail = type === "email";
   const create = useMutation({
-    mutationFn: () => api("/alert-channels", { method: "POST", json: { name, channel_type: type, url } }),
+    mutationFn: () => api("/alert-channels", {
+      method: "POST",
+      json: isEmail ? {
+        name,
+        channel_type: type,
+        smtp_host: smtpHost,
+        smtp_port: smtpPort,
+        smtp_security: smtpSecurity,
+        smtp_username: smtpUsername,
+        smtp_password: smtpPassword,
+        from_address: fromAddress,
+        to_addresses: toAddresses.split(",").map((value) => value.trim()).filter(Boolean),
+      } : { name, channel_type: type, url },
+    }),
     onSuccess: () => { show("追加しました"); qc.invalidateQueries({ queryKey: ["alert-channels"] }); onClose(); },
     onError: (e) => show(e instanceof Error ? e.message : "追加に失敗しました", "error"),
   });
@@ -127,9 +148,42 @@ function ChannelForm({ onClose }: { onClose: () => void }) {
           <option value="discord">Discord</option>
           <option value="slack">Slack</option>
           <option value="webhook">汎用 Webhook</option>
+          <option value="email">メール (SMTP)</option>
         </select>
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Webhook URL" className={`${input} font-mono text-xs`} />
-        <button onClick={() => create.mutate()} disabled={!name || !url || create.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        {isEmail ? (
+          <>
+            <div className="grid grid-cols-[1fr_7rem] gap-2">
+              <label className="text-xs text-zinc-500">SMTP host
+                <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.example.com" className={`${input} mt-1 font-mono text-xs`} autoCapitalize="none" />
+              </label>
+              <label className="text-xs text-zinc-500">Port
+                <input type="number" min={1} max={65535} value={smtpPort} onChange={(e) => setSmtpPort(Number(e.target.value))} className={`${input} mt-1`} />
+              </label>
+            </div>
+            <label className="block text-xs text-zinc-500">接続保護
+              <select value={smtpSecurity} onChange={(e) => setSmtpSecurity(e.target.value)} className={`${input} mt-1`}>
+                <option value="starttls">STARTTLS（通常587）</option>
+                <option value="tls">TLS（通常465）</option>
+                <option value="none">なし（信頼できる内部SMTPのみ）</option>
+              </select>
+            </label>
+            <label className="block text-xs text-zinc-500">SMTP username（任意）
+              <input value={smtpUsername} onChange={(e) => setSmtpUsername(e.target.value)} autoComplete="username" className={`${input} mt-1`} />
+            </label>
+            <label className="block text-xs text-zinc-500">SMTP password（暗号化保存）
+              <input type="password" value={smtpPassword} onChange={(e) => setSmtpPassword(e.target.value)} autoComplete="new-password" className={`${input} mt-1`} />
+            </label>
+            <label className="block text-xs text-zinc-500">送信元
+              <input type="email" value={fromAddress} onChange={(e) => setFromAddress(e.target.value)} placeholder="control-deck@example.com" className={`${input} mt-1`} autoCapitalize="none" />
+            </label>
+            <label className="block text-xs text-zinc-500">宛先（複数はカンマ区切り、最大20件）
+              <input value={toAddresses} onChange={(e) => setToAddresses(e.target.value)} placeholder="admin@example.com" className={`${input} mt-1`} autoCapitalize="none" />
+            </label>
+          </>
+        ) : (
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Webhook URL" className={`${input} font-mono text-xs`} />
+        )}
+        <button onClick={() => create.mutate()} disabled={!name || (isEmail ? !smtpHost || !fromAddress || !toAddresses : !url) || create.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           追加
         </button>
       </div>
