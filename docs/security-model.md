@@ -10,7 +10,7 @@
 | 原則 | 実装 |
 |---|---|
 | root で動作させない | web は一般ユーザー。setup/install スクリプトは root 起動を拒否 |
-| 特権操作の分離 | 再起動/シャットダウンは systemd `systemctl reboot` 相当を helper 経由（Phase 電源管理で導入、polkit ルールで限定） |
+| 特権操作の分離 | 再起動/シャットダウンは固定argvの `systemctl reboot/poweroff`（即時選択時だけ固定`--force`）をlogind/polkit境界で実行。任意commandは受け取らず、設定時はTOTP再認証を要求 |
 | AMD GPU制御 | Webは一般ユーザー。`deck.sh service`がroot所有の専用helperと限定NOPASSWD規則を登録。helperはAMD BDF・実機cap/DPM levelを再検証し、電力/MCLK/SCLK属性以外を変更しない |
 | system service制御 | Webは一般ユーザー。設定の固定ID／unit／start・stop・restartをroot所有catalogへ導入し、root所有・非symlink helperが固定`/usr/bin/systemctl`だけを配列実行。APIから任意unit／action／shellを渡せず、killも禁止 |
 | 任意コマンド初期無効 | `security.allow_arbitrary_commands: false`。登録済みアプリ実行のみ |

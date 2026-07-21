@@ -94,3 +94,86 @@ def test_power_worker_records_failure(monkeypatch):
     assert states[-1] == ("failed", "denied")
     assert ("power.reboot", "failure") in audits
     assert cleaned == [{"ignore_errors": True, "keep_state": True}]
+
+
+def test_immediate_power_uses_fixed_force_argv(monkeypatch):
+    from app.power import router
+
+    calls = []
+    monkeypatch.setattr(router.subprocess, "run", lambda argv, **kwargs: (
+        calls.append((argv, kwargs)) or SimpleNamespace(returncode=0, stdout="", stderr="")
+    ))
+    assert router._execute("reboot", "graceful") == (True, "")
+    assert router._execute("shutdown", "immediate") == (True, "")
+    assert calls[0][0] == ["systemctl", "reboot"]
+    assert calls[1][0] == ["systemctl", "--force", "poweroff"]
+    assert all(call[1]["timeout"] == 15 for call in calls)
+
+
+def test_power_api_without_body_remains_graceful(admin_client, monkeypatch):
+    from app.power import router
+
+    calls = []
+    monkeypatch.setattr(router, "_execute", lambda action, mode="graceful": (calls.append((action, mode)) or (True, "")))
+    response = admin_client.post("/api/v1/system/reboot", headers=CSRF_HEADERS)
+    assert response.status_code == 200
+    assert calls == [("reboot", "graceful")]
+
+
+def test_power_safety_returns_counts_without_session_details(admin_client, monkeypatch):
+    from app.power import router
+    from app.remote_desktop import activity
+    from app.terminals.router import streams
+
+    monkeypatch.setattr(streams, "stream_count", lambda: 3)
+    monkeypatch.setattr(activity, "count", lambda: 2)
+    monkeypatch.setattr(router.application_service, "runtime_info", lambda item, **kwargs: SimpleNamespace(status="STOPPED"))
+    response = admin_client.get("/api/v1/system/power/safety")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connected_terminals"] == 3
+    assert body["connected_remote_desktops"] == 2
+    assert isinstance(body["running_apps"], int) and isinstance(body["running_workflows"], int)
+    assert set(body) == {
+        "running_apps", "running_workflows", "connected_terminals", "connected_remote_desktops",
+        "totp_required", "totp_enabled",
+    }
+    assert "sessions" not in response.text and "connection_id" not in response.text
+
+
+def test_power_totp_reauthentication_blocks_invalid_code(admin_client, monkeypatch):
+    import pyotp
+    from sqlalchemy import select
+
+    from app.auth import totp
+    from app.database import SessionLocal
+    from app.models import User
+    from app.power import router
+
+    secret = totp.generate_secret()
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+        previous = (user.totp_enabled, user.totp_secret_encrypted, user.recovery_codes_encrypted)
+        user.totp_enabled = True
+        totp.store_secret(user, secret)
+        db.commit()
+    monkeypatch.setattr(router, "get_config", lambda: SimpleNamespace(
+        security=SimpleNamespace(require_totp_for_power=True)
+    ))
+    calls = []
+    monkeypatch.setattr(router, "_execute", lambda action, mode="graceful": (calls.append((action, mode)) or (True, "")))
+    try:
+        denied = admin_client.post(
+            "/api/v1/system/reboot", json={"mode": "immediate", "totp_code": "000000"}, headers=CSRF_HEADERS,
+        )
+        assert denied.status_code == 403 and calls == []
+        allowed = admin_client.post(
+            "/api/v1/system/reboot",
+            json={"mode": "immediate", "totp_code": pyotp.TOTP(secret).now()}, headers=CSRF_HEADERS,
+        )
+        assert allowed.status_code == 200 and calls == [("reboot", "immediate")]
+    finally:
+        with SessionLocal() as db:
+            user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+            user.totp_enabled, user.totp_secret_encrypted, user.recovery_codes_encrypted = previous
+            db.commit()

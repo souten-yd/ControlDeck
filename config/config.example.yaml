@@ -8,6 +8,7 @@ security:
   allow_arbitrary_commands: false   # 任意コマンド実行は初期無効
   secure_cookies: false             # HTTPS リバースプロキシ配下では true
   require_totp_for_admin: false     # true で管理者に二要素認証を推奨（UI にバナー）
+  require_totp_for_power: false     # true で再起動・停止・予約時にTOTP再認証を要求
 
 files:
   allowed_roots: []   # 例: ["/home/USER"]（~/.ssh・~/.gnupg・DB・鍵は拒否リストで常に保護）
