@@ -23,6 +23,11 @@ interface PythonCandidate {
   version: string | null;
 }
 
+interface HealthCommandOption {
+  id: string;
+  label: string;
+}
+
 export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp?: ManagedApp }) {
   const editing = !!editApp;
   const [step, setStep] = useState(editing ? 2 : 1); // 編集は手順1（種類選択）をスキップ
@@ -59,6 +64,8 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const [healthStatus, setHealthStatus] = useState(String(editApp?.health_check.expected_status ?? 200));
   const [healthBody, setHealthBody] = useState(editApp?.health_check.body_contains ?? "");
   const [healthPath, setHealthPath] = useState(editApp?.health_check.path ?? "");
+  const [healthCommandId, setHealthCommandId] = useState(editApp?.health_check.command_id ?? "");
+  const [healthCommands, setHealthCommands] = useState<HealthCommandOption[]>([]);
   // インラインコード編集
   const [codeMode, setCodeMode] = useState(false);
   const [code, setCode] = useState("");
@@ -86,6 +93,12 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
         .catch(() => setPythons([]));
     }
   }, [type]);
+
+  useEffect(() => {
+    api<HealthCommandOption[]>("/apps/health-commands")
+      .then(setHealthCommands)
+      .catch(() => setHealthCommands([]));
+  }, []);
 
   // プロジェクトフォルダから venv / エントリーポイントを提案
   useEffect(() => {
@@ -140,6 +153,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
         expected_status: Number(healthStatus) || 200,
         body_contains: healthBody,
         path: healthPath,
+        command_id: healthCommandId,
         timeout_seconds: 3,
       },
     };
@@ -173,6 +187,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   };
 
   const step1Valid = name.trim().length > 0;
+  const healthValid = healthType !== "command" || healthCommandId.trim() !== "";
   const step2Valid =
     type === "python_script"
       ? pythonPath.trim() !== "" && (codeMode ? code.trim() !== "" : scriptPath.trim() !== "")
@@ -182,7 +197,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           ? execPath.trim() !== ""
           : type === "url_shortcut"
             ? /^https?:\/\//.test(url.trim())
-            : unitName.trim() !== "";
+            : unitName.trim() !== "" && healthValid;
 
   return (
     <Drawer title={editing ? `「${editApp!.name}」を編集` : `アプリを追加 (${step}/3)`} onClose={onClose}>
@@ -369,10 +384,11 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
           {type === "systemd_service" && (
             <>
               <Field label="ヘルスチェック" hint="失敗すると実行中の状態をDEGRADEDとして表示します">
-                <select value={healthType} onChange={(e) => setHealthType(e.target.value as ManagedApp["health_check"]["type"])}
+                <select aria-label="ヘルスチェック種別" value={healthType} onChange={(e) => setHealthType(e.target.value as ManagedApp["health_check"]["type"])}
                   className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
                   <option value="none">なし</option><option value="process">プロセス存在</option>
                   <option value="tcp">TCPポート</option><option value="http">HTTP GET</option><option value="file">ファイル存在</option>
+                  {(healthCommands.length > 0 || healthType === "command") && <option value="command">許可コマンド</option>}
                 </select>
               </Field>
               {healthType === "tcp" && <div className="grid grid-cols-[1fr_7rem] gap-2">
@@ -388,6 +404,13 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               </div>}
               {healthType === "file" && <Field label="確認ファイル" hint="設定の許可ルート内だけを確認できます">
                 <PathInput value={healthPath} onChange={setHealthPath} placeholder="/path/to/ready" mode="file" title="確認ファイルを選択" />
+              </Field>}
+              {healthType === "command" && <Field label="許可コマンド" hint="サーバー設定で固定されたargvだけをsystemd user unitで実行します">
+                <select aria-label="許可コマンド" value={healthCommandId} onChange={(event) => setHealthCommandId(event.target.value)} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                  <option value="">選択してください</option>
+                  {healthCommands.map((command) => <option key={command.id} value={command.id}>{command.label}</option>)}
+                  {healthCommandId && !healthCommands.some((command) => command.id === healthCommandId) && <option value={healthCommandId}>現在の設定（利用不可）</option>}
+                </select>
               </Field>}
             </>
           )}
@@ -420,13 +443,14 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
                 </select>
               </Field>
               <Field label="ヘルスチェック" hint="失敗すると実行中の状態をDEGRADEDとして表示します">
-                <select value={healthType} onChange={(e) => setHealthType(e.target.value as ManagedApp["health_check"]["type"])}
+                <select aria-label="ヘルスチェック種別" value={healthType} onChange={(e) => setHealthType(e.target.value as ManagedApp["health_check"]["type"])}
                   className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
                   <option value="none">なし</option>
                   <option value="process">プロセス存在</option>
                   <option value="tcp">TCPポート</option>
                   <option value="http">HTTP GET</option>
                   <option value="file">ファイル存在</option>
+                  {(healthCommands.length > 0 || healthType === "command") && <option value="command">許可コマンド</option>}
                 </select>
               </Field>
               {healthType === "tcp" && (
@@ -447,6 +471,15 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
               {healthType === "file" && (
                 <Field label="確認ファイル" hint="設定の許可ルート内だけを確認できます">
                   <PathInput value={healthPath} onChange={setHealthPath} placeholder="/path/to/ready" mode="file" title="確認ファイルを選択" />
+                </Field>
+              )}
+              {healthType === "command" && (
+                <Field label="許可コマンド" hint="サーバー設定で固定されたargvだけをsystemd user unitで実行します">
+                  <select aria-label="許可コマンド" value={healthCommandId} onChange={(event) => setHealthCommandId(event.target.value)} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                    <option value="">選択してください</option>
+                    {healthCommands.map((command) => <option key={command.id} value={command.id}>{command.label}</option>)}
+                    {healthCommandId && !healthCommands.some((command) => command.id === healthCommandId) && <option value={healthCommandId}>現在の設定（利用不可）</option>}
+                  </select>
                 </Field>
               )}
               <button
@@ -522,7 +555,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
         ) : (
           <button
             onClick={submit}
-            disabled={busy}
+            disabled={busy || !healthValid}
             className="rounded-xl bg-accent-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
           >
             {busy ? (editing ? "更新中..." : "登録中...") : editing ? "更新する" : "登録する"}

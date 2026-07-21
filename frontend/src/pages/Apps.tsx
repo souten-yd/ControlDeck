@@ -174,6 +174,8 @@ export default function AppsPage() {
                     )}
                       {app.runtime.status === "RUNNING" && app.runtime.cpu_percent != null && <span className="num hidden whitespace-nowrap text-[11px] font-medium text-zinc-600 dark:text-zinc-300 sm:inline">CPU {app.runtime.cpu_percent.toFixed(0)}%</span>}
                       {app.runtime.status === "RUNNING" && app.runtime.memory_bytes != null && <span className="num hidden whitespace-nowrap text-[11px] font-medium text-zinc-600 dark:text-zinc-300 sm:inline">RAM {formatBytes(app.runtime.memory_bytes)}</span>}
+                      {app.runtime.status === "RUNNING" && app.runtime.gpu_percent != null && <span className="num hidden whitespace-nowrap text-[11px] font-medium text-zinc-600 dark:text-zinc-300 sm:inline">GPU {app.runtime.gpu_percent.toFixed(0)}%</span>}
+                      {app.runtime.status === "RUNNING" && app.runtime.vram_bytes != null && <span className="num hidden whitespace-nowrap text-[11px] font-medium text-zinc-600 dark:text-zinc-300 sm:inline">VRAM {formatBytes(app.runtime.vram_bytes)}</span>}
                     </div>
                   </div>
 
@@ -334,6 +336,8 @@ function AppDetailSheet({
     ["稼働時間", formatUptime(app.runtime.uptime_seconds)],
     ["CPU", app.runtime.cpu_percent != null ? `${app.runtime.cpu_percent.toFixed(1)}%` : "—"],
     ["RAM", app.runtime.memory_bytes != null ? formatBytes(app.runtime.memory_bytes) : "—"],
+    ["GPU", app.runtime.gpu_percent != null ? `${app.runtime.gpu_percent.toFixed(1)}%` : "N/A"],
+    ["VRAM", app.runtime.vram_bytes != null ? formatBytes(app.runtime.vram_bytes) : "N/A"],
     ["再起動回数", String(app.runtime.restart_count)],
     ["ユニット", app.systemd_unit_name || "—"],
     ["Python", app.python_path ?? "—"],

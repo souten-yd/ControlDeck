@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from app.security.crypto import decrypt_text, encrypt_text, mask_env
 
 # CPU% 計測用のプロセスキャッシュ（連続ポーリング間で有効な値を得るため）
 _proc_cache: dict[int, psutil.Process] = {}
+logger = logging.getLogger(__name__)
 
 
 class AppValidationError(ValueError):
@@ -96,6 +98,11 @@ def validate_fields(data: AppCreate) -> None:
             files.resolve(health.path, must_exist=False)
         except (OSError, files.FileAccessError) as e:
             raise AppValidationError(str(e)) from e
+    if health.type == "command":
+        from app.config import get_config
+
+        if not health.command_id or health.command_id not in get_config().applications.health_commands:
+            raise AppValidationError("登録済みの許可コマンドを選択してください")
 
 
 def is_managed_code(app: ManagedApplication) -> bool:
@@ -190,9 +197,12 @@ def runtime_info(app: ManagedApplication, *, include_health: bool = True) -> App
         return AppRuntime(status="UNKNOWN")
     cpu = None
     mem = None
+    gpu_percent = None
+    vram_bytes = None
     ports: set[int] = set()
     pid = q.get("pid")
     if pid:
+        process_ids = {int(pid)}
         try:
             proc = _proc_cache.get(pid)
             if proc is None or not proc.is_running():
@@ -206,12 +216,23 @@ def runtime_info(app: ManagedApplication, *, include_health: bool = True) -> App
             _collect_listen_ports(proc, ports)
             for child in proc.children(recursive=True):
                 try:
+                    process_ids.add(child.pid)
                     mem += child.memory_info().rss
                     _collect_listen_ports(child, ports)
                 except psutil.Error:
                     pass
         except psutil.Error:
             pass
+        try:
+            from app.applications import gpu_usage
+
+            # app ID + MainPIDでsampling世代を分離し、process再起動時のDRM counterを
+            # 前のprocessと差分計算しない。
+            gpu_percent, vram_bytes = gpu_usage.collect(process_ids, scope_id=f"{app.id}:{pid}")
+        except Exception as exc:
+            # Kernel/driverがfdinfo統計を公開しない環境ではN/Aへ縮退する。
+            logger.debug("application GPU usage unavailable: app_id=%s error=%s", app.id, type(exc).__name__)
+            gpu_percent, vram_bytes = None, None
     health = None
     status = q["status"]
     if include_health and get_health_check(app).type != "none":
@@ -228,6 +249,8 @@ def runtime_info(app: ManagedApplication, *, include_health: bool = True) -> App
         restart_count=q.get("restart_count", 0),
         cpu_percent=cpu,
         memory_bytes=mem,
+        gpu_percent=gpu_percent,
+        vram_bytes=vram_bytes,
         listening_ports=sorted(ports),
         health=health,
     )

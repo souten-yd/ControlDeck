@@ -20,6 +20,7 @@ test("long-running app remains readable without status or action overlap in dark
   await page.route("**/api/v1/apps", async (route) => {
     const response = await route.fetch();
     const apps = await response.json() as Array<Record<string, any>>;
+    expect(apps.every((app) => "gpu_percent" in app.runtime && "vram_bytes" in app.runtime)).toBe(true);
     const target = apps.find((app) => app.name === "FrameDeck") ?? apps.find((app) => !app.system_managed);
     if (target) {
       target.name = "FrameDeck";
@@ -30,6 +31,8 @@ test("long-running app remains readable without status or action overlap in dark
         started_at: "2026-03-28T01:23:00+00:00",
         cpu_percent: 12.4,
         memory_bytes: 1_234_567_890,
+        gpu_percent: 37.5,
+        vram_bytes: 4_294_967_296,
       };
     }
     await route.fulfill({ response, json: apps });
@@ -45,6 +48,10 @@ test("long-running app remains readable without status or action overlap in dark
     await expect(visibleStatus).toHaveCount(1);
     await expect(card.getByText(/稼働 114日 7時間/)).toBeVisible();
     await expect(card.getByText(/開始 3\/28 10:23/)).toBeVisible();
+    if (viewport.width >= 640) {
+      await expect(card.getByText("GPU 38%", { exact: true })).toBeVisible();
+      await expect(card.getByText("VRAM 4.0 GB", { exact: true })).toBeVisible();
+    }
 
     const styles = await card.evaluate((element) => {
       const cardStyle = getComputedStyle(element);
