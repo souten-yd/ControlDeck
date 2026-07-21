@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 3 ディスクhealth／IO監視 完了（2026-07-21）
+
+- `GET /system/disk`へ物理block device、ディスク別read／write Bps、全体IO wait、温度sensor／℃、SMART available／passed・failed・unknown・unavailableを追加した。partitionは`Path.resolve()`後に`/dev`配下のblock deviceであることを確認し、sysfsの親deviceへ正規化する。通常file、許可root外、壊れたsymlinkはtelemetry対象にしない。
+- 温度は非特権sysfs `device/hwmon*/temp*_input`だけを読み、`/sys/devices`への解決と-50〜200℃を検証し、Compositeを優先する。SMARTは固定`/usr/sbin/smartctl`または`/usr/bin/smartctl`だけを配列argv、`shell=False`相当、8秒timeout、JSONで読み、60秒cacheする。tool／権限／sensorがない場合はAPI・UIともN/Aで、disk一覧やアプリ全体をerrorにしない。
+- System UIは各mountの容量barの下へ物理device、R/W、温度、SMARTを小さくまとめ、SMART異常だけ赤、正常は緑、取得不可は通常色のN/Aとする。IO waitはdisk sectionで1回だけ表示し、大量chartを追加しない。
+- 全回帰で再現したWorkflow business eventのmodule-global `asyncio.Lock`別event-loop束縛を、process全体を直列化するcancel-safeなcross-loop async lockへ修正した。TestClient／管理loopを跨いでもretryが3回でFAILEDへ収束し、同一process内の二重配送防止を維持する。
+
+検証: disk／GPU集中8件、Workflow event retry該当testを連続2回、backend全477件中Terminal系29件を除く最新448件、frontend TypeScript／production build、compile、diff whitespace検査に成功。最終実service PID `571645`、health 200。実APIで`/dev/nvme0n1` Composite 37.85〜38.85℃、IO wait 0.2〜0.4%、`/dev/sda`の変動R/W速度を確認した。実機は`smartctl`未導入のためSMART N/A、fixtureでは固定argv JSONのpassed／39℃を確認した。Chromium 320×700／1280×800で全項目、横overflow 0、console／page error 0。一時user／login session／auditは清掃済み。既存Terminalには接続・入力・停止していない。
+
 ## Phase 3 アラートメール通知 完了（2026-07-21）
 
 - 既存のWeb通知センター／Discord／Slack／WebhookへSMTPメールを追加した。host、port、STARTTLS／TLS／内部SMTP向け保護なし、任意username／password、送信元、最大20宛先を管理者だけが登録でき、接続設定全体を既存Fernet鍵で暗号化保存する。API／一覧はpasswordや宛先を返さず、送信元を伏せ字、宛先を件数だけで表示する。

@@ -95,10 +95,17 @@ def self_status(user: User = Depends(require_permission("system.view"))):
 
 @router.get("/disk")
 def disk(user: User = Depends(require_permission("system.view"))):
+    from app.monitoring.disks import disk_telemetry
+
+    partitions = [
+        p for p in psutil.disk_partitions(all=False)
+        if p.fstype not in ("squashfs", "tmpfs", "devtmpfs", "overlay")
+    ]
+    telemetry = disk_telemetry.snapshot([p.device for p in partitions])
+    cpu_times = psutil.cpu_times_percent(interval=None)
+    io_wait = getattr(cpu_times, "iowait", None)
     parts = []
-    for p in psutil.disk_partitions(all=False):
-        if p.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
-            continue
+    for p in partitions:
         try:
             usage = psutil.disk_usage(p.mountpoint)
         except OSError:
@@ -111,6 +118,8 @@ def disk(user: User = Depends(require_permission("system.view"))):
                 "total": usage.total,
                 "used": usage.used,
                 "percent": usage.percent,
+                "io_wait_percent": io_wait,
+                **telemetry.get(p.device, {}),
             }
         )
     return parts
