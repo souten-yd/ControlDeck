@@ -103,12 +103,23 @@ def test_ollama_adapter_normalizes_models_and_lifecycle(monkeypatch):
     monkeypatch.setattr(provider_adapters.ollama, "load", lambda *args: _async_result(calls, ("load", args), {"loaded": True}))
     monkeypatch.setattr(provider_adapters.ollama, "unload", lambda *args: _async_result(calls, ("unload", args), {"loaded": False}))
     monkeypatch.setattr(provider_adapters.ollama, "delete", lambda *args: _async_result(calls, ("delete", args), None))
+    monkeypatch.setattr(provider_adapters.ollama, "get_model_config", lambda model: {"num_ctx": 8192})
+    monkeypatch.setattr(provider_adapters.ollama, "set_model_config", lambda model, patch: {**patch})
 
     listed = asyncio.run(provider_adapters.list_models("ollama"))
     assert listed[0]["id"] == "qwen" and listed[0]["size_bytes"] == 123 and listed[0]["loaded"] is True
     assert asyncio.run(provider_adapters.load_model("ollama", "qwen", "1h"))["loaded"] is True
     assert asyncio.run(provider_adapters.unload_model("ollama", "qwen"))["loaded"] is False
     asyncio.run(provider_adapters.delete_model("ollama", "qwen"))
+    assert asyncio.run(provider_adapters.get_model_config("ollama", "qwen")) == {"num_ctx": 8192}
+    assert asyncio.run(provider_adapters.configure_model("ollama", "qwen", {"temperature": 0.2})) == {
+        "temperature": 0.2,
+    }
+    import pytest
+    with pytest.raises(provider_adapters.InvalidConfiguration):
+        asyncio.run(provider_adapters.configure_model("ollama", "qwen", {"num_ctx": "large"}))
+    with pytest.raises(provider_adapters.ProviderNotFound):
+        asyncio.run(provider_adapters.get_model_config("ollama", "missing"))
     assert [call[0] for call in calls] == ["load", "unload", "delete"]
 
 
@@ -182,6 +193,31 @@ def test_external_provider_rejects_mutation(monkeypatch):
     assert listed[0]["id"] == "remote"
     with pytest.raises(provider_adapters.UnsupportedOperation):
         asyncio.run(provider_adapters.load_model("external", "remote"))
+    with pytest.raises(provider_adapters.UnsupportedOperation):
+        asyncio.run(provider_adapters.get_model_config("external", "remote"))
+
+
+def test_llama_common_config_rejects_identity_changes(monkeypatch):
+    import asyncio
+    import pytest
+    from app.models_mgmt import provider_adapters
+
+    async def catalog(**kwargs):
+        return [{
+            "id": "llama.cpp", "provider": "llama.cpp", "managed": True,
+            "available": True, "models": ["local"], "capabilities": ["list", "configure"],
+        }]
+
+    instance = {"alias": "local", "model_path": "/models/local.gguf", "port": 8080, "ctx_size": 4096}
+    monkeypatch.setattr(provider_adapters.providers, "list_providers", catalog)
+    monkeypatch.setattr(provider_adapters.llama, "get_instance", lambda alias: dict(instance))
+    monkeypatch.setattr(provider_adapters.llama, "save_instance", lambda alias, patch: {"selected_alias": alias})
+
+    assert asyncio.run(provider_adapters.get_model_config("llama.cpp", "local"))["ctx_size"] == 4096
+    configured = asyncio.run(provider_adapters.configure_model("llama.cpp", "local", {"ctx_size": 8192}))
+    assert configured["model"] == "local"
+    with pytest.raises(provider_adapters.InvalidConfiguration):
+        asyncio.run(provider_adapters.configure_model("llama.cpp", "local", {"model_path": "/tmp/other.gguf"}))
 
 
 def test_common_provider_api_routes(admin_client, monkeypatch):
@@ -193,11 +229,38 @@ def test_common_provider_api_routes(admin_client, monkeypatch):
     async def loaded(provider_id, model_id, keep_alive=None):
         return {"model": model_id, "loaded": True}
 
+    async def configured(provider_id, model_id, patch):
+        return dict(patch)
+
+    async def model_config(provider_id, model_id):
+        return {"num_ctx": 4096}
+
+    async def ensure_operation(provider_id, operation):
+        return {"provider": provider_id, "managed": True, "capabilities": [operation]}
+
+    async def pulled(provider_id, model_id):
+        yield {"status": "success", "completed": 1, "total": 1}
+
     monkeypatch.setattr(provider_adapters, "list_models", listed)
     monkeypatch.setattr(provider_adapters, "load_model", loaded)
+    monkeypatch.setattr(provider_adapters, "get_model_config", model_config)
+    monkeypatch.setattr(provider_adapters, "configure_model", configured)
+    monkeypatch.setattr(provider_adapters, "ensure_operation", ensure_operation)
+    monkeypatch.setattr(provider_adapters, "pull_model", pulled)
     assert admin_client.get("/api/v1/models/providers/ollama/models").json()[0]["id"] == "m"
     response = admin_client.post(
         "/api/v1/models/providers/ollama/models/m/load",
         json={"keep_alive": "1h"}, headers={"X-Requested-With": "ControlDeck"},
     )
     assert response.status_code == 200 and response.json()["loaded"] is True
+    assert admin_client.get("/api/v1/models/providers/ollama/models/m/config").json() == {"num_ctx": 4096}
+    configured_response = admin_client.put(
+        "/api/v1/models/providers/ollama/models/m/config",
+        json={"num_ctx": 8192}, headers={"X-Requested-With": "ControlDeck"},
+    )
+    assert configured_response.status_code == 200 and configured_response.json() == {"num_ctx": 8192}
+    pull_response = admin_client.post(
+        "/api/v1/models/providers/ollama/pull-jobs",
+        json={"model": "m"}, headers={"X-Requested-With": "ControlDeck"},
+    )
+    assert pull_response.status_code == 201 and pull_response.json()["job_id"]

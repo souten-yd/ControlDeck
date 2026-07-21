@@ -346,7 +346,7 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
     const target = name.trim();
     if (!target || running) return;
     try {
-      const r = await api<{ job_id: string }>("/models/pull-jobs", { method: "POST", json: { model: target } });
+      const r = await api<{ job_id: string }>("/models/providers/ollama/pull-jobs", { method: "POST", json: { model: target } });
       setJobId(r.job_id);
     } catch (e) {
       show(e instanceof Error ? e.message : "開始に失敗しました", "error");
@@ -677,7 +677,7 @@ function ModelConfigSection({ model }: { model: string }) {
   const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ["model-config", model],
-    queryFn: () => api<ModelConfig>(`/models/${encodeURIComponent(model)}/config`),
+    queryFn: () => api<ModelConfig>(`/models/providers/ollama/models/${encodeURIComponent(model)}/config`),
   });
   const { data: caps } = useQuery({
     queryKey: ["model-show", model],
@@ -690,7 +690,7 @@ function ModelConfigSection({ model }: { model: string }) {
 
   const saveMut = useMutation({
     mutationFn: (reload: boolean) =>
-      api(`/models/${encodeURIComponent(model)}/config?reload=${reload}`, { method: "PUT", json: eff }),
+      api(`/models/providers/ollama/models/${encodeURIComponent(model)}/config?reload=${reload}`, { method: "PUT", json: eff }),
     onSuccess: (_d, reload) => {
       show(reload ? "保存して新しい設定でロードしました" : "モデル設定を保存しました");
       qc.invalidateQueries({ queryKey: ["model-config", model] });

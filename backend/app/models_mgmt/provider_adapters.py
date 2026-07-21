@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.models_mgmt import llama, ollama, providers
@@ -19,12 +20,69 @@ class UnsupportedOperation(ProviderError):
     pass
 
 
+class InvalidConfiguration(ProviderError):
+    pass
+
+
+_LLAMA_CONFIG_KEYS = {
+    "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn",
+    "n_predict", "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
+    "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe", "n_cpu_moe",
+    "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed", "auto_start",
+    "idle_exclude",
+}
+
+
 async def _provider(provider_id: str) -> dict:
     catalog = await providers.list_providers()
     item = next((provider for provider in catalog if provider["id"] == provider_id), None)
     if item is None:
         raise ProviderNotFound("LLM providerが見つかりません")
     return item
+
+
+async def ensure_operation(provider_id: str, operation: str) -> dict:
+    """操作開始前にcapabilityとControl Deck管理対象かを確認する。"""
+    provider = await _provider(provider_id)
+    labels = {"pull": "モデル取得", "configure": "モデル設定"}
+    label = labels.get(operation, operation)
+    if operation not in provider["capabilities"]:
+        raise UnsupportedOperation(f"このproviderは{label}に対応していません")
+    if operation in {"pull", "configure"} and not provider.get("managed"):
+        raise UnsupportedOperation(f"このproviderはControl Deckからの{label}に対応していません")
+    return provider
+
+
+def _validate_ollama_config(patch: dict) -> None:
+    unknown = sorted(set(patch) - ollama.MODEL_CONFIG_KEYS)
+    if unknown:
+        raise InvalidConfiguration(f"Ollamaで設定できない項目です: {', '.join(unknown)}")
+    for key, value in patch.items():
+        if value is None or value == "":
+            continue
+        if key in ollama.OPT_INT or key == "deep_research_num_ctx":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidConfiguration(f"{key}は整数で指定してください")
+            if key == "deep_research_num_ctx" and not 0 < value <= 1_048_576:
+                raise InvalidConfiguration("deep_research_num_ctxは1〜1048576で指定してください")
+        elif key in ollama.OPT_FLOAT:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise InvalidConfiguration(f"{key}は数値で指定してください")
+        elif key in {"idle_exclude", "vlm_enabled"}:
+            if not isinstance(value, bool):
+                raise InvalidConfiguration(f"{key}はbooleanで指定してください")
+        elif key == "keep_alive":
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                raise InvalidConfiguration("keep_aliveは期間文字列または整数で指定してください")
+        elif key == "think" and str(value).lower() not in {*ollama.THINK_VALUES, "auto"}:
+            raise InvalidConfiguration(f"thinkはautoまたは{', '.join(ollama.THINK_VALUES)}で指定してください")
+
+
+def _ensure_ollama_model(provider: dict, model_id: str) -> None:
+    requested = ollama.normalize_model_name(model_id)
+    known = {ollama.normalize_model_name(str(item)) for item in provider.get("models", [])}
+    if not requested or requested not in known:
+        raise ProviderNotFound("Ollamaモデルが見つかりません")
 
 
 def _ollama_model(model: dict) -> dict:
@@ -160,6 +218,55 @@ async def delete_model(provider_id: str, model_id: str) -> None:
         await ollama.delete(model_id)
     except ollama.OllamaError as e:
         raise ProviderError(str(e)) from e
+
+
+async def pull_model(provider_id: str, model_id: str) -> AsyncIterator[dict]:
+    """Provider capabilityに従ってモデル取得進捗を共通形式で返す。"""
+    provider = await ensure_operation(provider_id, "pull")
+    if provider["provider"] != "ollama" or not provider["managed"]:
+        raise UnsupportedOperation("このproviderはControl Deckからのモデル取得に対応していません")
+    try:
+        async for item in ollama.pull_stream(model_id):
+            yield item
+    except ollama.OllamaError as exc:
+        raise ProviderError(str(exc)) from exc
+
+
+async def get_model_config(provider_id: str, model_id: str) -> dict:
+    provider = await ensure_operation(provider_id, "configure")
+    if provider["provider"] == "ollama" and provider["managed"]:
+        _ensure_ollama_model(provider, model_id)
+        return ollama.get_model_config(model_id)
+    if provider["provider"] == "llama.cpp" and provider["managed"]:
+        try:
+            instance = llama.get_instance(model_id)
+        except KeyError as exc:
+            raise ProviderNotFound("設定中のllama.cppモデルと一致しません") from exc
+        return {key: instance.get(key) for key in sorted(_LLAMA_CONFIG_KEYS) if key in instance}
+    raise UnsupportedOperation("このproviderはControl Deckからのモデル設定に対応していません")
+
+
+async def configure_model(provider_id: str, model_id: str, patch: dict) -> dict:
+    """モデルの識別子・path・portを変更しない共通設定境界。"""
+    provider = await ensure_operation(provider_id, "configure")
+    if provider["provider"] == "ollama" and provider["managed"]:
+        _ensure_ollama_model(provider, model_id)
+        _validate_ollama_config(patch)
+        return ollama.set_model_config(model_id, patch)
+    if provider["provider"] == "llama.cpp" and provider["managed"]:
+        unknown = sorted(set(patch) - _LLAMA_CONFIG_KEYS)
+        if unknown:
+            raise InvalidConfiguration(f"llama.cppで設定できない項目です: {', '.join(unknown)}")
+        try:
+            llama.get_instance(model_id)
+            result = llama.save_instance(model_id, patch)
+            return {"model": model_id, "config": await get_model_config(provider_id, model_id),
+                    "selected_alias": result.get("selected_alias")}
+        except KeyError as exc:
+            raise ProviderNotFound("設定中のllama.cppモデルと一致しません") from exc
+        except ValueError as exc:
+            raise InvalidConfiguration(str(exc)) from exc
+    raise UnsupportedOperation("このproviderはControl Deckからのモデル設定に対応していません")
 
 
 async def provider_health(provider_id: str) -> dict:
