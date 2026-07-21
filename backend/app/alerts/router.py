@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.alerts.engine import APP_METRICS, METRIC_LABELS
+from app.alerts.engine import APP_METRICS, LOG_ERROR_METRIC, METRIC_LABELS
 from app.audit import service as audit
 from app.database import get_db
-from app.models import AlertEvent, AlertRule, ManagedApplication, NotificationChannel, User
+from app.models import AlertEvent, AlertLogCursor, AlertRule, ManagedApplication, NotificationChannel, User
 from app.security.crypto import decrypt_text, encrypt_text
 from app.security.deps import require_permission
 
@@ -152,7 +152,7 @@ def delete_channel(channel_id: int, request: Request, user: User = Depends(edit_
 # ---- アラートルール ----
 class RuleBody(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    metric: str = Field(pattern="^(cpu_percent|memory_percent|cpu_temp_c|gpu_percent|gpu_temp_c|vram_percent|disk_percent|app_down|app_health_failed|app_restart_loop)$")
+    metric: str = Field(pattern="^(cpu_percent|memory_percent|cpu_temp_c|gpu_percent|gpu_temp_c|vram_percent|disk_percent|app_down|app_health_failed|app_restart_loop|app_log_error)$")
     operator: str = Field(default="gt", pattern="^(gt|gte|lt|lte)$")
     threshold: float = 90.0
     duration_seconds: int = Field(default=60, ge=0, le=86400)
@@ -182,10 +182,13 @@ def create_rule(body: RuleBody, request: Request, user: User = Depends(edit_dep)
     app_id = _validated_rule_app(body, db)
     r = AlertRule(
         name=body.name, metric=body.metric, operator=body.operator, threshold=body.threshold,
-        duration_seconds=body.duration_seconds, cooldown_seconds=body.cooldown_seconds,
+        duration_seconds=0 if body.metric == LOG_ERROR_METRIC else body.duration_seconds, cooldown_seconds=body.cooldown_seconds,
         app_id=app_id, channel_ids_json=json.dumps(body.channel_ids), enabled=body.enabled,
     )
     db.add(r)
+    db.flush()
+    if body.metric == LOG_ERROR_METRIC:
+        _initialize_log_cursors(r, db)
     db.commit()
     audit.record(db, "alert.rule_create", user=user, resource_type="alert_rule", resource_id=str(r.id), request=request, metadata={"name": r.name})
     return _rule_out(r)
@@ -197,9 +200,17 @@ def update_rule(rule_id: int, body: RuleBody, request: Request, user: User = Dep
     if r is None:
         raise HTTPException(status_code=404, detail="ルールが見つかりません")
     app_id = _validated_rule_app(body, db)
+    reset_log_cursor = r.metric != body.metric or r.app_id != app_id
     r.name, r.metric, r.operator, r.threshold = body.name, body.metric, body.operator, body.threshold
-    r.duration_seconds, r.cooldown_seconds, r.app_id = body.duration_seconds, body.cooldown_seconds, app_id
+    r.duration_seconds = 0 if body.metric == LOG_ERROR_METRIC else body.duration_seconds
+    r.cooldown_seconds, r.app_id = body.cooldown_seconds, app_id
     r.channel_ids_json, r.enabled = json.dumps(body.channel_ids), body.enabled
+    if reset_log_cursor:
+        from sqlalchemy import delete as sql_delete
+
+        db.execute(sql_delete(AlertLogCursor).where(AlertLogCursor.rule_id == rule_id))
+        if body.metric == LOG_ERROR_METRIC:
+            _initialize_log_cursors(r, db)
     db.commit()
     audit.record(db, "alert.rule_update", user=user, resource_type="alert_rule", resource_id=str(rule_id), request=request)
     return _rule_out(r)
@@ -215,6 +226,25 @@ def _validated_rule_app(body: RuleBody, db: Session) -> int | None:
     return body.app_id
 
 
+def _initialize_log_cursors(rule: AlertRule, db: Session) -> None:
+    """新規ルールは既存ログを再通知せず、現在の各ストリーム末尾から監視する。"""
+    from app.logs import service as logs
+
+    if rule.app_id is None:
+        return
+    for stream in logs.STREAMS:
+        path = logs.log_path(rule.app_id, stream).resolve()
+        try:
+            stat = path.stat()
+            identity, offset = f"{stat.st_dev}:{stat.st_ino}", stat.st_size
+        except FileNotFoundError:
+            identity, offset = "", 0
+        except OSError as error:
+            logger.warning("ログ監視位置の初期化失敗: app=%s stream=%s (%s)", rule.app_id, stream, type(error).__name__)
+            identity, offset = "", 0
+        db.add(AlertLogCursor(rule_id=rule.id, stream=stream, file_identity=identity, offset=offset))
+
+
 @router.delete("/alert-rules/{rule_id}")
 def delete_rule(rule_id: int, request: Request, user: User = Depends(edit_dep), db: Session = Depends(get_db)):
     from sqlalchemy import delete as sql_delete
@@ -224,6 +254,7 @@ def delete_rule(rule_id: int, request: Request, user: User = Depends(edit_dep), 
         raise HTTPException(status_code=404, detail="ルールが見つかりません")
     # 関連イベントも削除（残留したアラートがダッシュボードに残らないように）
     db.execute(sql_delete(AlertEvent).where(AlertEvent.rule_id == rule_id))
+    db.execute(sql_delete(AlertLogCursor).where(AlertLogCursor.rule_id == rule_id))
     db.delete(r)
     db.commit()
     audit.record(db, "alert.rule_delete", user=user, resource_type="alert_rule", resource_id=str(rule_id), request=request)

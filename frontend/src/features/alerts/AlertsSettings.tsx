@@ -37,9 +37,10 @@ const METRICS = [
   { value: "app_down", label: "アプリ停止" },
   { value: "app_health_failed", label: "アプリのヘルスチェック失敗" },
   { value: "app_restart_loop", label: "アプリの再起動回数" },
+  { value: "app_log_error", label: "アプリログの ERROR" },
 ];
-const APP_METRICS = new Set(["app_down", "app_health_failed", "app_restart_loop"]);
-const BOOLEAN_METRICS = new Set(["app_down", "app_health_failed"]);
+const APP_METRICS = new Set(["app_down", "app_health_failed", "app_restart_loop", "app_log_error"]);
+const BOOLEAN_METRICS = new Set(["app_down", "app_health_failed", "app_log_error"]);
 const OPERATORS = [
   { value: "gt", label: ">" },
   { value: "gte", label: "≥" },
@@ -286,8 +287,9 @@ function RuleForm({ rule, onClose }: { rule: Rule | null; onClose: () => void })
   return (
     <BottomSheet title={rule ? "ルールを編集" : "アラートルールを追加"} onClose={onClose} wide>
       <div className="space-y-3">
-        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ルール名" className={input} />
+        <input aria-label="ルール名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ルール名" className={input} />
         <select
+          aria-label="監視条件"
           value={form.metric}
           onChange={(e) => {
             const metric = e.target.value;
@@ -304,23 +306,25 @@ function RuleForm({ rule, onClose }: { rule: Rule | null; onClose: () => void })
           {METRICS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>
         {isAppMetric && (
-          <select value={form.app_id ?? ""} onChange={(e) => setForm({ ...form, app_id: e.target.value ? Number(e.target.value) : null })} className={input}>
+          <select aria-label="対象アプリ" value={form.app_id ?? ""} onChange={(e) => setForm({ ...form, app_id: e.target.value ? Number(e.target.value) : null })} className={input}>
             <option value="">アプリを選択</option>
             {apps?.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         )}
         {!isBooleanMetric && (
           <div className="flex gap-2">
-            <select value={form.operator} onChange={(e) => setForm({ ...form, operator: e.target.value })} className={`${input} w-24`}>
+            <select aria-label="比較演算子" value={form.operator} onChange={(e) => setForm({ ...form, operator: e.target.value })} className={`${input} w-24`}>
               {OPERATORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <input type="number" min={form.metric === "app_restart_loop" ? 1 : undefined} value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} placeholder={form.metric === "app_restart_loop" ? "再起動回数" : "しきい値"} className={input} />
+            <input aria-label="しきい値" type="number" min={form.metric === "app_restart_loop" ? 1 : undefined} value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} placeholder={form.metric === "app_restart_loop" ? "再起動回数" : "しきい値"} className={input} />
           </div>
         )}
-        <label className="block text-xs text-zinc-500">
-          継続時間（秒）— この時間しきい値を超え続けたら通知
-          <input type="number" value={form.duration_seconds} onChange={(e) => setForm({ ...form, duration_seconds: Number(e.target.value) })} className={`${input} mt-1`} />
-        </label>
+        {form.metric !== "app_log_error" && (
+          <label className="block text-xs text-zinc-500">
+            継続時間（秒）— この時間しきい値を超え続けたら通知
+            <input aria-label="継続時間" type="number" value={form.duration_seconds} onChange={(e) => setForm({ ...form, duration_seconds: Number(e.target.value) })} className={`${input} mt-1`} />
+          </label>
+        )}
         <div>
           <p className="mb-1 text-xs text-zinc-500">通知先チャンネル</p>
           {channels && channels.length > 0 ? (

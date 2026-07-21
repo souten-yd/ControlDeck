@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 3 永続ログ ERROR アラート 完了（2026-07-21）
+
+- 管理アプリのstdout／stderrへ新しく追記された`ERROR`／`CRITICAL`／`FATAL`を15秒評価loopで検知する`app_log_error`条件を追加した。登録済み対象アプリを必須にし、イベント条件のため継続時間は0へ固定する。UIは比較・しきい値・継続時間を隠し、対象未選択では保存できない。
+- `alert_log_cursors`へrule／streamごとのdevice・inodeとbyte offsetだけを保存する。新規ruleは現在のEOFから開始して過去ログを大量通知せず、Web再起動後も既読行を再通知しない。inode変更とtruncateを検出してローテーション後の新ファイル先頭へ追従し、1回256KiBの有界走査で大容量追記を順次処理する。
+- ログ本文や一致行はDB、AlertEvent、Workflow payload、通知、audit、内部logのいずれにも保存しない。イベントは一致件数だけを`ログ ERROR = N`として返す。ログpathは`data_dir/logs`を`Path.resolve()`し、アプリ領域外へ解決するsymlinkを拒否する。カーソルはrule削除時に明示削除し、対象／条件変更時は現EOFへ安全に再初期化する。
+- Alembic revision `f6b2c8d41a70`を追加し、SQLiteでupgrade→downgrade→upgradeを確認した。
+
+検証: alert集中14件、backend全481件中Terminal系29件を除く最新452件、frontend TypeScript／production build、migration往復、diff whitespace検査に成功。過去ERROR非通知、新規ERROR／CRITICAL件数、process内状態消失後の重複なし、inode rotation、event解消、本文非露出、cursor削除を確認した。実service PID `594535`、health 200。実API／実stderr追記／実15秒loopで約7秒後の`app_log_error=1.0`発火を確認し、Playwright Chromium 320×700／1280×800で対象選択、不要条件の非表示、横overflow 0、console／page error 0。一時app／rule／event／user／login session／auditは0件に清掃済み。既存Terminalには接続・入力・停止・削除していない。
+
 ## Phase 3 アプリ状態アラート修正・拡張 完了（2026-07-21）
 
 - `app_down`が0／1を返す一方、従来UIはしきい値を隠したまま既定`gt 90`を保存しており発火不能だった。アプリ停止／ヘルス失敗をboolean条件としてstored comparatorに依存せず1=trueで評価し、既存ruleをmigrationなしで動作させる。
