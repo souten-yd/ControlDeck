@@ -165,4 +165,12 @@ export interface Meta {
   default_theme: string;
   metric_refresh_seconds: number;
   enabled_features: string[];
+  plugin_navigation: PluginNavigation[];
+}
+
+export interface PluginNavigation {
+  id: string;
+  label: string;
+  url: string;
+  permission: string;
 }

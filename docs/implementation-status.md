@@ -1722,10 +1722,12 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 ## 既知の制約 / 次の作業
 
 1. system service helper／root catalogの初回導入は`./deck.sh service`で対話sudo認証が必要。コード・境界・自動／ブラウザ回帰は完了したが、この実機でのhelper操作確認は導入後に行う
-2. PostgreSQL運用切替コードは完了したが、この実機にserver／clientがなくonline migration／backup／restoreは確認待ち。汎用プラグインSDKは未完
+2. PostgreSQL運用切替コードは完了したが、この実機にserver／clientがなくonline migration／backup／restoreは確認待ち
 3. 電源 reboot/shutdown は API 実装済みだが、破壊的な実機実行は未検証
 
 ## 履歴
+
+- 2026-07-21: 宣言型plugin SDK v1を追加。厳格manifest（API version／ID／SemVer／capability／既知permission／安全なnavigation URL）、0600原子保存、symlink・サイズ・所有者検査、管理API／CLI／設定UI、PC sidebar／mobile操作sheet／command paletteへの権限付き導線、CSRF／RBAC／監査を実装。外部plugin codeは本体へloadせず、削除もmanifestと状態だけに限定。CLI実往復、backend全460件、frontend本番build、実service health、Chromium 1280／320px（横overflow・console errorなし）を確認し、一時manifest／user／session／auditを除去
 
 - 2026-07-19: WorkflowとRunnerを「作成・デバッグ」と「公開アプリ」に役割整理。editor主操作を更新して開く／アプリを開く、一覧へ公開版button、URL deep link/reload復元、無効ID復帰表示を追加。`llm.chat`は管理Ollamaをprovider adapterで自動load、llama.cppをsystemd user起動してhealth待機し、外部endpointは非操作。backend全322件、frontend本番build、実サービス、Playwright 3件、未load実機27B modelのload→生成→unload復元を確認
 - 2026-07-19: `human.approval`の承認待ちcontractを型付きobjectへ統一し、公開アプリの500を修正。承認文・担当者・期限・承認／却下をeditorと公開アプリへ統合し、API回帰testと320px公開操作E2Eを追加

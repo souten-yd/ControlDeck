@@ -126,6 +126,7 @@ export default function SettingsPage() {
       {can("settings.manage") && <TerminalV2PhysicalCheckSection />}
 
       {can("settings.manage") && <AddonsSection />}
+      {can("settings.manage") && <PluginsSection />}
 
       {can("system.view") && <AlertsSettings />}
 
@@ -338,6 +339,77 @@ interface AddonState {
   id: string; name: string; available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string;
+}
+
+interface PluginState {
+  api_version: "1"; id: string; name: string; version: string; description: string; publisher: string;
+  capabilities: string[]; navigation: { label: string; url: string; permission: string };
+  installed: boolean; enabled: boolean;
+}
+
+const PLUGIN_EXAMPLE = JSON.stringify({
+  api_version: "1", id: "example-gui", name: "Example GUI", version: "1.0.0",
+  description: "Independent local web application", publisher: "Your name",
+  capabilities: ["navigation"],
+  navigation: { label: "Example", url: "http://127.0.0.1:9010/", permission: "apps.view" },
+}, null, 2);
+
+function PluginsSection() {
+  const show = useToasts((state) => state.show);
+  const qc = useQueryClient();
+  const [manifestText, setManifestText] = useState(PLUGIN_EXAMPLE);
+  const [showInstall, setShowInstall] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const { data: plugins } = useQuery({ queryKey: ["plugins"], queryFn: () => api<PluginState[]>("/plugins") });
+
+  const install = async () => {
+    try {
+      const parsed: unknown = JSON.parse(manifestText);
+      await api("/plugins", { method: "POST", json: parsed });
+      await qc.invalidateQueries({ queryKey: ["plugins"] });
+      setShowInstall(false);
+      show("プラグインmanifestを登録しました");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "manifestを登録できませんでした", "error");
+    }
+  };
+  const act = async (id: string, action: "enable" | "disable" | "uninstall") => {
+    try {
+      await api(`/plugins/${id}/${action}`, { method: "POST" });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["plugins"] }),
+        qc.invalidateQueries({ queryKey: ["meta"] }),
+      ]);
+      show(action === "uninstall" ? "プラグインを削除しました" : action === "enable" ? "プラグインを有効化しました" : "プラグインを無効化しました");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "プラグイン操作に失敗しました", "error");
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div><h2 className="text-sm font-semibold text-zinc-500">GUIプラグイン</h2><p className="mt-1 text-xs text-zinc-400">独立稼働するWeb UIを、検証済みmanifestからナビへ追加します。</p></div>
+        <button onClick={() => setShowInstall((value) => !value)} className="shrink-0 rounded-xl bg-accent-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-accent-700">manifest登録</button>
+      </div>
+      {showInstall && <div className="mb-3 space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-950">
+        <label className="block text-xs font-medium">control-deck-plugin.json</label>
+        <textarea aria-label="Plugin manifest JSON" value={manifestText} onChange={(event) => setManifestText(event.target.value)} spellCheck={false}
+          className="h-56 w-full resize-y rounded-xl border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900" />
+        <div className="flex justify-end gap-2"><button onClick={() => setShowInstall(false)} className="rounded-xl px-3 py-2 text-xs">キャンセル</button><button onClick={() => void install()} className="rounded-xl bg-accent-600 px-3 py-2 text-xs font-medium text-white">検証して登録</button></div>
+      </div>}
+      <div className="space-y-2.5">
+        {(plugins ?? []).map((plugin) => <div key={plugin.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <span className={`h-2.5 w-2.5 rounded-full ${plugin.enabled ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} />
+          <div className="min-w-0 flex-1"><p className="text-sm font-semibold">{plugin.name}<span className="num ml-2 text-[10px] font-normal text-zinc-400">v{plugin.version}</span></p><p className="truncate text-[11px] text-zinc-400">{plugin.publisher} · {plugin.navigation.url}</p></div>
+          <button onClick={() => void act(plugin.id, plugin.enabled ? "disable" : "enable")} className={`rounded-xl px-3.5 py-2 text-xs font-medium ${plugin.enabled ? "bg-zinc-100 dark:bg-zinc-800" : "bg-accent-600 text-white"}`}>{plugin.enabled ? "無効化" : "有効化"}</button>
+          <button onClick={() => setRemoving(plugin.id)} className="rounded-xl px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+        </div>)}
+        {plugins?.length === 0 && <p className="text-xs text-zinc-400">登録済みプラグインはありません</p>}
+      </div>
+      {removing && <ConfirmDialog title="プラグインを削除しますか？" message="Control Deckが管理するmanifestと有効化状態を削除します。外部アプリ本体は削除しません。" confirmLabel="削除する" onConfirm={() => { const id = removing; setRemoving(null); void act(id, "uninstall"); }} onClose={() => setRemoving(null)} />}
+    </section>
+  );
 }
 
 /** アドオン管理: 導入（npmユーザー空間・sudo不要）/有効化/無効化/アンインストールをワンタップで。 */

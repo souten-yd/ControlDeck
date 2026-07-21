@@ -44,6 +44,10 @@ export function CommandPalette({
     ];
     if (meta?.enabled_features.includes("opencode"))
       list.push({ id: "nav-opencode", label: "Open OpenCode", run: () => navigate("/opencode") });
+    for (const plugin of meta?.plugin_navigation ?? []) {
+      if (can(plugin.permission))
+        list.push({ id: `plugin-${plugin.id}`, label: `Open ${plugin.label}`, run: () => window.open(plugin.url, "_blank", "noopener,noreferrer") });
+    }
     if (can("apps.edit"))
       list.push({ id: "app-add", label: "Add App", run: () => navigate("/apps?add=1") });
     for (const app of apps ?? []) {
@@ -71,7 +75,7 @@ export function CommandPalette({
       list.push({ id: "power-shutdown", label: "Shut Down PC", hint: "Confirmation required", run: () => onPower("shutdown") });
     }
     return list;
-  }, [apps, can, navigate, action, onPower, meta?.enabled_features]);
+  }, [apps, can, navigate, action, onPower, meta?.enabled_features, meta?.plugin_navigation]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
