@@ -13,6 +13,14 @@ interface DiskInfo {
   total: number;
   used: number;
   percent: number;
+  io_wait_percent: number | null;
+  physical_device: string | null;
+  read_bps: number | null;
+  write_bps: number | null;
+  temperature_c: number | null;
+  temperature_sensor: string | null;
+  smart_status: "passed" | "failed" | "unknown" | "unavailable";
+  smart_available: boolean;
 }
 
 interface NetInfo {
@@ -151,24 +159,40 @@ export default function SystemPage() {
         {!disks ? (
           <Skeleton className="h-16" />
         ) : (
-          <ul className="space-y-3">
-            {disks.map((d) => (
-              <li key={d.mountpoint} className="text-sm">
-                <div className="mb-1 flex items-baseline justify-between gap-3">
-                  <span className="min-w-0 truncate font-mono text-xs">{d.mountpoint}</span>
-                  <span className="num shrink-0 text-xs text-zinc-400">
-                    {formatBytes(d.used)} / {formatBytes(d.total)}（{d.percent.toFixed(0)}%）
-                  </span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-                  <div
-                    className={`h-full rounded-full ${d.percent >= 90 ? "bg-red-500" : "bg-accent-500"}`}
-                    style={{ width: `${d.percent}%` }}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="num mb-3 text-xs text-zinc-400">
+              IO wait: {disks[0]?.io_wait_percent != null ? `${disks[0].io_wait_percent.toFixed(1)}%` : "N/A"}
+            </p>
+            <ul className="space-y-4">
+              {disks.map((d) => (
+                <li key={d.mountpoint} className="text-sm">
+                  <div className="mb-1 flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate font-mono text-xs">{d.mountpoint}</span>
+                    <span className="num shrink-0 text-xs text-zinc-400">
+                      {formatBytes(d.used)} / {formatBytes(d.total)}（{d.percent.toFixed(0)}%）
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+                    <div
+                      className={`h-full rounded-full ${d.percent >= 90 ? "bg-red-500" : "bg-accent-500"}`}
+                      style={{ width: `${d.percent}%` }}
+                    />
+                  </div>
+                  <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-400">
+                    <span className="max-w-full truncate font-mono">{d.physical_device ?? d.device}</span>
+                    <span className="num">R {d.read_bps != null ? formatBps(d.read_bps) : "N/A"}</span>
+                    <span className="num">W {d.write_bps != null ? formatBps(d.write_bps) : "N/A"}</span>
+                    <span className="num" title={d.temperature_sensor ?? undefined}>
+                      温度 {d.temperature_c != null ? `${d.temperature_c.toFixed(0)}°C` : "N/A"}
+                    </span>
+                    <span className={d.smart_status === "failed" ? "font-medium text-red-600 dark:text-red-400" : d.smart_status === "passed" ? "text-emerald-600 dark:text-emerald-400" : ""}>
+                      SMART {d.smart_status === "passed" ? "正常" : d.smart_status === "failed" ? "異常" : d.smart_status === "unknown" ? "不明" : "N/A"}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </Section>
 

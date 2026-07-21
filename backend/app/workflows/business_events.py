@@ -6,6 +6,7 @@ from datetime import timedelta
 import json
 import logging
 import re
+import threading
 from typing import Any
 import uuid
 
@@ -27,7 +28,32 @@ MAX_OUTBOX_EVENTS = 10_000
 EVENT_RETENTION = timedelta(days=7)
 
 logger = logging.getLogger(__name__)
-_dispatch_lock = asyncio.Lock()
+
+
+class _CrossLoopAsyncLock:
+    """複数event loopから呼ばれてもoutbox配送をprocess内で直列化する。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    async def __aenter__(self):
+        # TestClient／管理CLI等が別loopを持ってもasyncio.Lockのloop束縛を起こさない。
+        acquire = asyncio.create_task(asyncio.to_thread(self._lock.acquire))
+        try:
+            await asyncio.shield(acquire)
+        except asyncio.CancelledError:
+            # workerが後から取得して永久lockしないよう、取得完了後に必ず解放する。
+            acquired = await acquire
+            if acquired:
+                self._lock.release()
+            raise
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        self._lock.release()
+
+
+_dispatch_lock = _CrossLoopAsyncLock()
 
 
 class WorkflowBusinessEventError(ValueError):
