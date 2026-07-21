@@ -15,6 +15,7 @@ from app.bootstrap import init_db, seed_roles
 from app.config import REPO_ROOT, get_config
 from app.database import SessionLocal
 from app.monitoring.collector import collector
+from app.security.rate_limit import api_rate_limiter
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -97,6 +98,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)
+
+
+def _download_request(path: str) -> bool:
+    segments = {segment for segment in path.split("/") if segment}
+    return "download" in segments or "artifacts" in segments
+
+
+@app.middleware("http")
+async def api_rate_limit(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/v1/") and path not in ("/api/v1/health", "/api/v1/meta"):
+        cfg = get_config().security
+        download = request.method == "GET" and _download_request(path)
+        scope = "download" if download else "api"
+        limit = cfg.download_rate_limit_per_minute if download else cfg.api_rate_limit_per_minute
+        peer = request.client.host if request.client else "unknown"
+        allowed, retry_after = api_rate_limiter.check(scope, peer, limit)
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "リクエストが多すぎます。しばらく待ってから再試行してください"},
+                headers={"Retry-After": str(retry_after)},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")

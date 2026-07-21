@@ -9,6 +9,9 @@ security:
   secure_cookies: false             # HTTPS リバースプロキシ配下では true
   require_totp_for_admin: false     # true で管理者に二要素認証を推奨（UI にバナー）
   require_totp_for_power: false     # true で再起動・停止・予約時にTOTP再認証を要求
+  api_rate_limit_per_minute: 5000   # 直接接続元ごとのAPI上限（health/metaを除く）
+  download_rate_limit_per_minute: 300
+  websocket_rate_limit_per_minute: 300
 
 files:
   allowed_roots: []   # 例: ["/home/USER"]（~/.ssh・~/.gnupg・DB・鍵は拒否リストで常に保護）

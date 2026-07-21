@@ -25,6 +25,10 @@ class SecurityConfig(BaseModel):
     require_totp_for_admin: bool = False
     # 電源の即時操作・予約時に、ログイン済みsessionとは別にTOTP再認証を要求する。
     require_totp_for_power: bool = False
+    # 直接接続元IPごとの共通保護。login等は別のより厳しい制限も併用する。
+    api_rate_limit_per_minute: int = Field(default=5000, ge=60, le=100_000)
+    download_rate_limit_per_minute: int = Field(default=300, ge=10, le=10_000)
+    websocket_rate_limit_per_minute: int = Field(default=300, ge=10, le=10_000)
 
 
 class FilesConfig(BaseModel):

@@ -7,6 +7,7 @@
 ### Phase 1 — 基盤（認証 + レイアウト）
 - FastAPI + SQLite（SQLAlchemy 2.x、WAL）
 - ログイン / ログアウト / サーバー側セッション（Argon2id、HttpOnly Cookie、CSRF 対策）
+- ✅ 直接peer別のAPI／download／WebSocket handshakeレート制限（HTTP 429 + Retry-After／WS 4429、転送header非信頼、有界bucket）
 - 管理者作成 CLI（scripts/create-admin.sh）
 - RBAC（administrator / operator / viewer + 権限依存性）
 - 監査ログ基盤

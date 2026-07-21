@@ -20,6 +20,7 @@
 | アーカイブ | ZIP／tar.gzの作成・展開は許可root内の一時pathへ実行し、Linux `renameat2(RENAME_NOREPLACE)`で原子的公開。`..`／絶対path／重複・競合path、symlink／hardlink／特殊file、10万項目超、設定size上限超、16MiBを超える200倍超の展開率、空き容量不足を拒否し、既存pathを上書きしない。管理backup restoreも既知root・通常file／directory限定の同等境界で展開する |
 | 監査ログ | ログイン成功/失敗、アプリ登録/編集/削除/起動/停止/強制終了、ログ削除、電源操作、ユーザー/権限/設定変更を AuditLog へ記録 |
 | 秘密情報のマスキング | 環境変数の値のうち TOKEN/SECRET/PASSWORD/PASS/API_KEY/PRIVATE_KEY/AUTH/COOKIE を含むキーは表示・ログ出力時にマスク。DB 保存時は暗号化（Fernet、鍵は data_dir 内 0600） |
+| レート制限 | 直接peer IPごとにAPI 5,000回/分、download 300回/分、WebSocket handshake 300回/分（設定可能）。HTTP超過は429 + Retry-After、WebSocketは4429で拒否。未設定の転送headerは信用せず、bucket数も20,000へ制限 |
 | PostgreSQL credential | URLはYAML／unit本文へ書かず、固定`config/database.env`だけに保存。起動前に`O_NOFOLLOW`、通常file、実行user owner、0600、4KiB、固定1行、SQLite／PostgreSQL方言を検査。診断はbackend／host／port／databaseだけを表示し、pg_dump／pg_restoreはpasswordをargvへ渡さない |
 | ネットワーク | 既定 127.0.0.1:8765。0.0.0.0 設定時は起動ログと UI に警告。HTTPS はリバースプロキシ（Caddy/Nginx 設定例を deploy/ に用意） |
 
@@ -30,6 +31,9 @@
   Cookie 属性: `HttpOnly; SameSite=Lax; Path=/`（HTTPS 時 `Secure`）。有効期限は設定（既定 480 分）。
 - TOTP（Phase 7）: RFC 6238、シークレットは暗号化保存。リカバリーコード対応。
 - ログイン試行はレート制限し、失敗を監査ログへ記録する。
+- 全APIには接続元別の共通上限を置き、ダウンロードとWebSocket接続は別の低い上限を使う。
+  `/health`と`/meta`は死活監視を妨げないよう除外する。リバースプロキシ利用時も、信頼済みproxyの明示設定を実装するまでは
+  `X-Forwarded-For`等をrate-limit keyへ使わず、ASGI serverが確定した直接peerを使う。
 
 ## CSRF
 
@@ -41,6 +45,7 @@ Cookie セッションのため、状態変更メソッド（POST/PATCH/PUT/DELE
 
 接続時に (1) セッション Cookie 検証 (2) Origin ヘッダー検証（許可オリジンのみ）
 (3) 対象リソースの権限確認 を行い、失敗時は 4401/4403 で即時クローズする。
+接続元別上限を認証より前に検査し、超過時は4429で即時クローズする。
 
 ## systemd ユニット生成の安全性
 

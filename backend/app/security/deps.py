@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User
 from app.security.sessions import SESSION_COOKIE, resolve_session
+from app.security.rate_limit import api_rate_limiter
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -59,6 +60,15 @@ async def authenticate_websocket(
     websocket: WebSocket, db: Session, permission: str
 ) -> User | None:
     """WebSocket の認証 + Origin + 権限確認。失敗時は close して None を返す。"""
+    from app.config import get_config
+
+    peer = websocket.client.host if websocket.client else "unknown"
+    allowed, _retry_after = api_rate_limiter.check(
+        "websocket", peer, get_config().security.websocket_rate_limit_per_minute,
+    )
+    if not allowed:
+        await websocket.close(code=4429, reason="rate limited")
+        return None
     origin = websocket.headers.get("origin", "")
     host = websocket.headers.get("host", "")
     # 同一オリジンのみ許可（Origin が付かない非ブラウザクライアントは Cookie 必須のため許容）
