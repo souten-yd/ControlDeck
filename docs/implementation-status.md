@@ -10,6 +10,8 @@
 
 検証: Terminal backend集中29件、frontend TypeScript／production build成功。実ControlDeck serviceを`./deck.sh`で再起動し、Playwright ChromiumのV2 Lab 1件で4 viewport、20回の1-byte echo p95 50ms未満／max 250ms未満、scroll p95／max 100ms未満、replay 4秒未満、履歴scroll→WebSocket resume、page reload、keyboard相当resize、全可視操作44px以上、横overflowなし、console／page errorなしを確認した。V1代表回帰3件も成功した。検証用Session／user／session／audit／一時credentialは清掃済み。物理iPhone Safari／PWAはChromium emulationと区別して未完了であり、証拠が得られるまでcanary／既定化へ進めない。
 
+追補: Linux Playwright WebKitでも同じ4 viewport／latency／resume／reload／session switch回帰を実行し、作成直後のquery refetch前に旧`select` optionsが残り得るbrowser間raceを検出した。Terminal Session作成は一覧再取得完了後だけ全画面viewをmountするよう修正した。E2E cleanupは一覧や選択値からIDを推測せず、自身が送ったPOST responseのIDだけを直ちに所有集合へ登録し、その集合以外への接続・入力・削除を行わない。WebKitが未対応の`interactive-widget` viewport hintを仕様どおり無視した既知診断だけを除き、console／page errorなしを維持する。これはSafari系engineの自動証拠であり、物理iPhone／standalone PWAの代替にはしない。
+
 ## Terminal V2 Phase 4c-3 UI／操作同等化 完了（2026-07-21 11:16 JST）
 
 - V2専用Lab SessionへV1と同じTerminal workspace契約を接続した。PC Copy、モバイルPasteタップ／上swipe Copy、Enter、Esc、Tab、Ctrl、矢印、`^C`／`^D`／`^Z`／`^L`、Clipboard paste、32KiB以上のchunk／ACK／cancel／retry進捗、本文swipe、右端history bar、Snippet／Automation panel、session switchを同じaccessible nameと操作位置で提供する。

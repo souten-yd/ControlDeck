@@ -72,7 +72,10 @@ export default function TerminalPage() {
     try {
       const s = await api<{ id: string }>(terminalLabV2 ? "/terminals?engine=v2-lab" : "/terminals", { method: "POST" });
       if (terminalLabV2) rememberV2Session(s.id);
-      qc.invalidateQueries({ queryKey: ["terminals"] });
+      // 新Sessionをselect optionsへ反映してから全画面viewをmountする。
+      // 先にactiveだけを変えると、遅いbrowserでは旧optionsのvalueを保持したまま
+      // engine判定／session switchが一時的に食い違う。
+      await qc.invalidateQueries({ queryKey: ["terminals"] });
       setActive(s.id);
     } catch (e) {
       show(e instanceof Error ? e.message : "セッション作成に失敗しました", "error");
