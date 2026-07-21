@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models import User, UserSession
 from app.schemas.auth import (
     LoginRequest,
+    PasswordChangeRequest,
     SessionOut,
     TotpSetupResponse,
     TotpVerifyRequest,
@@ -18,7 +19,7 @@ from app.schemas.auth import (
 )
 from app.security import ratelimit
 from app.security.deps import get_current_user, user_permissions
-from app.security.passwords import verify_password
+from app.security.passwords import hash_password, verify_password
 from app.security.sessions import (
     SESSION_COOKIE,
     _hash_token,
@@ -28,6 +29,34 @@ from app.security.sessions import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_CREDENTIAL_MAX_FAILURES = 5
+_TOTP_WINDOW_SECONDS = 5 * 60
+_PASSWORD_WINDOW_SECONDS = 15 * 60
+
+
+def _credential_key(kind: str, request: Request, user: User) -> str:
+    peer = request.client.host if request.client else "unknown"
+    return f"{kind}:{peer}:{user.id}"
+
+
+def _check_credential_limit(
+    kind: str,
+    request: Request,
+    user: User,
+    db: Session,
+    *,
+    window_seconds: int,
+) -> str:
+    key = _credential_key(kind, request, user)
+    if not ratelimit.check(key, max_attempts=_CREDENTIAL_MAX_FAILURES, window_seconds=window_seconds):
+        audit.record(db, kind, user=user, result="rate_limited", request=request)
+        raise HTTPException(
+            status_code=429,
+            detail="試行回数が多すぎます。しばらく待ってから再試行してください",
+            headers={"Retry-After": str(window_seconds)},
+        )
+    return key
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -120,6 +149,40 @@ def me(user: User = Depends(get_current_user)) -> UserOut:
     return _user_out(user)
 
 
+@router.post("/password")
+def change_password(
+    body: PasswordChangeRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """現在のpasswordで再認証し、成功時は全sessionを失効する。"""
+    key = _check_credential_limit(
+        "password.change", request, user, db, window_seconds=_PASSWORD_WINDOW_SECONDS,
+    )
+    if not verify_password(user.password_hash, body.current_password):
+        ratelimit.record(key)
+        audit.record(db, "password.change", user=user, result="failure", request=request)
+        raise HTTPException(status_code=400, detail="現在のパスワードが正しくありません")
+    if verify_password(user.password_hash, body.new_password):
+        raise HTTPException(status_code=400, detail="新しいパスワードは現在のパスワードと異なるものにしてください")
+
+    from app.models import utcnow
+
+    user.password_hash = hash_password(body.new_password)
+    db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
+        .values(revoked_at=utcnow())
+    )
+    db.commit()
+    ratelimit.reset(key)
+    audit.record(db, "password.change", user=user, request=request)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"ok": True, "sessions_revoked": True}
+
+
 # ---- TOTP 二要素認証 ----
 
 
@@ -147,15 +210,21 @@ def totp_verify(
     db: Session = Depends(get_db),
 ):
     """6 桁コードで確認して有効化し、リカバリーコードを返す（この 1 回だけ表示）。"""
+    key = _check_credential_limit(
+        "totp.verify", request, user, db, window_seconds=_TOTP_WINDOW_SECONDS,
+    )
     secret = totp.get_secret(user)
     if secret is None:
         raise HTTPException(status_code=409, detail="先に setup を実行してください")
     if not totp.verify_code(secret, body.code):
+        ratelimit.record(key)
+        audit.record(db, "totp.verify", user=user, result="failure", request=request)
         raise HTTPException(status_code=400, detail="認証コードが正しくありません")
     codes = totp.generate_recovery_codes()
     totp.store_recovery_codes(user, codes)
     user.totp_enabled = True
     db.commit()
+    ratelimit.reset(key)
     audit.record(db, "totp.enable", user=user, request=request)
     return {"enabled": True, "recovery_codes": codes}
 
@@ -168,16 +237,22 @@ def totp_disable(
     db: Session = Depends(get_db),
 ):
     """現在のコードまたはリカバリーコードで確認してから無効化する。"""
+    key = _check_credential_limit(
+        "totp.disable", request, user, db, window_seconds=_TOTP_WINDOW_SECONDS,
+    )
     if not user.totp_enabled:
         raise HTTPException(status_code=409, detail="二要素認証は有効ではありません")
     secret = totp.get_secret(user)
     ok = (secret is not None and totp.verify_code(secret, body.code)) or totp.consume_recovery_code(user, body.code)
     if not ok:
+        ratelimit.record(key)
+        audit.record(db, "totp.disable", user=user, result="failure", request=request)
         raise HTTPException(status_code=400, detail="認証コードが正しくありません")
     user.totp_enabled = False
     user.totp_secret_encrypted = None
     user.recovery_codes_encrypted = None
     db.commit()
+    ratelimit.reset(key)
     audit.record(db, "totp.disable", user=user, request=request)
     return {"enabled": False}
 

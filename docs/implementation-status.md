@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 1 パスワード変更／TOTP個別レート制限 完了（2026-07-21）
+
+- 認証済み本人が現在のパスワードで再認証して新しいパスワードへ変更するAPIとSettings UIを追加した。新旧同一値を拒否し、成功時は現在の端末を含む本人の全サーバー側sessionを同一処理で失効、Cookieも削除して再ログイン画面へ戻す。
+- password変更失敗は直接peer+user単位5回/15分、TOTP有効化確認と無効化はendpoint別に各5回/5分で制限し、超過は429+`Retry-After`を返す。成功／失敗／rate_limitedをpassword、TOTP code、secret、recovery codeなしで監査する。
+- 既存のlogin／電源TOTPを含む失敗counterを最大20,000 keyへ有界化した。usernameを大量に変える入力でもprocess memoryへkeyを無制限に残さず、古いcounterから破棄する。
+- Settingsはアカウント欄の主操作を小さな「変更」入口に保ち、mobile bottom sheet／PC modalで現在値、新値、確認値をpassword inputとして入力する。全端末からlogoutすることを操作前に明記する。
+
+検証: password再認証、新旧同一拒否、全session失効、旧password拒否／新password成功、TOTP verify／disable各5回、429+Retry-After、成功／失敗／制限監査、有界counterの集中19件、backend全492件中Terminal系29件を除く最新463件、Python compile、frontend TypeScript／production build、diff whitespace検査に成功。実service PID `657112`、active、health 200。実一時userでpassword変更成功監査1件、変更前session全失効、変更後credential再loginを確認した。Playwright Chromium 320×700／1280×800でbottom sheet／modal、password型入力、logout遷移、横overflow 0、console／page error 0。一時user／login session／auditは0件に清掃済み。既存Terminalには接続・入力・停止・削除していない。
+
 ## Phase 1 API／download／WebSocketレート制限 完了（2026-07-21）
 
 - `/api/v1`全体へ接続元別sliding-window上限を追加した。既定は一般API 5,000回/分、GET download／artifact 300回/分、WebSocket handshake 300回/分で、設定から変更できる。死活監視用health／metaは除外する。

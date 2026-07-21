@@ -16,6 +16,11 @@ class TotpVerifyRequest(BaseModel):
     code: str = Field(min_length=6, max_length=32)
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
 class TotpSetupResponse(BaseModel):
     secret: str
     qr_data_uri: str
