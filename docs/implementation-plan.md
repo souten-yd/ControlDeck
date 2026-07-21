@@ -31,9 +31,10 @@
 - 電源予約は予約時だけ systemd ユーザーtimerを生成（Web再起動・SSH切断後も継続、期限切れは再実行せず、取消時削除）
 
 ### Phase 4 — ファイル + ターミナル
-- 許可ルート限定ファイルマネージャー（一覧 / 再開可能チャンクアップロード / ダウンロード / 編集 / コピー / 移動 / ごみ箱）
+- 許可ルート限定ファイルマネージャー（一覧 / 再開可能チャンクアップロード / ダウンロード / 編集 / コピー / 移動 / ごみ箱 / ZIP・tar.gz圧縮・安全展開）
 - ごみ箱（復元 / 完全削除 / 保持期間 / 容量上限）とアップロード進捗・中止・再開
-- Monaco 遅延ロード、Web ターミナル（xterm.js + tmux、モバイル補助キーバー）
+- テキスト／Markdown／JSON／YAML／画像に加え、Range対応PDF／音声／動画preview。PC右panel／mobile bottom sheet、Monaco遅延ロード
+- Web ターミナル（xterm.js + tmux、モバイル補助キーバー）
 
 ### Phase 4b — Terminal Snippets / Durable Automation（2026-07-20 完了）
 

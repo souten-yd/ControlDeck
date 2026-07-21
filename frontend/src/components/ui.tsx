@@ -18,7 +18,7 @@ function Overlay({
 }: {
   onClose: () => void;
   children: ReactNode;
-  align: "bottom" | "right" | "center";
+  align: "bottom" | "right" | "center" | "preview";
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // onClose はインライン関数で渡されることが多く、依存に入れると親の再レンダー
@@ -40,6 +40,7 @@ function Overlay({
     bottom: "items-end sm:items-center justify-center",
     right: "items-stretch justify-end",
     center: "items-center justify-center",
+    preview: "items-end justify-center sm:items-stretch sm:justify-end",
   }[align];
   return createPortal(
     <div
@@ -62,6 +63,7 @@ export function BottomSheet({
   children,
   wide,
   stable,
+  sideOnDesktop,
   headerActions,
 }: {
   title: string;
@@ -70,16 +72,20 @@ export function BottomSheet({
   wide?: boolean;
   /** inspector等、内容によって位置・高さを変えたくない編集surface向け。 */
   stable?: boolean;
+  /** preview等をmobile bottom sheet／desktop right panelにする。 */
+  sideOnDesktop?: boolean;
   headerActions?: ReactNode;
 }) {
   return (
-    <Overlay onClose={onClose} align="bottom">
+    <Overlay onClose={onClose} align={sideOnDesktop ? "preview" : "bottom"}>
       <div
         role="dialog"
         aria-label={title}
         className={`flex w-full max-w-[100dvw] flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:rounded-2xl ${
           wide ? "sm:w-[640px]" : "sm:w-[480px]"
-        } ${stable ? "h-[88dvh] sm:h-[min(760px,88dvh)]" : "max-h-[85dvh]"} safe-bottom`}
+        } ${stable ? "h-[88dvh] sm:h-[min(760px,88dvh)]" : "max-h-[85dvh]"} ${
+          sideOnDesktop ? "sm:h-dvh sm:max-h-dvh sm:w-[min(720px,60vw)] sm:rounded-none" : ""
+        } safe-bottom`}
       >
         <div className="relative flex shrink-0 items-center gap-2 px-5 pt-4 pb-2">
           <div className="mx-auto h-1 w-9 rounded-full bg-zinc-300 dark:bg-zinc-700 sm:hidden absolute left-1/2 -translate-x-1/2 top-2" />

@@ -1,4 +1,7 @@
 import io
+import stat
+import tarfile
+import zipfile
 
 from tests.conftest import CSRF_HEADERS, _sandbox
 
@@ -117,6 +120,12 @@ def test_viewer_cannot_write(client):
         headers=CSRF_HEADERS,
     )
     assert r.status_code == 403  # viewer に files.edit はない
+    r = client.post(
+        "/api/v1/files/archive",
+        json={"source": f"{_sandbox}/x.txt", "destination": f"{_sandbox}/x.zip", "format": "zip"},
+        headers=CSRF_HEADERS,
+    )
+    assert r.status_code == 403
     client.cookies.clear()
 
 
@@ -188,3 +197,137 @@ def test_resumable_upload_cancel(admin_client):
     upload_id = r.json()["id"]
     assert admin_client.delete(f"/api/v1/files/uploads/{upload_id}", headers=CSRF_HEADERS).status_code == 204
     assert admin_client.get(f"/api/v1/files/uploads/{upload_id}").status_code == 404
+
+
+def test_archive_create_and_extract_roundtrip(admin_client):
+    source = _sandbox / "archive-source"
+    (source / "nested").mkdir(parents=True)
+    (source / "hello.txt").write_text("こんにちは", encoding="utf-8")
+    (source / "nested" / "data.bin").write_bytes(b"\x00\x01\x02")
+    archive = _sandbox / "archive-source.zip"
+
+    response = admin_client.post(
+        "/api/v1/files/archive",
+        json={"source": str(source), "destination": str(archive), "format": "zip"},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["entries"] == 4
+    assert response.json()["format"] == "zip"
+    with zipfile.ZipFile(archive) as packed:
+        assert "archive-source/hello.txt" in packed.namelist()
+
+    destination = _sandbox / "archive-restored"
+    response = admin_client.post(
+        "/api/v1/files/extract",
+        json={"archive": str(archive), "destination": str(destination)},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert (destination / "archive-source" / "hello.txt").read_text(encoding="utf-8") == "こんにちは"
+    assert (destination / "archive-source" / "nested" / "data.bin").read_bytes() == b"\x00\x01\x02"
+
+    tar_path = _sandbox / "archive-source.tar.gz"
+    response = admin_client.post(
+        "/api/v1/files/archive",
+        json={"source": str(source / "hello.txt"), "destination": str(tar_path), "format": "tar.gz"},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    tar_destination = _sandbox / "tar-restored"
+    response = admin_client.post(
+        "/api/v1/files/extract",
+        json={"archive": str(tar_path), "destination": str(tar_destination)},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert (tar_destination / "hello.txt").read_text(encoding="utf-8") == "こんにちは"
+
+
+def test_archive_extract_rejects_traversal_links_and_bombs_without_partial_output(admin_client):
+    from app.files import archives as archive_service
+
+    cases: list[str] = []
+
+    traversal = _sandbox / "unsafe-traversal.zip"
+    with zipfile.ZipFile(traversal, "w") as archive:
+        archive.writestr("../escape.txt", b"escape")
+        archive.writestr("..\\escape-win.txt", b"escape")
+    cases.append(str(traversal))
+
+    symlink = _sandbox / "unsafe-link.zip"
+    with zipfile.ZipFile(symlink, "w") as archive:
+        info = zipfile.ZipInfo("outside-link")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(info, "/etc/passwd")
+    cases.append(str(symlink))
+
+    hardlink = _sandbox / "unsafe-hardlink.tar.gz"
+    with tarfile.open(hardlink, "w:gz") as archive:
+        info = tarfile.TarInfo("outside-hardlink")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "/etc/passwd"
+        archive.addfile(info)
+    cases.append(str(hardlink))
+
+    bomb = _sandbox / "unsafe-ratio.zip"
+    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("zeros.bin", b"\x00" * (17 * 1024 * 1024))
+    cases.append(str(bomb))
+
+    for index, archive_path in enumerate(cases):
+        destination = _sandbox / f"unsafe-output-{index}"
+        response = admin_client.post(
+            "/api/v1/files/extract",
+            json={"archive": archive_path, "destination": str(destination)},
+            headers=CSRF_HEADERS,
+        )
+        assert response.status_code == 403, response.text
+        assert not destination.exists()
+    assert not (_sandbox.parent / "escape.txt").exists()
+    assert not (_sandbox.parent / "escape-win.txt").exists()
+
+    source = _sandbox / "unsafe-source-link"
+    source.mkdir()
+    (source / "outside").symlink_to("/etc/passwd")
+    destination = _sandbox / "unsafe-source-link.zip"
+    response = admin_client.post(
+        "/api/v1/files/archive",
+        json={"source": str(source), "destination": str(destination), "format": "zip"},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 403
+    assert not destination.exists()
+
+    # 公開直前に同名pathが現れても既存内容を置換しない。
+    temporary = _sandbox / ".publish-candidate"
+    existing = _sandbox / "publish-existing.zip"
+    temporary.write_bytes(b"candidate")
+    existing.write_bytes(b"existing")
+    try:
+        archive_service._publish_noreplace(temporary, existing)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("atomic archive publication must not replace an existing path")
+    assert existing.read_bytes() == b"existing"
+    assert temporary.read_bytes() == b"candidate"
+
+
+def test_media_preview_supports_range_and_rejects_unsafe_inline_type(admin_client):
+    media = _sandbox / "sample.mp4"
+    media.write_bytes(b"0123456789")
+    response = admin_client.get(
+        f"/api/v1/files/preview?path={media}", headers={"Range": "bytes=2-5"},
+    )
+    assert response.status_code == 206
+    assert response.content == b"2345"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+    unsafe = _sandbox / "unsafe-preview.html"
+    unsafe.write_text("<script>alert(1)</script>", encoding="utf-8")
+    assert admin_client.get(f"/api/v1/files/preview?path={unsafe}").status_code == 415

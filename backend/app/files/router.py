@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.config import get_config
 from app.database import get_db
+from app.files import archives
 from app.files import service as files
 from app.models import User
 from app.security.deps import require_permission
@@ -58,12 +59,20 @@ def download(path: str, user: User = Depends(require_permission("files.view"))):
 
 @router.get("/preview")
 def preview(path: str, user: User = Depends(require_permission("files.view"))):
-    """インライン表示用（画像等）。Content-Disposition を付けない。"""
+    """画像／PDF／音声／動画をRange対応で安全にインライン配信する。"""
     p: Path = _wrap(files.resolve, path)
     if p.is_dir():
         raise HTTPException(status_code=409, detail="ディレクトリはプレビューできません")
     media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-    return FileResponse(p, media_type=media_type)
+    if not (media_type.startswith(("image/", "audio/", "video/")) or media_type == "application/pdf"):
+        raise HTTPException(status_code=415, detail="このファイル形式はインラインプレビューできません")
+    headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+    if media_type == "image/svg+xml":
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+    return FileResponse(
+        p, filename=p.name, media_type=media_type, headers=headers,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/text")
@@ -229,6 +238,43 @@ class SrcDstBody(BaseModel):
 class RenameBody(BaseModel):
     path: str
     new_name: str
+
+
+class ArchiveCreateBody(BaseModel):
+    source: str
+    destination: str
+    format: str | None = None
+
+
+class ArchiveExtractBody(BaseModel):
+    archive: str
+    destination: str
+
+
+@router.post("/archive")
+def create_archive(
+    body: ArchiveCreateBody, request: Request,
+    user: User = Depends(require_permission("files.edit")), db: Session = Depends(get_db),
+):
+    result = _wrap(archives.create, body.source, body.destination, body.format)
+    audit.record(
+        db, "files.archive_create", user=user, resource_type="file", resource_id=body.source,
+        request=request, metadata={"to": result.path, "format": result.format, "entries": result.entries, "bytes": result.bytes},
+    )
+    return {"ok": True, **result.__dict__}
+
+
+@router.post("/extract")
+def extract_archive(
+    body: ArchiveExtractBody, request: Request,
+    user: User = Depends(require_permission("files.edit")), db: Session = Depends(get_db),
+):
+    result = _wrap(archives.extract, body.archive, body.destination)
+    audit.record(
+        db, "files.archive_extract", user=user, resource_type="file", resource_id=body.archive,
+        request=request, metadata={"to": result.path, "format": result.format, "entries": result.entries, "bytes": result.bytes},
+    )
+    return {"ok": True, **result.__dict__}
 
 
 @router.post("/directory")
