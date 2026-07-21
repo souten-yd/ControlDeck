@@ -60,6 +60,12 @@ class ProviderLoadBody(BaseModel):
     keep_alive: str | int | None = None
 
 
+class ProviderPullBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1, max_length=300)
+
+
 @router.get("/providers")
 async def providers(user: User = Depends(require_permission("workflows.run"))):
     """管理対象と検出済みのLLMランタイムを共通形式で返す。"""
@@ -78,6 +84,39 @@ async def provider_models(provider_id: str, user: User = Depends(require_permiss
         raise HTTPException(status_code=404, detail=str(e)) from e
     except provider_adapters.ProviderError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post("/providers/{provider_id}/pull-jobs", status_code=201)
+async def provider_pull(
+    provider_id: str, body: ProviderPullBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """Capability付きprovider adapter経由でdurable pull jobを開始する。"""
+    from app.models_mgmt import provider_adapters
+
+    target = body.model.strip()
+    if not target:
+        raise HTTPException(status_code=422, detail="モデル名を入力してください")
+    try:
+        await provider_adapters.ensure_operation(provider_id, "pull")
+    except provider_adapters.ProviderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except provider_adapters.UnsupportedOperation as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    async def run(job: jobs.Job):
+        async for chunk in provider_adapters.pull_model(provider_id, target):
+            status = str(chunk.get("status", ""))
+            job.set_progress(status or "取得中", chunk.get("completed"), chunk.get("total"))
+            if status and (not job.events or job.events[-1]["message"] != status):
+                job.log(status)
+        return {"provider": provider_id, "model": target}
+
+    job = jobs.create("model.pull", f"モデル取得: {target}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
+    audit.record(db, "model.pull", user=user, resource_type="model", resource_id=target,
+                 request=request, metadata={"provider": provider_id, "job_id": job.id})
+    return {"job_id": job.id}
 
 
 @router.get("/providers/{provider_id}/health")
@@ -144,6 +183,57 @@ async def provider_delete(provider_id: str, model_id: str, request: Request,
     audit.record(db, "model.delete", user=user, resource_type="model", resource_id=model_id,
                  request=request, metadata={"provider": provider_id})
     return {"ok": True}
+
+
+@router.get("/providers/{provider_id}/models/{model_id:path}/config")
+async def provider_model_config(
+    provider_id: str, model_id: str,
+    user: User = Depends(require_permission("workflows.run")),
+):
+    from app.models_mgmt import provider_adapters
+
+    try:
+        return await provider_adapters.get_model_config(provider_id, model_id)
+    except provider_adapters.ProviderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except provider_adapters.UnsupportedOperation as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except provider_adapters.ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.put("/providers/{provider_id}/models/{model_id:path}/config")
+async def provider_model_config_put(
+    provider_id: str, model_id: str, body: dict, request: Request, reload: bool = False,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import provider_adapters
+
+    patch = _validated_provider_patch(provider_id, body)
+    try:
+        result = await provider_adapters.configure_model(provider_id, model_id, patch)
+    except provider_adapters.ProviderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (provider_adapters.UnsupportedOperation, provider_adapters.InvalidConfiguration) as exc:
+        status = 409 if isinstance(exc, provider_adapters.UnsupportedOperation) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except provider_adapters.ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    audit.record(db, "model.configure", user=user, resource_type="model", resource_id=model_id,
+                 request=request, metadata={"provider": provider_id, "fields": sorted(patch),
+                                            "reload": reload})
+    response: dict = result
+    if reload:
+        try:
+            loaded = await provider_adapters.load_model(provider_id, model_id)
+        except provider_adapters.ProviderNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except provider_adapters.UnsupportedOperation as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except provider_adapters.ProviderError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        response = {"config": result, "loaded": loaded}
+    return response
 
 
 @router.get("/status")
@@ -552,6 +642,20 @@ def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
         if not resolved.is_file() or resolved.suffix.lower() != ".gguf":
             raise HTTPException(status_code=422, detail="許可ルート内のGGUFファイルを指定してください")
         patch[key] = str(resolved)
+    return patch
+
+
+def _validated_provider_patch(provider_id: str, body: dict) -> dict:
+    patch: dict = body
+    if provider_id == "llama.cpp":
+        # 共通routeではmodel identity/path/portを変えず、既存の型・範囲検証を再利用する。
+        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path", "role", "port"})
+        if forbidden:
+            raise HTTPException(status_code=422, detail=f"共通設定APIでは変更できない項目です: {', '.join(forbidden)}")
+        try:
+            patch = LlamaInstanceBody.model_validate(body).model_dump(exclude_none=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     return patch
 
 

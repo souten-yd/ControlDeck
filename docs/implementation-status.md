@@ -2,6 +2,13 @@
 
 最終更新: 2026-07-21
 
+## Phase 7 provider共通pull／モデル設定管理 完了（2026-07-21 13:30 JST）
+
+- capability付きprovider adapterへ`pull`、モデル設定の取得／保存、操作開始前のcapability検査を追加した。Ollamaのpullは既存のブラウザ非依存durable Jobへ接続し、進捗と同じevent IDを維持する。llama.cppは登録済みaliasの生成／runtime設定だけを共通routeから変更でき、alias、GGUF path、mmproj、role、portは専用登録APIに限定する。
+- `POST /models/providers/{provider}/pull-jobs`と`GET/PUT /models/providers/{provider}/models/{model}/config`を追加した。未知provider／modelは404、capabilityなし・外部OpenAI互換への変更は409、不明field・型／範囲違反は422とし、黙って成功扱いしない。設定監査は値を残さずprovider、field名、reload有無だけを記録する。従来Ollama固有routeは互換のため維持し、Models UIのpull／個別設定は共通routeへ移行した。
+
+検証: provider集中8件、backend全440件、frontend TypeScript／production build、diff whitespace検査に成功。実Control Deckを最終PID `427143`へ再起動しhealth 200、実Ollama／`qwen3.6-27b-q5_k_m:latest`で共通config GET 200→同一値PUT 200を確認した。認証付きChromium 1件で320／1280pxの共通config GET／PUT、durable pull job導線、横overflowなしを確認した。実pullは不要な再downloadを避けfixtureとし、既存モデル削除／reloadは実行していない。一時user／login session／auditは0件に清掃済みで、既存Terminalには接続・入力・停止していない。
+
 ## Phase 2 system scope systemd service 最小特権境界 実装完了（2026-07-21 13:15 JST、root導入確認待ち）
 
 - Appsの既存systemd serviceへ`user`／`system` scopeを追加した。system scopeはAPIからunit名を自由入力できず、ローカル設定の固定ID、表示名、unit、許可操作を`./deck.sh service`がroot所有`/etc/control-deck/system-services.json`へ導入した項目だけを登録できる。DBにはcatalog IDとscopeを保存し、unit名はcatalogから再解決するため、作成・編集requestによる別unitへの差し替えを拒否する。
@@ -1284,10 +1291,10 @@ CTX、K/V cache、MTP、MoEの表示を確認。
 
 - providerごとに `list/load/unload/delete/pull/configure` capabilityを公開し、共通adapterでモデル情報を
   `id/name/size_bytes/modified_at/loaded/details` に正規化
-- `GET /models/providers/{provider}/models` とモデル単位の `load` / `unload` / `DELETE` を追加。
+- `GET /models/providers/{provider}/models` とモデル単位の `load` / `unload` / `DELETE`、provider単位のdurable pull job、モデル設定GET／PUTを追加。
   Ollamaは全操作、llama.cppは設定中GGUFの一覧・起動・停止、外部OpenAI互換は一覧のみ対応
-- 未対応の変更操作は `409`、未知provider/modelは `404`。ロード・アンロード・削除はprovider付きで監査
-- 既存Ollamaモデル画面とllama.cpp起動・停止UIを共通APIへ移行。既存の固有APIも互換のため維持
+- 未対応の変更操作は `409`、未知provider/modelは `404`、不正設定は`422`。変更操作は値を含めずprovider付きで監査
+- 既存Ollamaモデル画面とllama.cpp起動・停止UIを共通APIへ移行。pull／個別設定も共通routeを使用し、既存の固有APIは互換のため維持
 
 検証: `./deck.sh test` 178件成功、フロントエンド本番ビルド成功。実サービスの共通APIからOllamaモデルを取得し、
 1280px / 320pxの画面を確認（横スクロール・ログイン後のconsole errorなし）。破壊的なモデル操作は未実施。
@@ -1707,7 +1714,7 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 ## 既知の制約 / 次の作業
 
 1. system service helper／root catalogの初回導入は`./deck.sh service`で対話sudo認証が必要。コード・境界・自動／ブラウザ回帰は完了したが、この実機でのhelper操作確認は導入後に行う
-2. PostgreSQL の運用切替、汎用プラグインSDK、provider共通pull/設定管理は未完（OpenCode向けfeature境界は実装済み）
+2. PostgreSQL の運用切替、汎用プラグインSDKは未完（provider共通pull／設定管理とOpenCode向けfeature境界は実装済み）
 3. 電源 reboot/shutdown は API 実装済みだが、破壊的な実機実行は未検証
 
 ## 履歴
