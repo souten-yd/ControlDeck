@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-21
 
+## Phase 2／11 ログ秘密値マスキング 完了（2026-07-21）
+
+- 管理アプリstdout／stderrのtail API、WebSocketリアルタイム追従、downloadの全経路へ共通redactorを追加した。`TOKEN`／`SECRET`／`PASSWORD`／`PASS`／`API_KEY`／`PRIVATE_KEY`／`AUTH`／`COOKIE`系の`key=value`、header、引用符付きJSONを`***`へ置換する。
+- アプリの暗号化environmentから秘密名の値だけを復号し、ログ内にキー名なしで出た同一値もマスクする。値はAPI、WebSocket、download、audit、内部logへ追加保存せず、4文字未満の値による全体過剰置換も避ける。
+- WebSocketとdownloadはbyte chunkを最大1MiBの行bufferへ入れ、改行単位でマスクしてから送る。秘密名／値が256KiB chunk境界を跨いでもraw断片を送らず、1MiBを超える改行なし行は本文を破棄して固定の省略表示だけを返す。downloadはraw `FileResponse`を廃止し、redact済みstreamだけを返す。
+
+検証: log redaction／alert集中16件、backend全483件中Terminal系29件を除く最新454件、frontend production build、diff whitespace検査に成功。通常代入、Authorization、引用符付きJSON、既知環境秘密値、chunk分割、改行前後の巨大行、API／WebSocket／downloadを確認した。実service PID `608736`、health 200。実APIで暗号化環境値を持つ一時appの実stdoutを作り、Playwright Chromium 320×700／1280×800で安全な行と`***`だけの表示、秘密値のDOM／download非露出、横overflow 0、console／page error 0を確認した。一時app／user／login session／auditは0件に清掃済み。既存Terminalには接続・入力・停止・削除していない。
+
 ## Phase 3 永続ログ ERROR アラート 完了（2026-07-21）
 
 - 管理アプリのstdout／stderrへ新しく追記された`ERROR`／`CRITICAL`／`FATAL`を15秒評価loopで検知する`app_log_error`条件を追加した。登録済み対象アプリを必須にし、イベント条件のため継続時間は0へ固定する。UIは比較・しきい値・継続時間を隠し、対象未選択では保存できない。

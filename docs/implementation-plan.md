@@ -17,7 +17,7 @@
 - アプリ登録（Python Script / Shell Script / Executable。名前 / Python パス / スクリプト / 引数 / 作業ディレクトリ / 環境変数 / 自動起動 / 再起動ポリシー / 停止タイムアウト）
 - systemd ユーザーユニット生成（安全テンプレート、`cdapp-{id}.service`）
 - 起動 / 停止 / 再起動 / 強制終了、状態マッピング（STOPPED〜UNKNOWN の 8 状態）
-- stdout / stderr のファイル保存、ログ表示 / ストリーム / ダウンロード / 削除
+- stdout / stderr のファイル保存、秘密値マスキング済みログ表示 / ストリーム / ダウンロード / 削除
 - Python 自動検出（候補提示のみ）
 - アプリ一覧カード UI（PC / モバイル）、アプリ追加フロー（3 ステップ）
 - アプリアイコン（PNG / JPEG / WebP / サニタイズ済みSVG、認証付き配信）
