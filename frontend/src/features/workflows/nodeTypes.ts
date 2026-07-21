@@ -7,7 +7,7 @@ export interface FieldDef {
   options?: { value: string; label: string }[];
   placeholder?: string;
   hint?: string;
-  showIf?: { key: string; value: string };
+  showIf?: { key: string; value: string } | Array<{ key: string; value: string }>;
 }
 
 export interface OutputDef {
@@ -23,6 +23,8 @@ export interface NodeTypeDef {
   fields: FieldDef[];
   outputs?: OutputDef[]; // 出力変数（変数ピッカーに表示）
   branches?: boolean; // true/false の 2 出力
+  tryBranches?: boolean; // success/error の 2 出力
+  circuitBranches?: boolean; // allowed/blocked の 2 出力
   loop?: boolean; // body/done の 2 出力
   desc?: string;
 }
@@ -39,7 +41,7 @@ export interface ExtractorDef {
 export interface TriggerInputDef {
   key: string;
   label?: string;
-  type: "text" | "paragraph" | "number" | "boolean" | "select" | "multi_select" | "date" | "datetime" | "file" | "file_list" | "json" | "key_value" | "secret_reference";
+  type: "text" | "paragraph" | "number" | "boolean" | "select" | "multi_select" | "date" | "datetime" | "file" | "file_list" | "json" | "json_array" | "key_value" | "secret_reference";
   required?: boolean;
   options?: string; // select 用（改行区切り）
   description?: string;
@@ -68,17 +70,36 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
           { value: "daily", label: "毎日指定時刻" },
           { value: "cron", label: "Cron 式" },
           { value: "webhook", label: "Webhook（外部から POST）" },
-          { value: "event", label: "イベント（アラート発火時）" },
+          { value: "event", label: "イベント（アラート／Workflow間）" },
+          { value: "system", label: "システム状態の変化" },
         ],
       },
       { key: "interval_minutes", label: "間隔（分）", type: "number", placeholder: "60", showIf: { key: "mode", value: "interval" } },
       { key: "time", label: "時刻 (HH:MM)", type: "text", placeholder: "08:00", showIf: { key: "mode", value: "daily" } },
       { key: "cron", label: "Cron 式", type: "text", placeholder: "0 8 * * *", showIf: { key: "mode", value: "cron" } },
       { key: "webhook_token", label: "Webhook トークン", type: "text", showIf: { key: "mode", value: "webhook" }, hint: "POST /api/v1/hooks/{トークン} で起動（16 文字以上・スケジュール有効化が必要）。ボディの JSON が {{トリガーID.キー}} になります" },
-      { key: "rule_filter", label: "アラート名フィルタ（任意・部分一致）", type: "text", showIf: { key: "mode", value: "event" }, hint: "空なら全アラートで起動。{{トリガーID.rule}} / {{トリガーID.value}} を参照可（スケジュール有効化が必要）" },
+      { key: "event_source", label: "イベント種別", type: "select", showIf: { key: "mode", value: "event" }, options: [
+        { value: "alert", label: "アラート発火" }, { value: "workflow", label: "Workflow custom event" },
+      ], hint: "既存フローは未設定時もアラートとして動作します" },
+      { key: "rule_filter", label: "アラート名フィルタ", type: "text", showIf: [{ key: "mode", value: "event" }, { key: "event_source", value: "alert" }], hint: "空なら全アラートで起動。{{トリガーID.rule}} / {{トリガーID.value}} を参照可" },
+      { key: "event_name", label: "Custom event名", type: "text", showIf: [{ key: "mode", value: "event" }, { key: "event_source", value: "workflow" }], placeholder: "report.completed", hint: "完全一致するevent.emitだけを受信。英字始まり、最大128文字" },
+      {
+        key: "system_event", label: "監視対象", type: "select", showIf: { key: "mode", value: "system" },
+        options: [
+          { value: "gpu", label: "GPU使用率・温度" },
+          { value: "vram", label: "VRAM使用率" },
+          { value: "disk", label: "ディスク使用率" },
+          { value: "systemd", label: "管理アプリ停止（systemd）" },
+          { value: "llama_server", label: "llama-server状態" },
+          { value: "file", label: "ファイル変更" },
+        ],
+        hint: "公開して有効化したフローだけが、ControlDeckの監視イベントで自動起動します",
+      },
+      { key: "resource_filter", label: "対象名フィルタ（任意・部分一致）", type: "text", showIf: { key: "mode", value: "system" }, hint: "アラート名・メトリクス名・アプリ名などで絞り込みます" },
+      { key: "file_path", label: "監視するファイル／ディレクトリ", type: "text", showIf: { key: "system_event", value: "file" }, hint: "設定の files.allowed_roots 配下にある絶対パスだけを監視します" },
       { key: "inputs", label: "入力フィールド", type: "inputs", hint: "実行時に入力を求め、{{トリガーID.変数名}} で全後段ノードから参照できます" },
     ],
-    outputs: [{ key: "message", label: "チャット入力" }],
+    outputs: [{ key: "message", label: "入力メッセージ" }, { key: "event_source", label: "イベント種別" }, { key: "event_name", label: "Custom event名" }, { key: "event_id", label: "Event ID" }, { key: "data", label: "Payload" }, { key: "source_workflow_id", label: "発行元Workflow" }, { key: "resource", label: "対象" }, { key: "value", label: "現在値" }],
   },
 
   // ---- アプリ ----
@@ -143,6 +164,20 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     ],
     outputs: [{ key: "approved", label: "承認済み" }, { key: "message", label: "承認メッセージ" }, { key: "approver", label: "承認者" }],
   },
+  "human.form": {
+    label: "入力フォーム",
+    category: "制御",
+    color: "#d97706",
+    icon: "▤",
+    desc: "型付き入力が送信されるまで実行を永続停止し、responseとして後続へ渡す",
+    fields: [
+      { key: "message", label: "入力案内", type: "textarea", placeholder: "必要な情報を入力してください", hint: TEMPLATE_HINT },
+      { key: "approver", label: "担当者（ユーザー名・任意）", type: "text", hint: "空欄ならworkflows.run権限を持つユーザー。指定時はそのユーザーだけが送信できます" },
+      { key: "form_timeout_seconds", label: "入力期限（秒）", type: "number", placeholder: "86400", hint: "期限切れはtimeout経路へ送られます" },
+      { key: "inputs", label: "入力フィールド", type: "inputs", hint: "最大20件。後続から {{このノードID.response.変数名}} で参照できます" },
+    ],
+    outputs: [{ key: "submitted", label: "送信済み" }, { key: "response", label: "入力値" }, { key: "message", label: "入力案内" }, { key: "assignee", label: "担当者" }],
+  },
   "control.merge": {
     label: "分岐を合流",
     category: "制御",
@@ -162,6 +197,80 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     outputs: [{ key: "items", label: "node・状態・出力" }, { key: "values", label: "出力配列" }, { key: "value", label: "単一／出力配列" }, { key: "count", label: "合流数" }, { key: "succeeded", label: "成功数" }],
   },
   "util.wait": { label: "待機", category: "制御", color: "#f59e0b", icon: "⏱", fields: [{ key: "seconds", label: "秒数", type: "number", placeholder: "10" }], outputs: [{ key: "waited_seconds", label: "待機秒数" }] },
+  "control.delay": {
+    label: "Delay（永続待機）", category: "制御", color: "#0f766e", icon: "◷",
+    desc: "待機点をDBへ保存し、再起動後も同じ実行から再開する",
+    fields: [
+      { key: "seconds", label: "待機秒数", type: "text", placeholder: "60", hint: "0.1秒〜7日。上流変数も使用できます" },
+      { key: "message", label: "待機中の説明", type: "text", placeholder: "外部サービスの準備を待機中", hint: TEMPLATE_HINT },
+    ],
+    outputs: [
+      { key: "waited_seconds", label: "設定秒数" }, { key: "scheduled_for", label: "再開予定" },
+      { key: "resumed_at", label: "再開日時" }, { key: "durable", label: "永続待機" },
+    ],
+  },
+  "control.try": {
+    label: "Try（サブフロー）", category: "制御", color: "#0891b2", icon: "◇",
+    desc: "公開済みサブフローを失敗境界として実行し、成功／エラーへ分岐する",
+    tryBranches: true,
+    fields: [
+      { key: "workflow_id", label: "試行する公開ワークフロー", type: "workflow" },
+      { key: "message", label: "メッセージ入力", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "input_json", label: "追加入力（JSON・任意）", type: "code", placeholder: '{"topic":"{{trigger.topic}}"}', hint: TEMPLATE_HINT },
+      { key: "timeout", label: "待ち時間上限（秒）", type: "number", placeholder: "600" },
+    ],
+    outputs: [
+      { key: "ok", label: "成功" }, { key: "status", label: "子フロー状態" },
+      { key: "outputs", label: "型付き出力" }, { key: "result", label: "結果テキスト" },
+      { key: "error", label: "型付きエラー" }, { key: "execution_id", label: "子実行ID" },
+    ],
+  },
+  "control.rate_limit": {
+    label: "レート制限",
+    category: "制御",
+    color: "#0f766e",
+    icon: "⌁",
+    desc: "同じWorkflow・scopeの複数実行で回数制限を永続共有",
+    fields: [
+      { key: "scope", label: "共有scope", type: "text", placeholder: "external-api", hint: "同じ依存先では同じscopeを使用。Secretは使用不可" },
+      { key: "max_calls", label: "最大実行数", type: "number", placeholder: "10" },
+      { key: "window_seconds", label: "時間窓（秒）", type: "number", placeholder: "60" },
+      { key: "mode", label: "到達時", type: "select", options: [
+        { value: "wait", label: "空きまで待つ" }, { value: "reject", label: "即時エラー" },
+      ] },
+      { key: "max_wait_seconds", label: "最大待機（秒）", type: "number", placeholder: "60", showIf: { key: "mode", value: "wait" } },
+    ],
+    outputs: [
+      { key: "acquired", label: "取得済み" }, { key: "used", label: "窓内使用数" },
+      { key: "remaining", label: "残り回数" }, { key: "reset_at", label: "リセット日時" },
+      { key: "waited_seconds", label: "待機秒数" },
+    ],
+  },
+  "control.circuit_breaker": {
+    label: "回路遮断",
+    category: "制御",
+    color: "#0f766e",
+    icon: "⊘",
+    desc: "連続失敗を記録して依存先を遮断し、回復後は1実行だけ試行",
+    circuitBranches: true,
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "check", label: "実行可否を確認" },
+        { value: "record_success", label: "成功を記録" },
+        { value: "record_failure", label: "失敗を記録" },
+        { value: "status", label: "状態を取得" },
+        { value: "reset", label: "手動リセット" },
+      ] },
+      { key: "scope", label: "共有scope", type: "text", placeholder: "external-api", hint: "check・成功記録・失敗記録で同じscopeを使用" },
+      { key: "failure_threshold", label: "連続失敗しきい値", type: "number", placeholder: "3" },
+      { key: "recovery_seconds", label: "回復待機（秒）", type: "number", placeholder: "60" },
+    ],
+    outputs: [
+      { key: "allowed", label: "実行許可" }, { key: "state", label: "CLOSED/OPEN/HALF_OPEN" },
+      { key: "probe", label: "回復試行" }, { key: "consecutive_failures", label: "連続失敗数" },
+      { key: "retry_at", label: "再試行可能日時" },
+    ],
+  },
 
   // ---- 変数・文字列・テキスト ----
   "var.set": {
@@ -282,6 +391,117 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
     ],
     outputs: [{ key: "result", label: "集計結果" }, { key: "groups", label: "group別結果" }, { key: "count", label: "入力件数" }, { key: "operation", label: "集計種別" }],
   },
+  "data.batch": {
+    label: "配列バッチ化",
+    category: "データ",
+    color: "#6366f1",
+    icon: "▦",
+    desc: "arrayを順序を保った一定件数のbatchへ分割",
+    fields: [
+      { key: "input", label: "入力array", type: "code", hint: TEMPLATE_HINT },
+      { key: "batch_size", label: "1 batchの件数", type: "number", placeholder: "100", hint: "1〜1000。入力全体は最大10000件" },
+    ],
+    outputs: [
+      { key: "batches", label: "batch配列" }, { key: "batch_count", label: "batch数" },
+      { key: "item_count", label: "項目数" }, { key: "batch_size", label: "設定件数" },
+    ],
+  },
+  "data.queue": {
+    label: "永続キュー",
+    category: "データ",
+    color: "#6366f1",
+    icon: "≡",
+    desc: "Workflow単位の再起動対応bounded FIFOへJSON値を追加・取得",
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "enqueue", label: "追加（enqueue）" },
+        { value: "dequeue", label: "最古を取得して削除（dequeue）" },
+        { value: "peek", label: "最古を参照（peek）" },
+        { value: "size", label: "件数を取得（size）" },
+      ] },
+      { key: "queue", label: "キュー名", type: "text", placeholder: "jobs", hint: "Workflow内だけで共有されます。英字始まりの英数字・._-、最大64文字" },
+      { key: "value", label: "追加するJSON値", type: "code", showIf: { key: "operation", value: "enqueue" }, hint: TEMPLATE_HINT },
+    ],
+    outputs: [
+      { key: "value", label: "取得値" }, { key: "found", label: "取得できた" },
+      { key: "size", label: "残り件数" }, { key: "item_id", label: "項目ID" },
+      { key: "enqueued", label: "追加済み" },
+    ],
+  },
+  "data.cache": {
+    label: "期限付きキャッシュ",
+    category: "データ",
+    color: "#6366f1",
+    icon: "◫",
+    desc: "Workflow単位で再起動を越えて共有する期限付きJSONキャッシュ",
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "set", label: "保存・更新（set）" },
+        { value: "get", label: "取得（get）" },
+        { value: "delete", label: "削除（delete）" },
+        { value: "size", label: "有効件数（size）" },
+      ] },
+      { key: "namespace", label: "名前空間", type: "text", placeholder: "api", hint: "Workflow内でkeyを分類します。英字始まり、最大64文字" },
+      { key: "key", label: "キー", type: "text", placeholder: "latest", hint: "size以外で必須。英数字・._:/-、最大128文字。Secretは使用不可" },
+      { key: "value", label: "保存するJSON値", type: "code", showIf: { key: "operation", value: "set" }, hint: TEMPLATE_HINT },
+      { key: "ttl_seconds", label: "有効期間（秒）", type: "number", placeholder: "3600", showIf: { key: "operation", value: "set" }, hint: "1秒〜30日。期限のない値にはstateを使用します" },
+    ],
+    outputs: [
+      { key: "value", label: "取得値" }, { key: "found", label: "有効な値あり" },
+      { key: "expires_at", label: "期限" }, { key: "size", label: "有効件数" },
+      { key: "stored", label: "保存済み" }, { key: "deleted", label: "削除済み" },
+    ],
+  },
+  "data.state": {
+    label: "永続ステート",
+    category: "データ",
+    color: "#6366f1",
+    icon: "◆",
+    desc: "Workflow単位の期限なし・型固定・version付きJSON状態",
+    fields: [
+      { key: "operation", label: "操作", type: "select", options: [
+        { value: "get", label: "取得（get）" },
+        { value: "set", label: "保存・更新（set）" },
+        { value: "increment", label: "原子的加算（increment）" },
+        { value: "delete", label: "削除（delete）" },
+      ] },
+      { key: "namespace", label: "名前空間", type: "text", placeholder: "metrics", hint: "Workflow内でkeyを分類します。英字始まり、最大64文字" },
+      { key: "key", label: "キー", type: "text", placeholder: "success_count", hint: "英数字・._:/-、最大128文字。Secretは使用不可" },
+      { key: "value_type", label: "値の型", type: "select", showIf: { key: "operation", value: "set" }, options: [
+        { value: "auto", label: "初回値から推論" }, { value: "string", label: "String" },
+        { value: "number", label: "Number" }, { value: "integer", label: "Integer" },
+        { value: "boolean", label: "Boolean" }, { value: "object", label: "Object" },
+        { value: "array", label: "Array" },
+      ] },
+      { key: "value", label: "保存するJSON値", type: "code", showIf: { key: "operation", value: "set" }, hint: TEMPLATE_HINT },
+      { key: "delta", label: "加算値", type: "code", showIf: { key: "operation", value: "increment" }, hint: "integer stateには整数、number stateには数値を指定" },
+      { key: "expected_version", label: "期待version（任意）", type: "text", placeholder: "{{read.version}}", hint: "一致時だけ変更します。0は新規作成時だけset。空欄は内部CASで自動再試行" },
+    ],
+    outputs: [
+      { key: "value", label: "現在値" }, { key: "found", label: "存在する" },
+      { key: "value_type", label: "固定型" }, { key: "version", label: "version" },
+      { key: "stored", label: "保存済み" }, { key: "deleted", label: "削除済み" },
+      { key: "updated_at", label: "更新日時" },
+    ],
+  },
+  "event.emit": {
+    label: "イベント発行",
+    category: "制御",
+    color: "#f59e0b",
+    icon: "↗",
+    desc: "DB outboxから公開済みWorkflowのcustom event triggerへ配送",
+    fields: [
+      { key: "event_name", label: "イベント名", type: "text", placeholder: "report.completed", hint: "英字始まりの英数字・._-、最大128文字。Secretは使用不可" },
+      { key: "payload", label: "Payload（JSON object）", type: "code", hint: TEMPLATE_HINT },
+    ],
+    outputs: [
+      { key: "event_id", label: "Event ID" }, { key: "event_name", label: "イベント名" }, { key: "status", label: "配送状態" },
+      { key: "target_count", label: "購読数" }, { key: "delivered_count", label: "配送数" },
+      { key: "failed_count", label: "失敗数" }, { key: "execution_ids", label: "受信実行ID" },
+      { key: "failed_workflow_ids", label: "配送失敗Workflow ID" },
+      { key: "durable", label: "Outbox保存済み" },
+    ],
+  },
   "text.markdown": {
     label: "Markdown→HTML",
     category: "データ",
@@ -351,6 +571,32 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
   },
 
   // ---- AI ----
+  "ai.route": {
+    label: "AI Runtime Route",
+    category: "AI",
+    color: "#7c3aed",
+    icon: "⌘",
+    desc: "稼働状況・loaded model・context・空きVRAMから後続LLMの経路を選択",
+    fields: [
+      { key: "strategy", label: "選択戦略", type: "select", options: [
+        { value: "balanced", label: "Balanced（推奨）" },
+        { value: "availability", label: "稼働中を優先" },
+        { value: "loaded", label: "ロード済みを優先" },
+        { value: "context", label: "Context容量を優先" },
+        { value: "vram", label: "空きVRAMを優先" },
+      ] },
+      { key: "candidates", label: "候補（任意JSON）", type: "code", placeholder: '[{"base_url":"http://127.0.0.1:11434/v1","model":"model-name","priority":10}]', hint: "空欄なら検出済みruntimeとmodelを使用。最大20件" },
+      { key: "min_context", label: "必要Context", type: "number", placeholder: "0" },
+      { key: "min_free_vram_mb", label: "必要空きVRAM（MiB）", type: "number", placeholder: "0" },
+      { key: "allow_unavailable", label: "停止中runtimeも候補にする", type: "checkbox" },
+    ],
+    outputs: [
+      { key: "base_url", label: "選択endpoint" }, { key: "model", label: "選択model" },
+      { key: "available", label: "稼働中" }, { key: "loaded", label: "ロード済み" },
+      { key: "context_window", label: "Context" }, { key: "vram_free_bytes", label: "空きVRAM" },
+      { key: "reason", label: "選択理由" }, { key: "candidates", label: "候補評価" },
+    ],
+  },
   "llm.chat": {
     label: "LLM 生成",
     category: "AI",
@@ -786,6 +1032,73 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
   },
 
   // ---- 制御（サブフロー） ----
+  "flow.return": {
+    label: "Return",
+    category: "制御",
+    color: "#0d9488",
+    icon: "↩",
+    desc: "終端から型付きの最終結果を明示的に返す。後続ノードは接続不可",
+    fields: [
+      { key: "name", label: "出力名", type: "text", placeholder: "result" },
+      { key: "title", label: "タイトル", type: "text", hint: TEMPLATE_HINT },
+      { key: "description", label: "説明", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "value", label: "返す値", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "renderer", label: "表示形式", type: "select", options: [
+        { value: "auto", label: "Auto" }, { value: "text", label: "Plain text" },
+        { value: "markdown", label: "Markdown" }, { value: "json_tree", label: "JSON tree" },
+        { value: "json_raw", label: "JSON raw" }, { value: "table", label: "Table" },
+        { value: "key_value", label: "Key-value" }, { value: "code", label: "Code" },
+        { value: "file", label: "File download" }, { value: "link", label: "Link" },
+        { value: "status", label: "Status card" }, { value: "metric", label: "Metric" },
+      ] },
+      { key: "schema", label: "出力schema JSON", type: "code", placeholder: '{"type":"string"}' },
+      { key: "copyable", label: "コピー可", type: "checkbox" },
+    ],
+    outputs: [{ key: "value", label: "返却値" }, { key: "renderer", label: "表示形式" }, { key: "name", label: "出力名" }],
+  },
+  "flow.error": {
+    label: "明示エラー",
+    category: "制御",
+    color: "#dc2626",
+    icon: "!",
+    desc: "機械判定可能なcode付きで処理を失敗させる。自動retryは行わない",
+    fields: [
+      { key: "code", label: "エラーコード", type: "text", placeholder: "FLOW_ERROR" },
+      { key: "message", label: "停止理由", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "details", label: "詳細JSON（任意）", type: "code", placeholder: '{"source":"{{node.value}}"}', hint: TEMPLATE_HINT },
+    ],
+  },
+  "flow.note": {
+    label: "注釈",
+    category: "制御",
+    color: "#64748b",
+    icon: "✎",
+    desc: "副作用なしの説明を実行履歴へ残す",
+    fields: [
+      { key: "level", label: "重要度", type: "select", options: [{ value: "info", label: "情報" }, { value: "warning", label: "注意" }] },
+      { key: "text", label: "注釈", type: "textarea", hint: TEMPLATE_HINT },
+    ],
+    outputs: [{ key: "note", label: "注釈" }, { key: "level", label: "重要度" }],
+  },
+  "test.assert": {
+    label: "Assert",
+    category: "制御",
+    color: "#7c3aed",
+    icon: "✓",
+    desc: "期待条件を決定的に検証。不一致はASSERTION_FAILEDとして停止またはerror分岐",
+    fields: [
+      { key: "actual", label: "実際の値", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "operator", label: "演算子", type: "select", options: [
+        { value: "eq", label: "= 等しい" }, { value: "ne", label: "≠ 等しくない" },
+        { value: "gt", label: "> より大きい" }, { value: "gte", label: "≥ 以上" },
+        { value: "lt", label: "< より小さい" }, { value: "lte", label: "≤ 以下" },
+        { value: "contains", label: "を含む" },
+      ] },
+      { key: "expected", label: "期待値", type: "textarea", hint: TEMPLATE_HINT },
+      { key: "message", label: "失敗メッセージ", type: "textarea", placeholder: "期待値と一致しません", hint: TEMPLATE_HINT },
+    ],
+    outputs: [{ key: "passed", label: "成功" }, { key: "actual", label: "実際の値" }, { key: "expected", label: "期待値" }],
+  },
   "flow.call": {
     label: "サブフロー呼び出し",
     category: "制御",
@@ -802,6 +1115,31 @@ export const NODE_TYPES: Record<string, NodeTypeDef> = {
       { key: "result", label: "結果（信号表示の連結）" },
       { key: "execution_id", label: "実行 ID" },
       { key: "status", label: "実行ステータス" },
+    ],
+  },
+  "flow.map": {
+    label: "Subflow Map",
+    category: "制御",
+    color: "#0e7490",
+    icon: "⋙",
+    desc: "JSON配列の各項目を同じ公開版サブフローへ並列入力し、入力順で結果を集約",
+    fields: [
+      { key: "workflow_id", label: "呼び出す公開ワークフロー", type: "workflow" },
+      { key: "items", label: "Items（JSON array）", type: "code", placeholder: '[{"id":1},{"id":2}]', hint: `${TEMPLATE_HINT}。最大100件` },
+      { key: "parallel", label: "並列数（1〜5）", type: "number", placeholder: "3", hint: "同時に起動する子フロー数" },
+      { key: "failure_policy", label: "子フロー失敗時", type: "select", options: [
+        { value: "stop", label: "失敗で停止（実行中のbatchは完了）" },
+        { value: "collect", label: "失敗も結果へ収集して継続" },
+      ] },
+      { key: "message", label: "子のmessage（任意）", type: "textarea", placeholder: "{{map.item}}", hint: "各項目ではこのノードIDのitem／index／totalを参照できます" },
+      { key: "input_json", label: "子への追加入力（JSON object・任意）", type: "code", placeholder: '{"source":"batch"}', hint: "item／index／totalは自動で型付き入力されます" },
+      { key: "timeout", label: "各子の待ち時間上限（秒）", type: "number", placeholder: "600" },
+    ],
+    outputs: [
+      { key: "results", label: "入力順の子結果" }, { key: "count", label: "実行数" },
+      { key: "succeeded", label: "成功数" }, { key: "failed", label: "失敗数" },
+      { key: "all_succeeded", label: "全件成功" }, { key: "execution_ids", label: "子実行ID" },
+      { key: "target_workflow_id", label: "対象Workflow ID" }, { key: "target_version_id", label: "固定公開Version ID" },
     ],
   },
 
@@ -863,10 +1201,14 @@ export const NODE_DOCS: Record<string, string> = {
   "control.loop":
     "body 側のノード列を繰り返し実行し、完了後に done 側へ進みます。\n\n■ モード\n- 回数指定: {{ID.index}} が 0..n-1\n- リスト each: JSON 配列 or 改行区切りを 1 件ずつ {{ID.item}} に\n- 並列数: 1〜5。反復ごとにcontextを分離し、{{ID.results}}へ入力順で集約\n\n■ 組み合わせ\nWeb 検索の {{search.urls}} を items に渡して URL ごとにスクレイピング、など。上限 100 回。",
   "human.approval":
-    "後続処理を人が確認するまで実行を一時停止します。情報パネルに承認文、指定承認者、承認／却下操作を表示し、操作は監査ログへ記録します。\n\n■ 経路\n承認時は通常出力、却下時はerror、期限切れはtimeoutへ進みます。on_errorをbranchにして各handleを接続してください。\n\n■ 安全性\n承認者をユーザー名で限定できます。message内のresolved secretは表示前に伏せ字化されます。サービス再起動をまたぐ永続pause tokenと修正入力は次のWorkflowPause migrationで追加予定です。",
+    "後続処理を人が確認するまで実行を一時停止します。情報パネルに承認文、指定承認者、承認／却下操作を表示し、操作は監査ログへ記録します。\n\n■ 経路\n承認時は通常出力、却下時はerror、期限切れはtimeoutへ進みます。on_errorをbranchにして各handleを接続してください。\n\n■ 安全性\n承認者をユーザー名で限定できます。message内のresolved secretは表示前に伏せ字化され、待機状態はDBへ保存されるため再起動後も同じ実行から再開します。",
+  "human.form":
+    "実行途中で人から型付き入力を受け取ります。入力待ちはDBへ保存され、ControlDeck再起動後も同じexecutionから継続します。\n\n■ 出力\n後続ノードから {{このノードID.response.変数名}} で入力値を参照できます。送信は通常経路、キャンセルはerror、期限切れはtimeoutへ進みます。\n\n■ 安全性\n担当者をユーザー名で限定でき、入力はJSON Schemaで検証して64KB以内だけを保存します。Secret入力とfile uploadはこのフォームでは扱いません。",
   "control.merge":
     "複数の直接上流を1本へまとめます。wait_allは全入力の解決待ち、first_successは最初の成功、first_completeは最初の生きた完了、quorumは指定成功数、collectは成功・失敗を含む全結果を扱います。\n\n■ 出力\nitemsはnode_id/status/output、valuesはoutputだけの配列です。first系ではvalueから単一結果を参照できます。\n\n■ 注意\nquorum未達とfirst_successで成功0件は明示的に失敗し、error routeへ送れます。",
   "util.wait": "指定秒数待機します。Wake-on-LAN 後の起動待ち、API のレート制限対策などに。最大 1 時間。",
+  "control.delay": "待機点をDBへ保存するため、長時間待機中にControlDeckを再起動しても同じexecutionから継続します。0.1秒〜7日で、待機中のキャンセルにも対応します。短い一時停止だけなら従来の待機ノードも利用できます。",
+  "control.try": "公開済みサブフローをtry境界として実行します。子フローの失敗は親全体を即停止せず、success／errorハンドルへ型付き状態を渡します。共通の後処理は両方の枝を合流ノードへ接続してください。",
   "var.set":
     "値に名前を付けて保存します。output_var と違い、フロー途中で明示的に変数を作る用途。\n\n■ 参照\n{{vars.変数名}} でどのノードからでも参照できます。設定パネルの変数ピッカーにも表示されます。",
   "string.op":
@@ -878,6 +1220,14 @@ export const NODE_DOCS: Record<string, string> = {
     "JSON arrayをfield条件で絞り込み、重複除去、安定sort、件数制限を1回で適用します。式やPythonは実行しません。\n\n■ 条件\nTruthy／存在／等値／非等値／含む／数値比較に対応。nested fieldはscore.totalのようなdot pathで指定します。\n\n■ Recipe\nHTTP結果→score >= 0.8→idでunique→score降順→上位10件。入力は最大10000件で、元件数と結果件数を返します。",
   "data.aggregate":
     "JSON arrayへcount、sum、avg、min、maxを適用します。group fieldを指定するとcategory別などの集計表を返します。\n\n■ 型\ncount以外はnumber field専用で、文字列の暗黙数値変換はしません。型が混在した場合は明示errorにしてdata.transform等での修正を促します。\n\n■ Recipe\nfile.glob→parallel loop結果→statusでgroup count、DB rows→department別amount合計→Table出力。最大10000件。",
+  "data.queue":
+    "Workflow内で実行とControlDeck再起動を越えてJSON値をFIFO保持します。enqueueは末尾へ追加、dequeueは最古の1件を原子的に取得・削除、peekは削除せず参照、sizeは件数だけを返します。\n\n■ 境界\n1項目256KiB、1キュー10,000件。別Workflowとは名前が同じでも分離されます。Secret値は保存前に伏せ字化し、enqueue／dequeueは監査ログへ本文なしで記録します。",
+  "data.cache":
+    "Workflow内で実行とControlDeck再起動を越えてJSON値を期限付きで再利用します。setは保存・上書き、getは有効な値だけを取得、deleteは1 keyを削除、sizeはnamespace内の有効件数を返します。\n\n■ TTLと境界\nTTLは1秒〜30日で、期限切れは返さず自動清掃します。1値256KiB、1 Workflow 10,000 key。Secret値は保存前に伏せ字化し、Secretをkeyへ含めることは禁止します。期限のない設定・状態にはstateを使用してください。",
+  "data.state":
+    "Workflow内で実行とControlDeck再起動を越えて、期限なしのJSON状態を共有します。初回setでstring／number／integer／boolean／object／arrayの型が固定され、型変更はdelete後だけ可能です。\n\n■ 競合制御\n各更新でversionが増えます。getしたversionをexpected versionへ渡すと、その後に別実行が更新していない場合だけset／increment／deleteできます。0は新規作成専用です。空欄時も内部CASで同時更新を再試行します。\n\n■ 境界\n1値256KiB、1 Workflow 10,000 key。incrementはinteger／number専用です。Secret値は保存前に伏せ字化し、Secretをkeyへ含めることは禁止します。短期再利用にはcache、実行内だけの値にはvar.setを使用してください。",
+  "event.emit":
+    "業務イベントをDB outboxへ先に保存し、公開・有効化済みで同じevent名を購読するWorkflowを起動します。受信側Triggerではevent_id、event_name、data、source_workflow_id等を参照できます。\n\n■ 配送\nsubscriber別の配送状態を保持し、ControlDeck再起動後も未配送を最大3回再試行します。クラッシュ境界では同じevent_idが再配送される場合があるため、厳密な一度だけ処理が必要ならstate等でevent_idを記録してください。直接・間接循環はlineageで除外し、最大8 hop、100 subscriberです。\n\n■ 安全性\nPayloadはJSON object・64KiB以内で、Secretを保存前に伏せ字化します。Secretをevent名へ含めることは禁止し、監査には本文を記録しません。",
   "text.markdown": "Markdown を HTML に変換します。レポートをメール/Web 表示用に整形する時に。",
   "db.query":
     "SQLite ファイルまたは接続 URL（PostgreSQL 等）へ SQL を実行します。\n\n■ 使い方\nSELECT は {{ID.rows}} に行データ（JSON）が入ります。パラメータは :name 形式 + JSON で安全にバインド。\n\n■ 組み合わせ\nDB クエリ → LLM 生成（要約/分析）→ 通知 で日次レポートが作れます。",
@@ -888,6 +1238,7 @@ export const NODE_DOCS: Record<string, string> = {
   "file.glob": "許可ルート内の基準フォルダから相対globで検索します。絶対pathと ..、symlinkによる基準外脱出を拒否します。",
   "llm.chat":
     "OpenAI 互換 API（Ollama / vLLM / llama.cpp / OpenAI）でテキスト生成する中核ノード。\n\n■ 使い方\nエンドポイント/モデルは設定パネルで稼働中サーバーを自動検出できます。プロンプトに {{前段.出力}} を埋め込んで使います。\n\n■ 構造化出力\n出力形式を JSON スキーマ指定にすると {{ID.json.フィールド}} で値を直接参照でき、条件分岐や DB 保存と繋げやすくなります。\n\n■ 組み合わせ\nRAG 検索 → LLM（根拠付き回答）、Web 検索 → LLM（ダイジェスト）、DB → LLM（分析）。",
+  "ai.route": "稼働中runtime、ロード済みmodel、context容量、空きVRAMを実行時に評価します。出力のbase_urlとmodelを後続LLMノードへ設定すると、固定endpointに依存しない経路になります。候補を空欄にすると検出済みruntimeから選びます。",
   "ai.utility": "OpenAI互換Embedding、/rerank API、LLM Judgeを切り替える補助ノードです。大量入力は件数・文字数上限を設け、秘密のAPI keyを結果へ含めません。",
   "media.ocr": "画像から文字を認識（tesseract）。スクリーンショット → OCR → LLM 整形 のような紙情報のデジタル化に。",
   "rag.build":
@@ -914,8 +1265,14 @@ export const NODE_DOCS: Record<string, string> = {
   "cmd.python": "Python コードを実行します（セキュリティ設定 security.allow_arbitrary_commands の許可が必要）。標準ノードで足りない加工処理の最終手段。",
   "notify.webhook":
     "Discord / Slack / 汎用 JSON の Webhook へ通知します。\n\n■ 使い方\n形式を選んで URL を設定、メッセージにテンプレートで結果を埋め込みます。フローの「完了報告」や条件分岐の true 側の警報として最後に置くのが定番。",
+  "flow.return": "ワークフローの終端から型付き結果を明示的に返します。後続ノードは接続できません。Runner、API、履歴で同じ出力形式になります。",
+  "flow.error": "想定した異常を機械判定可能なcode付きで停止します。再試行は行いません。回復処理は実行制御を「失敗時分岐」にして赤いハンドルへ接続します。",
+  "flow.note": "副作用を起こさず、実行履歴へ補足を残します。処理意図や判断材料を後から追跡したい場所に置きます。",
+  "test.assert": "実際の値と期待値を決定的に比較します。不一致はASSERTION_FAILEDとなり再試行しません。回帰確認や公開前の安全条件に使います。",
   "flow.call":
     "別のワークフローをサブフローとして実行し、完了を待って結果を受け取ります。\n\n■ 使い方\n呼び出し先を選び、メッセージ（相手の {{trigger.message}} になる）や追加入力を渡します。相手側の「信号表示」ノードの値が {{ID.result}} として返ります。\n\n■ 組み合わせ\n「要約」「通知」などの共通処理を 1 つのワークフローにして部品化し、複数のフローから呼び出せます。ネストは 3 段まで。",
+  "flow.map":
+    "JSON arrayの各項目を公開済みサブフローへ渡し、型付き結果を入力順でまとめます。\n\n■ 子の入力\n{{trigger.item}}、{{trigger.index}}、{{trigger.total}}が自動で渡ります。messageや追加入力にはMapノードの{{ID.item}}等を使えます。\n\n■ 再現性と安全性\n全項目は開始時に選ばれた同じ公開Versionで実行します。最大100件、並列1〜5、再帰cycleは子を起動する前に拒否します。失敗は親を停止するか、resultsへ型付きerrorとして収集できます。",
 };
 
 /**

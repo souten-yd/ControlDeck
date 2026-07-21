@@ -100,6 +100,13 @@ export const IconPlay = (p: SVGProps<SVGSVGElement>) => (
     <path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none" />
   </Icon>
 );
+export const IconTest = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9 3h6" />
+    <path d="M10 3v5l-5 9a2.5 2.5 0 0 0 2.2 3.7h9.6A2.5 2.5 0 0 0 19 17l-5-9V3" />
+    <path d="M7.5 15h9" />
+  </Icon>
+);
 export const IconStop = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none" />

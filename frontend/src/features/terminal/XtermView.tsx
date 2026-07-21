@@ -1,7 +1,7 @@
 /** xterm.js ターミナルビュー（遅延ロードチャンク）。
  * モバイル: visualViewport で高さ再計算 + Ctrl/Esc/Tab/矢印の補助キーバー。
- * コピペ: iOS では xterm 上の長押し選択が効かないため、貼付/コピーのシートで対応。
- * 非 HTTPS（Tailscale IP 直アクセス等）では Clipboard API が無いので手動フォールバック。 */
+ * コピペ: PasteはClipboard APIから直接送信し、CopyはPasteの上スワイプで直接開く。
+ * 非 HTTPSでClipboard APIを読めない場合は、二重入力欄を出さずOS keyboard pasteへ案内する。 */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
@@ -10,7 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { wsUrl } from "../../api/client";
 import { createUuid } from "../../lib/clientId";
 import { useToasts } from "../../stores";
-import { IconX } from "../../components/icons";
+import { IconSettings, IconX } from "../../components/icons";
 import { TerminalGeometryController } from "./controllers/TerminalGeometryController";
 import { TerminalDiagnostics } from "./controllers/TerminalDiagnostics";
 import { TerminalConnectionController } from "./controllers/TerminalConnectionController";
@@ -24,6 +24,11 @@ import { TerminalWriteQueue } from "./controllers/TerminalWriteQueue";
 interface SessionInfo {
   id: string;
   name: string;
+  program?: string;
+  cwd?: string;
+  workload?: "idle" | "running";
+  alive?: boolean;
+  persistent?: boolean;
 }
 
 const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl" }[] = [
@@ -44,11 +49,13 @@ export default function XtermView({
   sessionId,
   sessions,
   onSwitch,
+  onAutomation,
   onExit,
 }: {
   sessionId: string;
   sessions: SessionInfo[];
   onSwitch: (id: string) => void;
+  onAutomation?: () => void;
   onExit: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -65,14 +72,17 @@ export default function XtermView({
   const pasteCancelRef = useRef<(() => void) | null>(null);
   const pasteRetryRef = useRef<(() => void) | null>(null);
   const ctrlArmed = useRef(false);
-  const pasteRef = useRef<HTMLTextAreaElement>(null);
+  const pasteGestureRef = useRef({ startY: 0, triggered: false });
+  const suppressPasteClickRef = useRef(false);
   const copyRef = useRef<HTMLTextAreaElement>(null);
   const show = useToasts((s) => s.show);
   const [status, setStatus] = useState<"connecting" | "open" | "closed" | "gone">("connecting");
   const [ctrlOn, setCtrlOn] = useState(false);
-  const [sheet, setSheet] = useState<"paste" | "copy" | null>(null);
-  const [copyText, setCopyText] = useState("");
   const [pasteProgress, setPasteProgress] = useState<PasteProgress | null>(null);
+  const [replaying, setReplaying] = useState(true);
+  const [copySheet, setCopySheet] = useState(false);
+  const [copyText, setCopyText] = useState("");
+  const currentSession = sessions.find((session) => session.id === sessionId);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -84,6 +94,13 @@ export default function XtermView({
     const historyThumb = historyThumbRef.current;
     if (!host || !root || !header || !body || !helper || !historyTrack || !historyThumb) return;
     const coarseMobile = window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
+    if (coarseMobile) {
+      // 最初のfitより前にVisual Viewportへ合わせる。接続表示後にroot寸法が変わり、
+      // tmux resize/redrawが露出するraceを避ける。
+      const viewport = window.visualViewport;
+      root.style.width = `${Math.min(viewport?.width ?? window.innerWidth, document.documentElement.clientWidth || window.innerWidth)}px`;
+      root.style.height = `${viewport?.height ?? window.innerHeight}px`;
+    }
     const dark = document.documentElement.classList.contains("dark");
     const term = new Terminal({
       fontSize: 13,
@@ -102,9 +119,12 @@ export default function XtermView({
     term.open(host);
     fit.fit();
     termRef.current = term;
-    const updateHistoryTrack = () => {
+    let historyTrackHeight = historyTrack.clientHeight;
+    let historyMarkerFrame = 0;
+    const updateHistoryTrack = (remeasure = false) => {
       const buffer = term.buffer.active;
-      const trackHeight = historyTrack.getBoundingClientRect().height;
+      if (remeasure) historyTrackHeight = historyTrack.clientHeight;
+      const trackHeight = historyTrackHeight;
       const historyRows = buffer.baseY;
       const totalRows = historyRows + term.rows;
       historyTrack.setAttribute("aria-valuemax", String(historyRows));
@@ -123,16 +143,73 @@ export default function XtermView({
       historyThumb.style.transform = `translateY(${top}px)`;
     };
     const updateViewportMarker = () => {
+      historyMarkerFrame = 0;
       host.dataset.terminalViewportY = String(term.buffer.active.viewportY);
       updateHistoryTrack();
     };
+    const scheduleViewportMarker = () => {
+      if (!historyMarkerFrame) historyMarkerFrame = window.requestAnimationFrame(updateViewportMarker);
+    };
+    updateHistoryTrack(true);
     updateViewportMarker();
-    const scrollDisposable = term.onScroll(updateViewportMarker);
-    const historyResizeDisposable = term.onResize(updateHistoryTrack);
+    const scrollDisposable = term.onScroll(scheduleViewportMarker);
+    const historyResizeDisposable = term.onResize(() => updateHistoryTrack(true));
+    const historyTrackObserver = new ResizeObserver(() => updateHistoryTrack(true));
+    historyTrackObserver.observe(historyTrack);
 
     const encoder = new TextEncoder();
     const geometryDebug = window.localStorage.getItem("control-deck:terminal-geometry-debug") === "1";
     const writeQueue = new TerminalWriteQueue(term, geometryDebug);
+    const presentReplay = (active: boolean) => {
+      // visibility:hidden はbrowserのxterm renderer paintも止めるため、再表示の
+      // 最初の1 frameに未完成の行が露出する。レイアウトとpaintは継続し、
+      // 不透明のreplay overlayの下で安定させる。
+      root.dataset.terminalReplaying = active ? "true" : "false";
+      host.style.opacity = active ? "0" : "1";
+      host.style.pointerEvents = active ? "none" : "auto";
+      setReplaying(active);
+    };
+    const settleCompletedReplay = async () => {
+      term.scrollToBottom();
+      // terminal.write callbackはparser完了でありDOM renderer完了ではない。
+      // rAFだけではxtermのrender callbackより先に安定判定するraceが
+      // あるため、公開onRenderを完了境界として待つ。
+      await new Promise<void>((resolve) => {
+        let completed = false;
+        const finish = () => {
+          if (completed) return;
+          completed = true;
+          renderDisposable.dispose();
+          resolve();
+        };
+        const renderDisposable = term.onRender(finish);
+        term.refresh(0, Math.max(0, term.rows - 1));
+        // WebGL/DOM rendererがrefresh不要と判定してeventを出さない場合も
+        // 固定時間は足さず、2 paintを上限に先へ進む。
+        window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
+      });
+      let previous = "";
+      let stableFrames = 0;
+      for (let frame = 0; frame < 16 && stableFrames < 2; frame += 1) {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        const buffer = term.buffer.active;
+        const normalize = (value: string) => value.replace(/\u00a0/g, " ").trimEnd();
+        const bufferRows = Array.from({ length: term.rows }, (_, row) =>
+          normalize(buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? ""));
+        const domRows = [...host.querySelectorAll<HTMLElement>(".xterm-rows > div")]
+          .map((row) => normalize(row.textContent ?? ""));
+        const aligned = domRows.length === bufferRows.length
+          && domRows.every((row, index) => row === bufferRows[index]);
+        const signature = JSON.stringify(domRows);
+        if (aligned && signature === previous) {
+          stableFrames += 1;
+        } else {
+          stableFrames = 0;
+          if (!aligned) term.refresh(0, Math.max(0, term.rows - 1));
+        }
+        previous = signature;
+      }
+    };
     // セッションは tmux でサーバー側に永続。WS が切れても明示的に閉じるまで自動再接続する
     let disposed = false;
     let retryTimer: number | undefined;
@@ -146,6 +223,20 @@ export default function XtermView({
     let resizeGeneration = 0;
     let everConnected = false;
     let pendingOutputSequence: number | null = null;
+    let serverHistoryActive = false;
+    let replayFinalizeToken = 0;
+    let presentationGeneration = 0;
+    let pendingPresentationSync: {
+      connectionGeneration: number;
+      presentationGeneration: number;
+      resolve: (ack: { throughSequence: number; observedOutput: boolean } | null) => void;
+      timeout: number;
+    } | null = null;
+    const outputSequenceWaiters = new Set<{
+      connectionGeneration: number;
+      sequence: number;
+      resolve: (drawn: boolean) => void;
+    }>();
     // effectごとに1回だけ生成し、同一mount内の再接続では同じIDを維持する。
     const clientInstanceId = createUuid();
     let lastPtySize: { cols: number; rows: number } | null = null;
@@ -168,6 +259,135 @@ export default function XtermView({
       } else if (progressTimer === undefined) {
         progressTimer = window.setTimeout(flush, Math.max(0, 100 - (now - lastProgressUpdate)));
       }
+    };
+    const resolveOutputSequenceWaiters = (activeGeneration: number, sequence: number) => {
+      for (const waiter of [...outputSequenceWaiters]) {
+        if (waiter.connectionGeneration !== activeGeneration || sequence < waiter.sequence) continue;
+        outputSequenceWaiters.delete(waiter);
+        waiter.resolve(true);
+      }
+    };
+    const cancelPresentationWaiters = () => {
+      if (pendingPresentationSync) {
+        window.clearTimeout(pendingPresentationSync.timeout);
+        pendingPresentationSync.resolve(null);
+        pendingPresentationSync = null;
+      }
+      for (const waiter of outputSequenceWaiters) waiter.resolve(false);
+      outputSequenceWaiters.clear();
+    };
+    const waitUntilOutputDrawn = (targetGeneration: number, sequence: number): Promise<boolean> => {
+      if (targetGeneration !== connectionGeneration) return Promise.resolve(false);
+      if (connectionController.getLastSequence() >= sequence) return Promise.resolve(true);
+      return new Promise<boolean>((resolve) => {
+        outputSequenceWaiters.add({ connectionGeneration: targetGeneration, sequence, resolve });
+      });
+    };
+    const requestPresentationSync = (
+      ws: WebSocket,
+      targetGeneration: number,
+      chunks: readonly Uint8Array[],
+    ): Promise<{ throughSequence: number; observedOutput: boolean } | null> => {
+      if (chunks.length === 0 || ws.readyState !== WebSocket.OPEN
+        || targetGeneration !== connectionGeneration || pendingPresentationSync) return Promise.resolve(null);
+      const nextPresentationGeneration = ++presentationGeneration;
+      const inputBytes = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+      const afterSequence = connectionController.getLastSequence();
+      return new Promise((resolve) => {
+        const timeout = window.setTimeout(() => {
+          if (pendingPresentationSync?.presentationGeneration !== nextPresentationGeneration) return;
+          pendingPresentationSync = null;
+          resolve(null);
+          // An incomplete presentation must never be exposed. Reconnecting
+          // obtains a fresh snapshot and a new deterministic boundary.
+          ws.close(4500, "presentation sync timeout");
+        }, 2000);
+        pendingPresentationSync = {
+          connectionGeneration: targetGeneration,
+          presentationGeneration: nextPresentationGeneration,
+          resolve,
+          timeout,
+        };
+        ws.send(JSON.stringify({
+          type: "presentation_input_start",
+          presentationGeneration: nextPresentationGeneration,
+          inputChunks: chunks.length,
+          inputBytes,
+          afterSequence,
+          connectionGeneration: targetGeneration,
+        }));
+        for (const chunk of chunks) ws.send(chunk);
+        ws.send(JSON.stringify({
+          type: "presentation_sync",
+          presentationGeneration: nextPresentationGeneration,
+          connectionGeneration: targetGeneration,
+        }));
+        diagnostics?.record("presentation-sync-sent", {
+          connectionGeneration: targetGeneration,
+          presentationGeneration: nextPresentationGeneration,
+          inputChunks: chunks.length,
+          inputBytes,
+          afterSequence,
+        });
+      });
+    };
+    const finalizeReplay = async (
+      targetGeneration: number,
+      sequence: number,
+      event: "history-end-received" | "resume-end-received",
+    ) => {
+      const token = ++replayFinalizeToken;
+      // history_end以前のframeはWebSocket順序どおりenqueue済み。一度だけpaintへ
+      // 譲って同一batch末尾を取り込み、queueをdrainする。旧90〜600ms idle待ちは
+      // 入力可能化を不必要に遅らせていた。
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      await writeQueue.drain();
+      if (disposed || token !== replayFinalizeToken || targetGeneration !== connectionGeneration) return;
+      await settleCompletedReplay();
+      if (disposed || token !== replayFinalizeToken || targetGeneration !== connectionGeneration) return;
+
+      // xterm parserはDA/DSR等への端末応答をonDataへ返す。replay中に溜まった
+      // 応答を先にoverlay下で送り、その結果のPTY redrawをsequence境界まで
+      // 描画する。応答が連鎖した場合もqueueが空になるまでroundを繰り返す。
+      for (let round = 0; round < 16; round += 1) {
+        const input = connectionController.takePresentationInput(targetGeneration);
+        if (input === null) return;
+        if (input.length === 0) break;
+        const encoded: Uint8Array[] = [];
+        for (const value of input) {
+          const bytes = encoder.encode(value);
+          for (let offset = 0; offset < bytes.byteLength; offset += 16 * 1024) {
+            encoded.push(bytes.slice(offset, offset + 16 * 1024));
+          }
+        }
+        for (let offset = 0; offset < encoded.length; ) {
+          const batch: Uint8Array[] = [];
+          let batchBytes = 0;
+          while (offset < encoded.length && batch.length < 64
+            && batchBytes + encoded[offset].byteLength <= 64 * 1024) {
+            batch.push(encoded[offset]);
+            batchBytes += encoded[offset].byteLength;
+            offset += 1;
+          }
+          const ws = wsRef.current;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          const ack = await requestPresentationSync(ws, targetGeneration, batch);
+          if (!ack || disposed || token !== replayFinalizeToken
+            || targetGeneration !== connectionGeneration) return;
+          if (!await waitUntilOutputDrawn(targetGeneration, ack.throughSequence)) return;
+          await writeQueue.drain();
+          await settleCompletedReplay();
+          if (disposed || token !== replayFinalizeToken || targetGeneration !== connectionGeneration) return;
+        }
+      }
+      const finalSequence = Math.max(sequence, connectionController.getLastSequence());
+      if (!connectionController.markLive(targetGeneration, finalSequence, event)) return;
+      // LIVE判定とrenderer公開を同一taskで確定し、中間状態を作らない。
+      presentReplay(false);
+      inputController.availabilityChanged();
+      // mobileで接続完了時に自動focusするとsoftware keyboardがVisual Viewportを
+      // resizeし、直後のtmux再描画を可視化する。入力はterminal tapで明示開始する。
+      if (!coarseMobile) term.focus();
     };
     const sendNow = (data: string): void => {
       const ws = wsRef.current;
@@ -218,6 +438,7 @@ export default function XtermView({
       if (current?.readyState === WebSocket.OPEN || current?.readyState === WebSocket.CONNECTING) return;
       window.clearTimeout(retryTimer);
       connectionGeneration += 1;
+      presentationGeneration = 0;
       const thisConnectionGeneration = connectionGeneration;
       const attachMode = everConnected ? "resume" : "initial";
       resizeBarrier.resetConnection(thisConnectionGeneration);
@@ -231,6 +452,7 @@ export default function XtermView({
         connectionGeneration: String(thisConnectionGeneration),
         attachMode,
         lastSequence: String(connectionController.getLastSequence()),
+        engine: "v1",
       });
       const ws = new WebSocket(
         wsUrl(`/terminals/${sessionId}/connect?${query.toString()}`),
@@ -269,6 +491,25 @@ export default function XtermView({
               diagnostics.record("size-probe-result", control);
               return;
             }
+            if (control.type === "history_scroll_ack") {
+              diagnostics.record("history-scroll-ack", control);
+              return;
+            }
+            if (control.type === "presentation_sync_ack") {
+              const pending = pendingPresentationSync;
+              if (!pending
+                || control.connectionGeneration !== pending.connectionGeneration
+                || control.presentationGeneration !== pending.presentationGeneration
+                || !Number.isSafeInteger(control.throughSequence)) return;
+              window.clearTimeout(pending.timeout);
+              pendingPresentationSync = null;
+              diagnostics.record("presentation-sync-ack-received", control);
+              pending.resolve({
+                throughSequence: Number(control.throughSequence),
+                observedOutput: control.observedOutput === true,
+              });
+              return;
+            }
             if (control.type === "output") {
               if (control.connectionGeneration === thisConnectionGeneration
                 && Number.isSafeInteger(control.sequence)) pendingOutputSequence = control.sequence;
@@ -276,19 +517,17 @@ export default function XtermView({
             }
             if (control.type === "history_reset") {
               if (!connectionController.historyReset(control.connectionGeneration ?? thisConnectionGeneration)) return;
+              replayFinalizeToken += 1;
+              presentReplay(true);
               writeQueue.enqueueReset();
               return;
             }
             if (control.type === "history_end") {
-              writeQueue.enqueueTask(() => {
-                connectionController.markLive(
-                  control.connectionGeneration ?? thisConnectionGeneration,
-                  Number(control.sequence ?? 0),
-                  "history-end-received",
-                );
-                inputController.availabilityChanged();
-                term.focus();
-              }, "history-end");
+              void finalizeReplay(
+                control.connectionGeneration ?? thisConnectionGeneration,
+                Number(control.sequence ?? 0),
+                "history-end-received",
+              );
               return;
             }
             if (control.type === "resume_ready") {
@@ -300,15 +539,11 @@ export default function XtermView({
               return;
             }
             if (control.type === "resume_end") {
-              writeQueue.enqueueTask(() => {
-                connectionController.markLive(
-                  control.connectionGeneration,
-                  Number(control.sequence ?? 0),
-                  "resume-end-received",
-                );
-                inputController.availabilityChanged();
-                term.focus();
-              }, "resume-end");
+              void finalizeReplay(
+                control.connectionGeneration,
+                Number(control.sequence ?? 0),
+                "resume-end-received",
+              );
               return;
             }
           } catch {
@@ -330,14 +565,20 @@ export default function XtermView({
         diagnostics.recordPty("pty-frame-received", data, { connectionGeneration, token });
         writeQueue.enqueueWrite(data, () => {
           diagnostics.record("pty-write-complete", { connectionGeneration, token });
-          if (sequence !== null) connectionController.outputDrawn(thisConnectionGeneration, sequence);
+          if (sequence !== null) {
+            connectionController.outputDrawn(thisConnectionGeneration, sequence);
+            resolveOutputSequenceWaiters(thisConnectionGeneration, sequence);
+          }
           if (token) resizeBarrier.completePtyFrame(token);
         });
       };
       ws.onclose = (ev) => {
         if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
         if (!connectionController.closed(thisConnectionGeneration, ev)) return;
+        cancelPresentationWaiters();
         inputController.connectionChanged();
+        serverHistoryActive = false;
+        replayFinalizeToken += 1;
         resizeBarrier.resetConnection(connectionGeneration);
         if (disposed) return;
         if (ev.code === 4404) {
@@ -346,6 +587,9 @@ export default function XtermView({
           writeQueue.enqueueWrite("\r\n\x1b[90m[セッションが終了しました]\x1b[0m\r\n");
           return;
         }
+        // 切断からhistory_reset到着までにもcursor/rendererがDOMを更新し得る。
+        // 再接続時の追従描画を見せないため、切断を検知した時点で同期的に隠す。
+        presentReplay(true);
         setStatus("closed");
         connectionController.reconnectScheduled(retryDelay);
         retryTimer = window.setTimeout(connect, retryDelay);
@@ -354,7 +598,26 @@ export default function XtermView({
       ws.onerror = () => connectionController.error(thisConnectionGeneration);
     };
 
+    const exitServerHistory = () => {
+      if (!serverHistoryActive) return;
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "history_exit",
+          connectionGeneration,
+        }));
+      }
+      serverHistoryActive = false;
+    };
+    const leaveHistoryForInput = () => {
+      exitServerHistory();
+      // scrollToBottomは100,000行scrollbackの再描画を伴う。通常の文字入力や
+      // Backspaceごとに実行するとmobile UIを著しく遅くするため、
+      // 実際に履歴中の場合だけ一度戻す。
+      if (term.buffer.active.viewportY < term.buffer.active.baseY) term.scrollToBottom();
+    };
     const send = (data: string) => {
+      leaveHistoryForInput();
       connectionController.sendOrQueue(data);
     };
     inputSenderRef.current = send;
@@ -466,6 +729,7 @@ export default function XtermView({
       record: (event, details) => diagnostics.record(event, details),
     });
     const enqueuePaste = (text: string) => {
+      leaveHistoryForInput();
       const normalized = prepareTerminalPaste(text, term.modes.bracketedPasteMode);
       inputController.enqueuePaste(text, normalized);
     };
@@ -495,6 +759,9 @@ export default function XtermView({
       isGeometryLocked: imeController.isGeometryLocked,
       isResizeTransactionActive: resizeBarrier.isActive,
       sendPtyResize: notifyBackendTerminalSize,
+      onLocalResizeCommitted: (generation) => {
+        resizeBarrier.localResizeCommitted(generation);
+      },
       resumeConnection,
     });
     type TerminalTestHook = {
@@ -502,6 +769,7 @@ export default function XtermView({
       counters: () => ReturnType<TerminalGeometryController["getCounters"]>;
       resetCounters: () => void;
       isGeometryLocked: () => boolean;
+      isReplaying: () => boolean;
       textareaCount: () => number;
       rows: () => number;
       cols: () => number;
@@ -513,6 +781,7 @@ export default function XtermView({
       captureRenderState: () => Record<string, unknown>;
       startBarrierForTest: (generation: number, cols: number, rows: number) => boolean;
       ackBarrierForTest: (ack: TerminalResizeAck) => boolean;
+      commitBarrierForTest: (generation: number) => boolean;
       enqueuePtyFrameForTest: (data: string) => boolean;
       writeForTest: (data: string) => Promise<void>;
       sendInputForTest: (data: string) => void;
@@ -535,6 +804,7 @@ export default function XtermView({
         counters: () => geometryController!.getCounters(),
         resetCounters: () => geometryController?.resetCounters(),
         isGeometryLocked: imeController.isGeometryLocked,
+        isReplaying: () => root.dataset.terminalReplaying === "true",
         textareaCount: () => imeController.getTextareaCount(),
         rows: () => term.rows,
         cols: () => term.cols,
@@ -547,6 +817,7 @@ export default function XtermView({
         startBarrierForTest: (generation, cols, rows) =>
           resizeBarrier.startResize(generation, connectionGeneration, cols, rows),
         ackBarrierForTest: (ack) => resizeBarrier.handleAck(ack),
+        commitBarrierForTest: (generation) => resizeBarrier.localResizeCommitted(generation),
         enqueuePtyFrameForTest: (data) => {
           const token = resizeBarrier.captureFrameAfterAck();
           if (!token) return false;
@@ -584,7 +855,9 @@ export default function XtermView({
       touchScrollFrame = 0;
       const lines = Math.trunc(touchRemainder);
       if (lines !== 0) {
-        term.scrollLines(lines);
+        // replay済みnormal bufferを右端barと同じlocal pathで即時移動する。
+        // tmux subprocessとWebSocket往復はgestureのhot pathへ入れない。
+        term.scrollLines(Math.max(-100, Math.min(100, lines)));
         touchRemainder -= lines;
       }
     };
@@ -626,7 +899,8 @@ export default function XtermView({
       }
 
       event.preventDefault();
-      touchRemainder += (touchLastY - touch.clientY) / Math.max(touchCellHeight, 1);
+      // 1:1 cell換算は小さな画面で指の移動量に対して重く感じるため、軽い加速を加える。
+      touchRemainder += 1.35 * (touchLastY - touch.clientY) / Math.max(touchCellHeight, 1);
       if (!touchScrollFrame) touchScrollFrame = window.requestAnimationFrame(flushTouchScroll);
       touchLastY = touch.clientY;
     };
@@ -634,10 +908,17 @@ export default function XtermView({
       event.preventDefault();
       event.stopPropagation();
       const wasScrolling = touchScrolling;
-      if (touchScrolling && !touchScrollFrame) flushTouchScroll();
+      if (touchScrolling && touchScrollFrame) {
+        window.cancelAnimationFrame(touchScrollFrame);
+        touchScrollFrame = 0;
+        flushTouchScroll();
+      }
       touchTracking = false;
       touchScrolling = false;
-      if (!wasScrolling) term.focus();
+      if (!wasScrolling) {
+        leaveHistoryForInput();
+        term.focus();
+      }
     };
     host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
     host.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
@@ -676,6 +957,7 @@ export default function XtermView({
 
     return () => {
       disposed = true;
+      cancelPresentationWaiters();
       inputSenderRef.current = null;
       pasteSenderRef.current = null;
       pasteCancelRef.current = null;
@@ -688,6 +970,8 @@ export default function XtermView({
       imeController.dispose();
       delete testWindow.__controlDeckTerminalTest;
       window.cancelAnimationFrame(touchScrollFrame);
+      window.cancelAnimationFrame(historyMarkerFrame);
+      historyTrackObserver.disconnect();
       historyResizeDisposable.dispose();
       host.removeEventListener("touchstart", onTouchStart, true);
       host.removeEventListener("touchmove", onTouchMove, true);
@@ -723,110 +1007,132 @@ export default function XtermView({
 
   const sendSeq = (seq: string) => {
     inputSenderRef.current?.(seq);
-    termRef.current?.focus();
   };
 
-  /** クリップボードから貼り付け。API 不可・拒否時は手動貼付シートへ。 */
+  /** ユーザーgesture内でClipboard APIから直接送る。非secure originではOS pasteへ案内する。 */
   const doPaste = async () => {
     try {
       if (navigator.clipboard?.readText) {
         const text = await navigator.clipboard.readText();
         if (text) {
           pasteSenderRef.current?.(text);
-          termRef.current?.focus();
           return;
         }
+        show("クリップボードは空です");
+        return;
       }
     } catch {
-      // 権限拒否 or 非対応 → フォールバック
+      // 権限拒否または非secure origin。内容をアプリ内入力欄へ二重pasteさせない。
     }
-    setSheet("paste");
+    show("この接続ではクリップボードを直接読めません。キーボードの貼り付けを使用してください", "error");
   };
 
-  /** 選択範囲があればそれを、なければスクロールバック全文をコピーシートに表示。 */
   const openCopy = () => {
-    const sel = termRef.current?.getSelection();
-    if (sel && sel.trim()) {
-      setCopyText(sel);
+    const selection = termRef.current?.getSelection();
+    if (selection && selection.trim()) {
+      setCopyText(selection);
     } else {
-      const buf = termRef.current?.buffer.active;
+      const buffer = termRef.current?.buffer.active;
       const lines: string[] = [];
-      for (let i = 0; i < (buf?.length ?? 0); i++) {
-        const line = buf!.getLine(i);
+      for (let index = 0; index < (buffer?.length ?? 0); index += 1) {
+        const line = buffer!.getLine(index);
         const text = line?.translateToString(true) ?? "";
-        if (line?.isWrapped && lines.length > 0) {
-          // 画面幅によるsoft wrapを実改行としてコピーしない。
-          lines[lines.length - 1] += text;
-        } else {
-          lines.push(text);
-        }
+        if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+        else lines.push(text);
       }
       setCopyText(lines.join("\n").replace(/\n+$/, ""));
     }
-    setSheet("copy");
+    setCopySheet(true);
   };
 
-  /** Clipboard API → execCommand の順で試す（HTTP でも動くように）。 */
   const copyAll = async () => {
     const text = copyRef.current?.value ?? copyText;
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
         show("コピーしました");
-        setSheet(null);
+        setCopySheet(false);
         return;
       }
     } catch {
-      // 非セキュアコンテキスト等 → execCommand へ
+      // 非secure originでは選択済みtextareaを使う。
     }
-    const ta = copyRef.current;
-    if (ta) {
-      ta.focus();
-      ta.setSelectionRange(0, ta.value.length);
-      if (document.execCommand("copy")) {
-        show("コピーしました");
-        setSheet(null);
-      } else {
-        show("自動コピーできません。長押しで選択してコピーしてください", "error");
-      }
+    const textarea = copyRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+    if (document.execCommand("copy")) {
+      show("コピーしました");
+      setCopySheet(false);
+    } else {
+      show("自動コピーできません。選択範囲をコピーしてください", "error");
     }
   };
 
-  const submitPaste = () => {
-    const text = pasteRef.current?.value ?? "";
-    setSheet(null);
-    if (text) pasteSenderRef.current?.(text);
-    termRef.current?.focus();
+  const startPasteGesture = (event: React.TouchEvent<HTMLButtonElement>) => {
+    if (event.touches.length !== 1) return;
+    pasteGestureRef.current = { startY: event.touches[0].clientY, triggered: false };
+  };
+
+  const movePasteGesture = (event: React.TouchEvent<HTMLButtonElement>) => {
+    const gesture = pasteGestureRef.current;
+    if (event.touches.length !== 1 || gesture.triggered) return;
+    const movedUp = gesture.startY - event.touches[0].clientY;
+    if (movedUp >= 28) {
+      event.preventDefault();
+      gesture.triggered = true;
+      suppressPasteClickRef.current = true;
+      openCopy();
+    }
+  };
+
+  const endPasteGesture = () => {
+    if (pasteGestureRef.current.triggered) {
+      window.setTimeout(() => { suppressPasteClickRef.current = false; }, 0);
+    }
+    pasteGestureRef.current = { startY: 0, triggered: false };
   };
 
   // 下部ナビより手前の全画面表示（モバイルで画面全体を使う）
   return createPortal(
-    <div ref={rootRef} data-terminal-root className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
+    <div ref={rootRef} data-terminal-root data-terminal-replaying={replaying ? "true" : "false"} className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
       {/* ヘッダー */}
       <div ref={headerRef} data-terminal-header className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
-        <select
-          value={sessionId}
-          onChange={(e) => onSwitch(e.target.value)}
-          aria-label="セッションを切替"
-          className="min-w-0 rounded-lg border border-zinc-300 bg-white px-2 py-1 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
-        >
-          {sessions.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
-          ))}
-        </select>
-        <span
-          className={`text-xs ${
-            status === "open" ? "text-emerald-600 dark:text-emerald-400" : status === "gone" ? "text-red-500" : "text-zinc-400"
-          }`}
-        >
-          {status === "open" ? "接続中" : status === "closed" ? "再接続中..." : status === "gone" ? "終了済み" : "接続中..."}
-        </span>
+        <div className="min-w-0 flex-1">
+          <select
+            value={sessionId}
+            onChange={(e) => onSwitch(e.target.value)}
+            aria-label="セッションを切替"
+            className="h-8 max-w-full rounded-lg border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            {sessions.map((s) => (
+              <option key={s.id} value={s.id}>{s.program || s.name} · {s.cwd || `#${s.id}`}</option>
+            ))}
+          </select>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px]">
+            <span aria-live="polite" className={`inline-flex shrink-0 items-center gap-1 ${status === "open" ? "text-emerald-600 dark:text-emerald-400" : status === "gone" ? "text-red-500" : "text-zinc-400"}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${status === "open" ? "bg-emerald-500" : status === "gone" ? "bg-red-500" : "bg-amber-500 motion-safe:animate-pulse"}`} />
+              {status === "open" ? "Live" : status === "closed" ? "Reconnecting" : status === "gone" ? "Exited" : "Connecting"}
+            </span>
+            <span className={`shrink-0 ${currentSession?.workload === "running" ? "text-blue-500" : "text-zinc-400"}`}>{currentSession?.workload === "running" ? `Foreground ${currentSession.program}` : "Shell ready"}</span>
+            <code className="min-w-0 truncate text-zinc-400" title={currentSession?.cwd}>{currentSession?.cwd || "N/A"}</code>
+          </div>
+        </div>
         <button
           onClick={openCopy}
           className="ml-auto hidden rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
         >
           コピー
         </button>
+        {onAutomation && <button
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={onAutomation}
+          aria-label="Automation settings"
+          title="Snippets and schedules"
+          className="grid h-11 min-w-11 shrink-0 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          <IconSettings />
+        </button>}
         <button
           onClick={onExit}
           aria-label="ターミナルを閉じる"
@@ -841,7 +1147,8 @@ export default function XtermView({
       {/* FitAddonは直接の親paddingを寸法から引かない。装飾paddingを外側へ分離し、hostは無paddingにする。 */}
       <div ref={bodyRef} data-terminal-body className="relative flex min-h-0 flex-1 overflow-clip bg-white px-1 pt-1 dark:bg-zinc-950">
         {/* clipは端数cellを切りつつ、IME textareaが親を自動scrollするscroll containerを作らない。 */}
-        <div ref={hostRef} data-terminal-host className="terminal-xterm-host min-h-0 min-w-0 flex-1 overflow-clip" />
+        <div ref={hostRef} data-terminal-host aria-hidden={replaying} className={`terminal-xterm-host min-h-0 min-w-0 flex-1 overflow-clip ${replaying ? "opacity-0" : "opacity-100"}`} />
+        {replaying && <div data-terminal-replay-overlay role="status" className="absolute inset-0 grid place-items-center bg-white text-xs text-zinc-400 dark:bg-zinc-950"><span className="inline-flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-accent-500" />ターミナルを復元中…</span></div>}
         <div
           ref={historyTrackRef}
           data-terminal-history-track
@@ -876,32 +1183,51 @@ export default function XtermView({
         </div>
       )}
 
-      {/* モバイル補助キーバー */}
-      <div
-        ref={helperRef}
-        data-terminal-helper
-        className="terminal-helper-bar flex h-10 shrink-0 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 md:hidden"
-      >
+      {/* モバイル補助キーバー。CopyはPasteの上スワイプで直接開く。 */}
+      <div className="relative shrink-0 md:hidden">
+        <div
+          ref={helperRef}
+          data-terminal-helper
+          className="terminal-helper-bar flex h-10 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+        >
+          <button
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => {
+              if (suppressPasteClickRef.current) {
+                suppressPasteClickRef.current = false;
+                return;
+              }
+              void doPaste();
+            }}
+            onTouchStart={startPasteGesture}
+            onTouchMove={movePasteGesture}
+            onTouchEnd={endPasteGesture}
+            onTouchCancel={endPasteGesture}
+            onContextMenu={(event) => { event.preventDefault(); openCopy(); }}
+            onKeyDown={(event) => { if (event.key === "ArrowUp") { event.preventDefault(); openCopy(); } }}
+            aria-haspopup="dialog"
+            aria-label="貼付。上へスワイプでコピー"
+            title="タップ: 貼付 / 上へスワイプ: コピー"
+            className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+          >
+            貼付
+          </button>
         <button
-          onClick={doPaste}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => sendSeq("\r")}
+          aria-label="Enter"
           className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
         >
-          貼付
+          Enter
         </button>
-        <button
-          onClick={openCopy}
-          className="shrink-0 rounded-lg bg-white px-3 py-1.5 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-        >
-          コピー
-        </button>
-        {HELPER_KEYS.map((k) => (
+          {HELPER_KEYS.map((k) => (
           <button
             key={k.label}
+            onPointerDown={(event) => event.preventDefault()}
             onClick={() => {
               if (k.modifier === "ctrl") {
                 ctrlArmed.current = !ctrlArmed.current;
                 setCtrlOn(ctrlArmed.current);
-                termRef.current?.focus();
               } else if (k.seq) {
                 sendSeq(k.seq);
               }
@@ -914,65 +1240,12 @@ export default function XtermView({
           >
             {k.label}
           </button>
-        ))}
+          ))}
+        </div>
       </div>
 
-      {/* 貼付/コピーシート */}
-      {sheet && (
-        <div className="absolute inset-0 z-10 flex items-end bg-black/40" onClick={() => setSheet(null)}>
-          <div
-            className="safe-bottom w-full rounded-t-2xl bg-white p-4 dark:bg-zinc-900"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">
-                {sheet === "paste" ? "貼り付け" : "コピー"}
-              </h2>
-              <button
-                onClick={() => setSheet(null)}
-                aria-label="閉じる"
-                className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              >
-                <IconX />
-              </button>
-            </div>
-            {sheet === "paste" ? (
-              <>
-                <textarea
-                  ref={pasteRef}
-                  autoFocus
-                  rows={4}
-                  placeholder="ここに長押しでペーストして「送信」"
-                  className="w-full resize-none rounded-xl border border-zinc-300 bg-white p-3 font-mono text-base dark:border-zinc-700 dark:bg-zinc-950"
-                />
-                <button
-                  onClick={submitPaste}
-                  className="mt-2 w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700"
-                >
-                  ターミナルへ送信
-                </button>
-              </>
-            ) : (
-              <>
-                <textarea
-                  ref={copyRef}
-                  readOnly
-                  rows={10}
-                  value={copyText}
-                  className="w-full resize-none rounded-xl border border-zinc-300 bg-zinc-50 p-3 font-mono text-base dark:border-zinc-700 dark:bg-zinc-950"
-                />
-                <p className="mt-1 text-xs text-zinc-400">長押しで範囲選択してコピーもできます</p>
-                <button
-                  onClick={copyAll}
-                  className="mt-2 w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700"
-                >
-                  全文コピー
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      {copySheet && <div className="absolute inset-0 z-40 flex items-end bg-black/40" onClick={() => setCopySheet(false)}><div role="dialog" aria-label="コピー" className="safe-bottom w-full rounded-t-2xl bg-white p-4 dark:bg-zinc-900" onClick={(event) => event.stopPropagation()}><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold">コピー</h2><button onClick={() => setCopySheet(false)} aria-label="閉じる" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button></div><textarea ref={copyRef} readOnly rows={10} value={copyText} className="w-full resize-none rounded-xl border border-zinc-300 bg-zinc-50 p-3 font-mono text-base dark:border-zinc-700 dark:bg-zinc-950" /><p className="mt-1 text-xs text-zinc-400">選択した文字がある場合は選択範囲、それ以外は履歴全体です。</p><button onClick={() => void copyAll()} className="mt-2 min-h-11 w-full rounded-xl bg-accent-600 text-sm font-medium text-white hover:bg-accent-700">コピーする</button></div></div>}
+
     </div>,
     document.body,
   );

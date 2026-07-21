@@ -12,15 +12,15 @@ export interface RuntimeOutput {
 
 export function initialRuntimeValues(inputs: TriggerInputDef[]): Record<string, unknown> {
   return Object.fromEntries(inputs.filter((input) => input.key).map((input) => [
-    input.key, input.default ?? (input.type === "boolean" ? false : input.type === "multi_select" || input.type === "file_list" ? [] : ""),
+    input.key, input.default ?? (input.type === "boolean" ? false : ["multi_select", "file_list", "json_array"].includes(input.type) ? [] : ""),
   ]));
 }
 
-export function RuntimeField({ input, value, onChange }: { input: TriggerInputDef; value: unknown; onChange: (value: unknown) => void }) {
-  const id = `runtime-input-${input.key}`;
+export function RuntimeField({ input, value, onChange, idPrefix = "runtime-input" }: { input: TriggerInputDef; value: unknown; onChange: (value: unknown) => void; idPrefix?: string }) {
+  const id = `${idPrefix}-${input.key}`;
   const cls = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-950";
   const options = (input.options || "").split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
-  const parseStructured = (text: string) => { try { return text.trim() ? JSON.parse(text) : {}; } catch { return text; } };
+  const parseStructured = (text: string, emptyValue: unknown) => { try { return text.trim() ? JSON.parse(text) : emptyValue; } catch { return text; } };
   return (
     <label htmlFor={id} className="block">
       <span className="mb-1 block text-xs font-medium">{input.label || input.key}{input.required ? " *" : ""}</span>
@@ -30,7 +30,7 @@ export function RuntimeField({ input, value, onChange }: { input: TriggerInputDe
           : input.type === "boolean" ? <span className="flex min-h-11 items-center"><input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} className="h-5 w-5 accent-accent-600" /></span>
             : input.type === "select" ? <select id={id} value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} className={cls}><option value="">選択してください</option>{options.map((option) => <option key={option}>{option}</option>)}</select>
               : input.type === "multi_select" ? <select id={id} multiple value={Array.isArray(value) ? value.map(String) : []} onChange={(event) => onChange(Array.from(event.target.selectedOptions, (option) => option.value))} className={`${cls} min-h-28`}>{options.map((option) => <option key={option}>{option}</option>)}</select>
-                : input.type === "json" || input.type === "key_value" ? <textarea id={id} rows={5} value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2)} placeholder={input.placeholder || "{}"} onChange={(event) => onChange(parseStructured(event.target.value))} className={`${cls} font-mono text-xs`} />
+                : input.type === "json" || input.type === "json_array" || input.type === "key_value" ? <textarea id={id} rows={5} value={typeof value === "string" ? value : JSON.stringify(value ?? (input.type === "json_array" ? [] : {}), null, 2)} placeholder={input.placeholder || (input.type === "json_array" ? "[]" : "{}")} onChange={(event) => onChange(parseStructured(event.target.value, input.type === "json_array" ? [] : {}))} className={`${cls} font-mono text-xs`} />
                   : input.type === "file" || input.type === "file_list" ? <input id={id} type="file" multiple={input.type === "file_list"} onChange={(event) => onChange(input.type === "file_list" ? Array.from(event.target.files ?? [], (file) => file.name) : event.target.files?.[0]?.name ?? "")} className={`${cls} file:mr-2 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-2 file:py-1 dark:file:bg-zinc-800`} />
                     : <input id={id} type={input.type === "date" ? "date" : input.type === "datetime" ? "datetime-local" : input.type === "secret_reference" ? "password" : "text"} value={String(value ?? "")} maxLength={input.maxLength} placeholder={input.placeholder} onChange={(event) => onChange(event.target.value)} className={cls} />}
       {input.sample !== undefined && <span className="mt-1 block text-[10px] text-zinc-400">例: {typeof input.sample === "string" ? input.sample : JSON.stringify(input.sample)}</span>}
@@ -45,6 +45,11 @@ function stringify(value: unknown): string {
 
 export function RuntimeOutputView({ output }: { output: RuntimeOutput }) {
   const value = output.value;
+  if (value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).offloaded === true && typeof (value as Record<string, unknown>).artifact_id === "number") {
+    const artifact = value as Record<string, unknown>;
+    const size = typeof artifact.size_bytes === "number" ? `${Math.max(1, Math.ceil(artifact.size_bytes / 1024)).toLocaleString()} KB` : "";
+    return <a href={`/api/v1/workflow-artifacts/${artifact.artifact_id}/download`} className="mt-2 flex min-h-11 items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-xs font-medium text-accent-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-accent-300 dark:hover:bg-zinc-900"><span aria-hidden="true">↓</span><span className="min-w-0 flex-1 truncate">{String(artifact.filename || "成果物を取得")}</span>{size && <span className="num shrink-0 text-[10px] text-zinc-500">{size}</span>}</a>;
+  }
   if ((output.type === "image" || output.type === "file") && typeof value === "string" && /^https?:|^data:|^\//.test(value)) {
     if (output.type === "image") return <img src={value} alt={output.title || "出力画像"} className="mt-2 max-h-80 max-w-full rounded-xl object-contain" />;
     return <a href={value} className="mt-2 inline-flex min-h-11 items-center text-xs font-medium text-accent-600 underline">{output.filename || value}</a>;

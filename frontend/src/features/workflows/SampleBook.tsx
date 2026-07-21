@@ -22,9 +22,47 @@ interface Sample {
   node_count: number;
   node_types: string[];
   definition: { nodes: { id: string; type: string; name: string }[]; edges: unknown[] };
+  guide: {
+    goal: string;
+    difficulty: "beginner" | "intermediate" | "advanced";
+    estimated_minutes: number;
+    required_capabilities: string[];
+    side_effects: string[];
+    required_resources: { secrets: string[]; models: string[]; apps: string[] };
+    typed_input: Record<string, unknown>;
+    typed_output: Record<string, unknown>;
+    sample_input: Record<string, unknown>;
+    expected_assertions: Array<Record<string, unknown>>;
+    mock_data: Record<string, unknown>;
+    node_walkthrough: Array<{ order: number; node_id: string; type: string; purpose: string }>;
+    failure_injection: string[];
+    recovery_retry: string;
+    install_preview: { node_count: number; edge_count: number; side_effects: string[]; required_capabilities: string[]; requires_model: boolean; requires_secret: boolean; requires_app: boolean; intentional_failure: boolean };
+  };
 }
 
-const SAMPLE_CATEGORIES = ["すべて", "入門", "AI・RAG", "情報収集", "運用自動化"];
+interface NodeDocumentation {
+  purpose: string;
+  when_to_use: string[];
+  when_not_to_use: string[];
+  configuration: Array<{ key: string; type: string; required: boolean; default?: unknown; recommended?: unknown; description: string }>;
+  typed_inputs: Record<string, string>;
+  typed_outputs: Record<string, string>;
+  variable_examples: string[];
+  side_effect: { level: string; label: string; requires_review: boolean };
+  permissions: string[];
+  secrets: { accepted_keys: string[]; policy: string };
+  retry_timeout_error_route: { retry_supported: boolean; cancel_supported: boolean; guidance: string };
+  representative_errors: string[];
+  performance_cost: string;
+  recipes: Array<{ title: string; steps: string }>;
+  migration_note: string;
+}
+
+interface NodeReferenceMetadata {
+  type: string;
+  documentation: NodeDocumentation;
+}
 
 export default function SampleBook({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"samples" | "nodes">("samples");
@@ -128,11 +166,12 @@ function SamplesTab({ onClose }: { onClose: () => void }) {
   });
 
   const filtered = (samples ?? []).filter((s) => category === "すべて" || s.category === category);
+  const sampleCategories = ["すべて", ...Array.from(new Set((samples ?? []).map((sample) => sample.category)))];
 
   const list = (
     <div className="flex h-full flex-col">
       <div className="flex gap-1.5 overflow-x-auto px-4 py-3 sm:px-5">
-        {SAMPLE_CATEGORIES.map((c) => (
+        {sampleCategories.map((c) => (
           <button
             key={c}
             onClick={() => setCategory(c)}
@@ -203,6 +242,18 @@ function SamplesTab({ onClose }: { onClose: () => void }) {
         </div>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{selected.desc}</p>
 
+        <div aria-label="インストール前プレビュー" className="mt-4 grid grid-cols-3 gap-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/60">
+          <div><p className="text-[10px] text-zinc-400">難易度</p><p className="mt-0.5 text-xs font-semibold">{selected.guide.difficulty}</p></div>
+          <div><p className="text-[10px] text-zinc-400">目安</p><p className="num mt-0.5 text-xs font-semibold">{selected.guide.estimated_minutes}分</p></div>
+          <div><p className="text-[10px] text-zinc-400">構成</p><p className="num mt-0.5 text-xs font-semibold">{selected.guide.install_preview.node_count} nodes</p></div>
+          <div className="col-span-3 flex flex-wrap gap-1 pt-1">
+            {selected.guide.install_preview.intentional_failure && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">初回失敗を診断する教材</span>}
+            {selected.guide.install_preview.requires_model && <span className="rounded-full bg-violet-100 px-2 py-1 text-[10px] text-violet-800 dark:bg-violet-950/50 dark:text-violet-300">Model必要</span>}
+            {selected.guide.install_preview.requires_secret && <span className="rounded-full bg-zinc-200 px-2 py-1 text-[10px] text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">Secret確認</span>}
+            {selected.guide.side_effects.map((effect) => <span key={effect} className="rounded-full bg-zinc-200 px-2 py-1 text-[10px] text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">{effect}</span>)}
+          </div>
+        </div>
+
         {/* ノード構成（フロー順） */}
         <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">ノード構成（{selected.node_count} 個）</p>
         <div className="flex flex-wrap items-center gap-1">
@@ -227,6 +278,20 @@ function SamplesTab({ onClose }: { onClose: () => void }) {
         <div className="whitespace-pre-wrap rounded-xl bg-zinc-50 p-3.5 text-[13px] leading-relaxed text-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-300">
           {selected.usage}
         </div>
+        <details className="mt-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <summary className="cursor-pointer text-xs font-semibold">型・入力例・期待結果</summary>
+          <div className="mt-3 space-y-3 text-xs">
+            <DocJson label="Typed input" value={selected.guide.typed_input} />
+            <DocJson label="Sample input" value={selected.guide.sample_input} />
+            <DocJson label="Typed output" value={selected.guide.typed_output} />
+            <DocJson label="Expected assertions" value={selected.guide.expected_assertions} />
+          </div>
+        </details>
+        <details className="mt-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <summary className="cursor-pointer text-xs font-semibold">Failure injection／Recovery</summary>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-zinc-600 dark:text-zinc-300">{selected.guide.failure_injection.map((item) => <li key={item}>{item}</li>)}</ul>
+          <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{selected.guide.recovery_retry}</p>
+        </details>
       </div>
       {can("workflows.edit") && (
         <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800 sm:px-6">
@@ -267,6 +332,11 @@ function SamplesTab({ onClose }: { onClose: () => void }) {
 
 function NodeReferenceTab() {
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const { data: backendMetadata } = useQuery({
+    queryKey: ["workflow-node-catalog"],
+    queryFn: () => api<NodeReferenceMetadata[]>("/workflows/node-catalog"),
+    staleTime: 10 * 60 * 1000,
+  });
 
   const grouped = useMemo(() => {
     const g = new Map<string, [string, (typeof NODE_TYPES)[string]][]>();
@@ -283,6 +353,7 @@ function NodeReferenceTab() {
   }, []);
 
   const def = selectedType ? NODE_TYPES[selectedType] : null;
+  const documentation = backendMetadata?.find((item) => item.type === selectedType)?.documentation;
 
   const list = (
     <div className="h-full overflow-y-auto px-4 py-3 sm:px-5">
@@ -342,25 +413,34 @@ function NodeReferenceTab() {
       </div>
       {def.desc && <p className="mt-2.5 text-sm text-zinc-600 dark:text-zinc-300">{def.desc}</p>}
 
-      {NODE_DOCS[selectedType] && (
+      {(documentation?.purpose || NODE_DOCS[selectedType]) && (
         <div className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-3.5 text-[13px] leading-relaxed text-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-300">
-          {NODE_DOCS[selectedType]}
+          {documentation?.purpose || NODE_DOCS[selectedType]}
         </div>
       )}
 
-      {def.fields.length > 0 && (
+      {documentation && <>
+        <ReferenceList title="使う場面" values={documentation.when_to_use} />
+        <ReferenceList title="使わない場面" values={documentation.when_not_to_use} />
+        <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/60"><p className="text-zinc-400">副作用</p><p className="mt-1 font-semibold">{documentation.side_effect.label}</p></div>
+          <div className="rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/60"><p className="text-zinc-400">権限／Capability</p><p className="mt-1 break-words font-mono text-[10px]">{documentation.permissions.join(", ")}</p></div>
+        </div>
+      </>}
+
+      {(documentation?.configuration.length || def.fields.length > 0) && (
         <>
           <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">設定項目</p>
           <ul className="space-y-1 text-[13px]">
-            {def.fields.map((f) => (
-              <li key={f.key} className="flex gap-2">
+            {(documentation?.configuration ?? def.fields.map((field) => ({ key: field.key, type: field.type, required: false, description: field.hint || field.label }))).map((f) => (
+              <li key={f.key} className="rounded-lg border border-zinc-100 p-2 dark:border-zinc-800">
+                <div className="flex gap-2">
                 <code className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
                   {f.key}
                 </code>
-                <span className="text-zinc-600 dark:text-zinc-300">
-                  {f.label}
-                  {f.hint && <span className="text-zinc-400">（{f.hint}）</span>}
-                </span>
+                <span className="font-mono text-[10px] text-zinc-400">{f.type}{f.required ? " · required" : ""}</span>
+                </div>
+                <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{f.description}</p>
               </li>
             ))}
           </ul>
@@ -382,6 +462,21 @@ function NodeReferenceTab() {
           </ul>
         </>
       )}
+
+      {documentation && <>
+        <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">変数例</p>
+        <div className="flex flex-wrap gap-1">{documentation.variable_examples.map((item) => <code key={item} className="rounded bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{item}</code>)}</div>
+        <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">Secret</p>
+        <p className="rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">{documentation.secrets.policy}</p>
+        <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">Retry／Timeout／Error route</p>
+        <p className="text-xs text-zinc-600 dark:text-zinc-300">{documentation.retry_timeout_error_route.guidance}</p>
+        <ReferenceList title="代表Error" values={documentation.representative_errors} mono />
+        <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">性能／Cost</p>
+        <p className="text-xs text-zinc-600 dark:text-zinc-300">{documentation.performance_cost}</p>
+        <p className="mt-4 mb-1.5 text-xs font-semibold text-zinc-500">Recipes</p>
+        <div className="space-y-2">{documentation.recipes.map((recipe) => <div key={recipe.title} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"><p className="text-xs font-semibold">{recipe.title}</p><p className="mt-1 text-xs text-zinc-500">{recipe.steps}</p></div>)}</div>
+        <p className="mt-4 rounded-xl bg-zinc-50 p-3 text-[11px] text-zinc-500 dark:bg-zinc-800/60">Migration: {documentation.migration_note}</p>
+      </>}
 
       {(def.branches || def.loop) && (
         <p className="mt-4 rounded-xl bg-amber-50 p-3 text-[13px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
@@ -409,4 +504,12 @@ function NodeReferenceTab() {
       </div>
     </div>
   );
+}
+
+function DocJson({ label, value }: { label: string; value: unknown }) {
+  return <div><p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">{label}</p><pre className="max-h-40 overflow-auto rounded-lg bg-zinc-950 p-2 text-[10px] text-zinc-100">{JSON.stringify(value, null, 2)}</pre></div>;
+}
+
+function ReferenceList({ title, values, mono = false }: { title: string; values: string[]; mono?: boolean }) {
+  return <div className="mt-4"><p className="mb-1.5 text-xs font-semibold text-zinc-500">{title}</p><ul className={`list-disc space-y-1 pl-5 text-xs text-zinc-600 dark:text-zinc-300 ${mono ? "font-mono text-[11px]" : ""}`}>{values.map((value) => <li key={value}>{value}</li>)}</ul></div>;
 }

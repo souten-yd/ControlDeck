@@ -147,6 +147,7 @@ def test_runner_exposes_and_resolves_typed_approval(admin_client):
     assert pending == [{
         "approval_id": "gate", "message": "公開処理を続けますか？", "approver": "admin",
         "expires_at": pending[0]["expires_at"],
+        "form_schema": {},
     }]
     assert pending[0]["expires_at"]
 

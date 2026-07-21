@@ -9,7 +9,7 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
   page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.setViewportSize({ width: 320, height: 700 });
-  await page.goto("/runner");
+  await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
   await page.getByRole("button", { name: "ログイン" }).click();
@@ -18,8 +18,8 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
 
   await page.goto("/");
   await page.getByRole("button", { name: "More" }).click();
-  await page.getByRole("button", { name: "Play", exact: true }).click();
-  await expect(page).toHaveURL(/\/runner$/);
+  await page.getByRole("button", { name: "Workflows", exact: true }).click();
+  await expect(page).toHaveURL(/\/workflows$/);
 
   const workflowId = await page.evaluate(async () => {
     const headers = { "Content-Type": "application/json", "X-Requested-With": "ControlDeck" };
@@ -51,7 +51,7 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
 
   try {
     await page.goto("/workflows");
-    await page.getByRole("button", { name: "E2E 公開ランナー の公開版を開く" }).click();
+    await page.getByRole("button", { name: "E2E 公開ランナー Open App" }).click();
     await expect(page).toHaveURL(new RegExp(`/runner\\?workflow=${workflowId}$`));
     await expect(page.getByRole("heading", { name: "E2E 公開ランナー" })).toBeVisible();
     await page.reload();
@@ -97,7 +97,7 @@ test("approves a published workflow from the mobile public app", async ({ page }
   page.on("console", (message) => message.type() === "error" && runtimeErrors.push(message.text()));
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.setViewportSize({ width: 320, height: 700 });
-  await page.goto("/runner");
+  await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
   await page.getByRole("button", { name: "ログイン" }).click();

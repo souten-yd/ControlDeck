@@ -1,6 +1,6 @@
 /** React Flow ベースのワークフローエディター（遅延ロードチャンク）。
  * モダンなグラフィック: アイコン付きノード、カテゴリ色、グラデーションエッジ、ドットグリッド。 */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -21,12 +21,14 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  type NodeChange,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api } from "../../api/client";
+import { api, ApiError } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, DropdownMenu } from "../../components/ui";
-import { IconDots, IconPlay, IconPlus, IconTrash, IconX } from "../../components/icons";
+import { IconDots, IconPlay, IconPlus, IconTest, IconTrash, IconX } from "../../components/icons";
 import {
   CATEGORY_ORDER,
   JSON_SCHEMA_PRESETS,
@@ -46,6 +48,9 @@ import { PreviewWorkspace } from "./PreviewWorkspace";
 import { ExecutionNodeRuns, type ExecutionNodeRun } from "./ExecutionNodeRuns";
 import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
+import { WorkflowOutline } from "./WorkflowOutline";
+import { ProjectIntelligencePanel } from "./ProjectIntelligencePanel";
+import { collapseGraph, groupPosition, type WorkflowGroup } from "./largeFlow";
 
 interface DefNode {
   id: string;
@@ -55,8 +60,28 @@ interface DefNode {
   position?: { x: number; y: number };
   rotation?: number; // 0/90/180/270
   mirror?: boolean;
+  node_version?: number;
+  disabled?: boolean;
+  group_id?: string | null;
+  [key: string]: unknown;
 }
-interface DefEdge { id?: string; source: string; target: string; branch?: string | null }
+interface DefEdge {
+  id?: string;
+  source: string;
+  target: string;
+  branch?: string | null;
+  source_handle?: string | null;
+  target_handle?: string | null;
+  data_type?: string | null;
+  route?: string | null;
+  [key: string]: unknown;
+}
+interface WorkflowDefinition {
+  nodes: DefNode[];
+  edges: DefEdge[];
+  groups?: WorkflowGroup[];
+  [key: string]: unknown;
+}
 interface WorkflowDetail {
   id: number;
   name: string;
@@ -64,7 +89,8 @@ interface WorkflowDetail {
   state: "draft" | "published";
   published_version: number | null;
   published_version_id: number | null;
-  definition: { nodes: DefNode[]; edges: DefEdge[] };
+  updated_at: string;
+  definition: WorkflowDefinition;
 }
 type FlowNodeData = { def: DefNode; running?: string; pinned?: boolean };
 interface PinnedData {
@@ -96,7 +122,7 @@ interface NodeMetadata {
   supports: { retry: boolean; cancel: boolean; progress: boolean; dry_run: boolean };
 }
 // ---- カスタムノード（アイコン + カテゴリ色 + 状態） ----
-function FlowNode({ data, selected }: NodeProps) {
+const FlowNode = memo(function FlowNode({ data, selected }: NodeProps) {
   const d = data as FlowNodeData;
   const def = d.def;
   const meta = NODE_TYPES[def.type];
@@ -113,9 +139,10 @@ function FlowNode({ data, selected }: NodeProps) {
   return (
     <div
       style={transform ? { transform } : undefined}
+      aria-label={`${def.name || meta?.label || def.type}${def.disabled ? "（無効）" : ""}`}
       className={`group relative min-w-40 rounded-xl border bg-white shadow-sm transition-shadow hover:shadow-md dark:bg-zinc-900 ${
         selected ? "border-transparent ring-2 ring-accent-500" : "border-zinc-200 dark:border-zinc-700"
-      } ${statusRing}`}
+      } ${statusRing} ${def.disabled ? "opacity-55 grayscale" : ""}`}
     >
       {def.type !== "trigger" && (
         <Handle type="target" position={Position.Left} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
@@ -139,9 +166,9 @@ function FlowNode({ data, selected }: NodeProps) {
         </div>
       </div>
       {/* 承認ゲート/リトライのバッジ */}
-      {(def.type === "human.approval" || def.config?.require_approval || Number(def.config?.retry_count) > 0) && (
+      {(def.type === "human.approval" || def.type === "human.form" || def.config?.require_approval || Number(def.config?.retry_count) > 0) && (
         <span className="pointer-events-none absolute left-1 top-1.5 text-[9px]">
-          {def.type === "human.approval" || def.config?.require_approval ? "✋" : ""}{Number(def.config?.retry_count) > 0 ? "↻" : ""}
+          {def.type === "human.form" ? "▤" : (def.type === "human.approval" || def.config?.require_approval ? "✋" : "")}{Number(def.config?.retry_count) > 0 ? "↻" : ""}
         </span>
       )}
       {d.pinned && (
@@ -149,6 +176,7 @@ function FlowNode({ data, selected }: NodeProps) {
           📌 固定
         </span>
       )}
+      {def.disabled && <span className="pointer-events-none absolute right-2 top-2 rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">無効</span>}
       {/* エラー分岐ハンドル（on_error=branch のとき） */}
       {def.config?.on_error === "branch" && def.type !== "trigger" && (
         <>
@@ -158,7 +186,21 @@ function FlowNode({ data, selected }: NodeProps) {
           <span className="pointer-events-none absolute bottom-0.5 left-[65%] -translate-x-1/2 text-[8px] font-medium text-amber-500">時間切れ</span>
         </>
       )}
-      {meta?.branches ? (
+      {meta?.tryBranches ? (
+        <>
+          <Handle id="success" type="source" position={Position.Right} style={{ top: "45%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-emerald-500 dark:!border-zinc-900" />
+          <Handle id="error" type="source" position={Position.Right} style={{ top: "75%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-red-500 dark:!border-zinc-900" />
+          <span className="pointer-events-none absolute right-1 top-[38%] text-[8px] font-medium text-emerald-500">成功</span>
+          <span className="pointer-events-none absolute right-1 top-[68%] text-[8px] font-medium text-red-500">エラー</span>
+        </>
+      ) : meta?.circuitBranches ? (
+        <>
+          <Handle id="allowed" type="source" position={Position.Right} style={{ top: "45%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-emerald-500 dark:!border-zinc-900" />
+          <Handle id="blocked" type="source" position={Position.Right} style={{ top: "75%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-amber-500 dark:!border-zinc-900" />
+          <span className="pointer-events-none absolute right-1 top-[38%] text-[8px] font-medium text-emerald-500">許可</span>
+          <span className="pointer-events-none absolute right-1 top-[68%] text-[8px] font-medium text-amber-500">遮断</span>
+        </>
+      ) : meta?.branches ? (
         <>
           <Handle id="true" type="source" position={Position.Right} style={{ top: "45%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-emerald-500 dark:!border-zinc-900" />
           <Handle id="false" type="source" position={Position.Right} style={{ top: "75%" }} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-red-400 dark:!border-zinc-900" />
@@ -171,22 +213,33 @@ function FlowNode({ data, selected }: NodeProps) {
           <Handle id="done" type="source" position={Position.Bottom} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
           <span className="pointer-events-none absolute right-1 top-[38%] text-[8px] font-medium text-amber-500">反復</span>
         </>
-      ) : (
+      ) : def.type !== "flow.return" ? (
         <Handle type="source" position={Position.Right} className="workflow-node-handle !h-3 !w-3 !border-2 !border-white !bg-zinc-400 dark:!border-zinc-900" />
-      )}
+      ) : null}
     </div>
   );
-}
+});
 
-const nodeTypes = { cdNode: FlowNode };
+const FlowGroupNode = memo(function FlowGroupNode({ data, selected }: NodeProps) {
+  const group = (data as { group: WorkflowGroup }).group;
+  return <div aria-label={`${group.name}（折りたたみ、${group.node_ids.length}ノード）`} className={`relative min-w-44 rounded-2xl border-2 border-dashed bg-white/95 px-4 py-3 shadow-md dark:bg-zinc-900/95 ${selected ? "border-accent-500 ring-2 ring-accent-300" : "border-accent-300 dark:border-accent-700"}`}>
+    <Handle type="target" position={Position.Left} className="workflow-node-handle !h-3 !w-3 !bg-accent-400" />
+    <p className="truncate text-xs font-semibold">▸ {group.name}</p>
+    <p className="mt-1 text-[10px] text-zinc-400">{group.node_ids.length}ノードを折りたたみ中</p>
+    <Handle type="source" position={Position.Right} className="workflow-node-handle !h-3 !w-3 !bg-accent-500" />
+  </div>;
+});
+
+const nodeTypes = { cdNode: FlowNode, cdGroup: FlowGroupNode };
 
 function edgeStyle(branch?: string | null): React.CSSProperties {
   if (branch === "error") return { strokeWidth: 2, stroke: "#ef4444", strokeDasharray: "6 4" };
   if (branch === "timeout") return { strokeWidth: 2, stroke: "#f59e0b", strokeDasharray: "3 4" };
+  if (branch === "blocked") return { strokeWidth: 2, stroke: "#f59e0b", strokeDasharray: "6 4" };
   return { strokeWidth: 2 };
 }
 
-function toFlow(def: WorkflowDetail["definition"]): { nodes: Node[]; edges: Edge[] } {
+function toFlow(def: WorkflowDefinition): { nodes: Node[]; edges: Edge[]; groups: WorkflowGroup[] } {
   return {
     nodes: (def.nodes ?? []).map((n, i) => ({
       id: n.id,
@@ -198,11 +251,14 @@ function toFlow(def: WorkflowDetail["definition"]): { nodes: Node[]; edges: Edge
       id: e.id ?? `e${i}`,
       source: e.source,
       target: e.target,
-      sourceHandle: e.branch ?? undefined,
+      sourceHandle: e.source_handle ?? e.branch ?? undefined,
+      targetHandle: e.target_handle ?? undefined,
       animated: true,
       markerEnd: { type: MarkerType.ArrowClosed },
-      style: edgeStyle(e.branch),
+      style: edgeStyle(e.source_handle ?? e.branch),
+      data: { definition: e },
     })),
+    groups: Array.isArray(def.groups) ? def.groups.filter((group): group is WorkflowGroup => Boolean(group && typeof group.id === "string" && Array.isArray(group.node_ids))) : [],
   };
 }
 
@@ -213,19 +269,36 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const qc = useQueryClient();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [groups, setGroups] = useState<WorkflowGroup[]>([]);
   const [name, setName] = useState("");
   const [dirty, setDirty] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [palettePosition, setPalettePosition] = useState<{ x: number; y: number } | undefined>();
   const [executionsOpen, setExecutionsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewInitialMode, setPreviewInitialMode] = useState<"safe" | "test">("safe");
   const [infoOpen, setInfoOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [intelligenceOpen, setIntelligenceOpen] = useState(false);
+  const [conflict, setConflict] = useState<{ updatedAt?: string } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const flowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
+  const definitionExtrasRef = useRef<Record<string, unknown>>({});
+  const revisionRef = useRef<string | null>(null);
+  const initializedRef = useRef(false);
+  const definitionStateRef = useRef("");
+  const historyRef = useRef<Array<{ name: string; definition: WorkflowDefinition }>>([]);
+  const historyIndexRef = useRef(-1);
+  const historyRestoreRef = useRef(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const readOnly = !can("workflows.edit");
+  const navigationOnly = nodes.length > 300;
+  const editorReadOnly = readOnly || navigationOnly;
 
   const { data: wf } = useQuery({
     queryKey: ["workflow", workflowId],
@@ -248,7 +321,16 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     const flow = toFlow(wf.definition);
     setNodes(flow.nodes);
     setEdges(flow.edges);
+    setGroups(flow.groups);
     setName(wf.name);
+    revisionRef.current = wf.updated_at;
+    definitionExtrasRef.current = Object.fromEntries(Object.entries(wf.definition).filter(([key]) => !["nodes", "edges", "groups"].includes(key)));
+    const initial = { name: wf.name, definition: structuredClone(wf.definition) };
+    historyRef.current = [initial];
+    historyIndexRef.current = 0;
+    initializedRef.current = true;
+    setHistoryVersion((value) => value + 1);
+    setConflict(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wf]);
 
@@ -263,10 +345,25 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
 
   const markDirty = useCallback(() => setDirty(true), []);
 
+  const connectionDataType = useCallback((conn: Connection): string | null => {
+    const source = nodes.find((node) => node.id === conn.source);
+    if (!source) return null;
+    const sourceDef = (source.data as FlowNodeData).def;
+    const metadata = nodeCatalog?.find((item) => item.type === sourceDef.type);
+    const key = conn.sourceHandle && metadata?.output_schema[conn.sourceHandle]
+      ? conn.sourceHandle
+      : metadata?.ui_hints.primary_output ?? Object.keys(metadata?.output_schema ?? {})[0];
+    return key ? metadata?.output_schema[key] ?? null : null;
+  }, [nodeCatalog, nodes]);
+
   const onConnect = useCallback(
     (conn: Connection) => {
+      const dataType = connectionDataType(conn);
       setEdges((eds) =>
-        addEdge({ ...conn, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: edgeStyle(conn.sourceHandle) }, eds),
+        addEdge({
+          ...conn, animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: edgeStyle(conn.sourceHandle),
+          data: { definition: { source: conn.source!, target: conn.target!, source_handle: conn.sourceHandle, target_handle: conn.targetHandle, data_type: dataType } },
+        }, eds),
       );
       if (conn.source && conn.target) {
         setNodes((current) => {
@@ -295,7 +392,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       }
       markDirty();
     },
-    [setEdges, setNodes, markDirty, nodeCatalog],
+    [setEdges, setNodes, markDirty, nodeCatalog, connectionDataType],
   );
 
   const onReconnect = useCallback(
@@ -307,32 +404,114 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     [markDirty, setEdges],
   );
 
-  const buildDefinition = useCallback(() => {
+  const buildDefinition = useCallback((): WorkflowDefinition => {
     return {
+      ...definitionExtrasRef.current,
       nodes: nodes.map((n) => ({
         ...(n.data as FlowNodeData).def,
         id: n.id,
         position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
       })),
-      edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target, branch: e.sourceHandle ?? null })),
+      edges: edges.map((e) => ({
+        ...(((e.data as { definition?: DefEdge } | undefined)?.definition) ?? {}),
+        id: e.id, source: e.source, target: e.target,
+        branch: e.sourceHandle ?? null,
+        source_handle: e.sourceHandle ?? null,
+        target_handle: e.targetHandle ?? null,
+      })),
+      groups,
     };
-  }, [nodes, edges]);
+  }, [nodes, edges, groups]);
 
-  const save = async () => {
+  const currentSnapshot = useCallback(() => ({ name, definition: buildDefinition() }), [name, buildDefinition]);
+
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    const snapshot = currentSnapshot();
+    const serialized = JSON.stringify(snapshot);
+    definitionStateRef.current = serialized;
+    if (historyRestoreRef.current) {
+      historyRestoreRef.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const current = historyRef.current[historyIndexRef.current];
+      if (current && JSON.stringify(current) === serialized) return;
+      historyRef.current = [...historyRef.current.slice(0, historyIndexRef.current + 1), structuredClone(snapshot)].slice(-50);
+      historyIndexRef.current = historyRef.current.length - 1;
+      setHistoryVersion((value) => value + 1);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [currentSnapshot, nodes, edges, groups, name]);
+
+  const restoreSnapshot = useCallback((snapshot: { name: string; definition: WorkflowDefinition }) => {
+    const flow = toFlow(snapshot.definition);
+    historyRestoreRef.current = true;
+    setName(snapshot.name);
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+    setGroups(flow.groups);
+    setSelected(null);
+    setSelectedEdge(null);
+    setDirty(true);
+  }, [setEdges, setNodes]);
+
+  const undo = useCallback(() => {
+    const current = currentSnapshot();
+    const committed = historyRef.current[historyIndexRef.current];
+    if (committed && JSON.stringify(current) !== JSON.stringify(committed)) {
+      historyRef.current = [...historyRef.current.slice(0, historyIndexRef.current + 1), structuredClone(current)].slice(-50);
+      restoreSnapshot(committed);
+      setHistoryVersion((value) => value + 1);
+      return;
+    }
+    if (historyIndexRef.current <= 0) return;
+    historyIndexRef.current -= 1;
+    restoreSnapshot(historyRef.current[historyIndexRef.current]);
+    setHistoryVersion((value) => value + 1);
+  }, [currentSnapshot, restoreSnapshot]);
+
+  const redo = useCallback(() => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    historyIndexRef.current += 1;
+    restoreSnapshot(historyRef.current[historyIndexRef.current]);
+    setHistoryVersion((value) => value + 1);
+  }, [restoreSnapshot]);
+
+  const save = async (silent = false) => {
+    if (conflict) return false;
     setSaving(true);
+    const requestState = JSON.stringify({ name, definition: buildDefinition() });
     try {
-      await api(`/workflows/${workflowId}`, { method: "PATCH", json: { name, definition: buildDefinition() } });
-      setDirty(false);
-      show("保存しました");
+      const result = await api<WorkflowDetail>(`/workflows/${workflowId}`, {
+        method: "PATCH", json: { name, definition: buildDefinition(), expected_updated_at: revisionRef.current },
+      });
+      revisionRef.current = result.updated_at;
+      if (definitionStateRef.current === requestState) setDirty(false);
+      setConflict(null);
+      if (!silent) show("保存しました");
       qc.invalidateQueries({ queryKey: ["workflows"] });
       return true;
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && (e.detail as { code?: string } | null)?.code === "WORKFLOW_CONFLICT") {
+        setConflict({ updatedAt: (e.detail as { updated_at?: string }).updated_at });
+        show("別の画面で更新されています。内容を確認して再読み込みしてください", "error");
+        return false;
+      }
       show(e instanceof Error ? e.message : "保存に失敗しました", "error");
       return false;
     } finally {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!dirty || readOnly || saving || publishing || conflict) return;
+    const timer = window.setTimeout(() => { void save(true); }, 1200);
+    return () => window.clearTimeout(timer);
+    // saveは現在のeditor stateを読むため、状態依存値を明示してdebounceする。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, readOnly, saving, publishing, conflict, nodes, edges, groups, name]);
 
   const publish = async () => {
     if (dirty && !await save()) return;
@@ -353,20 +532,14 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     }
   };
 
-  const openPublishedApp = async () => {
-    if (readOnly) {
-      navigate(`/runner?workflow=${workflowId}`);
-      return;
-    }
-    if (wf?.state !== "published" || dirty) {
-      const result = await publish();
-      if (!result) return;
-    }
-    navigate(`/runner?workflow=${workflowId}`);
-  };
-
   const [runInputsOpen, setRunInputsOpen] = useState(false);
   const [startingRun, setStartingRun] = useState(false);
+
+  const openPreview = (mode: "safe" | "test") => {
+    setPreviewInitialMode(mode);
+    setPreviewOpen(true);
+    setInfoOpen(false);
+  };
 
   const doRun = async (input?: Record<string, unknown>) => {
     setStartingRun(true);
@@ -424,6 +597,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       { id, type: "cdNode", position: at ?? { x: 140 + ns.length * 30, y: 100 + ns.length * 40 }, data: { def } },
     ]);
     setPaletteOpen(false);
+    setPalettePosition(undefined);
     setSelected(id);
     markDirty();
   };
@@ -512,6 +686,130 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
 
   const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
 
+  const createGroup = useCallback(() => {
+    const ids = selectedNodes.map((node) => node.id);
+    if (ids.length < 2) return show("2つ以上のノードを選択してください", "error");
+    const id = `group-${crypto.randomUUID()}`;
+    const group: WorkflowGroup = { id, name: `グループ ${groups.length + 1}`, node_ids: ids, collapsed: false };
+    setGroups((current) => [...current.map((item) => ({ ...item, node_ids: item.node_ids.filter((nodeId) => !ids.includes(nodeId)) })).filter((item) => item.node_ids.length > 0), group]);
+    setNodes((current) => current.map((node) => ids.includes(node.id) ? {
+      ...node, data: { ...(node.data as FlowNodeData), def: { ...(node.data as FlowNodeData).def, group_id: id } },
+    } : node));
+    markDirty();
+    setOutlineOpen(true);
+  }, [groups.length, markDirty, selectedNodes, setNodes, show]);
+
+  const toggleGroup = useCallback((id: string) => {
+    setGroups((current) => current.map((group) => group.id === id ? { ...group, collapsed: !group.collapsed } : group));
+    setSelected(null);
+    markDirty();
+  }, [markDirty]);
+
+  const renameGroup = useCallback((id: string, groupName: string) => {
+    setGroups((current) => current.map((group) => group.id === id ? { ...group, name: groupName.slice(0, 80) } : group));
+    markDirty();
+  }, [markDirty]);
+
+  const ungroup = useCallback((id: string) => {
+    setGroups((current) => current.filter((group) => group.id !== id));
+    setNodes((current) => current.map((node) => {
+      const data = node.data as FlowNodeData;
+      return data.def.group_id === id ? { ...node, data: { ...data, def: { ...data.def, group_id: null } } } : node;
+    }));
+    markDirty();
+  }, [markDirty, setNodes]);
+
+  const focusNode = useCallback((id: string) => {
+    const owner = groups.find((group) => group.collapsed && group.node_ids.includes(id));
+    if (owner) setGroups((current) => current.map((group) => group.id === owner.id ? { ...group, collapsed: false } : group));
+    setOutlineOpen(false);
+    setSelected(null);
+    setNodes((current) => current.map((node) => ({ ...node, selected: node.id === id })));
+    window.setTimeout(() => {
+      const instance = flowRef.current;
+      const node = instance?.getNode(id);
+      if (instance && node) void instance.fitView({ nodes: [node], duration: 250, padding: 1.8, maxZoom: 1.25 });
+    }, owner ? 60 : 0);
+  }, [groups, setNodes]);
+
+  const fitSelection = useCallback(() => {
+    const instance = flowRef.current;
+    if (!instance) return;
+    const targets = selectedNodes.length ? selectedNodes : nodes;
+    void instance.fitView({ nodes: targets, duration: 250, padding: 0.25, maxZoom: 1.2 });
+  }, [nodes, selectedNodes]);
+
+  const runLayout = useCallback(async () => {
+    const requestId = Date.now();
+    const payload = {
+      requestId,
+      nodes: nodes.map((node) => ({ id: node.id, width: node.measured?.width, height: node.measured?.height })),
+      edges: edges.map((edge) => ({ source: edge.source, target: edge.target })),
+    };
+    try {
+      const positions = await new Promise<Array<{ id: string; x: number; y: number }>>((resolve, reject) => {
+        const worker = new Worker(new URL("./workflowLayout.worker.ts", import.meta.url), { type: "module" });
+        const timer = window.setTimeout(() => { worker.terminate(); reject(new Error("layout timeout")); }, 10_000);
+        worker.onmessage = (event: MessageEvent<{ requestId: number; positions: Array<{ id: string; x: number; y: number }> }>) => {
+          if (event.data.requestId !== requestId) return;
+          window.clearTimeout(timer);
+          worker.terminate();
+          resolve(event.data.positions);
+        };
+        worker.onerror = (event) => { window.clearTimeout(timer); worker.terminate(); reject(event.error ?? new Error(event.message)); };
+        worker.postMessage(payload);
+      });
+      const byId = new Map(positions.map((position) => [position.id, position]));
+      setNodes((current) => current.map((node) => ({ ...node, position: byId.get(node.id) ?? node.position })));
+      markDirty();
+      window.setTimeout(() => fitSelection(), 0);
+      show(`${nodes.length}ノードを自動配置しました`);
+    } catch {
+      show("自動配置に失敗しました", "error");
+    }
+  }, [edges, fitSelection, markDirty, nodes, setNodes, show]);
+
+  const visibleGraph = useMemo(() => collapseGraph(nodes, edges, groups), [edges, groups, nodes]);
+  const canvasEdges = useMemo(() => nodes.length > 100
+    ? visibleGraph.edges.map((edge) => edge.animated ? { ...edge, animated: false } : edge)
+    : visibleGraph.edges, [nodes.length, visibleGraph.edges]);
+
+  const handleNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+    const canonical = changes.filter((change) => !("id" in change) || !change.id.startsWith("__group__"));
+    if (canonical.length) onNodesChange(canonical);
+    for (const change of changes) {
+      if (!("id" in change) || !change.id.startsWith("__group__") || change.type !== "position" || !change.position) continue;
+      const group = groups.find((item) => `__group__${item.id}` === change.id);
+      if (!group) continue;
+      const currentPosition = groupPosition(group, nodes);
+      const dx = change.position.x - currentPosition.x;
+      const dy = change.position.y - currentPosition.y;
+      if (!dx && !dy) continue;
+      setNodes((current) => current.map((node) => group.node_ids.includes(node.id) ? {
+        ...node, position: { x: node.position.x + dx, y: node.position.y + dy },
+      } : node));
+    }
+    if (changes.some((change) => change.type === "position" || change.type === "remove")) markDirty();
+  }, [groups, markDirty, nodes, onNodesChange, setNodes]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      const command = event.ctrlKey || event.metaKey;
+      if (command && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        event.shiftKey ? redo() : undo();
+      } else if (command && event.key.toLowerCase() === "y") {
+        event.preventDefault(); redo();
+      } else if (command && event.key.toLowerCase() === "f") {
+        event.preventDefault(); setOutlineOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [redo, undo]);
+
   // 選択ノードをスニペットとして保存
   const saveAsSnippet = () => {
     const targets = selectedNodes.length > 0 ? selectedNodes : nodes.filter((n) => (n.data as FlowNodeData).def.type !== "trigger");
@@ -551,6 +849,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         const flow = toFlow(def);
         setNodes(flow.nodes);
         setEdges(flow.edges);
+        setGroups(flow.groups);
+        definitionExtrasRef.current = Object.fromEntries(Object.entries(def).filter(([key]) => !["nodes", "edges", "groups"].includes(key)));
         if (data.name) setName(data.name);
         markDirty();
         show("読み込みました");
@@ -565,12 +865,22 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     const node = nodes.find((n) => n.id === selected);
     return node ? (node.data as FlowNodeData).def : null;
   }, [nodes, selected]);
+  const canUndo = historyVersion >= 0 && (historyIndexRef.current > 0 || dirty);
+  const canRedo = historyIndexRef.current < historyRef.current.length - 1;
+
+  const reloadFromServer = async () => {
+    const latest = await api<WorkflowDetail>(`/workflows/${workflowId}`);
+    qc.setQueryData(["workflow", workflowId], latest);
+    setDirty(false);
+    setConflict(null);
+    show("サーバー側の最新版を読み込みました");
+  };
 
   return (
     <div className="flex h-full flex-col">
       {/* ツールバー */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
-        <button onClick={() => navigate("/workflows")} aria-label="一覧へ戻る" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800 sm:gap-2 sm:px-3 sm:py-2">
+        <button onClick={() => navigate("/workflows")} aria-label="一覧へ戻る" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
           <IconX />
         </button>
         <input
@@ -584,76 +894,116 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         <span className={`hidden shrink-0 rounded-full px-2 py-1 text-[9px] font-semibold sm:inline ${wf?.state === "published" && !dirty ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"}`}>
           {wf?.state === "published" && !dirty ? `公開 v${wf.published_version}` : "編集中"}
         </span>
+        <div className="hidden items-center gap-0.5 xl:flex" role="toolbar" aria-label="大規模フロー編集">
+          <button type="button" onClick={undo} disabled={!canUndo} aria-label="元に戻す" title="元に戻す (Ctrl+Z)" className="grid h-11 w-11 place-items-center rounded-lg text-lg hover:bg-zinc-100 disabled:opacity-30 dark:hover:bg-zinc-800">↶</button>
+          <button type="button" onClick={redo} disabled={!canRedo} aria-label="やり直す" title="やり直す (Ctrl+Y)" className="grid h-11 w-11 place-items-center rounded-lg text-lg hover:bg-zinc-100 disabled:opacity-30 dark:hover:bg-zinc-800">↷</button>
+          <button type="button" onClick={() => void runLayout()} aria-label="ノードを自動配置" title="自動配置" className="grid h-11 w-11 place-items-center rounded-lg text-xs font-bold hover:bg-zinc-100 dark:hover:bg-zinc-800">整列</button>
+          <button type="button" onClick={fitSelection} aria-label="選択範囲へ合わせる" title="選択範囲へ合わせる" className="grid h-11 w-11 place-items-center rounded-lg text-xs font-bold hover:bg-zinc-100 dark:hover:bg-zinc-800">Fit</button>
+          <button type="button" onClick={() => setOutlineOpen(true)} aria-label="フロー内を検索" title="検索 (Ctrl+F)" className="grid h-11 w-11 place-items-center rounded-lg text-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">⌕</button>
+        </div>
         <DropdownMenu
           ariaLabel="More"
           trigger={<IconDots />}
           items={[
             { label: "Execution History", onSelect: () => setExecutionsOpen(true) },
-            ...(can("workflows.run") ? [{ label: "Preview & Test", onSelect: () => { setPreviewOpen(true); setInfoOpen(false); } }] : []),
+            ...(can("workflows.run") ? [{ label: "Project Intelligence", onSelect: () => setIntelligenceOpen(true) }] : []),
+            { label: "Find / Outline (Ctrl+F)", onSelect: () => setOutlineOpen(true) },
+            ...(canUndo ? [{ label: "Undo (Ctrl+Z)", onSelect: undo }] : []),
+            ...(canRedo ? [{ label: "Redo (Ctrl+Y)", onSelect: redo }] : []),
+            { label: "Auto Layout", onSelect: () => void runLayout() },
+            { label: "Fit Selection", onSelect: fitSelection },
+            ...(can("workflows.run") ? [{ label: "Preflight Check", onSelect: () => openPreview("safe") }] : []),
             { label: "Export JSON", onSelect: exportJson },
             ...(readOnly ? [] : [
               { label: "Open in App Studio", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
               { label: "Publish Only", onSelect: () => void publish() },
-              ...(can("workflows.run") ? [{ label: "Publish & Debug Run", onSelect: () => void run() }] : []),
               { label: "Import JSON", onSelect: () => fileRef.current?.click() },
               { label: "Save Selection as Snippet", onSelect: saveAsSnippet },
             ]),
           ]}
         />
         {!readOnly && (
-          <button onClick={save} disabled={saving || !dirty} className="hidden rounded-xl bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300 sm:block">
+          <button onClick={() => void save()} disabled={saving || !dirty} className="hidden min-h-11 rounded-xl bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300 sm:block">
             {saving ? "保存中..." : dirty ? "保存" : "保存済み"}
           </button>
         )}
-        {!readOnly && <span className={`shrink-0 text-[9px] sm:hidden ${dirty ? "text-amber-600" : "text-zinc-400"}`}>{saving ? "保存中" : dirty ? "未保存" : "保存済"}</span>}
+        {!readOnly && <span aria-label={saving ? "保存中" : dirty ? "未保存" : "保存済み"} title={saving ? "保存中" : dirty ? "未保存の変更があります" : "保存済み"} className={`h-2.5 w-2.5 shrink-0 rounded-full sm:hidden ${saving ? "animate-pulse bg-accent-500" : dirty ? "bg-amber-500" : "bg-zinc-300 dark:bg-zinc-600"}`} />}
         {can("workflows.run") && (
           <button
-            onClick={() => { setPreviewOpen(true); setInfoOpen(false); }}
-            aria-label="確認・テストを開く"
-            className="hidden min-h-9 rounded-xl border border-accent-300 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30 sm:block"
+            onClick={() => openPreview("test")}
+            disabled={startingRun || publishing || saving}
+            aria-label="Test workflow draft without publishing"
+            title="下書きを実行してテストします。公開版は変更しません"
+            className="flex min-h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-xl border border-accent-300 px-2.5 text-sm font-medium text-accent-700 hover:bg-accent-50 disabled:opacity-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30"
           >
-            確認・テスト
+            <IconTest /> Test
           </button>
         )}
         {can("workflows.run") && (
           <button
-            onClick={() => void openPublishedApp()}
+            onClick={() => void run()}
             disabled={startingRun || publishing || saving}
-            aria-label={wf?.state === "published" && !dirty ? "公開アプリを開く" : "最新の内容を公開してアプリを開く"}
-            className="flex min-h-9 shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-accent-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
+            aria-label="Run workflow in editor; publish the saved draft when needed"
+            title="必要なら保存済み下書きを公開してから実行します"
+            className="flex min-h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-accent-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
           >
-            <IconPlay /> {publishing || saving ? "確認中…" : wf?.state === "published" && !dirty ? "アプリを開く" : "更新して開く"}
+            <IconPlay /> {startingRun || saving ? "Starting…" : "Run"}
           </button>
         )}
       </div>
 
+      {conflict && <div role="alert" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        <span className="min-w-0 flex-1">別の画面で更新されました。自動保存を停止しています。</span>
+        <button type="button" onClick={exportJson} className="min-h-11 rounded-lg px-3 font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/50">手元をJSON保存</button>
+        <button type="button" onClick={() => void reloadFromServer()} className="min-h-11 rounded-lg bg-amber-900 px-3 font-semibold text-white">最新版を再読み込み</button>
+      </div>}
+      {navigationOnly && <div role="status" className="shrink-0 border-b border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">500ノード級の定義を軽快に確認するナビゲーションモードです。検索・移動・Fitは利用できます。編集する範囲はサブフローへ分割してください。</div>}
+
       {/* キャンバス */}
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1" onDoubleClickCapture={(event) => {
+        if (editorReadOnly || !(event.target as HTMLElement).classList.contains("react-flow__pane")) return;
+        event.preventDefault();
+        setPalettePosition(flowRef.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        setPaletteOpen(true);
+      }}>
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={(c) => { onNodesChange(c); if (c.some((ch) => ch.type === "position" || ch.type === "remove")) markDirty(); }}
+          nodes={visibleGraph.nodes}
+          edges={canvasEdges}
+          onInit={(instance) => { flowRef.current = instance; }}
+          onNodesChange={handleNodesChange}
           onEdgesChange={(c) => { onEdgesChange(c); if (c.some((ch) => ch.type === "remove")) markDirty(); }}
           onConnect={onConnect}
           onReconnect={onReconnect}
-          onNodeClick={(_e, n) => { setSelectedEdge(null); setSelected(n.id); }}
+          onNodeClick={(_e, n) => {
+            setSelectedEdge(null);
+            if (n.id.startsWith("__group__")) { setOutlineOpen(true); return; }
+            setSelected(n.id);
+          }}
           onEdgeClick={(_e, edge) => { setSelected(null); setSelectedEdge(edge.id); }}
-          onPaneClick={() => { setSelected(null); setSelectedEdge(null); setCtxMenu(null); }}
+          onPaneClick={(event) => {
+            setSelected(null); setSelectedEdge(null); setCtxMenu(null);
+            if (event.detail >= 2 && !editorReadOnly) {
+              setPalettePosition(flowRef.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+              setPaletteOpen(true);
+            }
+          }}
           onNodeContextMenu={(e, n) => {
             e.preventDefault();
-            if (readOnly) return;
+            if (editorReadOnly) return;
+            if (n.id.startsWith("__group__")) { setOutlineOpen(true); return; }
             setSelected(n.id);
             setCtxMenu({ nodeId: n.id, x: e.clientX, y: e.clientY });
           }}
           onMoveStart={() => setCtxMenu(null)}
           nodeTypes={nodeTypes}
-          nodesDraggable={!readOnly}
-          nodesConnectable={!readOnly}
-          edgesReconnectable={!readOnly}
+          nodesDraggable={!editorReadOnly}
+          nodesConnectable={!editorReadOnly}
+          edgesReconnectable={!editorReadOnly}
           edgesFocusable
           connectionRadius={32}
           reconnectRadius={36}
           fitView
+          onlyRenderVisibleElements={nodes.length > 100}
           minZoom={0.2}
           proOptions={{ hideAttribution: true }}
           defaultEdgeOptions={{ animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 2 } }}
@@ -661,22 +1011,29 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.5} className="!text-zinc-300 dark:!text-zinc-700" />
           <Controls showInteractive={false} className="!bottom-6 !rounded-lg !shadow-md" />
-          <MiniMap
+          {nodes.length <= 200 && <MiniMap
             pannable
             zoomable
             nodeColor={(n) => NODE_TYPES[(n.data as FlowNodeData)?.def?.type]?.color ?? "#888"}
             className="!hidden !rounded-lg md:!block"
             maskColor="rgb(0 0 0 / 0.08)"
-          />
+          />}
         </ReactFlow>
 
-        {!readOnly && (
-          <button onClick={() => setPaletteOpen(true)} aria-label="ノードを追加" className="absolute bottom-6 right-4 z-10 grid place-items-center rounded-2xl bg-accent-600 p-3.5 text-xl text-white shadow-lg hover:bg-accent-700">
+        {!editorReadOnly && (
+          <button onClick={() => { setPalettePosition(undefined); setPaletteOpen(true); }} aria-label="ノードを追加" className="absolute bottom-6 right-4 z-10 grid min-h-11 min-w-11 place-items-center rounded-2xl bg-accent-600 p-3.5 text-xl text-white shadow-lg hover:bg-accent-700">
             <IconPlus />
           </button>
         )}
 
-        {selectedEdge && !readOnly && edges.some((edge) => edge.id === selectedEdge) && (
+        {selectedNodes.length >= 2 && !editorReadOnly && (
+          <div role="toolbar" aria-label="選択ノードの操作" className="absolute bottom-20 left-1/2 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl border border-zinc-200 bg-white/95 p-1.5 pl-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900/95">
+            <span className="text-xs text-zinc-500">{selectedNodes.length}件選択</span>
+            <button type="button" onClick={createGroup} className="min-h-11 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white">グループ化</button>
+          </div>
+        )}
+
+        {selectedEdge && !editorReadOnly && edges.some((edge) => edge.id === selectedEdge) && (
           <div
             role="toolbar"
             aria-label="接続線の操作"
@@ -695,7 +1052,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         )}
 
         {/* 実行デバッグパネル */}
+        <div className="absolute left-4 top-4 z-10">
+          <button onClick={() => setOutlineOpen(true)} aria-label="フロー内を検索・移動" className="min-h-11 rounded-xl bg-white px-3 text-sm font-medium text-zinc-700 shadow-md dark:bg-zinc-800 dark:text-zinc-200">検索</button>
+        </div>
         <div className="absolute right-4 top-4 z-10 flex gap-2">
+          {can("workflows.run") && <button onClick={() => setIntelligenceOpen(true)} className="hidden min-h-11 items-center rounded-xl bg-white px-3 text-sm font-medium text-zinc-700 shadow-md dark:bg-zinc-800 dark:text-zinc-200 sm:flex">Intelligence</button>}
           <button
             onClick={() => { setInfoOpen((v) => !v); if (!infoOpen) setPreviewOpen(false); }}
             aria-label="実行情報"
@@ -733,6 +1094,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
             definition={buildDefinition()}
             inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
             dirty={dirty}
+            initialMode={previewInitialMode}
             onSave={save}
             onExecution={() => { setInfoOpen(false); }}
             onClose={() => setPreviewOpen(false)}
@@ -753,7 +1115,21 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         )}
       </div>
 
-      {paletteOpen && <NodePalette onAdd={addNode} onSnippet={insertSnippet} onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && <NodePalette onAdd={(type) => addNode(type, palettePosition)} onSnippet={insertSnippet} onClose={() => { setPaletteOpen(false); setPalettePosition(undefined); }} />}
+
+      {outlineOpen && <WorkflowOutline
+        nodes={nodes.map((node) => {
+          const def = (node.data as FlowNodeData).def;
+          return { id: node.id, name: def.name || NODE_TYPES[def.type]?.label || node.id, type: def.type, disabled: def.disabled };
+        })}
+        groups={groups}
+        readOnly={editorReadOnly}
+        onFocus={focusNode}
+        onToggleGroup={toggleGroup}
+        onRenameGroup={renameGroup}
+        onUngroup={ungroup}
+        onClose={() => setOutlineOpen(false)}
+      />}
 
       {selectedDef && (
         <NodeConfigSheet
@@ -761,7 +1137,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           def={selectedDef}
           allDefs={nodes.map((n) => (n.data as FlowNodeData).def)}
           edgeList={edges.map((e) => ({ source: e.source, target: e.target }))}
-          readOnly={readOnly}
+          readOnly={editorReadOnly}
           onChange={(patch) => updateNodeDef(selectedDef.id, patch)}
           dirty={dirty}
           onSave={async () => { await save(); }}
@@ -782,6 +1158,14 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
       )}
 
       {executionsOpen && <ExecutionsSheet workflowId={workflowId} onClose={() => setExecutionsOpen(false)} />}
+      {intelligenceOpen && <ProjectIntelligencePanel
+        workflowId={workflowId}
+        dirty={dirty}
+        getRevision={() => revisionRef.current}
+        onEnsureSaved={async () => dirty ? save() : true}
+        onApplied={reloadFromServer}
+        onClose={() => setIntelligenceOpen(false)}
+      />}
     </div>
   );
 }
@@ -1021,7 +1405,11 @@ function NodeConfigSheet({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [def.type, config.mode]);
-  const visibleFields = (meta?.fields ?? []).filter((f) => !f.showIf || String(config[f.showIf.key] ?? "") === f.showIf.value);
+  const visibleFields = (meta?.fields ?? []).filter((field) => {
+    if (!field.showIf) return true;
+    const conditions = Array.isArray(field.showIf) ? field.showIf : [field.showIf];
+    return conditions.every(({ key, value }) => String(config[key] ?? "") === value);
+  });
   const upstream = useMemo(() => upstreamDefs(def.id, allDefs, edgeList), [def.id, allDefs, edgeList]);
   // 上流で定義された名前付き変数（出力変数名）
   const namedVars = useMemo(
@@ -1085,12 +1473,12 @@ function NodeConfigSheet({
       )}
       {tab === "settings" && <div className="space-y-4">
         {nodeMetadata && !readOnly && (
-          <div className="flex items-start justify-between gap-3 rounded-xl border border-accent-200 bg-accent-50/50 p-3 dark:border-accent-800 dark:bg-accent-950/20">
+          <div data-recommended-settings className="flex items-start justify-between gap-3 rounded-xl border border-accent-700 bg-accent-600 p-3 text-white shadow-sm dark:border-accent-500 dark:bg-accent-700">
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-accent-800 dark:text-accent-300">迷ったら推奨設定で開始</p>
-              <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">空欄だけを補完します。入力済みの値、URL、Secret、環境固有設定は変更しません。</p>
+              <p className="text-xs font-semibold text-white">迷ったら推奨設定で開始</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-white/90">空欄だけを補完します。入力済みの値、URL、Secret、環境固有設定は変更しません。</p>
             </div>
-            <button type="button" onClick={applyRecommended} className="min-h-11 shrink-0 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white">推奨値を適用</button>
+            <button type="button" onClick={applyRecommended} className="min-h-11 shrink-0 rounded-xl border border-zinc-950 bg-zinc-950 px-3 text-xs font-semibold text-white shadow-sm hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-accent-600">推奨値を適用</button>
           </div>
         )}
         {nodeMetadata && (
@@ -1104,6 +1492,12 @@ function NodeConfigSheet({
         <Field label="表示名">
           <input value={def.name ?? ""} onChange={(e) => onChange({ name: e.target.value })} disabled={readOnly} className="w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         </Field>
+        {def.type !== "trigger" && <Field label="ノードの状態" hint="無効化すると設定と接続を残したまま実行をスキップします">
+          <label className="flex min-h-11 items-center justify-between rounded-xl border border-zinc-300 px-3 dark:border-zinc-700">
+            <span className="text-sm">{def.disabled ? "無効（スキップ）" : "有効"}</span>
+            <input type="checkbox" aria-label="ノードを有効にする" checked={!def.disabled} disabled={readOnly} onChange={(event) => onChange({ disabled: !event.target.checked })} className="h-5 w-5" />
+          </label>
+        </Field>}
         {def.type === "llm.chat" && !readOnly && (
           <LlmEndpointDetect
             onPick={(base, model) => {
@@ -1180,7 +1574,7 @@ function NodeConfigSheet({
       )}
       {tab === "run" && (
         <div className="space-y-3">
-          {def.type !== "trigger" && def.type !== "control.loop" && def.type !== "human.approval" && !readOnly ? (
+          {def.type !== "trigger" && def.type !== "control.loop" && def.type !== "human.approval" && def.type !== "human.form" && !readOnly ? (
             <NodeTestRunner
               workflowId={workflowId}
               nodeId={def.id}
@@ -1663,7 +2057,7 @@ function ConfigInput({
   }
   if (field.type === "workflow") {
     return (
-      <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} disabled={disabled} className={cls}>
+      <select id={inputId} aria-label={field.label} value={String(value ?? "")} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} disabled={disabled} className={cls}>
         <option value="">選択してください</option>
         {workflows?.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
       </select>
@@ -1674,28 +2068,44 @@ function ConfigInput({
   }
   if (field.type === "select") {
     return (
-      <select value={String(value ?? field.options?.[0]?.value ?? "")} onChange={(e) => onChange(e.target.value)} disabled={disabled} className={cls}>
+      <select id={inputId} aria-label={field.label} value={String(value ?? field.options?.[0]?.value ?? "")} onChange={(e) => onChange(e.target.value)} disabled={disabled} className={cls}>
         {field.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     );
   }
   if (field.type === "checkbox") {
-    return <label className="flex min-h-11 items-center justify-between rounded-xl border border-zinc-300 px-3 dark:border-zinc-700"><span className="text-xs text-zinc-500">{value ? "有効" : "無効"}</span><input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-5 w-5" /></label>;
+    return <label className="flex min-h-11 items-center justify-between rounded-xl border border-zinc-300 px-3 dark:border-zinc-700"><span className="text-xs text-zinc-500">{value ? "有効" : "無効"}</span><input id={inputId} aria-label={field.label} type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-5 w-5" /></label>;
   }
   if (field.type === "app") {
     return (
-      <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} disabled={disabled} className={cls}>
+      <select id={inputId} aria-label={field.label} value={String(value ?? "")} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} disabled={disabled} className={cls}>
         <option value="">選択してください</option>
         {apps?.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
       </select>
     );
   }
   if (field.type === "textarea" || field.type === "code") {
+    const structuredCode = field.type === "code" && ["payload", "items", "input_json"].includes(field.key);
+    const displayValue = structuredCode && value !== null && typeof value === "object"
+      ? JSON.stringify(value, null, 2)
+      : String(value ?? "");
     return (
       <textarea
         id={inputId}
-        value={String(value ?? "")}
-        onChange={(e) => onChange(e.target.value)}
+        aria-label={field.label}
+        value={displayValue}
+        onChange={(e) => {
+          if (!structuredCode) {
+            onChange(e.target.value);
+            return;
+          }
+          try {
+            const parsed: unknown = JSON.parse(e.target.value);
+            onChange(parsed !== null && typeof parsed === "object" ? parsed : e.target.value);
+          } catch {
+            onChange(e.target.value);
+          }
+        }}
         disabled={disabled}
         rows={field.type === "code" ? 6 : 3}
         placeholder={field.placeholder}
@@ -1707,6 +2117,7 @@ function ConfigInput({
   return (
     <input
       id={inputId}
+      aria-label={field.label}
       type={field.type === "number" ? "number" : "text"}
       value={String(value ?? "")}
       onChange={(e) => onChange(field.type === "number" ? (e.target.value === "" ? null : Number(e.target.value)) : e.target.value)}
@@ -1749,6 +2160,7 @@ function TriggerInputsEditor({
               <option value="file">ファイル</option>
               <option value="file_list">複数ファイル</option>
               <option value="json">JSON</option>
+              <option value="json_array">JSON配列</option>
               <option value="key_value">Key-value</option>
               <option value="secret_reference">Secret参照</option>
             </select>
@@ -1814,6 +2226,17 @@ function RunInputsSheet({
                   <option key={o} value={o}>{o}</option>
                 ))}
               </select>
+            ) : inp.type === "json" || inp.type === "json_array" || inp.type === "key_value" ? (
+              <textarea
+                aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`}
+                value={typeof values[inp.key] === "string" ? String(values[inp.key]) : JSON.stringify(values[inp.key] ?? (inp.type === "json_array" ? [] : {}), null, 2)}
+                onChange={(e) => {
+                  try { set(inp.key, JSON.parse(e.target.value)); } catch { set(inp.key, e.target.value); }
+                }}
+                rows={5}
+                placeholder={inp.type === "json_array" ? "[]" : "{}"}
+                className={`${cls} font-mono text-xs`}
+              />
             ) : inp.type === "file" ? (
               <div className="flex gap-1.5">
                 <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} placeholder="/path/to/file" className={`${cls} min-w-0 flex-1 font-mono text-xs`} />

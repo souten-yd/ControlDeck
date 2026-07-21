@@ -4,7 +4,6 @@ import { useNavigate } from "react-router-dom";
 import { useApps, useAppAction, useMeta } from "../api/hooks";
 import { useAuth } from "../stores";
 import { IconSearch } from "./icons";
-import { PRODUCT_NAMES } from "../constants/productNames";
 
 interface Command {
   id: string;
@@ -36,8 +35,9 @@ export function CommandPalette({
       { id: "nav-home", label: "Open Home", run: () => navigate("/") },
       { id: "nav-apps", label: "Open Apps", run: () => navigate("/apps") },
       { id: "nav-assistant", label: "Open AI Assistant", run: () => navigate("/assistant") },
-      { id: "nav-workflows", label: "Open Workflows", run: () => navigate("/workflows") },
-      { id: "nav-runner", label: `Open ${PRODUCT_NAMES.workflowApps}`, run: () => navigate("/runner") },
+      ...(can("workflows.run") || can("workflows.edit")
+        ? [{ id: "nav-workflows", label: "Open Workflows", run: () => navigate("/workflows") }]
+        : []),
       { id: "nav-logs", label: "Open Logs", run: () => navigate("/logs") },
       { id: "nav-system", label: "Open System", run: () => navigate("/system") },
       { id: "nav-settings", label: "Open Settings", run: () => navigate("/settings") },

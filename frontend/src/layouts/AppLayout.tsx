@@ -13,7 +13,6 @@ import {
   IconFile,
   IconGrid,
   IconPlus,
-  IconPlay,
   IconPower,
   IconSettings,
   IconTerminal,
@@ -23,7 +22,7 @@ import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { Logo } from "../components/Logo";
 import { PRODUCT_NAMES } from "../constants/productNames";
-import { IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
+import { canAccessNavigationItem, IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
 import { useMobileNavigation } from "../stores/mobileNavigation";
 
 export default function AppLayout() {
@@ -32,7 +31,7 @@ export default function AppLayout() {
   const connected = useMetrics((s) => s.connected);
   const { data: meta } = useMeta();
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
-  const visibleNav = NAVIGATION.filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && (!item.permission || can(item.permission)));
+  const visibleNav = NAVIGATION.filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && canAccessNavigationItem(item, can));
   const mobilePaths = useMobileNavigation((state) => state.paths);
   const mobileNav = mobilePaths.map((path) => visibleNav.find((item) => item.to === path)).filter((item) => item !== undefined);
   const [collapsed, setCollapsed] = useState(
@@ -245,17 +244,7 @@ export default function AppLayout() {
                 }}
               />
             )}
-            {can("workflows.run") && (
-              <ActionItem
-                icon={<IconPlay />}
-                label={PRODUCT_NAMES.workflowApps}
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/runner");
-                }}
-              />
-            )}
-            {can("workflows.edit") && (
+            {(can("workflows.run") || can("workflows.edit")) && (
               <ActionItem
                 icon={<IconFlow />}
                 label="Workflows"

@@ -27,6 +27,14 @@ export interface WorkflowSummary {
   } | null;
 }
 
+interface PublishedWorkflowApp {
+  id: number;
+  name: string;
+  description: string;
+  version: number;
+  enabled: boolean;
+}
+
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   SUCCEEDED: { label: "成功", cls: "text-emerald-600 dark:text-emerald-400" },
   FAILED: { label: "失敗", cls: "text-red-600 dark:text-red-400" },
@@ -56,6 +64,7 @@ export default function WorkflowsPage() {
 
 function WorkflowList() {
   const can = useAuth((s) => s.can);
+  const canEdit = can("workflows.edit");
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -102,8 +111,11 @@ function WorkflowList() {
   };
 
   const { data: workflows, isLoading } = useQuery({
-    queryKey: ["workflows"],
-    queryFn: () => api<WorkflowSummary[]>("/workflows"),
+    queryKey: ["workflows", canEdit ? "editor" : "published"],
+    queryFn: async () => canEdit ? api<WorkflowSummary[]>("/workflows") : (await api<PublishedWorkflowApp[]>("/workflow-runner")).map((item) => ({
+      id: item.id, name: item.name, description: item.description, definition: { nodes: [], edges: [] },
+      enabled: item.enabled, state: "published" as const, published_version: item.version, last_execution: null,
+    })),
     refetchInterval: 10_000,
   });
 
@@ -150,14 +162,14 @@ function WorkflowList() {
               <IconPlus />
             </button>
           )}
-          <button
+          {canEdit && <button
             onClick={() => setShowSamples(true)}
             className="flex min-h-10 items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
             title="サンプルワークフロー集とノードリファレンス"
           >
             📖<span className="hidden sm:inline"> サンプルブック</span>
-          </button>
-          {can("workflows.edit") && (
+          </button>}
+          {canEdit && (
             <>
               <input
                 ref={importRef}
@@ -194,24 +206,24 @@ function WorkflowList() {
       ) : !workflows || workflows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
           <p className="text-sm text-zinc-400">
-            ワークフローはまだありません。ノードをつないで PC 操作を自動化できます。
+            {canEdit ? "ワークフローはまだありません。ノードをつないで PC 操作を自動化できます。" : "公開済みのワークフローはありません。"}
           </p>
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <button
-              onClick={() => setShowSamples(true)}
-              className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
-            >
-              📖 サンプルから始める
-            </button>
-            {can("workflows.edit") && (
+          {canEdit && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={() => setShowSamples(true)}
+                className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
+              >
+                📖 サンプルから始める
+              </button>
               <button
                 onClick={() => create.mutate()}
                 className="rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
               >
                 最初のワークフローを作成
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       ) : (
         <ul className="space-y-3">
@@ -221,12 +233,12 @@ function WorkflowList() {
               <li
                 key={wf.id}
                 className="flex cursor-pointer items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
-                onClick={() => navigate(`/workflows/${wf.id}`)}
+                onClick={() => navigate(canEdit ? `/workflows/${wf.id}` : `/runner?workflow=${wf.id}`)}
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{wf.name}</p>
                   <p className="mt-0.5 text-xs text-zinc-400">
-                    ノード {wf.definition.nodes?.length ?? 0} 個
+                    {canEdit ? `ノード ${wf.definition.nodes?.length ?? 0} 個` : `Published v${wf.published_version}`}
                     {st && (
                       <>
                         {" · 前回 "}
@@ -242,30 +254,26 @@ function WorkflowList() {
                       e.stopPropagation();
                       navigate(`/runner?workflow=${wf.id}`);
                     }}
-                    aria-label={`${wf.name} の公開版を開く`}
+                    aria-label={`${wf.name} Open App`}
                     className="flex min-h-11 items-center gap-1.5 rounded-xl bg-accent-50 px-3.5 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
                   >
                     <IconPlay />
-                    <span className="hidden sm:inline">公開版を開く</span>
+                    <span className="hidden sm:inline">Open App</span>
                   </button>
                 )}
-                <DropdownMenu
+                {canEdit && <DropdownMenu
                   ariaLabel={`${wf.name} menu`}
                   trigger={<IconDots />}
                   items={[
                     { label: "Edit", onSelect: () => navigate(`/workflows/${wf.id}`) },
                     { label: "Export JSON", onSelect: () => void exportWorkflow(wf) },
-                    ...(can("workflows.edit")
-                      ? [
-                          {
-                            label: wf.enabled ? "Disable Schedule" : "Enable Schedule",
-                            onSelect: () => toggle.mutate({ id: wf.id, enabled: !wf.enabled }),
-                          },
-                          { label: "Delete", danger: true, onSelect: () => setDeleting(wf) },
-                        ]
-                      : []),
+                    {
+                      label: wf.enabled ? "Disable Schedule" : "Enable Schedule",
+                      onSelect: () => toggle.mutate({ id: wf.id, enabled: !wf.enabled }),
+                    },
+                    { label: "Delete", danger: true, onSelect: () => setDeleting(wf) },
                   ]}
-                />
+                />}
               </li>
             );
           })}

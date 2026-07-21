@@ -89,6 +89,8 @@ class ApplicationIR(BaseModel):
     entities: list[dict[str, Any]] = Field(default_factory=list)
     api_endpoints: list[dict[str, Any]] = Field(default_factory=list)
     background_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    client_state: list[dict[str, Any]] = Field(default_factory=list)
+    queries: list[dict[str, Any]] = Field(default_factory=list)
     workflows: list[dict[str, Any]] = Field(default_factory=list)
     permissions: list[dict[str, Any] | str] = Field(default_factory=list)
     targets: list[dict[str, Any]] = Field(default_factory=list)

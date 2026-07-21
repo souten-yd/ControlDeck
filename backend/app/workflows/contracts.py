@@ -9,7 +9,7 @@ _INPUT_TYPES = {
     "text": "string", "short_text": "string", "paragraph": "string",
     "number": "number", "boolean": "boolean", "select": "string",
     "multi_select": "array", "date": "string", "datetime": "string",
-    "file": "string", "file_list": "array", "json": "object",
+    "file": "string", "file_list": "array", "json": "object", "json_array": "array",
     "key_value": "object", "secret_reference": "string",
 }
 
@@ -18,6 +18,11 @@ def build_input_schema(definition: dict[str, Any]) -> dict[str, Any]:
     trigger = next((node for node in definition.get("nodes", []) if node.get("type") == "trigger"), {})
     config = trigger.get("config") if isinstance(trigger.get("config"), dict) else {}
     raw_fields = config.get("inputs") if isinstance(config.get("inputs"), list) else []
+    return build_fields_schema(raw_fields)
+
+
+def build_fields_schema(raw_fields: list[Any]) -> dict[str, Any]:
+    """UI field definitionsを実行時検証用JSON Schemaへ変換する。"""
     fields: list[dict[str, Any]] = []
     properties: dict[str, Any] = {}
     required: list[str] = []

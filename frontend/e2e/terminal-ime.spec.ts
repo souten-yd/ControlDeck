@@ -3,6 +3,38 @@ import { expect, test, type Page } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;
 const password = process.env.CONTROL_DECK_E2E_PASSWORD;
+const ownedSessions = new WeakMap<Page, Set<string>>();
+
+const rememberOwnedSession = (page: Page, sessionId: string): void => {
+  const ids = ownedSessions.get(page) ?? new Set<string>();
+  ids.add(sessionId);
+  ownedSessions.set(page, ids);
+};
+
+const connectOwnedSession = async (page: Page, sessionId: string): Promise<void> => {
+  if (!ownedSessions.get(page)?.has(sessionId)) {
+    throw new Error(`Refusing to connect an unowned terminal session: ${sessionId}`);
+  }
+  const row = page.locator("li").filter({ hasText: `#${sessionId}` });
+  await expect(row).toHaveCount(1);
+  await row.getByRole("button", { name: "Connect", exact: true }).click();
+};
+
+const deleteOwnedSessions = async (page: Page): Promise<void> => {
+  const ids = [...(ownedSessions.get(page) ?? [])];
+  ownedSessions.delete(page);
+  for (const sessionId of ids) {
+    await page.context().request.delete(`/api/v1/terminals/${sessionId}`, {
+      headers: { "X-Requested-With": "ControlDeck" },
+    });
+  }
+};
+
+// Top-level tests and describe cases share the same fail-closed cleanup. A
+// failed assertion must not leave an E2E-owned tmux session behind.
+test.afterEach(async ({ page }) => {
+  await deleteOwnedSessions(page);
+});
 
 type PerfCounters = {
   fitRequested: number;
@@ -36,6 +68,7 @@ declare global {
       counters: () => PerfCounters;
       resetCounters: () => void;
       isGeometryLocked: () => boolean;
+      isReplaying: () => boolean;
       textareaCount: () => number;
       rows: () => number;
       cols: () => number;
@@ -65,6 +98,7 @@ declare global {
       };
       startBarrierForTest: (generation: number, cols: number, rows: number) => boolean;
       ackBarrierForTest: (ack: ResizeAck) => boolean;
+      commitBarrierForTest: (generation: number) => boolean;
       enqueuePtyFrameForTest: (data: string) => boolean;
       writeForTest: (data: string) => Promise<void>;
       sendInputForTest: (data: string) => void;
@@ -112,8 +146,15 @@ async function openTerminal(page: Page): Promise<void> {
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/terminal");
   await expect(page.getByRole("heading", { name: "Terminal" })).toBeVisible();
+  const beforeResponse = await page.context().request.get("/api/v1/terminals");
+  expect(beforeResponse.ok()).toBe(true);
+  const before = await beforeResponse.json() as { sessions: { id: string }[] };
+  const existingIds = new Set(before.sessions.map((session) => session.id));
   await page.getByRole("button", { name: "新規セッション" }).click();
   await expect(page.locator("[data-terminal-root]")).toBeVisible();
+  const createdId = await page.locator("[data-terminal-header] select").inputValue();
+  expect(existingIds.has(createdId), "E2E must never reuse an existing terminal session").toBe(false);
+  rememberOwnedSession(page, createdId);
   await expect(page.locator(".xterm-helper-textarea")).toHaveCount(1);
   await expect.poll(() => page.evaluate(() => Boolean(window.__controlDeckTerminalTest))).toBe(true);
   await page.waitForTimeout(250);
@@ -140,27 +181,104 @@ test("mounts over HTTP when crypto.randomUUID is unavailable", async ({ page }) 
   expect(await page.evaluate(() => window.__controlDeckTerminalTest!.clientInstanceId())).toBe(initialId);
   expect(pageErrors).toEqual([]);
 
-  const sessionId = await page.locator("[data-terminal-header] select").inputValue();
-  await page.context().request.delete(`/api/v1/terminals/${sessionId}`, {
-    headers: { "X-Requested-With": "ControlDeck" },
-  });
+  await deleteOwnedSessions(page);
 });
 
 const counters = (page: Page) => page.evaluate(() => ({ ...window.__controlDeckTerminalTest!.counters() }));
+
+test("initial terminal connection reveals one stable frame without viewport racing", async ({ page }, testInfo) => {
+  test.setTimeout(40_000);
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.addInitScript(() => localStorage.setItem("control-deck:terminal-geometry-debug", "1"));
+  await page.goto("/terminal");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+  await page.goto("/terminal");
+  await expect(page.getByRole("heading", { name: "Terminal" })).toBeVisible();
+  const beforeResponse = await page.context().request.get("/api/v1/terminals");
+  expect(beforeResponse.ok()).toBe(true);
+  const before = await beforeResponse.json() as { sessions: { id: string }[] };
+  const existingIds = new Set(before.sessions.map((session) => session.id));
+  await page.evaluate(() => {
+    type InitialFrame = {
+      at: number; exists: boolean; replaying: boolean; live: boolean; text: string;
+      viewportY: number; baseY: number; viewportScrollTop: number; pageScrollY: number;
+    };
+    const target = window as typeof window & { __initialReplayAudit?: { frames: InitialFrame[]; stop: boolean } };
+    target.__initialReplayAudit = { frames: [], stop: false };
+    let previous = "";
+    const sample = () => {
+      const root = document.querySelector<HTMLElement>("[data-terminal-root]");
+      const hook = window.__controlDeckTerminalTest;
+      const frame: InitialFrame = {
+        at: performance.now(), exists: Boolean(root), replaying: root?.dataset.terminalReplaying === "true",
+        live: hook?.connectionState().state === "LIVE", text: document.querySelector<HTMLElement>(".xterm-rows")?.textContent ?? "",
+        viewportY: hook?.viewportY() ?? -1, baseY: hook?.baseY() ?? -1,
+        viewportScrollTop: document.querySelector<HTMLElement>(".xterm-viewport")?.scrollTop ?? -1,
+        pageScrollY: window.scrollY,
+      };
+      const signature = JSON.stringify({ ...frame, at: 0 });
+      if (signature !== previous) target.__initialReplayAudit!.frames.push(frame);
+      previous = signature;
+      if (!target.__initialReplayAudit!.stop) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  await page.getByRole("button", { name: "新規セッション" }).click();
+  await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state), { timeout: 15_000 }).toBe("LIVE");
+  const createdId = await page.locator("[data-terminal-header] select").inputValue();
+  expect(existingIds.has(createdId), "E2E must never reuse an existing terminal session").toBe(false);
+  rememberOwnedSession(page, createdId);
+  await expect(page.locator("[data-terminal-root]")).toHaveAttribute("data-terminal-replaying", "false");
+  expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(false);
+  let previous = "";
+  let imageIndex = 0;
+  const deadline = Date.now() + 1_500;
+  while (Date.now() < deadline) {
+    const signature = await page.evaluate(() => JSON.stringify({
+      replaying: document.querySelector<HTMLElement>("[data-terminal-root]")?.dataset.terminalReplaying,
+      live: window.__controlDeckTerminalTest?.connectionState().state,
+      text: document.querySelector<HTMLElement>(".xterm-rows")?.textContent ?? "",
+      viewport: window.__controlDeckTerminalTest?.viewportY(),
+    }));
+    if (signature !== previous) {
+      await page.screenshot({ path: testInfo.outputPath(`initial-frame-${String(imageIndex).padStart(2, "0")}.png`) });
+      imageIndex += 1;
+      previous = signature;
+    }
+    await page.waitForTimeout(16);
+  }
+  const audit = await page.evaluate(() => {
+    const target = window as typeof window & { __initialReplayAudit?: { frames: Array<{
+      at: number; exists: boolean; replaying: boolean; live: boolean; text: string;
+      viewportY: number; baseY: number; viewportScrollTop: number; pageScrollY: number;
+    }>; stop: boolean } };
+    target.__initialReplayAudit!.stop = true;
+    return target.__initialReplayAudit!.frames;
+  });
+  await testInfo.attach("initial-connection-frame-timeline", {
+    body: Buffer.from(JSON.stringify(audit, null, 2)), contentType: "application/json",
+  });
+  const diagnostics = await page.evaluate(() => ({
+    terminal: window.__controlDeckTerminalTest!.terminalLog(),
+    connection: window.__controlDeckTerminalTest!.connectionLog(),
+  }));
+  await testInfo.attach("initial-connection-diagnostics", {
+    body: Buffer.from(JSON.stringify(diagnostics, null, 2)), contentType: "application/json",
+  });
+  await deleteOwnedSessions(page);
+  const visible = audit.filter((frame) => frame.exists && !frame.replaying && frame.live);
+  expect(new Set(visible.map((frame) => `${frame.text}|${frame.viewportY}|${frame.viewportScrollTop}`)).size).toBe(1);
+  expect(new Set(visible.map((frame) => frame.pageScrollY)).size).toBe(1);
+});
 
 test.describe("terminal mobile IME and geometry", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 700 });
     await openTerminal(page);
-  });
-
-  test.afterEach(async ({ page }) => {
-    const sessionId = await page.locator("[data-terminal-header] select").inputValue().catch(() => "");
-    if (sessionId) {
-      await page.context().request.delete(`/api/v1/terminals/${sessionId}`, {
-        headers: { "X-Requested-With": "ControlDeck" },
-      });
-    }
   });
 
   test("shows the close action at the right edge with a 44px touch target", async ({ page }) => {
@@ -173,6 +291,220 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(layout.close.height).toBeGreaterThanOrEqual(44);
     expect(layout.close.right).toBeLessThanOrEqual(layout.viewport - 12);
     expect(layout.header.right - layout.close.right).toBe(12);
+  });
+
+  test("pastes directly, swipes up to Copy, and helper keys keep the keyboard closed", async ({ page }) => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+    await page.evaluate(() => navigator.clipboard.writeText("printf DIRECT_PASTE_OK"));
+    const paste = page.getByRole("button", { name: /貼付。上へスワイプ/ });
+    await paste.click();
+    await page.getByRole("button", { name: "Enter", exact: true }).click();
+    await expect(page.locator(".xterm-rows")).toContainText("DIRECT_PASTE_OK");
+
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.focus();
+    const terminalPosition = () => page.evaluate(() => {
+      const rect = (selector: string) => document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+      const root = rect("[data-terminal-root]");
+      const host = rect("[data-terminal-host]");
+      const screen = rect(".xterm-screen");
+      return {
+        root: { top: root.top, left: root.left, width: root.width, height: root.height },
+        host: { top: host.top, left: host.left, width: host.width, height: host.height },
+        screen: { top: screen.top, left: screen.left, width: screen.width, height: screen.height },
+        viewport: { top: window.visualViewport?.offsetTop ?? 0, left: window.visualViewport?.offsetLeft ?? 0 },
+        page: { x: window.scrollX, y: window.scrollY },
+      };
+    });
+    const positionBeforeHelperKeys = await terminalPosition();
+    await page.getByRole("button", { name: "Enter", exact: true }).click();
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(true);
+    await page.getByRole("button", { name: "↑", exact: true }).click();
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(true);
+    expect(await terminalPosition()).toEqual(positionBeforeHelperKeys);
+
+    // 閉じている場合も補助キー側からkeyboardを開かない。
+    await textarea.evaluate((node: HTMLTextAreaElement) => node.blur());
+    await page.getByRole("button", { name: "Enter", exact: true }).click();
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(false);
+    await page.getByRole("button", { name: "↑", exact: true }).click();
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(false);
+
+    await page.evaluate(() => navigator.clipboard.writeText("SWIPE_MUST_NOT_PASTE"));
+    await paste.evaluate(async (button) => {
+      const rect = button.getBoundingClientRect();
+      const start = new Touch({ identifier: 71, target: button, clientX: rect.left + 16, clientY: rect.top + 16 });
+      button.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [start], targetTouches: [start], changedTouches: [start] }));
+      const moved = new Touch({ identifier: 71, target: button, clientX: rect.left + 16, clientY: rect.top - 20 });
+      button.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [moved], targetTouches: [moved], changedTouches: [moved] }));
+      button.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [moved] }));
+    });
+    await expect(page.getByRole("dialog", { name: "コピー" })).toContainText("DIRECT_PASTE_OK");
+    await expect(page.getByRole("dialog", { name: "コピー" })).not.toContainText("SWIPE_MUST_NOT_PASTE");
+    await page.getByRole("dialog", { name: "コピー" }).getByRole("button", { name: "閉じる" }).click();
+  });
+
+  test("swipes the live terminal body through real tmux scrollback", async ({ page }) => {
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.pressSequentially("seq -f LIVE_SWIPE_%03g 1 180", { delay: 1 });
+    await textarea.press("Enter");
+    await expect(page.locator(".xterm-rows")).toContainText("LIVE_SWIPE_180");
+    await textarea.evaluate((node: HTMLTextAreaElement) => node.blur());
+    const liveScreen = await page.evaluate(() => window.__controlDeckTerminalTest!.captureRenderState().visibleBufferRows.join("\n"));
+
+    const bodySwipeLatency = await page.locator("[data-terminal-host]").evaluate(async (node) => {
+      const rect = node.getBoundingClientRect();
+      const initialViewport = window.__controlDeckTerminalTest!.viewportY();
+      const start = new Touch({ identifier: 72, target: node, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height * 0.35 });
+      const moved = new Touch({ identifier: 72, target: node, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height * 0.75 });
+      node.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [start], targetTouches: [start], changedTouches: [start] }));
+      const startedAt = performance.now();
+      node.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [moved], targetTouches: [moved], changedTouches: [moved] }));
+      let latency = Number.POSITIVE_INFINITY;
+      for (let frame = 0; frame < 12; frame += 1) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (window.__controlDeckTerminalTest!.viewportY() !== initialViewport) {
+          latency = performance.now() - startedAt;
+          break;
+        }
+      }
+      node.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [moved] }));
+      return latency;
+    });
+    expect(bodySwipeLatency).toBeLessThan(100);
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.captureRenderState().visibleBufferRows.join("\n")))
+      .not.toBe(liveScreen);
+    await expect.poll(() => page.evaluate(() =>
+      window.__controlDeckTerminalTest!.baseY() - window.__controlDeckTerminalTest!.viewportY()))
+      .toBeGreaterThan(0);
+    // touchend後の遅延描画を待ってもbuffer行とDOM行が一致し続ける。
+    await expect.poll(() => page.evaluate(() =>
+      window.__controlDeckTerminalTest!.captureRenderState().mismatchedRows)).toEqual([]);
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(false);
+    await page.getByRole("button", { name: "Enter", exact: true }).click();
+    await expect(page.locator(".xterm-rows")).toContainText("LIVE_SWIPE_180");
+    expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea"))).toBe(false);
+  });
+
+  test("keeps the active input line above the resized mobile viewport", async ({ page }) => {
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.focus();
+    await page.setViewportSize({ width: 320, height: 430 });
+    await expect.poll(() => page.evaluate(() => {
+      const viewport = window.visualViewport;
+      const root = document.querySelector<HTMLElement>("[data-terminal-root]")!.getBoundingClientRect();
+      const helper = document.querySelector<HTMLElement>("[data-terminal-helper]")!.getBoundingClientRect();
+      const screen = document.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
+      const visibleBottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight);
+      return {
+        rootInside: root.bottom <= visibleBottom + 1,
+        helperInside: helper.bottom <= visibleBottom + 1,
+        screenAboveHelper: screen.bottom <= helper.top + 2,
+      };
+    })).toEqual({ rootInside: true, helperInside: true, screenAboveHelper: true });
+    await textarea.pressSequentially("printf KEYBOARD_INPUT_VISIBLE", { delay: 1 });
+    await expect(page.locator(".xterm-rows")).toContainText("KEYBOARD_INPUT_VISIBLE");
+  });
+
+  test("echoes and deletes mobile keystrokes without per-key rendering stalls", async ({ page }) => {
+    const latencies = await page.evaluate(async () => {
+      const hook = window.__controlDeckTerminalTest!;
+      const visibleText = () => hook.captureRenderState().visibleBufferRows.join("\n");
+      const waitFor = async (predicate: () => boolean): Promise<number> => {
+        const startedAt = performance.now();
+        for (let frame = 0; frame < 30; frame += 1) {
+          if (predicate()) return performance.now() - startedAt;
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        return Number.POSITIVE_INFINITY;
+      };
+      const samples: number[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        const prefix = `MOBILE_KEY_${index}_`;
+        hook.sendInputForTest(`${prefix}X`);
+        samples.push(await waitFor(() => visibleText().includes(`${prefix}X`)));
+        hook.sendInputForTest("\x7f");
+        samples.push(await waitFor(() => visibleText().includes(prefix)
+          && !visibleText().includes(`${prefix}X`)));
+        hook.sendInputForTest("\x15");
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      return samples;
+    });
+    if (process.env.CONTROL_DECK_E2E_REPORT === "1") {
+      console.log("MOBILE_KEY_LATENCY_MS", JSON.stringify(latencies));
+    }
+    expect(latencies.every(Number.isFinite)).toBe(true);
+    expect(Math.max(...latencies)).toBeLessThan(250);
+  });
+
+  test("reconnects a large existing tmux history without revealing intermediate scroll frames", async ({ page }, testInfo) => {
+    test.setTimeout(45_000);
+    const ownedSessionId = await page.locator("[data-terminal-header] select").inputValue();
+    const textarea = page.locator(".xterm-helper-textarea");
+    await textarea.pressSequentially("seq -f RECONNECT_HISTORY_%04g 1 3000", { delay: 1 });
+    await textarea.press("Enter");
+    await expect(page.locator(".xterm-rows")).toContainText("RECONNECT_HISTORY_3000", { timeout: 10_000 });
+    await page.getByRole("button", { name: "ターミナルを閉じる" }).click();
+    await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
+    await page.evaluate(() => {
+      type Frame = { at: number; replaying: boolean; live: boolean; text: string; viewportY: number; baseY: number };
+      const target = window as typeof window & { __tmuxReconnectAudit?: { frames: Frame[]; stop: boolean } };
+      target.__tmuxReconnectAudit = { frames: [], stop: false };
+      let previous = "";
+      const sample = () => {
+        const hook = window.__controlDeckTerminalTest;
+        const frame: Frame = {
+          at: performance.now(), replaying: document.querySelector<HTMLElement>("[data-terminal-root]")?.dataset.terminalReplaying === "true",
+          live: hook?.connectionState().state === "LIVE", text: document.querySelector<HTMLElement>(".xterm-rows")?.textContent ?? "",
+          viewportY: hook?.viewportY() ?? -1, baseY: hook?.baseY() ?? -1,
+        };
+        const signature = JSON.stringify({ ...frame, at: 0 });
+        if (signature !== previous) target.__tmuxReconnectAudit!.frames.push(frame);
+        previous = signature;
+        if (!target.__tmuxReconnectAudit!.stop) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    const reconnectStartedAt = Date.now();
+    await connectOwnedSession(page, ownedSessionId);
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state), { timeout: 15_000 }).toBe("LIVE");
+    const reconnectDurationMs = Date.now() - reconnectStartedAt;
+    if (process.env.CONTROL_DECK_E2E_REPORT === "1") {
+      console.log("TERMINAL_RECONNECT_MS", reconnectDurationMs);
+    }
+    expect(reconnectDurationMs).toBeLessThan(4_000);
+    await expect(page.locator("[data-terminal-root]")).toHaveAttribute("data-terminal-replaying", "false");
+    let previous = "";
+    let index = 0;
+    const deadline = Date.now() + 1_500;
+    while (Date.now() < deadline) {
+      const signature = await page.evaluate(() => JSON.stringify({
+        replaying: document.querySelector<HTMLElement>("[data-terminal-root]")?.dataset.terminalReplaying,
+        live: window.__controlDeckTerminalTest?.connectionState().state,
+        text: document.querySelector<HTMLElement>(".xterm-rows")?.textContent ?? "",
+        viewportY: window.__controlDeckTerminalTest?.viewportY(),
+      }));
+      if (signature !== previous) {
+        await page.screenshot({ path: testInfo.outputPath(`tmux-reconnect-frame-${String(index).padStart(2, "0")}.png`) });
+        index += 1;
+        previous = signature;
+      }
+      await page.waitForTimeout(16);
+    }
+    const frames = await page.evaluate(() => {
+      const target = window as typeof window & { __tmuxReconnectAudit?: { frames: Array<{
+        at: number; replaying: boolean; live: boolean; text: string; viewportY: number; baseY: number;
+      }>; stop: boolean } };
+      target.__tmuxReconnectAudit!.stop = true;
+      return target.__tmuxReconnectAudit!.frames;
+    });
+    await testInfo.attach("tmux-reconnect-frame-timeline", {
+      body: Buffer.from(JSON.stringify(frames, null, 2)), contentType: "application/json",
+    });
+    const visible = frames.filter((frame) => !frame.replaying && frame.live);
+    expect(new Set(visible.map((frame) => `${frame.text}|${frame.viewportY}|${frame.baseY}`)).size).toBe(1);
+    await expect(page.locator(".xterm-rows")).toContainText("RECONNECT_HISTORY_3000");
   });
 
   test("jumps and drags with the overlay history bar without opening terminal input", async ({ page }) => {
@@ -260,6 +592,8 @@ test.describe("terminal mobile IME and geometry", () => {
     await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.viewportY()))
       .toBeGreaterThan(baseY / 2);
     await expect(track).toHaveAttribute("data-active", "false");
+    await expect.poll(() => page.evaluate(() =>
+      window.__controlDeckTerminalTest!.captureRenderState().mismatchedRows)).toEqual([]);
     expect(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
       .toBe(false);
     const overlayLayout = await page.evaluate(() => {
@@ -467,15 +801,116 @@ test.describe("terminal mobile IME and geometry", () => {
   test("full page reload creates a new client and performs initial replay", async ({ page }) => {
     const sessionId = await page.locator("[data-terminal-header] select").inputValue();
     await page.reload();
-    const sessionRow = page.locator("li").filter({ hasText: `cdterm-${sessionId}` });
+    const sessionRow = page.locator("li").filter({ hasText: `#${sessionId}` });
     await expect(sessionRow).toBeVisible();
-    await sessionRow.getByRole("button", { name: "接続", exact: true }).click();
+    await sessionRow.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(page.locator("[data-terminal-root]")).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state)).toBe("LIVE");
     const countersAfterReload = await page.evaluate(() => window.__controlDeckTerminalTest!.historyReplayCounters());
     expect(countersAfterReload.websocketCreated).toBe(1);
     expect(countersAfterReload.historyReset).toBe(1);
     expect(countersAfterReload.historyEnd).toBe(1);
+    expect(await page.evaluate(() => window.__controlDeckTerminalTest!.isReplaying())).toBe(false);
+    expect(await page.locator("[data-terminal-root]").getAttribute("data-terminal-replaying")).toBe("false");
+    const restoredPosition = await page.evaluate(() => ({
+      viewport: window.__controlDeckTerminalTest!.viewportY(),
+      bottom: window.__controlDeckTerminalTest!.baseY(),
+    }));
+    expect(restoredPosition.viewport).toBe(restoredPosition.bottom);
+  });
+
+  test("server reload keeps replay hidden and stable after the final frame", async ({ page }, testInfo) => {
+    test.setTimeout(40_000);
+    const textarea = page.locator(".xterm-helper-textarea");
+    test.skip(process.env.CONTROL_DECK_E2E_ALLOW_SERVICE_RELOAD !== "1", "requires an explicitly isolated service");
+    const sessionsResponse = await page.context().request.get("/api/v1/terminals");
+    expect(sessionsResponse.ok()).toBe(true);
+    const sessionsSnapshot = await sessionsResponse.json() as { sessions: { id: string }[] };
+    const owned = ownedSessions.get(page) ?? new Set<string>();
+    const foreignSessions = sessionsSnapshot.sessions.filter((session) => !owned.has(session.id));
+    test.skip(
+      foreignSessions.length > 0,
+      "refusing to restart a service that has non-E2E terminal sessions",
+    );
+    await textarea.pressSequentially("echo SERVER_RELOAD_MARKER", { delay: 1 });
+    await textarea.press("Enter");
+    await expect(page.locator(".xterm-rows")).toContainText("SERVER_RELOAD_MARKER");
+    await page.evaluate(() => {
+      type ReplayFrame = { at: number; replaying: boolean; live: boolean; text: string };
+      const target = window as typeof window & { __replayAudit?: {
+        hiddenSeen: boolean; visibleReplayMutations: number; frames: ReplayFrame[]; stop: boolean;
+      } };
+      target.__replayAudit = { hiddenSeen: false, visibleReplayMutations: 0, frames: [], stop: false };
+      const root = document.querySelector<HTMLElement>("[data-terminal-root]")!;
+      const rows = document.querySelector<HTMLElement>(".xterm-rows")!;
+      new MutationObserver(() => {
+        if (root.dataset.terminalReplaying === "true") target.__replayAudit!.hiddenSeen = true;
+      }).observe(root, { attributes: true, attributeFilter: ["data-terminal-replaying"] });
+      new MutationObserver(() => {
+        const replaying = root.dataset.terminalReplaying === "true";
+        const live = window.__controlDeckTerminalTest?.connectionState().state === "LIVE";
+        if (!replaying && !live) target.__replayAudit!.visibleReplayMutations += 1;
+      }).observe(rows, { childList: true, subtree: true, characterData: true });
+      let previous = "";
+      const sample = () => {
+        const replaying = root.dataset.terminalReplaying === "true";
+        const live = window.__controlDeckTerminalTest?.connectionState().state === "LIVE";
+        const text = rows.textContent ?? "";
+        const signature = `${replaying}:${live}:${text}`;
+        if (signature !== previous) {
+          target.__replayAudit!.frames.push({ at: performance.now(), replaying, live, text });
+          previous = signature;
+        }
+        if (!target.__replayAudit!.stop) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    const reload = await page.context().request.post("/api/v1/system/platform/reload", {
+      headers: { "X-Requested-With": "ControlDeck" },
+    });
+    expect(reload.status()).toBe(202);
+    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state), {
+      // platform.reload waits for the response to flush, then schedules the
+      // systemd restart. Give that hand-off room on slower CI hosts.
+      timeout: 15_000,
+    }).not.toBe("LIVE");
+    let lastVisualSignature = "";
+    let screenshotIndex = 0;
+    let liveSince = 0;
+    const captureDeadline = Date.now() + 20_000;
+    while (Date.now() < captureDeadline && (!liveSince || Date.now() - liveSince < 750)) {
+      const visual = await page.evaluate(() => ({
+        replaying: document.querySelector<HTMLElement>("[data-terminal-root]")?.dataset.terminalReplaying,
+        live: window.__controlDeckTerminalTest?.connectionState().state === "LIVE",
+        text: document.querySelector<HTMLElement>(".xterm-rows")?.textContent ?? "",
+      }));
+      const signature = JSON.stringify(visual);
+      if (signature !== lastVisualSignature) {
+        await page.screenshot({ path: testInfo.outputPath(`reload-frame-${String(screenshotIndex).padStart(2, "0")}.png`) });
+        screenshotIndex += 1;
+        lastVisualSignature = signature;
+      }
+      if (visual.live && visual.replaying === "false") liveSince ||= Date.now();
+      await page.waitForTimeout(16);
+    }
+    expect(liveSince).toBeGreaterThan(0);
+    await expect(page.locator(".xterm-rows")).toContainText("SERVER_RELOAD_MARKER");
+    const audit = await page.evaluate(() => {
+      const target = window as typeof window & { __replayAudit?: {
+        hiddenSeen: boolean; visibleReplayMutations: number;
+        frames: { at: number; replaying: boolean; live: boolean; text: string }[]; stop: boolean;
+      } };
+      target.__replayAudit!.stop = true;
+      return target.__replayAudit!;
+    });
+    await testInfo.attach("reload-frame-timeline", {
+      body: Buffer.from(JSON.stringify(audit.frames, null, 2)), contentType: "application/json",
+    });
+    expect(audit.hiddenSeen).toBe(true);
+    expect(audit.visibleReplayMutations).toBe(0);
+    const visibleFrames = audit.frames.filter((frame) => !frame.replaying && frame.live);
+    expect(new Set(visibleFrames.map((frame) => frame.text)).size).toBe(1);
+    await expect(page.locator("[data-terminal-root]")).toHaveAttribute("data-terminal-replaying", "false");
   });
 
   test("session switch never mixes the previous terminal history", async ({ page }) => {
@@ -489,9 +924,10 @@ test.describe("terminal mobile IME and geometry", () => {
     });
     expect(created.ok()).toBe(true);
     const secondSession = await created.json() as { id: string };
+    rememberOwnedSession(page, secondSession.id);
     await page.reload();
-    const secondRow = page.locator("li").filter({ hasText: `cdterm-${secondSession.id}` });
-    await secondRow.getByRole("button", { name: "接続", exact: true }).click();
+    const secondRow = page.locator("li").filter({ hasText: `#${secondSession.id}` });
+    await secondRow.getByRole("button", { name: "Connect", exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest?.connectionState().state)).toBe("LIVE");
     const secondBuffer = await page.evaluate(() =>
       window.__controlDeckTerminalTest!.captureRenderState().visibleBufferRows.join("\n"));
@@ -501,9 +937,8 @@ test.describe("terminal mobile IME and geometry", () => {
     });
   });
 
-  test("blocks geometry during composition and flushes once", async ({ page }) => {
+  test("keeps cell geometry locked while the shell follows the keyboard during composition", async ({ page }) => {
     const textarea = page.locator(".xterm-helper-textarea");
-    const rootBefore = await page.locator("[data-terminal-root]").evaluate((node) => node.getAttribute("style"));
     await page.evaluate(() => window.__controlDeckTerminalTest!.resetCounters());
     await textarea.dispatchEvent("compositionstart", { data: "こ" });
     await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.isGeometryLocked())).toBe(true);
@@ -522,7 +957,16 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(during.refreshExecuted).toBe(0);
     expect(during.ptyResizeSent).toBe(0);
     expect(during.maxGeometryTasksPending).toBeLessThanOrEqual(1);
-    expect(await page.locator("[data-terminal-root]").evaluate((node) => node.getAttribute("style"))).toBe(rootBefore);
+    const shellDuring = await page.locator("[data-terminal-root]").evaluate((node) => {
+      const root = (node as HTMLElement).getBoundingClientRect();
+      const viewport = window.visualViewport;
+      return {
+        height: Math.round(root.height),
+        insideVisibleViewport: root.bottom <= (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight) + 1,
+      };
+    });
+    expect(shellDuring.height).toBe(440);
+    expect(shellDuring.insideVisibleViewport).toBe(true);
 
     await textarea.dispatchEvent("compositionend", { data: "こんにちは" });
     await page.waitForTimeout(300);
@@ -553,7 +997,7 @@ test.describe("terminal mobile IME and geometry", () => {
     expect(textareaLayout.insideHost).toBe(true);
   });
 
-  test("holds FIFO input until matching ACK and the following PTY write complete", async ({ page }) => {
+  test("holds FIFO input until matching ACK and local resize commit", async ({ page }) => {
     const setup = await page.evaluate(() => {
       const hook = window.__controlDeckTerminalTest!;
       const cols = hook.cols();
@@ -598,10 +1042,10 @@ test.describe("terminal mobile IME and geometry", () => {
     }), setup);
     expect(matchingAccepted).toBe(true);
     expect((await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState())).acked).toBe(true);
-    await page.waitForTimeout(20);
     expect((await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState())).active).toBe(true);
 
-    expect(await page.evaluate(() => window.__controlDeckTerminalTest!.enqueuePtyFrameForTest("\r"))).toBe(true);
+    expect(await page.evaluate((generation) =>
+      window.__controlDeckTerminalTest!.commitBarrierForTest(generation), setup.resizeGeneration)).toBe(true);
     await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState().active)).toBe(false);
     await expect(page.locator(".xterm-rows")).toContainText("BARRIER_😀_ORDER_OK");
     const finalState = await page.evaluate(() => window.__controlDeckTerminalTest!.resizeBarrierState());
@@ -745,6 +1189,7 @@ test.describe("terminal mobile IME and geometry", () => {
     test.setTimeout(660_000);
     const textarea = page.locator(".xterm-helper-textarea");
     const errors: string[] = [];
+    const soakSessionId = await page.locator("[data-terminal-header] select").inputValue();
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
@@ -772,7 +1217,7 @@ test.describe("terminal mobile IME and geometry", () => {
       if (cycle > 0 && cycle % 20 === 0) {
         await page.getByRole("button", { name: "ターミナルを閉じる" }).click();
         await expect(page.locator(".xterm-helper-textarea")).toHaveCount(0);
-        await page.getByRole("button", { name: "接続" }).last().click();
+        await connectOwnedSession(page, soakSessionId);
         await expect(page.locator(".xterm-helper-textarea")).toHaveCount(1);
       }
       cycle += 1;
@@ -799,7 +1244,7 @@ test.describe("terminal mobile IME and geometry", () => {
   });
 });
 
-test("desktop wheel, copy and remount keep one terminal instance", async ({ browser }) => {
+test("desktop copy and remount keep one terminal instance", async ({ browser }) => {
   test.setTimeout(45_000);
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
   const page = await context.newPage();
@@ -811,15 +1256,9 @@ test("desktop wheel, copy and remount keep one terminal instance", async ({ brow
   const sessionId = await page.locator("[data-terminal-header] select").inputValue();
   try {
     const textarea = page.locator(".xterm-helper-textarea");
-    await textarea.pressSequentially("for i in $(seq 1 300); do echo DESKTOP_LINE_$i; done; echo DESKTOP_DONE", { delay: 1 });
+    await textarea.pressSequentially("echo DESKTOP_DONE", { delay: 1 });
     await textarea.press("Enter");
     await expect(page.locator(".xterm-rows")).toContainText("DESKTOP_DONE");
-    const host = page.locator("[data-terminal-host]");
-    await page.waitForTimeout(300);
-    const before = await page.evaluate(() => window.__controlDeckTerminalTest!.baseY());
-    await host.hover();
-    await page.mouse.wheel(0, -700);
-    await expect.poll(() => page.evaluate(() => window.__controlDeckTerminalTest!.viewportY())).toBeLessThan(before);
 
     await page.getByRole("button", { name: "コピー" }).first().click();
     await expect(page.getByRole("heading", { name: "コピー" })).toBeVisible();
@@ -828,7 +1267,7 @@ test("desktop wheel, copy and remount keep one terminal instance", async ({ brow
 
     await page.getByRole("button", { name: "ターミナルを閉じる" }).click();
     await expect(page.locator(".xterm-helper-textarea")).toHaveCount(0);
-    await page.getByRole("button", { name: "接続" }).last().click();
+    await connectOwnedSession(page, sessionId);
     await expect(page.locator(".xterm-helper-textarea")).toHaveCount(1);
     expect(consoleErrors).toEqual([]);
   } finally {

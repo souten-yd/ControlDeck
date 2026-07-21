@@ -7,14 +7,12 @@ POST /api/v1/hooks/{token} で外部から起動する。セッション認証�
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import time
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import select
-
 from app.database import SessionLocal
-from app.models import Workflow
 from app.workflows import engine
 
 logger = logging.getLogger("control_deck.hooks")
@@ -44,15 +42,15 @@ async def fire_webhook(token: str, request: Request):
     def find() -> int | None:
         db = SessionLocal()
         try:
-            rows = db.execute(select(Workflow).where(Workflow.enabled.is_(True))).scalars().all()
-            for wf in rows:
+            for wf, definition in engine._published_workflow_definitions(db):
                 try:
-                    nodes, _ = engine.parse_definition(wf.definition_json)
+                    nodes, _ = engine.parse_definition(definition)
                 except engine.DefinitionError:
                     continue
                 trigger = next((n for n in nodes if n.get("type") == "trigger"), None)
                 config = (trigger or {}).get("config") or {}
-                if config.get("mode") == "webhook" and str(config.get("webhook_token", "")) == token:
+                token_hash = hashlib.sha256(token.encode()).hexdigest()
+                if config.get("mode") == "webhook" and str(config.get("webhook_token_hash", "")) == token_hash:
                     return wf.id
             return None
         finally:

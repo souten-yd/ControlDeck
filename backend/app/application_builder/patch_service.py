@@ -13,7 +13,7 @@ from app.schemas.application_builder import ApplicationPatchOperation
 
 ALLOWED_ROOTS = {
     "application", "theme", "navigation", "pages", "entities", "apiEndpoints",
-    "backgroundJobs", "workflows", "permissions", "targets",
+    "backgroundJobs", "clientState", "queries", "workflows", "permissions", "targets",
 }
 FORBIDDEN_TOKENS = {"__proto__", "prototype", "constructor"}
 

@@ -1,0 +1,2 @@
+ControlDeck database revisions. Apply only through app.database.migrations so the
+SQLite lock, pre-migration backup, integrity checks, and schema verification run.

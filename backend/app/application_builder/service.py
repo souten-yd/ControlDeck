@@ -9,10 +9,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.application_builder.compiler import compile_application, compile_workflow, default_spec
+from app.application_builder.compiler import compile_application, compile_workflow, default_spec, workflow_app_spec
 from app.application_builder.diagnostics import diagnostic
 from app.models import ApplicationProject, Workflow, WorkflowVersion
 from app.schemas.application_builder import ApplicationSpecV1
+from app.workflows.contracts import build_input_schema, build_output_schema
 
 
 def project_out(row: ApplicationProject) -> dict[str, Any]:
@@ -108,6 +109,17 @@ def validate_payload(
             workflow_version_id=resolved_version_id, target=target,
         )
         diagnostics.extend(workflow_ir.diagnostics)
+    from app.application_builder.builds import build_capability
+    from app.application_builder.capabilities import FRAMEWORK_BY_ID
+
+    source_target = next((
+        item for item in spec.get("targets", [])
+        if isinstance(item, dict) and FRAMEWORK_BY_ID.get(str(item.get("framework") or ""), {}).get("source") is True
+    ), None)
+    generation_available = bool(source_target) and not any(item.severity == "error" for item in diagnostics)
+    if workflow_ir is not None:
+        generation_available = generation_available and all(node.codegen.source_available for node in workflow_ir.nodes)
+    local_build = build_capability()
     return {
         "valid": not any(item.severity == "error" for item in diagnostics),
         "normalizedSpec": normalized_spec,
@@ -115,8 +127,9 @@ def validate_payload(
         "applicationIr": application_ir.model_dump(by_alias=True),
         "diagnostics": [item.model_dump(by_alias=True) for item in diagnostics],
         "capability": {
-            "target": target, "generationAvailable": False, "buildAvailable": False,
-            "note": "Phase Aは設計・検証のみです。source生成やbuildは実行していません。",
+            "target": target, "generationAvailable": generation_available,
+            "buildAvailable": bool(generation_available and local_build["available"]),
+            "note": "対応するC# Console／ASP.NET sourceは、SDK検出時にnetwork denied・resource制限付きsystemd user unitでbuild／self-testできます。",
         },
     }
 
@@ -127,9 +140,13 @@ def create_default_project(
 ) -> ApplicationProject:
     project_name = name or f"{workflow.name} App"
     project_description = workflow.description if description is None else description
-    spec = default_spec(
+    _workflow, definition, resolved_version_id = workflow_source(
+        db, workflow.id, source=source, version_id=workflow_version_id,
+    )
+    spec = workflow_app_spec(
         project_name, project_description, workflow.id,
-        workflow_version_id=workflow_version_id, source=source,
+        input_schema=build_input_schema(definition), output_schema=build_output_schema(definition),
+        workflow_version_id=resolved_version_id, source=source,
     )
     return ApplicationProject(
         name=project_name, description=project_description, workflow_id=workflow.id,

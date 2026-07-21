@@ -69,7 +69,14 @@ def render_template(text: str, context: dict[str, Any]) -> str:
 
 
 class NodeError(RuntimeError):
-    pass
+    def __init__(
+        self, message: str, *, code: str = "NODE_ERROR", retryable: bool = True,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.details = details or {}
 
 
 def _require_app(config: dict) -> int:
@@ -177,9 +184,28 @@ async def node_condition(config: dict, ctx: dict) -> dict:
 
 
 async def node_wait(config: dict, ctx: dict) -> dict:
-    seconds = min(float(config.get("seconds", 1)), 3600)
+    try:
+        seconds = max(0.0, min(float(render_template(str(config.get("seconds", 1)), ctx)), 3600.0))
+    except (TypeError, ValueError) as exc:
+        raise NodeError("待機秒数は数値で指定してください", code="WAIT_SECONDS_INVALID", retryable=False) from exc
     await asyncio.sleep(seconds)
     return {"waited_seconds": seconds}
+
+
+async def node_control_delay(config: dict, ctx: dict) -> dict:
+    """Durable delay completion. Waiting itself is persisted and resumed by the engine."""
+    seconds = max(0.1, min(float(render_template(str(config.get("seconds", 1)), ctx)), 7 * 86400))
+    response = config.get("__pause_response") if isinstance(config.get("__pause_response"), dict) else {}
+    if response:
+        return {
+            "waited_seconds": seconds,
+            "scheduled_for": str(response.get("scheduled_for") or ""),
+            "resumed_at": str(response.get("resumed_at") or ""),
+            "durable": True,
+        }
+    # Node単体テストなどexecution checkpointを持たない経路も同じexecutorを使う。
+    await asyncio.sleep(seconds)
+    return {"waited_seconds": seconds, "scheduled_for": "", "resumed_at": "", "durable": False}
 
 
 async def node_human_approval(config: dict, ctx: dict) -> dict:
@@ -190,11 +216,29 @@ async def node_human_approval(config: dict, ctx: dict) -> dict:
     sensitive.update(str(value) for value in (ctx.get("__secrets__") or {}).values() if value)
     return {
         "approved": True,
+        "response": config.get("__pause_response") if isinstance(config.get("__pause_response"), dict) else {},
         "message": redact(
             render_template(str(config.get("message") or "承認されました"), ctx),
             sensitive_values=sensitive,
         ),
         "approver": str(config.get("approver") or ""),
+    }
+
+
+async def node_human_form(config: dict, ctx: dict) -> dict:
+    """Schema検証済みのdurable form responseを後続へ渡す。"""
+    from app.workflows.redaction import collect_sensitive_values, redact
+
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(value) for value in (ctx.get("__secrets__") or {}).values() if value)
+    return {
+        "submitted": True,
+        "response": config.get("__pause_response") if isinstance(config.get("__pause_response"), dict) else {},
+        "message": redact(
+            render_template(str(config.get("message") or "入力を受け付けました"), ctx),
+            sensitive_values=sensitive,
+        ),
+        "assignee": str(config.get("approver") or ""),
     }
 
 
@@ -307,6 +351,57 @@ async def node_output_render(config: dict, ctx: dict) -> dict:
     }
 
 
+async def node_flow_return(config: dict, ctx: dict) -> dict:
+    """Leaf-only explicit workflow result using the shared typed output contract."""
+    return {
+        **await node_output_render(config, ctx),
+        "terminal": True,
+    }
+
+
+async def node_flow_error(config: dict, ctx: dict) -> dict:
+    """Raise a deliberate typed failure which can use the normal error route."""
+    message = render_template(str(config.get("message") or "ワークフローが明示的に停止されました"), ctx)
+    code = re.sub(r"[^A-Z0-9_]", "_", str(config.get("code") or "FLOW_ERROR").upper())[:64]
+    raw_details = render_template(str(config.get("details") or ""), ctx)
+    details: dict[str, Any] = {}
+    if raw_details:
+        try:
+            parsed = json.loads(raw_details)
+            details = parsed if isinstance(parsed, dict) else {"value": parsed}
+        except json.JSONDecodeError:
+            details = {"value": raw_details}
+    raise NodeError(message[:1000], code=code or "FLOW_ERROR", retryable=False, details=details)
+
+
+async def node_flow_note(config: dict, ctx: dict) -> dict:
+    """Executable no-side-effect annotation, useful in history and node inspection."""
+    level = str(config.get("level") or "info")
+    if level not in {"info", "warning"}:
+        raise NodeError("Note levelはinfoまたはwarningを指定してください", code="NOTE_LEVEL_INVALID", retryable=False)
+    return {"note": render_template(str(config.get("text") or ""), ctx), "level": level}
+
+
+async def node_test_assert(config: dict, ctx: dict) -> dict:
+    """Deterministic assertion for regression flows; never retries a failed assertion."""
+    actual = render_template(str(config.get("actual") or ""), ctx)
+    expected = render_template(str(config.get("expected") or ""), ctx)
+    operator = str(config.get("operator") or "eq")
+    if operator not in OPS:
+        raise NodeError(f"不正なassert演算子: {operator}", code="ASSERT_OPERATOR_INVALID", retryable=False)
+    try:
+        passed = bool(OPS[operator](actual, expected))
+    except NodeError as exc:
+        raise NodeError(str(exc), code="ASSERT_TYPE_ERROR", retryable=False) from exc
+    if not passed:
+        message = render_template(str(config.get("message") or "期待値と一致しません"), ctx)
+        raise NodeError(
+            message[:1000], code="ASSERTION_FAILED", retryable=False,
+            details={"operator": operator, "actual": actual, "expected": expected},
+        )
+    return {"passed": True, "operator": operator, "actual": actual, "expected": expected}
+
+
 # ---- 変数・文字列・Markdown ----
 
 
@@ -361,7 +456,26 @@ MAX_TRANSFORM_BYTES = 2 * 1024 * 1024
 
 
 def _json_value(raw: Any, ctx: dict, *, label: str = "JSON") -> Any:
-    if isinstance(raw, (dict, list, int, float, bool)) or raw is None:
+    if isinstance(raw, (dict, list)):
+        def render_structured(item: Any) -> Any:
+            if isinstance(item, dict):
+                return {str(key): render_structured(value) for key, value in item.items()}
+            if isinstance(item, list):
+                return [render_structured(value) for value in item]
+            # 固定JSON文字列の"1"を数値へ変えず、templateで参照した値だけ型復元する。
+            if isinstance(item, str) and TEMPLATE_RE.search(item):
+                return _template_literal(item, ctx)
+            return copy.deepcopy(item)
+
+        value = render_structured(raw)
+        try:
+            encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise NodeError(f"{label}が不正です: JSON互換の有限値を指定してください") from exc
+        if len(encoded) > MAX_TRANSFORM_BYTES:
+            raise NodeError(f"{label}が2MiB上限を超えました")
+        return value
+    if isinstance(raw, (int, float, bool)) or raw is None:
         return copy.deepcopy(raw)
     text = render_template(str(raw or ""), ctx)
     if len(text.encode("utf-8")) > MAX_TRANSFORM_BYTES:
@@ -625,6 +739,209 @@ async def node_data_aggregate(config: dict, ctx: dict) -> dict:
     return {"result": result, "groups": groups if group_by else [], "count": len(value), "operation": operation}
 
 
+async def node_data_batch(config: dict, ctx: dict) -> dict:
+    """Split a bounded JSON array into stable, ordered batches."""
+    value = _json_value(config.get("input", ""), ctx, label="batch input")
+    if not isinstance(value, list):
+        raise NodeError("batch inputはarrayにしてください", code="BATCH_INPUT_INVALID", retryable=False)
+    if len(value) > 10_000:
+        raise NodeError("batch inputは10000件上限です", code="BATCH_INPUT_TOO_LARGE", retryable=False)
+    try:
+        batch_size = int(render_template(str(config.get("batch_size", 100)), ctx))
+    except (TypeError, ValueError) as exc:
+        raise NodeError("batch sizeは整数で指定してください", code="BATCH_SIZE_INVALID", retryable=False) from exc
+    if batch_size < 1 or batch_size > 1_000:
+        raise NodeError("batch sizeは1〜1000にしてください", code="BATCH_SIZE_INVALID", retryable=False)
+    batches = [value[index:index + batch_size] for index in range(0, len(value), batch_size)]
+    return {
+        "batches": batches, "batch_count": len(batches), "item_count": len(value),
+        "batch_size": batch_size,
+    }
+
+
+async def node_control_rate_limit(config: dict, ctx: dict) -> dict:
+    """Acquire a durable Workflow-scoped fixed-window rate-limit slot."""
+    from app.workflows import resilience
+    from app.workflows.redaction import collect_sensitive_values
+
+    scope = render_template(str(config.get("scope") or "default"), ctx).strip()
+    try:
+        max_calls = int(render_template(str(config.get("max_calls", 1)), ctx))
+        window_seconds = float(render_template(str(config.get("window_seconds", 60)), ctx))
+        max_wait_seconds = float(render_template(str(config.get("max_wait_seconds", 60)), ctx))
+    except (TypeError, ValueError) as exc:
+        raise NodeError("レート制限の件数・時間は数値で指定してください", code="RATE_LIMIT_CONFIG_INVALID", retryable=False) from exc
+    mode = str(config.get("mode") or "wait").strip().lower()
+    if mode not in {"wait", "reject"}:
+        raise NodeError("到達時動作はwaitまたはrejectにしてください", code="RATE_LIMIT_CONFIG_INVALID", retryable=False)
+    if max_wait_seconds < 0 or max_wait_seconds > 3_600:
+        raise NodeError("最大待機は0〜3600秒にしてください", code="RATE_LIMIT_CONFIG_INVALID", retryable=False)
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(value) for value in (ctx.get("__secrets__") or {}).values() if value)
+    started = asyncio.get_running_loop().time()
+    while True:
+        try:
+            result = await asyncio.to_thread(
+                resilience.acquire_rate_limit,
+                workflow_id=int(config.get("__workflow_id") or 0),
+                execution_id=int(config.get("__execution_id") or 0) or None,
+                node_id=str(config.get("__node_id") or ""), scope=scope,
+                max_calls=max_calls, window_seconds=window_seconds,
+                sensitive_values=sensitive,
+            )
+        except resilience.WorkflowControlError as exc:
+            raise NodeError(str(exc), code="RATE_LIMIT_CONFIG_INVALID", retryable=False) from exc
+        waited = asyncio.get_running_loop().time() - started
+        if result["acquired"]:
+            return {**result, "mode": mode, "waited_seconds": waited, "durable": True}
+        retry_after = float(result["retry_after_seconds"])
+        if mode == "reject":
+            raise NodeError(
+                "レート制限に達しました", code="RATE_LIMITED", retryable=False,
+                details={"scope": scope, "retry_after_seconds": retry_after, "reset_at": result["reset_at"]},
+            )
+        remaining = max_wait_seconds - waited
+        if retry_after > remaining:
+            raise NodeError(
+                "レート制限の最大待機時間を超えます", code="RATE_LIMIT_TIMEOUT", retryable=False,
+                details={"scope": scope, "retry_after_seconds": retry_after, "reset_at": result["reset_at"]},
+            )
+        await asyncio.sleep(max(0.001, retry_after))
+
+
+async def node_control_circuit_breaker(config: dict, ctx: dict) -> dict:
+    """Read or update a durable Workflow-scoped circuit breaker."""
+    from app.workflows import resilience
+    from app.workflows.redaction import collect_sensitive_values
+
+    scope = render_template(str(config.get("scope") or "default"), ctx).strip()
+    operation = render_template(str(config.get("operation") or "check"), ctx).strip().lower()
+    try:
+        failure_threshold = int(render_template(str(config.get("failure_threshold", 3)), ctx))
+        recovery_seconds = float(render_template(str(config.get("recovery_seconds", 60)), ctx))
+    except (TypeError, ValueError) as exc:
+        raise NodeError("回路遮断のしきい値・回復待機は数値で指定してください", code="CIRCUIT_CONFIG_INVALID", retryable=False) from exc
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(value) for value in (ctx.get("__secrets__") or {}).values() if value)
+    try:
+        return await asyncio.to_thread(
+            resilience.operate_circuit_breaker,
+            workflow_id=int(config.get("__workflow_id") or 0),
+            execution_id=int(config.get("__execution_id") or 0) or None,
+            node_id=str(config.get("__node_id") or ""), scope=scope,
+            operation=operation, failure_threshold=failure_threshold,
+            recovery_seconds=recovery_seconds, sensitive_values=sensitive,
+        )
+    except resilience.WorkflowControlError as exc:
+        raise NodeError(str(exc), code="CIRCUIT_CONFIG_INVALID", retryable=False) from exc
+
+
+async def node_data_queue(config: dict, ctx: dict) -> dict:
+    """Workflow-scoped durable FIFOへbounded JSON valueを読み書きする。"""
+    from app.workflows import queue as workflow_queue
+    from app.workflows.redaction import collect_sensitive_values
+
+    operation = render_template(str(config.get("operation") or "size"), ctx).strip().lower()
+    queue_name = render_template(str(config.get("queue") or "default"), ctx).strip()
+    value = _json_value(config.get("value"), ctx, label="queue value") if operation == "enqueue" else None
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(item) for item in (ctx.get("__secrets__") or {}).values() if item)
+    try:
+        return await asyncio.to_thread(
+            workflow_queue.operate,
+            workflow_id=int(config.get("__workflow_id") or 0),
+            execution_id=int(config.get("__execution_id") or 0) or None,
+            node_id=str(config.get("__node_id") or ""),
+            operation=operation, queue_name=queue_name, value=value,
+            sensitive_values=sensitive,
+        )
+    except workflow_queue.WorkflowQueueError as exc:
+        raise NodeError(str(exc), code="QUEUE_OPERATION_FAILED", retryable=False) from exc
+
+
+async def node_data_cache(config: dict, ctx: dict) -> dict:
+    """Workflow-scoped durable TTL cacheへbounded JSON valueを読み書きする。"""
+    from app.workflows import cache as workflow_cache
+    from app.workflows.redaction import collect_sensitive_values
+
+    operation = render_template(str(config.get("operation") or "size"), ctx).strip().lower()
+    namespace = render_template(str(config.get("namespace") or "default"), ctx).strip()
+    key = render_template(str(config.get("key") or ""), ctx).strip()
+    value = _json_value(config.get("value"), ctx, label="cache value") if operation == "set" else None
+    raw_ttl = render_template(str(config.get("ttl_seconds") or 3600), ctx) if operation == "set" else 3600
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(item) for item in (ctx.get("__secrets__") or {}).values() if item)
+    try:
+        return await asyncio.to_thread(
+            workflow_cache.operate,
+            workflow_id=int(config.get("__workflow_id") or 0),
+            execution_id=int(config.get("__execution_id") or 0) or None,
+            node_id=str(config.get("__node_id") or ""), operation=operation,
+            namespace=namespace, key=key, value=value, ttl_seconds=raw_ttl,
+            sensitive_values=sensitive,
+        )
+    except workflow_cache.WorkflowCacheError as exc:
+        raise NodeError(str(exc), code="CACHE_OPERATION_FAILED", retryable=False) from exc
+
+
+async def node_data_state(config: dict, ctx: dict) -> dict:
+    """Workflow-scoped durable typed stateをversion付きで読み書きする。"""
+    from app.workflows import state as workflow_state
+    from app.workflows.redaction import collect_sensitive_values
+
+    operation = render_template(str(config.get("operation") or "get"), ctx).strip().lower()
+    namespace = render_template(str(config.get("namespace") or "default"), ctx).strip()
+    key = render_template(str(config.get("key") or "value"), ctx).strip()
+    value = _json_value(config.get("value"), ctx, label="state value") if operation == "set" else None
+    raw_expected = config.get("expected_version")
+    expected_version = (
+        "" if raw_expected is None or raw_expected == ""
+        else render_template(str(raw_expected), ctx).strip()
+    )
+    raw_delta = config.get("delta", 1)
+    delta = _json_value(raw_delta, ctx, label="state delta") if operation == "increment" else 1
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(item) for item in (ctx.get("__secrets__") or {}).values() if item)
+    try:
+        return await asyncio.to_thread(
+            workflow_state.operate,
+            workflow_id=int(config.get("__workflow_id") or 0),
+            execution_id=int(config.get("__execution_id") or 0) or None,
+            node_id=str(config.get("__node_id") or ""), operation=operation,
+            namespace=namespace, key=key, value=value,
+            value_type=str(config.get("value_type") or "auto"),
+            expected_version=expected_version, delta=delta,
+            sensitive_values=sensitive,
+        )
+    except workflow_state.WorkflowStateConflict as exc:
+        raise NodeError(str(exc), code="STATE_VERSION_CONFLICT", retryable=False) from exc
+    except workflow_state.WorkflowStateError as exc:
+        raise NodeError(str(exc), code="STATE_OPERATION_FAILED", retryable=False) from exc
+
+
+async def node_event_emit(config: dict, ctx: dict) -> dict:
+    """DB outboxへ業務イベントを保存して公開済みsubscriberへ配送する。"""
+    from app.workflows import business_events
+    from app.workflows.redaction import collect_sensitive_values
+
+    event_name = render_template(str(config.get("event_name") or ""), ctx).strip()
+    payload = _json_value(config.get("payload", {}), ctx, label="event payload")
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(item) for item in (ctx.get("__secrets__") or {}).values() if item)
+    try:
+        return await business_events.emit_event(
+            event_name=event_name, payload=payload,
+            source_workflow_id=int(config.get("__workflow_id") or 0),
+            source_execution_id=int(config.get("__execution_id") or 0),
+            source_node_id=str(config.get("__node_id") or ""),
+            lineage=ctx.get("__event_lineage__"),
+            current_hop=int(ctx.get("__event_hop__") or 0),
+            sensitive_values=sensitive,
+        )
+    except business_events.WorkflowBusinessEventError as exc:
+        raise NodeError(str(exc), code="EVENT_EMIT_FAILED", retryable=False) from exc
+
+
 # ---- ファイル入出力（許可ルート検証を通す） ----
 
 
@@ -743,12 +1060,14 @@ async def node_llm(config: dict, ctx: dict) -> dict:
     from app.models_mgmt.runtime_provider import response_format_candidates
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
-    base_url = str(config.get("base_url", "http://127.0.0.1:11434/v1")).rstrip("/")
+    base_url = render_template(str(config.get("base_url", "http://127.0.0.1:11434/v1")), ctx).strip().rstrip("/")
+    model = render_template(str(config.get("model", "llama3")), ctx).strip()
+    if not base_url.startswith(("http://", "https://")) or not model:
+        raise NodeError("LLM runtime routeが不正です", code="LLM_ROUTE_INVALID", retryable=False)
     try:
         await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as e:
         raise NodeError(str(e)) from e
-    model = str(config.get("model", "llama3"))
     auto_load = str(config.get("auto_load", True)).lower() not in {"0", "false", "off", "no"}
     if auto_load:
         report_progress("LLMを起動・ロード中", 0, 1)
@@ -975,6 +1294,31 @@ async def node_ai_utility(config: dict, ctx: dict) -> dict:
         raise NodeError("AI補助API応答を解析できません") from exc
 
 
+async def node_ai_route(config: dict, ctx: dict) -> dict:
+    """稼働状況からLLM runtimeを選び、後続ノードへ型付き経路を返す。"""
+    from app.workflows.runtime_route import RuntimeRouteError, choose_runtime
+
+    candidates = None
+    raw_candidates = config.get("candidates")
+    if raw_candidates not in (None, ""):
+        try:
+            candidates = _json_value(raw_candidates, ctx)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise NodeError("runtime候補はJSON arrayで指定してください", code="AI_ROUTE_CONFIG_INVALID", retryable=False) from exc
+    try:
+        return await choose_runtime(
+            strategy=str(config.get("strategy") or "balanced"),
+            candidates=candidates,
+            min_context=int(render_template(str(config.get("min_context") or 0), ctx)),
+            min_free_vram_mb=int(render_template(str(config.get("min_free_vram_mb") or 0), ctx)),
+            allow_unavailable=str(config.get("allow_unavailable", False)).lower() in {"1", "true", "yes", "on"},
+        )
+    except (TypeError, ValueError) as exc:
+        raise NodeError("runtime選択条件が不正です", code="AI_ROUTE_CONFIG_INVALID", retryable=False) from exc
+    except RuntimeRouteError as exc:
+        raise NodeError(str(exc), code="AI_RUNTIME_UNAVAILABLE", retryable=True) from exc
+
+
 # ---- エージェントモード（llm.chat 拡張。既存ノードをツールとして公開） ----
 
 AGENT_TOOLS = [
@@ -1078,60 +1422,287 @@ async def _agent_llm(
 # ---- サブワークフロー呼び出し ----
 
 
-async def node_flow_call(config: dict, ctx: dict) -> dict:
-    """別のワークフローを実行し、完了を待って signal.display の出力を返す。"""
+MAX_SUBFLOW_MAP_ITEMS = 100
+MAX_SUBFLOW_MAP_PARALLEL = 5
+
+
+def _published_subflow_snapshot(workflow_id: int) -> tuple[int, str]:
+    """Resolve one immutable published version for every item in a map run."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import WorkflowVersion
+
+    with SessionLocal() as db:
+        version = db.execute(
+            select(WorkflowVersion).where(
+                WorkflowVersion.workflow_id == workflow_id,
+                WorkflowVersion.published_at.is_not(None),
+            ).order_by(WorkflowVersion.published_at.desc(), WorkflowVersion.version.desc()).limit(1)
+        ).scalar_one_or_none()
+        if version is None:
+            raise NodeError(
+                "公開済みバージョンがありません。先にワークフローを公開してください",
+                code="SUBFLOW_NOT_PUBLISHED", retryable=False,
+            )
+        return version.id, version.definition_json
+
+
+def _subflow_lineage(config: dict, ctx: dict, target_workflow_id: int) -> list[int]:
+    lineage: list[int] = []
+    for raw in ctx.get("__subflow_lineage__") or []:
+        try:
+            workflow_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if workflow_id > 0 and workflow_id not in lineage:
+            lineage.append(workflow_id)
+    current_workflow_id = int(config.get("__workflow_id") or 0)
+    if current_workflow_id > 0 and current_workflow_id not in lineage:
+        lineage.append(current_workflow_id)
+    if target_workflow_id in lineage:
+        raise NodeError(
+            "サブフローの循環参照を検出しました",
+            code="SUBFLOW_CYCLE", retryable=False,
+            details={"target_workflow_id": target_workflow_id, "lineage": lineage},
+        )
+    return [*lineage, target_workflow_id]
+
+
+async def _run_subflow(
+    config: dict, ctx: dict, *, input_base: dict[str, Any] | None = None,
+    published_snapshot: tuple[int, str] | None = None, trigger_type: str = "subflow",
+) -> dict[str, Any]:
+    """Run one published subflow and return its terminal state without masking it."""
     from app.database import SessionLocal
     from app.models import WorkflowExecution
     from app.workflows import engine
+    from app.workflows.contracts import final_outputs
 
     wf_id = config.get("workflow_id")
     if not isinstance(wf_id, (int, float)) or int(wf_id) <= 0:
         raise NodeError("呼び出すワークフローを選択してください")
+    target_workflow_id = int(wf_id)
+    lineage = _subflow_lineage(config, ctx, target_workflow_id)
     depth = int(ctx.get("__depth__", 0))
     message = render_template(str(config.get("message", "")), ctx)
-    extra: dict = {}
-    raw_input = render_template(str(config.get("input_json", "")), ctx).strip()
-    if raw_input:
+    extra: dict[str, Any] = {}
+    configured_input = config.get("input_json", "")
+    if isinstance(configured_input, dict):
+        rendered_input = _json_value(configured_input, ctx, label="subflow input")
+        if not isinstance(rendered_input, dict):
+            raise NodeError("追加入力はJSON objectにしてください", code="SUBFLOW_INPUT_INVALID", retryable=False)
+        extra = rendered_input
+    else:
+        raw_input = render_template(str(configured_input), ctx).strip()
+    if not isinstance(configured_input, dict) and raw_input:
         try:
             parsed = json.loads(raw_input)
-            if isinstance(parsed, dict):
-                extra = parsed
+            if not isinstance(parsed, dict):
+                raise NodeError("追加入力はJSON objectにしてください", code="SUBFLOW_INPUT_INVALID", retryable=False)
+            extra = parsed
         except json.JSONDecodeError as e:
-            raise NodeError(f"入力 JSON が不正です: {e}")
+            raise NodeError(f"入力 JSON が不正です: {e}", code="SUBFLOW_INPUT_INVALID", retryable=False) from e
+    run_options: dict[str, Any] = {}
+    if published_snapshot is not None:
+        run_options = {
+            "workflow_version_id": published_snapshot[0],
+            "definition_json": published_snapshot[1],
+        }
     try:
         exec_id = await engine.run_workflow(
-            int(wf_id), trigger_type="subflow",
-            input_data={"message": message, **extra}, depth=depth + 1, published_only=True)
+            target_workflow_id, trigger_type=trigger_type,
+            input_data={"message": message, **extra, **(input_base or {})},
+            depth=depth + 1, published_only=True, subflow_lineage=lineage,
+            **run_options,
+        )
     except engine.DefinitionError as e:
-        raise NodeError(str(e))
+        raise NodeError(str(e), code="SUBFLOW_DEFINITION_ERROR", retryable=False) from e
 
     wait_limit = max(10, min(int(config.get("timeout", 600) or 600), 3600))
     import asyncio as _asyncio
 
     deadline = _asyncio.get_event_loop().time() + wait_limit
-    while _asyncio.get_event_loop().time() < deadline:
-        await _asyncio.sleep(1.0)
+    try:
+        while _asyncio.get_event_loop().time() < deadline:
+            await _asyncio.sleep(0.2)
 
-        def fetch() -> tuple[str, str, str]:
-            db = SessionLocal()
-            try:
-                row = db.get(WorkflowExecution, exec_id)
-                return (row.status, row.error or "", row.context_json or "{}") if row else ("FAILED", "実行消失", "{}")
-            finally:
-                db.close()
+            def fetch() -> tuple[str, str, str]:
+                db = SessionLocal()
+                try:
+                    row = db.get(WorkflowExecution, exec_id)
+                    return (row.status, row.error or "", row.context_json or "{}") if row else ("FAILED", "実行消失", "{}")
+                finally:
+                    db.close()
 
-        status, error, ctx_json = await _asyncio.to_thread(fetch)
-        if status not in ("RUNNING", "WAITING"):
-            sub_ctx = json.loads(ctx_json)
-            displays = [str(e.get("output", {}).get("value", ""))
-                        for e in sub_ctx.values()
-                        if isinstance(e, dict) and isinstance(e.get("output"), dict) and e["output"].get("display")]
-            if status != "SUCCEEDED":
-                raise NodeError(f"サブフローが {status}: {error}"[:300])
-            return {"execution_id": exec_id, "status": status,
-                    "result": "\n\n".join(d for d in displays if d), "count": len(displays)}
+            status, error, ctx_json = await _asyncio.to_thread(fetch)
+            if status not in ("RUNNING", "WAITING"):
+                sub_ctx = json.loads(ctx_json)
+                outputs = final_outputs(sub_ctx, expose_source=False)
+                displays = [str(item.get("value", "")) for item in outputs.values()]
+                error_contexts = [
+                    entry.get("error_context") or (entry.get("output") or {}).get("error")
+                    for entry in sub_ctx.values() if isinstance(entry, dict)
+                    and (entry.get("status") in {"FAILED", "TIMED_OUT"})
+                ]
+                error_context = next((item for item in reversed(error_contexts) if isinstance(item, dict)), None)
+                return {
+                    "execution_id": exec_id, "status": status, "ok": status == "SUCCEEDED",
+                    "outputs": outputs, "result": "\n\n".join(value for value in displays if value),
+                    "count": len(outputs), "error": error_context or ({
+                        "code": f"SUBFLOW_{status}", "message": error or f"サブフローが{status}になりました",
+                        "retryable": False,
+                    } if status != "SUCCEEDED" else None),
+                }
+    except _asyncio.CancelledError:
+        engine.cancel_execution(exec_id)
+        raise
     engine.cancel_execution(exec_id)
-    raise NodeError(f"サブフローが {wait_limit} 秒以内に完了しませんでした")
+    return {
+        "execution_id": exec_id, "status": "TIMED_OUT", "ok": False,
+        "outputs": {}, "result": "", "count": 0,
+        "error": {
+            "code": "SUBFLOW_TIMEOUT",
+            "message": f"サブフローが {wait_limit} 秒以内に完了しませんでした",
+            "retryable": True,
+        },
+    }
+
+
+async def node_flow_call(config: dict, ctx: dict) -> dict:
+    """別のワークフローを実行し、成功結果を返す。失敗は従来どおり親node error。"""
+    result = await _run_subflow(config, ctx)
+    if not result["ok"]:
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        raise NodeError(
+            str(error.get("message") or f"サブフローが {result['status']}")[:300],
+            code=str(error.get("code") or "SUBFLOW_FAILED"),
+            retryable=bool(error.get("retryable", True)),
+            details={"execution_id": result["execution_id"], "status": result["status"]},
+        )
+    return {
+        "execution_id": result["execution_id"], "status": result["status"],
+        "result": result["result"], "count": result["count"],
+    }
+
+
+async def node_control_try(config: dict, ctx: dict) -> dict:
+    """Treat a published subflow as a try boundary and expose success/error branches."""
+    return await _run_subflow(config, ctx)
+
+
+def _audit_subflow_map(
+    *, source_workflow_id: int, source_execution_id: int, source_node_id: str,
+    target_workflow_id: int, version_id: int, item_count: int, parallel: int,
+    failure_policy: str, succeeded: int, failed: int, execution_ids: list[int], result: str,
+) -> None:
+    from app.audit import service as audit
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        audit.record(
+            db, "workflow.subflow_map", username="workflow-engine",
+            resource_type="workflow", resource_id=str(source_workflow_id), result=result,
+            metadata={
+                "source_execution_id": source_execution_id, "source_node_id": source_node_id[:64],
+                "target_workflow_id": target_workflow_id, "target_version_id": version_id,
+                "item_count": item_count, "parallel": parallel, "failure_policy": failure_policy,
+                "succeeded": succeeded, "failed": failed, "execution_ids": execution_ids,
+            },
+        )
+
+
+async def node_flow_map(config: dict, ctx: dict) -> dict:
+    """Run one pinned published subflow for each typed item and preserve input ordering."""
+    from app.workflows.redaction import collect_sensitive_values, redact
+
+    workflow_id = config.get("workflow_id")
+    if not isinstance(workflow_id, (int, float)) or int(workflow_id) <= 0:
+        raise NodeError("呼び出すワークフローを選択してください", code="SUBFLOW_MAP_TARGET_REQUIRED", retryable=False)
+    items = _json_value(config.get("items", ""), ctx, label="map items")
+    if not isinstance(items, list):
+        raise NodeError("MapのitemsはJSON arrayにしてください", code="SUBFLOW_MAP_ITEMS_INVALID", retryable=False)
+    if len(items) > MAX_SUBFLOW_MAP_ITEMS:
+        raise NodeError(
+            f"Mapのitemsは{MAX_SUBFLOW_MAP_ITEMS}件以内にしてください",
+            code="SUBFLOW_MAP_ITEMS_LIMIT", retryable=False,
+        )
+    try:
+        parallel = int(config.get("parallel", 3) or 3)
+    except (TypeError, ValueError) as exc:
+        raise NodeError("Mapの並列数は整数にしてください", code="SUBFLOW_MAP_PARALLEL_INVALID", retryable=False) from exc
+    if parallel < 1 or parallel > MAX_SUBFLOW_MAP_PARALLEL:
+        raise NodeError(
+            f"Mapの並列数は1〜{MAX_SUBFLOW_MAP_PARALLEL}にしてください",
+            code="SUBFLOW_MAP_PARALLEL_INVALID", retryable=False,
+        )
+    failure_policy = str(config.get("failure_policy") or "stop")
+    if failure_policy not in {"stop", "collect"}:
+        raise NodeError("Mapの失敗方針が不正です", code="SUBFLOW_MAP_POLICY_INVALID", retryable=False)
+
+    target_workflow_id = int(workflow_id)
+    # cycleはversion検索や子execution作成より先に拒否する。
+    _subflow_lineage(config, ctx, target_workflow_id)
+    snapshot = await asyncio.to_thread(_published_subflow_snapshot, target_workflow_id)
+    node_id = str(config.get("__node_id") or "map")
+    sensitive = collect_sensitive_values(ctx)
+    sensitive.update(str(value) for value in (ctx.get("__secrets__") or {}).values() if value)
+    ordered: list[dict[str, Any] | None] = [None] * len(items)
+
+    async def run_item(index: int, item: Any) -> tuple[int, dict[str, Any]]:
+        iteration_context = dict(ctx)
+        iteration_context[node_id] = {
+            "status": "RUNNING", "type": "flow.map",
+            "output": {"index": index, "item": item, "total": len(items)},
+        }
+        result = await _run_subflow(
+            config, iteration_context,
+            input_base={"item": item, "index": index, "total": len(items)},
+            published_snapshot=snapshot, trigger_type="subflow:map",
+        )
+        return index, redact({"index": index, "item": item, **result}, sensitive_values=sensitive)
+
+    stop_after_batch = False
+    for base in range(0, len(items), parallel):
+        batch = list(enumerate(items))[base:base + parallel]
+        completed = await asyncio.gather(*(run_item(index, item) for index, item in batch))
+        for index, result in completed:
+            ordered[index] = result
+        report_progress("サブフローMap実行中", min(base + len(batch), len(items)), len(items))
+        if failure_policy == "stop" and any(not result["ok"] for _index, result in completed):
+            stop_after_batch = True
+            break
+
+    results = [item for item in ordered if item is not None]
+    succeeded = sum(1 for item in results if item["ok"])
+    failed = sum(1 for item in results if not item["ok"])
+    execution_ids = [int(item["execution_id"]) for item in results]
+    audit_args = {
+        "source_workflow_id": int(config.get("__workflow_id") or 0),
+        "source_execution_id": int(config.get("__execution_id") or 0),
+        "source_node_id": node_id, "target_workflow_id": target_workflow_id,
+        "version_id": snapshot[0], "item_count": len(items), "parallel": parallel,
+        "failure_policy": failure_policy, "succeeded": succeeded, "failed": failed,
+        "execution_ids": execution_ids,
+    }
+    if stop_after_batch:
+        await asyncio.to_thread(_audit_subflow_map, **audit_args, result="failure")
+        raise NodeError(
+            f"Map内のサブフローが失敗しました（成功{succeeded}／失敗{failed}）",
+            code="SUBFLOW_MAP_FAILED", retryable=False,
+            details={
+                "target_workflow_id": target_workflow_id, "target_version_id": snapshot[0],
+                "succeeded": succeeded, "failed": failed,
+                "failed_indexes": [item["index"] for item in results if not item["ok"]],
+                "execution_ids": execution_ids,
+            },
+        )
+    await asyncio.to_thread(_audit_subflow_map, **audit_args, result="success")
+    return {
+        "results": results, "count": len(results), "succeeded": succeeded, "failed": failed,
+        "all_succeeded": failed == 0, "execution_ids": execution_ids,
+        "target_workflow_id": target_workflow_id, "target_version_id": snapshot[0],
+    }
 
 
 # ---- ユーティリティ ----
@@ -1755,6 +2326,10 @@ NODE_EXECUTORS = {
     "trigger": node_trigger,
     "signal.display": node_signal_display,
     "output.render": node_output_render,
+    "flow.return": node_flow_return,
+    "flow.error": node_flow_error,
+    "flow.note": node_flow_note,
+    "test.assert": node_test_assert,
     "app.start": node_app_start,
     "app.stop": node_app_stop,
     "app.restart": node_app_restart,
@@ -1762,8 +2337,10 @@ NODE_EXECUTORS = {
     "http.request": node_http_request,
     "condition.if": node_condition,
     "human.approval": node_human_approval,
+    "human.form": node_human_form,
     "control.merge": node_control_merge,
     "util.wait": node_wait,
+    "control.delay": node_control_delay,
     "notify.webhook": node_webhook,
     "file.exists": node_file_exists,
     # v2 追加
@@ -1773,12 +2350,18 @@ NODE_EXECUTORS = {
     "data.template": node_data_template,
     "data.filter": node_data_filter,
     "data.aggregate": node_data_aggregate,
+    "data.batch": node_data_batch,
+    "data.queue": node_data_queue,
+    "data.cache": node_data_cache,
+    "data.state": node_data_state,
+    "event.emit": node_event_emit,
     "text.markdown": node_markdown,
     "file.read": node_file_read,
     "file.write": node_file_write,
     "file.op": node_file_op,
     "file.glob": node_file_glob,
     "llm.chat": node_llm,
+    "ai.route": node_ai_route,
     "ai.utility": node_ai_utility,
     "util.now": node_now,
     "http.download": node_http_download,
@@ -1797,6 +2380,10 @@ NODE_EXECUTORS = {
     "research.deep": node_deep_research,
     "db.query": node_db_query,
     "flow.call": node_flow_call,
+    "flow.map": node_flow_map,
+    "control.try": node_control_try,
+    "control.rate_limit": node_control_rate_limit,
+    "control.circuit_breaker": node_control_circuit_breaker,
 }
 
 # ノードごとの既定タイムアウト（秒）
@@ -1805,6 +2392,7 @@ NODE_TIMEOUTS = {
     "http.request": 320,
     "http.download": 1830,
     "llm.chat": 620,
+    "ai.route": 15,
     "ai.utility": 320,
     "web.scrape": 130,
     "media.ocr": 130,
@@ -1820,6 +2408,8 @@ NODE_TIMEOUTS = {
     "research.deep": 1800,
     "db.query": 320,
     "flow.call": 3660,
+    "flow.map": 7200,
+    "control.rate_limit": 3700,
 }
 
 # Optional integrationはfeature有効時だけexecutorへ登録する。通常起動ではimportもしない。

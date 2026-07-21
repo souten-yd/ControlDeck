@@ -263,8 +263,63 @@ def test_webhook_trigger_fires(admin_client):
             break
     assert ex["status"] == "SUCCEEDED"
     assert ex["context"]["s"]["output"]["value"] == "受信: こんにちは"
+    # 下書きでtokenを変更しても、次に公開するまでは公開版tokenが正となる。
+    draft = {**definition, "nodes": [
+        {"id": "t", "type": "trigger", "config": {"mode": "webhook", "webhook_token": "draft-only-token-0123456789"}},
+        definition["nodes"][1],
+    ]}
+    assert admin_client.patch(
+        f"/api/v1/workflows/{wf_id}", json={"definition": draft}, headers=CSRF_HEADERS,
+    ).status_code == 200
+    assert admin_client.post(f"/api/v1/hooks/{token}", json={"message": "公開版"}).status_code == 200
+    assert admin_client.post("/api/v1/hooks/draft-only-token-0123456789", json={}).status_code == 404
     # 不明トークンは 404
     assert admin_client.post("/api/v1/hooks/unknown-token-0123456789", json={}).status_code == 404
+
+
+def test_system_trigger_uses_published_definition_and_redacts_payload(admin_client):
+    """system triggerは公開版で選択し、内部イベントの秘密値をcontextへ残さない。"""
+    from app.workflows import engine
+
+    published = {
+        "nodes": [
+            {"id": "t", "type": "trigger", "config": {
+                "mode": "system", "system_event": "disk", "resource_filter": "data",
+            }},
+            {"id": "s", "type": "signal.display", "config": {
+                "signal": "reply", "value": "{{t.event_source}}:{{t.resource}}",
+            }},
+        ],
+        "edges": [{"source": "t", "target": "s"}],
+    }
+    response = admin_client.post(
+        "/api/v1/workflows", json={"name": "system trigger test", "definition": published}, headers=CSRF_HEADERS,
+    )
+    workflow_id = response.json()["id"]
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/enable", headers=CSRF_HEADERS).status_code == 200
+
+    draft = {**published, "nodes": [
+        {"id": "t", "type": "trigger", "config": {"mode": "manual"}}, published["nodes"][1],
+    ]}
+    assert admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": draft}, headers=CSRF_HEADERS,
+    ).status_code == 200
+
+    async def dispatch() -> tuple[list[int], dict]:
+        ids = await engine.fire_system_triggers("disk", {
+            "resource": "/data", "value": 91.2, "api_token": "must-not-leak",
+        })
+        assert len(ids) == 1
+        await engine._running[ids[0]]
+        return ids, engine._live.get(ids[0], {})
+
+    execution_ids, _ = asyncio.run(dispatch())
+    execution = admin_client.get(f"/api/v1/workflow-executions/{execution_ids[0]}").json()
+    assert execution["status"] == "SUCCEEDED"
+    assert execution["trigger_type"] == "system:disk"
+    assert execution["context"]["t"]["output"]["event_source"] == "disk"
+    assert "api_token" not in execution["context"]["t"]["output"]
 
 
 def test_flow_call_subflow(admin_client):
@@ -386,6 +441,61 @@ def test_human_approval_timeout_uses_timeout_route(admin_client):
     assert ex["status"] == "SUCCEEDED"
     assert ex["context"]["gate"]["status"] == "TIMED_OUT"
     assert ex["context"]["timed"]["output"]["value"] == "APPROVAL_TIMEOUT"
+
+
+def test_human_form_cancel_and_timeout_use_typed_error_routes(admin_client):
+    def create_and_run(name: str, timeout: float) -> int:
+        definition = {
+            "nodes": [
+                {"id": "t", "type": "trigger", "config": {"mode": "manual"}},
+                {"id": "form", "type": "human.form", "config": {
+                    "message": "入力待ち", "form_timeout_seconds": timeout, "on_error": "branch",
+                    "inputs": [{"key": "answer", "label": "回答", "type": "text", "required": True}],
+                }},
+                {"id": "error", "type": "signal.display", "config": {"signal": "error", "value": "{{form.error.code}}"}},
+                {"id": "timed", "type": "signal.display", "config": {"signal": "timeout", "value": "{{form.error.code}}"}},
+            ],
+            "edges": [
+                {"source": "t", "target": "form"},
+                {"source": "form", "target": "error", "branch": "error"},
+                {"source": "form", "target": "timed", "branch": "timeout"},
+            ],
+        }
+        workflow_id = admin_client.post(
+            "/api/v1/workflows", json={"name": name, "definition": definition}, headers=CSRF_HEADERS,
+        ).json()["id"]
+        assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+        return admin_client.post(
+            f"/api/v1/workflows/{workflow_id}/run", json={}, headers=CSRF_HEADERS,
+        ).json()["execution_id"]
+
+    canceled_id = create_and_run("フォームキャンセル", 30)
+    for _ in range(50):
+        time.sleep(0.05)
+        canceled = admin_client.get(f"/api/v1/workflow-executions/{canceled_id}/live").json()
+        if canceled["status"] == "WAITING":
+            break
+    response = admin_client.post(
+        f"/api/v1/workflow-executions/{canceled_id}/approve",
+        json={"node_id": "form", "approve": False, "response": {}}, headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    for _ in range(50):
+        time.sleep(0.05)
+        canceled = admin_client.get(f"/api/v1/workflow-executions/{canceled_id}").json()
+        if canceled["status"] not in ("RUNNING", "WAITING"):
+            break
+    assert canceled["status"] == "SUCCEEDED"
+    assert canceled["context"]["error"]["output"]["value"] == "FORM_CANCELED"
+
+    timed_id = create_and_run("フォーム期限", 0.1)
+    for _ in range(50):
+        time.sleep(0.1)
+        timed = admin_client.get(f"/api/v1/workflow-executions/{timed_id}").json()
+        if timed["status"] not in ("RUNNING", "WAITING"):
+            break
+    assert timed["status"] == "SUCCEEDED"
+    assert timed["context"]["timed"]["output"]["value"] == "FORM_TIMEOUT"
 
 
 def test_human_approval_rejects_wrong_assignee(admin_client):

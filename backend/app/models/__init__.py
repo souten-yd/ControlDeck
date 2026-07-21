@@ -306,6 +306,171 @@ class WorkflowExecution(Base):
     workflow_version_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_versions.id"), nullable=True)
     definition_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
     runtime_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WorkflowExecutionEvent(Base):
+    """再接続時に再送できる、redact済みの実行イベント。"""
+
+    __tablename__ = "workflow_execution_events"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "sequence", name="uq_workflow_execution_event_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[int] = mapped_column(ForeignKey("workflow_executions.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(48))
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class WorkflowPause(Base):
+    """Service再起動をまたいで解決できるWorkflowのhuman checkpoint。"""
+
+    __tablename__ = "workflow_pauses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[int] = mapped_column(ForeignKey("workflow_executions.id"), index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    pause_type: Mapped[str] = mapped_column(String(24), default="approval")
+    message: Mapped[str] = mapped_column(Text, default="")
+    approver: Mapped[str] = mapped_column(String(64), default="")
+    form_schema_json: Mapped[str] = mapped_column(Text, default="{}")
+    # PENDING / APPROVED / REJECTED / EXPIRED / COMPLETED / CANCELED
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
+    # 平文tokenは生成直後にSHA-256化して破棄し、DBにはhashだけを保存する。
+    token_hash: Mapped[str] = mapped_column(String(64), default="")
+    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WorkflowQueueItem(Base):
+    """Workflow内で実行・service再起動を越えて保持するbounded FIFO item。"""
+
+    __tablename__ = "workflow_queue_items"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "queue_name", "sequence", name="uq_workflow_queue_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    queue_name: Mapped[str] = mapped_column(String(64), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    enqueued_by_execution_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_executions.id"), nullable=True, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class WorkflowCacheEntry(Base):
+    """Workflow内でservice再起動を越えて共有する期限付きJSON cache。"""
+
+    __tablename__ = "workflow_cache_entries"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "namespace", "cache_key", name="uq_workflow_cache_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    namespace: Mapped[str] = mapped_column(String(64), index=True)
+    cache_key: Mapped[str] = mapped_column(String(128))
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    written_by_execution_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_executions.id"), nullable=True, index=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WorkflowStateEntry(Base):
+    """Workflow内で共有する期限なし・型固定・version付きJSON state。"""
+
+    __tablename__ = "workflow_state_entries"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "namespace", "state_key", name="uq_workflow_state_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    namespace: Mapped[str] = mapped_column(String(64), index=True)
+    state_key: Mapped[str] = mapped_column(String(128))
+    value_type: Mapped[str] = mapped_column(String(16))
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    written_by_execution_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_executions.id"), nullable=True, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class WorkflowBusinessEvent(Base):
+    """Workflow間で配送するredact済み業務イベントoutbox。"""
+
+    __tablename__ = "workflow_business_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    event_name: Mapped[str] = mapped_column(String(128), index=True)
+    source_workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    source_execution_id: Mapped[int] = mapped_column(ForeignKey("workflow_executions.id"), index=True)
+    source_node_id: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text)
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+    lineage_json: Mapped[str] = mapped_column(Text, default="[]")
+    hop: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkflowEventDelivery(Base):
+    """業務イベントoutboxのsubscriber別配送状態。"""
+
+    __tablename__ = "workflow_event_deliveries"
+    __table_args__ = (
+        UniqueConstraint("business_event_id", "target_workflow_id", name="uq_workflow_event_delivery_target"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    business_event_id: Mapped[int] = mapped_column(ForeignKey("workflow_business_events.id"), index=True)
+    target_workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
+    target_execution_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_executions.id"), nullable=True, index=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WorkflowArtifact(Base):
+    """Application-owned storageを指すWorkflow成果物metadata。本文はDBへ保存しない。"""
+
+    __tablename__ = "workflow_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[int] = mapped_column(ForeignKey("workflow_executions.id"), index=True)
+    node_run_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_node_runs.id"), nullable=True, index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    storage_key: Mapped[str] = mapped_column(String(160), unique=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    mime_type: Mapped[str] = mapped_column(String(255), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    checksum: Mapped[str] = mapped_column(String(64), default="")
+    sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class WorkflowNodeRun(Base):
@@ -386,6 +551,48 @@ class ApplicationProject(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ApplicationBuild(Base):
+    """決定的source snapshotを独立systemd user unitでbuildしたdurable記録。"""
+
+    __tablename__ = "application_builds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("application_projects.id"), index=True)
+    target_id: Mapped[str] = mapped_column(String(128))
+    framework: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    unit_name: Mapped[str] = mapped_column(String(128), unique=True, default="")
+    build_root: Mapped[str] = mapped_column(String(1024), default="")
+    source_checksum: Mapped[str] = mapped_column(String(64), default="")
+    archive_checksum: Mapped[str] = mapped_column(String(64), default="")
+    generator_json: Mapped[str] = mapped_column(Text, default="{}")
+    sdk_name: Mapped[str] = mapped_column(String(32), default="dotnet")
+    sdk_path: Mapped[str] = mapped_column(String(1024), default="")
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=900)
+    result: Mapped[str] = mapped_column(String(64), default="")
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_redacted: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ApplicationBuildArtifact(Base):
+    """Build root配下だけを指す成果物metadata。本文はDBへ保存しない。"""
+
+    __tablename__ = "application_build_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    build_id: Mapped[int] = mapped_column(ForeignKey("application_builds.id"), index=True)
+    path: Mapped[str] = mapped_column(String(2048))
+    kind: Mapped[str] = mapped_column(String(32), default="file")
+    mime_type: Mapped[str] = mapped_column(String(256), default="application/octet-stream")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    checksum: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class RemoteConnection(Base):
@@ -525,3 +732,78 @@ class ProjectRunArtifact(Base):
     checksum: Mapped[str] = mapped_column(String(64), default="")
     change_type: Mapped[str] = mapped_column(String(16), default="created")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TerminalSnippet(Base):
+    """管理者が登録し、Terminalから再利用するcode／prompt template。"""
+
+    __tablename__ = "terminal_snippets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(320), default="")
+    content: Mapped[str] = mapped_column(Text)
+    variables_json: Mapped[str] = mapped_column(Text, default="[]")
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class TerminalAutomationSchedule(Base):
+    """Web processから独立したsystemd user timer用の実行定義。"""
+
+    __tablename__ = "terminal_automation_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    snippet_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    parameters_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String(16), default="detached")
+    target_session_id: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    working_directory: Mapped[str] = mapped_column(String(1024), default="")
+    condition_type: Mapped[str] = mapped_column(String(24), default="always")
+    condition_value: Mapped[str] = mapped_column(String(128), default="")
+    recurrence: Mapped[str] = mapped_column(String(16), default="once")
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    run_if_missed: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=3600)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="SCHEDULED", index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_result: Mapped[str] = mapped_column(String(32), default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_by_username: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class TerminalCommandRun(Base):
+    """Snippetの即時／予約実行を追跡するbounded log付きdurable記録。"""
+
+    __tablename__ = "terminal_command_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    schedule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("terminal_automation_schedules.id"), nullable=True, index=True,
+    )
+    snippet_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    command_snapshot_encrypted: Mapped[str] = mapped_column(Text, default="")
+    command_checksum: Mapped[str] = mapped_column(String(64), default="")
+    mode: Mapped[str] = mapped_column(String(16), default="detached")
+    target_session_id: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    working_directory: Mapped[str] = mapped_column(String(1024), default="")
+    condition_type: Mapped[str] = mapped_column(String(24), default="always")
+    condition_value: Mapped[str] = mapped_column(String(128), default="")
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=3600)
+    status: Mapped[str] = mapped_column(String(24), default="QUEUED", index=True)
+    unit_name: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    output_path: Mapped[str] = mapped_column(String(1024), default="")
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_by_username: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

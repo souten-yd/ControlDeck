@@ -54,7 +54,8 @@ async def lifespan(app: FastAPI):
     from app.alerts.engine import alert_loop
     from app.maintenance.service import maintenance_loop
     from app.maintenance.watchdog import notify_ready, watchdog_loop
-    from app.workflows.engine import scheduler_loop
+    from app.workflows.engine import pause_recovery_loop, scheduler_loop, system_event_loop
+    from app.workflows.business_events import delivery_loop as business_event_delivery_loop
     from app.models_mgmt.ollama import idle_unload_loop as ollama_idle_unload_loop
     from app.models_mgmt.llama import idle_unload_loop as llama_idle_unload_loop
     from app.applications.health import health_check_loop
@@ -62,6 +63,9 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),
+        asyncio.create_task(pause_recovery_loop()),
+        asyncio.create_task(system_event_loop()),
+        asyncio.create_task(business_event_delivery_loop()),
         asyncio.create_task(maintenance_loop()),
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(alert_loop()),
@@ -145,6 +149,7 @@ from app.logs.router import router as logs_router  # noqa: E402
 from app.monitoring.router import router as system_router  # noqa: E402
 from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
+from app.terminals.automation_router import router as terminal_automation_router  # noqa: E402
 from app.workflows.router import router as workflows_router  # noqa: E402
 from app.workflows.runner_router import router as workflow_runner_router  # noqa: E402
 from app.application_builder.router import router as application_builder_router  # noqa: E402
@@ -178,6 +183,7 @@ app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
+app.include_router(terminal_automation_router, prefix=API)
 app.include_router(samplebook_router, prefix=API)  # /workflows/samples は /workflows/{id} より先に登録
 app.include_router(workflow_runner_router, prefix=API)
 app.include_router(application_builder_router, prefix=API)

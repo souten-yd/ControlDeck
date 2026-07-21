@@ -109,6 +109,7 @@ export function PreviewWorkspace({
   definition,
   inputs,
   dirty,
+  initialMode = "safe",
   onSave,
   onExecution,
   onClose,
@@ -117,13 +118,14 @@ export function PreviewWorkspace({
   definition: Definition;
   inputs: TriggerInputDef[];
   dirty: boolean;
+  initialMode?: "safe" | "test";
   onSave: () => Promise<boolean>;
   onExecution: (executionId: number) => void;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [values, setValues] = useState<Record<string, unknown>>(() => initialValues(inputs));
-  const [mode, setMode] = useState<"safe" | "test">("safe");
+  const [mode, setMode] = useState<"safe" | "test">(initialMode);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [publishCheck, setPublishCheck] = useState<PublishCheckResult | null>(null);
   const [executionId, setExecutionId] = useState<number | null>(null);
@@ -135,6 +137,7 @@ export function PreviewWorkspace({
   const [assertionsText, setAssertionsText] = useState("[]");
 
   useEffect(() => setValues((current) => ({ ...initialValues(inputs), ...current })), [inputs]);
+  useEffect(() => setMode(initialMode), [initialMode]);
 
   const { data: executions } = useQuery({
     queryKey: ["executions", workflowId],

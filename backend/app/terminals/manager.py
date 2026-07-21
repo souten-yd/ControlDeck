@@ -21,14 +21,21 @@ import subprocess
 import termios
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.config import data_dir, get_config
 
 TMUX_PREFIX = "cdterm-"
+TERMINAL_ENGINES = {"v1", "v2-lab"}
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 HISTORY_LINES = 100_000
-HISTORY_BYTES = 16 * 1024 * 1024
-HISTORY_TRUNCATED = b"\r\n\x1b[33m[Control Deck: history older than 16 MiB was truncated]\x1b[0m\r\n"
+# tmux側の全履歴は保持しつつ、Web初期表示は最新部分だけを取得する。
+# 4 MiBの一括解析ではxterm parser/rendererがモバイルのメインスレッドを
+# 数秒占有するため、復元用は最大10,000行かつ512 KiBの小さい方に限定する。
+HISTORY_REPLAY_LINES = 10_000
+HISTORY_BYTES = 512 * 1024
+HISTORY_TRUNCATED = b"\r\n\x1b[33m[Control Deck: Web restore shows recent history; older history remains in tmux]\x1b[0m\r\n"
+IDLE_COMMANDS = {"bash", "dash", "fish", "sh", "tmux", "zsh"}
 
 
 def tmux_available() -> bool:
@@ -66,6 +73,30 @@ def _bounded_history(data: bytes) -> tuple[bytes, bool]:
     return HISTORY_TRUNCATED + data[cut:], True
 
 
+def _display_path(value: str) -> str:
+    """認証済みUI用にhomeだけを短縮する。実パスはプロセス起動へ再利用しない。"""
+    if not value:
+        return "N/A"
+    home = os.path.expanduser("~")
+    if value == home:
+        return "~"
+    if value.startswith(home + os.sep):
+        return "~" + value[len(home):]
+    return value
+
+
+def _session_metadata(*, command: str, cwd: str, pid: int, activity_at: float, alive: bool = True) -> dict[str, object]:
+    program = os.path.basename(command.strip()) or "shell"
+    return {
+        "program": program,
+        "cwd": _display_path(cwd),
+        "pid": pid,
+        "activity_at": activity_at,
+        "alive": alive,
+        "workload": "idle" if program in IDLE_COMMANDS else "running",
+    }
+
+
 def _tmux_config_path() -> str:
     path = data_dir() / "terminal-tmux.conf"
     content = f"set -g history-limit {HISTORY_LINES}\n"
@@ -78,17 +109,24 @@ def _tmux_config_path() -> str:
     return str(path.resolve())
 
 
-def _initial_pty_output(fd: int) -> bytes:
-    """tmux attach直後の端末初期化/全画面描画を履歴snapshotより先に処理する。"""
+def _initial_pty_output(
+    fd: int,
+    *,
+    first_timeout: float = 0.75,
+    quiet_timeout: float = 0.05,
+) -> bytes:
+    """tmux attach初期化出力を、最初の無出力区間まで有界にdrainする。"""
     chunks: list[bytes] = []
-    deadline = time.monotonic() + 0.75
+    total = 0
+    deadline = time.monotonic() + first_timeout
     received = False
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([fd], [], [], 0.05)
+        timeout = quiet_timeout if received else max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([fd], [], [], timeout)
         if not ready:
             if received:
                 break
-            continue
+            break
         try:
             data = os.read(fd, 65_536)
         except (BlockingIOError, OSError):
@@ -96,8 +134,9 @@ def _initial_pty_output(fd: int) -> bytes:
         if not data:
             break
         chunks.append(data)
+        total += len(data)
         received = True
-        if sum(map(len, chunks)) >= 1_048_576:
+        if total >= 1_048_576:
             break
     return b"".join(chunks)
 
@@ -111,9 +150,11 @@ class PtySession:
     master_fd: int
     pid: int
     created_at: float = field(default_factory=time.time)
+    activity_at: float = field(default_factory=time.time)
     buffer: bytearray = field(default_factory=bytearray)  # 再接続時のリプレイ用
     buffer_truncated: bool = False
     attached: bool = False
+    engine: str = "v1"
 
     def alive(self) -> bool:
         try:
@@ -132,7 +173,10 @@ class TerminalManager:
     def list_sessions(self) -> list[dict]:
         if tmux_available():
             r = subprocess.run(
-                ["tmux", "list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_attached}"],
+                ["tmux", "list-sessions", "-F",
+                 "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_activity}"
+                 "\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t#{pane_dead}"
+                 "\t#{@control-deck-engine}"],
                 capture_output=True, text=True, timeout=10,
             )
             sessions = []
@@ -141,15 +185,25 @@ class TerminalManager:
                     parts = line.split("\t")
                     if not parts[0].startswith(TMUX_PREFIX):
                         continue
-                    sessions.append(
-                        {
-                            "id": parts[0][len(TMUX_PREFIX):],
-                            "name": parts[0],
-                            "created_at": float(parts[1]) if len(parts) > 1 else 0,
-                            "attached": parts[2] == "1" if len(parts) > 2 else False,
-                            "persistent": True,
-                        }
-                    )
+                    try:
+                        pid = int(parts[6]) if len(parts) > 6 else 0
+                    except ValueError:
+                        pid = 0
+                    sessions.append({
+                        "id": parts[0][len(TMUX_PREFIX):],
+                        "name": parts[0],
+                        "created_at": float(parts[1]) if len(parts) > 1 else 0,
+                        "attached": parts[2] == "1" if len(parts) > 2 else False,
+                        "persistent": True,
+                        "engine": parts[8] if len(parts) > 8 and parts[8] in TERMINAL_ENGINES else "v1",
+                        **_session_metadata(
+                            command=parts[4] if len(parts) > 4 else "",
+                            cwd=parts[5] if len(parts) > 5 else "",
+                            pid=pid,
+                            activity_at=float(parts[3]) if len(parts) > 3 and parts[3] else 0,
+                            alive=not (len(parts) > 7 and parts[7] == "1"),
+                        ),
+                    })
             return sessions
         # フォールバック
         dead = [sid for sid, s in self._fallback.items() if not s.alive()]
@@ -162,14 +216,35 @@ class TerminalManager:
                 "created_at": s.created_at,
                 "attached": s.attached,
                 "persistent": False,
+                "engine": s.engine,
+                **self._fallback_metadata(s),
             }
             for s in self._fallback.values()
         ]
 
-    def create_session(self, cwd: str | None = None, command: str | None = None) -> dict:
+    @staticmethod
+    def _fallback_metadata(session: PtySession) -> dict[str, object]:
+        command = ""
+        cwd = ""
+        try:
+            proc_root = Path("/proc") / str(session.pid)
+            command = (proc_root / "comm").read_text(encoding="utf-8").strip()
+            cwd = os.readlink(proc_root / "cwd")
+        except OSError:
+            pass
+        return _session_metadata(
+            command=command, cwd=cwd, pid=session.pid,
+            activity_at=session.activity_at, alive=session.alive(),
+        )
+
+    def create_session(
+        self, cwd: str | None = None, command: str | None = None, *, engine: str = "v1",
+    ) -> dict:
         """セッションを作成する。command 指定時はシェルでそのコマンドを実行する
         （例: gh auth login。継続利用するコマンド側で exec bash 等を付ける）。"""
         cfg = get_config().terminal
+        if engine not in TERMINAL_ENGINES:
+            raise ValueError("unsupported terminal engine")
         if not cfg.enabled:
             raise RuntimeError("ターミナルは無効化されています")
         if len(self.list_sessions()) >= cfg.max_sessions:
@@ -208,7 +283,14 @@ class TerminalManager:
                 ["tmux", "set-option", "-t", name, "status", "off"],
                 capture_output=True, timeout=10,
             )
-            return {"id": sid, "name": name, "persistent": True}
+            tagged = subprocess.run(
+                ["tmux", "set-option", "-t", name, "@control-deck-engine", engine],
+                capture_output=True, timeout=10,
+            )
+            if tagged.returncode != 0:
+                subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True, timeout=10)
+                raise RuntimeError("Terminal engine属性を保存できません")
+            return {"id": sid, "name": name, "persistent": True, "engine": engine}
         # フォールバック: プロセス内 PTY
         master, slave = pty.openpty()
         env = {
@@ -225,9 +307,19 @@ class TerminalManager:
         )
         os.close(slave)
         os.set_blocking(master, False)
-        session = PtySession(id=sid, name=f"pty-{sid}", master_fd=master, pid=proc.pid)
+        session = PtySession(id=sid, name=f"pty-{sid}", master_fd=master, pid=proc.pid, engine=engine)
         self._fallback[sid] = session
-        return {"id": sid, "name": session.name, "persistent": False}
+        return {"id": sid, "name": session.name, "persistent": False, "engine": engine}
+
+    def session_engine(self, sid: str) -> str:
+        """Sessionへ永続化した描画engineを返す。未知Sessionはfail-closed。"""
+        if not SESSION_ID_RE.fullmatch(sid):
+            raise KeyError("セッションが見つかりません")
+        session = next((item for item in self.list_sessions() if item.get("id") == sid), None)
+        if session is None:
+            raise KeyError("セッションが見つかりません")
+        engine = str(session.get("engine") or "v1")
+        return engine if engine in TERMINAL_ENGINES else "v1"
 
     def kill_session(self, sid: str) -> None:
         if tmux_available():
@@ -237,6 +329,58 @@ class TerminalManager:
             )
             return
         self._close_fallback(sid, kill=True)
+
+    def inject_input(self, sid: str, text: str, *, submit: bool = True) -> int:
+        """Bracket-paste an explicit automation payload into one exact session.
+
+        The payload is provided to tmux over stdin, so code or prompt text is
+        never exposed in a process argument. Callers must check their session
+        precondition immediately before this operation.
+        """
+        payload = text.encode("utf-8")
+        if not payload or len(payload) > 256 * 1024 or b"\x00" in payload:
+            raise ValueError("Terminal input must be 1..262144 bytes without NUL")
+        if tmux_available():
+            target = _target(sid)
+            exists = subprocess.run(
+                ["tmux", "has-session", "-t", target], capture_output=True, timeout=10,
+            )
+            if exists.returncode != 0:
+                raise KeyError("セッションが見つかりません")
+            buffer_name = f"cdauto-{secrets.token_hex(8)}"
+            try:
+                loaded = subprocess.run(
+                    ["tmux", "load-buffer", "-b", buffer_name, "-"],
+                    input=payload, capture_output=True, timeout=10,
+                )
+                if loaded.returncode != 0:
+                    raise OSError("tmux input buffer could not be loaded")
+                pasted = subprocess.run(
+                    ["tmux", "paste-buffer", "-p", "-d", "-b", buffer_name, "-t", target],
+                    capture_output=True, timeout=10,
+                )
+                if pasted.returncode != 0:
+                    raise OSError("tmux input could not be pasted")
+                if submit:
+                    submitted = subprocess.run(
+                        ["tmux", "send-keys", "-t", target, "Enter"],
+                        capture_output=True, timeout=10,
+                    )
+                    if submitted.returncode != 0:
+                        raise OSError("tmux input could not be submitted")
+            finally:
+                subprocess.run(
+                    ["tmux", "delete-buffer", "-b", buffer_name],
+                    capture_output=True, timeout=10, check=False,
+                )
+            return len(payload)
+        session = self._fallback.get(sid)
+        if session is None or not session.alive():
+            raise KeyError("セッションが見つかりません")
+        connection = TerminalConnection(
+            master_fd=session.master_fd, pid=session.pid, owns_process=False, session=session,
+        )
+        return connection.write(payload + (b"\r" if submit else b""))
 
     def _close_fallback(self, sid: str, kill: bool = False) -> None:
         s = self._fallback.pop(sid, None)
@@ -287,13 +431,21 @@ class TerminalManager:
             # attach初期描画をdrainした後にcaptureする。capture後の出力はPTYへ流れるため、
             # 接続確立中に生成された行もsnapshot/通常streamのどちらかへ必ず入る。
             captured = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-e", "-J", "-S", "-", "-t", target],
+                ["tmux", "capture-pane", "-p", "-e", "-J", "-S", f"-{HISTORY_REPLAY_LINES}", "-t", target],
                 capture_output=True, timeout=15,
             )
             if captured.returncode != 0:
                 os.close(master)
                 os.killpg(os.getpgid(proc.pid), signal.SIGHUP)
                 raise KeyError("セッションが見つかりません")
+            # capture-pane中にtmux attachが追加する最終全画面描画も、
+            # history_resetより前の初期化frameへ取り込む。これをreaderへ
+            # 流すとhistory_end後に1行ずれた画面が露出する。ローカル
+            # PTYの最初の追加byteだけ最大20ms待ち、受信後は5msのquiet
+            # boundaryで即座に完了する。
+            initial += _initial_pty_output(
+                master, first_timeout=0.02, quiet_timeout=0.005,
+            )
             replay, _ = _bounded_history(captured.stdout.replace(b"\n", b"\r\n"))
             return TerminalConnection(master_fd=master, pid=proc.pid, owns_process=True,
                                       replay=replay, initial=initial, rows=rows, cols=cols,
@@ -354,11 +506,49 @@ class TerminalConnection:
             total += written
         return total
 
+    def scroll_history(self, lines: int) -> bool:
+        """Move tmux copy-mode history without accepting a command from the client."""
+        if not self.tmux_target:
+            return False
+        amount = min(100, max(1, abs(lines)))
+        direction = "scroll-down" if lines > 0 else "scroll-up"
+        entered = subprocess.run(
+            ["tmux", "copy-mode", "-e", "-t", self.tmux_target],
+            capture_output=True, timeout=5, check=False,
+        )
+        if entered.returncode != 0:
+            raise OSError("tmux history mode is unavailable")
+        moved = subprocess.run(
+            ["tmux", "send-keys", "-t", self.tmux_target, "-X", "-N", str(amount), direction],
+            capture_output=True, timeout=5, check=False,
+        )
+        if moved.returncode != 0:
+            raise OSError("tmux history could not be moved")
+        if direction == "scroll-down":
+            position = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", self.tmux_target, "#{scroll_position}"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            if position.returncode == 0 and position.stdout.strip() in {"", "0"}:
+                self.exit_history()
+        return True
+
+    def exit_history(self) -> bool:
+        """Leave copy mode before terminal input resumes; harmless when not active."""
+        if not self.tmux_target:
+            return False
+        result = subprocess.run(
+            ["tmux", "send-keys", "-t", self.tmux_target, "-X", "cancel"],
+            capture_output=True, timeout=5, check=False,
+        )
+        # tmux returns non-zero when the pane is already in normal mode.
+        return result.returncode == 0
+
     def capture_replay(self) -> bytes:
         """resume journal範囲外時だけ現在のbounded snapshotを取得する。"""
         if self.tmux_target:
             captured = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-e", "-J", "-S", "-", "-t", self.tmux_target],
+                ["tmux", "capture-pane", "-p", "-e", "-J", "-S", f"-{HISTORY_REPLAY_LINES}", "-t", self.tmux_target],
                 capture_output=True, timeout=15,
             )
             if captured.returncode != 0:
@@ -423,6 +613,7 @@ class TerminalConnection:
                 data = b""
             if data:
                 if self.session is not None:
+                    self.session.activity_at = time.time()
                     self.session.buffer.extend(data)
                     if len(self.session.buffer) > HISTORY_BYTES:
                         overflow = len(self.session.buffer) - HISTORY_BYTES

@@ -5,13 +5,18 @@ import signal
 import subprocess
 import time
 
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
 from app.terminals.manager import (
     HISTORY_BYTES,
     HISTORY_TRUNCATED,
     TerminalConnection,
     TerminalManager,
     _bounded_history,
+    _display_path,
     _normalize_terminal_size,
+    _session_metadata,
     _target,
     tmux_available,
 )
@@ -64,8 +69,70 @@ def test_terminal_api_admin(admin_client):
     r = admin_client.post("/api/v1/terminals", headers=CSRF_HEADERS)
     assert r.status_code == 201
     sid = r.json()["id"]
+    listed = admin_client.get("/api/v1/terminals").json()["sessions"]
+    created = next(item for item in listed if item["id"] == sid)
+    assert created["program"]
+    assert created["cwd"]
+    assert created["workload"] in {"idle", "running"}
+    assert created["alive"] is True
+    assert isinstance(created["activity_at"], (int, float))
     r = admin_client.delete(f"/api/v1/terminals/{sid}", headers=CSRF_HEADERS)
     assert r.status_code == 200
+
+    lab = admin_client.post("/api/v1/terminals?engine=v2-lab", headers=CSRF_HEADERS)
+    assert lab.status_code == 201, lab.text
+    lab_id = lab.json()["id"]
+    assert lab.json()["engine"] == "v2-lab"
+    listed = admin_client.get("/api/v1/terminals").json()["sessions"]
+    assert next(item for item in listed if item["id"] == lab_id)["engine"] == "v2-lab"
+    assert admin_client.delete(f"/api/v1/terminals/{lab_id}", headers=CSRF_HEADERS).status_code == 200
+
+    invalid = admin_client.post("/api/v1/terminals?engine=unknown", headers=CSRF_HEADERS)
+    assert invalid.status_code == 422
+
+
+def test_terminal_v2_websocket_rejects_non_lab_session_before_attach(admin_client, monkeypatch):
+    class RejectAttachRegistry:
+        def acquire(self, *_args):
+            raise AssertionError("non-Lab session must be rejected before PTY attach")
+
+    monkeypatch.setattr("app.terminals.router.streams", RejectAttachRegistry())
+    monkeypatch.setattr("app.terminals.router.manager.session_engine", lambda _sid: "v1")
+    url = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80&engine=v2"
+           "&clientInstanceId=v2boundaryclient01&connectionGeneration=1&attachMode=initial&lastSequence=0")
+    with pytest.raises(WebSocketDisconnect) as rejected:
+        with admin_client.websocket_connect(url):
+            pass
+    assert rejected.value.code == 4403
+
+
+def test_terminal_v1_websocket_rejects_v2_lab_session_before_attach(admin_client, monkeypatch):
+    class RejectAttachRegistry:
+        def acquire(self, *_args):
+            raise AssertionError("V1 must not attach a V2 Lab tmux session")
+
+    monkeypatch.setattr("app.terminals.router.streams", RejectAttachRegistry())
+    monkeypatch.setattr("app.terminals.router.manager.session_engine", lambda _sid: "v2-lab")
+    url = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80&engine=v1"
+           "&clientInstanceId=v1boundaryclient01&connectionGeneration=1&attachMode=initial&lastSequence=0")
+    with pytest.raises(WebSocketDisconnect) as rejected:
+        with admin_client.websocket_connect(url):
+            pass
+    assert rejected.value.code == 4403
+
+
+def test_terminal_session_metadata_distinguishes_shell_and_program(monkeypatch):
+    monkeypatch.setenv("HOME", "/home/operator")
+    assert _display_path("/home/operator/project") == "~/project"
+    idle = _session_metadata(command="/bin/bash", cwd="/home/operator", pid=42, activity_at=10)
+    running = _session_metadata(command="/usr/bin/python3", cwd="/srv/app", pid=43, activity_at=11)
+    assert idle == {
+        "program": "bash", "cwd": "~", "pid": 42, "activity_at": 10,
+        "alive": True, "workload": "idle",
+    }
+    assert running["program"] == "python3"
+    assert running["cwd"] == "/srv/app"
+    assert running["workload"] == "running"
 
 
 def test_terminal_session_id_and_history_bounds():
@@ -139,13 +206,68 @@ def test_terminal_write_rejects_zero_progress(monkeypatch):
         raise AssertionError("zero-byte PTY write was accepted")
 
 
+def test_tmux_history_scroll_uses_bounded_copy_mode_commands(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        stdout = "7\n" if "display-message" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("app.terminals.manager.subprocess.run", fake_run)
+    conn = TerminalConnection(master_fd=123, pid=456, owns_process=False, tmux_target="cdterm-0123abcd")
+    assert conn.scroll_history(-250) is True
+    assert calls == [
+        ["tmux", "copy-mode", "-e", "-t", "cdterm-0123abcd"],
+        ["tmux", "send-keys", "-t", "cdterm-0123abcd", "-X", "-N", "100", "scroll-up"],
+    ]
+
+
+def test_tmux_history_scroll_down_exits_at_live_edge(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        stdout = "0\n" if "display-message" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("app.terminals.manager.subprocess.run", fake_run)
+    conn = TerminalConnection(master_fd=123, pid=456, owns_process=False, tmux_target="cdterm-0123abcd")
+    assert conn.scroll_history(8) is True
+    assert calls[-1] == ["tmux", "send-keys", "-t", "cdterm-0123abcd", "-X", "cancel"]
+
+
+def test_tmux_automation_input_uses_stdin_and_exact_target(monkeypatch):
+    calls: list[tuple[list[str], bytes | None]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs.get("input")))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("app.terminals.manager.tmux_available", lambda: True)
+    monkeypatch.setattr("app.terminals.manager.subprocess.run", fake_run)
+    payload = "codex continue --task 'private prompt'"
+    assert TerminalManager().inject_input("0123abcd", payload) == len(payload.encode())
+    assert calls[0][0] == ["tmux", "has-session", "-t", "cdterm-0123abcd"]
+    load = next(call for call in calls if call[0][1] == "load-buffer")
+    paste = next(call for call in calls if call[0][1] == "paste-buffer")
+    submit = next(call for call in calls if call[0][1] == "send-keys")
+    assert load[1] == payload.encode()
+    assert all(payload not in argument for call, _stdin in calls for argument in call)
+    assert paste[0][-1] == "cdterm-0123abcd"
+    assert submit[0] == ["tmux", "send-keys", "-t", "cdterm-0123abcd", "Enter"]
+
+
 def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypatch):
     class FakeConnection:
-        initial = b""
-        replay = b""
+        initial = b"INITIAL_FRAME"
+        replay = b"REPLAY_FRAME"
 
         def __init__(self):
             self.resize_calls: list[tuple[int, int]] = []
+            self.history_scroll_calls: list[int] = []
+            self.history_exit_calls = 0
+            self.writes: list[bytes] = []
             self.fail = False
 
         async def read_loop(self, _on_data):
@@ -157,8 +279,20 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
             self.resize_calls.append((rows, cols))
             return _normalize_terminal_size(rows, cols)
 
+        def write(self, data: bytes) -> int:
+            self.writes.append(data)
+            return len(data)
+
         def size_diagnostics(self) -> dict[str, object]:
             return {"ptyRows": 19, "ptyCols": 44}
+
+        def scroll_history(self, lines: int) -> bool:
+            self.history_scroll_calls.append(lines)
+            return True
+
+        def exit_history(self) -> bool:
+            self.history_exit_calls += 1
+            return True
 
         def close(self) -> None:
             pass
@@ -168,8 +302,33 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
     url = ("/api/v1/terminals/0123abcd/connect?rows=24&cols=80"
            "&clientInstanceId=backendtestclient0001&connectionGeneration=3&attachMode=initial&lastSequence=0")
     with admin_client.websocket_connect(url) as websocket:
+        assert websocket.receive_bytes() == b"INITIAL_FRAME"
         assert websocket.receive_json() == {"type": "history_reset", "connectionGeneration": 3}
+        assert websocket.receive_bytes() == b"REPLAY_FRAME"
         assert websocket.receive_json() == {"type": "history_end", "connectionGeneration": 3, "sequence": 0}
+        websocket.send_text(json.dumps({
+            "type": "presentation_input_start", "presentationGeneration": 1,
+            "inputChunks": 2, "inputBytes": 6, "afterSequence": 0,
+            "connectionGeneration": 3,
+        }))
+        websocket.send_bytes(b"DA-")
+        websocket.send_bytes(b"ACK")
+        websocket.send_text(json.dumps({
+            "type": "presentation_sync", "presentationGeneration": 1,
+            "connectionGeneration": 3,
+        }))
+        assert websocket.receive_json() == {
+            "type": "presentation_sync_ack", "presentationGeneration": 1,
+            "connectionGeneration": 3, "throughSequence": 0, "observedOutput": False,
+        }
+        assert conn.writes == [b"DA-", b"ACK"]
+        websocket.send_text(json.dumps({
+            "type": "history_scroll", "lines": -12, "connectionGeneration": 3,
+        }))
+        assert websocket.receive_json() == {
+            "type": "history_scroll_ack", "success": True, "connectionGeneration": 3,
+        }
+        websocket.send_text(json.dumps({"type": "history_exit", "connectionGeneration": 3}))
         websocket.send_text(json.dumps({
             "type": "resize",
             "rows": 19,
@@ -184,6 +343,8 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
         assert ack["rows"] == 19 and ack["cols"] == 44
         assert ack["resizeGeneration"] == 12
         assert ack["connectionGeneration"] == 3
+        assert conn.history_scroll_calls == [-12]
+        assert conn.history_exit_calls == 1
         assert ack["diagnostics"]["ptyRows"] == 19
         assert conn.resize_calls == [(19, 44)]
 
@@ -225,6 +386,32 @@ def test_output_journal_bounds_and_sequence_lookup():
     assert journal.after(0) is None
     assert [entry.data for entry in journal.after(second.sequence) or []] == [b"cc", b"dd"]
     assert journal.after(fourth.sequence + 1) is None
+
+
+def test_terminal_stream_waits_for_complete_output_burst_boundary():
+    class FakeConnection:
+        initial = b""
+        replay = b""
+
+        def close(self) -> None:
+            pass
+
+    async def scenario() -> None:
+        stream = TerminalClientStream(
+            "0123abcd", "presentationtest01", FakeConnection(),  # type: ignore[arg-type]
+        )
+        waiter = asyncio.create_task(stream.wait_for_output_boundary(0, first_timeout=0.1, quiet_timeout=0.01))
+        await asyncio.sleep(0)
+        first = stream.journal.latest_sequence + 1
+        await stream._on_data(b"redraw-1")
+        await asyncio.sleep(0.002)
+        await stream._on_data(b"redraw-2")
+        through, observed = await waiter
+        assert observed is True
+        assert through == first + 1
+        assert stream.journal.latest_sequence == through
+
+    asyncio.run(scenario())
 
 
 def test_terminal_websocket_resume_sends_only_sequence_delta(admin_client, monkeypatch):
