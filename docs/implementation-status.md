@@ -2,6 +2,15 @@
 
 最終更新: 2026-07-21
 
+## Phase 2／11 systemd journal・指定ログファイル 完了（2026-07-21）
+
+- Logs画面のsourceへstdout／stderrに加えて、登録済みアプリのsystemd journalと最大16件の指定ログファイルを追加した。journalは2秒ごとの有界snapshot、指定fileは既存WebSocket追従を使い、検索・一時停止・折返し・copy・downloadを共通利用する。journalはControl Deckから削除できず、指定fileのtruncateだけ`logs.delete`権限と監査を要求する。
+- journalはDBに登録済みの固定unit名とuser／system scopeだけから、固定`/usr/bin/journalctl`または`/bin/journalctl`、配列argv、`shell=False`相当、5秒timeout、最大2,000件／2MiBで取得する。API入力からunit／scope／任意argumentを受けず、取得不可は本文やcommand詳細を返さない503へ分離する。
+- 指定fileはApp追加／編集で1行1件を保存し、登録時と読取時の両方で`Path.resolve()`＋`files.allowed_roots`／deny root検査を通す。存在するdirectory、許可root外、後から外部へ差し替えたsymlinkを拒否し、未作成fileも検証済み親と名前だけを保持する。全sourceは共通秘密値redactorを通す。
+- Alembic revision `a73d9e4c2b18`で`managed_applications.log_files_json`を追加し、SQLite upgrade→downgrade→upgradeを確認した。
+
+検証: log／App集中8件、backend全486件中Terminal系29件を除く最新457件、frontend TypeScript／production build、migration往復、固定journalctl argv、許可root外422、journal削除409、追加fileのAPI／WebSocket／truncate／redactionを確認した。実service PID `620267`、health 200。実APIで指定file付きappと`control-deck-web.service`参照専用appを一時登録し、Playwright Chromium 320×700／1280×800でstdout／指定file切替、指定file秘密値非露出、実journal表示、横overflow 0、console／page error 0を確認した。journal対象serviceの操作は行わず、一時app／file／user／login session／auditは0件に清掃済み。既存Terminalには接続・入力・停止・削除していない。
+
 ## Phase 2／11 ログ秘密値マスキング 完了（2026-07-21）
 
 - 管理アプリstdout／stderrのtail API、WebSocketリアルタイム追従、downloadの全経路へ共通redactorを追加した。`TOKEN`／`SECRET`／`PASSWORD`／`PASS`／`API_KEY`／`PRIVATE_KEY`／`AUTH`／`COOKIE`系の`key=value`、header、引用符付きJSONを`***`へ置換する。

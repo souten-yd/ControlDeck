@@ -108,6 +108,7 @@ def create_app(
         auto_start=body.auto_start,
         restart_policy=body.restart_policy,
         stop_timeout_seconds=body.stop_timeout_seconds,
+        log_files_json=json.dumps(apps.normalize_log_files(body.log_files), ensure_ascii=False),
         systemd_scope=body.systemd_scope,
         system_service_id=body.system_service_id,
     )
@@ -333,6 +334,7 @@ def update_app(
     args = data.pop("arguments", None)
     code = data.pop("code", None)
     health_check = data.pop("health_check", None)
+    log_files = data.pop("log_files", None)
     for key, value in data.items():
         setattr(app, key, value)
     if app.application_type == "systemd_service":
@@ -351,6 +353,8 @@ def update_app(
         apps.write_app_code(app, code)
     # 検証（更新後の値で AppCreate 相当を再チェック）
     try:
+        if log_files is not None:
+            app.log_files_json = json.dumps(apps.normalize_log_files(log_files), ensure_ascii=False)
         apps.validate_fields(
             AppCreate(
                 name=app.name,
@@ -368,6 +372,7 @@ def update_app(
                 systemd_scope=app.systemd_scope or "user",  # type: ignore[arg-type]
                 system_service_id=app.system_service_id,
                 health_check=apps.get_health_check(app),
+                log_files=apps.get_log_files(app),
             )
         )
         apps.sync_unit(app)

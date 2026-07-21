@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -17,6 +18,8 @@ _SECRET_ASSIGNMENT = re.compile(
     (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)
     ''',
 )
+_SYSTEMD_UNIT = re.compile(r"^[A-Za-z0-9@_.-]+\.service$")
+_JOURNALCTL_CANDIDATES = (Path("/usr/bin/journalctl"), Path("/bin/journalctl"))
 
 
 def redact_text(value: str, sensitive_values: set[str] | None = None) -> str:
@@ -148,3 +151,26 @@ def iter_redacted_file(path: Path, sensitive_values: set[str] | None = None) -> 
     final = buffer.finish()
     if final:
         yield final.encode("utf-8")
+
+
+def journal_lines(
+    unit: str,
+    scope: str,
+    max_lines: int,
+    sensitive_values: set[str] | None = None,
+) -> list[str]:
+    """登録済みunitのjournalを固定argv・有界件数で取得する。"""
+    if _SYSTEMD_UNIT.fullmatch(unit) is None or scope not in ("user", "system"):
+        raise ValueError("systemdログ対象が不正です")
+    executable = next((str(path) for path in _JOURNALCTL_CANDIDATES if path.is_file()), None)
+    if executable is None:
+        raise OSError("journalctlが利用できません")
+    argv = [executable]
+    if scope == "user":
+        argv.append("--user")
+    argv.extend(["--unit", unit, "--output=short-iso", "--no-pager", "--lines", str(min(2000, max(1, max_lines)))])
+    result = subprocess.run(argv, capture_output=True, timeout=5, check=False, shell=False)
+    if result.returncode not in (0, 1):
+        raise OSError("journalを取得できません")
+    raw = result.stdout[-2 * 1024 * 1024:].decode("utf-8", errors="replace")
+    return [redact_text(line, sensitive_values) for line in raw.splitlines()[-max_lines:]]
