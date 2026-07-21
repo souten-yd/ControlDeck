@@ -20,7 +20,7 @@ export default function LogsPage() {
   const { data: apps } = useApps();
   const [params, setParams] = useSearchParams();
   const appId = params.get("app") ? Number(params.get("app")) : null;
-  const stream = params.get("stream") === "stderr" ? "stderr" : "stdout";
+  const source = params.get("source") ?? (params.get("stream") === "stderr" ? "stderr" : "stdout");
   const app = apps?.find((a) => a.id === appId) ?? null;
   const can = useAuth((s) => s.can);
   const show = useToasts((s) => s.show);
@@ -30,10 +30,23 @@ export default function LogsPage() {
   const [query, setQuery] = useState("");
   const [wrap, setWrap] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [sources, setSources] = useState<Array<{ id: string; label: string; kind: "file" | "journal"; deletable: boolean }>>([]);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
   const pendingRef = useRef<string[]>([]);
   const partialRef = useRef("");
+
+  useEffect(() => {
+    if (appId == null) { setSources([]); return; }
+    api<Array<{ id: string; label: string; kind: "file" | "journal"; deletable: boolean }>>(`/apps/${appId}/log-sources`)
+      .then((items) => {
+        setSources(items);
+        if (!items.some((item) => item.id === source)) {
+          setParams({ app: String(appId), source: "stdout" });
+        }
+      })
+      .catch(() => setSources([]));
+  }, [appId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // WebSocket 接続
   useEffect(() => {
@@ -45,9 +58,18 @@ export default function LogsPage() {
     let retryTimer: ReturnType<typeof setTimeout>;
     let retry = 0;
 
+    if (source === "journal") {
+      const refresh = () => api<{ lines: string[] }>(`/apps/${appId}/logs?source=journal&lines=500`)
+        .then((result) => { if (!closed && !pausedRef.current) setLines(result.lines.slice(-MAX_LINES)); })
+        .catch(() => undefined);
+      void refresh();
+      const timer = setInterval(refresh, 2000);
+      return () => { closed = true; clearInterval(timer); };
+    }
+
     const connect = () => {
       if (closed) return;
-      ws = new WebSocket(wsUrl(`/apps/${appId}/logs/stream?stream=${stream}`));
+      ws = new WebSocket(wsUrl(`/apps/${appId}/logs/stream?source=${encodeURIComponent(source)}`));
       ws.onopen = () => (retry = 0);
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data) as
@@ -78,7 +100,7 @@ export default function LogsPage() {
       clearTimeout(retryTimer);
       ws?.close();
     };
-  }, [appId, stream]);
+  }, [appId, source]);
 
   const togglePause = () => {
     if (paused && pendingRef.current.length > 0) {
@@ -102,7 +124,7 @@ export default function LogsPage() {
 
   const download = () => {
     if (appId != null)
-      window.open(`/api/v1/apps/${appId}/logs/download?stream=${stream}`, "_blank");
+      window.open(`/api/v1/apps/${appId}/logs/download?source=${encodeURIComponent(source)}`, "_blank");
   };
 
   const copyAll = async () => {
@@ -113,7 +135,7 @@ export default function LogsPage() {
   const deleteLogs = async () => {
     if (appId == null) return;
     try {
-      await api(`/apps/${appId}/logs?stream=all`, { method: "DELETE" });
+      await api(`/apps/${appId}/logs?source=${encodeURIComponent(source)}`, { method: "DELETE" });
       setLines([]);
       show("ログを削除しました");
     } catch (e) {
@@ -130,7 +152,7 @@ export default function LogsPage() {
         <select
           value={appId ?? ""}
           onChange={(e) =>
-            setParams(e.target.value ? { app: e.target.value, stream } : {})
+            setParams(e.target.value ? { app: e.target.value, source } : {})
           }
           aria-label="アプリを選択"
           className="max-w-[40vw] rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
@@ -142,6 +164,18 @@ export default function LogsPage() {
             </option>
           ))}
         </select>
+        {appId != null && (
+          <select
+            aria-label="ログソース"
+            value={source}
+            onChange={(event) => setParams({ app: String(appId), source: event.target.value })}
+            className="max-w-[32vw] rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            {(sources.length ? sources : [{ id: "stdout", label: "stdout", kind: "file" as const, deletable: true }, { id: "stderr", label: "stderr", kind: "file" as const, deletable: true }]).map((item) => (
+              <option key={item.id} value={item.id}>{item.label}</option>
+            ))}
+          </select>
+        )}
         <div className="relative min-w-0 flex-1">
           <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-zinc-400" />
           <input
@@ -163,16 +197,10 @@ export default function LogsPage() {
           ariaLabel="Log menu"
           trigger={<IconDots />}
           items={[
-            {
-              label: stream === "stdout" ? "Switch to stderr" : "Switch to stdout",
-              onSelect: () =>
-                appId != null &&
-                setParams({ app: String(appId), stream: stream === "stdout" ? "stderr" : "stdout" }),
-            },
             { label: wrap ? "Disable Line Wrap" : "Wrap Lines", onSelect: () => setWrap(!wrap) },
             { label: "Download", onSelect: download },
             { label: "Copy All", onSelect: copyAll },
-            ...(can("logs.delete")
+            ...(can("logs.delete") && source !== "journal" && sources.find((item) => item.id === source)?.deletable !== false
               ? [{ label: "Delete Logs", danger: true, onSelect: () => setConfirmDelete(true) }]
               : []),
           ]}
@@ -189,14 +217,14 @@ export default function LogsPage() {
       )}
 
       <div className="shrink-0 border-t border-zinc-200 px-3 py-1 text-[11px] text-zinc-400 dark:border-zinc-800">
-        {app ? `${app.name} · ${stream} · ${filtered.length.toLocaleString()} 行` : ""}
+        {app ? `${app.name} · ${sources.find((item) => item.id === source)?.label ?? source} · ${filtered.length.toLocaleString()} 行` : ""}
         {paused && " · 一時停止中"}
       </div>
 
       {confirmDelete && (
         <BottomSheet title="ログを削除しますか？" onClose={() => setConfirmDelete(false)}>
           <p className="text-sm text-zinc-500">
-            stdout / stderr の両方が削除されます。この操作は取り消せません。
+            選択中のログを削除します。この操作は取り消せません。
           </p>
           <div className="mt-4 flex justify-end gap-2">
             <button

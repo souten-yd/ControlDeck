@@ -61,6 +61,7 @@ def build_exec_argv(app: ManagedApplication) -> list[str]:
 
 
 def validate_fields(data: AppCreate) -> None:
+    normalize_log_files(data.log_files)
     if data.application_type != "systemd_service" and (
         data.systemd_scope != "user" or data.system_service_id is not None
     ):
@@ -219,6 +220,36 @@ def set_health_check(app: ManagedApplication, config: HealthCheckConfig) -> None
     app.health_check_json = json.dumps(config.model_dump(), ensure_ascii=False)
 
 
+def normalize_log_files(paths: list[str]) -> list[str]:
+    """追加ログpathを許可root内へ固定する。未作成fileは検証済み親＋名前で保持する。"""
+    from app.files import service as files
+
+    normalized: list[str] = []
+    for value in paths:
+        if not value.strip():
+            continue
+        try:
+            path = files.resolve(value.strip(), must_exist=Path(value.strip()).expanduser().exists())
+        except (OSError, files.FileAccessError) as error:
+            raise AppValidationError(str(error)) from error
+        if path.exists() and not path.is_file():
+            raise AppValidationError(f"追加ログは通常ファイルを指定してください: {path}")
+        text = str(path)
+        if text not in normalized:
+            normalized.append(text)
+    if len(normalized) > 16:
+        raise AppValidationError("追加ログは最大16件です")
+    return normalized
+
+
+def get_log_files(app: ManagedApplication) -> list[str]:
+    try:
+        values = json.loads(app.log_files_json or "[]")
+        return [str(value) for value in values if isinstance(value, str)][:16]
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+
 def sync_unit(app: ManagedApplication) -> None:
     """ManagedApplication からユニットファイルを生成・更新する。"""
     if app.application_type in ("systemd_service", "url_shortcut"):
@@ -345,6 +376,7 @@ def to_out(app: ManagedApplication) -> AppOut:
         restart_policy=app.restart_policy,
         stop_timeout_seconds=app.stop_timeout_seconds,
         health_check=get_health_check(app),
+        log_files=get_log_files(app),
         systemd_unit_name=systemd_unit_name(app),
         systemd_scope=app.systemd_scope if app.systemd_scope in ("user", "system") else "user",
         system_service_id=app.system_service_id,

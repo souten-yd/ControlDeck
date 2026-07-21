@@ -76,6 +76,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
   const [healthPath, setHealthPath] = useState(editApp?.health_check.path ?? "");
   const [healthCommandId, setHealthCommandId] = useState(editApp?.health_check.command_id ?? "");
   const [healthCommands, setHealthCommands] = useState<HealthCommandOption[]>([]);
+  const [logFilesText, setLogFilesText] = useState((editApp?.log_files ?? []).join("\n"));
   // インラインコード編集
   const [codeMode, setCodeMode] = useState(false);
   const [code, setCode] = useState("");
@@ -176,6 +177,7 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
         command_id: healthCommandId,
         timeout_seconds: 3,
       },
+      log_files: logFilesText.split("\n").map((value) => value.trim()).filter(Boolean),
     };
     if (type === "systemd_service") {
       payload.systemd_scope = systemdScope;
@@ -556,6 +558,16 @@ export function AddAppSheet({ onClose, editApp }: { onClose: () => void; editApp
             </>
           )}
           {/* 確認 */}
+          <Field label="追加ログファイル" hint="任意。許可ルート内の絶対パスを1行1件、最大16件。秘密値は表示時にマスクします">
+            <textarea
+              aria-label="追加ログファイル"
+              value={logFilesText}
+              onChange={(event) => setLogFilesText(event.target.value)}
+              rows={3}
+              placeholder="/home/user/app/app.log"
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-950"
+            />
+          </Field>
           <div className="rounded-xl border border-zinc-200 p-4 text-sm dark:border-zinc-800">
             <p className="mb-2 font-medium">確認</p>
             <dl className="space-y-1 text-xs text-zinc-500">

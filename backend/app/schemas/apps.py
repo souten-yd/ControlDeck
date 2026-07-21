@@ -53,6 +53,7 @@ class AppCreate(BaseModel):
     # Web ボタンで開くポート
     web_port: int | None = Field(default=None, ge=1, le=65535)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
+    log_files: list[str] = Field(default_factory=list, max_length=16)
 
 
 class AppUpdate(BaseModel):
@@ -75,6 +76,7 @@ class AppUpdate(BaseModel):
     systemd_unit_name: str | None = None
     systemd_scope: SystemdScope | None = None
     system_service_id: str | None = Field(default=None, max_length=64)
+    log_files: list[str] | None = Field(default=None, max_length=16)
 
 
 class AppRuntime(BaseModel):
@@ -111,6 +113,7 @@ class AppOut(BaseModel):
     restart_policy: str
     stop_timeout_seconds: int
     health_check: HealthCheckConfig
+    log_files: list[str] = Field(default_factory=list)
     systemd_unit_name: str
     systemd_scope: SystemdScope
     system_service_id: str | None

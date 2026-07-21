@@ -72,6 +72,7 @@ export interface ManagedApp {
   restart_policy: string;
   stop_timeout_seconds: number;
   health_check: HealthCheckConfig;
+  log_files: string[];
   systemd_unit_name: string;
   systemd_scope: "user" | "system";
   system_service_id: string | null;
