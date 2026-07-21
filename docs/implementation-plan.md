@@ -21,11 +21,11 @@
 - Python 自動検出（候補提示のみ）
 - アプリ一覧カード UI（PC / モバイル）、アプリ追加フロー（3 ステップ）
 - アプリアイコン（PNG / JPEG / WebP / サニタイズ済みSVG、認証付き配信）
-- 15秒間隔および手動のヘルスチェック（プロセス / TCP / HTTP status・本文 / 許可ルート内ファイル）、失敗時DEGRADED
+- 15秒間隔および手動のヘルスチェック（プロセス / TCP / HTTP status・本文 / 許可ルート内ファイル / 固定catalogの許可コマンド）、失敗時DEGRADED
 
 ### Phase 3 — 監視
 - CPU / RAM / ディスク / ネットワーク / 稼働時間（psutil）
-- GPU / VRAM（AMDは低負荷sysfs fast path → amd-smi / rocm-smi fallback、NVIDIAはnvidia-smi、失敗時 N/A）
+- GPU / VRAM（AMDは低負荷sysfs fast path → amd-smi / rocm-smi fallback、NVIDIAはnvidia-smi、失敗時 N/A）とsystemd process tree別のDRM GPU / VRAM使用量
 - 消費電力推定、単一メトリクス WS ストリーム、履歴（生 24h / 1 分平均 30 日）
 - アラート（しきい値 + 通知センター）
 - 電源予約は予約時だけ systemd ユーザーtimerを生成（Web再起動・SSH切断後も継続、期限切れは再実行せず、取消時削除）

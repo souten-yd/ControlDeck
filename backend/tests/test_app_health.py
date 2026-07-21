@@ -1,5 +1,7 @@
 import socket
+import subprocess
 import threading
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -100,3 +102,69 @@ def test_failed_health_marks_running_app_degraded(monkeypatch):
     runtime = service.runtime_info(app)
     assert runtime.status == "DEGRADED"
     assert runtime.health and runtime.health.ok is False
+
+
+def test_allowed_command_health_uses_fixed_systemd_unit_and_hides_output(monkeypatch):
+    from app.applications import health
+    from app.config import HealthCommandDefinition
+    from app.schemas.apps import HealthCheckConfig
+
+    definition = HealthCommandDefinition(label="Fixed self-check", argv=["/usr/bin/true", "--fixed"])
+    monkeypatch.setattr(health, "get_config", lambda: SimpleNamespace(
+        applications=SimpleNamespace(health_commands={"self-check": definition}),
+    ))
+    monkeypatch.setattr(health.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 7, stdout="secret-output", stderr="secret-error")
+
+    monkeypatch.setattr(health.subprocess, "run", fake_run)
+    result = health.run(
+        HealthCheckConfig(type="command", command_id="self-check", timeout_seconds=2),
+        process_running=True,
+    )
+
+    assert result.ok is False
+    assert "終了コード 7" in result.message
+    assert "secret" not in result.message
+    argv, kwargs = calls[0]
+    assert argv[0] == "/usr/bin/systemd-run"
+    assert "--user" in argv and "--wait" in argv and "--collect" in argv
+    assert "--property=StandardOutput=null" in argv
+    assert "--property=StandardError=null" in argv
+    assert argv[-2:] == ["/usr/bin/true", "--fixed"]
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert "shell" not in kwargs
+
+
+def test_command_health_is_fail_closed_without_registered_id(monkeypatch):
+    from app.applications import health, service
+    from app.schemas.apps import AppCreate, HealthCheckConfig
+
+    monkeypatch.setattr(health, "get_config", lambda: SimpleNamespace(
+        applications=SimpleNamespace(health_commands={}),
+    ))
+    result = health.run(
+        HealthCheckConfig(type="command", command_id="missing"), process_running=True,
+    )
+    assert result.ok is False
+    assert result.message == "許可コマンドが見つかりません"
+
+    try:
+        service.validate_fields(AppCreate(
+            name="invalid command health", application_type="systemd_service",
+            systemd_unit_name="valid.service",
+            health_check=HealthCheckConfig(type="command", command_id="missing"),
+        ))
+    except service.AppValidationError as exc:
+        assert "登録済みの許可コマンド" in str(exc)
+    else:
+        raise AssertionError("unknown command ID must be rejected")
+
+
+def test_health_command_catalog_does_not_expose_argv(admin_client):
+    response = admin_client.get("/api/v1/apps/health-commands")
+    assert response.status_code == 200
+    assert response.json() == []

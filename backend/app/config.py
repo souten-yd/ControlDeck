@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -94,6 +94,40 @@ class ApplicationBuilderConfig(BaseModel):
     dotnet_path: str | None = None
 
 
+class HealthCommandDefinition(BaseModel):
+    """ローカル管理者が明示的に許可した固定ヘルスチェックargv。"""
+
+    label: str = Field(min_length=1, max_length=80)
+    argv: list[str] = Field(min_length=1, max_length=32)
+
+    @field_validator("argv")
+    @classmethod
+    def _fixed_argv(cls, value: list[str]) -> list[str]:
+        if any(not item or "\x00" in item or len(item) > 4096 for item in value):
+            raise ValueError("health command argvは空文字・NULを含まず各4096文字以下にしてください")
+        if not Path(value[0]).is_absolute():
+            raise ValueError("health commandの実行ファイルは絶対パスで指定してください")
+        sensitive = ("password", "passwd", "secret", "token", "api_key", "authorization", "cookie", "bearer")
+        if any(any(marker in item.casefold() for marker in sensitive) for item in value):
+            raise ValueError("health command argvへ秘密値や認証情報を含めないでください")
+        return value
+
+
+class ApplicationsConfig(BaseModel):
+    health_commands: dict[str, HealthCommandDefinition] = Field(default_factory=dict)
+
+    @field_validator("health_commands")
+    @classmethod
+    def _command_ids(cls, value: dict[str, HealthCommandDefinition]) -> dict[str, HealthCommandDefinition]:
+        import re
+
+        if len(value) > 64:
+            raise ValueError("health commandは最大64件です")
+        if any(re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) is None for key in value):
+            raise ValueError("health command IDは英小文字で始まる英数字・_-、最大64文字です")
+        return value
+
+
 class Config(BaseModel):
     server: ServerConfig = ServerConfig()
     security: SecurityConfig = SecurityConfig()
@@ -102,6 +136,7 @@ class Config(BaseModel):
     monitoring: MonitoringConfig = MonitoringConfig()
     logs: LogsConfig = LogsConfig()
     ui: UIConfig = UIConfig()
+    applications: ApplicationsConfig = ApplicationsConfig()
     application_builder: ApplicationBuilderConfig = ApplicationBuilderConfig()
     data_dir: str = "~/.local/share/control-deck"
     # GitHub 管理でクローンするリポジトリの格納先

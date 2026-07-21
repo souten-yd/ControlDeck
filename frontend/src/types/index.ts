@@ -28,18 +28,21 @@ export interface AppRuntime {
   restart_count: number;
   cpu_percent: number | null;
   memory_bytes: number | null;
+  gpu_percent: number | null;
+  vram_bytes: number | null;
   listening_ports: number[];
   health: HealthCheckResult | null;
 }
 
 export interface HealthCheckConfig {
-  type: "none" | "process" | "tcp" | "http" | "file";
+  type: "none" | "process" | "tcp" | "http" | "file" | "command";
   host: string;
   port: number | null;
   url: string;
   expected_status: number;
   body_contains: string;
   path: string;
+  command_id: string;
   timeout_seconds: number;
 }
 

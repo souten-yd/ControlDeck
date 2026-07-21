@@ -46,4 +46,13 @@ application_builder:
   # .NET 8 SDKのdotnet実行ファイル。未設定時はCONTROL_DECK_DOTNET、次にPATHを確認。
   # dotnet_path: /home/USER/.local/share/control-deck/sdks/dotnet-8.0.423/dotnet
 
+applications:
+  # Web UIにはIDとlabelだけを公開し、argvはリクエストから変更できません。
+  # 実行ファイルは絶対パス、引数は固定値とし、password/token等を含めないでください。
+  health_commands: {}
+  # health_commands:
+  #   my-app-self-check:
+  #     label: My App self-check
+  #     argv: ["/home/USER/bin/my-app", "health"]
+
 # data_dir: ~/.local/share/control-deck

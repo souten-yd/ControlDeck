@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 ApplicationType = Literal["python_script", "shell_script", "executable", "systemd_service", "url_shortcut"]
 RestartPolicy = Literal["no", "on-failure", "always", "on-success"]
-HealthCheckType = Literal["none", "process", "tcp", "http", "file"]
+HealthCheckType = Literal["none", "process", "tcp", "http", "file", "command"]
 
 
 class HealthCheckConfig(BaseModel):
@@ -18,6 +18,7 @@ class HealthCheckConfig(BaseModel):
     expected_status: int = Field(default=200, ge=100, le=599)
     body_contains: str = Field(default="", max_length=500)
     path: str = ""
+    command_id: str = Field(default="", max_length=64)
     timeout_seconds: float = Field(default=3, ge=0.2, le=30)
 
 
@@ -78,6 +79,8 @@ class AppRuntime(BaseModel):
     restart_count: int = 0
     cpu_percent: float | None = None
     memory_bytes: int | None = None
+    gpu_percent: float | None = None
+    vram_bytes: int | None = None
     # プロセスツリーが LISTEN している TCP ポート（Web ボタン用）
     listening_ports: list[int] = []
     health: HealthCheckResult | None = None

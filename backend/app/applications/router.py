@@ -141,6 +141,12 @@ def project_discovery(
     return discover_project(path)
 
 
+@router.get("/health-commands")
+def health_commands(user: User = Depends(require_permission("apps.edit"))) -> list[dict[str, str]]:
+    """argvを公開せず、選択可能な固定コマンドIDと表示名だけを返す。"""
+    return app_health.command_catalog()
+
+
 class TestRunBody(BaseModel):
     application_type: str
     python_path: str | None = None
