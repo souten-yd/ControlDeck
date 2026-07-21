@@ -6,6 +6,7 @@ import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { ConfirmDialog, Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
 import { TotpSettings } from "../features/auth/TotpSettings";
+import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
 
@@ -57,6 +58,9 @@ export default function SettingsPage() {
         </dl>
         <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
           <TotpSettings />
+        </div>
+        <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+          <PasswordSettings />
         </div>
       </section>
 
