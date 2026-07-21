@@ -234,6 +234,7 @@ def test_application_alert_rules_require_registered_target(admin_client):
             ("app_down", "アプリ停止", 90),
             ("app_health_failed", "ヘルスチェック失敗", 90),
             ("app_restart_loop", "再起動回数", 3),
+            ("app_log_error", "ログ ERROR", 1),
         ):
             response = admin_client.post(
                 "/api/v1/alert-rules",
@@ -264,6 +265,109 @@ def test_application_alert_rules_require_registered_target(admin_client):
             db.commit()
         finally:
             db.close()
+
+
+def test_log_error_rule_tracks_only_new_lines_and_survives_restart(admin_client, monkeypatch):
+    from sqlalchemy import delete, select
+
+    from app.alerts import engine
+    from app.database import SessionLocal
+    from app.logs import service as logs
+    from app.models import AlertEvent, AlertLogCursor, AlertRule, ManagedApplication
+
+    db = SessionLocal()
+    try:
+        db.execute(delete(AlertEvent))
+        app = ManagedApplication(name="log alert target", application_type="url_shortcut", url="https://example.test")
+        db.add(app)
+        db.commit()
+        app_id = app.id
+    finally:
+        db.close()
+
+    stdout = logs.log_path(app_id, "stdout")
+    stderr = logs.log_path(app_id, "stderr")
+    stdout.write_text("ERROR historical-secret-must-not-alert\n", encoding="utf-8")
+    response = admin_client.post(
+        "/api/v1/alert-rules",
+        json={
+            "name": "new log errors", "metric": "app_log_error", "app_id": app_id,
+            "duration_seconds": 999, "cooldown_seconds": 0,
+        },
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["duration_seconds"] == 0
+    rule_id = response.json()["id"]
+
+    db = SessionLocal()
+    try:
+        cursors = db.scalars(select(AlertLogCursor).where(AlertLogCursor.rule_id == rule_id)).all()
+        assert {cursor.stream for cursor in cursors} == {"stdout", "stderr"}
+        assert next(cursor for cursor in cursors if cursor.stream == "stdout").offset == stdout.stat().st_size
+    finally:
+        db.close()
+
+    monkeypatch.setattr("app.monitoring.collector.collector.latest", {})
+    engine._breach_since.clear()
+    asyncio.run(engine.evaluate_once())
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(AlertEvent).where(AlertEvent.rule_id == rule_id)) is None
+    finally:
+        db.close()
+
+    with stderr.open("a", encoding="utf-8") as handle:
+        handle.write("INFO ready\nERROR private-runtime-value\nCRITICAL another-private-value\n")
+    asyncio.run(engine.evaluate_once())
+    db = SessionLocal()
+    try:
+        event = db.scalar(select(AlertEvent).where(AlertEvent.rule_id == rule_id))
+        assert event is not None and event.status == "active" and event.value == 2
+        assert event.message == "ログ ERROR = 2.0"
+        assert "private-runtime-value" not in event.message
+        persisted_offset = db.scalar(
+            select(AlertLogCursor.offset).where(
+                AlertLogCursor.rule_id == rule_id, AlertLogCursor.stream == "stderr",
+            )
+        )
+        assert persisted_offset == stderr.stat().st_size
+    finally:
+        db.close()
+
+    # プロセス内状態を失っても永続offsetを正として同じ行を再通知せず、静穏時に解消する。
+    engine._breach_since.clear()
+    engine._active_event.clear()
+    asyncio.run(engine.evaluate_once())
+    db = SessionLocal()
+    try:
+        events = db.scalars(select(AlertEvent).where(AlertEvent.rule_id == rule_id)).all()
+        assert len(events) == 1 and events[0].status == "resolved"
+    finally:
+        db.close()
+
+    # ローテーションでinodeとサイズが変わっても新ファイル先頭を読む。
+    stderr.unlink()
+    stderr.write_text("ERROR after-rotation-private-value\n", encoding="utf-8")
+    asyncio.run(engine.evaluate_once())
+    db = SessionLocal()
+    try:
+        events = db.scalars(
+            select(AlertEvent).where(AlertEvent.rule_id == rule_id).order_by(AlertEvent.id)
+        ).all()
+        assert len(events) == 2 and events[-1].value == 1
+        assert all("private-value" not in event.message for event in events)
+    finally:
+        db.close()
+
+    assert admin_client.delete(f"/api/v1/alert-rules/{rule_id}", headers=CSRF_HEADERS).status_code == 200
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(AlertLogCursor).where(AlertLogCursor.rule_id == rule_id)) is None
+        db.delete(db.get(ManagedApplication, app_id))
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_application_alert_metric_values(monkeypatch):

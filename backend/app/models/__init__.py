@@ -635,7 +635,7 @@ class AlertRule(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     # cpu_percent / memory_percent / gpu_percent / vram_percent / gpu_temp_c /
-    # cpu_temp_c / disk_percent / app_down
+    # cpu_temp_c / disk_percent / app_down / app_health_failed / app_restart_loop / app_log_error
     metric: Mapped[str] = mapped_column(String(32))
     # gt / gte / lt / lte
     operator: Mapped[str] = mapped_column(String(4), default="gt")
@@ -649,6 +649,19 @@ class AlertRule(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AlertLogCursor(Base):
+    """ログ条件の再起動耐性を保つストリーム別読取位置。ログ本文は保存しない。"""
+
+    __tablename__ = "alert_log_cursors"
+    __table_args__ = (UniqueConstraint("rule_id", "stream", name="uq_alert_log_cursor_stream"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("alert_rules.id"), index=True)
+    stream: Mapped[str] = mapped_column(String(8))
+    file_identity: Mapped[str] = mapped_column(String(64), default="")
+    offset: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AlertEvent(Base):
