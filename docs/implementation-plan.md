@@ -35,6 +35,27 @@
 - ごみ箱（復元 / 完全削除 / 保持期間 / 容量上限）とアップロード進捗・中止・再開
 - Monaco 遅延ロード、Web ターミナル（xterm.js + tmux、モバイル補助キーバー）
 
+### Phase 4b — Terminal Snippets / Durable Automation（2026-07-20 完了）
+
+1. ✅ 共通Snippet CRUD、parameter template、複数選択／順序付きcompose、展開preview、監査
+2. ✅ 既定のDetached runをsystemd user transient serviceで実行し、許可rootのrealpath、固定環境、timeout／resource／log上限、durable run状態を実装
+3. ✅ tmux session送信は明示的な上級modeとし、session ID、shell待機／program一致condition、bracketed paste、condition不一致skipを実装
+4. ✅ 1回／毎日／毎週／隔週、timezone、catch-up、次回時刻を持つschedule CRUDとschedule別systemd user timer、再起動継続、run historyを実装
+5. ✅ Terminalの共通`Snippets`入口＋各cardの3点menu、PC side panel／mobile bottom sheet、Library／Compose／Scheduleの段階開示、状態indicator、320px／PC E2E
+
+### Phase 4c — Terminal V2 並行再設計（2026-07-20 開始）
+
+現行UI／操作は契約として保持し、新しい接続／履歴／入力／geometryコアを別系統で実装する。
+既定はV1のままとし、専用sessionのLab検証、canary、V2既定化、V1ロールバック期間の順に進める。
+同一tmux sessionのV1/V2同時接続はサイズ/redrawが干渉するため禁止する。詳細と入れ替え合格基準は
+[`design-terminal-v2.md`](design-terminal-v2.md)を正とする。
+
+1. ✅ UI契約、責務分割、Lab/canary/ロールバック、合格基準、非本文telemetry境界を固定
+2. ✅ V2 connection/renderer/input/geometry/historyコアと専用sessionのLab切替
+3. ✅ V1と同じUI契約、Paste／Copy／helper／swipe／Automation／session switchの実装
+4. ⬜ 320／390／768／1280px自動回帰、履歴／入力／keyboard／scroll／reload計測、物理iPhone Safari／PWA確認
+5. ⬜ canary後にV2既定化、V1即時復帰確認、ロールバック期間後の整理
+
 ### 自己メンテナンス / ウォッチドッグ（2026-07-12 ユーザー要望で追加）
 
 本体自身の健全性維持を自動化する。
@@ -60,11 +81,30 @@
 [`design-workflow-integrated-ide.md`](design-workflow-integrated-ide.md) を正とする。
 
 1. UX 基盤: Preview Workspace、統一 inspector、debug panel、live canvas、過去入力 load
-2. 再現性: published version、execution snapshot、node run、test case、pin、retry/resume、event stream
-3. typed output / node / error route: output.render、approval/merge/try、data nodes、system trigger
-4. large flow: group/collapse/subflow/outline/layout/performance
-5. AI: diagnose/patch/runtime route/Project Intelligence
-6. sample/docs: 15 以上の実用 sample、全 node 詳細説明、回帰 E2E
+2. 再現性: ✅ published version、execution snapshot、node run、test case、pin、retry/resume、✅ durable sequence event replay／認証SSE／Execution Debugger接続、✅ Alembic baseline／既存SQLite backup・checksum・read検証／schema drift停止、✅ DB-backed durable pause／再起動継続／schema入力、✅ checksum付きartifact offload／認可download／削除清掃
+3. typed output / node / error route: ✅ output.render、✅ durable approval／human.form／merge、✅ data nodes、✅ typed error／timeout route、✅ flow.return／flow.error／flow.note／test.assert、✅ durable control.delay、✅ published-subflow control.try、✅ GPU／VRAM／disk／llama-server／systemd／file system trigger、✅ Workflow-scoped durable queue、✅ TTL cache、✅ typed/versioned durable state、✅ durable Workflow business event outbox／published custom event trigger／再起動再送、✅ version-pinned typed `flow.map`／ordered result／cycle preflight、✅ ordered `data.batch`、✅ durable shared rate limit、✅ CLOSED／OPEN／HALF_OPEN circuit breaker、✅ sample／全node詳細docs／指定E2E flow
+4. ✅ large flow: group/collapse、既存`flow.call`／`control.try` subflow、outline/search、fit selection、worker layout、quick add、typed edge metadata、50段undo/redo、1.2秒autosave＋optimistic conflict、100-node編集／500-node read-only navigation
+5. ✅ AI: redacted diagnose／versioned operation patch preview・選択適用／baseline test生成／live runtime route／Project Intelligence
+6. sample/docs: ✅ 19の実用sample、✅ 全62 node詳細説明、✅ Time Travel／Local LLM Route／PC State Recovery／AI Patch／Regression Batch回帰E2E
+7. App Studio F3: ✅ F3.1 Design Token／Composite／Pattern、✅ F3.2 property schema／全状態preview／a11y、✅ F3.3 Grid／Table／Chart editor、✅ F3.4 Binding／Event editor、✅ F3.5 Visual Preview Diff／3案比較、✅ F3.6 Parameterized Template、✅ F3.7 focus／keyboard／contrast audit。F3完了
+8. Application Builder Phase B: ✅ B1 Platform Advisor／framework・host matrix／複数target override／副作用なしPreflight、✅ B2.1 core deterministic C# Console generator／manifest／source ZIP／self-test、✅ B2.2 condition branch／merge／dead-edge／retry・timeout runtime、✅ B2.3 named variable／pure data runtime、✅ B2.4 nested count／foreach loop runtime＋実net8.0 build
+9. Application Builder Phase C1: ✅ typed API endpoint／background job contract、route・Workflow参照・anonymous・schedule validation、✅ deterministic ASP.NET health／OpenAPI 3.1／sync-async Workflow endpoint／status・SSE・cancel、API key、Dockerfile、self-test、実net8.0 build
+10. Application Builder Phase C2: ✅ dependency-free JSON Schema request／sync-async response runtime、OpenAPI schema、✅ manual／interval／daily／5-field cron、time zone／DST、overlap policy、atomic durable state、crash pending recovery、実net8.0／Kestrel／320px E2E
+11. Application Builder Phase D1: ✅ typed Entity／field／relation／CRUD contract、✅ transactional SQLite WAL additive migration／incompatible change stop／durable delete audit、✅ authenticated parameterized CRUD／OpenAPI、決定的15／16-file source、実net8.0／Kestrel／320px E2E。Linux／Windowsの生成選択肢はC# Console／ASP.NET Coreの2系統を維持し、全言語対応は要求しない。次はD2 Entity editor／CRUD Table binding（GUI sourceはE〜G2）
+12. Application Builder Phase D2: ✅ responsive Entity／field／relation／CRUD editor、✅ Designと共通の50段Undo／Redo・単一Spec save、✅ typed Entity／field bindingとbackend参照diagnostic、320px E2E。次はE1 Semantic Component／Entity bindingのASP.NET Blazor GUI source
+13. Application Builder Phase E1: ✅ deterministic Blazor static SSR Page／responsive Semantic Component source、✅ Entity collection Data TableとD1 list CRUD binding、✅ escape／`textContent`限定、unsupported action・event・認証のblocking diagnostic、実net8.0／Kestrel／320・1280px Chromium。Linux／Windowsの生成選択肢はC# Console／ASP.NET Coreの2系統を維持する。次はE2 form／CRUD mutation／browser認証adapter
+14. Application Builder Phase E2: ✅ Data Table create／update／delete typed propertyとEntity CRUD公開範囲diagnostic、✅ schema-driven mutation form／More menu／Delete確認、✅ API-key→12時間memory-only HttpOnly session、CSRF header、login rate／capacity／HTTPS境界、CSP、実net8.0／Kestrel／320・1280px Chromium。次はE3 Workflow trigger form／result renderer／navigation event
+15. Application Builder Phase E3: ✅ Workflow binding→保存済み同期API endpointの一意解決／blocking diagnostic、✅ JSON Schema string／enum／integer／number／boolean／object／array form、✅ `textContent`限定typed result、✅ success／errorの既存Page固定navigation、実net8.0／Kestrel／320px Chromium。typed state consumerがないstate-set／再帰Workflow eventは未対応のまま明示停止。Linux／Windowsの生成選択肢はC# Console／ASP.NET Coreの2系統を維持する。次はtyped client state／query binding contract
+16. Application Builder Phase E4: ✅ typed client state宣言／初期値／容量・型検査、✅ Text／Markdown／Metric／Text Input consumer、input change／Workflow success・errorのstate-set、✅ memory-only runtime／reload reset／`textContent`限定、✅ Create／Target／Export／Reviewの目的別workspace、Canvas／Data、PC 3ペイン／mobile bottom sheet、単一Save、実net8.0／Kestrel／320・1280px Chromium。Linux／Windowsの生成選択肢はC# Console／ASP.NET Coreの2系統を維持する。次はtyped query binding contract
+17. Application Builder Phase E5: ✅ typed Entity collection query／list公開・consumer・column検証、✅ Query Editor／stable ID／単一limit・cache設定、✅ loading／not-loaded／empty／固定error／Refresh、memory cache／同時取得共有／mutation後invalidate、実net8.0／Kestrel／320・1280px Chromium。既存`entity:` bindingは後方互換として維持する。Linux／Windowsの生成選択肢はC# Console／ASP.NET Coreの2系統を維持する。次はAPI query sourceとfilter／sort／pagination contract
+18. Application Builder Phase E6: ✅ Entity/API collection queryのtyped source、固定API input／result path／request-response schema検証、✅ field型別filter operator／値型、最大20 filter／3 sort、offset pagination、✅ Query Editorのsource別段階開示、✅ whitelist column＋全値parameter bindingのSQLite query、決定的sort、固定400、✅ browser Previous／Next／API POST／nested collection、実net8.0／Kestrel／320・1280px Chromium。Linux／Windowsの生成選択肢はC# Console／ASP.NET Coreの2系統を維持する。次はSecret injection／side-effect nodeの安全な生成境界と隔離build
+19. Application Builder Phase E7／B2.5: ✅ Secret名をopaque aliasへ変換し、値をsource／manifest／logへ含めない環境変数注入、欠落・64KiB上限・最終出力／file write redaction、✅ 固定HTTPSまたはloopback HTTP、redirect／cookie無効、header・body・response上限、credential位置制約、内容を含めない監査、✅ application-owned root相対file read／write／exists／glob、containment／symlink拒否、atomic overwrite／append・scan上限、✅ ASP.NETはapi-key必須・anonymous endpoint拒否、Console／ASP.NET共通runtime、実net8.0／Kestrel／320・1280px Chromium。source生成自体は引き続きI/O・Secret解決なし。次はsystemd user transient unitを用いる隔離build
+20. Application Builder Phase B3: ✅ 保存済みSourceの再生成／ZIP containment、✅ allowlist .NET SDKとvenv worker、✅ network deniedをIPv4／IPv6でfail-closed、最小SDK環境、systemd user transient unit、resource／timeout／同時実行制限、✅ durable phase／cancel／interrupt／bounded redacted log／artifact checksum・download・delete／監査、✅ App Studio Build & test／phase indicator／Cancel／log／artifact／Delete、実C# Console・ASP.NET Core self-test、320・1280px Chromium。Linux／Windows向け生成対象は2系統を維持する
+21. App Studio Workflow自動アプリ化: ✅ Workflow trigger／output契約からtype-aware入力、同期endpoint、型付き結果、navigation、responsive Pageを含む動作保証baselineを作成時に自動適用、✅ Canvas上のAdvisor根拠／契約form preview／生成・動作確認の主導線、✅ Workflow契約を明示したAI再検討3案とvisual diff／静的検証／選択適用、✅ Canvas Inspectorによる任意修正、実Ollama 3案、実net8.0 build／self-test／Kestrel、320・1280px Chromiumで入力→Workflow→結果を確認。AI／modelが利用不能でもbaselineは完全動作し、AI案は既存動作を壊す自動適用をしない
+
+運用導線は`Workflows`へ統合する。`workflows.edit`利用者には編集対象、`workflows.run`だけの利用者には公開済み対象を同じ一覧入口から示す。
+エディタの主操作`Run`は差分保存・公開検証・必要時だけversion更新・実行を行い、同じエディタ内のdebug panelへ結果を表示する。
+公開実行面は一覧項目の`Open App`から開き、`/runner?workflow={id}`は公開版専用APIを使う互換deep linkとして維持する。
 
 mock による決定的回帰に加え、LLM/RAG/AI 関連は利用可能なローカル model を必要に応じて実行し、
 品質、token、latency、cancel/timeout、fallback、VRAM route まで評価する。

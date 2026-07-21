@@ -1,4 +1,4 @@
-import type { SemanticComponent } from "../../api/applicationBuilder";
+import type { DesignTemplateDefinition, SemanticComponent } from "../../api/applicationBuilder";
 
 export interface AppPage { id: string; title?: string; description?: string; root?: SemanticComponent | null; [key: string]: unknown }
 
@@ -39,4 +39,38 @@ export function uniqueComponentId(root: SemanticComponent | null | undefined, ty
   let index = 1;
   while (findComponent(root, `${base}-${index}`)) index += 1;
   return `${base}-${index}`;
+}
+
+export function instantiateTemplate(root: SemanticComponent | null | undefined, template: DesignTemplateDefinition, values: Record<string, unknown>): SemanticComponent {
+  const reserved = new Set<string>();
+  const collect = (item: SemanticComponent | null | undefined) => {
+    if (!item) return;
+    reserved.add(item.id);
+    for (const child of item.children ?? []) collect(child);
+  };
+  collect(root);
+  const replacements = new Map<string, Map<string, unknown>>();
+  for (const parameter of template.parameters) {
+    const value = Object.prototype.hasOwnProperty.call(values, parameter.key) ? values[parameter.key] : parameter.default;
+    for (const target of parameter.targets) {
+      const properties = replacements.get(target.componentId) ?? new Map<string, unknown>();
+      properties.set(target.property, value); replacements.set(target.componentId, properties);
+    }
+  }
+  const instantiate = (item: SemanticComponent): SemanticComponent => {
+    const base = item.type.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "component";
+    let index = 1;
+    while (reserved.has(`${base}-${index}`)) index += 1;
+    const id = `${base}-${index}`;
+    reserved.add(id);
+    const cloned = structuredClone(item);
+    const replacement = replacements.get(item.id);
+    return {
+      ...cloned,
+      id,
+      ...(replacement ? { properties: { ...(cloned.properties ?? {}), ...Object.fromEntries(replacement) } } : {}),
+      children: (item.children ?? []).map(instantiate),
+    };
+  };
+  return instantiate(template.root);
 }

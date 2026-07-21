@@ -1,7 +1,31 @@
 """サンプルブック API と Chat アシスタント API のテスト。"""
 import json
+import time
 
 from tests.conftest import CSRF_HEADERS
+
+
+def _wait_execution(admin_client, execution_id: int, attempts: int = 160) -> dict:
+    detail: dict = {}
+    for _ in range(attempts):
+        detail = admin_client.get(f"/api/v1/workflow-executions/{execution_id}").json()
+        if detail.get("status") not in ("QUEUED", "RUNNING", "WAITING"):
+            return detail
+        time.sleep(0.03)
+    return detail
+
+
+def _install_publish(admin_client, sample_id: str) -> tuple[int, dict]:
+    installed = admin_client.post(
+        f"/api/v1/workflows/samples/{sample_id}/install", headers=CSRF_HEADERS,
+    )
+    assert installed.status_code == 201, installed.text
+    workflow_id = installed.json()["id"]
+    published = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS,
+    )
+    assert published.status_code == 200, published.text
+    return workflow_id, admin_client.get(f"/api/v1/workflows/{workflow_id}").json()
 
 
 def test_all_samples_are_valid():
@@ -9,12 +33,45 @@ def test_all_samples_are_valid():
     from app.workflows import samplebook
     from app.workflows.engine import validate_definition
 
-    assert len(samplebook.SAMPLES) >= 8
+    assert len(samplebook.SAMPLES) >= 19
     ids = [s["id"] for s in samplebook.SAMPLES]
     assert len(ids) == len(set(ids)), "サンプル ID が重複"
+    assert {
+        "execution-time-travel", "local-llm-route", "pc-state-recovery",
+        "ai-patch-recovery", "regression-batch",
+    } <= set(ids)
+    required_guide = {
+        "goal", "difficulty", "estimated_minutes", "required_capabilities", "side_effects",
+        "required_resources", "typed_input", "typed_output", "sample_input", "expected_assertions",
+        "mock_data", "node_walkthrough", "failure_injection", "recovery_retry", "install_preview",
+    }
     for s in samplebook.SAMPLES:
         validate_definition(json.dumps(s["definition"]))
         assert s["title"] and s["desc"] and s["usage"] and s["category"]
+        assert required_guide <= set(s["guide"]), f"{s['id']}: guide fields missing"
+        assert s["guide"]["goal"] and s["guide"]["estimated_minutes"] >= 5
+        assert len(s["guide"]["failure_injection"]) >= 2
+        assert len(s["guide"]["node_walkthrough"]) == len(s["definition"]["nodes"])
+        assert s["guide"]["install_preview"]["node_count"] == len(s["definition"]["nodes"])
+
+
+def test_every_node_has_complete_canonical_documentation():
+    from app.workflows.node_metadata import node_catalog
+
+    required = {
+        "purpose", "when_to_use", "when_not_to_use", "configuration", "typed_inputs",
+        "typed_outputs", "variable_examples", "side_effect", "permissions", "secrets",
+        "retry_timeout_error_route", "representative_errors", "performance_cost", "recipes",
+        "migration_note",
+    }
+    for node in node_catalog():
+        docs = node["documentation"]
+        assert required <= set(docs), node["type"]
+        assert docs["purpose"] and len(docs["when_to_use"]) >= 2 and len(docs["when_not_to_use"]) >= 2
+        assert len(docs["recipes"]) >= 2 and docs["representative_errors"]
+        assert {item["key"] for item in docs["configuration"]} == set(node["config_schema"])
+        assert docs["typed_outputs"] == node["output_schema"]
+        assert "workflows.run" in docs["permissions"]
 
 
 def test_catalog_covers_only_known_node_types():
@@ -113,6 +170,106 @@ def test_complex_order_sample_executes_with_typed_outputs(admin_client):
     assert execution["outputs"]["sales_by_region"]["value"] == [
         {"group": "東", "value": 16000.0, "count": 2},
     ]
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_regression_batch_sample_executes_and_asserts_typed_output(admin_client):
+    workflow_id, _ = _install_publish(admin_client, "regression-batch")
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/run",
+        json={"input": {"items": [1, 2, 3, 4, 5]}}, headers=CSRF_HEADERS,
+    )
+    assert started.status_code == 200, started.text
+    execution = _wait_execution(admin_client, started.json()["execution_id"])
+    assert execution["status"] == "SUCCEEDED", execution
+    assert execution["outputs"]["batches"]["value"] == [[1, 2], [3, 4], [5]]
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_time_travel_sample_replays_historical_and_current_versions(admin_client):
+    workflow_id, workflow = _install_publish(admin_client, "execution-time-travel")
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/run",
+        json={"input": {"message": "same input"}}, headers=CSRF_HEADERS,
+    )
+    original = _wait_execution(admin_client, started.json()["execution_id"])
+    assert original["status"] == "SUCCEEDED", original
+    assert original["outputs"]["result"]["value"] == "v1: same input"
+
+    definition = workflow["definition"]
+    format_node = next(node for node in definition["nodes"] if node["id"] == "format")
+    format_node["config"]["template"] = "v2: {{trigger.message}}"
+    patched = admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": definition}, headers=CSRF_HEADERS,
+    )
+    assert patched.status_code == 200, patched.text
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+
+    replayed = {}
+    for mode in ("historical", "current"):
+        retry = admin_client.post(
+            f"/api/v1/workflows/{workflow_id}/executions/{original['id']}/retry",
+            json={"version_mode": mode}, headers=CSRF_HEADERS,
+        )
+        assert retry.status_code == 200, retry.text
+        replayed[mode] = _wait_execution(admin_client, retry.json()["execution_id"])
+    assert replayed["historical"]["outputs"]["result"]["value"] == "v1: same input"
+    assert replayed["current"]["outputs"]["result"]["value"] == "v2: same input"
+    assert replayed["historical"]["workflow_version_id"] == original["workflow_version_id"]
+    assert replayed["current"]["workflow_version_id"] != original["workflow_version_id"]
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_ai_patch_sample_fails_then_diagnosis_patch_recovers(admin_client):
+    workflow_id, workflow = _install_publish(admin_client, "ai-patch-recovery")
+    failed_start = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/run", json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    failed = _wait_execution(admin_client, failed_start.json()["execution_id"])
+    # Node status is TIMED_OUT; the workflow-level terminal status is FAILED.
+    assert failed["status"] == "FAILED", failed
+
+    diagnosis = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/intelligence/diagnose",
+        json={"execution_id": failed["id"], "use_ai": False}, headers=CSRF_HEADERS,
+    )
+    assert diagnosis.status_code == 200, diagnosis.text
+    option = diagnosis.json()["options"][0]
+    assert option["operations"] and option["preview"]["valid"] is True
+    applied = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/intelligence/patch-apply",
+        json={
+            "patch_version": 1, "operations": option["operations"],
+            "expected_updated_at": workflow["updated_at"],
+        }, headers=CSRF_HEADERS,
+    )
+    assert applied.status_code == 200, applied.text
+    assert admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS).status_code == 200
+    recovered_start = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/run", json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    recovered = _wait_execution(admin_client, recovered_start.json()["execution_id"])
+    assert recovered["status"] == "SUCCEEDED", recovered
+    assert recovered["outputs"]["result"]["value"] == "timeoutを解消しました"
+    assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
+
+
+def test_pc_state_recovery_sample_persists_progress(admin_client):
+    workflow_id, workflow = _install_publish(admin_client, "pc-state-recovery")
+    definition = workflow["definition"]
+    checkpoint = next(node for node in definition["nodes"] if node["id"] == "checkpoint")
+    checkpoint["config"]["seconds"] = 0.1
+    assert admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": definition}, headers=CSRF_HEADERS,
+    ).status_code == 200
+    republished = admin_client.post(f"/api/v1/workflows/{workflow_id}/publish", headers=CSRF_HEADERS)
+    assert republished.status_code == 200, republished.text
+    started = admin_client.post(
+        f"/api/v1/workflows/{workflow_id}/run", json={"input": {}}, headers=CSRF_HEADERS,
+    )
+    execution = _wait_execution(admin_client, started.json()["execution_id"])
+    assert execution["status"] == "SUCCEEDED", execution
+    assert execution["outputs"]["progress"]["value"] == "1"
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 

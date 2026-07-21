@@ -414,7 +414,312 @@ SAMPLES: list[dict] = [
                       _e("aggregate", "groups"), _e("filter", "count")],
         },
     },
+    {
+        "id": "typed-guard-return",
+        "title": "入力ガードと明示 Return",
+        "icon": "✓",
+        "category": "入門",
+        "desc": "条件、注釈、Assert、明示エラー、型付きReturnを外部サービスなしで学ぶ安全な最小フロー。",
+        "usage": (
+            "成功と想定内エラーを明示するフロー制御の基本形です。外部サービスなしで実行できます。\n\n"
+            "■ 動かし方\n"
+            "1. statusへ ready を入力するとNoteとAssertを通過し、型付き結果をReturnします\n"
+            "2. ready以外では flow.error が INPUT_NOT_READY を返し、無駄なretryを行いません\n\n"
+            "■ 学べること\n"
+            "- flow.returnは終端専用で、RunnerとAPIへ同じoutput contractを返す\n"
+            "- flow.errorとtest.assertの失敗は機械判定可能なcodeを持つ\n"
+            "- flow.noteは副作用なしで実行履歴へ判断材料を残す"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "状態入力", {"mode": "manual", "inputs": [
+                    {"key": "status", "label": "状態", "type": "text", "required": True,
+                     "default": "ready"},
+                ]}, 40),
+                _n("guard", "condition.if", "実行条件", {
+                    "left": "{{trigger.status}}", "op": "eq", "right": "ready",
+                }, 300),
+                _n("note", "flow.note", "検証開始を記録", {
+                    "level": "info", "text": "status={{trigger.status}} を検証します",
+                }, 560, 80),
+                _n("assert", "test.assert", "状態を検証", {
+                    "actual": "{{trigger.status}}", "operator": "eq", "expected": "ready",
+                    "message": "statusがreadyではありません",
+                }, 800, 80),
+                _n("result", "flow.return", "結果を返す", {
+                    "name": "result", "title": "検証結果", "renderer": "status",
+                    "value": "{{trigger.status}}", "copyable": True,
+                }, 1040, 80),
+                _n("error", "flow.error", "入力エラー", {
+                    "code": "INPUT_NOT_READY", "message": "statusをreadyにしてください",
+                    "details": '{"status":"{{trigger.status}}"}',
+                }, 560, 300),
+            ],
+            "edges": [
+                _e("trigger", "guard"), _e("guard", "note", "true"),
+                _e("guard", "error", "false"), _e("note", "assert"),
+                _e("assert", "result"),
+            ],
+        },
+    },
+    {
+        "id": "system-disk-alert",
+        "title": "ディスク監視イベントを記録",
+        "icon": "◉",
+        "category": "運用・自動化",
+        "desc": "ディスク使用率アラートを公開済みフローで受け、型付きの監視結果を残す安全な雛形。",
+        "usage": (
+            "ControlDeckの監視イベントから自動起動する最小構成です。\n\n"
+            "■ 動かし方\n"
+            "1. アラートで disk_percent のルールを作成します\n"
+            "2. このフローを公開し、自動起動を有効にします\n"
+            "3. しきい値超過時にイベント種別・対象・現在値が実行履歴へ残ります\n\n"
+            "下書きの変更は再公開するまで自動起動へ影響しません。通知や復旧処理はReturnの前へ追加してください。"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "ディスク監視", {
+                    "mode": "system", "system_event": "disk", "resource_filter": "",
+                }, 40),
+                _n("note", "flow.note", "監視イベントを記録", {
+                    "level": "warning",
+                    "text": "{{trigger.metric}}={{trigger.value}}（しきい値 {{trigger.threshold}}）",
+                }, 320),
+                _n("result", "flow.return", "監視結果", {
+                    "name": "disk_alert", "title": "ディスク監視", "renderer": "status",
+                    "value": "{{trigger.message}}", "copyable": True,
+                }, 600),
+            ],
+            "edges": [_e("trigger", "note"), _e("note", "result")],
+        },
+    },
+    # ---- Workflow IDE 差別化 flow ----
+    {
+        "id": "execution-time-travel",
+        "title": "実行Time Travel — 当時版と現在版を比較",
+        "icon": "↶",
+        "category": "Workflow IDE",
+        "desc": "公開versionごとの実行snapshotを残し、過去入力を現在版／当時版へ再投入して差を確認する安全な教材。",
+        "usage": (
+            "外部依存なしでexecution time travelを確認します。まずv1を公開・実行し、prefixを変更してv2を公開します。"
+            "実行履歴からv1を開き、「現在のフローで再実行」と「当時のフローで再実行」を選ぶと、同じ入力に対するresultの差と固定version IDを比較できます。\n\n"
+            "■ Failure injection\nprefixを空にして公開checkのblocking diagnosticを確認します。\n\n"
+            "■ Recovery\n過去入力をloadし、現在版を修正するか、当時版retryで再現条件を固定します。"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "再現入力", {"mode": "manual", "inputs": [
+                    {"key": "message", "label": "Message", "type": "text", "required": True, "sample": "same input"},
+                ]}, 40),
+                _n("format", "data.template", "Version付き整形", {
+                    "template": "v1: {{trigger.message}}", "output_format": "text",
+                }, 320),
+                _n("result", "flow.return", "比較結果", {
+                    "name": "result", "title": "Time Travel結果", "renderer": "text", "value": "{{format.text}}",
+                }, 600),
+            ], "edges": [_e("trigger", "format"), _e("format", "result")],
+        },
+    },
+    {
+        "id": "local-llm-route",
+        "title": "Local LLM Runtime Route",
+        "icon": "⌘",
+        "category": "Workflow IDE",
+        "desc": "稼働中model、context、loaded状態、空きVRAMから実行経路を選び、LLMへ動的接続する。",
+        "usage": (
+            "AI Runtime RouteをLLMの直前に置き、{{route.base_url}}と{{route.model}}を設定へ渡します。"
+            "候補を空欄にするとControlDeckが検出したOllama／llama.cpp等からBalanced戦略で選択します。\n\n"
+            "■ Failure injection\nmin_contextを利用可能modelより大きくし、AI_RUNTIME_UNAVAILABLEとerror routeを確認します。\n\n"
+            "■ Recovery\n条件を緩めるか候補JSONへ別runtimeを追加します。VRAM sensorがN/AでもVRAM条件が0なら実行できます。"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "質問", {"mode": "manual", "inputs": [
+                    {"key": "message", "label": "質問", "type": "paragraph", "required": True, "sample": "ControlDeckとは？"},
+                ]}, 40),
+                _n("route", "ai.route", "Runtime自動選択", {
+                    "strategy": "balanced", "min_context": 0, "min_free_vram_mb": 0, "allow_unavailable": False,
+                }, 300),
+                _n("llm", "llm.chat", "選択modelで回答", {
+                    "base_url": "{{route.base_url}}", "model": "{{route.model}}", "prompt": "{{trigger.message}}",
+                    "system": "日本語で簡潔に回答してください。", "auto_load": True,
+                }, 560),
+                _n("result", "flow.return", "回答", {
+                    "name": "answer", "title": "回答", "renderer": "markdown", "value": "{{llm.content}}",
+                }, 820),
+            ], "edges": [_e("trigger", "route"), _e("route", "llm"), _e("llm", "result")],
+        },
+    },
+    {
+        "id": "pc-state-recovery",
+        "title": "PC State Recovery — 再起動を越える進捗",
+        "icon": "◆",
+        "category": "Workflow IDE",
+        "desc": "型付き永続stateとdurable delayを組み合わせ、ControlDeck再起動後も同じ実行から進捗を回復する。",
+        "usage": (
+            "stateを初期化し、durable delayでcheckpointを保存した後、counterを原子的に加算します。"
+            "Delay待機中にcontrol-deck-webを再起動すると、同じexecution IDで処理が再開します。\n\n"
+            "■ Failure injection\nDelay待機中にserviceを再起動し、実行がWAITINGからSUCCEEDEDへ戻ることを確認します。\n\n"
+            "■ Recovery\nstate versionが競合した場合は最新値をgetし、expected_versionを更新して再試行します。"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "回復テスト開始", {"mode": "manual"}, 40),
+                _n("initialize", "data.state", "進捗を初期化", {
+                    "operation": "set", "namespace": "recovery", "key": "progress", "value_type": "integer", "value": 0,
+                }, 280),
+                _n("checkpoint", "control.delay", "再起動可能な待機", {"seconds": 5, "message": "service再起動を試せます"}, 520),
+                _n("advance", "data.state", "進捗を加算", {
+                    "operation": "increment", "namespace": "recovery", "key": "progress", "delta": 1,
+                }, 760),
+                _n("result", "flow.return", "回復結果", {
+                    "name": "progress", "title": "回復後進捗", "renderer": "metric", "value": "{{advance.value}}",
+                }, 1000),
+            ], "edges": [_e("trigger", "initialize"), _e("initialize", "checkpoint"), _e("checkpoint", "advance"), _e("advance", "result")],
+        },
+    },
+    {
+        "id": "ai-patch-recovery",
+        "title": "AI Diagnose & Patch — Timeout修復",
+        "icon": "✦",
+        "category": "Workflow IDE",
+        "desc": "意図的なtimeoutをProject Intelligenceで診断し、操作差分を確認して選択適用する。",
+        "usage": (
+            "このSampleは最初の実行が意図的にTIMED_OUTになります。EditorのProject Intelligenceを開き、"
+            "ローカル診断またはAI再検討を実行すると、node_timeoutを延長するoperation patchが提示されます。\n\n"
+            "■ Failure injection\nwait 1秒に対しnode_timeout 0.1秒を設定済みです。\n\n"
+            "■ Recovery\nBefore／After qualityと操作JSONを確認し、案を選択適用して再実行します。AI案は自動適用されません。"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "修復テスト", {"mode": "manual"}, 40),
+                _n("wait", "util.wait", "意図的なTimeout", {"seconds": 1, "node_timeout": 0.1}, 320),
+                _n("result", "flow.return", "修復後結果", {
+                    "name": "result", "title": "修復結果", "renderer": "status", "value": "timeoutを解消しました",
+                }, 600),
+            ], "edges": [_e("trigger", "wait"), _e("wait", "result")],
+        },
+    },
+    {
+        "id": "regression-batch",
+        "title": "Regression Batch — 型付き回帰テスト",
+        "icon": "▦",
+        "category": "Workflow IDE",
+        "desc": "配列を決定的にbatch化し、Assertと保存済みtest caseの一括実行で変更を回帰確認する。",
+        "usage": (
+            "入力配列を2件ずつに分け、batch数が3であることをassertします。PreviewのTest Casesから複数入力を保存し、"
+            "Run Allで公開前の回帰を一括実行できます。Project IntelligenceのBaselineテスト生成も利用できます。\n\n"
+            "■ Failure injection\nbatch_sizeまたは期待値を変更し、ASSERTION_FAILEDを確認します。\n\n"
+            "■ Recovery\n失敗caseの実入力・node outputを確認し、定義を直して同じtest batchを再実行します。"
+        ),
+        "definition": {
+            "nodes": [
+                _n("trigger", "trigger", "回帰入力", {"mode": "manual", "inputs": [
+                    {"key": "items", "label": "Items", "type": "json_array", "required": True, "default": [1, 2, 3, 4, 5]},
+                ]}, 40),
+                _n("batch", "data.batch", "2件ずつ分割", {"input": "{{trigger.items}}", "batch_size": 2}, 300),
+                _n("assert", "test.assert", "Batch数を検証", {
+                    "actual": "{{batch.batch_count}}", "operator": "eq", "expected": "3", "message": "batch数が期待値と異なります",
+                }, 560),
+                _n("result", "flow.return", "回帰結果", {
+                    "name": "batches", "title": "Batch結果", "renderer": "json_tree", "value": "{{batch.batches}}",
+                }, 820),
+            ], "edges": [_e("trigger", "batch"), _e("batch", "assert"), _e("assert", "result")],
+        },
+    },
 ]
+
+
+def _sample_value(field: dict) -> object:
+    if "sample" in field:
+        return field["sample"]
+    if "default" in field:
+        return field["default"]
+    kind = str(field.get("type") or "text").lower()
+    if kind in {"number", "integer"}:
+        return 1
+    if kind == "boolean":
+        return True
+    if kind in {"json_array", "file_list", "multi_select"}:
+        return []
+    if kind in {"json", "key_value"}:
+        return {}
+    return "sample"
+
+
+def _enrich_samples() -> None:
+    """Attach the complete Phase 6 learning/verification contract to every sample."""
+    from app.workflows.contracts import build_input_schema, build_output_schema
+    from app.workflows.node_metadata import metadata_by_type
+    from app.workflows.redaction import is_sensitive_key
+
+    metadata = metadata_by_type()
+    for sample in SAMPLES:
+        definition = sample["definition"]
+        nodes = definition.get("nodes", [])
+        node_types = [str(node.get("type")) for node in nodes]
+        node_meta = [metadata.get(node_type, {}) for node_type in node_types]
+        trigger = next((node for node in nodes if node.get("type") == "trigger"), {})
+        fields = (trigger.get("config") or {}).get("inputs", [])
+        sample_input = {
+            str(field.get("key")): _sample_value(field)
+            for field in fields if isinstance(field, dict) and field.get("key")
+        }
+        side_effects = sorted({str(item.get("side_effect")) for item in node_meta if item.get("side_effect") not in {None, "none"}})
+        capabilities = sorted({capability for item in node_meta for capability in item.get("capabilities", [])})
+        external_nodes = [node for node in nodes if metadata.get(str(node.get("type")), {}).get("side_effect") == "external"]
+        model_nodes = [node for node in nodes if "llm" in metadata.get(str(node.get("type")), {}).get("capabilities", [])]
+        app_nodes = [node for node in nodes if str(node.get("type", "")).startswith("app.")]
+        secret_requirements = []
+        if any(node.get("type") == "notify.webhook" for node in nodes):
+            secret_requirements.append("Webhook URLをSecret Storeへ登録")
+        if any(
+            is_sensitive_key(str(config_key)) and value
+            for node in nodes for config_key, value in (node.get("config") or {}).items()
+        ):
+            secret_requirements.append("API credentialをSecret Storeへ登録")
+        outputs = build_output_schema(definition)
+        sample["guide"] = {
+            "goal": sample["desc"],
+            "difficulty": "advanced" if len(nodes) >= 6 or side_effects else ("intermediate" if len(nodes) >= 4 else "beginner"),
+            "estimated_minutes": max(5, min(30, len(nodes) * 2 + len(side_effects) * 3)),
+            "required_capabilities": capabilities,
+            "side_effects": side_effects,
+            "required_resources": {
+                "secrets": secret_requirements,
+                "models": ["利用可能なローカル／OpenAI互換model"] if model_nodes else [],
+                "apps": ["対象Managed Applicationを選択"] if app_nodes else [],
+            },
+            "typed_input": build_input_schema(definition),
+            "typed_output": outputs,
+            "sample_input": sample_input,
+            "expected_assertions": [
+                {"path": "execution.status", "operator": "eq", "expected": "FAILED" if sample["id"] == "ai-patch-recovery" else "SUCCEEDED"},
+                *({"path": "outputs", "operator": "exists"} for _ in [0] if outputs),
+            ],
+            "mock_data": {
+                str(node.get("id")): {"mode": "fixture", "note": "外部呼び出しを行わず型付きfixtureを返します"}
+                for node in external_nodes
+            },
+            "node_walkthrough": [
+                {"order": index + 1, "node_id": node.get("id"), "type": node.get("type"), "purpose": node.get("name") or metadata.get(str(node.get("type")), {}).get("description")}
+                for index, node in enumerate(nodes)
+            ],
+            "failure_injection": [
+                "必須入力を空にしてpublish／run前のblocking diagnosticを確認します。",
+                "外部依存またはtimeout条件を一時的に失敗させ、typed error routeと履歴を確認します。" if side_effects else "期待値を一時的に変更し、決定的な失敗とnode outputを確認します。",
+            ],
+            "recovery_retry": "失敗nodeのresolved input／typed errorを確認し、一時失敗だけを有限retryします。定義変更後は同じ保存入力で再実行します。",
+            "install_preview": {
+                "node_count": len(nodes), "edge_count": len(definition.get("edges", [])),
+                "side_effects": side_effects, "required_capabilities": capabilities,
+                "requires_model": bool(model_nodes), "requires_secret": bool(secret_requirements), "requires_app": bool(app_nodes),
+                "intentional_failure": sample["id"] == "ai-patch-recovery",
+            },
+        }
+
+
+_enrich_samples()
 
 _BY_ID = {s["id"]: s for s in SAMPLES}
 
@@ -426,6 +731,7 @@ def list_samples(user: User = Depends(require_permission("workflows.run"))):
         {
             "id": s["id"], "title": s["title"], "icon": s["icon"], "category": s["category"],
             "desc": s["desc"], "usage": s["usage"],
+            "guide": s["guide"],
             "node_count": len(s["definition"]["nodes"]),
             "node_types": [n["type"] for n in s["definition"]["nodes"]],
             "definition": s["definition"],

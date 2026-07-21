@@ -16,7 +16,7 @@ import sys
 from sqlalchemy import select
 
 from app.bootstrap import create_admin, init_db, seed_roles
-from app.database import SessionLocal
+from app.database import SessionLocal, engine
 from app.models import User
 from app.security.passwords import hash_password
 
@@ -76,7 +76,20 @@ def main() -> None:
             print(__doc__)
             sys.exit(1)
         username = sys.argv[2]
-    init_db()
+    # 管理CLIから稼働中serviceと並行してschemaを変更しない。空DBだけは初期化し、
+    # 既存DBはheadであることを検証する。更新が必要なら先に./deck.shで再起動する。
+    from sqlalchemy import inspect
+
+    if not inspect(engine).get_table_names():
+        init_db()
+    else:
+        try:
+            from app.database.migrations import verify_schema
+
+            verify_schema()
+        except RuntimeError as exc:
+            print(f"DB更新が必要です。先に ./deck.sh を実行してください: {exc}", file=sys.stderr)
+            sys.exit(1)
     db = SessionLocal()
     try:
         seed_roles(db)

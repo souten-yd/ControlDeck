@@ -40,7 +40,22 @@ test("uses recommended settings and inserts a typed upstream variable at the cur
     await page.goto(`/workflows/${workflowId}`);
     await page.locator(".react-flow__node").filter({ hasText: "詳細調査" }).click();
     await expect(page.getByText("迷ったら推奨設定で開始")).toBeVisible();
-    await page.getByRole("button", { name: "推奨値を適用" }).click();
+    const recommendationSurface = page.locator("[data-recommended-settings]");
+    const surfaceStyle = await recommendationSurface.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, border: style.borderTopColor };
+    });
+    expect(surfaceStyle.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(surfaceStyle.background).not.toBe("rgb(255, 255, 255)");
+    expect(surfaceStyle.border).not.toBe(surfaceStyle.background);
+    const recommendationButton = page.getByRole("button", { name: "推奨値を適用" });
+    const buttonStyle = await recommendationButton.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, color: style.color };
+    });
+    expect(buttonStyle.background).not.toBe(buttonStyle.color);
+    expect(buttonStyle.color).toBe("rgb(255, 255, 255)");
+    await recommendationButton.click();
     await expect(page.getByText("推奨:", { exact: false }).first()).toBeVisible();
     await page.getByText("このノードの使い方・推奨理由・構成例").click();
     await expect(page.getByText("最短手順:", { exact: false })).toBeVisible();

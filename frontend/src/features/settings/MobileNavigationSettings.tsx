@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useMeta } from "../../api/hooks";
-import { NAVIGATION } from "../../navigation";
+import { canAccessNavigationItem, NAVIGATION } from "../../navigation";
 import { useAuth } from "../../stores";
 import { MOBILE_NAV_MAX_ITEMS, useMobileNavigation } from "../../stores/mobileNavigation";
 
@@ -12,7 +12,7 @@ export function MobileNavigationSettings() {
   const reset = useMobileNavigation((state) => state.reset);
   const enabledFeatures = useMemo(() => new Set(meta?.enabled_features ?? []), [meta]);
   const available = NAVIGATION.filter((item) =>
-    (!item.feature || enabledFeatures.has(item.feature)) && (!item.permission || can(item.permission)),
+    (!item.feature || enabledFeatures.has(item.feature)) && canAccessNavigationItem(item, can),
   );
   const availablePaths = new Set(available.map((item) => item.to));
   const selected = paths.filter((path) => availablePaths.has(path));

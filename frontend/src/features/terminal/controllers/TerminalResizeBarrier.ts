@@ -29,6 +29,7 @@ interface ActiveResize {
   cols: number;
   rows: number;
   acked: boolean;
+  localCommitted: boolean;
   queuedInput: string[];
   queuedBytes: number;
   timeout: number;
@@ -86,6 +87,7 @@ export class TerminalResizeBarrier {
       cols,
       rows,
       acked: false,
+      localCommitted: false,
       queuedInput: [],
       queuedBytes: 0,
       timeout,
@@ -128,6 +130,26 @@ export class TerminalResizeBarrier {
       connectionGeneration: ack.connectionGeneration,
       diagnostics: ack.diagnostics,
     });
+    if (active!.localCommitted) this.release("ack-after-local-commit");
+    return true;
+  }
+
+  /**
+   * ACK済みのサイズをxtermへ反映し終えた時点で入力を解放する。
+   * SIGWINCH後のPTY描画は端末によって発生しないため、それを待つと通常入力へ
+   * 最大BARRIER_TIMEOUT_MSの遅延を加えてしまう。ACK前の出力はwrite queueで
+   * local resizeより先に処理済みなので、この境界で解放しても順序は崩れない。
+   */
+  localResizeCommitted(resizeGeneration: number): boolean {
+    const active = this.active;
+    if (!active || active.resizeGeneration !== resizeGeneration
+      || active.connectionGeneration !== this.connectionGeneration) return false;
+    active.localCommitted = true;
+    this.record("local-resize-committed", {
+      resizeGeneration,
+      connectionGeneration: this.connectionGeneration,
+    });
+    if (active.acked) this.release("local-resize-committed");
     return true;
   }
 
@@ -185,6 +207,7 @@ export class TerminalResizeBarrier {
       cols: active?.cols,
       rows: active?.rows,
       acked: active?.acked ?? false,
+      localCommitted: active?.localCommitted ?? false,
       queuedChunks: active?.queuedInput.length ?? 0,
       queuedBytes: active?.queuedBytes ?? 0,
       counters: { ...this.counters },

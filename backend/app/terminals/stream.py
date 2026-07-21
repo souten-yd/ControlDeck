@@ -98,6 +98,7 @@ class TerminalClientStream:
         self._input_acks: dict[int, InputAckRecord] = {}
         self._input_ack_order: deque[int] = deque()
         self._next_input_sequence = 1
+        self._output_condition = asyncio.Condition()
 
     def start(self, on_eof: Callable[[], None]) -> None:
         if self.reader_task is not None:
@@ -105,7 +106,9 @@ class TerminalClientStream:
 
         async def read() -> None:
             await self.connection.read_loop(self._on_data)
-            self.closed = True
+            async with self._output_condition:
+                self.closed = True
+                self._output_condition.notify_all()
             if self.subscriber is not None:
                 self.subscriber.put_nowait(None)
             on_eof()
@@ -113,7 +116,9 @@ class TerminalClientStream:
         self.reader_task = asyncio.create_task(read())
 
     async def _on_data(self, data: bytes) -> None:
-        entry = self.journal.append(data)
+        async with self._output_condition:
+            entry = self.journal.append(data)
+            self._output_condition.notify_all()
         queue = self.subscriber
         if queue is not None:
             try:
@@ -126,6 +131,49 @@ class TerminalClientStream:
                     queue.put_nowait(None)
                 except (asyncio.QueueEmpty, asyncio.QueueFull):
                     pass
+
+    async def wait_for_output_boundary(
+        self,
+        after_sequence: int,
+        *,
+        first_timeout: float = 0.25,
+        quiet_timeout: float = 0.008,
+    ) -> tuple[int, bool]:
+        """PTY output after ``after_sequence`` and its short burst boundary.
+
+        The first wait is only a fail-safe for terminals that do not answer a
+        device response.  On the normal path the condition wakes immediately;
+        the small quiet window then coalesces one PTY redraw burst into an
+        explicit journal sequence boundary.
+        """
+        async with self._output_condition:
+            if self.journal.latest_sequence <= after_sequence:
+                try:
+                    await asyncio.wait_for(
+                        self._output_condition.wait_for(
+                            lambda: self.closed or self.journal.latest_sequence > after_sequence,
+                        ),
+                        timeout=first_timeout,
+                    )
+                except TimeoutError:
+                    return self.journal.latest_sequence, False
+            if self.closed:
+                return self.journal.latest_sequence, False
+
+            through = self.journal.latest_sequence
+            while True:
+                try:
+                    await asyncio.wait_for(
+                        self._output_condition.wait_for(
+                            lambda: self.closed or self.journal.latest_sequence > through,
+                        ),
+                        timeout=quiet_timeout,
+                    )
+                except TimeoutError:
+                    return through, True
+                if self.closed:
+                    return self.journal.latest_sequence, False
+                through = self.journal.latest_sequence
 
     def attach(self, connection_generation: int) -> asyncio.Queue[JournalEntry | None]:
         if self.closed or connection_generation <= self.connection_generation:

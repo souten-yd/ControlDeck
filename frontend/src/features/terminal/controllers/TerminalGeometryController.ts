@@ -34,6 +34,7 @@ interface TerminalGeometryControllerOptions {
   isGeometryLocked: () => boolean;
   isResizeTransactionActive: () => boolean;
   sendPtyResize: (cols: number, rows: number, createBarrier: boolean) => number | null;
+  onLocalResizeCommitted: (resizeGeneration: number) => void;
   resumeConnection: () => void;
 }
 
@@ -108,6 +109,7 @@ export class TerminalGeometryController {
       });
       this.longTaskObserver.observe({ entryTypes: ["longtask"] });
     }
+    this.applyVisualViewportBounds();
     this.invalidate("size", "initial-layout");
   }
 
@@ -174,6 +176,7 @@ export class TerminalGeometryController {
         }
       }
       this.pendingLocalResize = undefined;
+      this.options.onLocalResizeCommitted(resizeGeneration);
       this.publishCounters();
     }, "resize-ack-local-commit");
   }
@@ -205,18 +208,35 @@ export class TerminalGeometryController {
 
   private scheduleStableFlush(): void {
     if (this.disposed || this.options.isGeometryLocked() || this.options.isResizeTransactionActive()) return;
+    // keyboard animation中の連続eventでtimerを毎回後ろ倒しにしない。先頭eventから
+    // 有界時間で一度測定し、その時点までのinvalidationsをまとめて処理する。
+    if (this.frame1 || this.frame2 || this.measureFrame || this.settleTimer !== undefined) return;
     const generation = ++this.generation;
-    window.cancelAnimationFrame(this.frame1);
-    window.cancelAnimationFrame(this.frame2);
-    window.cancelAnimationFrame(this.measureFrame);
-    window.clearTimeout(this.settleTimer);
     this.frame1 = window.requestAnimationFrame(() => {
       this.frame1 = 0;
       this.frame2 = window.requestAnimationFrame(() => {
         this.frame2 = 0;
-        this.settleTimer = window.setTimeout(() => this.prepareFlush(generation), SETTLE_MS);
+        this.settleTimer = window.setTimeout(() => {
+          this.settleTimer = undefined;
+          this.prepareFlush(generation);
+        }, SETTLE_MS);
       });
     });
+  }
+
+  private applyVisualViewportBounds(): void {
+    if (!this.options.coarseMobile) return;
+    const viewport = window.visualViewport;
+    const layoutWidth = document.documentElement.clientWidth || window.innerWidth;
+    const width = Math.min(viewport?.width ?? window.innerWidth, layoutWidth);
+    const height = viewport?.height ?? window.innerHeight;
+    const left = viewport?.offsetLeft ?? 0;
+    const top = viewport?.offsetTop ?? 0;
+    // DOM全体のfitより先にvisible viewport内へUIを収める。これによりkeyboard
+    // animation中もterminal/helper barがkeyboardの背面へ残らない。
+    this.options.root.style.width = `${width}px`;
+    this.options.root.style.height = `${height}px`;
+    this.options.root.style.transform = left || top ? `translate3d(${left}px, ${top}px, 0)` : "none";
   }
 
   private recordReason(reason: string): void {
@@ -240,14 +260,7 @@ export class TerminalGeometryController {
     const viewportSizeChanged = changed(viewportWidth, this.lastViewportWidth)
       || changed(viewportHeight, this.lastViewportHeight);
 
-    // Safari自身のVisual Viewport panと二重移動させない。fixed rootのtop/leftはCSSの0を維持する。
-    // DOM writeはsizeだけを一括し、次frameのDOM readと交互にしない。
-    if (this.options.coarseMobile) {
-      if (viewportSizeChanged) {
-        this.options.root.style.width = `${viewportWidth}px`;
-        this.options.root.style.height = `${viewportHeight}px`;
-      }
-    }
+    if (viewportSizeChanged) this.applyVisualViewportBounds();
     this.lastViewportWidth = viewportWidth;
     this.lastViewportHeight = viewportHeight;
     this.measureFrame = window.requestAnimationFrame(() => {
@@ -384,15 +397,17 @@ export class TerminalGeometryController {
           const previousViewportY = buffer.viewportY;
           const sentGeneration = this.options.sendPtyResize(dimensions.cols, dimensions.rows, true);
           if (sentGeneration !== null) {
-            this.pendingLocalResize = {
-              resizeGeneration: sentGeneration,
-              cols: dimensions.cols,
-              rows: dimensions.rows,
-              isNormal,
-              wasAtBottom,
-              previousViewportY,
-              commitQueued: false,
-            };
+            // Visual Viewportはkeyboardの上端を即時に示す。backend ACKを待って
+            // local rowsを縮めると、その間だけcursor/input行がkeyboardの背面に
+            // clipされる。write queue上で先行outputとの順序を保ったまま先に
+            // xtermを合わせ、inputはACKまでresize barrierに保持する。
+            this.options.terminal.resize(dimensions.cols, dimensions.rows);
+            this.counters.resizeExecuted += 1;
+            if (isNormal) {
+              if (wasAtBottom) this.options.terminal.scrollToBottom();
+              else this.options.terminal.scrollToLine(previousViewportY);
+            }
+            this.options.onLocalResizeCommitted(sentGeneration);
             this.counters.ptyResizeSent += 1;
             ptySizeSent = true;
           }
@@ -458,12 +473,13 @@ export class TerminalGeometryController {
 
   private readonly onViewportResize = (): void => {
     this.counters.viewportEvents += 1;
+    this.applyVisualViewportBounds();
     this.invalidate("size", "visual-viewport-resize");
   };
 
   private readonly onViewportScroll = (): void => {
     this.counters.viewportEvents += 1;
-    this.invalidate("position", "visual-viewport-scroll");
+    this.applyVisualViewportBounds();
   };
 
   private readonly onWindowResize = (): void => this.invalidate("size", "window-resize");

@@ -483,6 +483,50 @@ def test_publish_separates_production_from_draft_and_blocks_pins(admin_client):
     assert admin_client.delete(f"/api/v1/workflows/{workflow_id}", headers=CSRF_HEADERS).status_code == 200
 
 
+def test_workflow_update_rejects_stale_editor_revision(admin_client):
+    definition = _definition([TRIGGER], [])
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "optimistic revision", "definition": definition}, headers=CSRF_HEADERS,
+    ).json()
+    workflow_id = created["id"]
+    revision = created["updated_at"]
+    first = admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}",
+        json={"name": "first editor", "expected_updated_at": revision}, headers=CSRF_HEADERS,
+    )
+    assert first.status_code == 200
+    stale = admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}",
+        json={"name": "stale overwrite", "expected_updated_at": revision}, headers=CSRF_HEADERS,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "WORKFLOW_CONFLICT"
+    assert admin_client.get(f"/api/v1/workflows/{workflow_id}").json()["name"] == "first editor"
+
+
+def test_workflow_groups_round_trip_and_reject_invalid_membership(admin_client):
+    nodes = [TRIGGER, {"id": "a", "type": "flow.note", "config": {"text": "a"}}, {"id": "b", "type": "flow.note", "config": {"text": "b"}}]
+    definition = _definition(nodes, [{"source": "t", "target": "a"}, {"source": "a", "target": "b"}])
+    definition["schema_version"] = 2
+    definition["groups"] = [{"id": "g1", "name": "処理", "node_ids": ["a", "b"], "collapsed": True}]
+    created = admin_client.post(
+        "/api/v1/workflows", json={"name": "group round trip", "definition": definition}, headers=CSRF_HEADERS,
+    )
+    assert created.status_code == 201, created.text
+    workflow_id = created.json()["id"]
+    detail = admin_client.get(f"/api/v1/workflows/{workflow_id}").json()
+    assert detail["definition"]["schema_version"] == 2
+    assert detail["definition"]["groups"] == definition["groups"]
+
+    invalid = json.loads(json.dumps(definition))
+    invalid["groups"].append({"id": "g2", "name": "重複", "node_ids": ["b"]})
+    rejected = admin_client.patch(
+        f"/api/v1/workflows/{workflow_id}", json={"definition": invalid}, headers=CSRF_HEADERS,
+    )
+    assert rejected.status_code == 422
+    assert "複数グループ" in rejected.json()["detail"]
+
+
 def test_validate_publish_run_publishes_only_changed_draft_and_returns_diagnostics(admin_client):
     import time
 
@@ -601,6 +645,16 @@ def test_output_render_typed_contract_and_sensitive_redaction(admin_client):
 
 
 def test_viewer_cannot_run_workflows(client):
+    from app.database import SessionLocal
+    from app.models import Role, User
+    from app.security.passwords import hash_password
+    from sqlalchemy import select
+
+    with SessionLocal() as db:
+        role = db.execute(select(Role).where(Role.name == "viewer")).scalar_one()
+        if db.execute(select(User).where(User.username == "ro")).scalar_one_or_none() is None:
+            db.add(User(username="ro", password_hash=hash_password("viewer-pass-123"), role_id=role.id))
+            db.commit()
     client.cookies.clear()
     r = client.post(
         "/api/v1/auth/login",

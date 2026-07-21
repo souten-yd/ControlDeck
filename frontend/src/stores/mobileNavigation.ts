@@ -1,18 +1,24 @@
 import { create } from "zustand";
 
 export const MOBILE_NAV_MAX_ITEMS = 6;
-export const DEFAULT_MOBILE_NAV = ["/", "/apps", "/runner", "/terminal", "/assistant"];
+export const DEFAULT_MOBILE_NAV = ["/", "/apps", "/workflows", "/terminal", "/assistant"];
 const STORAGE_KEY = "cd-mobile-navigation-v1";
 
 function normalize(paths: unknown): string[] {
   if (!Array.isArray(paths)) return DEFAULT_MOBILE_NAV;
-  return [...new Set(paths.filter((path): path is string => typeof path === "string"))].slice(0, MOBILE_NAV_MAX_ITEMS);
+  const migrated = paths
+    .filter((path): path is string => typeof path === "string")
+    .map((path) => path === "/runner" ? "/workflows" : path);
+  return [...new Set(migrated)].slice(0, MOBILE_NAV_MAX_ITEMS);
 }
 
 function load(): string[] {
   try {
     const value = localStorage.getItem(STORAGE_KEY);
-    return value === null ? DEFAULT_MOBILE_NAV : normalize(JSON.parse(value));
+    if (value === null) return DEFAULT_MOBILE_NAV;
+    const next = normalize(JSON.parse(value));
+    if (JSON.stringify(next) !== value) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    return next;
   } catch {
     return DEFAULT_MOBILE_NAV;
   }

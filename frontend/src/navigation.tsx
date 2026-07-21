@@ -8,7 +8,6 @@ import {
   IconGrid,
   IconHome,
   IconLogs,
-  IconPlay,
   IconSettings,
   IconTerminal,
 } from "./components/icons";
@@ -20,13 +19,19 @@ export interface NavigationItem {
   icon: ComponentType<SVGProps<SVGSVGElement>>;
   feature?: string;
   permission?: string;
+  anyPermission?: string[];
+}
+
+export function canAccessNavigationItem(item: NavigationItem, can: (permission: string) => boolean): boolean {
+  if (item.permission && !can(item.permission)) return false;
+  if (item.anyPermission && !item.anyPermission.some(can)) return false;
+  return true;
 }
 
 export const NAVIGATION: NavigationItem[] = [
   { to: "/", label: "Home", icon: IconHome },
   { to: "/apps", label: "Apps", icon: IconGrid },
-  { to: "/runner", label: PRODUCT_NAMES.workflowApps, icon: IconPlay, permission: "workflows.run" },
-  { to: "/workflows", label: "Workflows", icon: IconFlow, permission: "workflows.edit" },
+  { to: "/workflows", label: "Workflows", icon: IconFlow, anyPermission: ["workflows.run", "workflows.edit"] },
   { to: "/applications", label: PRODUCT_NAMES.appStudio, icon: IconGrid, permission: "application_builder.view" },
   { to: "/project-lab", label: "Project Lab", icon: IconCode, permission: "project_lab.view" },
   { to: "/remote", label: "Remote", icon: IconRemote },

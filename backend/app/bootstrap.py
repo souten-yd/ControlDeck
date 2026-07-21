@@ -19,6 +19,15 @@ logger = logging.getLogger("control_deck.bootstrap")
 
 
 def init_db() -> None:
+    from app.database.migrations import migrate_database
+
+    def prepare_legacy() -> None:
+        Base.metadata.create_all(engine)
+        _apply_light_migrations()
+
+    migrate_database(prepare_legacy)
+    # Alembic移行期間の互換層。新規schemaの正はrevisionであり、ここは既存の
+    # column-only light migrationを安全にno-op化できる間だけ残す。
     Base.metadata.create_all(engine)
     _apply_light_migrations()
     _publish_legacy_enabled_workflows()
@@ -123,6 +132,7 @@ def _apply_light_migrations() -> None:
         ("workflow_executions", "workflow_version_id", "INTEGER"),
         ("workflow_executions", "definition_snapshot_json", "TEXT DEFAULT '{}'"),
         ("workflow_executions", "runtime_snapshot_json", "TEXT DEFAULT '{}'"),
+        ("workflow_executions", "last_event_sequence", "INTEGER DEFAULT 0"),
     ]
     with engine.begin() as conn:
         for table, column, coltype in additions:

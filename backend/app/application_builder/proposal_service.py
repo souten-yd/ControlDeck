@@ -77,6 +77,7 @@ async def generate_design_proposals(
             "targetId": request.target_id,
             "mode": request.mode,
             "applicationSpec": context,
+            "workflowContract": _workflow_contract_context(context),
             "allowedSemanticComponents": catalog["components"],
             "allowedDesignTokens": catalog["designTokens"],
             "allowedBindingSources": catalog["bindingSources"],
@@ -150,6 +151,23 @@ def _trim_strings(value: Any) -> Any:
     return value
 
 
+def _workflow_contract_context(spec: dict[str, Any]) -> dict[str, Any] | None:
+    advisor = spec.get("xAppAdvisor")
+    endpoints = spec.get("apiEndpoints") if isinstance(spec.get("apiEndpoints"), list) else []
+    workflow_endpoint = next((
+        item for item in endpoints
+        if isinstance(item, dict) and isinstance(item.get("workflowId"), int)
+    ), None)
+    if not isinstance(advisor, dict) and workflow_endpoint is None:
+        return None
+    return {
+        "advisor": advisor if isinstance(advisor, dict) else None,
+        "requestSchema": workflow_endpoint.get("requestSchema", {}) if workflow_endpoint else {},
+        "responseSchema": workflow_endpoint.get("responseSchema", {}) if workflow_endpoint else {},
+        "invariant": "All workflow inputs, outputs, binding IDs, and executable endpoint wiring must remain functional.",
+    }
+
+
 def _validate_scope(spec: dict[str, Any], request: ApplicationDesignProposalRequest) -> None:
     if request.scope in {"page", "component"} and not request.target_id:
         raise ProposalInputError("選択範囲にはtarget IDが必要です")
@@ -218,6 +236,7 @@ Use only these keys per proposal: id, direction, title, summary, rationale, patc
 Each proposal must contain RFC 6902 add/remove/replace/move operations against the supplied spec.
 Each patch must have exactly op, path, from, valueJson. Set from to null unless op is move.
 valueJson must be a JSON-encoded string for add/replace, and an empty string for remove/move.
-Respect the requested scope and redesign mode. Never modify locked fields, invent framework-specific component classes,
+Respect the requested scope and redesign mode. Preserve every supplied Workflow input/output and its executable endpoint wiring.
+Never modify locked fields, invent framework-specific component classes,
 insert secrets, credentials, executable code, shell commands, or remote assets. Prefer existing semantic component types,
 bindings, design tokens, responsive rules, and stable component IDs. A proposal is only a suggestion and is not applied automatically."""

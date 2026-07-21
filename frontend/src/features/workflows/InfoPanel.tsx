@@ -1,13 +1,14 @@
 /** エディタの情報パネル — 実行状況（ライブ）/ 履歴 / バージョン。
  *
- * 計算はすべてサーバー側。ここはポーリングして表示・操作（強制停止/承認/復元）するだけ。
+ * 計算はすべてサーバー側。永続イベントを購読して表示・操作する。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
 import { IconX } from "../../components/icons";
 import { NODE_TYPES } from "./nodeTypes";
+import { ApprovalResponseFields, missingRequiredFormFields, type ApprovalFormSchema } from "./ApprovalResponseFields";
 
 interface ExecSummary {
   id: number;
@@ -36,7 +37,7 @@ interface LiveExec {
   finished_at: string | null;
   error: string;
   context: Record<string, NodeEntry>;
-  pending_approvals: Array<{ node_id: string; message: string; approver: string; expires_at?: string | null }>;
+  pending_approvals: Array<{ node_id: string; interaction_type?: "approval" | "form"; message: string; approver: string; expires_at?: string | null; form_schema?: ApprovalFormSchema }>;
   total_tokens: number;
 }
 interface VersionRow { id: number; name: string; note: string; created_at: string; node_count: number }
@@ -49,13 +50,14 @@ const STATUS_STYLE: Record<string, string> = {
   RETRYING: "text-amber-600 dark:text-amber-400",
   WAITING: "text-amber-600 dark:text-amber-400",
   WAITING_APPROVAL: "text-amber-600 dark:text-amber-400",
+  WAITING_FORM: "text-amber-600 dark:text-amber-400",
   CANCELED: "text-zinc-400",
   SKIPPED: "text-zinc-400",
   PENDING: "text-zinc-400",
 };
 const STATUS_LABEL: Record<string, string> = {
   SUCCEEDED: "成功", FAILED: "失敗", TIMED_OUT: "時間切れ", RUNNING: "実行中",
-  RETRYING: "リトライ中", WAITING: "承認待ち", WAITING_APPROVAL: "承認待ち",
+  RETRYING: "リトライ中", WAITING: "入力待ち", WAITING_APPROVAL: "承認待ち", WAITING_FORM: "フォーム待ち",
   CANCELED: "中止", SKIPPED: "スキップ", PENDING: "待機", QUEUED: "待機",
 };
 
@@ -91,6 +93,8 @@ export function InfoPanel({
   const can = useAuth((s) => s.can);
   const qc = useQueryClient();
   const [now, setNow] = useState(Date.now());
+  const [streamState, setStreamState] = useState<"idle" | "connecting" | "live" | "reconnecting">("idle");
+  const lastSequence = useRef<Record<number, number>>({});
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -99,7 +103,8 @@ export function InfoPanel({
   const { data: executions } = useQuery({
     queryKey: ["executions", workflowId],
     queryFn: () => api<ExecSummary[]>(`/workflow-executions?workflow_id=${workflowId}`),
-    refetchInterval: 3000,
+    // 外部スケジュールによる新規実行の発見用。実行中の更新はSSEが担当する。
+    refetchInterval: streamState === "live" ? false : 15_000,
   });
   const latest = executions?.[0];
   const targetId = tab === "live" ? (latest?.id ?? null) : detailId;
@@ -109,8 +114,51 @@ export function InfoPanel({
     queryKey: ["exec-live", targetId],
     queryFn: () => api<LiveExec>(`/workflow-executions/${targetId}/live`),
     enabled: targetId !== null,
-    refetchInterval: targetRunning ? 1200 : false,
+    // SSE切断中だけ低頻度でフォールバックする。
+    refetchInterval: targetRunning && streamState === "reconnecting" ? 3000 : false,
   });
+
+  useEffect(() => {
+    if (!targetId || !targetRunning || tab !== "live") {
+      setStreamState("idle");
+      return;
+    }
+    let active = true;
+    let refreshTimer: number | undefined;
+    setStreamState("connecting");
+    const cursor = lastSequence.current[targetId] ?? 0;
+    const source = new EventSource(
+      `/api/v1/workflow-executions/${targetId}/stream?after_sequence=${cursor}`,
+      { withCredentials: true },
+    );
+    source.onopen = () => active && setStreamState("live");
+    source.onerror = () => active && setStreamState("reconnecting");
+    const onEvent = (raw: Event) => {
+      if (!(raw instanceof MessageEvent)) return;
+      try {
+        const event = JSON.parse(raw.data) as { sequence?: number; type?: string };
+        if (typeof event.sequence === "number") lastSequence.current[targetId] = event.sequence;
+        window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => {
+          void qc.invalidateQueries({ queryKey: ["exec-live", targetId] });
+          void qc.invalidateQueries({ queryKey: ["executions", workflowId] });
+        }, 60);
+        if (event.type === "stream.closed") {
+          source.close();
+          setStreamState("idle");
+        }
+      } catch {
+        // 壊れた単一イベントは無視し、次のシーケンスを待つ。
+      }
+    };
+    source.addEventListener("workflow", onEvent);
+    return () => {
+      active = false;
+      window.clearTimeout(refreshTimer);
+      source.removeEventListener("workflow", onEvent);
+      source.close();
+    };
+  }, [targetId, targetRunning, tab, qc, workflowId]);
 
   // キャンバス点灯: ライブタブの対象実行のノード状態を親へ
   useEffect(() => {
@@ -126,8 +174,8 @@ export function InfoPanel({
     onError: (e) => show(e instanceof Error ? e.message : "停止に失敗しました", "error"),
   });
   const approve = useMutation({
-    mutationFn: (p: { execId: number; nodeId: string; approve: boolean }) =>
-      api(`/workflow-executions/${p.execId}/approve`, { method: "POST", json: { node_id: p.nodeId, approve: p.approve } }),
+    mutationFn: (p: { execId: number; nodeId: string; approve: boolean; response: Record<string, unknown> }) =>
+      api(`/workflow-executions/${p.execId}/approve`, { method: "POST", json: { node_id: p.nodeId, approve: p.approve, response: p.response } }),
     onSuccess: (_d, p) => show(p.approve ? "承認しました" : "却下しました"),
     onError: (e) => show(e instanceof Error ? e.message : "操作に失敗しました", "error"),
   });
@@ -164,6 +212,16 @@ export function InfoPanel({
             {label}
           </button>
         ))}
+        {tab === "live" && targetRunning && (
+          <span
+            role="status"
+            className="ml-1 inline-flex items-center gap-1.5 text-[10px] text-zinc-400"
+            title={streamState === "live" ? "実行イベントをリアルタイム受信中" : "再接続中は低頻度で状態を確認します"}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${streamState === "live" ? "bg-emerald-500" : "animate-pulse bg-amber-500"}`} />
+            {streamState === "live" ? "ライブ" : "接続中"}
+          </span>
+        )}
         <button onClick={onClose} aria-label="閉じる" className="ml-auto rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">
           <IconX />
         </button>
@@ -214,7 +272,7 @@ export function InfoPanel({
                         {st ? new Date(st).toLocaleString("ja-JP") : ""}
                         {st && fin ? ` · ${fmtDur(fin - st)}` : ""}
                         {" · "}
-                        {{ manual: "手動", schedule: "定期", chat: "チャット", webhook: "Webhook", event: "イベント", subflow: "サブフロー", "chat-build": "自動ビルド" }[ex.trigger_type] ?? ex.trigger_type}
+                        {{ manual: "手動", schedule: "定期", chat: "チャット", webhook: "Webhook", event: "イベント", "system:gpu": "GPU監視", "system:vram": "VRAM監視", "system:disk": "ディスク監視", "system:systemd": "アプリ監視", "system:llama_server": "LLM監視", "system:file": "ファイル監視", subflow: "サブフロー", "chat-build": "自動ビルド" }[ex.trigger_type] ?? ex.trigger_type}
                       </span>
                     </button>
                   </li>
@@ -233,7 +291,7 @@ export function InfoPanel({
             nodeNames={nodeNames}
             onBack={tab === "history" ? () => setDetailId(null) : undefined}
             onCancel={can("workflows.run") ? () => cancel.mutate(detail.id) : undefined}
-            onApprove={can("workflows.run") ? (nodeId, ok) => approve.mutate({ execId: detail.id, nodeId, approve: ok }) : undefined}
+            onApprove={can("workflows.run") ? (nodeId, ok, response) => approve.mutate({ execId: detail.id, nodeId, approve: ok, response }) : undefined}
           />
         )}
       </div>
@@ -249,8 +307,9 @@ function ExecDetail({
   nodeNames: Record<string, { name: string; type: string }>;
   onBack?: () => void;
   onCancel?: () => void;
-  onApprove?: (nodeId: string, approve: boolean) => void;
+  onApprove?: (nodeId: string, approve: boolean, response: Record<string, unknown>) => void;
 }) {
+  const [approvalResponses, setApprovalResponses] = useState<Record<string, Record<string, unknown>>>({});
   const running = live.running || ["RUNNING", "WAITING"].includes(live.status);
   const started = parseTs(live.started_at);
   const finished = parseTs(live.finished_at);
@@ -295,18 +354,22 @@ function ExecDetail({
       {/* 承認待ち */}
       {live.pending_approvals.map((approval) => {
         const nid = approval.node_id;
+        const isForm = approval.interaction_type === "form";
+        const response = approvalResponses[nid] ?? {};
+        const missing = missingRequiredFormFields(approval.form_schema, response);
         return (
           <div key={nid} className="rounded-xl border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/40">
             <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
-              ✋ 「{live.context[nid]?.name ?? nodeNames[nid]?.name ?? nid}」が承認を待っています
+              {isForm ? "▤" : "✋"} 「{live.context[nid]?.name ?? nodeNames[nid]?.name ?? nid}」が{isForm ? "入力" : "承認"}を待っています
             </p>
             <p className="mt-1 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-200">{approval.message}</p>
-            {approval.approver && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">承認者: {approval.approver}</p>}
+            {approval.approver && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">{isForm ? "担当者" : "承認者"}: {approval.approver}</p>}
             {approval.expires_at && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">期限: {new Date(approval.expires_at).toLocaleString("ja-JP")}</p>}
+            <ApprovalResponseFields idPrefix={`debug-interaction-${nid}`} schema={approval.form_schema} value={response} onChange={(next) => setApprovalResponses((current) => ({ ...current, [nid]: next }))} />
             {onApprove && (
               <div className="mt-2 flex gap-2">
-                <button onClick={() => onApprove(nid, true)} className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">承認して続行</button>
-                <button onClick={() => onApprove(nid, false)} className="flex-1 rounded-lg bg-zinc-200 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200">却下</button>
+                <button disabled={missing.length > 0} onClick={() => onApprove(nid, true, response)} className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40">{isForm ? "送信して続行" : "承認して続行"}</button>
+                <button onClick={() => onApprove(nid, false, response)} className="flex-1 rounded-lg bg-zinc-200 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200">{isForm ? "キャンセル" : "却下"}</button>
               </div>
             )}
           </div>
@@ -319,7 +382,7 @@ function ExecDetail({
         const meta = NODE_TYPES[e.type ?? nodeNames[nid]?.type ?? ""];
         const st = parseTs(e.started_at);
         const fin = parseTs(e.finished_at);
-        const dur = st ? (fin ?? (["RUNNING", "RETRYING", "WAITING_APPROVAL"].includes(e.status) ? now : st)) - st : null;
+        const dur = st ? (fin ?? (["RUNNING", "RETRYING", "WAITING_APPROVAL", "WAITING_FORM"].includes(e.status) ? now : st)) - st : null;
         const outPreview =
           e.output !== undefined ? JSON.stringify(e.output, null, 0) : "";
         return (

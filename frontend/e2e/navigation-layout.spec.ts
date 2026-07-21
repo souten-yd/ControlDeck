@@ -6,7 +6,6 @@ const password = process.env.CONTROL_DECK_E2E_PASSWORD;
 const pages = [
   ["/", "Home"],
   ["/apps", "Apps"],
-  ["/runner", "Play"],
   ["/workflows", "Workflows"],
   ["/applications", "App Studio"],
   ["/project-lab", "Project Lab"],
@@ -64,10 +63,10 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
   }
 });
 
-test("keeps Play below the logo with an iPhone standalone safe area", async ({ page }) => {
+test("keeps Workflows below the logo with an iPhone standalone safe area", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/runner");
+  await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
   await page.getByRole("button", { name: "ログイン" }).click();
@@ -81,12 +80,31 @@ test("keeps Play below the logo with an iPhone standalone safe area", async ({ p
   const bounds = await page.evaluate(() => {
     const logo = document.querySelector("header svg");
     const page = document.querySelector("main > div");
-    if (!logo || !page) throw new Error("Play shell was not rendered");
+    if (!logo || !page) throw new Error("Workflows shell was not rendered");
     const logoRect = logo.getBoundingClientRect();
     const pageRect = page.getBoundingClientRect();
     return { logoBottom: logoRect.bottom, pageTop: pageRect.top };
   });
   expect(bounds.pageTop).toBeGreaterThanOrEqual(bounds.logoBottom);
+});
+
+test("migrates the saved Play destination to Workflows", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.addInitScript(() => {
+    localStorage.setItem("cd-mobile-navigation-v1", JSON.stringify(["/", "/apps", "/runner", "/terminal", "/assistant"]));
+  });
+  await page.goto("/workflows");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン" }).click();
+
+  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(navigation.getByRole("link", { name: "Workflows" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Play" })).toHaveCount(0);
+  await expect(navigation.locator("a")).toHaveCount(5);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("cd-mobile-navigation-v1") ?? "[]"));
+  expect(stored).not.toContain("/runner");
+  expect(stored).toContain("/workflows");
 });
 
 test("configures up to six mobile destinations while keeping More fixed", async ({ page }) => {
@@ -101,11 +119,11 @@ test("configures up to six mobile destinations while keeping More fixed", async 
 
   const settings = page.getByRole("region", { name: "Bottom Navigation" });
   await expect(settings.getByText("5 / 6", { exact: true })).toBeVisible();
-  await settings.getByRole("button", { name: /Workflows/ }).click();
+  await settings.getByRole("button", { name: /Files/ }).click();
   await expect(settings.getByText("6 / 6", { exact: true })).toBeVisible();
-  await expect(settings.getByRole("button", { name: /Files/ })).toBeDisabled();
+  await expect(settings.getByRole("button", { name: /GitHub/ })).toBeDisabled();
 
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 2; index += 1) {
     await settings.getByRole("button", { name: "Workflowsを上へ移動" }).click();
   }
   await page.reload();

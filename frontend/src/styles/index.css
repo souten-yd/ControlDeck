@@ -115,6 +115,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Snippet editorのtemplate説明はaccentの淡色変数に依存させない。
+   data-snippet-code直後の説明だけを濃色面に固定し、Light/Dark/OLEDで同じcontrastにする。 */
+label:has([data-snippet-code]) + p {
+  background: rgb(39 39 42) !important; /* zinc-800 */
+  border-color: rgb(82 82 91) !important; /* zinc-600 */
+  color: rgb(244 244 245) !important; /* zinc-100 */
+  line-height: 1.5;
+}
+label:has([data-snippet-code]) + p code {
+  border-radius: 0.25rem;
+  background: rgb(9 9 11); /* zinc-950 */
+  color: #fff;
+  padding: 0.125rem 0.375rem;
+  font-weight: 600;
+}
+
 /* Safe Area */
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);

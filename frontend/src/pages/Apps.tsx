@@ -18,6 +18,21 @@ import { AddAppSheet } from "../features/apps/AddAppSheet";
 import type { ManagedApp } from "../types";
 import { PageHeader } from "../components/PageHeader";
 
+function formatStartedAt(value: string | null): string {
+  if (!value) return "開始日時 —";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "開始日時 —";
+  const now = new Date();
+  const includeYear = date.getFullYear() !== now.getFullYear();
+  return `開始 ${new Intl.DateTimeFormat("ja-JP", {
+    ...(includeYear ? { year: "numeric" as const } : {}),
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)}`;
+}
+
 export default function AppsPage() {
   const { data: allApps, isLoading } = useApps();
   // SearXNG等のインフラアプリはサーバー側が全自動管理するため、操作対象として表示しない
@@ -106,91 +121,74 @@ export default function AppsPage() {
         <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {apps.map((app) => {
             const primary = primaryAction(app);
+            const showPrimary = primary != null && can(primary.perm);
+            const showActions = (app.application_type === "url_shortcut" && Boolean(app.url)) || hasWeb(app) || showPrimary;
             return (
               <li
                 key={app.id}
-                className="flex cursor-pointer items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                data-app-card
+                className="cursor-pointer rounded-2xl border border-zinc-200 bg-white p-3.5 text-zinc-900 shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:border-zinc-600"
                 onClick={() => setDetail(app)}
               >
-                <AppAvatar app={app} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{app.name}</p>
-                  <div className="mt-0.5 flex items-center gap-3">
-                    <StatusBadge status={app.runtime.status} />
+                <div className="flex min-w-0 items-start gap-3">
+                  <AppAvatar app={app} />
+                  <div className="min-w-0 flex-1 pt-0.5">
+                    <p className="truncate text-sm font-semibold text-zinc-950 dark:text-white">{app.name}</p>
+                    <div className="mt-1 flex items-center gap-2 sm:hidden"><StatusBadge status={app.runtime.status} /></div>
+                  </div>
+                  <DropdownMenu
+                    ariaLabel={`${app.name} のメニュー`}
+                    trigger={<IconDots />}
+                    items={[
+                      { label: "Logs", onSelect: () => navigate(`/logs?app=${app.id}`) },
+                      ...(can("apps.start")
+                        ? [{ label: "Restart", onSelect: () => action.mutate({ id: app.id, action: "restart" }) }]
+                        : []),
+                      ...(can("apps.stop") && app.runtime.status === "RUNNING"
+                        ? [{ label: "Force Stop", danger: true, onSelect: () => action.mutate({ id: app.id, action: "kill" }) }]
+                        : []),
+                      { label: "Details", onSelect: () => setDetail(app) },
+                      ...(can("apps.edit")
+                        ? [{ label: "Edit Settings", onSelect: () => setEditing(app) }]
+                        : []),
+                      ...(can("apps.delete")
+                        ? [{ label: "Delete", danger: true, onSelect: () => setDeleting(app) }]
+                        : []),
+                    ]}
+                  />
+                </div>
+
+                <div className="mt-2 flex min-w-0 items-start gap-2">
+                  <div data-app-runtime className="flex min-h-11 min-w-0 flex-1 items-center px-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+                    <span className="hidden sm:inline-flex"><StatusBadge status={app.runtime.status} /></span>
                     {app.runtime.status === "RUNNING" && (
-                      <span className="num text-xs text-zinc-400">
-                        {formatUptime(app.runtime.uptime_seconds)}
-                        <span className="hidden sm:inline">
-                          {app.runtime.cpu_percent != null &&
-                            ` · CPU ${app.runtime.cpu_percent.toFixed(0)}%`}
-                          {app.runtime.memory_bytes != null &&
-                            ` · ${formatBytes(app.runtime.memory_bytes)}`}
-                        </span>
+                      <span className="num whitespace-nowrap text-xs font-semibold text-zinc-800 dark:text-zinc-100 sm:text-sm">
+                        稼働 {formatUptime(app.runtime.uptime_seconds)}
                       </span>
                     )}
+                    {app.runtime.status === "RUNNING" && (
+                      <span className="num whitespace-nowrap text-xs text-zinc-600 dark:text-zinc-300">
+                        {formatStartedAt(app.runtime.started_at)}
+                      </span>
+                    )}
+                      {app.runtime.status === "RUNNING" && app.runtime.cpu_percent != null && <span className="num hidden whitespace-nowrap text-[11px] font-medium text-zinc-600 dark:text-zinc-300 sm:inline">CPU {app.runtime.cpu_percent.toFixed(0)}%</span>}
+                      {app.runtime.status === "RUNNING" && app.runtime.memory_bytes != null && <span className="num hidden whitespace-nowrap text-[11px] font-medium text-zinc-600 dark:text-zinc-300 sm:inline">RAM {formatBytes(app.runtime.memory_bytes)}</span>}
+                    </div>
                   </div>
+
+                {showActions && <div data-app-actions className="flex min-h-11 shrink-0 flex-wrap items-center justify-end gap-1.5">
+                  {app.application_type === "url_shortcut" && app.url && (
+                    <a href={app.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} aria-label={`${app.name} を開く`} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-accent-50 px-2.5 text-sm font-semibold text-accent-700 hover:bg-accent-100 dark:bg-accent-950 dark:text-accent-300 dark:hover:bg-accent-900"><span className="sm:hidden">↗</span><span className="hidden sm:inline">開く ↗</span></a>
+                  )}
+                  {hasWeb(app) && (
+                    <button onClick={(e) => { e.stopPropagation(); handleWeb(app); }} aria-label={`${app.name} を Web で開く`} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-accent-50 px-2.5 text-sm font-semibold text-accent-700 hover:bg-accent-100 dark:bg-accent-950 dark:text-accent-300 dark:hover:bg-accent-900"><span className="sm:hidden">↗</span><span className="hidden sm:inline">Web ↗</span></button>
+                  )}
+                  {primary && showPrimary && (
+                    <button onClick={(e) => { e.stopPropagation(); action.mutate({ id: app.id, action: primary.action }); }} aria-label={`${app.name} を${primary.label}`} className={`flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl px-2.5 text-sm font-semibold sm:px-3.5 ${primary.action === "stop" ? "border border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700" : "bg-accent-50 text-accent-700 hover:bg-accent-100 dark:bg-accent-950 dark:text-accent-300 dark:hover:bg-accent-900"}`}>{primary.icon}<span className="hidden sm:inline">{primary.label}</span></button>
+                  )}
+                </div>}
                 </div>
-                {app.application_type === "url_shortcut" && app.url && (
-                  <a
-                    href={app.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`${app.name} を開く`}
-                    className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-accent-50 px-3.5 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
-                  >
-                    開く ↗
-                  </a>
-                )}
-                {hasWeb(app) && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleWeb(app);
-                    }}
-                    aria-label={`${app.name} を Web で開く`}
-                    className="flex min-h-11 items-center justify-center gap-1 rounded-xl bg-accent-50 px-3 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400 sm:px-3.5"
-                  >
-                    Web ↗
-                  </button>
-                )}
-                {primary && can(primary.perm) && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      action.mutate({ id: app.id, action: primary.action });
-                    }}
-                    aria-label={`${app.name} を${primary.label}`}
-                    className={`flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-medium sm:min-w-0 sm:px-3.5 ${
-                      primary.action === "stop"
-                        ? "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-                        : "bg-accent-50 text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
-                    }`}
-                  >
-                    {primary.icon}
-                    <span className="hidden sm:inline">{primary.label}</span>
-                  </button>
-                )}
-                <DropdownMenu
-                  ariaLabel={`${app.name} のメニュー`}
-                  trigger={<IconDots />}
-                  items={[
-                    { label: "Logs", onSelect: () => navigate(`/logs?app=${app.id}`) },
-                    ...(can("apps.start")
-                      ? [{ label: "Restart", onSelect: () => action.mutate({ id: app.id, action: "restart" }) }]
-                      : []),
-                    ...(can("apps.stop") && app.runtime.status === "RUNNING"
-                      ? [{ label: "Force Stop", danger: true, onSelect: () => action.mutate({ id: app.id, action: "kill" }) }]
-                      : []),
-                    { label: "Details", onSelect: () => setDetail(app) },
-                    ...(can("apps.edit")
-                      ? [{ label: "Edit Settings", onSelect: () => setEditing(app) }]
-                      : []),
-                    ...(can("apps.delete")
-                      ? [{ label: "Delete", danger: true, onSelect: () => setDeleting(app) }]
-                      : []),
-                  ]}
-                />
               </li>
             );
           })}

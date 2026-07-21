@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.database import get_db
 from app.models import (
-    ApplicationProject, User, Workflow, WorkflowExecution, WorkflowNodeRun, WorkflowPinnedData, WorkflowSecret, WorkflowTestCase,
+    ApplicationProject, User, Workflow, WorkflowArtifact, WorkflowBusinessEvent, WorkflowCacheEntry, WorkflowEventDelivery, WorkflowExecution, WorkflowExecutionEvent, WorkflowNodeRun, WorkflowPause, WorkflowPinnedData, WorkflowQueueItem, WorkflowSecret, WorkflowStateEntry, WorkflowTestCase,
     WorkflowVersion, utcnow,
 )
 from app.security.crypto import encrypt_text
@@ -22,6 +25,8 @@ from app.workflows import engine
 from app.workflows.contracts import build_input_schema, build_output_schema, final_outputs
 from app.workflows.publish_validation import check_publishability
 from app.workflows.redaction import collect_sensitive_values, redact
+from app.workflows import events as execution_events
+from app.workflows import artifacts as workflow_artifacts
 
 MAX_VERSIONS_PER_WORKFLOW = 20
 logger = logging.getLogger(__name__)
@@ -112,6 +117,7 @@ class WorkflowPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
     definition: dict | None = None
+    expected_updated_at: datetime | None = None
 
 
 class DryRunBody(BaseModel):
@@ -240,6 +246,19 @@ def update_workflow(
     db: Session = Depends(get_db),
 ):
     wf = _get(db, workflow_id)
+    if body.expected_updated_at is not None:
+        expected = body.expected_updated_at
+        current = wf.updated_at
+        if expected.tzinfo is not None:
+            expected = expected.astimezone(timezone.utc).replace(tzinfo=None)
+        if current.tzinfo is not None:
+            current = current.astimezone(timezone.utc).replace(tzinfo=None)
+        if current != expected:
+            raise HTTPException(status_code=409, detail={
+                "code": "WORKFLOW_CONFLICT",
+                "message": "別の画面でワークフローが更新されました",
+                "updated_at": wf.updated_at.isoformat(),
+            })
     if body.name is not None:
         wf.name = body.name
     if body.description is not None:
@@ -733,6 +752,331 @@ def _set_test_case(row: WorkflowTestCase, body: WorkflowTestCaseBody) -> None:
     row.name = body.name.strip()
 
 
+class WorkflowIntelligenceDiagnoseBody(BaseModel):
+    execution_id: int | None = None
+    instruction: str = Field(default="", max_length=4000)
+    base_url: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=256)
+    api_key: str = Field(default="", max_length=8192)
+    use_ai: bool = True
+
+
+class WorkflowOperationPatchBody(BaseModel):
+    patch_version: int = 1
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    expected_updated_at: datetime | None = None
+
+
+def _assert_workflow_timestamp(workflow: Workflow, expected: datetime | None) -> None:
+    if expected is None:
+        return
+    current = workflow.updated_at
+    if expected.tzinfo is not None:
+        expected = expected.astimezone(timezone.utc).replace(tzinfo=None)
+    if current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    if current != expected:
+        raise HTTPException(status_code=409, detail={
+            "code": "WORKFLOW_CONFLICT", "message": "別の画面でワークフローが更新されました",
+            "updated_at": workflow.updated_at.isoformat(),
+        })
+
+
+def _patch_preview_out(preview: dict[str, Any], *, include_definition: bool = True) -> dict[str, Any]:
+    if include_definition:
+        return preview
+    return {key: value for key, value in preview.items() if key != "patched_definition"}
+
+
+def _normalize_ai_operations(raw: Any) -> Any:
+    """Normalize one common local-model shape before canonical validation.
+
+    The public patch contract remains strict: update_node cannot replace config.
+    Local models frequently nest config changes there, so split only that exact
+    shape into set_config operations; the canonical validator still checks every
+    node, key, value, size and secret boundary afterwards.
+    """
+    if not isinstance(raw, list):
+        return raw
+    normalized: list[Any] = []
+    for item in raw:
+        if not isinstance(item, dict) or item.get("op") != "update_node" or not isinstance(item.get("changes"), dict):
+            normalized.append(item)
+            continue
+        changes = dict(item["changes"])
+        config = changes.pop("config", None)
+        if isinstance(config, dict):
+            normalized.extend({
+                "op": "set_config", "node_id": item.get("node_id"), "key": str(key), "value": value,
+            } for key, value in config.items())
+        if changes:
+            normalized.append({"op": "update_node", "node_id": item.get("node_id"), "changes": changes})
+        elif not isinstance(config, dict):
+            normalized.append(item)
+    return normalized
+
+
+@router.get("/workflows/{workflow_id}/intelligence")
+async def get_workflow_intelligence(
+    workflow_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    from app.workflows.intelligence import project_intelligence
+    from app.workflows.runtime_route import runtime_snapshot
+
+    report = project_intelligence(db, _get(db, workflow_id))
+    try:
+        report["runtime"] = await runtime_snapshot()
+    except Exception:
+        logger.exception("runtime snapshot failed for workflow intelligence: workflow=%s", workflow_id)
+        report["runtime"] = {"gpu": {"name": None, "vram_total_bytes": None, "vram_used_bytes": None, "vram_free_bytes": None}, "providers": [], "models": [], "available": False}
+    return report
+
+
+@router.post("/workflows/{workflow_id}/intelligence/diagnose")
+async def diagnose_workflow(
+    workflow_id: int,
+    body: WorkflowIntelligenceDiagnoseBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    import time
+
+    from app.workflows.chat_router import _extract_json, _llm
+    from app.workflows.intelligence import WorkflowPatchError, deterministic_diagnosis, preview_patch
+
+    workflow = _get(db, workflow_id)
+    definition = json.loads(workflow.definition_json or "{}")
+    if body.execution_id is not None:
+        execution = db.get(WorkflowExecution, body.execution_id)
+        if execution is None or execution.workflow_id != workflow_id:
+            raise HTTPException(status_code=404, detail="指定実行が見つかりません")
+    else:
+        execution = db.execute(select(WorkflowExecution).where(
+            WorkflowExecution.workflow_id == workflow_id,
+        ).order_by(
+            (WorkflowExecution.status.in_(["FAILED", "TIMED_OUT"])).desc(),
+            WorkflowExecution.started_at.desc(),
+        ).limit(1)).scalar_one_or_none()
+    fallback = deterministic_diagnosis(definition, execution)
+    diagnosis = fallback
+    source = "deterministic"
+    fallback_reason: str | None = None
+    discarded_options: list[str] = []
+    elapsed_ms = 0
+    provider_type = "none"
+    if body.use_ai and body.base_url.strip() and body.model.strip():
+        from app.models_mgmt.providers import list_providers
+
+        providers = await list_providers(include_unavailable=True)
+        endpoint = next((item for item in providers if str(item.get("base_url") or "").rstrip("/") == body.base_url.rstrip("/")), None)
+        if endpoint is None or body.model not in list(endpoint.get("models") or []):
+            raise HTTPException(status_code=422, detail="登録済みLLM endpointとmodelを選択してください")
+        provider_type = str(endpoint.get("provider") or "unknown")
+        sensitive = collect_sensitive_values(definition)
+        execution_payload: dict[str, Any] | None = None
+        if execution is not None:
+            try:
+                context = json.loads(execution.context_json or "{}")
+            except json.JSONDecodeError:
+                context = {}
+            failed = {
+                str(node_id): redact(entry, sensitive_values=sensitive)
+                for node_id, entry in context.items()
+                if isinstance(entry, dict) and entry.get("status") in {"FAILED", "TIMED_OUT"}
+            }
+            try:
+                runtime = json.loads(execution.runtime_snapshot_json or "{}")
+            except json.JSONDecodeError:
+                runtime = {}
+            execution_payload = {
+                "id": execution.id, "status": execution.status,
+                "error": redact(execution.error, sensitive_values=sensitive),
+                "failed_nodes": failed, "runtime": redact(runtime, sensitive_values=sensitive),
+            }
+        schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "cause": {"type": "string", "maxLength": 4000},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "failed_node_id": {"type": ["string", "null"]},
+                "options": {"type": "array", "minItems": 1, "maxItems": 3, "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {"title": {"type": "string"}, "impact": {"type": "string"}, "operations": {"type": "array", "maxItems": 100, "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "op": {"type": "string", "enum": ["set_config", "update_node", "add_node", "remove_node", "add_edge", "remove_edge"]},
+                            "node_id": {"type": "string"}, "key": {"type": "string"}, "value": {},
+                            "changes": {"type": "object"}, "node": {"type": "object"}, "edge": {"type": "object"},
+                            "source": {"type": "string"}, "target": {"type": "string"}, "branch": {"type": "string"},
+                        }, "required": ["op"],
+                    }}},
+                    "required": ["title", "impact", "operations"],
+                }},
+            }, "required": ["cause", "confidence", "options"],
+        }
+        payload = {
+            "instruction": body.instruction or "失敗原因を診断し、安全で小さい修正案を最大3件提案してください",
+            "workflow": engine.safe_definition_snapshot(definition), "execution": execution_payload,
+            "operation_contract": {"patch_version": 1, "allowed": ["set_config", "update_node", "add_node", "remove_node", "add_edge", "remove_edge"]},
+        }
+        started = time.perf_counter()
+        ai_stage = "generation"
+        try:
+            content = await _llm(
+                [{"role": "system", "content": "Workflow診断者です。秘密値を出力せず、指定JSON Schemaだけで回答してください。set_config操作はop,node_id,key,value、update_nodeはop,node_id,changes、add_nodeはop,node、remove_nodeはop,node_id、add_edgeはop,edge、remove_edgeはop,source,targetを必ず含めます。小さく安全な変更を優先してください。"},
+                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+                body.base_url, body.model, body.api_key or "sk-no-key", temperature=0.1,
+                max_tokens=2048, disable_thinking=True,
+                response_format={"type": "json_schema", "json_schema": {"name": "workflow_diagnosis", "schema": schema, "strict": True}},
+                timeout_seconds=180,
+            )
+            ai_stage = "response_parse"
+            candidate = _extract_json(content)
+            ai_stage = "operation_validation"
+            options = []
+            raw_diagnosis = candidate.get("diagnosis")
+            raw_options = candidate.get("options")
+            # Some local OpenAI-compatible runtimes honor JSON mode but flatten a
+            # single proposal to {diagnosis, operations}. Only the versioned
+            # operations are normalized here; they still pass the same validator.
+            if not isinstance(raw_options, list) and isinstance(candidate.get("operations"), list):
+                raw_options = [{
+                    "title": candidate.get("title") or "AI修正案",
+                    "impact": candidate.get("impact") or "選択した操作だけを適用します",
+                    "operations": candidate["operations"],
+                }]
+            for option in list(raw_options or [])[:3]:
+                if not isinstance(option, dict):
+                    continue
+                try:
+                    preview = preview_patch(definition, _normalize_ai_operations(option.get("operations") or []))
+                except WorkflowPatchError as exc:
+                    discarded_options.append(str(exc)[:300])
+                    continue
+                options.append({
+                    "title": str(option.get("title") or "修正案")[:200],
+                    "impact": str(option.get("impact") or "")[:2000],
+                    "operations": preview["operations"], "preview": _patch_preview_out(preview, include_definition=False),
+                })
+            if not options:
+                discarded_options.append(
+                    f"response keys={','.join(sorted(str(key) for key in candidate)[:12])}; options shape={type(raw_options).__name__}, count={len(raw_options) if isinstance(raw_options, (list, dict, str)) else 0}"
+                )
+                raise ValueError("valid operation option is empty")
+            diagnosis = {
+                "cause": str(candidate.get("cause") or (
+                    raw_diagnosis.get("cause") or raw_diagnosis.get("root_cause") or raw_diagnosis.get("summary")
+                    if isinstance(raw_diagnosis, dict) else raw_diagnosis
+                ) or fallback["cause"])[:4000],
+                "confidence": max(0.0, min(float(candidate.get("confidence") or (
+                    raw_diagnosis.get("confidence") if isinstance(raw_diagnosis, dict) else 0
+                ) or 0), 1.0)),
+                "failed_node_id": candidate.get("failed_node_id") or (
+                    raw_diagnosis.get("failed_node_id") if isinstance(raw_diagnosis, dict) else None
+                ), "options": options,
+            }
+            source = "ai"
+        except Exception as exc:
+            logger.warning("workflow AI diagnosis fell back: workflow=%s stage=%s reason=%s", workflow_id, ai_stage, type(exc).__name__)
+            fallback_reason = f"{ai_stage}:{type(exc).__name__}"
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+    if source == "deterministic":
+        for option in diagnosis.get("options", []):
+            try:
+                option["preview"] = _patch_preview_out(preview_patch(definition, option.get("operations") or []), include_definition=False)
+            except WorkflowPatchError:
+                option["preview"] = {"valid": False, "errors": ["修正案を適用できません"]}
+    audit.record(
+        db, "workflow.ai_diagnose", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request,
+        metadata={"execution_id": execution.id if execution else None, "source": source, "provider": provider_type, "model": body.model if source == "ai" else "", "option_count": len(diagnosis.get("options") or [])},
+    )
+    return {**diagnosis, "source": source, "fallback_reason": fallback_reason, "discarded_options": discarded_options, "evaluation": {"model": body.model if source == "ai" else None, "provider": provider_type, "temperature": 0.1, "elapsed_ms": elapsed_ms}}
+
+
+@router.post("/workflows/{workflow_id}/intelligence/patch-preview")
+def preview_workflow_intelligence_patch(
+    workflow_id: int,
+    body: WorkflowOperationPatchBody,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    from app.workflows.intelligence import PATCH_VERSION, WorkflowPatchError, preview_patch
+
+    workflow = _get(db, workflow_id)
+    if body.patch_version != PATCH_VERSION:
+        raise HTTPException(status_code=422, detail=f"patch_version {body.patch_version} は未対応です")
+    try:
+        preview = preview_patch(json.loads(workflow.definition_json or "{}"), body.operations)
+    except WorkflowPatchError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"base_updated_at": workflow.updated_at, **preview}
+
+
+@router.post("/workflows/{workflow_id}/intelligence/patch-apply")
+def apply_workflow_intelligence_patch(
+    workflow_id: int,
+    body: WorkflowOperationPatchBody,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    from app.workflows.intelligence import PATCH_VERSION, WorkflowPatchError, preview_patch
+
+    workflow = _get(db, workflow_id)
+    _assert_workflow_timestamp(workflow, body.expected_updated_at)
+    if body.patch_version != PATCH_VERSION:
+        raise HTTPException(status_code=422, detail=f"patch_version {body.patch_version} は未対応です")
+    before_checksum = hashlib.sha256((workflow.definition_json or "{}").encode()).hexdigest()
+    try:
+        preview = preview_patch(json.loads(workflow.definition_json or "{}"), body.operations)
+    except WorkflowPatchError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not preview["valid"]:
+        raise HTTPException(status_code=422, detail={"errors": preview["errors"], "warnings": preview["warnings"]})
+    _snapshot_version(db, workflow, note="AI修正適用前")
+    workflow.definition_json = json.dumps(preview["patched_definition"], ensure_ascii=False)
+    db.commit()
+    db.refresh(workflow)
+    result_checksum = hashlib.sha256(workflow.definition_json.encode()).hexdigest()
+    audit.record(
+        db, "workflow.ai_patch_apply", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request,
+        metadata={"patch_version": body.patch_version, "operation_count": len(body.operations), "json_patch_count": len(preview["json_patch"]), "base_checksum": before_checksum, "result_checksum": result_checksum},
+    )
+    return {"workflow": _out(workflow, db), "patch": _patch_preview_out(preview, include_definition=False)}
+
+
+@router.post("/workflows/{workflow_id}/intelligence/auto-tests")
+def generate_workflow_intelligence_tests(
+    workflow_id: int,
+    request: Request,
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    from app.workflows.intelligence import suggested_tests
+
+    workflow = _get(db, workflow_id)
+    generated = []
+    for item in suggested_tests(json.loads(workflow.definition_json or "{}")):
+        existing = db.execute(select(WorkflowTestCase).where(
+            WorkflowTestCase.workflow_id == workflow_id, WorkflowTestCase.name == item["name"],
+        )).scalar_one_or_none()
+        if existing is None:
+            existing = WorkflowTestCase(workflow_id=workflow_id, name=item["name"])
+            _set_test_case(existing, WorkflowTestCaseBody(**{key: item[key] for key in ("name", "inputs", "mocks", "expected_outputs", "assertions")}))
+            db.add(existing)
+            db.flush()
+        generated.append(existing)
+    db.commit()
+    audit.record(
+        db, "workflow.ai_test_generate", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request,
+        metadata={"test_case_ids": [item.id for item in generated]},
+    )
+    return {"test_cases": [_test_case_out(item) for item in generated]}
+
+
 @router.get("/workflows/{workflow_id}/test-cases")
 def list_workflow_test_cases(
     workflow_id: int,
@@ -986,13 +1330,34 @@ def delete_workflow(
         )
 
     execution_ids = select(WorkflowExecution.id).where(WorkflowExecution.workflow_id == workflow_id)
+    business_event_ids = select(WorkflowBusinessEvent.id).where(
+        WorkflowBusinessEvent.source_workflow_id == workflow_id,
+    )
+    stored_artifacts = db.execute(select(WorkflowArtifact).where(
+        WorkflowArtifact.execution_id.in_(execution_ids),
+    )).scalars().all()
     db.execute(sql_delete(WorkflowTestCase).where(WorkflowTestCase.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowPinnedData).where(WorkflowPinnedData.workflow_id == workflow_id))
+    db.execute(sql_delete(WorkflowQueueItem).where(WorkflowQueueItem.workflow_id == workflow_id))
+    db.execute(sql_delete(WorkflowCacheEntry).where(WorkflowCacheEntry.workflow_id == workflow_id))
+    db.execute(sql_delete(WorkflowStateEntry).where(WorkflowStateEntry.workflow_id == workflow_id))
+    db.execute(sql_delete(WorkflowEventDelivery).where(
+        (WorkflowEventDelivery.business_event_id.in_(business_event_ids)) |
+        (WorkflowEventDelivery.target_workflow_id == workflow_id)
+    ))
+    db.execute(sql_delete(WorkflowBusinessEvent).where(
+        WorkflowBusinessEvent.source_workflow_id == workflow_id,
+    ))
+    db.execute(sql_delete(WorkflowArtifact).where(WorkflowArtifact.execution_id.in_(execution_ids)))
+    db.execute(sql_delete(WorkflowPause).where(WorkflowPause.execution_id.in_(execution_ids)))
+    db.execute(sql_delete(WorkflowExecutionEvent).where(WorkflowExecutionEvent.execution_id.in_(execution_ids)))
     db.execute(sql_delete(WorkflowNodeRun).where(WorkflowNodeRun.execution_id.in_(execution_ids)))
     db.execute(sql_delete(WorkflowExecution).where(WorkflowExecution.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == workflow_id))
     db.delete(wf)
     db.commit()
+    for artifact in stored_artifacts:
+        workflow_artifacts.remove_artifact_file(artifact)
     audit.record(db, "workflow.delete", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request, metadata={"name": name})
     return {"ok": True}
 
@@ -1197,6 +1562,96 @@ def list_executions(
     ]
 
 
+@router.get("/workflow-executions/{execution_id}/events")
+def get_execution_events(
+    execution_id: int,
+    after_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=200),
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    """Return an ordered replay window for reconnecting debuggers."""
+    try:
+        return execution_events.replay(db, execution_id, after_sequence, limit)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="実行が見つかりません") from exc
+
+
+@router.get("/workflow-executions/{execution_id}/stream")
+async def stream_execution_events(
+    execution_id: int,
+    request: Request,
+    after_sequence: int = Query(default=0, ge=0),
+    user: User = Depends(require_permission("workflows.edit")),
+    db: Session = Depends(get_db),
+):
+    """Authenticated SSE stream with durable sequence replay and heartbeats."""
+    execution = db.get(WorkflowExecution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="実行が見つかりません")
+    origin = request.headers.get("origin")
+    if origin:
+        from urllib.parse import urlparse
+
+        if urlparse(origin).netloc != request.headers.get("host", ""):
+            raise HTTPException(status_code=403, detail="同一オリジンから接続してください")
+    last_event_id = request.headers.get("last-event-id", "")
+    try:
+        cursor = max(after_sequence, int(last_event_id)) if last_event_id else after_sequence
+    except ValueError:
+        cursor = after_sequence
+    # StreamingResponseの寿命中にdependency Session/transactionを保持しない。
+    db.close()
+
+    async def generate():
+        nonlocal cursor
+        heartbeat_at = asyncio.get_running_loop().time()
+        yield "retry: 1000\n\n"
+        while not await request.is_disconnected():
+            with engine.SessionLocal() as stream_db:
+                try:
+                    batch = execution_events.replay(stream_db, execution_id, cursor)
+                    current = stream_db.get(WorkflowExecution, execution_id)
+                except LookupError:
+                    return
+            if batch["reset_required"]:
+                cursor = int(batch["latest_sequence"])
+                reset = json.dumps({
+                    "execution_id": execution_id, "sequence": cursor, "type": "stream.reset", "node_id": None,
+                    "timestamp": utcnow(),
+                    "payload": {"latest_sequence": cursor},
+                }, ensure_ascii=False, default=str)
+                yield f"id: {cursor}\nevent: workflow\ndata: {reset}\n\n"
+            else:
+                for event in batch["events"]:
+                    cursor = int(event["sequence"])
+                    data = json.dumps(event, ensure_ascii=False, default=str)
+                    yield f"id: {cursor}\nevent: workflow\ndata: {data}\n\n"
+            terminal = current is None or current.status not in ("QUEUED", "RUNNING", "WAITING")
+            if terminal and cursor >= int(batch["latest_sequence"]):
+                closed = json.dumps({
+                    "execution_id": execution_id, "sequence": cursor, "type": "stream.closed", "node_id": None,
+                    "timestamp": utcnow(),
+                    "payload": {"status": current.status if current else "DELETED"},
+                }, ensure_ascii=False, default=str)
+                yield f"id: {cursor}\nevent: workflow\ndata: {closed}\n\n"
+                return
+            now = asyncio.get_running_loop().time()
+            if now - heartbeat_at >= 15:
+                yield ": heartbeat\n\n"
+                heartbeat_at = now
+            await asyncio.sleep(0.35)
+
+    return StreamingResponse(
+        generate(), media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.get("/workflow-executions/{execution_id}")
 def get_execution(
     execution_id: int,
@@ -1255,6 +1710,61 @@ def get_execution_nodes(
         "output_size": len((row.outputs_json or "{}").encode("utf-8")),
         "cache_source": row.cache_source, "schema_version": row.schema_version,
     } for row in rows]
+
+
+@router.get("/workflows/{workflow_id}/executions/{execution_id}/artifacts")
+def list_execution_artifacts(
+    workflow_id: int,
+    execution_id: int,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    _get(db, workflow_id)
+    execution = db.get(WorkflowExecution, execution_id)
+    if execution is None or execution.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="実行が見つかりません")
+    rows = db.execute(
+        select(WorkflowArtifact)
+        .where(WorkflowArtifact.execution_id == execution_id)
+        .order_by(WorkflowArtifact.created_at, WorkflowArtifact.id)
+    ).scalars().all()
+    return [workflow_artifacts.reference(row) | {
+        "execution_id": row.execution_id,
+        "node_run_id": row.node_run_id,
+        "node_id": row.node_id,
+        "created_at": row.created_at,
+        "downloadable": not row.sensitive,
+    } for row in rows]
+
+
+@router.get("/workflow-artifacts/{artifact_id}/download")
+def download_workflow_artifact(
+    artifact_id: int,
+    request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+    db: Session = Depends(get_db),
+):
+    artifact = db.get(WorkflowArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="成果物が見つかりません")
+    if artifact.sensitive:
+        raise HTTPException(status_code=403, detail="機密成果物はダウンロードできません")
+    try:
+        path = workflow_artifacts.artifact_path(artifact)
+    except workflow_artifacts.WorkflowArtifactError as exc:
+        logger.warning("workflow artifact validation failed: artifact=%s error=%s", artifact_id, exc)
+        raise HTTPException(status_code=404, detail="成果物が見つからないか、整合性を確認できません") from exc
+    audit.record(
+        db, "workflow.artifact_download", user=user,
+        resource_type="workflow_artifact", resource_id=str(artifact.id), request=request,
+        metadata={"execution_id": artifact.execution_id, "node_id": artifact.node_id},
+    )
+    return FileResponse(
+        path,
+        media_type=artifact.mime_type,
+        filename=artifact.filename,
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 class RetryExecutionBody(BaseModel):
@@ -1396,29 +1906,40 @@ def get_execution_live(
 class ApproveBody(BaseModel):
     node_id: str = Field(min_length=1, max_length=64)
     approve: bool = True
+    response: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/workflow-executions/{execution_id}/approve")
-def approve_execution_node(
+async def approve_execution_node(
     execution_id: int,
     body: ApproveBody,
     request: Request,
     user: User = Depends(require_permission("workflows.run")),
     db: Session = Depends(get_db),
 ):
-    """承認待ちノードを承認/却下して実行を再開する。"""
+    """待機中のhuman interactionを解決して実行を再開する。"""
     details = engine.approval_details(execution_id, body.node_id)
     if details is None:
-        raise HTTPException(status_code=409, detail="このノードは承認待ちではありません")
+        raise HTTPException(status_code=409, detail="このノードは入力待ちではありません")
+    interaction_type = str(details.get("interaction_type") or "approval")
     approver = str(details.get("approver") or "").strip()
     if approver and approver != user.username:
-        raise HTTPException(status_code=403, detail=f"この承認はユーザー '{approver}' に割り当てられています")
-    if not engine.resolve_approval(execution_id, body.node_id, body.approve):
-        raise HTTPException(status_code=409, detail="このノードは承認待ちではありません")
-    audit.record(db, "workflow.approve" if body.approve else "workflow.reject", user=user,
+        raise HTTPException(status_code=403, detail=f"この操作はユーザー '{approver}' に割り当てられています")
+    try:
+        resolved = await engine.resolve_approval(execution_id, body.node_id, body.approve, body.response)
+    except engine.PauseResponseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not resolved:
+        raise HTTPException(status_code=409, detail="このノードは入力待ちではありません")
+    action = (
+        ("workflow.form_submit" if body.approve else "workflow.form_cancel")
+        if interaction_type == "form" else
+        ("workflow.approve" if body.approve else "workflow.reject")
+    )
+    audit.record(db, action, user=user,
                  resource_type="workflow_execution", resource_id=str(execution_id),
                  request=request, metadata={"node_id": body.node_id})
-    return {"ok": True, "approved": body.approve}
+    return {"ok": True, "approved": body.approve, "interaction_type": interaction_type}
 
 
 @router.post("/workflow-executions/{execution_id}/cancel")

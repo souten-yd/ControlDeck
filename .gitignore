@@ -12,6 +12,8 @@ node_modules/
 frontend/test-results/
 frontend/playwright-report/
 frontend/dist/
+backend/test-results/
+test-results/
 
 # Data / runtime
 data/
@@ -24,6 +26,7 @@ data/
 .idea/
 .vscode/
 *.swp
+*.orig
 .DS_Store
 
 # Claude Code ローカル/一時ファイル

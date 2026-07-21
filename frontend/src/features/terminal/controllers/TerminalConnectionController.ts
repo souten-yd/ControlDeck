@@ -119,16 +119,38 @@ export class TerminalConnectionController {
   }
 
   markLive(connectionGeneration: number, sequence: number, event: "history-end-received" | "resume-end-received"): boolean {
-    if (connectionGeneration !== this.connectionGeneration) return false;
+    if (connectionGeneration !== this.connectionGeneration || this.queuedInput.length > 0) return false;
     this.lastSequence = Math.max(this.lastSequence, sequence);
     this.state = "LIVE";
     if (event === "history-end-received") this.counters.historyEnd += 1;
     this.record(event, { durationMs: performance.now() - this.startedAt, sequence });
+    return true;
+  }
+
+  /**
+   * xtermがreplay解析中に生成した端末応答を、rendererを隠したまま送るために
+   * 1 batchとして取り出す。応答先の再描画でさらに応答が生じた場合は次roundで
+   * 再度取り出す。
+   */
+  takePresentationInput(connectionGeneration: number): string[] | null {
+    if (connectionGeneration !== this.connectionGeneration
+      || (this.state !== "INITIAL_REPLAY" && this.state !== "RESUMING")) return null;
     const input = this.queuedInput;
     this.queuedInput = [];
+    const bytes = this.queuedBytes;
     this.queuedBytes = 0;
-    for (const data of input) this.options.sendNow(data);
-    return true;
+    this.record("presentation-input-taken", { chunks: input.length, bytes });
+    return input;
+  }
+
+  restorePresentationInput(connectionGeneration: number, input: readonly string[]): void {
+    if (connectionGeneration !== this.connectionGeneration || input.length === 0) return;
+    this.queuedInput = [...input, ...this.queuedInput];
+    this.queuedBytes += input.reduce(
+      (total, data) => total + new TextEncoder().encode(data).byteLength,
+      0,
+    );
+    this.record("presentation-input-restored", { chunks: input.length });
   }
 
   outputDrawn(connectionGeneration: number, sequence: number): void {

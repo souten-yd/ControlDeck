@@ -123,14 +123,24 @@ ensure_linger() {
 
 ensure_admin() {
   local count
-  count="$(cd "$REPO_ROOT/backend" && "$VENV/bin/python" -c "
+  local initialize="1"
+  if service_installed && systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+    # 稼働中の旧serviceと並行して新revisionを適用しない。migrationはrestart後の
+    # lifespan開始時に一本化し、ここでは安定tableのraw countだけを読む。
+    initialize="0"
+  fi
+  count="$(cd "$REPO_ROOT/backend" && CONTROL_DECK_INITIALIZE_DB="$initialize" "$VENV/bin/python" -c "
+import os
+from sqlalchemy import inspect, text
 from app.bootstrap import init_db
-from app.database import SessionLocal
-from app.models import User
-init_db()
-db = SessionLocal()
-print(db.query(User).count())
-db.close()" 2>/dev/null || echo "?")"
+from app.database import engine
+if os.environ.get('CONTROL_DECK_INITIALIZE_DB') == '1':
+    init_db()
+if 'users' not in inspect(engine).get_table_names():
+    print(0)
+else:
+    with engine.connect() as connection:
+        print(connection.execute(text('SELECT COUNT(*) FROM users')).scalar_one())" 2>/dev/null || echo "?")"
   if [ "$count" = "0" ]; then
     if [ -t 0 ]; then
       info "ユーザーが存在しません。管理者を作成します。"

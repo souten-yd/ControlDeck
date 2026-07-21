@@ -150,13 +150,24 @@ async def evaluate_once() -> None:
                     logger.warning("アラート発火: %s (%s=%.1f)", rule.name, rule.metric, value)
                     # イベントトリガーのワークフローを起動（自己修復フロー等）
                     try:
-                        from app.workflows.engine import fire_event_triggers
+                        from app.workflows.engine import fire_event_triggers, fire_system_triggers
 
-                        await fire_event_triggers("alert", {
+                        workflow_payload = {
                             "message": f"アラート: {rule.name}（{label} = {value:.1f}）",
                             "rule": rule.name, "metric": rule.metric,
                             "value": value, "threshold": rule.threshold,
-                        })
+                        }
+                        await fire_event_triggers("alert", workflow_payload)
+                        source = {
+                            "gpu_percent": "gpu", "gpu_temp_c": "gpu",
+                            "vram_percent": "vram", "disk_percent": "disk",
+                        }.get(rule.metric)
+                        if source:
+                            await fire_system_triggers(source, {
+                                **workflow_payload,
+                                "resource": rule.name,
+                                "app_id": rule.app_id,
+                            })
                     except Exception:
                         logger.exception("event trigger dispatch error")
             else:

@@ -42,4 +42,8 @@ ui:
   default_theme: system   # system / dark / light
   metric_refresh_seconds: 2
 
+application_builder:
+  # .NET 8 SDKのdotnet実行ファイル。未設定時はCONTROL_DECK_DOTNET、次にPATHを確認。
+  # dotnet_path: /home/USER/.local/share/control-deck/sdks/dotnet-8.0.423/dotnet
+
 # data_dir: ~/.local/share/control-deck

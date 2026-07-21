@@ -28,6 +28,7 @@ class RunnerRunBody(BaseModel):
 class RunnerApprovalBody(BaseModel):
     approval_id: str = Field(min_length=1, max_length=64)
     approve: bool = True
+    response: dict[str, Any] = Field(default_factory=dict)
 
 
 def _published(db: Session, workflow_id: int) -> tuple[Workflow, WorkflowVersion]:
@@ -113,9 +114,11 @@ def get_run(
     for item in engine.pending_approvals(execution_id):
         approvals.append({
             "approval_id": str(item.get("node_id") or ""),
+            **({"interaction_type": "form"} if item.get("interaction_type") == "form" else {}),
             "message": str(redact(item.get("message") or "承認が必要です", sensitive_values=sensitive)),
             "approver": str(item.get("approver") or ""),
             "expires_at": item.get("expires_at"),
+            "form_schema": item.get("form_schema") if isinstance(item.get("form_schema"), dict) else {},
         })
     return {
         "id": execution.id, "workflow_id": execution.workflow_id, "status": execution.status,
@@ -142,23 +145,33 @@ def cancel_run(
 
 
 @router.post("/executions/{execution_id}/approval")
-def approve_run(
+async def approve_run(
     execution_id: int, body: RunnerApprovalBody, request: Request,
     user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
 ):
     _execution(db, execution_id)
     details = engine.approval_details(execution_id, body.approval_id)
     if details is None:
-        raise HTTPException(status_code=409, detail="この承認は待機中ではありません")
+        raise HTTPException(status_code=409, detail="この入力操作は待機中ではありません")
+    interaction_type = str(details.get("interaction_type") or "approval")
     approver = str(details.get("approver") or "").strip()
     if approver and approver != user.username:
-        raise HTTPException(status_code=403, detail=f"この承認はユーザー '{approver}' に割り当てられています")
-    if not engine.resolve_approval(execution_id, body.approval_id, body.approve):
-        raise HTTPException(status_code=409, detail="この承認は待機中ではありません")
-    audit.record(db, "workflow.runner_approve" if body.approve else "workflow.runner_reject",
+        raise HTTPException(status_code=403, detail=f"この操作はユーザー '{approver}' に割り当てられています")
+    try:
+        resolved = await engine.resolve_approval(execution_id, body.approval_id, body.approve, body.response)
+    except engine.PauseResponseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not resolved:
+        raise HTTPException(status_code=409, detail="この入力操作は待機中ではありません")
+    action = (
+        ("workflow.runner_form_submit" if body.approve else "workflow.runner_form_cancel")
+        if interaction_type == "form" else
+        ("workflow.runner_approve" if body.approve else "workflow.runner_reject")
+    )
+    audit.record(db, action,
                  user=user, resource_type="workflow_execution", resource_id=str(execution_id),
                  request=request)
-    return {"ok": True, "approved": body.approve}
+    return {"ok": True, "approved": body.approve, "interaction_type": interaction_type}
 
 
 @router.get("/{workflow_id}")

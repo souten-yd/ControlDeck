@@ -17,6 +17,7 @@ from app.models import ManagedApplication
 from app.schemas.apps import HealthCheckConfig, HealthCheckResult
 
 _cache: dict[int, HealthCheckResult] = {}
+_runtime_states: dict[int, str] = {}
 _lock = Lock()
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,30 @@ async def health_check_loop() -> None:
                 rows = db.execute(select(ManagedApplication)).scalars().all()
                 apps = [app for app in rows if app.health_check_json and app.health_check_json != "{}"]
                 await asyncio.gather(*(asyncio.to_thread(check_app, app) for app in apps))
+                from app.applications import service as app_service
+
+                states = await asyncio.gather(*(
+                    asyncio.to_thread(app_service.runtime_info, app, include_health=False) for app in rows
+                ))
+                changes: list[tuple[ManagedApplication, str, str]] = []
+                current_ids: set[int] = set()
+                for app, runtime in zip(rows, states, strict=False):
+                    current_ids.add(app.id)
+                    status = str(runtime.status)
+                    previous = _runtime_states.get(app.id)
+                    _runtime_states[app.id] = status
+                    if previous is not None and previous != status:
+                        changes.append((app, previous, status))
+                for removed_id in set(_runtime_states) - current_ids:
+                    _runtime_states.pop(removed_id, None)
+                if changes:
+                    from app.workflows.engine import fire_system_triggers
+
+                    for app, previous, status in changes:
+                        await fire_system_triggers("systemd", {
+                            "resource": app.name, "app": app.name, "app_id": app.id,
+                            "unit": app.systemd_unit_name, "status": status, "previous_status": previous,
+                        })
             finally:
                 db.close()
         except Exception:
