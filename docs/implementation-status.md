@@ -2,6 +2,14 @@
 
 最終更新: 2026-07-21
 
+## Terminal V2 Phase 4c-5 物理端末証拠取得導線 準備完了（2026-07-21 11:56 JST、端末確認は継続中）
+
+- 管理者Settingsへ追加した物理iPhone Safari／Standalone PWA専用入口から、既存Sessionへ接続せずV2 Labへ遷移できるようにした。明示的に作成したV2 Lab Sessionだけを対象とし、通常Sessionと別tabのLab SessionをV2で開かない境界を維持する。
+- V2 Lab headerへ本文非収集の検証レポートを追加した。Browser／Standalone判別、secure context、layout／Visual Viewport寸法とoffset、横overflow、root containment、IME textarea数、rows／cols、replay／echo／scroll／resize／reconnectだけをその場でsnapshot化する。画面本文、入力、Clipboard、cwd、command、token、Session IDは収集・永続化せず、利用者が明示した場合だけJSONをClipboardへコピーする。
+- replay未計測、echo 20 sample未満、scroll未操作を合格扱いせず、設計閾値を満たした項目だけを表示上で合格にする。E2Eへ320pxのレポート表示、合否項目、本文marker／Paste結果の非混入回帰を追加した。
+
+検証: frontend TypeScript／production build、Playwright test discovery、diff whitespace検査に成功。実ControlDeckのChromium E2E 1件で、POST応答から直ちに所有登録した専用V2 Lab Sessionだけを使い、320pxのレポート表示、閾値判定、Terminal本文marker／Paste結果の非混入、既存の4 viewport／latency／resume／reload／session switch回帰を確認した。所有Sessionと一時user／login session／auditは清掃済みで、既存Sessionには接続・入力・終了していない。物理iPhone Safari／Standalone PWAそれぞれの操作確認とJSON証拠は未取得であり、Phase 4c-5は未完了、canary／V2既定化は未着手のまま維持する。
+
 ## Terminal V2 Phase 4c-4 自動viewport／latency回帰 完了（2026-07-21 11:36 JST）
 
 - V2 rootへ本文・入力内容を含まないmount内telemetryを追加した。initial／resumeごとのreplay総時間、write drain、最終2 paint、履歴byte／chunk、通常入力送信から次のPTY outputまでのp95／max／sample数、local scrollのpaint時間、resize／reconnect回数、最終rows／colsだけを保持する。最大128 sampleの数値だけを有界保持し、文字、Clipboard、cwd、command、tokenは記録しない。

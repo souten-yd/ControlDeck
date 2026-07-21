@@ -177,6 +177,7 @@ function TerminalV2PhysicalCheckSection() {
           <li>100KB／300KB／絵文字入りPasteの完了、cancel、retryを確認する。</li>
           <li>本文swipeと右端bar、縦横回転、keyboard開閉10往復で文字ずれ・横overflow・二重textareaがないことを確認する。</li>
           <li>background復帰、回線切断復帰、page reload後も同じSession ID／最新画面／実processを維持する。</li>
+          <li>Terminal headerの「Lab」から再計測し、本文を含まないJSONレポートをSafari／Standalone PWAそれぞれでコピーする。</li>
           <li>終了する場合は、この手順で自分が作成して記録したSession IDだけを対象にする。</li>
         </ol>
       </details>
