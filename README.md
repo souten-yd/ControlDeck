@@ -285,6 +285,7 @@ git clone https://github.com/souten-yd/ControlDeck.git && cd ControlDeck
 ./deck.sh enable-desktop # この PC のリモートデスクトップを有効化（ヘッドレス）
 ./deck.sh disable-desktop # この PC のリモートデスクトップを無効化
 ./deck.sh searxng        # Deep Research 用 SearXNG を導入・アプリ登録
+./deck.sh plugin list    # 宣言型GUIプラグインの一覧（validate/install/enable等も可）
 ./deck.sh test           # バックエンドテスト
 ```
 
@@ -334,6 +335,13 @@ llama.cpp、LM Studio などの OpenAI 互換 LLM endpoint を用意したうえ
 `implement` / `fix` は対象プロジェクトを書き換え得るため、実行前に Git で作業内容を保存することを推奨する。
 設計上の境界と詳細は [OpenCode オプトイン feature 詳細設計](docs/design-opencode-feature.md) を参照。
 
+## GUIプラグイン SDK
+
+独立稼働する Web アプリは、`control-deck-plugin.json` を検証・登録して、権限付きの導線を
+PCサイドバー、モバイル操作シート、コマンドパレットへ追加できる。プラグインコードを本体へ読み込まず、
+無効化・削除でも外部アプリ本体には触れない。manifest仕様とCLIは
+[宣言型プラグイン SDK v1](docs/plugin-sdk.md) を参照。
+
 ## 構成
 
 | ディレクトリ | 内容 |
@@ -354,6 +362,7 @@ llama.cpp、LM Studio などの OpenAI 互換 LLM endpoint を用意したうえ
 - [実装計画](docs/implementation-plan.md)
 - [実装状況](docs/implementation-status.md)
 - [OpenCode オプトイン feature 詳細設計](docs/design-opencode-feature.md)
+- [宣言型プラグイン SDK v1](docs/plugin-sdk.md)
 - [ワークフロー dry-run / metadata 詳細設計](docs/design-workflow-dry-run-metadata.md)
 - [ワークフローノード catalog 詳細設計](docs/design-workflow-node-catalog.md)
 - [ワークフロー統合開発環境 監査・詳細実装仕様](docs/design-workflow-integrated-ide.md)

@@ -151,6 +151,19 @@ export default function AppLayout() {
               {!collapsed && label}
             </NavLink>
           ))}
+          {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
+            <a
+              key={`plugin-${plugin.id}`}
+              href={plugin.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={plugin.label}
+              className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
+            >
+              <IconGrid className="shrink-0 text-lg" />
+              {!collapsed && plugin.label}
+            </a>
+          ))}
         </nav>
         <div className="px-2 pb-3">
           <button
@@ -312,6 +325,17 @@ export default function AppLayout() {
                 }}
               />
             )}
+            {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
+              <ActionItem
+                key={`plugin-${plugin.id}`}
+                icon={<IconGrid />}
+                label={plugin.label}
+                onClick={() => {
+                  setActionOpen(false);
+                  window.open(plugin.url, "_blank", "noopener,noreferrer");
+                }}
+              />
+            ))}
             {can("files.view") && (
               <ActionItem
                 icon={<IconFile />}

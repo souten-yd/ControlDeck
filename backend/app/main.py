@@ -167,6 +167,7 @@ from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
 from app.features.registry import is_enabled as feature_enabled  # noqa: E402
+from app.plugins.router import router as plugins_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -200,6 +201,7 @@ app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
 app.include_router(features_router, prefix=API)
+app.include_router(plugins_router, prefix=API)
 if feature_enabled("opencode"):
     from app.integrations.opencode.router import router as opencode_router
 
@@ -211,6 +213,7 @@ def meta():
     """ログイン画面用の公開メタ情報（秘密情報を含めない）。"""
     ui = get_config().ui
     from app.features.registry import list_features
+    from app.plugins.registry import enabled_navigation
 
     return {
         "app_name": ui.app_name,
@@ -218,6 +221,7 @@ def meta():
         "default_theme": ui.default_theme,
         "metric_refresh_seconds": ui.metric_refresh_seconds,
         "enabled_features": [item["id"] for item in list_features() if item["enabled"]],
+        "plugin_navigation": enabled_navigation(),
     }
 
 

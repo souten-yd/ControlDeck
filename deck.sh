@@ -19,6 +19,8 @@
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
 #   ./deck.sh feature <status|install|enable|disable|uninstall> opencode
 #                                オプション機能を明示的に管理（通常起動では自動導入しない）
+#   ./deck.sh plugin <list|validate|install|enable|disable|uninstall> [manifest|ID]
+#                                宣言型plugin manifestを検証・管理
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
 # 不足要素（venv / Node 依存 / フロントエンドビルド / 設定 / linger / 管理者）は
@@ -630,6 +632,23 @@ cmd_feature() {
   fi
 }
 
+cmd_plugin() {
+  [ $# -ge 1 ] || die "使用方法: ./deck.sh plugin <list|validate|install|enable|disable|uninstall> [manifest|ID]"
+  local action="$1"
+  shift
+  case "$action" in list|validate|install|enable|disable|uninstall) ;; *)
+    die "plugin操作は list/validate/install/enable/disable/uninstall のいずれかです" ;;
+  esac
+  if [ "$action" = "validate" ] || [ "$action" = "install" ]; then
+    [ $# -eq 1 ] || die "$action にはmanifest pathを1つ指定してください"
+    local manifest_path
+    manifest_path="$(realpath -e -- "$1")" || die "manifestが見つかりません: $1"
+    set -- "$manifest_path"
+  fi
+  check_root; check_python; ensure_venv; ensure_config
+  (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.plugins.cli "$action" "$@")
+}
+
 case "${1:-start}" in
   start)   cmd_start ;;
   service) cmd_service ;;
@@ -646,6 +665,7 @@ case "${1:-start}" in
   test)    shift; cmd_test "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;
   feature) shift; cmd_feature "$@" ;;
+  plugin)  shift; cmd_plugin "$@" ;;
   -h|--help|help)
     sed -n '3,16p' "$0" ;;
   *)
