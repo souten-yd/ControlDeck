@@ -215,6 +215,130 @@ def test_app_down_rule_requires_app(admin_client):
     assert r.status_code == 422
 
 
+def test_application_alert_rules_require_registered_target(admin_client):
+    from app.database import SessionLocal
+    from app.models import ManagedApplication
+
+    db = SessionLocal()
+    try:
+        app = ManagedApplication(name="alert target", application_type="url_shortcut", url="https://example.test")
+        db.add(app)
+        db.commit()
+        app_id = app.id
+    finally:
+        db.close()
+
+    rule_ids = []
+    try:
+        for metric, label, threshold in (
+            ("app_down", "アプリ停止", 90),
+            ("app_health_failed", "ヘルスチェック失敗", 90),
+            ("app_restart_loop", "再起動回数", 3),
+        ):
+            response = admin_client.post(
+                "/api/v1/alert-rules",
+                json={"name": metric, "metric": metric, "app_id": app_id, "threshold": threshold},
+                headers=CSRF_HEADERS,
+            )
+            assert response.status_code == 201, response.text
+            assert response.json()["metric_label"] == label
+            rule_ids.append(response.json()["id"])
+        missing = admin_client.post(
+            "/api/v1/alert-rules",
+            json={"name": "missing", "metric": "app_restart_loop", "app_id": 999999},
+            headers=CSRF_HEADERS,
+        )
+        assert missing.status_code == 422
+        invalid_threshold = admin_client.post(
+            "/api/v1/alert-rules",
+            json={"name": "invalid", "metric": "app_restart_loop", "app_id": app_id, "threshold": 0},
+            headers=CSRF_HEADERS,
+        )
+        assert invalid_threshold.status_code == 422
+    finally:
+        for rule_id in rule_ids:
+            admin_client.delete(f"/api/v1/alert-rules/{rule_id}", headers=CSRF_HEADERS)
+        db = SessionLocal()
+        try:
+            db.delete(db.get(ManagedApplication, app_id))
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_application_alert_metric_values(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.alerts.engine import _metric_value
+    from app.models import AlertRule
+
+    app = object()
+
+    class DB:
+        def get(self, _model, app_id):
+            return app if app_id == 7 else None
+
+    runtimes = {
+        "app_down": SimpleNamespace(status="FAILED", health=None, restart_count=2),
+        "app_health_failed": SimpleNamespace(
+            status="DEGRADED", health=SimpleNamespace(ok=False), restart_count=2,
+        ),
+        "app_restart_loop": SimpleNamespace(status="RUNNING", health=None, restart_count=6),
+    }
+    monkeypatch.setattr(
+        "app.applications.service.runtime_info",
+        lambda _app, include_health=True: runtimes[current_metric],
+    )
+    for current_metric, expected in (("app_down", 1.0), ("app_health_failed", 1.0), ("app_restart_loop", 6.0)):
+        rule = AlertRule(metric=current_metric, app_id=7)
+        assert _metric_value(current_metric, {"cpu": {}}, rule, DB()) == expected
+
+
+def test_legacy_app_down_threshold_still_fires(client, monkeypatch):
+    from sqlalchemy import delete, select
+
+    from app.alerts import engine
+    from app.database import SessionLocal
+    from app.models import AlertEvent, AlertRule, ManagedApplication
+
+    db = SessionLocal()
+    try:
+        db.execute(delete(AlertEvent))
+        app = ManagedApplication(name="stopped target", application_type="url_shortcut", url="https://example.test")
+        db.add(app)
+        db.flush()
+        rule = AlertRule(
+            name="legacy stopped", metric="app_down", app_id=app.id,
+            operator="gt", threshold=90, duration_seconds=0, cooldown_seconds=0,
+        )
+        db.add(rule)
+        db.commit()
+        app_id, rule_id = app.id, rule.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        "app.applications.service.runtime_info",
+        lambda _app, include_health=True: __import__("types").SimpleNamespace(
+            status="STOPPED", health=None, restart_count=0,
+        ),
+    )
+    monkeypatch.setattr("app.monitoring.collector.collector.latest", {"cpu": {}})
+    engine._breach_since.clear()
+    asyncio.run(engine.evaluate_once())
+
+    db = SessionLocal()
+    try:
+        event = db.scalar(select(AlertEvent).where(AlertEvent.rule_id == rule_id))
+        assert event is not None and event.status == "active"
+        db.delete(event)
+        db.delete(db.get(AlertRule, rule_id))
+        db.delete(db.get(ManagedApplication, app_id))
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_alert_evaluation_fires_and_resolves(client, monkeypatch):
     import time as _time
 

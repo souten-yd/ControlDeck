@@ -56,8 +56,7 @@ def _metric_value(metric: str, snapshot: dict, rule: AlertRule, db) -> float | N
             return psutil.disk_usage("/").percent
         except OSError:
             return None
-    if metric == "app_down":
-        # アプリが停止/失敗なら 1、稼働なら 0
+    if metric in APP_METRICS:
         from app.applications import service as apps
         from app.models import ManagedApplication
 
@@ -66,8 +65,12 @@ def _metric_value(metric: str, snapshot: dict, rule: AlertRule, db) -> float | N
         app = db.get(ManagedApplication, rule.app_id)
         if app is None:
             return None
-        status = apps.runtime_info(app).status
-        return 1.0 if status in ("STOPPED", "FAILED", "UNKNOWN") else 0.0
+        runtime = apps.runtime_info(app, include_health=metric == "app_health_failed")
+        if metric == "app_down":
+            return 1.0 if runtime.status in ("STOPPED", "FAILED", "UNKNOWN") else 0.0
+        if metric == "app_health_failed":
+            return 1.0 if runtime.status == "DEGRADED" or (runtime.health is not None and not runtime.health.ok) else 0.0
+        return float(runtime.restart_count)
     return None
 
 
@@ -80,7 +83,11 @@ METRIC_LABELS = {
     "vram_percent": "VRAM 使用率",
     "disk_percent": "ディスク使用率",
     "app_down": "アプリ停止",
+    "app_health_failed": "ヘルスチェック失敗",
+    "app_restart_loop": "再起動回数",
 }
+APP_METRICS = {"app_down", "app_health_failed", "app_restart_loop"}
+BOOLEAN_METRICS = {"app_down", "app_health_failed"}
 
 
 async def _dispatch(rule: AlertRule, value: float | None, db) -> bool:
@@ -91,7 +98,7 @@ async def _dispatch(rule: AlertRule, value: float | None, db) -> bool:
 
     label = METRIC_LABELS.get(rule.metric, rule.metric)
     title = f"🚨 アラート: {rule.name}"
-    if rule.metric == "app_down":
+    if rule.metric in BOOLEAN_METRICS:
         message = f"{label} を検知しました"
     else:
         message = f"{label} が {value:.1f}（しきい値 {rule.operator} {rule.threshold}）"
@@ -124,7 +131,9 @@ async def evaluate_once() -> None:
             value = _metric_value(rule.metric, snapshot, rule, db)
             if value is None:
                 continue
-            breached = OPERATORS.get(rule.operator, OPERATORS["gt"])(value, rule.threshold)
+            # 旧app_down ruleはUIが隠した既定threshold=90を保存していた。boolean条件は
+            # stored comparatorに依存せず1をtrueとして既存ruleも正しく発火させる。
+            breached = value >= 1 if rule.metric in BOOLEAN_METRICS else OPERATORS.get(rule.operator, OPERATORS["gt"])(value, rule.threshold)
             # active 判定は DB を正とする（再起動でメモリが消えても重複発火・残留しない）
             active_event = db.execute(
                 select(AlertEvent)
