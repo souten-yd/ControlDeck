@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.application_builder.flow_app import packager, portable
+from app.flow_app import packager, portable
 from app.audit import service as audit
 from app.config import data_dir
 from app.database import get_db

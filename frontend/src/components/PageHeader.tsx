@@ -11,7 +11,8 @@ interface PageHeaderProps {
 /** 通常ページ共通header。独立viewer/editorは対象外。 */
 export function PageHeader({ title, description, actions, leading, className = "" }: PageHeaderProps) {
   return (
-    <header className={`mb-5 flex min-h-11 flex-wrap items-start gap-3 ${className}`}>
+    // 操作ボタンが無いheaderは高さを見出しだけに詰める（min-h-11はタップ領域用）。
+    <header className={`mb-5 flex flex-wrap items-start gap-3 ${actions || leading ? "min-h-11" : ""} ${className}`}>
       {leading}
       <div className="min-w-0 flex-1 pt-0.5">
         <h1 className="text-xl font-semibold leading-7 tracking-tight">{title}</h1>

@@ -42,13 +42,21 @@ function Overlay({
     center: "items-center justify-center",
     preview: "items-end justify-center sm:items-stretch sm:justify-end",
   }[align];
+  // 包み側に幅を与えないと、シートの幅が中身の量で決まって1枚ごとにばらつく。
+  // モバイルは常に画面幅いっぱい、デスクトップだけ各シートの指定幅に任せる。
+  const wrapCls = {
+    bottom: "w-full sm:w-auto",
+    right: "h-full",
+    center: "w-full sm:w-auto",
+    preview: "w-full sm:h-full sm:w-auto",
+  }[align];
   return createPortal(
     <div
       className={`fixed inset-0 z-50 flex ${alignCls} bg-black/40 backdrop-blur-[2px]`}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
       role="presentation"
     >
-      <div ref={ref} tabIndex={-1} className="outline-none max-h-full flex">
+      <div ref={ref} tabIndex={-1} className={`outline-none max-h-full flex ${wrapCls}`}>
         {children}
       </div>
     </div>,
@@ -83,7 +91,7 @@ export function BottomSheet({
         aria-label={title}
         className={`flex w-full max-w-[100dvw] flex-col rounded-t-2xl bg-white shadow-xl dark:bg-zinc-900 sm:rounded-2xl ${
           wide ? "sm:w-[640px]" : "sm:w-[480px]"
-        } ${stable ? "h-[88dvh] sm:h-[min(760px,88dvh)]" : "max-h-[85dvh]"} ${
+        } ${stable ? "h-[85dvh] sm:h-[min(760px,85dvh)]" : "max-h-[85dvh]"} ${
           sideOnDesktop ? "sm:h-dvh sm:max-h-dvh sm:w-[min(720px,60vw)] sm:rounded-none" : ""
         } safe-bottom`}
       >
@@ -102,6 +110,46 @@ export function BottomSheet({
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">{children}</div>
       </div>
     </Overlay>
+  );
+}
+
+/** 呼び出したボタンの直下に開くポップオーバー。position: relative の親の中で使う。
+ *  背景クリックとEscで閉じ、開く向き（左上/右上基点）だけを選べる。 */
+export function Popover({
+  open,
+  label,
+  onClose,
+  children,
+  align = "left",
+}: {
+  open: boolean;
+  label: string;
+  onClose: () => void;
+  children: ReactNode;
+  align?: "left" | "right";
+}) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && closeRef.current();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+  if (!open) return null;
+  return (
+    <>
+      <button type="button" aria-label="閉じる" onClick={onClose} className="fixed inset-0 z-40 cursor-default" />
+      <div
+        role="dialog"
+        aria-label={label}
+        className={`cd-pop absolute top-full z-50 mt-1 max-h-[70dvh] w-[min(22rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 ${
+          align === "right" ? "right-0 cd-pop-right" : "left-0"
+        }`}
+      >
+        {children}
+      </div>
+    </>
   );
 }
 
@@ -197,6 +245,8 @@ export interface MenuItem {
   label: string;
   danger?: boolean;
   onSelect: () => void;
+  /** 直前に区切り線を引く（項目の意味の切れ目を示す）。 */
+  separated?: boolean;
 }
 
 export function DropdownMenu({
@@ -246,12 +296,13 @@ export function DropdownMenu({
             <button
               key={item.label}
               role="menuitem"
+              data-separated={item.separated ? "true" : undefined}
               onClick={(e) => {
                 e.stopPropagation();
                 setOpen(false);
                 item.onSelect();
               }}
-              className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
+              className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-zinc-100 data-[separated]:mt-1 data-[separated]:border-t data-[separated]:border-zinc-200 data-[separated]:pt-2.5 dark:hover:bg-zinc-700 dark:data-[separated]:border-zinc-700 ${
                 item.danger ? "text-red-600 dark:text-red-400" : ""
               }`}
             >

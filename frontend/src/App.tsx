@@ -45,8 +45,6 @@ function lazyPage<T extends { default: React.ComponentType<Record<string, never>
 
 const OpenCodePage = lazyPage(() => import("./features/opencode/OpenCodePage"));
 const ApplicationsPage = lazyPage(() => import("./pages/Applications"));
-const ApplicationEditorPage = lazyPage(() => import("./pages/ApplicationEditor"));
-const ApplicationFromWorkflowPage = lazyPage(() => import("./pages/ApplicationFromWorkflow"));
 const ProjectLabPage = lazyPage(() => import("./pages/ProjectLab"));
 
 function LazyPage({ children }: { children: React.ReactNode }) {
@@ -111,9 +109,7 @@ function buildRouter(enabledFeatures: string[]) {
       { path: "workflows", element: <WorkflowsPage /> },
       { path: "runner", element: <WorkflowRunnerPage /> },
       { path: "workflows/:id", element: <WorkflowsPage /> },
-      { path: "workflows/:id/app", element: <LazyPage><ApplicationFromWorkflowPage /></LazyPage> },
       { path: "applications", element: <LazyPage><ApplicationsPage /></LazyPage> },
-      { path: "applications/:id", element: <LazyPage><ApplicationEditorPage /></LazyPage> },
       { path: "project-lab", element: <LazyPage><ProjectLabPage /></LazyPage> },
       { path: "remote", element: <RemotePage /> },
       { path: "github", element: <GitHubPage /> },

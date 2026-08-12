@@ -98,12 +98,6 @@ class UIConfig(BaseModel):
     metric_refresh_seconds: int = 2
 
 
-class ApplicationBuilderConfig(BaseModel):
-    # 空ならCONTROL_DECK_DOTNET、次にPATHを使う。設定時は解決済みの
-    # executableだけを隔離buildのSDK allowlistとして受け入れる。
-    dotnet_path: str | None = None
-
-
 class HealthCommandDefinition(BaseModel):
     """ローカル管理者が明示的に許可した固定ヘルスチェックargv。"""
 
@@ -175,7 +169,6 @@ class Config(BaseModel):
     logs: LogsConfig = LogsConfig()
     ui: UIConfig = UIConfig()
     applications: ApplicationsConfig = ApplicationsConfig()
-    application_builder: ApplicationBuilderConfig = ApplicationBuilderConfig()
     data_dir: str = "~/.local/share/control-deck"
     # GitHub 管理でクローンするリポジトリの格納先
     git_apps_dir: str = "~/ControlDeckApps"
@@ -224,13 +217,6 @@ def icons_dir() -> Path:
 def app_scripts_dir() -> Path:
     """インラインコードで登録したアプリのスクリプト保存先。"""
     d = data_dir() / "scripts"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def application_builds_dir() -> Path:
-    """Application Builderが所有する隔離buildのsource／artifact root。"""
-    d = data_dir() / "application-builds"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.application_builder.flow_app import portable
+from app.flow_app import portable
 from app.workflows.contracts import build_input_schema, build_output_schema
 
 BUNDLE_DIR = Path(__file__).resolve().parent / "bundle"
@@ -160,8 +160,8 @@ def _vendor(site_packages: Path, staging: Path) -> list[str]:
 
 
 def _repo_root() -> Path:
-    # backend/app/application_builder/flow_app/packager.py -> backend
-    return Path(__file__).resolve().parents[3]
+    # backend/app/flow_app/packager.py -> backend
+    return Path(__file__).resolve().parents[2]
 
 
 def _flow_metadata(name: str, description: str, definition: dict[str, Any], workflow_id: int,

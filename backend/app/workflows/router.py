@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.database import get_db
 from app.models import (
-    ApplicationProject, User, Workflow, WorkflowArtifact, WorkflowBusinessEvent, WorkflowCacheEntry, WorkflowEventDelivery, WorkflowExecution, WorkflowExecutionEvent, WorkflowNodeRun, WorkflowPause, WorkflowPinnedData, WorkflowQueueItem, WorkflowSecret, WorkflowStateEntry, WorkflowTestCase,
+    User, Workflow, WorkflowArtifact, WorkflowBusinessEvent, WorkflowCacheEntry, WorkflowEventDelivery, WorkflowExecution, WorkflowExecutionEvent, WorkflowNodeRun, WorkflowPause, WorkflowPinnedData, WorkflowQueueItem, WorkflowSecret, WorkflowStateEntry, WorkflowTestCase,
     WorkflowVersion, utcnow,
 )
 from app.security.crypto import encrypt_text
@@ -1320,15 +1320,9 @@ def delete_workflow(
     name = wf.name
     from sqlalchemy import delete as sql_delete
 
-    linked_projects = db.execute(select(ApplicationProject).where(
-        ApplicationProject.workflow_id == workflow_id,
-    )).scalars().all()
-    if linked_projects:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Application Projectが{len(linked_projects)}件接続されています。先にProjectを削除してください",
-        )
+    from app.flow_app.router import purge_workflow_exports
 
+    purge_workflow_exports(workflow_id)
     execution_ids = select(WorkflowExecution.id).where(WorkflowExecution.workflow_id == workflow_id)
     business_event_ids = select(WorkflowBusinessEvent.id).where(
         WorkflowBusinessEvent.source_workflow_id == workflow_id,

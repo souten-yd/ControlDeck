@@ -28,7 +28,7 @@ import "@xyflow/react/dist/style.css";
 import { api, ApiError } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, DropdownMenu } from "../../components/ui";
-import { IconDots, IconPlay, IconPlus, IconTest, IconTrash, IconX } from "../../components/icons";
+import { IconDots, IconPlay, IconPlus, IconTrash, IconX } from "../../components/icons";
 import {
   CATEGORY_ORDER,
   JSON_SCHEMA_PRESETS,
@@ -44,9 +44,9 @@ import {
 } from "./nodeTypes";
 import { ScrapeViewer } from "./ScrapeViewer";
 import { InfoPanel } from "./InfoPanel";
-import { PreviewWorkspace } from "./PreviewWorkspace";
+import { RunSheet } from "./RunSheet";
+import { TestCasesSheet } from "./TestCasesSheet";
 import { ExecutionNodeRuns, type ExecutionNodeRun } from "./ExecutionNodeRuns";
-import { FilePicker } from "../../components/FilePicker";
 import type { ManagedApp } from "../../types";
 import { WorkflowOutline } from "./WorkflowOutline";
 import { ProjectIntelligencePanel } from "./ProjectIntelligencePanel";
@@ -277,8 +277,6 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [palettePosition, setPalettePosition] = useState<{ x: number; y: number } | undefined>();
   const [executionsOpen, setExecutionsOpen] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewInitialMode, setPreviewInitialMode] = useState<"safe" | "test">("safe");
   const [infoOpen, setInfoOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [intelligenceOpen, setIntelligenceOpen] = useState(false);
@@ -532,34 +530,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     }
   };
 
-  const [runInputsOpen, setRunInputsOpen] = useState(false);
-  const [startingRun, setStartingRun] = useState(false);
-
-  const openPreview = (mode: "safe" | "test") => {
-    setPreviewInitialMode(mode);
-    setPreviewOpen(true);
-    setInfoOpen(false);
-  };
-
-  const doRun = async (input?: Record<string, unknown>) => {
-    setStartingRun(true);
-    try {
-      const result = await api<{ execution_id: number; version?: number; published?: boolean }>(
-        readOnly ? `/workflows/${workflowId}/run` : `/workflows/${workflowId}/validate-publish-run`,
-        { method: "POST", json: input ? { input } : {} },
-      );
-      if (!readOnly) await qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
-      show(result.published
-        ? `最新の下書きを v${result.version} として公開し、実行を開始しました`
-        : readOnly ? "公開版の実行を開始しました" : `公開中の v${result.version} を実行しました`);
-      setInfoOpen(true); // 情報パネルでライブ状況を表示
-      setPreviewOpen(false);
-    } catch (e) {
-      show(e instanceof Error ? e.message : "実行に失敗しました", "error");
-    } finally {
-      setStartingRun(false);
-    }
-  };
+  const [runOpen, setRunOpen] = useState(false);
+  const [testCasesOpen, setTestCasesOpen] = useState(false);
 
   // 情報パネルからのライブ状態をキャンバスのノードに反映（点灯）
   const applyStatuses = useCallback(
@@ -575,17 +547,6 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     },
     [setNodes],
   );
-
-  const run = async () => {
-    if (dirty && !await save()) return;
-    const trigger = nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger");
-    const inputs = (trigger?.config?.inputs as TriggerInputDef[] | undefined) ?? [];
-    if (inputs.length > 0) {
-      setRunInputsOpen(true); // 入力フィールドが定義されていれば値を聞いてから実行
-      return;
-    }
-    await doRun();
-  };
 
   const addNode = (type: string, at?: { x: number; y: number }) => {
     const id = newNodeId();
@@ -861,6 +822,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
     reader.readAsText(file);
   };
 
+  const triggerInputs = useMemo(
+    () => ((nodes.map((node) => (node.data as FlowNodeData).def).find((def) => def.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? []),
+    [nodes],
+  );
+
   const selectedDef = useMemo(() => {
     const node = nodes.find((n) => n.id === selected);
     return node ? (node.data as FlowNodeData).def : null;
@@ -892,7 +858,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         />
         <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) importJson(e.target.files[0]); e.target.value = ""; }} />
         <span className={`hidden shrink-0 rounded-full px-2 py-1 text-[9px] font-semibold sm:inline ${wf?.state === "published" && !dirty ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"}`}>
-          {wf?.state === "published" && !dirty ? `公開 v${wf.published_version}` : "編集中"}
+          {wf?.state === "published" && !dirty ? `公開 v${wf.published_version}` : "下書き"}
         </span>
         <div className="hidden items-center gap-0.5 xl:flex" role="toolbar" aria-label="大規模フロー編集">
           <button type="button" onClick={undo} disabled={!canUndo} aria-label="元に戻す" title="元に戻す (Ctrl+Z)" className="grid h-11 w-11 place-items-center rounded-lg text-lg hover:bg-zinc-100 disabled:opacity-30 dark:hover:bg-zinc-800">↶</button>
@@ -905,21 +871,22 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           ariaLabel="More"
           trigger={<IconDots />}
           items={[
-            { label: "Execution History", onSelect: () => setExecutionsOpen(true) },
-            ...(can("workflows.run") ? [{ label: "Project Intelligence", onSelect: () => setIntelligenceOpen(true) }] : []),
-            { label: "Find / Outline (Ctrl+F)", onSelect: () => setOutlineOpen(true) },
-            ...(canUndo ? [{ label: "Undo (Ctrl+Z)", onSelect: undo }] : []),
-            ...(canRedo ? [{ label: "Redo (Ctrl+Y)", onSelect: redo }] : []),
-            { label: "Auto Layout", onSelect: () => void runLayout() },
-            { label: "Fit Selection", onSelect: fitSelection },
-            ...(can("workflows.run") ? [{ label: "Preflight Check", onSelect: () => openPreview("safe") }] : []),
-            { label: "Export JSON", onSelect: exportJson },
+            ...(canUndo ? [{ label: "元に戻す", onSelect: undo }] : []),
+            ...(canRedo ? [{ label: "やり直す", onSelect: redo }] : []),
+            { label: "検索", onSelect: () => setOutlineOpen(true) },
+            { label: "自動整列", onSelect: () => void runLayout() },
+            { label: "実行履歴", onSelect: () => setExecutionsOpen(true), separated: true },
+            ...(can("workflows.run") ? [{ label: "テストケース", onSelect: () => setTestCasesOpen(true) }] : []),
             ...(readOnly ? [] : [
-              { label: "Open in App Studio", onSelect: () => navigate(`/workflows/${workflowId}/app`) },
-              { label: "Publish Only", onSelect: () => void publish() },
-              { label: "Import JSON", onSelect: () => fileRef.current?.click() },
-              { label: "Save Selection as Snippet", onSelect: saveAsSnippet },
+              { label: "公開する", onSelect: () => void publish(), separated: true },
+              { label: "配布ファイルを作る", onSelect: () => navigate("/applications") },
             ]),
+            { label: "JSONで書き出す", onSelect: exportJson, separated: true },
+            ...(readOnly ? [] : [
+              { label: "JSONを読み込む", onSelect: () => fileRef.current?.click() },
+              { label: "選択をスニペット保存", onSelect: saveAsSnippet },
+            ]),
+            ...(can("workflows.run") ? [{ label: "診断レポート", onSelect: () => setIntelligenceOpen(true), separated: true }] : []),
           ]}
         />
         {!readOnly && (
@@ -930,24 +897,11 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         {!readOnly && <span aria-label={saving ? "保存中" : dirty ? "未保存" : "保存済み"} title={saving ? "保存中" : dirty ? "未保存の変更があります" : "保存済み"} className={`h-2.5 w-2.5 shrink-0 rounded-full sm:hidden ${saving ? "animate-pulse bg-accent-500" : dirty ? "bg-amber-500" : "bg-zinc-300 dark:bg-zinc-600"}`} />}
         {can("workflows.run") && (
           <button
-            onClick={() => openPreview("test")}
-            disabled={startingRun || publishing || saving}
-            aria-label="Test workflow draft without publishing"
-            title="下書きを実行してテストします。公開版は変更しません"
-            className="flex min-h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-xl border border-accent-300 px-2.5 text-sm font-medium text-accent-700 hover:bg-accent-50 disabled:opacity-50 dark:border-accent-700 dark:text-accent-300 dark:hover:bg-accent-950/30"
+            onClick={() => setRunOpen(true)}
+            disabled={publishing || saving}
+            className="flex min-h-11 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white hover:bg-accent-700 disabled:opacity-50"
           >
-            <IconTest /> Test
-          </button>
-        )}
-        {can("workflows.run") && (
-          <button
-            onClick={() => void run()}
-            disabled={startingRun || publishing || saving}
-            aria-label="Run workflow in editor; publish the saved draft when needed"
-            title="必要なら保存済み下書きを公開してから実行します"
-            className="flex min-h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-accent-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
-          >
-            <IconPlay /> {startingRun || saving ? "Starting…" : "Run"}
+            <IconPlay /> 実行
           </button>
         )}
       </div>
@@ -957,7 +911,7 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         <button type="button" onClick={exportJson} className="min-h-11 rounded-lg px-3 font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/50">手元をJSON保存</button>
         <button type="button" onClick={() => void reloadFromServer()} className="min-h-11 rounded-lg bg-amber-900 px-3 font-semibold text-white">最新版を再読み込み</button>
       </div>}
-      {navigationOnly && <div role="status" className="shrink-0 border-b border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">500ノード級の定義を軽快に確認するナビゲーションモードです。検索・移動・Fitは利用できます。編集する範囲はサブフローへ分割してください。</div>}
+      {navigationOnly && <div role="status" className="shrink-0 border-b border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">大きなフローのため表示専用モードです。検索と移動はできます。</div>}
 
       {/* キャンバス */}
       <div className="relative min-h-0 flex-1" onDoubleClickCapture={(event) => {
@@ -1051,21 +1005,16 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           </div>
         )}
 
-        {/* 実行デバッグパネル */}
-        <div className="absolute left-4 top-4 z-10">
-          <button onClick={() => setOutlineOpen(true)} aria-label="フロー内を検索・移動" className="min-h-11 rounded-xl bg-white px-3 text-sm font-medium text-zinc-700 shadow-md dark:bg-zinc-800 dark:text-zinc-200">検索</button>
-        </div>
-        <div className="absolute right-4 top-4 z-10 flex gap-2">
-          {can("workflows.run") && <button onClick={() => setIntelligenceOpen(true)} className="hidden min-h-11 items-center rounded-xl bg-white px-3 text-sm font-medium text-zinc-700 shadow-md dark:bg-zinc-800 dark:text-zinc-200 sm:flex">Intelligence</button>}
+        {/* 実行の様子をキャンバスと並べて見るための非モーダルパネル */}
+        <div className="absolute right-3 top-3 z-10">
           <button
-            onClick={() => { setInfoOpen((v) => !v); if (!infoOpen) setPreviewOpen(false); }}
-            aria-label="実行情報"
-            title="実行状況・処理内容・経過時間・強制停止・履歴・バージョン"
-            className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium shadow-md ${
+            onClick={() => setInfoOpen((value) => !value)}
+            aria-pressed={infoOpen}
+            className={`min-h-10 rounded-xl px-3 text-xs font-medium shadow-md ${
               infoOpen ? "bg-accent-600 text-white" : "bg-white text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
             }`}
           >
-            実行・デバッグ
+            実行の様子
           </button>
         </div>
 
@@ -1088,16 +1037,15 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
           />
         )}
 
-        {previewOpen && (
-          <PreviewWorkspace
+        {runOpen && (
+          <RunSheet
             workflowId={workflowId}
-            definition={buildDefinition()}
-            inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
+            inputs={triggerInputs}
             dirty={dirty}
-            initialMode={previewInitialMode}
+            readOnly={readOnly}
             onSave={save}
-            onExecution={() => { setInfoOpen(false); }}
-            onClose={() => setPreviewOpen(false)}
+            onStatuses={applyStatuses}
+            onClose={() => setRunOpen(false)}
           />
         )}
         {infoOpen && (
@@ -1146,15 +1094,8 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
         />
       )}
 
-      {runInputsOpen && (
-        <RunInputsSheet
-          inputs={((nodes.map((n) => (n.data as FlowNodeData).def).find((d) => d.type === "trigger")?.config?.inputs as TriggerInputDef[] | undefined) ?? [])}
-          onRun={(values) => {
-            setRunInputsOpen(false);
-            void doRun(values);
-          }}
-          onClose={() => setRunInputsOpen(false)}
-        />
+      {testCasesOpen && (
+        <TestCasesSheet workflowId={workflowId} inputs={triggerInputs} onClose={() => setTestCasesOpen(false)} />
       )}
 
       {executionsOpen && <ExecutionsSheet workflowId={workflowId} onClose={() => setExecutionsOpen(false)} />}
@@ -1229,13 +1170,13 @@ function NodePalette({
         onClick={() => available && onAdd(type)}
         disabled={!available}
         title={meta.desc}
-        className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 text-left hover:bg-accent-50/40 disabled:cursor-not-allowed dark:hover:bg-accent-600/10"
+        className="flex min-h-14 min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left hover:bg-accent-500/10 disabled:cursor-not-allowed"
       >
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm" style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}>
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-sm" style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}>
           {meta.icon}
         </span>
         <span className="min-w-0">
-          <span className="block truncate text-sm font-medium">{meta.label}</span>
+          <span className="block truncate text-[13px] font-medium leading-tight">{meta.label}</span>
           <span className="block truncate text-[10px] text-zinc-400">{available ? (meta.desc || type) : "未導入・利用不可"}</span>
         </span>
       </button>
@@ -1292,13 +1233,13 @@ function NodePalette({
       {favoriteEntries.length > 0 && (
         <div className="mb-3">
           <p className="mb-1 px-1 text-xs font-medium text-amber-600 dark:text-amber-400">お気に入り</p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{favoriteEntries.map(nodeCard)}</div>
+          <div className="grid grid-cols-2 gap-1.5 lg:grid-cols-3">{favoriteEntries.map(nodeCard)}</div>
         </div>
       )}
       {CATEGORY_ORDER.filter((c) => byCategory[c]).map((category) => (
         <div key={category} className="mb-3">
           <p className="mb-1 px-1 text-xs font-medium text-zinc-400">{category}</p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{byCategory[category].map(nodeCard)}</div>
+          <div className="grid grid-cols-2 gap-1.5 lg:grid-cols-3">{byCategory[category].map(nodeCard)}</div>
         </div>
       ))}
       {backendMetadata && visibleCount === 0 && (
@@ -2196,81 +2137,6 @@ function TriggerInputsEditor({
 }
 
 /** 実行時の入力ダイアログ（トリガーの入力フィールド定義に基づく） */
-function RunInputsSheet({
-  inputs,
-  onRun,
-  onClose,
-}: {
-  inputs: TriggerInputDef[];
-  onRun: (values: Record<string, unknown>) => void;
-  onClose: () => void;
-}) {
-  const [values, setValues] = useState<Record<string, unknown>>({});
-  const [filePick, setFilePick] = useState<string | null>(null);
-  const set = (k: string, v: unknown) => setValues((prev) => ({ ...prev, [k]: v }));
-  const missing = inputs.filter((i) => i.required && !String(values[i.key] ?? "").trim());
-  const cls = "w-full rounded-xl border border-zinc-300 bg-white px-3.5 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  return (
-    <BottomSheet title="実行時の入力" onClose={onClose}>
-      <div className="space-y-3">
-        {inputs.map((inp) => (
-          <Field key={inp.key} label={`${inp.label || inp.key}${inp.required ? " *" : ""}`}>
-            {inp.type === "paragraph" ? (
-              <textarea aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} rows={3} className={cls} />
-            ) : inp.type === "number" ? (
-              <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} type="number" value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value === "" ? "" : Number(e.target.value))} className={cls} />
-            ) : inp.type === "select" ? (
-              <select aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls}>
-                <option value="">選択してください</option>
-                {(inp.options ?? "").split(",").map((o) => o.trim()).filter(Boolean).map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
-            ) : inp.type === "json" || inp.type === "json_array" || inp.type === "key_value" ? (
-              <textarea
-                aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`}
-                value={typeof values[inp.key] === "string" ? String(values[inp.key]) : JSON.stringify(values[inp.key] ?? (inp.type === "json_array" ? [] : {}), null, 2)}
-                onChange={(e) => {
-                  try { set(inp.key, JSON.parse(e.target.value)); } catch { set(inp.key, e.target.value); }
-                }}
-                rows={5}
-                placeholder={inp.type === "json_array" ? "[]" : "{}"}
-                className={`${cls} font-mono text-xs`}
-              />
-            ) : inp.type === "file" ? (
-              <div className="flex gap-1.5">
-                <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} placeholder="/path/to/file" className={`${cls} min-w-0 flex-1 font-mono text-xs`} />
-                <button type="button" aria-label={`${inp.label || inp.key}を選択`} onClick={() => setFilePick(inp.key)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
-              </div>
-            ) : (
-              <input aria-label={`${inp.label || inp.key}${inp.required ? " *" : ""}`} value={String(values[inp.key] ?? "")} onChange={(e) => set(inp.key, e.target.value)} className={cls} />
-            )}
-          </Field>
-        ))}
-        <button
-          onClick={() => onRun(values)}
-          disabled={missing.length > 0}
-          className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40"
-        >
-          実行
-        </button>
-      </div>
-      {filePick && (
-        <FilePicker
-          mode="file"
-          title="ファイルを選択"
-          onSelect={(p) => {
-            set(filePick, p);
-            setFilePick(null);
-          }}
-          onClose={() => setFilePick(null)}
-        />
-      )}
-    </BottomSheet>
-  );
-}
-
-/** Web スクレイピングの抽出項目フィールド（コンパクト編集 + ビューワ起動） */
 function ExtractorsField({
   value,
   url,
