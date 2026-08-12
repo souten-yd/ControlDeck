@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flow App</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f4f5; --panel: #ffffff; --line: #e4e4e7; --text: #18181b; --muted: #71717a;
+    --accent: #7c3aed; --accent-text: #ffffff; --ok: #059669; --err: #dc2626; --code: #fafafa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #09090b; --panel: #18181b; --line: #27272a; --text: #f4f4f5; --muted: #a1a1aa;
+      --accent: #8b5cf6; --accent-text: #ffffff; --ok: #34d399; --err: #f87171; --code: #0b0b0e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size: 15px; line-height: 1.6;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 96px; }
+  header h1 { font-size: 20px; margin: 4px 0 2px; letter-spacing: -0.01em; }
+  header p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 12px; }
+  label { display: block; margin-bottom: 12px; }
+  label span.name { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+  label span.req { color: var(--accent); margin-left: 4px; }
+  input, textarea, select {
+    width: 100%; min-height: 44px; padding: 10px 12px; font: inherit; font-size: 16px;
+    color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: 12px;
+  }
+  textarea { min-height: 96px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .check { display: flex; align-items: center; gap: 10px; }
+  .check input { width: 22px; height: 22px; min-height: 0; }
+  .dock {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px);
+    border-top: 1px solid var(--line);
+  }
+  .dock-inner { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center; }
+  button.run {
+    flex: 1; min-height: 48px; border: 0; border-radius: 14px; background: var(--accent); color: var(--accent-text);
+    font-size: 15px; font-weight: 700; cursor: pointer;
+  }
+  button.run[disabled] { opacity: 0.5; cursor: progress; }
+  button.ghost {
+    min-height: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  .status { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+  .badge { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 700; }
+  .badge.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .badge.err { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+  .out { margin-bottom: 12px; }
+  .out h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 6px; }
+  pre {
+    margin: 0; padding: 12px; background: var(--code); border: 1px solid var(--line); border-radius: 12px;
+    overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; }
+  .timeline { display: flex; flex-wrap: wrap; gap: 6px; }
+  .step { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; color: var(--muted); }
+  .step.SUCCEEDED { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .step.FAILED, .step.TIMED_OUT { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+  .err-box { border: 1px solid color-mix(in srgb, var(--err) 45%, var(--line)); color: var(--err); border-radius: 12px; padding: 10px 12px; font-size: 13px; }
+  @media (min-width: 720px) { .wrap { padding-bottom: 110px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title">Flow App</h1>
+    <p id="subtitle"></p>
+  </header>
+  <form id="form" class="card" autocomplete="off"></form>
+  <section id="result" hidden></section>
+</div>
+<div class="dock"><div class="dock-inner">
+  <button class="run" id="run" type="button">実行</button>
+  <button class="ghost" id="copy" type="button" hidden>結果をコピー</button>
+</div></div>
+<script>
+const FLOW = /*__FLOW_APP__*/null;
+const form = document.getElementById("form");
+const resultBox = document.getElementById("result");
+const runButton = document.getElementById("run");
+const copyButton = document.getElementById("copy");
+let lastResult = null;
+
+document.getElementById("title").textContent = FLOW.name || "Flow App";
+document.title = FLOW.name || "Flow App";
+document.getElementById("subtitle").textContent = FLOW.description || "Control Deck の Workflow から書き出したアプリ";
+
+function field(input) {
+  const label = document.createElement("label");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = input.label || input.name;
+  if (input.required) {
+    const mark = document.createElement("span");
+    mark.className = "req";
+    mark.textContent = "*";
+    name.appendChild(mark);
+  }
+  let control;
+  if (Array.isArray(input.enum) && input.enum.length) {
+    control = document.createElement("select");
+    for (const option of input.enum) {
+      const item = document.createElement("option");
+      item.value = String(option);
+      item.textContent = String(option);
+      control.appendChild(item);
+    }
+  } else if (input.type === "boolean") {
+    control = document.createElement("input");
+    control.type = "checkbox";
+    label.classList.add("check");
+  } else if (input.type === "integer" || input.type === "number") {
+    control = document.createElement("input");
+    control.type = "number";
+    if (input.type === "number") control.step = "any";
+  } else if (input.control === "textarea" || input.type === "object" || input.type === "array") {
+    control = document.createElement("textarea");
+    control.placeholder = input.type === "string" ? "" : "JSON";
+  } else {
+    control = document.createElement("input");
+    control.type = "text";
+  }
+  control.name = input.name;
+  control.id = "f_" + input.name;
+  if (input.default !== undefined && input.default !== null && control.type !== "checkbox") {
+    control.value = String(input.default);
+  }
+  name.setAttribute("for", control.id);
+  if (label.classList.contains("check")) {
+    label.append(control, name);
+  } else {
+    label.append(name, control);
+  }
+  return label;
+}
+
+if (!FLOW.inputs || FLOW.inputs.length === 0) {
+  const note = document.createElement("p");
+  note.className = "status";
+  note.textContent = "入力はありません。「実行」を押してください。";
+  form.appendChild(note);
+} else {
+  for (const input of FLOW.inputs) form.appendChild(field(input));
+}
+
+function collect() {
+  const data = {};
+  for (const input of FLOW.inputs || []) {
+    const control = document.getElementById("f_" + input.name);
+    if (!control) continue;
+    data[input.name] = control.type === "checkbox" ? control.checked : control.value;
+  }
+  return data;
+}
+
+function renderValue(item) {
+  const value = item && item.value !== undefined ? item.value : item;
+  const type = (item && item.type) || "text";
+  if (type === "table" && Array.isArray(value)) {
+    const rows = value.filter((row) => row && typeof row === "object");
+    if (rows.length) {
+      const table = document.createElement("table");
+      const head = document.createElement("tr");
+      const keys = Object.keys(rows[0]);
+      for (const key of keys) {
+        const th = document.createElement("th");
+        th.textContent = key;
+        head.appendChild(th);
+      }
+      table.appendChild(head);
+      for (const row of rows.slice(0, 200)) {
+        const tr = document.createElement("tr");
+        for (const key of keys) {
+          const td = document.createElement("td");
+          td.textContent = typeof row[key] === "string" ? row[key] : JSON.stringify(row[key]);
+          tr.appendChild(td);
+        }
+        table.appendChild(tr);
+      }
+      return table;
+    }
+  }
+  const pre = document.createElement("pre");
+  pre.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return pre;
+}
+
+function render(result) {
+  lastResult = result;
+  resultBox.hidden = false;
+  resultBox.textContent = "";
+  copyButton.hidden = false;
+
+  const head = document.createElement("p");
+  head.className = "status";
+  const badge = document.createElement("span");
+  const ok = result.status === "SUCCEEDED";
+  badge.className = "badge " + (ok ? "ok" : "err");
+  badge.textContent = ok ? "成功" : "失敗";
+  head.append(badge, " ", document.createTextNode(`${result.elapsedMs ?? 0} ms`));
+  resultBox.appendChild(head);
+
+  if (result.error) {
+    const box = document.createElement("div");
+    box.className = "err-box";
+    box.textContent = result.error;
+    resultBox.appendChild(box);
+  }
+
+  const outputs = result.outputs || {};
+  for (const [name, item] of Object.entries(outputs)) {
+    const card = document.createElement("section");
+    card.className = "card out";
+    const title = document.createElement("h3");
+    title.textContent = (item && item.title) || name;
+    card.append(title, renderValue(item));
+    resultBox.appendChild(card);
+  }
+  if (Object.keys(outputs).length === 0 && !result.error) {
+    const note = document.createElement("p");
+    note.className = "status";
+    note.textContent = "表示出力のあるノードがありません（出力ノードを追加すると結果がここに出ます）。";
+    resultBox.appendChild(note);
+  }
+
+  if (Array.isArray(result.nodes) && result.nodes.length) {
+    const card = document.createElement("section");
+    card.className = "card";
+    const title = document.createElement("h3");
+    title.textContent = "実行ステップ";
+    const line = document.createElement("div");
+    line.className = "timeline";
+    for (const node of result.nodes) {
+      const chip = document.createElement("span");
+      chip.className = "step " + (node.status || "");
+      chip.textContent = node.name || node.id;
+      if (node.error) chip.title = node.error;
+      line.appendChild(chip);
+    }
+    card.append(title, line);
+    resultBox.appendChild(card);
+  }
+  resultBox.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+runButton.addEventListener("click", async () => {
+  runButton.disabled = true;
+  runButton.textContent = "実行中…";
+  try {
+    const response = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collect()),
+    });
+    render(await response.json());
+  } catch (error) {
+    render({ status: "FAILED", error: String(error), outputs: {}, nodes: [] });
+  } finally {
+    runButton.disabled = false;
+    runButton.textContent = "実行";
+  }
+});
+
+copyButton.addEventListener("click", async () => {
+  if (!lastResult) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(lastResult.outputs ?? {}, null, 2));
+    copyButton.textContent = "コピーしました";
+    setTimeout(() => { copyButton.textContent = "結果をコピー"; }, 1500);
+  } catch { /* クリップボード不可の環境では何もしない */ }
+});
+</script>
+</body>
+</html>

@@ -29,14 +29,26 @@ NON_ARTIFACT_NAMES = {
     "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json",
     "jsconfig.json", "composer.json", "cargo.lock", "project.json",
 }
+CODE_LANGUAGES = {
+    ".py": "python", ".pyw": "python", ".js": "javascript", ".mjs": "javascript",
+    ".cjs": "javascript", ".jsx": "javascript", ".ts": "typescript", ".tsx": "typescript",
+    ".css": "css", ".scss": "css", ".sass": "css", ".sh": "shell", ".bash": "shell",
+    ".yml": "yaml", ".yaml": "yaml", ".toml": "toml", ".ini": "ini", ".cfg": "ini",
+    ".sql": "sql", ".rs": "rust", ".go": "go", ".java": "java", ".rb": "ruby",
+    ".php": "php", ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp",
+    ".kt": "kotlin", ".swift": "swift", ".xml": "xml", ".vue": "vue", ".svelte": "svelte",
+}
+# 単体fileとして実行できるruntime。shellやcompile言語は隔離実行の対象外に保つ。
+FILE_RUNTIMES = {".py": "python3", ".pyw": "python3", ".js": "node", ".mjs": "node", ".cjs": "node"}
 ARTIFACT_KINDS = {
     ".html": "html", ".htm": "html", ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".webp": "image", ".gif": "image", ".svg": "image", ".csv": "table", ".tsv": "table",
     ".json": "json", ".md": "markdown", ".markdown": "markdown", ".pdf": "pdf",
     ".mp3": "audio", ".wav": "audio", ".ogg": "audio", ".mp4": "video", ".webm": "video",
-    ".log": "log", ".txt": "text",
+    ".log": "log", ".txt": "text", ".text": "text",
+    **{suffix: "code" for suffix in CODE_LANGUAGES},
 }
-STATIC_RESOURCE_TYPES = {".css", ".woff", ".woff2", ".ttf", ".otf", ".ico"}
+STATIC_RESOURCE_TYPES = {".woff", ".woff2", ".ttf", ".otf", ".ico", ".map"}
 SENSITIVE_NAME = re.compile(r"(^|[._-])(secret|secrets|credential|credentials|private[_-]?key|id_rsa|id_ed25519)([._-]|$)", re.I)
 SENSITIVE_TEXT = re.compile(
     r"(?im)(\b(?:authorization|password|passwd|token|secret|api[_-]?token|api[_-]?key)\b[ \t]*[:=][ \t]*)([^\s,;&]+)"
@@ -240,13 +252,16 @@ def artifact_info(project: Path, path: Path, *, include_preview: bool = False) -
         stat = resolved.stat()
     except OSError:
         return None
-    kind = ARTIFACT_KINDS.get(resolved.suffix.lower())
+    suffix = resolved.suffix.lower()
+    kind = ARTIFACT_KINDS.get(suffix)
     if not kind:
         return None
     relative = resolved.relative_to(project).as_posix()
     text, structured = _text_preview(resolved, kind) if include_preview else (None, None)
     return {
         "path": relative, "name": resolved.name, "kind": kind,
+        "language": CODE_LANGUAGES.get(suffix, ""),
+        "runnable": suffix in FILE_RUNTIMES,
         "mimeType": mimetypes.guess_type(resolved.name)[0] or "application/octet-stream",
         "size": stat.st_size, "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
         "previewText": text, "structuredPreview": structured,

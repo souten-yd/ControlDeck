@@ -9,8 +9,31 @@ from typing import Literal
 
 from app.config import data_dir
 
-FeatureAction = Literal["install", "enable", "disable", "uninstall"]
-KNOWN_FEATURES = {"opencode"}
+FeatureAction = Literal["install", "update", "enable", "disable", "uninstall"]
+
+# アドオン定義。npmはユーザー空間のprefix、pipは専用venvへ導入する（どちらもsudo不要）。
+FEATURES: dict[str, dict] = {
+    "opencode": {
+        "name": "OpenCode",
+        "kind": "npm",
+        "package": "opencode-ai",
+        "executable": "opencode",
+        # 有効化でAPI/画面/ノードを登録するため、反映にプラットフォーム再読み込みが必要。
+        "route_gated": True,
+        "summary": "OpenCode画面とAIチャットのcodeモードで使うコーディングエージェント",
+    },
+    "pyinstaller": {
+        "name": "アプリビルド環境（単一バイナリ）",
+        "kind": "pip",
+        "package": "pyinstaller",
+        "executable": "pyinstaller",
+        # 使うのはApp Studioの書き出し時だけなので、導入すればそのまま使える。
+        "route_gated": False,
+        "summary": "App Studioで、配布先にPython不要の単一バイナリを作れるようにする",
+    },
+}
+NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] == "npm"}
+KNOWN_FEATURES = set(FEATURES)
 
 
 class FeatureError(RuntimeError):
@@ -42,35 +65,43 @@ def _write_state(state: dict) -> None:
     os.replace(temp, path)
 
 
-def _feature_root(feature_id: str) -> Path:
+def _known(feature_id: str) -> str:
     if feature_id not in KNOWN_FEATURES:
         raise FeatureError(f"未知のfeatureです: {feature_id}")
-    root = (_features_root() / feature_id).resolve()
+    return feature_id
+
+
+def _feature_root(feature_id: str) -> Path:
+    root = (_features_root() / _known(feature_id)).resolve()
     if not root.is_relative_to(_features_root()):
         raise FeatureError("feature pathがdata directory外です")
     return root
 
 
 def _managed_executable(feature_id: str) -> Path:
-    return _feature_root(feature_id) / "node_modules" / ".bin" / feature_id
+    spec = FEATURES[_known(feature_id)]
+    root = _feature_root(feature_id)
+    if spec["kind"] == "pip":
+        return root / "venv" / "bin" / spec["executable"]
+    return root / "node_modules" / ".bin" / spec["executable"]
 
 
 def executable(feature_id: str) -> Path | None:
+    binary_name = FEATURES[_known(feature_id)]["executable"]
     managed = _managed_executable(feature_id)
     if managed.is_file() and os.access(managed, os.X_OK):
         return managed.resolve()
     saved = str(_read_state().get(feature_id, {}).get("external_executable") or "")
     if saved:
         candidate = Path(saved).expanduser().resolve()
-        if candidate.name == feature_id and candidate.is_file() and os.access(candidate, os.X_OK):
+        if candidate.name == binary_name and candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
-    external = shutil.which(feature_id)
+    external = shutil.which(binary_name)
     return Path(external).resolve() if external else None
 
 
 def status(feature_id: str) -> dict:
-    if feature_id not in KNOWN_FEATURES:
-        raise FeatureError(f"未知のfeatureです: {feature_id}")
+    spec = FEATURES[_known(feature_id)]
     state = _read_state().get(feature_id, {})
     binary = executable(feature_id)
     managed = _managed_executable(feature_id).is_file()
@@ -90,14 +121,22 @@ def status(feature_id: str) -> dict:
         except (OSError, subprocess.TimeoutExpired):
             error = "実行ファイルを起動できません"
     installed = binary is not None
+    toolchain = shutil.which("npm") if spec["kind"] == "npm" else shutil.which("python3")
+    # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
+    enabled = (installed and healthy) if not spec["route_gated"] else (
+        bool(state.get("enabled")) and installed and healthy
+    )
     return {
         "id": feature_id,
-        "name": "OpenCode" if feature_id == "opencode" else feature_id,
-        "available": shutil.which("npm") is not None or installed,
+        "name": spec["name"],
+        "summary": spec["summary"],
+        "kind": spec["kind"],
+        "route_gated": spec["route_gated"],
+        "available": toolchain is not None or installed,
         "installed": installed,
         "managed": managed,
-        "enabled": bool(state.get("enabled")) and installed and healthy,
-        "requested_enabled": bool(state.get("enabled")),
+        "enabled": enabled,
+        "requested_enabled": bool(state.get("enabled")) or not spec["route_gated"],
         "version": version,
         "health": "healthy" if healthy else ("error" if installed else "not-installed"),
         "error": error,
@@ -116,25 +155,70 @@ def is_enabled(feature_id: str) -> bool:
         return False
 
 
-def install(feature_id: str) -> dict:
+def _npm_install(feature_id: str, package: str) -> subprocess.CompletedProcess[str]:
     root = _feature_root(feature_id)
     npm = shutil.which("npm")
     if npm is None:
         raise FeatureError("npmが必要です")
     root.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [npm, "install", "--prefix", str(root), "--no-fund", "--no-audit", "opencode-ai"],
+    return subprocess.run(
+        [npm, "install", "--prefix", str(root), "--no-fund", "--no-audit", package],
         capture_output=True, text=True, timeout=600, check=False,
     )
+
+
+def _pip_install(feature_id: str, package: str) -> subprocess.CompletedProcess[str]:
+    """アドオン専用venvへ導入する。Control Deck本体のvenvは汚さない。"""
+    root = _feature_root(feature_id)
+    python = shutil.which("python3")
+    if python is None:
+        raise FeatureError("python3が必要です")
+    venv = root / "venv"
+    if not (venv / "bin" / "pip").is_file():
+        root.mkdir(parents=True, exist_ok=True)
+        created = subprocess.run(
+            [python, "-m", "venv", str(venv)], capture_output=True, text=True, timeout=300, check=False,
+        )
+        if created.returncode != 0:
+            return created
+    return subprocess.run(
+        [str(venv / "bin" / "pip"), "install", "--upgrade", "--disable-pip-version-check", package],
+        capture_output=True, text=True, timeout=900, check=False,
+    )
+
+
+def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedProcess[str]:
+    spec = FEATURES[_known(feature_id)]
+    package = spec["package"]
+    if spec["kind"] == "pip":
+        return _pip_install(feature_id, package)
+    return _npm_install(feature_id, f"{package}@latest" if latest else package)
+
+
+def install(feature_id: str) -> dict:
+    name = FEATURES[_known(feature_id)]["name"]
+    result = _install_package(feature_id, latest=False)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
-        raise FeatureError("OpenCodeの管理導入に失敗しました")
+        raise FeatureError(f"{name}の管理導入に失敗しました")
     return status(feature_id)
+
+
+def update(feature_id: str) -> dict:
+    """管理導入のランタイムを最新版へ更新する。外部PATH上の実体には触れない。"""
+    name = FEATURES[_known(feature_id)]["name"]
+    if not _managed_executable(feature_id).is_file():
+        raise FeatureError(f"Control Deckが導入した{name}のみ更新できます")
+    previous = status(feature_id)["version"]
+    result = _install_package(feature_id, latest=True)
+    if result.returncode != 0 or not _managed_executable(feature_id).is_file():
+        raise FeatureError(f"{name}の更新に失敗しました")
+    return {**status(feature_id), "previous_version": previous}
 
 
 def enable(feature_id: str) -> dict:
     current = status(feature_id)
     if not current["installed"] or current["health"] != "healthy":
-        raise FeatureError("正常なOpenCodeを先に導入してください")
+        raise FeatureError(f"正常な{FEATURES[feature_id]['name']}を先に導入してください")
     state = _read_state()
     remembered = "" if current["managed"] else current["executable"]
     state[feature_id] = {
@@ -146,8 +230,7 @@ def enable(feature_id: str) -> dict:
 
 
 def disable(feature_id: str) -> dict:
-    if feature_id not in KNOWN_FEATURES:
-        raise FeatureError(f"未知のfeatureです: {feature_id}")
+    _known(feature_id)
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
     _write_state(state)
@@ -166,5 +249,6 @@ def uninstall(feature_id: str) -> dict:
 
 
 def apply(action: FeatureAction, feature_id: str) -> dict:
-    operations = {"install": install, "enable": enable, "disable": disable, "uninstall": uninstall}
+    operations = {"install": install, "update": update, "enable": enable,
+                  "disable": disable, "uninstall": uninstall}
     return operations[action](feature_id)

@@ -1,7 +1,7 @@
 /* Ubuntu Control Deck Service Worker
  * 方針: アプリシェル（HTML/JS/CSS/アイコン）のみをキャッシュしオフライン起動を可能にする。
  * API レスポンス・ログ・ファイル内容など機密になりうるデータは一切キャッシュしない。 */
-const CACHE = "control-deck-shell-v14";
+const CACHE = "control-deck-shell-v15";
 const SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -27,8 +27,11 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/assets/")) {
     event.respondWith(
       caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy));
+        // 再デプロイで消えた旧chunkの404を保存しない（保存すると復帰できなくなる）
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
         return res;
       })),
     );

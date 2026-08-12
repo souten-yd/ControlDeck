@@ -25,11 +25,29 @@ import KnowledgePage from "./pages/Knowledge";
 import ModelsPage from "./pages/Models";
 import AssistantPage from "./pages/Assistant";
 
-const OpenCodePage = lazy(() => import("./features/opencode/OpenCodePage"));
-const ApplicationsPage = lazy(() => import("./pages/Applications"));
-const ApplicationEditorPage = lazy(() => import("./pages/ApplicationEditor"));
-const ApplicationFromWorkflowPage = lazy(() => import("./pages/ApplicationFromWorkflow"));
-const ProjectLabPage = lazy(() => import("./pages/ProjectLab"));
+/** 再デプロイ後、開きっぱなしの旧画面は消えたchunkを読みに行き
+ *  "Importing a module script failed" で落ちる。1度だけ自動再読み込みして復帰する。 */
+function lazyPage<T extends { default: React.ComponentType<Record<string, never>> }>(load: () => Promise<T>) {
+  return lazy(async () => {
+    try {
+      return await load();
+    } catch (error) {
+      const last = Number(sessionStorage.getItem("cd-chunk-reload") || 0);
+      if (Date.now() - last > 10_000) {
+        sessionStorage.setItem("cd-chunk-reload", String(Date.now()));
+        location.reload();
+        await new Promise(() => {});  // reload完了までエラー画面を出さない
+      }
+      throw error;
+    }
+  });
+}
+
+const OpenCodePage = lazyPage(() => import("./features/opencode/OpenCodePage"));
+const ApplicationsPage = lazyPage(() => import("./pages/Applications"));
+const ApplicationEditorPage = lazyPage(() => import("./pages/ApplicationEditor"));
+const ApplicationFromWorkflowPage = lazyPage(() => import("./pages/ApplicationFromWorkflow"));
+const ProjectLabPage = lazyPage(() => import("./pages/ProjectLab"));
 
 function LazyPage({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div className="p-6 text-sm text-zinc-400">読み込み中...</div>}>{children}</Suspense>;

@@ -10,6 +10,17 @@ from app.project_lab import runs, service
 from app.schemas.project_lab import ProjectManifest
 
 
+def _purge_runs() -> None:
+    """session共有DBへ実行記録を残さない（後続testの同時実行判定を汚さない）。"""
+    from app.database import SessionLocal
+    from app.models import ProjectRun, ProjectRunArtifact
+
+    with SessionLocal() as db:
+        db.query(ProjectRunArtifact).delete()
+        db.query(ProjectRun).delete()
+        db.commit()
+
+
 def _project(root: Path, name: str = "demo") -> Path:
     project = root / name
     (project / ".controldeck").mkdir(parents=True)
@@ -95,9 +106,14 @@ def test_project_discovery_manifest_artifacts_and_containment(tmp_path, monkeypa
     }
     paths = {item["path"] for item in detail["artifacts"]}
     assert {"index.html", "reports/result.json", "reports/metrics.csv", "reports/chart.png"} <= paths
-    assert "main.py" not in paths and ".env" not in paths and "node_modules/ignored.json" not in paths
+    assert ".env" not in paths and "node_modules/ignored.json" not in paths
     assert "package.json" not in paths
-    assert "style.css" not in paths
+    # source fileも閲覧・実行対象。runnableはPython／JavaScriptだけをtrueにする。
+    assert {"main.py", "style.css"} <= paths
+    source = next(item for item in detail["artifacts"] if item["path"] == "main.py")
+    assert source["kind"] == "code" and source["language"] == "python" and source["runnable"] is True
+    stylesheet = next(item for item in detail["artifacts"] if item["path"] == "style.css")
+    assert stylesheet["kind"] == "code" and stylesheet["runnable"] is False
     assert "reports/escape.json" not in paths
     result_path = service.resolve_artifact(project, "reports/result.json")
     result = service.artifact_info(project, result_path, include_preview=True)
@@ -130,11 +146,25 @@ def test_project_lab_api_is_read_only_authenticated_and_safe(admin_client, tmp_p
     html = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/index.html")
     assert html.status_code == 200 and "安全な成果物" in html.text
     assert html.headers["x-frame-options"] == "SAMEORIGIN"
-    assert "default-src 'none'" in html.headers["content-security-policy"]
+    # HTMLはscriptを動かせるが、CSP sandboxで不透明originへ隔離しconnectを遮断する。
+    html_policy = html.headers["content-security-policy"]
+    assert "sandbox allow-scripts" in html_policy and "connect-src 'none'" in html_policy
+    assert "allow-same-origin" not in html_policy and "form-action 'none'" in html_policy
+    assert html.headers["x-content-type-options"] == "nosniff"
+    # sandbox iframeで落ちるstorage APIは、preview配信時だけ互換実装へ差し替える。
+    assert "Control Deck preview shim" in html.text
+    assert html.text.index("preview shim") < html.text.index("安全な成果物")
+    downloaded = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/index.html?download=true")
+    assert downloaded.status_code == 200 and "sandbox" not in downloaded.headers["content-security-policy"]
+    assert "preview shim" not in downloaded.text
+    assert (root / "demo" / "index.html").read_text(encoding="utf-8") == "<h1>安全な成果物</h1>"
     style = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/style.css")
     assert style.status_code == 200 and style.headers["content-type"].startswith("text/css")
+    assert "default-src 'none'" in style.headers["content-security-policy"]
     source = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/main.py")
-    assert source.status_code == 404
+    assert source.status_code == 200 and "source is not an artifact" in source.text
+    source_preview = admin_client.get("/api/v1/project-lab/projects/demo/previews/main.py")
+    assert source_preview.status_code == 200 and "print(" in source_preview.json()["previewText"]
     missing = admin_client.get("/api/v1/project-lab/projects/missing")
     assert missing.status_code == 404
 
@@ -201,6 +231,53 @@ def test_project_run_uses_systemd_argv_tracks_artifacts_and_redacts_logs(admin_c
     assert "--setenv=MODE=test" in launch
     assert Path(launch[-2]).name.startswith("python3") and launch[-1] == "main.py"
 
+
+def test_file_run_executes_single_source_without_manifest(admin_client, tmp_path, monkeypatch, request):
+    """manifestを持たないprojectでも、成果物のPython fileを1本だけ隔離実行できる。"""
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    project = root / "plain"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "main.py").write_text("print('hello')", encoding="utf-8")
+    (project / "src" / "style.css").write_text("body{}", encoding="utf-8")
+    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
+    monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0].endswith("systemd-run"):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[0].endswith("systemctl"):
+            return SimpleNamespace(returncode=0, stdout="LoadState=loaded\nActiveState=active\nSubState=running\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(runs.subprocess, "run", fake_run)
+    started = admin_client.post(
+        "/api/v1/project-lab/projects/plain/file-runs",
+        json={"path": "src/main.py", "timeout_seconds": 30}, headers={"X-Requested-With": "ControlDeck"},
+    )
+    assert started.status_code == 201, started.text
+    request.addfinalizer(_purge_runs)
+    body = started.json()
+    assert body["profileType"] == "file" and body["command"] == ["python3", "./main.py"]
+    assert body["previewUrl"] is None
+    launch = calls[0]
+    assert f"--property=WorkingDirectory={project / 'src'}" in launch
+    assert f"--property=ReadWritePaths={project}" in launch
+    assert "--property=NoNewPrivileges=yes" in launch and "--property=ProtectHome=read-only" in launch
+    assert Path(launch[-2]).name.startswith("python3") and launch[-1] == "./main.py"
+
+    # 実行できないfile typeとproject外pathは開始前に拒否する。
+    assert admin_client.post(
+        "/api/v1/project-lab/projects/plain/file-runs",
+        json={"path": "src/style.css"}, headers={"X-Requested-With": "ControlDeck"},
+    ).status_code == 409
+    assert admin_client.post(
+        "/api/v1/project-lab/projects/plain/file-runs",
+        json={"path": "../escape.py"}, headers={"X-Requested-With": "ControlDeck"},
+    ).status_code == 404
 
 def test_project_run_rejects_secrets_and_non_sdk(tmp_path, monkeypatch, admin_client):
     from app.database import SessionLocal

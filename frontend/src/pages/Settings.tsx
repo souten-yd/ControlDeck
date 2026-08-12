@@ -365,7 +365,8 @@ function AuditSection() {
 
 
 interface AddonState {
-  id: string; name: string; available: boolean; installed: boolean; managed: boolean;
+  id: string; name: string; summary: string; kind: "npm" | "pip"; route_gated: boolean;
+  available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string;
 }
@@ -446,6 +447,7 @@ function AddonsSection() {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
+  const [jobKind, setJobKind] = useState<"install" | "update">("install");
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const { data: addons } = useQuery({
@@ -455,7 +457,10 @@ function AddonsSection() {
   });
   const { data: job } = useQuery({
     queryKey: ["feature-job", jobId],
-    queryFn: () => api<{ status: string; error: string; progress?: { status?: string } }>(`/jobs/${jobId}`),
+    queryFn: () => api<{
+      status: string; error: string; progress?: { status?: string };
+      result?: { version?: string; previous_version?: string };
+    }>(`/jobs/${jobId}`),
     enabled: jobId !== null,
     refetchInterval: (q) => (q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1200),
   });
@@ -463,12 +468,20 @@ function AddonsSection() {
   useEffect(() => {
     if (!jobId || !job || !jobStatus || ["queued", "running"].includes(jobStatus)) return;
     setJobId(null);
-    if (jobStatus === "succeeded") {
-      show("導入が完了しました。「有効化」で利用を開始できます");
-      qc.invalidateQueries({ queryKey: ["features"] });
-    } else {
-      show(job.error || "導入に失敗しました", "error");
+    if (jobStatus !== "succeeded") {
+      show(job.error || (jobKind === "update" ? "更新に失敗しました" : "導入に失敗しました"), "error");
+      return;
     }
+    qc.invalidateQueries({ queryKey: ["features"] });
+    if (jobKind === "install") {
+      show("導入が完了しました。「有効化」で利用を開始できます");
+      return;
+    }
+    const before = job.result?.previous_version?.replace(/^v/, "") ?? "";
+    const after = job.result?.version?.replace(/^v/, "") ?? "";
+    show(before && after && before !== after
+      ? `v${before} から v${after} へ更新しました（起動中のセッションは再起動後に反映）`
+      : `すでに最新版です${after ? `（v${after}）` : ""}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobStatus]);
 
@@ -499,9 +512,19 @@ function AddonsSection() {
   const install = async (addon: AddonState) => {
     try {
       const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: {} });
+      setJobKind("install");
       setJobId(r.job_id);
     } catch (e) {
       show(e instanceof Error ? e.message : "導入開始に失敗しました", "error");
+    }
+  };
+  const update = async (addon: AddonState) => {
+    try {
+      const r = await api<{ job_id: string }>(`/features/${addon.id}/update-jobs`, { method: "POST", json: {} });
+      setJobKind("update");
+      setJobId(r.job_id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "更新開始に失敗しました", "error");
     }
   };
   const act = async (addon: AddonState, action: "enable" | "disable" | "uninstall") => {
@@ -531,37 +554,44 @@ function AddonsSection() {
                   {addon.version && <span className="num ml-2 text-[10px] font-normal text-zinc-400">v{addon.version.replace(/^v/, "")}</span>}
                 </p>
                 <p className="text-[11px] text-zinc-400">
-                  {addon.enabled ? "有効 — OpenCode画面とAIチャットのcodeモードで利用できます"
-                    : addon.installed ? "導入済み（無効）— 有効化すると画面とチャットに表示されます"
-                    : addon.available ? "未導入 — ワンタップで導入できます（npm・1〜2分）"
-                    : "npmが見つかりません。Node.jsの導入が必要です"}
+                  {addon.enabled ? `利用できます — ${addon.summary}`
+                    : addon.installed ? "導入済み（無効）— 有効化すると使えます"
+                    : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
+                    : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です"}
                   {addon.error && ` · ${addon.error}`}
                 </p>
               </div>
-              <div className="flex shrink-0 gap-1.5">
+              <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                {addon.installed && addon.managed && (
+                  <button onClick={() => void update(addon)} disabled={jobId !== null || reloading}
+                    title="npmの最新版へ更新します"
+                    className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
+                    {jobId !== null && jobKind === "update" ? "更新中…" : "更新"}
+                  </button>
+                )}
                 {!addon.installed && (
                   <button onClick={() => void install(addon)} disabled={!addon.available || jobId !== null}
                     className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
                     {jobId !== null ? "導入中…" : "導入"}
                   </button>
                 )}
-                {addon.installed && !addon.enabled && (
-                  <button onClick={() => void act(addon, "enable")} disabled={reloading}
+                {addon.installed && !addon.enabled && addon.route_gated && (
+                  <button onClick={() => void act(addon, "enable")} disabled={reloading || jobId !== null}
                     className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>有効化</button>
                 )}
-                {addon.installed && addon.enabled && (
-                  <button onClick={() => void act(addon, "disable")} disabled={reloading}
+                {addon.installed && addon.enabled && addon.route_gated && (
+                  <button onClick={() => void act(addon, "disable")} disabled={reloading || jobId !== null}
                     className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
                 )}
                 {addon.installed && (
-                  <button onClick={() => setUninstalling(addon.id)} disabled={reloading}
+                  <button onClick={() => setUninstalling(addon.id)} disabled={reloading || jobId !== null}
                     className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>削除</button>
                 )}
               </div>
             </div>
-            {jobId !== null && !addon.installed && (
+            {jobId !== null && (jobKind === "update" ? addon.managed : !addon.installed) && (
               <p className="mt-2 animate-pulse text-[11px] text-zinc-400">
-                {job?.progress?.status || "導入中…"} — サーバー側で実行中。この画面を閉じても継続します
+                {job?.progress?.status || (jobKind === "update" ? "更新中…" : "導入中…")} — サーバー側で実行中。この画面を閉じても継続します
               </p>
             )}
           </div>
@@ -576,7 +606,7 @@ function AddonsSection() {
       {uninstalling && (
         <ConfirmDialog
           title="アドオンをアンインストールしますか？"
-          message="ランタイム一式（管理領域のnode_modules）を削除します。CodeDEVのプロジェクトと外部のOpenCode設定には触れません。"
+          message="Control Deckが導入したランタイム一式（管理領域）だけを削除します。PATH上の外部インストールと個人設定には触れません。"
           confirmLabel="アンインストールする"
           onConfirm={() => {
             const target = (addons ?? []).find((a) => a.id === uninstalling);

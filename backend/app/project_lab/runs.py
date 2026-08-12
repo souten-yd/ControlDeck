@@ -122,6 +122,66 @@ def _command_with_runtime(command: list[str], *, web_port: int | None) -> list[s
     return [item.replace("{port}", str(web_port)).replace("{host}", "127.0.0.1") for item in command]
 
 
+def _launch(
+    db: Session, *, project: Path, project_id: str, project_name: str, profile_id: str,
+    profile_type: str, command: list[str], executable: str, cwd: Path, environment: dict[str, str],
+    timeout_seconds: int, web_port: int | None, created_by: int | None, manifest,
+) -> ProjectRun:
+    """隔離済みsystemd user transient unitでcommandを起動し、実行記録を残す。"""
+    systemd_run, _, _ = _systemd_tools()
+    for row in db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all():
+        refresh_run(db, row)
+    active = db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all()
+    if len(active) >= MAX_CONCURRENT_RUNS:
+        raise ProjectRunError("Project Labの同時実行上限に達しています")
+    if any(row.project_id == project_id for row in active):
+        raise ProjectRunError("同じprojectの実行が既に進行中です")
+
+    snapshot = _artifact_snapshot(project, manifest)
+    row = ProjectRun(
+        project_id=project_id, project_name=project_name, profile_id=profile_id,
+        profile_type=profile_type, status="QUEUED", command_json=json.dumps(command, ensure_ascii=False),
+        environment_names_json=json.dumps(sorted(environment), ensure_ascii=False),
+        working_directory=str(cwd), timeout_seconds=timeout_seconds, web_port=web_port,
+        initial_artifacts_json=json.dumps(snapshot, ensure_ascii=False), created_by=created_by,
+    )
+    db.add(row)
+    db.commit()
+    row.unit_name = f"control-deck-project-run-{row.id}"
+    db.commit()
+
+    argv = [
+        systemd_run, "--user", "--quiet", f"--unit={row.unit_name}",
+        "--property=Type=exec", f"--property=WorkingDirectory={cwd}",
+        "--property=RemainAfterExit=yes",
+        f"--property=RuntimeMaxSec={timeout_seconds}s", "--property=TimeoutStopSec=10s",
+        "--property=NoNewPrivileges=yes", "--property=PrivateTmp=yes", "--property=ProtectSystem=strict",
+        "--property=ProtectHome=read-only", f"--property=ReadWritePaths={project}",
+        "--property=MemoryMax=2G", "--property=TasksMax=128", "--property=CPUQuota=200%",
+        "--property=UMask=0077",
+    ]
+    for key, value in sorted(environment.items()):
+        argv.append(f"--setenv={key}={value}")
+    if web_port is not None:
+        argv.extend([
+            "--setenv=HOST=127.0.0.1", f"--setenv=PORT={web_port}",
+            "--setenv=FLASK_RUN_HOST=127.0.0.1", f"--setenv=FLASK_RUN_PORT={web_port}",
+            "--setenv=STREAMLIT_SERVER_ADDRESS=127.0.0.1", f"--setenv=STREAMLIT_SERVER_PORT={web_port}",
+        ])
+    argv.extend([executable, *command[1:]])
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    if result.returncode != 0:
+        row.status = "FAILED"
+        row.result = "START_FAILED"
+        row.error_redacted = service.redact_text((result.stderr or result.stdout or "systemd-run failed")[:4000])
+        row.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        raise ProjectRunError(row.error_redacted)
+    row.status = "RUNNING"
+    db.commit()
+    return row
+
+
 def start_run(
     db: Session, *, project_id: str, profile_id: str, timeout_seconds: int, created_by: int | None,
 ) -> ProjectRun:
@@ -142,58 +202,36 @@ def start_run(
     web_port = _allocate_web_port(db) if profile.type == "web" else None
     command = _command_with_runtime(profile.command, web_port=web_port)
     executable = _resolve_executable(command[0], cwd, project)
-    systemd_run, _, _ = _systemd_tools()
-    for row in db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all():
-        refresh_run(db, row)
-    active = db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all()
-    if len(active) >= MAX_CONCURRENT_RUNS:
-        raise ProjectRunError("Project Labの同時実行上限に達しています")
-    if any(row.project_id == project_id for row in active):
-        raise ProjectRunError("同じprojectの実行が既に進行中です")
-
-    snapshot = _artifact_snapshot(project, manifest)
-    row = ProjectRun(
-        project_id=project_id, project_name=manifest.name, profile_id=profile.id,
-        profile_type=profile.type, status="QUEUED", command_json=json.dumps(command, ensure_ascii=False),
-        environment_names_json=json.dumps(sorted(profile.environment), ensure_ascii=False),
-        working_directory=str(cwd), timeout_seconds=timeout_seconds, web_port=web_port,
-        initial_artifacts_json=json.dumps(snapshot, ensure_ascii=False), created_by=created_by,
+    return _launch(
+        db, project=project, project_id=project_id, project_name=manifest.name,
+        profile_id=profile.id, profile_type=profile.type, command=command, executable=executable,
+        cwd=cwd, environment=profile.environment, timeout_seconds=timeout_seconds,
+        web_port=web_port, created_by=created_by, manifest=manifest,
     )
-    db.add(row)
-    db.commit()
-    row.unit_name = f"control-deck-project-run-{row.id}"
-    db.commit()
 
-    argv = [
-        systemd_run, "--user", "--quiet", f"--unit={row.unit_name}",
-        "--property=Type=exec", f"--property=WorkingDirectory={cwd}",
-        "--property=RemainAfterExit=yes",
-        f"--property=RuntimeMaxSec={timeout_seconds}s", "--property=TimeoutStopSec=10s",
-        "--property=NoNewPrivileges=yes", "--property=PrivateTmp=yes", "--property=ProtectSystem=strict",
-        "--property=ProtectHome=read-only", f"--property=ReadWritePaths={project}",
-        "--property=MemoryMax=2G", "--property=TasksMax=128", "--property=CPUQuota=200%",
-        "--property=UMask=0077",
-    ]
-    for key, value in sorted(profile.environment.items()):
-        argv.append(f"--setenv={key}={value}")
-    if web_port is not None:
-        argv.extend([
-            "--setenv=HOST=127.0.0.1", f"--setenv=PORT={web_port}",
-            "--setenv=FLASK_RUN_HOST=127.0.0.1", f"--setenv=FLASK_RUN_PORT={web_port}",
-            "--setenv=STREAMLIT_SERVER_ADDRESS=127.0.0.1", f"--setenv=STREAMLIT_SERVER_PORT={web_port}",
-        ])
-    argv.extend([executable, *command[1:]])
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
-    if result.returncode != 0:
-        row.status = "FAILED"
-        row.result = "START_FAILED"
-        row.error_redacted = service.redact_text((result.stderr or result.stdout or "systemd-run failed")[:4000])
-        row.finished_at = datetime.now(timezone.utc)
-        db.commit()
-        raise ProjectRunError(row.error_redacted)
-    row.status = "RUNNING"
-    db.commit()
-    return row
+
+def start_file_run(
+    db: Session, *, project_id: str, artifact_path: str, timeout_seconds: int, created_by: int | None,
+) -> ProjectRun:
+    """manifestなしでも、project内のPython／JavaScript fileを1本だけ隔離実行する。"""
+    project = service.resolve_project(project_id)
+    path = service.resolve_artifact(project, artifact_path)
+    runtime = service.FILE_RUNTIMES.get(path.suffix.lower())
+    if runtime is None:
+        raise ProjectRunError("このfileは単体実行に対応していません（Python／JavaScriptのみ）")
+    cwd = path.parent
+    if not _inside(cwd, project):
+        raise ProjectRunError("実行fileがproject外です")
+    manifest, _ = service._read_manifest(project)
+    command = [runtime, f"./{path.name}"]
+    executable = _resolve_executable(runtime, cwd, project)
+    return _launch(
+        db, project=project, project_id=project_id,
+        project_name=manifest.name if manifest else project.name,
+        profile_id=f"file:{path.name}"[:64], profile_type="file", command=command,
+        executable=executable, cwd=cwd, environment={}, timeout_seconds=timeout_seconds,
+        web_port=None, created_by=created_by, manifest=manifest,
+    )
 
 
 def _show(unit_name: str) -> dict[str, str] | None:
@@ -234,7 +272,7 @@ def _finalize_artifacts(db: Session, row: ProjectRun) -> None:
         return
     try:
         project = service.resolve_project(row.project_id)
-        manifest = service.load_manifest(project)
+        manifest, _ = service._read_manifest(project)
         initial = json.loads(row.initial_artifacts_json or "{}")
     except (ValueError, json.JSONDecodeError):
         return

@@ -1,6 +1,47 @@
 # 実装状況
 
-最終更新: 2026-07-21
+最終更新: 2026-08-13
+
+## App Studio 単一バイナリ書き出し／プレビューのstorage shim／chunk復帰（2026-08-13）
+
+- 書き出し形式を2つから選べるようにした。`.pyz`（配布先にpython3が必要・1MB未満・1〜2秒）と`単一バイナリ`（配布先は追加インストール不要・約10MB・5〜20秒）。ビルド側だけに開発環境が要る構成で、PyInstallerは設定→アドオン「アプリビルド環境」から導入する。
+- アドオン基盤をnpm専用からnpm／pip両対応へ広げた。pipのアドオンは専用venv（`data_dir/features/<id>/venv`）へ導入し、Control Deck本体のvenvを汚さない。route_gatedでないアドオンは導入＝利用可能とし、有効化とプラットフォーム再読み込みを求めない。Settingsのアドオン説明文もfeature定義から出す。
+- 単一バイナリは1〜2分かかる想定でサーバー側jobとして実行し、UIは進捗表示のまま画面を離れられる。実測では約5秒・9.8MBだった。
+- Project Labのプレビューで「表示されるのに操作できない」根本原因を特定して修正した。sandbox iframeは不透明originのため`localStorage`アクセスがSecurityErrorになり、そこでscript全体が停止して以降のイベント登録とゲームループが動かなくなっていた（実例: `stick-runner.html`の冒頭で`localStorage.getItem`）。`allow-same-origin`はControl Deckのoriginを渡すことになるため使わず、preview配信時だけcharset宣言の直後へメモリ実装のlocalStorage／sessionStorage／cookie shimを差し込む。ダウンロードと実体のfileは書き換えない。
+- プレビュー下部のドックがアプリ自身の操作ボタン（例: 右下のJUMP）と重なるため、ドックを畳めるようにした。畳むと左下の小さな丸ボタンだけが残る。
+- 再デプロイ後に開いたままの画面が消えたchunkを読みに行き`Importing a module script failed`で落ちる問題を直した。遅延ロード失敗時に1度だけ自動再読み込みし、Service Workerは404を保存しない（`res.ok`のみキャッシュ、shell v15）。
+
+検証: 新規2件（バイナリ実行・アドオン未導入時の拒否）を含むbackend全509件、frontend TypeScript／production buildに成功。実機でアドオン導入（PyInstaller 6.22.0、4.4秒）→ 単一バイナリ生成（9.8MB、5.0秒）→ `PATH=/nonexistent`でCLI実行（`result: BINARY WORKS`）とGUI（`/`が200、`POST /api/run`が期待値）を確認。実`stick-runner.html`へのshim挿入位置がcharset直後かつアプリscriptより前であることを確認した。
+
+## App Studio 方針転換：Workflowを単一実行ファイル（.pyz）へ書き出す（2026-08-13）
+
+- App Studioの成果物を「ASP.NET Coreのソース＋.NET SDKビルド」から「配布できる単一実行ファイル」へ変更した。`POST /flow-apps/{workflow_id}/exports`が標準ライブラリのzipappだけで`.pyz`を生成する。追加SDK・コンパイラ・ネットワークを使わず、生成は1〜2秒。配布先の要件はpython3だけ。
+- 中身はControl Deck本体の`app/workflows/nodes.py`をそのまま同梱し、DAG実行だけをDB・承認・ライブ表示なしで移植した`flowapp/runner.py`が駆動する。ノード意味論を二重実装しないため、C#生成で起きた`string.op`の`find`/`replace`不一致のようなズレが構造的に発生しない。httpx一式（純Python）を同梱するのでHTTPS通信もそのまま動く。
+- 生成物は引数なしでローカルGUI（標準ライブラリのhttp.server＋同梱HTML、トリガー入力から自動生成したフォーム・結果表示・実行ステップ表示、モバイル対応／ダークモード対応）、`--input`でCLI、`--info`で入出力一覧、`--env-file`で環境変数を読む。LLMノードは`FLOW_APP_LLM_BASE_URL`／`FLOW_APP_LLM_MODEL`で外部のOpenAI互換endpointへ直接接続する配布版に差し替える。
+- 携帯可能な30ノードをallowlistで静的判定し、Knowledge・ブラウザ操作・コマンド実行などControl Deck基盤が要るノードは理由付きで書き出しを止める。無効化済みノードは判定から除外する。成果物はdata_dir配下へ保存し（DB schemaは増やさない）、SHA-256とmetadataを併記、20世代で自動整理、削除と監査に対応する。
+- App Studio画面をProject Labと同じ作法で作り直した。左上基点のワークフロー選択ポップオーバー、対応可否バッジと入出力サマリ、書き出せない理由の明示、成果物カード（サイズ・日時・SHA-256・実行コマンドのコピー・ダウンロード・削除）、下部フローティングドックの「書き出す」。旧C#/ASP.NET生成の導線（Create/Target/Export/Reviewの4タブ）はUIから撤去した（コードは削除前の据え置き）。
+
+検証: 新規6件（allowlist判定・生成物の別プロセス実行・非対応拒否・API書き出し／一覧／ダウンロード／削除／traversal 404・capability・同梱元の存在）を含むbackend全507件、frontend TypeScript／production buildに成功。実サービス（health 200）で`/api/v1/flow-apps/capability`の登録を確認。実DBの実Workflow 4件を判定し3件が書き出し可・1件が`research.deep`で拒否となることを確認。100ノードの実Workflowを566KBの`.pyz`へ書き出し、リポジトリ非依存の別プロセスとして0.16秒で`SUCCEEDED`実行。デモWorkflowではCLI実行（`HELLO WORLD / http=200`：同梱httpxでの実HTTPS通信を含む）とGUI（`/`が200、`POST /api/run`が期待値を返す）を確認した。
+
+## Project Lab 刷新：プレビュー修正・コード表示・単体実行（2026-08-13）
+
+- HTMLプレビューが真っ黒だった原因を修正した。artifact配信の`default-src 'none'`とiframeの`sandbox=""`がscriptを全面遮断していたため、HTMLだけCSPの`sandbox allow-scripts allow-modals`で不透明originへ隔離したうえでinline script／style／img／mediaを許可し、`connect-src 'none'`でControl Deck APIへの到達を断つ。上位tabで直接開かれてもcookie・DOM・APIへ触れない。`download=true`とHTML以外は従来どおり実行不能のCSPのまま。
+- `.py`／`.js`／`.ts`／`.css`／`.sh`／`.yaml`／`.sql`など30種のsource fileを`kind: code`として検出・表示できるようにし、`language`と`runnable`をAPIへ追加した。previewは既存のredactionとサイズ上限をそのまま通す。
+- manifestを持たないprojectでも成果物のPython／JavaScriptを1本だけ実行できる`POST /project-lab/projects/{id}/file-runs`を追加した。既存profile実行とunit起動処理を共通化し、隔離（NoNewPrivileges／ProtectSystem=strict／ProtectHome=read-only／ReadWritePaths=project／MemoryMax 2G）、同時実行上限、監査、ログ取得、停止をそのまま再利用する。実行対象はPython／JavaScriptのみで、CSS等は409、project外pathは404で拒否する。
+- UIを全画面ビューア構成へ作り直した。ページ自体はスクロールせず、上部48pxバー＋フル画面プレビュー＋フローティングドック（ファイル名チップ／再読み込み／実行／保存／その他メニュー）で完結する。プロジェクト・ファイル・情報・実行ログはボトムシート（PCは右パネル）で開き、ファイルシートは検索と「すべて／成果物／コード」の絞り込みを持つ。PCは左レールにプロジェクトとファイルを常時表示する。
+- コードは依存を増やさない自前トークナイザで行番号付きハイライト表示（複数行コメント・文字列も追従）。表はsticky header、画像は市松背景、HTMLはフル画面iframe、`ソースを表示`でHTML本文も確認できる。
+- HTMLプレビューは既定を実寸（枠と同じ幅）とした。論理幅1024pxへ固定して縮小するとページ側の`@media (max-width: 768px)`や`innerWidth`判定が外れ、モバイル用ボタンが出ずタップできなくなるため。全景を見たいときだけドックの「全体」でPC幅の縮小表示へ切り替える。sandboxは`allow-scripts allow-modals allow-forms allow-popups allow-downloads`まで許可する。
+
+検証: 更新した既存3件と新規のcode artifact／HTML CSP／file-run argv・拒否ケースを含むbackend全501件、frontend TypeScript／production buildに成功。実サービス（health 200）の実`~/CodeDEV`に対しAPI経路で確認し、`hello.html`がscript込みで配信されること、`.py`／`.js`／`.css`が`code`として検出され`runnable`が正しいこと、一時projectのPython単体実行が`SUCCEEDED`／exit 0でログに`python file run ok (3, 12)`を出すこと、CSSの実行要求が409になることを確認した（一時projectは削除済み）。
+
+## Settings アドオン更新ボタン（2026-08-13）
+
+- Settings→アドオンの導入済みOpenCodeへ「更新」ボタンを追加した。`POST /features/{id}/update-jobs`が`settings.manage`権限のサーバー側jobで`npm install --prefix <管理prefix> opencode-ai@latest`を実行し、既存の導入jobと同じ進捗表示・トーストで完了を伝える。
+- 更新できるのはControl Deckが導入した管理prefixだけ。PATH上の外部OpenCodeを使っている場合はボタンを出さず、APIも422で拒否して外部実体・`~/.config`・`~/.local/share`に触れない。有効/無効の状態は更新前後で変えず、ルート登録も変わらないためプラットフォーム再読み込みは不要。
+- job結果へ更新前後のversionを載せ、`v1.18.3 から v1.18.16 へ更新しました（起動中のセッションは再起動後に反映）`、変化がなければ`すでに最新版です（v…）`をトースト表示する。更新中は同アドオンの有効化/無効化/削除を無効化する。
+- `./deck.sh feature update opencode`（`app.features.cli`）からも同じ処理を実行できる。
+
+検証: 更新の集中3件（`@latest`引数・更新前後version・外部導入拒否・endpointの404/422/201）を含むbackend全499件、frontend TypeScript／production buildに成功。実service（PID 895605、active、health 200）の実OpenCodeを1.18.3→1.18.16へ実際に更新し、更新後も`enabled: true`／`health: healthy`を確認した。ブラウザ上の「更新」ボタン操作は利用者が実機画面で確認した（自動E2E `frontend/e2e/addon-update.spec.ts` は追加済みで、`CONTROL_DECK_E2E_USER`／`CONTROL_DECK_E2E_PASSWORD` を与えれば320px／1280pxのボタン表示・クリック・完了トーストまで再現できる）。
 
 ## AI Workflow→App Studio GUI 3件再検証（2026-07-21 18:04 JST、1件不具合検出）
 

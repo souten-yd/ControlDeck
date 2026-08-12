@@ -54,6 +54,76 @@ def test_managed_install_uses_private_prefix_and_does_not_enable(monkeypatch, tm
     assert installed["managed"] is True and installed["enabled"] is False
 
 
+def test_update_installs_latest_and_reports_previous_version(monkeypatch, tmp_path):
+    from app.features import registry
+
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    binary = tmp_path / "data" / "features" / "opencode" / "node_modules" / ".bin" / "opencode"
+    versions = ["1.18.3"]
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "/usr/bin/npm":
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(0o755)
+            if argv[-1].endswith("@latest"):
+                versions.append("1.18.16")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout=versions[-1] + "\n", stderr="")
+
+    monkeypatch.setattr(registry.subprocess, "run", run)
+    registry.install("opencode")
+    calls.clear()
+    updated = registry.update("opencode")
+    npm_calls = [argv for argv in calls if argv[0] == "/usr/bin/npm"]
+    assert npm_calls == [[
+        "/usr/bin/npm", "install", "--prefix", str(tmp_path / "data" / "features" / "opencode"),
+        "--no-fund", "--no-audit", "opencode-ai@latest",
+    ]]
+    assert updated["previous_version"] == "1.18.3" and updated["version"] == "1.18.16"
+
+
+def test_update_rejects_external_only_install(monkeypatch, tmp_path):
+    import pytest
+
+    from app.features import registry
+
+    external = tmp_path / "bin" / "opencode"
+    external.parent.mkdir()
+    external.write_text("#!/bin/sh\necho 1.2.3\n", encoding="utf-8")
+    external.chmod(0o755)
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(
+        registry.shutil, "which",
+        lambda name: str(external) if name == "opencode" else "/usr/bin/npm" if name == "npm" else None,
+    )
+    with pytest.raises(registry.FeatureError):
+        registry.update("opencode")
+    assert external.read_text(encoding="utf-8").strip().endswith("1.2.3")
+
+
+def test_update_job_endpoint_requires_managed_install(admin_client, monkeypatch):
+    from app.features import registry, router as features_router
+
+    assert admin_client.post(
+        "/api/v1/features/unknown/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
+    ).status_code == 404
+    assert admin_client.post(
+        "/api/v1/features/opencode/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
+    ).status_code == 422  # 未導入（managed=False）
+
+    base = registry.status("opencode")
+    monkeypatch.setattr(features_router.registry, "status", lambda feature_id: {**base, "managed": True})
+    monkeypatch.setattr(features_router.registry, "update", lambda feature_id: {**base, "previous_version": "1.0.0"})
+    started = admin_client.post(
+        "/api/v1/features/opencode/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
+    )
+    assert started.status_code == 201 and started.json()["job_id"]
+
+
 def test_disabled_feature_has_no_router_or_workflow_node(admin_client):
     from app.workflows.catalog import valid_types
     from app.workflows.nodes import NODE_EXECUTORS

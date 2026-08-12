@@ -85,3 +85,12 @@ class ProjectRunCreate(BaseModel):
 
     profile_id: str = Field(min_length=1, max_length=64)
     timeout_seconds: int = Field(default=600, ge=1, le=3600)
+
+
+class ProjectFileRunCreate(BaseModel):
+    """manifest不要の単体file実行。pathはproject内の相対pathだけを受け付ける。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=512)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)

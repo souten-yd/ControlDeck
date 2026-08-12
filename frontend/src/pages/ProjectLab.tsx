@@ -1,7 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { projectLabApi, type ProjectLabArtifact, type ProjectLabDetail, type ProjectLabRun } from "../api/projectLab";
-import { PageHeader } from "../components/PageHeader";
+import {
+  projectLabApi,
+  type ProjectLabArtifact,
+  type ProjectLabDetail,
+  type ProjectLabRun,
+  type ProjectLabSummary,
+} from "../api/projectLab";
+import { CodeViewer } from "../features/projectlab/CodeViewer";
+import { BottomSheet, Skeleton } from "../components/ui";
+import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
+import { useToasts } from "../stores";
+
+type SheetKind = "projects" | "files" | "info" | "runs" | null;
+
+const TEXTUAL: ProjectLabArtifact["kind"][] = ["code", "text", "markdown", "log", "json", "table"];
+const ACTIVE_STATES = ["QUEUED", "RUNNING"];
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -9,142 +23,835 @@ function formatBytes(value: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export default function ProjectLabPage() {
-  const [selected, setSelected] = useState<string | null>(null);
-  const { data: projects = [], isLoading, error } = useQuery({ queryKey: ["project-lab"], queryFn: projectLabApi.list });
-  useEffect(() => {
-    if (!selected && projects.length > 0 && matchMedia("(min-width: 768px)").matches) setSelected(projects[0].id);
-  }, [projects, selected]);
+const KIND_TONES: Record<string, string> = {
+  html: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
+  code: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+  image: "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",
+  table: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+  json: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
+  markdown: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
+  pdf: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  audio: "bg-pink-100 text-pink-700 dark:bg-pink-500/15 dark:text-pink-300",
+  video: "bg-pink-100 text-pink-700 dark:bg-pink-500/15 dark:text-pink-300",
+};
+
+function KindBadge({ artifact, size = "sm" }: { artifact: ProjectLabArtifact; size?: "sm" | "xs" }) {
+  const extension = (artifact.name.split(".").pop() ?? "?").toUpperCase().slice(0, 4);
+  const tone = KIND_TONES[artifact.kind] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <PageHeader title="Project Lab" description="~/CodeDEVの開発成果物を自動検出し、安全なread-only previewで評価します。" className="mb-0 shrink-0 border-b border-zinc-200 px-4 py-4 dark:border-zinc-800 md:px-6" />
-      <div className="grid min-h-0 flex-1 md:grid-cols-[20rem_minmax(0,1fr)]">
-        <aside className={`${selected ? "hidden md:block" : "block"} min-h-0 overflow-y-auto border-r border-zinc-200 p-3 dark:border-zinc-800`} aria-label="CodeDEVプロジェクト一覧">
-          {isLoading && <p className="p-3 text-sm text-zinc-400">検出中...</p>}
-          {error && <p className="rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">{error instanceof Error ? error.message : "検出に失敗しました"}</p>}
-          {!isLoading && !error && projects.length === 0 && <div className="rounded-xl border border-dashed border-zinc-300 p-5 text-sm text-zinc-500 dark:border-zinc-700"><strong className="block text-zinc-700 dark:text-zinc-200">プロジェクトがありません</strong><span className="mt-1 block">~/CodeDEV直下へproject folderを置くと自動表示されます。実行は自動開始しません。</span></div>}
-          <div className="space-y-2">
-            {projects.map((project) => <button key={project.id} type="button" onClick={() => setSelected(project.id)} className={`min-h-11 w-full rounded-xl border p-3 text-left ${selected === project.id ? "border-accent-400 bg-accent-50 dark:bg-accent-950/30" : "border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"}`}>
-              <span className="block truncate text-sm font-semibold">{project.name}</span>
-              <span className="mt-1 flex flex-wrap gap-1 text-[10px] text-zinc-500"><span>{project.artifactCount} 成果物</span><span>·</span><span>{project.profileCount} profile</span>{project.git && <><span>·</span><span>{project.git.branch}{project.git.dirty ? " *" : ""}</span></>}</span>
-              <span className="mt-1 flex flex-wrap gap-1">{project.technologies.slice(0, 5).map((item) => <span key={item} className="rounded bg-zinc-100 px-1.5 py-0.5 text-[9px] text-zinc-500 dark:bg-zinc-800">{item}</span>)}</span>
-            </button>)}
+    <span className={`grid shrink-0 place-items-center rounded-lg font-semibold ${tone} ${size === "sm" ? "h-9 w-9 text-[9px]" : "h-6 w-8 text-[8px]"}`}>
+      {extension}
+    </span>
+  );
+}
+
+/** 成果物のうち最初に見せるべきものを選ぶ（HTML → 画像 → それ以外の順）。 */
+function pickDefaultArtifact(artifacts: ProjectLabArtifact[]): ProjectLabArtifact | undefined {
+  return artifacts.find((item) => item.name.toLowerCase() === "index.html")
+    ?? artifacts.find((item) => item.kind === "html")
+    ?? artifacts.find((item) => item.kind === "image")
+    ?? artifacts[0];
+}
+
+export default function ProjectLabPage() {
+  const show = useToasts((state) => state.show);
+  const queryClient = useQueryClient();
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [artifactPath, setArtifactPath] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<SheetKind>(null);
+  const [sourceMode, setSourceMode] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+  // 既定は実寸。枠と同じ幅で描画するとページ側のmedia queryとタッチ判定が実機どおりに働く。
+  // 「全体」はPC幅1024pxで描いて縮小する全景モードで、操作より確認を優先したいとき用。
+  const [fitWidth, setFitWidth] = useState(false);
+  const [openRun, setOpenRun] = useState<number | null>(null);
+
+  const projectsQuery = useQuery({ queryKey: ["project-lab"], queryFn: projectLabApi.list });
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const detailQuery = useQuery({
+    queryKey: ["project-lab", projectId],
+    queryFn: () => projectLabApi.detail(projectId as string),
+    enabled: projectId !== null,
+  });
+  const detail = detailQuery.data;
+  const runsQuery = useQuery({
+    queryKey: ["project-lab-runs", projectId],
+    queryFn: () => projectLabApi.runs(projectId as string),
+    enabled: projectId !== null,
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((run) => ACTIVE_STATES.includes(run.status)) ? 1500 : false,
+  });
+  const runs = useMemo(() => runsQuery.data ?? [], [runsQuery.data]);
+  const activeRun = runs.find((run) => ACTIVE_STATES.includes(run.status)) ?? null;
+
+  useEffect(() => {
+    if (projectId === null && projects.length > 0) setProjectId(projects[0].id);
+  }, [projects, projectId]);
+  useEffect(() => {
+    setArtifactPath(null);
+    setSourceMode(false);
+  }, [projectId]);
+
+  const artifacts = useMemo(() => detail?.artifacts ?? [], [detail]);
+  const artifact = useMemo(
+    () => artifacts.find((item) => item.path === artifactPath) ?? pickDefaultArtifact(artifacts),
+    [artifacts, artifactPath],
+  );
+
+  const startFileRun = useMutation({
+    mutationFn: (target: ProjectLabArtifact) => projectLabApi.startFileRun(projectId as string, target.path),
+    onSuccess: (run) => {
+      setOpenRun(run.id);
+      setSheet("runs");
+      void queryClient.invalidateQueries({ queryKey: ["project-lab-runs", projectId] });
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "実行を開始できません", "error"),
+  });
+  const startProfileRun = useMutation({
+    mutationFn: (profile: { id: string; type: string }) =>
+      projectLabApi.startRun(projectId as string, profile.id, profile.type === "web" ? 3600 : 600),
+    onSuccess: (run) => {
+      setOpenRun(run.id);
+      setSheet("runs");
+      void queryClient.invalidateQueries({ queryKey: ["project-lab-runs", projectId] });
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "実行を開始できません", "error"),
+  });
+
+  const selectArtifact = (path: string) => {
+    setArtifactPath(path);
+    setSourceMode(false);
+    setSheet(null);
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-100 dark:bg-zinc-950">
+      <header className="flex h-12 shrink-0 items-center gap-2 px-2 md:px-3">
+        <div className="relative min-w-0 max-w-[60%]">
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={sheet === "projects"}
+            onClick={() => setSheet(sheet === "projects" ? null : "projects")}
+            className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-xl px-2.5 text-left hover:bg-white dark:hover:bg-zinc-900"
+          >
+            <span className="min-w-0 truncate text-sm font-semibold">{detail?.name ?? "Project Lab"}</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 text-zinc-400 transition-transform ${sheet === "projects" ? "rotate-180" : ""}`} aria-hidden>
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          {/* 起点のボタン直下（左上基点）から開く。中央のシートだと視線と操作位置がずれる。 */}
+          <Popover open={sheet === "projects"} label="プロジェクト" onClose={() => setSheet(null)}>
+            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
+            {projects.map((project) => (
+              <ProjectRow
+                key={project.id}
+                project={project}
+                selected={project.id === projectId}
+                onSelect={() => {
+                  setProjectId(project.id);
+                  setSheet(null);
+                }}
+              />
+            ))}
+            {projects.length === 0 && (
+              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">~/CodeDEV にフォルダを置くと自動で表示されます。</p>
+            )}
+          </Popover>
+        </div>
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setSheet("runs")}
+            aria-label="実行ログ"
+            className="relative grid h-10 w-10 place-items-center rounded-xl text-zinc-500 hover:bg-white dark:hover:bg-zinc-900"
+          >
+            <IconPlay />
+            {activeRun && <span className="absolute right-2 top-2 h-2 w-2 animate-pulse rounded-full bg-emerald-500" />}
+          </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setSheet(sheet === "info" ? null : "info")}
+              aria-label="プロジェクト情報"
+              aria-haspopup="dialog"
+              aria-expanded={sheet === "info"}
+              className="grid h-10 w-10 place-items-center rounded-xl text-zinc-500 hover:bg-white dark:hover:bg-zinc-900"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />
+              </svg>
+            </button>
+            <Popover open={sheet === "info" && detail !== undefined} label="プロジェクト情報" align="right" onClose={() => setSheet(null)}>
+              {detail && (
+                <InfoPanel
+                  detail={detail}
+                  busy={startProfileRun.isPending}
+                  onRunProfile={(profile) => startProfileRun.mutate(profile)}
+                />
+              )}
+            </Popover>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex min-h-0 flex-1 gap-3 px-2 pb-2 md:px-3 md:pb-3">
+        <aside className="hidden w-72 shrink-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 md:flex">
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
+            {projectsQuery.isLoading && <Skeleton className="mx-2 h-14 rounded-xl" />}
+            {projects.map((project) => (
+              <ProjectRow key={project.id} project={project} selected={project.id === projectId} onSelect={() => setProjectId(project.id)} />
+            ))}
+            {projects.length > 0 && (
+              <>
+                <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">ファイル</p>
+                {artifacts.map((item) => (
+                  <FileRow key={item.path} artifact={item} selected={item.path === artifact?.path} onSelect={() => selectArtifact(item.path)} />
+                ))}
+                {artifacts.length === 0 && <p className="px-2 text-xs text-zinc-400">表示できるファイルがありません</p>}
+              </>
+            )}
           </div>
         </aside>
-        <main className={`${selected ? "block" : "hidden md:block"} min-h-0 min-w-0 overflow-y-auto`}>
-          {selected ? <ProjectWorkspace projectId={selected} onBack={() => setSelected(null)} /> : <div className="grid h-full place-items-center p-8 text-sm text-zinc-400">左からprojectを選択してください</div>}
-        </main>
+
+        <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <Stage
+            projects={projects}
+            loading={projectsQuery.isLoading || (projectId !== null && detailQuery.isLoading)}
+            error={projectsQuery.error ?? detailQuery.error}
+            detail={detail}
+            artifact={artifact}
+            sourceMode={sourceMode}
+            reloadToken={reloadToken}
+            fit={fitWidth}
+          />
+          {artifact && detail && (
+            <Dock
+              detail={detail}
+              artifact={artifact}
+              sourceMode={sourceMode}
+              fit={fitWidth}
+              onToggleFit={() => setFitWidth((value) => !value)}
+              running={startFileRun.isPending || Boolean(activeRun)}
+              onFiles={() => setSheet("files")}
+              onReload={() => setReloadToken((value) => value + 1)}
+              onToggleSource={() => setSourceMode((value) => !value)}
+              onRun={() => startFileRun.mutate(artifact)}
+              onRuns={() => setSheet("runs")}
+              onInfo={() => setSheet("info")}
+            />
+          )}
+        </section>
+      </div>
+
+      {sheet === "files" && detail && (
+        <FilesSheet artifacts={artifacts} selected={artifact?.path ?? null} onSelect={selectArtifact} onClose={() => setSheet(null)} />
+      )}
+
+      {sheet === "runs" && (
+        <RunsSheet
+          projectId={projectId}
+          runs={runs}
+          openRun={openRun}
+          onOpenRun={setOpenRun}
+          onClose={() => setSheet(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 呼び出したボタンの直下に開くポップオーバー。背景クリックとEscで閉じる。 */
+function Popover({
+  open, label, onClose, children, align = "left",
+}: {
+  open: boolean;
+  label: string;
+  onClose: () => void;
+  children: ReactNode;
+  align?: "left" | "right";
+}) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && closeRef.current();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+  if (!open) return null;
+  return (
+    <>
+      <button type="button" aria-label="閉じる" onClick={onClose} className="fixed inset-0 z-40 cursor-default" />
+      <div
+        role="dialog"
+        aria-label={label}
+        className={`cd-pop absolute top-full z-50 mt-1 max-h-[70dvh] w-[min(22rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 ${
+          align === "right" ? "right-0 cd-pop-right" : "left-0"
+        }`}
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
+function ProjectRow({ project, selected, onSelect }: { project: ProjectLabSummary; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected}
+      className={`mb-1 flex min-h-12 w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${
+        selected ? "bg-accent-50 text-accent-900 dark:bg-accent-500/15 dark:text-accent-200" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      }`}
+    >
+      <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold ${selected ? "bg-accent-600 text-white" : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"}`}>
+        {project.name.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{project.name}</span>
+        <span className="num block truncate text-[11px] text-zinc-400">
+          {project.artifactCount} files
+          {project.git ? ` · ${project.git.branch}${project.git.dirty ? " *" : ""}` : ""}
+          {project.technologies.length ? ` · ${project.technologies.slice(0, 3).join(" ")}` : ""}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function FileRow({ artifact, selected, onSelect }: { artifact: ProjectLabArtifact; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected}
+      className={`mb-1 flex min-h-12 w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${
+        selected ? "bg-accent-50 text-accent-900 dark:bg-accent-500/15 dark:text-accent-200" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      }`}
+    >
+      <KindBadge artifact={artifact} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm">{artifact.name}</span>
+        <span className="num block truncate text-[11px] text-zinc-400">{formatBytes(artifact.size)} · {artifact.path}</span>
+      </span>
+      {artifact.runnable && (
+        <span className="shrink-0 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">RUN</span>
+      )}
+    </button>
+  );
+}
+
+function Stage({
+  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit,
+}: {
+  projects: ProjectLabSummary[];
+  loading: boolean;
+  error: unknown;
+  detail: ProjectLabDetail | undefined;
+  artifact: ProjectLabArtifact | undefined;
+  sourceMode: boolean;
+  reloadToken: number;
+  fit: boolean;
+}) {
+  if (loading) return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
+  if (error) {
+    return (
+      <Centered>
+        <p className="text-sm text-red-600 dark:text-red-400">{error instanceof Error ? error.message : "読み込みに失敗しました"}</p>
+      </Centered>
+    );
+  }
+  if (projects.length === 0) {
+    return (
+      <Centered>
+        <p className="text-base font-semibold">プロジェクトがありません</p>
+        <p className="mt-1.5 text-sm text-zinc-500">~/CodeDEV 直下にフォルダを置くと自動で検出します。実行はボタンを押したときだけ行われます。</p>
+      </Centered>
+    );
+  }
+  if (!detail || !artifact) {
+    return (
+      <Centered>
+        <p className="text-base font-semibold">表示できるファイルがありません</p>
+        <p className="mt-1.5 text-sm text-zinc-500">HTML・画像・CSV・JSON・Markdown・PDF・音声・動画・Python・JavaScript・CSS などを検出します。</p>
+      </Centered>
+    );
+  }
+  return <ArtifactView detail={detail} artifact={artifact} sourceMode={sourceMode} reloadToken={reloadToken} fit={fit} />;
+}
+
+function Centered({ children }: { children: ReactNode }) {
+  return <div className="grid h-full place-items-center p-8"><div className="max-w-sm text-center">{children}</div></div>;
+}
+
+/** デスクトップ幅前提のHTMLでも端が切れないよう、論理幅1024pxで描画して枠幅へ縮小表示する。 */
+function HtmlFrame({ name, url, fit }: { name: string; url: string; fit: boolean }) {
+  const BASE_WIDTH = 1024;
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const element = boxRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setBox({ width: entry.contentRect.width, height: entry.contentRect.height });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const scale = fit && box.width > 0 ? Math.min(1, box.width / BASE_WIDTH) : 1;
+  const scaled = scale < 1;
+  return (
+    <div ref={boxRef} className="h-full w-full overflow-hidden bg-white">
+      <iframe
+        title={`${name} preview`}
+        src={url}
+        sandbox="allow-scripts allow-modals allow-forms allow-popups allow-downloads"
+        style={scaled
+          ? { width: BASE_WIDTH, height: box.height / scale, transform: `scale(${scale})`, transformOrigin: "top left" }
+          : undefined}
+        className={`border-0 bg-white ${scaled ? "" : "h-full w-full"}`}
+      />
+    </div>
+  );
+}
+
+function ArtifactView({
+  detail, artifact, sourceMode, reloadToken, fit,
+}: {
+  detail: ProjectLabDetail;
+  artifact: ProjectLabArtifact;
+  sourceMode: boolean;
+  reloadToken: number;
+  fit: boolean;
+}) {
+  const url = projectLabApi.artifactUrl(detail.id, artifact.path);
+  const asText = sourceMode || TEXTUAL.includes(artifact.kind);
+  const preview = useQuery({
+    queryKey: ["project-lab-preview", detail.id, artifact.path],
+    queryFn: () => projectLabApi.preview(detail.id, artifact.path),
+    enabled: asText,
+  });
+
+  if (!asText) {
+    if (artifact.kind === "html") {
+      return <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={url} fit={fit} />;
+    }
+    if (artifact.kind === "image") {
+      return (
+        <div className="grid h-full place-items-center overflow-auto bg-[repeating-conic-gradient(#f4f4f5_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-4 dark:bg-[repeating-conic-gradient(#18181b_0_25%,transparent_0_50%)]">
+          <img src={url} alt={artifact.name} className="max-h-full max-w-full object-contain" />
+        </div>
+      );
+    }
+    if (artifact.kind === "pdf") return <iframe title={artifact.name} src={url} className="h-full w-full border-0 bg-white" />;
+    if (artifact.kind === "audio") return <Centered><audio src={url} controls className="w-full" /></Centered>;
+    if (artifact.kind === "video") return <div className="grid h-full place-items-center bg-black p-2"><video src={url} controls className="max-h-full max-w-full" /></div>;
+  }
+
+  if (preview.isLoading) return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
+  if (artifact.kind === "table" && !sourceMode) return <TableView value={preview.data?.structuredPreview} />;
+  const text = preview.data?.previewText;
+  if (!text) {
+    return (
+      <Centered>
+        <p className="text-sm text-zinc-500">プレビューできる内容がありません。サイズ上限（256KB）を超えている場合は保存して確認してください。</p>
+      </Centered>
+    );
+  }
+  const language = sourceMode && artifact.kind === "html" ? "xml" : artifact.language || artifact.kind;
+  return <CodeViewer text={text} language={language} wrap={artifact.kind === "markdown" || artifact.kind === "text"} />;
+}
+
+function TableView({ value }: { value: unknown }) {
+  const table = value as { headers?: string[]; rows?: string[][]; truncated?: boolean } | null;
+  if (!table?.headers?.length) return <Centered><p className="text-sm text-zinc-500">表を解析できませんでした。</p></Centered>;
+  return (
+    <div className="h-full overflow-auto pb-24">
+      <table className="min-w-full border-collapse text-xs">
+        <thead className="sticky top-0 z-10">
+          <tr>
+            {table.headers.map((header, index) => (
+              <th key={`${header}-${index}`} className="border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left font-semibold dark:border-zinc-800 dark:bg-zinc-800">{header}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows?.map((row, rowIndex) => (
+            <tr key={rowIndex} className="odd:bg-zinc-50/60 dark:odd:bg-zinc-800/30">
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} className="num max-w-64 break-words border-b border-zinc-100 px-3 py-1.5 dark:border-zinc-800/60">{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {table.truncated && <p className="px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400">先頭200行だけ表示しています。</p>}
+    </div>
+  );
+}
+
+function Dock({
+  detail, artifact, sourceMode, fit, onToggleFit, running, onFiles, onReload, onToggleSource, onRun, onRuns, onInfo,
+}: {
+  detail: ProjectLabDetail;
+  artifact: ProjectLabArtifact;
+  sourceMode: boolean;
+  fit: boolean;
+  onToggleFit: () => void;
+  running: boolean;
+  onFiles: () => void;
+  onReload: () => void;
+  onToggleSource: () => void;
+  onRun: () => void;
+  onRuns: () => void;
+  onInfo: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  // プレビュー中のアプリ自身が画面下部にボタンを置くことがあるため、ドックは畳める。
+  const [collapsed, setCollapsed] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setMenuOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  const items: Array<{ label: string; onSelect: () => void }> = [
+    ...(artifact.kind === "html" ? [{ label: sourceMode ? "プレビューに戻す" : "ソースを表示", onSelect: onToggleSource }] : []),
+    { label: "実行ログ", onSelect: onRuns },
+    { label: "プロジェクト情報", onSelect: onInfo },
+  ];
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        aria-label="操作パネルを表示"
+        className="absolute bottom-3 left-3 grid h-11 w-11 place-items-center rounded-full border border-zinc-200/80 bg-white/90 text-zinc-500 shadow-lg backdrop-blur dark:border-zinc-700/70 dark:bg-zinc-900/90"
+      >
+        <IconDots />
+      </button>
+    );
+  }
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-3">
+      <div className="pointer-events-auto flex max-w-full items-center gap-1 rounded-2xl border border-zinc-200/80 bg-white/90 p-1.5 shadow-lg backdrop-blur dark:border-zinc-700/70 dark:bg-zinc-900/90">
+        <button
+          type="button"
+          onClick={onFiles}
+          className="flex min-h-10 min-w-0 items-center gap-2 rounded-xl px-2 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          <KindBadge artifact={artifact} size="xs" />
+          <span className="min-w-0 max-w-[9rem] truncate text-xs font-medium sm:max-w-[16rem]">{artifact.name}</span>
+        </button>
+        <span className="h-6 w-px shrink-0 bg-zinc-200 dark:bg-zinc-700" />
+        {artifact.kind === "html" && !sourceMode && (
+          <>
+            <button
+              type="button"
+              onClick={onToggleFit}
+              aria-pressed={fit}
+              title={fit ? "実寸に戻す（タップ操作は実寸が確実）" : "PC幅1024pxで全景を表示（縮小・操作は実寸推奨）"}
+              className={`h-10 shrink-0 rounded-xl px-2.5 text-[11px] font-semibold ${
+                fit ? "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              }`}
+            >
+              {fit ? "全体" : "実寸"}
+            </button>
+            <button type="button" onClick={onReload} aria-label="プレビューを再読み込み" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+              <IconRestart />
+            </button>
+          </>
+        )}
+        {artifact.runnable && (
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={running}
+            className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white hover:bg-accent-700 disabled:opacity-40"
+          >
+            <IconPlay />
+            {running ? "実行中" : "実行"}
+          </button>
+        )}
+        <a
+          href={projectLabApi.artifactUrl(detail.id, artifact.path, true)}
+          aria-label="保存"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          <IconDownload />
+        </a>
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          aria-label="操作パネルを隠す"
+          title="アプリの操作を邪魔する場合は隠せます"
+          className="grid h-10 w-8 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        <div className="relative shrink-0" ref={menuRef}>
+          <button
+            type="button"
+            aria-label="その他の操作"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((value) => !value)}
+            className="grid h-10 w-10 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          >
+            <IconDots />
+          </button>
+          {menuOpen && (
+            <div role="menu" className="absolute bottom-full right-0 z-40 mb-2 w-44 overflow-hidden rounded-xl border border-zinc-200 bg-white py-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800">
+              {items.map((item) => (
+                <button
+                  key={item.label}
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    item.onSelect();
+                  }}
+                  className="block w-full px-4 py-2.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function ProjectWorkspace({ projectId, onBack }: { projectId: string; onBack: () => void }) {
-  const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({ queryKey: ["project-lab", projectId], queryFn: () => projectLabApi.detail(projectId) });
-  const runsQuery = useQuery({ queryKey: ["project-lab-runs", projectId], queryFn: () => projectLabApi.runs(projectId), refetchInterval: 2000 });
-  const startRun = useMutation({
-    mutationFn: ({ profileId, profileType }: { profileId: string; profileType: string }) => projectLabApi.startRun(projectId, profileId, profileType === "web" ? 3600 : 600),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["project-lab-runs", projectId] }),
+function FilesSheet({
+  artifacts, selected, onSelect, onClose,
+}: {
+  artifacts: ProjectLabArtifact[];
+  selected: string | null;
+  onSelect: (path: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "artifact" | "code">("all");
+  const filtered = artifacts.filter((item) => {
+    if (filter === "code" && item.kind !== "code") return false;
+    if (filter === "artifact" && item.kind === "code") return false;
+    return item.path.toLowerCase().includes(query.trim().toLowerCase());
   });
-  const [artifactPath, setArtifactPath] = useState<string | null>(null);
-  useEffect(() => setArtifactPath(null), [projectId]);
-  const selectedArtifact = useMemo(() => data?.artifacts.find((item) => item.path === artifactPath) ?? data?.artifacts[0], [artifactPath, data]);
-  if (isLoading) return <p className="p-5 text-sm text-zinc-400">読み込み中...</p>;
-  if (error || !data) return <p className="m-4 rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">{error instanceof Error ? error.message : "projectを開けません"}</p>;
-  return <div className="mx-auto max-w-7xl p-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:p-6">
-    <button type="button" onClick={onBack} className="mb-3 min-h-11 rounded-xl px-2 text-sm text-accent-600 md:hidden">← プロジェクト一覧</button>
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0"><h2 className="truncate text-xl font-semibold">{data.name}</h2><p className="mt-1 break-all font-mono text-[10px] text-zinc-400">{data.path}</p>{data.description && <p className="mt-2 text-sm text-zinc-500">{data.description}</p>}</div>
-      <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">成果物preview · 明示実行</span>
+  return (
+    <BottomSheet title="ファイル" onClose={onClose} stable>
+      <div className="sticky top-0 -mx-5 mb-2 bg-white px-5 pb-2 dark:bg-zinc-900">
+        <div className="flex items-center gap-2 rounded-xl bg-zinc-100 px-3 dark:bg-zinc-800">
+          <IconSearch className="shrink-0 text-zinc-400" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="ファイル名で絞り込み"
+            aria-label="ファイル名で絞り込み"
+            className="min-h-11 w-full bg-transparent text-sm outline-none"
+          />
+          {query && (
+            <button type="button" aria-label="検索条件を消す" onClick={() => setQuery("")} className="shrink-0 text-zinc-400">
+              <IconX />
+            </button>
+          )}
+        </div>
+        <div className="mt-2 flex gap-1.5">
+          {([["all", "すべて"], ["artifact", "成果物"], ["code", "コード"]] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFilter(value)}
+              aria-pressed={filter === value}
+              className={`min-h-9 rounded-full px-3 text-xs font-medium ${
+                filter === value ? "bg-accent-600 text-white" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {filtered.map((item) => (
+        <FileRow key={item.path} artifact={item} selected={item.path === selected} onSelect={() => onSelect(item.path)} />
+      ))}
+      {filtered.length === 0 && <p className="py-6 text-center text-sm text-zinc-500">該当するファイルがありません</p>}
+    </BottomSheet>
+  );
+}
+
+function InfoPanel({
+  detail, busy, onRunProfile,
+}: {
+  detail: ProjectLabDetail;
+  busy: boolean;
+  onRunProfile: (profile: { id: string; type: string }) => void;
+}) {
+  const profiles = detail.manifest?.profiles ?? [];
+  return (
+    <div className="px-2 pb-2 pt-1">
+      <p className="text-sm font-semibold">{detail.name}</p>
+      <p className="mt-0.5 break-all font-mono text-[11px] text-zinc-400">{detail.path}</p>
+      {detail.description && <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{detail.description}</p>}
+      <dl className="mt-3 grid grid-cols-2 gap-2">
+        <Fact label="技術" value={detail.technologies.join(" · ") || "未検出"} />
+        <Fact label="Git" value={detail.git ? `${detail.git.branch}${detail.git.dirty ? "（変更あり）" : detail.git.dirty === false ? "（clean）" : ""}` : "未使用"} />
+        <Fact label="ファイル" value={`${detail.artifacts.length} 件`} />
+        <Fact label="実行profile" value={`${profiles.length} 件`} />
+      </dl>
+      {detail.diagnostics.map((diagnostic) => (
+        <p key={`${diagnostic.code}-${diagnostic.message}`} className="mt-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+          <strong>{diagnostic.code}</strong> {diagnostic.message}
+        </p>
+      ))}
+      {profiles.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">実行profile</h3>
+          {profiles.map((profile) => {
+            const runnable = ["cli", "test", "web"].includes(profile.type) && profile.command.length > 0 && profile.secretRefs.length === 0;
+            return (
+              <div key={profile.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <strong className="min-w-0 flex-1 truncate text-sm">{profile.label}</strong>
+                  <span className="shrink-0 rounded bg-zinc-100 px-2 py-0.5 text-[10px] dark:bg-zinc-800">{profile.type}</span>
+                  <button
+                    type="button"
+                    disabled={!runnable || busy}
+                    onClick={() => onRunProfile(profile)}
+                    className="min-h-9 shrink-0 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white disabled:opacity-40"
+                  >
+                    {profile.type === "web" ? "起動" : "実行"}
+                  </button>
+                </div>
+                <p className="mt-1 break-all font-mono text-[10px] text-zinc-400">{profile.command.join(" ") || "commandなし"}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <p className="mt-4 text-[11px] leading-relaxed text-zinc-400">
+        実行は隔離された systemd user unit（ホームは読み取り専用、書き込みはプロジェクト配下のみ）で行われ、ボタンを押したときだけ開始します。
+      </p>
     </div>
-    {data.diagnostics.map((diagnostic) => <div key={`${diagnostic.code}-${diagnostic.message}`} className="mt-3 rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300"><strong>{diagnostic.code}</strong> {diagnostic.message}</div>)}
-    <section className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <InfoCard label="技術" value={data.technologies.join(" · ") || "未検出"} />
-      <InfoCard label="Git" value={data.git ? `${data.git.branch}${data.git.dirty ? "（変更あり）" : data.git.dirty === false ? "（clean）" : ""}` : "未使用"} />
-      <InfoCard label="実行profile" value={`${data.manifest?.profiles.filter((item) => ["cli", "test", "web"].includes(item.type)).length ?? 0}（CLI / test / Web）`} />
-      <InfoCard label="成果物" value={`${data.artifacts.length} files`} />
-    </section>
-    {data.manifest?.profiles.length ? <section className="mt-4"><h3 className="mb-2 text-sm font-semibold">検出したprofile</h3><div className="grid gap-2 md:grid-cols-2">{data.manifest.profiles.map((profile) => {
-      const runnable = ["cli", "test", "web"].includes(profile.type) && profile.command.length > 0 && profile.secretRefs.length === 0;
-      return <div key={profile.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"><div className="flex items-center justify-between gap-2"><strong className="text-sm">{profile.label}</strong><span className="rounded bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{profile.type}</span></div><p className="mt-1 break-all font-mono text-[10px] text-zinc-400">{profile.command.length ? profile.command.join(" ") : "commandなし"}</p><div className="mt-2 flex items-center justify-between gap-2"><span className="text-[10px] text-zinc-500">{profile.secretRefs.length ? "Secret注入は後続Phase" : runnable ? profile.type === "web" ? "localhost限定で起動し、安全なproxyで表示" : "隔離されたsystemd user serviceで実行" : "このprofileはpreview専用"}</span><button type="button" disabled={!runnable || startRun.isPending} onClick={() => startRun.mutate({ profileId: profile.id, profileType: profile.type })} className="min-h-11 shrink-0 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">{profile.type === "web" ? "起動" : "実行"}</button></div></div>;
-    })}</div>{startRun.error && <p className="mt-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{startRun.error.message}</p>}</section> : null}
-    <RunHistory projectId={projectId} runs={runsQuery.data ?? []} />
-    <section className="mt-5"><h3 className="mb-2 text-sm font-semibold">成果物</h3>{data.artifacts.length === 0 ? <p className="rounded-xl border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700">HTML、画像、CSV、JSON、Markdown、PDF、audio/video、logなどの成果物はまだありません。</p> : <div className="grid min-w-0 gap-3 lg:grid-cols-[17rem_minmax(0,1fr)]"><div className="max-h-96 space-y-1 overflow-y-auto rounded-xl border border-zinc-200 p-2 dark:border-zinc-800">{data.artifacts.map((artifact) => <button key={artifact.path} type="button" onClick={() => setArtifactPath(artifact.path)} className={`min-h-11 w-full rounded-lg px-2.5 py-2 text-left ${selectedArtifact?.path === artifact.path ? "bg-accent-50 text-accent-800 dark:bg-accent-950/30 dark:text-accent-300" : "hover:bg-zinc-50 dark:hover:bg-zinc-900"}`}><span className="block truncate text-xs font-medium">{artifact.name}</span><span className="mt-0.5 block truncate font-mono text-[9px] text-zinc-400">{artifact.kind} · {formatBytes(artifact.size)} · {artifact.path}</span></button>)}</div>{selectedArtifact && <ArtifactPreview project={data} artifact={selectedArtifact} />}</div>}</section>
-  </div>;
+  );
 }
 
-function InfoCard({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"><p className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">{label}</p><p className="mt-1 break-words text-sm">{value}</p></div>;
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-zinc-100 px-3 py-2 dark:bg-zinc-800/60">
+      <dt className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">{label}</dt>
+      <dd className="mt-0.5 break-words text-sm">{value}</dd>
+    </div>
+  );
 }
 
-function RunHistory({ projectId, runs }: { projectId: string; runs: ProjectLabRun[] }) {
+function RunsSheet({
+  projectId, runs, openRun, onOpenRun, onClose,
+}: {
+  projectId: string | null;
+  runs: ProjectLabRun[];
+  openRun: number | null;
+  onOpenRun: (id: number | null) => void;
+  onClose: () => void;
+}) {
   const queryClient = useQueryClient();
-  const [openRun, setOpenRun] = useState<number | null>(null);
+  const show = useToasts((state) => state.show);
+  const current = runs.find((run) => run.id === openRun) ?? runs[0] ?? null;
+  const active = current !== null && ACTIVE_STATES.includes(current.status);
   const logs = useQuery({
-    queryKey: ["project-lab-run-logs", openRun],
-    queryFn: () => projectLabApi.runLogs(openRun as number),
-    enabled: openRun !== null,
-    refetchInterval: openRun !== null && runs.some((run) => run.id === openRun && ["QUEUED", "RUNNING"].includes(run.status)) ? 1500 : false,
+    queryKey: ["project-lab-run-logs", current?.id],
+    queryFn: () => projectLabApi.runLogs(current?.id as number),
+    enabled: current !== null,
+    refetchInterval: active ? 1500 : false,
   });
   const cancel = useMutation({
     mutationFn: projectLabApi.cancelRun,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["project-lab-runs", projectId] }),
+    onError: (error) => show(error instanceof Error ? error.message : "停止できません", "error"),
   });
-  if (runs.length === 0) return null;
-  return <section className="mt-5">
-    <h3 className="mb-2 text-sm font-semibold">実行履歴</h3>
-    <div className="space-y-2">{runs.map((run) => {
-      const active = ["QUEUED", "RUNNING"].includes(run.status);
-      const okay = run.status === "SUCCEEDED";
-      return <div key={run.id} className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
-        <div className="flex min-h-11 flex-wrap items-center gap-2 px-3 py-2">
-          <button type="button" onClick={() => setOpenRun(openRun === run.id ? null : run.id)} className="min-h-11 min-w-0 flex-1 text-left">
-            <span className="block truncate text-xs font-semibold">#{run.id} · {run.profileId}</span>
-            <span className="block text-[10px] text-zinc-500">{new Date(run.startedAt).toLocaleString()} · {run.elapsedMs === null ? "実行中" : `${run.elapsedMs} ms`}</span>
-          </button>
-          <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${okay ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : active ? "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300" : "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300"}`}>{run.status}</span>
-          {active && <button type="button" onClick={() => cancel.mutate(run.id)} disabled={cancel.isPending} className="min-h-11 rounded-xl px-3 text-xs font-medium text-red-600 disabled:opacity-40">停止</button>}
+
+  return (
+    <BottomSheet title="実行" onClose={onClose} stable>
+      {runs.length === 0 && <p className="py-6 text-center text-sm text-zinc-500">まだ実行していません。Python / JavaScript ファイルを開いて「実行」を押すと、ここにログが出ます。</p>}
+      {runs.length > 0 && (
+        <div className="-mx-1 mb-3 flex gap-1.5 overflow-x-auto px-1 pb-1">
+          {runs.slice(0, 12).map((run) => (
+            <button
+              key={run.id}
+              type="button"
+              onClick={() => onOpenRun(run.id)}
+              aria-pressed={current?.id === run.id}
+              className={`min-h-9 shrink-0 rounded-full px-3 text-xs font-medium ${
+                current?.id === run.id ? "bg-accent-600 text-white" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+              }`}
+            >
+              #{run.id} {run.profileId}
+            </button>
+          ))}
         </div>
-        {openRun === run.id && <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
-          {run.error && <p className="mb-2 rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{run.error}</p>}
-          {run.profileType === "web" && run.previewReady && run.previewUrl && <iframe title={`${run.projectName} Web preview`} src={run.previewUrl} sandbox="allow-scripts allow-forms allow-downloads" className="mb-2 h-[65vh] min-h-80 w-full rounded-lg bg-white" />}
-          {run.profileType === "web" && active && !run.previewReady && <p className="mb-2 rounded-lg bg-blue-50 p-2 text-xs text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">Web applicationの待受開始を確認しています…</p>}
-          {run.artifacts.length > 0 && <div className="mb-2 flex flex-wrap gap-1">{run.artifacts.map((artifact) => <span key={artifact.id} className="rounded bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{artifact.changeType}: {artifact.path}</span>)}</div>}
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-950 p-3 font-mono text-[11px] text-zinc-100">{logs.isLoading ? "ログを読み込み中..." : logs.data?.logs || "ログはありません"}</pre>
-        </div>}
-      </div>;
-    })}</div>
-  </section>;
+      )}
+      {current && (
+        <>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <StatusChip status={current.status} />
+            <span className="num text-[11px] text-zinc-400">
+              {new Date(current.startedAt).toLocaleString("ja-JP")}
+              {current.elapsedMs !== null ? ` · ${current.elapsedMs} ms` : " · 実行中"}
+              {current.exitCode !== null ? ` · exit ${current.exitCode}` : ""}
+            </span>
+            {active && (
+              <button
+                type="button"
+                onClick={() => cancel.mutate(current.id)}
+                disabled={cancel.isPending}
+                className="ml-auto flex min-h-9 items-center gap-1 rounded-xl px-3 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40"
+              >
+                <IconStop /> 停止
+              </button>
+            )}
+          </div>
+          <p className="mb-2 break-all font-mono text-[10px] text-zinc-400">{current.command.join(" ")}</p>
+          {current.error && <p className="mb-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{current.error}</p>}
+          {current.profileType === "web" && current.previewReady && current.previewUrl && (
+            <iframe title="Web preview" src={current.previewUrl} sandbox="allow-scripts allow-forms" className="mb-2 h-64 w-full rounded-xl border border-zinc-200 bg-white dark:border-zinc-700" />
+          )}
+          <pre className="max-h-[46dvh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-100">
+            {logs.isLoading ? "ログを読み込み中..." : logs.data?.logs || "出力はありません"}
+          </pre>
+          {current.artifacts.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {current.artifacts.map((item) => (
+                <span key={item.id} className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] dark:bg-zinc-800">{item.changeType}: {item.path}</span>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </BottomSheet>
+  );
 }
 
-function ArtifactPreview({ project, artifact }: { project: ProjectLabDetail; artifact: ProjectLabArtifact }) {
-  const url = projectLabApi.artifactUrl(project.id, artifact.path);
-  const download = projectLabApi.artifactUrl(project.id, artifact.path, true);
-  const textual = ["table", "json", "markdown", "log", "text"].includes(artifact.kind);
-  const { data: preview, isLoading } = useQuery({
-    queryKey: ["project-lab-preview", project.id, artifact.path],
-    queryFn: () => projectLabApi.preview(project.id, artifact.path),
-    enabled: textual,
-  });
-  return <div className="min-w-0 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
-    <div className="flex min-h-11 items-center justify-between gap-2 border-b border-zinc-200 px-3 dark:border-zinc-800"><div className="min-w-0"><strong className="block truncate text-xs">{artifact.name}</strong><span className="block truncate font-mono text-[9px] text-zinc-400">{artifact.mimeType}</span></div><a href={download} className="shrink-0 rounded-lg px-2 py-2 text-xs font-medium text-accent-600">保存</a></div>
-    <div className="min-h-64 bg-zinc-50 p-3 dark:bg-zinc-950">
-      {textual && isLoading && <p className="text-sm text-zinc-400">previewを読み込み中...</p>}
-      {artifact.kind === "html" && <iframe title={`${artifact.name} preview`} src={url} sandbox="" className="h-[60vh] min-h-80 w-full rounded-lg bg-white" />}
-      {artifact.kind === "image" && <img src={url} alt={artifact.name} className="mx-auto max-h-[65vh] max-w-full object-contain" />}
-      {artifact.kind === "pdf" && <iframe title={`${artifact.name} PDF`} src={url} className="h-[65vh] w-full rounded-lg bg-white" />}
-      {artifact.kind === "audio" && <audio src={url} controls className="w-full" />}
-      {artifact.kind === "video" && <video src={url} controls className="max-h-[65vh] w-full" />}
-      {artifact.kind === "table" && preview && <TablePreview value={preview.structuredPreview} />}
-      {artifact.kind === "json" && preview && <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{JSON.stringify(preview.structuredPreview, null, 2) || preview.previewText}</pre>}
-      {["markdown", "log", "text"].includes(artifact.kind) && preview && <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{preview.previewText ?? "preview size上限を超えています。保存して確認してください。"}</pre>}
-    </div>
-  </div>;
-}
-
-function TablePreview({ value }: { value: unknown }) {
-  const table = value as { headers?: string[]; rows?: string[][]; truncated?: boolean } | null;
-  if (!table?.headers) return <p className="text-sm text-zinc-500">表を解析できませんでした。</p>;
-  return <div className="overflow-auto"><table className="min-w-full border-collapse text-xs"><thead><tr>{table.headers.map((header, index) => <th key={`${header}-${index}`} className="border border-zinc-200 bg-zinc-100 px-2 py-1.5 text-left dark:border-zinc-700 dark:bg-zinc-900">{header}</th>)}</tr></thead><tbody>{table.rows?.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="max-w-64 break-words border border-zinc-200 px-2 py-1.5 dark:border-zinc-700">{cell}</td>)}</tr>)}</tbody></table>{table.truncated && <p className="mt-2 text-xs text-amber-600">先頭200行だけ表示しています。</p>}</div>;
+function StatusChip({ status }: { status: ProjectLabRun["status"] }) {
+  const tone = status === "SUCCEEDED"
+    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+    : ACTIVE_STATES.includes(status)
+      ? "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300"
+      : "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300";
+  return <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${tone}`}>{status}</span>;
 }
