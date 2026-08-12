@@ -11,6 +11,9 @@
   --color-accent-500: #3b82f6;
   --color-accent-600: #2563eb;
   --color-accent-700: #1d4ed8;
+  --color-accent-800: #1e40af;
+  --color-accent-900: #1e3a8a;
+  --color-accent-950: #172554;
   --font-family-sans: "system-ui", "-apple-system", "Segoe UI", "Roboto",
     "Hiragino Sans", "Noto Sans CJK JP", sans-serif;
 }
@@ -25,6 +28,9 @@
   --color-accent-500: #8b5cf6;
   --color-accent-600: #7c3aed;
   --color-accent-700: #6d28d9;
+  --color-accent-800: #5b21b6;
+  --color-accent-900: #4c1d95;
+  --color-accent-950: #2e1065;
 }
 :root[data-accent="emerald"] {
   --color-accent-50: #ecfdf5;
@@ -35,6 +41,9 @@
   --color-accent-500: #10b981;
   --color-accent-600: #059669;
   --color-accent-700: #047857;
+  --color-accent-800: #065f46;
+  --color-accent-900: #064e3b;
+  --color-accent-950: #022c22;
 }
 :root[data-accent="teal"] {
   --color-accent-50: #f0fdfa;
@@ -45,6 +54,9 @@
   --color-accent-500: #14b8a6;
   --color-accent-600: #0d9488;
   --color-accent-700: #0f766e;
+  --color-accent-800: #115e59;
+  --color-accent-900: #134e4a;
+  --color-accent-950: #042f2e;
 }
 :root[data-accent="orange"] {
   --color-accent-50: #fff7ed;
@@ -55,6 +67,9 @@
   --color-accent-500: #f97316;
   --color-accent-600: #ea580c;
   --color-accent-700: #c2410c;
+  --color-accent-800: #9a3412;
+  --color-accent-900: #7c2d12;
+  --color-accent-950: #431407;
 }
 :root[data-accent="rose"] {
   --color-accent-50: #fff1f2;
@@ -65,6 +80,9 @@
   --color-accent-500: #f43f5e;
   --color-accent-600: #e11d48;
   --color-accent-700: #be123c;
+  --color-accent-800: #9f1239;
+  --color-accent-900: #881337;
+  --color-accent-950: #4c0519;
 }
 
 /* ---- OLED 完全黒テーマ（ダーク時のみ有効） ---- */

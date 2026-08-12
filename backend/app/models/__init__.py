@@ -538,68 +538,6 @@ class WorkflowTestCase(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
-class ApplicationProject(Base):
-    """Application Builderの独立draft。生成物・build状態はPhase Aでは持たない。"""
-
-    __tablename__ = "application_projects"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), index=True)
-    description: Mapped[str] = mapped_column(Text, default="")
-    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"), nullable=True, index=True)
-    application_spec_json: Mapped[str] = mapped_column(Text, default="{}")
-    schema_version: Mapped[int] = mapped_column(Integer, default=1)
-    target: Mapped[str] = mapped_column(String(32), default="csharp")
-    application_type: Mapped[str] = mapped_column(String(32), default="web")
-    ui_framework: Mapped[str] = mapped_column(String(64), default="aspnet-blazor")
-    status: Mapped[str] = mapped_column(String(16), default="draft")
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-
-
-class ApplicationBuild(Base):
-    """決定的source snapshotを独立systemd user unitでbuildしたdurable記録。"""
-
-    __tablename__ = "application_builds"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("application_projects.id"), index=True)
-    target_id: Mapped[str] = mapped_column(String(128))
-    framework: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
-    unit_name: Mapped[str] = mapped_column(String(128), unique=True, default="")
-    build_root: Mapped[str] = mapped_column(String(1024), default="")
-    source_checksum: Mapped[str] = mapped_column(String(64), default="")
-    archive_checksum: Mapped[str] = mapped_column(String(64), default="")
-    generator_json: Mapped[str] = mapped_column(Text, default="{}")
-    sdk_name: Mapped[str] = mapped_column(String(32), default="dotnet")
-    sdk_path: Mapped[str] = mapped_column(String(1024), default="")
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=900)
-    result: Mapped[str] = mapped_column(String(64), default="")
-    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    error_redacted: Mapped[str] = mapped_column(Text, default="")
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class ApplicationBuildArtifact(Base):
-    """Build root配下だけを指す成果物metadata。本文はDBへ保存しない。"""
-
-    __tablename__ = "application_build_artifacts"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    build_id: Mapped[int] = mapped_column(ForeignKey("application_builds.id"), index=True)
-    path: Mapped[str] = mapped_column(String(2048))
-    kind: Mapped[str] = mapped_column(String(32), default="file")
-    mime_type: Mapped[str] = mapped_column(String(256), default="application/octet-stream")
-    size: Mapped[int] = mapped_column(Integer, default=0)
-    checksum: Mapped[str] = mapped_column(String(64), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
 class RemoteConnection(Base):
     __tablename__ = "remote_connections"
 

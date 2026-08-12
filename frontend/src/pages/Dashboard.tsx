@@ -74,13 +74,13 @@ export default function DashboardPage() {
   const failed = apps?.filter((a) => a.runtime.status === "FAILED") ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
-      <PageHeader title="Home" description="PCとControlDeckの現在の状態をまとめて確認します。" className="mb-0" />
+    <div className="mx-auto max-w-5xl space-y-4 p-4 md:p-6">
+      <PageHeader title="Home" className="mb-0" />
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
-        <div className="mb-2 flex min-h-11 flex-wrap items-center justify-between gap-2">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
           <div className="flex items-center gap-2">
-            <label htmlFor="metrics-range" className="text-xs font-medium text-zinc-500">履歴期間</label>
+            <label htmlFor="metrics-range" className="text-[11px] font-medium text-zinc-500">履歴</label>
             <select
               id="metrics-range"
               value={rangeChoice}
@@ -89,7 +89,7 @@ export default function DashboardPage() {
                 setRangeChoice(choice);
                 if (choice !== "custom") setHistoryMinutes(Number(choice));
               }}
-              className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="h-8 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900"
             >
               {HISTORY_RANGES.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
               <option value="custom">任意…</option>
@@ -113,13 +113,13 @@ export default function DashboardPage() {
                 max={525600}
                 value={customMinutes}
                 onChange={(event) => setCustomMinutes(event.target.value)}
-                className="h-11 w-28 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                className="h-8 w-20 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900"
               />
-              <span className="text-xs text-zinc-500">分</span>
-              <button type="submit" className="h-11 rounded-xl bg-accent-600 px-3 text-sm font-medium text-white hover:bg-accent-700">適用</button>
+              <span className="text-[11px] text-zinc-500">分</span>
+              <button type="submit" className="h-8 rounded-lg bg-accent-600 px-2.5 text-xs font-medium text-white hover:bg-accent-700">適用</button>
             </form>
           ) : (
-            <span className="text-xs text-zinc-400" aria-live="polite">
+            <span className="text-[11px] text-zinc-400" aria-live="polite">
               {historyFetching ? "履歴を取得中…" : seeded ? `${seeded.resolution === "raw" ? "生データ" : seeded.resolution === "minute" ? "1分平均" : "1時間平均"} · ${seeded.samples.length}点` : ""}
             </span>
           )}
@@ -306,15 +306,15 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
         <CostItem label="今月" cost={power.month_cost_yen} kwh={power.month_energy_kwh} ok={psuOk} />
       </div>
       {/* 温度/FAN と単価情報は下端の1行に集約（FANはスカイブルーで区別） */}
-      <div className="num mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-zinc-100 pt-2.5 text-[10px] text-zinc-400 dark:border-zinc-800">
-        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {psuOk && power.vrm_temperature_c != null && <span>VRM {power.vrm_temperature_c}°C</span>}
-          {psuOk && power.case_temperature_c != null && <span>ケース {power.case_temperature_c}°C</span>}
-          {psuOk && power.fan_rpm != null && (
-            <span className="font-medium text-sky-500 dark:text-sky-400">FAN {power.fan_rpm} RPM</span>
-          )}
+      <div className="num mt-3 flex items-center gap-x-2 overflow-x-auto whitespace-nowrap border-t border-zinc-100 pt-2.5 text-[10px] text-zinc-400 dark:border-zinc-800">
+        {psuOk && power.vrm_temperature_c != null && <span className="shrink-0" title="VRM温度">VRM {power.vrm_temperature_c}°</span>}
+        {psuOk && power.case_temperature_c != null && <span className="shrink-0" title="ケース内温度">ケース {power.case_temperature_c}°</span>}
+        {psuOk && power.fan_rpm != null && (
+          <span className="shrink-0 font-medium text-sky-500 dark:text-sky-400" title="PSUファン回転数">✻ {power.fan_rpm.toLocaleString()}rpm</span>
+        )}
+        <span className="ml-auto shrink-0" title={`電力量単価 ${power.price_per_kwh_yen}円/kWh・PSU効率${Math.round(power.psu_efficiency * 100)}%（概算）`}>
+          ¥{power.price_per_kwh_yen}/kWh · η{Math.round(power.psu_efficiency * 100)}%
         </span>
-        <span>{power.price_per_kwh_yen}円/kWh・効率{Math.round(power.psu_efficiency * 100)}%（概算）</span>
       </div>
     </section>
   );

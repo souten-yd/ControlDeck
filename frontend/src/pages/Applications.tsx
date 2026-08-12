@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
@@ -9,7 +9,7 @@ import {
   type FlowAppFormat,
 } from "../api/flowApp";
 import type { WorkflowSummary } from "./Workflows";
-import { ConfirmDialog, Skeleton } from "../components/ui";
+import { ConfirmDialog, Popover, Skeleton } from "../components/ui";
 import { IconDots, IconDownload, IconTrash } from "../components/icons";
 import { useAuth, useToasts } from "../stores";
 
@@ -21,40 +21,6 @@ function formatBytes(value: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 呼び出したボタンの直下に開くポップオーバー。背景クリックとEscで閉じる。 */
-function Popover({
-  open, label, onClose, children, align = "left",
-}: {
-  open: boolean;
-  label: string;
-  onClose: () => void;
-  children: ReactNode;
-  align?: "left" | "right";
-}) {
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && closeRef.current();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
-  if (!open) return null;
-  return (
-    <>
-      <button type="button" aria-label="閉じる" onClick={onClose} className="fixed inset-0 z-40 cursor-default" />
-      <div
-        role="dialog"
-        aria-label={label}
-        className={`cd-pop absolute top-full z-50 mt-1 max-h-[70dvh] w-[min(22rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 ${
-          align === "right" ? "right-0 cd-pop-right" : "left-0"
-        }`}
-      >
-        {children}
-      </div>
-    </>
-  );
-}
 
 export default function ApplicationsPage() {
   const navigate = useNavigate();

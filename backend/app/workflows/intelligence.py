@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ApplicationProject, Workflow, WorkflowExecution, WorkflowTestCase
+from app.models import Workflow, WorkflowExecution, WorkflowTestCase
 from app.workflows import engine
 from app.workflows.node_metadata import metadata_by_type
 from app.workflows.redaction import is_sensitive_key, redact
@@ -325,9 +325,6 @@ def project_intelligence(db: Session, workflow: Workflow) -> dict[str, Any]:
             if not config.get("base_url"):
                 unknowns.append({"node_id": node.get("id"), "message": "LLM endpointは実行時の既定値に依存します"})
     latest = executions[0] if executions else None
-    linked_projects = db.execute(select(ApplicationProject).where(
-        ApplicationProject.workflow_id == workflow.id,
-    )).scalars().all()
     existing_tests = db.execute(select(WorkflowTestCase).where(
         WorkflowTestCase.workflow_id == workflow.id,
     )).scalars().all()
@@ -337,7 +334,7 @@ def project_intelligence(db: Session, workflow: Workflow) -> dict[str, Any]:
             "nodes": len(nodes), "edges": len(edges), "executions_analyzed": len(executions),
             "successes": sum(item.status == "SUCCEEDED" for item in executions),
             "failures": sum(item.status in {"FAILED", "TIMED_OUT"} for item in executions),
-            "linked_projects": len(linked_projects), "test_cases": len(existing_tests),
+            "test_cases": len(existing_tests),
         },
         "quality": quality_score(nodes, edges, latest.status == "SUCCEEDED" if latest else None),
         "issues": issues, "execution_order": _topological_order(nodes, edges),

@@ -38,13 +38,19 @@ function tokenTotal(usage: Record<string, unknown>): number {
   return 0;
 }
 
-function DataBlock({ value, empty }: { value: unknown; empty: string }) {
-  const isEmpty = value == null
-    || (Array.isArray(value) && value.length === 0)
-    || (typeof value === "object" && !Array.isArray(value) && Object.keys(value as object).length === 0);
-  return isEmpty
-    ? <p className="text-[11px] text-zinc-400">{empty}</p>
-    : <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-2 font-mono text-[10px] dark:bg-zinc-950">{json(value)}</pre>;
+/** 中身が実質空かどうか。空文字だけのerror（{"message": ""}）も「無し」と見なす。 */
+function isBlank(value: unknown): boolean {
+  if (value == null || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0 || value.every(isBlank);
+  if (typeof value === "object") {
+    const entries = Object.values(value as Record<string, unknown>);
+    return entries.length === 0 || entries.every(isBlank);
+  }
+  return false;
+}
+
+function DataBlock({ value }: { value: unknown }) {
+  return <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-2 font-mono text-[10px] dark:bg-zinc-950">{json(value)}</pre>;
 }
 
 export function ExecutionNodeRuns({
@@ -98,7 +104,7 @@ export function ExecutionNodeRuns({
       <ul className="space-y-1.5" aria-label="ノード実行一覧">
         {runs.map((run) => (
           <li key={run.id}>
-            <button type="button" aria-label={`${run.node_id} ${run.status}`} onClick={() => setSelectedId(run.id)} aria-pressed={selectedId === run.id} className={`min-h-11 w-full rounded-xl border p-2.5 text-left ${selectedId === run.id ? "border-accent-500 bg-accent-50/50 dark:bg-accent-950/20" : "border-zinc-200 dark:border-zinc-800"}`}>
+            <button type="button" aria-label={`${run.node_id} ${run.status}`} onClick={() => setSelectedId(run.id)} aria-pressed={selectedId === run.id} className={`min-h-11 w-full rounded-xl border p-2.5 text-left transition ${selectedId === run.id ? "border-accent-500 bg-accent-500/10" : "border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"}`}>
               <span className="flex min-w-0 items-center gap-2 text-xs"><code className="min-w-0 flex-1 truncate font-mono">{run.node_id}</code><span className={statusClass[run.status] ?? "text-zinc-400"}>{run.status}</span></span>
               <span className="mt-1 block truncate text-[10px] text-zinc-400">{run.node_type || "unknown"}{run.elapsed_ms !== null ? ` · ${run.elapsed_ms}ms` : ""}{run.retry_count ? ` · retry ${run.retry_count}` : ""}{run.cache_source ? ` · cache ${run.cache_source}` : ""} · in {bytes(run.input_size)} / out {bytes(run.output_size)}</span>
             </button>
@@ -109,12 +115,19 @@ export function ExecutionNodeRuns({
       {selected && (
         <article aria-label={`ノード ${selected.node_id} の詳細`} className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
           <div className="flex min-w-0 items-center gap-2"><strong className="min-w-0 flex-1 truncate text-xs">{selected.node_id}</strong><span className="text-[10px] text-zinc-400">attempt {selected.attempt || 1}</span></div>
-          <Inspect title="実入力"><DataBlock value={selected.resolved_inputs} empty="実入力の記録はありません" /></Inspect>
-          <Inspect title="実出力"><DataBlock value={selected.outputs} empty="実出力の記録はありません" /></Inspect>
-          <Inspect title="ログ"><DataBlock value={selected.logs} empty="このノードが保存したログはありません" /></Inspect>
-          <Inspect title="エラー" open={selected.status === "FAILED" || selected.status === "TIMED_OUT"}><DataBlock value={selected.error} empty="エラーはありません" /></Inspect>
-          <Inspect title="token"><DataBlock value={selected.token_usage} empty="token使用量の記録はありません" /></Inspect>
-          <Inspect title="アーティファクト"><DataBlock value={selected.artifacts} empty="アーティファクト参照はありません" /></Inspect>
+          {([
+            ["エラー", selected.error, selected.status === "FAILED" || selected.status === "TIMED_OUT"],
+            ["実入力", selected.resolved_inputs, false],
+            ["実出力", selected.outputs, false],
+            ["ログ", selected.logs, false],
+            ["token", selected.token_usage, false],
+            ["アーティファクト", selected.artifacts, false],
+          ] as const).filter(([, value]) => !isBlank(value)).map(([title, value, open]) => (
+            <Inspect key={title} title={title} open={open}><DataBlock value={value} /></Inspect>
+          ))}
+          {isBlank(selected.resolved_inputs) && isBlank(selected.outputs) && isBlank(selected.error) && (
+            <p className="text-[11px] text-zinc-400">記録された入出力はありません。</p>
+          )}
         </article>
       )}
     </section>

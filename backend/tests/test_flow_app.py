@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.application_builder.flow_app import packager, portable
+from app.flow_app import packager, portable
 
 PORTABLE_DEFINITION = {
     "nodes": [
@@ -141,7 +141,7 @@ def test_export_rejects_non_portable_workflow(tmp_path):
 
 
 def test_flow_app_api_exports_downloads_and_deletes(admin_client, tmp_path, monkeypatch):
-    from app.application_builder.flow_app import router as flow_router
+    from app.flow_app import router as flow_router
 
     monkeypatch.setattr(flow_router, "data_dir", lambda: tmp_path)
     workflow_id = _workflow("Export Me", PORTABLE_DEFINITION)
@@ -190,7 +190,7 @@ def test_flow_app_capability_reports_supported_nodes(admin_client):
 
 def test_bundle_sources_stay_in_sync_with_host_nodes():
     """同梱するのは本体のnodes.pyそのもの。コピー元が消えたら書き出しは壊れる。"""
-    repo_root = Path(packager.__file__).resolve().parents[3]
+    repo_root = Path(packager.__file__).resolve().parents[2]
     for source, _ in packager.COPIED_MODULES:
         assert (repo_root / source).is_file(), source
     assert (packager.BUNDLE_DIR / "__main__.py").is_file()

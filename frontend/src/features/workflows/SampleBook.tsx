@@ -360,15 +360,15 @@ function NodeReferenceTab() {
       {grouped.map(([cat, items]) => (
         <div key={cat} className="mb-3">
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-400">{cat}</p>
-          <div className="space-y-1">
+          <div className="grid grid-cols-2 gap-1 lg:grid-cols-3">
             {items.map(([type, d]) => (
               <button
                 key={type}
                 onClick={() => setSelectedType(type)}
-                className={`flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm transition ${
+                className={`flex min-h-14 w-full items-center gap-2 rounded-xl px-2 py-2 text-left text-sm transition ${
                   selectedType === type
-                    ? "bg-accent-50 dark:bg-accent-600/15"
-                    : "hover:bg-zinc-50 dark:hover:bg-zinc-800/60"
+                    ? "bg-accent-500/15 ring-1 ring-accent-500/40"
+                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
                 }`}
               >
                 <span
@@ -377,9 +377,9 @@ function NodeReferenceTab() {
                 >
                   {d.icon}
                 </span>
-                <span className="min-w-0">
-                  <span className="block truncate font-medium">{d.label}</span>
-                  <span className="block truncate text-[11px] text-zinc-400">{type}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium leading-tight">{d.label}</span>
+                  <span className="block truncate text-[10px] text-zinc-400">{type}</span>
                 </span>
               </button>
             ))}

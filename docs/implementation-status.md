@@ -2,6 +2,15 @@
 
 最終更新: 2026-08-13
 
+## 旧Application Builder削除とWorkflow実行UIの刷新（2026-08-13）
+
+- C#／ASP.NET生成系を削除した（generator群・compiler・build worker・platform advisor・design proposal・patch service・関連schema／model／config／frontend画面／テスト）。合計13,266行を除去し、`flow_app`を`app/flow_app`へ移した。Workflow削除時の「Application Projectが接続されています」制約もなくなり、代わりに書き出し済みFlow Appを片付ける。
+- Workflowエディタの実行導線を作り直した。`Test`と`Run`の2ボタンを廃し、**実行ボタン1つ**に統合。押すと1枚のシートで「入力 → 下書きで試す／公開して実行 → 結果」が完結する。公開を止める問題があるときだけ赤いバナーを出し、ノードごとの詳細は畳んでおく。
+- 7区画（入力／回帰テスト／実行モード／想定出力／副作用／実行前チェック／公開前検証）を並べていた`PreviewWorkspace`（487行）を削除し、回帰テストは⋯メニューの「テストケース」シートへ分離した。
+- 3点リーダーメニューを英語12項目から日本語の意味ごと（編集／実行／公開・配布／データ／詳細）に区切った一覧へ整理し、区切り線を`DropdownMenu`へ追加。キャンバス右上の常設`Intelligence`ボタンは撤去してメニューへ集約した。状態表示や案内文も短くした。
+
+検証: backend全467件成功（削除した旧builderテスト42件を除く）、frontend TypeScript／production buildに成功。実サービスで`/api/v1/application-projects`が404になり、health 200を確認。
+
 ## App Studio 単一バイナリ書き出し／プレビューのstorage shim／chunk復帰（2026-08-13）
 
 - 書き出し形式を2つから選べるようにした。`.pyz`（配布先にpython3が必要・1MB未満・1〜2秒）と`単一バイナリ`（配布先は追加インストール不要・約10MB・5〜20秒）。ビルド側だけに開発環境が要る構成で、PyInstallerは設定→アドオン「アプリビルド環境」から導入する。
