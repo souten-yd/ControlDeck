@@ -46,6 +46,31 @@ async def install_job(
     return {"job_id": job.id}
 
 
+@router.post("/{feature_id}/update-jobs", status_code=201)
+async def update_job(
+    feature_id: str, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """管理導入のランタイムをnpmの最新版へ更新する。有効/無効の状態は変えない。"""
+    if feature_id not in registry.KNOWN_FEATURES:
+        raise HTTPException(status_code=404, detail="未知のアドオンです")
+    current = registry.status(feature_id)
+    if not current["managed"]:
+        raise HTTPException(status_code=422, detail="Control Deckが導入したアドオンのみ更新できます")
+
+    async def run(job: jobs.Job) -> dict:
+        job.set_progress("npmで最新版を取得中", 0, 1)
+        state = await asyncio.to_thread(registry.update, feature_id)
+        job.set_progress("完了", 1, 1)
+        return state
+
+    job = jobs.create("feature.update", f"アドオン更新: {feature_id}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "feature.update", user=user, resource_type="feature",
+                 resource_id=feature_id, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
 @router.post("/{feature_id}/{action}")
 def apply_action(
     feature_id: str, action: str, request: Request,

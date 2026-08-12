@@ -3,7 +3,9 @@ import { api } from "./client";
 export interface ProjectLabArtifact {
   path: string;
   name: string;
-  kind: "html" | "image" | "table" | "json" | "markdown" | "pdf" | "audio" | "video" | "log" | "text";
+  kind: "html" | "image" | "table" | "json" | "markdown" | "pdf" | "audio" | "video" | "log" | "text" | "code";
+  language: string;
+  runnable: boolean;
   mimeType: string;
   size: number;
   modifiedAt: string;
@@ -72,6 +74,9 @@ export const projectLabApi = {
   runs: (id: string) => api<ProjectLabRun[]>(`/project-lab/runs?project_id=${encodeURIComponent(id)}`),
   startRun: (id: string, profileId: string, timeoutSeconds = 600) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/runs`, {
     method: "POST", json: { profile_id: profileId, timeout_seconds: timeoutSeconds },
+  }),
+  startFileRun: (id: string, path: string, timeoutSeconds = 300) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/file-runs`, {
+    method: "POST", json: { path, timeout_seconds: timeoutSeconds },
   }),
   cancelRun: (runId: number) => api<ProjectLabRun>(`/project-lab/runs/${runId}/cancel`, { method: "POST" }),
   runLogs: (runId: number) => api<{ runId: number; logs: string }>(`/project-lab/runs/${runId}/logs`),

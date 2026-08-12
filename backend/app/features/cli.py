@@ -8,7 +8,7 @@ from app.features import registry
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="control-deck-feature")
-    parser.add_argument("action", choices=("status", "install", "enable", "disable", "uninstall"))
+    parser.add_argument("action", choices=("status", "install", "update", "enable", "disable", "uninstall"))
     parser.add_argument("feature", nargs="?", default="opencode", choices=sorted(registry.KNOWN_FEATURES))
     args = parser.parse_args()
     try:

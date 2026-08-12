@@ -1,8 +1,11 @@
 """Project Lab API。成果物閲覧とbrowser非依存のdurable runを提供する。"""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,10 +13,82 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import ProjectRun, User
 from app.project_lab import runs, service
-from app.schemas.project_lab import ProjectRunCreate
+from app.schemas.project_lab import ProjectFileRunCreate, ProjectRunCreate
 from app.security.deps import require_permission
 
 router = APIRouter(prefix="/project-lab", tags=["project-lab"])
+
+# 既定は一切実行させないCSP。artifactはControl Deckのoriginから配信されるため、
+# 実行を許すHTMLだけCSPの`sandbox`で不透明originへ閉じ込め、上位tabで直接開かれても
+# Control Deckのcookie／DOM／APIへ到達できないようにする（connect-srcも遮断）。
+INERT_CSP = (
+    "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; "
+    "media-src 'self'; form-action 'none'; base-uri 'none'"
+)
+SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+HTML_CSP = (
+    "sandbox allow-scripts allow-modals allow-forms allow-popups allow-downloads; "
+    "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
+    "style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; font-src 'self' data:; "
+    "media-src 'self' data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; "
+    "frame-ancestors 'self'"
+)
+
+
+# sandbox iframeは不透明originのため、localStorage/sessionStorage/cookieへ触れると
+# SecurityErrorになりscript全体が止まる（描画は残るが操作できない）。allow-same-originを
+# 与えるとControl Deckのoriginを渡すことになり危険なので、preview配信時だけ
+# メモリ上の互換実装を先に差し込む。ダウンロードや実体のfileは書き換えない。
+STORAGE_SHIM = """<script>/* Control Deck preview shim */
+(function () {
+  function fallback() {
+    var store = {};
+    return {
+      getItem: function (key) { return Object.prototype.hasOwnProperty.call(store, String(key)) ? store[String(key)] : null; },
+      setItem: function (key, value) { store[String(key)] = String(value); },
+      removeItem: function (key) { delete store[String(key)]; },
+      clear: function () { store = {}; },
+      key: function (index) { var keys = Object.keys(store); return index < keys.length ? keys[index] : null; },
+      get length() { return Object.keys(store).length; }
+    };
+  }
+  ["localStorage", "sessionStorage"].forEach(function (name) {
+    try { window[name].getItem("__controldeck_probe__"); return; } catch (error) { /* 遮断されている */ }
+    try { Object.defineProperty(window, name, { value: fallback(), configurable: true }); } catch (error) { /* 諦める */ }
+  });
+  try { document.cookie; } catch (error) {
+    var jar = "";
+    try {
+      Object.defineProperty(document, "cookie", {
+        configurable: true,
+        get: function () { return jar; },
+        set: function (value) { jar = String(value).split(";")[0]; }
+      });
+    } catch (inner) { /* 諦める */ }
+  }
+})();
+</script>
+"""
+MAX_SHIM_BYTES = 4 * 1024 * 1024
+_HEAD_OPEN = re.compile(r"<head[^>]*>", re.I)
+_CHARSET_META = re.compile(r"<meta[^>]*charset[^>]*>", re.I)
+
+
+def _with_storage_shim(path: Path) -> str | None:
+    """HTMLのpreview本文へ互換shimを差し込む（charset宣言の直後、最初のscriptより前）。"""
+    try:
+        if path.stat().st_size > MAX_SHIM_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    charset = _CHARSET_META.search(text[:4096])
+    if charset:
+        index = charset.end()
+    else:
+        head = _HEAD_OPEN.search(text[:4096])
+        index = head.end() if head else 0
+    return text[:index] + "\n" + STORAGE_SHIM + text[index:]
 
 
 def _not_found(exc: ValueError) -> HTTPException:
@@ -44,10 +119,17 @@ def artifact(
     except service.ProjectLabError as exc:
         raise _not_found(exc) from exc
     kind = service.ARTIFACT_KINDS.get(path.suffix.lower(), "resource")
-    headers = {"Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; media-src 'self'; form-action 'none'; base-uri 'none'"}
-    if kind == "svg":
-        headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    policy = INERT_CSP
+    if kind == "html" and not download:
+        policy = HTML_CSP
+    elif path.suffix.lower() == ".svg":
+        policy = SVG_CSP
+    headers = {"Content-Security-Policy": policy, "X-Content-Type-Options": "nosniff"}
     disposition = "attachment" if download else "inline"
+    if kind == "html" and not download:
+        patched = _with_storage_shim(path)
+        if patched is not None:
+            return HTMLResponse(patched, headers={**headers, "Cache-Control": "no-store"})
     return FileResponse(
         path, media_type=(service.artifact_info(project_path, path) or {}).get("mimeType"),
         filename=path.name if download else None,
@@ -101,6 +183,32 @@ def start_project_run(
         db, "project_lab.run.start", user=user, resource_type="project_run",
         resource_id=str(row.id), request=request,
         metadata={"project_id": project_id, "profile_id": body.profile_id},
+    )
+    return runs.run_out(db, row)
+
+
+@router.post("/projects/{project_id}/file-runs", status_code=201)
+def start_project_file_run(
+    project_id: str, body: ProjectFileRunCreate, request: Request,
+    user: User = Depends(require_permission("project_lab.run")), db: Session = Depends(get_db),
+):
+    """成果物のPython／JavaScript fileを、profile定義なしで1本だけ隔離実行する。"""
+    try:
+        row = runs.start_file_run(
+            db, project_id=project_id, artifact_path=body.path,
+            timeout_seconds=body.timeout_seconds, created_by=user.id,
+        )
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    except runs.ProjectRunError as exc:
+        audit.record(
+            db, "project_lab.run.file", user=user, resource_type="project",
+            resource_id=project_id, request=request, result="failure", metadata={"path": body.path},
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(
+        db, "project_lab.run.file", user=user, resource_type="project_run",
+        resource_id=str(row.id), request=request, metadata={"project_id": project_id, "path": body.path},
     )
     return runs.run_out(db, row)
 

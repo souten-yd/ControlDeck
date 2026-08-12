@@ -269,3 +269,20 @@ label:has([data-snippet-code]) + p code {
 .dark .react-flow__controls-button:hover {
   background: rgb(39 39 42); /* zinc-800 */
 }
+
+/* 起点のボタンから出るポップオーバー（Project Labのプロジェクト選択等）。
+   transform-originを呼び出し元の角に合わせ、開閉の視線移動を最小にする。 */
+@keyframes cd-pop-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.cd-pop {
+  animation: cd-pop-in 120ms ease-out;
+  transform-origin: top left;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cd-pop { animation: none; }
+}
+.cd-pop-right {
+  transform-origin: top right;
+}
