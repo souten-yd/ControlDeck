@@ -35,6 +35,8 @@ const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl" }[] = [
   { label: "Esc", seq: "\x1b" },
   { label: "Tab", seq: "\t" },
   { label: "Ctrl", modifier: "ctrl" },
+  { label: "⇞", seq: "\x1b[5~" },
+  { label: "⇟", seq: "\x1b[6~" },
   { label: "↑", seq: "\x1b[A" },
   { label: "↓", seq: "\x1b[B" },
   { label: "←", seq: "\x1b[D" },
@@ -851,13 +853,45 @@ export default function XtermView({
     let touchRemainder = 0;
     let touchCellHeight = term.options.fontSize ?? 13;
     let touchScrollFrame = 0;
+    // TUI（代替画面）にはxterm側のscrollbackが無く、term.scrollLinesでは何も動かない。
+    // アプリ自身の履歴を動かすため、mouse tracking中はwheel、無効ならPageUp/PageDownを送る。
+    let pageRemainder = 0;
+    const appWantsMouse = () =>
+      String((term as unknown as { modes?: { mouseTrackingMode?: string } }).modes?.mouseTrackingMode ?? "none") !== "none";
+    const scrollApplication = (lines: number) => {
+      if (appWantsMouse()) {
+        // TUIが受け取れるのはwheelイベント。1行ずつ送って本体の履歴を動かす。
+        const button = lines > 0 ? 65 : 64;
+        const column = Math.max(1, Math.round(term.cols / 2));
+        const row = Math.max(1, Math.round(term.rows / 2));
+        const wheel = `\x1b[<${button};${column};${row}M`;
+        for (let index = 0; index < Math.min(Math.abs(lines), 20); index += 1) {
+          inputSenderRef.current?.(wheel);
+        }
+        return;
+      }
+      // mouse非対応TUIはPageUp/PageDownで動かす。1画面ぶん貯めると反応が鈍いので
+      // 1/3画面で1回送り、指の移動量に追従させる。
+      pageRemainder += lines / Math.max(1, Math.round((term.rows - 2) / 3));
+      while (Math.abs(pageRemainder) >= 1) {
+        const forward = pageRemainder > 0;
+        inputSenderRef.current?.(forward ? "\x1b[6~" : "\x1b[5~");
+        pageRemainder += forward ? -1 : 1;
+      }
+    };
     const flushTouchScroll = () => {
       touchScrollFrame = 0;
       const lines = Math.trunc(touchRemainder);
       if (lines !== 0) {
         // replay済みnormal bufferを右端barと同じlocal pathで即時移動する。
         // tmux subprocessとWebSocket往復はgestureのhot pathへ入れない。
-        term.scrollLines(Math.max(-100, Math.min(100, lines)));
+        // mouse tracking中のTUI（OpenCode等）やalternate screenでは、xterm側に
+        // scrollbackが無い／アプリが描画を持つため、入力としてアプリへ渡す。
+        if (term.buffer.active.type === "alternate" || appWantsMouse()) {
+          scrollApplication(Math.max(-100, Math.min(100, lines)));
+        } else {
+          term.scrollLines(Math.max(-100, Math.min(100, lines)));
+        }
         touchRemainder -= lines;
       }
     };
@@ -876,6 +910,7 @@ export default function XtermView({
       touchStartY = touch.clientY;
       touchLastY = touch.clientY;
       touchRemainder = 0;
+      pageRemainder = 0;
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
       touchCellHeight = screen && term.rows > 0
         ? screen.getBoundingClientRect().height / term.rows
