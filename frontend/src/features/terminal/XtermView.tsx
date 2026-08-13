@@ -35,8 +35,6 @@ const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl" }[] = [
   { label: "Esc", seq: "\x1b" },
   { label: "Tab", seq: "\t" },
   { label: "Ctrl", modifier: "ctrl" },
-  { label: "⇞", seq: "\x1b[5~" },
-  { label: "⇟", seq: "\x1b[6~" },
   { label: "↑", seq: "\x1b[A" },
   { label: "↓", seq: "\x1b[B" },
   { label: "←", seq: "\x1b[D" },

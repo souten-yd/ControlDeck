@@ -23,7 +23,18 @@ def test_connected_client_blocks_idle_unload(monkeypatch):
     assert llama._has_connected_clients(8091) is False
 
 
-def test_alive_opencode_session_marks_endpoint_in_use(monkeypatch):
+def _sessions(monkeypatch, rows):
+    class Terminals:
+        @staticmethod
+        def list_sessions():
+            return rows
+
+    monkeypatch.setattr("app.terminals.manager.manager", Terminals)
+
+
+def test_recently_used_opencode_session_marks_endpoint_in_use(monkeypatch):
+    import time
+
     from app.models_mgmt import llama
 
     monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: feature_id == "opencode")
@@ -31,31 +42,30 @@ def test_alive_opencode_session_marks_endpoint_in_use(monkeypatch):
         "app.integrations.opencode.provider.get_settings",
         lambda: {"base_url": "http://127.0.0.1:8090/v1", "model": "llama", "project_path": ""},
     )
+    now = time.time()
 
-    class Terminals:
-        @staticmethod
-        def list_sessions():
-            return [
-                {"id": "a", "program": "bash", "alive": True},
-                {"id": "b", "program": "opencode.exe", "alive": True},
-            ]
-
-    monkeypatch.setattr("app.terminals.manager.manager", Terminals)
-    assert llama._opencode_session_uses(8090) is True
+    _sessions(monkeypatch, [
+        {"id": "a", "program": "bash", "alive": True, "activity_at": now},
+        {"id": "b", "program": "opencode.exe", "alive": True, "attached": False, "activity_at": now - 60},
+    ])
+    assert llama._opencode_session_uses(8090, window_seconds=1800) is True
     # 別portのinstanceは対象外。
-    assert llama._opencode_session_uses(8091) is False
+    assert llama._opencode_session_uses(8091, window_seconds=1800) is False
+    # 見ていないセッションのために起動し直さない。
+    assert llama._opencode_session_uses(8090, window_seconds=1800, require_attached=True) is False
 
-    class Idle:
-        @staticmethod
-        def list_sessions():
-            return [{"id": "a", "program": "bash", "alive": True}]
+    # 放置されたTUIは保持しない（idle窓を超えた活動時刻）。
+    _sessions(monkeypatch, [
+        {"id": "b", "program": "opencode.exe", "alive": True, "attached": True, "activity_at": now - 4000},
+    ])
+    assert llama._opencode_session_uses(8090, window_seconds=1800) is False
 
-    monkeypatch.setattr("app.terminals.manager.manager", Idle)
-    assert llama._opencode_session_uses(8090) is False
+    _sessions(monkeypatch, [{"id": "a", "program": "bash", "alive": True, "activity_at": now}])
+    assert llama._opencode_session_uses(8090, window_seconds=1800) is False
 
 
 def test_disabled_feature_does_not_hold_instances(monkeypatch):
     from app.models_mgmt import llama
 
     monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: False)
-    assert llama._opencode_session_uses(8090) is False
+    assert llama._opencode_session_uses(8090, window_seconds=1800) is False
