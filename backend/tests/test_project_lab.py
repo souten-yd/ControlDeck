@@ -29,6 +29,9 @@ def _project(root: Path, name: str = "demo") -> Path:
     (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
     (project / "package.json").write_text('{"dependencies":{"react":"latest","vite":"latest"}}', encoding="utf-8")
     (project / "index.html").write_text("<h1>安全な成果物</h1>", encoding="utf-8")
+    (project / "cdn.html").write_text(
+        '<html><head><script src="https://cdn.example.com/three.min.js"></script></head><body></body></html>',
+        encoding="utf-8")
     (project / "style.css").write_text("body { color: #123; }", encoding="utf-8")
     (project / "reports" / "result.json").write_text('{"score": 98, "api_token": "must-not-leak"}', encoding="utf-8")
     (project / "reports" / "credentials.json").write_text('{"password": "must-not-leak"}', encoding="utf-8")
@@ -154,6 +157,19 @@ def test_project_lab_api_is_read_only_authenticated_and_safe(admin_client, tmp_p
     # sandbox iframeで落ちるstorage APIは、preview配信時だけ互換実装へ差し替える。
     assert "Control Deck preview shim" in html.text
     assert html.text.index("preview shim") < html.text.index("安全な成果物")
+    # 外部CDNは既定で遮断し、明示指定のときだけ許可する（sandboxは維持）。
+    assert detail.json()["artifacts"] is not None
+    cdn = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/cdn.html")
+    assert "script-src 'self' 'unsafe-inline'" in cdn.headers["content-security-policy"]
+    allowed = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/cdn.html?external=true")
+    policy = allowed.headers["content-security-policy"]
+    assert "script-src 'self' https:" in policy and "sandbox allow-scripts" in policy
+    assert "allow-same-origin" not in policy
+    external_flag = next(item for item in detail.json()["artifacts"] if item["path"] == "cdn.html")
+    assert external_flag["external"] is True
+    plain_flag = next(item for item in detail.json()["artifacts"] if item["path"] == "index.html")
+    assert plain_flag["external"] is False
+
     downloaded = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/index.html?download=true")
     assert downloaded.status_code == 200 and "sandbox" not in downloaded.headers["content-security-policy"]
     assert "preview shim" not in downloaded.text
@@ -167,6 +183,66 @@ def test_project_lab_api_is_read_only_authenticated_and_safe(admin_client, tmp_p
     assert source_preview.status_code == 200 and "print(" in source_preview.json()["previewText"]
     missing = admin_client.get("/api/v1/project-lab/projects/missing")
     assert missing.status_code == 404
+
+
+def test_external_preview_setting_applies_without_query(admin_client, tmp_path, monkeypatch):
+    """設定で常時許可にすると、query指定なし（サブページ遷移含む）でも外部読み込みを通す。"""
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    _project(root)
+    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "data_dir", lambda: tmp_path / "data")
+    headers = {"X-Requested-With": "ControlDeck"}
+
+    assert admin_client.get("/api/v1/project-lab/settings").json()["allow_external_preview"] is False
+    strict = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/cdn.html")
+    assert "script-src 'self' 'unsafe-inline'" in strict.headers["content-security-policy"]
+
+    saved = admin_client.put("/api/v1/project-lab/settings", json={"allow_external_preview": True}, headers=headers)
+    assert saved.status_code == 200 and saved.json()["allow_external_preview"] is True
+    relaxed = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/cdn.html")
+    policy = relaxed.headers["content-security-policy"]
+    assert "script-src 'self' https:" in policy and "sandbox allow-scripts" in policy
+    assert "allow-same-origin" not in policy
+
+    admin_client.put("/api/v1/project-lab/settings", json={"allow_external_preview": False}, headers=headers)
+    assert "script-src 'self' 'unsafe-inline'" in admin_client.get(
+        "/api/v1/project-lab/projects/demo/artifacts/cdn.html").headers["content-security-policy"]
+
+
+def test_split_app_subresources_are_served_with_correct_types(admin_client, tmp_path, monkeypatch):
+    """HTML・JS・CSS・アセットに分割されたアプリを、相対パスのまま配信できる。"""
+    root = tmp_path / "CodeDEV"
+    (root / "split" / "assets").mkdir(parents=True)
+    project = root / "split"
+    (project / "index.html").write_text(
+        '<html><head><link rel="stylesheet" href="assets/app.css"></head>'
+        '<body><script type="module" src="assets/main.mjs"></script></body></html>', encoding="utf-8")
+    (project / "assets" / "app.css").write_text("body{margin:0}", encoding="utf-8")
+    (project / "assets" / "main.mjs").write_text("export const ok = 1;\n", encoding="utf-8")
+    (project / "assets" / "engine.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (project / "assets" / "scene.glb").write_bytes(b"glTF")
+    (project / "assets" / "sprites.map").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+
+    expected = {
+        "assets/app.css": "text/css",
+        "assets/main.mjs": "text/javascript",
+        "assets/engine.wasm": "application/wasm",
+        "assets/scene.glb": "model/gltf-binary",
+        "assets/sprites.map": "application/json",
+    }
+    for relative, content_type in expected.items():
+        response = admin_client.get(f"/api/v1/project-lab/projects/split/artifacts/{relative}")
+        assert response.status_code == 200, relative
+        assert response.headers["content-type"].startswith(content_type), relative
+
+    # 一覧には成果物とコードだけを出し、バイナリのアセットは並べない。
+    listed = {item["path"] for item in admin_client.get("/api/v1/project-lab/projects/split").json()["artifacts"]}
+    assert {"index.html", "assets/app.css", "assets/main.mjs"} <= listed
+    assert "assets/engine.wasm" not in listed and "assets/scene.glb" not in listed
+    # project外への相対脱出は従来どおり拒否する。
+    assert admin_client.get("/api/v1/project-lab/projects/split/artifacts/../escape.js").status_code == 404
 
 
 def test_project_lab_permission_is_available_to_operator_only():

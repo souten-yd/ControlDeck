@@ -87,6 +87,14 @@ class ProjectRunCreate(BaseModel):
     timeout_seconds: int = Field(default=600, ge=1, le=3600)
 
 
+class ProjectLabSettingsBody(BaseModel):
+    """previewの挙動設定。将来項目を足しても既存clientを壊さないよう任意fieldにする。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_external_preview: bool | None = None
+
+
 class ProjectFileRunCreate(BaseModel):
     """manifest不要の単体file実行。pathはproject内の相対pathだけを受け付ける。"""
 

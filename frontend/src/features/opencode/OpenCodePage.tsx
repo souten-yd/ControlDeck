@@ -22,7 +22,13 @@ interface FeatureState {
 }
 interface Settings { base_url: string; model: string; project_path: string }
 interface Status { feature: FeatureState; settings: Settings }
-interface TerminalSession { id: string; name: string; created_at: number; attached: boolean; persistent: boolean }
+interface TerminalSession { id: string; name: string; created_at: number; attached: boolean; persistent: boolean; cwd?: string }
+
+/** セッションはCodeDEV配下のプロジェクトで起動するので、作業ディレクトリ名をそのまま名前として使う。 */
+function projectLabel(session: TerminalSession): string {
+  const directory = (session.cwd || "").replace(/\/+$/, "").split("/").filter(Boolean).pop();
+  return directory && directory !== "~" ? directory : session.id.slice(0, 8);
+}
 interface CodeProject { name: string; path: string; git: boolean; modified_at: number }
 
 const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900";
@@ -133,7 +139,7 @@ export default function OpenCodePage() {
       <Suspense fallback={<div className="grid h-full place-items-center text-sm text-zinc-400">OpenCodeに接続中...</div>}>
         <XtermView
           sessionId={active}
-          sessions={sessions.map((s) => ({ id: s.id, name: s.name }))}
+          sessions={sessions.map((s) => ({ id: s.id, name: projectLabel(s) }))}
           onSwitch={setActive}
           onExit={() => {
             setActive(null);
@@ -230,16 +236,19 @@ export default function OpenCodePage() {
           <ul className="divide-y divide-zinc-100 overflow-hidden rounded-2xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
             {sessions.map((s) => (
               <li key={s.id} className="flex items-center gap-3 bg-white px-4 py-3 dark:bg-zinc-900">
-                <button onClick={() => setActive(s.id)} className="min-w-0 flex-1 text-left">
-                  <p className="truncate font-mono text-sm">opencode · {s.id}</p>
-                  <p className="text-xs text-zinc-400">
+                <button onClick={() => setActive(s.id)} title={`session ${s.id}`} className="min-w-0 flex-1 text-left">
+                  <p className="truncate text-sm">
+                    <span className="text-zinc-400">OpenCode · </span>
+                    <span className="font-semibold">{projectLabel(s)}</span>
+                  </p>
+                  <p className="truncate text-xs text-zinc-400">
                     {s.created_at ? new Date(s.created_at * 1000).toLocaleString("ja-JP") : ""}
                     {s.attached && " · 接続中"}
                     {s.persistent && " · 永続 (tmux)"}
                   </p>
                 </button>
                 <button onClick={() => setActive(s.id)} className="rounded-xl bg-accent-50 px-3.5 py-2 text-sm font-medium text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400">接続</button>
-                <button onClick={() => setKilling(s.id)} aria-label={`セッション ${s.id} を終了`} className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40"><IconTrash /></button>
+                <button onClick={() => setKilling(s.id)} aria-label={`${projectLabel(s)} のセッションを終了`} className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40"><IconTrash /></button>
               </li>
             ))}
           </ul>
