@@ -119,6 +119,23 @@ export default function XtermView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    // 既定のDOMレンダラーはTUIの全画面再描画が重い。WebGLが使えれば切り替え、
+    // context lostや未対応環境ではDOMへ自動で戻す。
+    let webgl: { dispose: () => void; onContextLoss: (handler: () => void) => { dispose: () => void } } | null = null;
+    void (async () => {
+      try {
+        const { WebglAddon } = await import("@xterm/addon-webgl");
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => {
+          addon.dispose();
+          webgl = null;
+        });
+        term.loadAddon(addon);
+        webgl = addon;
+      } catch {
+        webgl = null;  // 未対応環境はDOMレンダラーのまま使う
+      }
+    })();
     fit.fit();
     termRef.current = term;
     let historyTrackHeight = historyTrack.clientHeight;
@@ -864,10 +881,8 @@ export default function XtermView({
         const button = lines > 0 ? 65 : 64;
         const column = Math.max(1, Math.round(term.cols / 2));
         const row = Math.max(1, Math.round(term.rows / 2));
-        const wheel = `\x1b[<${button};${column};${row}M`;
-        for (let index = 0; index < Math.min(Math.abs(lines), 20); index += 1) {
-          inputSenderRef.current?.(wheel);
-        }
+        const count = Math.min(Math.abs(lines), 4);
+        inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
         return;
       }
       // mouse非対応TUIはPageUp/PageDownで動かす。1画面ぶん貯めると反応が鈍いので
@@ -879,19 +894,55 @@ export default function XtermView({
         pageRemainder += forward ? -1 : 1;
       }
     };
+    // mouse tracking中のTUI（OpenCode等）やalternate screenでは、xterm側に
+    // scrollbackが無い／アプリが描画を持つため、入力としてアプリへ渡す。
+    const applyScroll = (lines: number) => {
+      const clamped = Math.max(-100, Math.min(100, lines));
+      if (term.buffer.active.type === "alternate" || appWantsMouse()) scrollApplication(clamped);
+      else term.scrollLines(clamped);
+    };
+    // TUIは1スクロールごとに全画面を描き直すため、送信間隔を空けて描画を詰まらせない。
+    let lastScrollFlushAt = 0;
+    const SCROLL_FLUSH_INTERVAL = 40;
+    // 指を離したあとの慣性。1フレームあたりの行速度を減衰させながら流す。
+    let scrollVelocity = 0;
+    let momentumRemainder = 0;
+    let momentumFrame = 0;
+    const stopMomentum = () => {
+      window.cancelAnimationFrame(momentumFrame);
+      momentumFrame = 0;
+      scrollVelocity = 0;
+      momentumRemainder = 0;
+    };
+    const stepMomentum = () => {
+      momentumFrame = 0;
+      scrollVelocity *= 0.93;
+      momentumRemainder += scrollVelocity;
+      const now = performance.now();
+      const lines = now - lastScrollFlushAt >= SCROLL_FLUSH_INTERVAL ? Math.trunc(momentumRemainder) : 0;
+      if (lines !== 0) {
+        lastScrollFlushAt = now;
+        applyScroll(lines);
+        momentumRemainder -= lines;
+      }
+      if (Math.abs(scrollVelocity) > 0.12) momentumFrame = window.requestAnimationFrame(stepMomentum);
+      else stopMomentum();
+    };
     const flushTouchScroll = () => {
       touchScrollFrame = 0;
+      // TUIは1スクロールごとに全画面を描き直す。フレーム毎に送ると描画が詰まって
+      // かえってカクつくため、一定間隔でまとめて送る。
+      const now = performance.now();
+      if (now - lastScrollFlushAt < SCROLL_FLUSH_INTERVAL) {
+        touchScrollFrame = window.requestAnimationFrame(flushTouchScroll);
+        return;
+      }
+      lastScrollFlushAt = now;
       const lines = Math.trunc(touchRemainder);
       if (lines !== 0) {
         // replay済みnormal bufferを右端barと同じlocal pathで即時移動する。
         // tmux subprocessとWebSocket往復はgestureのhot pathへ入れない。
-        // mouse tracking中のTUI（OpenCode等）やalternate screenでは、xterm側に
-        // scrollbackが無い／アプリが描画を持つため、入力としてアプリへ渡す。
-        if (term.buffer.active.type === "alternate" || appWantsMouse()) {
-          scrollApplication(Math.max(-100, Math.min(100, lines)));
-        } else {
-          term.scrollLines(Math.max(-100, Math.min(100, lines)));
-        }
+        applyScroll(lines);
         touchRemainder -= lines;
       }
     };
@@ -911,6 +962,7 @@ export default function XtermView({
       touchLastY = touch.clientY;
       touchRemainder = 0;
       pageRemainder = 0;
+      stopMomentum();
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
       touchCellHeight = screen && term.rows > 0
         ? screen.getBoundingClientRect().height / term.rows
@@ -935,7 +987,9 @@ export default function XtermView({
 
       event.preventDefault();
       // 1:1 cell換算は小さな画面で指の移動量に対して重く感じるため、軽い加速を加える。
-      touchRemainder += 1.35 * (touchLastY - touch.clientY) / Math.max(touchCellHeight, 1);
+      const moved = 1.5 * (touchLastY - touch.clientY) / Math.max(touchCellHeight, 1);
+      touchRemainder += moved;
+      scrollVelocity = scrollVelocity * 0.6 + moved * 0.4;
       if (!touchScrollFrame) touchScrollFrame = window.requestAnimationFrame(flushTouchScroll);
       touchLastY = touch.clientY;
     };
@@ -950,6 +1004,12 @@ export default function XtermView({
       }
       touchTracking = false;
       touchScrolling = false;
+      if (wasScrolling && Math.abs(scrollVelocity) > 0.4) {
+        momentumRemainder = 0;
+        if (!momentumFrame) momentumFrame = window.requestAnimationFrame(stepMomentum);
+      } else {
+        stopMomentum();
+      }
       if (!wasScrolling) {
         leaveHistoryForInput();
         term.focus();
@@ -1004,7 +1064,9 @@ export default function XtermView({
       geometryController?.dispose();
       imeController.dispose();
       delete testWindow.__controlDeckTerminalTest;
+      webgl?.dispose();
       window.cancelAnimationFrame(touchScrollFrame);
+      window.cancelAnimationFrame(momentumFrame);
       window.cancelAnimationFrame(historyMarkerFrame);
       historyTrackObserver.disconnect();
       historyResizeDisposable.dispose();
