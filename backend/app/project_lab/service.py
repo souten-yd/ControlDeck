@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.config import data_dir
 from app.schemas.project_lab import ProjectManifest
 from app.workflows.redaction import redact
 
@@ -48,7 +49,21 @@ ARTIFACT_KINDS = {
     ".log": "log", ".txt": "text", ".text": "text",
     **{suffix: "code" for suffix in CODE_LANGUAGES},
 }
-STATIC_RESOURCE_TYPES = {".woff", ".woff2", ".ttf", ".otf", ".ico", ".map"}
+# 一覧には出さないが、HTMLから読み込まれる補助リソースとして配信を許可する拡張子。
+STATIC_RESOURCE_TYPES = {
+    ".woff", ".woff2", ".ttf", ".otf", ".eot", ".ico", ".map", ".webmanifest",
+    ".wasm", ".bin", ".data",
+    ".glb", ".gltf", ".obj", ".mtl", ".fbx", ".stl", ".ply", ".hdr", ".exr", ".ktx2", ".basis",
+    ".avif", ".bmp", ".apng", ".m4a", ".flac", ".aac", ".m4v", ".mov", ".vtt", ".srt",
+}
+# Pythonのmimetypesが知らない拡張子だけを補う（moduleやWASMはMIMEが違うと読み込めない）。
+EXTRA_MEDIA_TYPES = {
+    ".map": "application/json", ".ktx2": "image/ktx2", ".basis": "application/octet-stream",
+    ".data": "application/octet-stream", ".mtl": "text/plain", ".obj": "text/plain",
+}
+# HTMLが外部CDN等を読み込むか（preview既定では遮断するため、UIで理由を示す）。
+EXTERNAL_REFERENCE = re.compile(r"""(?:src|href)\s*=\s*["']?(?:https?:)?//""", re.I)
+MAX_EXTERNAL_SCAN_BYTES = 512 * 1024
 SENSITIVE_NAME = re.compile(r"(^|[._-])(secret|secrets|credential|credentials|private[_-]?key|id_rsa|id_ed25519)([._-]|$)", re.I)
 SENSITIVE_TEXT = re.compile(
     r"(?im)(\b(?:authorization|password|passwd|token|secret|api[_-]?token|api[_-]?key)\b[ \t]*[:=][ \t]*)([^\s,;&]+)"
@@ -57,6 +72,38 @@ SENSITIVE_TEXT = re.compile(
 
 class ProjectLabError(ValueError):
     pass
+
+
+DEFAULT_SETTINGS = {"allow_external_preview": False}
+
+
+def _settings_path() -> Path:
+    root = (data_dir() / "project-lab").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "settings.json"
+
+
+def get_settings() -> dict[str, Any]:
+    """preview挙動の設定。既定は外部読み込みを遮断する。"""
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        raw = json.loads(_settings_path().read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            settings["allow_external_preview"] = bool(raw.get("allow_external_preview"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        pass
+    return settings
+
+
+def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
+    settings = get_settings()
+    if "allow_external_preview" in patch:
+        settings["allow_external_preview"] = bool(patch["allow_external_preview"])
+    path = _settings_path()
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    return settings
 
 
 def project_root() -> Path:
@@ -244,6 +291,24 @@ def _text_preview(path: Path, kind: str) -> tuple[str | None, Any | None]:
         return None, None
 
 
+def media_type(path: Path) -> str:
+    """配信時のContent-Type。moduleやWASMはMIMEが違うとブラウザが実行しない。"""
+    suffix = path.suffix.lower()
+    if suffix in EXTRA_MEDIA_TYPES:
+        return EXTRA_MEDIA_TYPES[suffix]
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def _uses_external_resources(path: Path) -> bool:
+    try:
+        if path.stat().st_size > MAX_EXTERNAL_SCAN_BYTES:
+            return False
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return EXTERNAL_REFERENCE.search(handle.read(MAX_EXTERNAL_SCAN_BYTES)) is not None
+    except OSError:
+        return False
+
+
 def artifact_info(project: Path, path: Path, *, include_preview: bool = False) -> dict[str, Any] | None:
     try:
         resolved = path.resolve(strict=True)
@@ -260,6 +325,7 @@ def artifact_info(project: Path, path: Path, *, include_preview: bool = False) -
     text, structured = _text_preview(resolved, kind) if include_preview else (None, None)
     return {
         "path": relative, "name": resolved.name, "kind": kind,
+        "external": kind == "html" and _uses_external_resources(resolved),
         "language": CODE_LANGUAGES.get(suffix, ""),
         "runnable": suffix in FILE_RUNTIMES,
         "mimeType": mimetypes.guess_type(resolved.name)[0] or "application/octet-stream",

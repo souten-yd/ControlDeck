@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
@@ -1349,7 +1350,15 @@ def delete_workflow(
     db.execute(sql_delete(WorkflowExecution).where(WorkflowExecution.workflow_id == workflow_id))
     db.execute(sql_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == workflow_id))
     db.delete(wf)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # 参照が残っている場合は500ではなく、原因が分かる409で返す。
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="ほかの機能から参照されているため削除できません。参照元を先に削除してください",
+        ) from exc
     for artifact in stored_artifacts:
         workflow_artifacts.remove_artifact_file(artifact)
     audit.record(db, "workflow.delete", user=user, resource_type="workflow", resource_id=str(workflow_id), request=request, metadata={"name": name})

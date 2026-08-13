@@ -64,6 +64,8 @@ export default function ProjectLabPage() {
   // 既定は実寸。枠と同じ幅で描画するとページ側のmedia queryとタッチ判定が実機どおりに働く。
   // 「全体」はPC幅1024pxで描いて縮小する全景モードで、操作より確認を優先したいとき用。
   const [fitWidth, setFitWidth] = useState(false);
+  // 外部CDNの読み込みは既定で遮断し、利用者が明示的に許可したファイルだけ通す。
+  const [externalAllowed, setExternalAllowed] = useState<Record<string, boolean>>({});
   const [openRun, setOpenRun] = useState<number | null>(null);
 
   const projectsQuery = useQuery({ queryKey: ["project-lab"], queryFn: projectLabApi.list });
@@ -74,6 +76,18 @@ export default function ProjectLabPage() {
     enabled: projectId !== null,
   });
   const detail = detailQuery.data;
+  const settingsQuery = useQuery({ queryKey: ["project-lab-settings"], queryFn: projectLabApi.settings });
+  const allowExternalAlways = settingsQuery.data?.allow_external_preview === true;
+  const saveSettings = useMutation({
+    mutationFn: (allow: boolean) => projectLabApi.saveSettings({ allow_external_preview: allow }),
+    onSuccess: async (settings) => {
+      queryClient.setQueryData(["project-lab-settings"], settings);
+      setReloadToken((value) => value + 1);
+      show(settings.allow_external_preview ? "外部CDNを常に許可します" : "外部CDNの読み込みを遮断します");
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "設定を保存できません", "error"),
+  });
+
   const runsQuery = useQuery({
     queryKey: ["project-lab-runs", projectId],
     queryFn: () => projectLabApi.runs(projectId as string),
@@ -188,6 +202,8 @@ export default function ProjectLabPage() {
                   detail={detail}
                   busy={startProfileRun.isPending}
                   onRunProfile={(profile) => startProfileRun.mutate(profile)}
+                  allowExternal={allowExternalAlways}
+                  onToggleExternal={(allow) => saveSettings.mutate(allow)}
                 />
               )}
             </Popover>
@@ -225,6 +241,12 @@ export default function ProjectLabPage() {
             sourceMode={sourceMode}
             reloadToken={reloadToken}
             fit={fitWidth}
+            externalAllowed={allowExternalAlways || (artifact ? externalAllowed[artifact.path] === true : false)}
+            onAllowExternal={() => {
+              if (!artifact) return;
+              setExternalAllowed((current) => ({ ...current, [artifact.path]: true }));
+              setReloadToken((value) => value + 1);
+            }}
           />
           {artifact && detail && (
             <Dock
@@ -311,7 +333,7 @@ function FileRow({ artifact, selected, onSelect }: { artifact: ProjectLabArtifac
 }
 
 function Stage({
-  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit,
+  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit, externalAllowed, onAllowExternal,
 }: {
   projects: ProjectLabSummary[];
   loading: boolean;
@@ -321,6 +343,8 @@ function Stage({
   sourceMode: boolean;
   reloadToken: number;
   fit: boolean;
+  externalAllowed: boolean;
+  onAllowExternal: () => void;
 }) {
   if (loading) return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
   if (error) {
@@ -346,7 +370,12 @@ function Stage({
       </Centered>
     );
   }
-  return <ArtifactView detail={detail} artifact={artifact} sourceMode={sourceMode} reloadToken={reloadToken} fit={fit} />;
+  return (
+    <ArtifactView
+      detail={detail} artifact={artifact} sourceMode={sourceMode} reloadToken={reloadToken} fit={fit}
+      externalAllowed={externalAllowed} onAllowExternal={onAllowExternal}
+    />
+  );
 }
 
 function Centered({ children }: { children: ReactNode }) {
@@ -385,15 +414,17 @@ function HtmlFrame({ name, url, fit }: { name: string; url: string; fit: boolean
 }
 
 function ArtifactView({
-  detail, artifact, sourceMode, reloadToken, fit,
+  detail, artifact, sourceMode, reloadToken, fit, externalAllowed, onAllowExternal,
 }: {
   detail: ProjectLabDetail;
   artifact: ProjectLabArtifact;
   sourceMode: boolean;
   reloadToken: number;
   fit: boolean;
+  externalAllowed: boolean;
+  onAllowExternal: () => void;
 }) {
-  const url = projectLabApi.artifactUrl(detail.id, artifact.path);
+  const url = projectLabApi.artifactUrl(detail.id, artifact.path, { external: externalAllowed });
   const asText = sourceMode || TEXTUAL.includes(artifact.kind);
   const preview = useQuery({
     queryKey: ["project-lab-preview", detail.id, artifact.path],
@@ -403,7 +434,25 @@ function ArtifactView({
 
   if (!asText) {
     if (artifact.kind === "html") {
-      return <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={url} fit={fit} />;
+      return (
+        <div className="relative h-full w-full">
+          <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={url} fit={fit} />
+          {artifact.external && !externalAllowed && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3">
+              <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-2xl border border-amber-300 bg-amber-50/95 px-3 py-2 text-[11px] leading-snug text-amber-900 shadow-lg backdrop-blur dark:border-amber-800 dark:bg-amber-950/90 dark:text-amber-200">
+                <span className="min-w-0">外部CDNの読み込みを遮断しています。動かない場合はこちら</span>
+                <button
+                  type="button"
+                  onClick={onAllowExternal}
+                  className="min-h-9 shrink-0 rounded-xl bg-amber-600 px-3 text-[11px] font-semibold text-white hover:bg-amber-700"
+                >
+                  許可して再読み込み
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
     }
     if (artifact.kind === "image") {
       return (
@@ -554,7 +603,7 @@ function Dock({
           </button>
         )}
         <a
-          href={projectLabApi.artifactUrl(detail.id, artifact.path, true)}
+          href={projectLabApi.artifactUrl(detail.id, artifact.path, { download: true })}
           aria-label="保存"
           className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
         >
@@ -663,11 +712,13 @@ function FilesSheet({
 }
 
 function InfoPanel({
-  detail, busy, onRunProfile,
+  detail, busy, onRunProfile, allowExternal, onToggleExternal,
 }: {
   detail: ProjectLabDetail;
   busy: boolean;
   onRunProfile: (profile: { id: string; type: string }) => void;
+  allowExternal: boolean;
+  onToggleExternal: (allow: boolean) => void;
 }) {
   const profiles = detail.manifest?.profiles ?? [];
   return (
@@ -711,7 +762,22 @@ function InfoPanel({
           })}
         </div>
       )}
-      <p className="mt-4 text-[11px] leading-relaxed text-zinc-400">
+      <label className="mt-4 flex items-start gap-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+        <input
+          type="checkbox"
+          checked={allowExternal}
+          onChange={(event) => onToggleExternal(event.target.checked)}
+          className="mt-0.5 h-5 w-5 shrink-0 accent-current"
+        />
+        <span className="min-w-0">
+          <span className="block text-xs font-medium">外部CDNを常に許可</span>
+          <span className="mt-0.5 block text-[11px] leading-relaxed text-zinc-400">
+            three.js などをCDNから読み込むページを、毎回の確認なしで表示します。プレビューは常に隔離（sandbox）のままなので、
+            Control Deck の情報へは到達できません。
+          </span>
+        </span>
+      </label>
+      <p className="mt-3 text-[11px] leading-relaxed text-zinc-400">
         実行は隔離された systemd user unit（ホームは読み取り専用、書き込みはプロジェクト配下のみ）で行われ、ボタンを押したときだけ開始します。
       </p>
     </div>

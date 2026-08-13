@@ -13,7 +13,7 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import ProjectRun, User
 from app.project_lab import runs, service
-from app.schemas.project_lab import ProjectFileRunCreate, ProjectRunCreate
+from app.schemas.project_lab import ProjectFileRunCreate, ProjectLabSettingsBody, ProjectRunCreate
 from app.security.deps import require_permission
 
 router = APIRouter(prefix="/project-lab", tags=["project-lab"])
@@ -26,6 +26,15 @@ INERT_CSP = (
     "media-src 'self'; form-action 'none'; base-uri 'none'"
 )
 SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+# 明示操作時だけ外部CDN等の読み込みを許可する。sandboxは維持したままなので、
+# 読み込まれたコードもControl Deckのcookie／DOM／APIへは到達できない。
+HTML_EXTERNAL_CSP = (
+    "sandbox allow-scripts allow-modals allow-forms allow-popups allow-downloads; "
+    "default-src 'self' https: data: blob:; script-src 'self' https: 'unsafe-inline' 'unsafe-eval' blob:; "
+    "style-src 'self' https: 'unsafe-inline' data:; img-src 'self' https: data: blob:; "
+    "font-src 'self' https: data:; media-src 'self' https: data: blob:; connect-src https:; "
+    "form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+)
 HTML_CSP = (
     "sandbox allow-scripts allow-modals allow-forms allow-popups allow-downloads; "
     "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
@@ -95,6 +104,25 @@ def _not_found(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/settings")
+def project_lab_settings(user: User = Depends(require_permission("project_lab.view"))):
+    return service.get_settings()
+
+
+@router.put("/settings")
+def update_project_lab_settings(
+    body: ProjectLabSettingsBody, request: Request,
+    user: User = Depends(require_permission("project_lab.run")), db: Session = Depends(get_db),
+):
+    """外部CDNを常に許可するかを切り替える。sandboxは常に維持する。"""
+    settings = service.save_settings(body.model_dump(exclude_none=True))
+    audit.record(
+        db, "project_lab.settings", user=user, resource_type="project_lab", resource_id="settings",
+        request=request, metadata={"allow_external_preview": settings["allow_external_preview"]},
+    )
+    return settings
+
+
 @router.get("/projects")
 def projects(user: User = Depends(require_permission("project_lab.view"))):
     return service.list_projects()
@@ -111,6 +139,7 @@ def project(project_id: str, user: User = Depends(require_permission("project_la
 @router.get("/projects/{project_id}/artifacts/{artifact_path:path}")
 def artifact(
     project_id: str, artifact_path: str, download: bool = Query(False),
+    external: bool = Query(False, description="外部CDN等の読み込みを明示的に許可する"),
     user: User = Depends(require_permission("project_lab.view")),
 ):
     try:
@@ -121,7 +150,8 @@ def artifact(
     kind = service.ARTIFACT_KINDS.get(path.suffix.lower(), "resource")
     policy = INERT_CSP
     if kind == "html" and not download:
-        policy = HTML_CSP
+        allow_external = external or service.get_settings()["allow_external_preview"]
+        policy = HTML_EXTERNAL_CSP if allow_external else HTML_CSP
     elif path.suffix.lower() == ".svg":
         policy = SVG_CSP
     headers = {"Content-Security-Policy": policy, "X-Content-Type-Options": "nosniff"}
@@ -131,7 +161,7 @@ def artifact(
         if patched is not None:
             return HTMLResponse(patched, headers={**headers, "Cache-Control": "no-store"})
     return FileResponse(
-        path, media_type=(service.artifact_info(project_path, path) or {}).get("mimeType"),
+        path, media_type=service.media_type(path),
         filename=path.name if download else None,
         content_disposition_type=disposition, headers=headers,
     )

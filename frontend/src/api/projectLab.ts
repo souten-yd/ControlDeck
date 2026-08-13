@@ -6,6 +6,8 @@ export interface ProjectLabArtifact {
   kind: "html" | "image" | "table" | "json" | "markdown" | "pdf" | "audio" | "video" | "log" | "text" | "code";
   language: string;
   runnable: boolean;
+  /** HTMLが外部CDN等を参照しているか（プレビューは既定で遮断する）。 */
+  external?: boolean;
   mimeType: string;
   size: number;
   modifiedAt: string;
@@ -68,7 +70,14 @@ export interface ProjectLabRun {
   artifacts: ProjectLabRunArtifact[];
 }
 
+export interface ProjectLabSettings {
+  allow_external_preview: boolean;
+}
+
 export const projectLabApi = {
+  settings: () => api<ProjectLabSettings>("/project-lab/settings"),
+  saveSettings: (patch: Partial<ProjectLabSettings>) =>
+    api<ProjectLabSettings>("/project-lab/settings", { method: "PUT", json: patch }),
   list: () => api<ProjectLabSummary[]>("/project-lab/projects"),
   detail: (id: string) => api<ProjectLabDetail>(`/project-lab/projects/${encodeURIComponent(id)}`),
   runs: (id: string) => api<ProjectLabRun[]>(`/project-lab/runs?project_id=${encodeURIComponent(id)}`),
@@ -83,6 +92,8 @@ export const projectLabApi = {
   preview: (id: string, path: string) => api<Pick<ProjectLabArtifact, "path" | "previewText" | "structuredPreview">>(
     `/project-lab/projects/${encodeURIComponent(id)}/previews/${path.split("/").map(encodeURIComponent).join("/")}`,
   ),
-  artifactUrl: (id: string, path: string, download = false) =>
-    `/api/v1/project-lab/projects/${encodeURIComponent(id)}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}${download ? "?download=true" : ""}`,
+  artifactUrl: (id: string, path: string, options: { download?: boolean; external?: boolean } = {}) => {
+    const query = [options.download ? "download=true" : "", options.external ? "external=true" : ""].filter(Boolean).join("&");
+    return `/api/v1/project-lab/projects/${encodeURIComponent(id)}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`;
+  },
 };
