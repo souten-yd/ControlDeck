@@ -796,8 +796,13 @@ def _has_connected_clients(port: int) -> bool:
     return False
 
 
-def _opencode_session_uses(port: int) -> bool:
-    """OpenCodeのTUIセッションが生きていて、その接続先が このinstanceか。"""
+def _opencode_session_uses(port: int, *, window_seconds: float, require_attached: bool = False) -> bool:
+    """OpenCodeのTUIが「実際に使われている」か。
+
+    セッションが存在するだけで保持し続けると、放置したTUIのせいでinstanceが
+    永久にアンロードされない。tmuxのpane活動時刻を見て、idle判定と同じ窓に
+    入っているものだけを利用中とみなす。
+    """
     try:
         from app.features.registry import is_enabled
 
@@ -811,15 +816,23 @@ def _opencode_session_uses(port: int) -> bool:
         endpoint = urlsplit(str(get_settings().get("base_url") or ""))
         if endpoint.hostname not in ("127.0.0.1", "localhost", "::1") or endpoint.port != port:
             return False
-        return any(
-            session.get("alive", True) and "opencode" in str(session.get("program") or "").lower()
-            for session in terminals.list_sessions()
-        )
+        now = time.time()
+        for session in terminals.list_sessions():
+            if not session.get("alive", True):
+                continue
+            if "opencode" not in str(session.get("program") or "").lower():
+                continue
+            if require_attached and not session.get("attached"):
+                continue
+            activity = float(session.get("activity_at") or 0)
+            if activity and now - activity <= window_seconds:
+                return True
+        return False
     except Exception:  # noqa: BLE001 - 監視の失敗でunloadを止めない
         return False
 
 
-async def _revive_endpoint_for_opencode() -> None:
+async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
     """OpenCodeのTUIが生きているのにendpointが落ちていたら起こし直す。
 
     OpenCodeはControl Deckを経由せず直接llama.cppを叩くため、停止中は
@@ -836,7 +849,8 @@ async def _revive_endpoint_for_opencode() -> None:
 
         base_url = str(get_settings().get("base_url") or "")
         port = urlsplit(base_url).port
-        if not port or not _opencode_session_uses(int(port)):
+        # 見ていない（detachされた）セッションのために勝手に起動しない。
+        if not port or not _opencode_session_uses(int(port), window_seconds=window_seconds, require_attached=True):
             return
         if any(int(item.get("port") or 0) == int(port) and item.get("loaded") for item in list_instances()):
             return
@@ -875,13 +889,15 @@ async def idle_unload_loop() -> None:
                 # Control Deck経由でない利用（OpenCode等）を止めない。使用中なら時計を進める。
                 if port and (
                     await asyncio.to_thread(_has_connected_clients, port)
-                    or await asyncio.to_thread(_opencode_session_uses, port)
+                    or await asyncio.to_thread(
+                        _opencode_session_uses, port, window_seconds=policy.idle_unload_minutes * 60,
+                    )
                 ):
                     mark_used_by_base_url(f"http://127.0.0.1:{port}/v1")
                     continue
                 await asyncio.to_thread(stop_instance, str(item["alias"]))
                 logger.info("idle llama.cpp instance unloaded: %s", item["alias"])
-            await _revive_endpoint_for_opencode()
+            await _revive_endpoint_for_opencode(policy.idle_unload_minutes * 60)
         except asyncio.CancelledError:
             raise
         except Exception:
