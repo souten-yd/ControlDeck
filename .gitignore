@@ -32,3 +32,6 @@ data/
 # Claude Code ローカル/一時ファイル
 .claude/settings.local.json
 .claude/*.tmp.*
+
+# deck.sh backup の既定出力先
+backups/

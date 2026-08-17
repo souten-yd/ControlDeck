@@ -234,12 +234,28 @@ service_installed() {
   systemctl --user cat "$SERVICE.service" >/dev/null 2>&1
 }
 
+# data_dir を載せているファイルシステムのマウントポイント。
+# 別ドライブへ移設した構成で、マウント前に起動して空の data_dir を作るのを防ぐガードに使う。
+# 既定（data_dir が / 上）では "/" になり、ガードは常に成功する。
+data_mount() {
+  local cfg="$REPO_ROOT/config/config.yaml" dd=""
+  if [ -f "$cfg" ]; then
+    dd="$(sed -n 's/^data_dir:[[:space:]]*//p' "$cfg" | head -1 | tr -d '"'\'' ')"
+  fi
+  [ -n "$dd" ] || dd="$HOME/.local/share/control-deck"
+  case "$dd" in "~"*) dd="$HOME${dd#\~}" ;; esac
+  findmnt -no TARGET --target "$dd" 2>/dev/null | head -1 || echo /
+}
+
 install_web_unit() {
   local unit_dir="$HOME/.config/systemd/user"
-  local unit_tmp
+  local unit_tmp mount_point
   mkdir -p "$unit_dir"
+  mount_point="$(data_mount)"
+  [ -n "$mount_point" ] || mount_point=/
   unit_tmp="$(mktemp "$unit_dir/.control-deck-web.service.XXXXXX")"
   sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
+      -e "s|@DATA_MOUNT@|$mount_point|g" \
       "$REPO_ROOT/deploy/systemd/control-deck-web.service.in" > "$unit_tmp"
   chmod 0644 "$unit_tmp"
   mv "$unit_tmp" "$unit_dir/$SERVICE.service"
