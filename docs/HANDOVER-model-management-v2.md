@@ -23,7 +23,7 @@
 
 | # | 項目 | 状態 |
 |---|---|---|
-| 0 | G: NVMe 移設 | **作業中**（§4 参照） |
+| 0 | G: NVMe 移設 | **完了**。残は再起動での自動起動確認のみ（ユーザーが手動実施） |
 | 1 | F: モデルライブラリ | 未着手 |
 | 2 | A: エンドポイント基盤 | 未着手 |
 | 3 | B: think のモデル個別化 | 未着手 |
@@ -139,28 +139,83 @@
    `Qwen3.6-35B-A3B-Q4_K_M.gguf`、`Qwen3.6-35B-A3B-UD-Q5_K_M.gguf`。
    これらは `files.allowed_roots` に `/data1tb` が無いため **ControlDeck から見えていない**（F で解決する）。
 
-### 次にやること（手順）
+### 実施済み（2026-08-18）— **移設完了。アプリは NVMe 側で正常稼働中**
 
-設計書「移設の実施手順」の 3 以降。`$VOL` = `/data1tb`。
+`$VOL` = `/data1tb`（SanDisk 1TB NVMe, UUID `3ebc97b1-…`）。
 
-1. `mkdir -p /data1tb/ControlDeck/{app,data,cache} /data1tb/containers`
-2. サービス停止: `systemctl --user stop control-deck-web cdapp-llama-llama-fc5a1047.service`
-3. rsync（**旧側は消さない**）:
-   - `~/.local/share/control-deck/` → `/data1tb/ControlDeck/data/`
-   - `~/ControlDeck/` → `/data1tb/ControlDeck/app/`（`.venv` と `node_modules` は除外）
-   - `~/.npm`・`~/.cache/{pip,uv,ms-playwright}` → `/data1tb/ControlDeck/cache/`
-   - `~/.local/share/opencode` → `/data1tb/ControlDeck/opencode`（後で元の場所に symlink）
-4. `config/config.yaml` を更新:
-   - `data_dir: /data1tb/ControlDeck/data` を追加
-   - `files.allowed_roots` に `/data1tb` を追加
-   - `git_apps_dir: /data1tb/ControlDeck/apps` を追加
-   - `application_builder.dotnet_path` を新 data_dir 配下へ（現在 `~/.local/share/control-deck/sdks/dotnet-8.0.423/dotnet`）
-5. `~/.config/environment.d/control-deck.conf` と `~/.profile` に環境変数（設計書参照）→ `systemctl --user daemon-reload`
-6. `llama-runtime.json` の `instances[].model_path` を NVMe パスへ書き換え
-7. 新パスで `./deck.sh service`（`.venv` 再構築 + unit 再生成）
-8. `runtimes/llama.cpp/current` symlink を張り直す → 各 llama instance を保存して unit 再生成
-9. 起動確認 → **再起動して**自動起動を確認
-10. **確認後に**旧ディレクトリ削除（ユーザーへ確認を取る。勝手に消さない）
+1. キャッシュ rsync（サービス稼働のまま）→ サービス停止 → `data_dir`(8.5G/40 秒)・リポジトリ・
+   opencode を rsync。**コピーで行い、旧側は最後まで残した**。
+2. `config/config.yaml` を更新。**`allowed_roots` は `/data1tb` 全体ではなく絞った**:
+   ```yaml
+   data_dir: /data1tb/ControlDeck/data
+   git_apps_dir: /data1tb/ControlDeck/apps
+   files:
+     allowed_roots:
+       - /home/souten
+       - /data1tb/LLM               # モデルライブラリ
+       - /data1tb/ControlDeck/app   # リポジトリ
+       # /data1tb/ControlDeck/data（data_dir）は意図的に含めない
+   application_builder:
+     dotnet_path: /data1tb/ControlDeck/data/sdks/dotnet-8.0.423/dotnet
+   ```
+   > `files/service.py:_deny_roots()` は `data_dir()` を**動的参照**するので DB と `secret.key` は
+   > 移設後も自動保護される。それでもバックアップや設定 JSON を Files に見せる必要はないため
+   > data_dir 自体を許可ルートから外した（移設前より狭い）。
+3. `llama-runtime.json` の `model_path` を 4 件とも NVMe へ書き換え（`.pre-migration.bak` を隣に残した）。
+4. **コード変更 (1)**: `deploy/systemd/control-deck-web.service.in` に
+   `ExecStartPre=/usr/bin/findmnt --mountpoint @DATA_MOUNT@` を追加し、`deck.sh` の
+   `deck_data_dir()` / `data_mount()` で置換する。既定構成では `/` に解決され常に成功する。
+5. 新パスで `./deck.sh service` → `.venv` 再構築・フロントビルド・unit 再生成。
+6. `llama.switch_backend()` で `runtimes/llama.cpp/current` symlink を新 data_dir へ張り直し →
+   `sync_instance_unit()` で全 `cdapp-llama-*.service` を再生成。
+7. `~/.local/share/opencode` を `/data1tb/ControlDeck/opencode` への symlink に置換。
+8. **コード変更 (2) — 途中で判明した問題への恒久対策**:
+   `~/.profile` は**非ログインシェルで読まれず**、`~/.config/environment.d` は
+   **systemd unit にしか効かない**。そのため `./deck.sh service` を非ログインシェルから実行すると
+   Playwright Chromium が旧 `~/.cache/ms-playwright` に入ってしまった（実際に発生し 2.5G に膨らんだ）。
+   → **`deck.sh` に `export_cache_paths()` を追加**し、main dispatch の直前で呼ぶようにした。
+   キャッシュ先は `deck_data_dir()/cache` に統一（data_dir を大容量ドライブへ向ければ自動追随）。
+   利用者が明示設定済みの変数は上書きしない。`backup.sh` は data_dir 全体ではなく
+   `secret.key`/`rag`/`icons`/DB/config/unit だけを取るので、キャッシュを配下に置いても
+   バックアップは肥大しない（確認済み）。
+9. 旧ディレクトリを削除（ユーザー承認済み）。**`/` の空き 28GB → 81GB**。
+   削除: `~/ドキュメント/LLM`(36G) / `~/.local/share/control-deck`(8.5G) / `~/.npm`(5.9G) /
+   `~/.cache/{pip,uv,ms-playwright}`(3.3G) / `~/.local/share/opencode.pre-migration`(433M) /
+   `~/ControlDeck`(631M)。
+
+**動作確認済み**: Web `HTTP 200` / `ExecStartPre=findmnt --mountpoint /data1tb` が status=0/SUCCESS /
+新 data_dir の DB が更新され旧側は停止 / `llama`(8090) が NVMe の GGUF から生成成功（`1+1`→`2`、`3*7`→`21`）/
+embedding(8094) 1024 次元・reranker(8095) がオンデマンド起動 / OpenCode symlink 経由で参照可 /
+`pip cache dir` が新パスを返す。**削除後にも全項目を再確認した。**
+
+### 現在の実際のレイアウト（これが正）
+
+```
+/data1tb/ControlDeck/
+  app/            リポジトリ（git 作業ツリー。旧 ~/ControlDeck は削除済み）
+  data/           data_dir
+    cache/        pip / uv / npm / ms-playwright / huggingface   ← deck.sh が指す
+    runtimes/     llama.cpp・whisper.cpp
+    models/gguf/  bge-m3・Qwen3-Reranker
+  opencode/       ~/.local/share/opencode はここへの symlink
+/data1tb/LLM/     GGUF（llama・Qwen3.8-27B の参照先）
+/data1tb/containers/  SGLang 用（空）
+```
+
+**以降の作業は `/data1tb/ControlDeck/app` で行う。`~/ControlDeck` はもう存在しない。**
+
+### 残っていること
+
+1. **再起動して自動起動を確認する**（未実施。ユーザーが帰宅後に手動で再起動する）。
+   確認観点: `systemctl --user status control-deck-web` が active で、
+   `ExecStartPre=/usr/bin/findmnt --mountpoint /data1tb` が status=0/SUCCESS であること。
+2. 特権 helper（`/usr/local/libexec/control-deck-hw-helper`）は**元々未登録**。移設の影響ではない
+   （設置先は repo 非依存）。AMD GPU 電力プロファイルを効かせるには、ユーザーが対話端末で
+   `./deck.sh service` を実行して sudo 認証する必要がある。
+3. Ollama のモデル 19GB は `/usr/share/ollama/.ollama/models` に残っている。移すなら
+   `sudo systemctl edit ollama` で `Environment=OLLAMA_MODELS=/data1tb/LLM/ollama` を設定し、
+   ディレクトリを `ollama:ollama` 所有にする。**sudo が要るのでユーザーの明示実行**。
+4. SearXNG(136M) と `~/.config/opencode`(63M) は判断どおり `/` に残してある。
 
 ### 移設で壊れる絶対パス（対処つき）
 
