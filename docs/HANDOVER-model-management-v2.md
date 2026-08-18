@@ -27,7 +27,7 @@
 | 1 | F: モデルライブラリ | **完了**（§4.5 参照） |
 | 2 | A: エンドポイント基盤 | **バックエンド完了**。UI は未着手（§4.6） |
 | 3 | B: think のモデル個別化 | **完了**（§4.7） |
-| 4 | D-1/2/3: 削除・並べ替え・複製 | 未着手 |
+| 4 | D-1/2/3: 削除・並べ替え・複製 | **完了**（§4.10） |
 | 5 | C: 並列駆動の UI 露出 | **完了**（§4.8） |
 | 6 | フロントエンド分割 | 未着手 |
 | 7 | D-4/D-5: 容量表示・HF ダウンロード | 未着手 |
@@ -489,6 +489,69 @@ embedding/reranker は対象外。2 回目以降は何もしない。
 
 `--parallel` は**起動引数**で、実行中は変更できない（`POST /props` は 501）。
 KV はロード時に確保されるため。ただしウォーム再起動は実測 25 秒。
+
+---
+
+## 4.10 D-1/2/3: 削除・並べ替え・複製（実装順序 4）— 完了
+
+- **削除が UI から到達不能だった**。一覧の削除ボタンは `selectedProvider === "ollama"` で
+  ガードされ、`LlamaRuntimePanel` の削除は `!registrationOnly` 分岐（描画されない）にあった。
+  一覧行に `DropdownMenu`（詳細設定／複製／削除）を置いて到達可能にした。
+- `llama.delete_instance(alias, delete_file=False)`。**本体削除は取り消せない**ので、
+  許可ルート内であることと**他のモデル設定が同じファイルを参照していないこと**を確認してから消す。
+  `router.py` のハードコード `gguf_deleted: False` を実値にした。
+- 並べ替えは ↑↓ ボタン（`MobileNavigationSettings` の流儀）。`POST /llama/instances/reorder`。
+- 複製は `DuplicateDialog`。既定で**同じエンドポイントに載る**ので CTX 違いの切替に使える。
+- 同一エンドポイントを共有する行には `:8090 共有` バッジを出し、**ロード時に同居モデルが
+  止まることを確認ダイアログで先に知らせる**（接続先は変わらない旨も明記）。
+- 削除で `selected_alias` を巻き込まないよう修正（使っていないモデルを消しただけで
+  既定チャット先が変わらない）。
+
+---
+
+## 4.11 【未解決・重要】OpenCode / OMo は受け入れ制御を通らない
+
+**§4.9 の admission control は `LlamaCppRuntimeProvider` の中にあるため、
+ControlDeck を経由する生成（Chat / Workflow / RAG）にしか効かない。**
+
+実機の設定を確認したところ:
+
+```json
+// data/integrations/opencode/settings.json
+{"base_url": "http://127.0.0.1:8090/v1", "model": "llama"}
+```
+
+`integrations/opencode/provider.py:82` がこの baseURL を OpenCode の runtime config へ書き、
+OpenCode は **llama.cpp を直接叩く**。`provider.py:303` の `ensure_ready_by_base_url` は
+起動保証だけで、KV の空き待ちも 500 の再試行も通らない。
+
+結果として、OMo のようにサブエージェントを並列で走らせると:
+
+- slot は 4 まで埋まる（slot 不足ではないので llama.cpp は queue に逃がさない）
+- 共有KVが枯渇すると `500 Context size has been exceeded` になり、
+  **実行中の他リクエストごと巻き込んで失敗しうる**
+
+### 対応案（未実装）
+
+ControlDeck に **OpenAI 互換ゲートウェイ**を置き、OpenCode の接続先をそちらへ向ける。
+
+```
+OpenCode / OMo → ControlDeck gateway → (admission control) → llama.cpp :8090
+```
+
+`endpoint_capacity()` / `await_capacity()` をそのまま流用できる。
+**要決定: 認証方式**。OpenCode は `apiKey: "sk-no-key"` を送るだけで、
+ControlDeck はセッション Cookie 認証なので、そのままでは通らない。
+
+### 併せて検討する精度改善（未実装）
+
+現在の必要量見積りは `prompt_chars // 4 + max_tokens` の概算。
+コードエージェントは `max_tokens=16384` でも実際は 2,000 で終わることが多く、
+全量を予約すると実効並列度を不必要に下げる。
+
+`needed = actual_prompt_tokens + min(max_tokens, predicted_output_p95)`
+のように、実測 p95 を使うと並列度を上げられる。
+tokenizer による正確な入力トークン数、prompt cache、`requests_deferred` も材料になる。
 
 ---
 

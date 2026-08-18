@@ -74,3 +74,27 @@ export type ThinkMode = "auto" | "off" | "low" | "medium" | "high" | "xhigh" | "
 export const THINK_LEVEL_BUDGETS: Partial<Record<ThinkMode, number>> = {
   off: 0, low: 1024, medium: 4096, high: 16384, xhigh: 32768,
 };
+
+export interface LlamaEndpoint {
+  id: string;
+  label: string;
+  port: number;
+  active_alias: string;
+  base_url: string;
+  aliases: string[];
+  running_alias: string;
+}
+
+export const listLlamaEndpoints = () => api<LlamaEndpoint[]>("/models/llama/endpoints");
+
+export const reorderLlamaInstances = (order: string[]) =>
+  api("/models/llama/instances/reorder", { method: "POST", json: { order } });
+
+export const duplicateLlamaInstance = (alias: string, newAlias: string) =>
+  api(`/models/llama/instances/${encodeURIComponent(alias)}/duplicate`,
+      { method: "POST", json: { alias: newAlias } });
+
+export const deleteLlamaInstance = (alias: string, deleteFile: boolean) =>
+  api<{ ok: boolean; gguf_deleted: boolean; reason: string }>(
+    `/models/llama/instances/${encodeURIComponent(alias)}/delete`,
+    { method: "POST", json: { delete_file: deleteFile } });

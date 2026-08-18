@@ -374,3 +374,55 @@ def test_start_instance_restarts_running_unit_to_apply_saved_settings(monkeypatc
     monkeypatch.setattr(sd, "query_status", lambda name: {"status": "STOPPED"})
     llama.start_instance("m")
     assert calls == ["start"], "停止中は start"
+
+
+def test_delete_instance_can_remove_gguf_but_protects_shared_files(monkeypatch, tmp_path):
+    """GGUF本体の削除は取り消せないので、他が参照中なら消さない。"""
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+    from tests.conftest import _sandbox
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "del.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias=None: (True, ""))
+    monkeypatch.setattr(sd, "remove_unit", lambda name: None)
+    shared = _sandbox / "shared.gguf"
+    shared.write_bytes(b"GGUF")
+    lone = _sandbox / "lone.gguf"
+    lone.write_bytes(b"GGUF")
+
+    llama.save_instance("a", {"alias": "a", "model_path": str(shared), "port": 9700})
+    llama.save_instance("b", {"alias": "b", "model_path": str(shared), "port": 9701})
+    llama.save_instance("c", {"alias": "c", "model_path": str(lone), "port": 9702})
+
+    # 他が参照中（b）なら本体は消さない
+    result = llama.delete_instance("a", delete_file=True)
+    assert result["gguf_deleted"] is False
+    assert "b" in result["reason"]
+    assert shared.exists()
+
+    # 既定（delete_file なし）は設定だけ消す
+    result = llama.delete_instance("b")
+    assert result["gguf_deleted"] is False
+    assert shared.exists()
+
+    # 参照が無ければ消す
+    result = llama.delete_instance("c", delete_file=True)
+    assert result["gguf_deleted"] is True
+    assert not lone.exists()
+
+
+def test_delete_instance_keeps_selection_when_other_model_removed(monkeypatch, tmp_path):
+    """使っていないモデルを消しただけで既定チャット先が変わらない。"""
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "sel.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias=None: (True, ""))
+    monkeypatch.setattr(sd, "remove_unit", lambda name: None)
+    llama.save_instance("keep", {"alias": "keep", "model_path": "/m/k.gguf", "port": 9710})
+    llama.save_instance("drop", {"alias": "drop", "model_path": "/m/d.gguf", "port": 9711})
+    llama.select_instance("keep")
+    llama.delete_instance("drop")
+    assert llama.get_config()["selected_alias"] == "keep"

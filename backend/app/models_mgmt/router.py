@@ -808,20 +808,30 @@ def llama_select_instance(
     return result
 
 
+class DeleteInstanceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # 既定は設定だけ削除。GGUF 本体の削除は取り消せないので明示指定を要る。
+    delete_file: bool = False
+
+
 @router.post("/llama/instances/{alias}/delete")
 def llama_delete_instance(
     alias: str, request: Request,
+    body: DeleteInstanceBody | None = None,
     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
 ):
     from app.models_mgmt import llama
 
+    delete_file = bool(body.delete_file) if body else False
     try:
-        llama.delete_instance(alias)
+        result = llama.delete_instance(alias, delete_file=delete_file)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     audit.record(db, "llama.instance_delete", user=user, resource_type="model", resource_id=alias,
-                 request=request, metadata={"gguf_deleted": False})
-    return {"ok": True, "gguf_deleted": False}
+                 request=request, metadata={"gguf_deleted": result["gguf_deleted"],
+                                            "requested_file_delete": delete_file})
+    return {"ok": True, **result}
 
 
 @router.get("/llama/endpoints/{endpoint_id}/capacity")

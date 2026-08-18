@@ -5,13 +5,13 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
-import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
+import { IconDots, IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
-import type { ThinkMode } from "../api/models";
+import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
 interface Model {
   id?: string;
@@ -183,7 +183,12 @@ export default function ModelsPage() {
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
   const [llamaManagerOpen, setLlamaManagerOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [llamaDeleting, setLlamaDeleting] = useState<string | null>(null);
+  const [deleteFile, setDeleteFile] = useState(false);
+  const [duplicating, setDuplicating] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const [swapConfirm, setSwapConfirm] = useState<{ id: string; running: string } | null>(null);
 
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
@@ -218,14 +223,58 @@ export default function ModelsPage() {
     );
     return { ...model, loaded: !!active, expires_at: active?.expires_at ?? null, vram: active?.size_vram ?? null };
   });
+  const { data: endpoints } = useQuery({
+    queryKey: ["llama-endpoints"], queryFn: listLlamaEndpoints,
+    enabled: selectedProvider === "llama.cpp", refetchInterval: 15000,
+  });
   const refresh = async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["models", selectedProvider] }),
+      qc.invalidateQueries({ queryKey: ["llama-endpoints"] }),
       selectedProvider === "ollama" ? qc.invalidateQueries({ queryKey: ["ollama-running"] }) : Promise.resolve(),
     ]);
   };
 
-  const act = async (id: string, action: "load" | "unload") => {
+  /** 優先度の入れ替え。自動起動・オンデマンド起動の順序に効く。 */
+  const move = async (index: number, offset: -1 | 1) => {
+    if (!liveModels) return;
+    const target = index + offset;
+    if (target < 0 || target >= liveModels.length) return;
+    const order = liveModels.map((item) => item.id ?? item.name);
+    [order[index], order[target]] = [order[target], order[index]];
+    setReordering(true);
+    try {
+      await reorderLlamaInstances(order);
+      await refresh();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "並べ替えに失敗しました", "error");
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const removeLlama = useMutation({
+    mutationFn: ({ alias, file }: { alias: string; file: boolean }) => deleteLlamaInstance(alias, file),
+    onSuccess: (result) => {
+      show(result.gguf_deleted ? "設定とGGUFを削除しました"
+           : result.reason ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
+      setLlamaDeleting(null); setDeleteFile(false); refresh();
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
+  });
+
+  const duplicate = useMutation({
+    mutationFn: ({ alias, next }: { alias: string; next: string }) => duplicateLlamaInstance(alias, next),
+    onSuccess: () => { show("複製しました（同じエンドポイントに追加）"); setDuplicating(null); refresh(); },
+    onError: (e) => show(e instanceof Error ? e.message : "複製に失敗しました", "error"),
+  });
+
+  const act = async (id: string, action: "load" | "unload", runningOnSameEndpoint = "") => {
+    // 同じエンドポイントで別モデルが動いていると、ロードでそれが止まる。先に知らせる。
+    if (action === "load" && runningOnSameEndpoint && runningOnSameEndpoint !== id) {
+      setSwapConfirm({ id, running: runningOnSameEndpoint });
+      return;
+    }
     setActing(id);
     try {
       await api(`/models/providers/${selectedProvider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
@@ -292,28 +341,64 @@ export default function ModelsPage() {
         </div>
       ) : (
         <ul className="space-y-3">
-          {liveModels.map((m) => (
-            <li key={m.id ?? m.name} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-              <div className="flex items-center gap-3">
+          {liveModels.map((m, index) => {
+            const id = m.id ?? m.name;
+            const isLlama = selectedProvider === "llama.cpp";
+            const endpoint = isLlama ? endpoints?.find((e) => e.aliases.includes(id)) : undefined;
+            // 同じエンドポイントを共有する行は、ロードすると同居モデルが止まることを明示する。
+            const shared = endpoint && endpoint.aliases.length > 1;
+            return (
+            <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 sm:gap-3">
+                {isLlama && can("workflows.edit") && liveModels.length > 1 && (
+                  <div className="flex shrink-0 flex-col">
+                    <button type="button" onClick={() => move(index, -1)} disabled={index === 0 || reordering}
+                      aria-label={`${m.name}を上へ移動`} title="優先度を上げる"
+                      className="grid h-6 w-8 place-items-center rounded text-zinc-400 hover:text-zinc-700 disabled:opacity-25 dark:hover:text-zinc-200">↑</button>
+                    <button type="button" onClick={() => move(index, 1)} disabled={index === liveModels.length - 1 || reordering}
+                      aria-label={`${m.name}を下へ移動`} title="優先度を下げる"
+                      className="grid h-6 w-8 place-items-center rounded text-zinc-400 hover:text-zinc-700 disabled:opacity-25 dark:hover:text-zinc-200">↓</button>
+                  </div>
+                )}
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
-                <button onClick={() => selectedProvider === "llama.cpp" ? setLlamaDetail(m.id ?? m.name) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
-                  <p className="truncate text-sm font-semibold">{m.name}</p>
+                <button onClick={() => isLlama ? setLlamaDetail(id) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
+                  <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
+                    {m.name}
+                    {shared && (
+                      <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        :{endpoint!.port} 共有
+                      </span>
+                    )}
+                  </p>
                   <p className="num truncate text-xs text-zinc-400">
-                    {selectedProvider === "llama.cpp" ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
+                    {isLlama ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
                     {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
                   </p>
                 </button>
                 {can("workflows.edit") && (
                   <>
-                    <button disabled={acting === (m.id ?? m.name)} onClick={() => act(m.id ?? m.name, m.loaded ? "unload" : "load")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
-                      {acting === (m.id ?? m.name) ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
+                    <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
+                      {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
-                    {selectedProvider === "ollama" && <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>}
+                    {isLlama ? (
+                      <DropdownMenu
+                        ariaLabel={`${m.name}の操作`}
+                        trigger={<IconDots />}
+                        items={[
+                          { label: "詳細設定", onSelect: () => setLlamaDetail(id) },
+                          { label: "複製", onSelect: () => setDuplicating(id) },
+                          { label: "削除", danger: true, separated: true, onSelect: () => setLlamaDeleting(id) },
+                        ]}
+                      />
+                    ) : (
+                      <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>
+                    )}
                   </>
                 )}
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
       </>)}
@@ -326,7 +411,70 @@ export default function ModelsPage() {
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
       )}
+      {llamaDeleting && (
+        <ConfirmDialog
+          title={`「${llamaDeleting}」を削除しますか？`}
+          message="モデル設定と systemd unit を削除します。"
+          confirmLabel="削除する"
+          danger
+          busy={removeLlama.isPending}
+          onConfirm={() => removeLlama.mutate({ alias: llamaDeleting, file: deleteFile })}
+          onClose={() => { setLlamaDeleting(null); setDeleteFile(false); }}
+        >
+          <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+            <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="text-xs">GGUF ファイル本体も削除する
+              <span className="block text-[10px] text-zinc-500">
+                取り消せません。他のモデル設定が同じファイルを参照している場合は削除されません。
+              </span>
+            </span>
+          </label>
+        </ConfirmDialog>
+      )}
+      {duplicating && (
+        <DuplicateDialog
+          alias={duplicating}
+          busy={duplicate.isPending}
+          onConfirm={(next) => duplicate.mutate({ alias: duplicating, next })}
+          onClose={() => setDuplicating(null)}
+        />
+      )}
+      {swapConfirm && (
+        <ConfirmDialog
+          title={`「${swapConfirm.running}」を停止して切り替えますか？`}
+          message={`同じエンドポイントを共有しているため、「${swapConfirm.id}」をロードすると「${swapConfirm.running}」は停止します。接続先（ポート）は変わりません。`}
+          confirmLabel="切り替える"
+          onConfirm={() => { const target = swapConfirm.id; setSwapConfirm(null); act(target, "load"); }}
+          onClose={() => setSwapConfirm(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** モデル設定の複製。既定で同じエンドポイントに載るので、CTX違いの切替に使える。 */
+function DuplicateDialog({ alias, busy, onConfirm, onClose }: {
+  alias: string; busy: boolean; onConfirm: (next: string) => void; onClose: () => void;
+}) {
+  const [name, setName] = useState(`${alias}-copy`);
+  const valid = /^[A-Za-z0-9._:-]{1,128}$/.test(name) && name !== alias;
+  return (
+    <ConfirmDialog
+      title={`「${alias}」を複製`}
+      message="設定を丸ごとコピーします。同じエンドポイントに追加されるので、CTX や思考の設定違いを切り替えて使えます。自動起動は引き継ぎません。"
+      confirmLabel="複製する"
+      busy={busy}
+      disabled={!valid}
+      onConfirm={() => onConfirm(name)}
+      onClose={onClose}
+    >
+      <label className="mt-2 block">
+        <span className="mb-1 block text-xs font-medium text-zinc-500">新しいモデル名（alias）</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} autoFocus
+          className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+        {!valid && <span className="mt-1 block text-[10px] text-red-500">英数字・._:- で、元と違う名前にしてください</span>}
+      </label>
+    </ConfirmDialog>
   );
 }
 

@@ -516,18 +516,55 @@ def select_instance(alias: str) -> dict:
     return cfg
 
 
-def delete_instance(alias: str) -> None:
+def delete_instance(alias: str, *, delete_file: bool = False) -> dict:
+    """設定を削除する。delete_file 指定時は GGUF 本体も消す。
+
+    本体削除は取り消せないため、許可ルート内であることと、他のモデル設定から
+    参照されていないことを確認してから行う。
+    """
     cfg = get_config()
     if alias not in cfg["instances"]:
         raise KeyError("llama.cppモデル設定が見つかりません")
+    model_path = str(cfg["instances"][alias].get("model_path") or "")
+    still_used = [
+        other for other, item in cfg["instances"].items()
+        if other != alias and str(item.get("model_path") or "") == model_path
+    ]
     stop_instance(alias)
     from app.applications import systemd as sd
 
     sd.remove_unit(unit_name(alias))
+    endpoint_id = str(cfg["instances"][alias].get("endpoint_id") or "")
     cfg["instances"].pop(alias)
-    cfg["selected_alias"] = next(iter(cfg["instances"]), "")
+    if cfg.get("selected_alias") == alias:
+        cfg["selected_alias"] = next(iter(cfg["instances"]), "")
     cfg["instance"] = dict(cfg["instances"].get(cfg["selected_alias"], DEFAULT_INSTANCE))
     _write_config(cfg)
+    if endpoint_id:
+        _sync_endpoint_units(endpoint_id)
+
+    result = {"gguf_deleted": False, "reason": ""}
+    if not delete_file:
+        return result
+    if not model_path:
+        result["reason"] = "モデルファイルが設定されていません"
+        return result
+    if still_used:
+        result["reason"] = f"他のモデル設定が同じファイルを参照しています: {', '.join(still_used)}"
+        return result
+    from app.files import service as files
+
+    try:
+        resolved = files.resolve(model_path)
+    except (PermissionError, FileNotFoundError) as exc:
+        result["reason"] = str(exc)
+        return result
+    try:
+        resolved.unlink()
+        result["gguf_deleted"] = True
+    except OSError as exc:
+        result["reason"] = f"削除できませんでした: {exc}"
+    return result
 
 
 def sync_instance_unit(alias: str) -> None:
