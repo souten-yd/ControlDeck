@@ -847,6 +847,35 @@ async def llama_endpoint_capacity(
     return await llama.endpoint_capacity(int(endpoint["port"]))
 
 
+@router.get("/llm-gateway")
+def llm_gateway_settings(user: User = Depends(require_permission("workflows.edit"))):
+    """ゲートウェイの接続情報。OpenCode 等の直結クライアント向け。"""
+    from app.config import get_config as app_config
+    from app.models_mgmt import gateway
+
+    key = gateway.get_api_key()
+    port = int(app_config().server.port)
+    return {
+        "issued": bool(key),
+        "api_key": key,
+        "base_url": f"http://127.0.0.1:{port}/api/v1/llm/v1",
+    }
+
+
+@router.post("/llm-gateway/key")
+def llm_gateway_issue_key(
+    request: Request, rotate: bool = False,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """APIキーを発行／再発行する。再発行すると既存クライアントは繋がらなくなる。"""
+    from app.models_mgmt import gateway
+
+    key = gateway.rotate_api_key() if rotate else gateway.get_api_key(create=True)
+    audit.record(db, "llm_gateway.key", user=user, resource_type="runtime",
+                 request=request, metadata={"rotated": bool(rotate)})
+    return {"api_key": key}
+
+
 @router.get("/llama/endpoints")
 def llama_endpoints(user: User = Depends(require_permission("workflows.run"))):
     """エンドポイント（待受ポート）一覧。所属モデルと稼働中モデルを添える。"""

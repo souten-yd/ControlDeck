@@ -1159,11 +1159,12 @@ def _opencode_session_uses(port: int, *, window_seconds: float, require_attached
             return False
         from urllib.parse import urlsplit
 
-        from app.integrations.opencode.provider import get_settings
+        from app.integrations.opencode.provider import resolve_backend_port
         from app.terminals.manager import manager as terminals
 
-        endpoint = urlsplit(str(get_settings().get("base_url") or ""))
-        if endpoint.hostname not in ("127.0.0.1", "localhost", "::1") or endpoint.port != port:
+        # ゲートウェイ経由だと base_url は ControlDeck のポートになるため、
+        # 転送先まで解決した実ポートで判定する。直結時は従来どおり。
+        if resolve_backend_port() != port:
             return False
         now = time.time()
         for session in terminals.list_sessions():
@@ -1194,10 +1195,9 @@ async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
 
         if not is_enabled("opencode"):
             return
-        from app.integrations.opencode.provider import get_settings
+        from app.integrations.opencode.provider import resolve_backend_port
 
-        base_url = str(get_settings().get("base_url") or "")
-        port = urlsplit(base_url).port
+        port = resolve_backend_port()
         # 見ていない（detachされた）セッションのために勝手に起動しない。
         if not port or not _opencode_session_uses(int(port), window_seconds=window_seconds, require_attached=True):
             return

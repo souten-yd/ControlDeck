@@ -137,10 +137,14 @@ async def api_rate_limit(request: Request, call_next):
 
 @app.middleware("http")
 async def csrf_protect(request: Request, call_next):
-    # Cookie セッションのため、状態変更 API はカスタムヘッダーを必須にする
-    # （/hooks/ は外部 Webhook 用: セッションを使わずトークンで保護されるため除外）
+    # Cookie セッションのため、状態変更 API はカスタムヘッダーを必須にする。
+    # 除外するのはセッションCookieを使わない経路だけ:
+    #   /hooks/ 外部 Webhook（トークンで保護）
+    #   /llm/   OpenAI互換ゲートウェイ（Bearer APIキーで保護。標準クライアントは
+    #           独自ヘッダーを付けられず、Cookieも持たないためCSRFの前提が成立しない）
+    csrf_exempt = (f"{API}/hooks/", f"{API}/llm/")
     if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        if not request.url.path.startswith(f"{API}/hooks/") and request.headers.get("x-requested-with") != "ControlDeck":
+        if not request.url.path.startswith(csrf_exempt) and request.headers.get("x-requested-with") != "ControlDeck":
             return JSONResponse(status_code=403, content={"detail": "CSRF チェックに失敗しました"})
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -201,6 +205,7 @@ from app.workflows.hooks_router import router as hooks_router  # noqa: E402
 from app.workflows.chat_persist import router as chat_persist_router  # noqa: E402
 from app.workflows.asr import router as chat_asr_router  # noqa: E402
 from app.jobs.router import router as jobs_router  # noqa: E402
+from app.models_mgmt.gateway import router as llm_gateway_router
 from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
 from app.features.registry import is_enabled as feature_enabled  # noqa: E402
@@ -231,6 +236,9 @@ app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
 app.include_router(remote_router, prefix=API)
 app.include_router(gitrepos_router, prefix=API)
+# OpenAI互換ゲートウェイ。OpenCode等の直結クライアントにもKV受け入れ制御を効かせる。
+# 認証はセッションCookieではなく専用APIキー（OpenAI互換クライアントはCookieを持てない）。
+app.include_router(llm_gateway_router, prefix=API)
 app.include_router(knowledge_router, prefix=API)
 app.include_router(chat_router, prefix=API)
 app.include_router(chat_persist_router, prefix=API)

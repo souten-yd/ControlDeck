@@ -19,6 +19,9 @@ DEFAULT_SETTINGS = {
     "base_url": "http://127.0.0.1:11434/v1",
     "model": "llama3.2",
     "project_path": "",
+    # ControlDeck の OpenAI 互換ゲートウェイ経由にするか。
+    # 経由すると KV の受け入れ制御（混雑時の待機・枯渇時の再試行）が効く。
+    "use_gateway": True,
 }
 
 
@@ -47,6 +50,64 @@ def get_settings() -> dict:
     return settings
 
 
+def gateway_base_url() -> str:
+    """ControlDeck ゲートウェイの base_url。"""
+    from app.config import get_config
+
+    return f"http://127.0.0.1:{int(get_config().server.port)}/api/v1/llm/v1"
+
+
+def is_gateway_url(base_url: str) -> bool:
+    return "/api/v1/llm/v1" in str(base_url or "")
+
+
+def resolve_backend_port() -> int | None:
+    """OpenCode が最終的に到達する llama.cpp のポート。
+
+    ゲートウェイ経由だと base_url は ControlDeck のポートになるため、
+    そのままではアイドル判定（どのモデルが使われているか）が引けない。
+    ゲートウェイの転送先まで解決して実ポートを返す。
+    """
+    from urllib.parse import urlsplit
+
+    settings = get_settings()
+    base_url = str(settings.get("base_url") or "")
+    if is_gateway_url(base_url):
+        try:
+            from app.models_mgmt.gateway import _target_endpoint
+
+            return _target_endpoint(str(settings.get("model") or ""))[1]
+        except Exception:  # noqa: BLE001 - 解決できなければ不明として扱う
+            return None
+    try:
+        parsed = urlsplit(base_url)
+        if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+            return None
+        return parsed.port
+    except ValueError:
+        return None
+
+
+def autoconfigure(*, model: str = "") -> dict:
+    """導入直後に通信できる状態へ自動設定する。
+
+    ユーザーが base_url や APIキーを手で入れなくても使えるようにする。
+    ゲートウェイのAPIキーは未発行なら発行し、OpenCode の runtime config へ渡る
+    形で保存する。
+    """
+    from app.models_mgmt import gateway, llama
+
+    target = model
+    if not target:
+        instances = [i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
+        target = str(instances[0]["alias"]) if instances else ""
+    gateway.get_api_key(create=True)  # 未発行なら発行
+    patch = {"base_url": gateway_base_url(), "use_gateway": True}
+    if target:
+        patch["model"] = target
+    return save_settings(patch)
+
+
 def save_settings(patch: dict) -> dict:
     settings = get_settings()
     settings.update({key: patch[key] for key in settings if key in patch})
@@ -69,6 +130,15 @@ def save_settings(patch: dict) -> dict:
     return settings
 
 
+def _api_key_for(base_url: str) -> str:
+    """ゲートウェイ宛なら発行済みAPIキー、直結なら従来どおりダミー。"""
+    if not is_gateway_url(base_url):
+        return "sk-no-key"
+    from app.models_mgmt import gateway
+
+    return gateway.get_api_key(create=True) or "sk-no-key"
+
+
 def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
@@ -79,7 +149,7 @@ def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
             "controldeck": {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Control Deck LLM",
-                "options": {"baseURL": base_url.rstrip("/"), "apiKey": "sk-no-key"},
+                "options": {"baseURL": base_url.rstrip("/"), "apiKey": _api_key_for(base_url)},
                 "models": {model: {"name": model}},
             }
         },
