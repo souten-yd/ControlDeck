@@ -30,7 +30,7 @@
 | 4 | D-1/2/3: 削除・並べ替え・複製 | **完了**（§4.10） |
 | 5 | C: 並列駆動の UI 露出 | **完了**（§4.8） |
 | 6 | フロントエンド分割 | 未着手 |
-| 7 | D-4/D-5: 容量表示・HF ダウンロード | 未着手 |
+| 7 | D-4/D-5: 容量表示・HF ダウンロード | **バックエンド完了**（§4.13）。UI は未着手 |
 | 8 | E: SGLang | 未着手 |
 
 ---
@@ -612,6 +612,51 @@ tokenizer による正確な入力トークン数、prompt cache、`requests_def
 
 導入先: `data/features/omo/node_modules/oh-my-openagent`。
 OMo 設定: `~/.omo/omo.jsonc`（ホーム配下。data_dir ではない）。
+
+---
+
+## 4.13 D-5: HuggingFace 直ダウンロード（実装順序 7）— バックエンド完了
+
+`backend/app/models_mgmt/hf.py`（新規）。`huggingface_hub` には依存せず httpx のみ。
+
+- `search_models(q)` / `list_repo_files(repo, revision)` / `download(job, repo, files, ...)`
+- **分割GGUF**（`model-00001-of-00003.gguf`）は 1 グループにまとめ、合計サイズと
+  必要な全ファイルを返す。1つだけ落としても使えないため。
+  欠けている場合は `complete: False` で示す。
+- **開始前に空き容量を検査**（`_ensure_free_space`、1GB の予備を残す）。
+  入らないものを落とし始めると中途半端なファイルが残る。
+- `.part` へ書いて `replace()` で原子的に公開。**Range ヘッダでレジューム**、
+  レンジ非対応なら取り直す。
+- 既に全ファイルがあれば**接続すら張らない**。
+- gated repo 用トークンは暗号化して保存（`gateway._load/_save` の設定を共用）。
+  値はログにも監査にも残さない。
+- API: `GET /models/hf/search` / `GET /models/hf/repos/{repo:path}/files` /
+  `GET,PUT /models/hf/settings` / `POST /models/hf/download-jobs`。
+
+### 保存先とレイアウト
+
+`<選択したライブラリ>/{owner}--{name}/{file}.gguf`。
+`role_presets.install` もこの `hf.download` へ委譲した（取得処理の重複を消し、
+レジュームと空き容量検査を共通で受けられる）。
+
+> **注意**: これでレイアウトが変わったため、`role_presets` の導入済み判定を
+> 全ライブラリ × (repo別サブディレクトリ | 直下の平置き) で探すようにした。
+> 既定ライブラリを NVMe へ移した結果、旧 data_dir 配下の既存 GGUF を見失って
+> 再ダウンロードになる問題が実機で出たため。
+
+### 実機で確認したこと
+
+- `gpustack/bge-m3-GGUF` のバリアント一覧（FP16 1158MB 〜 Q2_K 366MB）を取得
+- Q2_K（350MB）を `main` ライブラリへダウンロード成功 →
+  ライブラリの GGUF 件数が 5→6 に反映
+- 同じ指定で再実行すると「既にあります」で再取得しない
+
+### 残（UI 未実装）
+
+`PullSheet` の HF タブを「Ollama へ pull」と「GGUF を直接ダウンロード」の2系統に分ける。
+repo 検索 → バリアント一覧（サイズと選択中ライブラリの空き容量を並べ、入らないものは
+選べない）→ alias / エンドポイント指定 → ジョブ開始。
+進捗は job kind が `model.` 始まりなので既存の `useModelJobsStream` が拾う。
 
 ---
 

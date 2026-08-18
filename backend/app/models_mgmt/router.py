@@ -847,6 +847,101 @@ async def llama_endpoint_capacity(
     return await llama.endpoint_capacity(int(endpoint["port"]))
 
 
+@router.get("/hf/search")
+async def hf_search_repos(q: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import hf
+
+    if not q.strip():
+        return []
+    try:
+        return await hf.search_models(q.strip())
+    except hf.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/hf/repos/{repo:path}/files")
+async def hf_repo_files(repo: str, revision: str = "main",
+                        user: User = Depends(require_permission("workflows.run"))):
+    """repo 内の GGUF を量子化バリアントとして返す。保存先の空き容量も添える。"""
+    from app.models_mgmt import hf, libraries
+
+    try:
+        files = await hf.list_repo_files(repo, revision)
+    except hf.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"repo": repo, "variants": files, "libraries": libraries.list_libraries()}
+
+
+class HfSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(default="", max_length=200)
+
+
+@router.get("/hf/settings")
+def hf_settings(user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import hf
+
+    return {"has_token": hf.has_token()}
+
+
+@router.put("/hf/settings")
+def put_hf_settings(
+    body: HfSettingsBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """gated repo 用のトークン。値はログにも監査にも残さない。"""
+    from app.models_mgmt import hf
+
+    hf.set_token(body.token)
+    audit.record(db, "model.hf_token", user=user, resource_type="model", request=request,
+                 metadata={"configured": bool(body.token.strip())})
+    return {"has_token": hf.has_token()}
+
+
+class HfDownloadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str = Field(min_length=1, max_length=200)
+    files: list[str] = Field(min_length=1, max_length=64)
+    revision: str = Field(default="main", max_length=100)
+    library_id: str = Field(default="", max_length=64)
+    expected_bytes: int = Field(default=0, ge=0)
+    # 完了後に llama.cpp instance として登録する場合だけ指定する
+    alias: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    role: Literal["llm", "embedding", "reranker"] | None = None
+    endpoint_id: str | None = Field(default=None, max_length=128)
+    port: int | None = Field(default=None, ge=1024, le=65535)
+
+
+@router.post("/hf/download-jobs", status_code=201)
+async def hf_download(
+    body: HfDownloadBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """GGUF 取得をサーバー側ジョブで行う（ブラウザを閉じても継続）。"""
+    from app.models_mgmt import hf
+
+    register = None
+    if body.alias:
+        register = {"alias": body.alias, "role": body.role,
+                    "endpoint_id": body.endpoint_id, "port": body.port}
+
+    async def run(job: jobs.Job):
+        return await hf.download(
+            job, body.repo, body.files, library_id=body.library_id,
+            revision=body.revision, expected_bytes=body.expected_bytes, register=register,
+        )
+
+    job = jobs.create("model.hf_download", f"HuggingFace取得: {body.repo}", run,
+                      owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
+    audit.record(db, "model.hf_download", user=user, resource_type="model",
+                 resource_id=body.repo, request=request,
+                 metadata={"job_id": job.id, "files": len(body.files), "alias": body.alias or ""})
+    return {"job_id": job.id}
+
+
 @router.get("/llm-gateway")
 def llm_gateway_settings(user: User = Depends(require_permission("workflows.edit"))):
     """ゲートウェイの接続情報。OpenCode 等の直結クライアント向け。"""

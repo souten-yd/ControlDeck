@@ -5,7 +5,7 @@ HuggingFace から GGUF をダウンロードし、llama.cpp の role instance �
 """
 from __future__ import annotations
 
-import httpx
+from pathlib import Path
 
 from app.config import data_dir
 from app.jobs.service import Job
@@ -53,12 +53,35 @@ def _models_dir():
         return root
 
 
+def _existing_file(preset: dict) -> Path | None:
+    """導入済みGGUFを探す。
+
+    保存先は既定ライブラリだが、既存環境のファイルは別のライブラリ（旧 data_dir 配下）に
+    あることがある。レイアウトも hf.download の repo 別サブディレクトリと、以前の
+    ライブラリ直下の平置きが混在する。再ダウンロードにならないよう全部見る。
+    """
+    from app.models_mgmt import libraries
+
+    roots: list[Path] = []
+    for library in libraries.list_libraries():
+        if library.get("mounted") and library.get("path"):
+            roots.append(Path(str(library["path"])))
+    # 既定ライブラリが未接続でも従来の場所は見る
+    roots.append(data_dir() / "models" / "gguf")
+    sub = str(preset["repo"]).replace("/", "--")
+    for root in roots:
+        for candidate in (root / sub / str(preset["file"]), root / str(preset["file"])):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def preset_status() -> list[dict]:
     """各プリセットの導入・稼働状態（UI 表示用）。"""
     instances = {str(item["alias"]): item for item in llama.list_instances()}
     result = []
     for preset_id, preset in ROLE_PRESETS.items():
-        path = _models_dir() / str(preset["file"])
+        existing = _existing_file(preset)
         instance = instances.get(str(preset["alias"]))
         result.append({
             "id": preset_id,
@@ -66,7 +89,7 @@ def preset_status() -> list[dict]:
             "description": preset["description"],
             "role": preset["role"],
             "alias": preset["alias"],
-            "file_exists": path.is_file(),
+            "file_exists": existing is not None,
             "installed": instance is not None,
             "loaded": bool(instance and instance.get("loaded")),
             "idle_exclude": bool(instance and instance.get("idle_exclude")),
@@ -82,26 +105,13 @@ async def install(job: Job, preset_id: str) -> dict:
         raise RuntimeError("未知のプリセットです")
     if not llama.is_installed():
         raise RuntimeError("llama.cpp が未導入です。Model画面の共通設定から導入してください")
-    destination = _models_dir() / str(preset["file"])
-    if not destination.is_file():
-        url = f"https://huggingface.co/{preset['repo']}/resolve/main/{preset['file']}"
-        job.set_progress("ダウンロード中", 0, 1)
-        temp = destination.with_suffix(".part")
-        try:
-            async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-                async with client.stream("GET", url) as response:
-                    if response.status_code >= 400:
-                        raise RuntimeError(f"ダウンロード失敗 ({response.status_code}): {url}")
-                    total = int(response.headers.get("content-length") or 0)
-                    received = 0
-                    with temp.open("wb") as target:
-                        async for chunk in response.aiter_bytes(1024 * 1024):
-                            target.write(chunk)
-                            received += len(chunk)
-                            job.set_progress("ダウンロード中", received, total or None)
-            temp.replace(destination)
-        finally:
-            temp.unlink(missing_ok=True)
+    destination = _existing_file(preset)
+    if destination is None:
+        # 取得処理は hf.py に一本化する（レジューム・空き容量検査を共通で受けられる）。
+        from app.models_mgmt import hf
+
+        result = await hf.download(job, str(preset["repo"]), [str(preset["file"])])
+        destination = Path(result["files"][0])
     job.set_progress("instance登録中", 0, 1)
     llama.save_instance(str(preset["alias"]), {
         "alias": preset["alias"], "model_path": str(destination),
