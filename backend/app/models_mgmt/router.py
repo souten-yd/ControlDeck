@@ -662,6 +662,7 @@ class LlamaInstanceBody(BaseModel):
     ctx_size: int | None = Field(default=None, ge=0, le=1048576)
     deep_research_ctx_size: int | None = Field(default=None, ge=0, le=1048576)
     n_parallel: int | None = Field(default=None, ge=1, le=64)
+    kv_unified: bool | None = None
     flash_attn: bool | None = None
     n_predict: int | None = Field(default=None, ge=-1, le=1048576)
     batch_size: int | None = Field(default=None, ge=32, le=65536)
@@ -821,6 +822,19 @@ def llama_delete_instance(
     audit.record(db, "llama.instance_delete", user=user, resource_type="model", resource_id=alias,
                  request=request, metadata={"gguf_deleted": False})
     return {"ok": True, "gguf_deleted": False}
+
+
+@router.get("/llama/endpoints/{endpoint_id}/capacity")
+async def llama_endpoint_capacity(
+    endpoint_id: str, user: User = Depends(require_permission("workflows.run")),
+):
+    """KVプールの使用状況。共有KVでは総量が尽きると即エラーになるため、UIで残量を見せる。"""
+    from app.models_mgmt import llama
+
+    endpoint = next((e for e in llama.list_endpoints() if e["id"] == endpoint_id), None)
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail="エンドポイントが見つかりません")
+    return await llama.endpoint_capacity(int(endpoint["port"]))
 
 
 @router.get("/llama/endpoints")

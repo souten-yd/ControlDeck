@@ -985,6 +985,7 @@ interface LlamaInstanceConfig {
   draft_max: number;
   think: ThinkMode;
   think_budget_tokens: number;
+  kv_unified: boolean;
   endpoint_id?: string;
   order?: number;
   cpu_moe: boolean;
@@ -1004,6 +1005,7 @@ const LLAMA_INSTANCE_WRITE_KEYS = [
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
   "think", "think_budget_tokens",
+  "kv_unified",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 const LLAMA_PARAMETER_WRITE_KEYS = [
@@ -1012,6 +1014,7 @@ const LLAMA_PARAMETER_WRITE_KEYS = [
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
   "think", "think_budget_tokens",
+  "kv_unified",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 function llamaInstanceWriteBody(config: LlamaInstanceConfig, includeIdentity: boolean): Record<string, unknown> {
@@ -1244,19 +1247,24 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
       </div>
       <p className="text-[10px] leading-relaxed text-zinc-400">Deep Research専用CTXが通常CTXと異なる場合、開始前に再ロードし、完了・失敗後は通常CTXへ自動復元します。</p>
 
-      <L label="同時リクエスト数（スロット）">
+      <L label="最大同時リクエスト数（スロット）">
         <input type="number" min={1} max={64} value={cfg.n_parallel}
           onChange={(e) => set("n_parallel", Math.max(1, Math.min(64, Number(e.target.value) || 1)))}
           className={`${input} font-mono`} />
       </L>
+      <Toggle label="KVを共有プールにする（推奨）"
+        hint="1本で大きく使う／複数本で分け合う を同じ設定のまま切り替えられます"
+        value={cfg.kv_unified ?? true} onChange={(value) => set("kv_unified", value)} />
       <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
-        {cfg.n_parallel > 1 ? (<>
-          CTX {cfg.ctx_size.toLocaleString()} は全スロットの合計です。
-          1リクエストあたり <strong>{Math.floor(cfg.ctx_size / cfg.n_parallel).toLocaleString()}</strong> × {cfg.n_parallel} 並列になります
-          （VRAM は増えません）。
+        {cfg.kv_unified ?? true ? (<>
+          CTX {cfg.ctx_size.toLocaleString()} は<strong>全体で共有するプール</strong>です。
+          1本で最大 {cfg.ctx_size.toLocaleString()} まで使え、混雑時は最大 {cfg.n_parallel} 本が
+          プールを分け合います（例: 5,000 + 1,000 のような非対称な配分も可）。
+          プールが尽きたリクエストは空くまで待ってから実行します。
         </>) : (<>
-          CTX {cfg.ctx_size.toLocaleString()} を1リクエストで使います。
-          スロットを増やすと同じVRAMのまま同時実行できます（1本あたりのCTXは分割されます）。
+          CTX {cfg.ctx_size.toLocaleString()} を{cfg.n_parallel}分割し、
+          1リクエストあたり <strong>{Math.floor(cfg.ctx_size / Math.max(1, cfg.n_parallel)).toLocaleString()}</strong> 固定になります。
+          1本で大きく使いたい場合は共有プールを有効にしてください。
         </>)}
       </p>
 

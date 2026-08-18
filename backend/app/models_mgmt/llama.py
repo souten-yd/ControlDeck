@@ -75,7 +75,12 @@ DEFAULT_INSTANCE = {
         "ctx_size": 4096,
         # 0は通常CTXと同じ。異なる値の場合だけDeep Research開始前後に再ロードする。
         "deep_research_ctx_size": 0,
+        # 最大同時リクエスト数（server slots）。kv_unified と併用すると
+        # CTXを固定分割せず、共有プールから必要な分だけ取る。
         "n_parallel": 1,
+        # 単一の共有KVバッファを全sequenceで使う。無効にすると各slotへ
+        # ctx_size/n_parallel が固定割当てされ、1本で大きく使えなくなる。
+        "kv_unified": True,
         "flash_attn": False,
         "n_predict": 2048,
         "batch_size": 2048,
@@ -799,6 +804,10 @@ def _unit_content(alias: str | None = None) -> str:
     ]
     # b10001 以降は --flash-attn が on|off|auto の値必須（旧フラグ形式はエラーで即終了する）
     args += ["--flash-attn", "on" if inst.get("flash_attn") else "off"]
+    # 共有KV。無効時は各slotへ ctx_size/n_parallel を固定割当てする。
+    args += ["--kv-unified" if inst.get("kv_unified", True) else "--no-kv-unified"]
+    # 空き容量を観測して受け入れを制御するため常時有効化する（読み取り専用）。
+    args += ["--metrics"]
     if not inst.get("mmap", True):
         args += ["--no-mmap"]
     if inst.get("mlock"):
@@ -1227,3 +1236,87 @@ async def detect_options() -> list[str]:
         return flags
     except Exception:
         return []
+
+
+# ---- 空き容量（KVプール）の観測と受け入れ制御 ----
+
+# 実測: ctx_size の 97% まで詰めると "Context size has been exceeded" で
+# 実行中のリクエストごと失敗する。74% は問題なく通った。
+# 枯渇は待機ではなく即エラーなので、安全側の余白を既定で確保する。
+KV_HEADROOM_RATIO = 0.85
+
+
+async def endpoint_capacity(port: int) -> dict:
+    """エンドポイントのKVプール使用状況。
+
+    kv_unified では ctx_size が「全sequenceで共有するプール総量」になる。
+    /slots の n_ctx は各slotの上限であって予約ではないため、
+    使用量は稼働中slotの prompt + 生成済みトークンの合計で見る。
+    """
+    result = {
+        "port": int(port), "available": False, "slots": 0, "busy": 0,
+        "ctx_total": 0, "ctx_used": 0, "ctx_free": 0, "usable": 0,
+        "deferred": 0, "accepting": False,
+    }
+    base = f"http://127.0.0.1:{int(port)}"
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            slots_response = await client.get(f"{base}/slots")
+            slots = slots_response.json()
+            if not isinstance(slots, list) or not slots:
+                return result
+            used = 0
+            busy = 0
+            for slot in slots:
+                if not slot.get("is_processing"):
+                    continue
+                busy += 1
+                decoded = 0
+                nxt = slot.get("next_token")
+                if isinstance(nxt, list) and nxt:
+                    decoded = int(nxt[0].get("n_decoded") or 0)
+                used += int(slot.get("n_prompt_tokens") or 0) + decoded
+            total = int(slots[0].get("n_ctx") or 0)
+            usable = int(total * KV_HEADROOM_RATIO)
+            result.update({
+                "available": True, "slots": len(slots), "busy": busy,
+                "ctx_total": total, "ctx_used": used,
+                "ctx_free": max(0, usable - used), "usable": usable,
+                "accepting": busy < len(slots) and used < usable,
+            })
+            try:
+                metrics = (await client.get(f"{base}/metrics")).text
+                for line in metrics.splitlines():
+                    if line.startswith("llamacpp:requests_deferred"):
+                        result["deferred"] = int(float(line.split()[-1]))
+            except (httpx.HTTPError, ValueError, IndexError):
+                pass
+    except (httpx.HTTPError, ValueError, TypeError):
+        return result
+    return result
+
+
+async def await_capacity(port: int, needed_tokens: int = 0, *, timeout_seconds: float = 120) -> dict:
+    """KVプールに空きが出るまで待つ。
+
+    llama.cpp はプールが尽きると待たずに 500 を返し、しかも**実行中の他の
+    リクエストごと**失敗させる。投げる前に空くのを待つ方が、全体の失敗を防げる。
+    slot が空いていても総量が足りなければ待つ。
+    """
+    import asyncio
+
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    last = await endpoint_capacity(port)
+    if not last.get("available"):
+        return last  # 管理外/停止中は素通し（呼び出し側が従来どおり扱う）
+    while asyncio.get_event_loop().time() < deadline:
+        if last["busy"] == 0:
+            return last  # 誰も使っていないなら待つ意味がない
+        if last["accepting"] and last["ctx_free"] >= needed_tokens:
+            return last
+        await asyncio.sleep(1)
+        last = await endpoint_capacity(port)
+        if not last.get("available"):
+            return last
+    logger.warning("KVプールの空き待ちがtimeoutしました: port=%s needed=%s", port, needed_tokens)
+    return last

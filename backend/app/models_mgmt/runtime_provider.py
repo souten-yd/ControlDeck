@@ -172,6 +172,31 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
             payload["response_format"] = self._response_format(request.response_format)
         return payload
 
+    def _capacity_retries(self) -> int:
+        """KV枯渇での再試行回数。共有KVを持つ管理下runtimeだけが上書きする。"""
+        return 0
+
+    async def _wait_for_capacity(self, request: RuntimeChatRequest) -> None:
+        return None
+
+    def _is_capacity_error(self, response: httpx.Response) -> bool:
+        """KVプール枯渇による拒否か。
+
+        llama.cpp は共有KVが尽きると 500 "Context size has been exceeded." を返す。
+        単一リクエストがCTXを超える場合は 400 で別メッセージ（そちらは再試行しても無駄）。
+        """
+        if response.status_code != 500:
+            return False
+        message = ""
+        try:
+            message = str(response.json().get("error", {}).get("message") or "")
+        except (ValueError, AttributeError, TypeError):
+            message = ""
+        if not message:
+            # 本文がJSONでない/形が違う場合も取りこぼさない
+            message = response.text or ""
+        return "context size has been exceeded" in message.lower()
+
     async def _post(self, request: RuntimeChatRequest, payload: dict[str, Any]) -> httpx.Response:
         async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
             return await client.post(
@@ -190,6 +215,12 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
             else:
                 attempt["response_format"] = candidate
             response = await self._post(request, attempt)
+            for _ in range(self._capacity_retries()):
+                if not self._is_capacity_error(response):
+                    break
+                # 共有KVが尽きて弾かれた。空くのを待って投げ直す。
+                await self._wait_for_capacity(request)
+                response = await self._post(request, attempt)
             if response.status_code < 400:
                 break
             # 認証失敗、rate limit、provider内部障害はdialect差ではないので再送しない。
@@ -252,6 +283,11 @@ class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
 
     # モデル読み込み（大型GGUFで数十秒〜数分）を待つ上限
     _READY_TIMEOUT_SECONDS = 240
+    # KVプールの空き待ちの上限。超えたら待たずに投げる（従来どおりの挙動へ戻る）
+    _CAPACITY_TIMEOUT_SECONDS = 120
+    # KV枯渇で弾かれたときの再試行回数。空き容量は正確には予測できないため、
+    # 予測を厳しくするのではなく、弾かれたら待って投げ直す方針で吸収する。
+    _CAPACITY_RETRIES = 3
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)
@@ -264,6 +300,35 @@ class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
         )
         if not ok:
             raise RuntimeProviderError("llama.cppの自動起動またはモデル読み込みに失敗しました")
+        # KVプールの空きを待ってから投げる。
+        # 共有KV(kv_unified)では総量が尽きると llama.cpp は待たずに 500 を返し、
+        # しかも実行中の他リクエストごと巻き込んで失敗させる。先に空くのを待つ。
+        from urllib.parse import urlsplit
+
+        await self._wait_for_capacity(request)
+
+    def _capacity_retries(self) -> int:
+        return self._CAPACITY_RETRIES
+
+    async def _wait_for_capacity(self, request: RuntimeChatRequest) -> None:
+        """KVプールに空きが出るまで待つ。
+
+        共有KV(kv_unified)では総量が尽きると llama.cpp は待たずに 500 を返し、
+        実行中の他リクエストごと巻き込んで失敗させる。投げる前に待つ。
+        空き容量は正確には予測できない（出力分の予約・プロンプトキャッシュ・断片化が
+        効くため）ので、ここでは過度に厳しくせず、弾かれたら再試行する側で吸収する。
+        """
+        from urllib.parse import urlsplit
+
+        from app.models_mgmt import llama
+
+        port = urlsplit(request.base_url).port
+        if not port:
+            return
+        # 必要量: プロンプト概算（4文字≒1token）+ 出力上限（予約される前提で見る）
+        prompt_chars = sum(len(str(m.get("content") or "")) for m in request.messages)
+        needed = prompt_chars // 4 + max(0, int(request.max_tokens or 0))
+        await llama.await_capacity(port, needed, timeout_seconds=self._CAPACITY_TIMEOUT_SECONDS)
 
 
 class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):

@@ -438,6 +438,60 @@ embedding/reranker は対象外。2 回目以降は何もしない。
 
 ---
 
+## 4.9 共有KV（kv_unified）と受け入れ制御 — 完了
+
+### 実機で確定させた llama.cpp の挙動
+
+`--kv-unified --ctx-size N --parallel P` のとき:
+
+- **`/slots` の `n_ctx` は各slotの「上限」であって予約ではない**。P個のslotが全部 N を返すが、
+  総容量が N×P になるわけではない。実体は**合計 N の共有プール**。
+  起動ログも `n_slots = 4, n_ctx_slot = 8192, kv_unified = 'true'` と出る。
+- **非対称な配分ができる**（これが共有KVの狙い）。ctx=8192 での実測:
+
+  | 構成 | 結果 |
+  |---|---|
+  | 単発 6,844 tok | 200 成功 |
+  | 5,012 + 1,042 = 6,054（74%） | **両方 200 成功** |
+  | 約 7,950（97%） | 両方 500 |
+  | 6,844 × 2 = 13,688 | 両方 500 |
+
+  実機 ctx=262,144 / parallel=4 でも 5,014 + 614 の非対称同時実行が成功。
+- **枯渇はキューイングされず即エラー**。しかも**実行中の他リクエストごと巻き込んで失敗する**。
+  失敗の形は2種類あり、区別が要る:
+  - 単一リクエストが CTX 超過 → **400** `request (10015 tokens) exceeds the available context size (8192 tokens)`（再試行しても無駄）
+  - 同時実行の合計で枯渇 → **500** `Context size has been exceeded.`（空けば通る＝再試行の価値がある）
+- slot 数を超えるリクエストは `requests_deferred` として**正常にキューイングされる**
+  （4 slots に 6 本投げて processing=4 / deferred=2、全件成功）。
+  **枯渇と混同しないこと**: slot 不足は待つ、KV 不足は落ちる。
+
+> 97% で落ちる理由（出力分の予約・プロンプトキャッシュ・断片化のいずれか）は切り分けていない。
+> 正確な予測に依存しない設計にしてあるので、実装上は問題にならない。
+
+### 実装
+
+- instance に `kv_unified`（既定 True）。`--kv-unified` / `--no-kv-unified` を出し分ける。
+- `--metrics` を常時付与（読み取り専用。空き容量の観測に使う）。
+- `llama.endpoint_capacity(port)`: `/slots` の稼働中slotから
+  `Σ(n_prompt_tokens + next_token[0].n_decoded)` で使用量を出し、`/metrics` の
+  `requests_deferred` を添える。`KV_HEADROOM_RATIO = 0.85` の余白を引いた `usable` で判定。
+- `llama.await_capacity(port, needed, timeout)`: 空くまで待つ。**busy=0 なら即返す**
+  （単発の大きなリクエストを妨げない）。
+- `LlamaCppRuntimeProvider._wait_for_capacity()` を生成前に呼ぶ。
+  さらに **500 を掴んだら待って投げ直す**（`_CAPACITY_RETRIES = 3`）。
+  空き容量は正確に予測できないため、予測を厳しくするより弾かれてから吸収する方針。
+  400 は再試行しない。共有KVを持たない provider（Ollama / 外部）は再試行しない。
+- API: `GET /models/llama/endpoints/{id}/capacity`。
+- UI: 「最大同時リクエスト数」+「KVを共有プールにする（推奨）」トグル。
+  共有時と分割時で説明を出し分ける。
+
+### 注意
+
+`--parallel` は**起動引数**で、実行中は変更できない（`POST /props` は 501）。
+KV はロード時に確保されるため。ただしウォーム再起動は実測 25 秒。
+
+---
+
 ## 5. 実装時に必ず踏むポイント
 
 - **設定は DB ではなく JSON 3 ファイル**（`data_dir()/llama-runtime.json`、`ollama-settings.json`、
