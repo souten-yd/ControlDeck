@@ -107,10 +107,15 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
               {load ? (
                 <span className={load === "高" ? "text-amber-600 dark:text-amber-400" : ""}>
                   {load}
-                  <span className="ml-1.5 text-[10px] text-zinc-400">（論理並列 {data.omo.concurrency}）</span>
+                  <span className="ml-1.5 text-[10px] text-zinc-400">
+                    （{data.omo.model} · 論理並列 {data.omo.concurrency}）
+                  </span>
                 </span>
               ) : (
-                <span className="text-zinc-400">—</span>
+                // OMoの対象モデルが停止していれば、負荷ではなくその事実を出す。
+                <span className="text-zinc-400">
+                  {data.omo.model ? `${data.omo.model} は停止中` : "—"}
+                </span>
               )}
             </Row>
           );
