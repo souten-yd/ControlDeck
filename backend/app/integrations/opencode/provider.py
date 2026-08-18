@@ -528,3 +528,64 @@ class OpenCodeProvider:
 
 
 provider = OpenCodeProvider()
+
+
+# ---- OMo（oh-my-openagent）の並列数をモデル設定に合わせる ----
+
+def _omo_config_path() -> Path:
+    """OMo のユーザー設定。~/.config/opencode/oh-my-openagent.json。"""
+    root = Path.home() / ".config" / "opencode"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "oh-my-openagent.json"
+
+
+def omo_concurrency_for(n_parallel: int) -> int:
+    """モデルのスロット数から、背景タスクの同時実行数を決める。
+
+    対話中のメイン エージェントが1本使うので、背景側はそれを空けておく。
+    全スロットを背景に使わせると、ユーザーの操作が自分のサブエージェント待ちになる。
+    """
+    return max(1, int(n_parallel) - 1)
+
+
+def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
+    """OMo の background_task.defaultConcurrency をモデルの並列数へ揃える。
+
+    OMo は `modelConcurrency > providerConcurrency > defaultConcurrency` の順で
+    解決するので、既定値だけを書き、利用者が個別に付けた上書きは残す。
+    """
+    from app.models_mgmt import llama
+
+    if n_parallel is None:
+        settings = get_settings()
+        target = str(settings.get("model") or "")
+        instance = next(
+            (i for i in llama.list_instances() if str(i.get("alias")) == target), None,
+        )
+        if instance is None:
+            instance = next(
+                (i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"), None,
+            )
+        if instance is None:
+            return {"updated": False, "reason": "対象モデルがありません"}
+        n_parallel = int(instance.get("n_parallel") or 1)
+
+    concurrency = omo_concurrency_for(n_parallel)
+    path = _omo_config_path()
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            config = {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        config = {}
+    background = dict(config.get("background_task") or {})
+    if background.get("defaultConcurrency") == concurrency:
+        return {"updated": False, "concurrency": concurrency, "reason": "変更なし"}
+    background["defaultConcurrency"] = concurrency
+    config["background_task"] = background
+    try:
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        return {"updated": False, "reason": f"書き込めません: {exc}"}
+    return {"updated": True, "concurrency": concurrency, "n_parallel": n_parallel,
+            "path": str(path)}

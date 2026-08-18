@@ -465,7 +465,28 @@ def save_instance(alias: str, patch: dict) -> dict:
         cfg["instance"] = dict(instance)
     _write_config(cfg)
     _sync_endpoint_units(endpoint_id)
+    _sync_agent_concurrency(new_alias, instance)
     return cfg
+
+
+def _sync_agent_concurrency(alias: str, instance: dict) -> None:
+    """スロット数を変えたら、OMo の背景タスク同時実行数も追従させる。
+
+    片方だけ変えると、モデルの受け入れ枠とエージェントの投げる本数がずれる。
+    OMo 未導入なら何もしない。
+    """
+    try:
+        from app.features.registry import is_enabled
+
+        if not is_enabled("omo"):
+            return
+        from app.integrations.opencode.provider import get_settings, sync_omo_concurrency
+
+        if str(get_settings().get("model") or "") != alias:
+            return  # OpenCode が使っていないモデルの変更は無関係
+        sync_omo_concurrency(int(instance.get("n_parallel") or 1))
+    except Exception:  # noqa: BLE001 - 追従の失敗でモデル保存を失敗にしない
+        logger.exception("OMoの並列数同期に失敗しました")
 
 
 def reorder_instances(aliases: list[str]) -> list[dict]:

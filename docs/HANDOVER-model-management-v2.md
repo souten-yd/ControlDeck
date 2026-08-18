@@ -509,7 +509,7 @@ KV はロード時に確保されるため。ただしウォーム再起動は�
 
 ---
 
-## 4.11 【未解決・重要】OpenCode / OMo は受け入れ制御を通らない
+## 4.11 OpenCode / OMo への受け入れ制御の適用 — 完了
 
 **§4.9 の admission control は `LlamaCppRuntimeProvider` の中にあるため、
 ControlDeck を経由する生成（Chat / Workflow / RAG）にしか効かない。**
@@ -531,7 +531,7 @@ OpenCode は **llama.cpp を直接叩く**。`provider.py:303` の `ensure_ready
 - 共有KVが枯渇すると `500 Context size has been exceeded` になり、
   **実行中の他リクエストごと巻き込んで失敗しうる**
 
-### 対応案（未実装）
+### 対応（実装済み）
 
 ControlDeck に **OpenAI 互換ゲートウェイ**を置き、OpenCode の接続先をそちらへ向ける。
 
@@ -552,6 +552,24 @@ ControlDeck はセッション Cookie 認証なので、そのままでは通ら
 `needed = actual_prompt_tokens + min(max_tokens, predicted_output_p95)`
 のように、実測 p95 を使うと並列度を上げられる。
 tokenizer による正確な入力トークン数、prompt cache、`requests_deferred` も材料になる。
+
+---
+
+## 4.12 OMo（oh-my-openagent）アドオン — 完了
+
+- npm パッケージ **`oh-my-openagent`**（実行ファイル `omo`、v4.19.4 で確認）。
+  OpenCode のプラグインとして動くため `requires: "opencode"` を持たせ、
+  未導入なら導入ボタンを止めて順序を案内する。
+- 設定画面のアドオン一覧は `/features` を汎用に描画しているので、
+  **登録するだけで導入・更新・削除ボタンが付く**（UI 側の追加は依存表示のみ）。
+- **並列数の追従**: `background_task.defaultConcurrency` をモデルの `n_parallel` へ揃える。
+  設定は `~/.config/opencode/oh-my-openagent.json`。
+  OMo の解決順は `modelConcurrency > providerConcurrency > defaultConcurrency` なので、
+  **既定値だけ書き、利用者が付けた個別上書きは残す**。
+  値は `max(1, n_parallel - 1)`。対話中のメインエージェントが1本使うため、
+  背景側にはそれを空けておく（全部使わせるとユーザー操作が自分のサブエージェント待ちになる）。
+- 同期の起点は2つ: OMo 導入時と、**OpenCode が使っているモデルの `n_parallel` を変えたとき**。
+  関係ないモデルの変更では触らない。
 
 ---
 
