@@ -18,6 +18,7 @@ import re
 import shutil
 import tarfile
 import time
+from collections import deque
 from pathlib import Path
 
 import httpx
@@ -1312,6 +1313,43 @@ async def detect_options() -> list[str]:
 KV_HEADROOM_RATIO = 0.85
 
 
+# エンドポイント別の (観測時刻, 生成トークン累計) の履歴。
+# llama.cpp の predicted_tokens_seconds は「直近に完了した1リクエストの速度」で、
+# 並列で回したときの全体量が見えないうえ、完了までずっと0のままになる。
+# 累計の差分から全slot合算のスループットを出し、並列化の効果を見えるようにする。
+_THROUGHPUT_SAMPLES: dict[int, deque[tuple[float, float]]] = {}
+# 直前の1点だけを基準にすると、画面を複数開いてポーリング間隔が詰まったときに
+# 「差分が短すぎて計算できない」が続く。一定の窓で最古の点と比べる。
+THROUGHPUT_WINDOW_SECONDS = 8.0
+THROUGHPUT_MIN_INTERVAL_SECONDS = 2.0
+
+
+def _throughput(port: int, tokens_total: float) -> float:
+    """生成トークン累計の差分から、全slot合算の tok/s を出す。
+
+    呼び出し間隔に依存しないよう、窓の中で最も古い観測点と比較する。
+    """
+    import time
+
+    now = time.monotonic()
+    samples = _THROUGHPUT_SAMPLES.setdefault(int(port), deque(maxlen=64))
+    # 大きく巻き戻ったらサーバー再起動とみなして基準を捨てる。
+    if samples and tokens_total < samples[-1][1] * 0.5:
+        samples.clear()
+    # 窓から出た点は捨てる。長く見に来なかった後は一度空になり、次の観測から再開する
+    # （空白期間をまたいで平均すると、実際に出ている速度より低く見えてしまう）。
+    while samples and now - samples[0][0] > THROUGHPUT_WINDOW_SECONDS:
+        samples.popleft()
+    samples.append((now, tokens_total))
+    if len(samples) < 2:
+        return 0.0
+    oldest_at, oldest_total = samples[0]
+    elapsed = now - oldest_at
+    if elapsed < THROUGHPUT_MIN_INTERVAL_SECONDS:
+        return 0.0
+    return max(0.0, (tokens_total - oldest_total) / elapsed)
+
+
 async def endpoint_capacity(port: int) -> dict:
     """エンドポイントのKVプール使用状況。
 
@@ -1323,6 +1361,7 @@ async def endpoint_capacity(port: int) -> dict:
         "port": int(port), "available": False, "slots": 0, "busy": 0,
         "ctx_total": 0, "ctx_used": 0, "ctx_free": 0, "usable": 0,
         "deferred": 0, "accepting": False,
+        "tokens_per_second": 0.0, "tokens_per_second_single": 0.0,
     }
     base = f"http://127.0.0.1:{int(port)}"
     try:
@@ -1333,6 +1372,7 @@ async def endpoint_capacity(port: int) -> dict:
                 return result
             used = 0
             busy = 0
+            decoding = 0
             for slot in slots:
                 if not slot.get("is_processing"):
                     continue
@@ -1341,6 +1381,7 @@ async def endpoint_capacity(port: int) -> dict:
                 nxt = slot.get("next_token")
                 if isinstance(nxt, list) and nxt:
                     decoded = int(nxt[0].get("n_decoded") or 0)
+                decoding += decoded
                 used += int(slot.get("n_prompt_tokens") or 0) + decoded
             total = int(slots[0].get("n_ctx") or 0)
             usable = int(total * KV_HEADROOM_RATIO)
@@ -1352,9 +1393,25 @@ async def endpoint_capacity(port: int) -> dict:
             })
             try:
                 metrics = (await client.get(f"{base}/metrics")).text
+                values: dict[str, float] = {}
                 for line in metrics.splitlines():
-                    if line.startswith("llamacpp:requests_deferred"):
-                        result["deferred"] = int(float(line.split()[-1]))
+                    if not line.startswith("llamacpp:"):
+                        continue
+                    key, _, raw = line.partition(" ")
+                    try:
+                        values[key] = float(raw)
+                    except ValueError:
+                        continue
+                result["deferred"] = int(values.get("llamacpp:requests_deferred", 0))
+                # 合算と1本あたりを分けて出す。並列にすると1本は遅くなるが合算は伸びる、
+                # という並列化の効き方をそのまま見せる。
+                # tokens_predicted_total はリクエスト完了時にしか増えないので、
+                # 生成中のslotが持つ n_decoded を足して進行分まで含めた累計にする。
+                rate = _throughput(port, values.get("llamacpp:tokens_predicted_total", 0.0) + decoding)
+                result["tokens_per_second"] = round(rate, 1)
+                # 1本あたりは合算を同時実行数で割る。llama.cpp の
+                # predicted_tokens_seconds は完了するまで0のままで、生成中に見えない。
+                result["tokens_per_second_single"] = round(rate / busy, 1) if busy else 0.0
             except (httpx.HTTPError, ValueError, IndexError):
                 pass
     except (httpx.HTTPError, ValueError, TypeError):

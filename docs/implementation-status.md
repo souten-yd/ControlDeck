@@ -13,7 +13,9 @@
 
 - 起動に失敗して再試行待ちのループ（systemdの`sub_state=auto-restart`）を`FAILED`として扱い、ログ末尾を`last_error`に添えるようにした。従来はモデル読込中と同じ`STARTING`だったため、UIが延々と「起動中…（読み込み待ち）」を出し続けていた（実例: MTP層を持たないモデルに`spec_type=draft-mtp`を設定して21回リスタート）。`/models/llama/capacity`は失敗中のモデルを`failed`として返し、ホームのLLM利用状況が理由付きで表示する。OMo行の対象モデルも`auto`のような仮想モデルを解決してから出す。
 
-検証: backend 578件成功（新規7件: 起動中優先の解決／内部解決／provider選択／autoモデル／ゲートウェイ既定と非表示／revive のskipと起動先／auto-restartループのFAILED判定と読込中の区別）、frontend production buildに成功。
+- LLM利用状況に生成速度を追加した。全slot合算の tok/s と、それを同時実行数で割った1本あたりを並べる。並列にしても1本あたりの速度は落ちないまま合算が伸びることが読める（実測: 2本 31.5 → 4本 44.9 tok/s、1本あたりは 18.4 / 18.2）。llama.cppの`predicted_tokens_seconds`は直近に完了した1リクエストの速度で、生成中は0のまま並列の効果も見えないため使わない。`tokens_predicted_total`も完了時にしか増えないので、進行中slotの`n_decoded`を足した累計から8秒窓の差分で算出する（直前1点との差分だと、画面を複数開いてポーリング間隔が詰まったとき「間隔が短すぎる」が続いて0のままになる）。
+
+検証: backend 579件成功（新規7件: 起動中優先の解決／内部解決／provider選択／autoモデル／ゲートウェイ既定と非表示／revive のskipと起動先／auto-restartループのFAILED判定と読込中の区別）、frontend production buildに成功。
 
 ## 旧Application Builder削除とWorkflow実行UIの刷新（2026-08-13）
 

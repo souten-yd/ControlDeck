@@ -131,6 +131,10 @@ export interface EndpointCapacity {
   available: boolean; slots: number; busy: number;
   ctx_total: number; ctx_used: number; ctx_free: number; usable: number;
   deferred: number; accepting: boolean;
+  /** 全slot合算の生成速度。並列で回したときに全体でどれだけ出ているかを見る。 */
+  tokens_per_second: number;
+  /** 直近1リクエストの速度。合計との差が並列化の効き具合になる。 */
+  tokens_per_second_single: number;
 }
 
 export interface OmoStatus {

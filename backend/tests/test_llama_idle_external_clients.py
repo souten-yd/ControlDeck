@@ -1,6 +1,8 @@
 """Control Deckを経由しない利用（OpenCode等）でllama instanceを止めない。"""
 from __future__ import annotations
 
+import pytest
+
 
 def test_connected_client_blocks_idle_unload(monkeypatch):
     from app.models_mgmt import llama
@@ -155,3 +157,35 @@ def test_loading_model_is_still_reported_as_starting(monkeypatch):
     assert item["runtime_status"] == "STARTING"
     assert item["loaded"] is True
     assert item["last_error"] == ""
+
+
+def test_throughput_is_measured_from_the_cumulative_counter(monkeypatch):
+    """全slot合算の tok/s は累計トークンの差分から出す。
+
+    llama.cpp の predicted_tokens_seconds は直近1リクエストの速度なので、
+    並列で回したときに全体でどれだけ出ているかが分からない。
+    """
+    from app.models_mgmt import llama
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+    llama._THROUGHPUT_SAMPLES.pop(9999, None)
+
+    # 初回は基準を取るだけ
+    assert llama._throughput(9999, 1000.0) == 0.0
+    # 4秒で200トークン → 50 tok/s
+    clock["now"] = 104.0
+    assert llama._throughput(9999, 1200.0) == 50.0
+    # 画面を複数開いて間隔が詰まっても、窓の最古の点と比べるので計算できる
+    clock["now"] = 104.5
+    assert llama._throughput(9999, 1210.0) == pytest.approx(1210 / 4.5 - 1000 / 4.5)
+    # 窓（8秒）を越えて見に来なかったときは基準を取り直す。空白期間をまたいで
+    # 平均すると、実際に出ている速度より低く見えてしまうため。
+    clock["now"] = 113.0
+    assert llama._throughput(9999, 1400.0) == 0.0
+    # 取り直した基準からは通常どおり計算できる（3秒で150トークン → 50 tok/s）
+    clock["now"] = 116.0
+    assert llama._throughput(9999, 1550.0) == 50.0
+    # サーバー再起動で大きく巻き戻ったら基準を取り直す
+    clock["now"] = 118.0
+    assert llama._throughput(9999, 5.0) == 0.0
