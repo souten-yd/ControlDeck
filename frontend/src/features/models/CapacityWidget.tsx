@@ -23,9 +23,9 @@ function SlotDots({ busy, slots }: { busy: number; slots: number }) {
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 py-0.5">
-      <span className="w-20 shrink-0 text-[11px] text-zinc-400">{label}</span>
-      <span className="num min-w-0 flex-1 text-xs">{children}</span>
+    <div className="flex items-center gap-3">
+      <span className="w-[4.5rem] shrink-0 text-[10px] text-zinc-400 md:text-[11px]">{label}</span>
+      <span className="num min-w-0 flex-1 text-[11px] md:text-xs">{children}</span>
     </div>
   );
 }
@@ -40,7 +40,7 @@ function EndpointRows({ item, omoConcurrency }: {
     : item.busy >= item.slots ? "高"
     : item.busy > item.slots / 2 || kvPct >= 65 ? "中" : "低";
   return (
-    <div className="space-y-0.5">
+    <div>
       <Row label="LLM並列">
         <span className="flex items-center gap-2">
           <SlotDots busy={item.busy} slots={item.slots} />
@@ -81,8 +81,8 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
   if (!data || data.endpoints.length === 0) return null;
 
   return (
-    <section className={compact ? "" : "rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"}>
-      {!compact && <h2 className="mb-2 text-sm font-semibold">LLM 利用状況</h2>}
+    <section className={compact ? "" : "rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4"}>
+      {!compact && <h2 className="mb-1 text-xs font-semibold md:mb-2 md:text-sm">LLM 利用状況</h2>}
       <div className="space-y-3">
         {data.endpoints.map((item) => (
           <div key={item.id}>
