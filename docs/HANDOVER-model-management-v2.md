@@ -562,12 +562,39 @@ tokenizer による正確な入力トークン数、prompt cache、`requests_def
   未導入なら導入ボタンを止めて順序を案内する。
 - 設定画面のアドオン一覧は `/features` を汎用に描画しているので、
   **登録するだけで導入・更新・削除ボタンが付く**（UI 側の追加は依存表示のみ）。
-- **並列数の追従**: `background_task.defaultConcurrency` をモデルの `n_parallel` へ揃える。
-  設定は `~/.config/opencode/oh-my-openagent.json`。
-  OMo の解決順は `modelConcurrency > providerConcurrency > defaultConcurrency` なので、
-  **既定値だけ書き、利用者が付けた個別上書きは残す**。
-  値は `max(1, n_parallel - 1)`。対話中のメインエージェントが1本使うため、
-  背景側にはそれを空けておく（全部使わせるとユーザー操作が自分のサブエージェント待ちになる）。
+- **並列数の考え方**: OMo の並列数を llama の `--parallel` に一致させる必要はない。責務を分ける。
+
+  | レイヤー | 役割 |
+  |---|---|
+  | OMo | いくつの仕事を並行して進めたいか（論理並列） |
+  | ControlDeck | いま GPU へ何本入れて安全か（受付・待ち行列） |
+  | llama.cpp | 実際の同時実行（slot と共有KV） |
+
+  エージェントは常に LLM を呼んでいるわけではない（grep やビルドの時間がある）ので、
+  **論理並列 > slot 数は健全なオーバーサブスクリプション**になり GPU を遊ばせにくい。
+  溢れた分はゲートウェイの受け入れ制御が待たせる。
+
+  - **ゲートウェイ経由（既定）**: OMo 既定のまま `default_concurrency=5` /
+    `team.max_parallel_members=4`。slot 数に縛らない。
+  - **llama.cpp 直結**: 誰も待たせてくれないので `max(1, n_parallel - 1)`。
+    対話中のメインエージェント用に 1 本空ける。
+
+- **設定先は `~/.omo/omo.jsonc`**（`~/.config/opencode` ではない）。
+  OMo 自身の `config migrate` の移行先もここ。
+- **現行スキーマは `task.*`**。`background_task.defaultConcurrency` は**旧式**。
+  schema は **`.strict()`** なので未知のキーを混ぜると設定ごと弾かれる。
+  実測した現行スキーマ（v4.19.4）:
+
+  ```
+  task.default_concurrency        (default 5)
+  task.provider_concurrency       (optional)
+  task.model_concurrency          (optional)
+  task.team.max_members           (default 8)
+  task.team.max_parallel_members  (default 4)
+  ```
+
+  解決順は `model_concurrency > provider_concurrency > default_concurrency` なので、
+  **既定値だけ書き、利用者が付けた個別上書きは残す**。jsonc のコメントも壊さない。
 - 同期の起点は2つ: OMo 導入時と、**OpenCode が使っているモデルの `n_parallel` を変えたとき**。
   関係ないモデルの変更では触らない。
 
@@ -578,12 +605,13 @@ tokenizer による正確な入力トークン数、prompt cache、`requests_def
 | 設定画面からの導入 | 成功（install-job succeeded） |
 | version / health | 4.19.4 / healthy |
 | 実行ファイル | 動作。**bun 非導入のため Node CLI へフォールバック**（正常。警告が出るだけ） |
-| 導入直後の自動設定 | `background_task.defaultConcurrency: 3`（スロット4 − メイン1） |
-| モデル変更への追従 | `n_parallel` 4→8 で 3→7、戻すと 3 |
+| 導入直後の自動設定 | ゲートウェイ経由なので `task.default_concurrency: 5` / `team.max_parallel_members: 4` |
+| 直結時の保守的な値 | `n_parallel` 4 なら 3（メイン用に1本確保） |
+| OMo によるスキーマ検証 | `omo config migrate --dry-run --json` が `diagnostics: []` / 競合0で受理 |
 | ゲートウェイ経由の並列生成 | 3本同時すべて HTTP 200・正答、1秒 |
 
 導入先: `data/features/omo/node_modules/oh-my-openagent`。
-OMo 設定: `~/.config/opencode/oh-my-openagent.json`（ホーム配下。data_dir ではない）。
+OMo 設定: `~/.omo/omo.jsonc`（ホーム配下。data_dir ではない）。
 
 ---
 

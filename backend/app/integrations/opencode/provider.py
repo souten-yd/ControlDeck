@@ -530,62 +530,99 @@ class OpenCodeProvider:
 provider = OpenCodeProvider()
 
 
-# ---- OMo（oh-my-openagent）の並列数をモデル設定に合わせる ----
+# ---- OMo（oh-my-openagent）の並列設定 ----
+#
+# 責務を分ける:
+#   OMo        「いくつの仕事を並行して進めたいか」（論理並列）
+#   ControlDeck「いま GPU へ何本入れて安全か」（受付・待ち行列）
+#   llama.cpp  「実際の同時実行」（slot と共有KV）
+#
+# したがって OMo の並列数を llama の --parallel に一致させる必要はない。
+# エージェントは常に LLM を呼んでいるわけではない（grep やビルドの時間がある）ので、
+# 論理並列 > slot 数 は健全なオーバーサブスクリプションになり、GPU を遊ばせにくい。
+# 溢れた分はゲートウェイの受け入れ制御が待たせる。
+
+# OMo 側の既定（v4.19.4 の schema 実測値）
+OMO_DEFAULT_CONCURRENCY = 5
+OMO_DEFAULT_TEAM_PARALLEL = 4
+
 
 def _omo_config_path() -> Path:
-    """OMo のユーザー設定。~/.config/opencode/oh-my-openagent.json。"""
-    root = Path.home() / ".config" / "opencode"
+    """OMo のユーザー設定。~/.omo/omo.jsonc（jsonc が無ければ omo.json）。"""
+    root = Path.home() / ".omo"
     root.mkdir(parents=True, exist_ok=True)
-    return root / "oh-my-openagent.json"
+    jsonc = root / "omo.jsonc"
+    if jsonc.exists():
+        return jsonc
+    legacy = root / "omo.json"
+    return legacy if legacy.exists() else jsonc
 
 
-def omo_concurrency_for(n_parallel: int) -> int:
-    """モデルのスロット数から、背景タスクの同時実行数を決める。
+def omo_concurrency_for(n_parallel: int, *, gated: bool) -> tuple[int, int]:
+    """(論理並列, Team同時メンバー数) を決める。
 
-    対話中のメイン エージェントが1本使うので、背景側はそれを空けておく。
-    全スロットを背景に使わせると、ユーザーの操作が自分のサブエージェント待ちになる。
+    gated=True（ゲートウェイ経由）なら、溢れた分を ControlDeck が待たせられるので
+    OMo 既定のまま少し多めに走らせる。GPU を遊ばせない。
+    gated=False（llama.cpp 直結）なら誰も待たせてくれないため、
+    対話中のメインエージェント用に 1 本空けた保守的な値にする。
     """
-    return max(1, int(n_parallel) - 1)
+    if gated:
+        return OMO_DEFAULT_CONCURRENCY, OMO_DEFAULT_TEAM_PARALLEL
+    safe = max(1, int(n_parallel) - 1)
+    return safe, safe
 
 
 def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
-    """OMo の background_task.defaultConcurrency をモデルの並列数へ揃える。
+    """OMo の task.default_concurrency / task.team.max_parallel_members を整える。
 
-    OMo は `modelConcurrency > providerConcurrency > defaultConcurrency` の順で
-    解決するので、既定値だけを書き、利用者が個別に付けた上書きは残す。
+    OMo は provider_concurrency / model_concurrency を上位に持つので、
+    既定値だけ書き、利用者が付けた個別上書きは残す。
+    schema は .strict() なので、未知のキーを混ぜると設定ごと弾かれる点に注意。
     """
     from app.models_mgmt import llama
 
+    settings = get_settings()
+    gated = bool(settings.get("use_gateway")) and is_gateway_url(str(settings.get("base_url") or ""))
     if n_parallel is None:
-        settings = get_settings()
         target = str(settings.get("model") or "")
         instance = next(
             (i for i in llama.list_instances() if str(i.get("alias")) == target), None,
+        ) or next(
+            (i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"), None,
         )
-        if instance is None:
-            instance = next(
-                (i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"), None,
-            )
         if instance is None:
             return {"updated": False, "reason": "対象モデルがありません"}
         n_parallel = int(instance.get("n_parallel") or 1)
 
-    concurrency = omo_concurrency_for(n_parallel)
+    concurrency, team_parallel = omo_concurrency_for(n_parallel, gated=gated)
     path = _omo_config_path()
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        config = json.loads(_strip_jsonc(raw))
         if not isinstance(config, dict):
             config = {}
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         config = {}
-    background = dict(config.get("background_task") or {})
-    if background.get("defaultConcurrency") == concurrency:
+    task = dict(config.get("task") or {})
+    team = dict(task.get("team") or {})
+    if (task.get("default_concurrency") == concurrency
+            and team.get("max_parallel_members") == team_parallel):
         return {"updated": False, "concurrency": concurrency, "reason": "変更なし"}
-    background["defaultConcurrency"] = concurrency
-    config["background_task"] = background
+    task["default_concurrency"] = concurrency
+    team["max_parallel_members"] = team_parallel
+    task["team"] = team
+    config["task"] = task
     try:
         path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError as exc:
         return {"updated": False, "reason": f"書き込めません: {exc}"}
-    return {"updated": True, "concurrency": concurrency, "n_parallel": n_parallel,
-            "path": str(path)}
+    return {"updated": True, "concurrency": concurrency, "team_parallel": team_parallel,
+            "n_parallel": n_parallel, "gated": gated, "path": str(path)}
+
+
+def _strip_jsonc(text: str) -> str:
+    """jsonc のコメントを落とす。利用者が手で書いた設定を壊さず読むため。"""
+    import re
+
+    without_block = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"^\s*//.*$", "", without_block, flags=re.M)
