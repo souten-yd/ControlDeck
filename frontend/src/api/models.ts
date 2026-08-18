@@ -134,7 +134,10 @@ export interface EndpointCapacity {
 }
 
 export interface OmoStatus {
-  installed: boolean; model: string;
+  installed: boolean;
+  /** OMo（OpenCode）が使うモデル。ここのスロット数が並列の上限になる。 */
+  model: string;
+  slots: number;
   concurrency: number; team_parallel: number; gated: boolean;
 }
 

@@ -843,8 +843,16 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
     """
     from app.models_mgmt import llama
 
-    endpoints = llama.list_endpoints()
-    running = [e for e in endpoints if e.get("running_alias")]
+    # 表示対象はチャット用モデル（role=llm）だけ。embedding / reranker は
+    # RAG の補助で並列駆動の対象ではなく、並べると本来見たい行が埋もれる。
+    chat_aliases = {
+        str(i["alias"]) for i in llama.list_instances()
+        if str(i.get("role", "llm")) == "llm"
+    }
+    running = [
+        e for e in llama.list_endpoints()
+        if e.get("running_alias") and str(e["running_alias"]) in chat_aliases
+    ]
     capacities = await asyncio.gather(*(
         llama.endpoint_capacity(int(e["port"])) for e in running
     )) if running else []
@@ -858,9 +866,15 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
 
             settings = get_settings()
             gated = bool(settings.get("use_gateway"))
-            slots = next((int(c.get("slots") or 0) for c in capacities), 0)
-            concurrency, team = omo_concurrency_for(slots or 1, gated=gated)
-            omo = {"installed": True, "model": str(settings.get("model") or ""),
+            # OMo が実際に使うモデルのスロット数で決める。
+            # 先頭のエンドポイントを見ると、無関係なモデルの値を拾ってしまう。
+            target = str(settings.get("model") or "")
+            slots = next(
+                (int(i.get("n_parallel") or 1) for i in llama.list_instances()
+                 if str(i.get("alias")) == target), 1,
+            )
+            concurrency, team = omo_concurrency_for(slots, gated=gated)
+            omo = {"installed": True, "model": target, "slots": slots,
                    "concurrency": concurrency, "team_parallel": team, "gated": gated}
     except Exception:  # noqa: BLE001 - 表示用なので失敗しても他を返す
         omo = None
