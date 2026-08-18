@@ -41,9 +41,16 @@ ROLE_PRESETS: dict[str, dict] = {
 
 
 def _models_dir():
-    root = data_dir() / "models" / "gguf"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    """導入先。既定ライブラリ（F）へ置き、未設定環境では従来の data_dir 配下になる。"""
+    from app.models_mgmt import libraries
+
+    try:
+        return libraries.default_models_dir()
+    except libraries.LibraryError:
+        # ライブラリのドライブが未接続でもプリセット導入を止めない。
+        root = data_dir() / "models" / "gguf"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
 
 def preset_status() -> list[dict]:

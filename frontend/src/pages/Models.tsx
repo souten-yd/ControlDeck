@@ -9,6 +9,7 @@ import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 
 interface Model {
   id?: string;
@@ -868,6 +869,10 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         </div>
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
         <button onClick={() => savePolicy.mutate(policy)} disabled={savePolicy.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white disabled:opacity-40">共通設定を適用</button>
+      </div>
+
+      <div className="mb-4">
+        <ModelLibraryPanel />
       </div>
 
     </BottomSheet>

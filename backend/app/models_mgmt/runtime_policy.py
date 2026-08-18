@@ -22,6 +22,22 @@ class DeepResearchSettings(BaseModel):
     timeout_seconds: int = Field(default=1800, ge=300, le=7200)
 
 
+class ModelLibrary(BaseModel):
+    """モデルファイルの保存先。
+
+    ボリュームはマウント名ではなく UUID で参照し、相対サブパスを持つ。マウント名は
+    ユーザーが変えられ、デバイス名もハードウェア構成で変わるため直書きしない。
+    volume_uuid が空のエントリは従来どおり絶対 path を使う（後方互換）。
+    """
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    label: str = Field(min_length=1, max_length=128)
+    volume_uuid: str = Field(default="", max_length=64)
+    subpath: str = Field(default="", max_length=512)
+    path: str = Field(default="", max_length=1024)
+    default: bool = False
+
+
 class AmdGpuSettings(BaseModel):
     enabled: bool = False
     profile: Literal["quiet", "balanced", "full", "custom"] = "quiet"
@@ -44,6 +60,8 @@ class RuntimePolicy(BaseModel):
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
     deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
     amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
+    # 空なら libraries.py が data_dir/models/gguf の既定1件を合成する（後方互換）。
+    model_libraries: list[ModelLibrary] = Field(default_factory=list)
 
 
 def _path() -> Path:

@@ -56,6 +56,68 @@ async def put_runtime_policy(
     return await runtime_policy.environment()
 
 
+@router.get("/storage/volumes")
+def storage_volumes(user: User = Depends(require_permission("workflows.run"))):
+    """モデル置き場の候補になる実機ボリューム（ライブラリ追加時の選択肢）。"""
+    from app.models_mgmt import libraries
+
+    return libraries.detect_volumes()
+
+
+@router.get("/libraries")
+def model_libraries(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import libraries
+
+    return {"libraries": libraries.list_libraries()}
+
+
+class ModelLibraryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    label: str = Field(min_length=1, max_length=128)
+    volume_uuid: str = Field(default="", max_length=64)
+    subpath: str = Field(default="", max_length=512)
+    path: str = Field(default="", max_length=1024)
+    default: bool = False
+
+
+@router.put("/libraries")
+def put_model_libraries(
+    body: list[ModelLibraryBody], request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """ライブラリ一覧を丸ごと置き換える。"""
+    from app.models_mgmt import libraries, runtime_policy
+
+    entries = [item.model_dump() for item in body]
+    try:
+        entries = libraries.validate_entries(entries)
+    except libraries.LibraryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    policy = runtime_policy.get_policy()
+    policy.model_libraries = [runtime_policy.ModelLibrary.model_validate(e) for e in entries]
+    runtime_policy.save_policy(policy)
+    audit.record(db, "model.libraries", user=user, resource_type="model-library",
+                 request=request, metadata={"count": len(entries)})
+    return {"libraries": libraries.list_libraries()}
+
+
+@router.get("/libraries/{library_id}/scan")
+async def scan_model_library(
+    library_id: str, user: User = Depends(require_permission("workflows.run")),
+):
+    """ライブラリ内の GGUF 一覧。登録済み／未登録（孤児）を仕分けて返す。"""
+    from app.models_mgmt import libraries
+
+    try:
+        return await asyncio.to_thread(libraries.scan_library, library_id)
+    except libraries.LibraryError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PermissionError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 class ProviderLoadBody(BaseModel):
     keep_alive: str | int | None = None
 

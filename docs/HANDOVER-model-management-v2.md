@@ -24,7 +24,7 @@
 | # | 項目 | 状態 |
 |---|---|---|
 | 0 | G: NVMe 移設 | **完了**。残は再起動での自動起動確認のみ（ユーザーが手動実施） |
-| 1 | F: モデルライブラリ | 未着手 |
+| 1 | F: モデルライブラリ | **完了**（§4.5 参照） |
 | 2 | A: エンドポイント基盤 | 未着手 |
 | 3 | B: think のモデル個別化 | 未着手 |
 | 4 | D-1/2/3: 削除・並べ替え・複製 | 未着手 |
@@ -227,6 +227,55 @@ embedding(8094) 1024 次元・reranker(8095) がオンデマンド起動 / OpenC
 | `cdapp-llama-*.service` の `ExecStart` | `sync_instance_unit()` / `start_instance()` が毎回書き直すので instance を保存すれば再生成 |
 | `llama-runtime.json` の `model_path` | 手で書き換え |
 | `config.yaml` の `dotnet_path` | 手で書き換え |
+
+---
+
+## 4.5 F: モデルライブラリ（実装順序 1）— 完了
+
+### 追加したもの
+
+- `backend/app/models_mgmt/libraries.py`（新規）
+  - `detect_volumes()`: `lsblk -J -b -e7` を読み `shutil.disk_usage` で空きを付ける。新規依存なし。
+    `/boot` `/efi` `/snap` `/var/snap`、squashfs/cifs/nfs 等、UUID 無しは候補から除外。
+    transport / model はディスク側（親ノード）から引き継ぐ。
+  - `library_path()` / `default_library_id()` / `default_models_dir()` / `scan_library()` /
+    `list_libraries()` / `validate_entries()`。
+  - **未マウントのボリュームは「未接続」を返し、system ドライブへ暗黙フォールバックしない**
+    （マウント漏れで / を埋める事故を防ぐ。テストで固定済み）。
+  - 既定ライブラリが未接続なら、接続済みで最も空きの大きいものへ退避する。
+- `runtime_policy.ModelLibrary` + `RuntimePolicy.model_libraries`（空なら builtin 1 件を合成＝後方互換）。
+- API: `GET /models/storage/volumes` / `GET /models/libraries` / `PUT /models/libraries` /
+  `GET /models/libraries/{id}/scan`。**`/models/{model:path}` 系より前に定義する**こと（吸われるため）。
+- `role_presets._models_dir()` が既定ライブラリを使う（未接続時は従来の data_dir 配下へフォールバック）。
+- フロント: `frontend/src/api/models.ts`、`frontend/src/features/models/ModelLibraryPanel.tsx`。
+  共通設定シート（`SettingsSheet`）の末尾に差し込んである。
+- テスト: `backend/tests/test_model_libraries.py`（12 件）。
+
+### 実機の設定値（現在の `model-runtime-policy.json`）
+
+```json
+"model_libraries": [
+  {"id":"main","label":"モデル (NVMe)","volume_uuid":"3ebc97b1-…","subpath":"LLM","default":true},
+  {"id":"builtin","label":"内蔵 (Embed/Reranker)","path":"/data1tb/ControlDeck/data/models/gguf"}
+]
+```
+
+結果: `main` = **GGUF 5 件 102GB（うち未登録 3 件）**、`builtin` = 2 件 4GB。
+未登録の 3 件は `Qwen3.6-27B-IQ4_XS` / `Qwen3.6-35B-A3B-Q4_K_M` / `Qwen3.6-35B-A3B-UD-Q5_K_M`。
+
+### この作業中に判明したこと
+
+`allowed_roots` から data_dir 全体を外したため、**旧来の保存先 `data_dir/models/gguf` が
+スキャンできなくなった**（`ollama.scan_gguf` が `files.resolve` を通るため）。
+`/data1tb/ControlDeck/data/models` だけを `allowed_roots` に追加して解決した。
+DB・バックアップ・設定 JSON は引き続き許可ルートの外にある。
+
+### 残（F の範囲で未実装。UI 側の作り込み）
+
+- 未登録 GGUF からの**ワンタップ登録**は、一覧表示までは出来ているが登録ボタンは未実装。
+  既存の `POST /models/llama/instances` を呼べばよく、新しい API は不要
+  （エンドポイント概念を入れる A の後にやる方が手戻りがない）。
+- 孤児 GGUF の削除 UI は D-1（GGUF 実体削除）と一緒に実装する。
 
 ---
 
