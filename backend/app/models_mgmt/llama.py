@@ -902,11 +902,6 @@ def start_instance(alias: str | None = None) -> tuple[bool, str]:
         return False, str(exc)
     name = unit_name(alias)
     content = _unit_content(alias)
-    path = sd.user_unit_dir() / name
-    try:
-        changed = not path.exists() or path.read_text(encoding="utf-8") != content
-    except OSError:
-        changed = True
     sd.write_unit(name, content)
     sd.reset_failed(name)
     sd.set_enabled(name, bool(inst.get("auto_start")))
@@ -923,9 +918,13 @@ def start_instance(alias: str | None = None) -> tuple[bool, str]:
                 logger.info("エンドポイント %s のモデルを切り替えます: %s -> %s",
                             endpoint_id, other_alias, alias)
                 sd.stop(unit_name(other_alias))
-    active = sd.query_status(name).get("status") == "RUNNING"
-    # 保存後のloadで既に稼働中なら、新しい型付き設定を確実に反映する。
-    ok, err = sd.restart(name) if active and changed else sd.start(name)
+    # 稼働中なら必ず restart する。
+    # unit ファイルとの差分で判定していたが、save_instance が先に unit を書き出すため
+    # ここでは常に「変更なし」となり、start（稼働中は no-op）に落ちて設定が反映されなかった。
+    # この関数は「設定を適用して起動する」意図で呼ばれるので、稼働中は作り直すのが正しい。
+    # 単なる起動保証（ensure_ready）は health 済みなら手前で返るため、無駄な再起動にはならない。
+    active = sd.query_status(name).get("status") in ("RUNNING", "STARTING")
+    ok, err = sd.restart(name) if active else sd.start(name)
     if not ok:
         return ok, err
     # Type=simple は起動成功が即返るため、引数エラー等の即時クラッシュを検知できない。

@@ -333,3 +333,44 @@ def test_find_role_instance(monkeypatch, tmp_path):
     assert found is not None and found["alias"] == "embed"
     assert llama.find_role_instance("reranker") is None
     assert llama.find_role_instance("llm")["alias"] == "chatm"
+
+
+def test_start_instance_restarts_running_unit_to_apply_saved_settings(monkeypatch, tmp_path):
+    """保存済み設定が確実に反映されること。
+
+    save_instance が先に unit を書き出すため、start_instance 側で unit ファイルとの
+    差分を見ても常に「変更なし」になり、稼働中は start（no-op）に落ちて設定が
+    反映されないバグがあった。稼働中は必ず restart する。
+    """
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "restart.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: True)
+    monkeypatch.setattr(llama, "server_path", lambda: tmp_path / "llama-server")
+    monkeypatch.setattr(llama, "_unit_content", lambda alias=None: "unit")
+    monkeypatch.setattr(llama, "mark_used_by_base_url", lambda url: None)
+    monkeypatch.setattr("app.models_mgmt.runtime_policy.ensure_gpu_profile",
+                        lambda **kwargs: {})
+    monkeypatch.setattr(llama.time, "sleep", lambda seconds: None)
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    calls: list[str] = []
+    monkeypatch.setattr(sd, "write_unit", lambda name, content: None)
+    monkeypatch.setattr(sd, "reset_failed", lambda name: None)
+    monkeypatch.setattr(sd, "set_enabled", lambda name, value: None)
+    monkeypatch.setattr(sd, "stop", lambda name: (True, ""))
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "RUNNING"})
+    monkeypatch.setattr(sd, "restart", lambda name: (calls.append("restart"), (True, ""))[1])
+    monkeypatch.setattr(sd, "start", lambda name: (calls.append("start"), (True, ""))[1])
+
+    llama.save_instance("m", {"alias": "m", "model_path": str(gguf), "port": 9600})
+    ok, _ = llama.start_instance("m")
+    assert ok is True
+    assert calls == ["restart"], "稼働中は restart で設定を作り直す"
+
+    calls.clear()
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "STOPPED"})
+    llama.start_instance("m")
+    assert calls == ["start"], "停止中は start"
