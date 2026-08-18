@@ -63,30 +63,32 @@ OPT_KEYS = OPT_INT | OPT_FLOAT
 THINK_VALUES = ("off", "on", "low", "medium", "high", "max")
 
 # モデル個別設定として保存できる全キー（options + 運用フラグ + think）
-MODEL_CONFIG_KEYS = OPT_KEYS | {"keep_alive", "idle_exclude", "think", "deep_research_num_ctx", "vlm_enabled"}
+MODEL_CONFIG_KEYS = OPT_KEYS | {
+    "keep_alive", "idle_exclude", "think", "think_budget_tokens",
+    "deep_research_num_ctx", "vlm_enabled", "order",
+}
 
 
 def normalize_think(value) -> bool | str | None:
     """think 設定値を Ollama API 用に正規化する。
 
-    None/""/"auto" → None（送らない＝モデル既定の自動）
-    "off"/"false" → False、"on"/"true" → True、level 文字列 → そのまま
+    語彙は models_mgmt/thinking.py が正（auto/off/low/medium/high/xhigh/custom）。
+    旧語彙（on/max/true/false）もそこで読み替える。Ollama はトークンバジェットに
+    対応しないため、xhigh と custom は最も近いレベルへ落とす。
     """
+    from app.models_mgmt import thinking
+
     if value in (None, "", "auto"):
         return None
-    v = str(value).lower()
-    if v in ("off", "false", "0"):
-        return False
-    if v in ("on", "true", "1"):
-        return True
-    if v in ("low", "medium", "high", "max"):
-        return v
-    return None
+    return thinking.spec(value).ollama_think
 
 
 def effective_think(model: str) -> bool | str | None:
     """モデル個別 think 設定を正規化して返す。"""
-    return normalize_think(get_model_config(model).get("think"))
+    from app.models_mgmt import thinking
+
+    config = get_model_config(model)
+    return thinking.spec(config.get("think"), config.get("think_budget_tokens")).ollama_think
 
 # KV キャッシュ量子化の選択肢（サーバー全体・環境変数）
 KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")

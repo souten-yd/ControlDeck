@@ -8,6 +8,7 @@ import { formatBps, formatPercent, formatUptime } from "../lib/format";
 import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
 import { PageHeader } from "../components/PageHeader";
+import { CapacityWidget } from "../features/models/CapacityWidget";
 
 interface HistorySample {
   timestamp: string;
@@ -34,6 +35,14 @@ const HISTORY_RANGES = [
 ] as const;
 
 export default function DashboardPage() {
+  // OMoを入れて並列運用しているときだけLLM利用状況を出す。
+  // 単発利用では常に 1/1 で情報量が無く、ダッシュボードを混ませるだけになる。
+  const { data: features } = useQuery({
+    queryKey: ["features"],
+    queryFn: () => api<Array<{ id: string; installed: boolean }>>("/features"),
+    staleTime: 60_000,
+  });
+  const omoInstalled = !!features?.find((f) => f.id === "omo")?.installed;
   const latest = useMetrics((s) => s.latest);
   const history = useMetrics((s) => s.history);
   const [historyMinutes, setHistoryMinutes] = useState(15);
@@ -74,11 +83,14 @@ export default function DashboardPage() {
   const failed = apps?.filter((a) => a.runtime.status === "FAILED") ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-4 md:p-6">
-      <PageHeader title="Home" className="mb-0" />
+    <div className="mx-auto max-w-5xl space-y-2.5 p-3 md:space-y-4 md:p-6">
+      {/* 狭い画面では見出しを省いて1画面に収める（現在地は下部ナビで分かる） */}
+      <div className="hidden md:block">
+        <PageHeader title="Home" className="mb-0" />
+      </div>
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 md:mb-2">
           <div className="flex items-center gap-2">
             <label htmlFor="metrics-range" className="text-[11px] font-medium text-zinc-500">履歴</label>
             <select
@@ -89,7 +101,7 @@ export default function DashboardPage() {
                 setRangeChoice(choice);
                 if (choice !== "custom") setHistoryMinutes(Number(choice));
               }}
-              className="h-8 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+              className="h-7 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900 md:h-8"
             >
               {HISTORY_RANGES.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
               <option value="custom">任意…</option>
@@ -124,7 +136,7 @@ export default function DashboardPage() {
             </span>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:gap-3">
           <MetricTile
             label="CPU"
             value={m ? formatPercent(m.cpu.percent) : null}
@@ -168,7 +180,7 @@ export default function DashboardPage() {
             }
           />
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 px-1 text-xs text-zinc-500">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 px-1 text-[11px] text-zinc-500 md:mt-3 md:gap-x-5 md:gap-y-1 md:text-xs">
           {isLoading && !m ? (
             <Skeleton className="h-4 w-64" />
           ) : (
@@ -218,6 +230,9 @@ export default function DashboardPage() {
           </ul>
         </section>
       )}
+
+      {/* LLM利用状況。OMo導入時だけ出す（並列を意識して使う構成のときに意味がある）。 */}
+      {omoInstalled && <CapacityWidget />}
 
       {/* 実行中アプリ */}
       <section>
@@ -283,15 +298,15 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
     "HX1500i が計測した DC 出力電力を、設定された PSU 効率でコンセント入力電力へ換算し、" +
     `${power.price_per_kwh_yen}円/kWh で積算した概算です。コンセントのワットチェッカー実測値とは差が出る場合があります。`;
   return (
-    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900" title={tip}>
+    <section className="rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4" title={tip}>
       {/* PSU出力と電気代を同じ高さのstatとして横一列に並べ、空欄を作らない */}
-      <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 md:gap-x-6 md:gap-y-4">
         <div>
-          <p className="text-xs text-zinc-500">PSU 総出力</p>
+          <p className="text-[11px] text-zinc-500 md:text-xs">PSU 総出力</p>
           {psuOk ? (
             <>
-              <p className="num mt-0.5 text-2xl font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">
-                {power.output_power_w!.toFixed(0)} <span className="text-base font-normal text-zinc-400">W</span>
+              <p className="num text-lg font-semibold tracking-tight text-zinc-800 dark:text-zinc-100 md:mt-0.5 md:text-2xl">
+                {power.output_power_w!.toFixed(0)} <span className="text-sm font-normal text-zinc-400 md:text-base">W</span>
               </p>
               <p className="num text-[10px] text-zinc-400">
                 コンセント側 約{power.estimated_input_power_w != null ? power.estimated_input_power_w.toFixed(0) : "—"} W
@@ -306,7 +321,7 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
         <CostItem label="今月" cost={power.month_cost_yen} kwh={power.month_energy_kwh} ok={psuOk} />
       </div>
       {/* 温度/FAN と単価情報は下端の1行に集約（FANはスカイブルーで区別） */}
-      <div className="num mt-3 flex items-center gap-x-2 overflow-x-auto whitespace-nowrap border-t border-zinc-100 pt-2.5 text-[10px] text-zinc-400 dark:border-zinc-800">
+      <div className="num mt-2 flex items-center gap-x-2 overflow-x-auto whitespace-nowrap border-t border-zinc-100 pt-1.5 text-[10px] text-zinc-400 dark:border-zinc-800 md:mt-3 md:pt-2.5">
         {psuOk && power.vrm_temperature_c != null && <span className="shrink-0" title="VRM温度">VRM {power.vrm_temperature_c}°</span>}
         {psuOk && power.case_temperature_c != null && <span className="shrink-0" title="ケース内温度">ケース {power.case_temperature_c}°</span>}
         {psuOk && power.fan_rpm != null && (
@@ -323,8 +338,8 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
 function CostItem({ label, cost, kwh, ok }: { label: string; cost: number | null; kwh: number | null; ok: boolean }) {
   return (
     <div>
-      <p className="text-xs text-zinc-500">{label}</p>
-      <p className="num mt-0.5 text-xl font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">{ok ? fmtYen(cost) : "概算不可"}</p>
+      <p className="text-[11px] text-zinc-500 md:text-xs">{label}</p>
+      <p className="num text-base font-semibold tracking-tight text-zinc-800 dark:text-zinc-100 md:mt-0.5 md:text-xl">{ok ? fmtYen(cost) : "概算不可"}</p>
       {ok && <p className="num text-[10px] text-zinc-400">{fmtKwh(kwh)}</p>}
     </div>
   );
@@ -407,23 +422,23 @@ function MetricTile({
           ? "text-amber-500"
           : "text-accent-500";
   return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-xs font-medium text-zinc-400">{label}</p>
+        <p className="text-[11px] font-medium text-zinc-400 md:text-xs">{label}</p>
         {value === null ? (
-          <Skeleton className="h-7 w-14" />
+          <Skeleton className="h-6 w-12 md:h-7 md:w-14" />
         ) : (
-          <p className="num text-2xl font-semibold tracking-tight">{value}</p>
+          <p className="num text-lg font-semibold tracking-tight md:text-2xl">{value}</p>
         )}
       </div>
-      <div className="mt-2">
+      <div className="mt-1 md:mt-2">
         {values.filter((v) => v != null).length >= 2 ? (
-          <Sparkline values={values} fill className={tone} />
+          <Sparkline values={values} fill className={tone} heightClass="h-5 md:h-7" />
         ) : (
-          <div className="h-7 rounded-md bg-zinc-50 dark:bg-zinc-800/40" />
+          <div className="h-5 rounded-md bg-zinc-50 dark:bg-zinc-800/40 md:h-7" />
         )}
       </div>
-      <p className="num mt-1.5 flex h-4 items-center gap-2 overflow-hidden text-[11px] text-zinc-400">
+      <p className="num mt-1 flex h-4 items-center gap-2 overflow-hidden text-[10px] text-zinc-400 md:mt-1.5 md:text-[11px]">
         {sub && <span className="truncate">{sub}</span>}
         {temp && <span className="shrink-0">{temp}</span>}
         {fan && (

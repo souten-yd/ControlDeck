@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Literal
 
 from app.config import data_dir
+
+logger = logging.getLogger("control_deck.features")
 
 FeatureAction = Literal["install", "update", "enable", "disable", "uninstall"]
 
@@ -21,6 +24,16 @@ FEATURES: dict[str, dict] = {
         # 有効化でAPI/画面/ノードを登録するため、反映にプラットフォーム再読み込みが必要。
         "route_gated": True,
         "summary": "OpenCode画面とAIチャットのcodeモードで使うコーディングエージェント",
+    },
+    "omo": {
+        "name": "OMo（多エージェント編成）",
+        "kind": "npm",
+        "package": "oh-my-openagent",
+        "executable": "omo",
+        # OpenCode のプラグインとして動くため、OpenCode 側の導入が前提。
+        "route_gated": False,
+        "summary": "OpenCodeで複数エージェントを並列に動かす。並列数はモデル設定に合わせて調整する",
+        "requires": "opencode",
     },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
@@ -132,6 +145,13 @@ def status(feature_id: str) -> dict:
         "summary": spec["summary"],
         "kind": spec["kind"],
         "route_gated": spec["route_gated"],
+        # 依存アドオン。未導入なら UI で導入順を案内する。
+        "requires": spec.get("requires", ""),
+        "requires_installed": (
+            True if not spec.get("requires")
+            else _managed_executable(spec["requires"]).is_file()
+            or shutil.which(FEATURES[spec["requires"]]["executable"]) is not None
+        ),
         "available": toolchain is not None or installed,
         "installed": installed,
         "managed": managed,
@@ -197,10 +217,34 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
 
 def install(feature_id: str) -> dict:
     name = FEATURES[_known(feature_id)]["name"]
+    required = FEATURES[feature_id].get("requires")
+    if required and not status(required)["installed"]:
+        raise FeatureError(f"先に{FEATURES[required]['name']}を導入してください")
     result = _install_package(feature_id, latest=False)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
         raise FeatureError(f"{name}の管理導入に失敗しました")
+    _autoconfigure(feature_id)
     return status(feature_id)
+
+
+def _autoconfigure(feature_id: str) -> None:
+    """導入直後に通信できる状態へ整える。
+
+    接続先やAPIキーを手で入れさせない。失敗しても導入自体は成功扱いにする
+    （後から設定画面で直せるため、ここで導入を巻き戻す方が不便）。
+    """
+    try:
+        if feature_id == "opencode":
+            from app.integrations.opencode.provider import autoconfigure
+
+            autoconfigure()
+        elif feature_id == "omo":
+            # 背景タスクの同時実行数をモデルのスロット数へ揃える。
+            from app.integrations.opencode.provider import sync_omo_concurrency
+
+            sync_omo_concurrency()
+    except Exception:  # noqa: BLE001 - 自動設定の失敗で導入を失敗にしない
+        logger.exception("%sの自動設定に失敗しました", feature_id)
 
 
 def update(feature_id: str) -> dict:
@@ -226,6 +270,8 @@ def enable(feature_id: str) -> dict:
         "external_executable": remembered,
     }
     _write_state(state)
+    # 外部PATHの実体を有効化した場合は install を通らないので、ここでも整える。
+    _autoconfigure(feature_id)
     return status(feature_id)
 
 

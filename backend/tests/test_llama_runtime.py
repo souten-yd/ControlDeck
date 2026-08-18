@@ -68,10 +68,92 @@ def test_multi_instance_catalog_uniqueness_and_unit_names(monkeypatch, tmp_path)
     assert first["instances"]["model-a"]["auto_start"] is False
     assert llama.unit_name("model-a") != llama.unit_name("model-b")
     assert llama.unit_name("model-a").startswith("cdapp-llama-model-a-")
-    with pytest.raises(ValueError, match="port 8080"):
-        llama.save_instance("model-c", {"alias": "model-c", "model_path": "/models/c.gguf", "port": 8080})
-    with pytest.raises(ValueError, match="同じGGUF"):
-        llama.save_instance("model-c", {"alias": "model-c", "model_path": "/models/a.gguf", "port": 8082})
+    # ポートは共有できる（同一エンドポイントに束ね、起動時に排他制御する）。
+    shared = llama.save_instance(
+        "model-c", {"alias": "model-c", "model_path": "/models/c.gguf", "port": 8080},
+    )
+    assert shared["instances"]["model-c"]["endpoint_id"] == shared["instances"]["model-a"]["endpoint_id"]
+    assert {i["alias"] for i in llama.instances_on_endpoint(
+        shared["instances"]["model-a"]["endpoint_id"])} == {"model-a", "model-c"}
+    # 新規登録は既定チャット先を引き継ぐ（従来どおり）
+    assert shared["selected_alias"] == "model-c"
+    # 既存モデルの保存では既定チャット先を奪わない（利用中のモデルが黙って変わらない）
+    resaved = llama.save_instance("model-a", {"ctx_size": 16384})
+    assert resaved["selected_alias"] == "model-c"
+    assert resaved["instances"]["model-a"]["ctx_size"] == 16384
+    # 同じGGUFを別設定で持てる（別CTXで切り替える複製の用途）
+    same_file = llama.save_instance(
+        "model-d", {"alias": "model-d", "model_path": "/models/a.gguf", "port": 8080},
+    )
+    assert same_file["instances"]["model-d"]["model_path"] == "/models/a.gguf"
+
+
+def test_resolve_instance_by_port_prefers_running_then_active_then_priority(monkeypatch, tmp_path):
+    """同一ポートを共有したとき、どのモデルがそのポートを代表するかを1件に決める。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "resolve.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    llama.save_instance("first", {"alias": "first", "model_path": "/models/a.gguf", "port": 9100})
+    llama.save_instance("second", {"alias": "second", "model_path": "/models/b.gguf", "port": 9100})
+    llama.reorder_instances(["second", "first"])
+
+    # 稼働中が無ければ最優先（=並びの先頭）
+    assert llama.resolve_instance_by_port(9100) == "second"
+
+    # 最後に起動したものが記録されていればそれを優先
+    llama._set_active_alias(llama.get_config()["instances"]["first"]["endpoint_id"], "first")
+    assert llama.resolve_instance_by_port(9100) == "first"
+
+    # 稼働中があれば最優先
+    from app.applications import systemd as sd
+
+    monkeypatch.setattr(sd, "query_status", lambda name: (
+        {"status": "RUNNING"} if name == llama.unit_name("second") else {"status": "STOPPED"}
+    ))
+    assert llama.resolve_instance_by_port(9100) == "second"
+    assert 9100 in llama.endpoint_ports()
+    assert llama.resolve_instance_by_port(9999) is None
+
+
+def test_reorder_sets_priority_and_autostart_picks_top_of_endpoint(monkeypatch, tmp_path):
+    """同一エンドポイントで auto_start が複数あっても、enable するのは最優先の1件だけ。"""
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "order.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: True)
+    monkeypatch.setattr(llama, "_unit_content", lambda alias=None: "unit")
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "STOPPED"})
+    monkeypatch.setattr(sd, "write_unit", lambda name, content: None)
+    enabled: dict[str, bool] = {}
+    monkeypatch.setattr(sd, "set_enabled", lambda name, value: enabled.__setitem__(name, value))
+    for alias in ("a", "b"):
+        path = tmp_path / f"{alias}.gguf"
+        path.write_bytes(b"GGUF")
+        llama.save_instance(alias, {"alias": alias, "model_path": str(path),
+                                    "port": 9200, "auto_start": True})
+    assert enabled[llama.unit_name("a")] is True
+    assert enabled[llama.unit_name("b")] is False
+
+    llama.reorder_instances(["b", "a"])
+    assert [i["alias"] for i in llama.list_instances()] == ["b", "a"]
+    assert enabled[llama.unit_name("b")] is True
+    assert enabled[llama.unit_name("a")] is False
+
+
+def test_duplicate_instance_shares_endpoint_without_stealing_autostart(monkeypatch, tmp_path):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "dup.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    llama.save_instance("base", {"alias": "base", "model_path": "/models/a.gguf",
+                                 "port": 9300, "auto_start": True, "ctx_size": 8192})
+    cfg = llama.duplicate_instance("base", "base-long-ctx")
+    copy = cfg["instances"]["base-long-ctx"]
+    assert copy["endpoint_id"] == cfg["instances"]["base"]["endpoint_id"]
+    assert copy["ctx_size"] == 8192
+    assert copy["auto_start"] is False
 
 
 def test_mark_used_matches_local_instance_port(monkeypatch, tmp_path):
@@ -195,10 +277,26 @@ def test_llama_multi_instance_api(admin_client, monkeypatch):
     assert {item["alias"] for item in listed.json()} == {"catalog-a", "catalog-b"}
     gguf_c = _sandbox / "catalog-c.gguf"
     gguf_c.write_bytes(b"GGUF-c")
-    duplicate = admin_client.post("/api/v1/models/llama/instances", json={
+    # 同じポートの共有は許可される（エンドポイントを共有し、起動時に排他制御する）
+    shared = admin_client.post("/api/v1/models/llama/instances", json={
         "alias": "catalog-c", "model_path": str(gguf_c), "port": 8202,
     }, headers=CSRF_HEADERS)
-    assert duplicate.status_code == 422 and "port 8202" in duplicate.text
+    assert shared.status_code == 201, shared.text
+    endpoints = admin_client.get("/api/v1/models/llama/endpoints")
+    assert endpoints.status_code == 200
+    shared_endpoint = next(e for e in endpoints.json() if e["port"] == 8202)
+    assert set(shared_endpoint["aliases"]) == {"catalog-b", "catalog-c"}
+    # 優先度の並べ替え
+    reordered = admin_client.post("/api/v1/models/llama/instances/reorder", json={
+        "order": ["catalog-c", "catalog-a", "catalog-b"],
+    }, headers=CSRF_HEADERS)
+    assert reordered.status_code == 200
+    assert [i["alias"] for i in reordered.json()] == ["catalog-c", "catalog-a", "catalog-b"]
+    # 所属モデルがあるエンドポイントは削除できない
+    busy = admin_client.post(
+        f"/api/v1/models/llama/endpoints/{shared_endpoint['id']}/delete", headers=CSRF_HEADERS,
+    )
+    assert busy.status_code == 409
     deleted = admin_client.post("/api/v1/models/llama/instances/catalog-b/delete", headers=CSRF_HEADERS)
     assert deleted.status_code == 200 and deleted.json()["gguf_deleted"] is False
     assert gguf_b.exists()
@@ -235,3 +333,96 @@ def test_find_role_instance(monkeypatch, tmp_path):
     assert found is not None and found["alias"] == "embed"
     assert llama.find_role_instance("reranker") is None
     assert llama.find_role_instance("llm")["alias"] == "chatm"
+
+
+def test_start_instance_restarts_running_unit_to_apply_saved_settings(monkeypatch, tmp_path):
+    """保存済み設定が確実に反映されること。
+
+    save_instance が先に unit を書き出すため、start_instance 側で unit ファイルとの
+    差分を見ても常に「変更なし」になり、稼働中は start（no-op）に落ちて設定が
+    反映されないバグがあった。稼働中は必ず restart する。
+    """
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "restart.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: True)
+    monkeypatch.setattr(llama, "server_path", lambda: tmp_path / "llama-server")
+    monkeypatch.setattr(llama, "_unit_content", lambda alias=None: "unit")
+    monkeypatch.setattr(llama, "mark_used_by_base_url", lambda url: None)
+    monkeypatch.setattr("app.models_mgmt.runtime_policy.ensure_gpu_profile",
+                        lambda **kwargs: {})
+    monkeypatch.setattr(llama.time, "sleep", lambda seconds: None)
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    calls: list[str] = []
+    monkeypatch.setattr(sd, "write_unit", lambda name, content: None)
+    monkeypatch.setattr(sd, "reset_failed", lambda name: None)
+    monkeypatch.setattr(sd, "set_enabled", lambda name, value: None)
+    monkeypatch.setattr(sd, "stop", lambda name: (True, ""))
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "RUNNING"})
+    monkeypatch.setattr(sd, "restart", lambda name: (calls.append("restart"), (True, ""))[1])
+    monkeypatch.setattr(sd, "start", lambda name: (calls.append("start"), (True, ""))[1])
+
+    llama.save_instance("m", {"alias": "m", "model_path": str(gguf), "port": 9600})
+    ok, _ = llama.start_instance("m")
+    assert ok is True
+    assert calls == ["restart"], "稼働中は restart で設定を作り直す"
+
+    calls.clear()
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "STOPPED"})
+    llama.start_instance("m")
+    assert calls == ["start"], "停止中は start"
+
+
+def test_delete_instance_can_remove_gguf_but_protects_shared_files(monkeypatch, tmp_path):
+    """GGUF本体の削除は取り消せないので、他が参照中なら消さない。"""
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+    from tests.conftest import _sandbox
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "del.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias=None: (True, ""))
+    monkeypatch.setattr(sd, "remove_unit", lambda name: None)
+    shared = _sandbox / "shared.gguf"
+    shared.write_bytes(b"GGUF")
+    lone = _sandbox / "lone.gguf"
+    lone.write_bytes(b"GGUF")
+
+    llama.save_instance("a", {"alias": "a", "model_path": str(shared), "port": 9700})
+    llama.save_instance("b", {"alias": "b", "model_path": str(shared), "port": 9701})
+    llama.save_instance("c", {"alias": "c", "model_path": str(lone), "port": 9702})
+
+    # 他が参照中（b）なら本体は消さない
+    result = llama.delete_instance("a", delete_file=True)
+    assert result["gguf_deleted"] is False
+    assert "b" in result["reason"]
+    assert shared.exists()
+
+    # 既定（delete_file なし）は設定だけ消す
+    result = llama.delete_instance("b")
+    assert result["gguf_deleted"] is False
+    assert shared.exists()
+
+    # 参照が無ければ消す
+    result = llama.delete_instance("c", delete_file=True)
+    assert result["gguf_deleted"] is True
+    assert not lone.exists()
+
+
+def test_delete_instance_keeps_selection_when_other_model_removed(monkeypatch, tmp_path):
+    """使っていないモデルを消しただけで既定チャット先が変わらない。"""
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "sel.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias=None: (True, ""))
+    monkeypatch.setattr(sd, "remove_unit", lambda name: None)
+    llama.save_instance("keep", {"alias": "keep", "model_path": "/m/k.gguf", "port": 9710})
+    llama.save_instance("drop", {"alias": "drop", "model_path": "/m/d.gguf", "port": 9711})
+    llama.select_instance("keep")
+    llama.delete_instance("drop")
+    assert llama.get_config()["selected_alias"] == "keep"

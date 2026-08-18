@@ -12,7 +12,9 @@ from app.config import data_dir
 
 
 class ChatDefaults(BaseModel):
-    reasoning: Literal["off", "auto", "on"] = "off"
+    # 思考(reasoning)はモデル個別設定へ移した（models_mgmt/thinking.py）。
+    # モデルごとに適正な深さが違い、共通設定で一律に縛ると調整できなくなるため。
+    # 旧 reasoning キーが残った設定ファイルは pydantic が無視するのでそのまま読める。
     timeout_seconds: int = Field(default=300, ge=10, le=1800)
 
 
@@ -20,6 +22,22 @@ class DeepResearchSettings(BaseModel):
     evidence_context_chars: int = Field(default=90000, ge=12000, le=500000)
     max_report_tokens: int = Field(default=32768, ge=8192, le=262144)
     timeout_seconds: int = Field(default=1800, ge=300, le=7200)
+
+
+class ModelLibrary(BaseModel):
+    """モデルファイルの保存先。
+
+    ボリュームはマウント名ではなく UUID で参照し、相対サブパスを持つ。マウント名は
+    ユーザーが変えられ、デバイス名もハードウェア構成で変わるため直書きしない。
+    volume_uuid が空のエントリは従来どおり絶対 path を使う（後方互換）。
+    """
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    label: str = Field(min_length=1, max_length=128)
+    volume_uuid: str = Field(default="", max_length=64)
+    subpath: str = Field(default="", max_length=512)
+    path: str = Field(default="", max_length=1024)
+    default: bool = False
 
 
 class AmdGpuSettings(BaseModel):
@@ -44,6 +62,8 @@ class RuntimePolicy(BaseModel):
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
     deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
     amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
+    # 空なら libraries.py が data_dir/models/gguf の既定1件を合成する（後方互換）。
+    model_libraries: list[ModelLibrary] = Field(default_factory=list)
 
 
 def _path() -> Path:
@@ -116,10 +136,7 @@ def model_output_tokens(base_url: str, model: str) -> int:
     else:
         parsed = urlsplit(base_url)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
-            instance = next(
-                (item for item in llama.list_instances() if int(item.get("port", 0)) == parsed.port),
-                None,
-            )
+            instance = llama.instance_for_port(parsed.port) if parsed.port else None
             if instance is not None:
                 try:
                     configured = int(instance.get("n_predict"))
@@ -323,7 +340,7 @@ async def prepare_deep_research_context(base_url: str, model: str) -> dict:
     if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
         result["reason"] = "外部OpenAI互換runtimeはrequest単位CTX変更を保証できません"
         return result
-    instance = next((item for item in llama.list_instances() if int(item.get("port", 0)) == parsed.port), None)
+    instance = llama.instance_for_port(parsed.port) if parsed.port else None
     if instance is None:
         result["reason"] = "管理対象runtimeではありません"
         return result

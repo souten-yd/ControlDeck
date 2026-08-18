@@ -369,6 +369,8 @@ interface AddonState {
   available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string;
+  /** 依存する別アドオンのid。未導入なら導入ボタンを止めて順序を案内する。 */
+  requires?: string; requires_installed?: boolean;
 }
 
 interface PluginState {
@@ -559,6 +561,8 @@ function AddonsSection() {
                     : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
                     : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です"}
                   {addon.error && ` · ${addon.error}`}
+                  {addon.requires_installed === false &&
+                    ` · 先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} の導入が必要です`}
                 </p>
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
@@ -570,7 +574,11 @@ function AddonsSection() {
                   </button>
                 )}
                 {!addon.installed && (
-                  <button onClick={() => void install(addon)} disabled={!addon.available || jobId !== null}
+                  <button onClick={() => void install(addon)}
+                    disabled={!addon.available || jobId !== null || addon.requires_installed === false}
+                    title={addon.requires_installed === false
+                      ? `先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} を導入してください`
+                      : undefined}
                     className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
                     {jobId !== null ? "導入中…" : "導入"}
                   </button>

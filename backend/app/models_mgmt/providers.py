@@ -67,17 +67,23 @@ async def _candidates() -> list[dict]:
         port = int(llama_status.get("port") or 8080)
         add(f"http://127.0.0.1:{port}", "llama.cpp", "llama.cpp", managed=True,
             installed=False, experimental=True)
-    # 複数instanceは各portが独立OpenAI endpoint。選択中は上のmanaged providerへ
-    # mergeし、それ以外もLLM endpoint pickerから選べるよう検出候補に加える。
+    # エンドポイント（=port）が独立したOpenAI endpoint。1エンドポイントに複数モデルを
+    # 束ねられるため、base_urlをキーにすると同居モデルが1件へ潰れる。エンドポイント単位で
+    # 1候補を作り、所属aliasは後段でmodelsとして列挙する。
     # embedding/rerankerはチャット先ではないため候補に出さない。
+    endpoint_members: dict[str, list[str]] = {}
     for instance in llama_status.get("instances", []):
         if str(instance.get("role", "llm")) != "llm":
             continue
-        add(
-            str(instance.get("base_url") or f"http://127.0.0.1:{instance.get('port', 8080)}"),
-            "llama.cpp-instance", f"llama.cpp · {instance.get('alias')}",
-            installed=bool(llama_status.get("installed")), experimental=True,
+        base = _openai_base(
+            str(instance.get("base_url") or f"http://127.0.0.1:{instance.get('port', 8080)}")
         )
+        endpoint_members.setdefault(base, []).append(str(instance.get("alias")))
+    for base, aliases in endpoint_members.items():
+        label = aliases[0] if len(aliases) == 1 else f"{aliases[0]} ほか{len(aliases) - 1}件"
+        add(base, "llama.cpp-instance", f"llama.cpp · {label}",
+            installed=bool(llama_status.get("installed")), experimental=True)
+        candidates[base]["aliases"] = aliases
 
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)
@@ -147,6 +153,8 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
                     from app.models_mgmt import llama
 
                     models = [str(inst["alias"]) for inst in llama.list_instances()]
+                # エンドポイント候補は、そこに束ねた全モデルを選択肢として出す。
+                models = item.get("aliases") or models
                 return {**item, "available": False, "models": models,
                         "capabilities": capabilities(item["provider"], managed=item["managed"], available=False)}
             return None

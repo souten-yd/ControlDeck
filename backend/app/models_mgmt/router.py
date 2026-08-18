@@ -56,6 +56,68 @@ async def put_runtime_policy(
     return await runtime_policy.environment()
 
 
+@router.get("/storage/volumes")
+def storage_volumes(user: User = Depends(require_permission("workflows.run"))):
+    """モデル置き場の候補になる実機ボリューム（ライブラリ追加時の選択肢）。"""
+    from app.models_mgmt import libraries
+
+    return libraries.detect_volumes()
+
+
+@router.get("/libraries")
+def model_libraries(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import libraries
+
+    return {"libraries": libraries.list_libraries()}
+
+
+class ModelLibraryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    label: str = Field(min_length=1, max_length=128)
+    volume_uuid: str = Field(default="", max_length=64)
+    subpath: str = Field(default="", max_length=512)
+    path: str = Field(default="", max_length=1024)
+    default: bool = False
+
+
+@router.put("/libraries")
+def put_model_libraries(
+    body: list[ModelLibraryBody], request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """ライブラリ一覧を丸ごと置き換える。"""
+    from app.models_mgmt import libraries, runtime_policy
+
+    entries = [item.model_dump() for item in body]
+    try:
+        entries = libraries.validate_entries(entries)
+    except libraries.LibraryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    policy = runtime_policy.get_policy()
+    policy.model_libraries = [runtime_policy.ModelLibrary.model_validate(e) for e in entries]
+    runtime_policy.save_policy(policy)
+    audit.record(db, "model.libraries", user=user, resource_type="model-library",
+                 request=request, metadata={"count": len(entries)})
+    return {"libraries": libraries.list_libraries()}
+
+
+@router.get("/libraries/{library_id}/scan")
+async def scan_model_library(
+    library_id: str, user: User = Depends(require_permission("workflows.run")),
+):
+    """ライブラリ内の GGUF 一覧。登録済み／未登録（孤児）を仕分けて返す。"""
+    from app.models_mgmt import libraries
+
+    try:
+        return await asyncio.to_thread(libraries.scan_library, library_id)
+    except libraries.LibraryError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PermissionError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 class ProviderLoadBody(BaseModel):
     keep_alive: str | int | None = None
 
@@ -600,6 +662,7 @@ class LlamaInstanceBody(BaseModel):
     ctx_size: int | None = Field(default=None, ge=0, le=1048576)
     deep_research_ctx_size: int | None = Field(default=None, ge=0, le=1048576)
     n_parallel: int | None = Field(default=None, ge=1, le=64)
+    kv_unified: bool | None = None
     flash_attn: bool | None = None
     n_predict: int | None = Field(default=None, ge=-1, le=1048576)
     batch_size: int | None = Field(default=None, ge=32, le=65536)
@@ -612,6 +675,8 @@ class LlamaInstanceBody(BaseModel):
     mlock: bool | None = None
     spec_type: Literal["none", "draft-simple", "draft-mtp", "ngram-simple"] | None = None
     draft_max: int | None = Field(default=None, ge=1, le=128)
+    think: Literal["auto", "off", "low", "medium", "high", "xhigh", "custom"] | None = None
+    think_budget_tokens: int | None = Field(default=None, ge=0, le=262144)
     cpu_moe: bool | None = None
     n_cpu_moe: int | None = Field(default=None, ge=0, le=256)
     temperature: float | None = Field(default=None, ge=0, le=5)
@@ -623,6 +688,8 @@ class LlamaInstanceBody(BaseModel):
     alias: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     auto_start: bool | None = None
     idle_exclude: bool | None = None
+    endpoint_id: str | None = Field(default=None, max_length=128)
+    order: int | None = Field(default=None, ge=1, le=64)
 
 
 def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
@@ -649,7 +716,8 @@ def _validated_provider_patch(provider_id: str, body: dict) -> dict:
     patch: dict = body
     if provider_id == "llama.cpp":
         # 共通routeではmodel identity/path/portを変えず、既存の型・範囲検証を再利用する。
-        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path", "role", "port"})
+        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path", "role", "port",
+                                        "endpoint_id", "order"})
         if forbidden:
             raise HTTPException(status_code=422, detail=f"共通設定APIでは変更できない項目です: {', '.join(forbidden)}")
         try:
@@ -740,20 +808,306 @@ def llama_select_instance(
     return result
 
 
+class DeleteInstanceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # 既定は設定だけ削除。GGUF 本体の削除は取り消せないので明示指定を要る。
+    delete_file: bool = False
+
+
 @router.post("/llama/instances/{alias}/delete")
 def llama_delete_instance(
     alias: str, request: Request,
+    body: DeleteInstanceBody | None = None,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    delete_file = bool(body.delete_file) if body else False
+    try:
+        result = llama.delete_instance(alias, delete_file=delete_file)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_delete", user=user, resource_type="model", resource_id=alias,
+                 request=request, metadata={"gguf_deleted": result["gguf_deleted"],
+                                            "requested_file_delete": delete_file})
+    return {"ok": True, **result}
+
+
+@router.get("/llama/capacity")
+async def llama_capacity(user: User = Depends(require_permission("workflows.run"))):
+    """稼働中エンドポイントの利用状況をまとめて返す（ダッシュボード表示用）。
+
+    LLM並列（使用中/最大）・待ち行列・KV使用量を1回で取れるようにする。
+    OMo 導入時は設定済みの論理並列も添えて、負荷の見当を付けられるようにする。
+    """
+    from app.models_mgmt import llama
+
+    endpoints = llama.list_endpoints()
+    running = [e for e in endpoints if e.get("running_alias")]
+    capacities = await asyncio.gather(*(
+        llama.endpoint_capacity(int(e["port"])) for e in running
+    )) if running else []
+
+    omo: dict | None = None
+    try:
+        from app.features.registry import is_enabled
+
+        if is_enabled("omo"):
+            from app.integrations.opencode.provider import get_settings, omo_concurrency_for
+
+            settings = get_settings()
+            gated = bool(settings.get("use_gateway"))
+            slots = next((int(c.get("slots") or 0) for c in capacities), 0)
+            concurrency, team = omo_concurrency_for(slots or 1, gated=gated)
+            omo = {"installed": True, "model": str(settings.get("model") or ""),
+                   "concurrency": concurrency, "team_parallel": team, "gated": gated}
+    except Exception:  # noqa: BLE001 - 表示用なので失敗しても他を返す
+        omo = None
+
+    return {
+        "endpoints": [
+            {"id": e["id"], "label": e["label"], "port": e["port"],
+             "running_alias": e["running_alias"], **capacity}
+            for e, capacity in zip(running, capacities, strict=True)
+        ],
+        "omo": omo,
+    }
+
+
+@router.get("/llama/endpoints/{endpoint_id}/capacity")
+async def llama_endpoint_capacity(
+    endpoint_id: str, user: User = Depends(require_permission("workflows.run")),
+):
+    """KVプールの使用状況。共有KVでは総量が尽きると即エラーになるため、UIで残量を見せる。"""
+    from app.models_mgmt import llama
+
+    endpoint = next((e for e in llama.list_endpoints() if e["id"] == endpoint_id), None)
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail="エンドポイントが見つかりません")
+    return await llama.endpoint_capacity(int(endpoint["port"]))
+
+
+@router.get("/hf/search")
+async def hf_search_repos(q: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import hf
+
+    if not q.strip():
+        return []
+    try:
+        return await hf.search_models(q.strip())
+    except hf.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/hf/repos/{repo:path}/files")
+async def hf_repo_files(repo: str, revision: str = "main",
+                        user: User = Depends(require_permission("workflows.run"))):
+    """repo 内の GGUF を量子化バリアントとして返す。保存先の空き容量も添える。"""
+    from app.models_mgmt import hf, libraries
+
+    try:
+        files = await hf.list_repo_files(repo, revision)
+    except hf.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"repo": repo, "variants": files, "libraries": libraries.list_libraries()}
+
+
+class HfSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(default="", max_length=200)
+
+
+@router.get("/hf/settings")
+def hf_settings(user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import hf
+
+    return {"has_token": hf.has_token()}
+
+
+@router.put("/hf/settings")
+def put_hf_settings(
+    body: HfSettingsBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """gated repo 用のトークン。値はログにも監査にも残さない。"""
+    from app.models_mgmt import hf
+
+    hf.set_token(body.token)
+    audit.record(db, "model.hf_token", user=user, resource_type="model", request=request,
+                 metadata={"configured": bool(body.token.strip())})
+    return {"has_token": hf.has_token()}
+
+
+class HfDownloadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str = Field(min_length=1, max_length=200)
+    files: list[str] = Field(min_length=1, max_length=64)
+    revision: str = Field(default="main", max_length=100)
+    library_id: str = Field(default="", max_length=64)
+    expected_bytes: int = Field(default=0, ge=0)
+    # 完了後に llama.cpp instance として登録する場合だけ指定する
+    alias: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    role: Literal["llm", "embedding", "reranker"] | None = None
+    endpoint_id: str | None = Field(default=None, max_length=128)
+    port: int | None = Field(default=None, ge=1024, le=65535)
+
+
+@router.post("/hf/download-jobs", status_code=201)
+async def hf_download(
+    body: HfDownloadBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """GGUF 取得をサーバー側ジョブで行う（ブラウザを閉じても継続）。"""
+    from app.models_mgmt import hf
+
+    register = None
+    if body.alias:
+        register = {"alias": body.alias, "role": body.role,
+                    "endpoint_id": body.endpoint_id, "port": body.port}
+
+    async def run(job: jobs.Job):
+        return await hf.download(
+            job, body.repo, body.files, library_id=body.library_id,
+            revision=body.revision, expected_bytes=body.expected_bytes, register=register,
+        )
+
+    job = jobs.create("model.hf_download", f"HuggingFace取得: {body.repo}", run,
+                      owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
+    audit.record(db, "model.hf_download", user=user, resource_type="model",
+                 resource_id=body.repo, request=request,
+                 metadata={"job_id": job.id, "files": len(body.files), "alias": body.alias or ""})
+    return {"job_id": job.id}
+
+
+@router.get("/llm-gateway")
+def llm_gateway_settings(user: User = Depends(require_permission("workflows.edit"))):
+    """ゲートウェイの接続情報。OpenCode 等の直結クライアント向け。"""
+    from app.config import get_config as app_config
+    from app.models_mgmt import gateway
+
+    key = gateway.get_api_key()
+    port = int(app_config().server.port)
+    return {
+        "issued": bool(key),
+        "api_key": key,
+        "base_url": f"http://127.0.0.1:{port}/api/v1/llm/v1",
+    }
+
+
+@router.post("/llm-gateway/key")
+def llm_gateway_issue_key(
+    request: Request, rotate: bool = False,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """APIキーを発行／再発行する。再発行すると既存クライアントは繋がらなくなる。"""
+    from app.models_mgmt import gateway
+
+    key = gateway.rotate_api_key() if rotate else gateway.get_api_key(create=True)
+    audit.record(db, "llm_gateway.key", user=user, resource_type="runtime",
+                 request=request, metadata={"rotated": bool(rotate)})
+    return {"api_key": key}
+
+
+@router.get("/llama/endpoints")
+def llama_endpoints(user: User = Depends(require_permission("workflows.run"))):
+    """エンドポイント（待受ポート）一覧。所属モデルと稼働中モデルを添える。"""
+    from app.models_mgmt import llama
+
+    return llama.list_endpoints()
+
+
+class LlamaEndpointBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(default=None, max_length=128)
+    port: int | None = Field(default=None, ge=1024, le=65535)
+
+
+@router.put("/llama/endpoints/{endpoint_id}")
+def llama_save_endpoint(
+    endpoint_id: str, body: LlamaEndpointBody, request: Request,
     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
 ):
     from app.models_mgmt import llama
 
     try:
-        llama.delete_instance(alias)
+        result = llama.save_endpoint(endpoint_id, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.endpoint_save", user=user, resource_type="runtime",
+                 resource_id=endpoint_id, request=request, metadata={"port": result.get("port")})
+    return result
+
+
+@router.post("/llama/endpoints/{endpoint_id}/delete")
+def llama_delete_endpoint(
+    endpoint_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    try:
+        llama.delete_endpoint(endpoint_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    audit.record(db, "llama.instance_delete", user=user, resource_type="model", resource_id=alias,
-                 request=request, metadata={"gguf_deleted": False})
-    return {"ok": True, "gguf_deleted": False}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(db, "llama.endpoint_delete", user=user, resource_type="runtime",
+                 resource_id=endpoint_id, request=request)
+    return {"ok": True}
+
+
+class ReorderBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[str] = Field(min_length=1, max_length=64)
+
+
+@router.post("/llama/instances/reorder")
+def llama_reorder_instances(
+    body: ReorderBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """一覧の並び＝優先度。自動起動・オンデマンド起動・既定モデルの選択に効く。"""
+    from app.models_mgmt import llama
+
+    try:
+        result = llama.reorder_instances(body.order)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_reorder", user=user, resource_type="model",
+                 request=request, metadata={"order": body.order})
+    return result
+
+
+class DuplicateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    endpoint_id: str | None = Field(default=None, max_length=128)
+
+
+@router.post("/llama/instances/{alias}/duplicate", status_code=201)
+def llama_duplicate_instance(
+    alias: str, body: DuplicateBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """設定を複製する。既定では同じエンドポイントに載せる（モデル切替用途）。"""
+    from app.models_mgmt import llama
+
+    try:
+        llama.duplicate_instance(alias, body.alias, endpoint_id=body.endpoint_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_duplicate", user=user, resource_type="model",
+                 resource_id=body.alias, request=request, metadata={"source": alias})
+    return {"ok": True, "alias": body.alias}
 
 
 @router.post("/llama/start")

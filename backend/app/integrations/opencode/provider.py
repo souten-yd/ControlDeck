@@ -19,6 +19,9 @@ DEFAULT_SETTINGS = {
     "base_url": "http://127.0.0.1:11434/v1",
     "model": "llama3.2",
     "project_path": "",
+    # ControlDeck の OpenAI 互換ゲートウェイ経由にするか。
+    # 経由すると KV の受け入れ制御（混雑時の待機・枯渇時の再試行）が効く。
+    "use_gateway": True,
 }
 
 
@@ -47,6 +50,64 @@ def get_settings() -> dict:
     return settings
 
 
+def gateway_base_url() -> str:
+    """ControlDeck ゲートウェイの base_url。"""
+    from app.config import get_config
+
+    return f"http://127.0.0.1:{int(get_config().server.port)}/api/v1/llm/v1"
+
+
+def is_gateway_url(base_url: str) -> bool:
+    return "/api/v1/llm/v1" in str(base_url or "")
+
+
+def resolve_backend_port() -> int | None:
+    """OpenCode が最終的に到達する llama.cpp のポート。
+
+    ゲートウェイ経由だと base_url は ControlDeck のポートになるため、
+    そのままではアイドル判定（どのモデルが使われているか）が引けない。
+    ゲートウェイの転送先まで解決して実ポートを返す。
+    """
+    from urllib.parse import urlsplit
+
+    settings = get_settings()
+    base_url = str(settings.get("base_url") or "")
+    if is_gateway_url(base_url):
+        try:
+            from app.models_mgmt.gateway import _target_endpoint
+
+            return _target_endpoint(str(settings.get("model") or ""))[1]
+        except Exception:  # noqa: BLE001 - 解決できなければ不明として扱う
+            return None
+    try:
+        parsed = urlsplit(base_url)
+        if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+            return None
+        return parsed.port
+    except ValueError:
+        return None
+
+
+def autoconfigure(*, model: str = "") -> dict:
+    """導入直後に通信できる状態へ自動設定する。
+
+    ユーザーが base_url や APIキーを手で入れなくても使えるようにする。
+    ゲートウェイのAPIキーは未発行なら発行し、OpenCode の runtime config へ渡る
+    形で保存する。
+    """
+    from app.models_mgmt import gateway, llama
+
+    target = model
+    if not target:
+        instances = [i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
+        target = str(instances[0]["alias"]) if instances else ""
+    gateway.get_api_key(create=True)  # 未発行なら発行
+    patch = {"base_url": gateway_base_url(), "use_gateway": True}
+    if target:
+        patch["model"] = target
+    return save_settings(patch)
+
+
 def save_settings(patch: dict) -> dict:
     settings = get_settings()
     settings.update({key: patch[key] for key in settings if key in patch})
@@ -69,6 +130,15 @@ def save_settings(patch: dict) -> dict:
     return settings
 
 
+def _api_key_for(base_url: str) -> str:
+    """ゲートウェイ宛なら発行済みAPIキー、直結なら従来どおりダミー。"""
+    if not is_gateway_url(base_url):
+        return "sk-no-key"
+    from app.models_mgmt import gateway
+
+    return gateway.get_api_key(create=True) or "sk-no-key"
+
+
 def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
@@ -79,7 +149,7 @@ def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
             "controldeck": {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Control Deck LLM",
-                "options": {"baseURL": base_url.rstrip("/"), "apiKey": "sk-no-key"},
+                "options": {"baseURL": base_url.rstrip("/"), "apiKey": _api_key_for(base_url)},
                 "models": {model: {"name": model}},
             }
         },
@@ -458,3 +528,101 @@ class OpenCodeProvider:
 
 
 provider = OpenCodeProvider()
+
+
+# ---- OMo（oh-my-openagent）の並列設定 ----
+#
+# 責務を分ける:
+#   OMo        「いくつの仕事を並行して進めたいか」（論理並列）
+#   ControlDeck「いま GPU へ何本入れて安全か」（受付・待ち行列）
+#   llama.cpp  「実際の同時実行」（slot と共有KV）
+#
+# したがって OMo の並列数を llama の --parallel に一致させる必要はない。
+# エージェントは常に LLM を呼んでいるわけではない（grep やビルドの時間がある）ので、
+# 論理並列 > slot 数 は健全なオーバーサブスクリプションになり、GPU を遊ばせにくい。
+# 溢れた分はゲートウェイの受け入れ制御が待たせる。
+
+# OMo 側の既定（v4.19.4 の schema 実測値）
+OMO_DEFAULT_CONCURRENCY = 5
+OMO_DEFAULT_TEAM_PARALLEL = 4
+
+
+def _omo_config_path() -> Path:
+    """OMo のユーザー設定。~/.omo/omo.jsonc（jsonc が無ければ omo.json）。"""
+    root = Path.home() / ".omo"
+    root.mkdir(parents=True, exist_ok=True)
+    jsonc = root / "omo.jsonc"
+    if jsonc.exists():
+        return jsonc
+    legacy = root / "omo.json"
+    return legacy if legacy.exists() else jsonc
+
+
+def omo_concurrency_for(n_parallel: int, *, gated: bool) -> tuple[int, int]:
+    """(論理並列, Team同時メンバー数) を決める。
+
+    gated=True（ゲートウェイ経由）なら、溢れた分を ControlDeck が待たせられるので
+    OMo 既定のまま少し多めに走らせる。GPU を遊ばせない。
+    gated=False（llama.cpp 直結）なら誰も待たせてくれないため、
+    対話中のメインエージェント用に 1 本空けた保守的な値にする。
+    """
+    if gated:
+        return OMO_DEFAULT_CONCURRENCY, OMO_DEFAULT_TEAM_PARALLEL
+    safe = max(1, int(n_parallel) - 1)
+    return safe, safe
+
+
+def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
+    """OMo の task.default_concurrency / task.team.max_parallel_members を整える。
+
+    OMo は provider_concurrency / model_concurrency を上位に持つので、
+    既定値だけ書き、利用者が付けた個別上書きは残す。
+    schema は .strict() なので、未知のキーを混ぜると設定ごと弾かれる点に注意。
+    """
+    from app.models_mgmt import llama
+
+    settings = get_settings()
+    gated = bool(settings.get("use_gateway")) and is_gateway_url(str(settings.get("base_url") or ""))
+    if n_parallel is None:
+        target = str(settings.get("model") or "")
+        instance = next(
+            (i for i in llama.list_instances() if str(i.get("alias")) == target), None,
+        ) or next(
+            (i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"), None,
+        )
+        if instance is None:
+            return {"updated": False, "reason": "対象モデルがありません"}
+        n_parallel = int(instance.get("n_parallel") or 1)
+
+    concurrency, team_parallel = omo_concurrency_for(n_parallel, gated=gated)
+    path = _omo_config_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+        config = json.loads(_strip_jsonc(raw))
+        if not isinstance(config, dict):
+            config = {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        config = {}
+    task = dict(config.get("task") or {})
+    team = dict(task.get("team") or {})
+    if (task.get("default_concurrency") == concurrency
+            and team.get("max_parallel_members") == team_parallel):
+        return {"updated": False, "concurrency": concurrency, "reason": "変更なし"}
+    task["default_concurrency"] = concurrency
+    team["max_parallel_members"] = team_parallel
+    task["team"] = team
+    config["task"] = task
+    try:
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        return {"updated": False, "reason": f"書き込めません: {exc}"}
+    return {"updated": True, "concurrency": concurrency, "team_parallel": team_parallel,
+            "n_parallel": n_parallel, "gated": gated, "path": str(path)}
+
+
+def _strip_jsonc(text: str) -> str:
+    """jsonc のコメントを落とす。利用者が手で書いた設定を壊さず読むため。"""
+    import re
+
+    without_block = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"^\s*//.*$", "", without_block, flags=re.M)

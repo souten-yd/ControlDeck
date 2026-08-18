@@ -5,10 +5,15 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
-import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
+import { IconDots, IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
+import { ThinkingControl } from "../features/models/ThinkingControl";
+import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
+import { CapacityWidget } from "../features/models/CapacityWidget";
+import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
 interface Model {
   id?: string;
@@ -33,7 +38,7 @@ interface RuntimePolicy {
   max_loaded_models: number;
   default_model_ref: string;
   assistant_name: string;
-  chat: { reasoning: "off" | "auto" | "on"; timeout_seconds: number };
+  chat: { timeout_seconds: number };
   deep_research: {
     evidence_context_chars: number;
     max_report_tokens: number;
@@ -180,7 +185,12 @@ export default function ModelsPage() {
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
   const [llamaManagerOpen, setLlamaManagerOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [llamaDeleting, setLlamaDeleting] = useState<string | null>(null);
+  const [deleteFile, setDeleteFile] = useState(false);
+  const [duplicating, setDuplicating] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const [swapConfirm, setSwapConfirm] = useState<{ id: string; running: string } | null>(null);
 
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
@@ -215,14 +225,58 @@ export default function ModelsPage() {
     );
     return { ...model, loaded: !!active, expires_at: active?.expires_at ?? null, vram: active?.size_vram ?? null };
   });
+  const { data: endpoints } = useQuery({
+    queryKey: ["llama-endpoints"], queryFn: listLlamaEndpoints,
+    enabled: selectedProvider === "llama.cpp", refetchInterval: 15000,
+  });
   const refresh = async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["models", selectedProvider] }),
+      qc.invalidateQueries({ queryKey: ["llama-endpoints"] }),
       selectedProvider === "ollama" ? qc.invalidateQueries({ queryKey: ["ollama-running"] }) : Promise.resolve(),
     ]);
   };
 
-  const act = async (id: string, action: "load" | "unload") => {
+  /** 優先度の入れ替え。自動起動・オンデマンド起動の順序に効く。 */
+  const move = async (index: number, offset: -1 | 1) => {
+    if (!liveModels) return;
+    const target = index + offset;
+    if (target < 0 || target >= liveModels.length) return;
+    const order = liveModels.map((item) => item.id ?? item.name);
+    [order[index], order[target]] = [order[target], order[index]];
+    setReordering(true);
+    try {
+      await reorderLlamaInstances(order);
+      await refresh();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "並べ替えに失敗しました", "error");
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const removeLlama = useMutation({
+    mutationFn: ({ alias, file }: { alias: string; file: boolean }) => deleteLlamaInstance(alias, file),
+    onSuccess: (result) => {
+      show(result.gguf_deleted ? "設定とGGUFを削除しました"
+           : result.reason ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
+      setLlamaDeleting(null); setDeleteFile(false); refresh();
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
+  });
+
+  const duplicate = useMutation({
+    mutationFn: ({ alias, next }: { alias: string; next: string }) => duplicateLlamaInstance(alias, next),
+    onSuccess: () => { show("複製しました（同じエンドポイントに追加）"); setDuplicating(null); refresh(); },
+    onError: (e) => show(e instanceof Error ? e.message : "複製に失敗しました", "error"),
+  });
+
+  const act = async (id: string, action: "load" | "unload", runningOnSameEndpoint = "") => {
+    // 同じエンドポイントで別モデルが動いていると、ロードでそれが止まる。先に知らせる。
+    if (action === "load" && runningOnSameEndpoint && runningOnSameEndpoint !== id) {
+      setSwapConfirm({ id, running: runningOnSameEndpoint });
+      return;
+    }
     setActing(id);
     try {
       await api(`/models/providers/${selectedProvider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
@@ -274,6 +328,7 @@ export default function ModelsPage() {
       )}
 
       <ActiveModelJobs />
+      {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "tts" && <TtsPanel />}
       {tab === "llm" && (<>
@@ -289,28 +344,64 @@ export default function ModelsPage() {
         </div>
       ) : (
         <ul className="space-y-3">
-          {liveModels.map((m) => (
-            <li key={m.id ?? m.name} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-              <div className="flex items-center gap-3">
+          {liveModels.map((m, index) => {
+            const id = m.id ?? m.name;
+            const isLlama = selectedProvider === "llama.cpp";
+            const endpoint = isLlama ? endpoints?.find((e) => e.aliases.includes(id)) : undefined;
+            // 同じエンドポイントを共有する行は、ロードすると同居モデルが止まることを明示する。
+            const shared = endpoint && endpoint.aliases.length > 1;
+            return (
+            <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 sm:gap-3">
+                {isLlama && can("workflows.edit") && liveModels.length > 1 && (
+                  <div className="flex shrink-0 flex-col">
+                    <button type="button" onClick={() => move(index, -1)} disabled={index === 0 || reordering}
+                      aria-label={`${m.name}を上へ移動`} title="優先度を上げる"
+                      className="grid h-6 w-8 place-items-center rounded text-zinc-400 hover:text-zinc-700 disabled:opacity-25 dark:hover:text-zinc-200">↑</button>
+                    <button type="button" onClick={() => move(index, 1)} disabled={index === liveModels.length - 1 || reordering}
+                      aria-label={`${m.name}を下へ移動`} title="優先度を下げる"
+                      className="grid h-6 w-8 place-items-center rounded text-zinc-400 hover:text-zinc-700 disabled:opacity-25 dark:hover:text-zinc-200">↓</button>
+                  </div>
+                )}
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
-                <button onClick={() => selectedProvider === "llama.cpp" ? setLlamaDetail(m.id ?? m.name) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
-                  <p className="truncate text-sm font-semibold">{m.name}</p>
+                <button onClick={() => isLlama ? setLlamaDetail(id) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
+                  <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
+                    {m.name}
+                    {shared && (
+                      <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        :{endpoint!.port} 共有
+                      </span>
+                    )}
+                  </p>
                   <p className="num truncate text-xs text-zinc-400">
-                    {selectedProvider === "llama.cpp" ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
+                    {isLlama ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
                     {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
                   </p>
                 </button>
                 {can("workflows.edit") && (
                   <>
-                    <button disabled={acting === (m.id ?? m.name)} onClick={() => act(m.id ?? m.name, m.loaded ? "unload" : "load")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
-                      {acting === (m.id ?? m.name) ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
+                    <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
+                      {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
-                    {selectedProvider === "ollama" && <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>}
+                    {isLlama ? (
+                      <DropdownMenu
+                        ariaLabel={`${m.name}の操作`}
+                        trigger={<IconDots />}
+                        items={[
+                          { label: "詳細設定", onSelect: () => setLlamaDetail(id) },
+                          { label: "複製", onSelect: () => setDuplicating(id) },
+                          { label: "削除", danger: true, separated: true, onSelect: () => setLlamaDeleting(id) },
+                        ]}
+                      />
+                    ) : (
+                      <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>
+                    )}
                   </>
                 )}
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
       </>)}
@@ -323,13 +414,77 @@ export default function ModelsPage() {
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
       )}
+      {llamaDeleting && (
+        <ConfirmDialog
+          title={`「${llamaDeleting}」を削除しますか？`}
+          message="モデル設定と systemd unit を削除します。"
+          confirmLabel="削除する"
+          danger
+          busy={removeLlama.isPending}
+          onConfirm={() => removeLlama.mutate({ alias: llamaDeleting, file: deleteFile })}
+          onClose={() => { setLlamaDeleting(null); setDeleteFile(false); }}
+        >
+          <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+            <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="text-xs">GGUF ファイル本体も削除する
+              <span className="block text-[10px] text-zinc-500">
+                取り消せません。他のモデル設定が同じファイルを参照している場合は削除されません。
+              </span>
+            </span>
+          </label>
+        </ConfirmDialog>
+      )}
+      {duplicating && (
+        <DuplicateDialog
+          alias={duplicating}
+          busy={duplicate.isPending}
+          onConfirm={(next) => duplicate.mutate({ alias: duplicating, next })}
+          onClose={() => setDuplicating(null)}
+        />
+      )}
+      {swapConfirm && (
+        <ConfirmDialog
+          title={`「${swapConfirm.running}」を停止して切り替えますか？`}
+          message={`同じエンドポイントを共有しているため、「${swapConfirm.id}」をロードすると「${swapConfirm.running}」は停止します。接続先（ポート）は変わりません。`}
+          confirmLabel="切り替える"
+          onConfirm={() => { const target = swapConfirm.id; setSwapConfirm(null); act(target, "load"); }}
+          onClose={() => setSwapConfirm(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** モデル設定の複製。既定で同じエンドポイントに載るので、CTX違いの切替に使える。 */
+function DuplicateDialog({ alias, busy, onConfirm, onClose }: {
+  alias: string; busy: boolean; onConfirm: (next: string) => void; onClose: () => void;
+}) {
+  const [name, setName] = useState(`${alias}-copy`);
+  const valid = /^[A-Za-z0-9._:-]{1,128}$/.test(name) && name !== alias;
+  return (
+    <ConfirmDialog
+      title={`「${alias}」を複製`}
+      message="設定を丸ごとコピーします。同じエンドポイントに追加されるので、CTX や思考の設定違いを切り替えて使えます。自動起動は引き継ぎません。"
+      confirmLabel="複製する"
+      busy={busy}
+      disabled={!valid}
+      onConfirm={() => onConfirm(name)}
+      onClose={onClose}
+    >
+      <label className="mt-2 block">
+        <span className="mb-1 block text-xs font-medium text-zinc-500">新しいモデル名（alias）</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} autoFocus
+          className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+        {!valid && <span className="mt-1 block text-[10px] text-red-500">英数字・._:- で、元と違う名前にしてください</span>}
+      </label>
+    </ConfirmDialog>
   );
 }
 
 function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const show = useToasts((s) => s.show);
   const [tab, setTab] = useState<"registry" | "hf" | "local">("registry");
+  const [hfMode, setHfMode] = useState<"direct" | "ollama">("direct");
   const [model, setModel] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const { data: job } = useJob(jobId);
@@ -369,7 +524,20 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
           </button>
         </div>
       ) : tab === "hf" ? (
-        <HFSearch onPull={start} running={running} />
+        <div className="space-y-3">
+          {/* llama.cpp はGGUFを直接置く。Ollamaは自分でpullする。取得経路が違うので分ける。 */}
+          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+            {([["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const).map(([id, label]) => (
+              <button key={id} onClick={() => setHfMode(id)}
+                className={`flex-1 rounded-lg py-1.5 text-[11px] font-medium ${hfMode === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {hfMode === "direct"
+            ? <HuggingFaceDownload onStarted={setJobId} />
+            : <HFSearch onPull={start} running={running} />}
+        </div>
       ) : (
         <LocalRegister onDone={onDone} />
       )}
@@ -555,6 +723,7 @@ interface ModelConfig {
   idle_exclude?: boolean;
   vlm_enabled?: boolean;
   think?: string;
+  think_budget_tokens?: number;
   num_ctx?: number;
   deep_research_num_ctx?: number;
   num_predict?: number;
@@ -702,7 +871,6 @@ function ModelConfigSection({ model }: { model: string }) {
   const hasThinking = (caps?.capabilities ?? []).includes("thinking");
   // MTP（Multi-Token Prediction）対応判定: capabilities に completion 以外の特殊機能があるかで簡易判定
   const hasMtp = (caps?.capabilities ?? []).some((c) => /mtp|speculat/i.test(c));
-  const selCls = "w-full rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
   return (
     <div className="rounded-xl border border-zinc-200 dark:border-zinc-700">
@@ -719,17 +887,12 @@ function ModelConfigSection({ model }: { model: string }) {
         </p>
         <L label="出力長 num_predict（最大生成トークン）"><PresetOrCustom value={eff.num_predict} presets={PREDICT_PRESETS} placeholder="512" onChange={(v) => set("num_predict", v)} /></L>
         {hasThinking && (
-          <L label="思考（推論）think — オフで高速化・レベルで深さ調整">
-            <select value={eff.think ?? ""} onChange={(e) => set("think", e.target.value)} className={selCls}>
-              <option value="">既定（自動）</option>
-              <option value="off">オフ（思考なし・最速）</option>
-              <option value="on">オン</option>
-              <option value="low">低（浅い思考）</option>
-              <option value="medium">中</option>
-              <option value="high">高（深い思考）</option>
-              <option value="max">最大</option>
-            </select>
-          </L>
+          <ThinkingControl
+            runtime="ollama"
+            mode={(eff.think as ThinkMode) ?? "auto"}
+            budget={eff.think_budget_tokens ?? 0}
+            onChange={(mode, budget) => setCfg({ ...(eff ?? {}), think: mode, think_budget_tokens: budget })}
+          />
         )}
         <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
           <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常駐させ再ロード待ちをなくす</span></span>
@@ -846,11 +1009,10 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <L label="全ランタイムの同時ロード上限">
           <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
         </L>
-        <L label="チャット思考">
-          <select value={policy.chat.reasoning} onChange={(e) => setPolicyCfg({ ...policy, chat: { ...policy.chat, reasoning: e.target.value as RuntimePolicy["chat"]["reasoning"] } })} className={input}>
-            <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
-          </select>
-        </L>
+        <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+          思考（reasoning）の設定は各モデルの個別設定へ移動しました。モデルごとに適した深さが
+          違うため、共通設定で一律に指定しない方針です。
+        </p>
         <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50/40 p-3 dark:border-violet-900 dark:bg-violet-950/20">
           <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">Deep Research共通設定</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -868,6 +1030,10 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         </div>
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
         <button onClick={() => savePolicy.mutate(policy)} disabled={savePolicy.isPending} className="w-full rounded-xl bg-accent-600 py-2 text-xs font-medium text-white disabled:opacity-40">共通設定を適用</button>
+      </div>
+
+      <div className="mb-4">
+        <ModelLibraryPanel />
       </div>
 
     </BottomSheet>
@@ -982,6 +1148,11 @@ interface LlamaInstanceConfig {
   mlock: boolean;
   spec_type: "none" | "draft-simple" | "draft-mtp" | "ngram-simple";
   draft_max: number;
+  think: ThinkMode;
+  think_budget_tokens: number;
+  kv_unified: boolean;
+  endpoint_id?: string;
+  order?: number;
   cpu_moe: boolean;
   n_cpu_moe: number;
   temperature: number;
@@ -998,6 +1169,8 @@ const LLAMA_INSTANCE_WRITE_KEYS = [
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
+  "think", "think_budget_tokens",
+  "kv_unified",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 const LLAMA_PARAMETER_WRITE_KEYS = [
@@ -1005,6 +1178,8 @@ const LLAMA_PARAMETER_WRITE_KEYS = [
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
+  "think", "think_budget_tokens",
+  "kv_unified",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 function llamaInstanceWriteBody(config: LlamaInstanceConfig, includeIdentity: boolean): Record<string, unknown> {
@@ -1236,6 +1411,34 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
         <L label="GPUオフロード層"><PresetOrCustom value={cfg.n_gpu_layers} presets={GPU_PRESETS.map((p) => p.v === -1 ? { ...p, v: 999, label: "全部 (999)" } : p)} placeholder="999" onChange={(v) => set("n_gpu_layers", Number(v ?? 999))} /></L>
       </div>
       <p className="text-[10px] leading-relaxed text-zinc-400">Deep Research専用CTXが通常CTXと異なる場合、開始前に再ロードし、完了・失敗後は通常CTXへ自動復元します。</p>
+
+      <L label="最大同時リクエスト数（スロット）">
+        <input type="number" min={1} max={64} value={cfg.n_parallel}
+          onChange={(e) => set("n_parallel", Math.max(1, Math.min(64, Number(e.target.value) || 1)))}
+          className={`${input} font-mono`} />
+      </L>
+      <Toggle label="KVを共有プールにする（推奨）"
+        hint="1本で大きく使う／複数本で分け合う を同じ設定のまま切り替えられます"
+        value={cfg.kv_unified ?? true} onChange={(value) => set("kv_unified", value)} />
+      <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+        {cfg.kv_unified ?? true ? (<>
+          CTX {cfg.ctx_size.toLocaleString()} は<strong>全体で共有するプール</strong>です。
+          1本で最大 {cfg.ctx_size.toLocaleString()} まで使え、混雑時は最大 {cfg.n_parallel} 本が
+          プールを分け合います（例: 5,000 + 1,000 のような非対称な配分も可）。
+          プールが尽きたリクエストは空くまで待ってから実行します。
+        </>) : (<>
+          CTX {cfg.ctx_size.toLocaleString()} を{cfg.n_parallel}分割し、
+          1リクエストあたり <strong>{Math.floor(cfg.ctx_size / Math.max(1, cfg.n_parallel)).toLocaleString()}</strong> 固定になります。
+          1本で大きく使いたい場合は共有プールを有効にしてください。
+        </>)}
+      </p>
+
+      <ThinkingControl
+        runtime="llama.cpp"
+        mode={cfg.think ?? "auto"}
+        budget={cfg.think_budget_tokens ?? 0}
+        onChange={(mode, budget) => setCfg((c) => ({ ...c, think: mode, think_budget_tokens: budget }))}
+      />
       {flags.has("--flash-attn") && <Toggle label="Flash Attention" hint="KVキャッシュ削減と速度改善。量子化KVでは有効化を推奨" value={cfg.flash_attn} onChange={(value) => set("flash_attn", value)} />}
 
       {(flags.has("--cache-type-k") || flags.has("--cache-type-v")) && <div className="grid grid-cols-2 gap-2">

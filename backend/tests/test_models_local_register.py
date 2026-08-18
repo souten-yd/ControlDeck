@@ -169,7 +169,10 @@ def test_think_normalize_and_config(admin_client):
     from app.models_mgmt import ollama
 
     assert ollama.normalize_think("off") is False
-    assert ollama.normalize_think("on") is True
+    # 旧語彙 "on"（レベル指定なしの有効）は、現行語彙で最も近い high へ読み替える。
+    # 語彙は models_mgmt/thinking.py が正。
+    assert ollama.normalize_think("on") == "high"
+    assert ollama.normalize_think("max") == "high"  # xhigh はOllama非対応なのでhighへ
     assert ollama.normalize_think("high") == "high"
     assert ollama.normalize_think("auto") is None
     assert ollama.normalize_think("") is None

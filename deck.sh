@@ -234,12 +234,52 @@ service_installed() {
   systemctl --user cat "$SERVICE.service" >/dev/null 2>&1
 }
 
+# data_dir の軽量解決。scripts/lib_paths.sh の resolve_data_dir と同じ値を返すが、
+# あちらは venv の python を使うため venv 構築前（= 依存導入前）には使えない。
+# ここは config.yaml を直接読むので bootstrap の最初から使える。
+deck_data_dir() {
+  local cfg="$REPO_ROOT/config/config.yaml" dd=""
+  if [ -f "$cfg" ]; then
+    dd="$(sed -n 's/^data_dir:[[:space:]]*//p' "$cfg" | head -1 | tr -d '"'\'' ')"
+  fi
+  [ -n "$dd" ] || dd="$HOME/.local/share/control-deck"
+  case "$dd" in "~"*) dd="$HOME${dd#\~}" ;; esac
+  printf '%s\n' "$dd"
+}
+
+# data_dir を載せているファイルシステムのマウントポイント。
+# 別ドライブへ移設した構成で、マウント前に起動して空の data_dir を作るのを防ぐガードに使う。
+# 既定（data_dir が / 上）では "/" になり、ガードは常に成功する。
+data_mount() {
+  findmnt -no TARGET --target "$(deck_data_dir)" 2>/dev/null | head -1 || echo /
+}
+
+# pip / npm / Playwright のキャッシュを data_dir 配下へ寄せる。
+# data_dir を大容量ドライブへ向けている構成で、これらだけが system ドライブに
+# 数 GB 単位で残るのを防ぐ。~/.profile は非ログインシェルで読まれず、
+# ~/.config/environment.d は systemd unit にしか効かないため、
+# 実際に導入を走らせるこのスクリプト自身が指定するのが確実。
+# 利用者が明示的に設定している場合はそれを尊重する（上書きしない）。
+export_cache_paths() {
+  local cache; cache="$(deck_data_dir)/cache"
+  export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$cache/pip}"
+  export UV_CACHE_DIR="${UV_CACHE_DIR:-$cache/uv}"
+  export npm_config_cache="${npm_config_cache:-$cache/npm}"
+  export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$cache/ms-playwright}"
+  export HF_HOME="${HF_HOME:-$cache/huggingface}"
+  mkdir -p "$PIP_CACHE_DIR" "$UV_CACHE_DIR" "$npm_config_cache" \
+           "$PLAYWRIGHT_BROWSERS_PATH" "$HF_HOME" 2>/dev/null || true
+}
+
 install_web_unit() {
   local unit_dir="$HOME/.config/systemd/user"
-  local unit_tmp
+  local unit_tmp mount_point
   mkdir -p "$unit_dir"
+  mount_point="$(data_mount)"
+  [ -n "$mount_point" ] || mount_point=/
   unit_tmp="$(mktemp "$unit_dir/.control-deck-web.service.XXXXXX")"
   sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
+      -e "s|@DATA_MOUNT@|$mount_point|g" \
       "$REPO_ROOT/deploy/systemd/control-deck-web.service.in" > "$unit_tmp"
   chmod 0644 "$unit_tmp"
   mv "$unit_tmp" "$unit_dir/$SERVICE.service"
@@ -648,6 +688,9 @@ cmd_plugin() {
   check_root; check_python; ensure_venv; ensure_config
   (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.plugins.cli "$action" "$@")
 }
+
+# 依存導入（pip / npm / Playwright）を走らせる前に、キャッシュ先を data_dir 配下へ固定する。
+export_cache_paths
 
 case "${1:-start}" in
   start)   cmd_start ;;

@@ -370,12 +370,16 @@ export function Sparkline({
   max = 100,
   className = "",
   fill = false,
+  /** 高さのクラス。画面が狭いときに詰められるよう外から差し替える。 */
+  heightClass = "h-7",
 }: {
   values: (number | null)[];
   max?: number;
   className?: string;
   /** 折れ線の下を currentColor の淡い面で塗る（統合メトリクスカード用） */
   fill?: boolean;
+  /** 高さのクラス。画面が狭いときに詰められるよう外から差し替える。 */
+  heightClass?: string;
 }) {
   const w = 100;
   const h = 28;
@@ -392,7 +396,7 @@ export function Sparkline({
     <svg
       viewBox={`0 0 ${w} ${h}`}
       preserveAspectRatio="none"
-      className={`block h-7 w-full ${className}`}
+      className={`block w-full ${heightClass} ${className}`}
       aria-hidden
     >
       {pts && fill && (
