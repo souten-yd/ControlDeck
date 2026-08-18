@@ -11,6 +11,8 @@ import { IconDots, IconFolder, IconPlus, IconSearch, IconTrash } from "../compon
 import { PageHeader } from "../components/PageHeader";
 import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
+import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
+import { CapacityWidget } from "../features/models/CapacityWidget";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
 interface Model {
@@ -326,6 +328,7 @@ export default function ModelsPage() {
       )}
 
       <ActiveModelJobs />
+      {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "tts" && <TtsPanel />}
       {tab === "llm" && (<>
@@ -481,6 +484,7 @@ function DuplicateDialog({ alias, busy, onConfirm, onClose }: {
 function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const show = useToasts((s) => s.show);
   const [tab, setTab] = useState<"registry" | "hf" | "local">("registry");
+  const [hfMode, setHfMode] = useState<"direct" | "ollama">("direct");
   const [model, setModel] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const { data: job } = useJob(jobId);
@@ -520,7 +524,20 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
           </button>
         </div>
       ) : tab === "hf" ? (
-        <HFSearch onPull={start} running={running} />
+        <div className="space-y-3">
+          {/* llama.cpp はGGUFを直接置く。Ollamaは自分でpullする。取得経路が違うので分ける。 */}
+          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+            {([["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const).map(([id, label]) => (
+              <button key={id} onClick={() => setHfMode(id)}
+                className={`flex-1 rounded-lg py-1.5 text-[11px] font-medium ${hfMode === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {hfMode === "direct"
+            ? <HuggingFaceDownload onStarted={setJobId} />
+            : <HFSearch onPull={start} running={running} />}
+        </div>
       ) : (
         <LocalRegister onDone={onDone} />
       )}

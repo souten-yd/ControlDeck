@@ -834,6 +834,47 @@ def llama_delete_instance(
     return {"ok": True, **result}
 
 
+@router.get("/llama/capacity")
+async def llama_capacity(user: User = Depends(require_permission("workflows.run"))):
+    """稼働中エンドポイントの利用状況をまとめて返す（ダッシュボード表示用）。
+
+    LLM並列（使用中/最大）・待ち行列・KV使用量を1回で取れるようにする。
+    OMo 導入時は設定済みの論理並列も添えて、負荷の見当を付けられるようにする。
+    """
+    from app.models_mgmt import llama
+
+    endpoints = llama.list_endpoints()
+    running = [e for e in endpoints if e.get("running_alias")]
+    capacities = await asyncio.gather(*(
+        llama.endpoint_capacity(int(e["port"])) for e in running
+    )) if running else []
+
+    omo: dict | None = None
+    try:
+        from app.features.registry import is_enabled
+
+        if is_enabled("omo"):
+            from app.integrations.opencode.provider import get_settings, omo_concurrency_for
+
+            settings = get_settings()
+            gated = bool(settings.get("use_gateway"))
+            slots = next((int(c.get("slots") or 0) for c in capacities), 0)
+            concurrency, team = omo_concurrency_for(slots or 1, gated=gated)
+            omo = {"installed": True, "model": str(settings.get("model") or ""),
+                   "concurrency": concurrency, "team_parallel": team, "gated": gated}
+    except Exception:  # noqa: BLE001 - 表示用なので失敗しても他を返す
+        omo = None
+
+    return {
+        "endpoints": [
+            {"id": e["id"], "label": e["label"], "port": e["port"],
+             "running_alias": e["running_alias"], **capacity}
+            for e, capacity in zip(running, capacities, strict=True)
+        ],
+        "omo": omo,
+    }
+
+
 @router.get("/llama/endpoints/{endpoint_id}/capacity")
 async def llama_endpoint_capacity(
     endpoint_id: str, user: User = Depends(require_permission("workflows.run")),

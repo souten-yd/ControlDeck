@@ -8,6 +8,7 @@ import { formatBps, formatPercent, formatUptime } from "../lib/format";
 import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
 import { PageHeader } from "../components/PageHeader";
+import { CapacityWidget } from "../features/models/CapacityWidget";
 
 interface HistorySample {
   timestamp: string;
@@ -34,6 +35,14 @@ const HISTORY_RANGES = [
 ] as const;
 
 export default function DashboardPage() {
+  // OMoを入れて並列運用しているときだけLLM利用状況を出す。
+  // 単発利用では常に 1/1 で情報量が無く、ダッシュボードを混ませるだけになる。
+  const { data: features } = useQuery({
+    queryKey: ["features"],
+    queryFn: () => api<Array<{ id: string; installed: boolean }>>("/features"),
+    staleTime: 60_000,
+  });
+  const omoInstalled = !!features?.find((f) => f.id === "omo")?.installed;
   const latest = useMetrics((s) => s.latest);
   const history = useMetrics((s) => s.history);
   const [historyMinutes, setHistoryMinutes] = useState(15);
@@ -218,6 +227,9 @@ export default function DashboardPage() {
           </ul>
         </section>
       )}
+
+      {/* LLM利用状況。OMo導入時だけ出す（並列を意識して使う構成のときに意味がある）。 */}
+      {omoInstalled && <CapacityWidget />}
 
       {/* 実行中アプリ */}
       <section>

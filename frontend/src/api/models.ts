@@ -98,3 +98,45 @@ export const deleteLlamaInstance = (alias: string, deleteFile: boolean) =>
   api<{ ok: boolean; gguf_deleted: boolean; reason: string }>(
     `/models/llama/instances/${encodeURIComponent(alias)}/delete`,
     { method: "POST", json: { delete_file: deleteFile } });
+
+export interface HfRepo {
+  repo: string; downloads: number; likes: number; gated: boolean;
+}
+
+export interface HfVariant {
+  name: string;
+  files: string[];
+  size: number;
+  /** 分割GGUF。1ファイルだけでは使えないのでまとめて扱う。 */
+  sharded: boolean;
+  shard_total: number;
+  /** 分割が揃っているか。欠けていればダウンロードさせない。 */
+  complete: boolean;
+}
+
+export const searchHfRepos = (q: string) =>
+  api<HfRepo[]>(`/models/hf/search?q=${encodeURIComponent(q)}`);
+
+export const listHfRepoFiles = (repo: string) =>
+  api<{ repo: string; variants: HfVariant[]; libraries: ModelLibrary[] }>(
+    `/models/hf/repos/${repo.split("/").map(encodeURIComponent).join("/")}/files`);
+
+export const startHfDownload = (body: {
+  repo: string; files: string[]; library_id?: string; expected_bytes?: number;
+  alias?: string; role?: string; port?: number;
+}) => api<{ job_id: string }>("/models/hf/download-jobs", { method: "POST", json: body });
+
+export interface EndpointCapacity {
+  id: string; label: string; port: number; running_alias: string;
+  available: boolean; slots: number; busy: number;
+  ctx_total: number; ctx_used: number; ctx_free: number; usable: number;
+  deferred: number; accepting: boolean;
+}
+
+export interface OmoStatus {
+  installed: boolean; model: string;
+  concurrency: number; team_parallel: number; gated: boolean;
+}
+
+export const getLlamaCapacity = () =>
+  api<{ endpoints: EndpointCapacity[]; omo: OmoStatus | null }>("/models/llama/capacity");

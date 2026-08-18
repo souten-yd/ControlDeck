@@ -155,3 +155,59 @@ def test_only_llamacpp_retries_on_capacity():
     assert rp.LlamaCppRuntimeProvider()._capacity_retries() > 0
     assert rp.OpenAICompatibleRuntimeProvider()._capacity_retries() == 0
     assert rp.OllamaRuntimeProvider()._capacity_retries() == 0
+
+
+def test_capacity_api_aggregates_running_endpoints(admin_client, monkeypatch):
+    """ダッシュボード表示用。稼働中のエンドポイントだけをまとめて返す。"""
+    import asyncio
+
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "list_endpoints", lambda: [
+        {"id": "ep-8090", "label": "メイン", "port": 8090, "running_alias": "llama",
+         "aliases": ["llama"], "base_url": "", "active_alias": "llama"},
+        {"id": "ep-8091", "label": "停止中", "port": 8091, "running_alias": "",
+         "aliases": ["other"], "base_url": "", "active_alias": ""},
+    ])
+
+    async def _cap(port):
+        return {"port": port, "available": True, "slots": 4, "busy": 2,
+                "ctx_total": 8192, "ctx_used": 1000, "ctx_free": 5963,
+                "usable": 6963, "deferred": 1, "accepting": True}
+
+    monkeypatch.setattr(llama, "endpoint_capacity", _cap)
+    monkeypatch.setattr("app.features.registry.is_enabled", lambda fid: False)
+
+    response = admin_client.get("/api/v1/models/llama/capacity")
+    assert response.status_code == 200
+    body = response.json()
+    # 停止中のエンドポイントは出さない（表示しても情報が無い）
+    assert [e["id"] for e in body["endpoints"]] == ["ep-8090"]
+    assert body["endpoints"][0]["busy"] == 2
+    assert body["endpoints"][0]["deferred"] == 1
+    assert body["omo"] is None
+
+
+def test_capacity_api_includes_omo_when_installed(admin_client, monkeypatch):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "list_endpoints", lambda: [
+        {"id": "ep-8090", "label": "メイン", "port": 8090, "running_alias": "llama",
+         "aliases": ["llama"], "base_url": "", "active_alias": "llama"},
+    ])
+
+    async def _cap(port):
+        return {"port": port, "available": True, "slots": 4, "busy": 0,
+                "ctx_total": 8192, "ctx_used": 0, "ctx_free": 6963,
+                "usable": 6963, "deferred": 0, "accepting": True}
+
+    monkeypatch.setattr(llama, "endpoint_capacity", _cap)
+    monkeypatch.setattr("app.features.registry.is_enabled", lambda fid: fid == "omo")
+    monkeypatch.setattr("app.integrations.opencode.provider.get_settings",
+                        lambda: {"model": "llama", "use_gateway": True})
+
+    body = admin_client.get("/api/v1/models/llama/capacity").json()
+    assert body["omo"]["installed"] is True
+    assert body["omo"]["gated"] is True
+    # ゲートウェイ経由なので OMo 既定の論理並列
+    assert body["omo"]["concurrency"] == 5

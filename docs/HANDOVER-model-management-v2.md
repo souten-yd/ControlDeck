@@ -217,6 +217,20 @@ embedding(8094) 1024 次元・reranker(8095) がオンデマンド起動 / OpenC
    ディレクトリを `ollama:ollama` 所有にする。**sudo が要るのでユーザーの明示実行**。
 4. SearXNG(136M) と `~/.config/opencode`(63M) は判断どおり `/` に残してある。
 
+### 移設で漏れていて後から直した箇所（同じ移設をするなら最初からやること）
+
+- **登録アプリの systemd unit**。`ExecStart` のスクリプトと `StandardOutput/Error` の
+  ログ出力先が旧 data_dir を指したままで、ログディレクトリが無くなったため
+  `status=209/STDOUT` で起動失敗していた（ダッシュボードに「失敗したアプリ」が出続ける）。
+  DB の `managed_applications.script_path` も旧パスだった。
+  → DB を置換してから `applications.service.sync_unit(app)` で unit を再生成する。
+- **OpenCode の `project_path`**。削除済みの `/home/souten/ControlDeck` を指していた。
+- **旧単一 `cdapp-llama.service`**。エンドポイント別 unit へ移行済みで未使用のまま
+  旧パスを参照して残っていたので撤去した。
+- **Playwright のブラウザ**。`PLAYWRIGHT_BROWSERS_PATH` は `deck.sh` と systemd unit には
+  効くが、`.venv/bin/python` を直接叩く検証スクリプトには効かない。
+  手動実行時は環境変数を明示すること。
+
 ### 移設で壊れる絶対パス（対処つき）
 
 | 対象 | 対処 |
