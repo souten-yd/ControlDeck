@@ -162,12 +162,13 @@ def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
 
 
 def codedev_root() -> Path:
-    """OpenCodeプロジェクトの既定ルート（~/CodeDEV）。
+    """OpenCodeプロジェクトのルート。置き場の決定は config へ委ねる。
 
-    ControlDeckのデータ領域やリポジトリ内ではなくホーム直下に置くことで、
-    ファイルマネージャ・ターミナル・Git から普通のプロジェクトとして扱える。
+    Project Lab も同じ場所を見るため、両者で別々に組み立てない。
     """
-    root = Path.home() / "CodeDEV"
+    from app.config import codedev_dir
+
+    root = codedev_dir()
     root.mkdir(exist_ok=True)
     return root
 

@@ -26,8 +26,11 @@ def encrypt_text(plain: str) -> str:
     return _fernet().encrypt(plain.encode()).decode()
 
 
-def decrypt_text(token: str) -> str:
-    return _fernet().decrypt(token.encode()).decode()
+def decrypt_text(token: str, *, ttl_seconds: int | None = None) -> str:
+    """ttl_secondsを渡すと、発行からその秒数を過ぎたtokenを無効として扱う。"""
+    if ttl_seconds is None:
+        return _fernet().decrypt(token.encode()).decode()
+    return _fernet().decrypt(token.encode(), ttl=ttl_seconds).decode()
 
 
 SECRET_KEY_MARKERS = (

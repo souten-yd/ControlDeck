@@ -1,6 +1,16 @@
 # 実装状況
 
-最終更新: 2026-08-13
+最終更新: 2026-08-19
+
+## Project Labプレビューの相対リソースが401になる問題（2026-08-19）
+
+- HTMLプレビューは`sandbox`で不透明originへ閉じ込めているため、そこから出るサブリソース要求（`<script src="three.min.js">`等）はcross-site扱いになり、`SameSite=Lax`のセッションcookieが送られない。artifactエンドポイントはcookie認証なので401になり、外部ファイルを参照するプロジェクトだけ動かなかった。Chromeは送らずWebKitは送るため、デスクトップでは最初から動かず、モバイルからは動いて見えていた（実測: 200は14件すべてTailscale経由のモバイル、401は127.0.0.1と192.168.68.69）。
+- 短命tokenをパスに含む配信経路`GET /project-lab/preview/{token}/{artifact_path}`を追加した。tokenはパスにあるのでHTMLからの相対参照にそのまま引き継がれ、cookieなしで配下を配信できる。token（Fernet・TTL 15分）はプロジェクト単位で、ダウンロードは不可、配下から出るpathは従来どおり弾く。`allow-same-origin`は付けない（ControlDeckのcookie／DOM／APIへ到達させないsandboxの前提を崩さないため）。
+
+## CodeDEVの置き場をプロジェクトルート配下へ（2026-08-19）
+
+- OpenCode と Project Lab が別々に`Path.home() / "CodeDEV"`を組み立てていたのをやめ、`config.codedev_dir()`に一本化した。未設定なら data_dir の親（=プロジェクトルート）配下の`CodeDEV`を使うので、この環境では`/data1tb/ControlDeck/CodeDEV`になる。data_dir の中には入れない（バックアップや設定JSONと混ざらず、ファイルマネージャ・ターミナル・Gitから普通のプロジェクトとして扱えるようにするため）。`config.yaml`の`codedev_dir`で上書きできる。
+- 既存の3プロジェクト（Hello / Space3DInvader / test2）を`.git`ごと新しい場所へ複製し、Files の`allowed_roots`へ新パスを追加した。
 
 ## 旧Application Builder削除とWorkflow実行UIの刷新（2026-08-13）
 

@@ -70,3 +70,7 @@ applications:
   #     actions: [start, stop, restart]
 
 # data_dir: ~/.local/share/control-deck
+
+# OpenCode / Project Lab のプロジェクト置き場。
+# 未設定なら data_dir の親（=プロジェクトルート）配下の CodeDEV。
+# codedev_dir: /srv/control-deck/CodeDEV

@@ -431,12 +431,26 @@ function ArtifactView({
     queryFn: () => projectLabApi.preview(detail.id, artifact.path),
     enabled: asText,
   });
+  // HTMLはtoken付きURLで配信する。sandboxのiframeは不透明originになるため、そこから出る
+  // 相対参照（js/css/画像）にはcookieが乗らず、artifactの通常URLだと401になる。
+  const previewToken = useQuery({
+    queryKey: ["project-lab-preview-token", detail.id],
+    queryFn: () => projectLabApi.previewToken(detail.id),
+    enabled: !asText && artifact.kind === "html",
+    staleTime: 10 * 60_000,
+    refetchInterval: 10 * 60_000,
+  });
 
   if (!asText) {
     if (artifact.kind === "html") {
+      if (!previewToken.data) {
+        return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
+      }
+      const previewUrl = projectLabApi.previewUrl(previewToken.data.token, artifact.path,
+        { external: externalAllowed });
       return (
         <div className="relative h-full w-full">
-          <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={url} fit={fit} />
+          <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={previewUrl} fit={fit} />
           {artifact.external && !externalAllowed && (
             <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3">
               <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-2xl border border-amber-300 bg-amber-50/95 px-3 py-2 text-[11px] leading-snug text-amber-900 shadow-lg backdrop-blur dark:border-amber-800 dark:bg-amber-950/90 dark:text-amber-200">

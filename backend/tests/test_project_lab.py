@@ -94,7 +94,7 @@ def test_project_discovery_manifest_artifacts_and_containment(tmp_path, monkeypa
             "environment": {"API_TOKEN": "diagnostic-must-not-leak"},
         }],
     }), encoding="utf-8")
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
 
     rows = service.list_projects()
     assert {item["id"] for item in rows} == {"demo", "bad-manifest"}
@@ -135,7 +135,7 @@ def test_project_lab_api_is_read_only_authenticated_and_safe(admin_client, tmp_p
     root = tmp_path / "CodeDEV"
     root.mkdir()
     _project(root)
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
 
     listed = admin_client.get("/api/v1/project-lab/projects")
     assert listed.status_code == 200 and listed.json()[0]["name"] == "Demo Dashboard"
@@ -190,7 +190,7 @@ def test_external_preview_setting_applies_without_query(admin_client, tmp_path, 
     root = tmp_path / "CodeDEV"
     root.mkdir()
     _project(root)
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     monkeypatch.setattr(service, "data_dir", lambda: tmp_path / "data")
     headers = {"X-Requested-With": "ControlDeck"}
 
@@ -223,7 +223,7 @@ def test_split_app_subresources_are_served_with_correct_types(admin_client, tmp_
     (project / "assets" / "engine.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
     (project / "assets" / "scene.glb").write_bytes(b"glTF")
     (project / "assets" / "sprites.map").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
 
     expected = {
         "assets/app.css": "text/css",
@@ -270,7 +270,7 @@ def test_project_run_uses_systemd_argv_tracks_artifacts_and_redacts_logs(admin_c
         "environment": {"MODE": "test"}, "secret_refs": [], "artifacts": ["reports/*"],
     }]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
     monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
     calls: list[list[str]] = []
@@ -316,7 +316,7 @@ def test_file_run_executes_single_source_without_manifest(admin_client, tmp_path
     (project / "src").mkdir(parents=True)
     (project / "src" / "main.py").write_text("print('hello')", encoding="utf-8")
     (project / "src" / "style.css").write_text("body{}", encoding="utf-8")
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
     monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
     calls: list[list[str]] = []
@@ -368,7 +368,7 @@ def test_project_run_rejects_secrets_and_non_sdk(tmp_path, monkeypatch, admin_cl
         {"id": "binary", "label": "Binary", "type": "cli", "command": ["curl", "https://example.invalid"]},
     ]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     with SessionLocal() as db:
         with pytest.raises(runs.ProjectRunError, match="Secret"):
             runs.start_run(db, project_id="demo", profile_id="secret", timeout_seconds=10, created_by=None)
@@ -391,7 +391,7 @@ def test_web_run_allocates_localhost_port_and_substitutes_argv(admin_client, tmp
         "cwd": ".", "environment": {}, "secret_refs": [], "artifacts": [],
     }]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
     monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
     calls: list[list[str]] = []
@@ -461,7 +461,7 @@ def test_project_lab_api_enforces_operator_and_viewer_permissions(client, tmp_pa
 
     root = tmp_path / "CodeDEV"
     root.mkdir()
-    monkeypatch.setattr(service, "PROJECT_ROOT", root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     usernames = ["lab-operator", "lab-viewer"]
     with SessionLocal() as db:
         for role_name, username in (("operator", usernames[0]), ("viewer", usernames[1])):
@@ -486,3 +486,63 @@ def test_project_lab_api_enforces_operator_and_viewer_permissions(client, tmp_pa
             for user in users:
                 db.delete(user)
             db.commit()
+
+
+def test_preview_token_serves_relative_assets_without_cookies(admin_client, monkeypatch, tmp_path):
+    """sandboxの不透明originから読めるよう、token付きURLはcookie無しで配信する。
+
+    HTMLからの相対参照（js等）はcross-site扱いでcookieが送られず、通常のartifact URLでは
+    401になる。tokenをパスへ入れると相対解決でも引き継がれるので、その経路で配信する。
+    """
+    from tests.conftest import CSRF_HEADERS
+    from app.project_lab import service
+
+    root = tmp_path / "CodeDEV"
+    project = root / "demo"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text(
+        '<meta charset="utf-8"><script src="lib.js"></script>', encoding="utf-8")
+    (project / "lib.js").write_text("window.ok = true;", encoding="utf-8")
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+
+    issued = admin_client.post("/api/v1/project-lab/projects/demo/preview-token", headers=CSRF_HEADERS)
+    assert issued.status_code == 200, issued.text
+    token = issued.json()["token"]
+
+    # cookieを付けずに（=sandbox内からの要求と同じ条件で）読めること
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as anonymous:
+        html = anonymous.get(f"/api/v1/project-lab/preview/{token}/index.html")
+        assert html.status_code == 200
+        assert "Control Deck preview shim" in html.text
+        asset = anonymous.get(f"/api/v1/project-lab/preview/{token}/lib.js")
+        assert asset.status_code == 200
+        assert asset.text == "window.ok = true;"
+        # 通常のartifact URLはcookieが無ければ従来どおり弾く
+        assert anonymous.get("/api/v1/project-lab/projects/demo/artifacts/lib.js").status_code == 401
+
+
+def test_preview_token_is_scoped_and_rejects_tampering(admin_client, monkeypatch, tmp_path):
+    """tokenはプロジェクト単位。改竄や別プロジェクトへの流用はできない。"""
+    from tests.conftest import CSRF_HEADERS
+    from app.project_lab import service
+
+    root = tmp_path / "CodeDEV"
+    (root / "demo").mkdir(parents=True)
+    (root / "demo" / "index.html").write_text("<p>ok</p>", encoding="utf-8")
+    (root / "secret").mkdir(parents=True)
+    (root / "secret" / "index.html").write_text("<p>secret</p>", encoding="utf-8")
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+
+    token = admin_client.post("/api/v1/project-lab/projects/demo/preview-token",
+                              headers=CSRF_HEADERS).json()["token"]
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as anonymous:
+        # 配下から出られない
+        assert anonymous.get(f"/api/v1/project-lab/preview/{token}/../secret/index.html").status_code == 404
+        # 改竄したtokenは通らない
+        assert anonymous.get(f"/api/v1/project-lab/preview/{token[:-2]}xx/index.html").status_code == 404
