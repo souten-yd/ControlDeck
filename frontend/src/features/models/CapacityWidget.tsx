@@ -98,6 +98,17 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
             <EndpointRows item={item} />
           </div>
         ))}
+        {/* 起動に失敗しているモデルは、読み込み待ちと取り違えないよう理由ごと出す。 */}
+        {data.failed?.map((item) => (
+          <Row key={item.alias} label="起動失敗">
+            <span className="text-red-600 dark:text-red-400">
+              {item.alias}
+              {item.error && (
+                <span className="ml-1.5 block text-[10px] break-words text-zinc-500">{item.error}</span>
+              )}
+            </span>
+          </Row>
+        ))}
         {/* OMo はエンドポイント個別ではなく全体の設定なので、まとめて1行だけ出す。 */}
         {data.omo && (() => {
           const loads = data.endpoints.map(endpointLoad).filter(Boolean) as string[];

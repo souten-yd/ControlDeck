@@ -117,3 +117,41 @@ def test_revive_starts_the_resolved_port_when_connected_directly(monkeypatch):
     monkeypatch.setattr(llama, "ensure_ready_by_base_url", _ensure)
     asyncio.run(llama._revive_endpoint_for_opencode(1800))
     assert started == ["http://127.0.0.1:8090/v1"]
+
+
+def test_auto_restart_loop_is_reported_as_failed(monkeypatch):
+    """起動失敗の再試行ループを「起動中」と見せない。
+
+    モデル読込中と区別が付かないと、UIが延々と「読み込み待ち」を出し続ける。
+    """
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "get_config", lambda: {
+        "instances": {"broken": {"port": 8096, "role": "llm", "order": 1}},
+        "selected_alias": "broken", "endpoints": {},
+    })
+    monkeypatch.setattr("app.applications.systemd.query_status",
+                        lambda unit, **kwargs: {"status": "STARTING", "sub_state": "auto-restart"})
+    monkeypatch.setattr(llama, "_log_tail", lambda alias, max_chars=300: "failed to create MTP context")
+
+    item = llama.list_instances()[0]
+    assert item["runtime_status"] == "FAILED"
+    assert item["loaded"] is False
+    assert "MTP" in item["last_error"]
+
+
+def test_loading_model_is_still_reported_as_starting(monkeypatch):
+    """通常の読み込み中（再試行ループではない）は従来どおり起動中として扱う。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "get_config", lambda: {
+        "instances": {"loading": {"port": 8096, "role": "llm", "order": 1}},
+        "selected_alias": "loading", "endpoints": {},
+    })
+    monkeypatch.setattr("app.applications.systemd.query_status",
+                        lambda unit, **kwargs: {"status": "STARTING", "sub_state": "start"})
+
+    item = llama.list_instances()[0]
+    assert item["runtime_status"] == "STARTING"
+    assert item["loaded"] is True
+    assert item["last_error"] == ""

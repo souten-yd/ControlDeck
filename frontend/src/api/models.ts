@@ -141,5 +141,13 @@ export interface OmoStatus {
   concurrency: number; team_parallel: number; gated: boolean;
 }
 
+/** 起動に失敗して再試行待ちのモデル。読み込み中と紛らわしいので理由付きで分けて出す。 */
+export interface FailedInstance {
+  alias: string;
+  port: number;
+  error: string;
+}
+
 export const getLlamaCapacity = () =>
-  api<{ endpoints: EndpointCapacity[]; omo: OmoStatus | null }>("/models/llama/capacity");
+  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; omo: OmoStatus | null }>(
+    "/models/llama/capacity");

@@ -11,7 +11,9 @@
 
 - アイドル監視の`_revive_endpoint_for_opencode()`が未定義の`base_url`を参照していた（例外を握って復活しない状態）ので、解決済みportから組み立てるよう直した。あわせてゲートウェイ経由の設定では復活処理自体をスキップする。リクエスト時にオンデマンド起動されるため、使っていない間に別モデルをロードする必要がない。
 
-検証: backend 576件成功（新規7件: 起動中優先の解決／内部解決／provider選択／autoモデル／ゲートウェイ既定と非表示／revive のskipと起動先）、frontend production buildに成功。
+- 起動に失敗して再試行待ちのループ（systemdの`sub_state=auto-restart`）を`FAILED`として扱い、ログ末尾を`last_error`に添えるようにした。従来はモデル読込中と同じ`STARTING`だったため、UIが延々と「起動中…（読み込み待ち）」を出し続けていた（実例: MTP層を持たないモデルに`spec_type=draft-mtp`を設定して21回リスタート）。`/models/llama/capacity`は失敗中のモデルを`failed`として返し、ホームのLLM利用状況が理由付きで表示する。OMo行の対象モデルも`auto`のような仮想モデルを解決してから出す。
+
+検証: backend 578件成功（新規7件: 起動中優先の解決／内部解決／provider選択／autoモデル／ゲートウェイ既定と非表示／revive のskipと起動先／auto-restartループのFAILED判定と読込中の区別）、frontend production buildに成功。
 
 ## 旧Application Builder削除とWorkflow実行UIの刷新（2026-08-13）
 

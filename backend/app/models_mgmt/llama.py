@@ -369,13 +369,20 @@ def list_instances() -> list[dict]:
             legacy = sd.query_status(f"{UNIT_PREFIX}.service")
             if legacy.get("status") in ("RUNNING", "STARTING", "FAILED"):
                 status = legacy
+        state = status.get("status", "UNKNOWN")
+        # 起動に失敗して再試行待ちのループ（sub_state=auto-restart）は「起動中」ではない。
+        # モデル読込中と区別できないと、UIが延々と「読み込み待ち」を出し続ける。
+        if state == "STARTING" and status.get("sub_state") == "auto-restart":
+            state = "FAILED"
         result.append({
             **instance,
             "alias": alias,
             "selected": alias == cfg.get("selected_alias"),
             "unit": unit_name(alias),
-            "loaded": status.get("status") in ("RUNNING", "STARTING"),
-            "runtime_status": status.get("status", "UNKNOWN"),
+            "loaded": state in ("RUNNING", "STARTING"),
+            "runtime_status": state,
+            # 失敗時だけログ末尾を読む（通常のポーリングでI/Oを増やさない）。
+            "last_error": _log_tail(alias) if state == "FAILED" else "",
             "base_url": f"http://127.0.0.1:{instance.get('port', 8080)}/v1",
         })
     # 一覧の並び＝優先度。自動起動・オンデマンド起動・既定モデルの選択もこの順を使う。
