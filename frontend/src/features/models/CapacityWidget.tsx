@@ -30,15 +30,27 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function EndpointRows({ item, omoConcurrency }: {
-  item: EndpointCapacity; omoConcurrency?: number;
-}) {
+/** そのエンドポイントの混み具合を一語で返す（表示にも使う）。 */
+export function endpointLoad(item: EndpointCapacity): "低" | "中" | "高" | null {
+  if (!item.available || item.slots === 0) return null;
+  const kvPct = item.usable > 0 ? (item.ctx_used / item.usable) * 100 : 0;
+  if (item.deferred > 0 || item.busy >= item.slots) return "高";
+  return item.busy > item.slots / 2 || kvPct >= 65 ? "中" : "低";
+}
+
+function EndpointRows({ item }: { item: EndpointCapacity }) {
+  // モデル読込中などで /slots を取れないと slots=0 になる。
+  // このとき 0/0 を「満杯」と読んでしまわないよう、状態表示に切り替える。
+  if (!item.available || item.slots === 0) {
+    return (
+      <Row label="LLM並列">
+        <span className="text-zinc-400">起動中…（読み込み待ち）</span>
+      </Row>
+    );
+  }
   const kvPct = item.usable > 0 ? Math.min(100, (item.ctx_used / item.usable) * 100) : 0;
   const tone = kvPct >= 85 ? "bg-red-500" : kvPct >= 65 ? "bg-amber-500" : "bg-accent-600";
   // 待ち行列と埋まり具合から、体感の混み具合を一語で示す。
-  const load = item.deferred > 0 ? "高"
-    : item.busy >= item.slots ? "高"
-    : item.busy > item.slots / 2 || kvPct >= 65 ? "中" : "低";
   return (
     <div>
       <Row label="LLM並列">
@@ -60,14 +72,6 @@ function EndpointRows({ item, omoConcurrency }: {
           <span>{tokens(item.ctx_used)} / {tokens(item.usable)}</span>
         </span>
       </Row>
-      {omoConcurrency !== undefined && (
-        <Row label="OMo負荷">
-          <span className={load === "高" ? "text-amber-600 dark:text-amber-400" : ""}>
-            {load}
-            <span className="ml-1.5 text-[10px] text-zinc-400">（論理並列 {omoConcurrency}）</span>
-          </span>
-        </Row>
-      )}
     </div>
   );
 }
@@ -91,9 +95,26 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
                 {item.running_alias} <span className="text-zinc-400">:{item.port}</span>
               </p>
             )}
-            <EndpointRows item={item} omoConcurrency={data.omo?.concurrency} />
+            <EndpointRows item={item} />
           </div>
         ))}
+        {/* OMo はエンドポイント個別ではなく全体の設定なので、まとめて1行だけ出す。 */}
+        {data.omo && (() => {
+          const loads = data.endpoints.map(endpointLoad).filter(Boolean) as string[];
+          const load = loads.includes("高") ? "高" : loads.includes("中") ? "中" : loads[0] ?? null;
+          return (
+            <Row label="OMo負荷">
+              {load ? (
+                <span className={load === "高" ? "text-amber-600 dark:text-amber-400" : ""}>
+                  {load}
+                  <span className="ml-1.5 text-[10px] text-zinc-400">（論理並列 {data.omo.concurrency}）</span>
+                </span>
+              ) : (
+                <span className="text-zinc-400">—</span>
+              )}
+            </Row>
+          );
+        })()}
       </div>
     </section>
   );

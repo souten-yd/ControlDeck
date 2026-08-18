@@ -211,3 +211,20 @@ def test_capacity_api_includes_omo_when_installed(admin_client, monkeypatch):
     assert body["omo"]["gated"] is True
     # ゲートウェイ経由なので OMo 既定の論理並列
     assert body["omo"]["concurrency"] == 5
+
+
+def test_unavailable_endpoint_reports_zero_slots_not_full(monkeypatch):
+    """モデル読込中は slots=0 になる。これを「満杯」と読ませてはいけない。
+
+    UI 側は available=False / slots=0 を「起動中」として扱う。
+    0/0 を busy>=slots と判定すると負荷「高」に見えてしまう。
+    """
+    def _boom(**kwargs):
+        raise llama.httpx.HTTPError("503")
+
+    monkeypatch.setattr(llama.httpx, "AsyncClient", _boom)
+    cap = asyncio.run(llama.endpoint_capacity(8090))
+    assert cap["available"] is False
+    assert cap["slots"] == 0 and cap["busy"] == 0
+    # accepting も False（空きがあると誤認させない）
+    assert cap["accepting"] is False
