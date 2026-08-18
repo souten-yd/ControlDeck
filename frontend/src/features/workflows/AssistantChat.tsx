@@ -653,8 +653,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   };
 
   const currentMode = MODES.find((m) => m.id === effectiveMode)!;
+  // 管理下のモデルは接続先を意識させない（どのポートで動くかは ControlDeck が決める）。
+  // 外部エンドポイントだけ、区別が付くようURLを添える。
   const modelOptions =
-    endpoints?.flatMap((ep) => ep.models.map((m) => ({ base: ep.base_url, model: m }))) ?? [];
+    endpoints?.flatMap((ep) => ep.models.map((m) => ({
+      base: ep.base_url, model: m, managed: !!ep.managed,
+      label: ep.managed ? m : `${m} — ${ep.base_url}`,
+    }))) ?? [];
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;
 
@@ -754,7 +759,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               </div>
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs text-zinc-500">LLM モデル（稼働中サーバーを自動検出）</span>
+              <span className="mb-1 block text-xs text-zinc-500">LLM モデル</span>
               {modelOptions.length ? (
                 <select
                   value={`${baseUrl}|${model}`}
@@ -767,7 +772,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 >
                   {modelOptions.map((o) => (
                     <option key={`${o.base}|${o.model}`} value={`${o.base}|${o.model}`}>
-                      {o.model} — {o.base}
+                      {o.label}
                     </option>
                   ))}
                 </select>

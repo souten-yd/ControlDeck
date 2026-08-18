@@ -264,3 +264,25 @@ def test_common_provider_api_routes(admin_client, monkeypatch):
         json={"model": "m"}, headers={"X-Requested-With": "ControlDeck"},
     )
     assert pull_response.status_code == 201 and pull_response.json()["job_id"]
+
+
+def test_managed_provider_is_marked_so_ui_can_hide_endpoint_url(monkeypatch):
+    """管理下のモデルは接続先を意識させない。
+
+    どのポートで動くかは ControlDeck（エンドポイント）が決めるので、
+    UI では URL を隠してモデル名だけ出す。外部endpointだけ区別のためURLを添える。
+    そのための managed フラグが provider catalog に載っていること。
+    """
+    import asyncio
+
+    from app.models_mgmt import providers
+
+    async def _run():
+        return await providers.list_providers(include_unavailable=True)
+
+    catalog = asyncio.run(_run())
+    managed = [p for p in catalog if p.get("managed")]
+    assert managed, "管理下providerが1件も無い"
+    for provider in catalog:
+        # UI が分岐に使うので、必ず真偽が決まっていること
+        assert isinstance(provider.get("managed"), bool)
