@@ -571,6 +571,20 @@ tokenizer による正確な入力トークン数、prompt cache、`requests_def
 - 同期の起点は2つ: OMo 導入時と、**OpenCode が使っているモデルの `n_parallel` を変えたとき**。
   関係ないモデルの変更では触らない。
 
+### 実機での動作確認（2026-08-18）
+
+| 項目 | 結果 |
+|---|---|
+| 設定画面からの導入 | 成功（install-job succeeded） |
+| version / health | 4.19.4 / healthy |
+| 実行ファイル | 動作。**bun 非導入のため Node CLI へフォールバック**（正常。警告が出るだけ） |
+| 導入直後の自動設定 | `background_task.defaultConcurrency: 3`（スロット4 − メイン1） |
+| モデル変更への追従 | `n_parallel` 4→8 で 3→7、戻すと 3 |
+| ゲートウェイ経由の並列生成 | 3本同時すべて HTTP 200・正答、1秒 |
+
+導入先: `data/features/omo/node_modules/oh-my-openagent`。
+OMo 設定: `~/.config/opencode/oh-my-openagent.json`（ホーム配下。data_dir ではない）。
+
 ---
 
 ## 5. 実装時に必ず踏むポイント
