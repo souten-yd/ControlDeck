@@ -28,7 +28,7 @@ from app.models import ChatMessage, ChatReference, Conversation, User
 from app.models import utcnow
 from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
-from app.workflows.chat_router import _keep_alive, _resolve_think
+from app.workflows.chat_router import _keep_alive, resolve_think
 
 router = APIRouter(prefix="/chat", tags=["chat-persist"])
 
@@ -404,10 +404,11 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     base_url = params["base_url"]
     model = params["model"]
     mode = params.get("mode", "chat")
-    thinking_mode = str(params.get("thinking", "off"))
+    thinking_mode = str(params.get("thinking") or "")
     max_output_tokens = int(params["max_output_tokens"])
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_base_url
-    think = _resolve_think(thinking_mode, model)
+    think_spec = resolve_think(base_url, model, thinking_mode or None)
+    think = think_spec.ollama_think
     # 元のユーザー発話（検索モードではhistoryが差し替わるため先に控える）
     user_query = str(history[-1].get("content") or "") if history else ""
     provider = provider_for_base_url(base_url)
@@ -591,7 +592,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     try:
         runtime_request = RuntimeChatRequest(
             base_url=base_url, model=model, messages=history,
-            max_tokens=max_output_tokens, thinking=think,
+            max_tokens=max_output_tokens, thinking=think, reasoning_effort=think_spec.reasoning_effort,
             disable_thinking=think is False, keep_alive=_keep_alive(),
         )
         # 生成統計（フェーズ / tok/s / コンテキスト使用量）。1チャンク≒1トークンとして
@@ -936,11 +937,11 @@ async def send_message(
 
     from app.models_mgmt.runtime_policy import get_policy, model_output_tokens
 
-    chat_defaults = get_policy().chat
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,
-              "thinking": body.thinking or chat_defaults.reasoning,
+              # 未指定ならモデル個別設定へ委ねる（共通設定で一律に縛らない）
+              "thinking": body.thinking or "",
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "attachments": body.attachments,
               "code_project": body.code_project,

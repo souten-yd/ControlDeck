@@ -26,7 +26,7 @@
 | 0 | G: NVMe 移設 | **完了**。残は再起動での自動起動確認のみ（ユーザーが手動実施） |
 | 1 | F: モデルライブラリ | **完了**（§4.5 参照） |
 | 2 | A: エンドポイント基盤 | **バックエンド完了**。UI は未着手（§4.6） |
-| 3 | B: think のモデル個別化 | 未着手 |
+| 3 | B: think のモデル個別化 | **完了**（§4.7） |
 | 4 | D-1/2/3: 削除・並べ替え・複製 | 未着手 |
 | 5 | C: 並列駆動の UI 露出 | 未着手 |
 | 6 | フロントエンド分割 | 未着手 |
@@ -328,6 +328,64 @@ DB・バックアップ・設定 JSON は引き続き許可ルートの外にあ
 - **UI 未実装**: エンドポイント管理・並べ替え（↑↓）・複製。設計書「UI/UX 設計」の
   Models 画面カード刷新（実装順序 6）と一緒にやる方が手戻りがない。
 - `default_model_ref` のフォールバック実装（優先度最上位を既定にする）は未着手。
+
+---
+
+## 4.7 B: think のモデル個別化（実装順序 3）— 完了
+
+### 語彙（`backend/app/models_mgmt/thinking.py` が正）
+
+`auto / off / low / medium / high / xhigh / custom`。
+レベル→バジェット: low=1024 / medium=4096 / high=16384 / xhigh=32768。
+`auto` は「何も送らない」（モデル既定に任せる）、`custom` は `think_budget_tokens` を直接指定。
+旧語彙は読み替える: `""`→auto、`on`/`true`→**high**、`max`→xhigh、`false`→off。
+
+### ランタイムごとの伝達
+
+| ランタイム | 方法 |
+|---|---|
+| llama.cpp | instance の CLI 引数。`off`→`--reasoning off` / レベル・custom→`--reasoning on --reasoning-budget N` / `auto`→引数なし。**unit 引数なので保存後の再起動が要る** |
+| Ollama | native `/api/chat` の `think`。バジェット非対応なので最も近いレベルへ落とし、`xhigh` は `high` へ寄せる |
+| 外部 OpenAI 互換 | `reasoning_effort`（`RuntimeChatRequest.reasoning_effort` を新設）。`disable_thinking` 時は送らない |
+
+### 変更点
+
+- `RuntimePolicy.ChatDefaults.reasoning` を**削除**（`timeout_seconds` は残る）。
+- `chat_router._resolve_think` → `resolve_think(base_url, model, requested)` に置換。
+  **共通設定は参照しない**。リクエストで明示された場合だけそれを優先する。
+  `_think_for` は不要になったので削除。
+- `chat_persist` は `body.thinking or ""` にし、未指定ならモデル個別設定へ委ねる。
+- `ollama.normalize_think` / `effective_think` は thinking.py へ委譲。
+- 保存キー: llama instance に `think` / `think_budget_tokens`、
+  `ollama.MODEL_CONFIG_KEYS` に `think_budget_tokens` と `order`、
+  `provider_adapters._LLAMA_CONFIG_KEYS` にも追加。
+- フロント: `features/models/ThinkingControl.tsx`（両ランタイム共通）。
+  共通設定シートの「チャット思考」セレクトは削除し、移動した旨の案内に置き換えた。
+
+### 一度きりの移行（実装済み・実機で実行済み）
+
+`thinking.migrate_shared_reasoning()` を `main.py` の lifespan から呼ぶ。
+旧 `chat.reasoning` を、**個別 think が未設定の LLM モデルにだけ**書き、その後キーを削除する。
+共通設定を消しただけだと「共通でオフ」だった環境が突然思考し始めて体感が変わるため。
+embedding/reranker は対象外。2 回目以降は何もしない。
+
+実機ログ: `思考設定をモデル個別へ移行しました: mode=off models=llama.cpp:Qwen3.8-27B, ollama:qwen3.6-27b-q5_k_m:latest`
+（`llama` は検証中に手動で off にしていたので対象外だった）
+
+### 実機で確認したこと
+
+同じ質問（17×23）で llama.cpp を再起動して比較:
+
+| 設定 | reasoning | completion | 答え |
+|---|---|---|---|
+| `think=off` | 0 文字 | **4 tok** | 391 |
+| `think=high` | 312 文字 | 139 tok | 391 |
+
+`--reasoning on --reasoning-budget 16384` が b10001 に受理されることも確認済み
+（ログにエラーなし）。
+
+> 注意: `start_instance` 直後に `/health` を叩くと**まだ旧プロセスが応答している**ことがある。
+> 再起動の確認は `until [ "$(curl ... /health)" = 200 ]` で待つこと。
 
 ---
 

@@ -674,6 +674,8 @@ class LlamaInstanceBody(BaseModel):
     mlock: bool | None = None
     spec_type: Literal["none", "draft-simple", "draft-mtp", "ngram-simple"] | None = None
     draft_max: int | None = Field(default=None, ge=1, le=128)
+    think: Literal["auto", "off", "low", "medium", "high", "xhigh", "custom"] | None = None
+    think_budget_tokens: int | None = Field(default=None, ge=0, le=262144)
     cpu_moe: bool | None = None
     n_cpu_moe: int | None = Field(default=None, ge=0, le=256)
     temperature: float | None = Field(default=None, ge=0, le=5)

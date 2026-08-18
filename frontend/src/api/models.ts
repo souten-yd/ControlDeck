@@ -66,3 +66,11 @@ export const scanModelLibrary = (id: string) =>
   api<{ id: string; path: string; files: LibraryFile[] }>(
     `/models/libraries/${encodeURIComponent(id)}/scan`,
   );
+
+/** 思考（reasoning）の語彙。バックエンドの models_mgmt/thinking.py と対応する。 */
+export type ThinkMode = "auto" | "off" | "low" | "medium" | "high" | "xhigh" | "custom";
+
+/** レベル→トークンバジェットの写像。レベルはプリセット、カスタムは直接指定。 */
+export const THINK_LEVEL_BUDGETS: Partial<Record<ThinkMode, number>> = {
+  off: 0, low: 1024, medium: 4096, high: 16384, xhigh: 32768,
+};

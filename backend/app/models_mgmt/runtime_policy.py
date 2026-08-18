@@ -12,7 +12,9 @@ from app.config import data_dir
 
 
 class ChatDefaults(BaseModel):
-    reasoning: Literal["off", "auto", "on"] = "off"
+    # 思考(reasoning)はモデル個別設定へ移した（models_mgmt/thinking.py）。
+    # モデルごとに適正な深さが違い、共通設定で一律に縛ると調整できなくなるため。
+    # 旧 reasoning キーが残った設定ファイルは pydantic が無視するのでそのまま読める。
     timeout_seconds: int = Field(default=300, ge=10, le=1800)
 
 

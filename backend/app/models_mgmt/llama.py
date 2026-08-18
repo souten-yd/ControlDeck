@@ -88,6 +88,10 @@ DEFAULT_INSTANCE = {
         "mlock": False,
         "spec_type": "none",
         "draft_max": 16,
+        # 思考（reasoning）。auto/off/low/medium/high/xhigh/custom。
+        # unit の引数になるため、変更の反映には再起動が要る。
+        "think": "auto",
+        "think_budget_tokens": 0,
         "cpu_moe": False,
         "n_cpu_moe": 0,
         "temperature": 0.8,
@@ -808,6 +812,16 @@ def _unit_content(alias: str | None = None) -> str:
     elif role == "reranker":
         # 再ランク専用（Qwen3-Reranker等）。/v1/rerank を提供する
         args += ["--rerank"]
+    if role == "llm":
+        # 思考（reasoning）はモデル個別設定。auto は何も指定せずモデル既定に任せる。
+        # b10001 は --reasoning on|off|auto と --reasoning-budget N（-1=無制限 / 0=即終了）を持つ。
+        from app.models_mgmt import thinking
+
+        think = thinking.spec(inst.get("think"), inst.get("think_budget_tokens"))
+        if think.mode == "off":
+            args += ["--reasoning", "off"]
+        elif think.mode != "auto":
+            args += ["--reasoning", "on", "--reasoning-budget", str(thinking.effective_budget(think))]
     spec_type = str(inst.get("spec_type", "none"))
     if spec_type != "none" and role == "llm":
         # --draft-max は削除済み。後継は --spec-draft-n-max

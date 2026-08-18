@@ -31,6 +31,8 @@ class RuntimeChatRequest:
     max_tokens: int = 2048
     thinking: bool | str | None = None
     disable_thinking: bool = False
+    # OpenAI互換の思考強度（low/medium/high/xhigh）。モデル個別設定から解決する。
+    reasoning_effort: str | None = None
     response_format: dict[str, Any] | None = None
     keep_alive: str | int | None = None
     # Deep Research等の大規模入力で要求するcontext。providerがrequest単位で対応する場合だけ使う。
@@ -160,8 +162,12 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         if request.disable_thinking or request.thinking is False:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         elif request.thinking is True or isinstance(request.thinking, str):
-            # 共通設定「オン」/レベル指定。llama.cpp等のjinjaテンプレートへ思考有効を明示する
+            # レベル指定/有効。llama.cpp等のjinjaテンプレートへ思考有効を明示する
             payload["chat_template_kwargs"] = {"enable_thinking": True}
+        # 思考強度を解釈できるendpoint向け。llama.cppはinstanceの--reasoning-budgetが正なので、
+        # ここは外部OpenAI互換endpointへの伝達手段として使う。
+        if request.reasoning_effort and not request.disable_thinking:
+            payload["reasoning_effort"] = request.reasoning_effort
         if request.response_format is not None:
             payload["response_format"] = self._response_format(request.response_format)
         return payload

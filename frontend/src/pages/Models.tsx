@@ -10,6 +10,8 @@ import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
+import { ThinkingControl } from "../features/models/ThinkingControl";
+import type { ThinkMode } from "../api/models";
 
 interface Model {
   id?: string;
@@ -34,7 +36,7 @@ interface RuntimePolicy {
   max_loaded_models: number;
   default_model_ref: string;
   assistant_name: string;
-  chat: { reasoning: "off" | "auto" | "on"; timeout_seconds: number };
+  chat: { timeout_seconds: number };
   deep_research: {
     evidence_context_chars: number;
     max_report_tokens: number;
@@ -556,6 +558,7 @@ interface ModelConfig {
   idle_exclude?: boolean;
   vlm_enabled?: boolean;
   think?: string;
+  think_budget_tokens?: number;
   num_ctx?: number;
   deep_research_num_ctx?: number;
   num_predict?: number;
@@ -703,7 +706,6 @@ function ModelConfigSection({ model }: { model: string }) {
   const hasThinking = (caps?.capabilities ?? []).includes("thinking");
   // MTP（Multi-Token Prediction）対応判定: capabilities に completion 以外の特殊機能があるかで簡易判定
   const hasMtp = (caps?.capabilities ?? []).some((c) => /mtp|speculat/i.test(c));
-  const selCls = "w-full rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
   return (
     <div className="rounded-xl border border-zinc-200 dark:border-zinc-700">
@@ -720,17 +722,12 @@ function ModelConfigSection({ model }: { model: string }) {
         </p>
         <L label="出力長 num_predict（最大生成トークン）"><PresetOrCustom value={eff.num_predict} presets={PREDICT_PRESETS} placeholder="512" onChange={(v) => set("num_predict", v)} /></L>
         {hasThinking && (
-          <L label="思考（推論）think — オフで高速化・レベルで深さ調整">
-            <select value={eff.think ?? ""} onChange={(e) => set("think", e.target.value)} className={selCls}>
-              <option value="">既定（自動）</option>
-              <option value="off">オフ（思考なし・最速）</option>
-              <option value="on">オン</option>
-              <option value="low">低（浅い思考）</option>
-              <option value="medium">中</option>
-              <option value="high">高（深い思考）</option>
-              <option value="max">最大</option>
-            </select>
-          </L>
+          <ThinkingControl
+            runtime="ollama"
+            mode={(eff.think as ThinkMode) ?? "auto"}
+            budget={eff.think_budget_tokens ?? 0}
+            onChange={(mode, budget) => setCfg({ ...(eff ?? {}), think: mode, think_budget_tokens: budget })}
+          />
         )}
         <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
           <span className="text-xs">アイドル自動アンロードから除外<span className="block text-[10px] text-zinc-400">常駐させ再ロード待ちをなくす</span></span>
@@ -847,11 +844,10 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <L label="全ランタイムの同時ロード上限">
           <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
         </L>
-        <L label="チャット思考">
-          <select value={policy.chat.reasoning} onChange={(e) => setPolicyCfg({ ...policy, chat: { ...policy.chat, reasoning: e.target.value as RuntimePolicy["chat"]["reasoning"] } })} className={input}>
-            <option value="off">オフ（高速・既定）</option><option value="auto">モデルに任せる</option><option value="on">オン</option>
-          </select>
-        </L>
+        <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+          思考（reasoning）の設定は各モデルの個別設定へ移動しました。モデルごとに適した深さが
+          違うため、共通設定で一律に指定しない方針です。
+        </p>
         <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50/40 p-3 dark:border-violet-900 dark:bg-violet-950/20">
           <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">Deep Research共通設定</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -987,6 +983,10 @@ interface LlamaInstanceConfig {
   mlock: boolean;
   spec_type: "none" | "draft-simple" | "draft-mtp" | "ngram-simple";
   draft_max: number;
+  think: ThinkMode;
+  think_budget_tokens: number;
+  endpoint_id?: string;
+  order?: number;
   cpu_moe: boolean;
   n_cpu_moe: number;
   temperature: number;
@@ -1003,6 +1003,7 @@ const LLAMA_INSTANCE_WRITE_KEYS = [
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
+  "think", "think_budget_tokens",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 const LLAMA_PARAMETER_WRITE_KEYS = [
@@ -1010,6 +1011,7 @@ const LLAMA_PARAMETER_WRITE_KEYS = [
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
+  "think", "think_budget_tokens",
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 function llamaInstanceWriteBody(config: LlamaInstanceConfig, includeIdentity: boolean): Record<string, unknown> {
@@ -1241,6 +1243,29 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
         <L label="GPUオフロード層"><PresetOrCustom value={cfg.n_gpu_layers} presets={GPU_PRESETS.map((p) => p.v === -1 ? { ...p, v: 999, label: "全部 (999)" } : p)} placeholder="999" onChange={(v) => set("n_gpu_layers", Number(v ?? 999))} /></L>
       </div>
       <p className="text-[10px] leading-relaxed text-zinc-400">Deep Research専用CTXが通常CTXと異なる場合、開始前に再ロードし、完了・失敗後は通常CTXへ自動復元します。</p>
+
+      <L label="同時リクエスト数（スロット）">
+        <input type="number" min={1} max={64} value={cfg.n_parallel}
+          onChange={(e) => set("n_parallel", Math.max(1, Math.min(64, Number(e.target.value) || 1)))}
+          className={`${input} font-mono`} />
+      </L>
+      <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+        {cfg.n_parallel > 1 ? (<>
+          CTX {cfg.ctx_size.toLocaleString()} は全スロットの合計です。
+          1リクエストあたり <strong>{Math.floor(cfg.ctx_size / cfg.n_parallel).toLocaleString()}</strong> × {cfg.n_parallel} 並列になります
+          （VRAM は増えません）。
+        </>) : (<>
+          CTX {cfg.ctx_size.toLocaleString()} を1リクエストで使います。
+          スロットを増やすと同じVRAMのまま同時実行できます（1本あたりのCTXは分割されます）。
+        </>)}
+      </p>
+
+      <ThinkingControl
+        runtime="llama.cpp"
+        mode={cfg.think ?? "auto"}
+        budget={cfg.think_budget_tokens ?? 0}
+        onChange={(mode, budget) => setCfg((c) => ({ ...c, think: mode, think_budget_tokens: budget }))}
+      />
       {flags.has("--flash-attn") && <Toggle label="Flash Attention" hint="KVキャッシュ削減と速度改善。量子化KVでは有効化を推奨" value={cfg.flash_attn} onChange={(value) => set("flash_attn", value)} />}
 
       {(flags.has("--cache-type-k") || flags.has("--cache-type-v")) && <div className="grid grid-cols-2 gap-2">

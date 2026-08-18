@@ -56,27 +56,17 @@ def _native_base(base_url: str) -> str | None:
     return None
 
 
-def _think_for(model: str):
-    try:
-        from app.models_mgmt import ollama
+def resolve_think(base_url: str, model: str, requested: object = None):
+    """このリクエストの思考設定を決める。
 
-        return ollama.effective_think(model)
-    except Exception:
-        return None
-
-
-def _resolve_think(mode: str, model: str) -> bool | str | None:
-    """共通設定(off/auto/on)とモデル個別thinkを解決する。
-
-    off は強制オフ。on はモデル個別設定（レベル等）があればそれを優先し、
-    なければ強制オン。auto はモデル個別設定 → モデル既定の順。
+    共通設定は参照しない（思考の深さはモデルごとに適正が違うため、モデル個別設定が正）。
+    リクエストで明示された場合だけそれを優先する。
     """
-    if mode == "off":
-        return False
-    model_think = _think_for(model)
-    if mode == "on" and model_think is None:
-        return True
-    return model_think
+    from app.models_mgmt import thinking
+
+    if requested not in (None, "", "auto"):
+        return thinking.spec(requested)
+    return thinking.resolve(base_url, model)
 
 
 async def _llm(
@@ -94,11 +84,13 @@ async def _llm(
         RuntimeChatRequest, RuntimeProviderError, provider_for_base_url,
     )
 
-    think = False if disable_thinking else _think_for(model)
+    think_spec = resolve_think(base_url, model)
+    think = False if disable_thinking else think_spec.ollama_think
     request = RuntimeChatRequest(
         base_url=base_url, model=model, messages=messages, api_key=api_key,
         temperature=temperature, max_tokens=max_tokens,
         thinking=think, disable_thinking=disable_thinking,
+        reasoning_effort=None if disable_thinking else think_spec.reasoning_effort,
         response_format=response_format, keep_alive=_keep_alive(), context_window=context_window,
         timeout_seconds=timeout_seconds,
     )
@@ -134,12 +126,8 @@ async def chat_stream(websocket: WebSocket):
     # think: リクエスト指定 > モデル個別設定
     from app.models_mgmt import ollama as _ollama
 
-    if req.get("think") is not None:
-        think = _ollama.normalize_think(req.get("think"))
-    else:
-        from app.models_mgmt.runtime_policy import get_policy
-
-        think = _resolve_think(get_policy().chat.reasoning, model)
+    think_spec = resolve_think(base, model, req.get("think"))
+    think = think_spec.ollama_think
     from app.models_mgmt.runtime_provider import (
         GenerationCancelled, RuntimeChatRequest, provider_for_base_url,
     )
@@ -149,6 +137,7 @@ async def chat_stream(websocket: WebSocket):
     runtime_request = RuntimeChatRequest(
         base_url=base, model=model, messages=messages, max_tokens=2048,
         thinking=think, disable_thinking=think is False, keep_alive=_keep_alive(),
+        reasoning_effort=think_spec.reasoning_effort,
     )
     try:
         async for chunk in provider.stream_chat(runtime_request, request_id=request_id):

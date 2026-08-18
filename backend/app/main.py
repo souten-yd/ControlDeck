@@ -60,6 +60,17 @@ async def lifespan(app: FastAPI):
     from app.models_mgmt.ollama import idle_unload_loop as ollama_idle_unload_loop
     from app.models_mgmt.llama import idle_unload_loop as llama_idle_unload_loop
     from app.applications.health import health_check_loop
+    from app.models_mgmt.thinking import migrate_shared_reasoning
+
+    # 思考設定を共通設定からモデル個別へ移した際の一度きりの移行。
+    # 旧共通値を個別未設定のモデルへ書き、体感が変わらないようにする。
+    try:
+        result = migrate_shared_reasoning()
+        if result.get("migrated") and result.get("models"):
+            logger.info("思考設定をモデル個別へ移行しました: mode=%s models=%s",
+                        result.get("mode"), ", ".join(result["models"]))
+    except Exception:  # noqa: BLE001 - 移行失敗で起動を止めない
+        logger.exception("思考設定の移行に失敗しました")
 
     tasks = [
         asyncio.create_task(collector.run()),
