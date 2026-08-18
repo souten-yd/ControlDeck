@@ -71,7 +71,7 @@ async def _context_max(base_url: str, model: str) -> int | None:
         from urllib.parse import urlsplit
 
         port = urlsplit(base_url).port
-        if any(int(item.get("port", 0)) == port for item in llama.list_instances()):
+        if port in llama.endpoint_ports():
             async with httpx.AsyncClient(timeout=2) as client:
                 response = await client.get(f"http://127.0.0.1:{port}/slots")
             slots = response.json()
@@ -92,7 +92,7 @@ async def _prompt_tokens_probe(base_url: str) -> int | None:
         from urllib.parse import urlsplit
 
         port = urlsplit(base_url).port
-        if not any(int(item.get("port", 0)) == port for item in llama.list_instances()):
+        if port not in llama.endpoint_ports():
             return None
         async with httpx.AsyncClient(timeout=2) as client:
             response = await client.get(f"http://127.0.0.1:{port}/slots")

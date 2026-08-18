@@ -100,7 +100,15 @@ DEFAULT_INSTANCE = {
         "auto_start": False,
         "idle_exclude": False,
         "last_used_at": "",
+        # 所属エンドポイント。空なら読込時に port から解決して補完する。
+        "endpoint_id": "",
+        # 一覧の並び順＝優先度。1始まりで小さいほど優先。0は未設定（末尾扱い）。
+        "order": 0,
 }
+
+# エンドポイント = 127.0.0.1 の待受ポート。複数モデルを束ね、常に1つだけ稼働させる。
+DEFAULT_ENDPOINT = {"id": "", "label": "", "port": 8080, "active_alias": ""}
+MAX_ENDPOINTS = 8
 
 DEFAULT_CONFIG = {
     "tag": "",
@@ -110,8 +118,163 @@ DEFAULT_CONFIG = {
     # legacy互換mirror。正はinstances[selected_alias]。
     "instance": dict(DEFAULT_INSTANCE),
     "instances": {},
+    "endpoints": {},
     "selected_alias": "",
 }
+
+
+def _endpoint_id_for_port(port: int) -> str:
+    return f"ep-{int(port)}"
+
+
+def _migrate_endpoints(cfg: dict) -> None:
+    """instance の port からエンドポイントを補完する（冪等）。
+
+    移行前は port が instance 内で一意だったので 1:1 で無損失に投影できる。
+    order 未設定のものは既存の並び順（JSON の挿入順）で 1..N を振る。
+    """
+    endpoints: dict = cfg["endpoints"]
+    by_port = {int(e.get("port", 0)): eid for eid, e in endpoints.items()}
+    for alias, instance in cfg["instances"].items():
+        endpoint_id = str(instance.get("endpoint_id") or "")
+        if endpoint_id and endpoint_id in endpoints:
+            continue
+        port = int(instance.get("port", 8080) or 8080)
+        endpoint_id = by_port.get(port) or _endpoint_id_for_port(port)
+        if endpoint_id not in endpoints:
+            endpoints[endpoint_id] = {**DEFAULT_ENDPOINT, "id": endpoint_id,
+                                      "label": f"ポート {port}", "port": port}
+            by_port[port] = endpoint_id
+        instance["endpoint_id"] = endpoint_id
+    # port は endpoint を正とする派生値。呼び出し側の互換のため各 instance へ写す。
+    for instance in cfg["instances"].values():
+        endpoint = endpoints.get(str(instance.get("endpoint_id") or ""))
+        if endpoint:
+            instance["port"] = int(endpoint.get("port", 8080))
+    unordered = [a for a, i in cfg["instances"].items() if not int(i.get("order") or 0)]
+    if unordered:
+        used = {int(i.get("order") or 0) for i in cfg["instances"].values()}
+        next_order = 1
+        for alias in unordered:
+            while next_order in used:
+                next_order += 1
+            cfg["instances"][alias]["order"] = next_order
+            used.add(next_order)
+
+
+def list_endpoints() -> list[dict]:
+    """エンドポイント一覧。所属モデルと稼働状況を添える。"""
+    cfg = get_config()
+    instances = list_instances()
+    result = []
+    for endpoint_id, endpoint in cfg["endpoints"].items():
+        members = [i for i in instances if str(i.get("endpoint_id")) == endpoint_id]
+        running = next((i for i in members if i.get("loaded")), None)
+        result.append({
+            **endpoint,
+            "base_url": f"http://127.0.0.1:{endpoint.get('port', 8080)}/v1",
+            "aliases": [str(i["alias"]) for i in members],
+            "running_alias": str(running["alias"]) if running else "",
+        })
+    result.sort(key=lambda e: int(e.get("port", 0)))
+    return result
+
+
+def save_endpoint(endpoint_id: str, patch: dict) -> dict:
+    """エンドポイントを作成／更新する。port は全エンドポイントで一意。"""
+    if not ALIAS_RE.fullmatch(endpoint_id):
+        raise ValueError("エンドポイントIDは英数字・._:-の1〜128文字で指定してください")
+    cfg = get_config()
+    exists = endpoint_id in cfg["endpoints"]
+    if not exists and len(cfg["endpoints"]) >= MAX_ENDPOINTS:
+        raise ValueError(f"エンドポイントは最大{MAX_ENDPOINTS}件です")
+    endpoint = dict(cfg["endpoints"].get(endpoint_id, DEFAULT_ENDPOINT))
+    endpoint.update({key: value for key, value in patch.items() if key in DEFAULT_ENDPOINT})
+    endpoint["id"] = endpoint_id
+    port = int(endpoint.get("port", 8080))
+    if not 1024 <= port <= 65535:
+        raise ValueError("ポートは1024〜65535で指定してください")
+    for other_id, other in cfg["endpoints"].items():
+        if other_id != endpoint_id and int(other.get("port", 0)) == port:
+            raise ValueError(f"ポート {port} はエンドポイント '{other_id}' が使用中です")
+    _ensure_port_free_for_other_runtimes(port)
+    endpoint["label"] = str(endpoint.get("label") or f"ポート {port}")
+    cfg["endpoints"][endpoint_id] = endpoint
+    for instance in cfg["instances"].values():
+        if str(instance.get("endpoint_id")) == endpoint_id:
+            instance["port"] = port
+    _write_config(cfg)
+    return endpoint
+
+
+def _ensure_port_free_for_other_runtimes(port: int) -> None:
+    """llama.cpp 以外の管理対象と衝突していないか確認する。
+
+    従来は llama instance 同士しか見ておらず、Ollama のポートを指定しても
+    保存は通り、起動して初めて失敗していた。
+    """
+    from urllib.parse import urlsplit
+
+    from app.models_mgmt import ollama
+
+    try:
+        ollama_port = urlsplit(ollama.base_url()).port
+    except ValueError:
+        ollama_port = None
+    if ollama_port and int(ollama_port) == int(port):
+        raise ValueError(f"ポート {port} は Ollama が使用しています")
+
+
+def delete_endpoint(endpoint_id: str) -> None:
+    cfg = get_config()
+    if endpoint_id not in cfg["endpoints"]:
+        raise KeyError("エンドポイントが見つかりません")
+    members = [a for a, i in cfg["instances"].items() if str(i.get("endpoint_id")) == endpoint_id]
+    if members:
+        raise ValueError(f"このエンドポイントには {len(members)} 件のモデルが紐づいています: {', '.join(members)}")
+    cfg["endpoints"].pop(endpoint_id)
+    _write_config(cfg)
+
+
+def instances_on_endpoint(endpoint_id: str) -> list[dict]:
+    """同一エンドポイントのモデルを優先度順で返す。"""
+    return [i for i in list_instances() if str(i.get("endpoint_id")) == endpoint_id]
+
+
+def instance_for_port(port: int) -> dict | None:
+    """ポートから「今そのポートを代表しているモデル」を1件に決める。
+
+    同一ポートを複数モデルで共有できるようにしたため、単純な先頭一致では
+    誤ったモデルを掴む。稼働中 → 最後に起動したもの → 最優先、の順で解決する。
+    list_instances() は優先度順に並んでいるので、最後は先頭を採ればよい。
+    """
+    members = [i for i in list_instances() if int(i.get("port", 0) or 0) == int(port)]
+    if not members:
+        return None
+    running = next((i for i in members if i.get("loaded")), None)
+    if running:
+        return running
+    if len(members) > 1:
+        # 停止中で候補が複数あるときだけ、最後に起動したモデルを手掛かりにする。
+        endpoint_id = str(members[0].get("endpoint_id") or "")
+        active = str(get_config()["endpoints"].get(endpoint_id, {}).get("active_alias") or "")
+        match = next((i for i in members if str(i.get("alias")) == active), None)
+        if match:
+            return match
+    return members[0]
+
+
+def resolve_instance_by_port(port: int) -> str | None:
+    instance = instance_for_port(port)
+    alias = str(instance.get("alias") or "") if instance else ""
+    return alias or None
+
+
+def endpoint_ports() -> set[int]:
+    """管理下の待受ポート。エンドポイント未定義の設定でも instance 側から拾う。"""
+    ports = {int(e.get("port", 0)) for e in get_config()["endpoints"].values()}
+    ports |= {int(i.get("port", 0) or 0) for i in list_instances()}
+    return {p for p in ports if p}
 
 
 def get_config() -> dict:
@@ -134,6 +297,14 @@ def get_config() -> dict:
                     instance.update({key: value for key, value in raw.items() if key in instance})
                     instance["alias"] = str(alias)
                     cfg["instances"][str(alias)] = instance
+            if isinstance(saved.get("endpoints"), dict):
+                for endpoint_id, raw in list(saved["endpoints"].items())[:MAX_ENDPOINTS]:
+                    if not ALIAS_RE.fullmatch(str(endpoint_id)) or not isinstance(raw, dict):
+                        continue
+                    endpoint = dict(DEFAULT_ENDPOINT)
+                    endpoint.update({key: value for key, value in raw.items() if key in endpoint})
+                    endpoint["id"] = str(endpoint_id)
+                    cfg["endpoints"][str(endpoint_id)] = endpoint
         except (json.JSONDecodeError, OSError):
             pass
     # 旧単一instanceを初回読込時にcatalogへ投影（ファイル保存は次の更新時）。
@@ -143,6 +314,7 @@ def get_config() -> dict:
             alias = "llama"
         cfg["instance"]["alias"] = alias
         cfg["instances"][alias] = dict(cfg["instance"])
+    _migrate_endpoints(cfg)
     selected = str(cfg.get("selected_alias") or "")
     if selected not in cfg["instances"]:
         legacy_alias = str(cfg["instance"].get("alias") or "")
@@ -197,6 +369,8 @@ def list_instances() -> list[dict]:
             "runtime_status": status.get("status", "UNKNOWN"),
             "base_url": f"http://127.0.0.1:{instance.get('port', 8080)}/v1",
         })
+    # 一覧の並び＝優先度。自動起動・オンデマンド起動・既定モデルの選択もこの順を使う。
+    result.sort(key=lambda i: (int(i.get("order") or 10_000), str(i["alias"]).lower()))
     return result
 
 
@@ -212,7 +386,11 @@ def get_instance(alias: str | None = None) -> dict:
 
 
 def save_instance(alias: str, patch: dict) -> dict:
-    """alias単位で型付き設定を保存。alias/port/pathの一意性を強制する。"""
+    """alias単位で型付き設定を保存する。
+
+    ポートは複数モデルで共有できる（同一エンドポイントに束ねる）。共有した場合は
+    起動時に排他制御し、外部クライアントは同じendpointのままモデルだけ差し替わる。
+    """
     if not ALIAS_RE.fullmatch(alias):
         raise ValueError("aliasは英数字・._:-の1〜128文字で指定してください")
     cfg = get_config()
@@ -226,16 +404,41 @@ def save_instance(alias: str, patch: dict) -> dict:
         raise ValueError("aliasは英数字・._:-の1〜128文字で指定してください")
     if new_alias != alias and new_alias in cfg["instances"]:
         raise ValueError(f"alias '{new_alias}' は登録済みです")
-    port = int(instance.get("port", 8080))
-    model_path = str(instance.get("model_path") or "")
-    for other_alias, other in cfg["instances"].items():
-        if other_alias == alias:
-            continue
-        if int(other.get("port", 8080)) == port:
-            raise ValueError(f"port {port} は '{other_alias}' が使用中です")
-        if model_path and str(other.get("model_path") or "") == model_path:
-            raise ValueError(f"同じGGUFは '{other_alias}' として登録済みです")
+
+    # 所属エンドポイントを決める。port 直接指定は互換のため受け付け、
+    # 該当エンドポイントが無ければ作る。
+    endpoint_id = str(instance.get("endpoint_id") or "")
+    if endpoint_id and endpoint_id not in cfg["endpoints"]:
+        raise ValueError(f"エンドポイント '{endpoint_id}' が見つかりません")
+    if not endpoint_id:
+        port = int(instance.get("port", 8080) or 8080)
+        endpoint_id = next(
+            (eid for eid, e in cfg["endpoints"].items() if int(e.get("port", 0)) == port), "",
+        )
+        if not endpoint_id:
+            if len(cfg["endpoints"]) >= MAX_ENDPOINTS:
+                raise ValueError(f"エンドポイントは最大{MAX_ENDPOINTS}件です")
+            if not 1024 <= port <= 65535:
+                raise ValueError("ポートは1024〜65535で指定してください")
+            _ensure_port_free_for_other_runtimes(port)
+            endpoint_id = _endpoint_id_for_port(port)
+            cfg["endpoints"][endpoint_id] = {**DEFAULT_ENDPOINT, "id": endpoint_id,
+                                             "label": f"ポート {port}", "port": port}
+    instance["endpoint_id"] = endpoint_id
+    instance["port"] = int(cfg["endpoints"][endpoint_id].get("port", 8080))
+
+    # 同じGGUFの重複登録は禁止しない。ポートが一意だった頃は「同じファイルで2つの
+    # サーバーが立つ」ことを避ける意味があったが、エンドポイント内は排他起動になったため
+    # 同時に動くことはない。同じGGUFを別CTX・別量子化設定で持って切り替えるのは
+    # 複製機能の主目的なので、ここで弾くと用途を塞いでしまう。
+    # 識別子としての一意性は alias で担保する。
     instance["alias"] = new_alias
+    if not int(instance.get("order") or 0):
+        used = {int(i.get("order") or 0) for a, i in cfg["instances"].items() if a != alias}
+        order = 1
+        while order in used:
+            order += 1
+        instance["order"] = order
     if new_alias != alias:
         if exists:
             stop_instance(alias)
@@ -244,13 +447,54 @@ def save_instance(alias: str, patch: dict) -> dict:
             sd.remove_unit(unit_name(alias))
         cfg["instances"].pop(alias, None)
     cfg["instances"][new_alias] = instance
-    # embedding/reranker はチャットの既定instance（selected）を奪わない
-    if str(instance.get("role", "llm")) == "llm" or not cfg.get("selected_alias"):
+    # 既定チャット先は新規登録時と、まだ何も選ばれていない時だけ引き継ぐ。
+    # 既存モデルの設定を保存しただけで選択が奪われると、利用中のモデルが黙って切り替わる。
+    if not cfg.get("selected_alias") or (not exists and str(instance.get("role", "llm")) == "llm"):
         cfg["selected_alias"] = new_alias
         cfg["instance"] = dict(instance)
+    elif cfg.get("selected_alias") == new_alias:
+        cfg["instance"] = dict(instance)
     _write_config(cfg)
-    sync_instance_unit(new_alias)
+    _sync_endpoint_units(endpoint_id)
     return cfg
+
+
+def reorder_instances(aliases: list[str]) -> list[dict]:
+    """一覧の並び＝優先度を設定する。指定漏れは後ろへ残す。"""
+    cfg = get_config()
+    unknown = [a for a in aliases if a not in cfg["instances"]]
+    if unknown:
+        raise KeyError(f"未知のモデルです: {', '.join(unknown)}")
+    order = 1
+    for alias in aliases:
+        cfg["instances"][alias]["order"] = order
+        order += 1
+    for alias in cfg["instances"]:
+        if alias not in aliases:
+            cfg["instances"][alias]["order"] = order
+            order += 1
+    _write_config(cfg)
+    for endpoint_id in cfg["endpoints"]:
+        _sync_endpoint_units(endpoint_id)
+    return list_instances()
+
+
+def duplicate_instance(alias: str, new_alias: str, *, endpoint_id: str | None = None) -> dict:
+    """設定を複製する。既定では同じエンドポイントに載せる（切替用途）。"""
+    cfg = get_config()
+    if alias not in cfg["instances"]:
+        raise KeyError("llama.cppモデル設定が見つかりません")
+    if new_alias in cfg["instances"]:
+        raise ValueError(f"alias '{new_alias}' は登録済みです")
+    source = dict(cfg["instances"][alias])
+    source.update({
+        "alias": new_alias,
+        "auto_start": False,      # 複製がいきなり自動起動を奪わない
+        "last_used_at": "",
+        "order": 0,               # save_instance が末尾へ採番する
+        "endpoint_id": endpoint_id or str(source.get("endpoint_id") or ""),
+    })
+    return save_instance(new_alias, source)
 
 
 def select_instance(alias: str) -> dict:
@@ -278,20 +522,38 @@ def delete_instance(alias: str) -> None:
 
 
 def sync_instance_unit(alias: str) -> None:
-    """設定保存時にunitとauto-start enable状態を同期する（起動はしない）。"""
-    if not is_installed():
-        return
+    """1件のunitを書き出し、所属エンドポイント全体のauto-startを整える（起動はしない）。"""
     try:
-        instance = get_instance(alias)
+        endpoint_id = str(get_instance(alias).get("endpoint_id") or "")
     except KeyError:
         return
-    if not Path(str(instance.get("model_path") or "")).is_file():
+    _sync_endpoint_units(endpoint_id or "")
+
+
+def _sync_endpoint_units(endpoint_id: str) -> None:
+    """エンドポイント内の全unitを書き出し、auto-start を最優先の1件だけに絞る。
+
+    同じポートを複数モデルで共有できるため、auto_start が複数あっても
+    boot 時に同時起動させるとポート競合で後発が落ちる。優先度（order）の
+    最上位だけを enable し、他は明示的に disable する。
+    """
+    if not is_installed():
         return
     from app.applications import systemd as sd
 
-    name = unit_name(alias)
-    sd.write_unit(name, _unit_content(alias))
-    sd.set_enabled(name, bool(instance.get("auto_start")))
+    members = instances_on_endpoint(endpoint_id) if endpoint_id else []
+    auto_start_winner = next(
+        (str(i["alias"]) for i in members
+         if i.get("auto_start") and Path(str(i.get("model_path") or "")).is_file()),
+        None,
+    )
+    for instance in members:
+        alias = str(instance["alias"])
+        if not Path(str(instance.get("model_path") or "")).is_file():
+            continue
+        name = unit_name(alias)
+        sd.write_unit(name, _unit_content(alias))
+        sd.set_enabled(name, alias == auto_start_winner)
 
 
 def is_installed() -> bool:
@@ -637,6 +899,16 @@ def start_instance(alias: str | None = None) -> tuple[bool, str]:
     # 旧単一unitが残っている場合はport競合を避ける。catalog unit以外には触れない。
     if name != f"{UNIT_PREFIX}.service":
         sd.stop(f"{UNIT_PREFIX}.service")
+    # 同一エンドポイント（＝同じポート）の他モデルを先に止める。
+    # 止めずに起動すると後発が bind に失敗し、原因の分かりにくい起動失敗になる。
+    endpoint_id = str(inst.get("endpoint_id") or "")
+    if endpoint_id:
+        for other in instances_on_endpoint(endpoint_id):
+            other_alias = str(other["alias"])
+            if other_alias != alias and other.get("loaded"):
+                logger.info("エンドポイント %s のモデルを切り替えます: %s -> %s",
+                            endpoint_id, other_alias, alias)
+                sd.stop(unit_name(other_alias))
     active = sd.query_status(name).get("status") == "RUNNING"
     # 保存後のloadで既に稼働中なら、新しい型付き設定を確実に反映する。
     ok, err = sd.restart(name) if active and changed else sd.start(name)
@@ -656,10 +928,29 @@ def start_instance(alias: str | None = None) -> tuple[bool, str]:
         if state.get("status") == "RUNNING":
             stable += 1
             if stable >= 3:
+                _set_active_alias(endpoint_id, alias)
                 return True, ""
         else:
             stable = 0
+    _set_active_alias(endpoint_id, alias)
     return True, ""
+
+
+def _set_active_alias(endpoint_id: str, alias: str) -> None:
+    """エンドポイントで最後に起動したモデルを記録する。
+
+    停止後も「そのポートを代表するモデル」を決めるために使う
+    （resolve_instance_by_port の 2 番目の手掛かり）。
+    """
+    if not endpoint_id:
+        return
+    cfg = get_config()
+    if endpoint_id not in cfg["endpoints"]:
+        return
+    if cfg["endpoints"][endpoint_id].get("active_alias") == alias:
+        return
+    cfg["endpoints"][endpoint_id]["active_alias"] = alias
+    _write_config(cfg)
 
 
 def stop_instance(alias: str | None = None) -> tuple[bool, str]:
@@ -735,10 +1026,7 @@ async def ensure_ready_by_base_url(base_url: str, *, timeout_seconds: int = 240)
         port = urlsplit(base_url).port
     except ValueError:
         return True
-    alias = next(
-        (str(item["alias"]) for item in list_instances() if int(item.get("port", 0)) == port),
-        None,
-    )
+    alias = resolve_instance_by_port(port) if port else None
     if alias is None:
         return True
     return await ensure_ready(alias, timeout_seconds=timeout_seconds)
@@ -765,9 +1053,11 @@ def mark_used_by_base_url(base_url: str) -> str | None:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
     except ValueError:
         return None
-    cfg = get_config()
-    alias = next((name for name, item in cfg["instances"].items() if int(item.get("port", 0)) == port), None)
+    alias = resolve_instance_by_port(port)
     if alias is None:
+        return None
+    cfg = get_config()
+    if alias not in cfg["instances"]:
         return None
     cfg["instances"][alias]["last_used_at"] = _now_iso()
     if cfg.get("selected_alias") == alias:

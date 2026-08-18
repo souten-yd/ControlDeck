@@ -407,7 +407,7 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
 
         parsed = urlsplit(normalized)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
-            ports = {int(item.get("port", 0)) for item in llama.list_instances()}
+            ports = llama.endpoint_ports()
             if parsed.port in ports:
                 return _LLAMA
     except Exception:

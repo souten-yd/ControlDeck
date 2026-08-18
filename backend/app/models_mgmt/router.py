@@ -685,6 +685,8 @@ class LlamaInstanceBody(BaseModel):
     alias: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     auto_start: bool | None = None
     idle_exclude: bool | None = None
+    endpoint_id: str | None = Field(default=None, max_length=128)
+    order: int | None = Field(default=None, ge=1, le=64)
 
 
 def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
@@ -711,7 +713,8 @@ def _validated_provider_patch(provider_id: str, body: dict) -> dict:
     patch: dict = body
     if provider_id == "llama.cpp":
         # 共通routeではmodel identity/path/portを変えず、既存の型・範囲検証を再利用する。
-        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path", "role", "port"})
+        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path", "role", "port",
+                                        "endpoint_id", "order"})
         if forbidden:
             raise HTTPException(status_code=422, detail=f"共通設定APIでは変更できない項目です: {', '.join(forbidden)}")
         try:
@@ -816,6 +819,104 @@ def llama_delete_instance(
     audit.record(db, "llama.instance_delete", user=user, resource_type="model", resource_id=alias,
                  request=request, metadata={"gguf_deleted": False})
     return {"ok": True, "gguf_deleted": False}
+
+
+@router.get("/llama/endpoints")
+def llama_endpoints(user: User = Depends(require_permission("workflows.run"))):
+    """エンドポイント（待受ポート）一覧。所属モデルと稼働中モデルを添える。"""
+    from app.models_mgmt import llama
+
+    return llama.list_endpoints()
+
+
+class LlamaEndpointBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(default=None, max_length=128)
+    port: int | None = Field(default=None, ge=1024, le=65535)
+
+
+@router.put("/llama/endpoints/{endpoint_id}")
+def llama_save_endpoint(
+    endpoint_id: str, body: LlamaEndpointBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    try:
+        result = llama.save_endpoint(endpoint_id, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.endpoint_save", user=user, resource_type="runtime",
+                 resource_id=endpoint_id, request=request, metadata={"port": result.get("port")})
+    return result
+
+
+@router.post("/llama/endpoints/{endpoint_id}/delete")
+def llama_delete_endpoint(
+    endpoint_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import llama
+
+    try:
+        llama.delete_endpoint(endpoint_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(db, "llama.endpoint_delete", user=user, resource_type="runtime",
+                 resource_id=endpoint_id, request=request)
+    return {"ok": True}
+
+
+class ReorderBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[str] = Field(min_length=1, max_length=64)
+
+
+@router.post("/llama/instances/reorder")
+def llama_reorder_instances(
+    body: ReorderBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """一覧の並び＝優先度。自動起動・オンデマンド起動・既定モデルの選択に効く。"""
+    from app.models_mgmt import llama
+
+    try:
+        result = llama.reorder_instances(body.order)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_reorder", user=user, resource_type="model",
+                 request=request, metadata={"order": body.order})
+    return result
+
+
+class DuplicateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    endpoint_id: str | None = Field(default=None, max_length=128)
+
+
+@router.post("/llama/instances/{alias}/duplicate", status_code=201)
+def llama_duplicate_instance(
+    alias: str, body: DuplicateBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """設定を複製する。既定では同じエンドポイントに載せる（モデル切替用途）。"""
+    from app.models_mgmt import llama
+
+    try:
+        llama.duplicate_instance(alias, body.alias, endpoint_id=body.endpoint_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "llama.instance_duplicate", user=user, resource_type="model",
+                 resource_id=body.alias, request=request, metadata={"source": alias})
+    return {"ok": True, "alias": body.alias}
 
 
 @router.post("/llama/start")

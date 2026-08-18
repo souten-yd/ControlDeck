@@ -68,10 +68,92 @@ def test_multi_instance_catalog_uniqueness_and_unit_names(monkeypatch, tmp_path)
     assert first["instances"]["model-a"]["auto_start"] is False
     assert llama.unit_name("model-a") != llama.unit_name("model-b")
     assert llama.unit_name("model-a").startswith("cdapp-llama-model-a-")
-    with pytest.raises(ValueError, match="port 8080"):
-        llama.save_instance("model-c", {"alias": "model-c", "model_path": "/models/c.gguf", "port": 8080})
-    with pytest.raises(ValueError, match="同じGGUF"):
-        llama.save_instance("model-c", {"alias": "model-c", "model_path": "/models/a.gguf", "port": 8082})
+    # ポートは共有できる（同一エンドポイントに束ね、起動時に排他制御する）。
+    shared = llama.save_instance(
+        "model-c", {"alias": "model-c", "model_path": "/models/c.gguf", "port": 8080},
+    )
+    assert shared["instances"]["model-c"]["endpoint_id"] == shared["instances"]["model-a"]["endpoint_id"]
+    assert {i["alias"] for i in llama.instances_on_endpoint(
+        shared["instances"]["model-a"]["endpoint_id"])} == {"model-a", "model-c"}
+    # 新規登録は既定チャット先を引き継ぐ（従来どおり）
+    assert shared["selected_alias"] == "model-c"
+    # 既存モデルの保存では既定チャット先を奪わない（利用中のモデルが黙って変わらない）
+    resaved = llama.save_instance("model-a", {"ctx_size": 16384})
+    assert resaved["selected_alias"] == "model-c"
+    assert resaved["instances"]["model-a"]["ctx_size"] == 16384
+    # 同じGGUFを別設定で持てる（別CTXで切り替える複製の用途）
+    same_file = llama.save_instance(
+        "model-d", {"alias": "model-d", "model_path": "/models/a.gguf", "port": 8080},
+    )
+    assert same_file["instances"]["model-d"]["model_path"] == "/models/a.gguf"
+
+
+def test_resolve_instance_by_port_prefers_running_then_active_then_priority(monkeypatch, tmp_path):
+    """同一ポートを共有したとき、どのモデルがそのポートを代表するかを1件に決める。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "resolve.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    llama.save_instance("first", {"alias": "first", "model_path": "/models/a.gguf", "port": 9100})
+    llama.save_instance("second", {"alias": "second", "model_path": "/models/b.gguf", "port": 9100})
+    llama.reorder_instances(["second", "first"])
+
+    # 稼働中が無ければ最優先（=並びの先頭）
+    assert llama.resolve_instance_by_port(9100) == "second"
+
+    # 最後に起動したものが記録されていればそれを優先
+    llama._set_active_alias(llama.get_config()["instances"]["first"]["endpoint_id"], "first")
+    assert llama.resolve_instance_by_port(9100) == "first"
+
+    # 稼働中があれば最優先
+    from app.applications import systemd as sd
+
+    monkeypatch.setattr(sd, "query_status", lambda name: (
+        {"status": "RUNNING"} if name == llama.unit_name("second") else {"status": "STOPPED"}
+    ))
+    assert llama.resolve_instance_by_port(9100) == "second"
+    assert 9100 in llama.endpoint_ports()
+    assert llama.resolve_instance_by_port(9999) is None
+
+
+def test_reorder_sets_priority_and_autostart_picks_top_of_endpoint(monkeypatch, tmp_path):
+    """同一エンドポイントで auto_start が複数あっても、enable するのは最優先の1件だけ。"""
+    from app.applications import systemd as sd
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "order.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: True)
+    monkeypatch.setattr(llama, "_unit_content", lambda alias=None: "unit")
+    monkeypatch.setattr(sd, "query_status", lambda name: {"status": "STOPPED"})
+    monkeypatch.setattr(sd, "write_unit", lambda name, content: None)
+    enabled: dict[str, bool] = {}
+    monkeypatch.setattr(sd, "set_enabled", lambda name, value: enabled.__setitem__(name, value))
+    for alias in ("a", "b"):
+        path = tmp_path / f"{alias}.gguf"
+        path.write_bytes(b"GGUF")
+        llama.save_instance(alias, {"alias": alias, "model_path": str(path),
+                                    "port": 9200, "auto_start": True})
+    assert enabled[llama.unit_name("a")] is True
+    assert enabled[llama.unit_name("b")] is False
+
+    llama.reorder_instances(["b", "a"])
+    assert [i["alias"] for i in llama.list_instances()] == ["b", "a"]
+    assert enabled[llama.unit_name("b")] is True
+    assert enabled[llama.unit_name("a")] is False
+
+
+def test_duplicate_instance_shares_endpoint_without_stealing_autostart(monkeypatch, tmp_path):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "dup.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    llama.save_instance("base", {"alias": "base", "model_path": "/models/a.gguf",
+                                 "port": 9300, "auto_start": True, "ctx_size": 8192})
+    cfg = llama.duplicate_instance("base", "base-long-ctx")
+    copy = cfg["instances"]["base-long-ctx"]
+    assert copy["endpoint_id"] == cfg["instances"]["base"]["endpoint_id"]
+    assert copy["ctx_size"] == 8192
+    assert copy["auto_start"] is False
 
 
 def test_mark_used_matches_local_instance_port(monkeypatch, tmp_path):
@@ -195,10 +277,26 @@ def test_llama_multi_instance_api(admin_client, monkeypatch):
     assert {item["alias"] for item in listed.json()} == {"catalog-a", "catalog-b"}
     gguf_c = _sandbox / "catalog-c.gguf"
     gguf_c.write_bytes(b"GGUF-c")
-    duplicate = admin_client.post("/api/v1/models/llama/instances", json={
+    # 同じポートの共有は許可される（エンドポイントを共有し、起動時に排他制御する）
+    shared = admin_client.post("/api/v1/models/llama/instances", json={
         "alias": "catalog-c", "model_path": str(gguf_c), "port": 8202,
     }, headers=CSRF_HEADERS)
-    assert duplicate.status_code == 422 and "port 8202" in duplicate.text
+    assert shared.status_code == 201, shared.text
+    endpoints = admin_client.get("/api/v1/models/llama/endpoints")
+    assert endpoints.status_code == 200
+    shared_endpoint = next(e for e in endpoints.json() if e["port"] == 8202)
+    assert set(shared_endpoint["aliases"]) == {"catalog-b", "catalog-c"}
+    # 優先度の並べ替え
+    reordered = admin_client.post("/api/v1/models/llama/instances/reorder", json={
+        "order": ["catalog-c", "catalog-a", "catalog-b"],
+    }, headers=CSRF_HEADERS)
+    assert reordered.status_code == 200
+    assert [i["alias"] for i in reordered.json()] == ["catalog-c", "catalog-a", "catalog-b"]
+    # 所属モデルがあるエンドポイントは削除できない
+    busy = admin_client.post(
+        f"/api/v1/models/llama/endpoints/{shared_endpoint['id']}/delete", headers=CSRF_HEADERS,
+    )
+    assert busy.status_code == 409
     deleted = admin_client.post("/api/v1/models/llama/instances/catalog-b/delete", headers=CSRF_HEADERS)
     assert deleted.status_code == 200 and deleted.json()["gguf_deleted"] is False
     assert gguf_b.exists()

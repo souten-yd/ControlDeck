@@ -25,7 +25,7 @@
 |---|---|---|
 | 0 | G: NVMe 移設 | **完了**。残は再起動での自動起動確認のみ（ユーザーが手動実施） |
 | 1 | F: モデルライブラリ | **完了**（§4.5 参照） |
-| 2 | A: エンドポイント基盤 | 未着手 |
+| 2 | A: エンドポイント基盤 | **バックエンド完了**。UI は未着手（§4.6） |
 | 3 | B: think のモデル個別化 | 未着手 |
 | 4 | D-1/2/3: 削除・並べ替え・複製 | 未着手 |
 | 5 | C: 並列駆動の UI 露出 | 未着手 |
@@ -276,6 +276,58 @@ DB・バックアップ・設定 JSON は引き続き許可ルートの外にあ
   既存の `POST /models/llama/instances` を呼べばよく、新しい API は不要
   （エンドポイント概念を入れる A の後にやる方が手戻りがない）。
 - 孤児 GGUF の削除 UI は D-1（GGUF 実体削除）と一緒に実装する。
+
+---
+
+## 4.6 A: エンドポイント基盤（実装順序 2）— バックエンド完了
+
+### 入れたもの
+
+- `llama-runtime.json` に `endpoints: {id: {id,label,port,active_alias}}`。instance に
+  `endpoint_id` と `order`（1始まり・小さいほど優先）を追加。
+- `_migrate_endpoints()` が読込時に **port から冪等に投影**する。移行前は port が一意だったので
+  1:1 で無損失。`order` は既存の並び順で 1..N を採番。実機の 4 instance で移行を確認済み。
+- `save_instance()` の **port 一意制約を撤廃**。同一 port は同一エンドポイントに束ねる。
+  `port` 直接指定は互換のため受け付け、該当エンドポイントが無ければ作る。
+  `port` は endpoint を正とする派生値として各 instance へ写す。
+- `start_instance()` が起動前に**同一エンドポイントの他モデルを停止**する。
+  起動成功後は `active_alias` を記録する。
+- `instance_for_port()` / `resolve_instance_by_port()`：稼働中 → `active_alias` → 最優先、の順で
+  ポートを代表するモデルを1件に決める。`list_instances()` ベースなので
+  テストの monkeypatch がそのまま効く。
+- `_sync_endpoint_units()`：エンドポイント内で `auto_start` が複数あっても
+  **enable するのは最優先の1件だけ**（boot 時の同時起動によるポート競合を防ぐ）。
+- `reorder_instances()` / `duplicate_instance()`。
+- `providers.py` をエンドポイント単位のグルーピングに変更（同居モデルが1件へ潰れていた）。
+- API: `GET /llama/endpoints` / `PUT /llama/endpoints/{id}` / `POST /llama/endpoints/{id}/delete`（所属あれば409）/
+  `POST /llama/instances/reorder` / `POST /llama/instances/{alias}/duplicate`。
+  `LlamaInstanceBody` に `endpoint_id` / `order` を追加し、共通設定APIの `forbidden` にも加えた。
+
+### 実装中に判明して設計を変えた点
+
+1. **同一 GGUF の重複登録禁止を撤廃した**。設計書では「endpoint と model_path の組が同じときだけ拒否」
+   としていたが、それは複製機能の主目的（同じ GGUF を別 CTX 設定で持って切り替える）を
+   そのまま塞ぐ。ポートが一意だった頃は「同じファイルで2つのサーバーが立つ」のを避ける意味が
+   あったが、エンドポイント内は排他起動になったので同時に動くことはない。
+   識別子としての一意性は alias で担保する。
+2. **`save_instance` が selected_alias を奪う問題を直した**（既知バグ）。
+   新規登録時は従来どおり引き継ぎ、**既存モデルの保存では奪わない**。
+3. `_ensure_port_free_for_other_runtimes()` を追加。従来は llama instance 同士しか見ておらず、
+   Ollama のポートを指定しても保存は通り起動して初めて失敗していた。
+
+### 実機で確認したこと
+
+- 既存 4 instance が `ep-8090/8091/8094/8095` へ無損失移行。
+- `Qwen3.8-27B` を `ep-8090` へ移して `llama` と同居 → `start_instance` で
+  **`llama` が自動停止して切り替わり**、`/v1/models` が `['Qwen3.8-27B']` になり生成成功。
+  **endpoint (`http://127.0.0.1:8090/v1`) は変わらない**（OpenCode 等の接続先固定が目的）。
+- 検証後は元の構成へ戻してある。
+
+### 残（A の範囲）
+
+- **UI 未実装**: エンドポイント管理・並べ替え（↑↓）・複製。設計書「UI/UX 設計」の
+  Models 画面カード刷新（実装順序 6）と一緒にやる方が手戻りがない。
+- `default_model_ref` のフォールバック実装（優先度最上位を既定にする）は未着手。
 
 ---
 

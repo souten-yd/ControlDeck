@@ -134,10 +134,7 @@ def model_output_tokens(base_url: str, model: str) -> int:
     else:
         parsed = urlsplit(base_url)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
-            instance = next(
-                (item for item in llama.list_instances() if int(item.get("port", 0)) == parsed.port),
-                None,
-            )
+            instance = llama.instance_for_port(parsed.port) if parsed.port else None
             if instance is not None:
                 try:
                     configured = int(instance.get("n_predict"))
@@ -341,7 +338,7 @@ async def prepare_deep_research_context(base_url: str, model: str) -> dict:
     if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
         result["reason"] = "外部OpenAI互換runtimeはrequest単位CTX変更を保証できません"
         return result
-    instance = next((item for item in llama.list_instances() if int(item.get("port", 0)) == parsed.port), None)
+    instance = llama.instance_for_port(parsed.port) if parsed.port else None
     if instance is None:
         result["reason"] = "管理対象runtimeではありません"
         return result
