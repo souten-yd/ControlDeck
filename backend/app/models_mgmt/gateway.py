@@ -30,6 +30,10 @@ router = APIRouter(prefix="/llm", tags=["llm-gateway"])
 # OpenCode 側は base_url に http://127.0.0.1:8765/api/v1/llm/v1 を設定する。
 _SETTINGS = "llm-gateway.json"
 KEY_PREFIX = "cdk-"
+# main.py が付ける API prefix を含めた実パス。接続先の判定にも使う。
+API_PATH = "/api/v1/llm/v1"
+# クライアントにモデルを固定させないための仮想モデル。転送先はControlDeckが決める。
+AUTO_MODEL = "auto"
 
 
 def _path():
@@ -87,21 +91,57 @@ def _authorize(request: Request) -> None:
         raise HTTPException(status_code=401, detail="APIキーが正しくありません")
 
 
-def _target_endpoint(model: str) -> tuple[str, int]:
-    """モデル名(alias)から転送先を決める。未指定なら既定モデルのエンドポイント。"""
+def base_url() -> str:
+    """ゲートウェイのOpenAI互換 base_url。全クライアントの共通接続先。"""
+    from app.config import get_config
+
+    return f"http://127.0.0.1:{int(get_config().server.port)}{API_PATH}"
+
+
+def is_gateway_url(url: str) -> bool:
+    return API_PATH in str(url or "")
+
+
+def resolve_endpoint(model: str) -> tuple[str, int]:
+    """モデル名(alias)から転送先を決める。
+
+    AUTO_MODEL・未指定・未登録のときは起動中のLLMを優先し、いなければ登録順（=優先度順）
+    の先頭を採る。停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
+    エンドポイントまでVRAM不足で巻き込むため、起動済みがあればそれを使う。
+    """
     from app.models_mgmt import llama
 
     instances = llama.list_instances()
+    if model == AUTO_MODEL:
+        model = ""
     match = next((i for i in instances if str(i.get("alias")) == model), None)
     if match is None:
-        # 一覧は優先度順。既定は最優先のLLM。
-        match = next((i for i in instances if str(i.get("role", "llm")) == "llm"), None)
+        llms = [i for i in instances if str(i.get("role", "llm")) == "llm"]
+        match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
     if match is None:
         raise HTTPException(status_code=404, detail="転送先のモデルが登録されていません")
     port = int(match.get("port") or 0)
     if not port:
         raise HTTPException(status_code=503, detail="転送先ポートが解決できません")
     return str(match["alias"]), port
+
+
+def _target_endpoint(model: str) -> tuple[str, int]:
+    """後方互換の別名。"""
+    return resolve_endpoint(model)
+
+
+def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
+    """ゲートウェイ宛の (base_url, model) を実エンドポイントへ解決する。
+
+    ControlDeck 内部の生成はゲートウェイへHTTPで戻らず、同じ解決規則で実インスタンスを
+    直接叩く。往復のホップを増やさずに、受け入れ制御・thinking・キャンセルといった
+    provider側の既存処理をそのまま効かせるため。
+    """
+    if not is_gateway_url(base):
+        return base, model
+    alias, port = resolve_endpoint(model)
+    return f"http://127.0.0.1:{port}/v1", alias
 
 
 # クライアント側のtimeoutより長く待たないよう、既定は控えめにする。
@@ -125,10 +165,11 @@ async def gateway_models(request: Request):
     _authorize(request)
     from app.models_mgmt import llama
 
-    return {"object": "list", "data": [
-        {"id": str(i["alias"]), "object": "model", "owned_by": "control-deck"}
-        for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"
-    ]}
+    llms = [i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
+    # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、起動中のモデルへ流れる。
+    data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck"}] if llms else []
+    data += [{"id": str(i["alias"]), "object": "model", "owned_by": "control-deck"} for i in llms]
+    return {"object": "list", "data": data}
 
 
 @router.post("/v1/chat/completions")

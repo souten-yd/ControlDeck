@@ -69,3 +69,51 @@ def test_disabled_feature_does_not_hold_instances(monkeypatch):
 
     monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: False)
     assert llama._opencode_session_uses(8090, window_seconds=1800) is False
+
+
+def test_revive_skips_when_opencode_goes_through_the_gateway(monkeypatch):
+    """ゲートウェイ経由ならリクエスト時に起きるので、使っていない間は起こし直さない。"""
+    import asyncio
+
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: True)
+    monkeypatch.setattr(
+        "app.integrations.opencode.provider.get_settings",
+        lambda: {"base_url": "http://127.0.0.1:8765/api/v1/llm/v1", "model": "auto",
+                 "project_path": "", "use_gateway": True},
+    )
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("ゲートウェイ経由では起動判定まで進まない")
+
+    monkeypatch.setattr(llama, "_opencode_session_uses", _fail)
+    asyncio.run(llama._revive_endpoint_for_opencode(1800))
+
+
+def test_revive_starts_the_resolved_port_when_connected_directly(monkeypatch):
+    """直結設定では、attachされたセッションの転送先portを起こす。"""
+    import asyncio
+
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: True)
+    monkeypatch.setattr(
+        "app.integrations.opencode.provider.get_settings",
+        lambda: {"base_url": "http://127.0.0.1:8090/v1", "model": "llama",
+                 "project_path": "", "use_gateway": False},
+    )
+    monkeypatch.setattr("app.integrations.opencode.provider.resolve_backend_port", lambda: 8090)
+    monkeypatch.setattr(llama, "_opencode_session_uses", lambda *a, **k: True)
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "llama", "role": "llm", "port": 8090, "loaded": False},
+    ])
+    started: list[str] = []
+
+    async def _ensure(base_url, **kwargs):
+        started.append(base_url)
+        return True
+
+    monkeypatch.setattr(llama, "ensure_ready_by_base_url", _ensure)
+    asyncio.run(llama._revive_endpoint_for_opencode(1800))
+    assert started == ["http://127.0.0.1:8090/v1"]

@@ -1204,28 +1204,29 @@ def _opencode_session_uses(port: int, *, window_seconds: float, require_attached
 
 
 async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
-    """OpenCodeのTUIが生きているのにendpointが落ちていたら起こし直す。
+    """直結設定のOpenCode TUIが生きているのにendpointが落ちていたら起こし直す。
 
-    OpenCodeはControl Deckを経由せず直接llama.cppを叩くため、停止中は
-    「呼んでも応答がない」状態になる。セッションがある間は起動を保つ。
+    直結だと停止中は「呼んでも応答がない」状態になるため、セッションがある間は起動を
+    保つ。ゲートウェイ経由ならリクエスト時にオンデマンド起動されるので、使っていない
+    間に起こし直さない（意図しないモデルのロードを増やさない）。
     """
     try:
-        from urllib.parse import urlsplit
-
         from app.features.registry import is_enabled
 
         if not is_enabled("opencode"):
             return
-        from app.integrations.opencode.provider import resolve_backend_port
+        from app.integrations.opencode.provider import get_settings, is_gateway_url, resolve_backend_port
 
+        if is_gateway_url(str(get_settings().get("base_url") or "")):
+            return
         port = resolve_backend_port()
         # 見ていない（detachされた）セッションのために勝手に起動しない。
         if not port or not _opencode_session_uses(int(port), window_seconds=window_seconds, require_attached=True):
             return
         if any(int(item.get("port") or 0) == int(port) and item.get("loaded") for item in list_instances()):
             return
-        logger.info("OpenCodeセッションのためllama.cppを再起動します: %s", base_url)
-        await ensure_ready_by_base_url(base_url)
+        logger.info("OpenCodeセッションのためllama.cppを再起動します: port=%s", port)
+        await ensure_ready_by_base_url(f"http://127.0.0.1:{int(port)}/v1")
     except Exception:  # noqa: BLE001 - 監視ループを落とさない
         logger.exception("OpenCode endpoint revive failed")
 
