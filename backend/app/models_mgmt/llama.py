@@ -18,6 +18,7 @@ import re
 import shutil
 import tarfile
 import time
+from collections import deque
 from pathlib import Path
 
 import httpx
@@ -369,13 +370,20 @@ def list_instances() -> list[dict]:
             legacy = sd.query_status(f"{UNIT_PREFIX}.service")
             if legacy.get("status") in ("RUNNING", "STARTING", "FAILED"):
                 status = legacy
+        state = status.get("status", "UNKNOWN")
+        # 起動に失敗して再試行待ちのループ（sub_state=auto-restart）は「起動中」ではない。
+        # モデル読込中と区別できないと、UIが延々と「読み込み待ち」を出し続ける。
+        if state == "STARTING" and status.get("sub_state") == "auto-restart":
+            state = "FAILED"
         result.append({
             **instance,
             "alias": alias,
             "selected": alias == cfg.get("selected_alias"),
             "unit": unit_name(alias),
-            "loaded": status.get("status") in ("RUNNING", "STARTING"),
-            "runtime_status": status.get("status", "UNKNOWN"),
+            "loaded": state in ("RUNNING", "STARTING"),
+            "runtime_status": state,
+            # 失敗時だけログ末尾を読む（通常のポーリングでI/Oを増やさない）。
+            "last_error": _log_tail(alias) if state == "FAILED" else "",
             "base_url": f"http://127.0.0.1:{instance.get('port', 8080)}/v1",
         })
     # 一覧の並び＝優先度。自動起動・オンデマンド起動・既定モデルの選択もこの順を使う。
@@ -1204,28 +1212,29 @@ def _opencode_session_uses(port: int, *, window_seconds: float, require_attached
 
 
 async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
-    """OpenCodeのTUIが生きているのにendpointが落ちていたら起こし直す。
+    """直結設定のOpenCode TUIが生きているのにendpointが落ちていたら起こし直す。
 
-    OpenCodeはControl Deckを経由せず直接llama.cppを叩くため、停止中は
-    「呼んでも応答がない」状態になる。セッションがある間は起動を保つ。
+    直結だと停止中は「呼んでも応答がない」状態になるため、セッションがある間は起動を
+    保つ。ゲートウェイ経由ならリクエスト時にオンデマンド起動されるので、使っていない
+    間に起こし直さない（意図しないモデルのロードを増やさない）。
     """
     try:
-        from urllib.parse import urlsplit
-
         from app.features.registry import is_enabled
 
         if not is_enabled("opencode"):
             return
-        from app.integrations.opencode.provider import resolve_backend_port
+        from app.integrations.opencode.provider import get_settings, is_gateway_url, resolve_backend_port
 
+        if is_gateway_url(str(get_settings().get("base_url") or "")):
+            return
         port = resolve_backend_port()
         # 見ていない（detachされた）セッションのために勝手に起動しない。
         if not port or not _opencode_session_uses(int(port), window_seconds=window_seconds, require_attached=True):
             return
         if any(int(item.get("port") or 0) == int(port) and item.get("loaded") for item in list_instances()):
             return
-        logger.info("OpenCodeセッションのためllama.cppを再起動します: %s", base_url)
-        await ensure_ready_by_base_url(base_url)
+        logger.info("OpenCodeセッションのためllama.cppを再起動します: port=%s", port)
+        await ensure_ready_by_base_url(f"http://127.0.0.1:{int(port)}/v1")
     except Exception:  # noqa: BLE001 - 監視ループを落とさない
         logger.exception("OpenCode endpoint revive failed")
 
@@ -1304,6 +1313,43 @@ async def detect_options() -> list[str]:
 KV_HEADROOM_RATIO = 0.85
 
 
+# エンドポイント別の (観測時刻, 生成トークン累計) の履歴。
+# llama.cpp の predicted_tokens_seconds は「直近に完了した1リクエストの速度」で、
+# 並列で回したときの全体量が見えないうえ、完了までずっと0のままになる。
+# 累計の差分から全slot合算のスループットを出し、並列化の効果を見えるようにする。
+_THROUGHPUT_SAMPLES: dict[int, deque[tuple[float, float]]] = {}
+# 直前の1点だけを基準にすると、画面を複数開いてポーリング間隔が詰まったときに
+# 「差分が短すぎて計算できない」が続く。一定の窓で最古の点と比べる。
+THROUGHPUT_WINDOW_SECONDS = 8.0
+THROUGHPUT_MIN_INTERVAL_SECONDS = 2.0
+
+
+def _throughput(port: int, tokens_total: float) -> float:
+    """生成トークン累計の差分から、全slot合算の tok/s を出す。
+
+    呼び出し間隔に依存しないよう、窓の中で最も古い観測点と比較する。
+    """
+    import time
+
+    now = time.monotonic()
+    samples = _THROUGHPUT_SAMPLES.setdefault(int(port), deque(maxlen=64))
+    # 大きく巻き戻ったらサーバー再起動とみなして基準を捨てる。
+    if samples and tokens_total < samples[-1][1] * 0.5:
+        samples.clear()
+    # 窓から出た点は捨てる。長く見に来なかった後は一度空になり、次の観測から再開する
+    # （空白期間をまたいで平均すると、実際に出ている速度より低く見えてしまう）。
+    while samples and now - samples[0][0] > THROUGHPUT_WINDOW_SECONDS:
+        samples.popleft()
+    samples.append((now, tokens_total))
+    if len(samples) < 2:
+        return 0.0
+    oldest_at, oldest_total = samples[0]
+    elapsed = now - oldest_at
+    if elapsed < THROUGHPUT_MIN_INTERVAL_SECONDS:
+        return 0.0
+    return max(0.0, (tokens_total - oldest_total) / elapsed)
+
+
 async def endpoint_capacity(port: int) -> dict:
     """エンドポイントのKVプール使用状況。
 
@@ -1315,6 +1361,7 @@ async def endpoint_capacity(port: int) -> dict:
         "port": int(port), "available": False, "slots": 0, "busy": 0,
         "ctx_total": 0, "ctx_used": 0, "ctx_free": 0, "usable": 0,
         "deferred": 0, "accepting": False,
+        "tokens_per_second": 0.0, "tokens_per_second_single": 0.0,
     }
     base = f"http://127.0.0.1:{int(port)}"
     try:
@@ -1325,6 +1372,7 @@ async def endpoint_capacity(port: int) -> dict:
                 return result
             used = 0
             busy = 0
+            decoding = 0
             for slot in slots:
                 if not slot.get("is_processing"):
                     continue
@@ -1333,6 +1381,7 @@ async def endpoint_capacity(port: int) -> dict:
                 nxt = slot.get("next_token")
                 if isinstance(nxt, list) and nxt:
                     decoded = int(nxt[0].get("n_decoded") or 0)
+                decoding += decoded
                 used += int(slot.get("n_prompt_tokens") or 0) + decoded
             total = int(slots[0].get("n_ctx") or 0)
             usable = int(total * KV_HEADROOM_RATIO)
@@ -1344,9 +1393,25 @@ async def endpoint_capacity(port: int) -> dict:
             })
             try:
                 metrics = (await client.get(f"{base}/metrics")).text
+                values: dict[str, float] = {}
                 for line in metrics.splitlines():
-                    if line.startswith("llamacpp:requests_deferred"):
-                        result["deferred"] = int(float(line.split()[-1]))
+                    if not line.startswith("llamacpp:"):
+                        continue
+                    key, _, raw = line.partition(" ")
+                    try:
+                        values[key] = float(raw)
+                    except ValueError:
+                        continue
+                result["deferred"] = int(values.get("llamacpp:requests_deferred", 0))
+                # 合算と1本あたりを分けて出す。並列にすると1本は遅くなるが合算は伸びる、
+                # という並列化の効き方をそのまま見せる。
+                # tokens_predicted_total はリクエスト完了時にしか増えないので、
+                # 生成中のslotが持つ n_decoded を足して進行分まで含めた累計にする。
+                rate = _throughput(port, values.get("llamacpp:tokens_predicted_total", 0.0) + decoding)
+                result["tokens_per_second"] = round(rate, 1)
+                # 1本あたりは合算を同時実行数で割る。llama.cpp の
+                # predicted_tokens_seconds は完了するまで0のままで、生成中に見えない。
+                result["tokens_per_second_single"] = round(rate / busy, 1) if busy else 0.0
             except (httpx.HTTPError, ValueError, IndexError):
                 pass
     except (httpx.HTTPError, ValueError, TypeError):

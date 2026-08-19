@@ -11,6 +11,20 @@
 
 - OpenCode と Project Lab が別々に`Path.home() / "CodeDEV"`を組み立てていたのをやめ、`config.codedev_dir()`に一本化した。未設定なら data_dir の親（=プロジェクトルート）配下の`CodeDEV`を使うので、この環境では`/data1tb/ControlDeck/CodeDEV`になる。data_dir の中には入れない（バックアップや設定JSONと混ざらず、ファイルマネージャ・ターミナル・Gitから普通のプロジェクトとして扱えるようにするため）。`config.yaml`の`codedev_dir`で上書きできる。
 - 既存の3プロジェクト（Hello / Space3DInvader / test2）を`.git`ごと新しい場所へ複製し、Files の`allowed_roots`へ新パスを追加した。
+## LLM接続先をゲートウェイへ集約（2026-08-19）
+
+- チャット・AIアシスタント・ワークフロー・RAG／GraphRAG・Deep Research・OpenCode／OMoの接続先を、llama.cppの個別ポートからControlDeckゲートウェイ（`/api/v1/llm/v1`）1本へ寄せた。`/workflows/llm-endpoints`はゲートウェイをselectedで返し、llama.cpp系の個別エンドポイントはそこへ集約する（同じモデルが接続先違いで二重に並ぶと、選び方でモデル解決も受け入れ制御も変わってしまうため）。モデル管理画面の一覧には出さない（モデルを保有するのはllama.cpp側）ので、`list_providers(include_gateway=...)`で用途を分ける。
+- 内部の生成は自分のHTTPへ戻らず、`runtime_provider.resolve_target()`（実体は`gateway.resolve_internal_target()`）でゲートウェイURLを実エンドポイント＋実aliasへ解決してから叩く。ホップを増やさずに、thinking解決・キャンセル・KV受け入れ制御・Deep Researchのctx拡張といった既存処理をそのまま効かせるため。
+- 転送先の既定解決を「起動中のLLMを優先し、いなければ登録順の先頭」に変更した。従来は登録順の先頭を無条件に選ぶため、8091が稼働中でもOpenCodeの指名で8090が追加起動され、VRAMが尽きて双方が不安定になっていた（実測: 22:10起動→VRAM 91%／swap 2.4GB→SIGKILL）。
+- 仮想モデル`auto`を追加した。クライアント側でモデルを固定せずに済み、そのとき動いているモデルへ流れる。OpenCode導入時の自動設定の既定も`auto`にした。OMoの並列数同期も同じ解決規則で転送先instanceを引く。
+
+- アイドル監視の`_revive_endpoint_for_opencode()`が未定義の`base_url`を参照していた（例外を握って復活しない状態）ので、解決済みportから組み立てるよう直した。あわせてゲートウェイ経由の設定では復活処理自体をスキップする。リクエスト時にオンデマンド起動されるため、使っていない間に別モデルをロードする必要がない。
+
+- 起動に失敗して再試行待ちのループ（systemdの`sub_state=auto-restart`）を`FAILED`として扱い、ログ末尾を`last_error`に添えるようにした。従来はモデル読込中と同じ`STARTING`だったため、UIが延々と「起動中…（読み込み待ち）」を出し続けていた（実例: MTP層を持たないモデルに`spec_type=draft-mtp`を設定して21回リスタート）。`/models/llama/capacity`は失敗中のモデルを`failed`として返し、ホームのLLM利用状況が理由付きで表示する。OMo行の対象モデルも`auto`のような仮想モデルを解決してから出す。
+
+- LLM利用状況に生成速度を追加した。全slot合算の tok/s と、それを同時実行数で割った1本あたりを並べる。並列にしても1本あたりの速度は落ちないまま合算が伸びることが読める（実測: 2本 31.5 → 4本 44.9 tok/s、1本あたりは 18.4 / 18.2）。llama.cppの`predicted_tokens_seconds`は直近に完了した1リクエストの速度で、生成中は0のまま並列の効果も見えないため使わない。`tokens_predicted_total`も完了時にしか増えないので、進行中slotの`n_decoded`を足した累計から8秒窓の差分で算出する（直前1点との差分だと、画面を複数開いてポーリング間隔が詰まったとき「間隔が短すぎる」が続いて0のままになる）。
+
+検証: backend 579件成功（新規7件: 起動中優先の解決／内部解決／provider選択／autoモデル／ゲートウェイ既定と非表示／revive のskipと起動先／auto-restartループのFAILED判定と読込中の区別）、frontend production buildに成功。
 
 ## 旧Application Builder削除とWorkflow実行UIの刷新（2026-08-13）
 

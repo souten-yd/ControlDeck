@@ -658,7 +658,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const modelOptions =
     endpoints?.flatMap((ep) => ep.models.map((m) => ({
       base: ep.base_url, model: m, managed: !!ep.managed,
-      label: ep.managed ? m : `${m} — ${ep.base_url}`,
+      // auto は特定モデルを固定しない仮想モデル。転送先は ControlDeck が決める。
+      label: m === "auto" ? "自動（起動中のモデル）" : ep.managed ? m : `${m} — ${ep.base_url}`,
     }))) ?? [];
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;

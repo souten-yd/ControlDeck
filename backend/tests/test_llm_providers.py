@@ -286,3 +286,60 @@ def test_managed_provider_is_marked_so_ui_can_hide_endpoint_url(monkeypatch):
     for provider in catalog:
         # UI が分岐に使うので、必ず真偽が決まっていること
         assert isinstance(provider.get("managed"), bool)
+
+
+def test_gateway_is_the_default_endpoint_for_llama_runtime(monkeypatch):
+    """llama.cpp運用時の既定接続先はゲートウェイ。
+
+    個別ポートを直接指すと、クライアントごとに違うモデルを起こしてしまう。
+    接続先を1アドレスへ揃えると、モデル解決・起動・受け入れ制御が一元化される。
+    """
+    import asyncio
+
+    from app.models_mgmt import llama, providers
+
+    async def candidates():
+        return [
+            {"id": "llama.cpp", "provider": "llama.cpp", "name": "llama.cpp",
+             "base_url": "http://127.0.0.1:8090/v1", "managed": True,
+             "installed": True, "experimental": True},
+        ]
+
+    monkeypatch.setattr(providers, "_candidates", candidates)
+    monkeypatch.setattr(providers, "_selected_runtime", lambda: "llama.cpp")
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "chat", "role": "llm", "port": 8090},
+        {"alias": "embed", "role": "embedding", "port": 8094},
+    ])
+    result = asyncio.run(providers.list_providers(include_gateway=True))
+    assert result[0]["id"] == "control-deck-gateway"
+    assert result[0]["selected"] is True
+    assert result[0]["base_url"].endswith("/api/v1/llm/v1")
+    # チャット先だけを束ねる（embeddingは出さない）。先頭のautoは転送先をControlDeckに任せる。
+    assert result[0]["models"] == ["auto", "chat"]
+    # 個別ポートはゲートウェイへ集約され、接続先の選択肢には残さない
+    assert [item["id"] for item in result] == ["control-deck-gateway"]
+
+
+def test_gateway_is_hidden_from_runtime_management_listing(monkeypatch):
+    """モデル管理の一覧には出さない。モデルを保有するのはllama.cpp側のため。"""
+    import asyncio
+
+    from app.models_mgmt import llama, providers
+
+    async def candidates():
+        return [
+            {"id": "llama.cpp", "provider": "llama.cpp", "name": "llama.cpp",
+             "base_url": "http://127.0.0.1:8090/v1", "managed": True,
+             "installed": True, "experimental": True},
+        ]
+
+    monkeypatch.setattr(providers, "_candidates", candidates)
+    monkeypatch.setattr(providers, "_selected_runtime", lambda: "llama.cpp")
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "chat", "role": "llm", "port": 8090},
+    ])
+    result = asyncio.run(providers.list_providers())
+    assert [item["id"] for item in result] == ["llama.cpp"]
+    # 既定の選択はランタイム側へ戻る
+    assert result[0]["selected"] is True

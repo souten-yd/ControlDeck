@@ -36,9 +36,12 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
 
 
 async def _extract(text: str, base_url: str, model: str, api_key: str) -> list[dict]:
-    from app.models_mgmt.runtime_provider import response_format_candidates
+    from app.models_mgmt import llama
+    from app.models_mgmt.runtime_provider import resolve_target, response_format_candidates
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
+    base_url, model = resolve_target(base_url, model)
+    await llama.ensure_ready_by_base_url(base_url)
     try:
         await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:

@@ -1057,13 +1057,16 @@ def _strip_json_fences(text: str) -> str:
 
 async def node_llm(config: dict, ctx: dict) -> dict:
     from app.models_mgmt.runtime_lifecycle import RuntimeStartupError, ensure_chat_model_ready
-    from app.models_mgmt.runtime_provider import response_format_candidates
+    from app.models_mgmt.runtime_provider import resolve_target, response_format_candidates
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
     base_url = render_template(str(config.get("base_url", "http://127.0.0.1:11434/v1")), ctx).strip().rstrip("/")
     model = render_template(str(config.get("model", "llama3")), ctx).strip()
     if not base_url.startswith(("http://", "https://")) or not model:
         raise NodeError("LLM runtime routeが不正です", code="LLM_ROUTE_INVALID", retryable=False)
+    # ゲートウェイ宛は実エンドポイントへ解決する。以降のGPUプロファイル・起動待ち・
+    # 直接HTTP呼び出しはいずれも実ポート前提のため。
+    base_url, model = resolve_target(base_url, model)
     try:
         await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as e:
@@ -1213,6 +1216,9 @@ async def node_ai_utility(config: dict, ctx: dict) -> dict:
     model = render_template(str(config.get("model") or ""), ctx).strip()
     if not model:
         raise NodeError("modelを指定してください")
+    from app.models_mgmt.runtime_provider import resolve_target
+
+    base_url, model = resolve_target(base_url, model)
     api_key = str(config.get("api_key") or "sk-no-key")
     timeout = max(5.0, min(float(config.get("timeout") or 120), 300.0))
     report_progress("AI補助処理を準備中", 0, 2)

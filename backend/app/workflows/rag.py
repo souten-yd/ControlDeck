@@ -429,8 +429,13 @@ def list_collections() -> list[dict]:
 
 
 async def _llm_complete(prompt: str, base_url: str, model: str, api_key: str, temperature: float = 0.3) -> str:
+    from app.models_mgmt import llama
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
+    from app.models_mgmt.runtime_provider import resolve_target
 
+    base_url, model = resolve_target(base_url, model)
+    # 解決先が停止中なら起動を待つ（ゲートウェイ経由と同じオンデマンド起動）。
+    await llama.ensure_ready_by_base_url(base_url)
     try:
         await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:

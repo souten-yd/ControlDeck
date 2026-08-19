@@ -111,6 +111,31 @@ async def _candidates() -> list[dict]:
     return list(candidates.values())
 
 
+def _gateway_candidate() -> dict | None:
+    """ControlDeck ゲートウェイ自身を接続先候補にする。
+
+    llama.cpp の各ポートを直接指す代わりにこの1アドレスへ集約すると、モデル解決・
+    オンデマンド起動・KVの受け入れ制御がゲートウェイ側の規則へ一元化され、OpenCode
+    などの外部クライアントと内部のチャットが同じ経路を通る。
+    自ポート宛のため疎通確認はせず、登録済みLLMをそのままモデル一覧として返す。
+    """
+    from app.models_mgmt import gateway, llama
+
+    models = [str(i["alias"]) for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
+    if not models:
+        return None
+    # 先頭は仮想モデル。どれを使うかをControlDeckに任せると、停止中の別モデルを
+    # 起こさずに済む（起動中があればそれを使う）。
+    models = [gateway.AUTO_MODEL, *models]
+    return {
+        "id": "control-deck-gateway", "provider": "control-deck-gateway",
+        "name": "ControlDeck ゲートウェイ", "base_url": gateway.base_url(),
+        "managed": True, "installed": True, "experimental": False,
+        "available": True, "models": models, "gateway": True,
+        "capabilities": capabilities("control-deck-gateway", managed=True),
+    }
+
+
 def _selected_runtime() -> str:
     from app.models_mgmt.runtime_policy import get_policy
 
@@ -120,17 +145,28 @@ def _selected_runtime() -> str:
         return "ollama"
 
 
-async def list_providers(*, include_unavailable: bool = True, exclude_port: int | None = None) -> list[dict]:
+async def list_providers(*, include_unavailable: bool = True, exclude_port: int | None = None,
+                         include_gateway: bool = False) -> list[dict]:
     """候補の `/v1/models` を並列確認し、共通provider形式で返す。
 
     ⚙️で選択中のruntimeには selected=true を付け、チャット等の既定接続先が
     ランタイム選択に追従できるようにする。選択中のmanaged providerは停止中でも
     一覧へ残す（llama.cppは生成時にオンデマンド起動されるため選択肢として有効）。
+    接続先を選ぶ用途では include_gateway=True を渡す。llama.cpp運用時は個別ポートを
+    ゲートウェイへ集約し、全クライアントの接続先を1つの管理アドレスへ揃える。
     """
     candidates = await _candidates()
     selected_runtime = _selected_runtime()
+    # llama.cpp運用時の既定接続先はゲートウェイ。個別ポートも選べるよう一覧には残す。
+    # モデル管理画面のようにランタイム自体を扱う用途では出さない（保有モデルはllama.cpp側）。
+    gateway_item = (_gateway_candidate()
+                    if include_gateway and selected_runtime == "llama.cpp" else None)
     for item in candidates:
-        item["selected"] = bool(item.get("managed")) and item.get("provider") == selected_runtime
+        item["selected"] = (
+            gateway_item is None
+            and bool(item.get("managed"))
+            and item.get("provider") == selected_runtime
+        )
 
     async def probe(item: dict) -> dict | None:
         parsed = urlsplit(item["base_url"])
@@ -160,5 +196,13 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
             return None
 
     results = await asyncio.gather(*(probe(item) for item in candidates))
-    return sorted((item for item in results if item is not None),
+    found = [item for item in results if item is not None]
+    if gateway_item is not None:
+        # llama.cpp の個別ポートはゲートウェイへ集約する。同じモデルが接続先違いで
+        # 二重に並ぶと、どちらを選んだかでモデル解決も受け入れ制御も変わってしまう。
+        found = [item for item in found
+                 if not str(item.get("provider") or "").startswith("llama.cpp")]
+        gateway_item["selected"] = True
+        found.append(gateway_item)
+    return sorted(found,
                   key=lambda x: (not x.get("selected"), not x["managed"], x["name"], x["base_url"]))

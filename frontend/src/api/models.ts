@@ -131,6 +131,10 @@ export interface EndpointCapacity {
   available: boolean; slots: number; busy: number;
   ctx_total: number; ctx_used: number; ctx_free: number; usable: number;
   deferred: number; accepting: boolean;
+  /** 全slot合算の生成速度。並列で回したときに全体でどれだけ出ているかを見る。 */
+  tokens_per_second: number;
+  /** 直近1リクエストの速度。合計との差が並列化の効き具合になる。 */
+  tokens_per_second_single: number;
 }
 
 export interface OmoStatus {
@@ -141,5 +145,13 @@ export interface OmoStatus {
   concurrency: number; team_parallel: number; gated: boolean;
 }
 
+/** 起動に失敗して再試行待ちのモデル。読み込み中と紛らわしいので理由付きで分けて出す。 */
+export interface FailedInstance {
+  alias: string;
+  port: number;
+  error: string;
+}
+
 export const getLlamaCapacity = () =>
-  api<{ endpoints: EndpointCapacity[]; omo: OmoStatus | null }>("/models/llama/capacity");
+  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; omo: OmoStatus | null }>(
+    "/models/llama/capacity");
