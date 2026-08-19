@@ -37,6 +37,24 @@ export const IconGrid = (p: SVGProps<SVGSVGElement>) => (
     <rect x="14" y="14" width="7" height="7" rx="1.5" />
   </Icon>
 );
+/** 実験・試作（Project Lab）。コードそのものではなく「試す場所」を表す。 */
+export const IconFlask = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9 2.75h6" />
+    <path d="M10 3v6.2L4.9 18a2 2 0 0 0 1.7 3h10.8a2 2 0 0 0 1.7-3L14 9.2V3" />
+    <path d="M7.6 14.5h8.8" />
+  </Icon>
+);
+
+/** 書き出した成果物（App Studio）。Apps の一覧アイコンと役割を分ける。 */
+export const IconPackage = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M21 8v8a2 2 0 0 1-1 1.73l-7 4a2 2 0 0 1-2 0l-7-4A2 2 0 0 1 3 16V8a2 2 0 0 1 1-1.73l7-4a2 2 0 0 1 2 0l7 4A2 2 0 0 1 21 8z" />
+    <path d="m3.3 7 8.7 5 8.7-5" />
+    <path d="M12 22V12" />
+  </Icon>
+);
+
 export const IconTerminal = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="m5 7 5 5-5 5" />
