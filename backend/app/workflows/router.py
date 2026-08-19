@@ -44,7 +44,8 @@ async def llm_endpoints(user: User = Depends(require_permission("workflows.edit"
     """
     from app.models_mgmt.providers import list_providers
 
-    return await list_providers(include_unavailable=False, exclude_port=get_server_port())
+    return await list_providers(include_unavailable=False, exclude_port=get_server_port(),
+                                include_gateway=True)
 
 
 def get_server_port() -> int:
@@ -871,7 +872,7 @@ async def diagnose_workflow(
     if body.use_ai and body.base_url.strip() and body.model.strip():
         from app.models_mgmt.providers import list_providers
 
-        providers = await list_providers(include_unavailable=True)
+        providers = await list_providers(include_unavailable=True, include_gateway=True)
         endpoint = next((item for item in providers if str(item.get("base_url") or "").rstrip("/") == body.base_url.rstrip("/")), None)
         if endpoint is None or body.model not in list(endpoint.get("models") or []):
             raise HTTPException(status_code=422, detail="登録済みLLM endpointとmodelを選択してください")

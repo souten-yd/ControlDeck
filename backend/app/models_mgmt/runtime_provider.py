@@ -486,6 +486,24 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
     return _OPENAI
 
 
+def resolve_target(base_url: str, model: str) -> tuple[str, str]:
+    """ゲートウェイ宛の接続先を実エンドポイントへ解決する。
+
+    UI・OpenCode・ワークフローはゲートウェイの1アドレスを指すが、ControlDeck内部の
+    生成は自分のHTTPへ戻らず実インスタンスを直接叩く。ホップを増やさずに済み、
+    thinking解決・キャンセル・KV受け入れ制御など既存のprovider処理もそのまま効く。
+    """
+    from app.models_mgmt import gateway
+
+    return gateway.resolve_internal_target(base_url, model)
+
+
+def provider_for_request(request: RuntimeChatRequest) -> LlmRuntimeProvider:
+    """requestの接続先を解決したうえでproviderを選ぶ。requestも解決後の値へ揃える。"""
+    request.base_url, request.model = resolve_target(request.base_url, request.model)
+    return provider_for_base_url(request.base_url)
+
+
 def active_request_count() -> int:
     return sum(provider.active_request_count for provider in (_OLLAMA, _LLAMA, _OPENAI))
 

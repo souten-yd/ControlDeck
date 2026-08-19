@@ -395,7 +395,10 @@ async def route_message(
     del user
     from app.workflows.assistant_planner import decide
 
-    return (await decide(body.content, body.base_url, body.model)).model_dump()
+    from app.models_mgmt.runtime_provider import resolve_target
+
+    base_url, model = resolve_target(body.base_url, body.model)
+    return (await decide(body.content, base_url, model)).model_dump()
 
 
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
@@ -936,7 +939,11 @@ async def send_message(
     assistant_id = assistant.id
 
     from app.models_mgmt.runtime_policy import get_policy, model_output_tokens
+    from app.models_mgmt.runtime_provider import resolve_target
 
+    # ゲートウェイ宛なら実エンドポイントへ解決してからjobへ渡す。以降のcontext上限・
+    # thinking・容量待ちはすべてモデル個別設定を引くため、解決済みの値が要る。
+    body.base_url, body.model = resolve_target(body.base_url, body.model)
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,

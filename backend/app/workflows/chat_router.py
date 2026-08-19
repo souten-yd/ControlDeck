@@ -81,9 +81,11 @@ async def _llm(
     max tokenを設定する。構造化生成ではthinkingを止め、schemaを優先する。
     """
     from app.models_mgmt.runtime_provider import (
-        RuntimeChatRequest, RuntimeProviderError, provider_for_base_url,
+        RuntimeChatRequest, RuntimeProviderError, provider_for_base_url, resolve_target,
     )
 
+    # thinking もモデル個別設定なので、解決後のエンドポイント/aliasで引く。
+    base_url, model = resolve_target(base_url, model)
     think_spec = resolve_think(base_url, model)
     think = False if disable_thinking else think_spec.ollama_think
     request = RuntimeChatRequest(
@@ -125,12 +127,13 @@ async def chat_stream(websocket: WebSocket):
     messages = req.get("messages") or []
     # think: リクエスト指定 > モデル個別設定
     from app.models_mgmt import ollama as _ollama
+    from app.models_mgmt.runtime_provider import (
+        GenerationCancelled, RuntimeChatRequest, provider_for_base_url, resolve_target,
+    )
 
+    base, model = resolve_target(base, model)
     think_spec = resolve_think(base, model, req.get("think"))
     think = think_spec.ollama_think
-    from app.models_mgmt.runtime_provider import (
-        GenerationCancelled, RuntimeChatRequest, provider_for_base_url,
-    )
 
     provider = provider_for_base_url(base)
     request_id = f"legacy-ws-{id(websocket)}"
@@ -304,11 +307,14 @@ async def chat_search(body: SearchBody, user: User = Depends(require_permission(
 async def _deep_search(body: SearchBody, progress=None) -> dict:
     """反復型Deep Research。検索実装とruntimeを共通engineへ注入する。"""
     from app.models_mgmt import runtime_policy
+    from app.models_mgmt.runtime_provider import resolve_target
     from app.workflows import deep_research
     from app.workflows.engine import _load_secrets
 
     settings = runtime_policy.get_policy().deep_research
     secrets = await asyncio.to_thread(_load_secrets)
+    # Deep Researchはctx拡張やidle判定でエンドポイントを直接触るため、先に解決しておく。
+    body.base_url, body.model = resolve_target(body.base_url, body.model)
     context_state = await runtime_policy.prepare_deep_research_context(body.base_url, body.model)
     request_context = context_state.get("request_context_tokens")
     presets = {

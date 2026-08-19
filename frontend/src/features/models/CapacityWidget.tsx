@@ -59,6 +59,16 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
           <span>{item.busy} / {item.slots}</span>
         </span>
       </Row>
+      {(item.busy > 0 || item.tokens_per_second > 0) && (
+        <Row label="生成速度">
+          <span className="flex flex-wrap items-baseline gap-x-2">
+            <span>{item.tokens_per_second.toFixed(1)} tok/s</span>
+            <span className="text-[10px] text-zinc-400">
+              1本あたり {item.tokens_per_second_single.toFixed(1)}
+            </span>
+          </span>
+        </Row>
+      )}
       <Row label="待ち行列">
         {item.deferred > 0
           ? <span className="text-amber-600 dark:text-amber-400">{item.deferred} 件待機中</span>
@@ -97,6 +107,17 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
             )}
             <EndpointRows item={item} />
           </div>
+        ))}
+        {/* 起動に失敗しているモデルは、読み込み待ちと取り違えないよう理由ごと出す。 */}
+        {data.failed?.map((item) => (
+          <Row key={item.alias} label="起動失敗">
+            <span className="text-red-600 dark:text-red-400">
+              {item.alias}
+              {item.error && (
+                <span className="ml-1.5 block text-[10px] break-words text-zinc-500">{item.error}</span>
+              )}
+            </span>
+          </Row>
         ))}
         {/* OMo はエンドポイント個別ではなく全体の設定なので、まとめて1行だけ出す。 */}
         {data.omo && (() => {

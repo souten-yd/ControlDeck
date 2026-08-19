@@ -51,14 +51,16 @@ def get_settings() -> dict:
 
 
 def gateway_base_url() -> str:
-    """ControlDeck ゲートウェイの base_url。"""
-    from app.config import get_config
+    """ControlDeck ゲートウェイの base_url。判定・組み立てはgatewayへ委譲する。"""
+    from app.models_mgmt import gateway
 
-    return f"http://127.0.0.1:{int(get_config().server.port)}/api/v1/llm/v1"
+    return gateway.base_url()
 
 
 def is_gateway_url(base_url: str) -> bool:
-    return "/api/v1/llm/v1" in str(base_url or "")
+    from app.models_mgmt import gateway
+
+    return gateway.is_gateway_url(base_url)
 
 
 def resolve_backend_port() -> int | None:
@@ -74,9 +76,9 @@ def resolve_backend_port() -> int | None:
     base_url = str(settings.get("base_url") or "")
     if is_gateway_url(base_url):
         try:
-            from app.models_mgmt.gateway import _target_endpoint
+            from app.models_mgmt.gateway import resolve_endpoint
 
-            return _target_endpoint(str(settings.get("model") or ""))[1]
+            return resolve_endpoint(str(settings.get("model") or ""))[1]
         except Exception:  # noqa: BLE001 - 解決できなければ不明として扱う
             return None
     try:
@@ -99,8 +101,10 @@ def autoconfigure(*, model: str = "") -> dict:
 
     target = model
     if not target:
+        # 特定モデルを名指しせず、転送先の判断はゲートウェイへ任せる。停止中の別モデルを
+        # 起こさずに、そのとき動いているモデルへ流れる。
         instances = [i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
-        target = str(instances[0]["alias"]) if instances else ""
+        target = gateway.AUTO_MODEL if instances else ""
     gateway.get_api_key(create=True)  # 未発行なら発行
     patch = {"base_url": gateway_base_url(), "use_gateway": True}
     if target:
@@ -584,11 +588,15 @@ def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
     settings = get_settings()
     gated = bool(settings.get("use_gateway")) and is_gateway_url(str(settings.get("base_url") or ""))
     if n_parallel is None:
-        target = str(settings.get("model") or "")
+        # 並列数は実際に転送される先の設定で決める。解決規則はゲートウェイと共有する。
+        from app.models_mgmt import gateway
+
+        try:
+            alias, _ = gateway.resolve_endpoint(str(settings.get("model") or ""))
+        except Exception:  # noqa: BLE001 - 未登録なら同期対象なし
+            return {"updated": False, "reason": "対象モデルがありません"}
         instance = next(
-            (i for i in llama.list_instances() if str(i.get("alias")) == target), None,
-        ) or next(
-            (i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"), None,
+            (i for i in llama.list_instances() if str(i.get("alias")) == alias), None,
         )
         if instance is None:
             return {"updated": False, "reason": "対象モデルがありません"}

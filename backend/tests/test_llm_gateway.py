@@ -59,8 +59,8 @@ def test_models_listing_returns_registered_llm_aliases(admin_client, monkeypatch
                                 headers={"Authorization": f"Bearer {key}"})
     assert response.status_code == 200
     ids = [m["id"] for m in response.json()["data"]]
-    # embedding はチャット先ではないので出さない
-    assert ids == ["chat-model"]
+    # embedding はチャット先ではないので出さない。autoは転送先をControlDeckに任せる仮想モデル。
+    assert ids == ["auto", "chat-model"]
 
 
 def test_unknown_model_falls_back_to_highest_priority_llm(monkeypatch):
@@ -145,7 +145,7 @@ def test_autoconfigure_sets_everything_needed_to_connect(monkeypatch, tmp_path):
     ])
     settings = provider.autoconfigure()
     assert settings["base_url"] == provider.gateway_base_url()
-    assert settings["model"] == "top"       # 既定は優先度最上位のLLM
+    assert settings["model"] == "auto"      # 既定はモデル固定なし（転送先はゲートウェイが決める）
     assert settings["use_gateway"] is True
     # APIキーが発行され、runtime config へ載る
     key = gateway.get_api_key()
@@ -173,7 +173,7 @@ def test_install_autoconfigures_opencode_connection(monkeypatch, tmp_path):
     registry.install("opencode")
     settings = provider.get_settings()
     assert settings["base_url"] == provider.gateway_base_url()
-    assert settings["model"] == "llama"
+    assert settings["model"] == "auto"
     assert gateway.get_api_key().startswith("cdk-")
 
 
@@ -192,3 +192,69 @@ def test_autoconfigure_failure_does_not_break_install(monkeypatch, tmp_path):
 
     monkeypatch.setattr("app.integrations.opencode.provider.autoconfigure", _boom)
     assert registry.install("opencode") == {"installed": True}
+
+
+def test_default_target_prefers_loaded_endpoint(monkeypatch):
+    """未指定時は起動中のエンドポイントを優先する。
+
+    停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
+    エンドポイントまでVRAM不足で巻き込む。
+    """
+    from app.models_mgmt import gateway, llama
+
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "top", "role": "llm", "port": 8090, "loaded": False},
+        {"alias": "running", "role": "llm", "port": 8091, "loaded": True},
+    ])
+    assert gateway.resolve_endpoint("") == ("running", 8091)
+    assert gateway.resolve_endpoint("does-not-exist") == ("running", 8091)
+    # 明示指定は従来どおりそのモデル（必要ならオンデマンド起動される）
+    assert gateway.resolve_endpoint("top") == ("top", 8090)
+
+
+def test_internal_calls_resolve_gateway_url_to_real_endpoint(monkeypatch):
+    """内部の生成はゲートウェイへHTTPで戻らず、同じ規則で実エンドポイントを叩く。"""
+    from app.models_mgmt import gateway, llama
+    from app.models_mgmt.runtime_provider import resolve_target
+
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "top", "role": "llm", "port": 8090, "loaded": False},
+        {"alias": "running", "role": "llm", "port": 8091, "loaded": True},
+    ])
+    assert resolve_target(gateway.base_url(), "top") == ("http://127.0.0.1:8090/v1", "top")
+    assert resolve_target(gateway.base_url(), "") == ("http://127.0.0.1:8091/v1", "running")
+    # ゲートウェイ以外の接続先は素通し
+    assert resolve_target("http://127.0.0.1:11434/v1", "qwen3") == (
+        "http://127.0.0.1:11434/v1", "qwen3")
+
+
+def test_provider_selection_follows_resolved_endpoint(monkeypatch):
+    """ゲートウェイ宛のrequestは解決後のllama.cpp providerで処理される。"""
+    from app.models_mgmt import gateway, llama
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_request
+
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "running", "role": "llm", "port": 8091, "loaded": True},
+    ])
+    monkeypatch.setattr(llama, "endpoint_ports", lambda: {8091})
+    request = RuntimeChatRequest(base_url=gateway.base_url(), model="", messages=[])
+    provider = provider_for_request(request)
+    assert provider.kind == "llama.cpp"
+    assert request.base_url == "http://127.0.0.1:8091/v1"
+    assert request.model == "running"
+
+
+def test_auto_model_follows_the_running_endpoint(monkeypatch):
+    """autoは「今動いているモデル」へ流す。クライアント側のモデル固定を外すための逃げ道。"""
+    from app.models_mgmt import gateway, llama
+
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "top", "role": "llm", "port": 8090, "loaded": False},
+        {"alias": "running", "role": "llm", "port": 8091, "loaded": True},
+    ])
+    assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("running", 8091)
+    # 停止中しかなければ登録順の先頭を起こす
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "top", "role": "llm", "port": 8090, "loaded": False},
+    ])
+    assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("top", 8090)

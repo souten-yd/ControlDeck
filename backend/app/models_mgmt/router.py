@@ -868,7 +868,14 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
             gated = bool(settings.get("use_gateway"))
             # OMo が実際に使うモデルのスロット数で決める。
             # 先頭のエンドポイントを見ると、無関係なモデルの値を拾ってしまう。
+            # autoのような仮想モデルは、実際の転送先へ解決してから並列数と表示名を決める。
+            from app.models_mgmt import gateway
+
             target = str(settings.get("model") or "")
+            try:
+                target = gateway.resolve_endpoint(target)[0]
+            except Exception:  # noqa: BLE001 - 未登録なら設定値のまま見せる
+                pass
             slots = next(
                 (int(i.get("n_parallel") or 1) for i in llama.list_instances()
                  if str(i.get("alias")) == target), 1,
@@ -879,12 +886,21 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
     except Exception:  # noqa: BLE001 - 表示用なので失敗しても他を返す
         omo = None
 
+    # 起動に失敗しているモデルは「読み込み待ち」と紛らわしいので、理由を添えて別に返す。
+    failed = [
+        {"alias": str(i["alias"]), "port": int(i.get("port") or 0),
+         "error": str(i.get("last_error") or "")}
+        for i in llama.list_instances()
+        if str(i.get("role", "llm")) == "llm" and i.get("runtime_status") == "FAILED"
+    ]
+
     return {
         "endpoints": [
             {"id": e["id"], "label": e["label"], "port": e["port"],
              "running_alias": e["running_alias"], **capacity}
             for e, capacity in zip(running, capacities, strict=True)
         ],
+        "failed": failed,
         "omo": omo,
     }
 

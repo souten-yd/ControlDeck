@@ -42,7 +42,7 @@ async def runtime_snapshot() -> dict[str, Any]:
     from app.models_mgmt.providers import list_providers
     from app.monitoring.collector import collector
 
-    providers = await list_providers(include_unavailable=True)
+    providers = await list_providers(include_unavailable=True, include_gateway=True)
     try:
         ollama_models = await ollama.list_models()
     except Exception:

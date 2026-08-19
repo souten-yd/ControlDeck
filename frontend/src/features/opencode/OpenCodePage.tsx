@@ -158,7 +158,7 @@ export default function OpenCodePage() {
       {settingsOpen && (
         <section className="grid gap-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800 sm:grid-cols-2">
           <label className="text-xs text-zinc-500">LLM endpoint<input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={`${input} mt-1 font-mono`} /></label>
-          <label className="text-xs text-zinc-500">モデル<input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} className={`${input} mt-1 font-mono`} /></label>
+          <label className="text-xs text-zinc-500">モデル<input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="auto" className={`${input} mt-1 font-mono`} /><span className="mt-1 block text-[11px] text-zinc-500">auto にすると起動中のモデルへ流れます（停止中の別モデルを起こしません）</span></label>
           <button onClick={() => save.mutate()} disabled={save.isPending} className="rounded-xl border border-accent-500 py-2 text-sm text-accent-600 disabled:opacity-50 sm:col-span-2">設定を保存</button>
         </section>
       )}
