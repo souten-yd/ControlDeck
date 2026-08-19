@@ -72,6 +72,8 @@ export interface ProjectLabRun {
 
 export interface ProjectLabSettings {
   allow_external_preview: boolean;
+  /** プロジェクトの置き場。設定で変わるので、案内文にパスを埋め込まない。 */
+  project_root?: string;
 }
 
 export const projectLabApi = {

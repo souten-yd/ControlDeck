@@ -106,7 +106,8 @@ def _not_found(exc: ValueError) -> HTTPException:
 
 @router.get("/settings")
 def project_lab_settings(user: User = Depends(require_permission("project_lab.view"))):
-    return service.get_settings()
+    # 置き場は設定で変わるので、UIの案内文がパスを埋め込まずに済むよう一緒に返す。
+    return {**service.get_settings(), "project_root": str(service.project_root())}
 
 
 @router.put("/settings")

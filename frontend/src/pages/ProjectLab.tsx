@@ -78,6 +78,8 @@ export default function ProjectLabPage() {
   const detail = detailQuery.data;
   const settingsQuery = useQuery({ queryKey: ["project-lab-settings"], queryFn: projectLabApi.settings });
   const allowExternalAlways = settingsQuery.data?.allow_external_preview === true;
+  // 置き場は設定で変わるので、案内文はサーバーが返す実際のパスを出す。
+  const projectRoot = settingsQuery.data?.project_root ?? "プロジェクトフォルダ";
   const saveSettings = useMutation({
     mutationFn: (allow: boolean) => projectLabApi.saveSettings({ allow_external_preview: allow }),
     onSuccess: async (settings) => {
@@ -169,7 +171,7 @@ export default function ProjectLabPage() {
               />
             ))}
             {projects.length === 0 && (
-              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">~/CodeDEV にフォルダを置くと自動で表示されます。</p>
+              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">{projectRoot} にフォルダを置くと自動で表示されます。</p>
             )}
           </Popover>
         </div>
@@ -233,6 +235,7 @@ export default function ProjectLabPage() {
 
         <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <Stage
+            projectRoot={projectRoot}
             projects={projects}
             loading={projectsQuery.isLoading || (projectId !== null && detailQuery.isLoading)}
             error={projectsQuery.error ?? detailQuery.error}
@@ -333,7 +336,8 @@ function FileRow({ artifact, selected, onSelect }: { artifact: ProjectLabArtifac
 }
 
 function Stage({
-  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit, externalAllowed, onAllowExternal,
+  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit, externalAllowed,
+  onAllowExternal, projectRoot,
 }: {
   projects: ProjectLabSummary[];
   loading: boolean;
@@ -345,6 +349,7 @@ function Stage({
   fit: boolean;
   externalAllowed: boolean;
   onAllowExternal: () => void;
+  projectRoot: string;
 }) {
   if (loading) return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
   if (error) {
@@ -358,7 +363,7 @@ function Stage({
     return (
       <Centered>
         <p className="text-base font-semibold">プロジェクトがありません</p>
-        <p className="mt-1.5 text-sm text-zinc-500">~/CodeDEV 直下にフォルダを置くと自動で検出します。実行はボタンを押したときだけ行われます。</p>
+        <p className="mt-1.5 text-sm text-zinc-500">{projectRoot} 直下にフォルダを置くと自動で検出します。実行はボタンを押したときだけ行われます。</p>
       </Centered>
     );
   }
