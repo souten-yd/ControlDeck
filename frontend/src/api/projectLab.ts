@@ -72,6 +72,8 @@ export interface ProjectLabRun {
 
 export interface ProjectLabSettings {
   allow_external_preview: boolean;
+  /** プロジェクトの置き場。設定で変わるので、案内文にパスを埋め込まない。 */
+  project_root?: string;
 }
 
 export const projectLabApi = {
@@ -95,5 +97,14 @@ export const projectLabApi = {
   artifactUrl: (id: string, path: string, options: { download?: boolean; external?: boolean } = {}) => {
     const query = [options.download ? "download=true" : "", options.external ? "external=true" : ""].filter(Boolean).join("&");
     return `/api/v1/project-lab/projects/${encodeURIComponent(id)}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`;
+  },
+  /** iframeプレビュー用の短命token。sandboxの不透明originからはcookieが送れないため。 */
+  previewToken: (id: string) => api<{ token: string; expires_in: number }>(
+    `/project-lab/projects/${encodeURIComponent(id)}/preview-token`, { method: "POST" },
+  ),
+  /** tokenをパスに含めるので、HTMLからの相対参照にもそのまま引き継がれる。 */
+  previewUrl: (token: string, path: string, options: { external?: boolean } = {}) => {
+    const query = options.external ? "?external=true" : "";
+    return `/api/v1/project-lab/preview/${encodeURIComponent(token)}/${path.split("/").map(encodeURIComponent).join("/")}${query}`;
   },
 };

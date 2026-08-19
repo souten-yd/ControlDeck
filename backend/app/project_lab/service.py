@@ -15,11 +15,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.config import data_dir
+from app.config import codedev_dir, data_dir
 from app.schemas.project_lab import ProjectManifest
 from app.workflows.redaction import redact
 
-PROJECT_ROOT = (Path.home() / "CodeDEV").resolve()
 MAX_PROJECTS = 100
 MAX_ARTIFACTS = 500
 MAX_MANIFEST_BYTES = 256 * 1024
@@ -107,8 +106,8 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def project_root() -> Path:
-    PROJECT_ROOT.mkdir(exist_ok=True)
-    return PROJECT_ROOT.resolve()
+    """プロジェクトの置き場。設定に従うので、OpenCode側と必ず同じ場所を指す。"""
+    return codedev_dir().resolve()
 
 
 def _inside(path: Path, root: Path) -> bool:

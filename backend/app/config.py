@@ -172,6 +172,9 @@ class Config(BaseModel):
     data_dir: str = "~/.local/share/control-deck"
     # GitHub 管理でクローンするリポジトリの格納先
     git_apps_dir: str = "~/ControlDeckApps"
+    # OpenCode / Project Lab が扱うプロジェクトの置き場。空ならプロジェクトルート
+    # （data_dir の親）配下の CodeDEV を使う。
+    codedev_dir: str = ""
 
 
 def _config_path() -> Path | None:
@@ -198,6 +201,19 @@ def get_config() -> Config:
 
 def data_dir() -> Path:
     d = Path(get_config().data_dir).expanduser()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def codedev_dir() -> Path:
+    """OpenCode / Project Lab のプロジェクトルート。
+
+    未設定ならプロジェクトルート（data_dir の親）配下へ置く。data_dir 自体の中には
+    入れない。バックアップや設定JSONと混ざらず、ファイルマネージャ・ターミナル・Git
+    から普通のプロジェクトとして扱えるようにするため。
+    """
+    configured = str(get_config().codedev_dir or "").strip()
+    d = Path(configured).expanduser() if configured else data_dir().parent / "CodeDEV"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

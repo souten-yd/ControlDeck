@@ -78,6 +78,8 @@ export default function ProjectLabPage() {
   const detail = detailQuery.data;
   const settingsQuery = useQuery({ queryKey: ["project-lab-settings"], queryFn: projectLabApi.settings });
   const allowExternalAlways = settingsQuery.data?.allow_external_preview === true;
+  // 置き場は設定で変わるので、案内文はサーバーが返す実際のパスを出す。
+  const projectRoot = settingsQuery.data?.project_root ?? "プロジェクトフォルダ";
   const saveSettings = useMutation({
     mutationFn: (allow: boolean) => projectLabApi.saveSettings({ allow_external_preview: allow }),
     onSuccess: async (settings) => {
@@ -169,7 +171,7 @@ export default function ProjectLabPage() {
               />
             ))}
             {projects.length === 0 && (
-              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">~/CodeDEV にフォルダを置くと自動で表示されます。</p>
+              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">{projectRoot} にフォルダを置くと自動で表示されます。</p>
             )}
           </Popover>
         </div>
@@ -233,6 +235,7 @@ export default function ProjectLabPage() {
 
         <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <Stage
+            projectRoot={projectRoot}
             projects={projects}
             loading={projectsQuery.isLoading || (projectId !== null && detailQuery.isLoading)}
             error={projectsQuery.error ?? detailQuery.error}
@@ -333,7 +336,8 @@ function FileRow({ artifact, selected, onSelect }: { artifact: ProjectLabArtifac
 }
 
 function Stage({
-  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit, externalAllowed, onAllowExternal,
+  projects, loading, error, detail, artifact, sourceMode, reloadToken, fit, externalAllowed,
+  onAllowExternal, projectRoot,
 }: {
   projects: ProjectLabSummary[];
   loading: boolean;
@@ -345,6 +349,7 @@ function Stage({
   fit: boolean;
   externalAllowed: boolean;
   onAllowExternal: () => void;
+  projectRoot: string;
 }) {
   if (loading) return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
   if (error) {
@@ -358,7 +363,7 @@ function Stage({
     return (
       <Centered>
         <p className="text-base font-semibold">プロジェクトがありません</p>
-        <p className="mt-1.5 text-sm text-zinc-500">~/CodeDEV 直下にフォルダを置くと自動で検出します。実行はボタンを押したときだけ行われます。</p>
+        <p className="mt-1.5 text-sm text-zinc-500">{projectRoot} 直下にフォルダを置くと自動で検出します。実行はボタンを押したときだけ行われます。</p>
       </Centered>
     );
   }
@@ -431,12 +436,26 @@ function ArtifactView({
     queryFn: () => projectLabApi.preview(detail.id, artifact.path),
     enabled: asText,
   });
+  // HTMLはtoken付きURLで配信する。sandboxのiframeは不透明originになるため、そこから出る
+  // 相対参照（js/css/画像）にはcookieが乗らず、artifactの通常URLだと401になる。
+  const previewToken = useQuery({
+    queryKey: ["project-lab-preview-token", detail.id],
+    queryFn: () => projectLabApi.previewToken(detail.id),
+    enabled: !asText && artifact.kind === "html",
+    staleTime: 10 * 60_000,
+    refetchInterval: 10 * 60_000,
+  });
 
   if (!asText) {
     if (artifact.kind === "html") {
+      if (!previewToken.data) {
+        return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
+      }
+      const previewUrl = projectLabApi.previewUrl(previewToken.data.token, artifact.path,
+        { external: externalAllowed });
       return (
         <div className="relative h-full w-full">
-          <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={url} fit={fit} />
+          <HtmlFrame key={`${artifact.path}-${reloadToken}`} name={artifact.name} url={previewUrl} fit={fit} />
           {artifact.external && !externalAllowed && (
             <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3">
               <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-2xl border border-amber-300 bg-amber-50/95 px-3 py-2 text-[11px] leading-snug text-amber-900 shadow-lg backdrop-blur dark:border-amber-800 dark:bg-amber-950/90 dark:text-amber-200">

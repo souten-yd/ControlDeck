@@ -106,7 +106,8 @@ def _not_found(exc: ValueError) -> HTTPException:
 
 @router.get("/settings")
 def project_lab_settings(user: User = Depends(require_permission("project_lab.view"))):
-    return service.get_settings()
+    # 置き場は設定で変わるので、UIの案内文がパスを埋め込まずに済むよう一緒に返す。
+    return {**service.get_settings(), "project_root": str(service.project_root())}
 
 
 @router.put("/settings")
@@ -136,12 +137,34 @@ def project(project_id: str, user: User = Depends(require_permission("project_la
         raise _not_found(exc) from exc
 
 
-@router.get("/projects/{project_id}/artifacts/{artifact_path:path}")
-def artifact(
-    project_id: str, artifact_path: str, download: bool = Query(False),
-    external: bool = Query(False, description="外部CDN等の読み込みを明示的に許可する"),
-    user: User = Depends(require_permission("project_lab.view")),
-):
+# プレビュー用の短命token。sandboxのiframeは不透明originになるため、そこから出る
+# サブリソース要求はcross-site扱いになりセッションcookieが送られない（Chromeは送らず、
+# WebKitは送るのでブラウザによって動いたり動かなかったりする）。tokenをパスへ入れると
+# 相対参照にもそのまま引き継がれるので、cookieに依存せず配下のファイルを配信できる。
+PREVIEW_TOKEN_PREFIX = "project-lab-preview:"
+PREVIEW_TOKEN_TTL_SECONDS = 900
+
+
+def issue_preview_token(project_id: str) -> str:
+    from app.security.crypto import encrypt_text
+
+    return encrypt_text(PREVIEW_TOKEN_PREFIX + project_id)
+
+
+def resolve_preview_token(token: str) -> str:
+    """tokenからproject_idを取り出す。期限切れ・改竄は404で潰す（存在を推測させない）。"""
+    from app.security.crypto import decrypt_text
+
+    try:
+        plain = decrypt_text(token, ttl_seconds=PREVIEW_TOKEN_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - 失敗理由は問わない
+        raise HTTPException(status_code=404, detail="previewの有効期限が切れました") from exc
+    if not plain.startswith(PREVIEW_TOKEN_PREFIX):
+        raise HTTPException(status_code=404, detail="previewの有効期限が切れました")
+    return plain[len(PREVIEW_TOKEN_PREFIX):]
+
+
+def _artifact_response(project_id: str, artifact_path: str, *, download: bool, external: bool):
     try:
         project_path = service.resolve_project(project_id)
         path = service.resolve_artifact(project_path, artifact_path)
@@ -165,6 +188,39 @@ def artifact(
         filename=path.name if download else None,
         content_disposition_type=disposition, headers=headers,
     )
+
+
+@router.get("/projects/{project_id}/artifacts/{artifact_path:path}")
+def artifact(
+    project_id: str, artifact_path: str, download: bool = Query(False),
+    external: bool = Query(False, description="外部CDN等の読み込みを明示的に許可する"),
+    user: User = Depends(require_permission("project_lab.view")),
+):
+    return _artifact_response(project_id, artifact_path, download=download, external=external)
+
+
+@router.post("/projects/{project_id}/preview-token")
+def preview_token(project_id: str, user: User = Depends(require_permission("project_lab.view"))):
+    """iframeプレビュー用の短命tokenを発行する。"""
+    try:
+        service.resolve_project(project_id)
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    return {"token": issue_preview_token(project_id), "expires_in": PREVIEW_TOKEN_TTL_SECONDS}
+
+
+@router.get("/preview/{token}/{artifact_path:path}")
+def preview(
+    token: str, artifact_path: str,
+    external: bool = Query(False, description="外部CDN等の読み込みを明示的に許可する"),
+):
+    """token付きのpreview配信。相対参照のサブリソースもこの経路で解決される。
+
+    cookieを使わないので、sandboxの不透明originからでも読める。tokenはプロジェクト
+    単位・短命で、配信できるのはそのプロジェクト配下のartifactだけ（ダウンロードは不可）。
+    """
+    return _artifact_response(resolve_preview_token(token), artifact_path,
+                              download=False, external=external)
 
 
 @router.get("/projects/{project_id}/previews/{artifact_path:path}")
