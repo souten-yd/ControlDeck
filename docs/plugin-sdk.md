@@ -78,4 +78,32 @@ v2の未知presentational fieldは無視した項目をwarningとして返しま
 - contribution typeはnavigation、embedded view、command、quick action、settings、workflow executor、
   agent tool、context action、setup checklistの固定集合
 - host capabilityはallowlist。任意Python/JavaScriptをControl Deckへimportしない
-- v2 install/enable/effective registryはPR-Aまで未提供。lint成功を利用可能性と誤認しない
+- v2のlint成功だけを利用可能状態とは扱わない。PR-Aのregistryへinstallし、enable、health、grantを通った
+  contributionだけがeffectiveになる
+
+## Add-on v2 registry（PR-A）
+
+管理APIはすべて認証必須です。install/enable/disable/recheck/uninstallと詳細・activityは`settings.manage`、
+effective registryとrevision SSEはログイン中ユーザーへ、そのユーザーのpermissionでfilterして返します。
+
+```text
+GET    /api/v1/addons
+POST   /api/v1/addons
+GET    /api/v1/addons/{id}
+POST   /api/v1/addons/{id}/enable
+POST   /api/v1/addons/{id}/disable
+POST   /api/v1/addons/{id}/recheck
+DELETE /api/v1/addons/{id}
+GET    /api/v1/addons/{id}/activity
+GET    /api/v1/addons/effective
+GET    /api/v1/addons/effective/events
+```
+
+install直後はdisabledです。enableは要求capabilityのgrantと即時health確認を行います。healthは15秒間隔、
+失敗時最大120秒のbackoff、3回失敗でunavailable、degradedからの復帰は2回成功です。enabled navigationは
+healthで消えませんが、unavailableな実行contributionはeffective registryから外れます。effective応答は
+user permission別ETagを返し、SSEは本文を含めずrevision/ETagだけ通知します。
+
+managed manifestは`data_dir/addons/<id>/control-deck-addon.json`へ0600で原子的に保存します。
+壊れた／将来majorのmanifestは消さず`incompatible`として表示し、disable/uninstallできる一方でenable/effectiveを拒否します。
+非loopback runtimeは`addons.allowed_origins`へpathなしHTTPS originを明示した場合だけhealth接続できます。

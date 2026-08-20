@@ -69,6 +69,12 @@ applications:
   #     unit: xrdp.service
   #     actions: [start, stop, restart]
 
+addons:
+  # Add-on v2 serviceは既定でloopbackだけへ接続します。非loopbackを許可する場合は、
+  # pathなしのHTTPS originを管理者が明示してください。
+  allowed_origins: []
+  # allowed_origins: ["https://addon.internal.example"]
+
 # data_dir: ~/.local/share/control-deck
 
 # OpenCode / Project Lab のプロジェクト置き場。
