@@ -1,6 +1,15 @@
 # 実装状況
 
-最終更新: 2026-08-20
+最終更新: 2026-08-21
+
+## Add-on Platform v2 PR-D1 AI Resource Broker core 完了（2026-08-21）
+
+- `backend/app/resources` に device collection、provider reservation/probe、決定的scheduler、request queue、lease acquire/activate/renew/release/cancel/TTL、telemetry、管理APIを追加した。要求はVRAM confidence／有限max wait／queueかfail-fastを必須とし、固定予約を差し引いて物理的に入らない要求はqueueへ残さず拒否する。interactive優先、background starvation上限600秒、owner fairness、bounded residency bonus、FIFO tieをテストで固定した。
+- 単一GPUを特別扱いせずcollectionとして扱い、exclusiveとshared-safe、固定deviceとauto、fit scheduling、provider yield levelを分離した。monitor snapshotが別metricの失敗でpublishされない場合も、monitorが既に選択したproviderを再利用してGPU factsだけを更新する。Brokerのrefresh/reaper失敗はWeb本体を停止させない。
+- `/api/v1/resources` は`system.view`、mutationは`settings.manage`＋CSRF＋本文を含めないauditで保護した。Add-on disable完了／uninstall時は`addon:{id}` ownerのwaiting requestとleaseを取り消す。Brokerはin-memoryのためprocess再起動時にstale leaseを持ち越さず、waitingはexecution slotを占有しない。
+- observed Llama起動でprocess→listen、listen→ready、最初のtokenを実測し、bounded sampleのp50/p90だけをprofile化する。推定値fallbackは持たない。OOM incidentはruntime/model/device別に回数、observed peak、下げないrecommended requirement floorを記録する。leaseを使ったmanaged supervision、thrash guard、OOM retry制御、Jobs admissionはPR-D2まで有効化しない。
+
+検証: code head `f3935e5` でresource／Llama／Gateway集中57件、canonical cwd=`backend`のbackend全651件成功（1件skip）、frontend production build成功。実`control-deck-web`をbranchから再起動し、sysfs-amdgpuの32GB device発見、実APIでexclusive grant→2件目`device_busy_exclusive`待機→activate／renew→waiting cancel→release、最終lease予約0とtelemetryを確認した。NVMe上のQwen3.8 27BをGatewayから1 token cold-startし、request 83.376秒、cold-load p90 82.714秒、first-token 0.565秒、load時VRAM 29,269,970,944 bytes、stop後59,912,192 bytesへの解放を実測した。現行llama-serverに動的unload操作はなく、yield level 3はlevel 4（process stop）へ縮退する。PR-D2／単独DB migration／Jobs待機UIはNOT TESTED（未実装）。
 
 ## Add-on Platform v2 PR-C Embedded View／Host Bridge 完了（2026-08-20）
 

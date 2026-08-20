@@ -1,7 +1,21 @@
 # AI Resource Broker 詳細設計
 
-最終更新: 2026-08-20  
-状態: 計画
+最終更新: 2026-08-21
+状態: PR-D1 core実装済み／PR-D2 adapter・Jobs移行は計画
+
+## 0. PR-D1 実装結果
+
+PR-D1ではfake／実device collection、provider reservation/probe、lease lifecycle、有限queue、§20のcommon scheduling不変条件、管理API、Add-on owner cleanup、bounded telemetryまでを実装した。process再起動時はin-memory lease tableを空から開始するためstale leaseを復元しない。
+
+実機ではsysfs-amdgpuから32GB GPUを発見し、exclusive requestのgrantと競合requestの`device_busy_exclusive`待機、renew/cancel/release後の予約0を確認した。NVMe上のQwen3.8 27Bをobserved supervisionのままcold-startした結果は次のとおり。
+
+- Gateway request: 83.376秒（1 token）
+- `cold_load_cost_sec` p90: 82.714秒（sample 1）
+- first token latency: 0.565秒
+- VRAM: load時29,269,970,944 bytes、stop後59,912,192 bytes
+- 動的unload: 現行llama-server CLI/APIに操作なし。yield level 3はlevel 4（process stop）へ縮退
+
+このsampleは実測値であり推定fallbackではない。sample 1のため閾値調整に十分な分布とは扱わず、PR-D2で追加loadを蓄積してp90を更新する。managed supervision、thrash guard、Gateway lease、Jobs `waiting_resource`、OOM後の再実行制限はPR-D2／単独DB migrationの範囲であり、PR-D1では有効化していない。
 
 ## 1. 目的
 

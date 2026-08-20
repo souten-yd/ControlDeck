@@ -1070,6 +1070,14 @@ async def health(alias: str | None = None) -> dict:
         return {"ok": False, "status_code": None}
 
 
+def residency_key(instance: dict) -> str:
+    """Stable non-path identity shared by load telemetry and resource leases."""
+    identity = hashlib.sha256(
+        str(instance.get("model_path") or instance.get("alias") or "llama").encode("utf-8")
+    ).hexdigest()[:16]
+    return f"llama:{identity}"
+
+
 def find_role_instance(role: str) -> dict | None:
     """指定roleの最初のinstance設定を返す（未登録ならNone）。"""
     for item in list_instances():
@@ -1093,13 +1101,40 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
         return False
     if (await health(alias)).get("ok"):
         return True
-    ok, error = await asyncio.to_thread(start_instance, alias)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    listen_at: float | None = None
+    start_task = asyncio.create_task(asyncio.to_thread(start_instance, alias))
+    while not start_task.done():
+        state = await health(alias)
+        if listen_at is None and state.get("status_code") is not None:
+            listen_at = loop.time()
+        await asyncio.sleep(0.25)
+    ok, error = await start_task
     if not ok:
         logger.warning("llama instance %s の自動起動に失敗: %s", alias, error)
         return False
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while asyncio.get_event_loop().time() < deadline:
-        if (await health(alias)).get("ok"):
+    deadline = loop.time() + timeout_seconds
+    while loop.time() < deadline:
+        state = await health(alias)
+        now = loop.time()
+        if listen_at is None and state.get("status_code") is not None:
+            listen_at = now
+        if state.get("ok"):
+            # A server that becomes ready before a non-200 health observation has
+            # an indistinguishable listen/load boundary. Keep the total measured
+            # cost exact and conservatively assign it to process startup.
+            observed_listen = listen_at if listen_at is not None else now
+            try:
+                from app.resources.broker import broker as resource_broker
+
+                resource_broker.telemetry.record_load_measurement(
+                    residency_key(inst),
+                    process_start_sec=max(0.0, observed_listen - started_at),
+                    model_load_sec=max(0.0, now - observed_listen),
+                )
+            except Exception:  # noqa: BLE001 - telemetry must never block LLM readiness
+                logger.exception("llama cold-load telemetry recording failed")
             return True
         await asyncio.sleep(2)
     logger.warning("llama instance %s のモデル読込が時間内に完了しませんでした", alias)

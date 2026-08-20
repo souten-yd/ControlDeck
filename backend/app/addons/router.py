@@ -14,6 +14,7 @@ from app.addons.schema import AddonManifestV2, parse_manifest
 from app.audit import service as audit
 from app.database import get_db
 from app.models import User
+from app.resources.broker import broker as resource_broker
 from app.security.deps import get_current_user, require_permission, user_permissions
 
 router = APIRouter(prefix="/addons", tags=["addons"])
@@ -198,9 +199,18 @@ async def disable_addon(
         if pending["enabled"]:
             await _wait_for_disable_grace()
         result = registry.complete_disable(addon_id)
+        canceled_resources = await resource_broker.cancel_owner(f"addon:{addon_id}")
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
-    audit.record(db, "addon.disable", user=user, resource_type="addon", resource_id=addon_id, request=request)
+    audit.record(
+        db,
+        "addon.disable",
+        user=user,
+        resource_type="addon",
+        resource_id=addon_id,
+        request=request,
+        metadata={"canceled_resource_requests": canceled_resources["requests"], "canceled_resource_leases": canceled_resources["leases"]},
+    )
     return result
 
 
@@ -223,7 +233,7 @@ async def recheck_addon(
 
 
 @router.delete("/{addon_id}")
-def uninstall_addon(
+async def uninstall_addon(
     addon_id: str,
     request: Request,
     user: User = Depends(require_permission("settings.manage")),
@@ -231,7 +241,16 @@ def uninstall_addon(
 ):
     try:
         result = registry.uninstall(addon_id)
+        canceled_resources = await resource_broker.cancel_owner(f"addon:{addon_id}")
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
-    audit.record(db, "addon.uninstall", user=user, resource_type="addon", resource_id=addon_id, request=request)
+    audit.record(
+        db,
+        "addon.uninstall",
+        user=user,
+        resource_type="addon",
+        resource_id=addon_id,
+        request=request,
+        metadata={"canceled_resource_requests": canceled_resources["requests"], "canceled_resource_leases": canceled_resources["leases"]},
+    )
     return result
