@@ -29,7 +29,9 @@ def bridge_addon(admin_client, monkeypatch, tmp_path):
 
     monkeypatch.setattr(health, "recheck", healthy)
     manifest = addon_manifest()
-    manifest["host_capabilities"].append("notifications.show")
+    manifest["host_capabilities"].extend([
+        "notifications.show", "files.pick", "files.export", "projects.pick", "jobs.read",
+    ])
     assert admin_client.post("/api/v1/addons", json=manifest, headers=CSRF_HEADERS).status_code == 201
     assert admin_client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
     return admin_client, registry
@@ -62,6 +64,25 @@ def test_bridge_handshake_binds_nonce_and_authorizes_granted_method(bridge_addon
     response = call(client, session, "host.theme.get")
     assert response.status_code == 200
     assert response.json() == {"ok": True, "method": "host.theme.get"}
+
+
+def test_bridge_filters_and_enforces_user_permissions_for_pickers_and_jobs(bridge_addon, monkeypatch):
+    client, _registry = bridge_addon
+    from app.addons import bridge
+
+    admin_session = handshake(client)
+    assert {
+        "host.file.pick", "host.file.export", "host.project.pick", "host.job.open", "host.job.subscribe",
+    }.issubset(admin_session["allowed_methods"])
+
+    monkeypatch.setattr(bridge, "user_permissions", lambda _user: {"apps.view"})
+    limited_session = handshake(client)
+    assert "host.file.pick" not in limited_session["allowed_methods"]
+    assert "host.project.pick" not in limited_session["allowed_methods"]
+    assert "host.job.subscribe" not in limited_session["allowed_methods"]
+    denied = call(client, admin_session, "host.file.pick", {"mode": "file"})
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "permission_denied"
 
 
 def test_bridge_rejects_unknown_method_bad_nonce_and_external_route_with_codes(bridge_addon):

@@ -52,6 +52,14 @@ METHOD_CAPABILITY: dict[str, str | None] = {
     "host.busy.set": None,
 }
 
+METHOD_PERMISSION: dict[str, str | None] = {
+    "host.file.pick": "files.view",
+    "host.file.export": "files.edit",
+    "host.project.pick": "project_lab.view",
+    "host.job.open": "workflows.run",
+    "host.job.subscribe": "workflows.run",
+}
+
 
 class BridgeHandshake(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -101,7 +109,12 @@ def _view(addon_id: str, view_id: str, user: User) -> tuple[dict[str, Any], dict
 def handshake(addon_id: str, value: BridgeHandshake, user: User) -> dict[str, Any]:
     current, _contribution = _view(addon_id, value.view_id, user)
     grants = set(current["granted_capabilities"])
-    allowed = [method for method, capability in METHOD_CAPABILITY.items() if capability is None or capability in grants]
+    permissions = user_permissions(user)
+    allowed = [
+        method for method, capability in METHOD_CAPABILITY.items()
+        if (capability is None or capability in grants)
+        and (METHOD_PERMISSION.get(method) is None or METHOD_PERMISSION[method] in permissions)
+    ]
     nonce = tokens.issue(
         addon_id,
         subject=f"{user.id}:{value.view_id}",
@@ -214,6 +227,9 @@ def authorize(addon_id: str, value: BridgeCall, user: User) -> dict[str, Any]:
     capability = METHOD_CAPABILITY[value.method]
     if capability is not None and capability not in set(current["granted_capabilities"]):
         raise BridgeAccessError(403, "capability_not_granted", f"{capability}は許可されていません")
+    required_permission = METHOD_PERMISSION.get(value.method)
+    if required_permission is not None and required_permission not in user_permissions(user):
+        raise BridgeAccessError(403, "permission_denied", f"{required_permission}権限がありません")
     result: dict[str, Any] = {"ok": True, "method": value.method}
     if value.method == "host.permission.has":
         result["has_permission"] = value.params["permission"] in user_permissions(user)

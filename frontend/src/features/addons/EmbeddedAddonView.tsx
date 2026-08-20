@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   authorizeAddonBridgeCall,
@@ -8,6 +9,10 @@ import {
   type EffectiveContribution,
 } from "../../api/addons";
 import { ApiError } from "../../api/client";
+import { api } from "../../api/client";
+import { FilePicker } from "../../components/FilePicker";
+import { BottomSheet } from "../../components/ui";
+import { projectLabApi } from "../../api/projectLab";
 import { ACCENTS, useTheme, useToasts } from "../../stores";
 import { AddonStatusChip, addonStateMessage } from "./AddonStatus";
 
@@ -36,6 +41,21 @@ interface ThemeTokens {
   locale: "en" | "ja";
   safe_area: { top: number; right: number; bottom: number; left: number };
   motion_reduced: boolean;
+}
+
+interface FileBridgeRequest {
+  purpose: "pick" | "export";
+  mode: "file" | "dir";
+  title: string;
+  suggestedName?: string;
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+}
+
+interface ProjectBridgeRequest {
+  title: string;
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
 }
 
 function useThemeTokens(): ThemeTokens {
@@ -105,12 +125,28 @@ export function EmbeddedAddonView({
   const sessionRef = useRef<AddonBridgeSession | null>(null);
   const notificationTimes = useRef<number[]>([]);
   const notificationDedupe = useRef(new Map<string, number>());
+  const fileGrants = useRef(new Map<string, { path: string; kind: string }>());
+  const jobSubscriptions = useRef(new Map<string, number>());
   const initialPath = useRef(routePath || contribution.path || "/");
   const [connectionKey, setConnectionKey] = useState(0);
   const [connection, setConnection] = useState<"connecting" | "ready" | "timeout" | "error">("connecting");
   const [error, setError] = useState("");
   const [title, setTitle] = useState(addon.name);
   const [busy, setBusy] = useState(false);
+  const [fileRequest, setFileRequest] = useState<FileBridgeRequest | null>(null);
+  const [projectRequest, setProjectRequest] = useState<ProjectBridgeRequest | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const projects = useQuery({
+    queryKey: ["project-lab", "projects", "addon-picker"],
+    queryFn: projectLabApi.list,
+    enabled: projectRequest !== null,
+  });
+  const job = useQuery({
+    queryKey: ["addon-job", jobId],
+    queryFn: () => api<Record<string, unknown>>(`/jobs/${encodeURIComponent(jobId as string)}`),
+    enabled: jobId !== null,
+    refetchInterval: jobId ? 1_000 : false,
+  });
   const framePath = initialPath.current.startsWith("/") ? initialPath.current : "/";
   const frameSrc = `/addon-frame/${encodeURIComponent(addon.id)}${framePath}`;
 
@@ -176,8 +212,50 @@ export function EmbeddedAddonView({
       setBusy(params.busy === true);
       return { busy: params.busy === true };
     }
+    if (request.method === "host.file.pick" || request.method === "host.file.export") {
+      return await new Promise((resolve, reject) => setFileRequest({
+        purpose: request.method === "host.file.pick" ? "pick" : "export",
+        mode: request.method === "host.file.pick" && params.mode === "dir" ? "dir" : request.method === "host.file.export" ? "dir" : "file",
+        title: typeof params.title === "string" ? params.title : request.method === "host.file.export" ? "書き出し先を選択" : "拡張機能へ渡す項目を選択",
+        suggestedName: typeof params.suggested_name === "string" ? params.suggested_name : undefined,
+        resolve,
+        reject,
+      }));
+    }
+    if (request.method === "host.project.pick") {
+      return await new Promise((resolve, reject) => setProjectRequest({
+        title: typeof params.title === "string" ? params.title : "プロジェクトを選択",
+        resolve,
+        reject,
+      }));
+    }
+    if (request.method === "host.job.open") {
+      setJobId(String(params.job_id));
+      return { opened: true, job_id: String(params.job_id) };
+    }
+    if (request.method === "host.job.subscribe") {
+      const subscribedId = String(params.job_id);
+      if (!jobSubscriptions.current.has(subscribedId)) {
+        const poll = async () => {
+          try {
+            const value = await api<Record<string, unknown>>(`/jobs/${encodeURIComponent(subscribedId)}`);
+            sendEvent("job.changed", { job_id: subscribedId, job: value });
+            if (["succeeded", "failed", "canceled", "interrupted"].includes(String(value.status).toLowerCase())) {
+              const timer = jobSubscriptions.current.get(subscribedId);
+              if (timer) window.clearInterval(timer);
+              jobSubscriptions.current.delete(subscribedId);
+            }
+          } catch (reason) {
+            sendEvent("job.error", { job_id: subscribedId, error: bridgeError(reason) });
+          }
+        };
+        await poll();
+        jobSubscriptions.current.set(subscribedId, window.setInterval(() => void poll(), 1_000));
+      }
+      return { subscribed: true, job_id: subscribedId };
+    }
     throw new Error("このHost Bridge methodは画面側でまだ利用できません");
-  }, [addon.id, contribution.id, location.pathname, navigate, show, themeTokens]);
+  }, [addon.id, contribution.id, location.pathname, navigate, sendEvent, show, themeTokens]);
   const executeRef = useRef(execute);
   const themeTokensRef = useRef(themeTokens);
   executeRef.current = execute;
@@ -259,6 +337,10 @@ export function EmbeddedAddonView({
   }, [addon.id, connectionKey, contribution.id, sendEvent]);
 
   useEffect(() => sendEvent("theme.changed", themeTokens), [sendEvent, themeTokens]);
+  useEffect(() => () => {
+    for (const timer of jobSubscriptions.current.values()) window.clearInterval(timer);
+    jobSubscriptions.current.clear();
+  }, []);
   useEffect(() => {
     const changed = () => sendEvent("visibility.changed", { visible: document.visibilityState === "visible" });
     changed();
@@ -272,6 +354,20 @@ export function EmbeddedAddonView({
     setConnection("connecting");
     setError("");
     setConnectionKey((value) => value + 1);
+  };
+
+  const finishFileRequest = (path: string) => {
+    if (!fileRequest) return;
+    const grantId = crypto.randomUUID();
+    fileGrants.current.set(grantId, { path, kind: fileRequest.purpose });
+    const parts = path.split("/").filter(Boolean);
+    const name = parts[parts.length - 1] ?? "selected";
+    fileRequest.resolve({
+      grant_id: grantId,
+      name: fileRequest.suggestedName ?? name,
+      kind: fileRequest.mode,
+    });
+    setFileRequest(null);
   };
 
   return <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: themeTokens.bg }}>
@@ -294,6 +390,11 @@ export function EmbeddedAddonView({
         className={`h-full w-full border-0 ${connection === "ready" ? "visible" : "invisible"}`}
       />
     </div>
+    {fileRequest && <FilePicker mode={fileRequest.mode} title={fileRequest.title} onSelect={finishFileRequest} onClose={() => { fileRequest.reject(new Error("picker_canceled")); setFileRequest(null); }} />}
+    {projectRequest && <BottomSheet title={projectRequest.title} onClose={() => { projectRequest.reject(new Error("picker_canceled")); setProjectRequest(null); }}>
+      <div className="space-y-2">{projects.isLoading && <p className="text-sm text-zinc-400">プロジェクトを読み込んでいます…</p>}{projects.isError && <p className="text-sm text-red-500">プロジェクトを取得できませんでした</p>}{projects.data?.map((project) => <button key={project.id} onClick={() => { projectRequest.resolve({ project_id: project.id, name: project.name }); setProjectRequest(null); }} className="min-h-12 w-full rounded-xl border border-zinc-200 px-3 text-left dark:border-zinc-700"><span className="block text-sm font-medium">{project.name}</span><span className="block truncate text-xs text-zinc-400">{project.description || project.id}</span></button>)}</div>
+    </BottomSheet>}
+    {jobId && <BottomSheet title="ジョブ詳細" onClose={() => setJobId(null)}><div className="space-y-3">{job.isLoading && <p className="text-sm text-zinc-400">ジョブを確認しています…</p>}{job.isError && <p className="text-sm text-red-500">ジョブを表示できません</p>}{job.data && <><p className="font-mono text-xs text-zinc-400">{jobId}</p><p className="text-sm font-semibold">{String(job.data.status ?? "unknown")}</p>{job.data.progress && <pre className="overflow-x-auto rounded-xl bg-zinc-50 p-3 text-xs dark:bg-zinc-950">{JSON.stringify(job.data.progress, null, 2)}</pre>}</>}</div></BottomSheet>}
   </div>;
 }
 

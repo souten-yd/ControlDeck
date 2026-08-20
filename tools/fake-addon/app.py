@@ -24,7 +24,8 @@ button{min-height:44px;margin:6px 6px 0 0;padding:0 14px;border:0;border-radius:
 code{font-size:12px;color:var(--muted,#71717a)}
 </style></head><body><main class="card"><h1>Fake embedded workspace</h1><p id="bridge-state">Connecting to host…</p>
 <p><code id="route-state">/</code> · <code id="theme-state">unknown</code></p>
-<button id="details">Open details route</button><button id="notify">Show notification</button><button id="busy">Toggle unsaved</button>
+<button id="details">Open details route</button><button id="notify">Show notification</button><button id="busy">Toggle unsaved</button><button id="pick-file">Pick file</button><button id="pick-project">Pick project</button>
+<p><code id="picker-state">No selection</code></p>
 <p id="ws-state">WebSocket: connecting</p></main><script>
 let port=null,nonce="",sequence=0,busy=false;document.documentElement.dataset.loadId=String(performance.timeOrigin);
 function applyTheme(theme){for(const key of ["bg","surface","text","border","muted","accent"])document.documentElement.style.setProperty(`--${key}`,theme[key]);document.documentElement.dataset.scheme=theme.color_scheme;document.getElementById("theme-state").textContent=theme.color_scheme;}
@@ -34,6 +35,8 @@ window.addEventListener("keydown",event=>{if((event.ctrlKey||event.metaKey)&&eve
 document.getElementById("details").onclick=()=>call("host.route.sync",{path:"/details"}).then(()=>document.getElementById("route-state").textContent="/details");
 document.getElementById("notify").onclick=()=>call("host.notification.show",{title:"Fake Add-on",message:"Bridge notification",dedupe_key:"fake-notification"});
 document.getElementById("busy").onclick=()=>{busy=!busy;call("host.busy.set",{busy})};
+document.getElementById("pick-file").onclick=()=>call("host.file.pick",{mode:"file",title:"Fake Add-onへ渡すファイル"}).then(value=>document.getElementById("picker-state").textContent=`File grant: ${value.grant_id} (${value.name})`).catch(error=>document.getElementById("picker-state").textContent=error.code||String(error));
+document.getElementById("pick-project").onclick=()=>call("host.project.pick",{title:"Fake Add-onへ渡すプロジェクト"}).then(value=>document.getElementById("picker-state").textContent=`Project: ${value.project_id} (${value.name})`).catch(error=>document.getElementById("picker-state").textContent=error.code||String(error));
 window.parent.postMessage({type:"control-deck-addon.connect",bridge_version:"1.0"},"*");
 </script></body></html>"""
 
