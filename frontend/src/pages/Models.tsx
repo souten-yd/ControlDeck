@@ -396,7 +396,9 @@ export default function ModelsPage() {
                   </div>
                 )}
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
-                <button onClick={() => isLlama ? setLlamaDetail(id) : setDetail(m.name)} className="min-w-0 flex-1 text-left">
+                <button onClick={() => isLlama ? setLlamaDetail(id) : setDetail(m.name)}
+                  aria-label={isLlama ? `${id}の個別設定を開く` : `${m.name}の詳細を開く`}
+                  className="min-w-0 flex-1 text-left">
                   <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
                     {m.name}
                     {shared && (
@@ -1048,7 +1050,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
                 <span className="block text-xs font-semibold text-amber-800 dark:text-amber-300">GPU Brokerによる管理を有効化</span>
                 <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">実測した再ロード時間より十分長いGPU処理だけ、LLMを一時停止します。既定は監視のみです。</span>
               </span>
-              <input type="checkbox" checked={policy.supervision === "managed"}
+              <input type="checkbox" aria-label="GPU Brokerによる管理" checked={policy.supervision === "managed"}
                 onChange={(e) => setPolicyCfg({ ...policy, supervision: e.target.checked ? "managed" : "observed", gateway_only: true })}
                 className="mt-0.5 h-4 w-4" />
             </label>

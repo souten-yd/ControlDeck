@@ -29,11 +29,18 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   await expect(common.getByLabel("レポート総出力token上限")).toHaveValue("262144");
   await expect(common.getByLabel("レポート総出力token上限").locator("option[value='262144']")).toHaveCount(1);
   expect(["300", "600", "1200", "1800", "3600"]).toContain(await common.getByLabel("Deep Research生成timeout（秒）").inputValue());
+  const managed = common.getByLabel("GPU Brokerによる管理");
+  await expect(managed).not.toBeChecked();
+  await managed.check();
+  await expect(common.getByLabel("最低常駐時間（秒）")).toBeVisible();
+  await expect(common.getByLabel("drain上限（秒）")).toBeVisible();
+  await expect(common.getByText("cold-load p90が未計測の場合は自動的に監視のみへ縮退します", { exact: false })).toBeVisible();
+  await managed.uncheck();
   await common.getByRole("button", { name: "閉じる" }).click();
 
   const status = await page.evaluate(async () => (await fetch("/api/v1/models/llama/status")).json());
   const alias = status.selected_alias as string;
-  await page.getByRole("listitem").first().getByRole("button").first().click();
+  await page.getByRole("button", { name: `${alias}の個別設定を開く` }).click();
   const sheet = page.getByRole("dialog", { name: `${alias} · モデル個別設定` });
   await expect(sheet.getByText("Deep Research専用CTX", { exact: true })).toBeVisible();
   await expect(sheet.getByLabel("コンテキスト長（CTX）").locator("option[value='262144']")).toHaveCount(1);
