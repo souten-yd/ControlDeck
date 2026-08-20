@@ -2,6 +2,14 @@
 
 最終更新: 2026-08-20
 
+## Add-on Platform v2 PR-A Registry／Effective Contributions 完了（2026-08-20）
+
+- `data_dir/addons`へowner/mode/symlink/64KiB境界を持つmanaged registryを追加し、installed／enabled／effectiveを分離した。install直後はdisabled、enable時に要求capabilityを明示grantし、disable/uninstallはmanifest外のserviceやdataへ触れない。壊れた／major非互換manifestは消さず`incompatible`として一覧に残し、enable/effectiveを拒否しながらdisable/uninstall可能にした。
+- healthは15秒、失敗時最大120秒backoff、3回失敗でunavailable、unavailableから1回成功、degradedから2回成功でhealthyへ戻す。HTTPSまたはloopbackだけを許可し、非loopbackは`addons.allowed_origins`の管理者allowlist必須、redirect非追従、3秒timeout、64KiB上限、schema検証とした。setup、理由＋action、contribution単位availabilityを保持し、1 serviceの失敗でhost loopを止めない。
+- 認証済みAdd-on一覧／詳細／install／enable／disable／recheck／uninstall／activityとeffective APIを追加した。管理操作は`settings.manage`＋CSRF＋本文なしaudit、effectiveは利用者permissionでfilterし、ユーザー別ETagと`addons.effective.changed` SSE revisionを返す。enabled navigationはhealthで消さず、unavailableな実行contributionだけを除外する。未認証の`/meta`へAdd-on存在を追加していない。
+
+検証: Add-on contract／registry／health／API／fake service／既存Plugin SDK v1の集中33件、backend全607件成功（1件skip）、Python compile、`deck.sh`構文、diff whitespaceに成功。実`control-deck-web`を本branchから再起動し、別processのfake add-onを実loopback起動。実APIでinstall→disabled、enable→healthy、全contribution＋ETag、videoだけunavailableのdegraded再確認、navigation維持＋video executorだけ除外、disable即時effective空、uninstallを確認した。一時Add-on／user／session／auditとfake processは清掃し、service active／health 200を再確認した。backend-only PRのためviewport確認は対象外。
+
 ## Add-on Platform v2 PR-0 Contract／Harness 完了（2026-08-20）
 
 - Plugin SDK v1を`PluginManifestV1`として互換維持し、`api_version`でv1/v2をfail-closed dispatchするAdd-on contractを追加した。Add-on `2.0`、Bridge／Theme／Health `1.0`を固定し、contract range、既知host capability、固定contribution type、HTTPS／loopback runtime、相対endpointを検証する。未知の実行fieldは拒否し、未知presentational fieldだけはwarning付きで無視する。
