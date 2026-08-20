@@ -283,7 +283,7 @@ async def _admit_resource(
         _notify_job(job)
         await asyncio.to_thread(_db_write, job)
         if status.state == RequestState.WAITING:
-            status = await broker.wait(status.request_id)
+            status = await _wait_for_resource_updates(job, broker, status.request_id)
         if status.state != RequestState.GRANTED or not status.lease_id:
             if job.status != "canceled":
                 job.status = "failed"
@@ -314,6 +314,36 @@ async def _admit_resource(
             job.finished_at = time.time()
             _notify_job(job)
             await asyncio.to_thread(_db_write, job, True)
+
+
+async def _wait_for_resource_updates(
+    job: Job, broker: ResourceBroker, request_id: str,
+) -> RequestStatus:
+    """Mirror broker reason changes while its terminal wait remains runner-free."""
+    terminal = asyncio.create_task(broker.wait(request_id))
+    revision = broker.revision
+    try:
+        while not terminal.done():
+            changed = asyncio.create_task(broker.wait_for_revision(revision, 1.0))
+            done, _pending = await asyncio.wait(
+                (terminal, changed), return_when=asyncio.FIRST_COMPLETED,
+            )
+            if terminal in done:
+                changed.cancel()
+                await asyncio.gather(changed, return_exceptions=True)
+                break
+            revision = changed.result()
+            current = await broker.request_status(request_id)
+            reason = current.reason.value if current.reason else None
+            if reason != job.wait_reason:
+                job.wait_reason = reason
+                _notify_job(job)
+                await asyncio.to_thread(_db_write, job)
+        return await terminal
+    finally:
+        if not terminal.done():
+            terminal.cancel()
+            await asyncio.gather(terminal, return_exceptions=True)
 
 
 async def _renew_resource(job: Job, broker: ResourceBroker) -> None:

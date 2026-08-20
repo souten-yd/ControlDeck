@@ -61,6 +61,9 @@ class ResourceProvider(ABC):
     ) -> bool:
         return False
 
+    def yield_wait_reason(self) -> WaitReason | None:
+        return None
+
 
 class StaticReservationProvider(ResourceProvider):
     def __init__(self, provider_id: str, values: list[ProviderReservation]):

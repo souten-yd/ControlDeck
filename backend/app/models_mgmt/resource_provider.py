@@ -12,11 +12,15 @@ from app.models_mgmt import llama
 from app.models_mgmt.runtime_policy import get_policy
 from app.resources.devices import DeviceCollection
 from app.resources.providers import ProviderReservation, ResourceProvider, YieldLevel
-from app.resources.schema import ResourceRequest
-from app.resources.telemetry import ResourceTelemetry
+from app.resources.schema import ResourceRequest, WaitReason
+from app.resources.telemetry import (
+    LoadCostEstimate,
+    ResourceTelemetry,
+    YIELD_THRASH_FACTOR,
+)
 
 
-THRASH_FACTOR = 2.0
+THRASH_FACTOR = YIELD_THRASH_FACTOR
 THRASH_WINDOW_SEC = 300.0
 THRASH_MAX_YIELDS = 2
 
@@ -50,6 +54,7 @@ class LlamaCapacityProvider(ResourceProvider):
         self._active_requests = 0
         self._draining = False
         self._stopping = False
+        self._last_yield_wait_reason: WaitReason | None = None
 
     def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
         instance = llama.get_instance(alias)
@@ -163,27 +168,45 @@ class LlamaCapacityProvider(ResourceProvider):
         if not self._managed(running):
             return False
         if request.estimated_runtime_sec is None:
-            self._telemetry.record("yield.suppressed", reason="runtime_unknown")
-            return False
-        costs = [
-            self._telemetry.cold_load_p90(llama.residency_key(item)) for item in running
+            return self._suppress(WaitReason.YIELD_RUNTIME_UNKNOWN, "runtime_unknown")
+        costs: list[LoadCostEstimate | None] = [
+            self._telemetry.reload_cost_p90(llama.residency_key(item)) for item in running
         ]
+        if not self._telemetry.persistent_profiles:
+            # Ephemeral callers are retained as a compatibility harness only. The
+            # production singleton is always persistent and enforces MIN_*_SAMPLES.
+            costs = [
+                value or self._legacy_cost(llama.residency_key(item))
+                for value, item in zip(costs, running, strict=True)
+            ]
         if not costs or any(value is None for value in costs):
-            self._telemetry.record("yield.suppressed", reason="load_cost_unknown")
-            return False
-        if request.estimated_runtime_sec <= max(costs) * THRASH_FACTOR:  # type: ignore[arg-type]
-            self._telemetry.record("yield.suppressed", reason="thrash_cost")
-            return False
+            return self._suppress(WaitReason.YIELD_LOAD_COST_UNKNOWN, "load_cost_unknown")
+        threshold = max(value.value_sec for value in costs if value is not None) * THRASH_FACTOR
+        if request.estimated_runtime_sec <= threshold:
+            return self._suppress(WaitReason.YIELD_THRASH_COST, "thrash_cost")
         aliases = [str(item.get("alias") or "llama") for item in running]
         if any(now - self._resident_since.get(alias, now) < policy.min_uptime_sec for alias in aliases):
-            self._telemetry.record("yield.suppressed", reason="minimum_uptime")
-            return False
+            return self._suppress(WaitReason.YIELD_MINIMUM_UPTIME, "minimum_uptime")
         while self._yield_history and now - self._yield_history[0] > THRASH_WINDOW_SEC:
             self._yield_history.popleft()
         if len(self._yield_history) >= THRASH_MAX_YIELDS:
-            self._telemetry.record("yield.suppressed", reason="thrash_window")
-            return False
+            return self._suppress(WaitReason.YIELD_THRASH_WINDOW, "thrash_window")
+        self._last_yield_wait_reason = None
         return True
+
+    def _legacy_cost(self, residency_key: str) -> LoadCostEstimate | None:
+        value = self._telemetry.cold_load_p90(residency_key)
+        if value is None:
+            return None
+        return LoadCostEstimate(value, "cold", 1, 0, 1)
+
+    def _suppress(self, wait_reason: WaitReason, telemetry_reason: str) -> bool:
+        self._last_yield_wait_reason = wait_reason
+        self._telemetry.record("yield.suppressed", reason=telemetry_reason)
+        return False
+
+    def yield_wait_reason(self) -> WaitReason | None:
+        return self._last_yield_wait_reason
 
     async def request_yield(
         self,
@@ -204,6 +227,7 @@ class LlamaCapacityProvider(ResourceProvider):
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     self._draining = False
+                    self._last_yield_wait_reason = WaitReason.YIELD_DRAIN_TIMEOUT
                     self._telemetry.record("yield.suppressed", reason="drain_timeout")
                     self._condition.notify_all()
                     return False
@@ -211,6 +235,7 @@ class LlamaCapacityProvider(ResourceProvider):
                     await asyncio.wait_for(self._condition.wait(), timeout=remaining)
                 except TimeoutError:
                     self._draining = False
+                    self._last_yield_wait_reason = WaitReason.YIELD_DRAIN_TIMEOUT
                     self._telemetry.record("yield.suppressed", reason="drain_timeout")
                     self._condition.notify_all()
                     return False
@@ -230,6 +255,7 @@ class LlamaCapacityProvider(ResourceProvider):
                 self._draining = False
                 self._condition.notify_all()
         if stopped:
+            self._last_yield_wait_reason = None
             self._yield_history.append(self._clock())
             self._telemetry.record("yield.completed", device_id=device_id, reason="process_stop")
         return stopped

@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
+from app.config import data_dir
 from app.resources.devices import DeviceCollection, ResourceDevice
 from app.resources.leases import LeaseError, LeaseTable
 from app.resources.probes import ProviderRegistry
@@ -347,6 +348,11 @@ class ResourceBroker:
                 record = self._requests.get(request_id)
                 if record is not None and record.status.state == RequestState.WAITING:
                     await self._schedule_locked(self._clock())
+                    if not yielded:
+                        suppression = self.providers.yield_wait_reason()
+                        if suppression is not None:
+                            record.status.reason = suppression
+                            await self._bump()
                 if yielded:
                     await self._bump()
 
@@ -471,7 +477,10 @@ def empty_broker() -> ResourceBroker:
     return ResourceBroker(DeviceCollection())
 
 
-broker = empty_broker()
+broker = ResourceBroker(
+    DeviceCollection(),
+    telemetry=ResourceTelemetry(profile_path=data_dir() / "resource-load-profiles.json"),
+)
 
 
 __all__ = ["BrokerError", "LeaseError", "ResourceBroker", "broker"]
