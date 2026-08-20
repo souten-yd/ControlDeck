@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Re
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.addons import bridge, health, registry
+from app.addons import bridge, execution as addon_execution, health, registry
 from app.addons.schema import AddonManifestV2, parse_manifest
 from app.audit import service as audit
 from app.database import get_db
@@ -29,12 +29,27 @@ class EnableAddonRequest(BaseModel):
     granted_capabilities: list[str] | None = Field(default=None, max_length=32)
 
 
+class AgentToolInvokeRequest(BaseModel):
+    arguments: dict = Field(default_factory=dict, max_length=64)
+    wait: bool = True
+
+
+class ContextActionInvokeRequest(BaseModel):
+    context_type: str = Field(pattern="^(file|project|workflow|job)$")
+    resource_id: str = Field(min_length=1, max_length=1024)
+    input: dict = Field(default_factory=dict, max_length=64)
+
+
 def _bridge_error(exc: bridge.BridgeAccessError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail())
 
 
 def _registry_error(exc: registry.AddonRegistryError, status_code: int = 404) -> HTTPException:
     return HTTPException(status_code=status_code, detail=str(exc))
+
+
+def _execution_error(exc: addon_execution.AddonExecutionError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)})
 
 
 @router.get("/effective")
@@ -47,6 +62,98 @@ def effective_addons(
     if if_none_match == etag:
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
     return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+
+
+@router.get("/execution-contributions")
+async def execution_contributions(user: User = Depends(get_current_user)):
+    """Return only enabled, available and user-authorized executable contributions."""
+    permissions = user_permissions(user)
+    groups = {
+        kind: addon_execution.discover(kind, permissions)
+        for kind in ("workflow_executors", "agent_tools", "context_actions")
+    }
+    schema_errors: dict[str, str] = {}
+    for contribution in groups["workflow_executors"]:
+        key = f"{contribution['addon_id']}:{contribution['id']}"
+        try:
+            input_schema, output_schema = await addon_execution.workflow_schemas(
+                contribution["addon_id"], contribution["id"], permissions=permissions,
+            )
+            contribution["input_schema"] = input_schema
+            contribution["output_schema"] = output_schema
+        except addon_execution.AddonExecutionError as exc:
+            schema_errors[key] = exc.code
+    groups["workflow_executors"] = [
+        item for item in groups["workflow_executors"]
+        if f"{item['addon_id']}:{item['id']}" not in schema_errors
+    ]
+    return {"revision": registry.revision(), "contributions": groups, "schema_errors": schema_errors}
+
+
+@router.post("/{addon_id}/agent-tools/{contribution_id}/invoke")
+async def invoke_agent_tool(
+    addon_id: str,
+    contribution_id: str,
+    body: AgentToolInvokeRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    permissions = user_permissions(user)
+    try:
+        job = await addon_execution.create_agent_tool_job(
+            addon_id, contribution_id, body.arguments,
+            owner_user_id=user.id, permissions=permissions,
+        )
+        result = await addon_execution.wait_agent_tool_job(job) if body.wait else None
+    except addon_execution.AddonExecutionError as exc:
+        audit.record(
+            db, "addon.agent_tool", user=user, resource_type="addon", resource_id=addon_id,
+            result="failure", request=request,
+            metadata={"contribution_id": contribution_id, "result_code": exc.code, "field_count": len(body.arguments)},
+        )
+        raise _execution_error(exc) from exc
+    response.status_code = 200 if body.wait else 202
+    audit.record(
+        db, "addon.agent_tool", user=user, resource_type="addon", resource_id=addon_id,
+        request=request,
+        metadata={"contribution_id": contribution_id, "job_id": job.id, "field_count": len(body.arguments)},
+    )
+    return result if body.wait else {"job_id": job.id, "status": job.status}
+
+
+@router.post("/{addon_id}/context-actions/{contribution_id}/invoke")
+async def invoke_context_action(
+    addon_id: str,
+    contribution_id: str,
+    body: ContextActionInvokeRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    try:
+        result = await addon_execution.invoke_context_action(
+            addon_id, contribution_id,
+            context_type=body.context_type,
+            resource_id=body.resource_id,
+            input_value=body.input,
+            owner_user_id=user.id,
+            permissions=user_permissions(user),
+        )
+    except addon_execution.AddonExecutionError as exc:
+        audit.record(
+            db, "addon.context_action", user=user, resource_type="addon", resource_id=addon_id,
+            result="failure", request=request,
+            metadata={"contribution_id": contribution_id, "context_type": body.context_type, "result_code": exc.code},
+        )
+        raise _execution_error(exc) from exc
+    audit.record(
+        db, "addon.context_action", user=user, resource_type="addon", resource_id=addon_id,
+        request=request,
+        metadata={"contribution_id": contribution_id, "context_type": body.context_type, "field_count": len(body.input)},
+    )
+    return result
 
 
 async def _effective_event_stream(request: Request, permissions: set[str]):

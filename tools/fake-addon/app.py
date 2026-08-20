@@ -217,7 +217,7 @@ async def agent_execute(payload: dict) -> dict:
 
 @app.post("/context/inspect")
 async def context_inspect(payload: dict) -> dict:
-    return {"summary": "fake context", "keys": sorted(payload)}
+    return {"summary": "fake context", "keys": sorted(payload), "context": payload.get("context")}
 
 
 @app.get("/schemas/workflow-input")

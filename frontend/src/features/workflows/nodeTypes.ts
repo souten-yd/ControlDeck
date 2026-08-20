@@ -1178,7 +1178,43 @@ export const JSON_SCHEMA_PRESETS: { label: string; schema: object }[] = [
   },
 ];
 
-export const CATEGORY_ORDER = ["チャット", "アプリ", "制御", "データ", "ファイル", "AI", "ネットワーク", "コマンド", "通知"];
+interface RemoteNodeMetadata {
+  type: string;
+  description: string;
+  config_schema: Record<string, { type: string; required?: boolean; reason?: string }>;
+  output_schema: Record<string, string>;
+  addon?: { id: string; contribution_id: string; label: string };
+}
+
+/** Backend discoveryを正としてremote Add-on nodeだけをpaletteへ登録する。 */
+export function registerAddonWorkflowNodeTypes(catalog: RemoteNodeMetadata[]): void {
+  for (const type of Object.keys(NODE_TYPES)) {
+    if (type.startsWith("addon.workflow:")) delete NODE_TYPES[type];
+  }
+  for (const item of catalog) {
+    if (!item.type.startsWith("addon.workflow:") || !item.addon) continue;
+    const fields: FieldDef[] = Object.entries(item.config_schema).map(([key, schema]) => ({
+      key,
+      label: key,
+      type: schema.type === "boolean" ? "checkbox"
+        : schema.type === "number" || schema.type === "integer" ? "number"
+          : schema.type === "object" || schema.type === "array" ? "textarea" : "text",
+      hint: schema.reason,
+      placeholder: schema.type === "object" ? "{}" : schema.type === "array" ? "[]" : undefined,
+    }));
+    NODE_TYPES[item.type] = {
+      label: item.addon.label,
+      category: "拡張機能",
+      color: "#7c3aed",
+      icon: "◇",
+      fields,
+      outputs: Object.keys(item.output_schema).map((key) => ({ key, label: key })),
+      desc: `${item.addon.id} · ${item.description}`,
+    };
+  }
+}
+
+export const CATEGORY_ORDER = ["チャット", "アプリ", "制御", "データ", "ファイル", "AI", "拡張機能", "ネットワーク", "コマンド", "通知"];
 
 /**
  * ノードリファレンス用の詳細ドキュメント（Markdown ライクなプレーンテキスト）。

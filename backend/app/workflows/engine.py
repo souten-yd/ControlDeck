@@ -119,7 +119,10 @@ def validate_definition(definition_json: str) -> None:
         elif ntype == "control.loop":
             pass  # エンジンが直接処理する制御ノード
         elif ntype not in NODE_EXECUTORS:
-            raise DefinitionError(f"未知のノード種類: {ntype}")
+            from app.addons.execution import is_workflow_node_type
+
+            if not is_workflow_node_type(ntype):
+                raise DefinitionError(f"未知のノード種類: {ntype}")
     if nodes and triggers != 1:
         raise DefinitionError("トリガーノードは 1 つ必要です")
     for e in edges:
@@ -559,6 +562,10 @@ async def _execute_graph(
         if steps["n"] > MAX_STEPS:
             raise NodeError(f"ステップ数が上限（{MAX_STEPS}）を超えました")
         executor = NODE_EXECUTORS.get(ntype)
+        if executor is None:
+            from app.addons.execution import workflow_executor
+
+            executor = workflow_executor(ntype)
         if executor is None:
             raise NodeError(f"未知のノード種類: {ntype}")
         entry: dict[str, Any] = {"status": "PENDING", "name": node.get("name") or nid, "type": ntype}

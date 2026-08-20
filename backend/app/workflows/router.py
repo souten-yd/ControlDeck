@@ -128,11 +128,13 @@ class DryRunBody(BaseModel):
 
 
 @router.get("/workflows/node-catalog")
-def workflow_node_catalog(user: User = Depends(require_permission("workflows.run"))):
+async def workflow_node_catalog(user: User = Depends(require_permission("workflows.run"))):
     """backendを正とする全nodeの型・capability・副作用metadata。"""
+    from app.addons.execution import workflow_catalog
+    from app.security.deps import user_permissions
     from app.workflows.node_metadata import node_catalog
 
-    return node_catalog()
+    return [*node_catalog(), *await workflow_catalog(user_permissions(user))]
 
 
 @router.post("/workflows/dry-run-definition")
