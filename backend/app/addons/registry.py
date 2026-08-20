@@ -218,10 +218,32 @@ def status(addon_id: str) -> dict[str, Any]:
     with _LOCK:
         directory = _addon_dir(addon_id)
         _validate_directory(directory)
-        parsed = _load_path(directory / MANIFEST_NAME)
-        manifest = parsed.manifest
         stored = _read_state().get(addon_id, {})
         enabled = bool(stored.get("enabled", False))
+        try:
+            parsed = _load_path(directory / MANIFEST_NAME)
+        except AddonRegistryError:
+            return {
+                "api_version": "2",
+                "id": addon_id,
+                "name": addon_id,
+                "installed": True,
+                "enabled": enabled,
+                "state": "incompatible",
+                "granted_capabilities": [],
+                "warnings": [],
+                "health": {
+                    "status": "unavailable",
+                    "contract_version": "2.0",
+                    "reason_code": "contract_incompatible",
+                    "message": "manifestまたはcontractが現在のhostと互換ではありません",
+                    "action": {"kind": "documentation"},
+                    "contributions": {},
+                    "setup": [],
+                },
+                "health_checked_at": None,
+            }
+        manifest = parsed.manifest
         observation = _observations.get(addon_id)
         warnings = stored.get("warnings", list(parsed.warnings))
         return {
@@ -239,12 +261,29 @@ def status(addon_id: str) -> dict[str, Any]:
 
 
 def list_addons() -> list[dict[str, Any]]:
-    return [status(manifest.id) for manifest, _warnings in manifests()]
+    result: list[dict[str, Any]] = []
+    for directory in sorted(_root().iterdir(), key=lambda item: item.name):
+        if directory.name == STATE_NAME or directory.is_symlink() or not directory.is_dir():
+            continue
+        try:
+            result.append(status(directory.name))
+        except AddonRegistryError:
+            continue
+    return result
 
 
 def set_enabled(addon_id: str, enabled: bool, grants: list[str] | None = None) -> dict[str, Any]:
     with _LOCK:
         current = status(addon_id)
+        if current["state"] == "incompatible":
+            if enabled:
+                raise AddonRegistryError("互換性のない拡張機能は有効化できません")
+            state = _read_state()
+            state[addon_id] = {"enabled": False, "granted_capabilities": [], "warnings": []}
+            _write_state(state)
+            _observations.pop(addon_id, None)
+            _bump_revision()
+            return status(addon_id)
         manifest = _load_path(_addon_dir(addon_id) / MANIFEST_NAME).manifest
         requested = set(manifest.host_capabilities)
         selected = list(manifest.host_capabilities) if grants is None else list(dict.fromkeys(grants))

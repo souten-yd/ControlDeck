@@ -102,3 +102,17 @@ def test_effective_etag_and_revision_change_deterministically(isolated_registry)
     assert before["etag"] != after["etag"]
     assert after["revision"] > before["revision"]
     assert registry.wait_for_revision(after["revision"], timeout=0.001) == after["revision"]
+
+
+def test_incompatible_managed_manifest_remains_visible_but_never_effective(isolated_registry, tmp_path):
+    registry = isolated_registry
+    _install(registry)
+    path = tmp_path / "data" / "addons" / "fake-addon" / registry.MANIFEST_NAME
+    path.write_text('{"api_version":"3"}', encoding="utf-8")
+    item = registry.list_addons()[0]
+    assert item["state"] == "incompatible"
+    assert item["health"]["reason_code"] == "contract_incompatible"
+    with pytest.raises(registry.AddonRegistryError, match="有効化できません"):
+        registry.set_enabled("fake-addon", True)
+    assert registry.effective_for_permissions({"apps.view"})["addons"] == []
+    assert registry.uninstall("fake-addon")["state"] == "not_installed"
