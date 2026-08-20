@@ -25,6 +25,8 @@ def test_load_profiles_use_bounded_observed_samples_and_nearest_rank_p90():
     profile = telemetry.snapshot()["load_profiles"][0]
     assert profile["sample_count"] == 3
     assert profile["measured_at"] == 104.0
+    assert profile["process_start_sec"] == {"p50": 3.0, "p90": 4.0}
+    assert profile["model_load_sec"] == {"p50": 27.0, "p90": 36.0}
     assert profile["cold_load_cost_sec"] == {"p50": 30.0, "p90": 40.0}
     assert profile["first_token_latency_sec"] == {
         "sample_count": 2,

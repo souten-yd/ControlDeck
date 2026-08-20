@@ -134,6 +134,8 @@ class ResourceTelemetry:
         profiles: list[dict[str, Any]] = []
         for key in sorted(self._load_samples):
             samples = list(self._load_samples[key])
+            process_starts = [item["process_start_sec"] for item in samples]
+            model_loads = [item["model_load_sec"] for item in samples]
             costs = [item["cold_load_cost_sec"] for item in samples]
             first_tokens = [
                 item["first_token_latency_sec"]
@@ -144,6 +146,14 @@ class ResourceTelemetry:
                 "residency_key": key,
                 "measured_at": samples[-1]["measured_at"],
                 "sample_count": len(samples),
+                "process_start_sec": {
+                    "p50": self._percentile(process_starts, 0.50),
+                    "p90": self._percentile(process_starts, 0.90),
+                },
+                "model_load_sec": {
+                    "p50": self._percentile(model_loads, 0.50),
+                    "p90": self._percentile(model_loads, 0.90),
+                },
                 "cold_load_cost_sec": {
                     "p50": self._percentile(costs, 0.50),
                     "p90": self._percentile(costs, 0.90),
