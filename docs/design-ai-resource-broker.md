@@ -15,7 +15,7 @@ PR-D1ではfake／実device collection、provider reservation/probe、lease life
 - VRAM: load時29,269,970,944 bytes、stop後59,912,192 bytes
 - 動的unload: 現行llama-server CLI/APIに操作なし。yield level 3はlevel 4（process stop）へ縮退
 
-このsampleは実測値であり推定fallbackではない。sample 1のため閾値調整に十分な分布とは扱わず、PR-D2で追加loadを蓄積してp90を更新する。managed supervision、thrash guard、Gateway lease、Jobs `waiting_resource`、OOM後の再実行制限はPR-D2／単独DB migrationの範囲であり、PR-D1では有効化していない。
+このsampleは実測値であり推定fallbackではない。sample 1のため閾値調整に十分な分布とは扱わず、PR-D2で追加loadを蓄積してp90を更新する。`jobs.phase`／`jobs.wait_reason`のnullable列は単独migration `c83f7a19d2e4`で追加済み。managed supervision、thrash guard、Gateway lease、Jobs `waiting_resource`の挙動、OOM後の再実行制限はPR-D2の範囲であり、まだ有効化していない。
 
 ## 1. 目的
 
