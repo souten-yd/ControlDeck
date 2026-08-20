@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import asyncio
 import logging
+from math import isfinite
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -122,14 +123,26 @@ def observed_system_devices() -> DeviceCollection:
 
     gpu = (collector.latest or {}).get("gpu") or {}
     total = gpu.get("vram_total_bytes")
-    if not isinstance(total, int) or total <= 0:
+    if not isinstance(total, (int, float)) or not isfinite(total) or total <= 0:
+        # The collector can fail after its GPU sample but before publishing `latest`
+        # (for example, an unrelated power/history error). Reuse its already-selected
+        # provider so Broker visibility does not disappear with the whole snapshot.
+        provider = collector.gpu
+        gpu = provider.sample() if provider is not None else None
+        gpu = gpu or {}
+        total = gpu.get("vram_total_bytes")
+    if not isinstance(total, (int, float)) or not isfinite(total) or total <= 0:
         return DeviceCollection()
     used = gpu.get("vram_used_bytes")
     return DeviceCollection([ResourceDevice(
         id="gpu0",
         name=str(gpu.get("name") or "GPU 0"),
-        total_bytes=total,
-        observed_used_bytes=used if isinstance(used, int) and used >= 0 else 0,
+        total_bytes=int(total),
+        observed_used_bytes=(
+            int(used)
+            if isinstance(used, (int, float)) and isfinite(used) and used >= 0
+            else 0
+        ),
     )])
 
 
@@ -137,7 +150,7 @@ async def refresh_loop(devices: DeviceCollection) -> None:
     """Refresh facts from the established monitor; transient probe gaps retain the last facts."""
     while True:
         try:
-            observed = observed_system_devices().list()
+            observed = (await asyncio.to_thread(observed_system_devices)).list()
             if observed:
                 devices.replace(observed)
         except Exception:  # noqa: BLE001 - resource telemetry must not stop ControlDeck

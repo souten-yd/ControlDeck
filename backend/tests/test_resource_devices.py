@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.resources.devices import fake_devices
+from app.resources.devices import fake_devices, observed_system_devices
 from app.resources.probes import ProviderRegistry
 from app.resources.providers import ProbeResult, ProviderReservation, ResourceProvider, StaticReservationProvider, YieldLevel
 from app.resources.schema import ResourceRequest, WaitReason
@@ -36,6 +36,38 @@ def test_device_collection_rejects_duplicates_and_unknown_updates():
         fake.replace([fake.get("gpu0"), fake.get("gpu0")])  # type: ignore[list-item]
     with pytest.raises(KeyError):
         fake_devices(10).update_observation("gpu9", observed_used_bytes=1)
+
+
+def test_observed_devices_accept_monitor_float_bytes(monkeypatch):
+    from app.monitoring.collector import collector
+
+    monkeypatch.setattr(collector, "latest", {"gpu": {
+        "name": "Observed GPU",
+        "vram_total_bytes": 100.0,
+        "vram_used_bytes": 25.0,
+    }})
+    device = observed_system_devices().get("gpu0")
+    assert device is not None
+    assert (device.name, device.total_bytes, device.observed_used_bytes) == (
+        "Observed GPU", 100, 25
+    )
+
+
+def test_observed_devices_reuse_selected_provider_when_latest_is_unavailable(monkeypatch):
+    from app.monitoring.collector import collector
+
+    class Provider:
+        @staticmethod
+        def sample():
+            return {"name": "Fallback GPU", "vram_total_bytes": 200, "vram_used_bytes": 10}
+
+    monkeypatch.setattr(collector, "latest", None)
+    monkeypatch.setattr(collector, "gpu", Provider())
+    device = observed_system_devices().get("gpu0")
+    assert device is not None
+    assert (device.name, device.total_bytes, device.observed_used_bytes) == (
+        "Fallback GPU", 200, 10
+    )
 
 
 def test_provider_registry_keeps_level_zero_reservations_explicit():
