@@ -41,6 +41,13 @@
         "route": "/x/fake-addon/workspace",
         "path": "/",
         "mobile": "companion"
+      },
+      {
+        "id": "silent",
+        "label": "Silent timeout harness",
+        "route": "/x/fake-addon/silent",
+        "path": "/silent",
+        "mobile": "embedded"
       }
     ],
     "commands": [

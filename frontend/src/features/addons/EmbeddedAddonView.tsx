@@ -107,6 +107,10 @@ function bridgeError(error: unknown) {
   return { code: "host_error", message: error instanceof Error ? error.message : "Host Bridgeでエラーが発生しました" };
 }
 
+function entryPath(routePath: string, contributionPath?: string): string {
+  return routePath === "/" ? contributionPath || "/" : routePath;
+}
+
 export function EmbeddedAddonView({
   addon,
   contribution,
@@ -127,7 +131,7 @@ export function EmbeddedAddonView({
   const notificationDedupe = useRef(new Map<string, number>());
   const fileGrants = useRef(new Map<string, { path: string; kind: string }>());
   const jobSubscriptions = useRef(new Map<string, number>());
-  const initialPath = useRef(routePath || contribution.path || "/");
+  const initialPath = useRef(entryPath(routePath, contribution.path));
   const [connectionKey, setConnectionKey] = useState(0);
   const [connection, setConnection] = useState<"connecting" | "ready" | "timeout" | "error">("connecting");
   const [error, setError] = useState("");
@@ -147,12 +151,25 @@ export function EmbeddedAddonView({
     enabled: jobId !== null,
     refetchInterval: jobId ? 1_000 : false,
   });
+  const viewIdentity = `${addon.id}:${contribution.id}`;
+  const viewIdentityRef = useRef(viewIdentity);
+  if (viewIdentityRef.current !== viewIdentity) {
+    viewIdentityRef.current = viewIdentity;
+    initialPath.current = entryPath(routePath, contribution.path);
+  }
   const framePath = initialPath.current.startsWith("/") ? initialPath.current : "/";
   const frameSrc = `/addon-frame/${encodeURIComponent(addon.id)}${framePath}`;
 
   const sendEvent = useCallback((event: string, data: unknown) => {
     portRef.current?.postMessage({ type: "event", event, data });
   }, []);
+
+  useEffect(() => {
+    setConnection("connecting");
+    setError("");
+    setTitle(addon.name);
+    setBusy(false);
+  }, [addon.name, viewIdentity]);
 
   useEffect(() => {
     if (!busy) return;
@@ -353,7 +370,7 @@ export function EmbeddedAddonView({
   useEffect(() => sendEvent("route.changed", { path: routePath || "/" }), [routePath, sendEvent]);
 
   const retry = () => {
-    initialPath.current = routePath || contribution.path || "/";
+    initialPath.current = entryPath(routePath, contribution.path);
     setConnection("connecting");
     setError("");
     setConnectionKey((value) => value + 1);
@@ -385,7 +402,7 @@ export function EmbeddedAddonView({
         {connection === "connecting" ? <div className="w-full max-w-sm animate-pulse space-y-3" aria-label="拡張機能を接続中"><div className="h-8 w-2/3 rounded-xl" style={{ backgroundColor: themeTokens.surface }} /><div className="h-32 rounded-2xl" style={{ backgroundColor: themeTokens.surface }} /><p className="text-center text-xs" style={{ color: themeTokens.muted }}>拡張機能へ安全に接続しています…</p></div> : <div className="max-w-sm rounded-2xl border p-5 text-center" style={{ borderColor: themeTokens.border, backgroundColor: themeTokens.surface }}><h2 className="font-semibold">拡張画面を表示できません</h2><p className="mt-2 text-sm" style={{ color: themeTokens.muted }}>{connection === "timeout" ? "8秒以内に応答がありませんでした。serviceと設定を確認してください。" : error || addonStateMessage(addon.state)}</p><div className="mt-4 flex justify-center gap-2"><button onClick={retry} className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white">再試行</button><button onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)} className="min-h-11 rounded-xl px-4 text-sm">設定を開く</button></div></div>}
       </div>}
       <iframe
-        key={connectionKey}
+        key={`${viewIdentity}:${connectionKey}`}
         ref={iframeRef}
         title={`${addon.name} — ${contribution.id}`}
         src={frameSrc}

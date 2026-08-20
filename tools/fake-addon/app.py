@@ -86,6 +86,7 @@ def _availability() -> dict:
     return {
         "navigation:workspace": "available",
         "embedded_view:workspace": "available",
+        "embedded_view:silent": "available",
         "workflow_executor:fake.generate": "available",
         "workflow_executor:fake.video": video,
     }
@@ -120,6 +121,11 @@ async def health() -> dict:
 @app.get("/details", response_class=HTMLResponse)
 async def workspace() -> str:
     return _WORKSPACE_HTML
+
+
+@app.get("/silent", response_class=HTMLResponse)
+async def silent_workspace() -> str:
+    return "<!doctype html><html><body><p>Intentionally silent Bridge harness</p></body></html>"
 
 
 @app.post("/test/health")
