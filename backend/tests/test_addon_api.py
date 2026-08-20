@@ -40,6 +40,13 @@ def test_addon_api_requires_auth_and_does_not_leak_from_public_meta(client, addo
 def test_addon_api_install_enable_effective_etag_disable_and_audit(addon_api, monkeypatch):
     client, registry = addon_api
     from app.addons import router
+    canceled_owners: list[str] = []
+
+    async def cancel_owner(owner: str):
+        canceled_owners.append(owner)
+        return {"requests": 1, "leases": 1}
+
+    monkeypatch.setattr(router.resource_broker, "cancel_owner", cancel_owner)
     value = deepcopy(addon_manifest())
     value["contributions"]["commands"][0]["hint"] = "future presentation"
     installed = client.post("/api/v1/addons", json=value, headers=CSRF_HEADERS)
@@ -75,6 +82,7 @@ def test_addon_api_install_enable_effective_etag_disable_and_audit(addon_api, mo
     monkeypatch.setattr(router, "_wait_for_disable_grace", observe_grace)
     disabled = client.post("/api/v1/addons/fake-addon/disable", headers=CSRF_HEADERS)
     assert disabled.status_code == 200
+    assert canceled_owners == ["addon:fake-addon"]
     assert client.get("/api/v1/addons/effective").json()["addons"] == []
 
     audits = client.get("/api/v1/audit").json()

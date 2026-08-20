@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import threading
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Iterable
 
 from app.resources.schema import DeviceSnapshot
+
+logger = logging.getLogger("control_deck.resources.devices")
 
 
 @dataclass
@@ -127,3 +131,15 @@ def observed_system_devices() -> DeviceCollection:
         total_bytes=total,
         observed_used_bytes=used if isinstance(used, int) and used >= 0 else 0,
     )])
+
+
+async def refresh_loop(devices: DeviceCollection) -> None:
+    """Refresh facts from the established monitor; transient probe gaps retain the last facts."""
+    while True:
+        try:
+            observed = observed_system_devices().list()
+            if observed:
+                devices.replace(observed)
+        except Exception:  # noqa: BLE001 - resource telemetry must not stop ControlDeck
+            logger.exception("resource device refresh failed")
+        await asyncio.sleep(2)

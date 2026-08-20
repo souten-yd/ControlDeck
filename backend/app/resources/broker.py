@@ -21,6 +21,7 @@ from app.resources.schema import (
     ResourceRequest,
     WaitReason,
 )
+from app.resources.telemetry import ResourceTelemetry
 
 
 class BrokerError(RuntimeError):
@@ -50,11 +51,13 @@ class ResourceBroker:
         *,
         lease_ttl_sec: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
+        telemetry: ResourceTelemetry | None = None,
     ):
         self.devices = devices
         self.providers = providers or ProviderRegistry()
         self.leases = LeaseTable(ttl_sec=lease_ttl_sec)
         self._clock = clock
+        self.telemetry = telemetry or ResourceTelemetry()
         self._lock = asyncio.Lock()
         self._requests: dict[str, _RequestRecord] = {}
         self._sequence = 0
@@ -89,6 +92,12 @@ class ResourceBroker:
                 await self._schedule_locked(now)
                 if request.on_insufficient == "fail_fast" and record.status.state == RequestState.WAITING:
                     self._finish_rejected(record, record.status.reason or WaitReason.INSUFFICIENT_VRAM)
+            if record.status.state == RequestState.WAITING:
+                self.telemetry.record(
+                    "request.waiting",
+                    request_id=request_id,
+                    reason=(record.status.reason or WaitReason.QUEUE_POSITION).value,
+                )
             await self._bump()
             return self._copy_status(record.status)
 
@@ -132,6 +141,7 @@ class ResourceBroker:
                 record.status.queue_position = None
                 record.status.actions = []
                 record.completed.set()
+                self.telemetry.record("request.canceled", request_id=request_id)
                 await self._schedule_locked(self._clock())
                 await self._bump()
             return self._copy_status(record.status)
@@ -139,18 +149,21 @@ class ResourceBroker:
     async def activate(self, lease_id: str) -> LeaseStatus:
         async with self._lock:
             result = self.leases.activate(lease_id, self._clock())
+            self.telemetry.record("lease.active", request_id=result.request_id, lease_id=lease_id, device_id=result.device_id)
             await self._bump()
             return result
 
     async def renew(self, lease_id: str) -> LeaseStatus:
         async with self._lock:
             result = self.leases.renew(lease_id, self._clock())
+            self.telemetry.record("lease.renewed", request_id=result.request_id, lease_id=lease_id, device_id=result.device_id)
             await self._bump()
             return result
 
     async def release(self, lease_id: str) -> LeaseStatus:
         async with self._lock:
             result = self.leases.release(lease_id)
+            self.telemetry.record("lease.released", request_id=result.request_id, lease_id=lease_id, device_id=result.device_id)
             await self._schedule_locked(self._clock())
             await self._bump()
             return result
@@ -165,8 +178,12 @@ class ResourceBroker:
                     record.status.queue_position = None
                     record.status.actions = []
                     record.completed.set()
+                    self.telemetry.record("request.canceled", request_id=record.status.request_id)
                     requests += 1
-            leases = len(self.leases.cancel_owner(owner))
+            canceled_leases = self.leases.cancel_owner(owner)
+            leases = len(canceled_leases)
+            for lease in canceled_leases:
+                self.telemetry.record("lease.canceled", request_id=lease.request_id, lease_id=lease.lease_id, device_id=lease.device_id)
             await self._schedule_locked(self._clock())
             if requests or leases:
                 await self._bump()
@@ -183,8 +200,12 @@ class ResourceBroker:
                     record.status.queue_position = None
                     record.status.actions = []
                     record.completed.set()
+                    self.telemetry.record("request.expired", request_id=record.status.request_id)
                     requests += 1
-            leases = len(self.leases.expire_due(now))
+            expired_leases = self.leases.expire_due(now)
+            leases = len(expired_leases)
+            for lease in expired_leases:
+                self.telemetry.record("lease.expired", request_id=lease.request_id, lease_id=lease.lease_id, device_id=lease.device_id)
             if requests or leases:
                 await self._schedule_locked(now)
                 await self._bump()
@@ -202,6 +223,7 @@ class ResourceBroker:
                 )],
                 "requests": [self._copy_status(item.status).model_dump(mode="json") for item in self._requests.values()],
                 "leases": [item.model_dump(mode="json") for item in self.leases.all()],
+                "telemetry": self.telemetry.snapshot(),
             }
 
     async def wait_for_revision(self, previous: int, timeout: float = 30.0) -> int:
@@ -224,6 +246,7 @@ class ResourceBroker:
                 record.completed.set()
             self._requests.clear()
             self.leases.reset()
+            self.telemetry.reset()
             self._sequence = 0
             await self._bump()
 
@@ -266,6 +289,12 @@ class ResourceBroker:
                     record.status.blocking = []
                     record.status.actions = []
                     record.completed.set()
+                    self.telemetry.record(
+                        "lease.granted",
+                        request_id=candidate.request_id,
+                        lease_id=lease.lease_id,
+                        device_id=fit.device_id,
+                    )
                     granted = True
                     break
                 record.status.reason = fit.reason or WaitReason.QUEUE_POSITION
@@ -353,6 +382,7 @@ class ResourceBroker:
         record.status.queue_position = None
         record.status.actions = []
         record.completed.set()
+        self.telemetry.record("request.rejected", request_id=record.status.request_id, reason=reason.value)
 
     def _required_request(self, request_id: str) -> _RequestRecord:
         try:
@@ -378,4 +408,3 @@ broker = empty_broker()
 
 
 __all__ = ["BrokerError", "LeaseError", "ResourceBroker", "broker"]
-
