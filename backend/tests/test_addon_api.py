@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from copy import deepcopy
 
 import pytest
@@ -87,3 +89,25 @@ def test_addon_api_recheck_disabled_and_invalid_manifest_fail_closed(addon_api):
 def test_addon_api_rejects_csrf(addon_api):
     client, _registry = addon_api
     assert client.post("/api/v1/addons", json=addon_manifest()).status_code == 403
+
+
+def test_effective_event_stream_emits_revision_and_user_specific_etag(addon_api):
+    _client, registry = addon_api
+    from app.addons.router import _effective_event_stream
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    async def first_event():
+        stream = _effective_event_stream(ConnectedRequest(), {"apps.view"})
+        try:
+            return await anext(stream)
+        finally:
+            await stream.aclose()
+
+    event = asyncio.run(first_event())
+    assert event.startswith("event: addons.effective.changed\ndata: ")
+    payload = json.loads(event.split("data: ", 1)[1])
+    assert payload["revision"] == registry.revision()
+    assert payload["etag"] == registry.effective_for_permissions({"apps.view"})["etag"]

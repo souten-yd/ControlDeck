@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from app.addons import health, registry
@@ -34,6 +35,28 @@ def effective_addons(
     if if_none_match == etag:
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
     return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+
+
+async def _effective_event_stream(request: Request, permissions: set[str]):
+    previous = -1
+    while True:
+        payload = registry.effective_for_permissions(permissions)
+        current = payload["revision"]
+        if current != previous:
+            yield f"event: addons.effective.changed\ndata: {json.dumps({'revision': current, 'etag': payload['etag']})}\n\n"
+            previous = current
+        if await request.is_disconnected():
+            return
+        await asyncio.to_thread(registry.wait_for_revision, previous, 25.0)
+
+
+@router.get("/effective/events")
+def effective_addon_events(request: Request, user: User = Depends(get_current_user)):
+    return StreamingResponse(
+        _effective_event_stream(request, user_permissions(user)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("")
