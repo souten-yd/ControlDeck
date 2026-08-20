@@ -6,16 +6,17 @@ import { addonLabel, useEffectiveAddons, type AddonHealthAction } from "../api/a
 import { PageHeader } from "../components/PageHeader";
 import { IconGrid } from "../components/icons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
+import { AddonCompanion, EmbeddedAddonView } from "../features/addons/EmbeddedAddonView";
 import { useAuth, useToasts } from "../stores";
 
 export default function AddonHostPage() {
-  const { addonId = "", viewId = "" } = useParams();
+  const { addonId = "", viewId = "", "*": nestedPath = "" } = useParams();
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const can = useAuth((state) => state.can);
   const show = useToasts((state) => state.show);
   const queryClient = useQueryClient();
-  const { data, isLoading } = useEffectiveAddons();
+  const { data, isLoading } = useEffectiveAddons(true);
   const addon = data?.addons.find((item) => item.id === addonId);
   const contributions = useMemo(() => Object.entries(data?.contributions ?? {}).flatMap(([kind, values]) =>
     values.filter((value) => value.addon_id === addonId).map((value) => ({ kind, ...value }))), [addonId, data]);
@@ -38,6 +39,12 @@ export default function AddonHostPage() {
 
   if (isLoading) return <div className="p-6 text-sm text-zinc-400">拡張機能を確認しています…</div>;
   if (!addon) return <MissingAddon addonId={addonId} />;
+
+  const embedded = (data?.contributions.embedded_views ?? []).find((item) => item.addon_id === addonId && item.id === viewId);
+  if (embedded) {
+    if (embedded.mobile === "companion" && window.matchMedia("(max-width: 767px)").matches) return <AddonCompanion addon={addon} />;
+    return <EmbeddedAddonView key={`${addon.id}:${embedded.id}`} addon={addon} contribution={embedded} routePath={nestedPath ? `/${nestedPath}` : "/"} />;
+  }
 
   const requested = search.get("command") || search.get("action");
   return (

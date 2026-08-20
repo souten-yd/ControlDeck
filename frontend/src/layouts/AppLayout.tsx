@@ -67,7 +67,12 @@ export default function AppLayout() {
       }
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    const openFromAddon = () => setPaletteOpen(true);
+    window.addEventListener("control-deck:command-palette", openFromAddon);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("control-deck:command-palette", openFromAddon);
+    };
   }, []);
 
   const toggleSidebar = () => {

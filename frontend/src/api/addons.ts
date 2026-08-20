@@ -46,6 +46,7 @@ export interface EffectiveContribution {
   permission: string;
   availability: "available" | "degraded" | "unavailable";
   route?: string;
+  path?: string;
   endpoint?: string;
   icon?: string | null;
   order?: number;
@@ -90,6 +91,35 @@ export interface AddonActivity {
   method: string;
   result: string;
   metadata: Record<string, number>;
+}
+
+export interface AddonBridgeSession {
+  addon_id: string;
+  view_id: string;
+  bridge_version: "1.0";
+  session_nonce: string;
+  expires_in: number;
+  allowed_methods: string[];
+}
+
+export function openAddonBridge(addonId: string, viewId: string) {
+  return api<AddonBridgeSession>(`/addons/${encodeURIComponent(addonId)}/bridge/handshake`, {
+    method: "POST",
+    json: { bridge_version: "1.0", view_id: viewId },
+  });
+}
+
+export function authorizeAddonBridgeCall(addonId: string, session: AddonBridgeSession, method: string, params: Record<string, unknown>) {
+  return api<{ ok: true; method: string; has_permission?: boolean }>(`/addons/${encodeURIComponent(addonId)}/bridge/call`, {
+    method: "POST",
+    json: {
+      bridge_version: "1.0",
+      session_nonce: session.session_nonce,
+      view_id: session.view_id,
+      method,
+      params,
+    },
+  });
 }
 
 export function addonLabel(label: AddonLabel): string {
