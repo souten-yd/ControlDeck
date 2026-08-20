@@ -24,6 +24,7 @@ import GitHubPage from "./pages/GitHub";
 import KnowledgePage from "./pages/Knowledge";
 import ModelsPage from "./pages/Models";
 import AssistantPage from "./pages/Assistant";
+import AddonHostPage from "./pages/AddonHost";
 
 /** 再デプロイ後、開きっぱなしの旧画面は消えたchunkを読みに行き
  *  "Importing a module script failed" で落ちる。1度だけ自動再読み込みして復帰する。 */
@@ -118,6 +119,7 @@ function buildRouter(enabledFeatures: string[]) {
       { path: "assistant", element: <AssistantPage /> },
       { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "x/:addonId/:viewId/*", element: <AddonHostPage /> },
       ...featureRoutes,
       { path: "*", element: <Navigate to="/" replace /> },
     ],
