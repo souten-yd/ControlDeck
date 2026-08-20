@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { useApps, useAppAction, useMeta } from "../api/hooks";
 import { useAuth } from "../stores";
 import { IconSearch } from "./icons";
+import { addonLabel, type EffectiveAddons } from "../api/addons";
+import { addonStateMessage } from "../features/addons/AddonStatus";
 
 interface Command {
   id: string;
@@ -15,9 +17,11 @@ interface Command {
 export function CommandPalette({
   onClose,
   onPower,
+  effectiveAddons,
 }: {
   onClose: () => void;
   onPower: (a: "reboot" | "shutdown") => void;
+  effectiveAddons?: EffectiveAddons;
 }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
@@ -48,6 +52,23 @@ export function CommandPalette({
       if (can(plugin.permission))
         list.push({ id: `plugin-${plugin.id}`, label: `Open ${plugin.label}`, run: () => window.open(plugin.url, "_blank", "noopener,noreferrer") });
     }
+    for (const contribution of effectiveAddons?.contributions.navigation ?? []) {
+      const addon = effectiveAddons?.addons.find((item) => item.id === contribution.addon_id);
+      list.push({
+        id: `addon-navigation-${contribution.addon_id}-${contribution.id}`,
+        label: `Open ${addonLabel(contribution.label)}`,
+        hint: addon && addon.state !== "healthy" ? addonStateMessage(addon.state) : "拡張機能",
+        run: () => navigate(contribution.route || `/x/${contribution.addon_id}/${contribution.id}`),
+      });
+    }
+    for (const contribution of effectiveAddons?.contributions.commands ?? []) {
+      list.push({
+        id: `addon-command-${contribution.addon_id}-${contribution.id}`,
+        label: addonLabel(contribution.label),
+        hint: "拡張機能のコマンド",
+        run: () => navigate(`/x/${contribution.addon_id}/${contribution.id}?command=${encodeURIComponent(contribution.id)}`),
+      });
+    }
     if (can("apps.edit"))
       list.push({ id: "app-add", label: "Add App", run: () => navigate("/apps?add=1") });
     for (const app of apps ?? []) {
@@ -75,7 +96,7 @@ export function CommandPalette({
       list.push({ id: "power-shutdown", label: "Shut Down PC", hint: "Confirmation required", run: () => onPower("shutdown") });
     }
     return list;
-  }, [apps, can, navigate, action, onPower, meta?.enabled_features, meta?.plugin_navigation]);
+  }, [apps, can, navigate, action, onPower, meta?.enabled_features, meta?.plugin_navigation, effectiveAddons]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

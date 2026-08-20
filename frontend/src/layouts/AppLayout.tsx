@@ -24,12 +24,18 @@ import { Logo } from "../components/Logo";
 import { PRODUCT_NAMES } from "../constants/productNames";
 import { canAccessNavigationItem, IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
 import { useMobileNavigation } from "../stores/mobileNavigation";
+import { addonLabel, useEffectiveAddons } from "../api/addons";
+import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 
 export default function AppLayout() {
   const user = useAuth((s) => s.user);
   const can = useAuth((s) => s.can);
   const connected = useMetrics((s) => s.connected);
   const { data: meta } = useMeta();
+  const { data: effectiveAddons } = useEffectiveAddons(true);
+  const addonById = new Map((effectiveAddons?.addons ?? []).map((addon) => [addon.id, addon]));
+  const addonNavigation = effectiveAddons?.contributions.navigation ?? [];
+  const addonQuickActions = effectiveAddons?.contributions.quick_actions ?? [];
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
   const enrollmentPending = Boolean(user?.totp_required && !user.totp_enabled);
   const visibleNav = NAVIGATION.filter((item) =>
@@ -157,6 +163,21 @@ export default function AppLayout() {
               {!collapsed && label}
             </NavLink>
           ))}
+          {addonNavigation.map((contribution) => {
+            const addon = addonById.get(contribution.addon_id);
+            const label = addonLabel(contribution.label);
+            return <NavLink
+              key={`addon-${contribution.addon_id}-${contribution.id}`}
+              to={contribution.route || `/x/${contribution.addon_id}/${contribution.id}`}
+              title={`${label}${addon && addon.state !== "healthy" ? ` — ${addonStateMessage(addon.state)}` : ""}`}
+              className={({ isActive }) => `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${
+                isActive ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
+              }`}
+            >
+              <IconGrid className="shrink-0 text-lg" />
+              {!collapsed && <><span className="min-w-0 flex-1 truncate">{label}</span>{addon && <AddonStatusChip state={addon.state} compact />}</>}
+            </NavLink>;
+          })}
           {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
             <a
               key={`plugin-${plugin.id}`}
@@ -331,6 +352,29 @@ export default function AppLayout() {
                 }}
               />
             )}
+            {addonNavigation.map((contribution) => {
+              const addon = addonById.get(contribution.addon_id);
+              return <ActionItem
+                key={`addon-navigation-${contribution.addon_id}-${contribution.id}`}
+                icon={<IconGrid />}
+                label={addonLabel(contribution.label)}
+                hint={addon && addon.state !== "healthy" ? addonStateMessage(addon.state) : undefined}
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate(contribution.route || `/x/${contribution.addon_id}/${contribution.id}`);
+                }}
+              />;
+            })}
+            {addonQuickActions.map((contribution) => <ActionItem
+              key={`addon-quick-${contribution.addon_id}-${contribution.id}`}
+              icon={<IconPlus />}
+              label={addonLabel(contribution.label)}
+              hint="拡張機能"
+              onClick={() => {
+                setActionOpen(false);
+                navigate(`/x/${contribution.addon_id}/${contribution.id}?action=${encodeURIComponent(contribution.id)}`);
+              }}
+            />)}
             {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
               <ActionItem
                 key={`plugin-${plugin.id}`}
@@ -454,6 +498,7 @@ export default function AppLayout() {
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
           onPower={(a) => setPowerAction(a)}
+          effectiveAddons={effectiveAddons}
         />
       )}
 
