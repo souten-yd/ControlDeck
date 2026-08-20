@@ -1,7 +1,7 @@
 # AI Resource Broker 詳細設計
 
 最終更新: 2026-08-21
-状態: PR-D1 core実装済み／PR-D2 adapter・Jobs移行は計画
+状態: PR-D1 core／PR-D2 adapter・Jobs移行実装済み
 
 ## 0. PR-D1 実装結果
 
@@ -15,7 +15,15 @@ PR-D1ではfake／実device collection、provider reservation/probe、lease life
 - VRAM: load時29,269,970,944 bytes、stop後59,912,192 bytes
 - 動的unload: 現行llama-server CLI/APIに操作なし。yield level 3はlevel 4（process stop）へ縮退
 
-このsampleは実測値であり推定fallbackではない。sample 1のため閾値調整に十分な分布とは扱わず、PR-D2で追加loadを蓄積してp90を更新する。`jobs.phase`／`jobs.wait_reason`のnullable列は単独migration `c83f7a19d2e4`で追加済み。managed supervision、thrash guard、Gateway lease、Jobs `waiting_resource`の挙動、OOM後の再実行制限はPR-D2の範囲であり、まだ有効化していない。
+このsampleは実測値であり推定fallbackではない。`jobs.phase`／`jobs.wait_reason`のnullable列は単独migration `c83f7a19d2e4`で追加した。以下のPR-D2でmanaged supervision、thrash guard、Gateway lease、Jobs `waiting_resource`、OOM後の再実行制限まで実装した。
+
+## 0.1 PR-D2 実装結果
+
+Llama Gatewayは既存OpenAI互換URLとKV probeを維持したままBroker leaseを取得し、停止modelのcold-load見積り、起動済みmodelのprovider reservation、client disconnect／timeout／応答完了時の解放を一つのadmission経路へ統合した。resource-aware JobはBroker grant前にrunnerへ入らず、`queued + waiting_resource`のままcancel可能である。OOM profileは次回requestのVRAM floorと60秒cooldownへ反映する。
+
+managed supervisionは既定OFFで、Gateway専用・local NVMe・実測cold-load p90ありの場合だけopt-inできる。推定処理時間がreload costの2倍を超え、最低常駐時間と5分2回のyield上限を満たす時だけdrain後に停止する。動的unload非対応の現行llama-serverではlevel 4のprocess stopを使い、新規LLM requestはdrainを取り消す。
+
+実機の2回目のQwen3.8 27B cold-loadではGateway request 83.981秒、cold-load p90 83.038秒、first token 0.733秒、VRAM 29,269,983,232 bytesを観測した。20GiB exclusive Broker requestはLLM resident中に`device_busy_exclusive`で待機し、managed yield後59,924,480 bytesまで解放してgrantされた。request解放後のGateway requestは7.851秒でmodelを再起動した。sampleは2件のためmanaged既定化や汎用的な閾値調整の根拠にはせず、`observed`を既定のまま維持する。
 
 ## 1. 目的
 

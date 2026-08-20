@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI):
     from app.addons.health import health_loop as addon_health_loop
     from app.resources.broker import broker as resource_broker
     from app.resources.devices import refresh_loop as resource_device_refresh_loop
+    from app.models_mgmt.resource_provider import provider as llama_resource_provider
     from app.models_mgmt.thinking import migrate_shared_reasoning
 
     # 思考設定を共通設定からモデル個別へ移した際の一度きりの移行。
@@ -75,6 +76,10 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 - 移行失敗で起動を止めない
         logger.exception("思考設定の移行に失敗しました")
 
+    try:
+        resource_broker.providers.register(llama_resource_provider())
+    except ValueError:
+        pass  # repeated TestClient lifespans reuse the same process singleton
     tasks = [
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),

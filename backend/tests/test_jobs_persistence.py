@@ -2,6 +2,8 @@
 import asyncio
 import time
 
+import pytest
+
 from app.jobs import service as jobs
 
 
@@ -169,6 +171,244 @@ def test_idempotency_priority_and_queued_cancel(client, monkeypatch):
         assert idem2.id == idem1.id and idem2.status == "succeeded"
 
     _run(scenario())
+
+
+def test_waiting_resource_job_does_not_consume_runner_slot_and_cancel_reclaims_request(
+    client, monkeypatch,
+):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+    monkeypatch.setattr(jobs, "MAX_CONCURRENT", 1)
+
+    def requirement(owner: str, job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": owner,
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 100,
+                "execution_peak_bytes": 100,
+                "cold_load_peak_bytes": 100,
+                "headroom_bytes": 0,
+                "confidence": "measured",
+            },
+            "compute_mode": "exclusive-required",
+            "class": "interactive",
+            "max_wait_sec": 60,
+        })
+
+    async def scenario():
+        held = await broker.submit(requirement("internal:holder", "holder"))
+        assert held.lease_id
+
+        ran = asyncio.Event()
+
+        async def gpu_runner(_job):
+            raise AssertionError("resource waiter must not run")
+
+        async def cpu_runner(_job):
+            ran.set()
+            return "cpu"
+
+        waiting = jobs.create(
+            "test.resource", "GPU wait", gpu_runner,
+            resource=lambda job_id: requirement("internal:media", job_id),
+        )
+        cpu = jobs.create("test.cpu", "CPU", cpu_runner)
+        await asyncio.wait_for(ran.wait(), timeout=2)
+        for _ in range(100):
+            if waiting.wait_reason:
+                break
+            await asyncio.sleep(0.01)
+        assert waiting.status == "queued"
+        assert waiting.phase == "waiting_resource"
+        assert waiting.wait_reason == "device_busy_exclusive"
+        assert cpu.status in ("running", "succeeded")
+        request_id = waiting.resource_request_id
+        assert request_id
+        assert await jobs.cancel_and_wait(waiting.id)
+        assert waiting.status == "canceled"
+        assert (await broker.request_status(request_id)).state.value == "canceled"
+        await broker.release(held.lease_id)
+        return waiting.id
+
+    waiting_id = _run(scenario())
+    persisted = _run(jobs.get_any(waiting_id))
+    assert persisted["phase"] == "waiting_resource"
+    assert persisted["wait_reason"] == "device_busy_exclusive"
+
+
+def test_resource_job_progress_is_phase_bound_monotonic_and_coalesced(monkeypatch):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+
+    def requirement(job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": "internal:progress",
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 1, "execution_peak_bytes": 1,
+                "cold_load_peak_bytes": 1, "headroom_bytes": 0,
+                "confidence": "measured",
+            },
+            "compute_mode": "shared-safe",
+            "class": "workflow",
+        })
+
+    async def scenario():
+        observations = {}
+
+        async def runner(job):
+            before = job.revision
+            for completed in range(1, 11):
+                job.set_progress("generating", completed, 10)
+            observations["immediate"] = job.revision - before
+            try:
+                job.set_progress("invalid", 9, 10)
+            except ValueError:
+                observations["monotonic"] = True
+            await asyncio.sleep(0.55)
+            observations["coalesced"] = job.revision - before
+            return "ok"
+
+        job = jobs.create(
+            "test.resource-progress", "progress", runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        while job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+        return job, observations
+
+    job, observations = _run(scenario())
+    assert job.status == "succeeded"
+    assert job.progress == {
+        "status": "generating", "completed": 10, "total": 10, "phase": "generating"
+    }
+    assert observations == {"immediate": 1, "monotonic": True, "coalesced": 2}
+
+    no_phase = jobs.Job("no-phase", "test", "test", resource_broker=broker)
+    with pytest.raises(ValueError, match="phase"):
+        no_phase.set_progress("x", 1, 1)
+
+
+def test_resource_job_oom_is_normalized_profiled_and_not_retried(monkeypatch):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+
+    def requirement(job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": "internal:oom",
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 80, "execution_peak_bytes": 80,
+                "cold_load_peak_bytes": 80, "headroom_bytes": 0,
+                "confidence": "estimated",
+            },
+            "compute_mode": "shared-safe",
+            "class": "background",
+            "residency_key": "runtime:risky-model",
+        })
+
+    async def scenario():
+        calls = 0
+
+        async def runner(_job):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("HIP out of memory")
+
+        job = jobs.create(
+            "test.resource-oom", "oom", runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        while job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+        return job, calls, await broker.snapshot()
+
+    job, calls, snapshot = _run(scenario())
+    assert job.status == "failed" and job.error == "resource_oom"
+    assert calls == 1
+    assert snapshot["telemetry"]["counters"]["oom.incident"] == 1
+    assert snapshot["telemetry"]["oom_profiles"][0]["recommended_bytes"] == 88
+    assert snapshot["leases"][0]["state"] == "released"
+
+
+def test_two_exclusive_resource_jobs_execute_serially(monkeypatch):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+    monkeypatch.setattr(jobs, "MAX_CONCURRENT", 2)
+
+    def requirement(job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": f"internal:{job_id}", "job_id": job_id, "device": "gpu0",
+            "vram": {
+                "resident_bytes": 100, "execution_peak_bytes": 100,
+                "cold_load_peak_bytes": 100, "headroom_bytes": 0,
+                "confidence": "measured",
+            },
+            "compute_mode": "exclusive-required", "class": "background",
+        })
+
+    async def scenario():
+        first_gate = asyncio.Event()
+        order = []
+
+        async def first_runner(_job):
+            order.append("first-start")
+            await first_gate.wait()
+            order.append("first-end")
+
+        async def second_runner(_job):
+            order.append("second-start")
+
+        first = jobs.create(
+            "test.gpu", "first", first_runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        second = jobs.create(
+            "test.gpu", "second", second_runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        for _ in range(100):
+            if first.status == "running" and second.wait_reason:
+                break
+            await asyncio.sleep(0.01)
+        assert first.status == "running"
+        assert second.status == "queued" and second.phase == "waiting_resource"
+        assert order == ["first-start"]
+        first_gate.set()
+        for _ in range(100):
+            if first.status == second.status == "succeeded":
+                break
+            await asyncio.sleep(0.01)
+        return first, second, order, await broker.snapshot()
+
+    first, second, order, snapshot = _run(scenario())
+    assert first.status == second.status == "succeeded"
+    assert order == ["first-start", "first-end", "second-start"]
+    assert snapshot["devices"][0]["lease_reserved_bytes"] == 0
 
 
 def test_jobs_api_hides_other_owners_and_streams_snapshot(admin_client):

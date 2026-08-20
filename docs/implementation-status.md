@@ -2,12 +2,20 @@
 
 最終更新: 2026-08-21
 
+## Add-on Platform v2 PR-D2 Llama／Jobs resource admission 完了（2026-08-21）
+
+- resource-aware Jobは通常runnerへ入る前にBroker requestを作り、取得までは`status=queued, phase=waiting_resource`として永続化する。待機中はrunner slotを消費せず、grant後にleaseをactivate／renewし、成功・失敗・cancelの全terminal pathでrequest／leaseを解放する。進捗はphase必須、completed単調増加、通知2Hz・DB書込5秒を上限とし、従来のresource非依存Jobの契約は維持した。
+- llama.cpp GatewayをBroker admissionへ接続し、既存KV capacity probeをprovider adapterの下で維持した。停止modelは保守的なVRAM要求、起動済みmodelはprovider reservationとして扱い、client disconnect、stream／non-stream完了、load timeoutの各経路でleaseを解放する。OOMは`resource_oom`へ正規化し、runtime/model/device別profileの推奨requirement floorと60秒cooldownを次回admissionへ適用する。
+- supervisionは既定`observed`のまま、`gateway_only`、local NVMe、cold-load実測p90、最低常駐時間、推定処理時間、5分あたり2回のyield上限を満たす場合だけopt-in `managed`を許可した。現行llama-serverに動的unloadがないためlevel 4のprocess stopでdrainし、新規LLM requestはdrainを取り消す。設定UIは縮退条件と閾値を表示し、待機Job UIは固定wait reasonとcancelを表示する。
+
+検証: code head `3d1ba907eb76` でcanonical `./deck.sh test`は664件成功（1件skip）、frontend production build成功、320×700の実Chromiumでmanaged既定OFF、opt-in警告・閾値表示、個別設定保存を確認した。1280×800でもmanaged既定OFF、横overflow 0、認証後console error 0を確認した。実32GB AMD GPU／NVMe上Qwen3.8 27BではGateway cold request 83.981秒、cold-load p90 83.038秒、first-token 0.733秒、load時VRAM 29,269,983,232 bytesを観測した。managed opt-in中に20GiB exclusive Broker requestを`device_busy_exclusive`で待機させ、LLM drain／stop後59,924,480 bytesまで解放してgrant／activate／release、続くGateway requestで7.851秒で再起動した。sample 2でもp90 83.038秒を維持し、検証後はpolicyを`observed`、LLM停止、Broker予約0へ戻した。managedの既定化と動的unloadは未提供であり、sample 2はthrash閾値を一般化する十分な分布とは扱わない。
+
 ## Add-on Platform v2 Jobs resource wait単独migration 完了（2026-08-21）
 
 - 既存`jobs.status` enumと意味を変更せず、nullable textの`phase`／`wait_reason`だけを追加するAlembic revision `c83f7a19d2e4`を作成した。既存行は両列NULLのまま保持されるため旧client／queryは従来の`queued/running/succeeded/failed/canceled/interrupted`だけを見続けられる。downgradeは追加2列だけを除去する。
-- ORM schemaには列を宣言したが、Job service／API／runner schedulingの挙動は変更していない。`status=queued, phase=waiting_resource`、wait reason永続化、runner slot非消費、cancel連携はPR-D2でこのschemaを利用する。
+- migration単独PRではORM schemaだけを宣言し、Job service／API／runner schedulingの挙動は変更しなかった。後続PR-D2がこのschemaを使って`status=queued, phase=waiting_resource`、wait reason永続化、runner slot非消費、cancel連携を実装した。
 
-検証: migration／Jobs集中17件成功。SQLiteで旧head `b41f7d90c655`からupgradeし、既存queued行、status、NULL値を保持したままheadへ到達し、downgrade後も行を保持した。PostgreSQL offline migrationも生成成功。実`control-deck-web`の正規startup migrationではverified pre-upgrade backup（SHA-256 64桁、Jobs 133行）を作成し、upgrade後もJobs 133行、phase／wait_reason非NULL 0、revision `c83f7a19d2e4`、service health 200を確認した。PR-D2のadmission挙動はNOT TESTED（未実装）。
+検証: migration／Jobs集中17件成功。SQLiteで旧head `b41f7d90c655`からupgradeし、既存queued行、status、NULL値を保持したままheadへ到達し、downgrade後も行を保持した。PostgreSQL offline migrationも生成成功。実`control-deck-web`の正規startup migrationではverified pre-upgrade backup（SHA-256 64桁、Jobs 133行）を作成し、upgrade後もJobs 133行、phase／wait_reason非NULL 0、revision `c83f7a19d2e4`、service health 200を確認した。この節はmigration単独PR時点の記録であり、後続admissionの最終結果は上記PR-D2節に記録する。
 
 ## Add-on Platform v2 PR-D1 AI Resource Broker core 完了（2026-08-21）
 
@@ -16,7 +24,7 @@
 - `/api/v1/resources` は`system.view`、mutationは`settings.manage`＋CSRF＋本文を含めないauditで保護した。Add-on disable完了／uninstall時は`addon:{id}` ownerのwaiting requestとleaseを取り消す。Brokerはin-memoryのためprocess再起動時にstale leaseを持ち越さず、waitingはexecution slotを占有しない。
 - observed Llama起動でprocess→listen、listen→ready、最初のtokenを実測し、bounded sampleのp50/p90だけをprofile化する。推定値fallbackは持たない。OOM incidentはruntime/model/device別に回数、observed peak、下げないrecommended requirement floorを記録する。leaseを使ったmanaged supervision、thrash guard、OOM retry制御、Jobs admissionはPR-D2まで有効化しない。
 
-検証: code head `f3935e5` でresource／Llama／Gateway集中57件、canonical cwd=`backend`のbackend全651件成功（1件skip）、frontend production build成功。実`control-deck-web`をbranchから再起動し、sysfs-amdgpuの32GB device発見、実APIでexclusive grant→2件目`device_busy_exclusive`待機→activate／renew→waiting cancel→release、最終lease予約0とtelemetryを確認した。NVMe上のQwen3.8 27BをGatewayから1 token cold-startし、request 83.376秒、cold-load p90 82.714秒、first-token 0.565秒、load時VRAM 29,269,970,944 bytes、stop後59,912,192 bytesへの解放を実測した。現行llama-serverに動的unload操作はなく、yield level 3はlevel 4（process stop）へ縮退する。PR-D2／Jobs待機UIはNOT TESTED（未実装）。単独DB migrationは上記の独立sliceで検証した。
+検証: code head `f3935e5` でresource／Llama／Gateway集中57件、canonical cwd=`backend`のbackend全651件成功（1件skip）、frontend production build成功。実`control-deck-web`をbranchから再起動し、sysfs-amdgpuの32GB device発見、実APIでexclusive grant→2件目`device_busy_exclusive`待機→activate／renew→waiting cancel→release、最終lease予約0とtelemetryを確認した。NVMe上のQwen3.8 27BをGatewayから1 token cold-startし、request 83.376秒、cold-load p90 82.714秒、first-token 0.565秒、load時VRAM 29,269,970,944 bytes、stop後59,912,192 bytesへの解放を実測した。現行llama-serverに動的unload操作はなく、yield level 3はlevel 4（process stop）へ縮退する。このPR-D1時点ではPR-D2／Jobs待機UIはNOT TESTEDだった。単独DB migrationと後続PR-D2の結果は上記各節に記録した。
 
 ## Add-on Platform v2 PR-C Embedded View／Host Bridge 完了（2026-08-20）
 

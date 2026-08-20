@@ -1,0 +1,247 @@
+"""llama.cpp adapter for the common Resource Broker."""
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from collections import deque
+from pathlib import Path
+from typing import Callable
+
+from app.models_mgmt import llama
+from app.models_mgmt.runtime_policy import get_policy
+from app.resources.devices import DeviceCollection
+from app.resources.providers import ProviderReservation, ResourceProvider, YieldLevel
+from app.resources.schema import ResourceRequest
+from app.resources.telemetry import ResourceTelemetry
+
+
+THRASH_FACTOR = 2.0
+THRASH_WINDOW_SEC = 300.0
+THRASH_MAX_YIELDS = 2
+
+
+def model_is_on_local_nvme(model_path: str) -> bool:
+    """Fail closed unless the model's backing block-device path is NVMe."""
+    try:
+        stat = os.stat(Path(model_path).resolve())
+        device = Path(f"/sys/dev/block/{os.major(stat.st_dev)}:{os.minor(stat.st_dev)}")
+        return "nvme" in str(device.resolve()).lower()
+    except OSError:
+        return False
+
+
+class LlamaCapacityProvider(ResourceProvider):
+    id = "llama.cpp"
+
+    def __init__(
+        self,
+        devices: DeviceCollection,
+        telemetry: ResourceTelemetry,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._devices = devices
+        self._telemetry = telemetry
+        self._clock = clock
+        self._resident_since: dict[str, float] = {}
+        self._yield_history: deque[float] = deque(maxlen=16)
+        self._condition = asyncio.Condition()
+        self._active_requests = 0
+        self._draining = False
+        self._stopping = False
+
+    def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
+        instance = llama.get_instance(alias)
+        current = next(
+            (item for item in llama.list_instances() if str(item.get("alias")) == alias),
+            instance,
+        )
+        loaded = bool(current.get("loaded"))
+        try:
+            model_bytes = Path(str(instance.get("model_path") or "")).stat().st_size
+        except OSError:
+            model_bytes = 0
+        device = self._devices.get("gpu0")
+        headroom = 0 if loaded else 512 * 1024 * 1024
+        peak = 0 if loaded else max(model_bytes + 2 * 1024**3, int(model_bytes * 1.75))
+        if device is not None:
+            peak = min(peak, max(0, device.total_bytes - headroom))
+        return ResourceRequest.model_validate({
+            "owner": f"llm:{alias}",
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 0 if loaded else model_bytes,
+                "execution_peak_bytes": peak,
+                "cold_load_peak_bytes": peak,
+                "headroom_bytes": headroom,
+                "confidence": "measured" if loaded else "low",
+            },
+            "compute_mode": "endpoint-managed",
+            "priority": 100,
+            "class": "interactive",
+            "residency_key": llama.residency_key(instance),
+            "max_wait_sec": 300,
+            "on_insufficient": "queue",
+        })
+
+    def _managed(self, instances: list[dict]) -> bool:
+        policy = get_policy()
+        return (
+            policy.supervision == "managed"
+            and policy.gateway_only
+            and policy.yield_max_level >= int(YieldLevel.STOP)
+            and bool(instances)
+            and all(model_is_on_local_nvme(str(item.get("model_path") or "")) for item in instances)
+        )
+
+    def reservations(self) -> list[ProviderReservation]:
+        running = [item for item in llama.list_instances() if item.get("loaded")]
+        now = self._clock()
+        aliases = {str(item.get("alias") or "llama") for item in running}
+        self._resident_since = {
+            alias: self._resident_since.get(alias, now) for alias in aliases
+        }
+        if not running:
+            return []
+        device = self._devices.get("gpu0")
+        observed = device.observed_used_bytes if device is not None else 0
+        sizes = []
+        for item in running:
+            try:
+                sizes.append(Path(str(item.get("model_path") or "")).stat().st_size)
+            except OSError:
+                sizes.append(0)
+        total_size = sum(sizes)
+        reserved_total = max(observed, total_size)
+        managed = self._managed(running)
+        values = []
+        for item, size in zip(running, sizes, strict=True):
+            alias = str(item.get("alias") or "llama")
+            share = (
+                int(reserved_total * size / total_size)
+                if total_size > 0 else int(reserved_total / len(running))
+            )
+            values.append(ProviderReservation(
+                provider_id=self.id,
+                device_id="gpu0",
+                owner=f"llm:{alias}",
+                reserved_bytes=share,
+                residency_key=llama.residency_key(item),
+                yield_level=YieldLevel.STOP if managed else YieldLevel.NONE,
+                draining=self._draining,
+            ))
+        return values
+
+    async def await_capacity(
+        self, port: int, needed_tokens: int, *, timeout_seconds: float
+    ) -> dict:
+        """Preserve the established llama KV admission behavior behind the adapter."""
+        return await llama.await_capacity(
+            port, needed_tokens, timeout_seconds=timeout_seconds
+        )
+
+    async def enter_request(self) -> None:
+        async with self._condition:
+            if self._draining and not self._stopping:
+                self._draining = False
+                self._telemetry.record("yield.drain_canceled", reason="llm_request")
+            while self._stopping:
+                await self._condition.wait()
+            self._active_requests += 1
+            self._condition.notify_all()
+
+    async def leave_request(self) -> None:
+        async with self._condition:
+            self._active_requests = max(0, self._active_requests - 1)
+            self._condition.notify_all()
+
+    def _yield_allowed(self, request: ResourceRequest, running: list[dict]) -> bool:
+        policy = get_policy()
+        now = self._clock()
+        if not self._managed(running):
+            return False
+        if request.estimated_runtime_sec is None:
+            self._telemetry.record("yield.suppressed", reason="runtime_unknown")
+            return False
+        costs = [
+            self._telemetry.cold_load_p90(llama.residency_key(item)) for item in running
+        ]
+        if not costs or any(value is None for value in costs):
+            self._telemetry.record("yield.suppressed", reason="load_cost_unknown")
+            return False
+        if request.estimated_runtime_sec <= max(costs) * THRASH_FACTOR:  # type: ignore[arg-type]
+            self._telemetry.record("yield.suppressed", reason="thrash_cost")
+            return False
+        aliases = [str(item.get("alias") or "llama") for item in running]
+        if any(now - self._resident_since.get(alias, now) < policy.min_uptime_sec for alias in aliases):
+            self._telemetry.record("yield.suppressed", reason="minimum_uptime")
+            return False
+        while self._yield_history and now - self._yield_history[0] > THRASH_WINDOW_SEC:
+            self._yield_history.popleft()
+        if len(self._yield_history) >= THRASH_MAX_YIELDS:
+            self._telemetry.record("yield.suppressed", reason="thrash_window")
+            return False
+        return True
+
+    async def request_yield(
+        self,
+        device_id: str,
+        level: YieldLevel,
+        request: ResourceRequest | None = None,
+    ) -> bool:
+        running = [item for item in llama.list_instances() if item.get("loaded")]
+        if device_id != "gpu0" or request is None or not self._yield_allowed(request, running):
+            return False
+        policy = get_policy()
+        async with self._condition:
+            if self._stopping:
+                return False
+            self._draining = True
+            deadline = asyncio.get_running_loop().time() + policy.drain_timeout_sec
+            while self._active_requests and self._draining:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    self._draining = False
+                    self._telemetry.record("yield.suppressed", reason="drain_timeout")
+                    self._condition.notify_all()
+                    return False
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                except TimeoutError:
+                    self._draining = False
+                    self._telemetry.record("yield.suppressed", reason="drain_timeout")
+                    self._condition.notify_all()
+                    return False
+            if not self._draining:
+                return False
+            self._stopping = True
+        stopped = True
+        try:
+            for item in running:
+                ok, _detail = await asyncio.to_thread(
+                    llama.stop_instance, str(item.get("alias") or "llama")
+                )
+                stopped = stopped and ok
+        finally:
+            async with self._condition:
+                self._stopping = False
+                self._draining = False
+                self._condition.notify_all()
+        if stopped:
+            self._yield_history.append(self._clock())
+            self._telemetry.record("yield.completed", device_id=device_id, reason="process_stop")
+        return stopped
+
+
+_provider: LlamaCapacityProvider | None = None
+
+
+def provider() -> LlamaCapacityProvider:
+    global _provider
+    if _provider is None:
+        from app.resources.broker import broker
+
+        _provider = LlamaCapacityProvider(broker.devices, broker.telemetry)
+    return _provider

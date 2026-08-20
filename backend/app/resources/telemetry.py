@@ -100,16 +100,32 @@ class ResourceTelemetry:
                 "device_id": device,
                 "incident_count": int(previous.get("incident_count", 0)) + 1,
                 "last_incident_at": now,
+                "blocked_until": now + 60,
                 "observed_peak_bytes": max(
                     observed_peak_bytes, int(previous.get("observed_peak_bytes", 0))
                 ),
                 "recommended_bytes": max(
-                    observed_peak_bytes,
-                    requested_bytes,
+                    int(max(observed_peak_bytes, requested_bytes) * 1.10),
                     int(previous.get("recommended_bytes", 0)),
                 ),
             }
             self._counters["oom.incident"] += 1
+
+    def oom_recommendation(self, residency_key: str, device_id: str) -> int:
+        key = residency_key.strip()[:128]
+        device = device_id.strip()[:64]
+        with self._lock:
+            profile = self._oom_profiles.get((key, device))
+            return int(profile.get("recommended_bytes", 0)) if profile else 0
+
+    def oom_retry_after(self, residency_key: str, device_id: str) -> float:
+        key = residency_key.strip()[:128]
+        device = device_id.strip()[:64]
+        with self._lock:
+            profile = self._oom_profiles.get((key, device))
+            if not profile:
+                return 0.0
+            return max(0.0, float(profile.get("blocked_until", 0)) - self._clock())
 
     def record_first_token(self, residency_key: str, latency_sec: float) -> bool:
         """Complete the newest cold-load sample once; warm requests are ignored."""
@@ -123,6 +139,16 @@ class ResourceTelemetry:
                     self._counters["load.first_token_measured"] += 1
                     return True
         return False
+
+    def cold_load_p90(self, residency_key: str) -> float | None:
+        key = residency_key.strip()[:128]
+        with self._lock:
+            samples = list(self._load_samples.get(key, ()))
+            if not samples:
+                return None
+            return self._percentile(
+                [item["cold_load_cost_sec"] for item in samples], 0.90
+            )
 
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float:

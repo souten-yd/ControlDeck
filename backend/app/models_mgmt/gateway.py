@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
+import uuid
 from typing import Any
 
 import httpx
@@ -151,13 +153,116 @@ CAPACITY_TIMEOUT_SECONDS = 300
 
 async def _admit(port: int, payload: dict[str, Any]) -> dict:
     """KVに空きが出るまで待つ。空くまで待って必ず通す方針。"""
-    from app.models_mgmt import llama
+    from app.models_mgmt.resource_provider import provider
 
     messages = payload.get("messages") or []
     prompt_chars = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
     # 見積りは概算。厳密さより「混雑時に待つ」ことが目的。
     needed = prompt_chars // 4 + int(payload.get("max_tokens") or 0)
-    return await llama.await_capacity(port, needed, timeout_seconds=CAPACITY_TIMEOUT_SECONDS)
+    return await provider().await_capacity(
+        port, needed, timeout_seconds=CAPACITY_TIMEOUT_SECONDS
+    )
+
+
+async def _wait_for_client(task: asyncio.Task, request: Request):
+    while not task.done():
+        done, _ = await asyncio.wait((task,), timeout=0.25)
+        if done:
+            break
+        if await request.is_disconnected():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise HTTPException(status_code=499, detail="クライアントが切断しました")
+    return await task
+
+
+async def _renew_gateway_lease(lease_id: str) -> None:
+    from app.resources.broker import broker
+
+    try:
+        while True:
+            await asyncio.sleep(10)
+            await broker.renew(lease_id)
+    except asyncio.CancelledError:
+        raise
+
+
+async def _acquire_gateway_lease(alias: str, request: Request):
+    from app.models_mgmt.resource_provider import provider
+    from app.resources.broker import broker
+    from app.resources.schema import RequestState
+
+    adapter = provider()
+    await adapter.enter_request()
+    status = None
+    try:
+        requirement = adapter.resource_request(alias, f"gateway-{uuid.uuid4().hex[:16]}")
+        status = await broker.submit(requirement)
+        if status.state == RequestState.WAITING:
+            status = await _wait_for_client(
+                asyncio.create_task(broker.wait(status.request_id)), request
+            )
+        if status.state != RequestState.GRANTED or not status.lease_id:
+            raise HTTPException(
+                status_code=503,
+                detail=f"GPU resource admission failed: {status.state.value}",
+                headers={"Retry-After": "5"},
+            )
+        await broker.activate(status.lease_id)
+        renew = asyncio.create_task(_renew_gateway_lease(status.lease_id))
+        return adapter, status.lease_id, renew
+    except (Exception, asyncio.CancelledError):
+        if status is not None:
+            try:
+                await broker.cancel_request(status.request_id)
+            except Exception:  # noqa: BLE001 - original admission error wins
+                pass
+            if status.lease_id:
+                try:
+                    await broker.release(status.lease_id)
+                except Exception:  # noqa: BLE001 - original admission error wins
+                    pass
+        await adapter.leave_request()
+        raise
+
+
+async def _release_gateway_lease(adapter, lease_id: str, renew: asyncio.Task) -> None:
+    from app.resources.broker import broker
+    from app.resources.leases import LeaseError
+
+    renew.cancel()
+    await asyncio.gather(renew, return_exceptions=True)
+    try:
+        await broker.release(lease_id)
+    except LeaseError:
+        pass
+    await adapter.leave_request()
+
+
+def _record_gateway_oom(alias: str, lease_id: str, response: httpx.Response) -> None:
+    if response.status_code < 500:
+        return
+    try:
+        detail = response.text.casefold()
+    except Exception:  # noqa: BLE001 - malformed provider response is not an OOM signal
+        return
+    if not (
+        any(token in detail for token in ("out of memory", "out_of_memory", "cannot allocate"))
+        or re.search(r"\boom\b", detail) is not None
+    ):
+        return
+    from app.models_mgmt import llama
+    from app.resources.broker import broker
+
+    lease = broker.leases.get(lease_id)
+    device = broker.devices.get(lease.device_id) if lease else None
+    if lease:
+        broker.telemetry.record_oom(
+            llama.residency_key(llama.get_instance(alias)),
+            lease.device_id,
+            observed_peak_bytes=device.observed_used_bytes if device else lease.reserved_bytes,
+            requested_bytes=lease.reserved_bytes,
+        )
 
 
 @router.get("/v1/models")
@@ -184,10 +289,22 @@ async def gateway_chat(request: Request):
     except ValueError:
         raise HTTPException(status_code=400, detail="JSONボディが不正です") from None
     alias, port = _target_endpoint(str(payload.get("model") or ""))
-    # 停止中ならオンデマンド起動（Chat経路と同じ扱い）
-    if not await llama.ensure_ready(alias, timeout_seconds=240):
-        raise HTTPException(status_code=503, detail="モデルの起動に失敗しました")
-    await _admit(port, payload)
+    adapter, lease_id, renew = await _acquire_gateway_lease(alias, request)
+    try:
+        # 停止中ならlease確保後にオンデマンド起動する。
+        ready = await _wait_for_client(
+            asyncio.create_task(llama.ensure_ready(alias, timeout_seconds=180)), request
+        )
+        if not ready:
+            raise HTTPException(
+                status_code=503,
+                detail="モデルの起動に失敗しました",
+                headers={"Retry-After": "5"},
+            )
+        await _admit(port, payload)
+    except (Exception, asyncio.CancelledError):
+        await _release_gateway_lease(adapter, lease_id, renew)
+        raise
     payload["model"] = alias
     target = f"http://127.0.0.1:{port}/v1/chat/completions"
 
@@ -207,18 +324,25 @@ async def gateway_chat(request: Request):
             # ストリームはクライアントへそのまま流す。ここで加工しない。
             started_at = asyncio.get_running_loop().time()
             first = True
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", target, json=payload) as upstream:
-                    async for chunk in upstream.aiter_bytes():
-                        if first and chunk:
-                            record_first_token(started_at)
-                            first = False
-                        yield chunk
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", target, json=payload) as upstream:
+                        async for chunk in upstream.aiter_bytes():
+                            if first and chunk:
+                                record_first_token(started_at)
+                                first = False
+                            yield chunk
+            finally:
+                await _release_gateway_lease(adapter, lease_id, renew)
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
-    started_at = asyncio.get_running_loop().time()
-    async with httpx.AsyncClient(timeout=None) as client:
-        upstream = await client.post(target, json=payload)
-    record_first_token(started_at)
-    return JSONResponse(status_code=upstream.status_code, content=upstream.json())
+    try:
+        started_at = asyncio.get_running_loop().time()
+        async with httpx.AsyncClient(timeout=None) as client:
+            upstream = await client.post(target, json=payload)
+        _record_gateway_oom(alias, lease_id, upstream)
+        record_first_token(started_at)
+        return JSONResponse(status_code=upstream.status_code, content=upstream.json())
+    finally:
+        await _release_gateway_lease(adapter, lease_id, renew)
