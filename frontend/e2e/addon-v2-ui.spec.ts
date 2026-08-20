@@ -63,7 +63,7 @@ test("renders v2 contributions and state without a host reload", async ({ page, 
   await expect(quickActions.getByRole("button", { name: "Quick fake generate" })).toBeVisible();
   await quickActions.getByRole("button", { name: "テスト拡張" }).click();
   await expect(page).toHaveURL(/\/x\/fake-addon\/workspace$/);
-  await expect(page.getByRole("heading", { name: "Control Deck Fake Add-on" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Control Deck Fake Add-on" })).toBeVisible();
   const mobileLayout = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
   expect(mobileLayout.document).toBeLessThanOrEqual(mobileLayout.viewport);
 
@@ -73,7 +73,7 @@ test("renders v2 contributions and state without a host reload", async ({ page, 
   await expect(addonNavigation).toBeVisible();
   await page.keyboard.press("Control+k");
   await page.getByLabel("コマンド検索").fill("Fake generate");
-  await page.getByRole("button", { name: "Fake generate", exact: true }).click();
+  await page.getByRole("option").getByRole("button", { name: /^Fake generate/ }).click();
   await expect(page).toHaveURL(/\/x\/fake-addon\/generate\?command=generate$/);
   await expect(page.getByText("操作の実行にはまだ対応していません。", { exact: false })).toBeVisible();
 
