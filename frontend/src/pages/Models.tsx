@@ -36,6 +36,12 @@ interface RuntimePolicy {
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
   max_loaded_models: number;
+  supervision: "observed" | "managed";
+  gateway_only: boolean;
+  warm_idle_sec: number;
+  min_uptime_sec: number;
+  drain_timeout_sec: number;
+  yield_max_level: number;
   default_model_ref: string;
   assistant_name: string;
   chat: { timeout_seconds: number };
@@ -86,6 +92,8 @@ interface JobInfo {
   kind: string;
   title: string;
   status: string; // running / succeeded / failed / canceled
+  phase?: string | null;
+  wait_reason?: string | null;
   progress: { status?: string; completed?: number | null; total?: number | null };
   error: string;
 }
@@ -133,11 +141,29 @@ function useJob(jobId: string | null) {
 }
 
 function JobProgress({ job }: { job: JobInfo }) {
+  const show = useToasts((s) => s.show);
+  const canCancel = useAuth((s) => s.can("workflows.edit"));
+  const cancel = useMutation({
+    mutationFn: () => api(`/jobs/${job.id}/cancel`, { method: "POST" }),
+    onError: (error) => show(error instanceof Error ? error.message : "キャンセルできませんでした", "error"),
+  });
+  const waitLabels: Record<string, string> = {
+    device_busy_exclusive: "GPUを使用中の処理が終わるのを待っています",
+    insufficient_vram: "GPUメモリが空くのを待っています",
+    held_by_other_owner: "別のAIランタイムがGPUを保持しています",
+    queue_position: "前の処理が終わるのを待っています",
+    model_loading: "AIモデルを読み込んでいます",
+    provider_draining: "AIランタイムの処理終了を待っています",
+    dependency_pending: "必要なサービスの準備を待っています",
+    insufficient_capacity: "このGPUでは必要な容量を確保できません",
+  };
   const pct =
     job.progress?.total && job.progress?.completed
       ? Math.round((job.progress.completed / job.progress.total) * 100)
       : null;
-  const label =
+  const label = job.phase === "waiting_resource"
+    ? waitLabels[job.wait_reason ?? ""] ?? "GPUリソースを待っています"
+    :
     job.status === "succeeded" ? "完了" : job.status === "failed" ? `エラー: ${job.error}` : job.status === "canceled" ? "キャンセル" : job.status === "queued" ? "開始待ち" : job.progress?.status || "処理中...";
   return (
     <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
@@ -146,6 +172,12 @@ function JobProgress({ job }: { job: JobInfo }) {
         <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
           <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
         </div>
+      )}
+      {job.phase === "waiting_resource" && canCancel && (
+        <button type="button" onClick={() => cancel.mutate()} disabled={cancel.isPending}
+          className="mt-2 rounded-lg border border-zinc-300 px-2.5 py-1 text-[11px] font-medium hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:hover:bg-zinc-800">
+          {cancel.isPending ? "キャンセル中…" : "キャンセル"}
+        </button>
       )}
       <p className="mt-1 text-[10px] text-zinc-400">サーバー側で実行中 — ブラウザを閉じても継続します</p>
     </div>
@@ -1009,6 +1041,27 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <L label="全ランタイムの同時ロード上限">
           <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
         </L>
+        {policy.selected_runtime === "llama.cpp" && (
+          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+            <label className="flex items-start justify-between gap-3">
+              <span>
+                <span className="block text-xs font-semibold text-amber-800 dark:text-amber-300">GPU Brokerによる管理を有効化</span>
+                <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">実測した再ロード時間より十分長いGPU処理だけ、LLMを一時停止します。既定は監視のみです。</span>
+              </span>
+              <input type="checkbox" checked={policy.supervision === "managed"}
+                onChange={(e) => setPolicyCfg({ ...policy, supervision: e.target.checked ? "managed" : "observed", gateway_only: true })}
+                className="mt-0.5 h-4 w-4" />
+            </label>
+            {policy.supervision === "managed" && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <L label="最低常駐時間（秒）"><PresetOrCustom value={policy.min_uptime_sec} presets={[60, 120, 300, 600].map((v) => ({ v, label: `${v}秒` }))} placeholder="120" onChange={(v) => setPolicyCfg({ ...policy, min_uptime_sec: Number(v ?? 120) })} /></L>
+                <L label="drain上限（秒）"><PresetOrCustom value={policy.drain_timeout_sec} presets={[30, 60, 120, 300].map((v) => ({ v, label: `${v}秒` }))} placeholder="120" onChange={(v) => setPolicyCfg({ ...policy, drain_timeout_sec: Number(v ?? 120) })} /></L>
+                <L label="遅延復帰の保持時間（秒）"><PresetOrCustom value={policy.warm_idle_sec} presets={[120, 300, 600, 1200].map((v) => ({ v, label: `${v}秒` }))} placeholder="600" onChange={(v) => setPolicyCfg({ ...policy, warm_idle_sec: Number(v ?? 600) })} /></L>
+              </div>
+            )}
+            <p className="text-[10px] leading-relaxed text-zinc-500">モデルがNVMe上にない、またはcold-load p90が未計測の場合は自動的に監視のみへ縮退します。短時間処理や5分以内3回目の退避は抑止されます。</p>
+          </div>
+        )}
         <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
           思考（reasoning）の設定は各モデルの個別設定へ移動しました。モデルごとに適した深さが
           違うため、共通設定で一律に指定しない方針です。

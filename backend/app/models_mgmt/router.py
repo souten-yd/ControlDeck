@@ -52,6 +52,7 @@ async def put_runtime_policy(
                  request=request, metadata={"runtime": policy.selected_runtime,
                                             "backend": policy.selected_backend,
                                             "coexistence": policy.coexistence,
+                                            "supervision": policy.supervision,
                                             "gpu_profile": policy.amd_gpu.profile if policy.amd_gpu.enabled else "disabled"})
     return await runtime_policy.environment()
 
