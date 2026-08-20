@@ -302,6 +302,54 @@ def test_resource_job_progress_is_phase_bound_monotonic_and_coalesced(monkeypatc
         no_phase.set_progress("x", 1, 1)
 
 
+def test_resource_job_oom_is_normalized_profiled_and_not_retried(monkeypatch):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+
+    def requirement(job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": "internal:oom",
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 80, "execution_peak_bytes": 80,
+                "cold_load_peak_bytes": 80, "headroom_bytes": 0,
+                "confidence": "estimated",
+            },
+            "compute_mode": "shared-safe",
+            "class": "background",
+            "residency_key": "runtime:risky-model",
+        })
+
+    async def scenario():
+        calls = 0
+
+        async def runner(_job):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("HIP out of memory")
+
+        job = jobs.create(
+            "test.resource-oom", "oom", runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        while job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+        return job, calls, await broker.snapshot()
+
+    job, calls, snapshot = _run(scenario())
+    assert job.status == "failed" and job.error == "resource_oom"
+    assert calls == 1
+    assert snapshot["telemetry"]["counters"]["oom.incident"] == 1
+    assert snapshot["telemetry"]["oom_profiles"][0]["recommended_bytes"] == 88
+    assert snapshot["leases"][0]["state"] == "released"
+
+
 def test_jobs_api_hides_other_owners_and_streams_snapshot(admin_client):
     from app.bootstrap import create_admin
     from app.database import SessionLocal

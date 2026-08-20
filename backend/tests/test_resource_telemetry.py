@@ -65,9 +65,12 @@ def test_oom_profile_counts_incidents_and_never_lowers_requirement_floor():
         "device_id": "gpu0",
         "incident_count": 2,
         "last_incident_at": 60.0,
+        "blocked_until": 120.0,
         "observed_peak_bytes": 90,
-        "recommended_bytes": 90,
+        "recommended_bytes": 99,
     }]
+    assert telemetry.oom_recommendation("runtime:model", "gpu0") == 99
+    assert telemetry.oom_retry_after("runtime:model", "gpu0") == 60
 
 
 def test_first_token_completes_only_the_latest_pending_load_sample():

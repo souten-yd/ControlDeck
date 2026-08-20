@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import uuid
 from typing import Any
@@ -238,6 +239,32 @@ async def _release_gateway_lease(adapter, lease_id: str, renew: asyncio.Task) ->
     await adapter.leave_request()
 
 
+def _record_gateway_oom(alias: str, lease_id: str, response: httpx.Response) -> None:
+    if response.status_code < 500:
+        return
+    try:
+        detail = response.text.casefold()
+    except Exception:  # noqa: BLE001 - malformed provider response is not an OOM signal
+        return
+    if not (
+        any(token in detail for token in ("out of memory", "out_of_memory", "cannot allocate"))
+        or re.search(r"\boom\b", detail) is not None
+    ):
+        return
+    from app.models_mgmt import llama
+    from app.resources.broker import broker
+
+    lease = broker.leases.get(lease_id)
+    device = broker.devices.get(lease.device_id) if lease else None
+    if lease:
+        broker.telemetry.record_oom(
+            llama.residency_key(llama.get_instance(alias)),
+            lease.device_id,
+            observed_peak_bytes=device.observed_used_bytes if device else lease.reserved_bytes,
+            requested_bytes=lease.reserved_bytes,
+        )
+
+
 @router.get("/v1/models")
 async def gateway_models(request: Request):
     """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。"""
@@ -314,6 +341,7 @@ async def gateway_chat(request: Request):
         started_at = asyncio.get_running_loop().time()
         async with httpx.AsyncClient(timeout=None) as client:
             upstream = await client.post(target, json=payload)
+        _record_gateway_oom(alias, lease_id, upstream)
         record_first_token(started_at)
         return JSONResponse(status_code=upstream.status_code, content=upstream.json())
     finally:

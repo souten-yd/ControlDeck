@@ -20,14 +20,22 @@ class LeaseTable:
     def _copy(value: LeaseStatus) -> LeaseStatus:
         return LeaseStatus.model_validate(value.model_dump())
 
-    def grant(self, request_id: str, request: ResourceRequest, device_id: str, now: float) -> LeaseStatus:
+    def grant(
+        self,
+        request_id: str,
+        request: ResourceRequest,
+        device_id: str,
+        now: float,
+        *,
+        reserved_bytes: int | None = None,
+    ) -> LeaseStatus:
         lease = LeaseStatus(
             lease_id=str(uuid.uuid4()),
             request_id=request_id,
             owner=request.owner,
             job_id=request.job_id,
             device_id=device_id,
-            reserved_bytes=request.vram.required_bytes,
+            reserved_bytes=(request.vram.required_bytes if reserved_bytes is None else reserved_bytes),
             compute_mode=request.compute_mode,
             residency_key=request.residency_key,
             state=LeaseState.GRANTED,
@@ -103,4 +111,3 @@ class LeaseTable:
 
     def reset(self) -> None:
         self._leases.clear()
-

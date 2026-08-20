@@ -293,7 +293,13 @@ class ResourceBroker:
                 record = self._requests[candidate.request_id]
                 fit = await self._fit(record.request, provider_values)
                 if fit.device_id is not None:
-                    lease = self.leases.grant(candidate.request_id, record.request, fit.device_id, now)
+                    lease = self.leases.grant(
+                        candidate.request_id,
+                        record.request,
+                        fit.device_id,
+                        now,
+                        reserved_bytes=self._required_bytes(record.request, fit.device_id),
+                    )
                     record.status.state = RequestState.GRANTED
                     record.status.device_id = fit.device_id
                     record.status.lease_id = lease.lease_id
@@ -357,6 +363,11 @@ class ResourceBroker:
         last_yield_device: str | None = None
         for device in self._eligible_devices(request):
             snapshot = snapshots[device.id]
+            if request.residency_key and self.telemetry.oom_retry_after(
+                request.residency_key, device.id
+            ) > 0:
+                last_reason = WaitReason.DEPENDENCY_PENDING
+                continue
             leases = [item for item in current_leases if item.device_id == device.id]
             providers = [item for item in provider_values if item.device_id == device.id and item.reserved_bytes > 0]
             exclusive = request.compute_mode in {ComputeMode.EXCLUSIVE_REQUIRED, ComputeMode.EXCLUSIVE_PREFERRED}
@@ -372,7 +383,7 @@ class ResourceBroker:
                 if yield_device is not None:
                     last_yield_device = yield_device
                 continue
-            if request.vram.required_bytes > snapshot.admitted_free_bytes:
+            if self._required_bytes(request, device.id) > snapshot.admitted_free_bytes:
                 last_blocking = self._blocking(leases, providers)
                 last_reason = WaitReason.HELD_BY_OTHER_OWNER if providers else WaitReason.INSUFFICIENT_VRAM
                 continue
@@ -403,9 +414,17 @@ class ResourceBroker:
             if item.yield_level == YieldLevel.NONE:
                 non_yieldable[item.device_id] = non_yieldable.get(item.device_id, 0) + item.reserved_bytes
         return any(
-            request.vram.required_bytes <= max(0, item.total_bytes - non_yieldable.get(item.id, 0))
+            self._required_bytes(request, item.id)
+            <= max(0, item.total_bytes - non_yieldable.get(item.id, 0))
             for item in self._eligible_devices(request)
         )
+
+    def _required_bytes(self, request: ResourceRequest, device_id: str) -> int:
+        recommendation = (
+            self.telemetry.oom_recommendation(request.residency_key, device_id)
+            if request.residency_key else 0
+        )
+        return max(request.vram.required_bytes, recommendation)
 
     @staticmethod
     def _reservation_totals(values: list[ProviderReservation]) -> dict[str, int]:

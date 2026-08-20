@@ -18,6 +18,7 @@ import heapq
 import itertools
 import json
 import logging
+import re
 import time
 import uuid
 from collections import OrderedDict
@@ -67,6 +68,7 @@ class Job:
     resource_request_id: str | None = None
     resource_lease_id: str | None = None
     resource_broker: ResourceBroker | None = field(default=None, repr=False)
+    resource_requirement: ResourceRequest | None = field(default=None, repr=False)
     progress_flush_task: asyncio.Task | None = field(default=None, repr=False)
     last_progress_notify_at: float = field(default=0.0, repr=False)
     last_progress_db_at: float = field(default=0.0, repr=False)
@@ -274,6 +276,7 @@ async def _admit_resource(
 ) -> None:
     try:
         job.resource_broker = broker
+        job.resource_requirement = request
         status = await broker.submit(request)
         job.resource_request_id = status.request_id
         job.wait_reason = status.reason.value if status.reason else None
@@ -375,7 +378,22 @@ async def _run_job(job: Job, runner: Callable[[Job], Awaitable[Any]]) -> None:
         job.error = "キャンセルされました"
     except Exception as e:  # ジョブ失敗は記録して終わり（プロセスは守る）
         job.status = "failed"
-        job.error = f"{type(e).__name__}: {e}"[:500]
+        if _is_oom_error(e) and job.resource_requirement and job.resource_lease_id:
+            lease = (job.resource_broker or resource_broker).leases.get(job.resource_lease_id)
+            device = (
+                (job.resource_broker or resource_broker).devices.get(lease.device_id)
+                if lease else None
+            )
+            if lease and job.resource_requirement.residency_key:
+                (job.resource_broker or resource_broker).telemetry.record_oom(
+                    job.resource_requirement.residency_key,
+                    lease.device_id,
+                    observed_peak_bytes=device.observed_used_bytes if device else lease.reserved_bytes,
+                    requested_bytes=lease.reserved_bytes,
+                )
+            job.error = "resource_oom"
+        else:
+            job.error = f"{type(e).__name__}: {e}"[:500]
         logger.warning("job %s (%s) failed: %s", job.id, job.kind, job.error)
     finally:
         heartbeat.cancel()
@@ -388,6 +406,14 @@ async def _run_job(job: Job, runner: Callable[[Job], Awaitable[Any]]) -> None:
         await asyncio.to_thread(_db_write, job, True)
         _running_count = max(0, _running_count - 1)
         _dispatch()
+
+
+def _is_oom_error(error: BaseException) -> bool:
+    value = str(error).casefold()
+    return (
+        any(token in value for token in ("out of memory", "out_of_memory", "cannot allocate"))
+        or re.search(r"\boom\b", value) is not None
+    )
 
 
 def _db_touch_control(job: Job) -> None:

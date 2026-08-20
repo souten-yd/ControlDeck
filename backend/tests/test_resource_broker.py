@@ -12,6 +12,7 @@ from app.resources.providers import (
     YieldLevel,
 )
 from app.resources.schema import LeaseState, RequestState, ResourceRequest, WaitReason
+from app.resources.telemetry import ResourceTelemetry
 
 
 def request(
@@ -207,3 +208,30 @@ def test_yieldable_provider_is_requested_outside_broker_lock_and_waiter_wakes():
     result, calls = run(scenario())
     assert result.state == RequestState.GRANTED
     assert calls == 1
+
+
+def test_oom_profile_enforces_cooldown_and_raised_reservation_floor():
+    now = [10.0]
+    telemetry = ResourceTelemetry(clock=lambda: now[0])
+    telemetry.record_oom(
+        "model:risky", "gpu0", observed_peak_bytes=90, requested_bytes=80
+    )
+
+    async def scenario():
+        broker = ResourceBroker(
+            fake_devices(100), clock=lambda: now[0], telemetry=telemetry
+        )
+        value = request("addon:media", "retry", 80, mode="shared-safe").model_copy(
+            update={"residency_key": "model:risky"}
+        )
+        waiting = await broker.submit(value)
+        now[0] = 71
+        await broker.reschedule()
+        granted = await broker.request_status(waiting.request_id)
+        return waiting, granted, broker.leases.current()
+
+    waiting, granted, leases = run(scenario())
+    assert waiting.state == RequestState.WAITING
+    assert waiting.reason == WaitReason.DEPENDENCY_PENDING
+    assert granted.state == RequestState.GRANTED
+    assert leases[0].reserved_bytes == 99
