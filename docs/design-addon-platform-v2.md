@@ -1469,12 +1469,15 @@ UX原則（§3）が docs に無いと、次の実装者が必ず policy 任せ�
 - モデルディレクトリが NVMe 外を検出したら `managed` を `observed` へ自動降格
 - proxy でのヘッダ削除（Cookie / Authorization / Set-Cookie）はテストで常時検証
 
-### B.3 未決（PR-0 までに決定）
+### B.3 PR-0 で確定した判断
 
-1. `./deck.sh ext` を追加するか、`plugin` のみで通すか
-2. 通知の永続化（履歴を残すか、toast のみか）
-3. add-on token の更新方式（silent refresh / bridge経由 / proxy側で完結）
-4. Add-on 一覧をログイン前に見せるか（現状は見せない前提）
+1. `./deck.sh ext lint <manifest>` を正規のv1/v2静的検証導線として追加する。既存の
+   `./deck.sh plugin ...` はv1管理APIとして永続維持する。
+2. `host.notification.show` はtoastのみとし、同じ通知本文を別tableへ重複永続化しない。
+   Job終端状態は既存Jobs履歴、bridge呼出しは本文を含めないaudit/activityへ残す。
+3. add-on service tokenはproxyがリクエストごとに発行・更新し、browserへ公開しない。
+   browser bridgeはsession nonceを使い、service credentialと分離する。
+4. Add-on一覧・manifest・存在情報はログイン前に公開しない。認証後かつ権限検査後だけ返す。
 
 ### B.4 PR-D1 で実機確認が必要な項目
 
