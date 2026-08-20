@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+import websockets
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 
 from app.addons import health, registry, tokens
+from app.database import SessionLocal
 from app.models import User
-from app.security.deps import get_current_user, user_permissions
+from app.security.deps import authenticate_websocket_user, get_current_user, user_permissions
 
 router = APIRouter(prefix="/addon-frame", tags=["addon-frame"])
 
@@ -38,6 +42,25 @@ def _upstream_headers(request: Request, addon_id: str, user_id: int) -> dict[str
     headers["Authorization"] = f"Bearer {tokens.issue(addon_id, subject=str(user_id), kind='service')}"
     headers["X-Control-Deck-Addon-ID"] = addon_id
     return headers
+
+
+def _service_headers(addon_id: str, user_id: int) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {tokens.issue(addon_id, subject=str(user_id), kind='service')}",
+        "X-Control-Deck-Addon-ID": addon_id,
+    }
+
+
+def _connect_websocket(url: str, headers: dict[str, str], subprotocols: list[str]):
+    return websockets.connect(
+        url,
+        additional_headers=headers,
+        subprotocols=subprotocols or None,
+        proxy=None,
+        open_timeout=10,
+        close_timeout=5,
+        max_size=16 * 1024 * 1024,
+    )
 
 
 def _authorized_runtime(addon_id: str, permissions: set[str]) -> str:
@@ -175,3 +198,67 @@ async def addon_frame_proxy(
             )
 
     return StreamingResponse(stream(), status_code=upstream.status_code, headers=headers)
+
+
+@router.websocket("/{addon_id}/{path:path}")
+async def addon_frame_websocket(websocket: WebSocket, addon_id: str, path: str):
+    db = SessionLocal()
+    try:
+        user = await authenticate_websocket_user(websocket, db)
+        if user is None:
+            return
+        user_id = user.id
+        permissions = user_permissions(user)
+    finally:
+        db.close()
+    try:
+        base_url = _authorized_runtime(addon_id, permissions)
+    except HTTPException as exc:
+        await websocket.close(code={403: 4403, 404: 4404, 409: 4409}.get(exc.status_code, 4500))
+        return
+    parsed = urlsplit(base_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    upstream_path = f"/{path.lstrip('/')}"
+    url = urlunsplit((scheme, parsed.netloc, upstream_path, websocket.url.query, ""))
+    requested_protocols = list(websocket.scope.get("subprotocols") or [])
+    try:
+        async with _connect_websocket(
+            url,
+            _service_headers(addon_id, user_id),
+            requested_protocols,
+        ) as upstream:
+            selected_protocol = getattr(upstream, "subprotocol", None)
+            await websocket.accept(subprotocol=selected_protocol if selected_protocol in requested_protocols else None)
+
+            async def browser_to_upstream() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        return
+                    if message.get("text") is not None:
+                        await upstream.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+
+            async def upstream_to_browser() -> None:
+                async for message in upstream:
+                    if isinstance(message, str):
+                        await websocket.send_text(message)
+                    else:
+                        await websocket.send_bytes(message)
+
+            first = asyncio.create_task(browser_to_upstream())
+            second = asyncio.create_task(upstream_to_browser())
+            done, pending = await asyncio.wait((first, second), return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+            registry.record_activity(addon_id, "addon-frame.websocket", "success")
+    except (OSError, TimeoutError, websockets.WebSocketException) as exc:
+        registry.record_activity(addon_id, "addon-frame.websocket", "upstream_error")
+        try:
+            await websocket.close(code=4502, reason="拡張機能のWebSocketへ接続できません")
+        except RuntimeError:
+            pass
+    except (WebSocketDisconnect, RuntimeError):
+        registry.record_activity(addon_id, "addon-frame.websocket", "closed")

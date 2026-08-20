@@ -69,10 +69,8 @@ def require_permissions(*permissions: str):
     return checker
 
 
-async def authenticate_websocket(
-    websocket: WebSocket, db: Session, permission: str
-) -> User | None:
-    """WebSocket の認証 + Origin + 権限確認。失敗時は close して None を返す。"""
+async def authenticate_websocket_user(websocket: WebSocket, db: Session) -> User | None:
+    """WebSocket の認証 + Origin確認。失敗時はcloseし、権限判定前のUserだけを返す。"""
     from app.config import get_config
 
     peer = websocket.client.host if websocket.client else "unknown"
@@ -100,6 +98,16 @@ async def authenticate_websocket(
     _, user = resolved
     if totp_required_for(user) and not user.totp_enabled:
         await websocket.close(code=4403, reason="totp setup required")
+        return None
+    return user
+
+
+async def authenticate_websocket(
+    websocket: WebSocket, db: Session, permission: str
+) -> User | None:
+    """WebSocket の認証 + Origin + 権限確認。失敗時は close して None を返す。"""
+    user = await authenticate_websocket_user(websocket, db)
+    if user is None:
         return None
     if permission not in user_permissions(user):
         await websocket.close(code=4403)

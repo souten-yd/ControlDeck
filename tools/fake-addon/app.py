@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Control Deck Fake Add-on", version="2.0")
@@ -98,6 +98,18 @@ async def set_health(update: HealthUpdate) -> dict:
     _health_state = update.status
     _video_available = update.video_available
     return await health()
+
+
+@app.websocket("/ws")
+async def echo_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    await websocket.send_json({"type": "ready"})
+    try:
+        while True:
+            message = await websocket.receive_text()
+            await websocket.send_text(message)
+    except WebSocketDisconnect:
+        return
 
 
 async def _run_gpu_job(job: FakeGpuJob) -> None:

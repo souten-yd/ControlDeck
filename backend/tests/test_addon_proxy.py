@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from app.addons.schema import AddonHealthReport
 from tests.conftest import CSRF_HEADERS
@@ -118,3 +121,52 @@ def test_addon_service_token_is_audience_bound_and_expires(monkeypatch, tmp_path
         tokens.verify(token, addon_id="other-addon", kind="service", now=101)
     with pytest.raises(tokens.AddonTokenError):
         tokens.verify(token, addon_id="fake-addon", kind="service", now=700)
+
+
+def test_addon_frame_websocket_relays_messages_with_scoped_token(enabled_addon, monkeypatch):
+    client, _registry = enabled_addon
+    from app.addons import proxy, tokens
+
+    sent: list[str | bytes] = []
+    captured: dict[str, object] = {}
+
+    class FakeUpstream:
+        subprotocol = None
+
+        async def send(self, message):
+            sent.append(message)
+
+        async def __aiter__(self):
+            yield "upstream-ready"
+            await asyncio.Event().wait()
+
+    class FakeConnection:
+        async def __aenter__(self):
+            return FakeUpstream()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    def connect(url, headers, subprotocols):
+        captured.update({"url": url, "headers": headers, "subprotocols": subprotocols})
+        return FakeConnection()
+
+    monkeypatch.setattr(proxy, "_connect_websocket", connect)
+    with client.websocket_connect("/addon-frame/fake-addon/ws?run=1") as socket:
+        assert socket.receive_text() == "upstream-ready"
+        socket.send_text("browser-message")
+    assert sent == ["browser-message"]
+    assert captured["url"] == "ws://127.0.0.1:9130/ws?run=1"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    token = headers["Authorization"].removeprefix("Bearer ")
+    assert tokens.verify(token, addon_id="fake-addon", kind="service")["aud"] == "fake-addon"
+
+
+def test_addon_frame_websocket_rejects_disabled_addon(enabled_addon):
+    client, _registry = enabled_addon
+    assert client.post("/api/v1/addons/fake-addon/disable", headers=CSRF_HEADERS).status_code == 200
+    with pytest.raises(WebSocketDisconnect) as rejected:
+        with client.websocket_connect("/addon-frame/fake-addon/ws"):
+            pass
+    assert rejected.value.code == 4409
