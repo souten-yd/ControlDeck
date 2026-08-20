@@ -350,6 +350,67 @@ def test_resource_job_oom_is_normalized_profiled_and_not_retried(monkeypatch):
     assert snapshot["leases"][0]["state"] == "released"
 
 
+def test_two_exclusive_resource_jobs_execute_serially(monkeypatch):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+    monkeypatch.setattr(jobs, "MAX_CONCURRENT", 2)
+
+    def requirement(job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": f"internal:{job_id}", "job_id": job_id, "device": "gpu0",
+            "vram": {
+                "resident_bytes": 100, "execution_peak_bytes": 100,
+                "cold_load_peak_bytes": 100, "headroom_bytes": 0,
+                "confidence": "measured",
+            },
+            "compute_mode": "exclusive-required", "class": "background",
+        })
+
+    async def scenario():
+        first_gate = asyncio.Event()
+        order = []
+
+        async def first_runner(_job):
+            order.append("first-start")
+            await first_gate.wait()
+            order.append("first-end")
+
+        async def second_runner(_job):
+            order.append("second-start")
+
+        first = jobs.create(
+            "test.gpu", "first", first_runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        second = jobs.create(
+            "test.gpu", "second", second_runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        for _ in range(100):
+            if first.status == "running" and second.wait_reason:
+                break
+            await asyncio.sleep(0.01)
+        assert first.status == "running"
+        assert second.status == "queued" and second.phase == "waiting_resource"
+        assert order == ["first-start"]
+        first_gate.set()
+        for _ in range(100):
+            if first.status == second.status == "succeeded":
+                break
+            await asyncio.sleep(0.01)
+        return first, second, order, await broker.snapshot()
+
+    first, second, order, snapshot = _run(scenario())
+    assert first.status == second.status == "succeeded"
+    assert order == ["first-start", "first-end", "second-start"]
+    assert snapshot["devices"][0]["lease_reserved_bytes"] == 0
+
+
 def test_jobs_api_hides_other_owners_and_streams_snapshot(admin_client):
     from app.bootstrap import create_admin
     from app.database import SessionLocal
