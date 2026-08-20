@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Re
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.addons import bridge, health, registry
+from app.addons import bridge, execution as addon_execution, health, registry
 from app.addons.schema import AddonManifestV2, parse_manifest
 from app.audit import service as audit
 from app.database import get_db
@@ -47,6 +47,32 @@ def effective_addons(
     if if_none_match == etag:
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
     return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+
+
+@router.get("/execution-contributions")
+async def execution_contributions(user: User = Depends(get_current_user)):
+    """Return only enabled, available and user-authorized executable contributions."""
+    permissions = user_permissions(user)
+    groups = {
+        kind: addon_execution.discover(kind, permissions)
+        for kind in ("workflow_executors", "agent_tools", "context_actions")
+    }
+    schema_errors: dict[str, str] = {}
+    for contribution in groups["workflow_executors"]:
+        key = f"{contribution['addon_id']}:{contribution['id']}"
+        try:
+            input_schema, output_schema = await addon_execution.workflow_schemas(
+                contribution["addon_id"], contribution["id"], permissions=permissions,
+            )
+            contribution["input_schema"] = input_schema
+            contribution["output_schema"] = output_schema
+        except addon_execution.AddonExecutionError as exc:
+            schema_errors[key] = exc.code
+    groups["workflow_executors"] = [
+        item for item in groups["workflow_executors"]
+        if f"{item['addon_id']}:{item['id']}" not in schema_errors
+    ]
+    return {"revision": registry.revision(), "contributions": groups, "schema_errors": schema_errors}
 
 
 async def _effective_event_stream(request: Request, permissions: set[str]):
