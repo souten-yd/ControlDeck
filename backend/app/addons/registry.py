@@ -152,6 +152,12 @@ def revision() -> int:
         return _revision
 
 
+def health_observation(addon_id: str) -> HealthObservation | None:
+    with _LOCK:
+        status(addon_id)
+        return _observations.get(addon_id)
+
+
 def wait_for_revision(previous: int, timeout: float = 30.0) -> int:
     with _revision_event:
         if _revision == previous:
