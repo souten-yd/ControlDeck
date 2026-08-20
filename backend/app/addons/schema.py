@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.addons.contract import ADDON_CONTRACT_VERSION
+from app.addons.contract import ADDON_CONTRACT_VERSION, AddonHealthState, AddonReasonCode, ContributionAvailability
 from app.security.permissions import ALL_PERMISSIONS
 
 PLUGIN_ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
@@ -263,6 +263,69 @@ class AddonManifestV2(BaseModel):
                 if qualified in contribution_ids:
                     raise ValueError("contribution IDを重複させることはできません")
                 contribution_ids.add(qualified)
+        return self
+
+
+class HealthAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["retry", "open_route", "open_logs", "disable", "documentation"]
+    route: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def validate_action(self) -> "HealthAction":
+        if self.kind == "open_route":
+            if self.route is None:
+                raise ValueError("open_route actionにはrouteが必要です")
+            _validate_relative_path(self.route, "action.route")
+        elif self.route is not None:
+            raise ValueError("open_route以外のactionにrouteは指定できません")
+        return self
+
+
+class ContributionAvailabilityDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal[ContributionAvailability.DEGRADED, ContributionAvailability.UNAVAILABLE]
+    reason_code: AddonReasonCode
+    message: str = Field(min_length=1, max_length=300)
+    action: HealthAction
+
+
+class SetupChecklistItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=CONTRIBUTION_ID_PATTERN)
+    label: str = Field(min_length=1, max_length=80)
+    state: Literal["ok", "missing", "error", "checking"]
+    detail: str | None = Field(default=None, max_length=300)
+    message: str | None = Field(default=None, max_length=300)
+    action: HealthAction | None = None
+
+
+class AddonHealthReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: AddonHealthState
+    contract_version: Literal["2.0"]
+    reason_code: AddonReasonCode | None = None
+    message: str | None = Field(default=None, max_length=300)
+    action: HealthAction | None = None
+    contributions: dict[str, ContributionAvailability | ContributionAvailabilityDetail] = Field(
+        default_factory=dict, max_length=256,
+    )
+    setup: list[SetupChecklistItem] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_state_detail(self) -> "AddonHealthReport":
+        if self.status in {AddonHealthState.DEGRADED, AddonHealthState.UNAVAILABLE, AddonHealthState.SETUP_REQUIRED}:
+            if self.reason_code is None and not self.setup and not any(
+                isinstance(value, ContributionAvailabilityDetail) for value in self.contributions.values()
+            ):
+                raise ValueError("非healthy healthにはreason_code、setup、またはcontribution detailが必要です")
+        ids = [item.id for item in self.setup]
+        if len(ids) != len(set(ids)):
+            raise ValueError("setup item idを重複させることはできません")
         return self
 
 
