@@ -8,8 +8,8 @@
 
 SDK v1 の capability は `navigation` です。manifest の未知フィールドや未知 capability は fail closed で拒否します。
 
-高度な別プロセスservice向けの Add-on v2 は、v1を破壊せず別contractとして追加します。v2のregistry／UI／bridgeは
-段階実装中であり、PR-0時点で利用できるのはmanifest contract、lint、fake service harnessです。設計の正本は
+高度な別プロセスservice向けの Add-on v2 は、v1を破壊せず別contractとして追加します。v2はregistry、host UI、
+opaque embedded view／Bridge、Resource Broker、remote Workflow／Agent／Context executionまで実装済みです。設計の正本は
 [design-addon-platform-v2.md](design-addon-platform-v2.md)です。ユーザー向けUIではv1/v2とも「拡張機能」と表示します。
 
 ## manifest
@@ -107,3 +107,41 @@ user permission別ETagを返し、SSEは本文を含めずrevision/ETagだけ通
 managed manifestは`data_dir/addons/<id>/control-deck-addon.json`へ0600で原子的に保存します。
 壊れた／将来majorのmanifestは消さず`incompatible`として表示し、disable/uninstallできる一方でenable/effectiveを拒否します。
 非loopback runtimeは`addons.allowed_origins`へpathなしHTTPS originを明示した場合だけhealth接続できます。
+
+## Add-on v2 execution contributions（PR-E）
+
+実行対象はmanifestに存在するだけでは足りません。Add-onがenabled、対象contributionがavailable、呼出し利用者が
+manifestの`permission`を持つ場合だけdiscovery／invokeできます。実行中にdisableされた場合も送信直前の再検査で停止します。
+
+```text
+GET  /api/v1/addons/execution-contributions
+POST /api/v1/addons/{id}/agent-tools/{contribution_id}/invoke
+POST /api/v1/addons/{id}/context-actions/{contribution_id}/invoke
+GET  /api/v1/workflows/node-catalog
+```
+
+schema endpointは5秒／64KiB、実行endpointは120秒、request 1MiB／response 4MiBが上限です。redirectは追従せず、
+schemaとresponseはJSON objectだけを受理します。upstreamへControlDeck session Cookie、利用者Authorization、CSRF tokenは
+転送されず、Add-on audienceへ束縛した短命service tokenだけが送られます。
+
+### Workflow executor
+
+`workflow_executors`はhostで`addon.workflow:{addon_id}:{contribution_id}` nodeになります。input/output schemaは
+JSON Schema Draft 2020-12 object schemaにしてください。hostはtemplate解決後inputとupstream outputを検証します。
+dry-runはschema検証だけでendpointを呼びません。disable／unavailable時も保存済みnodeとedgeは削除されず、Editorが
+必要なAdd-onを表示し、publishと実行をfail closedにします。
+
+### Agent tool
+
+`agent_tools`は実行Workflow ownerの現在permissionでLLM tool listへ追加されます。各callはControlDeck Jobに紐づき、
+同期応答は`job_id`、`asset_id`（`job-result:{job_id}`）、bounded outputです。`wait: false`では202とJob IDを返します。
+raw host pathは引数schemaが許可しても拒否されます。ファイルはhostが発行した`asset:`／`grant:` IDで設計してください。
+
+### Context Action
+
+`context_actions.contexts`は`file`、`project`、`workflow`、`job`の固定集合です。Files／Project Labのhost UIから実行でき、
+hostが対象の存在・realpath containment・Job ownerを検証します。file pathはupstreamへ送られず、`grant:` IDへ変換されます。
+payloadは`input`と`context: {type, resource_id, grant_id}`だけです。`grant_id`は要求単位のscoped tokenであり、
+ControlDeck全体またはproject rootへの包括権限ではありません。
+
+実装例と実E2Eは`tools/fake-addon/`と`frontend/e2e/addon-v2-execution.spec.ts`を参照してください。

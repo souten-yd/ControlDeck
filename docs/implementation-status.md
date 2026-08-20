@@ -2,6 +2,15 @@
 
 最終更新: 2026-08-21
 
+## Add-on Platform v2 PR-E Workflow／Agent／Context 統合完了（2026-08-21）
+
+- executable contributionの共通境界を追加した。discoveryはinstalledではなく、enabled・contribution available・利用者permissionをすべて満たすものだけを返す。schema取得はredirect非追従、5秒、64KiB、Draft 2020-12 object schemaに限定し、実行はrequest 1MiB、response 4MiB、120秒、JSON objectに限定した。ControlDeck sessionのCookie／Authorizationは送らず、audience束縛service tokenだけを使う。disableとのraceは送信直前にも再検査し、失敗／成功をpayloadなしactivityへ記録する。
+- Workflow node type `addon.workflow:{addon_id}:{contribution_id}`をnode catalogへ動的登録し、schemaからhost側設定UIを生成する。dry-runはcache済みschema検証とtemplate解決だけでAdd-onを呼ばない。実行はinput/output両schemaを検証し、execution/node correlationを付ける。保存済みnodeはAdd-on停止／disable後も定義と接続を保持してunavailable警告を表示し、publish／runだけをfail closedにする。
+- Agent toolは実行Workflowの作成者と現在permissionを解決してLLM tool一覧へ動的追加する。各callはowner付きdurable Jobとして実行し、agentへは`job_id`、`job-result:{job_id}`の`asset_id`、bounded outputだけを返す。timeout／client cancelはJob cancelへ伝播し、raw host pathを含む引数はschemaが許可しても拒否する。
+- Context ActionをFilesとProject Labへ追加した。hostがfile realpath containmentまたはproject存在を検証し、Add-onへはfile pathではなく`grant:` ID、context種別、短命scoped tokenだけを渡す。Add-onへproject全体のpath／内容／ControlDeck credentialは渡さない。直接invoke APIと全操作の監査を追加した。
+
+検証: implementation code head `aeeb34b` でaddon execution／Jobs persistence／LLM autoload／Workflow dry-run・catalog集中36件、canonical backend全671件成功（1件skip）、frontend production build成功。実`control-deck-web`をbranchから再起動し、別processのfake Add-onをloopback起動した実Chromium E2E（3.6秒）でinstall／enable、実schema discovery、remote Workflow dry-run（remote callなし）→draft execution `SUCCEEDED`、Agent owned Job＋asset参照、raw file pathから`grant:`への変換と非反射、320×700の「拡張機能」palette／overflowなし、1280×800のProject Lab Context Action、認証後console／page error 0を確認した。fake processを停止し、一時WorkflowとAdd-onを削除した。外部hosted CIはこのrepositoryに必須checkが設定されていない場合はUNAVAILABLEとして扱い、local gateの代替PASSとは記録しない。
+
 ## Add-on Platform v2 PR-D2 Llama／Jobs resource admission 完了（2026-08-21）
 
 - resource-aware Jobは通常runnerへ入る前にBroker requestを作り、取得までは`status=queued, phase=waiting_resource`として永続化する。待機中はrunner slotを消費せず、grant後にleaseをactivate／renewし、成功・失敗・cancelの全terminal pathでrequest／leaseを解放する。進捗はphase必須、completed単調増加、通知2Hz・DB書込5秒を上限とし、従来のresource非依存Jobの契約は維持した。

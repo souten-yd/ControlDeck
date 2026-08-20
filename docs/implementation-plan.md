@@ -122,7 +122,7 @@ mock による決定的回帰に加え、LLM/RAG/AI 関連は利用可能なロ�
 - LLM runtime providerカタログ（Ollama / llama.cpp / LM Studio / OpenAI互換）と共通エンドポイント検出
 - ✅ capability付きモデルadapter（共通一覧 / ロード / アンロード / 削除 / durable pull / 型付き設定。未対応操作は明示的に拒否）
 - ✅ 宣言型plugin SDK v1（外部Web UIのmanifest検証／登録／権限付きnavigation／状態管理／監査。任意コードは本体へloadしない）
-- Add-on Platform v2: ✅ PR-0 contract/harness、✅ PR-A backend registry/effective contributions、✅ PR-B host-rendered UI contribution／状態表示、✅ PR-C opaque embedded view／secure proxy／Host Bridge、✅ PR-D1 Resource Broker core、✅ Jobs phase/wait reason単独migration、✅ PR-D2 llama adapter／Gateway lease／Jobs admission／managed supervision（既定observed）。次はPR-E Workflow／Agent／Context統合
+- Add-on Platform v2: ✅ PR-0 contract/harness、✅ PR-A backend registry/effective contributions、✅ PR-B host-rendered UI contribution／状態表示、✅ PR-C opaque embedded view／secure proxy／Host Bridge、✅ PR-D1 Resource Broker core、✅ Jobs phase/wait reason単独migration、✅ PR-D2 llama adapter／Gateway lease／Jobs admission／managed supervision（既定observed）、✅ PR-E remote Workflow executor／Job-backed Agent tools／scoped Context Actions。計画したPR-0〜PR-Eを完了
 
 ## 環境構築方針（ユーザー追加要求）
 

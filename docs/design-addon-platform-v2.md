@@ -1131,6 +1131,14 @@ LLM リクエスト受信
 - tool呼び出しは Jobs に紐づけ、agent には job_id + asset_id を返す
   （ログからファイル名をscrapeさせない）
 
+### 9.1 実装結果（2026-08-21）
+
+- `GET /api/v1/addons/execution-contributions`が利用者permissionとeffective availabilityでWorkflow／Agent／Contextを発見し、Workflow schema取得失敗をcontribution単位で隔離する。
+- remote Workflowは`addon.workflow:{addon_id}:{contribution_id}`としてhost node catalog／Editorへ動的登録される。schema取得・input/output検証・request/response上限・timeout・redirect拒否はhostが一元管理する。dry-runはschema cacheだけを使いupstreamへ送信しない。disable後も保存済みnodeとedgeは残り、unavailable表示とpublish blockerになる。
+- Agent toolはWorkflow execution ownerの現在RBACで再評価し、callごとにowner付きdurable Jobを作る。結果は`job_id`とopaque `job-result:` asset IDで参照し、timeout／cancelをJobへ伝播する。raw host path引数は境界で拒否する。
+- Context ActionはFiles／Project Labのhost UIからだけ開始し、hostが対象を検証してfile pathを`grant:`へ変換する。upstreamへ渡すのはcontext type、opaque resource ID、要求単位のscoped token、明示inputだけである。
+- 実fake Add-on processと実Chromiumによりremote Workflow、Agent Job、Context grant、320px／1280px host UIを通し、終了後に一時registry／Workflowを清掃した。
+
 ---
 
 ## 10. セキュリティ要件（前版 §29 を拡張）
