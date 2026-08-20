@@ -2,6 +2,20 @@
 
 最終更新: 2026-08-21
 
+## LLM reload cost分離・永続化 完了（2026-08-21）
+
+- llama.cppのload profileをresidency keyごとにcold／warmへ分離した。起動後初回、stop記録なし、またはstopから900秒超過はcold、同じkeyのstopから900秒以内の次のload 1回だけをwarmとする。yield判断はwarm 3件を優先し、未達時はcold 3件、どちらも未達なら`yield_load_cost_unknown`で保守的に抑止する。推定値・catalog値へのfallbackは追加していない。
+- profileは`data_dir/resource-load-profiles.json`（schema version 1）へload計測時だけatomic保存し、起動時に30日超過、破損、schema／型不一致を安全に無視する。keyごとのsample数とファイル全体をboundedにし、telemetry clearは永続fileも削除する。`GET /api/v1/resources`はcold／warmのp50・p90・count、yield basis、実際のthresholdを返す。
+- managed設定画面にbasis、p90とsample数、推定実行時間のthreshold、直近の抑止理由、cold bootstrap説明と「今すぐ退避」を追加した。Brokerの抑止enumは同じyield可能blockerが続く間保持し、待機Jobの`wait_reason`へrevision追従で反映する。`estimated_runtime_sec`は要求元申告のままで、未申告requestはyieldを誘発しない。supervisionの既定は`observed`を維持した。
+
+実機検証: code head `dee0a22` を実`control-deck-web`へ反映し、32GB AMD GPU／NVMe上Qwen3.8 27Bを`supervision=observed`でGateway cold loadした。最初のprofileはprocess 1.052秒＋model load 21.239秒＝cold 22.291秒、count 1、basis insufficientだった。Web PID `1030276`→`1031535`の再起動後も同じresidency key、cold p90 22.291秒、count 1をAPIから復元し、Broker request／active lease 0を確認した。
+
+clean profileでControlDeck起動後初回のcoldを3件実測し、cold p90 6.206秒、basis cold、暫定threshold 12.412秒を確認した。その後managedへopt-inし、各回20GiB exclusive requestが`yield_runtime_unknown`で待機すること、手動「今すぐ退避」後にstop→grant→releaseとなること、続くGateway loadがwarmになることを3回繰り返した。warm countは1／2の間basis coldを維持し、3件目にbasis warmへ切り替わった。最終warm p90は6.128秒、yield thresholdは12.256秒で、旧cold混在値166秒ではない。最終profileはcold 3件／warm 3件として再起動後も復元した。
+
+実Chromiumの320×700と1280×800でwarm実測、`6.1 秒（warm p90、サンプル 3 件）`、`推定実行時間が 12.3 秒を超えるジョブ`、`処理時間が未申告`、手動退避buttonをlive APIで表示した。document／body／dialogの横overflowは双方0、認証後console error／page errorも双方0。検証後は`supervision=observed`、LLM loaded 0、Broker request 0／lease 0へ戻し、warm profileの永続だけを残した。初回検証profileは`/tmp/controldeck-resource-load-profiles-first-run.json`へ退避して保全した。
+
+自動検証はresource profile／Broker／Llama provider／無改変KV capacity／Jobs persistenceの集中52件、canonical `./deck.sh test` 683件成功（1件skip）、frontend production build（1,542 modules）に成功した。canonicalの先行2回は既存の排他Job直列化testが最初のrunner開始前に固定1秒判定へ到達して各1件失敗したが、同test単独＋連続10回、Jobs suite 11件、集中52件、最終canonical全件はいずれも成功した。
+
 ## Add-on Platform v2 PR-E Workflow／Agent／Context 統合完了（2026-08-21）
 
 - executable contributionの共通境界を追加した。discoveryはinstalledではなく、enabled・contribution available・利用者permissionをすべて満たすものだけを返す。schema取得はredirect非追従、5秒、64KiB、Draft 2020-12 object schemaに限定し、実行はrequest 1MiB、response 4MiB、120秒、JSON objectに限定した。ControlDeck sessionのCookie／Authorizationは送らず、audience束縛service tokenだけを使う。disableとのraceは送信直前にも再検査し、失敗／成功をpayloadなしactivityへ記録する。

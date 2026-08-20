@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
+from app.config import data_dir
 from app.resources.devices import DeviceCollection, ResourceDevice
 from app.resources.leases import LeaseError, LeaseTable
 from app.resources.probes import ProviderRegistry
@@ -26,6 +27,16 @@ from app.resources.telemetry import ResourceTelemetry
 
 class BrokerError(RuntimeError):
     pass
+
+
+YIELD_SUPPRESSION_REASONS = {
+    WaitReason.YIELD_RUNTIME_UNKNOWN,
+    WaitReason.YIELD_LOAD_COST_UNKNOWN,
+    WaitReason.YIELD_THRASH_COST,
+    WaitReason.YIELD_MINIMUM_UPTIME,
+    WaitReason.YIELD_THRASH_WINDOW,
+    WaitReason.YIELD_DRAIN_TIMEOUT,
+}
 
 
 @dataclass
@@ -316,7 +327,15 @@ class ResourceBroker:
                     )
                     granted = True
                     break
-                record.status.reason = fit.reason or WaitReason.QUEUE_POSITION
+                preserved_suppression = (
+                    record.status.reason
+                    if fit.yield_device_id is not None
+                    and record.status.reason in YIELD_SUPPRESSION_REASONS
+                    else None
+                )
+                record.status.reason = (
+                    preserved_suppression or fit.reason or WaitReason.QUEUE_POSITION
+                )
                 record.status.queue_position = position
                 record.status.blocking = list(fit.blocking)
                 record.status.actions = ["cancel", "lower_priority"]
@@ -347,6 +366,11 @@ class ResourceBroker:
                 record = self._requests.get(request_id)
                 if record is not None and record.status.state == RequestState.WAITING:
                     await self._schedule_locked(self._clock())
+                    if not yielded:
+                        suppression = self.providers.yield_wait_reason()
+                        if suppression is not None:
+                            record.status.reason = suppression
+                            await self._bump()
                 if yielded:
                     await self._bump()
 
@@ -471,7 +495,10 @@ def empty_broker() -> ResourceBroker:
     return ResourceBroker(DeviceCollection())
 
 
-broker = empty_broker()
+broker = ResourceBroker(
+    DeviceCollection(),
+    telemetry=ResourceTelemetry(profile_path=data_dir() / "resource-load-profiles.json"),
+)
 
 
 __all__ = ["BrokerError", "LeaseError", "ResourceBroker", "broker"]

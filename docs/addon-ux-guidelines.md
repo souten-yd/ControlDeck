@@ -29,6 +29,23 @@ navigationの存在と実行contributionのavailabilityは分離します。一�
 320pxの既定は`mobile: companion`です。Jobs、通知、直近asset、再実行と「デスクトップで開く」をhostが描画し、
 PC workspaceを縮小して対応済みとは扱いません。
 
+### LLM退避の抑止理由
+
+Broker／providerはenumを返し、日本語文言はhostが所有します。待機Jobは単なる「GPUの空き待ち」で止めず、
+次の理由を詳細へ反映します。内部profile、model path、provider response本文は表示しません。
+
+| enum | 表示 |
+|---|---|
+| `yield_runtime_unknown` | 処理時間が未申告のためLLMを退避しません |
+| `yield_load_cost_unknown` | 再ロード実測が不足しているためLLMを退避しません |
+| `yield_thrash_cost` | 処理時間が退避コストに見合わないため待機しています |
+| `yield_minimum_uptime` | LLMの最低常駐時間が過ぎるまで待機しています |
+| `yield_thrash_window` | 短時間の退避頻発を防ぐため待機しています |
+| `yield_drain_timeout` | LLM処理を安全に停止できなかったため待機しています |
+
+設定画面はcold／warmのbasis、実測p90とsample数、`p90 * 2`の退避閾値、直近の抑止理由を表示します。
+cold basisは暫定で退避がほぼ起きないこと、手動退避後の再ロードを3回測ると精度が上がることを明示します。
+
 ## 描画・入力
 
 - labelはlocale fallback後24文字まで。制御文字を拒否し、省略時も詳細名へ到達可能にする

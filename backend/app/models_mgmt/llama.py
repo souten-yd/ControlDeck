@@ -1046,12 +1046,29 @@ def stop_instance(alias: str | None = None) -> tuple[bool, str]:
 
     selected = str(get_config().get("selected_alias") or "")
     resolved = str(alias or selected or "llama")
+    instance = None
+    was_loaded = False
+    try:
+        instance = get_instance(resolved)
+        was_loaded = any(
+            str(item.get("alias") or "llama") == resolved and bool(item.get("loaded"))
+            for item in list_instances()
+        )
+    except (KeyError, OSError):
+        pass
     current = sd.stop(unit_name(resolved))
     # catalog移行前の旧単一unitも、選択中モデルの停止操作に含める。
     if resolved == selected:
         legacy = sd.stop(f"{UNIT_PREFIX}.service")
         if legacy[0]:
-            return legacy
+            current = legacy
+    if current[0] and was_loaded and instance is not None:
+        try:
+            from app.resources.broker import broker as resource_broker
+
+            resource_broker.telemetry.record_unload(residency_key(instance))
+        except Exception:  # noqa: BLE001 - telemetry must never block a stop
+            logger.exception("llama unload telemetry recording failed")
     return current
 
 

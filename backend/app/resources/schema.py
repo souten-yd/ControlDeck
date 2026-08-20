@@ -37,6 +37,12 @@ class WaitReason(StrEnum):
     PROVIDER_DRAINING = "provider_draining"
     DEPENDENCY_PENDING = "dependency_pending"
     INSUFFICIENT_CAPACITY = "insufficient_capacity"
+    YIELD_RUNTIME_UNKNOWN = "yield_runtime_unknown"
+    YIELD_LOAD_COST_UNKNOWN = "yield_load_cost_unknown"
+    YIELD_THRASH_COST = "yield_thrash_cost"
+    YIELD_MINIMUM_UPTIME = "yield_minimum_uptime"
+    YIELD_THRASH_WINDOW = "yield_thrash_window"
+    YIELD_DRAIN_TIMEOUT = "yield_drain_timeout"
 
 
 class RequestState(StrEnum):

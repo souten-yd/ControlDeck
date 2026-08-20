@@ -25,6 +25,25 @@ managed supervisionは既定OFFで、Gateway専用・local NVMe・実測cold-loa
 
 実機の2回目のQwen3.8 27B cold-loadではGateway request 83.981秒、cold-load p90 83.038秒、first token 0.733秒、VRAM 29,269,983,232 bytesを観測した。20GiB exclusive Broker requestはLLM resident中に`device_busy_exclusive`で待機し、managed yield後59,924,480 bytesまで解放してgrantされた。request解放後のGateway requestは7.851秒でmodelを再起動した。sampleは2件のためmanaged既定化や汎用的な閾値調整の根拠にはせず、`observed`を既定のまま維持する。
 
+## 0.2 reload cost profile（cold／warm分離）
+
+thrash guardが比較するreload costは、起動後初回のdisk cold loadではなく、BrokerがLLMを停止した後に発生する再ロードである。page cacheを直接推測せず、同じ`residency_key`のstop記録から15分以内に開始した最初のloadだけを`warm`、それ以外を`cold`へ決定的に分類する。同じstopで2回をwarmにせず、別keyのstopは影響させない。互換上`cold_load_cost_sec`というsample field名は維持し、`load_kind`で意味を分ける。
+
+`reload_cost_p90()`の選択規則は次のとおりで、推定値／catalog値へfallbackしない。
+
+```text
+warm >= 3 samples -> warm p90（yieldの正規basis）
+warm < 3 and cold >= 3 samples -> cold p90（bootstrap中の保守的basis）
+otherwise -> insufficient。自動yieldしない
+yield threshold = selected p90 * 2.0
+```
+
+profileは`data_dir/resource-load-profiles.json`へschema version 1でatomic保存する。keyあたり最大50件、30日を超えるsampleは起動時に捨て、全体2MiBを超える場合は最終計測が古いkeyから除く。schema不一致、破損、型不一致はwarningだけを残して空profileとして起動し、Web起動を止めない。
+
+warm sampleが無い初期状態はcold basisで保守的に動く。利用者が「今すぐ退避」を行い、続くGateway loadを3回実測するとwarm basisへ移る。このbootstrapを自動推定で短絡しない。
+
+`estimated_runtime_sec`はresource要求元が申告する。ControlDeckはMedia固有の推定器を持たず、未申告の要求は`runtime_unknown`としてLLM退避を誘発しない。
+
 ## 1. 目的
 
 ControlDeck の既存 LLM Gateway が持つ「空くまで待ってから通す」考え方を、LLM専用のKV制御から **LLM・VLM・画像・動画・3D・将来のAIワーカーで共有できるGPU/AIリソース受け入れ基盤**へ一般化する。

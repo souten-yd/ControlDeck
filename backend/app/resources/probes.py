@@ -41,3 +41,10 @@ class ProviderRegistry:
             if levels and await provider.request_yield(device_id, max(levels), request):
                 yielded = True
         return yielded
+
+    def yield_wait_reason(self) -> WaitReason | None:
+        for provider in self.values():
+            reason = provider.yield_wait_reason()
+            if reason is not None:
+                return reason
+        return None
