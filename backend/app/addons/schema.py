@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 import re
+import stat
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlsplit
 
@@ -16,6 +20,7 @@ CONTRIBUTION_ID_PATTERN = r"^[a-z][a-z0-9._-]{0,127}$"
 SEMVER_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
 CONTRACT_RANGE_PATTERN = r"^>=[0-9]+\.[0-9]+ <[0-9]+\.[0-9]+$"
 PRESENTATIONAL_FORWARD_FIELDS = frozenset({"badge", "hint", "icon", "order"})
+MAX_MANIFEST_BYTES = 64 * 1024
 
 HostCapability: TypeAlias = Literal[
     "context.read",
@@ -314,3 +319,26 @@ def parse_manifest(value: Any) -> ParsedManifest:
             f"addon contract {manifest.requires.addon_contract!r} はhost {ADDON_CONTRACT_VERSION}と互換性がありません"
         )
     return ParsedManifest(manifest, tuple(warnings))
+
+
+def load_manifest_file(source: Path) -> ParsedManifest:
+    """Read a bounded user-owned manifest without following a symlink target."""
+
+    expanded = source.expanduser()
+    try:
+        info = expanded.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError("manifestが見つかりません") from exc
+    if not stat.S_ISREG(info.st_mode) or expanded.is_symlink():
+        raise ValueError("manifestはsymlinkではない通常fileにしてください")
+    if info.st_uid != os.getuid():
+        raise ValueError("manifestは実行user所有にしてください")
+    if info.st_mode & 0o002:
+        raise ValueError("manifestをotherから書込み可能にはできません")
+    if info.st_size > MAX_MANIFEST_BYTES:
+        raise ValueError("manifestは64KiB以下にしてください")
+    try:
+        raw = json.loads(expanded.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"manifest JSONが不正です: {exc}") from exc
+    return parse_manifest(raw)

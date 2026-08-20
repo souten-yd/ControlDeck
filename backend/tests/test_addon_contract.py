@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+
 import pytest
 from pydantic import ValidationError
 
@@ -87,3 +91,42 @@ def test_v2_unknown_presentational_field_is_ignored_with_warning():
     assert parsed.warnings == (
         "contributions.commands[0].badge: このhostでは未対応の表示fieldを無視しました",
     )
+
+
+def test_ext_lint_cli_accepts_v2_and_reports_warnings(tmp_path):
+    value = addon_manifest()
+    value["contributions"]["commands"][0]["hint"] = "future hint"
+    path = tmp_path / "addon.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "app.addons.cli", "lint", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["valid"] is True
+    assert payload["id"] == "fake-addon"
+    assert payload["host_contract"]["addon"] == "2.0"
+    assert payload["warnings"] == [
+        "contributions.commands[0].hint: このhostでは未対応の表示fieldを無視しました"
+    ]
+
+
+def test_ext_lint_cli_rejects_invalid_and_unsafe_manifest_files(tmp_path):
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text('{"api_version":"99"}', encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "app.addons.cli", "lint", str(invalid)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "未対応のapi_version" in result.stderr
+
+    symlink = tmp_path / "manifest-link.json"
+    symlink.symlink_to(invalid)
+    result = subprocess.run(
+        [sys.executable, "-m", "app.addons.cli", "lint", str(symlink)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "symlinkではない通常file" in result.stderr

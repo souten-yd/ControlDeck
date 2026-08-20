@@ -21,6 +21,7 @@
 #                                オプション機能を明示的に管理（通常起動では自動導入しない）
 #   ./deck.sh plugin <list|validate|install|enable|disable|uninstall> [manifest|ID]
 #                                宣言型plugin manifestを検証・管理
+#   ./deck.sh ext lint <manifest> Add-on v1/v2 manifestを静的検証
 #
 # 初回でも 2 回目以降でも同じように実行するだけでよい。
 # 不足要素（venv / Node 依存 / フロントエンドビルド / 設定 / linger / 管理者）は
@@ -689,6 +690,16 @@ cmd_plugin() {
   (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.plugins.cli "$action" "$@")
 }
 
+cmd_ext() {
+  [ $# -eq 2 ] || die "使用方法: ./deck.sh ext lint <manifest>"
+  local action="$1"
+  [ "$action" = "lint" ] || die "ext操作は lint のみ対応しています"
+  local manifest_path
+  manifest_path="$(realpath -e -- "$2")" || die "manifestが見つかりません: $2"
+  check_root; check_python; ensure_venv
+  (cd "$REPO_ROOT/backend" && "$VENV/bin/python" -m app.addons.cli lint "$manifest_path")
+}
+
 # 依存導入（pip / npm / Playwright）を走らせる前に、キャッシュ先を data_dir 配下へ固定する。
 export_cache_paths
 
@@ -709,6 +720,7 @@ case "${1:-start}" in
   searxng) shift; cmd_searxng "$@" ;;
   feature) shift; cmd_feature "$@" ;;
   plugin)  shift; cmd_plugin "$@" ;;
+  ext)     shift; cmd_ext "$@" ;;
   -h|--help|help)
     sed -n '3,16p' "$0" ;;
   *)
