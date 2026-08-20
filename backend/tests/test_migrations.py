@@ -213,6 +213,53 @@ command.upgrade(_alembic_config(), "head")
     assert rows == [(2, 20.0, 50.0), (1, 50.0, 80.0)]
 
 
+def test_job_resource_wait_columns_are_nullable_and_preserve_existing_rows(tmp_path: Path):
+    database = tmp_path / "job-resource-wait.db"
+    baseline = _run(database, """
+from alembic import command
+from app.database.migrations import _alembic_config
+command.upgrade(_alembic_config(), "b41f7d90c655")
+""")
+    assert baseline.returncode == 0, baseline.stderr
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO jobs "
+            "(id, kind, title, status, progress_json, events_json, error, created_at, updated_at) "
+            "VALUES ('existing-job', 'test', 'existing', 'queued', '{}', '[]', '', "
+            "'2026-08-21 00:00:00', '2026-08-21 00:00:00')"
+        )
+        connection.commit()
+
+    upgraded = _run(database, """
+from alembic import command
+from app.database.migrations import _alembic_config
+command.upgrade(_alembic_config(), "head")
+""")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database) as connection:
+        columns = {row[1]: bool(row[3]) for row in connection.execute("PRAGMA table_info(jobs)")}
+        row = connection.execute(
+            "SELECT status, phase, wait_reason FROM jobs WHERE id = 'existing-job'"
+        ).fetchone()
+    assert columns["phase"] is False
+    assert columns["wait_reason"] is False
+    assert row == ("queued", None, None)
+
+    downgraded = _run(database, """
+from alembic import command
+from app.database.migrations import _alembic_config
+command.downgrade(_alembic_config(), "b41f7d90c655")
+""")
+    assert downgraded.returncode == 0, downgraded.stderr
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        row = connection.execute(
+            "SELECT status FROM jobs WHERE id = 'existing-job'"
+        ).fetchone()
+    assert {"phase", "wait_reason"}.isdisjoint(columns)
+    assert row == ("queued",)
+
+
 def test_postgresql_offline_migrations_render_to_head_without_sqlite_statements():
     env = os.environ.copy()
     env["CONTROL_DECK_DB_URL"] = "postgresql+psycopg://user:secret@127.0.0.1/control_deck"

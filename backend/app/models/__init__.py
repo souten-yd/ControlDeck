@@ -220,6 +220,9 @@ class Job(Base):
     title: Mapped[str] = mapped_column(String(300), default="")
     # running/succeeded/failed/canceled/interrupted
     status: Mapped[str] = mapped_column(String(24), default="running", index=True)
+    # Additive resource/lifecycle detail. Keep status stable for older clients.
+    phase: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wait_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     progress_json: Mapped[str] = mapped_column(Text, default="{}")
     events_json: Mapped[str] = mapped_column(Text, default="[]")  # 末尾N件のスナップショット
