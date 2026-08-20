@@ -11,6 +11,7 @@ import { CodeViewer } from "../features/projectlab/CodeViewer";
 import { BottomSheet, Popover, Skeleton } from "../components/ui";
 import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
 import { useToasts } from "../stores";
+import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
 
 type SheetKind = "projects" | "files" | "info" | "runs" | null;
 
@@ -176,6 +177,7 @@ export default function ProjectLabPage() {
           </Popover>
         </div>
         <div className="ml-auto flex items-center gap-1">
+          {projectId && <ContextActionsMenu contextType="project" resourceId={projectId} />}
           <button
             type="button"
             onClick={() => setSheet("runs")}

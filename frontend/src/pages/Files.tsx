@@ -7,6 +7,7 @@ import { formatBytes } from "../lib/format";
 import { BottomSheet, DropdownMenu, Skeleton } from "../components/ui";
 import { IconDots, IconFile, IconTrash, IconUpload } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
 
 const TextEditor = lazy(() => import("../features/files/TextEditor"));
 
@@ -268,6 +269,7 @@ export default function FilesPage() {
                     {new Date(e.mtime * 1000).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                   </p>
                 </div>
+                {!e.is_dir && <ContextActionsMenu contextType="file" resourceId={e.path} />}
                 <DropdownMenu
                   ariaLabel={`${e.name} のメニュー`}
                   trigger={<IconDots />}

@@ -51,6 +51,7 @@ export interface EffectiveContribution {
   icon?: string | null;
   order?: number;
   mobile?: "embedded" | "companion" | "link_out";
+  contexts?: Array<"file" | "project" | "workflow" | "job">;
 }
 
 export interface EffectiveAddon {

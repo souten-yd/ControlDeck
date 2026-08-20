@@ -1356,6 +1356,11 @@ AGENT_TOOLS = [
 async def _agent_call_tool(name: str, args: dict, ctx: dict) -> str:
     """ツール呼び出しを既存ノード実装へ委譲する（安全なサブセットのみ）。"""
     try:
+        from app.addons.execution import invoke_agent_tool_name
+
+        remote = await invoke_agent_tool_name(name, args, ctx)
+        if remote is not None:
+            return json.dumps(remote, ensure_ascii=False)[:8000]
         if name == "web_search":
             out = await node_web_search({"query": str(args.get("query", "")), "max_results": 6}, ctx)
             return out["text"][:4000] or "(結果なし)"
@@ -1377,7 +1382,7 @@ async def _agent_call_tool(name: str, args: dict, ctx: dict) -> str:
             out = await node_file_read({"path": str(args.get("path", ""))}, ctx)
             return str(out.get("content", ""))[:4000]
         return f"未知のツール: {name}"
-    except NodeError as e:
+    except (NodeError, RuntimeError) as e:
         return f"ツールエラー: {e}"
 
 
@@ -1392,13 +1397,18 @@ async def _agent_llm(
     messages.append({"role": "user", "content": prompt})
     tool_log: list[dict] = []
     timeout = min(float(config.get("timeout", 180)), 600)
+    from app.addons.execution import agent_tool_definitions, execution_permissions
+
+    addon_tools = await agent_tool_definitions(execution_permissions(config.get("__execution_id")))
+    tools = [*AGENT_TOOLS, *addon_tools]
+    agent_context = {**ctx, "__execution_id": config.get("__execution_id")}
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         for round_no in range(1, max_rounds + 1):
             try:
                 r = await client.post(
                     f"{base_url}/chat/completions",
-                    json={"model": model, "messages": messages, "tools": AGENT_TOOLS,
+                    json={"model": model, "messages": messages, "tools": tools,
                           "temperature": float(config.get("temperature", 0.4))},
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
@@ -1419,7 +1429,7 @@ async def _agent_llm(
                     args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = await _agent_call_tool(name, args, ctx)
+                result = await _agent_call_tool(name, args, agent_context)
                 tool_log.append({"round": round_no, "tool": name, "args": args, "result": result[:500]})
                 messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
     return {"content": "(ツール使用の上限に達しました)", "model": model, "tool_log": tool_log, "rounds": max_rounds}
