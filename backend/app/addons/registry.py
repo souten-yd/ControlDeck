@@ -346,11 +346,16 @@ def effective_for_permissions(permissions: set[str]) -> dict[str, Any]:
 def record_activity(addon_id: str, method: str, result: str, metadata: dict[str, Any] | None = None) -> None:
     with _LOCK:
         status(addon_id)
+        bounded_metadata = {
+            key: value for key, value in (metadata or {}).items()
+            if key in {"duration_ms", "status_code", "field_count", "byte_count"}
+            and isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
         _activity[addon_id].appendleft({
             "at": time.time(),
             "method": method[:128],
             "result": result[:32],
-            "metadata": metadata or {},
+            "metadata": bounded_metadata,
         })
 
 

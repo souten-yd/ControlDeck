@@ -212,6 +212,7 @@ from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
 from app.features.registry import is_enabled as feature_enabled  # noqa: E402
 from app.plugins.router import router as plugins_router  # noqa: E402
+from app.addons.router import router as addons_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -250,6 +251,7 @@ app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
 app.include_router(features_router, prefix=API)
 app.include_router(plugins_router, prefix=API)
+app.include_router(addons_router, prefix=API)
 if feature_enabled("opencode"):
     from app.integrations.opencode.router import router as opencode_router
 
