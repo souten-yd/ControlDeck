@@ -1,0 +1,95 @@
+{
+  "api_version": "2",
+  "id": "fake-addon",
+  "name": "Control Deck Fake Add-on",
+  "version": "1.0.0",
+  "description": "Contract and UX harness for Add-on Platform v2",
+  "publisher": "Control Deck",
+  "requires": {
+    "addon_contract": ">=2.0 <3.0"
+  },
+  "runtime": {
+    "kind": "external-service",
+    "base_url": "http://127.0.0.1:9130",
+    "health_path": "/health"
+  },
+  "host_capabilities": [
+    "context.read",
+    "theme.read",
+    "route.open",
+    "files.pick",
+    "files.export",
+    "projects.pick",
+    "jobs.read",
+    "jobs.write",
+    "notifications.show",
+    "resources.acquire"
+  ],
+  "contributions": {
+    "navigation": [
+      {
+        "id": "workspace",
+        "label": {"en": "Fake Add-on", "ja": "テスト拡張"},
+        "route": "/x/fake-addon/workspace",
+        "icon": "flask-conical"
+      }
+    ],
+    "embedded_views": [
+      {
+        "id": "workspace",
+        "label": "Fake workspace",
+        "route": "/x/fake-addon/workspace",
+        "path": "/",
+        "mobile": "companion"
+      }
+    ],
+    "commands": [
+      {"id": "generate", "label": "Fake generate", "endpoint": "/commands/generate"}
+    ],
+    "quick_actions": [
+      {"id": "quick-generate", "label": "Quick fake generate", "endpoint": "/commands/generate"}
+    ],
+    "settings": [
+      {"id": "settings", "label": "Fake settings", "route": "/x/fake-addon/settings", "permission": "settings.manage"}
+    ],
+    "workflow_executors": [
+      {
+        "id": "fake.generate",
+        "label": "Fake generate",
+        "endpoint": "/workflow/execute",
+        "input_schema_path": "/schemas/workflow-input",
+        "output_schema_path": "/schemas/workflow-output",
+        "permission": "workflows.run"
+      },
+      {
+        "id": "fake.video",
+        "label": "Fake video",
+        "endpoint": "/workflow/execute",
+        "input_schema_path": "/schemas/workflow-input",
+        "output_schema_path": "/schemas/workflow-output",
+        "permission": "workflows.run"
+      }
+    ],
+    "agent_tools": [
+      {
+        "id": "fake.generate",
+        "label": "Fake generate tool",
+        "endpoint": "/agent/execute",
+        "schema_path": "/schemas/agent-tool",
+        "permission": "workflows.run"
+      }
+    ],
+    "context_actions": [
+      {
+        "id": "fake.inspect",
+        "label": "Inspect with fake add-on",
+        "endpoint": "/context/inspect",
+        "contexts": ["file", "project"],
+        "permission": "project_lab.view"
+      }
+    ],
+    "setup_checklist": [
+      {"id": "setup", "label": "Fake setup", "permission": "settings.manage"}
+    ]
+  }
+}

@@ -1,6 +1,15 @@
 # 実装状況
 
-最終更新: 2026-08-19
+最終更新: 2026-08-20
+
+## Add-on Platform v2 PR-0 Contract／Harness 完了（2026-08-20）
+
+- Plugin SDK v1を`PluginManifestV1`として互換維持し、`api_version`でv1/v2をfail-closed dispatchするAdd-on contractを追加した。Add-on `2.0`、Bridge／Theme／Health `1.0`を固定し、contract range、既知host capability、固定contribution type、HTTPS／loopback runtime、相対endpointを検証する。未知の実行fieldは拒否し、未知presentational fieldだけはwarning付きで無視する。
+- `./deck.sh ext lint <manifest>`を追加した。64KiB、通常file、実行user所有、other書込み不可を確認してからJSONとcontractを検証する。既存`./deck.sh plugin`はv1管理導線として維持する。
+- `tools/fake-addon`に実FastAPI serviceを追加した。全contribution、4 health状態、部分availability、setup checklist、時間／VRAM指定とcancelを持つfake GPU job、Workflow／Agent／Context endpointを提供する。
+- 通知はtoastのみ（Job履歴とauditを正）、service tokenはproxy側発行更新、Add-on情報は認証前非公開とPR-0で確定した。共通UX規約を`docs/addon-ux-guidelines.md`へ分離した。registry/install/enable/effective APIはPR-Aまで未実装であり、PR-0のlint成功を利用可能状態とは扱わない。
+
+検証: Add-on contract／CLI／fake service／既存Plugin SDK v1の集中19件、backend全593件成功（1件skip）、`deck.sh`構文検査、`ext lint`実command成功。fake add-onを実loopback processとして起動し、health 200、degraded + video executor unavailable、fake GPU job 202を確認して停止した。
 
 ## Project Labプレビューの相対リソースが401になる問題（2026-08-19）
 

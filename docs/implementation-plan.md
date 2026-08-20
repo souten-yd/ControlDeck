@@ -122,6 +122,7 @@ mock による決定的回帰に加え、LLM/RAG/AI 関連は利用可能なロ�
 - LLM runtime providerカタログ（Ollama / llama.cpp / LM Studio / OpenAI互換）と共通エンドポイント検出
 - ✅ capability付きモデルadapter（共通一覧 / ロード / アンロード / 削除 / durable pull / 型付き設定。未対応操作は明示的に拒否）
 - ✅ 宣言型plugin SDK v1（外部Web UIのmanifest検証／登録／権限付きnavigation／状態管理／監査。任意コードは本体へloadしない）
+- Add-on Platform v2: ✅ PR-0 contract/harness（v1/v2 dispatch、version定数、`ext lint`、fake service）。次はPR-A backend registry/effective contributions。その後PR-B UI、PR-C embedded view/bridge、PR-D1 broker、単独migration、PR-D2 llama/Jobs、PR-E Workflow/Agentの順に進める
 
 ## 環境構築方針（ユーザー追加要求）
 
