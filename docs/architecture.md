@@ -17,7 +17,7 @@ control-deck-web  (FastAPI + Uvicorn, 一般ユーザー権限)
    ├── terminals/    (Phase 4) tmux + PTY ゲートウェイ
    ├── workflows/    (Phase 5) ワークフローエンジン
    ├── plugins/      宣言型Plugin SDK v1互換registry
-   ├── addons/       Add-on v2のversioned contract（runtime registryはPR-A）
+   ├── addons/       Add-on v2 contract、installed/enabled/effective registry、health polling
    └── database/     SQLAlchemy 2.x + SQLite (WAL)
    │
    ▼ (特権操作のみ)
@@ -28,8 +28,8 @@ MVP 段階では web プロセスに agent 機能（メトリクス収集・状�
 ワークフロー / 高負荷収集が入る Phase で `control-deck-agent` に分離する。
 
 Add-on v2も任意codeをweb processへimportしない。別プロセスserviceを宣言manifest、scoped host bridge、
-host-mediated proxyで接続する。PR-0は副作用のないcontract dispatchとfake harnessだけを提供し、installed / enabled /
-effective registry、embedded view、resource brokerは後続PRで独立して追加する。
+host-mediated proxyで接続する。filesystem-backed registryはinstalled / enabled / effectiveを分離し、healthや
+user permissionで実行contributionをfilterする。embedded viewとresource brokerは後続PRで独立して追加する。
 
 ## プロセス継続性の設計
 

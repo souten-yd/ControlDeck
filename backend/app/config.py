@@ -5,6 +5,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -160,6 +161,25 @@ class ApplicationsConfig(BaseModel):
         return value
 
 
+class AddonsConfig(BaseModel):
+    """Explicit non-loopback origins that Add-on v2 may contact."""
+
+    allowed_origins: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _safe_origins(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for origin in value:
+            parsed = urlsplit(origin)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+                raise ValueError("addons.allowed_originsはpathなしのHTTPS originにしてください")
+            normalized.append(f"https://{parsed.netloc}")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("addons.allowed_originsを重複させることはできません")
+        return normalized
+
 class Config(BaseModel):
     server: ServerConfig = ServerConfig()
     security: SecurityConfig = SecurityConfig()
@@ -169,6 +189,7 @@ class Config(BaseModel):
     logs: LogsConfig = LogsConfig()
     ui: UIConfig = UIConfig()
     applications: ApplicationsConfig = ApplicationsConfig()
+    addons: AddonsConfig = AddonsConfig()
     data_dir: str = "~/.local/share/control-deck"
     # GitHub 管理でクローンするリポジトリの格納先
     git_apps_dir: str = "~/ControlDeckApps"

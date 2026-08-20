@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     from app.models_mgmt.ollama import idle_unload_loop as ollama_idle_unload_loop
     from app.models_mgmt.llama import idle_unload_loop as llama_idle_unload_loop
     from app.applications.health import health_check_loop
+    from app.addons.health import health_loop as addon_health_loop
     from app.models_mgmt.thinking import migrate_shared_reasoning
 
     # 思考設定を共通設定からモデル個別へ移した際の一度きりの移行。
@@ -84,6 +85,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(ollama_idle_unload_loop()),
         asyncio.create_task(llama_idle_unload_loop()),
         asyncio.create_task(health_check_loop()),
+        asyncio.create_task(addon_health_loop()),
     ]
     # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
     from app.workflows import searxng
@@ -210,6 +212,7 @@ from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
 from app.features.registry import is_enabled as feature_enabled  # noqa: E402
 from app.plugins.router import router as plugins_router  # noqa: E402
+from app.addons.router import router as addons_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -248,6 +251,7 @@ app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
 app.include_router(features_router, prefix=API)
 app.include_router(plugins_router, prefix=API)
+app.include_router(addons_router, prefix=API)
 if feature_enabled("opencode"):
     from app.integrations.opencode.router import router as opencode_router
 
