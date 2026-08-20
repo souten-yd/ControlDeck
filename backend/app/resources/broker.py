@@ -41,6 +41,7 @@ class _Fit:
     device_id: str | None
     reason: WaitReason | None
     blocking: tuple[BlockingResource, ...] = ()
+    yield_device_id: str | None = None
 
 
 class ResourceBroker:
@@ -63,6 +64,8 @@ class ResourceBroker:
         self._sequence = 0
         self._revision = 0
         self._changed = asyncio.Condition()
+        self._yielding_requests: set[str] = set()
+        self._yield_retry_at: dict[str, float] = {}
 
     @property
     def revision(self) -> int:
@@ -239,6 +242,14 @@ class ResourceBroker:
         while True:
             await asyncio.sleep(1)
             await self.expire_due()
+            await self.reschedule()
+
+    async def reschedule(self) -> None:
+        async with self._lock:
+            before = len(self.leases.current())
+            await self._schedule_locked(self._clock())
+            if len(self.leases.current()) != before:
+                await self._bump()
 
     async def reset(self) -> None:
         async with self._lock:
@@ -248,6 +259,8 @@ class ResourceBroker:
             self.leases.reset()
             self.telemetry.reset()
             self._sequence = 0
+            self._yielding_requests.clear()
+            self._yield_retry_at.clear()
             await self._bump()
 
     async def _schedule_locked(self, now: float) -> None:
@@ -301,8 +314,35 @@ class ResourceBroker:
                 record.status.queue_position = position
                 record.status.blocking = list(fit.blocking)
                 record.status.actions = ["cancel", "lower_priority"]
+                if fit.yield_device_id is not None:
+                    self._start_yield(record, fit.yield_device_id, now)
             if not granted:
                 return
+
+    def _start_yield(self, record: _RequestRecord, device_id: str, now: float) -> None:
+        request_id = record.status.request_id
+        if request_id in self._yielding_requests or now < self._yield_retry_at.get(request_id, 0):
+            return
+        self._yielding_requests.add(request_id)
+        self._yield_retry_at[request_id] = now + 5
+        asyncio.create_task(self._yield_and_reschedule(request_id, record.request, device_id))
+
+    async def _yield_and_reschedule(
+        self, request_id: str, request: ResourceRequest, device_id: str
+    ) -> None:
+        yielded = False
+        try:
+            yielded = await self.providers.request_yield(request, device_id)
+        except Exception:  # noqa: BLE001 - provider failure must not stop Broker
+            self.telemetry.record("yield.failed", request_id=request_id, device_id=device_id)
+        finally:
+            async with self._lock:
+                self._yielding_requests.discard(request_id)
+                record = self._requests.get(request_id)
+                if record is not None and record.status.state == RequestState.WAITING:
+                    await self._schedule_locked(self._clock())
+                if yielded:
+                    await self._bump()
 
     async def _fit(self, request: ResourceRequest, provider_values: list[ProviderReservation]) -> _Fit:
         current_leases = self.leases.current()
@@ -314,6 +354,7 @@ class ResourceBroker:
         candidates: list[tuple[int, int, int, str]] = []
         last_reason = WaitReason.INSUFFICIENT_VRAM
         last_blocking: tuple[BlockingResource, ...] = ()
+        last_yield_device: str | None = None
         for device in self._eligible_devices(request):
             snapshot = snapshots[device.id]
             leases = [item for item in current_leases if item.device_id == device.id]
@@ -323,6 +364,13 @@ class ResourceBroker:
             if (exclusive and (leases or providers)) or existing_exclusive:
                 last_reason = WaitReason.DEVICE_BUSY_EXCLUSIVE
                 last_blocking = self._blocking(leases, providers)
+                yield_device = (
+                    device.id
+                    if not leases and any(item.yieldable for item in providers)
+                    else None
+                )
+                if yield_device is not None:
+                    last_yield_device = yield_device
                 continue
             if request.vram.required_bytes > snapshot.admitted_free_bytes:
                 last_blocking = self._blocking(leases, providers)
@@ -336,7 +384,7 @@ class ResourceBroker:
             resident = 1 if request.residency_key and request.residency_key in device.resident_keys else 0
             candidates.append((preferred, resident, snapshot.admitted_free_bytes, device.id))
         if not candidates:
-            return _Fit(None, last_reason, last_blocking)
+            return _Fit(None, last_reason, last_blocking, last_yield_device)
         candidates.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
         return _Fit(candidates[0][3], None)
 

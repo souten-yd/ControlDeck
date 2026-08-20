@@ -53,7 +53,12 @@ class ResourceProvider(ABC):
     async def probe(self, request: ResourceRequest, device_id: str) -> ProbeResult:
         return ProbeResult(accepting=True)
 
-    async def request_yield(self, device_id: str, level: YieldLevel) -> bool:
+    async def request_yield(
+        self,
+        device_id: str,
+        level: YieldLevel,
+        request: ResourceRequest | None = None,
+    ) -> bool:
         return False
 
 
@@ -71,4 +76,3 @@ class StaticReservationProvider(ResourceProvider):
         if any(item.provider_id != self.id for item in values):
             raise ValueError("provider reservationのIDが一致しません")
         self._values = list(values)
-

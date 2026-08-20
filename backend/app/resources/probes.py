@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.resources.providers import ProbeResult, ResourceProvider
+from app.resources.providers import ProbeResult, ResourceProvider, YieldLevel
 from app.resources.schema import ResourceRequest
 
 
@@ -31,3 +31,13 @@ class ProviderRegistry:
     def values(self) -> list[ResourceProvider]:
         return [self._providers[key] for key in sorted(self._providers)]
 
+    async def request_yield(self, request: ResourceRequest, device_id: str) -> bool:
+        yielded = False
+        for provider in self.values():
+            levels = [
+                item.yield_level for item in provider.reservations()
+                if item.device_id == device_id and item.yield_level > YieldLevel.NONE
+            ]
+            if levels and await provider.request_yield(device_id, max(levels), request):
+                yielded = True
+        return yielded

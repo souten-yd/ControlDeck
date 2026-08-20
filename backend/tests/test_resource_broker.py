@@ -5,7 +5,12 @@ import asyncio
 from app.resources.broker import ResourceBroker
 from app.resources.devices import fake_devices
 from app.resources.probes import ProviderRegistry
-from app.resources.providers import ProviderReservation, StaticReservationProvider, YieldLevel
+from app.resources.providers import (
+    ProviderReservation,
+    ResourceProvider,
+    StaticReservationProvider,
+    YieldLevel,
+)
 from app.resources.schema import LeaseState, RequestState, ResourceRequest, WaitReason
 
 
@@ -163,3 +168,42 @@ def test_request_max_wait_and_owner_cancel_reclaim_all_state():
     assert canceled == {"requests": 0, "leases": 1}
     assert run(ResourceBroker(fake_devices(1)).request_statuses()) == []
     assert any(item.state == LeaseState.CANCELED for item in leases)
+
+
+def test_yieldable_provider_is_requested_outside_broker_lock_and_waiter_wakes():
+    class YieldingProvider(ResourceProvider):
+        id = "llm"
+
+        def __init__(self):
+            self.loaded = True
+            self.calls = 0
+
+        def reservations(self):
+            if not self.loaded:
+                return []
+            return [ProviderReservation(
+                "llm", "gpu0", "llm:chat", 80, yield_level=YieldLevel.STOP
+            )]
+
+        async def request_yield(self, device_id, level, request=None):
+            self.calls += 1
+            self.loaded = False
+            return True
+
+    async def scenario():
+        provider = YieldingProvider()
+        broker = ResourceBroker(fake_devices(100), ProviderRegistry([provider]))
+        result = await broker.submit(request(
+            "addon:media", "video", 100, mode="exclusive-required"
+        ).model_copy(update={"estimated_runtime_sec": 200}))
+        assert result.state == RequestState.WAITING
+        for _ in range(100):
+            result = await broker.request_status(result.request_id)
+            if result.state == RequestState.GRANTED:
+                break
+            await asyncio.sleep(0.01)
+        return result, provider.calls
+
+    result, calls = run(scenario())
+    assert result.state == RequestState.GRANTED
+    assert calls == 1

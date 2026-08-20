@@ -124,6 +124,16 @@ class ResourceTelemetry:
                     return True
         return False
 
+    def cold_load_p90(self, residency_key: str) -> float | None:
+        key = residency_key.strip()[:128]
+        with self._lock:
+            samples = list(self._load_samples.get(key, ()))
+            if not samples:
+                return None
+            return self._percentile(
+                [item["cold_load_cost_sec"] for item in samples], 0.90
+            )
+
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float:
         ordered = sorted(values)
