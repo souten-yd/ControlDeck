@@ -2,6 +2,8 @@
 import asyncio
 import time
 
+import pytest
+
 from app.jobs import service as jobs
 
 
@@ -239,6 +241,65 @@ def test_waiting_resource_job_does_not_consume_runner_slot_and_cancel_reclaims_r
     persisted = _run(jobs.get_any(waiting_id))
     assert persisted["phase"] == "waiting_resource"
     assert persisted["wait_reason"] == "device_busy_exclusive"
+
+
+def test_resource_job_progress_is_phase_bound_monotonic_and_coalesced(monkeypatch):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+
+    def requirement(job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": "internal:progress",
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 1, "execution_peak_bytes": 1,
+                "cold_load_peak_bytes": 1, "headroom_bytes": 0,
+                "confidence": "measured",
+            },
+            "compute_mode": "shared-safe",
+            "class": "workflow",
+        })
+
+    async def scenario():
+        observations = {}
+
+        async def runner(job):
+            before = job.revision
+            for completed in range(1, 11):
+                job.set_progress("generating", completed, 10)
+            observations["immediate"] = job.revision - before
+            try:
+                job.set_progress("invalid", 9, 10)
+            except ValueError:
+                observations["monotonic"] = True
+            await asyncio.sleep(0.55)
+            observations["coalesced"] = job.revision - before
+            return "ok"
+
+        job = jobs.create(
+            "test.resource-progress", "progress", runner,
+            resource=lambda job_id: requirement(job_id),
+        )
+        while job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+        return job, observations
+
+    job, observations = _run(scenario())
+    assert job.status == "succeeded"
+    assert job.progress == {
+        "status": "generating", "completed": 10, "total": 10, "phase": "generating"
+    }
+    assert observations == {"immediate": 1, "monotonic": True, "coalesced": 2}
+
+    no_phase = jobs.Job("no-phase", "test", "test", resource_broker=broker)
+    with pytest.raises(ValueError, match="phase"):
+        no_phase.set_progress("x", 1, 1)
 
 
 def test_jobs_api_hides_other_owners_and_streams_snapshot(admin_client):

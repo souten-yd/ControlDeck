@@ -33,6 +33,9 @@ logger = logging.getLogger("control_deck.jobs")
 MAX_JOBS = 100          # メモリに保持する完了ジョブ数の上限
 MAX_EVENTS = 300        # ジョブごとのメモリイベント上限
 DB_EVENT_SNAPSHOT = 50  # DB に残す末尾イベント件数
+RESOURCE_PHASES = {
+    "waiting_resource", "starting", "generating", "postprocess", "validate", "package"
+}
 
 
 @dataclass
@@ -64,6 +67,9 @@ class Job:
     resource_request_id: str | None = None
     resource_lease_id: str | None = None
     resource_broker: ResourceBroker | None = field(default=None, repr=False)
+    progress_flush_task: asyncio.Task | None = field(default=None, repr=False)
+    last_progress_notify_at: float = field(default=0.0, repr=False)
+    last_progress_db_at: float = field(default=0.0, repr=False)
     changed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def log(self, message: str, **extra: Any) -> None:
@@ -81,8 +87,36 @@ class Job:
         _notify_job(self)
 
     def set_progress(self, status: str, completed: int | None = None, total: int | None = None) -> None:
-        self.progress = {"status": status, "completed": completed, "total": total}
-        _notify_job(self)
+        if self.resource_broker is None:
+            self.progress = {"status": status, "completed": completed, "total": total}
+            _notify_job(self)
+            return
+        phase_changed = status in RESOURCE_PHASES and status != self.phase
+        if phase_changed:
+            self.phase = status
+        if self.phase not in RESOURCE_PHASES:
+            raise ValueError("resource-aware job progressにはphaseが必要です")
+        previous = self.progress.get("completed")
+        if completed is not None and isinstance(previous, int) and completed < previous:
+            raise ValueError("resource-aware job progressは単調増加である必要があります")
+        self.progress = {
+            "status": status,
+            "completed": completed,
+            "total": total,
+            "phase": self.phase,
+        }
+        now = time.monotonic()
+        if phase_changed or now - self.last_progress_notify_at >= 0.5:
+            self.last_progress_notify_at = now
+            _notify_job(self)
+        if phase_changed:
+            self.last_progress_db_at = now
+            asyncio.create_task(asyncio.to_thread(_db_write, self))
+        if self.progress_flush_task is None or self.progress_flush_task.done():
+            delay = max(0.0, 0.5 - (now - self.last_progress_notify_at))
+            self.progress_flush_task = asyncio.create_task(
+                _flush_resource_progress(self, delay)
+            )
 
     def to_dict(self, with_events_from: int = 0) -> dict:
         retained, next_cursor, truncated = self.events_since(with_events_from)
@@ -132,6 +166,20 @@ def _notify_job(job: Job) -> None:
     _stream_revision += 1
     job.changed.set()
     _global_changed.set()
+
+
+async def _flush_resource_progress(job: Job, delay: float) -> None:
+    if delay:
+        await asyncio.sleep(delay)
+    if job.status not in ("queued", "running"):
+        return
+    now = time.monotonic()
+    if now - job.last_progress_notify_at >= 0.49:
+        job.last_progress_notify_at = now
+        _notify_job(job)
+    if now - job.last_progress_db_at >= 5:
+        job.last_progress_db_at = now
+        await asyncio.to_thread(_db_write, job)
 
 
 # ---- DB 同期（同期関数。呼び出し側が to_thread で包む） ----
@@ -331,6 +379,9 @@ async def _run_job(job: Job, runner: Callable[[Job], Awaitable[Any]]) -> None:
         logger.warning("job %s (%s) failed: %s", job.id, job.kind, job.error)
     finally:
         heartbeat.cancel()
+        if job.progress_flush_task is not None:
+            job.progress_flush_task.cancel()
+            await asyncio.gather(job.progress_flush_task, return_exceptions=True)
         await _cancel_resource_state(job, job.resource_broker or resource_broker)
         job.finished_at = time.time()
         _notify_job(job)
