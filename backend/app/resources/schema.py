@@ -151,3 +151,16 @@ class LeaseStatus(BaseModel):
     granted_at: float
     expires_at: float
 
+
+class DeviceSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    total_bytes: int = Field(ge=0)
+    observed_used_bytes: int = Field(ge=0)
+    fixed_reserved_bytes: int = Field(ge=0)
+    lease_reserved_bytes: int = Field(ge=0)
+    admitted_free_bytes: int = Field(ge=0)
+    compatible: bool = True
+    resident_keys: list[str] = Field(default_factory=list)
