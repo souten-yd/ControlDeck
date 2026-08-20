@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import time
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.addons import health, registry
+from app.addons import bridge, health, registry
 from app.addons.schema import AddonManifestV2, parse_manifest
 from app.audit import service as audit
 from app.database import get_db
@@ -15,10 +17,19 @@ from app.models import User
 from app.security.deps import get_current_user, require_permission, user_permissions
 
 router = APIRouter(prefix="/addons", tags=["addons"])
+DISABLE_GRACE_SECONDS = 2.0
+
+
+async def _wait_for_disable_grace() -> None:
+    await asyncio.sleep(DISABLE_GRACE_SECONDS)
 
 
 class EnableAddonRequest(BaseModel):
     granted_capabilities: list[str] | None = Field(default=None, max_length=32)
+
+
+def _bridge_error(exc: bridge.BridgeAccessError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail())
 
 
 def _registry_error(exc: registry.AddonRegistryError, status_code: int = 404) -> HTTPException:
@@ -114,6 +125,47 @@ def addon_activity(addon_id: str, user: User = Depends(require_permission("setti
         raise _registry_error(exc) from exc
 
 
+@router.post("/{addon_id}/bridge/handshake")
+def bridge_handshake(
+    addon_id: str,
+    body: bridge.BridgeHandshake,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    try:
+        result = bridge.handshake(addon_id, body, user)
+    except bridge.BridgeAccessError as exc:
+        audit.record(db, "addon.bridge", user=user, resource_type="addon", resource_id=addon_id, result="failure", request=request, metadata={"method": "host.handshake"})
+        raise _bridge_error(exc) from exc
+    registry.record_activity(addon_id, "host.handshake", "success")
+    audit.record(db, "addon.bridge", user=user, resource_type="addon", resource_id=addon_id, request=request, metadata={"method": "host.handshake"})
+    return result
+
+
+@router.post("/{addon_id}/bridge/call")
+def bridge_call(
+    addon_id: str,
+    body: bridge.BridgeCall,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    started = time.monotonic()
+    try:
+        result = bridge.authorize(addon_id, body, user)
+    except bridge.BridgeAccessError as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        with contextlib.suppress(registry.AddonRegistryError):
+            registry.record_activity(addon_id, body.method, exc.code, {"duration_ms": duration_ms, "field_count": len(body.params)})
+        audit.record(db, "addon.bridge", user=user, resource_type="addon", resource_id=addon_id, result="failure", request=request, metadata={"method": body.method, "result_code": exc.code, "field_count": len(body.params)})
+        raise _bridge_error(exc) from exc
+    duration_ms = int((time.monotonic() - started) * 1000)
+    registry.record_activity(addon_id, body.method, "success", {"duration_ms": duration_ms, "field_count": len(body.params)})
+    audit.record(db, "addon.bridge", user=user, resource_type="addon", resource_id=addon_id, request=request, metadata={"method": body.method, "field_count": len(body.params)})
+    return result
+
+
 @router.post("/{addon_id}/enable")
 async def enable_addon(
     addon_id: str,
@@ -135,14 +187,17 @@ async def enable_addon(
 
 
 @router.post("/{addon_id}/disable")
-def disable_addon(
+async def disable_addon(
     addon_id: str,
     request: Request,
     user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
     try:
-        result = registry.set_enabled(addon_id, False)
+        pending = registry.begin_disable(addon_id)
+        if pending["enabled"]:
+            await _wait_for_disable_grace()
+        result = registry.complete_disable(addon_id)
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
     audit.record(db, "addon.disable", user=user, resource_type="addon", resource_id=addon_id, request=request)

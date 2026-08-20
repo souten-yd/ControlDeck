@@ -2,6 +2,14 @@
 
 最終更新: 2026-08-20
 
+## Add-on Platform v2 PR-C Embedded View／Host Bridge 完了（2026-08-20）
+
+- `/x/:addonId/:viewId/*`をhost管理の埋め込み画面へ接続した。iframeは`allow-same-origin`なしのopaque sandbox、`frame-src 'self'`、同一hostの`/addon-frame/{addon_id}/*`だけを使い、loopback upstreamをブラウザへ露出しない。proxyはControl DeckのCookie／Authorization／CSRF／Origin／Refererを除去し、audience束縛・10分TTLのservice tokenだけを注入する。redirectを追従せず、Set-Cookieを除去し、request 16MiB／response 32MiB／60秒read timeoutを課し、SSEとWebSocketを中継する。opaque iframeのWebSocketがCookieを送らない実挙動には、Bridge nonceを専用subprotocolで渡してuser／addon／view／effective状態を再認証し、upstreamへnonceを転送しない形で対応した。
+- Bridge 1.0をMessageChannelで実装し、source／opaque origin／user・addon・view束縛nonce、schema、capability、RBAC、120 calls/minute、16KiB request、明示error code、payloadを含めないactivity／auditを強制した。context／theme／route open・sync／title、host file・export pickerのview-local opaque grant、project picker、job open・subscribe、notification dedupe・rate limit、permission、busyをhost側で実行する。theme／locale／safe area／visibility／route／session更新と`disable.pending`をevent配信し、theme変更はiframeをreloadしない。file/projectのserver pathはAdd-onへ返さない。
+- handshake前skeleton、8秒timeout＋再試行／設定導線、戻る・進む・reload・共有URL、Command Palette shortcut、Tab脱出、未保存表示、desktop embedded／mobile companionを追加した。disableはregistryの`disable_pending`をeffectiveに2秒残して開いているviewへ通知した後にcontributionを撤去し、状態ページへ置換する。並行enableはpending disableを取り消せる。
+
+検証: 最終head `50aee5b` で frontend production build、Bridge／proxy／registry／API集中26件、backend全623件成功（1件skip）。実`control-deck-web`と別processのfake Add-onを使うChromium E2Eで、opaque iframe handshake、実WebSocket、theme無reload、routeの戻る／進む／reload／共有URL、Command Palette、notification、busy、file grantでpath非公開、project picker、Tab脱出、320px companion、silent viewの8秒timeout、2秒`disable.pending`後の状態ページ置換を17.8秒で確認した。既存PR-B E2Eも8.9秒で成功し、各run後に一時Add-onをuninstallした。PR-D1以降のBroker／Jobs統合はNOT TESTED（未実装）。
+
 ## Add-on Platform v2 PR-B UI Contribution／状態表示 完了（2026-08-20）
 
 - 認証済みeffective contributionをrevision SSEで追従し、desktop sidebar、mobileのMore、Quick Actions、Command Paletteへhost描画でnavigation／command／quick actionを追加した。Add-onがhealthyでない場合もnavigationは維持し、degradedは黄、unavailable／incompatibleは灰、setup requiredは青の状態chipと理由を表示する。状態ページから理由、setup checklist、再確認、無効化、権限・詳細へ1操作で到達できる。

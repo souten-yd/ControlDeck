@@ -152,11 +152,12 @@ async def csrf_protect(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     # appview / Project Lab成果物は認証済み同一origin iframeで表示するためDENYにしない。
     project_artifact = request.url.path.startswith(f"{API}/project-lab/projects/") and "/artifacts/" in request.url.path
-    if request.url.path.startswith(("/appview/", "/project-view/")) or project_artifact:
+    if request.url.path.startswith(("/appview/", "/project-view/", "/addon-frame/")) or project_artifact:
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     else:
         response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", "frame-src 'self'")
     return response
 
 
@@ -165,18 +166,21 @@ async def csrf_protect(request: Request, call_next):
 # API/資産(/api/v1, /assets)とproxy自身は対象外。
 _APPVIEW_REFERER_RE = _re.compile(r"/appview/(\d+)/")
 _PROJECT_VIEW_REFERER_RE = _re.compile(r"/project-view/(\d+)/")
+_ADDON_FRAME_REFERER_RE = _re.compile(r"/addon-frame/([a-z][a-z0-9-]{0,63})/")
 
 
 @app.middleware("http")
 async def appview_referer_fallback(request: Request, call_next):
     path = request.url.path
-    if not path.startswith(("/appview/", "/project-view/", "/api/v1/", "/assets/")):
+    if not path.startswith(("/appview/", "/project-view/", "/addon-frame/", "/api/v1/", "/assets/")):
         referer = request.headers.get("referer", "")
         match = _APPVIEW_REFERER_RE.search(referer)
         project_match = _PROJECT_VIEW_REFERER_RE.search(referer)
-        if match or project_match:
+        addon_match = _ADDON_FRAME_REFERER_RE.search(referer)
+        if match or project_match or addon_match:
             target = (f"/appview/{match.group(1)}{path}" if match
-                      else f"/project-view/{project_match.group(1)}{path}")
+                      else f"/project-view/{project_match.group(1)}{path}" if project_match
+                      else f"/addon-frame/{addon_match.group(1)}{path}")
             if request.url.query:
                 target += f"?{request.url.query}"
             return RedirectResponse(target, status_code=307)
@@ -213,6 +217,7 @@ from app.features.router import router as features_router  # noqa: E402
 from app.features.registry import is_enabled as feature_enabled  # noqa: E402
 from app.plugins.router import router as plugins_router  # noqa: E402
 from app.addons.router import router as addons_router  # noqa: E402
+from app.addons.proxy import router as addon_frame_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -224,6 +229,7 @@ from app.project_lab.webview import router as project_view_router  # noqa: E402
 
 app.include_router(appview_router)
 app.include_router(project_view_router)
+app.include_router(addon_frame_router)
 app.include_router(logs_router, prefix=API)
 app.include_router(system_router, prefix=API)
 app.include_router(power_router, prefix=API)

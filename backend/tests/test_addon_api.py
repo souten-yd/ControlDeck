@@ -37,8 +37,9 @@ def test_addon_api_requires_auth_and_does_not_leak_from_public_meta(client, addo
     assert "addons" not in meta.json()
 
 
-def test_addon_api_install_enable_effective_etag_disable_and_audit(addon_api):
+def test_addon_api_install_enable_effective_etag_disable_and_audit(addon_api, monkeypatch):
     client, registry = addon_api
+    from app.addons import router
     value = deepcopy(addon_manifest())
     value["contributions"]["commands"][0]["hint"] = "future presentation"
     installed = client.post("/api/v1/addons", json=value, headers=CSRF_HEADERS)
@@ -65,6 +66,13 @@ def test_addon_api_install_enable_effective_etag_disable_and_audit(addon_api):
     assert activity.json()[0]["method"] == "host.context.get"
     assert activity.json()[0]["metadata"] == {"field_count": 2}
 
+    async def observe_grace():
+        assert router.DISABLE_GRACE_SECONDS == 2.0
+        pending = registry.status("fake-addon")
+        assert pending["state"] == "disable_pending"
+        assert registry.effective_for_permissions({"apps.view"})["addons"][0]["state"] == "disable_pending"
+
+    monkeypatch.setattr(router, "_wait_for_disable_grace", observe_grace)
     disabled = client.post("/api/v1/addons/fake-addon/disable", headers=CSRF_HEADERS)
     assert disabled.status_code == 200
     assert client.get("/api/v1/addons/effective").json()["addons"] == []

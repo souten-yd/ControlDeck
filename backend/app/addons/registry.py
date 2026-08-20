@@ -32,6 +32,7 @@ MAX_ACTIVITY_PER_ADDON = 100
 _LOCK = threading.RLock()
 _observations: dict[str, "HealthObservation"] = {}
 _activity: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=MAX_ACTIVITY_PER_ADDON))
+_disable_pending: set[str] = set()
 _revision = 0
 _revision_event = threading.Condition(_LOCK)
 
@@ -186,6 +187,7 @@ def install(parsed: ParsedManifest) -> dict[str, Any]:
             "warnings": list(parsed.warnings),
         }
         _write_state(state)
+        _disable_pending.discard(manifest.id)
         _bump_revision()
         return status(manifest.id)
 
@@ -250,7 +252,7 @@ def status(addon_id: str) -> dict[str, Any]:
             **manifest.model_dump(mode="json"),
             "installed": True,
             "enabled": enabled,
-            "state": _state_name(enabled, observation),
+            "state": "disable_pending" if enabled and addon_id in _disable_pending else _state_name(enabled, observation),
             "granted_capabilities": [
                 item for item in stored.get("granted_capabilities", []) if item in manifest.host_capabilities
             ],
@@ -282,6 +284,7 @@ def set_enabled(addon_id: str, enabled: bool, grants: list[str] | None = None) -
             state[addon_id] = {"enabled": False, "granted_capabilities": [], "warnings": []}
             _write_state(state)
             _observations.pop(addon_id, None)
+            _disable_pending.discard(addon_id)
             _bump_revision()
             return status(addon_id)
         manifest = _load_path(_addon_dir(addon_id) / MANIFEST_NAME).manifest
@@ -296,10 +299,30 @@ def set_enabled(addon_id: str, enabled: bool, grants: list[str] | None = None) -
             "warnings": current["warnings"],
         }
         _write_state(state)
+        _disable_pending.discard(addon_id)
         if not enabled:
             _observations.pop(addon_id, None)
         _bump_revision()
         return status(addon_id)
+
+
+def begin_disable(addon_id: str) -> dict[str, Any]:
+    """Expose a transient effective state so open views can prepare to close."""
+    with _LOCK:
+        current = status(addon_id)
+        if not current["enabled"] or addon_id in _disable_pending:
+            return current
+        _disable_pending.add(addon_id)
+        _bump_revision()
+        return status(addon_id)
+
+
+def complete_disable(addon_id: str) -> dict[str, Any]:
+    """Finish a pending disable, unless a concurrent enable canceled it."""
+    with _LOCK:
+        if addon_id not in _disable_pending:
+            return status(addon_id)
+        return set_enabled(addon_id, False)
 
 
 def uninstall(addon_id: str) -> dict[str, Any]:
@@ -314,6 +337,7 @@ def uninstall(addon_id: str) -> dict[str, Any]:
         _write_state(state)
         _observations.pop(addon_id, None)
         _activity.pop(addon_id, None)
+        _disable_pending.discard(addon_id)
         _bump_revision()
         return {**current, "installed": False, "enabled": False, "state": "not_installed"}
 
@@ -409,4 +433,5 @@ def reset_runtime_state_for_tests() -> None:
     with _LOCK:
         _observations.clear()
         _activity.clear()
+        _disable_pending.clear()
         _revision = 0
