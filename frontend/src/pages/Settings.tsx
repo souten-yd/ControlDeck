@@ -481,17 +481,21 @@ function ExtensionsSection() {
         {(extensions ?? []).map((extension) => <div key={`v2-${extension.id}`} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
           <div className="flex flex-wrap items-center gap-2">
             <span className={`h-2.5 w-2.5 rounded-full ${extension.enabled ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} />
-            <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold">{extension.name}<span className="num ml-2 text-[10px] font-normal text-zinc-400">v{extension.version}</span></p><span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[9px] font-semibold text-zinc-500 dark:bg-zinc-800">SERVICE</span><AddonStatusChip state={extension.state} /></div><p className="mt-1 truncate text-[11px] text-zinc-400">{extension.health?.message || addonStateMessage(extension.state)}</p></div>
-            <button onClick={() => setSelected(extension.id)} className="rounded-xl px-3 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">詳細</button>
-            {extension.enabled ? <button onClick={() => void actV2(extension, "disable")} className="rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-medium dark:bg-zinc-800">無効化</button> : <button onClick={() => setReviewing(extension)} disabled={extension.state === "incompatible"} className="rounded-xl bg-accent-600 px-3.5 py-2 text-xs font-medium text-white disabled:opacity-40">有効化</button>}
-            <button onClick={() => setRemoving({ id: extension.id, api: "v2" })} className="rounded-xl px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+            <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p title={extension.name} className="min-w-0 truncate text-sm font-semibold">{extension.name}<span className="num ml-2 text-[10px] font-normal text-zinc-400">v{extension.version}</span></p><span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[9px] font-semibold text-zinc-500 dark:bg-zinc-800">SERVICE</span><AddonStatusChip state={extension.state} /></div><p className="mt-1 truncate text-[11px] text-zinc-400">{extension.health?.message || addonStateMessage(extension.state)}</p></div>
+            <div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto">
+              <button onClick={() => setSelected(extension.id)} className="rounded-xl px-3 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">詳細</button>
+              {extension.enabled ? <button onClick={() => void actV2(extension, "disable")} className="rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-medium dark:bg-zinc-800">無効化</button> : <button onClick={() => setReviewing(extension)} disabled={extension.state === "incompatible"} className="rounded-xl bg-accent-600 px-3.5 py-2 text-xs font-medium text-white disabled:opacity-40">有効化</button>}
+              <button onClick={() => setRemoving({ id: extension.id, api: "v2" })} className="rounded-xl px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+            </div>
           </div>
         </div>)}
         {(plugins ?? []).map((plugin) => <div key={plugin.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
           <span className={`h-2.5 w-2.5 rounded-full ${plugin.enabled ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} />
-          <div className="min-w-0 flex-1"><p className="text-sm font-semibold">{plugin.name}<span className="num ml-2 text-[10px] font-normal text-zinc-400">v{plugin.version}</span><span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[9px] font-semibold text-zinc-500 dark:bg-zinc-800">基本</span></p><p className="truncate text-[11px] text-zinc-400">{plugin.publisher} · {plugin.navigation.url}</p></div>
-          <button onClick={() => void actV1(plugin.id, plugin.enabled ? "disable" : "enable")} className={`rounded-xl px-3.5 py-2 text-xs font-medium ${plugin.enabled ? "bg-zinc-100 dark:bg-zinc-800" : "bg-accent-600 text-white"}`}>{plugin.enabled ? "無効化" : "有効化"}</button>
-          <button onClick={() => setRemoving({ id: plugin.id, api: "v1" })} className="rounded-xl px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+          <div className="min-w-0 flex-1"><p title={plugin.name} className="truncate text-sm font-semibold">{plugin.name}<span className="num ml-2 text-[10px] font-normal text-zinc-400">v{plugin.version}</span><span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[9px] font-semibold text-zinc-500 dark:bg-zinc-800">基本</span></p><p className="truncate text-[11px] text-zinc-400">{plugin.publisher} · {plugin.navigation.url}</p></div>
+          <div className="flex w-full justify-end gap-2 sm:w-auto">
+            <button onClick={() => void actV1(plugin.id, plugin.enabled ? "disable" : "enable")} className={`rounded-xl px-3.5 py-2 text-xs font-medium ${plugin.enabled ? "bg-zinc-100 dark:bg-zinc-800" : "bg-accent-600 text-white"}`}>{plugin.enabled ? "無効化" : "有効化"}</button>
+            <button onClick={() => setRemoving({ id: plugin.id, api: "v1" })} className="rounded-xl px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">削除</button>
+          </div>
         </div>)}
         {plugins?.length === 0 && extensions?.length === 0 && <p className="text-xs text-zinc-400">登録済みの拡張機能はありません</p>}
       </div>

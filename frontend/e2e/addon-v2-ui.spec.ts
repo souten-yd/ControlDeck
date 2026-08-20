@@ -44,8 +44,10 @@ test("renders v2 contributions and state without a host reload", async ({ page, 
   await page.getByRole("button", { name: "manifest登録" }).click();
   await page.getByLabel("Extension manifest JSON").fill(manifest);
   await page.getByRole("button", { name: "検証して登録" }).click();
-  const extensionRow = page.getByText("Control Deck Fake Add-on", { exact: true })
-    .locator("xpath=ancestor::div[contains(@class,'rounded-xl')][1]");
+  const extensionsSection = page.getByRole("heading", { name: "拡張機能", exact: true })
+    .locator("xpath=ancestor::section[1]");
+  const extensionRow = extensionsSection.locator("div.rounded-xl.border")
+    .filter({ hasText: "Control Deck Fake Add-on" }).first();
   await expect(extensionRow).toBeVisible();
   await extensionRow.getByRole("button", { name: "有効化" }).click();
   const permissionReview = page.getByRole("dialog", { name: "要求する権限を確認" });
