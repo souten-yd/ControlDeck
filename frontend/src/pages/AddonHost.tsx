@@ -49,7 +49,7 @@ export default function AddonHostPage() {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{addon.name}</h2><AddonStatusChip state={addon.state} /></div>
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{addon.health?.message || addonStateMessage(addon.state)}</p>
-            {requested && <p className="mt-2 rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-950">選択した操作: {requested}。拡張画面との接続はHost Bridge導入後にこの場所で実行されます。</p>}
+            {requested && <p className="mt-2 rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-950">選択した操作: {requested}。操作の実行にはまだ対応していません。</p>}
           </div>
         </div>
 
