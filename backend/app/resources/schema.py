@@ -42,6 +42,7 @@ class WaitReason(StrEnum):
 class RequestState(StrEnum):
     WAITING = "waiting"
     GRANTED = "granted"
+    REJECTED = "rejected"
     CANCELED = "canceled"
     EXPIRED = "expired"
 
