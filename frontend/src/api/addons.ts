@@ -82,7 +82,7 @@ export interface InstalledAddon {
   warnings: string[];
   health: AddonHealth | null;
   health_checked_at: number | null;
-  contributions?: Record<string, EffectiveContribution[]>;
+  contributions?: Record<string, Array<Partial<EffectiveContribution> & Pick<EffectiveContribution, "id" | "label">>>;
 }
 
 export interface AddonActivity {
