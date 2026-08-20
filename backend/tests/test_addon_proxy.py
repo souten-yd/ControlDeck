@@ -152,7 +152,7 @@ def test_addon_frame_websocket_relays_messages_with_scoped_token(enabled_addon, 
         return FakeConnection()
 
     monkeypatch.setattr(proxy, "_connect_websocket", connect)
-    with client.websocket_connect("/addon-frame/fake-addon/ws?run=1") as socket:
+    with client.websocket_connect("/addon-frame/fake-addon/ws?run=1", headers={"Origin": "null"}) as socket:
         assert socket.receive_text() == "upstream-ready"
         socket.send_text("browser-message")
     assert sent == ["browser-message"]
@@ -170,3 +170,34 @@ def test_addon_frame_websocket_rejects_disabled_addon(enabled_addon):
         with client.websocket_connect("/addon-frame/fake-addon/ws"):
             pass
     assert rejected.value.code == 4409
+
+
+def test_addon_frame_websocket_uses_bridge_subprotocol_when_opaque_frame_has_no_cookie(enabled_addon, monkeypatch):
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    session = client.post("/api/v1/addons/fake-addon/bridge/handshake", headers=CSRF_HEADERS, json={
+        "bridge_version": "1.0", "view_id": "workspace",
+    }).json()
+
+    class WaitingUpstream:
+        subprotocol = None
+        async def send(self, _message): pass
+        async def __aiter__(self): await asyncio.Event().wait(); yield "never"
+    class Connection:
+        async def __aenter__(self): return WaitingUpstream()
+        async def __aexit__(self, *_args): return None
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(proxy, "_connect_websocket", lambda url, headers, subprotocols: (
+        captured.update({"protocols": subprotocols}) or Connection()
+    ))
+    client.cookies.clear()
+    protocol = f"control-deck-bridge.{session['session_nonce']}"
+    with client.websocket_connect(
+        "/addon-frame/fake-addon/ws",
+        headers={"Origin": "null"},
+        subprotocols=[protocol],
+    ):
+        pass
+    assert captured["protocols"] == []

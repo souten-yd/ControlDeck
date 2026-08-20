@@ -9,10 +9,12 @@ import websockets
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 
-from app.addons import health, registry, tokens
+from app.addons import bridge, health, registry, tokens
 from app.database import SessionLocal
 from app.models import User
 from app.security.deps import authenticate_websocket_user, get_current_user, user_permissions
+from app.security.rate_limit import api_rate_limiter
+from app.config import get_config
 
 router = APIRouter(prefix="/addon-frame", tags=["addon-frame"])
 
@@ -28,6 +30,7 @@ _PRIVATE_REQUEST_HEADERS = {
     "origin", "referer",
 }
 _PRIVATE_RESPONSE_HEADERS = {"set-cookie", "set-cookie2"}
+_BRIDGE_PROTOCOL_PREFIX = "control-deck-bridge."
 
 
 def _new_http_client() -> httpx.AsyncClient:
@@ -204,11 +207,35 @@ async def addon_frame_proxy(
 async def addon_frame_websocket(websocket: WebSocket, addon_id: str, path: str):
     db = SessionLocal()
     try:
-        user = await authenticate_websocket_user(websocket, db)
-        if user is None:
-            return
-        user_id = user.id
-        permissions = user_permissions(user)
+        requested_protocols = list(websocket.scope.get("subprotocols") or [])
+        bridge_protocol = next((item for item in requested_protocols if item.startswith(_BRIDGE_PROTOCOL_PREFIX)), None)
+        if bridge_protocol is not None:
+            peer = websocket.client.host if websocket.client else "unknown"
+            allowed, _retry_after = api_rate_limiter.check(
+                "websocket", peer, get_config().security.websocket_rate_limit_per_minute,
+            )
+            if not allowed:
+                await websocket.close(code=4429, reason="rate limited")
+                return
+            if websocket.headers.get("origin") != "null":
+                await websocket.close(code=4403)
+                return
+            try:
+                user, permissions = bridge.authenticate_websocket_session(
+                    addon_id,
+                    bridge_protocol.removeprefix(_BRIDGE_PROTOCOL_PREFIX),
+                    db,
+                )
+            except bridge.BridgeAccessError:
+                await websocket.close(code=4403)
+                return
+            user_id = user.id
+        else:
+            user = await authenticate_websocket_user(websocket, db, allow_opaque_origin=True)
+            if user is None:
+                return
+            user_id = user.id
+            permissions = user_permissions(user)
     finally:
         db.close()
     try:
@@ -220,15 +247,16 @@ async def addon_frame_websocket(websocket: WebSocket, addon_id: str, path: str):
     scheme = "wss" if parsed.scheme == "https" else "ws"
     upstream_path = f"/{path.lstrip('/')}"
     url = urlunsplit((scheme, parsed.netloc, upstream_path, websocket.url.query, ""))
-    requested_protocols = list(websocket.scope.get("subprotocols") or [])
+    upstream_protocols = [item for item in requested_protocols if not item.startswith(_BRIDGE_PROTOCOL_PREFIX)]
     try:
         async with _connect_websocket(
             url,
             _service_headers(addon_id, user_id),
-            requested_protocols,
+            upstream_protocols,
         ) as upstream:
             selected_protocol = getattr(upstream, "subprotocol", None)
-            await websocket.accept(subprotocol=selected_protocol if selected_protocol in requested_protocols else None)
+            accepted_protocol = selected_protocol if selected_protocol in upstream_protocols else bridge_protocol
+            await websocket.accept(subprotocol=accepted_protocol)
 
             async def browser_to_upstream() -> None:
                 while True:

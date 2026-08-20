@@ -229,6 +229,8 @@ export function EmbeddedAddonView({
         }, "*", [channel.port2]);
         setConnection("ready");
         setError("");
+        channel.port1.postMessage({ type: "event", event: "route.changed", data: { path: routePath || "/" } });
+        channel.port1.postMessage({ type: "event", event: "visibility.changed", data: { visible: document.visibilityState === "visible" } });
         window.clearTimeout(timeout);
         refreshTimer = window.setInterval(() => {
           void openAddonBridge(addon.id, contribution.id).then((fresh) => {
@@ -276,7 +278,7 @@ export function EmbeddedAddonView({
     <header className="flex min-h-12 shrink-0 items-center gap-3 border-b px-4" style={{ borderColor: themeTokens.border, color: themeTokens.text }}>
       <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-semibold">{title}</h1><p className="truncate text-[10px]" style={{ color: themeTokens.muted }}>{addon.name} · {routePath || "/"}</p></div>
       {busy && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800">未保存</span>}
-      <AddonStatusChip state={addon.state} />
+      {addon.state === "healthy" ? null : <button aria-label={`状態詳細: ${addonStateMessage(addon.state)}`} onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)}><AddonStatusChip state={addon.state} /></button>}
       <button onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)} className="min-h-10 rounded-xl px-3 text-xs font-medium">詳細</button>
     </header>
     <div className="relative min-h-0 flex-1">

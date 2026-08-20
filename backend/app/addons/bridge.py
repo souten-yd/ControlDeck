@@ -9,7 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.addons import registry, tokens
 from app.addons.contract import BRIDGE_SCHEMA_VERSION
+from app.auth.policy import totp_required_for
 from app.models import User
+from sqlalchemy.orm import Session
 from app.security.deps import user_permissions
 from app.security.permissions import ALL_PERMISSIONS
 from app.security.rate_limit import SlidingWindowRateLimiter
@@ -216,6 +218,21 @@ def authorize(addon_id: str, value: BridgeCall, user: User) -> dict[str, Any]:
     if value.method == "host.permission.has":
         result["has_permission"] = value.params["permission"] in user_permissions(user)
     return result
+
+
+def authenticate_websocket_session(addon_id: str, token: str, db: Session) -> tuple[User, set[str]]:
+    try:
+        payload = tokens.verify(token, addon_id=addon_id, kind="bridge")
+        subject = payload.get("sub", "")
+        raw_user_id, view_id = subject.split(":", 1)
+        user_id = int(raw_user_id)
+    except (tokens.AddonTokenError, ValueError, TypeError) as exc:
+        raise BridgeAccessError(403, "invalid_session", "Bridge sessionが無効です") from exc
+    user = db.get(User, user_id)
+    if user is None or not user.is_active or totp_required_for(user) and not user.totp_enabled:
+        raise BridgeAccessError(403, "invalid_session", "Bridge sessionが無効です")
+    _view(addon_id, view_id, user)
+    return user, user_permissions(user)
 
 
 def reset_for_tests() -> None:

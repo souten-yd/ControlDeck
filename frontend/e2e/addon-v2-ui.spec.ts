@@ -89,11 +89,12 @@ test("renders v2 contributions and state without a host reload", async ({ page, 
   const degradedNavigation = page.getByRole("link", { name: /テスト拡張.*一部機能が利用できません/ });
   await expect(degradedNavigation).toBeVisible();
   await degradedNavigation.click();
-  await expect(page.getByText("一部の機能が停止しています。利用可能な機能はそのまま使えます。"))
-    .toBeVisible();
-
-  await page.getByRole("button", { name: "権限・詳細を開く" }).click();
+  const embedded = page.frameLocator('iframe[title="Control Deck Fake Add-on — workspace"]');
+  await expect(embedded.getByText("Host Bridge ready")).toBeVisible();
+  await expect(embedded.getByText(/WebSocket: .*ready/)).toBeVisible();
+  await page.getByRole("button", { name: /状態詳細:/ }).click();
   const openDetails = page.getByRole("dialog", { name: "Control Deck Fake Add-on" });
+  await expect(openDetails.getByText("一部機能が利用できません")).toBeVisible();
   await page.evaluate(() => { (window as Window & { addonReloadSentinel?: string }).addonReloadSentinel = "present"; });
   await openDetails.getByRole("button", { name: "無効化" }).click();
   await expect(page.getByRole("link", { name: /テスト拡張/ })).toHaveCount(0);

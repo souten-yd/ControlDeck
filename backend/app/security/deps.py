@@ -69,7 +69,12 @@ def require_permissions(*permissions: str):
     return checker
 
 
-async def authenticate_websocket_user(websocket: WebSocket, db: Session) -> User | None:
+async def authenticate_websocket_user(
+    websocket: WebSocket,
+    db: Session,
+    *,
+    allow_opaque_origin: bool = False,
+) -> User | None:
     """WebSocket の認証 + Origin確認。失敗時はcloseし、権限判定前のUserだけを返す。"""
     from app.config import get_config
 
@@ -83,7 +88,7 @@ async def authenticate_websocket_user(websocket: WebSocket, db: Session) -> User
     origin = websocket.headers.get("origin", "")
     host = websocket.headers.get("host", "")
     # 同一オリジンのみ許可（Origin が付かない非ブラウザクライアントは Cookie 必須のため許容）
-    if origin:
+    if origin and not (allow_opaque_origin and origin == "null"):
         from urllib.parse import urlparse
 
         parsed = urlparse(origin)
