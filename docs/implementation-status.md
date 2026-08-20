@@ -2,6 +2,14 @@
 
 最終更新: 2026-08-20
 
+## Add-on Platform v2 PR-B UI Contribution／状態表示 完了（2026-08-20）
+
+- 認証済みeffective contributionをrevision SSEで追従し、desktop sidebar、mobileのMore、Quick Actions、Command Paletteへhost描画でnavigation／command／quick actionを追加した。Add-onがhealthyでない場合もnavigationは維持し、degradedは黄、unavailable／incompatibleは灰、setup requiredは青の状態chipと理由を表示する。状態ページから理由、setup checklist、再確認、無効化、権限・詳細へ1操作で到達できる。
+- SettingsのPlugin SDK v1とAdd-on v2を「拡張機能」へ統合した。v1互換操作は維持し、v2はmanifest登録、要求capability確認、enable／disable／recheck／uninstall、付与権限、warning、settings contribution、直近activityをhost UIで管理する。従来の本体内オプトイン機能は意味の衝突を避けて「オプション機能」とした。
+- `/x/:addonId/:viewId/*`はPR-Bのhost-rendered状態／contribution一覧だけを表示する。command／quick actionは選択内容を表示するが実行せず、embedded view、Host Bridge、proxy、service tokenはPR-Cまで未実装であることを画面でも明示した。
+
+検証: frontend production build、Playwright構文読込、backend全607件成功（1件skip）。実`control-deck-web`と別processの`tools/fake-addon`を起動し、実Chromiumでmanifest登録→権限承認→enable、320px More navigation／quick actionとoverflowなし、1280px sidebar／Command Palette、fake healthをdegradedへ変更→再確認→chip／理由表示、navigation維持、disable後のnavigation即時消去と同一window sentinel維持（再読み込みなし）を1本のE2Eで確認した。一時Add-onは各run後にuninstallした。PR-C以降の実行surfaceはNOT TESTED（未実装）。
+
 ## Add-on Platform v2 PR-A Registry／Effective Contributions 完了（2026-08-20）
 
 - `data_dir/addons`へowner/mode/symlink/64KiB境界を持つmanaged registryを追加し、installed／enabled／effectiveを分離した。install直後はdisabled、enable時に要求capabilityを明示grantし、disable/uninstallはmanifest外のserviceやdataへ触れない。壊れた／major非互換manifestは消さず`incompatible`として一覧に残し、enable/effectiveを拒否しながらdisable/uninstall可能にした。
