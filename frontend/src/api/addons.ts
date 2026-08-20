@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 
 export type AddonStateName =
-  | "installed_disabled" | "enabling" | "setup_required" | "healthy"
+  | "installed_disabled" | "disable_pending" | "enabling" | "setup_required" | "healthy"
   | "degraded" | "unavailable" | "incompatible";
 
 export interface AddonHealthAction {

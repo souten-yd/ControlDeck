@@ -17,6 +17,11 @@ from app.models import User
 from app.security.deps import get_current_user, require_permission, user_permissions
 
 router = APIRouter(prefix="/addons", tags=["addons"])
+DISABLE_GRACE_SECONDS = 2.0
+
+
+async def _wait_for_disable_grace() -> None:
+    await asyncio.sleep(DISABLE_GRACE_SECONDS)
 
 
 class EnableAddonRequest(BaseModel):
@@ -182,14 +187,17 @@ async def enable_addon(
 
 
 @router.post("/{addon_id}/disable")
-def disable_addon(
+async def disable_addon(
     addon_id: str,
     request: Request,
     user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
     try:
-        result = registry.set_enabled(addon_id, False)
+        pending = registry.begin_disable(addon_id)
+        if pending["enabled"]:
+            await _wait_for_disable_grace()
+        result = registry.complete_disable(addon_id)
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
     audit.record(db, "addon.disable", user=user, resource_type="addon", resource_id=addon_id, request=request)

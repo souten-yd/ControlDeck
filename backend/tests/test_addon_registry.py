@@ -104,6 +104,26 @@ def test_effective_etag_and_revision_change_deterministically(isolated_registry)
     assert registry.wait_for_revision(after["revision"], timeout=0.001) == after["revision"]
 
 
+def test_disable_pending_remains_effective_until_completion_and_can_be_canceled(isolated_registry):
+    registry = isolated_registry
+    _install(registry)
+    registry.set_enabled("fake-addon", True)
+    registry.update_health("fake-addon", _health())
+
+    pending = registry.begin_disable("fake-addon")
+    assert pending["enabled"] is True
+    assert pending["state"] == "disable_pending"
+    assert registry.effective_for_permissions({"apps.view"})["addons"][0]["state"] == "disable_pending"
+    disabled = registry.complete_disable("fake-addon")
+    assert disabled["enabled"] is False
+    assert registry.effective_for_permissions({"apps.view"})["addons"] == []
+
+    registry.set_enabled("fake-addon", True)
+    registry.begin_disable("fake-addon")
+    registry.set_enabled("fake-addon", True)
+    assert registry.complete_disable("fake-addon")["enabled"] is True
+
+
 def test_incompatible_managed_manifest_remains_visible_but_never_effective(isolated_registry, tmp_path):
     registry = isolated_registry
     _install(registry)

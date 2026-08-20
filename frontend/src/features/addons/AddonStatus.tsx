@@ -6,6 +6,7 @@ const STATUS: Partial<Record<AddonStateName, { label: string; className: string 
   setup_required: { label: "セットアップが必要", className: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" },
   incompatible: { label: "互換性がありません", className: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" },
   enabling: { label: "確認中", className: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" },
+  disable_pending: { label: "終了準備中", className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" },
 };
 
 export function AddonStatusChip({ state, compact = false }: { state: AddonStateName; compact?: boolean }) {
@@ -24,5 +25,6 @@ export function addonStateMessage(state: AddonStateName): string {
   if (state === "incompatible") return "このmanifestは現在のControl Deckと互換性がありません。";
   if (state === "enabling") return "拡張機能の状態を確認しています。";
   if (state === "installed_disabled") return "この拡張機能は無効です。";
+  if (state === "disable_pending") return "拡張機能を安全に終了しています。";
   return "拡張機能は利用できます。";
 }

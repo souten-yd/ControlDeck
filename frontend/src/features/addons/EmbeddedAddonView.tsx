@@ -337,6 +337,9 @@ export function EmbeddedAddonView({
   }, [addon.id, connectionKey, contribution.id, sendEvent]);
 
   useEffect(() => sendEvent("theme.changed", themeTokens), [sendEvent, themeTokens]);
+  useEffect(() => {
+    if (addon.state === "disable_pending") sendEvent("disable.pending", { grace_ms: 2_000 });
+  }, [addon.state, sendEvent]);
   useEffect(() => () => {
     for (const timer of jobSubscriptions.current.values()) window.clearInterval(timer);
     jobSubscriptions.current.clear();
