@@ -13,6 +13,7 @@ OpenAI互換クライアントはCookieを持てないため。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from typing import Any
@@ -190,16 +191,34 @@ async def gateway_chat(request: Request):
     payload["model"] = alias
     target = f"http://127.0.0.1:{port}/v1/chat/completions"
 
+    def record_first_token(started_at: float) -> None:
+        from app.resources.broker import broker as resource_broker
+
+        try:
+            resource_broker.telemetry.record_first_token(
+                llama.residency_key(llama.get_instance(alias)),
+                asyncio.get_running_loop().time() - started_at,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must not affect inference
+            return
+
     if payload.get("stream"):
         async def relay():
             # ストリームはクライアントへそのまま流す。ここで加工しない。
+            started_at = asyncio.get_running_loop().time()
+            first = True
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", target, json=payload) as upstream:
                     async for chunk in upstream.aiter_bytes():
+                        if first and chunk:
+                            record_first_token(started_at)
+                            first = False
                         yield chunk
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
+    started_at = asyncio.get_running_loop().time()
     async with httpx.AsyncClient(timeout=None) as client:
         upstream = await client.post(target, json=payload)
+    record_first_token(started_at)
     return JSONResponse(status_code=upstream.status_code, content=upstream.json())
