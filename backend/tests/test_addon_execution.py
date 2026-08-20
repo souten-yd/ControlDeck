@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -143,3 +144,68 @@ def test_execution_discovery_filters_permission_availability_and_invalid_schema(
     assert payload["schema_errors"] == {"fake-addon:fake.generate": "invalid_schema"}
     assert payload["contributions"]["agent_tools"][0]["id"] == "fake.generate"
     assert payload["contributions"]["context_actions"] == []
+
+
+def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api, monkeypatch):
+    client, registry = addon_api
+    from app.addons import execution
+    from app.workflows import engine
+    from app.workflows.dry_run import simulate_node
+
+    execution.reset_for_tests()
+    assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
+    assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/schemas/workflow-input":
+            return httpx.Response(200, json={
+                "type": "object", "required": ["prompt"],
+                "properties": {"prompt": {"type": "string", "description": "Prompt"}},
+                "additionalProperties": False,
+            })
+        if request.url.path == "/schemas/workflow-output":
+            return httpx.Response(200, json={
+                "type": "object", "required": ["ok"],
+                "properties": {"ok": {"type": "boolean"}},
+            })
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(execution, "_client", _transport(handler))
+    node_type = "addon.workflow:fake-addon:fake.generate"
+    catalog = client.get("/api/v1/workflows/node-catalog")
+    assert catalog.status_code == 200
+    remote = next(item for item in catalog.json() if item["type"] == node_type)
+    assert remote["addon"] == {"id": "fake-addon", "contribution_id": "fake.generate", "label": "Generate"}
+    assert remote["config_schema"]["prompt"]["required"] is True
+
+    definition = json.dumps({
+        "nodes": [
+            {"id": "start", "type": "trigger", "config": {}},
+            {"id": "remote", "type": node_type, "config": {"prompt": "hello"}},
+        ],
+        "edges": [{"source": "start", "target": "remote"}],
+    })
+    engine.validate_definition(definition)
+    preview = simulate_node(node_type, {"prompt": "hello"})
+    assert preview["ok"] is True and preview["dry_run"] is True
+    assert calls == []
+
+    executor = execution.workflow_executor(node_type)
+    assert executor is not None
+    output = asyncio.run(executor(
+        {"prompt": "{{start.message}}", "__execution_id": 17, "__node_id": "remote"},
+        {"start": {"output": {"message": "rendered"}}},
+    ))
+    assert output == {"ok": True}
+    assert calls == [{
+        "input": {"prompt": "rendered"},
+        "correlation": {"execution_id": "17", "node_id": "remote"},
+    }]
+
+    registry.set_enabled("fake-addon", False)
+    # Definition history remains structurally valid, while execution fails closed.
+    engine.validate_definition(definition)
+    with pytest.raises(Exception, match="無効"):
+        asyncio.run(executor({"prompt": "hello"}, {}))

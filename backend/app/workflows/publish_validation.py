@@ -41,6 +41,29 @@ def check_publishability(db: Session, workflow: Workflow, definition: dict[str, 
     blocking.extend(semantic_blocking)
     warnings.extend(semantic_warnings)
 
+    from app.addons.execution import (
+        AddonExecutionError,
+        cached_workflow_input_schema,
+        find_for_runtime,
+        is_workflow_node_type,
+        parse_workflow_node_type,
+    )
+
+    for node in nodes:
+        node_type = node.get("type")
+        if not is_workflow_node_type(node_type):
+            continue
+        parsed = parse_workflow_node_type(str(node_type))
+        if parsed is None:
+            continue
+        try:
+            find_for_runtime("workflow_executors", *parsed)
+        except AddonExecutionError as exc:
+            blocking.append(f"{node.get('id')}: {exc}")
+            continue
+        if cached_workflow_input_schema(str(node_type)) is None:
+            blocking.append(f"{node.get('id')}: Add-on schemaを再取得してから公開してください")
+
     output_nodes = [
         node for node in nodes
         if node.get("type") in ("signal.display", "output.render", "flow.return")

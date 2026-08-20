@@ -33,6 +33,7 @@ import {
   CATEGORY_ORDER,
   JSON_SCHEMA_PRESETS,
   NODE_TYPES,
+  registerAddonWorkflowNodeTypes,
   deleteSnippet,
   loadSnippets,
   newNodeId,
@@ -120,6 +121,7 @@ interface NodeMetadata {
     examples?: Array<{ title: string; config: Record<string, unknown> }>;
   };
   supports: { retry: boolean; cancel: boolean; progress: boolean; dry_run: boolean };
+  addon?: { id: string; contribution_id: string; label: string };
 }
 // ---- カスタムノード（アイコン + カテゴリ色 + 状態） ----
 const FlowNode = memo(function FlowNode({ data, selected }: NodeProps) {
@@ -306,8 +308,10 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   const { data: nodeCatalog } = useQuery({
     queryKey: ["workflow-node-catalog"],
     queryFn: () => api<NodeMetadata[]>("/workflows/node-catalog"),
-    staleTime: Infinity,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   });
+  if (nodeCatalog) registerAddonWorkflowNodeTypes(nodeCatalog);
   const { data: pinnedData } = useQuery({
     queryKey: ["workflow-pinned-data", workflowId],
     queryFn: () => api<PinnedData[]>(`/workflows/${workflowId}/pinned-data`),
@@ -1399,6 +1403,11 @@ function NodeConfigSheet({
           <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium ${tab === key ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}>{label}</button>
         ))}
       </div>
+      {def.type.startsWith("addon.workflow:") && !nodeMetadata && (
+        <div role="status" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          このノードに必要な拡張機能が無効、未導入、または現在利用できません。設定と接続は保持されています。拡張機能を有効化して再確認してください。
+        </div>
+      )}
       {meta?.desc && <p className="mb-3 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800/60">{meta.desc}</p>}
       {nodeMetadata && (
         <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">

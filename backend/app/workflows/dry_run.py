@@ -20,6 +20,10 @@ def _bounded_int(value: Any, low: int, high: int, default: int = 0) -> int:
 
 def simulate_node(node_type: str, config: dict[str, Any]) -> dict[str, Any]:
     """単一nodeの予定操作を返す。executor、secret、外部I/Oには触れない。"""
+    from app.addons.execution import dry_run_workflow_node, is_workflow_node_type
+
+    if is_workflow_node_type(node_type):
+        return dry_run_workflow_node(node_type, config)
     metadata = metadata_by_type().get(node_type)
     if metadata is None:
         raise DefinitionError(f"未知のノード種類: {node_type}")
@@ -99,6 +103,12 @@ def simulate_definition(definition: dict[str, Any], input_data: dict[str, Any] |
                 "branch": edge.get("branch") or edge.get("sourceHandle"),
             })
         config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        from app.addons.execution import dry_run_workflow_node, is_workflow_node_type
+
+        if is_workflow_node_type(node_type):
+            remote = dry_run_workflow_node(node_type, config)
+            errors.extend(f"{node_id}: {message}" for message in remote["errors"])
+            meta = remote
         plans.append({
             "id": node_id,
             "name": node.get("name") or node_id,

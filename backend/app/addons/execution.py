@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -20,6 +21,10 @@ EXECUTION_TIMEOUT_SECONDS = 120.0
 WORKFLOW_NODE_PREFIX = "addon.workflow:"
 _NODE_PATTERN = re.compile(r"^addon\.workflow:([a-z][a-z0-9-]{0,63}):([a-z][a-z0-9._-]{0,127})$")
 _schema_cache: dict[tuple[int, str, str], dict[str, Any]] = {}
+_WORKFLOW_INTERNAL_KEYS = {
+    "retry_count", "retry_wait", "node_timeout", "on_error", "output_var",
+    "__pause_response", "__workflow_id", "__execution_id", "__node_id",
+}
 
 
 class AddonExecutionError(RuntimeError):
@@ -237,6 +242,177 @@ def cached_workflow_input_schema(node_type: str) -> dict[str, Any] | None:
     except AddonExecutionError:
         return None
     return _schema_cache.get((registry.revision(), addon_id, contribution["input_schema_path"]))
+
+
+def _json_type(value: Any) -> str:
+    if isinstance(value, list):
+        value = next((item for item in value if item != "null"), "string")
+    return value if value in {"string", "number", "integer", "boolean", "object", "array"} else "string"
+
+
+def _output_types(schema_value: dict[str, Any]) -> dict[str, str]:
+    properties = schema_value.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    return {
+        str(key): _json_type(value.get("type") if isinstance(value, dict) else None)
+        for key, value in properties.items()
+    }
+
+
+async def workflow_catalog(permissions: set[str]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for contribution in discover("workflow_executors", permissions):
+        try:
+            input_schema, output_schema = await workflow_schemas(
+                contribution["addon_id"], contribution["id"], permissions=permissions,
+            )
+        except AddonExecutionError:
+            continue
+        properties = input_schema.get("properties") if isinstance(input_schema.get("properties"), dict) else {}
+        required = set(input_schema.get("required") or [])
+        label = contribution["label"]
+        if isinstance(label, dict):
+            label = label.get("ja") or label.get("en") or next(iter(label.values()), contribution["id"])
+        config_schema = {
+            str(key): {
+                "type": _json_type(value.get("type") if isinstance(value, dict) else None),
+                "required": key in required,
+                "reason": str(value.get("description") or "Add-onが宣言した入力です")[:300]
+                if isinstance(value, dict) else "Add-onが宣言した入力です",
+                **({"default": value["default"]} if isinstance(value, dict) and "default" in value else {}),
+            }
+            for key, value in properties.items()
+        }
+        initial_config = {
+            key: value["default"] for key, value in properties.items()
+            if isinstance(value, dict) and "default" in value
+        }
+        result.append({
+            "type": workflow_node_type(contribution["addon_id"], contribution["id"]),
+            "version": 1,
+            "metadata_version": 3,
+            "description": f"{contribution['addon_id']} Add-onのremote executor「{label}」を実行します。",
+            "side_effect": "external",
+            "capabilities": ["addon.remote", "network"],
+            "config_schema": config_schema,
+            "initial_config": initial_config,
+            "input_schema": input_schema,
+            "output_schema": _output_types(output_schema),
+            "ui_hints": {
+                "help": "入力と出力はAdd-onのJSON Schemaでhostが検証します。無効化後も保存済みnodeは削除されません。",
+                "quick_start": "必須入力を設定し、安全プレビューでschemaを確認してから実行してください。",
+                "variable_picker": True,
+                "show_recommended_defaults": True,
+                "primary_input": next(iter(properties), None),
+                "primary_output": next(iter(_output_types(output_schema)), None),
+                "examples": [],
+            },
+            "security": {"allowed_in_generated_app": False, "requires_secret_reference": False},
+            "supports": {"retry": True, "cancel": True, "progress": False, "dry_run": True},
+            "addon": {
+                "id": contribution["addon_id"], "contribution_id": contribution["id"], "label": label,
+            },
+        })
+    return result
+
+
+def _render_input(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        from app.workflows.nodes import render_template
+
+        rendered = render_template(value, context)
+        stripped = rendered.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+        return rendered
+    if isinstance(value, list):
+        return [_render_input(item, context) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _render_input(item, context) for key, item in value.items()}
+    return value
+
+
+async def execute_workflow_node(node_type: str, config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    parsed = parse_workflow_node_type(node_type)
+    if parsed is None:
+        raise AddonExecutionError("remote workflow node typeが不正です", code="invalid_node_type", status_code=422)
+    addon_id, contribution_id = parsed
+    input_schema, output_schema = await workflow_schemas(addon_id, contribution_id)
+    payload = {
+        key: _render_input(value, context) for key, value in config.items()
+        if key not in _WORKFLOW_INTERNAL_KEYS
+    }
+    validate(input_schema, payload, label="workflow input")
+    execution_id = config.get("__execution_id")
+    output = await invoke(
+        "workflow_executors", addon_id, contribution_id,
+        {
+            "input": payload,
+            "correlation": {
+                "execution_id": str(execution_id) if execution_id is not None else None,
+                "node_id": str(config.get("__node_id") or "") or None,
+            },
+        },
+        subject=f"workflow:{execution_id if execution_id is not None else 'preview'}",
+    )
+    validate(output_schema, output, label="workflow output")
+    return output
+
+
+def workflow_executor(node_type: str) -> Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]] | None:
+    if not is_workflow_node_type(node_type):
+        return None
+
+    async def execute(config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await execute_workflow_node(node_type, config, context)
+        except AddonExecutionError as exc:
+            from app.workflows.nodes import NodeError
+
+            raise NodeError(
+                str(exc), code=exc.code.upper(),
+                retryable=exc.code in {"upstream_unavailable", "upstream_error", "contribution_unavailable"},
+            ) from exc
+
+    return execute
+
+
+def dry_run_workflow_node(node_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    parsed = parse_workflow_node_type(node_type)
+    if parsed is None:
+        raise AddonExecutionError("remote workflow node typeが不正です", code="invalid_node_type", status_code=422)
+    addon_id, contribution_id = parsed
+    # Discovery populates the schema cache. Dry-run itself never performs external I/O.
+    input_schema = cached_workflow_input_schema(node_type)
+    errors: list[str] = []
+    if input_schema is None:
+        errors.append("schema cacheがありません。node catalogを再取得してください")
+    else:
+        try:
+            validate(
+                input_schema,
+                {key: value for key, value in config.items() if key not in _WORKFLOW_INTERNAL_KEYS},
+                label="workflow input",
+            )
+        except AddonExecutionError as exc:
+            errors.append(str(exc))
+    return {
+        "ok": not errors,
+        "dry_run": True,
+        "type": node_type,
+        "status": "SIMULATED" if not errors else "BLOCKED",
+        "description": f"{addon_id}/{contribution_id} remote executor",
+        "side_effect": "external",
+        "capabilities": ["addon.remote", "network"],
+        "config": config,
+        "would_output": {},
+        "errors": errors,
+        "notice": "schema検証だけを行い、Add-on executorは呼び出していません。",
+    }
 
 
 def reset_for_tests() -> None:
