@@ -111,6 +111,23 @@ def test_addon_frame_rejects_oversize_response_before_rendering(enabled_addon, m
     assert response.json()["detail"] == "拡張機能のresponseが32MiBを超えています"
 
 
+def test_addon_frame_enforces_request_limit_and_upstream_timeout(enabled_addon, monkeypatch):
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    monkeypatch.setattr(proxy, "MAX_REQUEST_BYTES", 4)
+    oversized = client.post("/addon-frame/fake-addon/upload", content=b"12345")
+    assert oversized.status_code == 413
+
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow upstream", request=request)
+
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(timeout)))
+    response = client.get("/addon-frame/fake-addon/slow")
+    assert response.status_code == 502
+    assert response.json()["detail"] == "拡張機能serviceへ接続できません"
+
+
 def test_addon_service_token_is_audience_bound_and_expires(monkeypatch, tmp_path):
     from app.addons import tokens
 

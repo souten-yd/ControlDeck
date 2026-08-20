@@ -53,6 +53,8 @@ test("embedded Add-on Bridge preserves host authority and lifecycle UX", async (
   const embedded = page.frameLocator('iframe[title="Control Deck Fake Add-on — workspace"]');
   await expect(embedded.getByText("Host Bridge ready")).toBeVisible();
   await expect(embedded.getByText(/WebSocket: .*ready/)).toBeVisible();
+  await expect(embedded.locator("html")).toHaveAttribute("data-locale", /^(en|ja)$/);
+  await expect(embedded.locator("html")).toHaveAttribute("data-safe-area", '{"top":0,"right":0,"bottom":0,"left":0}');
   const firstLoad = await embedded.locator("html").getAttribute("data-load-id");
   expect(firstLoad).toBeTruthy();
 
@@ -105,6 +107,9 @@ test("embedded Add-on Bridge preserves host authority and lifecycle UX", async (
   const projectDialog = page.getByRole("dialog", { name: "Fake Add-onへ渡すプロジェクト" });
   await projectDialog.locator("button").filter({ hasText: projects[0].name }).first().click();
   await expect(embedded.locator("#picker-state")).toContainText(`Project: ${projects[0].id}`);
+  await embedded.getByRole("button", { name: "Pick project" }).focus();
+  await embedded.getByRole("button", { name: "Pick project" }).press("Tab");
+  await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).not.toBe("IFRAME");
 
   await page.setViewportSize({ width: 320, height: 700 });
   await page.goto("/x/fake-addon/workspace");

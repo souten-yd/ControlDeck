@@ -326,6 +326,8 @@ export function EmbeddedAddonView({
         setError("");
         channel.port1.postMessage({ type: "event", event: "route.changed", data: { path: routePath || "/" } });
         channel.port1.postMessage({ type: "event", event: "visibility.changed", data: { visible: document.visibilityState === "visible" } });
+        channel.port1.postMessage({ type: "event", event: "locale.changed", data: { locale: themeTokensRef.current.locale } });
+        channel.port1.postMessage({ type: "event", event: "safe_area.changed", data: themeTokensRef.current.safe_area });
         window.clearTimeout(timeout);
         refreshTimer = window.setInterval(() => {
           void openAddonBridge(addon.id, contribution.id).then((fresh) => {
