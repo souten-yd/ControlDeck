@@ -57,7 +57,7 @@ async def cancel_job(
         from app.models_mgmt.runtime_provider import cancel_request
 
         await cancel_request(job_id)
-    if not jobs.cancel(job_id):
+    if not await jobs.cancel_and_wait(job_id):
         raise HTTPException(status_code=409, detail="実行中のジョブではありません")
     audit.record(db, "job.cancel", user=user, resource_type="job", resource_id=job_id, request=request)
     return {"ok": True}

@@ -171,6 +171,76 @@ def test_idempotency_priority_and_queued_cancel(client, monkeypatch):
     _run(scenario())
 
 
+def test_waiting_resource_job_does_not_consume_runner_slot_and_cancel_reclaims_request(
+    client, monkeypatch,
+):
+    from app.jobs import service as jobs
+    from app.resources.broker import ResourceBroker
+    from app.resources.devices import fake_devices
+    from app.resources.schema import ResourceRequest
+
+    broker = ResourceBroker(fake_devices(100))
+    monkeypatch.setattr(jobs, "resource_broker", broker)
+    monkeypatch.setattr(jobs, "MAX_CONCURRENT", 1)
+
+    def requirement(owner: str, job_id: str) -> ResourceRequest:
+        return ResourceRequest.model_validate({
+            "owner": owner,
+            "job_id": job_id,
+            "device": "gpu0",
+            "vram": {
+                "resident_bytes": 100,
+                "execution_peak_bytes": 100,
+                "cold_load_peak_bytes": 100,
+                "headroom_bytes": 0,
+                "confidence": "measured",
+            },
+            "compute_mode": "exclusive-required",
+            "class": "interactive",
+            "max_wait_sec": 60,
+        })
+
+    async def scenario():
+        held = await broker.submit(requirement("internal:holder", "holder"))
+        assert held.lease_id
+
+        ran = asyncio.Event()
+
+        async def gpu_runner(_job):
+            raise AssertionError("resource waiter must not run")
+
+        async def cpu_runner(_job):
+            ran.set()
+            return "cpu"
+
+        waiting = jobs.create(
+            "test.resource", "GPU wait", gpu_runner,
+            resource=lambda job_id: requirement("internal:media", job_id),
+        )
+        cpu = jobs.create("test.cpu", "CPU", cpu_runner)
+        await asyncio.wait_for(ran.wait(), timeout=2)
+        for _ in range(100):
+            if waiting.wait_reason:
+                break
+            await asyncio.sleep(0.01)
+        assert waiting.status == "queued"
+        assert waiting.phase == "waiting_resource"
+        assert waiting.wait_reason == "device_busy_exclusive"
+        assert cpu.status in ("running", "succeeded")
+        request_id = waiting.resource_request_id
+        assert request_id
+        assert await jobs.cancel_and_wait(waiting.id)
+        assert waiting.status == "canceled"
+        assert (await broker.request_status(request_id)).state.value == "canceled"
+        await broker.release(held.lease_id)
+        return waiting.id
+
+    waiting_id = _run(scenario())
+    persisted = _run(jobs.get_any(waiting_id))
+    assert persisted["phase"] == "waiting_resource"
+    assert persisted["wait_reason"] == "device_busy_exclusive"
+
+
 def test_jobs_api_hides_other_owners_and_streams_snapshot(admin_client):
     from app.bootstrap import create_admin
     from app.database import SessionLocal

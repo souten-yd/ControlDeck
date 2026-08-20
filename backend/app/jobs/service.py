@@ -24,6 +24,10 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from app.resources.broker import BrokerError, ResourceBroker, broker as resource_broker
+from app.resources.leases import LeaseError
+from app.resources.schema import RequestState, ResourceRequest
+
 logger = logging.getLogger("control_deck.jobs")
 
 MAX_JOBS = 100          # メモリに保持する完了ジョブ数の上限
@@ -37,6 +41,8 @@ class Job:
     kind: str  # model.pull / model.register / workflow.build / chat.completion など
     title: str
     status: str = "queued"  # queued / running / succeeded / failed / canceled / interrupted
+    phase: str | None = None
+    wait_reason: str | None = None
     progress: dict = field(default_factory=dict)  # {status, completed, total}
     events: list[dict] = field(default_factory=list)
     # events は bounded journal。配列 index ではなく単調増加 cursor で購読する。
@@ -53,6 +59,11 @@ class Job:
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     task: asyncio.Task | None = None
+    resource_task: asyncio.Task | None = field(default=None, repr=False)
+    resource_renew_task: asyncio.Task | None = field(default=None, repr=False)
+    resource_request_id: str | None = None
+    resource_lease_id: str | None = None
+    resource_broker: ResourceBroker | None = field(default=None, repr=False)
     changed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def log(self, message: str, **extra: Any) -> None:
@@ -80,6 +91,8 @@ class Job:
             "kind": self.kind,
             "title": self.title,
             "status": self.status,
+            "phase": self.phase,
+            "wait_reason": self.wait_reason,
             "progress": self.progress,
             "events": retained,
             "event_count": self.event_sequence,
@@ -143,6 +156,8 @@ def _db_write(job: Job, finished: bool = False) -> None:
             )
             db.add(control)
         row.status = job.status
+        row.phase = job.phase
+        row.wait_reason = job.wait_reason
         row.progress_json = json.dumps(job.progress, ensure_ascii=False, default=str)
         row.events_json = json.dumps(job.events[-DB_EVENT_SNAPSHOT:], ensure_ascii=False, default=str)
         row.error = (job.error or "")[:2000]
@@ -165,6 +180,7 @@ def create(
     kind: str, title: str, runner: Callable[[Job], Awaitable[Any]],
     owner_user_id: int | None = None,
     *, idempotency_key: str | None = None, priority: int = 0,
+    resource: Callable[[str], ResourceRequest] | None = None,
 ) -> Job:
     """ジョブをpriority queueへ登録する。同一owner/kind/keyの有効結果は再利用する。"""
     if idempotency_key:
@@ -180,16 +196,103 @@ def create(
         id=uuid.uuid4().hex[:12], kind=kind, title=title, owner_user_id=owner_user_id,
         idempotency_key=idempotency_key, priority=priority,
     )
+    resource_request = resource(job.id) if resource is not None else None
+    if resource_request is not None and resource_request.job_id != job.id:
+        raise ValueError("resource requestのjob_idが作成jobと一致しません")
+    if resource_request is not None:
+        job.phase = "waiting_resource"
     _jobs[job.id] = job
     # 完了済みジョブが溜まりすぎたら古い順にメモリから破棄（DB には残る）
     finished = [j for j in _jobs.values() if j.status not in ("queued", "running")]
     for old in finished[: max(0, len(_jobs) - MAX_JOBS)]:
         _jobs.pop(old.id, None)
     _db_write(job)  # queued作成時に1回
-    heapq.heappush(_pending, (-priority, next(_sequence), job.id, runner))
     _notify_job(job)
-    _dispatch()
+    if resource_request is None:
+        heapq.heappush(_pending, (-priority, next(_sequence), job.id, runner))
+        _dispatch()
+    else:
+        job.resource_task = asyncio.create_task(
+            _admit_resource(job, runner, resource_request, resource_broker)
+        )
     return job
+
+
+async def _admit_resource(
+    job: Job,
+    runner: Callable[[Job], Awaitable[Any]],
+    request: ResourceRequest,
+    broker: ResourceBroker,
+) -> None:
+    try:
+        job.resource_broker = broker
+        status = await broker.submit(request)
+        job.resource_request_id = status.request_id
+        job.wait_reason = status.reason.value if status.reason else None
+        _notify_job(job)
+        await asyncio.to_thread(_db_write, job)
+        if status.state == RequestState.WAITING:
+            status = await broker.wait(status.request_id)
+        if status.state != RequestState.GRANTED or not status.lease_id:
+            if job.status != "canceled":
+                job.status = "failed"
+                job.error = f"resource admission failed: {status.state.value}"
+                job.finished_at = time.time()
+                job.wait_reason = status.reason.value if status.reason else None
+                _notify_job(job)
+                await asyncio.to_thread(_db_write, job, True)
+            return
+        job.resource_lease_id = status.lease_id
+        await broker.activate(status.lease_id)
+        job.phase = "starting"
+        job.wait_reason = None
+        job.resource_renew_task = asyncio.create_task(_renew_resource(job, broker))
+        _notify_job(job)
+        await asyncio.to_thread(_db_write, job)
+        heapq.heappush(_pending, (-job.priority, next(_sequence), job.id, runner))
+        _dispatch()
+    except asyncio.CancelledError:
+        await _cancel_resource_state(job, broker)
+        raise
+    except Exception as exc:  # Broker failure is isolated to the resource-aware job.
+        logger.exception("job resource admission failed (%s)", job.id)
+        await _cancel_resource_state(job, broker)
+        if job.status != "canceled":
+            job.status = "failed"
+            job.error = f"resource admission failed: {type(exc).__name__}"[:500]
+            job.finished_at = time.time()
+            _notify_job(job)
+            await asyncio.to_thread(_db_write, job, True)
+
+
+async def _renew_resource(job: Job, broker: ResourceBroker) -> None:
+    try:
+        while job.status in ("queued", "running") and job.resource_lease_id:
+            await asyncio.sleep(10)
+            if job.status in ("queued", "running") and job.resource_lease_id:
+                await broker.renew(job.resource_lease_id)
+    except asyncio.CancelledError:
+        raise
+    except LeaseError:
+        logger.warning("job resource lease renewal failed (%s)", job.id)
+
+
+async def _cancel_resource_state(job: Job, broker: ResourceBroker = resource_broker) -> None:
+    if job.resource_renew_task is not None and job.resource_renew_task is not asyncio.current_task():
+        job.resource_renew_task.cancel()
+        await asyncio.gather(job.resource_renew_task, return_exceptions=True)
+        job.resource_renew_task = None
+    if job.resource_request_id:
+        try:
+            await broker.cancel_request(job.resource_request_id)
+        except BrokerError:
+            pass
+    if job.resource_lease_id:
+        try:
+            await broker.release(job.resource_lease_id)
+        except LeaseError:
+            pass
+        job.resource_lease_id = None
 
 
 def _dispatch() -> None:
@@ -228,6 +331,7 @@ async def _run_job(job: Job, runner: Callable[[Job], Awaitable[Any]]) -> None:
         logger.warning("job %s (%s) failed: %s", job.id, job.kind, job.error)
     finally:
         heartbeat.cancel()
+        await _cancel_resource_state(job, job.resource_broker or resource_broker)
         job.finished_at = time.time()
         _notify_job(job)
         await asyncio.to_thread(_db_write, job, True)
@@ -285,6 +389,7 @@ def _dict_to_job(data: dict) -> Job:
     event_sequence = int(data.get("event_count") or len(events))
     return Job(
         id=data["id"], kind=data["kind"], title=data["title"], status=data["status"],
+        phase=data.get("phase"), wait_reason=data.get("wait_reason"),
         progress=data.get("progress") or {}, events=events,
         event_offset=max(0, event_sequence - len(events)), event_sequence=event_sequence,
         result=data.get("result"),
@@ -322,6 +427,7 @@ def _db_get(job_id: str) -> dict | None:
 def _row_to_dict(row, control=None) -> dict:
     return {
         "id": row.id, "kind": row.kind, "title": row.title, "status": row.status,
+        "phase": row.phase, "wait_reason": row.wait_reason,
         "progress": json.loads(row.progress_json or "{}"),
         "events": json.loads(row.events_json or "[]"),
         "result": json.loads(row.result_json) if row.result_json else None,
@@ -382,11 +488,27 @@ def cancel(job_id: str) -> bool:
         job.finished_at = time.time()
         _notify_job(job)
         _db_write(job, True)
+        if job.resource_task and not job.resource_task.done():
+            job.resource_task.cancel()
+        elif job.resource_request_id or job.resource_lease_id:
+            asyncio.create_task(_cancel_resource_state(job, job.resource_broker or resource_broker))
         return True
     if job and job.status == "running" and job.task and not job.task.done():
         job.task.cancel()
         return True
     return False
+
+
+async def cancel_and_wait(job_id: str) -> bool:
+    """Cancel and synchronously reclaim a waiting request/lease for API callers."""
+    job = _jobs.get(job_id)
+    if not cancel(job_id):
+        return False
+    if job is not None and job.resource_task is not None:
+        await asyncio.gather(job.resource_task, return_exceptions=True)
+    if job is not None:
+        await _cancel_resource_state(job, job.resource_broker or resource_broker)
+    return True
 
 
 def visible_to(job: Job | dict, owner_user_id: int) -> bool:
