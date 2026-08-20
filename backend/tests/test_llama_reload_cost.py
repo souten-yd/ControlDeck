@@ -5,11 +5,13 @@ import asyncio
 from app.models_mgmt import llama
 from app.models_mgmt.resource_provider import LlamaCapacityProvider
 from app.models_mgmt.runtime_policy import RuntimePolicy
+from app.jobs import service as jobs
+from app.resources import broker as broker_module
 from app.resources.broker import ResourceBroker
 from app.resources.devices import fake_devices
 from app.resources.probes import ProviderRegistry
 from app.resources.providers import YieldLevel
-from app.resources.schema import ResourceRequest, RequestState, WaitReason
+from app.resources.schema import RequestStatus, ResourceRequest, RequestState, WaitReason
 from app.resources.telemetry import ResourceTelemetry
 
 
@@ -115,3 +117,74 @@ def test_broker_exposes_yield_suppression_as_wait_reason(monkeypatch, tmp_path):
     status = asyncio.run(scenario())
     assert status.state == RequestState.WAITING
     assert status.reason == WaitReason.YIELD_RUNTIME_UNKNOWN
+
+
+def test_successful_llama_stop_marks_the_next_load_warm(monkeypatch, tmp_path):
+    telemetry = ResourceTelemetry(profile_path=tmp_path / "profiles.json")
+    instance = {"alias": "chat", "model_path": str(tmp_path / "model.gguf"), "loaded": True}
+    monkeypatch.setattr(broker_module.broker, "telemetry", telemetry)
+    monkeypatch.setattr(llama, "get_config", lambda: {"selected_alias": "chat"})
+    monkeypatch.setattr(llama, "get_instance", lambda _alias: instance)
+    monkeypatch.setattr(llama, "list_instances", lambda: [instance])
+    monkeypatch.setattr(llama, "residency_key", lambda _item: "llama:model")
+    monkeypatch.setattr("app.applications.systemd.stop", lambda _unit: (True, ""))
+
+    assert llama.stop_instance("chat") == (True, "")
+    telemetry.record_load_measurement(
+        "llama:model", process_start_sec=1, model_load_sec=7,
+    )
+    profile = telemetry.snapshot()["load_profiles"][0]
+    assert profile["warm_reload_cost_sec"]["count"] == 1
+    assert profile["cold_load_cost_sec"]["count"] == 0
+
+
+def test_waiting_job_mirrors_broker_suppression_reason(monkeypatch):
+    class BrokerStub:
+        def __init__(self):
+            self.revision = 0
+            self.reason = WaitReason.INSUFFICIENT_VRAM
+            self.changed = asyncio.Event()
+            self.done = asyncio.Event()
+
+        async def wait(self, _request_id):
+            await self.done.wait()
+            return RequestStatus(
+                request_id="request", state=RequestState.CANCELED,
+                owner="addon:test", job_id="job", reason=self.reason,
+                requested_at=1, deadline_at=2,
+            )
+
+        async def wait_for_revision(self, previous, _timeout):
+            while self.revision <= previous:
+                await self.changed.wait()
+                self.changed.clear()
+            return self.revision
+
+        async def request_status(self, _request_id):
+            return RequestStatus(
+                request_id="request", state=RequestState.WAITING,
+                owner="addon:test", job_id="job", reason=self.reason,
+                requested_at=1, deadline_at=2,
+            )
+
+    monkeypatch.setattr(jobs, "_db_write", lambda *_args, **_kwargs: None)
+
+    async def scenario():
+        broker = BrokerStub()
+        job = jobs.Job(id="job", kind="test", title="test")
+        task = asyncio.create_task(jobs._wait_for_resource_updates(job, broker, "request"))
+        await asyncio.sleep(0)
+        broker.reason = WaitReason.YIELD_RUNTIME_UNKNOWN
+        broker.revision += 1
+        broker.changed.set()
+        for _ in range(100):
+            if job.wait_reason == WaitReason.YIELD_RUNTIME_UNKNOWN.value:
+                break
+            await asyncio.sleep(0.01)
+        broker.done.set()
+        broker.revision += 1
+        broker.changed.set()
+        await task
+        return job.wait_reason
+
+    assert asyncio.run(scenario()) == WaitReason.YIELD_RUNTIME_UNKNOWN.value

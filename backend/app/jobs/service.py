@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable
 
 from app.resources.broker import BrokerError, ResourceBroker, broker as resource_broker
 from app.resources.leases import LeaseError
-from app.resources.schema import RequestState, ResourceRequest
+from app.resources.schema import RequestState, RequestStatus, ResourceRequest
 
 logger = logging.getLogger("control_deck.jobs")
 
