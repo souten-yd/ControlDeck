@@ -112,6 +112,8 @@ def test_broker_exposes_yield_suppression_as_wait_reason(monkeypatch, tmp_path):
             if status.reason == WaitReason.YIELD_RUNTIME_UNKNOWN:
                 break
             await asyncio.sleep(0.01)
+        await broker.expire_due()
+        status = await broker.request_status(status.request_id)
         return status
 
     status = asyncio.run(scenario())

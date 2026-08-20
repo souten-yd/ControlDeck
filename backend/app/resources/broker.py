@@ -29,6 +29,16 @@ class BrokerError(RuntimeError):
     pass
 
 
+YIELD_SUPPRESSION_REASONS = {
+    WaitReason.YIELD_RUNTIME_UNKNOWN,
+    WaitReason.YIELD_LOAD_COST_UNKNOWN,
+    WaitReason.YIELD_THRASH_COST,
+    WaitReason.YIELD_MINIMUM_UPTIME,
+    WaitReason.YIELD_THRASH_WINDOW,
+    WaitReason.YIELD_DRAIN_TIMEOUT,
+}
+
+
 @dataclass
 class _RequestRecord:
     request: ResourceRequest
@@ -317,7 +327,15 @@ class ResourceBroker:
                     )
                     granted = True
                     break
-                record.status.reason = fit.reason or WaitReason.QUEUE_POSITION
+                preserved_suppression = (
+                    record.status.reason
+                    if fit.yield_device_id is not None
+                    and record.status.reason in YIELD_SUPPRESSION_REASONS
+                    else None
+                )
+                record.status.reason = (
+                    preserved_suppression or fit.reason or WaitReason.QUEUE_POSITION
+                )
                 record.status.queue_position = position
                 record.status.blocking = list(fit.blocking)
                 record.status.actions = ["cancel", "lower_priority"]
