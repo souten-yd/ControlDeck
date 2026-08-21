@@ -129,7 +129,7 @@ async def create_session(
             project_path = imported["path"]
         command, project = opencode.tui_command(
             project_path=project_path, prompt=body.prompt,
-            base_url=body.base_url, model=body.model,
+            base_url=body.base_url, model=body.model, owner_user_id=user.id,
         )
         session = terminals.create_session(cwd=project, command=command)
     except opencode.CodeAgentError as exc:

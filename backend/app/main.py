@@ -272,7 +272,10 @@ app.include_router(addons_router, prefix=API)
 app.include_router(resources_router, prefix=API)
 app.include_router(addon_runtime_router, prefix=API)
 if feature_enabled("opencode"):
+    from app.addons.agent_mcp import router as addon_agent_mcp_router
     from app.integrations.opencode.router import router as opencode_router
+
+    app.include_router(addon_agent_mcp_router, prefix=API)
 
     app.include_router(opencode_router, prefix=API)
 
