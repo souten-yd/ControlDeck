@@ -367,10 +367,10 @@ function AuditSection() {
 
 
 interface AddonState {
-  id: string; name: string; summary: string; kind: "npm" | "pip"; route_gated: boolean;
+  id: string; name: string; summary: string; kind: "npm" | "pip" | "release-bundle"; route_gated: boolean;
   available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
-  error: string; executable: string;
+  error: string; executable: string; preview?: boolean;
   /** 依存する別アドオンのid。未導入なら導入ボタンを止めて順序を案内する。 */
   requires?: string; requires_installed?: boolean;
 }
@@ -631,12 +631,13 @@ function AddonsSection() {
                 <p className="text-[11px] text-zinc-400">
                   {addon.enabled ? `利用できます — ${addon.summary}`
                     : addon.installed ? "導入済み（無効）— 有効化すると使えます"
-                    : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
+                    : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "release-bundle" ? "検証済みbundle" : addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
                     : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です"}
                   {addon.error && ` · ${addon.error}`}
                   {addon.requires_installed === false &&
                     ` · 先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} の導入が必要です`}
                 </p>
+                {addon.preview && <p className="mt-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">PREVIEW — release署名またはcatalog digest固定前</p>}
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                 {addon.installed && addon.managed && (
