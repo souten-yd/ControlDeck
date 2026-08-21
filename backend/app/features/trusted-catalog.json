@@ -2,7 +2,7 @@
   "media-forge": {
     "name": "Media Forge",
     "kind": "release-bundle",
-    "route_gated": false,
+    "route_gated": true,
     "summary": "ローカルGPUで画像などの素材を生成するControlDeck Add-on",
     "release_metadata_url": "https://api.github.com/repos/souten-yd/ControlDeckMediaForge/releases/latest",
     "artifact_name": "control-deck-media-forge-{version}-{platform}-{arch}.tar.gz",

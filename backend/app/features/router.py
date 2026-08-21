@@ -96,5 +96,6 @@ def apply_action(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, f"feature.{action}", user=user, resource_type="feature",
                  resource_id=feature_id, request=request)
-    # ルート/ナビ登録は起動時ゲートのため、反映には再読み込みが必要
-    return {**state, "requires_reload": action in ("enable", "disable", "uninstall")}
+    # Add-on v2 registry is revision-driven; legacy route-gated features need reload.
+    needs_reload = registry.FEATURES[feature_id]["kind"] != "release-bundle"
+    return {**state, "requires_reload": needs_reload and action in ("enable", "disable", "uninstall")}

@@ -605,7 +605,8 @@ function AddonsSection() {
   const act = async (addon: AddonState, action: "enable" | "disable" | "uninstall") => {
     try {
       const r = await api<{ requires_reload?: boolean }>(`/features/${addon.id}/${action}`, { method: "POST", json: {} });
-      show(action === "enable" ? "有効化しました。反映のため再読み込みします…" : action === "disable" ? "無効化しました。反映のため再読み込みします…" : "アンインストールしました。再読み込みします…", "info");
+      const label = action === "enable" ? "有効化しました" : action === "disable" ? "無効化しました" : "アンインストールしました";
+      show(r.requires_reload ? `${label}。反映のため再読み込みします…` : label, "info");
       qc.invalidateQueries({ queryKey: ["features"] });
       if (r.requires_reload) await reloadPlatform();
     } catch (e) {

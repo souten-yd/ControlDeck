@@ -144,8 +144,10 @@ def status(feature_id: str) -> dict:
     version = ""
     healthy = False
     error = ""
+    release_enabled: bool | None = None
     if spec["kind"] == "release-bundle":
         from app.features import release_bundle
+        from app.addons import registry as addon_registry
 
         selected = release_bundle.current(feature_id)
         managed = selected is not None
@@ -153,6 +155,11 @@ def status(feature_id: str) -> dict:
         installed = selected is not None
         version = selected[0].version if selected else ""
         healthy, error = release_bundle.health(feature_id, selected[0]) if selected else (False, "")
+        if selected:
+            try:
+                release_enabled = bool(addon_registry.status(str(spec["addon_id"]))["enabled"])
+            except addon_registry.AddonRegistryError:
+                release_enabled = False
     elif binary is not None:
         try:
             result = subprocess.run(
@@ -171,8 +178,11 @@ def status(feature_id: str) -> dict:
         else shutil.which("npm") if spec["kind"] == "npm" else shutil.which("python3")
     )
     # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
-    enabled = (installed and healthy) if not spec["route_gated"] else (
-        bool(state.get("enabled")) and installed and healthy
+    enabled = (
+        release_enabled is True and installed and healthy
+        if spec["kind"] == "release-bundle"
+        else (installed and healthy) if not spec["route_gated"]
+        else bool(state.get("enabled")) and installed and healthy
     )
     return {
         "id": feature_id,
@@ -192,7 +202,9 @@ def status(feature_id: str) -> dict:
         "installed": installed,
         "managed": managed,
         "enabled": enabled,
-        "requested_enabled": bool(state.get("enabled")) or not spec["route_gated"],
+        "requested_enabled": release_enabled if release_enabled is not None else (
+            bool(state.get("enabled")) or not spec["route_gated"]
+        ),
         "version": version,
         "health": "healthy" if healthy else ("error" if installed else "not-installed"),
         "error": error,
@@ -322,6 +334,13 @@ def enable(feature_id: str) -> dict:
         "external_executable": remembered,
     }
     _write_state(state)
+    if FEATURES[feature_id]["kind"] == "release-bundle":
+        from app.addons import registry as addon_registry
+
+        try:
+            addon_registry.set_enabled(str(FEATURES[feature_id]["addon_id"]), True)
+        except addon_registry.AddonRegistryError as exc:
+            raise FeatureError(str(exc)) from exc
     # 外部PATHの実体を有効化した場合は install を通らないので、ここでも整える。
     _autoconfigure(feature_id)
     return status(feature_id)
@@ -332,6 +351,13 @@ def disable(feature_id: str) -> dict:
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
     _write_state(state)
+    if FEATURES[feature_id]["kind"] == "release-bundle":
+        from app.addons import registry as addon_registry
+
+        try:
+            addon_registry.set_enabled(str(FEATURES[feature_id]["addon_id"]), False)
+        except addon_registry.AddonRegistryError as exc:
+            raise FeatureError(str(exc)) from exc
     return status(feature_id)
 
 

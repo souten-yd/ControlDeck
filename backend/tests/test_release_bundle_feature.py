@@ -156,12 +156,42 @@ def test_release_bundle_status_uses_live_service_health(monkeypatch, tmp_path):
         {"name": "Fake", "kind": "release-bundle", "route_gated": False, "summary": "Fake", **spec()},
     )
     monkeypatch.setattr(registry, "KNOWN_FEATURES", {*registry.KNOWN_FEATURES, "fake-addon"})
+    monkeypatch.setattr(release_bundle.addon_registry, "status", lambda _addon_id: {"enabled": True})
     monkeypatch.setattr(release_bundle, "health", lambda *_args: (False, "service is stopped"))
     state = registry.status("fake-addon")
     assert state["installed"] is True
     assert state["health"] == "error"
     assert state["enabled"] is False
     assert state["error"] == "service is stopped"
+
+
+def test_release_bundle_enable_disable_controls_addon_registry(monkeypatch, tmp_path):
+    from app.features import registry, release_bundle
+
+    prepare(monkeypatch, tmp_path, "1.2.3", bundle_bytes("1.2.3"))
+    release_bundle.install("fake-addon", spec())
+    monkeypatch.setitem(
+        registry.FEATURES,
+        "fake-addon",
+        {"name": "Fake", "kind": "release-bundle", "route_gated": True, "summary": "Fake", **spec()},
+    )
+    monkeypatch.setattr(registry, "KNOWN_FEATURES", {*registry.KNOWN_FEATURES, "fake-addon"})
+    monkeypatch.setattr(release_bundle, "health", lambda *_args: (True, ""))
+    enabled = False
+
+    def addon_status(_addon_id):
+        return {"enabled": enabled}
+
+    def set_enabled(_addon_id, value, grants=None):
+        nonlocal enabled
+        enabled = value
+        return addon_status(_addon_id)
+
+    monkeypatch.setattr(release_bundle.addon_registry, "status", addon_status)
+    monkeypatch.setattr(release_bundle.addon_registry, "set_enabled", set_enabled)
+    assert registry.status("fake-addon")["enabled"] is False
+    assert registry.enable("fake-addon")["enabled"] is True
+    assert registry.disable("fake-addon")["enabled"] is False
 
 
 def test_catalog_url_rejects_untrusted_host():
