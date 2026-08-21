@@ -42,11 +42,11 @@ def test_addon_api_install_enable_effective_etag_disable_and_audit(addon_api, mo
     from app.addons import router
     canceled_owners: list[str] = []
 
-    async def cancel_owner(owner: str):
+    async def cancel_waiting_owner(owner: str):
         canceled_owners.append(owner)
-        return {"requests": 1, "leases": 1}
+        return {"requests": 1, "leases": 0}
 
-    monkeypatch.setattr(router.resource_broker, "cancel_owner", cancel_owner)
+    monkeypatch.setattr(router.resource_broker, "cancel_waiting_owner", cancel_waiting_owner)
     value = deepcopy(addon_manifest())
     value["contributions"]["commands"][0]["hint"] = "future presentation"
     installed = client.post("/api/v1/addons", json=value, headers=CSRF_HEADERS)

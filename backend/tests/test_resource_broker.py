@@ -171,6 +171,21 @@ def test_request_max_wait_and_owner_cancel_reclaim_all_state():
     assert any(item.state == LeaseState.CANCELED for item in leases)
 
 
+def test_waiting_owner_cancel_preserves_active_lease_for_ttl_fail_safe():
+    async def scenario():
+        broker = ResourceBroker(fake_devices(100))
+        active = await broker.submit(request("addon:a", "active", 100))
+        waiting = await broker.submit(request("addon:a", "waiting", 100))
+        canceled = await broker.cancel_waiting_owner("addon:a")
+        return active, await broker.request_status(waiting.request_id), canceled, await broker.lease_status(active.lease_id)
+
+    active, waiting, canceled, lease = run(scenario())
+    assert active.state == RequestState.GRANTED
+    assert waiting.state == RequestState.CANCELED
+    assert canceled == {"requests": 1, "leases": 0}
+    assert lease.state == LeaseState.GRANTED
+
+
 def test_yieldable_provider_is_requested_outside_broker_lock_and_waiter_wakes():
     class YieldingProvider(ResourceProvider):
         id = "llm"

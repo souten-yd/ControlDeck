@@ -146,6 +146,13 @@ class ResourceBroker:
         async with self._lock:
             return self.leases.all()
 
+    async def lease_status(self, lease_id: str) -> LeaseStatus:
+        async with self._lock:
+            result = next((item for item in self.leases.all() if item.lease_id == lease_id), None)
+            if result is None:
+                raise BrokerError("leaseが見つかりません")
+            return result
+
     async def cancel_request(self, request_id: str) -> RequestStatus:
         async with self._lock:
             record = self._required_request(request_id)
@@ -202,6 +209,24 @@ class ResourceBroker:
             if requests or leases:
                 await self._bump()
             return {"requests": requests, "leases": leases}
+
+    async def cancel_waiting_owner(self, owner: str) -> dict[str, int]:
+        """Stop queued work without pretending an active worker released its device."""
+        async with self._lock:
+            requests = 0
+            for record in self._requests.values():
+                if record.request.owner == owner and record.status.state == RequestState.WAITING:
+                    record.status.state = RequestState.CANCELED
+                    record.status.reason = None
+                    record.status.queue_position = None
+                    record.status.actions = []
+                    record.completed.set()
+                    self.telemetry.record("request.canceled", request_id=record.status.request_id)
+                    requests += 1
+            if requests:
+                await self._schedule_locked(self._clock())
+                await self._bump()
+            return {"requests": requests, "leases": 0}
 
     async def expire_due(self) -> dict[str, int]:
         now = self._clock()
