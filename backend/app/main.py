@@ -153,7 +153,7 @@ async def csrf_protect(request: Request, call_next):
     #   /hooks/ 外部 Webhook（トークンで保護）
     #   /llm/   OpenAI互換ゲートウェイ（Bearer APIキーで保護。標準クライアントは
     #           独自ヘッダーを付けられず、Cookieも持たないためCSRFの前提が成立しない）
-    csrf_exempt = (f"{API}/hooks/", f"{API}/llm/")
+    csrf_exempt = (f"{API}/hooks/", f"{API}/llm/", f"{API}/addon-runtime/")
     if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         if not request.url.path.startswith(csrf_exempt) and request.headers.get("x-requested-with") != "ControlDeck":
             return JSONResponse(status_code=403, content={"detail": "CSRF チェックに失敗しました"})
@@ -228,6 +228,7 @@ from app.plugins.router import router as plugins_router  # noqa: E402
 from app.addons.router import router as addons_router  # noqa: E402
 from app.addons.proxy import router as addon_frame_router  # noqa: E402
 from app.resources.router import router as resources_router  # noqa: E402
+from app.addon_runtime.router import router as addon_runtime_router  # noqa: E402
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
@@ -269,6 +270,7 @@ app.include_router(features_router, prefix=API)
 app.include_router(plugins_router, prefix=API)
 app.include_router(addons_router, prefix=API)
 app.include_router(resources_router, prefix=API)
+app.include_router(addon_runtime_router, prefix=API)
 if feature_enabled("opencode"):
     from app.integrations.opencode.router import router as opencode_router
 
