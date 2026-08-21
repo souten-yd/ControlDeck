@@ -1,6 +1,43 @@
 # 実装状況
 
-最終更新: 2026-08-21
+最終更新: 2026-08-22
+
+## Media Forge v0.1.2 catalog pin／direct GPU placement 実証（2026-08-22）
+
+- trusted catalog の Media Forge artifact SHA-256を、公開GitHub Release v0.1.2の
+  `855303fd90e25e2ff2886b255fd98365c862eb417e0e57268cb0e8a27c06916c`へ更新した。
+  artifactは29,043,648 bytesで、release assetのdigest、download後の実ファイル、catalog pinが一致する。
+  provider／API／route／依存へMedia固有処理は追加せず、catalog dataとinstalled-bundle browser assertionだけを
+  更新した。bundle内にvenvとmodel weightsは含めず、既存の永続runtimeと共有NVMe cacheを再利用する。
+
+実機検証: 隔離ControlDeck `127.0.0.1:18773`の標準Settings API経路で公開v0.1.2を導入した。
+install job `0e2d7361ca49`は18.375702秒で終了し、`current -> versions/0.1.2`、実systemd service、
+Add-on v2登録、HTTP health `healthy`を観測した。healthはR9700/gfx1201、PyTorch 2.10.0+ROCm 7.2.1、
+model installed/healthyを返した。packaged provisionは永続runtime/modelを再利用し4.972467秒で完了した。
+
+同じ標準導入serviceをControlDeck Workflow／Broker経由で実行し、Host execution 9、Media Job
+`job_5f6dfb71e62c4c44909fdf56f081a78e`が13.327802秒で512x512 PNG（168,170 bytes、SHA-256
+`9f644dfc60d63f51b14858fd01bd34b45f400c682019565cd001484ee48b7037`）を生成した。service logの内訳は
+model load 9.265287秒、generation 1.483399秒で、pipeline／text encoder／transformer／VAEはすべて
+`cuda:0`、offload hookとCPU／disk／meta device mapは0件だった。Broker lease
+`c0b3ea2c-bd77-4f2e-a141-6d9dbfd73740`はactiveを経てreleasedとなり、終了後active leaseは0件だった。
+50ms間隔の外部samplingで観測したVRAM増分は17,416,728,576 bytesだが、瞬間peakを捕捉する保証はないため
+admission用の既存実測peakの代替にはしない。provenanceはFLUX.2 Klein 4B、実weights hash、Apache-2.0、
+Diffusers 0.40.0、Media Forge 0.1.2とvalidator passを含んだ。
+
+実ChromiumはSettingsのv0.1.2／導入済み（無効）表示から有効化し、Media iframeのModels、Create、Library、
+Provenanceまで16.2秒で成功し、page errorは0件だった。Host Job `85504437fc9c`は12.888887秒で成功し、
+Media Job `job_fbf824b1cb4243338d417b8bd193d7a2`、asset
+`asset_75be0d4e823d49228a3f624eea56988c`（159,515 bytes、SHA-256
+`75d169f5bc1529e7bd292e3cc3e158f7327ce2323f581b428b80ba86dabe6f56`）を返した。load 9.013070秒、
+generation 1.458398秒で、全componentは`cuda:0`、offload hookとnon-GPU placementは0件、終了後のBrokerは
+active 0／waiting 0だった。
+
+完全に空のHugging Face cacheから約15.99GBを再downloadする試験はNOT TESTEDである。公開bundle download、
+SHA検証、warm runtime/model再利用、実GPU生成は検証済みだが、既存cacheを空cacheの証拠として扱わない。
+最終PR headの自動回帰はrelease-bundle／Add-on contract集中22件成功（0.92秒）、backend全738件成功／1件skip
+（62.18秒）、frontend production build 1,542 modules成功（19.79秒）、installed-bundle browser E2E 1件成功
+（16.2秒）だった。これらは上記実process／browser証拠の代替にしない。
 
 ## release-bundle persistent provisioning／実update rollback（2026-08-21）
 
