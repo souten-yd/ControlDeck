@@ -2,6 +2,33 @@
 
 最終更新: 2026-08-21
 
+## Add-on Runtime 委譲actor／要求単位grant scope（2026-08-21）
+
+- service tokenの相関subjectと利用者権限を分離し、Hostだけが署名する`actor_user_id`を追加した。
+  `job:*`の既存Job束縛は維持し、Workflow／Context ActionはactorからHost Job ownerとgrant ownerを
+  解決する。既存の数値subjectは後方互換として残し、browser proxy／Agentもactorを明示する。
+- 要求単位の`grant_ids` allowlistを追加した。claim無しは既存token互換、空集合はgrant利用不可、
+  非空集合は完全一致だけを許可する。Context Actionのraw fileはHostが実在する短命Runtime read grantへ
+  変換し、pathやAdd-onが検証不能な疑似tokenをupstreamへ渡さない。Workflow execution ownerを解決
+  できない場合もAdd-onを呼ばず403でfail closedする。
+- 詳細な権限表、後方互換、却下した5案は`docs/design-addon-platform-v2.md` §9.2へ記録した。Media Forge
+  固有のroute、依存、capabilityはControlDeckへ追加していない。
+
+実機検証: code head `2ec4dbb`を隔離config／SQLite、Uvicorn `127.0.0.1:18767`で起動し、別processの
+Media Forgeを`127.0.0.1:9131`で起動した。公開HTTP APIだけを使う17.722796秒のrunで、install／enable後に
+Workflow／Context contribution各1件を発見、dry-run時のMedia Forge Job増分0、実Workflow execution
+`SUCCEEDED`、委譲actorで作ったMedia Forge Job `succeeded`を確認した。Files context actionは1206 bytesの
+PNGをHost UI相当のraw path入力から実Runtime `grant:`へ変換してAdd-onが内容を読み、応答へpath／grantを
+反射しなかった。加えて実AMD GPU Brokerで335544320 bytes予約、2 Job直列化
+`device_busy_exclusive`／queue 1、Host cancel、10.647061秒Job中のrenew 5回、active中disableによるJob cancel、
+全lease release、再enable healthy、1206 bytes scoped read／output commitのSHA-256一致を観測した。
+runのfinallyで一時Workflowを削除しAdd-onをuninstallした。
+
+自動検証: Add-on Runtime／execution／proxy／contract集中53件成功。完全checkoutの先行backend全体runは
+705件成功／1件skip／固定待機に依存する既知の2件が失敗し、同2件の直後単独runは2件成功した。
+最終backend全体rerunは707件成功／1件skip（58.90秒）。frontend production buildは1,542 modules成功
+（20.76秒）。frontend sourceは変更していない。外部hosted CIはlocal実機証跡の代替にしない。
+
 ## Add-on Runtime Host API（Authentication／Resources／Jobs／Files）実装完了（2026-08-21）
 
 - Browser Host BridgeをGPU／backend execution APIへ拡張せず、`/api/v1/addon-runtime`にservice-to-host専用境界を追加した。通常のsession cookie、CSRF、`settings.manage`は使わず、Bearer service tokenのHMAC署名、10分TTL、`kind=service`、`aud`・path・`X-Control-Deck-Addon-ID`一致、installed／enabled、操作別Host Capability grantを毎request検証する。HMAC keyはAdd-onへ渡さず、`POST /token/introspect`が無効理由を漏らさない`active`応答、subject、期限、現在grantを返す。全mutationとintrospectionはtoken／payload／host pathを含めずauditする。
