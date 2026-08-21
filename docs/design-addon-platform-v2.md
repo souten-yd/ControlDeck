@@ -1139,6 +1139,38 @@ LLM リクエスト受信
 - Context ActionはFiles／Project Labのhost UIからだけ開始し、hostが対象を検証してfile pathを`grant:`へ変換する。upstreamへ渡すのはcontext type、opaque resource ID、要求単位のscoped token、明示inputだけである。
 - 実fake Add-on processと実Chromiumによりremote Workflow、Agent Job、Context grant、320px／1280px host UIを通し、終了後に一時registry／Workflowを清掃した。
 
+### 9.2 実行主体と委譲権限（2026-08-21 追補）
+
+service tokenの`sub`は、`job:{id}`、`workflow:{execution_id}`、`context:{user_id}`のような
+呼出元相関IDであり、常に利用者IDとは限らない。Runtime APIが`sub`を利用者権限としても解釈すると、
+Workflow／Context ActionはHost Job作成とfile grant利用を正しく認可できない。このため、Hostだけが
+発行できる署名済みclaimを次のように分離する。
+
+| claim | 意味 | Runtimeでの扱い |
+|---|---|---|
+| `sub` | 監査・取消・Job attach用の呼出元相関ID | `job:`は対象Jobへ厳密に束縛。それ以外を文字列規則で権限化しない |
+| `actor_user_id` | 呼出しを開始したControlDeck利用者 | Workflow／ContextのHost Job ownerとgrant ownerの照合に使う |
+| `grant_ids` | この呼出しへ委譲した要求単位のRuntime grant集合 | claim無しは既存token互換、空集合はgrant利用不可、非空集合は完全一致だけ許可 |
+
+- Workflowは`WorkflowExecution -> Workflow.created_by`からactorを解決する。解決できなければAdd-onを
+  呼ばずfail closedとする。
+- Context ActionでHost UIがraw fileを受け取った場合、Hostは実在する短命Runtime read grantを作り、
+  Add-onへpathではなくその`grant:` IDだけを渡す。asset／project contextはfile grantを暗黙付与しない。
+- Agent toolは従来どおり`job:{id}`を第一のscopeとし、actor claimはowner情報を明示する補助である。
+- browser proxyの数値`sub`は後方互換のため維持し、同じ利用者をactor claimにも署名する。
+- Add-onはclaimを自己申告できず、HostのRuntime APIはaddon ID、現在のcapability、actor、grant allowlist、
+  grant自体のowner／TTL／kindを毎requestで再検証する。
+
+検討したが採用しなかった案:
+
+1. `workflow:*`／`context:*` subjectをそのままRuntimeで許可する案は、利用者ownerを証明できず権限昇格になる。
+2. 利用者IDを`sub`文字列へ追加する案は、相関と権限を再び結合し、将来の呼出元追加ごとに危険なparserを増やす。
+3. Add-onへpathやHost cookieを渡す案は、opaque grant境界とAdd-on分離を壊す。
+4. 空のgrant allowlistを既存互換の無制限とみなす案は、asset-only contextから既知のgrant IDを再利用できるため、
+   claim無しと空集合を区別する。
+5. payload上の`grant_id`へAdd-onが検証不能な別種HMAC tokenを置く案は、Runtime grantとして利用できない。
+   payloadとtoken claimの双方へ同じ実在`grant:` IDを渡し、Runtime側で完全一致を検証する。
+
 ---
 
 ## 10. セキュリティ要件（前版 §29 を拡張）

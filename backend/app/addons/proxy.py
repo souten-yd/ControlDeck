@@ -42,14 +42,16 @@ def _upstream_headers(request: Request, addon_id: str, user_id: int) -> dict[str
         key: value for key, value in request.headers.items()
         if key.lower() not in _HOP_HEADERS | _PRIVATE_REQUEST_HEADERS
     }
-    headers["Authorization"] = f"Bearer {tokens.issue(addon_id, subject=str(user_id), kind='service')}"
+    token = tokens.issue(addon_id, subject=str(user_id), kind="service", actor_user_id=user_id)
+    headers["Authorization"] = f"Bearer {token}"
     headers["X-Control-Deck-Addon-ID"] = addon_id
     return headers
 
 
 def _service_headers(addon_id: str, user_id: int) -> dict[str, str]:
+    token = tokens.issue(addon_id, subject=str(user_id), kind="service", actor_user_id=user_id)
     return {
-        "Authorization": f"Bearer {tokens.issue(addon_id, subject=str(user_id), kind='service')}",
+        "Authorization": f"Bearer {token}",
         "X-Control-Deck-Addon-ID": addon_id,
     }
 

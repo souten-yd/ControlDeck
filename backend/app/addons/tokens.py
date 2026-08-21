@@ -53,16 +53,39 @@ def _signing_key() -> bytes:
     return key
 
 
-def issue(addon_id: str, *, subject: str, kind: str, now: int | None = None) -> str:
+def issue(
+    addon_id: str,
+    *,
+    subject: str,
+    kind: str,
+    actor_user_id: int | None = None,
+    grant_ids: list[str] | tuple[str, ...] | None = None,
+    now: int | None = None,
+) -> str:
     issued = int(time.time()) if now is None else int(now)
-    payload = json.dumps({
+    if actor_user_id is not None and (
+        not isinstance(actor_user_id, int) or isinstance(actor_user_id, bool) or actor_user_id <= 0
+    ):
+        raise AddonTokenError("actor user IDが不正です")
+    delegated_grants = list(dict.fromkeys(grant_ids or ()))
+    if len(delegated_grants) > 8 or any(
+        not isinstance(value, str) or not value.startswith("grant:") or len(value) > 128
+        for value in delegated_grants
+    ):
+        raise AddonTokenError("delegated grant IDが不正です")
+    claims: dict[str, Any] = {
         "aud": addon_id,
         "sub": subject,
         "kind": kind,
         "iat": issued,
         "exp": issued + TOKEN_TTL_SECONDS,
         "nonce": secrets.token_urlsafe(12),
-    }, sort_keys=True, separators=(",", ":")).encode()
+    }
+    if actor_user_id is not None:
+        claims["actor_user_id"] = actor_user_id
+    if grant_ids is not None:
+        claims["grant_ids"] = delegated_grants
+    payload = json.dumps(claims, sort_keys=True, separators=(",", ":")).encode()
     encoded = _b64encode(payload)
     signature = _b64encode(hmac.new(_signing_key(), encoded.encode(), hashlib.sha256).digest())
     return f"{encoded}.{signature}"

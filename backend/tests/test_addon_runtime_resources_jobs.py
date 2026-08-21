@@ -96,6 +96,44 @@ def test_user_subject_creates_job_and_job_subject_attaches_without_duplicate(run
     assert attached.json()["job"]["id"] == job["id"]
 
 
+@pytest.mark.parametrize("subject", ["workflow:42", "context:7"])
+def test_delegated_actor_subject_creates_and_operates_scoped_job(runtime_api, subject):
+    client, _registry, tokens, _broker, user_id = runtime_api
+    token = tokens.issue(
+        "fake-addon",
+        subject=subject,
+        kind="service",
+        actor_user_id=user_id,
+    )
+    created = client.post(
+        "/api/v1/addon-runtime/fake-addon/jobs",
+        json={"title": "delegated execution"},
+        headers=headers(token),
+    )
+    assert created.status_code == 201, created.text
+    job = created.json()["job"]
+    assert job["owner_user_id"] == user_id
+    resource = client.post(
+        "/api/v1/addon-runtime/fake-addon/resources/requests",
+        json=resource_body(job["id"]),
+        headers=headers(token),
+    )
+    assert resource.status_code == 202, resource.text
+    assert resource.json()["job_id"] == job["id"]
+
+    other_actor = tokens.issue(
+        "fake-addon",
+        subject=subject,
+        kind="service",
+        actor_user_id=user_id + 999,
+    )
+    denied = client.get(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{job['id']}/control",
+        headers=headers(other_actor),
+    )
+    assert denied.status_code == 403
+
+
 def test_resource_api_forces_owner_binds_host_job_and_enforces_priority_ceiling(runtime_api):
     client, _registry, tokens, broker, user_id = runtime_api
     job, user_token = create_host_job(client, tokens, user_id)

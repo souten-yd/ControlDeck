@@ -86,6 +86,52 @@ def test_read_grant_metadata_and_content_never_expose_host_path(runtime_files):
     assert str(root) not in json.dumps(dict(content.headers))
 
 
+def test_context_actor_can_read_only_delegated_grant(runtime_files):
+    client, tokens, user_id, root = runtime_files
+    first = root / "runtime-context-first.txt"
+    second = root / "runtime-context-second.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    first_grant = client.post(
+        "/api/v1/addons/fake-addon/file-grants",
+        json={"path": str(first), "kind": "read"},
+        headers=CSRF_HEADERS,
+    ).json()["grant_id"]
+    second_grant = client.post(
+        "/api/v1/addons/fake-addon/file-grants",
+        json={"path": str(second), "kind": "read"},
+        headers=CSRF_HEADERS,
+    ).json()["grant_id"]
+    token = tokens.issue(
+        "fake-addon",
+        subject=f"context:{user_id}",
+        kind="service",
+        actor_user_id=user_id,
+        grant_ids=[first_grant],
+    )
+    allowed = client.get(
+        f"/api/v1/addon-runtime/fake-addon/grants/{first_grant}/content",
+        headers=headers(token),
+    )
+    denied = client.get(
+        f"/api/v1/addon-runtime/fake-addon/grants/{second_grant}/content",
+        headers=headers(token),
+    )
+    assert allowed.status_code == 200 and allowed.content == b"first"
+    assert denied.status_code == 404
+    deny_all_token = tokens.issue(
+        "fake-addon",
+        subject=f"context:{user_id}",
+        kind="service",
+        actor_user_id=user_id,
+        grant_ids=[],
+    )
+    assert client.get(
+        f"/api/v1/addon-runtime/fake-addon/grants/{first_grant}/content",
+        headers=headers(deny_all_token),
+    ).status_code == 404
+
+
 def test_read_grant_rejects_inode_swap_and_symlink_escape(runtime_files):
     client, tokens, user_id, root = runtime_files
     source = root / "runtime-grant-swap.txt"
