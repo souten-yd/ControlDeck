@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from app.addons import bridge, execution as addon_execution, health, registry
+from app.addon_runtime import grants as runtime_grants
 from app.addons.schema import AddonManifestV2, parse_manifest
 from app.audit import service as audit
 from app.database import get_db
@@ -39,6 +40,11 @@ class ContextActionInvokeRequest(BaseModel):
     context_type: str = Field(pattern="^(file|project|workflow|job)$")
     resource_id: str = Field(min_length=1, max_length=1024)
     input: dict = Field(default_factory=dict, max_length=64)
+
+
+class AddonFileGrantRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    kind: str = Field(pattern="^(read|export)$")
 
 
 def _bridge_error(exc: bridge.BridgeAccessError) -> HTTPException:
@@ -224,6 +230,42 @@ def addon_detail(addon_id: str, user: User = Depends(require_permission("setting
         return registry.status(addon_id)
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
+
+
+@router.post("/{addon_id}/file-grants", status_code=201)
+def create_addon_file_grant(
+    addon_id: str,
+    body: AddonFileGrantRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    required_capability = "files.pick" if body.kind == "read" else "files.export"
+    required_permission = "files.view" if body.kind == "read" else "files.edit"
+    current_permissions = user_permissions(user)
+    try:
+        current = registry.status(addon_id)
+        if not current["enabled"] or current["state"] == "disable_pending":
+            raise HTTPException(status_code=409, detail="Add-onは有効ではありません")
+        if required_capability not in current["granted_capabilities"]:
+            raise HTTPException(status_code=403, detail=f"{required_capability}がgrantされていません")
+        if required_permission not in current_permissions:
+            raise HTTPException(status_code=403, detail=f"{required_permission}権限が必要です")
+        result = runtime_grants.create(addon_id, user.id, body.path, body.kind)
+    except registry.AddonRegistryError as exc:
+        raise _registry_error(exc) from exc
+    except (runtime_grants.GrantError, PermissionError, FileNotFoundError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db,
+        "addon.file_grant.create",
+        user=user,
+        resource_type="addon_grant",
+        resource_id=result["grant_id"],
+        request=request,
+        metadata={"addon_id": addon_id, "kind": body.kind, "size": result.get("size")},
+    )
+    return result
 
 
 @router.get("/{addon_id}/activity")
