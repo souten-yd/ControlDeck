@@ -2,6 +2,38 @@
 
 最終更新: 2026-08-21
 
+## Trusted release-bundle Optional Feature provider（2026-08-21）
+
+- Settings の標準導入経路へ、source-controlled trusted catalog だけを入力とする汎用
+  `release-bundle` provider を追加した。API はfeature ID以外のURL／repository／version／command／hash／
+  destinationを受け取らない。HTTPS allowlist、bounded download、catalog固定SHA-256、safe tar、package manifest、
+  Add-on v2 manifestとcapability上限を検証し、version side-by-side配置、relative `current` symlinkのatomic切替、
+  user systemd service、loopback health、Add-on registry登録を順に行う。
+- 同一version再導入はimmutableなversion treeを置換せず、停止serviceとAdd-on登録を修復する。live service／healthを
+  Settings状態へ反映し、Feature enable/disableはAdd-on v2 registryと同期する。削除対象はprovider管理下の
+  service、Add-on登録、current、versions、downloads、logsだけで、`feature-data/<id>`と共有cacheを保持する。
+- Git clone/source build、caller指定source、in-place update、release checksumだけを信頼する案は採用しなかった。
+  一般提供bundleの更新には、新artifact digestをcatalog reviewで明示的に承認する必要がある。
+  詳細は`docs/design-release-bundle-features.md`に記録した。実装はMedia固有のroute／Python依存／処理分岐を持たず、
+  Media Forgeはcatalog dataとしてのみ登録した。
+
+実機検証: PR headの隔離ControlDeckを`127.0.0.1:18773`で起動し、Settings API jobから公開GitHub Release
+`souten-yd/ControlDeckMediaForge v0.1.0`を取得した。29,035,125 bytesを4.29秒で導入し、実ファイルSHA-256
+`bcbde4514c6a5ef8d1c226509a4ca6afccb888e159fca10f9cb3fa933835c87e`がcatalog pinと一致した。
+`versions/0.1.0`、`current -> versions/0.1.0`、bundle内`mediaforge-core`のuser service（peak 111.5 MiB）、
+HTTP 200 `setup_required`、Add-on v2 `installed_disabled`を観測した。serviceを停止して同一version update jobを
+実行するとserviceが復帰し、version tree内のmarkerを保持、Add-on enabled状態も保持した。uninstall後はunit、
+Add-on、versions、downloadsが消え、feature dataとshared cacheのmarker各20 bytesが残った。再導入後の実Chromium
+（1280x800）はSettingsのv0.1.0／非PREVIEW／無効表示、reloadなしの有効化、Media navigation、Hostの
+setup-required画面を2.1秒で確認し、page error 0だった。
+
+自動検証: release-bundle／Add-on contract集中17件成功（0.92秒）、backend全733件成功／1件skip（57.35秒）、
+frontend production build 1,542 modules成功、installed release bundle browser E2E 1件成功（2.1秒）。
+異なる新versionを用いた公開release updateと、実systemd serviceの意図的health failureによる旧version rollbackは
+適切な第二の署名済みrelease／安全なfault injectionがまだないためNOT TESTED。rollbackのcurrent／Add-on復元は
+隔離fixtureの自動testで確認済みだが、実process証拠の代替とは扱わない。bundle導入直後は重量image runtime未構築のため
+Media Forgeは正しく`setup_required`であり、ローカルGPU画像生成までを本項の完了とはしない。
+
 ## Add-on Runtime 長時間resource jobのservice token rotation（2026-08-21）
 
 - 通常のservice tokenは10分TTLのまま維持し、`resources.acquire`を許可された有効なAdd-onが、

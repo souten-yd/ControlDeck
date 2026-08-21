@@ -45,6 +45,20 @@ FEATURES: dict[str, dict] = {
         "summary": "App Studioで、配布先にPython不要の単一バイナリを作れるようにする",
     },
 }
+
+
+def _release_catalog() -> dict[str, dict]:
+    path = Path(__file__).with_name("trusted-catalog.json")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("trusted feature catalog is invalid") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("trusted feature catalog root must be an object")
+    return {key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, dict)}
+
+
+FEATURES.update(_release_catalog())
 NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] == "npm"}
 KNOWN_FEATURES = set(FEATURES)
 
@@ -94,13 +108,22 @@ def _feature_root(feature_id: str) -> Path:
 def _managed_executable(feature_id: str) -> Path:
     spec = FEATURES[_known(feature_id)]
     root = _feature_root(feature_id)
+    if spec["kind"] == "release-bundle":
+        from app.features import release_bundle
+
+        selected = release_bundle.current(feature_id)
+        return root / "current" / selected[0].entrypoint if selected else root / "current" / "missing"
     if spec["kind"] == "pip":
         return root / "venv" / "bin" / spec["executable"]
     return root / "node_modules" / ".bin" / spec["executable"]
 
 
 def executable(feature_id: str) -> Path | None:
-    binary_name = FEATURES[_known(feature_id)]["executable"]
+    spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "release-bundle":
+        managed = _managed_executable(feature_id)
+        return managed.resolve() if managed.is_file() and os.access(managed, os.X_OK) else None
+    binary_name = spec["executable"]
     managed = _managed_executable(feature_id)
     if managed.is_file() and os.access(managed, os.X_OK):
         return managed.resolve()
@@ -121,7 +144,23 @@ def status(feature_id: str) -> dict:
     version = ""
     healthy = False
     error = ""
-    if binary is not None:
+    release_enabled: bool | None = None
+    if spec["kind"] == "release-bundle":
+        from app.features import release_bundle
+        from app.addons import registry as addon_registry
+
+        selected = release_bundle.current(feature_id)
+        managed = selected is not None
+        binary = _managed_executable(feature_id) if selected else None
+        installed = selected is not None
+        version = selected[0].version if selected else ""
+        healthy, error = release_bundle.health(feature_id, selected[0]) if selected else (False, "")
+        if selected:
+            try:
+                release_enabled = bool(addon_registry.status(str(spec["addon_id"]))["enabled"])
+            except addon_registry.AddonRegistryError:
+                release_enabled = False
+    elif binary is not None:
         try:
             result = subprocess.run(
                 [str(binary), "--version"], capture_output=True, text=True, timeout=10, check=False,
@@ -133,11 +172,17 @@ def status(feature_id: str) -> dict:
                 error = "version確認に失敗しました"
         except (OSError, subprocess.TimeoutExpired):
             error = "実行ファイルを起動できません"
-    installed = binary is not None
-    toolchain = shutil.which("npm") if spec["kind"] == "npm" else shutil.which("python3")
+    installed = binary is not None if spec["kind"] != "release-bundle" else installed
+    toolchain = (
+        True if spec["kind"] == "release-bundle"
+        else shutil.which("npm") if spec["kind"] == "npm" else shutil.which("python3")
+    )
     # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
-    enabled = (installed and healthy) if not spec["route_gated"] else (
-        bool(state.get("enabled")) and installed and healthy
+    enabled = (
+        release_enabled is True and installed and healthy
+        if spec["kind"] == "release-bundle"
+        else (installed and healthy) if not spec["route_gated"]
+        else bool(state.get("enabled")) and installed and healthy
     )
     return {
         "id": feature_id,
@@ -147,6 +192,7 @@ def status(feature_id: str) -> dict:
         "route_gated": spec["route_gated"],
         # 依存アドオン。未導入なら UI で導入順を案内する。
         "requires": spec.get("requires", ""),
+        "preview": bool(spec.get("preview", False)),
         "requires_installed": (
             True if not spec.get("requires")
             else _managed_executable(spec["requires"]).is_file()
@@ -156,7 +202,9 @@ def status(feature_id: str) -> dict:
         "installed": installed,
         "managed": managed,
         "enabled": enabled,
-        "requested_enabled": bool(state.get("enabled")) or not spec["route_gated"],
+        "requested_enabled": release_enabled if release_enabled is not None else (
+            bool(state.get("enabled")) or not spec["route_gated"]
+        ),
         "version": version,
         "health": "healthy" if healthy else ("error" if installed else "not-installed"),
         "error": error,
@@ -220,6 +268,14 @@ def install(feature_id: str) -> dict:
     required = FEATURES[feature_id].get("requires")
     if required and not status(required)["installed"]:
         raise FeatureError(f"先に{FEATURES[required]['name']}を導入してください")
+    if FEATURES[feature_id]["kind"] == "release-bundle":
+        from app.features import release_bundle
+
+        try:
+            release_bundle.install(feature_id, FEATURES[feature_id])
+        except release_bundle.ReleaseBundleError as exc:
+            raise FeatureError(str(exc)) from exc
+        return status(feature_id)
     result = _install_package(feature_id, latest=False)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
         raise FeatureError(f"{name}の管理導入に失敗しました")
@@ -253,6 +309,14 @@ def update(feature_id: str) -> dict:
     if not _managed_executable(feature_id).is_file():
         raise FeatureError(f"Control Deckが導入した{name}のみ更新できます")
     previous = status(feature_id)["version"]
+    if FEATURES[feature_id]["kind"] == "release-bundle":
+        from app.features import release_bundle
+
+        try:
+            result = release_bundle.install(feature_id, FEATURES[feature_id])
+        except release_bundle.ReleaseBundleError as exc:
+            raise FeatureError(str(exc)) from exc
+        return {**status(feature_id), "previous_version": result["previous_version"] or previous}
     result = _install_package(feature_id, latest=True)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
         raise FeatureError(f"{name}の更新に失敗しました")
@@ -270,6 +334,13 @@ def enable(feature_id: str) -> dict:
         "external_executable": remembered,
     }
     _write_state(state)
+    if FEATURES[feature_id]["kind"] == "release-bundle":
+        from app.addons import registry as addon_registry
+
+        try:
+            addon_registry.set_enabled(str(FEATURES[feature_id]["addon_id"]), True)
+        except addon_registry.AddonRegistryError as exc:
+            raise FeatureError(str(exc)) from exc
     # 外部PATHの実体を有効化した場合は install を通らないので、ここでも整える。
     _autoconfigure(feature_id)
     return status(feature_id)
@@ -280,11 +351,26 @@ def disable(feature_id: str) -> dict:
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
     _write_state(state)
+    if FEATURES[feature_id]["kind"] == "release-bundle":
+        from app.addons import registry as addon_registry
+
+        try:
+            addon_registry.set_enabled(str(FEATURES[feature_id]["addon_id"]), False)
+        except addon_registry.AddonRegistryError as exc:
+            raise FeatureError(str(exc)) from exc
     return status(feature_id)
 
 
 def uninstall(feature_id: str) -> dict:
     disable(feature_id)
+    if FEATURES[_known(feature_id)]["kind"] == "release-bundle":
+        from app.features import release_bundle
+
+        try:
+            release_bundle.uninstall(feature_id, FEATURES[feature_id])
+        except release_bundle.ReleaseBundleError as exc:
+            raise FeatureError(str(exc)) from exc
+        return status(feature_id)
     root = _feature_root(feature_id)
     if root.exists():
         # 管理prefixだけを削除。PATH上の外部OpenCodeと~/.config/~/.local/shareには触れない。

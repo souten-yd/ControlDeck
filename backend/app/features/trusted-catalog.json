@@ -1,0 +1,29 @@
+{
+  "media-forge": {
+    "name": "Media Forge",
+    "kind": "release-bundle",
+    "route_gated": true,
+    "summary": "ローカルGPUで画像などの素材を生成するControlDeck Add-on",
+    "release_metadata_url": "https://api.github.com/repos/souten-yd/ControlDeckMediaForge/releases/latest",
+    "artifact_name": "control-deck-media-forge-{version}-{platform}-{arch}.tar.gz",
+    "sha256": "bcbde4514c6a5ef8d1c226509a4ca6afccb888e159fca10f9cb3fa933835c87e",
+    "addon_id": "media-forge",
+    "allowed_host_capabilities": [
+      "context.read",
+      "theme.read",
+      "route.open",
+      "files.pick",
+      "files.export",
+      "projects.pick",
+      "jobs.read",
+      "jobs.write",
+      "notifications.show",
+      "resources.acquire"
+    ],
+    "max_download_bytes": 536870912,
+    "max_expanded_bytes": 1073741824,
+    "smoke_timeout_sec": 120,
+    "retain_versions": 2,
+    "preview": false
+  }
+}

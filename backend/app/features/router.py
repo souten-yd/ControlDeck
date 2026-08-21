@@ -7,6 +7,7 @@
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
 
 from app.audit import service as audit
 from app.database import get_db
@@ -19,6 +20,12 @@ from app.security.deps import require_permission
 router = APIRouter(prefix="/features", tags=["features"])
 
 
+class FeatureJobRequest(BaseModel):
+    """Feature selection is path/catalog bound; callers cannot supply a source."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @router.get("")
 def features(user: User = Depends(require_permission("settings.manage"))):
     return list_features()
@@ -26,15 +33,17 @@ def features(user: User = Depends(require_permission("settings.manage"))):
 
 @router.post("/{feature_id}/install-jobs", status_code=201)
 async def install_job(
-    feature_id: str, request: Request,
+    feature_id: str, request: Request, body: FeatureJobRequest,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
 ):
-    """ランタイム一式（npmパッケージ）をサーバー側ジョブで導入する。sudo不要。"""
+    """信頼済みproviderでfeatureをサーバー側ジョブとして導入する。sudo不要。"""
     if feature_id not in registry.KNOWN_FEATURES:
         raise HTTPException(status_code=404, detail="未知のアドオンです")
 
     async def run(job: jobs.Job) -> dict:
-        job.set_progress("npmで導入中（初回は1〜2分かかります）", 0, 1)
+        kind = registry.FEATURES[feature_id]["kind"]
+        message = "検証済みrelease bundleを取得・検証中" if kind == "release-bundle" else "パッケージを導入中"
+        job.set_progress(message, 0, 1)
         state = await asyncio.to_thread(registry.install, feature_id)
         job.set_progress("完了", 1, 1)
         return state
@@ -48,10 +57,10 @@ async def install_job(
 
 @router.post("/{feature_id}/update-jobs", status_code=201)
 async def update_job(
-    feature_id: str, request: Request,
+    feature_id: str, request: Request, body: FeatureJobRequest,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
 ):
-    """管理導入のランタイムをnpmの最新版へ更新する。有効/無効の状態は変えない。"""
+    """管理導入をtrusted providerの最新版へ更新する。有効/無効の状態は変えない。"""
     if feature_id not in registry.KNOWN_FEATURES:
         raise HTTPException(status_code=404, detail="未知のアドオンです")
     current = registry.status(feature_id)
@@ -59,7 +68,9 @@ async def update_job(
         raise HTTPException(status_code=422, detail="Control Deckが導入したアドオンのみ更新できます")
 
     async def run(job: jobs.Job) -> dict:
-        job.set_progress("npmで最新版を取得中", 0, 1)
+        kind = registry.FEATURES[feature_id]["kind"]
+        message = "新しいrelease bundleをside-by-side検証中" if kind == "release-bundle" else "最新版を取得中"
+        job.set_progress(message, 0, 1)
         state = await asyncio.to_thread(registry.update, feature_id)
         job.set_progress("完了", 1, 1)
         return state
@@ -85,5 +96,6 @@ def apply_action(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, f"feature.{action}", user=user, resource_type="feature",
                  resource_id=feature_id, request=request)
-    # ルート/ナビ登録は起動時ゲートのため、反映には再読み込みが必要
-    return {**state, "requires_reload": action in ("enable", "disable", "uninstall")}
+    # Add-on v2 registry is revision-driven; legacy route-gated features need reload.
+    needs_reload = registry.FEATURES[feature_id]["kind"] != "release-bundle"
+    return {**state, "requires_reload": needs_reload and action in ("enable", "disable", "uninstall")}
