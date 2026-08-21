@@ -161,6 +161,7 @@ POST   /api/v1/addon-runtime/{addon_id}/resources/requests
 GET    /api/v1/addon-runtime/{addon_id}/resources/requests/{request_id}
 DELETE /api/v1/addon-runtime/{addon_id}/resources/requests/{request_id}
 POST   /api/v1/addon-runtime/{addon_id}/resources/leases/{lease_id}/{activate|renew|release}
+POST   /api/v1/addon-runtime/{addon_id}/resources/leases/{lease_id}/credential/refresh
 GET    /api/v1/addon-runtime/{addon_id}/grants/{grant_id}
 GET    /api/v1/addon-runtime/{addon_id}/grants/{grant_id}/content
 POST   /api/v1/addon-runtime/{addon_id}/files/outputs

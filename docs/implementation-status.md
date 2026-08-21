@@ -2,6 +2,27 @@
 
 最終更新: 2026-08-21
 
+## Add-on Runtime 長時間resource jobのservice token rotation（2026-08-21）
+
+- 通常のservice tokenは10分TTLのまま維持し、`resources.acquire`を許可された有効なAdd-onが、
+  同じowner／subjectに束縛されたactive Host Jobとcurrent resource leaseを両方持つ間だけ、lease IDを
+  proofとして同一scopeのservice tokenへrotationできる汎用Runtime APIを追加した。actor userと
+  request単位grant allowlistをそのまま保存し、別owner／別subject、終了job／lease、disable後はfail closedする。
+- 8時間tokenへの一律延長、active jobだけをproofにする案、期限切れtokenの猶予復活は、漏洩時の影響時間と
+  不要な権限延命を広げるため採用しなかった。credential本文、grant ID、responseはaudit metadataへ保存せず、
+  lease／job IDだけを記録する。Media固有のroute、依存、capabilityは追加していない。
+
+実process検証: 隔離config／SQLiteのControlDeckを`127.0.0.1:18771`、別processの汎用fake Add-onを
+`127.0.0.1:9130`で起動した。公開HTTP APIでinstall／enable、Host Job作成、実AMD GPU Broker requestの
+`granted`を確認後、credentialをrotationした。新tokenは旧tokenと異なり、subjectと`grant:e2e` allowlistを
+維持し、新tokenだけでleaseのactivate／renew／releaseが各200になった。auditはrefresh 1件、metadataは
+job IDだけで、旧／新tokenとgrant IDを含まないことを確認した。検証後は両processと隔離dataを停止・回収した。
+
+自動検証: Runtime Resources／Auth集中21件成功（2.65秒）。別worktreeから共有venvを直接呼んだ先行全体runは、
+worktree直下`.venv`不在によるTerminal Automation 2件と、固定待機に依存する既知の排他Job 1件が失敗した。
+worktree直下からcanonical `./deck.sh test`を再実行し、最終headで725件成功／1件skip（58.08秒）。frontend sourceは
+変更しておらず、frontend build／browser／Hosted CIはNOT TESTED。
+
 ## OpenCode Add-on Agent Tool MCP投影（2026-08-21）
 
 - OpenCode featureのjob／TUI専用0600 runtime configへ、現在有効なAdd-on `agent_tools`を投影する汎用
