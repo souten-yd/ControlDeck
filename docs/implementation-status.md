@@ -2,6 +2,32 @@
 
 最終更新: 2026-08-21
 
+## release-bundle persistent provisioning／実update rollback（2026-08-21）
+
+- 検証済みbundleが同じentrypointの固定array argsで永続runtime/modelを準備できる、任意の
+  `provision_args` lifecycleをpackage schemaへ追加した。APIからcommand／環境／pathは受け取らず、実行環境、
+  cwd、最大7200秒timeoutはproviderが固定する。provision失敗は`current`を変更せず、feature data/shared cacheへの
+  中間成果だけを再試行用に保持する。Media Forge v0.1.1のcatalog pinは
+  `66dfb88425d61e533e5ca8b45e0e19169e07e66cbc9ba1846364de4177981d4a`へ更新した。
+
+実機検証: 公開v0.1.0がenabled/runningの隔離ControlDeck `127.0.0.1:18773`からSettings update jobを開始した。
+処理中は`current -> versions/0.1.0`と旧PID 1599352を維持し、37.914599秒後に29,041,267-byteの公開v0.1.1、
+`versions/{0.1.0,0.1.1}`、`current -> versions/0.1.1`、新PID 1627743へ切り替わった。隔離feature dataへ
+4,686,979,949-byteのROCm venvをsource checkoutなしで構築し、共有NVMeのpip/model cacheを再利用した。
+healthは`healthy`、R9700/gfx1201、PyTorch 2.10.0+ROCm 7.2.1、model installed/healthy、Add-on enabledを返した。
+
+実rollbackは、公開不健康releaseを作らず、新serviceのhealth gateだけを1回fault injectionした。providerは
+v0.1.1へswitch後に失敗を受け、`current`、実systemd service、Add-on manifestをv0.1.0へ戻し、PID 1635963で
+RUNNING、Add-on enabledを維持した（10.4秒）。その後の通常API update jobはv0.1.1/healthyへ復帰した。
+これは実version tree／systemd／registryを通るrollback証拠であり、自然発生したhealth failureとは区別する。
+
+標準導入bundleだけを使う実ControlDeck Workflow/Broker生成は、先行LLM残留による`insufficient_vram`待機後に
+leaseを取得し、6回renew、release、512x512 PNG（128,589 bytes、SHA-256
+`9a1920654a48007c4917385d05af43a82d144803c66c19cefb906a9e93be962e`）を生成した。provenanceはFLUX.2 Klein 4B、
+Apache-2.0、Media Forge 0.1.1だった。実ChromiumのSettings disable→enable→Media iframe→Create→Library→
+Provenanceも19.5秒で成功し、Host Job `a8c8f00183db`、別の512x512 asset 159,515 bytes、lease release、page error 0を
+観測した。完全に空のHugging Face cacheからの約15.99GB model downloadだけはNOT TESTEDで、cache reuseと混同しない。
+
 ## Trusted release-bundle Optional Feature provider（2026-08-21）
 
 - Settings の標準導入経路へ、source-controlled trusted catalog だけを入力とする汎用
