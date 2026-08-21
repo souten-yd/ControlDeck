@@ -24,7 +24,7 @@
 最初の`auto`実行は27B model起動後5分でtool call未到達のため中断し、成功とは記録しない。
 
 自動検証: Agent MCP／OpenCode／Add-on execution／token集中42件成功（2.54秒）。正しい`backend/` cwdの
-backend全体は722件成功／1件skip（56.25秒）。先行runはrepository rootから起動したためCLI subprocess
+backend全体は最終code headで722件成功／1件skip（57.43秒）。先行runはrepository rootから起動したためCLI subprocess
 2件が`app` import不可となり、既知の固定1秒GPU Job直列化testもrunner開始前にtimeoutしたが、正しいcwdの
 集中10件と最終全体runでは再現しなかった。frontend sourceは変更していないため、Hosted CI、frontend
 build、browser再実行はNOT TESTED。実証用Add-onは公開APIでdisable／uninstallし、Host／Media process、
