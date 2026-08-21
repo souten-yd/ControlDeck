@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
@@ -476,6 +477,50 @@ def validate_context_reference(
     return resource_id, None
 
 
+def validate_context_result(addon_id: str, value: dict[str, Any]) -> dict[str, Any]:
+    action = value.get("action")
+    if action is None:
+        return value
+    if action != "open_route":
+        raise AddonExecutionError(
+            "Context Action応答のactionが不正です",
+            code="invalid_context_response",
+            status_code=502,
+        )
+    route = value.get("route")
+    if not isinstance(route, str) or len(route) > 2048 or any(ord(character) < 32 for character in route):
+        raise AddonExecutionError(
+            "Context Action応答のrouteが不正です",
+            code="invalid_context_response",
+            status_code=502,
+        )
+    parsed = urlsplit(route)
+    try:
+        decoded_path = unquote(parsed.path, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise AddonExecutionError(
+            "Context Action応答のrouteが不正です",
+            code="invalid_context_response",
+            status_code=502,
+        ) from exc
+    prefix = f"/x/{addon_id}"
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.fragment
+        or "\\" in decoded_path
+        or any(ord(character) < 32 for character in decoded_path)
+        or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+        or (decoded_path != prefix and not decoded_path.startswith(f"{prefix}/"))
+    ):
+        raise AddonExecutionError(
+            "Context Actionは自身のAdd-on routeだけを開けます",
+            code="invalid_context_response",
+            status_code=502,
+        )
+    return value
+
+
 async def invoke_context_action(
     addon_id: str,
     contribution_id: str,
@@ -495,7 +540,7 @@ async def invoke_context_action(
         addon_id=addon_id,
         owner_user_id=owner_user_id,
     )
-    return await invoke(
+    result = await invoke(
         "context_actions", addon_id, contribution_id,
         {
             "input": input_value,
@@ -506,6 +551,7 @@ async def invoke_context_action(
         grant_ids=(grant_id,) if grant_id is not None else (),
         permissions=permissions,
     )
+    return validate_context_result(addon_id, result)
 
 
 def cached_workflow_input_schema(node_type: str) -> dict[str, Any] | None:

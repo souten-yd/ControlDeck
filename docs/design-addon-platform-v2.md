@@ -1171,6 +1171,27 @@ Workflow／Context ActionはHost Job作成とfile grant利用を正しく認可�
 5. payload上の`grant_id`へAdd-onが検証不能な別種HMAC tokenを置く案は、Runtime grantとして利用できない。
    payloadとtoken claimの双方へ同じ実在`grant:` IDを渡し、Runtime側で完全一致を検証する。
 
+### 9.3 Context ActionのHost画面遷移（2026-08-21 追補）
+
+Context Actionは任意のJSON objectを結果として返せる既存互換を維持する。結果にHost操作を要求する
+場合だけ、次の明示形を使う。
+
+```json
+{ "action": "open_route", "route": "/x/example-addon/workspace/edit?asset=opaque" }
+```
+
+Hostは`action=open_route`を認識した場合、scheme／authority／fragment／制御文字を拒否し、routeの
+pathが呼出し元Add-on自身の`/x/{addon_id}`またはその子孫であることをbackendで検証してから遷移する。
+外部URL、Host設定、他Add-onのrouteへは遷移できない。未知actionは成功として握り潰さず
+`invalid_context_response`で失敗する。`action`を含まない既存の結果objectは変更せず呼出し元へ返す。
+
+検討したが採用しなかった案:
+
+1. 成功toastだけを表示する案は、編集画面を開くというContext Actionを完了できず、利用者に次の操作を
+   探させる。
+2. Add-onが返したrouteをfrontendで無条件に`navigate`する案は、Host設定／他Add-onへの誘導を許す。
+3. Media固有の`open_workspace` actionを追加する案は、Host coreへ用途固有語彙を持ち込む。
+
 ---
 
 ## 10. セキュリティ要件（前版 §29 を拡張）

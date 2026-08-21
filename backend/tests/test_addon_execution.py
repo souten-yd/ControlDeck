@@ -334,6 +334,37 @@ def test_context_action_uses_opaque_scoped_grant_and_rejects_paths(addon_api, mo
     assert service_claims[-1]["grant_ids"] == ["grant:context-file"]
 
 
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/settings",
+        "/x/other-addon/workspace",
+        "https://example.com/x/fake-addon/workspace",
+        "//example.com/x/fake-addon/workspace",
+        "/x/fake-addon/workspace#outside",
+        "/x/fake-addon/%2e%2e/settings",
+        "/x/%6fther-addon/workspace",
+        "/x/fake-addon/workspace%0aoutside",
+        "/x/fake-addon/workspace\\outside",
+    ],
+)
+def test_context_action_open_route_is_confined_to_its_own_addon(route):
+    from app.addons import execution
+
+    with pytest.raises(execution.AddonExecutionError) as invalid:
+        execution.validate_context_result("fake-addon", {"action": "open_route", "route": route})
+    assert invalid.value.code == "invalid_context_response"
+
+
+def test_context_action_accepts_own_addon_route_and_query():
+    from app.addons import execution
+
+    value = {"action": "open_route", "route": "/x/fake-addon/workspace/edit?asset=opaque"}
+    assert execution.validate_context_result("fake-addon", value) == value
+    legacy = {"status": "accepted", "detail": {"id": "opaque"}}
+    assert execution.validate_context_result("fake-addon", legacy) == legacy
+
+
 def test_llm_agent_discovers_and_dispatches_remote_tool(monkeypatch):
     from app.addons import execution
     from app.workflows import nodes

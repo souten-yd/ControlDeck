@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { addonLabel, useEffectiveAddons } from "../../api/addons";
 import { DropdownMenu } from "../../components/ui";
@@ -12,6 +13,7 @@ export function ContextActionsMenu({
   resourceId: string;
 }) {
   const show = useToasts((state) => state.show);
+  const navigate = useNavigate();
   const [running, setRunning] = useState<string | null>(null);
   const { data } = useEffectiveAddons(false);
   const actions = (data?.contributions.context_actions ?? []).filter((item) => item.contexts?.includes(contextType));
@@ -21,11 +23,15 @@ export function ContextActionsMenu({
     const key = `${addonId}:${contributionId}`;
     setRunning(key);
     try {
-      await api(`/addons/${encodeURIComponent(addonId)}/context-actions/${encodeURIComponent(contributionId)}/invoke`, {
-        method: "POST",
-        json: { context_type: contextType, resource_id: resourceId, input: {} },
-      });
+      const result = await api<{ action?: "open_route"; route?: string }>(
+        `/addons/${encodeURIComponent(addonId)}/context-actions/${encodeURIComponent(contributionId)}/invoke`,
+        {
+          method: "POST",
+          json: { context_type: contextType, resource_id: resourceId, input: {} },
+        },
+      );
       show(`${label}を実行しました`);
+      if (result.action === "open_route" && result.route) navigate(result.route);
     } catch (error) {
       show(error instanceof Error ? error.message : "拡張機能actionを実行できません", "error");
     } finally {
