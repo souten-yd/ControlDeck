@@ -42,6 +42,7 @@ class PackageManifest(BaseModel):
     architecture: str = Field(pattern=r"^x86_64$")
     entrypoint: str = Field(min_length=1, max_length=256)
     addon_manifest: str = Field(min_length=1, max_length=256)
+    provision_args: list[str] = Field(default_factory=list, max_length=8)
     smoke_args: list[str] = Field(default_factory=lambda: ["doctor"], max_length=8)
     service_args: list[str] = Field(default_factory=lambda: ["serve"], max_length=8)
     health_url: HttpUrl
@@ -61,7 +62,7 @@ class PackageManifest(BaseModel):
             raise ValueError("bundle paths must be normalized relative paths")
         return value
 
-    @field_validator("smoke_args", "service_args")
+    @field_validator("provision_args", "smoke_args", "service_args")
     @classmethod
     def bounded_args(cls, value: list[str]) -> list[str]:
         if any(not item or len(item) > 128 or "\x00" in item or "\n" in item for item in value):
@@ -351,6 +352,14 @@ def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
             extracted = _safe_extract(partial, Path(temporary), max_expanded_bytes=int(spec["max_expanded_bytes"]))
             package, entrypoint, addon_path = _load_package(extracted, feature_id, version, spec)
             smoke_environment = {**os.environ, **_runtime_environment(feature_id, extracted)}
+            if package.provision_args:
+                provision = subprocess.run(
+                    [str(entrypoint), *package.provision_args], cwd=extracted, capture_output=True, text=True,
+                    timeout=min(7200, max(1, int(spec.get("provision_timeout_sec", 3600)))),
+                    check=False, env=smoke_environment,
+                )
+                if provision.returncode != 0:
+                    raise ReleaseBundleError("release bundle provisioning failed")
             smoke = subprocess.run(
                 [str(entrypoint), *package.smoke_args], cwd=extracted, capture_output=True, text=True,
                 timeout=int(spec.get("smoke_timeout_sec", 60)), check=False, env=smoke_environment,

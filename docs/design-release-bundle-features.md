@@ -32,11 +32,15 @@ Its `control-deck-feature.json` is schema v1 and binds:
 - feature ID, version, platform, architecture;
 - one relative executable entrypoint;
 - one relative Add-on v2 manifest;
+- optional bounded provisioning arguments for that same verified entrypoint;
 - a loopback health URL and bounded smoke arguments.
 
-The package manifest cannot provide environment variables, arbitrary service
-names, working directories, shell fragments, or host paths. The provider builds
-the systemd unit itself and supplies the managed version directory and fixed
+The package manifest cannot provide environment variables, arbitrary executable
+paths beyond its single entrypoint, service names, working directories, shell
+fragments, or host paths. Provisioning is an array-argument invocation of the
+verified entrypoint, with a catalog-bounded timeout and the same provider-owned
+persistent data/cache environment as the service. The provider builds the
+systemd unit itself and supplies the managed version directory and fixed
 ControlDeck integration environment.
 
 ## Transaction
@@ -46,7 +50,8 @@ Install/update uses this order:
 1. fetch bounded release metadata and choose the catalog-bound platform asset;
 2. download to `features/<id>/downloads/*.partial` and verify SHA-256;
 3. safely extract into a sibling staging directory and validate both manifests;
-4. run the entrypoint's bounded `smoke` operation;
+4. run the entrypoint's optional bounded provisioning operation, then its smoke
+   operation;
 5. atomically rename staging to `versions/<version>` (or retain an already
    selected version's immutable files while repairing service/registry state);
 6. atomically replace `current` with a relative symlink to that version;
@@ -59,6 +64,10 @@ unit/Add-on manifest, and restarts it. A new version remains side-by-side only
 when it passed package validation and smoke; it is not selected after rollback.
 Successful updates retain the previous version for rollback and prune only
 older provider-managed versions beyond the catalog retention count.
+
+Provisioning may populate provider-owned feature data and shared caches before
+the atomic switch. Those locations are intentionally persistent and are not a
+version selection signal; a failed provision never changes `current`.
 
 ## Removal and ownership
 

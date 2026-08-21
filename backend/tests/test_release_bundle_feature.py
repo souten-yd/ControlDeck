@@ -12,7 +12,7 @@ import pytest
 from tests.test_addon_contract import addon_manifest
 
 
-def bundle_bytes(version: str, *, unsafe: bool = False) -> bytes:
+def bundle_bytes(version: str, *, unsafe: bool = False, provision: bool = False) -> bytes:
     addon = addon_manifest()
     addon["version"] = version
     package = {
@@ -23,6 +23,7 @@ def bundle_bytes(version: str, *, unsafe: bool = False) -> bytes:
         "architecture": "x86_64",
         "entrypoint": "run.sh",
         "addon_manifest": "control-deck-addon.json",
+        "provision_args": ["provision"] if provision else [],
         "smoke_args": ["doctor"],
         "service_args": ["serve"],
         "health_url": "http://127.0.0.1:9130/health",
@@ -143,6 +144,40 @@ def test_same_version_reinstall_repairs_service_and_addon(monkeypatch, tmp_path)
     assert marker.read_text(encoding="utf-8") == "immutable"
     assert installed == ["1.2.3", "1.2.3"]
     assert result == {"version": "1.2.3", "previous_version": "1.2.3"}
+
+
+def test_provision_runs_before_smoke_with_the_managed_environment(monkeypatch, tmp_path):
+    from app.features import release_bundle
+
+    calls: list[tuple[list[str], dict[str, str]]] = []
+    prepare(monkeypatch, tmp_path, "1.2.3", bundle_bytes("1.2.3", provision=True))
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs["env"]))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(release_bundle.subprocess, "run", run)
+    release_bundle.install("fake-addon", {**spec(), "provision_timeout_sec": 60})
+    assert [call[0][-1] for call in calls] == ["provision", "doctor"]
+    assert all(call[1]["CONTROL_DECK_FEATURE_DATA_DIR"].endswith("/feature-data/fake-addon") for call in calls)
+
+
+def test_failed_provision_does_not_change_current(monkeypatch, tmp_path):
+    from app.features import release_bundle
+
+    prepare(monkeypatch, tmp_path, "1.0.0", bundle_bytes("1.0.0"))
+    release_bundle.install("fake-addon", spec())
+    prepare(monkeypatch, tmp_path, "2.0.0", bundle_bytes("2.0.0", provision=True))
+
+    def fail_provision(argv, **_kwargs):
+        return SimpleNamespace(returncode=1 if argv[-1] == "provision" else 0, stdout="", stderr="")
+
+    monkeypatch.setattr(release_bundle.subprocess, "run", fail_provision)
+    with pytest.raises(release_bundle.ReleaseBundleError, match="provisioning failed"):
+        release_bundle.install("fake-addon", spec())
+    root = tmp_path / "data" / "features" / "fake-addon"
+    assert (root / "current").resolve() == (root / "versions" / "1.0.0").resolve()
+    assert list((root / "downloads").glob("*.partial")) == []
 
 
 def test_release_bundle_status_uses_live_service_health(monkeypatch, tmp_path):
