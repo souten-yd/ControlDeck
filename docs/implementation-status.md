@@ -31,6 +31,12 @@ Provenanceも19.5秒で成功し、Host Job `a8c8f00183db`、別の512x512 asset
 最終PR headの自動回帰はrelease-bundle／Add-on contract集中22件成功（0.91秒）、backend全738件成功／1件skip
 （61.79秒）、frontend production build 1,542 modules成功。これらは上記実process／browser証拠の代替にしない。
 
+PR #217 merge後、そのexact provider内容を隔離hostで再起動して、環境allowlist強化後の実lifecycleも確認した。
+install job `de4cf085cfd3`はpersistent warm runtime/cacheから11.521913秒でv0.1.1／healthyとなり、実serviceは
+R9700/gfx1201、ROCm 7.2.1、model installed/healthyを返した。続く実uninstallはservice/Add-on/current/versionsを
+除去し、feature dataを4,687,592,191 bytes／8 filesのまま保持した。これにより、強化前の実E2Eをtestsだけで
+最終実装へ外挿していない。完全cache-emptyの15.99GB downloadは引き続きNOT TESTEDである。
+
 ## Trusted release-bundle Optional Feature provider（2026-08-21）
 
 - Settings の標準導入経路へ、source-controlled trusted catalog だけを入力とする汎用
