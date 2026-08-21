@@ -2,6 +2,27 @@
 
 最終更新: 2026-08-21
 
+## Add-on Context Action own-route遷移（2026-08-21）
+
+- Context Action結果の汎用`action=open_route`を追加し、成功後にHost routerで画面を開けるようにした。
+  backendはrouteを呼出し元Add-on自身の`/x/{addon_id}`名前空間へ閉じ込め、scheme／authority／fragment／
+  制御文字、Host route、他Add-on route、未知actionを`invalid_context_response`で拒否する。actionを含まない
+  既存結果objectはそのまま返すため後方互換である。Media固有route／action／依存は追加していない。
+- 成功toastだけ、frontendでの無条件navigate、Media固有`open_workspace`はそれぞれ操作未完了、権限境界、
+  Host core汚染の理由で採用しなかった。契約と判断は`docs/design-addon-platform-v2.md` §9.3へ記録した。
+
+実機検証: 隔離config／SQLiteのControlDeckと別processのMedia Forgeをloopback起動し、実Chromiumで
+FilesのPNGからContext Actionを実行した。Hostは実Runtime read grantで画像を渡し、応答後URLが
+`/x/media-forge/workspace/create`へ遷移してopaque iframe bridgeがreadyになった。15.162338秒の一巡で
+handshake中iframe非表示、CreateからHost Job成功、Workflow dry-run時Media Forge Job増分0、実Workflow
+`SUCCEEDED`、Brokerの2 Job直列化`device_busy_exclusive`／queue 1、disable時のcontribution撤去、保存済み
+Workflow保持、再enable後asset保持、320px companionを観測し、console error／page errorは0だった。
+終了後は一時WorkflowとAdd-onをdriverが削除し、Brokerはactive 0／waiting 0、4 leaseすべてreleasedだった。
+
+自動検証: addon execution／Runtime files集中22件成功、backend全717件成功／1件skip（58.11秒）、
+frontend production build 1,542 modules成功（19.35秒）。
+これは回帰証拠であり、上記実process／browser観測の代替には扱わない。外部hosted CIは未実施。
+
 ## Add-on Runtime 委譲actor／要求単位grant scope（2026-08-21）
 
 - service tokenの相関subjectと利用者権限を分離し、Hostだけが署名する`actor_user_id`を追加した。
