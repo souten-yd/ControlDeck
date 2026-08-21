@@ -72,6 +72,8 @@ class Job:
     progress_flush_task: asyncio.Task | None = field(default=None, repr=False)
     last_progress_notify_at: float = field(default=0.0, repr=False)
     last_progress_db_at: float = field(default=0.0, repr=False)
+    external_addon_id: str | None = field(default=None, repr=False)
+    last_external_update_at: float = field(default=0.0, repr=False)
     changed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def log(self, message: str, **extra: Any) -> None:
@@ -157,6 +159,7 @@ _pending: list[tuple[int, int, str, Callable[[Job], Awaitable[Any]]]] = []
 _sequence = itertools.count()
 _running_count = 0
 MAX_CONCURRENT = 4
+MAX_EXTERNAL_ACTIVE_PER_OWNER = 8
 _stream_revision = 0
 _global_changed = asyncio.Event()
 
@@ -266,6 +269,93 @@ def create(
             _admit_resource(job, runner, resource_request, resource_broker)
         )
     return job
+
+
+def create_external(addon_id: str, title: str, *, owner_user_id: int) -> Job:
+    """Create a host-visible job whose execution is owned by an Add-on service."""
+    active = sum(
+        1 for item in _jobs.values()
+        if item.status in {"queued", "running"}
+        and item.owner_user_id == owner_user_id
+        and addon_owns(item, addon_id)
+    )
+    if active >= MAX_EXTERNAL_ACTIVE_PER_OWNER:
+        raise RuntimeError("同一Add-on userのactive Job上限に達しました")
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind=f"addon.runtime.{addon_id}",
+        title=title[:300],
+        status="running",
+        phase="starting",
+        owner_user_id=owner_user_id,
+        external_addon_id=addon_id,
+    )
+    _jobs[job.id] = job
+    _db_write(job)
+    _notify_job(job)
+    return job
+
+
+def addon_owns(job: Job, addon_id: str) -> bool:
+    return (
+        job.external_addon_id == addon_id
+        or job.kind.startswith(f"addon.runtime.{addon_id}")
+        or job.kind.startswith(f"addon.agent_tool.{addon_id}.")
+    )
+
+
+def update_external(
+    job: Job,
+    *,
+    addon_id: str,
+    phase: str,
+    completed: int | None,
+    total: int | None,
+    message: str | None,
+    wait_reason: str | None,
+    terminal_status: str | None,
+    result: Any,
+    error: str | None,
+) -> Job:
+    if not addon_owns(job, addon_id):
+        raise PermissionError("Add-onが所有するJobではありません")
+    if job.status not in {"queued", "running"}:
+        raise RuntimeError("Jobはすでに終了しています")
+    now = time.monotonic()
+    if terminal_status is None and job.last_external_update_at and now - job.last_external_update_at < 0.5:
+        raise RuntimeError("progress updateは2Hz以下にしてください")
+    previous = job.progress.get("completed")
+    if completed is not None and isinstance(previous, int) and completed < previous:
+        raise ValueError("progressは単調増加である必要があります")
+    if completed is not None and total is not None and completed > total:
+        raise ValueError("progress completedはtotal以下にしてください")
+    job.phase = phase
+    job.wait_reason = wait_reason
+    job.progress = {
+        "status": phase,
+        "completed": completed,
+        "total": total,
+        "phase": phase,
+    }
+    if message:
+        job.log(message)
+    if terminal_status is not None:
+        job.status = terminal_status
+        job.result = result
+        job.error = (error or "")[:2000]
+        job.finished_at = time.time()
+    job.last_external_update_at = now
+    _notify_job(job)
+    _db_write(job, terminal_status is not None)
+    return job
+
+
+def cancel_addon(addon_id: str) -> int:
+    canceled = 0
+    for job in list(_jobs.values()):
+        if job.status in {"queued", "running"} and addon_owns(job, addon_id) and cancel(job.id):
+            canceled += 1
+    return canceled
 
 
 async def _admit_resource(
@@ -401,12 +491,16 @@ async def _run_job(job: Job, runner: Callable[[Job], Awaitable[Any]]) -> None:
     global _running_count
     heartbeat = asyncio.create_task(_heartbeat(job))
     try:
-        job.result = await runner(job)
-        job.status = "succeeded"
+        result = await runner(job)
+        if job.status in ("queued", "running"):
+            job.result = result
+            job.status = "succeeded"
     except asyncio.CancelledError:
         job.status = "canceled"
         job.error = "キャンセルされました"
     except Exception as e:  # ジョブ失敗は記録して終わり（プロセスは守る）
+        if job.status not in ("queued", "running"):
+            return
         job.status = "failed"
         if _is_oom_error(e) and job.resource_requirement and job.resource_lease_id:
             lease = (job.resource_broker or resource_broker).leases.get(job.resource_lease_id)
@@ -602,6 +696,13 @@ def cancel(job_id: str) -> bool:
         return True
     if job and job.status == "running" and job.task and not job.task.done():
         job.task.cancel()
+        return True
+    if job and job.status == "running" and job.kind.startswith("addon.runtime."):
+        job.status = "canceled"
+        job.error = "Control Deckからキャンセルされました"
+        job.finished_at = time.time()
+        _notify_job(job)
+        _db_write(job, True)
         return True
     return False
 

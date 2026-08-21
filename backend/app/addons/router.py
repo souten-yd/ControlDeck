@@ -15,6 +15,7 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import User
 from app.resources.broker import broker as resource_broker
+from app.jobs import service as jobs_service
 from app.security.deps import get_current_user, require_permission, user_permissions
 
 router = APIRouter(prefix="/addons", tags=["addons"])
@@ -304,9 +305,10 @@ async def disable_addon(
     try:
         pending = registry.begin_disable(addon_id)
         if pending["enabled"]:
+            canceled_jobs = jobs_service.cancel_addon(addon_id)
             await _wait_for_disable_grace()
         result = registry.complete_disable(addon_id)
-        canceled_resources = await resource_broker.cancel_owner(f"addon:{addon_id}")
+        canceled_resources = await resource_broker.cancel_waiting_owner(f"addon:{addon_id}")
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
     audit.record(
@@ -316,7 +318,7 @@ async def disable_addon(
         resource_type="addon",
         resource_id=addon_id,
         request=request,
-        metadata={"canceled_resource_requests": canceled_resources["requests"], "canceled_resource_leases": canceled_resources["leases"]},
+        metadata={"canceled_jobs": canceled_jobs if pending["enabled"] else 0, "canceled_resource_requests": canceled_resources["requests"], "active_resource_leases_released": 0},
     )
     return result
 
@@ -348,7 +350,7 @@ async def uninstall_addon(
 ):
     try:
         result = registry.uninstall(addon_id)
-        canceled_resources = await resource_broker.cancel_owner(f"addon:{addon_id}")
+        canceled_resources = await resource_broker.cancel_waiting_owner(f"addon:{addon_id}")
     except registry.AddonRegistryError as exc:
         raise _registry_error(exc) from exc
     audit.record(
@@ -358,6 +360,6 @@ async def uninstall_addon(
         resource_type="addon",
         resource_id=addon_id,
         request=request,
-        metadata={"canceled_resource_requests": canceled_resources["requests"], "canceled_resource_leases": canceled_resources["leases"]},
+        metadata={"canceled_resource_requests": canceled_resources["requests"], "active_resource_leases_released": 0},
     )
     return result
