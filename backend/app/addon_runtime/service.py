@@ -8,6 +8,19 @@ from app.database import SessionLocal
 from app.jobs import service as jobs
 
 
+class RuntimeAuthorityError(ValueError):
+    pass
+
+
+def principal_user_id(principal: RuntimePrincipal) -> int:
+    if principal.actor_user_id is not None:
+        return principal.actor_user_id
+    try:
+        return int(principal.subject)
+    except ValueError as exc:
+        raise RuntimeAuthorityError("service token subjectのactorを解決できません") from exc
+
+
 def host_job(principal: RuntimePrincipal, job_id: str, *, active_only: bool = True) -> jobs.Job:
     job = jobs.get(job_id)
     if job is None or not jobs.addon_owns(job, principal.addon_id):
@@ -17,9 +30,9 @@ def host_job(principal: RuntimePrincipal, job_id: str, *, active_only: bool = Tr
             raise HTTPException(status_code=403, detail="service tokenのJob scopeが一致しません")
     else:
         try:
-            owner_user_id = int(principal.subject)
-        except ValueError as exc:
-            raise HTTPException(status_code=403, detail="service token subjectがJob操作に使えません") from exc
+            owner_user_id = principal_user_id(principal)
+        except RuntimeAuthorityError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         if job.owner_user_id != owner_user_id or not job.kind.startswith(f"addon.runtime.{principal.addon_id}"):
             raise HTTPException(status_code=403, detail="service tokenのuser scopeが一致しません")
     if active_only and job.status not in {"queued", "running"}:

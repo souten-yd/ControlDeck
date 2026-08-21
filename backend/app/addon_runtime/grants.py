@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.addon_runtime.auth import RuntimePrincipal
+from app.addon_runtime.service import RuntimeAuthorityError, principal_user_id
 from app.config import data_dir
 from app.files import service as files
 from app.jobs import service as jobs
@@ -108,13 +109,16 @@ def _subject_user_id(principal: RuntimePrincipal) -> int:
             raise GrantError("service tokenのJob ownerを解決できません")
         return job.owner_user_id
     try:
-        return int(principal.subject)
-    except ValueError as exc:
+        return principal_user_id(principal)
+    except RuntimeAuthorityError as exc:
         raise GrantError("service token subjectをgrant ownerに解決できません") from exc
 
 
 def load(grant_id: str, principal: RuntimePrincipal, *, kind: str | None = None) -> dict[str, Any]:
-    value = _read(_root("addon-grants") / f"{_id(grant_id)}.json")
+    normalized_grant_id = f"grant:{_id(grant_id)}"
+    if principal.grant_ids is not None and normalized_grant_id not in principal.grant_ids:
+        raise GrantError("grantが見つかりません")
+    value = _read(_root("addon-grants") / f"{_id(normalized_grant_id)}.json")
     if value.get("addon_id") != principal.addon_id or value.get("owner_user_id") != _subject_user_id(principal):
         raise GrantError("grantが見つかりません")
     if float(value.get("expires_at", 0)) <= time.time():

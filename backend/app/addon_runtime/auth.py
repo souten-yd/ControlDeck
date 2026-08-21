@@ -12,6 +12,8 @@ from app.addons import registry, tokens
 class RuntimePrincipal:
     addon_id: str
     subject: str
+    actor_user_id: int | None
+    grant_ids: frozenset[str] | None
     expires_at: int
     granted_capabilities: frozenset[str]
     active: bool
@@ -61,6 +63,24 @@ def authorize_runtime(
     subject = payload.get("sub")
     if not isinstance(subject, str) or not subject:
         raise HTTPException(status_code=401, detail="Add-on service token subjectが不正です")
+    actor_user_id = payload.get("actor_user_id")
+    if actor_user_id is not None and (
+        not isinstance(actor_user_id, int) or isinstance(actor_user_id, bool) or actor_user_id <= 0
+    ):
+        raise HTTPException(status_code=401, detail="Add-on service token actorが不正です")
+    raw_grants = payload.get("grant_ids")
+    if (
+        raw_grants is not None
+        and (
+            not isinstance(raw_grants, list)
+            or len(raw_grants) > 8
+            or any(
+                not isinstance(value, str) or not value.startswith("grant:") or len(value) > 128
+                for value in raw_grants
+            )
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Add-on service token grant scopeが不正です")
     try:
         current = registry.status(header_addon_id)
     except registry.AddonRegistryError as exc:
@@ -75,6 +95,8 @@ def authorize_runtime(
     return RuntimePrincipal(
         addon_id=header_addon_id,
         subject=subject,
+        actor_user_id=actor_user_id,
+        grant_ids=frozenset(raw_grants) if raw_grants is not None else None,
         expires_at=payload["exp"],
         granted_capabilities=granted,
         active=active,

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.schema import RuntimeJobCreate, RuntimeJobUpdate
-from app.addon_runtime.service import audit_runtime, host_job
+from app.addon_runtime.service import RuntimeAuthorityError, audit_runtime, host_job, principal_user_id
 from app.database import SessionLocal
 from app.jobs import service as jobs
 from app.models import User
@@ -31,9 +31,9 @@ async def create_or_attach_job(
         created = False
     else:
         try:
-            owner_user_id = int(principal.subject)
-        except ValueError as exc:
-            raise HTTPException(status_code=403, detail="service token subjectがJob作成に使えません") from exc
+            owner_user_id = principal_user_id(principal)
+        except RuntimeAuthorityError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         with SessionLocal() as db:
             user = db.get(User, owner_user_id)
             if user is None or not user.is_active:

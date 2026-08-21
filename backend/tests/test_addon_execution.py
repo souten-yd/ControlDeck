@@ -149,7 +149,7 @@ def test_execution_discovery_filters_permission_availability_and_invalid_schema(
 
 def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api, monkeypatch):
     client, registry = addon_api
-    from app.addons import execution
+    from app.addons import execution, tokens
     from app.workflows import engine
     from app.workflows.dry_run import simulate_node
 
@@ -157,6 +157,7 @@ def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api
     assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
     assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
     calls: list[dict] = []
+    service_claims: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/schemas/workflow-input":
@@ -171,6 +172,11 @@ def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api
                 "properties": {"ok": {"type": "boolean"}},
             })
         calls.append(json.loads(request.content))
+        service_claims.append(tokens.verify(
+            request.headers["Authorization"].removeprefix("Bearer "),
+            addon_id="fake-addon",
+            kind="service",
+        ))
         return httpx.Response(200, json={"ok": True})
 
     monkeypatch.setattr(execution, "_client", _transport(handler))
@@ -195,6 +201,7 @@ def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api
 
     executor = execution.workflow_executor(node_type)
     assert executor is not None
+    monkeypatch.setattr(execution, "execution_owner", lambda execution_id: 7 if execution_id == 17 else None)
     output = asyncio.run(executor(
         {"prompt": "{{start.message}}", "__execution_id": 17, "__node_id": "remote"},
         {"start": {"output": {"message": "rendered"}}},
@@ -204,6 +211,8 @@ def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api
         "input": {"prompt": "rendered"},
         "correlation": {"execution_id": "17", "node_id": "remote"},
     }]
+    assert service_claims[0]["actor_user_id"] == 7
+    assert service_claims[0]["sub"] == "workflow:17"
 
     registry.set_enabled("fake-addon", False)
     # Definition history remains structurally valid, while execution fails closed.
@@ -264,15 +273,22 @@ def test_agent_tool_runs_as_owned_job_and_returns_asset_reference(addon_api, mon
 
 def test_context_action_uses_opaque_scoped_grant_and_rejects_paths(addon_api, monkeypatch):
     client, _registry = addon_api
-    from app.addons import execution
+    from app.addons import execution, tokens
 
     execution.reset_for_tests()
     assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
     assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
     requests: list[dict] = []
+    service_claims: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
+        authorization = request.headers["Authorization"]
+        service_claims.append(tokens.verify(
+            authorization.removeprefix("Bearer "),
+            addon_id="fake-addon",
+            kind="service",
+        ))
         return httpx.Response(200, json={"summary": "safe"})
 
     monkeypatch.setattr(execution, "_client", _transport(handler))
@@ -294,20 +310,28 @@ def test_context_action_uses_opaque_scoped_grant_and_rejects_paths(addon_api, mo
     assert payload["input"] == {"question": "summary"}
     assert payload["context"]["type"] == "file"
     assert payload["context"]["resource_id"] == "asset:report-7"
-    assert payload["context"]["grant_id"]
+    assert payload["context"]["grant_id"] is None
     assert "/etc/passwd" not in json.dumps(payload)
 
-    from app.files import service as files_service
+    created_grants: list[tuple[str, int, str, str]] = []
 
-    monkeypatch.setattr(files_service, "resolve", lambda value: Path(value))
+    def create_grant(addon_id: str, owner_user_id: int, path: str, kind: str):
+        created_grants.append((addon_id, owner_user_id, path, kind))
+        return {"grant_id": "grant:context-file"}
+
+    monkeypatch.setattr(execution.runtime_grants, "create", create_grant)
     raw_path = client.post(
         "/api/v1/addons/fake-addon/context-actions/fake.inspect/invoke",
         json={"context_type": "file", "resource_id": "/allowed/report.txt", "input": {}},
         headers=CSRF_HEADERS,
     )
     assert raw_path.status_code == 200
-    assert requests[-1]["context"]["resource_id"].startswith("grant:")
+    assert requests[-1]["context"]["resource_id"] == "grant:context-file"
+    assert requests[-1]["context"]["grant_id"] == "grant:context-file"
+    assert created_grants and created_grants[0][0] == "fake-addon"
     assert "/allowed/report.txt" not in json.dumps(requests[-1])
+    assert service_claims[-1]["actor_user_id"] == created_grants[0][1]
+    assert service_claims[-1]["grant_ids"] == ["grant:context-file"]
 
 
 def test_llm_agent_discovers_and_dispatches_remote_tool(monkeypatch):

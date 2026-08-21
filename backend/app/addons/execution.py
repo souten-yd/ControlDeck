@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
+from app.addon_runtime import grants as runtime_grants
 from app.addons import health, registry, tokens
 from app.security.permissions import ALL_PERMISSIONS
 
@@ -93,10 +94,23 @@ def _url(addon_id: str, path: str) -> str:
     return health.approved_health_url(current["runtime"]["base_url"], path)
 
 
-def _headers(addon_id: str, subject: str) -> dict[str, str]:
+def _headers(
+    addon_id: str,
+    subject: str,
+    *,
+    actor_user_id: int | None = None,
+    grant_ids: tuple[str, ...] | None = None,
+) -> dict[str, str]:
+    token = tokens.issue(
+        addon_id,
+        subject=subject,
+        kind="service",
+        actor_user_id=actor_user_id,
+        grant_ids=grant_ids,
+    )
     return {
         "Accept": "application/json",
-        "Authorization": f"Bearer {tokens.issue(addon_id, subject=subject, kind='service')}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Control-Deck-Addon-ID": addon_id,
     }
@@ -159,6 +173,8 @@ async def invoke(
     payload: dict[str, Any],
     *,
     subject: str,
+    actor_user_id: int | None = None,
+    grant_ids: tuple[str, ...] | None = None,
     permissions: set[str] | None = None,
     timeout: float = EXECUTION_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
@@ -176,7 +192,12 @@ async def invoke(
         async with _client(max(1.0, min(timeout, EXECUTION_TIMEOUT_SECONDS))) as client:
             response = await client.post(
                 _url(addon_id, contribution["endpoint"]),
-                headers=_headers(addon_id, subject),
+                headers=_headers(
+                    addon_id,
+                    subject,
+                    actor_user_id=actor_user_id,
+                    grant_ids=grant_ids,
+                ),
                 content=encoded,
             )
         status_code = response.status_code
@@ -330,7 +351,7 @@ async def create_agent_tool_job(
         output = await invoke(
             "agent_tools", addon_id, contribution_id,
             {"input": arguments, "correlation": {"job_id": job.id}},
-            subject=f"job:{job.id}", permissions=permissions,
+            subject=f"job:{job.id}", actor_user_id=owner_user_id, permissions=permissions,
         )
         return {
             "job_id": job.id,
@@ -407,16 +428,19 @@ async def invoke_agent_tool_name(name: str, arguments: dict[str, Any], context: 
     return await wait_agent_tool_job(job)
 
 
-def validate_context_reference(context_type: str, resource_id: str, *, owner_user_id: int) -> str:
+def validate_context_reference(
+    context_type: str,
+    resource_id: str,
+    *,
+    addon_id: str,
+    owner_user_id: int,
+) -> tuple[str, str | None]:
     if context_type == "file" and resource_id.startswith("/"):
-        from app.files.service import FileAccessError, resolve
-
         try:
-            resolved = resolve(resource_id)
-        except FileAccessError as exc:
+            grant = runtime_grants.create(addon_id, owner_user_id, resource_id, "read")
+        except (runtime_grants.GrantError, PermissionError, FileNotFoundError, OSError) as exc:
             raise AddonExecutionError(str(exc), code="context_not_found", status_code=404) from exc
-        digest = hashlib.sha256(f"{owner_user_id}:{resolved}".encode()).hexdigest()[:32]
-        return f"grant:{digest}"
+        return grant["grant_id"], grant["grant_id"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", resource_id):
         raise AddonExecutionError("context resource_idはopaque IDで指定してください", code="invalid_context", status_code=422)
     if context_type == "project":
@@ -426,7 +450,7 @@ def validate_context_reference(context_type: str, resource_id: str, *, owner_use
             resolve_project(resource_id)
         except ProjectLabError as exc:
             raise AddonExecutionError(str(exc), code="context_not_found", status_code=404) from exc
-        return resource_id
+        return resource_id, None
     from app.database import SessionLocal
     from app.models import Job, Workflow
 
@@ -434,7 +458,7 @@ def validate_context_reference(context_type: str, resource_id: str, *, owner_use
         # File context accepts only an already opaque host asset/grant identifier, never a path.
         if not resource_id.startswith(("asset:", "grant:")):
             raise AddonExecutionError("file contextにはhostのasset/grant IDが必要です", code="invalid_context", status_code=422)
-        return resource_id
+        return resource_id, resource_id if resource_id.startswith("grant:") else None
     with SessionLocal() as db:
         if context_type == "workflow":
             try:
@@ -449,7 +473,7 @@ def validate_context_reference(context_type: str, resource_id: str, *, owner_use
                 raise AddonExecutionError("jobが見つかりません", code="context_not_found", status_code=404)
         else:
             raise AddonExecutionError("context typeが不正です", code="invalid_context", status_code=422)
-    return resource_id
+    return resource_id, None
 
 
 async def invoke_context_action(
@@ -465,9 +489,11 @@ async def invoke_context_action(
     contribution = find_for_user("context_actions", addon_id, contribution_id, permissions)
     if context_type not in contribution["contexts"]:
         raise AddonExecutionError("このactionは指定contextを受け付けません", code="invalid_context", status_code=422)
-    scoped_resource_id = validate_context_reference(context_type, resource_id, owner_user_id=owner_user_id)
-    grant_id = tokens.issue(
-        addon_id, subject=f"{owner_user_id}:{context_type}:{scoped_resource_id}", kind="context",
+    scoped_resource_id, grant_id = validate_context_reference(
+        context_type,
+        resource_id,
+        addon_id=addon_id,
+        owner_user_id=owner_user_id,
     )
     return await invoke(
         "context_actions", addon_id, contribution_id,
@@ -475,7 +501,10 @@ async def invoke_context_action(
             "input": input_value,
             "context": {"type": context_type, "resource_id": scoped_resource_id, "grant_id": grant_id},
         },
-        subject=f"context:{owner_user_id}", permissions=permissions,
+        subject=f"context:{owner_user_id}",
+        actor_user_id=owner_user_id,
+        grant_ids=(grant_id,) if grant_id is not None else (),
+        permissions=permissions,
     )
 
 
@@ -595,6 +624,13 @@ async def execute_workflow_node(node_type: str, config: dict[str, Any], context:
     }
     validate(input_schema, payload, label="workflow input")
     execution_id = config.get("__execution_id")
+    actor_user_id = execution_owner(execution_id)
+    if actor_user_id is None:
+        raise AddonExecutionError(
+            "workflow execution ownerを解決できません",
+            code="workflow_owner_unavailable",
+            status_code=403,
+        )
     output = await invoke(
         "workflow_executors", addon_id, contribution_id,
         {
@@ -605,6 +641,7 @@ async def execute_workflow_node(node_type: str, config: dict[str, Any], context:
             },
         },
         subject=f"workflow:{execution_id if execution_id is not None else 'preview'}",
+        actor_user_id=actor_user_id,
     )
     validate(output_schema, output, label="workflow output")
     return output

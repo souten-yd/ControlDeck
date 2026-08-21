@@ -111,3 +111,37 @@ def test_runtime_dependency_binds_path_header_and_granted_capability(runtime_add
             _request(), authorization=f"Bearer {token}", header_addon_id="fake-addon", capability="files.read",
         )
     assert missing_grant.value.status_code == 403
+
+
+def test_runtime_principal_separates_correlation_subject_from_delegated_authority(runtime_addon):
+    _client, _registry, tokens = runtime_addon
+    from app.addon_runtime.auth import authorize_runtime
+
+    token = tokens.issue(
+        "fake-addon",
+        subject="workflow:42",
+        kind="service",
+        actor_user_id=7,
+        grant_ids=["grant:abc"],
+    )
+    principal = authorize_runtime(
+        _request(),
+        authorization=f"Bearer {token}",
+        header_addon_id="fake-addon",
+        capability="resources.acquire",
+    )
+    assert principal.subject == "workflow:42"
+    assert principal.actor_user_id == 7
+    assert principal.grant_ids == frozenset({"grant:abc"})
+
+
+@pytest.mark.parametrize("actor_user_id", [0, -1, True, "7"])
+def test_token_issuer_rejects_invalid_delegated_actor(runtime_addon, actor_user_id):
+    _client, _registry, tokens = runtime_addon
+    with pytest.raises(tokens.AddonTokenError):
+        tokens.issue(
+            "fake-addon",
+            subject="workflow:42",
+            kind="service",
+            actor_user_id=actor_user_id,
+        )
