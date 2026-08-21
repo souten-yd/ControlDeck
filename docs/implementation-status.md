@@ -27,6 +27,8 @@ leaseを取得し、6回renew、release、512x512 PNG（128,589 bytes、SHA-256
 Apache-2.0、Media Forge 0.1.1だった。実ChromiumのSettings disable→enable→Media iframe→Create→Library→
 Provenanceも19.5秒で成功し、Host Job `a8c8f00183db`、別の512x512 asset 159,515 bytes、lease release、page error 0を
 観測した。完全に空のHugging Face cacheからの約15.99GB model downloadだけはNOT TESTEDで、cache reuseと混同しない。
+最終PR headの自動回帰はrelease-bundle／Add-on contract集中19件成功（0.95秒）、backend全735件成功／1件skip
+（57.68秒）、frontend production build 1,542 modules成功。これらは上記実process／browser証拠の代替にしない。
 
 ## Trusted release-bundle Optional Feature provider（2026-08-21）
 
