@@ -26,6 +26,20 @@ from app.config import data_dir, get_config
 PACKAGE_MANIFEST = "control-deck-feature.json"
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+LIFECYCLE_ENV_ALLOWLIST = (
+    "HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "LANG",
+    "LC_ALL",
+    "NO_PROXY",
+    "PATH",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
 
 
 class ReleaseBundleError(RuntimeError):
@@ -80,6 +94,40 @@ class PackageManifest(BaseModel):
 def host_platform() -> tuple[str, str]:
     machine = platform.machine().lower()
     return ("linux", "x86_64" if machine in {"x86_64", "amd64"} else machine)
+
+
+def _lifecycle_environment(feature_id: str, bundle_root: Path) -> dict[str, str]:
+    """Build a minimal child environment without leaking host service secrets."""
+    environment = {name: os.environ[name] for name in LIFECYCLE_ENV_ALLOWLIST if name in os.environ}
+    environment.update(_runtime_environment(feature_id, bundle_root))
+    return environment
+
+
+def _run_lifecycle(
+    label: str,
+    entrypoint: Path,
+    args: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: int,
+) -> None:
+    try:
+        result = subprocess.run(
+            [str(entrypoint), *args],
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ReleaseBundleError(f"release bundle {label} timed out") from exc
+    except OSError as exc:
+        raise ReleaseBundleError(f"release bundle {label} could not start") from exc
+    if result.returncode != 0:
+        raise ReleaseBundleError(f"release bundle {label} failed")
 
 
 def _feature_root(feature_id: str) -> Path:
@@ -351,21 +399,18 @@ def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix=f".{version}-", dir=versions) as temporary:
             extracted = _safe_extract(partial, Path(temporary), max_expanded_bytes=int(spec["max_expanded_bytes"]))
             package, entrypoint, addon_path = _load_package(extracted, feature_id, version, spec)
-            smoke_environment = {**os.environ, **_runtime_environment(feature_id, extracted)}
+            smoke_environment = _lifecycle_environment(feature_id, extracted)
             if package.provision_args:
-                provision = subprocess.run(
-                    [str(entrypoint), *package.provision_args], cwd=extracted, capture_output=True, text=True,
+                _run_lifecycle(
+                    "provisioning", entrypoint, package.provision_args, cwd=extracted,
+                    environment=smoke_environment,
                     timeout=min(7200, max(1, int(spec.get("provision_timeout_sec", 3600)))),
-                    check=False, env=smoke_environment,
                 )
-                if provision.returncode != 0:
-                    raise ReleaseBundleError("release bundle provisioning failed")
-            smoke = subprocess.run(
-                [str(entrypoint), *package.smoke_args], cwd=extracted, capture_output=True, text=True,
-                timeout=int(spec.get("smoke_timeout_sec", 60)), check=False, env=smoke_environment,
+            _run_lifecycle(
+                "smoke test", entrypoint, package.smoke_args, cwd=extracted,
+                environment=smoke_environment,
+                timeout=int(spec.get("smoke_timeout_sec", 60)),
             )
-            if smoke.returncode != 0:
-                raise ReleaseBundleError("release bundle smoke test failed")
             destination = versions / version
             same_version = old_target is not None and destination.resolve() == old_target.resolve()
             if not same_version:

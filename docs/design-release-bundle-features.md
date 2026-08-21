@@ -41,7 +41,11 @@ fragments, or host paths. Provisioning is an array-argument invocation of the
 verified entrypoint, with a catalog-bounded timeout and the same provider-owned
 persistent data/cache environment as the service. The provider builds the
 systemd unit itself and supplies the managed version directory and fixed
-ControlDeck integration environment.
+ControlDeck integration environment. Provisioning and smoke inherit only a
+small OS environment allowlist; ControlDeck service tokens and unrelated host
+secrets are not forwarded. Their output is not captured into host memory or
+returned through the API, and start/timeout failures are normalized as provider
+errors.
 
 ## Transaction
 

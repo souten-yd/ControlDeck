@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,6 +161,40 @@ def test_provision_runs_before_smoke_with_the_managed_environment(monkeypatch, t
     release_bundle.install("fake-addon", {**spec(), "provision_timeout_sec": 60})
     assert [call[0][-1] for call in calls] == ["provision", "doctor"]
     assert all(call[1]["CONTROL_DECK_FEATURE_DATA_DIR"].endswith("/feature-data/fake-addon") for call in calls)
+
+
+def test_lifecycle_environment_does_not_inherit_host_secrets(monkeypatch, tmp_path):
+    from app.features import release_bundle
+
+    monkeypatch.setenv("CONTROL_DECK_SERVICE_TOKEN", "must-not-leak")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-leak")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    environment = release_bundle._lifecycle_environment("fake-addon", tmp_path)
+    assert environment["PATH"] == "/usr/bin"
+    assert "CONTROL_DECK_SERVICE_TOKEN" not in environment
+    assert "UNRELATED_SECRET" not in environment
+    assert environment["CONTROL_DECK_FEATURE_DATA_DIR"].endswith("/feature-data/fake-addon")
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (subprocess.TimeoutExpired(["run.sh", "provision"], 1), "provisioning timed out"),
+        (OSError("exec failed"), "provisioning could not start"),
+    ],
+)
+def test_lifecycle_errors_are_normalized(monkeypatch, tmp_path, error, message):
+    from app.features import release_bundle
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(release_bundle.subprocess, "run", fail)
+    with pytest.raises(release_bundle.ReleaseBundleError, match=message):
+        release_bundle._run_lifecycle(
+            "provisioning", tmp_path / "run.sh", ["provision"], cwd=tmp_path,
+            environment={"PATH": "/usr/bin"}, timeout=1,
+        )
 
 
 def test_failed_provision_does_not_change_current(monkeypatch, tmp_path):

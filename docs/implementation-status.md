@@ -7,7 +7,8 @@
 - 検証済みbundleが同じentrypointの固定array argsで永続runtime/modelを準備できる、任意の
   `provision_args` lifecycleをpackage schemaへ追加した。APIからcommand／環境／pathは受け取らず、実行環境、
   cwd、最大7200秒timeoutはproviderが固定する。provision失敗は`current`を変更せず、feature data/shared cacheへの
-  中間成果だけを再試行用に保持する。Media Forge v0.1.1のcatalog pinは
+  中間成果だけを再試行用に保持する。子processへ渡すOS環境はallowlist化し、ControlDeck service token等を継承せず、
+  stdout/stderrをhost memoryへ無制限にcaptureしない。Media Forge v0.1.1のcatalog pinは
   `66dfb88425d61e533e5ca8b45e0e19169e07e66cbc9ba1846364de4177981d4a`へ更新した。
 
 実機検証: 公開v0.1.0がenabled/runningの隔離ControlDeck `127.0.0.1:18773`からSettings update jobを開始した。
@@ -27,8 +28,8 @@ leaseを取得し、6回renew、release、512x512 PNG（128,589 bytes、SHA-256
 Apache-2.0、Media Forge 0.1.1だった。実ChromiumのSettings disable→enable→Media iframe→Create→Library→
 Provenanceも19.5秒で成功し、Host Job `a8c8f00183db`、別の512x512 asset 159,515 bytes、lease release、page error 0を
 観測した。完全に空のHugging Face cacheからの約15.99GB model downloadだけはNOT TESTEDで、cache reuseと混同しない。
-最終PR headの自動回帰はrelease-bundle／Add-on contract集中19件成功（0.95秒）、backend全735件成功／1件skip
-（57.68秒）、frontend production build 1,542 modules成功。これらは上記実process／browser証拠の代替にしない。
+最終PR headの自動回帰はrelease-bundle／Add-on contract集中22件成功（0.91秒）、backend全738件成功／1件skip
+（61.79秒）、frontend production build 1,542 modules成功。これらは上記実process／browser証拠の代替にしない。
 
 ## Trusted release-bundle Optional Feature provider（2026-08-21）
 
