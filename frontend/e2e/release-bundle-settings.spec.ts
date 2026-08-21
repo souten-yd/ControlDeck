@@ -18,7 +18,7 @@ test("manages an installed release bundle and exposes its Add-on without reload"
 
   const section = page.getByRole("heading", { name: "オプション機能" }).locator("xpath=ancestor::section[1]");
   const row = section.locator("div.rounded-xl.border").filter({ hasText: "Media Forge" }).first();
-  await expect(row).toContainText("v0.1.0");
+  await expect(row).toContainText("v0.1.1");
   await expect(row).toContainText("導入済み（無効）");
   await expect(row).not.toContainText("PREVIEW");
   await row.getByRole("button", { name: "有効化" }).click();
