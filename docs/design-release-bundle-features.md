@@ -11,6 +11,12 @@ versions, commands, hashes, and filesystem destinations are never API inputs.
 They are derived from the source-controlled trusted catalog and bounded release
 metadata.
 
+Generally available entries pin the artifact SHA-256 in the reviewed catalog.
+Publishing a new release does not silently authorize its installation: updating
+the catalog digest is the review step that admits that exact artifact. Preview
+entries may temporarily rely on the adjacent checksum asset, and are labeled as
+such in Settings.
+
 ## Trust and format
 
 Each catalog entry fixes the GitHub owner/repository, release metadata endpoint,
@@ -41,7 +47,8 @@ Install/update uses this order:
 2. download to `features/<id>/downloads/*.partial` and verify SHA-256;
 3. safely extract into a sibling staging directory and validate both manifests;
 4. run the entrypoint's bounded `smoke` operation;
-5. atomically rename staging to `versions/<version>`;
+5. atomically rename staging to `versions/<version>` (or retain an already
+   selected version's immutable files while repairing service/registry state);
 6. atomically replace `current` with a relative symlink to that version;
 7. generate and start a ControlDeck-owned user service, then poll loopback health;
 8. install/update the Add-on v2 manifest in the Host registry.
@@ -73,4 +80,3 @@ models, shared caches, or any directory outside
   both artifact and hash. The first production catalog revision must pin a
   release signing identity or immutable digest in the catalog before the feature
   is marked generally available; until then it remains an explicit preview.
-

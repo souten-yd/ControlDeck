@@ -303,6 +303,21 @@ def _wait_health(url: str, timeout: float = 30.0) -> None:
     raise ReleaseBundleError("feature service did not become healthy")
 
 
+def health(feature_id: str, package: PackageManifest) -> tuple[bool, str]:
+    """Check the selected service instead of treating installation as health."""
+    state = systemd.query_status(_unit_name(feature_id))
+    if state["status"] != "RUNNING":
+        return False, f"service is {str(state['status']).lower()}"
+    try:
+        with urllib.request.urlopen(str(package.health_url), timeout=1) as response:
+            body = json.loads(response.read(64 * 1024 + 1))
+        if response.status == 200 and body.get("status") in {"healthy", "setup_required"}:
+            return True, ""
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return False, "service health check failed"
+
+
 def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
     root = _feature_root(feature_id)
     versions = _managed_directory(root, "versions")
@@ -325,25 +340,28 @@ def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
         partial.unlink(missing_ok=True)
         raise
     old_target = (root / "current").resolve() if (root / "current").is_symlink() else None
-    with tempfile.TemporaryDirectory(prefix=f".{version}-", dir=versions) as temporary:
-        extracted = _safe_extract(partial, Path(temporary), max_expanded_bytes=int(spec["max_expanded_bytes"]))
-        package, entrypoint, addon_path = _load_package(extracted, feature_id, version, spec)
-        smoke = subprocess.run(
-            [str(entrypoint), *package.smoke_args], cwd=extracted, capture_output=True, text=True,
-            timeout=int(spec.get("smoke_timeout_sec", 60)), check=False,
-        )
-        if smoke.returncode != 0:
-            raise ReleaseBundleError("release bundle smoke test failed")
-        destination = versions / version
-        if old_target is not None and destination.resolve() == old_target.resolve():
-            final_download = downloads / artifact_name
-            final_download.unlink(missing_ok=True)
-            partial.rename(final_download)
-            return {"version": version, "previous_version": version}
-        if destination.exists():
-            shutil.rmtree(destination)
-        os.replace(extracted, destination)
-    partial.rename(downloads / artifact_name)
+    try:
+        with tempfile.TemporaryDirectory(prefix=f".{version}-", dir=versions) as temporary:
+            extracted = _safe_extract(partial, Path(temporary), max_expanded_bytes=int(spec["max_expanded_bytes"]))
+            package, entrypoint, addon_path = _load_package(extracted, feature_id, version, spec)
+            smoke = subprocess.run(
+                [str(entrypoint), *package.smoke_args], cwd=extracted, capture_output=True, text=True,
+                timeout=int(spec.get("smoke_timeout_sec", 60)), check=False,
+            )
+            if smoke.returncode != 0:
+                raise ReleaseBundleError("release bundle smoke test failed")
+            destination = versions / version
+            same_version = old_target is not None and destination.resolve() == old_target.resolve()
+            if not same_version:
+                if destination.exists():
+                    shutil.rmtree(destination)
+                os.replace(extracted, destination)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    final_download = downloads / artifact_name
+    final_download.unlink(missing_ok=True)
+    partial.rename(final_download)
     package, entrypoint, addon_path = _load_package(destination, feature_id, version, spec)
     try:
         _atomic_current(root, destination)

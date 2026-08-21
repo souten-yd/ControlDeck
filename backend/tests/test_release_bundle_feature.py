@@ -71,6 +71,7 @@ def prepare(monkeypatch, tmp_path: Path, version: str, content: bytes) -> list[s
     monkeypatch.setattr(release_bundle.systemd, "write_unit", lambda name, body: tmp_path / name)
     monkeypatch.setattr(release_bundle.systemd, "restart", lambda name: (True, ""))
     monkeypatch.setattr(release_bundle.systemd, "stop", lambda name: (True, ""))
+    monkeypatch.setattr(release_bundle.systemd, "query_status", lambda name: {"status": "RUNNING"})
     installed: list[str] = []
     monkeypatch.setattr(release_bundle.addon_registry, "install", lambda parsed: installed.append(parsed.manifest.version))
     return installed
@@ -120,6 +121,40 @@ def test_unsafe_archive_never_changes_current(monkeypatch, tmp_path):
     root = tmp_path / "data" / "features" / "fake-addon"
     assert (root / "current").resolve() == (root / "versions" / "1.0.0").resolve()
     assert not (tmp_path / "data" / "features" / "escape").exists()
+    assert list((root / "downloads").glob("*.partial")) == []
+
+
+def test_same_version_reinstall_repairs_service_and_addon(monkeypatch, tmp_path):
+    from app.features import release_bundle
+
+    installed = prepare(monkeypatch, tmp_path, "1.2.3", bundle_bytes("1.2.3"))
+    release_bundle.install("fake-addon", spec())
+    selected = tmp_path / "data" / "features" / "fake-addon" / "versions" / "1.2.3"
+    marker = selected / "keep-me"
+    marker.write_text("immutable", encoding="utf-8")
+    result = release_bundle.install("fake-addon", spec())
+    assert marker.read_text(encoding="utf-8") == "immutable"
+    assert installed == ["1.2.3", "1.2.3"]
+    assert result == {"version": "1.2.3", "previous_version": "1.2.3"}
+
+
+def test_release_bundle_status_uses_live_service_health(monkeypatch, tmp_path):
+    from app.features import registry, release_bundle
+
+    prepare(monkeypatch, tmp_path, "1.2.3", bundle_bytes("1.2.3"))
+    release_bundle.install("fake-addon", spec())
+    monkeypatch.setitem(
+        registry.FEATURES,
+        "fake-addon",
+        {"name": "Fake", "kind": "release-bundle", "route_gated": False, "summary": "Fake", **spec()},
+    )
+    monkeypatch.setattr(registry, "KNOWN_FEATURES", {*registry.KNOWN_FEATURES, "fake-addon"})
+    monkeypatch.setattr(release_bundle, "health", lambda *_args: (False, "service is stopped"))
+    state = registry.status("fake-addon")
+    assert state["installed"] is True
+    assert state["health"] == "error"
+    assert state["enabled"] is False
+    assert state["error"] == "service is stopped"
 
 
 def test_catalog_url_rejects_untrusted_host():

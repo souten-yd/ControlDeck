@@ -152,8 +152,7 @@ def status(feature_id: str) -> dict:
         binary = _managed_executable(feature_id) if selected else None
         installed = selected is not None
         version = selected[0].version if selected else ""
-        healthy = installed
-        error = ""
+        healthy, error = release_bundle.health(feature_id, selected[0]) if selected else (False, "")
     elif binary is not None:
         try:
             result = subprocess.run(
