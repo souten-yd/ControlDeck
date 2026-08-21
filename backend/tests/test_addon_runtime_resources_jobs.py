@@ -165,6 +165,93 @@ def test_resource_api_forces_owner_binds_host_job_and_enforces_priority_ceiling(
     assert wrong_job.status_code in {403, 404}
 
 
+def test_active_lease_refresh_rotates_same_scoped_short_lived_credential(runtime_api):
+    client, _registry, tokens, _broker, user_id = runtime_api
+    subject = "workflow:42"
+    token = tokens.issue(
+        "fake-addon",
+        subject=subject,
+        kind="service",
+        actor_user_id=user_id,
+        grant_ids=["grant:input"],
+    )
+    created = client.post(
+        "/api/v1/addon-runtime/fake-addon/jobs",
+        json={"title": "long add-on job"},
+        headers=headers(token),
+    )
+    assert created.status_code == 201, created.text
+    job = created.json()["job"]
+    resource = client.post(
+        "/api/v1/addon-runtime/fake-addon/resources/requests",
+        json=resource_body(job["id"]),
+        headers=headers(token),
+    ).json()
+
+    refreshed = client.post(
+        f"/api/v1/addon-runtime/fake-addon/resources/leases/{resource['lease_id']}/credential/refresh",
+        headers=headers(token),
+    )
+
+    assert refreshed.status_code == 200, refreshed.text
+    body = refreshed.json()
+    assert body["token_type"] == "Bearer"
+    assert body["access_token"] != token
+    claims = tokens.verify(body["access_token"], addon_id="fake-addon", kind="service")
+    assert claims["sub"] == subject
+    assert claims["actor_user_id"] == user_id
+    assert claims["grant_ids"] == ["grant:input"]
+    assert claims["exp"] == body["expires_at"]
+    audit_entries = [
+        item for item in client.get("/api/v1/audit").json()
+        if item["action"] == "addon.runtime.resource.credential.refresh"
+    ]
+    assert len(audit_entries) == 1
+    assert audit_entries[0]["metadata"] == {"job_id": job["id"]}
+    serialized_audit = str(audit_entries[0])
+    assert token not in serialized_audit
+    assert body["access_token"] not in serialized_audit
+    assert "grant:input" not in serialized_audit
+
+
+def test_lease_refresh_rejects_wrong_scope_disabled_addon_and_terminal_job(runtime_api):
+    client, _registry, tokens, _broker, user_id = runtime_api
+    job, token = create_host_job(client, tokens, user_id)
+    resource = client.post(
+        "/api/v1/addon-runtime/fake-addon/resources/requests",
+        json=resource_body(job["id"]),
+        headers=headers(token),
+    ).json()
+    url = f"/api/v1/addon-runtime/fake-addon/resources/leases/{resource['lease_id']}/credential/refresh"
+    wrong_subject = tokens.issue("fake-addon", subject=str(user_id + 999), kind="service")
+    assert client.post(url, headers=headers(wrong_subject)).status_code == 403
+
+    terminal = client.patch(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{job['id']}",
+        json={"phase": "complete", "status": "succeeded"},
+        headers=headers(token),
+    )
+    assert terminal.status_code == 200, terminal.text
+    assert client.post(url, headers=headers(token)).status_code == 409
+
+
+def test_lease_refresh_fails_closed_after_addon_disable(runtime_api):
+    client, _registry, tokens, _broker, user_id = runtime_api
+    job, token = create_host_job(client, tokens, user_id)
+    resource = client.post(
+        "/api/v1/addon-runtime/fake-addon/resources/requests",
+        json=resource_body(job["id"]),
+        headers=headers(token),
+    ).json()
+    disabled = client.post("/api/v1/addons/fake-addon/disable", headers=CSRF_HEADERS)
+    assert disabled.status_code == 200
+    refreshed = client.post(
+        f"/api/v1/addon-runtime/fake-addon/resources/leases/{resource['lease_id']}/credential/refresh",
+        headers=headers(token),
+    )
+    assert refreshed.status_code == 409
+
+
 def test_job_updates_require_phase_are_monotonic_rate_limited_and_terminal(runtime_api):
     client, _registry, tokens, _broker, user_id = runtime_api
     job, _user_token = create_host_job(client, tokens, user_id)

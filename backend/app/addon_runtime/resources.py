@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.schema import RuntimeResourceRequest
 from app.addon_runtime.service import audit_runtime, host_job
+from app.addons import tokens
 from app.resources.broker import BrokerError, broker
 from app.resources.leases import LeaseError
-from app.resources.schema import ResourceRequest
+from app.resources.schema import LeaseState, ResourceRequest
 
 router = APIRouter(prefix="/{addon_id}/resources")
 ActiveResourceAuth = Annotated[
@@ -47,6 +48,35 @@ async def _owned_lease(principal: RuntimePrincipal, lease_id: str):
         raise HTTPException(status_code=404, detail="Resource leaseが見つかりません")
     host_job(principal, value.job_id, active_only=False)
     return value
+
+
+@router.post("/leases/{lease_id}/credential/refresh")
+async def refresh_lease_credential(
+    lease_id: str,
+    request: Request,
+    principal: ActiveResourceAuth,
+) -> dict[str, str | int]:
+    lease = await _owned_lease(principal, lease_id)
+    if lease.state not in {LeaseState.GRANTED, LeaseState.ACTIVE}:
+        raise HTTPException(status_code=409, detail="終了したleaseのcredentialは更新できません")
+    host_job(principal, lease.job_id)
+    token = tokens.issue(
+        principal.addon_id,
+        subject=principal.subject,
+        kind="service",
+        actor_user_id=principal.actor_user_id,
+        grant_ids=sorted(principal.grant_ids) if principal.grant_ids is not None else None,
+    )
+    payload = tokens.verify(token, addon_id=principal.addon_id, kind="service")
+    audit_runtime(
+        request,
+        principal,
+        "addon.runtime.resource.credential.refresh",
+        "resource_lease",
+        lease_id,
+        {"job_id": lease.job_id},
+    )
+    return {"access_token": token, "token_type": "Bearer", "expires_at": payload["exp"]}
 
 
 @router.post("/requests", status_code=status.HTTP_202_ACCEPTED)

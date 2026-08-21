@@ -1244,6 +1244,21 @@ LLM 生ポートを外部bindしない（managed 時）
 LLM 退避/復帰操作を audit log に記録する
 ```
 
+service token の自動更新は、通常 token を長寿命化しない。`resources.acquire`
+を許可された Add-on が、同じ subject / actor / grant allowlist に束縛された
+active Host Job と current resource lease を持つ間だけ、lease ID を proof として
+新しい10分 tokenへrotationできる。別Add-on、別subject、終了job、終了lease、
+disable pending／disabled状態ではfail closedとする。旧tokenは元の短い期限までだけ
+有効であり、更新response、token本文、grant IDはaudit/logへ保存しない。
+
+検討して却下した案:
+
+- service token 全体を8時間へ延長する案は、通常のiframe／単発executionまで漏洩時の
+  影響時間を広げるため採らない。
+- active jobだけで更新を許す案は、GPUを使わない通常jobまで不要にcredential寿命を
+  延ばせるため採らない。Host brokerがownerとjobを再検証するcurrent leaseも要求する。
+- expiry後の猶予更新は、盗難tokenの復活を許すため採らない。更新は現tokenが有効な間に行う。
+
 ---
 
 ## 11. テスト要件（前版 §32 を拡張）
