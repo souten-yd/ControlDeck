@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +144,7 @@ def _api_key_for(base_url: str) -> str:
     return gateway.get_api_key(create=True) or "sk-no-key"
 
 
-def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
+def _runtime_config(job_id: str, base_url: str, model: str, *, owner_user_id: int | None = None) -> Path:
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
     payload = {
@@ -158,6 +159,26 @@ def _runtime_config(job_id: str, base_url: str, model: str) -> Path:
             }
         },
     }
+    if owner_user_id is not None:
+        from app.addons.agent_mcp import issue_opencode_token
+        from app.config import get_config
+
+        bridge = Path(__file__).with_name("addon_mcp_bridge.py").resolve()
+        token = issue_opencode_token(owner_user_id, safe_job_id)
+        payload["mcp"] = {
+            "controldeck_addons": {
+                "type": "local",
+                "command": [sys.executable, str(bridge)],
+                "enabled": True,
+                "timeout": 10_000,
+                "environment": {
+                    "CONTROL_DECK_ADDON_MCP_URL": (
+                        f"http://127.0.0.1:{get_config().server.port}/api/v1/addons/agent-mcp"
+                    ),
+                    "CONTROL_DECK_ADDON_MCP_TOKEN": token,
+                },
+            }
+        }
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(temp, 0o600)
@@ -258,7 +279,14 @@ def import_project(source_path: str) -> dict:
     return {"name": destination.name, "path": str(destination), "imported": True}
 
 
-def tui_command(*, project_path: str, prompt: str = "", base_url: str = "", model: str = "") -> tuple[str, str]:
+def tui_command(
+    *,
+    project_path: str,
+    prompt: str = "",
+    base_url: str = "",
+    model: str = "",
+    owner_user_id: int | None = None,
+) -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
 
     ターミナル基盤（tmux）の上でopencode TUIをそのまま動かす。設定は永続config
@@ -283,7 +311,7 @@ def tui_command(*, project_path: str, prompt: str = "", base_url: str = "", mode
         raise CodeAgentError(str(exc)) from exc
     if not project.is_dir():
         raise CodeAgentError("project pathはディレクトリを指定してください")
-    config = _runtime_config("tui", endpoint, model_id)
+    config = _runtime_config(f"tui-{owner_user_id or 0}", endpoint, model_id, owner_user_id=owner_user_id)
     argv = [str(binary), "--model", f"controldeck/{model_id}"]
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
@@ -371,7 +399,9 @@ async def run_chat(
         raise CodeAgentError("project pathはディレクトリを指定してください")
     endpoint = str(settings["base_url"]).rstrip("/")
     model_id = str(settings["model"]).strip()
-    runtime_config = _runtime_config(f"chat-{job.id}", endpoint, model_id)
+    runtime_config = _runtime_config(
+        f"chat-{job.id}", endpoint, model_id, owner_user_id=job.owner_user_id,
+    )
     # LLM endpoint（llama.cpp instance）はondemand hookを通らないため先に起動保証する
     from app.models_mgmt import llama
 
@@ -472,7 +502,7 @@ class OpenCodeProvider:
         systemctl = shutil.which("systemctl")
         if binary is None or systemd_run is None or systemctl is None:
             raise CodeAgentError("OpenCodeまたはsystemd user managerを利用できません")
-        runtime_config = _runtime_config(job.id, endpoint, model_id)
+        runtime_config = _runtime_config(job.id, endpoint, model_id, owner_user_id=job.owner_user_id)
         prompt_path = (_integration_dir() / f"prompt-{job.id}.txt").resolve()
         if not prompt_path.is_relative_to(_integration_dir()):
             raise CodeAgentError("prompt pathがintegration directory外です")

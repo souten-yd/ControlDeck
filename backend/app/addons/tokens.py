@@ -14,6 +14,7 @@ from typing import Any
 from app.config import data_dir
 
 TOKEN_TTL_SECONDS = 10 * 60
+MAX_TOKEN_TTL_SECONDS = 8 * 60 * 60
 _KEY_NAME = "addon-token.key"
 
 
@@ -60,6 +61,7 @@ def issue(
     kind: str,
     actor_user_id: int | None = None,
     grant_ids: list[str] | tuple[str, ...] | None = None,
+    ttl_seconds: int = TOKEN_TTL_SECONDS,
     now: int | None = None,
 ) -> str:
     issued = int(time.time()) if now is None else int(now)
@@ -67,6 +69,8 @@ def issue(
         not isinstance(actor_user_id, int) or isinstance(actor_user_id, bool) or actor_user_id <= 0
     ):
         raise AddonTokenError("actor user IDが不正です")
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or not 1 <= ttl_seconds <= MAX_TOKEN_TTL_SECONDS:
+        raise AddonTokenError("token TTLが不正です")
     delegated_grants = list(dict.fromkeys(grant_ids or ()))
     if len(delegated_grants) > 8 or any(
         not isinstance(value, str) or not value.startswith("grant:") or len(value) > 128
@@ -78,7 +82,7 @@ def issue(
         "sub": subject,
         "kind": kind,
         "iat": issued,
-        "exp": issued + TOKEN_TTL_SECONDS,
+        "exp": issued + ttl_seconds,
         "nonce": secrets.token_urlsafe(12),
     }
     if actor_user_id is not None:
@@ -91,7 +95,15 @@ def issue(
     return f"{encoded}.{signature}"
 
 
-def verify(token: str, *, addon_id: str, kind: str, subject: str | None = None, now: int | None = None) -> dict[str, Any]:
+def verify(
+    token: str,
+    *,
+    addon_id: str,
+    kind: str,
+    subject: str | None = None,
+    max_ttl_seconds: int = TOKEN_TTL_SECONDS,
+    now: int | None = None,
+) -> dict[str, Any]:
     try:
         encoded, signature = token.split(".", 1)
         expected = hmac.new(_signing_key(), encoded.encode(), hashlib.sha256).digest()
@@ -109,6 +121,13 @@ def verify(token: str, *, addon_id: str, kind: str, subject: str | None = None, 
         raise AddonTokenError("token subjectが一致しません")
     if not isinstance(payload.get("iat"), int) or not isinstance(payload.get("exp"), int):
         raise AddonTokenError("token timeが不正です")
-    if payload["iat"] > current + 30 or payload["exp"] <= current or payload["exp"] - payload["iat"] > TOKEN_TTL_SECONDS:
+    if (
+        not isinstance(max_ttl_seconds, int)
+        or isinstance(max_ttl_seconds, bool)
+        or not 1 <= max_ttl_seconds <= MAX_TOKEN_TTL_SECONDS
+        or payload["iat"] > current + 30
+        or payload["exp"] <= current
+        or payload["exp"] - payload["iat"] > max_ttl_seconds
+    ):
         raise AddonTokenError("tokenの有効期限が切れています")
     return payload

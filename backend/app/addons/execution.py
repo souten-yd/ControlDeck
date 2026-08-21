@@ -299,6 +299,61 @@ async def agent_tool_definitions(permissions: set[str]) -> list[dict[str, Any]]:
     return result
 
 
+def _mcp_tool_name(contribution: dict[str, Any], duplicate_ids: set[str]) -> str:
+    contribution_id = str(contribution["id"])
+    return (
+        f"{contribution['addon_id']}.{contribution_id}"
+        if contribution_id in duplicate_ids
+        else contribution_id
+    )
+
+
+async def agent_mcp_tools(permissions: set[str]) -> list[dict[str, Any]]:
+    contributions = discover("agent_tools", permissions)
+    counts: dict[str, int] = {}
+    for contribution in contributions:
+        contribution_id = str(contribution["id"])
+        counts[contribution_id] = counts.get(contribution_id, 0) + 1
+    duplicate_ids = {key for key, count in counts.items() if count > 1}
+    result: list[dict[str, Any]] = []
+    for contribution in contributions:
+        try:
+            input_schema = await agent_schema(
+                contribution["addon_id"], contribution["id"], permissions=permissions,
+            )
+        except AddonExecutionError:
+            continue
+        label = contribution["label"]
+        if isinstance(label, dict):
+            label = label.get("ja") or label.get("en") or contribution["id"]
+        result.append({
+            "name": _mcp_tool_name(contribution, duplicate_ids),
+            "description": f"{contribution['addon_id']} Add-on: {label}"[:240],
+            "inputSchema": input_schema,
+        })
+    return result
+
+
+async def agent_mcp_target(name: str, permissions: set[str]) -> tuple[str, str] | None:
+    contributions = discover("agent_tools", permissions)
+    counts: dict[str, int] = {}
+    for contribution in contributions:
+        contribution_id = str(contribution["id"])
+        counts[contribution_id] = counts.get(contribution_id, 0) + 1
+    duplicate_ids = {key for key, count in counts.items() if count > 1}
+    for contribution in contributions:
+        if _mcp_tool_name(contribution, duplicate_ids) != name:
+            continue
+        try:
+            await agent_schema(
+                contribution["addon_id"], contribution["id"], permissions=permissions,
+            )
+        except AddonExecutionError:
+            return None
+        return contribution["addon_id"], contribution["id"]
+    return None
+
+
 def _agent_target(name: str) -> tuple[str, str] | None:
     value = _agent_tool_map.get(name)
     if value is None or value[0] != registry.revision():

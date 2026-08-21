@@ -42,6 +42,15 @@ OpenCodeはControl Deckの必須依存にしない。通常の`./deck.sh`、serv
 - stdout/stderrは上限付き。API key、prompt全文、秘密値を監査ログへ出さない。cancel時はunitを停止する。
 - workflow `code.agent`はfeature有効時だけ存在し、既存job/engineのtimeout・cancelを継承する。
 
+### Add-on agent tools
+
+- 利用者authorityがあるjob／TUIの実行時configに限り、Host管理のローカルstdio MCPを追加する。
+- MCP bridgeはHostのloopback APIだけを呼び、OpenCodeやAdd-onへHost cookie、DB access、project全体権限を
+  渡さない。署名済みuser-bound tokenは0600のruntime configへ置き、最大8時間で失効する。
+- tool discovery／callごとに現在のRBAC、Add-on enable、capability、schemaをHostで再検証し、callは既存の
+  owner付きAdd-on Host Jobへ流す。結果はjob IDとopaque asset IDを含み、ログからpathを拾わせない。
+- OpenCodeのユーザー／グローバルconfigは変更しない。feature無効時はMCP Host endpointも登録しない。
+
 ## UI
 
 - `/opencode`は状態、provider endpoint/model、project、operation、指示を表示する独立feature page。
@@ -56,3 +65,4 @@ OpenCodeはControl Deckの必須依存にしない。通常の`./deck.sh`、serv
 - project symlink脱出、未知operation、未有効実行を拒否する。
 - prompt本文をargvへ入れず`shell=True`を使わない。cancelでtransient unitが停止し、一時ファイルが残らない。
 - llama.cpp OpenAI endpointを使った実機analyzeが成功する。全test/buildと1280px/320pxを確認する。
+- 実OpenCodeがAdd-on toolをdiscovery／callでき、Add-on disable後の再discoveryでtoolが消える。

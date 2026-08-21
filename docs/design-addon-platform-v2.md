@@ -1192,6 +1192,32 @@ pathが呼出し元Add-on自身の`/x/{addon_id}`またはその子孫である�
 2. Add-onが返したrouteをfrontendで無条件に`navigate`する案は、Host設定／他Add-onへの誘導を許す。
 3. Media固有の`open_workspace` actionを追加する案は、Host coreへ用途固有語彙を持ち込む。
 
+### 9.4 OpenCodeへのAgent Tool投影（2026-08-21 追補）
+
+OpenCode featureが有効な場合、Hostが現在の利用者に見えるAdd-on `agent_tools`をローカルstdio MCPへ
+投影する。OpenCodeのユーザー設定やグローバル設定は変更せず、既存のjob／TUI専用0600
+`OPENCODE_CONFIG`へだけ`controldeck_addons` serverを追加する。bridgeは標準ライブラリだけで動く薄い
+転送processであり、Add-on registry、DB、利用者session cookieを直接読まない。
+
+- HostはOpenCode実行ごとに、利用者IDと相関subjectを署名した`kind=agent-mcp` tokenを発行する。有効期限は
+  最大8時間で、通常のAdd-on service tokenの10分既定は変更しない。
+- bridgeは固定loopback endpointへbearer tokenを送り、Hostはrequestごとに署名、期限、active user、
+  `workflows.run`、現在のeffective contribution、schema availabilityを再評価する。Add-on disableや権限変更は
+  生存中bridgeにも次の`tools/list`／`tools/call`から反映される。
+- tool IDが有効なAdd-on間で一意ならmanifestの公開IDを保つ。衝突時だけ`{addon_id}.{tool_id}`へ
+  namespaceする。呼出しは既存のowner付きHost Job経路を使い、結果は`job_id`、opaque `asset_id`、
+  bounded outputとして返す。
+- tokenを含むruntime configは0600かつjob別で、ログ、audit、MCP errorへ秘密値を出さない。TUIが8時間を
+  超える場合は再起動して新しいtokenを得る。OpenCode featureが無効ならendpoint自体を登録しない。
+
+検討したが採用しなかった案:
+
+1. Media Forge専用plugin／tool設定をHostへ追加する案は、汎用Add-on Platformの境界を壊す。
+2. ユーザーのOpenCode configを永続変更する案は、disable／uninstall後もstale toolを残し、外部導入を汚す。
+3. MCP childがHost DB／Python内部moduleを直接読む案は、process分離と現在RBACの一元評価を壊す。
+4. browser cookieをbridgeへ渡す案はCSRF／session authorityを長時間processへ拡散する。
+5. 起動時のtool snapshotを固定する案は、disableや権限剥奪後も呼出せる時間差を作る。
+
 ---
 
 ## 10. セキュリティ要件（前版 §29 を拡張）
