@@ -84,12 +84,16 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
             arguments = params.get("arguments", {})
             if not isinstance(arguments, dict):
                 raise BridgeError("Tool arguments must be an object")
-            value = _host_request("/call", payload={"name": params["name"], "arguments": arguments})
-            result = {
-                "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}],
-                "structuredContent": value,
-                "isError": False,
-            }
+            try:
+                value = _host_request("/call", payload={"name": params["name"], "arguments": arguments})
+            except BridgeError as exc:
+                result = {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+            else:
+                result = {
+                    "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}],
+                    "structuredContent": value,
+                    "isError": False,
+                }
         else:
             return {
                 "jsonrpc": "2.0",

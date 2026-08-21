@@ -93,6 +93,19 @@ def test_stdio_bridge_protocol_and_tool_result(monkeypatch):
     })
     assert called["result"]["structuredContent"]["job_id"] == "job-1"
     assert requests[-1] == ("/call", {"name": "media.capabilities", "arguments": {}})
+    def failed_host_request(*_args, **_kwargs):
+        raise bridge.BridgeError("failed")
+
+    monkeypatch.setattr(bridge, "_host_request", failed_host_request)
+    failed = bridge.handle_message({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {"name": "media.capabilities", "arguments": {}},
+    })
+    assert failed["result"] == {
+        "content": [{"type": "text", "text": "failed"}], "isError": True,
+    }
     assert bridge.handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
 
 
