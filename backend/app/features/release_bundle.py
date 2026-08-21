@@ -266,21 +266,27 @@ def _unit_name(feature_id: str) -> str:
     return f"cdapp-feature-{feature_id}.service"
 
 
+def _runtime_environment(feature_id: str, version_root: Path) -> dict[str, str]:
+    persistent = data_dir() / "feature-data" / feature_id
+    persistent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    shared_cache = data_dir() / "cache"
+    shared_cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return {
+        "CONTROL_DECK_FEATURE_ROOT": str(version_root),
+        "CONTROL_DECK_FEATURE_DATA_DIR": str(persistent),
+        "CONTROL_DECK_SHARED_CACHE_DIR": str(shared_cache),
+        "CONTROL_DECK_BASE_URL": f"http://127.0.0.1:{get_config().server.port}",
+    }
+
+
 def _write_service(feature_id: str, version_root: Path, package: PackageManifest, entrypoint: Path) -> None:
     root = _feature_root(feature_id)
     logs = _managed_directory(root, "logs")
-    persistent = data_dir() / "feature-data" / feature_id
-    persistent.mkdir(mode=0o700, parents=True, exist_ok=True)
     content = systemd.build_unit_content(
         name=f"Optional feature: {feature_id}",
         exec_argv=[str(entrypoint), *package.service_args],
         working_directory=str(version_root),
-        environment={
-            "CONTROL_DECK_FEATURE_ROOT": str(version_root),
-            "CONTROL_DECK_FEATURE_DATA_DIR": str(persistent),
-            "CONTROL_DECK_SHARED_CACHE_DIR": str(data_dir() / "cache"),
-            "CONTROL_DECK_BASE_URL": f"http://127.0.0.1:{get_config().server.port}",
-        },
+        environment=_runtime_environment(feature_id, version_root),
         restart_policy="on-failure",
         stop_timeout_seconds=30,
         stdout_path=logs / "service.log",
@@ -344,9 +350,10 @@ def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix=f".{version}-", dir=versions) as temporary:
             extracted = _safe_extract(partial, Path(temporary), max_expanded_bytes=int(spec["max_expanded_bytes"]))
             package, entrypoint, addon_path = _load_package(extracted, feature_id, version, spec)
+            smoke_environment = {**os.environ, **_runtime_environment(feature_id, extracted)}
             smoke = subprocess.run(
                 [str(entrypoint), *package.smoke_args], cwd=extracted, capture_output=True, text=True,
-                timeout=int(spec.get("smoke_timeout_sec", 60)), check=False,
+                timeout=int(spec.get("smoke_timeout_sec", 60)), check=False, env=smoke_environment,
             )
             if smoke.returncode != 0:
                 raise ReleaseBundleError("release bundle smoke test failed")

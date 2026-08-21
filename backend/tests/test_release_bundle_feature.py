@@ -66,7 +66,14 @@ def prepare(monkeypatch, tmp_path: Path, version: str, content: bytes) -> list[s
     monkeypatch.setattr(release_bundle, "_select_release", lambda _spec, _meta: (version, asset, checksum))
     monkeypatch.setattr(release_bundle, "_download", lambda _spec, _asset, path: path.write_bytes(content))
     monkeypatch.setattr(release_bundle, "_expected_sha", lambda _spec, _sum, _name: hashlib.sha256(content).hexdigest())
-    monkeypatch.setattr(release_bundle.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    def smoke(*_args, **kwargs):
+        environment = kwargs["env"]
+        assert environment["CONTROL_DECK_FEATURE_DATA_DIR"] == str(tmp_path / "data" / "feature-data" / "fake-addon")
+        assert environment["CONTROL_DECK_SHARED_CACHE_DIR"] == str(tmp_path / "data" / "cache")
+        assert Path(environment["CONTROL_DECK_FEATURE_ROOT"]).is_dir()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(release_bundle.subprocess, "run", smoke)
     monkeypatch.setattr(release_bundle, "_wait_health", lambda *a, **k: None)
     monkeypatch.setattr(release_bundle.systemd, "write_unit", lambda name, body: tmp_path / name)
     monkeypatch.setattr(release_bundle.systemd, "restart", lambda name: (True, ""))
