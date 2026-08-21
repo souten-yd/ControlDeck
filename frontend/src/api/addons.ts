@@ -123,6 +123,21 @@ export function authorizeAddonBridgeCall(addonId: string, session: AddonBridgeSe
   });
 }
 
+export interface AddonFileGrant {
+  grant_id: string;
+  kind: "read" | "export";
+  name: string;
+  size: number | null;
+  expires_at: number;
+}
+
+export function createAddonFileGrant(addonId: string, path: string, kind: "read" | "export") {
+  return api<AddonFileGrant>(`/addons/${encodeURIComponent(addonId)}/file-grants`, {
+    method: "POST",
+    json: { path, kind },
+  });
+}
+
 export function addonLabel(label: AddonLabel): string {
   const resolved = typeof label === "string" ? label : label.ja || label.en || "拡張機能";
   const characters = Array.from(resolved.replace(/[\u0000-\u001f\u007f]/g, "").trim());

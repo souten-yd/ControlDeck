@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   authorizeAddonBridgeCall,
+  createAddonFileGrant,
   openAddonBridge,
   type AddonBridgeSession,
   type EffectiveAddon,
@@ -129,7 +130,6 @@ export function EmbeddedAddonView({
   const sessionRef = useRef<AddonBridgeSession | null>(null);
   const notificationTimes = useRef<number[]>([]);
   const notificationDedupe = useRef(new Map<string, number>());
-  const fileGrants = useRef(new Map<string, { path: string; kind: string }>());
   const jobSubscriptions = useRef(new Map<string, number>());
   const initialPath = useRef(entryPath(routePath, contribution.path));
   const [connectionKey, setConnectionKey] = useState(0);
@@ -378,18 +378,25 @@ export function EmbeddedAddonView({
     setConnectionKey((value) => value + 1);
   };
 
-  const finishFileRequest = (path: string) => {
+  const finishFileRequest = async (path: string) => {
     if (!fileRequest) return;
-    const grantId = crypto.randomUUID();
-    fileGrants.current.set(grantId, { path, kind: fileRequest.purpose });
-    const parts = path.split("/").filter(Boolean);
-    const name = parts[parts.length - 1] ?? "selected";
-    fileRequest.resolve({
-      grant_id: grantId,
-      name: fileRequest.suggestedName ?? name,
-      kind: fileRequest.mode,
-    });
-    setFileRequest(null);
+    try {
+      const grant = await createAddonFileGrant(
+        addon.id,
+        path,
+        fileRequest.purpose === "pick" ? "read" : "export",
+      );
+      fileRequest.resolve({
+        grant_id: grant.grant_id,
+        name: fileRequest.suggestedName ?? grant.name,
+        kind: fileRequest.mode,
+        expires_at: grant.expires_at,
+      });
+      setFileRequest(null);
+    } catch (reason) {
+      fileRequest.reject(reason instanceof Error ? reason : new Error("grant_create_failed"));
+      setFileRequest(null);
+    }
   };
 
   return <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: themeTokens.bg }}>

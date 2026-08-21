@@ -144,4 +144,47 @@ hostが対象の存在・realpath containment・Job ownerを検証します。fi
 payloadは`input`と`context: {type, resource_id, grant_id}`だけです。`grant_id`は要求単位のscoped tokenであり、
 ControlDeck全体またはproject rootへの包括権限ではありません。
 
+## Add-on Runtime Host API
+
+Browser Bridgeはtheme、route、picker、notification等の軽量UI操作だけを担います。GPU、Job、file contentは
+Add-on serviceが次のservice-to-host APIを使用し、browser JavaScriptからleaseを取得してはいけません。
+
+```text
+Authorization: Bearer <ControlDeck service token>
+X-Control-Deck-Addon-ID: <addon_id>
+
+POST   /api/v1/addon-runtime/token/introspect
+POST   /api/v1/addon-runtime/{addon_id}/jobs
+PATCH  /api/v1/addon-runtime/{addon_id}/jobs/{host_job_id}
+GET    /api/v1/addon-runtime/{addon_id}/jobs/{host_job_id}/control
+POST   /api/v1/addon-runtime/{addon_id}/resources/requests
+GET    /api/v1/addon-runtime/{addon_id}/resources/requests/{request_id}
+DELETE /api/v1/addon-runtime/{addon_id}/resources/requests/{request_id}
+POST   /api/v1/addon-runtime/{addon_id}/resources/leases/{lease_id}/{activate|renew|release}
+GET    /api/v1/addon-runtime/{addon_id}/grants/{grant_id}
+GET    /api/v1/addon-runtime/{addon_id}/grants/{grant_id}/content
+POST   /api/v1/addon-runtime/{addon_id}/files/outputs
+PUT    /api/v1/addon-runtime/{addon_id}/files/outputs/{output_id}/content
+POST   /api/v1/addon-runtime/{addon_id}/files/outputs/{output_id}/commit
+```
+
+Runtime APIはsession cookie、CSRF、`settings.manage`をservice identityとして受理しません。token署名、`kind=service`、
+10分以内の期限、`aud`・header・pathのAdd-on ID一致、installed／enabled、操作別capability grantをHostが検証します。
+HMAC keyをAdd-onへ共有しません。serviceがHostから受け取ったrequest tokenを検証するときはintrospectionへそのまま送り、
+`active`、`addon_id`、`subject`、`expires_at`、`granted_capabilities`を確認してください。
+
+`sub=job:{id}`では`POST /jobs`が既存Host Jobへattachし、新しいJobを作りません。数値user subjectではAdd-on UI起点として
+Host Jobを作成します。Resource requestの`job_id`はこのHost Jobに一致させます。service schemaに`owner`はなく、Hostが
+`addon:{addon_id}`を強制します。priority上限はinteractive 30、agent-interactive 25、workflow 15、background／batch 0、
+maintenance -10です。同一Add-on/userのactive外部Jobは8件までです。Job PATCHはphase必須、progress単調増加、
+通常update 2Hz以下、terminal result 16KiB以下です。
+
+disable後は新規resource requestとrenewが409、waiting requestはcanceled、関連Jobはcanceledになります。active leaseはworkerが
+停止するまで予約を維持します。serviceはcontrolをpollし、worker停止後にreleaseしてください。応答しない場合はlease TTLが
+fail-safeとして解放します。無効化後もcontrol参照、waiting cancel、active lease releaseだけは有効期限内tokenで許可されます。
+
+Host pickerが返す`grant:`はuser／addon／kind／期限に束縛されます。metadata/content/output APIはhost pathを返しません。
+readは選択時のrealpath／inode／size／mtimeを再検証し、outputはexport grant配下のprivate stagingへ宣言size以内でuploadしてから
+commitします。raw `/share/...`や`/home/...`をAdd-on protocol、Job result、asset metadataへ入れないでください。
+
 実装例と実E2Eは`tools/fake-addon/`と`frontend/e2e/addon-v2-execution.spec.ts`を参照してください。

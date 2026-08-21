@@ -2,6 +2,15 @@
 
 最終更新: 2026-08-21
 
+## Add-on Runtime Host API（Authentication／Resources／Jobs／Files）実装完了（2026-08-21）
+
+- Browser Host BridgeをGPU／backend execution APIへ拡張せず、`/api/v1/addon-runtime`にservice-to-host専用境界を追加した。通常のsession cookie、CSRF、`settings.manage`は使わず、Bearer service tokenのHMAC署名、10分TTL、`kind=service`、`aud`・path・`X-Control-Deck-Addon-ID`一致、installed／enabled、操作別Host Capability grantを毎request検証する。HMAC keyはAdd-onへ渡さず、`POST /token/introspect`が無効理由を漏らさない`active`応答、subject、期限、現在grantを返す。全mutationとintrospectionはtoken／payload／host pathを含めずauditする。
+- `resources.acquire` APIはservice schemaから`owner`を削除し、Hostが常に`addon:{addon_id}`を設定する。Host Jobとtoken subjectを照合し、request／leaseのownerを全操作で再検証する。priority ceilingはinteractive 30、agent-interactive 25、workflow 15、background／batch 0、maintenance -10とした。disable／uninstallは新規requestとrenewを拒否し、waitingだけcancelする。active leaseは空き扱いにせず、serviceの明示releaseまたは30秒TTL expiryまで予約を維持する。
+- `jobs.write` APIは`sub=job:{id}`ならControlDeckがすでに作ったAgent等のHost Jobへattachし、数値user subjectならAdd-on UI起点のHost Jobを新規作成する。Add-onはowner、addon ID、created_by、kindを指定・変更できない。同一Add-on/userのactive外部Jobは8件までとした。PATCHはphase必須、progress単調増加、通常update 2Hz以下、message／wait reason／terminal result 16KiB以下に限定した。disableは関連Jobをcancelし、serviceは無効化後もcontrolをpollして停止要求を認識できる。
+- Host pickerはbrowser内だけのUUID/path mapを廃止し、user／addon／capability／permission束縛の短命`grant:`をHostへ登録する。Runtime APIはmetadataと最大1GiBのbounded content streamだけを返し、pathは返さない。read grantはrealpath、device／inode／size／mtimeを再検証する。outputはexport grant＋Host Jobへ束縛したprivate staging、宣言size／任意SHA-256、safe filename、directory fd／inode再検証を通してatomic commitし、`asset:` IDだけを返す。symlink escape、inode swap、同名上書きを拒否する。
+
+検証: Runtime auth／Resources／Jobs／Filesと既存Add-on／Broker／Jobs／executionの集中49件成功。canonical `./deck.sh test`の最終rerunは699件成功（1件skip）、frontend production buildは1,542 modules成功。canonical先行runは既知の排他Job直列化testが最初のrunner開始前に固定1秒判定へ到達して697 PASS／1 FAILだったが、同test単独連続10回と最終canonical rerunはすべて成功したためhost scheduling遅延と分類した。隔離config、別Uvicorn host process、別fake Add-on process、cookieなしservice clientで、introspection active、user subject Job作成、job subject attach（重複Jobなし）、実AMD GPU Broker request→grant→activate、grant content read、output stage→commit、Job progress→succeeded、lease releaseを確認した。続くdisable caseではexclusive active lease＋waiting requestを作り、2秒grace後にJob canceled、waiting canceled、renew 409、新規request 409、active leaseは保持されたまま明示release 200、introspection inactiveとなることを確認した。一時Add-onをuninstallし、両processと隔離dataを停止・回収した。
+
 ## LLM reload cost分離・永続化 完了（2026-08-21）
 
 - llama.cppのload profileをresidency keyごとにcold／warmへ分離した。起動後初回、stop記録なし、またはstopから900秒超過はcold、同じkeyのstopから900秒以内の次のload 1回だけをwarmとする。yield判断はwarm 3件を優先し、未達時はcold 3件、どちらも未達なら`yield_load_cost_unknown`で保守的に抑止する。推定値・catalog値へのfallbackは追加していない。
@@ -44,7 +53,7 @@ clean profileでControlDeck起動後初回のcoldを3件実測し、cold p90 6.2
 
 - `backend/app/resources` に device collection、provider reservation/probe、決定的scheduler、request queue、lease acquire/activate/renew/release/cancel/TTL、telemetry、管理APIを追加した。要求はVRAM confidence／有限max wait／queueかfail-fastを必須とし、固定予約を差し引いて物理的に入らない要求はqueueへ残さず拒否する。interactive優先、background starvation上限600秒、owner fairness、bounded residency bonus、FIFO tieをテストで固定した。
 - 単一GPUを特別扱いせずcollectionとして扱い、exclusiveとshared-safe、固定deviceとauto、fit scheduling、provider yield levelを分離した。monitor snapshotが別metricの失敗でpublishされない場合も、monitorが既に選択したproviderを再利用してGPU factsだけを更新する。Brokerのrefresh/reaper失敗はWeb本体を停止させない。
-- `/api/v1/resources` は`system.view`、mutationは`settings.manage`＋CSRF＋本文を含めないauditで保護した。Add-on disable完了／uninstall時は`addon:{id}` ownerのwaiting requestとleaseを取り消す。Brokerはin-memoryのためprocess再起動時にstale leaseを持ち越さず、waitingはexecution slotを占有しない。
+- `/api/v1/resources` は`system.view`、mutationは`settings.manage`＋CSRF＋本文を含めないauditで保護した。このPR-D1時点ではAdd-on disable完了／uninstall時に`addon:{id}` ownerのwaiting requestとleaseを取り消していたが、後続Runtime Host APIでactive workerとの二重割当を避けるためwaitingだけcancelし、active leaseは明示release／TTL expiryまで保持する契約へ更新した。Brokerはin-memoryのためprocess再起動時にstale leaseを持ち越さず、waitingはexecution slotを占有しない。
 - observed Llama起動でprocess→listen、listen→ready、最初のtokenを実測し、bounded sampleのp50/p90だけをprofile化する。推定値fallbackは持たない。OOM incidentはruntime/model/device別に回数、observed peak、下げないrecommended requirement floorを記録する。leaseを使ったmanaged supervision、thrash guard、OOM retry制御、Jobs admissionはPR-D2まで有効化しない。
 
 検証: code head `f3935e5` でresource／Llama／Gateway集中57件、canonical cwd=`backend`のbackend全651件成功（1件skip）、frontend production build成功。実`control-deck-web`をbranchから再起動し、sysfs-amdgpuの32GB device発見、実APIでexclusive grant→2件目`device_busy_exclusive`待機→activate／renew→waiting cancel→release、最終lease予約0とtelemetryを確認した。NVMe上のQwen3.8 27BをGatewayから1 token cold-startし、request 83.376秒、cold-load p90 82.714秒、first-token 0.565秒、load時VRAM 29,269,970,944 bytes、stop後59,912,192 bytesへの解放を実測した。現行llama-serverに動的unload操作はなく、yield level 3はlevel 4（process stop）へ縮退する。このPR-D1時点ではPR-D2／Jobs待機UIはNOT TESTEDだった。単独DB migrationと後続PR-D2の結果は上記各節に記録した。
