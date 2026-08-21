@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from app.addons import registry as addon_registry
 from app.addons.schema import AddonManifestV2, load_manifest_file
 from app.applications import systemd
-from app.config import data_dir
+from app.config import data_dir, get_config
 
 PACKAGE_MANIFEST = "control-deck-feature.json"
 MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -279,6 +279,7 @@ def _write_service(feature_id: str, version_root: Path, package: PackageManifest
             "CONTROL_DECK_FEATURE_ROOT": str(version_root),
             "CONTROL_DECK_FEATURE_DATA_DIR": str(persistent),
             "CONTROL_DECK_SHARED_CACHE_DIR": str(data_dir() / "cache"),
+            "CONTROL_DECK_BASE_URL": f"http://127.0.0.1:{get_config().server.port}",
         },
         restart_policy="on-failure",
         stop_timeout_seconds=30,
