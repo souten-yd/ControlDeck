@@ -2,6 +2,35 @@
 
 最終更新: 2026-08-21
 
+## OpenCode Add-on Agent Tool MCP投影（2026-08-21）
+
+- OpenCode featureのjob／TUI専用0600 runtime configへ、現在有効なAdd-on `agent_tools`を投影する汎用
+  stdio MCPを追加した。Host cookieや内部moduleは渡さず、最大8時間の署名済みuser-bound tokenを使い、
+  Hostが各discovery／callでactive user、`workflows.run`、effective contribution、schemaを再評価する。
+- tool callは既存のowner付きHost Job経路へ流れ、`job_id`、opaque `asset_id`、bounded outputを返す。
+  公開tool IDは一意なら維持し、衝突時だけAdd-on IDでnamespaceする。Media固有のroute、tool、依存、
+  capabilityはControlDeckへ追加していない。
+- ユーザー／グローバルOpenCode config変更、Host DB直結bridge、cookie転送、起動時tool snapshot固定は、
+  外部環境汚染、権限境界、disable反映の理由で採用しなかった。詳細は
+  `docs/design-addon-platform-v2.md` §9.4へ記録した。
+
+実機検証: 隔離config／SQLiteのControlDeck `127.0.0.1:18770`、別processのMedia Forge
+`127.0.0.1:9134`、外部OpenCode 1.18.18を使用した。`opencode mcp list`で
+`controldeck_addons connected`、実stdio MCPで`media.capabilities`／`media.generate`／`media.inspect`の3件を
+発見し、`media.capabilities` callがHost Job `4aa6c2f74ae9`とopaque asset
+`job-result:4aa6c2f74ae9`を返した。生存中tokenのままAdd-onをdisableするとtool 3件から0件、再enableで
+0件から3件へ戻った。実`opencode run`は19.5秒、exit 0で
+`controldeck_addons_media_capabilities`を1回callし、Host Job `7966ff194635`の結果から`available`と応答した。
+最初の`auto`実行は27B model起動後5分でtool call未到達のため中断し、成功とは記録しない。
+
+自動検証: Agent MCP／OpenCode／Add-on execution／token集中42件成功（2.54秒）。正しい`backend/` cwdの
+backend全体は722件成功／1件skip（56.25秒）。先行runはrepository rootから起動したためCLI subprocess
+2件が`app` import不可となり、既知の固定1秒GPU Job直列化testもrunner開始前にtimeoutしたが、正しいcwdの
+集中10件と最終全体runでは再現しなかった。frontend sourceは変更していないため、Hosted CI、frontend
+build、browser再実行はNOT TESTED。実証用Add-onは公開APIでdisable／uninstallし、Host／Media process、
+今回起動したQwen3.8-27B instance、18770／9134／8097 listenerを停止した。token入りruntime configとcookieは
+削除済みである。
+
 ## Add-on Context Action own-route遷移（2026-08-21）
 
 - Context Action結果の汎用`action=open_route`を追加し、成功後にHost routerで画面を開けるようにした。
