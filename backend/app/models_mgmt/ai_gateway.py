@@ -22,6 +22,9 @@ class AITargetUnavailable(RuntimeError):
 class AITarget:
     base_url: str
     model: str
+    # Internal ControlDeck detail. When true, execution must use the same Broker
+    # lease/admission path as the public /llm gateway before calling the provider.
+    gateway_managed: bool = False
 
 
 def _order(value: object) -> int:
@@ -53,7 +56,7 @@ def _llama_target(capability: AICapability) -> AITarget:
     model = str(selected.get("alias") or "").strip()
     if not base_url or not model:
         raise AITargetUnavailable("llama.cpp AI target の設定が不完全です")
-    return AITarget(base_url=base_url, model=model)
+    return AITarget(base_url=base_url, model=model, gateway_managed=True)
 
 
 async def _ollama_target(capability: AICapability) -> AITarget:
