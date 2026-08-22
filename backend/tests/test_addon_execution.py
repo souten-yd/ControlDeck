@@ -424,3 +424,90 @@ def test_llm_agent_discovers_and_dispatches_remote_tool(monkeypatch):
     tool_message = posts[1]["messages"][-1]
     assert tool_message["role"] == "tool"
     assert "job-result:job-9" in tool_message["content"]
+
+
+def test_quick_action_invokes_the_declared_endpoint_and_opens_its_route(addon_api, monkeypatch):
+    """宣言だけして呼ばないと、利用者には押しても何も起きない項目に見える。"""
+    client, _registry = addon_api
+    from app.addons import execution
+
+    execution.reset_for_tests()
+    assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
+    assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"route": "/x/fake-addon/workspace/create"})
+
+    monkeypatch.setattr(execution, "_client", _transport(handler))
+    response = client.post(
+        "/api/v1/addons/fake-addon/commands/quick-generate/invoke",
+        json={"kind": "quick_actions", "input": {}},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["route"] == "/x/fake-addon/workspace/create"
+    assert len(seen) == 1
+    assert seen[0]["correlation"]["contribution_id"] == "quick-generate"
+
+
+def test_command_invocation_rejects_unknown_kind_and_missing_contribution(addon_api):
+    client, _registry = addon_api
+    from app.addons import execution
+
+    execution.reset_for_tests()
+    assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
+    assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
+
+    assert client.post(
+        "/api/v1/addons/fake-addon/commands/quick-generate/invoke",
+        json={"kind": "agent_tools", "input": {}},
+        headers=CSRF_HEADERS,
+    ).status_code == 422
+    assert client.post(
+        "/api/v1/addons/fake-addon/commands/missing/invoke",
+        json={"kind": "commands", "input": {}},
+        headers=CSRF_HEADERS,
+    ).status_code == 404
+
+
+@pytest.mark.parametrize("route", ["/settings", "https://example.com/x/fake-addon", "/x/other-addon/a", "/x/fake-addon/../admin"])
+def test_command_open_route_is_confined_to_its_own_addon(addon_api, monkeypatch, route):
+    client, _registry = addon_api
+    from app.addons import execution
+
+    execution.reset_for_tests()
+    assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
+    assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
+    monkeypatch.setattr(
+        execution, "_client",
+        _transport(lambda request: httpx.Response(200, json={"route": route})),
+    )
+    response = client.post(
+        "/api/v1/addons/fake-addon/commands/quick-generate/invoke",
+        json={"kind": "quick_actions", "input": {}},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 502
+
+
+def test_command_without_a_route_reports_success_without_navigating(addon_api, monkeypatch):
+    client, _registry = addon_api
+    from app.addons import execution
+
+    execution.reset_for_tests()
+    assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
+    assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
+    monkeypatch.setattr(
+        execution, "_client",
+        _transport(lambda request: httpx.Response(200, json={"job_id": "job_1", "status": "queued"})),
+    )
+    response = client.post(
+        "/api/v1/addons/fake-addon/commands/generate/invoke",
+        json={"kind": "commands", "input": {}},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["route"] is None
+    assert response.json()["result"]["job_id"] == "job_1"

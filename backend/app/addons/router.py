@@ -42,6 +42,11 @@ class ContextActionInvokeRequest(BaseModel):
     input: dict = Field(default_factory=dict, max_length=64)
 
 
+class CommandInvokeRequest(BaseModel):
+    kind: str = Field(default="quick_actions", pattern="^(commands|quick_actions)$")
+    input: dict = Field(default_factory=dict, max_length=64)
+
+
 class AddonFileGrantRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     kind: str = Field(pattern="^(read|export)$")
@@ -128,6 +133,39 @@ async def invoke_agent_tool(
         metadata={"contribution_id": contribution_id, "job_id": job.id, "field_count": len(body.arguments)},
     )
     return result if body.wait else {"job_id": job.id, "status": job.status}
+
+
+@router.post("/{addon_id}/commands/{contribution_id}/invoke")
+async def invoke_command(
+    addon_id: str,
+    contribution_id: str,
+    body: CommandInvokeRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """宣言された command / quick action を実行し、route が返れば呼び元へ渡す。"""
+    try:
+        result = await addon_execution.invoke_command(
+            addon_id, contribution_id,
+            kind=body.kind,
+            input_value=body.input,
+            owner_user_id=user.id,
+            permissions=user_permissions(user),
+        )
+    except addon_execution.AddonExecutionError as exc:
+        audit.record(
+            db, "addon.command", user=user, resource_type="addon", resource_id=addon_id,
+            result="failure", request=request,
+            metadata={"contribution_id": contribution_id, "kind": body.kind, "result_code": exc.code},
+        )
+        raise _execution_error(exc) from exc
+    audit.record(
+        db, "addon.command", user=user, resource_type="addon", resource_id=addon_id,
+        request=request,
+        metadata={"contribution_id": contribution_id, "kind": body.kind, "opened_route": bool(result["route"])},
+    )
+    return result
 
 
 @router.post("/{addon_id}/context-actions/{contribution_id}/invoke")

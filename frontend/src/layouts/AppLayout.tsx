@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ComponentType, type SVGProps } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
@@ -12,8 +12,10 @@ import {
   IconChip,
   IconFile,
   IconGrid,
+  IconPlay,
   IconPlus,
   IconPower,
+  IconRestart,
   IconSettings,
   IconTerminal,
   IconLogout,
@@ -24,7 +26,7 @@ import { Logo } from "../components/Logo";
 import { PRODUCT_NAMES } from "../constants/productNames";
 import { canAccessNavigationItem, IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
 import { useMobileNavigation } from "../stores/mobileNavigation";
-import { addonLabel, useEffectiveAddons } from "../api/addons";
+import { addonLabel, invokeAddonCommand, useEffectiveAddons } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 
 export default function AppLayout() {
@@ -36,6 +38,17 @@ export default function AppLayout() {
   const addonById = new Map((effectiveAddons?.addons ?? []).map((addon) => [addon.id, addon]));
   const addonNavigation = effectiveAddons?.contributions.navigation ?? [];
   const addonQuickActions = effectiveAddons?.contributions.quick_actions ?? [];
+  // Quick Actions のアイコンは NAVIGATION から引く。二重管理すると
+  // Project Lab と OpenCode が同じ <> になるような取り違えが再発する。
+  const navigationIcon = useMemo(
+    () => new Map(NAVIGATION.map((item) => [item.to, item.icon])),
+    [],
+  );
+  const RouteIcon = ({ to, fallback: Fallback }: { to: string; fallback: ComponentType<SVGProps<SVGSVGElement>> }) => {
+    const Ico = navigationIcon.get(to) ?? Fallback;
+    return <Ico />;
+  };
+
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
   const enrollmentPending = Boolean(user?.totp_required && !user.totp_enabled);
   const visibleNav = NAVIGATION.filter((item) =>
@@ -54,6 +67,16 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const show = useToasts((s) => s.show);
+  /** 宣言された quick action を実行し、拡張機能が返した route へ遷移する。 */
+  const runQuickAction = async (addonId: string, contributionId: string) => {
+    try {
+      const { route } = await invokeAddonCommand(addonId, contributionId);
+      if (route) navigate(route);
+      else show("操作を実行しました");
+    } catch (error) {
+      show(error instanceof ApiError ? error.message : "拡張機能の操作を実行できませんでした", "error");
+    }
+  };
   // ワークフローエディタ（/workflows/:id）等は全画面表示（ヘッダー・下部ナビを隠す）
   const immersive = location.pathname === "/assistant" || /^\/workflows\/[^/]+$/.test(location.pathname);
 
@@ -291,7 +314,7 @@ export default function AppLayout() {
             )}
             {(can("workflows.run") || can("workflows.edit")) && (
               <ActionItem
-                icon={<IconFlow />}
+                icon={<RouteIcon to="/workflows" fallback={IconFlow} />}
                 label="Workflows"
                 onClick={() => {
                   setActionOpen(false);
@@ -301,7 +324,7 @@ export default function AppLayout() {
             )}
             {can("application_builder.view") && (
               <ActionItem
-                icon={<IconGrid />}
+                icon={<RouteIcon to="/applications" fallback={IconGrid} />}
                 label={PRODUCT_NAMES.appStudio}
                 onClick={() => {
                   setActionOpen(false);
@@ -311,7 +334,7 @@ export default function AppLayout() {
             )}
             {can("project_lab.view") && (
               <ActionItem
-                icon={<IconCode />}
+                icon={<RouteIcon to="/project-lab" fallback={IconCode} />}
                 label="Project Lab"
                 onClick={() => {
                   setActionOpen(false);
@@ -321,7 +344,7 @@ export default function AppLayout() {
             )}
             {can("remote_desktop.use") && (
               <ActionItem
-                icon={<IconRemote />}
+                icon={<RouteIcon to="/remote" fallback={IconRemote} />}
                 label="Remote Desktop"
                 onClick={() => {
                   setActionOpen(false);
@@ -331,7 +354,7 @@ export default function AppLayout() {
             )}
             {can("terminal.use") && (
               <ActionItem
-                icon={<IconTerminal />}
+                icon={<RouteIcon to="/terminal" fallback={IconTerminal} />}
                 label="Terminal"
                 onClick={() => {
                   setActionOpen(false);
@@ -340,7 +363,7 @@ export default function AppLayout() {
               />
             )}
             <ActionItem
-              icon={<IconAssistant />}
+              icon={<RouteIcon to="/assistant" fallback={IconAssistant} />}
               label="AI Assistant"
               onClick={() => {
                 setActionOpen(false);
@@ -349,7 +372,7 @@ export default function AppLayout() {
             />
             {enabledFeatures.has("opencode") && can("workflows.run") && (
               <ActionItem
-                icon={<IconCode />}
+                icon={<RouteIcon to="/opencode" fallback={IconCode} />}
                 label="OpenCode"
                 onClick={() => {
                   setActionOpen(false);
@@ -372,12 +395,12 @@ export default function AppLayout() {
             })}
             {addonQuickActions.map((contribution) => <ActionItem
               key={`addon-quick-${contribution.addon_id}-${contribution.id}`}
-              icon={<IconPlus />}
+              icon={<IconPlay />}
               label={addonLabel(contribution.label)}
               hint="拡張機能"
               onClick={() => {
                 setActionOpen(false);
-                navigate(`/x/${contribution.addon_id}/${contribution.id}?action=${encodeURIComponent(contribution.id)}`);
+                void runQuickAction(contribution.addon_id, contribution.id);
               }}
             />)}
             {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
@@ -393,7 +416,7 @@ export default function AppLayout() {
             ))}
             {can("files.view") && (
               <ActionItem
-                icon={<IconFile />}
+                icon={<RouteIcon to="/files" fallback={IconFile} />}
                 label="File Manager"
                 onClick={() => {
                   setActionOpen(false);
@@ -403,7 +426,7 @@ export default function AppLayout() {
             )}
             {can("apps.view") && (
               <ActionItem
-                icon={<IconBranch />}
+                icon={<RouteIcon to="/github" fallback={IconBranch} />}
                 label="GitHub"
                 onClick={() => {
                   setActionOpen(false);
@@ -413,7 +436,7 @@ export default function AppLayout() {
             )}
             {can("workflows.run") && (
               <ActionItem
-                icon={<IconBook />}
+                icon={<RouteIcon to="/knowledge" fallback={IconBook} />}
                 label="Knowledge (RAG)"
                 onClick={() => {
                   setActionOpen(false);
@@ -423,7 +446,7 @@ export default function AppLayout() {
             )}
             {can("workflows.run") && (
               <ActionItem
-                icon={<IconChip />}
+                icon={<RouteIcon to="/models" fallback={IconChip} />}
                 label="Models & LLM"
                 onClick={() => {
                   setActionOpen(false);
@@ -432,7 +455,7 @@ export default function AppLayout() {
               />
             )}
             <ActionItem
-              icon={<IconChart />}
+              icon={<RouteIcon to="/system" fallback={IconChart} />}
               label="System Monitor"
               onClick={() => {
                 setActionOpen(false);
@@ -440,7 +463,7 @@ export default function AppLayout() {
               }}
             />
             <ActionItem
-              icon={<IconSettings />}
+              icon={<RouteIcon to="/settings" fallback={IconSettings} />}
               label="Settings"
               onClick={() => {
                 setActionOpen(false);
@@ -462,7 +485,7 @@ export default function AppLayout() {
               <p className="mb-1 mt-3 px-1 text-xs text-zinc-400">Power</p>
               <div className="space-y-1">
                 <ActionItem
-                  icon={<IconRestartPower />}
+                  icon={<IconRestart />}
                   label={platformReloading ? "Reloading ControlDeck…" : "Reload ControlDeck"}
                   onClick={reloadPlatform}
                 />
@@ -512,11 +535,15 @@ export default function AppLayout() {
   );
 }
 
+/** PC の再起動。アプリの再読み込み（IconRestart）と同じ形にしない。
+    輪の中の電源記号で「機械が落ちて上がる」ことを示す。 */
 function IconRestartPower(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" width="1em" height="1em" aria-hidden {...props}>
-      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-      <path d="M21 3v6h-6" />
+      <path d="M20 13a8 8 0 1 1-3.2-6.4" />
+      <path d="M20 3.5v4h-4" />
+      <path d="M12 9.5v4" />
+      <path d="M9.6 11a3.2 3.2 0 1 0 4.8 0" />
     </svg>
   );
 }

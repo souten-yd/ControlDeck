@@ -576,6 +576,68 @@ def validate_context_result(addon_id: str, value: dict[str, Any]) -> dict[str, A
     return value
 
 
+def _validated_own_route(addon_id: str, route: object, *, message: str, code: str) -> str:
+    """Add-on が返した route が自分自身の route であることを確認する。"""
+    if not isinstance(route, str) or len(route) > 2048 or any(ord(character) < 32 for character in route):
+        raise AddonExecutionError(message, code=code, status_code=502)
+    parsed = urlsplit(route)
+    try:
+        decoded_path = unquote(parsed.path, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise AddonExecutionError(message, code=code, status_code=502) from exc
+    prefix = f"/x/{addon_id}"
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.fragment
+        or "\\" in decoded_path
+        or any(ord(character) < 32 for character in decoded_path)
+        or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+        or (decoded_path != prefix and not decoded_path.startswith(f"{prefix}/"))
+    ):
+        raise AddonExecutionError(message, code=code, status_code=502)
+    return route
+
+
+async def invoke_command(
+    addon_id: str,
+    contribution_id: str,
+    *,
+    kind: str,
+    input_value: dict[str, Any],
+    owner_user_id: int,
+    permissions: set[str],
+) -> dict[str, Any]:
+    """commands / quick_actions を宣言どおり実行する。
+
+    宣言だけして呼ばないと、利用者には「押しても何も起きない項目」に見える。
+    応答が自分自身の route を返した場合だけ、host はそこへ遷移する。
+    """
+    if kind not in {"commands", "quick_actions"}:
+        raise AddonExecutionError("未対応のcontribution種別です", code="invalid_contribution_kind", status_code=422)
+    result = await invoke(
+        kind, addon_id, contribution_id,
+        {"input": input_value, "correlation": {"kind": kind, "contribution_id": contribution_id}},
+        subject=f"command:{owner_user_id}",
+        actor_user_id=owner_user_id,
+        permissions=permissions,
+    )
+    route = result.get("route")
+    if route is None and result.get("action") is None:
+        return {"route": None, "result": result}
+    if result.get("action") is not None and result.get("action") != "open_route":
+        raise AddonExecutionError(
+            "command応答のactionが不正です", code="invalid_command_response", status_code=502
+        )
+    return {
+        "route": _validated_own_route(
+            addon_id, route,
+            message="commandは自身のAdd-on routeだけを開けます",
+            code="invalid_command_response",
+        ),
+        "result": result,
+    }
+
 async def invoke_context_action(
     addon_id: str,
     contribution_id: str,
