@@ -302,6 +302,47 @@ def test_llama_multi_instance_api(admin_client, monkeypatch):
     assert gguf_b.exists()
 
 
+def test_llama_vision_detection_is_same_folder_and_disabled_by_default(admin_client):
+    from tests.conftest import CSRF_HEADERS, _sandbox
+
+    model_dir = _sandbox / "vision-detection"
+    model_dir.mkdir()
+    model = model_dir / "Qwen3.8-27B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF-model")
+    projector_b = model_dir / "mmproj-F16.gguf"
+    projector_a = model_dir / "MMProj-BF16.GGUF"
+    projector_b.write_bytes(b"GGUF-projector-b")
+    projector_a.write_bytes(b"GGUF-projector-a")
+    (model_dir / "not-a-projector.gguf").write_bytes(b"GGUF-other")
+    outside = _sandbox / "mmproj-outside.gguf"
+    outside.write_bytes(b"GGUF-outside")
+    (model_dir / "mmproj-link.gguf").symlink_to(outside)
+
+    response = admin_client.get(
+        "/api/v1/models/llama/vision-detection",
+        params={"model_path": str(model)},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload == {
+        "available": True,
+        "candidates": [str(projector_a.resolve()), str(projector_b.resolve())],
+        "suggested_path": str(projector_a.resolve()),
+        "enabled_by_default": False,
+    }
+
+    created = admin_client.post(
+        "/api/v1/models/llama/instances",
+        json={"alias": "vision-default-off", "model_path": str(model), "port": 8203},
+        headers=CSRF_HEADERS,
+    )
+    assert created.status_code == 201, created.text
+    instance = next(item for item in created.json()["instances"].values()
+                    if item["alias"] == "vision-default-off")
+    assert instance["mmproj_path"] == ""
+
+
 def test_unit_content_role_embedding_and_reranker(monkeypatch, tmp_path):
     from app.models_mgmt import llama
 

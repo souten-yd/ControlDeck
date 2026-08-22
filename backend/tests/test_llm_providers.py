@@ -141,7 +141,7 @@ def test_llama_adapter_lists_and_controls_each_catalog_instance(monkeypatch, tmp
     model_a.write_bytes(b"a")
     model_b.write_bytes(b"bb")
     instances = [
-        {"alias": "a", "model_path": str(model_a), "port": 8100, "base_url": "http://127.0.0.1:8100/v1", "unit": "a.service", "runtime_status": "RUNNING"},
+        {"alias": "a", "model_path": str(model_a), "mmproj_path": str(tmp_path / "mmproj.gguf"), "port": 8100, "base_url": "http://127.0.0.1:8100/v1", "unit": "a.service", "runtime_status": "RUNNING"},
         {"alias": "b", "model_path": str(model_b), "port": 8101, "base_url": "http://127.0.0.1:8101/v1", "unit": "b.service", "runtime_status": "STOPPED"},
     ]
     calls = []
@@ -165,7 +165,8 @@ def test_llama_adapter_lists_and_controls_each_catalog_instance(monkeypatch, tmp
 
     listed = asyncio.run(provider_adapters.list_models("llama.cpp"))
     assert [item["id"] for item in listed] == ["a", "b"]
-    assert listed[0]["loaded"] is True and listed[1]["details"]["port"] == 8101
+    assert listed[0]["loaded"] is True and listed[0]["details"]["vision_enabled"] is True
+    assert listed[1]["details"]["port"] == 8101 and listed[1]["details"]["vision_enabled"] is False
     asyncio.run(provider_adapters.load_model("llama.cpp", "b"))
     asyncio.run(provider_adapters.unload_model("llama.cpp", "a"))
     asyncio.run(provider_adapters.delete_model("llama.cpp", "b"))

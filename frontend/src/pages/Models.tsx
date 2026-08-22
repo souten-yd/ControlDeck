@@ -26,6 +26,7 @@ interface Model {
   expires_at: string | null;
   vram: number | null;
   digest?: string;
+  vision_enabled?: boolean;
 }
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
@@ -253,8 +254,8 @@ export default function ModelsPage() {
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
       if (selectedProvider === "ollama") return api<Model[]>("/models");
-      const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, string> }>>(`/models/providers/${selectedProvider}/models`);
-      return common.map((m) => ({ id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "", family: "", loaded: !!m.loaded, expires_at: null, vram: null }));
+      const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(`/models/providers/${selectedProvider}/models`);
+      return common.map((m) => ({ id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "", family: "", loaded: !!m.loaded, expires_at: null, vram: null, vision_enabled: m.details.vision_enabled === true }));
     },
     refetchInterval: 15000,
     enabled: !!runtimeEnv && (selectedProvider !== "ollama" || status?.available !== false),
@@ -426,6 +427,11 @@ export default function ModelsPage() {
                     {shared && (
                       <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
                         :{endpoint!.port} 共有
+                      </span>
+                    )}
+                    {m.vision_enabled && (
+                      <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-700 dark:bg-violet-950/60 dark:text-violet-300">
+                        VISION
                       </span>
                     )}
                   </p>
@@ -1336,6 +1342,13 @@ interface LlamaStatus {
   health?: { ok: boolean };
 }
 
+interface VisionDetection {
+  available: boolean;
+  candidates: string[];
+  suggested_path: string;
+  enabled_by_default: false;
+}
+
 const BACKEND_LABEL: Record<string, string> = { rocm: "ROCm (AMD)", vulkan: "Vulkan (汎用GPU)", cuda: "CUDA (NVIDIA)" };
 
 function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
@@ -1414,7 +1427,7 @@ function LlamaRuntimePanel({ registrationOnly = false }: { registrationOnly?: bo
       {st.installed && registrationOnly && creating && (
         <LlamaInstanceControls
           key="new"
-          initial={{ ...st.instance, model_path: "", alias: "", port: Math.max(8080, ...st.instances.map((item) => item.port)) + (st.instances.length ? 1 : 0), auto_start: false, idle_exclude: false }}
+          initial={{ ...st.instance, model_path: "", mmproj_path: "", alias: "", port: Math.max(8080, ...st.instances.map((item) => item.port)) + (st.instances.length ? 1 : 0), auto_start: false, idle_exclude: false }}
           isNew
           onCancel={() => setCreating(false)}
           onChanged={() => { setCreating(false); qc.invalidateQueries({ queryKey: ["llama-status"] }); qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] }); }}
@@ -1492,11 +1505,26 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
   const [pickerOpen, setPickerOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [cfg, setCfg] = useState<LlamaInstanceConfig>({ ...initial });
+  const [visionModelPath, setVisionModelPath] = useState(initial.model_path);
   const originalAlias = initial.alias;
   const { data: optionData } = useQuery({ queryKey: ["llama-options"], queryFn: () => api<{ flags: string[] }>("/models/llama/options") });
   const flags = new Set(optionData?.flags ?? []);
   const set = <K extends keyof typeof cfg>(key: K, value: (typeof cfg)[K]) => setCfg((current) => ({ ...current, [key]: value }));
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  useEffect(() => {
+    if (!isNew) return;
+    const timer = window.setTimeout(() => setVisionModelPath(cfg.model_path), 300);
+    return () => window.clearTimeout(timer);
+  }, [cfg.model_path, isNew]);
+  const visionDetection = useQuery({
+    queryKey: ["llama-vision-detection", visionModelPath],
+    queryFn: () => api<VisionDetection>(`/models/llama/vision-detection?model_path=${encodeURIComponent(visionModelPath)}`),
+    enabled: isNew && visionModelPath.toLowerCase().endsWith(".gguf"),
+    retry: false,
+  });
+  const chooseModelPath = (path: string) => {
+    setCfg((current) => ({ ...current, model_path: path, mmproj_path: "" }));
+  };
 
   const persist = async (start: boolean) => {
     if (!cfg.model_path) { show("モデルファイルを選択してください", "error"); return; }
@@ -1527,12 +1555,35 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
       </div>
       {isNew && <>
         <div className="flex gap-1.5">
-          <input value={cfg.model_path} onChange={(e) => set("model_path", e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+          <input value={cfg.model_path} onChange={(e) => chooseModelPath(e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
           <button onClick={() => setPickerOpen(true)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
           <L label="待受port"><input type="number" min={1024} max={65535} value={cfg.port} onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} /></L>
+        </div>
+        <div className="space-y-1.5 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+          <Toggle
+            label="VISION機能"
+            hint="同じフォルダのmmprojを使います。検出されても初期値は無効です"
+            value={Boolean(cfg.mmproj_path)}
+            disabled={!visionDetection.data?.available && !cfg.mmproj_path}
+            onChange={(enabled) => set("mmproj_path", enabled ? visionDetection.data?.suggested_path ?? "" : "")}
+          />
+          {visionDetection.isFetching ? (
+            <p className="text-[10px] text-zinc-400">同じフォルダのmmprojを確認中...</p>
+          ) : visionDetection.data?.available ? (
+            <p className="break-all text-[10px] text-emerald-600 dark:text-emerald-400">
+              VISION対応候補を検出: {visionDetection.data.suggested_path}
+              {visionDetection.data.candidates.length > 1 && `（ほか${visionDetection.data.candidates.length - 1}件）`}
+            </p>
+          ) : visionDetection.isError ? (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400">モデルファイルを確認できないためVISION判定を完了できません。</p>
+          ) : cfg.model_path ? (
+            <p className="text-[10px] text-zinc-400">同じフォルダにmmprojがないためVISIONは利用できません。</p>
+          ) : (
+            <p className="text-[10px] text-zinc-400">GGUFを選ぶとVISION対応を判定します。</p>
+          )}
         </div>
       </>}
       <div className="grid grid-cols-2 gap-2">
@@ -1636,16 +1687,16 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
       )}
       {pickerOpen && (
         <FilePicker mode="file" title="GGUF モデルを選択" initialPath={cfg.model_path || undefined}
-          onSelect={(p) => { set("model_path", p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />
+          onSelect={(p) => { chooseModelPath(p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />
       )}
     </div>
   );
 }
 
-function Toggle({ label, hint, value, onChange }: { label: string; hint?: string; value: boolean; onChange: (value: boolean) => void }) {
+function Toggle({ label, hint, value, disabled = false, onChange }: { label: string; hint?: string; value: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
   return <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
     <span className="text-xs">{label}{hint && <span className="block text-[10px] font-normal text-zinc-400">{hint}</span>}</span>
-    <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 shrink-0" />
+    <input type="checkbox" checked={value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 shrink-0 disabled:opacity-40" />
   </label>;
 }
 

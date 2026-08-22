@@ -41,6 +41,7 @@ BACKEND_PATTERNS = {
 SELECTABLE_BACKENDS = ("rocm", "vulkan")
 ALIAS_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_INSTANCES = 8
+MAX_VISION_PROJECTORS = 32
 
 
 def runtimes_dir() -> Path:
@@ -131,6 +132,29 @@ DEFAULT_CONFIG = {
     "endpoints": {},
     "selected_alias": "",
 }
+
+
+def detect_vision_projectors(model_path: str) -> list[str]:
+    """モデルと同じディレクトリにある mmproj GGUF を決定的に返す。
+
+    呼び出し元は先に files.resolve() でモデルパスを許可ルート内へ正規化する。
+    検出だけで VISION を有効化せず、登録画面で利用者が明示的に選ぶための候補にする。
+    """
+    model = Path(model_path)
+    candidates: list[Path] = []
+    try:
+        for child in model.parent.iterdir():
+            name = child.name.lower()
+            if child == model or child.is_symlink() or not child.is_file():
+                continue
+            if child.suffix.lower() == ".gguf" and "mmproj" in name:
+                resolved = child.resolve()
+                if resolved.parent == model.parent:
+                    candidates.append(resolved)
+    except OSError:
+        return []
+    ordered = sorted(candidates, key=lambda item: (item.name.lower(), item.name))
+    return [str(path) for path in ordered[:MAX_VISION_PROJECTORS]]
 
 
 def _endpoint_id_for_port(port: int) -> str:

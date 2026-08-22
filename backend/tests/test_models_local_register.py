@@ -69,8 +69,10 @@ def test_list_models_matches_running_alias_and_digest(monkeypatch):
 
     monkeypatch.setattr(ollama, "_get", tags)
     monkeypatch.setattr(ollama, "running_models", running)
+    monkeypatch.setattr(ollama, "get_model_config", lambda name: {"vlm_enabled": name.lower().startswith("qwen")})
     models = asyncio.run(ollama.list_models())
     assert [(item["loaded"], item["vram"]) for item in models] == [(True, 10), (True, 20)]
+    assert [item["vision_enabled"] for item in models] == [True, False]
     assert ollama.normalize_model_name("hf.co/Org/Model") == "hf.co/org/model:latest"
 
 

@@ -282,6 +282,7 @@ async def list_models() -> list[dict]:
             "loaded": active is not None,
             "expires_at": (active or {}).get("expires_at"),
             "vram": (active or {}).get("size_vram"),
+            "vision_enabled": bool(get_model_config(name).get("vlm_enabled")),
         })
     return out
 

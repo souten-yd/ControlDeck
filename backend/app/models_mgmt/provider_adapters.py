@@ -149,6 +149,7 @@ async def list_models(provider_id: str) -> list[dict]:
                     "path": model_path, "backend": backend, "port": config.get("port"),
                     "base_url": config.get("base_url"), "unit": config.get("unit"),
                     "runtime_status": config.get("runtime_status"),
+                    "vision_enabled": bool(config.get("mmproj_path")),
                 },
             })
         return result
