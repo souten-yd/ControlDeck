@@ -5,7 +5,7 @@ import asyncio
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.audit import service as audit
@@ -691,6 +691,24 @@ class LlamaInstanceBody(BaseModel):
     idle_exclude: bool | None = None
     endpoint_id: str | None = Field(default=None, max_length=128)
     order: int | None = Field(default=None, ge=1, le=64)
+
+
+@router.get("/llama/vision-detection")
+def llama_vision_detection(
+    model_path: str = Query(min_length=1, max_length=4096),
+    user: User = Depends(require_permission("workflows.edit")),
+):
+    """GGUFと同じフォルダのmmproj候補を検出する。検出時点では有効化しない。"""
+    from app.models_mgmt import llama
+
+    validated = _llama_instance_patch(LlamaInstanceBody(model_path=model_path))
+    candidates = llama.detect_vision_projectors(str(validated["model_path"]))
+    return {
+        "available": bool(candidates),
+        "candidates": candidates,
+        "suggested_path": candidates[0] if candidates else "",
+        "enabled_by_default": False,
+    }
 
 
 def _llama_instance_patch(body: LlamaInstanceBody) -> dict:

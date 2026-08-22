@@ -63,15 +63,27 @@ class LlamaCapacityProvider(ResourceProvider):
             instance,
         )
         loaded = bool(current.get("loaded"))
-        try:
-            model_bytes = Path(str(instance.get("model_path") or "")).stat().st_size
-        except OSError:
-            model_bytes = 0
+        model_bytes = 0
+        for key in ("model_path", "mmproj_path"):
+            path = str(instance.get(key) or "")
+            if not path:
+                continue
+            try:
+                model_bytes += Path(path).stat().st_size
+            except OSError:
+                continue
         device = self._devices.get("gpu0")
         headroom = 0 if loaded else 512 * 1024 * 1024
         peak = 0 if loaded else max(model_bytes + 2 * 1024**3, int(model_bytes * 1.75))
         if device is not None:
-            peak = min(peak, max(0, device.total_bytes - headroom))
+            # A capped low-confidence first load must fit the currently admitted
+            # device, not the theoretical empty device.  Capping at total-headroom
+            # made required_bytes equal total VRAM, so even normal driver usage
+            # caused every large local model to wait forever as insufficient_vram.
+            peak = min(
+                peak,
+                max(0, device.total_bytes - device.observed_used_bytes - headroom),
+            )
         return ResourceRequest.model_validate({
             "owner": f"llm:{alias}",
             "job_id": job_id,
