@@ -575,6 +575,12 @@ function MobileNavLink({
   );
 }
 
+/** 長い注記は折り返しの原因になる。意味を保った短い印にする。 */
+function hintMark(hint: string): string {
+  if (hint === "拡張機能") return "EXT";
+  return hint.length > 3 ? "!" : hint;
+}
+
 function ActionItem({
   icon,
   label,
@@ -600,9 +606,17 @@ function ActionItem({
           : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
-      <span className="text-lg">{icon}</span>
-      {label}
-      {hint && <span className="ml-auto text-xs font-normal text-zinc-400">{hint}</span>}
+      <span className="shrink-0 text-lg">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {hint && (
+        <span
+          title={hint}
+          aria-label={hint}
+          className="shrink-0 rounded-md border border-zinc-300 px-1 text-[10px] font-semibold uppercase leading-4 tracking-wide text-zinc-400 dark:border-zinc-700"
+        >
+          {hintMark(hint)}
+        </span>
+      )}
     </button>
   );
 }

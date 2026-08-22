@@ -155,8 +155,9 @@ export function invokeAddonCommand(
   );
 }
 
+/** 拡張機能のラベル。shell の項目名は英語なので、英語を優先して混在を避ける。 */
 export function addonLabel(label: AddonLabel): string {
-  const resolved = typeof label === "string" ? label : label.ja || label.en || "拡張機能";
+  const resolved = typeof label === "string" ? label : label.en || label.ja || "拡張機能";
   const characters = Array.from(resolved.replace(/[\u0000-\u001f\u007f]/g, "").trim());
   return characters.length > 24 ? `${characters.slice(0, 23).join("")}…` : characters.join("") || "拡張機能";
 }
