@@ -97,6 +97,31 @@ async def ai_capabilities(principal: AIAuth):
     }
 
 
+async def _complete_with_host_admission(
+    target,
+    runtime_request: RuntimeChatRequest,
+    request: Request,
+) -> str:
+    provider = provider_for_base_url(target.base_url)
+    if not target.gateway_managed:
+        return await provider.complete(runtime_request)
+
+    # llama.cpp must obey the exact same Broker lease/yield path as /api/v1/llm/v1.
+    # Add-ons do not acquire a second GPU lease themselves for this Host-owned
+    # inference; the selected LLM remains owner=llm:<alias> inside ControlDeck.
+    from app.models_mgmt import gateway as llm_gateway
+
+    adapter = None
+    lease_id = ""
+    renew = None
+    try:
+        adapter, lease_id, renew = await llm_gateway._acquire_gateway_lease(target.model, request)
+        return await provider.complete(runtime_request)
+    finally:
+        if adapter is not None and lease_id and renew is not None:
+            await llm_gateway._release_gateway_lease(adapter, lease_id, renew)
+
+
 @router.post("/complete")
 async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAuth):
     try:
@@ -116,7 +141,7 @@ async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAut
         timeout_seconds=body.timeout_seconds,
     )
     try:
-        content = await provider_for_base_url(target.base_url).complete(runtime_request)
+        content = await _complete_with_host_admission(target, runtime_request, request)
     except RuntimeProviderError as exc:
         raise HTTPException(status_code=502, detail="ControlDeck AI gatewayで生成に失敗しました") from exc
 
