@@ -245,6 +245,28 @@ worktree直下`.venv`不在によるTerminal Automation 2件と、固定待機�
 worktree直下からcanonical `./deck.sh test`を再実行し、最終headで725件成功／1件skip（58.08秒）。frontend sourceは
 変更しておらず、frontend build／browser／Hosted CIはNOT TESTED。
 
+## OpenCode current-project output grant（2026-08-23）
+
+- OpenCodeのjob／TUI runtime configが、CodeDEV直下で解決済みのProject Lab project IDだけを署名済み
+  Agent MCP tokenへ束縛するようにした。project外やproject内のnested cwdにはclaimを付けない。
+- 汎用MCP tool `control_deck.project_output_grant`を追加した。現在のRBAC、effective agent tool、Add-on enable、
+  `projects.pick`／`files.export` grantを毎回再評価し、current project内の既存subdirectoryだけを短命
+  Runtime export `grant:`へ変換する。project root、絶対path、traversal、backslash、symlink脱出を拒否し、
+  応答／auditへraw host pathを出さない。Media固有のroute、provider、model、配置規則は追加していない。
+- Agent tool service tokenはschema検証済みinput内の`grant:`だけを最大8件まで委譲する。grant無しを
+  空allowlistとして明示し、同じownerの別要求grantを暗黙利用できないようにした。
+- 実受入: installed ControlDeckをbranch codeで再起動（PID 594021）し、既存のenabled Media Forgeと
+  Project Lab `Hanabi`を使って公開loopback Agent MCPを実行した。778msの一巡でMedia tool 3件と汎用Host
+  tool 1件を発見し、`js/scenes`に対するexport grantがopaque `grant:`、`kind=export`、`name=scenes`だけを
+  返しpathを含まないことを確認した。project claim無しtokenではHost tool非掲載、project rootとtraversalは
+  ともに422だった。audit 3件はaddon ID、project ID、directory depthだけで、token、grant ID、raw pathを
+  含まなかった。実output commitとOpenCodeによるcode参照更新はMedia Forge側の後続G4 sliceで確認するため、
+  このHost prerequisiteではNOT TESTED。
+- 自動検証: Agent MCP／Add-on execution集中32件成功（最終1.52秒）。canonical `./deck.sh test`は2回とも
+  755件成功／1件skip／既知の固定1秒排他Job直列化test 1件失敗（各59.52秒、59.34秒）だった。同testは
+  直後の単独10回すべて成功したため、全suite中のscheduler遅延として記録し、成功へ読み替えない。
+  frontend source、browser、Hosted CIはNOT TESTED。
+
 ## OpenCode Add-on Agent Tool MCP投影（2026-08-21）
 
 - OpenCode featureのjob／TUI専用0600 runtime configへ、現在有効なAdd-on `agent_tools`を投影する汎用

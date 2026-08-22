@@ -136,6 +136,10 @@ dry-runはschema検証だけでendpointを呼びません。disable／unavailabl
 `agent_tools`は実行Workflow ownerの現在permissionでLLM tool listへ追加されます。各callはControlDeck Jobに紐づき、
 同期応答は`job_id`、`asset_id`（`job-result:{job_id}`）、bounded outputです。`wait: false`では202とJob IDを返します。
 raw host pathは引数schemaが許可しても拒否されます。ファイルはhostが発行した`asset:`／`grant:` IDで設計してください。
+OpenCodeがProject Lab管理下のprojectで動く場合、`projects.pick`と`files.export`を許可されたAdd-onには
+`control_deck.project_output_grant`も投影されます。coding agentが指定するのは`addon_id`とproject相対の既存
+subdirectoryだけで、Hostが検証して短命export `grant:`を返します。そのIDをagent tool inputへ明示すると、
+該当callのservice tokenだけへ委譲されます。project pathやownerの他grantはAdd-onへ渡りません。
 
 ### Context Action
 

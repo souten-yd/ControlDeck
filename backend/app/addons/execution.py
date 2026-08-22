@@ -23,6 +23,10 @@ SCHEMA_TIMEOUT_SECONDS = 5.0
 EXECUTION_TIMEOUT_SECONDS = 120.0
 WORKFLOW_NODE_PREFIX = "addon.workflow:"
 _NODE_PATTERN = re.compile(r"^addon\.workflow:([a-z][a-z0-9-]{0,63}):([a-z][a-z0-9._-]{0,127})$")
+_GRANT_ID_PATTERN = re.compile(
+    r"^grant:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 _schema_cache: dict[tuple[int, str, str], dict[str, Any]] = {}
 _agent_tool_map: dict[str, tuple[int, str, str]] = {}
 _WORKFLOW_INTERNAL_KEYS = {
@@ -401,13 +405,15 @@ async def create_agent_tool_job(
     tool_schema = await agent_schema(addon_id, contribution_id, permissions=permissions)
     _reject_unscoped_host_paths(arguments)
     validate(tool_schema, arguments, label="agent tool input")
+    grant_ids = tuple(_delegated_grant_ids(arguments))
 
     async def runner(job) -> dict[str, Any]:
         job.log("Add-on agent toolを実行しています")
         output = await invoke(
             "agent_tools", addon_id, contribution_id,
             {"input": arguments, "correlation": {"job_id": job.id}},
-            subject=f"job:{job.id}", actor_user_id=owner_user_id, permissions=permissions,
+            subject=f"job:{job.id}", actor_user_id=owner_user_id,
+            grant_ids=grant_ids, permissions=permissions,
         )
         return {
             "job_id": job.id,
@@ -467,6 +473,29 @@ def _reject_unscoped_host_paths(value: Any) -> None:
             "agent toolにはhost pathではなくasset/grant IDを指定してください",
             code="unscoped_host_path", status_code=422,
         )
+
+
+def _delegated_grant_ids(value: Any) -> list[str]:
+    """Collect only opaque grants explicitly present in validated tool input."""
+    found: list[str] = []
+
+    def visit(current: Any) -> None:
+        if isinstance(current, dict):
+            for nested in current.values():
+                visit(nested)
+        elif isinstance(current, list):
+            for nested in current:
+                visit(nested)
+        elif isinstance(current, str) and _GRANT_ID_PATTERN.fullmatch(current) and current not in found:
+            found.append(current)
+
+    visit(value)
+    if len(found) > 8:
+        raise AddonExecutionError(
+            "agent toolへ委譲できるgrantは8件までです",
+            code="too_many_grants", status_code=422,
+        )
+    return found
 
 
 async def invoke_agent_tool_name(name: str, arguments: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:

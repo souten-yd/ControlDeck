@@ -1218,6 +1218,31 @@ OpenCode featureが有効な場合、Hostが現在の利用者に見えるAdd-on
 4. browser cookieをbridgeへ渡す案はCSRF／session authorityを長時間processへ拡散する。
 5. 起動時のtool snapshotを固定する案は、disableや権限剥奪後も呼出せる時間差を作る。
 
+### 9.5 OpenCodeのcurrent-project output grant（2026-08-23 追補）
+
+OpenCodeからAdd-onが生成した成果物をコードプロジェクトへ配置する場合も、Add-onへproject pathや
+project全体権限を渡さない。Hostが生成するjob／TUI専用MCP tokenへ、実行開始時に解決済みの
+Project Lab project IDだけを署名し、次の汎用Host toolを同じstdio MCPへ追加する。
+
+- `control_deck.project_output_grant`は、tokenにcurrent projectがあり、利用者が`project_lab.view`と
+  `files.edit`を持ち、対象Add-onが有効なagent toolと`projects.pick`／`files.export` grantを持つ場合だけ
+  discoveryされる。
+- 入力は対象`addon_id`とproject相対の既存directoryだけである。HostはProject Labのproject解決、
+  realpath containment、directory種別を再検証し、project root、絶対path、traversal、symlink脱出を拒否する。
+- 応答は既存Add-on Runtimeの短命`grant:` metadataだけで、Host pathを含まない。Add-on固有の配置規則、
+  model、route、provider判断はHostへ追加しない。
+- Add-on agent toolを呼ぶservice tokenの`grant_ids`は、schema検証済みinput内に明示されたopaque grantだけを
+  最大8件まで収集する。grantが無い呼出しは空allowlistとなり、同じ利用者の既知grantを横取りできない。
+- project外で起動したOpenCodeにはproject claimを付けず、このHost toolを公開しない。project移動後も
+  tokenを使って別projectへ切り替えられず、新しい実行でtokenを再発行する。
+
+検討したが採用しなかった案:
+
+1. Add-onへcurrent projectのraw pathを渡す案は、Host境界のopaque grant契約を壊す。
+2. project root全体を常時grantする案は、単一出力配置に不要な書込み範囲を与える。
+3. Media Forge専用Host toolを追加する案は、Add-on Platformを用途固有実装へ結合する。
+4. Add-on tool tokenへownerの全grantを暗黙委譲する案は、別要求で得たgrantの再利用を許す。
+
 ---
 
 ## 10. セキュリティ要件（前版 §29 を拡張）
