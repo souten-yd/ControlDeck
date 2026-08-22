@@ -2,6 +2,35 @@
 
 最終更新: 2026-08-23
 
+## Media Forge v0.3.2 catalog admission／実update（2026-08-23）
+
+- 公開Release v0.3.2のLinux x86_64 artifactは30,642,575 bytes、GitHub asset digestと
+  ローカルSHA-256が
+  `ec864154b9d5e79fdfee8f616d3b02bd74ac29f80fd10822ac676881de12e3d9`で一致した。
+  targetはMedia Forge merge commit `676f8cce1e4ecdc929967a2923250440cc4de817`。
+- PR #230は汎用trusted catalogのSHAだけを更新し、merge commitは
+  `a47e4175e55f74d18b20bb5400b2fea96d048167`。provider code、route、依存、capability、
+  Media固有UI文言は追加していない。hosted CIは使っていない。
+- backend cwdからrelease-bundle／Add-on AI／contract集中28件成功（1.18秒）。repository rootから
+  直接呼んだ最初のcontract実行は、test内subprocessの`app` import cwdを外して2件失敗したが、
+  canonical cwdで全件成功し、code変更は不要だった。
+
+実Optional Feature Manager updateは23.59秒で成功し、`version=0.3.2`、installed／managed／enabled／
+healthy、`previous_version=0.3.1`を返した。`current` symlink、service WorkingDirectory、ExecStartは全て
+`versions/0.3.2`を指し、systemd main PID `474013`でactive/running。rollback用に0.3.1と0.3.2の
+2版を保持している。実HTTP `/health`はcontract 2.0／healthy、core、ROCm runtime、R9700 gfx1201、
+model library、diskの全setup check `ok`だった。
+
+認証済みChromiumでinstalled workspaceを開き、bridge `ready`、H3 card／評価button／新しいworkspace内
+dialog、console/page error 0を確認した。`/api/v1/resources`のactive lease、Media Forge active lease、
+waiting requestは全て0件。Media Forge DBのactive model operation／local jobも0件、H3 native workerも
+0件だった。
+
+feature-data境界は更新前後で不変。H3 snapshotは26,978,278,484 bytes、denoiser blob hashは
+`cfe0795c00ab6e6ebf8c64fe4574f45a828e8a93e0876bca704e055662a9d7b8`で一致し、`.downloads`は空。
+Media Forge assets／models／feature data／shared cacheは削除していない。本体にMedia固有code、route、
+依存を入れない完成条件を維持した。
+
 ## Media Forge v0.3.1 catalog admission／実update（2026-08-23）
 
 - 公開Release v0.3.1のLinux x86_64 artifactは30,641,380 bytes、GitHub asset digestと
