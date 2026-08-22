@@ -1,6 +1,31 @@
 # 実装状況
 
-最終更新: 2026-08-22
+最終更新: 2026-08-23
+
+## Media Forge v0.3.1 catalog admission／実update（2026-08-23）
+
+- 公開Release v0.3.1のLinux x86_64 artifactは30,641,380 bytes、GitHub asset digestと
+  trusted catalog pinはSHA-256
+  `1b15eaa58f477bce982c3dcc3b093518c84382d11f8fc6bb7a9e1afe47dd30c4`で一致した。
+  PR #227はこのcatalog dataだけを更新し、Media固有route、provider分岐、依存、UI文言は追加していない。
+- 最初の実updateは、bundle manifestが要求する既存のprovider-neutral capability
+  `ai.inference`がcatalog allowlistに無く、`package requests capabilities outside the trusted catalog`
+  でcurrent切替前にfail closedした。`current`はv0.3.0を維持し、停止していた旧serviceを直ちに
+  healthyへ戻した。PR #228は当該標準capabilityをcatalog allowlistへ追加しただけである。
+- 訂正後の`./deck.sh feature update media-forge`は13.2秒以内に成功し、version 0.3.1、installed／
+  managed／enabled／healthy、`current -> versions/0.3.1`、`previous_version=0.3.0`を返した。
+  systemd MainPID 421078のExecStartは`versions/0.3.1/bin/mediaforge serve`で、実HTTP `/health`は
+  contract 2.0／healthy、R9700 gfx1201、ROCm Torch runtime、model library、diskをすべてokと返した。
+
+ローカル集中gateはrelease-bundle／Add-on AI／contract 28件成功（4.17秒）。最初に別worktreeの
+venvを`PYTHONPATH`なしで使った実行はsubprocess内の`app` importに2件失敗したが、
+`PYTHONPATH=backend`を指定した正しいworktree実行では全件成功した。hosted CIは使用していない。
+認証済みworkspaceのH3評価ボタンを押した後のHost Job／Broker／GPU実行はMedia Forge側の次の実測であり、
+このcatalog更新の成功には数えていない。
+
+canonical `./deck.sh test`の初回runは752件成功／1件skip／1件失敗（60.06秒）で、変更外の
+resource job直列化テストが1秒のpoll期間内に`queued`から`running`へ移らなかった。単独再実行は
+1件成功（0.05秒）、続くcanonical全件再実行は753件成功／1件skip（62.20秒）だった。
 
 ## Add-on AI Gateway実受け入れ／llama.cpp VISION登録判定（2026-08-22）
 
