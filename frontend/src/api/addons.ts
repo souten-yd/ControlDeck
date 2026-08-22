@@ -138,6 +138,23 @@ export function createAddonFileGrant(addonId: string, path: string, kind: "read"
   });
 }
 
+export interface AddonCommandResult {
+  route: string | null;
+  result: Record<string, unknown>;
+}
+
+/** 宣言された command / quick action を実行する。route が返れば host が遷移する。 */
+export function invokeAddonCommand(
+  addonId: string,
+  contributionId: string,
+  kind: "commands" | "quick_actions" = "quick_actions",
+) {
+  return api<AddonCommandResult>(
+    `/addons/${encodeURIComponent(addonId)}/commands/${encodeURIComponent(contributionId)}/invoke`,
+    { method: "POST", json: { kind, input: {} } },
+  );
+}
+
 export function addonLabel(label: AddonLabel): string {
   const resolved = typeof label === "string" ? label : label.ja || label.en || "拡張機能";
   const characters = Array.from(resolved.replace(/[\u0000-\u001f\u007f]/g, "").trim());
