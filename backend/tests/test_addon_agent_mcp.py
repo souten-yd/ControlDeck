@@ -1,6 +1,7 @@
 import asyncio
 import json
 from contextlib import nullcontext
+from pathlib import Path
 
 
 def test_agent_mcp_token_is_user_bound_and_long_ttl_is_explicit(admin_client):
@@ -14,7 +15,7 @@ def test_agent_mcp_token_is_user_bound_and_long_ttl_is_explicit(admin_client):
 
     with SessionLocal() as db:
         user = db.execute(select(User).where(User.username == "admin")).scalar_one()
-    token = issue_opencode_token(user.id, "job-safe_1")
+    token = issue_opencode_token(user.id, "job-safe_1", project_id="sample-project")
     claims = tokens.verify(
         token,
         addon_id="control-deck",
@@ -23,8 +24,11 @@ def test_agent_mcp_token_is_user_bound_and_long_ttl_is_explicit(admin_client):
     )
     assert claims["actor_user_id"] == user.id
     assert claims["sub"] == "opencode:job-safe_1"
+    assert claims["project_id"] == "sample-project"
     with pytest.raises(tokens.AddonTokenError):
         tokens.verify(token, addon_id="control-deck", kind="agent-mcp")
+    with pytest.raises(tokens.AddonTokenError):
+        issue_opencode_token(user.id, "job-safe_1", project_id="../outside")
 
 
 def test_agent_mcp_catalog_uses_public_ids_and_namespaces_duplicates(monkeypatch):
@@ -137,11 +141,18 @@ def test_runtime_config_projects_mcp_only_with_user_authority(monkeypatch, tmp_p
     from app.integrations.opencode import provider
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
-    monkeypatch.setattr(agent_mcp, "issue_opencode_token", lambda user_id, correlation: "signed-user-token")
+    issued = []
+
+    def issue_token(user_id, correlation, *, project_id=None):
+        issued.append((user_id, correlation, project_id))
+        return "signed-user-token"
+
+    monkeypatch.setattr(agent_mcp, "issue_opencode_token", issue_token)
     without_user = provider._runtime_config("without-user", "http://127.0.0.1:8090/v1", "local")
     assert "mcp" not in json.loads(without_user.read_text(encoding="utf-8"))
     with_user = provider._runtime_config(
-        "with-user", "http://127.0.0.1:8090/v1", "local", owner_user_id=7,
+        "with-user", "http://127.0.0.1:8090/v1", "local",
+        owner_user_id=7, project_id="sample-project",
     )
     payload = json.loads(with_user.read_text(encoding="utf-8"))
     server = payload["mcp"]["controldeck_addons"]
@@ -149,3 +160,101 @@ def test_runtime_config_projects_mcp_only_with_user_authority(monkeypatch, tmp_p
     assert isinstance(server["command"], list) and server["command"][1].endswith("addon_mcp_bridge.py")
     assert server["environment"]["CONTROL_DECK_ADDON_MCP_TOKEN"] == "signed-user-token"
     assert server["environment"]["CONTROL_DECK_ADDON_MCP_URL"].startswith("http://127.0.0.1:")
+    assert issued == [(7, "with-user", "sample-project")]
+
+
+def test_managed_project_id_accepts_only_direct_codedev_child(monkeypatch, tmp_path):
+    from app.integrations.opencode import provider
+
+    root = tmp_path / "CodeDEV"
+    project = root / "game"
+    nested = project / "packages" / "client"
+    outside = tmp_path / "outside"
+    nested.mkdir(parents=True)
+    outside.mkdir()
+    monkeypatch.setattr(provider, "codedev_root", lambda: root)
+    assert provider._managed_project_id(project) == "game"
+    assert provider._managed_project_id(nested) is None
+    assert provider._managed_project_id(outside) is None
+
+
+def test_project_output_grant_tool_is_project_scoped_and_opaque(admin_client, monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.addon_runtime import grants
+    from app.addons import agent_mcp
+    from app.database import SessionLocal, get_db
+    from app.models import User
+    from app.project_lab import service as project_lab
+    from sqlalchemy import select
+
+    root = tmp_path / "CodeDEV"
+    destination = root / "game" / "assets" / "generated"
+    destination.mkdir(parents=True)
+    escaped = tmp_path / "escaped"
+    escaped.mkdir()
+    (root / "game" / "linked").symlink_to(escaped, target_is_directory=True)
+    grant_data = tmp_path / "grant-data"
+    monkeypatch.setattr(project_lab, "project_root", lambda: root)
+    monkeypatch.setattr(grants, "data_dir", lambda: grant_data)
+    monkeypatch.setattr(grants.files, "resolve", lambda value: Path(value).resolve(strict=True))
+    monkeypatch.setattr(agent_mcp, "_eligible_output_addons", lambda _permissions: ["fake-addon"])
+
+    async def no_addon_tools(_permissions):
+        return []
+
+    monkeypatch.setattr(agent_mcp.execution, "agent_mcp_tools", no_addon_tools)
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+    app = FastAPI()
+    app.include_router(agent_mcp.router, prefix="/api/v1")
+
+    def database():
+        with SessionLocal() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database
+    local_client = TestClient(app)
+    scoped = agent_mcp.issue_opencode_token(user.id, "project-tool", project_id="game")
+    headers = {"Authorization": f"Bearer {scoped}", "X-Requested-With": "ControlDeck"}
+    listed = local_client.get("/api/v1/addons/agent-mcp/tools", headers=headers)
+    assert listed.status_code == 200
+    assert [tool["name"] for tool in listed.json()["tools"]] == [agent_mcp.PROJECT_OUTPUT_GRANT_TOOL]
+    created = local_client.post(
+        "/api/v1/addons/agent-mcp/call",
+        headers=headers,
+        json={"name": agent_mcp.PROJECT_OUTPUT_GRANT_TOOL, "arguments": {
+            "addon_id": "fake-addon", "relative_directory": "assets/generated",
+        }},
+    )
+    assert created.status_code == 200, created.text
+    assert set(created.json()) == {"grant_id", "kind", "name", "size", "expires_at"}
+    assert created.json()["grant_id"].startswith("grant:") and str(root) not in created.text
+    escaped_response = local_client.post(
+        "/api/v1/addons/agent-mcp/call",
+        headers=headers,
+        json={"name": agent_mcp.PROJECT_OUTPUT_GRANT_TOOL, "arguments": {
+            "addon_id": "fake-addon", "relative_directory": "linked",
+        }},
+    )
+    assert escaped_response.status_code == 422
+    root_response = local_client.post(
+        "/api/v1/addons/agent-mcp/call",
+        headers=headers,
+        json={"name": agent_mcp.PROJECT_OUTPUT_GRANT_TOOL, "arguments": {
+            "addon_id": "fake-addon", "relative_directory": ".",
+        }},
+    )
+    assert root_response.status_code == 422
+
+    unscoped = agent_mcp.issue_opencode_token(user.id, "no-project")
+    unscoped_headers = {"Authorization": f"Bearer {unscoped}", "X-Requested-With": "ControlDeck"}
+    assert local_client.get("/api/v1/addons/agent-mcp/tools", headers=unscoped_headers).json()["tools"] == []
+    denied = local_client.post(
+        "/api/v1/addons/agent-mcp/call",
+        headers=unscoped_headers,
+        json={"name": agent_mcp.PROJECT_OUTPUT_GRANT_TOOL, "arguments": {
+            "addon_id": "fake-addon", "relative_directory": "assets/generated",
+        }},
+    )
+    assert denied.status_code == 404

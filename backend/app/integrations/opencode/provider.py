@@ -144,7 +144,14 @@ def _api_key_for(base_url: str) -> str:
     return gateway.get_api_key(create=True) or "sk-no-key"
 
 
-def _runtime_config(job_id: str, base_url: str, model: str, *, owner_user_id: int | None = None) -> Path:
+def _runtime_config(
+    job_id: str,
+    base_url: str,
+    model: str,
+    *,
+    owner_user_id: int | None = None,
+    project_id: str | None = None,
+) -> Path:
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
     payload = {
@@ -164,7 +171,7 @@ def _runtime_config(job_id: str, base_url: str, model: str, *, owner_user_id: in
         from app.config import get_config
 
         bridge = Path(__file__).with_name("addon_mcp_bridge.py").resolve()
-        token = issue_opencode_token(owner_user_id, safe_job_id)
+        token = issue_opencode_token(owner_user_id, safe_job_id, project_id=project_id)
         payload["mcp"] = {
             "controldeck_addons": {
                 "type": "local",
@@ -184,6 +191,14 @@ def _runtime_config(job_id: str, base_url: str, model: str, *, owner_user_id: in
     os.chmod(temp, 0o600)
     os.replace(temp, path)
     return path
+
+
+def _managed_project_id(project: Path) -> str | None:
+    try:
+        relative = project.resolve(strict=True).relative_to(codedev_root().resolve())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return relative.name if len(relative.parts) == 1 and not relative.name.startswith(".") else None
 
 
 def codedev_root() -> Path:
@@ -311,7 +326,10 @@ def tui_command(
         raise CodeAgentError(str(exc)) from exc
     if not project.is_dir():
         raise CodeAgentError("project pathはディレクトリを指定してください")
-    config = _runtime_config(f"tui-{owner_user_id or 0}", endpoint, model_id, owner_user_id=owner_user_id)
+    config = _runtime_config(
+        f"tui-{owner_user_id or 0}", endpoint, model_id,
+        owner_user_id=owner_user_id, project_id=_managed_project_id(project),
+    )
     argv = [str(binary), "--model", f"controldeck/{model_id}"]
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
@@ -401,6 +419,7 @@ async def run_chat(
     model_id = str(settings["model"]).strip()
     runtime_config = _runtime_config(
         f"chat-{job.id}", endpoint, model_id, owner_user_id=job.owner_user_id,
+        project_id=_managed_project_id(project),
     )
     # LLM endpoint（llama.cpp instance）はondemand hookを通らないため先に起動保証する
     from app.models_mgmt import llama
@@ -502,7 +521,10 @@ class OpenCodeProvider:
         systemctl = shutil.which("systemctl")
         if binary is None or systemd_run is None or systemctl is None:
             raise CodeAgentError("OpenCodeまたはsystemd user managerを利用できません")
-        runtime_config = _runtime_config(job.id, endpoint, model_id, owner_user_id=job.owner_user_id)
+        runtime_config = _runtime_config(
+            job.id, endpoint, model_id, owner_user_id=job.owner_user_id,
+            project_id=_managed_project_id(project),
+        )
         prompt_path = (_integration_dir() / f"prompt-{job.id}.txt").resolve()
         if not prompt_path.is_relative_to(_integration_dir()):
             raise CodeAgentError("prompt pathがintegration directory外です")

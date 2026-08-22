@@ -223,12 +223,13 @@ def test_workflow_catalog_dry_run_execution_and_saved_unavailable_node(addon_api
 
 def test_agent_tool_runs_as_owned_job_and_returns_asset_reference(addon_api, monkeypatch):
     client, _registry = addon_api
-    from app.addons import execution
+    from app.addons import execution, tokens
 
     execution.reset_for_tests()
     assert client.post("/api/v1/addons", json=addon_manifest(), headers=CSRF_HEADERS).status_code == 201
     assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
     requests: list[dict] = []
+    service_claims: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/schemas/agent-tool":
@@ -237,6 +238,10 @@ def test_agent_tool_runs_as_owned_job_and_returns_asset_reference(addon_api, mon
                 "properties": {"prompt": {"type": "string"}}, "additionalProperties": False,
             })
         requests.append(json.loads(request.content))
+        service_claims.append(tokens.verify(
+            request.headers["Authorization"].removeprefix("Bearer "),
+            addon_id="fake-addon", kind="service",
+        ))
         return httpx.Response(200, json={"content": [{"type": "text", "text": "generated"}]})
 
     monkeypatch.setattr(execution, "_client", _transport(handler))
@@ -266,9 +271,25 @@ def test_agent_tool_runs_as_owned_job_and_returns_asset_reference(addon_api, mon
         "input": {"prompt": "hello"},
         "correlation": {"job_id": result["job_id"]},
     }]
+    assert service_claims[0]["grant_ids"] == []
     job = client.get(f"/api/v1/jobs/{result['job_id']}")
     assert job.status_code == 200
     assert job.json()["owner_user_id"] is not None and job.json()["status"] == "succeeded"
+
+
+def test_agent_tool_delegates_only_opaque_grants_in_validated_input():
+    from app.addons import execution
+
+    first = "grant:11111111-1111-1111-1111-111111111111"
+    second = "grant:22222222-2222-2222-2222-222222222222"
+    assert execution._delegated_grant_ids({
+        "output": first, "nested": [{"same": first}, {"other": second}], "asset": "asset:7",
+    }) == [first, second]
+    with pytest.raises(execution.AddonExecutionError) as too_many:
+        execution._delegated_grant_ids({
+            "grants": [f"grant:00000000-0000-0000-0000-{value:012d}" for value in range(9)],
+        })
+    assert too_many.value.code == "too_many_grants"
 
 
 def test_context_action_uses_opaque_scoped_grant_and_rejects_paths(addon_api, monkeypatch):

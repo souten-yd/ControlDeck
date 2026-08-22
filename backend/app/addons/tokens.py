@@ -61,6 +61,7 @@ def issue(
     kind: str,
     actor_user_id: int | None = None,
     grant_ids: list[str] | tuple[str, ...] | None = None,
+    project_id: str | None = None,
     ttl_seconds: int = TOKEN_TTL_SECONDS,
     now: int | None = None,
 ) -> str:
@@ -71,6 +72,15 @@ def issue(
         raise AddonTokenError("actor user IDが不正です")
     if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or not 1 <= ttl_seconds <= MAX_TOKEN_TTL_SECONDS:
         raise AddonTokenError("token TTLが不正です")
+    if project_id is not None and (
+        not isinstance(project_id, str)
+        or not project_id
+        or len(project_id) > 128
+        or project_id in {".", ".."}
+        or project_id.startswith(".")
+        or any(character in project_id for character in "/\\\x00")
+    ):
+        raise AddonTokenError("project IDが不正です")
     delegated_grants = list(dict.fromkeys(grant_ids or ()))
     if len(delegated_grants) > 8 or any(
         not isinstance(value, str) or not value.startswith("grant:") or len(value) > 128
@@ -89,6 +99,8 @@ def issue(
         claims["actor_user_id"] = actor_user_id
     if grant_ids is not None:
         claims["grant_ids"] = delegated_grants
+    if project_id is not None:
+        claims["project_id"] = project_id
     payload = json.dumps(claims, sort_keys=True, separators=(",", ":")).encode()
     encoded = _b64encode(payload)
     signature = _b64encode(hmac.new(_signing_key(), encoded.encode(), hashlib.sha256).digest())

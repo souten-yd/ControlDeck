@@ -49,6 +49,11 @@ OpenCodeはControl Deckの必須依存にしない。通常の`./deck.sh`、serv
   渡さない。署名済みuser-bound tokenは0600のruntime configへ置き、最大8時間で失効する。
 - tool discovery／callごとに現在のRBAC、Add-on enable、capability、schemaをHostで再検証し、callは既存の
   owner付きAdd-on Host Jobへ流す。結果はjob IDとopaque asset IDを含み、ログからpathを拾わせない。
+- Project Lab管理下のprojectで起動した場合だけ、署名済みtokenをcurrent projectへ束縛する。
+  `projects.pick`／`files.export`を許可されたAdd-onには、project相対の既存subdirectoryをHostが検証して
+  短命output `grant:`へ変換する汎用toolを投影する。OpenCode／Add-onへproject pathは渡さない。
+- Add-on toolへ渡すservice tokenは、検証済みinputに含まれる`grant:`だけを要求単位で委譲し、
+  grant入力が無い場合は空allowlistとする。
 - OpenCodeのユーザー／グローバルconfigは変更しない。feature無効時はMCP Host endpointも登録しない。
 
 ## UI
