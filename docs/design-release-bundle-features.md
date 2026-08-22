@@ -17,6 +17,29 @@ the catalog digest is the review step that admits that exact artifact. Preview
 entries may temporarily rely on the adjacent checksum asset, and are labeled as
 such in Settings.
 
+## Release admission checklist
+
+Every generally available bundle update must complete all of the following. A
+published release alone is not an update and must not be described as one.
+
+1. Download the published artifact independently from the release page, rather
+   than trusting the local packaging output.
+2. Match its SHA-256 against the release asset digest and adjacent checksum
+   asset.
+3. Update the source-controlled `trusted-catalog.json` SHA-256 to that exact
+   digest in a reviewed ControlDeck PR. Never carry the previous release's pin
+   forward.
+4. Run the provider's package-manifest, Add-on-manifest, smoke, atomic switch,
+   service-health, and rollback-retention checks through the normal feature
+   operation.
+5. Record the admitted version, digest, byte size, job result, selected
+   `current` target, retained rollback version, and preserved persistent-data
+   measurements in `docs/implementation-status.md`.
+
+The operator CLI derives valid feature IDs from the same trusted registry as
+Settings and the API. Shell entrypoints must not maintain a second fixed
+feature allowlist; catalog review remains the authorization boundary.
+
 ## Trust and format
 
 Each catalog entry fixes the GitHub owner/repository, release metadata endpoint,

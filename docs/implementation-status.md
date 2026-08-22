@@ -2,6 +2,35 @@
 
 最終更新: 2026-08-22
 
+## Media Forge v0.3.0 catalog admission／実update（2026-08-22）
+
+- 公開GitHub Release v0.3.0のLinux x86_64 artifact（30,781,945 bytes）をrelease pageから
+  独立に取得し、GitHub asset digest、隣接checksum asset、取得ファイル、trusted catalogの4者を
+  SHA-256 `d8055331b96befc3de2bbf99cb3823ad6a5159158a0fab6521f40f8d719aa48f`で一致させた。
+  release公開だけでは導入許可にならないこと、毎releaseでcatalog pinを更新すること、独立download照合と
+  実updateの記録を必須にするchecklistを`docs/design-release-bundle-features.md`へ追加した。
+- backend registry／Settingsはtrusted catalog全体を正としていた一方、`deck.sh feature`だけが
+  `opencode|pyinstaller`を別allowlistにしてMedia Forgeを拒否していた。shell側の固定一覧を除去し、未知IDの
+  fail-closed判定はcatalogを読む`app.features.cli`へ一本化した。Media固有route、依存、provider分岐は追加していない。
+
+実機検証: 稼働中v0.2.4から、同じ汎用Optional Feature Managerのupdateを実行した。9.90秒、最大RSS
+787,656 KiBでv0.3.0／healthyとなり、`current -> versions/0.3.0`、実systemd PID 198210、実行path
+`versions/0.3.0/bin/mediaforge`を観測した。旧`versions/0.2.4`はrollback用に保持され、さらに古いv0.2.3は
+retention 2に従ってprovider管理領域から除かれた。serviceと同じ固定環境でpackaged doctorは
+`status=ok, version=0.3.0, packaged=true`、実HTTP `/health`はcontract 2.0／healthyを返し、R9700 gfx1201、
+PyTorch 2.10.0+ROCm 7.2.1、model libraryをすべてokと報告した。Add-on registryの実manifestもversion 0.3.0、
+enabled、既存host capability grantを維持した。
+
+更新前後で外部model-managementは15,975,821,813 bytesのまま、永続feature dataは4,731,433,128から
+4,731,441,264 bytesとなった。差分8,136 bytesはprovision statusと既存SQLiteの更新で、asset APIは既存30件、
+model APIは既存FLUX.2 Klein 4Bをavailableとして返した。providerが保持したdownload artifactも30,781,945 bytes、
+上記SHA-256と一致する。`./deck.sh feature status media-forge`の実公開CLIはv0.3.0／healthyを返した。
+
+自動検証はrelease-bundle／Add-on contract集中22件成功（0.92秒）、canonical `./deck.sh test`は
+751件成功／1件skip（59.33秒）。これらは上記実process／HTTP証拠の代替にしない。既存ControlDeck sessionの
+E2E資格情報がこの実行環境へ渡されていないため、更新後の実Settings画面を認証済みbrowserで開く確認は
+NOT TESTED。v0.3.0 bundle単体の実browser確認はMedia Forge側で済んでいるが、Host Settings確認とは混同しない。
+
 ## Media Forge v0.1.2 catalog pin／direct GPU placement 実証（2026-08-22）
 
 - trusted catalog の Media Forge artifact SHA-256を、公開GitHub Release v0.1.2の
