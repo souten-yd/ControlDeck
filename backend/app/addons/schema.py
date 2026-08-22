@@ -33,6 +33,7 @@ HostCapability: TypeAlias = Literal[
     "jobs.write",
     "notifications.show",
     "resources.acquire",
+    "ai.inference",
 ]
 LocalizedLabel: TypeAlias = str | dict[Literal["en", "ja"], str]
 
