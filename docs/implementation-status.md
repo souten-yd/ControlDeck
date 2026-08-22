@@ -2,6 +2,41 @@
 
 最終更新: 2026-08-22
 
+## Add-on AI Gateway実受け入れ／llama.cpp VISION登録判定（2026-08-22）
+
+- PR #224で追加した汎用`ai.inference` bridgeを実機受け入れまで完了した。llama.cppの新規GGUF登録時は、
+  許可root内で解決したモデルと同じdirectoryにある通常fileの`*mmproj*.gguf`だけを最大32件、決定的順序で検出する。
+  symlinkと別directoryは候補にせず、検出してもVISIONは初期無効のまま、利用者が明示的にONにした場合だけ
+  `mmproj_path`を保存する。モデルpath変更時も再び無効へ戻す。
+- 共通モデル一覧へprovider identityではなく`vision_enabled`だけを投影し、llama.cppは`mmproj_path`、既存Ollamaは
+  `vlm_enabled=true`の場合に一覧へ`VISION` markを表示する。Add-onのrequest／responseには従来どおりruntime、model、
+  port、projector pathを公開しない。
+- 35B+mmprojの初回実行で、32GiB GPUの空き34,148,831,232 bytesに対しcold-load低信頼推定を理論総VRAM
+  34,208,743,424 bytesへcapしていたため、driver使用59,912,192 bytesだけで`insufficient_vram`となる問題を再現した。
+  capを現在のobserved使用量とheadroomを引いた実admitted上限へ変更し、resident sizeにはmmprojも加えた。
+  OOM実測recommendationは引き続き下げず、モデル本体＋mmproj＋headroom自体が収まらない要求はfail closedを維持する。
+
+実process検証: 通常のControlDeckを利用者許可のもと停止し、PR headの隔離ControlDeckを`127.0.0.1:18776`、
+llama-serverを`127.0.0.1:18096`で起動した。実modelは
+`/data1tb/LLM/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-Q4_K_M.gguf`（21,166,757,728 bytes）、
+同一folderの`mmproj-F16.gguf`（899,283,680 bytes）を使用し、Ollama推論は使用していない。登録判定は候補1件、
+`enabled_by_default=false`、登録直後の`mmproj_path`空／`vision_enabled=false`、明示ON後のVISION available／mark trueを返した。
+有効な一時Add-on service tokenからmodel fieldなしの`text.generate`を送り、応答は正確に`PR226_TEXT_OK`だった。
+続く`vision.analyze`は168,170-byteの512x512 PNGを「濃紺背景のオレンジ色のロボット」と正しく記述した。
+
+同じVISION request（canonical SHA-256
+`f315c8a8e7232ca72be3a71b0d30df8eea7012f78fa7e67779edcf3ddb315997`）のまま、Host内部の稼働aliasを
+`pr226-qwen36`から`pr226-qwen36-alt`へ切り替え、両方で同じ画像認識結果を得た。response keyは両方とも
+`content`／`capability`だけでidentity非公開、Add-on AI audit 5件のmetadataはcapabilityだけ、llama Broker lease
+5件はすべて`released`だった。先行runの`insufficient_vram`は修正後に同じ要求が即`granted/active`となった。
+
+実Chromiumは1280x800／320x700の両方でVISION mark 2件、同folder projector検出、初期OFF、明示ONを確認した。
+document／body／dialogの横overflowはすべて0、認証後console error／page errorも0件だった。
+自動検証はVISION／AI／Broker集中49件、追加のadmission集中24件、frontend production build 1,542 modulesに成功した。
+canonical全件の最初のrunは新testの一時llama configがsession内に残り、後続runtime-policy test 1件を汚染して
+752件成功／1件skip／1件失敗となった。configをtest固有pathへ隔離後、当該2件は成功した。最終canonical rerunは
+753件成功／1件skip（58.18秒）だった。
+
 ## Media Forge v0.3.0 catalog admission／実update（2026-08-22）
 
 - 公開GitHub Release v0.3.0のLinux x86_64 artifact（30,781,945 bytes）をrelease pageから

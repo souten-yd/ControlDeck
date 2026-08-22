@@ -1,6 +1,6 @@
 # Add-on AI Gateway — generic host bridge
 
-Status: implementation slice under review  
+Status: implemented and real-host verified
 Date: 2026-08-22
 
 ## Purpose
@@ -66,6 +66,21 @@ Initial host resolution follows the selected runtime policy:
 
 Loaded targets are preferred, then configured order/default. This provider-specific knowledge remains inside ControlDeck and is not part of the Add-on contract. Future runtimes should extend the resolver/capability catalog, not add provider branches to consumers.
 
+## Model registration and operator visibility
+
+When a new llama.cpp GGUF is registered, ControlDeck resolves the model through
+the configured file roots and scans only that resolved model's directory for a
+bounded, deterministic list of regular `*mmproj*.gguf` files. Symlinks and
+projectors outside that directory are not candidates. Detection makes VISION
+available in the registration form but never enables it automatically. The
+operator must explicitly turn VISION on, which stores the selected
+`mmproj_path`; changing the model path resets the choice to disabled.
+
+The common model list exposes only the boolean VISION capability needed by the
+Host UI. A `VISION` mark is shown for llama.cpp instances with `mmproj_path` and
+for existing Ollama models with `vlm_enabled=true`; projector paths remain a
+llama.cpp registration/configuration detail.
+
 ## Critical decisions
 
 1. Do not expose the existing gateway API key to add-ons. Add-on Runtime service tokens and `ai.inference` are the authorization boundary.
@@ -77,3 +92,11 @@ Loaded targets are preferred, then configured order/default. This provider-speci
 ## Acceptance
 
 Before merge, run the normal backend test gate plus `backend/tests/test_addon_runtime_ai.py`. Real-machine acceptance should cover one text request and one vision request through an enabled fake/test add-on service token, confirm audit records, confirm the selected runtime can be changed without changing the add-on request, and confirm no raw provider/model identity is returned to the add-on.
+
+Completed on 2026-08-22 with the llama.cpp/Vulkan runtime and
+`/data1tb/LLM/Qwen3.6-35B-A3B-GGUF/{Qwen3.6-35B-A3B-Q4_K_M.gguf,mmproj-F16.gguf}`.
+The generic Add-on Runtime bridge produced an exact text response and correctly
+described a 512x512 image. The same canonical VISION request (identical SHA-256)
+was then executed through two different Host-selected aliases. Both responses
+contained only `content` and `capability`; five broker leases reached
+`released`, and five audit records contained only the requested capability.

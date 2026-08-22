@@ -302,11 +302,13 @@ def test_llama_multi_instance_api(admin_client, monkeypatch):
     assert gguf_b.exists()
 
 
-def test_llama_vision_detection_is_same_folder_and_disabled_by_default(admin_client):
+def test_llama_vision_detection_is_same_folder_and_disabled_by_default(admin_client, monkeypatch):
+    from app.models_mgmt import llama
     from tests.conftest import CSRF_HEADERS, _sandbox
 
     model_dir = _sandbox / "vision-detection"
     model_dir.mkdir()
+    monkeypatch.setattr(llama, "_config_path", lambda: model_dir / "llama-runtime.json")
     model = model_dir / "Qwen3.8-27B-Q4_K_M.gguf"
     model.write_bytes(b"GGUF-model")
     projector_b = model_dir / "mmproj-F16.gguf"
