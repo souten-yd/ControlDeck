@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useApps, useAppAction, useMeta } from "../api/hooks";
-import { useAuth } from "../stores";
+import { useAuth, useToasts } from "../stores";
 import { IconSearch } from "./icons";
-import { addonLabel, type EffectiveAddons } from "../api/addons";
+import { addonLabel, invokeAddonCommand, type EffectiveAddons } from "../api/addons";
 import { addonStateMessage } from "../features/addons/AddonStatus";
+import { ApiError } from "../api/client";
 
 interface Command {
   id: string;
@@ -27,6 +28,7 @@ export function CommandPalette({
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const show = useToasts((state) => state.show);
   const can = useAuth((s) => s.can);
   const { data: apps } = useApps();
   const { data: meta } = useMeta();
@@ -66,7 +68,15 @@ export function CommandPalette({
         id: `addon-command-${contribution.addon_id}-${contribution.id}`,
         label: addonLabel(contribution.label),
         hint: "拡張機能のコマンド",
-        run: () => navigate(`/x/${contribution.addon_id}/${contribution.id}?command=${encodeURIComponent(contribution.id)}`),
+        // 宣言された endpoint を実行する。以前は存在しない view へ遷移していた。
+        run: () => {
+          void invokeAddonCommand(contribution.addon_id, contribution.id, "commands")
+            .then(({ route }) => { if (route) navigate(route); else show("操作を実行しました"); })
+            .catch((error) => show(
+              error instanceof ApiError ? error.message : "拡張機能の操作を実行できませんでした",
+              "error",
+            ));
+        },
       });
     }
     if (can("apps.edit"))
