@@ -53,6 +53,38 @@ def test_llama_resource_request_reserves_cold_load_but_not_resident_model(
     assert resident.vram.confidence.value == "measured"
 
 
+def test_llama_large_vision_request_includes_mmproj_and_fits_observed_free_vram(
+    monkeypatch, tmp_path,
+):
+    from app.resources.devices import DeviceCollection, ResourceDevice
+
+    model = tmp_path / "model.gguf"
+    projector = tmp_path / "mmproj.gguf"
+    with model.open("wb") as stream:
+        stream.truncate(2 * 1024**3)
+    with projector.open("wb") as stream:
+        stream.truncate(256 * 1024**2)
+    instance = {
+        "alias": "vision", "model_path": str(model), "mmproj_path": str(projector),
+        "port": 8090,
+    }
+    monkeypatch.setattr(llama, "get_instance", lambda alias: instance)
+    monkeypatch.setattr(llama, "residency_key", lambda item: "llama:vision")
+    monkeypatch.setattr(llama, "list_instances", lambda: [{**instance, "loaded": False}])
+    total = 3 * 1024**3
+    observed = 64 * 1024**2
+    devices = DeviceCollection([
+        ResourceDevice(id="gpu0", name="GPU", total_bytes=total, observed_used_bytes=observed),
+    ])
+    request = LlamaCapacityProvider(devices, ResourceTelemetry()).resource_request(
+        "vision", "gateway-vision",
+    )
+
+    assert request.vram.resident_bytes == 2 * 1024**3 + 256 * 1024**2
+    assert request.vram.required_bytes == total - observed
+    assert request.vram.required_bytes <= devices.snapshots()[0].admitted_free_bytes
+
+
 def test_managed_provider_stops_only_for_measured_profitable_yield(monkeypatch, tmp_path):
     model = tmp_path / "model.gguf"
     model.write_bytes(b"x" * 50)
