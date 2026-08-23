@@ -220,6 +220,55 @@ class LlamaCapacityProvider(ResourceProvider):
     def yield_wait_reason(self) -> WaitReason | None:
         return self._last_yield_wait_reason
 
+    async def release_on_request(self) -> tuple[bool, str, int]:
+        """Honour an explicit "my AI turn is over" declaration from a consumer.
+
+        This is the same decision the idle-unload loop makes after 30 minutes,
+        triggered by a request instead of by a clock. It reuses the identical
+        in-use guards, so ControlDeck chat, an OpenCode session, and another
+        add-on cannot have the shared model pulled out from under them.
+
+        Unlike broker yield this does not consult the thrash/uptime heuristics:
+        those exist to stop involuntary preemption from thrashing, and a
+        voluntary hand-back is not preemption. The in-use guards still apply.
+        """
+        policy = get_policy()
+        if not (policy.gateway_only and policy.yield_max_level >= int(YieldLevel.UNLOAD)):
+            return False, "release_not_permitted_by_policy", 0
+        async with self._condition:
+            if self._stopping:
+                return False, "already_stopping", 0
+            self._draining = True
+            deadline = asyncio.get_running_loop().time() + policy.drain_timeout_sec
+            while self._active_requests and self._draining:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    self._draining = False
+                    self._condition.notify_all()
+                    return False, "drain_timeout", 0
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                except TimeoutError:
+                    self._draining = False
+                    self._condition.notify_all()
+                    return False, "drain_timeout", 0
+            if not self._draining:
+                # 別の要求が入ってきた。降ろさない。
+                return False, "in_use", 0
+            self._stopping = True
+        try:
+            released, reason, freed = await llama.release_loaded_llms(
+                window_seconds=float(policy.idle_unload_minutes * 60),
+            )
+        finally:
+            async with self._condition:
+                self._stopping = False
+                self._draining = False
+                self._condition.notify_all()
+        if released and freed:
+            self._telemetry.record("release.explicit", reason="consumer_request")
+        return released, reason, freed
+
     async def request_yield(
         self,
         device_id: str,

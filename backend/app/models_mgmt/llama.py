@@ -1519,3 +1519,52 @@ async def await_capacity(port: int, needed_tokens: int = 0, *, timeout_seconds: 
             return last
     logger.warning("KVプールの空き待ちがtimeoutしました: port=%s needed=%s", port, needed_tokens)
     return last
+
+
+def release_reason(item: dict, *, window_seconds: float) -> str:
+    """明示解放を断る理由。断らないなら空文字。
+
+    idle unload が 30 分後に使う判定と同じ集合をそのまま使う。判定を二重化しない。
+    """
+    if str(item.get("role", "llm")) != "llm":
+        return "not_an_llm_instance"
+    if item.get("idle_exclude"):
+        return "idle_excluded"
+    port = int(item.get("port") or 0)
+    if not port:
+        return "unknown_port"
+    if _has_connected_clients(port):
+        return "clients_connected"
+    if _opencode_session_uses(port, window_seconds=window_seconds):
+        return "opencode_active"
+    return ""
+
+
+async def release_loaded_llms(*, window_seconds: float) -> tuple[bool, str, int]:
+    """使用中でない llm instance を今すぐ降ろす。
+
+    時間ではなく要求で起こすだけで、決定に使う判定は idle unload と同一。
+    実行中の要求は呼び出し側が drain 済みであることを前提とする。
+    """
+    import asyncio
+
+    running = [item for item in list_instances() if item.get("loaded")]
+    running = [item for item in running if str(item.get("role", "llm")) == "llm"]
+    if not running:
+        return True, "already_released", 0
+
+    freed = 0
+    for item in running:
+        reason = release_reason(item, window_seconds=window_seconds)
+        if reason:
+            return False, reason, 0
+    for item in running:
+        try:
+            freed += Path(str(item.get("model_path") or "")).stat().st_size
+        except OSError:
+            pass
+        ok, detail = await asyncio.to_thread(stop_instance, str(item.get("alias") or "llama"))
+        if not ok:
+            logger.warning("explicit llama release failed for %s: %s", item.get("alias"), detail)
+            return False, "stop_failed", 0
+    return True, "released", freed
