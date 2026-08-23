@@ -157,6 +157,7 @@ def test_runtime_config_projects_mcp_only_with_user_authority(monkeypatch, tmp_p
     payload = json.loads(with_user.read_text(encoding="utf-8"))
     server = payload["mcp"]["controldeck_addons"]
     assert server["type"] == "local" and server["enabled"] is True
+    assert server["timeout"] == agent_mcp.MCP_CLIENT_TIMEOUT_MS == 135_000
     assert isinstance(server["command"], list) and server["command"][1].endswith("addon_mcp_bridge.py")
     assert server["environment"]["CONTROL_DECK_ADDON_MCP_TOKEN"] == "signed-user-token"
     assert server["environment"]["CONTROL_DECK_ADDON_MCP_URL"].startswith("http://127.0.0.1:")

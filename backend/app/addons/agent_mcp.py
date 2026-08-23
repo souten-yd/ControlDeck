@@ -18,6 +18,7 @@ from app.security.deps import user_permissions
 
 router = APIRouter(prefix="/addons/agent-mcp", tags=["addons"])
 MCP_TOKEN_TTL_SECONDS = 8 * 60 * 60
+MCP_CLIENT_TIMEOUT_MS = 135_000
 _SUBJECT = re.compile(r"^opencode:[A-Za-z0-9_-]{1,64}$")
 PROJECT_OUTPUT_GRANT_TOOL = "control_deck.project_output_grant"
 _OUTPUT_CAPABILITIES = {"projects.pick", "files.export"}
