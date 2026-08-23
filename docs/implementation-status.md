@@ -267,6 +267,22 @@ worktree直下からcanonical `./deck.sh test`を再実行し、最終headで725
   直後の単独10回すべて成功したため、全suite中のscheduler遅延として記録し、成功へ読み替えない。
   frontend source、browser、Hosted CIはNOT TESTED。
 
+## OpenCode Add-on MCP long-running tool timeout（2026-08-23）
+
+- generated OpenCode MCP configのclient timeoutを10秒から135秒へ変更した。Host Agent Jobの120秒上限と
+  stdio bridgeの130秒HTTP上限が先にterminal結果または明示timeoutを返すための汎用整合であり、特定Add-on、
+  model、providerの判定は追加していない。
+- G4実受入の先行runでは、Media Forge生成callが10.006秒と10.005秒で
+  `MCP error -32001: Request timed out`になり、upstream JobはまだBroker待機中だった。
+- timeout修正後、installed HostとOpenCode 1.18.18の実runで、同じMCP経路の`media.generate`が
+  107.901秒で成功した。続く`media.inspect`、`control_deck.project_output_grant`、`media.pack`も同一runで
+  成功し、73,238 byteのPNGをopaque grant経由でprojectへcommitした。生成configは0600、timeout 135000、
+  Add-on responseとauditにtoken、raw path、model/provider identityがないことを確認した。
+- focused regressionは`backend/tests/test_addon_agent_mcp.py` 7件PASS。browser、Hosted CIはNOT TESTED。
+- canonical `./deck.sh test`は755 PASS / 1 SKIP / 1 FAIL（66.06秒）。失敗は本差分外の
+  `test_large_output_is_offloaded_downloaded_and_deleted`が全suite中の待機後に期待outputを得られなかったもの
+  で、直後の単独再実行は1 PASS（0.77秒）。full suiteのFAILは成功へ読み替えない。
+
 ## OpenCode Add-on Agent Tool MCP投影（2026-08-21）
 
 - OpenCode featureのjob／TUI専用0600 runtime configへ、現在有効なAdd-on `agent_tools`を投影する汎用

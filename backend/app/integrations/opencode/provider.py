@@ -167,7 +167,7 @@ def _runtime_config(
         },
     }
     if owner_user_id is not None:
-        from app.addons.agent_mcp import issue_opencode_token
+        from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS, issue_opencode_token
         from app.config import get_config
 
         bridge = Path(__file__).with_name("addon_mcp_bridge.py").resolve()
@@ -177,7 +177,7 @@ def _runtime_config(
                 "type": "local",
                 "command": [sys.executable, str(bridge)],
                 "enabled": True,
-                "timeout": 10_000,
+                "timeout": MCP_CLIENT_TIMEOUT_MS,
                 "environment": {
                     "CONTROL_DECK_ADDON_MCP_URL": (
                         f"http://127.0.0.1:{get_config().server.port}/api/v1/addons/agent-mcp"

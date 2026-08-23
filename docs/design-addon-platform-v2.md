@@ -1209,6 +1209,8 @@ OpenCode featureが有効な場合、Hostが現在の利用者に見えるAdd-on
   bounded outputとして返す。
 - tokenを含むruntime configは0600かつjob別で、ログ、audit、MCP errorへ秘密値を出さない。TUIが8時間を
   超える場合は再起動して新しいtokenを得る。OpenCode featureが無効ならendpoint自体を登録しない。
+- MCP client timeoutは、Host Agent Jobの120秒上限とstdio bridgeの130秒HTTP上限を先に切らない135秒とする。
+  capability照会だけでなく、Broker待機やlocal generationを含む長時間toolを同じ汎用経路で完了させる。
 
 検討したが採用しなかった案:
 
