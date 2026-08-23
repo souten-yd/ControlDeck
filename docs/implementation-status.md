@@ -2,6 +2,37 @@
 
 最終更新: 2026-08-23
 
+## Media Forge v0.4.0 catalog admission／実update（2026-08-23）
+
+- 公開Release v0.4.0のLinux x86_64 artifactは30,971,889 bytes。ローカルchecksumと
+  GitHub asset digestはSHA-256
+  `51ee55c1da6d491852e145d6e2fc42b1b46eccedfae50176b1a34d6ba5f98799`で一致し、
+  targetはMedia Forge merge commit `5a340ac2a9729b1fd591e4287c7adfca1252ff4a`。
+- PR #234は汎用trusted catalogのSHAだけを更新し、merge commitは
+  `f716630b9067ca0d91ffe2722ac75ce849bb5ac6`。provider/model分岐、route、依存、capability、
+  Media固有UI文言は追加していない。release-bundle／Add-on AI／contract集中28件は
+  1.19秒で成功し、hosted CIは使っていない。
+
+実Optional Feature Manager updateは12.75秒、max RSS 784,004 KiBで成功し、
+`version=0.4.0`、installed／managed／enabled／healthy、`previous_version=0.3.2`を返した。
+`current` symlink、`cdapp-feature-media-forge.service`のWorkingDirectory／ExecStartはすべて
+`versions/0.4.0`を指し、main PIDは640027。rollback用に0.3.2と0.4.0の2版を保持する。
+実HTTP `/health`はcontract 2.0／healthyで、core、ROCm runtime、R9700 gfx1201、model library、
+diskをすべて`ok`とし、新しい`agent_tool:media.pack`を`available`と返した。
+
+認証済みinstalled Chromiumのlight/dark両runでHost bridge `ready`、Host theme token、詳細モードの
+reload保持、libraryへのHost route sync、390px mobile横overflow 0、60px tab、2列library、
+console/page error 0を確認した。最初のrunは製品不具合ではなく、Media Forge側E2E fixtureが古い
+3 preset固定を期待して停止した。現行設計の6 ratio preset + customを明示検証するよう修正後、
+light/darkとも成功した。
+
+更新後のHost `/api/v1/resources`はactive lease 0／waiting request 0／Media Forge lease 0。
+Media Forgeは保存済みjob 41件中active 0、native image/video worker 0だった。H3 snapshotは更新前後
+26,978,278,484 bytes、8,063,029,344-byte denoiser blobのSHA-256は
+`cfe0795c00ab6e6ebf8c64fe4574f45a828e8a93e0876bca704e055662a9d7b8`で不変、asset fileは94件を
+維持した。試験用`mf-e2e` password hashは各run後に元値へ戻し、作成したbrowser session 3件は
+revoke済み。既存Media Forge data/model/cacheを削除していない。
+
 ## Media Forge v0.3.2 catalog admission／実update（2026-08-23）
 
 - 公開Release v0.3.2のLinux x86_64 artifactは30,642,575 bytes、GitHub asset digestと
