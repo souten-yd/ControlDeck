@@ -6,7 +6,7 @@
     "summary": "ローカルGPUで画像などの素材を生成するControlDeck Add-on",
     "release_metadata_url": "https://api.github.com/repos/souten-yd/ControlDeckMediaForge/releases/latest",
     "artifact_name": "control-deck-media-forge-{version}-{platform}-{arch}.tar.gz",
-    "sha256": "a615fc014d6584c255c72399b40963dbc06a4f5bd99d02ee3137b083f7409c0f",
+    "sha256": "c0d700c208b925124d1878e17eddf1b30ce3e08ebfb7545184315d7bec94f564",
     "addon_id": "media-forge",
     "allowed_host_capabilities": [
       "context.read",

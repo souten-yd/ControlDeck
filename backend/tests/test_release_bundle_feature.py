@@ -284,3 +284,131 @@ def test_feature_job_api_rejects_caller_supplied_source(admin_client):
             headers=headers,
         )
         assert response.status_code == 422
+
+
+# ── 発行者署名 ─────────────────────────────────────────────────────────
+#
+# digest を catalog に固定していると、add-on を出すたびに ControlDeck を直す
+# 必要があった。信頼が「このファイル」に付いていて「これを出す人」に付いて
+# いないためである。以下は、鍵を 1 度置けば以降が向こう側で完結すること、
+# および署名だけでは足りない部分を押さえる。
+
+def _signed_release(tmp_path, *, version="1.2.3", feature_id="media-forge"):
+    import base64, json
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+
+    key = Ed25519PrivateKey.generate()
+    public = base64.b64encode(key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw,
+    )).decode("ascii")
+    name = f"control-deck-media-forge-{version}-linux-x86_64.tar.gz"
+    manifest = {
+        "schema_version": 1, "feature_id": feature_id, "version": version,
+        "platform": "linux", "architecture": "x86_64",
+        "artifact_name": name, "sha256": "c" * 64, "size_bytes": 1234,
+    }
+    message = json.dumps(
+        manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return public, name, message, base64.b64encode(key.sign(message)).decode("ascii")
+
+
+def _patch_fetch(monkeypatch, message: bytes, signature: str):
+    from app.features import release_bundle
+
+    def fake(url, *, allowed_hosts, limit):
+        return message if url.endswith("/manifest") else signature.encode("ascii")
+
+    monkeypatch.setattr(release_bundle, "_bounded_get", fake)
+
+
+SIGNED_ASSETS = {
+    "manifest": {"browser_download_url": "https://github.com/manifest"},
+    "signature": {"browser_download_url": "https://github.com/signature"},
+}
+
+
+def test_a_release_signed_by_the_publisher_needs_no_catalog_edit(tmp_path, monkeypatch):
+    from app.features import release_bundle
+
+    public, name, message, signature = _signed_release(tmp_path)
+    _patch_fetch(monkeypatch, message, signature)
+    spec = {"addon_id": "media-forge", "publisher_keys": [public]}
+
+    digest = release_bundle._verify_signed_manifest(
+        spec, SIGNED_ASSETS, version="1.2.3", artifact_name=name
+    )
+    assert digest == "c" * 64
+
+
+def test_a_tampered_manifest_is_refused(tmp_path, monkeypatch):
+    from app.features import release_bundle
+
+    public, name, message, signature = _signed_release(tmp_path)
+    _patch_fetch(monkeypatch, message.replace(b'"size_bytes":1234', b'"size_bytes":9999'), signature)
+
+    with pytest.raises(release_bundle.ReleaseBundleError, match="does not match"):
+        release_bundle._verify_signed_manifest(
+            {"addon_id": "media-forge", "publisher_keys": [public]},
+            SIGNED_ASSETS, version="1.2.3", artifact_name=name,
+        )
+
+
+def test_a_signature_from_another_key_is_refused(tmp_path, monkeypatch):
+    from app.features import release_bundle
+
+    public, name, message, signature = _signed_release(tmp_path)
+    other, _, _, _ = _signed_release(tmp_path)
+    _patch_fetch(monkeypatch, message, signature)
+
+    with pytest.raises(release_bundle.ReleaseBundleError, match="does not match"):
+        release_bundle._verify_signed_manifest(
+            {"addon_id": "media-forge", "publisher_keys": [other]},
+            SIGNED_ASSETS, version="1.2.3", artifact_name=name,
+        )
+
+
+def test_a_correctly_signed_release_cannot_be_passed_off_as_another_version(tmp_path, monkeypatch):
+    """署名だけでは足りない。digest 単体に署名すると、正しく署名された古い版を
+    新しい版として出せてしまう。版まで署名対象に含める理由がこれである。"""
+    from app.features import release_bundle
+
+    public, name, message, signature = _signed_release(tmp_path, version="1.2.3")
+    _patch_fetch(monkeypatch, message, signature)
+
+    with pytest.raises(release_bundle.ReleaseBundleError, match="version does not describe"):
+        release_bundle._verify_signed_manifest(
+            {"addon_id": "media-forge", "publisher_keys": [public]},
+            SIGNED_ASSETS, version="9.9.9", artifact_name=name,
+        )
+
+
+def test_a_signed_release_for_another_feature_is_refused(tmp_path, monkeypatch):
+    from app.features import release_bundle
+
+    public, name, message, signature = _signed_release(tmp_path, feature_id="something-else")
+    _patch_fetch(monkeypatch, message, signature)
+
+    with pytest.raises(release_bundle.ReleaseBundleError, match="feature_id does not describe"):
+        release_bundle._verify_signed_manifest(
+            {"addon_id": "media-forge", "publisher_keys": [public]},
+            SIGNED_ASSETS, version="1.2.3", artifact_name=name,
+        )
+
+
+def test_an_entry_with_a_publisher_key_requires_the_release_to_be_signed():
+    from app.features import release_bundle
+
+    spec = {
+        "addon_id": "media-forge", "publisher_keys": ["A" * 44],
+        "artifact_name": "control-deck-media-forge-{version}-{platform}-{arch}.tar.gz",
+    }
+    metadata = {"tag_name": "v1.2.3", "assets": [
+        {"name": "control-deck-media-forge-1.2.3-linux-x86_64.tar.gz"},
+        {"name": "control-deck-media-forge-1.2.3-linux-x86_64.tar.gz.sha256"},
+    ]}
+    with pytest.raises(release_bundle.ReleaseBundleError, match="not signed"):
+        release_bundle._signed_assets(
+            spec, metadata, "control-deck-media-forge-1.2.3-linux-x86_64.tar.gz"
+        )
