@@ -144,6 +144,7 @@ export default function DashboardPage() {
             values={cpuValues}
             temp={m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : undefined}
             fan={m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm}` : undefined}
+            fanPercent={m?.cpu.fan_percent ?? undefined}
           />
           <MetricTile
             label="RAM"
@@ -334,7 +335,6 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
               : "PSUファン回転数"}
           >
             ✻ {power.fan_rpm.toLocaleString()}rpm
-            {power.fan_percent != null && <span className="ml-1 opacity-70">({power.fan_percent}%)</span>}
           </span>
         )}
         <span className="ml-auto shrink-0" title={`電力量単価 ${power.price_per_kwh_yen}円/kWh・PSU効率${Math.round(power.psu_efficiency * 100)}%（概算）`}>
@@ -414,6 +414,7 @@ function MetricTile({
   sub,
   temp,
   fan,
+  fanPercent,
 }: {
   label: string;
   value: string | null;
@@ -422,6 +423,7 @@ function MetricTile({
   sub?: string;
   temp?: string;
   fan?: string;
+  fanPercent?: number;
 }) {
   const tone =
     percent == null
@@ -458,6 +460,8 @@ function MetricTile({
               <path d="M12 9.8c0-3.2 1.6-5 3.4-5 1.5 0 2.4 1.2 2.4 2.4 0 1.9-2.6 2.6-5.8 2.6zM12 14.2c0 3.2-1.6 5-3.4 5-1.5 0-2.4-1.2-2.4-2.4 0-1.9 2.6-2.6 5.8-2.6zM9.8 12c-3.2 0-5-1.6-5-3.4 0-1.5 1.2-2.4 2.4-2.4 1.9 0 2.6 2.6 2.6 5.8zM14.2 12c3.2 0 5 1.6 5 3.4 0 1.5-1.2 2.4-2.4 2.4-1.9 0-2.6-2.6-2.6-5.8z" />
             </svg>
             {fan} <span className="font-normal opacity-70">RPM</span>
+            {/* 0 rpm と「止まっている」は違う。指令値があるなら添える。 */}
+            {fanPercent != null && <span className="font-normal opacity-70">· {fanPercent}%</span>}
           </span>
         )}
       </p>

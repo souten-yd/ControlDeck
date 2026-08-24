@@ -94,6 +94,7 @@ export interface MetricsSnapshot {
     freq_mhz: number | null;
     temperature_c: number | null;
     fan_rpm: number | null;
+    fan_percent: number | null;
     cores: number;
   };
   memory: {
