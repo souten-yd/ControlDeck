@@ -325,7 +325,17 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
         {psuOk && power.vrm_temperature_c != null && <span className="shrink-0" title="VRM温度">VRM {power.vrm_temperature_c}°</span>}
         {psuOk && power.case_temperature_c != null && <span className="shrink-0" title="ケース内温度">ケース {power.case_temperature_c}°</span>}
         {psuOk && power.fan_rpm != null && (
-          <span className="shrink-0 font-medium text-sky-500 dark:text-sky-400" title="PSUファン回転数">✻ {power.fan_rpm.toLocaleString()}rpm</span>
+          // 0rpm は故障ではなく zero-RPM mode のことがある。回転数だけでは
+          // 区別がつかないので、指令値の割合を併記する。
+          <span
+            className="shrink-0 font-medium text-sky-500 dark:text-sky-400"
+            title={power.fan_percent != null
+              ? `PSUファン 回転数 ${power.fan_rpm.toLocaleString()}rpm・指令 ${power.fan_percent}%`
+              : "PSUファン回転数"}
+          >
+            ✻ {power.fan_rpm.toLocaleString()}rpm
+            {power.fan_percent != null && <span className="ml-1 opacity-70">({power.fan_percent}%)</span>}
+          </span>
         )}
         <span className="ml-auto shrink-0" title={`電力量単価 ${power.price_per_kwh_yen}円/kWh・PSU効率${Math.round(power.psu_efficiency * 100)}%（概算）`}>
           ¥{power.price_per_kwh_yen}/kWh · η{Math.round(power.psu_efficiency * 100)}%

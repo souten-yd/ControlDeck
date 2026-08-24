@@ -146,6 +146,7 @@ class MetricsCollector:
             "vrm_temperature_c": psu.get("vrm_temperature_c"),
             "case_temperature_c": psu.get("case_temperature_c"),
             "fan_rpm": psu.get("fan_rpm"),
+            "fan_percent": psu.get("fan_percent"),
         }
         output_w = psu.get("output_power_w")
         # 電気代積算（PSU 取得不能時は None を渡して欠測扱い）

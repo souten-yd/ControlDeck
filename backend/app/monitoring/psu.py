@@ -120,6 +120,10 @@ def read_corsair_psu() -> dict:
     result["case_temperature_c"] = _milli(temps.get("casetemp"))
     fans = _labelled(hw, "fan")
     result["fan_rpm"] = _read_int(fans["psufan"]) if "psufan" in fans else None
+    # 0 rpm は故障ではなく zero-RPM mode のことがある。回転数だけだと区別が
+    # つかないので、指令値（pwm 0-255）を割合にして併せて出す。
+    duty = _read_int(hw / "pwm1")
+    result["fan_percent"] = round(duty / 255 * 100) if duty is not None else None
     return result
 
 

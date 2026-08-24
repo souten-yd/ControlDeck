@@ -135,6 +135,7 @@ export interface MetricsSnapshot {
     vrm_temperature_c: number | null;
     case_temperature_c: number | null;
     fan_rpm: number | null;
+    fan_percent: number | null;
     // 電気代（起動中/今日/今月）
     session_energy_kwh: number | null;
     session_cost_yen: number | null;
