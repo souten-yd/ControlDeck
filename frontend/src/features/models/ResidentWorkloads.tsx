@@ -82,12 +82,18 @@ export function ResidentWorkloads() {
   if (!device && !items.length) return null;
 
   const total = device?.total_bytes ?? 0;
-  // 占有量を申告しないものがある（llama.cpp は自分の使用量を返さない）。
-  // 0 のまま帯にすると見えないので、分かっているものだけを帯にし、
-  // 申告の無いものは名前だけ並べる。無いものを推測で埋めない。
+  const observed = device?.observed_used_bytes ?? 0;
+  // llama.cpp は自分の使用量を返さず、この機材では per-process の VRAM も
+  // 読めない（KFD に PID が出ない）。つまり「どのモデルが何 GB か」は本当に
+  // 分からない。分からないことと、何も載っていないことは違う: 申告の合計だけ
+  // を見せると、29GB 使われている状態が「— / 32GB」になった。
+  // 機材が実際に使っている量は分かるので、そちらを総量として使い、按分できない
+  // 差分を「内訳不明」として 1 本の帯にする。
   const measured = items.filter((item) => item.bytes > 0);
   const unmeasured = items.filter((item) => item.bytes <= 0);
-  const held = measured.reduce((sum, item) => sum + item.bytes, 0);
+  const declared = measured.reduce((sum, item) => sum + item.bytes, 0);
+  const held = Math.max(declared, observed);
+  const unattributed = Math.max(0, held - declared);
   const free = Math.max(0, total - held);
 
   return (
@@ -113,6 +119,13 @@ export function ResidentWorkloads() {
                 title={`${item.label} · ${formatBytes(item.bytes)}`}
               />
             ))}
+            {unattributed > 0 && (
+              <div
+                className="h-full bg-zinc-400 dark:bg-zinc-500"
+                style={{ width: `${Math.min(100, (unattributed / total) * 100)}%` }}
+                title={`内訳不明 · ${formatBytes(unattributed)}（占有量を申告しないモデルの分）`}
+              />
+            )}
             <div className="h-full flex-1" style={{ minWidth: `${(free / total) * 100}%` }} />
           </div>
         )}
@@ -158,11 +171,11 @@ export function ResidentWorkloads() {
 
         {device && (
           <p className="mt-3 border-t border-zinc-100 pt-2 text-[10px] text-zinc-400 dark:border-zinc-800">
-            {device.name} · 実測 {formatBytes(device.observed_used_bytes)} 使用中
-            {held > 0 && held !== device.observed_used_bytes && (
-              // 確保量と実測は一致しない。確保しただけでまだ載せていない間や、
-              // 申告の無い runtime の分がここに出る。差を隠さない。
-              <> · 申告と実測の差 {formatBytes(Math.abs(device.observed_used_bytes - held))}</>
+            {device.name} · 実測 {formatBytes(observed)} 使用中
+            {unattributed > 0 && (
+              // どのモデルの分かは本当に分からない。分からないと言い、
+              // 量だけは実測から出す。
+              <> · うち {formatBytes(unattributed)} は内訳を取得できません</>
             )}
           </p>
         )}
