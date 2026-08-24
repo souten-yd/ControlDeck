@@ -235,3 +235,54 @@ def test_addon_ai_release_requires_a_valid_service_token(admin_client):
         headers={"Authorization": "Bearer not-a-token", "X-Control-Deck-Addon-ID": "fake-addon"},
     )
     assert response.status_code in (401, 403), response.text
+
+
+# ── 明示解放は idle unload の 30 分窓を引き継がない ──────────────────────
+
+
+def test_an_open_opencode_session_does_not_block_an_explicit_release(monkeypatch):
+    """OpenCode から add-on へ生成を頼む経路を殺さないための境界。
+
+    idle unload の 30 分窓を明示解放へ持ち込むと、OpenCode セッションが開いて
+    いる間はどの add-on も GPU を取れず、この機能が必要な場面でだけ死ぬ。
+    実行中の推論を切らない保証は drain 側が持つ。
+    """
+    from app.models_mgmt import llama
+
+    instance = {"role": "llm", "alias": "llm-a", "port": 8096, "idle_exclude": False}
+    monkeypatch.setattr(llama, "_has_connected_clients", lambda port: False)
+    monkeypatch.setattr(
+        llama,
+        "_opencode_session_uses",
+        lambda *args, **kwargs: pytest.fail("明示解放が idle unload の窓を見ている"),
+    )
+
+    assert llama.release_reason(instance) == ""
+
+
+def test_a_live_stream_still_blocks_an_explicit_release(monkeypatch):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_has_connected_clients", lambda port: True)
+
+    assert llama.release_reason(
+        {"role": "llm", "alias": "llm-a", "port": 8096}
+    ) == "clients_connected"
+
+
+def test_an_operator_opt_out_still_blocks_an_explicit_release(monkeypatch):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_has_connected_clients", lambda port: False)
+
+    assert llama.release_reason(
+        {"role": "llm", "alias": "llm-a", "port": 8096, "idle_exclude": True}
+    ) == "idle_excluded"
+
+
+def test_an_embedding_instance_is_never_released(monkeypatch):
+    from app.models_mgmt import llama
+
+    assert llama.release_reason(
+        {"role": "embedding", "alias": "embed", "port": 8094}
+    ) == "not_an_llm_instance"

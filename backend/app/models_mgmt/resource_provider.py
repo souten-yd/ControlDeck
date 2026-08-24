@@ -230,7 +230,14 @@ class LlamaCapacityProvider(ResourceProvider):
 
         Unlike broker yield this does not consult the thrash/uptime heuristics:
         those exist to stop involuntary preemption from thrashing, and a
-        voluntary hand-back is not preemption. The in-use guards still apply.
+        voluntary hand-back is not preemption.
+
+        The drain below is the guarantee that matters: no running inference is
+        ever cut, whether it belongs to ControlDeck chat, an OpenCode session,
+        or another add-on. What an explicit release deliberately does not
+        honour is the idle loop's 30-minute recency window — see
+        llama.release_reason for why keeping it would make the capability
+        useless on a single GPU.
         """
         policy = get_policy()
         if not (policy.gateway_only and policy.yield_max_level >= int(YieldLevel.UNLOAD)):
@@ -257,9 +264,7 @@ class LlamaCapacityProvider(ResourceProvider):
                 return False, "in_use", 0
             self._stopping = True
         try:
-            released, reason, freed = await llama.release_loaded_llms(
-                window_seconds=float(policy.idle_unload_minutes * 60),
-            )
+            released, reason, freed = await llama.release_loaded_llms()
         finally:
             async with self._condition:
                 self._stopping = False
