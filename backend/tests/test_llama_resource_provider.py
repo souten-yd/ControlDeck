@@ -285,3 +285,67 @@ def test_widening_the_role_filter_does_not_bypass_the_other_guards():
         {"role": "embedding", "port": 8081, "idle_exclude": True}, include_helpers=True
     ) == "idle_excluded"
     assert release_reason({"role": "embedding", "port": 0}, include_helpers=True) == "unknown_port"
+
+
+# ── 自分の接続で自分を縛らない ──────────────────────────────────────────
+#
+# 実測: AI アシスタントで 1 往復した後、解放が常に clients_connected で拒否
+# され、画像生成が insufficient_capacity で落ちていた。HTTP client は応答後も
+# 接続を保持するので、接続の有無だけを見ると「1 度でもチャットしたら二度と
+# 降ろせない」になる。ControlDeck 自身の要求は release_on_request が drain で
+# 待つので、ここで重ねて見る必要がない。見るのは外から来ている人だけである。
+
+def test_our_own_connection_does_not_pin_the_model(monkeypatch):
+    import os
+
+    from app.models_mgmt import llama
+
+    class Connection:
+        def __init__(self, pid, raddr_port):
+            self.status = "ESTABLISHED"
+            self.laddr = type("A", (), {"port": 40000})()
+            self.raddr = type("A", (), {"port": raddr_port})()
+            self.pid = pid
+
+    class FakePsutil:
+        CONN_ESTABLISHED = "ESTABLISHED"
+
+        class Error(Exception):
+            pass
+
+        @staticmethod
+        def net_connections(kind):
+            return FakePsutil.connections
+
+        class Process:
+            def __init__(self, *a):
+                pass
+
+            def children(self, recursive=False):
+                return []
+
+    monkeypatch.setitem(__import__("sys").modules, "psutil", FakePsutil)
+
+    FakePsutil.connections = [Connection(os.getpid(), 8097)]
+    assert llama._has_connected_clients(8097) is False, "自分の接続で降ろせなくなっている"
+
+    FakePsutil.connections = [Connection(os.getpid() + 99999, 8097)]
+    assert llama._has_connected_clients(8097) is True, "外部 client を守れていない"
+
+    # pid が読めない接続は外部として扱う。読めないことを「自分のものだ」と
+    # 解釈すると、他人が使っている model を降ろしてしまう。
+    FakePsutil.connections = [Connection(None, 8097)]
+    assert llama._has_connected_clients(8097) is True
+
+
+def test_the_server_side_socket_is_not_what_gets_inspected(monkeypatch):
+    """laddr.port == port の socket の pid は常に llama 自身で、誰が繋いで
+    いるかを何も語らない。見るのは client 側（raddr.port == port）である。"""
+    source = (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "app" / "models_mgmt" / "llama.py"
+    ).read_text(encoding="utf-8")
+    guard = source[source.index("def _has_connected_clients"):]
+    guard = guard[:guard.index("\ndef ")]
+    assert "connection.raddr" in guard and "connection.raddr.port == port" in guard
+    assert "connection.laddr.port == port" not in guard

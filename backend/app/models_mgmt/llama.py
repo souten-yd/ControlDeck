@@ -1231,17 +1231,36 @@ def mark_used_by_base_url(base_url: str) -> str | None:
 
 
 def _has_connected_clients(port: int) -> bool:
-    """そのportへ接続中のclientがあるか。
+    """そのportへ接続中の *外部* clientがあるか。
 
     OpenCodeのような外部clientはControl Deckを経由しないため`last_used_at`が
     更新されない。利用中のinstanceを止めてしまわないよう、実接続を直接見る。
+
+    自分自身の接続は数えない。HTTP clientは応答後も接続を保持するので、
+    数えると「1度でもチャットしたら二度と降ろせない」になる。実測: AI
+    アシスタントで1往復した後、解放は常に clients_connected で拒否され、
+    画像生成は insufficient_capacity で落ちていた。
+    ControlDeck自身の要求は release_on_request が drain で待つので、
+    ここで重ねて見る必要がない。見ているのは外から来ている人だけである。
     """
     try:
+        import os
+
         import psutil
 
+        mine = {os.getpid()}
+        try:
+            mine.update(child.pid for child in psutil.Process().children(recursive=True))
+        except psutil.Error:
+            pass
+        # server 側の socket（laddr.port == port）の pid は常に llama 自身なので、
+        # そこからは誰が繋いでいるか分からない。client 側（raddr.port == port）を
+        # 見る。そちらの pid が接続元である。
         for connection in psutil.net_connections(kind="tcp"):
-            if (connection.status == psutil.CONN_ESTABLISHED and connection.laddr
-                    and connection.laddr.port == port):
+            if (connection.status == psutil.CONN_ESTABLISHED and connection.raddr
+                    and connection.raddr.port == port and connection.pid not in mine):
+                # pid が読めない接続は外部として扱う。読めないことを「自分の
+                # ものだ」と解釈すると、他人が使っている model を降ろしてしまう。
                 return True
     except (OSError, RuntimeError, PermissionError):
         return False
