@@ -100,3 +100,61 @@ described a 512x512 image. The same canonical VISION request (identical SHA-256)
 was then executed through two different Host-selected aliases. Both responses
 contained only `content` and `capability`; five broker leases reached
 `released`, and five audit records contained only the requested capability.
+
+## 明示解放 `POST /{addon_id}/ai/release`
+
+`ai.inference` を持つ add-on が「自分の AI ターンは終わった」と宣言するための
+汎用 primitive。AI の直後に自分の処理で GPU を使う add-on は、モデルの寿命を
+ControlDeck が所有している以上、これ以外に意思を伝える手段が無い。
+
+**要求であって命令ではない。** ControlDeck は自分の chat、OpenCode セッション、
+他の add-on が共有モデルを使っている間は必ず断り、理由を返す。呼び出し側は
+後段で匿名の out-of-memory に当たる代わりに、理由を提示して説明できる。
+
+```text
+1. policy      gateway_only かつ yield_max_level >= UNLOAD
+2. drain       実行中の gateway 要求が 0 になるまで drain_timeout_sec 待つ
+               （chat / OpenCode / 他 add-on の実行中要求を切らない）
+3. guards      _has_connected_clients   -> clients_connected（今まさに streaming 中）
+               idle_exclude             -> idle_excluded（運用者の明示除外）
+               role != "llm"            -> not_an_llm_instance
+                                           （embedding / reranker は対象外）
+4. stop        すべて通ったときだけ stop_instance
+```
+
+### idle unload の 30 分窓を引き継がない
+
+明示解放は idle unload ではない。idle loop が「最近誰か触ったか」を見るのは、
+**誰も要求していない**からで、その場合は暖めたまま保つのが安全側になる。
+明示解放は逆で、**要求した側が今その VRAM を必要としている**。
+
+単一 GPU で 30 分の最近利用窓を引き継ぐと、OpenCode セッションが開いている間は
+どの add-on も GPU を取れない。この機能が必要な場面でだけ死ぬ。
+
+実行中の推論を切らない保証は drain 側が持つ。降ろしたものは `ensure_ready` で
+自動復帰するので、次に必要とした consumer が払うのは作業の喪失ではなく再読込である。
+
+実測（R9700 / Qwen3.8-27B-UD-Q4_K_M + mmproj / ctx 262144）:
+
+```text
+常駐        VRAM +31,495,229,440 バイト（34,208,743,424 中）
+load        4.040 秒
+解放        0.356 秒   VRAM 31,555,141,632 -> 59,912,192（全量返却）
+次 turn 復帰 5.836 秒   ensure_ready による自動復帰
+実行中の解放要求  refused reason=drain_timeout（120.058 秒待って拒否）
+```
+
+戻り値の `freed_bytes` は降ろした**モデルファイルの大きさ**である。
+実際に空く VRAM は KV cache を含むためこれより大きい
+（実測 16,464,440,224 バイトのモデルに対し VRAM は 31,495,229,440 バイト）。
+
+応答は `{"released": bool, "reason": str, "freed_bytes": int}`。
+
+broker の yield が持つ thrash / uptime heuristics は参照しない。あれは
+**非自発的な preemption** の往復を防ぐためのもので、自発的な返却は preemption
+ではない。使用中判定は変わらず適用する。
+
+対になる変更として `/ai/complete` に `llama.ensure_ready` を追加した。
+`/api/v1/llm` の `gateway_chat` と同じ on-demand 起動になり、明示解放や
+idle unload で停止した instance へ add-on の要求が飛んでも復帰する。
+これが無いと「降ろす」機能は次の要求を壊す。

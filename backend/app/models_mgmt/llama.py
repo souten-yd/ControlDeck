@@ -1519,3 +1519,72 @@ async def await_capacity(port: int, needed_tokens: int = 0, *, timeout_seconds: 
             return last
     logger.warning("KVプールの空き待ちがtimeoutしました: port=%s needed=%s", port, needed_tokens)
     return last
+
+
+def release_reason(item: dict) -> str:
+    """Why an explicit release must be refused, or "" when it may proceed.
+
+    An explicit release is not the idle unload, and must not reuse the idle
+    unload's 30-minute "somebody used this recently" window.
+
+    The idle loop asks "did anyone touch this lately?" because nobody asked for
+    the memory, so the safe answer is to keep the model warm. An explicit
+    release is the opposite situation: a consumer needs that memory *now* for
+    its own work. On a single GPU, honouring a 30-minute recency window would
+    mean that while an OpenCode session is open no add-on can ever obtain the
+    GPU, and the capability would be dead in exactly the case it exists for.
+    Measured on this machine: the resident model holds 31,495,229,440 bytes of
+    VRAM, and coming back costs 10.038 s through ensure_ready.
+
+    What still refuses:
+      the caller drains in-flight gateway requests first, so no running
+      inference is ever cut (that guard lives in the resource provider)
+      a live TCP connection means somebody is mid-stream right now
+      idle_exclude is the operator's explicit "never release this"
+      non-llm roles (embedding / reranker) are never touched
+    """
+    if str(item.get("role", "llm")) != "llm":
+        return "not_an_llm_instance"
+    if item.get("idle_exclude"):
+        return "idle_excluded"
+    port = int(item.get("port") or 0)
+    if not port:
+        return "unknown_port"
+    if _has_connected_clients(port):
+        return "clients_connected"
+    return ""
+
+
+async def release_loaded_llms() -> tuple[bool, str, int]:
+    """Unload every llm instance that nobody is using right now.
+
+    In-flight requests are drained by the caller before this runs. Whatever is
+    released comes back on demand through ensure_ready, so a consumer that
+    needs the model again pays a reload rather than losing its work.
+
+    The returned byte count is the size of the model files that were unloaded.
+    Actual VRAM released is larger because the KV cache goes with it: measured
+    16,464,440,224 bytes of model against 31,495,229,440 bytes of VRAM.
+    """
+    import asyncio
+
+    running = [item for item in list_instances() if item.get("loaded")]
+    running = [item for item in running if str(item.get("role", "llm")) == "llm"]
+    if not running:
+        return True, "already_released", 0
+
+    for item in running:
+        reason = release_reason(item)
+        if reason:
+            return False, reason, 0
+    released_model_bytes = 0
+    for item in running:
+        try:
+            released_model_bytes += Path(str(item.get("model_path") or "")).stat().st_size
+        except OSError:
+            pass
+        ok, detail = await asyncio.to_thread(stop_instance, str(item.get("alias") or "llama"))
+        if not ok:
+            logger.warning("explicit llama release failed for %s: %s", item.get("alias"), detail)
+            return False, "stop_failed", 0
+    return True, "released", released_model_bytes
