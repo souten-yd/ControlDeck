@@ -1555,8 +1555,17 @@ def release_reason(item: dict) -> str:
     return ""
 
 
-async def release_loaded_llms() -> tuple[bool, str, int]:
+async def release_loaded_llms(*, include_helpers: bool = False) -> tuple[bool, str, int]:
     """Unload every llm instance that nobody is using right now.
+
+    ``include_helpers`` extends this to the embedding and reranker instances.
+    They are excluded by default because they are small and RAG leans on them
+    constantly, so evicting them for every turn would be pure churn. But small
+    is not free: a 1.16GB embedding model resident on a 34.2GB card leaves
+    33.05GB, and an image model measured at 33.35GB then cannot be admitted at
+    all. Observed exactly that — bge-m3 loaded, FLUX refused with
+    insufficient_capacity while the GPU looked idle. Keeping a helper resident
+    must not be the reason a real workload cannot run.
 
     In-flight requests are drained by the caller before this runs. Whatever is
     released comes back on demand through ensure_ready, so a consumer that
@@ -1568,8 +1577,9 @@ async def release_loaded_llms() -> tuple[bool, str, int]:
     """
     import asyncio
 
+    wanted = {"llm", "embedding", "reranker"} if include_helpers else {"llm"}
     running = [item for item in list_instances() if item.get("loaded")]
-    running = [item for item in running if str(item.get("role", "llm")) == "llm"]
+    running = [item for item in running if str(item.get("role", "llm")) in wanted]
     if not running:
         return True, "already_released", 0
 

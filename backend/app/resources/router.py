@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.audit import service as audit
@@ -38,8 +36,16 @@ async def resource_snapshot(user: User = Depends(require_permission("system.view
 # 取って GPU を確保している利用者である。後者は lease だけで表現できるので、
 # ここに個別の add-on の語彙は要らない。名前は持ち主が自分で名乗る。
 
-def _resident_since(value: float) -> float:
-    return max(0.0, time.time() - value)
+def _resident_since(granted_at: float, now: float | None) -> float | None:
+    """Elapsed time on the broker's own clock.
+
+    granted_at is monotonic, not wall clock. Subtracting time.time() from it
+    produced "496491.9時間" on screen. The snapshot carries the matching
+    reading, so there is nothing to guess; without it, say nothing.
+    """
+    if now is None:
+        return None
+    return max(0.0, now - granted_at)
 
 
 async def _runtime_residents() -> list[dict]:
@@ -88,6 +94,8 @@ async def _runtime_residents() -> list[dict]:
 async def resident_workloads(user: User = Depends(require_permission("system.view"))):
     """One list of everything currently holding GPU memory, however it got there."""
     snapshot = await resource_broker.snapshot()
+    now = snapshot.get("now")
+    now = float(now) if isinstance(now, (int, float)) else None
     items = await _runtime_residents()
     for lease in snapshot.get("leases", []):
         if lease.get("state") not in {"granted", "active"}:
@@ -101,7 +109,7 @@ async def resident_workloads(user: User = Depends(require_permission("system.vie
             "owner": owner,
             "role": None,
             "bytes": int(lease.get("reserved_bytes") or 0),
-            "since_sec": _resident_since(float(lease.get("granted_at") or 0.0)),
+            "since_sec": _resident_since(float(lease.get("granted_at") or 0.0), now),
             "state": str(lease.get("state")),
             "job_id": str(lease.get("job_id") or ""),
             "device_id": str(lease.get("device_id") or ""),

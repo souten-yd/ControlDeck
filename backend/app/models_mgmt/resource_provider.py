@@ -220,7 +220,7 @@ class LlamaCapacityProvider(ResourceProvider):
     def yield_wait_reason(self) -> WaitReason | None:
         return self._last_yield_wait_reason
 
-    async def release_on_request(self) -> tuple[bool, str, int]:
+    async def release_on_request(self, *, include_helpers: bool = False) -> tuple[bool, str, int]:
         """Honour an explicit "my AI turn is over" declaration from a consumer.
 
         This is the same decision the idle-unload loop makes after 30 minutes,
@@ -264,7 +264,9 @@ class LlamaCapacityProvider(ResourceProvider):
                 return False, "in_use", 0
             self._stopping = True
         try:
-            released, reason, freed = await llama.release_loaded_llms()
+            released, reason, freed = await llama.release_loaded_llms(
+                include_helpers=include_helpers
+            )
         finally:
             async with self._condition:
                 self._stopping = False

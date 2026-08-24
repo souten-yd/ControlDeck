@@ -276,13 +276,17 @@ def test_residents_lists_runtime_and_lease_holders_together(admin_client, monkey
         return {
             "devices": [{"id": "gpu0", "name": "test", "total_bytes": 34_000_000_000,
                          "observed_used_bytes": 18_000_000_000}],
+            # granted_at は monotonic。壁時計と引き算すると 56 年経過のような
+            # 値になる（実際に「496491.9時間」と表示された）。同じ時計の現在値
+            # を snapshot が持つ。
+            "now": 1_000.0,
             "leases": [
                 {"lease_id": "lease-1", "owner": "addon:media-forge", "job_id": "job-1",
                  "device_id": "gpu0", "reserved_bytes": 18_000_000_000,
-                 "state": "active", "granted_at": time.time() - 30},
+                 "state": "active", "granted_at": 970.0},
                 {"lease_id": "lease-2", "owner": "addon:other", "job_id": "job-2",
                  "device_id": "gpu0", "reserved_bytes": 1_000,
-                 "state": "released", "granted_at": time.time()},
+                 "state": "released", "granted_at": 999.0},
             ],
         }
 
@@ -301,7 +305,7 @@ def test_residents_lists_runtime_and_lease_holders_together(admin_client, monkey
     # 表示名は持ち主が名乗る。ControlDeck が add-on ごとの語彙を持たない。
     assert holder["label"] == "media-forge"
     assert holder["bytes"] == 18_000_000_000
-    assert holder["since_sec"] >= 29
+    assert holder["since_sec"] == 30.0, "経過時間が別の時計で計算されている"
     assert body["devices"][0]["total_bytes"] == 34_000_000_000
 
 
@@ -323,3 +327,33 @@ def test_residents_survives_one_runtime_being_unreadable(admin_client, monkeypat
     monkeypatch.setattr(resources_router.resource_broker, "snapshot", snapshot)
     body = admin_client.get("/api/v1/resources/residents").json()
     assert [item["label"] for item in body["items"]] == ["qwen"]
+
+
+def test_elapsed_time_is_omitted_when_the_clock_is_unknown(admin_client, monkeypatch):
+    """どの時計かを推測して引き算すると、56 年経過のような値が画面に出る。
+    分からないなら黙る。"""
+    from app.resources import router as resources_router
+
+    async def runtime_items():
+        return []
+
+    async def snapshot():
+        return {"devices": [], "leases": [
+            {"lease_id": "l", "owner": "addon:x", "job_id": "j", "device_id": "gpu0",
+             "reserved_bytes": 1, "state": "active", "granted_at": 12345.0},
+        ]}
+
+    monkeypatch.setattr(resources_router, "_runtime_residents", runtime_items)
+    monkeypatch.setattr(resources_router.resource_broker, "snapshot", snapshot)
+    body = admin_client.get("/api/v1/resources/residents").json()
+    assert body["items"][0]["since_sec"] is None
+
+
+def test_the_broker_snapshot_publishes_its_own_clock():
+    """granted_at と同じ時計の現在値が無いと、経過時間は出しようがない。"""
+    import asyncio
+
+    from app.resources.broker import broker
+
+    snapshot = asyncio.run(broker.snapshot())
+    assert "now" in snapshot and isinstance(snapshot["now"], (int, float))

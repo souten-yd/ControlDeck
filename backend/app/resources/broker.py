@@ -256,6 +256,10 @@ class ResourceBroker:
             fixed = self._reservation_totals(provider_values)
             return {
                 "revision": self._revision,
+                # granted_at / expires_at は monotonic。壁時計と引き算されると
+                # 56 年経過のような値になる（実際に表示された）。どの時計かを
+                # 呼び出し側に推測させず、同じ時計の現在値を一緒に返す。
+                "now": self._clock(),
                 "devices": [item.model_dump(mode="json") for item in self.devices.snapshots(
                     fixed_reservations=fixed,
                     lease_reservations=self.leases.reservations(),
