@@ -97,10 +97,23 @@ def _ollama_model(model: dict) -> dict:
     }
 
 
+# 上限の判定は「今いくつ載っているか」を数えて行う。数え終えてから実際に
+# 載るまでの間に別の要求が同じ判断をすると、両方が通る。実測: 上限 1 に対し
+# 同時要求で 2 つ載った。ensure_chat_model_ready の lock は base_url::model
+# 単位なので、別モデルの要求同士は直列化されない。
+#
+# 判定と、判定の前提になる状態の変更を、同じ区間に入れる。ロードそのものは
+# 数分かかりうるので区間には入れず、進行中のものを予約として数える。
+_admission = asyncio.Lock()
+_inflight: set[tuple[str, str]] = set()
+
+
 async def _enforce_load_limit(provider_kind: str, model_id: str) -> None:
     """全runtime共通の同時load上限。既にload済みの対象再要求は許可する。
 
     embedding/reranker（小型・RAG補助）はLLMの上限枠に数えず、対象にもしない。
+    進行中のロードも枠を占有しているものとして数える。まだ載っていないだけで、
+    載ることが決まっているためである。
     """
     from app.models_mgmt.runtime_policy import get_policy
 
@@ -113,9 +126,10 @@ async def _enforce_load_limit(provider_kind: str, model_id: str) -> None:
     ollama_names = {str(item.get("name") or item.get("model") or "") for item in ollama_running}
     llama_running = {str(item["alias"]) for item in llm_instances if item.get("loaded")}
     already = model_id in (ollama_names if provider_kind == "ollama" else llama_running)
-    if already:
+    if already or (provider_kind, model_id) in _inflight:
         return
-    loaded = len(ollama_names) + len(llama_running)
+    others = {item for item in _inflight if item[1] not in ollama_names | llama_running}
+    loaded = len(ollama_names) + len(llama_running) + len(others)
     limit = get_policy().max_loaded_models
     if loaded >= limit:
         raise ProviderError(
@@ -170,20 +184,32 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
         await asyncio.to_thread(ensure_gpu_profile, force=True)
     except RuntimeError as e:
         raise ProviderError(str(e)) from e
-    await _enforce_load_limit(str(provider["provider"]), model_id)
-    if provider["provider"] == "ollama":
-        try:
-            return await ollama.load(model_id, keep_alive)
-        except ollama.OllamaError as e:
-            raise ProviderError(str(e)) from e
+    kind = str(provider["provider"])
+    reservation = (kind, model_id)
+    # 判定と予約を同じ区間で行う。ここを分けると、両方が「まだ空きがある」を
+    # 見てから両方が載る。
+    async with _admission:
+        await _enforce_load_limit(kind, model_id)
+        held = reservation not in _inflight
+        _inflight.add(reservation)
     try:
-        llama.get_instance(model_id)
-    except KeyError:
-        raise ProviderNotFound("設定中のllama.cppモデルと一致しません")
-    ok, error = await asyncio.to_thread(llama.start_instance, model_id)
-    if not ok:
-        raise ProviderError(error or "llama.cppの起動に失敗しました")
-    return {"model": model_id, "loaded": True}
+        if kind == "ollama":
+            try:
+                return await ollama.load(model_id, keep_alive)
+            except ollama.OllamaError as e:
+                raise ProviderError(str(e)) from e
+        try:
+            llama.get_instance(model_id)
+        except KeyError:
+            raise ProviderNotFound("設定中のllama.cppモデルと一致しません")
+        ok, error = await asyncio.to_thread(llama.start_instance, model_id)
+        if not ok:
+            raise ProviderError(error or "llama.cppの起動に失敗しました")
+        return {"model": model_id, "loaded": True}
+    finally:
+        # 失敗しても枠を返す。返さないと、以後その分だけ上限が目減りする。
+        if held:
+            _inflight.discard(reservation)
 
 
 async def unload_model(provider_id: str, model_id: str) -> dict:

@@ -1511,15 +1511,16 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
   const flags = new Set(optionData?.flags ?? []);
   const set = <K extends keyof typeof cfg>(key: K, value: (typeof cfg)[K]) => setCfg((current) => ({ ...current, [key]: value }));
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  // 登録のときだけ判定していたので、既に登録したモデルの VISION を後から
+  // 入り切りできなかった。mmproj は起動引数なので、設定を持てば足りる。
   useEffect(() => {
-    if (!isNew) return;
     const timer = window.setTimeout(() => setVisionModelPath(cfg.model_path), 300);
     return () => window.clearTimeout(timer);
-  }, [cfg.model_path, isNew]);
+  }, [cfg.model_path]);
   const visionDetection = useQuery({
     queryKey: ["llama-vision-detection", visionModelPath],
     queryFn: () => api<VisionDetection>(`/models/llama/vision-detection?model_path=${encodeURIComponent(visionModelPath)}`),
-    enabled: isNew && visionModelPath.toLowerCase().endsWith(".gguf"),
+    enabled: visionModelPath.toLowerCase().endsWith(".gguf"),
     retry: false,
   });
   const chooseModelPath = (path: string) => {
@@ -1562,10 +1563,11 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
           <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
           <L label="待受port"><input type="number" min={1024} max={65535} value={cfg.port} onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} /></L>
         </div>
+      </>}
         <div className="space-y-1.5 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
           <Toggle
             label="VISION機能"
-            hint="同じフォルダのmmprojを使います。検出されても初期値は無効です"
+            hint="同じフォルダのmmprojを使います。既定は無効。あとから切り替えられ、次の起動から反映します"
             value={Boolean(cfg.mmproj_path)}
             disabled={!visionDetection.data?.available && !cfg.mmproj_path}
             onChange={(enabled) => set("mmproj_path", enabled ? visionDetection.data?.suggested_path ?? "" : "")}
@@ -1585,7 +1587,6 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
             <p className="text-[10px] text-zinc-400">GGUFを選ぶとVISION対応を判定します。</p>
           )}
         </div>
-      </>}
       <div className="grid grid-cols-2 gap-2">
         <L label="コンテキスト長（CTX）"><PresetOrCustom value={cfg.ctx_size} presets={CTX_PRESETS} placeholder="8192" onChange={(v) => set("ctx_size", Number(v ?? 4096))} /></L>
         <L label="Deep Research専用CTX"><PresetOrCustom value={cfg.deep_research_ctx_size || undefined} presets={CTX_PRESETS} placeholder="例: 262144" onChange={(v) => set("deep_research_ctx_size", Number(v ?? 0))} /></L>
