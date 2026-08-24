@@ -1521,7 +1521,7 @@ async def await_capacity(port: int, needed_tokens: int = 0, *, timeout_seconds: 
     return last
 
 
-def release_reason(item: dict) -> str:
+def release_reason(item: dict, *, include_helpers: bool = False) -> str:
     """Why an explicit release must be refused, or "" when it may proceed.
 
     An explicit release is not the idle unload, and must not reuse the idle
@@ -1541,9 +1541,13 @@ def release_reason(item: dict) -> str:
       inference is ever cut (that guard lives in the resource provider)
       a live TCP connection means somebody is mid-stream right now
       idle_exclude is the operator's explicit "never release this"
-      non-llm roles (embedding / reranker) are never touched
+      non-llm roles (embedding / reranker), unless include_helpers says the
+      caller has already found that releasing the LLMs was not enough. Keeping
+      a 1.16GB helper resident must not be the reason a 33.35GB workload
+      cannot run on a 34.2GB card.
     """
-    if str(item.get("role", "llm")) != "llm":
+    role = str(item.get("role", "llm"))
+    if role != "llm" and not (include_helpers and role in {"embedding", "reranker"}):
         return "not_an_llm_instance"
     if item.get("idle_exclude"):
         return "idle_excluded"
@@ -1584,7 +1588,7 @@ async def release_loaded_llms(*, include_helpers: bool = False) -> tuple[bool, s
         return True, "already_released", 0
 
     for item in running:
-        reason = release_reason(item)
+        reason = release_reason(item, include_helpers=include_helpers)
         if reason:
             return False, reason, 0
     released_model_bytes = 0

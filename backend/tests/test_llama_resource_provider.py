@@ -357,3 +357,34 @@ def test_the_broker_snapshot_publishes_its_own_clock():
 
     snapshot = asyncio.run(broker.snapshot())
     assert "now" in snapshot and isinstance(snapshot["now"], (int, float))
+
+
+# ── helper モデルの解放 ─────────────────────────────────────────────────
+#
+# 実機で「GPU が空いているのに画像生成が insufficient_capacity で落ちる」。
+# bge-m3 が 1.16GB 載ったままで、画像モデルは 34.2GB のカードに 33.35GB を
+# 要る。小さいことと、無害であることは別である。
+
+def test_helpers_are_kept_by_default_and_released_only_when_asked():
+    """RAG が常時使うので毎回外すのは無駄な載せ替えになる。ただし、足りないと
+    分かったときにまで残すと、実際の作業が動かせない。"""
+    from app.models_mgmt.llama import release_reason
+
+    embedding = {"role": "embedding", "port": 8081}
+    assert release_reason(embedding) == "not_an_llm_instance"
+    # 呼び出し側が「LLM を降ろしても足りなかった」と判断したときだけ広げる
+    assert release_reason(embedding, include_helpers=True) == ""
+
+    reranker = {"role": "reranker", "port": 8082}
+    assert release_reason(reranker, include_helpers=True) == ""
+
+
+def test_widening_the_role_filter_does_not_bypass_the_other_guards():
+    """役割を広げても、operator の「絶対に降ろすな」と接続中は依然として拒む。
+    選択だけ広げて可否判定を素通りさせると、使用中のものまで落ちる。"""
+    from app.models_mgmt.llama import release_reason
+
+    assert release_reason(
+        {"role": "embedding", "port": 8081, "idle_exclude": True}, include_helpers=True
+    ) == "idle_excluded"
+    assert release_reason({"role": "embedding", "port": 0}, include_helpers=True) == "unknown_port"
