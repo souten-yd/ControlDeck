@@ -9,6 +9,7 @@ import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
 import { PageHeader } from "../components/PageHeader";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { ResidentWorkloads } from "../features/models/ResidentWorkloads";
 
 interface HistorySample {
   timestamp: string;
@@ -230,6 +231,10 @@ export default function DashboardPage() {
           </ul>
         </section>
       )}
+
+      {/* いま GPU に載っているもの。LLM だけでなく、拡張機能が確保した分も
+          同じ帯に並べる。VRAM の総量だけでは何が使っているのか読めなかった。 */}
+      <ResidentWorkloads />
 
       {/* LLM利用状況。OMo導入時だけ出す（並列を意識して使う構成のときに意味がある）。 */}
       {omoInstalled && <CapacityWidget />}

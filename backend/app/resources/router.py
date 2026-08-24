@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.audit import service as audit
@@ -24,6 +26,90 @@ def _lease_conflict(exc: LeaseError) -> HTTPException:
 @router.get("")
 async def resource_snapshot(user: User = Depends(require_permission("system.view"))):
     return await resource_broker.snapshot()
+
+
+# ── いま GPU に載っているもの ───────────────────────────────────────────
+#
+# ホームで見えるのは CPU/RAM/GPU/VRAM の総量だけで、その VRAM を何が使って
+# いるのかは分からなかった。LLM だけ別扱いにすると、add-on が載せた画像・
+# 動画・音声のモデルが数字の中に混ざったまま見えない。
+#
+# 出所は 2 つある。ControlDeck 自身が動かす LLM runtime と、resource lease を
+# 取って GPU を確保している利用者である。後者は lease だけで表現できるので、
+# ここに個別の add-on の語彙は要らない。名前は持ち主が自分で名乗る。
+
+def _resident_since(value: float) -> float:
+    return max(0.0, time.time() - value)
+
+
+async def _runtime_residents() -> list[dict]:
+    """LLM runtime が載せているもの。ControlDeck 自身の持ち物。"""
+    from app.models_mgmt import llama, ollama
+
+    items: list[dict] = []
+    try:
+        for instance in llama.list_instances():
+            if not instance.get("loaded"):
+                continue
+            items.append({
+                "id": f"llama:{instance['alias']}",
+                "label": str(instance["alias"]),
+                "source": "runtime",
+                "owner": "llama.cpp",
+                "role": str(instance.get("role", "llm")),
+                "bytes": 0,
+                "since_sec": None,
+                "state": "active",
+            })
+    except Exception:
+        # 一方が読めなくても、もう一方は出す。全部黙るより悪いことはない。
+        pass
+    try:
+        for model in await ollama.running_models():
+            name = str(model.get("name") or model.get("model") or "")
+            if not name:
+                continue
+            items.append({
+                "id": f"ollama:{name}",
+                "label": name,
+                "source": "runtime",
+                "owner": "ollama",
+                "role": "llm",
+                "bytes": int(model.get("size_vram") or model.get("size") or 0),
+                "since_sec": None,
+                "state": "active",
+            })
+    except Exception:
+        pass
+    return items
+
+
+@router.get("/residents")
+async def resident_workloads(user: User = Depends(require_permission("system.view"))):
+    """One list of everything currently holding GPU memory, however it got there."""
+    snapshot = await resource_broker.snapshot()
+    items = await _runtime_residents()
+    for lease in snapshot.get("leases", []):
+        if lease.get("state") not in {"granted", "active"}:
+            continue
+        owner = str(lease.get("owner") or "")
+        items.append({
+            "id": str(lease.get("lease_id") or ""),
+            # owner は "addon:media-forge" の形。表示名は持ち主のものを使う。
+            "label": owner.split(":", 1)[-1] or owner,
+            "source": "addon" if owner.startswith("addon:") else "lease",
+            "owner": owner,
+            "role": None,
+            "bytes": int(lease.get("reserved_bytes") or 0),
+            "since_sec": _resident_since(float(lease.get("granted_at") or 0.0)),
+            "state": str(lease.get("state")),
+            "job_id": str(lease.get("job_id") or ""),
+            "device_id": str(lease.get("device_id") or ""),
+        })
+    return {
+        "devices": snapshot.get("devices", []),
+        "items": items,
+    }
 
 
 @router.get("/requests/{request_id}")

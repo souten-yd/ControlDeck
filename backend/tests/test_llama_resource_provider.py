@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from app.models_mgmt import llama
 from app.models_mgmt.resource_provider import LlamaCapacityProvider
@@ -253,3 +254,72 @@ def test_gateway_disconnect_cancels_waiting_broker_request(monkeypatch):
     statuses = asyncio.run(scenario())
     gateway_request = next(item for item in statuses if item.owner == "llm:chat")
     assert gateway_request.state.value == "canceled"
+
+
+# ── いま GPU に載っているもの ───────────────────────────────────────────
+#
+# ホームからは VRAM の総量しか見えず、何が使っているのかが分からなかった。
+# LLM だけ別扱いにすると、add-on が載せた画像・動画・音声のモデルが数字に
+# 混ざったまま見えない。lease で表現できるので、個別 add-on の語彙は要らない。
+
+def test_residents_lists_runtime_and_lease_holders_together(admin_client, monkeypatch):
+    from app.resources import router as resources_router
+
+    async def runtime_items():
+        return [{
+            "id": "llama:qwen", "label": "qwen", "source": "runtime",
+            "owner": "llama.cpp", "role": "llm", "bytes": 0,
+            "since_sec": None, "state": "active",
+        }]
+
+    async def snapshot():
+        return {
+            "devices": [{"id": "gpu0", "name": "test", "total_bytes": 34_000_000_000,
+                         "observed_used_bytes": 18_000_000_000}],
+            "leases": [
+                {"lease_id": "lease-1", "owner": "addon:media-forge", "job_id": "job-1",
+                 "device_id": "gpu0", "reserved_bytes": 18_000_000_000,
+                 "state": "active", "granted_at": time.time() - 30},
+                {"lease_id": "lease-2", "owner": "addon:other", "job_id": "job-2",
+                 "device_id": "gpu0", "reserved_bytes": 1_000,
+                 "state": "released", "granted_at": time.time()},
+            ],
+        }
+
+    monkeypatch.setattr(resources_router, "_runtime_residents", runtime_items)
+    monkeypatch.setattr(resources_router.resource_broker, "snapshot", snapshot)
+
+    body = admin_client.get("/api/v1/resources/residents").json()
+    by_id = {item["id"]: item for item in body["items"]}
+
+    assert "llama:qwen" in by_id, "runtime 側が出ていない"
+    assert "lease-1" in by_id, "lease 側が出ていない"
+    assert "lease-2" not in by_id, "解放済みの lease を載っているものとして出している"
+
+    holder = by_id["lease-1"]
+    assert holder["source"] == "addon"
+    # 表示名は持ち主が名乗る。ControlDeck が add-on ごとの語彙を持たない。
+    assert holder["label"] == "media-forge"
+    assert holder["bytes"] == 18_000_000_000
+    assert holder["since_sec"] >= 29
+    assert body["devices"][0]["total_bytes"] == 34_000_000_000
+
+
+def test_residents_survives_one_runtime_being_unreadable(admin_client, monkeypatch):
+    """片方が読めなくても、もう片方は出す。全部黙るより悪いことはない。"""
+    from app.models_mgmt import ollama
+    from app.resources import router as resources_router
+
+    async def broken():
+        raise RuntimeError("ollamaが応答しない")
+
+    monkeypatch.setattr(ollama, "running_models", broken)
+    monkeypatch.setattr("app.models_mgmt.llama.list_instances",
+                        lambda: [{"alias": "qwen", "loaded": True, "role": "llm"}])
+
+    async def snapshot():
+        return {"devices": [], "leases": []}
+
+    monkeypatch.setattr(resources_router.resource_broker, "snapshot", snapshot)
+    body = admin_client.get("/api/v1/resources/residents").json()
+    assert [item["label"] for item in body["items"]] == ["qwen"]
