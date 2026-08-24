@@ -5,16 +5,37 @@ import pytest
 
 
 def test_connected_client_blocks_idle_unload(monkeypatch):
+    """外部 client が繋いでいる間は降ろさない。
+
+    見るのは client 側の socket である。server 側（laddr.port == port）の pid は
+    常に llama 自身で、誰が繋いでいるかを何も語らない。
+    """
+    import os
+
     from app.models_mgmt import llama
 
     class Connection:
         status = "ESTABLISHED"
+        pid = os.getpid() + 99999  # 外部プロセス
 
         class laddr:  # noqa: N801 - psutilのnamedtuple互換
+            port = 40001
+
+        class raddr:  # noqa: N801 - psutilのnamedtuple互換
             port = 8090
 
     class FakePsutil:
         CONN_ESTABLISHED = "ESTABLISHED"
+
+        class Error(Exception):
+            pass
+
+        class Process:
+            def __init__(self, *args):
+                pass
+
+            def children(self, recursive=False):
+                return []
 
         @staticmethod
         def net_connections(kind="tcp"):
