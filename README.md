@@ -113,6 +113,39 @@ so commit first. Turn it off with `feature disable`, remove it with `feature uni
 
 You can also register standalone web apps as GUI plugins — see the [Plugin SDK](docs/plugin-sdk.md).
 
+## Optional: motherboard fan and temperature sensors
+
+The CPU fan, the case fans and the board's temperature sensors live on a Super-I/O chip, and Linux does not read
+them unless a driver for that chip is loaded. Without one the dashboard shows the PSU and GPU fans only, and the
+CPU fan reads N/A — the figure is genuinely unavailable rather than zero.
+
+Find out which chip you have, then load its driver:
+
+```bash
+sudo sensors-detect --auto      # identifies the chip and names the module
+sudo modprobe nct6775           # Nuvoton NCT67xx — most AMD/Intel desktop boards
+sensors                         # a new nct67xx section means it worked
+```
+
+Make it survive a reboot with `echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf`.
+
+**If `sensors` shows nothing new,** the module loaded but did not attach: ACPI has claimed the chip's I/O ports and
+the driver steps aside rather than fight it. `lsmod` will show the module with a use count of 0 and no new entry
+appears under `/sys/class/hwmon`. Getting past that needs a kernel parameter and a reboot:
+
+```bash
+# add acpi_enforce_resources=lax to GRUB_CMDLINE_LINUX_DEFAULT
+sudo nano /etc/default/grub && sudo update-grub && sudo reboot
+```
+
+That tells the kernel to let the driver touch registers ACPI also claims. It is the standard remedy and normally
+harmless, but the two really can contend for the same chip, so it is your call rather than something Control Deck
+does for you. Observed on an ASRock X870 Taichi Creator: the module loads, does not attach, and needs this.
+
+**Naming.** Control Deck reports a fan as the CPU fan only when something names it one — `fanN_label` from the
+driver, or a label from `/etc/sensors.d` that `sensors -j` picks up. It will not take a fan by number: `fan1` being
+the CPU fan is a convention, and following it reports a case fan or a pump as the CPU's.
+
 ## Layout
 
 | Directory | Contents |
