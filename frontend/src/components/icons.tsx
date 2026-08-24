@@ -37,6 +37,13 @@ export const IconGrid = (p: SVGProps<SVGSVGElement>) => (
     <rect x="14" y="14" width="7" height="7" rx="1.5" />
   </Icon>
 );
+/** 外部から差し込まれた機能（plugin navigation）。Apps の一覧アイコンと
+    同じ形を使うと、Media のような plugin が Apps と見分けられなくなる。 */
+export const IconPlugin = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9.5 3.5a2 2 0 1 1 4 0V6h3.2a1.3 1.3 0 0 1 1.3 1.3v3.2h2.5a2 2 0 1 1 0 4H18v3.2a1.3 1.3 0 0 1-1.3 1.3H13.5v-2.5a2 2 0 1 0-4 0V19H6.3A1.3 1.3 0 0 1 5 17.7V7.3A1.3 1.3 0 0 1 6.3 6h3.2Z" />
+  </Icon>
+);
 /** 実験・試作（Project Lab）。コードそのものではなく「試す場所」を表す。 */
 export const IconFlask = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>

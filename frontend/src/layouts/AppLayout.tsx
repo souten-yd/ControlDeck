@@ -12,6 +12,7 @@ import {
   IconChip,
   IconFile,
   IconGrid,
+  IconPlugin,
   IconPlay,
   IconPlus,
   IconPower,
@@ -202,7 +203,7 @@ export default function AppLayout() {
                 isActive ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
               }`}
             >
-              <IconGrid className="shrink-0 text-lg" />
+              <IconPlugin className="shrink-0 text-lg" />
               {!collapsed && <><span className="min-w-0 flex-1 truncate">{label}</span>{addon && <AddonStatusChip state={addon.state} compact />}</>}
             </NavLink>;
           })}
@@ -215,7 +216,7 @@ export default function AppLayout() {
               title={plugin.label}
               className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
             >
-              <IconGrid className="shrink-0 text-lg" />
+              <IconPlugin className="shrink-0 text-lg" />
               {!collapsed && plugin.label}
             </a>
           ))}
@@ -302,6 +303,17 @@ export default function AppLayout() {
       {actionOpen && (
         <BottomSheet title="Quick Actions" onClose={() => setActionOpen(false)}>
           <div className="grid grid-cols-2 gap-1">
+            {/* 下段ナビから溢れると行き場が無くなる。Quick Actions にも置く。 */}
+            {can("apps.view") && (
+              <ActionItem
+                icon={<RouteIcon to="/apps" fallback={IconGrid} />}
+                label="Apps"
+                onClick={() => {
+                  setActionOpen(false);
+                  navigate("/apps");
+                }}
+              />
+            )}
             {can("apps.edit") && (
               <ActionItem
                 icon={<IconPlus />}
@@ -406,7 +418,9 @@ export default function AppLayout() {
             {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
               <ActionItem
                 key={`plugin-${plugin.id}`}
-                icon={<IconGrid />}
+                // Apps と同じ IconGrid を使っていたので、Media が Apps と
+                // 見分けられなかった。差し込まれた機能だと分かる形にする。
+                icon={<IconPlugin />}
                 label={plugin.label}
                 onClick={() => {
                   setActionOpen(false);
