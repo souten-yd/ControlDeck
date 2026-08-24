@@ -176,7 +176,7 @@ export function EmbeddedAddonView({
     const beforeUnload = (event: BeforeUnloadEvent) => event.preventDefault();
     const beforeNavigation = (event: MouseEvent) => {
       const link = (event.target as Element | null)?.closest("a[href]");
-      if (!link || window.confirm("拡張機能に未保存の変更があります。移動しますか？")) return;
+      if (!link || window.confirm("拡張機能で処理中の作業があります。移動すると失われる場合があります。移動しますか？")) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -402,7 +402,7 @@ export function EmbeddedAddonView({
   return <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: themeTokens.bg }}>
     <header className="flex min-h-12 shrink-0 items-center gap-3 border-b px-4" style={{ borderColor: themeTokens.border, color: themeTokens.text }}>
       <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-semibold">{title}</h1><p className="truncate text-[10px]" style={{ color: themeTokens.muted }}>{addon.name} · {routePath || "/"}</p></div>
-      {busy && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800">未保存</span>}
+      {busy && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800" title="今離れると失う作業があります">処理中</span>}
       {addon.state === "healthy" ? null : <button aria-label={`状態詳細: ${addonStateMessage(addon.state)}`} onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)}><AddonStatusChip state={addon.state} /></button>}
       <button onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)} className="min-h-10 rounded-xl px-3 text-xs font-medium">詳細</button>
     </header>
