@@ -43,14 +43,20 @@ async def create_or_attach_job(
     request: Request,
     principal: JobAuth,
 ):
-    if principal.subject.startswith("job:"):
+    if principal.subject.startswith("job:") and not body.detached:
         job = host_job(principal, principal.subject.removeprefix("job:"))
         created = False
     else:
-        try:
-            owner_user_id = principal_user_id(principal)
-        except RuntimeAuthorityError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if principal.subject.startswith("job:"):
+            parent = host_job(principal, principal.subject.removeprefix("job:"))
+            owner_user_id = parent.owner_user_id
+            if owner_user_id is None:
+                raise HTTPException(status_code=403, detail="Add-on Host Jobのownerを解決できません")
+        else:
+            try:
+                owner_user_id = principal_user_id(principal)
+            except RuntimeAuthorityError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
         with SessionLocal() as db:
             user = db.get(User, owner_user_id)
             if user is None or not user.is_active:
