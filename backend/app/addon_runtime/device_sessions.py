@@ -29,10 +29,10 @@ DeviceRelayAuth = Annotated[
     RuntimePrincipal, Depends(require_runtime_capability("devices.relay"))
 ]
 PAIRING_TTL_SECONDS = 5 * 60
-# Local-first devices should pair once rather than every boot/day. The credential
-# remains narrowly bound to one Add-on relay + device id and is rotated on every
-# successful reconnect. Basic direct SonicForge speech does not require it.
-DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+# Device credentials follow the same maximum TTL policy as other Add-on
+# credentials. A successful reconnect rotates the credential, but device kind
+# does not receive a special long-lived exception.
+DEVICE_TOKEN_TTL_SECONDS = tokens.MAX_TOKEN_TTL_SECONDS
 POLICY_RECHECK_SECONDS = 60.0
 MAX_PENDING_PAIRINGS = 128
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -409,9 +409,9 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
 
             async def authorization_watch() -> None:
                 # The active socket is already authenticated. Recheck infrequently
-                # only so an explicit user/add-on revoke eventually terminates the
-                # connection; do not force reconnect when the rolling device token
-                # itself reaches its expiry.
+                # so an explicit user/add-on revoke eventually terminates it. The
+                # credential TTL governs future reconnect authorization rather than
+                # forcing a healthy local WebSocket to disconnect mid-session.
                 while True:
                     await asyncio.sleep(POLICY_RECHECK_SECONDS)
                     try:
