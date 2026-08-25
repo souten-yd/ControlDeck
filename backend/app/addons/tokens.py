@@ -15,10 +15,6 @@ from app.config import data_dir
 
 TOKEN_TTL_SECONDS = 10 * 60
 MAX_TOKEN_TTL_SECONDS = 8 * 60 * 60
-# Device credentials are intentionally a different usability/security tradeoff:
-# they are paired once, scoped to one Add-on relay/device and refreshed on every
-# successful reconnect. Service/workflow credentials remain capped at 8 hours.
-MAX_DEVICE_TOKEN_TTL_SECONDS = 31 * 24 * 60 * 60
 _KEY_NAME = "addon-token.key"
 
 
@@ -66,14 +62,6 @@ def _signing_key() -> bytes:
     return key
 
 
-def _max_ttl_for_kind(kind: str) -> int:
-    return (
-        MAX_DEVICE_TOKEN_TTL_SECONDS
-        if kind == "device"
-        else MAX_TOKEN_TTL_SECONDS
-    )
-
-
 def issue(
     addon_id: str,
     *,
@@ -95,7 +83,7 @@ def issue(
     if (
         not isinstance(ttl_seconds, int)
         or isinstance(ttl_seconds, bool)
-        or not 1 <= ttl_seconds <= _max_ttl_for_kind(kind)
+        or not 1 <= ttl_seconds <= MAX_TOKEN_TTL_SECONDS
     ):
         raise AddonTokenError("token TTLが不正です")
     if project_id is not None and (
@@ -168,7 +156,7 @@ def verify(
     if (
         not isinstance(max_ttl_seconds, int)
         or isinstance(max_ttl_seconds, bool)
-        or not 1 <= max_ttl_seconds <= _max_ttl_for_kind(kind)
+        or not 1 <= max_ttl_seconds <= MAX_TOKEN_TTL_SECONDS
         or payload["iat"] > current + 30
         or payload["exp"] <= current
         or payload["exp"] - payload["iat"] > max_ttl_seconds
