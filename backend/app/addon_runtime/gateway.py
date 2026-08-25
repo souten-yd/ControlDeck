@@ -5,12 +5,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
+from app.addons import registry
 from app.models_mgmt.ai_gateway import capability_available
 
 
 router = APIRouter(prefix="/{addon_id}/gateway", tags=["addon-runtime-gateway"])
 GatewayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability())]
-GATEWAY_PROTOCOL_VERSION = "1.0"
+GATEWAY_PROTOCOL_VERSION = "1.1"
 
 
 def _gateway_document(
@@ -18,9 +19,13 @@ def _gateway_document(
     *,
     text_generate: bool,
     vision_analyze: bool,
+    device_relays: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     granted = principal.granted_capabilities
     ai_granted = "ai.inference" in granted
+    relay_granted = "devices.relay" in granted
+    relays = device_relays or []
+    device_available = bool(relay_granted and relays)
     return {
         "protocol_version": GATEWAY_PROTOCOL_VERSION,
         "addon_id": principal.addon_id,
@@ -51,15 +56,26 @@ def _gateway_document(
                     "vision.analyze": bool(ai_granted and vision_analyze),
                 },
             },
+            "devices": {
+                "relay": relay_granted,
+                "pairing": device_available,
+                "relay_ids": [
+                    item.get("id") for item in relays if isinstance(item.get("id"), str)
+                ],
+            },
         },
         "transports": {
             "runtime_http": {"available": True, "version": "1"},
             "embedded_http_proxy": {"available": True, "version": "1"},
             "embedded_websocket_proxy": {"available": True, "version": "1"},
             "device_session": {
-                "available": False,
-                "version": None,
-                "reason": "generic_device_session_not_implemented",
+                "available": device_available,
+                "version": "1" if device_available else None,
+                "pairing": "one_time_code" if device_available else None,
+                "credential_ttl_seconds": 28800 if device_available else None,
+                "reason": None if device_available else (
+                    "devices_relay_not_granted" if not relay_granted else "no_device_relays_declared"
+                ),
             },
         },
         "ownership": {
@@ -71,6 +87,7 @@ def _gateway_document(
                 "scoped_file_grants",
                 "agent_workflow_projection",
                 "transport_relay",
+                "device_pairing_and_relay",
             ],
             "addon": [
                 "domain_models",
@@ -78,6 +95,7 @@ def _gateway_document(
                 "worker_runtimes",
                 "asset_semantics",
                 "domain_provenance",
+                "device_protocol_semantics",
             ],
         },
     }
@@ -90,8 +108,14 @@ async def gateway_capabilities(principal: GatewayAuth):
     if "ai.inference" in principal.granted_capabilities:
         text_generate = await capability_available("text.generate")
         vision_analyze = await capability_available("vision.analyze")
+    try:
+        current = registry.status(principal.addon_id)
+        relays = (current.get("contributions") or {}).get("device_relays") or []
+    except registry.AddonRegistryError:
+        relays = []
     return _gateway_document(
         principal,
         text_generate=text_generate,
         vision_analyze=vision_analyze,
+        device_relays=relays,
     )
