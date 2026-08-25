@@ -89,35 +89,8 @@ def service_headers(user_id: int) -> dict[str, str]:
     }
 
 
-def test_manifest_accepts_scoped_device_relay_contract():
-    parsed = parse_manifest(device_manifest()).manifest
-    assert "devices.relay" in parsed.host_capabilities
-    relay = parsed.contributions.device_relays[0]
-    assert relay.id == "voice"
-    assert relay.endpoint == "/addon/v1/live/ws"
-    assert relay.protocol == "sonic-edge/1"
-
-
-def test_pairing_requires_explicit_devices_relay_grant(enabled_device_addon):
-    client, registry, user_id = enabled_device_addon
-    registry.set_enabled(
-        "fake-addon",
-        True,
-        grants=["theme.read", "jobs.write", "resources.acquire"],
-    )
-    response = client.post(
-        "/api/v1/addon-runtime/fake-addon/devices/pairings",
-        json={"relay_id": "voice", "device_label": "M5"},
-        headers=service_headers(user_id),
-    )
-    assert response.status_code == 403
-
-
-def test_pairing_is_one_time_and_device_token_reconnects(
-    enabled_device_addon, monkeypatch
-):
-    client, _registry, user_id = enabled_device_addon
-    from app.addons import proxy, tokens
+def install_fake_upstream(monkeypatch):
+    from app.addons import proxy
 
     upstream_messages: list[str | bytes] = []
     upstream_headers: list[dict[str, str]] = []
@@ -146,7 +119,40 @@ def test_pairing_is_one_time_and_device_token_reconnects(
         return FakeConnection()
 
     monkeypatch.setattr(proxy, "_connect_websocket", connect)
+    return upstream_messages, upstream_headers
 
+
+def test_manifest_accepts_scoped_device_relay_contract():
+    parsed = parse_manifest(device_manifest()).manifest
+    assert "devices.relay" in parsed.host_capabilities
+    relay = parsed.contributions.device_relays[0]
+    assert relay.id == "voice"
+    assert relay.endpoint == "/addon/v1/live/ws"
+    assert relay.protocol == "sonic-edge/1"
+
+
+def test_pairing_requires_explicit_devices_relay_grant(enabled_device_addon):
+    client, registry, user_id = enabled_device_addon
+    registry.set_enabled(
+        "fake-addon",
+        True,
+        grants=["theme.read", "jobs.write", "resources.acquire"],
+    )
+    response = client.post(
+        "/api/v1/addon-runtime/fake-addon/devices/pairings",
+        json={"relay_id": "voice", "device_label": "M5"},
+        headers=service_headers(user_id),
+    )
+    assert response.status_code == 403
+
+
+def test_pairing_is_one_time_and_device_token_reconnects(
+    enabled_device_addon, monkeypatch
+):
+    client, _registry, user_id = enabled_device_addon
+    from app.addons import tokens
+
+    upstream_messages, upstream_headers = install_fake_upstream(monkeypatch)
     pairing = client.post(
         "/api/v1/addon-runtime/fake-addon/devices/pairings",
         json={"relay_id": "voice", "device_label": "M5 CoreS3"},
@@ -205,3 +211,67 @@ def test_pairing_is_one_time_and_device_token_reconnects(
         assert refreshed["device_id"] == session["device_id"]
         assert refreshed["device_token"] != device_token
         assert socket.receive_text() == "upstream-ready"
+
+
+def test_wrong_relay_does_not_consume_valid_pairing_code(
+    enabled_device_addon, monkeypatch
+):
+    client, _registry, user_id = enabled_device_addon
+    install_fake_upstream(monkeypatch)
+    pairing = client.post(
+        "/api/v1/addon-runtime/fake-addon/devices/pairings",
+        json={"relay_id": "voice", "device_label": "M5"},
+        headers=service_headers(user_id),
+    )
+    assert pairing.status_code == 201
+    body = pairing.json()
+    code = body["pairing_code"]
+
+    with pytest.raises(WebSocketDisconnect) as wrong_scope:
+        with client.websocket_connect(
+            "/api/v1/addon-runtime/fake-addon/devices/relay/not-voice",
+            headers={"X-Control-Deck-Pairing-Code": code},
+        ):
+            pass
+    assert wrong_scope.value.code == 4403
+
+    with client.websocket_connect(
+        body["websocket_path"],
+        headers={"X-Control-Deck-Pairing-Code": code},
+    ) as socket:
+        session = socket.receive_json()
+        assert session["type"] == "control-deck.device.session"
+        assert session["newly_paired"] is True
+        assert socket.receive_text() == "upstream-ready"
+
+
+def test_active_device_session_closes_when_relay_grant_is_revoked(
+    enabled_device_addon, monkeypatch
+):
+    client, registry, user_id = enabled_device_addon
+    from app.addon_runtime import device_sessions
+
+    install_fake_upstream(monkeypatch)
+    monkeypatch.setattr(device_sessions, "ACTIVE_POLICY_CHECK_SECONDS", 0.01)
+    pairing = client.post(
+        "/api/v1/addon-runtime/fake-addon/devices/pairings",
+        json={"relay_id": "voice", "device_label": "M5"},
+        headers=service_headers(user_id),
+    )
+    assert pairing.status_code == 201
+    body = pairing.json()
+
+    with client.websocket_connect(
+        body["websocket_path"],
+        headers={"X-Control-Deck-Pairing-Code": body["pairing_code"]},
+    ) as socket:
+        assert socket.receive_json()["type"] == "control-deck.device.session"
+        assert socket.receive_text() == "upstream-ready"
+        registry.set_enabled(
+            "fake-addon",
+            True,
+            grants=["theme.read", "jobs.write", "resources.acquire"],
+        )
+        with pytest.raises(WebSocketDisconnect) as revoked:
+            socket.receive_text()
+        assert revoked.value.code == 4403
