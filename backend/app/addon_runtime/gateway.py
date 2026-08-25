@@ -11,7 +11,7 @@ from app.models_mgmt.ai_gateway import capability_available
 
 router = APIRouter(prefix="/{addon_id}/gateway", tags=["addon-runtime-gateway"])
 GatewayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability())]
-GATEWAY_PROTOCOL_VERSION = "1.1"
+GATEWAY_PROTOCOL_VERSION = "1.2"
 
 
 def _gateway_document(
@@ -51,6 +51,7 @@ def _gateway_document(
             "ai": {
                 "inference": ai_granted,
                 "release": ai_granted,
+                "stream": bool(ai_granted and text_generate),
                 "capabilities": {
                     "text.generate": bool(ai_granted and text_generate),
                     "vision.analyze": bool(ai_granted and vision_analyze),
@@ -68,6 +69,7 @@ def _gateway_document(
             "runtime_http": {"available": True, "version": "1"},
             "embedded_http_proxy": {"available": True, "version": "1"},
             "embedded_websocket_proxy": {"available": True, "version": "1"},
+            "ai_sse": {"available": bool(ai_granted and text_generate), "version": "1"},
             "device_session": {
                 "available": device_available,
                 "version": "1" if device_available else None,
