@@ -11,7 +11,7 @@ from app.models_mgmt.ai_gateway import capability_available
 
 router = APIRouter(prefix="/{addon_id}/gateway", tags=["addon-runtime-gateway"])
 GatewayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability())]
-GATEWAY_PROTOCOL_VERSION = "1.3"
+GATEWAY_PROTOCOL_VERSION = "1.4"
 
 
 def _gateway_document(
@@ -35,6 +35,7 @@ def _gateway_document(
                 "write": "jobs.write" in granted,
                 "durable": True,
                 "cancel_control": "jobs.write" in granted,
+                "credential_refresh": "jobs.write" in granted,
             },
             "resources": {
                 "acquire": "resources.acquire" in granted,
@@ -78,7 +79,9 @@ def _gateway_document(
                 "pairing": "one_time_code" if device_available else None,
                 "credential_ttl_seconds": 28800 if device_available else None,
                 "reason": None if device_available else (
-                    "devices_relay_not_granted" if not relay_granted else "no_device_relays_declared"
+                    "devices_relay_not_granted"
+                    if not relay_granted
+                    else "no_device_relays_declared"
                 ),
             },
         },
