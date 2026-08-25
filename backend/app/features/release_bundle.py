@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -16,6 +18,8 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from app.addons import registry as addon_registry
@@ -195,9 +199,28 @@ def _select_release(spec: dict[str, Any], metadata: dict[str, Any]) -> tuple[str
     assets = {str(item.get("name")): item for item in metadata["assets"] if isinstance(item, dict)}
     artifact = assets.get(name)
     checksum = assets.get(name + ".sha256")
-    if artifact is None or checksum is None:
+    if artifact is None or (checksum is None and not _publisher_keys(spec)):
         raise ReleaseBundleError(f"release has no verified artifact for {system}-{architecture}")
     return version, artifact, checksum
+
+
+def _signed_assets(
+    spec: dict[str, Any], metadata: dict[str, Any], artifact_name: str
+) -> dict[str, dict[str, Any]] | None:
+    """Locate the signed manifest, when this catalog entry trusts a publisher.
+
+    Kept separate from selecting the artifact so the signature path is one
+    decision in one place: an entry with a key must be signed, an entry without
+    one keeps the pinned-digest behaviour untouched.
+    """
+    if not _publisher_keys(spec):
+        return None
+    assets = {str(item.get("name")): item for item in metadata.get("assets", []) if isinstance(item, dict)}
+    manifest = assets.get(artifact_name + ".manifest.json")
+    signature = assets.get(artifact_name + ".manifest.json.sig")
+    if manifest is None or signature is None:
+        raise ReleaseBundleError("release is not signed by the publisher")
+    return {"manifest": manifest, "signature": signature}
 
 
 def _download(spec: dict[str, Any], asset: dict[str, Any], destination: Path) -> None:
@@ -218,6 +241,133 @@ def _download(spec: dict[str, Any], asset: dict[str, Any], destination: Path) ->
             if written > limit:
                 raise ReleaseBundleError("download exceeds catalog size limit")
             stream.write(chunk)
+
+
+# ── 発行者署名 ─────────────────────────────────────────────────────────
+#
+# digest を catalog に固定していると、Media Forge を出すたびに ControlDeck を
+# 直す必要があった。信頼が「このファイル」に付いていて「これを出す人」に
+# 付いていないためである。公開鍵を 1 度置けば、以降は向こう側だけで完結する。
+#
+# 署名するのは tarball の digest 単体ではなく manifest 全体である。digest だけ
+# の署名は差し替えが効く: 正しく署名された古い版を新しい版として出せてしまう。
+# feature id・版・platform・arch・大きさを署名対象に含め、その上で降格を拒む。
+
+RELEASE_MANIFEST_SCHEMA_VERSION = 1
+_SIGNATURE_LIMIT = 512
+_MANIFEST_LIMIT = 8192
+_GITHUB_ASSET_HOSTS = {
+    "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+}
+
+
+def _publisher_keys(spec: dict[str, Any]) -> list[str]:
+    """Trusted Ed25519 public keys, base64 raw. A list so keys can be rotated."""
+    value = spec.get("publisher_keys")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not value or len(value) > 4:
+        raise ReleaseBundleError("catalog publisher_keys is invalid")
+    keys: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or len(item) > 128:
+            raise ReleaseBundleError("catalog publisher_keys is invalid")
+        keys.append(item)
+    return keys
+
+
+def _verify_signed_manifest(
+    spec: dict[str, Any],
+    signed: dict[str, dict[str, Any]],
+    *,
+    version: str,
+    artifact_name: str,
+) -> str:
+    """Return the SHA-256 the publisher signed, or refuse.
+
+    Everything the caller is about to rely on has to be inside the signed
+    bytes. Checking only the digest would leave the version free to differ from
+    what was actually published.
+    """
+    message = _bounded_get(
+        str(signed["manifest"].get("browser_download_url") or ""),
+        allowed_hosts=_GITHUB_ASSET_HOSTS,
+        limit=_MANIFEST_LIMIT,
+    ).rstrip(b"\n")
+    encoded = _bounded_get(
+        str(signed["signature"].get("browser_download_url") or ""),
+        allowed_hosts=_GITHUB_ASSET_HOSTS,
+        limit=_SIGNATURE_LIMIT,
+    ).decode("ascii", errors="strict").strip()
+    try:
+        signature = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ReleaseBundleError("release signature is not valid base64") from exc
+
+    verified = False
+    for encoded_key in _publisher_keys(spec):
+        try:
+            key = Ed25519PublicKey.from_public_bytes(base64.b64decode(encoded_key, validate=True))
+            key.verify(signature, message)
+        except (ValueError, binascii.Error, InvalidSignature):
+            continue
+        verified = True
+        break
+    if not verified:
+        raise ReleaseBundleError("release signature does not match any trusted publisher key")
+
+    try:
+        manifest = json.loads(message.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseBundleError("signed release manifest is not readable") from exc
+    if not isinstance(manifest, dict):
+        raise ReleaseBundleError("signed release manifest is not readable")
+
+    system, architecture = host_platform()
+    expected = {
+        "schema_version": RELEASE_MANIFEST_SCHEMA_VERSION,
+        "feature_id": str(spec.get("addon_id") or ""),
+        "version": version,
+        "platform": system,
+        "architecture": architecture,
+        "artifact_name": artifact_name,
+    }
+    for field, value in expected.items():
+        if manifest.get(field) != value:
+            raise ReleaseBundleError(
+                f"signed release manifest {field} does not describe this download"
+            )
+    digest = manifest.get("sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ReleaseBundleError("signed release manifest has no usable digest")
+    size = manifest.get("size_bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise ReleaseBundleError("signed release manifest has no usable size")
+    return digest
+
+
+def _refuse_downgrade(feature_id: str, version: str) -> None:
+    """A correctly signed older release is still an attack when served as new.
+
+    Signature verification says who published the bytes, not that they are the
+    ones being offered today. Without this, a stale release with a known
+    problem can be replayed at anyone who is already past it.
+    """
+    current = (_feature_root(feature_id) / "current")
+    if not current.is_symlink():
+        return
+    installed = current.resolve().name
+    if VERSION_RE.fullmatch(installed) is None:
+        return
+    if _version_key(version) < _version_key(installed):
+        raise ReleaseBundleError(
+            f"release {version} is older than the installed {installed}; refusing to downgrade"
+        )
+
+
+def _version_key(value: str) -> tuple[int, ...]:
+    numbers = re.findall(r"[0-9]+", value)
+    return tuple(int(item) for item in numbers[:4])
 
 
 def _expected_sha(spec: dict[str, Any], checksum: dict[str, Any], artifact_name: str) -> str:
@@ -380,11 +530,17 @@ def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
     metadata = _metadata(spec)
     version, artifact, checksum = _select_release(spec, metadata)
     artifact_name = str(artifact["name"])
+    signed = _signed_assets(spec, metadata, artifact_name)
+    _refuse_downgrade(feature_id, version)
     partial = downloads / f"{artifact_name}.partial"
     partial.unlink(missing_ok=True)
     try:
         _download(spec, artifact, partial)
-        expected = _expected_sha(spec, checksum, artifact_name)
+        expected = (
+            _verify_signed_manifest(spec, signed, version=version, artifact_name=artifact_name)
+            if signed is not None
+            else _expected_sha(spec, checksum, artifact_name)
+        )
         digest = hashlib.sha256()
         with partial.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):

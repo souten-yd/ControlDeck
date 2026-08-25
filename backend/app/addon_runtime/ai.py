@@ -131,8 +131,29 @@ async def _complete_with_host_admission(
             await llm_gateway._release_gateway_lease(adapter, lease_id, renew)
 
 
+class AIReleaseRequest(BaseModel):
+    """What the caller needs, so ControlDeck can tell whether the turn is enough.
+
+    Generic on purpose: a byte count, not a workload description. The caller
+    knows how much it measured itself needing; ControlDeck knows what is
+    resident. Neither has to learn the other's vocabulary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    required_bytes: int = Field(default=0, ge=0, le=2**50)
+
+
+async def _admitted_free_bytes() -> int:
+    from app.resources.broker import broker
+
+    snapshot = await broker.snapshot()
+    return max((int(device.get("admitted_free_bytes") or 0)
+                for device in snapshot.get("devices", [])), default=0)
+
+
 @router.post("/release")
-async def ai_release(request: Request, principal: AIAuth):
+async def ai_release(request: Request, principal: AIAuth, body: AIReleaseRequest | None = None):
     """Accept a consumer's declaration that its AI turn is over.
 
     Generic for any add-on holding `ai.inference`: an add-on that needs the GPU
@@ -155,7 +176,23 @@ async def ai_release(request: Request, principal: AIAuth):
         if not target.gateway_managed:
             released, reason, freed = False, "runtime_not_gateway_managed", 0
         else:
-            released, reason, freed = await resource_provider.provider().release_on_request()
+            provider = resource_provider.provider()
+            released, reason, freed = await provider.release_on_request()
+            # embedding / reranker は既定では降ろさない。小さく、RAG が常時
+            # 使うので、毎回外すのは無駄な載せ替えになる。ただし小さいことと
+            # 無害であることは違う: 1.16GB の embedding が載っているだけで、
+            # 33.35GB を要る画像モデルが 34.2GB のカードに入らなくなる。
+            # 足りないと分かったときだけ、そこまで降ろす。
+            required = int(body.required_bytes) if body else 0
+            if released and required and await _admitted_free_bytes() < required:
+                escalated, escalated_reason, extra = await provider.release_on_request(
+                    include_helpers=True
+                )
+                if escalated and extra:
+                    reason = "released_with_helpers"
+                    freed += extra
+                elif not escalated and escalated_reason not in {"already_released"}:
+                    reason = escalated_reason
 
     audit_runtime(
         request,

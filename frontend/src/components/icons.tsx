@@ -37,6 +37,23 @@ export const IconGrid = (p: SVGProps<SVGSVGElement>) => (
     <rect x="14" y="14" width="7" height="7" rx="1.5" />
   </Icon>
 );
+/** 外部から差し込まれた機能（plugin navigation）。Apps の一覧アイコンと
+    同じ形を使うと、Media のような plugin が Apps と見分けられなくなる。 */
+export const IconPlugin = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9.5 3.5a2 2 0 1 1 4 0V6h3.2a1.3 1.3 0 0 1 1.3 1.3v3.2h2.5a2 2 0 1 1 0 4H18v3.2a1.3 1.3 0 0 1-1.3 1.3H13.5v-2.5a2 2 0 1 0-4 0V19H6.3A1.3 1.3 0 0 1 5 17.7V7.3A1.3 1.3 0 0 1 6.3 6h3.2Z" />
+  </Icon>
+);
+/** 生成された画像・素材。写真の重なりで「1 枚ではない」ことを示す。 */
+export const IconImages = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="7.5" y="3.5" width="13" height="13" rx="2" />
+    <circle cx="11.5" cy="7.5" r="1.3" />
+    <path d="m20.5 13-3.6-3.6a1.6 1.6 0 0 0-2.3 0L7.5 16.5" />
+    <path d="M16.5 20.5h-11a2 2 0 0 1-2-2v-11" />
+  </Icon>
+);
+
 /** 実験・試作（Project Lab）。コードそのものではなく「試す場所」を表す。 */
 export const IconFlask = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
@@ -219,3 +236,30 @@ export const IconSend = (p: SVGProps<SVGSVGElement>) => (
     <path d="M10.5 13.5 21 3" />
   </Icon>
 );
+
+
+/** Add-on が manifest で名乗るアイコン名を、実際の形に対応づける。
+
+    Add-on ごとに分岐しない。名前の空間を 1 つ用意して、そこに載っている
+    ものだけを描く。載っていない名前は「差し込まれた機能」の形にする。
+    Apps の一覧アイコンには決して落とさない。落ちると、Add-on が Apps と
+    同じ形で並び、どちらを押せばよいのか分からなくなる（実測）。 */
+const ADDON_ICONS: Record<string, (p: SVGProps<SVGSVGElement>) => JSX.Element> = {
+  images: IconImages,
+  terminal: IconTerminal,
+  chart: IconChart,
+  book: IconBook,
+  folder: IconFolder,
+  file: IconFile,
+  chip: IconChip,
+  package: IconPackage,
+  flask: IconFlask,
+  settings: IconSettings,
+  branch: IconBranch,
+  mic: IconMic,
+  home: IconHome,
+};
+
+export function addonIcon(name?: string | null) {
+  return (name && ADDON_ICONS[name]) || IconPlugin;
+}

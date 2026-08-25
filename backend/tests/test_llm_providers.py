@@ -1,3 +1,5 @@
+import asyncio
+import pytest
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -344,3 +346,94 @@ def test_gateway_is_hidden_from_runtime_management_listing(monkeypatch):
     assert [item["id"] for item in result] == ["llama.cpp"]
     # 既定の選択はランタイム側へ戻る
     assert result[0]["selected"] is True
+
+
+# ── 同時ロード上限の競合 ────────────────────────────────────────────────
+#
+# 実機で「2 番目のモデルを読み込み、チャットで LLM を呼ぶとメモリの読み込みが
+# おかしくなる」ことがあった。上限判定が check-then-act で、ensure_chat_model_ready
+# の lock が base_url::model 単位のため、別モデルの要求同士が直列化されない。
+# 実測で上限 1 に対し同時要求 2 件が両方通っていた。
+
+@pytest.fixture
+def _one_model_at_a_time(monkeypatch):
+    from app.models_mgmt import provider_adapters as adapters
+
+    loaded: set[str] = set()
+
+    class Policy:
+        max_loaded_models = 1
+
+    async def running_models():
+        await asyncio.sleep(0)  # 判定と反映の間に他が走る余地を作る
+        return [{"name": name} for name in loaded]
+
+    async def load(model_id, keep_alive=None):
+        await asyncio.sleep(0.01)
+        loaded.add(model_id)
+        return {"model": model_id, "loaded": True}
+
+    async def provider(_provider_id):
+        return {"provider": "ollama", "managed": True, "capabilities": ["load"]}
+
+    monkeypatch.setattr("app.models_mgmt.runtime_policy.get_policy", lambda: Policy())
+    monkeypatch.setattr("app.models_mgmt.runtime_policy.ensure_gpu_profile", lambda **_: {})
+    monkeypatch.setattr(adapters, "_provider", provider)
+    monkeypatch.setattr(adapters.ollama, "running_models", running_models)
+    monkeypatch.setattr(adapters.ollama, "load", load)
+    monkeypatch.setattr(adapters.llama, "list_instances", lambda: [])
+    adapters._inflight.clear()
+    return adapters, loaded
+
+
+def test_concurrent_loads_cannot_exceed_the_limit(_one_model_at_a_time):
+    """判定と、判定の前提になる状態の変更が別々だと、両方が「空きがある」を見る。"""
+    adapters, loaded = _one_model_at_a_time
+
+    async def attempt(name):
+        try:
+            await adapters.load_model("ollama", name)
+            return True
+        except adapters.ProviderError:
+            return False
+
+    async def run():
+        return await asyncio.gather(attempt("a"), attempt("b"))
+
+    outcomes = asyncio.run(run())
+    assert sorted(outcomes) == [False, True], "同時要求で上限を超えた"
+    assert len(loaded) == 1
+    assert not adapters._inflight, "予約が残っている"
+
+
+def test_a_failed_load_gives_its_slot_back(_one_model_at_a_time):
+    """返さないと、以後その分だけ上限が目減りする。"""
+    adapters, loaded = _one_model_at_a_time
+
+    async def run():
+        async def boom(model_id, keep_alive=None):
+            raise adapters.ollama.OllamaError("起動に失敗")
+
+        original = adapters.ollama.load
+        adapters.ollama.load = boom
+        try:
+            with pytest.raises(adapters.ProviderError):
+                await adapters.load_model("ollama", "x")
+        finally:
+            adapters.ollama.load = original
+        assert not adapters._inflight
+        await adapters.load_model("ollama", "y")
+
+    asyncio.run(run())
+    assert loaded == {"y"}
+
+
+def test_reloading_a_model_that_is_already_loaded_is_allowed(_one_model_at_a_time):
+    adapters, loaded = _one_model_at_a_time
+
+    async def run():
+        await adapters.load_model("ollama", "a")
+        await adapters.load_model("ollama", "a")  # 同じものの再要求は枠を使わない
+
+    asyncio.run(run())
+    assert loaded == {"a"}

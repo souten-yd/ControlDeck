@@ -144,6 +144,7 @@ export default function DashboardPage() {
             values={cpuValues}
             temp={m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : undefined}
             fan={m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm}` : undefined}
+            fanPercent={m?.cpu.fan_percent ?? undefined}
           />
           <MetricTile
             label="RAM"
@@ -325,7 +326,16 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
         {psuOk && power.vrm_temperature_c != null && <span className="shrink-0" title="VRM温度">VRM {power.vrm_temperature_c}°</span>}
         {psuOk && power.case_temperature_c != null && <span className="shrink-0" title="ケース内温度">ケース {power.case_temperature_c}°</span>}
         {psuOk && power.fan_rpm != null && (
-          <span className="shrink-0 font-medium text-sky-500 dark:text-sky-400" title="PSUファン回転数">✻ {power.fan_rpm.toLocaleString()}rpm</span>
+          // 0rpm は故障ではなく zero-RPM mode のことがある。回転数だけでは
+          // 区別がつかないので、指令値の割合を併記する。
+          <span
+            className="shrink-0 font-medium text-sky-500 dark:text-sky-400"
+            title={power.fan_percent != null
+              ? `PSUファン 回転数 ${power.fan_rpm.toLocaleString()}rpm・指令 ${power.fan_percent}%`
+              : "PSUファン回転数"}
+          >
+            ✻ {power.fan_rpm.toLocaleString()}rpm
+          </span>
         )}
         <span className="ml-auto shrink-0" title={`電力量単価 ${power.price_per_kwh_yen}円/kWh・PSU効率${Math.round(power.psu_efficiency * 100)}%（概算）`}>
           ¥{power.price_per_kwh_yen}/kWh · η{Math.round(power.psu_efficiency * 100)}%
@@ -404,6 +414,7 @@ function MetricTile({
   sub,
   temp,
   fan,
+  fanPercent,
 }: {
   label: string;
   value: string | null;
@@ -412,6 +423,7 @@ function MetricTile({
   sub?: string;
   temp?: string;
   fan?: string;
+  fanPercent?: number;
 }) {
   const tone =
     percent == null
@@ -448,6 +460,8 @@ function MetricTile({
               <path d="M12 9.8c0-3.2 1.6-5 3.4-5 1.5 0 2.4 1.2 2.4 2.4 0 1.9-2.6 2.6-5.8 2.6zM12 14.2c0 3.2-1.6 5-3.4 5-1.5 0-2.4-1.2-2.4-2.4 0-1.9 2.6-2.6 5.8-2.6zM9.8 12c-3.2 0-5-1.6-5-3.4 0-1.5 1.2-2.4 2.4-2.4 1.9 0 2.6 2.6 2.6 5.8zM14.2 12c3.2 0 5 1.6 5 3.4 0 1.5-1.2 2.4-2.4 2.4-1.9 0-2.6-2.6-2.6-5.8z" />
             </svg>
             {fan} <span className="font-normal opacity-70">RPM</span>
+            {/* 0 rpm と「止まっている」は違う。指令値があるなら添える。 */}
+            {fanPercent != null && <span className="font-normal opacity-70">· {fanPercent}%</span>}
           </span>
         )}
       </p>

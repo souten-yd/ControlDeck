@@ -13,6 +13,7 @@ from typing import Any
 import psutil
 
 from app.config import get_config
+from app.monitoring.cpu_fan import read_cpu_fan
 from app.monitoring.gpu import BaseProvider, detect_provider
 
 logger = logging.getLogger("control_deck.monitoring")
@@ -68,19 +69,11 @@ class MetricsCollector:
                     break
         except Exception:
             pass
+        cpu_fan_percent = None
         try:
-            # chip/labelがCPUを明示するセンサーだけを採用する。筐体/PSU/GPU fanを
-            # CPU fanとして誤表示しない。不明な環境はN/Aのままにする。
-            for chip, fans in psutil.sensors_fans().items():
-                for fan in fans:
-                    identity = f"{chip} {fan.label}".casefold().replace(" ", "_")
-                    if any(token in identity for token in ("cpu_fan", "cpufan", "cpu_opt")):
-                        cpu_fan_rpm = int(fan.current) if fan.current is not None else None
-                        break
-                if cpu_fan_rpm is not None:
-                    break
-        except (AttributeError, OSError, RuntimeError):
-            pass
+            cpu_fan_rpm, cpu_fan_percent = read_cpu_fan()
+        except Exception:  # noqa: BLE001 - ファンが読めなくても他は出す
+            logger.debug("CPU fan read failed", exc_info=True)
 
         gpu_sample = None
         try:
@@ -103,6 +96,7 @@ class MetricsCollector:
                 "freq_mhz": freq.current if freq else None,
                 "temperature_c": cpu_temp,
                 "fan_rpm": cpu_fan_rpm,
+                "fan_percent": cpu_fan_percent,
                 "cores": len(per_cpu),
             },
             "memory": {
@@ -146,6 +140,7 @@ class MetricsCollector:
             "vrm_temperature_c": psu.get("vrm_temperature_c"),
             "case_temperature_c": psu.get("case_temperature_c"),
             "fan_rpm": psu.get("fan_rpm"),
+            "fan_percent": psu.get("fan_percent"),
         }
         output_w = psu.get("output_power_w")
         # 電気代積算（PSU 取得不能時は None を渡して欠測扱い）

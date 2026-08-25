@@ -168,3 +168,61 @@ def test_health_command_catalog_does_not_expose_argv(admin_client):
     response = admin_client.get("/api/v1/apps/health-commands")
     assert response.status_code == 200
     assert response.json() == []
+
+
+# ── CPU ファン ───────────────────────────────────────────────────────────
+#
+# マザーボードのファンは Super-I/O チップが持つ。そのドライバが無い環境では
+# hwmon に何も出ないので、CPU ファンは本当に読めない。読めないことと、
+# 0 rpm（止まっている）は別なので、推測で埋めない。
+
+def test_the_cpu_fan_is_only_reported_when_something_names_it(tmp_path, monkeypatch):
+    from app.monitoring import cpu_fan
+
+    root = tmp_path / "hwmon"
+    chip = root / "hwmon9"
+    chip.mkdir(parents=True)
+    (chip / "name").write_text("nct6799\n", encoding="utf-8")
+    (chip / "fan1_input").write_text("620\n", encoding="utf-8")
+    (chip / "pwm1").write_text("128\n", encoding="utf-8")
+    monkeypatch.setattr(cpu_fan, "HWMON_ROOT", root)
+    monkeypatch.setattr(cpu_fan, "_from_sensors", lambda: (None, None))
+
+    # 番号しかない状態では採用しない。fan1 が CPU とは限らず、当てにすると
+    # 筐体ファンや水冷ポンプを CPU ファンとして出してしまう。
+    assert cpu_fan.read_cpu_fan() == (None, None)
+
+    (chip / "fan1_label").write_text("CPU Fan\n", encoding="utf-8")
+    assert cpu_fan.read_cpu_fan() == (620, 50)
+
+
+def test_a_non_super_io_chip_is_never_read_as_the_cpu_fan(tmp_path, monkeypatch):
+    """PSU や GPU の fan を CPU fan として出さない。"""
+    from app.monitoring import cpu_fan
+
+    root = tmp_path / "hwmon"
+    chip = root / "hwmon1"
+    chip.mkdir(parents=True)
+    (chip / "name").write_text("amdgpu\n", encoding="utf-8")
+    (chip / "fan1_label").write_text("CPU Fan\n", encoding="utf-8")
+    (chip / "fan1_input").write_text("900\n", encoding="utf-8")
+    monkeypatch.setattr(cpu_fan, "HWMON_ROOT", root)
+    monkeypatch.setattr(cpu_fan, "_from_sensors", lambda: (None, None))
+
+    assert cpu_fan.read_cpu_fan() == (None, None)
+
+
+def test_the_sensors_naming_is_used_when_the_driver_gives_no_label(monkeypatch):
+    """ドライバが番号しか出さない板でも、/etc/sensors.d が名付けていれば拾える。"""
+    import json
+    import subprocess
+
+    from app.monitoring import cpu_fan
+
+    payload = json.dumps({"nct6799-isa-0a20": {"CPU Fan": {"fan2_input": 705.0}}})
+    monkeypatch.setattr(cpu_fan, "_from_hwmon", lambda: (None, None))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: type("R", (), {"stdout": payload})(),
+    )
+    assert cpu_fan.read_cpu_fan() == (705, None)

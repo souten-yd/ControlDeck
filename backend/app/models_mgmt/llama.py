@@ -1231,17 +1231,36 @@ def mark_used_by_base_url(base_url: str) -> str | None:
 
 
 def _has_connected_clients(port: int) -> bool:
-    """そのportへ接続中のclientがあるか。
+    """そのportへ接続中の *外部* clientがあるか。
 
     OpenCodeのような外部clientはControl Deckを経由しないため`last_used_at`が
     更新されない。利用中のinstanceを止めてしまわないよう、実接続を直接見る。
+
+    自分自身の接続は数えない。HTTP clientは応答後も接続を保持するので、
+    数えると「1度でもチャットしたら二度と降ろせない」になる。実測: AI
+    アシスタントで1往復した後、解放は常に clients_connected で拒否され、
+    画像生成は insufficient_capacity で落ちていた。
+    ControlDeck自身の要求は release_on_request が drain で待つので、
+    ここで重ねて見る必要がない。見ているのは外から来ている人だけである。
     """
     try:
+        import os
+
         import psutil
 
+        mine = {os.getpid()}
+        try:
+            mine.update(child.pid for child in psutil.Process().children(recursive=True))
+        except psutil.Error:
+            pass
+        # server 側の socket（laddr.port == port）の pid は常に llama 自身なので、
+        # そこからは誰が繋いでいるか分からない。client 側（raddr.port == port）を
+        # 見る。そちらの pid が接続元である。
         for connection in psutil.net_connections(kind="tcp"):
-            if (connection.status == psutil.CONN_ESTABLISHED and connection.laddr
-                    and connection.laddr.port == port):
+            if (connection.status == psutil.CONN_ESTABLISHED and connection.raddr
+                    and connection.raddr.port == port and connection.pid not in mine):
+                # pid が読めない接続は外部として扱う。読めないことを「自分の
+                # ものだ」と解釈すると、他人が使っている model を降ろしてしまう。
                 return True
     except (OSError, RuntimeError, PermissionError):
         return False
@@ -1521,7 +1540,7 @@ async def await_capacity(port: int, needed_tokens: int = 0, *, timeout_seconds: 
     return last
 
 
-def release_reason(item: dict) -> str:
+def release_reason(item: dict, *, include_helpers: bool = False) -> str:
     """Why an explicit release must be refused, or "" when it may proceed.
 
     An explicit release is not the idle unload, and must not reuse the idle
@@ -1541,9 +1560,13 @@ def release_reason(item: dict) -> str:
       inference is ever cut (that guard lives in the resource provider)
       a live TCP connection means somebody is mid-stream right now
       idle_exclude is the operator's explicit "never release this"
-      non-llm roles (embedding / reranker) are never touched
+      non-llm roles (embedding / reranker), unless include_helpers says the
+      caller has already found that releasing the LLMs was not enough. Keeping
+      a 1.16GB helper resident must not be the reason a 33.35GB workload
+      cannot run on a 34.2GB card.
     """
-    if str(item.get("role", "llm")) != "llm":
+    role = str(item.get("role", "llm"))
+    if role != "llm" and not (include_helpers and role in {"embedding", "reranker"}):
         return "not_an_llm_instance"
     if item.get("idle_exclude"):
         return "idle_excluded"
@@ -1555,8 +1578,17 @@ def release_reason(item: dict) -> str:
     return ""
 
 
-async def release_loaded_llms() -> tuple[bool, str, int]:
+async def release_loaded_llms(*, include_helpers: bool = False) -> tuple[bool, str, int]:
     """Unload every llm instance that nobody is using right now.
+
+    ``include_helpers`` extends this to the embedding and reranker instances.
+    They are excluded by default because they are small and RAG leans on them
+    constantly, so evicting them for every turn would be pure churn. But small
+    is not free: a 1.16GB embedding model resident on a 34.2GB card leaves
+    33.05GB, and an image model measured at 33.35GB then cannot be admitted at
+    all. Observed exactly that — bge-m3 loaded, FLUX refused with
+    insufficient_capacity while the GPU looked idle. Keeping a helper resident
+    must not be the reason a real workload cannot run.
 
     In-flight requests are drained by the caller before this runs. Whatever is
     released comes back on demand through ensure_ready, so a consumer that
@@ -1568,13 +1600,14 @@ async def release_loaded_llms() -> tuple[bool, str, int]:
     """
     import asyncio
 
+    wanted = {"llm", "embedding", "reranker"} if include_helpers else {"llm"}
     running = [item for item in list_instances() if item.get("loaded")]
-    running = [item for item in running if str(item.get("role", "llm")) == "llm"]
+    running = [item for item in running if str(item.get("role", "llm")) in wanted]
     if not running:
         return True, "already_released", 0
 
     for item in running:
-        reason = release_reason(item)
+        reason = release_reason(item, include_helpers=include_helpers)
         if reason:
             return False, reason, 0
     released_model_bytes = 0

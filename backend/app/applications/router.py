@@ -333,7 +333,11 @@ def update_app(
     env = data.pop("environment", None)
     args = data.pop("arguments", None)
     code = data.pop("code", None)
-    health_check = data.pop("health_check", None)
+    # model_dump は入れ子のモデルも dict にする。set_health_check は
+    # HealthCheckConfig を受ける契約なので、dump した側ではなく body から取る。
+    # ここを取り違えると、health_check を含む更新が必ず 500 になる（実際なった）。
+    health_check_set = data.pop("health_check", None) is not None
+    health_check = body.health_check if health_check_set else None
     log_files = data.pop("log_files", None)
     for key, value in data.items():
         setattr(app, key, value)
