@@ -5,6 +5,7 @@ import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
 import {
+  addonIcon,
   IconBook,
   IconBranch,
   IconChart,
@@ -203,7 +204,7 @@ export default function AppLayout() {
                 isActive ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
               }`}
             >
-              <IconPlugin className="shrink-0 text-lg" />
+              {(() => { const Ico = addonIcon(contribution.icon); return <Ico className="shrink-0 text-lg" />; })()}
               {!collapsed && <><span className="min-w-0 flex-1 truncate">{label}</span>{addon && <AddonStatusChip state={addon.state} compact />}</>}
             </NavLink>;
           })}
@@ -394,9 +395,12 @@ export default function AppLayout() {
             )}
             {addonNavigation.map((contribution) => {
               const addon = addonById.get(contribution.addon_id);
+              // Apps と同じ IconGrid を使っていたので、Media が Apps と
+              // 見分けられなかった。Add-on が manifest で名乗った形を使う。
+              const Ico = addonIcon(contribution.icon);
               return <ActionItem
                 key={`addon-navigation-${contribution.addon_id}-${contribution.id}`}
-                icon={<IconGrid />}
+                icon={<Ico />}
                 label={addonLabel(contribution.label)}
                 hint={addon && addon.state !== "healthy" ? addonStateMessage(addon.state) : undefined}
                 onClick={() => {
