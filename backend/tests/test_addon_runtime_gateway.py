@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from app.addon_runtime.auth import RuntimePrincipal
-from app.addon_runtime.gateway import GATEWAY_PROTOCOL_VERSION, _gateway_document
+from app.addon_runtime.gateway import (
+    DEVICE_CREDENTIAL_TTL_SECONDS,
+    GATEWAY_PROTOCOL_VERSION,
+    _gateway_document,
+)
 
 
 def principal(*capabilities: str) -> RuntimePrincipal:
@@ -23,17 +27,21 @@ def test_gateway_document_projects_only_granted_host_capabilities():
         vision_analyze=False,
     )
 
-    assert value["protocol_version"] == GATEWAY_PROTOCOL_VERSION == "1.1"
+    assert value["protocol_version"] == GATEWAY_PROTOCOL_VERSION == "1.4"
     assert value["addon_id"] == "media-forge"
     assert value["control_plane"]["jobs"] == {
         "read": False,
         "write": True,
         "durable": True,
         "cancel_control": True,
+        "credential_refresh": True,
     }
     assert value["control_plane"]["resources"]["leases"] is True
     assert value["control_plane"]["files"]["pick"] is False
     assert value["control_plane"]["files"]["export"] is True
+    assert value["control_plane"]["ai"]["stream"] is True
+    assert value["control_plane"]["ai"]["residency_hold"] is True
+    assert value["control_plane"]["ai"]["residency_hold_ttl_seconds"] == 120
     assert value["control_plane"]["ai"]["capabilities"] == {
         "text.generate": True,
         "vision.analyze": False,
@@ -44,11 +52,13 @@ def test_gateway_document_projects_only_granted_host_capabilities():
         "relay_ids": [],
     }
     assert value["transports"]["embedded_websocket_proxy"]["available"] is True
+    assert value["transports"]["ai_sse"] == {"available": True, "version": "1"}
     assert value["transports"]["device_session"] == {
         "available": False,
         "version": None,
         "pairing": None,
         "credential_ttl_seconds": None,
+        "credential_refresh": None,
         "reason": "devices_relay_not_granted",
     }
 
@@ -62,6 +72,8 @@ def test_gateway_document_does_not_advertise_host_ai_without_grant():
 
     assert value["control_plane"]["ai"]["inference"] is False
     assert value["control_plane"]["ai"]["release"] is False
+    assert value["control_plane"]["ai"]["stream"] is False
+    assert value["control_plane"]["ai"]["residency_hold"] is False
     assert value["control_plane"]["ai"]["capabilities"] == {
         "text.generate": False,
         "vision.analyze": False,
@@ -86,7 +98,10 @@ def test_device_session_requires_both_grant_and_declared_relay():
         "relay_ids": [],
     }
     assert granted_only["transports"]["device_session"]["available"] is False
-    assert granted_only["transports"]["device_session"]["reason"] == "no_device_relays_declared"
+    assert (
+        granted_only["transports"]["device_session"]["reason"]
+        == "no_device_relays_declared"
+    )
 
     declared_without_grant = _gateway_document(
         principal(),
@@ -95,7 +110,10 @@ def test_device_session_requires_both_grant_and_declared_relay():
         device_relays=[relay],
     )
     assert declared_without_grant["transports"]["device_session"]["available"] is False
-    assert declared_without_grant["transports"]["device_session"]["reason"] == "devices_relay_not_granted"
+    assert (
+        declared_without_grant["transports"]["device_session"]["reason"]
+        == "devices_relay_not_granted"
+    )
 
     ready = _gateway_document(
         principal("devices.relay"),
@@ -112,6 +130,7 @@ def test_device_session_requires_both_grant_and_declared_relay():
         "available": True,
         "version": "1",
         "pairing": "one_time_code",
-        "credential_ttl_seconds": 28800,
+        "credential_ttl_seconds": DEVICE_CREDENTIAL_TTL_SECONDS,
+        "credential_refresh": "on_connect",
         "reason": None,
     }
