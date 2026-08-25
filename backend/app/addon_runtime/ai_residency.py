@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.service import audit_runtime
+from app.addons import tokens
 from app.models_mgmt import llama, resource_provider
 from app.models_mgmt.ai_gateway import AITargetUnavailable, resolve_ai_target
 
@@ -21,6 +22,22 @@ def _owner(principal: RuntimePrincipal) -> str:
     return f"addon:{principal.addon_id}:{principal.subject}"
 
 
+def _fresh_credential(principal: RuntimePrincipal) -> dict[str, str | int]:
+    token = tokens.issue(
+        principal.addon_id,
+        subject=principal.subject,
+        kind="service",
+        actor_user_id=principal.actor_user_id,
+        grant_ids=sorted(principal.grant_ids) if principal.grant_ids is not None else None,
+    )
+    payload = tokens.verify(token, addon_id=principal.addon_id, kind="service")
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "token_expires_at": payload["exp"],
+    }
+
+
 async def _managed_text_target():
     try:
         target = await resolve_ai_target("text.generate")
@@ -33,9 +50,9 @@ async def _managed_text_target():
 async def create_hold(request: Request, principal: AIAuth):
     """Keep the Host-selected LLM warm for a live conversational session.
 
-    The hold is intentionally short and renewable. It is never persisted, so a
-    SonicForge crash, lost network path, or ControlDeck restart cannot leave a
-    permanent pin behind.
+    Holds are short, renewable and in-memory. Rolling the service credential in
+    the same heartbeat lets multi-hour voice/meeting sessions continue without
+    making the original Add-on service token long-lived.
     """
     target = await _managed_text_target()
     if not target.gateway_managed:
@@ -72,6 +89,7 @@ async def create_hold(request: Request, principal: AIAuth):
         "reason": "session_hold",
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
         "expires_at": expires_at,
+        **_fresh_credential(principal),
     }
 
 
@@ -94,8 +112,10 @@ async def renew_hold(hold_id: str, request: Request, principal: AIAuth):
     return {
         "held": True,
         "hold_id": hold_id,
+        "reason": "session_hold",
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
         "expires_at": expires_at,
+        **_fresh_credential(principal),
     }
 
 
