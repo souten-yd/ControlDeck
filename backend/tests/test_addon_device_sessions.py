@@ -180,7 +180,7 @@ def test_pairing_is_one_time_and_device_token_reconnects(
         )
         assert payload["actor_user_id"] == user_id
         assert payload["sub"].startswith("device:voice:")
-        assert payload["exp"] - payload["iat"] == 30 * 24 * 60 * 60
+        assert payload["exp"] - payload["iat"] == tokens.MAX_TOKEN_TTL_SECONDS
         assert socket.receive_text() == "upstream-ready"
         socket.send_text("device-message")
 
