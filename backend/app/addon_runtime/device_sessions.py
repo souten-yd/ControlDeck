@@ -25,10 +25,15 @@ from app.security.rate_limit import api_rate_limiter
 
 
 router = APIRouter(prefix="/{addon_id}/devices", tags=["addon-runtime-device"])
-DeviceRelayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability("devices.relay"))]
+DeviceRelayAuth = Annotated[
+    RuntimePrincipal, Depends(require_runtime_capability("devices.relay"))
+]
 PAIRING_TTL_SECONDS = 5 * 60
-DEVICE_TOKEN_TTL_SECONDS = 8 * 60 * 60
-ACTIVE_POLICY_CHECK_SECONDS = 5.0
+# Local-first devices should pair once rather than every boot/day. The credential
+# remains narrowly bound to one Add-on relay + device id and is rotated on every
+# successful reconnect. Basic direct SonicForge speech does not require it.
+DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+POLICY_RECHECK_SECONDS = 60.0
 MAX_PENDING_PAIRINGS = 128
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _LOCK = threading.RLock()
@@ -37,7 +42,9 @@ _LOCK = threading.RLock()
 class DevicePairingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    relay_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9._-]{0,127}$")
+    relay_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9._-]{0,127}$"
+    )
     device_label: str | None = Field(default=None, max_length=80)
 
 
@@ -96,7 +103,9 @@ def _new_pairing(
 
 
 def _consume_pairing(code: str, *, addon_id: str, relay_id: str) -> PendingPairing:
-    if len(code) != 8 or any(character not in _CODE_ALPHABET for character in code):
+    if len(code) != 8 or any(
+        character not in _CODE_ALPHABET for character in code
+    ):
         raise ValueError("invalid pairing code")
     now = int(time.time())
     digest = _code_hash(code)
@@ -145,14 +154,20 @@ def _audit_device(
             resource_type="addon_device",
             resource_id=f"{addon_id}:{relay_id}"[:64],
             result=result,
-            request=request,  # Request and WebSocket both expose client/headers.
-            metadata={"addon_id": addon_id, "relay_id": relay_id, **(metadata or {})},
+            request=request,
+            metadata={
+                "addon_id": addon_id,
+                "relay_id": relay_id,
+                **(metadata or {}),
+            },
         )
     finally:
         db.close()
 
 
-def _resolve_relay(addon_id: str, relay_id: str, permissions: set[str]) -> tuple[dict, str]:
+def _resolve_relay(
+    addon_id: str, relay_id: str, permissions: set[str]
+) -> tuple[dict, str]:
     try:
         current = registry.status(addon_id)
     except registry.AddonRegistryError as exc:
@@ -179,7 +194,9 @@ def _resolve_relay(addon_id: str, relay_id: str, permissions: set[str]) -> tuple
         raise PermissionError("device relay endpoint is invalid")
     if not isinstance(protocol, str) or not protocol:
         raise PermissionError("device relay protocol is invalid")
-    base_url = health.approved_health_url(current["runtime"]["base_url"], "/").rstrip("/")
+    base_url = health.approved_health_url(
+        current["runtime"]["base_url"], "/"
+    ).rstrip("/")
     return relay, base_url
 
 
@@ -194,7 +211,9 @@ def _parse_device_subject(subject: object, relay_id: str) -> str:
     if not subject.startswith(prefix):
         raise ValueError("device token relay scope does not match")
     device_id = subject.removeprefix(prefix)
-    if len(device_id) != 32 or any(character not in "0123456789abcdef" for character in device_id):
+    if len(device_id) != 32 or any(
+        character not in "0123456789abcdef" for character in device_id
+    ):
         raise ValueError("device token device id is invalid")
     return device_id
 
@@ -203,12 +222,19 @@ def _bearer(value: str | None) -> str | None:
     if value is None:
         return None
     scheme, separator, token = value.partition(" ")
-    if separator != " " or scheme.lower() != "bearer" or not token or " " in token:
+    if (
+        separator != " "
+        or scheme.lower() != "bearer"
+        or not token
+        or " " in token
+    ):
         raise ValueError("invalid device authorization")
     return token
 
 
-def _authorize_device(websocket: WebSocket, addon_id: str, relay_id: str) -> tuple[int, str, bool]:
+def _authorize_device(
+    websocket: WebSocket, addon_id: str, relay_id: str
+) -> tuple[int, str, bool]:
     code = websocket.headers.get("x-control-deck-pairing-code")
     authorization = _bearer(websocket.headers.get("authorization"))
     if bool(code) == bool(authorization):
@@ -224,12 +250,18 @@ def _authorize_device(websocket: WebSocket, addon_id: str, relay_id: str) -> tup
         max_ttl_seconds=DEVICE_TOKEN_TTL_SECONDS,
     )
     actor_user_id = payload.get("actor_user_id")
-    if not isinstance(actor_user_id, int) or isinstance(actor_user_id, bool) or actor_user_id <= 0:
+    if (
+        not isinstance(actor_user_id, int)
+        or isinstance(actor_user_id, bool)
+        or actor_user_id <= 0
+    ):
         raise ValueError("device token actor is invalid")
     return actor_user_id, _parse_device_subject(payload.get("sub"), relay_id), False
 
 
-def _fresh_device_token(addon_id: str, relay_id: str, device_id: str, actor_user_id: int) -> tuple[str, int]:
+def _fresh_device_token(
+    addon_id: str, relay_id: str, device_id: str, actor_user_id: int
+) -> tuple[str, int]:
     now = int(time.time())
     token = tokens.issue(
         addon_id,
@@ -243,7 +275,11 @@ def _fresh_device_token(addon_id: str, relay_id: str, device_id: str, actor_user
 
 
 @router.post("/pairings", status_code=201)
-def create_pairing(body: DevicePairingRequest, principal: DeviceRelayAuth, request: Request):
+def create_pairing(
+    body: DevicePairingRequest,
+    principal: DeviceRelayAuth,
+    request: Request,
+):
     if principal.actor_user_id is None:
         raise HTTPException(
             status_code=403,
@@ -251,7 +287,9 @@ def create_pairing(body: DevicePairingRequest, principal: DeviceRelayAuth, reque
         )
     try:
         permissions = _user_permissions(principal.actor_user_id)
-        relay, _base_url = _resolve_relay(principal.addon_id, body.relay_id, permissions)
+        relay, _base_url = _resolve_relay(
+            principal.addon_id, body.relay_id, permissions
+        )
     except PermissionError as exc:
         _audit_device(
             "addon.device.pairing.create",
@@ -286,7 +324,10 @@ def create_pairing(body: DevicePairingRequest, principal: DeviceRelayAuth, reque
         "expires_at": pairing.expires_at,
         "relay_id": body.relay_id,
         "protocol": relay["protocol"],
-        "websocket_path": f"/api/v1/addon-runtime/{principal.addon_id}/devices/relay/{body.relay_id}",
+        "websocket_path": (
+            f"/api/v1/addon-runtime/{principal.addon_id}"
+            f"/devices/relay/{body.relay_id}"
+        ),
     }
 
 
@@ -302,7 +343,9 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
         await websocket.close(code=4429, reason="rate limited")
         return
     try:
-        actor_user_id, device_id, newly_paired = _authorize_device(websocket, addon_id, relay_id)
+        actor_user_id, device_id, newly_paired = _authorize_device(
+            websocket, addon_id, relay_id
+        )
         permissions = _user_permissions(actor_user_id)
         relay, base_url = _resolve_relay(addon_id, relay_id, permissions)
     except (ValueError, tokens.AddonTokenError, PermissionError):
@@ -311,7 +354,9 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
 
     parsed = urlsplit(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    upstream_url = urlunsplit((scheme, parsed.netloc, relay["endpoint"], "", ""))
+    upstream_url = urlunsplit(
+        (scheme, parsed.netloc, relay["endpoint"], "", "")
+    )
     try:
         async with proxy._connect_websocket(
             upstream_url,
@@ -322,22 +367,27 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
             refreshed, expires_at = _fresh_device_token(
                 addon_id, relay_id, device_id, actor_user_id
             )
-            await websocket.send_json({
-                "type": "control-deck.device.session",
-                "protocol_version": "1",
-                "relay_protocol": relay["protocol"],
-                "device_id": device_id,
-                "device_token": refreshed,
-                "expires_at": expires_at,
-                "newly_paired": newly_paired,
-            })
+            await websocket.send_json(
+                {
+                    "type": "control-deck.device.session",
+                    "protocol_version": "1",
+                    "relay_protocol": relay["protocol"],
+                    "device_id": device_id,
+                    "device_token": refreshed,
+                    "expires_at": expires_at,
+                    "newly_paired": newly_paired,
+                }
+            )
             _audit_device(
                 "addon.device.session.connect",
                 actor_user_id=actor_user_id,
                 addon_id=addon_id,
                 relay_id=relay_id,
                 request=websocket,
-                metadata={"device_id": device_id, "newly_paired": newly_paired},
+                metadata={
+                    "device_id": device_id,
+                    "newly_paired": newly_paired,
+                },
             )
 
             async def device_to_upstream() -> None:
@@ -358,16 +408,19 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
                         await websocket.send_bytes(message)
 
             async def authorization_watch() -> None:
+                # The active socket is already authenticated. Recheck infrequently
+                # only so an explicit user/add-on revoke eventually terminates the
+                # connection; do not force reconnect when the rolling device token
+                # itself reaches its expiry.
                 while True:
-                    await asyncio.sleep(ACTIVE_POLICY_CHECK_SECONDS)
-                    if int(time.time()) >= expires_at:
-                        await websocket.close(code=4401, reason="device session credential refresh required")
-                        return
+                    await asyncio.sleep(POLICY_RECHECK_SECONDS)
                     try:
                         current_permissions = _user_permissions(actor_user_id)
                         _resolve_relay(addon_id, relay_id, current_permissions)
                     except PermissionError:
-                        await websocket.close(code=4403, reason="device authorization revoked")
+                        await websocket.close(
+                            code=4403, reason="device authorization revoked"
+                        )
                         return
 
             first = asyncio.create_task(device_to_upstream())
@@ -393,7 +446,9 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
             {"relay_id": relay_id},
         )
         try:
-            await websocket.close(code=4502, reason="add-on device relay unavailable")
+            await websocket.close(
+                code=4502, reason="add-on device relay unavailable"
+            )
         except RuntimeError:
             pass
     except (WebSocketDisconnect, RuntimeError):
