@@ -8,6 +8,7 @@ from app.addon_runtime.auth import authorize_runtime
 from app.audit import service as audit
 from app.database import SessionLocal
 from app.addon_runtime.ai import router as ai_router
+from app.addon_runtime.gateway import router as gateway_router
 from app.addon_runtime.jobs import router as jobs_router
 from app.addon_runtime.resources import router as resources_router
 from app.addon_runtime.files import router as files_router
@@ -17,6 +18,7 @@ router.include_router(jobs_router)
 router.include_router(resources_router)
 router.include_router(files_router)
 router.include_router(ai_router)
+router.include_router(gateway_router)
 
 
 @router.post("/token/introspect")
