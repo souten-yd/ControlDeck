@@ -12,6 +12,7 @@ from app.models_mgmt.ai_gateway import capability_available
 router = APIRouter(prefix="/{addon_id}/gateway", tags=["addon-runtime-gateway"])
 GatewayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability())]
 GATEWAY_PROTOCOL_VERSION = "1.4"
+DEVICE_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 def _gateway_document(
@@ -54,7 +55,9 @@ def _gateway_document(
                 "release": ai_granted,
                 "stream": bool(ai_granted and text_generate),
                 "residency_hold": bool(ai_granted and text_generate),
-                "residency_hold_ttl_seconds": 120 if ai_granted and text_generate else None,
+                "residency_hold_ttl_seconds": (
+                    120 if ai_granted and text_generate else None
+                ),
                 "capabilities": {
                     "text.generate": bool(ai_granted and text_generate),
                     "vision.analyze": bool(ai_granted and vision_analyze),
@@ -64,7 +67,9 @@ def _gateway_document(
                 "relay": relay_granted,
                 "pairing": device_available,
                 "relay_ids": [
-                    item.get("id") for item in relays if isinstance(item.get("id"), str)
+                    item.get("id")
+                    for item in relays
+                    if isinstance(item.get("id"), str)
                 ],
             },
         },
@@ -72,13 +77,21 @@ def _gateway_document(
             "runtime_http": {"available": True, "version": "1"},
             "embedded_http_proxy": {"available": True, "version": "1"},
             "embedded_websocket_proxy": {"available": True, "version": "1"},
-            "ai_sse": {"available": bool(ai_granted and text_generate), "version": "1"},
+            "ai_sse": {
+                "available": bool(ai_granted and text_generate),
+                "version": "1",
+            },
             "device_session": {
                 "available": device_available,
                 "version": "1" if device_available else None,
                 "pairing": "one_time_code" if device_available else None,
-                "credential_ttl_seconds": 28800 if device_available else None,
-                "reason": None if device_available else (
+                "credential_ttl_seconds": (
+                    DEVICE_CREDENTIAL_TTL_SECONDS if device_available else None
+                ),
+                "credential_refresh": "on_connect" if device_available else None,
+                "reason": None
+                if device_available
+                else (
                     "devices_relay_not_granted"
                     if not relay_granted
                     else "no_device_relays_declared"
