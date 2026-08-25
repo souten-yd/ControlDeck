@@ -11,7 +11,7 @@ from app.models_mgmt.ai_gateway import capability_available
 
 router = APIRouter(prefix="/{addon_id}/gateway", tags=["addon-runtime-gateway"])
 GatewayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability())]
-GATEWAY_PROTOCOL_VERSION = "1.2"
+GATEWAY_PROTOCOL_VERSION = "1.3"
 
 
 def _gateway_document(
@@ -52,6 +52,8 @@ def _gateway_document(
                 "inference": ai_granted,
                 "release": ai_granted,
                 "stream": bool(ai_granted and text_generate),
+                "residency_hold": bool(ai_granted and text_generate),
+                "residency_hold_ttl_seconds": 120 if ai_granted and text_generate else None,
                 "capabilities": {
                     "text.generate": bool(ai_granted and text_generate),
                     "vision.analyze": bool(ai_granted and vision_analyze),
@@ -86,6 +88,7 @@ def _gateway_document(
                 "jobs",
                 "resource_admission",
                 "host_ai_routing",
+                "host_ai_residency",
                 "scoped_file_grants",
                 "agent_workflow_projection",
                 "transport_relay",
