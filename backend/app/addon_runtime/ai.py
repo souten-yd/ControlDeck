@@ -3,15 +3,17 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.service import audit_runtime
 from app.models_mgmt.ai_gateway import AITargetUnavailable, capability_available, resolve_ai_target
-from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeProviderError, provider_for_base_url
+from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeProviderError, RuntimeChunk, provider_for_base_url
 
 
 router = APIRouter(prefix="/{addon_id}/ai")
@@ -88,12 +90,26 @@ class RuntimeAIRequest(BaseModel):
         return self
 
 
+def _runtime_request(body: RuntimeAIRequest, target) -> RuntimeChatRequest:
+    return RuntimeChatRequest(
+        base_url=target.base_url,
+        model=target.model,
+        messages=body.messages,
+        temperature=body.temperature,
+        max_tokens=body.max_tokens,
+        thinking=False,
+        disable_thinking=True,
+        response_format=body.response_format,
+        timeout_seconds=body.timeout_seconds,
+    )
+
+
 @router.get("/capabilities")
 async def ai_capabilities(principal: AIAuth):
     del principal
     return {
-        "text.generate": {"available": await capability_available("text.generate")},
-        "vision.analyze": {"available": await capability_available("vision.analyze")},
+        "text.generate": {"available": await capability_available("text.generate"), "stream": True},
+        "vision.analyze": {"available": await capability_available("vision.analyze"), "stream": False},
     }
 
 
@@ -117,8 +133,6 @@ async def _complete_with_host_admission(
     renew = None
     try:
         adapter, lease_id, renew = await llm_gateway._acquire_gateway_lease(target.model, request)
-        # /api/v1/llm と同じ on-demand 起動を行う。明示解放やidle unloadで
-        # 停止した instance へ add-on の要求が飛んでも、ここで復帰する。
         if not await llama.ensure_ready(target.model, timeout_seconds=180):
             raise HTTPException(
                 status_code=503,
@@ -152,6 +166,40 @@ async def _admitted_free_bytes() -> int:
                 for device in snapshot.get("devices", [])), default=0)
 
 
+async def _stream_with_host_admission(
+    target,
+    runtime_request: RuntimeChatRequest,
+    request: Request,
+) -> AsyncIterator[RuntimeChunk]:
+    """Stream through the same Host-owned admission path as normal chat.
+
+    The lease is held only for the LLM stage and is always returned when the
+    caller disconnects/cancels or the provider finishes. Add-ons never receive
+    provider/model identity or a raw provider credential.
+    """
+    provider = provider_for_base_url(target.base_url)
+    if not target.gateway_managed:
+        async for chunk in provider.stream_chat(runtime_request):
+            yield chunk
+        return
+
+    from app.models_mgmt import gateway as llm_gateway
+    from app.models_mgmt import llama
+
+    adapter = None
+    lease_id = ""
+    renew = None
+    try:
+        adapter, lease_id, renew = await llm_gateway._acquire_gateway_lease(target.model, request)
+        if not await llama.ensure_ready(target.model, timeout_seconds=180):
+            raise RuntimeProviderError("AI model failed to become ready")
+        async for chunk in provider.stream_chat(runtime_request):
+            yield chunk
+    finally:
+        if adapter is not None and lease_id and renew is not None:
+            await llm_gateway._release_gateway_lease(adapter, lease_id, renew)
+
+
 @router.post("/release")
 async def ai_release(request: Request, principal: AIAuth, body: AIReleaseRequest | None = None):
     """Accept a consumer's declaration that its AI turn is over.
@@ -170,7 +218,6 @@ async def ai_release(request: Request, principal: AIAuth, body: AIReleaseRequest
     try:
         target = await resolve_ai_target("text.generate")
     except AITargetUnavailable:
-        # 対象そのものが無いなら、既に解放されているのと区別しない。
         released, reason, freed = True, "no_ai_target", 0
     else:
         if not target.gateway_managed:
@@ -212,17 +259,7 @@ async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAut
     except AITargetUnavailable as exc:
         raise HTTPException(status_code=503, detail="要求されたAI capabilityを利用できません") from exc
 
-    runtime_request = RuntimeChatRequest(
-        base_url=target.base_url,
-        model=target.model,
-        messages=body.messages,
-        temperature=body.temperature,
-        max_tokens=body.max_tokens,
-        thinking=False,
-        disable_thinking=True,
-        response_format=body.response_format,
-        timeout_seconds=body.timeout_seconds,
-    )
+    runtime_request = _runtime_request(body, target)
     try:
         content = await _complete_with_host_admission(target, runtime_request, request)
     except RuntimeProviderError as exc:
@@ -237,3 +274,51 @@ async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAut
         {"capability": body.capability},
     )
     return {"content": content, "capability": body.capability}
+
+
+@router.post("/stream")
+async def ai_stream(body: RuntimeAIRequest, request: Request, principal: AIAuth):
+    if body.capability != "text.generate":
+        raise HTTPException(status_code=400, detail="streaming currently supports text.generate only")
+    try:
+        target = await resolve_ai_target(body.capability)
+    except AITargetUnavailable as exc:
+        raise HTTPException(status_code=503, detail="要求されたAI capabilityを利用できません") from exc
+
+    runtime_request = _runtime_request(body, target)
+
+    async def events() -> AsyncIterator[str]:
+        result = "success"
+        try:
+            async for chunk in _stream_with_host_admission(target, runtime_request, request):
+                if await request.is_disconnected():
+                    result = "client_disconnected"
+                    return
+                if chunk.type == "thinking":
+                    # Add-on text.generate intentionally suppresses private/reasoning text.
+                    continue
+                payload = {"type": chunk.type}
+                if chunk.type == "content":
+                    payload["content"] = chunk.content
+                elif chunk.type == "usage":
+                    payload["usage"] = chunk.usage
+                yield "data: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n\n"
+            yield 'data: {"type":"done"}\n\n'
+        except RuntimeProviderError:
+            result = "provider_error"
+            yield 'data: {"type":"error","code":"generation_failed"}\n\n'
+        finally:
+            audit_runtime(
+                request,
+                principal,
+                "addon.runtime.ai.stream",
+                "ai_gateway",
+                body.capability,
+                {"capability": body.capability, "result": result},
+            )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
