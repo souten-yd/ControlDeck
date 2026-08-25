@@ -114,6 +114,57 @@ def test_job_subject_can_create_detached_durable_job(runtime_api):
     assert body["created"] is True
     assert body["job"]["id"] != parent["id"]
     assert body["job"]["kind"] == "addon.runtime.fake-addon"
+    child_token = body["access_token"]
+    claims = tokens.verify(child_token, addon_id="fake-addon", kind="service")
+    assert claims["sub"] == f"job:{body['job']['id']}"
+    updated = client.patch(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{body['job']['id']}",
+        json={"phase": "complete", "status": "succeeded"},
+        headers=headers(child_token),
+    )
+    assert updated.status_code == 200, updated.text
+    denied = client.get(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{parent['id']}/control",
+        headers=headers(child_token),
+    )
+    assert denied.status_code == 403
+    parent_done = client.patch(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{parent['id']}",
+        json={"phase": "complete", "status": "succeeded"},
+        headers=headers(
+            tokens.issue("fake-addon", subject=f"job:{parent['id']}", kind="service")
+        ),
+    )
+    assert parent_done.status_code == 200, parent_done.text
+
+
+def test_new_job_credential_preserves_actor_and_grant_scope(runtime_api):
+    client, _registry, tokens, _broker, user_id = runtime_api
+    original = tokens.issue(
+        "fake-addon",
+        subject="workflow:42",
+        kind="service",
+        actor_user_id=user_id,
+        grant_ids=["grant:input"],
+    )
+    created = client.post(
+        "/api/v1/addon-runtime/fake-addon/jobs",
+        json={"title": "scoped execution"},
+        headers=headers(original),
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    claims = tokens.verify(body["access_token"], addon_id="fake-addon", kind="service")
+    assert claims["sub"] == f"job:{body['job']['id']}"
+    assert claims["actor_user_id"] == user_id
+    assert claims["grant_ids"] == ["grant:input"]
+    assert claims["exp"] == body["expires_at"]
+    completed = client.patch(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{body['job']['id']}",
+        json={"phase": "complete", "status": "succeeded"},
+        headers=headers(body["access_token"]),
+    )
+    assert completed.status_code == 200, completed.text
 
 
 @pytest.mark.parametrize("subject", ["workflow:42", "context:7"])
