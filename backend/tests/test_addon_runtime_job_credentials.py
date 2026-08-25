@@ -55,6 +55,13 @@ def test_active_host_job_refresh_rotates_same_scoped_short_lived_credential(runt
     assert body["access_token"] not in serialized
     assert "grant:input" not in serialized
 
+    terminal = client.patch(
+        f"/api/v1/addon-runtime/fake-addon/jobs/{job['id']}",
+        json={"phase": "complete", "status": "succeeded"},
+        headers=headers(body["access_token"]),
+    )
+    assert terminal.status_code == 200, terminal.text
+
 
 def test_job_refresh_fails_closed_for_terminal_job(runtime_api):
     client, _registry, tokens, _broker, user_id = runtime_api
