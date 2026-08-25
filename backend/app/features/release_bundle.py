@@ -15,11 +15,13 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from app.addons import registry as addon_registry
@@ -209,9 +211,9 @@ def _signed_assets(
 ) -> dict[str, dict[str, Any]] | None:
     """Locate the signed manifest, when this catalog entry trusts a publisher.
 
-    Kept separate from selecting the artifact so the signature path is one
-    decision in one place: an entry with a key must be signed, an entry without
-    one keeps the pinned-digest behaviour untouched.
+    An entry with a publisher key must be signed and never falls back to the
+    legacy per-release digest path. Entries without publisher keys keep the
+    existing migration path unchanged.
     """
     if not _publisher_keys(spec):
         return None
@@ -259,6 +261,24 @@ _MANIFEST_LIMIT = 8192
 _GITHUB_ASSET_HOSTS = {
     "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
 }
+_SIGNED_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "feature_id",
+        "version",
+        "platform",
+        "architecture",
+        "artifact_name",
+        "sha256",
+        "size_bytes",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _SignedReleaseIntegrity:
+    sha256: str
+    size_bytes: int
 
 
 def _publisher_keys(spec: dict[str, Any]) -> list[str]:
@@ -276,24 +296,19 @@ def _publisher_keys(spec: dict[str, Any]) -> list[str]:
     return keys
 
 
-def _verify_signed_manifest(
+def _verify_signed_release(
     spec: dict[str, Any],
     signed: dict[str, dict[str, Any]],
     *,
     version: str,
     artifact_name: str,
-) -> str:
-    """Return the SHA-256 the publisher signed, or refuse.
-
-    Everything the caller is about to rely on has to be inside the signed
-    bytes. Checking only the digest would leave the version free to differ from
-    what was actually published.
-    """
+) -> _SignedReleaseIntegrity:
+    """Authenticate the small release manifest before downloading the artifact."""
     message = _bounded_get(
         str(signed["manifest"].get("browser_download_url") or ""),
         allowed_hosts=_GITHUB_ASSET_HOSTS,
         limit=_MANIFEST_LIMIT,
-    ).rstrip(b"\n")
+    )
     encoded = _bounded_get(
         str(signed["signature"].get("browser_download_url") or ""),
         allowed_hosts=_GITHUB_ASSET_HOSTS,
@@ -322,6 +337,17 @@ def _verify_signed_manifest(
         raise ReleaseBundleError("signed release manifest is not readable") from exc
     if not isinstance(manifest, dict):
         raise ReleaseBundleError("signed release manifest is not readable")
+    if frozenset(manifest) != _SIGNED_MANIFEST_FIELDS:
+        raise ReleaseBundleError("signed release manifest fields are invalid")
+
+    canonical = json.dumps(
+        manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    if message != canonical:
+        raise ReleaseBundleError("signed release manifest is not canonical JSON")
 
     system, architecture = host_platform()
     expected = {
@@ -343,31 +369,46 @@ def _verify_signed_manifest(
     size = manifest.get("size_bytes")
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
         raise ReleaseBundleError("signed release manifest has no usable size")
-    return digest
+    return _SignedReleaseIntegrity(sha256=digest, size_bytes=size)
+
+
+def _verify_signed_manifest(
+    spec: dict[str, Any],
+    signed: dict[str, dict[str, Any]],
+    *,
+    version: str,
+    artifact_name: str,
+) -> str:
+    """Backward-compatible digest-only seam used by existing focused tests."""
+    return _verify_signed_release(
+        spec,
+        signed,
+        version=version,
+        artifact_name=artifact_name,
+    ).sha256
 
 
 def _refuse_downgrade(feature_id: str, version: str) -> None:
-    """A correctly signed older release is still an attack when served as new.
-
-    Signature verification says who published the bytes, not that they are the
-    ones being offered today. Without this, a stale release with a known
-    problem can be replayed at anyone who is already past it.
-    """
-    current = (_feature_root(feature_id) / "current")
-    if not current.is_symlink():
+    """Reject replay of an older correctly signed release."""
+    current_link = _feature_root(feature_id) / "current"
+    if not current_link.is_symlink():
         return
-    installed = current.resolve().name
+    installed = current_link.resolve().name
     if VERSION_RE.fullmatch(installed) is None:
         return
-    if _version_key(version) < _version_key(installed):
+    try:
+        selected_version = Version(version)
+        installed_version = Version(installed)
+    except InvalidVersion as exc:
+        if version != installed:
+            raise ReleaseBundleError(
+                "release versions cannot be safely ordered for downgrade protection"
+            ) from exc
+        return
+    if selected_version < installed_version:
         raise ReleaseBundleError(
             f"release {version} is older than the installed {installed}; refusing to downgrade"
         )
-
-
-def _version_key(value: str) -> tuple[int, ...]:
-    numbers = re.findall(r"[0-9]+", value)
-    return tuple(int(item) for item in numbers[:4])
 
 
 def _expected_sha(spec: dict[str, Any], checksum: dict[str, Any], artifact_name: str) -> str:
@@ -387,6 +428,22 @@ def _expected_sha(spec: dict[str, Any], checksum: dict[str, Any], artifact_name:
     if pinned and pinned.lower() != fields[0].lower():
         raise ReleaseBundleError("release checksum differs from trusted catalog pin")
     return fields[0].lower()
+
+
+def _verify_downloaded_artifact(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int | None = None,
+) -> None:
+    if expected_size is not None and path.stat().st_size != expected_size:
+        raise ReleaseBundleError("release artifact size does not match signed manifest")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
+        raise ReleaseBundleError("release artifact SHA-256 mismatch")
 
 
 def _safe_extract(archive: Path, destination: Path, *, max_expanded_bytes: int) -> Path:
@@ -532,21 +589,35 @@ def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
     artifact_name = str(artifact["name"])
     signed = _signed_assets(spec, metadata, artifact_name)
     _refuse_downgrade(feature_id, version)
+
+    # Authenticate the small publisher metadata before downloading a potentially
+    # large bundle. Publisher-key entries never fall back to legacy SHA pins.
+    signed_integrity = (
+        _verify_signed_release(
+            spec,
+            signed,
+            version=version,
+            artifact_name=artifact_name,
+        )
+        if signed is not None
+        else None
+    )
+    expected_sha = (
+        signed_integrity.sha256
+        if signed_integrity is not None
+        else _expected_sha(spec, checksum, artifact_name)
+    )
+    expected_size = signed_integrity.size_bytes if signed_integrity is not None else None
+
     partial = downloads / f"{artifact_name}.partial"
     partial.unlink(missing_ok=True)
     try:
         _download(spec, artifact, partial)
-        expected = (
-            _verify_signed_manifest(spec, signed, version=version, artifact_name=artifact_name)
-            if signed is not None
-            else _expected_sha(spec, checksum, artifact_name)
+        _verify_downloaded_artifact(
+            partial,
+            expected_sha256=expected_sha,
+            expected_size=expected_size,
         )
-        digest = hashlib.sha256()
-        with partial.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-        if digest.hexdigest() != expected:
-            raise ReleaseBundleError("release artifact SHA-256 mismatch")
     except Exception:
         partial.unlink(missing_ok=True)
         raise
