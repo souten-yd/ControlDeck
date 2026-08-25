@@ -5,14 +5,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
-from app.addons import registry
+from app.addons import registry, tokens
 from app.models_mgmt.ai_gateway import capability_available
 
 
 router = APIRouter(prefix="/{addon_id}/gateway", tags=["addon-runtime-gateway"])
 GatewayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability())]
 GATEWAY_PROTOCOL_VERSION = "1.4"
-DEVICE_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60
+DEVICE_CREDENTIAL_TTL_SECONDS = tokens.MAX_TOKEN_TTL_SECONDS
 
 
 def _gateway_document(
