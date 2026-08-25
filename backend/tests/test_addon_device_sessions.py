@@ -150,6 +150,7 @@ def test_pairing_is_one_time_and_device_token_reconnects(
     enabled_device_addon, monkeypatch
 ):
     client, _registry, user_id = enabled_device_addon
+    from app.addon_runtime import device_sessions
     from app.addons import tokens
 
     upstream_messages, upstream_headers = install_fake_upstream(monkeypatch)
@@ -175,10 +176,11 @@ def test_pairing_is_one_time_and_device_token_reconnects(
             device_token,
             addon_id="fake-addon",
             kind="device",
-            max_ttl_seconds=8 * 60 * 60,
+            max_ttl_seconds=device_sessions.DEVICE_TOKEN_TTL_SECONDS,
         )
         assert payload["actor_user_id"] == user_id
         assert payload["sub"].startswith("device:voice:")
+        assert payload["exp"] - payload["iat"] == 30 * 24 * 60 * 60
         assert socket.receive_text() == "upstream-ready"
         socket.send_text("device-message")
 
@@ -210,6 +212,7 @@ def test_pairing_is_one_time_and_device_token_reconnects(
         assert refreshed["newly_paired"] is False
         assert refreshed["device_id"] == session["device_id"]
         assert refreshed["device_token"] != device_token
+        assert refreshed["expires_at"] > session["expires_at"] - 5
         assert socket.receive_text() == "upstream-ready"
 
 
@@ -252,7 +255,7 @@ def test_active_device_session_closes_when_relay_grant_is_revoked(
     from app.addon_runtime import device_sessions
 
     install_fake_upstream(monkeypatch)
-    monkeypatch.setattr(device_sessions, "ACTIVE_POLICY_CHECK_SECONDS", 0.01)
+    monkeypatch.setattr(device_sessions, "POLICY_RECHECK_SECONDS", 0.01)
     pairing = client.post(
         "/api/v1/addon-runtime/fake-addon/devices/pairings",
         json={"relay_id": "voice", "device_label": "M5"},
