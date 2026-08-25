@@ -11,11 +11,12 @@ from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
 
 import websockets
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addons import health, proxy, registry, tokens
+from app.audit import service as audit
 from app.config import get_config
 from app.database import SessionLocal
 from app.models import User
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/{addon_id}/devices", tags=["addon-runtime-device"])
 DeviceRelayAuth = Annotated[RuntimePrincipal, Depends(require_runtime_capability("devices.relay"))]
 PAIRING_TTL_SECONDS = 5 * 60
 DEVICE_TOKEN_TTL_SECONDS = 8 * 60 * 60
+ACTIVE_POLICY_CHECK_SECONDS = 5.0
 MAX_PENDING_PAIRINGS = 128
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _LOCK = threading.RLock()
@@ -100,21 +102,52 @@ def _consume_pairing(code: str, *, addon_id: str, relay_id: str) -> PendingPairi
     digest = _code_hash(code)
     with _LOCK:
         _cleanup_pairings(now)
-        pairing = _pairings.pop(digest, None)
-    if pairing is None or pairing.expires_at <= now:
-        raise ValueError("pairing code expired or was already used")
-    if pairing.addon_id != addon_id or pairing.relay_id != relay_id:
-        raise ValueError("pairing code scope does not match this relay")
-    return pairing
+        pairing = _pairings.get(digest)
+        if pairing is None or pairing.expires_at <= now:
+            raise ValueError("pairing code expired or was already used")
+        if pairing.addon_id != addon_id or pairing.relay_id != relay_id:
+            # Do not consume a valid code presented to the wrong relay. This
+            # prevents a scope-confusion attempt from becoming a one-shot DoS.
+            raise ValueError("pairing code scope does not match this relay")
+        _pairings.pop(digest, None)
+        return pairing
 
 
 def _user_permissions(actor_user_id: int) -> set[str]:
     db = SessionLocal()
     try:
         user = db.get(User, actor_user_id)
-        if user is None:
-            raise PermissionError("paired user no longer exists")
+        if user is None or not bool(user.is_active):
+            raise PermissionError("paired user is unavailable")
         return user_permissions(user)
+    finally:
+        db.close()
+
+
+def _audit_device(
+    action: str,
+    *,
+    actor_user_id: int,
+    addon_id: str,
+    relay_id: str,
+    result: str = "success",
+    request: Request | WebSocket | None = None,
+    metadata: dict | None = None,
+) -> None:
+    db = SessionLocal()
+    try:
+        user = db.get(User, actor_user_id)
+        audit.record(
+            db,
+            action,
+            user=user,
+            username=f"user:{actor_user_id}" if user is None else "",
+            resource_type="addon_device",
+            resource_id=f"{addon_id}:{relay_id}"[:64],
+            result=result,
+            request=request,  # Request and WebSocket both expose client/headers.
+            metadata={"addon_id": addon_id, "relay_id": relay_id, **(metadata or {})},
+        )
     finally:
         db.close()
 
@@ -210,7 +243,7 @@ def _fresh_device_token(addon_id: str, relay_id: str, device_id: str, actor_user
 
 
 @router.post("/pairings", status_code=201)
-def create_pairing(body: DevicePairingRequest, principal: DeviceRelayAuth):
+def create_pairing(body: DevicePairingRequest, principal: DeviceRelayAuth, request: Request):
     if principal.actor_user_id is None:
         raise HTTPException(
             status_code=403,
@@ -220,12 +253,33 @@ def create_pairing(body: DevicePairingRequest, principal: DeviceRelayAuth):
         permissions = _user_permissions(principal.actor_user_id)
         relay, _base_url = _resolve_relay(principal.addon_id, body.relay_id, permissions)
     except PermissionError as exc:
+        _audit_device(
+            "addon.device.pairing.create",
+            actor_user_id=principal.actor_user_id,
+            addon_id=principal.addon_id,
+            relay_id=body.relay_id,
+            result="failure",
+            request=request,
+            metadata={"reason": str(exc)[:120]},
+        )
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     pairing, code = _new_pairing(
         addon_id=principal.addon_id,
         relay_id=body.relay_id,
         actor_user_id=principal.actor_user_id,
         device_label=body.device_label,
+    )
+    _audit_device(
+        "addon.device.pairing.create",
+        actor_user_id=principal.actor_user_id,
+        addon_id=principal.addon_id,
+        relay_id=body.relay_id,
+        request=request,
+        metadata={
+            "device_id": pairing.device_id,
+            "device_label": body.device_label,
+            "expires_at": pairing.expires_at,
+        },
     )
     return {
         "pairing_code": code,
@@ -277,6 +331,14 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
                 "expires_at": expires_at,
                 "newly_paired": newly_paired,
             })
+            _audit_device(
+                "addon.device.session.connect",
+                actor_user_id=actor_user_id,
+                addon_id=addon_id,
+                relay_id=relay_id,
+                request=websocket,
+                metadata={"device_id": device_id, "newly_paired": newly_paired},
+            )
 
             async def device_to_upstream() -> None:
                 while True:
@@ -295,10 +357,24 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
                     else:
                         await websocket.send_bytes(message)
 
+            async def authorization_watch() -> None:
+                while True:
+                    await asyncio.sleep(ACTIVE_POLICY_CHECK_SECONDS)
+                    if int(time.time()) >= expires_at:
+                        await websocket.close(code=4401, reason="device session credential refresh required")
+                        return
+                    try:
+                        current_permissions = _user_permissions(actor_user_id)
+                        _resolve_relay(addon_id, relay_id, current_permissions)
+                    except PermissionError:
+                        await websocket.close(code=4403, reason="device authorization revoked")
+                        return
+
             first = asyncio.create_task(device_to_upstream())
             second = asyncio.create_task(upstream_to_device())
+            policy = asyncio.create_task(authorization_watch())
             done, pending = await asyncio.wait(
-                (first, second), return_when=asyncio.FIRST_COMPLETED
+                (first, second, policy), return_when=asyncio.FIRST_COMPLETED
             )
             for task in pending:
                 task.cancel()
@@ -327,3 +403,15 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
             "closed",
             {"relay_id": relay_id},
         )
+    finally:
+        try:
+            _audit_device(
+                "addon.device.session.disconnect",
+                actor_user_id=actor_user_id,
+                addon_id=addon_id,
+                relay_id=relay_id,
+                request=websocket,
+                metadata={"device_id": device_id},
+            )
+        except UnboundLocalError:
+            pass
