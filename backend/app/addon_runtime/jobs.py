@@ -21,10 +21,12 @@ JobControlAuth = Annotated[
 MAX_RESULT_BYTES = 16 * 1024
 
 
-def _fresh_job_credential(principal: RuntimePrincipal) -> dict[str, str | int]:
+def _fresh_job_credential(
+    principal: RuntimePrincipal, *, subject: str | None = None
+) -> dict[str, str | int]:
     token = tokens.issue(
         principal.addon_id,
-        subject=principal.subject,
+        subject=subject or principal.subject,
         kind="service",
         actor_user_id=principal.actor_user_id,
         grant_ids=sorted(principal.grant_ids) if principal.grant_ids is not None else None,
@@ -73,7 +75,10 @@ async def create_or_attach_job(
         "job",
         job.id,
     )
-    return {"created": created, "job": job.to_dict()}
+    result: dict[str, object] = {"created": created, "job": job.to_dict()}
+    if created:
+        result.update(_fresh_job_credential(principal, subject=f"job:{job.id}"))
+    return result
 
 
 @router.post("/{host_job_id}/credential/refresh")
