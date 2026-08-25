@@ -97,7 +97,7 @@ class PluginManifestV1(BaseModel):
 
     @model_validator(mode="after")
     def validate_manifest(self) -> "PluginManifestV1":
-        if len(set(self.capabilities)) != len(set(self.capabilities)):
+        if len(self.capabilities) != len(set(self.capabilities)):
             raise ValueError("capabilities を重複させることはできません")
         _clean_text(self.name, "name")
         return self
