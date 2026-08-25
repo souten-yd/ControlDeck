@@ -8,6 +8,7 @@ from app.addon_runtime.auth import authorize_runtime
 from app.audit import service as audit
 from app.database import SessionLocal
 from app.addon_runtime.ai import router as ai_router
+from app.addon_runtime.ai_residency import router as ai_residency_router
 from app.addon_runtime.device_sessions import router as device_sessions_router
 from app.addon_runtime.gateway import router as gateway_router
 from app.addon_runtime.jobs import router as jobs_router
@@ -19,6 +20,7 @@ router.include_router(jobs_router)
 router.include_router(resources_router)
 router.include_router(files_router)
 router.include_router(ai_router)
+router.include_router(ai_residency_router)
 router.include_router(gateway_router)
 router.include_router(device_sessions_router)
 
