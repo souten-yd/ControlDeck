@@ -34,6 +34,7 @@ HostCapability: TypeAlias = Literal[
     "notifications.show",
     "resources.acquire",
     "ai.inference",
+    "devices.relay",
 ]
 LocalizedLabel: TypeAlias = str | dict[Literal["en", "ja"], str]
 
@@ -96,7 +97,7 @@ class PluginManifestV1(BaseModel):
 
     @model_validator(mode="after")
     def validate_manifest(self) -> "PluginManifestV1":
-        if len(set(self.capabilities)) != len(self.capabilities):
+        if len(set(self.capabilities)) != len(set(self.capabilities)):
             raise ValueError("capabilities を重複させることはできません")
         _clean_text(self.name, "name")
         return self
@@ -205,6 +206,11 @@ class AgentToolContribution(EndpointContribution):
         return self
 
 
+class DeviceRelayContribution(EndpointContribution):
+    protocol: str = Field(min_length=3, max_length=80, pattern=r"^[a-z][a-z0-9.-]*/[0-9]+$")
+    transport: Literal["websocket"] = "websocket"
+
+
 class ContextActionContribution(EndpointContribution):
     contexts: list[Literal["file", "project", "workflow", "job"]] = Field(min_length=1, max_length=4)
 
@@ -223,6 +229,7 @@ class AddonContributions(BaseModel):
     settings: list[SettingsContribution] = Field(default_factory=list, max_length=32)
     workflow_executors: list[WorkflowExecutorContribution] = Field(default_factory=list, max_length=64)
     agent_tools: list[AgentToolContribution] = Field(default_factory=list, max_length=64)
+    device_relays: list[DeviceRelayContribution] = Field(default_factory=list, max_length=16)
     context_actions: list[ContextActionContribution] = Field(default_factory=list, max_length=64)
     setup_checklist: list[SetupChecklistContribution] = Field(default_factory=list, max_length=8)
 
