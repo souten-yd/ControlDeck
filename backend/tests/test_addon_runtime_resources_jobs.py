@@ -96,6 +96,26 @@ def test_user_subject_creates_job_and_job_subject_attaches_without_duplicate(run
     assert attached.json()["job"]["id"] == job["id"]
 
 
+def test_job_subject_can_create_detached_durable_job(runtime_api):
+    client, _registry, tokens, _broker, user_id = runtime_api
+    parent, _user_token = create_host_job(client, tokens, user_id)
+    from app.jobs import service as jobs
+
+    jobs.get(parent["id"]).kind = "addon.agent_tool.fake-addon.generate"
+    detached = client.post(
+        "/api/v1/addon-runtime/fake-addon/jobs",
+        json={"title": "durable child", "detached": True},
+        headers=headers(
+            tokens.issue("fake-addon", subject=f"job:{parent['id']}", kind="service")
+        ),
+    )
+    assert detached.status_code == 201, detached.text
+    body = detached.json()
+    assert body["created"] is True
+    assert body["job"]["id"] != parent["id"]
+    assert body["job"]["kind"] == "addon.runtime.fake-addon"
+
+
 @pytest.mark.parametrize("subject", ["workflow:42", "context:7"])
 def test_delegated_actor_subject_creates_and_operates_scoped_job(runtime_api, subject):
     client, _registry, tokens, _broker, user_id = runtime_api

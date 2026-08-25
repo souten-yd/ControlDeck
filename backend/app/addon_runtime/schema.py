@@ -50,6 +50,7 @@ class RuntimeResourceRequest(BaseModel):
 class RuntimeJobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=300)
+    detached: bool = False
 
     @field_validator("title")
     @classmethod
