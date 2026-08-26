@@ -8,12 +8,15 @@ import httpx
 import websockets
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
+from sqlalchemy.orm import Session
 
 from app.addons import bridge, health, registry, tokens
-from app.database import SessionLocal
+from app.auth.policy import totp_required_for
+from app.database import SessionLocal, get_db
 from app.models import User
-from app.security.deps import authenticate_websocket_user, get_current_user, user_permissions
+from app.security.deps import authenticate_websocket_user, user_permissions
 from app.security.rate_limit import api_rate_limiter
+from app.security.sessions import SESSION_COOKIE, resolve_session
 from app.config import get_config
 
 router = APIRouter(prefix="/addon-frame", tags=["addon-frame"])
@@ -27,10 +30,14 @@ _HOP_HEADERS = {
 }
 _PRIVATE_REQUEST_HEADERS = {
     "cookie", "authorization", "proxy-authorization", "x-csrf-token", "x-requested-with",
-    "origin", "referer",
+    "x-control-deck-bridge-session", "origin", "referer",
 }
 _PRIVATE_RESPONSE_HEADERS = {"set-cookie", "set-cookie2"}
 _BRIDGE_PROTOCOL_PREFIX = "control-deck-bridge."
+_FRAME_COOKIE = "cd_addon_frame"
+_FRAME_BRIDGE_HEADER = "x-control-deck-bridge-session"
+_FRAME_PREFLIGHT_HEADERS = {"content-type", _FRAME_BRIDGE_HEADER}
+_FRAME_STATIC_DESTINATIONS = {"audio", "font", "image", "script", "style", "track", "video"}
 
 
 def _new_http_client() -> httpx.AsyncClient:
@@ -54,6 +61,76 @@ def _service_headers(addon_id: str, user_id: int) -> dict[str, str]:
         "Authorization": f"Bearer {token}",
         "X-Control-Deck-Addon-ID": addon_id,
     }
+
+
+def _frame_user(request: Request, db: Session = Depends(get_db)) -> User | None:
+    requested_headers = {
+        header.strip().lower()
+        for header in request.headers.get("access-control-request-headers", "").split(",")
+        if header.strip()
+    }
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("origin") == "null"
+        and request.headers.get("access-control-request-method") in _METHODS
+        and _FRAME_BRIDGE_HEADER in requested_headers
+        and requested_headers <= _FRAME_PREFLIGHT_HEADERS
+    ):
+        return None
+    resolved = resolve_session(db, request.cookies.get(SESSION_COOKIE, ""))
+    if resolved is not None:
+        _session, user = resolved
+    else:
+        addon_id = request.path_params.get("addon_id", "")
+        try:
+            payload = tokens.verify(
+                request.cookies.get(_FRAME_COOKIE, ""),
+                addon_id=addon_id,
+                kind="frame",
+            )
+            actor_user_id = payload.get("actor_user_id")
+            if (
+                not isinstance(actor_user_id, int)
+                or isinstance(actor_user_id, bool)
+                or payload.get("sub") != str(actor_user_id)
+            ):
+                raise tokens.AddonTokenError("frame token actorが不正です")
+            user = db.get(User, actor_user_id)
+        except (tokens.AddonTokenError, ValueError, TypeError):
+            user = None
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=401, detail="認証が必要です")
+        requires_bridge = request.method not in {"GET", "HEAD", "OPTIONS"} or (
+            request.headers.get("origin") == "null"
+            and request.headers.get("sec-fetch-dest", "") not in _FRAME_STATIC_DESTINATIONS
+        )
+        if requires_bridge:
+            try:
+                bridge_user, _permissions = bridge.authenticate_websocket_session(
+                    addon_id,
+                    request.headers.get(_FRAME_BRIDGE_HEADER, ""),
+                    db,
+                )
+            except bridge.BridgeAccessError as exc:
+                raise HTTPException(status_code=403, detail="Bridge sessionが必要です") from exc
+            if bridge_user.id != user.id:
+                raise HTTPException(status_code=403, detail="Bridge session scopeが一致しません")
+    if totp_required_for(user) and not user.totp_enabled:
+        raise HTTPException(status_code=403, detail="totp_setup_required")
+    return user
+
+
+def _frame_cookie(addon_id: str, user_id: int) -> str:
+    token = tokens.issue(
+        addon_id,
+        subject=str(user_id),
+        kind="frame",
+        actor_user_id=user_id,
+    )
+    return (
+        f"{_FRAME_COOKIE}={token}; Path=/addon-frame/{addon_id}/; "
+        f"Max-Age={tokens.TOKEN_TTL_SECONDS}; HttpOnly; Secure; SameSite=None"
+    )
 
 
 def _connect_websocket(url: str, headers: dict[str, str], subprotocols: list[str]):
@@ -104,8 +181,19 @@ async def addon_frame_proxy(
     addon_id: str,
     path: str,
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(_frame_user),
 ):
+    if user is None:
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "null",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": request.headers["access-control-request-method"],
+                "Access-Control-Allow-Headers": request.headers["access-control-request-headers"],
+                "Access-Control-Max-Age": "600",
+            },
+        )
     base_url = _authorized_runtime(addon_id, user_permissions(user))
     declared_length = _content_length(request)
     if declared_length is not None and declared_length > MAX_REQUEST_BYTES:
@@ -156,6 +244,10 @@ async def addon_frame_proxy(
         headers[key] = value
     headers["Cache-Control"] = "no-store"
     headers["Content-Security-Policy"] = "sandbox allow-scripts allow-forms allow-popups allow-downloads"
+    headers["Set-Cookie"] = _frame_cookie(addon_id, user.id)
+    if request.headers.get("origin") == "null":
+        headers["Access-Control-Allow-Origin"] = "null"
+        headers["Access-Control-Allow-Credentials"] = "true"
     if streaming:
         headers["X-Accel-Buffering"] = "no"
 

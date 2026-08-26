@@ -137,9 +137,9 @@ iframe 内 JS は opaque origin となり `document.cookie` / `localStorage` /
 
 **実装上の落とし穴（必ず対処）**
 
-> opaque origin でも、iframe から `/addon-frame/*` へ出るリクエストには
-> **Cookie が付く**。Cookie の送信可否はリクエストURL基準であり、
-> JS の origin 基準ではない。
+> opaque origin でも、iframe から `/addon-frame/*` へ出るリクエストへ
+> Cookie が付くことを前提にしてはならない。現行ブラウザは第三者Cookie制限により、
+> sandboxed iframe のsubresource requestから通常のHost session Cookieを除外し得る。
 
 したがって「sandbox したから Cookie は渡っていない」は誤り。
 **proxy 層で明示的に `Cookie` / `Authorization` ヘッダを削除してから
@@ -149,7 +149,13 @@ ControlDeck の session cookie を平文で受け取る。
 必須ルール:
 
 - iframe に `allow-same-origin` を付けない
-- proxy は `Cookie` / `Authorization` を **削除**して upstream へ（テストで検証）
+- 初回frame navigationは通常のHost session Cookieで認証し、Hostは10分・Add-on・利用者に束縛した
+  `HttpOnly; Secure; SameSite=None` frame Cookieを発行する
+- subresource/API requestは通常sessionまたはframe CookieをHostで検証する
+- opaque originのAPI fetchとframe Cookieによる状態変更は、同じ利用者・viewへ束縛した
+  `X-Control-Deck-Bridge-Session` headerも必須にする
+- `Origin: null`へのCORS許可は静的resource destination、または検証済みBridge session付きAPI responseだけに限定する
+- proxy は通常session/frame Cookie / `Authorization` を **削除**して upstream へ（テストで検証）
 - upstream からの `Set-Cookie` も**剥奪**する（add-on が親originにcookieを置けない）
 - `Content-Security-Policy: frame-src 'self'`（proxy経由なので self で足りる）
 - `postMessage` は送受信双方で `origin` 検証 + セッション毎 nonce
@@ -804,12 +810,15 @@ CSP            = frame-src 'self'
 
 #### 7.2.3 Cookie に関する誤解の明示
 
-> **opaque origin であっても、iframe から `/addon-frame/*` へ出る
-> リクエストには Cookie が自動付与される。**
-> Cookie 送信可否はリクエストURL基準であり、JS の origin 基準ではない。
+> **opaque origin からのsubresource requestに通常のHost session Cookieが
+> 自動付与されることを前提にしてはならない。**
+> 現行ブラウザの第三者Cookie制限では、初回frame navigationだけが認証でき、
+> 相対CSS/JS/API requestから通常sessionが除外される場合がある。
 
 「sandbox したから安全」は成立しない。
-**proxy 層でのヘッダ削除が唯一の防御線**であり、テストで直接検証する（§11.3）。
+Hostは初回navigation後にAdd-on・利用者・10分TTLへ束縛したframe Cookieを発行する。
+proxy 層で通常session/frame Cookieを検証し、両方をupstreamから削除することが防御線であり、
+実ブラウザとproxy単体テストで直接検証する（§11.3）。
 
 #### 7.2.4 その他
 
@@ -1335,9 +1344,13 @@ nonce不一致拒否
 disable.pending 猶予後に撤去
 
 --- proxy（§7.2 の防御線を直接検証） ---
-Cookie ヘッダが upstream に到達しない        ★最重要
+通常session/frame Cookie が upstream に到達しない ★最重要
 Authorization ヘッダが upstream に到達しない
 upstream の Set-Cookie がブラウザに到達しない
+初回navigation後のopaque CSS/JS/API requestがframe Cookieで認証される
+frame Cookieの期限・Add-on audience・利用者scope不一致を拒否
+frame Cookieによる状態変更は同一利用者のBridge session headerなしで拒否
+opaque API CORSはBridge sessionなしで拒否し、静的resourceだけを起動前に読める
 未認証セッションで /addon-frame/* → 401
 disabled add-on で /addon-frame/* → 409
 allowlist外 upstream の manifest → 登録拒否
