@@ -178,8 +178,11 @@ Runtime APIはsession cookie、CSRF、`settings.manage`をservice identityとし
 HMAC keyをAdd-onへ共有しません。serviceがHostから受け取ったrequest tokenを検証するときはintrospectionへそのまま送り、
 `active`、`addon_id`、`subject`、`expires_at`、`granted_capabilities`を確認してください。
 
-`sub=job:{id}`では`POST /jobs`が既存Host Jobへattachし、新しいJobを作りません。数値user subjectではAdd-on UI起点として
-Host Jobを作成します。Resource requestの`job_id`はこのHost Jobに一致させます。service schemaに`owner`はなく、Hostが
+`sub=job:{id}`では`POST /jobs`が既存Host Jobへattachし、新しいJobを作りません。Agent/Workflowの同期呼出しより長く続く
+durable workだけは`{"title":"...","detached":true}`でownerを継承した別Jobを作成できます。新規作成レスポンスは
+`access_token`、`token_type`、`expires_at`を含み、tokenは新しい`sub=job:{id}`だけへ束縛されます。以後のJob更新、Broker、grant操作は
+このtokenへ切り替え、親Job tokenで子Jobを操作してはいけません。数値user subjectではAdd-on UI起点としてHost Jobを作成します。
+Resource requestの`job_id`はこのHost Jobに一致させます。service schemaに`owner`はなく、Hostが
 `addon:{addon_id}`を強制します。priority上限はinteractive 30、agent-interactive 25、workflow 15、background／batch 0、
 maintenance -10です。同一Add-on/userのactive外部Jobは8件までです。Job PATCHはphase必須、progress単調増加、
 通常update 2Hz以下、terminal result 16KiB以下です。

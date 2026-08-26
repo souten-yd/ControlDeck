@@ -111,8 +111,8 @@ def test_addon_ai_capabilities_do_not_expose_provider_or_model(runtime_ai_api):
     response = client.get("/api/v1/addon-runtime/fake-addon/ai/capabilities", headers=headers)
     assert response.status_code == 200
     assert response.json() == {
-        "text.generate": {"available": True},
-        "vision.analyze": {"available": True},
+        "text.generate": {"available": True, "stream": True},
+        "vision.analyze": {"available": True, "stream": False},
     }
 
 

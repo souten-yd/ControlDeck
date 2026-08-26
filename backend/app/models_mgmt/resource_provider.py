@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -55,6 +57,12 @@ class LlamaCapacityProvider(ResourceProvider):
         self._draining = False
         self._stopping = False
         self._last_yield_wait_reason: WaitReason | None = None
+        # Voice/live consumers may request a short, renewable residency hold so
+        # the LLM is not unloaded between conversational turns. Holds are
+        # intentionally in-memory and TTL-bound: if the consumer crashes or
+        # ControlDeck restarts, they disappear without requiring orphan cleanup.
+        self._hold_lock = threading.RLock()
+        self._residency_holds: dict[str, tuple[str, str, float]] = {}
 
     def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
         instance = llama.get_instance(alias)
@@ -76,10 +84,6 @@ class LlamaCapacityProvider(ResourceProvider):
         headroom = 0 if loaded else 512 * 1024 * 1024
         peak = 0 if loaded else max(model_bytes + 2 * 1024**3, int(model_bytes * 1.75))
         if device is not None:
-            # A capped low-confidence first load must fit the currently admitted
-            # device, not the theoretical empty device.  Capping at total-headroom
-            # made required_bytes equal total VRAM, so even normal driver usage
-            # caused every large local model to wait forever as insufficient_vram.
             peak = min(
                 peak,
                 max(0, device.total_bytes - device.observed_used_bytes - headroom),
@@ -102,6 +106,49 @@ class LlamaCapacityProvider(ResourceProvider):
             "max_wait_sec": 300,
             "on_insufficient": "queue",
         })
+
+    def _cleanup_residency_holds(self) -> None:
+        now = self._clock()
+        with self._hold_lock:
+            for hold_id, (_owner, _key, expires_at) in list(self._residency_holds.items()):
+                if expires_at <= now:
+                    self._residency_holds.pop(hold_id, None)
+
+    def create_residency_hold(self, residency_key: str, owner: str, *, ttl_seconds: float) -> str:
+        ttl = max(10.0, float(ttl_seconds))
+        hold_id = f"hold:{uuid.uuid4().hex}"
+        with self._hold_lock:
+            self._cleanup_residency_holds()
+            self._residency_holds[hold_id] = (owner, residency_key, self._clock() + ttl)
+        self._telemetry.record("residency.hold.created", reason="consumer_session")
+        return hold_id
+
+    def renew_residency_hold(self, hold_id: str, owner: str, *, ttl_seconds: float) -> bool:
+        ttl = max(10.0, float(ttl_seconds))
+        with self._hold_lock:
+            self._cleanup_residency_holds()
+            current = self._residency_holds.get(hold_id)
+            if current is None or current[0] != owner:
+                return False
+            self._residency_holds[hold_id] = (current[0], current[1], self._clock() + ttl)
+        return True
+
+    def release_residency_hold(self, hold_id: str, owner: str) -> bool:
+        with self._hold_lock:
+            self._cleanup_residency_holds()
+            current = self._residency_holds.get(hold_id)
+            if current is None or current[0] != owner:
+                return False
+            self._residency_holds.pop(hold_id, None)
+        self._telemetry.record("residency.hold.released", reason="consumer_session")
+        return True
+
+    def has_residency_hold(self, residency_key: str | None = None) -> bool:
+        with self._hold_lock:
+            self._cleanup_residency_holds()
+            if residency_key is None:
+                return bool(self._residency_holds)
+            return any(key == residency_key for _owner, key, _expires in self._residency_holds.values())
 
     def _managed(self, instances: list[dict]) -> bool:
         policy = get_policy()
@@ -146,7 +193,7 @@ class LlamaCapacityProvider(ResourceProvider):
                 owner=f"llm:{alias}",
                 reserved_bytes=share,
                 residency_key=llama.residency_key(item),
-                yield_level=YieldLevel.STOP if managed else YieldLevel.NONE,
+                yield_level=YieldLevel.NONE if self.has_residency_hold(llama.residency_key(item)) else (YieldLevel.STOP if managed else YieldLevel.NONE),
                 draining=self._draining,
             ))
         return values
@@ -154,7 +201,6 @@ class LlamaCapacityProvider(ResourceProvider):
     async def await_capacity(
         self, port: int, needed_tokens: int, *, timeout_seconds: float
     ) -> dict:
-        """Preserve the established llama KV admission behavior behind the adapter."""
         return await llama.await_capacity(
             port, needed_tokens, timeout_seconds=timeout_seconds
         )
@@ -179,14 +225,14 @@ class LlamaCapacityProvider(ResourceProvider):
         now = self._clock()
         if not self._managed(running):
             return False
+        if any(self.has_residency_hold(llama.residency_key(item)) for item in running):
+            return self._suppress(WaitReason.HELD_BY_OTHER_OWNER, "residency_hold")
         if request.estimated_runtime_sec is None:
             return self._suppress(WaitReason.YIELD_RUNTIME_UNKNOWN, "runtime_unknown")
         costs: list[LoadCostEstimate | None] = [
             self._telemetry.reload_cost_p90(llama.residency_key(item)) for item in running
         ]
         if not self._telemetry.persistent_profiles:
-            # Ephemeral callers are retained as a compatibility harness only. The
-            # production singleton is always persistent and enforces MIN_*_SAMPLES.
             costs = [
                 value or self._legacy_cost(llama.residency_key(item))
                 for value, item in zip(costs, running, strict=True)
@@ -240,6 +286,8 @@ class LlamaCapacityProvider(ResourceProvider):
         useless on a single GPU.
         """
         policy = get_policy()
+        if self.has_residency_hold():
+            return False, "residency_held", 0
         if not (policy.gateway_only and policy.yield_max_level >= int(YieldLevel.UNLOAD)):
             return False, "release_not_permitted_by_policy", 0
         async with self._condition:
@@ -260,7 +308,6 @@ class LlamaCapacityProvider(ResourceProvider):
                     self._condition.notify_all()
                     return False, "drain_timeout", 0
             if not self._draining:
-                # 別の要求が入ってきた。降ろさない。
                 return False, "in_use", 0
             self._stopping = True
         try:
