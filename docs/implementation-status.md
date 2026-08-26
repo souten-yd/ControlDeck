@@ -1,6 +1,23 @@
 # 実装状況
 
-最終更新: 2026-08-23
+最終更新: 2026-08-26
+
+## Opaque Add-on frame認証修正（2026-08-26）
+
+- Chromium 151ではsandboxed Add-on iframeのsubresource/API requestに通常の
+  `SameSite=Lax` Host session cookieが付かず、SonicForge workspaceのHTMLだけが200、
+  JavaScript/CSSが401となって画面が表示されない不具合を実再現した。
+- 初回navigationで通常sessionを検証した後、Add-on audience・利用者・10分TTLに限定した
+  `HttpOnly; Secure; SameSite=None` frame cookieを`/addon-frame/<addon-id>/`へ発行する汎用経路を追加した。
+  upstreamへHost/frame cookie、Bridge nonce、Originは転送せず、従来どおりAdd-on service tokenへ交換する。
+- opaque originのAPI requestは同一利用者のBridge nonceを必須とし、mutationとJSON requestのpreflightは
+  `X-Control-Deck-Bridge-Session`と`Content-Type`だけを許可する。静的resourceはBridge handshake前でも
+  frame cookieで取得でき、WebSocketはBridge subprotocolを継続使用する。
+- 隔離Host `127.0.0.1:18766`と実SonicForge `127.0.0.1:9140`を使った認証済みChromeで、workspace表示、
+  authoritative GET、voiceの一時POST/DELETEと後始末、event WebSocketを確認し、failed response、
+  CORS/console errorはいずれも0件だった。
+- Add-on proxy/Bridge/contract集中25件成功。canonical backend全件の初回は変更外のresource job timing testが
+  1件だけ失敗（815件成功、1件skip）し、当該単独は成功。続く全件再実行は816件成功、1件skipだった。
 
 ## Media Forge v0.4.0 catalog admission／実update（2026-08-23）
 
