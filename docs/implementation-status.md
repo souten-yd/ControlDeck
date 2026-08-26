@@ -2,6 +2,18 @@
 
 最終更新: 2026-08-26
 
+## Add-on outputのcross-filesystem atomic commit（2026-08-26）
+
+- Media Forgeのinstalled Agent placementで、Host stagingが`/data1tb`、選択したexport grantが
+  `/home`にある場合、中央staging fileからgrant先への`os.replace`が`EXDEV`となる汎用不具合を実再現した。
+- upload済みbytesをgrant directory内の0600 exclusive temporary fileへcopyし、fsync後に同じdirectory fd内の
+  hard linkでno-replace publishしてtemporaryを除去する。これにより別filesystemでもatomic publishを維持し、
+  symlink／directory inode再検証、同名上書き拒否、checksum境界は変更しない。
+- Add-on runtime files／execution集中31件成功。backend全体は814件成功／1件skip、変更外の共有Job state
+  4件と固定1秒resource scheduling 1件が順序実行で失敗した。前者を含むresource集中12件はclean processで
+  成功し、後者も単独再実行で成功した。実Media Forge Agentによるcross-filesystem commitとcommitted
+  bytes／receipt hashの一致はMedia Forge側のinstalled acceptanceで確認する。
+
 ## setup_required Add-on UI到達性修正（2026-08-26）
 
 - 汎用Release Bundle Featureで署名済みSonicForge v0.1.0を隔離dataへfresh installしたところ、serviceは
