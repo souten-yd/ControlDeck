@@ -2,6 +2,18 @@
 
 最終更新: 2026-08-26
 
+## setup_required Add-on UI到達性修正（2026-08-26）
+
+- 汎用Release Bundle Featureで署名済みSonicForge v0.1.0を隔離dataへfresh installしたところ、serviceは
+  `setup_required`で正常稼働しnavigationも残る一方、Hostが全non-navigation contributionを除外するため、
+  Add-on自身のSpeech Essentialsセットアップ画面へ到達できない不具合を実再現した。
+- `setup_required`中はnavigationに加えて`embedded_views`と`settings`だけをeffectiveに残し、commands、
+  quick actions、Workflow/Agent/Contextなどの実行surfaceは引き続き除外する。個別UI contributionが
+  明示的に`unavailable`なら、その指定を優先する。
+- Add-on registry/API/proxy集中22件成功。修正Hostと実導入済み公開bundleを使った認証済みChrome 320x720で、
+  初期セットアップ前のfull workspace、JA/EN切替、`Studio / Library / Jobs / More`、event WebSocket、
+  document/body横overflow 0、failed/CORS/console error 0を確認した。
+
 ## SonicForge v0.1.0 signed catalog admission（2026-08-26）
 
 - SonicForge PR #6のmobile full-workspaceを含むmerge commit
