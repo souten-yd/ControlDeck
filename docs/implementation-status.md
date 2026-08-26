@@ -30,7 +30,9 @@
 - #243 Hostと実導入済み公開bundleの認証済みChrome 320x720で、`Studio / Library / Jobs / More`、JA/EN、
   event WebSocket、document/body横overflow 0、failed/CORS/console error 0を確認した。隔離featureは汎用uninstallで
   service/unit/managed filesを撤去し、既存`/data1tb/ControlDeck/data/sonicforge`を変更せずsource serviceをhealthyへ復帰した。
-- catalog/release/Add-on contract集中29件成功。canonical全件と実Settings導入候補表示は#243取り込み後に再実行する。
+- #243取り込み後、catalog/release/Add-on contract集中36件、canonical backend全件818件成功／1件skip。
+  認証済み実ChromeのSettingsを320x720／1280x800で確認し、SonicForgeが`未導入`・`検証済みbundle`・有効な
+  `導入`buttonとして表示された。document/body横overflow、failed response、HTTP 400以上、console errorはいずれも0件だった。
 
 ## Opaque Add-on frame認証修正（2026-08-26）
 
