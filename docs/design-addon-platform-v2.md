@@ -421,6 +421,10 @@ add-on が health応答内で返す:
 
 host は共通スタイルのチェックリストを描画し、`再確認` ボタンを提供する。
 `setup_required` は `unavailable` とは別状態として扱う（ユーザの行動が変わるため）。
+navigationに加え、Add-on自身のセットアップ操作へ到達するための`embedded_views`と`settings`は
+`setup_required`中もeffectiveに残す。commands、quick actions、Workflow/Agent/Contextなどの
+実行contributionはsetup完了まで発見対象から除外する。Add-onが個別UI contributionを明示的に
+`unavailable`と報告した場合は、その指定を優先して非表示にする。
 
 ---
 

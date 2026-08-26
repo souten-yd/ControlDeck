@@ -93,6 +93,26 @@ def test_effective_registry_filters_permission_health_and_partial_availability(i
     assert registry.effective_for_permissions({"apps.view"})["addons"] == []
 
 
+def test_setup_required_keeps_setup_ui_but_hides_execution_contributions(isolated_registry):
+    registry = isolated_registry
+    _install(registry)
+    registry.set_enabled("fake-addon", True)
+    registry.update_health("fake-addon", _health("setup_required"))
+
+    effective = registry.effective_for_permissions(
+        {"apps.view", "settings.manage", "workflows.run"}
+    )
+
+    assert [item["id"] for item in effective["contributions"]["navigation"]] == ["workspace"]
+    assert [item["id"] for item in effective["contributions"]["embedded_views"]] == ["workspace"]
+    assert [item["id"] for item in effective["contributions"]["settings"]] == ["settings"]
+    assert "commands" not in effective["contributions"]
+    assert "quick_actions" not in effective["contributions"]
+    assert "workflow_executors" not in effective["contributions"]
+    assert "agent_tools" not in effective["contributions"]
+    assert "context_actions" not in effective["contributions"]
+
+
 def test_effective_etag_and_revision_change_deterministically(isolated_registry):
     registry = isolated_registry
     _install(registry)
