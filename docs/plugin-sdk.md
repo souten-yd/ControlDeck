@@ -12,6 +12,14 @@ SDK v1 の capability は `navigation` です。manifest の未知フィール�
 opaque embedded view／Bridge、Resource Broker、remote Workflow／Agent／Context executionまで実装済みです。設計の正本は
 [design-addon-platform-v2.md](design-addon-platform-v2.md)です。ユーザー向けUIではv1/v2とも「拡張機能」と表示します。
 
+opaque embedded viewの初回navigationはHost sessionで認証され、その後の相対CSS/JS/API requestはHostが発行する
+10分・Add-on・利用者scopeのframe Cookieで認証されます。frame Cookieからの状態変更requestには、接続時または
+`session.updated`で受け取ったBridge session nonceを`X-Control-Deck-Bridge-Session`へ設定してください。
+opaque iframeからのAPI fetchは`credentials: "include"`も指定してください。Hostはこのheaderを検証してから
+`Origin: null`へ限定したCORS responseを返し、header自体はupstreamへ転送しません。
+Add-on側はCookieを読んだり保持したりせず、
+すべてのCookieと利用者AuthorizationはHost proxyで削除され、upstreamには短命service tokenだけが届きます。
+
 ## manifest
 
 `control-deck-plugin.json` を UTF-8、64 KiB 以下、実行ユーザー所有かつ other 書込み不可で作成します。

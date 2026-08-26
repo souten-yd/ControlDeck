@@ -60,13 +60,117 @@ def test_addon_frame_strips_host_credentials_injects_scoped_token_and_drops_set_
     )
     assert response.status_code == 302
     assert response.headers["location"] == "/addon-frame/fake-addon/next"
-    assert "set-cookie" not in response.headers
+    frame_cookie = response.headers["set-cookie"]
+    assert "addon=secret" not in frame_cookie
+    assert "HttpOnly" in frame_cookie and "Secure" in frame_cookie and "SameSite=None" in frame_cookie
     assert response.headers["content-security-policy"].startswith("sandbox ")
     assert "cookie" not in captured and "x-csrf-token" not in captured and "origin" not in captured
     assert captured["authorization"].startswith("Bearer ")
     token = captured["authorization"].removeprefix("Bearer ")
     payload = tokens.verify(token, addon_id="fake-addon", kind="service")
     assert payload["aud"] == "fake-addon" and payload["sub"].isdigit()
+    raw_frame_token = frame_cookie.split(";", 1)[0].split("=", 1)[1]
+    frame_payload = tokens.verify(raw_frame_token, addon_id="fake-addon", kind="frame")
+    assert frame_payload["actor_user_id"] == int(frame_payload["sub"])
+
+
+def test_addon_frame_cookie_authenticates_opaque_subresources(enabled_addon, monkeypatch):
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, stream=OneChunkStream(b"asset"), request=request)
+
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ))
+    bridge_session = client.post(
+        "/api/v1/addons/fake-addon/bridge/handshake",
+        headers=CSRF_HEADERS,
+        json={"bridge_version": "1.0", "view_id": "workspace"},
+    ).json()["session_nonce"]
+    root = client.get("/addon-frame/fake-addon/")
+    frame_token = root.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+    client.cookies.clear()
+    asset = client.get(
+        "/addon-frame/fake-addon/app.js",
+        headers={"Cookie": f"cd_addon_frame={frame_token}", "Sec-Fetch-Dest": "script"},
+    )
+    assert asset.status_code == 200 and asset.content == b"asset"
+    assert "cookie" not in requests[-1].headers and "origin" not in requests[-1].headers
+
+    mutation_without_bridge = client.post(
+        "/addon-frame/fake-addon/action",
+        headers={"Cookie": f"cd_addon_frame={frame_token}"},
+    )
+    assert mutation_without_bridge.status_code == 403
+    mutation = client.post(
+        "/addon-frame/fake-addon/action",
+        headers={
+            "Cookie": f"cd_addon_frame={frame_token}",
+            "X-Control-Deck-Bridge-Session": bridge_session,
+        },
+    )
+    assert mutation.status_code == 200
+    assert "x-control-deck-bridge-session" not in requests[-1].headers
+
+    opaque_fetch_without_bridge = client.get(
+        "/addon-frame/fake-addon/data",
+        headers={
+            "Cookie": f"cd_addon_frame={frame_token}",
+            "Origin": "null",
+            "Sec-Fetch-Dest": "empty",
+        },
+    )
+    assert opaque_fetch_without_bridge.status_code == 403
+    preflight = client.options(
+        "/addon-frame/fake-addon/data",
+        headers={
+            "Origin": "null",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-control-deck-bridge-session",
+        },
+    )
+    assert preflight.status_code == 204
+    assert preflight.headers["access-control-allow-origin"] == "null"
+    mutation_preflight = client.options(
+        "/addon-frame/fake-addon/action",
+        headers={
+            "Origin": "null",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type, x-control-deck-bridge-session",
+        },
+    )
+    assert mutation_preflight.status_code == 204
+    assert mutation_preflight.headers["access-control-allow-headers"] == "content-type, x-control-deck-bridge-session"
+    opaque_fetch = client.get(
+        "/addon-frame/fake-addon/data",
+        headers={
+            "Cookie": f"cd_addon_frame={frame_token}",
+            "Origin": "null",
+            "Sec-Fetch-Dest": "empty",
+            "X-Control-Deck-Bridge-Session": bridge_session,
+        },
+    )
+    assert opaque_fetch.status_code == 200
+    assert opaque_fetch.headers["access-control-allow-origin"] == "null"
+    assert opaque_fetch.headers["access-control-allow-credentials"] == "true"
+    assert "x-control-deck-bridge-session" not in requests[-1].headers
+
+    wrong_scope = client.get(
+        "/addon-frame/other-addon/app.js",
+        headers={"Cookie": f"cd_addon_frame={frame_token}", "Origin": "null"},
+    )
+    assert wrong_scope.status_code == 401
+
+    tampered = client.get(
+        "/addon-frame/fake-addon/app.js",
+        headers={"Cookie": f"cd_addon_frame={frame_token}x", "Origin": "null"},
+    )
+    assert tampered.status_code == 401
 
 
 def test_addon_frame_requires_auth_enabled_and_effective_view(enabled_addon):
@@ -94,7 +198,8 @@ def test_addon_frame_preserves_sse_without_buffering(enabled_addon, monkeypatch)
     assert response.status_code == 200
     assert response.content == b"event: progress\ndata: 1\n\n"
     assert response.headers["x-accel-buffering"] == "no"
-    assert "set-cookie" not in response.headers
+    assert "forbidden=1" not in response.headers["set-cookie"]
+    assert "cd_addon_frame=" in response.headers["set-cookie"]
 
 
 def test_addon_frame_rejects_oversize_response_before_rendering(enabled_addon, monkeypatch):
