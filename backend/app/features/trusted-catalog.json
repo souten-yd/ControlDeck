@@ -29,5 +29,37 @@
     "publisher_keys": [
       "80bNiqW1CzAzQ3LSqYqtwecm6TYQywDLxGACF9AVsac="
     ]
+  },
+  "sonic-forge": {
+    "name": "SonicForge",
+    "kind": "release-bundle",
+    "route_gated": true,
+    "summary": "日本語・英語の音声生成、文字起こし、効果音、音楽制作を行うControlDeck Add-on",
+    "release_metadata_url": "https://api.github.com/repos/souten-yd/ControlDeckSonicForge/releases/latest",
+    "artifact_name": "control-deck-sonic-forge-{version}-{platform}-{arch}.tar.gz",
+    "addon_id": "sonic-forge",
+    "allowed_host_capabilities": [
+      "context.read",
+      "theme.read",
+      "route.open",
+      "files.pick",
+      "files.export",
+      "projects.pick",
+      "jobs.read",
+      "jobs.write",
+      "notifications.show",
+      "resources.acquire",
+      "ai.inference",
+      "devices.relay"
+    ],
+    "max_download_bytes": 536870912,
+    "max_expanded_bytes": 1073741824,
+    "smoke_timeout_sec": 120,
+    "provision_timeout_sec": 7200,
+    "retain_versions": 2,
+    "preview": false,
+    "publisher_keys": [
+      "g4c486WbOPjVYuwtkMLxqriGlolip0Tfen2E262+PC0="
+    ]
   }
 }
