@@ -2,6 +2,38 @@
 
 最終更新: 2026-08-26
 
+## setup_required Add-on UI到達性修正（2026-08-26）
+
+- 汎用Release Bundle Featureで署名済みSonicForge v0.1.0を隔離dataへfresh installしたところ、serviceは
+  `setup_required`で正常稼働しnavigationも残る一方、Hostが全non-navigation contributionを除外するため、
+  Add-on自身のSpeech Essentialsセットアップ画面へ到達できない不具合を実再現した。
+- `setup_required`中はnavigationに加えて`embedded_views`と`settings`だけをeffectiveに残し、commands、
+  quick actions、Workflow/Agent/Contextなどの実行surfaceは引き続き除外する。個別UI contributionが
+  明示的に`unavailable`なら、その指定を優先する。
+- Add-on registry/API/proxy集中22件成功。修正Hostと実導入済み公開bundleを使った認証済みChrome 320x720で、
+  初期セットアップ前のfull workspace、JA/EN切替、`Studio / Library / Jobs / More`、event WebSocket、
+  document/body横overflow 0、failed/CORS/console error 0を確認した。
+
+## SonicForge v0.1.0 signed catalog admission（2026-08-26）
+
+- SonicForge PR #6のmobile full-workspaceを含むmerge commit
+  `62532efbabc02463bad1163af6eb0c5a76c9dc3a`から、初回公開Release v0.1.0を作成した。
+  Linux x86_64 artifactは29,970,963 bytes、SHA-256は
+  `da4a50ffa317fc1bda3ed87a95032a50a83e61470b5e49f1354d87ca7f0efd48`。
+- canonical manifestはfeature/version/platform/architecture/artifact名/SHA-256/sizeを束縛し、repository外の
+  SonicForge Ed25519 publisher keyで署名した。公開Releaseから4 assetsを別directoryへ再取得し、署名、
+  adjacent checksum、GitHub asset digest、実artifactの全てを一致させた。catalogはpublisher公開鍵を信頼し、
+  per-release `sha256` pinやSonicForge固有provider分岐を追加していない。
+- 公開bundleはpackaged `doctor`、Add-on/feature version 0.1.0一致、`mobile: embedded`を確認した。
+  隔離dataで汎用Release Bundle Feature providerからfresh installし、managed/installed v0.1.0、service healthy、
+  Add-on enabledを返した。初期Speech Essentials未導入時のUI到達性不具合はprovider-neutral PR #243で修正した。
+- #243 Hostと実導入済み公開bundleの認証済みChrome 320x720で、`Studio / Library / Jobs / More`、JA/EN、
+  event WebSocket、document/body横overflow 0、failed/CORS/console error 0を確認した。隔離featureは汎用uninstallで
+  service/unit/managed filesを撤去し、既存`/data1tb/ControlDeck/data/sonicforge`を変更せずsource serviceをhealthyへ復帰した。
+- #243取り込み後、catalog/release/Add-on contract集中36件、canonical backend全件818件成功／1件skip。
+  認証済み実ChromeのSettingsを320x720／1280x800で確認し、SonicForgeが`未導入`・`検証済みbundle`・有効な
+  `導入`buttonとして表示された。document/body横overflow、failed response、HTTP 400以上、console errorはいずれも0件だった。
+
 ## Opaque Add-on frame認証修正（2026-08-26）
 
 - Chromium 151ではsandboxed Add-on iframeのsubresource/API requestに通常の

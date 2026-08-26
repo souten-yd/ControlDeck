@@ -388,9 +388,10 @@ def effective_for_permissions(permissions: set[str]) -> dict[str, Any]:
                     continue
                 availability = _contribution_availability(report, kind.rstrip("s"), contribution.id)
                 navigation = kind == "navigation"
+                setup_surface = kind in {"navigation", "embedded_views", "settings"}
                 overall_unavailable = report is None or report.status in {
-                    AddonHealthState.UNAVAILABLE, AddonHealthState.SETUP_REQUIRED,
-                }
+                    AddonHealthState.UNAVAILABLE,
+                } or (report.status == AddonHealthState.SETUP_REQUIRED and not setup_surface)
                 if not navigation and (availability == ContributionAvailability.UNAVAILABLE.value or overall_unavailable):
                     continue
                 groups.setdefault(kind, []).append({
