@@ -231,6 +231,7 @@ def commit_output(output_id: str, principal: RuntimePrincipal) -> dict[str, Any]
     destination_grant = load(value["grant_id"], principal, kind="export")
     destination_dir = resolved_grant(destination_grant)
     directory_fd = os.open(destination_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    local_name = f".control-deck-output-{uuid.uuid4().hex}.part"
     try:
         directory_info = os.fstat(directory_fd)
         if directory_info.st_dev != destination_grant["device"] or directory_info.st_ino != destination_grant["inode"]:
@@ -241,10 +242,40 @@ def commit_output(output_id: str, principal: RuntimePrincipal) -> dict[str, Any]
             pass
         else:
             raise GrantError("同名のoutputがすでに存在します")
-        os.replace(part, value["filename"], dst_dir_fd=directory_fd)
+        local_fd = os.open(
+            local_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            with part.open("rb") as source, os.fdopen(local_fd, "wb") as destination_stream:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    destination_stream.write(chunk)
+                destination_stream.flush()
+                os.fsync(destination_stream.fileno())
+            # link is an atomic no-replace publish inside the granted
+            # directory. Unlike replacing the central staging file, it also
+            # works when the grant is on another filesystem.
+            os.link(
+                local_name,
+                value["filename"],
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.unlink(local_name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except BaseException:
+            try:
+                os.unlink(local_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            raise
         info = os.stat(value["filename"], dir_fd=directory_fd, follow_symlinks=False)
     finally:
         os.close(directory_fd)
+    part.unlink(missing_ok=True)
     destination = destination_dir / value["filename"]
     asset_id = str(uuid.uuid4())
     _atomic_json(_root("addon-assets") / f"{asset_id}.json", {

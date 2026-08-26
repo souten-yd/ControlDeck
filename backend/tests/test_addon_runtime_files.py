@@ -189,6 +189,51 @@ def test_output_staging_commit_is_job_and_export_grant_scoped(runtime_files):
     assert (destination / "result.png").read_bytes() == payload
 
 
+def test_output_commit_does_not_cross_device_replace_the_central_staging_file(
+    runtime_files, monkeypatch
+):
+    client, tokens, user_id, root = runtime_files
+    destination = root / "runtime-output-another-device"
+    destination.mkdir(exist_ok=True)
+    grant = client.post(
+        "/api/v1/addons/fake-addon/file-grants",
+        json={"path": str(destination), "kind": "export"}, headers=CSRF_HEADERS,
+    ).json()
+    job_id, job_token = create_job(client, tokens, user_id)
+    payload = b"portable atomic output"
+    created = client.post(
+        "/api/v1/addon-runtime/fake-addon/files/outputs",
+        json={
+            "job_id": job_id, "grant_id": grant["grant_id"], "filename": "portable.bin",
+            "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+        },
+        headers=headers(job_token),
+    ).json()
+    client.put(
+        f"/api/v1/addon-runtime/fake-addon/files/outputs/{created['output_id']}/content",
+        content=payload, headers=headers(job_token),
+    )
+
+    import app.addon_runtime.grants as grants
+
+    original_replace = grants.os.replace
+
+    def reject_cross_device_shape(source, destination_name, *args, **kwargs):
+        if str(source).endswith(".part") and kwargs.get("dst_dir_fd") is not None:
+            raise OSError(18, "Invalid cross-device link")
+        return original_replace(source, destination_name, *args, **kwargs)
+
+    monkeypatch.setattr(grants.os, "replace", reject_cross_device_shape)
+    committed = client.post(
+        f"/api/v1/addon-runtime/fake-addon/files/outputs/{created['output_id']}/commit",
+        headers=headers(job_token),
+    )
+
+    assert committed.status_code == 200, committed.text
+    assert (destination / "portable.bin").read_bytes() == payload
+    assert list(destination.glob(".control-deck-output-*.part")) == []
+
+
 def test_output_rejects_path_filename_and_size_mismatch(runtime_files):
     client, tokens, user_id, root = runtime_files
     destination = root / "runtime-output-rejected"
