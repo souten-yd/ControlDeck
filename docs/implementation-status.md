@@ -33,6 +33,10 @@
 - #243取り込み後、catalog/release/Add-on contract集中36件、canonical backend全件818件成功／1件skip。
   認証済み実ChromeのSettingsを320x720／1280x800で確認し、SonicForgeが`未導入`・`検証済みbundle`・有効な
   `導入`buttonとして表示された。document/body横overflow、failed response、HTTP 400以上、console errorはいずれも0件だった。
+- Catalog PR #244をmerge commit `99b2e5bd4f78837da1e6774143958b4eb8eb3335`としてactive checkoutへ取り込み、
+  並行中の`frontend/tsconfig.tsbuildinfo`を保持して`control-deck-web.service`を再起動した。live `127.0.0.1:8765`の
+  feature APIはSonicForgeを`available=true`／`not-installed`として返し、認証済みChrome 320x720／1280x800の
+  Settingsでも同じ導入候補を表示した。横overflow、failed response、HTTP 400以上、console errorはいずれも0件だった。
 
 ## Opaque Add-on frame認証修正（2026-08-26）
 
