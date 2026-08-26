@@ -412,3 +412,16 @@ def test_an_entry_with_a_publisher_key_requires_the_release_to_be_signed():
         release_bundle._signed_assets(
             spec, metadata, "control-deck-media-forge-1.2.3-linux-x86_64.tar.gz"
         )
+
+
+def test_sonicforge_catalog_uses_the_generic_signed_release_contract():
+    from app.features import registry
+
+    catalog = registry.FEATURES["sonic-forge"]
+    assert catalog["kind"] == "release-bundle"
+    assert catalog["addon_id"] == "sonic-forge"
+    assert catalog["artifact_name"] == "control-deck-sonic-forge-{version}-{platform}-{arch}.tar.gz"
+    assert catalog["publisher_keys"] == ["g4c486WbOPjVYuwtkMLxqriGlolip0Tfen2E262+PC0="]
+    assert catalog["preview"] is False
+    assert "sha256" not in catalog
+    assert "devices.relay" in catalog["allowed_host_capabilities"]

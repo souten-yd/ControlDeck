@@ -2,6 +2,24 @@
 
 最終更新: 2026-08-26
 
+## SonicForge v0.1.0 signed catalog admission（2026-08-26）
+
+- SonicForge PR #6のmobile full-workspaceを含むmerge commit
+  `62532efbabc02463bad1163af6eb0c5a76c9dc3a`から、初回公開Release v0.1.0を作成した。
+  Linux x86_64 artifactは29,970,963 bytes、SHA-256は
+  `da4a50ffa317fc1bda3ed87a95032a50a83e61470b5e49f1354d87ca7f0efd48`。
+- canonical manifestはfeature/version/platform/architecture/artifact名/SHA-256/sizeを束縛し、repository外の
+  SonicForge Ed25519 publisher keyで署名した。公開Releaseから4 assetsを別directoryへ再取得し、署名、
+  adjacent checksum、GitHub asset digest、実artifactの全てを一致させた。catalogはpublisher公開鍵を信頼し、
+  per-release `sha256` pinやSonicForge固有provider分岐を追加していない。
+- 公開bundleはpackaged `doctor`、Add-on/feature version 0.1.0一致、`mobile: embedded`を確認した。
+  隔離dataで汎用Release Bundle Feature providerからfresh installし、managed/installed v0.1.0、service healthy、
+  Add-on enabledを返した。初期Speech Essentials未導入時のUI到達性不具合はprovider-neutral PR #243で修正した。
+- #243 Hostと実導入済み公開bundleの認証済みChrome 320x720で、`Studio / Library / Jobs / More`、JA/EN、
+  event WebSocket、document/body横overflow 0、failed/CORS/console error 0を確認した。隔離featureは汎用uninstallで
+  service/unit/managed filesを撤去し、既存`/data1tb/ControlDeck/data/sonicforge`を変更せずsource serviceをhealthyへ復帰した。
+- catalog/release/Add-on contract集中29件成功。canonical全件と実Settings導入候補表示は#243取り込み後に再実行する。
+
 ## Opaque Add-on frame認証修正（2026-08-26）
 
 - Chromium 151ではsandboxed Add-on iframeのsubresource/API requestに通常の
