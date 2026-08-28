@@ -93,6 +93,32 @@ def test_effective_registry_filters_permission_health_and_partial_availability(i
     assert registry.effective_for_permissions({"apps.view"})["addons"] == []
 
 
+def test_a_newly_requested_capability_does_not_hide_the_whole_addon(isolated_registry):
+    """更新で機能が増えても、既に使えている画面を取り上げないこと。
+
+    以前は未許可の host 機能が 1 つでもあると effective から丸ごと外れ、
+    利用者は理由も分からないまま拡張機能を見失った。実際の防御は呼び出しごとに
+    bridge が行う (capability_not_granted) ので、隠すのは締め出すだけだった。
+    """
+    registry = isolated_registry
+    value = addon_manifest()
+    _install(registry, value)
+    registry.set_enabled("fake-addon", True, grants=list(value["host_capabilities"]))
+    registry.update_health("fake-addon", _health())
+    assert registry.effective_for_permissions({"apps.view"})["addons"][0]["pending_capabilities"] == []
+
+    # 更新で新しい機能を要求し始める。許可はまだ増えていない。
+    grown = deepcopy(value)
+    grown["host_capabilities"] = [*value["host_capabilities"], "audio.capture"]
+    grown["version"] = "9.9.9"
+    _install(registry, grown)
+
+    effective = registry.effective_for_permissions({"apps.view"})
+    assert [item["id"] for item in effective["addons"]] == ["fake-addon"]
+    assert effective["addons"][0]["pending_capabilities"] == ["audio.capture"]
+    assert [item["id"] for item in effective["contributions"]["navigation"]] == ["workspace"]
+
+
 def test_setup_required_keeps_setup_ui_but_hides_execution_contributions(isolated_registry):
     registry = isolated_registry
     _install(registry)

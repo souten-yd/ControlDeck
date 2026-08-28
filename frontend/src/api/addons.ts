@@ -58,6 +58,8 @@ export interface EffectiveAddon {
   id: string;
   name: string;
   state: AddonStateName;
+  /** 更新で新しく要求され、まだ許可していない host 機能。 */
+  pending_capabilities?: string[];
   health: AddonHealth | null;
 }
 
