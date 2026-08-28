@@ -69,6 +69,15 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const show = useToasts((s) => s.show);
+  /* 上の行に出す「いまどこか」。拡張機能の画面なら拡張機能の名前を出す。 */
+  const currentTitle = (() => {
+    const contribution = addonNavigation.find((item) =>
+      location.pathname.startsWith(item.route || `/x/${item.addon_id}/${item.id}`));
+    if (contribution) return addonLabel(contribution.label);
+    const item = [...visibleNav].sort((a, b) => b.to.length - a.to.length)
+      .find((entry) => entry.to === "/" ? location.pathname === "/" : location.pathname.startsWith(entry.to));
+    return item?.label ?? meta?.app_name ?? "Control Deck";
+  })();
   /** 宣言された quick action を実行し、拡張機能が返した route へ遷移する。 */
   const runQuickAction = async (addonId: string, contributionId: string) => {
     try {
@@ -239,8 +248,11 @@ export default function AppLayout() {
       {/* メイン */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="safe-top flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:min-h-14">
-          <div className="flex items-center gap-2 md:hidden">
+          {/* 携帯ではここが唯一の題名の置き場になる。拡張機能は自分の1行を
+              操作で使い切るので、いまどこにいるかはこの行が受け持つ。 */}
+          <div className="flex min-w-0 items-center gap-2 md:hidden">
             <Logo size={24} />
+            <span className="min-w-0 truncate text-sm font-semibold">{currentTitle}</span>
           </div>
           <div className="hidden md:block">
             <button
