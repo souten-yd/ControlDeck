@@ -35,6 +35,7 @@ HostCapability: TypeAlias = Literal[
     "resources.acquire",
     "ai.inference",
     "devices.relay",
+    "audio.capture",
 ]
 LocalizedLabel: TypeAlias = str | dict[Literal["en", "ja"], str]
 

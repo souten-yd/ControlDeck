@@ -112,6 +112,30 @@ function entryPath(routePath: string, contributionPath?: string): string {
   return routePath === "/" ? contributionPath || "/" : routePath;
 }
 
+/* add-on frameは allow-same-origin なしの sandbox、つまり不透明originで動く。
+   ブラウザはそこでの getUserMedia を SecurityError で拒む。allow="microphone" を
+   足しても変わらない: 許可は origin に紐づき、不透明originは許可を持てないため。
+   そこでマイクは host が開き、frame へは PCM だけを event で渡す。 */
+const CAPTURE_RATE = 16_000;
+const CAPTURE_FRAME_SAMPLES = 3_200; // 200ms
+
+interface AudioCaptureState {
+  recordingId: string;
+  stream: MediaStream;
+  context: AudioContext;
+  processor: ScriptProcessorNode;
+  sequence: number;
+  samples: number;
+  pending: Float32Array;
+}
+
+function encodePcm(samples: Int16Array): string {
+  const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+  return btoa(binary);
+}
+
 export function EmbeddedAddonView({
   addon,
   contribution,
@@ -131,6 +155,8 @@ export function EmbeddedAddonView({
   const notificationTimes = useRef<number[]>([]);
   const notificationDedupe = useRef(new Map<string, number>());
   const jobSubscriptions = useRef(new Map<string, number>());
+  const audioCapture = useRef<AudioCaptureState | null>(null);
+  const [capturing, setCapturing] = useState(false);
   const initialPath = useRef(entryPath(routePath, contribution.path));
   const [connectionKey, setConnectionKey] = useState(0);
   const [connection, setConnection] = useState<"connecting" | "ready" | "timeout" | "error">("connecting");
@@ -163,6 +189,82 @@ export function EmbeddedAddonView({
   const sendEvent = useCallback((event: string, data: unknown) => {
     portRef.current?.postMessage({ type: "event", event, data });
   }, []);
+
+  /* マイクは離脱しても開いたままにしない。frameの入れ替え・画面離脱でも必ず閉じる。 */
+  const stopAudioCapture = useCallback(() => {
+    const capture = audioCapture.current;
+    audioCapture.current = null;
+    setCapturing(false);
+    if (!capture) return null;
+    capture.processor.onaudioprocess = null;
+    try { capture.processor.disconnect(); } catch { /* すでに外れている */ }
+    for (const track of capture.stream.getTracks()) track.stop();
+    void capture.context.close().catch(() => undefined);
+    return capture;
+  }, []);
+
+  useEffect(() => () => { stopAudioCapture(); }, [stopAudioCapture, viewIdentity]);
+
+  const startAudioCapture = useCallback(async () => {
+    if (audioCapture.current) throw new Error("すでに録音しています");
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+    } catch (reason) {
+      const name = reason instanceof Error ? reason.name : "";
+      throw new Error(name === "NotAllowedError" ? "マイクの利用が許可されていません" : "マイクを開けませんでした");
+    }
+    const context = new AudioContext({ sampleRate: CAPTURE_RATE });
+    const source = context.createMediaStreamSource(stream);
+    /* AudioWorklet は module を fetch する。host の origin なら読めるが、
+       対応の幅を優先して、どの環境でも同じに動く方を使う。 */
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    const recordingId = `rec_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const capture: AudioCaptureState = {
+      recordingId, stream, context, processor,
+      sequence: 0, samples: 0, pending: new Float32Array(0),
+    };
+    processor.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const merged = new Float32Array(capture.pending.length + input.length);
+      merged.set(capture.pending, 0);
+      merged.set(input, capture.pending.length);
+      let offset = 0;
+      while (merged.length - offset >= CAPTURE_FRAME_SAMPLES) {
+        const frame = new Int16Array(CAPTURE_FRAME_SAMPLES);
+        let peak = 0;
+        for (let index = 0; index < CAPTURE_FRAME_SAMPLES; index += 1) {
+          const value = Math.max(-1, Math.min(1, merged[offset + index]));
+          peak = Math.max(peak, Math.abs(value));
+          frame[index] = value < 0 ? value * 0x8000 : value * 0x7fff;
+        }
+        sendEvent("audio.frame", {
+          recording_id: recordingId,
+          sequence: capture.sequence,
+          sample_rate: CAPTURE_RATE,
+          channels: 1,
+          format: "pcm_s16le",
+          peak,
+          pcm: encodePcm(frame),
+        });
+        capture.sequence += 1;
+        capture.samples += CAPTURE_FRAME_SAMPLES;
+        offset += CAPTURE_FRAME_SAMPLES;
+      }
+      capture.pending = merged.slice(offset);
+    };
+    source.connect(processor);
+    /* ScriptProcessor は出力へ繋がっていないと呼ばれない。無音を出して回す。 */
+    const sink = context.createGain();
+    sink.gain.value = 0;
+    processor.connect(sink);
+    sink.connect(context.destination);
+    audioCapture.current = capture;
+    setCapturing(true);
+    return { recording_id: recordingId, sample_rate: CAPTURE_RATE, channels: 1, format: "pcm_s16le" };
+  }, [sendEvent]);
 
   useEffect(() => {
     setConnection("connecting");
@@ -246,6 +348,20 @@ export function EmbeddedAddonView({
         reject,
       }));
     }
+    if (request.method === "host.audio.record.start") return await startAudioCapture();
+    if (request.method === "host.audio.record.stop") {
+      const current = audioCapture.current;
+      if (!current) return { stopped: false };
+      if (params.recording_id && String(params.recording_id) !== current.recordingId) return { stopped: false };
+      stopAudioCapture();
+      return {
+        stopped: true,
+        recording_id: current.recordingId,
+        frames: current.sequence,
+        sample_rate: CAPTURE_RATE,
+        duration_ms: Math.round((current.samples / CAPTURE_RATE) * 1000),
+      };
+    }
     if (request.method === "host.job.open") {
       setJobId(String(params.job_id));
       return { opened: true, job_id: String(params.job_id) };
@@ -272,7 +388,7 @@ export function EmbeddedAddonView({
       return { subscribed: true, job_id: subscribedId };
     }
     throw new Error("このHost Bridge methodは画面側でまだ利用できません");
-  }, [addon.id, contribution.id, location.pathname, navigate, sendEvent, show, themeTokens]);
+  }, [addon.id, contribution.id, location.pathname, navigate, sendEvent, show, themeTokens, startAudioCapture, stopAudioCapture]);
   const executeRef = useRef(execute);
   const themeTokensRef = useRef(themeTokens);
   executeRef.current = execute;
@@ -400,12 +516,15 @@ export function EmbeddedAddonView({
   };
 
   return <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: themeTokens.bg }}>
-    <header className="flex min-h-12 shrink-0 items-center gap-3 border-b px-4" style={{ borderColor: themeTokens.border, color: themeTokens.text }}>
-      <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-semibold">{title}</h1><p className="truncate text-[10px]" style={{ color: themeTokens.muted }}>{addon.name} · {routePath || "/"}</p></div>
+    {/* 拡張機能は自分のheaderに題名と操作を1行で持つ。hostが同じ題名でもう1行使うと、
+        狭い画面ではそれだけで縦が埋まる。言うことがあるときだけ出す。
+        権限と状態は設定の拡張機能ページから引き続き見られる。 */}
+    {(busy || capturing || addon.state !== "healthy") && <header className="flex min-h-10 shrink-0 items-center gap-2 border-b px-4 text-xs" style={{ borderColor: themeTokens.border, color: themeTokens.text }}>
+      <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
+      {capturing && <span className="rounded-full bg-red-100 px-2 py-1 text-[10px] font-semibold text-red-800" title="この画面がマイクを使っています">🎤 録音中</span>}
       {busy && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800" title="今離れると失う作業があります">処理中</span>}
       {addon.state === "healthy" ? null : <button aria-label={`状態詳細: ${addonStateMessage(addon.state)}`} onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)}><AddonStatusChip state={addon.state} /></button>}
-      <button onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)} className="min-h-10 rounded-xl px-3 text-xs font-medium">詳細</button>
-    </header>
+    </header>}
     <div className="relative min-h-0 flex-1">
       {connection !== "ready" && <div className="absolute inset-0 z-10 grid place-items-center p-6" style={{ backgroundColor: themeTokens.bg, color: themeTokens.text }}>
         {connection === "connecting" ? <div className="w-full max-w-sm animate-pulse space-y-3" aria-label="拡張機能を接続中"><div className="h-8 w-2/3 rounded-xl" style={{ backgroundColor: themeTokens.surface }} /><div className="h-32 rounded-2xl" style={{ backgroundColor: themeTokens.surface }} /><p className="text-center text-xs" style={{ color: themeTokens.muted }}>拡張機能へ安全に接続しています…</p></div> : <div className="max-w-sm rounded-2xl border p-5 text-center" style={{ borderColor: themeTokens.border, backgroundColor: themeTokens.surface }}><h2 className="font-semibold">拡張画面を表示できません</h2><p className="mt-2 text-sm" style={{ color: themeTokens.muted }}>{connection === "timeout" ? "8秒以内に応答がありませんでした。serviceと設定を確認してください。" : error || addonStateMessage(addon.state)}</p><div className="mt-4 flex justify-center gap-2"><button onClick={retry} className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white">再試行</button><button onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)} className="min-h-11 rounded-xl px-4 text-sm">設定を開く</button></div></div>}

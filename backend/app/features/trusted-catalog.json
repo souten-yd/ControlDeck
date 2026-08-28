@@ -50,7 +50,8 @@
       "notifications.show",
       "resources.acquire",
       "ai.inference",
-      "devices.relay"
+      "devices.relay",
+      "audio.capture"
     ],
     "max_download_bytes": 536870912,
     "max_expanded_bytes": 1073741824,
