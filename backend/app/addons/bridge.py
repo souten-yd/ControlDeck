@@ -34,6 +34,8 @@ BridgeMethod = Literal[
     "host.notification.show",
     "host.permission.has",
     "host.busy.set",
+    "host.audio.record.start",
+    "host.audio.record.stop",
 ]
 
 METHOD_CAPABILITY: dict[str, str | None] = {
@@ -50,6 +52,11 @@ METHOD_CAPABILITY: dict[str, str | None] = {
     "host.notification.show": "notifications.show",
     "host.permission.has": None,
     "host.busy.set": None,
+    # add-on frame は sandbox の不透明 origin で動くので、ブラウザはそこに
+    # getUserMedia を許さない（allow="microphone" を足しても SecurityError）。
+    # マイクは host が開き、frame へは音の中身だけを渡す。
+    "host.audio.record.start": "audio.capture",
+    "host.audio.record.stop": "audio.capture",
 }
 
 METHOD_PERMISSION: dict[str, str | None] = {
