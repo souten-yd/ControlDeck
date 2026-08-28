@@ -373,13 +373,18 @@ def effective_for_permissions(permissions: set[str]) -> dict[str, Any]:
         if not item["enabled"]:
             continue
         granted = set(item["granted_capabilities"])
-        if not set(manifest.host_capabilities).issubset(granted):
-            continue
+        # 更新で新しい host 機能を要求し始めた add-on を、丸ごと隠さない。以前は
+        # 未許可が 1 つでもあると一覧から消え、利用者は理由も分からないまま
+        # 使えていた画面を失った。実際の防御は呼び出しごとに bridge が行う
+        # (capability_not_granted) ので、ここで隠すのは二重で、締め出すだけだった。
+        # 許可済みの範囲で使い続けられるようにし、未許可のものは承認待ちとして伝える。
+        pending = sorted(set(manifest.host_capabilities) - granted)
         report = _observations.get(manifest.id).report if manifest.id in _observations else None
         addons.append({
             "id": manifest.id,
             "name": manifest.name,
             "state": item["state"],
+            "pending_capabilities": pending,
             "health": report.model_dump(mode="json") if report else None,
         })
         for kind in type(manifest.contributions).model_fields:

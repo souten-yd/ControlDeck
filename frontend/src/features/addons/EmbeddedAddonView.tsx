@@ -183,6 +183,9 @@ export function EmbeddedAddonView({
     viewIdentityRef.current = viewIdentity;
     initialPath.current = entryPath(routePath, contribution.path);
   }
+  /* 更新で機能が増えると、承認するまでその機能だけが使えない。画面ごと消える
+     よりは、使えている範囲で開いたまま、承認の入口を出すほうがよい。 */
+  const pending = addon.pending_capabilities ?? [];
   const framePath = initialPath.current.startsWith("/") ? initialPath.current : "/";
   const frameSrc = `/addon-frame/${encodeURIComponent(addon.id)}${framePath}`;
 
@@ -519,9 +522,14 @@ export function EmbeddedAddonView({
     {/* 拡張機能は自分のheaderに題名と操作を1行で持つ。hostが同じ題名でもう1行使うと、
         狭い画面ではそれだけで縦が埋まる。言うことがあるときだけ出す。
         権限と状態は設定の拡張機能ページから引き続き見られる。 */}
-    {(busy || capturing || addon.state !== "healthy") && <header className="flex min-h-10 shrink-0 items-center gap-2 border-b px-4 text-xs" style={{ borderColor: themeTokens.border, color: themeTokens.text }}>
+    {(busy || capturing || pending.length > 0 || addon.state !== "healthy") && <header className="flex min-h-10 shrink-0 items-center gap-2 border-b px-4 text-xs" style={{ borderColor: themeTokens.border, color: themeTokens.text }}>
       <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
       {capturing && <span className="rounded-full bg-red-100 px-2 py-1 text-[10px] font-semibold text-red-800" title="この画面がマイクを使っています">🎤 録音中</span>}
+      {pending.length > 0 && <button
+        onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)}
+        title={`未許可: ${pending.join(", ")}`}
+        className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800"
+      >権限の承認が必要</button>}
       {busy && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800" title="今離れると失う作業があります">処理中</span>}
       {addon.state === "healthy" ? null : <button aria-label={`状態詳細: ${addonStateMessage(addon.state)}`} onClick={() => navigate(`/settings?extension=${encodeURIComponent(addon.id)}`)}><AddonStatusChip state={addon.state} /></button>}
     </header>}
