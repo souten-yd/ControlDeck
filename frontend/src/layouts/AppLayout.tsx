@@ -73,7 +73,11 @@ export default function AppLayout() {
   const currentTitle = (() => {
     const contribution = addonNavigation.find((item) =>
       location.pathname.startsWith(item.route || `/x/${item.addon_id}/${item.id}`));
-    if (contribution) return addonLabel(contribution.label);
+    /* 拡張機能は製品の名前で呼ぶ。貢献のラベル（「音声」など）はその中の
+       画面の名前で、上の行が答えるべき「どのアプリか」ではない。 */
+    if (contribution) {
+      return addonById.get(contribution.addon_id)?.name ?? addonLabel(contribution.label);
+    }
     const item = [...visibleNav].sort((a, b) => b.to.length - a.to.length)
       .find((entry) => entry.to === "/" ? location.pathname === "/" : location.pathname.startsWith(entry.to));
     return item?.label ?? meta?.app_name ?? "Control Deck";
