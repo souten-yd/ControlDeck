@@ -92,7 +92,9 @@ def _project_output_tool(project_id: object, permissions: set[str]) -> dict[str,
     return {
         "name": PROJECT_OUTPUT_GRANT_TOOL,
         "description": "現在のControl Deck project内に、選択したAdd-on用の短期output grantを作成します。",
-        "inputSchema": {
+        # Add-on由来のtoolと同じく、制約付きデコーダが展開できない長さ制約は落とす。
+        # 実際の上限は _resolve_project_directory が引き続き強制する。
+        "inputSchema": execution.model_facing_schema({
             "type": "object",
             "properties": {
                 "addon_id": {"type": "string", "enum": addons},
@@ -100,7 +102,7 @@ def _project_output_tool(project_id: object, permissions: set[str]) -> dict[str,
             },
             "required": ["addon_id", "relative_directory"],
             "additionalProperties": False,
-        },
+        }),
     }
 
 

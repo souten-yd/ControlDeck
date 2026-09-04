@@ -259,3 +259,45 @@ def test_project_output_grant_tool_is_project_scoped_and_opaque(admin_client, mo
         }},
     )
     assert denied.status_code == 404
+
+
+def test_published_tool_schema_drops_length_bounds_but_validation_keeps_them(monkeypatch):
+    """モデルへ出すスキーマから長さ制約を落とす（検証側の制約は残す）。
+
+    制約付きデコード（llama.cpp の JSON schema → GBNF 変換）は maxLength を
+    「文字ルールの繰り返し回数」へ展開する。大きな値が一つあるだけで文法生成に
+    失敗し、その tool を含む全リクエストが 400 になるため、Add-on tool を有効に
+    しただけで OpenCode がローカルモデルを使えなくなる。
+    """
+    from app.addons import execution
+
+    raw = {
+        "type": "object",
+        "properties": {
+            "text": {"type": ["string", "null"], "maxLength": 100_000},
+            "stages": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}},
+            }},
+        },
+        "required": ["text"],
+    }
+    contributions = [{"addon_id": "sonic-forge", "id": "sonic.pipeline", "label": "Pipeline"}]
+    monkeypatch.setattr(execution, "discover", lambda kind, permissions: contributions)
+
+    async def schema(addon_id, contribution_id, permissions=None):
+        return raw
+
+    monkeypatch.setattr(execution, "agent_schema", schema)
+
+    published = json.dumps(asyncio.run(execution.agent_mcp_tools({"workflows.run"})))
+    assert "maxLength" not in published and "minLength" not in published
+    # 構造・型・required は落とさない。落とすのは展開できない長さ制約だけ。
+    assert '"required": ["text"]' in published.replace("'", '"')
+    assert '"type": "array"' in published
+
+    definitions = json.dumps(asyncio.run(execution.agent_tool_definitions({"workflows.run"})))
+    assert "maxLength" not in definitions and "minLength" not in definitions
+
+    # 元のスキーマは書き換えない。実際の上限は create_agent_tool_job の validate() が使う。
+    assert raw["properties"]["text"]["maxLength"] == 100_000
