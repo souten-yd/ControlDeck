@@ -6,7 +6,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.audit import service as audit
 from app.database import SessionLocal, get_db
@@ -674,8 +674,26 @@ class LlamaInstanceBody(BaseModel):
     threads_batch: int | None = Field(default=None, ge=-1, le=1024)
     mmap: bool | None = None
     mlock: bool | None = None
-    spec_type: Literal["none", "draft-simple", "draft-mtp", "ngram-simple"] | None = None
+    # 種別はバイナリ側で増えるので Literal で固定せず、既知の上位集合で検証する。
+    # カンマ区切りで複数指定できる（例: draft-mtp,ngram-mod）。
+    spec_type: str | None = Field(default=None, max_length=128)
     draft_max: int | None = Field(default=None, ge=1, le=128)
+    draft_min: int | None = Field(default=None, ge=0, le=128)
+    draft_p_min: float | None = Field(default=None, ge=0, le=1)
+    spec_draft_model_path: str | None = None
+    spec_draft_ngl: int | None = Field(default=None, ge=-1, le=999)
+    spec_draft_cache_type_k: Literal["", "f32", "f16", "bf16", "q8_0", "q4_0"] | None = None
+    spec_draft_cache_type_v: Literal["", "f32", "f16", "bf16", "q8_0", "q4_0"] | None = None
+    load_mode: Literal["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"] | None = None
+
+    @field_validator("spec_type")
+    @classmethod
+    def _known_spec_type(cls, value: str | None) -> str | None:
+        from app.models_mgmt import llama
+
+        if value is not None:
+            llama.parse_spec_types(value)  # 未知の値・不正な組み合わせはここで弾く
+        return value
     think: Literal["auto", "off", "low", "medium", "high", "xhigh", "custom"] | None = None
     think_budget_tokens: int | None = Field(default=None, ge=0, le=262144)
     cpu_moe: bool | None = None
@@ -715,11 +733,11 @@ def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     from app.files import service as files
 
-    for key in ("model_path", "mmproj_path"):
+    for key in ("model_path", "mmproj_path", "spec_draft_model_path"):
         if key not in patch:
             continue
         raw = str(patch[key])
-        if key == "mmproj_path" and raw == "":  # 空文字はmmproj解除
+        if key != "model_path" and raw == "":  # 空文字はmmproj/ドラフト解除
             continue
         try:
             resolved = files.resolve(raw)
@@ -735,7 +753,8 @@ def _validated_provider_patch(provider_id: str, body: dict) -> dict:
     patch: dict = body
     if provider_id == "llama.cpp":
         # 共通routeではmodel identity/path/portを変えず、既存の型・範囲検証を再利用する。
-        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path", "role", "port",
+        forbidden = sorted(set(body) & {"alias", "model_path", "mmproj_path",
+                                        "spec_draft_model_path", "role", "port",
                                         "endpoint_id", "order"})
         if forbidden:
             raise HTTPException(status_code=422, detail=f"共通設定APIでは変更できない項目です: {', '.join(forbidden)}")
@@ -1246,7 +1265,16 @@ async def llama_options(user: User = Depends(require_permission("workflows.edit"
     """稼働バイナリの --help から利用可能な引数を返す（実在オプションのみ UI 表示するため）。"""
     from app.models_mgmt import llama
 
-    return {"flags": await llama.detect_options()}
+    return {
+        "flags": await llama.detect_options(),
+        # 投機デコードの種別は版ごとに増える。UIの選択肢はバイナリ実物から出す。
+        "spec_types": await llama.detect_spec_types(),
+        "spec_types_needing_draft_model": list(llama.SPEC_TYPES_NEEDING_DRAFT_MODEL),
+        "draft_cache_types": [value for value in llama.DRAFT_CACHE_TYPES if value],
+        # b10793 で --mmap / --mlock は --load-mode へ集約された。
+        "load_modes": [value for value in llama.LOAD_MODES if value],
+        "supports_load_mode": llama.supports_load_mode(),
+    }
 
 
 # ---- Lucebox ランタイム（DFlash 投機デコード / R9700） ----

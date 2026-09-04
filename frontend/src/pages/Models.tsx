@@ -1385,8 +1385,19 @@ interface LlamaInstanceConfig {
   threads_batch: number;
   mmap: boolean;
   mlock: boolean;
-  spec_type: "none" | "draft-simple" | "draft-mtp" | "ngram-simple";
+  /** --load-mode。空なら mmap/mlock から組み立てる（古いバイナリ互換）。 */
+  load_mode: string;
+  /** 種別はバイナリ側で増えるので固定しない（/models/llama/options が正）。 */
+  spec_type: string;
   draft_max: number;
+  draft_min: number;
+  draft_p_min: number;
+  /** draft-simple / eagle3 / dflash / dspark で必要なドラフトGGUF。 */
+  spec_draft_model_path: string;
+  /** ドラフトをVRAMへ載せる層数。-1 は auto。 */
+  spec_draft_ngl: number;
+  spec_draft_cache_type_k: string;
+  spec_draft_cache_type_v: string;
   think: ThinkMode;
   think_budget_tokens: number;
   kv_unified: boolean;
@@ -1402,11 +1413,41 @@ interface LlamaInstanceConfig {
   seed: number;
 }
 
+interface LlamaOptions {
+  /** 稼働バイナリが実際に持つ --xxx 引数。UIはこれに載っているものだけ出す。 */
+  flags: string[];
+  /** --spec-type が受け付ける値。版ごとに増えるのでバイナリ実物から取る。 */
+  spec_types: string[];
+  /** 別途ドラフトGGUFが要る種別。 */
+  spec_types_needing_draft_model: string[];
+  draft_cache_types: string[];
+  /** --load-mode の値。--mmap / --mlock はb10793でここへ集約された。 */
+  load_modes: string[];
+  supports_load_mode: boolean;
+}
+
+/** 投機デコード種別の説明。未知の値はそのまま出す（バイナリが増やしても壊れない）。 */
+const SPEC_TYPE_LABEL: Record<string, string> = {
+  none: "無効（互換性優先）",
+  "draft-mtp": "MTP — 対応GGUFのみ・追加モデル不要",
+  "draft-dflash": "DFlash — 専用ドラフトGGUFが必要",
+  "draft-dspark": "DSpark — 専用ドラフトGGUFが必要",
+  "draft-eagle3": "EAGLE-3 — 専用ドラフトGGUFが必要",
+  "draft-simple": "Draft simple — 小さめの同系GGUFが必要",
+  "ngram-simple": "N-gram simple — 追加モデル不要",
+  "ngram-map-k": "N-gram map-k — 追加モデル不要",
+  "ngram-map-k4v": "N-gram map-k4v — 追加モデル不要",
+  "ngram-mod": "N-gram mod — 追加モデル不要",
+  "ngram-cache": "N-gram cache — 追加モデル不要",
+};
+
 const LLAMA_INSTANCE_WRITE_KEYS = [
   "model_path", "mmproj_path", "port", "alias", "auto_start", "idle_exclude",
   "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
-  "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
+  "threads_batch", "mmap", "mlock", "load_mode", "spec_type", "draft_max", "draft_min", "draft_p_min",
+  "spec_draft_model_path", "spec_draft_ngl",
+  "spec_draft_cache_type_k", "spec_draft_cache_type_v", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
   "think", "think_budget_tokens",
   "kv_unified",
@@ -1415,7 +1456,9 @@ const LLAMA_INSTANCE_WRITE_KEYS = [
 const LLAMA_PARAMETER_WRITE_KEYS = [
   "mmproj_path", "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
-  "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe",
+  "threads_batch", "mmap", "mlock", "load_mode", "spec_type", "draft_max", "draft_min", "draft_p_min",
+  "spec_draft_model_path", "spec_draft_ngl",
+  "spec_draft_cache_type_k", "spec_draft_cache_type_v", "cpu_moe",
   "n_cpu_moe", "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed",
   "think", "think_budget_tokens",
   "kv_unified",
@@ -1607,13 +1650,21 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
   onChanged: () => void;
 }) {
   const show = useToasts((s) => s.show);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState<"model" | "draft" | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [cfg, setCfg] = useState<LlamaInstanceConfig>({ ...initial });
   const [visionModelPath, setVisionModelPath] = useState(initial.model_path);
   const originalAlias = initial.alias;
-  const { data: optionData } = useQuery({ queryKey: ["llama-options"], queryFn: () => api<{ flags: string[] }>("/models/llama/options") });
+  const { data: optionData } = useQuery({
+    queryKey: ["llama-options"],
+    queryFn: () => api<LlamaOptions>("/models/llama/options"),
+  });
   const flags = new Set(optionData?.flags ?? []);
+  const specTypes = optionData?.spec_types ?? ["none"];
+  const needsDraftModel = new Set(optionData?.spec_types_needing_draft_model ?? []);
+  const draftCacheTypes = optionData?.draft_cache_types ?? [];
+  const loadModes = optionData?.load_modes ?? [];
+  const supportsLoadMode = optionData?.supports_load_mode ?? false;
   const set = <K extends keyof typeof cfg>(key: K, value: (typeof cfg)[K]) => setCfg((current) => ({ ...current, [key]: value }));
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   // 登録のときだけ判定していたので、既に登録したモデルの VISION を後から
@@ -1662,7 +1713,7 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
       {isNew && <>
         <div className="flex gap-1.5">
           <input value={cfg.model_path} onChange={(e) => chooseModelPath(e.target.value)} placeholder="GGUF ファイルのパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
-          <button onClick={() => setPickerOpen(true)} className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+          <button onClick={() => setPickerOpen("model")} aria-label="GGUFを選択" className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <L label="モデル名（alias）"><input value={cfg.alias} onChange={(e) => set("alias", e.target.value)} className={`${input} font-mono`} /></L>
@@ -1734,17 +1785,80 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
         <L label="Vキャッシュ量子化"><CacheTypeSelect value={cfg.cache_type_v} onChange={(value) => set("cache_type_v", value)} input={input} /></L>
       </div>}
 
-      {flags.has("--spec-type") && <div className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
-        <L label="推測デコード / MTP">
-          <select value={cfg.spec_type} onChange={(e) => set("spec_type", e.target.value as typeof cfg.spec_type)} className={input}>
-            <option value="none">無効（互換性優先）</option>
-            <option value="draft-mtp">MTP（対応GGUFのみ）</option>
-            <option value="draft-simple">Draft simple</option>
-            <option value="ngram-simple">N-gram（追加モデル不要）</option>
+      {flags.has("--spec-type") && <div className="space-y-2 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+        <L label="投機デコード">
+          <select value={cfg.spec_type} onChange={(e) => set("spec_type", e.target.value)} className={input}>
+            {/* 選択肢は稼働バイナリが受け付ける値そのもの。版を上げると自動で増える。 */}
+            {specTypes.map((value) => (
+              <option key={value} value={value}>{SPEC_TYPE_LABEL[value] ?? value}</option>
+            ))}
           </select>
         </L>
-        {cfg.spec_type !== "none" && <L label="先読みトークン上限"><PresetOrCustom value={cfg.draft_max} presets={[4, 8, 16, 32, 64].map((v) => ({ v, label: String(v) }))} placeholder="16" onChange={(v) => set("draft_max", Number(v ?? 16))} /></L>}
-        {cfg.spec_type === "draft-mtp" && <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">MTP層を含まないモデルでは起動に失敗するため、その場合は無効へ戻してください。</p>}
+        {cfg.spec_type !== "none" && <>
+          <L label="先読みトークン上限">
+            <PresetOrCustom value={cfg.draft_max} presets={[2, 3, 4, 6, 8].map((v) => ({ v, label: String(v) }))}
+              placeholder="4" onChange={(v) => set("draft_max", Number(v ?? 4))} />
+          </L>
+          <p className="text-[10px] leading-relaxed text-zinc-500">
+            大きいほど速いわけではありません。外した分の検証コストが効くため、
+            実測（Qwen3.8-27B + MTP）では8以上で投機なしより遅くなり、4前後が頭打ちでした。
+          </p>
+          {needsDraftModel.has(cfg.spec_type) && <>
+            <L label="ドラフトGGUF（この方式では必須）">
+              <div className="flex gap-1.5">
+                <input value={cfg.spec_draft_model_path} onChange={(e) => set("spec_draft_model_path", e.target.value)}
+                  placeholder="ドラフトモデルのGGUFパス" className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+                <button onClick={() => setPickerOpen("draft")} aria-label="ドラフトGGUFを選択"
+                  className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+              </div>
+            </L>
+            {!cfg.spec_draft_model_path && (
+              <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                ドラフトGGUFを指定しないと起動に失敗します。ターゲットと同じトークナイザのモデルを選んでください。
+              </p>
+            )}
+            <L label="ドラフトのGPU層数（-1でauto）">
+              <PresetOrCustom value={cfg.spec_draft_ngl} presets={[-1, 0, 99].map((v) => ({ v, label: v === -1 ? "auto" : v === 0 ? "CPUのみ" : "全層" }))}
+                placeholder="-1" onChange={(v) => set("spec_draft_ngl", Number(v ?? -1))} />
+            </L>
+          </>}
+          <details className="rounded-lg bg-zinc-50 p-2 dark:bg-zinc-800/60">
+            <summary className="cursor-pointer text-[11px] text-zinc-500">受け入れ条件とドラフト側KV</summary>
+            <div className="mt-2 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <L label="先読みの下限">
+                  <PresetOrCustom value={cfg.draft_min} presets={[0, 1, 2, 4].map((v) => ({ v, label: String(v) }))}
+                    placeholder="0" onChange={(v) => set("draft_min", Number(v ?? 0))} />
+                </L>
+                <L label="採用する最小確率">
+                  <PresetOrCustom value={cfg.draft_p_min} presets={[0, 0.1, 0.4, 0.75].map((v) => ({ v, label: String(v) }))}
+                    placeholder="0" onChange={(v) => set("draft_p_min", Number(v ?? 0))} />
+                </L>
+              </div>
+              {draftCacheTypes.length > 0 && needsDraftModel.has(cfg.spec_type) && (
+                <div className="grid grid-cols-2 gap-2">
+                  <L label="ドラフトKV K（空=同じ）">
+                    <select value={cfg.spec_draft_cache_type_k} onChange={(e) => set("spec_draft_cache_type_k", e.target.value)} className={input}>
+                      <option value="">ターゲットと同じ</option>
+                      {draftCacheTypes.map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </L>
+                  <L label="ドラフトKV V（空=同じ）">
+                    <select value={cfg.spec_draft_cache_type_v} onChange={(e) => set("spec_draft_cache_type_v", e.target.value)} className={input}>
+                      <option value="">ターゲットと同じ</option>
+                      {draftCacheTypes.map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </L>
+                </div>
+              )}
+              <p className="text-[10px] leading-relaxed text-zinc-500">
+                下限と最小確率は0でバイナリ既定。効果は生成内容に依存し、ドラフトの当たりが悪いと
+                投機なしより遅くなることがあります。
+              </p>
+            </div>
+          </details>
+        </>}
+        {cfg.spec_type === "draft-mtp" && <p className="text-[10px] text-amber-600 dark:text-amber-400">MTP層を含まないモデルでは起動に失敗するため、その場合は無効へ戻してください。</p>}
       </div>}
 
       {(flags.has("--cpu-moe") || flags.has("--n-cpu-moe")) && <div className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
@@ -1772,8 +1886,34 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
           <input value={cfg.mmproj_path ?? ""} onChange={(e) => set("mmproj_path", e.target.value)} placeholder="multimodal projector（*.mmproj*.gguf）のパス" className={`${input} font-mono text-xs`} />
         </L>
         <p className="text-[10px] leading-relaxed text-zinc-400">mmprojを設定すると画像入力（VLM）が有効になり、チャットの📎から画像を添付できます。</p>
-        <Toggle label="mmapでモデルを読む" hint="通常はON。OSのpage cacheを利用します" value={cfg.mmap} onChange={(value) => set("mmap", value)} />
-        <Toggle label="モデルをRAMへ固定（mlock）" hint="swapを防ぎますが、十分なRAMが必要です" value={cfg.mlock} onChange={(value) => set("mlock", value)} />
+        {supportsLoadMode ? (
+          <div className="space-y-1.5">
+            <L label="モデルの読み込み方（--load-mode）">
+              <select value={cfg.load_mode} onChange={(e) => set("load_mode", e.target.value)} className={input}>
+                <option value="">既存設定から自動（mmap / mlock の指定を引き継ぐ）</option>
+                {loadModes.map((value) => (
+                  <option key={value} value={value}>
+                    {value === "auto" ? "auto（既定・mmap）"
+                      : value === "none" ? "none（mmapしない・初回起動が遅い）"
+                      : value === "mmap" ? "mmap（page cacheを使う）"
+                      : value === "mlock" ? "mlock（RAMへ固定）"
+                      : value === "mmap+mlock" ? "mmap+mlock"
+                      : value === "dio" ? "dio（DirectIO・対応環境のみ）" : value}
+                  </option>
+                ))}
+              </select>
+            </L>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              全層をGPUへ載せている場合、生成速度は変わりません（実測差なし）。効くのは起動時間で、
+              cold（page cache無し）で auto/mmap 11.1秒 に対し none 12.9秒、warm では 2.9秒 対 4.8秒でした。
+              旧 <code className="font-mono">--mmap</code> / <code className="font-mono">--mlock</code> は
+              このバイナリでは deprecated です。
+            </p>
+          </div>
+        ) : (<>
+          <Toggle label="mmapでモデルを読む" hint="通常はON。OSのpage cacheを利用します" value={cfg.mmap} onChange={(value) => set("mmap", value)} />
+          <Toggle label="モデルをRAMへ固定（mlock）" hint="swapを防ぎますが、十分なRAMが必要です" value={cfg.mlock} onChange={(value) => set("mlock", value)} />
+        </>)}
         <Toggle label="PC起動時に自動起動" hint="このinstanceのsystemd user unitをenableします。起動前にGPU profileを適用します" value={cfg.auto_start} onChange={(value) => set("auto_start", value)} />
         <Toggle label="共通アイドル停止から除外" hint="直接endpointを使う外部clientは利用時刻を追跡できないため、常用時は除外を推奨" value={cfg.idle_exclude} onChange={(value) => set("idle_exclude", value)} />
       </div>}
@@ -1792,8 +1932,15 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
         </p>
       )}
       {pickerOpen && (
-        <FilePicker mode="file" title="GGUF モデルを選択" initialPath={cfg.model_path || undefined}
-          onSelect={(p) => { chooseModelPath(p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />
+        <FilePicker mode="file"
+          title={pickerOpen === "draft" ? "ドラフト GGUF を選択" : "GGUF モデルを選択"}
+          initialPath={(pickerOpen === "draft" ? cfg.spec_draft_model_path : cfg.model_path) || undefined}
+          onSelect={(p) => {
+            if (pickerOpen === "draft") set("spec_draft_model_path", p);
+            else chooseModelPath(p);
+            setPickerOpen(null);
+          }}
+          onClose={() => setPickerOpen(null)} />
       )}
     </div>
   );
