@@ -19,16 +19,6 @@ MIN_COLD_SAMPLES = 3
 MAX_PROFILE_AGE_DAYS = 30
 PROFILE_SCHEMA_VERSION = 1
 MAX_PROFILE_FILE_BYTES = 2 * 1024 * 1024
-YIELD_THRASH_FACTOR = 2.0
-
-
-@dataclass(frozen=True)
-class LoadCostEstimate:
-    value_sec: float
-    basis: str
-    sample_count: int
-    warm_count: int
-    cold_count: int
 
 
 class ResourceTelemetry:
@@ -300,31 +290,6 @@ class ResourceTelemetry:
                 [item["cold_load_cost_sec"] for item in samples], 0.90
             )
 
-    def reload_cost_p90(self, residency_key: str) -> LoadCostEstimate | None:
-        """Return the observed cost basis for a yield, or None if insufficient."""
-        key = residency_key.strip()[:128]
-        with self._lock:
-            samples = list(self._load_samples.get(key, ()))
-            warm = [item for item in samples if item.get("load_kind") == "warm"]
-            cold = [item for item in samples if item.get("load_kind", "cold") == "cold"]
-            selected: list[dict[str, Any]]
-            basis: str
-            if len(warm) >= MIN_WARM_SAMPLES:
-                selected, basis = warm, "warm"
-            elif len(cold) >= MIN_COLD_SAMPLES:
-                selected, basis = cold, "cold"
-            else:
-                return None
-            return LoadCostEstimate(
-                value_sec=self._percentile(
-                    [float(item["cold_load_cost_sec"]) for item in selected], 0.90
-                ),
-                basis=basis,
-                sample_count=len(selected),
-                warm_count=len(warm),
-                cold_count=len(cold),
-            )
-
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float:
         ordered = sorted(values)
@@ -373,11 +338,6 @@ class ResourceTelemetry:
             else:
                 profile["cold_load_cost_sec"] = self._distribution(cold_costs)
                 profile["warm_reload_cost_sec"] = self._distribution(warm_costs)
-                estimate = self.reload_cost_p90(key)
-                profile["yield_basis"] = estimate.basis if estimate else "insufficient"
-                profile["yield_threshold_sec"] = (
-                    estimate.value_sec * YIELD_THRASH_FACTOR if estimate else None
-                )
             if first_tokens:
                 profile["first_token_latency_sec"] = {
                     "sample_count": len(first_tokens),

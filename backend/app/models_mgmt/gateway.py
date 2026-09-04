@@ -193,13 +193,13 @@ async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
 
     共有KVを持たない Lucebox では待つ対象が無いので即座に通る（local_llm 側で判定）。
     """
-    from app.models_mgmt.resource_provider import provider
+    from app.models_mgmt import local_llm
 
     messages = payload.get("messages") or []
     prompt_chars = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
     # 見積りは概算。厳密さより「混雑時に待つ」ことが目的。
     needed = prompt_chars // 4 + int(payload.get("max_tokens") or 0)
-    return await provider().await_capacity(
+    return await local_llm.await_capacity(
         alias, port, needed, timeout_seconds=CAPACITY_TIMEOUT_SECONDS
     )
 

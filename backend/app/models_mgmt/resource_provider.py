@@ -183,13 +183,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
             ))
         return values
 
-    async def await_capacity(
-        self, alias: str, port: int, needed_tokens: int, *, timeout_seconds: float
-    ) -> dict:
-        return await local_llm.await_capacity(
-            alias, port, needed_tokens, timeout_seconds=timeout_seconds
-        )
-
     async def enter_request(self) -> None:
         async with self._condition:
             if self._draining and not self._stopping:
