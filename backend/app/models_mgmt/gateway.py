@@ -161,37 +161,31 @@ CAPACITY_TIMEOUT_SECONDS = 300
 
 # ControlDeck が生成する OpenCode の runtime config だけが付ける識別ヘッダ。
 # 汎用の User-Agent では OpenCode と利用者の自作クライアントを区別できない。
+# 現在はログ・診断用で、サンプリング方針の判断には使わない（下記参照）。
 CLIENT_HEADER = "x-control-deck-client"
 OPENCODE_CLIENT = "opencode"
 
-# alias -> そのモデルを起動させたクライアントが選んだサンプリング方針。
-# 起動時に決めて常駐中は保つ。プロセス内メモリなので、ControlDeck再起動や
-# ゲートウェイ外での起動では未登録になり、モデル個別設定へ戻る。
-_residency_greedy: dict[str, bool] = {}
-
 
 def _greedy_sampling_for(instance: dict, request: Request) -> bool:
-    """このリクエストで temperature を 0 に固定するか。
+    """このリクエストで temperature を 0 に固定するか。モデル個別設定だけで決める。
 
-    Lucebox の投機デコードは厳密グリーディ検証のみで、temperature>0 では効かない。
-    OpenCode はコード生成が主用途で投機デコードが 3〜5 倍効くため、OpenCode が
-    そのモデルを起こす場合はモデル個別設定より優先して投機ONで常駐させる。
-    既に誰かが使っている常駐へ相乗りするときは、その常駐を始めたときの方針を保つ
-    （生成の性質が途中で変わらないようにする）。方針の記録が無ければ個別設定に従う。
+    Lucebox の DFlash2 は厳密グリーディ検証のみで temperature>0 では効かないため、
+    速度を出すには temperature=0 が要る。以前はここで「OpenCode が停止中のモデルを
+    起こす場合は個別設定より優先して投機ONにする」規則を持っていたが、実運用で
+    エージェントが同じツール呼び出しを繰り返して止まらなくなった（同じ文脈から
+    決定的に同じ行動が出るため、ループから抜けられない。実測でも毎ターン出力が
+    59トークンで完全一致していた）。エージェント用途では greedy の副作用の方が
+    速度の利得より重いので、クライアントによる上書きはやめた。
+    コーディングは temperature に依存せず投機が効く llama.cpp 側へ寄せる。
+
+    temperature を潰すのは Lucebox の制約への対処であって一般的な高速化策では
+    ないので、llama.cpp のサンプリングには触らない。
     """
     from app.models_mgmt import local_llm
 
-    alias = str(instance["alias"])
-    # temperature を潰すのは Lucebox の DFlash2 制約への対処であって、一般的な高速化策では
-    # ない。llama.cpp には同じ制約が無いので、OpenCode 相手でもサンプリングへ触らない。
     if str(instance.get("runtime") or "") != local_llm.LUCEBOX:
         return False
-    if instance.get("loaded"):
-        return _residency_greedy.get(alias, local_llm.pins_greedy_sampling(alias))
-    started_by_opencode = request.headers.get(CLIENT_HEADER, "").lower() == OPENCODE_CLIENT
-    greedy = started_by_opencode or local_llm.pins_greedy_sampling(alias)
-    _residency_greedy[alias] = greedy
-    return greedy
+    return local_llm.pins_greedy_sampling(str(instance["alias"]))
 
 
 async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
