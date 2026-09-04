@@ -6,7 +6,7 @@ import pytest
 
 from app.resources.devices import fake_devices, observed_system_devices
 from app.resources.probes import ProviderRegistry
-from app.resources.providers import ProbeResult, ProviderReservation, ResourceProvider, StaticReservationProvider, YieldLevel
+from app.resources.providers import ProbeResult, ProviderReservation, ResourceProvider, StaticReservationProvider
 from app.resources.schema import ResourceRequest, WaitReason
 
 
@@ -70,12 +70,11 @@ def test_observed_devices_reuse_selected_provider_when_latest_is_unavailable(mon
     )
 
 
-def test_provider_registry_keeps_level_zero_reservations_explicit():
-    fixed = ProviderReservation("llm", "gpu0", "llm:external", 60, yield_level=YieldLevel.NONE)
+def test_provider_registry_keeps_reservations_explicit():
+    fixed = ProviderReservation("llm", "gpu0", "llm:external", 60)
     provider = StaticReservationProvider("llm", [fixed])
     registry = ProviderRegistry([provider])
     assert registry.reservations() == [fixed]
-    assert registry.reservations()[0].yieldable is False
     assert asyncio.run(registry.check(request(), "gpu0")).accepting is True
 
 

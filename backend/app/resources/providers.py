@@ -2,17 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import IntEnum
 
 from app.resources.schema import ResourceRequest, WaitReason
-
-
-class YieldLevel(IntEnum):
-    NONE = 0
-    DRAIN = 1
-    SHRINK = 2
-    UNLOAD = 3
-    STOP = 4
 
 
 @dataclass(frozen=True)
@@ -22,12 +13,8 @@ class ProviderReservation:
     owner: str
     reserved_bytes: int
     residency_key: str | None = None
-    yield_level: YieldLevel = YieldLevel.NONE
     draining: bool = False
 
-    @property
-    def yieldable(self) -> bool:
-        return self.yield_level > YieldLevel.NONE
 
 
 @dataclass(frozen=True)
@@ -53,16 +40,6 @@ class ResourceProvider(ABC):
     async def probe(self, request: ResourceRequest, device_id: str) -> ProbeResult:
         return ProbeResult(accepting=True)
 
-    async def request_yield(
-        self,
-        device_id: str,
-        level: YieldLevel,
-        request: ResourceRequest | None = None,
-    ) -> bool:
-        return False
-
-    def yield_wait_reason(self) -> WaitReason | None:
-        return None
 
 
 class StaticReservationProvider(ResourceProvider):

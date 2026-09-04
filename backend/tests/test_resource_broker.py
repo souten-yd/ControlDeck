@@ -9,7 +9,6 @@ from app.resources.providers import (
     ProviderReservation,
     ResourceProvider,
     StaticReservationProvider,
-    YieldLevel,
 )
 from app.resources.schema import LeaseState, RequestState, ResourceRequest, WaitReason
 from app.resources.telemetry import ResourceTelemetry
@@ -127,7 +126,7 @@ def test_shared_safe_leases_coexist_but_exclusive_waits():
 
 
 def test_level_zero_capacity_impossible_rejects_immediately_even_when_queue_requested():
-    reservation = ProviderReservation("llm", "gpu0", "llm:external", 80, yield_level=YieldLevel.NONE)
+    reservation = ProviderReservation("llm", "gpu0", "llm:external", 80)
     provider = StaticReservationProvider("llm", [reservation])
     broker = ResourceBroker(fake_devices(100), ProviderRegistry([provider]))
     result = run(broker.submit(request("addon:media", "video", 30)))
@@ -185,44 +184,6 @@ def test_waiting_owner_cancel_preserves_active_lease_for_ttl_fail_safe():
     assert canceled == {"requests": 1, "leases": 0}
     assert lease.state == LeaseState.GRANTED
 
-
-def test_yieldable_provider_is_requested_outside_broker_lock_and_waiter_wakes():
-    class YieldingProvider(ResourceProvider):
-        id = "llm"
-
-        def __init__(self):
-            self.loaded = True
-            self.calls = 0
-
-        def reservations(self):
-            if not self.loaded:
-                return []
-            return [ProviderReservation(
-                "llm", "gpu0", "llm:chat", 80, yield_level=YieldLevel.STOP
-            )]
-
-        async def request_yield(self, device_id, level, request=None):
-            self.calls += 1
-            self.loaded = False
-            return True
-
-    async def scenario():
-        provider = YieldingProvider()
-        broker = ResourceBroker(fake_devices(100), ProviderRegistry([provider]))
-        result = await broker.submit(request(
-            "addon:media", "video", 100, mode="exclusive-required"
-        ).model_copy(update={"estimated_runtime_sec": 200}))
-        assert result.state == RequestState.WAITING
-        for _ in range(100):
-            result = await broker.request_status(result.request_id)
-            if result.state == RequestState.GRANTED:
-                break
-            await asyncio.sleep(0.01)
-        return result, provider.calls
-
-    result, calls = run(scenario())
-    assert result.state == RequestState.GRANTED
-    assert calls == 1
 
 
 def test_oom_profile_enforces_cooldown_and_raised_reservation_floor():
