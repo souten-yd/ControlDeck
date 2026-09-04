@@ -27,7 +27,9 @@ class InvalidConfiguration(ProviderError):
 _LLAMA_CONFIG_KEYS = {
     "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "kv_unified", "flash_attn",
     "n_predict", "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
-    "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe", "n_cpu_moe",
+    "threads_batch", "mmap", "mlock", "load_mode", "spec_type", "draft_max", "draft_min", "draft_p_min",
+    "spec_draft_ngl", "spec_draft_cache_type_k", "spec_draft_cache_type_v",
+    "cpu_moe", "n_cpu_moe",
     "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed", "auto_start",
     "idle_exclude", "think", "think_budget_tokens",
 }

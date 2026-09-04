@@ -55,6 +55,44 @@ BACKEND_LABELS = {
     "cuda": "CUDA（NVIDIA）",
 }
 ALIAS_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+# 投機デコードの種別。正はバイナリの --spec-type（detect_spec_types() が読む）で、
+# ここは保存値の検証に使う既知の上位集合。b10793 で dflash / dspark / eagle3 と
+# ngram の各方式が増えた。未知の値を unit 引数へ通さないためのゲートでもある。
+SPEC_TYPES = (
+    "none",
+    "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark",
+    "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "ngram-cache",
+)
+
+
+def parse_spec_types(value: str) -> list[str]:
+    """--spec-type の値を分解して検証する。カンマ区切りで複数指定できる。
+
+    上流ドキュメントの通り「draft系 + draftless系」を混ぜられる。未知の値は弾く。
+    """
+    parts = [item.strip() for item in str(value or "none").split(",") if item.strip()]
+    if not parts:
+        return ["none"]
+    unknown = [item for item in parts if item not in SPEC_TYPES]
+    if unknown:
+        raise ValueError(f"未知の投機デコード種別です: {', '.join(unknown)}")
+    if "none" in parts and len(parts) > 1:
+        raise ValueError("none は他の種別と同時に指定できません")
+    return parts
+
+
+# 別途ドラフトGGUFが要る方式。MTPはターゲット自身のMTP層を使い、ngram系はモデル不要。
+SPEC_TYPES_NEEDING_DRAFT_MODEL = (
+    "draft-simple", "draft-eagle3", "draft-dflash", "draft-dspark",
+)
+# ドラフト側KVキャッシュ型。空文字はターゲット側と同じ（引数を渡さない）。
+DRAFT_CACHE_TYPES = ("", "f32", "f16", "bf16", "q8_0", "q4_0")
+
+# モデルの読み込み方。b10793 で --mmap / --no-mmap / --mlock / --direct-io が
+# まとめて deprecated になり --load-mode へ集約された（起動時に警告が出る）。
+# 空文字は「指定しない」= バイナリ既定の auto。
+LOAD_MODES = ("", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio")
 MAX_INSTANCES = 8
 MAX_VISION_PROJECTORS = 32
 
@@ -106,10 +144,27 @@ DEFAULT_INSTANCE = {
         "cache_type_v": "f16",
         "threads": -1,
         "threads_batch": -1,
+        # 旧 --mmap / --mlock。--load-mode を持つバイナリでは load_mode が優先される。
         "mmap": True,
         "mlock": False,
+        # --load-mode。空なら従来どおり mmap/mlock から組み立てる（古いバイナリ互換）。
+        "load_mode": "",
         "spec_type": "none",
-        "draft_max": 16,
+        # 先読み幅。大きいほど速いわけではなく、外した分の検証コストが効く。
+        # Qwen3.8-27B + draft-mtp の実測（日本語/コード）では 8 以上で素の生成より
+        # 遅くなり、2〜6 が良く 4 前後が頭打ち。バイナリ既定も 3。
+        "draft_max": 4,
+        # draft-simple / eagle3 / dflash / dspark で使うドラフトGGUF。
+        # MTP と ngram 系は不要（前者はターゲットのMTP層、後者はモデルを使わない）。
+        "spec_draft_model_path": "",
+        # ドラフトをVRAMへ載せる層数。-1 は auto（引数を渡さずバイナリ既定に任せる）。
+        "spec_draft_ngl": -1,
+        # 先読みの下限と、採用に必要な最小確率。0 はバイナリ既定と同じ。
+        "draft_min": 0,
+        "draft_p_min": 0.0,
+        # ドラフト側KVキャッシュ型。空ならターゲットと同じ扱い（引数を渡さない）。
+        "spec_draft_cache_type_k": "",
+        "spec_draft_cache_type_v": "",
         # 思考（reasoning）。auto/off/low/medium/high/xhigh/custom。
         # unit の引数になるため、変更の反映には再起動が要る。
         "think": "auto",
@@ -1044,10 +1099,20 @@ def _unit_content(alias: str | None = None) -> str:
     args += ["--kv-unified" if inst.get("kv_unified", True) else "--no-kv-unified"]
     # 空き容量を観測して受け入れを制御するため常時有効化する（読み取り専用）。
     args += ["--metrics"]
-    if not inst.get("mmap", True):
-        args += ["--no-mmap"]
-    if inst.get("mlock"):
-        args += ["--mlock"]
+    # --load-mode を持つバイナリでは deprecated な --mmap/--no-mmap/--mlock を使わない。
+    # 明示指定が無ければ、既存の mmap/mlock 設定を等価な load-mode へ写す。
+    load_mode = str(inst.get("load_mode") or "")
+    if load_mode and load_mode not in LOAD_MODES:
+        raise RuntimeError(f"未知の読み込みモードです: {load_mode}")
+    if supports_load_mode():
+        resolved = load_mode or _load_mode_from_legacy(inst)
+        if resolved:
+            args += ["--load-mode", resolved]
+    else:
+        if not inst.get("mmap", True):
+            args += ["--no-mmap"]
+        if inst.get("mlock"):
+            args += ["--mlock"]
     role = str(inst.get("role", "llm"))
     if role == "llm" and inst.get("mmproj_path"):
         args += ["--mmproj", str(inst["mmproj_path"])]
@@ -1068,9 +1133,32 @@ def _unit_content(alias: str | None = None) -> str:
         elif think.mode != "auto":
             args += ["--reasoning", "on", "--reasoning-budget", str(thinking.effective_budget(think))]
     spec_type = str(inst.get("spec_type", "none"))
-    if spec_type != "none" and role == "llm":
+    try:
+        spec_parts = parse_spec_types(spec_type)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if spec_parts != ["none"] and role == "llm":
         # --draft-max は削除済み。後継は --spec-draft-n-max
-        args += ["--spec-type", spec_type, "--spec-draft-n-max", str(inst.get("draft_max", 16))]
+        args += ["--spec-type", ",".join(spec_parts),
+                 "--spec-draft-n-max", str(inst.get("draft_max", 16))]
+        draft_model = str(inst.get("spec_draft_model_path") or "")
+        needing = [item for item in spec_parts if item in SPEC_TYPES_NEEDING_DRAFT_MODEL]
+        if needing:
+            if not draft_model:
+                raise RuntimeError(f"{', '.join(needing)} にはドラフトGGUFの指定が必要です")
+            args += ["--spec-draft-model", draft_model]
+            ngl = int(inst.get("spec_draft_ngl", -1))
+            if ngl >= 0:  # -1 は auto。バイナリ既定に任せる
+                args += ["--spec-draft-ngl", str(ngl)]
+        if int(inst.get("draft_min", 0) or 0) > 0:
+            args += ["--spec-draft-n-min", str(int(inst["draft_min"]))]
+        if float(inst.get("draft_p_min", 0.0) or 0.0) > 0:
+            args += ["--spec-draft-p-min", str(float(inst["draft_p_min"]))]
+        for key, flag in (("spec_draft_cache_type_k", "--spec-draft-type-k"),
+                          ("spec_draft_cache_type_v", "--spec-draft-type-v")):
+            value = str(inst.get(key) or "")
+            if value:
+                args += [flag, value]
     if inst.get("cpu_moe"):
         args += ["--cpu-moe"]
     elif int(inst.get("n_cpu_moe", 0)) > 0:
@@ -1524,15 +1612,41 @@ async def idle_unload_loop() -> None:
             logger.exception("llama idle unload loop error")
 
 
-async def detect_options() -> list[str]:
-    """稼働バイナリの --help から利用可能なオプション（--xxx）を抽出する（UI 用）。
+# --help の出力は版ごとに固定。起動のたびに読み直さず、実体のパスで memo 化する。
+_HELP_CACHE: dict[str, str] = {}
 
-    実在しないオプションを UI に出さないため。取得失敗時は空。
-    """
+
+def _help_text_sync() -> str:
+    """--help を同期で読む（unit生成など同期経路用）。実体パスで memo 化する。"""
+    import subprocess
+
+    if not is_installed():
+        return ""
+    key = str(server_path().resolve())
+    if key in _HELP_CACHE:
+        return _HELP_CACHE[key]
+    try:
+        result = subprocess.run(
+            [str(server_path()), "--help"], capture_output=True, timeout=15, check=False,
+            env={**os.environ, "LD_LIBRARY_PATH": str(_lib_dir())},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    text = (result.stdout or b"").decode(errors="replace")
+    _HELP_CACHE.clear()  # 保持するのは現行版だけ
+    _HELP_CACHE[key] = text
+    return text
+
+
+async def _help_text() -> str:
+    """稼働バイナリの --help を返す（取得失敗時は空）。"""
     import asyncio
 
     if not is_installed():
-        return []
+        return ""
+    key = str(server_path().resolve())
+    if key in _HELP_CACHE:
+        return _HELP_CACHE[key]
     try:
         env = {**os.environ, "LD_LIBRARY_PATH": str(_lib_dir())}
         proc = await asyncio.create_subprocess_exec(
@@ -1540,10 +1654,61 @@ async def detect_options() -> list[str]:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env,
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        flags = sorted(set(re.findall(r"(--[a-z][a-z0-9\-]+)", out.decode(errors="replace"))))
-        return flags
     except Exception:
-        return []
+        return ""
+    text = out.decode(errors="replace")
+    _HELP_CACHE.clear()  # 版が変わったら捨てる（保持するのは現行版だけ）
+    _HELP_CACHE[key] = text
+    return text
+
+
+async def detect_options() -> list[str]:
+    """稼働バイナリの --help から利用可能なオプション（--xxx）を抽出する（UI 用）。
+
+    実在しないオプションを UI に出さないため。取得失敗時は空。
+    """
+    text = await _help_text()
+    return sorted(set(re.findall(r"(--[a-z][a-z0-9\-]+)", text))) if text else []
+
+
+def _load_mode_from_legacy(instance: dict) -> str:
+    """旧 mmap/mlock 設定を --load-mode の値へ写す。既定どおりなら空（指定しない）。"""
+    mmap_on = bool(instance.get("mmap", True))
+    mlock_on = bool(instance.get("mlock", False))
+    if mmap_on and mlock_on:
+        return "mmap+mlock"
+    if mlock_on:
+        return "mlock"
+    if not mmap_on:
+        return "none"
+    return ""  # mmap のみ = バイナリ既定の auto と同じ
+
+
+def supports_load_mode() -> bool:
+    """稼働バイナリが --load-mode を持つか。
+
+    unit 生成（同期）から呼ぶため、実体パスで memo 化した --help を同期で読む。
+    版ごとに1回だけプロセスを起こす。読めなければ「持たない」に倒し、
+    従来の --mmap / --mlock を使う（古いバイナリでも起動できる側へ倒す）。
+    """
+    return "--load-mode" in _help_text_sync()
+
+
+async def detect_spec_types() -> list[str]:
+    """稼働バイナリが受け付ける --spec-type の値を返す。
+
+    種別は版ごとに増える（b10793 で dflash / dspark / eagle3 等が追加された）。
+    UI へはバイナリが実際に持つものだけを出し、こちらのハードコードで古くならない
+    ようにする。読めなければ既知の上位集合へ落とす。
+    """
+    flags_text = await _help_text()
+    if not flags_text:
+        return list(SPEC_TYPES)
+    match = re.search(r"--spec-type\s+([a-z0-9,\-]+)", flags_text)
+    if not match:
+        return list(SPEC_TYPES)
+    found = [value for value in match.group(1).split(",") if value in SPEC_TYPES]
+    return found or list(SPEC_TYPES)
 
 
 # ---- 空き容量（KVプール）の観測と受け入れ制御 ----

@@ -1,3 +1,4 @@
+import itertools
 """llama.cpp ランタイム管理のテスト（DL/GPU 不要のロジック部分）。"""
 
 
@@ -469,3 +470,183 @@ def test_delete_instance_keeps_selection_when_other_model_removed(monkeypatch, t
     llama.select_instance("keep")
     llama.delete_instance("drop")
     assert llama.get_config()["selected_alias"] == "keep"
+
+
+_SPEC_INSTANCE_SEQ = itertools.count()
+
+
+def _spec_instance(tmp_path, monkeypatch, patch):
+    """unit引数の確認用に、最小のinstanceを組んで ExecStart を返す。
+
+    呼ぶたびに別aliasを使う。同じaliasだと save_instance がマージするので、
+    直前の呼び出しで指定した値が次の確認へ漏れる。
+    """
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "llama-runtime.json")
+    monkeypatch.setattr(llama, "server_path", lambda: tmp_path / "llama-server")
+    monkeypatch.setattr(llama, "_ensure_port_free_for_other_runtimes", lambda _port: None)
+    alias = f"m{next(_SPEC_INSTANCE_SEQ)}"
+    llama.save_instance(alias, {"model_path": "/m/target.gguf", "alias": alias, **patch})
+    return next(line for line in llama._unit_content(alias).splitlines()
+                if line.startswith("ExecStart="))
+
+
+def test_new_spec_types_are_accepted(tmp_path, monkeypatch):
+    """b10793 で dflash / dspark / eagle3 と ngram 各方式が増えた。"""
+    from app.models_mgmt import llama
+
+    for value in ("draft-dflash", "draft-dspark", "draft-eagle3",
+                  "ngram-mod", "ngram-map-k", "ngram-map-k4v", "ngram-cache"):
+        assert value in llama.SPEC_TYPES
+
+
+def test_draft_model_is_passed_for_types_that_need_one(tmp_path, monkeypatch):
+    exec_start = _spec_instance(tmp_path, monkeypatch, {
+        "spec_type": "draft-dflash", "spec_draft_model_path": "/m/draft.gguf",
+        "draft_max": 8, "spec_draft_ngl": 99,
+    })
+    assert '"--spec-type" "draft-dflash"' in exec_start
+    assert '"--spec-draft-n-max" "8"' in exec_start
+    assert '"--spec-draft-model" "/m/draft.gguf"' in exec_start
+    assert '"--spec-draft-ngl" "99"' in exec_start
+
+
+def test_draft_ngl_auto_is_left_to_the_binary(tmp_path, monkeypatch):
+    exec_start = _spec_instance(tmp_path, monkeypatch, {
+        "spec_type": "draft-dflash", "spec_draft_model_path": "/m/draft.gguf",
+    })
+    # -1 は auto。バイナリ既定に任せるので引数を渡さない。
+    assert '"--spec-draft-ngl"' not in exec_start
+
+
+def test_missing_draft_model_fails_with_a_clear_message(tmp_path, monkeypatch):
+    import pytest
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _spec_instance(tmp_path, monkeypatch, {"spec_type": "draft-eagle3"})
+    assert "ドラフトGGUF" in str(excinfo.value)
+
+
+def test_ngram_and_mtp_need_no_draft_model(tmp_path, monkeypatch):
+    for value in ("ngram-mod", "draft-mtp"):
+        exec_start = _spec_instance(tmp_path, monkeypatch, {"spec_type": value})
+        assert f'"--spec-type" "{value}"' in exec_start
+        assert '"--spec-draft-model"' not in exec_start
+
+
+def test_acceptance_thresholds_are_only_passed_when_set(tmp_path, monkeypatch):
+    exec_start = _spec_instance(tmp_path, monkeypatch, {"spec_type": "ngram-mod"})
+    assert '"--spec-draft-n-min"' not in exec_start and '"--spec-draft-p-min"' not in exec_start
+    exec_start = _spec_instance(tmp_path, monkeypatch, {
+        "spec_type": "ngram-mod", "draft_min": 2, "draft_p_min": 0.4,
+    })
+    assert '"--spec-draft-n-min" "2"' in exec_start
+    assert '"--spec-draft-p-min" "0.4"' in exec_start
+
+
+def test_unknown_spec_type_never_reaches_the_unit(tmp_path, monkeypatch):
+    import pytest
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _spec_instance(tmp_path, monkeypatch, {"spec_type": "draft-bogus"})
+    assert "投機デコード種別" in str(excinfo.value)
+
+
+def test_draft_cache_types_follow_the_target_when_empty(tmp_path, monkeypatch):
+    exec_start = _spec_instance(tmp_path, monkeypatch, {
+        "spec_type": "draft-dflash", "spec_draft_model_path": "/m/draft.gguf",
+    })
+    assert '"--spec-draft-type-k"' not in exec_start
+    exec_start = _spec_instance(tmp_path, monkeypatch, {
+        "spec_type": "draft-dflash", "spec_draft_model_path": "/m/draft.gguf",
+        "spec_draft_cache_type_k": "q8_0", "spec_draft_cache_type_v": "q8_0",
+    })
+    assert '"--spec-draft-type-k" "q8_0"' in exec_start
+    assert '"--spec-draft-type-v" "q8_0"' in exec_start
+
+
+def test_spec_types_are_read_from_the_installed_binary(monkeypatch):
+    """種別はバイナリ側で増える。ハードコードで古くならないようにする。"""
+    import asyncio
+
+    from app.models_mgmt import llama
+
+    async def _help():
+        return ("--spec-type none,draft-simple,draft-dflash,ngram-mod\n"
+                "  comma-separated list of types of speculative decoding to use\n")
+
+    monkeypatch.setattr(llama, "_help_text", _help)
+    assert asyncio.run(llama.detect_spec_types()) == [
+        "none", "draft-simple", "draft-dflash", "ngram-mod",
+    ]
+
+    async def _empty():
+        return ""
+
+    # 読めないときは既知の上位集合へ落とす（選択肢が消えて設定できなくならないように）。
+    monkeypatch.setattr(llama, "_help_text", _empty)
+    assert asyncio.run(llama.detect_spec_types()) == list(llama.SPEC_TYPES)
+
+
+def test_spec_type_accepts_a_comma_separated_list():
+    """--spec-type はカンマ区切りで複数取れる（draft系 + draftless系の併用）。"""
+    import pytest
+
+    from app.models_mgmt import llama
+
+    assert llama.parse_spec_types("draft-mtp,ngram-mod") == ["draft-mtp", "ngram-mod"]
+    assert llama.parse_spec_types(" draft-mtp , ngram-mod ") == ["draft-mtp", "ngram-mod"]
+    assert llama.parse_spec_types("") == ["none"]
+    with pytest.raises(ValueError):
+        llama.parse_spec_types("none,ngram-mod")
+    with pytest.raises(ValueError):
+        llama.parse_spec_types("draft-mtp,bogus")
+
+
+def test_combined_spec_types_reach_the_unit(tmp_path, monkeypatch):
+    exec_start = _spec_instance(tmp_path, monkeypatch, {"spec_type": "draft-mtp,ngram-mod"})
+    assert '"--spec-type" "draft-mtp,ngram-mod"' in exec_start
+
+
+def test_load_mode_replaces_the_deprecated_mmap_flags(tmp_path, monkeypatch):
+    """b10793 で --mmap / --no-mmap / --mlock は deprecated。--load-mode へ寄せる。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "supports_load_mode", lambda: True)
+    exec_start = _spec_instance(tmp_path, monkeypatch, {"load_mode": "dio"})
+    assert '"--load-mode" "dio"' in exec_start
+    assert '"--no-mmap"' not in exec_start and '"--mlock"' not in exec_start
+
+
+def test_legacy_mmap_settings_map_onto_load_mode(tmp_path, monkeypatch):
+    """既存instanceの mmap/mlock を、等価な load-mode へ写して deprecated を避ける。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "supports_load_mode", lambda: True)
+    assert '"--load-mode" "none"' in _spec_instance(tmp_path, monkeypatch, {"mmap": False})
+    assert '"--load-mode" "mlock"' in _spec_instance(
+        tmp_path, monkeypatch, {"mmap": False, "mlock": True})
+    assert '"--load-mode" "mmap+mlock"' in _spec_instance(
+        tmp_path, monkeypatch, {"mmap": True, "mlock": True})
+    # 既定（mmap のみ）は auto と同じなので何も渡さない。
+    assert '"--load-mode"' not in _spec_instance(tmp_path, monkeypatch, {"mmap": True})
+
+
+def test_old_binaries_keep_using_the_legacy_flags(tmp_path, monkeypatch):
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "supports_load_mode", lambda: False)
+    exec_start = _spec_instance(tmp_path, monkeypatch, {"mmap": False, "mlock": True})
+    assert '"--no-mmap"' in exec_start and '"--mlock"' in exec_start
+    assert '"--load-mode"' not in exec_start
+
+
+def test_unknown_load_mode_is_rejected(tmp_path, monkeypatch):
+    import pytest
+
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "supports_load_mode", lambda: True)
+    with pytest.raises(RuntimeError):
+        _spec_instance(tmp_path, monkeypatch, {"load_mode": "bogus"})
