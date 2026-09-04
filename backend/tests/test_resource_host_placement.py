@@ -148,3 +148,49 @@ def test_a_ram_figure_without_asking_for_ram_is_refused():
 
     with pytest.raises(ValidationError):
         _request(preferred_devices=[], host_bytes=17 * GB)
+
+
+def test_ram_is_not_lent_to_the_last_byte():
+    """OSと他プロセスのための余白を残す。
+
+    VRAMは物理的に上限で頭打ちになるが、RAMはswapがあるぶん「入ったことになって
+    全体が遅くなる」という壊れ方をする。実測（2026-09-05）: total 30.4GiB /
+    available 18.3GiB で既に swap を 4.6GB 使っており、llama-server はVRAMとは別に
+    ホスト側で 6.9GB を持っていた。ここを使い切る判断をさせない。
+    """
+    from app.resources import devices as device_module
+
+    values = device_module.host_device()
+
+    assert values
+    host = values[0]
+    lendable = host.total_bytes - host.observed_used_bytes
+    assert host.total_bytes > 0
+    # total は偽らない。余白は「使用中」として数える。
+    assert lendable <= host.total_bytes - device_module.HOST_RESERVE_BYTES
+
+
+def test_a_machine_with_no_spare_ram_lends_nothing():
+    """余白を割り込んだら貸さない。負の空きを作らない。"""
+    from app.resources import devices as device_module
+
+    class Memory:
+        total = 8 * GB
+        available = 1 * GB
+
+    original = device_module.host_device.__globals__.get("psutil")
+    import sys
+    import types
+
+    fake = types.ModuleType("psutil")
+    fake.virtual_memory = lambda: Memory()
+    sys.modules["psutil"] = fake
+    try:
+        host = device_module.host_device()[0]
+    finally:
+        if original is not None:
+            sys.modules["psutil"] = original
+        else:
+            sys.modules.pop("psutil", None)
+
+    assert host.total_bytes - host.observed_used_bytes == 0

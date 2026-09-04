@@ -149,12 +149,24 @@ def observed_system_devices() -> DeviceCollection:
     ])
 
 
+# RAMを最後まで貸し出さない。OSと他プロセスのための余白である。
+#
+# VRAMは物理的に上限で頭打ちになるが、RAMはswapがあるぶん「入ったことになって
+# 全体が遅くなる」という壊れ方をする。余白を置かないと broker は available を
+# 使い切る判断を平気でする。実測（2026-09-05、この機械）: total 30.4GiB /
+# available 18.3GiB で既に swap を 4.6GB 使っており、llama-server はVRAMとは別に
+# ホスト側で 6.9GB を持っていた。ここへ 17.9GiB の匿名確保（画像worker、
+# disable_mmap なので回収できない）を足すと、VRAMを守るために逃がしたはずの
+# LLMをRAM側で潰す。
+HOST_RESERVE_BYTES = 4 * 1024 ** 3
+
+
 def host_device() -> list[ResourceDevice]:
     """システムRAMを配置先として登録する（CPUオフロード可能な処理の受け皿）。
 
     画像生成のような計算律速の処理は、VRAMが空いていなければRAMへ載せた方が、
     LLMのKVを追い出して全体を遅くするより得になる。空き容量は psutil の
-    available をそのまま使う（他プロセスの消費も込みで見える値が正）。
+    available から余白を引いた値を使う（他プロセスの消費も込みで見える値が正）。
     """
     try:
         import psutil
@@ -165,11 +177,13 @@ def host_device() -> list[ResourceDevice]:
     total = int(memory.total)
     if total <= 0:
         return []
+    # 余白は「使用中」として数える。total を偽ると、利用者に見える容量が変わる。
+    lendable = max(0, int(memory.available) - HOST_RESERVE_BYTES)
     return [ResourceDevice(
         id=HOST_DEVICE_ID,
         name="System RAM",
         total_bytes=total,
-        observed_used_bytes=max(0, total - int(memory.available)),
+        observed_used_bytes=max(0, total - lendable),
         kind="host",
     )]
 
