@@ -13,6 +13,7 @@ from app.resources.probes import ProviderRegistry
 from app.resources.providers import ProviderReservation
 from app.resources.scheduler import Candidate, order_candidates
 from app.resources.schema import (
+    HOST_DEVICE_ID,
     BlockingResource,
     ComputeMode,
     LeaseState,
@@ -423,6 +424,12 @@ class ResourceBroker:
             self.telemetry.oom_recommendation(request.residency_key, device_id)
             if request.residency_key else 0
         )
+        # 同じモデルでも置き場所で必要量が違う。vram の見積りは device_map で
+        # 段階的に載せるときのGPU側ピークで、RAM配置の実態とは別物である。
+        # 実測: FLUX.2 Klein 4B は VRAM 31.1GB の申告に対しCPU実行のRSSが16.3GB。
+        # VRAMの数字をRAMに当てると、30GBの機械では host が永久に grant されない。
+        if device_id == HOST_DEVICE_ID and request.host_bytes is not None:
+            return max(request.host_bytes, recommendation)
         return max(request.vram.required_bytes, recommendation)
 
     @staticmethod

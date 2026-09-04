@@ -89,3 +89,62 @@ def test_host_device_is_registered_from_system_ram():
     values = host_device()
     assert values and values[0].id == "host" and values[0].kind == "host"
     assert values[0].total_bytes > 0
+
+
+def test_ram_uses_its_own_figure_not_the_vram_envelope():
+    """同じモデルでも置き場所で必要量が違う。
+
+    vram の見積りは device_map で段階的に載せるときのGPU側ピークで、RAM配置の
+    実態とは別物である。実測: FLUX.2 Klein 4B は VRAM 31.1GB の申告に対し、
+    CPU実行の最大RSSが16.3GB（512x512/4歩、2026-09-04）。VRAMの数字をRAMに
+    当てると、30GBの機械では host が永久に grant されない。
+    """
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 29 * GB,
+              "cold_load_peak_bytes": 30 * GB, "headroom_bytes": GB,
+              "confidence": "measured"},
+        host_bytes=17 * GB,
+    )
+
+    status = _grant(_devices(32 * GB, 30 * GB, host_total=30 * GB), request)
+
+    assert status.state == RequestState.GRANTED
+    assert status.device_id == "host"
+
+
+def test_ram_without_its_own_figure_falls_back_to_the_vram_envelope():
+    """申告が無ければ従来どおり。黙って小さく見積もらない。"""
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 29 * GB,
+              "cold_load_peak_bytes": 30 * GB, "headroom_bytes": GB,
+              "confidence": "measured"},
+    )
+
+    status = _grant(_devices(32 * GB, 30 * GB, host_total=30 * GB), request)
+
+    assert status.state != RequestState.GRANTED
+
+
+def test_vram_placement_ignores_the_ram_figure():
+    """RAM の数字で VRAM を受理しない。小さい方を使うと OOM する。"""
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 29 * GB,
+              "cold_load_peak_bytes": 30 * GB, "headroom_bytes": GB,
+              "confidence": "measured"},
+        host_bytes=17 * GB,
+    )
+
+    status = _grant(_devices(24 * GB, 0, host_total=8 * GB), request)
+
+    # gpu0 は 31GB 要るのに 24GB しかない。host は 8GB で 17GB に足りない。
+    # RAM の 17GB を VRAM に当ててしまうと、ここが gpu0 で通ってしまう。
+    assert status.state != RequestState.GRANTED
+
+
+def test_a_ram_figure_without_asking_for_ram_is_refused():
+    """使われない申告を黙って受け取らない。効かないことに気づけなくなる。"""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _request(preferred_devices=[], host_bytes=17 * GB)

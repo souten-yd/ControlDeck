@@ -7,7 +7,7 @@ from math import isfinite
 from dataclasses import dataclass, field, replace
 from typing import Iterable
 
-from app.resources.schema import DeviceSnapshot
+from app.resources.schema import HOST_DEVICE_ID, DeviceSnapshot
 
 logger = logging.getLogger("control_deck.resources.devices")
 
@@ -147,9 +147,6 @@ def observed_system_devices() -> DeviceCollection:
         ),
         *host_device(),
     ])
-
-
-HOST_DEVICE_ID = "host"
 
 
 def host_device() -> list[ResourceDevice]:
