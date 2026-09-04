@@ -43,9 +43,27 @@ RAMへ流れてしまうため、`_fit` は `preferred_devices.index()` を第�
 1. CPUオフロードに対応した Add-on は `preferred_devices: ["gpu0", "host"]` を送る
 2. grant の `RequestStatus.device_id` が実際の配置を返す
 3. **`device_id == "host"` を受け取った Add-on は、VRAMを確保せずCPU（RAM）で実行する**
+4. RAM配置のときに要る量を `host_bytes` で申告する
 
 3 を守らない Add-on は host 配置を要求してはならない。要求しなければ従来どおり
 VRAM だけが候補になる。
+
+### 必要量は置き場所ごとに違う（`host_bytes`）
+
+`vram` の見積りは `device_map` で段階的に載せるときのGPU側ピークで、RAM配置の
+実態とは別物である。実測（2026-09-04、FLUX.2 Klein 4B、CPU実行）:
+
+```text
+申告 vram.required_bytes              31.1 GB
+CPU実行の最大RSS  512x512  / 4歩      16.3 GB   generation 40.3 秒
+                 1024x1024 / 4歩      18.8 GB   generation 113.4 秒
+```
+
+VRAMの数字をそのままRAMに当てると、RAM 30GB の機械では `host` が**永久に**
+grant されない。`_required_bytes` は host device のときだけ `host_bytes` を使う。
+省略した要求は従来どおり `vram` の値で判定する（黙って小さく見積もらない）。
+`host` を `preferred_devices` に挙げていない要求の `host_bytes` は受け取らない
+（使われない申告を通すと、効かないことに気づけない）。
 
 ### 廃止したもの
 

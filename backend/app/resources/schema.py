@@ -12,6 +12,10 @@ class VramConfidence(StrEnum):
     LOW = "low"
 
 
+# システムRAMを表す device の id。GPU以外の配置はこれ 1 つである。
+HOST_DEVICE_ID = "host"
+
+
 class ComputeMode(StrEnum):
     EXCLUSIVE_REQUIRED = "exclusive-required"
     EXCLUSIVE_PREFERRED = "exclusive-preferred"
@@ -78,6 +82,12 @@ class ResourceRequest(BaseModel):
     preferred_devices: list[str] = Field(default_factory=list, max_length=16)
     forbidden_devices: list[str] = Field(default_factory=list, max_length=16)
     vram: VramRequest
+    # host（システムRAM）に載せるときに要る量。同じモデルでも置き場所で必要量が
+    # 違う。vram の見積りは device_map で段階的に載せるときのGPU側ピークで、RAM
+    # 配置の実態とは別物である。実測: FLUX.2 Klein 4B は VRAM 31.1GB の申告に
+    # 対しCPU実行のRSSが16.3GB。VRAMの数字をRAMに当てると、30GBの機械では
+    # host が永久に grant されない。省略時は vram の値をそのまま使う。
+    host_bytes: int | None = Field(default=None, ge=0, le=2**50)
     compute_mode: ComputeMode
     priority: int = Field(default=0, ge=-100, le=100)
     workload_class: WorkloadClass = Field(default=WorkloadClass.BACKGROUND, alias="class")
@@ -106,6 +116,14 @@ class ResourceRequest(BaseModel):
             raise ValueError("固定deviceとpreferred/forbiddenは同時指定できません")
         if set(self.preferred_devices) & set(self.forbidden_devices):
             raise ValueError("同じdeviceをpreferredとforbiddenに指定できません")
+        return self
+
+    @model_validator(mode="after")
+    def host_bytes_needs_host(self) -> "ResourceRequest":
+        # host を候補にしていない要求の host_bytes は使われない。黙って無視すると
+        # 「申告したのに効かない」に気づけないので、受け取らない。
+        if self.host_bytes is not None and HOST_DEVICE_ID not in self.preferred_devices:
+            raise ValueError("host_bytesはpreferred_devicesにhostを挙げた要求にだけ指定できます")
         return self
 
 
