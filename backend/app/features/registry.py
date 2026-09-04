@@ -44,6 +44,24 @@ FEATURES: dict[str, dict] = {
         "route_gated": False,
         "summary": "App Studioで、配布先にPython不要の単一バイナリを作れるようにする",
     },
+    # GPU推論ランタイム。実体の取得・展開は models_mgmt 側が持ち、ここからは
+    # 初期セットアップ（導入）と最新リリースへの更新だけを扱う。
+    "llama-cpp": {
+        "name": "llama.cpp ランタイム（Vulkan / ROCm 10）",
+        "kind": "gpu-runtime",
+        "executable": "llama-server",
+        "route_gated": False,
+        "repo": "souten-yd/llama-builder",
+        "summary": "GGUFモデルを動かすローカルLLMランタイム。ROCmビルドはROCm 10系へ統一",
+    },
+    "lucebox": {
+        "name": "Lucebox（DFlash投機デコード / R9700）",
+        "kind": "gpu-runtime",
+        "executable": "dflash_server",
+        "route_gated": False,
+        "repo": "souten-yd/AMDLucebox",
+        "summary": "Radeon AI PRO R9700向けの高速推論ランタイム。ROCm 10ビルドを既定にする",
+    },
 }
 
 
@@ -108,6 +126,11 @@ def _feature_root(feature_id: str) -> Path:
 def _managed_executable(feature_id: str) -> Path:
     spec = FEATURES[_known(feature_id)]
     root = _feature_root(feature_id)
+    if spec["kind"] == "gpu-runtime":
+        # 実体は data/runtimes/ 配下。features root は使わない。
+        from app.models_mgmt import llama, lucebox
+
+        return llama.server_path() if feature_id == "llama-cpp" else lucebox.server_path()
     if spec["kind"] == "release-bundle":
         from app.features import release_bundle
 
@@ -120,6 +143,10 @@ def _managed_executable(feature_id: str) -> Path:
 
 def executable(feature_id: str) -> Path | None:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "gpu-runtime":
+        # PATH 上の同名バイナリを拾わない。ControlDeck が導入した実体だけを扱う。
+        managed = _managed_executable(feature_id)
+        return managed.resolve() if managed.is_file() and os.access(managed, os.X_OK) else None
     if spec["kind"] == "release-bundle":
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() and os.access(managed, os.X_OK) else None
@@ -136,8 +163,40 @@ def executable(feature_id: str) -> Path | None:
     return Path(external).resolve() if external else None
 
 
+def _gpu_runtime_status(feature_id: str, spec: dict) -> dict:
+    """GPUランタイムはバイナリの --version ではなく、ランタイム側の状態を正とする。"""
+    from app.features import gpu_runtime
+
+    detail = gpu_runtime.status(feature_id)
+    binary = executable(feature_id)
+    return {
+        "id": feature_id,
+        "name": spec["name"],
+        "summary": spec["summary"],
+        "kind": spec["kind"],
+        "route_gated": spec["route_gated"],
+        "requires": spec.get("requires", ""),
+        "preview": bool(spec.get("preview", False)),
+        "requires_installed": True,
+        "repo": str(spec.get("repo", "")),
+        "available": bool(detail["available"]),
+        "installed": bool(detail["installed"]),
+        "managed": bool(detail["managed"]),
+        # route_gated ではないので、導入＝利用可能。有効化の一手間を求めない。
+        "enabled": bool(detail["installed"] and detail["healthy"]),
+        "requested_enabled": True,
+        "version": detail["version"],
+        "health": "healthy" if detail["healthy"] else ("error" if detail["installed"] else "not-installed"),
+        "error": detail["error"],
+        "executable": str(binary) if binary else "",
+        "runtime": detail["detail"],
+    }
+
+
 def status(feature_id: str) -> dict:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "gpu-runtime":
+        return _gpu_runtime_status(feature_id, spec)
     state = _read_state().get(feature_id, {})
     binary = executable(feature_id)
     managed = _managed_executable(feature_id).is_file()
@@ -265,6 +324,9 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
 
 def install(feature_id: str) -> dict:
     name = FEATURES[_known(feature_id)]["name"]
+    if FEATURES[feature_id]["kind"] == "gpu-runtime":
+        # 取得がネットワークI/Oのため、routerがasyncのまま gpu_runtime を直接呼ぶ。
+        raise FeatureError(f"{name}の導入は非同期ジョブから実行してください")
     required = FEATURES[feature_id].get("requires")
     if required and not status(required)["installed"]:
         raise FeatureError(f"先に{FEATURES[required]['name']}を導入してください")
@@ -306,6 +368,8 @@ def _autoconfigure(feature_id: str) -> None:
 def update(feature_id: str) -> dict:
     """管理導入のランタイムを最新版へ更新する。外部PATH上の実体には触れない。"""
     name = FEATURES[_known(feature_id)]["name"]
+    if FEATURES[feature_id]["kind"] == "gpu-runtime":
+        raise FeatureError(f"{name}の更新は非同期ジョブから実行してください")
     if not _managed_executable(feature_id).is_file():
         raise FeatureError(f"Control Deckが導入した{name}のみ更新できます")
     previous = status(feature_id)["version"]
@@ -325,6 +389,9 @@ def update(feature_id: str) -> dict:
 
 def enable(feature_id: str) -> dict:
     current = status(feature_id)
+    if FEATURES[feature_id]["kind"] == "gpu-runtime":
+        # route_gated ではないので導入＝有効。切り替えるべき状態を持たない。
+        return current
     if not current["installed"] or current["health"] != "healthy":
         raise FeatureError(f"正常な{FEATURES[feature_id]['name']}を先に導入してください")
     state = _read_state()
@@ -348,6 +415,8 @@ def enable(feature_id: str) -> dict:
 
 def disable(feature_id: str) -> dict:
     _known(feature_id)
+    if FEATURES[feature_id]["kind"] == "gpu-runtime":
+        return status(feature_id)
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
     _write_state(state)
@@ -363,6 +432,14 @@ def disable(feature_id: str) -> dict:
 
 def uninstall(feature_id: str) -> dict:
     disable(feature_id)
+    if FEATURES[_known(feature_id)]["kind"] == "gpu-runtime":
+        from app.features import gpu_runtime
+
+        try:
+            gpu_runtime.uninstall(feature_id)
+        except gpu_runtime.GpuRuntimeError as exc:
+            raise FeatureError(str(exc)) from exc
+        return status(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "release-bundle":
         from app.features import release_bundle
 

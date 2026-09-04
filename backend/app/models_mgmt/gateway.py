@@ -1,8 +1,12 @@
 """OpenAI互換ゲートウェイ。
 
-OpenCode のように ControlDeck を経由せず llama.cpp を直接叩くクライアントにも、
+OpenCode のようにローカルランタイムを直接叩くクライアントにも、GPUリースと
 KVの受け入れ制御（models_mgmt/llama.py の endpoint_capacity / await_capacity）を
 効かせるための薄いリバースプロキシ。
+
+転送先は llama.cpp と Lucebox の両方。クライアントから見ると1つのアドレスに
+両ランタイムのモデルが並び、モデル名（alias）だけで切り替わる。どちらへ流れても
+GPUリース確保 → オンデマンド起動 → 受け入れ制御、という同じ手順を通る。
 
 共有KV(kv_unified)は総量が尽きると待たずに 500 を返し、実行中の他リクエストごと
 失敗させる。slot不足は llama.cpp が queue に逃がすが、KV不足は逃がしてくれない。
@@ -105,16 +109,16 @@ def is_gateway_url(url: str) -> bool:
     return API_PATH in str(url or "")
 
 
-def resolve_endpoint(model: str) -> tuple[str, int]:
-    """モデル名(alias)から転送先を決める。
+def resolve_instance(model: str) -> dict:
+    """モデル名(alias)から転送先インスタンスを決める。llama.cpp / Lucebox を区別しない。
 
     AUTO_MODEL・未指定・未登録のときは起動中のLLMを優先し、いなければ登録順（=優先度順）
     の先頭を採る。停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
     エンドポイントまでVRAM不足で巻き込むため、起動済みがあればそれを使う。
     """
-    from app.models_mgmt import llama
+    from app.models_mgmt import local_llm
 
-    instances = llama.list_instances()
+    instances = local_llm.list_instances()
     if model == AUTO_MODEL:
         model = ""
     match = next((i for i in instances if str(i.get("alias")) == model), None)
@@ -123,10 +127,15 @@ def resolve_endpoint(model: str) -> tuple[str, int]:
         match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
     if match is None:
         raise HTTPException(status_code=404, detail="転送先のモデルが登録されていません")
-    port = int(match.get("port") or 0)
-    if not port:
+    if not int(match.get("port") or 0):
         raise HTTPException(status_code=503, detail="転送先ポートが解決できません")
-    return str(match["alias"]), port
+    return match
+
+
+def resolve_endpoint(model: str) -> tuple[str, int]:
+    """モデル名(alias)から転送先の (alias, port) を返す。"""
+    match = resolve_instance(model)
+    return str(match["alias"]), int(match["port"])
 
 
 def _target_endpoint(model: str) -> tuple[str, int]:
@@ -150,9 +159,46 @@ def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
 # クライアント側のtimeoutより長く待たないよう、既定は控えめにする。
 CAPACITY_TIMEOUT_SECONDS = 300
 
+# ControlDeck が生成する OpenCode の runtime config だけが付ける識別ヘッダ。
+# 汎用の User-Agent では OpenCode と利用者の自作クライアントを区別できない。
+CLIENT_HEADER = "x-control-deck-client"
+OPENCODE_CLIENT = "opencode"
 
-async def _admit(port: int, payload: dict[str, Any]) -> dict:
-    """KVに空きが出るまで待つ。空くまで待って必ず通す方針。"""
+# alias -> そのモデルを起動させたクライアントが選んだサンプリング方針。
+# 起動時に決めて常駐中は保つ。プロセス内メモリなので、ControlDeck再起動や
+# ゲートウェイ外での起動では未登録になり、モデル個別設定へ戻る。
+_residency_greedy: dict[str, bool] = {}
+
+
+def _greedy_sampling_for(instance: dict, request: Request) -> bool:
+    """このリクエストで temperature を 0 に固定するか。
+
+    Lucebox の投機デコードは厳密グリーディ検証のみで、temperature>0 では効かない。
+    OpenCode はコード生成が主用途で投機デコードが 3〜5 倍効くため、OpenCode が
+    そのモデルを起こす場合はモデル個別設定より優先して投機ONで常駐させる。
+    既に誰かが使っている常駐へ相乗りするときは、その常駐を始めたときの方針を保つ
+    （生成の性質が途中で変わらないようにする）。方針の記録が無ければ個別設定に従う。
+    """
+    from app.models_mgmt import local_llm
+
+    alias = str(instance["alias"])
+    # temperature を潰すのは Lucebox の DFlash2 制約への対処であって、一般的な高速化策では
+    # ない。llama.cpp には同じ制約が無いので、OpenCode 相手でもサンプリングへ触らない。
+    if str(instance.get("runtime") or "") != local_llm.LUCEBOX:
+        return False
+    if instance.get("loaded"):
+        return _residency_greedy.get(alias, local_llm.pins_greedy_sampling(alias))
+    started_by_opencode = request.headers.get(CLIENT_HEADER, "").lower() == OPENCODE_CLIENT
+    greedy = started_by_opencode or local_llm.pins_greedy_sampling(alias)
+    _residency_greedy[alias] = greedy
+    return greedy
+
+
+async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
+    """KVに空きが出るまで待つ。空くまで待って必ず通す方針。
+
+    共有KVを持たない Lucebox では待つ対象が無いので即座に通る（local_llm 側で判定）。
+    """
     from app.models_mgmt.resource_provider import provider
 
     messages = payload.get("messages") or []
@@ -160,7 +206,7 @@ async def _admit(port: int, payload: dict[str, Any]) -> dict:
     # 見積りは概算。厳密さより「混雑時に待つ」ことが目的。
     needed = prompt_chars // 4 + int(payload.get("max_tokens") or 0)
     return await provider().await_capacity(
-        port, needed, timeout_seconds=CAPACITY_TIMEOUT_SECONDS
+        alias, port, needed, timeout_seconds=CAPACITY_TIMEOUT_SECONDS
     )
 
 
@@ -251,49 +297,82 @@ def _record_gateway_oom(alias: str, lease_id: str, response: httpx.Response) -> 
         or re.search(r"\boom\b", detail) is not None
     ):
         return
-    from app.models_mgmt import llama
+    from app.models_mgmt import local_llm
     from app.resources.broker import broker
 
     lease = broker.leases.get(lease_id)
     device = broker.devices.get(lease.device_id) if lease else None
     if lease:
         broker.telemetry.record_oom(
-            llama.residency_key(llama.get_instance(alias)),
+            local_llm.residency_key_for_alias(alias),
             lease.device_id,
             observed_peak_bytes=device.observed_used_bytes if device else lease.reserved_bytes,
             requested_bytes=lease.reserved_bytes,
         )
 
 
+# 転送先のエラー本文をクライアントへ渡す上限。llama.cpp は失敗した文法全体を
+# 返すことがあり、そのまま流すと数百KBになる。
+UPSTREAM_ERROR_CHARS = 2000
+
+
+def _upstream_error(alias: str, body: bytes) -> dict:
+    """転送先の失敗を OpenAI 互換のエラー形へ整える。
+
+    ここはループバックのllama.cppであり資格情報を含まないため、原因究明に必要な
+    本文をそのまま渡す。握り潰すとクライアント側は「空の応答」しか見えない。
+    """
+    text = body.decode("utf-8", errors="replace").strip()
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+        detail = parsed["error"]
+        message = str(detail.get("message") or "")[:UPSTREAM_ERROR_CHARS]
+        return {"error": {**detail, "message": f"{alias}: {message}"}}
+    return {"error": {"type": "upstream_error", "code": "upstream_error",
+                      "message": f"{alias}: {text[:UPSTREAM_ERROR_CHARS]}"}}
+
+
 @router.get("/v1/models")
 async def gateway_models(request: Request):
-    """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。"""
-    _authorize(request)
-    from app.models_mgmt import llama
+    """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。
 
-    llms = [i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
+    llama.cpp と Lucebox のモデルが1つの一覧に並ぶ。どちらのランタイムかは
+    OpenAI 仕様には無い項目なので、互換性を壊さない追加フィールドで示す。
+    """
+    _authorize(request)
+    from app.models_mgmt import local_llm
+
+    llms = local_llm.llm_instances()
     # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、起動中のモデルへ流れる。
-    data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck"}] if llms else []
-    data += [{"id": str(i["alias"]), "object": "model", "owned_by": "control-deck"} for i in llms]
+    data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck",
+             "runtime": "auto"}] if llms else []
+    data += [{"id": str(i["alias"]), "object": "model", "owned_by": "control-deck",
+              "runtime": str(i.get("runtime") or "")} for i in llms]
     return {"object": "list", "data": data}
 
 
 @router.post("/v1/chat/completions")
 async def gateway_chat(request: Request):
-    """受け入れ制御を挟んで llama.cpp へ転送する。stream もそのまま中継する。"""
+    """受け入れ制御を挟んでローカルランタイムへ転送する。stream もそのまま中継する。"""
     _authorize(request)
-    from app.models_mgmt import llama
+    from app.models_mgmt import local_llm
 
     try:
         payload = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSONボディが不正です") from None
-    alias, port = _target_endpoint(str(payload.get("model") or ""))
+    instance = resolve_instance(str(payload.get("model") or ""))
+    alias, port = str(instance["alias"]), int(instance["port"])
+    # 起動前に方針を決める（ensure_ready の後では「起動していたか」が分からない）。
+    greedy_sampling = _greedy_sampling_for(instance, request)
     adapter, lease_id, renew = await _acquire_gateway_lease(alias, request)
     try:
         # 停止中ならlease確保後にオンデマンド起動する。
         ready = await _wait_for_client(
-            asyncio.create_task(llama.ensure_ready(alias, timeout_seconds=180)), request
+            asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=420)), request
         )
         if not ready:
             raise HTTPException(
@@ -301,11 +380,15 @@ async def gateway_chat(request: Request):
                 detail="モデルの起動に失敗しました",
                 headers={"Retry-After": "5"},
             )
-        await _admit(port, payload)
+        await _admit(alias, port, payload)
     except (Exception, asyncio.CancelledError):
         await _release_gateway_lease(adapter, lease_id, renew)
         raise
     payload["model"] = alias
+    # 外部クライアントは DFlash2 の制約を知らないので、ここで揃える
+    # （内部チャットは provider 側で同じ扱いをする）。
+    if greedy_sampling:
+        payload["temperature"] = 0.0
     target = f"http://127.0.0.1:{port}/v1/chat/completions"
 
     def record_first_token(started_at: float) -> None:
@@ -313,26 +396,51 @@ async def gateway_chat(request: Request):
 
         try:
             resource_broker.telemetry.record_first_token(
-                llama.residency_key(llama.get_instance(alias)),
+                local_llm.residency_key_for_alias(alias),
                 asyncio.get_running_loop().time() - started_at,
             )
         except Exception:  # noqa: BLE001 - telemetry must not affect inference
             return
 
     if payload.get("stream"):
+        # 本文を流し始める前に転送先の応答行を見る。エラーをそのまま 200 の
+        # 空ストリームとして返すと、OpenAI互換クライアントは「中身の無い応答」
+        # として扱い、原因が見えないまま同じ要求を再送し続ける（実際に
+        # llama.cpp の grammar エラーが無限リトライになった）。
+        client = httpx.AsyncClient(timeout=None)
+        try:
+            upstream = await client.send(
+                client.build_request("POST", target, json=payload), stream=True,
+            )
+        except (Exception, asyncio.CancelledError):
+            await client.aclose()
+            await _release_gateway_lease(adapter, lease_id, renew)
+            raise
+        if upstream.status_code >= 400:
+            body = await upstream.aread()
+            await upstream.aclose()
+            await client.aclose()
+            try:
+                _record_gateway_oom(alias, lease_id, upstream)
+            finally:
+                await _release_gateway_lease(adapter, lease_id, renew)
+            return JSONResponse(
+                status_code=upstream.status_code, content=_upstream_error(alias, body),
+            )
+
         async def relay():
             # ストリームはクライアントへそのまま流す。ここで加工しない。
             started_at = asyncio.get_running_loop().time()
             first = True
             try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("POST", target, json=payload) as upstream:
-                        async for chunk in upstream.aiter_bytes():
-                            if first and chunk:
-                                record_first_token(started_at)
-                                first = False
-                            yield chunk
+                async for chunk in upstream.aiter_bytes():
+                    if first and chunk:
+                        record_first_token(started_at)
+                        first = False
+                    yield chunk
             finally:
+                await upstream.aclose()
+                await client.aclose()
                 await _release_gateway_lease(adapter, lease_id, renew)
 
         return StreamingResponse(relay(), media_type="text/event-stream")
@@ -343,6 +451,15 @@ async def gateway_chat(request: Request):
             upstream = await client.post(target, json=payload)
         _record_gateway_oom(alias, lease_id, upstream)
         record_first_token(started_at)
-        return JSONResponse(status_code=upstream.status_code, content=upstream.json())
+        try:
+            content = upstream.json()
+        except ValueError:
+            # 転送先がJSONを返さなかった。握り潰すとクライアントには
+            # 「空の成功」に見えるため、エラーとして明示する。
+            return JSONResponse(
+                status_code=upstream.status_code if upstream.status_code >= 400 else 502,
+                content=_upstream_error(alias, upstream.content),
+            )
+        return JSONResponse(status_code=upstream.status_code, content=content)
     finally:
         await _release_gateway_lease(adapter, lease_id, renew)

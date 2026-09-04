@@ -367,12 +367,68 @@ function AuditSection() {
 
 
 interface AddonState {
-  id: string; name: string; summary: string; kind: "npm" | "pip" | "release-bundle"; route_gated: boolean;
+  id: string; name: string; summary: string;
+  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime"; route_gated: boolean;
   available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string; preview?: boolean;
   /** 依存する別アドオンのid。未導入なら導入ボタンを止めて順序を案内する。 */
   requires?: string; requires_installed?: boolean;
+  /** 配布元リポジトリ。GPUランタイムだけ持つ。 */
+  repo?: string;
+  /** GPUランタイムの構成（バックエンド / ROCmトラック / ホスト環境との整合）。 */
+  runtime?: GpuRuntimeDetail;
+}
+
+interface GpuRuntimeDetail {
+  runtime: "llama.cpp" | "lucebox";
+  warning?: string;
+  /** llama.cpp */
+  active_backend?: string;
+  installed_backends?: string[];
+  selectable_backends?: string[];
+  backend_labels?: Record<string, string>;
+  rocm_series_major?: number;
+  host_rocm_version?: string;
+  /** Lucebox */
+  track?: string;
+  track_label?: string;
+  tracks?: Array<{ id: string; label: string; rocm_major: number; summary: string }>;
+  recommended_track?: string;
+  default_track?: string;
+  upstream?: string;
+  gpu?: { available: boolean; gfx: string; reason: string; rocm_version: string };
+}
+
+interface ReleaseStatus {
+  feature_id: string;
+  installed_tag: string;
+  latest_tag: string;
+  update_available: boolean;
+  published_at: string;
+  error: string;
+}
+
+/** GPUランタイムの更新有無。GitHubを見るので一覧とは別クエリ・低頻度にする。 */
+function useReleaseStatus(addons: AddonState[] | undefined) {
+  const runtimes = (addons ?? []).filter((item) => item.kind === "gpu-runtime" && item.installed);
+  return useQuery({
+    queryKey: ["feature-release-status", runtimes.map((item) => item.id).join(",")],
+    queryFn: async () => {
+      const entries = await Promise.all(runtimes.map(async (item) => {
+        try {
+          return [item.id, await api<ReleaseStatus>(`/features/${item.id}/release-status`)] as const;
+        } catch {
+          return [item.id, null] as const;
+        }
+      }));
+      return Object.fromEntries(entries) as Record<string, ReleaseStatus | null>;
+    },
+    enabled: runtimes.length > 0,
+    // GitHub の未認証レート上限に配慮する。導入・更新の直後は手動で無効化する。
+    refetchInterval: 15 * 60_000,
+    staleTime: 5 * 60_000,
+  });
 }
 
 interface PluginState {
@@ -517,6 +573,71 @@ function ExtensionsSection() {
   );
 }
 
+/** GPUランタイムの構成表示。何が入っていて、ホスト環境と噛み合っているかを1か所で見せる。 */
+function GpuRuntimeDetails({ addon, release, track, onTrackChange }: {
+  addon: AddonState;
+  release: ReleaseStatus | null;
+  track: string;
+  onTrackChange: (value: string) => void;
+}) {
+  const detail = addon.runtime;
+  if (!detail) return null;
+  const chip = "rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
+  return (
+    <div className="mt-1.5 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {detail.runtime === "llama.cpp" ? (
+          <>
+            {(detail.installed_backends ?? []).map((backend) => (
+              <span key={backend} className={backend === detail.active_backend
+                ? "rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
+                : chip}>
+                {detail.backend_labels?.[backend] ?? backend}{backend === detail.active_backend ? " · 使用中" : ""}
+              </span>
+            ))}
+            {(detail.installed_backends ?? []).length === 0
+              && (detail.selectable_backends ?? []).map((backend) => (
+                <span key={backend} className={chip}>{detail.backend_labels?.[backend] ?? backend}（未導入）</span>
+              ))}
+          </>
+        ) : (
+          <>
+            <span className={chip}>{detail.track_label ?? detail.track}</span>
+            {detail.gpu?.gfx && <span className={chip}>{detail.gpu.gfx}</span>}
+            {detail.upstream && <span className={`${chip} num`}>upstream {detail.upstream.slice(0, 8)}</span>}
+          </>
+        )}
+        {release?.update_available && (
+          <span className="num rounded bg-accent-100 px-1.5 py-0.5 text-[10px] font-medium text-accent-700 dark:bg-accent-600/20 dark:text-accent-300">
+            更新あり: {release.latest_tag}
+          </span>
+        )}
+      </div>
+      {/* 導入前だけトラックを選ばせる。既定は ROCm 10。 */}
+      {detail.runtime === "lucebox" && !addon.installed && (detail.tracks ?? []).length > 1 && (
+        <label className="flex items-center gap-2 text-[11px] text-zinc-500">
+          ROCmトラック
+          <select value={track} onChange={(event) => onTrackChange(event.target.value)}
+            className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-[11px] dark:border-zinc-700 dark:bg-zinc-900">
+            {(detail.tracks ?? []).map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}{item.id === detail.default_track ? "（既定）" : ""}
+                {item.id === detail.recommended_track && item.id !== detail.default_track ? "（このPC向け）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {detail.warning && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50/60 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          {detail.warning}
+        </p>
+      )}
+      {release?.error && <p className="text-[10px] text-zinc-400">更新確認: {release.error}</p>}
+    </div>
+  );
+}
+
 /** アドオン管理: 導入（npmユーザー空間・sudo不要）/有効化/無効化/アンインストールをワンタップで。 */
 function AddonsSection() {
   const show = useToasts((s) => s.show);
@@ -530,6 +651,9 @@ function AddonsSection() {
     queryFn: () => api<AddonState[]>("/features"),
     refetchInterval: jobId ? false : 15_000,
   });
+  const { data: releases } = useReleaseStatus(addons);
+  // Luceboxの初期トラック。ROCm 10 を既定にし、ホストが7系なら退避先も選べるようにする。
+  const [luceboxTrack, setLuceboxTrack] = useState<string>("rocm10");
   const { data: job } = useQuery({
     queryKey: ["feature-job", jobId],
     queryFn: () => api<{
@@ -548,6 +672,7 @@ function AddonsSection() {
       return;
     }
     qc.invalidateQueries({ queryKey: ["features"] });
+    qc.invalidateQueries({ queryKey: ["feature-release-status"] });
     if (jobKind === "install") {
       show("導入が完了しました。「有効化」で利用を開始できます");
       return;
@@ -586,7 +711,9 @@ function AddonsSection() {
 
   const install = async (addon: AddonState) => {
     try {
-      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: {} });
+      // Luceboxだけ、どのROCmトラックを入れるかを選べる。他は選択肢を送らない。
+      const json = addon.id === "lucebox" ? { track: luceboxTrack } : {};
+      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json });
       setJobKind("install");
       setJobId(r.job_id);
     } catch (e) {
@@ -639,13 +766,22 @@ function AddonsSection() {
                     ` · 先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} の導入が必要です`}
                 </p>
                 {addon.preview && <p className="mt-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">PREVIEW — release署名またはcatalog digest固定前</p>}
+                {addon.kind === "gpu-runtime" && (
+                  <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null}
+                    track={luceboxTrack} onTrackChange={setLuceboxTrack} />
+                )}
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                 {addon.installed && addon.managed && (
                   <button onClick={() => void update(addon)} disabled={jobId !== null || reloading}
-                    title="npmの最新版へ更新します"
-                    className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
-                    {jobId !== null && jobKind === "update" ? "更新中…" : "更新"}
+                    title={addon.kind === "gpu-runtime"
+                      ? `${addon.repo ?? "配布元"} の最新リリースへ更新します`
+                      : "npmの最新版へ更新します"}
+                    className={`${btn} border ${releases?.[addon.id]?.update_available
+                      ? "border-accent-300 bg-accent-50 text-accent-700 hover:bg-accent-100 dark:border-accent-700 dark:bg-accent-600/10 dark:text-accent-300"
+                      : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"} disabled:opacity-40`}>
+                    {jobId !== null && jobKind === "update" ? "更新中…"
+                      : releases?.[addon.id]?.update_available ? "更新する" : "更新"}
                   </button>
                 )}
                 {!addon.installed && (
@@ -655,7 +791,7 @@ function AddonsSection() {
                       ? `先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} を導入してください`
                       : undefined}
                     className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
-                    {jobId !== null ? "導入中…" : "導入"}
+                    {jobId !== null ? "導入中…" : addon.kind === "gpu-runtime" ? "セットアップ" : "導入"}
                   </button>
                 )}
                 {addon.installed && !addon.enabled && addon.route_gated && (
@@ -666,7 +802,8 @@ function AddonsSection() {
                   <button onClick={() => void act(addon, "disable")} disabled={reloading || jobId !== null}
                     className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
                 )}
-                {addon.installed && (
+                {/* llama.cpp は登録済みモデル全部の土台なので、アドオン画面からは消させない。 */}
+                {addon.installed && addon.id !== "llama-cpp" && (
                   <button onClick={() => setUninstalling(addon.id)} disabled={reloading || jobId !== null}
                     className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>削除</button>
                 )}

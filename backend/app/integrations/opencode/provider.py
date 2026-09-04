@@ -64,6 +64,12 @@ def is_gateway_url(base_url: str) -> bool:
     return gateway.is_gateway_url(base_url)
 
 
+def gateway_client_header() -> str:
+    from app.models_mgmt import gateway
+
+    return gateway.CLIENT_HEADER
+
+
 def resolve_backend_port() -> int | None:
     """OpenCode が最終的に到達する llama.cpp のポート。
 
@@ -98,14 +104,14 @@ def autoconfigure(*, model: str = "") -> dict:
     ゲートウェイのAPIキーは未発行なら発行し、OpenCode の runtime config へ渡る
     形で保存する。
     """
-    from app.models_mgmt import gateway, llama
+    from app.models_mgmt import gateway, local_llm
 
     target = model
     if not target:
         # 特定モデルを名指しせず、転送先の判断はゲートウェイへ任せる。停止中の別モデルを
-        # 起こさずに、そのとき動いているモデルへ流れる。
-        instances = [i for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
-        target = gateway.AUTO_MODEL if instances else ""
+        # 起こさずに、そのとき動いているモデルへ流れる。llama.cpp か Lucebox かも
+        # ゲートウェイ側の解決に委ねる（OpenCode はモデル名しか知らなくてよい）。
+        target = gateway.AUTO_MODEL if local_llm.llm_instances() else ""
     gateway.get_api_key(create=True)  # 未発行なら発行
     patch = {"base_url": gateway_base_url(), "use_gateway": True}
     if target:
@@ -161,7 +167,13 @@ def _runtime_config(
             "controldeck": {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Control Deck LLM",
-                "options": {"baseURL": base_url.rstrip("/"), "apiKey": _api_key_for(base_url)},
+                "options": {
+                    "baseURL": base_url.rstrip("/"),
+                    "apiKey": _api_key_for(base_url),
+                    # ゲートウェイがOpenCodeを識別するための印。停止中のモデルを
+                    # OpenCodeが起こすときは投機デコード優先で常駐させる。
+                    "headers": {gateway_client_header(): "opencode"},
+                },
                 "models": {model: {"name": model}},
             }
         },
@@ -421,10 +433,10 @@ async def run_chat(
         f"chat-{job.id}", endpoint, model_id, owner_user_id=job.owner_user_id,
         project_id=_managed_project_id(project),
     )
-    # LLM endpoint（llama.cpp instance）はondemand hookを通らないため先に起動保証する
-    from app.models_mgmt import llama
+    # LLM endpoint（llama.cpp / Lucebox instance）はondemand hookを通らないため先に起動保証する
+    from app.models_mgmt import local_llm
 
-    await llama.ensure_ready_by_base_url(endpoint)
+    await local_llm.ensure_ready_by_base_url(endpoint)
     unit = f"cdfeature-opencode-{re.sub(r'[^a-zA-Z0-9_-]', '', job.id)[:24]}"
     argv = [
         systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
@@ -636,7 +648,7 @@ def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
     既定値だけ書き、利用者が付けた個別上書きは残す。
     schema は .strict() なので、未知のキーを混ぜると設定ごと弾かれる点に注意。
     """
-    from app.models_mgmt import llama
+    from app.models_mgmt import local_llm
 
     settings = get_settings()
     gated = bool(settings.get("use_gateway")) and is_gateway_url(str(settings.get("base_url") or ""))
@@ -648,11 +660,10 @@ def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
             alias, _ = gateway.resolve_endpoint(str(settings.get("model") or ""))
         except Exception:  # noqa: BLE001 - 未登録なら同期対象なし
             return {"updated": False, "reason": "対象モデルがありません"}
-        instance = next(
-            (i for i in llama.list_instances() if str(i.get("alias")) == alias), None,
-        )
+        instance = local_llm.find(alias)
         if instance is None:
             return {"updated": False, "reason": "対象モデルがありません"}
+        # Lucebox は slot 分割を持たない（単一セッション + 投機デコード）ので 1 とみなす。
         n_parallel = int(instance.get("n_parallel") or 1)
 
     concurrency, team_parallel = omo_concurrency_for(n_parallel, gated=gated)
