@@ -10,7 +10,7 @@ from app.config import data_dir
 from app.resources.devices import DeviceCollection, ResourceDevice
 from app.resources.leases import LeaseError, LeaseTable
 from app.resources.probes import ProviderRegistry
-from app.resources.providers import ProviderReservation, YieldLevel
+from app.resources.providers import ProviderReservation
 from app.resources.scheduler import Candidate, order_candidates
 from app.resources.schema import (
     BlockingResource,
@@ -29,16 +29,6 @@ class BrokerError(RuntimeError):
     pass
 
 
-YIELD_SUPPRESSION_REASONS = {
-    WaitReason.YIELD_RUNTIME_UNKNOWN,
-    WaitReason.YIELD_LOAD_COST_UNKNOWN,
-    WaitReason.YIELD_THRASH_COST,
-    WaitReason.YIELD_MINIMUM_UPTIME,
-    WaitReason.YIELD_THRASH_WINDOW,
-    WaitReason.YIELD_DRAIN_TIMEOUT,
-}
-
-
 @dataclass
 class _RequestRecord:
     request: ResourceRequest
@@ -52,7 +42,6 @@ class _Fit:
     device_id: str | None
     reason: WaitReason | None
     blocking: tuple[BlockingResource, ...] = ()
-    yield_device_id: str | None = None
 
 
 class ResourceBroker:
@@ -75,8 +64,6 @@ class ResourceBroker:
         self._sequence = 0
         self._revision = 0
         self._changed = asyncio.Condition()
-        self._yielding_requests: set[str] = set()
-        self._yield_retry_at: dict[str, float] = {}
 
     @property
     def revision(self) -> int:
@@ -299,8 +286,6 @@ class ResourceBroker:
             self.leases.reset()
             self.telemetry.reset()
             self._sequence = 0
-            self._yielding_requests.clear()
-            self._yield_retry_at.clear()
             await self._bump()
 
     async def _schedule_locked(self, now: float) -> None:
@@ -356,52 +341,12 @@ class ResourceBroker:
                     )
                     granted = True
                     break
-                preserved_suppression = (
-                    record.status.reason
-                    if fit.yield_device_id is not None
-                    and record.status.reason in YIELD_SUPPRESSION_REASONS
-                    else None
-                )
-                record.status.reason = (
-                    preserved_suppression or fit.reason or WaitReason.QUEUE_POSITION
-                )
+                record.status.reason = fit.reason or WaitReason.QUEUE_POSITION
                 record.status.queue_position = position
                 record.status.blocking = list(fit.blocking)
                 record.status.actions = ["cancel", "lower_priority"]
-                if fit.yield_device_id is not None:
-                    self._start_yield(record, fit.yield_device_id, now)
             if not granted:
                 return
-
-    def _start_yield(self, record: _RequestRecord, device_id: str, now: float) -> None:
-        request_id = record.status.request_id
-        if request_id in self._yielding_requests or now < self._yield_retry_at.get(request_id, 0):
-            return
-        self._yielding_requests.add(request_id)
-        self._yield_retry_at[request_id] = now + 5
-        asyncio.create_task(self._yield_and_reschedule(request_id, record.request, device_id))
-
-    async def _yield_and_reschedule(
-        self, request_id: str, request: ResourceRequest, device_id: str
-    ) -> None:
-        yielded = False
-        try:
-            yielded = await self.providers.request_yield(request, device_id)
-        except Exception:  # noqa: BLE001 - provider failure must not stop Broker
-            self.telemetry.record("yield.failed", request_id=request_id, device_id=device_id)
-        finally:
-            async with self._lock:
-                self._yielding_requests.discard(request_id)
-                record = self._requests.get(request_id)
-                if record is not None and record.status.state == RequestState.WAITING:
-                    await self._schedule_locked(self._clock())
-                    if not yielded:
-                        suppression = self.providers.yield_wait_reason()
-                        if suppression is not None:
-                            record.status.reason = suppression
-                            await self._bump()
-                if yielded:
-                    await self._bump()
 
     async def _fit(self, request: ResourceRequest, provider_values: list[ProviderReservation]) -> _Fit:
         current_leases = self.leases.current()
@@ -413,7 +358,6 @@ class ResourceBroker:
         candidates: list[tuple[int, int, int, str]] = []
         last_reason = WaitReason.INSUFFICIENT_VRAM
         last_blocking: tuple[BlockingResource, ...] = ()
-        last_yield_device: str | None = None
         for device in self._eligible_devices(request):
             snapshot = snapshots[device.id]
             if request.residency_key and self.telemetry.oom_retry_after(
@@ -428,13 +372,6 @@ class ResourceBroker:
             if (exclusive and (leases or providers)) or existing_exclusive:
                 last_reason = WaitReason.DEVICE_BUSY_EXCLUSIVE
                 last_blocking = self._blocking(leases, providers)
-                yield_device = (
-                    device.id
-                    if not leases and any(item.yieldable for item in providers)
-                    else None
-                )
-                if yield_device is not None:
-                    last_yield_device = yield_device
                 continue
             if self._required_bytes(request, device.id) > snapshot.admitted_free_bytes:
                 last_blocking = self._blocking(leases, providers)
@@ -444,28 +381,37 @@ class ResourceBroker:
             if not probe.accepting:
                 last_reason = probe.reason or WaitReason.DEPENDENCY_PENDING
                 continue
-            preferred = 1 if device.id in request.preferred_devices else 0
+            # preferred_devices は順序を持つ。["gpu0", "host"] は「空いていればVRAM、
+            # 無ければRAM」を表す。順序を無視して空き容量で選ぶと、RAMの方が空きが
+            # 大きいだけでVRAMが空いていてもRAMへ流れてしまう。
+            try:
+                rank = request.preferred_devices.index(device.id)
+            except ValueError:
+                rank = len(request.preferred_devices)
             resident = 1 if request.residency_key and request.residency_key in device.resident_keys else 0
-            candidates.append((preferred, resident, snapshot.admitted_free_bytes, device.id))
+            candidates.append((rank, resident, snapshot.admitted_free_bytes, device.id))
         if not candidates:
-            return _Fit(None, last_reason, last_blocking, last_yield_device)
-        candidates.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
+            return _Fit(None, last_reason, last_blocking)
+        candidates.sort(key=lambda item: (item[0], -item[1], -item[2], item[3]))
         return _Fit(candidates[0][3], None)
 
     def _eligible_devices(self, request: ResourceRequest) -> list[ResourceDevice]:
         values = [item for item in self.devices.list() if item.compatible]
         if request.device != "auto":
-            values = [item for item in values if item.id == request.device]
-        else:
-            forbidden = set(request.forbidden_devices)
-            values = [item for item in values if item.id not in forbidden]
-        return values
+            return [item for item in values if item.id == request.device]
+        forbidden = set(request.forbidden_devices)
+        wanted = set(request.preferred_devices)
+        # GPU以外の配置（host = システムRAM）は opt-in。CPUオフロードに対応した
+        # 利用者が preferred_devices へ挙げたときだけ候補にする。知らない利用者へ
+        # 黙って割り当てると、GPUを使うつもりのまま二重にVRAMを取りにいく。
+        return [item for item in values
+                if item.id not in forbidden and (item.kind == "gpu" or item.id in wanted)]
 
     def _physically_possible(self, request: ResourceRequest) -> bool:
+        # 誰も明け渡さない前提なので、現在の予約はすべて動かせない量として数える。
         non_yieldable: dict[str, int] = {}
         for item in self.providers.reservations():
-            if item.yield_level == YieldLevel.NONE:
-                non_yieldable[item.device_id] = non_yieldable.get(item.device_id, 0) + item.reserved_bytes
+            non_yieldable[item.device_id] = non_yieldable.get(item.device_id, 0) + item.reserved_bytes
         return any(
             self._required_bytes(request, item.id)
             <= max(0, item.total_bytes - non_yieldable.get(item.id, 0))
@@ -492,7 +438,6 @@ class ResourceBroker:
         values.extend(BlockingResource(
             owner=item.owner,
             bytes=item.reserved_bytes,
-            yieldable=item.yieldable,
         ) for item in providers)
         return tuple(values)
 

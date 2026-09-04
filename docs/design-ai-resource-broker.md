@@ -1,9 +1,68 @@
 # AI Resource Broker 詳細設計
 
-最終更新: 2026-08-21
-状態: PR-D1 core／PR-D2 adapter・Jobs移行実装済み
+最終更新: 2026-09-04
+状態: host配置対応・退避(yield)機構は廃止
 
-## 0. PR-D1 実装結果
+## 0. 現行方針（2026-09-04 改訂）
+
+**LLM と画像生成は共存させる。VRAM が空いていなければ画像生成はシステムRAMへ載せる。**
+
+以前は「GPUを使う他の処理が来たらLLMを退避（yield）させる」設計だったが、実運用では
+`supervision: observed` のまま使われ、実際には退避せず、amdgpu が勝手にバッファを
+GTT（ホストRAM）へ追い出す形になっていた。LLMのKVがRAMへ落ちると
+デコードがメモリ帯域律速のため致命的に遅くなる（実測 75.4 → 32.6 tok/s）。
+一方、画像生成のような計算律速の処理はRAM配置の劣化が桁違いに小さい。
+そこで「誰を追い出すか」ではなく「どこへ載せるか」で解く。
+
+### デバイス
+
+| id | kind | 用途 |
+|---|---|---|
+| `gpu0` | `gpu` | VRAM。LLMはここに固定する（`device: "gpu0"`） |
+| `host` | `host` | システムRAM。CPUオフロード可能な処理の受け皿 |
+
+`host` は **opt-in**。`preferred_devices` に挙げた要求にだけ割り当てる
+（`_eligible_devices`）。知らない利用者へ黙って割り当てると、GPUを使うつもりのまま
+VRAMを二重に取りにいってしまう。
+
+### 配置の決め方
+
+`preferred_devices` は**順序を持つ**。
+
+```
+preferred_devices: ["gpu0", "host"]   # 空いていればVRAM、無ければRAM
+preferred_devices: []                  # VRAMのみ（従来どおり。空くまで待つ）
+device: "gpu0"                         # VRAM固定（LLMはこれ）
+```
+
+順序を無視して空き容量で選ぶと、RAMの方が空きが大きいだけでVRAMが空いていても
+RAMへ流れてしまうため、`_fit` は `preferred_devices.index()` を第一キーにする。
+
+### Add-on 側の契約
+
+1. CPUオフロードに対応した Add-on は `preferred_devices: ["gpu0", "host"]` を送る
+2. grant の `RequestStatus.device_id` が実際の配置を返す
+3. **`device_id == "host"` を受け取った Add-on は、VRAMを確保せずCPU（RAM）で実行する**
+
+3 を守らない Add-on は host 配置を要求してはならない。要求しなければ従来どおり
+VRAM だけが候補になる。
+
+### 廃止したもの
+
+`ResourceProvider.request_yield` / `yield_wait_reason`、`YieldLevel`、
+`ProviderReservation.yield_level` / `yieldable`、`BlockingResource.yieldable`、
+broker の `_start_yield` / `_yield_and_reschedule`、
+`LocalLlmCapacityProvider` の `_managed` / `_yield_allowed` / `_suppress` /
+`_legacy_cost` / thrash guard、`RuntimePolicy` の `supervision` / `yield_max_level` /
+`min_uptime_sec` / `warm_idle_sec`、およびモデル共通設定のGPU Brokerパネル。
+
+明示的な解放（`release_on_request` → `release_loaded_llms`）は残す。これは利用者が
+「AIの番を終えた」と宣言する経路で、自動退避とは別物。drain のための
+`drain_timeout_sec` も残る。
+
+## 1. 経緯（PR-D1 / PR-D2 当時の記録）
+
+### PR-D1 実装結果
 
 PR-D1ではfake／実device collection、provider reservation/probe、lease lifecycle、有限queue、§20のcommon scheduling不変条件、管理API、Add-on owner cleanup、bounded telemetryまでを実装した。process再起動時はin-memory lease tableを空から開始するためstale leaseを復元しない。
 

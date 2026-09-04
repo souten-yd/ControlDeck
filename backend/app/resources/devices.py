@@ -4,7 +4,7 @@ import threading
 import asyncio
 import logging
 from math import isfinite
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from app.resources.schema import DeviceSnapshot
@@ -20,6 +20,18 @@ class ResourceDevice:
     observed_used_bytes: int = 0
     compatible: bool = True
     resident_keys: set[str] = field(default_factory=set)
+    # "gpu" はVRAM。"host" はシステムRAM上で動かす配置で、CPUオフロードに対応した
+    # 利用者（Add-on）が明示的に希望したときだけ割り当てる。知らない利用者へ黙って
+    # 割り当てるとGPUを使うつもりのままVRAMを二重に取りにいってしまう。
+    kind: str = "gpu"
+
+
+def _copy(item: ResourceDevice) -> ResourceDevice:
+    """可変な resident_keys だけ切り離して複製する。
+
+    フィールドを手で並べ直すと、追加したときに写し漏れる（kind がそうなった）。
+    """
+    return replace(item, resident_keys=set(item.resident_keys))
 
 
 class DeviceCollection:
@@ -44,25 +56,12 @@ class DeviceCollection:
             item = self._devices.get(device_id)
             if item is None:
                 return None
-            return ResourceDevice(
-                id=item.id,
-                name=item.name,
-                total_bytes=item.total_bytes,
-                observed_used_bytes=item.observed_used_bytes,
-                compatible=item.compatible,
-                resident_keys=set(item.resident_keys),
-            )
+            return _copy(item)
 
     def list(self) -> list[ResourceDevice]:
         with self._lock:
-            return [ResourceDevice(
-                id=item.id,
-                name=item.name,
-                total_bytes=item.total_bytes,
-                observed_used_bytes=item.observed_used_bytes,
-                compatible=item.compatible,
-                resident_keys=set(item.resident_keys),
-            ) for item in sorted(self._devices.values(), key=lambda value: value.id)]
+            return [_copy(item)
+                    for item in sorted(self._devices.values(), key=lambda value: value.id)]
 
     def update_observation(
         self,
@@ -132,18 +131,50 @@ def observed_system_devices() -> DeviceCollection:
         gpu = gpu or {}
         total = gpu.get("vram_total_bytes")
     if not isinstance(total, (int, float)) or not isfinite(total) or total <= 0:
-        return DeviceCollection()
+        # GPUが読めなくても host は登録する。CPUオフロード可能な処理は動かせる。
+        return DeviceCollection(host_device())
     used = gpu.get("vram_used_bytes")
-    return DeviceCollection([ResourceDevice(
-        id="gpu0",
-        name=str(gpu.get("name") or "GPU 0"),
-        total_bytes=int(total),
-        observed_used_bytes=(
-            int(used)
-            if isinstance(used, (int, float)) and isfinite(used) and used >= 0
-            else 0
+    return DeviceCollection([
+        ResourceDevice(
+            id="gpu0",
+            name=str(gpu.get("name") or "GPU 0"),
+            total_bytes=int(total),
+            observed_used_bytes=(
+                int(used)
+                if isinstance(used, (int, float)) and isfinite(used) and used >= 0
+                else 0
+            ),
         ),
-    )])
+        *host_device(),
+    ])
+
+
+HOST_DEVICE_ID = "host"
+
+
+def host_device() -> list[ResourceDevice]:
+    """システムRAMを配置先として登録する（CPUオフロード可能な処理の受け皿）。
+
+    画像生成のような計算律速の処理は、VRAMが空いていなければRAMへ載せた方が、
+    LLMのKVを追い出して全体を遅くするより得になる。空き容量は psutil の
+    available をそのまま使う（他プロセスの消費も込みで見える値が正）。
+    """
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+    except Exception:  # noqa: BLE001 - RAM が読めないだけで資源管理を止めない
+        return []
+    total = int(memory.total)
+    if total <= 0:
+        return []
+    return [ResourceDevice(
+        id=HOST_DEVICE_ID,
+        name="System RAM",
+        total_bytes=total,
+        observed_used_bytes=max(0, total - int(memory.available)),
+        kind="host",
+    )]
 
 
 async def refresh_loop(devices: DeviceCollection) -> None:

@@ -120,7 +120,6 @@ class BlockingResource(BaseModel):
 
     owner: str
     bytes: int = Field(ge=0)
-    yieldable: bool = False
     deferred: bool = False
 
 

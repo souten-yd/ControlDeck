@@ -18,18 +18,11 @@ from typing import Callable
 from app.models_mgmt import local_llm
 from app.models_mgmt.runtime_policy import get_policy
 from app.resources.devices import DeviceCollection
-from app.resources.providers import ProviderReservation, ResourceProvider, YieldLevel
-from app.resources.schema import ResourceRequest, WaitReason
-from app.resources.telemetry import (
-    LoadCostEstimate,
-    ResourceTelemetry,
-    YIELD_THRASH_FACTOR,
-)
+from app.resources.providers import ProviderReservation, ResourceProvider
+from app.resources.schema import ResourceRequest
+from app.resources.telemetry import ResourceTelemetry
 
 
-THRASH_FACTOR = YIELD_THRASH_FACTOR
-THRASH_WINDOW_SEC = 300.0
-THRASH_MAX_YIELDS = 2
 
 
 def model_is_on_local_nvme(model_path: str) -> bool:
@@ -58,12 +51,10 @@ class LocalLlmCapacityProvider(ResourceProvider):
         self._telemetry = telemetry
         self._clock = clock
         self._resident_since: dict[str, float] = {}
-        self._yield_history: deque[float] = deque(maxlen=16)
         self._condition = asyncio.Condition()
         self._active_requests = 0
         self._draining = False
         self._stopping = False
-        self._last_yield_wait_reason: WaitReason | None = None
         # Voice/live consumers may request a short, renewable residency hold so
         # the LLM is not unloaded between conversational turns. Holds are
         # intentionally in-memory and TTL-bound: if the consumer crashes or
@@ -156,16 +147,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
                 return bool(self._residency_holds)
             return any(key == residency_key for _owner, key, _expires in self._residency_holds.values())
 
-    def _managed(self, instances: list[dict]) -> bool:
-        policy = get_policy()
-        return (
-            policy.supervision == "managed"
-            and policy.gateway_only
-            and policy.yield_max_level >= int(YieldLevel.STOP)
-            and bool(instances)
-            and all(model_is_on_local_nvme(str(item.get("model_path") or "")) for item in instances)
-        )
-
     def reservations(self) -> list[ProviderReservation]:
         running = [item for item in local_llm.list_instances() if item.get("loaded")]
         now = self._clock()
@@ -185,7 +166,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
                 sizes.append(0)
         total_size = sum(sizes)
         reserved_total = max(observed, total_size)
-        managed = self._managed(running)
         values = []
         for item, size in zip(running, sizes, strict=True):
             alias = str(item.get("alias") or "llama")
@@ -199,7 +179,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
                 owner=f"llm:{alias}",
                 reserved_bytes=share,
                 residency_key=local_llm.residency_key(item),
-                yield_level=YieldLevel.NONE if self.has_residency_hold(local_llm.residency_key(item)) else (YieldLevel.STOP if managed else YieldLevel.NONE),
                 draining=self._draining,
             ))
         return values
@@ -215,7 +194,7 @@ class LocalLlmCapacityProvider(ResourceProvider):
         async with self._condition:
             if self._draining and not self._stopping:
                 self._draining = False
-                self._telemetry.record("yield.drain_canceled", reason="llm_request")
+                self._telemetry.record("release.drain_canceled", reason="llm_request")
             while self._stopping:
                 await self._condition.wait()
             self._active_requests += 1
@@ -226,51 +205,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
             self._active_requests = max(0, self._active_requests - 1)
             self._condition.notify_all()
 
-    def _yield_allowed(self, request: ResourceRequest, running: list[dict]) -> bool:
-        policy = get_policy()
-        now = self._clock()
-        if not self._managed(running):
-            return False
-        if any(self.has_residency_hold(local_llm.residency_key(item)) for item in running):
-            return self._suppress(WaitReason.HELD_BY_OTHER_OWNER, "residency_hold")
-        if request.estimated_runtime_sec is None:
-            return self._suppress(WaitReason.YIELD_RUNTIME_UNKNOWN, "runtime_unknown")
-        costs: list[LoadCostEstimate | None] = [
-            self._telemetry.reload_cost_p90(local_llm.residency_key(item)) for item in running
-        ]
-        if not self._telemetry.persistent_profiles:
-            costs = [
-                value or self._legacy_cost(local_llm.residency_key(item))
-                for value, item in zip(costs, running, strict=True)
-            ]
-        if not costs or any(value is None for value in costs):
-            return self._suppress(WaitReason.YIELD_LOAD_COST_UNKNOWN, "load_cost_unknown")
-        threshold = max(value.value_sec for value in costs if value is not None) * THRASH_FACTOR
-        if request.estimated_runtime_sec <= threshold:
-            return self._suppress(WaitReason.YIELD_THRASH_COST, "thrash_cost")
-        aliases = [str(item.get("alias") or "llama") for item in running]
-        if any(now - self._resident_since.get(alias, now) < policy.min_uptime_sec for alias in aliases):
-            return self._suppress(WaitReason.YIELD_MINIMUM_UPTIME, "minimum_uptime")
-        while self._yield_history and now - self._yield_history[0] > THRASH_WINDOW_SEC:
-            self._yield_history.popleft()
-        if len(self._yield_history) >= THRASH_MAX_YIELDS:
-            return self._suppress(WaitReason.YIELD_THRASH_WINDOW, "thrash_window")
-        self._last_yield_wait_reason = None
-        return True
-
-    def _legacy_cost(self, residency_key: str) -> LoadCostEstimate | None:
-        value = self._telemetry.cold_load_p90(residency_key)
-        if value is None:
-            return None
-        return LoadCostEstimate(value, "cold", 1, 0, 1)
-
-    def _suppress(self, wait_reason: WaitReason, telemetry_reason: str) -> bool:
-        self._last_yield_wait_reason = wait_reason
-        self._telemetry.record("yield.suppressed", reason=telemetry_reason)
-        return False
-
-    def yield_wait_reason(self) -> WaitReason | None:
-        return self._last_yield_wait_reason
 
     async def release_on_request(self, *, include_helpers: bool = False) -> tuple[bool, str, int]:
         """Honour an explicit "my AI turn is over" declaration from a consumer.
@@ -280,7 +214,7 @@ class LocalLlmCapacityProvider(ResourceProvider):
         in-use guards, so ControlDeck chat, an OpenCode session, and another
         add-on cannot have the shared model pulled out from under them.
 
-        Unlike broker yield this does not consult the thrash/uptime heuristics:
+これは利用者からの明示的な解放要求で、自動退避とは別物:
         those exist to stop involuntary preemption from thrashing, and a
         voluntary hand-back is not preemption.
 
@@ -294,7 +228,7 @@ class LocalLlmCapacityProvider(ResourceProvider):
         policy = get_policy()
         if self.has_residency_hold():
             return False, "residency_held", 0
-        if not (policy.gateway_only and policy.yield_max_level >= int(YieldLevel.UNLOAD)):
+        if not policy.gateway_only:
             return False, "release_not_permitted_by_policy", 0
         async with self._condition:
             if self._stopping:
@@ -331,61 +265,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
             self._telemetry.record("release.explicit", reason="consumer_request")
         return released, reason, freed
 
-    async def request_yield(
-        self,
-        device_id: str,
-        level: YieldLevel,
-        request: ResourceRequest | None = None,
-    ) -> bool:
-        running = [item for item in local_llm.list_instances() if item.get("loaded")]
-        if device_id != "gpu0" or request is None or not self._yield_allowed(request, running):
-            return False
-        policy = get_policy()
-        async with self._condition:
-            if self._stopping:
-                return False
-            self._draining = True
-            deadline = asyncio.get_running_loop().time() + policy.drain_timeout_sec
-            while self._active_requests and self._draining:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    self._draining = False
-                    self._last_yield_wait_reason = WaitReason.YIELD_DRAIN_TIMEOUT
-                    self._telemetry.record("yield.suppressed", reason="drain_timeout")
-                    self._condition.notify_all()
-                    return False
-                try:
-                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
-                except TimeoutError:
-                    self._draining = False
-                    self._last_yield_wait_reason = WaitReason.YIELD_DRAIN_TIMEOUT
-                    self._telemetry.record("yield.suppressed", reason="drain_timeout")
-                    self._condition.notify_all()
-                    return False
-            if not self._draining:
-                return False
-            self._stopping = True
-        stopped = True
-        try:
-            for item in running:
-                ok, _detail = await asyncio.to_thread(
-                    local_llm.stop_instance, str(item.get("alias") or "llama")
-                )
-                stopped = stopped and ok
-        finally:
-            async with self._condition:
-                self._stopping = False
-                self._draining = False
-                self._condition.notify_all()
-        if stopped:
-            self._last_yield_wait_reason = None
-            self._yield_history.append(self._clock())
-            self._telemetry.record("yield.completed", device_id=device_id, reason="process_stop")
-        return stopped
-
-
-# 旧名。テストと既存の import 経路を壊さないために残す。
-LlamaCapacityProvider = LocalLlmCapacityProvider
 
 _provider: LocalLlmCapacityProvider | None = None
 

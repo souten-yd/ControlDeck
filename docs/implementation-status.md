@@ -2,6 +2,42 @@
 
 最終更新: 2026-09-04
 
+## GPU資源の再設計: 退避をやめ、画像生成はRAMへ載せて共存する（2026-09-04）
+
+- 方針を「誰を追い出すか」から「どこへ載せるか」へ変えた。**LLMと画像生成は共存**させ、
+  VRAMが空いていなければ画像生成はシステムRAMへ載せる。
+- 背景: 従来の退避(yield)機構は `supervision: observed` のまま使われ実際には動かず、
+  代わりに amdgpu がバッファをGTT（ホストRAM）へ勝手に追い出していた。LLMのKVが
+  RAMへ落ちるとデコードがメモリ帯域律速のため致命的に遅い（実測 75.4 → 32.6 tok/s）。
+  一方、画像生成のような計算律速の処理はRAM配置の劣化が桁違いに小さい。
+- **`host` デバイスを追加**（`resources/devices.py`）。psutil のRAM総量/空きをそのまま
+  デバイスとして登録する。GPUが読めない環境でも host は登録する。
+- **`host` は opt-in**。`preferred_devices` に挙げた要求にだけ割り当てる。
+  知らない利用者へ黙って割り当てると、GPUを使うつもりのままVRAMを二重に取りにいく。
+- **`preferred_devices` を順序付きにした**。`["gpu0", "host"]` で「空いていればVRAM、
+  無ければRAM」を表す。順序を無視して空き容量で選ぶと、RAMの方が空きが大きいだけで
+  VRAMが空いていてもRAMへ流れてしまう。ブローカー本体はこの1点だけの変更で済んだ。
+- LLMは `device: "gpu0"` 固定のままで、host配置には決してならない。
+- **退避機構を削除**（統廃合）。`request_yield` / `yield_wait_reason` / `YieldLevel` /
+  `yield_level` / `yieldable` / `_start_yield` / `_yield_and_reschedule` /
+  `_managed` / `_yield_allowed` / `_suppress` / `_legacy_cost` / thrash guard、
+  `RuntimePolicy` の `supervision` / `yield_max_level` / `min_uptime_sec` /
+  `warm_idle_sec`、モデル共通設定のGPU Brokerパネル。
+  明示解放（`release_on_request`）と `drain_timeout_sec` は残す。
+- 実装のバグを1つ潰した: `DeviceCollection.get()` / `list()` がフィールドを手で写して
+  複製しており、追加した `kind` が落ちていた。`dataclasses.replace` を使う `_copy()` に
+  集約して、フィールド追加時の写し漏れを構造的に防いだ。
+- **Add-on 側の契約**（MediaForge の対応が必要）:
+  1. CPUオフロード対応の Add-on は `preferred_devices: ["gpu0", "host"]` を送る
+  2. grant の `RequestStatus.device_id` が実際の配置を返す
+  3. `device_id == "host"` を受け取ったら、VRAMを確保せずCPUで実行する
+
+  3 を守らない Add-on は host を要求してはならない。要求しなければ従来どおりVRAMのみ。
+- 規模: backend は 8ファイルで +89 / −278 行。frontend もGPU Brokerパネル分を削減。
+- 自動検証: `test_resource_host_placement.py` を追加（VRAMが空けばVRAM／埋まればhost／
+  順序が空き容量に優先／hostはopt-in／LLMはgpu0固定／hostデバイス登録の6件）。
+  退避機構を対象にした既存テスト9件は機構ごと削除。backend全体は893件成功。
+
 ## OpenCodeがLuceboxで同じツール呼び出しを繰り返して止まらない（2026-09-04）
 
 - OpenCodeのセッションが `grep -n "vy" index.html` を延々と繰り返し、進まなくなった。

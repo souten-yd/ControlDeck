@@ -55,12 +55,8 @@ interface RuntimePolicy {
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
   max_loaded_models: number;
-  supervision: "observed" | "managed";
   gateway_only: boolean;
-  warm_idle_sec: number;
-  min_uptime_sec: number;
   drain_timeout_sec: number;
-  yield_max_level: number;
   default_model_ref: string;
   assistant_name: string;
   chat: { timeout_seconds: number };
@@ -103,21 +99,7 @@ interface RuntimeEnvironment {
   };
 }
 
-interface ResourceLoadProfile {
-  residency_key: string;
-  measured_at: number;
-  cold_load_cost_sec: { p50: number | null; p90: number | null; count: number };
-  warm_reload_cost_sec: { p50: number | null; p90: number | null; count: number };
-  yield_basis: "warm" | "cold" | "insufficient";
-  yield_threshold_sec: number | null;
-}
 
-interface ResourceSnapshot {
-  telemetry: {
-    load_profiles: ResourceLoadProfile[];
-    recent_events: Array<{ at: number; event: string; reason: string }>;
-  };
-}
 
 function gb(n: number): string {
   return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`;
@@ -1093,11 +1075,6 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
-  const { data: resources } = useQuery({
-    queryKey: ["resource-supervision"],
-    queryFn: () => api<ResourceSnapshot>("/resources"),
-    refetchInterval: 5000,
-  });
   const [policyCfg, setPolicyCfg] = useState<RuntimePolicy | null>(null);
   const policy = policyCfg ?? runtimeEnv?.policy ?? null;
   const savePolicy = useMutation({
@@ -1110,40 +1087,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
     },
     onError: (e) => show(e instanceof Error ? e.message : "ランタイム設定の適用に失敗", "error"),
   });
-  const manualYield = useMutation({
-    mutationFn: async () => {
-      const result = await api<{ ok: boolean; error?: string }>("/models/llama/stop", { method: "POST" });
-      if (!result.ok) throw new Error(result.error || "LLMを停止できませんでした");
-      return result;
-    },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["resource-supervision"] });
-      void qc.invalidateQueries({ queryKey: ["llama-status"] });
-      show("LLMを退避しました。次のGateway呼び出しをwarm再ロードとして計測します");
-    },
-    onError: (e) => show(e instanceof Error ? e.message : "LLMを退避できませんでした", "error"),
-  });
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   if (!policy || !runtimeEnv) return null;
-  const loadProfile = [...(resources?.telemetry.load_profiles ?? [])]
-    .sort((a, b) => b.measured_at - a.measured_at)[0];
-  const latestSuppression = resources?.telemetry.recent_events.find(
-    (event) => event.event === "yield.suppressed",
-  );
-  const suppressionLabels: Record<string, string> = {
-    runtime_unknown: "処理時間が未申告",
-    load_cost_unknown: "サンプル不足",
-    thrash_cost: "退避コストに見合わない",
-    minimum_uptime: "最低常駐時間",
-    thrash_window: "短時間に頻発",
-    drain_timeout: "安全な停止の待機上限超過",
-  };
-  const basisLabel = loadProfile?.yield_basis === "warm"
-    ? "warm 実測"
-    : loadProfile?.yield_basis === "cold" ? "cold 実測（暫定）" : "サンプル不足";
-  const basisDistribution = loadProfile?.yield_basis === "warm"
-    ? loadProfile.warm_reload_cost_sec
-    : loadProfile?.yield_basis === "cold" ? loadProfile.cold_load_cost_sec : null;
   const chooseRuntime = (item: RuntimeEnvironment["runtimes"][number]) => {
     if (!item.installed) return;
     savePolicy.mutate({
@@ -1210,44 +1155,10 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <L label="全ランタイムの同時ロード上限">
           <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
         </L>
-        {policy.selected_runtime === "llama.cpp" && (
-          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3 dark:border-amber-900 dark:bg-amber-950/20">
-            <label className="flex items-start justify-between gap-3">
-              <span>
-                <span className="block text-xs font-semibold text-amber-800 dark:text-amber-300">GPU Brokerによる管理を有効化</span>
-                <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">実測した再ロード時間より十分長いGPU処理だけ、LLMを一時停止します。既定は監視のみです。</span>
-              </span>
-              <input type="checkbox" aria-label="GPU Brokerによる管理" checked={policy.supervision === "managed"}
-                onChange={(e) => setPolicyCfg({ ...policy, supervision: e.target.checked ? "managed" : "observed", gateway_only: true })}
-                className="mt-0.5 h-4 w-4" />
-            </label>
-            {policy.supervision === "managed" && (
-              <div className="space-y-2.5">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <L label="最低常駐時間（秒）"><PresetOrCustom value={policy.min_uptime_sec} presets={[60, 120, 300, 600].map((v) => ({ v, label: `${v}秒` }))} placeholder="120" onChange={(v) => setPolicyCfg({ ...policy, min_uptime_sec: Number(v ?? 120) })} /></L>
-                  <L label="drain上限（秒）"><PresetOrCustom value={policy.drain_timeout_sec} presets={[30, 60, 120, 300].map((v) => ({ v, label: `${v}秒` }))} placeholder="120" onChange={(v) => setPolicyCfg({ ...policy, drain_timeout_sec: Number(v ?? 120) })} /></L>
-                  <L label="遅延復帰の保持時間（秒）"><PresetOrCustom value={policy.warm_idle_sec} presets={[120, 300, 600, 1200].map((v) => ({ v, label: `${v}秒` }))} placeholder="600" onChange={(v) => setPolicyCfg({ ...policy, warm_idle_sec: Number(v ?? 600) })} /></L>
-                </div>
-                <div className="space-y-1.5 rounded-lg bg-white/70 p-2.5 text-[11px] dark:bg-zinc-900/60">
-                  <p><span className="text-zinc-400">退避判断の基準</span><span className="ml-2 font-medium">{basisLabel}</span></p>
-                  <p><span className="text-zinc-400">基準値</span><span className="ml-2 font-medium">{basisDistribution?.p90 != null ? `${basisDistribution.p90.toFixed(1)} 秒（${loadProfile?.yield_basis} p90、サンプル ${basisDistribution.count} 件）` : "未確定"}</span></p>
-                  <p><span className="text-zinc-400">退避する条件</span><span className="ml-2 font-medium">{loadProfile?.yield_threshold_sec != null ? `推定実行時間が ${loadProfile.yield_threshold_sec.toFixed(1)} 秒を超えるジョブ` : "十分な実測が貯まるまで退避しません"}</span></p>
-                  <p><span className="text-zinc-400">直近の抑止理由</span><span className="ml-2 font-medium">{latestSuppression ? suppressionLabels[latestSuppression.reason] ?? latestSuppression.reason : "まだありません"}</span></p>
-                </div>
-                {loadProfile?.yield_basis === "cold" && (
-                  <p className="rounded-lg border border-amber-200 bg-amber-100/50 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                    退避後の再読み込み実測が不足しているため、初回読み込みの実測値を暫定で使っています。この間は退避がほとんど発生しません。「今すぐ退避」を数回実行すると精度が上がります。
-                  </p>
-                )}
-                <button type="button" onClick={() => manualYield.mutate()} disabled={manualYield.isPending}
-                  className="w-full rounded-lg border border-amber-300 px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/40">
-                  {manualYield.isPending ? "退避中…" : "今すぐ退避"}
-                </button>
-              </div>
-            )}
-            <p className="text-[10px] leading-relaxed text-zinc-500">モデルがNVMe上にない、またはcold-load p90が未計測の場合は自動的に監視のみへ縮退します。再ロード実測が3件未満、短時間処理、または5分以内3回目の退避も保守的に抑止されます。</p>
-          </div>
-        )}
+        <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
+          画像生成などGPUを使う他の処理は、VRAMが空いていなければシステムRAMへ載ります。
+          LLMを一時停止して譲る動作はありません。
+        </p>
         <p className="rounded-lg bg-zinc-50 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-800/60">
           思考（reasoning）の設定は各モデルの個別設定へ移動しました。モデルごとに適した深さが
           違うため、共通設定で一律に指定しない方針です。

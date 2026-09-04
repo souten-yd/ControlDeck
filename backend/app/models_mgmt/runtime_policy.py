@@ -59,12 +59,10 @@ class RuntimePolicy(BaseModel):
     idle_unload_enabled: bool = False
     idle_unload_minutes: int = Field(default=30, ge=1, le=1440)
     max_loaded_models: int = Field(default=1, ge=1, le=16)
-    supervision: Literal["observed", "managed"] = "observed"
+    # 画像生成などGPUを使う他の処理はVRAMが空いていなければRAM(host)へ載るので、
+    # LLMを退避させる経路そのものを持たない。明示的な解放要求だけ受け付ける。
     gateway_only: bool = True
-    warm_idle_sec: int = Field(default=600, ge=0, le=86_400)
-    min_uptime_sec: int = Field(default=120, ge=0, le=3600)
     drain_timeout_sec: int = Field(default=120, ge=1, le=600)
-    yield_max_level: int = Field(default=4, ge=0, le=4)
     default_model_ref: str = Field(default="", max_length=512)
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
