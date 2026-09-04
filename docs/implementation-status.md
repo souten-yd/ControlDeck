@@ -2,6 +2,52 @@
 
 最終更新: 2026-09-04
 
+## OpenCodeがLuceboxで同じツール呼び出しを繰り返して止まらない（2026-09-04）
+
+- OpenCodeのセッションが `grep -n "vy" index.html` を延々と繰り返し、進まなくなった。
+  Luceboxのログでは7ターン以上にわたり **毎ターン `out=59` トークンで完全に一致**、
+  プロンプトは毎回きっかり +122 トークン（assistant 59 + tool結果 63）。
+  確率的なブレが一切なく、同じ文脈から同じツール呼び出しが決定的に出続けていた。
+- DFlash2 そのものは原因ではない。厳密検証なので出力は素の greedy と同一で、
+  投機デコードがトークンを変えることはない。原因は **temperature=0 固定**。
+  DFlash2 は temperature>0 だと投機経路を使わず自己回帰へ落ちる（142→29 tok/s）ため
+  0 へ固定していたが、greedy は反復ループの古典的な原因で、エージェントループでは
+  「同じ文脈 → 同じツール呼び出し → 同じ結果 → 同じ文脈」で閉じて抜けられない。
+- **`gateway._greedy_sampling_for()` からクライアント別の上書きを外した**。
+  以前は「OpenCode が停止中のモデルを起こす場合は個別設定より優先して投機ONで常駐」
+  としていた（速度が3〜5倍効くため）が、エージェント用途では greedy の副作用の方が
+  重い。サンプリング方針はモデル個別設定 `prefer_speculative` だけで決める。
+  常駐ごとの方針記録（`_residency_greedy`）も不要になったので削除した。
+  識別ヘッダ `x-control-deck-client` は診断用に残す。
+- コーディング用途は llama.cpp 側へ寄せる。draft-mtp は temperature に依存せず投機が
+  効く（実測で temperature 0.0 と 0.7 に速度差なし）。
+
+## KVキャッシュがホストRAMへ退避して2.3倍遅くなる（2026-09-04）
+
+- Qwen3.8-27B が同一プロンプト・同一設定で 75.4 → 32.6 tok/s に落ちていた。
+- `/proc/<pid>/fdinfo` の DRM 統計で原因が確定した。
+
+  | | 退避時 | 再起動後 |
+  |---|---:|---:|
+  | プロセスのVRAM要求 | 27,682 MiB | 27,594 MiB |
+  | 実際にVRAMに載っている | 17,690 MiB | 27,651 MiB |
+  | GTT（ホストRAM）使用 | **10,402 MiB** | **3 MiB** |
+  | 生成速度（定型） | 32.6 tok/s | 73.5 tok/s |
+
+  モデル重み15,702 + mmproj 888 = 16,590 MiB に対し要求が 27,594 MiB なので、
+  差の約11GBがKVキャッシュ+計算バッファ。そのうち約10GBがGTTへ落ちていた。
+- 直接の原因は、検証用に Lucebox（約14GB）を llama.cpp（約27.7GB）と同時に起動した
+  こと。合計42GB > 32.6GBでVRAMが枯渇し、amdgpuがバッファをGTTへ退避させた。
+  **Luceboxを止めてVRAMが空いても、amdgpuは退避したバッファを自動では戻さない。**
+  モデルを再起動して解消した。
+- 教訓: `ctx_size = 262144` は要求を27.7GBまで押し上げ、32.6GBのカードでは他のモデルと
+  同居できない。ControlDeckは `max_loaded_models` で同時ロードを止める仕組みを持つが、
+  今回は `lucebox.start_instance()` を直接呼んでブローカーを迂回していた。
+  検証でも provider_adapters 経由（`load_model`）を使えば同じ事故は防げる。
+- 症状の見分け方: 生成が理由なく遅いときは
+  `grep drm-total /proc/<llama-serverのpid>/fdinfo/*` と
+  `/sys/class/drm/card1/device/mem_info_gtt_used` を見る。GTTが数GB載っていれば退避中。
+
 ## 投機デコード各方式の再評価と --load-mode 対応（2026-09-04）
 
 ### 前回の「ngram系は効かない」は測り方が誤っていた

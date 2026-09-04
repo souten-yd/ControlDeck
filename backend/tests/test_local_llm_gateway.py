@@ -151,55 +151,40 @@ def lucebox_config(monkeypatch, tmp_path):
     monkeypatch.setattr(lucebox, "_config_path", lambda: tmp_path / "lucebox-runtime.json")
     monkeypatch.setattr(lucebox, "_runtime_state", lambda _alias: {"status": "STOPPED"})
     monkeypatch.setattr(lucebox, "_sync_auto_start", lambda _alias: None)
-    gateway._residency_greedy.clear()
-    yield lucebox
-    gateway._residency_greedy.clear()
+    return lucebox
 
 
 OPENCODE_HEADERS = {gateway.CLIENT_HEADER: gateway.OPENCODE_CLIENT}
 
 
-def test_opencode_starts_a_stopped_model_with_speculative_decoding(lucebox_config):
-    """OpenCodeはコード生成が主用途で投機デコードが3〜5倍効く。起こす側なら個別設定より優先する。"""
+def test_sampling_policy_comes_from_the_instance_setting_only(lucebox_config):
+    """クライアントで上書きしない。
+
+    以前は「OpenCodeが停止中のモデルを起こすなら投機ON」を優先していたが、
+    greedy固定でエージェントが同じツール呼び出しを繰り返して止まらなくなった。
+    速度の利得よりループの害が重いので、個別設定だけで決める。
+    """
     lucebox_config.save_instance("luce", {"model_path": "/m/t.gguf", "prefer_speculative": False})
     stopped = {"alias": "luce", "port": 8216, "loaded": False, "runtime": "lucebox"}
-    assert gateway._greedy_sampling_for(stopped, _FakeRequest(OPENCODE_HEADERS)) is True
+    running = {"alias": "luce", "port": 8216, "loaded": True, "runtime": "lucebox"}
+    for instance in (stopped, running):
+        assert gateway._greedy_sampling_for(instance, _FakeRequest(OPENCODE_HEADERS)) is False
+        assert gateway._greedy_sampling_for(instance, _FakeRequest()) is False
 
-
-def test_other_clients_starting_a_model_follow_the_instance_setting(lucebox_config):
-    lucebox_config.save_instance("luce", {"model_path": "/m/t.gguf", "prefer_speculative": False})
-    stopped = {"alias": "luce", "port": 8216, "loaded": False, "runtime": "lucebox"}
-    assert gateway._greedy_sampling_for(stopped, _FakeRequest()) is False
     lucebox_config.save_instance("luce", {"prefer_speculative": True})
-    assert gateway._greedy_sampling_for(stopped, _FakeRequest()) is True
-
-
-def test_a_running_model_keeps_the_policy_it_was_started_with(lucebox_config):
-    """常駐中に方針が変わると、同じセッションの途中で生成の性質が変わってしまう。"""
-    lucebox_config.save_instance("luce", {"model_path": "/m/t.gguf", "prefer_speculative": False})
-    stopped = {"alias": "luce", "port": 8216, "loaded": False, "runtime": "lucebox"}
-    running = {"alias": "luce", "port": 8216, "loaded": True, "runtime": "lucebox"}
-
-    assert gateway._greedy_sampling_for(stopped, _FakeRequest(OPENCODE_HEADERS)) is True
-    # 同じ常駐へ相乗りする後続（OpenCode以外を含む）は起動時の方針を引き継ぐ。
-    assert gateway._greedy_sampling_for(running, _FakeRequest()) is True
-    assert gateway._greedy_sampling_for(running, _FakeRequest(OPENCODE_HEADERS)) is True
-
-
-def test_a_running_model_without_a_recorded_policy_falls_back_to_the_setting(lucebox_config):
-    """ControlDeck再起動やゲートウェイ外での起動では記録が無い。個別設定へ戻す。"""
-    lucebox_config.save_instance("luce", {"model_path": "/m/t.gguf", "prefer_speculative": False})
-    running = {"alias": "luce", "port": 8216, "loaded": True, "runtime": "lucebox"}
-    assert gateway._greedy_sampling_for(running, _FakeRequest(OPENCODE_HEADERS)) is False
+    for instance in (stopped, running):
+        assert gateway._greedy_sampling_for(instance, _FakeRequest(OPENCODE_HEADERS)) is True
+        assert gateway._greedy_sampling_for(instance, _FakeRequest()) is True
 
 
 def test_opencode_does_not_change_llama_cpp_sampling(lucebox_config):
-    """llama.cppは制約が無いので、OpenCodeが起こしてもサンプリングを潰さない。"""
+    """llama.cppは温度に依存せず投機が効く。サンプリングを潰す理由が無い。"""
     stopped = {"alias": "qwen-llama", "port": 8080, "loaded": False, "runtime": "llama.cpp"}
     assert gateway._greedy_sampling_for(stopped, _FakeRequest(OPENCODE_HEADERS)) is False
 
 
 def test_opencode_runtime_config_carries_the_client_header(tmp_path, monkeypatch):
+    """識別ヘッダ自体は診断用に残す（サンプリングの判断には使わない）。"""
     import json
     from pathlib import Path
 
