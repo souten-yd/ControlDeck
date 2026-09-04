@@ -1247,3 +1247,223 @@ async def llama_options(user: User = Depends(require_permission("workflows.edit"
     from app.models_mgmt import llama
 
     return {"flags": await llama.detect_options()}
+
+
+# ---- Lucebox ランタイム（DFlash 投機デコード / R9700） ----
+
+
+class LuceboxInstanceBody(BaseModel):
+    """Luceboxモデル設定。値域はランタイム側の検証と二重に持たない。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str | None = Field(default=None, min_length=1, max_length=128,
+                              pattern=r"^[A-Za-z0-9._:-]+$")
+    model_path: str | None = None
+    draft_path: str | None = None
+    port: int | None = Field(default=None, ge=1024, le=65535)
+    max_ctx: int | None = Field(default=None, ge=512, le=1_048_576)
+    draft_block_size: int | None = Field(default=None, ge=2, le=32)
+    cache_type_k: Literal["f16", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "tq3_0"] | None = None
+    cache_type_v: Literal["f16", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "tq3_0"] | None = None
+    fa_window: int | None = Field(default=None, ge=0, le=131_072)
+    ddtree: bool | None = None
+    ddtree_budget: int | None = Field(default=None, ge=1, le=256)
+    default_max_tokens: int | None = Field(default=None, ge=0, le=1_048_576)
+    draft_residency: Literal["auto", "persistent", "request-scoped"] | None = None
+    fast_rollback: bool | None = None
+    prefer_speculative: bool | None = None
+    agent_turn_cache: bool | None = None
+    auto_start: bool | None = None
+    idle_exclude: bool | None = None
+    order: int | None = Field(default=None, ge=1, le=64)
+
+
+def _lucebox_instance_patch(body: LuceboxInstanceBody) -> dict:
+    """GGUFパスを許可ルート内へ正規化する（llama.cpp と同じ境界を使う）。"""
+    from app.files import service as files
+
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    for key in ("model_path", "draft_path"):
+        if key not in patch:
+            continue
+        raw = str(patch[key])
+        if key == "draft_path" and raw == "":  # 空文字はドラフト解除（AR動作）
+            continue
+        try:
+            resolved = files.resolve(raw)
+        except (PermissionError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not resolved.is_file() or resolved.suffix.lower() != ".gguf":
+            raise HTTPException(status_code=422, detail="許可ルート内のGGUFファイルを指定してください")
+        patch[key] = str(resolved)
+    return patch
+
+
+@router.get("/lucebox/status")
+async def lucebox_status(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import lucebox
+
+    state = lucebox.runtime_status()
+    if state["installed"] and state["instances"]:
+        health = await asyncio.gather(*(
+            lucebox.health(str(item["alias"])) for item in state["instances"]
+        ))
+        state["instances"] = [{**item, "health": h}
+                              for item, h in zip(state["instances"], health, strict=True)]
+    return state
+
+
+@router.get("/lucebox/instances")
+async def lucebox_instances(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import lucebox
+
+    instances = lucebox.list_instances()
+    health = await asyncio.gather(*(lucebox.health(str(item["alias"])) for item in instances))
+    return [{**item, "health": state} for item, state in zip(instances, health, strict=True)]
+
+
+@router.post("/lucebox/instances", status_code=201)
+def lucebox_create_instance(
+    body: LuceboxInstanceBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """Lucebox用のモデル設定を登録する。llama.cppのGGUF登録とは別経路にする。"""
+    from app.models_mgmt import local_llm, lucebox
+
+    patch = _lucebox_instance_patch(body)
+    alias = str(patch.get("alias") or "")
+    if not alias or not patch.get("model_path"):
+        raise HTTPException(status_code=422, detail="別名とターゲットGGUFは必須です")
+    conflict = local_llm.alias_taken_by_other_runtime(alias, "lucebox")
+    if conflict:
+        raise HTTPException(status_code=422, detail=f"別名 '{alias}' は {conflict} が使用しています")
+    try:
+        result = lucebox.save_instance(alias, patch)
+    except lucebox.LuceboxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "lucebox.instance_create", user=user, resource_type="model", resource_id=alias,
+                 request=request, metadata={"port": result.get("port")})
+    return result
+
+
+@router.put("/lucebox/instances/{alias}")
+def lucebox_update_instance(
+    alias: str, body: LuceboxInstanceBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import lucebox
+
+    try:
+        lucebox.get_instance(alias)
+        result = lucebox.save_instance(alias, _lucebox_instance_patch(body))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lucebox.LuceboxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "lucebox.instance_save", user=user, resource_type="model", resource_id=alias,
+                 request=request)
+    return result
+
+
+@router.post("/lucebox/instances/{alias}/select")
+def lucebox_select_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import lucebox
+
+    try:
+        result = lucebox.select_instance(alias)
+    except lucebox.LuceboxError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "lucebox.instance_select", user=user, resource_type="model", resource_id=alias,
+                 request=request)
+    return result
+
+
+@router.post("/lucebox/instances/{alias}/delete")
+def lucebox_delete_instance(
+    alias: str, request: Request,
+    body: DeleteInstanceBody | None = None,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import lucebox
+
+    delete_file = bool(body.delete_file) if body else False
+    try:
+        result = lucebox.delete_instance(alias, delete_file=delete_file)
+    except lucebox.LuceboxError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "lucebox.instance_delete", user=user, resource_type="model", resource_id=alias,
+                 request=request, metadata={"gguf_deleted": result["gguf_deleted"],
+                                            "requested_file_delete": delete_file})
+    return {"ok": True, **result}
+
+
+@router.post("/lucebox/instances/reorder")
+def lucebox_reorder_instances(
+    body: ReorderBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import lucebox
+
+    try:
+        result = lucebox.reorder_instances(body.order)
+    except lucebox.LuceboxError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(db, "lucebox.instance_reorder", user=user, resource_type="model",
+                 request=request, metadata={"order": body.order})
+    return result
+
+
+@router.post("/lucebox/instances/{alias}/start")
+async def lucebox_start_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import lucebox
+
+    ok, error = await asyncio.to_thread(lucebox.start_instance, alias)
+    audit.record(db, "lucebox.start", user=user, resource_type="model", resource_id=alias,
+                 request=request)
+    if not ok:
+        raise HTTPException(status_code=502, detail=error or "起動に失敗しました")
+    return {"ok": True}
+
+
+@router.post("/lucebox/instances/{alias}/stop")
+async def lucebox_stop_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import lucebox
+
+    ok, error = await asyncio.to_thread(lucebox.stop_instance, alias)
+    audit.record(db, "lucebox.stop", user=user, resource_type="model", resource_id=alias,
+                 request=request)
+    return {"ok": ok, "error": error}
+
+
+class LuceboxSwitchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tag: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    track: Literal["rocm10", "rocm7"]
+
+
+@router.post("/lucebox/switch")
+async def lucebox_switch(
+    body: LuceboxSwitchBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """導入済みの別版/別トラックへ切り替える（再ダウンロード不要・ロールバック用）。"""
+    from app.models_mgmt import lucebox
+
+    try:
+        result = await asyncio.to_thread(lucebox.switch_version, body.tag, body.track)
+    except lucebox.LuceboxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "lucebox.switch", user=user, resource_type="runtime",
+                 resource_id=f"{body.tag}/{body.track}", request=request)
+    return result

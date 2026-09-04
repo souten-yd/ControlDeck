@@ -5,6 +5,9 @@ KVの受け入れ制御を効かせるための層。認証はセッションCoo
 """
 from __future__ import annotations
 
+import asyncio
+import json
+
 from tests.conftest import CSRF_HEADERS
 
 
@@ -80,7 +83,7 @@ def test_admission_waits_using_shared_capacity(monkeypatch):
     """ゲートウェイ経由でも await_capacity を通る（直結との差を無くすのが目的）。"""
     import asyncio
 
-    from app.models_mgmt import gateway, llama
+    from app.models_mgmt import gateway, llama, lucebox
 
     seen = {}
 
@@ -89,12 +92,38 @@ def test_admission_waits_using_shared_capacity(monkeypatch):
         return {"available": True, "accepting": True}
 
     monkeypatch.setattr(llama, "await_capacity", _fake)
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "local", "role": "llm", "port": 8090, "loaded": True},
+    ])
+    monkeypatch.setattr(lucebox, "list_instances", list)
     payload = {"messages": [{"role": "user", "content": "x" * 400}], "max_tokens": 256}
-    asyncio.run(gateway._admit(8090, payload))
+    asyncio.run(gateway._admit("local", 8090, payload))
     assert seen["port"] == 8090
     # プロンプト概算(400/4=100) + 出力上限(256)
     assert seen["needed"] == 356
     assert seen["timeout"] == gateway.CAPACITY_TIMEOUT_SECONDS
+
+
+def test_admission_skips_capacity_wait_for_lucebox(monkeypatch):
+    """Luceboxは共有KVプールを持たない。待つ対象が無いので素通しする。
+
+    ここで llama.cpp と同じ待ちを掛けると、存在しないメトリクスを読みに行って
+    毎回タイムアウト分だけ生成開始が遅れる。
+    """
+    import asyncio
+
+    from app.models_mgmt import gateway, llama, lucebox
+
+    async def _must_not_run(*args, **kwargs):
+        raise AssertionError("Luceboxでllama.cppの容量待ちを呼んではいけない")
+
+    monkeypatch.setattr(llama, "await_capacity", _must_not_run)
+    monkeypatch.setattr(llama, "list_instances", list)
+    monkeypatch.setattr(lucebox, "list_instances", lambda: [
+        {"alias": "luce", "role": "llm", "port": 8216, "loaded": True, "runtime": "lucebox"},
+    ])
+    result = asyncio.run(gateway._admit("luce", 8216, {"messages": [], "max_tokens": 16}))
+    assert result["ok"] is True
 
 
 def test_direct_port_still_works_and_is_resolvable(monkeypatch, tmp_path):
@@ -258,3 +287,76 @@ def test_auto_model_follows_the_running_endpoint(monkeypatch):
         {"alias": "top", "role": "llm", "port": 8090, "loaded": False},
     ])
     assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("top", 8090)
+
+
+def test_stream_failure_is_reported_instead_of_an_empty_ok_stream(admin_client, monkeypatch):
+    """転送先の失敗を 200 の空ストリームにしない。
+
+    ストリームは本文を流し始める前に応答行が決まるため、status を見ずに中継すると
+    エラーが「中身の無い成功」として届く。OpenAI互換クライアントはそれを空応答と
+    見なして同じ要求を再送し続け、原因も見えないまま GPU を焼き続ける
+    （llama.cpp の grammar エラーで実際に起きた）。
+    """
+    import httpx
+
+    from app.models_mgmt import gateway, llama
+
+    key = _issue(admin_client)
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "local", "role": "llm", "port": 8090, "loaded": True},
+    ])
+
+    async def _ready(alias, timeout_seconds=180):
+        return True
+
+    async def _admit(alias, port, payload):
+        return {"accepting": True}
+
+    async def _lease(alias, request):
+        return object(), "lease-1", asyncio.get_running_loop().create_future()
+
+    async def _release(adapter, lease_id, renew):
+        renew.cancel()
+
+    monkeypatch.setattr(llama, "ensure_ready", _ready)
+    monkeypatch.setattr(gateway, "_admit", _admit)
+    monkeypatch.setattr(gateway, "_acquire_gateway_lease", _lease)
+    monkeypatch.setattr(gateway, "_release_gateway_lease", _release)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {
+            "code": 400, "type": "invalid_request_error",
+            "message": "Failed to initialize samplers: failed to parse grammar",
+        }})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        gateway.httpx, "AsyncClient",
+        lambda **kwargs: real_client(**{**kwargs, "transport": transport}),
+    )
+
+    response = admin_client.post(
+        "/api/v1/llm/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": "local", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 400
+    # どのモデルが何で失敗したかが、そのままクライアントの表示になる。
+    assert "failed to parse grammar" in response.json()["error"]["message"]
+    assert response.json()["error"]["message"].startswith("local: ")
+
+
+def test_upstream_error_keeps_the_reason_and_bounds_the_body():
+    """転送先の本文はそのまま渡すが、上限は付ける（文法全体が返ることがある）。"""
+    from app.models_mgmt import gateway
+
+    structured = gateway._upstream_error("local", json.dumps({
+        "error": {"code": 400, "type": "invalid_request_error", "message": "no slot"},
+    }).encode())
+    assert structured["error"]["message"] == "local: no slot"
+    assert structured["error"]["type"] == "invalid_request_error"
+
+    plain = gateway._upstream_error("local", b"x" * 50_000)
+    assert plain["error"]["type"] == "upstream_error"
+    assert len(plain["error"]["message"]) <= gateway.UPSTREAM_ERROR_CHARS + len("local: ")

@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import shutil
-import tarfile
 import time
 from collections import deque
 from pathlib import Path
@@ -24,12 +23,19 @@ from pathlib import Path
 import httpx
 
 from app.config import data_dir
+from app.models_mgmt import gpu_release
 
 logger = logging.getLogger("control_deck.llama")
 
 RELEASE_REPO = "souten-yd/llama-builder"
+# 導入経験のない環境向けの下限。実際の導入・更新は常に最新リリースを解決する
+# （latest_tag()）。ここは GitHub へ届かないときの退避先でしかない。
 DEFAULT_TAG = "llama-gpu-b10001"
+# リリースタグの形。llama-builder は常に llama-gpu-<upstream tag> を発行する。
+TAG_PREFIX = "llama-gpu-"
 UNIT_PREFIX = "cdapp-llama"  # cdapp- 始まりで systemd ヘルパーの検証を満たす
+# 版ディレクトリの保持数。直前の1版はロールバック先として残す。
+RETAIN_VERSIONS = 2
 
 # backend 種別 → リリース asset 名のマッチ規則（Linux のみ）
 BACKEND_PATTERNS = {
@@ -39,6 +45,15 @@ BACKEND_PATTERNS = {
 }
 # llama.cpp としてユーザーに提示するバックエンド。CUDA(NVIDIA)は当面 Ollama を使う方針のため除外。
 SELECTABLE_BACKENDS = ("rocm", "vulkan")
+# ROCm ビルドは ROCm 10 系へ統一した（llama-builder の linux-rocm-r9700 は
+# amdrocm-core-dev10.0-gfx1201 でビルドされる）。ホストの ROCm ユーザースペースが
+# 別メジャーだと共有ライブラリを解決できないため、導入前に警告する材料として持つ。
+ROCM_SERIES_MAJOR = 10
+BACKEND_LABELS = {
+    "rocm": f"ROCm {ROCM_SERIES_MAJOR}（AMD）",
+    "vulkan": "Vulkan（汎用GPU）",
+    "cuda": "CUDA（NVIDIA）",
+}
 ALIAS_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_INSTANCES = 8
 MAX_VISION_PROJECTORS = 32
@@ -257,6 +272,14 @@ def _ensure_port_free_for_other_runtimes(port: int) -> None:
         ollama_port = None
     if ollama_port and int(ollama_port) == int(port):
         raise ValueError(f"ポート {port} は Ollama が使用しています")
+    from app.models_mgmt import lucebox
+
+    try:
+        lucebox_ports = lucebox.endpoint_ports()
+    except OSError:  # 設定ファイルが読めないだけで登録を止めない
+        lucebox_ports = set()
+    if int(port) in lucebox_ports:
+        raise ValueError(f"ポート {port} は Lucebox が使用しています")
 
 
 def delete_endpoint(endpoint_id: str) -> None:
@@ -402,6 +425,7 @@ def list_instances() -> list[dict]:
         result.append({
             **instance,
             "alias": alias,
+            "runtime": "llama.cpp",
             "selected": alias == cfg.get("selected_alias"),
             "unit": unit_name(alias),
             "loaded": state in ("RUNNING", "STARTING"),
@@ -694,17 +718,68 @@ def _backend_root(backend: str, tag: str) -> Path:
     return runtimes_dir() / tag / backend / "extracted"
 
 
-def installed_backends(tag: str = DEFAULT_TAG) -> list[str]:
+def current_tag() -> str:
+    """current が指している版。未導入なら既定タグ。"""
+    return str(get_config().get("tag") or "") or DEFAULT_TAG
+
+
+def installed_tags() -> list[str]:
+    """展開済みの版タグ（新しい順）。ロールバック候補になる。"""
+    root = runtimes_dir()
+    if not root.is_dir():
+        return []
+    tags = [child.name for child in root.iterdir()
+            if child.is_dir() and not child.is_symlink() and child.name.startswith(TAG_PREFIX)]
+    return sorted(tags, key=_tag_sort_key, reverse=True)
+
+
+def _tag_sort_key(tag: str) -> tuple[int, str]:
+    """llama-gpu-b10687 の数値部で比較する（b9544 < b10001 を正しく扱う）。"""
+    match = re.search(r"b(\d+)", tag)
+    return (int(match.group(1)) if match else 0, tag)
+
+
+def installed_backends(tag: str = "") -> list[str]:
     """ダウンロード済み（展開済み）の backend 一覧。切り替え候補になる。"""
+    resolved = tag or current_tag()
     out = []
     for b in BACKEND_PATTERNS:
-        if _find_binary(_backend_root(b, tag), "llama-server") is not None:
+        if _find_binary(_backend_root(b, resolved), "llama-server") is not None:
             out.append(b)
     return out
 
 
-def switch_backend(backend: str, tag: str = DEFAULT_TAG) -> dict:
+def host_rocm_version() -> str:
+    """ホストの ROCm ユーザースペース版。取得できなければ空。"""
+    for path in (Path("/opt/rocm/.info/version"), Path("/opt/rocm/.info/version-rocm")):
+        try:
+            value = path.read_text(encoding="ascii", errors="ignore").strip()
+        except OSError:
+            continue
+        match = re.match(r"^(\d+(?:\.\d+)*)", value)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def backend_warning(backend: str) -> str:
+    """ROCm 10 統一に伴う、ホスト環境との不一致の説明（空なら問題なし）。"""
+    if backend != "rocm":
+        return ""
+    version = host_rocm_version()
+    if not version:
+        return (f"ROCm ビルドは ROCm {ROCM_SERIES_MAJOR} 系へ統一されています。"
+                "ホストの ROCm を検出できないため、起動時にライブラリ解決へ失敗する可能性があります")
+    if int(version.split(".")[0]) != ROCM_SERIES_MAJOR:
+        return (f"ROCm ビルドは ROCm {ROCM_SERIES_MAJOR} 系へ統一されています。"
+                f"ホストの ROCm は {version} のため、ROCm {ROCM_SERIES_MAJOR} 系へ更新するか"
+                " Vulkan バックエンドを使ってください")
+    return ""
+
+
+def switch_backend(backend: str, tag: str = "") -> dict:
     """導入済みの別 backend へ current を張り替える（再ダウンロード不要）。"""
+    tag = tag or current_tag()
     server = _find_binary(_backend_root(backend, tag), "llama-server")
     if server is None:
         raise RuntimeError(f"{backend} は未導入です。先に導入してください")
@@ -746,95 +821,166 @@ def runtime_status() -> dict:
         "detected_backends": detected,       # {rocm/vulkan/cuda: bool}
         "installed_backends": installed,     # 導入済み（切り替え可能）
         "selectable_backends": selectable,   # UI に出す選択肢
+        "backend_labels": dict(BACKEND_LABELS),
+        "installed_tags": installed_tags(),   # ロールバック候補（新しい順）
+        "rocm_series_major": ROCM_SERIES_MAJOR,
+        "host_rocm_version": host_rocm_version(),
+        "warning": backend_warning(str(cfg.get("backend") or "")),
     }
 
 
 # ---- リリース asset ----
 
 
-async def list_assets(tag: str = DEFAULT_TAG) -> list[dict]:
-    """リリースの Linux 向け asset（backend 判別付き）を返す。"""
-    url = f"https://api.github.com/repos/{RELEASE_REPO}/releases/tags/{tag}"
-    async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "ControlDeck"}) as client:
-        r = await client.get(url)
-    if r.status_code >= 400:
-        raise RuntimeError(f"リリース情報の取得に失敗しました ({r.status_code})")
-    out = []
-    for a in r.json().get("assets", []):
-        backend = next((b for b, pat in BACKEND_PATTERNS.items() if pat.search(a["name"])), None)
-        if backend is None:
-            continue
-        out.append({
-            "name": a["name"], "backend": backend, "size": a["size"],
-            "download_url": a["browser_download_url"], "updated_at": a.get("updated_at", ""),
-        })
-    return out
+async def latest_tag() -> str:
+    """llama-builder の最新リリースタグ。取得できなければ現行版へ落とす。"""
+    try:
+        release = await gpu_release.fetch_release(RELEASE_REPO)
+    except gpu_release.ReleaseError:
+        return current_tag()
+    return release["tag"] or current_tag()
+
+
+async def list_assets(tag: str = "") -> list[dict]:
+    """リリースの Linux 向け asset（backend 判別付き）を返す。tag 未指定は最新。"""
+    try:
+        release = await gpu_release.fetch_release(RELEASE_REPO, tag=tag)
+    except gpu_release.ReleaseError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return [{**asset, "tag": release["tag"]} for asset in _classify_assets(release["assets"])]
+
+
+def _classify_assets(assets: list[dict]) -> list[dict]:
+    """asset 名から backend を判別して付与する（判別できないものは落とす）。"""
+    classified = []
+    for asset in assets:
+        backend = next((b for b, pat in BACKEND_PATTERNS.items() if pat.search(asset["name"])), None)
+        if backend is not None:
+            classified.append({**asset, "backend": backend})
+    return classified
 
 
 def _pick_asset(assets: list[dict], backend: str) -> dict | None:
     return next((a for a in assets if a["backend"] == backend), None)
 
 
-async def install_stream(job, backend: str, tag: str = DEFAULT_TAG):
-    """指定 backend の llama.cpp を導入する（ジョブ本体）。進捗を job に記録する。"""
-    assets = await list_assets(tag)
+async def available_update() -> dict:
+    """導入済みタグと最新リリースを突き合わせる。取得失敗は例外にしない。"""
+    installed = str(get_config().get("tag") or "")
+    result = {"installed_tag": installed, "latest_tag": "", "published_at": "",
+              "update_available": False, "backends": installed_backends(), "error": ""}
+    try:
+        release = await gpu_release.fetch_release(RELEASE_REPO)
+    except gpu_release.ReleaseError as exc:
+        result["error"] = str(exc)
+        return result
+    result["latest_tag"] = release["tag"]
+    result["published_at"] = release["published_at"]
+    result["update_available"] = bool(
+        installed and release["tag"] and _tag_sort_key(release["tag"]) > _tag_sort_key(installed)
+    )
+    return result
+
+
+async def _fetch_backend(job, backend: str, tag: str, assets: list[dict],
+                         checksums: dict[str, str]) -> dict:
+    """1 backend 分をダウンロード・検証・展開する（current は張り替えない）。"""
     asset = _pick_asset(assets, backend)
     if asset is None:
-        raise RuntimeError(f"{backend} 向けの Linux asset が見つかりません（利用可能: {[a['backend'] for a in assets]}）")
-
+        available = sorted({a["backend"] for a in assets})
+        raise RuntimeError(f"{backend} 向けの Linux asset が見つかりません（利用可能: {available}）")
     dest_root = runtimes_dir() / tag / backend
     dest_root.mkdir(parents=True, exist_ok=True)
-    archive = dest_root.parent / asset["name"]
-    total = asset["size"]
-
-    # 1. ダウンロード（進捗）
-    job.log(f"ダウンロード開始: {asset['name']}（{total // 1024 // 1024}MB）")
-    h = hashlib.sha256()
-    done = 0
-    async with httpx.AsyncClient(timeout=None, follow_redirects=True, headers={"User-Agent": "ControlDeck"}) as client:
-        async with client.stream("GET", asset["download_url"]) as r:
-            if r.status_code >= 400:
-                raise RuntimeError(f"ダウンロード失敗 ({r.status_code})")
-            with archive.open("wb") as f:
-                async for chunk in r.aiter_bytes(1024 * 1024):
-                    f.write(chunk)
-                    h.update(chunk)
-                    done += len(chunk)
-                    job.set_progress("ダウンロード中", done, total)
-    digest = f"sha256:{h.hexdigest()}"
-    job.log(f"ダウンロード完了。展開します（SHA256 {digest[:20]}…）")
-
-    # 2. 展開（tar.gz を安全に）
-    job.set_progress("展開中")
-    extract_dir = dest_root / "extracted"
-    if extract_dir.exists():
-        shutil.rmtree(extract_dir)
-    extract_dir.mkdir(parents=True)
-    with tarfile.open(archive, "r:gz") as tar:
-        for member in tar.getmembers():
-            # パストラバーサル防止
-            target = (extract_dir / member.name).resolve()
-            if not str(target).startswith(str(extract_dir.resolve())):
-                raise RuntimeError(f"不正なアーカイブメンバー: {member.name}")
-        tar.extractall(extract_dir)
-    archive.unlink(missing_ok=True)
-
-    # 3. llama-server を探して current にリンク
-    server = _find_binary(extract_dir, "llama-server")
-    if server is None:
+    archive = dest_root / asset["name"]
+    expected = checksums.get(asset["name"], "")
+    if job is not None:
+        job.log(f"{tag} / {BACKEND_LABELS.get(backend, backend)}: {asset['name']}"
+                f"（{asset['size'] // 1024 // 1024}MB{'・SHA256照合あり' if expected else ''}）")
+    try:
+        digest = await gpu_release.download_asset(
+            job, asset, archive, expected_sha256=expected,
+            label=f"ダウンロード中（{BACKEND_LABELS.get(backend, backend)}）",
+        )
+        if job is not None:
+            job.set_progress(f"展開中（{BACKEND_LABELS.get(backend, backend)}）")
+        extracted = gpu_release.extract_archive(archive, dest_root / "extracted")
+    except gpu_release.ReleaseError as exc:
+        shutil.rmtree(dest_root, ignore_errors=True)
+        raise RuntimeError(str(exc)) from exc
+    finally:
+        archive.unlink(missing_ok=True)
+    if _find_binary(extracted, "llama-server") is None:
+        shutil.rmtree(dest_root, ignore_errors=True)
         raise RuntimeError("アーカイブ内に llama-server が見つかりません")
-    bin_root = server.parent
-    server.chmod(0o755)
-    link = current_link()
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(bin_root, target_is_directory=True)
+    return {"backend": backend, "tag": tag, "sha256": f"sha256:{digest}"}
 
-    save_config({"tag": tag, "backend": backend, "sha256": digest,
-                 "installed_at": _now_iso()})
-    job.log(f"導入完了: {backend} 版 llama-server → {link}")
-    return {"backend": backend, "tag": tag, "server": str(server_path()), "sha256": digest}
+
+async def install_stream(job, backend: str, tag: str = ""):
+    """指定 backend の llama.cpp を導入する（ジョブ本体）。進捗を job に記録する。
+
+    tag 未指定なら llama-builder の最新リリースを解決する。ROCm ビルドは
+    ROCm 10 系へ統一されているため、ホストが別メジャーなら警告を残す。
+    """
+    resolved_tag = tag or await latest_tag()
+    release = await gpu_release.fetch_release(RELEASE_REPO, tag=resolved_tag)
+    assets = _classify_assets(release["assets"])
+    checksums = await gpu_release.fetch_checksums(release["assets"])
+    result = await _fetch_backend(job, backend, resolved_tag, assets, checksums)
+    switch_backend(backend, resolved_tag)
+    save_config({"sha256": result["sha256"], "installed_at": _now_iso()})
+    gpu_release.invalidate_cache(RELEASE_REPO)
+    warning = backend_warning(backend)
+    if job is not None:
+        job.log(f"導入完了: {BACKEND_LABELS.get(backend, backend)} 版 llama-server → {current_link()}")
+        if warning:
+            job.log(f"注意: {warning}")
+    return {**result, "version": resolved_tag, "server": str(server_path()), "warning": warning}
+
+
+async def update_stream(job, tag: str = ""):
+    """導入済み backend をまとめて最新リリースへ更新する（ジョブ本体）。
+
+    現在 current が指している backend は最後に張り替えるので、更新後も同じ
+    バックエンドのまま最新版になる。取得・展開が終わってから current を
+    差し替えるため、途中で失敗しても現行版はそのまま使える。
+    """
+    previous = str(get_config().get("tag") or "")
+    active = str(get_config().get("backend") or "")
+    targets = [b for b in installed_backends(previous) if b in SELECTABLE_BACKENDS] if previous else []
+    if not targets:
+        raise RuntimeError("Control Deck が導入した llama.cpp がありません")
+    resolved_tag = tag or await latest_tag()
+    if resolved_tag == previous:
+        return {"backend": active, "tag": previous, "version": previous,
+                "previous_version": previous, "updated": False,
+                "backends": targets, "warning": backend_warning(active)}
+    release = await gpu_release.fetch_release(RELEASE_REPO, tag=resolved_tag, use_cache=False)
+    assets = _classify_assets(release["assets"])
+    checksums = await gpu_release.fetch_checksums(release["assets"])
+    results = []
+    for backend in targets:
+        results.append(await _fetch_backend(job, backend, resolved_tag, assets, checksums))
+    # 起動中のモデルは古い版のバイナリを掴んだままなので、次回起動から新版になる。
+    activate = active if active in targets else targets[0]
+    switch_backend(activate, resolved_tag)
+    digest = next((r["sha256"] for r in results if r["backend"] == activate), "")
+    save_config({"sha256": digest, "installed_at": _now_iso()})
+    # 重複したまま切ると保持数が目減りし、ロールバック先の直前版まで消える。
+    ordered = dict.fromkeys([resolved_tag, *installed_tags()])
+    keep = list(ordered)[:RETAIN_VERSIONS]
+    removed = gpu_release.prune_versions(runtimes_dir(), [*keep, "current"])
+    gpu_release.invalidate_cache(RELEASE_REPO)
+    warning = backend_warning(activate)
+    if job is not None:
+        job.log(f"更新完了: {previous} → {resolved_tag}（{', '.join(targets)}）")
+        if removed:
+            job.log(f"古い版を削除しました: {', '.join(removed)}")
+        if warning:
+            job.log(f"注意: {warning}")
+        job.log("稼働中のモデルは次回起動から新しいバイナリになります")
+    return {"backend": activate, "tag": resolved_tag, "version": resolved_tag,
+            "previous_version": previous, "updated": True, "backends": targets,
+            "warning": warning, "pruned": removed}
 
 
 def _find_binary(root: Path, name: str) -> Path | None:

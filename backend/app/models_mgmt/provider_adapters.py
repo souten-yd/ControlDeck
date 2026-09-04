@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from app.models_mgmt import llama, ollama, providers
+from app.models_mgmt import llama, local_llm, lucebox, ollama, providers
 
 
 class ProviderError(RuntimeError):
@@ -30,6 +30,14 @@ _LLAMA_CONFIG_KEYS = {
     "threads_batch", "mmap", "mlock", "spec_type", "draft_max", "cpu_moe", "n_cpu_moe",
     "temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed", "auto_start",
     "idle_exclude", "think", "think_budget_tokens",
+}
+
+# Lucebox はモデルの識別（alias / target / draft / port）を共通設定APIでは変えない。
+# 変えられるのは、再ロードだけで効く実行パラメータに限る。
+_LUCEBOX_CONFIG_KEYS = {
+    "max_ctx", "draft_block_size", "cache_type_k", "cache_type_v", "fa_window",
+    "ddtree", "ddtree_budget", "default_max_tokens", "draft_residency", "fast_rollback",
+    "prefer_speculative", "agent_turn_cache", "auto_start", "idle_exclude",
 }
 
 
@@ -117,9 +125,9 @@ async def _enforce_load_limit(provider_kind: str, model_id: str) -> None:
     """
     from app.models_mgmt.runtime_policy import get_policy
 
-    llm_instances = [item for item in llama.list_instances() if str(item.get("role", "llm")) == "llm"]
-    if provider_kind == "llama.cpp":
-        target = next((item for item in llama.list_instances() if str(item["alias"]) == model_id), None)
+    llm_instances = local_llm.llm_instances()
+    if provider_kind in local_llm.RUNTIMES:
+        target = local_llm.find(model_id)
         if target is not None and str(target.get("role", "llm")) != "llm":
             return
     ollama_running = await ollama.running_models()
@@ -161,9 +169,37 @@ async def list_models(provider_id: str) -> list[dict]:
                 "modified_at": "", "loaded": bool(state.get("ok")) or bool(config.get("loaded")),
                 "details": {
                     "path": model_path, "backend": backend, "port": config.get("port"),
+                    "backend_label": llama.BACKEND_LABELS.get(backend, backend),
+                    "runtime": "llama.cpp",
                     "base_url": config.get("base_url"), "unit": config.get("unit"),
                     "runtime_status": config.get("runtime_status"),
                     "vision_enabled": bool(config.get("mmproj_path")),
+                },
+            })
+        return result
+    if provider["provider"] == "lucebox" and provider["managed"]:
+        state = lucebox.runtime_status()
+        instances = state["instances"]
+        health = await asyncio.gather(*(lucebox.health(str(item["alias"])) for item in instances))
+        result = []
+        for config, live in zip(instances, health, strict=True):
+            model_path = str(config.get("model_path") or "")
+            path = Path(model_path)
+            draft = Path(str(config.get("draft_path") or ""))
+            result.append({
+                "id": str(config["alias"]), "name": path.name or str(config["alias"]),
+                "size_bytes": (path.stat().st_size if path.is_file() else 0)
+                + (draft.stat().st_size if draft.is_file() else 0),
+                "modified_at": "",
+                "loaded": bool(live.get("ok")) or bool(config.get("loaded")),
+                "details": {
+                    "path": model_path, "draft_path": str(config.get("draft_path") or ""),
+                    "backend": state["track"], "backend_label": state["track_label"],
+                    "runtime": "lucebox", "port": config.get("port"),
+                    "base_url": config.get("base_url"), "unit": config.get("unit"),
+                    "runtime_status": config.get("runtime_status"),
+                    "speculative": bool(config.get("draft_path")),
+                    "vision_enabled": False,
                 },
             })
         return result
@@ -198,13 +234,11 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
                 return await ollama.load(model_id, keep_alive)
             except ollama.OllamaError as e:
                 raise ProviderError(str(e)) from e
-        try:
-            llama.get_instance(model_id)
-        except KeyError:
-            raise ProviderNotFound("設定中のllama.cppモデルと一致しません")
-        ok, error = await asyncio.to_thread(llama.start_instance, model_id)
+        if local_llm.find(model_id) is None:
+            raise ProviderNotFound(f"設定中の{kind}モデルと一致しません")
+        ok, error = await asyncio.to_thread(local_llm.start_instance, model_id)
         if not ok:
-            raise ProviderError(error or "llama.cppの起動に失敗しました")
+            raise ProviderError(error or f"{kind}の起動に失敗しました")
         return {"model": model_id, "loaded": True}
     finally:
         # 失敗しても枠を返す。返さないと、以後その分だけ上限が目減りする。
@@ -221,13 +255,12 @@ async def unload_model(provider_id: str, model_id: str) -> dict:
             return await ollama.unload(model_id)
         except ollama.OllamaError as e:
             raise ProviderError(str(e)) from e
-    try:
-        llama.get_instance(model_id)
-    except KeyError:
-        raise ProviderNotFound("設定中のllama.cppモデルと一致しません")
-    ok, error = await asyncio.to_thread(llama.stop_instance, model_id)
+    kind = str(provider["provider"])
+    if local_llm.find(model_id) is None:
+        raise ProviderNotFound(f"設定中の{kind}モデルと一致しません")
+    ok, error = await asyncio.to_thread(local_llm.stop_instance, model_id)
     if not ok:
-        raise ProviderError(error or "llama.cppの停止に失敗しました")
+        raise ProviderError(error or f"{kind}の停止に失敗しました")
     return {"model": model_id, "loaded": False}
 
 
@@ -240,6 +273,12 @@ async def delete_model(provider_id: str, model_id: str) -> None:
             await asyncio.to_thread(llama.delete_instance, model_id)
             return
         except KeyError as e:
+            raise ProviderNotFound(str(e)) from e
+    if provider["provider"] == "lucebox":
+        try:
+            await asyncio.to_thread(lucebox.delete_instance, model_id)
+            return
+        except lucebox.LuceboxError as e:
             raise ProviderNotFound(str(e)) from e
     try:
         await ollama.delete(model_id)
@@ -270,6 +309,12 @@ async def get_model_config(provider_id: str, model_id: str) -> dict:
         except KeyError as exc:
             raise ProviderNotFound("設定中のllama.cppモデルと一致しません") from exc
         return {key: instance.get(key) for key in sorted(_LLAMA_CONFIG_KEYS) if key in instance}
+    if provider["provider"] == "lucebox" and provider["managed"]:
+        try:
+            instance = lucebox.get_instance(model_id)
+        except KeyError as exc:
+            raise ProviderNotFound("設定中のLuceboxモデルと一致しません") from exc
+        return {key: instance.get(key) for key in sorted(_LUCEBOX_CONFIG_KEYS) if key in instance}
     raise UnsupportedOperation("このproviderはControl Deckからのモデル設定に対応していません")
 
 
@@ -293,6 +338,19 @@ async def configure_model(provider_id: str, model_id: str, patch: dict) -> dict:
             raise ProviderNotFound("設定中のllama.cppモデルと一致しません") from exc
         except ValueError as exc:
             raise InvalidConfiguration(str(exc)) from exc
+    if provider["provider"] == "lucebox" and provider["managed"]:
+        unknown = sorted(set(patch) - _LUCEBOX_CONFIG_KEYS)
+        if unknown:
+            raise InvalidConfiguration(f"Luceboxで設定できない項目です: {', '.join(unknown)}")
+        try:
+            lucebox.get_instance(model_id)
+            lucebox.save_instance(model_id, patch)
+            return {"model": model_id, "config": await get_model_config(provider_id, model_id),
+                    "selected_alias": lucebox.get_config().get("selected_alias")}
+        except KeyError as exc:
+            raise ProviderNotFound("設定中のLuceboxモデルと一致しません") from exc
+        except lucebox.LuceboxError as exc:
+            raise InvalidConfiguration(str(exc)) from exc
     raise UnsupportedOperation("このproviderはControl Deckからのモデル設定に対応していません")
 
 
@@ -314,4 +372,14 @@ async def provider_health(provider_id: str) -> dict:
         ]
         return {"ok": any(item["ok"] for item in details), "provider": "llama.cpp",
                 "installed": llama.is_installed(), "instances": details}
+    if provider["provider"] == "lucebox" and provider["managed"]:
+        instances = lucebox.list_instances()
+        states = await asyncio.gather(*(lucebox.health(str(item["alias"])) for item in instances))
+        details = [
+            {"alias": item["alias"], "port": item["port"], "ok": bool(state.get("ok")),
+             "runtime_status": item.get("runtime_status")}
+            for item, state in zip(instances, states, strict=True)
+        ]
+        return {"ok": any(item["ok"] for item in details), "provider": "lucebox",
+                "installed": lucebox.is_installed(), "instances": details}
     return {"ok": bool(provider.get("available")), "provider": provider["provider"], "instances": []}

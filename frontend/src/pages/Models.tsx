@@ -14,6 +14,10 @@ import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
+import {
+  createLuceboxInstance, deleteLuceboxInstance, getLuceboxStatus, reorderLuceboxInstances,
+  updateLuceboxInstance, type LuceboxInstance, type LuceboxInstanceInput, type LuceboxStatus,
+} from "../api/lucebox";
 
 interface Model {
   id?: string;
@@ -27,12 +31,26 @@ interface Model {
   vram: number | null;
   digest?: string;
   vision_enabled?: boolean;
+  /** どのランタイムが載せるモデルか。一覧の印と操作先の振り分けに使う。 */
+  runtime?: LocalRuntime | "ollama";
+  /** ROCm 10 / Vulkan のような、そのランタイム内でのビルド種別。 */
+  backend_label?: string;
+  /** Lucebox のDFlashドラフトが設定済みか（投機デコードが効く構成か）。 */
+  speculative?: boolean;
+  port?: number;
 }
+
+/** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
+type LocalRuntime = "llama.cpp" | "lucebox";
+const LOCAL_RUNTIMES: LocalRuntime[] = ["llama.cpp", "lucebox"];
+const RUNTIME_LABEL: Record<string, string> = {
+  "llama.cpp": "llama.cpp", lucebox: "Lucebox", ollama: "Ollama",
+};
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
 interface RuntimePolicy {
-  selected_runtime: "ollama" | "llama.cpp";
-  selected_backend: "rocm" | "vulkan" | "";
+  selected_runtime: "ollama" | LocalRuntime;
+  selected_backend: "rocm" | "vulkan" | "rocm10" | "rocm7" | "";
   coexistence: "exclusive" | "coexist";
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
@@ -64,7 +82,15 @@ interface RuntimePolicy {
 interface RuntimeEnvironment {
   platform: string;
   gpu: string;
-  runtimes: Array<{ id: string; runtime: "ollama" | "llama.cpp"; backend: string; label: string; available: boolean; installed: boolean; selected: boolean; running?: boolean }>;
+  runtimes: Array<{
+    id: string; runtime: "ollama" | LocalRuntime; backend: string; label: string;
+    available: boolean; installed: boolean; selected: boolean; running?: boolean;
+    /** ホスト環境との不一致など、選ぶ前に伝えるべき注意。空なら問題なし。 */
+    warning?: string;
+    /** 導入・更新を担当するアドオンのid。未導入時の導線に使う。 */
+    addon_id?: string;
+    experimental?: boolean;
+  }>;
   policy: RuntimePolicy;
   amd_gpu: null | {
     bdf: string;
@@ -238,9 +264,10 @@ export default function ModelsPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
-  const [llamaManagerOpen, setLlamaManagerOpen] = useState(false);
+  const [luceboxDetail, setLuceboxDetail] = useState<string | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [llamaDeleting, setLlamaDeleting] = useState<string | null>(null);
+  const [localDeleting, setLocalDeleting] = useState<{ alias: string; runtime: LocalRuntime } | null>(null);
   const [deleteFile, setDeleteFile] = useState(false);
   const [duplicating, setDuplicating] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
@@ -249,29 +276,49 @@ export default function ModelsPage() {
 
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
-  const selectedProvider = runtimeEnv?.policy.selected_runtime === "llama.cpp" ? "llama.cpp" : "ollama";
+  const selectedRuntime = runtimeEnv?.policy.selected_runtime ?? "ollama";
+  // ローカルランタイムを選んでいる間は llama.cpp と Lucebox のモデルを1つの一覧に出す。
+  // ゲートウェイが両方を同じアドレスで配るので、片方だけ見えると実態と食い違う。
+  const isLocal = selectedRuntime !== "ollama";
+  const selectedProvider: "ollama" | "local" = isLocal ? "local" : "ollama";
   const { data: models, isLoading } = useQuery({
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
-      if (selectedProvider === "ollama") return api<Model[]>("/models");
-      const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(`/models/providers/${selectedProvider}/models`);
-      return common.map((m) => ({ id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "", family: "", loaded: !!m.loaded, expires_at: null, vram: null, vision_enabled: m.details.vision_enabled === true }));
+      if (!isLocal) return api<Model[]>("/models");
+      const fetched = await Promise.all(LOCAL_RUNTIMES.map(async (runtime) => {
+        try {
+          const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
+            `/models/providers/${runtime}/models`);
+          return common.map((m): Model => ({
+            id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "",
+            family: "", loaded: !!m.loaded, expires_at: null, vram: null,
+            vision_enabled: m.details.vision_enabled === true,
+            runtime, backend_label: String(m.details.backend_label ?? ""),
+            speculative: m.details.speculative === true,
+            port: typeof m.details.port === "number" ? m.details.port : undefined,
+          }));
+        } catch {
+          // 片方が未導入でも、もう片方の一覧は出す。
+          return [] as Model[];
+        }
+      }));
+      return fetched.flat();
     },
     refetchInterval: 15000,
-    enabled: !!runtimeEnv && (selectedProvider !== "ollama" || status?.available !== false),
+    enabled: !!runtimeEnv && (isLocal || status?.available !== false),
   });
   // チャット等からOllamaが暗黙ロードされるため、重いmodel一覧とは別に軽量な/api/psを追跡する。
   // これがないと最大15秒、インジケータと操作ボタンがロード前のまま残る。
   const { data: runningModels } = useQuery({
     queryKey: ["ollama-running"],
     queryFn: () => api<RunningModel[]>("/models/running"),
-    enabled: selectedProvider === "ollama" && status?.available !== false,
+    enabled: !isLocal && status?.available !== false,
     refetchInterval: 2_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: "always",
   });
   const liveModels = models?.map((model) => {
-    if (selectedProvider !== "ollama" || runningModels === undefined) return model;
+    if (isLocal || runningModels === undefined) return model;
     const key = ollamaModelKey(model.name);
     const digest = model.digest?.toLowerCase();
     const active = runningModels.find((item) =>
@@ -282,26 +329,34 @@ export default function ModelsPage() {
   });
   const { data: endpoints } = useQuery({
     queryKey: ["llama-endpoints"], queryFn: listLlamaEndpoints,
-    enabled: selectedProvider === "llama.cpp", refetchInterval: 15000,
+    enabled: isLocal, refetchInterval: 15000,
   });
   const refresh = async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["models", selectedProvider] }),
       qc.invalidateQueries({ queryKey: ["llama-endpoints"] }),
-      selectedProvider === "ollama" ? qc.invalidateQueries({ queryKey: ["ollama-running"] }) : Promise.resolve(),
+      qc.invalidateQueries({ queryKey: ["lucebox-status"] }),
+      isLocal ? Promise.resolve() : qc.invalidateQueries({ queryKey: ["ollama-running"] }),
     ]);
   };
 
-  /** 優先度の入れ替え。自動起動・オンデマンド起動の順序に効く。 */
-  const move = async (index: number, offset: -1 | 1) => {
-    if (!liveModels) return;
+  /** 優先度の入れ替え。自動起動・オンデマンド起動の順序に効く。
+
+   * 順序はランタイム内で閉じている（llama.cpp と Lucebox は別々のカタログを持つ）ため、
+   * 同じランタイムの行同士でのみ入れ替える。
+   */
+  const move = async (model: Model, offset: -1 | 1) => {
+    if (!liveModels || !model.runtime || model.runtime === "ollama") return;
+    const runtime = model.runtime;
+    const siblings = liveModels.filter((item) => item.runtime === runtime);
+    const index = siblings.findIndex((item) => (item.id ?? item.name) === (model.id ?? model.name));
     const target = index + offset;
-    if (target < 0 || target >= liveModels.length) return;
-    const order = liveModels.map((item) => item.id ?? item.name);
+    if (index < 0 || target < 0 || target >= siblings.length) return;
+    const order = siblings.map((item) => item.id ?? item.name);
     [order[index], order[target]] = [order[target], order[index]];
     setReordering(true);
     try {
-      await reorderLlamaInstances(order);
+      await (runtime === "lucebox" ? reorderLuceboxInstances(order) : reorderLlamaInstances(order));
       await refresh();
     } catch (e) {
       show(e instanceof Error ? e.message : "並べ替えに失敗しました", "error");
@@ -310,12 +365,13 @@ export default function ModelsPage() {
     }
   };
 
-  const removeLlama = useMutation({
-    mutationFn: ({ alias, file }: { alias: string; file: boolean }) => deleteLlamaInstance(alias, file),
+  const removeLocal = useMutation({
+    mutationFn: ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) =>
+      runtime === "lucebox" ? deleteLuceboxInstance(alias, file) : deleteLlamaInstance(alias, file),
     onSuccess: (result) => {
       show(result.gguf_deleted ? "設定とGGUFを削除しました"
            : result.reason ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
-      setLlamaDeleting(null); setDeleteFile(false); refresh();
+      setLocalDeleting(null); setDeleteFile(false); refresh();
     },
     onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
   });
@@ -326,7 +382,8 @@ export default function ModelsPage() {
     onError: (e) => show(e instanceof Error ? e.message : "複製に失敗しました", "error"),
   });
 
-  const act = async (id: string, action: "load" | "unload", runningOnSameEndpoint = "") => {
+  const act = async (id: string, action: "load" | "unload", runningOnSameEndpoint = "",
+                     runtime: Model["runtime"] = undefined) => {
     // 同じエンドポイントで別モデルが動いていると、ロードでそれが止まる。先に知らせる。
     if (action === "load" && runningOnSameEndpoint && runningOnSameEndpoint !== id) {
       setSwapConfirm({ id, running: runningOnSameEndpoint });
@@ -334,8 +391,9 @@ export default function ModelsPage() {
     }
     setActing(id);
     try {
-      await api(`/models/providers/${selectedProvider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
-      if (selectedProvider === "ollama") {
+      const provider = runtime ?? (isLocal ? "llama.cpp" : "ollama");
+      await api(`/models/providers/${provider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
+      if (!isLocal) {
         qc.setQueryData<RunningModel[]>(["ollama-running"], (current = []) => action === "load"
           ? [...current.filter((item) => ollamaModelKey(item.name ?? item.model) !== ollamaModelKey(id)), { name: id, model: id }]
           : current.filter((item) => ollamaModelKey(item.name ?? item.model) !== ollamaModelKey(id)));
@@ -361,8 +419,8 @@ export default function ModelsPage() {
             <button onClick={() => setSettingsOpen(true)} aria-label="LLM 共通設定" title="LLM 共通設定" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300">⚙</button>
           )}
           {can("workflows.edit") && (
-            <button onClick={() => selectedProvider === "llama.cpp" ? setLlamaManagerOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              <IconPlus /> {selectedProvider === "llama.cpp" ? "GGUF登録" : "モデル取得"}
+            <button onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
+              <IconPlus /> {isLocal ? "モデル登録" : "モデル取得"}
             </button>
           )}
         </div>} />
@@ -377,8 +435,11 @@ export default function ModelsPage() {
       </div>
       {tab === "llm" && (
       <p className="mb-4 text-xs text-zinc-400">
-        選択中: {selectedProvider === "llama.cpp" ? `llama.cpp / ${runtimeEnv?.policy.selected_backend.toUpperCase()}` : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
-        {selectedProvider === "ollama" && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
+        選択中: {isLocal
+          ? `${RUNTIME_LABEL[selectedRuntime] ?? selectedRuntime} / ${BACKEND_LABEL[runtimeEnv?.policy.selected_backend ?? ""] ?? runtimeEnv?.policy.selected_backend ?? "-"}`
+          : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
+        {isLocal && "ゲートウェイは llama.cpp と Lucebox の両方を同じアドレスで配ります。"}
+        {!isLocal && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
       )}
 
@@ -387,7 +448,7 @@ export default function ModelsPage() {
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "tts" && <TtsPanel />}
       {tab === "llm" && (<>
-      {selectedProvider === "ollama" && status && !status.available ? (
+      {!isLocal && status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           Ollama（{status.base_url}）に接続できません。<code className="font-mono">ollama serve</code> の起動、または設定でエンドポイントを確認してください。
         </div>
@@ -395,35 +456,51 @@ export default function ModelsPage() {
         <Skeleton className="h-24" />
       ) : !liveModels || liveModels.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">モデルがありません。「モデル取得」から追加してください。</p>
+          <p className="text-sm text-zinc-400">
+            モデルがありません。「{isLocal ? "モデル登録" : "モデル取得"}」から追加してください。
+          </p>
         </div>
       ) : (
         <ul className="space-y-3">
-          {liveModels.map((m, index) => {
+          {liveModels.map((m) => {
             const id = m.id ?? m.name;
-            const isLlama = selectedProvider === "llama.cpp";
+            const runtime = m.runtime === "ollama" ? undefined : m.runtime;
+            const isLlama = runtime === "llama.cpp";
+            const isLucebox = runtime === "lucebox";
             const endpoint = isLlama ? endpoints?.find((e) => e.aliases.includes(id)) : undefined;
             // 同じエンドポイントを共有する行は、ロードすると同居モデルが止まることを明示する。
             const shared = endpoint && endpoint.aliases.length > 1;
+            const openDetail = () => isLucebox ? setLuceboxDetail(id) : isLlama ? setLlamaDetail(id) : setDetail(m.name);
             return (
             <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-2 sm:gap-3">
-                {isLlama && can("workflows.edit") && liveModels.length > 1 && (
+                {isLocal && can("workflows.edit") && liveModels.filter((item) => item.runtime === runtime).length > 1 && (
                   <div className="flex shrink-0 flex-col">
-                    <button type="button" onClick={() => move(index, -1)} disabled={index === 0 || reordering}
-                      aria-label={`${m.name}を上へ移動`} title="優先度を上げる"
+                    <button type="button" onClick={() => move(m, -1)} disabled={reordering}
+                      aria-label={`${m.name}を上へ移動`} title="優先度を上げる（同じランタイム内）"
                       className="grid h-6 w-8 place-items-center rounded text-zinc-400 hover:text-zinc-700 disabled:opacity-25 dark:hover:text-zinc-200">↑</button>
-                    <button type="button" onClick={() => move(index, 1)} disabled={index === liveModels.length - 1 || reordering}
-                      aria-label={`${m.name}を下へ移動`} title="優先度を下げる"
+                    <button type="button" onClick={() => move(m, 1)} disabled={reordering}
+                      aria-label={`${m.name}を下へ移動`} title="優先度を下げる（同じランタイム内）"
                       className="grid h-6 w-8 place-items-center rounded text-zinc-400 hover:text-zinc-700 disabled:opacity-25 dark:hover:text-zinc-200">↓</button>
                   </div>
                 )}
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
-                <button onClick={() => isLlama ? setLlamaDetail(id) : setDetail(m.name)}
-                  aria-label={isLlama ? `${id}の個別設定を開く` : `${m.name}の詳細を開く`}
+                <button onClick={openDetail}
+                  aria-label={isLocal ? `${id}の個別設定を開く` : `${m.name}の詳細を開く`}
                   className="min-w-0 flex-1 text-left">
                   <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
                     {m.name}
+                    {/* どのランタイムが載せるモデルかを一覧で見分けられるようにする。 */}
+                    {isLucebox && (
+                      <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                        LUCEBOX
+                      </span>
+                    )}
+                    {isLucebox && m.speculative && (
+                      <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                        DFLASH
+                      </span>
+                    )}
                     {shared && (
                       <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
                         :{endpoint!.port} 共有
@@ -436,23 +513,28 @@ export default function ModelsPage() {
                     )}
                   </p>
                   <p className="num truncate text-xs text-zinc-400">
-                    {isLlama ? "llama.cpp" : "Ollama"} · {gb(m.size)}{m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
+                    {RUNTIME_LABEL[runtime ?? "ollama"] ?? "Ollama"}
+                    {m.backend_label ? ` / ${m.backend_label}` : ""} · {gb(m.size)}
+                    {m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
+                    {m.port ? ` · :${m.port}` : ""}
                     {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
                   </p>
                 </button>
                 {can("workflows.edit") && (
                   <>
-                    <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "")} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
+                    <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "", runtime)} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
                       {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
-                    {isLlama ? (
+                    {isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
                         trigger={<IconDots />}
                         items={[
-                          { label: "詳細設定", onSelect: () => setLlamaDetail(id) },
-                          { label: "複製", onSelect: () => setDuplicating(id) },
-                          { label: "削除", danger: true, separated: true, onSelect: () => setLlamaDeleting(id) },
+                          { label: "詳細設定", onSelect: openDetail },
+                          // 複製はエンドポイント共有が前提の機能なので llama.cpp だけ。
+                          ...(isLlama ? [{ label: "複製", onSelect: () => setDuplicating(id) }] : []),
+                          { label: "削除", danger: true, separated: true,
+                            onSelect: () => setLocalDeleting({ alias: id, runtime }) },
                         ]}
                       />
                     ) : (
@@ -472,19 +554,20 @@ export default function ModelsPage() {
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
       {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
-      {llamaManagerOpen && <BottomSheet title="llama.cpp GGUF登録" onClose={() => setLlamaManagerOpen(false)} wide><LlamaRuntimePanel registrationOnly /></BottomSheet>}
+      {luceboxDetail && <LuceboxDetailSheet alias={luceboxDetail} onClose={() => setLuceboxDetail(null)} />}
+      {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
       )}
-      {llamaDeleting && (
+      {localDeleting && (
         <ConfirmDialog
-          title={`「${llamaDeleting}」を削除しますか？`}
-          message="モデル設定と systemd unit を削除します。"
+          title={`「${localDeleting.alias}」を削除しますか？`}
+          message={`${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
           confirmLabel="削除する"
           danger
-          busy={removeLlama.isPending}
-          onConfirm={() => removeLlama.mutate({ alias: llamaDeleting, file: deleteFile })}
-          onClose={() => { setLlamaDeleting(null); setDeleteFile(false); }}
+          busy={removeLocal.isPending}
+          onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
+          onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
           <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
@@ -1065,7 +1148,10 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
     if (!item.installed) return;
     savePolicy.mutate({
       selected_runtime: item.runtime,
-      selected_backend: item.runtime === "llama.cpp" ? item.backend as "rocm" | "vulkan" : "",
+      // ollama以外は「同じランタイム内のどのビルドか」を backend に持たせる
+      // （llama.cpp は rocm/vulkan、Lucebox は ROCm トラック）。
+      selected_backend: item.runtime === "ollama"
+        ? "" : item.backend as RuntimePolicy["selected_backend"],
     });
   };
   return (
@@ -1074,19 +1160,35 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <p className="mb-2 text-xs font-semibold text-zinc-500">このPCで利用するランタイム</p>
         <p className="mb-2 text-[10px] text-zinc-400">{runtimeEnv.platform} · {runtimeEnv.gpu} GPU。利用可能な構成だけを表示しています。</p>
         <div className="grid gap-2 sm:grid-cols-3">
-          {runtimeEnv.runtimes.filter((r) => r.available).map((item) => {
+          {runtimeEnv.runtimes.filter((r) => r.available || r.installed).map((item) => {
             const selected = policy.selected_runtime === item.runtime && (item.runtime === "ollama" || policy.selected_backend === item.backend);
             return (
               <button key={item.id} type="button" onClick={() => chooseRuntime(item)} disabled={!item.installed || savePolicy.isPending}
                 className={`rounded-xl border p-3 text-left disabled:opacity-50 ${selected ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-500 dark:bg-accent-600/10" : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700"}`}>
-                <span className="block text-sm font-semibold">{item.label}</span>
+                <span className="flex items-center gap-1.5 text-sm font-semibold">
+                  {item.label}
+                  {item.experimental && (
+                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
+                  )}
+                </span>
                 <span className={`mt-1 block text-[10px] ${selected ? "text-accent-600 dark:text-accent-400" : "text-zinc-400"}`}>
                   {selected ? "● 使用中" : !item.installed ? "導入が必要" : item.running ? "稼働中 · 選択する" : "利用可能 · 選択する"}
                 </span>
+                {/* ホストROCmとビルドのメジャー不一致など、選ぶ前に知るべきことをその場に出す。 */}
+                {item.warning && (
+                  <span className="mt-1.5 block rounded-lg bg-amber-50 px-2 py-1.5 text-[10px] leading-relaxed text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                    {item.warning}
+                  </span>
+                )}
               </button>
             );
           })}
         </div>
+        {runtimeEnv.runtimes.some((item) => !item.installed && item.addon_id) && (
+          <p className="mt-2 text-[10px] text-zinc-400">
+            未導入のランタイムは <a href="/settings" className="text-accent-600 underline dark:text-accent-400">設定 → オプション機能</a> から導入・更新します。
+          </p>
+        )}
       </div>
 
       <div className="mb-4 space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
@@ -1349,7 +1451,10 @@ interface VisionDetection {
   enabled_by_default: false;
 }
 
-const BACKEND_LABEL: Record<string, string> = { rocm: "ROCm (AMD)", vulkan: "Vulkan (汎用GPU)", cuda: "CUDA (NVIDIA)" };
+const BACKEND_LABEL: Record<string, string> = {
+  rocm: "ROCm 10 (AMD)", vulkan: "Vulkan (汎用GPU)", cuda: "CUDA (NVIDIA)",
+  rocm10: "ROCm 10", rocm7: "ROCm 7.2",
+};
 
 function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
   const qc = useQueryClient();
@@ -1814,6 +1919,333 @@ function TtsPanel() {
       <p className="text-2xl">🔊</p>
       <p className="mt-2 text-sm font-medium">TTS（音声合成）</p>
       <p className="mt-1 text-xs text-zinc-400">今後のアップデートで対応予定です。モデル管理・音声設定はこのタブに追加されます。</p>
+    </div>
+  );
+}
+
+/** モデル登録の入口。llama.cpp と Lucebox で必要な情報が違うので、最初にランタイムを選ばせる。
+ *
+ * 両者を1つのフォームに混ぜると「ドラフトGGUFは何のためか」「mmprojはどちらで効くか」が
+ * 分からなくなる。登録画面の時点で明確に分ける。
+ */
+function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
+  const { data: lucebox } = useQuery({ queryKey: ["lucebox-status"], queryFn: getLuceboxStatus });
+  const luceboxUsable = Boolean(lucebox?.installed);
+  const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
+  return (
+    <BottomSheet title="モデル登録" onClose={onClose} wide>
+      <div className="mb-4 grid gap-2 sm:grid-cols-2">
+        {(LOCAL_RUNTIMES).map((item) => {
+          const selected = runtime === item;
+          const disabled = item === "lucebox" && !luceboxUsable;
+          return (
+            <button key={item} type="button" disabled={disabled} onClick={() => setRuntime(item)}
+              className={`rounded-xl border p-3 text-left disabled:opacity-50 ${selected ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-500 dark:bg-accent-600/10" : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700"}`}>
+              <span className="block text-sm font-semibold">
+                {RUNTIME_LABEL[item]}
+                {item === "lucebox" && (
+                  <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">DFLASH</span>
+                )}
+              </span>
+              <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">
+                {item === "llama.cpp"
+                  ? "GGUF 1本を登録します。VISION（mmproj）や投機デコードもここで設定します"
+                  : disabled
+                    ? "未導入です。設定 → オプション機能から Lucebox を導入してください"
+                    : `ターゲットGGUF + DFlashドラフトGGUFの組で登録します（${lucebox?.track_label ?? "ROCm 10"}）`}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {runtime === "llama.cpp"
+        ? <LlamaRuntimePanel registrationOnly />
+        : <LuceboxRegisterPanel status={lucebox} onDone={onClose} />}
+    </BottomSheet>
+  );
+}
+
+/** Lucebox の新規モデル登録。推奨値（AMDLucebox の実測プロファイル）を初期値にする。 */
+function LuceboxRegisterPanel({ status, onDone }: { status?: LuceboxStatus; onDone: () => void }) {
+  const qc = useQueryClient();
+  if (!status) return <p className="text-xs text-zinc-400">読み込み中...</p>;
+  const usedPorts = status.instances.map((item) => item.port);
+  const initial: LuceboxInstance = {
+    ...status.defaults,
+    alias: "",
+    model_path: "",
+    draft_path: "",
+    port: usedPorts.length ? Math.max(...usedPorts) + 1 : status.defaults.port,
+    runtime: "lucebox", role: "llm", loaded: false, runtime_status: "STOPPED",
+    unit: "", base_url: "", selected: false,
+  };
+  return (
+    <div className="space-y-3">
+      <LuceboxRuntimeSummary status={status} />
+      <LuceboxInstanceControls
+        key="new"
+        initial={initial}
+        isNew
+        onChanged={() => {
+          qc.invalidateQueries({ queryKey: ["lucebox-status"] });
+          qc.invalidateQueries({ queryKey: ["models", "local"] });
+          onDone();
+        }}
+      />
+    </div>
+  );
+}
+
+/** 導入済みLuceboxの版・トラック・環境整合を1行で示す。 */
+function LuceboxRuntimeSummary({ status }: { status: LuceboxStatus }) {
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+        Lucebox
+        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
+        {status.installed
+          ? <span className="num text-xs font-normal text-emerald-600 dark:text-emerald-400">{status.tag} · {status.track_label}</span>
+          : <span className="text-xs font-normal text-zinc-400">未導入</span>}
+      </p>
+      <p className="num mt-1 text-[10px] text-zinc-400">
+        GPU {status.environment.gfx || "未検出"} · ホストROCm {status.environment.rocm_version || "不明"}
+        {status.upstream && ` · upstream ${status.upstream.slice(0, 12)}`}
+      </p>
+      {status.warning && (
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50/60 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          {status.warning}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LuceboxDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data: status } = useQuery({ queryKey: ["lucebox-status"], queryFn: getLuceboxStatus });
+  const instance = status?.instances.find((item) => item.alias === alias);
+  return (
+    <BottomSheet title={`${alias} · Luceboxモデル個別設定`} onClose={onClose} wide>
+      {!status ? <p className="text-xs text-zinc-400">読み込み中...</p>
+        : !instance ? <p className="text-xs text-zinc-400">モデル設定が見つかりません</p> : (
+        <div className="space-y-3">
+          <LuceboxRuntimeSummary status={status} />
+          <LuceboxInstanceControls
+            initial={instance}
+            onChanged={() => {
+              qc.invalidateQueries({ queryKey: ["lucebox-status"] });
+              qc.invalidateQueries({ queryKey: ["models", "local"] });
+            }}
+          />
+        </div>
+      )}
+    </BottomSheet>
+  );
+}
+
+/** Luceboxモデル設定のフォーム。既定値はAMDLucebox READMEの実測プロファイルに合わせる。 */
+function LuceboxInstanceControls({ initial, isNew = false, onChanged }: {
+  initial: LuceboxInstance;
+  isNew?: boolean;
+  onChanged: () => void;
+}) {
+  const show = useToasts((s) => s.show);
+  const [picker, setPicker] = useState<"model" | "draft" | null>(null);
+  const [advanced, setAdvanced] = useState(false);
+  const [cfg, setCfg] = useState<LuceboxInstance>({ ...initial });
+  const [busy, setBusy] = useState(false);
+  const originalAlias = initial.alias;
+  const set = <K extends keyof LuceboxInstance>(key: K, value: LuceboxInstance[K]) =>
+    setCfg((current) => ({ ...current, [key]: value }));
+  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+
+  const body = (): LuceboxInstanceInput => {
+    const common = {
+      model_path: cfg.model_path, draft_path: cfg.draft_path, max_ctx: cfg.max_ctx,
+      draft_block_size: cfg.draft_block_size, cache_type_k: cfg.cache_type_k,
+      cache_type_v: cfg.cache_type_v, fa_window: cfg.fa_window, ddtree: cfg.ddtree,
+      ddtree_budget: cfg.ddtree_budget, default_max_tokens: cfg.default_max_tokens,
+      draft_residency: cfg.draft_residency, fast_rollback: cfg.fast_rollback,
+      prefer_speculative: cfg.prefer_speculative, agent_turn_cache: cfg.agent_turn_cache,
+      auto_start: cfg.auto_start, idle_exclude: cfg.idle_exclude,
+    };
+    // 識別子（alias / port）は新規登録のときだけ送る。既存の変更は共通設定APIと同じ境界にする。
+    return isNew ? { ...common, alias: cfg.alias, port: cfg.port } : common;
+  };
+
+  const persist = async (start: boolean) => {
+    if (!cfg.model_path) { show("ターゲットGGUFを選択してください", "error"); return; }
+    if (isNew && !cfg.alias) { show("モデル名（alias）を入力してください", "error"); return; }
+    setBusy(true);
+    try {
+      if (isNew) await createLuceboxInstance(body());
+      else await updateLuceboxInstance(originalAlias, body());
+      if (start) {
+        await api(`/models/providers/lucebox/models/${encodeURIComponent(cfg.alias)}/load`, { method: "POST", json: {} });
+        show("保存してLuceboxを起動しました（ターゲットとドラフトの読み込みに時間がかかります）");
+      } else {
+        show("Luceboxモデル設定を保存しました");
+      }
+      onChanged();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "保存に失敗しました", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const stop = async () => {
+    try {
+      await api(`/models/providers/lucebox/models/${encodeURIComponent(cfg.alias)}/unload`, { method: "POST" });
+      show("停止しました");
+      onChanged();
+    } catch (e) { show(e instanceof Error ? e.message : "停止に失敗しました", "error"); }
+  };
+
+  return (
+    <div className="space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <div>
+        <p className="text-xs font-semibold text-zinc-500">{isNew ? "新しい" : cfg.alias} · Luceboxモデル個別設定</p>
+        <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-400">
+          ターゲットGGUFとDFlashドラフトGGUFの組で動きます。初期値はAMDLuceboxの実測プロファイル
+          （ブロック幅16・CTX131072・KV q8_0）です。
+        </p>
+      </div>
+      <L label="ターゲットGGUF">
+        <div className="flex gap-1.5">
+          <input value={cfg.model_path} onChange={(e) => set("model_path", e.target.value)}
+            placeholder="例: /data1tb/LLM/.../Qwen3.8-27B-UD-IQ4_XS.gguf"
+            className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+          <button onClick={() => setPicker("model")} aria-label="ターゲットGGUFを選択"
+            className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+        </div>
+      </L>
+      <L label="DFlashドラフトGGUF（空なら投機デコードなし）">
+        <div className="flex gap-1.5">
+          <input value={cfg.draft_path} onChange={(e) => set("draft_path", e.target.value)}
+            placeholder="例: /data1tb/LLM/.../qwen38-dflash2-q8_0.gguf"
+            className={`${input} min-w-0 flex-1 font-mono text-xs`} />
+          <button onClick={() => setPicker("draft")} aria-label="ドラフトGGUFを選択"
+            className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
+        </div>
+      </L>
+      {isNew && (
+        <div className="grid grid-cols-2 gap-2">
+          <L label="モデル名（alias）">
+            <input value={cfg.alias} onChange={(e) => set("alias", e.target.value)}
+              placeholder="lucebox-qwen38" className={`${input} font-mono`} />
+          </L>
+          <L label="待受port">
+            <input type="number" min={1024} max={65535} value={cfg.port}
+              onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} />
+          </L>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <L label="最大CTX">
+          <PresetOrCustom value={cfg.max_ctx}
+            presets={[8192, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))}
+            placeholder="131072" onChange={(v) => set("max_ctx", Number(v ?? 131072))} />
+        </L>
+        <L label="ドラフトブロック幅">
+          <PresetOrCustom value={cfg.draft_block_size}
+            presets={[8, 16, 24, 32].map((v) => ({ v, label: String(v) }))}
+            placeholder="16" onChange={(v) => set("draft_block_size", Number(v ?? 16))} />
+        </L>
+        <L label="FAウィンドウ（0=全注意・推奨）">
+          <PresetOrCustom value={cfg.fa_window}
+            presets={[0, 1024, 2048, 4096].map((v) => ({ v, label: v === 0 ? "0（全注意）" : String(v) }))}
+            placeholder="0" onChange={(v) => set("fa_window", Number(v ?? 0))} />
+        </L>
+      </div>
+      {cfg.fa_window > 0 && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50/60 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          FAウィンドウが0より大きいと、長いコンテキストでシステムプロンプトとツール定義が
+          注意から外れます。OpenCodeなどツールを使う用途では、引数の欠けたツール呼び出しが
+          返り会話が止まります。速度差は実測でほぼ無いため、0を推奨します。
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <L label="KVキャッシュ K"><CacheTypeSelect value={cfg.cache_type_k} onChange={(v) => set("cache_type_k", v)} input={input} /></L>
+        <L label="KVキャッシュ V"><CacheTypeSelect value={cfg.cache_type_v} onChange={(v) => set("cache_type_v", v)} input={input} /></L>
+      </div>
+      <div className="space-y-1.5 rounded-xl border border-emerald-200 bg-emerald-50/40 p-2.5 dark:border-emerald-900 dark:bg-emerald-950/20">
+        <Toggle
+          label="投機デコードを優先（temperature を 0 に固定）"
+          hint="DFlash2の検証は厳密グリーディのみです。temperatureが0より大きいと投機デコードが使われず自己回帰へ落ちます。コード・英語向け"
+          value={cfg.prefer_speculative}
+          onChange={(v) => set("prefer_speculative", v)}
+        />
+        <p className="text-[10px] leading-relaxed text-zinc-500">
+          速度はドラフトの採択長で決まり、生成する内容で大きく変わります。
+          実測（Qwen3.8-27B + DFlash2 q8_0、自己回帰は内容によらず約29 tok/s）:
+          <span className="mt-1 block font-medium">
+            英語コード 92〜152 tok/s（3〜5倍） · 英語の文章 42〜48 tok/s（1.5倍） ·
+            <span className="text-amber-700 dark:text-amber-400"> 日本語 23〜25 tok/s（自己回帰より遅い）</span>
+          </span>
+          {cfg.prefer_speculative
+            ? "日本語主体で使うならOFFの方が速く、サンプリングも効きます。"
+            : "呼び出し側のtemperatureをそのまま使います（投機デコードは無効）。"}
+        </p>
+      </div>
+      <Toggle label="自動起動" hint="ControlDeck起動時にこのモデルを常駐させます" value={cfg.auto_start} onChange={(v) => set("auto_start", v)} />
+      <button type="button" onClick={() => setAdvanced((v) => !v)}
+        className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-left text-xs text-zinc-500 dark:border-zinc-700">
+        {advanced ? "▾" : "▸"} 詳細設定（DDTree・ドラフト常駐・出力上限）
+      </button>
+      {advanced && (
+        <div className="space-y-2.5 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
+          <Toggle label="DDTree検証" hint="ドラフト候補を木で検証します。ドラフト未設定のときは無視されます" value={cfg.ddtree} onChange={(v) => set("ddtree", v)} />
+          {cfg.ddtree && (
+            <L label="DDTree予算">
+              <PresetOrCustom value={cfg.ddtree_budget}
+                presets={[16, 22, 32, 48].map((v) => ({ v, label: String(v) }))}
+                placeholder="22" onChange={(v) => set("ddtree_budget", Number(v ?? 22))} />
+            </L>
+          )}
+          <L label="ドラフト常駐">
+            <select value={cfg.draft_residency} onChange={(e) => set("draft_residency", e.target.value as LuceboxInstance["draft_residency"])} className={input}>
+              <option value="auto">auto（推奨）</option>
+              <option value="persistent">persistent（常駐・VRAMを継続確保）</option>
+              <option value="request-scoped">request-scoped（要求ごとに読み込む）</option>
+            </select>
+          </L>
+          <L label="既定の出力上限（0はモデル既定）">
+            <PresetOrCustom value={cfg.default_max_tokens}
+              presets={[0, 2048, 8192, 16000].map((v) => ({ v, label: v === 0 ? "モデル既定" : v.toLocaleString() }))}
+              placeholder="0" onChange={(v) => set("default_max_tokens", Number(v ?? 0))} />
+          </L>
+          <Toggle label="高速ロールバック" hint="投機失敗時の巻き戻しを速くします。既定は有効" value={cfg.fast_rollback} onChange={(v) => set("fast_rollback", v)} />
+          <Toggle
+            label="エージェント用ターンキャッシュ"
+            hint="生成したツール呼び出しの先までprefixキャッシュを延ばします。OpenCodeのようにターンを重ねる用途で、毎ターンの再読み込みが減ります（実測: 3ターン目で12.2秒→7.7秒）"
+            value={cfg.agent_turn_cache}
+            onChange={(v) => set("agent_turn_cache", v)}
+          />
+          <Toggle label="共通アイドル停止から除外" hint="直接endpointを使う外部clientは利用時刻を追跡できないため、常用時は除外を推奨" value={cfg.idle_exclude} onChange={(v) => set("idle_exclude", v)} />
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => persist(false)} disabled={busy}
+          className="min-h-11 flex-1 rounded-xl bg-zinc-100 px-4 text-xs font-medium disabled:opacity-40 dark:bg-zinc-800">保存</button>
+        <button onClick={() => persist(true)} disabled={busy}
+          className="min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-xs font-medium text-white disabled:opacity-40">保存して起動</button>
+        {!isNew && cfg.loaded && (
+          <button onClick={stop} className="min-h-11 rounded-xl border border-zinc-300 px-4 text-xs font-medium dark:border-zinc-700">停止</button>
+        )}
+      </div>
+      {!isNew && (
+        <p className="text-[10px] text-zinc-400">
+          起動後はエンドポイント <code className="font-mono">http://127.0.0.1:{cfg.port}/v1</code>、
+          またはゲートウェイからモデル名 <code className="font-mono">{cfg.alias}</code> で使えます。
+        </p>
+      )}
+      {picker && (
+        <FilePicker mode="file"
+          title={picker === "model" ? "ターゲットGGUFを選択" : "DFlashドラフトGGUFを選択"}
+          initialPath={(picker === "model" ? cfg.model_path : cfg.draft_path) || undefined}
+          onSelect={(path) => { set(picker === "model" ? "model_path" : "draft_path", path); setPicker(null); }}
+          onClose={() => setPicker(null)} />
+      )}
     </div>
   );
 }

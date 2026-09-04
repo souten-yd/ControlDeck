@@ -1,6 +1,260 @@
 # 実装状況
 
-最終更新: 2026-08-26
+最終更新: 2026-09-04
+
+## Luceboxにエージェント用ターンキャッシュを追加（2026-09-04）
+
+- `dflash_server --agent-turn-cache`（生成したツール呼び出しの先までprefixキャッシュを延ばす）を
+  Luceboxのモデル個別設定へ追加し、既定ONにした。
+- 無効だと`prefix_len`が初回プロンプトで止まり、ターンが進むほど再prefillが増える。
+  OpenCode相当のループ（tools=22、初回13,957トークン、各ターンに約1,500トークンの
+  ツール出力を追加）での実測:
+
+  | ターン | プロンプト | OFF | ON |
+  |---|---:|---:|---:|
+  | 1 | 13,957 | 0.9s | 0.8s |
+  | 2 | 17,001 | 6.7s | 6.4s |
+  | 3 | 20,081 | **12.2s** | **7.7s** |
+  | 4 | 23,171〜26,193 | 19.3s | 7.9s |
+
+  3ターン目はプロンプト長が完全に一致した比較で 12.2s → 7.7s（1.6倍）。
+  4ターン目はモデルのツール選択が分岐してプロンプト長がずれたので参考値。
+  ツール出力が小さい場合も、`prefix_len`はOFFで13,824に固定されるのに対し
+  ONは13,983→14,094→14,256と追従し、prefillは0.3→0.8sに対し0.1→0.2sで横ばいだった。
+- ツールを使わない用途では効かないだけなので既定ONにした。切ることもできる。
+- 補足: 以前「OpenCodeは毎ターン11kトークンのprefillに8〜14秒かけている」と書いたが、
+  これは不正確だった。既存のprefixキャッシュにより2ターン目以降のprefillは0.9秒程度で、
+  遅いのは初回のみ。ただし上表のとおり、ツール出力が積み上がるとOFFでは再び伸びていく。
+
+## LuceboxでOpenCodeが即終了する不具合（fa_window既定値の誤り・2026-09-04）
+
+- Luceboxを起動してOpenCodeを動かすと、モデルは応答するのにセッションが即座に終わる。
+- サーバーログに残っていた実際の症状:
+
+  ```
+  [server] tool_call parse failed; suppressing buffered tool text ... format=0 bytes=141
+           text='<tool_call>\n<function=Bash>\n<parameter=command>\nls -la ...'
+  [server] chat DONE ... out=44 ... finish=stop
+  ```
+
+  ツール呼び出しが壊れた方言（Hermes風の`<function=...>`XML）で出力され、dflash_serverが
+  パースに失敗してテキストごと捨てる。OpenCodeへは中身の無いassistantメッセージが
+  `finish_reason=stop`で返るため、エージェントは何もすることが無くセッションを終える。
+- 原因は`fa_window`の既定値。`dflash_server --help`に明記されている:
+
+  ```
+  --fa-window <N>     Flash-attention sliding window (default: 0=full).
+                       WARNING: >0 drops system prompt / tool definitions
+                       from attention at long contexts. Use 0 for tools.
+  ```
+
+  ControlDeck側は既定を2048にしていた。これは上流Luceboxの`server/README.md`にある
+  スループット向けの推奨値（1024〜2048）から取ったもので、**AMDLuceboxの実測起動コマンドは
+  `--fa-window`を渡していない（=既定の0）**。取り違えである。
+  OpenCodeのプロンプトは11,000トークンを超えるため、システムプロンプトとツール定義が
+  注意窓の外へ出て、モデルがツール定義を見ずに呼び出しを組み立てていた。
+- 再現と検証（tools=22 / prompt 13,958トークン / 同一プロンプト）:
+
+  | fa_window | 結果 |
+  |---|---|
+  | 2048 | `Bash`を引数空`{}`で呼ぶ（必須の`command`が欠落）→ エージェントが動けない |
+  | 0 | `List`を`{"path": "."}`で正しく呼ぶ |
+
+  5,492トークンでは2048でも呼び出せるが、任意引数`description`が落ちる。
+  文脈が伸びるほど欠落が増える。なお`fa_window` 2048→0 でデコード速度は実測で差が無い
+  （86.2 → 85.9 ms/step）ので、2048にする利点は無かった。
+- 修正:
+  - `lucebox.DEFAULT_INSTANCE["fa_window"]`を0にした。
+  - 既存設定の一度きりの移行を入れた（`CONFIG_REVISION = 2`）。過去に既定として
+    書き込まれた`fa_window == 2048`だけを0へ直し、利用者が意図して選んだ他の値
+    （1024等）はそのまま残す。移行後に意図して2048を選び直せば尊重する。
+  - `runtime_status()`に`tool_warnings`を追加し、`fa_window > 0`のinstanceを名指しで警告。
+    モデル個別設定の画面にも、ツール利用が壊れる旨を条件付きで表示する。
+- 実機検証: 本番経路（ゲートウェイ + OpenCodeヘッダ + temperature=0固定 + tools=22 +
+  13,958トークン）で、引数の揃ったtool_callが返ることを確認した。
+- 未確認: OpenCode CLIでの最終確認は、こちらの環境でOpenCodeが`init`（467MBの
+  `~/.local/share/opencode/opencode.db`のオープン）で止まるため完了していない。
+  ゲートウェイまでリクエストが届いていないので、本件とは無関係の環境問題。
+- 自動検証: 既定値、unit引数、移行（2048だけを直す/他の値は残す/書き戻す）、
+  `tool_warnings`の回帰4件を追加。backend全体は882件成功。
+
+## OpenCodeが起こしたLuceboxは投機デコード優先で常駐させる（2026-09-04）
+
+- `prefer_speculative`（temperature を 0 に固定）は既定ONだが、日本語主体のチャットでは
+  投機デコードが自己回帰より遅く、切りたい場合がある。一方 OpenCode はコード生成が主用途で
+  投機デコードが 3〜5 倍効くため、個別設定をOFFにすると OpenCode まで遅くなってしまう。
+- 方針: **OpenCode が停止中のモデルを起こす場合だけ、個別設定より優先して投機ONで常駐させる**。
+  既に誰かが使っている常駐へ相乗りするときは、その常駐を始めたときの方針を引き継ぐ
+  （同じセッションの途中で生成の性質が変わらないようにする）。方針の記録が無い場合
+  （ControlDeck再起動後、ゲートウェイ外での起動）は個別設定へ戻す。
+- 実装: `gateway.resolve_instance()`が転送先インスタンスを`loaded`込みで返し、
+  `gateway._greedy_sampling_for()`が起動前に方針を決めて`_residency_greedy`へ記録する。
+  クライアント識別は、ControlDeckが生成するOpenCodeのruntime configへ載せる
+  `x-control-deck-client: opencode`ヘッダ（`@ai-sdk/openai-compatible`の`options.headers`）。
+  汎用のUser-AgentではOpenCodeと利用者の自作クライアントを区別できないため。
+- llama.cppには同じ制約が無いので、OpenCode相手でもサンプリングへは触らない
+  （回帰テストで固定した。実装当初はランタイムを見ずに潰していた）。
+- 実機検証: 個別設定をOFFにした状態で、(1)停止中→OpenCodeヘッダ付きで起動すると
+  `spec-decode`、(2)その常駐へ別クライアントが投げても`spec-decode`（方針を継承）、
+  (3)停止中→ヘッダ無しで起動すると`ar-decode`（個別設定に従う）、を確認した。
+  実際のOpenCode 1.18.24でも`options.headers`付きruntime configが正常に動作することを確認した。
+- 自動検証: 上記4分岐 + llama.cppへ影響しないこと + runtime configがヘッダを載せることの
+  回帰6件を追加。backend全体は880件成功。
+
+## Luceboxの実効速度は採択長で決まる（性能特性の実測・2026-09-04）
+
+`temperature`固定の修正後もAIチャットで約50 tok/sだったため、性能特性を実測した。
+
+**速度 = 採択長 ÷ 約87ms**。1ステップ（ドラフト提案 + DDTree検証）の単価は内容によらず
+86〜88msで一定で、そのステップで何トークン確定できたか（`avg_commit`）だけが効く。
+
+| 生成内容 | 採択長 | 投機ON | 投機OFF（自己回帰） | 倍率 |
+|---|---:|---:|---:|---:|
+| 英語コード | 10.0〜13.3 | 92〜152 tok/s | 29.0 tok/s | 3.2〜5.2倍 |
+| 英語の文章 | 3.8〜4.2 | 42〜48 tok/s | 29.0 tok/s | 1.5倍 |
+| 日本語の文章 | 2.1〜2.3 | 23〜25 tok/s | 29.0 tok/s | **0.8倍（遅い）** |
+
+自己回帰は内容によらず29 tok/s。1ステップ87msは自己回帰の約2.5トークン分なので、
+採択長が2.5を下回る内容では投機デコードが逆効果になる。DFlash2ドラフトは英語・コード向けで、
+日本語では採択が伸びない。公開実測の180〜208 tok/sはHumanEval（英語コード）の値で、
+本機のコード生成152 tok/sはその水準にある。
+
+参考: 同一モデル・同一プロンプトでllama.cpp（Vulkan / b10001）は20.9 tok/s。
+Luceboxは最悪の日本語でもllama.cpp Vulkanより速い。
+
+**効果がなかった調整**（すべて実測で確認）
+- `--max-ctx` 131072 → 8192: デコードは差なし（86.2 → 85.9 ms/step）。
+  上流READMEのoversizing警告はprefillのみに効く。
+- `--fa-window` 2048 → 0: 差なし（短いコンテキストでは支配的でない）。
+- `--ddtree-budget` 22 → 48: 採択長は伸びる（2.17→2.56）がステップ単価が上がり（86→108ms）
+  総合では遅くなる。既定の22が妥当。
+- ドラフトをq8_0 → f16: 英語のみ+10%、日本語とコードは悪化。AMDLucebox指定のq8_0が妥当。
+
+**効果があった調整**
+- GPU電力cap 210W → 300W（既定値）: **+9%**（86.8 → 79.3 ms/step、日本語25.1→27.4、
+  数え上げ143→157 tok/s）。現在の`amd_gpu`設定がcustom/210Wのため常時この分を失っている。
+  静音・消費電力とのトレードオフなので設定は変更していない。
+
+UI側は、モデル個別設定のトグル説明に内容別の実測値を載せ、日本語主体ならOFFの方が速い旨を
+明示した。ONのまま日本語で使うと、遅いうえに出力が決定的になるという最悪の組み合わせになる。
+
+## Luceboxが投機デコードを使わず約1/5の速度になる不具合（2026-09-04）
+
+- AIチャットからLuceboxで生成すると約27 tok/sしか出なかった。公開実測（180+ tok/s）と大きく違う。
+- 原因は`temperature`。このLuceboxビルドのDFlash2/DDTree検証は**厳密グリーディ検証のみ**で、
+  `temperature > 0`のリクエストは投機経路を使わず自己回帰へフォールバックする。サーバーログの
+  `[spec-decode]`と`[ar-decode]`で判別できる。同一プロンプト・同一設定でtemperatureだけを変えた実測:
+
+  | temperature | 経路 | 速度 |
+  |---|---|---|
+  | 0 / 未指定 | `spec-decode`（平均12.4トークン/ステップ採択） | 142〜145 tok/s |
+  | 0.2 | `ar-decode` | 28.8 tok/s |
+  | 0.7 | `ar-decode` | 29.3 tok/s |
+
+  `RuntimeChatRequest.temperature`の既定は0.4なので、ControlDeckからの生成は常に自己回帰側へ落ちていた。
+- 切り分けで否定した仮説: stream有無（無関係）、max_tokens（無関係）、`--draft-block-size`の
+  horizon超え（学習時の8へ戻しても`temperature 0.7`は`ar-decode`のまま。かつ16の方が速い:
+  142 vs 93 tok/s なのでREADME推奨の16が正しい）、GPU電力・クロック制限（同条件で142 tok/s出る）。
+  `dflash_server --help`にもサンプリング下で投機を有効にするフラグは無い。
+- 対応: Luceboxのモデル個別設定へ`prefer_speculative`（「投機デコードを優先（temperature を 0 に固定）」）
+  を追加し、既定ONにした。ONの間は送信直前に`temperature`を0へ固定する。判定は
+  `lucebox.pins_greedy_sampling()`へ集約し、内部チャット（`LuceboxRuntimeProvider._payload`）と
+  ゲートウェイ（外部クライアント。OpenCodeはこの制約を知らないため）の両方の入口で適用する。
+  設定はLuceboxのinstanceにしか無いので、llama.cppのサンプリングには影響しない。
+  出力が決定的になる代償があるため、UIにトレードオフを明示したうえで利用者が切れるようにしてある。
+- 実機検証: 再起動後、(1)AIチャットと同じ内部経路（既定temperature 0.4、stream）と
+  (2)ゲートウェイ経由でクライアントが`temperature 0.7`を送る経路（OpenCode相当）の両方で
+  `[spec-decode] 145 tok/s`になることを確認した（修正前はどちらも`[ar-decode]` 29 tok/s）。
+- 自動検証: 既定ON、systemdを叩かない軽量ルックアップ、payload上書き、OFF時の素通し、
+  llama.cppに影響しないこと、の回帰を追加。backend全体は873件成功。
+
+## LuceboxをLLMランタイムへ追加／llama.cppをROCm 10へ統一（2026-09-04）
+
+- **Model画面のLLM共通設定にLuceboxを追加**した。`souten-yd/AMDLucebox`が配るRadeon AI PRO R9700
+  （gfx1201）向け`dflash_server`をControlDeck管理下のランタイムとして扱う。llama.cppと同じく
+  systemdユーザーユニットで常駐させ、OpenAI互換endpoint（`http://127.0.0.1:<port>/v1`）として公開する。
+  「このPCで利用するランタイム」には対応GPUがある環境と導入済み環境にだけ出す。
+- **Addonからの初期セットアップと更新**を`gpu-runtime`という新しいfeature種別で用意した。
+  `llama-cpp`（`souten-yd/llama-builder`）と`lucebox`（`souten-yd/AMDLucebox`）の2件で、導入は
+  このPCで動く構成を既定値のまま揃え、更新は導入済み構成を最新リリースへ上げる。実体の取得・展開・
+  current張り替えは`models_mgmt`側が持ち、`app/features/gpu_runtime.py`はアドオンUIへつなぐ
+  アダプタに徹する（並行するインストーラ基盤を作らない）。
+- **llama.cppのROCmビルドをROCm 10へ統一**した。`llama-builder`のROCmターゲットは
+  `amdrocm-core-dev10.0-gfx1201`でビルドされるため、`ROCM_SERIES_MAJOR = 10`として明示し、
+  ホストのROCmユーザースペースがメジャー違いなら導入前・選択前に警告する（止めはしない）。
+  導入・更新は固定タグではなく常に最新リリースを解決する（従来は`llama-gpu-b10001`固定で、
+  更新導線そのものが無かった）。タグ比較は`b<数値>`の数値順で行う（`b9544 < b10001`）。
+- **ゲートウェイをランタイム非依存**にした。`models_mgmt/local_llm.py`がllama.cppとLuceboxの
+  インスタンス列挙・起動保証・residency keyを束ね、`gateway.py`／`resource_provider.py`／
+  `providers.py`／`provider_adapters.py`／OpenCode連携はそれを通す。クライアントから見ると
+  1アドレスに両ランタイムのモデルが並び、モデル名（alias）だけで切り替わる。GPUリースは
+  1つのbroker provider（`local-llm`）が両方を代表する（同じ1枚のGPUを取り合うため）。
+  共有KVを持たないLuceboxではKV空き待ちを行わない。
+- **モデル一覧と登録画面でランタイムを明示**した。登録は最初にランタイムを選ばせ、llama.cppは
+  GGUF 1本、Luceboxはターゲット+DFlashドラフトの組という別々のフォームにする。一覧では
+  `LUCEBOX`／`DFLASH`バッジと、行ごとのランタイム名・ビルド種別・ポートを出す。優先度の
+  入れ替えはランタイム内で閉じる（カタログが別のため）。
+- **Luceboxの初期値はAMDLuceboxの実測プロファイル**（`--draft-block-size 16`、`--max-ctx 131072`、
+  `--cache-type-k/v q8_0`、`--fa-window 2048`、`--ddtree-budget 22`、port 8216）。初期トラックは
+  ROCm 10（`DEFAULT_TRACK = "rocm10"`）で、ROCm 7.2.4は比較用リファレンス兼退避先として選べる。
+- 配布物の取得・検証・展開は`models_mgmt/gpu_release.py`へ集約した。SHA256SUMSがあれば必ず
+  突き合わせ、展開先の外を指すリンクとパストラバーサルは拒否する。共有ライブラリのsoname
+  リンク（`libggml-hip.so` → `.so.0`）は配布物に必ず含まれるので、リンク自体は拒否しない。
+  `.tar.zst`はzstd CLIへ委譲する（`shell=True`は使わない）。
+- 実機検証: installed ControlDeckを再起動し、アドオン導入経路で
+  `lucebox-298031aa-r1 / ROCm 10`（SHA256照合あり・23MB）を導入、推奨既定のまま
+  `lucebox-qwen38`（Qwen3.8-27B-UD-IQ4_XS + qwen38-dflash2-q8_0）を登録して起動した。
+  ゲートウェイ`/v1/models`に`runtime: "lucebox"`付きで並ぶこと、`model: "lucebox-qwen38"`および
+  `model: "auto"`（stream）でLuceboxへ到達し`spec_decode_ran: true`で応答することを確認した。
+  OpenCode 1.18.24を`OPENCODE_CONFIG`付きheadless（`opencode run`）で実行し、既存設定
+  （base_url=ゲートウェイ、model=`auto`）のままLuceboxが応答した（llama.cppのunitは全停止状態、
+  Lucebox unitのログに該当リクエストの完了記録あり）。ROCm 10ビルドはホストROCm 7.2.1でも
+  `/opt/rocm/lib`の`libamdhip64.so.7`等を解決して起動したため、警告は出しつつ導入は止めない設計にした。
+- 自動検証: `test_gpu_release.py`／`test_lucebox_runtime.py`／`test_gpu_runtime_addon.py`／
+  `test_llama_update.py`／`test_local_llm_gateway.py`を追加し、backend全体は869件成功／1件skip。
+  同時に失敗する`test_addon_runtime_resources_jobs.py` 4件は本差分前のtree（HEADのworktree）でも
+  全体runで同じく失敗する既知の順序依存で、本差分の影響ではない。frontendは`npm run build`成功。
+  ブラウザ実機確認とHosted CIはNOT TESTED。
+- 既知の制限: LuceboxはROCmトラックとホストROCmのメジャーが揃っている前提を検証しきれていない
+  （本機はROCm 7.2.1でROCm 10ビルドが動いたが、これは保証ではない）。Luceboxは共有KVを持たない
+  ため、LLM利用状況ウィジェットのKV/slot表示はllama.cppのエンドポイントのみを対象とする。
+
+## OpenCodeがゲートウェイ経由でローカルLLMを使えない不具合（2026-09-02）
+
+- Add-on agent toolを1つでも有効にしたOpenCodeセッションが、ゲートウェイ経由のローカルモデルで
+  一切生成できず、同じ要求を約0.4秒間隔で無限に再送し続けていた。TUIには何も表示されないため
+  「ゲートウェイからLLMを利用できない」としか見えない状態だった。
+- 原因は2つある。
+  1. 制約付きデコード（llama.cppのJSON schema → GBNF変換）が`minLength`／`maxLength`を「文字ルールの
+     繰り返し回数」へ展開する。Add-on schemaの`maxLength: 100000`（`sonic.pipeline`の`input.text`）と
+     `maxLength: 8000`（`media.generate`の`intent`）だけで「ルール数 × 繰り返し数」が上限を超え、
+     `Failed to initialize samplers: failed to parse grammar`となる。tool定義は全リクエストへ載るため、
+     該当toolを1つ公開しただけでそのモデル宛の生成が全滅する。実測では単独でも400になった。
+  2. ゲートウェイのstream中継が転送先のstatusを見ずに本文だけを流していたため、この400が
+     「200 + 空ストリーム」としてクライアントへ届いていた。OpenAI互換クライアントはこれを空応答と
+     解釈して再送するので、原因が表に出ないまま無限ループになる（`AGENTS.md`のエラーを握り潰さない
+     規則にも反する）。llama.cppのログには17,000件超の同一エラーが積もり744MBに達していた。
+- 修正1: モデルへ出すtool schemaから、展開できない長さ制約を落とす`model_facing_schema()`を
+  `app/addons/execution.py`へ追加し、`agent_mcp_tools()`（OpenCode等のMCPクライアント向け）と
+  `agent_tool_definitions()`（ControlDeck自身のチャット／ワークフロー向け）の両方へ適用した。
+  ControlDeck自身が組み立てる`control_deck.project_output_grant`にも同じ写像を通す。落とすのは
+  モデルへ渡す複製だけで、実際の上限は`create_agent_tool_job()`の`validate()`が引き続き強制する。
+  Add-onはサードパーティなので、文法にできる形で書かれている前提を置かずHost側で正規化する。
+- 修正2: `app/models_mgmt/gateway.py`のstream経路を、本文を流し始める前に応答行を確認する形へ変えた。
+  転送先が4xx／5xxならOpenAI互換のエラー本文（先頭2000文字、モデルalias付き）をそのstatusで返す。
+  非streamも、転送先がJSONを返さなかった場合に「空の成功」に見えないようにした。OOM記録は両経路で行う。
+- 実機検証: installed ControlDeckを再起動し、失敗していた組み合わせ（Hanabi project、Add-on MCP有効、
+  `controldeck/auto`、Qwen3.8-27B）でOpenCode 1.18.24を実行した。修正前は2分で文法エラー1,272件と
+  step 0件だったものが、修正後は`read`を2回callして日本語で回答し、文法エラーは0件だった。
+  公開中のMCP tool 11件すべてが単独でも同時でも200になることを実endpointで確認した。
+  stream経路の伝播は、意図的に文法化できないtoolを出すMCPサーバを繋いで確認し、OpenCodeが
+  `statusCode 400`／`isRetryable false`の`AI_APICallError: Qwen3.8-27B: Failed to initialize samplers:
+  failed to parse grammar`を1回報告して終了することを確認した（従来は無限ループ）。
+- 自動検証: 回帰3件を追加し（公開schemaから長さ制約が落ちること、元schemaを壊さないこと、
+  stream失敗が200の空ストリームにならないこと、エラー本文の上限）、backend全体は819件成功／1件skip。
+  同時に失敗する`test_addon_runtime_resources_jobs.py` 4件は本差分前のtreeでも全体runで同じく失敗し、
+  単独では成功する既知の順序依存で、本差分の影響ではない。frontend sourceは変更していないため
+  frontend build／browser／Hosted CIはNOT TESTED。
 
 ## Add-on outputのcross-filesystem atomic commit（2026-08-26）
 

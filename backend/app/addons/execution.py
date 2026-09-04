@@ -268,6 +268,35 @@ async def agent_schema(addon_id: str, contribution_id: str, *, permissions: set[
     return await schema(addon_id, contribution["schema_path"])
 
 
+# 制約付きデコード（llama.cpp の JSON schema → GBNF 変換）は minLength/maxLength を
+# 「文字ルールを何回繰り返すか」へ展開する。maxLength: 100000 のフィールドが一つ
+# あるだけで「ルール数 × 繰り返し数」が上限を超え、文法の生成に失敗する。すると
+# そのtoolを含む全リクエストが 400 になり、Add-on toolを1つ有効にしただけで
+# OpenCode がローカルモデルを一切使えなくなる（実際に起きた）。
+#
+# 長さ上限は入力検証のための制約であって、モデルへ伝えなければならないものではない。
+# 実際の上限は create_agent_tool_job の validate() が引き続き強制するので、
+# モデルへ渡す複製からだけ落とす。
+_DECODER_HOSTILE_KEYS = frozenset({"minLength", "maxLength"})
+
+
+def model_facing_schema(value: Any) -> Any:
+    """Add-onのJSON schemaを、制約付きデコーダが展開できる形へ写した複製を返す。
+
+    Add-onはサードパーティなので、文法にできる形で書かれている保証がない。
+    モデルへ出す直前にControlDeck側で落とす。
+    """
+    if isinstance(value, dict):
+        return {
+            key: model_facing_schema(item)
+            for key, item in value.items()
+            if key not in _DECODER_HOSTILE_KEYS
+        }
+    if isinstance(value, list):
+        return [model_facing_schema(item) for item in value]
+    return value
+
+
 def agent_tool_name(addon_id: str, contribution_id: str) -> str:
     stem = re.sub(r"[^a-zA-Z0-9_]", "_", f"addon_{addon_id}_{contribution_id}")[:52]
     suffix = hashlib.sha256(f"{addon_id}:{contribution_id}".encode()).hexdigest()[:8]
@@ -294,7 +323,7 @@ async def agent_tool_definitions(permissions: set[str]) -> list[dict[str, Any]]:
             "function": {
                 "name": name,
                 "description": f"{contribution['addon_id']} Add-on: {label}"[:240],
-                "parameters": parameters,
+                "parameters": model_facing_schema(parameters),
             },
         })
     for name, value in list(_agent_tool_map.items()):
@@ -333,7 +362,7 @@ async def agent_mcp_tools(permissions: set[str]) -> list[dict[str, Any]]:
         result.append({
             "name": _mcp_tool_name(contribution, duplicate_ids),
             "description": f"{contribution['addon_id']} Add-on: {label}"[:240],
-            "inputSchema": input_schema,
+            "inputSchema": model_facing_schema(input_schema),
         })
     return result
 

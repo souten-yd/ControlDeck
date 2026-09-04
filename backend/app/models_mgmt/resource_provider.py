@@ -1,4 +1,9 @@
-"""llama.cpp adapter for the common Resource Broker."""
+"""Common Resource Broker adapter for the locally managed LLM runtimes.
+
+llama.cpp と Lucebox は同じ1枚のGPUを取り合うので、ブローカーから見ると1つの
+provider として扱うのが正しい。ランタイム別の差（KVプールの有無など）は
+models_mgmt/local_llm.py が吸収する。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +15,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
-from app.models_mgmt import llama
+from app.models_mgmt import local_llm
 from app.models_mgmt.runtime_policy import get_policy
 from app.resources.devices import DeviceCollection
 from app.resources.providers import ProviderReservation, ResourceProvider, YieldLevel
@@ -37,8 +42,10 @@ def model_is_on_local_nvme(model_path: str) -> bool:
         return False
 
 
-class LlamaCapacityProvider(ResourceProvider):
-    id = "llama.cpp"
+class LocalLlmCapacityProvider(ResourceProvider):
+    """ローカル常駐LLM（llama.cpp / Lucebox）のGPU占有をブローカーへ申告する。"""
+
+    id = "local-llm"
 
     def __init__(
         self,
@@ -65,14 +72,13 @@ class LlamaCapacityProvider(ResourceProvider):
         self._residency_holds: dict[str, tuple[str, str, float]] = {}
 
     def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
-        instance = llama.get_instance(alias)
-        current = next(
-            (item for item in llama.list_instances() if str(item.get("alias")) == alias),
-            instance,
-        )
+        instance = local_llm.get_instance(alias)
+        current = local_llm.find(alias) or instance
         loaded = bool(current.get("loaded"))
         model_bytes = 0
-        for key in ("model_path", "mmproj_path"):
+        # Lucebox はターゲット + DFlash ドラフトの2本を載せる。VLM の mmproj と同じく
+        # 追加分もVRAM見積りへ入れないと、受け入れ判定が実際より甘くなる。
+        for key in ("model_path", "mmproj_path", "draft_path"):
             path = str(instance.get(key) or "")
             if not path:
                 continue
@@ -102,7 +108,7 @@ class LlamaCapacityProvider(ResourceProvider):
             "compute_mode": "endpoint-managed",
             "priority": 100,
             "class": "interactive",
-            "residency_key": llama.residency_key(instance),
+            "residency_key": local_llm.residency_key({**instance, "runtime": current.get("runtime", "")}),
             "max_wait_sec": 300,
             "on_insufficient": "queue",
         })
@@ -161,7 +167,7 @@ class LlamaCapacityProvider(ResourceProvider):
         )
 
     def reservations(self) -> list[ProviderReservation]:
-        running = [item for item in llama.list_instances() if item.get("loaded")]
+        running = [item for item in local_llm.list_instances() if item.get("loaded")]
         now = self._clock()
         aliases = {str(item.get("alias") or "llama") for item in running}
         self._resident_since = {
@@ -192,17 +198,17 @@ class LlamaCapacityProvider(ResourceProvider):
                 device_id="gpu0",
                 owner=f"llm:{alias}",
                 reserved_bytes=share,
-                residency_key=llama.residency_key(item),
-                yield_level=YieldLevel.NONE if self.has_residency_hold(llama.residency_key(item)) else (YieldLevel.STOP if managed else YieldLevel.NONE),
+                residency_key=local_llm.residency_key(item),
+                yield_level=YieldLevel.NONE if self.has_residency_hold(local_llm.residency_key(item)) else (YieldLevel.STOP if managed else YieldLevel.NONE),
                 draining=self._draining,
             ))
         return values
 
     async def await_capacity(
-        self, port: int, needed_tokens: int, *, timeout_seconds: float
+        self, alias: str, port: int, needed_tokens: int, *, timeout_seconds: float
     ) -> dict:
-        return await llama.await_capacity(
-            port, needed_tokens, timeout_seconds=timeout_seconds
+        return await local_llm.await_capacity(
+            alias, port, needed_tokens, timeout_seconds=timeout_seconds
         )
 
     async def enter_request(self) -> None:
@@ -225,16 +231,16 @@ class LlamaCapacityProvider(ResourceProvider):
         now = self._clock()
         if not self._managed(running):
             return False
-        if any(self.has_residency_hold(llama.residency_key(item)) for item in running):
+        if any(self.has_residency_hold(local_llm.residency_key(item)) for item in running):
             return self._suppress(WaitReason.HELD_BY_OTHER_OWNER, "residency_hold")
         if request.estimated_runtime_sec is None:
             return self._suppress(WaitReason.YIELD_RUNTIME_UNKNOWN, "runtime_unknown")
         costs: list[LoadCostEstimate | None] = [
-            self._telemetry.reload_cost_p90(llama.residency_key(item)) for item in running
+            self._telemetry.reload_cost_p90(local_llm.residency_key(item)) for item in running
         ]
         if not self._telemetry.persistent_profiles:
             costs = [
-                value or self._legacy_cost(llama.residency_key(item))
+                value or self._legacy_cost(local_llm.residency_key(item))
                 for value, item in zip(costs, running, strict=True)
             ]
         if not costs or any(value is None for value in costs):
@@ -311,6 +317,8 @@ class LlamaCapacityProvider(ResourceProvider):
                 return False, "in_use", 0
             self._stopping = True
         try:
+            from app.models_mgmt import llama
+
             released, reason, freed = await llama.release_loaded_llms(
                 include_helpers=include_helpers
             )
@@ -329,7 +337,7 @@ class LlamaCapacityProvider(ResourceProvider):
         level: YieldLevel,
         request: ResourceRequest | None = None,
     ) -> bool:
-        running = [item for item in llama.list_instances() if item.get("loaded")]
+        running = [item for item in local_llm.list_instances() if item.get("loaded")]
         if device_id != "gpu0" or request is None or not self._yield_allowed(request, running):
             return False
         policy = get_policy()
@@ -361,7 +369,7 @@ class LlamaCapacityProvider(ResourceProvider):
         try:
             for item in running:
                 ok, _detail = await asyncio.to_thread(
-                    llama.stop_instance, str(item.get("alias") or "llama")
+                    local_llm.stop_instance, str(item.get("alias") or "llama")
                 )
                 stopped = stopped and ok
         finally:
@@ -376,13 +384,16 @@ class LlamaCapacityProvider(ResourceProvider):
         return stopped
 
 
-_provider: LlamaCapacityProvider | None = None
+# 旧名。テストと既存の import 経路を壊さないために残す。
+LlamaCapacityProvider = LocalLlmCapacityProvider
+
+_provider: LocalLlmCapacityProvider | None = None
 
 
-def provider() -> LlamaCapacityProvider:
+def provider() -> LocalLlmCapacityProvider:
     global _provider
     if _provider is None:
         from app.resources.broker import broker
 
-        _provider = LlamaCapacityProvider(broker.devices, broker.telemetry)
+        _provider = LocalLlmCapacityProvider(broker.devices, broker.telemetry)
     return _provider

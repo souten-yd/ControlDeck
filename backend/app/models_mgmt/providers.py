@@ -22,7 +22,7 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
     generation = ["chat", "stream", "cancel"] if available else []
     if managed and kind == "ollama":
         return generation + ["list", "load", "unload", "delete", "pull", "configure"]
-    if managed and kind == "llama.cpp":
+    if managed and kind in ("llama.cpp", "lucebox"):
         return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return generation + ["list"]
 
@@ -36,11 +36,15 @@ def _provider_id(kind: str, base_url: str, *, managed: bool) -> str:
     parsed = urlsplit(base_url)
     host = parsed.hostname or "unknown"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return kind if managed and kind in ("ollama", "llama.cpp") else f"{kind}-{host}-{port}"
+    return kind if managed and kind in ("ollama", "llama.cpp", "lucebox") else f"{kind}-{host}-{port}"
+
+
+# ゲートウェイへ集約するローカルランタイム。個別ポートを候補から外す判定に使う。
+GATEWAY_RUNTIMES = ("llama.cpp", "lucebox")
 
 
 async def _candidates() -> list[dict]:
-    from app.models_mgmt import llama, ollama
+    from app.models_mgmt import llama, lucebox, ollama
 
     candidates: dict[str, dict] = {}
 
@@ -85,6 +89,22 @@ async def _candidates() -> list[dict]:
             installed=bool(llama_status.get("installed")), experimental=True)
         candidates[base]["aliases"] = aliases
 
+    # Lucebox。1モデル=1ポートなので、エンドポイントを束ねる処理は要らない。
+    lucebox_status = lucebox.runtime_status()
+    lucebox_installed = bool(lucebox_status.get("installed"))
+    lucebox_instances = lucebox_status.get("instances", [])
+    if lucebox_installed or lucebox_instances:
+        default_port = int(lucebox.DEFAULT_INSTANCE["port"])
+        first_port = int(lucebox_instances[0]["port"]) if lucebox_instances else default_port
+        add(f"http://127.0.0.1:{first_port}", "lucebox", "Lucebox",
+            managed=True, installed=lucebox_installed, experimental=True)
+    for instance in lucebox_instances:
+        base = _openai_base(str(instance.get("base_url") or f"http://127.0.0.1:{instance['port']}"))
+        alias = str(instance["alias"])
+        add(base, "lucebox-instance", f"Lucebox · {alias}",
+            installed=lucebox_installed, experimental=True)
+        candidates[base].setdefault("aliases", []).append(alias)
+
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)
 
@@ -119,9 +139,9 @@ def _gateway_candidate() -> dict | None:
     などの外部クライアントと内部のチャットが同じ経路を通る。
     自ポート宛のため疎通確認はせず、登録済みLLMをそのままモデル一覧として返す。
     """
-    from app.models_mgmt import gateway, llama
+    from app.models_mgmt import gateway, local_llm
 
-    models = [str(i["alias"]) for i in llama.list_instances() if str(i.get("role", "llm")) == "llm"]
+    models = [str(i["alias"]) for i in local_llm.llm_instances()]
     if not models:
         return None
     # 先頭は仮想モデル。どれを使うかをControlDeckに任せると、停止中の別モデルを
@@ -160,7 +180,7 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
     # llama.cpp運用時の既定接続先はゲートウェイ。個別ポートも選べるよう一覧には残す。
     # モデル管理画面のようにランタイム自体を扱う用途では出さない（保有モデルはllama.cpp側）。
     gateway_item = (_gateway_candidate()
-                    if include_gateway and selected_runtime == "llama.cpp" else None)
+                    if include_gateway and selected_runtime in GATEWAY_RUNTIMES else None)
     for item in candidates:
         item["selected"] = (
             gateway_item is None
@@ -184,11 +204,12 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
         except (httpx.HTTPError, ValueError, TypeError):
             if item.get("managed") and (include_unavailable or item.get("selected")):
                 models: list[str] = []
-                if item.get("provider") == "llama.cpp":
-                    # 停止中でも登録済みaliasを提示する（--alias がモデルIDになる）
-                    from app.models_mgmt import llama
+                if item.get("provider") in GATEWAY_RUNTIMES:
+                    # 停止中でも登録済みaliasを提示する（起動時のモデル名になる）
+                    from app.models_mgmt import local_llm
 
-                    models = [str(inst["alias"]) for inst in llama.list_instances()]
+                    models = [str(inst["alias"])
+                              for inst in local_llm.list_instances(runtime=str(item["provider"]))]
                 # エンドポイント候補は、そこに束ねた全モデルを選択肢として出す。
                 models = item.get("aliases") or models
                 return {**item, "available": False, "models": models,
@@ -201,7 +222,7 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
         # llama.cpp の個別ポートはゲートウェイへ集約する。同じモデルが接続先違いで
         # 二重に並ぶと、どちらを選んだかでモデル解決も受け入れ制御も変わってしまう。
         found = [item for item in found
-                 if not str(item.get("provider") or "").startswith("llama.cpp")]
+                 if not str(item.get("provider") or "").startswith(GATEWAY_RUNTIMES)]
         gateway_item["selected"] = True
         found.append(gateway_item)
     return sorted(found,
