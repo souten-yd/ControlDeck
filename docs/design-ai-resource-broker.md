@@ -65,6 +65,27 @@ grant されない。`_required_bytes` は host device のときだけ `host_byt
 `host` を `preferred_devices` に挙げていない要求の `host_bytes` は受け取らない
 （使われない申告を通すと、効かないことに気づけない）。
 
+### RAMは最後まで貸さない（`HOST_RESERVE_BYTES`）
+
+VRAMは物理的に上限で頭打ちになるが、RAMはswapがあるぶん「入ったことになって全体が
+遅くなる」という壊れ方をする。余白を置かないと broker は `available` を使い切る
+判断を平気でする。実測（2026-09-05、開発機）:
+
+```text
+total      30.4 GiB
+available  18.3 GiB   ── この時点で swap を 4.6GB 使っていた
+llama-server のホスト側 RSS  6.9 GB（VRAM の 22.6GB とは別）
+```
+
+ここへ画像 worker の 17.9 GiB（`disable_mmap` なので回収できない匿名メモリ）を
+足すと、VRAMを守るために逃がしたはずのLLMをRAM側で潰す。`host_device()` は
+`available` から 4 GiB を引いた量だけを貸す。余白は「使用中」として数える
+（`total_bytes` を偽ると利用者に見える容量が変わる）。
+
+結果として、この開発機で FLUX.2 Klein 4B（`host_bytes` 18.9 GiB）を RAM へ載せる
+のは**余裕があるときだけ**になる。載らないときは従来どおり gpu0 が空くのを待つ。
+遅くても動くより、待って速く動く方が良い。
+
 ### 廃止したもの
 
 `ResourceProvider.request_yield` / `yield_wait_reason`、`YieldLevel`、
