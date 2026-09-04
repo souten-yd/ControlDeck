@@ -2,6 +2,26 @@
 
 最終更新: 2026-09-04
 
+## 退避廃止に伴う待機経路の整理（2026-09-04）
+
+退避(yield)を廃止したことで、到達しなくなった待機理由と、そのためだけにあった
+派生値を削除した。
+
+- `WaitReason` の `YIELD_RUNTIME_UNKNOWN` / `YIELD_LOAD_COST_UNKNOWN` /
+  `YIELD_THRASH_COST` / `YIELD_MINIMUM_UPTIME` / `YIELD_THRASH_WINDOW` /
+  `YIELD_DRAIN_TIMEOUT` を削除。これらを出す経路がもう無い。
+- `ResourceTelemetry.reload_cost_p90()` / `LoadCostEstimate` / `YIELD_THRASH_FACTOR`、
+  および load profile の `yield_basis` / `yield_threshold_sec` を削除。
+  「退避する価値があるか」を判断するためだけの派生値だった。
+  cold/warm の実測分布そのものは残す（診断に使える）。
+- ゲートウェイの KV 空き待ちが `resource_provider.provider().await_capacity()` を
+  経由していたのをやめ、`local_llm.await_capacity()` を直接呼ぶ。provider 側は
+  中継しているだけで判断を持っていなかった。provider からもメソッドを削除。
+- 対応するテストを整理（退避判断を対象にした2件を削除、生存テストからは
+  派生値の検証だけ外す）。backend全体は891件成功。
+
+規模: 5ファイルで +2 / −101 行。
+
 ## GPU資源の再設計: 退避をやめ、画像生成はRAMへ載せて共存する（2026-09-04）
 
 - 方針を「誰を追い出すか」から「どこへ載せるか」へ変えた。**LLMと画像生成は共存**させ、
