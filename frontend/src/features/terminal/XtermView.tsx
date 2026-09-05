@@ -120,7 +120,13 @@ export default function XtermView({
     // 既定のDOMレンダラーはTUIの全画面再描画が重い。WebGLが使えれば切り替え、
     // context lostや未対応環境ではDOMへ自動で戻す。
     let webgl: { dispose: () => void; onContextLoss: (handler: () => void) => { dispose: () => void } } | null = null;
+    // 折り返しで全角が 1 文字消えることがある。データは正しく届いていて（bash が
+    // 復唱するコマンド名は欠けていない）、tmux 側も全幅で正しく復元できるので、
+    // 残るのは描画である。WebGL の glyph atlas は全角の扱いで問題が出ることが
+    // あるため、?renderer=dom で切り替えて比べられるようにする。
+    const forceDomRenderer = new URLSearchParams(location.search).get("renderer") === "dom";
     void (async () => {
+      if (forceDomRenderer) return;
       try {
         const { WebglAddon } = await import("@xterm/addon-webgl");
         const addon = new WebglAddon();
