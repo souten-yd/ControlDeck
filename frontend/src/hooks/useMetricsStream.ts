@@ -35,19 +35,39 @@ export function useMetricsStream(enabled: boolean) {
       ws.onclose = () => {
         setConnected(false);
         if (!closed && !document.hidden) {
-          timer = setTimeout(connect, Math.min(30_000, 1000 * 2 ** retry++));
+          timer = setTimeout(connect, Math.min(8_000, 1000 * 2 ** retry++));
         }
       };
       ws.onerror = () => ws?.close();
     };
 
+    /** 前の socket を、再接続を予約させずに捨てる。 */
+    const discard = () => {
+      if (!ws) return;
+      ws.onopen = ws.onmessage = ws.onerror = null;
+      ws.onclose = null;
+      try {
+        ws.close();
+      } catch {
+        /* 既に閉じている */
+      }
+      ws = null;
+    };
+
     const onVisibility = () => {
       if (document.hidden) {
         ws?.close();
-      } else if (!ws || ws.readyState >= WebSocket.CLOSING) {
-        retry = 0;
-        connect();
+        return;
       }
+      // 戻ってきたら readyState を信用せずに繋ぎ直す。携帯で背面に回すと、
+      // OS が黙って経路を切っても socket は OPEN のまま残ることがある。その状態を
+      // 「生きている」と見なすと、watchdog が沈黙に気づく 45 秒まで「再接続中」が
+      // 居座る。捨てて繋ぎ直すほうが速く、無駄も一度きりで済む。
+      discard();
+      clearTimeout(timer);
+      retry = 0;
+      setConnected(false);
+      connect();
     };
 
     // 回線が戻ったのに backoff を待たせない。切れたまま画面を開いていると、
@@ -56,10 +76,11 @@ export function useMetricsStream(enabled: boolean) {
     let lastRevive = 0;
     const onOnline = () => {
       if (closed || document.hidden) return;
-      if (ws && ws.readyState <= WebSocket.OPEN) return;
       const now = Date.now();
       if (now - lastRevive < 3_000) return;
+      if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMessageAt < 15_000) return;
       lastRevive = now;
+      discard();
       clearTimeout(timer);
       retry = 0;
       connect();
@@ -70,7 +91,7 @@ export function useMetricsStream(enabled: boolean) {
     const watchdog = setInterval(() => {
       if (closed || document.hidden) return;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - lastMessageAt < 45_000) return;
+      if (Date.now() - lastMessageAt < 20_000) return;
       lastMessageAt = Date.now();
       ws.close();          // onclose が backoff つきで繋ぎ直す
     }, 5_000);
