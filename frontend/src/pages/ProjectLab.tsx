@@ -483,7 +483,15 @@ function ArtifactView({
       );
     }
     if (artifact.kind === "pdf") return <iframe title={artifact.name} src={url} className="h-full w-full border-0 bg-white" />;
-    if (artifact.kind === "audio") return <Centered><audio src={url} controls className="w-full" /></Centered>;
+    // Centered は文言用で、grid の place-items-center が中身を内容幅まで縮める。
+    // audio は内容幅を持たないので 0 になり、再生器が押せなくなる（携帯で発覚）。
+    if (artifact.kind === "audio") {
+      return (
+        <div className="flex h-full items-center justify-center p-6">
+          <audio src={url} controls className="w-full max-w-sm" />
+        </div>
+      );
+    }
     if (artifact.kind === "video") return <div className="grid h-full place-items-center bg-black p-2"><video src={url} controls className="max-h-full max-w-full" /></div>;
   }
 
