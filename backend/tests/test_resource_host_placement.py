@@ -170,27 +170,99 @@ def test_ram_is_not_lent_to_the_last_byte():
     assert lendable <= host.total_bytes - device_module.HOST_RESERVE_BYTES
 
 
-def test_a_machine_with_no_spare_ram_lends_nothing():
+def test_a_machine_with_no_spare_ram_lends_nothing(monkeypatch):
     """余白を割り込んだら貸さない。負の空きを作らない。"""
+    import psutil
+
     from app.resources import devices as device_module
 
     class Memory:
         total = 8 * GB
         available = 1 * GB
 
-    original = device_module.host_device.__globals__.get("psutil")
-    import sys
-    import types
-
-    fake = types.ModuleType("psutil")
-    fake.virtual_memory = lambda: Memory()
-    sys.modules["psutil"] = fake
-    try:
-        host = device_module.host_device()[0]
-    finally:
-        if original is not None:
-            sys.modules["psutil"] = original
-        else:
-            sys.modules.pop("psutil", None)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: Memory())
+    host = device_module.host_device()[0]
 
     assert host.total_bytes - host.observed_used_bytes == 0
+
+
+def test_the_leftover_is_lent_when_the_whole_thing_does_not_fit():
+    """全常駐が入らなくても、下限を満たせるなら空きぶんを貸す。
+
+    実測（2026-09-05、FLUX.2 Klein 4B / 1024²）: 全常駐 21.9GiB で 2.98秒、
+    枠 8GiB で 6.7秒、枠 7GiB では OOM。残りを貸せないと純CPUの 113秒に落ちる。
+    """
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 20 * GB,
+              "cold_load_peak_bytes": 20 * GB, "headroom_bytes": GB,
+              "minimum_bytes": 8 * GB, "confidence": "measured"},
+        host_bytes=18 * GB,
+    )
+
+    # LLM が 21.4GiB 載っていて、残りは 10.4GiB。
+    status = _grant(_devices(int(31.86 * GB), int(21.42 * GB)), request)
+
+    assert status.state == RequestState.GRANTED
+    assert status.device_id == "gpu0"
+    assert status.granted_bytes is not None
+    assert 8 * GB <= status.granted_bytes < 21 * GB
+
+
+def test_a_budget_below_the_floor_is_refused():
+    """下限を割る枠では動かない。貸しても OOM で落ちるだけである。"""
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 20 * GB,
+              "cold_load_peak_bytes": 20 * GB, "headroom_bytes": GB,
+              "minimum_bytes": 8 * GB, "confidence": "measured"},
+        preferred_devices=[],
+    )
+
+    # 空きは 5GiB しかない。
+    status = _grant(_devices(int(31.86 * GB), int(26.86 * GB)), request)
+
+    assert status.state != RequestState.GRANTED
+
+
+def test_a_request_without_a_floor_still_needs_the_whole_thing():
+    """下限を申告しない要求の意味は変えない。黙って小さく貸さない。"""
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 20 * GB,
+              "cold_load_peak_bytes": 20 * GB, "headroom_bytes": GB,
+              "confidence": "measured"},
+        preferred_devices=[],
+    )
+
+    status = _grant(_devices(int(31.86 * GB), int(21.42 * GB)), request)
+
+    assert status.state != RequestState.GRANTED
+
+
+def test_a_full_card_lends_the_whole_requirement_not_more():
+    """空いていれば全常駐ぶんを貸す。空き全部を予約して他を締め出さない。"""
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 20 * GB,
+              "cold_load_peak_bytes": 20 * GB, "headroom_bytes": GB,
+              "minimum_bytes": 8 * GB, "confidence": "measured"},
+        preferred_devices=[],
+    )
+
+    status = _grant(_devices(int(31.86 * GB), 0), request)
+
+    assert status.state == RequestState.GRANTED
+    assert status.granted_bytes == 21 * GB
+
+
+def test_ram_is_never_lent_in_pieces():
+    """RAM は分割して載せる先ではない。全部置ける空きが要る。"""
+    request = _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 20 * GB,
+              "cold_load_peak_bytes": 20 * GB, "headroom_bytes": GB,
+              "minimum_bytes": 8 * GB, "confidence": "measured"},
+        host_bytes=18 * GB,
+    )
+
+    # gpu0 は 3GiB しか空いておらず下限に足りない。host も 10GiB で 18GiB に届かない。
+    status = _grant(_devices(int(31.86 * GB), int(28.86 * GB), host_total=int(10 * GB)),
+                    request)
+
+    assert status.state != RequestState.GRANTED

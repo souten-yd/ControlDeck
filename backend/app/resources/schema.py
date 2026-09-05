@@ -67,10 +67,24 @@ class VramRequest(BaseModel):
     cold_load_peak_bytes: int = Field(ge=0, le=2**50)
     headroom_bytes: int = Field(ge=0, le=2**50)
     confidence: VramConfidence
+    # 全部載せるほど VRAM が無くても、これだけあれば動く、という下限。
+    # 画像生成は重みをRAMに置き、実行するモジュールだけをVRAMへ送る形で走れる
+    # （diffusers の model cpu offload）。枠が小さければ細かく往復して遅く、
+    # 大きければ多く常駐して速い、と連続的に変わる。実測（2026-09-05、
+    # FLUX.2 Klein 4B / 1024²）: 全常駐 21.9GiB で 2.98秒、枠 8GiB で 6.7秒、
+    # 枠 7GiB では OOM。省略した要求は従来どおり全常駐しか受け付けない。
+    minimum_bytes: int | None = Field(default=None, ge=0, le=2**50)
 
     @property
     def required_bytes(self) -> int:
         return max(self.resident_bytes, self.execution_peak_bytes, self.cold_load_peak_bytes) + self.headroom_bytes
+
+    @property
+    def floor_bytes(self) -> int:
+        """この要求が動ける最小の枠。下限が無ければ全常駐そのもの。"""
+        if self.minimum_bytes is None:
+            return self.required_bytes
+        return min(self.minimum_bytes, self.required_bytes)
 
 
 class ResourceRequest(BaseModel):
@@ -144,6 +158,9 @@ class RequestStatus(BaseModel):
     job_id: str
     device_id: str | None = None
     lease_id: str | None = None
+    # 実際に貸した枠。下限で受理されたときは required より小さい。利用者は
+    # この値に自分を縛る（例: torch の per-process memory fraction）。
+    granted_bytes: int | None = Field(default=None, ge=0)
     reason: WaitReason | None = None
     queue_position: int | None = Field(default=None, ge=1)
     blocking: list[BlockingResource] = Field(default_factory=list)

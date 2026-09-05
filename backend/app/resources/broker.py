@@ -43,6 +43,8 @@ class _Fit:
     device_id: str | None
     reason: WaitReason | None
     blocking: tuple[BlockingResource, ...] = ()
+    # 実際に貸す枠。全常駐が入らなくても下限を満たせるなら、空きぶんを貸す。
+    granted_bytes: int = 0
 
 
 class ResourceBroker:
@@ -324,11 +326,14 @@ class ResourceBroker:
                         record.request,
                         fit.device_id,
                         now,
-                        reserved_bytes=self._required_bytes(record.request, fit.device_id),
+                        reserved_bytes=fit.granted_bytes or self._required_bytes(
+                            record.request, fit.device_id
+                        ),
                     )
                     record.status.state = RequestState.GRANTED
                     record.status.device_id = fit.device_id
                     record.status.lease_id = lease.lease_id
+                    record.status.granted_bytes = lease.reserved_bytes
                     record.status.reason = None
                     record.status.queue_position = None
                     record.status.blocking = []
@@ -374,7 +379,13 @@ class ResourceBroker:
                 last_reason = WaitReason.DEVICE_BUSY_EXCLUSIVE
                 last_blocking = self._blocking(leases, providers)
                 continue
-            if self._required_bytes(request, device.id) > snapshot.admitted_free_bytes:
+            wanted = self._required_bytes(request, device.id)
+            # 全部載らなくても、下限を満たせるなら空きぶんを貸す。利用者は枠の中で
+            # 動く形（重みをRAMに置き、実行するモジュールだけをVRAMへ送る）へ
+            # 切り替える。枠を割れば利用者の process だけが OOM で落ちる。
+            floor = self._floor_bytes(request, device.id)
+            budget = min(wanted, snapshot.admitted_free_bytes)
+            if budget < floor:
                 last_blocking = self._blocking(leases, providers)
                 last_reason = WaitReason.HELD_BY_OTHER_OWNER if providers else WaitReason.INSUFFICIENT_VRAM
                 continue
@@ -390,11 +401,12 @@ class ResourceBroker:
             except ValueError:
                 rank = len(request.preferred_devices)
             resident = 1 if request.residency_key and request.residency_key in device.resident_keys else 0
-            candidates.append((rank, resident, snapshot.admitted_free_bytes, device.id))
+            candidates.append((rank, resident, snapshot.admitted_free_bytes, device.id, budget))
         if not candidates:
             return _Fit(None, last_reason, last_blocking)
         candidates.sort(key=lambda item: (item[0], -item[1], -item[2], item[3]))
-        return _Fit(candidates[0][3], None)
+        best = candidates[0]
+        return _Fit(best[3], None, granted_bytes=best[4])
 
     def _eligible_devices(self, request: ResourceRequest) -> list[ResourceDevice]:
         values = [item for item in self.devices.list() if item.compatible]
@@ -431,6 +443,20 @@ class ResourceBroker:
         if device_id == HOST_DEVICE_ID and request.host_bytes is not None:
             return max(request.host_bytes, recommendation)
         return max(request.vram.required_bytes, recommendation)
+
+    def _floor_bytes(self, request: ResourceRequest, device_id: str) -> int:
+        """この device で受理してよい最小の枠。
+
+        host（システムRAM）は分割して載せる先ではない。RAM 側は全部を置く前提
+        なので、下限は required と同じにする。
+        """
+        if device_id == HOST_DEVICE_ID:
+            return self._required_bytes(request, device_id)
+        recommendation = (
+            self.telemetry.oom_recommendation(request.residency_key, device_id)
+            if request.residency_key else 0
+        )
+        return max(request.vram.floor_bytes, recommendation)
 
     @staticmethod
     def _reservation_totals(values: list[ProviderReservation]) -> dict[str, int]:
