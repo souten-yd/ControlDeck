@@ -26,6 +26,11 @@ from app.resources.schema import (
 from app.resources.telemetry import ResourceTelemetry
 
 
+# 「置き場所が無い」と読める理由。ここに当たるときだけ provider へ退去を頼む。
+# 排他の衝突や依存待ちは、場所を空けても解けない。
+_NO_ROOM = frozenset({WaitReason.INSUFFICIENT_VRAM, WaitReason.HELD_BY_OTHER_OWNER})
+
+
 class BrokerError(RuntimeError):
     pass
 
@@ -320,6 +325,13 @@ class ResourceBroker:
             for position, candidate in enumerate(ordered, start=1):
                 record = self._requests[candidate.request_id]
                 fit = await self._fit(record.request, provider_values)
+                if fit.device_id is None and fit.reason in _NO_ROOM:
+                    # どこにも置けない。使っていない provider が居るなら退いて
+                    # もらう。使用中なら断られ、この要求は待ち続ける。実行中の
+                    # 処理を切らないのは provider 側の責任である。
+                    if await self._ask_for_room(record.request):
+                        provider_values = self.providers.reservations()
+                        fit = await self._fit(record.request, provider_values)
                 if fit.device_id is not None:
                     lease = self.leases.grant(
                         candidate.request_id,
@@ -408,6 +420,26 @@ class ResourceBroker:
         best = candidates[0]
         return _Fit(best[3], None, granted_bytes=best[4])
 
+    async def _ask_for_room(self, request: ResourceRequest) -> bool:
+        """置き場所が無い要求のために、使っていない provider へ退去を頼む。
+
+        頼むのは gpu0 に予約を持つ provider だけで、判断は provider が下す。
+        broker は「他に置けない」ことだけを知っていて、誰が使用中かは知らない。
+        """
+        for device in self._eligible_devices(request):
+            if device.kind != "gpu":
+                continue
+            needed = self._floor_bytes(request, device.id)
+            released, reason, freed = await self.providers.step_aside(device.id, needed)
+            self.telemetry.record(
+                "provider.step_aside",
+                device_id=device.id,
+                reason=f"{reason} freed={freed}",
+            )
+            if released:
+                return True
+        return False
+
     def _eligible_devices(self, request: ResourceRequest) -> list[ResourceDevice]:
         values = [item for item in self.devices.list() if item.compatible]
         if request.device != "auto":
@@ -421,13 +453,18 @@ class ResourceBroker:
                 if item.id not in forbidden and (item.kind == "gpu" or item.id in wanted)]
 
     def _physically_possible(self, request: ResourceRequest) -> bool:
-        # 誰も明け渡さない前提なので、現在の予約はすべて動かせない量として数える。
-        non_yieldable: dict[str, int] = {}
-        for item in self.providers.reservations():
-            non_yieldable[item.device_id] = non_yieldable.get(item.device_id, 0) + item.reserved_bytes
+        """そもそも置ける見込みがあるか。無いなら待たせずに断る。
+
+        退ける provider の予約は動かせない量として数えない。使っていない LLM は
+        退けるようになったので（step_aside）、ここで数えると「退けば入ったのに
+        断られる」ことになる。実際に退くかは provider が決める。
+        """
+        immovable: dict[str, int] = {}
+        for item in self.providers.immovable_reservations():
+            immovable[item.device_id] = immovable.get(item.device_id, 0) + item.reserved_bytes
         return any(
-            self._required_bytes(request, item.id)
-            <= max(0, item.total_bytes - non_yieldable.get(item.id, 0))
+            self._floor_bytes(request, item.id)
+            <= max(0, item.total_bytes - immovable.get(item.id, 0))
             for item in self._eligible_devices(request)
         )
 

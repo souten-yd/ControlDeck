@@ -266,3 +266,88 @@ def test_ram_is_never_lent_in_pieces():
                     request)
 
     assert status.state != RequestState.GRANTED
+
+
+class _SteppingProvider:
+    """使用中かどうかで退去の可否が変わる provider。"""
+
+    id = "local-llm"
+    can_step_aside = True
+
+    def __init__(self, *, in_use: bool, bytes_held: int):
+        self.in_use = in_use
+        self.bytes_held = bytes_held
+        self.asked = 0
+
+    def reservations(self):
+        from app.resources.providers import ProviderReservation
+
+        if not self.bytes_held:
+            return []
+        return [ProviderReservation(provider_id=self.id, device_id="gpu0",
+                                    owner="llm:qwen38", reserved_bytes=self.bytes_held,
+                                    residency_key="llm:qwen38")]
+
+    async def probe(self, request, device_id):
+        from app.resources.providers import ProbeResult
+
+        return ProbeResult(accepting=True)
+
+    async def step_aside(self, device_id):
+        self.asked += 1
+        if self.in_use:
+            return False, "in_use", 0
+        freed, self.bytes_held = self.bytes_held, 0
+        return True, "released", freed
+
+
+def _big_request():
+    return _request(
+        vram={"resident_bytes": 0, "execution_peak_bytes": 20 * GB,
+              "cold_load_peak_bytes": 20 * GB, "headroom_bytes": GB,
+              "confidence": "measured"},
+        preferred_devices=[],
+    )
+
+
+def test_an_idle_llm_steps_aside_when_there_is_nowhere_else():
+    """他に置き場所が無いときだけ、使っていない LLM に退いてもらう。"""
+    from app.resources.broker import ResourceBroker
+
+    provider = _SteppingProvider(in_use=False, bytes_held=int(21.42 * GB))
+    broker = ResourceBroker(_devices(int(31.86 * GB), 0))
+    broker.providers.register(provider)
+
+    status = asyncio.run(broker.submit(_big_request()))
+
+    assert provider.asked == 1
+    assert status.state == RequestState.GRANTED
+    assert status.device_id == "gpu0"
+
+
+def test_an_llm_in_use_is_never_pulled_out():
+    """使用中なら降ろさない。実行中の推論を切らないのは provider の責任である。"""
+    from app.resources.broker import ResourceBroker
+
+    provider = _SteppingProvider(in_use=True, bytes_held=int(21.42 * GB))
+    broker = ResourceBroker(_devices(int(31.86 * GB), 0))
+    broker.providers.register(provider)
+
+    status = asyncio.run(broker.submit(_big_request()))
+
+    assert provider.asked == 1
+    assert status.state != RequestState.GRANTED
+
+
+def test_a_request_that_already_fits_never_asks_anyone_to_move():
+    """置ける要求のために誰かを降ろさない。"""
+    from app.resources.broker import ResourceBroker
+
+    provider = _SteppingProvider(in_use=False, bytes_held=int(5 * GB))
+    broker = ResourceBroker(_devices(int(31.86 * GB), 0))
+    broker.providers.register(provider)
+
+    status = asyncio.run(broker.submit(_request()))
+
+    assert provider.asked == 0
+    assert status.state == RequestState.GRANTED

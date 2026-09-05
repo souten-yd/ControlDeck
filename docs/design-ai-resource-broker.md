@@ -116,6 +116,36 @@ llama-server のホスト側 RSS  6.9 GB（VRAM の 22.6GB とは別）
 のは**余裕があるときだけ**になる。載らないときは従来どおり gpu0 が空くのを待つ。
 遅くても動くより、待って速く動く方が良い。
 
+### 使っていない LLM だけが退く（`step_aside`）
+
+「余りを貸す」でも置けない要求のために、**使っていない** provider へ一度だけ
+退去を頼む。broker は「他に置き場所が無い」ことだけを知っていて、誰が使用中かは
+知らない。判断は provider が下す。
+
+```text
+ResourceProvider.can_step_aside   退ける provider か（既定 False）
+ResourceProvider.step_aside(device_id) -> (退いたか, 理由, 空けたバイト数)
+```
+
+`LocalLlmCapacityProvider.step_aside` は既存の `release_on_request` に委ねる。
+あれは実行中の推論を drain して待ち、空にならなければ `in_use` を返して降ろさない。
+利用者の明示保持（`has_residency_hold`）があっても降ろさない。
+
+**廃止した yield 機構とは別物である。** yield は「優先度の高い者のために追い出す」
+もので、実行中の推論を巻き込んだ。ここは
+
+```text
+(a) 使用中なら退かない
+(b) 実行中の処理は待つ（切らない）
+(c) 引き金は優先度ではなく「他に置き場所が無い」こと
+```
+
+降ろすと載せ直しに 80 秒かかる（実測、Qwen3.8-27B 23GB）ので、同じ provider を
+10 分に 1 回までしか降ろさない。1 枚の画像のために毎回振り回すのは割に合わない。
+
+退けない provider の予約は、従来どおり「動かせない量」として数える
+（`immovable_reservations`）。入らない要求を待たせずに断る挙動は変わらない。
+
 ### 廃止したもの
 
 `ResourceProvider.request_yield` / `yield_wait_reason`、`YieldLevel`、
