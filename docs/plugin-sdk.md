@@ -185,6 +185,10 @@ Runtime APIはsession cookie、CSRF、`settings.manage`をservice identityとし
 10分以内の期限、`aud`・header・pathのAdd-on ID一致、installed／enabled、操作別capability grantをHostが検証します。
 HMAC keyをAdd-onへ共有しません。serviceがHostから受け取ったrequest tokenを検証するときはintrospectionへそのまま送り、
 `active`、`addon_id`、`subject`、`expires_at`、`granted_capabilities`を確認してください。
+利用者に紐づく実行では、追加の`actor_subject=user:<opaque id>`が返ります。Agent toolの
+`subject=job:<id>`はcallごとに変わるため、同じ利用者のdurable objectを複数callから扱う
+owner keyには`actor_subject`を使います。値が無いservice identityでは`subject`を使い、
+actorを推測したり別利用者へ共有したりしてはいけません。
 
 `sub=job:{id}`では`POST /jobs`が既存Host Jobへattachし、新しいJobを作りません。Agent/Workflowの同期呼出しより長く続く
 durable workだけは`{"title":"...","detached":true}`でownerを継承した別Jobを作成できます。新規作成レスポンスは

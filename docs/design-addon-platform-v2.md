@@ -1173,6 +1173,11 @@ Workflow／Context ActionはHost Job作成とfile grant利用を正しく認可�
 - browser proxyの数値`sub`は後方互換のため維持し、同じ利用者をactor claimにも署名する。
 - Add-onはclaimを自己申告できず、HostのRuntime APIはaddon ID、現在のcapability、actor、grant allowlist、
   grant自体のowner／TTL／kindを毎requestで再検証する。
+- 2026-09-06追補: Agent toolはcallごとに別の`job:{id}`を持つため、複数callにまたがる
+  durable objectのownerには実行`sub`を使えない。introspectionは署名済み
+  `actor_user_id`がある場合だけ`actor_subject=user:<id>`を加法的に返す。これはAdd-on内の
+  owner照合用であり、Host Job/grant操作のauthorityは引き続き個々のservice token `sub`である。
+  actor claimが無いときはfield自体を返さず、Add-onはactorを推測しない。
 
 検討したが採用しなかった案:
 
