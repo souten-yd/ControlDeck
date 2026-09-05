@@ -55,6 +55,36 @@ export const prepareTerminalPaste = (text: string, bracketedPasteMode: boolean):
   return bracketedPasteMode ? `\x1b[200~${normalized}\x1b[201~` : normalized;
 };
 
+/** UTF-8 の文字と escape の途中で切らない chunk 終端。
+ *
+ * 単純に PASTE_CHUNK_BYTES で割ると、日本語（3 byte）の途中で分かれる。分かれた
+ * 前半だけが先に PTY へ書かれるので、受け側は壊れた列として捨てるか置換する。
+ * 貼り付けた文が欠けて見えるのはこれである。さらに悪いことに、境界が
+ * bracketed paste の終端（ESC [ 201 ~）を割ると、アプリは paste 中のまま留まり、
+ * その後の Enter が本文として飲まれる。「何度も Enter を押さないと入らない」の
+ * 正体でもある。
+ *
+ * 継続 byte（0b10xxxxxx）と ESC 以降の列を後ろへ送り、境界を安全な位置まで戻す。
+ */
+export function chunkEnd(bytes: Uint8Array, start: number): number {
+  const limit = Math.min(start + PASTE_CHUNK_BYTES, bytes.byteLength);
+  if (limit >= bytes.byteLength) return limit;
+  let end = limit;
+  // 文字の途中なら、その文字の先頭まで戻す。
+  while (end > start && (bytes[end] & 0b1100_0000) === 0b1000_0000) end -= 1;
+  // escape の途中なら、ESC の手前まで戻す。CSI は最大でも数 byte なので、
+  // 直近だけを見れば足りる。
+  const ESC = 0x1b;
+  for (let back = end - 1; back >= start && back > end - 12; back -= 1) {
+    if (bytes[back] !== ESC) continue;
+    const terminated = bytes.slice(back, end).some((byte) => byte >= 0x40 && byte <= 0x7e && byte !== 0x5b);
+    if (!terminated) end = back;
+    break;
+  }
+  // 戻しすぎて進めなくなったら、元の位置で切る。止まるよりは良い。
+  return end > start ? end : limit;
+}
+
 /** 長文pasteをACK単位で送る。通常キー入力とは独立し、同時未ACKは1 chunkに限定する。 */
 export class TerminalInputController {
   private nextPasteId = 1;
@@ -211,7 +241,7 @@ export class TerminalInputController {
       return;
     }
     const start = current.offset;
-    const end = Math.min(start + PASTE_CHUNK_BYTES, current.utf8Bytes.byteLength);
+    const end = chunkEnd(current.utf8Bytes, start);
     const chunkIndex = Math.floor(start / PASTE_CHUNK_BYTES);
     const connectionGeneration = this.options.connectionGeneration();
     const retry = this.retryChunk;

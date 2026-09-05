@@ -604,6 +604,13 @@ export default function XtermView({
           writeQueue.enqueueWrite("\r\n\x1b[90m[セッションが終了しました]\x1b[0m\r\n");
           return;
         }
+        if (ev.code === 4401 || ev.code === 4403) {
+          // 認証・Origin で断られている。何度繋ぎ直しても同じなので止める。
+          // 止めないと「再接続」と「接続中」が交互に出続けて、待っても進まない。
+          setStatus("gone");
+          writeQueue.enqueueWrite("\r\n\x1b[90m[ログインが切れました。画面を再読み込みしてください]\x1b[0m\r\n");
+          return;
+        }
         // 切断からhistory_reset到着までにもcursor/rendererがDOMを更新し得る。
         // 再接続時の追従描画を見せないため、切断を検知した時点で同期的に隠す。
         presentReplay(true);
@@ -618,12 +625,19 @@ export default function XtermView({
     // 携帯では画面を離れた間に socket が黙って死ぬ。close event が来ないことも
     // あるので、戻ってきた時点で生きているか確かめ、死んでいれば待たずに繋ぎ直す。
     // backoff の待ち時間（最大 5 秒）を待たせないためでもある。
+    // 戻ってくるたびに backoff を 0 へ戻すと、認証切れのように必ず失敗する状況で
+    // 再接続を叩き続けることになる（「再接続」と「接続中」が交互に出て進まない）。
+    // 直前の試行から十分空いているときだけ、待ちを飛ばして繋ぎ直す。
+    let lastReviveAt = 0;
+    const REVIVE_MIN_INTERVAL = 3_000;
     const reviveIfNeeded = () => {
       if (disposed || document.visibilityState !== "visible") return;
       const socket = wsRef.current;
       if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      const now = performance.now();
+      if (now - lastReviveAt < REVIVE_MIN_INTERVAL) return;
+      lastReviveAt = now;
       window.clearTimeout(retryTimer);
-      retryDelay = 500;
       connect();
     };
     document.addEventListener("visibilitychange", reviveIfNeeded);
