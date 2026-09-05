@@ -500,6 +500,7 @@ export default function XtermView({
         geometryController?.onConnectionOpen();
       };
       ws.onmessage = (ev) => {
+        lastMessageAt = performance.now();   // 心拍・出力どちらでも生存の証拠
         if (ws !== wsRef.current || thisConnectionGeneration !== connectionGeneration) return;
         if (typeof ev.data === "string") {
           try {
@@ -545,6 +546,7 @@ export default function XtermView({
                 && Number.isSafeInteger(control.sequence)) pendingOutputSequence = control.sequence;
               return;
             }
+            if (control.type === "heartbeat") return;
             if (control.type === "history_reset") {
               if (!connectionController.historyReset(control.connectionGeneration ?? thisConnectionGeneration)) return;
               replayFinalizeToken += 1;
@@ -649,6 +651,19 @@ export default function XtermView({
     // 直前の試行から十分空いているときだけ、待ちを飛ばして繋ぎ直す。
     let lastReviveAt = 0;
     const REVIVE_MIN_INTERVAL = 3_000;
+    // 無音が続いたら死んだと見なす。server は 15 秒ごとに heartbeat を送るので、
+    // 3 回ぶん来なければ経路が切れている。TCP の timeout を待つより早く気づく。
+    const SILENCE_LIMIT = 50_000;
+    let lastMessageAt = performance.now();
+    const watchdog = window.setInterval(() => {
+      if (disposed || document.visibilityState !== "visible") return;
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (performance.now() - lastMessageAt < SILENCE_LIMIT) return;
+      diagnostics?.record("heartbeat-timeout", { connectionGeneration });
+      lastMessageAt = performance.now();
+      socket.close();          // onclose が backoff つきで繋ぎ直す
+    }, 5_000);
     const reviveIfNeeded = () => {
       if (disposed || document.visibilityState !== "visible") return;
       const socket = wsRef.current;
@@ -1118,6 +1133,7 @@ export default function XtermView({
       pasteCancelRef.current = null;
       pasteRetryRef.current = null;
       host.removeEventListener("paste", onPaste, true);
+      window.clearInterval(watchdog);
       document.removeEventListener("visibilitychange", reviveIfNeeded);
       window.removeEventListener("online", reviveIfNeeded);
       window.removeEventListener("pageshow", reviveIfNeeded);

@@ -17,6 +17,9 @@ from app.terminals.stream import JournalEntry, TerminalClientStream, TerminalStr
 
 logger = logging.getLogger("control_deck.terminals")
 
+# 無出力でも生存が分かる間隔。受け側はこの 3 倍で死んだと見なす。
+HEARTBEAT_INTERVAL_SECONDS = 15.0
+
 router = APIRouter(prefix="/terminals", tags=["terminals"])
 streams = TerminalStreamRegistry(manager)
 CLIENT_INSTANCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
@@ -229,7 +232,25 @@ async def terminal_ws(
                 continue
             await send_output(entry)
 
+    async def pump_heartbeat() -> None:
+        """無出力でも定期的に合図を送る。
+
+        携帯では経路が黙って死ぬことがあり、TCP の timeout まで誰も気づかない。
+        出力の無い session は何分も無音になるので、生存を確かめる材料が無い。
+        受け側はこの間隔が途切れたら死んだと見なして繋ぎ直す。
+        """
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            try:
+                await send_control({
+                    "type": "heartbeat",
+                    "connectionGeneration": connection_generation,
+                })
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
     output_task = asyncio.create_task(pump_output())
+    heartbeat_task = asyncio.create_task(pump_heartbeat())
     pending_input: dict[str, int | bool] | None = None
     pending_presentation: dict[str, int] | None = None
     last_presentation_generation = 0
@@ -464,4 +485,5 @@ async def terminal_ws(
         pass
     finally:
         output_task.cancel()
+        heartbeat_task.cancel()
         streams.release(stream, output_queue)
