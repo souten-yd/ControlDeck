@@ -245,3 +245,33 @@ def test_project_symlink_escape_is_rejected(monkeypatch, tmp_path):
         assert False, "CodeAgentError expected"
     except op.CodeAgentError as exc:
         assert "outside" in str(exc)
+
+
+def test_runtime_config_lets_opencode_send_images_and_roam_codedev(monkeypatch, tmp_path):
+    """VLM を載せていても宣言が無いと画像は送られない。CodeDEV は毎回聞かない。"""
+    import json as _json
+
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
+    monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path / "CodeDEV")
+    path = provider._runtime_config("caps", "http://127.0.0.1:8090/v1", "auto")
+    payload = _json.loads(path.read_text(encoding="utf-8"))
+
+    model = payload["provider"]["controldeck"]["models"]["auto"]
+    # attachment だけでは足りない。modalities.input に image が無いと OpenCode は
+    # 画像を text へ落として送り、モデルは「画像入力に対応していない」と答える。
+    assert model["attachment"] is True
+    assert "image" in model["modalities"]["input"]
+    assert "text" in model["modalities"]["input"]
+
+    allowed = payload["permission"]["external_directory"]
+    root = tmp_path / "CodeDEV"
+    assert allowed[f"{root}/*"] == "allow"
+    assert allowed[f"{root}/**"] == "allow"
+    # ターミナルから送った画像はパスで渡すので、置き場も開いていないと読めない
+    from app.terminals import attachments
+
+    assert allowed[f"{attachments.store.root}/*"] == "allow"
+    # 全部開けてしまっていないこと
+    assert not any(key in ("*", "**", "/*") for key in allowed)
