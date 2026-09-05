@@ -58,8 +58,19 @@ export interface InputError {
  */
 export const prepareTerminalPaste = (text: string, bracketedPasteMode: boolean): string => {
   const normalized = text.replace(/\r?\n/g, "\r");
-  if (bracketedPasteMode) return `\x1b[200~${normalized}\x1b[201~`;
-  return normalized.replace(/\r+$/, "");
+  // 改行を含む貼り付けは、相手が名乗っていなくても囲む。
+  //
+  // session は tmux の中で動いていて、tmux は pane の bracketed paste 状態を外側の
+  // 端末へ伝えない。だからこちらは常に「使っていない」と見えるが、実際には囲んで
+  // 送れば tmux がそのまま pane へ渡し、bash は 1 つの複数行コマンドとして受け取る
+  // （実機で確認: 2 行を囲んで送ると実行されず、Enter を押して初めて両方走った）。
+  //
+  // 囲まないと改行が Enter として届き、貼った文章が 1 行ずつコマンドとして実行
+  // される。文章を貼っただけで任意の行が走るのは、印が文字として見えるより悪い。
+  if (bracketedPasteMode || normalized.includes("\r")) {
+    return `\x1b[200~${normalized}\x1b[201~`;
+  }
+  return normalized;
 };
 
 /** UTF-8 の文字と escape の途中で切らない chunk 終端。
