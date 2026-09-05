@@ -4,6 +4,7 @@ import { api, ApiError } from "../api/client";
 import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   addonIcon,
   IconBook,
@@ -289,7 +290,10 @@ export default function AppLayout() {
 
         {/* overflow-x-hidden: リロード直後等に幅超過要素があってもページ全体を横に広げない */}
         <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <Outlet />
+          {/* 1 画面の例外で全体を白くしない。path が変われば境界も解除する。 */}
+          <ErrorBoundary resetKey={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </main>
 
         {/* モバイル下部ナビ（フロー内配置で iOS の fixed 浮き上がりを回避）。
