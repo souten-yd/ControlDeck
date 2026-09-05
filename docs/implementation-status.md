@@ -1,6 +1,18 @@
 # 実装状況
 
-最終更新: 2026-09-04
+最終更新: 2026-09-06
+
+## Add-on introspection の stable actor owner（2026-09-06）
+
+OpenCodeのAgent toolはcallごとに別Host Jobを作るため、Add-onへ届く実行`subject=job:<id>`も
+毎回変わる。一方、introspectionは署名tokenに含む`actor_user_id`を返しておらず、Add-onが
+同じ利用者のdurable objectを次のtool callから安全に再取得できなかった。
+
+汎用introspection応答へ、actorが署名されている場合だけ`actor_subject=user:<id>`を加法追加した。
+実行Jobのauthorityである`subject`は変更せず、actorなしtokenの既存応答も変更しない。Add-onは
+stable owner keyにこのopaque subjectを使えるが、Host操作は引き続き実行/child Job credentialで行う。
+focused backend testはAdd-on Runtime auth/Jobs 27件成功。実Media Forge/OpenCode往復は依存Add-on
+リリース後の統合受入で確認するため、このHost PR単体では **NOT TESTED**。
 
 ## 退避廃止に伴う待機経路の整理（2026-09-04）
 

@@ -47,6 +47,12 @@ def introspect_service_token(
             "expires_at": principal.expires_at,
             "granted_capabilities": sorted(principal.granted_capabilities),
         }
+        if principal.actor_user_id is not None:
+            # The execution subject is deliberately short-lived (for example,
+            # one job per Agent tool call). Add-ons need a stable, opaque owner
+            # key to authorize durable objects across those calls. Do not expose
+            # the numeric database identity as an authority-bearing field.
+            result["actor_subject"] = f"user:{principal.actor_user_id}"
         audit_result = "success"
         reason = "active"
     except HTTPException as exc:  # introspection intentionally collapses all auth failures

@@ -68,6 +68,20 @@ def test_introspection_accepts_scoped_service_token_without_session_or_csrf(runt
     }
 
 
+def test_introspection_projects_stable_actor_subject_for_cross_call_ownership(runtime_addon):
+    client, _registry, tokens = runtime_addon
+    token = tokens.issue(
+        "fake-addon",
+        subject="job:12345",
+        kind="service",
+        actor_user_id=7,
+    )
+    response = client.post("/api/v1/addon-runtime/token/introspect", headers=_headers(token))
+    assert response.status_code == 200
+    assert response.json()["subject"] == "job:12345"
+    assert response.json()["actor_subject"] == "user:7"
+
+
 @pytest.mark.parametrize("case", ["tampered", "wrong_audience", "wrong_kind"])
 def test_introspection_returns_inactive_without_leaking_failure(case, runtime_addon):
     client, _registry, tokens = runtime_addon
