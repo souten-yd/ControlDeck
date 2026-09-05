@@ -43,16 +43,35 @@ export function useMetricsStream(enabled: boolean) {
       if (document.hidden) {
         ws?.close();
       } else if (!ws || ws.readyState >= WebSocket.CLOSING) {
+        retry = 0;
         connect();
       }
     };
 
+    // 回線が戻ったのに backoff を待たせない。切れたまま画面を開いていると、
+    // 待ちが 30 秒まで伸びて「再接続中」が居座る。復帰の合図が来たら待ちを
+    // 捨てて繋ぎ直す。連打にならないよう、直前の試行から 3 秒は空ける。
+    let lastRevive = 0;
+    const onOnline = () => {
+      if (closed || document.hidden) return;
+      if (ws && ws.readyState <= WebSocket.OPEN) return;
+      const now = Date.now();
+      if (now - lastRevive < 3_000) return;
+      lastRevive = now;
+      clearTimeout(timer);
+      retry = 0;
+      connect();
+    };
     connect();
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", onOnline);
     return () => {
       closed = true;
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", onOnline);
       ws?.close();
       setConnected(false);
     };
