@@ -891,33 +891,27 @@ export default function XtermView({
     let touchScrollFrame = 0;
     // TUI（代替画面）にはxterm側のscrollbackが無く、term.scrollLinesでは何も動かない。
     // アプリ自身の履歴を動かすため、mouse tracking中はwheel、無効ならPageUp/PageDownを送る。
-    let pageRemainder = 0;
     const appWantsMouse = () =>
       String((term as unknown as { modes?: { mouseTrackingMode?: string } }).modes?.mouseTrackingMode ?? "none") !== "none";
     const scrollApplication = (lines: number) => {
-      if (appWantsMouse()) {
-        // TUIが受け取れるのはwheelイベント。1行ずつ送って本体の履歴を動かす。
-        const button = lines > 0 ? 65 : 64;
-        const column = Math.max(1, Math.round(term.cols / 2));
-        const row = Math.max(1, Math.round(term.rows / 2));
-        const count = Math.min(Math.abs(lines), 4);
-        inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
-        return;
-      }
-      // mouse非対応TUIはPageUp/PageDownで動かす。1画面ぶん貯めると反応が鈍いので
-      // 1/3画面で1回送り、指の移動量に追従させる。
-      pageRemainder += lines / Math.max(1, Math.round((term.rows - 2) / 3));
-      while (Math.abs(pageRemainder) >= 1) {
-        const forward = pageRemainder > 0;
-        inputSenderRef.current?.(forward ? "\x1b[6~" : "\x1b[5~");
-        pageRemainder += forward ? -1 : 1;
-      }
+      // wheel を送ってよいのは、アプリが mouse tracking を有効にしている＝
+      // wheel を受け取ると宣言しているときだけである。宣言していない相手へ
+      // PageUp/PageDown を送ると、受け取らないアプリは素通しして echo するので、
+      // 画面に文字が重なって見える。scroll で文字がダブるのはこれだった。
+      // V2 はそもそもアプリへ入力を送らない。ここは alternate 画面に限って残す。
+      if (!appWantsMouse()) return;
+      const button = lines > 0 ? 65 : 64;
+      const column = Math.max(1, Math.round(term.cols / 2));
+      const row = Math.max(1, Math.round(term.rows / 2));
+      const count = Math.min(Math.abs(lines), 4);
+      inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
     };
-    // mouse tracking中のTUI（OpenCode等）やalternate screenでは、xterm側に
-    // scrollbackが無い／アプリが描画を持つため、入力としてアプリへ渡す。
+    // 通常画面では必ず xterm 自身の scrollback を動かす。mouse tracking を
+    // 有効にしたまま終了した TUI の後（よくある）に入力を注入すると、shell が
+    // その escape を表示してしまう。アプリへ渡すのは alternate 画面のときだけ。
     const applyScroll = (lines: number) => {
       const clamped = Math.max(-100, Math.min(100, lines));
-      if (term.buffer.active.type === "alternate" || appWantsMouse()) scrollApplication(clamped);
+      if (term.buffer.active.type === "alternate") scrollApplication(clamped);
       else term.scrollLines(clamped);
     };
     // TUIは1スクロールごとに全画面を描き直すため、送信間隔を空けて描画を詰まらせない。
@@ -982,7 +976,6 @@ export default function XtermView({
       touchStartY = touch.clientY;
       touchLastY = touch.clientY;
       touchRemainder = 0;
-      pageRemainder = 0;
       stopMomentum();
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
       touchCellHeight = screen && term.rows > 0
@@ -1031,7 +1024,10 @@ export default function XtermView({
       }
       touchTracking = false;
       touchScrolling = false;
-      if (wasScrolling && Math.abs(scrollVelocity) > 0.4) {
+      // 慣性は xterm 自身の scrollback を動かすときだけにする。alternate 画面では
+      // 指を離した後もアプリへ wheel を送り続けることになり、描画が追いつかない。
+      const ownScrollback = term.buffer.active.type !== "alternate";
+      if (wasScrolling && ownScrollback && Math.abs(scrollVelocity) > 0.4) {
         momentumRemainder = 0;
         if (!momentumFrame) momentumFrame = window.requestAnimationFrame(stepMomentum);
       } else {
