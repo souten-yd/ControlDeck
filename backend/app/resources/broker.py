@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from app.resources.telemetry import ResourceTelemetry
 
 # 「置き場所が無い」と読める理由。ここに当たるときだけ provider へ退去を頼む。
 # 排他の衝突や依存待ちは、場所を空けても解けない。
+logger = logging.getLogger("control_deck.resources")
+
 _NO_ROOM = frozenset({WaitReason.INSUFFICIENT_VRAM, WaitReason.HELD_BY_OTHER_OWNER})
 
 
@@ -68,6 +71,7 @@ class ResourceBroker:
         self._clock = clock
         self.telemetry = telemetry or ResourceTelemetry()
         self._lock = asyncio.Lock()
+        self._room_task: asyncio.Task[None] | None = None
         self._requests: dict[str, _RequestRecord] = {}
         self._sequence = 0
         self._revision = 0
@@ -99,8 +103,17 @@ class ResourceBroker:
                 self._finish_rejected(record, WaitReason.INSUFFICIENT_CAPACITY)
             else:
                 await self._schedule_locked(now)
-                if request.on_insufficient == "fail_fast" and record.status.state == RequestState.WAITING:
-                    self._finish_rejected(record, record.status.reason or WaitReason.INSUFFICIENT_VRAM)
+            room = self._room_task
+
+        # 退去を頼んでいる最中なら、その結果まで見てから断じる。ここで待つのは
+        # lock の外である。中で待つと、退く側が抱えている推論の後始末も同じ lock を
+        # 要るので進めず、drain が終わらないまま固まる。
+        if room is not None and record.status.state == RequestState.WAITING:
+            await asyncio.wait({room}, timeout=request.max_wait_sec)
+
+        async with self._lock:
+            if request.on_insufficient == "fail_fast" and record.status.state == RequestState.WAITING:
+                self._finish_rejected(record, record.status.reason or WaitReason.INSUFFICIENT_VRAM)
             if record.status.state == RequestState.WAITING:
                 self.telemetry.record(
                     "request.waiting",
@@ -329,9 +342,12 @@ class ResourceBroker:
                     # どこにも置けない。使っていない provider が居るなら退いて
                     # もらう。使用中なら断られ、この要求は待ち続ける。実行中の
                     # 処理を切らないのは provider 側の責任である。
-                    if await self._ask_for_room(record.request):
-                        provider_values = self.providers.reservations()
-                        fit = await self._fit(record.request, provider_values)
+                    #
+                    # 頼むのは lock の外で行う。ここで待つと、退く側が抱えている
+                    # 推論の後始末（lease の更新と解放）も同じ lock を要るため
+                    # 進めなくなり、drain が終わらないまま期限切れになる。実際
+                    # broker ごと固まり、/resources すら返らなくなった。
+                    self._want_room(record.request)
                 if fit.device_id is not None:
                     lease = self.leases.grant(
                         candidate.request_id,
@@ -419,6 +435,24 @@ class ResourceBroker:
         candidates.sort(key=lambda item: (item[0], -item[1], -item[2], item[3]))
         best = candidates[0]
         return _Fit(best[3], None, granted_bytes=best[4])
+
+    def _want_room(self, request: ResourceRequest) -> None:
+        """退去要求を lock の外で走らせる。同時に何本も走らせない。"""
+        task = self._room_task
+        if task is not None and not task.done():
+            return
+        self._room_task = asyncio.create_task(self._make_room(request))
+
+    async def _make_room(self, request: ResourceRequest) -> None:
+        try:
+            made = await self._ask_for_room(request)
+        except Exception:  # noqa: BLE001 - 退去の失敗で admission を止めない
+            logger.exception("step aside failed for %s", request.job_id)
+            return
+        if not made:
+            return
+        async with self._lock:
+            await self._schedule_locked(self._clock())
 
     async def _ask_for_room(self, request: ResourceRequest) -> bool:
         """置き場所が無い要求のために、使っていない provider へ退去を頼む。
