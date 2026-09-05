@@ -351,3 +351,31 @@ def test_a_request_that_already_fits_never_asks_anyone_to_move():
 
     assert provider.asked == 0
     assert status.state == RequestState.GRANTED
+
+
+def test_stepping_aside_is_not_rate_limited():
+    """時計で縛らない。
+
+    振り回しを止めているのは「使用中なら退かない」の方であって、間隔ではない。
+    誰も使っていない LLM を降ろす代償は次に使う人が載せ直しを待つことだけで、
+    その人が居ないから降ろせている。間隔で縛ると、続けて来る生成が RAM 実行
+    （実測で 17 倍遅い: 6.7 秒に対し 113 秒）へ落ちる。
+    """
+    from app.resources.broker import ResourceBroker
+
+    provider = _SteppingProvider(in_use=False, bytes_held=int(21.42 * GB))
+    broker = ResourceBroker(_devices(int(31.86 * GB), 0))
+    broker.providers.register(provider)
+
+    async def twice():
+        first = await broker.submit(_big_request())
+        await broker.release(first.lease_id)
+        provider.bytes_held = int(21.42 * GB)      # LLM が載せ直された
+        second = await broker.submit(_big_request())
+        return first, second
+
+    first, second = asyncio.run(twice())
+
+    assert first.state == RequestState.GRANTED
+    assert second.state == RequestState.GRANTED
+    assert provider.asked == 2
