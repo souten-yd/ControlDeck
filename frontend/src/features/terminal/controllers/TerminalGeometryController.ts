@@ -401,12 +401,23 @@ export class TerminalGeometryController {
             // local rowsを縮めると、その間だけcursor/input行がkeyboardの背面に
             // clipされる。write queue上で先行outputとの順序を保ったまま先に
             // xtermを合わせ、inputはACKまでresize barrierに保持する。
-            this.options.terminal.resize(dimensions.cols, dimensions.rows);
-            this.counters.resizeExecuted += 1;
-            if (isNormal) {
-              if (wasAtBottom) this.options.terminal.scrollToBottom();
-              else this.options.terminal.scrollToLine(previousViewportY);
-            }
+            // write queue へ積む。直に resize すると、まだ書き終わっていない行の
+            // 途中で幅が変わり、折り返し境界の全角が 1 文字消える。実機で
+            // 「ことを確かめます」が「とを確かめます」になっていたのはこれで、
+            // headless でも 80→52 の縮小を書き込みの途中に挟むと再現した。
+            // queue はすぐ流れるので、待ちはほとんど増えない。
+            const target = { cols: dimensions.cols, rows: dimensions.rows };
+            this.options.writeQueue.enqueueTask(() => {
+              if (this.disposed) return;
+              if (this.options.terminal.cols === target.cols
+                && this.options.terminal.rows === target.rows) return;
+              this.options.terminal.resize(target.cols, target.rows);
+              this.counters.resizeExecuted += 1;
+              if (isNormal) {
+                if (wasAtBottom) this.options.terminal.scrollToBottom();
+                else this.options.terminal.scrollToLine(previousViewportY);
+              }
+            }, "resize-local");
             this.options.onLocalResizeCommitted(sentGeneration);
             this.counters.ptyResizeSent += 1;
             ptySizeSent = true;
