@@ -49,10 +49,17 @@ export interface InputError {
   reason: string;
 }
 
-/** xterm標準pasteと同じ改行・bracketed paste変換。 */
+/** xterm標準pasteと同じ改行・bracketed paste変換。
+ *
+ * 複数行を bracketed paste 無しで送ると、改行が Enter として届くので shell は
+ * 1 行ずつ実行してしまう。貼り付けたつもりの文章がコマンドとして次々走る。
+ * 相手が bracketed paste を名乗っていないときは、末尾の改行だけを落として
+ * 「最後の 1 行が勝手に実行される」のを防ぐ。途中の改行は利用者の意図なので残す。
+ */
 export const prepareTerminalPaste = (text: string, bracketedPasteMode: boolean): string => {
   const normalized = text.replace(/\r?\n/g, "\r");
-  return bracketedPasteMode ? `\x1b[200~${normalized}\x1b[201~` : normalized;
+  if (bracketedPasteMode) return `\x1b[200~${normalized}\x1b[201~`;
+  return normalized.replace(/\r+$/, "");
 };
 
 /** UTF-8 の文字と escape の途中で切らない chunk 終端。

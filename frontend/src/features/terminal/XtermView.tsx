@@ -348,6 +348,8 @@ export default function XtermView({
         });
       });
     };
+    // 再接続の reset で失う mode を控える場所。
+    let rememberedBracketedPaste = false;
     const finalizeReplay = async (
       targetGeneration: number,
       sequence: number,
@@ -358,6 +360,11 @@ export default function XtermView({
       // 譲って同一batch末尾を取り込み、queueをdrainする。旧90〜600ms idle待ちは
       // 入力可能化を不必要に遅らせていた。
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      if (rememberedBracketedPaste && !term.modes.bracketedPasteMode) {
+        // 端末の内部状態だけを戻す。PTY へは何も送らない。
+        writeQueue.enqueueWrite("\x1b[?2004h");
+      }
+      rememberedBracketedPaste = false;
       await writeQueue.drain();
       if (disposed || token !== replayFinalizeToken || targetGeneration !== connectionGeneration) return;
       await settleCompletedReplay();
@@ -536,6 +543,12 @@ export default function XtermView({
               if (!connectionController.historyReset(control.connectionGeneration ?? thisConnectionGeneration)) return;
               replayFinalizeToken += 1;
               presentReplay(true);
+              // reset の前に、アプリが立てていた mode を控える。tmux の capture-pane が
+              // 返す履歴には DECSET が含まれないので、reset するとこちらの認識だけが
+              // 落ちる。bracketed paste が落ちると、貼り付けを囲む印を付けなくなり、
+              // shell は改行ごとに実行してしまう（1 行ずつコマンドとして走る）。
+              // アプリ側の状態は切断で変わらないので、こちらの認識を戻すのが正しい。
+              rememberedBracketedPaste = term.modes.bracketedPasteMode;
               writeQueue.enqueueReset();
               return;
             }
