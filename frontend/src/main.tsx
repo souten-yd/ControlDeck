@@ -49,3 +49,33 @@ if ("serviceWorker" in navigator && !import.meta.env.DEV) {
     });
   });
 }
+
+// 遅延読み込みの chunk が取れないときは、掴んでいる index が古い。放っておくと
+// 画面が白いまま戻らないので、控えを捨てて一度だけ読み直す。何度も繰り返さない
+// よう、直前の試みから 30 秒は空ける（本当に取れない状況で loop にしない）。
+const RELOAD_MARK = "control-deck:shell-reloaded-at";
+const healStaleShell = () => {
+  try {
+    const last = Number(sessionStorage.getItem(RELOAD_MARK) || 0);
+    if (Date.now() - last < 30_000) return;
+    sessionStorage.setItem(RELOAD_MARK, String(Date.now()));
+  } catch {
+    return;   // storage が使えないなら諦める。無限 reload よりましである
+  }
+  void (async () => {
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    } catch {
+      /* 消せなくても reload はしてみる */
+    }
+    location.reload();
+  })();
+};
+window.addEventListener("vite:preloadError", healStaleShell);
+window.addEventListener("unhandledrejection", (event) => {
+  const message = String((event.reason as { message?: unknown })?.message ?? event.reason ?? "");
+  if (/Failed to fetch dynamically imported module|Importing a module script failed/i.test(message)) {
+    healStaleShell();
+  }
+});
