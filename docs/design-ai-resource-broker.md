@@ -65,6 +65,36 @@ grant されない。`_required_bytes` は host device のときだけ `host_byt
 `host` を `preferred_devices` に挙げていない要求の `host_bytes` は受け取らない
 （使われない申告を通すと、効かないことに気づけない）。
 
+### 余りを貸す（`vram.minimum_bytes` / `RequestStatus.granted_bytes`）
+
+全部載せるほど VRAM が無くても、下限を満たせるなら**空きぶんを貸す**。画像生成は
+重みをRAMに置き、実行するモジュールだけをVRAMへ送る形で走れる（diffusers の
+model cpu offload）。枠が小さければ細かく往復して遅く、大きければ多く常駐して
+速い、と連続的に変わる。
+
+実測（2026-09-05、FLUX.2 Klein 4B / 1024² / 4歩、llama-server 常駐のまま）:
+
+```text
+全常駐 21.9 GiB    2.98 秒
+枠  8 GiB          6.70 秒
+枠  7 GiB          OOM（この process だけが落ち、LLM は無傷）
+RAM のみ           113.44 秒
+```
+
+枠を貸せないと 113 秒の純CPUに落ちる。「全部か、さもなくばRAM」の二択にしない。
+
+```text
+要求   vram.minimum_bytes   これ未満では動かない下限（省略時は全常駐と同じ）
+grant  RequestStatus.granted_bytes   実際に貸した枠
+```
+
+利用者は枠に自分を縛る（torch なら per-process memory fraction）。枠を割った
+ときは利用者の process だけが OOM で落ちる。実測で、枠 7/6/4/3 GiB のいずれでも
+カードには 24.5〜28.5 GiB の空きが残り、常駐していた LLM は無傷だった。
+**見積りを外しても被害が利用者側に閉じる**ので、管理側が枠を決める形が安全に成立する。
+
+`host`（システムRAM）は分割して載せる先ではないので、下限は全常駐と同じにする。
+
 ### RAMは最後まで貸さない（`HOST_RESERVE_BYTES`）
 
 VRAMは物理的に上限で頭打ちになるが、RAMはswapがあるぶん「入ったことになって全体が
