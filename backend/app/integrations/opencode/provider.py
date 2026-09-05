@@ -174,7 +174,20 @@ def _runtime_config(
                     # OpenCodeが起こすときは投機デコード優先で常駐させる。
                     "headers": {gateway_client_header(): "opencode"},
                 },
-                "models": {model: {"name": model}},
+                # attachment を宣言しないと OpenCode は画像を送らず
+                # 「このモデルは画像の入力をサポートしていない」と返す。VLM を載せていても
+                # 手前で止まるため、ここで能力を伝える。非 VLM を選んでいる場合は
+                # 転送先が拒否する（送る側では判断できない）。
+                "models": {model: {"name": model, "attachment": True}},
+            }
+        },
+        # CodeDEV 配下は毎回聞かない。別プロジェクトを参照するだけで確認が入ると
+        # 手が止まるためで、CodeDEV の外は既定どおり確認する。
+        # `*` は階層を跨がない照合系もあるので、直下と再帰の両方を挙げておく。
+        "permission": {
+            "external_directory": {
+                f"{codedev_root()}/*": "allow",
+                f"{codedev_root()}/**": "allow",
             }
         },
     }

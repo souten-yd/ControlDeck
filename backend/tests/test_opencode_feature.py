@@ -245,3 +245,25 @@ def test_project_symlink_escape_is_rejected(monkeypatch, tmp_path):
         assert False, "CodeAgentError expected"
     except op.CodeAgentError as exc:
         assert "outside" in str(exc)
+
+
+def test_runtime_config_lets_opencode_send_images_and_roam_codedev(monkeypatch, tmp_path):
+    """VLM を載せていても宣言が無いと画像は送られない。CodeDEV は毎回聞かない。"""
+    import json as _json
+
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
+    monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path / "CodeDEV")
+    path = provider._runtime_config("caps", "http://127.0.0.1:8090/v1", "auto")
+    payload = _json.loads(path.read_text(encoding="utf-8"))
+
+    model = payload["provider"]["controldeck"]["models"]["auto"]
+    assert model["attachment"] is True, "宣言が無いとOpenCodeは画像を送らない"
+
+    allowed = payload["permission"]["external_directory"]
+    root = tmp_path / "CodeDEV"
+    assert allowed[f"{root}/*"] == "allow"
+    assert allowed[f"{root}/**"] == "allow"
+    # CodeDEV の外まで開けてしまっていないこと
+    assert not any(key in ("*", "**", "/*") for key in allowed)
