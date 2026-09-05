@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.resources.schema import ComputeMode, VramRequest, WorkloadClass
+from app.resources.schema import HOST_DEVICE_ID, ComputeMode, VramRequest, WorkloadClass
 
 
 PRIORITY_CEILINGS = {
@@ -25,6 +25,9 @@ class RuntimeResourceRequest(BaseModel):
     preferred_devices: list[str] = Field(default_factory=list, max_length=16)
     forbidden_devices: list[str] = Field(default_factory=list, max_length=16)
     vram: VramRequest
+    # CPU で走らせる系統が RAM に載るときの必要量。VRAM の見積りとは別物で、
+    # これが無いと host へ載せてよいかを host 側で判断できない。
+    host_bytes: int | None = Field(default=None, ge=0, le=2**50)
     compute_mode: ComputeMode
     priority: int = Field(default=0, ge=-100, le=100)
     workload_class: WorkloadClass = Field(default=WorkloadClass.BACKGROUND, alias="class")
@@ -44,6 +47,9 @@ class RuntimeResourceRequest(BaseModel):
             raise ValueError("固定deviceとpreferred/forbiddenは同時指定できません")
         if set(self.preferred_devices) & set(self.forbidden_devices):
             raise ValueError("同じdeviceをpreferredとforbiddenに指定できません")
+        if self.host_bytes is not None and HOST_DEVICE_ID not in self.preferred_devices:
+            # 黙って無視すると「申告したのに効かない」に気づけない。
+            raise ValueError("host_bytesはpreferred_devicesにhostを挙げた要求にだけ指定できます")
         return self
 
 

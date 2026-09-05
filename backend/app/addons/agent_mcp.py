@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,7 @@ from app.database import get_db
 from app.models import User
 from app.project_lab import service as project_lab
 from app.security.deps import user_permissions
+from app.security.localhost import is_loopback
 
 router = APIRouter(prefix="/addons/agent-mcp", tags=["addons"])
 MCP_TOKEN_TTL_SECONDS = 8 * 60 * 60
@@ -43,10 +45,52 @@ def issue_opencode_token(user_id: int, correlation_id: str, *, project_id: str |
     )
 
 
+RENEW_HEADER = "X-Control-Deck-MCP-Token"
+
+
+def _renewed_token(claims: dict[str, Any]) -> str | None:
+    """残りが半分を切っていたら、同じ範囲で新しいトークンを返す。
+
+    OpenCode の session は何日も開いたままになる。TTL を切ると 8 時間で MCP が
+    使えなくなり、利用者からは「トークンが無い」としか見えない。かといって TTL を
+    伸ばすと、設定ファイルが漏れたときの露出が延びる。使われている限り更新する
+    形にして、放置された session は従来どおり期限で切れるようにする。
+    """
+    expires_at = claims.get("exp")
+    if not isinstance(expires_at, int):
+        return None
+    if expires_at - int(time.time()) > MCP_TOKEN_TTL_SECONDS // 2:
+        return None
+    subject = str(claims.get("sub") or "")
+    correlation = subject.removeprefix("opencode:")
+    actor_user_id = claims.get("actor_user_id")
+    if not correlation or not isinstance(actor_user_id, int):
+        return None
+    project_id = claims.get("project_id")
+    try:
+        return issue_opencode_token(
+            actor_user_id, correlation,
+            project_id=project_id if isinstance(project_id, str) else None,
+        )
+    except ValueError:
+        return None
+
+
+def _offer_renewal(response: Response, claims: dict[str, Any]) -> None:
+    token = _renewed_token(claims)
+    if token is not None:
+        response.headers[RENEW_HEADER] = token
+
+
 def _bearer_user(
     authorization: str | None,
     db: Session,
+    request: Request | None = None,
 ) -> tuple[User, dict[str, Any]]:
+    # OpenCode の session は何日も開いたままになる。同じ機械の中からの呼び出しなら
+    # 期限は見ない。token は「どの利用者として動くか」を決めるために残す。誰として
+    # 動くかが分からないと、見える Add-on tool も監査の記録も決められない。
+    local = request is not None and is_loopback(request)
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="OpenCode Add-on MCP tokenが必要です")
     try:
@@ -55,6 +99,7 @@ def _bearer_user(
             addon_id="control-deck",
             kind="agent-mcp",
             max_ttl_seconds=MCP_TOKEN_TTL_SECONDS,
+            allow_expired=local,
         )
     except tokens.AddonTokenError as exc:
         raise HTTPException(status_code=401, detail="OpenCode Add-on MCP tokenが無効です") from exc
@@ -130,10 +175,13 @@ def _resolve_project_directory(project_id: str, relative_directory: object) -> P
 
 @router.get("/tools")
 async def list_tools(
+    request: Request,
+    response: Response,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    user, claims = _bearer_user(authorization, db)
+    user, claims = _bearer_user(authorization, db, request)
+    _offer_renewal(response, claims)
     permissions = user_permissions(user)
     tools = await execution.agent_mcp_tools(permissions)
     project_tool = _project_output_tool(claims.get("project_id"), permissions)
@@ -146,10 +194,12 @@ async def list_tools(
 async def call_tool(
     body: AgentMcpCall,
     request: Request,
+    response: Response,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    user, claims = _bearer_user(authorization, db)
+    user, claims = _bearer_user(authorization, db, request)
+    _offer_renewal(response, claims)
     permissions = user_permissions(user)
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:
         project_id = claims.get("project_id")

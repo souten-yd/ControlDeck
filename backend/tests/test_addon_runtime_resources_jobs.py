@@ -402,3 +402,59 @@ def test_external_jobs_have_per_addon_user_active_limit(monkeypatch):
     finally:
         for job in created:
             jobs._jobs.pop(job.id, None)
+
+
+def test_addon_facing_request_carries_host_bytes_through_to_the_broker():
+    """RAM 併載の申告は add-on 側の契約にも要る。
+
+    内部モデルにだけ足すと、add-on が送った host_bytes が 422 で弾かれる。
+    実際にそれで MediaForge の画像生成が全滅した。
+    """
+    from app.addon_runtime.resources import _resource_request
+    from app.addon_runtime.schema import RuntimeResourceRequest
+
+    vram = {
+        "resident_bytes": 1, "execution_peak_bytes": 1, "cold_load_peak_bytes": 1,
+        "headroom_bytes": 1, "confidence": "measured", "minimum_bytes": 2,
+    }
+    body = RuntimeResourceRequest.model_validate({
+        "job_id": "job-1", "preferred_devices": ["gpu0", "host"],
+        "host_bytes": 18_000_000_000, "vram": vram,
+        "compute_mode": "shared-safe", "class": "agent-interactive", "priority": 20,
+    })
+    assert body.host_bytes == 18_000_000_000
+
+    class _Principal:
+        addon_id = "media-forge"
+
+    assert _resource_request(body, _Principal()).host_bytes == 18_000_000_000
+
+
+def test_host_bytes_without_host_in_preferred_devices_is_refused():
+    import pytest
+
+    from app.addon_runtime.schema import RuntimeResourceRequest
+
+    vram = {
+        "resident_bytes": 1, "execution_peak_bytes": 1, "cold_load_peak_bytes": 1,
+        "headroom_bytes": 1, "confidence": "measured",
+    }
+    with pytest.raises(ValueError):
+        RuntimeResourceRequest.model_validate({
+            "job_id": "job-1", "preferred_devices": ["gpu0"], "host_bytes": 1,
+            "vram": vram, "compute_mode": "shared-safe", "class": "agent-interactive",
+            "priority": 20,
+        })
+
+
+def test_a_request_without_host_bytes_still_works():
+    from app.addon_runtime.schema import RuntimeResourceRequest
+
+    body = RuntimeResourceRequest.model_validate({
+        "job_id": "job-1", "vram": {
+            "resident_bytes": 1, "execution_peak_bytes": 1, "cold_load_peak_bytes": 1,
+            "headroom_bytes": 1, "confidence": "measured",
+        },
+        "compute_mode": "shared-safe", "class": "agent-interactive", "priority": 20,
+    })
+    assert body.host_bytes is None

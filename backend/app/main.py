@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -120,6 +122,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)
+
+
+@app.exception_handler(RequestValidationError)
+async def _log_validation_error(request: Request, exc: RequestValidationError):
+    """422 の理由を残す。
+
+    Add-on は 422 という数字しか受け取れず、手元のログにも何も残らないので、
+    どの項目が弾かれたのか誰にも分からなくなる。値は載せない（本文には秘密が
+    入りうる）。場所と理由だけを残す。
+    """
+    reasons = [
+        {"loc": ".".join(str(part) for part in error.get("loc", ())), "msg": error.get("msg")}
+        for error in exc.errors()[:10]
+    ]
+    logger.warning("422 %s %s: %s", request.method, request.url.path, reasons)
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
 
 def _download_request(path: str) -> bool:
