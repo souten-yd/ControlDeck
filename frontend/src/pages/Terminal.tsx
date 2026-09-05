@@ -4,8 +4,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useToasts } from "../stores";
 import { ConfirmDialog, Skeleton } from "../components/ui";
-import { IconPlus, IconSettings, IconTerminal } from "../components/icons";
+import { IconPlus, IconSettings } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { useSessionOrder } from "../features/terminal/useSessionOrder";
+import { useDragReorder } from "../features/terminal/useDragReorder";
 
 const XtermView = lazy(() => import("../features/terminal/XtermView"));
 const XtermViewV2 = lazy(() => import("../features/terminal/XtermViewV2"));
@@ -67,6 +69,8 @@ export default function TerminalPage() {
   const visibleSessions = (data?.sessions ?? []).filter(
     (session) => session.engine !== "v2-lab" || v2LabSessions.includes(session.id),
   );
+  const { ordered, move } = useSessionOrder(visibleSessions);
+  const { dragging, over, handleProps, rowRef } = useDragReorder(ordered.map((s) => s.id), move);
 
   const create = async () => {
     try {
@@ -165,25 +169,59 @@ export default function TerminalPage() {
           </button>
         </div>
       ) : (
-        <ul className="grid gap-3">
-          {visibleSessions.map((s) => (
-            <li key={s.id} className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm transition hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700">
-              <div className="flex items-start gap-3">
-                <div className="relative grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                  <IconTerminal />
-                  <span aria-hidden="true" className={`absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-white dark:border-zinc-900 ${s.alive ? s.workload === "running" ? `bg-blue-500 ${isRecentlyActive(s.activity_at) ? "motion-safe:animate-pulse" : ""}` : "bg-emerald-500" : "bg-red-500"}`} />
-                </div>
-                <button onClick={() => setActive(s.id)} className="min-h-11 min-w-0 flex-1 text-left">
-                  <span className="flex min-w-0 items-center gap-2"><strong className="truncate text-sm">{s.program || "Shell"}</strong><code className="shrink-0 text-[10px] text-zinc-400">#{s.id}</code></span>
-                  <code className="mt-1 block truncate text-[11px] text-zinc-500" title={s.cwd}>{s.cwd || "N/A"}</code>
+        <ul className="grid gap-2">
+          {ordered.map((s, index) => (
+            <li
+              key={s.id}
+              ref={rowRef(s.id)}
+              // grid item は min-width:auto なので、min-w-0 が無いと中身の
+              // min-content より縮まない。長い cwd や program 名があると
+              // カードが container からはみ出し、main の overflow-x-hidden に
+              // 切り取られて右端のボタンが見えなくなる。
+              className={`min-w-0 rounded-2xl border bg-white p-2.5 shadow-sm transition dark:bg-zinc-900 ${
+                dragging === s.id
+                  ? "border-accent-400 opacity-60 dark:border-accent-500"
+                  : over === index && dragging
+                    ? "border-accent-300 dark:border-accent-600"
+                    : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
+              }`}
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                {visibleSessions.length > 1 && (
+                  <button
+                    type="button"
+                    {...handleProps(s.id)}
+                    aria-label={`${s.program || s.name}の並び順を変える`}
+                    title="つまんで並べ替え（↑↓ キーでも動かせます）"
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowUp") { event.preventDefault(); move(s.id, index - 1); }
+                      if (event.key === "ArrowDown") { event.preventDefault(); move(s.id, index + 1); }
+                    }}
+                    className="grid h-9 w-6 shrink-0 cursor-grab place-items-center rounded text-zinc-300 hover:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 active:cursor-grabbing dark:text-zinc-600 dark:hover:text-zinc-400"
+                  >
+                    <span aria-hidden="true" className="text-sm leading-none">⠿</span>
+                  </button>
+                )}
+                <span
+                  aria-hidden="true"
+                  title={s.alive ? (s.workload === "running" ? "実行中" : "待機中") : "終了"}
+                  className={`h-2.5 w-2.5 shrink-0 rounded-full ${s.alive ? s.workload === "running" ? `bg-blue-500 ${isRecentlyActive(s.activity_at) ? "motion-safe:animate-pulse" : ""}` : "bg-emerald-500" : "bg-red-500"}`}
+                />
+                <button onClick={() => setActive(s.id)} className="min-h-9 min-w-0 flex-1 text-left">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <strong className="min-w-0 truncate text-sm">{s.program || "Shell"}</strong>
+                    <code className="shrink-0 text-[10px] text-zinc-400">#{s.id.slice(0, 6)}</code>
+                    {s.attached && <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400" title="Web client connected">●</span>}
+                  </span>
+                  <code className="mt-0.5 block truncate text-[11px] text-zinc-500" title={s.cwd}>{s.cwd || "N/A"}</code>
                 </button>
-                <div className="flex shrink-0 items-center gap-1">
+                <div className="flex shrink-0 items-center gap-0.5">
                   <button
                     type="button"
                     onClick={() => { setAutomationSession(s.id); setAutomationOpen(true); }}
                     aria-label={`${s.program || s.name}のオートメーション設定`}
                     title="オートメーション設定"
-                    className="grid h-11 w-11 place-items-center rounded-xl text-lg hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 dark:hover:bg-zinc-800"
+                    className="grid h-9 w-9 place-items-center rounded-lg text-base hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 dark:hover:bg-zinc-800"
                   >
                     <span aria-hidden="true">🔧</span>
                   </button>
@@ -192,24 +230,24 @@ export default function TerminalPage() {
                     onClick={() => setKilling(s.id)}
                     aria-label={`${s.program || s.name}のセッションを削除`}
                     title="セッションを削除"
-                    className="grid h-11 w-11 place-items-center rounded-xl text-lg text-red-600 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40"
+                    className="grid h-9 w-9 place-items-center rounded-lg text-base text-red-600 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40"
                   >
                     <span aria-hidden="true">🗑️</span>
                   </button>
+                  <button
+                    data-terminal-connect
+                    onClick={() => setActive(s.id)}
+                    className="min-h-9 shrink-0 rounded-lg bg-accent-50 px-3 text-xs font-semibold text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
+                  >
+                    Connect
+                  </button>
                 </div>
               </div>
-              <div data-terminal-session-info className="mt-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-                <div data-terminal-status-row className="flex flex-wrap items-center gap-2">
-                  <WorkloadBadge session={s} />
-                  {s.attached && <span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">Web client connected</span>}
-                </div>
-                <div data-terminal-meta-row className="mt-2 flex min-w-0 items-end gap-3">
-                  <div data-terminal-dates className="min-w-0 flex-1 text-[10px] leading-4 text-zinc-500 dark:text-zinc-400">
-                    <p className="truncate" title={`最終活動 ${formatActivity(s.activity_at || s.created_at)}`}>最終活動 {formatActivity(s.activity_at || s.created_at)}</p>
-                    <p className="truncate" title={`作成 ${formatActivity(s.created_at)} · ${s.persistent ? "tmux persistent" : "in-memory"}`}>作成 {formatActivity(s.created_at)} · {s.persistent ? "tmux persistent" : "in-memory"}</p>
-                  </div>
-                  <button data-terminal-connect onClick={() => setActive(s.id)} className="min-h-11 shrink-0 rounded-xl bg-accent-50 px-4 text-sm font-semibold text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400">Connect</button>
-                </div>
+              <div data-terminal-session-info className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px] leading-4 text-zinc-500 dark:text-zinc-400">
+                <WorkloadBadge session={s} />
+                <span className="truncate" title={`最終活動 ${formatActivity(s.activity_at || s.created_at)}`}>{formatActivity(s.activity_at || s.created_at)}</span>
+                <span aria-hidden="true">·</span>
+                <span className="truncate" title={`作成 ${formatActivity(s.created_at)}`}>{s.persistent ? "tmux" : "in-memory"}</span>
               </div>
             </li>
           ))}

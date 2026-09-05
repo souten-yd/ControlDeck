@@ -50,7 +50,15 @@ def resolve_session(db: Session, token: str) -> tuple[UserSession, User] | None:
     user = db.get(User, row.user_id)
     if user is None or not user.is_active:
         return None
-    row.last_seen_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    row.last_seen_at = now
+    # 使っている間は期限を延ばす。延ばさないと、login からの固定時間で切れるので、
+    # 作業中に突然ログアウトする（既定 480 分）。半分を過ぎたときだけ書き戻すのは、
+    # 要求ごとに更新すると polling が走るたびに commit することになるためである。
+    timeout = timedelta(minutes=get_config().security.session_timeout_minutes)
+    if expires - now < timeout / 2:
+        row.expires_at = now + timeout
+        row.renewed = True          # cookie も延ばす合図。DB の列ではない
     db.commit()
     return row, user
 

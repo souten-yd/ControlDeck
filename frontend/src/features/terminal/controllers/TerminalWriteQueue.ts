@@ -1,5 +1,7 @@
 import type { Terminal } from "@xterm/xterm";
 
+const WRITE_SLICE_BYTES = 32 * 1024;
+
 /** xterm parserへwrite/reset/resizeを受信順で渡し、task失敗後もqueueを継続する。 */
 export class TerminalWriteQueue {
   private tail: Promise<void> = Promise.resolve();
@@ -11,13 +13,26 @@ export class TerminalWriteQueue {
   ) {}
 
   enqueueWrite(data: string | Uint8Array, onComplete?: () => void): void {
+    // 大きな snapshot を一括で渡すと、parser が回りきるまで main thread が戻らず
+    // 画面が固まる。再接続時の履歴はまさにそれで、待っている間の描画が飛ぶ。
+    // 32KiB ずつに割って、境目で browser へ制御を返す（V2 の scheduler と同じ）。
+    const slices: (string | Uint8Array)[] =
+      typeof data === "string" || data.byteLength <= WRITE_SLICE_BYTES
+        ? [data]
+        : Array.from(
+            { length: Math.ceil(data.byteLength / WRITE_SLICE_BYTES) },
+            (_, index) => data.slice(index * WRITE_SLICE_BYTES, (index + 1) * WRITE_SLICE_BYTES),
+          );
     this.enqueueTask(
-      () => new Promise<void>((resolve) => {
-        this.terminal.write(data, () => {
-          onComplete?.();
-          resolve();
-        });
-      }),
+      async () => {
+        for (let index = 0; index < slices.length; index += 1) {
+          await new Promise<void>((resolve) => this.terminal.write(slices[index], resolve));
+          if (index + 1 < slices.length) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          }
+        }
+        onComplete?.();
+      },
       "write",
     );
   }

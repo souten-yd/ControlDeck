@@ -120,7 +120,13 @@ export default function XtermView({
     // 既定のDOMレンダラーはTUIの全画面再描画が重い。WebGLが使えれば切り替え、
     // context lostや未対応環境ではDOMへ自動で戻す。
     let webgl: { dispose: () => void; onContextLoss: (handler: () => void) => { dispose: () => void } } | null = null;
+    // 折り返しで全角が 1 文字消えることがある。データは正しく届いていて（bash が
+    // 復唱するコマンド名は欠けていない）、tmux 側も全幅で正しく復元できるので、
+    // 残るのは描画である。WebGL の glyph atlas は全角の扱いで問題が出ることが
+    // あるため、?renderer=dom で切り替えて比べられるようにする。
+    const forceDomRenderer = new URLSearchParams(location.search).get("renderer") === "dom";
     void (async () => {
+      if (forceDomRenderer) return;
       try {
         const { WebglAddon } = await import("@xterm/addon-webgl");
         const addon = new WebglAddon();
@@ -348,6 +354,8 @@ export default function XtermView({
         });
       });
     };
+    // 再接続の reset で失う mode を控える場所。
+    let rememberedBracketedPaste = false;
     const finalizeReplay = async (
       targetGeneration: number,
       sequence: number,
@@ -358,6 +366,11 @@ export default function XtermView({
       // 譲って同一batch末尾を取り込み、queueをdrainする。旧90〜600ms idle待ちは
       // 入力可能化を不必要に遅らせていた。
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      if (rememberedBracketedPaste && !term.modes.bracketedPasteMode) {
+        // 端末の内部状態だけを戻す。PTY へは何も送らない。
+        writeQueue.enqueueWrite("\x1b[?2004h");
+      }
+      rememberedBracketedPaste = false;
       await writeQueue.drain();
       if (disposed || token !== replayFinalizeToken || targetGeneration !== connectionGeneration) return;
       await settleCompletedReplay();
@@ -536,6 +549,12 @@ export default function XtermView({
               if (!connectionController.historyReset(control.connectionGeneration ?? thisConnectionGeneration)) return;
               replayFinalizeToken += 1;
               presentReplay(true);
+              // reset の前に、アプリが立てていた mode を控える。tmux の capture-pane が
+              // 返す履歴には DECSET が含まれないので、reset するとこちらの認識だけが
+              // 落ちる。bracketed paste が落ちると、貼り付けを囲む印を付けなくなり、
+              // shell は改行ごとに実行してしまう（1 行ずつコマンドとして走る）。
+              // アプリ側の状態は切断で変わらないので、こちらの認識を戻すのが正しい。
+              rememberedBracketedPaste = term.modes.bracketedPasteMode;
               writeQueue.enqueueReset();
               return;
             }
@@ -604,6 +623,13 @@ export default function XtermView({
           writeQueue.enqueueWrite("\r\n\x1b[90m[セッションが終了しました]\x1b[0m\r\n");
           return;
         }
+        if (ev.code === 4401 || ev.code === 4403) {
+          // 認証・Origin で断られている。何度繋ぎ直しても同じなので止める。
+          // 止めないと「再接続」と「接続中」が交互に出続けて、待っても進まない。
+          setStatus("gone");
+          writeQueue.enqueueWrite("\r\n\x1b[90m[ログインが切れました。画面を再読み込みしてください]\x1b[0m\r\n");
+          return;
+        }
         // 切断からhistory_reset到着までにもcursor/rendererがDOMを更新し得る。
         // 再接続時の追従描画を見せないため、切断を検知した時点で同期的に隠す。
         presentReplay(true);
@@ -614,6 +640,28 @@ export default function XtermView({
       };
       ws.onerror = () => connectionController.error(thisConnectionGeneration);
     };
+
+    // 携帯では画面を離れた間に socket が黙って死ぬ。close event が来ないことも
+    // あるので、戻ってきた時点で生きているか確かめ、死んでいれば待たずに繋ぎ直す。
+    // backoff の待ち時間（最大 5 秒）を待たせないためでもある。
+    // 戻ってくるたびに backoff を 0 へ戻すと、認証切れのように必ず失敗する状況で
+    // 再接続を叩き続けることになる（「再接続」と「接続中」が交互に出て進まない）。
+    // 直前の試行から十分空いているときだけ、待ちを飛ばして繋ぎ直す。
+    let lastReviveAt = 0;
+    const REVIVE_MIN_INTERVAL = 3_000;
+    const reviveIfNeeded = () => {
+      if (disposed || document.visibilityState !== "visible") return;
+      const socket = wsRef.current;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      const now = performance.now();
+      if (now - lastReviveAt < REVIVE_MIN_INTERVAL) return;
+      lastReviveAt = now;
+      window.clearTimeout(retryTimer);
+      connect();
+    };
+    document.addEventListener("visibilitychange", reviveIfNeeded);
+    window.addEventListener("online", reviveIfNeeded);
+    window.addEventListener("pageshow", reviveIfNeeded);
 
     const exitServerHistory = () => {
       if (!serverHistoryActive) return;
@@ -862,6 +910,12 @@ export default function XtermView({
     // xterm.js 6の独自scrollbarはtouch dragをbuffer scrollへ変換しないため明示的に補う。
     let touchTracking = false;
     let touchScrolling = false;
+    // 指の遊びと、tap と見なす上限時間。8px / 無制限では、ゆっくり始めた scroll や
+    // 長押しからの離しが tap になり、software keyboard が勝手に出る。
+    const TOUCH_SLOP_PX = 14;
+    const TOUCH_TAP_MAX_MS = 500;
+    let touchMoved = false;
+    let touchStartAt = 0;
     let touchStartX = 0;
     let touchStartY = 0;
     let touchLastY = 0;
@@ -870,33 +924,27 @@ export default function XtermView({
     let touchScrollFrame = 0;
     // TUI（代替画面）にはxterm側のscrollbackが無く、term.scrollLinesでは何も動かない。
     // アプリ自身の履歴を動かすため、mouse tracking中はwheel、無効ならPageUp/PageDownを送る。
-    let pageRemainder = 0;
     const appWantsMouse = () =>
       String((term as unknown as { modes?: { mouseTrackingMode?: string } }).modes?.mouseTrackingMode ?? "none") !== "none";
     const scrollApplication = (lines: number) => {
-      if (appWantsMouse()) {
-        // TUIが受け取れるのはwheelイベント。1行ずつ送って本体の履歴を動かす。
-        const button = lines > 0 ? 65 : 64;
-        const column = Math.max(1, Math.round(term.cols / 2));
-        const row = Math.max(1, Math.round(term.rows / 2));
-        const count = Math.min(Math.abs(lines), 4);
-        inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
-        return;
-      }
-      // mouse非対応TUIはPageUp/PageDownで動かす。1画面ぶん貯めると反応が鈍いので
-      // 1/3画面で1回送り、指の移動量に追従させる。
-      pageRemainder += lines / Math.max(1, Math.round((term.rows - 2) / 3));
-      while (Math.abs(pageRemainder) >= 1) {
-        const forward = pageRemainder > 0;
-        inputSenderRef.current?.(forward ? "\x1b[6~" : "\x1b[5~");
-        pageRemainder += forward ? -1 : 1;
-      }
+      // wheel を送ってよいのは、アプリが mouse tracking を有効にしている＝
+      // wheel を受け取ると宣言しているときだけである。宣言していない相手へ
+      // PageUp/PageDown を送ると、受け取らないアプリは素通しして echo するので、
+      // 画面に文字が重なって見える。scroll で文字がダブるのはこれだった。
+      // V2 はそもそもアプリへ入力を送らない。ここは alternate 画面に限って残す。
+      if (!appWantsMouse()) return;
+      const button = lines > 0 ? 65 : 64;
+      const column = Math.max(1, Math.round(term.cols / 2));
+      const row = Math.max(1, Math.round(term.rows / 2));
+      const count = Math.min(Math.abs(lines), 4);
+      inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
     };
-    // mouse tracking中のTUI（OpenCode等）やalternate screenでは、xterm側に
-    // scrollbackが無い／アプリが描画を持つため、入力としてアプリへ渡す。
+    // 通常画面では必ず xterm 自身の scrollback を動かす。mouse tracking を
+    // 有効にしたまま終了した TUI の後（よくある）に入力を注入すると、shell が
+    // その escape を表示してしまう。アプリへ渡すのは alternate 画面のときだけ。
     const applyScroll = (lines: number) => {
       const clamped = Math.max(-100, Math.min(100, lines));
-      if (term.buffer.active.type === "alternate" || appWantsMouse()) scrollApplication(clamped);
+      if (term.buffer.active.type === "alternate") scrollApplication(clamped);
       else term.scrollLines(clamped);
     };
     // TUIは1スクロールごとに全画面を描き直すため、送信間隔を空けて描画を詰まらせない。
@@ -955,11 +1003,12 @@ export default function XtermView({
       const touch = event.touches[0];
       touchTracking = true;
       touchScrolling = false;
+      touchMoved = false;
+      touchStartAt = event.timeStamp;
       touchStartX = touch.clientX;
       touchStartY = touch.clientY;
       touchLastY = touch.clientY;
       touchRemainder = 0;
-      pageRemainder = 0;
       stopMomentum();
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
       touchCellHeight = screen && term.rows > 0
@@ -975,7 +1024,13 @@ export default function XtermView({
       if (!touchScrolling) {
         const distanceX = Math.abs(touch.clientX - touchStartX);
         const distanceY = Math.abs(touch.clientY - touchStartY);
-        if (Math.max(distanceX, distanceY) < 8) return;
+        // 指の遊びは 8px では狭い。ゆっくり始めた scroll が tap と判定され、
+        // 意図しない focus と履歴からの復帰が起きる。touch の目安は 10〜16px。
+        if (Math.max(distanceX, distanceY) < TOUCH_SLOP_PX) return;
+        // 遊びを超えた時点で「動かした」とみなす。横に払ったときも tap にしない。
+        // ここを立てずに touchTracking だけ落とすと、touchend で wasScrolling が
+        // false のままになり、横 swipe が tap として扱われていた。
+        touchMoved = true;
         if (distanceX >= distanceY) {
           touchTracking = false;
           return;
@@ -1002,16 +1057,23 @@ export default function XtermView({
       }
       touchTracking = false;
       touchScrolling = false;
-      if (wasScrolling && Math.abs(scrollVelocity) > 0.4) {
+      // 慣性は xterm 自身の scrollback を動かすときだけにする。alternate 画面では
+      // 指を離した後もアプリへ wheel を送り続けることになり、描画が追いつかない。
+      const ownScrollback = term.buffer.active.type !== "alternate";
+      if (wasScrolling && ownScrollback && Math.abs(scrollVelocity) > 0.4) {
         momentumRemainder = 0;
         if (!momentumFrame) momentumFrame = window.requestAnimationFrame(stepMomentum);
       } else {
         stopMomentum();
       }
-      if (!wasScrolling) {
+      // 指が動いた後や、長く押していた後は tap ではない。押しっぱなしからの
+      // 離しで focus を奪うと、scroll のたびに software keyboard が出る。
+      const heldFor = event.timeStamp - touchStartAt;
+      if (!wasScrolling && !touchMoved && heldFor < TOUCH_TAP_MAX_MS) {
         leaveHistoryForInput();
         term.focus();
       }
+      touchMoved = false;
     };
     host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
     host.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
@@ -1056,6 +1118,9 @@ export default function XtermView({
       pasteCancelRef.current = null;
       pasteRetryRef.current = null;
       host.removeEventListener("paste", onPaste, true);
+      document.removeEventListener("visibilitychange", reviveIfNeeded);
+      window.removeEventListener("online", reviveIfNeeded);
+      window.removeEventListener("pageshow", reviveIfNeeded);
       inputController.dispose();
       window.clearTimeout(retryTimer);
       window.clearTimeout(progressTimer);

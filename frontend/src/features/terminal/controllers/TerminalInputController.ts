@@ -49,11 +49,59 @@ export interface InputError {
   reason: string;
 }
 
-/** xterm標準pasteと同じ改行・bracketed paste変換。 */
+/** xterm標準pasteと同じ改行・bracketed paste変換。
+ *
+ * 複数行を bracketed paste 無しで送ると、改行が Enter として届くので shell は
+ * 1 行ずつ実行してしまう。貼り付けたつもりの文章がコマンドとして次々走る。
+ * 相手が bracketed paste を名乗っていないときは、末尾の改行だけを落として
+ * 「最後の 1 行が勝手に実行される」のを防ぐ。途中の改行は利用者の意図なので残す。
+ */
 export const prepareTerminalPaste = (text: string, bracketedPasteMode: boolean): string => {
   const normalized = text.replace(/\r?\n/g, "\r");
-  return bracketedPasteMode ? `\x1b[200~${normalized}\x1b[201~` : normalized;
+  // 改行を含む貼り付けは、相手が名乗っていなくても囲む。
+  //
+  // session は tmux の中で動いていて、tmux は pane の bracketed paste 状態を外側の
+  // 端末へ伝えない。だからこちらは常に「使っていない」と見えるが、実際には囲んで
+  // 送れば tmux がそのまま pane へ渡し、bash は 1 つの複数行コマンドとして受け取る
+  // （実機で確認: 2 行を囲んで送ると実行されず、Enter を押して初めて両方走った）。
+  //
+  // 囲まないと改行が Enter として届き、貼った文章が 1 行ずつコマンドとして実行
+  // される。文章を貼っただけで任意の行が走るのは、印が文字として見えるより悪い。
+  if (bracketedPasteMode || normalized.includes("\r")) {
+    return `\x1b[200~${normalized}\x1b[201~`;
+  }
+  return normalized;
 };
+
+/** UTF-8 の文字と escape の途中で切らない chunk 終端。
+ *
+ * 単純に PASTE_CHUNK_BYTES で割ると、日本語（3 byte）の途中で分かれる。分かれた
+ * 前半だけが先に PTY へ書かれるので、受け側は壊れた列として捨てるか置換する。
+ * 貼り付けた文が欠けて見えるのはこれである。さらに悪いことに、境界が
+ * bracketed paste の終端（ESC [ 201 ~）を割ると、アプリは paste 中のまま留まり、
+ * その後の Enter が本文として飲まれる。「何度も Enter を押さないと入らない」の
+ * 正体でもある。
+ *
+ * 継続 byte（0b10xxxxxx）と ESC 以降の列を後ろへ送り、境界を安全な位置まで戻す。
+ */
+export function chunkEnd(bytes: Uint8Array, start: number): number {
+  const limit = Math.min(start + PASTE_CHUNK_BYTES, bytes.byteLength);
+  if (limit >= bytes.byteLength) return limit;
+  let end = limit;
+  // 文字の途中なら、その文字の先頭まで戻す。
+  while (end > start && (bytes[end] & 0b1100_0000) === 0b1000_0000) end -= 1;
+  // escape の途中なら、ESC の手前まで戻す。CSI は最大でも数 byte なので、
+  // 直近だけを見れば足りる。
+  const ESC = 0x1b;
+  for (let back = end - 1; back >= start && back > end - 12; back -= 1) {
+    if (bytes[back] !== ESC) continue;
+    const terminated = bytes.slice(back, end).some((byte) => byte >= 0x40 && byte <= 0x7e && byte !== 0x5b);
+    if (!terminated) end = back;
+    break;
+  }
+  // 戻しすぎて進めなくなったら、元の位置で切る。止まるよりは良い。
+  return end > start ? end : limit;
+}
 
 /** 長文pasteをACK単位で送る。通常キー入力とは独立し、同時未ACKは1 chunkに限定する。 */
 export class TerminalInputController {
@@ -211,7 +259,7 @@ export class TerminalInputController {
       return;
     }
     const start = current.offset;
-    const end = Math.min(start + PASTE_CHUNK_BYTES, current.utf8Bytes.byteLength);
+    const end = chunkEnd(current.utf8Bytes, start);
     const chunkIndex = Math.floor(start / PASTE_CHUNK_BYTES);
     const connectionGeneration = this.options.connectionGeneration();
     const retry = this.retryChunk;
