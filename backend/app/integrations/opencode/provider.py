@@ -150,6 +150,17 @@ def _api_key_for(base_url: str) -> str:
     return gateway.get_api_key(create=True) or "sk-no-key"
 
 
+def _allowed_directories() -> dict[str, str]:
+    """確認なしで読ませてよい、プロジェクト外のディレクトリ。"""
+    from app.terminals import attachments
+
+    allowed: dict[str, str] = {}
+    for root in (codedev_root(), attachments.store.root):
+        allowed[f"{root}/*"] = "allow"
+        allowed[f"{root}/**"] = "allow"
+    return allowed
+
+
 def _runtime_config(
     job_id: str,
     base_url: str,
@@ -174,22 +185,26 @@ def _runtime_config(
                     # OpenCodeが起こすときは投機デコード優先で常駐させる。
                     "headers": {gateway_client_header(): "opencode"},
                 },
-                # attachment を宣言しないと OpenCode は画像を送らず
-                # 「このモデルは画像の入力をサポートしていない」と返す。VLM を載せていても
-                # 手前で止まるため、ここで能力を伝える。非 VLM を選んでいる場合は
+                # 画像を送らせるには attachment と modalities の両方が要る。
+                # attachment だけだと OpenCode は画像を text に落として送り、モデルは
+                # 「画像入力に対応していない」と答える。実際に画像を載せるかは
+                # modalities.input の image で決まる。転送先が VLM でない場合は
                 # 転送先が拒否する（送る側では判断できない）。
-                "models": {model: {"name": model, "attachment": True}},
+                "models": {
+                    model: {
+                        "name": model,
+                        "attachment": True,
+                        "modalities": {"input": ["text", "image"], "output": ["text"]},
+                    }
+                },
             }
         },
         # CodeDEV 配下は毎回聞かない。別プロジェクトを参照するだけで確認が入ると
         # 手が止まるためで、CodeDEV の外は既定どおり確認する。
+        # ターミナルから送った画像の置き場も開ける。利用者が自分で送ったものであり、
+        # ここが閉じているとパスを渡しても読めない。
         # `*` は階層を跨がない照合系もあるので、直下と再帰の両方を挙げておく。
-        "permission": {
-            "external_directory": {
-                f"{codedev_root()}/*": "allow",
-                f"{codedev_root()}/**": "allow",
-            }
-        },
+        "permission": {"external_directory": _allowed_directories()},
     }
     if owner_user_id is not None:
         from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS, issue_opencode_token

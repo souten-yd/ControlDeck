@@ -259,11 +259,19 @@ def test_runtime_config_lets_opencode_send_images_and_roam_codedev(monkeypatch, 
     payload = _json.loads(path.read_text(encoding="utf-8"))
 
     model = payload["provider"]["controldeck"]["models"]["auto"]
-    assert model["attachment"] is True, "宣言が無いとOpenCodeは画像を送らない"
+    # attachment だけでは足りない。modalities.input に image が無いと OpenCode は
+    # 画像を text へ落として送り、モデルは「画像入力に対応していない」と答える。
+    assert model["attachment"] is True
+    assert "image" in model["modalities"]["input"]
+    assert "text" in model["modalities"]["input"]
 
     allowed = payload["permission"]["external_directory"]
     root = tmp_path / "CodeDEV"
     assert allowed[f"{root}/*"] == "allow"
     assert allowed[f"{root}/**"] == "allow"
-    # CodeDEV の外まで開けてしまっていないこと
+    # ターミナルから送った画像はパスで渡すので、置き場も開いていないと読めない
+    from app.terminals import attachments
+
+    assert allowed[f"{attachments.store.root}/*"] == "allow"
+    # 全部開けてしまっていないこと
     assert not any(key in ("*", "**", "/*") for key in allowed)
