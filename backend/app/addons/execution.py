@@ -20,7 +20,11 @@ SCHEMA_LIMIT_BYTES = 64 * 1024
 REQUEST_LIMIT_BYTES = 1024 * 1024
 RESPONSE_LIMIT_BYTES = 4 * 1024 * 1024
 SCHEMA_TIMEOUT_SECONDS = 5.0
-EXECUTION_TIMEOUT_SECONDS = 120.0
+# Add-on の生成系は同期で待つ。実測（R9700）では、GPU が空いていれば画像 1 枚が
+# 読み込み 12 秒 + 生成 3.5 秒で終わるが、LLM が VRAM を 21〜27 GB 占めていると
+# 空きに合わせて置き直すぶん時間が伸び、120 秒では足りずに切れていた。載せ替えや
+# 場所空けを挟む場合の幅も見て 10 分を上限とする。
+EXECUTION_TIMEOUT_SECONDS = 600.0
 WORKFLOW_NODE_PREFIX = "addon.workflow:"
 _NODE_PATTERN = re.compile(r"^addon\.workflow:([a-z][a-z0-9-]{0,63}):([a-z][a-z0-9._-]{0,127})$")
 _GRANT_ID_PATTERN = re.compile(

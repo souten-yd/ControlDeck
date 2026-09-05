@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import data_dir
 from app.security.crypto import decrypt_text, encrypt_text
+from app.security.localhost import is_loopback
 
 router = APIRouter(prefix="/llm", tags=["llm-gateway"])
 
@@ -89,6 +90,11 @@ def rotate_api_key() -> str:
 
 
 def _authorize(request: Request) -> None:
+    # 同じ機械の中からは鍵を要らないことにする。OpenCode も MediaForge も
+    # SonicForge も 127.0.0.1 へ繋ぐので、手元で使うだけなら鍵の受け渡しは邪魔でしかない。
+    # tailnet や LAN から届いたものは従来どおり鍵を見る。
+    if is_loopback(request):
+        return
     expected = get_api_key()
     if not expected:
         raise HTTPException(status_code=503, detail="ゲートウェイのAPIキーが未発行です")

@@ -23,9 +23,25 @@ class BridgeError(RuntimeError):
     pass
 
 
+RENEW_HEADER = "X-Control-Deck-MCP-Token"
+
+# 起動時の token は設定ファイル由来。host が新しいものを返したらそれに乗り換える。
+# 設定ファイルは OpenCode を起動した時点のもので書き換えられないため、
+# 更新はこのプロセスが生きている間だけ手元に持つ。
+_token: str | None = None
+
+
+def _current_token() -> str:
+    global _token
+    if _token is None:
+        _token = os.environ.get("CONTROL_DECK_ADDON_MCP_TOKEN", "")
+    return _token
+
+
 def _host_request(path: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    global _token
     base_url = os.environ.get("CONTROL_DECK_ADDON_MCP_URL", "").rstrip("/")
-    token = os.environ.get("CONTROL_DECK_ADDON_MCP_TOKEN", "")
+    token = _current_token()
     if not base_url.startswith("http://127.0.0.1:") or not token:
         raise BridgeError("ControlDeck Add-on MCP bridge is not configured")
     body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
@@ -43,6 +59,9 @@ def _host_request(path: str, *, payload: dict[str, Any] | None = None) -> dict[s
     try:
         with urllib.request.urlopen(request, timeout=130) as response:
             content = response.read(MAX_MESSAGE_BYTES + 1)
+            renewed = getattr(response, "headers", {}).get(RENEW_HEADER)
+            if renewed and renewed != token:
+                _token = renewed
     except (urllib.error.URLError, TimeoutError) as exc:
         raise BridgeError("ControlDeck Add-on MCP request failed") from exc
     if len(content) > MAX_MESSAGE_BYTES:

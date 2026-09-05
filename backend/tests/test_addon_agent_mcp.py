@@ -301,3 +301,46 @@ def test_published_tool_schema_drops_length_bounds_but_validation_keeps_them(mon
 
     # 元のスキーマは書き換えない。実際の上限は create_agent_tool_job の validate() が使う。
     assert raw["properties"]["text"]["maxLength"] == 100_000
+
+
+def test_mcp_token_renews_itself_while_the_session_is_in_use(monkeypatch):
+    """OpenCode の session は何日も開く。使われている限り期限で切らさない。"""
+    import time as _time
+
+    from app.addons import agent_mcp
+
+    claims = {
+        "sub": "opencode:tui-1",
+        "actor_user_id": 1,
+        "project_id": "sample",
+        "exp": int(_time.time()) + agent_mcp.MCP_TOKEN_TTL_SECONDS,
+    }
+    # 発行直後は更新しない。毎回作り直すと token が無駄に増える。
+    assert agent_mcp._renewed_token(claims) is None
+
+    # 残りが半分を切ったら新しいものを配る
+    claims["exp"] = int(_time.time()) + agent_mcp.MCP_TOKEN_TTL_SECONDS // 4
+    renewed = agent_mcp._renewed_token(claims)
+    assert isinstance(renewed, str) and renewed
+
+    from app.addons import tokens
+
+    fresh = tokens.verify(
+        renewed, addon_id="control-deck", kind="agent-mcp",
+        max_ttl_seconds=agent_mcp.MCP_TOKEN_TTL_SECONDS,
+    )
+    # 範囲は据え置き。更新で権限が広がってはいけない。
+    assert fresh["sub"] == claims["sub"]
+    assert fresh["actor_user_id"] == claims["actor_user_id"]
+    assert fresh["project_id"] == claims["project_id"]
+    assert fresh["exp"] > claims["exp"]
+
+
+def test_mcp_token_renewal_refuses_claims_it_cannot_trust():
+    from app.addons import agent_mcp
+
+    near = int(__import__("time").time()) + 60
+    assert agent_mcp._renewed_token({"sub": "opencode:x", "actor_user_id": 1}) is None
+    assert agent_mcp._renewed_token({"sub": "", "actor_user_id": 1, "exp": near}) is None
+    assert agent_mcp._renewed_token({"sub": "opencode:x", "actor_user_id": None, "exp": near}) is None
+    assert agent_mcp._renewed_token({"sub": "opencode:", "actor_user_id": 1, "exp": near}) is None

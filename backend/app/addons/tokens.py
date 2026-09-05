@@ -133,7 +133,9 @@ def verify(
     subject: str | None = None,
     max_ttl_seconds: int = TOKEN_TTL_SECONDS,
     now: int | None = None,
+    allow_expired: bool = False,
 ) -> dict[str, Any]:
+    """allow_expired は同じ機械の中からの呼び出しにだけ使う。署名と scope は必ず見る。"""
     try:
         encoded, signature = token.split(".", 1)
         expected = hmac.new(_signing_key(), encoded.encode(), hashlib.sha256).digest()
@@ -158,7 +160,7 @@ def verify(
         or isinstance(max_ttl_seconds, bool)
         or not 1 <= max_ttl_seconds <= MAX_TOKEN_TTL_SECONDS
         or payload["iat"] > current + 30
-        or payload["exp"] <= current
+        or (payload["exp"] <= current and not allow_expired)
         or payload["exp"] - payload["iat"] > max_ttl_seconds
     ):
         raise AddonTokenError("tokenの有効期限が切れています")
