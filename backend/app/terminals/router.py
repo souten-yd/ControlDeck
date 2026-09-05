@@ -5,13 +5,17 @@ import json
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter, Depends, File, HTTPException, Query, Request, UploadFile,
+    WebSocket, WebSocketDisconnect,
+)
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
 from app.database import SessionLocal, get_db
 from app.models import User
 from app.security.deps import authenticate_websocket, require_permission
+from app.terminals import attachments
 from app.terminals.manager import manager, tmux_available
 from app.terminals.stream import JournalEntry, TerminalClientStream, TerminalStreamRegistry
 
@@ -51,6 +55,56 @@ def create_terminal(
         resource_id=session["id"], request=request,
     )
     return session
+
+
+@router.post("/attachments", status_code=201)
+async def upload_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """携帯の写真を PC 側へ置き、ターミナルへ打ち込むパスを返す。
+
+    置き場は RAM 上で、期限と枚数の上限で自動的に消える。溜め込むための場所ではない。
+    """
+    data = await file.read()
+    try:
+        stored = attachments.store.put(data, file.content_type or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(
+        db, "terminal.attachment", user=user, resource_type="terminal",
+        resource_id=stored.id, request=request,
+    )
+    return {
+        "id": stored.id,
+        "path": str(stored.path),
+        "size": stored.size,
+        "expires_at": stored.expires_at,
+    }
+
+
+@router.get("/attachments")
+def list_attachments(user: User = Depends(require_permission("terminal.use"))):
+    del user
+    return {
+        "root": str(attachments.store.root),
+        "ttl_seconds": attachments.TTL_SECONDS,
+        "items": [
+            {"id": item.id, "path": str(item.path), "size": item.size, "expires_at": item.expires_at}
+            for item in attachments.store.list()
+        ],
+    }
+
+
+@router.delete("/attachments/{attachment_id}", status_code=204)
+def delete_attachment(
+    attachment_id: str, user: User = Depends(require_permission("terminal.use")),
+):
+    del user
+    if not attachments.store.discard(attachment_id):
+        raise HTTPException(status_code=404, detail="添付が見つかりません")
 
 
 @router.delete("/{session_id}")

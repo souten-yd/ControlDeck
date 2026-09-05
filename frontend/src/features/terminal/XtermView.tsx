@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { wsUrl } from "../../api/client";
+import { api, wsUrl } from "../../api/client";
 import { createUuid } from "../../lib/clientId";
 import { useToasts } from "../../stores";
 import { IconSettings, IconX } from "../../components/icons";
@@ -31,7 +31,7 @@ interface SessionInfo {
   persistent?: boolean;
 }
 
-const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl" }[] = [
+const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl"; kind?: "attach" }[] = [
   { label: "Esc", seq: "\x1b" },
   { label: "Tab", seq: "\t" },
   { label: "Ctrl", modifier: "ctrl" },
@@ -39,6 +39,7 @@ const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl" }[] = [
   { label: "↓", seq: "\x1b[B" },
   { label: "←", seq: "\x1b[D" },
   { label: "→", seq: "\x1b[C" },
+  { label: "画像", kind: "attach" },
   { label: "^C", seq: "\x03" },
   { label: "^D", seq: "\x04" },
   { label: "^Z", seq: "\x1a" },
@@ -76,6 +77,8 @@ export default function XtermView({
   const suppressPasteClickRef = useRef(false);
   const copyRef = useRef<HTMLTextAreaElement>(null);
   const show = useToasts((s) => s.show);
+  const [uploading, setUploading] = useState(false);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const [status, setStatus] = useState<"connecting" | "open" | "closed" | "gone">("connecting");
   const [ctrlOn, setCtrlOn] = useState(false);
   const [pasteProgress, setPasteProgress] = useState<PasteProgress | null>(null);
@@ -1185,6 +1188,26 @@ export default function XtermView({
     inputSenderRef.current?.(seq);
   };
 
+  /** 撮った写真を PC 側へ置き、そのパスをターミナルへ打ち込む。
+   *
+   * 置き場は RAM 上で期限付き。溜め込む場所ではないので、送った直後に使うことを前提にする。
+   * 改行は送らない。利用者が前後に文章を足してから実行できるようにする。 */
+  const attachImage = async (file: File) => {
+    if (uploading) return;
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const stored = await api<{ path: string }>("/terminals/attachments", { method: "POST", body });
+      sendSeq(stored.path);
+      show("画像を送りました。パスを入力しました");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "画像を送れませんでした", "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   /** ユーザーgesture内でClipboard APIから直接送る。非secure originではOS pasteへ案内する。 */
   const doPaste = async () => {
     try {
@@ -1401,22 +1424,40 @@ export default function XtermView({
             key={k.label}
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => {
-              if (k.modifier === "ctrl") {
+              if (k.kind === "attach") {
+                fileInput.current?.click();
+              } else if (k.modifier === "ctrl") {
                 ctrlArmed.current = !ctrlArmed.current;
                 setCtrlOn(ctrlArmed.current);
               } else if (k.seq) {
                 sendSeq(k.seq);
               }
             }}
-            className={`min-h-11 shrink-0 rounded-lg px-3 font-mono text-xs font-medium ${
+            disabled={k.kind === "attach" && uploading}
+            aria-label={k.kind === "attach" ? "画像を送ってパスを入力" : undefined}
+            title={k.kind === "attach" ? "写真をPCへ送り、そのパスを入力します（一時保管）" : undefined}
+            className={`min-h-11 shrink-0 rounded-lg px-3 font-mono text-xs font-medium disabled:opacity-50 ${
               k.modifier === "ctrl" && ctrlOn
                 ? "bg-accent-600 text-white"
                 : "bg-white text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
             }`}
           >
-            {k.label}
+            {k.kind === "attach" && uploading ? "送信中" : k.label}
           </button>
           ))}
+          {/* 画像ボタンから開く。DOM には置くが見せない。 */}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              // 同じ写真をもう一度選べるように、値を戻しておく。
+              event.target.value = "";
+              if (file) void attachImage(file);
+            }}
+          />
         </div>
       </div>
 
