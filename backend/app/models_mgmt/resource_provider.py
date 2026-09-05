@@ -35,6 +35,11 @@ def model_is_on_local_nvme(model_path: str) -> bool:
         return False
 
 
+# 降ろすと載せ直しに 80 秒かかる（実測、Qwen3.8-27B 23GB）。
+# 1 枚の画像のために毎回振り回すのは割に合わない。
+_STEP_ASIDE_INTERVAL_SEC = 600.0
+
+
 class LocalLlmCapacityProvider(ResourceProvider):
     """ローカル常駐LLM（llama.cpp / Lucebox）のGPU占有をブローカーへ申告する。"""
 
@@ -61,6 +66,8 @@ class LocalLlmCapacityProvider(ResourceProvider):
         # ControlDeck restarts, they disappear without requiring orphan cleanup.
         self._hold_lock = threading.RLock()
         self._residency_holds: dict[str, tuple[str, str, float]] = {}
+        # 振り回し防止。降ろした直後にまた降ろさない。
+        self._last_step_aside = float("-inf")
 
     def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
         instance = local_llm.get_instance(alias)
@@ -198,6 +205,29 @@ class LocalLlmCapacityProvider(ResourceProvider):
             self._active_requests = max(0, self._active_requests - 1)
             self._condition.notify_all()
 
+
+    can_step_aside = True
+
+    async def step_aside(self, device_id: str) -> tuple[bool, str, int]:
+        """他に置き場所が無い要求のために、使っていない LLM だけを降ろす。
+
+        broker が「どの device にも置けない」と判じる直前に呼ばれる。判断は
+        release_on_request と同じで、実行中の推論は drain して待ち、使用中なら
+        降ろさない。違うのは引き金だけである。
+
+        23GB の LLM を降ろすと載せ直しに 80 秒かかるので、同じ residency_key を
+        続けて降ろさない。1 枚の画像のために毎回振り回すのは割に合わない。
+        """
+        if device_id != "gpu0":
+            return False, "not_this_device", 0
+        now = time.monotonic()
+        if now - self._last_step_aside < _STEP_ASIDE_INTERVAL_SEC:
+            return False, "stepped_aside_recently", 0
+        released, reason, freed = await self.release_on_request()
+        if released:
+            self._last_step_aside = now
+            self._telemetry.record("release.step_aside", reason="no_room_elsewhere")
+        return released, reason, freed
 
     async def release_on_request(self, *, include_helpers: bool = False) -> tuple[bool, str, int]:
         """Honour an explicit "my AI turn is over" declaration from a consumer.
