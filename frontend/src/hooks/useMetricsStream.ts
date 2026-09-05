@@ -21,9 +21,11 @@ export function useMetricsStream(enabled: boolean) {
       ws = new WebSocket(wsUrl("/system/metrics/stream"));
       ws.onopen = () => {
         retry = 0;
+        lastMessageAt = Date.now();
         setConnected(true);
       };
       ws.onmessage = (ev) => {
+        lastMessageAt = Date.now();
         try {
           push(JSON.parse(ev.data) as MetricsSnapshot);
         } catch {
@@ -62,6 +64,16 @@ export function useMetricsStream(enabled: boolean) {
       retry = 0;
       connect();
     };
+    // collector は定期的に snapshot を送る。それが途切れたら経路が死んでいる。
+    // 携帯では黙って切れることがあり、TCP の timeout まで誰も気づかない。
+    let lastMessageAt = Date.now();
+    const watchdog = setInterval(() => {
+      if (closed || document.hidden) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastMessageAt < 45_000) return;
+      lastMessageAt = Date.now();
+      ws.close();          // onclose が backoff つきで繋ぎ直す
+    }, 5_000);
     connect();
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("online", onOnline);
@@ -69,6 +81,7 @@ export function useMetricsStream(enabled: boolean) {
     return () => {
       closed = true;
       clearTimeout(timer);
+      clearInterval(watchdog);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("pageshow", onOnline);
