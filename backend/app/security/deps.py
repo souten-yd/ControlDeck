@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 
-from fastapi import Depends, HTTPException, Request, WebSocket, status
+from fastapi import Depends, HTTPException, Request, WebSocket, status, Response
 from sqlalchemy.orm import Session
 
 from app.auth.policy import totp_required_for
 from app.database import get_db
 from app.models import User
 from app.security.rate_limit import api_rate_limiter
+from app.config import get_config
 from app.security.sessions import SESSION_COOKIE, resolve_session
 
 _TOTP_ENROLLMENT_PATHS = {
@@ -20,12 +21,27 @@ _TOTP_ENROLLMENT_PATHS = {
 }
 
 
-def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> User:
     token = request.cookies.get(SESSION_COOKIE, "")
     resolved = resolve_session(db, token)
     if resolved is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="認証が必要です")
-    _, user = resolved
+    row, user = resolved
+    if getattr(row, "renewed", False):
+        # 使っている間は cookie の期限も延ばす。サーバー側だけ延ばしても、
+        # browser が login からの固定時間で cookie を捨てるので結局ログアウトする。
+        cfg = get_config()
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            max_age=cfg.security.session_timeout_minutes * 60,
+            httponly=True,
+            samesite="lax",
+            secure=cfg.security.secure_cookies,
+            path="/",
+        )
     if totp_required_for(user) and not user.totp_enabled and request.url.path not in _TOTP_ENROLLMENT_PATHS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

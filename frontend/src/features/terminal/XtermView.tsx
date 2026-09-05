@@ -615,6 +615,21 @@ export default function XtermView({
       ws.onerror = () => connectionController.error(thisConnectionGeneration);
     };
 
+    // 携帯では画面を離れた間に socket が黙って死ぬ。close event が来ないことも
+    // あるので、戻ってきた時点で生きているか確かめ、死んでいれば待たずに繋ぎ直す。
+    // backoff の待ち時間（最大 5 秒）を待たせないためでもある。
+    const reviveIfNeeded = () => {
+      if (disposed || document.visibilityState !== "visible") return;
+      const socket = wsRef.current;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      window.clearTimeout(retryTimer);
+      retryDelay = 500;
+      connect();
+    };
+    document.addEventListener("visibilitychange", reviveIfNeeded);
+    window.addEventListener("online", reviveIfNeeded);
+    window.addEventListener("pageshow", reviveIfNeeded);
+
     const exitServerHistory = () => {
       if (!serverHistoryActive) return;
       const ws = wsRef.current;
@@ -862,6 +877,12 @@ export default function XtermView({
     // xterm.js 6の独自scrollbarはtouch dragをbuffer scrollへ変換しないため明示的に補う。
     let touchTracking = false;
     let touchScrolling = false;
+    // 指の遊びと、tap と見なす上限時間。8px / 無制限では、ゆっくり始めた scroll や
+    // 長押しからの離しが tap になり、software keyboard が勝手に出る。
+    const TOUCH_SLOP_PX = 14;
+    const TOUCH_TAP_MAX_MS = 500;
+    let touchMoved = false;
+    let touchStartAt = 0;
     let touchStartX = 0;
     let touchStartY = 0;
     let touchLastY = 0;
@@ -955,6 +976,8 @@ export default function XtermView({
       const touch = event.touches[0];
       touchTracking = true;
       touchScrolling = false;
+      touchMoved = false;
+      touchStartAt = event.timeStamp;
       touchStartX = touch.clientX;
       touchStartY = touch.clientY;
       touchLastY = touch.clientY;
@@ -975,7 +998,13 @@ export default function XtermView({
       if (!touchScrolling) {
         const distanceX = Math.abs(touch.clientX - touchStartX);
         const distanceY = Math.abs(touch.clientY - touchStartY);
-        if (Math.max(distanceX, distanceY) < 8) return;
+        // 指の遊びは 8px では狭い。ゆっくり始めた scroll が tap と判定され、
+        // 意図しない focus と履歴からの復帰が起きる。touch の目安は 10〜16px。
+        if (Math.max(distanceX, distanceY) < TOUCH_SLOP_PX) return;
+        // 遊びを超えた時点で「動かした」とみなす。横に払ったときも tap にしない。
+        // ここを立てずに touchTracking だけ落とすと、touchend で wasScrolling が
+        // false のままになり、横 swipe が tap として扱われていた。
+        touchMoved = true;
         if (distanceX >= distanceY) {
           touchTracking = false;
           return;
@@ -1008,10 +1037,14 @@ export default function XtermView({
       } else {
         stopMomentum();
       }
-      if (!wasScrolling) {
+      // 指が動いた後や、長く押していた後は tap ではない。押しっぱなしからの
+      // 離しで focus を奪うと、scroll のたびに software keyboard が出る。
+      const heldFor = event.timeStamp - touchStartAt;
+      if (!wasScrolling && !touchMoved && heldFor < TOUCH_TAP_MAX_MS) {
         leaveHistoryForInput();
         term.focus();
       }
+      touchMoved = false;
     };
     host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
     host.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
@@ -1056,6 +1089,9 @@ export default function XtermView({
       pasteCancelRef.current = null;
       pasteRetryRef.current = null;
       host.removeEventListener("paste", onPaste, true);
+      document.removeEventListener("visibilitychange", reviveIfNeeded);
+      window.removeEventListener("online", reviveIfNeeded);
+      window.removeEventListener("pageshow", reviveIfNeeded);
       inputController.dispose();
       window.clearTimeout(retryTimer);
       window.clearTimeout(progressTimer);
