@@ -35,11 +35,6 @@ def model_is_on_local_nvme(model_path: str) -> bool:
         return False
 
 
-# 降ろすと載せ直しに 80 秒かかる（実測、Qwen3.8-27B 23GB）。
-# 1 枚の画像のために毎回振り回すのは割に合わない。
-_STEP_ASIDE_INTERVAL_SEC = 600.0
-
-
 class LocalLlmCapacityProvider(ResourceProvider):
     """ローカル常駐LLM（llama.cpp / Lucebox）のGPU占有をブローカーへ申告する。"""
 
@@ -66,8 +61,6 @@ class LocalLlmCapacityProvider(ResourceProvider):
         # ControlDeck restarts, they disappear without requiring orphan cleanup.
         self._hold_lock = threading.RLock()
         self._residency_holds: dict[str, tuple[str, str, float]] = {}
-        # 振り回し防止。降ろした直後にまた降ろさない。
-        self._last_step_aside = float("-inf")
 
     def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
         instance = local_llm.get_instance(alias)
@@ -215,17 +208,15 @@ class LocalLlmCapacityProvider(ResourceProvider):
         release_on_request と同じで、実行中の推論は drain して待ち、使用中なら
         降ろさない。違うのは引き金だけである。
 
-        23GB の LLM を降ろすと載せ直しに 80 秒かかるので、同じ residency_key を
-        続けて降ろさない。1 枚の画像のために毎回振り回すのは割に合わない。
+        時計での制限は置かない。振り回しを止めているのは「使用中なら退かない」の
+        方であって、間隔ではない。誰も使っていない LLM を降ろす代償は次に使う人が
+        載せ直しを待つことだけで、その人が居ないから降ろせている。間隔で縛ると、
+        続けて来る生成が RAM 実行（実測で 17 倍遅い）へ落ちる。
         """
         if device_id != "gpu0":
             return False, "not_this_device", 0
-        now = time.monotonic()
-        if now - self._last_step_aside < _STEP_ASIDE_INTERVAL_SEC:
-            return False, "stepped_aside_recently", 0
         released, reason, freed = await self.release_on_request()
         if released:
-            self._last_step_aside = now
             self._telemetry.record("release.step_aside", reason="no_room_elsewhere")
         return released, reason, freed
 
