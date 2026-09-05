@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import {
   createBrowserRouter,
   Navigate,
@@ -84,12 +84,23 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function buildRouter(enabledFeatures: string[]) {
+/** 機能で切り替わる画面は、route ごと出し入れせずに中で判定する。
+ *
+ * route 表を作り直すと RouterProvider に別の router を渡すことになる。React Router は
+ * router の差し替えを想定していないので、差し替わった瞬間に画面全体が消える。 */
+function FeatureRoute({ feature, children }: { feature: string; children: React.ReactNode }) {
+  const { data: meta, isLoading } = useMeta();
+  if (isLoading) return <div className="p-6 text-sm text-zinc-400">読み込み中...</div>;
+  if (!(meta?.enabled_features ?? []).includes(feature)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function buildRouter() {
   const featureRoutes = [];
-  if (enabledFeatures.includes("opencode")) {
+  {
     featureRoutes.push({
       path: "opencode",
-      element: <Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage /></Suspense>,
+      element: <FeatureRoute feature="opencode"><Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage /></Suspense></FeatureRoute>,
     });
   }
   return createBrowserRouter([
@@ -127,10 +138,11 @@ function buildRouter(enabledFeatures: string[]) {
   ]);
 }
 
+// router は 1 度だけ作る。作り直すと画面が消えるため、module 直下に置いて固定する。
+const router = buildRouter();
+
 export default function App() {
-  const { data: meta, isLoading } = useMeta();
-  const featureKey = (meta?.enabled_features ?? []).slice().sort().join(",");
-  const router = useMemo(() => buildRouter(featureKey ? featureKey.split(",") : []), [featureKey]);
+  const { isLoading } = useMeta();
   if (isLoading) return <div className="grid h-dvh place-items-center text-sm text-zinc-400">読み込み中...</div>;
   return <RouterProvider router={router} />;
 }
