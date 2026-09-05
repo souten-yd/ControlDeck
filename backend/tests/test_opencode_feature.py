@@ -275,3 +275,25 @@ def test_runtime_config_lets_opencode_send_images_and_roam_codedev(monkeypatch, 
     assert allowed[f"{attachments.store.root}/*"] == "allow"
     # 全部開けてしまっていないこと
     assert not any(key in ("*", "**", "/*") for key in allowed)
+
+
+def test_addon_assets_are_readable_without_asking_every_time(monkeypatch, tmp_path):
+    """生成物の置き場は開ける。閉じていると生成のたびに確認が入る。
+
+    開けるのは assets の下だけ。feature-data ごと開けると、モデルの重みや
+    実行状態まで読めてしまう。
+    """
+    from app.integrations.opencode import provider
+
+    base = tmp_path / "feature-data"
+    (base / "media-forge" / "data" / "assets").mkdir(parents=True)
+    (base / "sonic-forge" / "assets").mkdir(parents=True)
+    (base / "media-forge" / "runtimes" / "rocm-torch").mkdir(parents=True)
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path, raising=False)
+    monkeypatch.setattr("app.config.data_dir", lambda: tmp_path)
+
+    roots = {str(item) for item in provider._addon_asset_roots()}
+    assert str(base / "media-forge" / "data" / "assets") in roots
+    assert str(base / "sonic-forge" / "assets") in roots
+    # 重みや実行状態は開けない
+    assert not any("runtimes" in item for item in roots)

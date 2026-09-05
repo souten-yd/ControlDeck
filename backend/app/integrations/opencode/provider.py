@@ -150,12 +150,37 @@ def _api_key_for(base_url: str) -> str:
     return gateway.get_api_key(create=True) or "sk-no-key"
 
 
+def _addon_asset_roots() -> list[Path]:
+    """Add-on が作った成果物の置き場。
+
+    MediaForge も SonicForge も、生成したものを feature-data の下へ置いて
+    asset_id で返す。OpenCode はそのパスを読みに行くので、ここが閉じていると
+    生成のたびに確認が入る。置き場の形は Add-on ごとに違うので、両方見る。
+
+    開けるのは assets の下だけにする。feature-data ごと開けると、モデルの重みや
+    実行状態まで一緒に読めてしまう。知らない形の Add-on は従来どおり確認する。
+    """
+    from app.config import data_dir
+
+    base = data_dir() / "feature-data"
+    if not base.is_dir():
+        return []
+    roots: list[Path] = []
+    for feature in sorted(base.iterdir()):
+        if not feature.is_dir():
+            continue
+        for candidate in (feature / "assets", feature / "data" / "assets"):
+            if candidate.is_dir():
+                roots.append(candidate)
+    return roots
+
+
 def _allowed_directories() -> dict[str, str]:
     """確認なしで読ませてよい、プロジェクト外のディレクトリ。"""
     from app.terminals import attachments
 
     allowed: dict[str, str] = {}
-    for root in (codedev_root(), attachments.store.root):
+    for root in [codedev_root(), attachments.store.root, *_addon_asset_roots()]:
         allowed[f"{root}/*"] = "allow"
         allowed[f"{root}/**"] = "allow"
     return allowed
