@@ -272,7 +272,29 @@ async def _acquire_gateway_lease(alias: str, request: Request):
         raise
 
 
+_released_leases: set[str] = set()
+
+
 async def _release_gateway_lease(adapter, lease_id: str, renew: asyncio.Task) -> None:
+    """lease を返し、この要求ぶんの「使用中」を降ろす。
+
+    クライアントが途中で切ると、この後始末は取り消された task の中で走る。そこでは
+    最初の await が即座に CancelledError を再送出するので、leave_request まで
+    届かない。届かないと LLM は「使用中」のまま固定され、以後どの画像生成も
+    退去要求が通らなくなり、ControlDeck を再起動するまで直らない（実際そうなった）。
+    そのため後始末そのものを shield して、取り消しの影響を受けないようにする。
+    """
+    # 二重に返すと leave_request が余計に減り、使用中の要求があるのに LLM が
+    # 退いてしまう。返した lease は覚えておく。無制限に増やさないよう、溜まったら捨てる。
+    if lease_id in _released_leases:
+        return
+    if len(_released_leases) > 4096:
+        _released_leases.clear()
+    _released_leases.add(lease_id)
+    await asyncio.shield(_release_gateway_lease_now(adapter, lease_id, renew))
+
+
+async def _release_gateway_lease_now(adapter, lease_id: str, renew: asyncio.Task) -> None:
     from app.resources.broker import broker
     from app.resources.leases import LeaseError
 
@@ -282,7 +304,9 @@ async def _release_gateway_lease(adapter, lease_id: str, renew: asyncio.Task) ->
         await broker.release(lease_id)
     except LeaseError:
         pass
-    await adapter.leave_request()
+    finally:
+        # ここだけは必ず通す。通らないと LLM が使用中のまま残る。
+        await adapter.leave_request()
 
 
 def _record_gateway_oom(alias: str, lease_id: str, response: httpx.Response) -> None:
