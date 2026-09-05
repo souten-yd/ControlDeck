@@ -65,6 +65,8 @@ torch        /data1tb/ControlDeckMediaForge/runtimes/rocm-torch/.venv の
 ```text
 float16 の桁溢れ    logits に NaN が入り multinomial の assert が HIP 719 で落ちる。
                     bfloat16 にすれば直る（Qwen3-TTS で単体再現・実証済み）
+dtype 混在          fp32 へ揃えて解かない。bf16 へ揃える（§1.1）。fp32 は
+                    この GPU で 8 倍遅い
 numpy の ABI 不一致  pyopenjtalk-dict は numpy 1.x 前提の wheel。上流の
                     pyopenjtalk 0.4.1 なら numpy 2.x で通る（実証済み）
 dtype 混在          Half の入力に float の bias（下の SBV2 で実際に踏んだ）
@@ -79,13 +81,37 @@ dtype 混在          Half の入力に float の bias（下の SBV2 で実際�
 モデル        litagin/style_bert_vits2_jvnv の jvnv-F1-jp
               ファイル名は jvnv-F1-jp_e160_s14000.safetensors（README と違う）
 解決済み      numpy ABI → pip install --no-deps pyopenjtalk（0.4.1）で通る
-未解決        RuntimeError: Input type (c10::Half) and bias type (float)
+dtype 混在    RuntimeError: Input type (c10::Half) and bias type (float)
               should be the same
-              → 推論コードが half を前提にしている箇所がある。fp32 で回すか、
-                bias 側も half にするか。ROCm 固有ではない
+              → **bfloat16 へ揃えて解くこと。fp32 へ落としてはいけない**（§1.1）
 参考          souten-yd/Style-Bert-VITS2 は上流 litagin02 の master 追従で、
               独自の改変は無い。上流をそのまま使ってよい
 ```
+
+### 1.1 dtype は bfloat16 へ揃える（fp32 で解かない）
+
+RDNA4 の行列演算器（WMMA）は fp16 / bf16 / fp8 / int8 を加速する。**fp32 の行列積は
+ベクタ ALU に落ちる。** 実測（gfx1201 / R9700、4096² の行列積、2026-09-05）:
+
+```text
+float32     10.40 ms    13.2 TFLOPS   基準
+bfloat16     1.31 ms   105.2 TFLOPS   8.0 倍
+float16      1.28 ms   107.0 TFLOPS   8.1 倍
+```
+
+**dtype 混在を fp32 へ揃えて解くと、この GPU の演算器を丸ごと使わないことになる。**
+実際 Style-Bert-VITS2 の最初の評価で BERT と VITS を fp32 へ揃えた結果、音声 4.621 秒に
+10.522 秒（実時間比 0.439）となり、採用基準 0.56 に届かず不採用と判断された。その
+判断は根拠が崩れている。
+
+fp16 ではなく bf16 を選ぶ理由は、指数部が fp32 と同じ幅で桁溢れしないこと。fp16 では
+logits が溢れて NaN になり、ROCm では `torch.multinomial` の assert が HIP 719 で
+落ちる（Qwen3-TTS で単体再現済み）。SonicForge の whisper / qwen_tts も bf16 に
+揃えてある。
+
+**GPU 使用率 100% を「計算律速だから速くならない」の根拠にしない。** 使用率はカーネル
+が走っていることしか示さず、効率は示さない。fp32 カーネルが 8 分の 1 の効率で走って
+いても 100% になる。dtype を確かめてから律速を論じること。
 
 判断基準は手順 1 と同じ。
 
@@ -123,6 +149,7 @@ bfloat16 を使う      float16 は logits が溢れて NaN になり、ROCm で
 文        「これは合成音声の試験です。実機での速さを測っています。」
 手順      同じ呼び出しを 3 回行い、最後を採る（初回は MIOpen の調整が入る）
 指標      生成秒 / 音声秒 / 実時間比 / ピーク VRAM / GPU 使用率
+dtype     測定に使った dtype を必ず記録する。fp32 の数字は参考にならない
 記録      docs/implementation-status.md に実測値だけを書く
 ```
 
@@ -131,6 +158,18 @@ bfloat16 を使う      float16 は logits が溢れて NaN になり、ROCm で
 ```text
 生成 11.74 秒 / 音声 6.64 秒 / 実時間比 0.56 / ピーク VRAM 2.49 GiB
 ```
+
+## 2.1 やり直しが要る評価
+
+Style-Bert-VITS2 は fp32 で測られたため、結果が無効である。**bf16 で測り直す。**
+
+```text
+無効な記録   音声 4.621 秒に 10.522 秒、実時間比 0.439、採用基準 0.56 未満で不採用
+理由         BERT と VITS を fp32 へ揃えて測った。この GPU で fp32 は 8 倍遅い
+やること     dtype を bf16 に揃えて §2 の手順で測り直し、記録を差し替える
+```
+
+GPT-SoVITS 側も、測定に使った dtype を確認すること。fp32 なら同じく無効である。
 
 ## 3. 完了の条件
 
