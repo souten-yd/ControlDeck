@@ -143,6 +143,11 @@ export const projectLabApi = {
     `/project-lab/projects/${encodeURIComponent(id)}/publish-plan${
       directory === undefined ? "" : `?directory=${encodeURIComponent(directory)}`}`,
   ),
+  /** 公開を取り下げる。リポジトリ自体は残る。 */
+  unpublish: (id: string) => api<{
+    repository: string; branch: string; removed: string[];
+    repositoryRemains: boolean; repositoryUrl: string;
+  }>(`/project-lab/projects/${encodeURIComponent(id)}/publish`, { method: "DELETE" }),
   publish: (id: string, body: { repository: string; visibility: "public" | "private"; directory: string | null }) =>
     api<ProjectLabPublishState>(`/project-lab/projects/${encodeURIComponent(id)}/publish`, {
       method: "POST", json: body,

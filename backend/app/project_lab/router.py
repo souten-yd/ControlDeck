@@ -546,6 +546,26 @@ def project_publish(
     return entry
 
 
+@router.delete("/projects/{project_id}/publish")
+def project_unpublish(
+    project_id: str, request: Request,
+    user: User = Depends(require_permission("project_lab.publish")),
+    db: Session = Depends(get_db),
+):
+    """公開を取り下げる。リポジトリ自体は残す。"""
+    _project_or_404(project_id)
+    try:
+        result = publish.unpublish(project_id)
+    except publish.PublishError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(
+        db, "project_lab.unpublish", user=user, resource_type="project",
+        resource_id=project_id, request=request,
+        metadata={"repository": result["repository"], "removed": ",".join(result["removed"])},
+    )
+    return result
+
+
 @router.get("/projects/{project_id}/publish-state")
 def project_publish_state(
     project_id: str, user: User = Depends(require_permission("project_lab.publish")),

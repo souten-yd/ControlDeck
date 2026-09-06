@@ -220,6 +220,68 @@ def _enable_pages(full_name: str, branch: str) -> str:
     return url or f"https://github.com/{full_name}"
 
 
+def _clear_state(project_id: str) -> None:
+    state = _load_state()
+    if state.pop(project_id, None) is None:
+        return
+    path = _state_path()
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def unpublish(project_id: str) -> dict[str, Any]:
+    """公開を取り下げる。
+
+    リポジトリ自体は消さない。gh の token に delete_repo が無いのが直接の理由だが、
+    仮にあっても既定では消さない方がよい——公開を止めたいだけの操作で、履歴も
+    issue も一緒に消えるのは取り返しがつかない。
+
+    代わりに Pages を無効にし、公開していた branch を消す。これで URL は 404 に
+    なり、中身も残らない。同じ場所へ公開し直すこともできる。
+    """
+    entry = get_state(project_id)
+    if entry is None:
+        raise PublishError("このプロジェクトは公開されていません")
+    account = gh_account()
+    if not account["available"]:
+        raise PublishError("gh CLI が見つかりません")
+    if not account["loggedIn"]:
+        raise PublishError("gh が GitHub にログインしていません")
+
+    full_name = str(entry.get("repository") or "")
+    branch = str(entry.get("branch") or "gh-pages")
+    removed: list[str] = []
+
+    pages = _run(["gh", "api", "-X", "DELETE", f"repos/{full_name}/pages"],
+                 timeout=GH_TIMEOUT_SECONDS)
+    text = f"{pages.stdout}{pages.stderr}"
+    if pages.returncode == 0:
+        removed.append("pages")
+    elif "404" not in text:
+        # 既に無効なら 404。それ以外は黙って成功にしない。
+        raise _fail("GitHub Pages の無効化", pages)
+
+    ref = _run(["gh", "api", "-X", "DELETE",
+                f"repos/{full_name}/git/refs/heads/{branch}"],
+               timeout=GH_TIMEOUT_SECONDS)
+    ref_text = f"{ref.stdout}{ref.stderr}"
+    if ref.returncode == 0:
+        removed.append("branch")
+    elif "404" not in ref_text and "422" not in ref_text:
+        raise _fail("公開ブランチの削除", ref)
+
+    _clear_state(project_id)
+    return {
+        "repository": full_name,
+        "branch": branch,
+        "removed": removed,
+        # リポジトリは残る。何が残っているかを黙らない。
+        "repositoryRemains": True,
+        "repositoryUrl": f"https://github.com/{full_name}",
+    }
+
+
 def publish(project_id: str, project: Path, *, directory: str | None,
             repository: str, visibility: str, branch: str = "gh-pages") -> dict[str, Any]:
     """公開する。戻り値はそのまま画面と監査ログへ渡せる形にする。"""
