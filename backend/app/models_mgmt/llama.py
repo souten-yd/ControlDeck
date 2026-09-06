@@ -1763,8 +1763,15 @@ KV_HEADROOM_RATIO = 0.85
 _THROUGHPUT_SAMPLES: dict[int, deque[tuple[float, float]]] = {}
 # 直前の1点だけを基準にすると、画面を複数開いてポーリング間隔が詰まったときに
 # 「差分が短すぎて計算できない」が続く。一定の窓で最古の点と比べる。
-THROUGHPUT_WINDOW_SECONDS = 8.0
+#
+# 窓は見に来る間隔より広く取る。狭いと、前回の点が毎回窓から出て捨てられ、
+# 手元に1点しか残らないので常に 0 になる。画面は 3 秒ごとに見に来るが、携帯の
+# 回線や tunnel 越しではその倍以上に開く。実測（2026-09-06、12 秒間隔で観測）
+# では KV が 85,503 → 86,055 と動いているのに tok/s は 0.0 のままだった。
+THROUGHPUT_WINDOW_SECONDS = 45.0
 THROUGHPUT_MIN_INTERVAL_SECONDS = 2.0
+# これ以上間が空いたら、その間の平均は実態を表さないので測り直す。
+THROUGHPUT_STALE_SECONDS = 120.0
 
 
 def _throughput(port: int, tokens_total: float) -> float:
@@ -1779,10 +1786,17 @@ def _throughput(port: int, tokens_total: float) -> float:
     # 大きく巻き戻ったらサーバー再起動とみなして基準を捨てる。
     if samples and tokens_total < samples[-1][1] * 0.5:
         samples.clear()
-    # 窓から出た点は捨てる。長く見に来なかった後は一度空になり、次の観測から再開する
-    # （空白期間をまたいで平均すると、実際に出ている速度より低く見えてしまう）。
-    while samples and now - samples[0][0] > THROUGHPUT_WINDOW_SECONDS:
+    # 窓から出た点は捨てる。ただし最後の1点は残す。
+    #
+    # 全部捨てると手元に1点しか無くなり 0 を返すしかない。見に来る間隔が窓より
+    # 広い相手にはそれが毎回起きるので、生成中でもずっと 0 のままになる。
+    # 残しておけば、間隔が広い相手にも「その間の平均」を返せる。
+    while len(samples) > 1 and now - samples[0][0] > THROUGHPUT_WINDOW_SECONDS:
         samples.popleft()
+    # 残した1点が古すぎるときは、それを基準に平均しても実態とかけ離れる。
+    # 生成が止まっていた時間まで割り算に入るためで、ここは捨てて測り直す。
+    if samples and now - samples[-1][0] > THROUGHPUT_STALE_SECONDS:
+        samples.clear()
     samples.append((now, tokens_total))
     if len(samples) < 2:
         return 0.0
