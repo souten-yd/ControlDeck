@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "../stores";
 import {
   projectLabApi,
   type ProjectLabArtifact,
@@ -57,6 +58,7 @@ function pickDefaultArtifact(artifacts: ProjectLabArtifact[]): ProjectLabArtifac
 export default function ProjectLabPage() {
   const show = useToasts((state) => state.show);
   const queryClient = useQueryClient();
+  const can = useAuth((state) => state.can);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [artifactPath, setArtifactPath] = useState<string | null>(null);
   const [sheet, setSheet] = useState<SheetKind>(null);
@@ -208,6 +210,8 @@ export default function ProjectLabPage() {
                   onRunProfile={(profile) => startProfileRun.mutate(profile)}
                   allowExternal={allowExternalAlways}
                   onToggleExternal={(allow) => saveSettings.mutate(allow)}
+                  canExport={can("project_lab.export")}
+                  canPublish={can("project_lab.publish")}
                 />
               )}
             </Popover>
@@ -741,13 +745,15 @@ function FilesSheet({
 }
 
 function InfoPanel({
-  detail, busy, onRunProfile, allowExternal, onToggleExternal,
+  detail, busy, onRunProfile, allowExternal, onToggleExternal, canExport, canPublish,
 }: {
   detail: ProjectLabDetail;
   busy: boolean;
   onRunProfile: (profile: { id: string; type: string }) => void;
   allowExternal: boolean;
   onToggleExternal: (allow: boolean) => void;
+  canExport: boolean;
+  canPublish: boolean;
 }) {
   const profiles = detail.manifest?.profiles ?? [];
   return (
@@ -806,9 +812,270 @@ function InfoPanel({
           </span>
         </span>
       </label>
+      {canExport && <ExportSection projectId={detail.id} />}
+      {canPublish && <PublishSection projectId={detail.id} />}
       <p className="mt-3 text-[11px] leading-relaxed text-zinc-400">
         実行は隔離された systemd user unit（ホームは読み取り専用、書き込みはプロジェクト配下のみ）で行われ、ボタンを押したときだけ開始します。
       </p>
+    </div>
+  );
+}
+
+/** プロジェクトをまとめてZIPで持ち出す。
+ *
+ * 押したらすぐ落とす、にはしない。ここはソース一式が対象なので、何が入って
+ * 何が落ちたかを先に見せる。秘密情報は自動で落とすが、落とした事実が見えないと
+ * 「入っているはずの file が無い」としか分からず、逆に落とし漏れにも気づけない。
+ */
+function ExportSection({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [showExcluded, setShowExcluded] = useState(false);
+  const plan = useQuery({
+    queryKey: ["project-lab-export-plan", projectId],
+    queryFn: () => projectLabApi.exportPlan(projectId),
+    enabled: open,
+  });
+
+  return (
+    <div className="mt-4 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 text-xs font-medium">プロジェクトをZIPで書き出す</span>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="min-h-9 shrink-0 rounded-xl bg-zinc-100 px-3 text-xs font-semibold hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+        >
+          {open ? "閉じる" : "中身を確認"}
+        </button>
+      </div>
+      {!open && (
+        <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+          鍵や認証情報らしき file、node_modules や .git は自動で除外します。
+        </p>
+      )}
+      {open && plan.isPending && <p className="mt-3 text-xs text-zinc-400">確認しています…</p>}
+      {open && plan.isError && (
+        <p className="mt-3 text-xs text-red-600 dark:text-red-400">
+          {plan.error instanceof Error ? plan.error.message : "確認に失敗しました"}
+        </p>
+      )}
+      {open && plan.data && (
+        <div className="mt-3">
+          <p className="text-xs">
+            <strong>{plan.data.fileCount} 件</strong>（{formatBytes(plan.data.totalBytes)}）を書き出します。
+          </p>
+          {plan.data.excluded.length > 0 ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowExcluded((value) => !value)}
+                className="mt-1 text-[11px] text-accent-600 underline underline-offset-2 dark:text-accent-400"
+              >
+                {plan.data.excluded.length} 件を除外しました{showExcluded ? "（隠す）" : "（内訳を見る）"}
+              </button>
+              {showExcluded && (
+                <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl bg-zinc-100 p-2 dark:bg-zinc-800/60">
+                  {plan.data.excluded.map((item) => (
+                    <li key={item.path} className="text-[11px] leading-relaxed">
+                      <span className="break-all font-mono">{item.path}</span>
+                      <span className="text-zinc-400"> — {item.reason}</span>
+                    </li>
+                  ))}
+                  {plan.data.excludedTruncated && (
+                    <li className="text-[11px] text-zinc-400">… 以降は省略しました</li>
+                  )}
+                </ul>
+              )}
+            </>
+          ) : (
+            <p className="mt-1 text-[11px] text-zinc-400">除外した file はありません。</p>
+          )}
+          <a
+            href={projectLabApi.archiveUrl(projectId)}
+            className="mt-3 flex min-h-9 items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white hover:bg-accent-700"
+          >
+            <IconDownload />
+            ZIPをダウンロード
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 静的ホスティング（GitHub Pages）へ公開する。
+ *
+ * ダウンロードとは別に置く。あちらは手元に落とすだけだが、こちらは押した瞬間に
+ * インターネットへ出る。取り消しても索引や cache には残るので、
+ *   1. 何が出るかを必ず先に見せる
+ *   2. public / private は毎回選ばせる（既定値を持たない）
+ * の2つは省かない。
+ */
+function PublishSection({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [directory, setDirectory] = useState<string | undefined>(undefined);
+  const [repository, setRepository] = useState(projectId);
+  const [visibility, setVisibility] = useState<"public" | "private" | "">("");
+  const [showExcluded, setShowExcluded] = useState(false);
+  const show = useToasts((state) => state.show);
+
+  const plan = useQuery({
+    queryKey: ["project-lab-publish-plan", projectId, directory],
+    queryFn: () => projectLabApi.publishPlan(projectId, directory),
+    enabled: open,
+  });
+  const run = useMutation({
+    mutationFn: () => projectLabApi.publish(projectId, {
+      repository,
+      visibility: visibility as "public" | "private",
+      directory: directory ?? null,
+    }),
+    onSuccess: (state) => show(`公開しました: ${state.url}`, "success"),
+    onError: (error) => show(error instanceof Error ? error.message : "公開に失敗しました", "error"),
+  });
+
+  const github = plan.data?.github;
+  const blocked = github ? !github.available || !github.loggedIn : false;
+  const ready = Boolean(plan.data?.hasIndex) && visibility !== "" && repository.trim() !== "" && !blocked;
+
+  return (
+    <div className="mt-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 text-xs font-medium">静的サイトとして公開</span>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="min-h-9 shrink-0 rounded-xl bg-zinc-100 px-3 text-xs font-semibold hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+        >
+          {open ? "閉じる" : "公開の設定"}
+        </button>
+      </div>
+      {!open && (
+        <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+          GitHub Pages へ公開します。鍵や認証情報らしき file は自動で除外します。
+        </p>
+      )}
+      {open && plan.isPending && <p className="mt-3 text-xs text-zinc-400">確認しています…</p>}
+      {open && plan.isError && (
+        <p className="mt-3 text-xs text-red-600 dark:text-red-400">
+          {plan.error instanceof Error ? plan.error.message : "確認に失敗しました"}
+        </p>
+      )}
+      {open && plan.data && (
+        <div className="mt-3 space-y-3">
+          {plan.data.current && (
+            <p className="rounded-xl bg-zinc-100 p-2 text-[11px] dark:bg-zinc-800/60">
+              前回の公開先:{" "}
+              <a href={plan.data.current.url} target="_blank" rel="noreferrer noopener"
+                 className="break-all text-accent-600 underline underline-offset-2 dark:text-accent-400">
+                {plan.data.current.url}
+              </a>
+              <span className="text-zinc-400">（{plan.data.current.visibility}）</span>
+            </p>
+          )}
+          {blocked && (
+            <p className="rounded-xl bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              {github?.available
+                ? "gh が GitHub にログインしていません。サーバー上で `gh auth login` を実行してください。"
+                : "サーバーに gh CLI がありません。GitHub Pages への公開には gh が必要です。"}
+            </p>
+          )}
+
+          <label className="block">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">公開ディレクトリ</span>
+            <select
+              value={plan.data.directory}
+              onChange={(event) => setDirectory(event.target.value)}
+              className="mt-1 h-10 w-full rounded-xl border border-zinc-200 bg-transparent px-2 text-xs dark:border-zinc-700"
+            >
+              {plan.data.candidates.map((candidate) => (
+                <option key={candidate.directory} value={candidate.directory}>
+                  {candidate.directory === "" ? "（プロジェクト直下）" : candidate.directory}
+                  {candidate.hasIndex ? " — index.html あり" : " — index.html なし"}
+                </option>
+              ))}
+            </select>
+          </label>
+          {!plan.data.hasIndex && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              このディレクトリに index.html がありません。ビルド後の出力先を選んでください。
+            </p>
+          )}
+
+          <label className="block">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">リポジトリ名</span>
+            <input
+              value={repository}
+              onChange={(event) => setRepository(event.target.value)}
+              className="mt-1 h-10 w-full rounded-xl border border-zinc-200 bg-transparent px-2 font-mono text-xs dark:border-zinc-700"
+            />
+            {github?.account && (
+              <span className="mt-1 block text-[11px] text-zinc-400">{github.account}/{repository || "…"} に push します</span>
+            )}
+          </label>
+
+          <fieldset>
+            <legend className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">公開範囲</legend>
+            <div className="mt-1 space-y-1">
+              {(["private", "public"] as const).map((value) => (
+                <label key={value} className="flex items-start gap-2 text-[11px]">
+                  <input
+                    type="radio"
+                    name={`visibility-${projectId}`}
+                    checked={visibility === value}
+                    onChange={() => setVisibility(value)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-current"
+                  />
+                  <span>
+                    <strong>{value}</strong>
+                    <span className="block text-zinc-400">
+                      {value === "private"
+                        ? "リポジトリは非公開。無料プランでは Pages が有効にできない場合があります。"
+                        : "リポジトリごと世界に公開されます。中身を確認してから選んでください。"}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <div>
+            <p className="text-xs">
+              <strong>{plan.data.fileCount} 件</strong>（{formatBytes(plan.data.totalBytes)}）を公開します。
+            </p>
+            {plan.data.excluded.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowExcluded((value) => !value)}
+                  className="mt-1 text-[11px] text-accent-600 underline underline-offset-2 dark:text-accent-400"
+                >
+                  {plan.data.excluded.length} 件を除外しました{showExcluded ? "（隠す）" : "（内訳を見る）"}
+                </button>
+                {showExcluded && (
+                  <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl bg-zinc-100 p-2 dark:bg-zinc-800/60">
+                    {plan.data.excluded.map((item) => (
+                      <li key={item.path} className="text-[11px] leading-relaxed">
+                        <span className="break-all font-mono">{item.path}</span>
+                        <span className="text-zinc-400"> — {item.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={!ready || run.isPending}
+            onClick={() => run.mutate()}
+            className="flex min-h-10 w-full items-center justify-center rounded-xl bg-accent-600 px-3 text-xs font-semibold text-white hover:bg-accent-700 disabled:opacity-40"
+          >
+            {run.isPending ? "公開しています…" : visibility === "" ? "公開範囲を選んでください" : `${visibility} で公開する`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

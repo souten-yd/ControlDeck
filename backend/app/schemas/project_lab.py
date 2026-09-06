@@ -102,3 +102,17 @@ class ProjectFileRunCreate(BaseModel):
 
     path: str = Field(min_length=1, max_length=512)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
+
+
+class ProjectPublishBody(BaseModel):
+    """静的サイトの公開指示。
+
+    visibility に既定値は置かない。押した側が毎回選ぶ——「前回のまま public」で
+    出てしまう事故を、既定値で作らない。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str = Field(min_length=1, max_length=100)
+    visibility: Literal["public", "private"]
+    directory: str | None = Field(default=None, max_length=200)
