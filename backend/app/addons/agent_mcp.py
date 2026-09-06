@@ -173,6 +173,45 @@ def _resolve_project_directory(project_id: str, relative_directory: object) -> P
     return resolved
 
 
+# 生成物を project へ置くツールは project_output_grant を必須にしている。agent は
+# その grant を自分で作ってから呼ぶ必要があり、手順が1つ増えるぶん「生成はできた
+# のに置けない」で止まりやすい。
+#
+# 自動で作っても境界は変わらない。作るのは呼ばれている add-on のぶんだけで、置き先は
+# token が指している今の project の中に限られ、必要な権限も明示発行と同じものを見る。
+# つまり agent が自分で control_deck.project_output_grant を呼べば得られるものと同じで、
+# 省けるのは手順だけである。置き先を選びたいときは今までどおり明示的に呼べばよい。
+AUTO_OUTPUT_DIRECTORY = "assets"
+
+
+def _auto_output_grant(
+    addon_id: str, project_id: object, permissions: set[str], user: User,
+) -> str | None:
+    """置き先の grant を自動で作る。作れないときは None を返す。
+
+    ここで例外にしない。grant が無いまま進めば add-on 側の入力検証が
+    「grant が要る」と言うので、そちらの方が理由が伝わる。
+    """
+    if not isinstance(project_id, str) or addon_id not in _eligible_output_addons(permissions):
+        return None
+    try:
+        project = project_lab.resolve_project(project_id)
+    except project_lab.ProjectLabError:
+        return None
+    directory = project / AUTO_OUTPUT_DIRECTORY
+    try:
+        # 置き先が無ければ作る。掘るのは project 直下の1段だけで、既にあれば触らない。
+        directory.mkdir(exist_ok=True)
+        if not directory.is_dir() or not directory.resolve().is_relative_to(project):
+            return None
+        grant = runtime_grants.create(addon_id, user.id, str(directory), "export")
+    except (OSError, runtime_grants.GrantError):
+        return None
+    # 公開用の metadata は grant_id を返す（内部の id ではない）。
+    value = grant.get("grant_id")
+    return value if isinstance(value, str) else None
+
+
 @router.get("/tools")
 async def list_tools(
     request: Request,
@@ -233,11 +272,31 @@ async def call_tool(
     if target is None:
         raise HTTPException(status_code=404, detail="Add-on agent toolが見つかりません")
     addon_id, contribution_id = target
+    arguments = dict(body.arguments)
+    if "project_output_grant" not in arguments:
+        schema = await execution.agent_schema(addon_id, contribution_id, permissions=permissions)
+        if "project_output_grant" in (schema.get("required") or []):
+            issued = _auto_output_grant(addon_id, claims.get("project_id"), permissions, user)
+            if issued is not None:
+                arguments["project_output_grant"] = issued
+                audit.record(
+                    db,
+                    "addon.agent_mcp.auto_output_grant",
+                    user=user,
+                    resource_type="addon",
+                    resource_id=addon_id,
+                    request=request,
+                    metadata={
+                        "project_id": str(claims.get("project_id")),
+                        "directory": AUTO_OUTPUT_DIRECTORY,
+                        "contribution_id": contribution_id,
+                    },
+                )
     try:
         job = await execution.create_agent_tool_job(
             addon_id,
             contribution_id,
-            body.arguments,
+            arguments,
             owner_user_id=user.id,
             permissions=permissions,
         )
