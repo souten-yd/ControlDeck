@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.models_mgmt import llama
 
 
@@ -300,3 +302,50 @@ def test_omo_slots_come_from_the_model_opencode_uses(admin_client, monkeypatch):
     assert omo["model"] == "used"
     assert omo["slots"] == 8           # 稼働中の other(1) ではなく used(8)
     assert omo["concurrency"] == 7     # 直結なのでメイン用に1本空ける
+
+
+def test_throughput_survives_polling_slower_than_the_window():
+    """見に来る間隔が窓より広くても速度が出ること。
+
+    窓から出た点を全部捨てていたため、手元に1点しか残らず毎回 0 を返していた。
+    画面は 3 秒ごとに見に来るが、携帯の回線や tunnel 越しではその倍以上に開く。
+    実測（2026-09-06、12 秒間隔）では KV が 85,503 → 86,055 と動いているのに
+    tok/s は 0.0 のままだった。利用者からは「生成しているのに速度が出ない」と見える。
+    """
+    port = 65001
+    llama._THROUGHPUT_SAMPLES.pop(port, None)
+    clock = [1000.0]
+    import time as _time
+    real_monotonic = _time.monotonic
+    _time.monotonic = lambda: clock[0]
+    try:
+        # 窓（45秒）より広い 60 秒間隔でも、2 回目以降は速度が出る。
+        assert llama._throughput(port, 1000.0) == 0.0     # 1点目は基準にするだけ
+        clock[0] += 60.0
+        rate = llama._throughput(port, 1600.0)
+    finally:
+        _time.monotonic = real_monotonic
+    assert rate == pytest.approx(10.0), "窓より広い間隔で毎回 0 に戻ってはいけない"
+
+
+def test_throughput_starts_over_after_a_long_silence():
+    """間が空きすぎたら測り直す。
+
+    止まっていた時間まで割り算に入れると、再開直後の速度が実態よりずっと低く出る。
+    """
+    port = 65002
+    llama._THROUGHPUT_SAMPLES.pop(port, None)
+    clock = [2000.0]
+    import time as _time
+    real_monotonic = _time.monotonic
+    _time.monotonic = lambda: clock[0]
+    try:
+        llama._throughput(port, 500.0)
+        clock[0] += llama.THROUGHPUT_STALE_SECONDS + 1
+        stale = llama._throughput(port, 500.0)
+        clock[0] += 10.0
+        resumed = llama._throughput(port, 600.0)
+    finally:
+        _time.monotonic = real_monotonic
+    assert stale == 0.0, "古すぎる基準は捨てて測り直す"
+    assert resumed == pytest.approx(10.0), "測り直した後は普通に出る"

@@ -200,13 +200,20 @@ def test_throughput_is_measured_from_the_cumulative_counter(monkeypatch):
     # 画面を複数開いて間隔が詰まっても、窓の最古の点と比べるので計算できる
     clock["now"] = 104.5
     assert llama._throughput(9999, 1210.0) == pytest.approx(1210 / 4.5 - 1000 / 4.5)
-    # 窓（8秒）を越えて見に来なかったときは基準を取り直す。空白期間をまたいで
-    # 平均すると、実際に出ている速度より低く見えてしまうため。
+    # 窓を越えて見に来なかっただけでは基準を捨てない。捨てると手元に1点しか
+    # 残らず 0 を返すしかなくなり、見に来る間隔が窓より広い相手には生成中でも
+    # ずっと 0 が出る（携帯の回線や tunnel 越しで実際にそうなった）。
+    # 13 秒で 400 トークン。
     clock["now"] = 113.0
-    assert llama._throughput(9999, 1400.0) == 0.0
-    # 取り直した基準からは通常どおり計算できる（3秒で150トークン → 50 tok/s）
+    assert llama._throughput(9999, 1400.0) == pytest.approx(400 / 13)
     clock["now"] = 116.0
-    assert llama._throughput(9999, 1550.0) == 50.0
+    assert llama._throughput(9999, 1550.0) == pytest.approx(550 / 16)
+    # 止まっていた時間が長すぎるときだけ測り直す。そこまで含めて平均すると、
+    # 再開直後の速度が実態よりずっと低く出るため。
+    clock["now"] = 116.0 + llama.THROUGHPUT_STALE_SECONDS + 1
+    assert llama._throughput(9999, 1550.0) == 0.0
+    clock["now"] += 3.0
+    assert llama._throughput(9999, 1700.0) == 50.0
     # サーバー再起動で大きく巻き戻ったら基準を取り直す
     clock["now"] = 118.0
     assert llama._throughput(9999, 5.0) == 0.0
