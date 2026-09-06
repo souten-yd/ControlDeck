@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.schema import RuntimeJobCreate, RuntimeJobUpdate
-from app.addon_runtime.service import RuntimeAuthorityError, audit_runtime, host_job, principal_user_id
+from app.addon_runtime.service import (
+    RuntimeAuthorityError,
+    audit_runtime,
+    host_job,
+    host_job_control,
+    principal_user_id,
+)
 from app.addons import tokens
 from app.database import SessionLocal
 from app.jobs import service as jobs
@@ -157,10 +163,10 @@ async def update_job(
 
 @router.get("/{host_job_id}/control")
 async def job_control(host_job_id: str, principal: JobControlAuth):
-    job = host_job(principal, host_job_id, active_only=False)
+    job = await host_job_control(principal, host_job_id)
     return {
-        "host_job_id": job.id,
-        "cancel_requested": job.status == "canceled",
-        "status": job.status,
-        "revision": job.revision,
+        "host_job_id": job["id"],
+        "cancel_requested": job["status"] == "canceled",
+        "status": job["status"],
+        "revision": job["revision"],
     }
