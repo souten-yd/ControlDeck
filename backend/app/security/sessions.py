@@ -6,6 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
 
 from app.config import get_config
@@ -47,7 +48,10 @@ def resolve_session(db: Session, token: str) -> tuple[UserSession, User] | None:
         expires = expires.replace(tzinfo=timezone.utc)
     if expires < datetime.now(timezone.utc):
         return None
-    user = db.get(User, row.user_id)
+    # role を一緒に読む。あとから user.role を触ると、そこで DB へ問い合わせが
+    # 走る。権限の判定は async の endpoint の中で行われるので、その問い合わせは
+    # event loop の上で同期的に待つことになり、pool が空なら loop ごと止まる。
+    user = db.get(User, row.user_id, options=[joinedload(User.role)])
     if user is None or not user.is_active:
         return None
     now = datetime.now(timezone.utc)
