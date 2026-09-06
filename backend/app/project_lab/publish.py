@@ -230,6 +230,41 @@ def _clear_state(project_id: str) -> None:
     os.replace(temp, path)
 
 
+def _empty_branch(full_name: str, branch: str) -> None:
+    """公開していた中身を消す。branch そのものは消せないときの手段。
+
+    残すのは .nojekyll だけにする。README.md を残すと GitHub が Jekyll で index に
+    変換してしまい、site が 200 を返し続ける（実測: title が repository の説明に
+    なった既定テーマのページが出た）。.nojekyll を置いても README があれば変換
+    されたので、変換できる物を置かないのが確実だった。
+
+    実測（2026-09-06、souten-yd/karaage）: .nojekyll だけにした 20 秒後に 404。
+
+    履歴を残さず置き換えるのは公開時と同じ考えで、一度出した物を後から消せる
+    形にしておく。
+    """
+    with tempfile.TemporaryDirectory(prefix="cd-unpublish-") as temp:
+        workdir = Path(temp)
+        # 中身はこれ1つだけ。他に置くと Jekyll がそれを index にする。
+        (workdir / ".nojekyll").write_text("", encoding="utf-8")
+        steps = [
+            (["git", "init", "-q", "-b", branch], "リポジトリの初期化"),
+            (["git", "config", "user.name", "Control Deck"], "コミット情報の設定"),
+            (["git", "config", "user.email", "control-deck@localhost"], "コミット情報の設定"),
+            (["git", "add", "-A"], "ファイルの追加"),
+            (["git", "commit", "-q", "-m", "Unpublish"], "コミット"),
+            (["git", "remote", "add", "origin", f"https://github.com/{full_name}.git"], "リモートの設定"),
+        ]
+        for args, label in steps:
+            result = _run(args, cwd=workdir)
+            if result.returncode != 0:
+                raise _fail(label, result)
+        pushed = _run(["git", "push", "--force", "origin", branch],
+                      cwd=workdir, extra_env=_git_credential_env())
+        if pushed.returncode != 0:
+            raise _fail("公開内容の削除", pushed)
+
+
 def unpublish(project_id: str) -> dict[str, Any]:
     """公開を取り下げる。
 
@@ -276,7 +311,16 @@ def unpublish(project_id: str) -> dict[str, Any]:
     ref_text = f"{ref.stdout}{ref.stderr}"
     if ref.returncode == 0:
         removed.append("branch")
-    elif "404" not in ref_text and "422" not in ref_text:
+    elif "404" in ref_text:
+        pass                                  # 既に無い
+    elif "default branch" in ref_text.lower():
+        # 既定ブランチは消せない。新しい repository へ最初に push した branch が
+        # 既定になるので、公開用の branch がそのまま既定になっていることがある。
+        # public repository では Pages も止められないため、このままだと取り下げる
+        # 手段が無くなる。中身を空にして 404 にする。
+        _empty_branch(full_name, branch)
+        removed.append("contents")
+    else:
         raise _fail("公開ブランチの削除", ref)
 
     _clear_state(project_id)
