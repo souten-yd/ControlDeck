@@ -18,6 +18,15 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class ExecutionRequirement:
+    addon_id: str
+    tool_ids: tuple[str, ...]
+    capability_path: str
+    capability: str
+    schema_version: str
+
+
+@dataclass(frozen=True)
 class SkillEntry:
     id: str
     name: str
@@ -33,6 +42,8 @@ class SkillEntry:
     # 使うために別途要るもの。無くても導入はできるが、画面に注意として出す。
     requires: str = ""
     license: str = ""
+    adapter: str = ""
+    execution: ExecutionRequirement | None = None
 
 
 def _bundled_root() -> Path:
@@ -79,20 +90,27 @@ EXTERNAL = (
     SkillEntry(
         id="blender-skills",
         name="Blender Skills",
-        summary="Blender の制作工程を分野別に分けた 95 個の手順（blender-director が入口）。",
-        version="2026.07.10",
+        summary="94種の制作知識を保持し、ControlDeck対応の blender-director で3D制作を実行。実行範囲は型付き7操作・画像材質・GLB書き出し。",
+        version="2026.07.10-cd1",
         source="git",
         repository="https://github.com/arjun988/blender-skills",
         ref="8f778d2405a214b508d4c7d80742be8e43acdd52",
         # references は skills の中にある（SKILL.md が ../references/ で参照する）。
         subpaths=(".claude/skills",),
         requires=(
-            "Blender を起動し BlenderMCP addon（localhost:9876）を繋いだうえで、"
-            "その MCP サーバーを OpenCode へ登録する必要がある。ControlDeck の "
-            "media.scene.* とはツール体系が違うので、そのままでは実行部分が噛み合わない。"
-            "手順そのもの（工程の分け方・ポリゴン予算・参考画像との突き合わせ）は読む価値がある。"
+            "MediaForgeとそのBlender基本環境、利用者のAdd-on実行権限。Blender GUIの常駐やBlenderMCPは不要。"
+            "任意Python・リギング・シミュレーション等は未対応。上流94種を全操作対応として公開しません。"
         ),
         license="MIT",
+        adapter="mediaforge-blender",
+        execution=ExecutionRequirement(
+            addon_id="media-forge",
+            tool_ids=("media.capabilities", "media.scene.create", "media.scene.edit", "media.scene.snapshot",
+                      "media.scene.material", "media.scene.export", "media.job.status", "media.job.cancel"),
+            capability_path="/api/v1/capabilities",
+            capability="3d.scene_recipe",
+            schema_version="media-forge.scene-recipe@1",
+        ),
     ),
 )
 

@@ -2,6 +2,43 @@
 
 最終更新: 2026-09-06
 
+## Blender SkillsのControlDeck実行版・再起動準備（2026-09-06）
+
+方針Bを採用。上流固定commit `8f778d2405a214b508d4c7d80742be8e43acdd52`の94 SKILL.mdと
+175参考資料・MIT noticeを管理下へ保持し、OpenCodeへはControlDeck対応版`blender-director`だけを
+公開する。上流の全94実行指示を有効にして存在しないBlenderMCPを呼ばせる構成にはしない。
+型付き7操作/画像材質/Job追跡/GLB exportの対応表、前提確認、unsupportedの明示を含めた。
+Aは第二の常駐Blender/addon/MCPと資源lifecycleを増やす。Cだけではツール名と任意bpyの不一致が
+解消しないため、今回の実行profileには採らない。設計はdesign-opencode-extended-stack §17。
+
+catalog版`2026.07.10-cd1`。汎用の宣言済みAdd-on tool/public capability検査を追加し、
+未導入/無効/基本環境不足/契約不一致と旧未適応installを設定画面へ表示。
+その場合はenabledでもruntime skills.pathsへ入れない。GUI常駐は前提にしない。
+導入は同じdata/skills/versions配下のstagingでcommit/構成を検証し、同版修復でも旧実体をrename保持。
+state公開失敗で旧実体/記録/意図的無効を復元する。mutatorのprocess/thread lockとsymlink境界を追加。
+OpenCodeのasync実行経路からskill検査を含むruntime config生成をasyncio.to_threadへ移した。
+利用者のglobal agent設定、既存Blender、MediaForgeの実装/稼働版は変更していない。
+
+`./deck.sh test`: 994 passed / 2 skipped / 既知warning1 / 98.15秒。
+`npm ci`と`npm run build`: 成功(22.58秒)、既知large chunk warning。
+最新main `512eace`を統合した再確認: `./deck.sh test`は995 passed / 2 skipped /
+既知warning1 / 92.94秒。frontend buildも再成功(20.69秒)。
+npm auditは依存既存の9件(5 moderate/4 high)を報告し、本sliceで無関係な依存更新はしていない。
+新旧skill集中19 tests成功。失敗repairのfiles/state保持、旧版fail-closed、前提不足、symlink脱出拒否、
+public capabilityのstate/schema/local_only、async内同期config呼出し禁止を検査した。
+
+実取得はsource Python/CONTROL_DECK_CONFIG=installed config、skill dataだけを新しい
+`/data1tb/ControlDeck/data/blender-skills-acceptance-i77b3sla`へ限定してregistry.installを実行。
+実MediaForgeのpublic capabilityを検査しexecution=ready。上流94/参考175、runtime SKILL.md1を実測。
+同directory内の専用OPENCODE_CONFIGで管理OpenCodeの`debug skill`を実行しexit0、
+`blender-director`のlocationがversion配下runtimeを指すことを確認。
+本番のskills/state.jsonへは導入していない。試験用取得物は上記directoryに保持する。
+
+利用者が再起動準備を優先したため、ここではmerge/checkout/buildを整え、こちらから再起動しない。
+**NOT TESTED / 再起動後の残件**: 設定画面からの実導入(PC/320px)、実エージェントが本directorを読み
+3D Assetを制作する一巡、実環境の無効化/削除とglobal設定hash不変の照合。
+旧MediaForge 3D制作の実績を本skill経由の実行証拠に読み替えない。Blender Skills依頼全体の完了ではない。
+
 ## Add-on終端outboxの再認証後照合（2026-09-06）
 
 失効したchild credentialをAdd-onが再発行できないため、汎用Hostの終端専用reconcile APIを加法追加。

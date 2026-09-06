@@ -18,6 +18,8 @@ interface Skill {
   installed: boolean;
   enabled: boolean;
   update_available: boolean;
+  execution?: { state: string; message: string };
+  effective?: boolean;
 }
 
 type Action = "install" | "update" | "enable" | "disable" | "remove";
@@ -69,6 +71,7 @@ export function RecommendedSkills() {
         {skills.map((skill) => (
           <div
             key={skill.id}
+            data-skill-id={skill.id}
             className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -100,6 +103,14 @@ export function RecommendedSkills() {
                 {skill.requires && (
                   <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
                     使うには別途必要: {skill.requires}
+                  </p>
+                )}
+                {skill.execution && skill.requires && (
+                  <p className={`mt-1 text-[11px] ${skill.execution.state === "ready"
+                    ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}
+                    role="status">
+                    実行先: {skill.execution.message}
+                    {skill.installed && skill.enabled && !skill.effective && " 現在はOpenCodeへ読み込ませません。"}
                   </p>
                 )}
                 <p className="mt-1 text-[10px] text-zinc-400">
