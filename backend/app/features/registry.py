@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -108,6 +109,7 @@ def _write_state(state: dict) -> None:
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temp, path)
+    invalidate_feature_cache()   # 変えた直後に古い一覧を返さない
 
 
 def _known(feature_id: str) -> str:
@@ -271,8 +273,32 @@ def status(feature_id: str) -> dict:
     }
 
 
+# 一覧の結果を少しだけ覚えておく。
+#
+# status() は feature ごとに systemctl を起動して健全性を確かめる。7 件で
+# subprocess が 10 回、実測 430ms かかっていた。/api/v1/meta がこれを呼び、
+# 画面は meta を待ってから描き始めるので、開くたびに 0.4 秒何も出ない時間が
+# できていた。携帯では往復のぶん更に伸びる。
+#
+# 状態が変わるのは導入・有効化・無効化・更新のときだけで、そのときは
+# _write_state から捨てる。取りこぼしても数秒で消えるので、古い値が居座らない。
+_LIST_CACHE_TTL_SECONDS = 5.0
+_list_cache: tuple[float, list[dict]] | None = None
+
+
+def invalidate_feature_cache() -> None:
+    global _list_cache
+    _list_cache = None
+
+
 def list_features() -> list[dict]:
-    return [status(feature_id) for feature_id in sorted(KNOWN_FEATURES)]
+    global _list_cache
+    now = time.monotonic()
+    if _list_cache is not None and now - _list_cache[0] < _LIST_CACHE_TTL_SECONDS:
+        return [dict(item) for item in _list_cache[1]]
+    values = [status(feature_id) for feature_id in sorted(KNOWN_FEATURES)]
+    _list_cache = (now, [dict(item) for item in values])
+    return values
 
 
 def is_enabled(feature_id: str) -> bool:
