@@ -18,6 +18,10 @@ from app.security.deps import authenticate_websocket, require_permission
 
 router = APIRouter(prefix="/system", tags=["system"])
 
+# 無出力でもこの間隔で送る。利用者側は 16 秒黙ると回線が死んだと見なすので、
+# 収集が詰まっている間も回線を暖めておく。terminals と同じ 5 秒に揃える。
+HEARTBEAT_INTERVAL_SECONDS = 5.0
+
 
 @router.get("/overview")
 def overview(user: User = Depends(require_permission("system.view"))):
@@ -253,7 +257,14 @@ async def metrics_stream(websocket: WebSocket):
     queue = collector.subscribe()
     try:
         while True:
-            snapshot = await queue.get()
+            try:
+                snapshot = await asyncio.wait_for(queue.get(), HEARTBEAT_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                # 新しい値が来ない。最後の値に印を付けて送る。相手が居なければ
+                # ここで送信が失敗するので、切断にも気づける。
+                if collector.latest is None:
+                    continue
+                snapshot = {**collector.latest, "stale": True}
             await websocket.send_json(snapshot)
     except (WebSocketDisconnect, RuntimeError):
         pass

@@ -86,24 +86,28 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 });
 
 // ---- メトリクス（WebSocket から更新、セレクター経由で購読） ----
+/** 回線の状態。初回接続と再接続を分けるのは表示のため。
+ *  まだ一度も繋がっていないのに「再接続中」と出すと、壊れているように見える。 */
+export type MetricsStatus = "connecting" | "live" | "reconnecting";
+
 interface MetricsState {
   latest: MetricsSnapshot | null;
-  connected: boolean;
+  status: MetricsStatus;
   history: MetricsSnapshot[]; // 直近スパークライン用（最大 120 点）
   push: (s: MetricsSnapshot) => void;
-  setConnected: (c: boolean) => void;
+  setStatus: (s: MetricsStatus) => void;
 }
 
 export const useMetrics = create<MetricsState>((set) => ({
   latest: null,
-  connected: false,
+  status: "connecting",
   history: [],
   push: (s) =>
     set((st) => ({
       latest: s,
       history: [...st.history.slice(-119), s],
     })),
-  setConnected: (connected) => set({ connected }),
+  setStatus: (status) => set({ status }),
 }));
 
 // ---- トースト ----
