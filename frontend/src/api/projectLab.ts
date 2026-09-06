@@ -146,6 +146,7 @@ export const projectLabApi = {
   /** 公開を取り下げる。リポジトリ自体は残る。 */
   unpublish: (id: string) => api<{
     repository: string; branch: string; removed: string[];
+    pagesSettingRemains: boolean;
     repositoryRemains: boolean; repositoryUrl: string;
   }>(`/project-lab/projects/${encodeURIComponent(id)}/publish`, { method: "DELETE" }),
   publish: (id: string, body: { repository: string; visibility: "public" | "private"; directory: string | null }) =>

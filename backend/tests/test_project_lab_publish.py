@@ -201,3 +201,36 @@ def test_unpublish_refuses_when_nothing_is_published(monkeypatch):
     monkeypatch.setattr(publish, "_load_state", lambda: {})
     with pytest.raises(publish.PublishError, match="公開されていません"):
         publish.unpublish("demo")
+
+
+def test_unpublish_still_works_when_pages_cannot_be_deactivated(monkeypatch):
+    """public repository は API から Pages を止められない。
+
+    GitHub が 422 "Deactivating GitHub pages for this repository is not allowed"
+    を返す。実際にこれで取り下げが失敗した。無効化が通らないことを失敗として
+    扱うと、止める手段そのものが無くなる。公開元の branch を消せば site は
+    unpublish されるので、そちらで取り下げを成立させる。
+    """
+    monkeypatch.setattr(publish.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(publish, "_load_state", lambda: {
+        "demo": {"repository": "souten-yd/karaage", "branch": "gh-pages"}})
+    monkeypatch.setattr(publish, "_clear_state", lambda pid: None)
+    calls: list = []
+
+    def fake_run(args, cwd=None, timeout=publish.GIT_TIMEOUT_SECONDS, extra_env=None):
+        calls.append(list(args))
+        if args[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(args, 0, "account souten-yd\n", "")
+        if args[-1].endswith("/pages"):
+            return subprocess.CompletedProcess(
+                args, 1, "",
+                "gh: Deactivating GitHub pages for this repository is not allowed. (HTTP 422)")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(publish, "_run", fake_run)
+    result = publish.unpublish("demo")
+
+    assert result["removed"] == ["branch"], "branch を消して取り下げを成立させる"
+    # 設定が残ることを黙らない。次に公開すると同じ URL が生き返る。
+    assert result["pagesSettingRemains"] is True
+    assert any(a[-1].endswith("/git/refs/heads/gh-pages") for a in calls)

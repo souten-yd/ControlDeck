@@ -253,13 +253,21 @@ def unpublish(project_id: str) -> dict[str, Any]:
     branch = str(entry.get("branch") or "gh-pages")
     removed: list[str] = []
 
+    # Pages の無効化は通らないことがある。public repository では GitHub が
+    # API からの停止を許さず、422 "Deactivating GitHub pages for this repository
+    # is not allowed" を返す。実際にそれで取り下げが失敗した。
+    #
+    # その場合でも取り下げはできる。公開元の branch を消せば、GitHub は site を
+    # unpublish する。無効化が通らないことを失敗として扱うと、止める手段が
+    # 無くなってしまう。
     pages = _run(["gh", "api", "-X", "DELETE", f"repos/{full_name}/pages"],
                  timeout=GH_TIMEOUT_SECONDS)
     text = f"{pages.stdout}{pages.stderr}"
+    pages_locked = "422" in text or "not allowed" in text.lower()
     if pages.returncode == 0:
         removed.append("pages")
-    elif "404" not in text:
-        # 既に無効なら 404。それ以外は黙って成功にしない。
+    elif "404" not in text and not pages_locked:
+        # 既に無効なら 404。設定として止められないなら 422。それ以外は黙らない。
         raise _fail("GitHub Pages の無効化", pages)
 
     ref = _run(["gh", "api", "-X", "DELETE",
@@ -276,6 +284,9 @@ def unpublish(project_id: str) -> dict[str, Any]:
         "repository": full_name,
         "branch": branch,
         "removed": removed,
+        # public repository では Pages の設定自体は残る。次に公開すると
+        # 同じ URL がそのまま生き返るので、それは伝えておく。
+        "pagesSettingRemains": "pages" not in removed,
         # リポジトリは残る。何が残っているかを黙らない。
         "repositoryRemains": True,
         "repositoryUrl": f"https://github.com/{full_name}",
