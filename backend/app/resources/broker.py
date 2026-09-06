@@ -31,7 +31,21 @@ from app.resources.telemetry import ResourceTelemetry
 # 排他の衝突や依存待ちは、場所を空けても解けない。
 logger = logging.getLogger("control_deck.resources")
 
-_NO_ROOM = frozenset({WaitReason.INSUFFICIENT_VRAM, WaitReason.HELD_BY_OTHER_OWNER})
+# 「置けない」と判じたら provider へ退去を頼む理由。
+#
+# DEVICE_BUSY_EXCLUSIVE を外していたため、device を占有したい要求は LLM が
+# 載っているだけで待ち続け、退いてくれと言うことすらできなかった。空きバイトは
+# 足りているのに通らないので、利用者側は exclusive を諦めて shared-safe に
+# 落とすしかなく、結果として LLM と場所を奪い合って OOM で落ちていた
+# （音楽生成が実際にこれで落ちていた）。
+#
+# 退くかどうかを決めるのは provider である。使用中の LLM は step_aside を断るので、
+# 同居して構わない要求（shared-safe）の扱いは何も変わらない。
+_NO_ROOM = frozenset({
+    WaitReason.INSUFFICIENT_VRAM,
+    WaitReason.HELD_BY_OTHER_OWNER,
+    WaitReason.DEVICE_BUSY_EXCLUSIVE,
+})
 
 
 class BrokerError(RuntimeError):
