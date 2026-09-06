@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
+import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
 import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
@@ -130,10 +131,13 @@ function useModelJobsStream() {
     let disposed = false;
     let retry: number | undefined;
     let ws: WebSocket | null = null;
+    let attempt = 0;
+    let lastMessageAt = Date.now();
     const connect = () => {
       if (disposed) return;
       ws = new WebSocket(wsUrl("/jobs/stream"));
       ws.onmessage = (event) => {
+        lastMessageAt = Date.now();
         const data = JSON.parse(event.data);
         if (data.type === "snapshot") {
           const all = data.jobs as JobInfo[];
@@ -149,10 +153,29 @@ function useModelJobsStream() {
           }
         }
       };
-      ws.onclose = () => { if (!disposed) retry = window.setTimeout(connect, 1000); };
+      ws.onclose = () => { if (!disposed) retry = window.setTimeout(connect, retryDelayMs(attempt++)); };
+      ws.onopen = () => { attempt = 0; lastMessageAt = Date.now(); };
     };
+    // 携帯で戻ったときに繋ぎ直す。ここには手当てが無く、job の進み具合が
+    // 静かに止まったままになっていた。
+    const revive = () => {
+      if (disposed) return;
+      if (ws?.readyState === WebSocket.CONNECTING) return;
+      if (ws?.readyState === WebSocket.OPEN && looksAlive(lastMessageAt)) return;
+      discardSocket(ws);
+      ws = null;
+      window.clearTimeout(retry);
+      attempt = 0;
+      connect();
+    };
+    const stopWatching = watchForReturn(revive);
     connect();
-    return () => { disposed = true; window.clearTimeout(retry); ws?.close(); };
+    return () => {
+      disposed = true;
+      window.clearTimeout(retry);
+      stopWatching();
+      discardSocket(ws);
+    };
   }, [qc]);
 }
 

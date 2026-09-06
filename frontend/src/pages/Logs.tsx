@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, wsUrl } from "../api/client";
+import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
 import { useApps } from "../api/hooks";
 import { useAuth, useToasts } from "../stores";
 import { BottomSheet, DropdownMenu } from "../components/ui";
@@ -57,6 +58,7 @@ export default function LogsPage() {
     let ws: WebSocket | null = null;
     let retryTimer: ReturnType<typeof setTimeout>;
     let retry = 0;
+    let lastMessageAt = Date.now();
 
     if (source === "journal") {
       const refresh = () => api<{ lines: string[] }>(`/apps/${appId}/logs?source=journal&lines=500`)
@@ -70,8 +72,9 @@ export default function LogsPage() {
     const connect = () => {
       if (closed) return;
       ws = new WebSocket(wsUrl(`/apps/${appId}/logs/stream?source=${encodeURIComponent(source)}`));
-      ws.onopen = () => (retry = 0);
+      ws.onopen = () => { retry = 0; lastMessageAt = Date.now(); };
       ws.onmessage = (ev) => {
+        lastMessageAt = Date.now();
         const msg = JSON.parse(ev.data) as
           | { type: "initial"; lines: string[] }
           | { type: "append"; data: string };
@@ -90,15 +93,30 @@ export default function LogsPage() {
         }
       };
       ws.onclose = () => {
-        if (!closed) retryTimer = setTimeout(connect, Math.min(15000, 1000 * 2 ** retry++));
+        if (!closed) retryTimer = setTimeout(connect, retryDelayMs(retry++));
       };
       ws.onerror = () => ws?.close();
     };
+
+    // 携帯で別のアプリへ移って戻ると、経路は切れても socket は OPEN のまま
+    // 残る。ここには復帰の手当てが無く、log が静かに止まったままだった。
+    const revive = () => {
+      if (closed) return;
+      if (ws?.readyState === WebSocket.CONNECTING) return;
+      if (ws?.readyState === WebSocket.OPEN && looksAlive(lastMessageAt)) return;
+      discardSocket(ws);
+      ws = null;
+      clearTimeout(retryTimer);
+      retry = 0;
+      connect();
+    };
+    const stopWatching = watchForReturn(revive);
     connect();
     return () => {
       closed = true;
       clearTimeout(retryTimer);
-      ws?.close();
+      stopWatching();
+      discardSocket(ws);
     };
   }, [appId, source]);
 

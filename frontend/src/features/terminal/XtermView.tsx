@@ -9,6 +9,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api, wsUrl } from "../../api/client";
 import { createUuid } from "../../lib/clientId";
+import { discardSocket, looksAlive, looksDead } from "../../lib/liveConnection";
 import { useToasts } from "../../stores";
 import { IconSettings, IconX } from "../../components/icons";
 import { TerminalGeometryController } from "./controllers/TerminalGeometryController";
@@ -654,27 +655,35 @@ export default function XtermView({
     // 直前の試行から十分空いているときだけ、待ちを飛ばして繋ぎ直す。
     let lastReviveAt = 0;
     const REVIVE_MIN_INTERVAL = 3_000;
-    // 無音が続いたら死んだと見なす。server は 15 秒ごとに heartbeat を送るので、
-    // 3 回ぶん来なければ経路が切れている。TCP の timeout を待つより早く気づく。
-    const SILENCE_LIMIT = 50_000;
+    // 生死の判断は liveConnection の方針に合わせる。以前はここだけ heartbeat
+    // 15 秒・見切り 50 秒で、携帯で戻ってから復帰するまで 50 秒近く待たされていた。
     let lastMessageAt = performance.now();
     const watchdog = window.setInterval(() => {
       if (disposed || document.visibilityState !== "visible") return;
       const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
-      if (performance.now() - lastMessageAt < SILENCE_LIMIT) return;
+      if (!looksDead(lastMessageAt + (Date.now() - performance.now()))) return;
       diagnostics?.record("heartbeat-timeout", { connectionGeneration });
       lastMessageAt = performance.now();
       socket.close();          // onclose が backoff つきで繋ぎ直す
     }, 5_000);
     const reviveIfNeeded = () => {
       if (disposed || document.visibilityState !== "visible") return;
-      const socket = wsRef.current;
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
       const now = performance.now();
       if (now - lastReviveAt < REVIVE_MIN_INTERVAL) return;
+      const socket = wsRef.current;
+      // readyState を信用しない。iPhone で別のアプリへ移って戻ると、OS が経路を
+      // 切っても socket は OPEN のまま残る。生きていると見なすと、無音の見切りが
+      // 働くまで「再接続中」が居座る。直前まで受信できていたものだけ生きていると
+      // 見なし、それ以外は捨てて繋ぎ直す。
+      const alive = socket
+        && socket.readyState === WebSocket.OPEN
+        && looksAlive(lastMessageAt + (Date.now() - performance.now()));
+      if (alive || socket?.readyState === WebSocket.CONNECTING) return;
       lastReviveAt = now;
+      discardSocket(socket);    // 捨てる側で再接続を予約させない
       window.clearTimeout(retryTimer);
+      retryDelay = 500;
       connect();
     };
     document.addEventListener("visibilitychange", reviveIfNeeded);

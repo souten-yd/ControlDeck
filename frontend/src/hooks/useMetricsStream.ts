@@ -1,10 +1,21 @@
 import { useEffect } from "react";
 import { wsUrl } from "../api/client";
+import {
+  UI_GRACE_MS,
+  discardSocket,
+  looksAlive,
+  looksDead,
+  retryDelayMs,
+  watchForReturn,
+} from "../lib/liveConnection";
 import { useMetrics } from "../stores";
 import type { MetricsSnapshot } from "../types";
 
-/** メトリクス WebSocket。単一接続、切断時は指数バックオフで再接続、
- * タブ非表示時は切断して電池・通信を節約する。 */
+/** メトリクス WebSocket。
+ *
+ * 生死の判断・再接続・復帰の扱いは liveConnection の方針に従う。ここ独自の
+ * 事情は「画面を消している間は繋がない（電池と通信を使わない）」ことだけ。
+ */
 export function useMetricsStream(enabled: boolean) {
   const push = useMetrics((s) => s.push);
   const setConnected = useMetrics((s) => s.setConnected);
@@ -12,101 +23,94 @@ export function useMetricsStream(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     let ws: WebSocket | null = null;
-    let retry = 0;
+    let attempt = 0;
     let closed = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastMessageAt = Date.now();
+
+    // 一瞬の途切れは表示に出さない。携帯では珍しくなく、すぐ戻るものまで
+    // 「再接続中」と出すと、実際は繋がっているのに壊れて見える。
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const showDisconnected = () => {
+      if (graceTimer !== undefined) return;
+      graceTimer = setTimeout(() => {
+        graceTimer = undefined;
+        if (!closed) setConnected(false);
+      }, UI_GRACE_MS);
+    };
+    const showConnected = () => {
+      clearTimeout(graceTimer);
+      graceTimer = undefined;
+      setConnected(true);
+    };
 
     const connect = () => {
       if (closed || document.hidden) return;
       ws = new WebSocket(wsUrl("/system/metrics/stream"));
       ws.onopen = () => {
-        retry = 0;
+        attempt = 0;
         lastMessageAt = Date.now();
-        setConnected(true);
+        showConnected();
       };
-      ws.onmessage = (ev) => {
+      ws.onmessage = (event) => {
         lastMessageAt = Date.now();
         try {
-          push(JSON.parse(ev.data) as MetricsSnapshot);
+          push(JSON.parse(event.data) as MetricsSnapshot);
         } catch {
-          /* 破損メッセージは無視 */
+          /* 壊れた message は捨てる */
         }
       };
       ws.onclose = () => {
-        setConnected(false);
-        if (!closed && !document.hidden) {
-          timer = setTimeout(connect, Math.min(8_000, 1000 * 2 ** retry++));
-        }
+        showDisconnected();
+        if (closed || document.hidden) return;
+        timer = setTimeout(connect, retryDelayMs(attempt++));
       };
       ws.onerror = () => ws?.close();
     };
 
-    /** 前の socket を、再接続を予約させずに捨てる。 */
-    const discard = () => {
-      if (!ws) return;
-      ws.onopen = ws.onmessage = ws.onerror = null;
-      ws.onclose = null;
-      try {
-        ws.close();
-      } catch {
-        /* 既に閉じている */
-      }
+    /** 疑わしければ捨てて繋ぎ直す。readyState は信用しない。 */
+    const revive = () => {
+      if (closed) return;
+      if (ws?.readyState === WebSocket.CONNECTING) return;
+      if (ws?.readyState === WebSocket.OPEN && looksAlive(lastMessageAt)) return;
+      discardSocket(ws);
       ws = null;
+      clearTimeout(timer);
+      attempt = 0;
+      connect();
     };
 
     const onVisibility = () => {
       if (document.hidden) {
-        ws?.close();
+        discardSocket(ws);
+        ws = null;
+        clearTimeout(timer);
+        showDisconnected();
         return;
       }
-      // 戻ってきたら readyState を信用せずに繋ぎ直す。携帯で背面に回すと、
-      // OS が黙って経路を切っても socket は OPEN のまま残ることがある。その状態を
-      // 「生きている」と見なすと、watchdog が沈黙に気づく 45 秒まで「再接続中」が
-      // 居座る。捨てて繋ぎ直すほうが速く、無駄も一度きりで済む。
-      discard();
-      clearTimeout(timer);
-      retry = 0;
-      setConnected(false);
-      connect();
+      revive();
     };
 
-    // 回線が戻ったのに backoff を待たせない。切れたまま画面を開いていると、
-    // 待ちが 30 秒まで伸びて「再接続中」が居座る。復帰の合図が来たら待ちを
-    // 捨てて繋ぎ直す。連打にならないよう、直前の試行から 3 秒は空ける。
-    let lastRevive = 0;
-    const onOnline = () => {
-      if (closed || document.hidden) return;
-      const now = Date.now();
-      if (now - lastRevive < 3_000) return;
-      if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMessageAt < 15_000) return;
-      lastRevive = now;
-      discard();
-      clearTimeout(timer);
-      retry = 0;
-      connect();
-    };
-    // collector は定期的に snapshot を送る。それが途切れたら経路が死んでいる。
-    // 携帯では黙って切れることがあり、TCP の timeout まで誰も気づかない。
-    let lastMessageAt = Date.now();
+    // 黙ったまま切れることがある。TCP の timeout を待つより早く見切る。
     const watchdog = setInterval(() => {
       if (closed || document.hidden) return;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - lastMessageAt < 20_000) return;
+      if (!looksDead(lastMessageAt)) return;
       lastMessageAt = Date.now();
-      ws.close();          // onclose が backoff つきで繋ぎ直す
-    }, 5_000);
+      ws.close();          // onclose が再接続を予約する
+    }, 2_000);
+
     connect();
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("pageshow", onOnline);
+    const stopWatching = watchForReturn(revive);
     return () => {
       closed = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       clearInterval(watchdog);
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("pageshow", onOnline);
-      ws?.close();
+      stopWatching();
+      discardSocket(ws);
       setConnected(false);
     };
   }, [enabled, push, setConnected]);
