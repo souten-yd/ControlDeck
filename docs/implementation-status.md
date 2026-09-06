@@ -2,6 +2,41 @@
 
 最終更新: 2026-09-06
 
+## Add-on WebSocket relayの構造化終了処理（2026-09-06、candidate）
+
+Host PR #293のlocale通知とは別slice。無変更main 72948aeでもdevice pairingの
+TestClient context終了でCancelledErrorが再現した。旧relayはFIRST_COMPLETED後にのみ
+pendingをcancel/gatherし、親ASGIがキャンセルされた経路の子task joinを保証していなかった。
+汎用run_websocket_tasksでAnyIO task groupが全directionを所有し、最初の終了/失敗/親cancelで
+兄弟を止めてjoinする。frame proxyとdevice relayへ適用。最初の通常例外はcleanup後に
+呼出元へ返し、従来gather(return_exceptions=True)で転送失敗をsuccess扱いする経路も除く。
+AnyIOは既存FastAPI環境内の依存を直接使用するためrequirements/pyprojectに宣言した。
+新規同期I/Oや同期waitをasyncへ追加していない。認証・権限・relay public schemaは変更なし。
+
+`./deck.sh test tests/test_addon_relay_tasks.py tests/test_addon_device_sessions.py
+tests/test_addon_proxy.py`: 19 passed/既知warning1/6.80秒。
+新4ケースは正常終了・OSError・asyncio親cancel・AnyIO scope cancelで、awaitを含む
+cleanupの完了と残存asyncio task0を検査。例外と親cancelを握り潰さないこともassert。
+
+`PYTHONPATH=backend .venv/bin/python tools/addon-relay-lifetime-smoke.py`:
+専用transient systemd/loopback Uvicornで実WebSocket text/binary各20回と故障1回。
+各切断後active/directions0、closed21/errors1、故障close4502。
+最終typed scriptの実測0.338665秒、証拠`/tmp/cd-relay-lifetime-9ipvc0g3/observations.json`。
+初回同実測0.377852秒、`/tmp/cd-relay-lifetime-wposow5o`。finallyで専用unitを停止。
+production helperを使うfixture appの実network受入で、installed認証/実Add-onの証拠ではない。
+本番Host/MediaForgeを再起動せず、利用者の既存接続・データ・設定は変更しない。
+初回全gateは1 failed/1019 passed/2 skipped/123.34秒。Jobs streamも同じ
+FIRST_COMPLETED後だけのcleanupで、context終了時CancelledErrorが発生した。
+Jobs修正前の再実行は1020 passed/2 skipped/136.08秒だったが、これを解消証拠にせず、
+helperをHost共通app/websocket_tasks.pyへ移しJobs streamにも適用した。
+Jobsの直接ASGI fixtureで親asyncio/AnyIO cancel後に更新待ち/切断待ち両方の終了をassertする
+2 testsを追加。新helper/Jobs6 testsは0.11秒passed、関連30 testsは8.25秒passed。
+移動後helperの実network再確認は0.448174秒、`/tmp/cd-relay-lifetime-tsx4hl1y`、同じ21回完了。
+frontend buildは35.14秒成功（既知large chunk warning）。最終全gateは
+1022 passed/2 skipped/既知warning1/154.50秒。既存失敗箇所を含む追加再試験16 testsも
+7.77秒passed。git diff --check/新moduleとsmokeのcompileall成功。
+installed/end-to-endはNOT TESTED。backend-onlyでPC/320画面を変更していない。
+
 ## Blender SkillsのControlDeck実行版・再起動準備（2026-09-06）
 
 方針Bを採用。上流固定commit `8f778d2405a214b508d4c7d80742be8e43acdd52`の94 SKILL.mdと
