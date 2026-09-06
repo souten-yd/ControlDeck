@@ -3083,3 +3083,16 @@ Playwright通常5件成功（soak 1件は通常skip）。物理iPhone Safari/PWA
 - 2026-07-13: GitHub 管理（リポジトリ登録でクローン/更新/保存/リバート/削除をボタン操作、~/ControlDeckApps へ格納、gh auth login のターミナル連携）+ 下部ナビ再編 + Overlay フォーカス奪取バグ修正
 - 2026-07-13: アプリに Web ボタン（プロセスツリーの LISTEN ポートを検出しブラウザで開く。複数ポートは初回選択→ web_port として保存、設定編集で検出ポートから変更可）
 - 2026-07-13: アプリ機能の使い勝手改善: テスト実行のストリーミング化（WS /apps/test-run/stream、常駐アプリ対応・停止ボタン）、実行 cwd を既定ホームに（test-run とユニットの WorkingDirectory）、パス入力にサーバー側ファイル選択ダイアログ（FilePicker）、リモートビューアのタッチ判定を pointer:coarse に精緻化
+
+## 推奨スキル（設定画面から導入・更新・無効化・削除）
+
+OpenCode に読ませる制作手順を、ControlDeck のデータ配下だけで管理する。読ませ方は
+OpenCode の `skills.paths`（runtime config へ有効なものだけ並べる）。利用者の
+`~/.claude/skills` や `~/.config/opencode` へは書かない。
+
+同梱: `controldeck-image` / `controldeck-sound-effects` / `controldeck-music` /
+`controldeck-3d-scene`。実行先は既存の MCP ツール（media.* / sonic.*）で、
+引数は実物のスキーマと突き合わせてある。
+
+外部: `blender-skills`（commit 固定）。BlenderMCP 前提なので実行部分は噛み合わない
+ことを `requires` に書いて画面へ出す。

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -186,6 +187,24 @@ def _allowed_directories() -> dict[str, str]:
     return allowed
 
 
+logger = logging.getLogger("control_deck.opencode")
+
+
+def _skill_paths() -> list[str]:
+    """有効なスキルの置き場。取れなければ何も渡さない。
+
+    スキルは補助であって、これが読めないことで OpenCode が起動しないのは
+    本末転倒である。
+    """
+    try:
+        from app.skills import registry as skills
+
+        return skills.enabled_paths()
+    except Exception:  # noqa: BLE001 - スキルの都合で session を止めない
+        logger.exception("有効なskillの一覧を取得できませんでした")
+        return []
+
+
 def _runtime_config(
     job_id: str,
     base_url: str,
@@ -231,6 +250,13 @@ def _runtime_config(
         # `*` は階層を跨がない照合系もあるので、直下と再帰の両方を挙げておく。
         "permission": {"external_directory": _allowed_directories()},
     }
+    # 導入済みで有効なスキルだけ読ませる。利用者の ~/.claude や
+    # ~/.config/opencode へは書かない——そこは利用者自身のもので、こちらが
+    # 足したり消したりしてよい場所ではない。ControlDeck から起動した session
+    # にだけ効くので、無効化はこの一覧から外すだけで済む。
+    skill_paths = _skill_paths()
+    if skill_paths:
+        payload["skills"] = {"paths": skill_paths}
     if owner_user_id is not None:
         from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS, issue_opencode_token
         from app.config import get_config

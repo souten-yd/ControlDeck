@@ -9,6 +9,7 @@ import { TotpSettings } from "../features/auth/TotpSettings";
 import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
+import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 
@@ -158,6 +159,7 @@ export default function SettingsPage() {
 
       {can("settings.manage") && <AddonsSection />}
       {can("settings.manage") && <ExtensionsSection />}
+      {can("settings.manage") && <RecommendedSkills />}
 
       {can("system.view") && <AlertsSettings />}
 
