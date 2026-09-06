@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from app.security.compression import SelectiveGZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -122,6 +123,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)
+# 携帯から使うので、圧縮の有無がそのまま待ち時間になる。逐次流すものは素通しする。
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
 
 
 @app.exception_handler(RequestValidationError)
