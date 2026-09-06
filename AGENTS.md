@@ -38,6 +38,14 @@ scripts/ 配下は deck.sh への互換ラッパーのみ。新しい運用操�
 6. **破壊的・重要操作は監査ログ**（`audit` サービス）へ記録する。
 7. GPU 監視などセンサー取得の失敗でアプリ全体を落とさない。取得不可は `N/A`。
 8. エラーを握り潰さない。ユーザー向けメッセージと内部ログを分離する。
+9. **`async def` の中で同期的に待つ処理を呼ばない**。ORM の属性アクセス（遅延読み込み）・
+   `db.execute` / `db.commit`・同期 HTTP client・大きな読み書きや hash 計算・
+   `subprocess.run`・`time.sleep` はどれも event loop を止める。止まるのはその要求
+   だけではなくプロセス全体で、systemd の watchdog に落とされる（実測: 3 日で 68 回、
+   原因は `addon_frame_proxy` の遅延読み込みによる DB 接続待ち）。同期処理は
+   `asyncio.to_thread` へ出すか、endpoint を `def` にして threadpool へ任せる。
+   使う関連は eager load し、DB session は用が済んだ時点で返す（上流への往復の間
+   抱えると pool が尽きる）。調べ方は `docs/runbook-service-hangs.md`。
 
 ## UI ルール
 
