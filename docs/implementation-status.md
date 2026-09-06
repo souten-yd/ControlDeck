@@ -27,7 +27,9 @@ backend製品/test差分0。全 `./deck.sh test` 初回は3 failed/1013 passed/2
 registry revision試験で期待2/実3（health loop実HTTPが並行）を観測。
 無変更main 72948aeでこの3件を集中実行してdevice pairingの同じCancelledErrorを再現
 （1 failed/2 passed/6.17秒）。locale変更が原因とは扱わないが、全gate成功にも読み替えない。
-全gateの再確認と既存失敗の切り分けを進め、merge/installed反映は未実施。
+全gate再実行も1 failed/1015 passed/2 skipped/既知warning1/124.07秒。
+device pairingの再接続終了時に同じCancelledError。proxy/revisionは今回はpassだが
+初回失敗を解消済みとはしない。既存失敗を別sliceで切り分け、merge/installed反映は未実施。
 NOT TESTED: installed Hostから実MediaForgeのLibrary offset/選択を保持する言語切替、
 実ブラウザ設定からの言語変更、live resize入力問題。3D全体の完了は未宣言。
 
