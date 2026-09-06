@@ -92,8 +92,29 @@ def main() -> None:
             update = client.patch(path, json={"phase": "succeeded", "status": "succeeded"}, headers=headers(token))
             assert (denied.status_code, refresh.status_code, update.status_code) == (403, 404, 404)
             assert jobs._db_get(fixture.id)["status"] == "interrupted"
+            owner_token = tokens.issue("fake-addon", subject=str(owner), kind="service", actor_user_id=owner)
+            caller = client.post("/api/v1/addon-runtime/fake-addon/jobs", json={"title": "fresh reconciliation call"},
+                                 headers=headers(owner_token))
+            assert caller.status_code == 201
+            caller_token = caller.json()["access_token"]
+            conflict = client.post(f"{path}/terminal/reconcile", json={"status": "failed", "error": "local_stopped"},
+                                   headers=headers(caller_token))
+            assert conflict.status_code == 200
+            assert conflict.json()["status"] == "interrupted" and conflict.json()["terminal_matches"] is False
+            active = client.post("/api/v1/addon-runtime/fake-addon/jobs", json={"title": "retry terminal"},
+                                 headers=headers(owner_token))
+            assert active.status_code == 201
+            active_path = f"/api/v1/addon-runtime/fake-addon/jobs/{active.json()['job']['id']}/terminal/reconcile"
+            terminal = {"status": "succeeded", "result": {"fixture": "complete"}}
+            applied = client.post(active_path, json=terminal, headers=headers(caller_token))
+            duplicate = client.post(active_path, json=terminal, headers=headers(caller_token))
+            assert applied.status_code == duplicate.status_code == 200
+            assert applied.json()["disposition"] == "applied" and applied.json()["terminal_matches"] is True
+            assert duplicate.json()["disposition"] == "already_terminal" and duplicate.json()["terminal_matches"] is True
             evidence = {"control": response.json(), "wrong_job": denied.status_code,
                         "refresh": refresh.status_code, "update": update.status_code,
+                        "reconcile_conflict": conflict.json(), "reconcile_applied": applied.json(),
+                        "reconcile_duplicate": duplicate.json(),
                         "db_status": "interrupted", "fixture_root": str(root), "unit": unit,
                         "scope": "fresh-process production Job router and auth; not full installed Host"}
             (root / "observations.json").write_text(json.dumps(evidence, indent=2) + "\n")

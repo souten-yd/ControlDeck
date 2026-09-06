@@ -72,6 +72,13 @@ class RuntimeJobProgress(BaseModel):
     total: int | None = Field(default=None, gt=0)
 
 
+class RuntimeJobTerminal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["succeeded", "failed", "canceled"]
+    result: dict[str, Any] | None = None
+    error: str | None = Field(default=None, max_length=2000)
+
+
 class RuntimeJobUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     phase: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.-]*$")

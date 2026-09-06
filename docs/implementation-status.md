@@ -2,6 +2,21 @@
 
 最終更新: 2026-09-06
 
+## Add-on終端outboxの再認証後照合（2026-09-06）
+
+失効したchild credentialをAdd-onが再発行できないため、汎用Hostの終端専用reconcile APIを加法追加。
+有効なjobs.write service identityで、同じAdd-onのruntime Jobへ終端だけを送る。別のcalling Jobからは
+active caller・署名actor・caller/target ownerの一致を要求する。owner userの有効性も検証する。
+対象に確定終端があれば上書きせず、status/result/errorの一致をboolean receiptとして返す。
+再実行・credential・resource権限は委譲せず、既存PATCHとcontrolのJob scopeも変更しない。
+
+`./deck.sh test`: 960 passed / 1 skipped / 既知warning1件 / 61.41秒。
+`PYTHONPATH=backend .venv/bin/python tools/addon-job-history-smoke.py`の隔離systemd/実HTTPで、
+再起動後interruptedへのfailed通知はalready_terminal/matches=false、fresh callerからactive targetへ
+succeeded通知はapplied/matches=true、重複はalready_terminal/matches=trueを確認。
+旧control200・別Job403・refresh404・PATCH404も維持。証拠`/tmp/cd-job-history-tzrzg278/observations.json`。
+試験unitはfinallyで停止。installed Host適用・下流Add-on outbox・PC/mobile UIはNOT TESTED。
+
 ## Add-on Job controlの終端履歴参照（2026-09-06）
 
 Add-on側ではHost再起動後のDB履歴に到達できず、終端通知の照合を解決できないため、汎用Host
