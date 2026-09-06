@@ -1007,10 +1007,12 @@ function PublishSection({ projectId }: { projectId: string }) {
   const unpublish = useMutation({
     mutationFn: () => projectLabApi.unpublish(projectId),
     onSuccess: (result) => {
+      // 何が残っているかで言い方を変える。public repository は API から Pages を
+      // 止められないので、設定だけが残る（次に公開すると同じ URL が生き返る）。
       show(
-        result.repositoryRemains
-          ? `公開を取り下げました。リポジトリ ${result.repository} は残っています`
-          : "公開を取り下げました",
+        result.pagesSettingRemains
+          ? `公開を取り下げました。${result.repository} の Pages 設定は残るので、再公開すると同じURLになります`
+          : `公開を取り下げました。リポジトリ ${result.repository} は残っています`,
         "success",
       );
       queryClient.invalidateQueries({ queryKey: ["project-lab-publish-plan", projectId] });
