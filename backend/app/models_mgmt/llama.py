@@ -1361,6 +1361,35 @@ def find_role_instance(role: str) -> dict | None:
     return None
 
 
+# 抱えている相手が区切りに達するのを待つ上限。生成 1 枚ぶんより短くする。
+# 仕事を終えて場所だけ抱えている lease はすぐ返る。走っている生成は返らないので、
+# ここで長く待っても chat が止まるだけである。
+_GPU_RECLAIM_WAIT_SEC = 5.0
+
+
+async def _reclaim_gpu_before_load(alias: str) -> None:
+    """LLM を載せる前に、GPU を抱えている add-on へ返却を頼む。"""
+    import asyncio
+
+    try:
+        from app.resources.broker import broker as resource_broker
+    except Exception:  # noqa: BLE001 - broker が無い構成でも読み込みは進める
+        return
+    try:
+        marked = await resource_broker.request_release("gpu0", reason=f"llm_load:{alias}")
+        if not marked:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _GPU_RECLAIM_WAIT_SEC
+        while loop.time() < deadline:
+            if not [item for item in resource_broker.leases.current() if item.device_id == "gpu0"]:
+                return
+            await asyncio.sleep(0.1)
+        logger.info("llama %s: GPU を抱えている lease が %.1fs で返らなかった", alias, _GPU_RECLAIM_WAIT_SEC)
+    except Exception:  # noqa: BLE001 - 回収は最善努力。失敗しても読み込みは続ける
+        logger.exception("llama %s: GPU 返却要求に失敗した", alias)
+
+
 async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
     """instanceを必要ならオンデマンド起動し、/health 200（モデル読込完了）まで待つ。
 
@@ -1377,6 +1406,14 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
     if (await health(alias)).get("ok"):
         return True
     loop = asyncio.get_running_loop()
+    # ここから先は実際に VRAM へ載せる。載せる前に、同じ device を抱えている
+    # add-on へ返却を頼む。broker に許可を求めずに載せる作りなので、頼まないと
+    # 仕事を終えて場所だけ抱えている相手の上へ重ねて載ることになる。
+    #
+    # 待つのは短くする。返すかどうかは相手の区切り次第で、生成の最中なら返って
+    # こない。そこで待ち続けると、chat が生成の終わりまで止まる。返らなければ
+    # 従来どおり載せに行く（今までと同じ振る舞い）。
+    await _reclaim_gpu_before_load(alias)
     started_at = loop.time()
     listen_at: float | None = None
     start_task = asyncio.create_task(asyncio.to_thread(start_instance, alias))

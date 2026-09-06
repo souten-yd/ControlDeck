@@ -73,6 +73,23 @@ class LeaseTable:
         lease.state = state
         return self._copy(lease)
 
+    def request_release(self, device_id: str) -> list[LeaseStatus]:
+        """その device の lease に「返してほしい」と印を付ける。
+
+        取り上げはしない。lease を持っている側が、次の区切りで返すかどうかを
+        決める。生成の途中で取り上げると、待ち時間を減らすために入れたものが
+        作りかけを捨てる仕組みになってしまう。
+        """
+        marked: list[LeaseStatus] = []
+        for lease in self._leases.values():
+            if lease.device_id != device_id:
+                continue
+            if lease.state not in {LeaseState.GRANTED, LeaseState.ACTIVE}:
+                continue
+            lease.release_requested = True
+            marked.append(self._copy(lease))
+        return marked
+
     def expire_due(self, now: float) -> list[LeaseStatus]:
         result: list[LeaseStatus] = []
         for lease in self._leases.values():

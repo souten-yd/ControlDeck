@@ -72,6 +72,9 @@ class ResourceBroker:
         self.telemetry = telemetry or ResourceTelemetry()
         self._lock = asyncio.Lock()
         self._room_task: asyncio.Task[None] | None = None
+        # device ごとの「返してほしい」と言った時刻。lease を持たずに場所を
+        # 抱えている相手（生成後も model を載せたままの add-on）へも届ける。
+        self._release_wanted: dict[str, float] = {}
         self._requests: dict[str, _RequestRecord] = {}
         self._sequence = 0
         self._revision = 0
@@ -196,6 +199,48 @@ class ResourceBroker:
             await self._schedule_locked(self._clock())
             await self._bump()
             return result
+
+    async def request_release(self, device_id: str, *, reason: str) -> int:
+        """その device を他が要ることを、lease を持っている側へ伝える。
+
+        provider の step_aside と対になる。step_aside は「broker が持ち主でない
+        常駐物を退かす」もので、こちらは「lease を持っている相手に、区切りで
+        返してほしいと言う」もの。どちらも走っている処理は切らない。
+
+        LLM は ensure_ready で必要になった時点で自分から載る。broker に許可を
+        求めないので、add-on が仕事を終えた後も場所を抱えていると、そこへ
+        重ねて載ることになる。抱えている側にそれを伝える手段が要る。
+
+        返り値は印を付けた lease の数。
+        """
+        async with self._lock:
+            self._release_wanted[device_id] = self._clock()
+            marked = self.leases.request_release(device_id)
+            for lease in marked:
+                self.telemetry.record(
+                    "lease.release_requested",
+                    request_id=lease.request_id,
+                    lease_id=lease.lease_id,
+                    device_id=device_id,
+                    reason=reason,
+                )
+            if marked:
+                await self._bump()
+            return len(marked)
+
+    def now(self) -> float:
+        """broker が使っている時計。抱える側が同じ物差しで比べられるようにする。"""
+        return self._clock()
+
+    def release_wanted_at(self, device_id: str) -> float:
+        """その device を最後に「返してほしい」と言った時刻。まだなら 0。
+
+        lease を持たずに場所を抱えている相手にも届ける必要がある。生成を終えた
+        add-on が、次の依頼に備えて model を載せたまま待つのは、載せ直しの
+        10 数秒を省くためであって、場所を占め続けるためではない。抱えたままで
+        よいかどうかは、他が要るかどうかで決まる。
+        """
+        return self._release_wanted.get(device_id, 0.0)
 
     async def cancel_owner(self, owner: str) -> dict[str, int]:
         async with self._lock:

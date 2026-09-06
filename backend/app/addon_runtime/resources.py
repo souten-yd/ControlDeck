@@ -109,6 +109,25 @@ async def cancel_request(request_id: str, request: Request, principal: CleanupRe
     return result
 
 
+@router.get("/devices/{device_id}/pressure")
+async def device_pressure(device_id: str, principal: ActiveResourceAuth):
+    """その device を他が要っているか。lease を持っていなくても読める。
+
+    生成を終えた add-on は、次の依頼に備えて model を載せたまま待つことがある。
+    載せ直しは十数秒かかるので、続けて頼まれる間は抱えていたほうが速い。ただし
+    抱えてよいのは他が要らない間だけで、lease を返した後は broker から見て
+    「空いている」ので、要求されたことを知る手段が要る。
+
+    `release_requested_at` は broker の単調時計での時刻で、まだ言われていなければ
+    0 を返す。抱える側は待ち始めた時刻と比べ、増えていれば降りる。
+    """
+    return {
+        "device_id": device_id,
+        "release_requested_at": broker.release_wanted_at(device_id),
+        "now": broker.now(),
+    }
+
+
 @router.post("/leases/{lease_id}/{action}")
 async def lease_action(
     lease_id: str,
