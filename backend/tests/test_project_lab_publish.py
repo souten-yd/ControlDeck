@@ -140,3 +140,64 @@ def test_publish_stages_only_selected_files_and_adds_nojekyll(site: Path, monkey
 
     # .env は出ない。.nojekyll は足す（無いと Jekyll が `_` 始まりを丸ごと捨てる）
     assert seen["staged"] == {"index.html", "assets/app.js", ".nojekyll"}
+
+
+def test_unpublish_disables_pages_and_removes_the_branch(monkeypatch):
+    """公開を取り下げると URL が 404 になり、中身も残らないこと。
+
+    リポジトリ自体は消さない。公開を止めたいだけの操作で履歴も issue も
+    一緒に消えるのは取り返しがつかない。
+    """
+    calls: list = []
+    state = {"demo": {"repository": "souten-yd/demo", "branch": "gh-pages",
+                      "visibility": "private", "directory": "dist",
+                      "url": "https://souten-yd.github.io/demo/",
+                      "fileCount": 2, "excludedCount": 0}}
+    monkeypatch.setattr(publish.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(publish, "_load_state", lambda: dict(state))
+    cleared: list[str] = []
+    monkeypatch.setattr(publish, "_clear_state", lambda pid: cleared.append(pid))
+
+    def fake_run(args, cwd=None, timeout=publish.GIT_TIMEOUT_SECONDS, extra_env=None):
+        calls.append(list(args))
+        if args[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(args, 0, "account souten-yd\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(publish, "_run", fake_run)
+    result = publish.unpublish("demo")
+
+    api = [" ".join(a) for a in calls if a[0] == "gh" and a[1] == "api"]
+    assert any("DELETE repos/souten-yd/demo/pages" in a for a in api), "Pages を無効にしていない"
+    assert any("DELETE repos/souten-yd/demo/git/refs/heads/gh-pages" in a for a in api), \
+        "公開していた中身が残ってしまう"
+    assert cleared == ["demo"]
+    assert result["removed"] == ["pages", "branch"]
+    # リポジトリは残る。何が残っているかを黙らない。
+    assert result["repositoryRemains"] is True
+    assert result["repositoryUrl"] == "https://github.com/souten-yd/demo"
+    assert not any("DELETE repos/souten-yd/demo" == " ".join(a[2:]) for a in calls), \
+        "リポジトリ自体を消してはいけない"
+
+
+def test_unpublish_tolerates_an_already_disabled_site(monkeypatch):
+    """既に止まっているものを止め直しても失敗させない（404 は想定内）。"""
+    monkeypatch.setattr(publish.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(publish, "_load_state", lambda: {
+        "demo": {"repository": "souten-yd/demo", "branch": "gh-pages"}})
+    monkeypatch.setattr(publish, "_clear_state", lambda pid: None)
+
+    def fake_run(args, cwd=None, timeout=publish.GIT_TIMEOUT_SECONDS, extra_env=None):
+        if args[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(args, 0, "account souten-yd\n", "")
+        return subprocess.CompletedProcess(args, 1, "", "gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(publish, "_run", fake_run)
+    result = publish.unpublish("demo")
+    assert result["removed"] == []
+
+
+def test_unpublish_refuses_when_nothing_is_published(monkeypatch):
+    monkeypatch.setattr(publish, "_load_state", lambda: {})
+    with pytest.raises(publish.PublishError, match="公開されていません"):
+        publish.unpublish("demo")

@@ -7,6 +7,7 @@ import {
   type ProjectLabDetail,
   type ProjectLabRun,
   type ProjectLabSummary,
+  type ProjectLabPublishState,
 } from "../api/projectLab";
 import { CodeViewer } from "../features/projectlab/CodeViewer";
 import { BottomSheet, Popover, Skeleton } from "../components/ui";
@@ -903,6 +904,84 @@ function ExportSection({ projectId }: { projectId: string }) {
   );
 }
 
+/** 公開したページのアドレス。
+ *
+ * 公開してもアドレスが画面に残らないと、後から開く手段が無い。ここに置いて
+ * コピーと移動（開く）をその場でできるようにする。取り下げも同じ場所に置く
+ * ——公開した事実とその取り消しは、離して置くと見つからない。
+ */
+function PublishedAddress({
+  state, onUnpublish, busy,
+}: {
+  state: ProjectLabPublishState;
+  onUnpublish: () => void;
+  busy: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const { show } = useToasts.getState();
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(state.url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 安全でない文脈（平文HTTP）では clipboard API が使えない。
+      // 黙って何も起きないと壊れて見えるので、理由を出す。
+      show("この接続ではコピーできません。長押しで選択してください", "error");
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-800">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+          公開中
+        </span>
+        <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] dark:bg-zinc-800">
+          {state.visibility}
+        </span>
+      </div>
+      <p className="mt-1 break-all font-mono text-[11px]">{state.url}</p>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          onClick={copy}
+          className="min-h-9 rounded-xl bg-zinc-100 px-3 text-xs font-semibold hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+        >
+          {copied ? "コピーしました" : "URLをコピー"}
+        </button>
+        <a
+          href={state.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="flex min-h-9 items-center rounded-xl bg-zinc-100 px-3 text-xs font-semibold hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+        >
+          開く
+        </a>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => (confirming ? onUnpublish() : setConfirming(true))}
+          className={`min-h-9 rounded-xl px-3 text-xs font-semibold disabled:opacity-40 ${
+            confirming
+              ? "bg-red-600 text-white hover:bg-red-700"
+              : "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
+          }`}
+        >
+          {busy ? "取り下げ中…" : confirming ? "取り下げる（確定）" : "公開を取り下げる"}
+        </button>
+      </div>
+      {confirming && !busy && (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-400">
+          ページは 404 になり、公開していた内容も消えます。リポジトリ {state.repository} 自体は残ります。
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** 静的ホスティング（GitHub Pages）へ公開する。
  *
  * ダウンロードとは別に置く。あちらは手元に落とすだけだが、こちらは押した瞬間に
@@ -924,13 +1003,30 @@ function PublishSection({ projectId }: { projectId: string }) {
     queryFn: () => projectLabApi.publishPlan(projectId, directory),
     enabled: open,
   });
+  const queryClient = useQueryClient();
+  const unpublish = useMutation({
+    mutationFn: () => projectLabApi.unpublish(projectId),
+    onSuccess: (result) => {
+      show(
+        result.repositoryRemains
+          ? `公開を取り下げました。リポジトリ ${result.repository} は残っています`
+          : "公開を取り下げました",
+        "success",
+      );
+      queryClient.invalidateQueries({ queryKey: ["project-lab-publish-plan", projectId] });
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "取り下げに失敗しました", "error"),
+  });
   const run = useMutation({
     mutationFn: () => projectLabApi.publish(projectId, {
       repository,
       visibility: visibility as "public" | "private",
       directory: directory ?? null,
     }),
-    onSuccess: (state) => show(`公開しました: ${state.url}`, "success"),
+    onSuccess: (state) => {
+      show(`公開しました: ${state.url}`, "success");
+      queryClient.invalidateQueries({ queryKey: ["project-lab-publish-plan", projectId] });
+    },
     onError: (error) => show(error instanceof Error ? error.message : "公開に失敗しました", "error"),
   });
 
@@ -964,14 +1060,11 @@ function PublishSection({ projectId }: { projectId: string }) {
       {open && plan.data && (
         <div className="mt-3 space-y-3">
           {plan.data.current && (
-            <p className="rounded-xl bg-zinc-100 p-2 text-[11px] dark:bg-zinc-800/60">
-              前回の公開先:{" "}
-              <a href={plan.data.current.url} target="_blank" rel="noreferrer noopener"
-                 className="break-all text-accent-600 underline underline-offset-2 dark:text-accent-400">
-                {plan.data.current.url}
-              </a>
-              <span className="text-zinc-400">（{plan.data.current.visibility}）</span>
-            </p>
+            <PublishedAddress
+              state={plan.data.current}
+              onUnpublish={() => unpublish.mutate()}
+              busy={unpublish.isPending}
+            />
           )}
           {blocked && (
             <p className="rounded-xl bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
