@@ -87,6 +87,66 @@ def create_host_job(client, tokens, user_id: int):
     return response.json()["job"], token
 
 
+def test_terminal_reconcile_from_new_call_is_idempotent_and_preserves_conflict(runtime_api):
+    from app.jobs import service as jobs
+    client, _registry, tokens, _broker, user_id = runtime_api
+    target, _ = create_host_job(client, tokens, user_id)
+    caller, _ = create_host_job(client, tokens, user_id)
+    token = tokens.issue("fake-addon", subject=f"job:{caller['id']}", kind="service", actor_user_id=user_id)
+    path = f"/api/v1/addon-runtime/fake-addon/jobs/{target['id']}/terminal/reconcile"
+    payload = {"status": "succeeded", "result": {"asset_ids": ["asset_example"]}}
+    first = client.post(path, json=payload, headers=headers(token))
+    assert first.status_code == 200, first.text
+    assert first.json()["disposition"] == "applied" and first.json()["terminal_matches"] is True
+    jobs._jobs.pop(target["id"])
+    second = client.post(path, json=payload, headers=headers(token))
+    assert second.status_code == 200 and second.json()["disposition"] == "already_terminal"
+    assert second.json()["terminal_matches"] is True
+    conflict = client.post(path, json={"status": "failed", "error": "local_failure"}, headers=headers(token))
+    assert conflict.status_code == 200 and conflict.json()["terminal_matches"] is False
+    assert conflict.json()["status"] == "succeeded"
+    assert jobs._db_get(target["id"])["result"] == payload["result"]
+    assert jobs.get(target["id"]) is None
+    assert jobs.get(caller["id"]).status == "running"
+
+
+@pytest.mark.parametrize("case", ["no_actor", "wrong_actor", "finished_caller", "wrong_kind", "expired", "disabled", "too_large", "nonterminal"])
+def test_terminal_reconcile_is_bounded_and_authorized(runtime_api, case):
+    from app.jobs import service as jobs
+    client, registry, tokens, _broker, user_id = runtime_api
+    target, _ = create_host_job(client, tokens, user_id)
+    caller, _ = create_host_job(client, tokens, user_id)
+    claims = {"actor_user_id": user_id}
+    payload = {"status": "failed", "error": "test_failure"}
+    expected = 403
+    if case == "no_actor":
+        claims = {}
+    elif case == "wrong_actor":
+        claims = {"actor_user_id": user_id + 1000}
+    elif case == "finished_caller":
+        jobs.get(caller["id"]).status = "succeeded"
+        expected = 409
+    elif case == "wrong_kind":
+        jobs.get(caller["id"]).kind = "addon.runtime.fake-addon-extra"
+    elif case == "expired":
+        claims["now"] = int(time.time()) - 601
+        expected = 401
+    elif case == "disabled":
+        registry.set_enabled("fake-addon", False)
+        expected = 409
+    elif case == "too_large":
+        payload["result"] = {"data": "x" * 17000}
+        expected = 413
+    elif case == "nonterminal":
+        jobs._jobs.pop(target["id"])
+        expected = 409
+    token = tokens.issue("fake-addon", subject=f"job:{caller['id']}", kind="service", **claims)
+    response = client.post(f"/api/v1/addon-runtime/fake-addon/jobs/{target['id']}/terminal/reconcile",
+                           json=payload, headers=headers(token))
+    assert response.status_code == expected, response.text
+    assert jobs._db_get(target["id"])["status"] == "running"
+
+
 @pytest.mark.parametrize("status", ["succeeded", "failed", "canceled", "interrupted"])
 def test_job_control_reads_terminal_history_without_reviving_job(runtime_api, status):
     from app.jobs import service as jobs

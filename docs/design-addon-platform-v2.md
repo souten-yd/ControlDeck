@@ -1273,6 +1273,18 @@ Job controlの読み取りは、再起動後にメモリから消えたJobにつ
 DBだけにあるqueued/runningは実行の証明にならないため409。履歴を実行中メモリへ復元せず、
 refresh・更新・資源取得のauthorityは拡張しない。確定したinterrupted等をAdd-onの結果で上書きしない。
 
+終端outboxの再送は追加の`POST /api/v1/addon-runtime/{addon_id}/jobs/{id}/terminal/reconcile`で行う。
+入力はstatus（succeeded/failed/canceled）・result（16KiBまで）・errorだけ。現在有効なjobs.write
+service tokenを必要とし、対象は同じAdd-onのruntime Jobに限定する。利用者subjectはowner一致、
+Job subjectは対象自身か、署名actorが同じownerである現在activeな同Add-on呼出しJobだけを許す。
+後者は新しい呼出しから古いchildの終端を送るためだけの委譲であり、既存Job scopeを拡張しない。
+actor userの有効性も確認する。expired bearer・別owner・別Add-on・終了した別callは拒否する。
+実行中メモリの対象は既存終端更新へ送る。DBだけの非終端は409。終端済みなら上書きせず、
+`disposition=already_terminal`と保存済みstatus/result/errorの完全一致を示す`terminal_matches`を返す。
+新規適用は`disposition=applied`。応答はhost_job_id/status/disposition/terminal_matchesであり、
+結果本体・token・pathは返さない。Add-onは不一致を送信済み成功に読み替えず照合済み差異として残す。
+監査はstatus/disposition/matchのみ。再送が新しい実行やcredential更新を引き起こすことはない。
+
 ```text
 schema validation（fail closedの範囲は §C3 に従う）
 addon ID binding

@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
-from app.addon_runtime.schema import RuntimeJobCreate, RuntimeJobUpdate
+from app.addon_runtime.schema import RuntimeJobCreate, RuntimeJobTerminal, RuntimeJobUpdate
 from app.addon_runtime.service import (
     RuntimeAuthorityError,
     audit_runtime,
@@ -25,6 +25,61 @@ JobControlAuth = Annotated[
     RuntimePrincipal, Depends(require_runtime_capability("jobs.write", allow_inactive=True)),
 ]
 MAX_RESULT_BYTES = 16 * 1024
+
+
+@router.post("/{host_job_id}/terminal/reconcile")
+async def reconcile_terminal(
+    host_job_id: str, body: RuntimeJobTerminal, request: Request, principal: JobAuth,
+) -> dict:
+    if body.result is not None and len(json.dumps(body.result, ensure_ascii=False).encode()) > MAX_RESULT_BYTES:
+        raise HTTPException(status_code=413, detail="terminal resultが16KiB上限を超えています")
+    target = await jobs.get_any(host_job_id)
+    if target is None or target["kind"] != f"addon.runtime.{principal.addon_id}":
+        raise HTTPException(status_code=404, detail="Add-on Host Jobが見つかりません")
+    owner = target["owner_user_id"]
+    if principal.subject.startswith("job:"):
+        if principal.subject != f"job:{host_job_id}":
+            caller = host_job(principal, principal.subject.removeprefix("job:"))
+            caller_kind_valid = (caller.kind == f"addon.runtime.{principal.addon_id}"
+                                 or caller.kind.startswith(f"addon.agent_tool.{principal.addon_id}."))
+            if principal.actor_user_id != owner or caller.owner_user_id != owner or not caller_kind_valid:
+                raise HTTPException(status_code=403, detail="終端照合のactor scopeが一致しません")
+    else:
+        try:
+            actor = principal_user_id(principal)
+        except RuntimeAuthorityError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if actor != owner:
+            raise HTTPException(status_code=403, detail="終端照合のowner scopeが一致しません")
+    with SessionLocal() as db:
+        user = db.get(User, owner) if owner is not None else None
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=403, detail="終端照合のownerが有効ではありません")
+    # No await between reading live state and committing its terminal update.
+    live = jobs.get(host_job_id)
+    if live is not None:
+        target = live.to_dict()
+    disposition = "already_terminal"
+    if target["status"] in {"queued", "running"}:
+        if live is None:
+            raise HTTPException(status_code=409, detail="Add-on Host Jobの実行状態を確認できません")
+        jobs.update_external(
+            live, addon_id=principal.addon_id, phase=body.status,
+            completed=live.progress.get("completed"), total=live.progress.get("total"),
+            message=None, wait_reason=None, terminal_status=body.status, result=body.result, error=body.error,
+        )
+        target = live.to_dict()
+        disposition = "applied"
+    elif target["status"] not in {"succeeded", "failed", "canceled", "interrupted"}:
+        raise HTTPException(status_code=409, detail="Add-on Host Jobの終端を確認できません")
+    matches = (target["status"] == body.status
+               and json.dumps(target["result"], sort_keys=True) == json.dumps(body.result, sort_keys=True)
+               and (target["error"] or "") == (body.error or ""))
+    receipt = {"host_job_id": host_job_id, "status": target["status"],
+               "disposition": disposition, "terminal_matches": matches}
+    audit_runtime(request, principal, "addon.runtime.job.terminal.reconcile", "job", host_job_id,
+                  {key: value for key, value in receipt.items() if key != "host_job_id"})
+    return receipt
 
 
 def _fresh_job_credential(
