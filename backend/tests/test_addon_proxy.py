@@ -323,3 +323,66 @@ def test_addon_frame_websocket_uses_bridge_subprotocol_when_opaque_frame_has_no_
     ):
         pass
     assert captured["protocols"] == []
+
+
+def test_addon_frame_data_works_without_a_cookie_over_plain_http(enabled_addon, monkeypatch):
+    """cookie を保存できない経路でも add-on の API へ届くこと。
+
+    add-on は不透明 origin の sandbox で動くので、frame cookie は `SameSite=None`
+    でなければ送られない。そして `SameSite=None` は `Secure` を要求する。平文
+    HTTP の LAN アドレスは browser から「信頼できる origin」と見なされないため、
+    この cookie はそもそも保存できない——localhost と違って抜け道が無い。
+
+    bridge session は header で来るのでこの制限を受けない。中身は cookie と同じ
+    利用者を指し、発行にはこの add-on を開ける第一者の session が要る。
+    """
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=OneChunkStream(b"data"), request=request)
+
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ))
+    bridge_session = client.post(
+        "/api/v1/addons/fake-addon/bridge/handshake",
+        headers=CSRF_HEADERS,
+        json={"bridge_version": "1.0", "view_id": "workspace"},
+    ).json()["session_nonce"]
+    client.cookies.clear()
+
+    fetched = client.get(
+        "/addon-frame/fake-addon/data",
+        headers={
+            "Origin": "null",
+            "Sec-Fetch-Dest": "empty",
+            "X-Control-Deck-Bridge-Session": bridge_session,
+        },
+    )
+    assert fetched.status_code == 200 and fetched.content == b"data"
+
+    # 何も持たない相手は今までどおり弾く。cookie が無いことを通す理由にはしない。
+    anonymous = client.get(
+        "/addon-frame/fake-addon/data",
+        headers={"Origin": "null", "Sec-Fetch-Dest": "empty"},
+    )
+    assert anonymous.status_code == 401
+
+
+def test_addon_frame_cookie_outlives_a_short_absence(enabled_addon):
+    """画面を開いたまま少し離れただけで API が一斉に 401 にならないこと。
+
+    10 分で切れていたため、37 分放置しただけで SonicForge のライブラリと生成が
+    両方落ちた。利用者からは「データを取得できませんでした」としか見えない。
+    """
+    client, _registry = enabled_addon
+    from app.addons import tokens
+
+    root = client.get("/addon-frame/fake-addon/")
+    cookie = root.headers["set-cookie"]
+    assert f"Max-Age={tokens.FRAME_TOKEN_TTL_SECONDS}" in cookie
+    assert tokens.FRAME_TOKEN_TTL_SECONDS >= 30 * 24 * 60 * 60
+    # sandbox の不透明 origin から送るには両方が要る。片方でも欠けると送られない。
+    assert "SameSite=None" in cookie and "Secure" in cookie
+    assert "HttpOnly" in cookie
