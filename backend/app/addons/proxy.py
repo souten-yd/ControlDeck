@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
@@ -11,6 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.addons import bridge, health, registry, tokens
+from app.websocket_tasks import run_websocket_tasks
 from app.auth.policy import totp_required_for
 from app.database import SessionLocal, get_db
 from app.models import User
@@ -374,12 +374,7 @@ async def addon_frame_websocket(websocket: WebSocket, addon_id: str, path: str):
                     else:
                         await websocket.send_bytes(message)
 
-            first = asyncio.create_task(browser_to_upstream())
-            second = asyncio.create_task(upstream_to_browser())
-            done, pending = await asyncio.wait((first, second), return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*done, *pending, return_exceptions=True)
+            await run_websocket_tasks(browser_to_upstream, upstream_to_browser)
             registry.record_activity(addon_id, "addon-frame.websocket", "success")
     except (OSError, TimeoutError, websockets.WebSocketException) as exc:
         registry.record_activity(addon_id, "addon-frame.websocket", "upstream_error")

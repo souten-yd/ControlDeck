@@ -11,6 +11,7 @@ from app.database import SessionLocal, get_db
 from app.jobs import service as jobs
 from app.models import User
 from app.security.deps import authenticate_websocket, require_permission
+from app.websocket_tasks import run_websocket_tasks
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -86,23 +87,26 @@ async def stream_jobs(websocket: WebSocket, kind: str = ""):
         while True:
             # sendだけのWSはクライアントcloseを検知できず、Uvicorn終了時にhandlerが
             # 残り続ける。更新通知とASGIのdisconnectを同時に待つ。
-            changed = asyncio.create_task(jobs.wait_global(revision))
-            incoming = asyncio.create_task(websocket.receive())
-            done, pending = await asyncio.wait(
-                (changed, incoming), return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            if incoming in done:
-                message = incoming.result()
+            changed_revision: int | None = None
+            message: dict[str, object] | None = None
+
+            async def changed() -> None:
+                nonlocal changed_revision
+                changed_revision = await jobs.wait_global(revision)
+
+            async def incoming() -> None:
+                nonlocal message
+                message = await websocket.receive()
+
+            await run_websocket_tasks(changed, incoming)
+            if message is not None:
                 if message.get("type") == "websocket.disconnect":
                     return
                 # client messageは不要。受信した場合は次の更新/切断待ちへ戻る。
-                if changed not in done:
+                if changed_revision is None:
                     continue
-            revision = changed.result()
+            assert changed_revision is not None
+            revision = changed_revision
             # token/event ごとの更新を100ms単位で束ね、DB参照とWSフレームを抑える。
             # 最終状態はrevision比較で欠落せず、UI上の遅延も知覚しにくい範囲に留める。
             await asyncio.sleep(0.1)
