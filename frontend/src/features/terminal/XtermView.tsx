@@ -944,6 +944,21 @@ export default function XtermView({
     // アプリ自身の履歴を動かすため、mouse tracking中はwheel、無効ならPageUp/PageDownを送る。
     const appWantsMouse = () =>
       String((term as unknown as { modes?: { mouseTrackingMode?: string } }).modes?.mouseTrackingMode ?? "none") !== "none";
+    // 指やポインタが実際に居る cell。TUI は領域ごとに wheel の扱いが違うので、
+    // 画面中央に固定して送ると、狙った一覧ではない場所へ届いて何も動かない。
+    let pointerColumn = 0;
+    let pointerRow = 0;
+    const rememberPointer = (clientX: number, clientY: number) => {
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen) return;
+      const box = screen.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) return;
+      const column = Math.floor(((clientX - box.left) / box.width) * term.cols) + 1;
+      const row = Math.floor(((clientY - box.top) / box.height) * term.rows) + 1;
+      pointerColumn = Math.max(1, Math.min(term.cols, column));
+      pointerRow = Math.max(1, Math.min(term.rows, row));
+    };
+
     const scrollApplication = (lines: number) => {
       // wheel を送ってよいのは、アプリが mouse tracking を有効にしている＝
       // wheel を受け取ると宣言しているときだけである。宣言していない相手へ
@@ -952,17 +967,26 @@ export default function XtermView({
       // V2 はそもそもアプリへ入力を送らない。ここは alternate 画面に限って残す。
       if (!appWantsMouse()) return;
       const button = lines > 0 ? 65 : 64;
-      const column = Math.max(1, Math.round(term.cols / 2));
-      const row = Math.max(1, Math.round(term.rows / 2));
+      // 触った場所へ送る。分かっていないときだけ中央に落とす。
+      const column = pointerColumn || Math.max(1, Math.round(term.cols / 2));
+      const row = pointerRow || Math.max(1, Math.round(term.rows / 2));
       const count = Math.min(Math.abs(lines), 4);
       inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
     };
     // 通常画面では必ず xterm 自身の scrollback を動かす。mouse tracking を
     // 有効にしたまま終了した TUI の後（よくある）に入力を注入すると、shell が
     // その escape を表示してしまう。アプリへ渡すのは alternate 画面のときだけ。
+    // アプリへ渡すかは mouse tracking の有無で決める。
+    //
+    // 以前は alternate 画面かどうかで見ていたが、tmux の中では成立しない。tmux は
+    // 自分が alternate を持ち、中の TUI が切り替えても外側へは出さないので、
+    // buffer.active.type は normal のままになる（実測: mouse=vt200 / buffer=normal）。
+    // その結果、指でのスクロールは常に scrollback 側へ流れて何も起きなかった。
+    // wheel が効いていたのは xterm 自身が mouse tracking を見て送っていたためで、
+    // 判断をそちらへ揃える。
     const applyScroll = (lines: number) => {
       const clamped = Math.max(-100, Math.min(100, lines));
-      if (term.buffer.active.type === "alternate") scrollApplication(clamped);
+      if (appWantsMouse()) scrollApplication(clamped);
       else term.scrollLines(clamped);
     };
     // TUIは1スクロールごとに全画面を描き直すため、送信間隔を空けて描画を詰まらせない。
@@ -1026,6 +1050,7 @@ export default function XtermView({
       touchStartX = touch.clientX;
       touchStartY = touch.clientY;
       touchLastY = touch.clientY;
+      rememberPointer(touch.clientX, touch.clientY);
       touchRemainder = 0;
       stopMomentum();
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
