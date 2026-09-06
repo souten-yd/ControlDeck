@@ -98,12 +98,11 @@ def _frame_user(request: Request, db: Session = Depends(get_db)) -> User | None:
             user = db.get(User, actor_user_id, options=[joinedload(User.role)])
         except (tokens.AddonTokenError, ValueError, TypeError):
             user = None
-        if user is None or not user.is_active:
-            raise HTTPException(status_code=401, detail="認証が必要です")
         requires_bridge = request.method not in {"GET", "HEAD", "OPTIONS"} or (
             request.headers.get("origin") == "null"
             and request.headers.get("sec-fetch-dest", "") not in _FRAME_STATIC_DESTINATIONS
         )
+        bridge_user: User | None = None
         if requires_bridge:
             try:
                 bridge_user, _permissions = bridge.authenticate_websocket_session(
@@ -112,9 +111,25 @@ def _frame_user(request: Request, db: Session = Depends(get_db)) -> User | None:
                     db,
                 )
             except bridge.BridgeAccessError as exc:
+                if user is None:
+                    # cookie も bridge session も無い。どちらで落ちたかは相手に
+                    # 伝えない（どちらが有効かの手掛かりになる）。
+                    raise HTTPException(status_code=401, detail="認証が必要です") from exc
                 raise HTTPException(status_code=403, detail="Bridge sessionが必要です") from exc
-            if bridge_user.id != user.id:
-                raise HTTPException(status_code=403, detail="Bridge session scopeが一致しません")
+        if user is None:
+            # cookie が保存されていない経路。平文 HTTP の LAN アドレスでは、
+            # browser の規則により `SameSite=None; Secure` の cookie を保存できない。
+            # add-on は不透明 origin の sandbox で動くので `SameSite=None` は外せず、
+            # `SameSite=None` は `Secure` を要求する——cookie では届かせようがない。
+            #
+            # bridge session は header で来るのでこの制限を受けない。中身は cookie と
+            # 同じ利用者を指し、発行にはこの add-on を開ける第一者の session が要る。
+            # 強さは変わらないので、cookie が無いときの身元はこちらから取る。
+            user = bridge_user
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=401, detail="認証が必要です")
+        if bridge_user is not None and bridge_user.id != user.id:
+            raise HTTPException(status_code=403, detail="Bridge session scopeが一致しません")
     if totp_required_for(user) and not user.totp_enabled:
         raise HTTPException(status_code=403, detail="totp_setup_required")
     # ここから先は DB を使わない。上流の Add-on への往復が終わるまで session を
@@ -126,15 +141,25 @@ def _frame_user(request: Request, db: Session = Depends(get_db)) -> User | None:
 
 
 def _frame_cookie(addon_id: str, user_id: int) -> str:
+    """add-on の画面を開いている利用者を指す cookie。
+
+    `SameSite=None` は外せない。add-on は不透明 origin の sandbox iframe で
+    動くので、そこから出る要求は常に cross-site として扱われる。そして
+    `SameSite=None` は `Secure` を要求する——外すと browser が cookie ごと
+    捨てるので、平文でも `Secure` を付けたままにする方が通る。`http://localhost`
+    や `http://127.0.0.1` は browser 側が「信頼できる origin」として扱うため、
+    TLS が無くてもこの cookie は保存される。
+    """
     token = tokens.issue(
         addon_id,
         subject=str(user_id),
         kind="frame",
         actor_user_id=user_id,
+        ttl_seconds=tokens.FRAME_TOKEN_TTL_SECONDS,
     )
     return (
         f"{_FRAME_COOKIE}={token}; Path=/addon-frame/{addon_id}/; "
-        f"Max-Age={tokens.TOKEN_TTL_SECONDS}; HttpOnly; Secure; SameSite=None"
+        f"Max-Age={tokens.FRAME_TOKEN_TTL_SECONDS}; HttpOnly; Secure; SameSite=None"
     )
 
 

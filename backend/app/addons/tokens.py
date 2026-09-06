@@ -15,6 +15,17 @@ from app.config import data_dir
 
 TOKEN_TTL_SECONDS = 10 * 60
 MAX_TOKEN_TTL_SECONDS = 8 * 60 * 60
+# frame cookie だけは寿命が違う。
+#
+# これは add-on の画面を開いている利用者そのものを指す cookie で、上流へ渡す
+# service token とは役割が違う。10 分で切れると、画面を開いたまま少し離れた
+# だけで add-on の API が一斉に 401 になり、「データを取得できませんでした」に
+# なる。実際 37 分放置しただけで SonicForge のライブラリと生成が両方落ちた。
+#
+# 短くしても守れるものが少ない。cookie は HttpOnly で add-on の path に限られ、
+# 使うたびに利用者の在籍と有効状態を DB で引き直す（無効化すれば即座に弾かれる）。
+FRAME_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+MAX_FRAME_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60
 _KEY_NAME = "addon-token.key"
 
 
@@ -80,10 +91,13 @@ def issue(
         or actor_user_id <= 0
     ):
         raise AddonTokenError("actor user IDが不正です")
+    # 上限は用途で分ける。frame は画面を開いている利用者の cookie なので長く、
+    # 上流へ渡す service token は短いままにする。
+    ttl_limit = MAX_FRAME_TOKEN_TTL_SECONDS if kind == "frame" else MAX_TOKEN_TTL_SECONDS
     if (
         not isinstance(ttl_seconds, int)
         or isinstance(ttl_seconds, bool)
-        or not 1 <= ttl_seconds <= MAX_TOKEN_TTL_SECONDS
+        or not 1 <= ttl_seconds <= ttl_limit
     ):
         raise AddonTokenError("token TTLが不正です")
     if project_id is not None and (
@@ -131,11 +145,16 @@ def verify(
     addon_id: str,
     kind: str,
     subject: str | None = None,
-    max_ttl_seconds: int = TOKEN_TTL_SECONDS,
+    max_ttl_seconds: int | None = None,
     now: int | None = None,
     allow_expired: bool = False,
 ) -> dict[str, Any]:
-    """allow_expired は同じ機械の中からの呼び出しにだけ使う。署名と scope は必ず見る。"""
+    """allow_expired は同じ機械の中からの呼び出しにだけ使う。署名と scope は必ず見る。
+
+    許す寿命は kind で決まる。frame は画面を開いている利用者の cookie なので長く、
+    上流へ渡す service token は短いままにする。issue 側と同じ分け方にしないと、
+    発行できた token を verify が弾く。
+    """
     try:
         encoded, signature = token.split(".", 1)
         expected = hmac.new(_signing_key(), encoded.encode(), hashlib.sha256).digest()
@@ -155,10 +174,15 @@ def verify(
         payload.get("exp"), int
     ):
         raise AddonTokenError("token timeが不正です")
+    if max_ttl_seconds is None:
+        max_ttl_seconds = (
+            FRAME_TOKEN_TTL_SECONDS if kind == "frame" else TOKEN_TTL_SECONDS
+        )
+    ttl_limit = MAX_FRAME_TOKEN_TTL_SECONDS if kind == "frame" else MAX_TOKEN_TTL_SECONDS
     if (
         not isinstance(max_ttl_seconds, int)
         or isinstance(max_ttl_seconds, bool)
-        or not 1 <= max_ttl_seconds <= MAX_TOKEN_TTL_SECONDS
+        or not 1 <= max_ttl_seconds <= ttl_limit
         or payload["iat"] > current + 30
         or (payload["exp"] <= current and not allow_expired)
         or payload["exp"] - payload["iat"] > max_ttl_seconds
