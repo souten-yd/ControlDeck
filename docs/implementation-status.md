@@ -35,7 +35,15 @@ NOT TESTED: installed Hostから実MediaForgeのLibrary offset/選択を保持�
 
 PR #294の構造化終了処理はmerge `2fafa2d4256b14108a4beddd6b414491af53bd24`を確認し、
 本branchへ統合した。backend treeは同PRと一致し、全1022 passedの対象と同一。
-locale固有変更はfrontend/fixture/design/statusだけ。統合後のbuild/browserを再確認する。
+locale固有変更はfrontend/fixture/design/statusだけ。統合後のbuildは41.99秒成功。
+同browser commandのoutputを`/data1tb/cd-locale-integrated-20260906`へ変更して
+1280/320再確認: 2 passed/3.3秒、全locale/input/load/nonce/handshake assertions一致。
+backend tree `de469e316484e7e050fb1da01c38452d65b384e3`の一致をgitで照合。
+統合後の実relay smokeも21回完了/残存0/故障1、0.443121秒、
+`/tmp/cd-relay-lifetime-q7t69ul_`。本番Host PID407562/active（21:58:31起動）、
+MF PID396381/activeをread-only確認。こちらから再起動していない。
+本番checkout main 72948aeには別作業のproxy.py/tokens.py/test_addon_proxy.py変更あり。
+上書き・checkout切替・本番buildは行わない。installed反映は別作業との調整後。
 
 ## Add-on WebSocket relayの構造化終了処理（2026-09-06、candidate）
 
