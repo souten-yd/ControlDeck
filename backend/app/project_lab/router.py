@@ -142,6 +142,8 @@ def project(project_id: str, user: User = Depends(require_permission("project_la
 # WebKitは送るのでブラウザによって動いたり動かなかったりする）。tokenをパスへ入れると
 # 相対参照にもそのまま引き継がれるので、cookieに依存せず配下のファイルを配信できる。
 PREVIEW_TOKEN_PREFIX = "project-lab-preview:"
+# preview の配信 URL。CSP の source に書くので、router の prefix と必ず揃える。
+PREVIEW_PATH_PREFIX = "/api/v1/project-lab/preview/"
 PREVIEW_TOKEN_TTL_SECONDS = 900
 
 
@@ -164,7 +166,28 @@ def resolve_preview_token(token: str) -> str:
     return plain[len(PREVIEW_TOKEN_PREFIX):]
 
 
-def _artifact_response(project_id: str, artifact_path: str, *, download: bool, external: bool):
+def _own_assets_source(request: Request | None, token: str | None) -> str:
+    """自分のプロジェクトの配信経路だけを指す CSP source。
+
+    生成されたコードは、自分が作った画像や音声を読めなければ動かない。一方で
+    `'self'` を許すと Control Deck の API 全体が同じ origin にあるので、そちらへも
+    要求を出せてしまう。sandbox の中でも cookie は宛先 origin のものが付くため、
+    利用者として API を叩けることになる。
+
+    CSP の source は path まで書けるので、その project の preview 経路だけに絞る。
+    token は project 単位・短命で、配信できるのはその配下の artifact だけである。
+    """
+    if not token or request is None:
+        return ""
+    # CSP の source は host を省けないので、いま応答している URL から組み立てる。
+    # http でも https でも、Tailscale 越しでも、その経路そのものを指す。
+    return f"{request.url.scheme}://{request.url.netloc}{PREVIEW_PATH_PREFIX}{token}/"
+
+
+def _artifact_response(
+    project_id: str, artifact_path: str, *, download: bool, external: bool,
+    request: Request | None = None, preview_token: str | None = None,
+):
     try:
         project_path = service.resolve_project(project_id)
         path = service.resolve_artifact(project_path, artifact_path)
@@ -175,9 +198,21 @@ def _artifact_response(project_id: str, artifact_path: str, *, download: bool, e
     if kind == "html" and not download:
         allow_external = external or service.get_settings()["allow_external_preview"]
         policy = HTML_EXTERNAL_CSP if allow_external else HTML_CSP
+        own = _own_assets_source(request, preview_token)
+        if own:
+            # 自分のアセットを XHR / fetch で読めるようにする。THREE の AudioLoader も
+            # canvas へ描くための読み込みも、ここを通らないと何も鳴らず何も映らない。
+            policy = policy.replace("connect-src 'none'", f"connect-src {own}")
+            policy = policy.replace("connect-src https:", f"connect-src {own} https:")
     elif path.suffix.lower() == ".svg":
         policy = SVG_CSP
     headers = {"Content-Security-Policy": policy, "X-Content-Type-Options": "nosniff"}
+    if preview_token is not None:
+        # sandbox の中は不透明 origin なので、要求は Origin: null で出る。crossOrigin を
+        # 付けて読む loader（THREE.TextureLoader の既定）はこれが無いと弾かれる。
+        # 資格情報は許さないので、読めるのは token を持っている者だけである。
+        headers["Access-Control-Allow-Origin"] = "*"
+        headers["Cross-Origin-Resource-Policy"] = "cross-origin"
     disposition = "attachment" if download else "inline"
     if kind == "html" and not download:
         patched = _with_storage_shim(path)
@@ -211,7 +246,7 @@ def preview_token(project_id: str, user: User = Depends(require_permission("proj
 
 @router.get("/preview/{token}/{artifact_path:path}")
 def preview(
-    token: str, artifact_path: str,
+    token: str, artifact_path: str, request: Request,
     external: bool = Query(False, description="外部CDN等の読み込みを明示的に許可する"),
 ):
     """token付きのpreview配信。相対参照のサブリソースもこの経路で解決される。
@@ -220,7 +255,8 @@ def preview(
     単位・短命で、配信できるのはそのプロジェクト配下のartifactだけ（ダウンロードは不可）。
     """
     return _artifact_response(resolve_preview_token(token), artifact_path,
-                              download=False, external=external)
+                              download=False, external=external,
+                              request=request, preview_token=token)
 
 
 @router.get("/projects/{project_id}/previews/{artifact_path:path}")

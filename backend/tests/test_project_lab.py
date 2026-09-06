@@ -546,3 +546,50 @@ def test_preview_token_is_scoped_and_rejects_tampering(admin_client, monkeypatch
         assert anonymous.get(f"/api/v1/project-lab/preview/{token}/../secret/index.html").status_code == 404
         # 改竄したtokenは通らない
         assert anonymous.get(f"/api/v1/project-lab/preview/{token[:-2]}xx/index.html").status_code == 404
+
+
+def test_a_preview_can_read_its_own_assets(admin_client, tmp_path, monkeypatch):
+    """生成されたものが、自分で作った画像や音声を読めること。
+
+    sandbox の中は不透明 origin なので、要求は Origin: null で出る。CSP の
+    connect-src に自分の経路が無ければ XHR は全部落ち、CORS ヘッダが無ければ
+    crossOrigin を付けて読む loader（THREE.TextureLoader の既定）は弾かれる。
+    実測（2026-09-06）: 音声 18 本が全滅し、画像も読めなかった。
+    """
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    _project(root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+    monkeypatch.setattr(service, "data_dir", lambda: tmp_path / "data")
+    headers = {"X-Requested-With": "ControlDeck"}
+
+    issued = admin_client.post("/api/v1/project-lab/projects/demo/preview-token", headers=headers)
+    assert issued.status_code == 200
+    token = issued.json()["token"]
+
+    page = admin_client.get(f"/api/v1/project-lab/preview/{token}/index.html")
+    assert page.status_code == 200
+    policy = page.headers["content-security-policy"]
+    # 自分の配信経路だけを通す。'self' ではない——Control Deck の API は同じ
+    # origin にあるので、'self' を許すとそちらへも要求を出せてしまう。
+    assert f"/api/v1/project-lab/preview/{token}/" in policy
+    assert "connect-src 'none'" not in policy
+    assert "connect-src 'self'" not in policy
+
+    asset = admin_client.get(f"/api/v1/project-lab/preview/{token}/reports/chart.png")
+    assert asset.status_code == 200
+    assert asset.headers["access-control-allow-origin"] == "*"
+    assert asset.headers["cross-origin-resource-policy"] == "cross-origin"
+
+
+def test_the_authenticated_artifact_route_stays_closed(admin_client, tmp_path, monkeypatch):
+    """token を介さない経路は緩めない。緩める理由が preview にしか無い。"""
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    _project(root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+    monkeypatch.setattr(service, "data_dir", lambda: tmp_path / "data")
+
+    direct = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/reports/chart.png")
+    assert direct.status_code == 200
+    assert "access-control-allow-origin" not in direct.headers
