@@ -2,6 +2,25 @@
 
 最終更新: 2026-09-06
 
+## Add-on Job controlの終端履歴参照（2026-09-06）
+
+Add-on側ではHost再起動後のDB履歴に到達できず、終端通知の照合を解決できないため、汎用Host
+Job controlの読み取りだけを補った。メモリにないJobは既存非同期DB読取を使い、正確なAdd-on kind、
+Job scopeまたはowner、終端状態を検証する。DBだけのrunning/queuedは409、refresh/updateは従来どおり404。
+履歴をメモリへ再登録せず、interruptedを結果で上書きしない。公開応答fieldは不変。
+
+`PYTHONPATH=backend /data1tb/ControlDeck/app/.venv/bin/python tools/addon-job-history-smoke.py`を実行。
+隔離DBのrunning Jobを別systemd user processの通常recoveryでinterruptedへ移し、production Job router/authへ
+実HTTP照会: 200/interrupted、別Job403、refresh404、update404、DB終端不変。試験unitはfinallyで停止しinactive。
+証拠`/tmp/cd-job-history-s5qzgvn8/observations.json`。秘密tokenはメモリ内のみ。
+focused 25 tests passed / 2.92秒。導入済みHost、Add-on outbox再送、PC/mobile UIは **NOT TESTED**。
+今回の変更は汎用APIのみであり、個別Add-onの終端同期完了とは記録しない。
+最終`./deck.sh test`: 951 passed / 1 skipped / 既知warning 1件 / 66.76秒。
+最新main `f2fc148`の隔離baselineは936 passed / 5 failed / 1 skipped / 68.16秒で、
+既存runtime fixture間のactive Job持越しが件数上限と後続resource待機試験を汚染していた。
+本sliceでfixtureのJob mapを毎回隔離し、上限を緩めず全体を通した。
+最終codeの実HTTP再確認も同じ200/403/404/404、証拠`/tmp/cd-job-history-nzou5ckt/observations.json`。
+
 ## Add-on introspection の stable actor owner（2026-09-06）
 
 OpenCodeのAgent toolはcallごとに別Host Jobを作るため、Add-onへ届く実行`subject=job:<id>`も

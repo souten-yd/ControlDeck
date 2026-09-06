@@ -1267,6 +1267,12 @@ Project Lab project IDだけを署名し、次の汎用Host toolを同じstdio M
 
 ## 10. セキュリティ要件（前版 §29 を拡張）
 
+Job controlの読み取りは、再起動後にメモリから消えたJobについてもDBの終端履歴を参照する。
+現在有効なservice token・Add-on ID・capability・Job scope（またはruntime Jobのowner）を
+通常と同様に検証し、応答は既存status/revision/cancel_requestedだけに限定する。
+DBだけにあるqueued/runningは実行の証明にならないため409。履歴を実行中メモリへ復元せず、
+refresh・更新・資源取得のauthorityは拡張しない。確定したinterrupted等をAdd-onの結果で上書きしない。
+
 ```text
 schema validation（fail closedの範囲は §C3 に従う）
 addon ID binding

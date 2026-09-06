@@ -14,12 +14,16 @@ from tests.test_addon_contract import addon_manifest
 @pytest.fixture()
 def runtime_api(admin_client, monkeypatch, tmp_path):
     from app.addon_runtime import resources as runtime_resources
+    from app.jobs import service as jobs
     from app.addons import health, registry, router as addon_router, tokens
     from app.addons.schema import AddonHealthReport
     from app.database import SessionLocal
     from app.models import User
 
     data = tmp_path / "runtime-api-data"
+    # Each fixture registry/broker owns its own jobs; do not retain active jobs
+    # from an earlier fixture or exhaust the per-owner admission limit.
+    monkeypatch.setattr(jobs, "_jobs", {})
     monkeypatch.setattr(registry, "data_dir", lambda: data)
     monkeypatch.setattr(tokens, "data_dir", lambda: data)
     registry.reset_runtime_state_for_tests()
@@ -81,6 +85,68 @@ def create_host_job(client, tokens, user_id: int):
     )
     assert response.status_code == 201, response.text
     return response.json()["job"], token
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "canceled", "interrupted"])
+def test_job_control_reads_terminal_history_without_reviving_job(runtime_api, status):
+    from app.jobs import service as jobs
+
+    client, _registry, tokens, _broker, user_id = runtime_api
+    value, user_token = create_host_job(client, tokens, user_id)
+    job = jobs.get(value["id"])
+    job.status = status
+    jobs._db_write(job, finished=True)
+    jobs._jobs.pop(job.id)
+    path = f"/api/v1/addon-runtime/fake-addon/jobs/{job.id}"
+    for token in (user_token, tokens.issue("fake-addon", subject=f"job:{job.id}", kind="service")):
+        response = client.get(f"{path}/control", headers=headers(token))
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "host_job_id": job.id, "status": status,
+            "cancel_requested": status == "canceled", "revision": job.revision,
+        }
+        assert client.post(f"{path}/credential/refresh", headers=headers(token)).status_code == 404
+        assert client.patch(path, json={"phase": "succeeded", "status": "succeeded"}, headers=headers(token)).status_code == 404
+    assert jobs.get(job.id) is None
+    assert jobs._db_get(job.id)["status"] == status
+
+
+@pytest.mark.parametrize("scope", ["owner", "job", "addon", "prefix", "running", "expired"])
+def test_historical_job_control_preserves_authority(runtime_api, scope):
+    from app.database import SessionLocal
+    from app.jobs import service as jobs
+    from app.models import Job as JobRow
+
+    client, _registry, tokens, _broker, user_id = runtime_api
+    value, token = create_host_job(client, tokens, user_id)
+    job = jobs.get(value["id"])
+    job.status = "interrupted"
+    expected = 403
+    if scope == "owner":
+        from app.bootstrap import create_admin
+        with SessionLocal() as db:
+            job.owner_user_id = create_admin(db, "history-other-owner", "test-password-123").id
+    elif scope == "job":
+        token = tokens.issue("fake-addon", subject="job:another-job", kind="service")
+    elif scope in {"addon", "prefix"}:
+        job.kind = "addon.runtime.other" if scope == "addon" else "addon.runtime.fake-addon-extra"
+        expected = 404
+    elif scope == "running":
+        job.status = "running"
+        expected = 409
+    elif scope == "expired":
+        token = tokens.issue("fake-addon", subject=f"job:{job.id}", kind="service", now=int(time.time()) - 601)
+        expected = 401
+    jobs._db_write(job, finished=True)
+    with SessionLocal() as db:
+        row = db.get(JobRow, job.id)
+        row.kind = job.kind
+        row.owner_user_id = job.owner_user_id
+        db.commit()
+    jobs._jobs.pop(job.id)
+    response = client.get(f"/api/v1/addon-runtime/fake-addon/jobs/{job.id}/control", headers=headers(token))
+    assert response.status_code == expected, response.text
+    assert jobs.get(job.id) is None
 
 
 def test_user_subject_creates_job_and_job_subject_attaches_without_duplicate(runtime_api):
