@@ -508,9 +508,9 @@ async def run_chat(
         raise CodeAgentError("project pathはディレクトリを指定してください")
     endpoint = str(settings["base_url"]).rstrip("/")
     model_id = str(settings["model"]).strip()
-    runtime_config = _runtime_config(
+    runtime_config = await asyncio.to_thread(_runtime_config,
         f"chat-{job.id}", endpoint, model_id, owner_user_id=job.owner_user_id,
-        project_id=_managed_project_id(project),
+        project_id=await asyncio.to_thread(_managed_project_id, project),
     )
     # LLM endpoint（llama.cpp / Lucebox instance）はondemand hookを通らないため先に起動保証する
     from app.models_mgmt import local_llm
@@ -576,7 +576,7 @@ async def run_chat(
         await stop.wait()
         raise
     finally:
-        runtime_config.unlink(missing_ok=True)
+        await asyncio.to_thread(runtime_config.unlink, missing_ok=True)
     if reported_error:
         raise CodeAgentError(f"OpenCode provider error: {reported_error}")
     if proc is None or proc.returncode != 0:
@@ -612,9 +612,9 @@ class OpenCodeProvider:
         systemctl = shutil.which("systemctl")
         if binary is None or systemd_run is None or systemctl is None:
             raise CodeAgentError("OpenCodeまたはsystemd user managerを利用できません")
-        runtime_config = _runtime_config(
+        runtime_config = await asyncio.to_thread(_runtime_config,
             job.id, endpoint, model_id, owner_user_id=job.owner_user_id,
-            project_id=_managed_project_id(project),
+            project_id=await asyncio.to_thread(_managed_project_id, project),
         )
         prompt_path = (_integration_dir() / f"prompt-{job.id}.txt").resolve()
         if not prompt_path.is_relative_to(_integration_dir()):

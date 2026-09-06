@@ -296,4 +296,44 @@ OpenCode owns the runtime/plugin mechanism.
 ECA owns Project Intelligence and ECA/OMO coexistence evidence relevant to ECA behavior.
 OMO owns its orchestration behavior.
 
+## 17. Blender Skills execution profile (2026-09-06)
+
+Choose option B: retain the pinned upstream production references, but expose a
+ControlDeck-adapted `blender-director` through managed `skills.paths`. Its executable
+contract is the existing MediaForge typed scene tools, not BlenderMCP. The upstream
+94 skill documents are retained as reference material outside the exposed runtime
+skill root; they must not silently add nonexistent MCP calls to the agent context.
+
+The director preserves planning, scale/triangle budgets, staged construction,
+reference-image comparison and validation. It maps supported work to the seven
+existing recipe operations plus scene/material/export and durable Job tools.
+Unsupported work (arbitrary Python, sculpting, rigging, simulations, unsupported
+exports) is reported explicitly, not executed through a guessed substitute. Visual
+comparison is not claimed from a scene metadata snapshot alone.
+
+Option A would introduce another managed executable, Blender addon, persistent
+session and GPU reservation lifecycle alongside MediaForge. This is unnecessary
+for the supported typed asset workflow. Option C alone cannot resolve instructions
+that call BlenderMCP names and arbitrary bpy; additional typed operations remain
+MediaForge-owned, capability-gated follow-up work rather than a compatibility lie.
+
+Installation remains under `<data>/skills/versions`, pinned to upstream commit
+`8f778d2405a214b508d4c7d80742be8e43acdd52` plus a versioned local adapter. Preserve the
+upstream MIT notice. Stage and validate both upstream and adapter before activation;
+failure must retain the previous files and state, including a deliberate disable.
+Do not import repository MCP config, install BlenderMCP, touch global agent config,
+or modify an existing Blender installation.
+
+Skill runtime prerequisites are declarative catalog metadata. A generic check uses
+the registered Add-on's declared tools and bounded public capability response.
+Installation and execution readiness are separate: missing/disabled service,
+missing Blender batch runtime, missing tools or an old unadapted installation must
+be visible in Settings and excluded from generated runtime skill paths. Blender GUI
+need not be running; MediaForge owns on-demand batch execution and Broker policy.
+Repeat capability discovery in the director before execution, since readiness can
+change after a session starts. No authority is conferred by a successful health check.
+
+All blocking setup/check/config generation runs in a sync endpoint/threadpool, not
+on the async event loop. No new always-running subprocess is owned by the web worker.
+
 A problem must be fixed in the owning layer rather than creating cross-project private interfaces.
