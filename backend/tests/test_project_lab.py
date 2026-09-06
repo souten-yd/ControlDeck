@@ -580,6 +580,9 @@ def test_a_preview_can_read_its_own_assets(admin_client, tmp_path, monkeypatch):
     assert asset.status_code == 200
     assert asset.headers["access-control-allow-origin"] == "*"
     assert asset.headers["cross-origin-resource-policy"] == "cross-origin"
+    # 指定が無いとブラウザが Last-Modified から勝手に鮮度を決める。応答ヘッダを
+    # 直しても、既に持っている側には届かない（PC だけ直らない、という形で起きた）。
+    assert asset.headers["cache-control"] == "no-cache"
 
 
 def test_the_authenticated_artifact_route_stays_closed(admin_client, tmp_path, monkeypatch):
@@ -593,3 +596,32 @@ def test_the_authenticated_artifact_route_stays_closed(admin_client, tmp_path, m
     direct = admin_client.get("/api/v1/project-lab/projects/demo/artifacts/reports/chart.png")
     assert direct.status_code == 200
     assert "access-control-allow-origin" not in direct.headers
+
+
+def test_an_unchanged_preview_asset_is_not_sent_again(admin_client, tmp_path, monkeypatch):
+    """no-cache は「毎回問い合わせる」であって「毎回受け取り直す」ではない。
+
+    判定を返さないと、画像や音を開くたびに全量が流れる。唐揚げ防衛隊は 1 画面で
+    画像 790KB と音声 18 本を読むので、モバイルではそのまま体感に出る。
+    """
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    _project(root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+    monkeypatch.setattr(service, "data_dir", lambda: tmp_path / "data")
+    headers = {"X-Requested-With": "ControlDeck"}
+
+    token = admin_client.post(
+        "/api/v1/project-lab/projects/demo/preview-token", headers=headers
+    ).json()["token"]
+    url = f"/api/v1/project-lab/preview/{token}/reports/chart.png"
+
+    first = admin_client.get(url)
+    assert first.status_code == 200 and first.headers["etag"]
+
+    again = admin_client.get(url, headers={"If-None-Match": first.headers["etag"]})
+    assert again.status_code == 304
+    assert again.content == b""
+    # 変わっていないと答えるときも、CORS の判断材料は返す。返さないと、
+    # 持っている側が使えないままになる。
+    assert again.headers["access-control-allow-origin"] == "*"

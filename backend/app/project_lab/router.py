@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,9 @@ from app.schemas.project_lab import ProjectFileRunCreate, ProjectLabSettingsBody
 from app.security.deps import require_permission
 
 router = APIRouter(prefix="/project-lab", tags=["project-lab"])
+
+# 変わっていないかの判定だけ借りる。配信そのものはしない。
+_static_files = StaticFiles()
 
 # 既定は一切実行させないCSP。artifactはControl Deckのoriginから配信されるため、
 # 実行を許すHTMLだけCSPの`sandbox`で不透明originへ閉じ込め、上位tabで直接開かれても
@@ -184,6 +188,11 @@ def _own_assets_source(request: Request | None, token: str | None) -> str:
     return f"{request.url.scheme}://{request.url.netloc}{PREVIEW_PATH_PREFIX}{token}/"
 
 
+def _unchanged(request: Request, response: FileResponse) -> bool:
+    """相手が持っているものと同じか。"""
+    return _static_files.is_not_modified(response.headers, request.headers)
+
+
 def _artifact_response(
     project_id: str, artifact_path: str, *, download: bool, external: bool,
     request: Request | None = None, preview_token: str | None = None,
@@ -213,25 +222,43 @@ def _artifact_response(
         # 資格情報は許さないので、読めるのは token を持っている者だけである。
         headers["Access-Control-Allow-Origin"] = "*"
         headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        # 毎回問い合わせてから使う。作りかけのものを見る画面なので、作り直した
+        # アセットが出てこないのは困る。中身が同じなら 304 で済むので、返す量は
+        # 変わらない。
+        #
+        # 指定が無いと、ブラウザは Last-Modified から勝手に鮮度を決める。数日前の
+        # ファイルなら数時間は取りに来ない。応答ヘッダを直しても、既に持っている
+        # 側には届かない——PC だけ画像と音が出ないまま、という形で実際に起きた
+        # （モバイルは初回だったので直っていた）。
+        headers["Cache-Control"] = "no-cache"
     disposition = "attachment" if download else "inline"
     if kind == "html" and not download:
         patched = _with_storage_shim(path)
         if patched is not None:
             return HTMLResponse(patched, headers={**headers, "Cache-Control": "no-store"})
-    return FileResponse(
+    response = FileResponse(
         path, media_type=service.media_type(path),
         filename=path.name if download else None,
         content_disposition_type=disposition, headers=headers,
+        # 先に stat させると etag と last-modified がこの時点で載る。載っていないと
+        # 変わっていないことを判定できない。
+        stat_result=path.stat(),
     )
+    if request is not None and _unchanged(request, response):
+        # no-cache は「毎回問い合わせる」であって「毎回受け取り直す」ではない。
+        # 判定を返さないと、画像や音を開くたびに全量が流れる。
+        return Response(status_code=304, headers=dict(response.headers))
+    return response
 
 
 @router.get("/projects/{project_id}/artifacts/{artifact_path:path}")
 def artifact(
-    project_id: str, artifact_path: str, download: bool = Query(False),
+    project_id: str, artifact_path: str, request: Request, download: bool = Query(False),
     external: bool = Query(False, description="外部CDN等の読み込みを明示的に許可する"),
     user: User = Depends(require_permission("project_lab.view")),
 ):
-    return _artifact_response(project_id, artifact_path, download=download, external=external)
+    return _artifact_response(project_id, artifact_path, download=download,
+                              external=external, request=request)
 
 
 @router.post("/projects/{project_id}/preview-token")
