@@ -22,6 +22,7 @@ from app.database import SessionLocal
 from app.models import User
 from app.security.deps import user_permissions
 from app.security.rate_limit import api_rate_limiter
+from app.websocket_tasks import run_websocket_tasks
 
 
 router = APIRouter(prefix="/{addon_id}/devices", tags=["addon-runtime-device"])
@@ -423,15 +424,9 @@ async def device_relay(websocket: WebSocket, addon_id: str, relay_id: str):
                         )
                         return
 
-            first = asyncio.create_task(device_to_upstream())
-            second = asyncio.create_task(upstream_to_device())
-            policy = asyncio.create_task(authorization_watch())
-            done, pending = await asyncio.wait(
-                (first, second, policy), return_when=asyncio.FIRST_COMPLETED
+            await run_websocket_tasks(
+                device_to_upstream, upstream_to_device, authorization_watch
             )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*done, *pending, return_exceptions=True)
             registry.record_activity(
                 addon_id,
                 "addon-device.websocket",
