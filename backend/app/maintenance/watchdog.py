@@ -11,6 +11,7 @@ import logging
 import os
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger("control_deck.watchdog")
 
@@ -114,21 +115,44 @@ def watchdog_enabled() -> bool:
 
 
 async def watchdog_loop() -> None:
-    """WatchdogSec の半分の間隔で、健全なときのみ ping を送る。"""
+    """WatchdogSec の半分の間隔で、健全なときのみ ping を送る。
+
+    健全性の確認は専用の thread で行う。既定の executor は `asyncio.to_thread` を
+    使うあらゆる処理と共有していて、モデルの起動・停止や重みのハッシュ計算のように
+    長く塞ぐものが混ざる。埋まると確認が順番待ちになり、その間 ping が出せない。
+    プロセスは生きているのに systemd から見ればハングで、SIGABRT で落とされる
+    ——実測で 3 日に 68 回起きていた。落ちれば当然、繋いでいる画面は切れ、走って
+    いた生成も道連れになる。監視のための仕組みが、監視対象を壊していた。
+
+    確認が時間内に終わらないときは、落とさずに ping する。この loop が動けている
+    こと自体が「event loop は生きている」証拠であり、systemd の watchdog が拾う
+    べきなのはそこである。DB が一時的に遅いことは、プロセスを落とす理由にならない
+    （不調は alert として出す）。ping を止めるのは、確認が「駄目だ」と答えたときだけ。
+    """
     usec = os.environ.get("WATCHDOG_USEC")
     if not usec:
         logger.info("systemd ウォッチドッグは無効です（WATCHDOG_USEC なし）")
         return
     interval = max(2.0, int(usec) / 1_000_000 / 2)
     logger.info("systemd ウォッチドッグ有効（ping 間隔 %.0f 秒）", interval)
-    while True:
-        try:
-            healthy = await asyncio.to_thread(is_healthy)
-            if healthy:
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="watchdog") as pool:
+        while True:
+            try:
+                healthy = await asyncio.wait_for(
+                    loop.run_in_executor(pool, is_healthy), timeout=interval
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                # 確認が返らないだけで、この loop は動けている。落とさない。
+                logger.warning("内部ヘルスチェックが %.0f 秒で終わらなかった", interval)
+                sd_notify("WATCHDOG=1")
+            except Exception:
+                logger.exception("watchdog loop error")
                 sd_notify("WATCHDOG=1")
             else:
-                # ping を止め、systemd による再起動へ委ねる
-                logger.error("内部ヘルスチェック失敗: %s", health_checks())
-        except Exception:
-            logger.exception("watchdog loop error")
-        await asyncio.sleep(interval)
+                if healthy:
+                    sd_notify("WATCHDOG=1")
+                else:
+                    # ping を止め、systemd による再起動へ委ねる
+                    logger.error("内部ヘルスチェック失敗: %s", health_checks())
+            await asyncio.sleep(interval)
