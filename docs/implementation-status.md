@@ -21,6 +21,8 @@ OpenCodeのasync実行経路からskill検査を含むruntime config生成をasy
 
 `./deck.sh test`: 994 passed / 2 skipped / 既知warning1 / 98.15秒。
 `npm ci`と`npm run build`: 成功(22.58秒)、既知large chunk warning。
+最新main `512eace`を統合した再確認: `./deck.sh test`は995 passed / 2 skipped /
+既知warning1 / 92.94秒。frontend buildも再成功(20.69秒)。
 npm auditは依存既存の9件(5 moderate/4 high)を報告し、本sliceで無関係な依存更新はしていない。
 新旧skill集中19 tests成功。失敗repairのfiles/state保持、旧版fail-closed、前提不足、symlink脱出拒否、
 public capabilityのstate/schema/local_only、async内同期config呼出し禁止を検査した。
