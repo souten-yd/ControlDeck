@@ -84,7 +84,8 @@ EXTERNAL = (
         source="git",
         repository="https://github.com/arjun988/blender-skills",
         ref="8f778d2405a214b508d4c7d80742be8e43acdd52",
-        subpaths=(".claude/skills", ".claude/references"),
+        # references は skills の中にある（SKILL.md が ../references/ で参照する）。
+        subpaths=(".claude/skills",),
         requires=(
             "Blender を起動し BlenderMCP addon（localhost:9876）を繋いだうえで、"
             "その MCP サーバーを OpenCode へ登録する必要がある。ControlDeck の "

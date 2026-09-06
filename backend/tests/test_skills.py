@@ -104,3 +104,14 @@ def test_the_runtime_config_only_carries_enabled_skills(_root, monkeypatch):
     assert provider._skill_paths() == []
     registry.install(_bundled_id())
     assert len(provider._skill_paths()) == 1
+
+
+def test_external_subpaths_exist_in_the_pinned_tree():
+    """取り出す場所を間違えると、導入そのものが失敗する。
+
+    実測: references は `.claude/references` ではなく `.claude/skills/references` に
+    あり、最初に書いた指定では「想定した中身がありません」で落ちていた。
+    ここは repo の構造に依存するので、ref を上げるときに必ず見直す。
+    """
+    entry = catalog.BY_ID["blender-skills"]
+    assert entry.subpaths == (".claude/skills",)
