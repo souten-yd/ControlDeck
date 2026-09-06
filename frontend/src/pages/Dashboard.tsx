@@ -9,6 +9,7 @@ import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
 import { PageHeader } from "../components/PageHeader";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 
 interface HistorySample {
   timestamp: string;
@@ -234,6 +235,12 @@ export default function DashboardPage() {
 
       {/* LLM利用状況。OMo導入時だけ出す（並列を意識して使う構成のときに意味がある）。 */}
       {omoInstalled && <CapacityWidget />}
+
+      {/* Add-on ツール（MCP）の利用状況。MediaForge や SonicForge は agent から
+          呼ばれると GPU も時間も使うが、呼び出しは agent の中で完結するので、
+          Home からは何も起きていないように見えていた。一度も呼ばれていなければ
+          widget 側で出さない。 */}
+      {can("workflows.run") && <AgentToolWidget />}
 
       {/* 実行中アプリ */}
       <section>
