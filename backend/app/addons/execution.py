@@ -425,6 +425,58 @@ def execution_permissions(execution_id: object) -> set[str]:
         return user_permissions(user) if user and user.is_active else set()
 
 
+# Add-on ツールの実行を、利用者が見て分かる一語にする。
+#
+# job の kind（`addon.agent_tool.media-forge.media.generate`）だけでは、画像を
+# 作っているのか動画なのか分からない。種別は引数の中にあるので、job を作る時に
+# 拾ってしまう。拾えなければ add-on 側が付けた label へ落とし、それも無ければ
+# 従来どおり `{addon}: {tool}` にする。
+#
+# 表示は英語で統一する。add-on の label もツール名も英語なので、そこだけ日本語に
+# すると画面の中で言葉が混ざる。
+_AGENT_TOOL_ACTIVITY: dict[str, str] = {
+    # MediaForge: 引数の operation
+    "image.generate": "Generating image",
+    "image.edit": "Editing image",
+    "video.generate": "Generating video",
+    "video.edit": "Editing video",
+    "media.inspect": "Inspecting media",
+    "asset.pack": "Packing assets",
+    # SonicForge: 引数の task
+    "music.generate": "Generating music",
+    "speech.tts.synthesize": "Generating speech",
+    "audio.sfx.generate": "Generating sound effect",
+    "audio.ambience.generate": "Generating ambience",
+    "speech.asr.transcribe": "Transcribing audio",
+}
+# 引数を持たない、または種別が引数に出ないツールは contribution_id で決める。
+_AGENT_TOOL_FALLBACK: dict[str, str] = {
+    "media.scene.create": "Generating 3D scene",
+    "media.scene.edit": "Editing 3D scene",
+    "media.scene.material": "Applying 3D material",
+    "media.scene.export": "Exporting 3D asset",
+    "media.scene.snapshot": "Inspecting 3D scene",
+    "media.capabilities": "Checking media capabilities",
+    "media.pack": "Placing media asset",
+    "media.job.status": "Checking media job",
+    "media.job.cancel": "Canceling media job",
+    "sonic.transcribe": "Transcribing audio",
+    "sonic.pipeline": "Running audio pipeline",
+    "sonic.inspect": "Inspecting audio",
+    "sonic.pack": "Placing audio asset",
+    "sonic.capabilities": "Checking audio capabilities",
+}
+
+
+def agent_tool_activity(contribution_id: str, arguments: dict[str, Any]) -> str | None:
+    """実行中に出す一語。分からなければ None を返す。"""
+    for key in ("operation", "task"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value in _AGENT_TOOL_ACTIVITY:
+            return _AGENT_TOOL_ACTIVITY[value]
+    return _AGENT_TOOL_FALLBACK.get(contribution_id)
+
+
 async def create_agent_tool_job(
     addon_id: str,
     contribution_id: str,
@@ -454,9 +506,10 @@ async def create_agent_tool_job(
             "output": output,
         }
 
+    activity = agent_tool_activity(contribution_id, arguments)
     return jobs.create(
         f"addon.agent_tool.{addon_id}.{contribution_id}",
-        f"{addon_id}: {contribution_id}",
+        activity or f"{addon_id}: {contribution_id}",
         runner,
         owner_user_id=owner_user_id,
     )
