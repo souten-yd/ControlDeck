@@ -70,9 +70,11 @@ function useThemeTokens(): ThemeTokens {
     const changed = () => setMediaRevision((value) => value + 1);
     dark.addEventListener("change", changed);
     motion.addEventListener("change", changed);
+    window.addEventListener("languagechange", changed);
     return () => {
       dark.removeEventListener("change", changed);
       motion.removeEventListener("change", changed);
+      window.removeEventListener("languagechange", changed);
     };
   }, []);
   return useMemo(() => {
@@ -475,6 +477,9 @@ export function EmbeddedAddonView({
   }, [addon.id, connectionKey, contribution.id, sendEvent]);
 
   useEffect(() => sendEvent("theme.changed", themeTokens), [sendEvent, themeTokens]);
+  useEffect(() => {
+    sendEvent("locale.changed", { locale: themeTokens.locale });
+  }, [sendEvent, themeTokens.locale]);
   useEffect(() => {
     if (addon.state === "disable_pending") sendEvent("disable.pending", { grace_ms: 2_000 });
   }, [addon.state, sendEvent]);

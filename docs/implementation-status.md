@@ -2,6 +2,35 @@
 
 最終更新: 2026-09-06
 
+## Embedded Add-onの動的locale通知（2026-09-06、candidate）
+
+MediaForge側だけではHostから届かない言語変更通知を補えないため、全Add-on共通の
+EmbeddedAddonViewでbrowser languagechangeを購読し、locale変更時に既存MessagePortへ
+locale.changedを送る。接続時通知・ja系/それ以外enの選択・opaque sandboxは維持。
+theme tokenと同じlocaleを通知し、iframe/sessionの再作成はしない。購読解除も追加。
+実装先はHost別branch feat/addon-live-locale（base 72948ae）、Media固有処理なし。
+
+隔離Vite（127.0.0.1:5179）+実Chromiumでproduction React componentをmount。
+`CONTROL_DECK_E2E_URL=http://127.0.0.1:5179 CONTROL_DECK_LOCALE_FIXTURE=1
+npx playwright test e2e/addon-locale.spec.ts --output /data1tb/cd-locale-fixed-20260906 --trace on`
+は2 passed/1.6秒。実innerWidth1280/320、opaque origin null、ja→en→ja→en、
+theme locale一致、load ID/nonce/未保存input不変、handshake1、page errors0。
+言語はnavigator.languageとlanguagechangeを与えるbrowser入力fixture、認証APIとchildはmock。
+本番データ/APIへは要求を送らない。実ブラウザ設定操作やinstalled MediaForge受入ではない。
+同一testを旧製品codeで実行すると320pxの最初の英語切替がjaのまま失敗（5.6秒）。
+証拠 /data1tb/cd-locale-baseline-20260906。修正版へ戻して上記成功を再確認。
+初回fixtureはAPI routeがsrc/api importまで遮断してmount失敗、/api/v1限定へ修正。
+`npm run build` 成功（Vite35.77秒、既知large chunk warning）、git diff --check成功。
+
+backend製品/test差分0。全 `./deck.sh test` 初回は3 failed/1013 passed/2 skipped/
+既知warning1/129.82秒。device pairingとopaque WSのTestClient終了時CancelledError、
+registry revision試験で期待2/実3（health loop実HTTPが並行）を観測。
+無変更main 72948aeでこの3件を集中実行してdevice pairingの同じCancelledErrorを再現
+（1 failed/2 passed/6.17秒）。locale変更が原因とは扱わないが、全gate成功にも読み替えない。
+全gateの再確認と既存失敗の切り分けを進め、merge/installed反映は未実施。
+NOT TESTED: installed Hostから実MediaForgeのLibrary offset/選択を保持する言語切替、
+実ブラウザ設定からの言語変更、live resize入力問題。3D全体の完了は未宣言。
+
 ## Blender SkillsのControlDeck実行版・再起動準備（2026-09-06）
 
 方針Bを採用。上流固定commit `8f778d2405a214b508d4c7d80742be8e43acdd52`の94 SKILL.mdと
