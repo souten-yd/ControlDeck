@@ -57,7 +57,12 @@ async def lifespan(app: FastAPI):
     jobs_service.recover_on_startup()
     from app.alerts.engine import alert_loop
     from app.maintenance.service import maintenance_loop
-    from app.maintenance.watchdog import notify_ready, watchdog_loop
+    from app.maintenance.watchdog import (
+        _loop_ticker,
+        notify_ready,
+        start_stall_watcher,
+        watchdog_loop,
+    )
     from app.workflows.engine import pause_recovery_loop, scheduler_loop, system_event_loop
     from app.workflows.business_events import delivery_loop as business_event_delivery_loop
     from app.models_mgmt.ollama import idle_unload_loop as ollama_idle_unload_loop
@@ -91,6 +96,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(business_event_delivery_loop()),
         asyncio.create_task(maintenance_loop()),
         asyncio.create_task(watchdog_loop()),
+        asyncio.create_task(_loop_ticker()),
         asyncio.create_task(alert_loop()),
         asyncio.create_task(ollama_idle_unload_loop()),
         asyncio.create_task(llama_idle_unload_loop()),
@@ -103,6 +109,7 @@ async def lifespan(app: FastAPI):
     from app.workflows import searxng
 
     tasks.append(asyncio.create_task(searxng.idle_stop_loop()))
+    start_stall_watcher()
     notify_ready()
     logger.info("Control Deck 起動完了")
     yield

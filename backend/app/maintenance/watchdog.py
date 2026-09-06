@@ -7,9 +7,12 @@ systemd がサービスを自動再起動する。
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import logging
 import os
 import socket
+import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -112,6 +115,49 @@ def is_healthy() -> bool:
 
 def watchdog_enabled() -> bool:
     return bool(os.environ.get("WATCHDOG_USEC"))
+
+
+# event loop が動いていることを示す印。停止の検知だけに使う。
+_loop_tick = time.monotonic()
+
+# これだけ止まったら「同期処理が loop を塞いでいる」と見なして stack を取る。
+# systemd の WatchdogSec より短くしないと、落とされた後になって記録が残らない。
+_STALL_SECONDS = 12.0
+
+
+async def _loop_ticker() -> None:
+    """event loop が回っている限り、印を更新し続ける。"""
+    global _loop_tick
+    while True:
+        _loop_tick = time.monotonic()
+        await asyncio.sleep(1.0)
+
+
+def _stall_watcher() -> None:
+    """loop が止まったら、全 thread の stack を残す。
+
+    watchdog に落とされる事象を追うのに、外から見た「無応答」以外の手掛かりが
+    無かった。落ちた後では何が塞いでいたか分からないので、落ちる前に記録する。
+    loop の外（daemon thread）から見張るのが要点で、loop の中に置くと、塞がれた
+    ときに見張り自身も動けない。
+    """
+    reported = False
+    while True:
+        time.sleep(1.0)
+        age = time.monotonic() - _loop_tick
+        if age < _STALL_SECONDS:
+            reported = False
+            continue
+        if reported:
+            continue
+        reported = True
+        logger.error("event loop が %.1f 秒応答していない。全 thread の stack を記録する", age)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+
+
+def start_stall_watcher() -> None:
+    """停止検知を始める。loop の中と外に 1 つずつ置く。"""
+    threading.Thread(target=_stall_watcher, name="loop-stall-watch", daemon=True).start()
 
 
 async def watchdog_loop() -> None:
