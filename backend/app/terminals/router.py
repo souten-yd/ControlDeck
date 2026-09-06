@@ -22,7 +22,10 @@ from app.terminals.stream import JournalEntry, TerminalClientStream, TerminalStr
 logger = logging.getLogger("control_deck.terminals")
 
 # 無出力でも生存が分かる間隔。受け側はこの 3 倍で死んだと見なす。
-HEARTBEAT_INTERVAL_SECONDS = 15.0
+# 携帯では別のアプリへ移って戻ると経路が切れる。15 秒だと見切りが 50 秒になり、
+# 戻ってから「再接続中」が長く居座っていた。短くして気づきを早める。
+# 1 回は数十バイトなので、5 秒間隔でも通信量は無視できる。
+HEARTBEAT_INTERVAL_SECONDS = 5.0
 
 router = APIRouter(prefix="/terminals", tags=["terminals"])
 streams = TerminalStreamRegistry(manager)
