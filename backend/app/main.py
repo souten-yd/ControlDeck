@@ -251,6 +251,7 @@ from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.gateway import router as llm_gateway_router
 from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
+from app.skills.router import router as skills_router  # noqa: E402
 from app.features.registry import is_enabled as feature_enabled  # noqa: E402
 from app.plugins.router import router as plugins_router  # noqa: E402
 from app.addons.router import router as addons_router  # noqa: E402
@@ -295,6 +296,7 @@ app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
 app.include_router(features_router, prefix=API)
+app.include_router(skills_router, prefix=API)
 app.include_router(plugins_router, prefix=API)
 app.include_router(addons_router, prefix=API)
 app.include_router(resources_router, prefix=API)
