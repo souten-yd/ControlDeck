@@ -70,6 +70,40 @@ export interface ProjectLabRun {
   artifacts: ProjectLabRunArtifact[];
 }
 
+/** ZIPの中身の下見。excluded は落とした理由まで持つ——落ちた事実だけ見せても、
+ *  利用者は「入っているはずの file が無い」としか分からない。 */
+export interface ProjectLabExportPlan {
+  projectId: string;
+  fileCount: number;
+  totalBytes: number;
+  excluded: { path: string; reason: string }[];
+  excludedTruncated: boolean;
+}
+
+/** 公開の下見。公開は取り消しても索引に残るので、押す前に必ずこれを見せる。 */
+export interface ProjectLabPublishPlan {
+  projectId: string;
+  directory: string;
+  candidates: { directory: string; hasIndex: boolean }[];
+  hasIndex: boolean;
+  fileCount: number;
+  totalBytes: number;
+  excluded: { path: string; reason: string }[];
+  excludedTruncated: boolean;
+  github: { available: boolean; loggedIn: boolean; account: string };
+  current: ProjectLabPublishState | null;
+}
+
+export interface ProjectLabPublishState {
+  repository: string;
+  visibility: "public" | "private";
+  branch: string;
+  directory: string;
+  url: string;
+  fileCount: number;
+  excludedCount: number;
+}
+
 export interface ProjectLabSettings {
   allow_external_preview: boolean;
   /** プロジェクトの置き場。設定で変わるので、案内文にパスを埋め込まない。 */
@@ -98,6 +132,21 @@ export const projectLabApi = {
     const query = [options.download ? "download=true" : "", options.external ? "external=true" : ""].filter(Boolean).join("&");
     return `/api/v1/project-lab/projects/${encodeURIComponent(id)}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`;
   },
+  /** ZIPに何が入り、何が落ちるか。ダウンロードの前に見せるためのもの。 */
+  exportPlan: (id: string) => api<ProjectLabExportPlan>(
+    `/project-lab/projects/${encodeURIComponent(id)}/export-plan`,
+  ),
+  /** ZIP本体。ブラウザに直接取りに行かせるので URL だけ返す。 */
+  archiveUrl: (id: string) => `/api/v1/project-lab/projects/${encodeURIComponent(id)}/archive`,
+  /** 公開の下見。directory を変えると候補ごとの内訳が返る。 */
+  publishPlan: (id: string, directory?: string) => api<ProjectLabPublishPlan>(
+    `/project-lab/projects/${encodeURIComponent(id)}/publish-plan${
+      directory === undefined ? "" : `?directory=${encodeURIComponent(directory)}`}`,
+  ),
+  publish: (id: string, body: { repository: string; visibility: "public" | "private"; directory: string | null }) =>
+    api<ProjectLabPublishState>(`/project-lab/projects/${encodeURIComponent(id)}/publish`, {
+      method: "POST", json: body,
+    }),
   /** iframeプレビュー用の短命token。sandboxの不透明originからはcookieが送れないため。 */
   previewToken: (id: string) => api<{ token: string; expires_in: number }>(
     `/project-lab/projects/${encodeURIComponent(id)}/preview-token`, { method: "POST" },

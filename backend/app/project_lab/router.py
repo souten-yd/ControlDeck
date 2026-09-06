@@ -1,10 +1,12 @@
 """Project Lab API。成果物閲覧とbrowser非依存のdurable runを提供する。"""
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -13,8 +15,10 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.database import get_db
 from app.models import ProjectRun, User
-from app.project_lab import runs, service
-from app.schemas.project_lab import ProjectFileRunCreate, ProjectLabSettingsBody, ProjectRunCreate
+from app.project_lab import export, publish, runs, service
+from app.schemas.project_lab import (
+    ProjectFileRunCreate, ProjectLabSettingsBody, ProjectPublishBody, ProjectRunCreate,
+)
 from app.security.deps import require_permission
 
 router = APIRouter(prefix="/project-lab", tags=["project-lab"])
@@ -407,3 +411,144 @@ def cancel_project_run(
         resource_id=str(row.id), request=request,
     )
     return runs.run_out(db, row)
+
+
+# ---- プロジェクトの持ち出し（ZIP） ----
+# 画面で1つずつ開く経路と違い、ここはソース一式が対象になる。何が入って何が
+# 落ちるかを先に見せてから渡す。落とす判定は export 側に置く。
+
+
+def _export_plan_or_400(project_path: Path) -> export.ExportPlan:
+    try:
+        return export.plan(project_path)
+    except export.ExportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/export-plan")
+def project_export_plan(
+    project_id: str, user: User = Depends(require_permission("project_lab.export")),
+):
+    """ZIPに何が入り、何が落ちるか。ダウンロードの前に見せる。"""
+    try:
+        project_path = service.resolve_project(project_id)
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    plan = _export_plan_or_400(project_path)
+    return {
+        "projectId": project_id,
+        "fileCount": len(plan.files),
+        "totalBytes": plan.total_bytes,
+        "excluded": plan.excluded,
+        "excludedTruncated": plan.truncated,
+    }
+
+
+@router.get("/projects/{project_id}/archive")
+def project_archive(
+    project_id: str, request: Request, background: BackgroundTasks,
+    user: User = Depends(require_permission("project_lab.export")),
+    db: Session = Depends(get_db),
+):
+    """プロジェクトをまとめてZIPで渡す。
+
+    ZIPは一時fileへ書いてから返す。メモリ上で組むと、大きなプロジェクトで
+    そのまま常駐prosessのRSSになる。送り終えてから消す。
+    """
+    try:
+        project_path = service.resolve_project(project_id)
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    plan = _export_plan_or_400(project_path)
+    handle, temp_name = tempfile.mkstemp(prefix=f"{project_id}-", suffix=".zip")
+    os.close(handle)
+    temp_path = Path(temp_name)
+    try:
+        export.write_archive(project_path, temp_path, plan)
+    except OSError as exc:
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"ZIPの作成に失敗しました: {exc}") from exc
+    background.add_task(temp_path.unlink, True)
+    audit.record(
+        db, "project_lab.export", user=user, resource_type="project", resource_id=project_id,
+        request=request,
+        metadata={"files": len(plan.files), "bytes": plan.total_bytes, "excluded": len(plan.excluded)},
+    )
+    return FileResponse(
+        temp_path, media_type="application/zip", filename=f"{project_id}.zip",
+        content_disposition_type="attachment", background=background,
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+    )
+
+
+# ---- 静的ホスティングへの公開 ----
+# ダウンロードと違い、押した瞬間に中身がインターネットへ出る。取り消しても索引や
+# cache には残る前提なので、何が出るかを見せる経路（publish-plan）を必ず分けて置く。
+
+
+def _project_or_404(project_id: str) -> Path:
+    try:
+        return service.resolve_project(project_id)
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+
+
+@router.get("/projects/{project_id}/publish-plan")
+def project_publish_plan(
+    project_id: str, directory: str | None = Query(None),
+    user: User = Depends(require_permission("project_lab.publish")),
+):
+    """公開に何が出るか。候補ディレクトリと除外の内訳を返す。"""
+    project_path = _project_or_404(project_id)
+    try:
+        target = publish.resolve_target(project_path, directory)
+        plan = publish.plan(target)
+    except (publish.PublishError, export.ExportError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "projectId": project_id,
+        "directory": target.directory,
+        "candidates": publish.directory_candidates(project_path),
+        "hasIndex": (target.root / "index.html").is_file(),
+        "fileCount": len(plan.files),
+        "totalBytes": plan.total_bytes,
+        "excluded": plan.excluded,
+        "excludedTruncated": plan.truncated,
+        "github": publish.gh_account(),
+        "current": publish.get_state(project_id),
+    }
+
+
+@router.post("/projects/{project_id}/publish")
+def project_publish(
+    project_id: str, body: ProjectPublishBody, request: Request,
+    user: User = Depends(require_permission("project_lab.publish")),
+    db: Session = Depends(get_db),
+):
+    """GitHub Pages へ公開する。"""
+    project_path = _project_or_404(project_id)
+    try:
+        entry = publish.publish(
+            project_id, project_path, directory=body.directory,
+            repository=body.repository, visibility=body.visibility,
+        )
+    except (publish.PublishError, export.ExportError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(
+        db, "project_lab.publish", user=user, resource_type="project", resource_id=project_id,
+        request=request,
+        metadata={
+            "repository": entry["repository"], "visibility": entry["visibility"],
+            "url": entry["url"], "files": entry["fileCount"],
+            "excluded": entry["excludedCount"],
+        },
+    )
+    return entry
+
+
+@router.get("/projects/{project_id}/publish-state")
+def project_publish_state(
+    project_id: str, user: User = Depends(require_permission("project_lab.publish")),
+):
+    _project_or_404(project_id)
+    return {"projectId": project_id, "current": publish.get_state(project_id)}
