@@ -8,7 +8,7 @@ import httpx
 import websockets
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.addons import bridge, health, registry, tokens
 from app.auth.policy import totp_required_for
@@ -95,7 +95,7 @@ def _frame_user(request: Request, db: Session = Depends(get_db)) -> User | None:
                 or payload.get("sub") != str(actor_user_id)
             ):
                 raise tokens.AddonTokenError("frame token actorが不正です")
-            user = db.get(User, actor_user_id)
+            user = db.get(User, actor_user_id, options=[joinedload(User.role)])
         except (tokens.AddonTokenError, ValueError, TypeError):
             user = None
         if user is None or not user.is_active:
@@ -117,6 +117,11 @@ def _frame_user(request: Request, db: Session = Depends(get_db)) -> User | None:
                 raise HTTPException(status_code=403, detail="Bridge session scopeが一致しません")
     if totp_required_for(user) and not user.totp_enabled:
         raise HTTPException(status_code=403, detail="totp_setup_required")
+    # ここから先は DB を使わない。上流の Add-on への往復が終わるまで session を
+    # 抱えていると、その間ずっと pool の接続を 1 本占める。frame は 1 画面で
+    # 何十本も同時に飛ぶので、それだけで pool が空になり、次の要求が接続待ちで
+    # event loop ごと止まる。用が済んだ時点で返す。
+    db.close()
     return user
 
 
