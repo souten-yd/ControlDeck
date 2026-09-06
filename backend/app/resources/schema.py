@@ -185,6 +185,9 @@ class LeaseStatus(BaseModel):
     state: LeaseState
     granted_at: float
     expires_at: float
+    # この device を他が要るので、区切りのよいところで返してほしい。強制はしない。
+    # 走っている処理を切らないのは step_aside と同じで、違いは引き金だけである。
+    release_requested: bool = False
 
 
 class DeviceSnapshot(BaseModel):

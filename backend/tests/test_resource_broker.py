@@ -211,3 +211,34 @@ def test_oom_profile_enforces_cooldown_and_raised_reservation_floor():
     assert waiting.reason == WaitReason.DEPENDENCY_PENDING
     assert granted.state == RequestState.GRANTED
     assert leases[0].reserved_bytes == 99
+
+
+def test_release_request_marks_the_holder_without_taking_the_device_away():
+    """LLM は broker の許可なく載る。抱えている相手へ伝える手段が要る。"""
+    async def scenario():
+        broker = ResourceBroker(fake_devices(100))
+        granted = await broker.submit(request("addon:a", "a", 60, device="gpu0"))
+        assert granted.state == RequestState.GRANTED
+        marked = await broker.request_release("gpu0", reason="llm_load:llama")
+        held = broker.leases.current()
+        renewed = await broker.renew(granted.lease_id)
+        return marked, held, renewed
+
+    marked, held, renewed = run(scenario())
+    assert marked == 1
+    # 取り上げてはいない。走っている生成を切らないのが step_aside と同じ約束。
+    assert len(held) == 1 and held[0].release_requested is True
+    # renew でも印は残る。抱えている側は renew の返りでこれを見る。
+    assert renewed.release_requested is True
+
+
+def test_release_request_leaves_other_devices_alone():
+    async def scenario():
+        broker = ResourceBroker(fake_devices(100, 100))
+        await broker.submit(request("addon:a", "a", 60, device="gpu1"))
+        marked = await broker.request_release("gpu0", reason="llm_load:llama")
+        return marked, broker.leases.current()
+
+    marked, held = run(scenario())
+    assert marked == 0
+    assert len(held) == 1 and held[0].release_requested is False
