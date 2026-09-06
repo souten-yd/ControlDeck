@@ -37,6 +37,8 @@ class MetricsCollector:
         self._minute_bucket: list[dict[str, Any]] = []
         self._task: asyncio.Task | None = None
         self._subscribers: set[asyncio.Queue] = set()
+        self._dropped = 0
+        self._dropped_logged_at = 0.0
 
     # ---- 収集 ----
 
@@ -187,19 +189,17 @@ class MetricsCollector:
                 self.latest = snapshot
                 self.history.append(snapshot)
                 self._minute_bucket.append(snapshot)
-                if time.monotonic() - last_minute_flush >= 60:
-                    last_minute_flush = time.monotonic()
-                    await asyncio.to_thread(self._flush_minute)
-                dead = []
-                for q in self._subscribers:
-                    try:
-                        q.put_nowait(snapshot)
-                    except asyncio.QueueFull:
-                        dead.append(q)
-                for q in dead:
-                    self._subscribers.discard(q)
+                self._broadcast(snapshot)
             except Exception as e:
                 logger.warning("metrics collection failed: %s", e)
+            # 保存の失敗で配信まで止めない。購読者にとって無音は切断と同じで、
+            # 収集できているのに画面が「再接続中」になる。
+            if time.monotonic() - last_minute_flush >= 60:
+                last_minute_flush = time.monotonic()
+                try:
+                    await asyncio.to_thread(self._flush_minute)
+                except Exception as e:
+                    logger.warning("metrics persistence failed: %s", e)
             from app.maintenance.watchdog import beat
 
             beat("collector")
@@ -249,9 +249,21 @@ class MetricsCollector:
             )
             from sqlalchemy import delete
 
-            db.execute(delete(MetricMinute).where(MetricMinute.timestamp < cutoff))
+            # synchronize_session=False は必須。既定（evaluate）だと ORM が同じ条件を
+            # Python 側でも session 上の行へ当てにいく。SQLite の DateTime は offset を
+            # 落として保存するので、読み直した行は naive、cutoff は aware になり
+            # 「can't compare offset-naive and offset-aware datetimes」で毎分落ちていた。
+            db.execute(
+                delete(MetricMinute)
+                .where(MetricMinute.timestamp < cutoff)
+                .execution_options(synchronize_session=False)
+            )
             hour_cutoff = timestamp - timedelta(days=get_config().monitoring.hour_retention_days)
-            db.execute(delete(MetricHour).where(MetricHour.timestamp < hour_cutoff))
+            db.execute(
+                delete(MetricHour)
+                .where(MetricHour.timestamp < hour_cutoff)
+                .execution_options(synchronize_session=False)
+            )
             db.commit()
         finally:
             db.close()
@@ -280,6 +292,36 @@ class MetricsCollector:
         for field in METRIC_FIELDS:
             values = [value for row in minutes if (value := getattr(row, field)) is not None]
             setattr(hour, field, sum(values) / len(values) if values else None)
+
+    def _broadcast(self, snapshot: dict[str, Any]) -> None:
+        """購読者へ最新値を配る。遅れている購読者も切り離さない。
+
+        以前は Queue が埋まった時点で黙って購読を外していた。外された側の
+        WebSocket は `queue.get()` で永久に止まり、送信を試みないので相手の
+        切断にも気づけない。画面からは無音の回線に見えるだけで、利用者側が
+        16 秒黙るまで「再接続中」が居座っていた。
+        メトリクスは最新の 1 点だけが要るので、詰まったら古い方を捨てる。
+        """
+        for q in self._subscribers:
+            while True:
+                try:
+                    q.put_nowait(snapshot)
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        q.get_nowait()      # 一番古い 1 件を捨てて最新を入れる
+                        self._dropped += 1
+                    except asyncio.QueueEmpty:
+                        break
+        # 遅い購読者は毎回詰まるので、そのたびには出さない。
+        now = time.monotonic()
+        if self._dropped and now - self._dropped_logged_at >= 30:
+            logger.warning(
+                "metrics stream: 遅い購読者のため古い %d 件を捨てた（購読者 %d）",
+                self._dropped, len(self._subscribers),
+            )
+            self._dropped = 0
+            self._dropped_logged_at = now
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=5)

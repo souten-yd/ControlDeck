@@ -18,7 +18,7 @@ import type { MetricsSnapshot } from "../types";
  */
 export function useMetricsStream(enabled: boolean) {
   const push = useMetrics((s) => s.push);
-  const setConnected = useMetrics((s) => s.setConnected);
+  const setStatus = useMetrics((s) => s.setStatus);
 
   useEffect(() => {
     if (!enabled) return;
@@ -27,6 +27,8 @@ export function useMetricsStream(enabled: boolean) {
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let lastMessageAt = Date.now();
+    // 一度でも繋がったか。繋がる前の切断は「再接続」ではない。
+    let everConnected = false;
 
     // 一瞬の途切れは表示に出さない。携帯では珍しくなく、すぐ戻るものまで
     // 「再接続中」と出すと、実際は繋がっているのに壊れて見える。
@@ -35,13 +37,14 @@ export function useMetricsStream(enabled: boolean) {
       if (graceTimer !== undefined) return;
       graceTimer = setTimeout(() => {
         graceTimer = undefined;
-        if (!closed) setConnected(false);
+        if (!closed) setStatus(everConnected ? "reconnecting" : "connecting");
       }, UI_GRACE_MS);
     };
     const showConnected = () => {
       clearTimeout(graceTimer);
       graceTimer = undefined;
-      setConnected(true);
+      everConnected = true;
+      setStatus("live");
     };
 
     const connect = () => {
@@ -55,7 +58,10 @@ export function useMetricsStream(enabled: boolean) {
       ws.onmessage = (event) => {
         lastMessageAt = Date.now();
         try {
-          push(JSON.parse(event.data) as MetricsSnapshot);
+          const snapshot = JSON.parse(event.data) as MetricsSnapshot & { stale?: boolean };
+          // stale は server の heartbeat。回線を暖めるだけで新しい値ではないので、
+          // 履歴に同じ点を積まない。受け取った事実（lastMessageAt）だけを使う。
+          if (!snapshot.stale) push(snapshot);
         } catch {
           /* 壊れた message は捨てる */
         }
@@ -111,7 +117,7 @@ export function useMetricsStream(enabled: boolean) {
       document.removeEventListener("visibilitychange", onVisibility);
       stopWatching();
       discardSocket(ws);
-      setConnected(false);
+      setStatus("connecting");
     };
-  }, [enabled, push, setConnected]);
+  }, [enabled, push, setStatus]);
 }
