@@ -904,6 +904,24 @@ function ExportSection({ projectId }: { projectId: string }) {
   );
 }
 
+/** 公開先リポジトリ名の既定値。
+ *
+ *  `lab-` を付けて、Project Lab から公開したものだと一覧で分かるようにする。
+ *  GitHub のリポジトリ名は英数字と `.` `-` `_` しか通らないので、プロジェクト名が
+ *  日本語だと何も残らない。その場合は `lab-project` にして、利用者が直す前提にする
+ *  （空欄を出すより、直せる形が出ている方が迷わない）。
+ */
+export function defaultRepositoryName(projectId: string): string {
+  const slug = projectId
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, 90)
+    .toLowerCase();
+  return slug ? `lab-${slug}` : "lab-project";
+}
+
 /** 公開したページのアドレス。
  *
  * 公開してもアドレスが画面に残らないと、後から開く手段が無い。ここに置いて
@@ -993,7 +1011,7 @@ function PublishedAddress({
 function PublishSection({ projectId }: { projectId: string }) {
   const [open, setOpen] = useState(false);
   const [directory, setDirectory] = useState<string | undefined>(undefined);
-  const [repository, setRepository] = useState(projectId);
+  const [repository, setRepository] = useState(() => defaultRepositoryName(projectId));
   const [visibility, setVisibility] = useState<"public" | "private" | "">("");
   const [showExcluded, setShowExcluded] = useState(false);
   const show = useToasts((state) => state.show);

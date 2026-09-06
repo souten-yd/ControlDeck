@@ -234,3 +234,43 @@ def test_unpublish_still_works_when_pages_cannot_be_deactivated(monkeypatch):
     # 設定が残ることを黙らない。次に公開すると同じ URL が生き返る。
     assert result["pagesSettingRemains"] is True
     assert any(a[-1].endswith("/git/refs/heads/gh-pages") for a in calls)
+
+
+def test_unpublish_empties_the_branch_when_it_cannot_be_deleted(monkeypatch, tmp_path):
+    """公開用 branch が既定ブランチだと消せない。
+
+    新しい repository へ最初に push した branch が既定になるので、公開用の
+    branch がそのまま既定になっていることがある。public repository では Pages も
+    止められないため、このままでは取り下げる手段が無くなる（実際そうなった）。
+    index.html を消せば 404 になるので、中身を空にして取り下げを成立させる。
+    """
+    monkeypatch.setattr(publish.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(publish, "_load_state", lambda: {
+        "demo": {"repository": "souten-yd/karaage", "branch": "gh-pages"}})
+    monkeypatch.setattr(publish, "_clear_state", lambda pid: None)
+    pushed: list = []
+
+    def fake_run(args, cwd=None, timeout=publish.GIT_TIMEOUT_SECONDS, extra_env=None):
+        if args[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(args, 0, "account souten-yd\n", "")
+        if args[0] == "gh" and args[-1].endswith("/pages"):
+            return subprocess.CompletedProcess(
+                args, 1, "", "gh: Deactivating GitHub pages ... is not allowed. (HTTP 422)")
+        if args[0] == "gh" and "refs/heads" in args[-1]:
+            return subprocess.CompletedProcess(
+                args, 1, "", "gh: Cannot delete the default branch (HTTP 422)")
+        if args[:2] == ["git", "push"]:
+            pushed.append((list(args), cwd))
+            # 置き換える中身に index.html が残っていないこと
+            files = {p.name for p in Path(cwd).rglob("*") if p.is_file() and ".git" not in p.parts}
+            # 変換できる物を1つでも残すと Jekyll が index を作り、site が 200 の
+            # まま生き残る（README.md を残して実際にそうなった）。
+            assert files == {".nojekyll"}, f"消し残しがある: {files}"
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(publish, "_run", fake_run)
+    result = publish.unpublish("demo")
+
+    assert result["removed"] == ["contents"]
+    assert pushed, "中身の置き換えを push していない"
+    assert "--force" in pushed[-1][0], "履歴を積むと消した事実を後から消せない"
