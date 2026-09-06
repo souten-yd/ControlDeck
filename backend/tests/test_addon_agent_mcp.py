@@ -344,3 +344,66 @@ def test_mcp_token_renewal_refuses_claims_it_cannot_trust():
     assert agent_mcp._renewed_token({"sub": "", "actor_user_id": 1, "exp": near}) is None
     assert agent_mcp._renewed_token({"sub": "opencode:x", "actor_user_id": None, "exp": near}) is None
     assert agent_mcp._renewed_token({"sub": "opencode:", "actor_user_id": 1, "exp": near}) is None
+
+
+def test_output_grant_is_issued_automatically_for_the_current_project(admin_client, monkeypatch, tmp_path):
+    """置き先の grant を agent に作らせない。
+
+    生成物を project へ置くツールは project_output_grant を必須にしている。agent は
+    それを自分で作ってから呼ぶ必要があり、手順が1つ増えるぶん「生成はできたのに
+    置けない」で止まりやすい。
+
+    自動で作っても境界は変わらない。作るのは呼ばれている add-on のぶんだけで、
+    置き先は token が指している今の project の中に限られる。agent が自分で
+    control_deck.project_output_grant を呼べば得られるものと同じである。
+    """
+    from app.addon_runtime import grants
+    from app.addons import agent_mcp
+    from app.database import SessionLocal
+    from app.models import User
+    from app.project_lab import service as project_lab
+    from sqlalchemy import select
+
+    root = tmp_path / "CodeDEV"
+    (root / "game").mkdir(parents=True)
+    grant_data = tmp_path / "grant-data"
+    monkeypatch.setattr(project_lab, "project_root", lambda: root)
+    monkeypatch.setattr(grants, "data_dir", lambda: grant_data)
+    monkeypatch.setattr(grants.files, "resolve", lambda value: Path(value).resolve(strict=True))
+    monkeypatch.setattr(agent_mcp, "_eligible_output_addons", lambda _permissions: ["sonic-forge"])
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+
+    issued = agent_mcp._auto_output_grant("sonic-forge", "game", {"any"}, user)
+
+    assert isinstance(issued, str) and issued.startswith("grant:")
+    # 置き先は project の中。掘るのは1段だけで、無ければ作る。
+    created = root / "game" / agent_mcp.AUTO_OUTPUT_DIRECTORY
+    assert created.is_dir()
+
+
+def test_auto_grant_refuses_addons_and_projects_outside_the_session(admin_client, monkeypatch, tmp_path):
+    """自動発行でも、明示発行と同じ範囲しか許さない。"""
+    from app.addon_runtime import grants
+    from app.addons import agent_mcp
+    from app.database import SessionLocal
+    from app.models import User
+    from app.project_lab import service as project_lab
+    from sqlalchemy import select
+
+    root = tmp_path / "CodeDEV"
+    (root / "game").mkdir(parents=True)
+    monkeypatch.setattr(project_lab, "project_root", lambda: root)
+    monkeypatch.setattr(grants, "data_dir", lambda: tmp_path / "grant-data")
+    monkeypatch.setattr(agent_mcp, "_eligible_output_addons", lambda _permissions: ["sonic-forge"])
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+
+    # 資格の無い add-on には出さない
+    assert agent_mcp._auto_output_grant("other-addon", "game", {"any"}, user) is None
+    # session が project を指していなければ出さない
+    assert agent_mcp._auto_output_grant("sonic-forge", None, {"any"}, user) is None
+    # project の外は指させない
+    assert agent_mcp._auto_output_grant("sonic-forge", "../outside", {"any"}, user) is None
+    # 作れなかったことを例外にしない（add-on 側の入力検証に理由を言わせる）
+    assert agent_mcp._auto_output_grant("sonic-forge", "missing-project", {"any"}, user) is None
