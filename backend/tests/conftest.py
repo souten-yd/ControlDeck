@@ -55,3 +55,17 @@ def admin_client(client):
     )
     assert r.status_code == 200, r.text
     return client
+
+
+@pytest.fixture(autouse=True)
+def _fresh_feature_cache():
+    """feature 一覧の覚え書きを test をまたいで持ち越さない。
+
+    本番では状態を変えたときに捨てるが、test は registry を直接触るので、
+    前の test の値が次へ漏れる。
+    """
+    from app.features import registry
+
+    registry.invalidate_feature_cache()
+    yield
+    registry.invalidate_feature_cache()
