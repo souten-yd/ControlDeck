@@ -863,6 +863,11 @@ host.busy.set                   未保存変更あり（離脱確認）      ←
 - host→add-on イベント: `theme.changed` / `locale.changed` / `visibility.changed` /
   `safe_area.changed` / `disable.pending`
 
+`locale.changed` は接続時だけでなく、browser `languagechange` 後に有効localeが
+変わった場合も既存MessagePortへ送る。theme tokenのlocaleと一致させ、iframeやBridge
+sessionを作り直さない。現行の選択はnavigator.languageがja系ならja、それ以外はen。
+Add-onは通知で文言を再描画し、入力・選択・内部routeを保持する。
+
 `disable.pending` は重要: disable前に add-on に猶予（既定2秒）を与え、
 保存/中断処理をさせてから contribution を撤去する。
 

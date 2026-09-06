@@ -2,6 +2,49 @@
 
 最終更新: 2026-09-06
 
+## Embedded Add-onの動的locale通知（2026-09-06、candidate）
+
+MediaForge側だけではHostから届かない言語変更通知を補えないため、全Add-on共通の
+EmbeddedAddonViewでbrowser languagechangeを購読し、locale変更時に既存MessagePortへ
+locale.changedを送る。接続時通知・ja系/それ以外enの選択・opaque sandboxは維持。
+theme tokenと同じlocaleを通知し、iframe/sessionの再作成はしない。購読解除も追加。
+実装先はHost別branch feat/addon-live-locale（base 72948ae）、Media固有処理なし。
+
+隔離Vite（127.0.0.1:5179）+実Chromiumでproduction React componentをmount。
+`CONTROL_DECK_E2E_URL=http://127.0.0.1:5179 CONTROL_DECK_LOCALE_FIXTURE=1
+npx playwright test e2e/addon-locale.spec.ts --output /data1tb/cd-locale-fixed-20260906 --trace on`
+は2 passed/1.6秒。実innerWidth1280/320、opaque origin null、ja→en→ja→en、
+theme locale一致、load ID/nonce/未保存input不変、handshake1、page errors0。
+言語はnavigator.languageとlanguagechangeを与えるbrowser入力fixture、認証APIとchildはmock。
+本番データ/APIへは要求を送らない。実ブラウザ設定操作やinstalled MediaForge受入ではない。
+同一testを旧製品codeで実行すると320pxの最初の英語切替がjaのまま失敗（5.6秒）。
+証拠 /data1tb/cd-locale-baseline-20260906。修正版へ戻して上記成功を再確認。
+初回fixtureはAPI routeがsrc/api importまで遮断してmount失敗、/api/v1限定へ修正。
+`npm run build` 成功（Vite35.77秒、既知large chunk warning）、git diff --check成功。
+
+backend製品/test差分0。全 `./deck.sh test` 初回は3 failed/1013 passed/2 skipped/
+既知warning1/129.82秒。device pairingとopaque WSのTestClient終了時CancelledError、
+registry revision試験で期待2/実3（health loop実HTTPが並行）を観測。
+無変更main 72948aeでこの3件を集中実行してdevice pairingの同じCancelledErrorを再現
+（1 failed/2 passed/6.17秒）。locale変更が原因とは扱わないが、全gate成功にも読み替えない。
+全gate再実行も1 failed/1015 passed/2 skipped/既知warning1/124.07秒。
+device pairingの再接続終了時に同じCancelledError。proxy/revisionは今回はpassだが
+初回失敗を解消済みとはしない。既存失敗を別sliceで切り分け、merge/installed反映は未実施。
+NOT TESTED: installed Hostから実MediaForgeのLibrary offset/選択を保持する言語切替、
+実ブラウザ設定からの言語変更、live resize入力問題。3D全体の完了は未宣言。
+
+PR #294の構造化終了処理はmerge `2fafa2d4256b14108a4beddd6b414491af53bd24`を確認し、
+本branchへ統合した。backend treeは同PRと一致し、全1022 passedの対象と同一。
+locale固有変更はfrontend/fixture/design/statusだけ。統合後のbuildは41.99秒成功。
+同browser commandのoutputを`/data1tb/cd-locale-integrated-20260906`へ変更して
+1280/320再確認: 2 passed/3.3秒、全locale/input/load/nonce/handshake assertions一致。
+backend tree `de469e316484e7e050fb1da01c38452d65b384e3`の一致をgitで照合。
+統合後の実relay smokeも21回完了/残存0/故障1、0.443121秒、
+`/tmp/cd-relay-lifetime-q7t69ul_`。本番Host PID407562/active（21:58:31起動）、
+MF PID396381/activeをread-only確認。こちらから再起動していない。
+本番checkout main 72948aeには別作業のproxy.py/tokens.py/test_addon_proxy.py変更あり。
+上書き・checkout切替・本番buildは行わない。installed反映は別作業との調整後。
+
 ## Add-on WebSocket relayの構造化終了処理（2026-09-06、candidate）
 
 Host PR #293のlocale通知とは別slice。無変更main 72948aeでもdevice pairingの
