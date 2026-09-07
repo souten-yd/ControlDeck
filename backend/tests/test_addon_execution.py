@@ -666,6 +666,48 @@ def test_a_prompt_state_from_another_instance_is_discarded(monkeypatch, tmp_path
     assert not directory.exists(), "合わない状態を残している"
 
 
+def test_an_idle_slot_is_saved_even_though_it_reports_no_token_count(monkeypatch, tmp_path):
+    """空いている slot は抱えているトークン数を返さない（返すのは処理中の
+    slot だけ）。数を見てから選ぶ実装は、保存したい状態を必ず取りこぼす。"""
+    import httpx
+
+    from app.models_mgmt import llama
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_ROOT", tmp_path / "kv")
+    monkeypatch.setattr(
+        llama, "get_instance",
+        lambda alias=None: {"alias": "unit-test", "model_path": str(model), "port": 65001},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/slots":
+            # 実機が返す形。アイドルの slot にトークン数の欄は無い。
+            return httpx.Response(200, json=[
+                {"id": 0, "n_ctx": 262144, "is_processing": False},
+                {"id": 1, "n_ctx": 262144, "is_processing": False},
+            ])
+        slot = request.url.path.rsplit("/", 1)[-1]
+        if slot == "0":
+            return httpx.Response(200, json={"id_slot": 0, "n_saved": 72800, "n_written": 2_097_160_384})
+        return httpx.Response(200, json={"id_slot": 1, "n_saved": 0, "n_written": 0})
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.Client
+
+    def client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", client)
+    saved = llama.save_prompt_state("unit-test")
+
+    assert saved == 2_097_160_384, saved
+    meta = json.loads((llama._kv_dir("unit-test") / "meta.json").read_text(encoding="utf-8"))
+    assert [item["slot"] for item in meta["slots"]] == [0], meta
+
+
 def test_a_snapshot_is_refused_when_ram_would_run_out(monkeypatch, tmp_path):
     """tmpfs は RAM を食う。逼迫すれば swap へ落ち、落ちた時点で速さの理由が
     消える。そうなる前に預けない。"""
