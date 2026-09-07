@@ -267,8 +267,11 @@ class LocalLlmCapacityProvider(ResourceProvider):
         try:
             from app.models_mgmt import llama
 
+            # add-on のための退避は「戻ってくる退避」である。会話の KV を
+            # 預けておけば、戻ったときに読み直さずに済む（実測 165 秒 →
+            # 0.44 秒）。時間経過や手動で降ろすときは預けない。
             released, reason, freed = await llama.release_loaded_llms(
-                include_helpers=include_helpers
+                include_helpers=include_helpers, preserve_state=True
             )
         finally:
             async with self._condition:
