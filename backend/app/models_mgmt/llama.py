@@ -1080,6 +1080,19 @@ def unit_name(alias: str | None = None) -> str:
 # 預けるのは「戻ってくると分かっている退避」だけである。手動やアイドルで降ろす
 # ときは、次にいつ来るか分からないものに RAM を割かない。
 
+# 既定では預けない。実機で測ったところ、預けた状態はほぼ活かせなかった。
+#
+# 復元した slot には文脈チェックポイントが無く、llama.cpp は前方一致が途中で
+# 崩れたときに巻き戻せない。1 トークンでも食い違えば全部を読み直す。chat 経路
+# は必ず食い違う——思考は reasoning_content へ分離されて client は返さないし、
+# インライン（--reasoning-format none）にしても応答テキストの正規化で先頭の
+# 空白が落ちる。実測: 追記だけの再送なら 19,022 → 6 トークンになるが、chat の
+# 往復では 19,103 トークンを読み直した。
+#
+# 仕組み自体は動く（保存 0.5〜2.1 秒 / 復元 0.06〜0.44 秒）ので、上流が復元
+# した slot の巻き戻しに対応したら、この既定を反転すれば効く。それまでは
+# 退避のたびに 1〜2 秒と RAM 1.6GB を払う理由が無い。
+KV_SNAPSHOT_ENABLED = os.environ.get("CONTROL_DECK_LLM_KV_SNAPSHOT", "0") == "1"
 KV_SNAPSHOT_ROOT = Path("/dev/shm/control-deck/llm-kv")
 # これ未満は読み直しても数秒で終わる。預ける手間のほうが高い。
 KV_SNAPSHOT_MIN_TOKENS = 4096
@@ -1150,6 +1163,8 @@ def save_prompt_state(alias: str) -> int:
 
     失敗しても退避は止めない。預けられなければ、従来どおり読み直すだけである。
     """
+    if not KV_SNAPSHOT_ENABLED:
+        return 0
     try:
         inst = get_instance(alias)
     except KeyError:
