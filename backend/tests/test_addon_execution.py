@@ -701,6 +701,7 @@ def test_an_idle_slot_is_saved_even_though_it_reports_no_token_count(monkeypatch
         return original(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "Client", client)
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_ENABLED", True)
     saved = llama.save_prompt_state("unit-test")
 
     assert saved == 2_097_160_384, saved
@@ -737,3 +738,23 @@ def test_the_unit_creates_the_slot_save_path_before_starting(monkeypatch, tmp_pa
     assert f'ExecStartPre="/bin/mkdir" "-p" "{directory}"' in content, content
     # unit を組み立てただけで置き場を作らない。
     assert not (tmp_path / "kv").exists()
+
+
+def test_the_snapshot_is_off_until_the_restored_slot_can_rewind(monkeypatch, tmp_path):
+    """復元した slot には文脈チェックポイントが無く、前方一致が途中で崩れると
+    llama.cpp は巻き戻せずに全部を読み直す。chat の往復は必ず崩れるので（思考の
+    分離、応答テキストの正規化）、既定では預けない。仕組みは残してあり、上流が
+    対応したら環境変数で戻せる。"""
+    from app.models_mgmt import llama
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_ROOT", tmp_path / "kv")
+    monkeypatch.setattr(
+        llama, "get_instance",
+        lambda alias=None: {"alias": "unit-test", "model_path": str(model), "port": 65003},
+    )
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_ENABLED", False)
+
+    assert llama.save_prompt_state("unit-test") == 0
+    assert not (tmp_path / "kv").exists(), "預けない設定で置き場を作っている"
