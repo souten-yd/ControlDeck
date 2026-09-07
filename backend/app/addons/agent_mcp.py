@@ -20,7 +20,17 @@ from app.security.localhost import is_loopback
 
 router = APIRouter(prefix="/addons/agent-mcp", tags=["addons"])
 MCP_TOKEN_TTL_SECONDS = 8 * 60 * 60
-MCP_CLIENT_TIMEOUT_MS = 135_000
+# OpenCode 側が 1 コールを待つ長さ（ミリ秒）。bridge の待ちに合わせる。
+#
+# 135 秒だった。当時の bridge が 130 秒で切っていたので、その少し外側という
+# 意味だった。bridge を「host が返すまで待つ」へ変えた後もここが残り、client
+# 側だけが先に切っていた。実測: 45 秒の曲の生成に 98〜127 秒かかり、
+# エージェントは "MCP request timeout" として失敗を受け取りながら、
+# SonicForge 側では曲が出来上がっていた。
+#
+# 終わりを決めるのは host である（wait_agent_tool_job は進捗が止まったときだけ
+# 打ち切る）。client はその答えを待つ側なので、正常な処理時間で切らない。
+MCP_CLIENT_TIMEOUT_MS = 3_600_000
 _SUBJECT = re.compile(r"^opencode:[A-Za-z0-9_-]{1,64}$")
 PROJECT_OUTPUT_GRANT_TOOL = "control_deck.project_output_grant"
 _OUTPUT_CAPABILITIES = {"projects.pick", "files.export"}
