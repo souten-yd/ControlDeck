@@ -516,17 +516,27 @@ async def create_agent_tool_job(
 
 
 async def wait_agent_tool_job(job: Any, *, timeout: float = EXECUTION_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """Add-on の agent tool が終わるまで待つ。打ち切るのは「進んでいない」ときだけ。
+
+    以前はここが受付からの総時間で、600 秒で必ず切っていた。1 コールで 1 件しか
+    作らない tool ならそれで足りたが、Media Forge の batch のように「N 件を続けて
+    作る」tool は、正常に進んでいても総時間で切られる。切られた側の job は走り
+    続けるので、呼び出し側からは「失敗したのに物はできている」状態になる。
+
+    進捗があるたびに待ち直す形にすると、時計が測るのは「無音が続いた長さ」に
+    なる。止まった tool は従来どおり止まり、進んでいる tool は何件でも続けられる。
+    Add-on は phase と progress を job へ送っており（addon_runtime/jobs.py）、
+    その更新がそのまま job.changed になる。
+    """
     from app.jobs import service as jobs
 
-    deadline = asyncio.get_running_loop().time() + max(1.0, min(timeout, EXECUTION_TIMEOUT_SECONDS))
+    idle = max(1.0, min(timeout, EXECUTION_TIMEOUT_SECONDS))
     try:
         while job.status in {"queued", "running"}:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                raise TimeoutError
             job.changed.clear()
             if job.status in {"queued", "running"}:
-                await asyncio.wait_for(job.changed.wait(), timeout=remaining)
+                # 待ち直すたびに時計が戻る。進捗が来る限り待ち続ける。
+                await asyncio.wait_for(job.changed.wait(), timeout=idle)
     except TimeoutError as exc:
         await jobs.cancel_and_wait(job.id)
         raise AddonExecutionError(
