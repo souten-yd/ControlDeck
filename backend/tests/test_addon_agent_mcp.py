@@ -133,7 +133,11 @@ def test_stdio_bridge_marks_host_post_as_control_deck_request(monkeypatch):
     assert bridge._host_request("/call", payload={"name": "media.capabilities"}) == {"job_id": "job-1"}
     assert captured["request"].get_header("X-requested-with") == "ControlDeck"
     assert captured["request"].get_header("Authorization") == "Bearer signed-token"
-    assert captured["timeout"] == 130
+    # 正常な処理時間で切らない。終わりを決めるのは host 側で、そちらは進捗が
+    # 止まったときにだけ打ち切る（wait_agent_tool_job）。bridge が先に切ると、
+    # job だけが走り続けて「失敗したのに物はできている」状態になる。
+    assert captured["timeout"] == bridge.CALL_TIMEOUT_SECONDS
+    assert bridge.CALL_TIMEOUT_SECONDS >= 600
 
 
 def test_runtime_config_projects_mcp_only_with_user_authority(monkeypatch, tmp_path):

@@ -532,3 +532,79 @@ def test_command_without_a_route_reports_success_without_navigating(addon_api, m
     assert response.status_code == 200
     assert response.json()["route"] is None
     assert response.json()["result"]["job_id"] == "job_1"
+
+
+# ── Add-on agent tool の待ち方 ──────────────────────────────────────────
+#
+# 以前は受付からの総時間で、600 秒で必ず切っていた。1 コールで 1 件しか作らない
+# tool ならそれで足りたが、Media Forge の batch のように「N 件を続けて作る」tool は
+# 正常に進んでいても総時間で切られる。切られた側の job は走り続けるので、
+# 呼び出し側からは「失敗したのに物はできている」状態になる。
+
+
+def test_a_progressing_agent_tool_is_not_cut_by_the_total_time(monkeypatch):
+    import asyncio
+
+    from app.addons import execution
+
+    class Job:
+        id = "job-1"
+        status = "running"
+        task = None
+        result = {"content": []}
+        error = None
+
+        def __init__(self) -> None:
+            self.changed = asyncio.Event()
+
+    async def scenario():
+        job = Job()
+
+        async def progressing():
+            # 待ちの上限より短い間隔で進捗が来る。合計はその上限を大きく超える。
+            for _ in range(10):
+                await asyncio.sleep(0.01)
+                job.changed.set()
+            job.status = "succeeded"
+            job.changed.set()
+
+        driver = asyncio.create_task(progressing())
+        result = await execution.wait_agent_tool_job(job, timeout=0.05)
+        await driver
+        return result
+
+    assert asyncio.run(scenario()) == {"content": []}
+
+
+def test_a_silent_agent_tool_is_still_cut_and_canceled(monkeypatch):
+    import asyncio
+
+    from app.addons import execution
+    from app.jobs import service as jobs
+
+    canceled: list[str] = []
+
+    async def cancel_and_wait(job_id):
+        canceled.append(job_id)
+
+    monkeypatch.setattr(jobs, "cancel_and_wait", cancel_and_wait)
+
+    class Job:
+        id = "job-2"
+        status = "running"
+        task = None
+        result = None
+        error = None
+
+        def __init__(self) -> None:
+            self.changed = asyncio.Event()
+
+    async def scenario():
+        try:
+            await execution.wait_agent_tool_job(Job(), timeout=0.05)
+        except execution.AddonExecutionError as exc:
+            return exc.code
+        return None
+
+    assert asyncio.run(scenario()) == "agent_tool_timeout"
+    assert canceled == ["job-2"]
