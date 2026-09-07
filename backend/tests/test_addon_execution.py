@@ -715,3 +715,25 @@ def test_a_snapshot_is_refused_when_ram_would_run_out(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama, "KV_SNAPSHOT_MIN_AVAILABLE_BYTES", 1 << 62)
     assert llama._kv_room_available(tmp_path, 1) is False
+
+
+def test_the_unit_creates_the_slot_save_path_before_starting(monkeypatch, tmp_path):
+    """llama-server は --slot-save-path の置き場が無いと起動を拒否する（usage を
+    出して exit 1）。実機でこれを踏み、LLM が上がらなくなった。unit 自身に
+    作らせる——python 側で作ると、unit を書くだけの処理に副作用が付く。"""
+    from app.models_mgmt import llama
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_ROOT", tmp_path / "kv")
+    monkeypatch.setattr(
+        llama, "get_instance",
+        lambda alias=None: {"alias": "unit-test", "model_path": str(model), "port": 65002},
+    )
+    content = llama._unit_content("unit-test")
+
+    directory = str(llama._kv_dir("unit-test"))
+    assert f"--slot-save-path {directory}" in content or directory in content, content
+    assert f'ExecStartPre="/bin/mkdir" "-p" "{directory}"' in content, content
+    # unit を組み立てただけで置き場を作らない。
+    assert not (tmp_path / "kv").exists()

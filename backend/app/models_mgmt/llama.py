@@ -1371,6 +1371,15 @@ def _unit_content(alias: str | None = None) -> str:
     lines.append('Environment="GPU_MAX_HW_QUEUES=1"')
     for preflight in preflight_commands:
         lines.append("ExecStartPre=" + " ".join(_escape_exec_arg(a) for a in preflight))
+    # llama-server は --slot-save-path の置き場が無いと起動を拒否する（usage を
+    # 出して exit 1）。unit 自身に作らせる。python 側で作ると、unit を書くだけの
+    # 処理に副作用が付き、テストが偽の alias で書くたび実際の tmpfs が汚れる。
+    lines.append(
+        "ExecStartPre=" + " ".join(
+            _escape_exec_arg(a) for a in
+            ["/bin/mkdir", "-p", str(_kv_dir(str(inst.get("alias") or "llama")))]
+        )
+    )
     lines += [
         "ExecStart=" + " ".join(_escape_exec_arg(a) for a in args),
         "Restart=on-failure",
