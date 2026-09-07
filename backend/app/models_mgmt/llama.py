@@ -1166,10 +1166,13 @@ def save_prompt_state(alias: str) -> int:
             slots = client.get(f"{base}/slots").json()
             if not isinstance(slots, list):
                 return 0
+            # 空いている slot は、抱えているトークン数を返さない（返すのは
+            # 処理中の slot だけ）。数を見てから選ぶことはできないので、書き
+            # 出してみて、小さすぎるものを捨てる。空の slot の保存は一瞬で
+            # 終わる。
             for slot in slots:
                 slot_id = slot.get("id")
-                tokens = slot.get("n_past") or slot.get("n_ctx_used") or slot.get("prompt_n") or 0
-                if not isinstance(slot_id, int) or int(tokens or 0) < KV_SNAPSHOT_MIN_TOKENS:
+                if not isinstance(slot_id, int) or slot.get("is_processing"):
                     continue
                 if not _kv_room_available(directory, KV_SNAPSHOT_MAX_BYTES - total):
                     logger.info("prompt state not preserved for %s: not enough room", alias)
@@ -1178,13 +1181,16 @@ def save_prompt_state(alias: str) -> int:
                 answer = client.post(
                     f"{base}/slots/{slot_id}?action=save",
                     json={"filename": filename},
-                    timeout=120,
+                    timeout=300,
                 ).json()
+                tokens = int(answer.get("n_saved") or 0)
                 written = int(answer.get("n_written") or 0)
-                if written <= 0:
+                if tokens < KV_SNAPSHOT_MIN_TOKENS or written <= 0:
+                    with suppress(OSError):
+                        (directory / filename).unlink()
                     continue
                 total += written
-                saved.append({"slot": slot_id, "filename": filename, "tokens": int(answer.get("n_saved") or 0)})
+                saved.append({"slot": slot_id, "filename": filename, "tokens": tokens})
                 if total >= KV_SNAPSHOT_MAX_BYTES:
                     break
     except (httpx.HTTPError, ValueError, KeyError):
@@ -1260,7 +1266,7 @@ def _unit_content(alias: str | None = None) -> str:
         "--ubatch-size", str(inst.get("ubatch_size", 512)),
         # 退避のときに会話の KV を書き出す先。tmpfs なので実体は RAM で、
         # プロセスが死んでも残り、再起動後に戻せる。
-        "--slot-save-path", str(_kv_dir(str(inst.get("alias") or "llama"), create=True)),
+        "--slot-save-path", str(_kv_dir(str(inst.get("alias") or "llama"))),
         "--cache-type-k", str(inst.get("cache_type_k", "f16")),
         "--cache-type-v", str(inst.get("cache_type_v", "f16")),
         "--threads", str(inst.get("threads", -1)),
