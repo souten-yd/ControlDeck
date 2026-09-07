@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -18,6 +19,7 @@ import re
 import shutil
 import time
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
 
 import httpx
@@ -1064,6 +1066,180 @@ def unit_name(alias: str | None = None) -> str:
     return f"{UNIT_PREFIX}-{safe}-{digest}.service"
 
 
+# ---- 会話の KV を、退避のあいだ RAM に預ける ----
+#
+# add-on が GPU を要ると LLM は降りる。降りると KV が消えるので、戻ったとき
+# 会話全体を読み直す。実測で 72,800 トークンの再取り込みに 165 秒かかった。
+# 生成そのものより、この読み直しのほうが高い。
+#
+# llama.cpp は slot の KV をファイルへ書き出せる（--slot-save-path）。置き先を
+# tmpfs にすれば実体は RAM で、ディスクを経由せずプロセスの死を跨げる。実測:
+# 72,800 トークン = 2.0GB、保存 0.62 秒、復元 0.44 秒、復元後に処理された
+# プロンプトは 7 トークンだけだった。
+#
+# 預けるのは「戻ってくると分かっている退避」だけである。手動やアイドルで降ろす
+# ときは、次にいつ来るか分からないものに RAM を割かない。
+
+KV_SNAPSHOT_ROOT = Path("/dev/shm/control-deck/llm-kv")
+# これ未満は読み直しても数秒で終わる。預ける手間のほうが高い。
+KV_SNAPSHOT_MIN_TOKENS = 4096
+# 1 回の退避で預ける合計の上限。
+KV_SNAPSHOT_MAX_BYTES = 8 * 1024**3
+# 預けた後に残っていてほしい空き。tmpfs は RAM を食い、逼迫すれば swap へ
+# 落ちる——落ちた時点で速さの理由が消えるので、そうなる前に預けない。
+KV_SNAPSHOT_MIN_AVAILABLE_BYTES = 6 * 1024**3
+
+
+def _kv_dir(alias: str, *, create: bool = False) -> Path:
+    safe = "".join(character if character.isalnum() or character in "._-" else "_" for character in alias)
+    path = KV_SNAPSHOT_ROOT / (safe or "llama")
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _kv_fingerprint(inst: dict) -> str:
+    """この状態を戻してよい相手かどうかの印。
+
+    モデルが違えば当然戻せない。ctx や KV の量子化が変われば、書き出した形と
+    受け取る形が合わない。合わないものは黙って捨てる。
+    """
+    model = Path(str(inst.get("model_path") or ""))
+    try:
+        stamp = model.stat()
+        model_mark = f"{model}:{stamp.st_size}:{int(stamp.st_mtime)}"
+    except OSError:
+        model_mark = str(model)
+    parts = [
+        model_mark,
+        str(inst.get("ctx_size", 4096)),
+        str(inst.get("n_parallel", 1)),
+        str(inst.get("cache_type_k", "f16")),
+        str(inst.get("cache_type_v", "f16")),
+        str(inst.get("n_gpu_layers", 999)),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _kv_room_available(target: Path, wanted_bytes: int) -> bool:
+    try:
+        usage = shutil.disk_usage(target)
+    except OSError:
+        return False
+    if usage.free - wanted_bytes < KV_SNAPSHOT_MIN_AVAILABLE_BYTES:
+        return False
+    try:
+        with open("/proc/meminfo", encoding="ascii") as stream:
+            for line in stream:
+                if line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+                    return available - wanted_bytes >= KV_SNAPSHOT_MIN_AVAILABLE_BYTES
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
+
+
+def discard_prompt_state(alias: str) -> None:
+    """預かっている状態を捨てる。次にいつ来るか分からない降ろし方のとき。"""
+    with suppress(OSError):
+        shutil.rmtree(_kv_dir(alias), ignore_errors=True)
+
+
+def save_prompt_state(alias: str) -> int:
+    """退避の直前に、会話の KV を tmpfs へ預ける。預けた合計バイトを返す。
+
+    失敗しても退避は止めない。預けられなければ、従来どおり読み直すだけである。
+    """
+    try:
+        inst = get_instance(alias)
+    except KeyError:
+        return 0
+    base = f"http://127.0.0.1:{inst.get('port', 8080)}"
+    directory = _kv_dir(alias, create=True)
+    for stale in directory.glob("*.bin"):
+        with suppress(OSError):
+            stale.unlink()
+    saved: list[dict] = []
+    total = 0
+    try:
+        with httpx.Client(timeout=30) as client:
+            slots = client.get(f"{base}/slots").json()
+            if not isinstance(slots, list):
+                return 0
+            for slot in slots:
+                slot_id = slot.get("id")
+                tokens = slot.get("n_past") or slot.get("n_ctx_used") or slot.get("prompt_n") or 0
+                if not isinstance(slot_id, int) or int(tokens or 0) < KV_SNAPSHOT_MIN_TOKENS:
+                    continue
+                if not _kv_room_available(directory, KV_SNAPSHOT_MAX_BYTES - total):
+                    logger.info("prompt state not preserved for %s: not enough room", alias)
+                    break
+                filename = f"slot-{slot_id}.bin"
+                answer = client.post(
+                    f"{base}/slots/{slot_id}?action=save",
+                    json={"filename": filename},
+                    timeout=120,
+                ).json()
+                written = int(answer.get("n_written") or 0)
+                if written <= 0:
+                    continue
+                total += written
+                saved.append({"slot": slot_id, "filename": filename, "tokens": int(answer.get("n_saved") or 0)})
+                if total >= KV_SNAPSHOT_MAX_BYTES:
+                    break
+    except (httpx.HTTPError, ValueError, KeyError):
+        logger.info("prompt state could not be saved for %s", alias, exc_info=True)
+        discard_prompt_state(alias)
+        return 0
+    if not saved:
+        discard_prompt_state(alias)
+        return 0
+    (directory / "meta.json").write_text(
+        json.dumps({"fingerprint": _kv_fingerprint(inst), "slots": saved, "bytes": total, "saved_at": time.time()}),
+        encoding="utf-8",
+    )
+    logger.info("preserved prompt state for %s: %d slot(s), %d bytes", alias, len(saved), total)
+    return total
+
+
+async def restore_prompt_state(alias: str) -> int:
+    """載せ直した直後に、預けた状態を戻す。戻したトークン数を返す。
+
+    一度戻したら捨てる。同じものを二度戻す先は無く、抱え続ける理由も無い。
+    """
+    directory = _kv_dir(alias)
+    meta_path = directory / "meta.json"
+    if not meta_path.is_file():
+        return 0
+    try:
+        inst = get_instance(alias)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (KeyError, OSError, ValueError):
+        discard_prompt_state(alias)
+        return 0
+    if meta.get("fingerprint") != _kv_fingerprint(inst):
+        logger.info("prompt state for %s no longer matches this instance; discarding", alias)
+        discard_prompt_state(alias)
+        return 0
+    base = f"http://127.0.0.1:{inst.get('port', 8080)}"
+    restored = 0
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            for entry in meta.get("slots", []):
+                answer = await client.post(
+                    f"{base}/slots/{int(entry['slot'])}?action=restore",
+                    json={"filename": str(entry["filename"])},
+                )
+                restored += int(answer.json().get("n_restored") or 0)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        logger.info("prompt state could not be restored for %s", alias, exc_info=True)
+    finally:
+        discard_prompt_state(alias)
+    if restored:
+        logger.info("restored prompt state for %s: %d token(s)", alias, restored)
+    return restored
+
+
 def _unit_content(alias: str | None = None) -> str:
     from app.applications.systemd import _escape_exec_arg
 
@@ -1082,6 +1258,9 @@ def _unit_content(alias: str | None = None) -> str:
         "--n-predict", str(inst.get("n_predict", 2048)),
         "--batch-size", str(inst.get("batch_size", 2048)),
         "--ubatch-size", str(inst.get("ubatch_size", 512)),
+        # 退避のときに会話の KV を書き出す先。tmpfs なので実体は RAM で、
+        # プロセスが死んでも残り、再起動後に戻せる。
+        "--slot-save-path", str(_kv_dir(str(inst.get("alias") or "llama"), create=True)),
         "--cache-type-k", str(inst.get("cache_type_k", "f16")),
         "--cache-type-v", str(inst.get("cache_type_v", "f16")),
         "--threads", str(inst.get("threads", -1)),
@@ -1299,7 +1478,13 @@ def _set_active_alias(endpoint_id: str, alias: str) -> None:
     _write_config(cfg)
 
 
-def stop_instance(alias: str | None = None) -> tuple[bool, str]:
+def stop_instance(alias: str | None = None, *, preserve_state: bool = False) -> tuple[bool, str]:
+    """instance を止める。
+
+    `preserve_state` は「戻ってくると分かっている退避」であることを表す。その
+    ときだけ会話の KV を tmpfs へ預け、次の起動で戻す。手動やアイドルで降ろす
+    ときは預けない——次にいつ来るか分からないものに RAM を割かない。
+    """
     from app.applications import systemd as sd
 
     selected = str(get_config().get("selected_alias") or "")
@@ -1314,6 +1499,14 @@ def stop_instance(alias: str | None = None) -> tuple[bool, str]:
         )
     except (KeyError, OSError):
         pass
+    if was_loaded:
+        if preserve_state:
+            try:
+                save_prompt_state(resolved)
+            except Exception:  # noqa: BLE001 - 預けられなくても退避は止めない
+                logger.exception("prompt state preservation failed for %s", resolved)
+        else:
+            discard_prompt_state(resolved)
     current = sd.stop(unit_name(resolved))
     # catalog移行前の旧単一unitも、選択中モデルの停止操作に含める。
     if resolved == selected:
@@ -1447,6 +1640,12 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
                 )
             except Exception:  # noqa: BLE001 - telemetry must never block LLM readiness
                 logger.exception("llama cold-load telemetry recording failed")
+            try:
+                # 預けてあれば戻す。戻せば、呼び出し側が同じ会話を送ったときに
+                # 前方一致して読み直しが消える（実測 165 秒 → 0.44 秒）。
+                await restore_prompt_state(alias)
+            except Exception:  # noqa: BLE001 - 戻せなくても読み込みは成立している
+                logger.exception("prompt state restore failed for %s", alias)
             return True
         await asyncio.sleep(2)
     logger.warning("llama instance %s のモデル読込が時間内に完了しませんでした", alias)
@@ -1940,7 +2139,9 @@ def release_reason(item: dict, *, include_helpers: bool = False) -> str:
     return ""
 
 
-async def release_loaded_llms(*, include_helpers: bool = False) -> tuple[bool, str, int]:
+async def release_loaded_llms(
+    *, include_helpers: bool = False, preserve_state: bool = False
+) -> tuple[bool, str, int]:
     """Unload every llm instance that nobody is using right now.
 
     ``include_helpers`` extends this to the embedding and reranker instances.
@@ -1978,7 +2179,11 @@ async def release_loaded_llms(*, include_helpers: bool = False) -> tuple[bool, s
             released_model_bytes += Path(str(item.get("model_path") or "")).stat().st_size
         except OSError:
             pass
-        ok, detail = await asyncio.to_thread(stop_instance, str(item.get("alias") or "llama"))
+        ok, detail = await asyncio.to_thread(
+            functools.partial(
+                stop_instance, str(item.get("alias") or "llama"), preserve_state=preserve_state
+            )
+        )
         if not ok:
             logger.warning("explicit llama release failed for %s: %s", item.get("alias"), detail)
             return False, "stop_failed", 0

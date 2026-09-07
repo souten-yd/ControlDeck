@@ -608,3 +608,68 @@ def test_a_silent_agent_tool_is_still_cut_and_canceled(monkeypatch):
 
     assert asyncio.run(scenario()) == "agent_tool_timeout"
     assert canceled == ["job-2"]
+
+
+# ── 退避のあいだ、会話の KV を RAM に預ける ────────────────────────────
+#
+# add-on が GPU を要ると LLM は降りる。降りると KV が消え、戻ったとき会話全体を
+# 読み直す。実測で 72,800 トークンの読み直しに 165 秒かかった。llama.cpp の
+# slot save を tmpfs へ向ければ、実体は RAM のままプロセスの死を跨げる
+# （実測: 2.0GB、保存 0.62 秒、復元 0.44 秒、復元後の処理は 7 トークン）。
+
+
+def test_prompt_state_is_preserved_only_for_addon_driven_release(monkeypatch, tmp_path):
+    import asyncio
+
+    from app.models_mgmt import llama
+
+    calls: list[dict] = []
+
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "llama", "loaded": True, "role": "llm", "model_path": str(tmp_path / "m.gguf")}
+    ])
+    monkeypatch.setattr(llama, "release_reason", lambda item, include_helpers=False: "")
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    def fake_stop(alias=None, *, preserve_state=False):
+        calls.append({"alias": alias, "preserve_state": preserve_state})
+        return True, "stopped"
+
+    monkeypatch.setattr(llama, "stop_instance", fake_stop)
+
+    asyncio.run(llama.release_loaded_llms(preserve_state=True))
+    asyncio.run(llama.release_loaded_llms())
+
+    assert [item["preserve_state"] for item in calls] == [True, False]
+
+
+def test_a_prompt_state_from_another_instance_is_discarded(monkeypatch, tmp_path):
+    """モデルや ctx が変われば、書き出した形と受け取る形が合わない。黙って捨てる。"""
+    import asyncio
+    import json
+
+    from app.models_mgmt import llama
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    instance = {"alias": "unit-test", "model_path": str(model), "ctx_size": 4096, "port": 65000}
+    monkeypatch.setattr(llama, "get_instance", lambda alias=None: instance)
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_ROOT", tmp_path / "kv")
+
+    directory = llama._kv_dir("unit-test", create=True)
+    (directory / "meta.json").write_text(
+        json.dumps({"fingerprint": "not-this-one", "slots": [{"slot": 0, "filename": "a.bin"}]}),
+        encoding="utf-8",
+    )
+
+    assert asyncio.run(llama.restore_prompt_state("unit-test")) == 0
+    assert not directory.exists(), "合わない状態を残している"
+
+
+def test_a_snapshot_is_refused_when_ram_would_run_out(monkeypatch, tmp_path):
+    """tmpfs は RAM を食う。逼迫すれば swap へ落ち、落ちた時点で速さの理由が
+    消える。そうなる前に預けない。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "KV_SNAPSHOT_MIN_AVAILABLE_BYTES", 1 << 62)
+    assert llama._kv_room_available(tmp_path, 1) is False
