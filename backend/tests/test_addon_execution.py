@@ -758,3 +758,34 @@ def test_the_snapshot_is_off_until_the_restored_slot_can_rewind(monkeypatch, tmp
 
     assert llama.save_prompt_state("unit-test") == 0
     assert not (tmp_path / "kv").exists(), "預けない設定で置き場を作っている"
+
+
+def test_the_addon_reason_reaches_the_caller(monkeypatch):
+    """Add-on が名乗った理由を握り潰さない。
+
+    握り潰していたとき何が起きたか（実機 2026-09-08）: OpenCode は「拡張機能の
+    実行に失敗しました」しか受け取れず、元画像が消えている（取り込み直せば直る）
+    のと GPU が空かない（待てば直る）のを区別できなかった。同じ呼び出しを 3 時間
+    で 8 回繰り返している。
+    """
+    import httpx
+
+    from app.addons import execution
+
+    def error(body: bytes) -> execution.AddonExecutionError:
+        return execution._upstream_error(
+            httpx.Response(status_code=502, content=body)
+        )
+
+    assert error(b'{"detail": {"code": "asset_not_found"}}').code == "asset_not_found"
+    assert error(b'{"code": "resource_unavailable"}').code == "resource_unavailable"
+    # 読めない応答は従来どおり。分からないことを分かったふりにしない。
+    assert error(b"not json").code == "upstream_error"
+    assert error(b'{"detail": "just a string"}').code == "upstream_error"
+    # 形の決まった短い符号だけを通す。Add-on の内部事情は流さない。
+    assert error(b'{"code": "/data1tb/secret/path"}').code == "upstream_error"
+    assert error(b'{"code": "Not A Code"}').code == "upstream_error"
+    assert error(b'{"code": "%s"}' % (b"x" * 200)).code == "upstream_error"
+    # 本文は通さない。符号だけを添える。
+    detailed = error(b'{"detail": {"code": "asset_not_found", "message": "/home/u/x.png"}}')
+    assert "/home" not in str(detailed) and "asset_not_found" in str(detailed)

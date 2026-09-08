@@ -30,7 +30,8 @@ def _resource_request(body: RuntimeResourceRequest, principal: RuntimePrincipal)
 
 async def _owned_request(principal: RuntimePrincipal, request_id: str):
     try:
-        value = await broker.request_status(request_id)
+        # poll してきたのは資源を要る側である。生きている限り待たせる。
+        value = await broker.keep_waiting(request_id)
     except BrokerError as exc:
         raise HTTPException(status_code=404, detail="Resource requestが見つかりません") from exc
     if value.owner != f"addon:{principal.addon_id}":
