@@ -546,6 +546,30 @@ def project_publish(
     return entry
 
 
+@router.post("/projects/{project_id}/publish/update")
+def project_republish(
+    project_id: str, request: Request,
+    user: User = Depends(require_permission("project_lab.publish")),
+    db: Session = Depends(get_db),
+):
+    """公開済みのものを、いまの中身で出し直す。公開先も公開範囲も前回のまま。"""
+    project_path = _project_or_404(project_id)
+    try:
+        entry = publish.republish(project_id, project_path)
+    except (publish.PublishError, export.ExportError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(
+        db, "project_lab.publish.update", user=user, resource_type="project",
+        resource_id=project_id, request=request,
+        metadata={
+            "repository": entry["repository"], "visibility": entry["visibility"],
+            "url": entry["url"], "files": entry["fileCount"],
+            "excluded": entry["excludedCount"],
+        },
+    )
+    return entry
+
+
 @router.delete("/projects/{project_id}/publish")
 def project_unpublish(
     project_id: str, request: Request,

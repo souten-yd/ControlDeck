@@ -929,11 +929,14 @@ export function defaultRepositoryName(projectId: string): string {
  * ——公開した事実とその取り消しは、離して置くと見つからない。
  */
 function PublishedAddress({
-  state, onUnpublish, busy,
+  state, onUnpublish, busy, onUpdate, updating, fileCount,
 }: {
   state: ProjectLabPublishState;
   onUnpublish: () => void;
   busy: boolean;
+  onUpdate: () => void;
+  updating: boolean;
+  fileCount?: number;
 }) {
   const [copied, setCopied] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -978,6 +981,19 @@ function PublishedAddress({
         >
           開く
         </a>
+        {/*
+          出し直しに設定を選ばせない。初回に選ぶのは「どこへ、どこまで見せるか」
+          であって、同じ場所への出し直しでそれは変わらない。毎回選ばせると、
+          内容を差し替えるだけの操作に公開範囲の判断が紛れ込む。
+        */}
+        <button
+          type="button"
+          disabled={updating || busy}
+          onClick={onUpdate}
+          className="min-h-9 rounded-xl bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-40"
+        >
+          {updating ? "更新しています…" : "最新の内容に更新"}
+        </button>
         <button
           type="button"
           disabled={busy}
@@ -991,6 +1007,13 @@ function PublishedAddress({
           {busy ? "取り下げ中…" : confirming ? "取り下げる（確定）" : "公開を取り下げる"}
         </button>
       </div>
+      {!confirming && (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-400">
+          更新は同じ場所（{state.repository} / {state.visibility}）へ、いまの
+          {fileCount === undefined ? "" : ` ${fileCount} 件の`}file を出し直します。
+          公開範囲を変えるときは、取り下げてから公開し直してください。
+        </p>
+      )}
       {confirming && !busy && (
         <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-400">
           ページは 404 になり、公開していた内容も消えます。リポジトリ {state.repository} 自体は残ります。
@@ -1036,6 +1059,14 @@ function PublishSection({ projectId }: { projectId: string }) {
       queryClient.invalidateQueries({ queryKey: ["project-lab-publish-plan", projectId] });
     },
     onError: (error) => show(error instanceof Error ? error.message : "取り下げに失敗しました", "error"),
+  });
+  const update = useMutation({
+    mutationFn: () => projectLabApi.republish(projectId),
+    onSuccess: (state) => {
+      show(`最新の内容を公開しました: ${state.url}`, "success");
+      queryClient.invalidateQueries({ queryKey: ["project-lab-publish-plan", projectId] });
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "更新に失敗しました", "error"),
   });
   const run = useMutation({
     mutationFn: () => projectLabApi.publish(projectId, {
@@ -1084,6 +1115,9 @@ function PublishSection({ projectId }: { projectId: string }) {
               state={plan.data.current}
               onUnpublish={() => unpublish.mutate()}
               busy={unpublish.isPending}
+              onUpdate={() => update.mutate()}
+              updating={update.isPending}
+              fileCount={plan.data.fileCount}
             />
           )}
           {blocked && (

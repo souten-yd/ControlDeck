@@ -337,6 +337,35 @@ def unpublish(project_id: str) -> dict[str, Any]:
     }
 
 
+def republish(project_id: str, project: Path) -> dict[str, Any]:
+    """公開済みのものを、いまの中身で出し直す。
+
+    公開先も公開範囲も前回のままで、選び直させない。初回に選ぶのは「どこへ、
+    どこまで見せるか」であって、それは一度決めれば同じ場所への出し直しで変わら
+    ない。毎回選ばせると、内容を差し替えるだけの操作に公開範囲の判断が紛れ込み、
+    かえって選択が形骸化する。
+
+    公開範囲を変えたいときは、この経路では変えられない。取り下げてから出し直す
+    か、通常の公開でもう一度選ぶ——変えるつもりのない操作で変わらないことが、
+    ここで守りたいことである。
+    """
+    state = get_state(project_id)
+    if not state:
+        raise PublishError("まだ公開していません。先に公開してください")
+    repository = str(state.get("repository") or "")
+    visibility = str(state.get("visibility") or "")
+    if not repository or visibility not in {"public", "private"}:
+        raise PublishError("公開の記録が読めません。取り下げてから公開し直してください")
+    return publish(
+        project_id,
+        project,
+        directory=state.get("directory"),
+        repository=repository,
+        visibility=visibility,
+        branch=str(state.get("branch") or "gh-pages"),
+    )
+
+
 def publish(project_id: str, project: Path, *, directory: str | None,
             repository: str, visibility: str, branch: str = "gh-pages") -> dict[str, Any]:
     """公開する。戻り値はそのまま画面と監査ログへ渡せる形にする。"""
