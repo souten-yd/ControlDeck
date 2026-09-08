@@ -272,6 +272,90 @@ def test_project_output_grant_tool_is_project_scoped_and_opaque(admin_client, mo
     assert denied.status_code == 404
 
 
+def test_project_input_grant_tool_reads_only_files_inside_the_project(admin_client, monkeypatch, tmp_path):
+    """project へ置いた絵を Add-on に読ませる券。
+
+    生成した物しか参照にできないと、下描きや既存のキャラ表を渡す道が無い。
+    取り込み口は Host の画面からしか届かないので、agent 側にこの入口を置く。
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.addon_runtime import grants
+    from app.addons import agent_mcp
+    from app.database import SessionLocal, get_db
+    from app.models import User
+    from app.project_lab import service as project_lab
+    from sqlalchemy import select
+
+    root = tmp_path / "CodeDEV"
+    assets = root / "game" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "hero.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"1" * 32)
+    (root / "game" / "linked.png").symlink_to(outside / "secret.png")
+    grant_data = tmp_path / "grant-data"
+    monkeypatch.setattr(project_lab, "project_root", lambda: root)
+    monkeypatch.setattr(grants, "data_dir", lambda: grant_data)
+    monkeypatch.setattr(grants.files, "resolve", lambda value: Path(value).resolve(strict=True))
+    monkeypatch.setattr(agent_mcp, "_eligible_input_addons", lambda _permissions: ["fake-addon"])
+    monkeypatch.setattr(agent_mcp, "_eligible_output_addons", lambda _permissions: [])
+
+    async def no_addon_tools(_permissions):
+        return []
+
+    monkeypatch.setattr(agent_mcp.execution, "agent_mcp_tools", no_addon_tools)
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+    app = FastAPI()
+    app.include_router(agent_mcp.router, prefix="/api/v1")
+
+    def database():
+        with SessionLocal() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database
+    local_client = TestClient(app)
+    scoped = agent_mcp.issue_opencode_token(user.id, "project-input", project_id="game")
+    headers = {"Authorization": f"Bearer {scoped}", "X-Requested-With": "ControlDeck"}
+    listed = local_client.get("/api/v1/addons/agent-mcp/tools", headers=headers)
+    assert [tool["name"] for tool in listed.json()["tools"]] == [agent_mcp.PROJECT_INPUT_GRANT_TOOL]
+
+    def call(path):
+        return local_client.post(
+            "/api/v1/addons/agent-mcp/call",
+            headers=headers,
+            json={"name": agent_mcp.PROJECT_INPUT_GRANT_TOOL, "arguments": {
+                "addon_id": "fake-addon", "relative_path": path,
+            }},
+        )
+
+    created = call("assets/hero.png")
+    assert created.status_code == 200, created.text
+    assert created.json()["kind"] == "read"
+    # 券だけを返す。host の path は外へ出さない。
+    assert created.json()["grant_id"].startswith("grant:") and str(root) not in created.text
+    # symlink で project の外を指しても通さない。
+    assert call("linked.png").status_code == 422
+    assert call("../outside/secret.png").status_code == 422
+    assert call("/etc/hostname").status_code == 422
+    # directory は読み取りの券にならない。
+    assert call("assets").status_code == 422
+
+    unscoped = agent_mcp.issue_opencode_token(user.id, "no-project")
+    unscoped_headers = {"Authorization": f"Bearer {unscoped}", "X-Requested-With": "ControlDeck"}
+    assert local_client.get("/api/v1/addons/agent-mcp/tools", headers=unscoped_headers).json()["tools"] == []
+    denied = local_client.post(
+        "/api/v1/addons/agent-mcp/call",
+        headers=unscoped_headers,
+        json={"name": agent_mcp.PROJECT_INPUT_GRANT_TOOL, "arguments": {
+            "addon_id": "fake-addon", "relative_path": "assets/hero.png",
+        }},
+    )
+    assert denied.status_code == 404
+
+
 def test_published_tool_schema_drops_length_bounds_but_validation_keeps_them(monkeypatch):
     """モデルへ出すスキーマから長さ制約を落とす（検証側の制約は残す）。
 
