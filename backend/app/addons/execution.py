@@ -50,6 +50,41 @@ def _client(timeout: float) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
 
 
+# Add-on が名乗った失敗の理由。呼び出し側が自分で直せるものだけを通す。
+#
+# 通さなかったとき何が起きたか（実機、2026-09-08）: OpenCode は「拡張機能の実行に
+# 失敗しました」しか受け取れず、元画像が消えている（取り込み直せば直る）のと GPU が
+# 空かない（待てば直る）のを区別できなかった。同じ呼び出しを 3 時間で 8 回繰り返し、
+# 最後は他プロセスの環境変数から token を読み出して API を手で叩き始めた。
+#
+# 丸ごと通さないのは、Add-on の内部事情（path、内部 ID、例外の文面）を呼び出し側へ
+# 流さないためである。形の決まった短い符号だけを通し、本文は通さない。
+_UPSTREAM_CODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+
+
+def _upstream_error(response: httpx.Response) -> "AddonExecutionError":
+    """Add-on の応答から、呼び出し側へ返してよい符号を取り出す。
+
+    取り出せなければ従来どおり `upstream_error` にする。読めない応答を理由に
+    実行を別扱いしない——分からないことを分かったふりにしない。
+    """
+    code = ""
+    try:
+        body = json.loads(response.content[:RESPONSE_LIMIT_BYTES])
+    except (json.JSONDecodeError, ValueError):
+        body = None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    for candidate in (detail, body):
+        if isinstance(candidate, dict) and isinstance(candidate.get("code"), str):
+            code = candidate["code"]
+            break
+    if not _UPSTREAM_CODE.fullmatch(code):
+        return AddonExecutionError("拡張機能の実行に失敗しました", code="upstream_error")
+    return AddonExecutionError(
+        f"拡張機能の実行に失敗しました（{code}）", code=code,
+    )
+
+
 def workflow_node_type(addon_id: str, contribution_id: str) -> str:
     return f"{WORKFLOW_NODE_PREFIX}{addon_id}:{contribution_id}"
 
@@ -215,7 +250,7 @@ async def invoke(
             raise AddonExecutionError("拡張機能のredirectは許可されていません", code="redirect_rejected")
         if response.status_code >= 400:
             result = "upstream_error"
-            raise AddonExecutionError("拡張機能の実行に失敗しました", code="upstream_error")
+            raise _upstream_error(response)
         output = _decode_json(response.content, label="execution response", limit=RESPONSE_LIMIT_BYTES)
         # Disable/unavailable races fail closed even if the upstream already returned.
         if permissions is None:

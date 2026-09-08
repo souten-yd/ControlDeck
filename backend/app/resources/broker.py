@@ -159,9 +159,37 @@ class ResourceBroker:
             await self.expire_due()
         return await self.request_status(request_id)
 
+    # 頼んでいる側が生きている限り、待っている要求を時計で切らない。
+    #
+    # 切っていたときに何が起きたか（実機、2026-09-08）: GPU を空けるのに LLM の
+    # drain（上限 120 秒）が要るのに、要求の側が 300 秒で期限切れになり、
+    # `resource_unavailable` として 21 件連続で落ちた。空くまで待てば通るもので、
+    # 待てなかったのは時計のせいだけである。
+    #
+    # 打ち切る条件は「頼んだ側が応答しなくなったとき」にする。job が死ねば poll も
+    # 止まり、そこから RECLAIM_GRACE_SEC で期限が来る。生きている限りは待つ——
+    # 待ち時間の上限を決めるのは、資源を要る側とその job であって broker ではない。
+    RECLAIM_GRACE_SEC = 60.0
+
     async def request_status(self, request_id: str) -> RequestStatus:
         async with self._lock:
             return self._copy_status(self._required_request(request_id).status)
+
+    async def keep_waiting(self, request_id: str) -> RequestStatus:
+        """頼んだ側がまだ待っていることを申告する。待っている限り期限を延ばす。
+
+        `request_status` と分けてあるのは、状態を読むのが頼んだ側だけではない
+        からである（画面も broker 自身も読む）。読まれたことではなく、要る側が
+        まだ生きていることだけを期限の根拠にする。
+        """
+        async with self._lock:
+            record = self._required_request(request_id)
+            if record.status.state == RequestState.WAITING:
+                # 縮めない。最初に約束した max_wait_sec より短くはしない。
+                record.status.deadline_at = max(
+                    record.status.deadline_at, self._clock() + self.RECLAIM_GRACE_SEC,
+                )
+            return self._copy_status(record.status)
 
     async def request_statuses(self) -> list[RequestStatus]:
         async with self._lock:
@@ -406,7 +434,7 @@ class ResourceBroker:
                     # 推論の後始末（lease の更新と解放）も同じ lock を要るため
                     # 進めなくなり、drain が終わらないまま期限切れになる。実際
                     # broker ごと固まり、/resources すら返らなくなった。
-                    self._want_room(record.request)
+                    self._want_room(record.request, record.status.request_id)
                 if fit.device_id is not None:
                     lease = self.leases.grant(
                         candidate.request_id,
@@ -495,14 +523,21 @@ class ResourceBroker:
         best = candidates[0]
         return _Fit(best[3], None, granted_bytes=best[4])
 
-    def _want_room(self, request: ResourceRequest) -> None:
+    def _want_room(self, request: ResourceRequest, request_id: str) -> None:
         """退去要求を lock の外で走らせる。同時に何本も走らせない。"""
         task = self._room_task
         if task is not None and not task.done():
             return
-        self._room_task = asyncio.create_task(self._make_room(request))
+        self._room_task = asyncio.create_task(self._make_room(request, request_id))
 
-    async def _make_room(self, request: ResourceRequest) -> None:
+    async def _make_room(self, request: ResourceRequest, request_id: str) -> None:
+        """置き場所が無い要求のために、使っていない provider へ退去を頼む。
+
+        1 度で通らなくても、この要求は待ち続ける。頼み直す引き金は device の
+        再走査（2 秒ごと）が引く `_schedule_locked` で、そこから改めてここへ
+        来る。断られる理由のほとんどは「いま使用中」であり、待てば変わる。
+        """
+        del request_id
         try:
             made = await self._ask_for_room(request)
         except Exception:  # noqa: BLE001 - 退去の失敗で admission を止めない

@@ -242,3 +242,44 @@ def test_release_request_leaves_other_devices_alone():
     marked, held = run(scenario())
     assert marked == 0
     assert len(held) == 1 and held[0].release_requested is False
+
+
+def test_a_waiting_request_is_not_cut_off_by_the_clock():
+    """待っている要求を時計で打ち切らない。打ち切るのは頼んだ側が居なくなったとき。
+
+    実機 2026-09-08: GPU を空けるのに LLM の drain（上限 120 秒）が要るのに、
+    要求の側が先に期限切れになり `resource_unavailable` として 21 件連続で
+    落ちた。空くまで待てば通るもので、待てなかったのは時計のせいだけである。
+    """
+    async def scenario():
+        broker = ResourceBroker(fake_devices(100))
+        clock = [1000.0]
+        broker._clock = lambda: clock[0]
+        blocker = await broker.submit(request("addon:a", "a", 80))
+        waiter = await broker.submit(request("addon:b", "b", 40, max_wait=30))
+        assert blocker.state == RequestState.GRANTED
+        assert waiter.state == RequestState.WAITING
+        original = waiter.deadline_at
+
+        # 頼んだ側が「まだ待っている」と申告すると、期限は先へ延びる。
+        clock[0] += 1
+        asked = await broker.keep_waiting(waiter.request_id)
+
+        # 元の期限を過ぎても、申告があるので切られない。塞いでいる側は
+        # 生きている（lease を更新している）ので、空きは出ない。
+        clock[0] = original + 1
+        await broker.renew(blocker.lease_id)
+        await broker.expire_due()
+        still = await broker.request_status(waiter.request_id)
+
+        # 申告が止まれば、猶予のあとで期限が来る。
+        clock[0] = asked.deadline_at + 1
+        await broker.renew(blocker.lease_id)
+        await broker.expire_due()
+        gone = await broker.request_status(waiter.request_id)
+        return original, asked, still, gone
+
+    original, asked, still, gone = run(scenario())
+    assert asked.deadline_at > original, "申告しても期限が延びていない"
+    assert still.state == RequestState.WAITING, "頼んでいるのに時計で切られた"
+    assert gone.state == RequestState.EXPIRED, "誰も待っていないのに残り続けた"
