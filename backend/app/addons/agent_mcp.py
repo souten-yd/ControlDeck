@@ -34,6 +34,13 @@ MCP_CLIENT_TIMEOUT_MS = 3_600_000
 _SUBJECT = re.compile(r"^opencode:[A-Za-z0-9_-]{1,64}$")
 PROJECT_OUTPUT_GRANT_TOOL = "control_deck.project_output_grant"
 _OUTPUT_CAPABILITIES = {"projects.pick", "files.export"}
+# 逆向きの入口。project の中の file を add-on に「読ませる」ための grant を作る。
+#
+# 生成された物を参照にするのは出来ていたが、利用者が project へ置いた絵——下描き、
+# 既存のキャラ表、UI の当たり——を渡す道が無かった。add-on の取り込み口は Host の
+# 画面からしか届かず、agent からは手が出せない。
+PROJECT_INPUT_GRANT_TOOL = "control_deck.project_input_grant"
+_INPUT_CAPABILITIES = {"projects.pick", "files.pick"}
 
 
 class AgentMcpCall(BaseModel):
@@ -161,11 +168,65 @@ def _project_output_tool(project_id: object, permissions: set[str]) -> dict[str,
     }
 
 
-def _resolve_project_directory(project_id: str, relative_directory: object) -> Path:
+def _eligible_input_addons(permissions: set[str]) -> list[str]:
+    # 読むだけなので、書く側（files.edit）は要らない。project を見られる人が
+    # 既に見られる file を、その project の add-on に渡すだけである。
+    if "project_lab.view" not in permissions:
+        return []
+    addon_ids = {str(item["addon_id"]) for item in execution.discover("agent_tools", permissions)}
+    eligible: list[str] = []
+    for addon_id in sorted(addon_ids):
+        try:
+            current = registry.status(addon_id)
+        except registry.AddonRegistryError:
+            continue
+        if current.get("enabled") and _INPUT_CAPABILITIES.issubset(current.get("granted_capabilities", [])):
+            eligible.append(addon_id)
+    return eligible
+
+
+def _project_input_tool(project_id: object, permissions: set[str]) -> dict[str, Any] | None:
+    if not isinstance(project_id, str):
+        return None
+    addons = _eligible_input_addons(permissions)
+    if not addons:
+        return None
+    return {
+        "name": PROJECT_INPUT_GRANT_TOOL,
+        "description": (
+            "現在のControl Deck project内のfileを、選択したAdd-onに読ませるための短期grantを"
+            "作成します。返ったgrant_idは、そのAdd-onのtoolで参照画像などとして渡せます。"
+        ),
+        "inputSchema": execution.model_facing_schema({
+            "type": "object",
+            "properties": {
+                "addon_id": {"type": "string", "enum": addons},
+                "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+            },
+            "required": ["addon_id", "relative_path"],
+            "additionalProperties": False,
+        }),
+    }
+
+
+def _resolve_project_file(project_id: str, relative_path: object) -> Path:
+    """project の中の file を指す。指せなければ理由を言って断る。
+
+    directory 版と同じ道筋を通す——`..` も絶対 path も symlink での抜けも、
+    解決した後に project の中かどうかで見る。
+    """
+    resolved = _resolve_project_member(project_id, relative_path)
+    if not resolved.is_file():
+        raise HTTPException(status_code=422, detail="project内のfileを指定してください")
+    return resolved
+
+
+def _resolve_project_member(project_id: str, relative_directory: object) -> Path:
+    """project の中の一点を指す。file か directory かはここでは見ない。"""
     if not isinstance(relative_directory, str) or len(relative_directory) > 512:
-        raise HTTPException(status_code=422, detail="project directoryが不正です")
+        raise HTTPException(status_code=422, detail="project内のpathが不正です")
     if "\\" in relative_directory:
-        raise HTTPException(status_code=422, detail="project directoryが不正です")
+        raise HTTPException(status_code=422, detail="project内のpathが不正です")
     normalized = relative_directory
     parts = normalized.split("/")
     if (
@@ -177,9 +238,16 @@ def _resolve_project_directory(project_id: str, relative_directory: object) -> P
         project = project_lab.resolve_project(project_id)
         resolved = (project / normalized).resolve(strict=True)
     except (project_lab.ProjectLabError, FileNotFoundError, OSError) as exc:
-        raise HTTPException(status_code=422, detail="project directoryが見つかりません") from exc
-    if not resolved.is_dir() or not resolved.is_relative_to(project):
-        raise HTTPException(status_code=422, detail="project外のdirectoryは指定できません")
+        raise HTTPException(status_code=422, detail="project内のpathが見つかりません") from exc
+    if not resolved.is_relative_to(project):
+        raise HTTPException(status_code=422, detail="project外は指定できません")
+    return resolved
+
+
+def _resolve_project_directory(project_id: str, relative_directory: object) -> Path:
+    resolved = _resolve_project_member(project_id, relative_directory)
+    if not resolved.is_dir():
+        raise HTTPException(status_code=422, detail="project内のdirectoryを指定してください")
     return resolved
 
 
@@ -233,9 +301,10 @@ async def list_tools(
     _offer_renewal(response, claims)
     permissions = user_permissions(user)
     tools = await execution.agent_mcp_tools(permissions)
-    project_tool = _project_output_tool(claims.get("project_id"), permissions)
-    if project_tool is not None:
-        tools.append(project_tool)
+    for factory in (_project_output_tool, _project_input_tool):
+        project_tool = factory(claims.get("project_id"), permissions)
+        if project_tool is not None:
+            tools.append(project_tool)
     return {"tools": tools}
 
 
@@ -276,6 +345,34 @@ async def call_tool(
             resource_id=addon_id,
             request=request,
             metadata={"project_id": project_id, "directory_depth": len(Path(str(relative_directory)).parts)},
+        )
+        return result
+    if body.name == PROJECT_INPUT_GRANT_TOOL:
+        project_id = claims.get("project_id")
+        available = _project_input_tool(project_id, permissions)
+        addon_id = body.arguments.get("addon_id")
+        relative_path = body.arguments.get("relative_path")
+        allowed = (
+            available is not None
+            and isinstance(addon_id, str)
+            and addon_id in available["inputSchema"]["properties"]["addon_id"]["enum"]
+            and set(body.arguments) == {"addon_id", "relative_path"}
+        )
+        if not allowed or not isinstance(project_id, str):
+            raise HTTPException(status_code=404, detail="project input grant toolが見つかりません")
+        target_file = _resolve_project_file(project_id, relative_path)
+        try:
+            result = runtime_grants.create(addon_id, user.id, str(target_file), "read")
+        except runtime_grants.GrantError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        audit.record(
+            db,
+            "addon.agent_mcp.project_input_grant",
+            user=user,
+            resource_type="addon",
+            resource_id=addon_id,
+            request=request,
+            metadata={"project_id": project_id, "path_depth": len(Path(str(relative_path)).parts)},
         )
         return result
     target = await execution.agent_mcp_target(body.name, permissions)
