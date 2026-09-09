@@ -122,10 +122,14 @@ class ResourceBroker:
                 await self._schedule_locked(now)
             room = self._room_task
 
-        # 退去を頼んでいる最中なら、その結果まで見てから断じる。ここで待つのは
-        # lock の外である。中で待つと、退く側が抱えている推論の後始末も同じ lock を
-        # 要るので進めず、drain が終わらないまま固まる。
-        if room is not None and record.status.state == RequestState.WAITING:
+        # queue は受付IDを先に返し、退去中も呼出側がpoll/cancelできるようにする。
+        # max_wait_secまでHTTPを保持すると、clientのtimeoutでIDが未受信になる。
+        # fail_fastだけは既存どおり退去結果を見てから判定する。待ちはlockの外。
+        if (
+            request.on_insufficient == "fail_fast"
+            and room is not None
+            and record.status.state == RequestState.WAITING
+        ):
             await asyncio.wait({room}, timeout=request.max_wait_sec)
 
         async with self._lock:

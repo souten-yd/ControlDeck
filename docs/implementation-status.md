@@ -1,6 +1,34 @@
 # 実装状況
 
-最終更新: 2026-09-06
+最終更新: 2026-09-10
+
+## Queue資源予約の受付IDを退避完了前に返す（2026-09-10）
+
+Hostが発行した未受信の予約IDをAdd-onだけでは照会・取消できないため、汎用Brokerを
+別branch fix/resource-queue-receipt（base6d3cd2a）で修正。Media固有コードは追加しない。
+従来submitはqueueでもprovider退避taskをmax_wait_sec（既定300秒）まで待っていた。
+queueでは現在状態/IDを先に返し、退避をBrokerの既存taskへ残す。fail_fastの退避判定と
+acquireの待機動作は維持。timeout値の延長、公開schema追加、同期I/O追加は行わない。
+任意の応答喪失に対する冪等再送・未受信IDの回収を完成させたとはしない。
+
+新5testsはgate付きproviderで、退避前受付/照会/取消、取消済み要求を後でgrantしないこと、
+正常待機のgrant、fail_fastの成功/拒否、acquireの待機を検査。修正前2 failed/3 passed、
+修正後の関連5filesは58 passed/既知warning1/3.78秒。
+`PYTHONPATH=backend .venv/bin/python tools/resource-queue-receipt-smoke.py` は隔離transient
+systemd/Uvicornへ実HTTPを送信し、provider退避をgateで止めたまま202/IDを0.001068秒で受信。
+同IDのGET/DELETE、別要求の退避後grant/release、最終lease0を確認。全0.194703秒/exit0。
+証跡 `/tmp/cd-resource-receipt-chdal_xh/observations.json`。専用unitはfinallyで停止/inactive。
+初回smokeはfixture内の型annotation解決がquery扱いとなり422/exit1、import位置を修正。
+実GPU/provider/installed認証routeではなく、production Brokerの実network fixture受入。
+
+frontend build成功（Vite20.47秒、既知large chunk warning）。初回backend全gateは
+1064 passed/2 failed/2 skipped/96.28秒。2失敗は新worktreeの.venv不在を検査する
+terminal automation試験で、既存Host venvへの参照を準備して全gateを再実行。
+最終 `./deck.sh test`:1066 passed/2 skipped/既知warning1/95.08秒、exit0。
+新module/scriptのcompileallとgit diff --checkも成功。
+本番Host PID1141433/activeを保持し、PC/Host/MediaForge再起動なし。
+NOT TESTED: installed Host→Add-onの同条件受入、実GPU退避、PC/320pxの画面操作。
+backendのみの修正でUI/source bundle配布物は変更しない。導入済み修正とは案内しない。
 
 ## Embedded Add-onの動的locale通知（2026-09-06、candidate）
 

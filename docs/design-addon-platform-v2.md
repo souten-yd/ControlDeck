@@ -954,6 +954,14 @@ backend/app/resources/
   → **物理的に入り得ない要求**（固定予約を差し引いても不足）は
   `queue` 指定でも即 `insufficient_capacity` を返す（§C5）
 
+2026-09-10追補: `queue` の受付はproviderの退避完了を待たず、現在の状態と
+`request_id`をHTTP 202で返す。退避・再配置はBroker管理taskで継続し、呼出側は
+受信したIDで照会・取消する。`max_wait_sec`は予約の待機期限であり、受付HTTPを
+その時間保持する指定ではない。`fail_fast`は従来どおり退避結果を待ってから判定し、
+内部の`acquire()`は受付後の待機を含む。公開field・状態・権限契約は変更しない。
+この変更は退避待ちに起因する受付timeoutを防ぐもので、任意の応答喪失に対する
+冪等再送・未受信ID回収まで保証するものではない。
+
 ### 8.3 wait reason（UX直結・enum固定）
 
 ```text
