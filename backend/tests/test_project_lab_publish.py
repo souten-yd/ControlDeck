@@ -274,3 +274,49 @@ def test_unpublish_empties_the_branch_when_it_cannot_be_deleted(monkeypatch, tmp
     assert result["removed"] == ["contents"]
     assert pushed, "中身の置き換えを push していない"
     assert "--force" in pushed[-1][0], "履歴を積むと消した事実を後から消せない"
+
+
+# ── 出し直し ────────────────────────────────────────────────────────────
+#
+# 初回に選ぶのは「どこへ、どこまで見せるか」であって、同じ場所への出し直しで
+# それは変わらない。毎回選ばせると、内容を差し替えるだけの操作に公開範囲の
+# 判断が紛れ込み、選択そのものが形骸化する。
+
+
+def test_republish_reuses_where_and_how_far_it_was_published(site: Path, monkeypatch):
+    recorded: dict[str, object] = {}
+
+    def fake_publish(project_id, project, *, directory, repository, visibility, branch="gh-pages"):
+        recorded.update({
+            "directory": directory, "repository": repository,
+            "visibility": visibility, "branch": branch,
+        })
+        return {"url": "https://example.test/", "repository": repository}
+
+    monkeypatch.setattr(publish, "get_state", lambda _id: {
+        "repository": "souten-yd/lab-project",
+        "visibility": "public",
+        "branch": "gh-pages",
+        "directory": "dist",
+    })
+    monkeypatch.setattr(publish, "publish", fake_publish)
+
+    publish.republish("demo", site)
+
+    assert recorded == {
+        "directory": "dist", "repository": "souten-yd/lab-project",
+        "visibility": "public", "branch": "gh-pages",
+    }
+
+
+def test_republish_refuses_when_nothing_is_published(site: Path, monkeypatch):
+    monkeypatch.setattr(publish, "get_state", lambda _id: None)
+    with pytest.raises(publish.PublishError, match="まだ公開していません"):
+        publish.republish("demo", site)
+
+
+def test_republish_refuses_an_unreadable_record(site: Path, monkeypatch):
+    """記録が壊れていたら黙って既定へ倒さない。public で出す事故を作らない。"""
+    monkeypatch.setattr(publish, "get_state", lambda _id: {"repository": "", "visibility": ""})
+    with pytest.raises(publish.PublishError, match="記録が読めません"):
+        publish.republish("demo", site)

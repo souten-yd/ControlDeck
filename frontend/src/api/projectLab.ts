@@ -153,6 +153,11 @@ export const projectLabApi = {
     api<ProjectLabPublishState>(`/project-lab/projects/${encodeURIComponent(id)}/publish`, {
       method: "POST", json: body,
     }),
+  /** 公開済みのものを、いまの中身で出し直す。公開先も公開範囲も前回のまま。 */
+  republish: (id: string) =>
+    api<ProjectLabPublishState>(
+      `/project-lab/projects/${encodeURIComponent(id)}/publish/update`, { method: "POST" },
+    ),
   /** iframeプレビュー用の短命token。sandboxの不透明originからはcookieが送れないため。 */
   previewToken: (id: string) => api<{ token: string; expires_in: number }>(
     `/project-lab/projects/${encodeURIComponent(id)}/preview-token`, { method: "POST" },

@@ -400,10 +400,34 @@ async def agent_mcp_tools(permissions: set[str]) -> list[dict[str, Any]]:
             label = label.get("ja") or label.get("en") or contribution["id"]
         result.append({
             "name": _mcp_tool_name(contribution, duplicate_ids),
-            "description": f"{contribution['addon_id']} Add-on: {label}"[:240],
+            "description": _agent_tool_description(
+                str(contribution["addon_id"]), str(label), input_schema
+            ),
             "inputSchema": model_facing_schema(input_schema),
         })
     return result
+
+
+# 道具の説明に使える長さ。label は画面に出す名前で 80 字までと決まっており、
+# そこに使い方は書けない。使い方は Add-on が契約（入力 schema）の側に書いている。
+AGENT_TOOL_DESCRIPTION_LIMIT = 1200
+
+
+def _agent_tool_description(addon_id: str, label: str, input_schema: Any) -> str:
+    """道具の一覧に出す説明を作る。
+
+    label だけを出していた。label は画面に出す名前なので、一覧を見て道具を選ぶ
+    側には「何をするものか」しか伝わらず、順番や前提が伝わらない（SonicForge で
+    は、先に声を作らないと台詞ごとに別人の声になることが一覧から見えなかった）。
+
+    使い方は Add-on が入力 schema の説明に書いている。そこまで読む使い方なら
+    元から正しく使えていたが、一覧で選ぶ使い方には届いていなかった。届ける。
+    """
+    head = f"{addon_id} Add-on: {label}"
+    detail = input_schema.get("description") if isinstance(input_schema, dict) else None
+    if not isinstance(detail, str) or not detail.strip():
+        return head[:AGENT_TOOL_DESCRIPTION_LIMIT]
+    return f"{head}\n\n{detail.strip()}"[:AGENT_TOOL_DESCRIPTION_LIMIT]
 
 
 async def agent_mcp_target(name: str, permissions: set[str]) -> tuple[str, str] | None:

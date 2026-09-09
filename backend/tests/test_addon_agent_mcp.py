@@ -57,6 +57,49 @@ def test_agent_mcp_catalog_uses_public_ids_and_namespaces_duplicates(monkeypatch
     )
 
 
+def test_the_tool_listing_carries_what_the_addon_wrote_in_its_contract(monkeypatch):
+    """一覧に出す説明へ、Add-on が契約に書いた使い方を載せる。
+
+    label だけを出していた。label は画面に出す名前で 80 文字までと決まっており、
+    そこに使い方は書けない。一覧を見て道具を選ぶ側には「何をするものか」しか
+    伝わらず、順番や前提が伝わらなかった（SonicForge では、先に声を作らないと
+    台詞ごとに別人の声になることが一覧から見えなかった）。
+    """
+    from app.addons import execution
+
+    monkeypatch.setattr(
+        execution,
+        "discover",
+        lambda kind, permissions: [{
+            "addon_id": "sonic-forge",
+            "id": "sonic.voice.create",
+            "label": "Create a character voice",
+            "schema_path": "/schemas/voice-create-request.json",
+        }],
+    )
+
+    async def schema(addon_id, contribution_id, *, permissions):
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "description": "先に声を作る。作らないと台詞ごとに別人の声になる。",
+        }
+
+    monkeypatch.setattr(execution, "agent_schema", schema)
+    tools = asyncio.run(execution.agent_mcp_tools({"workflows.run"}))
+    description = tools[0]["description"]
+    assert description.startswith("sonic-forge Add-on: Create a character voice")
+    assert "作らないと台詞ごとに別人の声になる" in description
+
+    # 契約に説明が無い Add-on は、これまでどおり label だけになる。
+    async def bare(addon_id, contribution_id, *, permissions):
+        return {"type": "object", "additionalProperties": False}
+
+    monkeypatch.setattr(execution, "agent_schema", bare)
+    tools = asyncio.run(execution.agent_mcp_tools({"workflows.run"}))
+    assert tools[0]["description"] == "sonic-forge Add-on: Create a character voice"
+
+
 def test_stdio_bridge_protocol_and_tool_result(monkeypatch):
     from app.integrations.opencode import addon_mcp_bridge as bridge
 
