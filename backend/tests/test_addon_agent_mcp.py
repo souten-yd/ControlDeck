@@ -183,6 +183,26 @@ def test_stdio_bridge_marks_host_post_as_control_deck_request(monkeypatch):
     assert bridge.CALL_TIMEOUT_SECONDS >= 600
 
 
+def test_runtime_config_lets_opencode_drop_old_tool_output(monkeypatch, tmp_path):
+    """古い道具の出力を捨てられるようにする。
+
+    OpenCode の剪定は既定 false である。切ったままだと、忘れる仕組みが一つも
+    動かない——自動圧縮のほうも model.limit.context が無いと発火しないので、
+    実測ではモデルが断ってから畳む後追いだけが起きていた（793 session 中 19 件
+    の圧縮のうち 17 件が後追い、先回りは 0 件）。
+
+    剪定は会話も判断も壊さない。完了した tool の出力だけが対象で、直近
+    40,000 tokens 分は残る。頂点 100k を超えた 13 session で見積もると平均
+    51.7% が空く。
+    """
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
+    config = provider._runtime_config("prune", "http://127.0.0.1:8090/v1", "local")
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    assert payload["compaction"]["prune"] is True
+
+
 def test_runtime_config_projects_mcp_only_with_user_authority(monkeypatch, tmp_path):
     from app.addons import agent_mcp
     from app.integrations.opencode import provider
