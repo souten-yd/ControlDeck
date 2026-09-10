@@ -44,9 +44,17 @@ class AmdGpuSettings(BaseModel):
     enabled: bool = False
     profile: Literal["quiet", "balanced", "full", "custom"] = "quiet"
     power_limit_watts: int = Field(default=210, ge=1, le=2000)
-    memory_clock_mode: Literal["auto", "minimum", "limit"] = "auto"
+    # auto     GPU に任せる（負荷で上下する）
+    # minimum  最低段に張り付かせる
+    # limit    0 段目から level までを許す（上限を決めるだけで、下も使う）
+    # maximum  最高段に張り付かせる
+    #
+    # limit は「上限」であって「固定」ではない。level に最大段を指定しても全域が
+    # 使えるだけで、auto と変わらない。推論は帯域で決まるので、上げっぱなしに
+    # したいときは maximum を使う。
+    memory_clock_mode: Literal["auto", "minimum", "limit", "maximum"] = "auto"
     memory_clock_level: int = Field(default=0, ge=0, le=63)
-    core_clock_mode: Literal["auto", "limit"] = "auto"
+    core_clock_mode: Literal["auto", "limit", "maximum"] = "auto"
     core_clock_level: int = Field(default=0, ge=0, le=63)
 
 

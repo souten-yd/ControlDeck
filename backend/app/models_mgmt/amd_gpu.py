@@ -34,7 +34,7 @@ def preflight_argvs(profile: object) -> list[list[str]]:
     if not AMD_SMI.is_file():
         return []
     prefix = ["sudo", "-n", str(AMD_SMI)]
-    commands = [prefix + ["set", "-g", caps["bdf"], "-o", "ppt0", watts],
+    commands = [prefix + ["set", "-g", caps["bdf"], "-o", *_power_cap_args(watts)],
                 prefix + ["set", "-g", caps["bdf"], "-l", "AUTO"]]
     if memory_mode != "auto" or core_mode != "auto":
         commands.append(prefix + ["set", "-g", caps["bdf"], "-l", "MANUAL"])
@@ -42,10 +42,62 @@ def preflight_argvs(profile: object) -> list[list[str]]:
         selected = 0 if memory_mode == "minimum" else memory_level
         commands.append(prefix + ["set", "-g", caps["bdf"], "-c", "mclk",
                                   *(str(i) for i in range(selected + 1))])
+    elif memory_mode == "maximum":
+        # 最高段だけを許す。段を並べると下も使えてしまい、上げっぱなしにならない。
+        top = _top_level(caps["memory"]["levels"])
+        if top is not None:
+            commands.append(prefix + ["set", "-g", caps["bdf"], "-c", "mclk", str(top)])
     if core_mode == "limit":
         commands.append(prefix + ["set", "-g", caps["bdf"], "-c", "sclk",
                                   *(str(i) for i in range(core_level + 1))])
+    elif core_mode == "maximum":
+        top = _top_level(caps["core"]["levels"])
+        if top is not None:
+            commands.append(prefix + ["set", "-g", caps["bdf"], "-c", "sclk", str(top)])
     return commands
+
+
+def _top_level(levels: list[dict]) -> int | None:
+    """段の一覧から最高段の番号を返す。
+
+    番号は 0 始まりとは限らない（core は 1 から始まる機体があった）ので、
+    数え上げではなく実際に載っている番号の最大を取る。
+    """
+    numbers = [int(item["level"]) for item in levels if "level" in item]
+    return max(numbers) if numbers else None
+
+
+def _power_cap_args(watts: str) -> list[str]:
+    """`-o` の引数の並び。amd-smi の版で入れ替わっている。
+
+        ROCm 7.x   amd-smi set -o ppt0 210     種類 → ワット数
+        ROCm 10    amd-smi set -o 210 ppt0     ワット数 → 種類
+
+    間違えると status=2 で弾かれ、llama.cpp の起動そのものが失敗する（実機で
+    ROCm 10 を入れた直後にこれが起きた。alternatives が /usr/bin/amd-smi を
+    ROCm 10 側へ切り替えるため、ROCm を入れただけで壊れる）。
+
+    版を見るのではなく、help に書かれている並びを読む。版の付け方はこれからも
+    変わりうるが、help の記述は引数の実体と一緒に動く。
+    """
+    if _POWER_CAP_WATTS_FIRST:
+        return [watts, "ppt0"]
+    return ["ppt0", watts]
+
+
+def _watts_first() -> bool:
+    if not AMD_SMI.is_file():
+        return False
+    try:
+        out = subprocess.run([str(AMD_SMI), "set", "--help"], capture_output=True,
+                             timeout=20, check=False).stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # 7.x: "-o, --power-cap PWR_TYPE WATTS"  /  10: "-o, --power-cap WATTS [[PWR_TYPE]"
+    return bool(re.search(r"--power-cap\s+WATTS", out))
+
+
+_POWER_CAP_WATTS_FIRST = _watts_first()
 
 
 def _read_int(path: Path) -> int | None:
