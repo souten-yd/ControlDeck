@@ -50,8 +50,12 @@ class AmdGpuSettings(BaseModel):
     # maximum  最高段に張り付かせる
     #
     # limit は「上限」であって「固定」ではない。level に最大段を指定しても全域が
-    # 使えるだけで、auto と変わらない。推論は帯域で決まるので、上げっぱなしに
-    # したいときは maximum を使う。
+    # 使えるだけで、auto と変わらない。上げっぱなしにしたいときは maximum を使う。
+    #
+    # ただし推論のためには要らない。実測（R9700 / gfx1201）では、auto でも負荷が
+    # かかれば最高段（1258 MHz）まで上がり、生成は 50.37 対 50.26 tok/s で差が
+    # 無かった。maximum の効果は「無負荷でも上げ続ける」ことだけで、idle が
+    # 12W から 17W に増える。既定は auto でよい。
     memory_clock_mode: Literal["auto", "minimum", "limit", "maximum"] = "auto"
     memory_clock_level: int = Field(default=0, ge=0, le=63)
     core_clock_mode: Literal["auto", "limit", "maximum"] = "auto"

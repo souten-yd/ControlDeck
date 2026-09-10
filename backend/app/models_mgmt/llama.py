@@ -848,8 +848,41 @@ def installed_backends(tag: str = "") -> list[str]:
 
 
 def host_rocm_version() -> str:
-    """ホストの ROCm ユーザースペース版。取得できなければ空。"""
-    for path in (Path("/opt/rocm/.info/version"), Path("/opt/rocm/.info/version-rocm")):
+    """ホストの ROCm ユーザースペース版。取得できなければ空。
+
+    版ごとの置き方が二通りある。
+
+      7.x   /opt/rocm -> /opt/rocm-7.2.1 で、その直下に .info/version
+      10    /opt/rocm/core-10.0/.info/version（/opt/rocm の下に版を並べる）
+
+    新しい置き方を見ないと、ROCm 10 を入れてあるのに「ホストは 7.2.1 です」と
+    言い続ける。並存させている以上、新しいほうを答える——ROCm 10 のビルドは
+    ROCm 10 のライブラリを明示して呼ぶので、そちらが入っていれば動く。
+
+    一度読んだら覚える。版は動作中に変わらないうえ、ここは画面を描くたびに
+    呼ばれる。毎回 /opt/rocm を走査すると、その I/O が他の処理の間合いを崩す
+    ——実際、資源の排他を測る試験がこれで落ちた。
+    """
+    global _HOST_ROCM_VERSION
+    if _HOST_ROCM_VERSION is None:
+        _HOST_ROCM_VERSION = _read_host_rocm_version()
+    return _HOST_ROCM_VERSION
+
+
+_HOST_ROCM_VERSION: str | None = None
+
+
+def _read_host_rocm_version() -> str:
+    candidates: list[Path] = []
+    try:
+        candidates = sorted(
+            (item / ".info" / "version" for item in Path("/opt/rocm").glob("core-*")),
+            key=lambda item: item.parent.parent.name, reverse=True,
+        )
+    except OSError:
+        candidates = []
+    for path in (*candidates, Path("/opt/rocm/.info/version"),
+                 Path("/opt/rocm/.info/version-rocm")):
         try:
             value = path.read_text(encoding="ascii", errors="ignore").strip()
         except OSError:
