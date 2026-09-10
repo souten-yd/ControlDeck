@@ -130,6 +130,20 @@ DEFAULT_INSTANCE = {
         "port": 8080,
         "n_gpu_layers": 999,   # 全層 GPU（VRAM 不足時は下げる）
         "ctx_size": 4096,
+        # 一度やった prefill を捨てずに取っておく量（MiB）。0 で llama.cpp の
+        # 既定（8192）に任せる。
+        #
+        # 実測: Qwen3.8-27B（ctx 262144）の会話 1 本の状態は 6〜13 GiB あり、
+        # 8 GiB の枠に収まらない。ログには2種類の負けが出ていた——大きすぎて
+        # 「入れてもらえず skip」が 12 回（中央 10,644 MiB、最大 22,635 MiB）、
+        # 収まっても次が来て「追い出し」が 28 回（中央 4,767 MiB）。結果、次の
+        # ターンは prompt を丸ごと詰め直すことになる（実測で n_prompt_tokens
+        # 191,244 に対し cache 0）。
+        #
+        # 前方一致が崩れているのではない。llama.cpp が「頭が変わったので全部
+        # 読み直す」ときは forcing full prompt re-processing を出すが、この
+        # ログには 1 件も無い。単に入らないだけである。
+        "cache_ram_mib": 0,
         # 0は通常CTXと同じ。異なる値の場合だけDeep Research開始前後に再ロードする。
         "deep_research_ctx_size": 0,
         # 最大同時リクエスト数（server slots）。kv_unified と併用すると
@@ -1293,6 +1307,9 @@ def _unit_content(alias: str | None = None) -> str:
         "--repeat-penalty", str(inst.get("repeat_penalty", 1.0)),
         "--seed", str(inst.get("seed", -1)),
     ]
+    cache_ram = int(inst.get("cache_ram_mib") or 0)
+    if cache_ram > 0:
+        args += ["--cache-ram", str(cache_ram)]
     # b10001 以降は --flash-attn が on|off|auto の値必須（旧フラグ形式はエラーで即終了する）
     args += ["--flash-attn", "on" if inst.get("flash_attn") else "off"]
     # 共有KV。無効時は各slotへ ctx_size/n_parallel を固定割当てする。
