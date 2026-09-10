@@ -23,6 +23,33 @@ def test_backend_asset_matching():
     assert "windows" not in str(matched)  # Windows zip は対象外
 
 
+def test_prompt_cache_size_is_passed_when_set(monkeypatch, tmp_path):
+    """一度やった prefill を捨てずに済ませる量を渡せるようにする。
+
+    llama.cpp の既定は 8192 MiB。実測で Qwen3.8-27B（ctx 262144）の会話 1 本の
+    状態は 6〜13 GiB あり、その枠に収まらない。ログには 2 種類の負けが出ていた
+    ——大きすぎて「入れてもらえず skip」が 12 回（中央 10,644 MiB）、収まっても
+    次が来て「追い出し」が 28 回（中央 4,767 MiB）。結果、次のターンは prompt を
+    丸ごと詰め直す（実測 n_prompt_tokens 191,244 に対し cache 0）。
+
+    前方一致が崩れているのではない。llama.cpp が「頭が変わったので全部読み直す」
+    ときは forcing full prompt re-processing を出すが、ログには 1 件も無い。
+
+    0 のときは渡さない。llama.cpp の既定に任せる方が、こちらが数字を持つより
+    正しい——上流が既定を変えたときに黙って古い値で固定してしまわない。
+    """
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "llama-runtime.json")
+    llama.save_instance("big", {"alias": "big", "model_path": "/models/big.gguf",
+                                "cache_ram_mib": 12288})
+    llama.save_instance("small", {"alias": "small", "model_path": "/models/small.gguf",
+                                  "port": 9002})
+    # unit の ExecStart は引数を 1 つずつ引用符で囲む。
+    assert '"--cache-ram" "12288"' in llama._unit_content("big")
+    assert "--cache-ram" not in llama._unit_content("small")
+
+
 def test_config_roundtrip(client, monkeypatch, tmp_path):
     from app.models_mgmt import llama
 
