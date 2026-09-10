@@ -170,6 +170,9 @@ DEFAULT_INSTANCE = {
         # Qwen3.8-27B + draft-mtp の実測（日本語/コード）では 8 以上で素の生成より
         # 遅くなり、2〜6 が良く 4 前後が頭打ち。バイナリ既定も 3。
         "draft_max": 4,
+        # backend 別の先読み数。空なら draft_max を使う。実測で最適値が違った
+        # （Vulkan は 6、ROCm は 2）ので、片方に合わせると他方が 2 割損をする。
+        "draft_max_by_backend": {"vulkan": 6, "rocm": 2},
         # draft-simple / eagle3 / dflash / dspark で使うドラフトGGUF。
         # MTP と ngram 系は不要（前者はターゲットのMTP層、後者はモデルを使わない）。
         "spec_draft_model_path": "",
@@ -785,6 +788,30 @@ def _has_lib(name: str) -> bool:
         return False
 
 
+def _draft_max_for_backend(inst: dict) -> int:
+    """先読みの長さ。backend で最適値が違う。
+
+    実測（Qwen3.8-27B UD-Q4_K_M、R9700 / gfx1201、210W、MTP 込みの生成 tok/s）:
+
+        先読み数    n=2      n=4      n=6      n=8
+        Vulkan     47.04    47.92    49.41    43.23     最適 6
+        ROCm       47.62    38.45    35.77    38.82     最適 2
+
+    ROCm は伸ばすほど落ちる。下書きの検証が Vulkan より重く、外れたときに捨てる
+    量が得を上回るためと見られる。同じ値で両方を回すと、どちらかが 2 割損をする
+    ——実際、両方を 4 で測って「ROCm は生成が 2 割遅い」と誤って判断した。
+
+    backend 別の値が入っていればそれを使う。無ければ従来どおり draft_max。
+    """
+    backend = str(get_config().get("backend") or "")
+    per_backend = inst.get("draft_max_by_backend")
+    if isinstance(per_backend, dict):
+        value = per_backend.get(backend)
+        if isinstance(value, int) and value > 0:
+            return value
+    return int(inst.get("draft_max", 16))
+
+
 def _backend_root(backend: str, tag: str) -> Path:
     return runtimes_dir() / tag / backend / "extracted"
 
@@ -1357,7 +1384,7 @@ def _unit_content(alias: str | None = None) -> str:
     if spec_parts != ["none"] and role == "llm":
         # --draft-max は削除済み。後継は --spec-draft-n-max
         args += ["--spec-type", ",".join(spec_parts),
-                 "--spec-draft-n-max", str(inst.get("draft_max", 16))]
+                 "--spec-draft-n-max", str(_draft_max_for_backend(inst))]
         draft_model = str(inst.get("spec_draft_model_path") or "")
         needing = [item for item in spec_parts if item in SPEC_TYPES_NEEDING_DRAFT_MODEL]
         if needing:
