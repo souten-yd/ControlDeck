@@ -483,16 +483,15 @@ def _gfx_targets() -> list[int]:
 
 
 def host_rocm_version() -> str:
-    """ホストの ROCm ユーザースペース版。取得できなければ空。"""
-    for path in (Path("/opt/rocm/.info/version"), Path("/opt/rocm/.info/version-rocm")):
-        try:
-            value = path.read_text(encoding="ascii", errors="ignore").strip()
-        except OSError:
-            continue
-        match = re.match(r"^(\d+(?:\.\d+)*)", value)
-        if match:
-            return match.group(1)
-    return ""
+    """ホストの ROCm ユーザースペース版。取得できなければ空。
+
+    実装は llama 側と共有する。以前は同じものが二箇所にあり、ROCm 10 の新しい
+    置き方（/opt/rocm/core-10.0/.info/version）に片方だけ対応させたせいで、
+    画面の一方は「10.0.0」、もう一方は「7.2.1」と食い違った。
+    """
+    from app.models_mgmt.llama import host_rocm_version as _version
+
+    return _version()
 
 
 def host_rocm_major() -> int | None:
