@@ -188,6 +188,44 @@ def _mcp_result_dir() -> Path:
     return root
 
 
+# OS の処理を止める道具。CodeDEV で制作する仕事に要らない。
+#
+# 2026-09-12、OpenCode が「古いサーバーが別ディレクトリを提供している」と判断して
+# `kill 3080550` を実行した。3080550 は Control Deck 本体で、40 分止まった。同じ
+# 利用者で走っている以上 signal を撃てること自体は塞げないので、撃つ道具を渡さない。
+#
+# 命令の先頭だけを見ても足りない。事故のときの命令は
+# `kill 3080550 2>/dev/null; sleep 1; cd ... && ...` という一続きで、区切りの後ろに
+# 隠れる形もある。そこで区切り文字を明示して、その直後に来る場合も拾う。
+#
+# 単純に `*<名前>*` としないのは、語を含むだけの path（`src/myservice`）まで拒んで
+# しまうためである。区切りを挟むことで「命令として置かれたもの」に絞る。
+#
+# 副作用として `git commit -m "kill switch の修正"` のように文中に空白付きで含む
+# ものも拒まれる。言い換えれば通るので、取りこぼすより良いと判断する。
+_FORBIDDEN_COMMANDS = (
+    "kill", "pkill", "killall", "skill", "fuser",
+    "systemctl", "service", "shutdown", "reboot", "halt",
+)
+# 先頭（区切り無し）と、区切りの直後。
+_COMMAND_SEPARATORS = ("", " ", ";", "&", "|", "(", "\t")
+
+
+def _forbidden_commands() -> dict[str, str]:
+    """止める道具を禁じる規則を組む。
+
+    背後で server を起こしたいなら `timeout` を付けて前面で走らせる。後始末の
+    ために他人の process を探して撃つ、という形にしない。
+    """
+    rules: dict[str, str] = {}
+    for name in _FORBIDDEN_COMMANDS:
+        for separator in _COMMAND_SEPARATORS:
+            head = f"*{separator}" if separator else ""
+            rules[f"{head}{name}"] = "deny"
+            rules[f"{head}{name} *"] = "deny"
+    return rules
+
+
 def _allowed_directories() -> dict[str, str]:
     """確認なしで読ませてよい、プロジェクト外のディレクトリ。"""
     from app.terminals import attachments
@@ -393,7 +431,10 @@ def _runtime_config(
         # ターミナルから送った画像の置き場も開ける。利用者が自分で送ったものであり、
         # ここが閉じているとパスを渡しても読めない。
         # `*` は階層を跨がない照合系もあるので、直下と再帰の両方を挙げておく。
-        "permission": {"external_directory": _allowed_directories()},
+        "permission": {
+            "external_directory": _allowed_directories(),
+            "bash": _forbidden_commands(),
+        },
         "agent": _delegated_agents(),
     }
     # 導入済みで有効なスキルだけ読ませる。利用者の ~/.claude や

@@ -273,6 +273,33 @@ def test_runtime_config_lets_opencode_send_images_and_roam_codedev(monkeypatch, 
     from app.terminals import attachments
 
     assert allowed[f"{attachments.store.root}/*"] == "allow"
+
+    # 他人の process を撃つ道具は渡さない。実際にあった命令でそのまま縛る——
+    # 2026-09-12、OpenCode が http.server の残骸と取り違えて Control Deck 本体を
+    # 撃ち、40 分止まった。同じ利用者で走っている以上 signal 自体は塞げないので、
+    # 撃つ道具の側を閉じる。
+    bash = payload["permission"]["bash"]
+    incident = "kill 3080550 2>/dev/null; sleep 1; cd /tmp && python3 -m http.server 8799"
+    assert _bash_verdict(bash, incident) == "deny", "事故と同じ命令が通ってしまう"
+    for command in ("kill 1234", "pkill -f http.server", "killall python3",
+                    "systemctl --user stop control-deck-web", "sudo reboot",
+                    "cd /tmp && kill 999", "ls; killall node"):
+        assert _bash_verdict(bash, command) == "deny", command
+    # 制作の仕事は塞がない。
+    for command in ("git status", "npm run build", "timeout 60 python3 -m http.server 8799",
+                    "python3 manage.py test", "ls -la"):
+        assert _bash_verdict(bash, command) != "deny", command
+
+
+def _bash_verdict(rules: dict[str, str], command: str) -> str | None:
+    """OpenCode と同じ照合をする。最後に一致した規則が勝つ。"""
+    import fnmatch
+
+    verdict = None
+    for pattern, value in rules.items():
+        if fnmatch.fnmatchcase(command, pattern):
+            verdict = value
+    return verdict
     # 全部開けてしまっていないこと
     assert not any(key in ("*", "**", "/*") for key in allowed)
 
