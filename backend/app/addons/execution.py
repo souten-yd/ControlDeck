@@ -380,7 +380,39 @@ def _mcp_tool_name(contribution: dict[str, Any], duplicate_ids: set[str]) -> str
     )
 
 
-async def agent_mcp_tools(permissions: set[str]) -> list[dict[str, Any]]:
+# 一覧に契約を載せない道具に置く、当たり障りのない入力 schema。
+#
+# MCP の inputSchema は省けないので、何でも受ける形を置く。実際の検証は
+# create_agent_tool_job の validate() が本物の契約で行うので、境界は緩まない。
+# 緩むのは「モデルが正しい形を当てられるか」だけで、そのために契約を取りに
+# 来させる。
+_WITHHELD_INPUT_SCHEMA = {"type": "object", "additionalProperties": True}
+
+# 契約を一覧から外す境目（文字数）。0 なら従来どおり全部載せる。
+#
+# 道具定義の費用の 94% は説明ではなく schema である（実測: 道具 22 個で
+# 22,837 トークン、うち説明は 6%）。しかも大きいものに偏っていて、3D の
+# scene.create と scene.edit の二つだけで schema 全体の 54% を占める。
+# 3D を触らない会話でもこれを毎ターン払っている。
+#
+# 小さい契約まで外すと往復が増えるだけなので、大きいものだけを外す。
+DEFAULT_CONTRACT_THRESHOLD = 4000
+
+
+def _contract_notice(name: str) -> str:
+    # 道具の名前は client 側で書き換えられる（OpenCode は MCP server の名前を
+    # 前に付け、記号を _ にする: controldeck_addons_media_scene_create）。
+    # ここで名指しした名前がそのまま見えるとは限らないので、末尾で言う。
+    return (
+        "引数の契約はこの一覧に載せていない。名前が control_deck.tool_contract で"
+        f'終わる道具に {{"name": "{name}"}} を渡して契約を読んでから呼ぶこと'
+        "（この道具の名前をそのまま渡してもよい）。"
+    )
+
+
+async def agent_mcp_tools(
+    permissions: set[str], *, contract_threshold: int = 0,
+) -> list[dict[str, Any]]:
     contributions = discover("agent_tools", permissions)
     counts: dict[str, int] = {}
     for contribution in contributions:
@@ -398,14 +430,93 @@ async def agent_mcp_tools(permissions: set[str]) -> list[dict[str, Any]]:
         label = contribution["label"]
         if isinstance(label, dict):
             label = label.get("ja") or label.get("en") or contribution["id"]
+        name = _mcp_tool_name(contribution, duplicate_ids)
+        published = model_facing_schema(input_schema)
+        description = _agent_tool_description(
+            str(contribution["addon_id"]), str(label), input_schema
+        )
+        published = _without_hoisted_description(published)
+        if contract_threshold > 0 and _schema_size(published) > contract_threshold:
+            published = dict(_WITHHELD_INPUT_SCHEMA)
+            description = f"{_contract_notice(name)}\n\n{description}"
         result.append({
-            "name": _mcp_tool_name(contribution, duplicate_ids),
-            "description": _agent_tool_description(
-                str(contribution["addon_id"]), str(label), input_schema
-            ),
-            "inputSchema": model_facing_schema(input_schema),
+            "name": name,
+            "description": description,
+            "inputSchema": published,
         })
     return result
+
+
+def _without_hoisted_description(published: Any) -> Any:
+    """道具の説明へ持ち上げた本文を、schema の側から落とす。
+
+    _agent_tool_description は契約の top-level description を道具の説明に載せる。
+    schema にも残しておくと、同じ本文が一つの道具定義に二度載る（実測: 道具 24 個で
+    2,608 トークンぶんの重複）。
+
+    落とすのは top-level だけである。引数ごとの説明（properties の側）は
+    持ち上げていないので、そのまま残す。
+    """
+    if not isinstance(published, dict):
+        return published
+    detail = published.get("description")
+    if not isinstance(detail, str) or not detail.strip():
+        return published
+    return {key: value for key, value in published.items() if key != "description"}
+
+
+def _schema_size(published: Any) -> int:
+    return len(json.dumps(published, ensure_ascii=False))
+
+
+def _normalized_tool_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _match_tool_name(requested: str, candidates: list[str]) -> str | None:
+    """client が書き換えた名前でも、元の道具に辿り着けるようにする。
+
+    OpenCode は MCP server の名前を前に付け、記号を _ にする——モデルの一覧には
+    controldeck_addons_media_scene_create と出る。契約を取りに来るときにモデルが
+    渡すのは、たいていその見えている名前である。前置きを剥がして照合する。
+
+    紛れたときは長い方を採る。scene_create が media_scene_create の後ろに
+    重なるので、短い方を先に拾うと別の道具の契約を返してしまう。
+    """
+    normalized = _normalized_tool_name(requested)
+    best: str | None = None
+    for candidate in candidates:
+        target = _normalized_tool_name(candidate)
+        if normalized == target or normalized.endswith(f"_{target}"):
+            if best is None or len(target) > len(_normalized_tool_name(best)):
+                best = candidate
+    return best
+
+
+async def agent_contract(name: str, permissions: set[str]) -> dict[str, Any] | None:
+    """一覧から外した契約を、名前を指定して取りに来るための入口。
+
+    渡すのは一覧に載せるはずだったものと同じ複製である（model_facing_schema を
+    通した後）。取れるのは、その利用者が元から呼べる道具の契約だけに限られる。
+    """
+    target = await agent_mcp_target(name, permissions)
+    if target is None:
+        contributions = discover("agent_tools", permissions)
+        counts: dict[str, int] = {}
+        for contribution in contributions:
+            contribution_id = str(contribution["id"])
+            counts[contribution_id] = counts.get(contribution_id, 0) + 1
+        duplicate_ids = {key for key, count in counts.items() if count > 1}
+        listed = [_mcp_tool_name(item, duplicate_ids) for item in contributions]
+        matched = _match_tool_name(name, listed)
+        if matched is None:
+            return None
+        target = await agent_mcp_target(matched, permissions)
+        if target is None:
+            return None
+    addon_id, contribution_id = target
+    schema_value = await agent_schema(addon_id, contribution_id, permissions=permissions)
+    return model_facing_schema(schema_value)
 
 
 # 道具の説明に使える長さ。label は画面に出す名前で 80 字までと決まっており、

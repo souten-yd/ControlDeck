@@ -165,6 +165,17 @@ class AddonsConfig(BaseModel):
     """Explicit non-loopback origins that Add-on v2 may contact."""
 
     allowed_origins: list[str] = Field(default_factory=list, max_length=32)
+    # 大きい契約を道具一覧から外し、control_deck.tool_contract で取りに来させる
+    # 境目（文字数）。0 なら従来どおり全部載せる。
+    #
+    # 実測: 道具 22 個の定義で 24,999 トークン。うち 94% は説明ではなく schema で、
+    # 3D の scene.create と scene.edit の二つだけで schema 全体の 54% を占める。
+    # 3D を触らない会話でも毎ターン払っていた。
+    #
+    # 到達可能性は frontier と Haiku の両方で確かめた（全部載せを対照に置き、
+    # 同じ二題を解かせた）。一覧の一行だけで正しい道具を選び、契約を読んでから
+    # 正しい引数を組めた。外した側で選び損ねた例は無い。
+    agent_tool_contract_threshold: int = Field(default=0, ge=0, le=1_000_000)
 
     @field_validator("allowed_origins")
     @classmethod
