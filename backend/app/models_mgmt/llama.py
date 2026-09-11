@@ -2125,6 +2125,8 @@ async def endpoint_capacity(port: int) -> dict:
         "ctx_total": 0, "ctx_used": 0, "ctx_free": 0, "usable": 0,
         "deferred": 0, "accepting": False,
         "tokens_per_second": 0.0, "tokens_per_second_single": 0.0,
+        "prefill_tokens_per_second": 0.0, "prefilling": 0,
+        "prompt_tokens": 0, "prompt_tokens_done": 0, "phase": "idle",
     }
     base = f"http://127.0.0.1:{int(port)}"
     try:
@@ -2136,6 +2138,12 @@ async def endpoint_capacity(port: int) -> dict:
             used = 0
             busy = 0
             decoding = 0
+            # いま何をしているか。前処理と生成は速さの桁が違う（実測 ROCm で
+            # 前処理 約 1,000 tok/s、生成 約 50 tok/s）ので、同じ「tok/s」として
+            # 出すと読めない。どちらの最中かを添える。
+            prefilling = 0
+            prompt_total = 0
+            prompt_done = 0
             for slot in slots:
                 if not slot.get("is_processing"):
                     continue
@@ -2146,6 +2154,11 @@ async def endpoint_capacity(port: int) -> dict:
                     decoded = int(nxt[0].get("n_decoded") or 0)
                 decoding += decoded
                 used += int(slot.get("n_prompt_tokens") or 0) + decoded
+                if decoded == 0:
+                    # まだ一つも作っていない＝プロンプトを読んでいる最中である。
+                    prefilling += 1
+                    prompt_total += int(slot.get("n_prompt_tokens") or 0)
+                    prompt_done += int(slot.get("n_prompt_tokens_processed") or 0)
             total = int(slots[0].get("n_ctx") or 0)
             usable = int(total * KV_HEADROOM_RATIO)
             result.update({
@@ -2175,6 +2188,25 @@ async def endpoint_capacity(port: int) -> dict:
                 # 1本あたりは合算を同時実行数で割る。llama.cpp の
                 # predicted_tokens_seconds は完了するまで0のままで、生成中に見えない。
                 result["tokens_per_second_single"] = round(rate / busy, 1) if busy else 0.0
+                # 前処理の速さは別に数える。tokens_predicted_total は生成した数
+                # なので、読んでいる最中は 0 のままで動かない。
+                result["prefilling"] = prefilling
+                result["prompt_tokens"] = prompt_total
+                result["prompt_tokens_done"] = prompt_done
+                result["phase"] = (
+                    "prefill" if prefilling and prefilling == busy
+                    else "generate" if busy
+                    else "idle"
+                )
+                # 生成とは別の観測列で数える。負の port を鍵にするのは、実在の
+                # port と衝突しないためである。
+                result["prefill_tokens_per_second"] = round(
+                    _throughput(
+                        -int(port),
+                        values.get("llamacpp:prompt_tokens_total", 0.0) + prompt_done,
+                    ),
+                    1,
+                )
             except (httpx.HTTPError, ValueError, IndexError):
                 pass
     except (httpx.HTTPError, ValueError, TypeError):
