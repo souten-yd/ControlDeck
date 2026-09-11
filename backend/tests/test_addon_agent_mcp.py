@@ -881,10 +881,13 @@ def test_the_session_declares_the_window_so_compaction_can_fire(monkeypatch, tmp
     compaction = payload["compaction"]
     assert compaction["prune"] is True
     assert compaction["reserved"] == provider.OPENCODE_COMPACTION_RESERVED
-    # 発火点 = limit.input - reserved。畳んだ直後の余裕を残すため、直近に残す量は
-    # OpenCode の既定（発火点の 25% = 13,312）より小さくしてある。
+    # 発火点 = limit.input - reserved。直近に残す量は OpenCode の既定に任せる
+    # （発火点の 25% を 15,000 で頭打ち）。窓が 65,536 だった頃は道具定義に
+    # 押されて畳んだ直後の余裕が 13,000 しか無く 10,000 へ絞っていたが、窓が
+    # 131,072 になり主が 5,458 トークンになったいまは既定でも 97,000 残る。
+    assert "preserve_recent_tokens" not in compaction
     threshold = model["limit"]["input"] - compaction["reserved"]
-    assert compaction["preserve_recent_tokens"] < threshold // 4
+    assert threshold > 0
 
 
 def test_the_window_comes_from_the_instance_that_serves_the_model(monkeypatch):
