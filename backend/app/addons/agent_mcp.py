@@ -41,6 +41,37 @@ _OUTPUT_CAPABILITIES = {"projects.pick", "files.export"}
 # 画面からしか届かず、agent からは手が出せない。
 PROJECT_INPUT_GRANT_TOOL = "control_deck.project_input_grant"
 _INPUT_CAPABILITIES = {"projects.pick", "files.pick"}
+# 一覧から外した契約を取りに来るための道具。
+#
+# 一覧に全部の契約を載せると、使わない道具のぶんまで毎ターン払うことになる。
+# 名前と説明だけを載せ、schema は使うと決めてから取らせる。
+CONTRACT_TOOL = "control_deck.tool_contract"
+
+
+def _contract_threshold() -> int:
+    from app.config import get_config
+
+    try:
+        return int(get_config().addons.agent_tool_contract_threshold)
+    except Exception:  # noqa: BLE001 - 設定の都合で MCP を止めない
+        return 0
+
+
+def _contract_tool() -> dict[str, Any]:
+    return {
+        "name": CONTRACT_TOOL,
+        "description": (
+            "道具の引数の契約（入力 schema）を取り出す。一覧の説明に"
+            "「契約はこの一覧に載せていない」と書かれている道具は、"
+            "これで契約を読んでから呼ぶこと。name には一覧に出ている道具の名前を渡す。"
+        ),
+        "inputSchema": execution.model_facing_schema({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        }),
+    }
 
 
 class AgentMcpCall(BaseModel):
@@ -300,11 +331,14 @@ async def list_tools(
     user, claims = _bearer_user(authorization, db, request)
     _offer_renewal(response, claims)
     permissions = user_permissions(user)
-    tools = await execution.agent_mcp_tools(permissions)
+    threshold = _contract_threshold()
+    tools = await execution.agent_mcp_tools(permissions, contract_threshold=threshold)
     for factory in (_project_output_tool, _project_input_tool):
         project_tool = factory(claims.get("project_id"), permissions)
         if project_tool is not None:
             tools.append(project_tool)
+    if threshold > 0 and tools:
+        tools.append(_contract_tool())
     return {"tools": tools}
 
 
@@ -319,6 +353,16 @@ async def call_tool(
     user, claims = _bearer_user(authorization, db, request)
     _offer_renewal(response, claims)
     permissions = user_permissions(user)
+    if body.name == CONTRACT_TOOL:
+        if _contract_threshold() <= 0 or set(body.arguments) != {"name"}:
+            raise HTTPException(status_code=404, detail="tool contract toolが見つかりません")
+        requested = body.arguments.get("name")
+        if not isinstance(requested, str):
+            raise HTTPException(status_code=422, detail="道具の名前を渡してください")
+        contract = await execution.agent_contract(requested, permissions)
+        if contract is None:
+            raise HTTPException(status_code=404, detail="Add-on agent toolが見つかりません")
+        return {"name": requested, "inputSchema": contract}
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:
         project_id = claims.get("project_id")
         available = _project_output_tool(project_id, permissions)

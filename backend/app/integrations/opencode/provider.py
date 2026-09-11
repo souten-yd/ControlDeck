@@ -176,12 +176,26 @@ def _addon_asset_roots() -> list[Path]:
     return roots
 
 
+def _mcp_result_dir() -> Path:
+    """長すぎる Add-on tool の結果を、削る前に落としておく場所。
+
+    削った側だけを会話へ載せる。全部を載せると、1 件で文脈を食い尽くしうる
+    （実測で会話の 48.1% が道具の結果だった）。落とした先はここに置き、
+    必要になったら grep で読ませる。
+    """
+    root = (data_dir() / "integrations" / "opencode" / "tool-results").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _allowed_directories() -> dict[str, str]:
     """確認なしで読ませてよい、プロジェクト外のディレクトリ。"""
     from app.terminals import attachments
 
     allowed: dict[str, str] = {}
-    for root in [codedev_root(), attachments.store.root, *_addon_asset_roots()]:
+    for root in [
+        codedev_root(), attachments.store.root, _mcp_result_dir(), *_addon_asset_roots(),
+    ]:
         allowed[f"{root}/*"] = "allow"
         allowed[f"{root}/**"] = "allow"
     return allowed
@@ -205,6 +219,99 @@ def _skill_paths() -> list[str]:
         return []
 
 
+# 一度の返答に許す長さ。窓のうちここは常に空けておく必要がある。
+#
+# 8,192 で 30KB 前後の文章に相当する。コードを書く用途で足りなかった実測は無く、
+# 足りなければモデルは続きを書ける。ここを広げるほど圧縮が早く来る（窓は
+# 入力と出力で分け合うため）。
+OPENCODE_MAX_OUTPUT_TOKENS = 8192
+# 畳む作業そのものに要る余地。要約を書く一往復ぶん。
+OPENCODE_COMPACTION_RESERVED = 4096
+
+
+# 主の会話から外して、専門の子へ委ねる道具。
+#
+# OpenCode は MCP の道具名を書き換えて見せる（server 名を前に付け、記号を _ に
+# する）。この server 名は下の payload["mcp"] で決めているので、前置きは既知である。
+#
+# 実測（道具 24 個で 26,692 トークン）:
+#   3D  media.scene.* / media.job.*  15,583 tok  58%  コードを書く会話では一度も使わない
+#   音  sonic.*                       5,651 tok  21%  たまに使う
+#   絵  media.generate 系             5,236 tok  20%  よく使う。一発で終わることが多い
+#
+# 絵は主に残す。子を起こす往復のほうが、載せておく 5,236 トークンより高くつく。
+# 3D と音を外すと、主は 26,692 → 5,458 トークン（-80%）になり、圧縮を挟んだ
+# 直後の余裕が 13,346 → 36,590 トークンへ広がる。
+#
+# 子の中の往復（場面を何度も直す、音を何本も作る）は主の文脈に入らない。実測で
+# 会話の 48.1% は道具の結果だったので、こちらの効きのほうが大きい。
+_SUBAGENT_TOOLS = {
+    "sculptor": ("controldeck_addons_media_scene_*", "controldeck_addons_media_job_*"),
+    "sound": ("controldeck_addons_sonic_*",),
+}
+
+
+def _delegated_agents() -> dict[str, Any]:
+    """主から重い道具を外し、専門の子に持たせる。
+
+    子は自分の文脈を持つ。主へ返るのは結論だけで、途中の往復は入らない。
+    子の文脈が短いことには、もう一つ効きめがある——MCP の生成は GPU を要求し、
+    その度に言語モデルが降ろされる。戻すときの読み直しは文脈の長さに比例するので、
+    短い子ほど安く戻る。
+    """
+    agents: dict[str, Any] = {}
+    build_tools: dict[str, bool] = {}
+    for name, patterns in _SUBAGENT_TOOLS.items():
+        for pattern in patterns:
+            build_tools[pattern] = False
+        agents[name] = {
+            "mode": "subagent",
+            "description": _SUBAGENT_DESCRIPTIONS[name],
+            "tools": {pattern: True for pattern in patterns},
+        }
+    agents["build"] = {"tools": build_tools}
+    return agents
+
+
+_SUBAGENT_DESCRIPTIONS = {
+    "sculptor": (
+        "3D の場面を作る係。場面を作る・直す・材質を貼る・書き出す。"
+        "何を置いてどう見せたいかを渡すと、出来た場面の id と書き出した資産を返す。"
+    ),
+    "sound": (
+        "音を作る係。台詞の読み上げ、効果音、環境音、音楽、書き起こし。"
+        "キャラクターの声は先に作る必要があるので、声の用意もこの係が行う。"
+    ),
+}
+
+
+def _model_limits(model: str) -> dict[str, int] | None:
+    """そのモデルの窓の大きさを OpenCode へ伝える。
+
+    伝えないと自動圧縮が一度も動かない。OpenCode は limit.context が 0 の間は
+    発火しないと決めており（実測: この環境の 793 session のうち先回りの圧縮は
+    0 件、頂点は 262,142 tokens で打ち止め）、provider がモデルを宣言するときに
+    limit を書いていなかった。
+
+    input も併せて宣言する。OpenCode は input がある場合だけ compaction.reserved
+    を見る作りで、context だけだと予備は「返答の上限」（既定 32,000）に固定される。
+    """
+    try:
+        from app.models_mgmt import llama
+
+        for instance in llama.list_instances():
+            if str(instance.get("alias") or "") != model:
+                continue
+            context = int(instance.get("ctx_size") or 0)
+            if context <= 0:
+                return None
+            output = min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4))
+            return {"context": context, "output": output, "input": context - output}
+    except Exception:  # noqa: BLE001 - 窓の大きさが取れないことで session を止めない
+        logger.exception("モデルの窓の大きさを取得できませんでした")
+    return None
+
+
 def _runtime_config(
     job_id: str,
     base_url: str,
@@ -215,6 +322,7 @@ def _runtime_config(
 ) -> Path:
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
+    limits = _model_limits(model)
     payload = {
         "$schema": "https://opencode.ai/config.json",
         "model": f"controldeck/{model}",
@@ -239,6 +347,7 @@ def _runtime_config(
                         "name": model,
                         "attachment": True,
                         "modalities": {"input": ["text", "image"], "output": ["text"]},
+                        **({"limit": limits} if limits else {}),
                     }
                 },
             }
@@ -254,13 +363,37 @@ def _runtime_config(
         # 剪定が狙うのは、その打ち止めの中身そのものである。頂点の内訳を数えると
         # 道具の結果が 48%、推論が 20%、画像は 7%、人が読む本文は 2% だった。
         # 頂点 100k を超えた 13 session で見積もると、平均 51.7% が空く。
-        "compaction": {"prune": True},
+        # 窓が尽きる手前で自動的に畳む。
+        #
+        # 既定は auto: true だが、limit.context が 0 の間は一度も発火しない。
+        # 窓の大きさは _model_limits で宣言した。発火点は OpenCode の式で
+        # limit.input - reserved になるので、ctx 65,536 ならこうなる:
+        #
+        #   窓        65,536
+        #   返答       8,192   常に空けておく
+        #   入力      57,344   = 窓 - 返答
+        #   予備       4,096   畳む作業そのものの分
+        #   発火      53,248   入力がここに届いたら畳む（窓の 81%）
+        #
+        # 畳んだ後に残す直近は preserve_recent_tokens で決める。OpenCode の既定は
+        # 発火点の 25% を 15,000 で頭打ちにしたもの（= 13,312）だが、道具定義が
+        # 26,702 トークンあるので、残しすぎると畳んだ直後の余裕が 13,000 しか
+        # 無くなり、すぐ次の圧縮が来る。10,000 にして余裕を 17,000 弱にする。
+        #
+        # 剪定（prune）は別物で、完了した道具の出力だけを捨てる。直近 40,000
+        # トークン分は守られる（OpenCode 側の固定値で、設定では変えられない）。
+        "compaction": {
+            "prune": True,
+            "reserved": OPENCODE_COMPACTION_RESERVED,
+            "preserve_recent_tokens": 10000,
+        },
         # CodeDEV 配下は毎回聞かない。別プロジェクトを参照するだけで確認が入ると
         # 手が止まるためで、CodeDEV の外は既定どおり確認する。
         # ターミナルから送った画像の置き場も開ける。利用者が自分で送ったものであり、
         # ここが閉じているとパスを渡しても読めない。
         # `*` は階層を跨がない照合系もあるので、直下と再帰の両方を挙げておく。
         "permission": {"external_directory": _allowed_directories()},
+        "agent": _delegated_agents(),
     }
     # 導入済みで有効なスキルだけ読ませる。利用者の ~/.claude や
     # ~/.config/opencode へは書かない——そこは利用者自身のもので、こちらが
@@ -269,6 +402,14 @@ def _runtime_config(
     skill_paths = _skill_paths()
     if skill_paths:
         payload["skills"] = {"paths": skill_paths}
+    # 文脈の使い方を書いたものを system prompt へ足す。449 トークン。
+    #
+    # 実測の内訳では道具の結果が 48.1% を占め、その中身は全文読みと、絞らずに
+    # 受け取ったコマンドの出力だった。どちらも「読む前に当たりを付ける」だけで
+    # 桁が変わる。プロジェクト側の AGENTS.md は残したまま、こちらを足す。
+    notes = Path(__file__).with_name("agent-notes.md")
+    if notes.exists():
+        payload["instructions"] = [str(notes)]
     if owner_user_id is not None:
         from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS, issue_opencode_token
         from app.config import get_config
@@ -286,6 +427,7 @@ def _runtime_config(
                         f"http://127.0.0.1:{get_config().server.port}/api/v1/addons/agent-mcp"
                     ),
                     "CONTROL_DECK_ADDON_MCP_TOKEN": token,
+                    "CONTROL_DECK_ADDON_MCP_RESULT_DIR": str(_mcp_result_dir()),
                 },
             }
         }

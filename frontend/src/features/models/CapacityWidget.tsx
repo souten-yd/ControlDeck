@@ -48,8 +48,13 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
       </Row>
     );
   }
-  const kvPct = item.usable > 0 ? Math.min(100, (item.ctx_used / item.usable) * 100) : 0;
-  const tone = kvPct >= 85 ? "bg-red-500" : kvPct >= 65 ? "bg-amber-500" : "bg-accent-600";
+  // 分母は窓の大きさそのもの。usable は「ここを超えたら新しい仕事を受けない」
+  // という受付の線（既定で窓の 85%）で、入る量ではない。分母に出していたので
+  // 65,536 で動かしているのに 55.7K しか入らないように見えていた。
+  const kvPct = item.ctx_total > 0 ? Math.min(100, (item.ctx_used / item.ctx_total) * 100) : 0;
+  // 色は受付の線を基準にする。線に届いたら赤、手前で橙。
+  const admitPct = item.usable > 0 ? (item.ctx_used / item.usable) * 100 : 0;
+  const tone = admitPct >= 100 ? "bg-red-500" : admitPct >= 75 ? "bg-amber-500" : "bg-accent-600";
   // 待ち行列と埋まり具合から、体感の混み具合を一語で示す。
   return (
     <div>
@@ -59,8 +64,22 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
           <span>{item.busy} / {item.slots}</span>
         </span>
       </Row>
-      {(item.busy > 0 || item.tokens_per_second > 0) && (
-        <Row label="生成速度">
+      {/* 前処理と生成は速さの桁が違う。どちらの最中かを添えないと、
+          同じ「tok/s」が 20 倍ぶれて見える。 */}
+      {item.phase === "prefill" && (
+        <Row label="前処理中">
+          <span className="flex flex-wrap items-baseline gap-x-2">
+            <span>{item.prefill_tokens_per_second.toFixed(0)} tok/s</span>
+            {item.prompt_tokens > 0 && (
+              <span className="text-[10px] text-zinc-400">
+                {tokens(item.prompt_tokens_done)} / {tokens(item.prompt_tokens)} 読み込み
+              </span>
+            )}
+          </span>
+        </Row>
+      )}
+      {item.phase !== "prefill" && (item.busy > 0 || item.tokens_per_second > 0) && (
+        <Row label={item.busy > 0 ? "生成中" : "生成速度"}>
           <span className="flex flex-wrap items-baseline gap-x-2">
             <span>{item.tokens_per_second.toFixed(1)} tok/s</span>
             <span className="text-[10px] text-zinc-400">
@@ -79,7 +98,7 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
           <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <span className={`block h-full rounded-full ${tone}`} style={{ width: `${kvPct}%` }} />
           </span>
-          <span>{tokens(item.ctx_used)} / {tokens(item.usable)}</span>
+          <span>{tokens(item.ctx_used)} / {tokens(item.ctx_total)}</span>
         </span>
       </Row>
     </div>
@@ -128,9 +147,7 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
               {load ? (
                 <span className={load === "高" ? "text-amber-600 dark:text-amber-400" : ""}>
                   {load}
-                  <span className="ml-1.5 text-[10px] text-zinc-400">
-                    （{data.omo.model} · 論理並列 {data.omo.concurrency}）
-                  </span>
+                  <span className="ml-1.5 text-[10px] text-zinc-400">（{data.omo.model}）</span>
                 </span>
               ) : (
                 // OMoの対象モデルが停止していれば、負荷ではなくその事実を出す。

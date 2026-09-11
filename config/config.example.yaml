@@ -74,6 +74,18 @@ addons:
   # pathなしのHTTPS originを管理者が明示してください。
   allowed_origins: []
   # allowed_origins: ["https://addon.internal.example"]
+  #
+  # 大きい契約（Add-on tool の入力 schema）を道具一覧から外し、
+  # control_deck.tool_contract で取りに来させる境目（文字数）。
+  # 0 なら従来どおり一覧に全部載せます。
+  #
+  # 一覧に全部載せると、その会話で使わない道具のぶんまで毎ターン払います。
+  # 実測（MediaForge + SonicForge の 22 個、Qwen のトークナイザ）:
+  #   従来（全部載せ）      26,769 tok
+  #   4000 で外す（一覧のみ） 8,662 tok   -67.6%
+  #   外した道具を 1 件使う  15,640 tok   -41.6%
+  #   外した 4 件とも使う    27,129 tok    +1.3%
+  # agent_tool_contract_threshold: 4000
 
 # data_dir: ~/.local/share/control-deck
 

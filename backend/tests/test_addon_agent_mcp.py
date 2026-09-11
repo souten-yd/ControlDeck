@@ -275,7 +275,7 @@ def test_project_output_grant_tool_is_project_scoped_and_opaque(admin_client, mo
     monkeypatch.setattr(grants.files, "resolve", lambda value: Path(value).resolve(strict=True))
     monkeypatch.setattr(agent_mcp, "_eligible_output_addons", lambda _permissions: ["fake-addon"])
 
-    async def no_addon_tools(_permissions):
+    async def no_addon_tools(_permissions, **_options):
         return []
 
     monkeypatch.setattr(agent_mcp.execution, "agent_mcp_tools", no_addon_tools)
@@ -365,7 +365,7 @@ def test_project_input_grant_tool_reads_only_files_inside_the_project(admin_clie
     monkeypatch.setattr(agent_mcp, "_eligible_input_addons", lambda _permissions: ["fake-addon"])
     monkeypatch.setattr(agent_mcp, "_eligible_output_addons", lambda _permissions: [])
 
-    async def no_addon_tools(_permissions):
+    async def no_addon_tools(_permissions, **_options):
         return []
 
     monkeypatch.setattr(agent_mcp.execution, "agent_mcp_tools", no_addon_tools)
@@ -565,3 +565,383 @@ def test_auto_grant_refuses_addons_and_projects_outside_the_session(admin_client
     assert agent_mcp._auto_output_grant("sonic-forge", "../outside", {"any"}, user) is None
     # 作れなかったことを例外にしない（add-on 側の入力検証に理由を言わせる）
     assert agent_mcp._auto_output_grant("sonic-forge", "missing-project", {"any"}, user) is None
+
+
+def _fat_schema(size: int) -> dict:
+    """境目を跨ぐ大きさの契約を作る。中身は問わない。"""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "description": "3D の場面を作る。",
+        "properties": {"operations": {"type": "array", "items": {"enum": ["a" * size]}}},
+    }
+
+
+def test_a_big_contract_is_left_out_of_the_listing_and_fetched_by_name(monkeypatch):
+    """道具定義の費用の 94% は説明ではなく schema である。
+
+    実測: 道具 22 個の定義で 24,999 トークン。大きいものに偏っていて、3D の
+    scene.create と scene.edit の二つだけで schema 全体の 54% を占めていた。
+    3D を触らない会話でもこれを毎ターン払っていた。
+
+    大きいものだけを一覧から外し、使うと決めた道具の契約だけを取りに来させる。
+    小さいものまで外すと往復が増えるだけなので触らない。
+    """
+    from app.addons import execution
+
+    contributions = [
+        {"addon_id": "media-forge", "id": "media.scene.create", "label": "Create a 3D scene",
+         "schema_path": "/schemas/scene-create.json"},
+        {"addon_id": "media-forge", "id": "media.capabilities", "label": "Capabilities",
+         "schema_path": "/schemas/capabilities.json"},
+    ]
+    monkeypatch.setattr(execution, "discover", lambda kind, permissions: contributions)
+
+    async def schema(addon_id, contribution_id, *, permissions):
+        if contribution_id == "media.scene.create":
+            return _fat_schema(4000)
+        return {"type": "object", "additionalProperties": False, "description": "何が使えるかを返す。"}
+
+    monkeypatch.setattr(execution, "agent_schema", schema)
+
+    full = asyncio.run(execution.agent_mcp_tools({"workflows.run"}))
+    assert "operations" in json.dumps(full, ensure_ascii=False)
+
+    lazy = asyncio.run(execution.agent_mcp_tools({"workflows.run"}, contract_threshold=4000))
+    by_name = {tool["name"]: tool for tool in lazy}
+
+    big = by_name["media.scene.create"]
+    assert big["inputSchema"] == {"type": "object", "additionalProperties": True}
+    # どこへ取りに行けばよいかを、外した道具の説明そのものに書く。
+    assert "control_deck.tool_contract" in big["description"]
+    assert '"name": "media.scene.create"' in big["description"]
+    # 一覧から選ぶ手がかりは残す。名前だけになると選べない。
+    assert "3D の場面を作る" in big["description"]
+
+    small = by_name["media.capabilities"]
+    assert small["inputSchema"]["additionalProperties"] is False
+    assert "control_deck.tool_contract" not in small["description"]
+
+    contract = asyncio.run(execution.agent_contract("media.scene.create", {"workflows.run"}))
+    assert contract["properties"]["operations"]["items"]["enum"] == ["a" * 4000]
+    assert asyncio.run(execution.agent_contract("media.nope", {"workflows.run"})) is None
+
+    # client は道具の名前を書き換える。OpenCode はこの MCP server の名前を前に
+    # 付け、記号を _ にする（実測: controldeck_addons_media_scene_create）。
+    # モデルが契約を取りに来るとき渡すのは、その見えている名前である。
+    mangled = asyncio.run(execution.agent_contract(
+        "controldeck_addons_media_scene_create", {"workflows.run"},
+    ))
+    assert mangled == contract
+    # 後ろに重なる別の道具を拾わない。長い方を採る。
+    assert execution._match_tool_name(
+        "controldeck_addons_media_scene_create",
+        ["scene.create", "media.scene.create"],
+    ) == "media.scene.create"
+    assert execution._match_tool_name("something_else", ["media.scene.create"]) is None
+
+
+def test_the_contract_tool_appears_only_when_contracts_are_withheld(admin_client, monkeypatch):
+    """境目が 0 なら従来どおり全部載せる。取りに来る道具も出さない。
+
+    出しっぱなしにすると「契約を取ってから呼べ」と書かれていない道具にも
+    使えてしまい、一覧に既に載っているものを二度払うことになる。
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.addons import agent_mcp
+    from app.config import get_config
+    from app.database import SessionLocal, get_db
+    from app.models import User
+    from sqlalchemy import select
+
+    fat = _fat_schema(4000)
+    monkeypatch.setattr(
+        agent_mcp.execution, "discover",
+        lambda kind, permissions: [{
+            "addon_id": "media-forge", "id": "media.scene.create",
+            "label": "Create a 3D scene", "schema_path": "/schemas/scene-create.json",
+        }],
+    )
+
+    async def schema(addon_id, contribution_id, *, permissions):
+        return fat
+
+    monkeypatch.setattr(agent_mcp.execution, "agent_schema", schema)
+
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+    app = FastAPI()
+    app.include_router(agent_mcp.router, prefix="/api/v1")
+
+    def database():
+        with SessionLocal() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database
+    local_client = TestClient(app)
+    token = agent_mcp.issue_opencode_token(user.id, "contract-tool")
+    headers = {"Authorization": f"Bearer {token}", "X-Requested-With": "ControlDeck"}
+
+    def use(threshold: int):
+        # 生きている設定そのものを触る。差し替えると token を検証する側の設定まで
+        # 変わってしまい、見たいものと関係の無いところで 401 になる。
+        monkeypatch.setattr(
+            get_config().addons, "agent_tool_contract_threshold", threshold,
+        )
+
+    use(0)
+    eager = local_client.get("/api/v1/addons/agent-mcp/tools", headers=headers).json()["tools"]
+    assert agent_mcp.CONTRACT_TOOL not in [tool["name"] for tool in eager]
+    assert "operations" in json.dumps(eager, ensure_ascii=False)
+    # 出していないうちは呼べない。
+    refused = local_client.post(
+        "/api/v1/addons/agent-mcp/call", headers=headers,
+        json={"name": agent_mcp.CONTRACT_TOOL, "arguments": {"name": "media.scene.create"}},
+    )
+    assert refused.status_code == 404
+
+    use(4000)
+    lazy = local_client.get("/api/v1/addons/agent-mcp/tools", headers=headers).json()["tools"]
+    assert agent_mcp.CONTRACT_TOOL in [tool["name"] for tool in lazy]
+    assert "operations" not in json.dumps(lazy, ensure_ascii=False)
+
+    fetched = local_client.post(
+        "/api/v1/addons/agent-mcp/call", headers=headers,
+        json={"name": agent_mcp.CONTRACT_TOOL, "arguments": {"name": "media.scene.create"}},
+    )
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["inputSchema"]["properties"]["operations"]["items"]["enum"] == ["a" * 4000]
+
+    # 呼べない道具の契約は取れない。一覧に出る範囲と同じ範囲しか見せない。
+    missing = local_client.post(
+        "/api/v1/addons/agent-mcp/call", headers=headers,
+        json={"name": agent_mcp.CONTRACT_TOOL, "arguments": {"name": "media.nope"}},
+    )
+    assert missing.status_code == 404
+
+
+def test_a_long_tool_result_is_trimmed_and_the_whole_thing_is_left_in_a_file(tmp_path, monkeypatch):
+    """道具の結果は、そのまま載せると文脈を食い尽くしうる。
+
+    実測: 262,142 トークンで打ち止めた会話の内訳は道具の結果が 48.1% で最大。
+    bridge の上限は 1 MB しか無く、1 件で 30 万トークン——文脈の丸ごとぶんを
+    一度に食える形だった。50 枚の batch や長い書き起こしが現にそこへ近づく。
+
+    削るときに頭で切ると JSON が壊れて読めなくなる。形は保ったまま、並びと
+    長い文字列だけを刈り、全文は file へ落として grep で読ませる。
+    """
+    import importlib
+
+    bridge = importlib.import_module("app.integrations.opencode.addon_mcp_bridge")
+    monkeypatch.setenv(bridge.RESULT_DIR_ENV, str(tmp_path / "results"))
+
+    short = {"job_id": "abc", "asset_id": "asset_1"}
+    inline = bridge._tool_result("media.generate", short)
+    assert json.loads(inline["content"][0]["text"]) == short
+    assert inline["structuredContent"] == short
+    assert not list((tmp_path / "results").glob("*.json")) if (tmp_path / "results").exists() else True
+
+    value = {
+        "job_id": "job_long",
+        "output": {
+            "items": [{"index": i, "status": "succeeded", "asset_id": f"asset_{i}"} for i in range(50)],
+            "log": "x" * 20000,
+        },
+    }
+    trimmed = bridge._tool_result("media.generate.batch", value)
+    text = trimmed["content"][0]["text"]
+    assert len(text) < bridge.RESULT_INLINE_LIMIT + 500
+    # 形は残る。job_id と最初の数件の成否は読める。
+    assert trimmed["structuredContent"]["job_id"] == "job_long"
+    items = trimmed["structuredContent"]["output"]["items"]
+    assert items[0] == {"index": 0, "status": "succeeded", "asset_id": "asset_0"}
+    assert "残り 45 件" in items[-1]
+    assert "20000 文字" in trimmed["structuredContent"]["output"]["log"]
+
+    # 全文は file に残り、どこに在るかを結果そのものが名指しする。
+    files = list((tmp_path / "results").glob("*.json"))
+    assert len(files) == 1
+    assert str(files[0]) in text
+    assert json.loads(files[0].read_text(encoding="utf-8")) == value
+
+    # 契約を取りに来る道具だけは削らない。削ると、契約を一覧から外した意味が
+    # 無くなる——読ませるために取りに来させているのに、読める形で渡らない。
+    # 実測で media.scene.create の契約は 18,838 文字あり、上限に掛かっていた。
+    verbatim = bridge._tool_result("control_deck.tool_contract", value)
+    assert json.loads(verbatim["content"][0]["text"]) == value
+    assert verbatim["structuredContent"] == value
+
+    # 置き場が無い環境でも失敗にしない。載る分は削った側で成立している。
+    monkeypatch.delenv(bridge.RESULT_DIR_ENV)
+    without = bridge._tool_result("media.generate.batch", value)
+    assert "全文は残っていない" in without["content"][0]["text"]
+
+
+def test_the_result_directory_is_readable_without_asking(monkeypatch, tmp_path):
+    """落とした全文を読むのに確認が入ると、削った意味が無くなる。"""
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
+    allowed = provider._allowed_directories()
+    root = str((tmp_path / "integrations" / "opencode" / "tool-results").resolve())
+    assert allowed[f"{root}/*"] == "allow"
+    assert allowed[f"{root}/**"] == "allow"
+
+
+def test_the_session_is_told_how_to_spend_its_context(monkeypatch, tmp_path):
+    """文脈の使い方を system prompt へ足す。
+
+    実測（262,142 トークンで打ち止めた会話）の内訳は道具の結果が 48.1% で、
+    その中身は「探しものが在るかを見るための全文読み」と、絞らずに受け取った
+    コマンドの出力だった。読む前に当たりを付けるだけで桁が変わる。
+
+    OpenCode の instructions は system prompt へ足される（実測: 目印を書いた
+    file を渡し、ローカルモデルがその語を答えた）。プロジェクト側の AGENTS.md は
+    そのまま残る。
+    """
+    from app.integrations.opencode import provider
+
+    notes = Path(provider.__file__).with_name("agent-notes.md")
+    assert notes.exists(), "文脈の使い方を書いたものが無い"
+    body = notes.read_text(encoding="utf-8")
+    assert "grep" in body and "batch" in body and "control_deck.tool_contract" in body
+
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(provider, "_skill_paths", lambda: [])
+    monkeypatch.setattr(provider, "_allowed_directories", lambda: {})
+    config = provider._runtime_config("job-notes", "http://127.0.0.1:1/v1", "model")
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    assert payload["instructions"] == [str(notes)]
+
+
+def test_the_contract_description_is_published_once_not_twice(monkeypatch):
+    """契約の説明を、道具の説明と schema の両方に載せない。
+
+    _agent_tool_description は契約の top-level description を道具の説明へ
+    持ち上げる。schema にも残したままだったので、同じ本文が一つの道具定義に
+    二度載っていた（実測: 道具 24 個で 2,608 トークンぶん）。
+
+    落とすのは top-level だけである。引数ごとの説明は持ち上げていないので残す。
+    """
+    from app.addons import execution
+
+    monkeypatch.setattr(
+        execution, "discover",
+        lambda kind, permissions: [{
+            "addon_id": "media-forge", "id": "media.inspect",
+            "label": "Read back what a finished media asset is",
+            "schema_path": "/schemas/asset-reference.json",
+        }],
+    )
+
+    async def schema(addon_id, contribution_id, *, permissions):
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "description": "Read back what a finished asset is. It does not change anything.",
+            "properties": {"asset_id": {"type": "string", "description": "The asset to read."}},
+        }
+
+    monkeypatch.setattr(execution, "agent_schema", schema)
+    tool = asyncio.run(execution.agent_mcp_tools({"workflows.run"}))[0]
+
+    assert "It does not change anything" in tool["description"]
+    assert "description" not in tool["inputSchema"]
+    # 引数の説明は残る。こちらは持ち上げていない。
+    assert tool["inputSchema"]["properties"]["asset_id"]["description"] == "The asset to read."
+    assert json.dumps(tool, ensure_ascii=False).count("It does not change anything") == 1
+
+
+def test_the_session_declares_the_window_so_compaction_can_fire(monkeypatch, tmp_path):
+    """窓の大きさを宣言しないと、自動圧縮は一度も動かない。
+
+    OpenCode は limit.context が 0 の間は発火しないと決めている。provider が
+    モデルを宣言するとき limit を書いていなかったので、既定が auto: true でも
+    先回りの圧縮は起きていなかった（実測: この環境の 793 session のうち先回りは
+    0 件、頂点は 262,142 tokens で打ち止め）。
+
+    input も併せて宣言する。OpenCode は input がある場合だけ compaction.reserved
+    を見る作りで、context だけだと予備は返答の上限（既定 32,000）に固定される。
+    """
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(provider, "_skill_paths", lambda: [])
+    monkeypatch.setattr(provider, "_allowed_directories", lambda: {})
+    monkeypatch.setattr(
+        provider, "_model_limits",
+        lambda model: {"context": 65536, "output": 8192, "input": 57344},
+    )
+    config = provider._runtime_config("job-window", "http://127.0.0.1:1/v1", "Qwen3.8-27B")
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    model = payload["provider"]["controldeck"]["models"]["Qwen3.8-27B"]
+
+    assert model["limit"] == {"context": 65536, "output": 8192, "input": 57344}
+    compaction = payload["compaction"]
+    assert compaction["prune"] is True
+    assert compaction["reserved"] == provider.OPENCODE_COMPACTION_RESERVED
+    # 発火点 = limit.input - reserved。畳んだ直後の余裕を残すため、直近に残す量は
+    # OpenCode の既定（発火点の 25% = 13,312）より小さくしてある。
+    threshold = model["limit"]["input"] - compaction["reserved"]
+    assert compaction["preserve_recent_tokens"] < threshold // 4
+
+
+def test_the_window_comes_from_the_instance_that_serves_the_model(monkeypatch):
+    """窓の大きさは llama の instance が持っている。決め打ちにしない。"""
+    from app.integrations.opencode import provider
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(
+        llama, "list_instances",
+        lambda: [{"alias": "other", "ctx_size": 8192},
+                 {"alias": "Qwen3.8-27B", "ctx_size": 65536}],
+    )
+    limits = provider._model_limits("Qwen3.8-27B")
+    assert limits == {"context": 65536, "output": 8192, "input": 65536 - 8192}
+    # 小さい窓では、返答の上限も窓に合わせて縮む。8,192 のまま渡すと入力が
+    # 窓の半分しか使えなくなる。
+    assert provider._model_limits("other") == {"context": 8192, "output": 2048, "input": 6144}
+    # 知らないモデルは宣言しない。誤った窓を渡すより、従来どおり畳まないほうがよい。
+    assert provider._model_limits("nope") is None
+
+
+def test_heavy_addon_tools_move_to_specialist_subagents(monkeypatch, tmp_path):
+    """重い道具は主の会話から外し、専門の子に持たせる。
+
+    実測（道具 24 個で 26,692 トークン）: 3D が 15,583（58%）、音が 5,651（21%）、
+    絵が 5,236（20%）。3D はコードを書く会話で一度も使われないのに、毎ターン
+    載っていた。
+
+    絵は主に残す。よく使い、一発で終わることが多いので、子を起こす往復のほうが
+    載せておく 5,236 トークンより高くつく。
+
+    効きめは道具定義だけではない。子の往復は主の文脈に入らず（実測で会話の
+    48.1% が道具の結果だった）、子は文脈が短いぶん、MCP が GPU を要求して
+    言語モデルが降ろされた後の読み直しも安い。
+    """
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(provider, "_skill_paths", lambda: [])
+    monkeypatch.setattr(provider, "_allowed_directories", lambda: {})
+    monkeypatch.setattr(provider, "_model_limits", lambda model: None)
+    config = provider._runtime_config("job-agents", "http://127.0.0.1:1/v1", "model")
+    agents = json.loads(config.read_text(encoding="utf-8"))["agent"]
+
+    assert agents["sculptor"]["mode"] == "subagent"
+    assert agents["sculptor"]["tools"]["controldeck_addons_media_scene_*"] is True
+    assert agents["sound"]["tools"]["controldeck_addons_sonic_*"] is True
+
+    build = agents["build"]["tools"]
+    # 主は 3D と音を持たない。
+    assert build["controldeck_addons_media_scene_*"] is False
+    assert build["controldeck_addons_media_job_*"] is False
+    assert build["controldeck_addons_sonic_*"] is False
+    # 絵は主に残す。外した覚えのないものまで消えていないことを見る。
+    assert not any(key.startswith("controldeck_addons_media_generate") for key in build)
+    assert not any(key.startswith("controldeck_addons_media_pack") for key in build)
+
+    # 子には何をする係かを書く。書かないと、主はいつ呼べばよいか分からない。
+    for name in ("sculptor", "sound"):
+        assert len(agents[name]["description"]) > 20
