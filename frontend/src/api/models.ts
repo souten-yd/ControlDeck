@@ -138,7 +138,7 @@ export interface EndpointCapacity {
   /** いま何をしているか。前処理と生成は速さの桁が違う（実測 ROCm で
    * 前処理 約 1,000 tok/s、生成 約 50 tok/s）ので、同じ「tok/s」として
    * 出すと読めない。 */
-  phase: "idle" | "prefill" | "generate";
+  phase: "idle" | "prefill" | "think" | "generate";
   /** プロンプトを読む速さ。生成の速さとは別に数える。 */
   prefill_tokens_per_second: number;
   /** 読んでいる最中の slot 数。 */

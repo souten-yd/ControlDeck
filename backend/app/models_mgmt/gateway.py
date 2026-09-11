@@ -415,6 +415,33 @@ async def gateway_chat(request: Request):
         payload["temperature"] = 0.0
     target = f"http://127.0.0.1:{port}/v1/chat/completions"
 
+    def note_stream_phase(chunk: bytes) -> None:
+        """いま推論を書いているか、本文を書いているかを記録する。
+
+        llama.cpp は推論の中身を reasoning_content として流す。slot の状態には
+        出ないので、流れを見るしかない。判定は「その塊に reasoning_content が
+        入っているか」だけで、中身は読まない。
+        """
+        if not chunk:
+            return
+        try:
+            from app.models_mgmt.llama import set_stream_phase
+
+            if b'"reasoning_content"' in chunk:
+                set_stream_phase(port, "think")
+            elif b'"content"' in chunk:
+                set_stream_phase(port, "generate")
+        except Exception:  # noqa: BLE001 - 表示のための記録が推論を止めない
+            return
+
+    def clear_stream_phase() -> None:
+        try:
+            from app.models_mgmt.llama import set_stream_phase
+
+            set_stream_phase(port, None)
+        except Exception:  # noqa: BLE001
+            return
+
     def record_first_token(started_at: float) -> None:
         from app.resources.broker import broker as resource_broker
 
@@ -454,6 +481,11 @@ async def gateway_chat(request: Request):
 
         async def relay():
             # ストリームはクライアントへそのまま流す。ここで加工しない。
+            #
+            # 覗くのは「いま推論を書いているのか、本文を書いているのか」だけである。
+            # slot の状態には現れず（/slots は is_processing と n_decoded しか
+            # 返さない）、応答の流れにしか出ない。前処理・推論・本文で速さの意味が
+            # 違うので、同じ「tok/s」として出すと読めない。
             started_at = asyncio.get_running_loop().time()
             first = True
             try:
@@ -461,8 +493,10 @@ async def gateway_chat(request: Request):
                     if first and chunk:
                         record_first_token(started_at)
                         first = False
+                    note_stream_phase(chunk)
                     yield chunk
             finally:
+                clear_stream_phase()
                 await upstream.aclose()
                 await client.aclose()
                 await _release_gateway_lease(adapter, lease_id, renew)

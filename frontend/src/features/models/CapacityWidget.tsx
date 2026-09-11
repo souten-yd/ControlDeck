@@ -79,7 +79,9 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
         </Row>
       )}
       {item.phase !== "prefill" && (item.busy > 0 || item.tokens_per_second > 0) && (
-        <Row label={item.busy > 0 ? "生成中" : "生成速度"}>
+        // 推論の中身は slot に出ず、応答の流れにしか現れない。ゲートウェイが
+        // 中継の途中で見て記録している。
+        <Row label={item.phase === "think" ? "思考中" : item.busy > 0 ? "生成中" : "生成速度"}>
           <span className="flex flex-wrap items-baseline gap-x-2">
             <span>{item.tokens_per_second.toFixed(1)} tok/s</span>
             <span className="text-[10px] text-zinc-400">

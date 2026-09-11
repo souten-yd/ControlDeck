@@ -2080,6 +2080,25 @@ THROUGHPUT_MIN_INTERVAL_SECONDS = 2.0
 THROUGHPUT_STALE_SECONDS = 120.0
 
 
+# 流れを見て分かる段階。slot の状態には出ない。
+#
+# llama.cpp は推論の中身を reasoning_content として流す。/slots が返すのは
+# is_processing と n_decoded だけで、推論と本文の区別は付かない。ゲートウェイが
+# 中継の途中で見て、ここへ置く。
+_STREAM_PHASE: dict[int, str] = {}
+
+
+def set_stream_phase(port: int, phase: str | None) -> None:
+    if phase is None:
+        _STREAM_PHASE.pop(int(port), None)
+    else:
+        _STREAM_PHASE[int(port)] = phase
+
+
+def stream_phase(port: int) -> str | None:
+    return _STREAM_PHASE.get(int(port))
+
+
 def _throughput(port: int, tokens_total: float) -> float:
     """生成トークン累計の差分から、全slot合算の tok/s を出す。
 
@@ -2193,8 +2212,12 @@ async def endpoint_capacity(port: int) -> dict:
                 result["prefilling"] = prefilling
                 result["prompt_tokens"] = prompt_total
                 result["prompt_tokens_done"] = prompt_done
+                # 流れから分かる段階を優先する。prefill かどうかは slot から
+                # 分かるが、推論と本文の区別は流れにしか出ない。
+                streamed = stream_phase(port)
                 result["phase"] = (
                     "prefill" if prefilling and prefilling == busy
+                    else streamed if busy and streamed
                     else "generate" if busy
                     else "idle"
                 )
