@@ -497,7 +497,7 @@ def list_instances() -> list[dict]:
         if state == "STARTING" and status.get("sub_state") == "auto-restart":
             state = "FAILED"
         result.append({
-            **instance,
+            **_with_effective_draft_max(instance),
             "alias": alias,
             "runtime": "llama.cpp",
             "selected": alias == cfg.get("selected_alias"),
@@ -521,7 +521,7 @@ def get_instance(alias: str | None = None) -> dict:
         if alias is None and cfg["instance"].get("model_path"):
             return dict(cfg["instance"])
         raise KeyError("llama.cppモデル設定が見つかりません")
-    return dict(cfg["instances"][selected])
+    return _with_effective_draft_max(cfg["instances"][selected])
 
 
 def save_instance(alias: str, patch: dict) -> dict:
@@ -538,6 +538,7 @@ def save_instance(alias: str, patch: dict) -> dict:
         raise ValueError(f"llama.cppモデル設定は最大{MAX_INSTANCES}件です")
     instance = dict(cfg["instances"].get(alias, DEFAULT_INSTANCE))
     instance.update({key: value for key, value in patch.items() if key in DEFAULT_INSTANCE})
+    _store_draft_max(instance, patch)
     new_alias = str(instance.get("alias") or alias)
     if not ALIAS_RE.fullmatch(new_alias):
         raise ValueError("aliasは英数字・._:-の1〜128文字で指定してください")
@@ -810,6 +811,37 @@ def _draft_max_for_backend(inst: dict) -> int:
         if isinstance(value, int) and value > 0:
             return value
     return int(inst.get("draft_max", 16))
+
+
+def _with_effective_draft_max(instance: dict) -> dict:
+    """読み出す側へ、いまの backend で実際に使う先読み上限を返す。
+
+    draft_max_by_backend が入っていると draft_max は使われない。それを画面へ
+    そのまま出すと、値を変えても効かない項目を見せることになる——実際にそれで
+    誤った（画面は 4、走っていたのは rocm の 2）。読み出しの時点で実効値へ
+    寄せて、見えている数字と動いている数字を一致させる。
+    """
+    resolved = dict(instance)
+    resolved["draft_max"] = _draft_max_for_backend(instance)
+    return resolved
+
+
+def _store_draft_max(instance: dict, patch: dict) -> None:
+    """書き込む側で、いまの backend の欄へ入れる。
+
+    読みを実効値へ寄せたので、書きも同じ場所へ向けないと往復で値が消える。
+    backend ごとに適正が違うのがそもそもの理由なので（ROCm は伸ばすほど落ちる）、
+    片方を変えてもう片方を巻き込まないことが要る。
+    """
+    if "draft_max" not in patch:
+        return
+    backend = str(get_config().get("backend") or "")
+    if not backend:
+        return
+    per_backend = instance.get("draft_max_by_backend")
+    per_backend = dict(per_backend) if isinstance(per_backend, dict) else {}
+    per_backend[backend] = int(instance.get("draft_max", 4))
+    instance["draft_max_by_backend"] = per_backend
 
 
 def _backend_root(backend: str, tag: str) -> Path:

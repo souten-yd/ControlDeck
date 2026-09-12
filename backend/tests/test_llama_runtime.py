@@ -539,6 +539,63 @@ def test_draft_model_is_passed_for_types_that_need_one(tmp_path, monkeypatch):
     assert '"--spec-draft-ngl" "99"' in exec_start
 
 
+def test_the_draft_max_you_set_is_the_one_that_runs(tmp_path, monkeypatch):
+    """画面で変えた先読み上限が、そのまま起動引数になる。
+
+    draft_max_by_backend が入っていると draft_max は使われない。読み書きを
+    その欄へ向けていないと、値を変えても効かない項目を見せることになる
+    ——実機でそうなった（画面は 4、走っていたのは rocm の 2）。
+
+    backend ごとに適正が違うのが、そもそもこの欄がある理由である（ROCm は
+    伸ばすほど落ちる）。片方を変えて、もう片方を巻き込まないことも縛る。
+    """
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "llama-runtime.json")
+    monkeypatch.setattr(llama, "server_path", lambda: tmp_path / "llama-server")
+    monkeypatch.setattr(llama, "_ensure_port_free_for_other_runtimes", lambda _port: None)
+    llama.save_config({"backend": "rocm"})
+    llama.save_instance("m", {
+        "model_path": "/m/target.gguf", "alias": "m",
+        "spec_type": "draft-mtp",
+        "draft_max_by_backend": {"vulkan": 6, "rocm": 2},
+        "draft_max": 5,
+    })
+
+    exec_start = next(line for line in llama._unit_content("m").splitlines()
+                      if line.startswith("ExecStart="))
+    assert '"--spec-draft-n-max" "5"' in exec_start, "設定した値が起動引数に出ていない"
+    # 読み直したときも、走っている値が見えること。
+    assert llama.get_instance("m")["draft_max"] == 5
+    assert [item for item in llama.list_instances()
+            if item["alias"] == "m"][0]["draft_max"] == 5
+    # もう片方の backend は触らない。
+    stored = llama.get_config()["instances"]["m"]["draft_max_by_backend"]
+    assert stored == {"vulkan": 6, "rocm": 5}
+
+
+def test_the_other_backend_keeps_its_own_draft_max(tmp_path, monkeypatch):
+    """backend を切り替えると、その backend の値が見える。
+
+    同じ値で両方を回すと、どちらかが 2 割損をする。見えている数字が backend に
+    追随しなければ、その損に気づけない。
+    """
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "llama-runtime.json")
+    monkeypatch.setattr(llama, "server_path", lambda: tmp_path / "llama-server")
+    monkeypatch.setattr(llama, "_ensure_port_free_for_other_runtimes", lambda _port: None)
+    llama.save_config({"backend": "rocm"})
+    llama.save_instance("m", {
+        "model_path": "/m/target.gguf", "alias": "m",
+        "draft_max_by_backend": {"vulkan": 6, "rocm": 2},
+    })
+
+    assert llama.get_instance("m")["draft_max"] == 2
+    llama.save_config({"backend": "vulkan"})
+    assert llama.get_instance("m")["draft_max"] == 6
+
+
 def test_draft_ngl_auto_is_left_to_the_binary(tmp_path, monkeypatch):
     exec_start = _spec_instance(tmp_path, monkeypatch, {
         "spec_type": "draft-dflash", "spec_draft_model_path": "/m/draft.gguf",
