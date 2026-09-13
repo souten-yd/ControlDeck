@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.service import audit_runtime
@@ -42,6 +42,7 @@ class RuntimeAIRequest(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048, ge=1, le=8192)
     timeout_seconds: int = Field(default=120, ge=1, le=300)
+    thinking: StrictBool = False
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "RuntimeAIRequest":
@@ -97,8 +98,8 @@ def _runtime_request(body: RuntimeAIRequest, target) -> RuntimeChatRequest:
         messages=body.messages,
         temperature=body.temperature,
         max_tokens=body.max_tokens,
-        thinking=False,
-        disable_thinking=True,
+        thinking=body.thinking,
+        disable_thinking=not body.thinking,
         response_format=body.response_format,
         timeout_seconds=body.timeout_seconds,
     )
@@ -108,8 +109,12 @@ def _runtime_request(body: RuntimeAIRequest, target) -> RuntimeChatRequest:
 async def ai_capabilities(principal: AIAuth):
     del principal
     return {
-        "text.generate": {"available": await capability_available("text.generate"), "stream": True},
-        "vision.analyze": {"available": await capability_available("vision.analyze"), "stream": False},
+        capability: {
+            "available": await capability_available(capability),
+            "stream": capability == "text.generate",
+            "request_options": {"thinking": {"default": False}},
+        }
+        for capability in ("text.generate", "vision.analyze")
     }
 
 

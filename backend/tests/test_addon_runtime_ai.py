@@ -111,9 +111,51 @@ def test_addon_ai_capabilities_do_not_expose_provider_or_model(runtime_ai_api):
     response = client.get("/api/v1/addon-runtime/fake-addon/ai/capabilities", headers=headers)
     assert response.status_code == 200
     assert response.json() == {
-        "text.generate": {"available": True, "stream": True},
-        "vision.analyze": {"available": True, "stream": False},
+        "text.generate": {"available": True, "stream": True, "request_options": {"thinking": {"default": False}}},
+        "vision.analyze": {"available": True, "stream": False, "request_options": {"thinking": {"default": False}}},
     }
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("endpoint", ["complete", "stream"])
+def test_addon_ai_thinking_is_per_request_and_private(runtime_ai_api, thinking, endpoint):
+    from app.models_mgmt.runtime_provider import RuntimeChunk
+
+    client, headers, provider = runtime_ai_api
+
+    async def stream_chat(request):
+        provider.requests.append(request)
+        yield RuntimeChunk("thinking", content="private-reasoning")
+        yield RuntimeChunk("content", content="final-answer")
+
+    provider.stream_chat = stream_chat
+    payload = {"capability": "text.generate", "messages": [{"role": "user", "content": "answer"}]}
+    response = client.post(
+        f"/api/v1/addon-runtime/fake-addon/ai/{endpoint}",
+        headers=headers, json={**payload, "thinking": thinking},
+    )
+    assert response.status_code == 200, response.text
+    assert "private-reasoning" not in response.text
+    assert provider.requests[-1].thinking is thinking
+    assert provider.requests[-1].disable_thinking is (not thinking)
+    # A following caller omitting the option retains the old default.
+    assert client.post(
+        f"/api/v1/addon-runtime/fake-addon/ai/{endpoint}", headers=headers, json=payload,
+    ).status_code == 200
+    assert provider.requests[-1].thinking is False
+    assert provider.requests[-1].disable_thinking is True
+
+
+@pytest.mark.parametrize("thinking", [None, 0, 1, "true", "false", "high", {}, []])
+def test_addon_ai_thinking_rejects_coercion_before_provider(runtime_ai_api, thinking):
+    client, headers, provider = runtime_ai_api
+    response = client.post(
+        "/api/v1/addon-runtime/fake-addon/ai/complete", headers=headers,
+        json={"capability": "text.generate", "messages": [{"role": "user", "content": "answer"}],
+              "thinking": thinking},
+    )
+    assert response.status_code == 422
+    assert not provider.requests
 
 
 @pytest.mark.parametrize("payload", [

@@ -51,7 +51,30 @@ response_format?      # JSON object / JSON schema dialect already normalized by 
 temperature
 max_tokens
 timeout_seconds
+thinking?            # strict boolean; omitted = false (backward compatible)
 ```
+
+### Per-request thinking control (2026-09-13, implementation candidate)
+
+Both `complete` and text `stream` accept `thinking: true | false`. This is a
+provider-neutral request preference mapped by the existing runtime provider,
+not a model selector, global setting, or separate inference route. Omission
+retains the previous disabled behavior. Strings, numbers, and null are rejected.
+The existing token/time bounds, authorization, Host admission, cancellation,
+and lease ownership still apply. Thinking can consume the generation budget;
+callers must reject empty/incomplete structured results rather than assuming
+that enabling it guarantees a useful answer.
+
+Each entry in `GET ai/capabilities` adds
+`request_options: {"thinking": {"default": false}}`. This advertises the Host's
+request contract only, not that the selected model supports or benefits from
+thinking. Consumers must discover this option before sending it to older Hosts;
+absence means unsupported and must not be silently treated as enabled. A target
+can be unavailable while the Host still supports this request option.
+
+Private thinking chunks remain excluded from Add-on SSE output; complete returns
+only final content. No provider identity or credentials are added to responses.
+No automatic retries with a different thinking mode are introduced.
 
 There is deliberately no provider, port, runtime, or model field. The response returns content and requested capability, not the selected implementation identity.
 
