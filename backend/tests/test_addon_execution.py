@@ -666,7 +666,8 @@ def test_a_prompt_state_from_another_instance_is_discarded(monkeypatch, tmp_path
     assert not directory.exists(), "合わない状態を残している"
 
 
-def test_an_idle_slot_is_saved_even_though_it_reports_no_token_count(monkeypatch, tmp_path):
+@pytest.mark.parametrize("room_available", [True, False])
+def test_an_idle_slot_is_saved_even_though_it_reports_no_token_count(monkeypatch, tmp_path, room_available):
     """空いている slot は抱えているトークン数を返さない（返すのは処理中の
     slot だけ）。数を見てから選ぶ実装は、保存したい状態を必ず取りこぼす。"""
     import httpx
@@ -681,7 +682,10 @@ def test_an_idle_slot_is_saved_even_though_it_reports_no_token_count(monkeypatch
         lambda alias=None: {"alias": "unit-test", "model_path": str(model), "port": 65001},
     )
 
+    calls = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
         if request.url.path == "/slots":
             # 実機が返す形。アイドルの slot にトークン数の欄は無い。
             return httpx.Response(200, json=[
@@ -702,9 +706,16 @@ def test_an_idle_slot_is_saved_even_though_it_reports_no_token_count(monkeypatch
 
     monkeypatch.setattr(httpx, "Client", client)
     monkeypatch.setattr(llama, "KV_SNAPSHOT_ENABLED", True)
+    # This fixture simulates a multi-GB snapshot, not real PC disk/RAM capacity.
+    # Keep the refusal branch covered without weakening the production guard.
+    monkeypatch.setattr(llama, "_kv_room_available", lambda *_args: room_available)
     saved = llama.save_prompt_state("unit-test")
 
-    assert saved == 2_097_160_384, saved
+    assert saved == (2_097_160_384 if room_available else 0), saved
+    assert calls == (["GET", "POST", "POST"] if room_available else ["GET"])
+    if not room_available:
+        assert not (llama._kv_dir("unit-test") / "meta.json").exists()
+        return
     meta = json.loads((llama._kv_dir("unit-test") / "meta.json").read_text(encoding="utf-8"))
     assert [item["slot"] for item in meta["slots"]] == [0], meta
 
