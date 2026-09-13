@@ -71,3 +71,137 @@ OpenCodeはControl Deckの必須依存にしない。通常の`./deck.sh`、serv
 - prompt本文をargvへ入れず`shell=True`を使わない。cancelでtransient unitが停止し、一時ファイルが残らない。
 - llama.cpp OpenAI endpointを使った実機analyzeが成功する。全test/buildと1280px/320pxを確認する。
 - 実OpenCodeがAdd-on toolをdiscovery／callでき、Add-on disable後の再discoveryでtoolが消える。
+
+## OpenCode v2（2026-09-12 追加）
+
+### 位置づけ
+
+v1（npm `opencode-ai`、実行ファイル `opencode`）はそのまま残し、v2（npm
+`@opencode/cli`、実行ファイル `opencode2`）を別のアドオンとして並べる。導入先prefixが
+`data/features/opencode` と `data/features/opencode-v2` で別なので、片方の導入・更新・
+削除がもう片方に影響しない。どちらを使うかは OpenCode 画面の設定 `runtime`（`v1`/`v2`）
+で決める。既定は `v1`。設定した系列が未導入なら、導入済みのほうへ落として動かす。
+
+`@opencode/cli` は bin に `opencode` と `opencode2` の両方を持つ。registry の
+`executable` に `opencode2` を選ぶのは、PATH 上の外部 v1 を「外部導入の v2」と
+誤検出しないため（v1 の bin は `opencode` だけ）。
+
+アンインストールは従来どおり管理prefixだけを消す。v2 が持つ `opencode2 uninstall`
+サブコマンドは利用者のセッションDBや設定まで消すので呼ばない。
+
+### v1 との差（実測: 2.0.2）
+
+| | v1 | v2 |
+|---|---|---|
+| runtime configの渡し方 | `OPENCODE_CONFIG=<file>` | `XDG_CONFIG_HOME=<dir>`（`<dir>/opencode/opencode.json`） |
+| provider | `provider` / `npm` / `options` | `providers` / `package` / `settings` |
+| 独自ヘッダー | `options.headers` | provider直下の `headers`（`settings` の中では送られない） |
+| 画像 | `attachment` + `modalities` | `capabilities.{tools,input,output}` |
+| 権限 | `permission` の tool別map（`bash`） | `permissions` の配列 `{action,resource,effect}`（`shell`） |
+| agent | `agent` + `tools` map | `agents`（`tools` は無い。agent毎の `permissions` で書く） |
+| MCP | `mcp.<name>` / `enabled` / `timeout` 数値 | `mcp.servers.<name>` / `disabled` / `timeout.{catalog,execution}` |
+| compaction | `reserved` / `prune` | `buffer`（`prune` は警告付きで無視） |
+| skills | `{paths:[...]}` | 配列 |
+| `run` の対象 | `--dir <project>` | 作業ディレクトリ（`--dir` は無い） |
+| サーバー | プロセス内 | 既定は常駐 background service。`--standalone` でjob専用にする |
+
+`OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` / `OPENCODE_CONFIG_CONTENT` は
+2.0.2 では効かない（文字列は binary に在るが、`debug config` の読み込み元は
+変わらない）。そのため v2 は job ごとに config directory を作り、
+`XDG_CONFIG_HOME` で向ける。利用者自身の `~/.config/opencode` は読ませない。
+
+runtime config は v1 の形で組み立ててから機械的に読み替える（`_v2_payload`）。
+窓の大きさ・圧縮の発火点・重い道具の内訳といった実測に基づく判断を二重に持たないため。
+
+### ゲートウェイ／MCP／llamaサーバー
+
+いずれも v1 と同じ経路を使う。provider は ControlDeck の OpenAI 互換ゲートウェイ
+（`/api/v1/llm/v1`）を指し、APIキーは既存の発行済みキー、モデルは仮想モデル `auto`。
+llama.cpp / Lucebox の起動保証（`ensure_ready_by_base_url`）、KVの受け入れ制御、
+アイドル判定も従来どおり通る。Add-on の MCP は既存の `addon_mcp_bridge.py` を
+そのまま使う（v2 の MCP client から `connected` を確認済み）。
+
+### 画面（v1 / v2 で1枚ずつ）
+
+`/opencode` が v1、`/opencode-v2` が v2。中身は同じ `OpenCodePage` で、`runtime`
+prop だけが違う。ナビ・コマンドパレット・クイックアクションにもそれぞれ項目を出し、
+アドオンが無効な系列は SPA fallback が 404 を返す（CSS で隠すだけにしない）。
+
+**画面のボタンで開くセッションは、常にその画面の系列で起動する**（`POST
+/opencode/sessions` の `runtime`）。設定画面の系列トグルは、画面を持たない経路
+——AIチャットとワークフロー `code.agent`——の既定を決めるためのもの。名指しした系列が
+未導入なら導入済みのほうへ落として起動し、見出しにその旨を出す。
+
+このページで開始したセッション ID は系列ごとに別の localStorage キーへ分ける
+（v1 の画面に v2 のセッションが並ぶと、どちらで開いたか分からなくなる）。
+
+### TUI の設定（keybind / theme）は1枚へ集約する
+
+v2 は TUI 側の設定を config directory の `cli.json` から読む（v1 の層状 `tui.json` から
+変わった）。ControlDeck は job ごとに config directory を作り替えるので、そのままだと
+keybind を変えても次の起動で消える。`data/integrations/opencode/cli.json` を**共有の1枚**と
+し、生成した directory からはそこへ symlink する。ControlDeck は最初に既定を書いた後、
+このファイルの中身を触らない。TUI が設定画面から symlink を実体ファイルへ置き換えた
+場合も、そちらを尊重して触らない。
+
+既定は **v1 の操作へ揃えてある**。v1（1.18.30）と v2（2.0.2）の既定キーを突き合わせると
+162 件中 16 件だけが変わっており、そのうち「v2 が割り当てを外した／ずらした」ものを
+v1 の値へ戻す。plan ⇔ build の切替（`agent.cycle`）が `tab` でなくなったのが実用上
+いちばん響くため、`tab` / `shift+tab` に戻す。併せて v2 が割り当てを外した diff viewer
+（`left` / `right` / `E` / `tab` / `enter,space`）と入力欄の先頭・末尾（`home` / `end`）も戻す。
+
+`tab` は v2 で `prompt.autocomplete.complete` も使うが無害である。autocomplete 一群は
+候補が出ている間だけ効く文脈限定の割り当てで（`next=down` / `prev=up` / `select=return` と、
+通常操作と重なるキーを並べていることから分かる）、v1 でも `tab` は `agent_cycle` と
+`diff_switch_focus` が共有していた。`left` / `right` / `home` / `end` / `space` も v1 で
+同じ共存をしていた組み合わせをそのまま戻している。
+
+戻さないものが 2 つある。v2 が新機能へ割り当て直したキーで、戻すと新機能が潰れる:
+
+| action | v1 | v2 |
+|---|---|---|
+| `theme.switch` | `<leader>t` | v2 では `terminal.toggle` |
+| `session.child.first` | `<leader>down` | v2 では `terminal.select` |
+
+### 道具の結果の上限と自動整形（v2 のみ）
+
+v2 は `tool_output: {max_lines, max_bytes}` と `formatter` を組み込みで持つ
+（v1 には対応する設定が無い）。
+
+v2 の既定は 2,000 行 / 51,200 バイト。51,200 バイトは約 14,600 トークンで、窓
+131,072 なら 1 件で 11% を使う。実測（262,142 トークンで打ち止めた会話）では道具の
+結果が 48.1% を占め、内訳は bash 178k 文字・read 135k・edit 95k だったので、既定の
+ままでも数件で窓が埋まる。そこで**入力窓の 1/16 を上限とし、v2 の既定を超えない**形に
+する（3.5 バイト/トークン換算。ctx 131,072 なら 26,880 バイト）。窓が分からない
+ときは既定に任せ、勝手に絞らない。狭いモデルへ回っても 1 件が窓を食い尽くさない。
+
+削っても情報は失われない。v2 は全文を data directory の `tool-output/` へ落とし、
+その directory を読む権限を既定で開けている。必要な行は agent が grep で拾える
+——ControlDeck が MCP bridge で手作りした形（`RESULT_INLINE_LIMIT`）と同じである。
+
+`formatter: true` は編集のあとに整形を通す。差分が整形だけで膨らむのを防ぎ、
+lint との往復を 1 往復ぶん減らす。
+
+### 道具の出し入れ
+
+v2 の agent は `tools` map を持たない。代わりに agent 毎の `permissions` へ
+`{action: "<道具名のパターン>", resource: "*", effect: "deny"}` を並べる。これは
+v2 自身が v1 のトップレベル `tools: {pattern: false}` を移行する先と同じ形である。
+
+実機で確かめたところ、主エージェント（`build`）に deny を置いた道具はモデルの
+一覧そのものから消えた（Add-on の道具 7 個だけが見え、`media_scene_*` /
+`media_job_*` / `sonic_*` は出なかった）。v1 の `tools: false` と同じ効きで、
+重い道具を専門の子へ委ねる形と、それによる文脈の節約は v2 でも保たれる。
+
+### v2 で失われるもの
+
+- `compaction.prune`（完了した道具の出力だけを捨てる剪定）は v2 に無い。
+  v2 は `prune` を警告付きで無視する。畳む側（`compaction.auto` / `buffer`）は
+  そのまま効く。
+
+### 対応していないアドオン
+
+- **OMo（`oh-my-openagent`）は v2 未対応**。4.19.4 も 5.0.0-beta.56 も依存は
+  `@opencode-ai/plugin` / `@opencode-ai/sdk` の 1.x 系（1.15.13 / 1.18.22）で、
+  v2 の `@opencode/plugin` 2.x には載っていない。`runtime: v2` を選ぶと OMo は
+  効かない。OMo を使う間は v1 のままにする。

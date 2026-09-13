@@ -28,8 +28,8 @@ import AddonHostPage from "./pages/AddonHost";
 
 /** 再デプロイ後、開きっぱなしの旧画面は消えたchunkを読みに行き
  *  "Importing a module script failed" で落ちる。1度だけ自動再読み込みして復帰する。 */
-function lazyPage<T extends { default: React.ComponentType<Record<string, never>> }>(load: () => Promise<T>) {
-  return lazy(async () => {
+function lazyPage<P extends object>(load: () => Promise<{ default: React.ComponentType<P> }>) {
+  return lazy<React.ComponentType<P>>(async () => {
     try {
       return await load();
     } catch (error) {
@@ -98,10 +98,17 @@ function FeatureRoute({ feature, children }: { feature: string; children: React.
 function buildRouter() {
   const featureRoutes = [];
   {
-    featureRoutes.push({
-      path: "opencode",
-      element: <FeatureRoute feature="opencode"><Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage /></Suspense></FeatureRoute>,
-    });
+    // 系列ごとに1枚ずつ。画面の中身は同じで、起動する系列だけが違う。
+    const series: Array<{ path: string; feature: string; runtime: string }> = [
+      { path: "opencode", feature: "opencode", runtime: "v1" },
+      { path: "opencode-v2", feature: "opencode-v2", runtime: "v2" },
+    ];
+    for (const { path, feature, runtime } of series) {
+      featureRoutes.push({
+        path,
+        element: <FeatureRoute feature={feature}><Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage key={runtime} runtime={runtime} /></Suspense></FeatureRoute>,
+      });
+    }
   }
   return createBrowserRouter([
   { path: "/login", element: <LoginPage /> },

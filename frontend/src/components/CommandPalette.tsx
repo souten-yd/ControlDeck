@@ -50,6 +50,8 @@ export function CommandPalette({
     ];
     if (meta?.enabled_features.includes("opencode"))
       list.push({ id: "nav-opencode", label: "Open OpenCode", run: () => navigate("/opencode") });
+    if (meta?.enabled_features.includes("opencode-v2"))
+      list.push({ id: "nav-opencode-v2", label: "Open OpenCode v2", run: () => navigate("/opencode-v2") });
     for (const plugin of meta?.plugin_navigation ?? []) {
       if (can(plugin.permission))
         list.push({ id: `plugin-${plugin.id}`, label: `Open ${plugin.label}`, run: () => window.open(plugin.url, "_blank", "noopener,noreferrer") });

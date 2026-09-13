@@ -44,6 +44,7 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/knowledge", label: "Knowledge", icon: IconBook },
   { to: "/models", label: "Models", icon: IconChip },
   { to: "/opencode", label: "OpenCode", icon: IconCode, feature: "opencode" },
+  { to: "/opencode-v2", label: "OpenCode v2", icon: IconCode, feature: "opencode-v2" },
   { to: "/logs", label: "Logs", icon: IconLogs },
   { to: "/system", label: "System", icon: IconChart },
   { to: "/settings", label: "Settings", icon: IconSettings },

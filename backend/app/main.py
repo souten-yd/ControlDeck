@@ -252,7 +252,7 @@ from app.models_mgmt.gateway import router as llm_gateway_router
 from app.models_mgmt.router import router as models_router  # noqa: E402
 from app.features.router import router as features_router  # noqa: E402
 from app.skills.router import router as skills_router  # noqa: E402
-from app.features.registry import is_enabled as feature_enabled  # noqa: E402
+from app.features.registry import is_enabled as feature_enabled, opencode_enabled  # noqa: E402
 from app.plugins.router import router as plugins_router  # noqa: E402
 from app.addons.router import router as addons_router  # noqa: E402
 from app.addons.proxy import router as addon_frame_router  # noqa: E402
@@ -301,7 +301,7 @@ app.include_router(plugins_router, prefix=API)
 app.include_router(addons_router, prefix=API)
 app.include_router(resources_router, prefix=API)
 app.include_router(addon_runtime_router, prefix=API)
-if feature_enabled("opencode"):
+if opencode_enabled():
     from app.addons.agent_mcp import router as addon_agent_mcp_router
     from app.integrations.opencode.router import router as opencode_router
 
@@ -344,7 +344,10 @@ if DIST.is_dir():
         # 未登録APIをSPAへfallbackするとoptional featureの不存在を隠して200になる。
         if full_path.startswith("api/"):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
-        if full_path.rstrip("/") == "opencode" and not feature_enabled("opencode"):
+        # 系列ごとに画面を分けているので、無効な系列の path は個別に404にする。
+        # CSSで隠すだけにせず、未導入の系列が在るように見せない。
+        gate = {"opencode": "opencode", "opencode-v2": "opencode-v2"}.get(full_path.rstrip("/"))
+        if gate is not None and not feature_enabled(gate):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         candidate = (DIST / full_path).resolve()
         if full_path and candidate.is_file() and candidate.is_relative_to(DIST.resolve()):

@@ -1,6 +1,161 @@
 # 実装状況
 
-最終更新: 2026-09-10
+最終更新: 2026-09-13
+
+## v2 の TUI 設定が保存されない問題を修正（2026-09-13）
+
+v2 は TUI の keybind / theme を config directory の `cli.json` から読む。ControlDeck は
+job ごとに config directory を作り替えるため、**利用者が keybind を変えても次の起動で
+消えていた**（`XDG_CONFIG_HOME` を job 別 directory へ向けている副作用で、利用者自身の
+`~/.config/opencode/cli.json` も読まれない）。`data/integrations/opencode/cli.json` を
+共有の1枚とし、生成した directory からは symlink する形にした。TUI が設定画面から
+symlink を実体ファイルへ置き換えた場合はそちらを尊重する。
+
+併せて共有 `cli.json` の既定を **v1 の操作へ揃えた**。両 binary から既定キー表を抽出して
+突き合わせると、v1 の 162 件中 16 件だけが変わっていた。そのうち v2 が割り当てを外した／
+ずらしたものを v1 の値へ戻す: `agent.cycle=tab` / `agent.cycle.reverse=shift+tab`（plan 切替）、
+diff viewer の `left` / `right` / `E` / `tab` / `enter,space`、入力欄の `home` / `end`。
+
+`tab` は v2 で `prompt.autocomplete.complete` も使うが、autocomplete 一群は候補が出ている
+間だけ効く文脈限定の割り当て（`next=down` / `prev=up` / `select=return` と通常操作に重なる
+キーを並べている）なので衝突しない。v1 でも `tab` は `agent_cycle` と `diff_switch_focus` が
+共有しており、`left` / `right` / `home` / `end` / `space` も同じ共存をしていた。
+
+戻さないものが 2 つ: `theme.switch`（v1 `<leader>t`）と `session.child.first`
+（v1 `<leader>down`）は、v2 が `terminal.toggle` / `terminal.select` へ割り当て直しており、
+戻すと v2 の新機能が潰れるため v2 のままにした。実 binary で起動し、keybind の
+エラー・衝突警告が出ないことを確認。
+
+## OpenCode v2 に専用画面と、道具の結果の上限を追加（2026-09-13）
+
+### 画面を系列ごとに分けた
+
+`/opencode`（v1）と `/opencode-v2`（v2）の2枚にした。中身は同じ `OpenCodePage` で
+`runtime` prop だけが違う。ナビ・コマンドパレット・クイックアクションにも項目を出し、
+無効な系列の path は SPA fallback が 404 を返す（実機で v2 を disable → `/opencode-v2`
+が 404、`/opencode` は 200 のまま、re-enable で 200 に戻ることを確認）。
+
+**画面から開くセッションは常にその画面の系列で起動する**。`POST /opencode/sessions` に
+`runtime` を足し、`tui_command` / `active_binary` が名指しを受け取るようにした。
+設定値が v1 のままでも v2 画面は v2 で起動する（実機で確認: v1画面→`opencode-ai`、
+v2画面→`@opencode/cli`、未指定→設定値）。設定画面の系列トグルは、画面を持たない
+AIチャットとワークフロー `code.agent` の既定を決めるものへ役割を絞り、ラベルも変えた。
+セッションIDの localStorage キーも系列ごとに分けた。
+
+`lazyPage` は props を持たない画面（`ComponentType<Record<string, never>>`）に固定
+されていたので、props を取れるよう generic 化した。
+
+### 道具の結果の上限（`tool_output`）と自動整形（`formatter`）
+
+v2 だけが持つ組み込み設定。v2 の既定は 2,000 行 / 51,200 バイトだが、51,200 バイトは
+約 14,600 トークンで、窓 131,072 なら 1 件で 11% を使う。実測（262,142 トークンで
+打ち止めた会話）では道具の結果が 48.1% を占め、内訳は bash 178k 文字・read 135k・
+edit 95k だったので、既定のままでも数件で窓が埋まる。
+
+入力窓の 1/16 を上限とし、v2 の既定を超えない形にした（3.5 バイト/トークン換算。
+実測の 8,000 文字 ≒ 2,300 トークンが根拠）。ctx 131,072 → 26,880 バイト、
+ctx 8,192 → 8,000 バイト（下限）、窓が不明なら既定に任せて勝手に絞らない。
+削っても情報は失われない——v2 は全文を data directory の `tool-output/` へ落とし、
+その directory を読む権限を既定で開けている（`debug agents` の既定 permissions で確認）。
+MCP bridge の `RESULT_INLINE_LIMIT` と同じ形である。
+
+`formatter: true` は編集後に整形を通す。v1 に対応する設定は無いので v1 の config は
+従来のまま（test で `tool_output` / `formatter` が v1 側に出ないことを固定）。
+
+生成した v2 config を実 binary の `debug config` へ食わせ、トップレベル11鍵が
+1つも落ちないこと、`tool_output` が `{max_lines: 2000, max_bytes: 26880}` として
+受理されることを確認。
+
+### v2 用サードパーティ・プラグインの調査結果
+
+**現時点では実質ゼロ**。npm で流通している OpenCode プラグインを確認した範囲
+（dcp / mem / readseek / command-hooks / swarm / auto-resume / models-discovery /
+openspec / conductor / kompass / magic-context / oh-my-openagent 等）は**すべて v1 API
+（`@opencode-ai/plugin` 1.x）依存**で、beta 版（dcp 3.2.8-beta0、swarm 8.0.1-beta.0、
+OMo 5.0.0-beta.56）も v1 のままだった。公式ドキュメントは v1 プラグインが v2 では
+動かず移植が必要と明記している。先週のダウンロード数は `@opencode-ai/plugin`
+10,096,185 に対し `@opencode/plugin` 33,543（v2 CLI 本体 27,635 とほぼ同数）で、
+本家以外の採用がまだ無いことと整合する。
+
+一方 **MCP は系列に依存しない**ので、既存の `addon_mcp_bridge.py` がそのまま効く
+（v2 から道具 7 個の discovery を確認済み）。v1 でプラグインが埋めていた穴の多くは
+v2 の組み込み（LSP と `diagnostics`、`skill`、`subagent`、`websearch`、`commands`、
+`references`、`tool_output`、`compaction`、`formatter`）で埋まっており、binary には
+gopls / pyright / ruff / rust-analyzer が同梱されている。
+
+### 検証
+
+backend test 1088 passed / 1 failed / 2 skipped（95.40秒）。1失敗は
+`test_addon_agent_mcp.py::test_the_window_comes_from_the_instance_that_serves_the_model`
+で、本差分の前から単体でも落ちる既存の失敗（`_model_limits` の auto 対応の話）。
+frontend build 成功（18.28秒、既知の large chunk 警告）。本番 Host の
+`control-deck-web.service` を再起動し、`/api/v1/meta` に `opencode-v2` が出ること、
+両 path が 200 を返すこと、未認証 API が 401 であることを確認。
+
+実機の headless 実行（`runtime=v2`、`owner_user_id` 付き、ゲートウェイ →
+llama.cpp Qwen3.8-27B）で 20,000 行を吐く bash を走らせて exit 0（events 6）。
+transient unit の argv が `opencode.exe run ... --format json --auto --model
+controldeck/auto --standalone`（`--dir` 無し）であること、終了後に unit と
+job 別 config directory が残らないことを確認。agent 側は `| tail -n 1` で自分から
+絞っており、`agent-notes.md` の指示と `tool_output` の両方が効いている。
+
+NOT TESTED: 320px/1280px の画面確認（この環境からブラウザへ繋げず未実施）。
+v2 画面からの TUI セッションの実操作（起動文字列と systemd unit の argv までは確認）。
+`tool_output` の上限に実際にぶつかったときの切り詰め表示（今回は agent が自分で
+絞ったため上限に届かなかった）。
+
+## OpenCode v2 をアドオンとして追加（2026-09-12）
+
+v1（`opencode-ai` 1.18.30）はそのままに、v2（`@opencode/cli` 2.0.2）を別アドオン
+`opencode-v2` として追加。導入先prefixが `data/features/opencode` と
+`data/features/opencode-v2` で別なので、導入・更新・削除が互いに影響しない。
+実行ファイルは `opencode2`（v2 の bin だけが持つ名前で、PATH 上の外部 v1 を
+v2 と誤検出しない）。既存の feature registry / router / 設定画面をそのまま使い、
+別のインストーラは作っていない。どちらを使うかは OpenCode 画面の `runtime`
+（v1/v2）で切り替える。既定は v1 で、設定した系列が未導入なら導入済みのほうへ落ちる。
+
+v2 は設定の形が変わっている。実測（2.0.2）で確かめた差は
+`docs/design-opencode-feature.md` の表に置いた。要点は3つ:
+(1) `OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` / `OPENCODE_CONFIG_CONTENT` が
+どれも効かないので、job ごとの config directory を `XDG_CONFIG_HOME` で向ける。
+(2) 独自ヘッダーは `settings.headers` では送られず、provider 直下の `headers` が要る
+（echo serverで確認: settings内は届かず、provider直下だと `x-control-deck-client:
+opencode` が到達）。(3) `run` に `--dir` が無く、既定で常駐 background service へ
+繋ぐため `--standalone` を付ける。runtime config は v1 の形で組んでから
+`_v2_payload` で機械的に読み替え、測って書いた判断を二重に持たない。
+
+ゲートウェイ / MCP / llama サーバーの経路は v1 と同じものを通す。生成した v2 config
+を実 binary の `debug config` へ食わせ、トップレベル9鍵・permissions 152件・
+agents 3件・mcp servers 1件・capabilities・limit が1つも落ちないことを確認。
+
+実機検証（本番 Host、`control-deck-web.service` 再起動あり）:
+- `registry.install('opencode-v2')` → managed/healthy/`opencode v2.0.2`、v1 は enabled のまま
+- `/api/v1/meta` の enabled_features に v1 が残り、`/opencode` は 200、未認証 API は 401
+- `runtime=v2` の headless 実行（`run_chat` → systemd-run transient unit → ゲートウェイ →
+  llama.cpp Qwen3.8-27B）で `PONG-V2` と session ID を取得（events 2）
+- `owner_user_id` 付きの v2 実行で Add-on の MCP 道具 7 個を discovery。主エージェントに
+  deny した `media_scene_*` / `media_job_*` / `sonic_*` は一覧から消えており、v1 の
+  `tools: false` と同じ効き（＝文脈の節約）が v2 の agent 毎 `permissions` で保たれる
+- TUI 起動文字列は v1 が `OPENCODE_CONFIG=... opencode --model ...`、v2 が
+  `XDG_CONFIG_HOME=... opencode2 --standalone <project>`。v2 の flag 受理も実行で確認
+
+backend test: 1085 passed / 2 failed / 2 skipped（93.34秒）。2失敗は
+`test_addon_agent_mcp.py::test_the_window_comes_from_the_instance_that_serves_the_model`
+と `test_addon_execution.py::test_an_idle_slot_is_saved_even_though_it_reports_no_token_count`
+で、どちらも本差分の前から単体でも落ちる既存の失敗（`_model_limits` の auto 対応と
+KV slot 保存の話で、v2 とは無関係）。frontend build 成功（18.68秒、既知の large chunk 警告）。
+App Studio の書き出しは `app/features/registry.py` をスタブへ差し替えるので、
+`opencode_enabled` をスタブにも足した（`test_flow_app.py` で検出）。
+
+NOT TESTED: 320px/1280px の画面確認（この環境からブラウザへ繋げず未実施。追加したのは
+既存の2択セグメント（プロジェクト選択）と同じ `sm:col-span-2` + `flex-1` の作り）。
+v2 の `--standalone` を使わない常駐 service 経路、v2 での `code.agent` ワークフローノード、
+v2 セッションの長時間運用。
+
+**OMo は v2 未対応**。`oh-my-openagent` は 4.19.4 も 5.0.0-beta.56 も
+`@opencode-ai/plugin` / `@opencode-ai/sdk` の 1.x（1.15.13 / 1.18.22）に固定で、
+v2 の `@opencode/plugin` 2.x には載っていない。アドオン一覧の summary に
+「v1系列のみ対応（v2は未対応）」と出して先に伝える。OMo を使う間は v1 のままにする。
 
 ## Queue資源予約の受付IDを退避完了前に返す（2026-09-10）
 

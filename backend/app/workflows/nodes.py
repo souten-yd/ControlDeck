@@ -2429,9 +2429,9 @@ NODE_TIMEOUTS = {
 }
 
 # Optional integrationはfeature有効時だけexecutorへ登録する。通常起動ではimportもしない。
-from app.features.registry import is_enabled as _feature_enabled
+from app.features.registry import opencode_enabled as _opencode_enabled
 
-if _feature_enabled("opencode"):
+if _opencode_enabled():
     from app.integrations.opencode.node import node_code_agent
 
     NODE_EXECUTORS["code.agent"] = node_code_agent

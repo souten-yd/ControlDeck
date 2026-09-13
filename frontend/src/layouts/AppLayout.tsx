@@ -412,16 +412,19 @@ export default function AppLayout() {
                 navigate("/assistant");
               }}
             />
-            {enabledFeatures.has("opencode") && can("workflows.run") && (
-              <ActionItem
-                icon={<RouteIcon to="/opencode" fallback={IconCode} />}
-                label="OpenCode"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/opencode");
-                }}
-              />
-            )}
+            {([["/opencode", "opencode", "OpenCode"],
+               ["/opencode-v2", "opencode-v2", "OpenCode v2"]] as const).map(([to, feature, label]) =>
+              enabledFeatures.has(feature) && can("workflows.run") ? (
+                <ActionItem
+                  key={`action-${feature}`}
+                  icon={<RouteIcon to={to} fallback={IconCode} />}
+                  label={label}
+                  onClick={() => {
+                    setActionOpen(false);
+                    navigate(to);
+                  }}
+                />
+              ) : null)}
             {addonNavigation.map((contribution) => {
               const addon = addonById.get(contribution.addon_id);
               // Apps と同じ IconGrid を使っていたので、Media が Apps と
