@@ -905,8 +905,8 @@ def test_the_window_comes_from_the_instance_that_serves_the_model(monkeypatch):
     # 小さい窓では、返答の上限も窓に合わせて縮む。8,192 のまま渡すと入力が
     # 窓の半分しか使えなくなる。
     assert provider._model_limits("other") == {"context": 8192, "output": 2048, "input": 6144}
-    # 知らないモデルは宣言しない。誤った窓を渡すより、従来どおり畳まないほうがよい。
-    assert provider._model_limits("nope") is None
+    # gateway は未知aliasも利用可能なLLMへ転送する。候補の最小窓を宣言する。
+    assert provider._model_limits("nope") == {"context": 8192, "output": 2048, "input": 6144}
 
 
 def test_heavy_addon_tools_move_to_specialist_subagents(monkeypatch, tmp_path):

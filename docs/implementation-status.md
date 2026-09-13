@@ -2,6 +2,19 @@
 
 最終更新: 2026-09-13
 
+## AI gate regression fixtures isolated（2026-09-13）
+
+main7cf5605で再現した2件をtestのみ修正。gateway.resolve_instanceは未知aliasも
+起動済み/登録順LLMへ転送するため、_model_limitsの候補最小窓という現在仕様に
+古いNone期待値を合わせた。既存のauto/個別alias/分割KVの検査は維持。
+KV snapshot成功fixtureは実PCのRAM/disk空きに依存させず、容量判定を明示mock。
+容量不足時も別caseで保存POSTなし/metaなしを検査し、実capacity guardの既存拒否testを維持。
+途中のnegative fixtureはmeta不在を読み込み失敗したため、不在を明示assertへ修正した。
+
+`./deck.sh test`: 1094 passed / 2 skipped / 1 warning、108.83秒、exit0。
+frontend/distは同じmainソースから前段でbuild済みの成果物を参照し、SPA route条件を固定。
+production code/設定/サービス変更なし。これは単体test gateの修復で、推論・GUIの実機受入ではない。
+
 ## Project Lab にプロジェクト削除を追加（2026-09-13）
 
 CodeDEV へフォルダを置けば自動で並ぶ一方、画面から消す手段が無かった。プロジェクト
