@@ -229,8 +229,11 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
             </button>
           </div>
         </div>
+        {/* autoFocus は付けない。画面を開いただけで software keyboard が上がり、
+            プロジェクト一覧も開始ボタンも隠れてしまう。入力は利用者がこの欄を
+            選んだときに始める。 */}
         {projectMode === "new" && (
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="プロジェクト名（例: my-app）— CodeDEV配下に作成し git init します" className={`${input} font-mono`} autoFocus />
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="プロジェクト名（例: my-app）— CodeDEV配下に作成し git init します" className={`${input} font-mono`} />
         )}
         {projectMode === "existing" && (
           <div className="flex gap-1.5">
