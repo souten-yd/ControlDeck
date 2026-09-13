@@ -32,8 +32,25 @@ capabilities各項のrequest_optionsでHostの入力契約を発見可能にす�
 - Host PID485004 / MediaForge PID537447 はactive、稼働checkout/サービス未変更。
 
 NOT TESTED: 新版の実HTTP推論・思考有効時の実取消/lease返却・PC/320pxブラウザ。
+2026-09-13追記: PR325 test-only修正を統合した全gateは1106 passed / 2 skipped /
+1 warning、97.58秒、exit0。PR325は4765666でmerge確認。旧失敗記録は上記へ保持。
+配布前のread-only live checkで共有LLM slot0 is_processing=trueを観測したため、
+Host再起動は行わない。未認証jobs/resources APIは401で拒否、認証を迂回していない。
 未配布。次は既存2失敗の扱いとbuild後の全gate、別PRのreviewと実機受入、
 その後consumer側を接続する。新モデル・global設定変更・provider直結は行っていない。
+
+## AI gate regression fixtures isolated（2026-09-13）
+
+main7cf5605で再現した2件をtestのみ修正。gateway.resolve_instanceは未知aliasも
+起動済み/登録順LLMへ転送するため、_model_limitsの候補最小窓という現在仕様に
+古いNone期待値を合わせた。既存のauto/個別alias/分割KVの検査は維持。
+KV snapshot成功fixtureは実PCのRAM/disk空きに依存させず、容量判定を明示mock。
+容量不足時も別caseで保存POSTなし/metaなしを検査し、実capacity guardの既存拒否testを維持。
+途中のnegative fixtureはmeta不在を読み込み失敗したため、不在を明示assertへ修正した。
+
+`./deck.sh test`: 1094 passed / 2 skipped / 1 warning、108.83秒、exit0。
+frontend/distは同じmainソースから前段でbuild済みの成果物を参照し、SPA route条件を固定。
+production code/設定/サービス変更なし。これは単体test gateの修復で、推論・GUIの実機受入ではない。
 
 ## Project Lab にプロジェクト削除を追加（2026-09-13）
 
