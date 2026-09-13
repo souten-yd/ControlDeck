@@ -2,7 +2,7 @@
  * モバイル: visualViewport で高さ再計算 + Ctrl/Esc/Tab/矢印の補助キーバー。
  * コピペ: PasteはClipboard APIから直接送信し、CopyはPasteの上スワイプで直接開く。
  * 非 HTTPSでClipboard APIを読めない場合は、二重入力欄を出さずOS keyboard pasteへ案内する。 */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -46,6 +46,17 @@ const HELPER_KEYS: { label: string; seq?: string; modifier?: "ctrl"; kind?: "att
   { label: "^Z", seq: "\x1a" },
   { label: "^L", seq: "\x0c" },
 ];
+
+/** 押しても focus を動かさないボタン。
+ *
+ * focus が移ると software keyboard が出入りし、Visual Viewport の resize で
+ * ターミナルが描き直される。pointerdown だけでは pointer event を出さない経路が
+ * 残るので、mousedown も塞ぐ。type を明示するのは、既定の submit を避けるため。 */
+const NO_FOCUS_PRESS = {
+  type: "button",
+  onPointerDown: (event: PointerEvent) => event.preventDefault(),
+  onMouseDown: (event: MouseEvent) => event.preventDefault(),
+} as const;
 
 export default function XtermView({
   sessionId,
@@ -1046,6 +1057,9 @@ export default function XtermView({
     const onTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
         touchTracking = false;
+        // 開始時刻を残すと、この touch に対応しない touchend が「たった今始まった
+        // 短いタップ」に見えてしまう。連打で指が重なるとここを通るので、消しておく。
+        touchStartAt = 0;
         return;
       }
       // xterm 6自身の未完なtouch scroll stateと二重処理しない。tap focusはtouchendで復元する。
@@ -1101,6 +1115,9 @@ export default function XtermView({
     const onTouchEnd = (event: TouchEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      // 対応する touchstart を追えた touch か。追えていない touchend で focus すると、
+      // 補助キーの連打やマルチタッチの余りで software keyboard が出る。
+      const wasTracking = touchTracking;
       const wasScrolling = touchScrolling;
       if (touchScrolling && touchScrollFrame) {
         window.cancelAnimationFrame(touchScrollFrame);
@@ -1120,12 +1137,13 @@ export default function XtermView({
       }
       // 指が動いた後や、長く押していた後は tap ではない。押しっぱなしからの
       // 離しで focus を奪うと、scroll のたびに software keyboard が出る。
-      const heldFor = event.timeStamp - touchStartAt;
-      if (!wasScrolling && !touchMoved && heldFor < TOUCH_TAP_MAX_MS) {
+      const heldFor = touchStartAt > 0 ? event.timeStamp - touchStartAt : Number.POSITIVE_INFINITY;
+      if (wasTracking && !wasScrolling && !touchMoved && heldFor < TOUCH_TAP_MAX_MS) {
         leaveHistoryForInput();
         term.focus();
       }
       touchMoved = false;
+      touchStartAt = 0;
     };
     host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
     host.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
@@ -1358,7 +1376,7 @@ export default function XtermView({
           コピー
         </button>
         {onAutomation && <button
-          onPointerDown={(event) => event.preventDefault()}
+          {...NO_FOCUS_PRESS}
           onClick={onAutomation}
           aria-label="Automation settings"
           title="Snippets and schedules"
@@ -1424,7 +1442,7 @@ export default function XtermView({
           className="terminal-helper-bar flex h-12 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden border-t border-zinc-200 bg-zinc-50 px-2 py-0.5 dark:border-zinc-800 dark:bg-zinc-900"
         >
           <button
-            onPointerDown={(event) => event.preventDefault()}
+            {...NO_FOCUS_PRESS}
             onClick={() => {
               if (suppressPasteClickRef.current) {
                 suppressPasteClickRef.current = false;
@@ -1446,7 +1464,7 @@ export default function XtermView({
             貼付
           </button>
         <button
-          onPointerDown={(event) => event.preventDefault()}
+          {...NO_FOCUS_PRESS}
           onClick={() => sendSeq("\r")}
           aria-label="Enter"
           className="min-h-11 shrink-0 rounded-lg bg-white px-3 font-mono text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
@@ -1456,7 +1474,7 @@ export default function XtermView({
           {HELPER_KEYS.map((k) => (
           <button
             key={k.label}
-            onPointerDown={(event) => event.preventDefault()}
+            {...NO_FOCUS_PRESS}
             onClick={() => {
               if (k.kind === "attach") {
                 fileInput.current?.click();
