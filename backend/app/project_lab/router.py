@@ -145,6 +145,43 @@ def project(project_id: str, user: User = Depends(require_permission("project_la
         raise _not_found(exc) from exc
 
 
+@router.delete("/projects/{project_id}")
+def delete_project(
+    project_id: str, request: Request,
+    user: User = Depends(require_permission("project_lab.delete")),
+    db: Session = Depends(get_db),
+):
+    """プロジェクトをフォルダごと削除する。取り消せないので、先に2つだけ確かめる。
+
+    1. 実行中のものが無いか。走っている systemd unit は消えたフォルダを掴んだまま
+       残り、ログも成果物も宙に浮く。先に止めてもらう。
+    2. 公開していないか。ここで消すと GitHub 側の Pages と branch だけが残り、
+       画面からは取り下げられなくなる。先に「公開を取り下げる」を通してもらう。
+    """
+    _project_or_404(project_id)
+    running = db.execute(
+        select(ProjectRun).where(
+            ProjectRun.project_id == project_id, ProjectRun.status.in_(runs.RUNNING_STATES)
+        )
+    ).scalars().first()
+    if running is not None:
+        raise HTTPException(status_code=409, detail="実行中です。先に停止してから削除してください")
+    if publish.get_state(project_id) is not None:
+        raise HTTPException(status_code=409, detail="公開中です。先に公開を取り下げてから削除してください")
+    try:
+        result = service.delete_project(project_id)
+    except service.ProjectLabError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="プロジェクトを削除できません") from exc
+    audit.record(
+        db, "project_lab.project.delete", user=user, resource_type="project",
+        resource_id=project_id, request=request,
+        metadata={"name": result["name"], "link_only": result["link_only"]},
+    )
+    return {"ok": True, **result}
+
+
 # プレビュー用の短命token。sandboxのiframeは不透明originになるため、そこから出る
 # サブリソース要求はcross-site扱いになりセッションcookieが送られない（Chromeは送らず、
 # WebKitは送るのでブラウザによって動いたり動かなかったりする）。tokenをパスへ入れると

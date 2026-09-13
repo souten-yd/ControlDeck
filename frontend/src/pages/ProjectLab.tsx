@@ -10,7 +10,7 @@ import {
   type ProjectLabPublishState,
 } from "../api/projectLab";
 import { CodeViewer } from "../features/projectlab/CodeViewer";
-import { BottomSheet, Popover, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, Popover, Skeleton } from "../components/ui";
 import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
 import { useToasts } from "../stores";
 import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
@@ -71,6 +71,8 @@ export default function ProjectLabPage() {
   // 外部CDNの読み込みは既定で遮断し、利用者が明示的に許可したファイルだけ通す。
   const [externalAllowed, setExternalAllowed] = useState<Record<string, boolean>>({});
   const [openRun, setOpenRun] = useState<number | null>(null);
+  // 取り消せない操作なので、確認を挟む。対象は選択中のプロジェクト。
+  const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
 
   const projectsQuery = useQuery({ queryKey: ["project-lab"], queryFn: projectLabApi.list });
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
@@ -92,6 +94,21 @@ export default function ProjectLabPage() {
       show(settings.allow_external_preview ? "外部CDNを常に許可します" : "外部CDNの読み込みを遮断します");
     },
     onError: (error) => show(error instanceof Error ? error.message : "設定を保存できません", "error"),
+  });
+
+  const deleteProject = useMutation({
+    mutationFn: (id: string) => projectLabApi.remove(id),
+    onSuccess: async (result) => {
+      setDeleting(null);
+      setSheet(null);
+      if (projectId === result.id) {
+        setProjectId(null);
+        setArtifactPath(null);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["project-lab"] });
+      show(`${result.name} を削除しました`);
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "削除できません", "error"),
   });
 
   const runsQuery = useQuery({
@@ -213,6 +230,8 @@ export default function ProjectLabPage() {
                   onToggleExternal={(allow) => saveSettings.mutate(allow)}
                   canExport={can("project_lab.export")}
                   canPublish={can("project_lab.publish")}
+                  canDelete={can("project_lab.delete")}
+                  onDelete={() => setDeleting({ id: detail.id, name: detail.name })}
                 />
               )}
             </Popover>
@@ -288,6 +307,17 @@ export default function ProjectLabPage() {
           openRun={openRun}
           onOpenRun={setOpenRun}
           onClose={() => setSheet(null)}
+        />
+      )}
+
+      {deleting && (
+        <ConfirmDialog
+          title="プロジェクトを削除"
+          message={`${deleting.name} をフォルダごと削除します。元に戻せません。`}
+          confirmLabel="削除する"
+          busy={deleteProject.isPending}
+          onConfirm={() => deleteProject.mutate(deleting.id)}
+          onClose={() => setDeleting(null)}
         />
       )}
     </div>
@@ -747,6 +777,7 @@ function FilesSheet({
 
 function InfoPanel({
   detail, busy, onRunProfile, allowExternal, onToggleExternal, canExport, canPublish,
+  canDelete, onDelete,
 }: {
   detail: ProjectLabDetail;
   busy: boolean;
@@ -755,6 +786,8 @@ function InfoPanel({
   onToggleExternal: (allow: boolean) => void;
   canExport: boolean;
   canPublish: boolean;
+  canDelete: boolean;
+  onDelete: () => void;
 }) {
   const profiles = detail.manifest?.profiles ?? [];
   return (
@@ -818,6 +851,21 @@ function InfoPanel({
       <p className="mt-3 text-[11px] leading-relaxed text-zinc-400">
         実行は隔離された systemd user unit（ホームは読み取り専用、書き込みはプロジェクト配下のみ）で行われ、ボタンを押したときだけ開始します。
       </p>
+      {canDelete && (
+        /* 取り消せない操作なので、他の操作と線で区切ってメニューのいちばん下へ置く。 */
+        <div className="mt-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <button
+            type="button"
+            onClick={onDelete}
+            className="min-h-11 w-full rounded-xl border border-red-300 px-3 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/30"
+          >
+            プロジェクトを削除
+          </button>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-400">
+            フォルダごと消えます。実行中・公開中のものは削除できません。
+          </p>
+        </div>
+      )}
     </div>
   );
 }

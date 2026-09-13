@@ -625,3 +625,81 @@ def test_an_unchanged_preview_asset_is_not_sent_again(admin_client, tmp_path, mo
     # 変わっていないと答えるときも、CORS の判断材料は返す。返さないと、
     # 持っている側が使えないままになる。
     assert again.headers["access-control-allow-origin"] == "*"
+
+
+def test_project_delete_removes_the_folder_and_stays_inside_codedev(admin_client, tmp_path, monkeypatch):
+    """設定メニューからの削除。CodeDEV 配下だけを消し、外の実体には触れない。"""
+    from tests.conftest import CSRF_HEADERS
+
+    _purge_runs()
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    _project(root)
+    outside = tmp_path / "outside"
+    (outside / "keep").mkdir(parents=True)
+    (outside / "keep" / "data.txt").write_text("触らない", encoding="utf-8")
+    # CodeDEV の外を指す symlink。resolve すると外へ出るので削除対象にならない。
+    (root / "escape").symlink_to(outside / "keep")
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+
+    # 外へ出る symlink は project としてすら開けない（既存の境界検証）。
+    assert admin_client.get("/api/v1/project-lab/projects/escape").status_code == 404
+    assert admin_client.delete("/api/v1/project-lab/projects/escape", headers=CSRF_HEADERS).status_code == 404
+    assert (outside / "keep" / "data.txt").exists()
+
+    # 未知の project、および path 脱出は拒否する（.. は encode して handler まで通す）。
+    assert admin_client.delete("/api/v1/project-lab/projects/missing", headers=CSRF_HEADERS).status_code == 404
+    for escape in ("%2e%2e", ".hidden"):
+        assert admin_client.delete(
+            f"/api/v1/project-lab/projects/{escape}", headers=CSRF_HEADERS).status_code == 404
+    # 区切りを含む名前は route に一致せず、handler へ届かない。
+    assert admin_client.delete(
+        "/api/v1/project-lab/projects/%2e%2e%2fother", headers=CSRF_HEADERS).status_code == 405
+
+    removed = admin_client.delete("/api/v1/project-lab/projects/demo", headers=CSRF_HEADERS)
+    assert removed.status_code == 200
+    assert removed.json()["ok"] is True and removed.json()["name"] == "Demo Dashboard"
+    assert not (root / "demo").exists()
+    assert admin_client.get("/api/v1/project-lab/projects").json() == []
+
+
+def test_project_delete_refuses_while_running_or_published(admin_client, tmp_path, monkeypatch):
+    """走っているもの・公開しているものは消さない。先に止める／取り下げてもらう。"""
+    from app.database import SessionLocal
+    from app.models import ProjectRun
+    from app.project_lab import publish
+    from tests.conftest import CSRF_HEADERS
+
+    _purge_runs()
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    _project(root)
+    monkeypatch.setattr(service, "project_root", lambda: root.resolve())
+
+    with SessionLocal() as db:
+        db.add(ProjectRun(project_id="demo", project_name="Demo Dashboard", profile_id="preview",
+                          profile_type="cli", status="RUNNING", unit_name="cdpl-test-delete"))
+        db.commit()
+    busy = admin_client.delete("/api/v1/project-lab/projects/demo", headers=CSRF_HEADERS)
+    assert busy.status_code == 409 and "実行中" in busy.json()["detail"]
+    assert (root / "demo").exists()
+    _purge_runs()
+
+    monkeypatch.setattr(publish, "get_state", lambda project_id: {"repository": "owner/demo"})
+    published = admin_client.delete("/api/v1/project-lab/projects/demo", headers=CSRF_HEADERS)
+    assert published.status_code == 409 and "公開中" in published.json()["detail"]
+    assert (root / "demo").exists()
+
+    monkeypatch.setattr(publish, "get_state", lambda project_id: None)
+    assert admin_client.delete("/api/v1/project-lab/projects/demo", headers=CSRF_HEADERS).status_code == 200
+    assert not (root / "demo").exists()
+
+
+def test_project_delete_permission_is_administrator_only():
+    from app.security.permissions import ALL_PERMISSIONS, ROLE_PRESETS
+
+    assert "project_lab.delete" in ALL_PERMISSIONS
+    assert "project_lab.delete" in ROLE_PRESETS["administrator"]
+    # apps.delete / files.delete と同じ扱い。operator へは配らない。
+    assert "project_lab.delete" not in ROLE_PRESETS["operator"]
+    assert "project_lab.delete" not in ROLE_PRESETS["viewer"]

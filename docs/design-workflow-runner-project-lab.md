@@ -115,6 +115,22 @@ Web profileではcommand argv内の`{host}`を`127.0.0.1`、`{port}`を空きloo
 
 iframeは`allow-same-origin`を付けないsandboxとし、script、form、downloadだけを明示許可する。これにより未信頼の開発成果物がControlDeck parent DOMやsessionへ到達することを防ぐ。別originを必要とする高度なWebSocket/CORSアプリは、専用preview originを導入する後続Phaseの対象とする。
 
+## 4.1 プロジェクトの削除
+
+置き場（CodeDEV）へフォルダを置けば自動で並ぶ一方、消す手段が画面に無かった。
+プロジェクト情報（ⓘ）のメニュー最下部へ、線で区切って「プロジェクトを削除」を置く。
+破壊的操作なので確認ダイアログを挟む。
+
+- 権限は `project_lab.delete`。`apps.delete` / `files.delete` と同じ扱いで、preset では
+  administrator だけに付く（operator には配らない）。
+- 境界の検証は既存の `resolve_project` に任せる。CodeDEV の外・symlink 脱出・
+  `..`・先頭 `.` はそこで弾かれる。その上で root 自身でないことだけ追加で確かめる。
+- CodeDEV 直下が symlink の場合は link だけを外し、指す先には触れない。
+- 先に 2 つを断る。**実行中**（走っている systemd unit が消えたフォルダを掴んだまま
+  残り、ログも成果物も宙に浮く）と、**公開中**（ここで消すと GitHub 側の Pages と
+  branch だけが残り、画面からは取り下げられなくなる）。どちらも 409 で理由を返す。
+- 監査ログへ `project_lab.project.delete` を記録する。
+
 ## 5. 実装順
 
 1. 公開schema固定、専用Runner API/UI、入力・出力・承認・履歴、PC/390/320 E2E。
