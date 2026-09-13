@@ -70,9 +70,9 @@ NODE_CATALOG: list[dict] = [
     {"type": "ai.route", "desc": "稼働中runtime・model・VRAMを評価し、後続LLMへ実行経路を返す", "keys": ["candidates", "strategy", "min_context", "min_free_vram_mb", "allow_unavailable"]},
 ]
 
-from app.features.registry import is_enabled as _feature_enabled
+from app.features.registry import opencode_enabled as _opencode_enabled
 
-if _feature_enabled("opencode"):
+if _opencode_enabled():
     NODE_CATALOG.append({
         "type": "code.agent",
         "desc": "OpenCode coding agent。operation(analyze/implement/fix/test/review)、project_path、instruction",

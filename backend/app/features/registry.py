@@ -26,6 +26,19 @@ FEATURES: dict[str, dict] = {
         "route_gated": True,
         "summary": "OpenCode画面とAIチャットのcodeモードで使うコーディングエージェント",
     },
+    # OpenCode v2 は別パッケージ（@opencode/cli、bin に opencode2 を持つ）で、v1 と
+    # 同居できる。v1 と別のprefixへ入れるので、片方を消してももう片方は残る。
+    #
+    # 実行ファイルに opencode2 を選ぶのは、PATH 上の外部 v1 を「外部導入の v2」と
+    # 誤検出しないため。v1 の bin は opencode だけで、opencode2 を持つのは v2 だけ。
+    "opencode-v2": {
+        "name": "OpenCode v2",
+        "kind": "npm",
+        "package": "@opencode/cli",
+        "executable": "opencode2",
+        "route_gated": True,
+        "summary": "OpenCodeの次世代系列。v1と同居でき、画面から切り替えて使う",
+    },
     "omo": {
         "name": "OMo（多エージェント編成）",
         "kind": "npm",
@@ -33,7 +46,10 @@ FEATURES: dict[str, dict] = {
         "executable": "omo",
         # OpenCode のプラグインとして動くため、OpenCode 側の導入が前提。
         "route_gated": False,
-        "summary": "OpenCodeで複数エージェントを並列に動かす。並列数はモデル設定に合わせて調整する",
+        # OMo は OpenCode v1 のプラグイン API（@opencode-ai/plugin 1.x）に固定されている。
+        # 5.0.0-beta.56 でも依存は 1.18.22 のままで、v2（@opencode/plugin 2.x）には
+        # 載っていない。v2 を選ぶと OMo は効かないので、summary で先に伝える。
+        "summary": "OpenCodeで複数エージェントを並列に動かす。v1系列のみ対応（v2は未対応）",
         "requires": "opencode",
     },
     "pyinstaller": {
@@ -308,6 +324,15 @@ def is_enabled(feature_id: str) -> bool:
         return False
 
 
+# OpenCode は v1 と v2 が同居する。ルート・ノード・カタログの登録は
+# 「どちらかが使える」で判断する。片方だけ導入した利用者にも画面を出すため。
+OPENCODE_FEATURES = ("opencode", "opencode-v2")
+
+
+def opencode_enabled() -> bool:
+    return any(is_enabled(feature_id) for feature_id in OPENCODE_FEATURES)
+
+
 def _npm_install(feature_id: str, package: str) -> subprocess.CompletedProcess[str]:
     root = _feature_root(feature_id)
     npm = shutil.which("npm")
@@ -378,7 +403,7 @@ def _autoconfigure(feature_id: str) -> None:
     （後から設定画面で直せるため、ここで導入を巻き戻す方が不便）。
     """
     try:
-        if feature_id == "opencode":
+        if feature_id in ("opencode", "opencode-v2"):
             from app.integrations.opencode.provider import autoconfigure
 
             autoconfigure()

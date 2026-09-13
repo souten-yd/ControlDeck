@@ -24,7 +24,14 @@ DEFAULT_SETTINGS = {
     # ControlDeck の OpenAI 互換ゲートウェイ経由にするか。
     # 経由すると KV の受け入れ制御（混雑時の待機・枯渇時の再試行）が効く。
     "use_gateway": True,
+    # 使う OpenCode の系列。"v1"（opencode-ai）か "v2"（@opencode/cli）。
+    # 既定は v1 のまま。v2 を導入しただけでは切り替わらない。
+    "runtime": "v1",
 }
+
+# 同居する OpenCode ランタイムと、それを持つアドオン（feature）の対応。
+# 導入先prefixが別なので、片方だけ導入・片方だけ削除ができる。
+RUNTIME_FEATURES = {"v1": "opencode", "v2": "opencode-v2"}
 
 
 class CodeAgentError(RuntimeError):
@@ -50,6 +57,41 @@ def get_settings() -> dict:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         pass
     return settings
+
+
+def active_runtime(preferred: str = "") -> str:
+    """実際に使う OpenCode の系列を決める。
+
+    `preferred` は画面が名指しする系列（v1 画面／v2 画面のボタン）。空なら設定値を使う。
+    名指しされた系列が無効（未導入・停止）なら、有効なもう一方へ落とす。片方だけ
+    導入している利用者に「設定が v1 のままなので動かない」と言わせないため。
+    どちらも無効なら希望をそのまま返し、判断は呼び出し側（active_binary）へ委ねる。
+    """
+    if preferred not in RUNTIME_FEATURES:
+        preferred = str(get_settings().get("runtime") or "v1")
+    if preferred not in RUNTIME_FEATURES:
+        preferred = "v1"
+    for name in [preferred, *(n for n in RUNTIME_FEATURES if n != preferred)]:
+        if registry.is_enabled(RUNTIME_FEATURES[name]):
+            return name
+    return preferred
+
+
+def active_binary(preferred: str = "") -> tuple[str, Path]:
+    """(系列, 実行ファイル)。使えない場合は CodeAgentError を投げる。"""
+    runtime = active_runtime(preferred)
+    feature_id = RUNTIME_FEATURES[runtime]
+    if not registry.is_enabled(feature_id):
+        raise CodeAgentError("OpenCode featureが有効ではありません")
+    binary = registry.executable(feature_id)
+    if binary is None:
+        raise CodeAgentError("OpenCodeを利用できません")
+    return runtime, binary
+
+
+def runtime_states() -> dict[str, dict]:
+    """系列ごとのアドオン状態。画面の切り替え UI が導入済みかを判断するために使う。"""
+    return {name: registry.status(feature_id) for name, feature_id in RUNTIME_FEATURES.items()}
 
 
 def gateway_base_url() -> str:
@@ -129,6 +171,8 @@ def save_settings(patch: dict) -> dict:
         raise ValueError("LLM endpointはhttp(s) URLで指定してください")
     if not settings["model"] or len(settings["model"]) > 200:
         raise ValueError("modelを指定してください")
+    if str(settings.get("runtime") or "") not in RUNTIME_FEATURES:
+        raise ValueError("OpenCodeの系列はv1かv2を指定してください")
     project = str(settings.get("project_path") or "")
     if project:
         resolved = files.resolve(project)
@@ -323,28 +367,59 @@ _SUBAGENT_DESCRIPTIONS = {
 }
 
 
+def _window_of(instance: dict) -> int:
+    """そのモデル設定で 1 request が使える窓の大きさ。
+
+    鍵の名前はランタイムで違う（llama.cpp は ctx_size、Lucebox は max_ctx）。
+    共有KVを切っている llama.cpp は ctx_size を slot 数へ固定配分するので、
+    1 request の取り分はその割り算のあとになる。総量をそのまま宣言すると、
+    宣言した窓に届く前に転送先が溢れて、後追いの圧縮に戻る。
+    """
+    context = 0
+    for key in ("ctx_size", "max_ctx"):
+        context = int(instance.get(key) or 0)
+        if context > 0:
+            break
+    if context <= 0:
+        return 0
+    if not instance.get("kv_unified", True):
+        context //= max(1, int(instance.get("n_parallel") or 1))
+    return context
+
+
 def _model_limits(model: str) -> dict[str, int] | None:
     """そのモデルの窓の大きさを OpenCode へ伝える。
 
-    伝えないと自動圧縮が一度も動かない。OpenCode は limit.context が 0 の間は
-    発火しないと決めており（実測: この環境の 793 session のうち先回りの圧縮は
-    0 件、頂点は 262,142 tokens で打ち止め）、provider がモデルを宣言するときに
-    limit を書いていなかった。
+    伝えないと自動圧縮が先回りでは一度も動かない。OpenCode の判定は
+    `limit.context === 0` をそのまま「窓を知らない」と読んで諦める作りで、
+    残るのは溢れてから畳む後追いの経路だけになる。実測（2026-09-12、919
+    session）: 圧縮 38 件のうち 33 件が `overflow` 付き＝モデルが断ってからの
+    後追いで、先回りは 0 件だった。そのたびに 1 往復を捨てていた。
+
+    `model` は gateway の仮想モデル `auto` であることが多い。これは実在の
+    instance ではないので alias では引けず、以前の実装はここで None を返して
+    いた。転送先は request ごとに gateway が決める（起動中を優先、無ければ
+    登録順）ので、候補のうち最も狭い窓に合わせる。広いほうに合わせると、狭い
+    モデルへ回った回だけ溢れが戻る。
 
     input も併せて宣言する。OpenCode は input がある場合だけ compaction.reserved
     を見る作りで、context だけだと予備は「返答の上限」（既定 32,000）に固定される。
     """
     try:
-        from app.models_mgmt import llama
+        from app.models_mgmt import local_llm
 
-        for instance in llama.list_instances():
-            if str(instance.get("alias") or "") != model:
-                continue
-            context = int(instance.get("ctx_size") or 0)
-            if context <= 0:
-                return None
-            output = min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4))
-            return {"context": context, "output": output, "input": context - output}
+        match = next(
+            (i for i in local_llm.list_instances() if str(i.get("alias") or "") == model), None)
+        if match is not None:
+            context = _window_of(match)
+        else:
+            # gateway.resolve_instance と同じ候補集合（embedding/reranker は除く）。
+            windows = [w for w in map(_window_of, local_llm.llm_instances()) if w > 0]
+            context = min(windows) if windows else 0
+        if context <= 0:
+            return None
+        output = min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4))
+        return {"context": context, "output": output, "input": context - output}
     except Exception:  # noqa: BLE001 - 窓の大きさが取れないことで session を止めない
         logger.exception("モデルの窓の大きさを取得できませんでした")
     return None
@@ -357,6 +432,7 @@ def _runtime_config(
     *,
     owner_user_id: int | None = None,
     project_id: str | None = None,
+    runtime: str = "v1",
 ) -> Path:
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
@@ -473,11 +549,297 @@ def _runtime_config(
                 },
             }
         }
+    if runtime == "v2":
+        return _write_v2_config(safe_job_id, payload)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(temp, 0o600)
     os.replace(temp, path)
     return path
+
+
+# ---- OpenCode v2 向けの読み替え ----
+#
+# v2 は設定の形が変わっている（provider→providers、permission→permissions、
+# agent→agents、npm→package、options→settings/headers、modalities→capabilities）。
+# 上の payload は v1 の形のままにして、ここで機械的に読み替える。測って書いた
+# コメント（窓の大きさ、圧縮の発火点、重い道具の内訳）を二重に持たないため。
+#
+# v2 は OPENCODE_CONFIG / OPENCODE_CONFIG_DIR / OPENCODE_CONFIG_CONTENT の
+# どれも見ない（2.0.2 で実測）。job ごとに config directory を作り、
+# XDG_CONFIG_HOME でそこへ向ける。利用者自身の ~/.config/opencode は読まれない。
+
+
+def _v2_permissions(permission: dict) -> list[dict]:
+    """v1 の tool 別 map を、v2 の (action, resource, effect) の並びへ読み替える。
+
+    v2 は「後に一致した規則が勝つ」ので、広い規則から順に並べる。bash は shell へ
+    名前が変わった。tool 名そのものを action に置ける（v2 自身が v1 の
+    トップレベル `tools` をこの形へ移行する）ので、道具の出し入れもここで書ける。
+    """
+    renamed = {"bash": "shell"}
+    rules: list[dict] = []
+    for tool, entries in permission.items():
+        action = renamed.get(tool, tool)
+        for resource, effect in entries.items():
+            rules.append({"action": action, "resource": resource, "effect": effect})
+    return rules
+
+
+def _v2_agents(agent: dict) -> dict:
+    """v1 の agent 定義を v2 へ読み替える。
+
+    v2 の agent は `tools` を持たない。道具の出し入れは agent ごとの permissions
+    へ `{action: "<道具名のパターン>", resource: "*", effect: deny}` で書く。これは
+    v2 自身が v1 のトップレベル `tools: {pattern: false}` を移行する先と同じ形である。
+
+    実機で確認したところ、deny した道具は主エージェントの一覧そのものから消えた
+    （Add-on の道具 7 個だけが見え、media_scene_* / media_job_* / sonic_* は出ない）。
+    v1 の `tools: false` と同じ効きで、文脈の節約（実測 26,692 → 5,458 トークン）も
+    そのまま残る。
+    """
+    agents: dict[str, Any] = {}
+    for name, spec in agent.items():
+        converted = {key: value for key, value in spec.items() if key != "tools"}
+        tools = spec.get("tools") or {}
+        rules = [
+            {"action": pattern, "resource": "*", "effect": "allow" if allowed else "deny"}
+            for pattern, allowed in tools.items()
+        ]
+        if rules:
+            converted["permissions"] = rules
+        agents[name] = converted
+    return agents
+
+
+# 道具の結果 1 件に許す長さ。v2 の組み込み上限で、v1 には対応する設定が無い。
+#
+# v2 の既定は max_lines 2,000 / max_bytes 51,200。51,200 バイトは約 14,600 トークンで、
+# 窓 131,072 なら 1 件で 11% を使う。実測（262,142 トークンで打ち止めた会話）では
+# 道具の結果が 48.1% を占め、内訳は bash 178k 文字・read 135k・edit 95k だった。
+# 既定のままでも数件で窓が埋まる。
+#
+# そこで窓に対する割合で決める。入力窓の 1/16 を上限とし、v2 の既定を超えない。
+# 狭いモデルへ回っても 1 件が窓を食い尽くさず、広いモデルでは既定どおりになる。
+#
+# 削っても情報は失われない。v2 は全文を data directory の tool-output/ へ落とし、
+# その directory を読む権限を既定で開けている（実測）。必要な行は agent が grep で
+# 拾える。ControlDeck が MCP bridge で手作りした形（RESULT_INLINE_LIMIT）と同じ。
+TOOL_OUTPUT_DEFAULT_BYTES = 51_200
+TOOL_OUTPUT_DEFAULT_LINES = 2_000
+TOOL_OUTPUT_MIN_BYTES = 8_000
+TOOL_OUTPUT_WINDOW_SHARE = 16
+# 実測: 8,000 文字 ≒ 2,300 トークン（agent-notes.md の RESULT_INLINE_LIMIT の根拠）。
+BYTES_PER_TOKEN = 3.5
+
+
+def _v2_tool_output(limit: dict | None) -> dict:
+    """1 件の道具の結果に許す長さ。窓が分からなければ v2 の既定に任せる。"""
+    tokens = int((limit or {}).get("input") or 0)
+    if tokens <= 0:
+        return {"max_lines": TOOL_OUTPUT_DEFAULT_LINES, "max_bytes": TOOL_OUTPUT_DEFAULT_BYTES}
+    share = int(tokens * BYTES_PER_TOKEN) // TOOL_OUTPUT_WINDOW_SHARE
+    max_bytes = max(TOOL_OUTPUT_MIN_BYTES, min(TOOL_OUTPUT_DEFAULT_BYTES, share))
+    return {"max_lines": TOOL_OUTPUT_DEFAULT_LINES, "max_bytes": max_bytes}
+
+
+def _v2_payload(payload: dict) -> dict:
+    """v1 形の runtime config を v2 形へ読み替える。"""
+    provider = payload["provider"]["controldeck"]
+    options = dict(provider.get("options") or {})
+    headers = dict(options.pop("headers", {}) or {})
+    models: dict[str, Any] = {}
+    limit: dict | None = None
+    for model_id, spec in provider["models"].items():
+        converted = {key: value for key, value in spec.items()
+                     if key not in ("attachment", "modalities")}
+        modalities = spec.get("modalities") or {}
+        # v2 は attachment / modalities を capabilities へ統合した。tools を明示
+        # しないと道具を渡さない転送先とみなされうるので、併せて宣言する。
+        converted["capabilities"] = {
+            "tools": True,
+            "input": list(modalities.get("input") or ["text"]),
+            "output": list(modalities.get("output") or ["text"]),
+        }
+        models[model_id] = converted
+        limit = limit or spec.get("limit")
+    compaction = dict(payload.get("compaction") or {})
+    v2: dict[str, Any] = {
+        "$schema": payload["$schema"],
+        "model": payload["model"],
+        "providers": {
+            "controldeck": {
+                "name": provider["name"],
+                # AI SDK の npm ではなく v2 同梱の OpenAI 互換 provider を使う。
+                # 実行のたびに npm を取りに行かせない。
+                "package": "@opencode/ai/providers/openai-compatible",
+                "settings": options,
+                # headers は settings の中では送られない（2.0.2 で実測）。
+                # provider 直下に置く必要がある。
+                **({"headers": headers} if headers else {}),
+                "models": models,
+            }
+        },
+        # v2 は reserved を buffer へ改名し、prune は警告付きで無視する
+        # （完了した道具の出力を捨てる剪定は v2 では設定項目ではない）。
+        "compaction": {"auto": True, "buffer": int(compaction.get("reserved") or 0)},
+        "permissions": _v2_permissions(payload.get("permission") or {}),
+        "agents": _v2_agents(payload.get("agent") or {}),
+        "tool_output": _v2_tool_output(limit),
+        # 編集のあとに整形を通す。差分が整形だけで膨らむのを防ぎ、
+        # lint との往復を 1 往復ぶん減らす。v1 に対応する設定は無い。
+        "formatter": True,
+    }
+    # skills は paths/urls をまとめた1本の配列になった。
+    skills = (payload.get("skills") or {}).get("paths") or []
+    if skills:
+        v2["skills"] = list(skills)
+    if payload.get("instructions"):
+        v2["instructions"] = list(payload["instructions"])
+    if payload.get("mcp"):
+        servers = {}
+        for name, spec in payload["mcp"].items():
+            converted = {key: value for key, value in spec.items()
+                         if key not in ("enabled", "timeout")}
+            # enabled は disabled へ反転、timeout は catalog/execution の組になった。
+            converted["disabled"] = not bool(spec.get("enabled", True))
+            timeout = int(spec.get("timeout") or 0)
+            if timeout:
+                converted["timeout"] = {"catalog": timeout, "execution": timeout}
+            servers[name] = converted
+        v2["mcp"] = {"servers": servers}
+    return v2
+
+
+# TUI 側の設定（keybind / theme / layout）。v2 は config directory の cli.json から読む。
+#
+# ControlDeck は job ごとに config directory を作り替えるので、そのままだと利用者が
+# keybind を変えても次の起動で消える。系列をまたいで1枚だけ持ち、生成した directory
+# からはそこへ symlink する。ControlDeck はこのファイルの中身を作った後は触らない。
+#
+# 既定は v1 の操作へ揃えてある。
+#
+# v1（1.18.30）と v2（2.0.2）の既定キーを突き合わせると、162 件中 16 件だけが変わって
+# いた。そのうち「v2 が割り当てを外した／ずらした」ものを v1 の値へ戻す。plan への
+# 切替（agent.cycle）が tab でなくなったのが実用上いちばん響く。
+#
+# tab は v2 で prompt.autocomplete.complete も使うが、この衝突は無害である。
+# autocomplete 一群は候補が出ている間だけ効く文脈限定の割り当てで（next=down,
+# prev=up, select=return と、通常操作と重なる key を並べていることから分かる）、
+# v1 でも tab は agent_cycle と diff_switch_focus が共有していた。left / right /
+# home / end / space も v1 で同じ共存をしていた組み合わせをそのまま戻している。
+#
+# 戻さないものが 2 つある。v2 が新機能へ割り当て直したキーで、戻すと新機能が潰れる:
+#   theme.switch        <leader>t     → v2 では terminal.toggle
+#   session.child.first <leader>down  → v2 では terminal.select
+# この 2 つは v2 の割り当てのままにする（theme は command palette から選べる）。
+CLI_CONFIG_SEED = {
+    "keybinds": {
+        # plan ⇔ build の切替。v1 と同じく tab / shift+tab。
+        "agent.cycle": "tab",
+        "agent.cycle.reverse": "shift+tab",
+        # v2 が割り当てを外した diff viewer の操作。
+        "diff.collapse": "left",
+        "diff.expand": "right",
+        "diff.expand_all": "E",
+        "diff.switch_focus": "tab",
+        "diff.toggle": "enter,space",
+        # 同じく v2 が外した入力欄の先頭／末尾移動。
+        "input.buffer.end": "end",
+        "input.buffer.home": "home",
+    }
+}
+
+
+def cli_config_path() -> Path:
+    """利用者が編集する TUI 設定。無ければ既定で1度だけ作る。"""
+    path = _integration_dir() / "cli.json"
+    if not path.exists():
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(CLI_CONFIG_SEED, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+    return path
+
+
+def _link_cli_config(config_dir: Path) -> None:
+    """生成した config directory から、共有の cli.json を見えるようにする。
+
+    TUI 自身が設定画面から書き換えて symlink を実体ファイルへ置き換えた場合は、
+    そちらを尊重して触らない（利用者がその session で変えた結果である）。
+    """
+    link = config_dir / "cli.json"
+    try:
+        shared = cli_config_path()
+        if link.is_symlink():
+            if link.readlink() == shared:
+                return
+            link.unlink()
+        elif link.exists():
+            return
+        link.symlink_to(shared)
+    except OSError:  # noqa: BLE001 - 設定の都合で session を止めない
+        logger.exception("cli.jsonを共有設定へ繋げられませんでした")
+
+
+def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
+    """v2 用の config directory を作り、そのパス（XDG_CONFIG_HOME 相当）を返す。"""
+    root = _integration_dir() / f"runtime-config-v2-{safe_job_id}"
+    if not root.resolve().is_relative_to(_integration_dir()):
+        raise CodeAgentError("runtime config pathがintegration directory外です")
+    config_dir = root / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    os.chmod(config_dir, 0o700)
+    path = config_dir / "opencode.json"
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(_v2_payload(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(temp, 0o600)
+    os.replace(temp, path)
+    _link_cli_config(config_dir)
+    return root
+
+
+def _runtime_env(runtime: str, config: Path) -> dict[str, str]:
+    """runtime config を読ませるための環境変数。"""
+    return {"XDG_CONFIG_HOME": str(config)} if runtime == "v2" else {"OPENCODE_CONFIG": str(config)}
+
+
+def _discard_runtime_config(runtime: str, config: Path) -> None:
+    """job 別の runtime config を消す。v2 は directory なのでまとめて消す。"""
+    if runtime == "v2":
+        shutil.rmtree(config, ignore_errors=True)
+    else:
+        config.unlink(missing_ok=True)
+
+
+def _run_argv(runtime: str, binary: Path, message: str, model: str, project: Path) -> list[str]:
+    """`opencode run` の argv。系列ごとの差はここだけに閉じる。
+
+    v2 は `--dir` を持たず、作業ディレクトリで対象を決める（呼び出し側が
+    systemd-run の --working-directory で渡している）。既定では常駐の
+    background service へ繋ぎに行くため、`--standalone` で job 専用のサーバーに
+    する。常駐を増やさず、job ごとの config が確実に効く。
+    """
+    argv = [str(binary), "run", message, "--format", "json", "--auto",
+            "--model", f"controldeck/{model}"]
+    return argv + (["--standalone"] if runtime == "v2" else ["--dir", str(project)])
+
+
+def _event_error(event: dict) -> str:
+    """error イベントから表に出してよい要約を取る。
+
+    v1 は error.name、v2 は error.type / error.message を返す。どちらも
+    prompt や credential を含めない短い識別子だけを拾う。
+    """
+    error = event.get("error")
+    if not isinstance(error, dict):
+        return "provider error"
+    for key in ("name", "type", "message"):
+        value = error.get(key)
+        if isinstance(value, str) and value:
+            return value[:100]
+    return "provider error"
 
 
 def _managed_project_id(project: Path) -> str | None:
@@ -588,6 +950,7 @@ def tui_command(
     base_url: str = "",
     model: str = "",
     owner_user_id: int | None = None,
+    runtime: str = "",
 ) -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
 
@@ -596,11 +959,7 @@ def tui_command(
     """
     import shlex
 
-    if not registry.is_enabled("opencode"):
-        raise CodeAgentError("OpenCode featureが有効ではありません")
-    binary = registry.executable("opencode")
-    if binary is None:
-        raise CodeAgentError("OpenCodeを利用できません")
+    runtime, binary = active_binary(runtime)
     settings = get_settings()
     endpoint = (base_url or settings["base_url"]).strip().rstrip("/")
     model_id = (model or settings["model"]).strip()
@@ -616,12 +975,17 @@ def tui_command(
     config = _runtime_config(
         f"tui-{owner_user_id or 0}", endpoint, model_id,
         owner_user_id=owner_user_id, project_id=_managed_project_id(project),
+        runtime=runtime,
     )
-    argv = [str(binary), "--model", f"controldeck/{model_id}"]
+    # v2 の root command は --model を持たない（model は config で決まる）。
+    # 常駐 service へ繋がないよう --standalone を付ける。TUI を閉じたら一緒に終わる。
+    argv = [str(binary)]
+    argv += ["--standalone"] if runtime == "v2" else ["--model", f"controldeck/{model_id}"]
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))
-    command = f"OPENCODE_CONFIG={shlex.quote(str(config))} exec " + " ".join(shlex.quote(a) for a in argv)
+    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config).items())
+    command = f"{env} exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
 
 
@@ -679,15 +1043,13 @@ async def run_chat(
     on_text コールバックへストリームする（Codex/Claude風のチャット内コーディング）。
     session_id 指定で前回のopencodeセッションを継続する。
     """
-    if not registry.is_enabled("opencode"):
-        raise CodeAgentError("OpenCode featureが有効ではありません")
     if not instruction.strip():
         raise CodeAgentError("指示が空です")
-    binary = registry.executable("opencode")
+    runtime, binary = active_binary()
     systemd_run = shutil.which("systemd-run")
     systemctl = shutil.which("systemctl")
-    if binary is None or systemd_run is None or systemctl is None:
-        raise CodeAgentError("OpenCodeまたはsystemd user managerを利用できません")
+    if systemd_run is None or systemctl is None:
+        raise CodeAgentError("systemd user managerを利用できません")
     settings = get_settings()
     if project_name.strip():
         project = Path(ensure_project(project_name)["path"])
@@ -707,6 +1069,7 @@ async def run_chat(
     runtime_config = await asyncio.to_thread(_runtime_config,
         f"chat-{job.id}", endpoint, model_id, owner_user_id=job.owner_user_id,
         project_id=await asyncio.to_thread(_managed_project_id, project),
+        runtime=runtime,
     )
     # LLM endpoint（llama.cpp / Lucebox instance）はondemand hookを通らないため先に起動保証する
     from app.models_mgmt import local_llm
@@ -716,10 +1079,8 @@ async def run_chat(
     argv = [
         systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
         f"--unit={unit}", f"--working-directory={project}",
-        f"--setenv=OPENCODE_CONFIG={runtime_config}",
-        str(binary), "run", instruction[:32_000],
-        "--format", "json", "--auto",
-        "--model", f"controldeck/{model_id}", "--dir", str(project),
+        *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config).items()),
+        *_run_argv(runtime, binary, instruction[:32_000], model_id, project),
     ]
     if session_id:
         argv += ["--session", session_id]
@@ -752,7 +1113,7 @@ async def run_chat(
             if not found_session:
                 found_session = _find_session_id(event)
             if event.get("type") == "error":
-                reported_error = str(event.get("error", {}).get("name") or "provider error")[:100]
+                reported_error = _event_error(event)
             for text in _extract_text(event):
                 cleaned = text.strip()
                 if not cleaned or cleaned in emitted:
@@ -772,7 +1133,7 @@ async def run_chat(
         await stop.wait()
         raise
     finally:
-        await asyncio.to_thread(runtime_config.unlink, missing_ok=True)
+        await asyncio.to_thread(_discard_runtime_config, runtime, runtime_config)
     if reported_error:
         raise CodeAgentError(f"OpenCode provider error: {reported_error}")
     if proc is None or proc.returncode != 0:
@@ -788,8 +1149,6 @@ class OpenCodeProvider:
         self, job: Job, *, operation: str, project_path: str, instruction: str,
         base_url: str = "", model: str = "",
     ) -> dict:
-        if not registry.is_enabled("opencode"):
-            raise CodeAgentError("OpenCode featureが有効ではありません")
         if operation not in OPERATIONS:
             raise CodeAgentError("未対応のoperationです")
         if not instruction.strip() or len(instruction) > 32_000:
@@ -803,14 +1162,15 @@ class OpenCodeProvider:
         settings = get_settings()
         endpoint = (base_url or settings["base_url"]).strip().rstrip("/")
         model_id = (model or settings["model"]).strip()
-        binary = registry.executable("opencode")
+        runtime, binary = active_binary()
         systemd_run = shutil.which("systemd-run")
         systemctl = shutil.which("systemctl")
-        if binary is None or systemd_run is None or systemctl is None:
-            raise CodeAgentError("OpenCodeまたはsystemd user managerを利用できません")
+        if systemd_run is None or systemctl is None:
+            raise CodeAgentError("systemd user managerを利用できません")
         runtime_config = await asyncio.to_thread(_runtime_config,
             job.id, endpoint, model_id, owner_user_id=job.owner_user_id,
             project_id=await asyncio.to_thread(_managed_project_id, project),
+            runtime=runtime,
         )
         prompt_path = (_integration_dir() / f"prompt-{job.id}.txt").resolve()
         if not prompt_path.is_relative_to(_integration_dir()):
@@ -821,10 +1181,9 @@ class OpenCodeProvider:
         argv = [
             systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
             f"--unit={unit}", f"--working-directory={project}",
-            f"--setenv=OPENCODE_CONFIG={runtime_config}",
-            str(binary), "run", "添付されたControl Deckの指示を実行してください。",
-            "--format", "json", "--auto",
-            "--model", f"controldeck/{model_id}", "--dir", str(project),
+            *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config).items()),
+            *_run_argv(runtime, binary, "添付されたControl Deckの指示を実行してください。",
+                       model_id, project),
             "--file", str(prompt_path),
         ]
         job.set_progress("OpenCodeを起動", 0, 1)
@@ -843,7 +1202,7 @@ class OpenCodeProvider:
             raise
         finally:
             prompt_path.unlink(missing_ok=True)
-            runtime_config.unlink(missing_ok=True)
+            _discard_runtime_config(runtime, runtime_config)
         if len(stdout) > MAX_OUTPUT_BYTES or len(stderr) > MAX_OUTPUT_BYTES:
             raise CodeAgentError("OpenCode出力が上限を超えました")
         if proc is None or proc.returncode != 0:
@@ -859,7 +1218,7 @@ class OpenCodeProvider:
                 continue
             events.append(event)
             if event.get("type") == "error":
-                reported_error = str(event.get("error", {}).get("name") or "provider error")[:100]
+                reported_error = _event_error(event)
             text_parts.extend(_extract_text(event))
             if len(events) % 10 == 0:
                 job.set_progress("OpenCode実行中", len(events), 0)

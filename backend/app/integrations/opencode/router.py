@@ -12,20 +12,36 @@ from app.security.deps import require_permission
 router = APIRouter(prefix="/opencode", tags=["opencode"])
 
 
-class SettingsBody(BaseModel):
+class AgentTargetBody(BaseModel):
     base_url: str = Field(min_length=8, max_length=2048)
     model: str = Field(min_length=1, max_length=200)
     project_path: str = Field(default="", max_length=4096)
 
 
-class RunBody(SettingsBody):
+class SettingsBody(AgentTargetBody):
+    # 使うOpenCodeの系列。未指定なら現在の設定を保つ（既存クライアントを壊さない）。
+    runtime: str = Field(default="", max_length=8)
+
+
+class RunBody(AgentTargetBody):
+    # 系列はサーバー側の設定で決める。実行ごとに切り替えさせない
+    # （runtime config も CLI の引数も系列ごとに違うため）。
     operation: str
     instruction: str = Field(min_length=1, max_length=32_000)
 
 
 @router.get("/status")
-def status(user: User = Depends(require_permission("workflows.run"))):
-    return {"feature": registry.status("opencode"), "settings": opencode.get_settings()}
+def status(runtime: str = "", user: User = Depends(require_permission("workflows.run"))):
+    """画面が必要とする状態。
+
+    feature は実際に使われる系列の状態を返す（v1 だけの頃と同じ意味）。v1画面／v2画面は
+    自分の系列を `runtime` で名指しし、その系列の状態を受け取る。
+    runtimes は系列ごとの導入状況で、切り替え UI が選べる先を判断するために使う。
+    """
+    runtimes = opencode.runtime_states()
+    active = opencode.active_runtime(runtime)
+    return {"feature": runtimes[active], "settings": opencode.get_settings(),
+            "active_runtime": active, "runtimes": runtimes}
 
 
 @router.put("/settings")
@@ -33,13 +49,15 @@ def settings(
     body: SettingsBody, request: Request,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
 ):
+    patch = {key: value for key, value in body.model_dump().items() if key != "runtime" or value}
     try:
-        result = opencode.save_settings(body.model_dump())
+        result = opencode.save_settings(patch)
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, "feature.opencode.settings", user=user, resource_type="feature",
                  resource_id="opencode", request=request,
-                 metadata={"base_url": result["base_url"], "model": result["model"]})
+                 metadata={"base_url": result["base_url"], "model": result["model"],
+                           "runtime": result["runtime"]})
     return result
 
 
@@ -90,6 +108,9 @@ class SessionBody(BaseModel):
     prompt: str = Field(default="", max_length=32_000)
     base_url: str = Field(default="", max_length=2048)
     model: str = Field(default="", max_length=200)
+    # このセッションで使う系列。v1画面とv2画面がそれぞれ自分の系列を名指しする。
+    # 空なら設定値（チャットやワークフローと同じ既定）を使う。
+    runtime: str = Field(default="", max_length=8)
 
 
 _llm_warmup_tasks: set = set()
@@ -130,6 +151,7 @@ async def create_session(
         command, project = opencode.tui_command(
             project_path=project_path, prompt=body.prompt,
             base_url=body.base_url, model=body.model, owner_user_id=user.id,
+            runtime=body.runtime,
         )
         session = terminals.create_session(cwd=project, command=command)
     except opencode.CodeAgentError as exc:
@@ -139,7 +161,8 @@ async def create_session(
     audit.record(db, "feature.opencode.session", user=user, resource_type="feature",
                  resource_id="opencode", request=request,
                  metadata={"terminal_id": session["id"], "project_path": project,
-                           "with_prompt": bool(body.prompt.strip())})
+                           "with_prompt": bool(body.prompt.strip()),
+                           "runtime": opencode.active_runtime(body.runtime)})
     return {**session, "project_path": project}
 
 

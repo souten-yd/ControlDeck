@@ -20,8 +20,16 @@ interface FeatureState {
   id: string; installed: boolean; managed: boolean; enabled: boolean;
   version: string; health: string; executable: string;
 }
-interface Settings { base_url: string; model: string; project_path: string }
-interface Status { feature: FeatureState; settings: Settings }
+interface Settings { base_url: string; model: string; project_path: string; runtime: string }
+interface Status {
+  feature: FeatureState; settings: Settings;
+  active_runtime: string; runtimes: Record<string, FeatureState>;
+}
+// 同居する OpenCode の系列。未導入のものは選べない（設定だけ変わって動かない状態を作らない）。
+const RUNTIMES: Array<{ id: string; label: string }> = [
+  { id: "v1", label: "v1" },
+  { id: "v2", label: "v2" },
+];
 interface TerminalSession { id: string; name: string; created_at: number; attached: boolean; persistent: boolean; cwd?: string }
 
 /** セッションはCodeDEV配下のプロジェクトで起動するので、作業ディレクトリ名をそのまま名前として使う。 */
@@ -32,27 +40,36 @@ function projectLabel(session: TerminalSession): string {
 interface CodeProject { name: string; path: string; git: boolean; modified_at: number }
 
 const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900";
-const LS_SESSIONS = "cd-opencode-sessions"; // このページで開始したセッションID（表示の絞り込み用）
+// このページで開始したセッションID（表示の絞り込み用）。系列ごとに分ける——
+// v1 の画面に v2 のセッションが並ぶと、どちらで開いたか分からなくなる。
+function sessionsKey(runtime: string): string {
+  return runtime === "v1" ? "cd-opencode-sessions" : `cd-opencode-${runtime}-sessions`;
+}
 
-function loadOwnSessions(): string[] {
+function loadOwnSessions(runtime: string): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(LS_SESSIONS) || "[]");
+    const raw = JSON.parse(localStorage.getItem(sessionsKey(runtime)) || "[]");
     return Array.isArray(raw) ? raw.filter((v) => typeof v === "string") : [];
   } catch {
     return [];
   }
 }
 
-export default function OpenCodePage() {
+/** 系列（v1 / v2）ごとに1枚ずつ開く。画面の作りは同じで、起動する系列だけが違う。 */
+export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
   const show = useToasts((state) => state.show);
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
-  const { data } = useQuery({ queryKey: ["opencode-status"], queryFn: () => api<Status>("/opencode/status"), staleTime: 30_000 });
+  const { data } = useQuery({
+    queryKey: ["opencode-status", runtime],
+    queryFn: () => api<Status>(`/opencode/status?runtime=${encodeURIComponent(runtime)}`),
+    staleTime: 30_000,
+  });
   const { data: projectsData } = useQuery({
     queryKey: ["opencode-projects"],
     queryFn: () => api<{ root: string; projects: CodeProject[] }>("/opencode/projects"),
   });
-  const [form, setForm] = useState<Settings>({ base_url: "", model: "", project_path: "" });
+  const [form, setForm] = useState<Settings>({ base_url: "", model: "", project_path: "", runtime: "v1" });
   const [prompt, setPrompt] = useState("");
   // プロジェクト選択: 新規（既定）/ CodeDEV既存一覧 / 📁フォルダ（CodeDEV外はコピー取込）
   const [projectMode, setProjectMode] = useState<"new" | "existing" | "folder">("new");
@@ -61,13 +78,16 @@ export default function OpenCodePage() {
   const [otherPath, setOtherPath] = useState("");
   const [picker, setPicker] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [own, setOwn] = useState<string[]>(loadOwnSessions);
+  const [own, setOwn] = useState<string[]>(() => loadOwnSessions(runtime));
   const [active, setActive] = useState<string | null>(params.get("session"));
   const [killing, setKilling] = useState<string | null>(null);
   const [deletingProject, setDeletingProject] = useState<string | null>(null);
 
   useEffect(() => { if (data) setForm(data.settings); }, [data]);
-  useEffect(() => { localStorage.setItem(LS_SESSIONS, JSON.stringify(own.slice(-20))); }, [own]);
+  // 名指しした系列が未導入だと、サーバーは導入済みのほうへ落として起動する。黙って
+  // 別系列が動くと混乱するので、見出しに出す。
+  const fellBack = Boolean(data?.active_runtime && data.active_runtime !== runtime);
+  useEffect(() => { localStorage.setItem(sessionsKey(runtime), JSON.stringify(own.slice(-20))); }, [own, runtime]);
 
   const { data: terminals } = useQuery({
     queryKey: ["terminals"],
@@ -96,7 +116,7 @@ export default function OpenCodePage() {
       json: {
         project_name: projectMode === "new" ? newName.trim() : projectMode === "existing" ? existingName : "",
         project_path: projectMode === "folder" ? otherPath : "",
-        prompt, base_url: form.base_url, model: form.model,
+        prompt, base_url: form.base_url, model: form.model, runtime,
       },
     }),
     onSuccess: ({ id }) => {
@@ -152,13 +172,36 @@ export default function OpenCodePage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
-      <PageHeader title="OpenCode" description={`${data?.feature.version ? `v${data.feature.version.replace(/^v/, "")}` : "確認中"} · CLIそのままの対話TUI（tmux永続・再接続可）`} actions={<button onClick={() => setSettingsOpen((v) => !v)} aria-label="OpenCode Settings" title="LLM endpoint / model settings"
+      <PageHeader title={runtime === "v1" ? "OpenCode" : `OpenCode ${runtime}`}
+        description={`${data?.feature.version ? `v${data.feature.version.replace(/^v/, "")}` : "確認中"}${fellBack ? `（${runtime}が使えないため${data?.active_runtime}で起動します）` : ""} · CLIそのままの対話TUI（tmux永続・再接続可）`}
+        actions={<button onClick={() => setSettingsOpen((v) => !v)} aria-label="OpenCode Settings" title="LLM endpoint / model settings"
         className={`min-h-11 rounded-xl border px-3 py-2 text-sm ${settingsOpen ? "border-accent-500 text-accent-600" : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"}`}>⚙</button>} />
 
       {settingsOpen && (
         <section className="grid gap-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800 sm:grid-cols-2">
           <label className="text-xs text-zinc-500">LLM endpoint<input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={`${input} mt-1 font-mono`} /></label>
           <label className="text-xs text-zinc-500">モデル<input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="auto" className={`${input} mt-1 font-mono`} /><span className="mt-1 block text-[11px] text-zinc-500">auto にすると起動中のモデルへ流れます（停止中の別モデルを起こしません）</span></label>
+          <div className="text-xs text-zinc-500 sm:col-span-2">
+            AIチャット・ワークフローで使う系列
+            <div className="mt-1 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+              {RUNTIMES.map((series) => {
+                const state = data?.runtimes?.[series.id];
+                const usable = Boolean(state?.enabled);
+                return (
+                  <button key={series.id} type="button" disabled={!usable}
+                    onClick={() => setForm({ ...form, runtime: series.id })}
+                    title={usable ? state?.version : "アドオン設定から導入してください"}
+                    className={`flex-1 rounded-lg py-1.5 text-xs font-medium disabled:opacity-40 ${form.runtime === series.id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+                    {series.label}{usable ? "" : "（未導入）"}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="mt-1 block text-[11px] text-zinc-500">
+              この画面のセッションは常に {runtime} で起動します。ここで選ぶのは、画面を持たない
+              AIチャットとワークフロー（code.agent）が使う系列です
+            </span>
+          </div>
           <button onClick={() => save.mutate()} disabled={save.isPending} className="rounded-xl border border-accent-500 py-2 text-sm text-accent-600 disabled:opacity-50 sm:col-span-2">設定を保存</button>
         </section>
       )}

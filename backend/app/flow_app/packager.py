@@ -36,6 +36,10 @@ FEATURE_STUB = '''"""配布アプリではオプトインfeatureを持たない�
 
 def is_enabled(feature_id: str) -> bool:
     return False
+
+
+def opencode_enabled() -> bool:
+    return False
 '''
 FILES_STUB = '''"""配布アプリ向けのfile操作。Control Deckのallowed rootsではなく、
 実行したユーザーのカレントディレクトリを基準に素直に解決する。"""

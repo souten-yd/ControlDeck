@@ -1886,9 +1886,9 @@ def _opencode_session_uses(port: int, *, window_seconds: float, require_attached
     入っているものだけを利用中とみなす。
     """
     try:
-        from app.features.registry import is_enabled
+        from app.features.registry import opencode_enabled
 
-        if not is_enabled("opencode"):
+        if not opencode_enabled():
             return False
         from urllib.parse import urlsplit
 
@@ -1923,9 +1923,9 @@ async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
     間に起こし直さない（意図しないモデルのロードを増やさない）。
     """
     try:
-        from app.features.registry import is_enabled
+        from app.features.registry import opencode_enabled
 
-        if not is_enabled("opencode"):
+        if not opencode_enabled():
             return
         from app.integrations.opencode.provider import get_settings, is_gateway_url, resolve_backend_port
 
