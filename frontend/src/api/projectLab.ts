@@ -116,6 +116,10 @@ export const projectLabApi = {
     api<ProjectLabSettings>("/project-lab/settings", { method: "PUT", json: patch }),
   list: () => api<ProjectLabSummary[]>("/project-lab/projects"),
   detail: (id: string) => api<ProjectLabDetail>(`/project-lab/projects/${encodeURIComponent(id)}`),
+  /** フォルダごと削除する。実行中・公開中は 409 で断られる。 */
+  remove: (id: string) => api<{ ok: boolean; id: string; name: string; linkOnly?: boolean }>(
+    `/project-lab/projects/${encodeURIComponent(id)}`, { method: "DELETE" },
+  ),
   runs: (id: string) => api<ProjectLabRun[]>(`/project-lab/runs?project_id=${encodeURIComponent(id)}`),
   startRun: (id: string, profileId: string, timeoutSeconds = 600) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/runs`, {
     method: "POST", json: { profile_id: profileId, timeout_seconds: timeoutSeconds },

@@ -2,6 +2,32 @@
 
 最終更新: 2026-09-13
 
+## Project Lab にプロジェクト削除を追加（2026-09-13）
+
+CodeDEV へフォルダを置けば自動で並ぶ一方、画面から消す手段が無かった。プロジェクト
+情報（ⓘ）のメニュー最下部へ、線で区切って「プロジェクトを削除」を置いた。確認
+ダイアログを挟み、成功したら選択を外して一覧を引き直す。
+
+`DELETE /api/v1/project-lab/projects/{id}`、権限は新設の `project_lab.delete`。
+`apps.delete` / `files.delete` と同じ命名・扱いで、preset では administrator だけに付く
+（`ALL_PERMISSIONS` へ足したので、preset ロールは起動時の `seed_roles` で同期される。
+実機の再起動後に administrator=True / operator=False / viewer=False を確認）。
+
+境界の検証は既存の `resolve_project` を再利用する（CodeDEV の外・symlink 脱出・`..`・
+先頭 `.` はそこで弾かれる）。その上で root 自身でないことだけ追加で確かめ、CodeDEV
+直下が symlink の場合は link だけを外して指す先には触れない。先に 2 つを 409 で断る:
+**実行中**（走っている systemd unit が消えたフォルダを掴んだまま残る）と**公開中**
+（消すと GitHub 側の Pages と branch だけが残り、画面から取り下げられなくなる）。
+監査ログは `project_lab.project.delete`。
+
+新規 test 3 件で、フォルダが消えること・CodeDEV 外の実体へ触れないこと・`..` や
+先頭 `.` を拒むこと・実行中／公開中を断ること・権限が administrator 限定であることを
+固定した。backend 1092 passed / 1 failed（既存の `_model_limits` の失敗）、frontend
+build 成功。実機で service 再起動後、未認証 DELETE が 401、CSRF ヘッダー無しが 403。
+
+NOT TESTED: 320px/1280px の画面確認（ブラウザへ繋げず未実施）。実プロジェクトを
+画面から削除する操作（API と service 層までは test と実機の応答で確認）。
+
 ## v2 の TUI 設定が保存されない問題を修正（2026-09-13）
 
 v2 は TUI の keybind / theme を config directory の `cli.json` から読む。ControlDeck は

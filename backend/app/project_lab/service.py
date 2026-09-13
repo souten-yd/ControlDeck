@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -131,6 +132,29 @@ def resolve_project(project_id: str) -> Path:
     if not resolved.is_dir() or not _inside(resolved, root):
         raise ProjectLabError("CodeDEV外のprojectは開けません")
     return resolved
+
+
+def delete_project(project_id: str) -> dict[str, Any]:
+    """プロジェクトをフォルダごと削除する。
+
+    境界の検証は resolve_project に任せる（CodeDEV の外・symlink 脱出はそこで弾かれる）。
+    その上で root 自身を消さないことだけ追加で確かめる。
+
+    CodeDEV 直下が symlink の場合は、指す先ではなく link だけを外す。利用者が
+    「別の場所にある物を並べておくための名前」を消したつもりで、実体まで消えると困る。
+    """
+    project = resolve_project(project_id)
+    root = project_root()
+    if project == root or not _inside(project, root):
+        raise ProjectLabError("CodeDEV配下のプロジェクトのみ削除できます")
+    manifest, _ = _read_manifest(project)
+    name = manifest.name if manifest else project_id
+    entry = root / project_id
+    if entry.is_symlink():
+        entry.unlink()
+        return {"id": project_id, "name": name, "path": str(project), "link_only": True}
+    shutil.rmtree(project)
+    return {"id": project_id, "name": name, "path": str(project), "link_only": False}
 
 
 def resolve_artifact(project: Path, relative_path: str) -> Path:

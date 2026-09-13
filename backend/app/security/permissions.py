@@ -21,6 +21,8 @@ ALL_PERMISSIONS: list[str] = [
     "project_lab.run",
     "project_lab.export",
     "project_lab.publish",
+    # 破壊的操作。apps.delete / files.delete と同じく preset では administrator だけに付く。
+    "project_lab.delete",
     "system.view",
     "power.manage",
     "remote_desktop.use",
