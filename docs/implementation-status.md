@@ -2,6 +2,43 @@
 
 最終更新: 2026-09-13
 
+## Add-on AI request-local thinking control candidate（2026-09-13）
+
+base main `7cf5605`、branch `ux1/addon-ai-thinking`。Add-onが既存AI bridgeへ
+要求単位の思考設定を渡す手段がなく、従来は常にfalseだったため、genericなstrict
+boolean `thinking` をcomplete/text streamへ追加。省略false、後続要求・operator設定へ
+持ち越さない。既存runtime providerへ変換し、route/model/port/credentialを増やさない。
+capabilities各項のrequest_optionsでHostの入力契約を発見可能にする。モデルの能力や
+品質の保証ではない。SSE thinking chunkは従来どおり非公開。設計は
+`design-addon-ai-gateway.md` のper-request節。
+
+実行証拠:
+
+- `./deck.sh test -q tests/test_addon_runtime_ai.py tests/test_runtime_provider.py`:
+  36 passed（exit0）。有効/無効・次要求の既定・complete/stream・private chunk抑制・
+  不正型8種の実行前拒否を追加。既存providerの取消/structured-output testを含む。
+- `./deck.sh test`: 1102 passed / 3 failed / 2 skipped / 1 warning、150.21秒。
+  failuresはmodel_limits未知alias、KV snapshot空き容量、Project Lab encoded slashの
+  404対405。未変更mainで同じ3件を実行し2 failed/1 passed（2.95秒）:
+  model_limitsとKV snapshotは同じ失敗を再現。Project Labは候補worktreeでも
+  frontend build完了後の再実行で1 passed（0.74秒）。初回はbuildと並列で実行し、
+  main.pyのimport時DIST.existsによるSPA route登録条件が異なるため、以後はbuild後に
+  全gateを実行する。初回full gateを成功へ読み替えない。
+- `frontend/npm run build`: 1550 modules、54.76秒、exit0（chunk-size warning）。
+- 稼働Hostへ専用受入userの通常発行service tokenでHTTP確認（秘密値非表示/未保存）:
+  `GET ai/capabilities` 200、旧応答にはrequest_optionsなし。
+  `POST ai/complete` のthinking=trueは422/extra_forbidden（推論開始前）。
+  これは旧版の境界確認で、新機能の実機成功ではない。
+- Host PID485004 / MediaForge PID537447 はactive、稼働checkout/サービス未変更。
+
+NOT TESTED: 新版の実HTTP推論・思考有効時の実取消/lease返却・PC/320pxブラウザ。
+2026-09-13追記: PR325 test-only修正を統合した全gateは1106 passed / 2 skipped /
+1 warning、97.58秒、exit0。PR325は4765666でmerge確認。旧失敗記録は上記へ保持。
+配布前のread-only live checkで共有LLM slot0 is_processing=trueを観測したため、
+Host再起動は行わない。未認証jobs/resources APIは401で拒否、認証を迂回していない。
+未配布。次は既存2失敗の扱いとbuild後の全gate、別PRのreviewと実機受入、
+その後consumer側を接続する。新モデル・global設定変更・provider直結は行っていない。
+
 ## AI gate regression fixtures isolated（2026-09-13）
 
 main7cf5605で再現した2件をtestのみ修正。gateway.resolve_instanceは未知aliasも
