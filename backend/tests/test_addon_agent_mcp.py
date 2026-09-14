@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -948,3 +949,75 @@ def test_heavy_addon_tools_move_to_specialist_subagents(monkeypatch, tmp_path):
     # 子には何をする係かを書く。書かないと、主はいつ呼べばよいか分からない。
     for name in ("sculptor", "sound"):
         assert len(agents[name]["description"]) > 20
+
+
+def test_stdio_bridge_passes_host_rejection_reason_to_the_caller(monkeypatch):
+    """host が返した拒否理由をそのまま呼ぶ側へ渡す。
+
+    HTTPError は URLError の子クラスである。素直に URLError だけを捕まえると
+    422 も 400 も 500 も接続断と同じ 1 文に潰れ、呼ぶ側には直す手がかりが
+    何も残らない。実測: media.generate の inputs を文字列の配列で送っていた
+    だけの 422 に対し、理由が見えないまま 1 時間半で 8 通り試して諦めた
+    （わざと無効な grant を入れた切り分けにも同じ文言が返る）。
+    """
+    import pytest
+
+    from app.integrations.opencode import addon_mcp_bridge as bridge
+
+    def urlopen(request, timeout):
+        raise bridge.urllib.error.HTTPError(
+            request.full_url, 422, "Unprocessable Entity", {},
+            io.BytesIO(json.dumps({"detail": {
+                "code": "schema_validation_failed",
+                "message": "agent tool inputがcontribution schemaに一致しません (inputs.0)",
+            }}).encode()),
+        )
+
+    monkeypatch.setenv("CONTROL_DECK_ADDON_MCP_URL", "http://127.0.0.1:8765/api/v1/addons/agent-mcp")
+    monkeypatch.setenv("CONTROL_DECK_ADDON_MCP_TOKEN", "signed-token")
+    monkeypatch.setattr(bridge, "_token", None)
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", urlopen)
+    with pytest.raises(bridge.BridgeError) as raised:
+        bridge._host_request("/call", payload={"name": "media.generate"})
+    message = str(raised.value)
+    assert "422" in message
+    assert "schema_validation_failed" in message
+    assert "inputs.0" in message
+
+
+def test_stdio_bridge_keeps_generic_message_when_the_host_is_unreachable(monkeypatch):
+    """接続そのものが立たないときは status が無いので、従来どおりの 1 文で返す。"""
+    import pytest
+
+    from app.integrations.opencode import addon_mcp_bridge as bridge
+
+    def urlopen(request, timeout):
+        raise bridge.urllib.error.URLError("Connection refused")
+
+    monkeypatch.setenv("CONTROL_DECK_ADDON_MCP_URL", "http://127.0.0.1:8765/api/v1/addons/agent-mcp")
+    monkeypatch.setenv("CONTROL_DECK_ADDON_MCP_TOKEN", "signed-token")
+    monkeypatch.setattr(bridge, "_token", None)
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", urlopen)
+    with pytest.raises(bridge.BridgeError) as raised:
+        bridge._host_request("/call", payload={"name": "media.generate"})
+    assert str(raised.value) == "ControlDeck Add-on MCP request failed"
+
+
+def test_stdio_bridge_reports_status_when_the_rejection_body_is_unreadable(monkeypatch):
+    """本文が JSON でなくても status だけは返す。無言で潰さない。"""
+    import pytest
+
+    from app.integrations.opencode import addon_mcp_bridge as bridge
+
+    def urlopen(request, timeout):
+        raise bridge.urllib.error.HTTPError(
+            request.full_url, 500, "Internal Server Error", {}, io.BytesIO(b"<html>nope</html>"),
+        )
+
+    monkeypatch.setenv("CONTROL_DECK_ADDON_MCP_URL", "http://127.0.0.1:8765/api/v1/addons/agent-mcp")
+    monkeypatch.setenv("CONTROL_DECK_ADDON_MCP_TOKEN", "signed-token")
+    monkeypatch.setattr(bridge, "_token", None)
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", urlopen)
+    with pytest.raises(bridge.BridgeError) as raised:
+        bridge._host_request("/call", payload={"name": "media.generate"})
+    assert "500" in str(raised.value)

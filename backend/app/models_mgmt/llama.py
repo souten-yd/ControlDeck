@@ -127,6 +127,17 @@ DEFAULT_INSTANCE = {
         "role": "llm",
         # VLM用 multimodal projector（GGUF）。設定時のみ --mmproj を付ける
         "mmproj_path": "",
+        # 画像 1 枚に最低これだけトークンを割く。0 でモデル既定に任せる。
+        #
+        # モデル既定のままだと、画面の写しのような横長の絵は割り当てが薄くなる。
+        # 実測: 960x540 の写しは約 480 トークンで、Qwen3-VL が起動時に出す警告
+        # （Qwen-VL models require at minimum 1024 image tokens to function
+        # correctly on grounding tasks）の下限の半分しかない。どこに何が写って
+        # いるかを読ませる用途——画面の写しを見て直す、位置関係を確かめる——では
+        # ここが効くので、既定をその下限に合わせる。
+        #
+        # 上げるとそのぶん文脈を食う。要らない instance は 0 にして外す。
+        "image_min_tokens": 1024,
         "port": 8080,
         "n_gpu_layers": 999,   # 全層 GPU（VRAM 不足時は下げる）
         "ctx_size": 4096,
@@ -1425,6 +1436,16 @@ def _unit_content(alias: str | None = None) -> str:
     role = str(inst.get("role", "llm"))
     if role == "llm" and inst.get("mmproj_path"):
         args += ["--mmproj", str(inst["mmproj_path"])]
+        # 既存の instance はこの鍵を持たないので、既定を当てて拾わせる。
+        # `or` で潰すと、明示的に外した 0 と未設定が同じ扱いになる。
+        try:
+            image_min_tokens = int(
+                inst.get("image_min_tokens", DEFAULT_INSTANCE["image_min_tokens"]) or 0
+            )
+        except (TypeError, ValueError):
+            image_min_tokens = 0
+        if image_min_tokens > 0:
+            args += ["--image-min-tokens", str(image_min_tokens)]
     if role == "embedding":
         # 埋め込み専用（BGE-M3等）。/v1/embeddings を提供する
         args += ["--embedding", "--pooling", "mean"]

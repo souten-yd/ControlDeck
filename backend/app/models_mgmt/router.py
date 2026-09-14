@@ -656,6 +656,9 @@ class LlamaInstanceBody(BaseModel):
 
     model_path: str | None = None
     mmproj_path: str | None = None
+    # 0 はモデル既定。上限は llama.cpp の受け付ける範囲に合わせず、文脈を
+    # 食い潰さない現実的な幅で切る（1024 で 1 枚あたり約 1024 トークン）。
+    image_min_tokens: int | None = Field(default=None, ge=0, le=16384)
     role: Literal["llm", "embedding", "reranker"] | None = None
     port: int | None = Field(default=None, ge=1024, le=65535)
     n_gpu_layers: int | None = Field(default=None, ge=0, le=999)

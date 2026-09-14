@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 MAX_MESSAGE_BYTES = 1024 * 1024
+# 拒否理由をどこまで読むか。直せる場所が書いてあるのは先頭なので、頭だけ足りる。
+MAX_ERROR_BYTES = 8 * 1024
+MAX_ERROR_CHARS = 600
 
 # 道具の結果をそのまま会話へ載せてよい長さ（文字数）。
 #
@@ -75,6 +78,43 @@ def _current_token() -> str:
     return _token
 
 
+def _host_error_message(exc: urllib.error.HTTPError) -> str:
+    """host が返した拒否理由を、呼び出し側が読める 1 行にする。
+
+    HTTPError は URLError の子クラスなので、素直に URLError だけを捕まえると
+    422 も 400 も 500 も接続断と同じ「request failed」に潰れる。host は
+    `{"detail":{"code":"schema_validation_failed","message":"... (inputs.0)"}}`
+    のように直せる場所まで名指しで返しているので、それを捨てると呼ぶ側は
+    当て推量を繰り返すしかなくなる（実測: inputs の形が違うだけの 422 に対し、
+    理由が見えないまま 1 時間半で 8 通り試して諦めた）。
+    """
+    label = f"ControlDeck Add-on MCP request failed (HTTP {exc.code})"
+    try:
+        body = exc.read(MAX_ERROR_BYTES + 1)
+    except Exception:  # noqa: BLE001 - 本文が読めなくても status は返す
+        return label
+    try:
+        detail = json.loads(body).get("detail")
+    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+        detail = body.decode("utf-8", "replace")
+    if isinstance(detail, dict):
+        # HTTPException(detail={"code": ..., "message": ...}) の形。
+        code, message = detail.get("code"), detail.get("message")
+        detail = f"{code}: {message}" if code and message else (message or code or detail)
+    elif isinstance(detail, list):
+        # FastAPI の request validation は場所と理由の組を並べて返す。
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in (item.get('loc') or []))}: {item.get('msg')}"
+            for item in detail if isinstance(item, dict)
+        )
+    text = str(detail or "").strip()
+    if not text:
+        return label
+    if len(text) > MAX_ERROR_CHARS:
+        text = f"{text[:MAX_ERROR_CHARS]}…"
+    return f"{label}: {text}"
+
+
 def _host_request(path: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     global _token
     base_url = os.environ.get("CONTROL_DECK_ADDON_MCP_URL", "").rstrip("/")
@@ -99,6 +139,8 @@ def _host_request(path: str, *, payload: dict[str, Any] | None = None) -> dict[s
             renewed = getattr(response, "headers", {}).get(RENEW_HEADER)
             if renewed and renewed != token:
                 _token = renewed
+    except urllib.error.HTTPError as exc:
+        raise BridgeError(_host_error_message(exc)) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise BridgeError("ControlDeck Add-on MCP request failed") from exc
     if len(content) > MAX_MESSAGE_BYTES:
