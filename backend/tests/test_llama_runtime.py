@@ -734,3 +734,56 @@ def test_unknown_load_mode_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(llama, "supports_load_mode", lambda: True)
     with pytest.raises(RuntimeError):
         _spec_instance(tmp_path, monkeypatch, {"load_mode": "bogus"})
+
+
+def test_image_min_tokens_is_passed_only_for_vision_instances(monkeypatch, tmp_path):
+    """画像1枚に割く下限は、mmproj を持つ instance にだけ渡す。
+
+    モデル既定のままだと横長の絵は割り当てが薄い（実測: 960x540 の画面の写しで
+    約480トークン）。Qwen3-VL は起動時に「grounding tasks には最低1024必要」と
+    警告するので、既定をその下限に合わせる。文字だけの instance には画像が
+    来ないので、値が残っていても渡さない。
+    """
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "llama-runtime.json")
+    llama.save_instance("vision", {"alias": "vision", "model_path": "/models/v.gguf",
+                                   "mmproj_path": "/models/mmproj.gguf"})
+    llama.save_instance("vision-opt-out", {"alias": "vision-opt-out", "model_path": "/models/v.gguf",
+                                           "mmproj_path": "/models/mmproj.gguf",
+                                           "port": 9003, "image_min_tokens": 0})
+    llama.save_instance("text-only", {"alias": "text-only", "model_path": "/models/t.gguf",
+                                      "mmproj_path": "", "port": 9004,
+                                      "image_min_tokens": 1024})
+
+    assert llama.DEFAULT_INSTANCE["image_min_tokens"] == 1024
+    assert '"--image-min-tokens" "1024"' in llama._unit_content("vision")
+    # 明示的に 0 を入れた instance は外す。モデル既定のままにする。
+    assert "--image-min-tokens" not in llama._unit_content("vision-opt-out")
+    assert "--image-min-tokens" not in llama._unit_content("text-only")
+
+
+def test_existing_vision_instances_inherit_the_image_token_floor(monkeypatch, tmp_path):
+    """この鍵を持たない既存の instance も、読み込みのときに既定を拾う。
+
+    save_instance が既定を混ぜるのは新規のときだけなので、以前から在る instance
+    の設定ファイルには鍵そのものが無い。設定の読み込みが DEFAULT_INSTANCE を
+    土台にしているおかげで、そこが埋まる——埋まらなければ既定を変えても
+    起動中のモデルには一生効かない。
+    """
+    import json
+
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "llama-runtime.json")
+    llama.save_instance("old", {"alias": "old", "model_path": "/models/v.gguf",
+                                "mmproj_path": "/models/mmproj.gguf"})
+    # 以前の版が書いた設定ファイルを再現する。鍵そのものが無い状態にする。
+    path = tmp_path / "llama-runtime.json"
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    del stored["instances"]["old"]["image_min_tokens"]
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    assert "image_min_tokens" not in stored["instances"]["old"]
+
+    assert llama.get_config()["instances"]["old"]["image_min_tokens"] == 1024
+    assert '"--image-min-tokens" "1024"' in llama._unit_content("old")

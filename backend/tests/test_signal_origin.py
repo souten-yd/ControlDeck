@@ -84,3 +84,24 @@ def test_the_process_still_stops_the_way_it_did_before():
 
     assert "STOPPED CLEANLY" in stdout, "handler が走っていない（止まらなくなっている）"
     assert child.returncode == 0
+
+
+def test_shutdown_is_bounded_so_systemd_never_has_to_sigkill(monkeypatch):
+    """停止は上限付きにする。接続が空くのを待ち続けない。
+
+    uvicorn の既定は残っている接続を待ち続ける。LLM ゲートウェイは応答を流した
+    まま数分保つので、restart のたびに systemd の DefaultTimeoutStopSec（90秒）
+    に負けて SIGKILL される（実測 2026-09-14: 07:12:58 SIGTERM → 07:13:57 に
+    まだ chat/completions が流れており → 07:14:28 SIGKILL）。SIGKILL は
+    shutdown handler を 1 つも走らせないので、lease の返却も状態の書き出しも飛ぶ。
+    """
+    from app import server
+
+    captured = {}
+    monkeypatch.setattr(server.uvicorn, "run", lambda *a, **kw: captured.update(kw))
+    monkeypatch.setattr(server.signal_origin, "install", lambda: None)
+    server.main()
+
+    assert captured["timeout_graceful_shutdown"] == server.GRACEFUL_SHUTDOWN_SECONDS
+    # systemd に撃たれる前に自分で落ちきる余地を残す。
+    assert 0 < server.GRACEFUL_SHUTDOWN_SECONDS < 90

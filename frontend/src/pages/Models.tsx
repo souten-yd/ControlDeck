@@ -1295,6 +1295,7 @@ function L({ label, children }: { label: string; children: React.ReactNode }) {
 interface LlamaInstanceConfig {
   model_path: string;
   mmproj_path?: string;
+  image_min_tokens?: number;
   port: number;
   alias: string;
   selected?: boolean;
@@ -1376,7 +1377,7 @@ const SPEC_TYPE_LABEL: Record<string, string> = {
 };
 
 const LLAMA_INSTANCE_WRITE_KEYS = [
-  "model_path", "mmproj_path", "port", "alias", "auto_start", "idle_exclude",
+  "model_path", "mmproj_path", "image_min_tokens", "port", "alias", "auto_start", "idle_exclude",
   "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "load_mode", "spec_type", "draft_max", "draft_min", "draft_p_min",
@@ -1388,7 +1389,7 @@ const LLAMA_INSTANCE_WRITE_KEYS = [
 ] as const satisfies readonly (keyof LlamaInstanceConfig)[];
 
 const LLAMA_PARAMETER_WRITE_KEYS = [
-  "mmproj_path", "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
+  "mmproj_path", "image_min_tokens", "n_gpu_layers", "ctx_size", "deep_research_ctx_size", "n_parallel", "flash_attn", "n_predict",
   "batch_size", "ubatch_size", "cache_type_k", "cache_type_v", "threads",
   "threads_batch", "mmap", "mlock", "load_mode", "spec_type", "draft_max", "draft_min", "draft_p_min",
   "spec_draft_model_path", "spec_draft_ngl",
@@ -1820,6 +1821,23 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
           <input value={cfg.mmproj_path ?? ""} onChange={(e) => set("mmproj_path", e.target.value)} placeholder="multimodal projector（*.mmproj*.gguf）のパス" className={`${input} font-mono text-xs`} />
         </L>
         <p className="text-[10px] leading-relaxed text-zinc-400">mmprojを設定すると画像入力（VLM）が有効になり、チャットの📎から画像を添付できます。</p>
+        {cfg.mmproj_path ? (
+          <div className="space-y-1.5">
+            <L label="画像1枚あたりの最小トークン数（--image-min-tokens・0=モデル既定に任せる）">
+              <input
+                type="number" min={0} max={16384}
+                value={cfg.image_min_tokens ?? 1024}
+                onChange={(e) => set("image_min_tokens", Number(e.target.value))}
+                className={input}
+              />
+            </L>
+            <p className="text-[10px] leading-relaxed text-zinc-400">
+              モデル既定のままだと、画面の写しのような横長の絵は割り当てが薄くなります（960×540で約480トークン）。
+              Qwen-VL系は位置関係を読ませるなら1024以上が要ると起動時に警告するため、既定を1024にしています。
+              上げるとそのぶん文脈を消費します。画像を読ませないモデルは0にして外してください。
+            </p>
+          </div>
+        ) : null}
         {supportsLoadMode ? (
           <div className="space-y-1.5">
             <L label="モデルの読み込み方（--load-mode）">
