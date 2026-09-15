@@ -117,3 +117,83 @@ def test_shared_requests_are_unaffected_and_do_not_evict_the_llm():
     granted = asyncio.run(scenario())
     assert granted.state == RequestState.GRANTED, "空きに収まるなら同居のまま通る"
     assert llm.step_aside_calls == 0, "同居できる要求で LLM を降ろしてはいけない"
+
+
+def minimum_request(owner: str, job: str, required: int, minimum: int) -> ResourceRequest:
+    """「占有したいが、これだけあれば動ける」と申告する要求。"""
+    return ResourceRequest.model_validate({
+        "owner": owner,
+        "job_id": job,
+        "device": "auto",
+        "vram": {
+            "resident_bytes": required,
+            "execution_peak_bytes": required,
+            "cold_load_peak_bytes": required,
+            "headroom_bytes": 0,
+            "confidence": "measured",
+            "minimum_bytes": minimum,
+        },
+        "compute_mode": "exclusive-preferred",
+        "priority": 0,
+        "class": "interactive",
+        "max_wait_sec": 300,
+        "on_insufficient": "queue",
+    })
+
+
+def test_preferred_with_a_floor_shares_instead_of_waiting_for_the_llm_to_leave():
+    """preferred は required ではない。
+
+    「占有できるなら占有したいが、無理なら小さい枠でも動ける」と申告した要求が、
+    device に誰か居るというだけで下限の判定にすら進めなかった。minimum_bytes は
+    exclusive-preferred からは到達できない死んだ枝だった。
+
+    実測 2026-09-15: LLM が 22.9GiB を持った状態で音楽生成を頼むと
+    device_busy_exclusive のまま 5 分 35 秒待ち、LLM が退いてから動き出した。
+    空きは 9.9GiB あり、要求は 8.47GiB で動けると申告していた。待つ必要は無い。
+    """
+    llm = ResidentLLM(70, releases=False)  # 使用中。退かない。
+    broker = ResourceBroker(fake_devices(100), ProviderRegistry([llm]))
+
+    async def scenario():
+        submitted = await broker.submit(minimum_request("addon:sonic-forge", "music", 80, 20))
+        await asyncio.sleep(0.05)
+        return await broker.request_status(submitted.request_id)
+
+    settled = asyncio.run(scenario())
+    assert settled.state == RequestState.GRANTED, "動ける大きさの空きがあるのに待たせている"
+    # 貸すのは空いているぶんだけ。全部載る量を貸したことにしてはいけない。
+    assert settled.granted_bytes == 30, settled.granted_bytes
+    assert llm.reservations(), "同居できるのだから LLM を降ろす必要は無い"
+
+
+def test_preferred_without_a_floor_still_waits_for_the_device():
+    """下限を言っていない要求は、これまでどおり占有しか受けない。
+
+    小さい枠で動けるとは言っていないので、同居させるとその要求が OOM で落ちる。
+    """
+    llm = ResidentLLM(70, releases=False)
+    broker = ResourceBroker(fake_devices(100), ProviderRegistry([llm]))
+
+    async def scenario():
+        submitted = await broker.submit(request("addon:sonic-forge", "music", 20))
+        await asyncio.sleep(0.05)
+        return await broker.request_status(submitted.request_id)
+
+    settled = asyncio.run(scenario())
+    assert settled.state == RequestState.WAITING
+    assert settled.reason == WaitReason.DEVICE_BUSY_EXCLUSIVE
+
+
+def test_a_floor_larger_than_the_free_space_still_waits():
+    """動けない大きさで通してはいけない。通せば要求側が OOM で落ちる。"""
+    llm = ResidentLLM(90, releases=False)
+    broker = ResourceBroker(fake_devices(100), ProviderRegistry([llm]))
+
+    async def scenario():
+        submitted = await broker.submit(minimum_request("addon:sonic-forge", "music", 80, 20))
+        await asyncio.sleep(0.05)
+        return await broker.request_status(submitted.request_id)
+
+    settled = asyncio.run(scenario())
+    assert settled.state == RequestState.WAITING, "空き 10 に下限 20 は入らない"

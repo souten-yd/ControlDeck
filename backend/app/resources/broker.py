@@ -492,9 +492,35 @@ class ResourceBroker:
                 continue
             leases = [item for item in current_leases if item.device_id == device.id]
             providers = [item for item in provider_values if item.device_id == device.id and item.reserved_bytes > 0]
-            exclusive = request.compute_mode in {ComputeMode.EXCLUSIVE_REQUIRED, ComputeMode.EXCLUSIVE_PREFERRED}
             existing_exclusive = any(item.compute_mode in {ComputeMode.EXCLUSIVE_REQUIRED, ComputeMode.EXCLUSIVE_PREFERRED} for item in leases)
-            if (exclusive and (leases or providers)) or existing_exclusive:
+            occupied = bool(leases or providers)
+            # preferred は required ではない。
+            #
+            # ここは両方を同じに扱っていたので、「占有できるなら占有したいが、
+            # 無理なら小さい枠でも動ける」と申告した要求が、device に誰か居る
+            # だけで下限の判定に進めなかった。minimum_bytes は exclusive-preferred
+            # からは到達できない死んだ枝になっていた。
+            #
+            # 実測 2026-09-15: LLM が 22.9GiB を持った状態で音楽生成を頼むと、
+            # device_busy_exclusive のまま 5 分 35 秒待ち、LLM が退いてから
+            # ようやく動き出した。空きは 9.9GiB あり、この要求は 8.47GiB で
+            # 動ける（int8 + offload）と申告していた。待つ必要は無かった。
+            #
+            # 下限を言っていない exclusive-preferred は、これまでどおり占有しか
+            # 受けない——小さい枠で動けるとは言っていないので、同居させると
+            # その要求が OOM で落ちる。
+            shareable = (
+                request.compute_mode is ComputeMode.EXCLUSIVE_PREFERRED
+                and request.vram.minimum_bytes is not None
+            )
+            blocked_by_exclusive = existing_exclusive or (
+                request.compute_mode is ComputeMode.EXCLUSIVE_REQUIRED and occupied
+            ) or (
+                request.compute_mode is ComputeMode.EXCLUSIVE_PREFERRED
+                and occupied
+                and not shareable
+            )
+            if blocked_by_exclusive:
                 last_reason = WaitReason.DEVICE_BUSY_EXCLUSIVE
                 last_blocking = self._blocking(leases, providers)
                 continue
