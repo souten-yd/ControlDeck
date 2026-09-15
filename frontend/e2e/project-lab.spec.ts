@@ -50,6 +50,25 @@ test("previews artifacts and runs a source file without page scrolling", async (
   await page.getByRole("button", { name: /プレビュー|\./ }).first().click();
   const sheet = page.getByRole("dialog", { name: "ファイル" });
   await expect(sheet).toBeVisible();
+  // 形式での絞り込みは、この企画に実際にある拡張子だけを並べる。固定の一覧だと
+  // 一つも無い形式が選べてしまい、選んだ先が必ず空になる。
+  const kinds = sheet.getByLabel("ファイル形式で絞り込み");
+  if (await kinds.count()) {
+    const options = await kinds.locator("option").allInnerTexts();
+    expect(options[0]).toBe("すべての形式");
+    expect(options.length).toBeGreaterThan(1);
+    // 並びは多い順。同数なら名前順で、開くたびに変わらない。
+    const counts = options.slice(1).map((text) => Number(text.replace(/^.*（(\d+)）$/u, "$1")));
+    expect(counts).toEqual([...counts].sort((left, right) => right - left));
+    const picked = options[1].replace(/（\d+）$/u, "");
+    await kinds.selectOption(picked);
+    // 選んだ形式だけが残る。
+    const rows = sheet.getByRole("button").filter({ hasText: /·/ });
+    for (const text of await rows.allInnerTexts()) {
+      expect(text.toUpperCase()).toContain(`.${picked}`);
+    }
+    await kinds.selectOption("all");
+  }
   await sheet.getByRole("button", { name: "コード" }).click();
   const runnable = sheet.getByRole("button").filter({ hasText: /\.(py|js|mjs)$/ }).first();
   if (await runnable.count()) {

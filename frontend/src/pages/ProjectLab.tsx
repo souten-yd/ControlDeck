@@ -38,8 +38,20 @@ const KIND_TONES: Record<string, string> = {
   video: "bg-pink-100 text-pink-700 dark:bg-pink-500/15 dark:text-pink-300",
 };
 
+/** 拡張子を一つに決める。バッジと絞り込みで同じものを見せるため、ここに集める。
+ *
+ *  別々に求めると、バッジが PNG なのに絞り込みの一覧に PNG が無い、という形で
+ *  ずれる。ずれても動くので気づけない。 */
+function artifactExtension(artifact: ProjectLabArtifact): string {
+  const name = artifact.name;
+  const dot = name.lastIndexOf(".");
+  // 先頭のドットは拡張子ではない（.gitignore は「拡張子なし」として扱う）。
+  if (dot <= 0 || dot === name.length - 1) return "";
+  return name.slice(dot + 1).toUpperCase().slice(0, 4);
+}
+
 function KindBadge({ artifact, size = "sm" }: { artifact: ProjectLabArtifact; size?: "sm" | "xs" }) {
-  const extension = (artifact.name.split(".").pop() ?? "?").toUpperCase().slice(0, 4);
+  const extension = artifactExtension(artifact) || "?";
   const tone = KIND_TONES[artifact.kind] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
   return (
     <span className={`grid shrink-0 place-items-center rounded-lg font-semibold ${tone} ${size === "sm" ? "h-9 w-9 text-[9px]" : "h-6 w-8 text-[8px]"}`}>
@@ -728,9 +740,32 @@ function FilesSheet({
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "artifact" | "code">("all");
-  const filtered = artifacts.filter((item) => {
+  const [extension, setExtension] = useState("all");
+  // 形式の一覧は **この企画に実際にあるもの** だけを並べる。固定の一覧にすると、
+  // 一つも無い形式が選べてしまい、選んだ先が必ず空になる。
+  //
+  // 種類（成果物 / コード）で絞ったあとの数を出す。「コード」を選んでいるのに
+  // PNG が 42 件と出ていたら、数の意味が無い。
+  const byKind = artifacts.filter((item) => {
     if (filter === "code" && item.kind !== "code") return false;
     if (filter === "artifact" && item.kind === "code") return false;
+    return true;
+  });
+  const extensionCounts = new Map<string, number>();
+  for (const item of byKind) {
+    const value = artifactExtension(item);
+    if (!value) continue;
+    extensionCounts.set(value, (extensionCounts.get(value) ?? 0) + 1);
+  }
+  // 多い順。同数なら名前順にして、開くたびに並びが変わらないようにする。
+  const extensions = [...extensionCounts.entries()].sort(
+    (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+  );
+  // 種類を切り替えて選んでいた形式が無くなったら、黙って「すべて」に戻す。
+  // 残したままだと、一件も出ない一覧を見て「ファイルが消えた」と読まれる。
+  const activeExtension = extension !== "all" && !extensionCounts.has(extension) ? "all" : extension;
+  const filtered = byKind.filter((item) => {
+    if (activeExtension !== "all" && artifactExtension(item) !== activeExtension) return false;
     return item.path.toLowerCase().includes(query.trim().toLowerCase());
   });
   return (
@@ -751,7 +786,7 @@ function FilesSheet({
             </button>
           )}
         </div>
-        <div className="mt-2 flex gap-1.5">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {([["all", "すべて"], ["artifact", "成果物"], ["code", "コード"]] as const).map(([value, label]) => (
             <button
               key={value}
@@ -765,6 +800,30 @@ function FilesSheet({
               {label}
             </button>
           ))}
+          {/* 形式での絞り込み。携帯で使うので、自前の吹き出しではなく select に
+              する——iOS も Android も、こちらのほうが指で回せる本来の選択器が出る。 */}
+          {extensions.length > 1 && (
+            <label className="relative ml-auto inline-flex min-h-9 shrink-0 items-center">
+              <span className="sr-only">ファイル形式で絞り込み</span>
+              <select
+                value={activeExtension}
+                onChange={(event) => setExtension(event.target.value)}
+                className={`min-h-9 appearance-none rounded-full py-0 pl-3 pr-7 text-xs font-medium outline-none ${
+                  activeExtension === "all"
+                    ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                    : "bg-accent-600 text-white"
+                }`}
+              >
+                <option value="all">すべての形式</option>
+                {extensions.map(([value, count]) => (
+                  <option key={value} value={value}>{value}（{count}）</option>
+                ))}
+              </select>
+              <span aria-hidden="true" className={`pointer-events-none absolute right-2.5 text-[9px] ${
+                activeExtension === "all" ? "text-zinc-500 dark:text-zinc-400" : "text-white"
+              }`}>▼</span>
+            </label>
+          )}
         </div>
       </div>
       {filtered.map((item) => (
