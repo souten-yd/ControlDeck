@@ -386,3 +386,101 @@ def test_addon_frame_cookie_outlives_a_short_absence(enabled_addon):
     # sandbox の不透明 origin から送るには両方が要る。片方でも欠けると送られない。
     assert "SameSite=None" in cookie and "Secure" in cookie
     assert "HttpOnly" in cookie
+
+
+def test_addon_frame_streams_audio_instead_of_buffering_it(enabled_addon, monkeypatch):
+    """音は溜めずに流す。溜める上限で断ると、長い曲が再生できない。
+
+    実測 2026-09-16: SonicForge のライブラリで 5 分 39 秒の曲（62MB）を再生しようと
+    すると、上流が 206 を返しているのに proxy が 502 を返し、画面には「エラー」と
+    だけ出ていた。中身の長さだけを見て断っていたためである。音楽は最長 600 秒まで
+    作れるので、48kHz ステレオ 16bit なら 110MB を超える。
+    """
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    body = b"RIFF" + b"\0" * 64
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "audio/wav", "Content-Length": str(len(body))},
+            stream=OneChunkStream(body),
+            request=request,
+        )
+
+    # 溜める上限より大きいものを、流す側で通す。
+    monkeypatch.setattr(proxy, "MAX_RESPONSE_BYTES", 4)
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = client.get("/addon-frame/fake-addon/addon/v1/assets/a/content")
+    assert response.status_code == 200, response.text
+    assert response.content == body
+    # 溜めないものに buffering の指示は付けない。付けるのは event-stream だけ。
+    assert "x-accel-buffering" not in response.headers
+
+
+def test_addon_frame_streams_a_range_response(enabled_addon, monkeypatch):
+    """範囲で取りに来られたら、相手は少しずつ読む気でいる。溜めない。
+
+    browser は音を範囲で取りに来る。`bytes=0-` のように「残り全部」を求めることも
+    あり、そのときの中身の長さはファイル全体になる。溜める上限で測ると断ってしまう。
+    """
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    body = b"0123456789"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            206,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Range": f"bytes 0-{len(body) - 1}/{len(body)}",
+                "Content-Length": str(len(body)),
+            },
+            stream=OneChunkStream(body),
+            request=request,
+        )
+
+    monkeypatch.setattr(proxy, "MAX_RESPONSE_BYTES", 4)
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = client.get("/addon-frame/fake-addon/addon/v1/assets/a/content", headers={"Range": "bytes=0-"})
+    assert response.status_code == 206, response.text
+    assert response.content == body
+    assert response.headers["content-range"] == f"bytes 0-{len(body) - 1}/{len(body)}"
+
+
+def test_addon_frame_still_bounds_what_it_streams(enabled_addon, monkeypatch):
+    """流す側にも上限は要る。終わらない応答に付き合い続けない。"""
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    body = b"0123456789"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"Content-Type": "audio/wav"}, stream=OneChunkStream(body), request=request,
+        )
+
+    monkeypatch.setattr(proxy, "MAX_STREAMED_RESPONSE_BYTES", 4)
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = client.get("/addon-frame/fake-addon/addon/v1/assets/a/content")
+    # 頭は返ってしまうが、上限で打ち切る。全部は渡さない。
+    assert len(response.content) <= 4
+
+
+def test_addon_frame_still_rejects_an_oversize_json_response(enabled_addon, monkeypatch):
+    """普通の応答は今までどおり溜めて、上限で断る。"""
+    client, _registry = enabled_addon
+    from app.addons import proxy
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"Content-Type": "application/json"},
+            stream=OneChunkStream(b"12345"), request=request,
+        )
+
+    monkeypatch.setattr(proxy, "MAX_RESPONSE_BYTES", 4)
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = client.get("/addon-frame/fake-addon/large")
+    assert response.status_code == 502
