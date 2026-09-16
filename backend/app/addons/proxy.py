@@ -22,7 +22,27 @@ from app.config import get_config
 router = APIRouter(prefix="/addon-frame", tags=["addon-frame"])
 
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
+# 普通の応答（JSON など）をメモリへ溜めてよい上限。溜めるのは、応答を一度
+# 組み立ててから返す作りだからで、上限はそのための保護である。
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
+# 溜めずに流す応答の上限。
+#
+# 音や動画は元々大きい。SonicForge の音楽は最長 600 秒まで作れて、48kHz ステレオ
+# 16bit なら 110MB を超える。実測 2026-09-16: 5 分 39 秒の曲（62MB）を画面で
+# 再生しようとすると、proxy が 502 を返して「エラー」になっていた。上流は 206 を
+# 返しているのに、こちらが中身の長さだけを見て断っていた。
+#
+# こういうものは溜める必要が無い。browser は範囲を指定して少しずつ取りに来るので、
+# そのまま流せばメモリは要らない。上限は「流し続けてよい量」であって、溜める量では
+# ないので、別の値にする。
+MAX_STREAMED_RESPONSE_BYTES = 2 * 1024 * 1024 * 1024
+
+# 溜めずに流す相手。
+#
+# 範囲を指定して取りに来たもの（206）は、相手が少しずつ読む気でいるという申告
+# そのものである。音と動画は、範囲を使わなくても溜める意味が無い。
+_STREAMED_CONTENT_PREFIXES = ("audio/", "video/")
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
@@ -251,7 +271,14 @@ async def addon_frame_proxy(
         raise HTTPException(status_code=502, detail="拡張機能serviceへ接続できません") from exc
 
     content_type = upstream.headers.get("content-type", "")
-    streaming = content_type.lower().startswith("text/event-stream")
+    lowered = content_type.lower()
+    # 溜めずに流すかどうか。event-stream は終わりが無いので元から流している。
+    # 音と動画、および範囲で取りに来られたものも、溜める理由が無い。
+    streaming = (
+        lowered.startswith("text/event-stream")
+        or lowered.startswith(_STREAMED_CONTENT_PREFIXES)
+        or upstream.status_code == 206
+    )
     upstream_length = upstream.headers.get("content-length")
     if not streaming and upstream_length:
         try:
@@ -278,7 +305,9 @@ async def addon_frame_proxy(
     if request.headers.get("origin") == "null":
         headers["Access-Control-Allow-Origin"] = "null"
         headers["Access-Control-Allow-Credentials"] = "true"
-    if streaming:
+    if lowered.startswith("text/event-stream"):
+        # 途中で溜められると、送った端から届かなくなる。音や動画は途中で溜まっても
+        # 困らないので、こちらは event-stream にだけ付ける。
         headers["X-Accel-Buffering"] = "no"
 
     if not streaming:
@@ -311,6 +340,10 @@ async def addon_frame_proxy(
         try:
             async for chunk in upstream.aiter_raw():
                 transferred += len(chunk)
+                if transferred > MAX_STREAMED_RESPONSE_BYTES:
+                    # 流す側にも上限は要る。終わらない応答に付き合い続けない。
+                    result = "response_too_large"
+                    break
                 yield chunk
         except httpx.HTTPError:
             result = "upstream_error"
