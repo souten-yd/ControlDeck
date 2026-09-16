@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
     from app.resources.broker import broker as resource_broker
     from app.resources.devices import refresh_loop as resource_device_refresh_loop
     from app.models_mgmt.resource_provider import provider as llama_resource_provider
+    from app.resources.addon_provider import provider as addon_residency_provider
     from app.models_mgmt.thinking import migrate_shared_reasoning
 
     # 思考設定を共通設定からモデル個別へ移した際の一度きりの移行。
@@ -88,6 +89,14 @@ async def lifespan(app: FastAPI):
         resource_broker.providers.register(llama_resource_provider())
     except ValueError:
         pass  # repeated TestClient lifespans reuse the same process singleton
+    # Add-on も「場所を空けられる側」として参加させる。これが無いと、画像や音の
+    # model を降ろす引き金が時計しか無く、短くすれば続けて作るたびに読み直し、
+    # 長くすれば他の枠を削る。退くかどうかを決めるのは Add-on 側で、走っている
+    # 処理は切らない。
+    try:
+        resource_broker.providers.register(addon_residency_provider)
+    except ValueError:
+        pass  # 同上
     tasks = [
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),
@@ -102,6 +111,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(llama_idle_unload_loop()),
         asyncio.create_task(health_check_loop()),
         asyncio.create_task(addon_health_loop()),
+        asyncio.create_task(addon_residency_provider.refresh_loop()),
         asyncio.create_task(resource_broker.reaper_loop()),
         asyncio.create_task(resource_device_refresh_loop(resource_broker.devices)),
     ]
