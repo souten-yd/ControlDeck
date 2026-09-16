@@ -197,3 +197,86 @@ def test_a_floor_larger_than_the_free_space_still_waits():
 
     settled = asyncio.run(scenario())
     assert settled.state == RequestState.WAITING, "空き 10 に下限 20 は入らない"
+
+
+class _Costly(ResidentLLM):
+    """降ろすと高くつく常駐。LLM の立ち位置。"""
+
+    step_aside_order = 90
+
+    def __init__(self, reserved: int):
+        super().__init__(reserved, releases=True)
+        self.id = "local-llm"
+
+
+class _Cheap(ResidentLLM):
+    """降ろしても安い常駐。add-on の立ち位置。"""
+
+    step_aside_order = 10
+
+    def __init__(self, reserved: int):
+        super().__init__(reserved, releases=True)
+        self.id = "addons"
+
+
+def test_the_cheap_one_is_asked_first_and_the_llm_is_left_alone():
+    """安く戻せる方から頼む。足りたらそこでやめる。
+
+    音楽は int8 + offload なら 7.4 GiB で動き、LLM が 22.8 GiB 常駐でも残りの
+    約 9 GiB に収まる（実測 2026-09-16）。**音楽のために LLM を降ろす必要は無い。**
+    足りない量だけ空けば良いのだから、会話が止まる方を巻き込まない。
+    """
+    # 空きは 10 しかなく、そのままでは下限 20 に届かない。誰かに退いてもらう。
+    cheap = _Cheap(40)
+    costly = _Costly(50)
+    broker = ResourceBroker(fake_devices(100), ProviderRegistry([costly, cheap]))
+
+    async def scenario():
+        submitted = await broker.submit(minimum_request("addon:sonic-forge", "music", 20, 20))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if cheap.step_aside_calls:
+                break
+        await asyncio.sleep(0.05)
+        return await broker.request_status(submitted.request_id)
+
+    settled = asyncio.run(scenario())
+    assert cheap.step_aside_calls == 1, "安い方に頼めていない"
+    assert costly.step_aside_calls == 0, "足りているのに LLM まで降ろしている"
+    assert settled.state == RequestState.GRANTED
+    assert costly.reservations(), "LLM は載ったままであるべき"
+
+
+def test_the_llm_is_the_last_resort_when_the_cheap_one_is_not_enough():
+    """安い方を空けても足りないなら、最後に LLM へ頼む。
+
+    画像の全常駐（実測 19.4GB）のように、どうしても収まらないものはある。
+    「LLM は絶対に降ろさない」にすると、そちらが永久に通らなくなる。
+    """
+    cheap = _Cheap(5)
+    costly = _Costly(90)
+    broker = ResourceBroker(fake_devices(100), ProviderRegistry([costly, cheap]))
+
+    async def scenario():
+        submitted = await broker.submit(minimum_request("addon:media-forge", "image", 80, 80))
+        for _ in range(80):
+            await asyncio.sleep(0.01)
+            if costly.step_aside_calls:
+                break
+        await asyncio.sleep(0.05)
+        return await broker.request_status(submitted.request_id)
+
+    settled = asyncio.run(scenario())
+    assert cheap.step_aside_calls == 1
+    assert costly.step_aside_calls == 1, "足りないのに LLM へ頼んでいない"
+    assert settled.state == RequestState.GRANTED
+
+
+def test_the_order_does_not_depend_on_the_provider_name():
+    """順は名前の並びではなく決めごとで決まる。名前を変えても入れ替わらない。"""
+    cheap = _Cheap(30)
+    cheap.id = "zzz-late-in-the-alphabet"
+    costly = _Costly(50)
+    costly.id = "aaa-early-in-the-alphabet"
+    registry = ProviderRegistry([costly, cheap])
+    assert registry._step_aside_order() == [cheap.id, costly.id]

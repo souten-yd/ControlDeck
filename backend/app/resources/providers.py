@@ -35,6 +35,17 @@ class ResourceProvider(ABC):
     # 場所を空けられる provider か。空けられないものの予約は「動かせない量」と
     # して数え、入らない要求は待たせずに断る。
     can_step_aside: bool = False
+    # 退いてくれと頼む順。**小さいほど先に頼む。**
+    #
+    # 順の基準は「戻すのにいくらかかるか」である。空ける量ではない。add-on の
+    # model は載せ直しに数十秒だが、常駐 LLM を降ろすと、載せ直しの間だけでなく
+    # 利用者の会話そのものが止まる。安く戻せる方から頼み、必要量に届けばそこで
+    # やめるので、高い方は最後の手段になる。
+    #
+    # これまでは provider の id の並び順に頼んでいた。いまは偶然 "addons" が
+    # "local-llm" より前に来るので正しく動くが、名前を変えた途端に LLM が先に
+    # 降りる。順序は名前の副作用ではなく、決めごととして書く。
+    step_aside_order: int = 50
 
     @abstractmethod
     def reservations(self) -> list[ProviderReservation]:

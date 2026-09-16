@@ -34,14 +34,27 @@ class ProviderRegistry:
                 return result
         return ProbeResult(accepting=True)
 
+    def _step_aside_order(self) -> list[str]:
+        """頼む順。安く戻せる方から。
+
+        順は `step_aside_order` で決める。id の並び順ではない——並び順に頼むのは
+        名前の副作用であって決めごとではなく、名前を変えた途端に高い方から降りる。
+        同じ順位のものは id で並べ、呼ぶたびに変わらないようにする。
+        """
+        return sorted(
+            self._providers,
+            key=lambda key: (getattr(self._providers[key], "step_aside_order", 50), key),
+        )
+
     async def step_aside(self, device_id: str, needed_bytes: int) -> tuple[bool, str, int]:
         """その device で場所を空けられる provider に、順に一度だけ頼む。
 
         必要量に届いた時点でやめる。全部に頼んで回ると、要らない分まで降ろす。
+        安く戻せる方から頼むので、常駐 LLM のように戻すのが高いものは最後に残る。
         """
         freed = 0
         reasons: list[str] = []
-        for provider_id in sorted(self._providers):
+        for provider_id in self._step_aside_order():
             provider = self._providers[provider_id]
             if not any(item.device_id == device_id and item.reserved_bytes > 0
                        for item in provider.reservations()):

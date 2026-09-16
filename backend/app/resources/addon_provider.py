@@ -56,6 +56,8 @@ class AddonResidencyProvider(ResourceProvider):
 
     id = "addons"
     can_step_aside = True
+    # 先に頼む。add-on の model は載せ直しに数十秒で、会話は止まらない。
+    step_aside_order = 10
 
     def __init__(self, *, device_id: str = "gpu0") -> None:
         self._device_id = device_id
