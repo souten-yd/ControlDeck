@@ -39,6 +39,12 @@ class LocalLlmCapacityProvider(ResourceProvider):
     """ローカル常駐LLM（llama.cpp / Lucebox）のGPU占有をブローカーへ申告する。"""
 
     id = "local-llm"
+    # 最後に頼む。降ろすと、載せ直しの間だけでなく利用者の会話そのものが止まる。
+    # 音楽は int8 + offload なら 7.4 GiB で動き、LLM が 22.8 GiB 常駐でも残りの
+    # 約 9 GiB に収まる（実測 2026-09-16）。**音楽のために LLM を降ろす必要は
+    # 無い。** 画像の全常駐（実測 19.4GB）のように、どうしても収まらないものが
+    # 来たときだけ最後の手段として降りる。
+    step_aside_order = 90
 
     def __init__(
         self,
