@@ -208,6 +208,27 @@ def manifests() -> list[tuple[AddonManifestV2, tuple[str, ...]]]:
     return result
 
 
+def installed_ids() -> set[str]:
+    """導入済みAdd-onのID。
+
+    manifestの検証まではせず、管理directoryとmanifestの有無だけを見る。file APIの
+    path検証から呼ばれて1要求に何度も走るため、解決のたびにJSONを読ませない。
+    表示名など中身が要る用途は`manifests()`を使う。
+    """
+    try:
+        root = _root()
+    except AddonRegistryError:
+        return set()
+    return {
+        directory.name
+        for directory in root.iterdir()
+        if directory.name != STATE_NAME
+        and not directory.is_symlink()
+        and directory.is_dir()
+        and (directory / MANIFEST_NAME).is_file()
+    }
+
+
 def _state_name(enabled: bool, observation: HealthObservation | None) -> str:
     if not enabled:
         return "installed_disabled"

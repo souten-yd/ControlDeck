@@ -2,6 +2,45 @@
 
 最終更新: 2026-09-18
 
+## Files: 置き場プリセットと Add-on ライブラリ（2026-09-18）
+
+ファイルマネージャーの置き場選択に、許可ルートを全部並べるのをやめた。携帯では
+`/home/souten`・`/data1tb/LLM`・リポジトリ本体・`data/models` まで毎回選択肢に出て読めない。
+普段開く置き場だけを出し、MediaForge と SonicForge の生成物へ直接入れるようにした。
+
+- `app/files/service.py` に `presets()` を追加。CodeDEV（`config.codedev_dir()`）と、
+  導入済み Add-on のライブラリだけを `{id, label, path}` で返す。`GET /api/v1/files/presets`
+  （`files.view`）。**許可ルートは絞っていない**ので、プリセットに無い場所へも
+  パス指定では従来どおり届く（`files.allowed_roots` はモデル管理・ターミナル自動化・
+  Add-on の file grant が共有しているため、ここを絞ると `/data1tb/LLM` のモデル
+  ライブラリ設定の保存と GGUF 削除が落ちる）。
+- `addon_libraries()` を追加し、`allowed_roots()` へ導入済み Add-on の生成物置き場を足した。
+  MediaForge は `feature-data/media-forge/data/assets`、SonicForge は
+  `feature-data/sonic-forge/assets`。**開けるのは assets の下だけ**にする。feature-data ごと
+  開けると、モデルの重み・実行状態・`credentials.json` まで一緒に読めてしまう。
+  置き場の形は版で変わるので `data/assets` と `assets` の両方を見る。
+- 導入されていない Add-on の置き場は返さない。判定は `registry.installed_ids()`
+  （管理ディレクトリと manifest の有無だけを見る軽い判定）。`resolve()` から
+  1 要求に何度も走るため、解決のたびに manifest を JSON parse させない。
+  表示名が要る `presets()` 側だけ `manifests()` を読む。
+- frontend `pages/Files.tsx` は `/files/presets` を見る。ラベル表示になり、初期位置は
+  CodeDEV。プリセット外のパスで来ても選択とパンくずが壊れないよう、現在地を
+  一時的な選択肢として出す。`FilePicker` は `/files/roots` のままなので、Models や
+  Knowledge のパス選択は従来どおり（Add-on ライブラリが選択肢に増える）。
+
+実行証拠:
+
+- `backend pytest -q`（全体）: 1137 passed / 2 skipped、106.26 秒、failure なし。
+- `tests/test_files_api.py` へ3件追加（CodeDEV＋導入済み Add-on ライブラリだけが並び
+  許可ルートとは別物であること、未導入なら一覧に出ず 403 で閉じていること、
+  導入後も assets の外＝`credentials.json` の親は 403 のままであること）。
+- `frontend npm run build` / `npx tsc --noEmit`: ともに exit0。
+- 稼働 Host の実データで `presets()` の3件すべてを `list_dir` し、CodeDEV 15 件、
+  Media Forge ライブラリ 2,604 件、SonicForge ライブラリ 606 件を確認。
+- `./deck.sh` 再起動後、`/api/v1/health` 200、未認証 `GET /api/v1/files/presets` 401。
+
+NOT TESTED: ブラウザからの実 UI 操作（PC 幅／320px 幅）での置き場切り替え。
+
 ## Files: プロジェクトアーカイブの取り込み（2026-09-18）
 
 フロンティアAI（Claude／Codex等）が出力したプロジェクトをzip／tar.gzのまま

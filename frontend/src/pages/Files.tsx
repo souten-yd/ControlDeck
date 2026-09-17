@@ -37,6 +37,13 @@ const AUDIO_EXT = /\.(mp3|m4a|aac|wav|flac|oga|ogg|opus)$/i;
 const VIDEO_EXT = /\.(mp4|m4v|webm|ogv|mov)$/i;
 const ARCHIVE_EXT = /\.(zip|tar\.gz|tgz)$/i;
 
+/** ファイルマネージャーの開始位置。許可ルート全部ではない。 */
+interface Preset {
+  id: string;
+  label: string;
+  path: string;
+}
+
 interface ArchiveInspection {
   path: string;
   format: string;
@@ -80,15 +87,23 @@ export default function FilesPage() {
   const projectInputRef = useRef<HTMLInputElement>(null);
   const uploadAbort = useRef<AbortController | null>(null);
 
-  const { data: roots } = useQuery({
-    queryKey: ["file-roots"],
-    queryFn: () => api<string[]>("/files/roots"),
-    staleTime: Infinity,
+  const { data: presets } = useQuery({
+    queryKey: ["file-presets"],
+    queryFn: () => api<Preset[]>("/files/presets"),
+    staleTime: 60_000,
     retry: false,
   });
 
-  const path = params.get("path") || roots?.[0] || "";
+  const path = params.get("path") || presets?.[0]?.path || "";
   const setPath = (p: string) => setParams({ path: p });
+
+  // プリセット外（パス直指定で来た場所）でも選択とパンくずが壊れないようにする。
+  const activePreset = useMemo(() => {
+    if (!path || !presets) return undefined;
+    return [...presets]
+      .sort((a, b) => b.path.length - a.path.length)
+      .find((preset) => path === preset.path || path.startsWith(`${preset.path}/`));
+  }, [path, presets]);
 
   const { data: listing, isLoading, error } = useQuery({
     queryKey: ["files", path],
@@ -195,19 +210,18 @@ export default function FilesPage() {
 
   const crumbs = useMemo(() => {
     if (!path) return [];
-    const root = roots?.find((r) => path.startsWith(r));
-    if (!root) return [{ label: path, path }];
-    const rest = path.slice(root.length).split("/").filter(Boolean);
-    const list = [{ label: root.split("/").filter(Boolean).pop() || root, path: root }];
-    let acc = root;
+    if (!activePreset) return [{ label: path, path }];
+    const rest = path.slice(activePreset.path.length).split("/").filter(Boolean);
+    const list = [{ label: activePreset.label, path: activePreset.path }];
+    let acc = activePreset.path;
     for (const part of rest) {
       acc = `${acc}/${part}`.replace("//", "/");
       list.push({ label: part, path: acc });
     }
     return list;
-  }, [path, roots]);
+  }, [path, activePreset]);
 
-  if (roots && roots.length === 0) {
+  if (presets && presets.length === 0) {
     return (
       <div className="grid h-full place-items-center p-8 text-center text-sm text-zinc-400">
         <div>
@@ -231,16 +245,17 @@ export default function FilesPage() {
       {/* パンくず + 操作 */}
       <div className="mb-3 flex items-center gap-2">
         <nav aria-label="パス" className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-sm">
-          {roots && roots.length > 1 && (
+          {presets && presets.length > 1 && (
             <select
-              value={crumbs[0]?.path ?? ""}
+              value={activePreset?.path ?? path}
               onChange={(e) => setPath(e.target.value)}
               className="mr-2 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
-              aria-label="ルートを選択"
+              aria-label="置き場を選択"
             >
-              {roots.map((r) => (
-                <option key={r} value={r}>{r}</option>
+              {presets.map((preset) => (
+                <option key={preset.path} value={preset.path}>{preset.label}</option>
               ))}
+              {!activePreset && <option value={path}>{path}</option>}
             </select>
           )}
           {crumbs.map((c, i) => (

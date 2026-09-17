@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from app.config import data_dir, get_config
+from app.config import codedev_dir, data_dir, get_config
 from app.security.paths import is_within, normalize
 
 
@@ -34,8 +34,61 @@ def _deny_roots() -> list[Path]:
     ]
 
 
+def addon_libraries() -> list[tuple[str, Path]]:
+    """導入済みAdd-onが生成物を置く場所を (ID, パス) で返す。
+
+    MediaForgeもSonicForgeも、作ったものをfeature-dataの下へ置く。開けるのは
+    assetsの下だけにする。feature-dataごと開けると、モデルの重み・実行状態・
+    credentials.jsonまで一緒に読めてしまう。置き場の形は版で変わるので両方見る。
+
+    導入されていないAdd-onの置き場は返さない。アンインストール後に残った
+    ディレクトリまで開けたままにしないため。
+    """
+    from app.addons import registry
+
+    base = data_dir() / "feature-data"
+    if not base.is_dir():
+        return []
+    rows: list[tuple[str, Path]] = []
+    for addon_id in sorted(registry.installed_ids()):
+        for candidate in (base / addon_id / "data" / "assets", base / addon_id / "assets"):
+            if candidate.is_dir():
+                rows.append((addon_id, candidate.resolve()))
+                break
+    return rows
+
+
+def addon_library_roots() -> list[Path]:
+    return [path for _, path in addon_libraries()]
+
+
 def allowed_roots() -> list[Path]:
-    return [normalize(r) for r in get_config().files.allowed_roots]
+    return [normalize(r) for r in get_config().files.allowed_roots] + addon_library_roots()
+
+
+def presets() -> list[dict]:
+    """ファイルマネージャーの開始位置。
+
+    許可ルートを全部並べると、モデル置き場やリポジトリ本体まで毎回選択肢に出て
+    携帯では読めない。普段開く置き場（CodeDEVと導入済みAdd-onのライブラリ）だけを
+    出す。許可ルート自体は絞らないので、ここに無い場所へもパス指定では届く。
+    """
+    from app.addons import registry
+
+    roots = allowed_roots()
+    rows: list[dict] = []
+    codedev = codedev_dir().resolve()
+    if any(is_within(codedev, root) for root in roots):
+        rows.append({"id": "codedev", "label": "CodeDEV", "path": str(codedev)})
+    names = {manifest.id: manifest.name for manifest, _ in registry.manifests()}
+    for addon_id, library in addon_libraries():
+        rows.append({
+            "id": addon_id,
+            "label": f"{names.get(addon_id, addon_id)} ライブラリ",
+            "path": str(library),
+        })
+    # CodeDEVもAdd-onも無い環境（テスト用configなど）で選択肢を空にしない。
+    return rows or [{"id": str(root), "label": root.name or str(root), "path": str(root)} for root in roots]
 
 
 def resolve(path: str, *, must_exist: bool = True) -> Path:
