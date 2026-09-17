@@ -37,6 +37,20 @@ const AUDIO_EXT = /\.(mp3|m4a|aac|wav|flac|oga|ogg|opus)$/i;
 const VIDEO_EXT = /\.(mp4|m4v|webm|ogv|mov)$/i;
 const ARCHIVE_EXT = /\.(zip|tar\.gz|tgz)$/i;
 
+interface ArchiveInspection {
+  path: string;
+  format: string;
+  entries: number;
+  bytes: number;
+  top_level: string[];
+  single_root: string | null;
+}
+
+/** 取り込み中のアーカイブは隠しファイル名で置き、展開後に片付ける。 */
+function stagingName(file: File) {
+  return `.cd-import-${file.size}-${file.name}`;
+}
+
 function isPreviewable(name: string) {
   return IMAGE_EXT.test(name) || PDF_EXT.test(name) || AUDIO_EXT.test(name) || VIDEO_EXT.test(name);
 }
@@ -59,7 +73,11 @@ export default function FilesPage() {
     | { kind: "copy" | "move"; entry: Entry }
     | null
   >(null);
+  const [importing, setImporting] = useState<
+    { archive: string; sourceName: string; inspection: ArchiveInspection } | null
+  >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectInputRef = useRef<HTMLInputElement>(null);
   const uploadAbort = useRef<AbortController | null>(null);
 
   const { data: roots } = useQuery({
@@ -129,6 +147,43 @@ export default function FilesPage() {
     uploadAbort.current = null;
     setUploading(null);
     refresh();
+  };
+
+  /** アーカイブを上げて中身を確認し、配置先を決める画面へ渡す。 */
+  const importProject = async (selected: FileList | null) => {
+    const file = selected?.[0];
+    if (!file) return;
+    if (!ARCHIVE_EXT.test(file.name)) {
+      show("zip / tar.gz / tgz を選択してください", "error");
+      return;
+    }
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    let archive: string | null = null;
+    try {
+      setUploading({ name: file.name, received: 0, total: file.size });
+      archive = await apiUpload(
+        path, file, true,
+        (received) => setUploading({ name: file.name, received, total: file.size }),
+        controller.signal, stagingName(file),
+      );
+      const inspection = await api<ArchiveInspection>("/files/archive/inspect", {
+        method: "POST", json: { archive },
+      });
+      setImporting({ archive, sourceName: file.name, inspection });
+    } catch (e) {
+      if (archive) await discardStaged(archive);
+      show(
+        controller.signal.aborted
+          ? `${file.name} のアップロードを中止しました`
+          : e instanceof Error ? e.message : "取り込みに失敗しました",
+        controller.signal.aborted ? "info" : "error",
+      );
+    } finally {
+      uploadAbort.current = null;
+      setUploading(null);
+      refresh();
+    }
   };
 
   const openEntry = (e: Entry) => {
@@ -218,7 +273,10 @@ export default function FilesPage() {
           items={[
             { label: showHidden ? "隠しファイルを隠す" : "隠しファイルを表示", onSelect: () => setShowHidden(!showHidden) },
             ...(can("files.edit")
-              ? [{ label: "New Folder", onSelect: () => setDialog({ kind: "mkdir" }) }]
+              ? [
+                  { label: "New Folder", onSelect: () => setDialog({ kind: "mkdir" }) },
+                  { label: "プロジェクトを展開して配置", onSelect: () => projectInputRef.current?.click() },
+                ]
               : []),
             { label: "Trash", onSelect: () => setTrashOpen(true) },
             { label: "Refresh", onSelect: refresh },
@@ -326,6 +384,16 @@ export default function FilesPage() {
               e.target.value = "";
             }}
           />
+          <input
+            ref={projectInputRef}
+            type="file"
+            accept=".zip,.gz,.tgz,application/zip,application/gzip"
+            className="hidden"
+            onChange={(e) => {
+              importProject(e.target.files);
+              e.target.value = "";
+            }}
+          />
         </>
       )}
 
@@ -349,6 +417,25 @@ export default function FilesPage() {
           onDone={() => {
             setArchiveDialog(null);
             refresh();
+          }}
+        />
+      )}
+      {importing && (
+        <ImportProjectDialog
+          archive={importing.archive}
+          sourceName={importing.sourceName}
+          inspection={importing.inspection}
+          currentPath={path}
+          onClose={async () => {
+            const staged = importing.archive;
+            setImporting(null);
+            await discardStaged(staged);
+            refresh();
+          }}
+          onDone={(placed) => {
+            setImporting(null);
+            refresh();
+            setPath(placed);
           }}
         />
       )}
@@ -526,11 +613,114 @@ function ArchiveDialog({
   );
 }
 
+/** 取り込み用に置いたアーカイブを消す。失敗しても本処理は止めない。 */
+async function discardStaged(archive: string) {
+  await api(`/files?path=${encodeURIComponent(archive)}&permanent=true`, { method: "DELETE" })
+    .catch(() => undefined);
+}
+
+function ImportProjectDialog({
+  archive,
+  sourceName,
+  inspection,
+  currentPath,
+  onClose,
+  onDone,
+}: {
+  archive: string;
+  sourceName: string;
+  inspection: ArchiveInspection;
+  currentPath: string;
+  onClose: () => void;
+  onDone: (placedPath: string) => void;
+}) {
+  const show = useToasts((state) => state.show);
+  const root = inspection.single_root;
+  const [folder, setFolder] = useState(root ?? archiveBaseName(sourceName));
+  const [stripRoot, setStripRoot] = useState(root !== null);
+  const [keepArchive, setKeepArchive] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const destination = `${currentPath}/${folder.trim()}`;
+  const invalidName = folder.trim() === "" || /[/\\]/.test(folder.trim()) || [".", ".."].includes(folder.trim());
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      await api("/files/extract", {
+        method: "POST",
+        json: { archive, destination, strip_root: stripRoot },
+      });
+      if (keepArchive) {
+        try {
+          await api("/files/rename", { method: "PATCH", json: { path: archive, new_name: sourceName } });
+        } catch {
+          show(`展開しました。アーカイブは ${archive.split("/").pop()} のまま残しました`, "info");
+          onDone(destination);
+          return;
+        }
+      } else {
+        await discardStaged(archive);
+      }
+      show(`${folder.trim()} に配置しました（${inspection.entries.toLocaleString()} 項目）`);
+      onDone(destination);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "展開に失敗しました", "error");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <BottomSheet title="プロジェクトを展開して配置" onClose={onClose}>
+      <dl className="mb-3 space-y-2 text-sm">
+        <InfoRow k="ファイル" v={sourceName} />
+        <InfoRow k="形式" v={inspection.format} />
+        <InfoRow k="項目数" v={`${inspection.entries.toLocaleString()} 件 / ${formatBytes(inspection.bytes)}`} />
+        <InfoRow k="直下" v={inspection.top_level.slice(0, 5).join(", ") + (inspection.top_level.length > 5 ? " …" : "")} />
+      </dl>
+      <label className="block text-sm">
+        <span className="mb-1 block text-xs text-zinc-500">配置先フォルダ名</span>
+        <input
+          aria-label="配置先フォルダ名"
+          value={folder}
+          onChange={(event) => setFolder(event.target.value)}
+          className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        />
+      </label>
+      <p className="mt-1 break-all text-xs text-zinc-500">{destination}</p>
+      {root && (
+        <label className="mt-3 flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={stripRoot} onChange={(event) => setStripRoot(event.target.checked)} className="mt-1" />
+          <span>
+            アーカイブ直下の「{root}」フォルダを取り除く
+            <span className="block text-xs text-zinc-500">{folder.trim() || "フォルダ"}/{root}/… の二重階層を避けます</span>
+          </span>
+        </label>
+      )}
+      <label className="mt-2 flex items-start gap-2 text-sm">
+        <input type="checkbox" checked={keepArchive} onChange={(event) => setKeepArchive(event.target.checked)} className="mt-1" />
+        <span>
+          アーカイブも残す
+          <span className="block text-xs text-zinc-500">残さない場合、展開後に削除します</span>
+        </span>
+      </label>
+      <p className="mt-3 text-xs text-zinc-500">既存フォルダへは配置しません。リンク・特殊ファイル・危険な展開パスは拒否します。</p>
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} disabled={busy} className="min-h-11 rounded-xl px-4 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800">キャンセル</button>
+        <button onClick={run} disabled={busy || invalidName} className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
+          {busy ? "展開中..." : "配置する"}
+        </button>
+      </div>
+    </BottomSheet>
+  );
+}
+
 async function apiUpload(
   directory: string, file: File, overwrite = false,
   onProgress: (received: number) => void, signal: AbortSignal,
-): Promise<void> {
-  const resumeKey = `cd-upload:${directory}:${file.name}:${file.size}:${file.lastModified}`;
+  filename = file.name,
+): Promise<string> {
+  const resumeKey = `cd-upload:${directory}:${filename}:${file.size}:${file.lastModified}`;
   let uploadId = localStorage.getItem(resumeKey);
   let received = 0;
   if (uploadId) {
@@ -542,7 +732,7 @@ async function apiUpload(
   }
   if (!uploadId) {
     const created = await api<{ id: string }>("/files/uploads", {
-      method: "POST", json: { directory, filename: file.name, size: file.size, overwrite }, signal,
+      method: "POST", json: { directory, filename, size: file.size, overwrite }, signal,
     });
     uploadId = created.id;
     localStorage.setItem(resumeKey, uploadId);
@@ -558,8 +748,9 @@ async function apiUpload(
       received = result.received;
       onProgress(received);
     }
-    await api(`/files/uploads/${uploadId}/complete`, { method: "POST", signal });
+    const done = await api<{ path: string }>(`/files/uploads/${uploadId}/complete`, { method: "POST", signal });
     localStorage.removeItem(resumeKey);
+    return done.path;
   } catch (e) {
     if (signal.aborted && uploadId) {
       await api(`/files/uploads/${uploadId}`, { method: "DELETE" }).catch(() => undefined);

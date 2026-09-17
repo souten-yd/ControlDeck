@@ -249,6 +249,11 @@ class ArchiveCreateBody(BaseModel):
 class ArchiveExtractBody(BaseModel):
     archive: str
     destination: str
+    strip_root: bool = False
+
+
+class ArchiveInspectBody(BaseModel):
+    archive: str
 
 
 @router.post("/archive")
@@ -264,15 +269,23 @@ def create_archive(
     return {"ok": True, **result.__dict__}
 
 
+@router.post("/archive/inspect")
+def inspect_archive(body: ArchiveInspectBody, user: User = Depends(require_permission("files.view"))):
+    """展開前に中身を確認する。配置先名と単一フォルダ除去の可否をUIへ返す。"""
+    return _wrap(archives.inspect, body.archive).__dict__
+
+
 @router.post("/extract")
 def extract_archive(
     body: ArchiveExtractBody, request: Request,
     user: User = Depends(require_permission("files.edit")), db: Session = Depends(get_db),
 ):
-    result = _wrap(archives.extract, body.archive, body.destination)
+    result = _wrap(archives.extract, body.archive, body.destination, body.strip_root)
     audit.record(
         db, "files.archive_extract", user=user, resource_type="file", resource_id=body.archive,
-        request=request, metadata={"to": result.path, "format": result.format, "entries": result.entries, "bytes": result.bytes},
+        request=request,
+        metadata={"to": result.path, "format": result.format, "entries": result.entries,
+                  "bytes": result.bytes, "strip_root": body.strip_root},
     )
     return {"ok": True, **result.__dict__}
 
