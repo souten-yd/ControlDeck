@@ -331,3 +331,83 @@ def test_media_preview_supports_range_and_rejects_unsafe_inline_type(admin_clien
     unsafe = _sandbox / "unsafe-preview.html"
     unsafe.write_text("<script>alert(1)</script>", encoding="utf-8")
     assert admin_client.get(f"/api/v1/files/preview?path={unsafe}").status_code == 415
+
+
+def test_archive_inspect_reports_single_root_for_project_zip(admin_client):
+    """AIが出力するzipは直下が1フォルダ。配置先名をそこから決められること。"""
+    archive = _sandbox / "project-export.zip"
+    with zipfile.ZipFile(archive, "w") as packed:
+        packed.writestr("MyProject/README.md", "# MyProject")
+        packed.writestr("MyProject/src/main.py", "print('hi')")
+
+    response = admin_client.post(
+        "/api/v1/files/archive/inspect", json={"archive": str(archive)}, headers=CSRF_HEADERS
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["format"] == "zip"
+    assert body["entries"] == 2
+    assert body["top_level"] == ["MyProject"]
+    assert body["single_root"] == "MyProject"
+
+
+def test_archive_inspect_reports_no_single_root_for_flat_archive(admin_client):
+    archive = _sandbox / "flat-export.zip"
+    with zipfile.ZipFile(archive, "w") as packed:
+        packed.writestr("README.md", "# flat")
+        packed.writestr("main.py", "print('hi')")
+
+    body = admin_client.post(
+        "/api/v1/files/archive/inspect", json={"archive": str(archive)}, headers=CSRF_HEADERS
+    ).json()
+    assert body["single_root"] is None
+    assert body["top_level"] == ["README.md", "main.py"]
+
+
+def test_archive_inspect_rejects_broken_archive(admin_client):
+    broken = _sandbox / "broken.zip"
+    broken.write_bytes(b"not a zip at all")
+    response = admin_client.post(
+        "/api/v1/files/archive/inspect", json={"archive": str(broken)}, headers=CSRF_HEADERS
+    )
+    assert response.status_code == 403
+
+
+def test_extract_with_strip_root_places_contents_without_doubling(admin_client):
+    """Project/Project/… にならずに配置されること。"""
+    archive = _sandbox / "strip-project.zip"
+    with zipfile.ZipFile(archive, "w") as packed:
+        packed.writestr("MyProject/", "")
+        packed.writestr("MyProject/README.md", "# MyProject")
+        packed.writestr("MyProject/src/main.py", "print('hi')")
+
+    destination = _sandbox / "placed-project"
+    response = admin_client.post(
+        "/api/v1/files/extract",
+        json={"archive": str(archive), "destination": str(destination), "strip_root": True},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert (destination / "README.md").read_text(encoding="utf-8") == "# MyProject"
+    assert (destination / "src" / "main.py").read_text(encoding="utf-8") == "print('hi')"
+    assert not (destination / "MyProject").exists()
+
+
+def test_extract_with_strip_root_rejects_multi_root_archive(admin_client):
+    archive = _sandbox / "multi-root.tar.gz"
+    with tarfile.open(archive, "w:gz") as packed:
+        for name in ("a/one.txt", "b/two.txt"):
+            data = b"x"
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            packed.addfile(info, io.BytesIO(data))
+
+    destination = _sandbox / "multi-root-out"
+    response = admin_client.post(
+        "/api/v1/files/extract",
+        json={"archive": str(archive), "destination": str(destination), "strip_root": True},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 403
+    assert not destination.exists()
+    assert not any(destination.parent.glob(".control-deck-extract-*"))

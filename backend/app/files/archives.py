@@ -10,7 +10,7 @@ import tarfile
 import uuid
 import zipfile
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from app.config import get_config
@@ -32,6 +32,16 @@ class ArchiveResult:
     entries: int
     bytes: int
     format: str
+
+
+@dataclass(frozen=True)
+class ArchiveInspection:
+    path: str
+    format: str
+    entries: int
+    bytes: int
+    top_level: list[str]
+    single_root: str | None
 
 
 @dataclass(frozen=True)
@@ -295,7 +305,63 @@ def _extract_rows(rows: list[_ExtractEntry], temporary: Path, opener) -> None:
         directory.chmod(directory_modes.get(directory, 0o755))
 
 
-def extract(archive_path: str, destination_path: str) -> ArchiveResult:
+def _top_level(name: str) -> str:
+    return PurePosixPath(name).parts[0]
+
+
+def _single_root(rows: list[_ExtractEntry]) -> str | None:
+    """全項目が1つの同じdirectory配下にあるならその名前を返す。"""
+    tops = {_top_level(row.name) for row in rows}
+    if len(tops) != 1:
+        return None
+    root = tops.pop()
+    if not any(len(PurePosixPath(row.name).parts) > 1 for row in rows):
+        return None
+    return root
+
+
+def _strip_single_root(rows: list[_ExtractEntry]) -> list[_ExtractEntry]:
+    """配置時にProject/Project/…と二重にならないよう直下の単一folderを外す。"""
+    if _single_root(rows) is None:
+        raise files.FileAccessError("アーカイブ直下が単一フォルダではないため取り除けません")
+    stripped = [
+        replace(row, name="/".join(PurePosixPath(row.name).parts[1:]))
+        for row in rows
+        if len(PurePosixPath(row.name).parts) > 1
+    ]
+    if not stripped:
+        raise files.FileAccessError("展開できる項目がありません")
+    return stripped
+
+
+def _read_entries(source: Path, fmt: str, reader):
+    """zip／tarを開いて項目一覧と本体を渡す。壊れたarchiveはここで判定する。"""
+    try:
+        if fmt == "zip":
+            with zipfile.ZipFile(source, "r") as archive:
+                return reader(_zip_entries(archive), archive.open)
+        with tarfile.open(source, "r:gz") as archive:
+            return reader(_tar_entries(archive), archive.extractfile)
+    except (zipfile.BadZipFile, tarfile.TarError, EOFError, RuntimeError) as exc:
+        raise files.FileAccessError("アーカイブが壊れているか対応形式ではありません") from exc
+
+
+def inspect(archive_path: str) -> ArchiveInspection:
+    """展開せずに中身を数える。配置先の名前と単一folder除去の可否を決めるため。"""
+    source = files.resolve(archive_path)
+    if not source.is_file():
+        raise files.FileAccessError("アーカイブファイルを指定してください")
+    fmt = _archive_format(source)
+
+    def read(rows: list[_ExtractEntry], _opener) -> ArchiveInspection:
+        total = _validate_totals(rows, source.stat().st_size)
+        tops = sorted({_top_level(row.name) for row in rows})
+        return ArchiveInspection(str(source), fmt, len(rows), total, tops[:100], _single_root(rows))
+
+    return _read_entries(source, fmt, read)
+
+
+def extract(archive_path: str, destination_path: str, strip_root: bool = False) -> ArchiveResult:
     source = files.resolve(archive_path)
     if not source.is_file():
         raise files.FileAccessError("アーカイブファイルを指定してください")
@@ -307,24 +373,18 @@ def extract(archive_path: str, destination_path: str) -> ArchiveResult:
     fmt = _archive_format(source)
     temporary = destination.parent / f".control-deck-extract-{uuid.uuid4().hex}.tmp"
     temporary.mkdir(mode=0o700)
-    try:
-        if fmt == "zip":
-            with zipfile.ZipFile(source, "r") as archive:
-                rows = _zip_entries(archive)
-                total = _validate_totals(rows, source.stat().st_size)
-                _ensure_free_space(destination.parent, total)
-                _extract_rows(rows, temporary, archive.open)
-        else:
-            with tarfile.open(source, "r:gz") as archive:
-                rows = _tar_entries(archive)
-                total = _validate_totals(rows, source.stat().st_size)
-                _ensure_free_space(destination.parent, total)
-                _extract_rows(rows, temporary, archive.extractfile)
+
+    def run(rows: list[_ExtractEntry], opener) -> ArchiveResult:
+        if strip_root:
+            rows = _strip_single_root(rows)
+        total = _validate_totals(rows, source.stat().st_size)
+        _ensure_free_space(destination.parent, total)
+        _extract_rows(rows, temporary, opener)
         _publish_noreplace(temporary, destination)
-    except (zipfile.BadZipFile, tarfile.TarError, EOFError, RuntimeError) as exc:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise files.FileAccessError("アーカイブが壊れているか対応形式ではありません") from exc
+        return ArchiveResult(str(destination), len(rows), total, fmt)
+
+    try:
+        return _read_entries(source, fmt, run)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return ArchiveResult(str(destination), len(rows), total, fmt)

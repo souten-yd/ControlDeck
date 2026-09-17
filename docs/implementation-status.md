@@ -1,6 +1,45 @@
 # 実装状況
 
-最終更新: 2026-09-13
+最終更新: 2026-09-18
+
+## Files: プロジェクトアーカイブの取り込み（2026-09-18）
+
+フロンティアAI（Claude／Codex等）が出力したプロジェクトをzip／tar.gzのまま
+FileManagerへ渡し、展開して配置できるようにした。三点リーダーメニューの
+「プロジェクトを展開して配置」から、アーカイブ選択 → 内容確認 → 配置の2ステップで完結する。
+
+- backend `app/files/archives.py` に `inspect()` を追加。展開せずに形式・項目数・
+  展開後サイズ・直下の項目・単一ルートfolder名を返す。既存の項目検査（traversal、
+  symlink／特殊file、重複path、階層競合、圧縮率）をそのまま通すので、壊れたarchiveと
+  危険なarchiveはここで落ちる。`POST /api/v1/files/archive/inspect`（`files.view`）。
+- `extract()` に `strip_root` を追加。全項目が同じ1つのfolder配下にあるときだけ
+  その階層を外す。AIが出すzipは直下が`MyProject/`なので、これがないと
+  `MyProject/MyProject/…` と二重になる。単一rootでなければ展開前に拒否し、
+  一時ディレクトリを残さない。既存の`POST /files/extract`へ`strip_root`（既定false）を追加。
+- 展開処理はzip／tarのopenを`_read_entries()`へ集約した。inspectとextractで
+  壊れたarchiveの判定が二重にならないようにするため。
+- frontend `pages/Files.tsx`: アーカイブは`.cd-import-<size>-<名前>`という隠しfile名で
+  現在のフォルダへ再開可能uploadし、一覧を汚さない。展開後は既定で削除し、
+  「アーカイブも残す」を選べば元の名前へrenameする。キャンセル時も片付ける。
+  ダイアログは配置先folder名（単一root名を初期値）、単一root除去、archive保持を出す。
+  `apiUpload()`が保存名の上書きと確定pathの返却に対応した。
+
+実行証拠:
+
+- `backend pytest -q`（全体）: 1133 passed / 1 failed / 2 skipped、96.30秒。
+  failureは既知flakyの`test_jobs_persistence.py::test_two_exclusive_resource_jobs_execute_serially`。
+- `tests/test_files_api.py` へ5件追加（単一root検出、平坦archiveでの非検出、壊れたarchiveの403、
+  strip_rootの二重階層回避、複数rootのstrip_root拒否＋一時dir非残留）。
+  同fileの`test_viewer_cannot_write`はfile単位実行だと差分なしのHEAD worktreeでも同じく失敗する。
+- `frontend npm run build`: exit0。`npx tsc --noEmit`: exit0。
+- 稼働Hostで実データ設定（`CONTROL_DECK_CONFIG=config/config.yaml`）から
+  `archives.inspect`／`extract`を直接実行し、`/data1tb/ControlDeck/CodeDEV`配下で
+  単一root検出とstrip_root配置を確認、検証用ディレクトリは削除済み。
+- `./deck.sh`で再起動後、`/api/v1/health` 200、
+  未認証`POST /api/v1/files/archive/inspect` 401（routeは登録済み、認証を迂回していない）。
+
+NOT TESTED: ブラウザからの実UI操作（PC幅／320px幅）とcookie認証経路でのupload〜配置。
+adminパスワードを持たないため利用者による確認が要る。
 
 ## Add-on AI request-local thinking control candidate（2026-09-13）
 
