@@ -3,6 +3,8 @@ import stat
 import tarfile
 import zipfile
 
+import pytest
+
 from tests.conftest import CSRF_HEADERS, _sandbox
 
 
@@ -411,3 +413,66 @@ def test_extract_with_strip_root_rejects_multi_root_archive(admin_client):
     assert response.status_code == 403
     assert not destination.exists()
     assert not any(destination.parent.glob(".control-deck-extract-*"))
+
+
+@pytest.fixture()
+def addon_library(monkeypatch, tmp_path):
+    """導入済みAdd-onと、その生成物置き場を持つ隔離されたdata_dirを作る。"""
+    from app.addons import registry
+    from app.addons.schema import parse_manifest
+    from app.files import service as files
+    from tests.test_addon_contract import addon_manifest
+
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(files, "data_dir", lambda: tmp_path / "data")
+    codedev = _sandbox / "preset-codedev"
+    codedev.mkdir(exist_ok=True)
+    monkeypatch.setattr(files, "codedev_dir", lambda: codedev)
+    registry.reset_runtime_state_for_tests()
+
+    assets = tmp_path / "data" / "feature-data" / "fake-addon" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "generated.wav").write_bytes(b"RIFF")
+    secrets = tmp_path / "data" / "feature-data" / "fake-addon" / "credentials.json"
+    secrets.write_text("{}", encoding="utf-8")
+
+    def install() -> None:
+        registry.install(parse_manifest(addon_manifest()))
+
+    return install, codedev, assets, secrets
+
+
+def test_presets_list_codedev_and_installed_addon_libraries(admin_client, addon_library):
+    install, codedev, assets, _ = addon_library
+    install()
+
+    presets = admin_client.get("/api/v1/files/presets").json()
+    assert [row["path"] for row in presets] == [str(codedev), str(assets)]
+    assert presets[0]["label"] == "CodeDEV"
+    assert presets[1]["id"] == "fake-addon"
+    assert presets[1]["label"].endswith("ライブラリ")
+    # プリセットは許可ルートの一覧ではない。許可ルート自体は絞らない。
+    roots = admin_client.get("/api/v1/files/roots").json()
+    assert str(_sandbox) in roots
+    assert str(_sandbox) not in [row["path"] for row in presets]
+
+
+def test_addon_library_is_hidden_and_closed_until_the_addon_is_installed(admin_client, addon_library):
+    _, _, assets, _ = addon_library
+
+    presets = admin_client.get("/api/v1/files/presets").json()
+    assert str(assets) not in [row["path"] for row in presets]
+    assert str(assets) not in admin_client.get("/api/v1/files/roots").json()
+    assert admin_client.get(f"/api/v1/files/list?path={assets}").status_code == 403
+
+
+def test_installed_addon_opens_assets_only_not_the_rest_of_its_data(admin_client, addon_library):
+    install, _, assets, secrets = addon_library
+    install()
+
+    listed = admin_client.get(f"/api/v1/files/list?path={assets}")
+    assert listed.status_code == 200, listed.text
+    assert [entry["name"] for entry in listed.json()["entries"]] == ["generated.wav"]
+    # モデルの重み・実行状態・資格情報が入る親は開けない。
+    assert admin_client.get(f"/api/v1/files/list?path={secrets.parent}").status_code == 403
+    assert admin_client.get(f"/api/v1/files/download?path={secrets}").status_code == 403

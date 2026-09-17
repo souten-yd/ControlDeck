@@ -38,6 +38,12 @@ def roots(user: User = Depends(require_permission("files.view"))):
     return [str(r) for r in files.allowed_roots()]
 
 
+@router.get("/presets")
+def presets(user: User = Depends(require_permission("files.view"))):
+    """ファイルマネージャーの開始位置。許可ルート全部ではない（`/roots` を参照）。"""
+    return files.presets()
+
+
 @router.get("/list")
 def list_dir(path: str, user: User = Depends(require_permission("files.view"))):
     return _wrap(files.list_dir, path)
