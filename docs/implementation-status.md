@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-09-23 OpenCode endpoint監視の同期待機を修正中
+
+実Hostのstall stackが定期監視→feature status→同期version実行で停止し、30秒watchdogで再起動。
+Gatewayの不要な照会を省き、直結時の設定/feature/session/instance照会をthreadへ移す。
+同じidle監視の同期I/Oも分離。関連38tests通過、隔離実HTTPで4秒待つversion照会2回中も
+81health応答/8.072229秒、最大1.253ms。実モデル起動はstub。
+初回全体1173pass/2fail/2skip。worktreeのdist参照を補った後、1174pass/1fail/2skip。
+既存Job testのloop終了が未完のslot解放を取消していたためhelperで終端taskをawait。
+assertion/製品Jobは変更せず、対象23testsを通過。最終全1175pass/2skip/1warning/105.71秒、exit0。
+installed/再起動なしの継続観測はNOT TESTED。[詳細](opencode-revive-nonblocking-20260923.md)。
+
 ## 2026-09-23 実OpenCodeのモバイル明示停止を受入
 
 PR341/e34c7caを通常導入、PID486604/health ok。開始時刻/実行IDで停止対象を識別。

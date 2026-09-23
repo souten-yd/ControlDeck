@@ -100,7 +100,8 @@ def test_revive_skips_when_opencode_goes_through_the_gateway(monkeypatch):
 
     from app.models_mgmt import llama
 
-    monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: True)
+    probes = []
+    monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: probes.append(feature_id) or True)
     monkeypatch.setattr(
         "app.integrations.opencode.provider.get_settings",
         lambda: {"base_url": "http://127.0.0.1:8765/api/v1/llm/v1", "model": "auto",
@@ -112,6 +113,56 @@ def test_revive_skips_when_opencode_goes_through_the_gateway(monkeypatch):
 
     monkeypatch.setattr(llama, "_opencode_session_uses", _fail)
     asyncio.run(llama._revive_endpoint_for_opencode(1800))
+    assert probes == []
+
+
+@pytest.mark.parametrize("probe", ["settings", "feature", "sessions", "instances"])
+def test_revive_slow_state_probe_does_not_block_other_requests(monkeypatch, probe):
+    import asyncio
+    import threading
+
+    from app.models_mgmt import llama
+
+    entered = threading.Event()
+    release = threading.Event()
+    observed = []
+    revived = []
+
+    def slow(value):
+        entered.set()
+        observed.append(release.wait(2))
+        return value
+
+    settings = {"base_url": "http://127.0.0.1:8090/v1"}
+    monkeypatch.setattr("app.integrations.opencode.provider.get_settings",
+                        lambda: slow(settings) if probe == "settings" else settings)
+    monkeypatch.setattr("app.integrations.opencode.provider.resolve_backend_port", lambda: 8090)
+    monkeypatch.setattr("app.features.registry.opencode_enabled",
+                        lambda: slow(True) if probe == "feature" else True)
+    monkeypatch.setattr(llama, "_opencode_session_uses",
+                        lambda *a, **k: slow(True) if probe == "sessions" else True)
+    monkeypatch.setattr(llama, "list_instances", lambda: slow([]) if probe == "instances" else [])
+
+    async def ready(url):
+        revived.append(url)
+
+    monkeypatch.setattr(llama, "ensure_ready_by_base_url", ready)
+
+    async def run():
+        task = asyncio.create_task(llama._revive_endpoint_for_opencode(1800))
+        try:
+            while not entered.is_set():
+                await asyncio.sleep(.001)
+            # This heartbeat must run before the blocking probe times out.
+            release.set()
+            await task
+        finally:
+            release.set()
+            await task
+
+    asyncio.run(run())
+    assert observed == [True]
+    assert revived == ["http://127.0.0.1:8090/v1"]
 
 
 def test_revive_starts_the_resolved_port_when_connected_directly(monkeypatch):

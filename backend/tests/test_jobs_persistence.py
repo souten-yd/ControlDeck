@@ -8,7 +8,22 @@ from app.jobs import service as jobs
 
 
 def _run(coro):
-    return asyncio.run(coro)
+    async def run_and_finish_writes():
+        try:
+            return await coro
+        finally:
+            # Terminal status precedes the final DB write and runner-slot
+            # release. Closing this per-test loop at that point cancels cleanup
+            # and leaks the process-global slot count into the next test.
+            loop = asyncio.get_running_loop()
+            tasks = [task for job in list(jobs._jobs.values())
+                     if job.status not in {"queued", "running"}
+                     for task in (job.task, job.resource_task)
+                     if task is not None and task.get_loop() is loop and not task.done()]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    return asyncio.run(run_and_finish_writes())
 
 
 def test_job_persisted_to_db(client):
