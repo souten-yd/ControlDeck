@@ -1,6 +1,6 @@
 # 実装状況
 
-## 2026-09-23 OpenCode endpoint監視の同期待機を修正中
+## 2026-09-23 OpenCode endpoint監視修正を通常導入
 
 実Hostのstall stackが定期監視→feature status→同期version実行で停止し、30秒watchdogで再起動。
 Gatewayの不要な照会を省き、直結時の設定/feature/session/instance照会をthreadへ移す。
@@ -9,7 +9,12 @@ Gatewayの不要な照会を省き、直結時の設定/feature/session/instance
 初回全体1173pass/2fail/2skip。worktreeのdist参照を補った後、1174pass/1fail/2skip。
 既存Job testのloop終了が未完のslot解放を取消していたためhelperで終端taskをawait。
 assertion/製品Jobは変更せず、対象23testsを通過。最終全1175pass/2skip/1warning/105.71秒、exit0。
-installed/再起動なしの継続観測はNOT TESTED。[詳細](opencode-revive-nonblocking-20260923.md)。
+PR343/e3d374aをroot mainへ通常deck.shで適用、PID604536→674922/health ok。
+実OpenCode unit/HostとAdd-onのactive Job/leaseが0の時点で更新し、設定/frontend/runtimeのhashを保持。
+更新後130秒（idle監視2周期）/65回のhealthは最大4.432ms、PID不変/NRestarts0。
+通常opaque iframeのLibraryで既存GLBと画像の表示/閉じる、GLB回転をPC1280/320pxで確認。
+横overflow0/pageerror0。物理電話/実LLM推論中の再起動越し継続はNOT TESTED。
+以後は記録のみ。追加モデル取得0。[詳細](opencode-revive-nonblocking-20260923.md)。
 
 ## 2026-09-23 実OpenCodeのモバイル明示停止を受入
 
