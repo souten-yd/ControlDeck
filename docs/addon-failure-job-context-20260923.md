@@ -1,6 +1,6 @@
 # Add-on agent失敗時のJob追跡
 
-Status: source HTTP/stdio/永続化と全体test受入。installed/実OpenCodeはNOT TESTED。
+Status: PR337 merge・通常ローカル起動、実OpenCode/MCP失敗追跡・PC/mobile表示を受入。
 Branch: fix/addon-failure-job-context。基準ea72128。
 
 商店街の実MCP要求が処理開始後に失敗すると、受理済みJob IDが失われ、呼ぶ側が
@@ -43,3 +43,27 @@ Host DB/user/keyは隔離した試験用で、稼働Hostの認証・データを
 
 report.jsonと各process logを保存。所有3サービスは試験後に終了、fixture tokenは削除。
 モデル取得/推論0。実稼働更新・実OpenCode/新error表示の受入は次段。
+
+## ローカル適用と実MCP受入
+
+PR337 merge 786e76c6ac7251b54023fdd62d1a0bd2432d8fd4を実root mainへfast-forward。
+全Host queued/running Job0、実OpenCode unit0、Broker reserved/active lease0を確認。
+DB snapshot後に通常./deck.shを実行しPID98636→394222、health ok。
+frontend/dist/index.htmlとllama-runtime.jsonのhash不変。モデル取得0。
+対応Add-onは署名MediaForge0.33.18を通常Feature更新、既存1585assetsを保持。
+
+通常operator sessionでOpenCode/Qwen3.8-27B Jobace32c6b7a89を実行しsucceeded。
+session ses_f33364de4ffeXPSfRswmoIJ4Eyは意図的unsupported packを公開MCPで1回だけ呼んだ。
+tool自体はerrorでunsupported_pack_profile、Host94bde79e1799、
+upstream job_0fe3e640c9c341b0a2c3ded01c01402b、status failedがLLMへ届いた。
+通常同一operatorのJobs HTTPから同Host Job failed/result.errorを取得し、両ID/code/status一致。
+Add-on側も同一failed Job/asset_ids=[]。元Asset metadata/content SHA不変、再送0。
+OpenCode runの成功は期待した失敗を処理した結果で、失敗Jobを成功へ変えていない。
+現行Add-on media.job.statusはscene用なので、packの同tool照会は未検証。
+
+更新後の実Chrome/通常Project Labで1280/390/320pxを確認。
+全7実GLB、15配置のテクスチャ、PC移動、同時touch移動/視点変更、help、再読込が成功。
+横overflow0、page error/console warning/error0。実PC内蔵Radeonで59.971214fps/5.0024秒、
+物理電話はNOT TESTED。source全1150passed/2skipped/105.75秒から製品変更なし。
+証跡: MediaForge managed maintenance/release-0.33.18-20260923のhost-installed.json、
+host-street-acceptance.json/PNG、shopping-street-20260923のfailure-reference-independent.json。

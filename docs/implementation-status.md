@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-09-23 Add-on失敗Jobの実MCP・通常ブラウザ受入
+
+PR337/786e76cをroot mainへ適用し、全active Job/OpenCode unit/lease0でDB保存後に通常deck.sh。
+PID394222/health ok、frontendとllama-runtime設定のhash不変、モデル追加取得0。
+実OpenCode/Qwen Jobace32c6b7a89は意図的unsupported packを1回だけ要求して期待するtool error。
+Host94bde79e1799/upstream job_0fe3e640c9c341b0a2c3ded01c01402b/failedがLLMへ届き、
+通常認証付きJobs APIの保存errorと一致。再送0、元Asset不変、失敗Jobの成功化0。
+更新後の通常Project Labで1280/390/320px、7モデル/15画像付き配置、移動/視点/help/再読込を確認。
+PC実測59.971214fps、page error0、物理電話はNOT TESTED。以後の変更は文書のみ。
+詳細[受入記録](addon-failure-job-context-20260923.md)。
+
 ## 2026-09-23 Add-on agent失敗時のJob追跡（source受入）
 
 branch fix/addon-failure-job-context。MCP失敗時に受理済みJob IDが失われる問題を汎用Hostで修正。
