@@ -44,3 +44,33 @@ Host終了に連動する自動停止案は取り下げ、providerの起動/終�
 NOT TESTED（このsource時点）: installed通常画面/実OpenCodeの再起動越し継続、
 失われたstdoutの回収、物理携帯、chat.completion/workflowの同様の照合。
 既存の実行中メモリJob/TUIの動作を、このsource fixtureで実OpenCode受入したとはしない。
+
+## 31e3420 / PR340の通常導入と実OpenCode cold起動
+
+active Host Job0、cdfeature/cdapp双方の全状態unit0、active lease/waiting request0を確認。
+稼働DBの復旧用backup後、root mainへff-onlyして通常`./deck.sh`でfrontend build/起動。
+PID394222→456446、health ok。llama-runtime.jsonとPixal採用receiptのhash不変、追加モデル取得0。
+`opencode-recovery-installed/{update.log,installed.json}`。
+
+通常operator認証でOpenCode画面を開き、1280/320pxで実履歴25件・進行中の停止ボタン1個を確認。
+横overflow/page error0。旧interrupted Jobe67c69a17071はunit終了済みのため
+external_result_unavailableとなり、成功へ書き換えない。これは閲覧のみ（mutations0）。
+`browser.json`/`installed-{1280,320}.png`。停止の実行確認は上記source fixtureの証跡と区別する。
+
+停止中（loaded=false）のQwen3.8-27Bを通常OpenCode Job2291014cbcf0でcold起動。
+実session ses_f32fcf23cffecM4vaj4Dk0iWTg、77.058秒/succeeded。
+readツール2回だけでREADME.mdとacceptance-summary.mdを読み、要求した3行を回答。
+shell/MCP/別agent/編集0、Git clean。実Broker3要求が全てgranted、予約は
+30,979,147,560B/0B/0B、全3lease released、expired/retry0。
+`cold-{result,independent}.json`/`cold-resource-samples.jsonl`。
+これは実cold起動成功の証拠。lock前の要求到着時刻を採取していないため、
+以前の「2.021286秒差の同時cold要求」と同じ条件だと推測しない。
+
+## 同名の実行の識別（source追補）
+
+installedでOpenCode implement等の同じタイトルが並ぶことを目視した。
+開始時刻/実行IDを各行へ追加し、停止ボタンのaccessibility名と確認文にも同じIDを付ける。
+同じタイトルの3実systemd unitを使い、1280/320pxでIDに対応した2個だけを停止、
+controlは継続、最後に通常HTTPでcontrolを停止。overflow0/button44px/page error0。
+`opencode-run-identification-source/{report,browser}.json`。frontend build22.08秒。
+識別表示変更後の`./deck.sh test`も1171 passed / 2 skipped / 1 warning、106.87秒、exit0。

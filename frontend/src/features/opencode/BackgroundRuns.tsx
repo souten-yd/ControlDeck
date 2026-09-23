@@ -10,6 +10,7 @@ interface Run {
   kind: string;
   title: string;
   status: string;
+  created_at?: number | null;
   phase?: string | null;
   error: string;
   progress?: { status?: string };
@@ -65,10 +66,14 @@ export function BackgroundRuns() {
             const label = external ? run.progress?.status : labels[run.status] ?? run.status;
             return <li key={run.id} className="space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-900">
               <p className="break-words text-sm font-medium">{run.title || "OpenCode"}</p>
+              <p className="break-words text-xs text-zinc-500">
+                {run.created_at ? new Date(run.created_at * 1000).toLocaleString("ja-JP") : "開始時刻不明"}
+                <span className="block font-mono">実行 ID: {run.id}</span>
+              </p>
               <p className="break-words text-xs text-zinc-500">{label}</p>
               {run.error && <p className="break-words text-xs text-zinc-500">{run.error}</p>}
               {active && canStop && <button type="button" disabled={stop.isPending || query.isError}
-                aria-label={`${run.title || "OpenCode"} を停止`}
+                aria-label={`${run.title || "OpenCode"}（${run.id}）を停止`}
                 onClick={() => setStopping(run)}
                 className="min-h-11 rounded-lg border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-zinc-700">
                 停止
@@ -78,7 +83,7 @@ export function BackgroundRuns() {
         </ul>
       </div>}
       {stopping && <ConfirmDialog title="OpenCodeの実行を停止しますか？"
-        message={`「${stopping.title || "OpenCode"}」の処理を停止します。作成済みのファイルは削除しません。`}
+        message={`「${stopping.title || "OpenCode"}」（実行 ID: ${stopping.id}）を停止します。作成済みのファイルは削除しません。`}
         confirmLabel={stop.isPending ? "停止中…" : "停止する"}
         onConfirm={() => { if (!stop.isPending) stop.mutate(stopping.id); }} onClose={() => setStopping(null)} />}
     </details>
