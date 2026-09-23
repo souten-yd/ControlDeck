@@ -1669,3 +1669,21 @@ UX原則（§3）が docs に無いと、次の実装者が必ず policy 任せ�
 - `process_start_sec` / `model_load_sec` の実測値（Qwen3系・NVMe）
 - gfx1201 / ROCm 環境での VRAM 解放が unload 後に実際に返るか
   （ドライバによっては即座に返らないケースがある）
+
+## Agent tool失敗時の受理済みJob参照（2026-09-23）
+
+Add-onが処理を受理してからHTTPエラーを返した場合も、HostとAdd-onのJobを追跡可能にする。
+成功応答・公開tool引数・owner/RBACは変更しない。失敗Jobを成功に見せず、自動再送しない。
+
+- Add-onエラーのcodeは従来の短い符号に限定。任意message、path、credentialは透過しない。
+- 任意のjob_idは英数字で始まる1〜128文字のASCII英数字/underscore/hyphenだけを受理し、
+  upstream_job_idとして明確に区別する。既知statusはupstream_statusとして付けられる。
+- HostがJobを作成済みならHTTP/MCPエラーにもHost job_idを付ける。未受理時に捏造しない。
+- 失敗したHost Jobのresultには安全なerror/codeと追跡情報だけを保持し、asset_idは作らない。
+  statusはfailed/canceledのまま。generic Job永続化/権限検査をそのまま使う。
+- 待機timeoutはHost Job IDを保持する。上流ID/終端が不明なら推測しない。
+- stdio MCPのtools/callはisError=trueを維持し、bounded structuredContentとtextへ
+  code/job_id/upstream_job_id/upstream_statusを渡す。長い説明でもIDは切り落とさない。
+
+MediaForgeだけではHostのエラー変換で破棄される参照を復元できないため、汎用Host修正とする。
+Media固有のID接頭辞・モデル・API・依存は追加しない。

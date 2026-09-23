@@ -40,10 +40,28 @@ _WORKFLOW_INTERNAL_KEYS = {
 
 
 class AddonExecutionError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "addon_execution_failed", status_code: int = 502):
+    def __init__(
+        self, message: str, *, code: str = "addon_execution_failed", status_code: int = 502,
+        job_id: str | None = None, upstream_job_id: str | None = None,
+        upstream_status: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.job_id = _job_reference(job_id)
+        self.upstream_job_id = _job_reference(upstream_job_id)
+        self.upstream_status = (
+            upstream_status if self.upstream_job_id and isinstance(upstream_status, str)
+            and upstream_status in _UPSTREAM_JOB_STATES else None
+        )
+
+    def public_detail(self) -> dict[str, str]:
+        detail = {"code": self.code, "message": str(self)}
+        for name in ("job_id", "upstream_job_id", "upstream_status"):
+            value = getattr(self, name)
+            if value is not None:
+                detail[name] = value
+        return detail
 
 
 def _client(timeout: float) -> httpx.AsyncClient:
@@ -60,6 +78,12 @@ def _client(timeout: float) -> httpx.AsyncClient:
 # 丸ごと通さないのは、Add-on の内部事情（path、内部 ID、例外の文面）を呼び出し側へ
 # 流さないためである。形の決まった短い符号だけを通し、本文は通さない。
 _UPSTREAM_CODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+_OPAQUE_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+_UPSTREAM_JOB_STATES = frozenset({"queued", "running", "succeeded", "failed", "canceled"})
+
+
+def _job_reference(value: object) -> str | None:
+    return value if isinstance(value, str) and _OPAQUE_JOB_ID.fullmatch(value) else None
 
 
 def _upstream_error(response: httpx.Response) -> "AddonExecutionError":
@@ -69,6 +93,7 @@ def _upstream_error(response: httpx.Response) -> "AddonExecutionError":
     実行を別扱いしない——分からないことを分かったふりにしない。
     """
     code = ""
+    context: dict[str, Any] = {}
     try:
         body = json.loads(response.content[:RESPONSE_LIMIT_BYTES])
     except (json.JSONDecodeError, ValueError):
@@ -77,11 +102,13 @@ def _upstream_error(response: httpx.Response) -> "AddonExecutionError":
     for candidate in (detail, body):
         if isinstance(candidate, dict) and isinstance(candidate.get("code"), str):
             code = candidate["code"]
+            context = candidate
             break
     if not _UPSTREAM_CODE.fullmatch(code):
         return AddonExecutionError("拡張機能の実行に失敗しました", code="upstream_error")
     return AddonExecutionError(
         f"拡張機能の実行に失敗しました（{code}）", code=code,
+        upstream_job_id=context.get("job_id"), upstream_status=context.get("status"),
     )
 
 
@@ -664,12 +691,19 @@ async def create_agent_tool_job(
 
     async def runner(job) -> dict[str, Any]:
         job.log("Add-on agent toolを実行しています")
-        output = await invoke(
-            "agent_tools", addon_id, contribution_id,
-            {"input": arguments, "correlation": {"job_id": job.id}},
-            subject=f"job:{job.id}", actor_user_id=owner_user_id,
-            grant_ids=grant_ids, permissions=permissions,
-        )
+        try:
+            output = await invoke(
+                "agent_tools", addon_id, contribution_id,
+                {"input": arguments, "correlation": {"job_id": job.id}},
+                subject=f"job:{job.id}", actor_user_id=owner_user_id,
+                grant_ids=grant_ids, permissions=permissions,
+            )
+        except AddonExecutionError as exc:
+            exc.job_id = job.id
+            # The existing Job service persists this result while keeping failed
+            # status. It is diagnostic context, never a successful output asset.
+            job.result = {"error": exc.public_detail()}
+            raise
         return {
             "job_id": job.id,
             "asset_id": f"job-result:{job.id}",
@@ -711,6 +745,7 @@ async def wait_agent_tool_job(job: Any, *, timeout: float = EXECUTION_TIMEOUT_SE
         await jobs.cancel_and_wait(job.id)
         raise AddonExecutionError(
             "Add-on agent tool Jobがtimeoutしました", code="agent_tool_timeout", status_code=504,
+            job_id=job.id,
         ) from exc
     except asyncio.CancelledError:
         await jobs.cancel_and_wait(job.id)
@@ -718,8 +753,15 @@ async def wait_agent_tool_job(job: Any, *, timeout: float = EXECUTION_TIMEOUT_SE
     if job.task is not None and job.task is not asyncio.current_task():
         await asyncio.gather(job.task, return_exceptions=True)
     if job.status != "succeeded" or not isinstance(job.result, dict):
+        detail = job.result.get("error") if isinstance(job.result, dict) else None
+        detail = detail if isinstance(detail, dict) else {}
+        code = detail.get("code", job.error)
+        if not isinstance(code, str) or not _UPSTREAM_CODE.fullmatch(code):
+            code = "agent_tool_failed"
         raise AddonExecutionError(
-            "Add-on agent tool Jobが失敗しました", code=job.error or "agent_tool_failed", status_code=502,
+            "Add-on agent tool Jobが失敗しました", code=code, status_code=502,
+            job_id=job.id, upstream_job_id=detail.get("upstream_job_id"),
+            upstream_status=detail.get("upstream_status"),
         )
     return job.result
 

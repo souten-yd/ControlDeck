@@ -463,7 +463,7 @@ async def call_tool(
             request=request,
             metadata={"contribution_id": contribution_id, "result_code": exc.code},
         )
-        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(status_code=exc.status_code, detail=exc.public_detail()) from exc
     audit.record(
         db,
         "addon.agent_mcp",
