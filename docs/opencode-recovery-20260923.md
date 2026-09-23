@@ -74,3 +74,19 @@ installedでOpenCode implement等の同じタイトルが並ぶことを目視�
 controlは継続、最後に通常HTTPでcontrolを停止。overflow0/button44px/page error0。
 `opencode-run-identification-source/{report,browser}.json`。frontend build22.08秒。
 識別表示変更後の`./deck.sh test`も1171 passed / 2 skipped / 1 warning、106.87秒、exit0。
+
+## e34c7ca / PR341を通常導入し実OpenCodeの明示停止を受入
+
+Job/全状態OpenCode unit/leaseの空きを確認し、DB backup後に通常deck.shで更新。
+PID456446→486604、health ok、llama/Pixal runtime設定hash不変。追加モデル取得0。
+検証担当者自身の読み取り限定OpenCode Jobcfce488f01aa/Qwen3.8-27Bを通常APIで起動。
+実unit cdfeature-opencode-cfce488f01aa.service / MainPID487050のactiveを確認した。
+通常operator認証のOpenCode画面で、1280pxと320pxに同じ実行IDと開始時刻/停止ボタンを表示。
+320pxのタップでそのIDの確認ダイアログから停止。通常Jobsはcanceled、unitはinactive/MainPID0、
+active GPU lease0、商店街Git clean。横overflow0/button44px/page error0。
+これはfixtureではなく実installed OpenCodeの明示停止である。別の実行は停止していない。
+証跡opencode-identification-installed/{installed,stop,stop-browser}.json、before-stop-1280/320.png、after-stop-320.png。
+
+残る範囲: 実OpenCode推論中のHost再起動を意図的に起こす試験、失われたstdoutの回収、
+lock前のcold同時到着時刻、物理電話。再起動越しは隔離Host/実systemd fixtureの実測まで。
+この追記は文書のみ、PR341後の製品code変更なし。
