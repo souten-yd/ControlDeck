@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-09-23 継続OpenCodeの観測と明示停止（source受入）
+
+利用者の方針に従い、Host終了時にagentを自動停止する案を取り下げた。
+永続opencode.runの実unitを確認し、継続中をrunning表示、通常owner/RBAC付きcancelで個別停止。
+Webの「バックグラウンドの実行」を追加。利用者の依頼を受けたCodexや自身の検証cleanupも停止可能。
+実systemd/HTTP/隔離Host再起動後の3unit継続、PC1280/320px/APIの3停止経路を確認。
+他unitへの停止0、横overflow0、button44px、page error0。heartbeat fixtureであり実LLMではない。
+./deck.sh test 1171pass/2skip/1warning/107.27秒、frontend build24.60秒、追加モデル取得0。
+installed/実OpenCode再起動越しの受入はNOT TESTED。次は通常PR/merge/idle確認後のHost更新。
+[詳細と失敗履歴](opencode-recovery-20260923.md)。
+
 ## 2026-09-23 Add-on失敗Jobの実MCP・通常ブラウザ受入
 
 PR337/786e76cをroot mainへ適用し、全active Job/lease0でDB保存後に通常deck.sh。
