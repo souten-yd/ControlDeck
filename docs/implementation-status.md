@@ -1,5 +1,27 @@
 # 実装状況
 
+## 2026-09-23 Gateway同一モデルの同時cold start（修正・受入中）
+
+実OpenCodeのタイトル要求と本体要求がモデル未起動時に2.021286秒差で到着すると、
+後続がcold予算を保持したまま、起動済みの同じモデルに阻まれて300秒でexpired。
+前者30979147560 B予約、後者のblocking ownerもllm:Qwen3.8-27B/23138320384 B。
+slot idle/容量availableでも進まなかった。MediaForge側ではgatewayの見積り時点を
+変えられないため、汎用Host修正としてこのリポジトリで対応。
+
+- aliasとevent loopごとの弱参照lockで見積り→GPU lease→ensure_readyだけを直列化。
+  続く同一モデルの要求はready後に常駐を見て見積もり直す。別aliasの起動、KV待ち、
+  推論ストリームはこのlockに入れない。Brokerの予約/認証/退去条件は保持する。
+- 実Brokerを使う再現試験: 修正前は後続gateway_chatがtimeout。
+  修正後はcold/warmの順で見積り、両応答200・残lease/active request0。
+- 切断499/取消/起動失敗後の再要求/別aliasの並行性を含む関連30 tests通過（2.17秒）。
+- 実データや他の生成を停止していない。installed適用後のcold実機・ブラウザはNOT TESTED。
+  全体gateと通常PRを進め、現在の自身のOpenCode工程が終端になってから適用する。
+- 初回全体1138 passed/3 failedはworktreeのvenv/frontend dist不足。既存環境への
+  一時linkを用意するとその3件は通過。次の全体は1140 passed/1 failed、既存の
+  exclusive resource job待ちのflaky（queued/running、単独再実行通過）。
+  製品コードや待ち期限を変えず、最後に./deck.sh testを再実行し全体通過。
+
+
 最終更新: 2026-09-18
 
 ## Files: 置き場プリセットと Add-on ライブラリ（2026-09-18）
