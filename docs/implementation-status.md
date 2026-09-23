@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-09-23 Add-on agent失敗時のJob追跡（source受入）
+
+branch fix/addon-failure-job-context。MCP失敗時に受理済みJob IDが失われる問題を汎用Hostで修正。
+Host/upstream IDを区別し、短い符号と安全な参照だけを失敗Job・HTTP・stdioへ保持する。
+isError/failedを維持、成功応答とowner/RBACを変更しない。Media固有コード追加0。
+独立実HTTP/stdioと隔離Host DBでfailed3/succeeded1、内部パス除外、再送0を確認。
+関連82tests/5.16秒、最終全1150passed/2skipped/1warning/105.75秒。
+次はPR/merge後、稼働中の作業がない時に通常Host更新と実OpenCode失敗応答を受入する。
+installed/実OpenCodeはNOT TESTED。詳細[受入記録](addon-failure-job-context-20260923.md)。
+
 ## 2026-09-23 Gateway同一モデルの同時cold start（修正・受入中）
 
 実OpenCodeのタイトル要求と本体要求がモデル未起動時に2.021286秒差で到着すると、

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -60,7 +61,10 @@ SUPPORTED_PROTOCOL_VERSIONS = {"2024-11-05", LATEST_PROTOCOL_VERSION}
 
 
 class BridgeError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, detail: dict[str, str] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or {}
+
 
 
 RENEW_HEADER = "X-Control-Deck-MCP-Token"
@@ -78,7 +82,7 @@ def _current_token() -> str:
     return _token
 
 
-def _host_error_message(exc: urllib.error.HTTPError) -> str:
+def _host_error(exc: urllib.error.HTTPError) -> BridgeError:
     """host が返した拒否理由を、呼び出し側が読める 1 行にする。
 
     HTTPError は URLError の子クラスなので、素直に URLError だけを捕まえると
@@ -92,15 +96,28 @@ def _host_error_message(exc: urllib.error.HTTPError) -> str:
     try:
         body = exc.read(MAX_ERROR_BYTES + 1)
     except Exception:  # noqa: BLE001 - 本文が読めなくても status は返す
-        return label
+        return BridgeError(label)
     try:
         detail = json.loads(body).get("detail")
     except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
         detail = body.decode("utf-8", "replace")
+    references: dict[str, str] = {}
     if isinstance(detail, dict):
+        code = detail.get("code")
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,63}", code):
+            references["code"] = code
+        for key in ("job_id", "upstream_job_id"):
+            value = detail.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value):
+                references[key] = value
+        status = detail.get("upstream_status")
+        if "upstream_job_id" in references and isinstance(status, str) and status in {
+            "queued", "running", "succeeded", "failed", "canceled",
+        }:
+            references["upstream_status"] = status
         # HTTPException(detail={"code": ..., "message": ...}) の形。
         code, message = detail.get("code"), detail.get("message")
-        detail = f"{code}: {message}" if code and message else (message or code or detail)
+        detail = f"{code}: {message}" if code and message else (message or code or "")
     elif isinstance(detail, list):
         # FastAPI の request validation は場所と理由の組を並べて返す。
         detail = "; ".join(
@@ -108,11 +125,11 @@ def _host_error_message(exc: urllib.error.HTTPError) -> str:
             for item in detail if isinstance(item, dict)
         )
     text = str(detail or "").strip()
-    if not text:
-        return label
     if len(text) > MAX_ERROR_CHARS:
         text = f"{text[:MAX_ERROR_CHARS]}…"
-    return f"{label}: {text}"
+    # Keep references outside the truncation budget for explanatory prose.
+    suffix = " " + json.dumps(references, ensure_ascii=True) if references else ""
+    return BridgeError(label + (f": {text}" if text else "") + suffix, detail=references)
 
 
 def _host_request(path: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -140,7 +157,7 @@ def _host_request(path: str, *, payload: dict[str, Any] | None = None) -> dict[s
             if renewed and renewed != token:
                 _token = renewed
     except urllib.error.HTTPError as exc:
-        raise BridgeError(_host_error_message(exc)) from exc
+        raise _host_error(exc) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise BridgeError("ControlDeck Add-on MCP request failed") from exc
     if len(content) > MAX_MESSAGE_BYTES:
@@ -261,6 +278,8 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
                 value = _host_request("/call", payload={"name": params["name"], "arguments": arguments})
             except BridgeError as exc:
                 result = {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+                if exc.detail:
+                    result["structuredContent"] = exc.detail
             else:
                 result = _tool_result(params["name"], value)
         else:
