@@ -1936,6 +1936,26 @@ def _opencode_session_uses(port: int, *, window_seconds: float, require_attached
         return False
 
 
+def _opencode_endpoint_needing_revive(window_seconds: float) -> int | None:
+    """Read feature, terminal and runtime state outside the event loop."""
+    from app.integrations.opencode.provider import get_settings, is_gateway_url, resolve_backend_port
+
+    # Gateway requests start their own endpoint. Do not run an unnecessary
+    # feature --version subprocess from the periodic monitor in this case.
+    if is_gateway_url(str(get_settings().get("base_url") or "")):
+        return None
+    from app.features.registry import opencode_enabled
+
+    if not opencode_enabled():
+        return None
+    port = resolve_backend_port()
+    if not port or not _opencode_session_uses(int(port), window_seconds=window_seconds, require_attached=True):
+        return None
+    if any(int(item.get("port") or 0) == int(port) and item.get("loaded") for item in list_instances()):
+        return None
+    return int(port)
+
+
 async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
     """直結設定のOpenCode TUIが生きているのにendpointが落ちていたら起こし直す。
 
@@ -1943,20 +1963,11 @@ async def _revive_endpoint_for_opencode(window_seconds: float) -> None:
     保つ。ゲートウェイ経由ならリクエスト時にオンデマンド起動されるので、使っていない
     間に起こし直さない（意図しないモデルのロードを増やさない）。
     """
+    import asyncio
+
     try:
-        from app.features.registry import opencode_enabled
-
-        if not opencode_enabled():
-            return
-        from app.integrations.opencode.provider import get_settings, is_gateway_url, resolve_backend_port
-
-        if is_gateway_url(str(get_settings().get("base_url") or "")):
-            return
-        port = resolve_backend_port()
-        # 見ていない（detachされた）セッションのために勝手に起動しない。
-        if not port or not _opencode_session_uses(int(port), window_seconds=window_seconds, require_attached=True):
-            return
-        if any(int(item.get("port") or 0) == int(port) and item.get("loaded") for item in list_instances()):
+        port = await asyncio.to_thread(_opencode_endpoint_needing_revive, window_seconds)
+        if port is None:
             return
         logger.info("OpenCodeセッションのためllama.cppを再起動します: port=%s", port)
         await ensure_ready_by_base_url(f"http://127.0.0.1:{int(port)}/v1")
@@ -1974,11 +1985,11 @@ async def idle_unload_loop() -> None:
             await asyncio.sleep(60)
             from app.models_mgmt.runtime_policy import get_policy
 
-            policy = get_policy()
+            policy = await asyncio.to_thread(get_policy)
             if not policy.idle_unload_enabled:
                 continue
             deadline = time.time() - policy.idle_unload_minutes * 60
-            for item in list_instances():
+            for item in await asyncio.to_thread(list_instances):
                 if not item.get("loaded") or item.get("idle_exclude"):
                     continue
                 raw = str(item.get("last_used_at") or "")
@@ -1997,7 +2008,7 @@ async def idle_unload_loop() -> None:
                         _opencode_session_uses, port, window_seconds=policy.idle_unload_minutes * 60,
                     )
                 ):
-                    mark_used_by_base_url(f"http://127.0.0.1:{port}/v1")
+                    await asyncio.to_thread(mark_used_by_base_url, f"http://127.0.0.1:{port}/v1")
                     continue
                 await asyncio.to_thread(stop_instance, str(item["alias"]))
                 logger.info("idle llama.cpp instance unloaded: %s", item["alias"])

@@ -59,6 +59,13 @@ async の endpoint の中で ORM を触ると、接続待ちは event loop の�
 
 ### 同じ形をした危険
 
+2026-09-23には`llama.idle_unload_loop` → `_revive_endpoint_for_opencode` →
+`features.registry.opencode_enabled` → `status` → `subprocess.run(--version)`が
+event loop上で待機し、30秒のwatchdogにより再起動した。
+Gateway設定はendpoint復帰判定が不要なので、featureのversion確認より先に除外する。
+直結設定のfeature/session/instance照会もthreadへ出し、実際の非同期起動だけloop上で待つ。
+同じidle監視内のpolicy/instance一覧/利用時刻保存にも同期I/Oを残さない。
+
 `async def` の endpoint や background task の中で、次を呼んでいないか。
 
 - ORM の属性アクセス（遅延読み込み）、`db.execute`、`db.commit`
