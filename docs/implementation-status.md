@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-09-23 継続OpenCode修正を通常導入、cold起動を実測
+
+PR340/31e3420を通常deck.shでrootへ適用、PID456446/health ok。Job/unit/lease空きを確認し更新。
+1280/320px通常認証で実履歴25件と実行中の停止ボタン、旧interruptedの結果未回収表示を確認。
+Qwen3.8-27B loaded=falseからJob2291014cbcf0を実行、77.058秒/succeeded、read2回/変更0。
+Broker3要求はcold30,979,147,560B→warm0B→0Bで全granted/released、expired/retry0。
+ただしlock前の同時到着時刻はNOT TESTED。実OpenCode再起動越し継続と同じ検証ではない。
+同名タイトルを識別できる開始時刻/ID表示を追補し、同名3unitのPC/320px個別停止もsource実測。
+追加モデル取得0。詳細[受入](opencode-recovery-20260923.md)。
+
 ## 2026-09-23 継続OpenCodeの観測と明示停止（source受入）
 
 利用者の方針に従い、Host終了時にagentを自動停止する案を取り下げた。
