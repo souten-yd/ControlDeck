@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-09-23 実OpenCodeのモバイル明示停止を受入
+
+PR341/e34c7caを通常導入、PID486604/health ok。開始時刻/実行IDで停止対象を識別。
+自身の実OpenCode/Qwen検証Jobcfce488f01aa（unit PID487050）を通常APIから起動。
+通常operatorのPC1280/320pxでID/開始時刻/停止を確認し、320pxから当該IDだけをタップで停止。
+Jobs=canceled、unit=inactive/MainPID0、active lease0、商店街Git clean。
+横overflow0/button44px/page error0。追加DL0、他実行への停止0、設定hash保持。
+実OpenCode推論中のHost再起動/厳密なcold同時到着/物理電話はNOT TESTED。文書のみ更新。
+[受入記録](opencode-recovery-20260923.md)。
+
 ## 2026-09-23 継続OpenCode修正を通常導入、cold起動を実測
 
 PR340/31e3420を通常deck.shでrootへ適用、PID456446/health ok。Job/unit/lease空きを確認し更新。
