@@ -18,11 +18,13 @@ OpenAI互換クライアントはCookieを持てないため。
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import re
 import secrets
 import uuid
-from typing import Any
+from weakref import WeakValueDictionary
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -233,6 +235,33 @@ async def _renew_gateway_lease(lease_id: str) -> None:
         raise
 
 
+_model_startup_locks: WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock] = WeakValueDictionary()
+
+
+@asynccontextmanager
+async def _model_startup(alias: str, request: Request) -> AsyncIterator[None]:
+    """Serialize estimation through readiness, not inference, for one model.
+
+    A second cold estimate can remain queued after the first call loads the
+    same model: the Broker correctly retains the original request's budget.
+    Wait before estimating so the second call sees the resident model instead.
+    Different aliases retain independent Broker admission and startup.
+    """
+    key = (asyncio.get_running_loop(), alias)
+    lock = _model_startup_locks.setdefault(key, asyncio.Lock())
+    while True:
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=0.25)
+            break
+        except TimeoutError:
+            if await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="クライアントが切断しました") from None
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 async def _acquire_gateway_lease(alias: str, request: Request):
     from app.models_mgmt.resource_provider import provider
     from app.resources.broker import broker
@@ -392,18 +421,23 @@ async def gateway_chat(request: Request):
     alias, port = str(instance["alias"]), int(instance["port"])
     # 起動前に方針を決める（ensure_ready の後では「起動していたか」が分からない）。
     greedy_sampling = _greedy_sampling_for(instance, request)
-    adapter, lease_id, renew = await _acquire_gateway_lease(alias, request)
-    try:
-        # 停止中ならlease確保後にオンデマンド起動する。
-        ready = await _wait_for_client(
-            asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=420)), request
-        )
-        if not ready:
-            raise HTTPException(
-                status_code=503,
-                detail="モデルの起動に失敗しました",
-                headers={"Retry-After": "5"},
+    async with _model_startup(alias, request):
+        adapter, lease_id, renew = await _acquire_gateway_lease(alias, request)
+        try:
+            # Same-model callers remeasure only after this startup completes.
+            ready = await _wait_for_client(
+                asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=420)), request
             )
+            if not ready:
+                raise HTTPException(
+                    status_code=503,
+                    detail="モデルの起動に失敗しました",
+                    headers={"Retry-After": "5"},
+                )
+        except (Exception, asyncio.CancelledError):
+            await _release_gateway_lease(adapter, lease_id, renew)
+            raise
+    try:
         await _admit(alias, port, payload)
     except (Exception, asyncio.CancelledError):
         await _release_gateway_lease(adapter, lease_id, renew)
