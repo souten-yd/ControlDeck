@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from app.audit import service as audit
 from app.database import SessionLocal, get_db
 from app.jobs import service as jobs
+from app.integrations.opencode import recovery as opencode_recovery
 from app.models import User
 from app.security.deps import authenticate_websocket, require_permission
 from app.websocket_tasks import run_websocket_tasks
@@ -23,6 +24,7 @@ async def list_jobs(
 ):
     # メモリ（実行中）+ DB（履歴・再起動後も残る）を統合。events は一覧では省く
     items = await jobs.list_any(kind, max(1, min(limit, 100)), user.id)
+    await opencode_recovery.reconcile(items)
     for it in items:
         it["event_count"] = int(it.get("event_count") or len(it.get("events", [])))
         it["events"] = []
@@ -43,6 +45,7 @@ async def get_job(
     persisted = await jobs.get_any(job_id)
     if persisted is None or not jobs.visible_to(persisted, user.id):
         raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+    await opencode_recovery.reconcile([persisted])
     return persisted
 
 
@@ -52,15 +55,25 @@ async def cancel_job(
     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
 ):
     job = jobs.get(job_id)
-    if job is None or not jobs.visible_to(job, user.id):
+    record = job if job is not None else await jobs.get_any(job_id)
+    if record is None or not jobs.visible_to(record, user.id):
         raise HTTPException(status_code=404, detail="ジョブが見つかりません")
-    if job.kind == "chat.completion":
+    if job is None:
+        try:
+            canceled = await opencode_recovery.cancel_surviving(record)
+        except opencode_recovery.RecoveryError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    else:
+        canceled = None
+    if job is not None and job.kind == "chat.completion":
         from app.models_mgmt.runtime_provider import cancel_request
 
         await cancel_request(job_id)
-    if not await jobs.cancel_and_wait(job_id):
+    if canceled is None:
+        canceled = await jobs.cancel_and_wait(job_id)
+    if not canceled:
         raise HTTPException(status_code=409, detail="実行中のジョブではありません")
-    audit.record(db, "job.cancel", user=user, resource_type="job", resource_id=job_id, request=request)
+    await asyncio.to_thread(audit.record, db, "job.cancel", user=user, resource_type="job", resource_id=job_id, request=request)
     return {"ok": True}
 
 
@@ -76,12 +89,17 @@ async def stream_jobs(websocket: WebSocket, kind: str = ""):
     finally:
         db.close()
     await websocket.accept()
-    seen: dict[str, int] = {}
+    seen: dict[str, tuple] = {}
+
+    def signature(item: dict) -> tuple:
+        return (int(item.get("revision") or 0), item.get("status"), item.get("phase"), item.get("error"))
     try:
         initial = await jobs.list_any(kind, 100, user_id)
+        await opencode_recovery.reconcile(initial)
+        external = any(item.get("phase") in {"external_running", "external_status_unknown"} for item in initial)
         for item in initial:
             item["events"] = []
-            seen[item["id"]] = int(item.get("revision") or 0)
+            seen[item["id"]] = signature(item)
         await websocket.send_text(json.dumps({"type": "snapshot", "jobs": initial}, ensure_ascii=False))
         revision = jobs.stream_revision()
         while True:
@@ -92,7 +110,7 @@ async def stream_jobs(websocket: WebSocket, kind: str = ""):
 
             async def changed() -> None:
                 nonlocal changed_revision
-                changed_revision = await jobs.wait_global(revision)
+                changed_revision = await jobs.wait_global(revision, 2 if external else 25)
 
             async def incoming() -> None:
                 nonlocal message
@@ -112,8 +130,10 @@ async def stream_jobs(websocket: WebSocket, kind: str = ""):
             await asyncio.sleep(0.1)
             revision = jobs.stream_revision()
             current = await jobs.list_any(kind, 100, user_id)
+            await opencode_recovery.reconcile(current)
+            external = any(item.get("phase") in {"external_running", "external_status_unknown"} for item in current)
             for item in current:
-                item_revision = int(item.get("revision") or 0)
+                item_revision = signature(item)
                 if seen.get(item["id"]) == item_revision:
                     continue
                 seen[item["id"]] = item_revision

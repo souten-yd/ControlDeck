@@ -42,6 +42,28 @@ OpenCodeはControl Deckの必須依存にしない。通常の`./deck.sh`、serv
 - stdout/stderrは上限付き。API key、prompt全文、秘密値を監査ログへ出さない。cancel時はunitを停止する。
 - workflow `code.agent`はfeature有効時だけ存在し、既存job/engineのtimeout・cancelを継承する。
 
+### Host再起動後に継続しているheadless実行（2026-09-23）
+
+利用者は「OpenCodeはユーザーが明示的に終了するまで動いてもよい」と指定した。
+Host終了に連動してagentを停止する案は取り下げる。Jobがinterruptedでも独立unitが動いていることを
+自動停止の理由にしない。TUI/tmuxの再接続・永続実行も保持する。
+
+再起動後の永続opencode.run Jobに限り、通常Jobsの一覧/詳細/streamで実systemd状態を照合する。
+固定prefixと保存Job IDから一意に導いたunitだけを読み、別の実行/任意unit名は扱わない。
+実行中ならrunningと継続中の説明を返し、DBに残った中断記録をworker停止の証拠にしない。
+確認に失敗した場合は状態不明を明記し、実行終了や成功とは判定しない。
+unit終了後も、再起動前のpipeから失われた結果を推測復元しない。結果未回収として説明する。
+
+停止は既存owner/RBAC付きJobs cancelから利用者が明示した場合のみ実行する。
+この明示停止には、利用者の依頼を受けたCodex等のエージェントによる停止と、
+エージェント自身が検証用に開始した実行の後片付けを含む。Webの手動操作に限定しない。
+当該unitの停止を実確認してからcanceledを保存し、他のunitへの一括停止・生成の再送はしない。
+継続Jobの監視再接続は新しいOpenCode実行ではなく、モデル取得や新しい認証を必要としない。
+このsliceは既存実行の状態照合と明示停止であり、失われたstdoutの復元やworkflow全体の再実行ではない。
+WebのOpenCode画面から「バックグラウンドの実行」を開くと、権限内のopencode.runを確認できる。
+表示中だけ再取得し、進行中の実行を個別に停止できる。状態不明/取得失敗はそのまま表示する。
+TUIとは起動経路が異なるため、TUIへの再接続と同じ操作であるようには表示しない。
+
 ### Add-on agent tools
 
 - 利用者authorityがあるjob／TUIの実行時configに限り、Host管理のローカルstdio MCPを追加する。

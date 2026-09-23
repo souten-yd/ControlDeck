@@ -13,6 +13,7 @@ import { ConfirmDialog, Skeleton } from "../../components/ui";
 import { IconFolder, IconPlus, IconTrash } from "../../components/icons";
 import { useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
+import { BackgroundRuns } from "./BackgroundRuns";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -205,6 +206,8 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
           <button onClick={() => save.mutate()} disabled={save.isPending} className="rounded-xl border border-accent-500 py-2 text-sm text-accent-600 disabled:opacity-50 sm:col-span-2">設定を保存</button>
         </section>
       )}
+
+      <BackgroundRuns />
 
       {/* セッション開始 */}
       <section className="space-y-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
