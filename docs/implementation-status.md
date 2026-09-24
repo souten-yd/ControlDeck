@@ -172,6 +172,30 @@ FileManagerへ渡し、展開して配置できるようにした。三点リー
 NOT TESTED: ブラウザからの実UI操作（PC幅／320px幅）とcookie認証経路でのupload〜配置。
 adminパスワードを持たないため利用者による確認が要る。
 
+## Add-on AI thinking installed acceptance（2026-09-13）
+
+PR324はGitHub merge APIがHTTP500（empty JSON body）だったため、検証済み候補と
+tree差分0のlocal mergeを通常fast-forward push。main ca02bb926ffa8d480e34cd75075bce658394e572、
+GitHub PR324 MERGED/同mergeCommitを確認。force/protection bypassなし。
+共有slot52832がis_processing=falseになった後、root mainをff更新し`./deck.sh start`。
+Host PID711252 active、MediaForge PID537447保持。通常AI既定設定/モデル/重みは変更していない。
+
+正規scoped AI実受入（専用user、正常token発行、秘密値未表示/未保存）:
+
+- thinking=true取消: lease6e2ba05a-0e12-4e71-b987-6e8b152a29d3をactiveとして観測後取消。
+  1.402秒全体、local取消終端後0.352秒で推論idleかつlease released。
+- thinking=true期限: lease71533f3d-80ff-483a-9618-1ab4927b3a5b。
+  6.314秒全体、local期限終端後0.306秒でidle/released。部分成功なし。
+- 両試験は既存scoped cancellation diagnosticのcomplete_streamedへprocess-local wrapperで
+  thinking=Trueを明示したもの。配信コードやproviderを差し替えていない。発見/認証/Host admission経由。
+  既存scriptのdefault falseでの過去成功を流用していない。専用loginはfinallyで失効。
+- bounded structured requestは51.677秒/2段階でstrict構造検査成功。
+  応答本文以外の思考はconsumerへ渡していない。これは特定consumerの形状試験で、
+  Hostが品質を保証する契約ではない。モデル/port/credentialはpublic応答へ追加していない。
+
+基準全gate1106pass2skip/97.58秒、以後product/test差分なし。
+NOT TESTED: PC/320px browser、全runtimeでの思考効果。新APIの実行/取消とconsumer作品品質は区別する。
+
 ## Add-on AI request-local thinking control candidate（2026-09-13）
 
 base main `7cf5605`、branch `ux1/addon-ai-thinking`。Add-onが既存AI bridgeへ
