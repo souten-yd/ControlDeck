@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-10-13 ターミナルの長い履歴を実 tmux から参照
+
+通常 Terminal の wheel/touch/右端バーを tmux の保持履歴へ接続。大量出力で xterm の
+ローカル履歴が数行にしかならない問題を修正。長距離は goto-line で直接移動する。
+実サービス適用、PC1280/320px で 12,000 行前・入力復帰・再読込後の履歴を確認。
+mouse 対応/非対応 TUI の回帰も通過。backend 全1175pass/2skip、frontend build成功。
+ホストの Codex alternate_screen を never に変更（次回起動から、既存プロセスは保持）。
+既存履歴の復元、物理電話、V2 Lab は未検証/対象外。[詳細](terminal-scrollback-20261013.md)。
+
+
+
 ## 2026-11-10 Add-on local-only AI契約（PR #349）
 
 complete/streamに厳密boolean local_onlyを追加。Host管理llama.cpp・存在するGGUF・loopback宛先を要求し、GPU admission前後で検証。Ollama/未検証runtimeは拒否し、proxy環境変数/redirectを使わない。従来要求は既定falseで維持。capabilitiesは契約対応と利用可能性のみ返しprovider/model/pathを公開しない。

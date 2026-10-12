@@ -12,6 +12,7 @@ for (const { label, command, wantsMouse } of [
 test(`scrolling: ${label}`, async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials are required");
   await establishSession(page, context);
+  await page.addInitScript(() => localStorage.setItem("control-deck:terminal-geometry-debug", "1"));
   const created = await context.request.post("/api/v1/terminals", { headers: CSRF });
   const id: string = (await created.json()).id;
 
@@ -32,7 +33,7 @@ test(`scrolling: ${label}`, async ({ page, context }) => {
 
     const screen = page.locator(".xterm-screen").first();
     const read = () => page.evaluate(() =>
-      (document.querySelector(".xterm-screen") as HTMLElement)?.innerText.slice(0, 120) ?? "");
+      window.__controlDeckTerminalTest?.captureRenderState().visibleBufferRows.join("\n") ?? "");
     const before = await read();
     console.log("less が起動したか:", before.includes("1") && !before.includes("$"));
     console.log("スクロール前:", JSON.stringify(before.split("\n")[0]));
@@ -80,7 +81,11 @@ test(`scrolling: ${label}`, async ({ page, context }) => {
       expect(after, "指で動かしても表示が変わらない").not.toBe(before);
     } else {
       // 受け取らない相手へ送ると echo されて文字が重なる。送らないこと。
-      expect(sent, "mouse を使わないアプリへ送ってはいけない").toEqual([]);
+      // tmux history controls are out-of-band; never inject key/wheel bytes.
+      expect(sent.every(frame => {
+        try { return JSON.parse(frame).type === "history_scroll"; }
+        catch { return false; }
+      }), "mouse を使わないアプリへ入力を送ってはいけない").toBe(true);
     }
   } finally {
     await context.request.delete(`/api/v1/terminals/${id}`, { headers: CSRF });

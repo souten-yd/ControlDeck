@@ -157,24 +157,35 @@ export default function XtermView({
     })();
     fit.fit();
     termRef.current = term;
+    const persistentHistory = currentSession?.persistent === true;
+    host.dataset.terminalPersistent = String(persistentHistory);
+    let serverHistoryActive = false;
+    let serverHistoryPosition = 0;
+    let serverHistoryTotal = 0;
+    let pendingHistoryLines = 0;
+    let historyInFlight = false;
+    let inFlightHistoryLines = 0;
+    let historyEpoch = 0;
+    let requestHistoryEpoch = 0;
     let historyTrackHeight = historyTrack.clientHeight;
     let historyMarkerFrame = 0;
     const updateHistoryTrack = (remeasure = false) => {
       const buffer = term.buffer.active;
       if (remeasure) historyTrackHeight = historyTrack.clientHeight;
       const trackHeight = historyTrackHeight;
-      const historyRows = buffer.baseY;
+      const historyRows = persistentHistory ? serverHistoryTotal : buffer.baseY;
+      const viewportY = persistentHistory ? historyRows - serverHistoryPosition : buffer.viewportY;
       const totalRows = historyRows + term.rows;
       historyTrack.setAttribute("aria-valuemax", String(historyRows));
-      historyTrack.setAttribute("aria-valuenow", String(buffer.viewportY));
-      if (!coarseMobile || historyRows <= 0 || trackHeight <= 0) {
+      historyTrack.setAttribute("aria-valuenow", String(viewportY));
+      if ((!coarseMobile && !persistentHistory) || historyRows <= 0 || trackHeight <= 0) {
         historyTrack.style.opacity = "0";
         historyTrack.style.pointerEvents = "none";
         return;
       }
       const thumbHeight = Math.min(trackHeight, Math.max(44, trackHeight * term.rows / totalRows));
       const travel = Math.max(0, trackHeight - thumbHeight);
-      const top = historyRows > 0 ? travel * buffer.viewportY / historyRows : 0;
+      const top = historyRows > 0 ? travel * viewportY / historyRows : 0;
       historyTrack.style.opacity = "1";
       historyTrack.style.pointerEvents = "auto";
       historyThumb.style.height = `${thumbHeight}px`;
@@ -261,7 +272,6 @@ export default function XtermView({
     let resizeGeneration = 0;
     let everConnected = false;
     let pendingOutputSequence: number | null = null;
-    let serverHistoryActive = false;
     let replayFinalizeToken = 0;
     let presentationGeneration = 0;
     let pendingPresentationSync: {
@@ -539,6 +549,24 @@ export default function XtermView({
             }
             if (control.type === "history_scroll_ack") {
               diagnostics.record("history-scroll-ack", control);
+              if (control.connectionGeneration !== connectionGeneration || !historyInFlight) return;
+              historyInFlight = false;
+              if (requestHistoryEpoch === historyEpoch) {
+                if (!control.success) {
+                  pendingHistoryLines = 0;
+                  serverHistoryActive = false;
+                  show("ターミナル履歴を取得できませんでした", "error");
+                } else if (Number.isSafeInteger(control.position) && Number.isSafeInteger(control.total)) {
+                  serverHistoryPosition = Math.max(0, control.position);
+                  serverHistoryTotal = Math.max(serverHistoryPosition, control.total);
+                  root.dataset.terminalHistoryPosition = String(serverHistoryPosition);
+                  root.dataset.terminalHistoryTotal = String(serverHistoryTotal);
+                  if ((serverHistoryPosition === 0 && pendingHistoryLines > 0)
+                    || (serverHistoryPosition >= serverHistoryTotal && pendingHistoryLines < 0)) pendingHistoryLines = 0;
+                  updateHistoryTrack();
+                }
+              }
+              flushServerHistory();
               return;
             }
             if (control.type === "presentation_sync_ack") {
@@ -576,6 +604,11 @@ export default function XtermView({
               return;
             }
             if (control.type === "history_end") {
+              if (Number.isSafeInteger(control.historyTotal) && Number.isSafeInteger(control.historyPosition)) {
+                serverHistoryTotal = Math.max(0, control.historyTotal);
+                serverHistoryPosition = Math.max(0, control.historyPosition);
+                updateHistoryTrack();
+              }
               void finalizeReplay(
                 control.connectionGeneration ?? thisConnectionGeneration,
                 Number(control.sequence ?? 0),
@@ -631,6 +664,9 @@ export default function XtermView({
         cancelPresentationWaiters();
         inputController.connectionChanged();
         serverHistoryActive = false;
+        pendingHistoryLines = 0;
+        historyInFlight = false;
+        historyEpoch += 1;
         replayFinalizeToken += 1;
         resizeBarrier.resetConnection(connectionGeneration);
         if (disposed) return;
@@ -702,6 +738,9 @@ export default function XtermView({
     window.addEventListener("pageshow", reviveIfNeeded);
 
     const exitServerHistory = () => {
+      diagnostics.record("history-exit", { pendingHistoryLines, serverHistoryPosition });
+      pendingHistoryLines = 0;
+      historyEpoch += 1;
       if (!serverHistoryActive) return;
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
@@ -711,6 +750,8 @@ export default function XtermView({
         }));
       }
       serverHistoryActive = false;
+      serverHistoryPosition = 0;
+      updateHistoryTrack();
     };
     const leaveHistoryForInput = () => {
       exitServerHistory();
@@ -993,22 +1034,47 @@ export default function XtermView({
       const count = Math.min(Math.abs(lines), 4);
       inputSenderRef.current?.(`\x1b[<${button};${column};${row}M`.repeat(count));
     };
-    // 通常画面では必ず xterm 自身の scrollback を動かす。mouse tracking を
-    // 有効にしたまま終了した TUI の後（よくある）に入力を注入すると、shell が
-    // その escape を表示してしまう。アプリへ渡すのは alternate 画面のときだけ。
-    // アプリへ渡すかは mouse tracking の有無で決める。
-    //
-    // 以前は alternate 画面かどうかで見ていたが、tmux の中では成立しない。tmux は
-    // 自分が alternate を持ち、中の TUI が切り替えても外側へは出さないので、
-    // buffer.active.type は normal のままになる（実測: mouse=vt200 / buffer=normal）。
-    // その結果、指でのスクロールは常に scrollback 側へ流れて何も起きなかった。
-    // wheel が効いていたのは xterm 自身が mouse tracking を見て送っていたためで、
-    // 判断をそちらへ揃える。
+    // tmux hides its inner application's alternate-buffer transitions. Mouse
+    // tracking, not xterm's buffer.type, identifies applications that own scrolling.
+    // tmux attach sends screen redraws, not every original output line. A burst
+    // can add thousands of tmux history rows and almost no xterm history rows.
+    // Use tmux's retained history for persistent shells; keep one request in
+    // flight so a swipe cannot create an unbounded subprocess queue.
+    function flushServerHistory() {
+      const ws = wsRef.current;
+      if (historyInFlight || !pendingHistoryLines || ws?.readyState !== WebSocket.OPEN) return;
+      const lines = Math.max(-100_000, Math.min(100_000, pendingHistoryLines));
+      pendingHistoryLines -= lines;
+      historyInFlight = true;
+      inFlightHistoryLines = lines;
+      requestHistoryEpoch = historyEpoch;
+      serverHistoryActive = true;
+      if (term.buffer.active.viewportY < term.buffer.active.baseY) term.scrollToBottom();
+      ws.send(JSON.stringify({ type: "history_scroll", lines, connectionGeneration }));
+    }
+    const scrollServerHistory = (lines: number) => {
+      pendingHistoryLines = Math.max(-100_000, Math.min(100_000, pendingHistoryLines + Math.trunc(lines)));
+      flushServerHistory();
+    };
     const applyScroll = (lines: number) => {
       const clamped = Math.max(-100, Math.min(100, lines));
-      if (appWantsMouse()) scrollApplication(clamped);
+      if (serverHistoryActive || (persistentHistory && !appWantsMouse())) scrollServerHistory(lines);
+      else if (appWantsMouse()) scrollApplication(clamped);
       else term.scrollLines(clamped);
     };
+    // Capture before xterm 6's scrollable-element consumes the wheel; its
+    // customWheelEventHandler alone runs too late for the normal buffer.
+    const onHistoryWheel = (event: WheelEvent) => {
+      if (!persistentHistory || (appWantsMouse() && !serverHistoryActive)) return;
+      const cellHeight = host.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect().height / term.rows;
+      const lines = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * term.rows
+          : event.deltaY / Math.max(cellHeight, 1);
+      if (lines) scrollServerHistory(Math.sign(lines) * Math.max(1, Math.round(Math.abs(lines))));
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    host.addEventListener("wheel", onHistoryWheel, { capture: true, passive: false });
     // TUIは1スクロールごとに全画面を描き直すため、送信間隔を空けて描画を詰まらせない。
     let lastScrollFlushAt = 0;
     const SCROLL_FLUSH_INTERVAL = 40;
@@ -1048,8 +1114,7 @@ export default function XtermView({
       lastScrollFlushAt = now;
       const lines = Math.trunc(touchRemainder);
       if (lines !== 0) {
-        // replay済みnormal bufferを右端barと同じlocal pathで即時移動する。
-        // tmux subprocessとWebSocket往復はgestureのhot pathへ入れない。
+        // Persistent sessions use the same bounded server queue as the history bar.
         applyScroll(lines);
         touchRemainder -= lines;
       }
@@ -1128,7 +1193,7 @@ export default function XtermView({
       touchScrolling = false;
       // 慣性は xterm 自身の scrollback を動かすときだけにする。alternate 画面では
       // 指を離した後もアプリへ wheel を送り続けることになり、描画が追いつかない。
-      const ownScrollback = term.buffer.active.type !== "alternate";
+      const ownScrollback = !persistentHistory && !appWantsMouse();
       if (wasScrolling && ownScrollback && Math.abs(scrollVelocity) > 0.4) {
         momentumRemainder = 0;
         if (!momentumFrame) momentumFrame = window.requestAnimationFrame(stepMomentum);
@@ -1152,10 +1217,18 @@ export default function XtermView({
 
     const scrollHistoryToClientY = (clientY: number) => {
       const rect = historyTrack.getBoundingClientRect();
-      const maxLine = term.buffer.active.baseY;
+      const maxLine = persistentHistory ? serverHistoryTotal : term.buffer.active.baseY;
       if (rect.height <= 0 || maxLine <= 0) return;
-      const ratio = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
-      term.scrollToLine(Math.round(maxLine * ratio));
+      const thumbHeight = historyThumb.getBoundingClientRect().height;
+      const travel = Math.max(1, rect.height - thumbHeight);
+      const ratio = Math.min(1, Math.max(0, (clientY - rect.top - thumbHeight / 2) / travel));
+      const target = Math.round(maxLine * ratio);
+      if (persistentHistory) {
+        const inFlight = historyInFlight && requestHistoryEpoch === historyEpoch ? inFlightHistoryLines : 0;
+        pendingHistoryLines = target - (serverHistoryTotal - serverHistoryPosition + inFlight);
+        diagnostics.record("history-seek", { target, pendingHistoryLines, serverHistoryPosition, inFlight });
+        flushServerHistory();
+      } else term.scrollToLine(target);
     };
     const onHistoryTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
@@ -1179,6 +1252,27 @@ export default function XtermView({
     historyTrack.addEventListener("touchmove", onHistoryTouchMove, { passive: false });
     historyTrack.addEventListener("touchend", onHistoryTouchEnd, { passive: false });
     historyTrack.addEventListener("touchcancel", onHistoryTouchEnd, { passive: false });
+    const onHistoryPointerDown = (event: globalThis.PointerEvent) => {
+      if (event.pointerType === "touch" || event.button !== 0) return;
+      event.preventDefault();
+      historyTrack.setPointerCapture(event.pointerId);
+      historyTrack.dataset.active = "true";
+      scrollHistoryToClientY(event.clientY);
+    };
+    const onHistoryPointerMove = (event: globalThis.PointerEvent) => {
+      if (event.pointerType === "touch" || !historyTrack.hasPointerCapture(event.pointerId)) return;
+      event.preventDefault();
+      scrollHistoryToClientY(event.clientY);
+    };
+    const onHistoryPointerUp = (event: globalThis.PointerEvent) => {
+      if (event.pointerType === "touch" || !historyTrack.hasPointerCapture(event.pointerId)) return;
+      historyTrack.releasePointerCapture(event.pointerId);
+      historyTrack.dataset.active = "false";
+    };
+    historyTrack.addEventListener("pointerdown", onHistoryPointerDown);
+    historyTrack.addEventListener("pointermove", onHistoryPointerMove);
+    historyTrack.addEventListener("pointerup", onHistoryPointerUp);
+    historyTrack.addEventListener("pointercancel", onHistoryPointerUp);
 
     return () => {
       disposed = true;
@@ -1208,10 +1302,15 @@ export default function XtermView({
       host.removeEventListener("touchmove", onTouchMove, true);
       host.removeEventListener("touchend", onTouchEnd, true);
       host.removeEventListener("touchcancel", onTouchEnd, true);
+      host.removeEventListener("wheel", onHistoryWheel, true);
       historyTrack.removeEventListener("touchstart", onHistoryTouchStart);
       historyTrack.removeEventListener("touchmove", onHistoryTouchMove);
       historyTrack.removeEventListener("touchend", onHistoryTouchEnd);
       historyTrack.removeEventListener("touchcancel", onHistoryTouchEnd);
+      historyTrack.removeEventListener("pointerdown", onHistoryPointerDown);
+      historyTrack.removeEventListener("pointermove", onHistoryPointerMove);
+      historyTrack.removeEventListener("pointerup", onHistoryPointerUp);
+      historyTrack.removeEventListener("pointercancel", onHistoryPointerUp);
       if (coarseMobile) {
         if (bodyStyle === null) document.body.removeAttribute("style");
         else document.body.setAttribute("style", bodyStyle);
@@ -1410,7 +1509,7 @@ export default function XtermView({
           aria-valuemin={0}
           aria-valuemax={0}
           aria-valuenow={0}
-          className="terminal-history-track absolute inset-y-1 right-0 z-20 block w-5 opacity-0 md:hidden"
+          className="terminal-history-track absolute inset-y-1 right-0 z-20 block w-5 opacity-0"
         >
           <div
             ref={historyThumbRef}

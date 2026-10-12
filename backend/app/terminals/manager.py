@@ -510,27 +510,26 @@ class TerminalConnection:
         """Move tmux copy-mode history without accepting a command from the client."""
         if not self.tmux_target:
             return False
-        amount = min(100, max(1, abs(lines)))
-        direction = "scroll-down" if lines > 0 else "scroll-up"
         entered = subprocess.run(
             ["tmux", "copy-mode", "-e", "-t", self.tmux_target],
             capture_output=True, timeout=5, check=False,
         )
         if entered.returncode != 0:
             raise OSError("tmux history mode is unavailable")
+        state = self.history_state()
+        distance = max(-HISTORY_LINES, min(HISTORY_LINES, lines))
+        position = max(0, min(state["total"], state["position"] - distance))
+        # goto-line addresses the copy-mode offset from the live edge directly.
+        # Repeating scroll-up N times emits N redraws and overwhelms the browser
+        # when the scrollbar jumps across thousands of retained rows.
         moved = subprocess.run(
-            ["tmux", "send-keys", "-t", self.tmux_target, "-X", "-N", str(amount), direction],
+            ["tmux", "send-keys", "-t", self.tmux_target, "-X", "goto-line", str(position)],
             capture_output=True, timeout=5, check=False,
         )
         if moved.returncode != 0:
             raise OSError("tmux history could not be moved")
-        if direction == "scroll-down":
-            position = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", self.tmux_target, "#{scroll_position}"],
-                capture_output=True, text=True, timeout=5, check=False,
-            )
-            if position.returncode == 0 and position.stdout.strip() in {"", "0"}:
-                self.exit_history()
+        if position == 0:
+            self.exit_history()
         return True
 
     def exit_history(self) -> bool:
@@ -543,6 +542,23 @@ class TerminalConnection:
         )
         # tmux returns non-zero when the pane is already in normal mode.
         return result.returncode == 0
+
+    def history_state(self) -> dict[str, int]:
+        """Read the authoritative scroll position, not the client's redraw history."""
+        if not self.tmux_target:
+            return {"position": 0, "total": 0}
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", self.tmux_target,
+             "#{scroll_position}|#{history_size}"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if result.returncode != 0:
+            raise OSError("tmux history position is unavailable")
+        try:
+            position, total = result.stdout.strip().split("|")
+            return {"position": max(0, int(position or "0")), "total": max(0, int(total or "0"))}
+        except ValueError as exc:
+            raise OSError("tmux history position is invalid") from exc
 
     def capture_replay(self) -> bytes:
         """resume journal範囲外時だけ現在のbounded snapshotを取得する。"""
