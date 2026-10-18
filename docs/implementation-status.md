@@ -1,5 +1,18 @@
 # 実装状況
 
+## 2026-10-19 自動復旧修正のリリース候補検証
+
+`origin/main`の`749a971`から今回の修正を分離し、PR #346を作成。
+実稼働側の既存terminal修正は取り込まず、今回の製品変更4ファイルと新規回帰テストは実稼働側とbyte一致。
+候補で`./deck.sh test` **1195 passed / 2 skipped / 1 warning / 109.39秒**、
+frontend production build成功（Vite 18.44秒、chunk size警告あり）。
+GitHub Actions workflowは0件のため、CI成功ではなくローカル検証として記録する。
+ブラウザ4ケースと停止からのHost起動復旧は下記の実稼働環境で確認済み。
+候補専用の別Hostでのブラウザ試験は未実施。PC自体の再起動・新規生成の未検証境界も継続。
+配布は既存規則に合わせて`ControlDeck_v0.11`のソースアーカイブ。
+証跡: `/data1tb/ControlDeck/data/maintenance/feature-boot-restore-20261018/`
+内の`controldeck-boot-release-tests.log` / `controldeck-boot-release-build.log`。
+
 ## 2026-10-18 Media Forge / SonicForge の再起動後サービス復旧
 
 導入済みbundleとデータは残っていたが、両systemd unitが停止し、Hostにも起動復旧処理がなかった。
