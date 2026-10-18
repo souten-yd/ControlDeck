@@ -19,7 +19,8 @@ class ServerConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    session_timeout_minutes: int = 480
+    # 0 は期限なし。正の値なら未使用時間で失効する。
+    session_timeout_minutes: int = Field(default=0, ge=0)
     allow_arbitrary_commands: bool = False
     # HTTPS リバースプロキシ配下で true にする（Cookie に Secure を付与）
     secure_cookies: bool = False

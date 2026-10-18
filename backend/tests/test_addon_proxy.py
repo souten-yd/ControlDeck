@@ -370,7 +370,7 @@ def test_addon_frame_data_works_without_a_cookie_over_plain_http(enabled_addon, 
     assert anonymous.status_code == 401
 
 
-def test_addon_frame_cookie_outlives_a_short_absence(enabled_addon):
+def test_addon_frame_cookie_outlives_a_short_absence(enabled_addon, monkeypatch):
     """画面を開いたまま少し離れただけで API が一斉に 401 にならないこと。
 
     10 分で切れていたため、37 分放置しただけで SonicForge のライブラリと生成が
@@ -379,6 +379,16 @@ def test_addon_frame_cookie_outlives_a_short_absence(enabled_addon):
     client, _registry = enabled_addon
     from app.addons import tokens
 
+    from app.addons import proxy
+
+    # The lifetime assertion needs a successful upstream response, not a live
+    # service at the fake add-on's port on the developer's machine.
+    monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, headers={"Content-Type": "text/html"},
+            stream=OneChunkStream(b"<html></html>"), request=request,
+        )), follow_redirects=False,
+    ))
     root = client.get("/addon-frame/fake-addon/")
     cookie = root.headers["set-cookie"]
     assert f"Max-Age={tokens.FRAME_TOKEN_TTL_SECONDS}" in cookie

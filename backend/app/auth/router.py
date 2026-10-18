@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.auth import totp
 from app.auth.policy import totp_required_for
-from app.config import get_config
 from app.database import get_db
 from app.models import User, UserSession
 from app.schemas.auth import (
@@ -27,6 +26,7 @@ from app.security.sessions import (
     create_session,
     resolve_session,
     revoke_session,
+    set_session_cookie,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -58,19 +58,6 @@ def _check_credential_limit(
             headers={"Retry-After": str(window_seconds)},
         )
     return key
-
-
-def _set_session_cookie(response: Response, token: str) -> None:
-    cfg = get_config()
-    response.set_cookie(
-        SESSION_COOKIE,
-        token,
-        max_age=cfg.security.session_timeout_minutes * 60,
-        httponly=True,
-        samesite="lax",
-        secure=cfg.security.secure_cookies,
-        path="/",
-    )
 
 
 @router.post("/login")
@@ -114,7 +101,7 @@ def login(
     )
     ratelimit.reset(f"login:{ip}:{body.username}")
     audit.record(db, "login", user=user, result="success", request=request)
-    _set_session_cookie(response, token)
+    set_session_cookie(response, token)
     return _user_out(user)
 
 

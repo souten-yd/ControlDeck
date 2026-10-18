@@ -1,5 +1,46 @@
 # 実装状況
 
+## 2026-10-18 ログイン保持のリリース候補検証
+
+`origin/main`の`07d9a00`から`fix/persistent-login`を作成し、ログイン保持の変更を分離。
+実稼働側の`7f63417`は既存のローカルterminal修正`dd0beed`を親に持つが、リリース候補には
+terminalの製品変更を含めていない。認証の4ファイルは実稼働側とbyte一致。
+既存Add-on cookie寿命テストのfake upstreamだけはMockTransportへ置き換え、実ネットワーク依存を解消。
+
+候補そのものを検証し、`./deck.sh test` **1184 passed / 2 skipped / 1 warning / 107.57秒**、
+`npm --prefix frontend run build`成功（Vite 18.83秒、chunk size警告あり）。
+隔離DB・設定・systemd user unit・port18768で実起動し、候補のproduction buildを配信。
+Google Chrome1280px/320pxで通常ログイン、365日Cookie、保存状態のcontext復元、再読込、
+認証API 200、横overflowなしを確認。E2E **2 passed / 1.4秒**。
+検証unitは停止し、一時資格情報は無効化・削除。実サービスはPID160578/active/NRestarts0を維持。
+このリポジトリにはGitHub Actions workflowがないため、上記はローカル検証でありCI結果ではない。
+リリースは既存の`ControlDeck_v0.x`命名とソースアーカイブ配布に合わせて`ControlDeck_v0.10`を用いる。
+ログ: `/tmp/controldeck-release-tests.log`、`/tmp/controldeck-release-build.log`、
+`/tmp/controldeck-release-browser.log`。実時間の長期放置・物理スマートフォンはNOT TESTED。
+
+## 2026-10-18 ログインの期限切れを無効化
+
+`security.session_timeout_minutes` の既定を480分から0（期限なし）へ変更。
+有効な既存セッションは次の認証時に無期限へ移行し、HTTP応答でCookieを365日保存へ更新する。
+既に期限切れ・取消済みのセッションは復活させず、ログアウト・パスワード変更・
+端末セッション取消・ユーザー無効化による失効を維持する。正の値による未使用時間制限も継続対応。
+ブラウザのCookie削除・保持制限・365日以上の未アクセスでは再ログインが必要。
+
+検証: `./deck.sh test` **1184 passed / 2 skipped / 1 warning / 106.75秒**。
+90日未使用は時計を進めたテストで確認。旧セッション移行・有期限設定への復帰・失効操作も通過。
+Host Job/leaseが0の時点で通常`./deck.sh`を実行し、実サービスPID2277→160578、health 200。
+既存設定ファイルはtimeout未指定のため新既定0が適用される。実HTTPで再起動前に発行した
+8時間Cookieのセッションを再ログインなしで引き継ぎ、365日CookieとDBの無期限化を確認。
+Google Chromeの1280px/320pxで通常ログイン・Cookie属性・保存状態を別contextへ復元・再読込を確認、
+E2E **2 passed / 1.9秒**、横overflowなし。実logout後の旧token再利用は401。
+検証用account/session/資格情報は削除。長期間の実時間経過と物理スマートフォンはNOT TESTED。
+
+反映時、旧プロセスはgraceful shutdownの30秒超過とshutdown中のstallを記録した後に停止し、
+新プロセスが起動。既存tmux端末の再接続を確認。検証終了後の一時session削除と処理中requestが
+競合して`StaleDataError`が1件発生したため、無エラーの受入とはしていない。最終healthは200。
+ログ: `/tmp/controldeck-session-tests.log`、`/tmp/controldeck-session-deploy.log`、
+`/tmp/controldeck-session-browser.log`。仕様は[security model](security-model.md)。
+
 ## 2026-09-23 OpenCode endpoint監視修正を通常導入
 
 実Hostのstall stackが定期監視→feature status→同期version実行で停止し、30秒watchdogで再起動。

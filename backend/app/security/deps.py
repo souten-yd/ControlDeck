@@ -10,8 +10,7 @@ from app.auth.policy import totp_required_for
 from app.database import get_db
 from app.models import User
 from app.security.rate_limit import api_rate_limiter
-from app.config import get_config
-from app.security.sessions import SESSION_COOKIE, resolve_session
+from app.security.sessions import SESSION_COOKIE, resolve_session, set_session_cookie
 
 _TOTP_ENROLLMENT_PATHS = {
     "/api/v1/auth/me",
@@ -32,16 +31,7 @@ def get_current_user(
     if getattr(row, "renewed", False):
         # 使っている間は cookie の期限も延ばす。サーバー側だけ延ばしても、
         # browser が login からの固定時間で cookie を捨てるので結局ログアウトする。
-        cfg = get_config()
-        response.set_cookie(
-            SESSION_COOKIE,
-            token,
-            max_age=cfg.security.session_timeout_minutes * 60,
-            httponly=True,
-            samesite="lax",
-            secure=cfg.security.secure_cookies,
-            path="/",
-        )
+        set_session_cookie(response, token)
     if totp_required_for(user) and not user.totp_enabled and request.url.path not in _TOTP_ENROLLMENT_PATHS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
