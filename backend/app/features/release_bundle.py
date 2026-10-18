@@ -580,6 +580,24 @@ def health(feature_id: str, package: PackageManifest) -> tuple[bool, str]:
     return False, "service health check failed"
 
 
+def ensure_running(feature_id: str, spec: dict[str, Any]) -> None:
+    """Restore an installed service without downloading, provisioning, or restarting it."""
+    selected = current(feature_id)
+    if selected is None:
+        raise ReleaseBundleError("installed release bundle is missing")
+    selected_package, root = selected
+    package, entrypoint, _addon_path = _load_package(root, feature_id, selected_package.version, spec)
+    unit = _unit_name(feature_id)
+    state = systemd.query_status(unit)
+    if state["status"] not in {"RUNNING", "STARTING", "RESTARTING"}:
+        # A missing unit can be rebuilt entirely from the validated installed bundle.
+        _write_service(feature_id, root, package, entrypoint)
+        ok, error = systemd.start(unit)
+        if not ok:
+            raise ReleaseBundleError(f"feature service failed to start: {error[:200]}")
+    _wait_health(str(package.health_url))
+
+
 def install(feature_id: str, spec: dict[str, Any]) -> dict[str, Any]:
     root = _feature_root(feature_id)
     versions = _managed_directory(root, "versions")

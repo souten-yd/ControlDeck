@@ -98,6 +98,29 @@ version selection signal; a failed provision never changes `current`.
 
 ## Removal and ownership
 
+### Boot restoration
+
+The Host restores installed, enabled release-bundle services once during startup,
+in a worker thread. The auto-started Host already waits for its data mount. This
+avoids starting Add-ons before their installed bundle and persistent data are
+available. The Add-on registry's persisted `enabled` flag is authoritative; a
+stale Feature flag must not re-enable an opted-out Add-on. Restoration never
+changes capability grants or downloads/provisions/reinstalls a package.
+
+For a stopped or missing unit, validate the selected installed package, recreate
+the owned unit and start it, then check health. Running services are left running.
+Failure is logged per feature and does not prevent other services or the Host from
+starting. The normal Feature enable action uses the same recovery path, so a
+stopped service is not reported as an invalid installation. An already enabled
+Add-on retains its existing grants when the user requests recovery.
+
+Add-on units remain managed through the Host's startup pass rather than independent
+`systemctl enable` entries. Restarting the Host does not restart healthy Add-ons.
+Machine boot is covered by `control-deck-web.service` being enabled, as established
+by `./deck.sh service`.
+
+### Removal
+
 Removal stops and deletes only the provider-owned service, disables/uninstalls
 the registered Add-on, removes `current`, then removes the provider-owned
 `versions` and `downloads` trees. It does not remove Media Forge data, assets,

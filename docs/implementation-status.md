@@ -1,5 +1,32 @@
 # 実装状況
 
+## 2026-10-19 自動復旧修正のリリース候補検証
+
+`origin/main`の`749a971`から今回の修正を分離し、PR #346を作成。
+実稼働側の既存terminal修正は取り込まず、今回の製品変更4ファイルと新規回帰テストは実稼働側とbyte一致。
+候補で`./deck.sh test` **1195 passed / 2 skipped / 1 warning / 109.39秒**、
+frontend production build成功（Vite 18.44秒、chunk size警告あり）。
+GitHub Actions workflowは0件のため、CI成功ではなくローカル検証として記録する。
+ブラウザ4ケースと停止からのHost起動復旧は下記の実稼働環境で確認済み。
+候補専用の別Hostでのブラウザ試験は未実施。PC自体の再起動・新規生成の未検証境界も継続。
+配布は既存規則に合わせて`ControlDeck_v0.11`のソースアーカイブ。
+証跡: `/data1tb/ControlDeck/data/maintenance/feature-boot-restore-20261018/`
+内の`controldeck-boot-release-tests.log` / `controldeck-boot-release-build.log`。
+
+## 2026-10-18 Media Forge / SonicForge の再起動後サービス復旧
+
+導入済みbundleとデータは残っていたが、両systemd unitが停止し、Hostにも起動復旧処理がなかった。
+Host起動時に有効な導入済みサービスをworker threadで起動・health確認するよう修正。
+無効化設定・権限・保存データを保持し、稼働中サービスは再起動しない。
+設定画面にも「起動して復旧」を追加し、停止を再導入必須として扱う問題を修正。
+
+実Hostを通常`./deck.sh`で再起動し、停止していた両サービスの自動復旧を確認。
+Media Forge 0.33.24 / SonicForge 0.6.37のままhealthy、画像・音声・ジョブ・音声設定件数は不変。
+backend **1195 passed / 2 skipped**、frontend build成功。
+実Chromeの1280px/320pxで設定・Library画像・保存済み音声の再生を確認、E2E **4 passed / 19.1秒**。
+PC自体の再起動・新規生成はNOT TESTED。SonicForgeのLibrary直接URLの404は別途残存。
+[原因・変更・受入記録](feature-boot-restore-20261018.md)。
+
 ## 2026-10-18 ログイン保持のリリース候補検証
 
 `origin/main`の`07d9a00`から`fix/persistent-login`を作成し、ログイン保持の変更を分離。
@@ -17,6 +44,7 @@ Google Chrome1280px/320pxで通常ログイン、365日Cookie、保存状態のc
 リリースは既存の`ControlDeck_v0.x`命名とソースアーカイブ配布に合わせて`ControlDeck_v0.10`を用いる。
 ログ: `/tmp/controldeck-release-tests.log`、`/tmp/controldeck-release-build.log`、
 `/tmp/controldeck-release-browser.log`。実時間の長期放置・物理スマートフォンはNOT TESTED。
+
 
 ## 2026-10-18 ログインの期限切れを無効化
 

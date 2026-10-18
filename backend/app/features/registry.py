@@ -443,6 +443,14 @@ def enable(feature_id: str) -> dict:
     if FEATURES[feature_id]["kind"] == "gpu-runtime":
         # route_gated ではないので導入＝有効。切り替えるべき状態を持たない。
         return current
+    if FEATURES[feature_id]["kind"] == "release-bundle" and current["installed"]:
+        from app.features import release_bundle
+
+        try:
+            release_bundle.ensure_running(feature_id, FEATURES[feature_id])
+        except release_bundle.ReleaseBundleError as exc:
+            raise FeatureError(str(exc)) from exc
+        current = status(feature_id)
     if not current["installed"] or current["health"] != "healthy":
         raise FeatureError(f"正常な{FEATURES[feature_id]['name']}を先に導入してください")
     state = _read_state()
@@ -456,12 +464,41 @@ def enable(feature_id: str) -> dict:
         from app.addons import registry as addon_registry
 
         try:
-            addon_registry.set_enabled(str(FEATURES[feature_id]["addon_id"]), True)
+            # Repairing an already enabled service must preserve its capability grants.
+            if not current["requested_enabled"]:
+                addon_registry.set_enabled(str(FEATURES[feature_id]["addon_id"]), True)
         except addon_registry.AddonRegistryError as exc:
             raise FeatureError(str(exc)) from exc
     # 外部PATHの実体を有効化した場合は install を通らないので、ここでも整える。
     _autoconfigure(feature_id)
     return status(feature_id)
+
+
+def restore_enabled_services() -> None:
+    """One startup pass over installed, opted-in services; run in a worker thread.
+
+    The Host owns boot restoration so the data mount and registry are available
+    before services start. Add-on enabled state is authoritative; never enable an
+    opted-out Add-on or re-grant permissions here.
+    """
+    from app.addons import registry as addon_registry
+    from app.features import release_bundle
+
+    for feature_id, spec in list(FEATURES.items()):
+        if spec["kind"] != "release-bundle":
+            continue
+        try:
+            if release_bundle.current(feature_id) is None:
+                continue
+            if not addon_registry.status(str(spec["addon_id"]))["enabled"]:
+                continue
+            release_bundle.ensure_running(feature_id, spec)
+            logger.info("有効なfeatureのサービスを起動確認しました: %s", feature_id)
+        except Exception:
+            # One broken package must not prevent the Host or other Add-ons from starting.
+            logger.exception("featureサービスの起動復旧に失敗しました: %s", feature_id)
+        finally:
+            invalidate_feature_cache()
 
 
 def disable(feature_id: str) -> dict:

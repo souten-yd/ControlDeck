@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
     from app.models_mgmt.resource_provider import provider as llama_resource_provider
     from app.resources.addon_provider import provider as addon_residency_provider
     from app.models_mgmt.thinking import migrate_shared_reasoning
+    from app.features.registry import restore_enabled_services
 
     # 思考設定を共通設定からモデル個別へ移した際の一度きりの移行。
     # 旧共通値を個別未設定のモデルへ書き、体感が変わらないようにする。
@@ -98,6 +99,7 @@ async def lifespan(app: FastAPI):
     except ValueError:
         pass  # 同上
     tasks = [
+        asyncio.create_task(asyncio.to_thread(restore_enabled_services)),
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(pause_recovery_loop()),

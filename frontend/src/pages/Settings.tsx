@@ -760,6 +760,8 @@ function AddonsSection() {
                 </p>
                 <p className="text-[11px] text-zinc-400">
                   {addon.enabled ? `利用できます — ${addon.summary}`
+                    : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled
+                      ? "導入済み — サービスの復旧が必要です"
                     : addon.installed ? "導入済み（無効）— 有効化すると使えます"
                     : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "release-bundle" ? "検証済みbundle" : addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
                     : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です"}
@@ -798,7 +800,9 @@ function AddonsSection() {
                 )}
                 {addon.installed && !addon.enabled && addon.route_gated && (
                   <button onClick={() => void act(addon, "enable")} disabled={reloading || jobId !== null}
-                    className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>有効化</button>
+                    className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
+                    {addon.kind === "release-bundle" && addon.requested_enabled ? "起動して復旧" : "有効化"}
+                  </button>
                 )}
                 {addon.installed && addon.enabled && addon.route_gated && (
                   <button onClick={() => void act(addon, "disable")} disabled={reloading || jobId !== null}
