@@ -29,7 +29,12 @@
 
 - パスワードハッシュ: Argon2id（argon2-cffi デフォルトパラメータ以上）
 - セッション: 128bit 乱数トークン。DB には SHA-256 ハッシュのみ保存。
-  Cookie 属性: `HttpOnly; SameSite=Lax; Path=/`（HTTPS 時 `Secure`）。有効期限は設定（既定 480 分）。
+  Cookie 属性: `HttpOnly; SameSite=Lax; Path=/`（HTTPS 時 `Secure`）。
+  `security.session_timeout_minutes` は既定 `0`（サーバー側は期限なし）。正の値なら未使用時間（分）で失効。
+  期限なしの場合も Cookie の保存期間は365日とし、認証済みHTTPアクセスで更新する。
+  Cookie削除・ブラウザの保持制限・365日以上の未アクセスでは再ログインが必要。
+  既存の有効なセッションは次の認証時に無期限へ移行する。既に失効・取消されたセッションは復活しない。
+  ログアウト・パスワード変更・セッション取消・ユーザー無効化は引き続き認証を拒否する。
 - TOTP（Phase 7）: RFC 6238、シークレットは暗号化保存。リカバリーコード対応。
 - `security.totp_requirement`は`optional`／`administrators`／`all`。必須対象が未設定の場合は、認証済みsessionを
   enrollment専用の`me`／`setup`／`verify`／`logout`だけへ制限し、その他RESTを403、WebSocketを4403で拒否する。

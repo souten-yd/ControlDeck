@@ -405,7 +405,7 @@ server:
 security:
   require_totp_for_admin: true
   allow_arbitrary_commands: false
-  session_timeout_minutes: 480
+  session_timeout_minutes: 0  # 0 = 期限なし。正の値なら未使用時間（分）で失効
   reauthentication_minutes: 15
 ui:
   default_theme: system
