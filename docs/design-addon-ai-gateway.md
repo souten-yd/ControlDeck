@@ -54,7 +54,7 @@ timeout_seconds
 thinking?            # strict boolean; omitted = false (backward compatible)
 ```
 
-### Per-request thinking control (2026-09-13, implementation candidate)
+### Per-request thinking control (2026-09-13)
 
 Both `complete` and text `stream` accept `thinking: true | false`. This is a
 provider-neutral request preference mapped by the existing runtime provider,
