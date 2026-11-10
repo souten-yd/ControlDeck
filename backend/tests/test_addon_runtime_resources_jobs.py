@@ -584,3 +584,35 @@ def test_a_request_without_host_bytes_still_works():
         "compute_mode": "shared-safe", "class": "agent-interactive", "priority": 20,
     })
     assert body.host_bytes is None
+
+
+def test_lease_inspection_retains_owner_scope_and_terminal_states(runtime_api):
+    from app.resources.schema import LeaseState
+    client, registry, tokens, broker, user_id = runtime_api
+    job, token = create_host_job(client, tokens, user_id)
+    resource = client.post(
+        "/api/v1/addon-runtime/fake-addon/resources/requests",
+        json=resource_body(job["id"]), headers=headers(token),
+    ).json()
+    url = f"/api/v1/addon-runtime/fake-addon/resources/leases/{resource['lease_id']}"
+    first = client.get(url, headers=headers(token))
+    assert first.status_code == 200, first.text
+    assert first.json()["state"] == "granted"
+    expiry = first.json()["expires_at"]
+    assert client.get(url, headers=headers(token)).json()["expires_at"] == expiry
+    assert client.get(url).status_code == 400
+    wrong = tokens.issue("fake-addon", subject=str(user_id + 999), kind="service")
+    assert client.get(url, headers=headers(wrong)).status_code == 403
+    other_job, _ = create_host_job(client, tokens, user_id)
+    other_token = tokens.issue("fake-addon", subject=f"job:{other_job['id']}", kind="service")
+    assert client.get(url, headers=headers(other_token)).status_code == 403
+    assert client.get(url, headers=headers(token, "other-addon")).status_code == 403
+    assert client.get(url + "-absent", headers=headers(token)).status_code == 404
+    broker.leases.release(resource["lease_id"], LeaseState.EXPIRED)
+    assert client.get(url, headers=headers(token)).json()["state"] == "expired"
+    assert client.post("/api/v1/addons/fake-addon/disable", headers=CSRF_HEADERS).status_code == 200
+    # Cleanup authority remains available while disabled, but cannot renew.
+    disabled = client.get(url, headers=headers(token))
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["state"] == "expired"
+    assert client.post(url + "/renew", headers=headers(token)).status_code == 409

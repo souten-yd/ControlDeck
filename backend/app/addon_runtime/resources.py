@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -47,8 +49,14 @@ async def _owned_lease(principal: RuntimePrincipal, lease_id: str):
         raise HTTPException(status_code=404, detail="Resource leaseが見つかりません") from exc
     if value.owner != f"addon:{principal.addon_id}":
         raise HTTPException(status_code=404, detail="Resource leaseが見つかりません")
-    host_job(principal, value.job_id, active_only=False)
+    await asyncio.to_thread(host_job, principal, value.job_id, active_only=False)
     return value
+
+
+@router.get("/leases/{lease_id}")
+async def get_lease(lease_id: str, principal: CleanupResourceAuth):
+    """Inspect owned terminal leases without renewing or changing them."""
+    return await _owned_lease(principal, lease_id)
 
 
 @router.post("/leases/{lease_id}/credential/refresh")
