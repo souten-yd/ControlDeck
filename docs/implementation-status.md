@@ -3776,3 +3776,11 @@ Generation provenance実装（PR352候補）: `require_provenance: true`をlocal
 関連61 tests成功3.29秒（strict opt-in、前/後差替え、取消時のlease解放・provenance非発行、既存API互換を含む）。frontend build17.98秒成功。実Host既存local-only streamで合成59文字を生成し、候補helperを前後に呼び同一model/processを確認。一時addon/user/sessionを除去、Host Job/auditを保持（/tmp/pb-generation-provenance-live.log）。これはhelperの実機検証であり、新APIオプションの実導入試験ではない。候補codeはライブHostへ未反映。
 
 PR352最終ローカル検証: 全1253 tests成功・2 skip・既存Starlette warning、107.00秒（/tmp/pb-provenance-host-full.log）。その後、補助draft GGUFの識別をprojector試験と別parameterへ追加し、helper12 testsを再検証。コード変更はなくテスト被覆追加のみ。ライブAPI反映とPatentBuddy保存接続は次工程。
+
+### Generation provenance実Host受入完了（2026-11-11）
+
+PR352をmain `2c951d7`へ統合。実行中Host jobs=0、ライブai.pyが変更前mainとbyte一致、新helper不存在を確認して、マージ済みのai.py/generation_provenance.pyだけ反映。既存dirty/untracked 21ファイルをhash保存し、通常の`./deck.sh`再起動後も全件一致。ユーザーのpasskey等の作業は保持。health200。
+
+実Hostの正規ai.inference/Jobs/CPU leaseを持つ一時Add-onから`require_provenance:true`を要求し、complete（61文字）とstream（provenance event→done）の双方で、実Qwen3.8ローカル生成と候補helperのmodel_ref/runtime_ref一致を確認。`/tmp/pb-generation-provenance-api-live.log`、err空。一時addon/user/session除去済み、Host Job/audit保持。新APIの実導入は成功し、PatentBuddyの生成版記録は呼出側実装が次工程。
+
+PR351の「実機受入前」は当時の履歴。現在embedding/reranker APIも実導入済みで、BGE-M3/Qwen3-RerankerとPatentBuddy候補の索引/チャート生成を検証済み。詳細はPatentBuddy docs/HANDOFF.mdのPR23検証記録を参照。生成provenanceはmetadata/process連続性の識別であり、重み内容hashや数値再現性の保証へ拡張解釈しない。
