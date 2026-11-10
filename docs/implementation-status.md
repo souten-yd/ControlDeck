@@ -19,6 +19,12 @@ frontend本番build成功。Chrome仮想認証器による登録→logout→パ�
 pageerror・横overflowなし。実端末のFace ID／指紋センサーはNOT TESTED。
 本番Hostは通常 `./deck.sh` で再起動して適用済み、health 200。検証account/session/keyは削除済み。
 
+PR #347は`origin/main`からログイン変更だけを分離。PR treeのbackendも
+**1209 passed / 2 skipped（107.48秒）**、frontend build成功（21.16秒）。
+初回は空のworktreeでbuildとpytestを並行開始し、SPA配信未登録のため既存Project Labの
+404/405期待値が1件失敗。build後の単独再検証と全体再実行で通過。コード変更は不要だった。
+GitHub Actions workflowは未設定。物理端末の生体認証は上記どおり未検証。
+
 ## 2026-10-19 自動復旧修正のリリース候補検証
 
 `origin/main`の`749a971`から今回の修正を分離し、PR #346を作成。
