@@ -8,4 +8,4 @@ capabilitiesで契約対応/利用可能性を確認できるが、事前確認�
 
 capabilitiesの各capabilityは `request_options.local_only.supported=true` と `local_only_available` を返す。complete成功応答は `execution_policy=local_only` を含む。streamは実行時再検証失敗をerrorイベントで終える。
 
-関連52 tests、全体1225 passed/2 skipped、frontend build成功。実Host受入待ち。
+関連52 tests、全体1225 passed/2 skipped、frontend build成功。稼働Hostの認証済み一時アドオン→Broker→実llama.cppローカルGGUFでcomplete成功。実際のPatentBuddy UI/Jobs操作は後続統合の受入。
