@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-10 Add-on local-only AI契約（PR #349）
+
+complete/streamに厳密boolean local_onlyを追加。Host管理llama.cpp・存在するGGUF・loopback宛先を要求し、GPU admission前後で検証。Ollama/未検証runtimeは拒否し、proxy環境変数/redirectを使わない。従来要求は既定falseで維持。capabilitiesは契約対応と利用可能性のみ返しprovider/model/pathを公開しない。
+
+関連52 tests成功。全体初回は隔離worktreeに.venv入口が無くterminal automationの2 testsが失敗。依存hash一致を確認して既存venvへ参照を設定し、./deck.sh testは1225 passed/2 skipped（105.70秒）、frontend build成功（18.29秒）。実Host適用/実ローカルLLMは検証待ち。
+
 ## 2026-11-10 パスワード入力のみ／顔認証パスキーのログイン
 
 前回ログインに成功したユーザー名だけをブラウザで記憶し、次回はパスワード入力から開始。

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ipaddress
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -38,6 +39,7 @@ class RuntimeChatRequest:
     # Deep Research等の大規模入力で要求するcontext。providerがrequest単位で対応する場合だけ使う。
     context_window: int | None = None
     timeout_seconds: int = 300
+    local_only: bool = False
 
 
 @dataclass(slots=True)
@@ -126,6 +128,14 @@ class LlmRuntimeProvider(ABC):
         return True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
+        if request.local_only:
+            try:
+                url = urlsplit(request.base_url)
+                if (url.scheme != "http" or not ipaddress.ip_address(url.hostname or "").is_loopback
+                        or not url.port or url.username or url.password or url.query or url.fragment):
+                    raise ValueError()
+            except ValueError as exc:
+                raise RuntimeProviderError("local-only transport requires a loopback endpoint") from exc
         from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
         try:
@@ -198,7 +208,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         return "context size has been exceeded" in message.lower()
 
     async def _post(self, request: RuntimeChatRequest, payload: dict[str, Any]) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=not request.local_only, follow_redirects=False) as client:
             return await client.post(
                 normalize_openai_base(request.base_url) + "/chat/completions",
                 json=payload,
@@ -228,7 +238,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
                 break
         if response is None:
             raise RuntimeProviderError("LLM応答がありません")
-        if response.status_code >= 400:
+        if response.status_code >= 300:
             raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
         try:
             message = response.json()["choices"][0]["message"]
@@ -242,13 +252,13 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         payload = self._payload(request, stream=True)
         # 最終chunkで正確なprompt/completionトークン数を得る（OpenAI標準。未対応serverは無視する）
         payload["stream_options"] = {"include_usage": True}
-        async with httpx.AsyncClient(timeout=None) as client:
+        async with httpx.AsyncClient(timeout=None, trust_env=not request.local_only, follow_redirects=False) as client:
             async with client.stream(
                 "POST", normalize_openai_base(request.base_url) + "/chat/completions",
                 json=payload,
                 headers={"Authorization": f"Bearer {request.api_key or 'sk-no-key'}"},
             ) as response:
-                if response.status_code >= 400:
+                if response.status_code >= 300:
                     raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
                 async for line in response.aiter_lines():
                     if cancel_event.is_set():
@@ -404,7 +414,7 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
             return await super()._complete_impl(request)
         response: httpx.Response | None = None
         for candidate in response_format_candidates(request.response_format):
-            async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=not request.local_only, follow_redirects=False) as client:
                 response = await client.post(
                     self._native_base(request.base_url) + "/api/chat",
                     json=self._native_payload(request, stream=False, response_format=candidate),
@@ -413,7 +423,7 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
                 break
         if response is None:
             raise RuntimeProviderError("LLM応答がありません")
-        if response.status_code >= 400:
+        if response.status_code >= 300:
             raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
         try:
             return str(response.json()["message"].get("content") or "")
@@ -427,12 +437,12 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
             async for chunk in super()._stream_impl(request, cancel_event):
                 yield chunk
             return
-        async with httpx.AsyncClient(timeout=None) as client:
+        async with httpx.AsyncClient(timeout=None, trust_env=not request.local_only, follow_redirects=False) as client:
             async with client.stream(
                 "POST", self._native_base(request.base_url) + "/api/chat",
                 json=self._native_payload(request, stream=True, response_format=request.response_format),
             ) as response:
-                if response.status_code >= 400:
+                if response.status_code >= 300:
                     raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
                 async for line in response.aiter_lines():
                     if cancel_event.is_set():

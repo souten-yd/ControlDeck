@@ -48,6 +48,7 @@ def runtime_ai_api(admin_client, monkeypatch, tmp_path):
     monkeypatch.setattr(health, "recheck", healthy)
     monkeypatch.setattr(addon_router, "_wait_for_disable_grace", no_grace)
     monkeypatch.setattr(runtime_ai, "capability_available", available)
+    monkeypatch.setattr(runtime_ai, "local_capability_available", available)
     monkeypatch.setattr(
         runtime_ai,
         "resolve_ai_target",
@@ -111,8 +112,8 @@ def test_addon_ai_capabilities_do_not_expose_provider_or_model(runtime_ai_api):
     response = client.get("/api/v1/addon-runtime/fake-addon/ai/capabilities", headers=headers)
     assert response.status_code == 200
     assert response.json() == {
-        "text.generate": {"available": True, "stream": True, "request_options": {"thinking": {"default": False}}},
-        "vision.analyze": {"available": True, "stream": False, "request_options": {"thinking": {"default": False}}},
+        "text.generate": {"available": True, "stream": True, "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}}, "local_only_available": True},
+        "vision.analyze": {"available": True, "stream": False, "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}}, "local_only_available": True},
     }
 
 
@@ -328,3 +329,79 @@ def test_an_embedding_instance_is_never_released(monkeypatch):
     assert llama.release_reason(
         {"role": "embedding", "alias": "embed", "port": 8094}
     ) == "not_an_llm_instance"
+
+
+@pytest.mark.parametrize("endpoint", ["complete", "stream"])
+def test_local_only_rejects_unverified_runtime_without_sending_prompt(runtime_ai_api, endpoint):
+    client, headers, provider = runtime_ai_api
+    response = client.post(f"/api/v1/addon-runtime/fake-addon/ai/{endpoint}", headers=headers,
+        json={"capability": "text.generate", "local_only": True,
+              "messages": [{"role": "user", "content": "confidential invention"}]})
+    assert response.status_code == 503
+    assert not provider.requests
+    assert "confidential" not in response.text
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", "false", [], {}])
+def test_local_only_is_strict_boolean(runtime_ai_api, value):
+    client, headers, provider = runtime_ai_api
+    response = client.post("/api/v1/addon-runtime/fake-addon/ai/complete", headers=headers,
+        json={"capability": "text.generate", "local_only": value,
+              "messages": [{"role": "user", "content": "private"}]})
+    assert response.status_code == 422
+    assert not provider.requests
+
+
+@pytest.mark.parametrize("changed_after_admission", [False, True])
+@pytest.mark.parametrize("endpoint", ["complete", "stream"])
+def test_local_only_revalidates_after_host_admission(runtime_ai_api, monkeypatch, tmp_path, changed_after_admission, endpoint):
+    from app.addon_runtime import ai
+    from app.models_mgmt import llama, gateway
+    from app.models_mgmt.runtime_provider import RuntimeChunk
+    client, headers, provider = runtime_ai_api
+    model = tmp_path / "local.gguf"; model.write_bytes(b"synthetic model")
+    target = AITarget("http://127.0.0.1:18080/v1", "host-selected", gateway_managed=True)
+    monkeypatch.setattr(ai, "resolve_ai_target", lambda _: asyncio.sleep(0, result=target))
+    instance = {"alias": target.model, "base_url": target.base_url, "model_path": str(model)}
+    monkeypatch.setattr(llama, "list_instances", lambda: [instance])
+    releases = []
+    async def acquire(*args): return object(), "test-lease", object()
+    async def release(*args): releases.append(True)
+    async def ready(*args, **kwargs):
+        if changed_after_admission: instance["base_url"] = "http://192.0.2.1:8080/v1"
+        return True
+    async def stream(request):
+        provider.requests.append(request)
+        yield RuntimeChunk("content", content="local answer")
+    provider.stream_chat = stream
+    monkeypatch.setattr(gateway, "_acquire_gateway_lease", acquire)
+    monkeypatch.setattr(gateway, "_release_gateway_lease", release)
+    monkeypatch.setattr(llama, "ensure_ready", ready)
+    response = client.post(f"/api/v1/addon-runtime/fake-addon/ai/{endpoint}", headers=headers,
+        json={"capability": "text.generate", "local_only": True,
+              "messages": [{"role": "user", "content": "private"}]})
+    assert releases == [True]
+    if changed_after_admission:
+        assert not provider.requests
+        assert response.status_code == 502 if endpoint == "complete" else '"type":"error"' in response.text
+    else:
+        assert response.status_code == 200
+        assert provider.requests[0].local_only is True
+        if endpoint == "complete": assert response.json()["execution_policy"] == "local_only"
+
+
+def test_local_target_requires_managed_matching_loopback_and_existing_gguf(monkeypatch, tmp_path):
+    from app.models_mgmt import ai_gateway, llama
+    model = tmp_path / "local.gguf"; model.write_bytes(b"synthetic")
+    entry = {"alias": "local", "model_path": str(model), "base_url": "http://127.0.0.1:1234/v1"}
+    monkeypatch.setattr(llama, "list_instances", lambda: [entry])
+    ai_gateway.require_local_target(AITarget(entry["base_url"], "local", True))
+    for url in ("https://example.com/v1", "http://localhost:1234/v1", "http://192.168.1.1:1234/v1",
+                "http://127.0.0.1:1234/v1?relay=cloud", "http://secret@127.0.0.1:1234/v1"):
+        with pytest.raises(ai_gateway.AITargetUnavailable):
+            ai_gateway.require_local_target(AITarget(url, "local", True))
+    with pytest.raises(ai_gateway.AITargetUnavailable):
+        ai_gateway.require_local_target(AITarget(entry["base_url"], "other", True))
+    model.unlink()
+    with pytest.raises(ai_gateway.AITargetUnavailable):
+        ai_gateway.require_local_target(AITarget(entry["base_url"], "local", True))
