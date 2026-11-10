@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.service import audit_runtime
 from app.models_mgmt.ai_gateway import AITargetUnavailable, capability_available, resolve_ai_target, local_capability_available, require_local_target
+from app.models_mgmt import generation_provenance
 from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeProviderError, RuntimeChunk, provider_for_base_url
 
 
@@ -45,9 +47,12 @@ class RuntimeAIRequest(BaseModel):
     timeout_seconds: int = Field(default=120, ge=1, le=300)
     thinking: StrictBool = False
     local_only: StrictBool = False
+    require_provenance: StrictBool = False
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "RuntimeAIRequest":
+        if self.require_provenance and not self.local_only:
+            raise ValueError("provenance requires local_only")
         try:
             encoded = json.dumps(self.messages, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         except (TypeError, ValueError) as exc:
@@ -115,7 +120,7 @@ async def ai_capabilities(principal: AIAuth):
         capability: {
             "available": await capability_available(capability),
             "stream": capability == "text.generate",
-            "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}},
+            "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}, "require_provenance": {"default": False, "supported": True, "requires_local_only": True}},
             "local_only_available": await local_capability_available(capability),
         }
         for capability in ("text.generate", "vision.analyze")
@@ -126,10 +131,12 @@ async def _complete_with_host_admission(
     target,
     runtime_request: RuntimeChatRequest,
     request: Request,
-) -> str:
+    require_provenance: bool = False,
+) -> tuple[str, dict[str, str] | None]:
+    selected = await asyncio.to_thread(generation_provenance.configured, target) if require_provenance else None
     provider = provider_for_base_url(target.base_url)
     if not target.gateway_managed:
-        return await provider.complete(runtime_request)
+        return await provider.complete(runtime_request), None
 
     # llama.cpp must obey the exact same Broker lease/yield path as /api/v1/llm/v1.
     # Add-ons do not acquire a second GPU lease themselves for this Host-owned
@@ -150,7 +157,11 @@ async def _complete_with_host_admission(
             )
         if runtime_request.local_only:
             await asyncio.to_thread(require_local_target, target)
-        return await provider.complete(runtime_request)
+        proof = await asyncio.to_thread(generation_provenance.capture, target, selected) if selected else None
+        content = await provider.complete(runtime_request)
+        if proof is not None and await asyncio.to_thread(generation_provenance.capture, target, selected) != proof:
+            raise AITargetUnavailable("local generation identity changed during inference")
+        return content, proof
     finally:
         if adapter is not None and lease_id and renew is not None:
             await llm_gateway._release_gateway_lease(adapter, lease_id, renew)
@@ -177,17 +188,25 @@ async def _admitted_free_bytes() -> int:
                 for device in snapshot.get("devices", [])), default=0)
 
 
+@dataclass(frozen=True)
+class ProvenanceChunk:
+    provenance: dict[str, str]
+    type: Literal["provenance"] = "provenance"
+
+
 async def _stream_with_host_admission(
     target,
     runtime_request: RuntimeChatRequest,
     request: Request,
-) -> AsyncIterator[RuntimeChunk]:
+    require_provenance: bool = False,
+) -> AsyncIterator[RuntimeChunk | ProvenanceChunk]:
     """Stream through the same Host-owned admission path as normal chat.
 
     The lease is held only for the LLM stage and is always returned when the
     caller disconnects/cancels or the provider finishes. Add-ons never receive
     provider/model identity or a raw provider credential.
     """
+    selected = await asyncio.to_thread(generation_provenance.configured, target) if require_provenance else None
     provider = provider_for_base_url(target.base_url)
     if not target.gateway_managed:
         async for chunk in provider.stream_chat(runtime_request):
@@ -206,8 +225,13 @@ async def _stream_with_host_admission(
             raise RuntimeProviderError("AI model failed to become ready")
         if runtime_request.local_only:
             await asyncio.to_thread(require_local_target, target)
+        proof = await asyncio.to_thread(generation_provenance.capture, target, selected) if selected else None
         async for chunk in provider.stream_chat(runtime_request):
             yield chunk
+        if proof is not None:
+            if await asyncio.to_thread(generation_provenance.capture, target, selected) != proof:
+                raise AITargetUnavailable("local generation identity changed during inference")
+            yield ProvenanceChunk(proof)
     finally:
         if adapter is not None and lease_id and renew is not None:
             await llm_gateway._release_gateway_lease(adapter, lease_id, renew)
@@ -276,7 +300,7 @@ async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAut
 
     runtime_request = _runtime_request(body, target)
     try:
-        content = await _complete_with_host_admission(target, runtime_request, request)
+        content, proof = await _complete_with_host_admission(target, runtime_request, request, body.require_provenance)
     except (RuntimeProviderError, AITargetUnavailable, OSError) as exc:
         raise HTTPException(status_code=502, detail="ControlDeck AI gatewayで生成に失敗しました") from exc
 
@@ -291,6 +315,8 @@ async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAut
     response = {"content": content, "capability": body.capability}
     if body.local_only:
         response["execution_policy"] = "local_only"
+    if proof is not None:
+        response["provenance"] = proof
     return response
 
 
@@ -310,7 +336,7 @@ async def ai_stream(body: RuntimeAIRequest, request: Request, principal: AIAuth)
     async def events() -> AsyncIterator[str]:
         result = "success"
         try:
-            async for chunk in _stream_with_host_admission(target, runtime_request, request):
+            async for chunk in _stream_with_host_admission(target, runtime_request, request, body.require_provenance):
                 if await request.is_disconnected():
                     result = "client_disconnected"
                     return
@@ -318,7 +344,9 @@ async def ai_stream(body: RuntimeAIRequest, request: Request, principal: AIAuth)
                     # Add-on text.generate intentionally suppresses private/reasoning text.
                     continue
                 payload = {"type": chunk.type}
-                if chunk.type == "content":
+                if chunk.type == "provenance":
+                    payload["provenance"] = chunk.provenance
+                elif chunk.type == "content":
                     payload["content"] = chunk.content
                 elif chunk.type == "usage":
                     payload["usage"] = chunk.usage

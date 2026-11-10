@@ -112,8 +112,8 @@ def test_addon_ai_capabilities_do_not_expose_provider_or_model(runtime_ai_api):
     response = client.get("/api/v1/addon-runtime/fake-addon/ai/capabilities", headers=headers)
     assert response.status_code == 200
     assert response.json() == {
-        "text.generate": {"available": True, "stream": True, "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}}, "local_only_available": True},
-        "vision.analyze": {"available": True, "stream": False, "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}}, "local_only_available": True},
+        "text.generate": {"available": True, "stream": True, "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}, "require_provenance": {"default": False, "supported": True, "requires_local_only": True}}, "local_only_available": True},
+        "vision.analyze": {"available": True, "stream": False, "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}, "require_provenance": {"default": False, "supported": True, "requires_local_only": True}}, "local_only_available": True},
     }
 
 
@@ -405,3 +405,94 @@ def test_local_target_requires_managed_matching_loopback_and_existing_gguf(monke
     model.unlink()
     with pytest.raises(ai_gateway.AITargetUnavailable):
         ai_gateway.require_local_target(AITarget(entry["base_url"], "local", True))
+
+
+@pytest.mark.parametrize('endpoint', ['complete', 'stream'])
+@pytest.mark.parametrize('drift', ['none', 'before', 'after'])
+def test_opt_in_provenance_requires_verified_continuity(runtime_ai_api, monkeypatch, endpoint, drift):
+    from app.addon_runtime import ai
+    from app.models_mgmt import gateway, llama
+    from app.models_mgmt.ai_gateway import AITargetUnavailable
+    from app.models_mgmt.runtime_provider import RuntimeChunk
+    client, headers, provider = runtime_ai_api
+    target = AITarget('http://127.0.0.1:18080/v1', 'private-alias', True)
+    monkeypatch.setattr(ai, 'resolve_ai_target', lambda _: asyncio.sleep(0, result=target))
+    monkeypatch.setattr(ai, 'require_local_target', lambda _: None)
+    monkeypatch.setattr(ai.generation_provenance, 'configured', lambda _: 'selected')
+    proof = dict(model_ref='a'*64, runtime_ref='b'*64, execution_policy='local_only', revision_kind='host_process_file_metadata_v1')
+    captures = []
+    releases = []
+    def capture(target, expected):
+        assert expected == 'selected'
+        captures.append(True)
+        if drift == 'before': raise AITargetUnavailable('unverified process')
+        if drift == 'after' and len(captures) == 2: return dict(proof, runtime_ref='c'*64)
+        return proof
+    monkeypatch.setattr(ai.generation_provenance, 'capture', capture)
+    async def acquire(*args): return object(), 'lease', object()
+    async def release(*args): releases.append(True)
+    async def stream(request):
+        provider.requests.append(request)
+        yield RuntimeChunk('content', content='synthetic answer')
+    monkeypatch.setattr(gateway, '_acquire_gateway_lease', acquire)
+    monkeypatch.setattr(gateway, '_release_gateway_lease', release)
+    monkeypatch.setattr(llama, 'ensure_ready', lambda *a, **kw: asyncio.sleep(0, result=True))
+    provider.stream_chat = stream
+    response = client.post(f'/api/v1/addon-runtime/fake-addon/ai/{endpoint}', headers=headers,
+        json={'capability': 'text.generate', 'local_only': True, 'require_provenance': True,
+              'messages': [{'role': 'user', 'content': 'private synthetic input'}]})
+    assert releases == [True]
+    assert len(provider.requests) == (0 if drift == 'before' else 1)
+    if drift == 'none':
+        assert response.status_code == 200
+        if endpoint == 'complete': assert response.json()['provenance'] == proof
+        else:
+            events = [__import__('json').loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+            assert events[-2:] == [{'type': 'provenance', 'provenance': proof}, {'type': 'done'}]
+    elif endpoint == 'complete':
+        assert response.status_code == 502 and 'provenance' not in response.json()
+    else:
+        assert '"type":"error"' in response.text
+        assert '"type":"provenance"' not in response.text and '"type":"done"' not in response.text
+    assert 'private-alias' not in response.text
+
+
+@pytest.mark.parametrize('body', [
+    {'require_provenance': True},
+    {'require_provenance': 'true', 'local_only': True},
+    {'require_provenance': 1, 'local_only': True},
+])
+def test_provenance_is_strict_opt_in_local_only(runtime_ai_api, body):
+    client, headers, provider = runtime_ai_api
+    response = client.post('/api/v1/addon-runtime/fake-addon/ai/complete', headers=headers,
+        json={'capability': 'text.generate', 'messages': [{'role': 'user', 'content': 'synthetic'}], **body})
+    assert response.status_code == 422
+    assert not provider.requests
+
+
+def test_provenance_stream_cancellation_releases_without_attesting(runtime_ai_api, monkeypatch):
+    from app.addon_runtime import ai
+    from app.models_mgmt import gateway, llama
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeChunk
+    _, _, provider = runtime_ai_api
+    captures, releases = [], []
+    monkeypatch.setattr(ai, 'require_local_target', lambda _: None)
+    monkeypatch.setattr(ai.generation_provenance, 'configured', lambda _: 'selected')
+    monkeypatch.setattr(ai.generation_provenance, 'capture', lambda *a: captures.append(True) or {'model_ref': 'synthetic'})
+    async def acquire(*args): return object(), 'lease', object()
+    async def release(*args): releases.append(True)
+    async def stream(request):
+        yield RuntimeChunk('content', content='partial')
+        await asyncio.sleep(300)
+    monkeypatch.setattr(gateway, '_acquire_gateway_lease', acquire)
+    monkeypatch.setattr(gateway, '_release_gateway_lease', release)
+    monkeypatch.setattr(llama, 'ensure_ready', lambda *a, **kw: asyncio.sleep(0, result=True))
+    provider.stream_chat = stream
+    async def run():
+        target = AITarget('http://127.0.0.1:18080/v1', 'private-alias', True)
+        body = RuntimeChatRequest(target.base_url, target.model, [], local_only=True)
+        generator = ai._stream_with_host_admission(target, body, SimpleNamespace(), True)
+        assert (await anext(generator)).type == 'content'
+        await generator.aclose()
+    asyncio.run(run())
+    assert captures == [True] and releases == [True]

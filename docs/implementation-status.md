@@ -3770,3 +3770,9 @@ Lease inspection final validation: initial full run had 1225 passes and one unre
 PatentBuddyの生成チャートに使用モデル版を残すため、local-only生成の任意provenance契約を追加する。通常の既存AI呼出は互換維持。Hostが選択したGGUF/実行バイナリのfile metadata指紋とsystemd管理processの同一性を照合し、推論前後で変化した場合は成功の証明を返さない。alias/path/URL/資格情報は返さない。内容hashではなくfile metadata由来であることを明示する。呼出側の任意モデル/URL指定やcloud fallbackを追加しない。
 
 まず既存target選択/Host lease/ensure_readyを調査し、設定だけでなく実processのargv/起動時刻も照合するhelperを実装する。次にopt-in complete/stream契約・テスト、main統合/限定実機反映、PatentBuddyで検証済みprovenance保存へ接続する。現段階は計画であり未実装・未配布。ライブHostのユーザー未コミット変更に触れない。
+
+Generation provenance実装（PR352候補）: `require_provenance: true`をlocal_only生成の任意オプションとして追加。completeはprovenance object、streamは正常終了直前のprovenance eventを返す。既定falseの既存応答は維持。モデル選択時のfile metadataと、admission/ensure_ready後のsystemd MainPID・同一UID・実exe/argv・LISTEN port・file更新時刻を照合し、生成後も同じmodel_ref/runtime_refの場合だけ成功を返す。process開始後にモデル/binaryを書換えた場合は既にGPUへ載った重みを確定できないため拒否。補助mmproj/draftも識別対象。alias/path/PID/argv/資格情報は返さず、`revision_kind=host_process_file_metadata_v1`とする。内容hashや完全な数値再現性の証明ではない。
+
+関連61 tests成功3.29秒（strict opt-in、前/後差替え、取消時のlease解放・provenance非発行、既存API互換を含む）。frontend build17.98秒成功。実Host既存local-only streamで合成59文字を生成し、候補helperを前後に呼び同一model/processを確認。一時addon/user/sessionを除去、Host Job/auditを保持（/tmp/pb-generation-provenance-live.log）。これはhelperの実機検証であり、新APIオプションの実導入試験ではない。候補codeはライブHostへ未反映。
+
+PR352最終ローカル検証: 全1253 tests成功・2 skip・既存Starlette warning、107.00秒（/tmp/pb-provenance-host-full.log）。その後、補助draft GGUFの識別をprojector試験と別parameterへ追加し、helper12 testsを再検証。コード変更はなくテスト被覆追加のみ。ライブAPI反映とPatentBuddy保存接続は次工程。
