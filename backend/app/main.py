@@ -273,6 +273,8 @@ from app.addon_runtime.router import router as addon_runtime_router  # noqa: E40
 
 API = "/api/v1"
 app.include_router(auth_router, prefix=API)
+from app.auth.passkeys import router as passkey_router
+app.include_router(passkey_router, prefix=API)
 app.include_router(access_router, prefix=API)
 app.include_router(apps_router, prefix=API)
 # アプリ内Webビュー proxy（同一オリジン・iframe用のためAPI prefixなし）

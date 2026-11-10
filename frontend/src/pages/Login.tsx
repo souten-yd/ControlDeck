@@ -4,10 +4,12 @@ import { api } from "../api/client";
 import { useMeta } from "../api/hooks";
 import { useAuth } from "../stores";
 import { Logo } from "../components/Logo";
+import { loginWithPasskey, passkeyError, passkeysAvailable, rememberedUsername, rememberUsername } from "../api/passkeys";
 import type { UserInfo } from "../types";
 
 export default function LoginPage() {
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState(rememberedUsername);
+  const [chooseUser, setChooseUser] = useState(() => !rememberedUsername());
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [needTotp, setNeedTotp] = useState(false);
@@ -26,6 +28,7 @@ export default function LoginPage() {
         method: "POST",
         json: { username, password, totp_code: totpCode || undefined },
       });
+      rememberUsername(user.username);
       setUser(user);
       navigate("/", { replace: true });
     } catch (err) {
@@ -41,6 +44,15 @@ export default function LoginPage() {
     }
   };
 
+  const passkeyLogin = async () => {
+    setBusy(true); setError(null);
+    try {
+      const user = await loginWithPasskey();
+      rememberUsername(user.username); setUser(user); navigate("/", { replace: true });
+    } catch (error) { setError(passkeyError(error)); }
+    finally { setBusy(false); }
+  };
+
   return (
     <div className="safe-top safe-bottom flex min-h-dvh items-center justify-center px-6">
       <form onSubmit={submit} className="w-full max-w-sm">
@@ -51,7 +63,11 @@ export default function LoginPage() {
           </h1>
         </div>
         <div className="space-y-3">
-          <label className="block">
+          {!chooseUser && <div className="flex items-center justify-between gap-2 text-sm">
+            <span className="min-w-0 break-all">{username}</span>
+            <button type="button" disabled={busy} onClick={() => { setChooseUser(true); setPassword(""); setNeedTotp(false); setTotpCode(""); }} className="shrink-0 text-xs text-accent-600">別のユーザーでログイン</button>
+          </div>}
+          <label className={chooseUser ? "block" : "hidden"}>
             <span className="mb-1 block text-xs font-medium text-zinc-500">
               ユーザー名
             </span>
@@ -109,6 +125,13 @@ export default function LoginPage() {
           >
             {busy ? "確認中..." : needTotp ? "認証してログイン" : "ログイン"}
           </button>
+          <button type="button" disabled={busy || !passkeysAvailable()} onClick={() => void passkeyLogin()}
+            className="w-full rounded-xl border border-zinc-300 py-2.5 text-sm disabled:opacity-50 dark:border-zinc-700">
+            顔認証・パスキーでログイン
+          </button>
+          <p className="text-xs text-zinc-500">{passkeysAvailable()
+            ? "初回はパスワードでログインし、設定からパスキーを登録してください。端末によって指紋・PINで確認します。"
+            : "顔認証・パスキーにはHTTPS接続と対応ブラウザが必要です。"}</p>
           {needTotp && (
             <button
               type="button"

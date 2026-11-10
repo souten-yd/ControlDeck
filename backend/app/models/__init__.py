@@ -784,3 +784,31 @@ class TerminalCommandRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Passkey(Base):
+    __tablename__ = "passkeys"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    credential_id: Mapped[str] = mapped_column(String(1400), unique=True)
+    public_key: Mapped[str] = mapped_column(Text)
+    user_handle: Mapped[str] = mapped_column(String(128))
+    rp_id: Mapped[str] = mapped_column(String(253))
+    name: Mapped[str] = mapped_column(String(80))
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PasskeyChallenge(Base):
+    __tablename__ = "passkey_challenges"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    challenge: Mapped[str] = mapped_column(String(128))
+    purpose: Mapped[str] = mapped_column(String(16))
+    origin: Mapped[str] = mapped_column(String(512))
+    rp_id: Mapped[str] = mapped_column(String(253))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    session_hash: Mapped[str] = mapped_column(String(64), default="")
+    user_handle: Mapped[str] = mapped_column(String(128), default="")
+    name: Mapped[str] = mapped_column(String(80), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

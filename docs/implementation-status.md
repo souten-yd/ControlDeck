@@ -1,5 +1,24 @@
 # 実装状況
 
+## 2026-11-10 パスワード入力のみ／顔認証パスキーのログイン
+
+前回ログインに成功したユーザー名だけをブラウザで記憶し、次回はパスワード入力から開始。
+「別のユーザーでログイン」で切替可能。初回は従来どおりユーザー名とパスワードを入力する。
+設定の「顔認証・パスキー」から登録・一覧・削除でき、ログイン画面にパスキー認証を追加。
+WebAuthnのuser verificationを必須とし、Face ID／指紋／端末PIN等を使用する。顔画像は取得しない。
+登録にはsessionと現在のpassword、有効な場合はTOTPを要求。既存の二要素認証ポリシーは保持。
+公開鍵と5分の単回challengeをDB保存し、Origin/RP ID・署名・user handle・counter・sessionを検証。
+schema revision `a19b48d207f1`、依存 `webauthn>=2.8,<3`。
+
+稼働checkoutのbackend全体 **1209 passed / 2 skipped / 1 warning（121.18秒）**、最終パスキー回帰14件成功。
+frontend本番build成功。Chrome仮想認証器による登録→logout→パスキーログイン→削除→
+旧鍵拒否→ユーザー名再入力なしのpasswordログインを1280px/320pxで検証。
+隔離preview **2 passed / 3.0秒**、本番localhost **2 passed / 3.5秒**。
+既存Tailscale ServeのHTTPSでも **2 passed / 3.5秒**。
+証跡: `/data1tb/ControlDeck/data/maintenance/passkey-login-20261110/`。
+pageerror・横overflowなし。実端末のFace ID／指紋センサーはNOT TESTED。
+本番Hostは通常 `./deck.sh` で再起動して適用済み、health 200。検証account/session/keyは削除済み。
+
 ## 2026-10-19 自動復旧修正のリリース候補検証
 
 `origin/main`の`749a971`から今回の修正を分離し、PR #346を作成。
