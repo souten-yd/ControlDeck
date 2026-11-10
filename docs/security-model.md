@@ -41,6 +41,17 @@
   設定完了後に通常権限へ戻し、必須対象によるTOTP無効化は監査付きで拒否する。legacyの
   `require_totp_for_admin: true`は`administrators`と同じ強制として扱う。
 - ログイン試行はレート制限し、失敗を監査ログへ記録する。
+- パスワードログイン成功時にブラウザへユーザー名だけを記憶し、次回はそのユーザーの
+  パスワード入力から開始する。別ユーザーへの切替は可能。パスワード・認証コードは保存しない。
+- 顔認証等はWebAuthnパスキーで扱い、顔画像をサーバーへ送信・保存しない。端末によって
+  Face ID／指紋／PIN等を使う。HTTPS（localhostはHTTP可）が必要で、登録したRPの接続先で使う。
+  登録には既存sessionと現在のpassword、有効な場合はTOTP／recovery codeによる再認証が必要。
+  認証器のuser verificationを登録・ログインとも必須とし、公開鍵・署名・RP ID・Origin・
+  challenge・user handle・sign counterを検証する。パスキーログインに追加TOTP入力は不要だが、
+  組織のTOTP enrollment必須ポリシーは引き続き適用する。
+  challengeは5分の単回使用で、HttpOnly／SameSite=Strict cookieへ結び付け、登録では
+  既存sessionとuserにも束縛する。失敗時も消費し、DBの条件付きDELETEで再利用を防ぐ。
+  公開鍵の一覧露出はせず、管理APIは本人に限定。登録・削除・ログインを監査する。
 - パスワード変更は現在のパスワードで再認証し、成功時に本人の全セッションを失効する。失敗は接続元+user単位5回/15分、
   TOTP有効化確認／無効化は各5回/5分に制限し、成功／失敗／制限を秘密値なしで監査する。
 - ログイン／TOTP／パスワード変更の失敗counterも最大20,000 keyへ制限し、異なるusernameの大量送信でmemoryを無制限に消費しない。

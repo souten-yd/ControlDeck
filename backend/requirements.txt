@@ -23,3 +23,5 @@ playwright
 pyotp
 qrcode
 pypdf>=5.0
+
+webauthn>=2.8,<3
