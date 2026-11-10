@@ -62,5 +62,35 @@
     "publisher_keys": [
       "g4c486WbOPjVYuwtkMLxqriGlolip0Tfen2E262+PC0="
     ]
+  },
+  "patent-buddy": {
+    "name": "PatentBuddy",
+    "kind": "release-bundle",
+    "route_gated": true,
+    "summary": "ResearchDataHubサーバーに接続する特許調査・分析アドオン。文献の保存先サーバーとは別に管理します。",
+    "release_metadata_url": "https://api.github.com/repos/souten-yd/PatentBuddy/releases/latest",
+    "artifact_name": "control-deck-patent-buddy-{version}-{platform}-{arch}.tar.gz",
+    "addon_id": "patent-buddy",
+    "allowed_host_capabilities": [
+      "context.read",
+      "theme.read",
+      "route.open",
+      "files.pick",
+      "files.export",
+      "jobs.read",
+      "jobs.write",
+      "notifications.show",
+      "resources.acquire",
+      "ai.inference"
+    ],
+    "max_download_bytes": 536870912,
+    "max_expanded_bytes": 1073741824,
+    "smoke_timeout_sec": 120,
+    "provision_timeout_sec": 7200,
+    "retain_versions": 2,
+    "preview": true,
+    "publisher_keys": [
+      "g4c486WbOPjVYuwtkMLxqriGlolip0Tfen2E262+PC0="
+    ]
   }
 }

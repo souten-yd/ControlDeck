@@ -3734,3 +3734,7 @@ OpenCode の `skills.paths`（runtime config へ有効なものだけ並べる�
 
 外部: `blender-skills`（commit 固定）。BlenderMCP 前提なので実行部分は噛み合わない
 ことを `requires` に書いて画面へ出す。
+
+### 2026-11-10 PatentBuddy option registration (in progress)
+
+User requested PatentBuddy in the same optional-feature install/update/enable/disable lifecycle as the other Add-ons. Added a release-bundle trusted catalog entry, scoped to `souten-yd/PatentBuddy` and `control-deck-patent-buddy-*` assets. Uses the existing souten-yd publisher key already trusted for SonicForge; no new private key is generated or copied. The entry is preview until the signed package and installed UI acceptance pass. ResearchDataHub is a separate data server, not the Add-on's local database. Host runtime implementation and existing user changes are untouched. Release-bundle tests and live install/update acceptance are pending.
