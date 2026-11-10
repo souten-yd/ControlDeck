@@ -3754,3 +3754,13 @@ PatentBuddy PDF imports need to distinguish an already-released or expired lease
 Lease inspection implementation: GET `/api/v1/addon-runtime/{addon_id}/resources/leases/{lease_id}` uses existing CleanupResourceAuth and verifies the Add-on and Job owner. It preserves expiry and state and performs no mutation/audit write. Shared lease ownership DB lookup now runs through `asyncio.to_thread`. Related 35 tests pass (4.69s), including wrong user/Job/header, missing lease, expired lease and disabled cleanup authority. Full suite and live rollout are in progress.
 
 Lease inspection final validation: initial full run had 1225 passes and one unrelated Project Lab 404/405 assertion failure because this fresh worktree lacked frontend/dist (SPA route not registered). Built frontend successfully (21.32s); the exact failed test then passed unchanged. Full rerun: 1226 passed, 2 skipped, existing Starlette warning, 112.41s. Logs `/tmp/pb-host-lease-{full,build,environment-test,full2}.log`. Tests were not relaxed. Live rollout and PatentBuddy recovery acceptance follow merge.
+
+
+## Add-on local retrieval AI（2026-11-11・実機受入前）
+
+- PR351: ai.inference認可の /ai/retrieval/capabilities と /execute を追加。Host登録済みembedding/reranker GGUFだけを選択し、loopback/役割/原本fileを確認して既存gateway Broker lease→ensure_ready→推論→releaseを使う。cloud fallbackなし。
+- 入力32件/各8192文字/計64KiB、応答4MiB/8192次元。finite値・行数/indexの完全被覆を検証。proxy/redirect拒否、設定差替えを前後で検出、切断時に推論taskをcancelしleaseを解放。
+- model_refはモデルfile path/size/mtime_ns/inodeと実行設定のopaque SHA256指紋。alias/path/URL/資格情報は出さない。内容hashの証明ではないためrevision_kind=host_file_metadata_v1と明示する。
+- 関連46 tests成功3.04秒、frontend build19.08秒。初回全体1failed/1231passedはfrontend未ビルド時に起動したSPA routerの既存404/405検証。build完了後、全1232 tests成功105.70秒/2skip/既存warning。
+- 初回関連試験はdisable拒否409を401/403と誤期待し、async test plugin不存在で4件失敗。既存409契約とasyncio.runへ修正（依存追加なし）。pytest既定tmp cleanup中のwatchdog stackは試験プロセスのcleanup。以降専用basetempで検証。
+- 実Hostにはまだ未反映。実登録モデルはLLM Qwen3.8-27Bのみだったため、通常role-presets APIの導入jobでBGE-M3とQwen3-Reranker-4Bを準備中。導入中のHost再起動はしない。実API/PatentBuddy結合・モデル品質/計時は未検証。
