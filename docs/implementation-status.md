@@ -3750,3 +3750,5 @@ PatentBuddy registration verification: `test_release_bundle_feature.py` 20 passe
 ### 2026-11-10 Add-on lease recovery inspection (in progress)
 
 PatentBuddy PDF imports need to distinguish an already-released or expired lease from an active lease after a lost release response or worker restart. Add a read-only scoped GET for a lease using the existing cleanup authority and owner/Job checks. No authority expansion, GPU execution, or frontend changes. Authorization regression tests and live acceptance are pending.
+
+Lease inspection implementation: GET `/api/v1/addon-runtime/{addon_id}/resources/leases/{lease_id}` uses existing CleanupResourceAuth and verifies the Add-on and Job owner. It preserves expiry and state and performs no mutation/audit write. Shared lease ownership DB lookup now runs through `asyncio.to_thread`. Related 35 tests pass (4.69s), including wrong user/Job/header, missing lease, expired lease and disabled cleanup authority. Full suite and live rollout are in progress.
