@@ -7,6 +7,11 @@ changing the add-on contract.
 """
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+from pathlib import Path
+from urllib.parse import urlsplit
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -111,7 +116,7 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
 
     runtime = str(get_policy().selected_runtime)
     if runtime == "llama.cpp":
-        return _llama_target(capability)
+        return await asyncio.to_thread(_llama_target, capability)
     if runtime == "ollama":
         return await _ollama_target(capability)
     raise AITargetUnavailable(f"選択中 runtime {runtime!r} は AI gateway に未対応です")
@@ -121,5 +126,38 @@ async def capability_available(capability: AICapability) -> bool:
     try:
         await resolve_ai_target(capability)
     except AITargetUnavailable:
+        return False
+    return True
+
+
+def require_local_target(target: AITarget) -> None:
+    """Verify Host-managed local inference, not merely a localhost HTTP URL."""
+    from app.models_mgmt import llama
+
+    if not target.gateway_managed:
+        raise AITargetUnavailable("local-only execution is not verified for this runtime")
+    try:
+        url = urlsplit(target.base_url)
+        if (url.scheme != "http" or not ipaddress.ip_address(url.hostname or "").is_loopback
+                or not url.port or url.username or url.password or url.query or url.fragment
+                or url.path not in ("", "/v1")):
+            raise ValueError()
+    except ValueError as exc:
+        raise AITargetUnavailable("local-only endpoint is invalid") from exc
+    instances = llama.list_instances()
+    instance = next((item for item in instances if item.get("alias") == target.model
+                     and item.get("base_url") == target.base_url), None)
+    if not instance or instance.get("role", "llm") != "llm":
+        raise AITargetUnavailable("local-only model is not Host managed")
+    model = Path(str(instance.get("model_path") or "")).resolve()
+    if model.suffix.lower() != ".gguf" or not model.is_file():
+        raise AITargetUnavailable("local-only model file is unavailable")
+
+
+async def local_capability_available(capability: AICapability) -> bool:
+    try:
+        target = await resolve_ai_target(capability)
+        await asyncio.to_thread(require_local_target, target)
+    except (AITargetUnavailable, OSError):
         return False
     return True

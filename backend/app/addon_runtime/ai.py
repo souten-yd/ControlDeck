@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -12,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from app.addon_runtime.auth import RuntimePrincipal, require_runtime_capability
 from app.addon_runtime.service import audit_runtime
-from app.models_mgmt.ai_gateway import AITargetUnavailable, capability_available, resolve_ai_target
+from app.models_mgmt.ai_gateway import AITargetUnavailable, capability_available, resolve_ai_target, local_capability_available, require_local_target
 from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeProviderError, RuntimeChunk, provider_for_base_url
 
 
@@ -43,6 +44,7 @@ class RuntimeAIRequest(BaseModel):
     max_tokens: int = Field(default=2048, ge=1, le=8192)
     timeout_seconds: int = Field(default=120, ge=1, le=300)
     thinking: StrictBool = False
+    local_only: StrictBool = False
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "RuntimeAIRequest":
@@ -102,6 +104,7 @@ def _runtime_request(body: RuntimeAIRequest, target) -> RuntimeChatRequest:
         disable_thinking=not body.thinking,
         response_format=body.response_format,
         timeout_seconds=body.timeout_seconds,
+        local_only=body.local_only,
     )
 
 
@@ -112,7 +115,8 @@ async def ai_capabilities(principal: AIAuth):
         capability: {
             "available": await capability_available(capability),
             "stream": capability == "text.generate",
-            "request_options": {"thinking": {"default": False}},
+            "request_options": {"thinking": {"default": False}, "local_only": {"default": False, "supported": True}},
+            "local_only_available": await local_capability_available(capability),
         }
         for capability in ("text.generate", "vision.analyze")
     }
@@ -144,6 +148,8 @@ async def _complete_with_host_admission(
                 detail="AIモデルの起動に失敗しました",
                 headers={"Retry-After": "5"},
             )
+        if runtime_request.local_only:
+            await asyncio.to_thread(require_local_target, target)
         return await provider.complete(runtime_request)
     finally:
         if adapter is not None and lease_id and renew is not None:
@@ -198,6 +204,8 @@ async def _stream_with_host_admission(
         adapter, lease_id, renew = await llm_gateway._acquire_gateway_lease(target.model, request)
         if not await llama.ensure_ready(target.model, timeout_seconds=180):
             raise RuntimeProviderError("AI model failed to become ready")
+        if runtime_request.local_only:
+            await asyncio.to_thread(require_local_target, target)
         async for chunk in provider.stream_chat(runtime_request):
             yield chunk
     finally:
@@ -261,13 +269,15 @@ async def ai_release(request: Request, principal: AIAuth, body: AIReleaseRequest
 async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAuth):
     try:
         target = await resolve_ai_target(body.capability)
-    except AITargetUnavailable as exc:
+        if body.local_only:
+            await asyncio.to_thread(require_local_target, target)
+    except (AITargetUnavailable, OSError) as exc:
         raise HTTPException(status_code=503, detail="要求されたAI capabilityを利用できません") from exc
 
     runtime_request = _runtime_request(body, target)
     try:
         content = await _complete_with_host_admission(target, runtime_request, request)
-    except RuntimeProviderError as exc:
+    except (RuntimeProviderError, AITargetUnavailable, OSError) as exc:
         raise HTTPException(status_code=502, detail="ControlDeck AI gatewayで生成に失敗しました") from exc
 
     audit_runtime(
@@ -278,7 +288,10 @@ async def ai_complete(body: RuntimeAIRequest, request: Request, principal: AIAut
         body.capability,
         {"capability": body.capability},
     )
-    return {"content": content, "capability": body.capability}
+    response = {"content": content, "capability": body.capability}
+    if body.local_only:
+        response["execution_policy"] = "local_only"
+    return response
 
 
 @router.post("/stream")
@@ -287,7 +300,9 @@ async def ai_stream(body: RuntimeAIRequest, request: Request, principal: AIAuth)
         raise HTTPException(status_code=400, detail="streaming currently supports text.generate only")
     try:
         target = await resolve_ai_target(body.capability)
-    except AITargetUnavailable as exc:
+        if body.local_only:
+            await asyncio.to_thread(require_local_target, target)
+    except (AITargetUnavailable, OSError) as exc:
         raise HTTPException(status_code=503, detail="要求されたAI capabilityを利用できません") from exc
 
     runtime_request = _runtime_request(body, target)
@@ -309,7 +324,7 @@ async def ai_stream(body: RuntimeAIRequest, request: Request, principal: AIAuth)
                     payload["usage"] = chunk.usage
                 yield "data: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n\n"
             yield 'data: {"type":"done"}\n\n'
-        except RuntimeProviderError:
+        except (RuntimeProviderError, AITargetUnavailable, OSError):
             result = "provider_error"
             yield 'data: {"type":"error","code":"generation_failed"}\n\n'
         finally:

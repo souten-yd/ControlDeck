@@ -242,3 +242,32 @@ def test_chat_job_cancel_notifies_runtime_before_generic_cancel(admin_client, mo
     )
     assert response.status_code == 200
     assert calls == [("runtime", "chat-cancel-1"), ("job", "chat-cancel-1")]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_local_only_transport_ignores_proxy_and_never_follows_redirect(monkeypatch, stream):
+    """A redirect cannot forward a confidential request to another destination."""
+    import httpx
+    from app.models_mgmt import runtime_provider as rp
+
+    sent = []
+    options = []
+    real_client = httpx.AsyncClient
+    def redirect(request):
+        sent.append(str(request.url))
+        return httpx.Response(307, headers={"Location": "https://external.invalid/collect"})
+    def client(**kwargs):
+        options.append(kwargs)
+        return real_client(transport=httpx.MockTransport(redirect), **kwargs)
+    monkeypatch.setenv("HTTP_PROXY", "http://external.invalid:9999")
+    monkeypatch.setattr(rp.httpx, "AsyncClient", client)
+    request = rp.RuntimeChatRequest(base_url="http://127.0.0.1:1234/v1", model="local",
+        messages=[{"role": "user", "content": "confidential invention"}], local_only=True)
+    provider = rp.OpenAICompatibleRuntimeProvider()
+    async def run():
+        if stream:
+            return [chunk async for chunk in provider._stream_impl(request, asyncio.Event())]
+        return await provider._complete_impl(request)
+    with pytest.raises(rp.RuntimeProviderError): asyncio.run(run())
+    assert sent == ["http://127.0.0.1:1234/v1/chat/completions"]
+    assert all(o["trust_env"] is False and o["follow_redirects"] is False for o in options)
