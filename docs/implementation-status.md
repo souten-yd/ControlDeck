@@ -3764,3 +3764,9 @@ Lease inspection final validation: initial full run had 1225 passes and one unre
 - 関連46 tests成功3.04秒、frontend build19.08秒。初回全体1failed/1231passedはfrontend未ビルド時に起動したSPA routerの既存404/405検証。build完了後、全1232 tests成功105.70秒/2skip/既存warning。
 - 初回関連試験はdisable拒否409を401/403と誤期待し、async test plugin不存在で4件失敗。既存409契約とasyncio.runへ修正（依存追加なし）。pytest既定tmp cleanup中のwatchdog stackは試験プロセスのcleanup。以降専用basetempで検証。
 - 実Hostにはまだ未反映。実登録モデルはLLM Qwen3.8-27Bのみだったため、通常role-presets APIの導入jobでBGE-M3とQwen3-Reranker-4Bを準備中。導入中のHost再起動はしない。実API/PatentBuddy結合・モデル品質/計時は未検証。
+
+## Add-on generation provenance（2026-11-11・実装中）
+
+PatentBuddyの生成チャートに使用モデル版を残すため、local-only生成の任意provenance契約を追加する。通常の既存AI呼出は互換維持。Hostが選択したGGUF/実行バイナリのfile metadata指紋とsystemd管理processの同一性を照合し、推論前後で変化した場合は成功の証明を返さない。alias/path/URL/資格情報は返さない。内容hashではなくfile metadata由来であることを明示する。呼出側の任意モデル/URL指定やcloud fallbackを追加しない。
+
+まず既存target選択/Host lease/ensure_readyを調査し、設定だけでなく実processのargv/起動時刻も照合するhelperを実装する。次にopt-in complete/stream契約・テスト、main統合/限定実機反映、PatentBuddyで検証済みprovenance保存へ接続する。現段階は計画であり未実装・未配布。ライブHostのユーザー未コミット変更に触れない。
