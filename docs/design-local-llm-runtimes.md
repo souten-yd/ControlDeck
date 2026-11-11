@@ -24,7 +24,7 @@ CLIおよびエンジンの実行はモデルの手動取得・起動と分離�
 ## 既存LLMの維持
 
 - `models_mgmt/local_llm.py` はllama.cppとユーザーが明示登録したStrataモデルだけを列挙する。既存のmodel alias、ポート、共有KV受入制御、オンデマンド起動を維持する。
-- GPUリソース管理は登録されたllama.cppモデルを引き続き使用する。
+- GPUリソース管理は登録済みのllama.cpp / Strataを共通のリソース対象とする。Strataは分割重みのため現状は保守的なVRAM予約量を使用する。
 - `models_mgmt/runtime_policy.py` の既定モデル・排他ポリシーは変更しない。旧Lucebox選択の読み込み時だけOllamaへ安全に退避する。
 - Strataの導入・更新・削除でOllama/llama.cppを停止、更新、削除、切り替えない。
 - Strataのモデル登録はユーザー明示操作でのみ作成する。初回起動（大容量ダウンロードあり）は`POST /models/strata/instances/{alias}/start-jobs`で開始する。初回成功前、ゲートウェイからの暗黙モデル取得を禁止する。初回成功後のみ登録モデルのオンデマンド再起動を認める。
