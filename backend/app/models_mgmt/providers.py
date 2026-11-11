@@ -91,7 +91,7 @@ async def _candidates() -> list[dict]:
 
     # Strata is opt-in: only installed, ControlDeck-registered models appear here.
     if strata.installed():
-        strata_instances = strata_gateway.list_instances()
+        strata_instances = await asyncio.to_thread(strata_gateway.list_instances)
         if strata_instances:
             first = strata_instances[0]
             add(first["base_url"], "strata", "Strata", managed=True,
