@@ -22,7 +22,7 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
     generation = ["chat", "stream", "cancel"] if available else []
     if managed and kind == "ollama":
         return generation + ["list", "load", "unload", "delete", "pull", "configure"]
-    if managed and kind in ("llama.cpp", "lucebox"):
+    if managed and kind in ("llama.cpp",):
         return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return generation + ["list"]
 
@@ -36,15 +36,15 @@ def _provider_id(kind: str, base_url: str, *, managed: bool) -> str:
     parsed = urlsplit(base_url)
     host = parsed.hostname or "unknown"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return kind if managed and kind in ("ollama", "llama.cpp", "lucebox") else f"{kind}-{host}-{port}"
+    return kind if managed and kind in ("ollama", "llama.cpp") else f"{kind}-{host}-{port}"
 
 
 # ゲートウェイへ集約するローカルランタイム。個別ポートを候補から外す判定に使う。
-GATEWAY_RUNTIMES = ("llama.cpp", "lucebox")
+GATEWAY_RUNTIMES = ("llama.cpp",)
 
 
 async def _candidates() -> list[dict]:
-    from app.models_mgmt import llama, lucebox, ollama
+    from app.models_mgmt import llama, ollama
 
     candidates: dict[str, dict] = {}
 
@@ -88,22 +88,6 @@ async def _candidates() -> list[dict]:
         add(base, "llama.cpp-instance", f"llama.cpp · {label}",
             installed=bool(llama_status.get("installed")), experimental=True)
         candidates[base]["aliases"] = aliases
-
-    # Lucebox。1モデル=1ポートなので、エンドポイントを束ねる処理は要らない。
-    lucebox_status = lucebox.runtime_status()
-    lucebox_installed = bool(lucebox_status.get("installed"))
-    lucebox_instances = lucebox_status.get("instances", [])
-    if lucebox_installed or lucebox_instances:
-        default_port = int(lucebox.DEFAULT_INSTANCE["port"])
-        first_port = int(lucebox_instances[0]["port"]) if lucebox_instances else default_port
-        add(f"http://127.0.0.1:{first_port}", "lucebox", "Lucebox",
-            managed=True, installed=lucebox_installed, experimental=True)
-    for instance in lucebox_instances:
-        base = _openai_base(str(instance.get("base_url") or f"http://127.0.0.1:{instance['port']}"))
-        alias = str(instance["alias"])
-        add(base, "lucebox-instance", f"Lucebox · {alias}",
-            installed=lucebox_installed, experimental=True)
-        candidates[base].setdefault("aliases", []).append(alias)
 
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)
