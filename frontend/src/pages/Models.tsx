@@ -291,11 +291,10 @@ export default function ModelsPage() {
             family: "", loaded: !!m.loaded, expires_at: null, vram: null,
             vision_enabled: m.details.vision_enabled === true,
             runtime, backend_label: String(m.details.backend_label ?? ""),
-            speculative: m.details.speculative === true,
             port: typeof m.details.port === "number" ? m.details.port : undefined,
           }));
         } catch {
-          // 片方が未導入でも、もう片方の一覧は出す。
+          // ローカルllama.cppの登録が取得できない場合は空で扱う。
           return [] as Model[];
         }
       }));
@@ -362,7 +361,7 @@ export default function ModelsPage() {
   };
 
   const removeLocal = useMutation({
-    mutationFn: ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) =>
+    mutationFn: ({ alias, file }: { alias: string; runtime: LocalRuntime; file: boolean }) =>
       deleteLlamaInstance(alias, file),
     onSuccess: (result) => {
       show(result.gguf_deleted ? "設定とGGUFを削除しました"
