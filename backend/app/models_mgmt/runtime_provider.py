@@ -480,7 +480,7 @@ class StrataRuntimeProvider(OpenAICompatibleRuntimeProvider):
 
         port = urlsplit(normalize_openai_base(request.base_url)).port
         instance = next(
-            (item for item in strata_gateway.list_instances() if item["port"] == port),
+            (item for item in await asyncio.to_thread(strata_gateway.list_instances) if item["port"] == port),
             None,
         )
         if instance is None or not await strata_gateway.ensure_ready(
