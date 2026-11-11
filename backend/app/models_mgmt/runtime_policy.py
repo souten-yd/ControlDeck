@@ -63,8 +63,8 @@ class AmdGpuSettings(BaseModel):
 
 
 class RuntimePolicy(BaseModel):
-    selected_runtime: Literal["ollama", "llama.cpp"] = "ollama"
-    # llama.cppのバックエンドだけを選択する（Strataはオプトイン独立CLI）。
+    selected_runtime: Literal["ollama", "llama.cpp", "strata"] = "ollama"
+    # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
     selected_backend: Literal["rocm", "vulkan", ""] = ""
     coexistence: Literal["exclusive", "coexist"] = "exclusive"
     idle_unload_enabled: bool = False
@@ -173,7 +173,7 @@ def model_output_tokens(base_url: str, model: str) -> int:
 
 
 async def environment() -> dict:
-    from app.models_mgmt import amd_gpu, llama, ollama
+    from app.models_mgmt import amd_gpu, llama, ollama, strata, strata_gateway
 
     policy = get_policy()
     detected = llama.detect_backends()
@@ -201,6 +201,18 @@ async def environment() -> dict:
             "running": any_llama_running and llama_status.get("backend") == backend,
             "warning": llama.backend_warning(backend),
             "addon_id": "llama-cpp",
+        })
+    # Strata appears only once the optional managed terminal has been installed.
+    if strata.installed():
+        instances = strata_gateway.list_instances()
+        runtimes.append({
+            "id": "strata", "runtime": "strata", "backend": "",
+            "label": "Strata（ローカルLLM / R9700）",
+            "available": bool(strata.available()), "installed": True,
+            "selected": policy.selected_runtime == "strata",
+            "running": any(item.get("loaded") for item in instances),
+            "warning": "モデルは明示的に登録・初回起動してください",
+            "addon_id": "strata", "experimental": True,
         })
     gpu_caps = amd_gpu.capabilities()
     if gpu_caps:
@@ -274,7 +286,7 @@ def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:
 
 async def apply_selection(policy: RuntimePolicy) -> None:
     """排他モードのruntime切替。サービス削除はせず、競合モデルだけ解放する。"""
-    from app.models_mgmt import llama, ollama
+    from app.models_mgmt import llama, ollama, strata, strata_gateway
 
     async def _release_ollama() -> None:
         for model in await ollama.running_models():
@@ -287,6 +299,21 @@ async def apply_selection(policy: RuntimePolicy) -> None:
         for item in instances:
             if item.get("loaded"):
                 llama.stop_instance(str(item["alias"]))
+
+    def _release_strata() -> None:
+        for item in strata_gateway.list_instances():
+            if item.get("loaded"):
+                ok, reason = strata_gateway.stop_instance(str(item["alias"]))
+                if not ok:
+                    raise RuntimeError(reason or "Strataモデルを停止できませんでした")
+
+    if policy.selected_runtime == "strata":
+        if not strata.installed():
+            raise ValueError("Strataは未導入です。オプション機能から導入してください")
+        if policy.coexistence == "exclusive":
+            await _release_ollama()
+            _release_llama()
+        return
 
     if policy.selected_runtime == "llama.cpp":
         if policy.selected_backend not in llama.installed_backends():
@@ -303,11 +330,13 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                     raise RuntimeError(detail or f"backend切替後の起動に失敗しました: {alias}")
         if policy.coexistence == "exclusive":
             await _release_ollama()
+            _release_strata()
     elif policy.coexistence == "exclusive":
         instances = llama.list_instances()
         _release_llama()
         if not instances and (await llama.health()).get("ok", False):
             llama.stop_instance()
+        _release_strata()
 
 
 async def _wait_llama_health(alias: str, seconds: int = 90) -> bool:
