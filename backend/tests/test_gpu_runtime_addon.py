@@ -9,7 +9,7 @@ from app.features import gpu_runtime, registry
 def test_catalog_registers_llama_and_strata():
     assert {"llama-cpp", "strata"} <= registry.KNOWN_FEATURES
     assert registry.FEATURES["llama-cpp"]["repo"] == "souten-yd/llama-builder"
-    assert registry.FEATURES["strata"]["repo"] == "souten-yd/AMDStrata"
+    assert registry.FEATURES["strata"]["repo"] == "Niko1221/Strata"
     assert registry.FEATURES["llama-cpp"]["kind"] == "gpu-runtime"
 
 
