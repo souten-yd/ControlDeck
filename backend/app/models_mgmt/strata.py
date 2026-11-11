@@ -215,12 +215,12 @@ def uninstall() -> dict:
     if result.returncode != 0:
         raise StrataError("稼働状態を確認できません。Strataを停止してから削除してください")
     try:
-        state = json.loads(result.stdout)
+        state = json.loads(result.stdout.splitlines()[0])
     except (ValueError, TypeError) as exc:
         raise StrataError("稼働状態を解釈できません。Strataを停止してから削除してください") from exc
-    if not isinstance(state, dict) or "serving" not in state:
+    if not isinstance(state, dict) or not isinstance(state.get("running"), list):
         raise StrataError("稼働状態が不明です。Strataを停止してから削除してください")
-    if state["serving"]:
+    if state["running"]:
         raise StrataError("Strataモデルが稼働中です。停止してから削除してください")
     # Delete only the CLI and managed engine. Never delete downloaded models,
     # shared GGUF libraries, configurations or a Strata installation on PATH.
