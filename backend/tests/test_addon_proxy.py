@@ -494,3 +494,25 @@ def test_addon_frame_still_rejects_an_oversize_json_response(enabled_addon, monk
     monkeypatch.setattr(proxy, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     response = client.get("/addon-frame/fake-addon/large")
     assert response.status_code == 502
+
+
+def test_sandbox_csp_keeps_restrictions_and_resolves_only_same_origin(enabled_addon, monkeypatch):
+    client, _ = enabled_addon
+    from app.addons import proxy
+    def handler(request):
+        return httpx.Response(200, headers={
+            'Content-Type': 'text/html',
+            'Content-Security-Policy': "default-src 'none'; connect-src 'self'; script-src 'sha256-example'",
+        }, stream=OneChunkStream(b'<html></html>'), request=request)
+    monkeypatch.setattr(proxy, '_new_http_client', lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=False))
+    response = client.get('/addon-frame/fake-addon/')
+    values = response.headers.get_list('content-security-policy')
+    assert len(values) == 1
+    assert "default-src 'none'" in values[0]
+    assert "script-src 'sha256-example'" in values[0]
+    assert "connect-src 'self' http://testserver" in values[0]
+    assert 'sandbox allow-scripts' in values[0]
+    assert 'unsafe-inline' not in values[0]
+    assert proxy._sandbox_csp("connect-src 'none'", 'http://testserver') == "connect-src 'none'"
+    assert proxy._sandbox_csp("default-src 'self'", 'https://deck.example') == "default-src 'self'; connect-src 'self' https://deck.example"
