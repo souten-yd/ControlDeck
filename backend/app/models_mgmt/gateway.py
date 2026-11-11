@@ -4,7 +4,7 @@ OpenCode のようにローカルランタイムを直接叩くクライアン�
 KVの受け入れ制御（models_mgmt/llama.py の endpoint_capacity / await_capacity）を
 効かせるための薄いリバースプロキシ。
 
-転送先は llama.cpp と Lucebox の両方。クライアントから見ると1つのアドレスに
+転送先は管理中のllama.cpp。クライアントから見ると1つのアドレスに
 両ランタイムのモデルが並び、モデル名（alias）だけで切り替わる。どちらへ流れても
 GPUリース確保 → オンデマンド起動 → 受け入れ制御、という同じ手順を通る。
 
@@ -175,7 +175,7 @@ OPENCODE_CLIENT = "opencode"
 
 
 def _greedy_sampling_for(instance: dict, request: Request) -> bool:
-    """Retired Lucebox may not influence generic sampling or tools."""
+    """No runtime-specific forced greedy sampling."""
     return False
 
 
