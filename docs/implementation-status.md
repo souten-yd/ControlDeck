@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-12 Strataオプション・Lucebox廃止・ControlDeck本体アップデート（実装PR、未検証）
+
+- Strata Terminalをオプション機能（導入・更新・削除）へ追加。公式ReleaseのSHA-256確認・専用HOME・ユーザー権限・CLIランタイム非既定・モデル自動取得なしを設計。
+- Luceboxの登録・provider・gateway・モデル管理・設定画面・旧APIを撤去。既存ユーザーデータやモデルファイルは削除せず、旧selected_runtimeのみ読み込み時に安全な既存runtimeへ変換。
+- ControlDeck本体の更新確認と明示適用API/UIを追加。正式Release・許可origin・main/clean・fast-forward・バックアップ・別systemdユーザージョブ・ヘルス確認・rollbackを設計。通常起動では自動アップデートしない。
+- PR完了後マージ→マイルストーン達成時Releaseを必須とする規則を AGENTS.md と docs/development-release-policy.md に追加。
+- **重要：この実装は現時点でローカルpytest、frontend build、実OSでのsystemd-run、R9700実機、Web UI操作を未検証。main未適用、リリース未発行。検証完了前のマージ/リリースは不可。**
+
 ## 2026-11-10 Add-on local-only AI契約（PR #349）
 
 complete/streamに厳密boolean local_onlyを追加。Host管理llama.cpp・存在するGGUF・loopback宛先を要求し、GPU admission前後で検証。Ollama/未検証runtimeは拒否し、proxy環境変数/redirectを使わない。従来要求は既定falseで維持。capabilitiesは契約対応と利用可能性のみ返しprovider/model/pathを公開しない。
