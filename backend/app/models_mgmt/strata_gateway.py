@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,17 @@ _FAMILIES = {
 _CONTEXTS = {"8k", "16k", "32k", "64k", "128k"}
 _ALIAS = re.compile(r"^[a-z][a-z0-9-]{0,47}$")
 _MIN_PORT, _MAX_PORT = 8081, 65535
+
+
+_status_lock = threading.Lock()
+_status_expires = 0.0
+_status_rows: list[dict] = []
+
+
+def _invalidate_status() -> None:
+    global _status_expires
+    with _status_lock:
+        _status_expires = 0.0
 
 
 class StrataGatewayError(RuntimeError):
@@ -71,17 +83,32 @@ def _run(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
 
 
 def _running() -> list[dict]:
+    """Short-lived cache keeps status subprocess calls out of normal hot paths."""
+    global _status_expires, _status_rows
     if not strata.installed():
         return []
+    now = time.monotonic()
+    with _status_lock:
+        if now < _status_expires:
+            return list(_status_rows)
+    rows: list[dict] = []
     try:
         result = _run(["launch", "--status", "--output", "json"], timeout=12)
-        if result.returncode:
-            return []
-        payload = json.loads(result.stdout.splitlines()[0])
-        rows = payload.get("running", [])
-        return rows if isinstance(rows, list) else []
-    except (StrataGatewayError, ValueError, TypeError):
-        return []
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                try:
+                    payload = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("running"), list):
+                    rows = [item for item in payload["running"] if isinstance(item, dict)]
+                    break
+    except StrataGatewayError:
+        pass
+    with _status_lock:
+        _status_rows = rows
+        _status_expires = time.monotonic() + 3
+    return list(rows)
 
 
 def _present(instance: dict, *, running: list[dict]) -> dict:
@@ -175,6 +202,7 @@ def _start(alias: str, *, explicit: bool) -> tuple[bool, str]:
         return False, str(exc)
     if result.returncode:
         return False, (result.stderr or result.stdout)[-700:].strip() or "Strataの起動に失敗しました"
+    _invalidate_status()
     if explicit:
         items = _read()
         if alias in items:
@@ -193,6 +221,7 @@ def stop_instance(alias: str) -> tuple[bool, str]:
     result = _run(["launch", "--stop", "--preset", "cd-" + alias], timeout=240)
     if result.returncode:
         return False, (result.stderr or result.stdout)[-400:].strip() or "停止に失敗しました"
+    _invalidate_status()
     return True, ""
 
 
