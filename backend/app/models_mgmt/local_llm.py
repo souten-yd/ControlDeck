@@ -32,8 +32,9 @@ def _llama_instances() -> list[dict]:
 
 
 def _strata_instances() -> list[dict]:
-    from app.models_mgmt import strata_gateway
-    return strata_gateway.list_instances()
+    from app.models_mgmt import strata, strata_gateway
+    # Removed optional runtime must not leave selectable ghost gateway models.
+    return strata_gateway.list_instances() if strata.installed() else []
 
 
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
