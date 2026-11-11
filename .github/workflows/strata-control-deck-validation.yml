@@ -29,7 +29,7 @@ jobs:
       - name: Run backend unit tests
         env:
           PYTHONPATH: backend
-        run: python -m pytest -q backend/tests/test_gpu_runtime_addon.py backend/tests/test_local_llm_gateway.py backend/tests/test_llm_gateway.py backend/tests/test_runtime_policy.py backend/tests/test_runtime_provider.py backend/tests/test_features.py
+        run: python -m pytest -q backend/tests/test_gpu_runtime_addon.py backend/tests/test_local_llm_gateway.py backend/tests/test_llm_gateway.py backend/tests/test_runtime_policy.py backend/tests/test_runtime_provider.py backend/tests/test_features.py backend/tests/test_strata_gateway.py backend/tests/test_control_deck_self_update.py
 
   frontend:
     runs-on: ubuntu-latest
