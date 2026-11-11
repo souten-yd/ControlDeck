@@ -31,6 +31,9 @@ jobs:
             tests/test_runtime_policy.py \
             tests/test_llm_gateway.py \
             tests/test_gpu_release.py
+      - name: Full backend regression suite
+        working-directory: backend
+        run: python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest
