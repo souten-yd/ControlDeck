@@ -363,7 +363,7 @@ export default function ModelsPage() {
       runtime === "strata"
         ? api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} })
         : deleteLlamaInstance(alias, file),
-    onSuccess: (result) => {
+    onSuccess: () => {
       show("モデル設定を削除しました。モデルファイルは保持しています");
       setLocalDeleting(null); setDeleteFile(false); refresh();
     },
