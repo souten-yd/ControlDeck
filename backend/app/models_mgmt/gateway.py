@@ -383,7 +383,7 @@ async def gateway_models(request: Request):
     _authorize(request)
     from app.models_mgmt import local_llm
 
-    llms = local_llm.llm_instances()
+    llms = await asyncio.to_thread(local_llm.llm_instances)
     # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、起動中のモデルへ流れる。
     data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck",
              "runtime": "auto"}] if llms else []
@@ -402,7 +402,7 @@ async def gateway_chat(request: Request):
         payload = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSONボディが不正です") from None
-    instance = resolve_instance(str(payload.get("model") or ""))
+    instance = await asyncio.to_thread(resolve_instance, str(payload.get("model") or ""))
     alias, port = str(instance["alias"]), int(instance["port"])
     # 起動前に方針を決める（ensure_ready の後では「起動していたか」が分からない）。
     greedy_sampling = _greedy_sampling_for(instance, request)
