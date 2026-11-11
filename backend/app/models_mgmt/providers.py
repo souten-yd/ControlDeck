@@ -22,7 +22,7 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
     generation = ["chat", "stream", "cancel"] if available else []
     if managed and kind == "ollama":
         return generation + ["list", "load", "unload", "delete", "pull", "configure"]
-    if managed and kind in ("llama.cpp",):
+    if managed and kind in ("llama.cpp", "strata"):
         return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return generation + ["list"]
 
@@ -36,15 +36,15 @@ def _provider_id(kind: str, base_url: str, *, managed: bool) -> str:
     parsed = urlsplit(base_url)
     host = parsed.hostname or "unknown"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return kind if managed and kind in ("ollama", "llama.cpp") else f"{kind}-{host}-{port}"
+    return kind if managed and kind in ("ollama", "llama.cpp", "strata") else f"{kind}-{host}-{port}"
 
 
 # ゲートウェイへ集約するローカルランタイム。個別ポートを候補から外す判定に使う。
-GATEWAY_RUNTIMES = ("llama.cpp",)
+GATEWAY_RUNTIMES = ("llama.cpp", "strata")
 
 
 async def _candidates() -> list[dict]:
-    from app.models_mgmt import llama, ollama
+    from app.models_mgmt import llama, ollama, strata, strata_gateway
 
     candidates: dict[str, dict] = {}
 
@@ -88,6 +88,17 @@ async def _candidates() -> list[dict]:
         add(base, "llama.cpp-instance", f"llama.cpp · {label}",
             installed=bool(llama_status.get("installed")), experimental=True)
         candidates[base]["aliases"] = aliases
+
+    # Strata is opt-in: only installed, ControlDeck-registered models appear here.
+    if strata.installed():
+        strata_instances = strata_gateway.list_instances()
+        if strata_instances:
+            first = strata_instances[0]
+            add(first["base_url"], "strata", "Strata", managed=True,
+                installed=True, experimental=True)
+            candidates[_openai_base(first["base_url"])]["aliases"] = [
+                str(instance["alias"]) for instance in strata_instances
+            ]
 
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)
