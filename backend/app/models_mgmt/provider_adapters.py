@@ -181,7 +181,7 @@ async def list_models(provider_id: str) -> list[dict]:
                 "runtime_status": item["runtime_status"],
                 "quantization": item["model"], "context": item["context"],
             },
-        } for item in strata_gateway.list_instances()]
+        } for item in await asyncio.to_thread(strata_gateway.list_instances)]
     return [{
         "id": model, "name": model, "size_bytes": 0, "modified_at": "",
         # OpenAI互換APIだけでは各モデルのロード状態を判定できない。
@@ -333,7 +333,7 @@ async def provider_health(provider_id: str) -> dict:
         return {"ok": any(item["ok"] for item in details), "provider": "llama.cpp",
                 "installed": llama.is_installed(), "instances": details}
     if provider["provider"] == "strata" and provider["managed"]:
-        instances = strata_gateway.list_instances()
+        instances = await asyncio.to_thread(strata_gateway.list_instances)
         states = await asyncio.gather(*(strata_gateway.health(str(item["alias"])) for item in instances))
         return {
             "ok": any(state["ok"] for state in states), "provider": "strata",
