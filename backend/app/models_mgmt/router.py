@@ -1325,9 +1325,8 @@ async def strata_start_job(
 
     async def run(job: jobs.Job) -> dict:
         job.set_progress("Strataモデルを取得・起動しています。容量と環境により時間がかかります", 0, 1)
-        ok, error = await asyncio.to_thread(strata_gateway.start_instance, alias)
-        if not ok:
-            raise RuntimeError(error or "Strataの起動に失敗しました")
+        from app.models_mgmt import provider_adapters
+        await provider_adapters.load_model("strata", alias)
         job.set_progress("起動完了", 1, 1)
         return {"alias": alias, "loaded": True}
 
