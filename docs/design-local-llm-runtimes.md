@@ -10,9 +10,9 @@ Strataは独立した**オプトインのTerminal型ランタイム**として `
 | 機能 | Ollama | llama.cpp | Strata |
 |---|---|---|---|
 | インストール | 外部サービスとして扱う | GPUランタイム機能 | オプション機能 `strata` |
-| モデル管理 | Ollama API | ControlDeck alias/endpoint | Strata Terminalで明示管理（本PRではControlDeckへの自動統合なし） |
-| 推論経路 | 既存provider | `/api/v1/llm/v1` | 明示的に起動した場合のみStrata自身のOpenAI互換endpoint |
-| 自動起動 | 既存設定 | 既存設定 | なし |
+| モデル管理 | Ollama API | ControlDeck alias/endpoint | ControlDeckで明示登録、初回起動はジョブ経由 |
+| 推論経路 | 既存provider | `/api/v1/llm/v1` | 初回起動後は共通ゲートウェイ `/api/v1/llm/v1` からループバックのStrataへ接続 |
+| 自動起動 | 既存設定 | 既存設定 | 初回起動の明示操作後は登録モデルのオンデマンド再起動が可能 |
 | 更新 | Ollama自身の管理 | `llama-builder` | `strata update --yes` |
 | 削除 | 既存方式 | モデル管理画面 | ControlDeck管理CLI/engineのみ、モデルは保持 |
 
@@ -23,11 +23,12 @@ CLIおよびエンジンの実行はモデルの手動取得・起動と分離�
 
 ## 既存LLMの維持
 
-- `models_mgmt/local_llm.py` の登録モデルはllama.cppのみ。既存のmodel alias、ポート、共有KV受入制御、オンデマンド起動を維持する。
+- `models_mgmt/local_llm.py` はllama.cppとユーザーが明示登録したStrataモデルだけを列挙する。既存のmodel alias、ポート、共有KV受入制御、オンデマンド起動を維持する。
 - GPUリソース管理は登録されたllama.cppモデルを引き続き使用する。
 - `models_mgmt/runtime_policy.py` の既定モデル・排他ポリシーは変更しない。旧Lucebox選択の読み込み時だけOllamaへ安全に退避する。
 - Strataの導入・更新・削除でOllama/llama.cppを停止、更新、削除、切り替えない。
-- Strata起動やモデル取得、ControlDeckのゲートウェイ接続を自動化することは今回のスコープ外。
+- Strataのモデル登録はユーザー明示操作でのみ作成する。初回起動（大容量ダウンロードあり）は`POST /models/strata/instances/{alias}/start-jobs`で開始する。初回成功前、ゲートウェイからの暗黙モデル取得を禁止する。初回成功後のみ登録モデルのオンデマンド再起動を認める。
+- ゲートウェイはStrata別名を上流model id `strata` へ変換し、認証、GPU broker、監査・停止ルールを維持する。Strataの上流サーバーはlocalhost限定とし、LANポートを追加しない。
 
 ## Strataオプション管理
 
@@ -36,6 +37,16 @@ CLIおよびエンジンの実行はモデルの手動取得・起動と分離�
 3. `POST /api/v1/features/strata/update-jobs` はStrata自身の署名済み更新機能を使う。稼働中モデルは無断停止しない。
 4. `POST /api/v1/features/strata/uninstall` は状態を確認し、管理済みCLI/engineのみ削除する。ユーザーのモデル、Ollamaやllama.cppは保持する。
 5. `GET /api/v1/features/strata/release-status` で公開リリースとの差分を確認する。通信失敗は状態エラーとして表示する。
+
+## Strataモデル管理とゲートウェイ
+
+1. `GET /api/v1/models/strata/instances`：導入状態と管理登録モデルを表示。
+2. `POST /api/v1/models/strata/instances`：固定のfamily/quant/context/portで登録。任意URL、任意CLI引数、未検証モデルを拒否する。
+3. `POST /api/v1/models/strata/instances/{alias}/start-jobs`：明示初回ダウンロード/ロード。モデル取得に必要な時間をHTTPリクエストで保持しない。
+4. `POST /api/v1/models/strata/instances/{alias}/stop`：管理モデルを停止する。
+5. `POST /api/v1/models/strata/instances/{alias}/delete`：登録情報だけ削除し、モデルファイルは必ず残す。
+6. `/api/v1/llm/v1/models` と `/api/v1/llm/v1/chat/completions` から登録Strata別名を選択し、上流のOpenAI互換モデル `strata` にルーティングする。
+7. 対応モデル/量子化は現時点のサーバー側allowlistに限定し、Strata側カタログ更新に追従する際はPRでテストする。
 
 ## ControlDeck本体の手動更新
 
