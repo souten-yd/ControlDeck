@@ -208,6 +208,9 @@ async def available_update() -> dict:
 
 
 def uninstall() -> dict:
+    from app.models_mgmt.runtime_policy import get_policy
+    if get_policy().selected_runtime == "strata":
+        raise StrataError("Strataを削除する前に共通設定でOllamaまたはllama.cppへ切り替えてください")
     if not installed():
         raise StrataError("ControlDeck管理のStrataがありません")
     result = _run(["launch", "--status", "--output", "json"], timeout=30)
