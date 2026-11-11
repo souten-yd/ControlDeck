@@ -1,14 +1,26 @@
 name: Strata / runtime / updater checks
 
 on:
-  pull_request:
+  # Cloud CI is paid. NEVER trigger on push / PR automatically.
+  # Run only after local validation on the owner's PC and only when essential.
   workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Which check needs GitHub-hosted verification?'
+        required: true
+        default: backend
+        type: choice
+        options:
+          - backend
+          - frontend
+          - both
 
 permissions:
   contents: read
 
 jobs:
   backend:
+    if: inputs.scope == 'backend' || inputs.scope == 'both'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +48,7 @@ jobs:
         run: python -m pytest -q
 
   frontend:
+    if: inputs.scope == 'frontend' || inputs.scope == 'both'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
