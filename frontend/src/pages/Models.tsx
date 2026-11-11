@@ -366,8 +366,9 @@ export default function ModelsPage() {
       }
       return deleteLlamaInstance(alias, file);
     },
-    onSuccess: () => {
-      show("モデル設定を削除しました。モデルファイルは保持しています");
+    onSuccess: (result) => {
+      show(result.gguf_deleted ? "設定とGGUFを削除しました" : result.reason
+        ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
       setLocalDeleting(null); setDeleteFile(false); refresh();
     },
     onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
