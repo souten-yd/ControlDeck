@@ -45,6 +45,13 @@ def _env() -> dict[str, str]:
     env["HOME"] = str(home)
     env["XDG_DATA_HOME"] = str(home / ".local" / "share")
     env["STRATA_HOME"] = str(home / ".strata")
+    # Never inherit arbitrary installer/updater feed, target, or test-trust overrides.
+    env["STRATA_FEED"] = "https://github.com/Niko1221/Strata/releases/latest/download"
+    env["STRATA_UPDATE_FEED"] = "https://github.com/Niko1221/Strata/releases/latest/download"
+    env["STRATA_DATA_DIR"] = str(home / ".local" / "share" / "strata")
+    env["STRATA_BIN_DIR"] = str(home / ".local" / "bin")
+    env.pop("STRATA_INSTALL_TEST_TRUST", None)
+    env.pop("STRATA_UPDATE_TRUSTED_KEYS", None)
     env["PATH"] = f"{home / '.local' / 'bin'}:{env.get('PATH', '')}"
     return env
 
@@ -147,6 +154,8 @@ def _wrapper() -> None:
 
 
 def _install_sync() -> dict:
+    if os.geteuid() == 0:
+        raise StrataError("rootによる導入は許可されません")
     if platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64"):
         raise StrataError("Linux x86_64以外にはインストールできません")
     if not shutil.which("sh"):
