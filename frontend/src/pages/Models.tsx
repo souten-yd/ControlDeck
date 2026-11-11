@@ -36,9 +36,9 @@ interface Model {
 }
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
-type LocalRuntime = "llama.cpp";
+type LocalRuntime = "llama.cpp" | "strata";
 const RUNTIME_LABEL: Record<string, string> = {
-  "llama.cpp": "llama.cpp", ollama: "Ollama",
+  "llama.cpp": "llama.cpp", strata: "Strata", ollama: "Ollama",
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
@@ -262,6 +262,7 @@ export default function ModelsPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
+  const [strataDetail, setStrataDetail] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [localDeleting, setLocalDeleting] = useState<{ alias: string; runtime: LocalRuntime } | null>(null);
@@ -280,7 +281,7 @@ export default function ModelsPage() {
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
       if (!isLocal) return api<Model[]>("/models");
-      const fetched = await Promise.all(LOCAL_RUNTIMES.map(async (runtime) => {
+      const fetched = await Promise.all((["llama.cpp", "strata"] as const).map(async (runtime) => {
         try {
           const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
             `/models/providers/${runtime}/models`);
@@ -289,7 +290,6 @@ export default function ModelsPage() {
             family: "", loaded: !!m.loaded, expires_at: null, vram: null,
             vision_enabled: m.details.vision_enabled === true,
             runtime, backend_label: String(m.details.backend_label ?? ""),
-            speculative: m.details.speculative === true,
             port: typeof m.details.port === "number" ? m.details.port : undefined,
           }));
         } catch {
@@ -339,7 +339,7 @@ export default function ModelsPage() {
    * 同一llama.cppランタイムのモデルだけを並べ替える。
    */
   const move = async (model: Model, offset: -1 | 1) => {
-    if (!liveModels || !model.runtime || model.runtime === "ollama") return;
+    if (!liveModels || model.runtime !== "llama.cpp") return;
     const runtime = model.runtime;
     const siblings = liveModels.filter((item) => item.runtime === runtime);
     const index = siblings.findIndex((item) => (item.id ?? item.name) === (model.id ?? model.name));
@@ -360,10 +360,11 @@ export default function ModelsPage() {
 
   const removeLocal = useMutation({
     mutationFn: ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) =>
-      deleteLlamaInstance(alias, file),
+      runtime === "strata"
+        ? api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} })
+        : deleteLlamaInstance(alias, file),
     onSuccess: (result) => {
-      show(result.gguf_deleted ? "設定とGGUFを削除しました"
-           : result.reason ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
+      show("モデル設定を削除しました。モデルファイルは保持しています");
       setLocalDeleting(null); setDeleteFile(false); refresh();
     },
     onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
@@ -385,7 +386,20 @@ export default function ModelsPage() {
     setActing(id);
     try {
       const provider = runtime ?? (isLocal ? "llama.cpp" : "ollama");
-      await api(`/models/providers/${provider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
+      if (provider === "strata" && action === "load") {
+        const started = await api<{ job_id: string }>(
+          `/models/strata/instances/${encodeURIComponent(id)}/start-jobs`,
+          { method: "POST", json: {} },
+        );
+        show(`Strataの初回起動ジョブを開始しました（${started.job_id}）。モデルの取得状況はジョブ一覧で確認できます`);
+        return;
+      }
+      if (provider === "strata" && action === "unload") {
+        await api(`/models/strata/instances/${encodeURIComponent(id)}/stop`,
+          { method: "POST", json: {} });
+      } else {
+        await api(`/models/providers/${provider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
+      }
       if (!isLocal) {
         qc.setQueryData<RunningModel[]>(["ollama-running"], (current = []) => action === "load"
           ? [...current.filter((item) => ollamaModelKey(item.name ?? item.model) !== ollamaModelKey(id)), { name: id, model: id }]
@@ -431,7 +445,7 @@ export default function ModelsPage() {
         選択中: {isLocal
           ? `${RUNTIME_LABEL[selectedRuntime] ?? selectedRuntime} / ${BACKEND_LABEL[runtimeEnv?.policy.selected_backend ?? ""] ?? runtimeEnv?.policy.selected_backend ?? "-"}`
           : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
-        {isLocal && "ゲートウェイは登録済みllama.cppモデルを同じアドレスで配ります。"}
+        {isLocal && "ゲートウェイは登録済みllama.cpp・Strataモデルを同じアドレスで配ります。"}
         {!isLocal && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
       )}
@@ -462,11 +476,11 @@ export default function ModelsPage() {
             const endpoint = isLlama ? endpoints?.find((e) => e.aliases.includes(id)) : undefined;
             // 同じエンドポイントを共有する行は、ロードすると同居モデルが止まることを明示する。
             const shared = endpoint && endpoint.aliases.length > 1;
-            const openDetail = () => isLlama ? setLlamaDetail(id) : setDetail(m.name);
+            const openDetail = () => runtime === "strata" ? setStrataDetail(id) : isLlama ? setLlamaDetail(id) : setDetail(m.name);
             return (
             <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-2 sm:gap-3">
-                {isLocal && can("workflows.edit") && liveModels.filter((item) => item.runtime === runtime).length > 1 && (
+                {isLocal && runtime === "llama.cpp" && can("workflows.edit") && liveModels.filter((item) => item.runtime === runtime).length > 1 && (
                   <div className="flex shrink-0 flex-col">
                     <button type="button" onClick={() => move(m, -1)} disabled={reordering}
                       aria-label={`${m.name}を上へ移動`} title="優先度を上げる（同じランタイム内）"
@@ -536,6 +550,7 @@ export default function ModelsPage() {
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
       {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
+      {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
@@ -543,21 +558,21 @@ export default function ModelsPage() {
       {localDeleting && (
         <ConfirmDialog
           title={`「${localDeleting.alias}」を削除しますか？`}
-          message={`${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
+          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
           confirmLabel="削除する"
           danger
           busy={removeLocal.isPending}
           onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
           onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
-          <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+          {localDeleting.runtime !== "strata" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="text-xs">GGUF ファイル本体も削除する
               <span className="block text-[10px] text-zinc-500">
                 取り消せません。他のモデル設定が同じファイルを参照している場合は削除されません。
               </span>
             </span>
-          </label>
+          </label>}
         </ConfirmDialog>
       )}
       {duplicating && (
@@ -1998,11 +2013,111 @@ function TtsPanel() {
   );
 }
 
-/** llama.cpp registration; Strata stays an independent opt-in Terminal. */
+/** Register only models explicitly requested by the user. */
 function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
+  const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
+  const { data: strataState } = useQuery({
+    queryKey: ["strata-instances"],
+    queryFn: () => api<{ runtime: { installed: boolean }; instances: Array<{alias: string}> }>("/models/strata/instances"),
+  });
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
-      <LlamaRuntimePanel registrationOnly />
+      <div className="mb-3 flex gap-2">
+        {(["llama.cpp", "strata"] as const).map((choice) => (
+          <button key={choice} type="button" onClick={() => setRuntime(choice)}
+            disabled={choice === "strata" && !strataState?.runtime.installed}
+            className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
+            {RUNTIME_LABEL[choice]}
+          </button>
+        ))}
+      </div>
+      {runtime === "llama.cpp"
+        ? <LlamaRuntimePanel registrationOnly />
+        : <StrataRegisterPanel onDone={onClose} />}
     </BottomSheet>
   );
+}
+
+function StrataRegisterPanel({ onDone }: { onDone: () => void }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const [alias, setAlias] = useState("qwen-flash-next");
+  const [family, setFamily] = useState<"qwen" | "deepseek41">("qwen");
+  const [model, setModel] = useState("iq2_xs");
+  const [context, setContext] = useState("32k");
+  const [port, setPort] = useState("8095");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api("/models/strata/instances", {
+        method: "POST", json: { alias, family, model, context, port: Number(port) },
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["models", "local"] }),
+        qc.invalidateQueries({ queryKey: ["strata-instances"] }),
+      ]);
+      show("Strataモデルを登録しました。「ロード」で初回ダウンロードと起動を開始できます");
+      onDone();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "Strataモデル登録に失敗しました", "error");
+    } finally { setSaving(false); }
+  };
+  return <div className="space-y-3">
+    <p className="text-xs text-zinc-500">登録だけではモデルをダウンロードしません。Strataはローカル限定で起動し、共通ゲートウェイに接続します。</p>
+    <label className="block text-xs">モデル別名
+      <input aria-label="Strataモデル別名" value={alias} onChange={(e) => setAlias(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+    </label>
+    <label className="block text-xs">モデル系列
+      <select aria-label="Strataモデル系列" value={family} onChange={(e) => {
+        const next = e.target.value as "qwen" | "deepseek41";
+        setFamily(next); setModel(next === "qwen" ? "iq2_xs" : "ista-das-coder");
+      }} className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        <option value="qwen">Qwen Flash-Next</option>
+        <option value="deepseek41">DeepSeek V4.1 Flash</option>
+      </select>
+    </label>
+    <label className="block text-xs">量子化
+      <select aria-label="Strataモデル量子化" value={model} onChange={(e) => setModel(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        {(family === "qwen" ? ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"] : ["ista-das-coder", "ist-das-2.00bpw"])
+          .map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    </label>
+    <label className="block text-xs">コンテキスト
+      <select aria-label="Strataコンテキスト" value={context} onChange={(e) => setContext(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        {["8k", "16k", "32k", "64k", "128k"].map((item) => <option key={item}>{item}</option>)}
+      </select>
+    </label>
+    <label className="block text-xs">ポート
+      <input aria-label="Strataポート" type="number" min={8081} max={65535} value={port}
+        onChange={(e) => setPort(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+    </label>
+    <button disabled={saving} onClick={() => void save()}
+      className="w-full rounded-xl bg-accent-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
+      {saving ? "登録中…" : "Strataモデルを登録"}
+    </button>
+  </div>;
+}
+
+function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
+  const { data } = useQuery({
+    queryKey: ["strata-instances"], queryFn: () => api<{
+      runtime: { installed: boolean; models_dir: string };
+      instances: Array<{alias: string; family: string; model: string; context: string; port: number; loaded: boolean}>;
+    }>("/models/strata/instances"), refetchInterval: 5000,
+  });
+  const item = data?.instances.find((model) => model.alias === alias);
+  return <BottomSheet title={`Strata · ${alias}`} onClose={onClose}>
+    {item ? <div className="space-y-2 text-sm">
+      <p>モデル: {item.family} / {item.model}</p>
+      <p>コンテキスト: {item.context}　ポート: {item.port}</p>
+      <p>状態: {item.loaded ? "稼働中" : "停止中"}</p>
+      <p className="break-all text-xs text-zinc-500">モデル保存先: {data?.runtime.models_dir}</p>
+      <p className="text-xs text-zinc-500">モデルの削除は行いません。初回ロードはモデルダウンロードを含み、バックグラウンドジョブで実行します。</p>
+    </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
+  </BottomSheet>;
 }
