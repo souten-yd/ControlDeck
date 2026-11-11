@@ -3791,3 +3791,9 @@ PR351の「実機受入前」は当時の履歴。現在embedding/reranker API�
 PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque sandboxで拒否されることを再現。proxyは上流CSPを維持し、connect-src（またはdefault-src fallback）にselfがある場合だけブラウザ側の正確なHost originを追加する。noneやhashは維持、外部origin/wildcard/unsafe-inlineを追加しない。CSPヘッダーの大小文字差による意図しない二重生成も整理。関連proxy17 tests成功、実画面と全体検証は進行中。ユーザーのパスキー作業を含むlive checkoutの他ファイルは変更しない。
 
 - 最終frontend build成功、backend全1255 tests成功/2skip105.69秒（/tmp/pb-host-csp-full-cwd.log）。初回repo rootからpytestを直接実行したためCLIのapp import2件だけ失敗、規定backend cwdで全再実行成功。live proxyのみ反映/deck.sh再起動後、再現条件のWebKit HTTPでstatus/原文成功。HTTPS WebKit/Chromeと実Host local LLM要約も成功。既存23files hash不変（/tmp/pb-csp-preserved.json）。
+
+\n## 2026-11-12 — Strata導入 / Lucebox撤去 / 本体更新機能（開発ブランチ）\n
+- GPU推論のオプションにStrata Terminalを追加。明示的な導入・更新・削除をControlDeck管理領域へ限定する。デフォルトランタイムは変更せず、模型ライブラリも削除しない。\n
+- 利用不可のLuceboxをモデル登録・共通設定・Provider・Gateway・UI/APIから撤去。旧設定が選択していた場合はOllamaへ移す。\n
+- 本体のGitHub mainへのfast-forward更新確認と管理者の明示操作による独立systemd更新ジョブを追加。変更済み作業ツリーと未対応配置では更新不可。\n
+- 受け入れ条件：backend pytest、frontend build、旧Lucebox参照grep、Strata導入/削除テスト、本体更新失敗時のロールバック、モバイル画面確認。マージとリリースは検証結果が得られるまで未完了。\n
