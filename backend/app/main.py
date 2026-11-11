@@ -243,6 +243,7 @@ from app.access.router import router as access_router  # noqa: E402
 from app.files.router import router as files_router  # noqa: E402
 from app.logs.router import router as logs_router  # noqa: E402
 from app.monitoring.router import router as system_router  # noqa: E402
+from app.platform_update import router as platform_update_router  # noqa: E402
 from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
 from app.terminals.automation_router import router as terminal_automation_router  # noqa: E402
@@ -286,6 +287,7 @@ app.include_router(project_view_router)
 app.include_router(addon_frame_router)
 app.include_router(logs_router, prefix=API)
 app.include_router(system_router, prefix=API)
+app.include_router(platform_update_router, prefix=API)
 app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
