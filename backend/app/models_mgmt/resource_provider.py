@@ -81,6 +81,10 @@ class LocalLlmCapacityProvider(ResourceProvider):
                 model_bytes += Path(path).stat().st_size
             except OSError:
                 continue
+        # Strata uses many sharded MoE weights, not one model_path; reserve a
+        # conservative VRAM envelope rather than reporting a zero-size model.
+        if str(instance.get("runtime")) == "strata":
+            model_bytes = 28 * 1024**3
         device = self._devices.get("gpu0")
         headroom = 0 if loaded else 512 * 1024 * 1024
         peak = 0 if loaded else max(model_bytes + 2 * 1024**3, int(model_bytes * 1.75))
