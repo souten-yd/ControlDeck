@@ -359,10 +359,13 @@ export default function ModelsPage() {
   };
 
   const removeLocal = useMutation({
-    mutationFn: ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) =>
-      runtime === "strata"
-        ? api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} })
-        : deleteLlamaInstance(alias, file),
+    mutationFn: async ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) => {
+      if (runtime === "strata") {
+        await api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} });
+        return { ok: true, gguf_deleted: false, reason: "Strataモデルファイルは保持" };
+      }
+      return deleteLlamaInstance(alias, file);
+    },
     onSuccess: () => {
       show("モデル設定を削除しました。モデルファイルは保持しています");
       setLocalDeleting(null); setDeleteFile(false); refresh();
