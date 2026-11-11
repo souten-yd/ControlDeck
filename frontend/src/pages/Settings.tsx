@@ -161,6 +161,8 @@ export default function SettingsPage() {
 
       {can("settings.manage") && <TerminalV2PhysicalCheckSection />}
 
+      {can("settings.manage") && <PlatformUpdatesSection />}
+
       {can("settings.manage") && <AddonsSection />}
       {can("settings.manage") && <ExtensionsSection />}
       {can("settings.manage") && <RecommendedSkills />}
@@ -173,6 +175,95 @@ export default function SettingsPage() {
 
       {can("audit.view") && <AuditSection />}
     </div>
+  );
+}
+
+interface PlatformUpdateStatus {
+  local: { head: string; branch: string; clean: boolean; trusted_origin: boolean; ready: boolean; reason?: string };
+  installed_tag: string;
+  latest: { tag: string; url: string; published_at?: string } | null;
+  update_available: boolean;
+  last_operation: { id?: string; status?: string; target_tag?: string; message?: string };
+  error: string;
+}
+
+function PlatformUpdatesSection() {
+  const show = useToasts((s) => s.show);
+  const [confirmTag, setConfirmTag] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [requested, setRequested] = useState(false);
+  const { data, refetch, isFetching } = useQuery({
+    queryKey: ["control-deck-self-update"],
+    queryFn: () => api<PlatformUpdateStatus>("/system/updates"),
+    refetchInterval: (q) => {
+      const state = q.state.data?.last_operation.status;
+      return state === "queued" || state === "running" ? 15_000 : false;
+    },
+  });
+  const apply = async () => {
+    if (!confirmTag) return;
+    setSubmitting(true);
+    try {
+      await api("/system/updates/apply", { method: "POST", json: { tag: confirmTag } });
+      setRequested(true);
+      show("本体更新を開始しました。サービス再起動後に結果を確認してください", "info");
+      await refetch();
+    } catch (error) {
+      show(error instanceof Error ? error.message : "更新開始に失敗しました", "error");
+    } finally {
+      setConfirmTag(null);
+      setSubmitting(false);
+    }
+  };
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
+      <h2 className="mb-1 text-sm font-semibold text-zinc-500">ControlDeck 本体の更新</h2>
+      <p className="text-xs text-zinc-400">
+        GitHubの正式Releaseからのみ更新します。適用前に作業ツリーとfast-forwardを確認し、
+        DB・設定をバックアップします。サービスは更新中に再起動します。
+      </p>
+      {data && (
+        <div className="mt-3 space-y-1 text-xs text-zinc-500">
+          <p>現在: {data.installed_tag || data.local.head.slice(0, 12) || "不明"} （{data.local.branch || "Git管理外"}）</p>
+          <p>公開Release: {data.latest?.tag || "取得できません"}</p>
+          {!data.local.ready && <p className="text-amber-700 dark:text-amber-400">{data.local.reason || "安全条件を満たしていません"}</p>}
+          {data.error && <p className="text-amber-700 dark:text-amber-400">{data.error}</p>}
+          {data.last_operation?.status && (
+            <p>前回の更新: {data.last_operation.status} · {data.last_operation.message || "状況を確認してください"}</p>
+          )}
+          {requested && <p>更新中は通信が一時的に切れる場合があります。復旧後に「更新を確認」を押してください。</p>}
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={() => void refetch()} disabled={isFetching}
+          className="rounded-xl border border-zinc-300 px-3.5 py-2 text-xs font-semibold disabled:opacity-40 dark:border-zinc-700">
+          {isFetching ? "確認中…" : "更新を確認"}
+        </button>
+        {data?.latest?.url && (
+          <a href={data.latest.url} target="_blank" rel="noreferrer"
+            className="rounded-xl border border-zinc-300 px-3.5 py-2 text-xs font-semibold dark:border-zinc-700">
+            リリースノート
+          </a>
+        )}
+        {data?.update_available && data.latest && (
+          <button type="button" onClick={() => setConfirmTag(data.latest!.tag)} disabled={submitting}
+            className="rounded-xl bg-accent-600 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-40">
+            {data.latest.tag} に更新
+          </button>
+        )}
+      </div>
+      {confirmTag && (
+        <ConfirmDialog
+          title="ControlDeck本体を更新しますか？"
+          message={confirmTag + "へ更新します。DB・設定のバックアップ後にControlDeckサービスを再起動します。進行中の操作やチャットは中断される場合があります。"}
+          confirmLabel="更新を実行"
+          danger
+          busy={submitting}
+          onConfirm={() => void apply()}
+          onClose={() => setConfirmTag(null)}
+        />
+      )}
+    </section>
   );
 }
 
