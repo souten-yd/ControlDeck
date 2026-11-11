@@ -512,13 +512,13 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
     except Exception:
         pass
     try:
-        from app.models_mgmt import llama, strata_gateway
+        from app.models_mgmt import llama, strata, strata_gateway
 
         parsed = urlsplit(normalized)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
             if parsed.port in llama.endpoint_ports():
                 return _LLAMA
-            if parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
+            if strata.installed() and parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
                 return _STRATA
     except Exception:
         pass
