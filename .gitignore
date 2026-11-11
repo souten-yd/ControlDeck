@@ -12,6 +12,7 @@ node_modules/
 frontend/test-results/
 frontend/playwright-report/
 frontend/dist/
+frontend/*.tsbuildinfo
 backend/test-results/
 test-results/
 
