@@ -89,3 +89,19 @@ def test_strata_registration_remains_explicit_and_preserves_models(monkeypatch, 
     assert (tmp_path / "instances.json").is_file()
     assert strata_gateway.delete_instance("strata-test")["model_files_deleted"] is False
     assert strata_gateway.list_instances() == []
+
+
+def test_auto_does_not_choose_unactivated_strata(monkeypatch):
+    from app.models_mgmt import strata
+    monkeypatch.setattr(strata, "installed", lambda: True)
+    monkeypatch.setattr(llama, "list_instances", lambda: [])
+    monkeypatch.setattr(strata_gateway, "list_instances", lambda: [
+        {"alias": "unactivated", "port": 8095, "role": "llm", "runtime": "strata",
+         "activated": False, "loaded": False},
+    ])
+    from fastapi import HTTPException
+    import pytest
+    with pytest.raises(HTTPException) as exc:
+        gateway.resolve_instance(gateway.AUTO_MODEL)
+    assert exc.value.status_code == 404
+    assert gateway.resolve_endpoint("unactivated") == ("unactivated", 8095)
