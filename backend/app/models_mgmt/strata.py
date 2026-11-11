@@ -193,8 +193,8 @@ def _release_status() -> dict:
         tag = str(metadata.get("tag_name") or "")
         state["latest_tag"] = tag
         state["published_at"] = str(metadata.get("published_at") or "")
-        current_versions = re.findall(r"\\d+\\.\\d+\\.\\d+", current)
-        latest_versions = re.findall(r"\\d+\\.\\d+\\.\\d+", tag)
+        current_versions = re.findall(r"[0-9]+[.][0-9]+[.][0-9]+", current)
+        latest_versions = re.findall(r"[0-9]+[.][0-9]+[.][0-9]+", tag)
         if current_versions and latest_versions:
             state["update_available"] = tuple(map(int, latest_versions[0].split("."))) > tuple(
                 map(int, current_versions[0].split(".")))
