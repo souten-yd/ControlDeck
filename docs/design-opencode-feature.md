@@ -139,7 +139,7 @@ runtime config は v1 の形で組み立ててから機械的に読み替える�
 
 いずれも v1 と同じ経路を使う。provider は ControlDeck の OpenAI 互換ゲートウェイ
 （`/api/v1/llm/v1`）を指し、APIキーは既存の発行済みキー、モデルは仮想モデル `auto`。
-llama.cpp / Lucebox の起動保証（`ensure_ready_by_base_url`）、KVの受け入れ制御、
+llama.cppの起動保証（`ensure_ready_by_base_url`）、KVの受け入れ制御、
 アイドル判定も従来どおり通る。Add-on の MCP は既存の `addon_mcp_bridge.py` を
 そのまま使う（v2 の MCP client から `connected` を確認済み）。
 
