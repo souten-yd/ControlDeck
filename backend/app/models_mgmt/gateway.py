@@ -4,7 +4,7 @@ OpenCode のようにローカルランタイムを直接叩くクライアン�
 KVの受け入れ制御（models_mgmt/llama.py の endpoint_capacity / await_capacity）を
 効かせるための薄いリバースプロキシ。
 
-転送先は llama.cpp と llama.cpp の両方。クライアントから見ると1つのアドレスに
+転送先は llama.cpp と Strata の両方。クライアントから見ると1つのアドレスに
 両ランタイムのモデルが並び、モデル名（alias）だけで切り替わる。どちらへ流れても
 GPUリース確保 → オンデマンド起動 → 受け入れ制御、という同じ手順を通る。
 
@@ -118,7 +118,7 @@ def is_gateway_url(url: str) -> bool:
 
 
 def resolve_instance(model: str) -> dict:
-    """モデル名(alias)から転送先インスタンスを決める。llama.cpp / llama.cpp を区別しない。
+    """モデル名(alias)から転送先インスタンスを決める。llama.cpp / Strata を区別しない。
 
     AUTO_MODEL・未指定・未登録のときは起動中のLLMを優先し、いなければ登録順（=優先度順）
     の先頭を採る。停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
@@ -160,8 +160,10 @@ def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
     """
     if not is_gateway_url(base):
         return base, model
-    alias, port = resolve_endpoint(model)
-    return f"http://127.0.0.1:{port}/v1", alias
+    instance = resolve_instance(model)
+    alias, port = str(instance["alias"]), int(instance["port"])
+    upstream_id = "strata" if instance.get("runtime") == "strata" else alias
+    return f"http://127.0.0.1:{port}/v1", upstream_id
 
 
 # クライアント側のtimeoutより長く待たないよう、既定は控えめにする。
@@ -182,7 +184,7 @@ def _greedy_sampling_for(instance: dict, request: Request) -> bool:
 async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
     """KVに空きが出るまで待つ。空くまで待って必ず通す方針。
 
-    共有KVを持たない llama.cpp では待つ対象が無いので即座に通る（local_llm 側で判定）。
+    Strataは共有KVプールを公開しないため待たずに通す（local_llm 側で判定）。
     """
     from app.models_mgmt import local_llm
 
@@ -425,9 +427,8 @@ async def gateway_chat(request: Request):
     except (Exception, asyncio.CancelledError):
         await _release_gateway_lease(adapter, lease_id, renew)
         raise
-    payload["model"] = alias
-    # 外部クライアントは DFlash2 の制約を知らないので、ここで揃える
-    # （内部チャットは provider 側で同じ扱いをする）。
+    payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
+    # Model-level sampling settings are preserved for all remaining runtimes.
     if greedy_sampling:
         payload["temperature"] = 0.0
     target = f"http://127.0.0.1:{port}/v1/chat/completions"
