@@ -1320,7 +1320,7 @@ async def strata_start_job(
     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
 ):
     from app.models_mgmt import strata_gateway
-    if alias not in {item["alias"] for item in strata_gateway.list_instances()}:
+    if alias not in {item["alias"] for item in await asyncio.to_thread(strata_gateway.list_instances)}:
         raise HTTPException(status_code=404, detail="Strataモデル設定がありません")
 
     async def run(job: jobs.Job) -> dict:
