@@ -1,4 +1,4 @@
-"""アドオンとして管理する GPU 推論ランタイム（llama.cpp / Lucebox）。
+"""アドオンとして管理する GPU 推論ランタイム（llama.cpp / Strata）。
 
 npm/pip/release-bundle と違い、これらは GitHub リリースの tar 配布物で、
 導入先も `data/runtimes/<runtime>/` と決まっている。実体の取得・展開・
@@ -16,8 +16,8 @@ from typing import Any
 logger = logging.getLogger("control_deck.features.gpu_runtime")
 
 LLAMA_FEATURE = "llama-cpp"
-LUCEBOX_FEATURE = "lucebox"
-FEATURE_IDS = (LLAMA_FEATURE, LUCEBOX_FEATURE)
+STRATA_FEATURE = "strata"
+FEATURE_IDS = (LLAMA_FEATURE, STRATA_FEATURE)
 
 
 class GpuRuntimeError(RuntimeError):
@@ -30,10 +30,10 @@ def _llama():
     return llama
 
 
-def _lucebox():
-    from app.models_mgmt import lucebox
+def _strata():
+    from app.features import strata_runtime
 
-    return lucebox
+    return strata_runtime
 
 
 def is_gpu_runtime(feature_id: str) -> bool:
@@ -70,38 +70,15 @@ def _llama_status() -> dict:
     }
 
 
-def _lucebox_status() -> dict:
-    lucebox = _lucebox()
-    state = lucebox.runtime_status()
-    installed = bool(state["installed"])
-    environment = state["environment"]
-    return {
-        "installed": installed,
-        "managed": installed,
-        "version": str(state.get("tag") or ""),
-        "healthy": installed,
-        "error": "" if installed or environment["available"] else environment["reason"],
-        "available": bool(environment["available"] or installed),
-        "detail": {
-            "runtime": "lucebox",
-            "track": state["track"],
-            "track_label": state["track_label"],
-            "tracks": state["tracks"],
-            "recommended_track": state["recommended_track"],
-            "default_track": state["default_track"],
-            "upstream": state["upstream"],
-            "installed_versions": state["installed_versions"],
-            "gpu": environment,
-            "warning": str(state.get("warning") or ""),
-        },
-    }
+def _strata_status() -> dict:
+    return _strata().runtime_status()
 
 
 def status(feature_id: str) -> dict:
     if feature_id == LLAMA_FEATURE:
         return _llama_status()
-    if feature_id == LUCEBOX_FEATURE:
-        return _lucebox_status()
+    if feature_id == STRATA_FEATURE:
+        return _strata_status()
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
 
@@ -112,8 +89,8 @@ async def release_status(feature_id: str) -> dict:
     """更新の有無を返す。GitHub 側の失敗は error として返し、例外にしない。"""
     if feature_id == LLAMA_FEATURE:
         return {"feature_id": feature_id, **await _llama().available_update()}
-    if feature_id == LUCEBOX_FEATURE:
-        return {"feature_id": feature_id, **await _lucebox().available_update()}
+    if feature_id == STRATA_FEATURE:
+        return {"feature_id": feature_id, **await _strata().available_update()}
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
 
@@ -125,8 +102,11 @@ async def install(feature_id: str, job: Any = None, *, options: dict | None = No
     options = options or {}
     if feature_id == LLAMA_FEATURE:
         return await _install_llama(job, options)
-    if feature_id == LUCEBOX_FEATURE:
-        return await _install_lucebox(job, options)
+    if feature_id == STRATA_FEATURE:
+        try:
+            return await _strata().install(job, options=options)
+        except _strata().StrataError as exc:
+            raise GpuRuntimeError(str(exc)) from exc
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
 
@@ -154,21 +134,6 @@ async def _install_llama(job: Any, options: dict) -> dict:
     }
 
 
-async def _install_lucebox(job: Any, options: dict) -> dict:
-    lucebox = _lucebox()
-    environment = lucebox.detect()
-    if not environment["available"] and not options.get("force"):
-        raise GpuRuntimeError(environment["reason"] or "このPCではLuceboxを利用できません")
-    track = str(options.get("track") or lucebox.DEFAULT_TRACK)
-    if track not in lucebox.TRACKS:
-        raise GpuRuntimeError(f"未知のトラックです: {track}")
-    try:
-        result = await lucebox.install_stream(job, track=track)
-    except lucebox.LuceboxError as exc:
-        raise GpuRuntimeError(str(exc)) from exc
-    return {"runtime": "lucebox", **result}
-
-
 async def update(feature_id: str, job: Any = None) -> dict:
     """導入済み構成を最新リリースへ更新する。構成（backend/track）は変えない。"""
     if feature_id == LLAMA_FEATURE:
@@ -179,19 +144,21 @@ async def update(feature_id: str, job: Any = None) -> dict:
             return {"runtime": "llama.cpp", **await llama.update_stream(job)}
         except RuntimeError as exc:
             raise GpuRuntimeError(str(exc)) from exc
-    if feature_id == LUCEBOX_FEATURE:
-        lucebox = _lucebox()
+    if feature_id == STRATA_FEATURE:
         try:
-            return {"runtime": "lucebox", **await lucebox.update_stream(job)}
-        except lucebox.LuceboxError as exc:
+            return await _strata().update(job)
+        except _strata().StrataError as exc:
             raise GpuRuntimeError(str(exc)) from exc
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
 
 def uninstall(feature_id: str) -> dict:
     """導入物を削除する。モデルファイルと登録済みのモデル設定は残す。"""
-    if feature_id == LUCEBOX_FEATURE:
-        return _lucebox().uninstall()
+    if feature_id == STRATA_FEATURE:
+        try:
+            return _strata().uninstall()
+        except _strata().StrataError as exc:
+            raise GpuRuntimeError(str(exc)) from exc
     if feature_id == LLAMA_FEATURE:
         # llama.cpp は Ollama 非利用時の主ランタイムで、消すと登録済みモデルが
         # すべて起動できなくなる。アドオン画面からの一括削除は用意しない。
