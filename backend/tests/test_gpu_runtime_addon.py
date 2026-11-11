@@ -1,4 +1,4 @@
-"""アドオンとして管理するGPUランタイム（llama.cpp / Lucebox）。"""
+"""アドオンとして管理するGPUランタイム（llama.cpp / Strata）。"""
 import asyncio
 
 import pytest
@@ -6,10 +6,10 @@ import pytest
 from app.features import gpu_runtime, registry
 
 
-def test_catalog_registers_both_runtimes_from_the_expected_repos():
-    assert {"llama-cpp", "lucebox"} <= registry.KNOWN_FEATURES
+def test_catalog_registers_llama_and_strata():
+    assert {"llama-cpp", "strata"} <= registry.KNOWN_FEATURES
     assert registry.FEATURES["llama-cpp"]["repo"] == "souten-yd/llama-builder"
-    assert registry.FEATURES["lucebox"]["repo"] == "souten-yd/AMDLucebox"
+    assert registry.FEATURES["strata"]["repo"] == "souten-yd/AMDStrata"
     assert registry.FEATURES["llama-cpp"]["kind"] == "gpu-runtime"
 
 
@@ -30,16 +30,15 @@ def test_status_reports_llama_backends_and_rocm_series(monkeypatch):
     assert state["detail"]["rocm_series_major"] == 10
 
 
-def test_status_surfaces_missing_gpu_for_lucebox(monkeypatch):
-    from app.models_mgmt import lucebox
-
-    monkeypatch.setattr(lucebox, "is_installed", lambda: False)
-    monkeypatch.setattr(lucebox, "_gfx_targets", lambda: [110000])
-    state = gpu_runtime.status("lucebox")
+def test_status_reports_strata_terminal(monkeypatch):
+    from app.models_mgmt import strata
+    monkeypatch.setattr(strata, "runtime_status", lambda: {
+        "installed": False, "version": "", "available": True, "reason": "",
+        "cli_path": "", "models_dir": "/data/models/strata", "warning": "",
+    })
+    state = gpu_runtime.status("strata")
     assert state["installed"] is False
-    assert state["available"] is False
-    assert "gfx1201" in state["error"]
-
+    assert state["available"] is True
 
 def test_install_llama_targets_detected_backends_and_prefers_rocm(monkeypatch):
     from app.models_mgmt import llama
@@ -75,31 +74,20 @@ def test_install_llama_fails_clearly_without_a_usable_backend(monkeypatch):
     assert "ROCm" in str(excinfo.value)
 
 
-def test_install_lucebox_defaults_to_rocm10(monkeypatch):
-    from app.models_mgmt import lucebox
+def test_install_update_and_uninstall_strata(monkeypatch):
+    from app.models_mgmt import strata
 
-    seen = {}
-    monkeypatch.setattr(lucebox, "detect", lambda: {"available": True, "reason": ""})
+    async def _install(_job):
+        return {"version": "0.2.13"}
+    async def _update(_job):
+        return {"version": "0.2.14"}
 
-    async def _install(_job, *, track):
-        seen["track"] = track
-        return {"tag": "lucebox-298031aa-r1", "track": track, "version": "lucebox-298031aa-r1"}
-
-    monkeypatch.setattr(lucebox, "install_stream", _install)
-    asyncio.run(gpu_runtime.install("lucebox", None))
-    assert seen["track"] == "rocm10"
-    # 明示指定があればそちらを使う（ホストが ROCm 7 系のときの退避先）。
-    asyncio.run(gpu_runtime.install("lucebox", None, options={"track": "rocm7"}))
-    assert seen["track"] == "rocm7"
-
-
-def test_install_lucebox_refuses_unknown_track(monkeypatch):
-    from app.models_mgmt import lucebox
-
-    monkeypatch.setattr(lucebox, "detect", lambda: {"available": True, "reason": ""})
-    with pytest.raises(gpu_runtime.GpuRuntimeError):
-        asyncio.run(gpu_runtime.install("lucebox", None, options={"track": "rocm99"}))
-
+    monkeypatch.setattr(strata, "install_stream", _install)
+    monkeypatch.setattr(strata, "update_stream", _update)
+    monkeypatch.setattr(strata, "uninstall", lambda: {"installed": False})
+    assert asyncio.run(gpu_runtime.install("strata"))["runtime"] == "strata"
+    assert asyncio.run(gpu_runtime.update("strata"))["version"] == "0.2.14"
+    assert gpu_runtime.uninstall("strata")["installed"] is False
 
 def test_uninstall_protects_llama_cpp():
     """llama.cpp を消すと登録済みモデルが全部起動できなくなる。アドオンからは消させない。"""
@@ -111,18 +99,17 @@ def test_features_api_lists_gpu_runtimes(admin_client):
     response = admin_client.get("/api/v1/features")
     assert response.status_code == 200
     listed = {item["id"]: item for item in response.json()}
-    assert listed["lucebox"]["kind"] == "gpu-runtime"
-    assert listed["lucebox"]["runtime"]["runtime"] == "lucebox"
+    assert listed["strata"]["kind"] == "gpu-runtime"
+    assert listed["strata"]["runtime"]["runtime"] == "strata"
     # route_gated ではないので、有効化の一手間を求めない。
-    assert listed["lucebox"]["route_gated"] is False
+    assert listed["strata"]["route_gated"] is False
 
 
-def test_install_job_rejects_an_unknown_track(admin_client):
-    response = admin_client.post("/api/v1/features/lucebox/install-jobs",
-                                 json={"track": "rocm99"},
+def test_strata_install_job_rejects_retired_track_option(admin_client):
+    response = admin_client.post("/api/v1/features/strata/install-jobs",
+                                 json={"track": "rocm10"},
                                  headers={"X-Requested-With": "ControlDeck"})
     assert response.status_code == 422
-
 
 def test_release_status_is_only_for_gpu_runtimes(admin_client):
     response = admin_client.get("/api/v1/features/opencode/release-status")
