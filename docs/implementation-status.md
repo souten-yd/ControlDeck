@@ -3784,3 +3784,10 @@ PR352をmain `2c951d7`へ統合。実行中Host jobs=0、ライブai.pyが変更
 実Hostの正規ai.inference/Jobs/CPU leaseを持つ一時Add-onから`require_provenance:true`を要求し、complete（61文字）とstream（provenance event→done）の双方で、実Qwen3.8ローカル生成と候補helperのmodel_ref/runtime_ref一致を確認。`/tmp/pb-generation-provenance-api-live.log`、err空。一時addon/user/session除去済み、Host Job/audit保持。新APIの実導入は成功し、PatentBuddyの生成版記録は呼出側実装が次工程。
 
 PR351の「実機受入前」は当時の履歴。現在embedding/reranker APIも実導入済みで、BGE-M3/Qwen3-RerankerとPatentBuddy候補の索引/チャート生成を検証済み。詳細はPatentBuddy docs/HANDOFF.mdのPR23検証記録を参照。生成provenanceはmetadata/process連続性の識別であり、重み内容hashや数値再現性の保証へ拡張解釈しない。
+
+
+### 2026-11-11 Add-on opaque iframeのCSP接続先
+
+PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque sandboxで拒否されることを再現。proxyは上流CSPを維持し、connect-src（またはdefault-src fallback）にselfがある場合だけブラウザ側の正確なHost originを追加する。noneやhashは維持、外部origin/wildcard/unsafe-inlineを追加しない。CSPヘッダーの大小文字差による意図しない二重生成も整理。関連proxy17 tests成功、実画面と全体検証は進行中。ユーザーのパスキー作業を含むlive checkoutの他ファイルは変更しない。
+
+- 最終frontend build成功、backend全1255 tests成功/2skip105.69秒（/tmp/pb-host-csp-full-cwd.log）。初回repo rootからpytestを直接実行したためCLIのapp import2件だけ失敗、規定backend cwdで全再実行成功。live proxyのみ反映/deck.sh再起動後、再現条件のWebKit HTTPでstatus/原文成功。HTTPS WebKit/Chromeと実Host local LLM要約も成功。既存23files hash不変（/tmp/pb-csp-preserved.json）。

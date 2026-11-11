@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from collections.abc import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
@@ -58,6 +60,20 @@ _FRAME_COOKIE = "cd_addon_frame"
 _FRAME_BRIDGE_HEADER = "x-control-deck-bridge-session"
 _FRAME_PREFLIGHT_HEADERS = {"content-type", _FRAME_BRIDGE_HEADER}
 _FRAME_STATIC_DESTINATIONS = {"audio", "font", "image", "script", "style", "track", "video"}
+
+
+def _sandbox_csp(policy: str, origin: str) -> str:
+    """Keep upstream restrictions while resolving opaque-frame connect 'self'."""
+    directives = [part.strip().split() for part in policy.split(';') if part.strip()]
+    connect = next((part for part in directives if part[0].lower() == 'connect-src'), None)
+    if connect is None:
+        default = next((part for part in directives if part[0].lower() == 'default-src'), None)
+        if default is not None and "'self'" in default:
+            connect = ['connect-src', *default[1:]]
+            directives.append(connect)
+    if connect is not None and "'self'" in connect and origin not in connect:
+        connect.append(origin)
+    return '; '.join(' '.join(part) for part in directives)
 
 
 def _new_http_client() -> httpx.AsyncClient:
@@ -244,6 +260,9 @@ async def addon_frame_proxy(
                 "Access-Control-Max-Age": "600",
             },
         )
+    origin = str(request.url.replace(path='', query='', fragment='')).rstrip('/')
+    if not re.fullmatch(r'https?://[A-Za-z0-9.\-:\[\]]+', origin):
+        raise HTTPException(status_code=400, detail="Host originが不正です")
     base_url = _authorized_runtime(addon_id, user_permissions(user))
     declared_length = _content_length(request)
     if declared_length is not None and declared_length > MAX_REQUEST_BYTES:
@@ -298,9 +317,14 @@ async def addon_frame_proxy(
             continue
         if lower == "location" and value.startswith("/"):
             value = f"/addon-frame/{addon_id}{value}"
-        headers[key] = value
-    headers["Cache-Control"] = "no-store"
-    headers["Content-Security-Policy"] = "sandbox allow-scripts allow-forms allow-popups allow-downloads"
+        if lower == "content-security-policy":
+            continue
+        headers[lower] = value
+    headers["cache-control"] = "no-store"
+    # The request origin is the browser-facing Host, never the upstream service.
+    policies = [_sandbox_csp(policy, origin) for policy in upstream.headers.get_list('content-security-policy')]
+    policies.append("sandbox allow-scripts allow-forms allow-popups allow-downloads")
+    headers["content-security-policy"] = ', '.join(policies)
     headers["Set-Cookie"] = _frame_cookie(addon_id, user.id)
     if request.headers.get("origin") == "null":
         headers["Access-Control-Allow-Origin"] = "null"
