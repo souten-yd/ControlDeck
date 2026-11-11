@@ -204,7 +204,7 @@ async def environment() -> dict:
         })
     # Strata appears only once the optional managed terminal has been installed.
     if strata.installed():
-        instances = strata_gateway.list_instances()
+        instances = await asyncio.to_thread(strata_gateway.list_instances)
         runtimes.append({
             "id": "strata", "runtime": "strata", "backend": "",
             "label": "Strata（ローカルLLM / R9700）",
@@ -330,13 +330,13 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                     raise RuntimeError(detail or f"backend切替後の起動に失敗しました: {alias}")
         if policy.coexistence == "exclusive":
             await _release_ollama()
-            _release_strata()
+            await asyncio.to_thread(_release_strata)
     elif policy.coexistence == "exclusive":
         instances = llama.list_instances()
         _release_llama()
         if not instances and (await llama.health()).get("ok", False):
             llama.stop_instance()
-        _release_strata()
+        await asyncio.to_thread(_release_strata)
 
 
 async def _wait_llama_health(alias: str, seconds: int = 90) -> bool:
