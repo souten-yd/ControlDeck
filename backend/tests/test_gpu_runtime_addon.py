@@ -60,7 +60,7 @@ def test_strata_update_and_delete_are_separate_from_llama(monkeypatch):
 
 def test_unknown_lucebox_routes_are_rejected(admin_client):
     assert admin_client.get("/api/v1/features/lucebox/release-status").status_code == 404
-    assert admin_client.get("/api/v1/models/lucebox/status").status_code == 404
+    assert admin_client.get("/api/v1/models/lucebox/status").status_code in (404, 405)  # generic route can match method
 
 
 def test_strata_not_a_default_llm_runtime():
