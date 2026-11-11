@@ -42,6 +42,10 @@ def _binary() -> Path:
     return _home() / ".local" / "bin" / "strata"
 
 
+def binary_path() -> Path:
+    return _binary()
+
+
 def _marker() -> Path:
     return _root() / "managed.json"
 
