@@ -118,7 +118,7 @@ def is_gateway_url(url: str) -> bool:
 
 
 def resolve_instance(model: str) -> dict:
-    """モデル名(alias)から転送先インスタンスを決める。llama.cpp / Lucebox を区別しない。
+    """モデル名(alias)から転送先インスタンスを決める。
 
     AUTO_MODEL・未指定・未登録のときは起動中のLLMを優先し、いなければ登録順（=優先度順）
     の先頭を採る。停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
@@ -175,31 +175,14 @@ OPENCODE_CLIENT = "opencode"
 
 
 def _greedy_sampling_for(instance: dict, request: Request) -> bool:
-    """このリクエストで temperature を 0 に固定するか。モデル個別設定だけで決める。
-
-    Lucebox の DFlash2 は厳密グリーディ検証のみで temperature>0 では効かないため、
-    速度を出すには temperature=0 が要る。以前はここで「OpenCode が停止中のモデルを
-    起こす場合は個別設定より優先して投機ONにする」規則を持っていたが、実運用で
-    エージェントが同じツール呼び出しを繰り返して止まらなくなった（同じ文脈から
-    決定的に同じ行動が出るため、ループから抜けられない。実測でも毎ターン出力が
-    59トークンで完全一致していた）。エージェント用途では greedy の副作用の方が
-    速度の利得より重いので、クライアントによる上書きはやめた。
-    コーディングは temperature に依存せず投機が効く llama.cpp 側へ寄せる。
-
-    temperature を潰すのは Lucebox の制約への対処であって一般的な高速化策では
-    ないので、llama.cpp のサンプリングには触らない。
-    """
-    from app.models_mgmt import local_llm
-
-    if str(instance.get("runtime") or "") != local_llm.LUCEBOX:
-        return False
-    return local_llm.pins_greedy_sampling(str(instance["alias"]))
+    """Retired Lucebox may not influence generic sampling or tools."""
+    return False
 
 
 async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
     """KVに空きが出るまで待つ。空くまで待って必ず通す方針。
 
-    共有KVを持たない Lucebox では待つ対象が無いので即座に通る（local_llm 側で判定）。
+    共有KVの制限はlocal_llmが判定する。
     """
     from app.models_mgmt import local_llm
 
@@ -392,8 +375,7 @@ def _upstream_error(alias: str, body: bytes) -> dict:
 async def gateway_models(request: Request):
     """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。
 
-    llama.cpp と Lucebox のモデルが1つの一覧に並ぶ。どちらのランタイムかは
-    OpenAI 仕様には無い項目なので、互換性を壊さない追加フィールドで示す。
+    登録されたllama.cppモデルの一覧を返す。ランタイム名は追加フィールドとして示す。
     """
     _authorize(request)
     from app.models_mgmt import local_llm
