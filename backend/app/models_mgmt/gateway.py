@@ -131,7 +131,13 @@ def resolve_instance(model: str) -> dict:
         model = ""
     match = next((i for i in instances if str(i.get("alias")) == model), None)
     if match is None:
-        llms = [i for i in instances if str(i.get("role", "llm")) == "llm"]
+        # Never choose a merely registered, never-activated Strata model by
+        # default; it may require a massive first download requiring consent.
+        llms = [
+            i for i in instances
+            if str(i.get("role", "llm")) == "llm"
+            and (i.get("runtime") != "strata" or i.get("activated"))
+        ]
         match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
     if match is None:
         raise HTTPException(status_code=404, detail="転送先のモデルが登録されていません")
