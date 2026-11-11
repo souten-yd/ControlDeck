@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import shutil
+import shlex
 import subprocess
 import tempfile
 import urllib.request
@@ -135,11 +136,11 @@ def _wrapper() -> None:
     data.mkdir(parents=True, exist_ok=True)
     source = (
         "#!/bin/sh\n"
-        f"export HOME='{home}'\n"
-        f"export XDG_DATA_HOME='{home / '.local' / 'share'}'\n"
-        f"export STRATA_HOME='{home / '.strata'}'\n"
-        f"export PATH='{home / '.local' / 'bin'}':$PATH\n"
-        f"exec '{server_path()}' \"$@\"\n"
+        f"export HOME={shlex.quote(str(home))}\n"
+        f"export XDG_DATA_HOME={shlex.quote(str(home / '.local' / 'share'))}\n"
+        f"export STRATA_HOME={shlex.quote(str(home / '.strata'))}\n"
+        f"export PATH={shlex.quote(str(home / '.local' / 'bin'))}:$PATH\n"
+        f"exec {shlex.quote(str(server_path()))} \"$@\"\n"
     )
     script.write_text(source, encoding="utf-8")
     script.chmod(0o700)
@@ -183,11 +184,31 @@ async def install(job=None, *, options: dict | None = None) -> dict:
     return await asyncio.to_thread(_install_sync)
 
 
-async def update(job=None) -> dict:
+def _update_sync() -> dict:
     if not is_installed():
         raise StrataError("Strataは未導入です")
-    # Do not overwrite a running engine or interrupt existing sessions.
-    return await asyncio.to_thread(_install_sync)
+    previous = str(_state().get("tag") or "")
+    # Upstream signed feed verification/engine rollback live inside strata update.
+    # --yes does NOT stop a running model. No --stop-model / --start-again.
+    try:
+        cp = subprocess.run(
+            [str(server_path()), "update", "--yes"], env=_env(), cwd=str(_home()),
+            capture_output=True, text=True, timeout=1200, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StrataError("Strata公式updaterを実行できませんでした") from exc
+    if cp.returncode != 0:
+        raise StrataError("Strataの更新に失敗しました。モデルが起動中の場合は停止して再実行してください")
+    tag, _ = _release()
+    state = {"tag": tag, "source": "Niko1221/Strata"}
+    temp = _state_path().with_suffix(".tmp")
+    temp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(temp, _state_path())
+    return {"runtime": "strata", "version": tag, "previous_version": previous}
+
+
+async def update(job=None) -> dict:
+    return await asyncio.to_thread(_update_sync)
 
 
 async def available_update() -> dict:
