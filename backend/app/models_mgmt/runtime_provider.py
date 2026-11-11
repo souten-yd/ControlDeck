@@ -468,8 +468,36 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
                         })
 
 
+class StrataRuntimeProvider(OpenAICompatibleRuntimeProvider):
+    """Managed Strata OpenAI-compatible server with explicit first activation."""
+
+    kind = "strata"
+
+    async def _prepare(self, request: RuntimeChatRequest) -> None:
+        await super()._prepare(request)
+        from app.models_mgmt import strata_gateway
+        from urllib.parse import urlsplit
+
+        port = urlsplit(normalize_openai_base(request.base_url)).port
+        instance = next(
+            (item for item in strata_gateway.list_instances() if item["port"] == port),
+            None,
+        )
+        if instance is None or not await strata_gateway.ensure_ready(
+            str(instance["alias"]), timeout_seconds=420
+        ):
+            raise RuntimeProviderError("Strataモデルが未登録・未起動、または読み込みに失敗しました")
+
+    def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
+        payload = super()._payload(request, stream=stream)
+        # Strata exposes its own model ID on its one-model OpenAI endpoint.
+        payload["model"] = "strata"
+        return payload
+
+
 _OLLAMA = OllamaRuntimeProvider()
 _LLAMA = LlamaCppRuntimeProvider()
+_STRATA = StrataRuntimeProvider()
 _OPENAI = OpenAICompatibleRuntimeProvider()
 
 
@@ -484,12 +512,14 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
     except Exception:
         pass
     try:
-        from app.models_mgmt import llama
+        from app.models_mgmt import llama, strata_gateway
 
         parsed = urlsplit(normalized)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
             if parsed.port in llama.endpoint_ports():
                 return _LLAMA
+            if parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
+                return _STRATA
     except Exception:
         pass
     return _OPENAI
@@ -513,7 +543,7 @@ def provider_for_request(request: RuntimeChatRequest) -> LlmRuntimeProvider:
     return provider_for_base_url(request.base_url)
 
 
-_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _OPENAI)
+_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _OPENAI)
 
 
 def active_request_count() -> int:
