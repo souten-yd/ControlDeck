@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from app.models_mgmt import llama, local_llm, ollama, providers
+from app.models_mgmt import llama, local_llm, ollama, providers, strata_gateway
 
 
 class ProviderError(RuntimeError):
@@ -170,6 +170,18 @@ async def list_models(provider_id: str) -> list[dict]:
                 },
             })
         return result
+    if provider["provider"] == "strata" and provider["managed"]:
+        return [{
+            "id": item["alias"],
+            "name": f"Strata · {item['family']} / {item['model']}",
+            "size_bytes": 0, "modified_at": "", "loaded": item["loaded"],
+            "details": {
+                "runtime": "strata", "backend": "ROCm",
+                "port": item["port"], "base_url": item["base_url"],
+                "runtime_status": item["runtime_status"],
+                "quantization": item["model"], "context": item["context"],
+            },
+        } for item in strata_gateway.list_instances()]
     return [{
         "id": model, "name": model, "size_bytes": 0, "modified_at": "",
         # OpenAI互換APIだけでは各モデルのロード状態を判定できない。
@@ -235,6 +247,12 @@ async def delete_model(provider_id: str, model_id: str) -> None:
     provider = await _provider(provider_id)
     if "delete" not in provider["capabilities"]:
         raise UnsupportedOperation("このproviderはモデル削除に対応していません")
+    if provider["provider"] == "strata":
+        try:
+            await asyncio.to_thread(strata_gateway.delete_instance, model_id)
+            return
+        except (KeyError, strata_gateway.StrataGatewayError) as exc:
+            raise ProviderError(str(exc)) from exc
     if provider["provider"] == "llama.cpp":
         try:
             await asyncio.to_thread(llama.delete_instance, model_id)
@@ -314,4 +332,14 @@ async def provider_health(provider_id: str) -> dict:
         ]
         return {"ok": any(item["ok"] for item in details), "provider": "llama.cpp",
                 "installed": llama.is_installed(), "instances": details}
+    if provider["provider"] == "strata" and provider["managed"]:
+        instances = strata_gateway.list_instances()
+        states = await asyncio.gather(*(strata_gateway.health(str(item["alias"])) for item in instances))
+        return {
+            "ok": any(state["ok"] for state in states), "provider": "strata",
+            "installed": True,
+            "instances": [{"alias": item["alias"], "port": item["port"],
+                           "ok": state["ok"], "runtime_status": item["runtime_status"]}
+                          for item, state in zip(instances, states, strict=True)],
+        }
     return {"ok": bool(provider.get("available")), "provider": provider["provider"], "instances": []}
