@@ -1,6 +1,6 @@
 """Common Resource Broker adapter for the locally managed LLM runtimes.
 
-llama.cpp と Lucebox は同じ1枚のGPUを取り合うので、ブローカーから見ると1つの
+llama.cpp は同じ1枚のGPUを取り合うので、ブローカーから見ると1つの
 provider として扱うのが正しい。ランタイム別の差（KVプールの有無など）は
 models_mgmt/local_llm.py が吸収する。
 """
@@ -36,7 +36,7 @@ def model_is_on_local_nvme(model_path: str) -> bool:
 
 
 class LocalLlmCapacityProvider(ResourceProvider):
-    """ローカル常駐LLM（llama.cpp / Lucebox）のGPU占有をブローカーへ申告する。"""
+    """ローカル常駐LLM（llama.cpp）のGPU占有をブローカーへ申告する。"""
 
     id = "local-llm"
     # 最後に頼む。降ろすと、載せ直しの間だけでなく利用者の会話そのものが止まる。
@@ -73,9 +73,7 @@ class LocalLlmCapacityProvider(ResourceProvider):
         current = local_llm.find(alias) or instance
         loaded = bool(current.get("loaded"))
         model_bytes = 0
-        # Lucebox はターゲット + DFlash ドラフトの2本を載せる。VLM の mmproj と同じく
-        # 追加分もVRAM見積りへ入れないと、受け入れ判定が実際より甘くなる。
-        for key in ("model_path", "mmproj_path", "draft_path"):
+        for key in ("model_path", "mmproj_path"):
             path = str(instance.get(key) or "")
             if not path:
                 continue
