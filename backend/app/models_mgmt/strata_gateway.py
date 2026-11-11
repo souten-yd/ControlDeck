@@ -77,7 +77,7 @@ def _running() -> list[dict]:
         result = _run(["launch", "--status", "--output", "json"], timeout=12)
         if result.returncode:
             return []
-        payload = json.loads(result.stdout)
+        payload = json.loads(result.stdout.splitlines()[0])
         rows = payload.get("running", [])
         return rows if isinstance(rows, list) else []
     except (StrataGatewayError, ValueError, TypeError):
@@ -201,7 +201,9 @@ async def health(alias: str) -> dict:
     if not cfg or not strata.installed():
         return {"ok": False, "status_code": None}
     try:
-        async with httpx.AsyncClient(timeout=3) as client:
+        if not get_instance(alias)["loaded"]:
+            return {"ok": False, "status_code": None}
+        async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
             res = await client.get(f"http://127.0.0.1:{cfg['port']}/health")
             if res.status_code != 200:
                 return {"ok": False, "status_code": res.status_code}
