@@ -71,13 +71,13 @@ FEATURES: dict[str, dict] = {
         "repo": "souten-yd/llama-builder",
         "summary": "GGUFモデルを動かすローカルLLMランタイム。ROCmビルドはROCm 10系へ統一",
     },
-    "lucebox": {
-        "name": "Lucebox（DFlash投機デコード / R9700）",
+    "strata": {
+        "name": "Strata（Qwen / DeepSeek・SSD併用）",
         "kind": "gpu-runtime",
-        "executable": "dflash_server",
+        "executable": "strata",
         "route_gated": False,
-        "repo": "souten-yd/AMDLucebox",
-        "summary": "Radeon AI PRO R9700向けの高速推論ランタイム。ROCm 10ビルドを既定にする",
+        "repo": "Niko1221/Strata",
+        "summary": "任意導入のStrata Terminal。モデルは自動取得・起動しません",
     },
 }
 
@@ -146,9 +146,10 @@ def _managed_executable(feature_id: str) -> Path:
     root = _feature_root(feature_id)
     if spec["kind"] == "gpu-runtime":
         # 実体は data/runtimes/ 配下。features root は使わない。
-        from app.models_mgmt import llama, lucebox
+        from app.models_mgmt import llama
+        from app.features import strata_runtime
 
-        return llama.server_path() if feature_id == "llama-cpp" else lucebox.server_path()
+        return llama.server_path() if feature_id == "llama-cpp" else strata_runtime.server_path()
     if spec["kind"] == "release-bundle":
         from app.features import release_bundle
 
