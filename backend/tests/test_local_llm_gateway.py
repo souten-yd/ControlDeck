@@ -53,6 +53,8 @@ def test_gateway_never_forces_greedy_sampling_for_llama(monkeypatch):
 
 
 def test_gateway_dispatches_strata_alias_without_rewriting_other_models(monkeypatch):
+    from app.models_mgmt import strata
+    monkeypatch.setattr(strata, "installed", lambda: True)
     monkeypatch.setattr(llama, "list_instances", lambda: [
         {"alias": "llama-model", "port": 8080, "role": "llm"},
     ])
