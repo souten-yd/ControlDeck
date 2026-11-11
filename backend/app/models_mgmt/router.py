@@ -1331,7 +1331,7 @@ async def strata_start_job(
         job.set_progress("起動完了", 1, 1)
         return {"alias": alias, "loaded": True}
 
-    job = jobs.create("strata.start", f"Strata初回起動: {alias}", run,
+    job = jobs.create("model.strata.start", f"Strata初回起動: {alias}", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
     audit.record(db, "strata.start", user=user, resource_type="model",
                  resource_id=alias, request=request, metadata={"job_id": job.id})
