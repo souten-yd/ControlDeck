@@ -9,11 +9,14 @@ import asyncio
 from typing import Any
 
 LLAMA = "llama.cpp"
-RUNTIMES = (LLAMA,)
+STRATA = "strata"
+RUNTIMES = (LLAMA, STRATA)
 
 
 def module_for(runtime: str):
-    from app.models_mgmt import llama
+    from app.models_mgmt import llama, strata_gateway
+    if runtime == STRATA:
+        return strata_gateway
     if runtime == LLAMA:
         return llama
     raise KeyError(f"未知のローカルランタイムです: {runtime}")
@@ -28,6 +31,11 @@ def _llama_instances() -> list[dict]:
         return []
 
 
+def _strata_instances() -> list[dict]:
+    from app.models_mgmt import strata_gateway
+    return strata_gateway.list_instances()
+
+
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
     """全ローカルランタイムのモデル設定を優先度順で返す。
 
@@ -35,6 +43,8 @@ def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
     items: list[dict] = []
     if runtime in ("", LLAMA):
         items += _llama_instances()
+    if runtime in ("", STRATA):
+        items += _strata_instances()
     if role:
         items = [item for item in items if str(item.get("role", "llm")) == role]
     return items
@@ -168,4 +178,6 @@ async def await_capacity(alias: str, port: int, needed_tokens: int, *,
 def installed_runtimes() -> dict[str, bool]:
     from app.models_mgmt import llama
 
-    return {LLAMA: llama.is_installed()}
+    from app.models_mgmt import strata
+
+    return {LLAMA: llama.is_installed(), STRATA: strata.installed()}
