@@ -719,6 +719,7 @@ function AddonsSection() {
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobKind, setJobKind] = useState<"install" | "update">("install");
+  const [jobAddonId, setJobAddonId] = useState<string>("");
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const { data: addons } = useQuery({
@@ -747,7 +748,8 @@ function AddonsSection() {
     qc.invalidateQueries({ queryKey: ["features"] });
     qc.invalidateQueries({ queryKey: ["feature-release-status"] });
     if (jobKind === "install") {
-      show("導入が完了しました。「有効化」で利用を開始できます");
+      const isRuntime = (addons ?? []).some((item) => item.id === jobAddonId && item.kind === "gpu-runtime");
+      show(isRuntime ? "ランタイムの導入が完了しました。利用するモデルは端末から明示的に選択してください" : "導入が完了しました。「有効化」で利用を開始できます");
       return;
     }
     const before = job.result?.previous_version?.replace(/^v/, "") ?? "";
@@ -787,6 +789,7 @@ function AddonsSection() {
       const json = {};
       const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json });
       setJobKind("install");
+      setJobAddonId(addon.id);
       setJobId(r.job_id);
     } catch (e) {
       show(e instanceof Error ? e.message : "導入開始に失敗しました", "error");
@@ -796,6 +799,7 @@ function AddonsSection() {
     try {
       const r = await api<{ job_id: string }>(`/features/${addon.id}/update-jobs`, { method: "POST", json: {} });
       setJobKind("update");
+      setJobAddonId(addon.id);
       setJobId(r.job_id);
     } catch (e) {
       show(e instanceof Error ? e.message : "更新開始に失敗しました", "error");
@@ -833,7 +837,7 @@ function AddonsSection() {
                     : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled
                       ? "導入済み — サービスの復旧が必要です"
                     : addon.installed ? "導入済み（無効）— 有効化すると使えます"
-                    : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "release-bundle" ? "検証済みbundle" : addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
+                    : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "release-bundle" ? "検証済みbundle" : addon.kind === "pip" ? "pip・1〜2分" : addon.kind === "gpu-runtime" ? "管理済みランタイム" : "npm・1〜2分"}）`
                     : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です"}
                   {addon.error && ` · ${addon.error}`}
                   {addon.requires_installed === false &&
