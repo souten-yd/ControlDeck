@@ -1277,3 +1277,93 @@ async def llama_options(user: User = Depends(require_permission("workflows.edit"
         "load_modes": [value for value in llama.LOAD_MODES if value],
         "supports_load_mode": llama.supports_load_mode(),
     }
+
+# ---- Opt-in Strata Terminal / gateway-managed models ----
+
+class StrataModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(min_length=1, max_length=48)
+    family: Literal["qwen", "deepseek41"] = "qwen"
+    model: str = Field(min_length=1, max_length=50)
+    context: Literal["8k", "16k", "32k", "64k", "128k"] = "32k"
+    port: int = Field(default=8095, ge=8081, le=65535)
+
+
+@router.get("/strata/instances")
+def strata_instances(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import strata, strata_gateway
+    return {"runtime": strata.runtime_status(), "instances": strata_gateway.list_instances()}
+
+
+@router.post("/strata/instances", status_code=201)
+def strata_create_instance(
+    body: StrataModelBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import strata_gateway
+
+    try:
+        result = strata_gateway.save_instance(
+            body.alias, family=body.family, model=body.model,
+            context=body.context, port=body.port,
+        )
+    except strata_gateway.StrataGatewayError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "strata.instance_create", user=user, resource_type="model",
+                 resource_id=body.alias, request=request)
+    return result
+
+
+@router.post("/strata/instances/{alias}/start-jobs", status_code=201)
+async def strata_start_job(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import strata_gateway
+    if alias not in {item["alias"] for item in strata_gateway.list_instances()}:
+        raise HTTPException(status_code=404, detail="Strataモデル設定がありません")
+
+    async def run(job: jobs.Job) -> dict:
+        job.set_progress("Strataモデルを取得・起動しています。容量と環境により時間がかかります", 0, 1)
+        ok, error = await asyncio.to_thread(strata_gateway.start_instance, alias)
+        if not ok:
+            raise RuntimeError(error or "Strataの起動に失敗しました")
+        job.set_progress("起動完了", 1, 1)
+        return {"alias": alias, "loaded": True}
+
+    job = jobs.create("strata.start", f"Strata初回起動: {alias}", run,
+                      owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "strata.start", user=user, resource_type="model",
+                 resource_id=alias, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.post("/strata/instances/{alias}/stop")
+async def strata_stop_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import strata_gateway
+    ok, error = await asyncio.to_thread(strata_gateway.stop_instance, alias)
+    if not ok:
+        raise HTTPException(status_code=422, detail=error)
+    audit.record(db, "strata.stop", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return {"alias": alias, "loaded": False}
+
+
+@router.post("/strata/instances/{alias}/delete")
+def strata_delete_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import strata_gateway
+    try:
+        result = strata_gateway.delete_instance(alias)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Strataモデル設定がありません") from exc
+    except strata_gateway.StrataGatewayError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "strata.instance_delete", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return result
