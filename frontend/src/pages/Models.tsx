@@ -485,7 +485,7 @@ export default function ModelsPage() {
                   className="min-w-0 flex-1 text-left">
                   <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
                     {m.name}
-                    {/* どのランタイムが載せるモデルかを一覧で見分けられるようにする。 */}
+                  </p>
                   <p className="num truncate text-xs text-zinc-400">
                     {RUNTIME_LABEL[runtime ?? "ollama"] ?? "Ollama"}
                     {m.backend_label ? ` / ${m.backend_label}` : ""} · {gb(m.size)}
