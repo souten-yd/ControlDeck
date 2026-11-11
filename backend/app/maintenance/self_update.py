@@ -123,14 +123,13 @@ def start(expected_sha: str) -> dict:
         raise SelfUpdateError(current["error"] or "更新できない環境です")
     if current["remote_sha"] != expected_sha or not current["update_available"]:
         raise SelfUpdateError("mainが変更されたか、既に最新版です。再確認してください")
-    if _saved_state().get("phase") in ("scheduled", "running"):
-        raise SelfUpdateError("更新が実行中です")
-    if not _cmd(["systemctl", "--user", "is-active", _SERVICE], check=False):
+    if _cmd(["systemctl", "--user", "is-active", _SERVICE], check=False) != "active":
         raise SelfUpdateError("ControlDeckユーザーサービスが見つかりません")
     _write_state({"phase": "scheduled", "target_sha": expected_sha, "started_at": int(time.time())})
     unit = "control-deck-update-" + expected_sha[:12]
     command = [
         "systemd-run", "--user", "--collect", "--unit", unit,
+        "--working-directory", str(REPO_ROOT / "backend"),
         "--description", "Explicit ControlDeck update",
         str(REPO_ROOT / ".venv" / "bin" / "python"), "-m",
         "app.maintenance.self_update", "--apply", expected_sha,
