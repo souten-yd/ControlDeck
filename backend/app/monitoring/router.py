@@ -97,6 +97,35 @@ def self_status(user: User = Depends(require_permission("system.view"))):
     }
 
 
+# Explicit ControlDeck source updates; never run on boot.
+# The worker is detached into an independent user systemd unit because it must
+# restart this web server after the frontend/backend have been rebuilt.
+@router.get("/control-deck-update")
+def control_deck_update_status(user: User = Depends(require_permission("settings.manage"))):
+    from app.maintenance import self_update
+    return self_update.status()
+
+
+@router.post("/control-deck-update", status_code=202)
+def control_deck_update_start(
+    body: dict, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    from app.audit import service as audit
+    from app.maintenance import self_update
+
+    expected_sha = body.get("expected_sha")
+    if set(body) != {"expected_sha"} or not isinstance(expected_sha, str):
+        raise HTTPException(status_code=422, detail="expected_shaのみ指定できます")
+    try:
+        result = self_update.start(expected_sha)
+    except self_update.SelfUpdateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "system.control_deck_update", user=user, resource_type="system",
+                 request=request, metadata={"target_sha": expected_sha})
+    return result
+
+
 @router.get("/disk")
 def disk(user: User = Depends(require_permission("system.view"))):
     from app.monitoring.disks import disk_telemetry
