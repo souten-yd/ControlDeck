@@ -131,6 +131,10 @@ def apply_amd(bdf: str, watts_text: str, memory_mode: str, memory_level_text: st
 
 
 
+# Never below the firmware's advertised minimum, and never a stopped fan.
+MIN_FAN_PERCENT = 15
+
+
 def fan_curve_path(device: Path) -> Path:
     """Only the GPU's exact amdgpu OD node; never accept a path from the caller."""
     curve = device / "gpu_od" / "fan_ctrl" / "fan_curve"
@@ -199,7 +203,7 @@ def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
         fail("fan_curve指定形式が不正です")
     points = [tuple(map(int, item.split(":"))) for item in curve_text.split(",")]
     if len(points) != count or any(
-        not (tmin <= t <= tmax and max(30, pmin) <= p <= pmax)
+        not (tmin <= t <= tmax and max(MIN_FAN_PERCENT, pmin) <= p <= pmax)
         for t, p in points
     ) or any(
         points[i][0] <= points[i - 1][0] or points[i][1] < points[i - 1][1]

@@ -47,7 +47,8 @@ class FanSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     bdf: str | None = None
-    min_percent: int = Field(default=35, ge=30, le=70)
+    # Firmware (R9700) accepts 15–100%; the curve also clamps to the device minimum.
+    min_percent: int = Field(default=35, ge=15, le=70)
     allow_zero_rpm: bool = False
     preset_id: Literal["recommended", "quiet", "cooling", "custom"] = "recommended"
     cool_hold_seconds: int = Field(default=180, ge=180, le=600)
@@ -399,7 +400,9 @@ def _curve(ranges: tuple[int, int, int, int], floor: int) -> str:
     if end - start < 4:
         raise FanControlError("GPUの温度カーブ範囲が狭すぎます")
     anchor = [start + ((end - start) * i) // 4 for i in range(5)]
-    base = (35, 45, 65, 90, pmax)
+    # Flat at the user's floor up to ~42°C hotspot: the adaptive controller raises
+    # the floor on load, and the 60/77/95°C points stay as a firmware backstop.
+    base = (floor, floor, 65, 90, pmax)
     speeds = [min(pmax, max(pmin, floor, value)) for value in base]
     speeds[-1] = pmax
     return ",".join(f"{temp}:{pwm}" for temp, pwm in zip(anchor, speeds, strict=True))

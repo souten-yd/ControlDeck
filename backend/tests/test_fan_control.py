@@ -527,3 +527,23 @@ def test_reset_still_fails_when_advertised_zero_rpm_cannot_be_restored(tmp_path,
     monkeypatch.setattr(Path, "write_text", device)
     with pytest.raises(SystemExit):
         helper.control_fan_curve("reset", "0000:03:00.0")
+
+
+def test_floor_can_go_down_to_firmware_minimum_and_low_curve_is_flat():
+    """実機R9700: 旧実装は25°C 35% / 42°C 45%を固定で敷き、最低指令を30%に
+    下げても約1600rpmのままだった。ファームウェアの下限15%まで下げられ、
+    低温側は最低指令のまま平らにする。高温側の安全網は残す。"""
+    from app.monitoring import fan_control as fan
+    assert fan.FanSettings(min_percent=15).min_percent == 15
+    with pytest.raises(ValueError):
+        fan.FanSettings(min_percent=14)
+    assert fan._curve((25, 100, 15, 100), 20) == "25:20,42:20,60:65,77:90,95:100"
+    # Device minimum still wins over a lower floor.
+    assert fan._curve((25, 100, 25, 100), 15).startswith("25:25,42:25,")
+
+
+def test_helper_accepts_firmware_minimum_but_not_below(tmp_path):
+    helper, curve = _helper(tmp_path)
+    helper.control_fan_curve("apply", "0000:03:00.0", "25:20,42:20,60:65,77:90,95:100")
+    with pytest.raises(SystemExit):
+        helper.control_fan_curve("apply", "0000:03:00.0", "25:10,42:10,60:65,77:90,95:100")

@@ -129,7 +129,7 @@ function FanCurvePreview({ device, minimum, activeCurve }: {
   const start = Math.max(t0, 25);
   const end = Math.min(t1, 95);
   if (end - start < 4) return null;
-  const baseline = [35, 45, 65, 90, p1].map((v, index) => ({
+  const baseline = [minimum, minimum, 65, 90, p1].map((v, index) => ({
     temp: start + Math.floor(((end - start) * index) / 4),
     percent: Math.min(p1, Math.max(p0, minimum, v)),
   }));
@@ -329,7 +329,7 @@ export function FanControlSettings() {
           )}
 
           <RangeControl label="アイドル時の最低ファン指令" value={draft.min_percent}
-            min={30} max={70} suffix="%" hint="通常は低速回転を維持し、温度が上がれば自動的に加速します。"
+            min={Math.max(15, selected?.curve_limits?.pwm_min_percent ?? 15)} max={70} suffix="%" hint="通常は低速回転を維持し、温度が上がれば自動的に加速します。"
             onChange={(value) => update({ min_percent: value })}/>
           {selected && <FanCurvePreview device={selected} minimum={draft.min_percent}
             activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}/>}
