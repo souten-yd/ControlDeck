@@ -36,9 +36,9 @@ interface Model {
 }
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
-type LocalRuntime = "llama.cpp" | "strata";
+type LocalRuntime = "llama.cpp" | "strata" | "maya-s24";
 const RUNTIME_LABEL: Record<string, string> = {
-  "llama.cpp": "llama.cpp", strata: "Strata", ollama: "Ollama",
+  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s24": "Maya-S24", ollama: "Ollama",
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
@@ -281,7 +281,7 @@ export default function ModelsPage() {
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
       if (!isLocal) return api<Model[]>("/models");
-      const fetched = await Promise.all((["llama.cpp", "strata"] as const).map(async (runtime) => {
+      const fetched = await Promise.all((["llama.cpp", "strata", "maya-s24"] as const).map(async (runtime) => {
         try {
           const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
             `/models/providers/${runtime}/models`);
@@ -390,6 +390,18 @@ export default function ModelsPage() {
     setActing(id);
     try {
       const provider = runtime ?? (isLocal ? "llama.cpp" : "ollama");
+      if (provider === "maya-s24") {
+        if (action === "load") {
+          const started = await api<{job_id: string}>("/features/maya-s24/model/start-jobs",
+            {method: "POST", json: {}});
+          show(`Maya-S24の起動ジョブを開始しました（${started.job_id}）。ジョブ一覧で進捗を確認できます`);
+        } else {
+          await api("/features/maya-s24/model/stop", {method: "POST", json: {}});
+          show("Maya-S24を停止しました");
+          await refresh();
+        }
+        return;
+      }
       if (provider === "strata" && action === "load") {
         const started = await api<{ job_id: string }>(
           `/models/strata/instances/${encodeURIComponent(id)}/start-jobs`,
@@ -480,7 +492,12 @@ export default function ModelsPage() {
             const endpoint = isLlama ? endpoints?.find((e) => e.aliases.includes(id)) : undefined;
             // 同じエンドポイントを共有する行は、ロードすると同居モデルが止まることを明示する。
             const shared = endpoint && endpoint.aliases.length > 1;
-            const openDetail = () => runtime === "strata" ? setStrataDetail(id) : isLlama ? setLlamaDetail(id) : setDetail(m.name);
+            const openDetail = () => {
+              if (runtime === "strata") setStrataDetail(id);
+              else if (runtime === "maya-s24") show("Maya-S24の詳細・HIP設定とモデル準備は「設定 → オプション機能」で管理します");
+              else if (isLlama) setLlamaDetail(id);
+              else setDetail(m.name);
+            };
             return (
             <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-2 sm:gap-3">
@@ -525,7 +542,7 @@ export default function ModelsPage() {
                     <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "", runtime)} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
                       {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
-                    {isLocal && runtime ? (
+                    {isLocal && runtime === "maya-s24" ? null : isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
                         trigger={<IconDots />}
