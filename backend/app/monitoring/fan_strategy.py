@@ -38,7 +38,7 @@ class AdaptivePolicy:
     last_demand: float = 35
     last_rise_at: float = 0
     cooling_since: float | None = None
-    last_stop_exit: float = 0
+    last_stop_exit: float = -1_000_000
     stop_active: bool = False
     warm_seconds: float = 0
     cool_seconds: float = 0
@@ -200,6 +200,15 @@ class AdaptivePolicy:
             "learning": {"ff_gain": round(self.ff_gain, 2), "kp": round(self.kp, 2),
                          "ki": self.ki, "observations": self.observations},
         }
+
+    def reset_dwell(self, now: float) -> None:
+        """Suspend/worker gaps are not evidence of continuous cooling."""
+        self.cooling_since = None
+        self.previous_c.clear()
+        self.derivative.clear()
+        self.power_ema_w = None
+        self.last_rise_at = now
+        self.warm_seconds = self.cool_seconds = 0
 
     def exited_stop(self, now: float) -> None:
         self.last_stop_exit = now
