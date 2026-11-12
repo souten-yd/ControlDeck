@@ -53,6 +53,7 @@ def gpu(tmp_path, monkeypatch):
         "_temp_history": {}, "_zero_stable_since": None,
         "_zero_active": False, "_zero_initialized_bdf": None,
         "_last_rise_c_per_min": 0.0, "_applied_floor": 0,
+        "_last_tick_at": None,
     }.items():
         monkeypatch.setattr(fan, key, value)
     calls = []
@@ -228,15 +229,13 @@ def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
     # LLM goes idle with all temperatures cool: hold the fan, not the load.
     for sensor_id, temp in (("temp1", 40), ("temp2", 46), ("temp3", 40)):
         (hwmon / f"{sensor_id}_input").write_text(str(temp * 1000))
+    for _ in range(60):
+        clock[0] += 3
+        fan.tick()
+    assert fan._floor == 100  # 177 seconds of observed cooldown
     clock[0] += 3
     fan.tick()
-    assert fan._floor == 100
-    clock[0] += 120
-    fan.tick()
-    assert fan._floor == 100
-    clock[0] += 61
-    fan.tick()
-    assert fan._floor == 95  # first reduction only after >=180 seconds
+    assert fan._floor == 95  # first reduction after >=180 seconds
     clock[0] += 3
     fan.tick()
     assert fan._floor == 95  # no 5%-per-poll rapid ramp-down
@@ -288,10 +287,11 @@ def test_zero_rpm_only_after_stable_five_minutes_and_immediate_wake(gpu, monkeyp
     assert calls[0][0] == "zero-deny"
     assert not any(x[0] == "zero-allow" for x in calls)
 
-    clock[0] += 150
-    fan.tick()
+    for _ in range(99):
+        clock[0] += 3
+        fan.tick()
     assert not any(x[0] == "zero-allow" for x in calls)
-    clock[0] += 151
+    clock[0] += 3
     fan.tick()
     assert calls[-1][0] == "zero-allow"
     assert fan.status()["active"]["zero_rpm_permitted"] is True
@@ -354,3 +354,18 @@ def test_helper_refuses_zero_rpm_when_stop_temperature_is_unsafe(tmp_path):
     with pytest.raises(SystemExit):
         helper.control_zero_rpm("allow", "0000:03:00.0")
     assert stop.read_text() == before
+
+
+
+def test_stalled_monitor_loop_cannot_count_as_5_minutes_of_cooling(gpu, monkeypatch):
+    fan, device, hwmon, _, calls = gpu
+    _add_zero_nodes(device)
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid, temp in (("temp1", 31), ("temp2", 34), ("temp3", 39)):
+        (hwmon / f"{sid}_input").write_text(str(temp * 1000))
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", allow_zero_rpm=True))
+    clock[0] += 600  # e.g. the host was suspended; no intervening reads
+    fan.tick()
+    assert not any(x[0] == "zero-allow" for x in calls)
+    assert fan.status()["active"]["zero_rpm_permitted"] is False
