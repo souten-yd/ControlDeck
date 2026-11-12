@@ -238,6 +238,30 @@ export const IconSend = (p: SVGProps<SVGSVGElement>) => (
 );
 
 
+/** 音声・音楽（波形）。SonicForge などが "audio" / "music" で名乗る。 */
+export const IconAudio = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M3 12h1.5M7 8v8M10.5 5v14M14 9v6M17.5 6.5v11M21 12h-1" />
+  </Icon>
+);
+/** 開いた本。 */
+export const IconBookOpen = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 6.5C10.3 5 7.8 4.5 3 4.5v13c4.8 0 7.3.5 9 2 1.7-1.5 4.2-2 9-2v-13c-4.8 0-7.3.5-9 2z" />
+    <path d="M12 6.5v13" />
+  </Icon>
+);
+/** 特許・権利書類（認証印つきの書面）。 */
+export const IconPatent = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5" />
+    <path d="M14 3v4h4M14 3l4 4v3" />
+    <path d="M7.5 9h5M7.5 12.5h3" />
+    <circle cx="16.5" cy="15" r="3" />
+    <path d="m15 17.6-.8 3.9 2.3-1.3 2.3 1.3-.8-3.9" />
+  </Icon>
+);
+
 /** Add-on が manifest で名乗るアイコン名を、実際の形に対応づける。
 
     Add-on ごとに分岐しない。名前の空間を 1 つ用意して、そこに載っている
@@ -257,9 +281,21 @@ const ADDON_ICONS: Record<string, (p: SVGProps<SVGSVGElement>) => JSX.Element> =
   settings: IconSettings,
   branch: IconBranch,
   mic: IconMic,
+  audio: IconAudio,
+  music: IconAudio,
+  "book-open": IconBookOpen,
+  patent: IconPatent,
   home: IconHome,
 };
 
-export function addonIcon(name?: string | null) {
-  return (name && ADDON_ICONS[name]) || IconPlugin;
+/** ControlDeck の信頼カタログに載る自前 Add-on だけ、ControlDeck 側で形を決める。
+    PatentBuddy は manifest で "book-open" を名乗るが、本の形では特許の道具だと
+    読めないため、特許書類の形にする。第三者 Add-on の宣言は上書きしない。 */
+const FIRST_PARTY_ICONS: Record<string, string> = {
+  "patent-buddy": "patent",
+};
+
+export function addonIcon(name?: string | null, addonId?: string | null) {
+  const chosen = (addonId && FIRST_PARTY_ICONS[addonId]) || name;
+  return (chosen && ADDON_ICONS[chosen]) || IconPlugin;
 }
