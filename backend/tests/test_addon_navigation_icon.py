@@ -46,7 +46,7 @@ def test_the_ui_reads_the_declared_icon_in_both_places():
     ままになる。実際にそうなっていた。"""
     layout = (FRONTEND / "layouts" / "AppLayout.tsx").read_text(encoding="utf-8")
 
-    assert layout.count("addonIcon(contribution.icon)") == 2
+    assert layout.count("addonIcon(contribution.icon, contribution.addon_id)") == 2
 
 
 def test_an_unknown_icon_never_falls_back_to_the_apps_glyph():
@@ -57,3 +57,15 @@ def test_an_unknown_icon_never_falls_back_to_the_apps_glyph():
 
     assert "IconPlugin" in fallback
     assert "IconGrid" not in fallback
+
+
+def test_first_party_addons_declared_icons_are_drawn():
+    """SonicForge は "audio" を名乗る。名前空間に無いとプラグインの形に落ちて、
+    以前の音の形が消えた（実測）。PatentBuddy は特許書類の形で描く。"""
+    icons = (FRONTEND / "components" / "icons.tsx").read_text(encoding="utf-8")
+    table = icons[icons.index("const ADDON_ICONS"):icons.index("export function addonIcon")]
+
+    assert "audio: IconAudio" in table
+    assert '"book-open": IconBookOpen' in table
+    assert '"patent-buddy": "patent"' in table
+    assert "patent: IconPatent" in table
