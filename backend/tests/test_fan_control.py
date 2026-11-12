@@ -48,6 +48,11 @@ def gpu(tmp_path, monkeypatch):
         "_active_bdf": None, "_last_curve": None, "_last_write": 0.0,
         "_floor": 35, "_sensor_ids": set(), "_zero_rpm_checks": 0,
         "_state": "disabled", "_error": "", "_last_sample": {},
+        "_pending_reset_bdf": None, "_last_reset_retry": 0.0,
+        "_last_boost_at": 0.0, "_cool_since": None, "_last_cool_step": 0.0,
+        "_temp_history": {}, "_zero_stable_since": None,
+        "_zero_active": False, "_zero_initialized_bdf": None,
+        "_last_rise_c_per_min": 0.0, "_applied_floor": 0,
     }.items():
         monkeypatch.setattr(fan, key, value)
     calls = []
@@ -210,3 +215,145 @@ def test_unexpected_temperature_read_error_fails_closed(gpu, monkeypatch):
     assert fan._load().enabled is False
     assert fan._state == "fault"
     assert calls[-1][0] == "reset"
+
+
+
+def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
+    fan, _, hwmon, _, calls = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+    assert fan._floor == 100
+
+    # LLM goes idle with all temperatures cool: hold the fan, not the load.
+    for sensor_id, temp in (("temp1", 40), ("temp2", 46), ("temp3", 40)):
+        (hwmon / f"{sensor_id}_input").write_text(str(temp * 1000))
+    clock[0] += 3
+    fan.tick()
+    assert fan._floor == 100
+    clock[0] += 120
+    fan.tick()
+    assert fan._floor == 100
+    clock[0] += 61
+    fan.tick()
+    assert fan._floor == 95  # first reduction only after >=180 seconds
+    clock[0] += 3
+    fan.tick()
+    assert fan._floor == 95  # no 5%-per-poll rapid ramp-down
+
+    # LLM begins another burst: increase instantly, even inside write cooldown.
+    (hwmon / "temp3_input").write_text("84000")
+    clock[0] += 3
+    prev_count = len(calls)
+    fan.tick()
+    assert fan._floor == 100
+    assert len(calls) > prev_count
+    assert calls[-1][0] == "apply"
+
+
+def test_predictive_ramp_uses_temperature_trend_not_utilization():
+    from app.monitoring.fan_control import _predictive_floor
+
+    sensors = [
+        {"id": "temp1", "value_c": 63, "headroom_c": 12},
+        {"id": "temp3", "value_c": 55, "headroom_c": 30},
+    ]
+    # At +8 C/min, headroom 12C lasts ~1.5min -> early >=90%.
+    assert _predictive_floor(sensors, 35, 100, 8.0) >= 90
+    # Stable temperature has no predictive boost.
+    assert _predictive_floor(sensors, 35, 100, 0.0) == 60
+
+
+def _add_zero_nodes(device):
+    directory = device / "gpu_od/fan_ctrl"
+    (directory / "fan_zero_rpm_enable").write_text(
+        "OD_FAN_ZERO_RPM_ENABLE:\n0\nOD_RANGE:\nFAN_ZERO_RPM_ENABLE: 0 1\n"
+    )
+    (directory / "fan_zero_rpm_stop_temperature").write_text(
+        "OD_FAN_ZERO_RPM_STOP_TEMP:\n40C\nOD_RANGE:\nFAN_ZERO_RPM_STOP_TEMP: 25C 80C\n"
+    )
+
+
+def test_zero_rpm_only_after_stable_five_minutes_and_immediate_wake(gpu, monkeypatch):
+    fan, device, hwmon, _, calls = gpu
+    _add_zero_nodes(device)
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid, temp in (("temp1", 31), ("temp2", 34), ("temp3", 39)):
+        (hwmon / f"{sid}_input").write_text(str(temp * 1000))
+    (hwmon / "fan1_input").write_text("0")
+    cfg = fan.FanSettings(enabled=True, bdf="0000:03:00.0", allow_zero_rpm=True)
+    fan.configure(cfg)
+    assert fan.status()["devices"][0]["zero_rpm_supported"] is True
+    assert calls[0][0] == "zero-deny"
+    assert not any(x[0] == "zero-allow" for x in calls)
+
+    clock[0] += 150
+    fan.tick()
+    assert not any(x[0] == "zero-allow" for x in calls)
+    clock[0] += 151
+    fan.tick()
+    assert calls[-1][0] == "zero-allow"
+    assert fan.status()["active"]["zero_rpm_permitted"] is True
+
+    # Memory heats up even if hotspot is still cool; wake without a hold.
+    (hwmon / "temp3_input").write_text("56000")
+    clock[0] += 3
+    fan.tick()
+    assert calls[-1][0] in ("zero-deny", "apply")
+    assert any(x[0] == "zero-deny" for x in calls[2:])
+    assert fan.status()["active"]["zero_rpm_permitted"] is False
+
+
+def test_zero_rpm_is_default_off_and_unavailable_without_native_support(gpu):
+    fan, device, _, _, calls = gpu
+    _add_zero_nodes(device)
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+    assert calls[0][0] == "zero-deny"
+    assert not any(x[0] == "zero-allow" for x in calls)
+
+    fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
+    (device / "gpu_od/fan_ctrl/fan_zero_rpm_stop_temperature").unlink()
+    assert fan.status()["devices"][0]["zero_rpm_supported"] is False
+    with pytest.raises(fan.FanControlError, match="Zero RPM"):
+        fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", allow_zero_rpm=True))
+
+
+def test_helper_zero_rpm_control_uses_fixed_nodes_and_stop_temp(tmp_path, monkeypatch):
+    helper, curve = _helper(tmp_path)
+    devdir = curve.parent
+    _add_zero_nodes(curve.parents[2])
+    # curve.parents[2] is device/gpu_od: provide the actual device instead.
+    if not (devdir / "fan_zero_rpm_enable").is_file():
+        _add_zero_nodes(curve.parents[2].parent)
+    enable = devdir / "fan_zero_rpm_enable"
+    stop = devdir / "fan_zero_rpm_stop_temperature"
+    writes = []
+    original = Path.write_text
+
+    def recording(path, value, *args, **kwargs):
+        if path in (enable, stop):
+            writes.append((path.name, value))
+        return original(path, value, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", recording)
+    helper.control_zero_rpm("allow", "0000:03:00.0")
+    assert writes == [
+        ("fan_zero_rpm_stop_temperature", "40"),
+        ("fan_zero_rpm_stop_temperature", "c"),
+        ("fan_zero_rpm_enable", "1"),
+        ("fan_zero_rpm_enable", "c"),
+    ]
+    helper.control_zero_rpm("deny", "0000:03:00.0")
+    assert writes[-2:] == [("fan_zero_rpm_enable", "0"), ("fan_zero_rpm_enable", "c")]
+
+
+def test_helper_refuses_zero_rpm_when_stop_temperature_is_unsafe(tmp_path):
+    helper, curve = _helper(tmp_path)
+    _add_zero_nodes(curve.parents[2].parent)
+    stop = curve.parent / "fan_zero_rpm_stop_temperature"
+    stop.write_text("OD_RANGE:\nFAN_ZERO_RPM_STOP_TEMP: 60C 80C\n")
+    before = stop.read_text()
+    with pytest.raises(SystemExit):
+        helper.control_zero_rpm("allow", "0000:03:00.0")
+    assert stop.read_text() == before
