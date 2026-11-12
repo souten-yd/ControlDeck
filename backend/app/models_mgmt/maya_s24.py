@@ -114,6 +114,8 @@ def _operation_lock():
 def _serialized(fn):
     @wraps(fn)
     def call(*args, **kwargs):
+        if os.geteuid() == 0:
+            raise MayaError("Maya-S24の管理操作はrootで実行できません")
         with _operation_lock():
             return fn(*args, **kwargs)
     return call
