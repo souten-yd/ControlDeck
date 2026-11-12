@@ -88,6 +88,7 @@ _zero_active = False
 _zero_initialized_bdf: str | None = None
 _last_rise_c_per_min = 0.0
 _applied_floor = 0
+_last_tick_at: float | None = None
 _policy = AdaptivePolicy()
 _last_learning_save = 0.0
 _LEARNING_FILE = "amd-fan-learning.json"
@@ -420,6 +421,7 @@ def _stop_must_end(sensors: list[dict], rise: float) -> bool:
 def _failure(exc: Exception, bdf: str | None) -> None:
     global _state, _error, _active_bdf, _last_curve, _sensor_ids, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since
+    global _last_tick_at
     logger.error("GPUファン制御を停止します: %s", exc)
     reset_error = ""
     if bdf:
@@ -438,14 +440,14 @@ def _failure(exc: Exception, bdf: str | None) -> None:
     _pending_reset_bdf = bdf if reset_error else None
     _active_bdf, _last_curve, _sensor_ids = None, None, set()
     _zero_active, _zero_initialized_bdf = False, None
-    _zero_stable_since, _temp_history = None, {}
+    _zero_stable_since, _temp_history, _last_tick_at = None, {}, None
 
 
 def tick() -> None:
     global _active_bdf, _last_curve, _last_write, _floor, _state, _error, _last_sample
     global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry
     global _zero_active, _zero_initialized_bdf, _zero_stable_since, _temp_history
-    global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step
+    global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step, _last_tick_at
     with _lock:
         try:
             settings = _load()
@@ -453,6 +455,16 @@ def tick() -> None:
             _failure(exc, _active_bdf)
             return
         now = time.monotonic()
+        # Monotonic elapsed time is NOT observed cooling time. After suspend,
+        # stalled watchdog or process pause, reset all quiet/stop dwell clocks.
+        if _last_tick_at is not None and (
+            now < _last_tick_at or now - _last_tick_at > 4 * INTERVAL
+        ):
+            _temp_history = {}
+            _cool_since = None
+            _zero_stable_since = None
+            logger.warning("GPU温度の継続観測が途絶えたため低速化/停止の待機判定をリセット")
+        _last_tick_at = now
         if _pending_reset_bdf and now - _last_reset_retry >= 10:
             _last_reset_retry = now
             try:
@@ -547,7 +559,7 @@ def tick() -> None:
 def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
-    global _cool_since, _last_cool_step
+    global _cool_since, _last_cool_step, _last_tick_at
     with _lock:
         prior = _load()
         if settings.enabled:
@@ -566,6 +578,7 @@ def configure(settings: FanSettings) -> dict:
             _floor, _sensor_ids, _zero_rpm_checks = settings.min_percent, set(), 0
             _cool_since, _last_cool_step, _zero_stable_since = None, 0.0, None
             _temp_history = {}
+            _last_tick_at = None
             _applied_floor = 0
             tick()
             if _state == "fault":
@@ -589,7 +602,7 @@ def configure(settings: FanSettings) -> dict:
             _active_bdf, _last_curve, _sensor_ids = None, None, set()
             _state, _error, _pending_reset_bdf = "disabled", "", None
             _zero_active, _zero_initialized_bdf = False, None
-            _temp_history, _zero_stable_since, _cool_since = {}, None, None
+            _temp_history, _zero_stable_since, _cool_since, _last_tick_at = {}, None, None, None
         return status()
 
 
