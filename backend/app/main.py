@@ -134,8 +134,6 @@ async def lifespan(app: FastAPI):
     from app.monitoring.electricity import accumulator
 
     await asyncio.to_thread(accumulator.persist, "shutdown")
-    from app.monitoring.fan_control import shutdown as fan_control_shutdown
-    await asyncio.to_thread(fan_control_shutdown)
     await searxng.lifecycle_stop()  # SearXNG も一緒に停止
     import contextlib
 
@@ -143,6 +141,9 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    # Controllerが再適用しないよう先にタスクを停止してからautoへ戻す。
+    from app.monitoring.fan_control import shutdown as fan_control_shutdown
+    await asyncio.to_thread(fan_control_shutdown)
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)
