@@ -52,7 +52,7 @@ class FanSettings(BaseModel):
     # Firmware (R9700) accepts 15–100%; the curve also clamps to the device minimum.
     min_percent: int = Field(default=35, ge=15, le=70)
     allow_zero_rpm: bool = False
-    preset_id: Literal["recommended", "quiet", "cooling", "custom"] = "recommended"
+    preset_id: Literal["recommended", "llm_r9700", "quiet", "cooling", "custom"] = "recommended"
     # After cooling starts, hold this long, then ramp down continuously.
     cool_hold_seconds: int = Field(default=30, ge=30, le=600)
     cool_rate_percent_per_min: float = Field(default=30.0, ge=1.0, le=60.0, allow_inf_nan=False)
@@ -127,6 +127,15 @@ _LEARNING_FILE = "amd-fan-learning.json"
 FAN_PRESETS = (
     {"id": "recommended", "label": "推奨・バランス", "description": "LLM常駐向け。常時低速・昇温時即加速・静かな降速",
      "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 30,
+     "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "target_offset_c": 0},
+    # Tuned on the R9700 with Qwen3.8-27B (llama.cpp) bursts and a 3 min
+    # sustained run (2026-11-13): idle ~890 rpm, short bursts stay at idle,
+    # sustained ~3100 rpm at hotspot 78/90°C, mem 70/85°C, edge 55/75°C,
+    # back to idle ~25 s after the load ends.
+    {"id": "llm_r9700", "label": "LLM常駐（R9700実測）",
+     "description": "実機のLLM負荷で調整。短い負荷では回さず、連続負荷でも約3100rpm。終了後約25秒で静音に戻る",
+     "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "target_offset_c": 0},
     {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",

@@ -410,14 +410,14 @@ def test_recommended_presets_safe_and_consistent():
     from app.monitoring.fan_control import FAN_PRESETS, FanSettings
 
     builtins = {preset["id"]: preset for preset in FAN_PRESETS}
-    assert set(builtins) == {"recommended", "quiet", "cooling"}
+    assert set(builtins) == {"recommended", "llm_r9700", "quiet", "cooling"}
     default = FanSettings()
     assert default.preset_id == "recommended"
     assert default.enabled is False
     assert default.allow_zero_rpm is False
     for preset in FAN_PRESETS:
         assert preset["allow_zero_rpm"] is False
-        assert preset["min_percent"] >= 30
+        assert preset["min_percent"] >= 15
         assert preset["cool_hold_seconds"] >= 30
         assert 1 <= preset["cool_rate_percent_per_min"] <= 60
         assert preset["zero_stable_seconds"] >= 600

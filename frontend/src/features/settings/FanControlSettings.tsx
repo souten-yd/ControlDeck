@@ -6,7 +6,7 @@ import { useToasts } from "../../stores";
 type FanSettings = {
   enabled: boolean;
   bdf: string | null;
-  preset_id: "recommended" | "quiet" | "cooling" | "custom";
+  preset_id: "recommended" | "llm_r9700" | "quiet" | "cooling" | "custom";
   min_percent: number;
   allow_zero_rpm: boolean;
   cool_hold_seconds: number;
@@ -339,7 +339,7 @@ export function FanControlSettings() {
 
           <div className="space-y-2">
             <h3 className="text-xs font-semibold">プリセットを選択</h3>
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-2">
               {data.presets.map((preset) => (
                 <button key={preset.id} type="button" disabled={saving} onClick={() => selectPreset(preset)}
                   aria-pressed={draft.preset_id === preset.id}
