@@ -115,6 +115,7 @@ def test_start_requires_preparation_and_uses_user_unit(managed, monkeypatch):
     _installed(managed)
     assert maya_s24.start_instance() == (False, "明示的なMaya-S24モデル準備が必要です")
     (maya_s24.source() / "maya-glm-maya-s24-hip.json").write_text("{}")
+    maya_s24._prepared_marker().write_text('{"model":"glm-maya-s24"}')
     calls = []
     monkeypatch.setattr(maya_s24, "_exec", lambda argv, **kw:
                         (calls.append(argv) or SimpleNamespace(returncode=0, stdout="")))
@@ -182,3 +183,28 @@ def test_prepare_endpoint_rejects_untrusted_extra_fields(admin_client):
                                  json={"gpu_index": 0, "source_url": "https://malicious.invalid"},
                                  headers={"X-Requested-With": "ControlDeck"})
     assert response.status_code == 422
+
+
+def test_partial_download_config_is_not_marked_ready(managed):
+    source = _installed(managed)
+    (source / "maya-glm-maya-s24-hip.json").write_text("{}")
+    assert not maya_s24.runtime_status()["configured"]
+    assert maya_s24._config() is None
+    assert maya_s24.start_instance()[0] is False
+
+
+def test_lock_prevents_parallel_model_operations(managed):
+    _installed(managed)
+    with maya_s24._operation_lock():
+        with pytest.raises(maya_s24.MayaError, match="別の操作"):
+            maya_s24.uninstall()
+
+
+def test_update_refuses_active_model_before_git_fetch(managed, monkeypatch):
+    _installed(managed)
+    monkeypatch.setattr(maya_s24, "_running", lambda: True)
+    monkeypatch.setattr(maya_s24, "_latest_release", lambda: "v1.1.61")
+    monkeypatch.setattr(maya_s24, "_exec",
+                        lambda *args, **kw: pytest.fail("unexpected git change"))
+    with pytest.raises(maya_s24.MayaError, match="停止"):
+        maya_s24._update()
