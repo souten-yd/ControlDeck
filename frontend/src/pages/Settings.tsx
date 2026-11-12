@@ -464,7 +464,7 @@ interface AddonState {
 }
 
 interface GpuRuntimeDetail {
-  runtime: "llama.cpp" | "strata";
+  runtime: "llama.cpp" | "strata" | "maya-s24";
   warning?: string;
   /** llama.cpp */
   active_backend?: string;
@@ -476,6 +476,8 @@ interface GpuRuntimeDetail {
   /** Strata Terminal (managed user-local installation). */
   cli_path?: string;
   models_dir?: string;
+  configured?: boolean;
+  running?: boolean;
 }
 
 interface ReleaseStatus {
@@ -698,6 +700,94 @@ function GpuRuntimeDetails({ addon, release }: {
   );
 }
 
+
+/** Maya has a deliberately separate 95GB download consent gate. */
+function MayaS24Panel({ addon }: { addon: AddonState }) {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [gpu, setGpu] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { data: job } = useQuery({
+    queryKey: ["maya-s24-job", jobId],
+    queryFn: () => api<{status: string; error?: string; progress?: {status?: string}}>(`/jobs/${jobId}`),
+    enabled: jobId !== null,
+    refetchInterval: (q) => q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1500,
+  });
+  useEffect(() => {
+    if (!jobId || !job || ["queued", "running"].includes(job.status)) return;
+    setJobId(null);
+    setBusy(false);
+    void qc.invalidateQueries({ queryKey: ["features"] });
+    show(job.status === "succeeded" ? "Maya-S24操作が完了しました" : job.error || "Maya-S24操作に失敗しました",
+      job.status === "succeeded" ? "info" : "error");
+  }, [jobId, job?.status]);
+
+  const run = async (kind: "prepare" | "start" | "stop") => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (kind === "stop") {
+        await api("/features/maya-s24/model/stop", {method: "POST", json: {}});
+        void qc.invalidateQueries({queryKey: ["features"]});
+        show("Maya-S24を停止しました");
+        setBusy(false);
+        return;
+      }
+      const route = kind === "prepare" ? "prepare-jobs" : "start-jobs";
+      const started = await api<{job_id: string}>(`/features/maya-s24/model/${route}`, {
+        method: "POST", json: kind === "prepare" ? {gpu_index: gpu} : {},
+      });
+      setJobId(started.job_id);
+      if (kind === "prepare") show("Maya-S24（約94.7GB）のモデル取得・HIP構築を開始しました");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Maya-S24操作に失敗しました", "error");
+      setBusy(false);
+    }
+  };
+
+  return <div className="mt-3 space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+    <p className="text-xs font-semibold">Maya-S24 モデル（GLM-5.3-Flash）</p>
+    <p className="text-[11px] text-zinc-500">
+      アドオン導入はコードのみです。モデル約94.7GBの取得は別途明示操作が必要です。
+      32GB RAM＋32GB VRAMではSSD依存が大きくなる可能性があります。
+    </p>
+    <p className="text-[11px] text-zinc-500">
+      {addon.runtime?.running ? "API稼働中 · 127.0.0.1:8099"
+        : addon.runtime?.configured ? "HIPモデル準備済み・停止中" : "モデル未準備"}
+    </p>
+    {!addon.runtime?.configured && <div className="flex flex-wrap items-center gap-2">
+      <label className="text-xs text-zinc-500" htmlFor="maya-gpu-index">ROCm GPU番号</label>
+      <input id="maya-gpu-index" aria-label="Maya GPU番号" type="number" min={0} max={15} value={gpu}
+        onChange={(e) => setGpu(Number(e.target.value))}
+        className="w-16 rounded-lg border border-zinc-300 bg-transparent px-2 py-2 text-xs dark:border-zinc-600"/>
+      <button type="button" onClick={() => setConfirming(true)} disabled={busy || !Number.isInteger(gpu) || gpu < 0 || gpu > 15}
+        className="min-h-11 rounded-lg border border-amber-400 px-3 py-2 text-xs font-medium text-amber-700 disabled:opacity-40 dark:text-amber-300">
+        約95GBのモデルを取得・準備
+      </button>
+    </div>}
+    {addon.runtime?.configured && <div className="flex flex-wrap gap-2">
+      <button type="button" disabled={busy || addon.runtime.running} onClick={() => void run("start")}
+        className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs disabled:opacity-40 dark:border-zinc-700">
+        起動
+      </button>
+      <button type="button" disabled={busy || !addon.runtime.running} onClick={() => void run("stop")}
+        className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs disabled:opacity-40 dark:border-zinc-700">
+        停止
+      </button>
+    </div>}
+    {jobId && <p className="text-xs text-zinc-500" role="status">
+      ジョブ {job?.status ?? "queued"} · {job?.progress?.status || "処理中"}
+    </p>}
+    {confirming && <ConfirmDialog title="Maya-S24を取得しますか？"
+      message="GLM-5.3-Flash Maya-S24のモデル約94.7GBをSSDにダウンロードして検証します。110GB以上の空き容量が必要で、HIPエンジンのコンパイルに時間がかかります。今はモデルを起動しません。"
+      confirmLabel="モデル取得を開始"
+      onConfirm={() => { setConfirming(false); void run("prepare"); }}
+      onClose={() => setConfirming(false)}/>}
+  </div>;
+}
+
 /** アドオン管理: 導入（npmユーザー空間・sudo不要）/有効化/無効化/アンインストールをワンタップで。 */
 function AddonsSection() {
   const show = useToasts((s) => s.show);
@@ -827,6 +917,7 @@ function AddonsSection() {
                 {addon.kind === "gpu-runtime" && (
                   <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />
                 )}
+                {addon.id === "maya-s24" && addon.installed && <MayaS24Panel addon={addon} />}
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                 {addon.installed && addon.managed && (
