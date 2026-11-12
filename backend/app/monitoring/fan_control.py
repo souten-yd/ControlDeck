@@ -340,10 +340,20 @@ def configure(settings: FanSettings) -> dict:
             if _state == "fault":
                 raise FanControlError(_error)
         else:
-            if prior.enabled or _active_bdf:
-                target = _active_bdf or prior.bdf
-                if target:
+            # A failed prior auto-restore is latched even after enabled=False was
+            # persisted; explicit "return to auto" must retry, not clear the latch.
+            targets = {item for item in (
+                _pending_reset_bdf,
+                _active_bdf,
+                prior.bdf if prior.enabled else None,
+            ) if item}
+            for target in sorted(targets):
+                try:
                     _helper("reset", target)
+                except FanControlError as exc:
+                    _pending_reset_bdf = target
+                    _state, _error = "fault", f"自動制御へ復帰できません: {exc}"
+                    raise
             _persist(settings)
             _active_bdf, _last_curve, _sensor_ids = None, None, set()
             _state, _error, _pending_reset_bdf = "disabled", "", None
