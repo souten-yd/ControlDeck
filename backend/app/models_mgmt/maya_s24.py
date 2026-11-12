@@ -199,7 +199,9 @@ async def available_update() -> dict:
                 "update_available": False, "published_at": "", "error": str(exc)}
 
 
-def _prepare_model() -> dict:
+def _prepare_model(*, gpu_index: int = 0) -> dict:
+    if not 0 <= gpu_index <= 15:
+        raise MayaError("GPU番号が範囲外です")
     if not installed():
         raise MayaError("先にMaya-S24ランタイムを導入してください")
     if _running():
@@ -209,20 +211,22 @@ def _prepare_model() -> dict:
     if os.geteuid() == 0:
         raise MayaError("root実行は禁止されています")
     models_dir().mkdir(parents=True, exist_ok=True)
-    _exec(["bash", str(entrypoint()), "--backend", "hip", "--gpu", "0",
+    if shutil.disk_usage(models_dir()).free < 110 * 1000**3:
+        raise MayaError("モデル準備には約110GB以上の空き領域が必要です")
+    _exec(["bash", str(entrypoint()), "--backend", "hip", "--gpu", str(gpu_index),
            "--model", _MODEL, "--context", "8192", "--no-vision",
            "--yes", "--plain", "--download-model", "--no-start",
-           "--models-dir", str(models_dir()), "--port", str(_PORT)],
+           "--models-dir", str(models_dir()), "--port", str(_PORT), "--host", "127.0.0.1"],
           cwd=source(), timeout=8*3600)
     if _config() is None:
         raise MayaError("セットアップは終了しましたがHIP設定を確認できません")
     return runtime_status()
 
 
-async def prepare_model_stream(job=None) -> dict:
+async def prepare_model_stream(job=None, *, gpu_index: int = 0) -> dict:
     if job:
         job.set_progress("約94.7GBのMaya-S24を取得・検証、HIPエンジンを準備中", 0, 1)
-    return await asyncio.to_thread(_prepare_model)
+    return await asyncio.to_thread(_prepare_model, gpu_index=gpu_index)
 
 
 def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
@@ -234,7 +238,7 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
         _exec(["systemd-run", "--user", "--collect", "--unit",
                _UNIT.removesuffix(".service"), "--working-directory", str(source()),
                "bash", str(entrypoint()), "--config", str(_config()), "--port",
-               str(_PORT)], cwd=source(), timeout=45)
+               str(_PORT), "--host", "127.0.0.1"], cwd=source(), timeout=45)
     except MayaError as exc:
         return False, str(exc)
     return True, ""
@@ -250,6 +254,62 @@ def stop_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     except MayaError as exc:
         return False, str(exc)
 
+
+
+async def health(alias: str = _ALIAS) -> dict:
+    """Only accept our loopback instance; a launched unit is not a ready model."""
+    if alias != _ALIAS or _config() is None or not _running():
+        return {"ok": False, "status_code": None}
+    import httpx
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+            response = await client.get(f"http://127.0.0.1:{_PORT}/health")
+            if response.status_code != 200:
+                return {"ok": False, "status_code": response.status_code}
+            # Maya reports unloaded after an idle unload. Do not claim ready.
+            state = response.json()
+            if isinstance(state, dict) and state.get("status") in ("unloaded", "loading", "error"):
+                return {"ok": False, "status_code": 200}
+            return {"ok": isinstance(state, dict), "status_code": 200}
+    except (httpx.HTTPError, ValueError):
+        return {"ok": False, "status_code": None}
+
+
+async def wait_ready(*, timeout_seconds: int = 900) -> bool:
+    import time
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if (await health())["ok"]:
+            return True
+        await asyncio.sleep(3)
+    return False
+
+
+def get_instance(alias: str) -> dict:
+    if alias != _ALIAS or _config() is None:
+        raise KeyError(alias)
+    return {"alias": _ALIAS, "runtime": "maya-s24", "role": "llm",
+            "model": _MODEL, "port": _PORT,
+            "base_url": f"http://127.0.0.1:{_PORT}/v1",
+            "loaded": _running(), "model_path": "",
+            "configured": True, "n_parallel": 1}
+
+
+def list_instances() -> list[dict]:
+    return [get_instance(_ALIAS)] if _config() is not None else []
+
+
+def residency_key(instance: dict) -> str:
+    return "maya-s24:glm-5.3-flash"
+
+
+async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
+    # No autonomous start or model download; startup must be explicit.
+    return alias == _ALIAS and (await health(alias))["ok"]
+
+
+def mark_used_by_base_url(_base_url: str) -> None:
+    return None
 
 def uninstall() -> dict:
     if not installed():
