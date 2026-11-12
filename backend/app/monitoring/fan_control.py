@@ -267,7 +267,11 @@ def tick() -> None:
     global _active_bdf, _last_curve, _last_write, _floor, _state, _error, _last_sample
     global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry
     with _lock:
-        settings = _load()
+        try:
+            settings = _load()
+        except Exception as exc:  # fail safe even for invalid persisted settings
+            _failure(exc, _active_bdf)
+            return
         if _pending_reset_bdf and time.monotonic() - _last_reset_retry >= 10:
             _last_reset_retry = time.monotonic()
             try:
@@ -312,7 +316,7 @@ def tick() -> None:
                 "floor_percent": floor, "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
                 "observed_at": time.time(), "curve": _last_curve,
             }
-        except (FanControlError, OSError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 - fail safe on unexpected sysfs/runtime errors
             _failure(exc, bdf)
 
 
