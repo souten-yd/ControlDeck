@@ -133,7 +133,7 @@ function FanCurvePreview({ device, minimum, activeCurve }: {
   const start = Math.max(t0, 25);
   const end = Math.min(t1, 95);
   if (end - start < 4) return null;
-  const baseline = [minimum, minimum, 65, 90, p1].map((v, index) => ({
+  const baseline = [minimum, minimum, minimum, Math.max(minimum, 60), p1].map((v, index) => ({
     temp: start + Math.floor(((end - start) * index) / 4),
     percent: Math.min(p1, Math.max(p0, minimum, v)),
   }));

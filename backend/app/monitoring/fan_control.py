@@ -445,9 +445,12 @@ def _curve(ranges: tuple[int, int, int, int], floor: int) -> str:
     if end - start < 4:
         raise FanControlError("GPUの温度カーブ範囲が狭すぎます")
     anchor = [start + ((end - start) * i) // 4 for i in range(5)]
-    # Flat at the user's floor up to ~42°C hotspot: the adaptive controller raises
-    # the floor on load, and the 60/77/95°C points stay as a firmware backstop.
-    base = (floor, floor, 65, 90, pmax)
+    # The firmware reads this curve by HOTSPOT temperature. Measured on the
+    # R9700: with 60°C→65% / 77°C→90% points, a hotspot of 61–69°C under LLM
+    # load (target 90°C) spun the fan to 3000–4300 rpm although the controller
+    # asked for 25–44%. Keep the floor up to 60°C, 60% at 77°C and maximum at
+    # 95°C as the firmware backstop; the controller raises the floor by margin.
+    base = (floor, floor, floor, max(floor, BACKSTOP_77C_PERCENT), pmax)
     speeds = [min(pmax, max(pmin, floor, value)) for value in base]
     speeds[-1] = pmax
     return ",".join(f"{temp}:{pwm}" for temp, pwm in zip(anchor, speeds, strict=True))
@@ -480,6 +483,7 @@ def _rise_rate(sensors: list[dict], now: float) -> float:
 
 
 PREDICT_AHEAD_MINUTES = 0.5
+BACKSTOP_77C_PERCENT = 60
 PREDICT_MAX_HEADROOM_C = 20.0
 
 

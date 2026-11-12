@@ -541,7 +541,8 @@ def test_floor_can_go_down_to_firmware_minimum_and_low_curve_is_flat():
     assert fan.FanSettings(min_percent=15).min_percent == 15
     with pytest.raises(ValueError):
         fan.FanSettings(min_percent=14)
-    assert fan._curve((25, 100, 15, 100), 20) == "25:20,42:20,60:65,77:90,95:100"
+    # Measured R9700: the old 60°C→65% point spun 3000+ rpm at a 61°C hotspot.
+    assert fan._curve((25, 100, 15, 100), 20) == "25:20,42:20,60:20,77:60,95:100"
     # Device minimum still wins over a lower floor.
     assert fan._curve((25, 100, 25, 100), 15).startswith("25:25,42:25,")
 
