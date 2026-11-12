@@ -18,8 +18,10 @@ type FanSettings = {
   kp: number;
   ki: number;
   targets_c: Record<string, number>;
+  /** PC起動後: 保存設定を自動で再適用 / GPU標準のまま起動 */
+  startup_mode?: "apply_saved" | "firmware";
 };
-type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c"> & {
+type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c" | "startup_mode"> & {
   id: "recommended" | "quiet" | "cooling";
   label: string;
   description: string;
@@ -178,6 +180,14 @@ export function FanControlSettings() {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<FanSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  // 設定一覧の開閉はこのブラウザだけの好み。既定は閉じてグラフと状態だけを見せる。
+  const [settingsOpen, setSettingsOpen] = useState(() => {
+    try { return localStorage.getItem("fan-settings-open") === "1"; } catch { return false; }
+  });
+  const rememberOpen = (open: boolean) => {
+    setSettingsOpen(open);
+    try { localStorage.setItem("fan-settings-open", open ? "1" : "0"); } catch { /* private mode */ }
+  };
   const { data, error, isLoading } = useQuery({
     queryKey: ["system-fan-control"],
     queryFn: () => api<FanStatus>("/system/fan-control"),
@@ -233,17 +243,12 @@ export function FanControlSettings() {
   return (
     <section aria-labelledby="fan-settings-title" className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 id="fan-settings-title" className="text-sm font-semibold">ファンコントロール（AMD GPU）</h2>
-      <p className="mt-2 text-xs leading-relaxed text-zinc-500">
-        GPU本体・Hotspot・VRAMなど、実際に取得できる温度のうち余裕が最小のセンサーを優先します。
-        ファン加速は早く、減速はゆっくり。短いLLM負荷のON/OFFではファンを細かく動かしません。
-      </p>
-      <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-        温度目標は保証された上限ではありません。過熱時の安全制御とGPU本来の温度保護は変更できません。
-      </p>
       {isLoading && <p className="mt-3 text-xs text-zinc-500">GPU情報を読み取っています…</p>}
       {error && <p role="alert" className="mt-3 text-xs text-red-600">{error instanceof Error ? error.message : "取得失敗"}</p>}
       {data && draft && (
         <div className="mt-4 space-y-4">
+          {selected && <FanCurvePreview device={selected} minimum={draft.min_percent}
+            activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}/>}
           <div className={surface} role="status" aria-live="polite">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <strong>{data.state === "controlling" ? "温度制御中" : data.state === "fan-stop"
@@ -266,6 +271,21 @@ export function FanControlSettings() {
               ? "text-red-600" : "text-amber-700 dark:text-amber-300"}`}>{data.error}</p>}
           </div>
 
+          <details open={settingsOpen} onToggle={(e) => rememberOpen((e.currentTarget as HTMLDetailsElement).open)}
+            className="group rounded-xl border border-zinc-200 dark:border-zinc-700">
+            <summary className="flex min-h-11 cursor-pointer items-center justify-between px-3 text-sm font-semibold">
+              <span>設定（GPU・プリセット・温度目標・詳細）</span>
+              <span className="text-[11px] font-normal text-zinc-500 group-open:hidden">タップで開く</span>
+              <span className="hidden text-[11px] font-normal text-zinc-500 group-open:inline">タップで閉じる</span>
+            </summary>
+            <div className="space-y-4 border-t border-zinc-200 p-3 dark:border-zinc-700">
+            <p className="text-xs leading-relaxed text-zinc-500">
+              GPU本体・Hotspot・VRAMなど、実際に取得できる温度のうち余裕が最小のセンサーを優先します。
+              ファン加速は早く、減速はゆっくり。短いLLM負荷のON/OFFではファンを細かく動かしません。
+                  </p>
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+              温度目標は保証された上限ではありません。過熱時の安全制御とGPU本来の温度保護は変更できません。
+                  </p>
           <label className="block text-xs font-medium">
             対象GPU
             <select value={draft.bdf ?? ""} onChange={(e) => {
@@ -337,8 +357,6 @@ export function FanControlSettings() {
           <RangeControl label="アイドル時の最低ファン指令" value={draft.min_percent}
             min={Math.max(15, selected?.curve_limits?.pwm_min_percent ?? 15)} max={70} suffix="%" hint="通常は低速回転を維持し、温度が上がれば自動的に加速します。"
             onChange={(value) => update({ min_percent: value })}/>
-          {selected && <FanCurvePreview device={selected} minimum={draft.min_percent}
-            activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}/>}
 
           <label className={"flex min-h-11 items-center justify-between gap-3 " + surface}>
             <span>
@@ -396,6 +414,19 @@ export function FanControlSettings() {
             <input type="checkbox" aria-label="温度制御を有効にする" checked={draft.enabled}
               onChange={(e) => update({ enabled: e.target.checked }, false)} className="h-5 w-5 shrink-0"/>
           </label>
+          <label className={"block space-y-1 " + surface}>
+            <span className="text-sm font-medium">PC起動時の動作</span>
+            <select aria-label="PC起動時の動作" value={draft.startup_mode ?? "apply_saved"}
+              onChange={(e) => update({ startup_mode: e.target.value as "apply_saved" | "firmware" }, false)}
+              className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-950">
+              <option value="apply_saved">保存した設定を自動で適用する</option>
+              <option value="firmware">GPU標準の自動制御で起動する（毎回手動で有効化）</option>
+            </select>
+            <span className="block text-[11px] text-zinc-500">
+              PCを起動した直後はGPU標準の自動制御です。「自動で適用」を選ぶと、ControlDeckの起動後に保存した設定へ切り替えます。
+              ControlDeckだけを再起動したときは、どちらを選んでも制御を続けます。
+            </span>
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={primaryButton}
               disabled={saving || !canApply}
@@ -412,12 +443,22 @@ export function FanControlSettings() {
               className="min-h-11 rounded-xl border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700 disabled:opacity-40">
               GPU標準制御へ戻す
             </button>
+            <button type="button" disabled={saving || !data.presets.some((preset) => preset.id === "recommended")}
+              onClick={() => { const preset = data.presets.find((item) => item.id === "recommended"); if (preset) selectPreset(preset); }}
+              className="min-h-11 rounded-xl border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700 disabled:opacity-40">
+              設定値を初期値（推奨）に戻す
+            </button>
             {modified && <span className="text-[11px] text-amber-700 dark:text-amber-300">未保存の変更があります</span>}
           </div>
+          {selected?.restore_supported === false && <p className="text-[11px] text-amber-700 dark:text-amber-300">
+            このGPUでは「GPU標準制御へ戻す」を押すと制御を止めて現在のカーブを保持し、次にPCを再起動したときにGPU標準へ戻ります（再起動後も自動では再適用しません）。
+          </p>}
           <p className="text-[11px] leading-relaxed text-zinc-500">
             外部ファン制御アプリ・任意のsysfs書き込みは利用しません。VRAM温度が非公開ならVRAMの閉ループ制御はできません。
             設定はControlDeckに保存され、センサー不足やファン異常時はGPU標準制御への復帰を試みます。
           </p>
+            </div>
+          </details>
         </div>
       )}
     </section>

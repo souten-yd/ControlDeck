@@ -60,6 +60,10 @@ class FanSettings(BaseModel):
     kp: float = Field(default=1.8, ge=1.8, le=3.2, allow_inf_nan=False)
     ki: float = Field(default=0.015, ge=0.005, le=0.03, allow_inf_nan=False)
     targets_c: dict[str, int] = Field(default_factory=dict, max_length=16)
+    # What to do after the PC boots (PMFW auto is active after every boot):
+    # "apply_saved" re-applies these settings; "firmware" keeps GPU auto until
+    # the user enables control again.
+    startup_mode: Literal["apply_saved", "firmware"] = "apply_saved"
 
     @field_validator("bdf")
     @classmethod
@@ -794,7 +798,46 @@ def status() -> dict:
         }
 
 
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+FIRMWARE_STARTUP_NOTICE = "PC起動時はGPU標準の自動制御を使う設定のため、ファン制御を無効にして起動しました"
+
+
+def _boot_marker() -> Path:
+    return data_dir() / "amd-fan-control.boot"
+
+
+def startup() -> None:
+    """On the first ControlDeck start after a PC boot, honour startup_mode.
+    A ControlDeck restart within the same boot keeps controlling as before."""
+    global _state, _error
+    with _lock:
+        try:
+            boot_id = BOOT_ID_PATH.read_text(encoding="ascii").strip()
+        except OSError:
+            return
+        marker = _boot_marker()
+        try:
+            previous = marker.read_text(encoding="ascii").strip()
+        except OSError:
+            previous = ""
+        try:
+            marker.write_text(boot_id, encoding="ascii")
+        except OSError:
+            logger.warning("ファン制御の起動記録を保存できません")
+        if previous == boot_id:
+            return
+        try:
+            settings = _load()
+        except FanControlError:
+            return
+        if settings.enabled and settings.startup_mode == "firmware":
+            _persist(settings.model_copy(update={"enabled": False}))
+            _state, _error = "disabled", FIRMWARE_STARTUP_NOTICE
+            logger.info(FIRMWARE_STARTUP_NOTICE)
+
+
 async def run() -> None:
+    await asyncio.to_thread(startup)
     while True:
         try:
             await asyncio.to_thread(tick)

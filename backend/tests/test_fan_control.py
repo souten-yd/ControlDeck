@@ -631,3 +631,31 @@ def test_helper_refuses_reset_on_smu14_and_skips_revert_on_failed_apply(tmp_path
     with pytest.raises(SystemExit):
         helper.control_fan_curve("apply", "0000:03:00.0", "25:20,42:20,60:65,77:90,95:100")
     assert "r" not in writes
+
+
+@pytest.mark.parametrize("mode, expect_enabled", [("apply_saved", True), ("firmware", False)])
+def test_startup_mode_after_pc_boot(gpu, tmp_path, monkeypatch, mode, expect_enabled):
+    """PC起動後に保存設定を自動で再適用するか、GPU標準のまま起動するかを選べる。"""
+    fan, _, _, _, _ = gpu
+    boot = tmp_path / "boot_id"
+    monkeypatch.setattr(fan, "BOOT_ID_PATH", boot)
+    boot.write_text("boot-a\n")
+    fan._persist(fan.FanSettings(enabled=True, bdf="0000:03:00.0", startup_mode=mode))
+    fan.startup()  # first start in this boot (no marker yet) counts as after boot
+    assert fan._load().enabled is expect_enabled
+
+    # A ControlDeck restart within the same boot never changes the setting.
+    fan._persist(fan.FanSettings(enabled=True, bdf="0000:03:00.0", startup_mode=mode))
+    fan.startup()
+    assert fan._load().enabled is True
+
+    boot.write_text("boot-b\n")
+    fan.startup()
+    assert fan._load().enabled is expect_enabled
+    if not expect_enabled:
+        assert fan.status()["error"] == fan.FIRMWARE_STARTUP_NOTICE
+
+
+def test_legacy_settings_default_to_reapplying_on_boot(gpu):
+    fan, _, _, _, _ = gpu
+    assert fan.FanSettings().startup_mode == "apply_saved"
