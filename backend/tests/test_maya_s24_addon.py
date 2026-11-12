@@ -22,6 +22,8 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(maya_s24, "available", lambda: True)
     monkeypatch.setattr(maya_s24.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(maya_s24, "_running", lambda: False)
+    monkeypatch.setattr(maya_s24, "_ensure_alias_port_available", lambda: None)
+    monkeypatch.setattr(maya_s24, "_port_busy", lambda: False)
     return tmp_path
 
 
@@ -208,3 +210,59 @@ def test_update_refuses_active_model_before_git_fetch(managed, monkeypatch):
                         lambda *args, **kw: pytest.fail("unexpected git change"))
     with pytest.raises(maya_s24.MayaError, match="停止"):
         maya_s24._update()
+
+
+def test_default_gateway_does_not_autoselect_dormant_maya(managed, monkeypatch):
+    from app.models_mgmt import gateway, local_llm
+    monkeypatch.setattr(local_llm, "list_instances", lambda: [
+        {"alias": "maya-s24", "runtime": "maya-s24", "role": "llm",
+         "port": 8099, "loaded": False},
+        {"alias": "qwen", "runtime": "llama.cpp", "role": "llm",
+         "port": 8091, "loaded": False},
+    ])
+    assert gateway.resolve_instance(gateway.AUTO_MODEL)["alias"] == "qwen"
+    assert gateway.resolve_instance("maya-s24")["alias"] == "maya-s24"
+
+
+def test_maya_provider_never_auto_starts_on_discovery(managed, monkeypatch):
+    from app.models_mgmt import providers, local_llm
+    assert "maya-s24" in local_llm.RUNTIMES
+    caps = providers.capabilities("maya-s24", managed=True)
+    assert "list" in caps and "chat" in caps
+    assert "load" not in caps and "delete" not in caps and "pull" not in caps
+
+
+def test_health_requires_real_loaded_s24(monkeypatch, managed):
+    import httpx
+    from app.models_mgmt import maya_s24
+    _installed(managed)
+    (maya_s24.source() / "maya-glm-maya-s24-hip.json").write_text("{}")
+    maya_s24._prepared_marker().write_text("{}")
+    monkeypatch.setattr(maya_s24, "_running", lambda: True)
+
+    class Client:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        async def get(self, url):
+            req = httpx.Request("GET", url)
+            if url.endswith("/health"):
+                return httpx.Response(200, json={
+                    "status":"ok", "model_label":"GLM-5.3-Flash · Maya-S24",
+                    "unloaded": False}, request=req)
+            return httpx.Response(200, json={"data":[
+                {"id":"GLM-5.3-Flash", "status":{"value":"loaded"}}]}, request=req)
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    assert asyncio.run(maya_s24.health())["ok"] is True
+
+
+def test_maya_port_conflict_prevents_start(managed, monkeypatch):
+    _installed(managed)
+    (maya_s24.source() / "maya-glm-maya-s24-hip.json").write_text("{}")
+    maya_s24._prepared_marker().write_text("{}")
+    monkeypatch.setattr(maya_s24, "_port_busy", lambda: True)
+    monkeypatch.setattr(maya_s24, "_exec",
+                        lambda *a, **kw: pytest.fail("should not launch Maya"))
+    ok, msg = maya_s24.start_instance()
+    assert ok is False and "8099" in msg
