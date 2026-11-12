@@ -447,7 +447,7 @@ def tick() -> None:
     global _active_bdf, _last_curve, _last_write, _floor, _state, _error, _last_sample
     global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry
     global _zero_active, _zero_initialized_bdf, _zero_stable_since, _temp_history
-    global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step, _last_tick_at
+    global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step, _policy, _last_tick_at
     with _lock:
         try:
             settings = _load()
@@ -486,10 +486,20 @@ def tick() -> None:
                 raise FanControlError("制御中に温度センサー構成が変化しました")
             if _active_bdf != bdf:
                 _temp_history, _cool_since, _zero_stable_since = {}, None, None
+                _policy = AdaptivePolicy()
+                _load_learning(bdf)
             maximum = device["_range"][3]
             rise = _rise_rate(sensors, now)
             _last_rise_c_per_min = round(rise, 2)
-            wanted = _predictive_floor(sensors, settings.min_percent, maximum, rise)
+            strategy = _policy.update(
+                sensors,
+                power_w=device["power_w"], power_cap_w=device["power_cap_w"],
+                min_percent=settings.min_percent, max_percent=maximum,
+                now=now, dt=INTERVAL, allow_stop=settings.allow_zero_rpm,
+            )
+            # The independent safety floor wins over learned PI/FF output.
+            wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rise),
+                         strategy["floor_percent"])
             floor = wanted if _active_bdf != bdf else _smooth_floor(wanted, _floor, now)
             curve = _curve(device["_range"], floor)
             hot = max(item["value_c"] for item in sensors)
@@ -505,11 +515,13 @@ def tick() -> None:
                 _last_curve = None
             if _zero_active and (
                 not settings.allow_zero_rpm or _stop_must_end(sensors, rise)
+                or strategy["wake_required"]
             ):
                 # Sensor- or temperature-rise-driven wake has no cool-down wait.
                 _helper("zero-deny", bdf)
                 _zero_active = False
                 _zero_stable_since = None
+                _policy.exited_stop(now)
                 _last_curve = None  # Firmware may have switched modes.
                 _zero_rpm_checks = 0
 
@@ -526,23 +538,29 @@ def tick() -> None:
             # Every increase is applied immediately (not delayed by the
             # slow-down write budget); decreases are spaced apart.
             increasing = floor > _applied_floor
-            if curve != _last_curve and (increasing or now - _last_write >= 10):
+            if not _zero_active and curve != _last_curve and (increasing or now - _last_write >= 10):
                 _helper("apply", bdf, curve)
                 _last_curve, _last_write = curve, now
                 _applied_floor = floor
 
             if settings.allow_zero_rpm and device["zero_rpm_supported"] and not _zero_active:
-                eligible = _stop_entry_safe(sensors, rise)
+                eligible = _stop_entry_safe(sensors, rise) and strategy["zero_stop_eligible"]
                 _zero_stable_since = (
                     now if eligible and _zero_stable_since is None
                     else _zero_stable_since if eligible else None
                 )
                 if _zero_stable_since is not None and now - _zero_stable_since >= ZERO_STABLE_SECONDS:
+                    # PMFW auto owns the stopped state. Do not force PWM=0.
+                    _helper("reset", bdf)
                     _helper("zero-allow", bdf)
                     _zero_active = True
+                    _last_curve = None
+                    _applied_floor = 0
             elif not _zero_active:
                 _zero_stable_since = None
 
+            if not _zero_active:
+                _save_learning(bdf, now)
             _active_bdf, _floor, _sensor_ids = bdf, floor, ids
             _state, _error = "controlling", ""
             _last_sample = {
@@ -550,6 +568,9 @@ def tick() -> None:
                 "floor_percent": floor, "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
                 "rise_c_per_min": _last_rise_c_per_min,
                 "zero_rpm_permitted": _zero_active, "cool_hold_seconds": COOL_HOLD_SECONDS,
+                "power_ema_w": strategy["power_ema_w"],
+                "min_predicted_headroom_c": strategy["min_predicted_headroom_c"],
+                "learning": strategy["learning"],
                 "observed_at": time.time(), "curve": _last_curve,
             }
         except Exception as exc:  # noqa: BLE001 - fail safe on unexpected sysfs/runtime errors
@@ -617,7 +638,8 @@ def status() -> dict:
             "helper_installed": HELPER.is_file(),
             "state": _state if settings.enabled or _state == "fault" else "disabled",
             "error": _error, "pending_auto_restore": _pending_reset_bdf is not None,
-            "control_policy": "fast_rise_slow_fall",
+            "control_policy": "adaptive_ff_pi_antiwindup_fast_rise_slow_fall",
+            "learned_parameters": _policy.learned_parameters(),
             "cool_hold_seconds": COOL_HOLD_SECONDS,
             "zero_stable_seconds": ZERO_STABLE_SECONDS,
             "active": _last_sample if settings.enabled else None,
