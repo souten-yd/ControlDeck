@@ -176,3 +176,37 @@ def test_helper_commits_five_points_and_reset(tmp_path, monkeypatch):
     assert writes == ["0 25 35", "1 45 45", "2 60 65", "3 75 90", "4 95 100", "c"]
     helper.control_fan_curve("reset", "0000:03:00.0")
     assert writes[-2:] == ["r", "c"]
+
+
+def test_explicit_restore_retries_pending_auto_failure(gpu, monkeypatch):
+    fan, _, hwmon, _, calls = gpu
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+    (hwmon / "temp3_input").unlink()
+    failed = [True]
+
+    def flaky(action, bdf, curve=None):
+        calls.append((action, bdf, curve))
+        if action == "reset" and failed[0]:
+            failed[0] = False
+            raise fan.FanControlError("simulated transient reset failure")
+
+    monkeypatch.setattr(fan, "_helper", flaky)
+    fan.tick()
+    assert fan.status()["state"] == "fault"
+    assert fan.status()["pending_auto_restore"] is True
+    assert fan._load().enabled is False
+    # This must retry the reset, even though enabled=False was persisted at fault.
+    restored = fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
+    assert calls[-1][0] == "reset"
+    assert restored["pending_auto_restore"] is False
+    assert restored["state"] == "disabled"
+
+
+def test_unexpected_temperature_read_error_fails_closed(gpu, monkeypatch):
+    fan, _, _, _, calls = gpu
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+    monkeypatch.setattr(fan, "_devices", lambda: (_ for _ in ()).throw(RuntimeError("hwmon issue")))
+    fan.tick()
+    assert fan._load().enabled is False
+    assert fan._state == "fault"
+    assert calls[-1][0] == "reset"
