@@ -51,7 +51,7 @@ def gpu(tmp_path, monkeypatch):
         "_floor": 35, "_sensor_ids": set(), "_zero_rpm_checks": 0,
         "_state": "disabled", "_error": "", "_last_sample": {},
         "_policy": __import__("app.monitoring.fan_strategy", fromlist=["AdaptivePolicy"]).AdaptivePolicy(),
-        "_pending_reset_bdf": None, "_last_reset_retry": 0.0,
+        "_pending_reset_bdf": None, "_last_reset_retry": 0.0, "_reset_retry_failures": 0,
         "_last_boost_at": 0.0, "_cool_since": None, "_last_cool_step": 0.0,
         "_temp_history": {}, "_zero_stable_since": None,
         "_zero_active": False, "_zero_initialized_bdf": None,
@@ -547,3 +547,30 @@ def test_helper_accepts_firmware_minimum_but_not_below(tmp_path):
     helper.control_fan_curve("apply", "0000:03:00.0", "25:20,42:20,60:65,77:90,95:100")
     with pytest.raises(SystemExit):
         helper.control_fan_curve("apply", "0000:03:00.0", "25:10,42:10,60:65,77:90,95:100")
+
+
+def test_rejected_auto_restore_stops_retrying_and_asks_for_reboot(gpu, monkeypatch):
+    """実機R9700: SMUがリセットを拒否すると以後のOD書き込みは再起動まで全て失敗する。
+    10秒ごとに叩き続けず、3回で止めて再起動を案内する。"""
+    fan, _, hwmon, _, calls = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+
+    def rejecting(action, bdf, curve=None):
+        calls.append((action, bdf, curve))
+        if action == "reset":
+            raise fan.FanControlError("Input/output error")
+
+    monkeypatch.setattr(fan, "_helper", rejecting)
+    (hwmon / "temp3_input").unlink()
+    fan.tick()  # fault + first failed reset
+    assert fan.status()["pending_auto_restore"] is True
+    for _ in range(20):
+        clock[0] += 3
+        fan.tick()
+    resets = [c for c in calls if c[0] == "reset"]
+    assert len(resets) == 1 + fan.MAX_RESET_RETRIES
+    assert fan.REBOOT_HINT in fan.status()["error"]
+    with pytest.raises(fan.FanControlError, match="再起動"):
+        fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))

@@ -89,6 +89,11 @@ _error = ""
 _last_sample: dict = {}
 _pending_reset_bdf: str | None = None
 _last_reset_retry = 0.0
+_reset_retry_failures = 0
+# R9700 + kernel 7.0: once a fan_curve reset is rejected by the SMU, every
+# later OD upload fails until reboot. Do not hammer the SMU every 10 s.
+MAX_RESET_RETRIES = 3
+REBOOT_HINT = "GPUのファン設定を標準に戻せません。PCを再起動すると標準の自動制御に戻ります"
 # Monotonic state (not based on GPU utilization %).
 _last_boost_at = 0.0
 _cool_since: float | None = None
@@ -528,7 +533,7 @@ def _failure(exc: Exception, bdf: str | None) -> None:
 
 def tick() -> None:
     global _active_bdf, _last_curve, _last_write, _floor, _state, _error, _last_sample
-    global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry
+    global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry, _reset_retry_failures
     global _zero_active, _zero_initialized_bdf, _zero_stable_since, _temp_history
     global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step, _policy, _last_tick_at
     with _lock:
@@ -549,15 +554,23 @@ def tick() -> None:
             _policy.reset_dwell(now)
             logger.warning("GPU温度の継続観測が途絶えたため低速化/停止の待機判定をリセット")
         _last_tick_at = now
-        if _pending_reset_bdf and now - _last_reset_retry >= 10:
+        if (_pending_reset_bdf and now - _last_reset_retry >= 10
+                and _reset_retry_failures < MAX_RESET_RETRIES):
             _last_reset_retry = now
             try:
                 _helper("reset", _pending_reset_bdf)
                 logger.warning("GPU標準ファン制御への復帰リトライに成功しました")
                 _pending_reset_bdf = None
+                _reset_retry_failures = 0
                 _error += " / 標準自動制御への復帰済み"
             except FanControlError:
-                logger.warning("GPU標準ファン制御の復帰待ち: %s", _pending_reset_bdf)
+                _reset_retry_failures += 1
+                if _reset_retry_failures >= MAX_RESET_RETRIES:
+                    logger.error("GPU標準ファン制御へ戻せないため自動リトライを止めます: %s", _pending_reset_bdf)
+                    if REBOOT_HINT not in _error:
+                        _error = f"{_error} / {REBOOT_HINT}" if _error else REBOOT_HINT
+                else:
+                    logger.warning("GPU標準ファン制御の復帰待ち: %s", _pending_reset_bdf)
         if not settings.enabled or _state == "fault":
             return
         bdf = settings.bdf or _active_bdf
@@ -671,7 +684,7 @@ def tick() -> None:
 def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
-    global _cool_since, _last_cool_step, _last_tick_at, _policy
+    global _cool_since, _last_cool_step, _last_tick_at, _policy, _reset_retry_failures
     with _lock:
         prior = _load()
         if settings.enabled:
@@ -711,11 +724,12 @@ def configure(settings: FanSettings) -> dict:
                     _helper("reset", target)
                 except FanControlError as exc:
                     _pending_reset_bdf = target
-                    _state, _error = "fault", f"自動制御へ復帰できません: {exc}"
-                    raise
+                    _state, _error = "fault", f"自動制御へ復帰できません: {exc} / {REBOOT_HINT}"
+                    raise FanControlError(_error) from exc
             _persist(settings)
             _active_bdf, _last_curve, _sensor_ids = None, None, set()
             _state, _error, _pending_reset_bdf = "disabled", "", None
+            _reset_retry_failures = 0
             _zero_active, _zero_initialized_bdf = False, None
             _temp_history, _zero_stable_since, _cool_since, _last_tick_at = {}, None, None, None
             _policy = AdaptivePolicy()
