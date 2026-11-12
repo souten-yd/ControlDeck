@@ -10,7 +10,8 @@ This is **not Strata**. Project Maya-S24 is a 94.7 GB GGUF quantization of GLM-5
 - Model preparation is a **separate** `settings.manage` authenticated job with an explicit confirmation (94.7 GB / at least 110 GB free). GPU index 0–15 is bounded; defaults to 0. Fixed model: `glm-maya-s24`. Fixed loopback API `127.0.0.1:8099`. First setup uses text-only and 8K context to lower VRAM pressure. The GPU ID must be checked on the target PC; the OS enumeration is not guaranteed to align with PCI bus numbers.
 - Preparation uses upstream HIP setup, with `--download-model --no-start`. After preparing, **explicit** Start launches a managed systemd-user unit; Stop ends it. The job tests the loopback health endpoint; an accepted systemd unit alone does not count as a ready model.
 - Model files are retained under `data_dir()/models/maya-s24` if the managed code is uninstalled. The original system-wide Maya, HOME, and other local runtime settings are never modified.
-- A separate hosted OpenAI-compatible API is provided on the loopback port. **The first PR does not change shared ControlDeck gateway selection semantics or silently adopt Maya as the default**; connecting the hosted API to a shared LLM provider requires a separate explicit design/review, if requested.
+- The managed Maya model is advertised to ControlDeck's local model and provider catalog **only after explicit HIP preparation**. The shared gateway can forward an explicitly selected Maya alias after the administrator has started it. Dormant Maya is excluded from the default AUTO candidate and never auto-starts/downloading weights. Maya is NOT added to the default runtime selector nor made the default chat engine.
+- The Maya model's own OpenAI-compatible API stays bound to loopback. The existing ControlDeck gateway's authenticated endpoint controls remote client access, rather than exposing the Maya port itself. Load/Stop/Delete/Download generic provider capabilities are not granted to Maya: those operations require explicit authenticated feature jobs.
 
 ## Compatibility and caveats
 
@@ -28,7 +29,8 @@ This is **not Strata**. Project Maya-S24 is a 94.7 GB GGUF quantization of GLM-5
 - [ ] Full pytest suite / frontend build from the actual new PR code: **not run**
 - [ ] Real R9700/ROCm10/Maya-S24 setup/download/load/API/generation/unload test
 - [ ] Concurrent jobs, cancellation, and repeated install/update/uninstall smoke test on Linux
-- [ ] Confirm shared LLM gateway interoperability requirement before expanding scope
+- [x] Add Maya to opt-in local provider/model catalog and shared gateway without default/autonomous start
+- [ ] Verify the gateway returns a Maya response after explicit real R9700 start
 - [ ] Review stacked PR against PR #355 after it merges, change base to main, recheck all code/docs/tests, then Ready for review and a single manual CI run
 
 ## Developer test command (do not run via GitHub Actions repeatedly)
