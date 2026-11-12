@@ -31,6 +31,8 @@ def gpu(tmp_path, monkeypatch):
         (hwmon / f"temp{n}_input").write_text(str(value))
         (hwmon / f"temp{n}_crit").write_text(str(crit))
     (hwmon / "fan1_input").write_text("1500")
+    (hwmon / "power1_average").write_text("12000000")
+    (hwmon / "power1_cap").write_text("300000000")
     curve = device / "gpu_od" / "fan_ctrl" / "fan_curve"
     curve.parent.mkdir(parents=True)
     curve.write_text(
@@ -48,6 +50,7 @@ def gpu(tmp_path, monkeypatch):
         "_active_bdf": None, "_last_curve": None, "_last_write": 0.0,
         "_floor": 35, "_sensor_ids": set(), "_zero_rpm_checks": 0,
         "_state": "disabled", "_error": "", "_last_sample": {},
+        "_policy": __import__("app.monitoring.fan_strategy", fromlist=["AdaptivePolicy"]).AdaptivePolicy(),
         "_pending_reset_bdf": None, "_last_reset_retry": 0.0,
         "_last_boost_at": 0.0, "_cool_since": None, "_last_cool_step": 0.0,
         "_temp_history": {}, "_zero_stable_since": None,
@@ -273,7 +276,7 @@ def _add_zero_nodes(device):
     )
 
 
-def test_zero_rpm_only_after_stable_five_minutes_and_immediate_wake(gpu, monkeypatch):
+def test_zero_rpm_only_after_stable_ten_minutes_and_immediate_wake(gpu, monkeypatch):
     fan, device, hwmon, _, calls = gpu
     _add_zero_nodes(device)
     clock = [100.0]
@@ -287,7 +290,7 @@ def test_zero_rpm_only_after_stable_five_minutes_and_immediate_wake(gpu, monkeyp
     assert calls[0][0] == "zero-deny"
     assert not any(x[0] == "zero-allow" for x in calls)
 
-    for _ in range(99):
+    for _ in range(199):
         clock[0] += 3
         fan.tick()
     assert not any(x[0] == "zero-allow" for x in calls)
@@ -336,7 +339,7 @@ def test_helper_zero_rpm_control_uses_fixed_nodes_and_stop_temp(tmp_path, monkey
     monkeypatch.setattr(Path, "write_text", recording)
     helper.control_zero_rpm("allow", "0000:03:00.0")
     assert writes == [
-        ("fan_zero_rpm_stop_temperature", "40"),
+        ("fan_zero_rpm_stop_temperature", "50"),
         ("fan_zero_rpm_stop_temperature", "c"),
         ("fan_zero_rpm_enable", "1"),
         ("fan_zero_rpm_enable", "c"),
