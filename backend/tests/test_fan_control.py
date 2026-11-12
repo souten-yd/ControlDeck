@@ -323,9 +323,6 @@ def test_helper_zero_rpm_control_uses_fixed_nodes_and_stop_temp(tmp_path, monkey
     helper, curve = _helper(tmp_path)
     devdir = curve.parent
     _add_zero_nodes(curve.parents[2])
-    # curve.parents[2] is device/gpu_od: provide the actual device instead.
-    if not (devdir / "fan_zero_rpm_enable").is_file():
-        _add_zero_nodes(curve.parents[2].parent)
     enable = devdir / "fan_zero_rpm_enable"
     stop = devdir / "fan_zero_rpm_stop_temperature"
     writes = []
@@ -350,7 +347,7 @@ def test_helper_zero_rpm_control_uses_fixed_nodes_and_stop_temp(tmp_path, monkey
 
 def test_helper_refuses_zero_rpm_when_stop_temperature_is_unsafe(tmp_path):
     helper, curve = _helper(tmp_path)
-    _add_zero_nodes(curve.parents[2].parent)
+    _add_zero_nodes(curve.parents[2])
     stop = curve.parent / "fan_zero_rpm_stop_temperature"
     stop.write_text("OD_RANGE:\nFAN_ZERO_RPM_STOP_TEMP: 60C 80C\n")
     before = stop.read_text()
