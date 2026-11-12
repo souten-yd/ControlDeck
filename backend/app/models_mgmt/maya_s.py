@@ -1,7 +1,7 @@
-"""Explicit, isolated Project Maya-S24 add-on; never downloads weights on install.
+"""Explicit, isolated Project Maya-S add-on; never downloads weights on install.
 
 Only the official mw00/project-maya GitHub Release is a source for managed code.
-All commands have server-side fixed arguments. The 94.7 GB GGUF is downloaded
+All commands have server-side fixed arguments. The 96.5 GB GGUF is downloaded
 ONLY by an independent authenticated prepare-model action.
 """
 from __future__ import annotations
@@ -27,10 +27,10 @@ from app.config import data_dir
 _REPO = "https://github.com/mw00/project-maya.git"
 _RELEASE = "https://api.github.com/repos/mw00/project-maya/releases/latest"
 _TAG = re.compile(r"^v[0-9]+[.][0-9]+[.][0-9]+$")
-_UNIT = "control-deck-maya-s24.service"
-_ALIAS = "maya-s24"
+_UNIT = "control-deck-maya-s.service"
+_ALIAS = "maya-s"
 _PORT = 8099
-_MODEL = "glm-maya-s24"
+_MODEL = "glm-maya-s"
 # Model bytes are separate from code and deliberately never removed by uninstall.
 
 class MayaError(RuntimeError):
@@ -38,7 +38,7 @@ class MayaError(RuntimeError):
 
 
 def root() -> Path:
-    return data_dir().resolve() / "runtimes" / "maya-s24"
+    return data_dir().resolve() / "runtimes" / "maya-s"
 
 
 def source() -> Path:
@@ -50,7 +50,7 @@ def entrypoint() -> Path:
 
 
 def models_dir() -> Path:
-    return data_dir().resolve() / "models" / "maya-s24"
+    return data_dir().resolve() / "models" / "maya-s"
 
 
 def _marker() -> Path:
@@ -59,12 +59,12 @@ def _marker() -> Path:
 
 def _ensure_alias_port_available() -> None:
     from app.models_mgmt import local_llm
-    other = local_llm.alias_taken_by_other_runtime(_ALIAS, "maya-s24")
+    other = local_llm.alias_taken_by_other_runtime(_ALIAS, "maya-s")
     if other:
-        raise MayaError(f"別のランタイム({other})がMaya-S24のモデル名を使用しています")
-    other = local_llm.port_taken_by_other_runtime(_PORT, "maya-s24")
+        raise MayaError(f"別のランタイム({other})がMaya-Sのモデル名を使用しています")
+    other = local_llm.port_taken_by_other_runtime(_PORT, "maya-s")
     if other:
-        raise MayaError(f"別のランタイム({other})がMaya-S24のAPIポートを使用しています")
+        raise MayaError(f"別のランタイム({other})がMaya-SのAPIポートを使用しています")
 
 
 def _port_busy() -> bool:
@@ -78,13 +78,20 @@ def _prepared_marker() -> Path:
 
 
 def _find_config() -> Path | None:
-    files = [p for p in source().glob("maya-*-hip.json") if "s24" in p.name.lower()]
+    files = [p for p in source().glob("maya-*-hip.json")
+             if re.search(r"maya-s(?![a-z0-9])", p.name.lower())]
     return files[0] if len(files) == 1 and files[0].is_file() and not files[0].is_symlink() else None
 
 
 def _config() -> Path | None:
     # A partial/failed download may leave a config file; never treat it as ready.
     if not installed() or not _prepared_marker().is_file() or _prepared_marker().is_symlink():
+        return None
+    try:
+        prepared = json.loads(_prepared_marker().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(prepared, dict) or prepared.get("model") != _MODEL:
         return None
     return _find_config()
 
@@ -105,7 +112,7 @@ def _operation_lock():
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise MayaError("Maya-S24の別の操作が実行中です") from exc
+            raise MayaError("Maya-Sの別の操作が実行中です") from exc
         yield
     finally:
         os.close(descriptor)
@@ -115,7 +122,7 @@ def _serialized(fn):
     @wraps(fn)
     def call(*args, **kwargs):
         if os.geteuid() == 0:
-            raise MayaError("Maya-S24の管理操作はrootで実行できません")
+            raise MayaError("Maya-Sの管理操作はrootで実行できません")
         with _operation_lock():
             return fn(*args, **kwargs)
     return call
@@ -157,7 +164,7 @@ def _latest_release() -> str:
     try:
         request = urllib.request.Request(
             _RELEASE, headers={"Accept": "application/vnd.github+json",
-                               "User-Agent": "ControlDeck-Maya-S24"})
+                               "User-Agent": "ControlDeck-Maya-S"})
         with urllib.request.urlopen(request, timeout=20) as response:
             meta = json.load(response)
     except (OSError, ValueError) as exc:
@@ -193,7 +200,7 @@ def runtime_status() -> dict:
         "entrypoint": str(entrypoint()) if state else "",
         "models_dir": str(models_dir()),
         "error": "" if available() else "Linux x86_64のみ管理導入対応",
-        "warning": "Maya-S24は約94.7GB。モデル取得は別操作で明示的に承認するまで実行しません。ROCm 7以降・R9700 HIPが必要です。",
+        "warning": "Maya-Sは約96.5GB。モデル取得は別操作で明示的に承認するまで実行しません。ROCm 7以降・R9700 HIPが必要です。",
     }
 
 
@@ -202,7 +209,7 @@ def _install() -> dict:
     if not available() or os.geteuid() == 0:
         raise MayaError("Linux x86_64の非rootユーザーで導入してください")
     if installed():
-        raise MayaError("Maya-S24は導入済みです。更新操作を使ってください")
+        raise MayaError("Maya-Sは導入済みです。更新操作を使ってください")
     target = root()
     if target.is_symlink() or source().is_symlink():
         raise MayaError("管理ディレクトリがシンボリックリンクです")
@@ -216,7 +223,7 @@ def _install() -> dict:
                "--single-branch", "--branch", tag, _REPO, str(staged)], cwd=target, timeout=600)
         if not (staged / "maya.sh").is_file():
             raise MayaError("公式Mayaの起動スクリプトが存在しません")
-        # Do not invoke setup at this point; upstream setup may download 95 GB.
+        # Do not invoke setup at this point; upstream setup may download 96.5 GB.
         staged.rename(source())
     _marker().write_text(json.dumps({"source": _REPO, "tag": tag}), encoding="utf-8")
     return runtime_status()
@@ -231,7 +238,7 @@ async def install_stream(job=None) -> dict:
 @_serialized
 def _update() -> dict:
     if not installed():
-        raise MayaError("管理導入したMaya-S24がありません")
+        raise MayaError("管理導入したMaya-Sがありません")
     if _running():
         raise MayaError("Mayaを停止してから更新してください")
     tag = _latest_release()
@@ -300,11 +307,11 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
     if not 0 <= gpu_index <= 15:
         raise MayaError("GPU番号が範囲外です")
     if not installed():
-        raise MayaError("先にMaya-S24ランタイムを導入してください")
+        raise MayaError("先にMaya-Sランタイムを導入してください")
     if _running():
         raise MayaError("モデル準備の前にMayaを停止してください")
     if _config() is not None:
-        raise MayaError("Maya-S24はセットアップ済みです。再設定は手動で行ってください")
+        raise MayaError("Maya-Sはセットアップ済みです。再設定は手動で行ってください")
     if os.geteuid() == 0:
         raise MayaError("root実行は禁止されています")
     _ensure_alias_port_available()
@@ -326,14 +333,14 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
 
 async def prepare_model_stream(job=None, *, gpu_index: int = 0) -> dict:
     if job:
-        job.set_progress("約94.7GBのMaya-S24を取得・検証、HIPエンジンを準備中", 0, 1)
+        job.set_progress("約96.5GBのMaya-Sを取得・検証、HIPエンジンを準備中", 0, 1)
     return await asyncio.to_thread(_prepare_model, gpu_index=gpu_index)
 
 
 @_serialized
 def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     if alias != _ALIAS or _config() is None:
-        return False, "明示的なMaya-S24モデル準備が必要です"
+        return False, "明示的なMaya-Sモデル準備が必要です"
     if _running():
         return True, ""
     try:
@@ -352,7 +359,7 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
 @_serialized
 def stop_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     if alias != _ALIAS:
-        return False, "Maya-S24のモデル名が不正です"
+        return False, "Maya-Sのモデル名が不正です"
     try:
         if _running():
             _exec(["systemctl", "--user", "stop", _UNIT], timeout=600)
@@ -377,7 +384,7 @@ async def health(alias: str = _ALIAS) -> dict:
             if not isinstance(state, dict) or state.get("status") != "ok" or state.get("unloaded") is True:
                 return {"ok": False, "status_code": 200}
             # A port collision must never make an unrelated server look like our model.
-            if "s24" not in str(state.get("model_label") or "").lower():
+            if str(state.get("model_label") or "").strip().casefold() != "glm-5.3-flash · maya-s":
                 return {"ok": False, "status_code": 200}
             models = await client.get(f"http://127.0.0.1:{_PORT}/v1/models")
             if models.status_code != 200:
@@ -406,7 +413,7 @@ async def wait_ready(*, timeout_seconds: int = 900) -> bool:
 def get_instance(alias: str) -> dict:
     if alias != _ALIAS or _config() is None:
         raise KeyError(alias)
-    return {"alias": _ALIAS, "runtime": "maya-s24", "role": "llm",
+    return {"alias": _ALIAS, "runtime": "maya-s", "role": "llm",
             "model": _MODEL, "port": _PORT,
             "base_url": f"http://127.0.0.1:{_PORT}/v1",
             "loaded": _running(), "model_path": "",
@@ -418,7 +425,7 @@ def list_instances() -> list[dict]:
 
 
 def residency_key(instance: dict) -> str:
-    return "maya-s24:glm-5.3-flash"
+    return "maya-s:glm-5.3-flash"
 
 
 async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
@@ -432,7 +439,7 @@ def mark_used_by_base_url(_base_url: str) -> None:
 @_serialized
 def uninstall() -> dict:
     if not installed():
-        raise MayaError("ControlDeck管理のMaya-S24がありません")
+        raise MayaError("ControlDeck管理のMaya-Sがありません")
     if _running():
         raise MayaError("モデル稼働中は削除できません。停止してください")
     target = root()

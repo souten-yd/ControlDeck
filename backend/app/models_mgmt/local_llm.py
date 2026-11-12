@@ -10,14 +10,14 @@ from typing import Any
 
 LLAMA = "llama.cpp"
 STRATA = "strata"
-MAYA_S24 = "maya-s24"
-RUNTIMES = (LLAMA, STRATA, MAYA_S24)
+MAYA_S = "maya-s"
+RUNTIMES = (LLAMA, STRATA, MAYA_S)
 
 
 def module_for(runtime: str):
-    from app.models_mgmt import llama, strata_gateway, maya_s24
-    if runtime == MAYA_S24:
-        return maya_s24
+    from app.models_mgmt import llama, strata_gateway, maya_s
+    if runtime == MAYA_S:
+        return maya_s
     if runtime == STRATA:
         return strata_gateway
     if runtime == LLAMA:
@@ -40,10 +40,10 @@ def _strata_instances() -> list[dict]:
     return strata_gateway.list_instances() if strata.installed() else []
 
 
-def _maya_s24_instances() -> list[dict]:
-    from app.models_mgmt import maya_s24
+def _maya_s_instances() -> list[dict]:
+    from app.models_mgmt import maya_s
     # Never advertise a ghost model when code or GGUF is not prepared.
-    return maya_s24.list_instances() if maya_s24.installed() else []
+    return maya_s.list_instances() if maya_s.installed() else []
 
 
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
@@ -55,8 +55,8 @@ def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
         items += _llama_instances()
     if runtime in ("", STRATA):
         items += _strata_instances()
-    if runtime in ("", MAYA_S24):
-        items += _maya_s24_instances()
+    if runtime in ("", MAYA_S):
+        items += _maya_s_instances()
     if role:
         items = [item for item in items if str(item.get("role", "llm")) == role]
     return items
@@ -190,7 +190,7 @@ async def await_capacity(alias: str, port: int, needed_tokens: int, *,
 def installed_runtimes() -> dict[str, bool]:
     from app.models_mgmt import llama
 
-    from app.models_mgmt import strata, maya_s24
+    from app.models_mgmt import strata, maya_s
 
     return {LLAMA: llama.is_installed(), STRATA: strata.installed(),
-            MAYA_S24: maya_s24.installed()}
+            MAYA_S: maya_s.installed()}

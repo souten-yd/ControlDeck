@@ -137,7 +137,7 @@ def resolve_instance(model: str) -> dict:
             i for i in instances
             if str(i.get("role", "llm")) == "llm"
             and (i.get("runtime") != "strata" or i.get("activated"))
-            and (i.get("runtime") != "maya-s24" or i.get("loaded"))
+            and (i.get("runtime") != "maya-s" or i.get("loaded"))
         ]
         match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
     if match is None:
@@ -384,7 +384,7 @@ def _upstream_error(alias: str, body: bytes) -> dict:
 async def gateway_models(request: Request):
     """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。
 
-    llama.cpp、Strata、明示準備済みMaya-S24のモデルが1つの一覧に並ぶ。どちらのランタイムかは
+    llama.cpp、Strata、明示準備済みMaya-Sのモデルが1つの一覧に並ぶ。どちらのランタイムかは
     OpenAI 仕様には無い項目なので、互換性を壊さない追加フィールドで示す。
     """
     _authorize(request)

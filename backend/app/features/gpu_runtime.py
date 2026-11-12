@@ -5,7 +5,7 @@ from typing import Any
 
 LLAMA_FEATURE = "llama-cpp"
 STRATA_FEATURE = "strata"
-MAYA_FEATURE = "maya-s24"
+MAYA_FEATURE = "maya-s"
 FEATURE_IDS = (LLAMA_FEATURE, STRATA_FEATURE, MAYA_FEATURE)
 
 
@@ -24,8 +24,8 @@ def _strata():
 
 
 def _maya():
-    from app.models_mgmt import maya_s24
-    return maya_s24
+    from app.models_mgmt import maya_s
+    return maya_s
 
 
 def is_gpu_runtime(feature_id: str) -> bool:
@@ -78,7 +78,7 @@ def status(feature_id: str) -> dict:
             "installed": state["installed"], "managed": state["installed"],
             "version": state["version"], "healthy": state["installed"],
             "error": state["error"], "available": state["available"],
-            "detail": {"runtime": "maya-s24", "cli_path": state["entrypoint"],
+            "detail": {"runtime": "maya-s", "cli_path": state["entrypoint"],
                        "models_dir": state["models_dir"], "configured": state["configured"],
                        "running": state["running"], "warning": state["warning"]},
         }
@@ -106,7 +106,7 @@ async def install(feature_id: str, job: Any = None, *, options: dict | None = No
             raise GpuRuntimeError(str(exc)) from exc
     if feature_id == MAYA_FEATURE:
         try:
-            return {"runtime": "maya-s24", **await _maya().install_stream(job)}
+            return {"runtime": "maya-s", **await _maya().install_stream(job)}
         except _maya().MayaError as exc:
             raise GpuRuntimeError(str(exc)) from exc
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
@@ -148,7 +148,7 @@ async def update(feature_id: str, job: Any = None) -> dict:
             raise GpuRuntimeError(str(exc)) from exc
     if feature_id == MAYA_FEATURE:
         try:
-            return {"runtime": "maya-s24", **await _maya().update_stream(job)}
+            return {"runtime": "maya-s", **await _maya().update_stream(job)}
         except _maya().MayaError as exc:
             raise GpuRuntimeError(str(exc)) from exc
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")

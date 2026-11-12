@@ -464,7 +464,7 @@ interface AddonState {
 }
 
 interface GpuRuntimeDetail {
-  runtime: "llama.cpp" | "strata" | "maya-s24";
+  runtime: "llama.cpp" | "strata" | "maya-s";
   warning?: string;
   /** llama.cpp */
   active_backend?: string;
@@ -701,8 +701,8 @@ function GpuRuntimeDetails({ addon, release }: {
 }
 
 
-/** Maya has a deliberately separate 95GB download consent gate. */
-function MayaS24Panel({ addon }: { addon: AddonState }) {
+/** Maya has a deliberately separate 96.5GB download consent gate. */
+function MayaSPanel({ addon }: { addon: AddonState }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [gpu, setGpu] = useState(0);
@@ -710,7 +710,7 @@ function MayaS24Panel({ addon }: { addon: AddonState }) {
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const { data: job } = useQuery({
-    queryKey: ["maya-s24-job", jobId],
+    queryKey: ["maya-s-job", jobId],
     queryFn: () => api<{status: string; error?: string; progress?: {status?: string}}>(`/jobs/${jobId}`),
     enabled: jobId !== null,
     refetchInterval: (q) => q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1500,
@@ -720,7 +720,7 @@ function MayaS24Panel({ addon }: { addon: AddonState }) {
     setJobId(null);
     setBusy(false);
     void qc.invalidateQueries({ queryKey: ["features"] });
-    show(job.status === "succeeded" ? "Maya-S24操作が完了しました" : job.error || "Maya-S24操作に失敗しました",
+    show(job.status === "succeeded" ? "Maya-S操作が完了しました" : job.error || "Maya-S操作に失敗しました",
       job.status === "succeeded" ? "info" : "error");
   }, [jobId, job?.status]);
 
@@ -729,28 +729,28 @@ function MayaS24Panel({ addon }: { addon: AddonState }) {
     setBusy(true);
     try {
       if (kind === "stop") {
-        await api("/features/maya-s24/model/stop", {method: "POST", json: {}});
+        await api("/features/maya-s/model/stop", {method: "POST", json: {}});
         void qc.invalidateQueries({queryKey: ["features"]});
-        show("Maya-S24を停止しました");
+        show("Maya-Sを停止しました");
         setBusy(false);
         return;
       }
       const route = kind === "prepare" ? "prepare-jobs" : "start-jobs";
-      const started = await api<{job_id: string}>(`/features/maya-s24/model/${route}`, {
+      const started = await api<{job_id: string}>(`/features/maya-s/model/${route}`, {
         method: "POST", json: kind === "prepare" ? {gpu_index: gpu} : {},
       });
       setJobId(started.job_id);
-      if (kind === "prepare") show("Maya-S24（約94.7GB）のモデル取得・HIP構築を開始しました");
+      if (kind === "prepare") show("Maya-S（約96.5GB）のモデル取得・HIP構築を開始しました");
     } catch (error) {
-      show(error instanceof Error ? error.message : "Maya-S24操作に失敗しました", "error");
+      show(error instanceof Error ? error.message : "Maya-S操作に失敗しました", "error");
       setBusy(false);
     }
   };
 
   return <div className="mt-3 space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-    <p className="text-xs font-semibold">Maya-S24 モデル（GLM-5.3-Flash）</p>
+    <p className="text-xs font-semibold">Maya-S モデル（GLM-5.3-Flash）</p>
     <p className="text-[11px] text-zinc-500">
-      アドオン導入はコードのみです。モデル約94.7GBの取得は別途明示操作が必要です。
+      アドオン導入はコードのみです。モデル約96.5GBの取得は別途明示操作が必要です。
       32GB RAM＋32GB VRAMではSSD依存が大きくなる可能性があります。
     </p>
     <p className="text-[11px] text-zinc-500">
@@ -764,7 +764,7 @@ function MayaS24Panel({ addon }: { addon: AddonState }) {
         className="w-16 rounded-lg border border-zinc-300 bg-transparent px-2 py-2 text-xs dark:border-zinc-600"/>
       <button type="button" onClick={() => setConfirming(true)} disabled={busy || !Number.isInteger(gpu) || gpu < 0 || gpu > 15}
         className="min-h-11 rounded-lg border border-amber-400 px-3 py-2 text-xs font-medium text-amber-700 disabled:opacity-40 dark:text-amber-300">
-        約95GBのモデルを取得・準備
+        約96.5GBのモデルを取得・準備
       </button>
     </div>}
     {addon.runtime?.configured && <div className="flex flex-wrap gap-2">
@@ -780,8 +780,8 @@ function MayaS24Panel({ addon }: { addon: AddonState }) {
     {jobId && <p className="text-xs text-zinc-500" role="status">
       ジョブ {job?.status ?? "queued"} · {job?.progress?.status || "処理中"}
     </p>}
-    {confirming && <ConfirmDialog title="Maya-S24を取得しますか？"
-      message="GLM-5.3-Flash Maya-S24のモデル約94.7GBをSSDにダウンロードして検証します。110GB以上の空き容量が必要で、HIPエンジンのコンパイルに時間がかかります。今はモデルを起動しません。"
+    {confirming && <ConfirmDialog title="Maya-Sを取得しますか？"
+      message="GLM-5.3-Flash Maya-Sのモデル約96.5GBをSSDにダウンロードして検証します。110GB以上の空き容量が必要で、HIPエンジンのコンパイルに時間がかかります。今はモデルを起動しません。"
       confirmLabel="モデル取得を開始"
       onConfirm={() => { setConfirming(false); void run("prepare"); }}
       onClose={() => setConfirming(false)}/>}
@@ -917,7 +917,7 @@ function AddonsSection() {
                 {addon.kind === "gpu-runtime" && (
                   <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />
                 )}
-                {addon.id === "maya-s24" && addon.installed && <MayaS24Panel addon={addon} />}
+                {addon.id === "maya-s" && addon.installed && <MayaSPanel addon={addon} />}
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                 {addon.installed && addon.managed && (

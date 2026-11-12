@@ -145,42 +145,42 @@ def apply_action(
     return {**state, "requires_reload": needs_reload and action in ("enable", "disable", "uninstall")}
 
 
-# Project Maya-S24 is opt-in. Installing engine code NEVER downloads its 94.7 GB model.
-@router.post("/maya-s24/model/prepare-jobs", status_code=201)
-async def maya_s24_prepare_model(
+# Project Maya-S is opt-in. Installing engine code NEVER downloads its 96.5 GB model.
+@router.post("/maya-s/model/prepare-jobs", status_code=201)
+async def maya_s_prepare_model(
     request: Request, body: MayaSetupBody,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
 ):
-    from app.models_mgmt import maya_s24
+    from app.models_mgmt import maya_s
 
-    if not maya_s24.installed():
-        raise HTTPException(status_code=422, detail="先にMaya-S24をオプション機能から導入してください")
-    if maya_s24.runtime_status()["configured"]:
-        raise HTTPException(status_code=422, detail="Maya-S24モデルはセットアップ済みです")
+    if not maya_s.installed():
+        raise HTTPException(status_code=422, detail="先にMaya-Sをオプション機能から導入してください")
+    if maya_s.runtime_status()["configured"]:
+        raise HTTPException(status_code=422, detail="Maya-Sモデルはセットアップ済みです")
 
     async def run(job: jobs.Job) -> dict:
-        job.set_progress("Maya-S24約94.7GBの明示取得とROCm HIP準備中", 0, 1)
-        state = await maya_s24.prepare_model_stream(job, gpu_index=body.gpu_index)
+        job.set_progress("Maya-S約96.5GBの明示取得とROCm HIP準備中", 0, 1)
+        state = await maya_s.prepare_model_stream(job, gpu_index=body.gpu_index)
         job.set_progress("モデルの準備完了（まだ起動していません）", 1, 1)
         return state
 
-    job = jobs.create("maya-s24.prepare", "Maya-S24モデル準備", run,
+    job = jobs.create("maya-s.prepare", "Maya-Sモデル準備", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
-    audit.record(db, "maya-s24.prepare", user=user, resource_type="feature",
-                 resource_id="maya-s24", request=request, metadata={"job_id": job.id, "gpu_index": body.gpu_index})
+    audit.record(db, "maya-s.prepare", user=user, resource_type="feature",
+                 resource_id="maya-s", request=request, metadata={"job_id": job.id, "gpu_index": body.gpu_index})
     return {"job_id": job.id}
 
 
-@router.post("/maya-s24/model/start-jobs", status_code=201)
-async def maya_s24_start_model(
+@router.post("/maya-s/model/start-jobs", status_code=201)
+async def maya_s_start_model(
     request: Request, user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
-    from app.models_mgmt import maya_s24
+    from app.models_mgmt import maya_s
     from app.models_mgmt import llama, strata_gateway, ollama
 
-    if not maya_s24.runtime_status()["configured"]:
-        raise HTTPException(status_code=422, detail="先にMaya-S24のモデル準備を完了してください")
+    if not maya_s.runtime_status()["configured"]:
+        raise HTTPException(status_code=422, detail="先にMaya-Sのモデル準備を完了してください")
     # Never auto-evict another engine or secretly switch the shared runtime.
     others = await asyncio.gather(
         asyncio.to_thread(llama.list_instances),
@@ -191,32 +191,32 @@ async def maya_s24_start_model(
         raise HTTPException(status_code=409, detail="別のローカルLLMが稼働中です。GPU競合を解消してから明示起動してください")
 
     async def run(job: jobs.Job) -> dict:
-        job.set_progress("Maya-S24を独立systemdユーザーサービスで起動中", 0, 1)
-        ok, message = await asyncio.to_thread(maya_s24.start_instance)
+        job.set_progress("Maya-Sを独立systemdユーザーサービスで起動中", 0, 1)
+        ok, message = await asyncio.to_thread(maya_s.start_instance)
         if not ok:
             raise RuntimeError(message)
         # Avoid reporting success on a service launch that immediately fails.
-        if not await maya_s24.wait_ready(timeout_seconds=900):
-            raise RuntimeError("Maya-S24のAPIを確認できません。systemd --user のjournalを確認してください")
-        job.set_progress("Maya-S24 APIの起動を確認", 1, 1)
-        return maya_s24.runtime_status()
+        if not await maya_s.wait_ready(timeout_seconds=900):
+            raise RuntimeError("Maya-SのAPIを確認できません。systemd --user のjournalを確認してください")
+        job.set_progress("Maya-S APIの起動を確認", 1, 1)
+        return maya_s.runtime_status()
 
-    job = jobs.create("maya-s24.start", "Maya-S24起動", run,
+    job = jobs.create("maya-s.start", "Maya-S起動", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
-    audit.record(db, "maya-s24.start", user=user, resource_type="feature",
-                 resource_id="maya-s24", request=request, metadata={"job_id": job.id})
+    audit.record(db, "maya-s.start", user=user, resource_type="feature",
+                 resource_id="maya-s", request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
 
 
-@router.post("/maya-s24/model/stop")
-async def maya_s24_stop_model(
+@router.post("/maya-s/model/stop")
+async def maya_s_stop_model(
     request: Request, user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
-    from app.models_mgmt import maya_s24
-    ok, message = await asyncio.to_thread(maya_s24.stop_instance)
+    from app.models_mgmt import maya_s
+    ok, message = await asyncio.to_thread(maya_s.stop_instance)
     if not ok:
         raise HTTPException(status_code=422, detail=message)
-    audit.record(db, "maya-s24.stop", user=user, resource_type="feature",
-                 resource_id="maya-s24", request=request)
-    return maya_s24.runtime_status()
+    audit.record(db, "maya-s.stop", user=user, resource_type="feature",
+                 resource_id="maya-s", request=request)
+    return maya_s.runtime_status()

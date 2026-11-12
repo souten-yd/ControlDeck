@@ -3805,10 +3805,12 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - 受け入れ条件：backend pytest、frontend build、旧Lucebox参照grep、Strata導入/削除テスト、本体更新失敗時のロールバック、モバイル画面確認。マージとリリースは検証結果が得られるまで未完了。
 
 
-## 2026-11-12 — Project Maya-S24 option (PR #359, Draft)
+## 2026-11-12 — Project Maya-S option (PR #359, Draft)
 
-- `feat/maya-s24-optional-addon-20261112` adds an independent `maya-s24` opt-in feature stacked on PR #355. Official Project Maya GitHub Release code only on install; explicit separate GLM-5.3-Flash Maya-S24 model download (~94.7GB) with confirmation, explicit start/stop and loopback-only API.
-- Uninstall keeps model weights, defaults and other runtimes unchanged. `backend/tests/test_maya_s24_addon.py` adds mocked offline checks. See `docs/design-maya-s24-optional-addon.md`.
+- `feat/maya-s-optional-addon-20261112` adds an independent `maya-s` opt-in feature stacked on PR #355. Official Project Maya GitHub Release code only on install; explicit separate GLM-5.3-Flash Maya-S model download (~96.5GB) with confirmation, explicit start/stop and loopback-only API.
+- Uninstall keeps model weights, defaults and other runtimes unchanged. `backend/tests/test_maya_s_addon.py` adds mocked offline checks. See `docs/design-maya-s-optional-addon.md`.
 - **Not merged/released**. Full tests, R9700/ROCm10 and mobile verification remain pending; CI stays manual-only as in the main development rules. Existing PR #355 is an upstream dependency and must merge first.
 
-- Draft PR #359 now also wires the explicitly prepared Maya-S24 model into the existing ControlDeck provider/model list and authenticated shared gateway. Dormant Maya is not an AUTO candidate and cannot start by chat request. Added offline tests for this contract; actual runtime tests remain pending.
+- Draft PR #359 now also wires the explicitly prepared Maya-S model into the existing ControlDeck provider/model list and authenticated shared gateway. Dormant Maya is not an AUTO candidate and cannot start by chat request. Added offline tests for this contract; actual runtime tests remain pending.
+
+- PR #359 model choice updated to **GLM-5.3-Flash Maya-S** (`glm-maya-s`, ~96.5GB) for the supported R9700. No S24 fallback or migration. Source branch name remains historical; actual runtime, APIs, frontend, docs and tests use `maya-s`. `maya_s.py` rejects old S24 config/marker and the health check requires the Maya-S label. Hardware checks and full CI remain pending.

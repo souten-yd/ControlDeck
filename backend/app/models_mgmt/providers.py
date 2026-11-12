@@ -22,7 +22,7 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
     generation = ["chat", "stream", "cancel"] if available else []
     if managed and kind == "ollama":
         return generation + ["list", "load", "unload", "delete", "pull", "configure"]
-    if managed and kind == "maya-s24":
+    if managed and kind == "maya-s":
         # Model lifecycle is administered only through the explicit, authenticated
         # feature prepare/start/stop endpoints (with GPU conflict checks).
         return generation + ["list", "health"]
@@ -40,15 +40,15 @@ def _provider_id(kind: str, base_url: str, *, managed: bool) -> str:
     parsed = urlsplit(base_url)
     host = parsed.hostname or "unknown"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return kind if managed and kind in ("ollama", "llama.cpp", "strata", "maya-s24") else f"{kind}-{host}-{port}"
+    return kind if managed and kind in ("ollama", "llama.cpp", "strata", "maya-s") else f"{kind}-{host}-{port}"
 
 
 # ゲートウェイへ集約するローカルランタイム。個別ポートを候補から外す判定に使う。
-GATEWAY_RUNTIMES = ("llama.cpp", "strata", "maya-s24")
+GATEWAY_RUNTIMES = ("llama.cpp", "strata", "maya-s")
 
 
 async def _candidates() -> list[dict]:
-    from app.models_mgmt import llama, ollama, strata, strata_gateway, maya_s24
+    from app.models_mgmt import llama, ollama, strata, strata_gateway, maya_s
 
     candidates: dict[str, dict] = {}
 
@@ -104,12 +104,12 @@ async def _candidates() -> list[dict]:
                 str(instance["alias"]) for instance in strata_instances
             ]
 
-    # Maya-S24 is listed only after explicit HIP preparation. Never start it on discovery.
-    if maya_s24.installed():
-        maya_items = await asyncio.to_thread(maya_s24.list_instances)
+    # Maya-S is listed only after explicit HIP preparation. Never start it on discovery.
+    if maya_s.installed():
+        maya_items = await asyncio.to_thread(maya_s.list_instances)
         if maya_items:
             first = maya_items[0]
-            add(first["base_url"], "maya-s24", "Project Maya-S24", managed=True,
+            add(first["base_url"], "maya-s", "Project Maya-S", managed=True,
                 installed=True, experimental=True)
             candidates[_openai_base(first["base_url"])]["aliases"] = [first["alias"]]
 
