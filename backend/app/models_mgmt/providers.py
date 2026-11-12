@@ -23,7 +23,9 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
     if managed and kind == "ollama":
         return generation + ["list", "load", "unload", "delete", "pull", "configure"]
     if managed and kind == "maya-s24":
-        return generation + ["list", "load", "unload", "health", "start", "stop"]
+        # Model lifecycle is administered only through the explicit, authenticated
+        # feature prepare/start/stop endpoints (with GPU conflict checks).
+        return generation + ["list", "health"]
     if managed and kind in ("llama.cpp", "strata"):
         return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return generation + ["list"]
