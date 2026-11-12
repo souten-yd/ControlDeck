@@ -160,8 +160,16 @@ def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
     device = device_path(bdf)
     curve = fan_curve_path(device)
     if action == "reset":
-        # r stages firmware defaults, c applies them (kernel OD API).
+        # Restore any native zero-RPM overrides and fan curve to firmware defaults.
+        # A missing optional node is fine, but a present failed node is NOT.
         try:
+            for name in ("fan_zero_rpm_enable", "fan_zero_rpm_stop_temperature"):
+                node = curve.parent / name
+                if node.is_file():
+                    if node.is_symlink() or node.resolve() != node:
+                        fail("不正なzero RPM node")
+                    node.write_text("r", encoding="ascii")
+                    node.write_text("c", encoding="ascii")
             curve.write_text("r", encoding="ascii")
             curve.write_text("c", encoding="ascii")
         except OSError as exc:
@@ -198,6 +206,59 @@ def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
             pass
         fail(f"fan_curveの適用に失敗しました（auto復帰を試行）: {exc}")
     print(json.dumps({"ok": True, "mode": "curve", "bdf": bdf.lower()}))
+
+
+
+def zero_rpm_nodes(device: Path) -> tuple[Path, Path, int]:
+    """Only hardware-advertised native zero-RPM controls, with safe stop temp."""
+    directory = device / "gpu_od" / "fan_ctrl"
+    enable = directory / "fan_zero_rpm_enable"
+    stop = directory / "fan_zero_rpm_stop_temperature"
+    for node in (enable, stop):
+        if not node.is_file() or node.is_symlink() or node.resolve() != node:
+            fail("GPU native zero RPM設定はサポートされていません")
+    try:
+        content = stop.read_text(encoding="ascii")
+    except OSError as exc:
+        fail(f"Zero RPMの安全温度範囲を読み取れません: {exc}")
+    # Some AMD drivers prefix the name with FAN_, others do not.
+    match = re.search(
+        r"(?im)^\s*(?:FAN_)?ZERO_RPM_STOP_(?:TEMP|TEMPERATURE)\s*:\s*(\d+)\s*C?\s+(\d+)\s*C?\s*$",
+        content.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in content else "",
+    )
+    if not match:
+        fail("Zero RPM停止温度のOD_RANGEが取得できません")
+    minimum, maximum = map(int, match.groups())
+    if minimum > 40 or maximum < 40 or minimum >= maximum:
+        fail("安全な40°C以下のファン停止温度を設定できません")
+    return enable, stop, 40
+
+
+def control_zero_rpm(action: str, bdf: str) -> None:
+    """Enable/disable ONLY native PMFW stop feature, not raw PWM=0."""
+    if action not in ("allow", "deny"):
+        fail("不正なZero RPM操作です")
+    device = device_path(bdf)
+    enable, stop, stop_temp = zero_rpm_nodes(device)
+    try:
+        if action == "allow":
+            # Install a conservative firmware fallback before enabling stop.
+            stop.write_text(str(stop_temp), encoding="ascii")
+            stop.write_text("c", encoding="ascii")
+            enable.write_text("1", encoding="ascii")
+            enable.write_text("c", encoding="ascii")
+        else:
+            enable.write_text("0", encoding="ascii")
+            enable.write_text("c", encoding="ascii")
+    except OSError as exc:
+        if action == "allow":
+            try:
+                enable.write_text("0", encoding="ascii")
+                enable.write_text("c", encoding="ascii")
+            except OSError:
+                pass
+        fail(f"Zero RPM {action}に失敗しました: {exc}")
+    print(json.dumps({"ok": True, "action": action, "bdf": bdf.lower()}))
 
 
 def system_service_catalog() -> dict:
@@ -267,13 +328,16 @@ def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == "system-service":
         control_system_service(sys.argv[2], sys.argv[3])
         return
+    if len(sys.argv) == 4 and sys.argv[1] == "fan-zero-rpm":
+        control_zero_rpm(sys.argv[2], sys.argv[3])
+        return
     if len(sys.argv) == 5 and sys.argv[1] == "fan-curve" and sys.argv[2] == "apply":
         control_fan_curve("apply", sys.argv[3], sys.argv[4])
         return
     if len(sys.argv) == 4 and sys.argv[1] == "fan-curve" and sys.argv[2] == "reset":
         control_fan_curve("reset", sys.argv[3])
         return
-    fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | system-service ACTION ID")
+    fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | fan-zero-rpm allow|deny BDF | system-service ACTION ID")
 
 
 if __name__ == "__main__":
