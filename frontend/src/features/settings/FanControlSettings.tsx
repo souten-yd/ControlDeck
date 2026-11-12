@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
@@ -81,6 +81,7 @@ function RangeControl({
   label: string; value: number; min: number; max: number; step?: number;
   suffix?: string; hint?: string; disabled?: boolean; onChange: (value: number) => void;
 }) {
+  const id = useId();
   const valid = Number.isFinite(value) && min <= max;
   const safe = valid ? Math.max(min, Math.min(max, value)) : min;
   const set = (next: number) => {
@@ -91,13 +92,13 @@ function RangeControl({
   return (
     <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <label htmlFor={"fan-range-" + label} className="text-xs font-medium">{label}</label>
+        <label htmlFor={id} className="text-xs font-medium">{label}</label>
         <span className="tabular-nums text-sm font-semibold">{safe}{suffix}</span>
       </div>
       {hint && <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{hint}</p>}
       <div className="mt-2 flex items-center gap-3">
         <input
-          id={"fan-range-" + label}
+          id={id}
           type="range" min={min} max={max} step={step}
           value={safe} disabled={disabled || !valid} onChange={(e) => set(Number(e.target.value))}
           className="min-w-0 flex-1 accent-sky-600"
