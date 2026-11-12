@@ -20,6 +20,12 @@ STOP_OTHER_C = 50
 STOP_MEMORY_C = 55
 
 
+# Bounds for user / learned gains. Lower bounds allow a gentle response:
+# on the R9700 the old minimums (FF 25, P 1.8) pushed LLM bursts to ~85%.
+FF_MIN, FF_MAX = 0.0, 55.0
+KP_MIN, KP_MAX = 0.5, 3.2
+
+
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
@@ -49,7 +55,7 @@ def margin_ramp(margin: float, minimum: float, maximum: float) -> int:
 @dataclass
 class AdaptivePolicy:
     """In-memory online learner. Persist bounded gains only, never live integrators."""
-    ff_gain: float = 25.0
+    ff_gain: float = 10.0
     kp: float = 1.8
     ki: float = 0.015
     integral: dict[str, float] = field(default_factory=dict)
@@ -96,7 +102,7 @@ class AdaptivePolicy:
             power_cap_w = None
         if power_w is not None:
             # Quick to rise, slow to decay: LLM prefill/decode load may toggle 0/100%.
-            tau = 20 if self.power_ema_w is None or power_w > self.power_ema_w else 120
+            tau = 20 if self.power_ema_w is None or power_w > self.power_ema_w else 45
             alpha = 1.0 - exp(-dt / tau)
             self.power_ema_w = power_w if self.power_ema_w is None else (
                 (1 - alpha) * self.power_ema_w + alpha * power_w
@@ -110,6 +116,7 @@ class AdaptivePolicy:
         feedforward = self.ff_gain * ratio
         demands: list[float] = []
         margins: list[float] = []
+        actual_margins: list[float] = []
         stop_cold = True
         fast_rise = False
         for sensor in sensors:
@@ -127,6 +134,7 @@ class AdaptivePolicy:
             predicted = temp + 20 * max(0.0, d_smooth)
             margin = target - predicted
             margins.append(margin)
+            actual_margins.append(target - temp)
             # 20°C ahead of the limit the PI begins quietly correcting.
             error = predicted - (target - 20)
             integral = self.integral.get(key, 0.0)
@@ -146,7 +154,10 @@ class AdaptivePolicy:
             fast_rise |= d_smooth > 0.045
         margin_min = min(margins)
         # Independent safety floor: adaptive parameters never reduce this.
-        safety = margin_ramp(margin_min, min_percent, max_percent)
+        # The independent safety floor uses the measured headroom; the PI term
+        # already looks ahead. Using the 20 s prediction here doubled the
+        # reaction to the hotspot's jump at load start.
+        safety = margin_ramp(min(actual_margins), min_percent, max_percent)
         wanted = clamp(max(safety, *demands), min_percent, max_percent)
 
         # Normal operation is passive system identification (no test load).
@@ -162,11 +173,11 @@ class AdaptivePolicy:
             else:
                 self.warm_seconds = self.cool_seconds = 0
             if self.warm_seconds >= 60:
-                self.ff_gain = clamp(self.ff_gain + 1, 25, 55)
-                self.kp = clamp(self.kp + 0.05, 1.8, 3.2)
+                self.ff_gain = clamp(self.ff_gain + 1, FF_MIN, FF_MAX)
+                self.kp = clamp(self.kp + 0.05, KP_MIN, KP_MAX)
                 self.warm_seconds = 0
             if self.cool_seconds >= 900:
-                self.ff_gain = clamp(self.ff_gain - 0.25, 25, 55)
+                self.ff_gain = clamp(self.ff_gain - 0.25, FF_MIN, FF_MAX)
                 self.cool_seconds = 0
         else:
             self.warm_seconds = self.cool_seconds = 0
@@ -234,8 +245,8 @@ class AdaptivePolicy:
         self.last_rise_at = now
 
     def learned_parameters(self) -> dict:
-        return {"ff_gain": round(clamp(self.ff_gain, 25, 55), 2),
-                "kp": round(clamp(self.kp, 1.8, 3.2), 3)}
+        return {"ff_gain": round(clamp(self.ff_gain, FF_MIN, FF_MAX), 2),
+                "kp": round(clamp(self.kp, KP_MIN, KP_MAX), 3)}
 
     def load_parameters(self, values: dict) -> None:
         if not isinstance(values, dict):
@@ -243,7 +254,7 @@ class AdaptivePolicy:
         try:
             v1, v2 = float(values["ff_gain"]), float(values["kp"])
             if isfinite(v1) and isfinite(v2):
-                self.ff_gain = clamp(v1, 25, 55)
-                self.kp = clamp(v2, 1.8, 3.2)
+                self.ff_gain = clamp(v1, FF_MIN, FF_MAX)
+                self.kp = clamp(v2, KP_MIN, KP_MAX)
         except (ValueError, TypeError, KeyError):
             pass

@@ -241,19 +241,19 @@ def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
             break
     assert fan._cool_since is not None
     assert fan._floor == 100
-    for _ in range(19):
+    for _ in range(9):
         clock[0] += 3
         fan.tick()
-    assert fan._floor == 100  # 57 seconds of observed cooldown: still held
-    # After the 60 s hold the floor ramps continuously at 10%/min:
-    # 0.5% per 3 s poll, never a 5% step.
+    assert fan._floor == 100  # 27 seconds of observed cooldown: still held
+    # After the 30 s hold the floor ramps continuously at 30%/min:
+    # 1.5% per 3 s poll, never a 5% step.
     seen = []
     for _ in range(20):
         clock[0] += 3
         fan.tick()
         seen.append(fan._floor)
-    assert seen[-1] == 90  # 60 s of ramp at 10%/min
-    assert all(a - b <= 1 for a, b in zip([100] + seen, seen))
+    assert seen[-1] == 70  # 60 s of ramp at 30%/min
+    assert all(a - b <= 2 for a, b in zip([100] + seen, seen))
 
     # LLM begins another burst: increase instantly, even inside write cooldown.
     (hwmon / "temp3_input").write_text("84000")
@@ -421,8 +421,8 @@ def test_recommended_presets_safe_and_consistent():
         assert 1 <= preset["cool_rate_percent_per_min"] <= 60
         assert preset["zero_stable_seconds"] >= 600
         assert preset["learning_enabled"] is True
-        assert 25 <= preset["ff_gain"] <= 55
-        assert 1.8 <= preset["kp"] <= 3.2
+        assert 0 <= preset["ff_gain"] <= 55
+        assert 0.5 <= preset["kp"] <= 3.2
     assert builtins["recommended"]["min_percent"] == default.min_percent
     assert builtins["recommended"]["cool_hold_seconds"] == default.cool_hold_seconds
 
@@ -437,14 +437,15 @@ def test_user_tuning_bounds_and_legacy_settings_migration():
         "min_percent": 35, "allow_zero_rpm": False, "targets_c": {"temp3": 85},
     })
     assert legacy.preset_id == "recommended"
-    assert legacy.cool_hold_seconds == 60
+    assert legacy.cool_hold_seconds == 30
     assert legacy.learning_enabled is True
     for patch in (
         {"cool_hold_seconds": 29},
         {"cool_rate_percent_per_min": 0.5},
         {"cool_rate_percent_per_min": 61},
         {"zero_stable_seconds": 599},
-        {"ff_gain": 24.9},
+        {"ff_gain": -0.1},
+        {"kp": 0.49},
         {"kp": 3.21},
         {"ki": 0.031},
         {"preset_id": "unsafe"},

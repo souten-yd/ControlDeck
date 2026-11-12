@@ -72,11 +72,11 @@ def test_integrator_clamps_and_adaptive_gains_remain_in_safe_bounds():
         result = step(p, sensors(edge=90, hotspot=105, memory=95),
                       now=1000 + idx * 5, power=280)
     assert all(0 <= v <= 30 for v in p.integral.values())
-    assert 25 <= p.ff_gain <= 55
-    assert 1.8 <= p.kp <= 3.2
+    assert 0 <= p.ff_gain <= 55
+    assert 0.5 <= p.kp <= 3.2
     assert result["floor_percent"] == 100
     p.load_parameters({"ff_gain": 999, "kp": -999})
-    assert p.learned_parameters() == {"ff_gain": 55, "kp": 1.8}
+    assert p.learned_parameters() == {"ff_gain": 55, "kp": 0.5}
 
 
 def test_suspend_resets_low_power_qualification_not_just_monotonic_clock():
@@ -125,3 +125,15 @@ def test_zero_stop_dwell_cannot_shorten_below_ten_minutes():
         max_percent=100, now=2200, dt=5, allow_stop=True,
         stop_dwell_seconds=1200,
     )["zero_stop_eligible"]
+
+
+
+def test_llm_burst_far_from_target_stays_gentle():
+    """実機R9700: hotspotが36→64°C（目標90°C）、239Wの約20秒の負荷で85%まで上がった。"""
+    p = AdaptivePolicy()
+    for i, hot in enumerate((36, 45, 55, 61, 64, 64)):
+        result = p.update(
+            sensors(edge=40, hotspot=hot, memory=44), power_w=239, power_cap_w=210,
+            min_percent=20, max_percent=100, now=1000 + 3 * i, dt=3,
+        )
+    assert result["floor_percent"] <= 45

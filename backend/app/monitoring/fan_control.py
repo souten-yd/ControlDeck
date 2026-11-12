@@ -31,8 +31,8 @@ SENSOR_RE = re.compile(r"^temp[1-9][0-9]*$")
 STATE_FILE = "amd-fan-control.json"
 INTERVAL = 3.0
 # Bursty LLM workloads must not turn into fan-speed oscillations.
-COOL_HOLD_SECONDS = 60.0
-COOL_RATE_PERCENT_PER_MIN = 10.0
+COOL_HOLD_SECONDS = 30.0
+COOL_RATE_PERCENT_PER_MIN = 30.0
 # Decreasing curve writes are rate limited; increases are written at once.
 RAMP_WRITE_SECONDS = 5.0
 ZERO_STABLE_SECONDS = 600.0
@@ -54,12 +54,12 @@ class FanSettings(BaseModel):
     allow_zero_rpm: bool = False
     preset_id: Literal["recommended", "quiet", "cooling", "custom"] = "recommended"
     # After cooling starts, hold this long, then ramp down continuously.
-    cool_hold_seconds: int = Field(default=60, ge=30, le=600)
-    cool_rate_percent_per_min: float = Field(default=10.0, ge=1.0, le=60.0, allow_inf_nan=False)
+    cool_hold_seconds: int = Field(default=30, ge=30, le=600)
+    cool_rate_percent_per_min: float = Field(default=30.0, ge=1.0, le=60.0, allow_inf_nan=False)
     zero_stable_seconds: int = Field(default=600, ge=600, le=1800)
     learning_enabled: bool = True
-    ff_gain: float = Field(default=25.0, ge=25.0, le=55.0, allow_inf_nan=False)
-    kp: float = Field(default=1.8, ge=1.8, le=3.2, allow_inf_nan=False)
+    ff_gain: float = Field(default=10.0, ge=0.0, le=55.0, allow_inf_nan=False)
+    kp: float = Field(default=1.0, ge=0.5, le=3.2, allow_inf_nan=False)
     ki: float = Field(default=0.015, ge=0.005, le=0.03, allow_inf_nan=False)
     targets_c: dict[str, int] = Field(default_factory=dict, max_length=16)
     # What to do after the PC boots (PMFW auto is active after every boot):
@@ -126,17 +126,17 @@ _LEARNING_FILE = "amd-fan-learning.json"
 # Sensor goals are resolved per GPU against current critical limits in the UI.
 FAN_PRESETS = (
     {"id": "recommended", "label": "推奨・バランス", "description": "LLM常駐向け。常時低速・昇温時即加速・静かな降速",
-     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 60,
-     "cool_rate_percent_per_min": 10.0, "zero_stable_seconds": 600,
-     "learning_enabled": True, "ff_gain": 25.0, "kp": 1.8, "ki": 0.015, "target_offset_c": 0},
+     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 30,
+     "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "target_offset_c": 0},
     {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",
-     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 180,
-     "cool_rate_percent_per_min": 4.0, "zero_stable_seconds": 900,
-     "learning_enabled": True, "ff_gain": 25.0, "kp": 1.8, "ki": 0.015, "target_offset_c": 0},
+     "min_percent": 30, "allow_zero_rpm": False, "cool_hold_seconds": 120,
+     "cool_rate_percent_per_min": 10.0, "zero_stable_seconds": 900,
+     "learning_enabled": True, "ff_gain": 5.0, "kp": 0.8, "ki": 0.015, "target_offset_c": 0},
     {"id": "cooling", "label": "冷却優先", "description": "最低回転と冷却余裕を増やした保守的設定",
-     "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 180,
-     "cool_rate_percent_per_min": 5.0, "zero_stable_seconds": 900,
-     "learning_enabled": True, "ff_gain": 30.0, "kp": 2.0, "ki": 0.015, "target_offset_c": -5},
+     "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 60,
+     "cool_rate_percent_per_min": 15.0, "zero_stable_seconds": 900,
+     "learning_enabled": True, "ff_gain": 20.0, "kp": 2.0, "ki": 0.015, "target_offset_c": -5},
 )
 
 
@@ -480,6 +480,7 @@ def _rise_rate(sensors: list[dict], now: float) -> float:
 
 
 PREDICT_AHEAD_MINUTES = 0.5
+PREDICT_MAX_HEADROOM_C = 20.0
 
 
 def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
@@ -491,7 +492,9 @@ def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
     headroom = min(s["headroom_c"] for s in sensors)
     if headroom <= 0:
         return maximum
-    if rise_c_per_min > 1.5:
+    # Only when already close to a target. Far from it, the hotspot's jump at
+    # load start plateaus quickly; extrapolating it drove ~85% at 64°C/90°C.
+    if rise_c_per_min > 1.5 and headroom < PREDICT_MAX_HEADROOM_C:
         ahead = headroom - rise_c_per_min * PREDICT_AHEAD_MINUTES
         floor = max(floor, margin_ramp(ahead, minimum, maximum))
     return min(maximum, floor)

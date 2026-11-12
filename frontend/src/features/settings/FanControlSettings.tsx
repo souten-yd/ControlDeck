@@ -417,11 +417,11 @@ export function FanControlSettings() {
                 <input type="checkbox" checked={draft.learning_enabled} aria-label="熱制御の自動学習"
                   onChange={(e) => update({ learning_enabled: e.target.checked })} className="h-5 w-5 shrink-0"/>
               </label>
-              <RangeControl label="電力フィードフォワード係数" min={25} max={55} step={1}
-                value={draft.ff_gain} hint="消費電力の増加をどの程度先読み加速に使うかの開始係数。"
+              <RangeControl label="電力フィードフォワード係数" min={0} max={55} step={1}
+                value={draft.ff_gain} hint="消費電力に応じた上乗せ（最大電力で+この値%）。0で無効。LLMの短い負荷でファンを上げたくない場合は小さく。"
                 onChange={(value) => update({ ff_gain: value })}/>
-              <RangeControl label="温度偏差の比例ゲイン（P）" min={1.8} max={3.2} step={0.05}
-                value={draft.kp} hint="高温に近づいた時の追従性。上限は安全に固定されています。"
+              <RangeControl label="温度偏差の比例ゲイン（P）" min={0.5} max={3.2} step={0.05}
+                value={draft.kp} hint="目標の20°C手前から効く追従の強さ。小さいほど穏やか。余裕が少ないときの安全下限は別に常に効きます。"
                 onChange={(value) => update({ kp: value })}/>
               <RangeControl label="積分ゲイン（I）" min={0.005} max={0.03} step={0.005}
                 value={draft.ki} hint="積分飽和防止（Anti-windup）は常に有効です。"
