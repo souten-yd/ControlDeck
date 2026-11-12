@@ -83,7 +83,7 @@ def test_admission_waits_using_shared_capacity(monkeypatch):
     """ゲートウェイ経由でも await_capacity を通る（直結との差を無くすのが目的）。"""
     import asyncio
 
-    from app.models_mgmt import gateway, llama, lucebox
+    from app.models_mgmt import gateway, llama
 
     seen = {}
 
@@ -95,35 +95,12 @@ def test_admission_waits_using_shared_capacity(monkeypatch):
     monkeypatch.setattr(llama, "list_instances", lambda: [
         {"alias": "local", "role": "llm", "port": 8090, "loaded": True},
     ])
-    monkeypatch.setattr(lucebox, "list_instances", list)
     payload = {"messages": [{"role": "user", "content": "x" * 400}], "max_tokens": 256}
     asyncio.run(gateway._admit("local", 8090, payload))
     assert seen["port"] == 8090
     # プロンプト概算(400/4=100) + 出力上限(256)
     assert seen["needed"] == 356
     assert seen["timeout"] == gateway.CAPACITY_TIMEOUT_SECONDS
-
-
-def test_admission_skips_capacity_wait_for_lucebox(monkeypatch):
-    """Luceboxは共有KVプールを持たない。待つ対象が無いので素通しする。
-
-    ここで llama.cpp と同じ待ちを掛けると、存在しないメトリクスを読みに行って
-    毎回タイムアウト分だけ生成開始が遅れる。
-    """
-    import asyncio
-
-    from app.models_mgmt import gateway, llama, lucebox
-
-    async def _must_not_run(*args, **kwargs):
-        raise AssertionError("Luceboxでllama.cppの容量待ちを呼んではいけない")
-
-    monkeypatch.setattr(llama, "await_capacity", _must_not_run)
-    monkeypatch.setattr(llama, "list_instances", list)
-    monkeypatch.setattr(lucebox, "list_instances", lambda: [
-        {"alias": "luce", "role": "llm", "port": 8216, "loaded": True, "runtime": "lucebox"},
-    ])
-    result = asyncio.run(gateway._admit("luce", 8216, {"messages": [], "max_tokens": 16}))
-    assert result["ok"] is True
 
 
 def test_direct_port_still_works_and_is_resolvable(monkeypatch, tmp_path):

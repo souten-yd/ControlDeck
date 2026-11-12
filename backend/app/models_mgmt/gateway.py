@@ -4,7 +4,7 @@ OpenCode のようにローカルランタイムを直接叩くクライアン�
 KVの受け入れ制御（models_mgmt/llama.py の endpoint_capacity / await_capacity）を
 効かせるための薄いリバースプロキシ。
 
-転送先は llama.cpp と Lucebox の両方。クライアントから見ると1つのアドレスに
+転送先は llama.cpp と Strata の両方。クライアントから見ると1つのアドレスに
 両ランタイムのモデルが並び、モデル名（alias）だけで切り替わる。どちらへ流れても
 GPUリース確保 → オンデマンド起動 → 受け入れ制御、という同じ手順を通る。
 
@@ -118,7 +118,7 @@ def is_gateway_url(url: str) -> bool:
 
 
 def resolve_instance(model: str) -> dict:
-    """モデル名(alias)から転送先インスタンスを決める。llama.cpp / Lucebox を区別しない。
+    """モデル名(alias)から転送先インスタンスを決める。llama.cpp / Strata を区別しない。
 
     AUTO_MODEL・未指定・未登録のときは起動中のLLMを優先し、いなければ登録順（=優先度順）
     の先頭を採る。停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
@@ -131,7 +131,13 @@ def resolve_instance(model: str) -> dict:
         model = ""
     match = next((i for i in instances if str(i.get("alias")) == model), None)
     if match is None:
-        llms = [i for i in instances if str(i.get("role", "llm")) == "llm"]
+        # Never choose a merely registered, never-activated Strata model by
+        # default; it may require a massive first download requiring consent.
+        llms = [
+            i for i in instances
+            if str(i.get("role", "llm")) == "llm"
+            and (i.get("runtime") != "strata" or i.get("activated"))
+        ]
         match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
     if match is None:
         raise HTTPException(status_code=404, detail="転送先のモデルが登録されていません")
@@ -160,8 +166,10 @@ def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
     """
     if not is_gateway_url(base):
         return base, model
-    alias, port = resolve_endpoint(model)
-    return f"http://127.0.0.1:{port}/v1", alias
+    instance = resolve_instance(model)
+    alias, port = str(instance["alias"]), int(instance["port"])
+    upstream_id = "strata" if instance.get("runtime") == "strata" else alias
+    return f"http://127.0.0.1:{port}/v1", upstream_id
 
 
 # クライアント側のtimeoutより長く待たないよう、既定は控えめにする。
@@ -175,31 +183,14 @@ OPENCODE_CLIENT = "opencode"
 
 
 def _greedy_sampling_for(instance: dict, request: Request) -> bool:
-    """このリクエストで temperature を 0 に固定するか。モデル個別設定だけで決める。
-
-    Lucebox の DFlash2 は厳密グリーディ検証のみで temperature>0 では効かないため、
-    速度を出すには temperature=0 が要る。以前はここで「OpenCode が停止中のモデルを
-    起こす場合は個別設定より優先して投機ONにする」規則を持っていたが、実運用で
-    エージェントが同じツール呼び出しを繰り返して止まらなくなった（同じ文脈から
-    決定的に同じ行動が出るため、ループから抜けられない。実測でも毎ターン出力が
-    59トークンで完全一致していた）。エージェント用途では greedy の副作用の方が
-    速度の利得より重いので、クライアントによる上書きはやめた。
-    コーディングは temperature に依存せず投機が効く llama.cpp 側へ寄せる。
-
-    temperature を潰すのは Lucebox の制約への対処であって一般的な高速化策では
-    ないので、llama.cpp のサンプリングには触らない。
-    """
-    from app.models_mgmt import local_llm
-
-    if str(instance.get("runtime") or "") != local_llm.LUCEBOX:
-        return False
-    return local_llm.pins_greedy_sampling(str(instance["alias"]))
+    """Retired speculative-runtime override; preserve normal model sampling."""
+    return False
 
 
 async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
     """KVに空きが出るまで待つ。空くまで待って必ず通す方針。
 
-    共有KVを持たない Lucebox では待つ対象が無いので即座に通る（local_llm 側で判定）。
+    Strataは共有KVプールを公開しないため待たずに通す（local_llm 側で判定）。
     """
     from app.models_mgmt import local_llm
 
@@ -392,13 +383,13 @@ def _upstream_error(alias: str, body: bytes) -> dict:
 async def gateway_models(request: Request):
     """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。
 
-    llama.cpp と Lucebox のモデルが1つの一覧に並ぶ。どちらのランタイムかは
+    llama.cpp と llama.cpp のモデルが1つの一覧に並ぶ。どちらのランタイムかは
     OpenAI 仕様には無い項目なので、互換性を壊さない追加フィールドで示す。
     """
     _authorize(request)
     from app.models_mgmt import local_llm
 
-    llms = local_llm.llm_instances()
+    llms = await asyncio.to_thread(local_llm.llm_instances)
     # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、起動中のモデルへ流れる。
     data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck",
              "runtime": "auto"}] if llms else []
@@ -417,7 +408,7 @@ async def gateway_chat(request: Request):
         payload = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSONボディが不正です") from None
-    instance = resolve_instance(str(payload.get("model") or ""))
+    instance = await asyncio.to_thread(resolve_instance, str(payload.get("model") or ""))
     alias, port = str(instance["alias"]), int(instance["port"])
     # 起動前に方針を決める（ensure_ready の後では「起動していたか」が分からない）。
     greedy_sampling = _greedy_sampling_for(instance, request)
@@ -442,9 +433,8 @@ async def gateway_chat(request: Request):
     except (Exception, asyncio.CancelledError):
         await _release_gateway_lease(adapter, lease_id, renew)
         raise
-    payload["model"] = alias
-    # 外部クライアントは DFlash2 の制約を知らないので、ここで揃える
-    # （内部チャットは provider 側で同じ扱いをする）。
+    payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
+    # Model-level sampling settings are preserved for all remaining runtimes.
     if greedy_sampling:
         payload["temperature"] = 0.0
     target = f"http://127.0.0.1:{port}/v1/chat/completions"

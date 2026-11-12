@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -162,6 +163,9 @@ def test_schedule_rejects_blind_interactive_session_injection(admin_client):
 
 def test_schedule_unit_contains_only_worker_reference_and_absolute_utc_time(tmp_path, monkeypatch):
     monkeypatch.setattr(automation_systemd, "_unit_dir", lambda: tmp_path.resolve())
+    # Verify unit contents without requiring a real installed app venv on CI.
+    monkeypatch.setattr(automation_systemd, "_venv_python",
+                        lambda: tmp_path / ".venv" / "bin" / "python")
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(
         automation_systemd, "_systemctl",
@@ -184,7 +188,15 @@ def test_schedule_unit_contains_only_worker_reference_and_absolute_utc_time(tmp_
     assert calls[-1] == ("is-active", "--quiet", "control-deck-terminal-automation-schedule-42.timer")
 
 
-def test_worker_python_keeps_virtualenv_entrypoint_symlink():
+def test_worker_python_keeps_virtualenv_entrypoint_symlink(tmp_path, monkeypatch):
+    # A real virtualenv commonly exposes its interpreter as a symlink to /usr/bin.
+    # This test verifies that the returned entrypoint retains the venv path.
+    bin_dir = tmp_path / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(sys.executable)
+    monkeypatch.setattr(automation_systemd, "REPO_ROOT", tmp_path.resolve())
     python = automation_systemd._venv_python()
+    assert python == bin_dir / "python"
+    assert python.is_symlink()
     assert str(python).endswith("/.venv/bin/python")
     assert not str(python).startswith("/usr/bin/")

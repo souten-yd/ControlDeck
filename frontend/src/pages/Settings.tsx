@@ -161,6 +161,7 @@ export default function SettingsPage() {
 
       {can("settings.manage") && <TerminalV2PhysicalCheckSection />}
 
+      {can("settings.manage") && <ControlDeckUpdateSection />}
       {can("settings.manage") && <AddonsSection />}
       {can("settings.manage") && <ExtensionsSection />}
       {can("settings.manage") && <RecommendedSkills />}
@@ -372,6 +373,82 @@ function AuditSection() {
 }
 
 
+
+interface ControlDeckUpdateStatus {
+  channel: "main";
+  current_sha: string;
+  remote_sha: string;
+  update_available: boolean;
+  can_update: boolean;
+  error: string;
+  job?: { phase?: string; step?: string; error?: string; old_sha?: string; new_sha?: string };
+}
+
+/** Only explicit administrator interaction can schedule a platform update. */
+function ControlDeckUpdateSection() {
+  const show = useToasts((state) => state.show);
+  const qc = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const { data, isFetching, refetch } = useQuery({
+    queryKey: ["control-deck-update"],
+    queryFn: () => api<ControlDeckUpdateStatus>("/system/control-deck-update"),
+    refetchInterval: (q) => ["scheduled", "running"].includes(q.state.data?.job?.phase ?? "") ? 10000 : 300000,
+    retry: false,
+  });
+  const apply = async () => {
+    if (!data?.remote_sha || starting) return;
+    setStarting(true);
+    setConfirming(false);
+    try {
+      await api("/system/control-deck-update", { method: "POST", json: { expected_sha: data.remote_sha } });
+      show("ControlDeck更新を開始しました。完了時にWebサービスを再起動します。");
+      void qc.invalidateQueries({ queryKey: ["control-deck-update"] });
+    } catch (error) {
+      show(error instanceof Error ? error.message : "ControlDeck更新を開始できませんでした", "error");
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
+      <h2 className="text-sm font-semibold text-zinc-500">ControlDeck 本体の更新</h2>
+      <p className="mt-1 text-xs leading-relaxed text-zinc-400">
+        公式GitHubの正式Releaseへ更新します。未コミット変更がある場合は中止します。
+        更新は手動のみで、依存導入・画面ビルド後にWebサービスを再起動します。
+      </p>
+      <div className="mt-3 space-y-1 text-xs text-zinc-500">
+        <p>現在: <span className="font-mono">{data?.current_sha?.slice(0, 12) || "確認中"}</span></p>
+        <p>正式Release: <span className="font-mono">{data?.remote_sha?.slice(0, 12) || "-"}</span></p>
+        {data?.job?.phase && <p>更新状態: {data.job.phase}{data.job.step ? ` / ${data.job.step}` : ""}</p>}
+        {data?.job?.error && <p className="text-red-600">{data.job.error}</p>}
+        {data?.error && <p className="text-amber-600">{data.error}</p>}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={() => void refetch()} disabled={isFetching}
+          className="min-h-11 rounded-xl border border-zinc-300 px-4 text-xs font-medium disabled:opacity-40 dark:border-zinc-700">
+          {isFetching ? "確認中…" : "更新を確認"}
+        </button>
+        <button type="button" onClick={() => setConfirming(true)}
+          disabled={!data?.can_update || !data?.update_available || starting ||
+            ["scheduled", "running"].includes(data?.job?.phase ?? "")}
+          className="min-h-11 rounded-xl bg-accent-600 px-4 text-xs font-semibold text-white disabled:opacity-40">
+          {starting ? "開始中…" : data?.update_available ? "本体を更新" : "最新版"}
+        </button>
+      </div>
+      {confirming && <ConfirmDialog
+        title="ControlDeck本体を更新しますか？"
+        message={`公式Release（${data?.remote_sha?.slice(0, 12) || "不明"}）へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
+        confirmLabel="更新して再起動"
+        busy={starting}
+        onConfirm={() => void apply()}
+        onClose={() => setConfirming(false)}
+      />}
+    </section>
+  );
+}
+
 interface AddonState {
   id: string; name: string; summary: string;
   kind: "npm" | "pip" | "release-bundle" | "gpu-runtime"; route_gated: boolean;
@@ -387,7 +464,7 @@ interface AddonState {
 }
 
 interface GpuRuntimeDetail {
-  runtime: "llama.cpp" | "lucebox";
+  runtime: "llama.cpp" | "strata";
   warning?: string;
   /** llama.cpp */
   active_backend?: string;
@@ -396,14 +473,9 @@ interface GpuRuntimeDetail {
   backend_labels?: Record<string, string>;
   rocm_series_major?: number;
   host_rocm_version?: string;
-  /** Lucebox */
-  track?: string;
-  track_label?: string;
-  tracks?: Array<{ id: string; label: string; rocm_major: number; summary: string }>;
-  recommended_track?: string;
-  default_track?: string;
-  upstream?: string;
-  gpu?: { available: boolean; gfx: string; reason: string; rocm_version: string };
+  /** Strata Terminal (managed user-local installation). */
+  cli_path?: string;
+  models_dir?: string;
 }
 
 interface ReleaseStatus {
@@ -580,11 +652,9 @@ function ExtensionsSection() {
 }
 
 /** GPUランタイムの構成表示。何が入っていて、ホスト環境と噛み合っているかを1か所で見せる。 */
-function GpuRuntimeDetails({ addon, release, track, onTrackChange }: {
+function GpuRuntimeDetails({ addon, release }: {
   addon: AddonState;
   release: ReleaseStatus | null;
-  track: string;
-  onTrackChange: (value: string) => void;
 }) {
   const detail = addon.runtime;
   if (!detail) return null;
@@ -608,9 +678,8 @@ function GpuRuntimeDetails({ addon, release, track, onTrackChange }: {
           </>
         ) : (
           <>
-            <span className={chip}>{detail.track_label ?? detail.track}</span>
-            {detail.gpu?.gfx && <span className={chip}>{detail.gpu.gfx}</span>}
-            {detail.upstream && <span className={`${chip} num`}>upstream {detail.upstream.slice(0, 8)}</span>}
+            <span className={chip}>Terminal</span>
+            {detail.cli_path && <span className={chip}>{detail.cli_path}</span>}
           </>
         )}
         {release?.update_available && (
@@ -619,21 +688,6 @@ function GpuRuntimeDetails({ addon, release, track, onTrackChange }: {
           </span>
         )}
       </div>
-      {/* 導入前だけトラックを選ばせる。既定は ROCm 10。 */}
-      {detail.runtime === "lucebox" && !addon.installed && (detail.tracks ?? []).length > 1 && (
-        <label className="flex items-center gap-2 text-[11px] text-zinc-500">
-          ROCmトラック
-          <select value={track} onChange={(event) => onTrackChange(event.target.value)}
-            className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-[11px] dark:border-zinc-700 dark:bg-zinc-900">
-            {(detail.tracks ?? []).map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}{item.id === detail.default_track ? "（既定）" : ""}
-                {item.id === detail.recommended_track && item.id !== detail.default_track ? "（このPC向け）" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
       {detail.warning && (
         <p className="rounded-lg border border-amber-200 bg-amber-50/60 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
           {detail.warning}
@@ -658,8 +712,6 @@ function AddonsSection() {
     refetchInterval: jobId ? false : 15_000,
   });
   const { data: releases } = useReleaseStatus(addons);
-  // Luceboxの初期トラック。ROCm 10 を既定にし、ホストが7系なら退避先も選べるようにする。
-  const [luceboxTrack, setLuceboxTrack] = useState<string>("rocm10");
   const { data: job } = useQuery({
     queryKey: ["feature-job", jobId],
     queryFn: () => api<{
@@ -717,9 +769,7 @@ function AddonsSection() {
 
   const install = async (addon: AddonState) => {
     try {
-      // Luceboxだけ、どのROCmトラックを入れるかを選べる。他は選択肢を送らない。
-      const json = addon.id === "lucebox" ? { track: luceboxTrack } : {};
-      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json });
+      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: {} });
       setJobKind("install");
       setJobId(r.job_id);
     } catch (e) {
@@ -775,8 +825,7 @@ function AddonsSection() {
                 </p>
                 {addon.preview && <p className="mt-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">PREVIEW — release署名またはcatalog digest固定前</p>}
                 {addon.kind === "gpu-runtime" && (
-                  <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null}
-                    track={luceboxTrack} onTrackChange={setLuceboxTrack} />
+                  <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />
                 )}
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">

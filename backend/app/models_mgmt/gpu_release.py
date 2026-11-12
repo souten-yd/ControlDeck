@@ -1,8 +1,6 @@
 """GitHub リリースで配布される GPU ランタイム資材の取得・検証・展開。
 
-llama.cpp（souten-yd/llama-builder）と Lucebox（souten-yd/AMDLucebox）は
-どちらも「タグ付きリリースの tar アーカイブ + SHA256SUMS」という同じ形で
-配布される。取得・整合性検証・安全な展開はランタイム非依存なのでここへ集約し、
+llama.cpp（souten-yd/llama-builder）用の「タグ付きリリースの tar アーカイブ + SHA256SUMS」を扱う。取得・整合性検証・安全な展開はランタイム非依存なのでここへ集約し、
 ランタイム固有の判断（どの asset を選ぶか、展開後に何を current にするか）だけを
 呼び出し側へ残す。
 

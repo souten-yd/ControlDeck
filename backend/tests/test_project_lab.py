@@ -652,9 +652,11 @@ def test_project_delete_removes_the_folder_and_stays_inside_codedev(admin_client
     for escape in ("%2e%2e", ".hidden"):
         assert admin_client.delete(
             f"/api/v1/project-lab/projects/{escape}", headers=CSRF_HEADERS).status_code == 404
-    # 区切りを含む名前は route に一致せず、handler へ届かない。
+    # 区切りを含む名前は project の削除対象にならない。Starlette の
+    # デコード/ルーティング順序によって 404 または 405 になる。
     assert admin_client.delete(
-        "/api/v1/project-lab/projects/%2e%2e%2fother", headers=CSRF_HEADERS).status_code == 405
+        "/api/v1/project-lab/projects/%2e%2e%2fother", headers=CSRF_HEADERS).status_code in (404, 405)
+    assert (outside / "keep" / "data.txt").exists()
 
     removed = admin_client.delete("/api/v1/project-lab/projects/demo", headers=CSRF_HEADERS)
     assert removed.status_code == 200

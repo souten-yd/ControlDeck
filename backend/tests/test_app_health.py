@@ -1,6 +1,7 @@
 import socket
 import subprocess
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -134,7 +135,9 @@ def test_allowed_command_health_uses_fixed_systemd_unit_and_hides_output(monkeyp
     assert "--user" in argv and "--wait" in argv and "--collect" in argv
     assert "--property=StandardOutput=null" in argv
     assert "--property=StandardError=null" in argv
-    assert argv[-2:] == ["/usr/bin/true", "--fixed"]
+    # The runtime resolves the fixed allowlisted executable before invoking it.
+    # On GitHub runners /usr/bin/true may resolve to /usr/bin/gnutrue.
+    assert argv[-2:] == [str(Path("/usr/bin/true").resolve(strict=True)), "--fixed"]
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert "shell" not in kwargs
 

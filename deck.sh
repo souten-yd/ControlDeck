@@ -17,6 +17,7 @@
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
+#   ./deck.sh update-prepare    明示的なControlDeck本体更新の依存導入・UIビルド（内部用）
 #   ./deck.sh feature <status|install|update|enable|disable|uninstall> [feature-id]
 #                                オプション機能を明示的に管理（通常起動では自動導入しない）
 #   ./deck.sh plugin <list|validate|install|enable|disable|uninstall> [manifest|ID]
@@ -657,6 +658,20 @@ cmd_searxng() {
   exec bash "$REPO_ROOT/scripts/setup-searxng.sh" "$@"
 }
 
+# Only called from an explicitly requested ControlDeck updater worker.
+# Installing dependencies and rebuilding here is intentional; never from server startup.
+cmd_update_prepare() {
+  check_root
+  check_python
+  ensure_venv
+  ensure_config
+  if ! command -v npm >/dev/null; then
+    die "更新のためにnpmが必要です"
+  fi
+  (cd "$REPO_ROOT/frontend" && npm ci --silent --no-fund --no-audit)
+  (cd "$REPO_ROOT/frontend" && npm run build --silent)
+}
+
 cmd_feature() {
   [ $# -ge 1 ] || die "使用方法: ./deck.sh feature <status|install|update|enable|disable|uninstall> [feature-id]"
   local action="$1"
@@ -718,6 +733,7 @@ case "${1:-start}" in
   test)    shift; cmd_test "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;
   feature) shift; cmd_feature "$@" ;;
+  update-prepare) shift; cmd_update_prepare "$@" ;;
   plugin)  shift; cmd_plugin "$@" ;;
   ext)     shift; cmd_ext "$@" ;;
   -h|--help|help)

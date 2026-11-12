@@ -25,13 +25,12 @@ class FeatureJobRequest(BaseModel):
     """Feature selection is path/catalog bound; callers cannot supply a source.
 
     GPUランタイムだけは「どの構成を入れるか」の選択肢があるため、カタログ側で
-    定義済みの識別子（track / backend）に限って受け付ける。任意のURLやパスは
+    定義済みの識別子（backend）に限って受け付ける。任意のURLやパスは
     受け取らない。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    track: Literal["rocm10", "rocm7"] | None = None
     backends: list[Literal["rocm", "vulkan"]] | None = None
 
 
@@ -52,7 +51,7 @@ async def install_job(
     kind = registry.FEATURES[feature_id]["kind"]
     if kind == "gpu-runtime" and body.backends is not None and not body.backends:
         raise HTTPException(status_code=422, detail="導入するバックエンドを1つ以上指定してください")
-    options = {k: v for k, v in {"track": body.track, "backends": body.backends}.items() if v is not None}
+    options = {"backends": body.backends} if body.backends is not None else {}
 
     async def run(job: jobs.Job) -> dict:
         if kind == "gpu-runtime":

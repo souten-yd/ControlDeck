@@ -356,7 +356,7 @@ def test_local_only_is_strict_boolean(runtime_ai_api, value):
 @pytest.mark.parametrize("endpoint", ["complete", "stream"])
 def test_local_only_revalidates_after_host_admission(runtime_ai_api, monkeypatch, tmp_path, changed_after_admission, endpoint):
     from app.addon_runtime import ai
-    from app.models_mgmt import llama, gateway
+    from app.models_mgmt import llama, local_llm, gateway
     from app.models_mgmt.runtime_provider import RuntimeChunk
     client, headers, provider = runtime_ai_api
     model = tmp_path / "local.gguf"; model.write_bytes(b"synthetic model")
@@ -376,7 +376,7 @@ def test_local_only_revalidates_after_host_admission(runtime_ai_api, monkeypatch
     provider.stream_chat = stream
     monkeypatch.setattr(gateway, "_acquire_gateway_lease", acquire)
     monkeypatch.setattr(gateway, "_release_gateway_lease", release)
-    monkeypatch.setattr(llama, "ensure_ready", ready)
+    monkeypatch.setattr(local_llm, "ensure_ready", ready)
     response = client.post(f"/api/v1/addon-runtime/fake-addon/ai/{endpoint}", headers=headers,
         json={"capability": "text.generate", "local_only": True,
               "messages": [{"role": "user", "content": "private"}]})
@@ -411,7 +411,7 @@ def test_local_target_requires_managed_matching_loopback_and_existing_gguf(monke
 @pytest.mark.parametrize('drift', ['none', 'before', 'after'])
 def test_opt_in_provenance_requires_verified_continuity(runtime_ai_api, monkeypatch, endpoint, drift):
     from app.addon_runtime import ai
-    from app.models_mgmt import gateway, llama
+    from app.models_mgmt import gateway, llama, local_llm
     from app.models_mgmt.ai_gateway import AITargetUnavailable
     from app.models_mgmt.runtime_provider import RuntimeChunk
     client, headers, provider = runtime_ai_api
@@ -436,7 +436,7 @@ def test_opt_in_provenance_requires_verified_continuity(runtime_ai_api, monkeypa
         yield RuntimeChunk('content', content='synthetic answer')
     monkeypatch.setattr(gateway, '_acquire_gateway_lease', acquire)
     monkeypatch.setattr(gateway, '_release_gateway_lease', release)
-    monkeypatch.setattr(llama, 'ensure_ready', lambda *a, **kw: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(local_llm, 'ensure_ready', lambda *a, **kw: asyncio.sleep(0, result=True))
     provider.stream_chat = stream
     response = client.post(f'/api/v1/addon-runtime/fake-addon/ai/{endpoint}', headers=headers,
         json={'capability': 'text.generate', 'local_only': True, 'require_provenance': True,
@@ -472,7 +472,7 @@ def test_provenance_is_strict_opt_in_local_only(runtime_ai_api, body):
 
 def test_provenance_stream_cancellation_releases_without_attesting(runtime_ai_api, monkeypatch):
     from app.addon_runtime import ai
-    from app.models_mgmt import gateway, llama
+    from app.models_mgmt import gateway, llama, local_llm
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeChunk
     _, _, provider = runtime_ai_api
     captures, releases = [], []
@@ -486,7 +486,7 @@ def test_provenance_stream_cancellation_releases_without_attesting(runtime_ai_ap
         await asyncio.sleep(300)
     monkeypatch.setattr(gateway, '_acquire_gateway_lease', acquire)
     monkeypatch.setattr(gateway, '_release_gateway_lease', release)
-    monkeypatch.setattr(llama, 'ensure_ready', lambda *a, **kw: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(local_llm, 'ensure_ready', lambda *a, **kw: asyncio.sleep(0, result=True))
     provider.stream_chat = stream
     async def run():
         target = AITarget('http://127.0.0.1:18080/v1', 'private-alias', True)
