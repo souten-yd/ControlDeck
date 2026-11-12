@@ -38,15 +38,19 @@ type FanStatus = {
     bdf: string;
     sensors: Sensor[];
     fan_rpm: number | null;
-    floor_percent: number;
+    floor_percent: number | null;
     rise_c_per_min: number;
     zero_rpm_permitted: boolean;
+    power_ema_w?: number | null;
+    min_predicted_headroom_c?: number;
+    learning?: { ff_gain: number; kp: number; ki: number; observations: number };
     critical_sensor: string;
     observed_at: number;
     curve: string | null;
   } | null;
   poll_interval_seconds: number;
   zero_stable_seconds: number;
+  learned_parameters?: { ff_gain: number; kp: number };
   cool_hold_seconds: number;
   warning: string;
 };
@@ -103,16 +107,17 @@ export function FanControlSettings() {
       {data && draft && (
         <div className="mt-4 space-y-4">
           <div className="rounded-xl bg-zinc-100 p-3 text-xs dark:bg-zinc-800" role="status" aria-live="polite">
-            状態: <strong>{data.state === "controlling" ? "温度制御中" : data.state === "fault" ? "制御停止（異常）" : "標準自動制御"}</strong>
+            状態: <strong>{data.state === "controlling" ? "温度制御中" : data.state === "fan-stop" ? "Zero RPM許可中（PMFW自動制御）" : data.state === "fault" ? "制御停止（異常）" : "標準自動制御"}</strong>
             {data.active && (
               <span className="ml-3 tabular-nums">
                 ファン {data.active.fan_rpm === null ? "N/A" : data.active.fan_rpm + " RPM"}・
-                指令下限 {data.active.floor_percent}%・
+                指令下限 {data.active.floor_percent === null ? "PMFWに委任" : data.active.floor_percent + "%"}・
                 優先センサー {data.active.critical_sensor}・
                 上昇傾向 {data.active.rise_c_per_min.toFixed(1)}°C/分
                 {data.active.zero_rpm_permitted && "・ファン停止許可中"}
               </span>
             )}
+            {data.active?.learning && <p className="mt-2 text-xs tabular-nums text-zinc-500">学習係数 FF {data.active.learning.ff_gain.toFixed(1)} / P {data.active.learning.kp.toFixed(2)} ・ 推定電力 {data.active.power_ema_w === null || data.active.power_ema_w === undefined ? "N/A" : data.active.power_ema_w + "W"}（過熱時は学習値より安全制御を優先）</p>}
             {data.error && <p role="alert" className="mt-2 text-red-600">{data.error}</p>}
           </div>
           <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
@@ -181,7 +186,7 @@ export function FanControlSettings() {
             <span>
               <span className="block">低温安定時のファン停止を許可（Zero RPM）</span>
               <span className="block text-xs text-zinc-500">
-                初期OFF。全センサーが低温・温度安定を5分間継続した場合のみ、AMDファームウェアの停止機能を許可します。
+                初期OFF。全センサーが低温・低電力・温度安定を10分間継続した場合のみ、AMDファームウェアの停止機能を許可します。
                 上昇時は即座に解除します。
               </span>
               {selected && !selected.zero_rpm_supported && (
