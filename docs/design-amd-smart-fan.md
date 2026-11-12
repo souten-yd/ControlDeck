@@ -6,8 +6,8 @@ Status: Draft PR / R9700実機未検証
 
 ControlDeckの Settings > ファンコントロール から、外部ファン制御ツールなしにLinuxのamdgpu標準sysfsでGPUファンを制御する。対象はGPU本体（edge）・junction/hotspot・VRAM/memoryなど、選択GPUのhwmonで実際に公開される温度センサー。CPU・ケース・システムRAMのファンは制御対象外。
 
-- AMD PMFWがファンカーブをハードウェア上で継続実行。ControlDeckは5秒ごとにセンサー別の目標温度までのheadroomを比較し、余裕が最小のセンサーを優先してカーブの最低PWMを補正する。
-- 加速は即時、減速は5ポイント/周期以内。低温でも35%以上の最低PWM、hotspot高温ではファームウェア上で最大PWMとなるカーブを設定。ソフトウェア停止時も最後のカーブはPMFWに残る。
+- AMD PMFWがファンカーブをハードウェア上で継続実行。ControlDeckは3秒ごとにセンサー別の目標温度までのheadroomを比較し、余裕が最小のセンサーを優先してカーブの最低PWMを補正する。
+- 加速は即時、減速は180秒保持後、45秒あたり最大5ポイント。低温でも35%以上の最低PWM、hotspot高温ではファームウェア上で最大PWMとなるカーブを設定。ソフトウェア停止時も最後のカーブはPMFWに残る。
 - 固定権限helper以外にroot処理を置かず、入力は有効なPCI BDF、5点カーブと数値のみ。任意パス・任意シェル実行・外部プログラムのインストールは不要。
 - 初期状態はOFF。有効化済み設定はControlDeckデータディレクトリにmode 0600で原子的に保存し、再起動後のバックエンドが再適用。正常終了と明示OFFではファームウェアautoへ復帰（r→c）。
 - ハードウェアが公開するtempN_crit / tempN_emergencyより最低5℃/10℃低い目標を強制。温度センサー消失、書込失敗、60℃以上・指令70%以上でRPMゼロが2回連続の場合はautoへ復帰を試み、制御を無効化し、エラーを表示する。
@@ -30,9 +30,9 @@ PUT /api/v1/system/fan-control: settings.manage権限 + CSRF + auditで設定変
 
 ## 開発用テスト（実施前）
 
-backend/tests/test_fan_control.py でGPU hwmon/OD_RANGEの模擬、危険曲線の拒否、メモリの温度優先、欠損温度、RPM=0、OFF時リセットとパス検証を確認する。
+backend/tests/test_fan_control.py / test_fan_strategy.py でGPU hwmon/OD_RANGEの模擬、危険曲線の拒否、メモリの温度優先、欠損温度、RPM=0、OFF時リセットとパス検証を確認する。
 
-cd backend && ../.venv/bin/python -m pytest tests/test_fan_control.py tests/test_amd_gpu_profiles.py -q
+cd backend && ../.venv/bin/python -m pytest tests/test_fan_control.py tests/test_fan_strategy.py tests/test_amd_gpu_profiles.py -q
 cd backend && ../.venv/bin/python -m pytest -q
 cd frontend && npm run build
 
@@ -51,20 +51,29 @@ Settingsで「標準自動制御に戻す」をクリックし、温度/RPMを�
 
 参考: https://www.kernel.org/doc/html/latest/gpu/amdgpu/thermal.html
 
-## 追加仕様: LLMバースト負荷に対する静音性とZero RPM (2026-11-12)
+## LLM断続負荷・適応フィードフォワード/PI制御
 
-- LLMの使用率が0%/100%を往復してもGPU使用率はファン制御入力に使用せず、全温度センサーと約15秒以上の温度上昇傾向のみを使う。3秒周期で監視する。
-- 上昇方向は待たない。headroomの厳しいセンサー、または上昇勾配から目標到達まで1/2/4分を切る予測時は、カーブ下限を即時引き上げる。従来の10秒sysfs書込制限を**加速時のみ**解除する。
-- 低下方向は冷却余裕が戻った状態が連続180秒続くまで回転を保持する。以後も45秒につき最大5%しか減速せず、温度上昇した場合は降下待ちを破棄する。
-- 通常は最低35%指令（設定30〜70%）を継続。静音停止は独立した **allow_zero_rpm: false** の明示ON/OFF設定。設定がOFFならPMFWのnative Zero RPM許可を解除し、ファンは最低指令に沿って常時回転する意図。ただし実際のRPMはハードウェア/SMU動作によるため実機確認が必要。
-- Zero RPMはAMD標準の `fan_zero_rpm_enable` と `fan_zero_rpm_stop_temperature` が両方あり、STOP_TEMPのOD_RANGEに40°Cが含まれる場合のみ有効化可能。PWMを0%に強制しない。GPUにハードウェアの安全停止温度40°Cを設定してから許可する。ファームウェアが温度上昇時に独立して起動できることが必要。
-- 温度停止許可を与える前に、全温度が余裕25°C以上あり、VRAM≤50°C、hotspot≤45°C、edge≤42°C（名称不明センサーは≤42°C）、20秒程度の観測で上昇が0.5°C/分以下の状態を**5分間**確認する。過去の危険温度からの冷却直後やLLM短時間のアイドルではZero RPMにならない。
-- 停止許可後は、最悪センサーのheadroomが20°C未満、VRAM≥55°C、hotspot≥49°C、edge≥46°C、または20秒程度の上昇勾配が1°C/分以上で、ControlDeck側の停止許可を即解除。PMFW自身の40°C停止温度が独立した上限になる。
-- Zero RPMが有効な間のRPM=0は故障とみなさない。許可を解除しても高温・指令≥70%の状態で2サイクルRPM=0なら既存の故障処理へ移行。native制御インターフェースがない/不正な範囲ならZero RPM設定欄は無効。
-- アプリ強制終了時は各センサーへのソフトウェア側監視が失われる。この場合にも温度上昇を監視するPMFW native Zero RPMの停止温度(40°C)と、最大PWMへ達する基本ファンカーブが重要な安全策。ユーザー設定値以下の保証はできない。
+ControlDeckはGPU使用率の瞬間0%/100%をファン速度の直接入力に**使わない**。3秒間隔でGPU hwmonが公開するedge/hotspot/VRAM等の全温度センサー、power1_average/power1_input（µW）、power1_capを読み、以下の制御を行う。
 
-## 追加の検証
-1. VRAM負荷100%→0%を1分周期で繰り返すLLMワークロードを使い、180秒の保持と45秒/5%ずつの減速、先行温度上昇時の即時加速を測る。
-2. native Zero RPM未対応GPUではUIが無効になること、対応GPUでは5分低温安定後にのみ許可されること、温度急上昇で即解除されることを検証。
-3. Zero RPM許可は実機側PMFW挙動に依存するため、実際にRPM=0になった時にHotspot・VRAMの温度と再始動を必ず検証。実際にファンが再始動しない場合は機能OFFに戻す。
-4. 既存のfan_curve/AMD電力・クロックの併用時に、native Zero RPMコマンドがファンカーブの適用を意図せず解除しないか確認。必要なら状態の再照会/再適用試験を追加。
+1. **独立安全監督**：センサーごとの目標までの最小余裕（headroom）と温度上昇速度から保守的な最低ファン指令を求める。危険温度では最大ファン速度を優先し、学習値で弱められない。
+2. **温度フィードバック**：正の温度変化率を20秒先まで外挿。先読みした温度誤差に対するPI補償を行う。積分器は0〜30に制限し、100%飽和時に積分を止める/減らす（anti-windup）。低温域では積分を解消する。
+3. **消費電力フィードフォワード**：瞬間GPU使用率ではなく、消費電力を上昇20秒/減少120秒の非対称EWMAで平滑化。GPUの電力上限に対する相対負荷から予測加速量を生成する。電力センサー取得失敗時は温度のみで安全制御を継続し、Zero RPM停止許可は禁止する。
+4. **受動オンライン学習**：通常運転から温度の逼迫と温度上昇傾向を観測してFF係数（25〜55）、P係数（1.8〜3.2）を遅い速度で調整する。PI積分項は実行時だけ保持し、係数のみ30分以上の間隔でローカルJSONに保存。意図的な100%負荷実験・ファン探索・発熱増加を行わない。学習係数による最適性の数学的保証はない。
+5. **非対称の速度制御**：温度上昇方向は即時反映（10秒書込抑制も免除）。下降方向は180秒の維持を経て45秒ごと最大5ポイントだけ減速。LLMのデコード/待機など断続動作でファンを細かく上げ下げしない。低温であっても原則アイドル最低PWM（初期35%）を維持する。
+
+## Zero RPMを許可する任意設定
+
+- 独立した \`allow_zero_rpm: false\` が初期設定。OFF時は定速ではなく、35%以上のファームウェア温度カーブを使い**低速常時回転を意図**する。
+- ON時もファンを直接0%へ書き込まない。gpu_od/fan_ctrl/fan_zero_rpm_enableとfan_zero_rpm_stop_temperatureが実際に存在し、ファームウェアOD_RANGEが安全な設定を許す場合だけ利用する。停止温度はハードウェア範囲内の50〜55°C以下に抑える。RDNA4では最低設定温度が50°Cとなる個体もあり、固定40°Cが有効とは限らない。
+- 入場条件：全温度センサーが目標に対して25°C以上の冷却余裕、edge≤42°C、hotspot≤45°C、VRAM≤50°C、温度上昇0.5°C/分以下、低く平滑化されたGPU消費電力を**連続10分間実測**していること。センサー、消費電力、OD_RANGEが欠落・不正な場合は停止させない。
+- PMFW自動モードへ一度復帰した上でファームウェアの停止許可を有効化する。以後の停止/再始動はPMFWが判断し、ControlDeckの停止許可と実際のRPM=0とは区別してUIへ表示する。ゼロRPM中は手動カーブを書き換えない。
+- 解除条件：温度の逼迫、edge≥46°C、hotspot≥49°C、VRAM≥55°C、一定以上の温度上昇（1°C/分）、平滑GPU消費電力の上昇など。停止解除側に遅延は入れない。新たな停止には再び長い安定時間が必要。
+- 正常終了・明示OFF・故障ではPMFW autoに復帰。Zero RPM停止許可の解除が失敗したときも故障扱いにし、自動復帰を繰り返し試みる。**GPU/ドライバのファームウェアが再始動を保証するかはR9700実機テストが必要**。
+
+## 設計の限界と必須実機試験
+
+- **温度目標以下に必ず維持できるとは限らない**。GPU電力制限/thermal throttling/シャットダウン等のハードウェア保護には介入しない。RPM未取得ならゼロRPM後の再始動確認ができない。R9700のPMFW版によりmanual fan_curveとZero RPMの動作差があり、ユーザーPCの実測が必要。
+- R9700側でUbuntu/kernel、OD_RANGE、全温度/RPM/電力、Zero RPM標準復帰動作、suspend/resume、LLM負荷100↔0%の断続パターン、長時間アイドルでの10分停止判定、停止中のVRAM加熱時の即再始動、センサー断・権限不足を検証する。
+- テストは本体への追加前にローカル集中テスト（test_fan_control.py、test_fan_strategy.py）、全体pytest、Frontend build、iPhone幅320pxを確認する。R9700での実機確認がない場合はDraftを維持し、mainマージ/Releaseを行わない。GitHub CIはローカルの代替にしない。
+
+参考: https://www.kernel.org/doc/html/latest/gpu/amdgpu/thermal.html
