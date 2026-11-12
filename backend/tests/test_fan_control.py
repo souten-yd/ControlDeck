@@ -386,3 +386,98 @@ def test_zero_rpm_requires_reliable_fan_and_power_readings(gpu):
     with pytest.raises(fan.FanControlError, match="電力"):
         fan.configure(enabled)
     assert not calls
+
+
+
+def test_recommended_presets_safe_and_consistent():
+    from app.monitoring.fan_control import FAN_PRESETS, FanSettings
+
+    builtins = {preset["id"]: preset for preset in FAN_PRESETS}
+    assert set(builtins) == {"recommended", "quiet", "cooling"}
+    default = FanSettings()
+    assert default.preset_id == "recommended"
+    assert default.enabled is False
+    assert default.allow_zero_rpm is False
+    for preset in FAN_PRESETS:
+        assert preset["allow_zero_rpm"] is False
+        assert preset["min_percent"] >= 30
+        assert preset["cool_hold_seconds"] >= 180
+        assert preset["cool_step_seconds"] >= 45
+        assert preset["zero_stable_seconds"] >= 600
+        assert preset["learning_enabled"] is True
+        assert 25 <= preset["ff_gain"] <= 55
+        assert 1.8 <= preset["kp"] <= 3.2
+    assert builtins["recommended"]["min_percent"] == default.min_percent
+    assert builtins["recommended"]["cool_hold_seconds"] == default.cool_hold_seconds
+
+
+def test_user_tuning_bounds_and_legacy_settings_migration():
+    from app.monitoring.fan_control import FanSettings
+    from pydantic import ValidationError
+
+    # Persisted pre-PR360 settings should migrate without hardware writes.
+    legacy = FanSettings.model_validate({
+        "enabled": False, "bdf": "0000:03:00.0",
+        "min_percent": 35, "allow_zero_rpm": False, "targets_c": {"temp3": 85},
+    })
+    assert legacy.preset_id == "recommended"
+    assert legacy.cool_hold_seconds == 180
+    assert legacy.learning_enabled is True
+    for patch in (
+        {"cool_hold_seconds": 179},
+        {"cool_step_seconds": 44},
+        {"cool_step_percent": 6},
+        {"zero_stable_seconds": 599},
+        {"ff_gain": 24.9},
+        {"kp": 3.21},
+        {"ki": 0.031},
+        {"preset_id": "unsafe"},
+    ):
+        with pytest.raises(ValidationError):
+            FanSettings.model_validate({**legacy.model_dump(), **patch})
+
+
+def test_graphic_custom_settings_persist_without_enabling_gpu(gpu):
+    fan, _, _, _, calls = gpu
+    edited = fan.FanSettings(
+        enabled=False, bdf="0000:03:00.0", preset_id="custom",
+        min_percent=42, cool_hold_seconds=360, cool_step_seconds=90,
+        cool_step_percent=2, zero_stable_seconds=1200,
+        ff_gain=32.0, kp=2.25, ki=0.02, learning_enabled=False,
+        targets_c={"temp1": 72, "temp2": 85, "temp3": 78},
+    )
+    result = fan.configure(edited)
+    assert result["settings"] == edited.model_dump()
+    assert fan._load() == edited
+    assert result["presets"][0]["id"] == "recommended"
+    assert not calls, "Saving disabled settings must not cause a root helper call"
+
+
+def test_configured_cooldown_parameters_reach_controller(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    changed = fan.FanSettings(
+        enabled=True, bdf="0000:03:00.0",
+        cool_hold_seconds=330, cool_step_seconds=120, cool_step_percent=2,
+        learning_enabled=False, ff_gain=42.0, kp=2.4, ki=0.02,
+        preset_id="custom",
+    )
+    fan.configure(changed)
+    assert fan._policy.ff_gain == 42
+    assert fan._policy.kp == 2.4
+    assert fan._policy.ki == 0.02
+    record = []
+    original = fan._smooth_floor
+
+    def observe(wanted, current, now, **kwargs):
+        record.append(kwargs)
+        return original(wanted, current, now, **kwargs)
+
+    monkeypatch.setattr(fan, "_smooth_floor", observe)
+    for sensor_id, temperature in (("temp1", 35), ("temp2", 40), ("temp3", 40)):
+        (hwmon / f"{sensor_id}_input").write_text(str(temperature * 1000))
+    fan.tick()
+    assert record[-1] == {
+        "hold_seconds": 330,
+        "step_seconds": 120,
+        "step_percent": 2,
+    }
