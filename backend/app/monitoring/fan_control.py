@@ -55,9 +55,9 @@ class FanSettings(BaseModel):
     cool_step_percent: int = Field(default=5, ge=1, le=5)
     zero_stable_seconds: int = Field(default=600, ge=600, le=1800)
     learning_enabled: bool = True
-    ff_gain: float = Field(default=25.0, ge=25.0, le=55.0)
-    kp: float = Field(default=1.8, ge=1.8, le=3.2)
-    ki: float = Field(default=0.015, ge=0.005, le=0.03)  # Opt-in; native PMFW feature required
+    ff_gain: float = Field(default=25.0, ge=25.0, le=55.0, allow_inf_nan=False)
+    kp: float = Field(default=1.8, ge=1.8, le=3.2, allow_inf_nan=False)
+    ki: float = Field(default=0.015, ge=0.005, le=0.03, allow_inf_nan=False)
     targets_c: dict[str, int] = Field(default_factory=dict, max_length=16)
 
     @field_validator("bdf")
@@ -122,6 +122,30 @@ FAN_PRESETS = (
 
 
 
+def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanSettings:
+    """Saved preset label must describe the actual immutable catalog snapshot."""
+    if settings.preset_id == "custom":
+        return settings
+    preset = next((entry for entry in FAN_PRESETS if entry["id"] == settings.preset_id), None)
+    if preset is None:
+        return settings.model_copy(update={"preset_id": "custom"})
+    keys = (
+        "min_percent", "allow_zero_rpm", "cool_hold_seconds",
+        "cool_step_seconds", "cool_step_percent", "zero_stable_seconds",
+        "learning_enabled", "ff_gain", "kp", "ki",
+    )
+    if any(getattr(settings, key) != preset[key] for key in keys):
+        return settings.model_copy(update={"preset_id": "custom"})
+    if device is not None:
+        for sensor in device["sensors"]:
+            expected = max(45, min(sensor["max_target_c"],
+                                    sensor["default_target_c"] + preset["target_offset_c"]))
+            actual = settings.targets_c.get(sensor["id"], sensor["default_target_c"])
+            if actual != expected:
+                return settings.model_copy(update={"preset_id": "custom"})
+    return settings
+
+
 def _setting_path() -> Path:
     return data_dir() / STATE_FILE
 
@@ -129,10 +153,18 @@ def _setting_path() -> Path:
 def _load() -> FanSettings:
     path = _setting_path()
     try:
-        return FanSettings.model_validate_json(path.read_text(encoding="utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"))
+        settings = FanSettings.model_validate(document)
+        # Legacy settings could have custom temperatures without a preset tag.
+        if "preset_id" not in document and (
+            document.get("targets_c") or document.get("min_percent", 35) != 35
+            or document.get("allow_zero_rpm", False)
+        ):
+            return settings.model_copy(update={"preset_id": "custom"})
+        return settings
     except FileNotFoundError:
         return FanSettings()
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
         raise FanControlError(f"ファン設定ファイルが不正です: {exc}") from exc
 
 
@@ -644,6 +676,7 @@ def configure(settings: FanSettings) -> dict:
                 raise FanControlError("自動制御への復帰待ちです。復帰してから再有効化してください")
             device = _select(_devices(), settings.bdf)
             _validate(settings, device)
+            settings = _normalize_preset(settings, device)
             previous_bdf = _active_bdf or prior.bdf
             if prior.enabled and previous_bdf and previous_bdf != device["bdf"]:
                 _helper("reset", previous_bdf)
@@ -662,6 +695,7 @@ def configure(settings: FanSettings) -> dict:
             if _state == "fault":
                 raise FanControlError(_error)
         else:
+            settings = _normalize_preset(settings)
             # A failed prior auto-restore is latched even after enabled=False was
             # persisted; explicit "return to auto" must retry, not clear the latch.
             targets = {item for item in (
@@ -704,7 +738,7 @@ def status() -> dict:
             "control_policy": "adaptive_ff_pi_antiwindup_fast_rise_slow_fall",
             "learned_parameters": _policy.learned_parameters(),
             "presets": list(FAN_PRESETS),
-            "cool_hold_seconds": COOL_HOLD_SECONDS,
+            "cool_hold_seconds": settings.cool_hold_seconds,
             "zero_stable_seconds": settings.zero_stable_seconds,
             "effective_cool_hold_seconds": settings.cool_hold_seconds,
             "effective_cool_step_seconds": settings.cool_step_seconds,
