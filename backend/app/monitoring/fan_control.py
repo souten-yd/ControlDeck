@@ -286,8 +286,91 @@ def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
     return min(maximum, max(minimum, request))
 
 
+def _rise_rate(sensors: list[dict], now: float) -> float:
+    """20-second thermal trend; do not react to GPU utilization spikes."""
+    maximum = 0.0
+    for sensor in sensors:
+        sensor_id = sensor["id"]
+        entries = _temp_history.setdefault(sensor_id, [])
+        if entries and now < entries[-1][0]:
+            entries.clear()
+        entries.append((now, float(sensor["value_c"])))
+        entries[:] = [(t, v) for t, v in entries if now - t <= 45]
+        baseline = [item for item in entries if now - item[0] >= 15]
+        if baseline:
+            old_time, old_value = baseline[-1]
+            rate = (float(sensor["value_c"]) - old_value) * 60 / max(1, now - old_time)
+            maximum = max(maximum, rate)
+    return maximum
+
+
+def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
+                      rise_c_per_min: float) -> int:
+    """Raise early if extrapolated time to a target is small."""
+    floor = _desired_floor(sensors, minimum, maximum)
+    headroom = min(s["headroom_c"] for s in sensors)
+    if headroom <= 0:
+        return maximum
+    if rise_c_per_min > 1.5:
+        minutes_to_target = headroom / rise_c_per_min
+        if minutes_to_target <= 1:
+            floor = maximum
+        elif minutes_to_target <= 2:
+            floor = max(floor, 90)
+        elif minutes_to_target <= 4:
+            floor = max(floor, 75)
+    return min(maximum, floor)
+
+
+def _smooth_floor(wanted: int, current: int, now: float) -> int:
+    """Immediate spin-up, 3-minute hold then 5% steps no faster than 45 s."""
+    global _cool_since, _last_cool_step, _last_boost_at
+    if wanted >= current:
+        _cool_since = None
+        if wanted > current:
+            _last_boost_at = now
+        return wanted
+    if _cool_since is None:
+        _cool_since = now
+        return current
+    if now - _cool_since < COOL_HOLD_SECONDS:
+        return current
+    if now - _last_cool_step < COOL_STEP_SECONDS:
+        return current
+    _last_cool_step = now
+    return max(wanted, current - COOL_STEP_PERCENT)
+
+
+def _stop_entry_safe(sensors: list[dict], rise: float) -> bool:
+    if rise > ZERO_RISE_LIMIT_C_PER_MIN:
+        return False
+    for sensor in sensors:
+        label = sensor["label"].casefold()
+        cap = 50 if any(word in label for word in ("mem", "vram")) else (
+            45 if any(word in label for word in ("junction", "hotspot")) else 42
+        )
+        if sensor["value_c"] > cap or sensor["headroom_c"] < 25:
+            return False
+    return True
+
+
+def _stop_must_end(sensors: list[dict], rise: float) -> bool:
+    # Exit early; hardware's 40C native stop limit remains an independent brake.
+    if rise >= ZERO_START_RISE_C_PER_MIN:
+        return True
+    for sensor in sensors:
+        label = sensor["label"].casefold()
+        cap = 55 if any(word in label for word in ("mem", "vram")) else (
+            49 if any(word in label for word in ("junction", "hotspot")) else 46
+        )
+        if sensor["value_c"] >= cap or sensor["headroom_c"] < 20:
+            return True
+    return False
+
+
 def _failure(exc: Exception, bdf: str | None) -> None:
     global _state, _error, _active_bdf, _last_curve, _sensor_ids, _pending_reset_bdf
+    global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since
     logger.error("GPUファン制御を停止します: %s", exc)
     reset_error = ""
     if bdf:
@@ -305,19 +388,24 @@ def _failure(exc: Exception, bdf: str | None) -> None:
     _state, _error = "fault", str(exc) + reset_error
     _pending_reset_bdf = bdf if reset_error else None
     _active_bdf, _last_curve, _sensor_ids = None, None, set()
+    _zero_active, _zero_initialized_bdf = False, None
+    _zero_stable_since, _temp_history = None, {}
 
 
 def tick() -> None:
     global _active_bdf, _last_curve, _last_write, _floor, _state, _error, _last_sample
     global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry
+    global _zero_active, _zero_initialized_bdf, _zero_stable_since, _temp_history
+    global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step
     with _lock:
         try:
             settings = _load()
         except Exception as exc:  # fail safe even for invalid persisted settings
             _failure(exc, _active_bdf)
             return
-        if _pending_reset_bdf and time.monotonic() - _last_reset_retry >= 10:
-            _last_reset_retry = time.monotonic()
+        now = time.monotonic()
+        if _pending_reset_bdf and now - _last_reset_retry >= 10:
+            _last_reset_retry = now
             try:
                 _helper("reset", _pending_reset_bdf)
                 logger.warning("GPU標準ファン制御への復帰リトライに成功しました")
@@ -335,29 +423,72 @@ def tick() -> None:
             ids = {item["id"] for item in sensors}
             if _sensor_ids and ids != _sensor_ids:
                 raise FanControlError("制御中に温度センサー構成が変化しました")
+            if _active_bdf != bdf:
+                _temp_history, _cool_since, _zero_stable_since = {}, None, None
             maximum = device["_range"][3]
-            wanted = _desired_floor(sensors, settings.min_percent, maximum)
-            # Increase immediately, relax slowly to prevent hunting/chatter.
-            floor = wanted if _active_bdf != bdf else (
-                wanted if wanted >= _floor else max(wanted, _floor - 5)
-            )
+            rise = _rise_rate(sensors, now)
+            _last_rise_c_per_min = round(rise, 2)
+            wanted = _predictive_floor(sensors, settings.min_percent, maximum, rise)
+            floor = wanted if _active_bdf != bdf else _smooth_floor(wanted, _floor, now)
             curve = _curve(device["_range"], floor)
             hot = max(item["value_c"] for item in sensors)
             rpm = device["fan_rpm"]
-            _zero_rpm_checks = _zero_rpm_checks + 1 if rpm == 0 and hot >= 60 and floor >= 70 else 0
+
+            # Native zero-RPM mode is explicitly disabled on each controller
+            # startup so the normal default has an always-spinning idle fan.
+            if _zero_initialized_bdf != bdf:
+                if device["zero_rpm_supported"]:
+                    _helper("zero-deny", bdf)
+                _zero_initialized_bdf = bdf
+                _zero_active = False
+                _last_curve = None
+            if _zero_active and (
+                not settings.allow_zero_rpm or _stop_must_end(sensors, rise)
+            ):
+                # Sensor- or temperature-rise-driven wake has no cool-down wait.
+                _helper("zero-deny", bdf)
+                _zero_active = False
+                _zero_stable_since = None
+                _last_curve = None  # Firmware may have switched modes.
+                _zero_rpm_checks = 0
+
+            # Zero-RPM is never treated as stalled when firmware was explicitly
+            # permitted to stop. Once re-enabled, a hot zero RPM still faults.
+            _zero_rpm_checks = (
+                _zero_rpm_checks + 1
+                if not _zero_active and rpm == 0 and hot >= 60 and floor >= 70
+                else 0
+            )
             if _zero_rpm_checks >= 2:
                 raise FanControlError("高温時にファンRPMが0のままです。制御を停止しました")
-            if (curve != _last_curve or _active_bdf != bdf) and (
-                _active_bdf != bdf or time.monotonic() - _last_write >= 10
-                or floor >= 90
-            ):
+
+            # Every increase is applied immediately (not delayed by the
+            # slow-down write budget); decreases are spaced apart.
+            increasing = floor > _applied_floor
+            if curve != _last_curve and (increasing or now - _last_write >= 10):
                 _helper("apply", bdf, curve)
-                _last_curve, _last_write = curve, time.monotonic()
+                _last_curve, _last_write = curve, now
+                _applied_floor = floor
+
+            if settings.allow_zero_rpm and device["zero_rpm_supported"] and not _zero_active:
+                eligible = _stop_entry_safe(sensors, rise)
+                _zero_stable_since = (
+                    now if eligible and _zero_stable_since is None
+                    else _zero_stable_since if eligible else None
+                )
+                if _zero_stable_since is not None and now - _zero_stable_since >= ZERO_STABLE_SECONDS:
+                    _helper("zero-allow", bdf)
+                    _zero_active = True
+            elif not _zero_active:
+                _zero_stable_since = None
+
             _active_bdf, _floor, _sensor_ids = bdf, floor, ids
             _state, _error = "controlling", ""
             _last_sample = {
                 "bdf": bdf, "sensors": sensors, "fan_rpm": rpm,
                 "floor_percent": floor, "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
+                "rise_c_per_min": _last_rise_c_per_min,
+                "zero_rpm_permitted": _zero_active, "cool_hold_seconds": COOL_HOLD_SECONDS,
                 "observed_at": time.time(), "curve": _last_curve,
             }
         except Exception as exc:  # noqa: BLE001 - fail safe on unexpected sysfs/runtime errors
