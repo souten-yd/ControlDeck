@@ -3807,7 +3807,7 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 
 ## 2026-11-12 — Project Maya-S option (PR #359, Draft)
 
-- `feat/maya-s-optional-addon-20261112` adds an independent `maya-s` opt-in feature stacked on PR #355. Official Project Maya GitHub Release code only on install; explicit separate GLM-5.3-Flash Maya-S model download (~96.5GB) with confirmation, explicit start/stop and loopback-only API.
+- `feat/maya-s24-optional-addon-20261112` (historical branch name) adds an independent `maya-s` opt-in feature stacked on PR #355. Official Project Maya GitHub Release code only on install; explicit separate GLM-5.3-Flash Maya-S model download (~96.5GB) with confirmation, explicit start/stop and loopback-only API.
 - Uninstall keeps model weights, defaults and other runtimes unchanged. `backend/tests/test_maya_s_addon.py` adds mocked offline checks. See `docs/design-maya-s-optional-addon.md`.
 - **Not merged/released**. Full tests, R9700/ROCm10 and mobile verification remain pending; CI stays manual-only as in the main development rules. Existing PR #355 is an upstream dependency and must merge first.
 
