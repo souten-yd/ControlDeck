@@ -10,11 +10,14 @@ from typing import Any
 
 LLAMA = "llama.cpp"
 STRATA = "strata"
-RUNTIMES = (LLAMA, STRATA)
+MAYA_S24 = "maya-s24"
+RUNTIMES = (LLAMA, STRATA, MAYA_S24)
 
 
 def module_for(runtime: str):
-    from app.models_mgmt import llama, strata_gateway
+    from app.models_mgmt import llama, strata_gateway, maya_s24
+    if runtime == MAYA_S24:
+        return maya_s24
     if runtime == STRATA:
         return strata_gateway
     if runtime == LLAMA:
@@ -37,6 +40,12 @@ def _strata_instances() -> list[dict]:
     return strata_gateway.list_instances() if strata.installed() else []
 
 
+def _maya_s24_instances() -> list[dict]:
+    from app.models_mgmt import maya_s24
+    # Never advertise a ghost model when code or GGUF is not prepared.
+    return maya_s24.list_instances() if maya_s24.installed() else []
+
+
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
     """全ローカルランタイムのモデル設定を優先度順で返す。
 
@@ -46,6 +55,8 @@ def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
         items += _llama_instances()
     if runtime in ("", STRATA):
         items += _strata_instances()
+    if runtime in ("", MAYA_S24):
+        items += _maya_s24_instances()
     if role:
         items = [item for item in items if str(item.get("role", "llm")) == role]
     return items
@@ -179,6 +190,7 @@ async def await_capacity(alias: str, port: int, needed_tokens: int, *,
 def installed_runtimes() -> dict[str, bool]:
     from app.models_mgmt import llama
 
-    from app.models_mgmt import strata
+    from app.models_mgmt import strata, maya_s24
 
-    return {LLAMA: llama.is_installed(), STRATA: strata.installed()}
+    return {LLAMA: llama.is_installed(), STRATA: strata.installed(),
+            MAYA_S24: maya_s24.installed()}
