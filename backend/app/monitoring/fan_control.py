@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
+from app.monitoring.fan_strategy import AdaptivePolicy
 
 logger = logging.getLogger("control_deck.fan_control")
 DRM_ROOT = Path("/sys/class/drm")
@@ -31,8 +32,8 @@ INTERVAL = 3.0
 COOL_HOLD_SECONDS = 180.0
 COOL_STEP_SECONDS = 45.0
 COOL_STEP_PERCENT = 5
-ZERO_STABLE_SECONDS = 300.0
-ZERO_STOP_TEMP_C = 40
+ZERO_STABLE_SECONDS = 600.0
+ZERO_STOP_TEMP_C = 55
 ZERO_RISE_LIMIT_C_PER_MIN = 0.5
 ZERO_START_RISE_C_PER_MIN = 1.0
 
@@ -87,6 +88,9 @@ _zero_active = False
 _zero_initialized_bdf: str | None = None
 _last_rise_c_per_min = 0.0
 _applied_floor = 0
+_policy = AdaptivePolicy()
+_last_learning_save = 0.0
+_LEARNING_FILE = "amd-fan-learning.json"
 
 
 def _setting_path() -> Path:
@@ -114,6 +118,34 @@ def _persist(settings: FanSettings) -> None:
         raise FanControlError(f"ファン設定を保存できません: {exc}") from exc
 
 
+def _learning_file() -> Path:
+    return data_dir() / _LEARNING_FILE
+
+
+def _load_learning(bdf: str) -> None:
+    try:
+        document = json.loads(_learning_file().read_text(encoding="utf-8"))
+        if document.get("bdf") == bdf:
+            _policy.load_parameters(document.get("parameters", {}))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+
+def _save_learning(bdf: str, now: float) -> None:
+    global _last_learning_save
+    if now - _last_learning_save < 1800:
+        return
+    _last_learning_save = now
+    path = _learning_file()
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps({"bdf": bdf, "parameters": _policy.learned_parameters()}), encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(path)
+    except OSError:
+        logger.warning("ファン制御学習値を保存できません", exc_info=True)
+
+
 def _read_int(path: Path) -> int | None:
     try:
         return int(path.read_text(encoding="ascii").strip())
@@ -122,14 +154,18 @@ def _read_int(path: Path) -> int | None:
 
 
 def _zero_capable(directory: Path) -> bool:
-    """Fail closed unless both PMFW zero-stop controls advertise a 40C limit."""
+    """Fail closed unless native OD ranges support conservative zero-RPM settings."""
     enable = directory / "fan_zero_rpm_enable"
     stop = directory / "fan_zero_rpm_stop_temperature"
     if not all(node.is_file() and not node.is_symlink() for node in (enable, stop)):
         return False
     try:
         contents = stop.read_text(encoding="ascii")
+        enable_info = enable.read_text(encoding="ascii")
     except OSError:
+        return False
+    if not re.search(r"(?m)^\s*ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
+                     enable_info.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in enable_info else ""):
         return False
     if "OD_RANGE:" not in contents:
         return False
@@ -140,7 +176,7 @@ def _zero_capable(directory: Path) -> bool:
     if match is None:
         return False
     lower, upper = map(int, match.groups())
-    return lower <= ZERO_STOP_TEMP_C <= upper and lower < upper
+    return 25 <= lower <= ZERO_STOP_TEMP_C and max(50, lower) <= upper and lower < upper
 
 
 def _devices() -> list[dict]:
@@ -210,11 +246,17 @@ def _devices() -> list[dict]:
                         curve_range = (t0, t1, p0, p1)
             except OSError:
                 pass
+        power = _read_int(hwmon / "power1_average")
+        if power is None:
+            power = _read_int(hwmon / "power1_input")
+        power_cap = _read_int(hwmon / "power1_cap")
         found[device.name] = {
             "bdf": device.name, "vram_bytes": _read_int(device / "mem_info_vram_total") or 0,
             "sensors": sensors, "fan_rpm": _read_int(hwmon / "fan1_input"),
             "curve_supported": curve_range is not None,
             "zero_rpm_supported": curve_range is not None and _zero_capable(device / "gpu_od/fan_ctrl"),
+            "power_w": round(power / 1_000_000, 1) if power is not None and power >= 0 else None,
+            "power_cap_w": round(power_cap / 1_000_000, 1) if power_cap is not None and power_cap > 0 else None,
             "_range": curve_range,
         }
     return sorted(found.values(), key=lambda item: -item["vram_bytes"])
