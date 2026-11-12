@@ -254,9 +254,16 @@ def _validate(settings: FanSettings, device: dict) -> list[dict]:
 
 
 def _helper(action: str, bdf: str, curve: str | None = None) -> None:
-    argv = ["sudo", "-n", str(HELPER), "fan-curve", action, bdf]
-    if curve is not None:
-        argv.append(curve)
+    if action in ("zero-allow", "zero-deny"):
+        if curve is not None:
+            raise FanControlError("Zero RPMにfan_curve引数は指定できません")
+        argv = ["sudo", "-n", str(HELPER), "fan-zero-rpm", action.removeprefix("zero-"), bdf]
+    elif action in ("apply", "reset"):
+        argv = ["sudo", "-n", str(HELPER), "fan-curve", action, bdf]
+        if curve is not None:
+            argv.append(curve)
+    else:
+        raise FanControlError("不正なGPUファン操作です")
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=8, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -497,9 +504,13 @@ def tick() -> None:
 
 def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
+    global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
+    global _cool_since, _last_cool_step
     with _lock:
         prior = _load()
         if settings.enabled:
+            if _pending_reset_bdf is not None or _state == "fault" and prior.enabled:
+                raise FanControlError("自動制御への復帰待ちです。復帰してから再有効化してください")
             device = _select(_devices(), settings.bdf)
             _validate(settings, device)
             previous_bdf = _active_bdf or prior.bdf
@@ -511,6 +522,9 @@ def configure(settings: FanSettings) -> dict:
             _state, _error = "disabled", ""
             _persist(settings.model_copy(update={"bdf": device["bdf"]}))
             _floor, _sensor_ids, _zero_rpm_checks = settings.min_percent, set(), 0
+            _cool_since, _last_cool_step, _zero_stable_since = None, 0.0, None
+            _temp_history = {}
+            _applied_floor = 0
             tick()
             if _state == "fault":
                 raise FanControlError(_error)
@@ -532,6 +546,8 @@ def configure(settings: FanSettings) -> dict:
             _persist(settings)
             _active_bdf, _last_curve, _sensor_ids = None, None, set()
             _state, _error, _pending_reset_bdf = "disabled", "", None
+            _zero_active, _zero_initialized_bdf = False, None
+            _temp_history, _zero_stable_since, _cool_since = {}, None, None
         return status()
 
 
@@ -546,6 +562,9 @@ def status() -> dict:
             "helper_installed": HELPER.is_file(),
             "state": _state if settings.enabled or _state == "fault" else "disabled",
             "error": _error, "pending_auto_restore": _pending_reset_bdf is not None,
+            "control_policy": "fast_rise_slow_fall",
+            "cool_hold_seconds": COOL_HOLD_SECONDS,
+            "zero_stable_seconds": ZERO_STABLE_SECONDS,
             "active": _last_sample if settings.enabled else None,
             "poll_interval_seconds": INTERVAL,
             "warning": "温度上限は目標であり保証値ではありません。CPU・マザーボードのファンは制御しません。",
