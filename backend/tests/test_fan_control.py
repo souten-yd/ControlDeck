@@ -232,7 +232,16 @@ def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
     # LLM goes idle with all temperatures cool: hold the fan, not the load.
     for sensor_id, temp in (("temp1", 40), ("temp2", 46), ("temp3", 40)):
         (hwmon / f"{sensor_id}_input").write_text(str(temp * 1000))
-    for _ in range(60):
+    # The learned PI/FF demand decays first; the cooling hold starts only
+    # once the wanted floor is below the current one.
+    for _ in range(100):
+        clock[0] += 3
+        fan.tick()
+        if fan._cool_since is not None:
+            break
+    assert fan._cool_since is not None
+    assert fan._floor == 100
+    for _ in range(59):
         clock[0] += 3
         fan.tick()
     assert fan._floor == 100  # 177 seconds of observed cooldown
