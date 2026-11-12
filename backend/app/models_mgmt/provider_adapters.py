@@ -170,6 +170,15 @@ async def list_models(provider_id: str) -> list[dict]:
                 },
             })
         return result
+    if provider["provider"] == "maya-s24" and provider["managed"]:
+        from app.models_mgmt import maya_s24
+        return [{
+            "id": item["alias"], "name": "Project Maya-S24 · GLM-5.3-Flash",
+            "size_bytes": 94_700_000_000, "modified_at": "", "loaded": item["loaded"],
+            "details": {"runtime": "maya-s24", "backend": "HIP",
+                        "port": item["port"], "base_url": item["base_url"],
+                        "quantization": "Maya-S24", "vision_enabled": False}
+        } for item in await asyncio.to_thread(maya_s24.list_instances)]
     if provider["provider"] == "strata" and provider["managed"]:
         return [{
             "id": item["alias"],
@@ -332,6 +341,10 @@ async def provider_health(provider_id: str) -> dict:
         ]
         return {"ok": any(item["ok"] for item in details), "provider": "llama.cpp",
                 "installed": llama.is_installed(), "instances": details}
+    if provider["provider"] == "maya-s24" and provider["managed"]:
+        from app.models_mgmt import maya_s24
+        state = await maya_s24.health()
+        return {"ok": bool(state["ok"]), "provider": "maya-s24", "instances": [state]}
     if provider["provider"] == "strata" and provider["managed"]:
         instances = await asyncio.to_thread(strata_gateway.list_instances)
         states = await asyncio.gather(*(strata_gateway.health(str(item["alias"])) for item in instances))
