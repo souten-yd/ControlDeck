@@ -461,7 +461,8 @@ def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
 
 
 def _rise_rate(sensors: list[dict], now: float) -> float:
-    """20-second thermal trend; do not react to GPU utilization spikes."""
+    """30–45 s thermal trend. A short window turned the hotspot's normal
+    jump at LLM start (~20°C in seconds) into ">80°C/min" and drove 100%."""
     maximum = 0.0
     for sensor in sensors:
         sensor_id = sensor["id"]
@@ -470,29 +471,29 @@ def _rise_rate(sensors: list[dict], now: float) -> float:
             entries.clear()
         entries.append((now, float(sensor["value_c"])))
         entries[:] = [(t, v) for t, v in entries if now - t <= 45]
-        baseline = [item for item in entries if now - item[0] >= 15]
+        baseline = [item for item in entries if now - item[0] >= 30]
         if baseline:
-            old_time, old_value = baseline[-1]
+            old_time, old_value = baseline[0]
             rate = (float(sensor["value_c"]) - old_value) * 60 / max(1, now - old_time)
             maximum = max(maximum, rate)
     return maximum
 
 
+PREDICT_AHEAD_MINUTES = 0.5
+
+
 def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
                       rise_c_per_min: float) -> int:
-    """Raise early if extrapolated time to a target is small."""
+    """Raise early by the headroom expected 30 s ahead, on the same linear
+    ramp as the steady state. Far from the target a fast hotspot rise only
+    nudges the fan; close to the target it still goes to maximum."""
     floor = _desired_floor(sensors, minimum, maximum)
     headroom = min(s["headroom_c"] for s in sensors)
     if headroom <= 0:
         return maximum
     if rise_c_per_min > 1.5:
-        minutes_to_target = headroom / rise_c_per_min
-        if minutes_to_target <= 1:
-            floor = maximum
-        elif minutes_to_target <= 2:
-            floor = max(floor, 90)
-        elif minutes_to_target <= 4:
-            floor = max(floor, 75)
+        ahead = headroom - rise_c_per_min * PREDICT_AHEAD_MINUTES
+        floor = max(floor, margin_ramp(ahead, minimum, maximum))
     return min(maximum, floor)
 
 

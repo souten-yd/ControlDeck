@@ -272,8 +272,11 @@ def test_predictive_ramp_uses_temperature_trend_not_utilization():
         {"id": "temp1", "value_c": 63, "headroom_c": 12},
         {"id": "temp3", "value_c": 55, "headroom_c": 30},
     ]
-    # At +8 C/min, headroom 12C lasts ~1.5min -> early >=90%.
-    assert _predictive_floor(sensors, 35, 100, 8.0) >= 90
+    # At +8 C/min near the target (12°C headroom) it raises early, on the ramp
+    # for the headroom expected 30 s ahead (8°C -> 81%).
+    assert _predictive_floor(sensors, 35, 100, 8.0) == 81
+    # Racing at the target still goes to maximum.
+    assert _predictive_floor(sensors, 35, 100, 30.0) == 100
     # Stable temperature has no predictive boost.
     # Interpolated between the 15°C (60%) and 10°C (75%) points.
     assert _predictive_floor(sensors, 35, 100, 0.0) == 69
@@ -686,3 +689,20 @@ def test_legacy_step_settings_migrate_to_equivalent_ramp(gpu, tmp_path):
     loaded = fan._load()
     assert loaded.cool_rate_percent_per_min == 2.0
     assert loaded.cool_hold_seconds == 300
+
+
+
+def test_hotspot_jump_far_from_target_does_not_max_the_fan():
+    """実機: LLM開始時のhotspotの跳ね上がり（数秒で約20°C）を毎分80°C超と
+    見積もり、余裕50°C以上あるのに100%まで上げていた。"""
+    from app.monitoring.fan_control import _predictive_floor
+    sensors = [{"id": "temp2", "value_c": 55, "headroom_c": 35}]
+    assert _predictive_floor(sensors, 20, 100, 30.0) <= 50  # was 100
+    # The trend window is long enough that a one-sample jump is averaged.
+    fan = fan_module()
+    fan._temp_history = {}
+    rate = 0.0
+    for t, v in ((0, 31), (3, 31), (6, 31), (9, 31), (12, 31), (15, 31), (18, 31), (21, 31),
+                 (24, 31), (27, 31), (30, 31), (33, 51)):
+        rate = fan._rise_rate([{"id": "temp2", "value_c": v}], 1000 + t)
+    assert rate <= 40
