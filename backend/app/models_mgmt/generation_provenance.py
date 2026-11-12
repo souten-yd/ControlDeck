@@ -45,6 +45,10 @@ def _configured(target: AITarget) -> ConfiguredIdentity:
     """Snapshot the selected managed files without starting or stopping anything."""
     from app.models_mgmt import llama
 
+    from app.models_mgmt import strata_gateway
+    if target.model in strata_gateway._read():
+        from app.models_mgmt import strata_provenance
+        return strata_provenance.configured(target)
     require_local_target(target)
     instance = llama.get_instance(target.model)
     files = {'--model': _file(instance['model_path'], gguf=True), '--executable': _file(llama.server_path())}
@@ -63,7 +67,7 @@ def _configured(target: AITarget) -> ConfiguredIdentity:
 def configured(target: AITarget) -> ConfiguredIdentity:
     try:
         return _configured(target)
-    except (OSError, KeyError, ValueError) as exc:
+    except (OSError, KeyError, ValueError, TypeError, RuntimeError) as exc:
         raise AITargetUnavailable('local generation configuration cannot be verified') from exc
 
 
@@ -82,6 +86,10 @@ def capture(target: AITarget, expected: ConfiguredIdentity | None = None) -> dic
     from app.models_mgmt import llama
 
     try:
+        from app.models_mgmt import strata_gateway
+        if target.model in strata_gateway._read():
+            from app.models_mgmt import strata_provenance
+            return strata_provenance.capture(target, expected)
         current = configured(target)
         if expected is not None and current != expected:
             raise AITargetUnavailable('local generation configuration changed')
@@ -120,5 +128,5 @@ def capture(target: AITarget, expected: ConfiguredIdentity | None = None) -> dic
             raise AITargetUnavailable('local generation identity changed during inspection')
         return {'execution_policy': 'local_only', 'revision_kind': REVISION_KIND,
                 'model_ref': current.model_ref, 'runtime_ref': _digest([pid, started, argv, current.model_ref])}
-    except (OSError, KeyError, ValueError, psutil.Error) as exc:
+    except (OSError, KeyError, ValueError, TypeError, RuntimeError, psutil.Error) as exc:
         raise AITargetUnavailable('local generation provenance is unavailable') from exc

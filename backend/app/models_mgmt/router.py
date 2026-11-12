@@ -1281,6 +1281,11 @@ async def llama_options(user: User = Depends(require_permission("workflows.edit"
 # ---- Opt-in Strata Terminal / gateway-managed models ----
 
 class StrataModelBody(BaseModel):
+    kv: Literal["int8", "q4_0", "k8v4", "fp16"] = "int8"
+    vision: Literal["on", "off", "gpu", "cpu"] = "on"
+    parallel: int = Field(default=1, ge=1, le=8)
+    drafting: Literal["auto", "mtp", "dflash2", "off"] = "auto"
+    model_path: str = Field(default="", max_length=4096)
     model_config = ConfigDict(extra="forbid")
     alias: str = Field(min_length=1, max_length=48)
     family: Literal["qwen", "deepseek41"] = "qwen"
@@ -1305,12 +1310,32 @@ def strata_create_instance(
     try:
         result = strata_gateway.save_instance(
             body.alias, family=body.family, model=body.model,
-            context=body.context, port=body.port,
+            context=body.context, port=body.port, model_path=body.model_path,
+            kv=body.kv, vision=body.vision, parallel=body.parallel, drafting=body.drafting,
         )
     except strata_gateway.StrataGatewayError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, "strata.instance_create", user=user, resource_type="model",
                  resource_id=body.alias, request=request)
+    return result
+
+
+@router.put("/strata/instances/{alias}")
+def strata_update_instance(
+    alias: str, body: StrataModelBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import strata_gateway
+    if alias != body.alias:
+        raise HTTPException(status_code=422, detail="モデル別名は変更できません")
+    try:
+        result = strata_gateway.save_instance(**body.model_dump(), replace=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Strataモデル設定がありません") from exc
+    except strata_gateway.StrataGatewayError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "strata.instance_update", user=user, resource_type="model",
+                 resource_id=alias, request=request)
     return result
 
 

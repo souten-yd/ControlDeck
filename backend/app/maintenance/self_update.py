@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -86,27 +87,47 @@ def _preflight() -> str:
     return head
 
 
-def _remote_main() -> str:
-    output = _git("ls-remote", "origin", "refs/heads/main", timeout=30)
-    line = output.splitlines()[0] if output else ""
-    sha = line.split()[0] if line else ""
+def _remote_release() -> tuple[str, str]:
+    request = urllib.request.Request(
+        "https://api.github.com/repos/souten-yd/ControlDeck/releases/latest",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "ControlDeck-Updater"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            metadata = json.load(response)
+        tag = metadata.get("tag_name", "")
+        if (metadata.get("draft") or metadata.get("prerelease")
+                or not re.fullmatch(r"ControlDeck_v[0-9]+\.[0-9]+(?:\.[0-9]+)?", tag)):
+            raise ValueError()
+    except Exception as exc:
+        raise SelfUpdateError("公式の正式Releaseを確認できません") from exc
+    ref = "refs/tags/" + tag
+    lines = _git("ls-remote", "origin", ref, ref + "^{}", timeout=30).splitlines()
+    refs = dict((parts[1], parts[0]) for line in lines if len(parts := line.split()) == 2)
+    sha = refs.get(ref + "^{}", refs.get(ref, ""))
     if not _SHA_RE.fullmatch(sha):
-        raise SelfUpdateError("GitHub上のmainを確認できません")
-    return sha
+        raise SelfUpdateError("正式Releaseのコミットを確認できません")
+    return tag, sha
+
+
+def _remote_main() -> str:
+    # Compatibility for existing callers; the update source is now a release.
+    return _remote_release()[1]
 
 
 def status(*, refresh: bool = True) -> dict:
     state = _saved_state()
     result = {
         "current_sha": "", "remote_sha": "", "update_available": False,
-        "can_update": False, "channel": "main", "error": "", "job": state,
+        "can_update": False, "channel": "release", "release_tag": "", "error": "", "job": state,
     }
     try:
         head = _preflight()
         result["current_sha"] = head
         result["can_update"] = True
         if refresh:
-            remote = _remote_main()
+            tag, remote = _remote_release()
+            result["release_tag"] = tag
             result["remote_sha"] = remote
             result["update_available"] = remote != head
     except SelfUpdateError as exc:
@@ -122,7 +143,7 @@ def start(expected_sha: str) -> dict:
     if current["error"] or not current["can_update"]:
         raise SelfUpdateError(current["error"] or "更新できない環境です")
     if current["remote_sha"] != expected_sha or not current["update_available"]:
-        raise SelfUpdateError("mainが変更されたか、既に最新版です。再確認してください")
+        raise SelfUpdateError("Releaseが変更されたか、既に最新版です。再確認してください")
     if _cmd(["systemctl", "--user", "is-active", _SERVICE], check=False) != "active":
         raise SelfUpdateError("ControlDeckユーザーサービスが見つかりません")
     _write_state({"phase": "scheduled", "target_sha": expected_sha, "started_at": int(time.time())})
@@ -147,6 +168,23 @@ def _prepare() -> None:
     _cmd(["bash", str(REPO_ROOT / "deck.sh"), "update-prepare"], timeout=1800)
 
 
+def _health_check() -> None:
+    import httpx
+    from app.config import get_config
+    port = get_config().server.port
+    deadline = time.monotonic() + 30
+    with httpx.Client(timeout=3, trust_env=False) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = client.get(f"http://127.0.0.1:{port}/api/v1/health")
+                if response.status_code == 200 and response.json().get("ok") is True:
+                    return
+            except (httpx.HTTPError, ValueError, AttributeError):
+                pass
+            time.sleep(1)
+    raise SelfUpdateError("更新後のControlDeckが正常応答しません")
+
+
 def apply(expected_sha: str) -> None:
     if not _SHA_RE.fullmatch(expected_sha):
         raise SelfUpdateError("更新先コミットが不正です")
@@ -164,14 +202,19 @@ def apply(expected_sha: str) -> None:
             _write_state({"phase": "running", "step": "fetch", "old_sha": old,
                           "target_sha": expected_sha, "started_at": int(time.time())})
             # Use the repository's trusted origin and never accept a client-supplied URL/ref.
-            _git("fetch", "--no-tags", "origin", "main", timeout=180)
-            fetched = _git("rev-parse", "FETCH_HEAD")
+            tag, release_sha = _remote_release()
+            if release_sha != expected_sha:
+                raise SelfUpdateError("正式Releaseが変更されました。再確認してください")
+            _git("fetch", "--no-tags", "origin", "refs/tags/" + tag, timeout=180)
+            fetched = _git("rev-parse", "FETCH_HEAD^{commit}")
             if fetched != expected_sha:
-                raise SelfUpdateError("更新中にmainのコミットが変わりました。再確認してください")
+                raise SelfUpdateError("更新中にReleaseのコミットが変わりました。再確認してください")
             _git("merge-base", "--is-ancestor", old, fetched)
             if old == fetched:
                 _write_state({"phase": "succeeded", "old_sha": old, "new_sha": old})
                 return
+            backup = _state_path().parent / ("backup-" + str(int(time.time())))
+            _cmd(["bash", str(REPO_ROOT / "deck.sh"), "backup", str(backup)], timeout=300)
             # Do not destroy user data or overwrite local edits.
             _git("merge", "--ff-only", fetched, timeout=60)
             updated = True
@@ -180,6 +223,7 @@ def apply(expected_sha: str) -> None:
             _write_state({"phase": "running", "step": "restart", "old_sha": old, "target_sha": fetched})
             _cmd(["systemctl", "--user", "restart", _SERVICE], timeout=120)
             _cmd(["systemctl", "--user", "is-active", _SERVICE], timeout=15)
+            _health_check()
             _write_state({"phase": "succeeded", "old_sha": old, "new_sha": fetched,
                           "finished_at": int(time.time())})
         except Exception as exc:
@@ -193,6 +237,7 @@ def apply(expected_sha: str) -> None:
                         _git("reset", "--hard", old, timeout=60)
                         _prepare()
                         _cmd(["systemctl", "--user", "restart", _SERVICE], timeout=120)
+                        _health_check()
                     else:
                         error += "。作業ツリーが変更されているため手動復旧が必要です"
                 except Exception:

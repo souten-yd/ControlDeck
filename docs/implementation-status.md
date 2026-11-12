@@ -3803,3 +3803,13 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - 本体のGitHub mainへのfast-forward更新確認と管理者の明示操作による独立systemd更新ジョブを追加。変更済み作業ツリーと未対応配置では更新不可。
 
 - 受け入れ条件：backend pytest、frontend build、旧Lucebox参照grep、Strata導入/削除テスト、本体更新失敗時のロールバック、モバイル画面確認。マージとリリースは検証結果が得られるまで未完了。
+
+## 2026-11-12 PR #355 ローカルStrata受け入れ（進行中）
+
+- 管理Terminal 0.2.13.1 / HIP engine 0.1.59をR9700へ導入。既存Flash-Next IQ2_XSの2分割GGUFを`/data1tb/LLM`から使用し、元ファイルを移動・削除せず推論用packを管理領域へ作成。
+- CLI exit 0とAPI Readyを区別し、status・health loaded・modelsで初回activationを確認。エンジンはsystemd user unit内で実行する。
+- 既存GGUFの許可パス・分割検証、停止時のモデル/コンテキスト/KV/画像/並列数/投機デコード設定変更を追加。OpenCodeへのcontext上限伝達、Add-on AIのStrata解決・共通admission・local_only/provenance経路を補完。
+- 8K/16K/32K/64Kを実起動し、入力約1K/5.8K、出力256 tokensを各2回測定。32Kの5.8K入力でprefill 2209.8–2317.5 tok/s、decode 129.7–130.7 tok/s、TTFT 2.53–2.65秒。64Kで50,911入力tokensの応答も成功（prefill 2600.1、decode 108.0 tok/s、TTFT 19.65秒）。測定は単一リクエスト、thinking off、MTPであり一般品質・並列性能の保証ではない。
+- ローカル稼働Hostは最新main bf53da1と既存terminal修正を統合した別checkoutへ更新済み。更新候補backend 1255 passed/2 skipped、frontend build成功。localhostでPC/320pxのpassword/passkey 2件成功。旧checkout・DB・設定・unitのバックアップ保持。PR本体は未マージ、Strata統合UI・OpenCode・Add-on実経路の最終検証を継続。
+- 本体更新の配布元をmainから正式GitHub Releaseのタグ・検証済みSHAへ修正し、適用前backupと再起動後health確認を追加。
+- 証跡は`/data1tb/ControlDeck/strata-pr355-evidence/`。ベンチマークraw JSONと各段階のログを保持。

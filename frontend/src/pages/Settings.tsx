@@ -415,12 +415,12 @@ function ControlDeckUpdateSection() {
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="text-sm font-semibold text-zinc-500">ControlDeck 本体の更新</h2>
       <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-        公式GitHubの main ブランチへ安全にfast-forward更新します。未コミット変更がある場合は中止します。
+        公式GitHubの正式Releaseへ更新します。未コミット変更がある場合は中止します。
         更新は手動のみで、依存導入・画面ビルド後にWebサービスを再起動します。
       </p>
       <div className="mt-3 space-y-1 text-xs text-zinc-500">
         <p>現在: <span className="font-mono">{data?.current_sha?.slice(0, 12) || "確認中"}</span></p>
-        <p>GitHub main: <span className="font-mono">{data?.remote_sha?.slice(0, 12) || "-"}</span></p>
+        <p>正式Release: <span className="font-mono">{data?.remote_sha?.slice(0, 12) || "-"}</span></p>
         {data?.job?.phase && <p>更新状態: {data.job.phase}{data.job.step ? ` / ${data.job.step}` : ""}</p>}
         {data?.job?.error && <p className="text-red-600">{data.job.error}</p>}
         {data?.error && <p className="text-amber-600">{data.error}</p>}
@@ -439,7 +439,7 @@ function ControlDeckUpdateSection() {
       </div>
       {confirming && <ConfirmDialog
         title="ControlDeck本体を更新しますか？"
-        message={`GitHub main（${data?.remote_sha?.slice(0, 12) || "不明"}）へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
+        message={`公式Release（${data?.remote_sha?.slice(0, 12) || "不明"}）へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
         confirmLabel="更新して再起動"
         busy={starting}
         onConfirm={() => void apply()}
