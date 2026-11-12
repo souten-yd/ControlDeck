@@ -146,6 +146,14 @@ def apply_action(
 
 
 # Project Maya-S is opt-in. Installing engine code NEVER downloads its 96.5 GB model.
+@router.get("/maya-s/model")
+def maya_s_model_status(user: User = Depends(require_permission("settings.manage"))):
+    """Models画面向け: 導入・準備・稼働の状態と個別設定。取得や起動はしない。"""
+    from app.models_mgmt import maya_s
+
+    return maya_s.runtime_status()
+
+
 @router.post("/maya-s/model/prepare-jobs", status_code=201)
 async def maya_s_prepare_model(
     request: Request, body: MayaSetupBody,
@@ -164,7 +172,7 @@ async def maya_s_prepare_model(
         job.set_progress("モデルの準備完了（まだ起動していません）", 1, 1)
         return state
 
-    job = jobs.create("maya-s.prepare", "Maya-Sモデル準備", run,
+    job = jobs.create("model.maya-s.prepare", "Maya-Sモデル準備", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
     audit.record(db, "maya-s.prepare", user=user, resource_type="feature",
                  resource_id="maya-s", request=request, metadata={"job_id": job.id, "gpu_index": body.gpu_index})
@@ -201,7 +209,7 @@ async def maya_s_start_model(
         job.set_progress("Maya-S APIの起動を確認", 1, 1)
         return maya_s.runtime_status()
 
-    job = jobs.create("maya-s.start", "Maya-S起動", run,
+    job = jobs.create("model.maya-s.start", "Maya-S起動", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
     audit.record(db, "maya-s.start", user=user, resource_type="feature",
                  resource_id="maya-s", request=request, metadata={"job_id": job.id})
@@ -272,7 +280,7 @@ async def maya_existing(request: Request,
         state = await asyncio.to_thread(maya_s.prepare_existing)
         job.set_progress("既存モデル準備完了（停止中）", 1, 1)
         return state
-    job = jobs.create("maya-s.existing", "Maya-S既存モデル準備", run, owner_user_id=user.id,
+    job = jobs.create("model.maya-s.existing", "Maya-S既存モデル準備", run, owner_user_id=user.id,
                       idempotency_key=request.headers.get("idempotency-key"))
     audit.record(db, "maya-s.existing", user=user, resource_type="feature",
                  resource_id="maya-s", request=request, metadata={"job_id": job.id})

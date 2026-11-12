@@ -4,7 +4,7 @@ This is **not Strata**. Project Maya-S is a 96.5 GB GGUF quantization of GLM-5.3
 
 ## Scope
 
-- Separate optional feature id `maya-s` in Settings > Optional features. It does not become the default LLM runtime.
+- Separate optional feature id `maya-s` in Settings > Optional features (engine code + HIP build only). It does not become the default LLM runtime. Model download, existing-GGUF loading, per-model settings and load/unload live in the Models page.
 - Code install, update and uninstall are built around `mw00/project-maya` official GitHub Releases, via a fixed source URL, validated semver tags, and a managed code directory.
 - Installation checks out **code only**. It never downloads weights or starts inference, and does not touch Ollama, llama.cpp, Strata, or user model files.
 - Model preparation is a **separate** `settings.manage` authenticated job with an explicit confirmation (96.5 GB / at least 110 GB free (including headroom beyond model size)). GPU index 0–15 is bounded; defaults to 0. Fixed model: `glm-maya-s`. Fixed loopback API `127.0.0.1:8099`. First setup uses text-only and 8K context to lower VRAM pressure. The GPU ID must be checked on the target PC; the OS enumeration is not guaranteed to align with PCI bus numbers.

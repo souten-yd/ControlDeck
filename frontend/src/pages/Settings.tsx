@@ -477,7 +477,7 @@ interface GpuRuntimeDetail {
   cli_path?: string;
   models_dir?: string;
   built?: boolean;
-  settings?: MayaSettings;
+  settings?: Record<string, unknown>;
   configured?: boolean;
   running?: boolean;
 }
@@ -703,20 +703,11 @@ function GpuRuntimeDetails({ addon, release }: {
 }
 
 
-/** Maya has a deliberately separate 96.5GB download consent gate. */
-interface MayaSettings {
-  model_path: string; context: number; gpu_index: number; parallel: number;
-  ram_headroom_gb: number; drafting: "on" | "off";
-}
-
+/** Maya-S アドオンが持つのはエンジン（コード導入・HIPビルド）だけ。
+ * モデルのダウンロード・既存GGUFの読み込み・個別設定・ロードは Models 画面で行う。 */
 function MayaSPanel({ addon }: { addon: AddonState }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
-  const [gpu, setGpu] = useState(0);
-  const [settings, setSettings] = useState<MayaSettings>(addon.runtime?.settings ?? {
-    model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
-  });
-  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const { data: job } = useQuery({
@@ -730,104 +721,41 @@ function MayaSPanel({ addon }: { addon: AddonState }) {
     setJobId(null);
     setBusy(false);
     void qc.invalidateQueries({ queryKey: ["features"] });
-    show(job.status === "succeeded" ? "Maya-S操作が完了しました" : job.error || "Maya-S操作に失敗しました",
+    show(job.status === "succeeded" ? "Maya-SのHIPビルドが完了しました" : job.error || "Maya-SのHIPビルドに失敗しました",
       job.status === "succeeded" ? "info" : "error");
   }, [jobId, job?.status]);
 
-  const run = async (kind: "prepare" | "start" | "stop" | "build" | "existing") => {
+  const build = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      if (kind === "stop") {
-        await api("/features/maya-s/model/stop", {method: "POST", json: {}});
-        void qc.invalidateQueries({queryKey: ["features"]});
-        show("Maya-Sを停止しました");
-        setBusy(false);
-        return;
-      }
-      const route = `${kind}-jobs`;
-      const started = await api<{job_id: string}>(`/features/maya-s/model/${route}`, {
-        method: "POST", json: kind === "prepare" ? {gpu_index: gpu} : {},
-      });
+      const started = await api<{job_id: string}>("/features/maya-s/model/build-jobs", { method: "POST", json: {} });
       setJobId(started.job_id);
-      if (kind === "prepare") show("Maya-S（約96.5GB）のモデル取得・HIP構築を開始しました");
     } catch (error) {
-      show(error instanceof Error ? error.message : "Maya-S操作に失敗しました", "error");
+      show(error instanceof Error ? error.message : "HIPビルドを開始できませんでした", "error");
       setBusy(false);
     }
   };
 
+  const runtime = addon.runtime;
   return <div className="mt-3 space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-    <p className="text-xs font-semibold">Maya-S モデル（GLM-5.3-Flash）</p>
+    <p className="text-xs font-semibold">Maya-S エンジン</p>
     <p className="text-[11px] text-zinc-500">
-      アドオン導入はコードのみです。モデル約96.5GBの取得は別途明示操作が必要です。
-      32GB RAM＋32GB VRAMではSSD依存が大きくなる可能性があります。
+      {runtime?.running ? "モデル稼働中 · 127.0.0.1:8099"
+        : runtime?.configured ? "HIPモデル準備済み・停止中"
+        : runtime?.built ? "HIPビルド済み・モデル未準備" : "HIP未ビルド・モデル未準備"}
     </p>
     <p className="text-[11px] text-zinc-500">
-      {addon.runtime?.running ? "API稼働中 · 127.0.0.1:8099"
-        : addon.runtime?.configured ? "HIPモデル準備済み・停止中" : addon.runtime?.built ? "HIPビルド済み・モデル未準備" : "HIP未ビルド・モデル未準備"}
+      モデルのダウンロード・既存モデルの読み込み・個別設定・ロードは{" "}
+      <a href="/models" className="text-accent-600 underline dark:text-accent-400">Models</a> で行います。
     </p>
-    <button type="button" disabled={busy || addon.runtime?.running} onClick={() => void run("build")}
+    <button type="button" disabled={busy || runtime?.running} onClick={() => void build()}
       className="min-h-11 rounded-lg border px-3 text-xs disabled:opacity-40">
-      {addon.runtime?.built ? "HIPを再ビルド" : "HIPをビルド"}（モデル取得なし）
+      {runtime?.built ? "HIPを再ビルド" : "HIPをビルド"}（モデル取得なし）
     </button>
-    <button type="button" disabled={busy || addon.runtime?.running || !addon.runtime?.settings?.model_path}
-      onClick={() => void run("existing")} className="min-h-11 rounded-lg border px-3 text-xs disabled:opacity-40">
-      保存済みの既存モデルを準備（取得・起動なし）
-    </button>
-    <details className="text-xs"><summary className="cursor-pointer py-3">詳細設定・既存モデルの指定</summary>
-      <div className="space-y-3">
-        <label className="block">既存GGUFの先頭ファイル
-          <input className="mt-1 w-full rounded border bg-transparent p-2" value={settings.model_path}
-            onChange={e => setSettings({...settings, model_path: e.target.value})} />
-        </label>
-        {([ ["context", "コンテキスト長", 1024, 262144], ["gpu_index", "GPU番号", 0, 15],
-          ["parallel", "並列数", 1, 8], ["ram_headroom_gb", "RAM確保量 (GB)", 1, 256]] as const).map(([key, label, min, max]) =>
-          <label key={key} className="flex flex-wrap items-center justify-between gap-2">{label}
-            <input type="number" min={min} max={max} className="w-28 rounded border bg-transparent p-2"
-              value={settings[key]} onChange={e => setSettings({...settings, [key]: Number(e.target.value)})} />
-          </label>)}
-        <label className="flex items-center justify-between">投機デコード
-          <select value={settings.drafting} onChange={e => setSettings({...settings, drafting: e.target.value as "on" | "off"})}
-            className="rounded border bg-transparent p-2"><option value="on">有効</option><option value="off">無効</option></select>
-        </label>
-        <p className="text-zinc-500">設定保存ではモデルを取得・読み込みしません。モデル変更後は準備が必要です。</p>
-        <button type="button" disabled={busy || addon.runtime?.running} className="min-h-11 rounded border px-3 disabled:opacity-40"
-          onClick={async () => { setBusy(true); try {
-            await api("/features/maya-s/settings", {method: "PUT", json: settings});
-            await qc.invalidateQueries({queryKey: ["features"]}); show("Maya-S設定を保存しました");
-          } catch (e) { show(e instanceof Error ? e.message : "設定保存に失敗しました", "error"); }
-          finally { setBusy(false); } }}>設定を保存</button>
-      </div>
-    </details>
-    {!addon.runtime?.configured && <div className="flex flex-wrap items-center gap-2">
-      <label className="text-xs text-zinc-500" htmlFor="maya-gpu-index">ROCm GPU番号</label>
-      <input id="maya-gpu-index" aria-label="Maya GPU番号" type="number" min={0} max={15} value={gpu}
-        onChange={(e) => setGpu(Number(e.target.value))}
-        className="w-16 rounded-lg border border-zinc-300 bg-transparent px-2 py-2 text-xs dark:border-zinc-600"/>
-      <button type="button" onClick={() => setConfirming(true)} disabled={busy || !Number.isInteger(gpu) || gpu < 0 || gpu > 15}
-        className="min-h-11 rounded-lg border border-amber-400 px-3 py-2 text-xs font-medium text-amber-700 disabled:opacity-40 dark:text-amber-300">
-        約96.5GBのモデルを取得・準備
-      </button>
-    </div>}
-    {addon.runtime?.configured && <div className="flex flex-wrap gap-2">
-      <button type="button" disabled={busy || addon.runtime.running} onClick={() => void run("start")}
-        className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs disabled:opacity-40 dark:border-zinc-700">
-        起動
-      </button>
-      <button type="button" disabled={busy || !addon.runtime.running} onClick={() => void run("stop")}
-        className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs disabled:opacity-40 dark:border-zinc-700">
-        停止
-      </button>
-    </div>}
     {jobId && <p className="text-xs text-zinc-500" role="status">
       ジョブ {job?.status ?? "queued"} · {job?.progress?.status || "処理中"}
     </p>}
-    {confirming && <ConfirmDialog title="Maya-Sを取得しますか？"
-      message="GLM-5.3-Flash Maya-Sのモデル約96.5GBをSSDにダウンロードして検証します。110GB以上の空き容量が必要で、HIPエンジンのコンパイルに時間がかかります。今はモデルを起動しません。"
-      confirmLabel="モデル取得を開始"
-      onConfirm={() => { setConfirming(false); void run("prepare"); }}
-      onClose={() => setConfirming(false)}/>}
   </div>;
 }
 

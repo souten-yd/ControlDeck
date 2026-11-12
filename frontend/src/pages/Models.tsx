@@ -1,7 +1,7 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
@@ -14,6 +14,7 @@ import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { MayaSDetailSheet, MayaSSetupCard, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
 interface Model {
@@ -252,7 +253,6 @@ function ActiveModelJobs() {
 }
 
 export default function ModelsPage() {
-  const navigate = useNavigate();
   useModelJobsStream();
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
@@ -264,6 +264,7 @@ export default function ModelsPage() {
   const [detail, setDetail] = useState<string | null>(null);
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
   const [strataDetail, setStrataDetail] = useState<string | null>(null);
+  const [mayaDetail, setMayaDetail] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [localDeleting, setLocalDeleting] = useState<{ alias: string; runtime: LocalRuntime } | null>(null);
@@ -273,6 +274,7 @@ export default function ModelsPage() {
   const [reordering, setReordering] = useState(false);
   const [swapConfirm, setSwapConfirm] = useState<{ id: string; running: string } | null>(null);
 
+  const { data: mayaStatus } = useMayaStatus();
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
   const selectedRuntime = runtimeEnv?.policy.selected_runtime ?? "ollama";
@@ -462,13 +464,16 @@ export default function ModelsPage() {
         選択中: {isLocal
           ? `${RUNTIME_LABEL[selectedRuntime] ?? selectedRuntime} / ${BACKEND_LABEL[runtimeEnv?.policy.selected_backend ?? ""] ?? runtimeEnv?.policy.selected_backend ?? "-"}`
           : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
-        {isLocal && "ゲートウェイは登録済みllama.cpp・Strataモデルを同じアドレスで配ります。"}
+        {isLocal && "ゲートウェイは登録済みllama.cpp・Strata・Maya-Sモデルを同じアドレスで配ります。"}
         {!isLocal && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
       )}
 
       <ActiveModelJobs />
       {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
+      {tab === "llm" && isLocal && mayaStatus?.installed && !mayaStatus.configured && can("workflows.edit") && (
+        <MayaSSetupCard status={mayaStatus} />
+      )}
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "tts" && <TtsPanel />}
       {tab === "llm" && (<>
@@ -495,7 +500,7 @@ export default function ModelsPage() {
             const shared = endpoint && endpoint.aliases.length > 1;
             const openDetail = () => {
               if (runtime === "strata") setStrataDetail(id);
-              else if (runtime === "maya-s") navigate("/settings#feature-maya-s");
+              else if (runtime === "maya-s") setMayaDetail(true);
               else if (isLlama) setLlamaDetail(id);
               else setDetail(m.name);
             };
@@ -543,7 +548,13 @@ export default function ModelsPage() {
                     <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "", runtime)} className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
                       {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
-                    {isLocal && runtime === "maya-s" ? null : isLocal && runtime ? (
+                    {isLocal && runtime === "maya-s" ? (
+                      <DropdownMenu
+                        ariaLabel={`${m.name}の操作`}
+                        trigger={<IconDots />}
+                        items={[{ label: "詳細設定", onSelect: openDetail }]}
+                      />
+                    ) : isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
                         trigger={<IconDots />}
@@ -573,6 +584,7 @@ export default function ModelsPage() {
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
       {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
       {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
+      {mayaDetail && <MayaSDetailSheet onClose={() => setMayaDetail(false)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />

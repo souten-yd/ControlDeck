@@ -353,3 +353,25 @@ def test_addon_maya_rejects_unready_and_vision(managed, monkeypatch):
     for capability in ('text.generate', 'vision.analyze'):
         with pytest.raises(ai_gateway.AITargetUnavailable):
             asyncio.run(ai_gateway.resolve_ai_target(capability))
+
+
+def test_models_page_status_endpoint_reports_without_side_effects(admin_client, managed, monkeypatch):
+    """Models画面は未準備かどうかで「ダウンロード／既存モデル」を出し分ける。
+    状態の問い合わせでは取得・ビルド・起動を一切しない。"""
+    _installed(managed)
+    monkeypatch.setattr(maya_s, "_exec", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no exec")))
+    response = admin_client.get("/api/v1/features/maya-s/model")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["installed"] is True
+    assert body["configured"] is False
+    assert body["running"] is False
+    assert body["settings"]["context"] == 8192
+
+
+def test_model_preparation_jobs_are_listed_as_model_jobs():
+    """Modelsの進行表示は kind=model. のジョブを拾う。Maya-Sの準備・起動もそこへ出す。"""
+    from pathlib import Path
+    router = (Path(__file__).parents[1] / "app" / "features" / "router.py").read_text(encoding="utf-8")
+    for kind in ("prepare", "start", "existing"):
+        assert f'jobs.create("model.maya-s.{kind}"' in router
