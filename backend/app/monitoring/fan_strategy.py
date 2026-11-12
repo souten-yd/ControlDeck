@@ -63,6 +63,8 @@ class AdaptivePolicy:
         now: float,
         dt: float = INTERVAL_SECONDS,
         allow_stop: bool = False,
+        learning_enabled: bool = True,
+        stop_dwell_seconds: int = FAN_STOP_DWELL_SECONDS,
     ) -> dict:
         if not sensors:
             raise ValueError("thermal sensors unavailable")
@@ -133,7 +135,7 @@ class AdaptivePolicy:
         # Normal operation is passive system identification (no test load).
         # Tuning is slow, bounded, and asymmetric. Bad thermal performance
         # increases response, stable cool operation relaxes very slowly.
-        if power_w is not None and power_cap_w is not None and ratio >= 0.3:
+        if learning_enabled and power_w is not None and power_cap_w is not None and ratio >= 0.3:
             if margin_min < 10 and fast_rise:
                 self.warm_seconds += dt
                 self.cool_seconds = 0
@@ -175,7 +177,7 @@ class AdaptivePolicy:
         if allow_stop and cool and not fast_rise and now - self.last_stop_exit >= FAN_STOP_REARM_SECONDS:
             if self.cooling_since is None:
                 self.cooling_since = now
-            stop_permission = now - self.cooling_since >= FAN_STOP_DWELL_SECONDS
+            stop_permission = now - self.cooling_since >= max(FAN_STOP_DWELL_SECONDS, stop_dwell_seconds)
         else:
             self.cooling_since = None
 
