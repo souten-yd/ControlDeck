@@ -1,17 +1,16 @@
 name: Validate Strata and ControlDeck changes
 
+# Additional focused tests are manually requested only when required.
+# The normal review-ready PR workflow already covers the full test suite.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "deck.sh"
-      - ".github/workflows/strata-control-deck-validation.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
