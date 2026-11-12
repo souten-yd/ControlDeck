@@ -214,6 +214,7 @@ def apply(expected_sha: str) -> None:
                 _write_state({"phase": "succeeded", "old_sha": old, "new_sha": old})
                 return
             backup = _state_path().parent / ("backup-" + str(int(time.time())))
+            backup.mkdir(parents=True, mode=0o700, exist_ok=False)
             _cmd(["bash", str(REPO_ROOT / "deck.sh"), "backup", str(backup)], timeout=300)
             # Do not destroy user data or overwrite local edits.
             _git("merge", "--ff-only", fetched, timeout=60)
