@@ -19,11 +19,13 @@ type Device = {
   sensors: Sensor[];
   fan_rpm: number | null;
   curve_supported: boolean;
+  zero_rpm_supported: boolean;
 };
 type FanSettings = {
   enabled: boolean;
   bdf: string | null;
   min_percent: number;
+  allow_zero_rpm: boolean;
   targets_c: Record<string, number>;
 };
 type FanStatus = {
@@ -37,11 +39,15 @@ type FanStatus = {
     sensors: Sensor[];
     fan_rpm: number | null;
     floor_percent: number;
+    rise_c_per_min: number;
+    zero_rpm_permitted: boolean;
     critical_sensor: string;
     observed_at: number;
     curve: string | null;
   } | null;
   poll_interval_seconds: number;
+  zero_stable_seconds: number;
+  cool_hold_seconds: number;
   warning: string;
 };
 
@@ -102,7 +108,9 @@ export function FanControlSettings() {
               <span className="ml-3 tabular-nums">
                 ファン {data.active.fan_rpm === null ? "N/A" : data.active.fan_rpm + " RPM"}・
                 指令下限 {data.active.floor_percent}%・
-                優先センサー {data.active.critical_sensor}
+                優先センサー {data.active.critical_sensor}・
+                上昇傾向 {data.active.rise_c_per_min.toFixed(1)}°C/分
+                {data.active.zero_rpm_permitted && "・ファン停止許可中"}
               </span>
             )}
             {data.error && <p role="alert" className="mt-2 text-red-600">{data.error}</p>}
@@ -169,6 +177,32 @@ export function FanControlSettings() {
               className="w-20 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-right tabular-nums dark:border-zinc-700 dark:bg-zinc-950"
             />
           </label>
+          <label className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+            <span>
+              <span className="block">低温安定時のファン停止を許可（Zero RPM）</span>
+              <span className="block text-xs text-zinc-500">
+                初期OFF。全センサーが低温・温度安定を5分間継続した場合のみ、AMDファームウェアの停止機能を許可します。
+                上昇時は即座に解除します。
+              </span>
+              {selected && !selected.zero_rpm_supported && (
+                <span className="block text-xs text-amber-700 dark:text-amber-300">
+                  このGPU/ドライバには検証可能なZero RPM専用制御がありません。
+                </span>
+              )}
+            </span>
+            <input
+              type="checkbox"
+              aria-label="低温時のファン停止を許可"
+              checked={draft.allow_zero_rpm}
+              disabled={!selected?.zero_rpm_supported || saving}
+              onChange={(e) => update({ allow_zero_rpm: e.target.checked })}
+              className="h-5 w-5 shrink-0"
+            />
+          </label>
+          <p className="text-xs text-zinc-500">
+            LLMの負荷率には反応せず、温度上昇を検知すると即加速します。低温方向は3分保持後、45秒ごとに最大5%ずつ減速します。
+            通常時はアイドル回転を維持します。
+          </p>
           <label className="flex min-h-11 items-center justify-between gap-3 rounded-lg bg-zinc-50 px-3 text-sm dark:bg-zinc-800">
             温度制御を有効にする（初期OFF）
             <input type="checkbox" checked={draft.enabled} onChange={(e) => update({ enabled: e.target.checked })} className="h-5 w-5" />
@@ -176,7 +210,7 @@ export function FanControlSettings() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={saving || (draft.enabled && (!selected?.curve_supported || !data.helper_installed))}
+              disabled={saving || (draft.enabled && (!selected?.curve_supported || !data.helper_installed || (draft.allow_zero_rpm && !selected?.zero_rpm_supported)))}
               onClick={() => void save({ ...draft, bdf: selected?.bdf ?? draft.bdf })}
               className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40"
             >
