@@ -222,7 +222,7 @@ def zero_rpm_nodes(device: Path) -> tuple[Path, Path, int]:
         on_info = enable.read_text(encoding="ascii")
     except OSError as exc:
         fail(f"Zero RPMの安全温度範囲を読み取れません: {exc}")
-    if not re.search(r"(?m)^\s*ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
+    if not re.search(r"(?m)^\s*(?:FAN_)?ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
                      on_info.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in on_info else ""):
         fail("Zero RPM切替をファームウェアが許可していません")
     # Some AMD drivers prefix the name with FAN_, others do not.
@@ -246,7 +246,14 @@ def control_zero_rpm(action: str, bdf: str) -> None:
     if action not in ("allow", "deny"):
         fail("不正なZero RPM操作です")
     device = device_path(bdf)
-    enable, stop, stop_temp = zero_rpm_nodes(device)
+    if action == "allow":
+        enable, stop, stop_temp = zero_rpm_nodes(device)
+    else:
+        # On a fault, disabling zero RPM must not depend on the stop-temp
+        # node still existing or advertising the same OD_RANGE.
+        enable = device / "gpu_od/fan_ctrl/fan_zero_rpm_enable"
+        if not enable.is_file() or enable.is_symlink() or enable.resolve() != enable:
+            fail("Zero RPM無効化の制御ノードが利用できません")
     try:
         if action == "allow":
             # Install a conservative firmware fallback before enabling stop.
