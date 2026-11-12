@@ -64,6 +64,19 @@ def _llama_target(capability: AICapability) -> AITarget:
     return AITarget(base_url=base_url, model=model, gateway_managed=True)
 
 
+def _strata_target(capability: AICapability) -> AITarget:
+    from app.models_mgmt import strata, strata_gateway
+    if not strata.installed():
+        raise AITargetUnavailable("Strataは未導入です")
+    candidates = [item for item in strata_gateway.list_instances() if item.get("activated")]
+    if capability == "vision.analyze":
+        candidates = [item for item in candidates if item.get("vision", "on") != "off"]
+    if not candidates:
+        raise AITargetUnavailable(f"{capability} に対応する起動確認済みStrataモデルがありません")
+    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"]))
+    return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
+
+
 async def _ollama_target(capability: AICapability) -> AITarget:
     from app.models_mgmt import ollama
 
@@ -117,6 +130,8 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
     runtime = str(get_policy().selected_runtime)
     if runtime == "llama.cpp":
         return await asyncio.to_thread(_llama_target, capability)
+    if runtime == "strata":
+        return await asyncio.to_thread(_strata_target, capability)
     if runtime == "ollama":
         return await _ollama_target(capability)
     raise AITargetUnavailable(f"選択中 runtime {runtime!r} は AI gateway に未対応です")
@@ -144,7 +159,8 @@ def require_local_target(target: AITarget) -> None:
             raise ValueError()
     except ValueError as exc:
         raise AITargetUnavailable("local-only endpoint is invalid") from exc
-    instances = llama.list_instances()
+    from app.models_mgmt import local_llm
+    instances = local_llm.list_instances()
     instance = next((item for item in instances if item.get("alias") == target.model
                      and item.get("base_url") == target.base_url), None)
     if not instance or instance.get("role", "llm") != "llm":

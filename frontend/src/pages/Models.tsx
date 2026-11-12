@@ -2059,26 +2059,35 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
-function StrataRegisterPanel({ onDone }: { onDone: () => void }) {
+type StrataSettings = { alias: string; family: "qwen" | "deepseek41"; model: string;
+  context: string; port: number; model_path?: string; kv?: string; vision?: string;
+  parallel?: number; drafting?: string; loaded?: boolean };
+
+function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?: StrataSettings }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const [alias, setAlias] = useState("qwen-flash-next");
-  const [family, setFamily] = useState<"qwen" | "deepseek41">("qwen");
-  const [model, setModel] = useState("iq2_xs");
-  const [context, setContext] = useState("32k");
-  const [port, setPort] = useState("8095");
+  const [alias, setAlias] = useState(initial?.alias ?? "qwen-flash-next");
+  const [family, setFamily] = useState<"qwen" | "deepseek41">(initial?.family ?? "qwen");
+  const [model, setModel] = useState(initial?.model ?? "iq2_xs");
+  const [context, setContext] = useState(initial?.context ?? "32k");
+  const [port, setPort] = useState(String(initial?.port ?? 8095));
+  const [modelPath, setModelPath] = useState(initial?.model_path ?? "");
+  const [kv, setKv] = useState(initial?.kv ?? "int8");
+  const [vision, setVision] = useState(initial?.vision ?? "on");
+  const [parallel, setParallel] = useState(initial?.parallel ?? 1);
+  const [drafting, setDrafting] = useState(initial?.drafting ?? "auto");
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
     try {
-      await api("/models/strata/instances", {
-        method: "POST", json: { alias, family, model, context, port: Number(port) },
+      await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
+        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting },
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["models", "local"] }),
         qc.invalidateQueries({ queryKey: ["strata-instances"] }),
       ]);
-      show("Strataモデルを登録しました。「ロード」で初回ダウンロードと起動を開始できます");
+      show("Strataモデルを登録しました。「ロード」でモデルの準備と起動を開始できます");
       onDone();
     } catch (e) {
       show(e instanceof Error ? e.message : "Strataモデル登録に失敗しました", "error");
@@ -2087,7 +2096,7 @@ function StrataRegisterPanel({ onDone }: { onDone: () => void }) {
   return <div className="space-y-3">
     <p className="text-xs text-zinc-500">登録だけではモデルをダウンロードしません。Strataはローカル限定で起動し、共通ゲートウェイに接続します。</p>
     <label className="block text-xs">モデル別名
-      <input aria-label="Strataモデル別名" value={alias} onChange={(e) => setAlias(e.target.value)}
+      <input aria-label="Strataモデル別名" disabled={!!initial} value={alias} onChange={(e) => setAlias(e.target.value)}
         className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
     </label>
     <label className="block text-xs">モデル系列
@@ -2098,6 +2107,12 @@ function StrataRegisterPanel({ onDone }: { onDone: () => void }) {
         <option value="qwen">Qwen Flash-Next</option>
         <option value="deepseek41">DeepSeek V4.1 Flash</option>
       </select>
+    </label>
+    <label className="block text-xs">既存GGUFのパス（任意）
+      <input aria-label="Strata既存GGUFパス" value={modelPath} onChange={(e) => setModelPath(e.target.value)}
+        placeholder="/data1tb/LLM/.../model-00001-of-00002.gguf"
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+      <span className="text-zinc-500">分割モデルは最初のファイルを指定します。空欄の場合はロード時に取得します。</span>
     </label>
     <label className="block text-xs">量子化
       <select aria-label="Strataモデル量子化" value={model} onChange={(e) => setModel(e.target.value)}
@@ -2112,6 +2127,21 @@ function StrataRegisterPanel({ onDone }: { onDone: () => void }) {
         {["8k", "16k", "32k", "64k", "128k"].map((item) => <option key={item}>{item}</option>)}
       </select>
     </label>
+    {([
+      ["KVキャッシュ", kv, setKv, ["int8", "q4_0", "k8v4", "fp16"]],
+      ["画像入力", vision, setVision, ["on", "off", "gpu", "cpu"]],
+      ["投機デコード", drafting, setDrafting, ["auto", "mtp", "dflash2", "off"]],
+    ] as const).map(([label, value, setter, choices]) => <label key={label} className="block text-xs">{label}
+      <select aria-label={`Strata${label}`} value={value} onChange={(e) => setter(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        {choices.map((choice) => <option key={choice}>{choice}</option>)}
+      </select>
+    </label>)}
+    <label className="block text-xs">同時実行数
+      <input aria-label="Strata同時実行数" type="number" min={1} max={8} value={parallel}
+        onChange={(e) => setParallel(Number(e.target.value))}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+    </label>
     <label className="block text-xs">ポート
       <input aria-label="Strataポート" type="number" min={8081} max={65535} value={port}
         onChange={(e) => setPort(e.target.value)}
@@ -2119,24 +2149,30 @@ function StrataRegisterPanel({ onDone }: { onDone: () => void }) {
     </label>
     <button disabled={saving} onClick={() => void save()}
       className="w-full rounded-xl bg-accent-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
-      {saving ? "登録中…" : "Strataモデルを登録"}
+      {saving ? "保存中…" : initial ? "設定を保存" : "Strataモデルを登録"}
     </button>
   </div>;
 }
 
 function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
+  const [editing, setEditing] = useState(false);
   const { data } = useQuery({
     queryKey: ["strata-instances"], queryFn: () => api<{
       runtime: { installed: boolean; models_dir: string };
-      instances: Array<{alias: string; family: string; model: string; context: string; port: number; loaded: boolean}>;
+      instances: StrataSettings[];
     }>("/models/strata/instances"), refetchInterval: 5000,
   });
   const item = data?.instances.find((model) => model.alias === alias);
   return <BottomSheet title={`Strata · ${alias}`} onClose={onClose}>
-    {item ? <div className="space-y-2 text-sm">
+    {item && editing ? <StrataRegisterPanel initial={item} onDone={() => setEditing(false)} /> : item ? <div className="space-y-2 text-sm">
       <p>モデル: {item.family} / {item.model}</p>
       <p>コンテキスト: {item.context}　ポート: {item.port}</p>
       <p>状態: {item.loaded ? "稼働中" : "停止中"}</p>
+      <p>KV: {item.kv ?? "int8"} / 同時実行: {item.parallel ?? 1} / 投機デコード: {item.drafting ?? "auto"}</p>
+      {item.model_path && <p className="break-all text-xs">既存モデル: {item.model_path}</p>}
+      <button disabled={item.loaded} onClick={() => setEditing(true)}
+        className="rounded-lg border border-zinc-500 px-3 py-2 disabled:opacity-40">設定を変更</button>
+      {item.loaded && <p className="text-xs text-zinc-500">設定変更はモデルを停止してから行えます。</p>}
       <p className="break-all text-xs text-zinc-500">モデル保存先: {data?.runtime.models_dir}</p>
       <p className="text-xs text-zinc-500">モデルの削除は行いません。初回ロードはモデルダウンロードを含み、バックグラウンドジョブで実行します。</p>
     </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
