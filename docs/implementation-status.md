@@ -3795,4 +3795,4 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 
 ## AMD GPU Smart Fan Control（2026-11-12、Draft・実機未検証）
 
-Settings > ファンコントロールにamdgpuのファンカーブを使う多温度センサー制御を実装中。R9700実機、ローカルpytest、Frontend build、モバイル表示は未検証。**必要な実機検証までマージ・リリース不可**。設計と検証手順は docs/design-amd-smart-fan.md を参照。
+Settings > ファンコントロールにamdgpuのファンカーブを使う多温度センサー制御を実装中。GUIには温度・最低ファン・減速保持/間隔/幅・Zero RPM猶予・FF/PIゲイン・学習切替のスライダー、GPU OD_RANGEベースのカーブプレビュー、推奨/静音/冷却優先プリセットを追加。設定の保存/読み取りは既存FanSettingsに統合し、安全上限をバックエンド側で検証。R9700実機、ローカルpytest、Frontend build、モバイル表示は未検証。**必要な実機検証までマージ・リリース不可**。設計と検証手順は docs/design-amd-smart-fan.md を参照。
