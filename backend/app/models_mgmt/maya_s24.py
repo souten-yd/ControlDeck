@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import re
+import socket
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,22 @@ def models_dir() -> Path:
 
 def _marker() -> Path:
     return root() / "managed.json"
+
+
+def _ensure_alias_port_available() -> None:
+    from app.models_mgmt import local_llm
+    other = local_llm.alias_taken_by_other_runtime(_ALIAS, "maya-s24")
+    if other:
+        raise MayaError(f"別のランタイム({other})がMaya-S24のモデル名を使用しています")
+    other = local_llm.port_taken_by_other_runtime(_PORT, "maya-s24")
+    if other:
+        raise MayaError(f"別のランタイム({other})がMaya-S24のAPIポートを使用しています")
+
+
+def _port_busy() -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
+        conn.settimeout(0.5)
+        return conn.connect_ex(("127.0.0.1", _PORT)) == 0
 
 
 def _prepared_marker() -> Path:
@@ -288,6 +305,7 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
         raise MayaError("Maya-S24はセットアップ済みです。再設定は手動で行ってください")
     if os.geteuid() == 0:
         raise MayaError("root実行は禁止されています")
+    _ensure_alias_port_available()
     models_dir().mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(models_dir()).free < 110 * 1000**3:
         raise MayaError("モデル準備には約110GB以上の空き領域が必要です")
@@ -317,6 +335,9 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     if _running():
         return True, ""
     try:
+        _ensure_alias_port_available()
+        if _port_busy():
+            raise MayaError("127.0.0.1:8099が別のサーバーに使用されています")
         _exec(["systemd-run", "--user", "--collect", "--unit",
                _UNIT.removesuffix(".service"), "--working-directory", str(source()),
                "bash", str(entrypoint()), "--config", str(_config()), "--port",
