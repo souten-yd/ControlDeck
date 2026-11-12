@@ -165,7 +165,7 @@ def _zero_capable(directory: Path) -> bool:
         enable_info = enable.read_text(encoding="ascii")
     except OSError:
         return False
-    if not re.search(r"(?m)^\s*ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
+    if not re.search(r"(?m)^\s*(?:FAN_)?ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
                      enable_info.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in enable_info else ""):
         return False
     if "OD_RANGE:" not in contents:
@@ -463,6 +463,7 @@ def tick() -> None:
             _temp_history = {}
             _cool_since = None
             _zero_stable_since = None
+            _policy.reset_dwell(now)
             logger.warning("GPU温度の継続観測が途絶えたため低速化/停止の待機判定をリセット")
         _last_tick_at = now
         if _pending_reset_bdf and now - _last_reset_retry >= 10:
@@ -544,12 +545,13 @@ def tick() -> None:
                 _applied_floor = floor
 
             if settings.allow_zero_rpm and device["zero_rpm_supported"] and not _zero_active:
-                eligible = _stop_entry_safe(sensors, rise) and strategy["zero_stop_eligible"]
+                eligible = _stop_entry_safe(sensors, rise)
                 _zero_stable_since = (
                     now if eligible and _zero_stable_since is None
                     else _zero_stable_since if eligible else None
                 )
-                if _zero_stable_since is not None and now - _zero_stable_since >= ZERO_STABLE_SECONDS:
+                if (_zero_stable_since is not None and now - _zero_stable_since >= ZERO_STABLE_SECONDS
+                        and strategy["zero_stop_eligible"]):
                     # PMFW auto owns the stopped state. Do not force PWM=0.
                     _helper("reset", bdf)
                     _helper("zero-allow", bdf)
@@ -562,10 +564,11 @@ def tick() -> None:
             if not _zero_active:
                 _save_learning(bdf, now)
             _active_bdf, _floor, _sensor_ids = bdf, floor, ids
-            _state, _error = "controlling", ""
+            _state, _error = ("fan-stop" if _zero_active else "controlling"), ""
             _last_sample = {
                 "bdf": bdf, "sensors": sensors, "fan_rpm": rpm,
-                "floor_percent": floor, "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
+                "floor_percent": None if _zero_active else floor,
+                "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
                 "rise_c_per_min": _last_rise_c_per_min,
                 "zero_rpm_permitted": _zero_active, "cool_hold_seconds": COOL_HOLD_SECONDS,
                 "power_ema_w": strategy["power_ema_w"],
