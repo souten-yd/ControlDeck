@@ -344,9 +344,18 @@ async def health(alias: str = _ALIAS) -> dict:
                 return {"ok": False, "status_code": response.status_code}
             # Maya reports unloaded after an idle unload. Do not claim ready.
             state = response.json()
-            if isinstance(state, dict) and state.get("status") in ("unloaded", "loading", "error"):
+            if not isinstance(state, dict) or state.get("status") != "ok" or state.get("unloaded") is True:
                 return {"ok": False, "status_code": 200}
-            return {"ok": isinstance(state, dict), "status_code": 200}
+            models = await client.get(f"http://127.0.0.1:{_PORT}/v1/models")
+            if models.status_code != 200:
+                return {"ok": False, "status_code": models.status_code}
+            payload = models.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            loaded = any(
+                isinstance(m, dict) and m.get("status", {}).get("value") == "loaded"
+                for m in (data if isinstance(data, list) else [])
+            )
+            return {"ok": loaded, "status_code": 200}
     except (httpx.HTTPError, ValueError):
         return {"ok": False, "status_code": None}
 
