@@ -71,6 +71,14 @@ FEATURES: dict[str, dict] = {
         "repo": "souten-yd/llama-builder",
         "summary": "GGUFモデルを動かすローカルLLMランタイム。ROCmビルドはROCm 10系へ統一",
     },
+    "maya-s24": {
+        "name": "Project Maya-S24（GLM-5.3-Flash / R9700）",
+        "kind": "gpu-runtime",
+        "executable": "maya.sh",
+        "route_gated": False,
+        "repo": "mw00/project-maya",
+        "summary": "Maya-S24（約94.7GB）専用の独立推論エンジン。導入時はコードのみ。モデルは別途明示して取得",
+    },
     "strata": {
         "name": "Strata（ローカルLLM Terminal / R9700）",
         "kind": "gpu-runtime",
@@ -146,9 +154,13 @@ def _managed_executable(feature_id: str) -> Path:
     root = _feature_root(feature_id)
     if spec["kind"] == "gpu-runtime":
         # 実体は data/runtimes/ 配下。features root は使わない。
-        from app.models_mgmt import llama, strata
+        from app.models_mgmt import llama, strata, maya_s24
 
-        return llama.server_path() if feature_id == "llama-cpp" else strata.binary_path()
+        if feature_id == "llama-cpp":
+            return llama.server_path()
+        if feature_id == "maya-s24":
+            return maya_s24.entrypoint()
+        return strata.binary_path()
     if spec["kind"] == "release-bundle":
         from app.features import release_bundle
 
