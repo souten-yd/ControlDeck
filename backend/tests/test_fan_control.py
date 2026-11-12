@@ -410,7 +410,7 @@ def test_recommended_presets_safe_and_consistent():
     from app.monitoring.fan_control import FAN_PRESETS, FanSettings
 
     builtins = {preset["id"]: preset for preset in FAN_PRESETS}
-    assert set(builtins) == {"recommended", "llm_r9700", "quiet", "cooling"}
+    assert set(builtins) == {"recommended", "llm_r9700", "llm_quiet", "quiet", "cooling"}
     default = FanSettings()
     assert default.preset_id == "recommended"
     assert default.enabled is False
@@ -709,3 +709,67 @@ def test_hotspot_jump_far_from_target_does_not_max_the_fan():
                  (24, 31), (27, 31), (30, 31), (33, 51)):
         rate = fan._rise_rate([{"id": "temp2", "value_c": v}], 1000 + t)
     assert rate <= 40
+
+
+def test_rise_rate_ignores_plateau_after_load_start_jump():
+    """実機R9700: hotspotが72→81°Cへ跳ねた直後に横ばいでも、30秒窓の傾きだけで
+    「上昇中」と見なし、81°C/90°Cで100%まで上げていた。"""
+    fan = fan_module()
+    fan._temp_history = {}
+    rate = 0.0
+    for t, v in ((0, 72), (3, 75), (6, 78), (9, 80), (12, 81), (15, 81), (18, 81),
+                 (21, 81), (24, 81), (27, 81), (30, 81), (33, 81)):
+        rate = fan._rise_rate([{"id": "temp2", "value_c": v}], 2000 + t)
+    assert rate == 0
+    # A rise that continues is still detected.
+    fan._temp_history = {}
+    for t in range(0, 36, 3):
+        rate = fan._rise_rate([{"id": "temp2", "value_c": 60 + t / 3}], 3000 + t)
+    assert rate > 15
+
+
+def test_prediction_uses_each_sensors_own_rise():
+    """hotspot 80/90°Cで横ばい、mem 66/85°Cが上昇中のとき、memの上昇を
+    hotspotの余裕に当てはめて87%まで上げていた。"""
+    from app.monitoring.fan_control import _predictive_floor
+    sensors = [{"id": "temp2", "value_c": 81, "headroom_c": 9},
+               {"id": "temp3", "value_c": 66, "headroom_c": 19}]
+    steady = _predictive_floor(sensors, 20, 100, {"temp2": 0.0, "temp3": 0.0})
+    assert _predictive_floor(sensors, 20, 100, {"temp2": 0.0, "temp3": 15.0}) == steady
+    assert _predictive_floor(sensors, 20, 100, {"temp2": 15.0, "temp3": 0.0}) > steady
+
+
+def test_curve_backstop_point_can_move_later():
+    fan = fan_module()
+    assert fan._curve((25, 100, 15, 100), 20, 40, 85) == "25:20,45:20,65:20,85:40,95:100"
+    # Default stays on the measured R9700 layout.
+    assert fan._curve((25, 100, 15, 100), 20, 60, None) == "25:20,42:20,60:20,77:60,95:100"
+    quiet = next(p for p in fan.FAN_PRESETS if p["id"] == "llm_quiet")
+    assert quiet["backstop_c"] == 85 and quiet["target_offset_c"] == 5
+
+
+def test_single_hotspot_spike_is_not_a_rise():
+    """3秒1回だけの+8°Cの跳ねを上昇と見なし、予測で84%に上げていた。"""
+    fan = fan_module()
+    fan._temp_history = {}
+    rate = 0.0
+    for t in range(0, 45, 3):
+        rate = fan._rise_rate([{"id": "temp2", "value_c": 86 if t == 42 else 78}], 4000 + t)
+    assert rate == 0
+
+
+def test_llm_quiet_preset_targets_per_sensor_kind():
+    fan = fan_module()
+    quiet = next(p for p in fan.FAN_PRESETS if p["id"] == "llm_quiet")
+    targets = {label: min(95, base + fan.preset_target_offset(quiet, {"label": label}))
+               for label, base in (("edge", 75), ("junction", 90), ("mem", 85))}
+    assert targets == {"edge": 85, "junction": 95, "mem": 90}
+
+
+def test_hotspot_climb_is_not_extrapolated():
+    """hotspotは数秒でファンに追従する。86/95°Cへの上昇を先読みして83〜100%にしていた。"""
+    from app.monitoring.fan_control import _predictive_floor
+    hot = [{"id": "temp2", "label": "junction", "kind": "junction", "value_c": 86, "headroom_c": 9}]
+    assert _predictive_floor(hot, 20, 100, {"temp2": 15.0}) == _predictive_floor(hot, 20, 100, {"temp2": 0.0})
+    mem = [{"id": "temp3", "label": "mem", "kind": "mem", "value_c": 81, "headroom_c": 9}]
+    assert _predictive_floor(mem, 20, 100, {"temp3": 15.0}) > _predictive_floor(mem, 20, 100, {"temp3": 0.0})

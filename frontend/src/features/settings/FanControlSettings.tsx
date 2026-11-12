@@ -6,7 +6,7 @@ import { useToasts } from "../../stores";
 type FanSettings = {
   enabled: boolean;
   bdf: string | null;
-  preset_id: "recommended" | "llm_r9700" | "quiet" | "cooling" | "custom";
+  preset_id: "recommended" | "llm_r9700" | "llm_quiet" | "quiet" | "cooling" | "custom";
   min_percent: number;
   allow_zero_rpm: boolean;
   cool_hold_seconds: number;
@@ -17,16 +17,33 @@ type FanSettings = {
   ff_gain: number;
   kp: number;
   ki: number;
+  /** ファンカーブの安全点（hotspot基準）。コントローラ停止時にも残る */
+  backstop_percent: number;
+  /** 安全点の温度。null = GPU範囲の3/4（R9700は77°C） */
+  backstop_c: number | null;
   targets_c: Record<string, number>;
   /** PC起動後: 保存設定を自動で再適用 / GPU標準のまま起動 */
   startup_mode?: "apply_saved" | "firmware";
 };
 type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c" | "startup_mode"> & {
-  id: "recommended" | "quiet" | "cooling";
+  id: "recommended" | "llm_r9700" | "llm_quiet" | "quiet" | "cooling";
   label: string;
   description: string;
   target_offset_c: number;
+  /** センサー種別（edge / junction / mem）ごとの上書き */
+  target_offsets_c?: Record<string, number>;
 };
+
+function sensorKind(label: string) {
+  if (/mem|vram/i.test(label)) return "mem";
+  if (/junction|hotspot/i.test(label)) return "junction";
+  return "edge";
+}
+
+function presetTarget(preset: FanPreset | undefined, sensor: Sensor) {
+  const offset = preset?.target_offsets_c?.[sensorKind(sensor.label)] ?? preset?.target_offset_c ?? 0;
+  return Math.max(45, Math.min(sensor.max_target_c, sensor.default_target_c + offset));
+}
 type Sensor = {
   id: string;
   label: string;
@@ -124,8 +141,8 @@ function RangeControl({
   );
 }
 
-function FanCurvePreview({ device, minimum, activeCurve }: {
-  device: FanDevice; minimum: number; activeCurve: string | null;
+function FanCurvePreview({ device, minimum, activeCurve, backstop, backstopC }: {
+  device: FanDevice; minimum: number; activeCurve: string | null; backstop: number; backstopC: number | null;
 }) {
   const limits = device.curve_limits;
   if (!limits) return null;
@@ -133,9 +150,13 @@ function FanCurvePreview({ device, minimum, activeCurve }: {
   const start = Math.max(t0, 25);
   const end = Math.min(t1, 95);
   if (end - start < 4) return null;
-  const baseline = [minimum, minimum, minimum, Math.max(minimum, 60), p1].map((v, index) => ({
-    temp: start + Math.floor(((end - start) * index) / 4),
-    percent: Math.min(p1, Math.max(p0, minimum, v)),
+  // backend _curve と同じ配置: 安全点（knee）までを3等分、最後は最大温度で100%
+  const knee = backstopC == null ? start + Math.floor(((end - start) * 3) / 4)
+    : Math.max(start + 3, Math.min(end - 1, backstopC));
+  const temps = [start, Math.round(start + (knee - start) / 3), Math.round(start + ((knee - start) * 2) / 3), knee, end];
+  const baseline = [minimum, minimum, minimum, Math.max(minimum, backstop), p1].map((v, index) => ({
+    temp: temps[index],
+    percent: index === 4 ? p1 : Math.min(p1, Math.max(p0, minimum, v)),
   }));
   const fromHardware = activeCurve?.split(",").map((item) => {
     const [a, b] = item.split(":").map(Number);
@@ -235,13 +256,14 @@ export function FanControlSettings() {
     if (!draft) return;
     const targets: Record<string, number> = {};
     for (const sensor of selected?.sensors ?? []) {
-      targets[sensor.id] = Math.max(45, Math.min(sensor.max_target_c, sensor.default_target_c + preset.target_offset_c));
+      targets[sensor.id] = presetTarget(preset, sensor);
     }
     setDraft({ ...draft, preset_id: preset.id, min_percent: preset.min_percent,
       allow_zero_rpm: preset.allow_zero_rpm, cool_hold_seconds: preset.cool_hold_seconds,
       cool_rate_percent_per_min: preset.cool_rate_percent_per_min,
       zero_stable_seconds: preset.zero_stable_seconds, learning_enabled: preset.learning_enabled,
       ff_gain: preset.ff_gain, kp: preset.kp, ki: preset.ki, targets_c: targets,
+      backstop_percent: preset.backstop_percent, backstop_c: preset.backstop_c,
     });
   };
 
@@ -274,7 +296,8 @@ export function FanControlSettings() {
       {data && draft && (
         <div className="mt-4 space-y-4">
           {selected && <FanCurvePreview device={selected} minimum={draft.min_percent}
-            activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}/>}
+            activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}
+            backstop={draft.backstop_percent ?? 60} backstopC={draft.backstop_c ?? null}/>}
           <div className={surface} role="status" aria-live="polite">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <strong>{data.state === "controlling" ? "温度制御中" : data.state === "fan-stop"
@@ -319,8 +342,7 @@ export function FanControlSettings() {
               const preset = data.presets.find((item) => item.id === draft.preset_id);
               const targets: Record<string, number> = {};
               for (const sensor of device?.sensors ?? []) {
-                targets[sensor.id] = Math.max(45, Math.min(sensor.max_target_c,
-                  sensor.default_target_c + (preset?.target_offset_c ?? 0)));
+                targets[sensor.id] = presetTarget(preset, sensor);
               }
               update({ bdf: e.target.value || null, targets_c: targets }, false);
             }}
@@ -333,7 +355,7 @@ export function FanControlSettings() {
             </select>
           </label>
           {selected && selected.restore_supported === false && <p className="text-xs text-amber-700 dark:text-amber-300">
-            このGPUは標準の自動制御へ戻すとファン設定が壊れるため、無効化・異常時・ControlDeck停止時も最後のファンカーブ（最低回転＋60/77/95°Cの安全網）を保持します。標準の自動制御にはPCの再起動で戻ります。
+            このGPUは標準の自動制御へ戻すとファン設定が壊れるため、無効化・異常時・ControlDeck停止時も最後のファンカーブ（最低回転＋安全点と最大温度での100%）を保持します。標準の自動制御にはPCの再起動で戻ります。
           </p>}
           {!data.helper_installed && <p className="text-xs text-amber-700">固定権限helperが未登録です。 ./deck.sh service で登録してください。</p>}
 
@@ -406,6 +428,12 @@ export function FanControlSettings() {
               <RangeControl label="減速の速さ（なめらかに下げる）" min={1} max={60} step={1}
                 value={draft.cool_rate_percent_per_min} suffix="%/分" hint="保持のあと、段階ではなく連続的に下げます。加速は常に即時です。"
                 onChange={(value) => update({ cool_rate_percent_per_min: value })}/>
+              <RangeControl label="ファンカーブ安全点の温度（hotspot）" min={70} max={90} step={1}
+                value={draft.backstop_c ?? 77} suffix="°C" hint="この温度で下の回転数、最大温度で100%になります。高くするとLLMの連続負荷で静か。制御が止まってもGPUがこの曲線で冷やします。"
+                onChange={(value) => update({ backstop_c: value })}/>
+              <RangeControl label="ファンカーブ安全点の回転数" min={25} max={100} step={5}
+                value={draft.backstop_percent ?? 60} suffix="%" hint="コントローラが停止してもGPUに残る保護。低くするほど静かですが、保護は弱くなります。"
+                onChange={(value) => update({ backstop_percent: value })}/>
               <RangeControl label="Zero RPM停止判定の継続時間" min={600} max={1800} step={60}
                 value={draft.zero_stable_seconds} suffix="秒" hint="最低10分。短いGPU負荷の谷では停止しません。"
                 onChange={(value) => update({ zero_stable_seconds: value })}/>

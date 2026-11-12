@@ -52,7 +52,7 @@ class FanSettings(BaseModel):
     # Firmware (R9700) accepts 15–100%; the curve also clamps to the device minimum.
     min_percent: int = Field(default=35, ge=15, le=70)
     allow_zero_rpm: bool = False
-    preset_id: Literal["recommended", "llm_r9700", "quiet", "cooling", "custom"] = "recommended"
+    preset_id: Literal["recommended", "llm_r9700", "llm_quiet", "quiet", "cooling", "custom"] = "recommended"
     # After cooling starts, hold this long, then ramp down continuously.
     cool_hold_seconds: int = Field(default=30, ge=30, le=600)
     cool_rate_percent_per_min: float = Field(default=30.0, ge=1.0, le=60.0, allow_inf_nan=False)
@@ -61,6 +61,13 @@ class FanSettings(BaseModel):
     ff_gain: float = Field(default=10.0, ge=0.0, le=55.0, allow_inf_nan=False)
     kp: float = Field(default=1.0, ge=0.5, le=3.2, allow_inf_nan=False)
     ki: float = Field(default=0.015, ge=0.005, le=0.03, allow_inf_nan=False)
+    # Firmware backstop at the 77°C curve point (read by HOTSPOT). It also
+    # holds when the controller stops, so it cannot go below 25%.
+    backstop_percent: int = Field(default=60, ge=25, le=100)
+    # Temperature of that point. None = 3/4 of the firmware range (77°C on the
+    # R9700). A later point keeps the steep backstop→100% segment out of the
+    # normal LLM hotspot range (quiet preset).
+    backstop_c: int | None = Field(default=None, ge=70, le=90)
     targets_c: dict[str, int] = Field(default_factory=dict, max_length=16)
     # What to do after the PC boots (PMFW auto is active after every boot):
     # "apply_saved" re-applies these settings; "firmware" keeps GPU auto until
@@ -128,7 +135,7 @@ FAN_PRESETS = (
     {"id": "recommended", "label": "推奨・バランス", "description": "LLM常駐向け。常時低速・昇温時即加速・静かな降速",
      "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
-     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "target_offset_c": 0},
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0},
     # Tuned on the R9700 with Qwen3.8-27B (llama.cpp) bursts and a 3 min
     # sustained run (2026-11-13): idle ~890 rpm, short bursts stay at idle,
     # sustained ~3100 rpm at hotspot 78/90°C, mem 70/85°C, edge 55/75°C,
@@ -137,15 +144,26 @@ FAN_PRESETS = (
      "description": "実機のLLM負荷で調整。短い負荷では回さず、連続負荷でも約3100rpm。終了後約25秒で静音に戻る",
      "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
-     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "target_offset_c": 0},
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0},
+    # Same R9700 workload (2026-11-13): hotspot 95, mem 90, edge 85°C
+    # (criticals 110/108/110°C) and the backstop moved to 85°C→40%.
+    # Sustained: steady 49% / ~2400 rpm (avg 2190, was ~3100), hotspot 86,
+    # mem 76, edge 62°C; bursts stay at idle ~890 rpm.
+    {"id": "llm_quiet", "label": "LLM静音（R9700実測）",
+     "description": "温度目標を上げ（hotspot 95・mem 90・edge 85°C）、安全点を85°Cに移した静音版。連続負荷でも約2400rpmで一定",
+     "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
+     "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
+     "backstop_percent": 40, "backstop_c": 85, "target_offset_c": 5,
+     "target_offsets_c": {"edge": 10}},
     {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",
      "min_percent": 30, "allow_zero_rpm": False, "cool_hold_seconds": 120,
      "cool_rate_percent_per_min": 10.0, "zero_stable_seconds": 900,
-     "learning_enabled": True, "ff_gain": 5.0, "kp": 0.8, "ki": 0.015, "target_offset_c": 0},
+     "learning_enabled": True, "ff_gain": 5.0, "kp": 0.8, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0},
     {"id": "cooling", "label": "冷却優先", "description": "最低回転と冷却余裕を増やした保守的設定",
      "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 60,
      "cool_rate_percent_per_min": 15.0, "zero_stable_seconds": 900,
-     "learning_enabled": True, "ff_gain": 20.0, "kp": 2.0, "ki": 0.015, "target_offset_c": -5},
+     "learning_enabled": True, "ff_gain": 20.0, "kp": 2.0, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": -5},
 )
 
 
@@ -160,14 +178,14 @@ def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanS
     keys = (
         "min_percent", "allow_zero_rpm", "cool_hold_seconds",
         "cool_rate_percent_per_min", "zero_stable_seconds",
-        "learning_enabled", "ff_gain", "kp", "ki",
+        "learning_enabled", "ff_gain", "kp", "ki", "backstop_percent", "backstop_c",
     )
     if any(getattr(settings, key) != preset[key] for key in keys):
         return settings.model_copy(update={"preset_id": "custom"})
     if device is not None:
         for sensor in device["sensors"]:
             expected = max(45, min(sensor["max_target_c"],
-                                    sensor["default_target_c"] + preset["target_offset_c"]))
+                                    sensor["default_target_c"] + preset_target_offset(preset, sensor)))
             actual = settings.targets_c.get(sensor["id"], sensor["default_target_c"])
             if actual != expected:
                 return settings.model_copy(update={"preset_id": "custom"})
@@ -287,6 +305,21 @@ def _zero_capable(directory: Path) -> bool:
     return 25 <= lower <= ZERO_STOP_TEMP_C and max(50, lower) <= upper and lower < upper
 
 
+def _sensor_kind(label: str) -> str:
+    name = label.casefold()
+    if any(k in name for k in ("mem", "vram")):
+        return "mem"
+    if any(k in name for k in ("junction", "hotspot")):
+        return "junction"
+    return "edge"
+
+
+def preset_target_offset(preset: dict, sensor: dict) -> int:
+    """Per sensor kind offset (edge / junction / mem), else the common one."""
+    kind = sensor.get("kind") or _sensor_kind(str(sensor.get("label", "")))
+    return int(preset.get("target_offsets_c", {}).get(kind, preset["target_offset_c"]))
+
+
 def _smu_major(device: Path) -> int | None:
     return _read_int(device / "ip_discovery/die/0/MP1/0/major")
 
@@ -347,13 +380,13 @@ def _devices() -> list[dict]:
             upper = min(
                 [95] + [int(x / 1000) - margin for x, margin in ((critical, 5), (emergency, 10)) if x is not None]
             )
-            name = label.casefold()
-            default = 85 if any(k in name for k in ("mem", "vram")) else 90 if any(
-                k in name for k in ("junction", "hotspot")) else 75
+            kind = _sensor_kind(label)
+            default = {"mem": 85, "junction": 90}.get(kind, 75)
             sensors.append({
                 "id": sid, "label": label, "value_c": current,
                 "crit_c": critical / 1000 if critical is not None else None,
                 "emergency_c": emergency / 1000 if emergency is not None else None,
+                "kind": kind,
                 "max_target_c": upper,
                 "default_target_c": min(default, upper),
             })
@@ -448,18 +481,22 @@ def _helper(action: str, bdf: str, curve: str | None = None) -> None:
                               (result.stderr.strip()[:240] or f"exit {result.returncode}"))
 
 
-def _curve(ranges: tuple[int, int, int, int], floor: int) -> str:
+def _curve(ranges: tuple[int, int, int, int], floor: int,
+           backstop: int = 60, backstop_c: int | None = None) -> str:
     tmin, tmax, pmin, pmax = ranges
     start, end = max(tmin, 25), min(tmax, 95)
     if end - start < 4:
         raise FanControlError("GPUの温度カーブ範囲が狭すぎます")
-    anchor = [start + ((end - start) * i) // 4 for i in range(5)]
+    knee = start + ((end - start) * 3) // 4
+    if backstop_c is not None:
+        knee = max(start + 3, min(end - 1, backstop_c))
+    anchor = [start, round(start + (knee - start) / 3), round(start + (knee - start) * 2 / 3), knee, end]
     # The firmware reads this curve by HOTSPOT temperature. Measured on the
     # R9700: with 60°C→65% / 77°C→90% points, a hotspot of 61–69°C under LLM
     # load (target 90°C) spun the fan to 3000–4300 rpm although the controller
     # asked for 25–44%. Keep the floor up to 60°C, 60% at 77°C and maximum at
     # 95°C as the firmware backstop; the controller raises the floor by margin.
-    base = (floor, floor, floor, max(floor, BACKSTOP_77C_PERCENT), pmax)
+    base = (floor, floor, floor, max(floor, backstop), pmax)
     speeds = [min(pmax, max(pmin, floor, value)) for value in base]
     speeds[-1] = pmax
     return ",".join(f"{temp}:{pwm}" for temp, pwm in zip(anchor, speeds, strict=True))
@@ -473,43 +510,70 @@ def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
 
 
 def _rise_rate(sensors: list[dict], now: float) -> float:
+    return max(_rise_rates(sensors, now).values(), default=0.0)
+
+
+def _rise_rates(sensors: list[dict], now: float) -> dict[str, float]:
     """30–45 s thermal trend. A short window turned the hotspot's normal
     jump at LLM start (~20°C in seconds) into ">80°C/min" and drove 100%."""
-    maximum = 0.0
+    rates: dict[str, float] = {}
     for sensor in sensors:
         sensor_id = sensor["id"]
+        rates[sensor_id] = 0.0
         entries = _temp_history.setdefault(sensor_id, [])
         if entries and now < entries[-1][0]:
             entries.clear()
         entries.append((now, float(sensor["value_c"])))
         entries[:] = [(t, v) for t, v in entries if now - t <= 45]
-        baseline = [item for item in entries if now - item[0] >= 30]
-        if baseline:
-            old_time, old_value = baseline[0]
-            rate = (float(sensor["value_c"]) - old_value) * 60 / max(1, now - old_time)
-            maximum = max(maximum, rate)
-    return maximum
+        # Medians of ~3 samples: the hotspot jumps 5–8°C for a single 3 s
+        # reading under LLM load; one such reading looked like a fast rise
+        # and the prediction then held 84% for ~2 minutes.
+        def level(lo: float, hi: float) -> float | None:
+            values = sorted(v for t, v in entries if lo <= now - t <= hi)
+            return values[len(values) // 2] if values else None
+        current = level(0, 7)
+        recent = level(9, 16)
+        baseline = level(30, 45)
+        if current is not None and recent is not None and baseline is not None:
+            old_ages = [now - t for t, _ in entries if 30 <= now - t <= 45]
+            span = (old_ages[0] + old_ages[-1]) / 2 - 3
+            rate = (current - baseline) * 60 / max(1.0, span)
+            # A still-rising trend must also show in the last ~10 s. The
+            # hotspot plateaus right after its load-start jump; the 30 s trend
+            # alone kept "rising" and sent 80°C/90°C (flat) to 100%.
+            short = (current - recent) * 60 / 9.5
+            rates[sensor_id] = max(0.0, min(rate, short))
+    return rates
 
 
 PREDICT_AHEAD_MINUTES = 0.5
-BACKSTOP_77C_PERCENT = 60
 PREDICT_MAX_HEADROOM_C = 10.0
 
 
 def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
-                      rise_c_per_min: float) -> int:
+                      rise_c_per_min: float | dict[str, float]) -> int:
     """Raise early by the headroom expected 30 s ahead, on the same linear
-    ramp as the steady state. Far from the target a fast hotspot rise only
-    nudges the fan; close to the target it still goes to maximum."""
+    ramp as the steady state. Far from the target a fast rise only nudges the
+    fan; close to the target it still goes to maximum. Each sensor uses its
+    OWN rise: combining the hotspot's small headroom with the memory's rise
+    sent a flat 80°C/90°C hotspot to 87% on the R9700."""
     floor = _desired_floor(sensors, minimum, maximum)
-    headroom = min(s["headroom_c"] for s in sensors)
-    if headroom <= 0:
+    if min(s["headroom_c"] for s in sensors) <= 0:
         return maximum
-    # Only when already close to a target. Far from it, the hotspot's jump at
-    # load start plateaus quickly; extrapolating it drove ~85% at 64°C/90°C.
-    if rise_c_per_min > 1.5 and headroom < PREDICT_MAX_HEADROOM_C:
-        ahead = headroom - rise_c_per_min * PREDICT_AHEAD_MINUTES
-        floor = max(floor, margin_ramp(ahead, minimum, maximum))
+    for sensor in sensors:
+        # The hotspot follows the fan within seconds (R9700: 86→72°C in 12 s
+        # after a spin-up), so plain feedback is enough. Extrapolating its
+        # climb drove 83–100% at 86/95°C, then the hold kept it for minutes.
+        if (sensor.get("kind") or _sensor_kind(str(sensor.get("label", "")))) == "junction":
+            continue
+        headroom = sensor["headroom_c"]
+        rise = (rise_c_per_min.get(sensor["id"], 0.0) if isinstance(rise_c_per_min, dict)
+                else rise_c_per_min)
+        # Only when this sensor is already close to its target. Far from it,
+        # the hotspot's jump at load start plateaus quickly.
+        if rise > 1.5 and headroom < PREDICT_MAX_HEADROOM_C:
+            ahead = headroom - rise * PREDICT_AHEAD_MINUTES
+            floor = max(floor, margin_ramp(ahead, minimum, maximum))
     return min(maximum, floor)
 
 
@@ -644,7 +708,8 @@ def tick() -> None:
                 _temp_history, _cool_since, _zero_stable_since = {}, None, None
                 _new_policy(settings, bdf)
             maximum = device["_range"][3]
-            rise = _rise_rate(sensors, now)
+            rises = _rise_rates(sensors, now)
+            rise = max(rises.values(), default=0.0)
             _last_rise_c_per_min = round(rise, 2)
             strategy = _policy.update(
                 sensors,
@@ -655,13 +720,13 @@ def tick() -> None:
                 stop_dwell_seconds=settings.zero_stable_seconds,
             )
             # The independent safety floor wins over learned PI/FF output.
-            wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rise),
+            wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rises),
                          strategy["floor_percent"])
             floor = wanted if _active_bdf != bdf else _smooth_floor(
                 wanted, _floor, now, hold_seconds=settings.cool_hold_seconds,
                 rate_percent_per_min=settings.cool_rate_percent_per_min,
             )
-            curve = _curve(device["_range"], floor)
+            curve = _curve(device["_range"], floor, settings.backstop_percent, settings.backstop_c)
             hot = max(item["value_c"] for item in sensors)
             rpm = device["fan_rpm"]
 
