@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -47,7 +48,16 @@ class FanSettings(BaseModel):
     enabled: bool = False
     bdf: str | None = None
     min_percent: int = Field(default=35, ge=30, le=70)
-    allow_zero_rpm: bool = False  # Opt-in; native PMFW feature required
+    allow_zero_rpm: bool = False
+    preset_id: Literal["recommended", "quiet", "cooling", "custom"] = "recommended"
+    cool_hold_seconds: int = Field(default=180, ge=180, le=600)
+    cool_step_seconds: int = Field(default=45, ge=45, le=180)
+    cool_step_percent: int = Field(default=5, ge=1, le=5)
+    zero_stable_seconds: int = Field(default=600, ge=600, le=1800)
+    learning_enabled: bool = True
+    ff_gain: float = Field(default=25.0, ge=25.0, le=55.0)
+    kp: float = Field(default=1.8, ge=1.8, le=3.2)
+    ki: float = Field(default=0.015, ge=0.005, le=0.03)  # Opt-in; native PMFW feature required
     targets_c: dict[str, int] = Field(default_factory=dict, max_length=16)
 
     @field_validator("bdf")
@@ -93,6 +103,24 @@ _policy = AdaptivePolicy()
 _last_learning_save = 0.0
 _LEARNING_FILE = "amd-fan-learning.json"
 
+# Catalog is immutable and does not auto-enable hardware on selection.
+# Sensor goals are resolved per GPU against current critical limits in the UI.
+FAN_PRESETS = (
+    {"id": "recommended", "label": "推奨・バランス", "description": "LLM常駐向け。常時低速・昇温時即加速・静かな降速",
+     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 180,
+     "cool_step_seconds": 45, "cool_step_percent": 5, "zero_stable_seconds": 600,
+     "learning_enabled": True, "ff_gain": 25.0, "kp": 1.8, "ki": 0.015, "target_offset_c": 0},
+    {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",
+     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 300,
+     "cool_step_seconds": 90, "cool_step_percent": 3, "zero_stable_seconds": 900,
+     "learning_enabled": True, "ff_gain": 25.0, "kp": 1.8, "ki": 0.015, "target_offset_c": 0},
+    {"id": "cooling", "label": "冷却優先", "description": "最低回転と冷却余裕を増やした保守的設定",
+     "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 300,
+     "cool_step_seconds": 90, "cool_step_percent": 3, "zero_stable_seconds": 900,
+     "learning_enabled": True, "ff_gain": 30.0, "kp": 2.0, "ki": 0.015, "target_offset_c": -5},
+)
+
+
 
 def _setting_path() -> Path:
     return data_dir() / STATE_FILE
@@ -123,16 +151,28 @@ def _learning_file() -> Path:
     return data_dir() / _LEARNING_FILE
 
 
-def _load_learning(bdf: str) -> None:
+def _base_gains(settings: FanSettings) -> dict:
+    return {"ff_gain": settings.ff_gain, "kp": settings.kp, "ki": settings.ki}
+
+
+def _new_policy(settings: FanSettings, bdf: str) -> AdaptivePolicy:
+    global _policy
+    _policy = AdaptivePolicy(ff_gain=settings.ff_gain, kp=settings.kp, ki=settings.ki)
+    if settings.learning_enabled:
+        _load_learning(bdf, settings)
+    return _policy
+
+
+def _load_learning(bdf: str, settings: FanSettings) -> None:
     try:
         document = json.loads(_learning_file().read_text(encoding="utf-8"))
-        if document.get("bdf") == bdf:
+        if document.get("bdf") == bdf and document.get("base_gains") == _base_gains(settings):
             _policy.load_parameters(document.get("parameters", {}))
     except (OSError, ValueError, TypeError, AttributeError):
         pass
 
 
-def _save_learning(bdf: str, now: float) -> None:
+def _save_learning(bdf: str, now: float, settings: FanSettings) -> None:
     global _last_learning_save
     if now - _last_learning_save < 1800:
         return
@@ -140,7 +180,8 @@ def _save_learning(bdf: str, now: float) -> None:
     path = _learning_file()
     tmp = path.with_suffix(".tmp")
     try:
-        tmp.write_text(json.dumps({"bdf": bdf, "parameters": _policy.learned_parameters()}), encoding="utf-8")
+        tmp.write_text(json.dumps({"bdf": bdf, "base_gains": _base_gains(settings),
+                                   "parameters": _policy.learned_parameters()}), encoding="utf-8")
         tmp.chmod(0o600)
         tmp.replace(path)
     except OSError:
@@ -376,7 +417,10 @@ def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
     return min(maximum, floor)
 
 
-def _smooth_floor(wanted: int, current: int, now: float) -> int:
+def _smooth_floor(wanted: int, current: int, now: float, *,
+                  hold_seconds: int = COOL_HOLD_SECONDS,
+                  step_seconds: int = COOL_STEP_SECONDS,
+                  step_percent: int = COOL_STEP_PERCENT) -> int:
     """Immediate spin-up, 3-minute hold then 5% steps no faster than 45 s."""
     global _cool_since, _last_cool_step, _last_boost_at
     if wanted >= current:
@@ -387,12 +431,12 @@ def _smooth_floor(wanted: int, current: int, now: float) -> int:
     if _cool_since is None:
         _cool_since = now
         return current
-    if now - _cool_since < COOL_HOLD_SECONDS:
+    if now - _cool_since < hold_seconds:
         return current
-    if now - _last_cool_step < COOL_STEP_SECONDS:
+    if now - _last_cool_step < step_seconds:
         return current
     _last_cool_step = now
-    return max(wanted, current - COOL_STEP_PERCENT)
+    return max(wanted, current - step_percent)
 
 
 def _stop_entry_safe(sensors: list[dict], rise: float) -> bool:
@@ -491,8 +535,7 @@ def tick() -> None:
                 raise FanControlError("制御中に温度センサー構成が変化しました")
             if _active_bdf != bdf:
                 _temp_history, _cool_since, _zero_stable_since = {}, None, None
-                _policy = AdaptivePolicy()
-                _load_learning(bdf)
+                _new_policy(settings, bdf)
             maximum = device["_range"][3]
             rise = _rise_rate(sensors, now)
             _last_rise_c_per_min = round(rise, 2)
@@ -501,11 +544,16 @@ def tick() -> None:
                 power_w=device["power_w"], power_cap_w=device["power_cap_w"],
                 min_percent=settings.min_percent, max_percent=maximum,
                 now=now, dt=INTERVAL, allow_stop=settings.allow_zero_rpm,
+                learning_enabled=settings.learning_enabled,
+                stop_dwell_seconds=settings.zero_stable_seconds,
             )
             # The independent safety floor wins over learned PI/FF output.
             wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rise),
                          strategy["floor_percent"])
-            floor = wanted if _active_bdf != bdf else _smooth_floor(wanted, _floor, now)
+            floor = wanted if _active_bdf != bdf else _smooth_floor(
+                wanted, _floor, now, hold_seconds=settings.cool_hold_seconds,
+                step_seconds=settings.cool_step_seconds, step_percent=settings.cool_step_percent,
+            )
             curve = _curve(device["_range"], floor)
             hot = max(item["value_c"] for item in sensors)
             rpm = device["fan_rpm"]
@@ -554,7 +602,7 @@ def tick() -> None:
                     now if eligible and _zero_stable_since is None
                     else _zero_stable_since if eligible else None
                 )
-                if (_zero_stable_since is not None and now - _zero_stable_since >= ZERO_STABLE_SECONDS
+                if (_zero_stable_since is not None and now - _zero_stable_since >= settings.zero_stable_seconds
                         and strategy["zero_stop_eligible"]):
                     # PMFW auto owns the stopped state. Do not force PWM=0.
                     _helper("reset", bdf)
@@ -566,7 +614,8 @@ def tick() -> None:
                 _zero_stable_since = None
 
             if not _zero_active:
-                _save_learning(bdf, now)
+                if settings.learning_enabled:
+                    _save_learning(bdf, now, settings)
             _active_bdf, _floor, _sensor_ids = bdf, floor, ids
             _state, _error = ("fan-stop" if _zero_active else "controlling"), ""
             _last_sample = {
@@ -574,7 +623,7 @@ def tick() -> None:
                 "floor_percent": None if _zero_active else floor,
                 "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
                 "rise_c_per_min": _last_rise_c_per_min,
-                "zero_rpm_permitted": _zero_active, "cool_hold_seconds": COOL_HOLD_SECONDS,
+                "zero_rpm_permitted": _zero_active, "cool_hold_seconds": settings.cool_hold_seconds,
                 "power_ema_w": strategy["power_ema_w"],
                 "min_predicted_headroom_c": strategy["min_predicted_headroom_c"],
                 "learning": strategy["learning"],
@@ -587,7 +636,7 @@ def tick() -> None:
 def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
-    global _cool_since, _last_cool_step, _last_tick_at
+    global _cool_since, _last_cool_step, _last_tick_at, _policy
     with _lock:
         prior = _load()
         if settings.enabled:
@@ -608,6 +657,7 @@ def configure(settings: FanSettings) -> dict:
             _temp_history = {}
             _last_tick_at = None
             _applied_floor = 0
+            _new_policy(settings, device["bdf"])
             tick()
             if _state == "fault":
                 raise FanControlError(_error)
@@ -631,6 +681,7 @@ def configure(settings: FanSettings) -> dict:
             _state, _error, _pending_reset_bdf = "disabled", "", None
             _zero_active, _zero_initialized_bdf = False, None
             _temp_history, _zero_stable_since, _cool_since, _last_tick_at = {}, None, None, None
+            _policy = AdaptivePolicy()
         return status()
 
 
@@ -647,8 +698,11 @@ def status() -> dict:
             "error": _error, "pending_auto_restore": _pending_reset_bdf is not None,
             "control_policy": "adaptive_ff_pi_antiwindup_fast_rise_slow_fall",
             "learned_parameters": _policy.learned_parameters(),
+            "presets": list(FAN_PRESETS),
             "cool_hold_seconds": COOL_HOLD_SECONDS,
-            "zero_stable_seconds": ZERO_STABLE_SECONDS,
+            "zero_stable_seconds": settings.zero_stable_seconds,
+            "effective_cool_hold_seconds": settings.cool_hold_seconds,
+            "effective_cool_step_seconds": settings.cool_step_seconds,
             "active": _last_sample if settings.enabled else None,
             "poll_interval_seconds": INTERVAL,
             "warning": "温度上限は目標であり保証値ではありません。CPU・マザーボードのファンは制御しません。",
