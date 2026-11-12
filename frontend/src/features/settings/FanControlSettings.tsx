@@ -165,7 +165,7 @@ function FanCurvePreview({ device, minimum, activeCurve }: {
       </svg>
       <p className="text-[11px] leading-relaxed text-zinc-500">
         青: 変更中の基本カーブ（未適用）。{fromHardware.length === 5 && "橙破線: 最後に適用したカーブ。"}
-        実際は温度・電力・学習によって青い線より回転を引き上げます。最大回転100%相当の保護は維持します。
+        実際は温度・電力・学習によって青い線より回転を引き上げます。GPUが公開する最大ファン指令までの保護は維持します。
       </p>
     </div>
   );
@@ -265,7 +265,16 @@ export function FanControlSettings() {
 
           <label className="block text-xs font-medium">
             対象GPU
-            <select value={draft.bdf ?? ""} onChange={(e) => update({ bdf: e.target.value || null, targets_c: {} }, false)}
+            <select value={draft.bdf ?? ""} onChange={(e) => {
+              const device = data.devices.find((item) => item.bdf === e.target.value);
+              const preset = data.presets.find((item) => item.id === draft.preset_id);
+              const targets: Record<string, number> = {};
+              for (const sensor of device?.sensors ?? []) {
+                targets[sensor.id] = Math.max(45, Math.min(sensor.max_target_c,
+                  sensor.default_target_c + (preset?.target_offset_c ?? 0)));
+              }
+              update({ bdf: e.target.value || null, targets_c: targets }, false);
+            }}
               className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-950">
               <option value="">対象を選択</option>
               {data.devices.map((device) =>
