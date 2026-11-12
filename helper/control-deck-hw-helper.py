@@ -130,6 +130,76 @@ def apply_amd(bdf: str, watts_text: str, memory_mode: str, memory_level_text: st
                       "core_mode": core_mode, "core_level": core_level}))
 
 
+
+def fan_curve_path(device: Path) -> Path:
+    """Only the GPU's exact amdgpu OD node; never accept a path from the caller."""
+    curve = device / "gpu_od" / "fan_ctrl" / "fan_curve"
+    resolved = curve.resolve()
+    if not curve.is_file() or curve.is_symlink() or resolved != curve:
+        fail("amdgpu fan_curveが利用できません（kernel/OverDrive対応を確認してください）")
+    return curve
+
+
+def fan_curve_range(text: str) -> tuple[int, int, int, int, int]:
+    """Parse firmware-advertised limits; zero/invalid ranges MUST NOT be used."""
+    temps = re.search(r"FAN_CURVE\\(hotspot temp\\):\\s*(\\d+)\\s*C\\s+(\\d+)\\s*C", text, re.I)
+    speeds = re.search(r"FAN_CURVE\\(fan speed\\):\\s*(\\d+)\\s*%\\s+(\\d+)\\s*%", text, re.I)
+    points = re.findall(r"^\\s*(\\d+):\\s*\\d+\\s*C\\s+\\d+\\s*%", text, re.M)
+    if not temps or not speeds or points != [str(i) for i in range(len(points))] or len(points) != 5:
+        fail("fan_curveのOD_RANGE/5-point形式を検証できません")
+    t0, t1 = map(int, temps.groups())
+    p0, p1 = map(int, speeds.groups())
+    if t0 >= t1 or t1 - t0 < 5 or p0 >= p1 or p1 < 90 or p0 > 40 or p1 > 100:
+        fail("fan_curveの温度/PWM範囲が安全に利用できません")
+    return t0, t1, p0, p1, len(points)
+
+
+def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
+    if action not in ("apply", "reset"):
+        fail("不正なfan control操作です")
+    device = device_path(bdf)
+    curve = fan_curve_path(device)
+    if action == "reset":
+        # r stages firmware defaults, c applies them (kernel OD API).
+        try:
+            curve.write_text("r", encoding="ascii")
+            curve.write_text("c", encoding="ascii")
+        except OSError as exc:
+            fail(f"ファン自動制御への復帰に失敗しました: {exc}")
+        print(json.dumps({"ok": True, "mode": "auto", "bdf": bdf.lower()}))
+        return
+
+    try:
+        current = curve.read_text(encoding="ascii")
+    except OSError as exc:
+        fail(f"fan_curveを読み取れません: {exc}")
+    tmin, tmax, pmin, pmax, count = fan_curve_range(current)
+    if not re.fullmatch(r"(?:\\d{1,3}:\\d{1,3},){4}\\d{1,3}:\\d{1,3}", curve_text):
+        fail("fan_curve指定形式が不正です")
+    points = [tuple(map(int, item.split(":"))) for item in curve_text.split(",")]
+    if len(points) != count or any(
+        not (tmin <= t <= tmax and max(30, pmin) <= p <= pmax)
+        for t, p in points
+    ) or any(
+        points[i][0] <= points[i - 1][0] or points[i][1] < points[i - 1][1]
+        for i in range(1, count)
+    ) or points[-1][1] != pmax:
+        fail("fan_curveが機器上限/単調増加/最大PWMの安全条件を満たしません")
+    try:
+        for i, (temperature, pwm) in enumerate(points):
+            curve.write_text(f"{i} {temperature} {pwm}", encoding="ascii")
+        curve.write_text("c", encoding="ascii")
+    except OSError as exc:
+        # An incomplete curve must never remain staged.
+        try:
+            curve.write_text("r", encoding="ascii")
+            curve.write_text("c", encoding="ascii")
+        except OSError:
+            pass
+        fail(f"fan_curveの適用に失敗しました（auto復帰を試行）: {exc}")
+    print(json.dumps({"ok": True, "mode": "curve", "bdf": bdf.lower()}))
+
+
 def system_service_catalog() -> dict:
     try:
         descriptor = os.open(CATALOG_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -197,7 +267,13 @@ def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == "system-service":
         control_system_service(sys.argv[2], sys.argv[3])
         return
-    fail("usage: control-deck-hw-helper apply-amd ... | system-service ACTION ID")
+    if len(sys.argv) == 5 and sys.argv[1] == "fan-curve" and sys.argv[2] == "apply":
+        control_fan_curve("apply", sys.argv[3], sys.argv[4])
+        return
+    if len(sys.argv) == 4 and sys.argv[1] == "fan-curve" and sys.argv[2] == "reset":
+        control_fan_curve("reset", sys.argv[3])
+        return
+    fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | system-service ACTION ID")
 
 
 if __name__ == "__main__":
