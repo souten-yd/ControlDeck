@@ -372,3 +372,17 @@ def test_stalled_monitor_loop_cannot_count_as_5_minutes_of_cooling(gpu, monkeypa
     fan.tick()
     assert not any(x[0] == "zero-allow" for x in calls)
     assert fan.status()["active"]["zero_rpm_permitted"] is False
+
+
+def test_zero_rpm_requires_reliable_fan_and_power_readings(gpu):
+    fan, device, hwmon, _, calls = gpu
+    _add_zero_nodes(device)
+    enabled = fan.FanSettings(enabled=True, bdf="0000:03:00.0", allow_zero_rpm=True)
+    (hwmon / "fan1_input").unlink()
+    with pytest.raises(fan.FanControlError, match="RPM"):
+        fan.configure(enabled)
+    (hwmon / "fan1_input").write_text("1500")
+    (hwmon / "power1_average").unlink()
+    with pytest.raises(fan.FanControlError, match="電力"):
+        fan.configure(enabled)
+    assert not calls
