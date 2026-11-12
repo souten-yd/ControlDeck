@@ -1,23 +1,19 @@
 name: ControlDeck checks
 
 # Run only for review-ready PRs and explicit manual checks. Developer validates locally first.
+# Only run as an explicit final verification.
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # Do not allow a Draft-only skipped run to cancel an already running review-ready CI.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.draft && 'draft' || 'ready' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend:
-    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -33,7 +29,6 @@ jobs:
         run: cd backend && python -m pytest -q tests
 
   frontend:
-    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
