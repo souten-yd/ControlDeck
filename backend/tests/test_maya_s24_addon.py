@@ -266,3 +266,13 @@ def test_maya_port_conflict_prevents_start(managed, monkeypatch):
                         lambda *a, **kw: pytest.fail("should not launch Maya"))
     ok, msg = maya_s24.start_instance()
     assert ok is False and "8099" in msg
+
+
+def test_privileged_process_never_mutates_managed_maya(managed, monkeypatch):
+    _installed(managed)
+    monkeypatch.setattr(maya_s24.os, "geteuid", lambda: 0)
+    with pytest.raises(maya_s24.MayaError, match="root"):
+        maya_s24.uninstall()
+    with pytest.raises(maya_s24.MayaError, match="root"):
+        maya_s24.start_instance()
+    assert maya_s24.installed()
