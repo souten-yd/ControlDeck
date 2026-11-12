@@ -15,10 +15,6 @@ import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
-import {
-  createLuceboxInstance, deleteLuceboxInstance, getLuceboxStatus, reorderLuceboxInstances,
-  updateLuceboxInstance, type LuceboxInstance, type LuceboxInstanceInput, type LuceboxStatus,
-} from "../api/lucebox";
 
 interface Model {
   id?: string;
@@ -36,22 +32,19 @@ interface Model {
   runtime?: LocalRuntime | "ollama";
   /** ROCm 10 / Vulkan のような、そのランタイム内でのビルド種別。 */
   backend_label?: string;
-  /** Lucebox のDFlashドラフトが設定済みか（投機デコードが効く構成か）。 */
-  speculative?: boolean;
   port?: number;
 }
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
-type LocalRuntime = "llama.cpp" | "lucebox";
-const LOCAL_RUNTIMES: LocalRuntime[] = ["llama.cpp", "lucebox"];
+type LocalRuntime = "llama.cpp" | "strata";
 const RUNTIME_LABEL: Record<string, string> = {
-  "llama.cpp": "llama.cpp", lucebox: "Lucebox", ollama: "Ollama",
+  "llama.cpp": "llama.cpp", strata: "Strata", ollama: "Ollama",
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
 interface RuntimePolicy {
   selected_runtime: "ollama" | LocalRuntime;
-  selected_backend: "rocm" | "vulkan" | "rocm10" | "rocm7" | "";
+  selected_backend: "rocm" | "vulkan" | "";
   coexistence: "exclusive" | "coexist";
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
@@ -269,7 +262,7 @@ export default function ModelsPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
-  const [luceboxDetail, setLuceboxDetail] = useState<string | null>(null);
+  const [strataDetail, setStrataDetail] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [localDeleting, setLocalDeleting] = useState<{ alias: string; runtime: LocalRuntime } | null>(null);
@@ -282,15 +275,13 @@ export default function ModelsPage() {
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
   const selectedRuntime = runtimeEnv?.policy.selected_runtime ?? "ollama";
-  // ローカルランタイムを選んでいる間は llama.cpp と Lucebox のモデルを1つの一覧に出す。
-  // ゲートウェイが両方を同じアドレスで配るので、片方だけ見えると実態と食い違う。
   const isLocal = selectedRuntime !== "ollama";
   const selectedProvider: "ollama" | "local" = isLocal ? "local" : "ollama";
   const { data: models, isLoading } = useQuery({
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
       if (!isLocal) return api<Model[]>("/models");
-      const fetched = await Promise.all(LOCAL_RUNTIMES.map(async (runtime) => {
+      const fetched = await Promise.all((["llama.cpp", "strata"] as const).map(async (runtime) => {
         try {
           const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
             `/models/providers/${runtime}/models`);
@@ -299,7 +290,6 @@ export default function ModelsPage() {
             family: "", loaded: !!m.loaded, expires_at: null, vram: null,
             vision_enabled: m.details.vision_enabled === true,
             runtime, backend_label: String(m.details.backend_label ?? ""),
-            speculative: m.details.speculative === true,
             port: typeof m.details.port === "number" ? m.details.port : undefined,
           }));
         } catch {
@@ -340,18 +330,16 @@ export default function ModelsPage() {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["models", selectedProvider] }),
       qc.invalidateQueries({ queryKey: ["llama-endpoints"] }),
-      qc.invalidateQueries({ queryKey: ["lucebox-status"] }),
       isLocal ? Promise.resolve() : qc.invalidateQueries({ queryKey: ["ollama-running"] }),
     ]);
   };
 
   /** 優先度の入れ替え。自動起動・オンデマンド起動の順序に効く。
 
-   * 順序はランタイム内で閉じている（llama.cpp と Lucebox は別々のカタログを持つ）ため、
-   * 同じランタイムの行同士でのみ入れ替える。
+   * 同一llama.cppランタイムのモデルだけを並べ替える。
    */
   const move = async (model: Model, offset: -1 | 1) => {
-    if (!liveModels || !model.runtime || model.runtime === "ollama") return;
+    if (!liveModels || model.runtime !== "llama.cpp") return;
     const runtime = model.runtime;
     const siblings = liveModels.filter((item) => item.runtime === runtime);
     const index = siblings.findIndex((item) => (item.id ?? item.name) === (model.id ?? model.name));
@@ -361,7 +349,7 @@ export default function ModelsPage() {
     [order[index], order[target]] = [order[target], order[index]];
     setReordering(true);
     try {
-      await (runtime === "lucebox" ? reorderLuceboxInstances(order) : reorderLlamaInstances(order));
+      await reorderLlamaInstances(order);
       await refresh();
     } catch (e) {
       show(e instanceof Error ? e.message : "並べ替えに失敗しました", "error");
@@ -371,11 +359,16 @@ export default function ModelsPage() {
   };
 
   const removeLocal = useMutation({
-    mutationFn: ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) =>
-      runtime === "lucebox" ? deleteLuceboxInstance(alias, file) : deleteLlamaInstance(alias, file),
+    mutationFn: async ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) => {
+      if (runtime === "strata") {
+        await api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} });
+        return { ok: true, gguf_deleted: false, reason: "Strataモデルファイルは保持" };
+      }
+      return deleteLlamaInstance(alias, file);
+    },
     onSuccess: (result) => {
-      show(result.gguf_deleted ? "設定とGGUFを削除しました"
-           : result.reason ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
+      show(result.gguf_deleted ? "設定とGGUFを削除しました" : result.reason
+        ? `設定を削除しました（${result.reason}）` : "設定を削除しました（GGUFは保持）");
       setLocalDeleting(null); setDeleteFile(false); refresh();
     },
     onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
@@ -397,7 +390,20 @@ export default function ModelsPage() {
     setActing(id);
     try {
       const provider = runtime ?? (isLocal ? "llama.cpp" : "ollama");
-      await api(`/models/providers/${provider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
+      if (provider === "strata" && action === "load") {
+        const started = await api<{ job_id: string }>(
+          `/models/strata/instances/${encodeURIComponent(id)}/start-jobs`,
+          { method: "POST", json: {} },
+        );
+        show(`Strataの初回起動ジョブを開始しました（${started.job_id}）。モデルの取得状況はジョブ一覧で確認できます`);
+        return;
+      }
+      if (provider === "strata" && action === "unload") {
+        await api(`/models/strata/instances/${encodeURIComponent(id)}/stop`,
+          { method: "POST", json: {} });
+      } else {
+        await api(`/models/providers/${provider}/models/${encodeURIComponent(id)}/${action}`, { method: "POST", json: {} });
+      }
       if (!isLocal) {
         qc.setQueryData<RunningModel[]>(["ollama-running"], (current = []) => action === "load"
           ? [...current.filter((item) => ollamaModelKey(item.name ?? item.model) !== ollamaModelKey(id)), { name: id, model: id }]
@@ -443,7 +449,7 @@ export default function ModelsPage() {
         選択中: {isLocal
           ? `${RUNTIME_LABEL[selectedRuntime] ?? selectedRuntime} / ${BACKEND_LABEL[runtimeEnv?.policy.selected_backend ?? ""] ?? runtimeEnv?.policy.selected_backend ?? "-"}`
           : "Ollama"}。モデルの登録・ロード・アンロード・個別設定を管理します。
-        {isLocal && "ゲートウェイは llama.cpp と Lucebox の両方を同じアドレスで配ります。"}
+        {isLocal && "ゲートウェイは登録済みllama.cpp・Strataモデルを同じアドレスで配ります。"}
         {!isLocal && status && (status.available ? ` · Ollama ${status.version}` : " · Ollama に接続できません")}
       </p>
       )}
@@ -471,15 +477,14 @@ export default function ModelsPage() {
             const id = m.id ?? m.name;
             const runtime = m.runtime === "ollama" ? undefined : m.runtime;
             const isLlama = runtime === "llama.cpp";
-            const isLucebox = runtime === "lucebox";
             const endpoint = isLlama ? endpoints?.find((e) => e.aliases.includes(id)) : undefined;
             // 同じエンドポイントを共有する行は、ロードすると同居モデルが止まることを明示する。
             const shared = endpoint && endpoint.aliases.length > 1;
-            const openDetail = () => isLucebox ? setLuceboxDetail(id) : isLlama ? setLlamaDetail(id) : setDetail(m.name);
+            const openDetail = () => runtime === "strata" ? setStrataDetail(id) : isLlama ? setLlamaDetail(id) : setDetail(m.name);
             return (
             <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-2 sm:gap-3">
-                {isLocal && can("workflows.edit") && liveModels.filter((item) => item.runtime === runtime).length > 1 && (
+                {isLocal && runtime === "llama.cpp" && can("workflows.edit") && liveModels.filter((item) => item.runtime === runtime).length > 1 && (
                   <div className="flex shrink-0 flex-col">
                     <button type="button" onClick={() => move(m, -1)} disabled={reordering}
                       aria-label={`${m.name}を上へ移動`} title="優先度を上げる（同じランタイム内）"
@@ -496,16 +501,6 @@ export default function ModelsPage() {
                   <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
                     {m.name}
                     {/* どのランタイムが載せるモデルかを一覧で見分けられるようにする。 */}
-                    {isLucebox && (
-                      <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
-                        LUCEBOX
-                      </span>
-                    )}
-                    {isLucebox && m.speculative && (
-                      <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
-                        DFLASH
-                      </span>
-                    )}
                     {shared && (
                       <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
                         :{endpoint!.port} 共有
@@ -559,7 +554,7 @@ export default function ModelsPage() {
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
       {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
-      {luceboxDetail && <LuceboxDetailSheet alias={luceboxDetail} onClose={() => setLuceboxDetail(null)} />}
+      {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
@@ -567,21 +562,21 @@ export default function ModelsPage() {
       {localDeleting && (
         <ConfirmDialog
           title={`「${localDeleting.alias}」を削除しますか？`}
-          message={`${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
+          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
           confirmLabel="削除する"
           danger
           busy={removeLocal.isPending}
           onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
           onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
-          <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+          {localDeleting.runtime !== "strata" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="text-xs">GGUF ファイル本体も削除する
               <span className="block text-[10px] text-zinc-500">
                 取り消せません。他のモデル設定が同じファイルを参照している場合は削除されません。
               </span>
             </span>
-          </label>
+          </label>}
         </ConfirmDialog>
       )}
       {duplicating && (
@@ -1117,7 +1112,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
     savePolicy.mutate({
       selected_runtime: item.runtime,
       // ollama以外は「同じランタイム内のどのビルドか」を backend に持たせる
-      // （llama.cpp は rocm/vulkan、Lucebox は ROCm トラック）。
+      // （llama.cpp は rocm/vulkan）。
       selected_backend: item.runtime === "ollama"
         ? "" : item.backend as RuntimePolicy["selected_backend"],
     });
@@ -2022,329 +2017,147 @@ function TtsPanel() {
   );
 }
 
-/** モデル登録の入口。llama.cpp と Lucebox で必要な情報が違うので、最初にランタイムを選ばせる。
- *
- * 両者を1つのフォームに混ぜると「ドラフトGGUFは何のためか」「mmprojはどちらで効くか」が
- * 分からなくなる。登録画面の時点で明確に分ける。
- */
+/** Register only models explicitly requested by the user. */
 function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
-  const { data: lucebox } = useQuery({ queryKey: ["lucebox-status"], queryFn: getLuceboxStatus });
-  const luceboxUsable = Boolean(lucebox?.installed);
   const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
+  const { data: strataState } = useQuery({
+    queryKey: ["strata-instances"],
+    queryFn: () => api<{ runtime: { installed: boolean }; instances: Array<{alias: string}> }>("/models/strata/instances"),
+  });
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
-      <div className="mb-4 grid gap-2 sm:grid-cols-2">
-        {(LOCAL_RUNTIMES).map((item) => {
-          const selected = runtime === item;
-          const disabled = item === "lucebox" && !luceboxUsable;
-          return (
-            <button key={item} type="button" disabled={disabled} onClick={() => setRuntime(item)}
-              className={`rounded-xl border p-3 text-left disabled:opacity-50 ${selected ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-500 dark:bg-accent-600/10" : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700"}`}>
-              <span className="block text-sm font-semibold">
-                {RUNTIME_LABEL[item]}
-                {item === "lucebox" && (
-                  <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">DFLASH</span>
-                )}
-              </span>
-              <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">
-                {item === "llama.cpp"
-                  ? "GGUF 1本を登録します。VISION（mmproj）や投機デコードもここで設定します"
-                  : disabled
-                    ? "未導入です。設定 → オプション機能から Lucebox を導入してください"
-                    : `ターゲットGGUF + DFlashドラフトGGUFの組で登録します（${lucebox?.track_label ?? "ROCm 10"}）`}
-              </span>
-            </button>
-          );
-        })}
+      <div className="mb-3 flex gap-2">
+        {(["llama.cpp", "strata"] as const).map((choice) => (
+          <button key={choice} type="button" onClick={() => setRuntime(choice)}
+            disabled={choice === "strata" && !strataState?.runtime.installed}
+            className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
+            {RUNTIME_LABEL[choice]}
+          </button>
+        ))}
       </div>
       {runtime === "llama.cpp"
         ? <LlamaRuntimePanel registrationOnly />
-        : <LuceboxRegisterPanel status={lucebox} onDone={onClose} />}
+        : <StrataRegisterPanel onDone={onClose} />}
     </BottomSheet>
   );
 }
 
-/** Lucebox の新規モデル登録。推奨値（AMDLucebox の実測プロファイル）を初期値にする。 */
-function LuceboxRegisterPanel({ status, onDone }: { status?: LuceboxStatus; onDone: () => void }) {
+type StrataSettings = { alias: string; family: "qwen" | "deepseek41"; model: string;
+  context: string; port: number; model_path?: string; kv?: string; vision?: string;
+  parallel?: number; drafting?: string; loaded?: boolean };
+
+function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?: StrataSettings }) {
   const qc = useQueryClient();
-  if (!status) return <p className="text-xs text-zinc-400">読み込み中...</p>;
-  const usedPorts = status.instances.map((item) => item.port);
-  const initial: LuceboxInstance = {
-    ...status.defaults,
-    alias: "",
-    model_path: "",
-    draft_path: "",
-    port: usedPorts.length ? Math.max(...usedPorts) + 1 : status.defaults.port,
-    runtime: "lucebox", role: "llm", loaded: false, runtime_status: "STOPPED",
-    unit: "", base_url: "", selected: false,
-  };
-  return (
-    <div className="space-y-3">
-      <LuceboxRuntimeSummary status={status} />
-      <LuceboxInstanceControls
-        key="new"
-        initial={initial}
-        isNew
-        onChanged={() => {
-          qc.invalidateQueries({ queryKey: ["lucebox-status"] });
-          qc.invalidateQueries({ queryKey: ["models", "local"] });
-          onDone();
-        }}
-      />
-    </div>
-  );
-}
-
-/** 導入済みLuceboxの版・トラック・環境整合を1行で示す。 */
-function LuceboxRuntimeSummary({ status }: { status: LuceboxStatus }) {
-  return (
-    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-      <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
-        Lucebox
-        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
-        {status.installed
-          ? <span className="num text-xs font-normal text-emerald-600 dark:text-emerald-400">{status.tag} · {status.track_label}</span>
-          : <span className="text-xs font-normal text-zinc-400">未導入</span>}
-      </p>
-      <p className="num mt-1 text-[10px] text-zinc-400">
-        GPU {status.environment.gfx || "未検出"} · ホストROCm {status.environment.rocm_version || "不明"}
-        {status.upstream && ` · upstream ${status.upstream.slice(0, 12)}`}
-      </p>
-      {status.warning && (
-        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50/60 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-          {status.warning}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function LuceboxDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
-  const qc = useQueryClient();
-  const { data: status } = useQuery({ queryKey: ["lucebox-status"], queryFn: getLuceboxStatus });
-  const instance = status?.instances.find((item) => item.alias === alias);
-  return (
-    <BottomSheet title={`${alias} · Luceboxモデル個別設定`} onClose={onClose} wide>
-      {!status ? <p className="text-xs text-zinc-400">読み込み中...</p>
-        : !instance ? <p className="text-xs text-zinc-400">モデル設定が見つかりません</p> : (
-        <div className="space-y-3">
-          <LuceboxRuntimeSummary status={status} />
-          <LuceboxInstanceControls
-            initial={instance}
-            onChanged={() => {
-              qc.invalidateQueries({ queryKey: ["lucebox-status"] });
-              qc.invalidateQueries({ queryKey: ["models", "local"] });
-            }}
-          />
-        </div>
-      )}
-    </BottomSheet>
-  );
-}
-
-/** Luceboxモデル設定のフォーム。既定値はAMDLucebox READMEの実測プロファイルに合わせる。 */
-function LuceboxInstanceControls({ initial, isNew = false, onChanged }: {
-  initial: LuceboxInstance;
-  isNew?: boolean;
-  onChanged: () => void;
-}) {
   const show = useToasts((s) => s.show);
-  const [picker, setPicker] = useState<"model" | "draft" | null>(null);
-  const [advanced, setAdvanced] = useState(false);
-  const [cfg, setCfg] = useState<LuceboxInstance>({ ...initial });
-  const [busy, setBusy] = useState(false);
-  const originalAlias = initial.alias;
-  const set = <K extends keyof LuceboxInstance>(key: K, value: LuceboxInstance[K]) =>
-    setCfg((current) => ({ ...current, [key]: value }));
-  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-
-  const body = (): LuceboxInstanceInput => {
-    const common = {
-      model_path: cfg.model_path, draft_path: cfg.draft_path, max_ctx: cfg.max_ctx,
-      draft_block_size: cfg.draft_block_size, cache_type_k: cfg.cache_type_k,
-      cache_type_v: cfg.cache_type_v, fa_window: cfg.fa_window, ddtree: cfg.ddtree,
-      ddtree_budget: cfg.ddtree_budget, default_max_tokens: cfg.default_max_tokens,
-      draft_residency: cfg.draft_residency, fast_rollback: cfg.fast_rollback,
-      prefer_speculative: cfg.prefer_speculative, agent_turn_cache: cfg.agent_turn_cache,
-      auto_start: cfg.auto_start, idle_exclude: cfg.idle_exclude,
-    };
-    // 識別子（alias / port）は新規登録のときだけ送る。既存の変更は共通設定APIと同じ境界にする。
-    return isNew ? { ...common, alias: cfg.alias, port: cfg.port } : common;
-  };
-
-  const persist = async (start: boolean) => {
-    if (!cfg.model_path) { show("ターゲットGGUFを選択してください", "error"); return; }
-    if (isNew && !cfg.alias) { show("モデル名（alias）を入力してください", "error"); return; }
-    setBusy(true);
+  const [alias, setAlias] = useState(initial?.alias ?? "qwen-flash-next");
+  const [family, setFamily] = useState<"qwen" | "deepseek41">(initial?.family ?? "qwen");
+  const [model, setModel] = useState(initial?.model ?? "iq2_xs");
+  const [context, setContext] = useState(initial?.context ?? "32k");
+  const [port, setPort] = useState(String(initial?.port ?? 8095));
+  const [modelPath, setModelPath] = useState(initial?.model_path ?? "");
+  const [kv, setKv] = useState(initial?.kv ?? "int8");
+  const [vision, setVision] = useState(initial?.vision ?? "on");
+  const [parallel, setParallel] = useState(initial?.parallel ?? 1);
+  const [drafting, setDrafting] = useState(initial?.drafting ?? "auto");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
     try {
-      if (isNew) await createLuceboxInstance(body());
-      else await updateLuceboxInstance(originalAlias, body());
-      if (start) {
-        await api(`/models/providers/lucebox/models/${encodeURIComponent(cfg.alias)}/load`, { method: "POST", json: {} });
-        show("保存してLuceboxを起動しました（ターゲットとドラフトの読み込みに時間がかかります）");
-      } else {
-        show("Luceboxモデル設定を保存しました");
-      }
-      onChanged();
+      await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
+        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting },
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["models", "local"] }),
+        qc.invalidateQueries({ queryKey: ["strata-instances"] }),
+      ]);
+      show("Strataモデルを登録しました。「ロード」でモデルの準備と起動を開始できます");
+      onDone();
     } catch (e) {
-      show(e instanceof Error ? e.message : "保存に失敗しました", "error");
-    } finally {
-      setBusy(false);
-    }
+      show(e instanceof Error ? e.message : "Strataモデル登録に失敗しました", "error");
+    } finally { setSaving(false); }
   };
-  const stop = async () => {
-    try {
-      await api(`/models/providers/lucebox/models/${encodeURIComponent(cfg.alias)}/unload`, { method: "POST" });
-      show("停止しました");
-      onChanged();
-    } catch (e) { show(e instanceof Error ? e.message : "停止に失敗しました", "error"); }
-  };
+  return <div className="space-y-3">
+    <p className="text-xs text-zinc-500">登録だけではモデルをダウンロードしません。Strataはローカル限定で起動し、共通ゲートウェイに接続します。</p>
+    <label className="block text-xs">モデル別名
+      <input aria-label="Strataモデル別名" disabled={!!initial} value={alias} onChange={(e) => setAlias(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+    </label>
+    <label className="block text-xs">モデル系列
+      <select aria-label="Strataモデル系列" value={family} onChange={(e) => {
+        const next = e.target.value as "qwen" | "deepseek41";
+        setFamily(next); setModel(next === "qwen" ? "iq2_xs" : "ista-das-coder");
+      }} className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        <option value="qwen">Qwen Flash-Next</option>
+        <option value="deepseek41">DeepSeek V4.1 Flash</option>
+      </select>
+    </label>
+    <label className="block text-xs">既存GGUFのパス（任意）
+      <input aria-label="Strata既存GGUFパス" value={modelPath} onChange={(e) => setModelPath(e.target.value)}
+        placeholder="/data1tb/LLM/.../model-00001-of-00002.gguf"
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+      <span className="text-zinc-500">分割モデルは最初のファイルを指定します。空欄の場合はロード時に取得します。</span>
+    </label>
+    <label className="block text-xs">量子化
+      <select aria-label="Strataモデル量子化" value={model} onChange={(e) => setModel(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        {(family === "qwen" ? ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"] : ["ista-das-coder", "ist-das-2.00bpw"])
+          .map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    </label>
+    <label className="block text-xs">コンテキスト
+      <select aria-label="Strataコンテキスト" value={context} onChange={(e) => setContext(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        {["8k", "16k", "32k", "64k", "128k"].map((item) => <option key={item}>{item}</option>)}
+      </select>
+    </label>
+    {([
+      ["KVキャッシュ", kv, setKv, ["int8", "q4_0", "k8v4", "fp16"]],
+      ["画像入力", vision, setVision, ["on", "off", "gpu", "cpu"]],
+      ["投機デコード", drafting, setDrafting, ["auto", "mtp", "dflash2", "off"]],
+    ] as const).map(([label, value, setter, choices]) => <label key={label} className="block text-xs">{label}
+      <select aria-label={`Strata${label}`} value={value} onChange={(e) => setter(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
+        {choices.map((choice) => <option key={choice}>{choice}</option>)}
+      </select>
+    </label>)}
+    <label className="block text-xs">同時実行数
+      <input aria-label="Strata同時実行数" type="number" min={1} max={8} value={parallel}
+        onChange={(e) => setParallel(Number(e.target.value))}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+    </label>
+    <label className="block text-xs">ポート
+      <input aria-label="Strataポート" type="number" min={8081} max={65535} value={port}
+        onChange={(e) => setPort(e.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
+    </label>
+    <button disabled={saving} onClick={() => void save()}
+      className="w-full rounded-xl bg-accent-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
+      {saving ? "保存中…" : initial ? "設定を保存" : "Strataモデルを登録"}
+    </button>
+  </div>;
+}
 
-  return (
-    <div className="space-y-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-      <div>
-        <p className="text-xs font-semibold text-zinc-500">{isNew ? "新しい" : cfg.alias} · Luceboxモデル個別設定</p>
-        <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-400">
-          ターゲットGGUFとDFlashドラフトGGUFの組で動きます。初期値はAMDLuceboxの実測プロファイル
-          （ブロック幅16・CTX131072・KV q8_0）です。
-        </p>
-      </div>
-      <L label="ターゲットGGUF">
-        <div className="flex gap-1.5">
-          <input value={cfg.model_path} onChange={(e) => set("model_path", e.target.value)}
-            placeholder="例: /data1tb/LLM/.../Qwen3.8-27B-UD-IQ4_XS.gguf"
-            className={`${input} min-w-0 flex-1 font-mono text-xs`} />
-          <button onClick={() => setPicker("model")} aria-label="ターゲットGGUFを選択"
-            className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
-        </div>
-      </L>
-      <L label="DFlashドラフトGGUF（空なら投機デコードなし）">
-        <div className="flex gap-1.5">
-          <input value={cfg.draft_path} onChange={(e) => set("draft_path", e.target.value)}
-            placeholder="例: /data1tb/LLM/.../qwen38-dflash2-q8_0.gguf"
-            className={`${input} min-w-0 flex-1 font-mono text-xs`} />
-          <button onClick={() => setPicker("draft")} aria-label="ドラフトGGUFを選択"
-            className="shrink-0 rounded-xl border border-zinc-300 px-3 text-sm dark:border-zinc-700">📁</button>
-        </div>
-      </L>
-      {isNew && (
-        <div className="grid grid-cols-2 gap-2">
-          <L label="モデル名（alias）">
-            <input value={cfg.alias} onChange={(e) => set("alias", e.target.value)}
-              placeholder="lucebox-qwen38" className={`${input} font-mono`} />
-          </L>
-          <L label="待受port">
-            <input type="number" min={1024} max={65535} value={cfg.port}
-              onChange={(e) => set("port", Number(e.target.value))} className={`${input} font-mono`} />
-          </L>
-        </div>
-      )}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        <L label="最大CTX">
-          <PresetOrCustom value={cfg.max_ctx}
-            presets={[8192, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))}
-            placeholder="131072" onChange={(v) => set("max_ctx", Number(v ?? 131072))} />
-        </L>
-        <L label="ドラフトブロック幅">
-          <PresetOrCustom value={cfg.draft_block_size}
-            presets={[8, 16, 24, 32].map((v) => ({ v, label: String(v) }))}
-            placeholder="16" onChange={(v) => set("draft_block_size", Number(v ?? 16))} />
-        </L>
-        <L label="FAウィンドウ（0=全注意・推奨）">
-          <PresetOrCustom value={cfg.fa_window}
-            presets={[0, 1024, 2048, 4096].map((v) => ({ v, label: v === 0 ? "0（全注意）" : String(v) }))}
-            placeholder="0" onChange={(v) => set("fa_window", Number(v ?? 0))} />
-        </L>
-      </div>
-      {cfg.fa_window > 0 && (
-        <p className="rounded-lg border border-amber-200 bg-amber-50/60 p-2 text-[10px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-          FAウィンドウが0より大きいと、長いコンテキストでシステムプロンプトとツール定義が
-          注意から外れます。OpenCodeなどツールを使う用途では、引数の欠けたツール呼び出しが
-          返り会話が止まります。速度差は実測でほぼ無いため、0を推奨します。
-        </p>
-      )}
-      <div className="grid grid-cols-2 gap-2">
-        <L label="KVキャッシュ K"><CacheTypeSelect value={cfg.cache_type_k} onChange={(v) => set("cache_type_k", v)} input={input} /></L>
-        <L label="KVキャッシュ V"><CacheTypeSelect value={cfg.cache_type_v} onChange={(v) => set("cache_type_v", v)} input={input} /></L>
-      </div>
-      <div className="space-y-1.5 rounded-xl border border-emerald-200 bg-emerald-50/40 p-2.5 dark:border-emerald-900 dark:bg-emerald-950/20">
-        <Toggle
-          label="投機デコードを優先（temperature を 0 に固定）"
-          hint="DFlash2の検証は厳密グリーディのみです。temperatureが0より大きいと投機デコードが使われず自己回帰へ落ちます。コード・英語向け"
-          value={cfg.prefer_speculative}
-          onChange={(v) => set("prefer_speculative", v)}
-        />
-        <p className="text-[10px] leading-relaxed text-zinc-500">
-          速度はドラフトの採択長で決まり、生成する内容で大きく変わります。
-          実測（Qwen3.8-27B + DFlash2 q8_0、自己回帰は内容によらず約29 tok/s）:
-          <span className="mt-1 block font-medium">
-            英語コード 92〜152 tok/s（3〜5倍） · 英語の文章 42〜48 tok/s（1.5倍） ·
-            <span className="text-amber-700 dark:text-amber-400"> 日本語 23〜25 tok/s（自己回帰より遅い）</span>
-          </span>
-          {cfg.prefer_speculative
-            ? "日本語主体で使うならOFFの方が速く、サンプリングも効きます。"
-            : "呼び出し側のtemperatureをそのまま使います（投機デコードは無効）。"}
-        </p>
-      </div>
-      <Toggle label="自動起動" hint="ControlDeck起動時にこのモデルを常駐させます" value={cfg.auto_start} onChange={(v) => set("auto_start", v)} />
-      <button type="button" onClick={() => setAdvanced((v) => !v)}
-        className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-left text-xs text-zinc-500 dark:border-zinc-700">
-        {advanced ? "▾" : "▸"} 詳細設定（DDTree・ドラフト常駐・出力上限）
-      </button>
-      {advanced && (
-        <div className="space-y-2.5 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
-          <Toggle label="DDTree検証" hint="ドラフト候補を木で検証します。ドラフト未設定のときは無視されます" value={cfg.ddtree} onChange={(v) => set("ddtree", v)} />
-          {cfg.ddtree && (
-            <L label="DDTree予算">
-              <PresetOrCustom value={cfg.ddtree_budget}
-                presets={[16, 22, 32, 48].map((v) => ({ v, label: String(v) }))}
-                placeholder="22" onChange={(v) => set("ddtree_budget", Number(v ?? 22))} />
-            </L>
-          )}
-          <L label="ドラフト常駐">
-            <select value={cfg.draft_residency} onChange={(e) => set("draft_residency", e.target.value as LuceboxInstance["draft_residency"])} className={input}>
-              <option value="auto">auto（推奨）</option>
-              <option value="persistent">persistent（常駐・VRAMを継続確保）</option>
-              <option value="request-scoped">request-scoped（要求ごとに読み込む）</option>
-            </select>
-          </L>
-          <L label="既定の出力上限（0はモデル既定）">
-            <PresetOrCustom value={cfg.default_max_tokens}
-              presets={[0, 2048, 8192, 16000].map((v) => ({ v, label: v === 0 ? "モデル既定" : v.toLocaleString() }))}
-              placeholder="0" onChange={(v) => set("default_max_tokens", Number(v ?? 0))} />
-          </L>
-          <Toggle label="高速ロールバック" hint="投機失敗時の巻き戻しを速くします。既定は有効" value={cfg.fast_rollback} onChange={(v) => set("fast_rollback", v)} />
-          <Toggle
-            label="エージェント用ターンキャッシュ"
-            hint="生成したツール呼び出しの先までprefixキャッシュを延ばします。OpenCodeのようにターンを重ねる用途で、毎ターンの再読み込みが減ります（実測: 3ターン目で12.2秒→7.7秒）"
-            value={cfg.agent_turn_cache}
-            onChange={(v) => set("agent_turn_cache", v)}
-          />
-          <Toggle label="共通アイドル停止から除外" hint="直接endpointを使う外部clientは利用時刻を追跡できないため、常用時は除外を推奨" value={cfg.idle_exclude} onChange={(v) => set("idle_exclude", v)} />
-        </div>
-      )}
-      <div className="flex flex-wrap gap-2">
-        <button onClick={() => persist(false)} disabled={busy}
-          className="min-h-11 flex-1 rounded-xl bg-zinc-100 px-4 text-xs font-medium disabled:opacity-40 dark:bg-zinc-800">保存</button>
-        <button onClick={() => persist(true)} disabled={busy}
-          className="min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-xs font-medium text-white disabled:opacity-40">保存して起動</button>
-        {!isNew && cfg.loaded && (
-          <button onClick={stop} className="min-h-11 rounded-xl border border-zinc-300 px-4 text-xs font-medium dark:border-zinc-700">停止</button>
-        )}
-      </div>
-      {!isNew && (
-        <p className="text-[10px] text-zinc-400">
-          起動後はエンドポイント <code className="font-mono">http://127.0.0.1:{cfg.port}/v1</code>、
-          またはゲートウェイからモデル名 <code className="font-mono">{cfg.alias}</code> で使えます。
-        </p>
-      )}
-      {picker && (
-        <FilePicker mode="file"
-          title={picker === "model" ? "ターゲットGGUFを選択" : "DFlashドラフトGGUFを選択"}
-          initialPath={(picker === "model" ? cfg.model_path : cfg.draft_path) || undefined}
-          onSelect={(path) => { set(picker === "model" ? "model_path" : "draft_path", path); setPicker(null); }}
-          onClose={() => setPicker(null)} />
-      )}
-    </div>
-  );
+function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const { data } = useQuery({
+    queryKey: ["strata-instances"], queryFn: () => api<{
+      runtime: { installed: boolean; models_dir: string };
+      instances: StrataSettings[];
+    }>("/models/strata/instances"), refetchInterval: 5000,
+  });
+  const item = data?.instances.find((model) => model.alias === alias);
+  return <BottomSheet title={`Strata · ${alias}`} onClose={onClose}>
+    {item && editing ? <StrataRegisterPanel initial={item} onDone={() => setEditing(false)} /> : item ? <div className="space-y-2 text-sm">
+      <p>モデル: {item.family} / {item.model}</p>
+      <p>コンテキスト: {item.context}　ポート: {item.port}</p>
+      <p>状態: {item.loaded ? "稼働中" : "停止中"}</p>
+      <p>KV: {item.kv ?? "int8"} / 同時実行: {item.parallel ?? 1} / 投機デコード: {item.drafting ?? "auto"}</p>
+      {item.model_path && <p className="break-all text-xs">既存モデル: {item.model_path}</p>}
+      <button disabled={item.loaded} onClick={() => setEditing(true)}
+        className="rounded-lg border border-zinc-500 px-3 py-2 disabled:opacity-40">設定を変更</button>
+      {item.loaded && <p className="text-xs text-zinc-500">設定変更はモデルを停止してから行えます。</p>}
+      <p className="break-all text-xs text-zinc-500">モデル保存先: {data?.runtime.models_dir}</p>
+      <p className="text-xs text-zinc-500">モデルの削除は行いません。初回ロードはモデルダウンロードを含み、バックグラウンドジョブで実行します。</p>
+    </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
+  </BottomSheet>;
 }

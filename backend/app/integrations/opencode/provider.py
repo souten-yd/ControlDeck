@@ -152,7 +152,7 @@ def autoconfigure(*, model: str = "") -> dict:
     target = model
     if not target:
         # 特定モデルを名指しせず、転送先の判断はゲートウェイへ任せる。停止中の別モデルを
-        # 起こさずに、そのとき動いているモデルへ流れる。llama.cpp か Lucebox かも
+        # 起こさずに、そのとき動いているモデルへ流れる。どのローカルモデルかも
         # ゲートウェイ側の解決に委ねる（OpenCode はモデル名しか知らなくてよい）。
         target = gateway.AUTO_MODEL if local_llm.llm_instances() else ""
     gateway.get_api_key(create=True)  # 未発行なら発行
@@ -370,7 +370,7 @@ _SUBAGENT_DESCRIPTIONS = {
 def _window_of(instance: dict) -> int:
     """そのモデル設定で 1 request が使える窓の大きさ。
 
-    鍵の名前はランタイムで違う（llama.cpp は ctx_size、Lucebox は max_ctx）。
+    鍵の名前はランタイムで違う（llama.cpp は ctx_size）。
     共有KVを切っている llama.cpp は ctx_size を slot 数へ固定配分するので、
     1 request の取り分はその割り算のあとになる。総量をそのまま宣言すると、
     宣言した窓に届く前に転送先が溢れて、後追いの圧縮に戻る。
@@ -800,9 +800,14 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
     return root
 
 
-def _runtime_env(runtime: str, config: Path) -> dict[str, str]:
+def _runtime_env(runtime: str, config: Path, project: Path | None = None) -> dict[str, str]:
     """runtime config を読ませるための環境変数。"""
-    return {"XDG_CONFIG_HOME": str(config)} if runtime == "v2" else {"OPENCODE_CONFIG": str(config)}
+    env = {"XDG_CONFIG_HOME": str(config)} if runtime == "v2" else {"OPENCODE_CONFIG": str(config)}
+    # v2 resolves its workspace from PWD; systemd's inherited PWD can still be
+    # HOME even when WorkingDirectory points at the selected project.
+    if runtime == "v2" and project is not None:
+        env["PWD"] = str(project.resolve())
+    return env
 
 
 def _discard_runtime_config(runtime: str, config: Path) -> None:
@@ -984,7 +989,7 @@ def tui_command(
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))
-    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config).items())
+    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config, project).items())
     command = f"{env} exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
 
@@ -1071,7 +1076,7 @@ async def run_chat(
         project_id=await asyncio.to_thread(_managed_project_id, project),
         runtime=runtime,
     )
-    # LLM endpoint（llama.cpp / Lucebox instance）はondemand hookを通らないため先に起動保証する
+    # LLM endpoint（llama.cpp instance）はondemand hookを通らないため先に起動保証する
     from app.models_mgmt import local_llm
 
     await local_llm.ensure_ready_by_base_url(endpoint)
@@ -1079,7 +1084,7 @@ async def run_chat(
     argv = [
         systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
         f"--unit={unit}", f"--working-directory={project}",
-        *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config).items()),
+        *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config, project).items()),
         *_run_argv(runtime, binary, instruction[:32_000], model_id, project),
     ]
     if session_id:
@@ -1181,7 +1186,7 @@ class OpenCodeProvider:
         argv = [
             systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
             f"--unit={unit}", f"--working-directory={project}",
-            *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config).items()),
+            *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config, project).items()),
             *_run_argv(runtime, binary, "添付されたControl Deckの指示を実行してください。",
                        model_id, project),
             "--file", str(prompt_path),
@@ -1297,7 +1302,7 @@ def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
         instance = local_llm.find(alias)
         if instance is None:
             return {"updated": False, "reason": "対象モデルがありません"}
-        # Lucebox は slot 分割を持たない（単一セッション + 投機デコード）ので 1 とみなす。
+        # スロット設定が無ければ1とみなす。
         n_parallel = int(instance.get("n_parallel") or 1)
 
     concurrency, team_parallel = omo_concurrency_for(n_parallel, gated=gated)

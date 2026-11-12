@@ -63,10 +63,9 @@ class AmdGpuSettings(BaseModel):
 
 
 class RuntimePolicy(BaseModel):
-    selected_runtime: Literal["ollama", "llama.cpp", "lucebox"] = "ollama"
-    # llama.cpp は rocm/vulkan、Lucebox は ROCm トラック（rocm10/rocm7）を入れる。
-    # どちらも「同じランタイムの中でどのビルドを使うか」を表す1つの軸なので共用する。
-    selected_backend: Literal["rocm", "vulkan", "rocm10", "rocm7", ""] = ""
+    selected_runtime: Literal["ollama", "llama.cpp", "strata"] = "ollama"
+    # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
+    selected_backend: Literal["rocm", "vulkan", ""] = ""
     coexistence: Literal["exclusive", "coexist"] = "exclusive"
     idle_unload_enabled: bool = False
     idle_unload_minutes: int = Field(default=30, ge=1, le=1440)
@@ -106,7 +105,14 @@ def get_policy() -> RuntimePolicy:
     path = _path()
     if path.exists():
         try:
-            return RuntimePolicy.model_validate_json(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if raw.get("selected_runtime") == "lucebox":
+                # Preserve unrelated policy settings when retiring Lucebox.
+                raw["selected_runtime"] = "ollama"
+                raw["selected_backend"] = ""
+            elif raw.get("selected_backend") in ("rocm10", "rocm7"):
+                raw["selected_backend"] = ""
+            return RuntimePolicy.model_validate(raw)
         except (OSError, ValueError):
             pass
     return _derived_default()
@@ -167,7 +173,7 @@ def model_output_tokens(base_url: str, model: str) -> int:
 
 
 async def environment() -> dict:
-    from app.models_mgmt import amd_gpu, llama, lucebox, ollama
+    from app.models_mgmt import amd_gpu, llama, ollama, strata, strata_gateway
 
     policy = get_policy()
     detected = llama.detect_backends()
@@ -196,24 +202,17 @@ async def environment() -> dict:
             "warning": llama.backend_warning(backend),
             "addon_id": "llama-cpp",
         })
-    # Lucebox は対応GPU（gfx1201 / R9700）がある環境と、既に導入済みの環境にだけ出す。
-    lucebox_status = lucebox.runtime_status()
-    lucebox_env = lucebox_status["environment"]
-    if lucebox_env["available"] or lucebox_status["installed"]:
-        lucebox_health = await asyncio.gather(*(
-            lucebox.health(str(item["alias"])) for item in lucebox_status["instances"]
-        )) if lucebox_status["installed"] else []
-        track = lucebox_status["track"]
+    # Strata appears only once the optional managed terminal has been installed.
+    if strata.installed():
+        instances = await asyncio.to_thread(strata_gateway.list_instances)
         runtimes.append({
-            "id": f"lucebox:{track}", "runtime": "lucebox", "backend": track,
-            "label": f"Lucebox / {lucebox_status['track_label']}",
-            "available": bool(lucebox_env["available"]),
-            "installed": bool(lucebox_status["installed"]),
-            "selected": policy.selected_runtime == "lucebox",
-            "running": any(state.get("ok") for state in lucebox_health),
-            "warning": str(lucebox_status.get("warning") or "") or lucebox_env["reason"],
-            "addon_id": "lucebox",
-            "experimental": True,
+            "id": "strata", "runtime": "strata", "backend": "",
+            "label": "Strata（ローカルLLM / R9700）",
+            "available": bool(strata.available()), "installed": True,
+            "selected": policy.selected_runtime == "strata",
+            "running": any(item.get("loaded") for item in instances),
+            "warning": "モデルは明示的に登録・初回起動してください",
+            "addon_id": "strata", "experimental": True,
         })
     gpu_caps = amd_gpu.capabilities()
     if gpu_caps:
@@ -287,7 +286,7 @@ def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:
 
 async def apply_selection(policy: RuntimePolicy) -> None:
     """排他モードのruntime切替。サービス削除はせず、競合モデルだけ解放する。"""
-    from app.models_mgmt import llama, lucebox, ollama
+    from app.models_mgmt import llama, ollama, strata, strata_gateway
 
     async def _release_ollama() -> None:
         for model in await ollama.running_models():
@@ -301,16 +300,17 @@ async def apply_selection(policy: RuntimePolicy) -> None:
             if item.get("loaded"):
                 llama.stop_instance(str(item["alias"]))
 
-    def _release_lucebox() -> None:
-        for item in lucebox.list_instances():
+    def _release_strata() -> None:
+        for item in strata_gateway.list_instances():
             if item.get("loaded"):
-                lucebox.stop_instance(str(item["alias"]))
+                ok, reason = strata_gateway.stop_instance(str(item["alias"]))
+                if not ok:
+                    raise RuntimeError(reason or "Strataモデルを停止できませんでした")
 
-    if policy.selected_runtime == "lucebox":
-        if not lucebox.is_installed():
-            raise ValueError("Lucebox は未導入です。アドオンから導入してください")
+    if policy.selected_runtime == "strata":
+        if not strata.installed():
+            raise ValueError("Strataは未導入です。オプション機能から導入してください")
         if policy.coexistence == "exclusive":
-            # 同じGPUを取り合う。選んだランタイム以外は先に降ろす。
             await _release_ollama()
             _release_llama()
         return
@@ -330,13 +330,13 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                     raise RuntimeError(detail or f"backend切替後の起動に失敗しました: {alias}")
         if policy.coexistence == "exclusive":
             await _release_ollama()
-            _release_lucebox()
+            await asyncio.to_thread(_release_strata)
     elif policy.coexistence == "exclusive":
         instances = llama.list_instances()
         _release_llama()
         if not instances and (await llama.health()).get("ok", False):
             llama.stop_instance()
-        _release_lucebox()
+        await asyncio.to_thread(_release_strata)
 
 
 async def _wait_llama_health(alias: str, seconds: int = 90) -> bool:

@@ -18,14 +18,14 @@ def _targz(path, entries):
 def test_extract_keeps_layout_and_finds_binary(tmp_path):
     archive = tmp_path / "runtime.tar.gz"
     _targz(archive, {
-        "lucebox-r9700/server/build/dflash_server": b"ELF",
-        "lucebox-r9700/BUILD_INFO.json": b"{}",
+        "sample-runtime/server/build/llama-server": b"ELF",
+        "sample-runtime/BUILD_INFO.json": b"{}",
     })
     extracted = gpu_release.extract_archive(archive, tmp_path / "extracted")
-    binary = gpu_release.find_binary(extracted, "dflash_server")
+    binary = gpu_release.find_binary(extracted, "llama-server")
     assert binary is not None
     # 配布物の相対レイアウト（server/build/）を崩さない。同梱ライブラリの解決に要る。
-    assert binary.relative_to(extracted).as_posix() == "lucebox-r9700/server/build/dflash_server"
+    assert binary.relative_to(extracted).as_posix() == "sample-runtime/server/build/llama-server"
 
 
 def test_extract_rejects_path_traversal(tmp_path):
@@ -129,7 +129,7 @@ def test_checksums_parse_only_wellformed_lines(monkeypatch):
     import asyncio
 
     digest = "deadbeef" * 8
-    body = f"{digest}  lucebox.tar.zst\ngarbage line\nzz  short.tar\n{digest} *star.tar\n"
+    body = f"{digest}  runtime.tar.zst\ngarbage line\nzz  short.tar\n{digest} *star.tar\n"
 
     class _Response:
         status_code = 200
@@ -151,7 +151,7 @@ def test_checksums_parse_only_wellformed_lines(monkeypatch):
     monkeypatch.setattr(gpu_release.httpx, "AsyncClient", _Client)
     assets = [{"name": "SHA256SUMS", "size": len(body), "download_url": "https://example/s"}]
     assert asyncio.run(gpu_release.fetch_checksums(assets)) == {
-        "lucebox.tar.zst": digest, "star.tar": digest,
+        "runtime.tar.zst": digest, "star.tar": digest,
     }
     # SHA256SUMS が無いリリースでも失敗させない（照合をスキップする）。
     assert asyncio.run(gpu_release.fetch_checksums([])) == {}

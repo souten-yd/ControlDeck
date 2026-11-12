@@ -357,14 +357,7 @@ def _ensure_port_free_for_other_runtimes(port: int) -> None:
         ollama_port = None
     if ollama_port and int(ollama_port) == int(port):
         raise ValueError(f"ポート {port} は Ollama が使用しています")
-    from app.models_mgmt import lucebox
 
-    try:
-        lucebox_ports = lucebox.endpoint_ports()
-    except OSError:  # 設定ファイルが読めないだけで登録を止めない
-        lucebox_ports = set()
-    if int(port) in lucebox_ports:
-        raise ValueError(f"ポート {port} は Lucebox が使用しています")
 
 
 def delete_endpoint(endpoint_id: str) -> None:

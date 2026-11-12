@@ -468,54 +468,36 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
                         })
 
 
-class LuceboxRuntimeProvider(OpenAICompatibleRuntimeProvider):
-    """Lucebox（dflash_server）。OpenAI Chat Completions 互換。
+class StrataRuntimeProvider(OpenAICompatibleRuntimeProvider):
+    """Managed Strata OpenAI-compatible server with explicit first activation."""
 
-    llama.cpp と違い共有KVプールを持たず、max-ctx 固定の単一セッション構成なので、
-    KV 空き待ちは行わない。停止中のオンデマンド起動だけ llama.cpp と揃える。
-    """
-
-    kind = "lucebox"
-
-    # DFlash はターゲット+ドラフトの2本を読むため、初回ロードは llama.cpp より長い。
-    _READY_TIMEOUT_SECONDS = 420
-
-    def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
-        """投機デコードを優先する設定なら temperature を 0 へ固定する。
-
-        Lucebox の DFlash2 検証は厳密グリーディのみで、temperature>0 だと投機経路を
-        使わず自己回帰へ落ちる（同一プロンプトの実測で 142 tok/s → 29 tok/s）。
-        呼び出し側は既定 0.4 を送るため、ここで潰さないと Lucebox を選んでも
-        速度が出ない。切りたい利用者はモデル個別設定の prefer_speculative を外す。
-        """
-        payload = super()._payload(request, stream=stream)
-        if self._prefers_speculative(request.base_url):
-            payload["temperature"] = 0.0
-        return payload
-
-    @staticmethod
-    def _prefers_speculative(base_url: str) -> bool:
-        from app.models_mgmt import lucebox
-
-        parsed = urlsplit(normalize_openai_base(base_url))
-        if parsed.hostname not in ("127.0.0.1", "localhost", "::1") or not parsed.port:
-            return False
-        return lucebox.pins_greedy_sampling(port=parsed.port)
+    kind = "strata"
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)
-        from app.models_mgmt import lucebox
+        from app.models_mgmt import strata_gateway
+        from urllib.parse import urlsplit
 
-        ok = await lucebox.ensure_ready_by_base_url(
-            normalize_openai_base(request.base_url), timeout_seconds=self._READY_TIMEOUT_SECONDS,
+        port = urlsplit(normalize_openai_base(request.base_url)).port
+        instance = next(
+            (item for item in await asyncio.to_thread(strata_gateway.list_instances) if item["port"] == port),
+            None,
         )
-        if not ok:
-            raise RuntimeProviderError("Luceboxの自動起動またはモデル読み込みに失敗しました")
+        if instance is None or not await strata_gateway.ensure_ready(
+            str(instance["alias"]), timeout_seconds=420
+        ):
+            raise RuntimeProviderError("Strataモデルが未登録・未起動、または読み込みに失敗しました")
+
+    def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
+        payload = super()._payload(request, stream=stream)
+        # Strata exposes its own model ID on its one-model OpenAI endpoint.
+        payload["model"] = "strata"
+        return payload
 
 
 _OLLAMA = OllamaRuntimeProvider()
 _LLAMA = LlamaCppRuntimeProvider()
-_LUCEBOX = LuceboxRuntimeProvider()
+_STRATA = StrataRuntimeProvider()
 _OPENAI = OpenAICompatibleRuntimeProvider()
 
 
@@ -530,14 +512,14 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
     except Exception:
         pass
     try:
-        from app.models_mgmt import llama, lucebox
+        from app.models_mgmt import llama, strata, strata_gateway
 
         parsed = urlsplit(normalized)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
             if parsed.port in llama.endpoint_ports():
                 return _LLAMA
-            if parsed.port in lucebox.endpoint_ports():
-                return _LUCEBOX
+            if strata.installed() and parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
+                return _STRATA
     except Exception:
         pass
     return _OPENAI
@@ -561,7 +543,7 @@ def provider_for_request(request: RuntimeChatRequest) -> LlmRuntimeProvider:
     return provider_for_base_url(request.base_url)
 
 
-_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _LUCEBOX, _OPENAI)
+_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _OPENAI)
 
 
 def active_request_count() -> int:

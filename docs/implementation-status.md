@@ -3793,6 +3793,28 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - 最終frontend build成功、backend全1255 tests成功/2skip105.69秒（/tmp/pb-host-csp-full-cwd.log）。初回repo rootからpytestを直接実行したためCLIのapp import2件だけ失敗、規定backend cwdで全再実行成功。live proxyのみ反映/deck.sh再起動後、再現条件のWebKit HTTPでstatus/原文成功。HTTPS WebKit/Chromeと実Host local LLM要約も成功。既存23files hash不変（/tmp/pb-csp-preserved.json）。
 
 
+
+## 2026-11-12 — Strata導入 / Lucebox撤去 / 本体更新機能（開発ブランチ）
+
+- GPU推論のオプションにStrata Terminalを追加。明示的な導入・更新・削除をControlDeck管理領域へ限定する。デフォルトランタイムは変更せず、模型ライブラリも削除しない。
+
+- 利用不可のLuceboxをモデル登録・共通設定・Provider・Gateway・UI/APIから撤去。旧設定が選択していた場合はOllamaへ移す。
+
+- 本体のGitHub mainへのfast-forward更新確認と管理者の明示操作による独立systemd更新ジョブを追加。変更済み作業ツリーと未対応配置では更新不可。
+
+- 受け入れ条件：backend pytest、frontend build、旧Lucebox参照grep、Strata導入/削除テスト、本体更新失敗時のロールバック、モバイル画面確認。マージとリリースは検証結果が得られるまで未完了。
+
+## 2026-11-12 PR #355 ローカルStrata受け入れ（進行中）
+
+- 管理Terminal 0.2.13.1 / HIP engine 0.1.59をR9700へ導入。既存Flash-Next IQ2_XSの2分割GGUFを`/data1tb/LLM`から使用し、元ファイルを移動・削除せず推論用packを管理領域へ作成。
+- CLI exit 0とAPI Readyを区別し、status・health loaded・modelsで初回activationを確認。エンジンはsystemd user unit内で実行する。
+- 既存GGUFの許可パス・分割検証、停止時のモデル/コンテキスト/KV/画像/並列数/投機デコード設定変更を追加。OpenCodeへのcontext上限伝達、Add-on AIのStrata解決・共通admission・local_only/provenance経路を補完。
+- 8K/16K/32K/64Kを実起動し、入力約1K/5.8K、出力256 tokensを各2回測定。32Kの5.8K入力でprefill 2209.8–2317.5 tok/s、decode 129.7–130.7 tok/s、TTFT 2.53–2.65秒。64Kで50,911入力tokensの応答も成功（prefill 2600.1、decode 108.0 tok/s、TTFT 19.65秒）。測定は単一リクエスト、thinking off、MTPであり一般品質・並列性能の保証ではない。
+- ローカル稼働Hostは最新main bf53da1と既存terminal修正を統合した別checkoutへ更新済み。更新候補backend 1255 passed/2 skipped、frontend build成功。localhostでPC/320pxのpassword/passkey 2件成功。旧checkout・DB・設定・unitのバックアップ保持。PR本体は未マージ、Strata統合UI・OpenCode・Add-on実経路の最終検証を継続。
+- 本体更新の配布元をmainから正式GitHub Releaseのタグ・検証済みSHAへ修正し、適用前backupと再起動後health確認を追加。
+- 証跡は`/data1tb/ControlDeck/strata-pr355-evidence/`。ベンチマークraw JSONと各段階のログを保持。
+
+
 ## AMD GPU Smart Fan Control（2026-11-12、Draft・実機未検証）
 
 Settings > ファンコントロールにamdgpuのファンカーブを使う多温度センサー制御を実装中。GUIには温度・最低ファン・減速保持/間隔/幅・Zero RPM猶予・FF/PIゲイン・学習切替のスライダー、GPU OD_RANGEベースのカーブプレビュー、推奨/静音/冷却優先プリセットを追加。設定の保存/読み取りは既存FanSettingsに統合し、安全上限をバックエンド側で検証。R9700実機、ローカルpytest、Frontend build、モバイル表示は未検証。**必要な実機検証までマージ・リリース不可**。設計と検証手順は docs/design-amd-smart-fan.md を参照。

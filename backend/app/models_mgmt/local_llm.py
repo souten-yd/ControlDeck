@@ -1,11 +1,7 @@
-"""ControlDeck が常駐管理するローカル LLM ランタイムの共通アクセス層。
+"""Common interface for ControlDeck-managed llama.cpp instances.
 
-llama.cpp と Lucebox は「systemd で常駐する OpenAI 互換サーバー + 別名(alias)で
-識別されるモデル設定」という同じ形をしている。ゲートウェイ・GPU ブローカー・
-provider カタログはランタイム種別を知る必要がないので、ここで束ねる。
-
-ここが唯一の分岐点になるよう、呼び出し側は原則 alias だけを扱う。alias は
-両ランタイムを通して一意（save 時に相互チェックする）。
+Strata is an independent optional Terminal add-on and does not implicitly
+replace or alter the ControlDeck local LLM gateway.
 """
 from __future__ import annotations
 
@@ -13,15 +9,14 @@ import asyncio
 from typing import Any
 
 LLAMA = "llama.cpp"
-LUCEBOX = "lucebox"
-RUNTIMES = (LLAMA, LUCEBOX)
+STRATA = "strata"
+RUNTIMES = (LLAMA, STRATA)
 
 
 def module_for(runtime: str):
-    from app.models_mgmt import llama, lucebox
-
-    if runtime == LUCEBOX:
-        return lucebox
+    from app.models_mgmt import llama, strata_gateway
+    if runtime == STRATA:
+        return strata_gateway
     if runtime == LLAMA:
         return llama
     raise KeyError(f"未知のローカルランタイムです: {runtime}")
@@ -36,27 +31,21 @@ def _llama_instances() -> list[dict]:
         return []
 
 
-def _lucebox_instances() -> list[dict]:
-    from app.models_mgmt import lucebox
-
-    try:
-        return [{**item, "runtime": LUCEBOX} for item in lucebox.list_instances()]
-    except Exception:  # noqa: BLE001 - 片方の設定破損で全体を落とさない
-        return []
+def _strata_instances() -> list[dict]:
+    from app.models_mgmt import strata, strata_gateway
+    # Removed optional runtime must not leave selectable ghost gateway models.
+    return strata_gateway.list_instances() if strata.installed() else []
 
 
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
     """全ローカルランタイムのモデル設定を優先度順で返す。
 
-    並びは llama.cpp → Lucebox の順に、各ランタイム内の order を保つ。既存の
-    「一覧の並び＝優先度」という規約をランタイムをまたいでも壊さないため、
-    ランタイム間で order を混ぜて並べ替えることはしない。
     """
     items: list[dict] = []
     if runtime in ("", LLAMA):
         items += _llama_instances()
-    if runtime in ("", LUCEBOX):
-        items += _lucebox_instances()
+    if runtime in ("", STRATA):
+        items += _strata_instances()
     if role:
         items = [item for item in items if str(item.get("role", "llm")) == role]
     return items
@@ -169,18 +158,16 @@ def stop_instance(alias: str) -> tuple[bool, str]:
 
 
 def mark_used_by_base_url(base_url: str) -> str | None:
-    from app.models_mgmt import llama, lucebox
+    from app.models_mgmt import llama
 
-    return llama.mark_used_by_base_url(base_url) or lucebox.mark_used_by_base_url(base_url)
+    return llama.mark_used_by_base_url(base_url)
 
 
 async def await_capacity(alias: str, port: int, needed_tokens: int, *,
                          timeout_seconds: float) -> dict[str, Any]:
     """KV プールの空きを待つ。
 
-    共有KV(kv_unified)を持つのは llama.cpp だけで、Lucebox の dflash_server は
-    固定 max-ctx の単一セッション構成のため待つ対象が無い。ランタイムごとに
-    「待つ対象があるか」が違うので、ここで吸収する。
+    llama.cpp uses a shared KV cache.
     """
     if runtime_of(alias) == LLAMA:
         from app.models_mgmt import llama
@@ -189,18 +176,9 @@ async def await_capacity(alias: str, port: int, needed_tokens: int, *,
     return {"ok": True, "waited_seconds": 0.0, "reason": "capacity-not-tracked"}
 
 
-def pins_greedy_sampling(alias: str) -> bool:
-    """このモデルが temperature=0 固定を要求するか（Lucebox の投機デコード優先設定）。
-
-    llama.cpp は該当しないので常に False。ランタイム判定のために instance 一覧を
-    引き直すと systemctl を叩くので、設定ファイルだけを見る軽い経路を使う。
-    """
-    from app.models_mgmt import lucebox
-
-    return lucebox.pins_greedy_sampling(alias=alias)
-
-
 def installed_runtimes() -> dict[str, bool]:
-    from app.models_mgmt import llama, lucebox
+    from app.models_mgmt import llama
 
-    return {LLAMA: llama.is_installed(), LUCEBOX: lucebox.is_installed()}
+    from app.models_mgmt import strata
+
+    return {LLAMA: llama.is_installed(), STRATA: strata.installed()}

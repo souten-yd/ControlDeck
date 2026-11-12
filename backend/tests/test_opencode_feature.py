@@ -600,3 +600,24 @@ def test_v2_tui_settings_survive_across_sessions(monkeypatch, tmp_path):
     op._runtime_config("tui-1", "http://127.0.0.1:1/v1", "auto", runtime="v2")
     assert not link.is_symlink()
     assert json.loads(link.read_text(encoding="utf-8"))["keybinds"]["agent.cycle"] == "ctrl+j"
+
+
+def test_strata_context_limits_reach_opencode(monkeypatch):
+    from app.integrations.opencode import provider
+    from app.models_mgmt import local_llm, strata_gateway
+    instance = strata_gateway._present({"alias": "flash", "port": 8095,
+        "context": "32k", "parallel": 2}, running=[])
+    monkeypatch.setattr(local_llm, "list_instances", lambda: [instance])
+    limits = provider._model_limits("flash")
+    assert limits["context"] == 32768
+    assert limits["input"] + limits["output"] == 32768
+
+
+def test_v2_project_environment_overrides_stale_systemd_pwd(tmp_path):
+    from app.integrations.opencode import provider as op
+    project = tmp_path / "selected-project"
+    project.mkdir()
+    config = tmp_path / "config"
+    assert op._runtime_env("v2", config, project) == {
+        "XDG_CONFIG_HOME": str(config), "PWD": str(project.resolve())}
+    assert op._runtime_env("v1", config, project) == {"OPENCODE_CONFIG": str(config)}
