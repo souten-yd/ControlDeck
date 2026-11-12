@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI):
     from app.jobs import service as jobs_service
 
     jobs_service.recover_on_startup()
+    from app.monitoring.fan_control import run as fan_control_loop
     from app.alerts.engine import alert_loop
     from app.maintenance.service import maintenance_loop
     from app.maintenance.watchdog import (
@@ -101,6 +102,7 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(asyncio.to_thread(restore_enabled_services)),
         asyncio.create_task(collector.run()),
+        asyncio.create_task(fan_control_loop()),
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(pause_recovery_loop()),
         asyncio.create_task(system_event_loop()),
@@ -132,6 +134,8 @@ async def lifespan(app: FastAPI):
     from app.monitoring.electricity import accumulator
 
     await asyncio.to_thread(accumulator.persist, "shutdown")
+    from app.monitoring.fan_control import shutdown as fan_control_shutdown
+    await asyncio.to_thread(fan_control_shutdown)
     await searxng.lifecycle_stop()  # SearXNG も一緒に停止
     import contextlib
 
@@ -243,6 +247,7 @@ from app.access.router import router as access_router  # noqa: E402
 from app.files.router import router as files_router  # noqa: E402
 from app.logs.router import router as logs_router  # noqa: E402
 from app.monitoring.router import router as system_router  # noqa: E402
+from app.monitoring.fan_router import router as fan_router  # noqa: E402
 from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
 from app.terminals.automation_router import router as terminal_automation_router  # noqa: E402
@@ -286,6 +291,7 @@ app.include_router(project_view_router)
 app.include_router(addon_frame_router)
 app.include_router(logs_router, prefix=API)
 app.include_router(system_router, prefix=API)
+app.include_router(fan_router, prefix=API)
 app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
