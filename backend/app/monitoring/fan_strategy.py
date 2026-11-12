@@ -12,7 +12,6 @@ from math import exp, isfinite
 from typing import Sequence
 
 INTERVAL_SECONDS = 5
-COOL_DOWN_HOLD_SECONDS = 90
 FAN_STOP_DWELL_SECONDS = 600
 FAN_STOP_REARM_SECONDS = 600
 # Sensor types have different conservative stopping thresholds.
@@ -174,12 +173,10 @@ class AdaptivePolicy:
 
         if wanted > self.last_demand:
             self.last_rise_at = now
-            demand = wanted # hot side never slew-rate limited
-        elif now - self.last_rise_at < COOL_DOWN_HOLD_SECONDS:
-            demand = self.last_demand
-        else:
-            # Slow and quantized ramp-down to avoid audible fan hunting.
-            demand = max(wanted, self.last_demand - 2)
+        # The controller (fan_control._smooth_floor) owns the cool-down hold
+        # and the continuous ramp. A second hold/slew here made the floor
+        # stick for minutes and ignore the user's settings.
+        demand = wanted
         self.last_demand = clamp(demand, min_percent, max_percent)
         self.observations += 1
 

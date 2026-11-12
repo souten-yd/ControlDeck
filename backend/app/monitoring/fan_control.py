@@ -749,6 +749,9 @@ def configure(settings: FanSettings) -> dict:
             _last_tick_at = None
             _applied_floor = 0
             _new_policy(settings, device["bdf"])
+            # Saved settings take effect now (no hold restart): the first tick
+            # after a save writes the wanted floor directly.
+            _active_bdf = None
             tick()
             if _state == "fault":
                 raise FanControlError(_error)

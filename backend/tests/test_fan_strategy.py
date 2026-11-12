@@ -53,15 +53,17 @@ def test_positive_temperature_slope_accelerates_without_cooling_slew_limit():
     assert second["min_predicted_headroom_c"] < first["min_predicted_headroom_c"]
 
 
-def test_cooldown_does_not_chase_bursty_load():
+def test_policy_reports_raw_demand_and_leaves_cooldown_to_controller():
+    """降速の保持と連続ランプは fan_control._smooth_floor だけが持つ。
+    ここでも保持すると二重になり、実機で数分間35%付近から下がらなかった。
+    バースト負荷で上下しないことは test_llm_bursts_do_not_chatter_on_cooling が確認する。"""
     p = AdaptivePolicy()
-    step(p, sensors(edge=76, hotspot=90, memory=85), power=220)
-    high = p.last_demand
-    result = step(p, sensors(), now=1005, power=0)
-    assert result["floor_percent"] >= high  # no sudden audible fan slowdown
-    for idx in range(12):
-        result = step(p, sensors(), now=1010 + idx * 5, power=0)
-    assert result["floor_percent"] >= 35
+    hot = step(p, sensors(edge=76, hotspot=90, memory=85), power=220)
+    cool = step(p, sensors(), now=1005, power=0)
+    assert cool["floor_percent"] < hot["floor_percent"]
+    # Rising is never delayed.
+    again = step(p, sensors(edge=76, hotspot=90, memory=85), now=1010, power=220)
+    assert again["floor_percent"] >= hot["floor_percent"]
 
 
 def test_integrator_clamps_and_adaptive_gains_remain_in_safe_bounds():
