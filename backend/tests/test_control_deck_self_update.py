@@ -64,3 +64,38 @@ def test_release_rejects_untrusted_tag_or_prerelease(monkeypatch, body):
     monkeypatch.setattr(self_update.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(body.encode()))
     with pytest.raises(self_update.SelfUpdateError):
         self_update._remote_release()
+
+
+def test_failed_health_rolls_back_and_keeps_private_backup(monkeypatch, tmp_path):
+    old, new = 'a' * 40, 'b' * 40
+    calls, states = [], []
+    monkeypatch.setattr(self_update, 'REPO_ROOT', tmp_path)
+    monkeypatch.setattr(self_update, '_state_path', lambda: tmp_path / 'update.json')
+    monkeypatch.setattr(self_update, '_preflight', lambda: old)
+    monkeypatch.setattr(self_update, '_remote_release', lambda: ('ControlDeck_v0.12', new))
+    monkeypatch.setattr(self_update, '_write_state', lambda s: states.append(s))
+    monkeypatch.setattr(self_update, '_prepare', lambda: calls.append(('prepare',)))
+    def git(*args, **kwargs):
+        calls.append(args)
+        return new if args[0] == 'rev-parse' else ''
+    def command(argv, **kwargs):
+        calls.append(tuple(argv))
+        if 'backup' in argv:
+            assert Path(argv[-1]).stat().st_mode & 0o777 == 0o700
+    checks = 0
+    def health():
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            raise self_update.SelfUpdateError('unhealthy')
+    monkeypatch.setattr(self_update, '_git', git)
+    monkeypatch.setattr(self_update, '_cmd', command)
+    monkeypatch.setattr(self_update, '_health_check', health)
+    with pytest.raises(self_update.SelfUpdateError, match='unhealthy'):
+        self_update.apply(new)
+    assert ('reset', '--hard', old) in calls
+    assert checks == 2
+    assert states[-1]['phase'] == 'failed'
+    backup_index = next(i for i, c in enumerate(calls) if 'backup' in c)
+    merge_index = calls.index(('merge', '--ff-only', new))
+    assert backup_index < merge_index
