@@ -268,18 +268,19 @@ def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
 def test_predictive_ramp_uses_temperature_trend_not_utilization():
     from app.monitoring.fan_control import _predictive_floor
 
-    sensors = [
-        {"id": "temp1", "value_c": 63, "headroom_c": 12},
+    near = [
+        {"id": "temp1", "value_c": 82, "headroom_c": 8},
         {"id": "temp3", "value_c": 55, "headroom_c": 30},
     ]
-    # At +8 C/min near the target (12°C headroom) it raises early, on the ramp
-    # for the headroom expected 30 s ahead (8°C -> 81%).
-    assert _predictive_floor(sensors, 35, 100, 8.0) == 81
+    # Near the target (8°C) a rise of 8°C/min raises early: 4°C expected
+    # 30 s ahead -> 73% on the ramp; stable it is 52%.
+    assert _predictive_floor(near, 35, 100, 8.0) == 73
+    assert _predictive_floor(near, 35, 100, 0.0) == 52
     # Racing at the target still goes to maximum.
-    assert _predictive_floor(sensors, 35, 100, 30.0) == 100
-    # Stable temperature has no predictive boost.
-    # Interpolated between the 15°C (60%) and 10°C (75%) points.
-    assert _predictive_floor(sensors, 35, 100, 0.0) == 69
+    assert _predictive_floor(near, 35, 100, 30.0) == 100
+    # Far from the target (12°C) the trend is ignored: normal LLM load.
+    far = [{"id": "temp2", "value_c": 78, "headroom_c": 12}]
+    assert _predictive_floor(far, 35, 100, 30.0) == _predictive_floor(far, 35, 100, 0.0)
 
 
 def _add_zero_nodes(device):

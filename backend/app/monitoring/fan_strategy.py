@@ -32,8 +32,12 @@ def clamp(value: float, low: float, high: float) -> float:
 
 # Piecewise-linear (not stepped) safety demand by remaining headroom (°C).
 # Between points the fan command is interpolated, so it ramps instead of
-# jumping at band edges. Above 25°C headroom the user's floor applies.
-MARGIN_RAMP = ((25.0, None), (20.0, 50.0), (15.0, 60.0), (10.0, 75.0), (5.0, 90.0), (2.0, 100.0))
+# jumping at band edges. Above 15°C headroom the user's floor applies.
+# Tuned on the R9700: under normal LLM load the hotspot sits 15–20°C below
+# its 90°C target, so the ramp starts 15°C before the target.
+MARGIN_RAMP = ((15.0, None), (10.0, 45.0), (6.0, 60.0), (3.0, 80.0), (1.0, 100.0))
+# The PI term starts correcting this many °C before a target.
+PI_START_BEFORE_TARGET_C = 10.0
 
 
 def margin_ramp(margin: float, minimum: float, maximum: float) -> int:
@@ -135,8 +139,8 @@ class AdaptivePolicy:
             margin = target - predicted
             margins.append(margin)
             actual_margins.append(target - temp)
-            # 20°C ahead of the limit the PI begins quietly correcting.
-            error = predicted - (target - 20)
+            # PI_START_BEFORE_TARGET_C ahead of the limit the PI begins correcting.
+            error = predicted - (target - PI_START_BEFORE_TARGET_C)
             integral = self.integral.get(key, 0.0)
             requested = min_percent + feedforward + self.kp * max(error, 0) + integral
             # Conditional integration is the anti-windup: do not accumulate

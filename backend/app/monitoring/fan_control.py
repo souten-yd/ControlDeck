@@ -457,7 +457,7 @@ def _curve(ranges: tuple[int, int, int, int], floor: int) -> str:
 
 
 def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
-    # Cool (>=25°C headroom) follows the user's floor; it used to be a fixed
+    # Cool (>=15°C headroom) follows the user's floor; it used to be a fixed
     # 35%, so a 15% floor never took effect. Closer to the target it ramps.
     margin = min(sensor["headroom_c"] for sensor in sensors)
     return margin_ramp(margin, minimum, maximum)
@@ -484,7 +484,7 @@ def _rise_rate(sensors: list[dict], now: float) -> float:
 
 PREDICT_AHEAD_MINUTES = 0.5
 BACKSTOP_77C_PERCENT = 60
-PREDICT_MAX_HEADROOM_C = 20.0
+PREDICT_MAX_HEADROOM_C = 10.0
 
 
 def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
