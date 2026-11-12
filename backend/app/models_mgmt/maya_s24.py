@@ -7,6 +7,9 @@ ONLY by an independent authenticated prepare-model action.
 from __future__ import annotations
 
 import asyncio
+import fcntl
+from contextlib import contextmanager
+from functools import wraps
 import json
 import os
 import platform
@@ -53,12 +56,50 @@ def _marker() -> Path:
     return root() / "managed.json"
 
 
-def _config() -> Path | None:
-    if not installed():
-        return None
-    # Upstream HIP setup emits maya-<quant>-hip.json; avoid taking any other quant.
+def _prepared_marker() -> Path:
+    return root() / "model-prepared.json"
+
+
+def _find_config() -> Path | None:
     files = [p for p in source().glob("maya-*-hip.json") if "s24" in p.name.lower()]
     return files[0] if len(files) == 1 and files[0].is_file() and not files[0].is_symlink() else None
+
+
+def _config() -> Path | None:
+    # A partial/failed download may leave a config file; never treat it as ready.
+    if not installed() or not _prepared_marker().is_file() or _prepared_marker().is_symlink():
+        return None
+    return _find_config()
+
+
+@contextmanager
+def _operation_lock():
+    directory = root()
+    if directory.is_symlink():
+        raise MayaError("管理ディレクトリがシンボリックリンクです")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / "operation.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise MayaError("Maya操作の安全なロックを作成できません") from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise MayaError("Maya-S24の別の操作が実行中です") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _serialized(fn):
+    @wraps(fn)
+    def call(*args, **kwargs):
+        with _operation_lock():
+            return fn(*args, **kwargs)
+    return call
 
 
 def available() -> bool:
@@ -130,6 +171,7 @@ def runtime_status() -> dict:
     }
 
 
+@_serialized
 def _install() -> dict:
     if not available() or os.geteuid() == 0:
         raise MayaError("Linux x86_64の非rootユーザーで導入してください")
@@ -160,6 +202,7 @@ async def install_stream(job=None) -> dict:
     return await asyncio.to_thread(_install)
 
 
+@_serialized
 def _update() -> dict:
     if not installed():
         raise MayaError("管理導入したMaya-S24がありません")
@@ -199,6 +242,7 @@ async def available_update() -> dict:
                 "update_available": False, "published_at": "", "error": str(exc)}
 
 
+@_serialized
 def _prepare_model(*, gpu_index: int = 0) -> dict:
     if not 0 <= gpu_index <= 15:
         raise MayaError("GPU番号が範囲外です")
@@ -218,8 +262,11 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
            "--yes", "--plain", "--download-model", "--no-start",
            "--models-dir", str(models_dir()), "--port", str(_PORT), "--host", "127.0.0.1"],
           cwd=source(), timeout=8*3600)
-    if _config() is None:
+    if _find_config() is None:
         raise MayaError("セットアップは終了しましたがHIP設定を確認できません")
+    _prepared_marker().write_text(json.dumps({
+        "model": _MODEL, "gpu_index": gpu_index, "port": _PORT
+    }), encoding="utf-8")
     return runtime_status()
 
 
@@ -229,6 +276,7 @@ async def prepare_model_stream(job=None, *, gpu_index: int = 0) -> dict:
     return await asyncio.to_thread(_prepare_model, gpu_index=gpu_index)
 
 
+@_serialized
 def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     if alias != _ALIAS or _config() is None:
         return False, "明示的なMaya-S24モデル準備が必要です"
@@ -244,6 +292,7 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     return True, ""
 
 
+@_serialized
 def stop_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     if alias != _ALIAS:
         return False, "Maya-S24のモデル名が不正です"
@@ -311,6 +360,7 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
 def mark_used_by_base_url(_base_url: str) -> None:
     return None
 
+@_serialized
 def uninstall() -> dict:
     if not installed():
         raise MayaError("ControlDeck管理のMaya-S24がありません")
@@ -321,5 +371,6 @@ def uninstall() -> dict:
         raise MayaError("削除先にシンボリックリンクが含まれています")
     # Remove managed code only, preserve models_dir, secrets, global Maya installs.
     shutil.rmtree(source())
+    _prepared_marker().unlink(missing_ok=True)
     _marker().unlink(missing_ok=True)
     return runtime_status()
