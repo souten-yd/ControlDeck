@@ -80,7 +80,8 @@ def status(feature_id: str) -> dict:
             "error": state["error"], "available": state["available"],
             "detail": {"runtime": "maya-s", "cli_path": state["entrypoint"],
                        "models_dir": state["models_dir"], "configured": state["configured"],
-                       "running": state["running"], "warning": state["warning"]},
+                       "running": state["running"], "built": state.get("built", False),
+                       "settings": state.get("settings", {}), "warning": state["warning"]},
         }
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 

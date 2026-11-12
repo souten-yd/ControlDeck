@@ -1,7 +1,7 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
@@ -252,6 +252,7 @@ function ActiveModelJobs() {
 }
 
 export default function ModelsPage() {
+  const navigate = useNavigate();
   useModelJobsStream();
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
@@ -494,7 +495,7 @@ export default function ModelsPage() {
             const shared = endpoint && endpoint.aliases.length > 1;
             const openDetail = () => {
               if (runtime === "strata") setStrataDetail(id);
-              else if (runtime === "maya-s") show("Maya-Sの詳細・HIP設定とモデル準備は「設定 → オプション機能」で管理します");
+              else if (runtime === "maya-s") navigate("/settings#feature-maya-s");
               else if (isLlama) setLlamaDetail(id);
               else setDetail(m.name);
             };

@@ -476,6 +476,8 @@ interface GpuRuntimeDetail {
   /** Strata Terminal (managed user-local installation). */
   cli_path?: string;
   models_dir?: string;
+  built?: boolean;
+  settings?: MayaSettings;
   configured?: boolean;
   running?: boolean;
 }
@@ -702,10 +704,18 @@ function GpuRuntimeDetails({ addon, release }: {
 
 
 /** Maya has a deliberately separate 96.5GB download consent gate. */
+interface MayaSettings {
+  model_path: string; context: number; gpu_index: number; parallel: number;
+  ram_headroom_gb: number; drafting: "on" | "off";
+}
+
 function MayaSPanel({ addon }: { addon: AddonState }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [gpu, setGpu] = useState(0);
+  const [settings, setSettings] = useState<MayaSettings>(addon.runtime?.settings ?? {
+    model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
+  });
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -724,7 +734,7 @@ function MayaSPanel({ addon }: { addon: AddonState }) {
       job.status === "succeeded" ? "info" : "error");
   }, [jobId, job?.status]);
 
-  const run = async (kind: "prepare" | "start" | "stop") => {
+  const run = async (kind: "prepare" | "start" | "stop" | "build" | "existing") => {
     if (busy) return;
     setBusy(true);
     try {
@@ -735,7 +745,7 @@ function MayaSPanel({ addon }: { addon: AddonState }) {
         setBusy(false);
         return;
       }
-      const route = kind === "prepare" ? "prepare-jobs" : "start-jobs";
+      const route = `${kind}-jobs`;
       const started = await api<{job_id: string}>(`/features/maya-s/model/${route}`, {
         method: "POST", json: kind === "prepare" ? {gpu_index: gpu} : {},
       });
@@ -755,8 +765,41 @@ function MayaSPanel({ addon }: { addon: AddonState }) {
     </p>
     <p className="text-[11px] text-zinc-500">
       {addon.runtime?.running ? "API稼働中 · 127.0.0.1:8099"
-        : addon.runtime?.configured ? "HIPモデル準備済み・停止中" : "モデル未準備"}
+        : addon.runtime?.configured ? "HIPモデル準備済み・停止中" : addon.runtime?.built ? "HIPビルド済み・モデル未準備" : "HIP未ビルド・モデル未準備"}
     </p>
+    <button type="button" disabled={busy || addon.runtime?.running} onClick={() => void run("build")}
+      className="min-h-11 rounded-lg border px-3 text-xs disabled:opacity-40">
+      {addon.runtime?.built ? "HIPを再ビルド" : "HIPをビルド"}（モデル取得なし）
+    </button>
+    <button type="button" disabled={busy || addon.runtime?.running || !addon.runtime?.settings?.model_path}
+      onClick={() => void run("existing")} className="min-h-11 rounded-lg border px-3 text-xs disabled:opacity-40">
+      保存済みの既存モデルを準備（取得・起動なし）
+    </button>
+    <details className="text-xs"><summary className="cursor-pointer py-3">詳細設定・既存モデルの指定</summary>
+      <div className="space-y-3">
+        <label className="block">既存GGUFの先頭ファイル
+          <input className="mt-1 w-full rounded border bg-transparent p-2" value={settings.model_path}
+            onChange={e => setSettings({...settings, model_path: e.target.value})} />
+        </label>
+        {([ ["context", "コンテキスト長", 1024, 262144], ["gpu_index", "GPU番号", 0, 15],
+          ["parallel", "並列数", 1, 8], ["ram_headroom_gb", "RAM確保量 (GB)", 1, 256]] as const).map(([key, label, min, max]) =>
+          <label key={key} className="flex flex-wrap items-center justify-between gap-2">{label}
+            <input type="number" min={min} max={max} className="w-28 rounded border bg-transparent p-2"
+              value={settings[key]} onChange={e => setSettings({...settings, [key]: Number(e.target.value)})} />
+          </label>)}
+        <label className="flex items-center justify-between">投機デコード
+          <select value={settings.drafting} onChange={e => setSettings({...settings, drafting: e.target.value as "on" | "off"})}
+            className="rounded border bg-transparent p-2"><option value="on">有効</option><option value="off">無効</option></select>
+        </label>
+        <p className="text-zinc-500">設定保存ではモデルを取得・読み込みしません。モデル変更後は準備が必要です。</p>
+        <button type="button" disabled={busy || addon.runtime?.running} className="min-h-11 rounded border px-3 disabled:opacity-40"
+          onClick={async () => { setBusy(true); try {
+            await api("/features/maya-s/settings", {method: "PUT", json: settings});
+            await qc.invalidateQueries({queryKey: ["features"]}); show("Maya-S設定を保存しました");
+          } catch (e) { show(e instanceof Error ? e.message : "設定保存に失敗しました", "error"); }
+          finally { setBusy(false); } }}>設定を保存</button>
+      </div>
+    </details>
     {!addon.runtime?.configured && <div className="flex flex-wrap items-center gap-2">
       <label className="text-xs text-zinc-500" htmlFor="maya-gpu-index">ROCm GPU番号</label>
       <input id="maya-gpu-index" aria-label="Maya GPU番号" type="number" min={0} max={15} value={gpu}
@@ -894,7 +937,7 @@ function AddonsSection() {
       <p className="mb-3 text-xs text-zinc-400">オプトイン機能の導入と管理。導入はユーザー領域へのインストールでパスワードは不要です。</p>
       <div className="space-y-2.5">
         {(addons ?? []).map((addon) => (
-          <div key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <div id={`feature-${addon.id}`} key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
             <div className="flex flex-wrap items-center gap-2">
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
                 title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />

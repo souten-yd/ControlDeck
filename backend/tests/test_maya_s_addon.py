@@ -292,3 +292,64 @@ def test_privileged_process_never_mutates_managed_maya(managed, monkeypatch):
     with pytest.raises(maya_s.MayaError, match="root"):
         maya_s.start_instance()
     assert maya_s.installed()
+
+
+def test_settings_save_does_not_start_or_download(managed, monkeypatch):
+    _installed(managed)
+    monkeypatch.setattr(maya_s, '_exec', lambda *a, **k: pytest.fail('settings must not execute commands'))
+    values = maya_s.get_settings() | {'context': 16384, 'parallel': 2, 'drafting': 'off'}
+    result = maya_s.save_settings(values)
+    assert result['settings'] == values
+    assert not result['configured'] and not result['running']
+    assert not maya_s.models_dir().exists()
+
+
+def test_settings_reject_outside_allowed_roots(managed):
+    _installed(managed)
+    from fastapi import HTTPException
+    with pytest.raises((HTTPException, ValueError, PermissionError)):
+        maya_s.save_settings(maya_s.get_settings() | {'model_path': '/etc/passwd'})
+
+
+def test_settings_while_running_rejected(managed, monkeypatch):
+    _installed(managed)
+    monkeypatch.setattr(maya_s, '_running', lambda: True)
+    with pytest.raises(maya_s.MayaError, match='停止'):
+        maya_s.save_settings(maya_s.get_settings())
+
+
+def test_build_only_never_invokes_installer_or_engine(managed, monkeypatch):
+    _installed(managed)
+    commands = []
+    original = Path.is_file
+    monkeypatch.setattr(Path, 'is_file', lambda p: True if str(p).endswith('/llvm/bin/clang++') else original(p))
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(maya_s.subprocess, 'run', run)
+    state = maya_s.build_engine()
+    assert len(commands) == 2
+    assert all(c[0] == 'cmake' for c in commands)
+    assert commands[1][-2:] == ['-j', '1']
+    assert not state['configured']
+    assert not maya_s.models_dir().exists()
+
+
+def test_maya_policy_selection_never_starts_model(managed, monkeypatch):
+    _installed(managed)
+    from app.models_mgmt import runtime_policy
+    monkeypatch.setattr(maya_s, 'start_instance', lambda *a: pytest.fail('must not start'))
+    policy = runtime_policy.RuntimePolicy(selected_runtime='maya-s', coexistence='coexist')
+    asyncio.run(runtime_policy.apply_selection(policy))
+    assert policy.selected_runtime == 'maya-s'
+
+
+def test_addon_maya_rejects_unready_and_vision(managed, monkeypatch):
+    from app.models_mgmt import ai_gateway, runtime_policy
+    monkeypatch.setattr(runtime_policy, 'get_policy', lambda: SimpleNamespace(selected_runtime='maya-s'))
+    async def not_ready(*args):
+        return {'ok': False}
+    monkeypatch.setattr(maya_s, 'health', not_ready)
+    for capability in ('text.generate', 'vision.analyze'):
+        with pytest.raises(ai_gateway.AITargetUnavailable):
+            asyncio.run(ai_gateway.resolve_ai_target(capability))

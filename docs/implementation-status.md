@@ -3823,3 +3823,11 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - ローカル稼働Hostは最新main bf53da1と既存terminal修正を統合した別checkoutへ更新済み。更新候補backend 1255 passed/2 skipped、frontend build成功。localhostでPC/320pxのpassword/passkey 2件成功。旧checkout・DB・設定・unitのバックアップ保持。PR本体は未マージ、Strata統合UI・OpenCode・Add-on実経路の最終検証を継続。
 - 本体更新の配布元をmainから正式GitHub Releaseのタグ・検証済みSHAへ修正し、適用前backupと再起動後health確認を追加。
 - 証跡は`/data1tb/ControlDeck/strata-pr355-evidence/`。ベンチマークraw JSONと各段階のログを保持。
+
+## 2026-11-12 PR #359 build-only acceptance (in progress)
+
+- User scope: install/build Maya-S, integrate add-in lifecycle/settings/runtime selection; **do not download model weights or load/run the Maya model**. Existing separately downloaded GGUF can be selected later.
+- Official Maya v1.1.61 code installed. HIP build-only action is independent of model setup; one compiler job limits RAM use. Settings save does not run setup or inference. Existing-model preparation never passes `--download-model` and disables speed calibration.
+- Added context/GPU/parallel/RAM headroom/drafting settings, selected-runtime policy and Add-on text capability wiring. Unready Maya is rejected, not started by a generation request. OpenCode receives the configured context through local_llm.
+- Local backend 1281 passed / 2 skipped before final resource-accounting test; frontend build passed. Final build/UI/CI acceptance pending. Maya inference/performance/quality explicitly NOT TESTED by user instruction.
+- PR #355 merged to main as d01dddca after final manual CI 43236566272 passed.

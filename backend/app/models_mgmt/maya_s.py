@@ -196,6 +196,10 @@ def runtime_status() -> dict:
         "available": available() or state,
         "version": tag,
         "configured": bool(config),
+        "built": ((source() / "build" / "maya").is_file()
+                  and (root() / "build-version").is_file()
+                  and (root() / "build-version").read_text().strip() == tag),
+        "settings": get_settings(),
         "running": _running() if config else False,
         "entrypoint": str(entrypoint()) if state else "",
         "models_dir": str(models_dir()),
@@ -371,7 +375,7 @@ def stop_instance(alias: str = _ALIAS) -> tuple[bool, str]:
 
 async def health(alias: str = _ALIAS) -> dict:
     """Only accept our loopback instance; a launched unit is not a ready model."""
-    if alias != _ALIAS or _config() is None or not _running():
+    if alias != _ALIAS or not await asyncio.to_thread(lambda: _config() is not None and _running()):
         return {"ok": False, "status_code": None}
     import httpx
     try:
@@ -416,7 +420,8 @@ def get_instance(alias: str) -> dict:
     return {"alias": _ALIAS, "runtime": "maya-s", "role": "llm",
             "model": _MODEL, "port": _PORT,
             "base_url": f"http://127.0.0.1:{_PORT}/v1",
-            "loaded": _running(), "model_path": "",
+            "loaded": _running(), "model_path": get_settings()["model_path"],
+            "ctx_size": get_settings()["context"],
             "configured": True, "n_parallel": 1}
 
 
@@ -449,4 +454,109 @@ def uninstall() -> dict:
     shutil.rmtree(source())
     _prepared_marker().unlink(missing_ok=True)
     _marker().unlink(missing_ok=True)
+    return runtime_status()
+
+
+def get_settings() -> dict:
+    defaults = {"model_path": "", "context": 8192, "gpu_index": 0,
+                "parallel": 1, "ram_headroom_gb": 16, "drafting": "on"}
+    path = root() / "settings.json"
+    if path.is_file() and not path.is_symlink():
+        defaults.update(json.loads(path.read_text(encoding="utf-8")))
+    return defaults
+
+
+@_serialized
+def save_settings(settings: dict) -> dict:
+    if not installed():
+        raise MayaError("先にMaya-Sを導入してください")
+    if _running():
+        raise MayaError("Maya-Sを停止してから設定を変更してください")
+    value = dict(settings)
+    if value.get("model_path"):
+        from app.files.service import resolve
+        path = resolve(value["model_path"])
+        if not path.is_file() or path.suffix.lower() != ".gguf":
+            raise MayaError("既存GGUFの先頭ファイルを指定してください")
+        with path.open("rb") as stream:
+            if stream.read(4) != b"GGUF":
+                raise MayaError("GGUFファイルではありません")
+        value["model_path"] = str(path)
+    config = _config()
+    previous = get_settings()
+    if config and value.get("model_path") == previous.get("model_path"):
+        cfg = json.loads(config.read_text(encoding="utf-8"))
+        args = cfg.get("args", [])
+        for flag, setting in (("--max-context", "context"), ("--parallel", "parallel")):
+            if flag in args:
+                args[args.index(flag) + 1] = str(value[setting])
+            else:
+                args.extend([flag, str(value[setting])])
+        cfg["args"] = args
+        cfg["gpu"] = [value["gpu_index"]]
+        cfg.setdefault("env", {})["MAYA_GLM_RAM_HEADROOM_GB"] = str(value["ram_headroom_gb"])
+        cfg["env"]["MAYA_GLM_MTP_DECODE"] = "1" if value["drafting"] == "on" else "0"
+        config.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    elif config:
+        _prepared_marker().unlink(missing_ok=True)
+    (root() / "settings.json").write_text(json.dumps(value, indent=2), encoding="utf-8")
+    return runtime_status()
+
+
+@_serialized
+def build_engine() -> dict:
+    """Compile code only. Never invoke the model installer or inference engine."""
+    if not installed() or _running():
+        raise MayaError("導入済み・停止中のMaya-Sが必要です")
+    rocm = Path("/opt/rocm").resolve()
+    compiler = rocm / "llvm/bin/clang++"
+    if not compiler.is_file():
+        raise MayaError("/opt/rocmのHIPコンパイラーが必要です")
+    build = source() / "build"
+    commands = [
+        ["cmake", "-S", str(source()), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release",
+         "-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_PREFILL_MMQ=ON",
+         "-DSTRATA_NATIVE_EXPERTS=ON", "-DSTRATA_BUILD_TESTS=OFF",
+         "-DCMAKE_HIP_ARCHITECTURES=gfx1201", f"-DCMAKE_HIP_COMPILER={compiler}",
+         f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={rocm}", f"-DCMAKE_PREFIX_PATH={rocm}"],
+        ["cmake", "--build", str(build), "--target", "maya", "-j", "1"],
+    ]
+    with (root() / "build.log").open("w", encoding="utf-8") as log:
+        for command in commands:
+            try:
+                result = subprocess.run(command, cwd=source(), stdin=subprocess.DEVNULL,
+                                        stdout=log, stderr=subprocess.STDOUT, timeout=3*3600,
+                                        env={**os.environ, "MAYA_UPDATE_CHECK": "0"}, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise MayaError("HIP構築を完了できません。build.logを確認してください") from exc
+            if result.returncode:
+                raise MayaError("HIP構築に失敗しました。build.logを確認してください")
+    (root() / "build-version").write_text(runtime_status()["version"], encoding="utf-8")
+    return runtime_status()
+
+
+@_serialized
+def prepare_existing() -> dict:
+    """Prepare a user-supplied GGUF without downloading weights or running a benchmark."""
+    if not installed() or _running():
+        raise MayaError("導入済み・停止中のMaya-Sが必要です")
+    value = get_settings()
+    from app.files.service import resolve
+    path = resolve(value["model_path"])
+    if not value["model_path"] or not path.is_file() or path.suffix.lower() != ".gguf":
+        raise MayaError("詳細設定で既存GGUFを指定してください")
+    _ensure_alias_port_available()
+    _prepared_marker().unlink(missing_ok=True)
+    _exec(["bash", str(entrypoint()), "--setup", "--backend", "hip",
+           "--gguf-dir", str(path), "--gpu", str(value["gpu_index"]),
+           "--context", str(value["context"]), "--parallel", str(value["parallel"]),
+           "--env", f"MAYA_GLM_RAM_HEADROOM_GB={value['ram_headroom_gb']}",
+           "--drafting", value["drafting"], "--no-speed-calibration",
+           "--no-vision", "--yes", "--plain", "--no-start",
+           "--models-dir", str(models_dir()), "--port", str(_PORT), "--host", "127.0.0.1"],
+          cwd=source(), timeout=8*3600)
+    if _find_config() is None:
+        raise MayaError("Maya-SのHIP設定を確認できません。他のモデル形式には対応していません")
+    _prepared_marker().write_text(json.dumps({"model": _MODEL, "gpu_index": value["gpu_index"],
+                                            "port": _PORT}), encoding="utf-8")
     return runtime_status()

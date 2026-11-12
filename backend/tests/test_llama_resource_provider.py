@@ -251,3 +251,18 @@ def test_the_server_side_socket_is_not_what_gets_inspected(monkeypatch):
     guard = guard[:guard.index("\ndef ")]
     assert "connection.raddr" in guard and "connection.raddr.port == port" in guard
     assert "connection.laddr.port == port" not in guard
+
+
+def test_disk_streamed_moe_reservation_is_not_full_gguf_size(monkeypatch, tmp_path):
+    from app.models_mgmt import local_llm
+    model = tmp_path / 'large.gguf'
+    with model.open('wb') as stream:
+        stream.truncate(96_500_000_000)
+    item = {'alias': 'maya-s', 'runtime': 'maya-s', 'loaded': True,
+            'model_path': str(model)}
+    monkeypatch.setattr(local_llm, 'list_instances', lambda: [item])
+    monkeypatch.setattr(local_llm, 'residency_key', lambda item: 'maya-s:glm')
+    provider = LocalLlmCapacityProvider(fake_devices(32 * 1024**3), ResourceTelemetry())
+    reservations = provider.reservations()
+    assert len(reservations) == 1
+    assert reservations[0].reserved_bytes == 28 * 1024**3
