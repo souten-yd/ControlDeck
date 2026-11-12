@@ -3803,3 +3803,10 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - 本体のGitHub mainへのfast-forward更新確認と管理者の明示操作による独立systemd更新ジョブを追加。変更済み作業ツリーと未対応配置では更新不可。
 
 - 受け入れ条件：backend pytest、frontend build、旧Lucebox参照grep、Strata導入/削除テスト、本体更新失敗時のロールバック、モバイル画面確認。マージとリリースは検証結果が得られるまで未完了。
+
+
+## 2026-11-12 — Project Maya-S24 option (PR #359, Draft)
+
+- `feat/maya-s24-optional-addon-20261112` adds an independent `maya-s24` opt-in feature stacked on PR #355. Official Project Maya GitHub Release code only on install; explicit separate GLM-5.3-Flash Maya-S24 model download (~94.7GB) with confirmation, explicit start/stop and loopback-only API.
+- Uninstall keeps model weights, defaults and other runtimes unchanged. `backend/tests/test_maya_s24_addon.py` adds mocked offline checks. See `docs/design-maya-s24-optional-addon.md`.
+- **Not merged/released**. Full tests, R9700/ROCm10 and mobile verification remain pending; CI stays manual-only as in the main development rules. Existing PR #355 is an upstream dependency and must merge first.
