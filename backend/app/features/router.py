@@ -146,7 +146,7 @@ def apply_action(
 
 
 # Project Maya-S24 is opt-in. Installing engine code NEVER downloads its 94.7 GB model.
-@router.post("/maya-s24/prepare-model-jobs", status_code=201)
+@router.post("/maya-s24/model/prepare-jobs", status_code=201)
 async def maya_s24_prepare_model(
     request: Request, body: MayaSetupBody,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
@@ -171,7 +171,7 @@ async def maya_s24_prepare_model(
     return {"job_id": job.id}
 
 
-@router.post("/maya-s24/start-jobs", status_code=201)
+@router.post("/maya-s24/model/start-jobs", status_code=201)
 async def maya_s24_start_model(
     request: Request, user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
@@ -208,7 +208,7 @@ async def maya_s24_start_model(
     return {"job_id": job.id}
 
 
-@router.post("/maya-s24/stop")
+@router.post("/maya-s24/model/stop")
 async def maya_s24_stop_model(
     request: Request, user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
