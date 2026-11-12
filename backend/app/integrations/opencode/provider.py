@@ -800,9 +800,14 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
     return root
 
 
-def _runtime_env(runtime: str, config: Path) -> dict[str, str]:
+def _runtime_env(runtime: str, config: Path, project: Path | None = None) -> dict[str, str]:
     """runtime config を読ませるための環境変数。"""
-    return {"XDG_CONFIG_HOME": str(config)} if runtime == "v2" else {"OPENCODE_CONFIG": str(config)}
+    env = {"XDG_CONFIG_HOME": str(config)} if runtime == "v2" else {"OPENCODE_CONFIG": str(config)}
+    # v2 resolves its workspace from PWD; systemd's inherited PWD can still be
+    # HOME even when WorkingDirectory points at the selected project.
+    if runtime == "v2" and project is not None:
+        env["PWD"] = str(project.resolve())
+    return env
 
 
 def _discard_runtime_config(runtime: str, config: Path) -> None:
@@ -984,7 +989,7 @@ def tui_command(
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))
-    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config).items())
+    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config, project).items())
     command = f"{env} exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
 
@@ -1079,7 +1084,7 @@ async def run_chat(
     argv = [
         systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
         f"--unit={unit}", f"--working-directory={project}",
-        *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config).items()),
+        *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config, project).items()),
         *_run_argv(runtime, binary, instruction[:32_000], model_id, project),
     ]
     if session_id:
@@ -1181,7 +1186,7 @@ class OpenCodeProvider:
         argv = [
             systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
             f"--unit={unit}", f"--working-directory={project}",
-            *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config).items()),
+            *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config, project).items()),
             *_run_argv(runtime, binary, "添付されたControl Deckの指示を実行してください。",
                        model_id, project),
             "--file", str(prompt_path),
