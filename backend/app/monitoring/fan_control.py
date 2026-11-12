@@ -690,7 +690,12 @@ def status() -> dict:
         settings = _load()
         devices = _devices()
         for device in devices:
-            device.pop("_range", None)
+            limits = device.pop("_range", None)
+            device["curve_limits"] = (
+                {"temp_min_c": limits[0], "temp_max_c": limits[1],
+                 "pwm_min_percent": limits[2], "pwm_max_percent": limits[3]}
+                if limits is not None else None
+            )
         return {
             "settings": settings.model_dump(), "devices": devices,
             "helper_installed": HELPER.is_file(),
