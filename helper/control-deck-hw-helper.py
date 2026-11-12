@@ -142,9 +142,9 @@ def fan_curve_path(device: Path) -> Path:
 
 def fan_curve_range(text: str) -> tuple[int, int, int, int, int]:
     """Parse firmware-advertised limits; zero/invalid ranges MUST NOT be used."""
-    temps = re.search(r"FAN_CURVE\\(hotspot temp\\):\\s*(\\d+)\\s*C\\s+(\\d+)\\s*C", text, re.I)
-    speeds = re.search(r"FAN_CURVE\\(fan speed\\):\\s*(\\d+)\\s*%\\s+(\\d+)\\s*%", text, re.I)
-    points = re.findall(r"^\\s*(\\d+):\\s*\\d+\\s*C\\s+\\d+\\s*%", text, re.M)
+    temps = re.search(r"FAN_CURVE\(hotspot temp\):\s*(\d+)\s*C\s+(\d+)\s*C", text, re.I)
+    speeds = re.search(r"FAN_CURVE\(fan speed\):\s*(\d+)\s*%\s+(\d+)\s*%", text, re.I)
+    points = re.findall(r"^\s*(\d+):\s*\d+\s*C\s+\d+\s*%", text, re.M)
     if not temps or not speeds or points != [str(i) for i in range(len(points))] or len(points) != 5:
         fail("fan_curveのOD_RANGE/5-point形式を検証できません")
     t0, t1 = map(int, temps.groups())
@@ -174,7 +174,7 @@ def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
     except OSError as exc:
         fail(f"fan_curveを読み取れません: {exc}")
     tmin, tmax, pmin, pmax, count = fan_curve_range(current)
-    if not re.fullmatch(r"(?:\\d{1,3}:\\d{1,3},){4}\\d{1,3}:\\d{1,3}", curve_text):
+    if not re.fullmatch(r"(?:\d{1,3}:\d{1,3},){4}\d{1,3}:\d{1,3}", curve_text):
         fail("fan_curve指定形式が不正です")
     points = [tuple(map(int, item.split(":"))) for item in curve_text.split(",")]
     if len(points) != count or any(
