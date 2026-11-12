@@ -25,6 +25,28 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+# Piecewise-linear (not stepped) safety demand by remaining headroom (°C).
+# Between points the fan command is interpolated, so it ramps instead of
+# jumping at band edges. Above 25°C headroom the user's floor applies.
+MARGIN_RAMP = ((25.0, None), (20.0, 50.0), (15.0, 60.0), (10.0, 75.0), (5.0, 90.0), (2.0, 100.0))
+
+
+def margin_ramp(margin: float, minimum: float, maximum: float) -> int:
+    points = [(m, float(minimum) if v is None else min(float(maximum), v)) for m, v in MARGIN_RAMP]
+    points[-1] = (points[-1][0], float(maximum))
+    if margin >= points[0][0]:
+        value = points[0][1]
+    elif margin <= points[-1][0]:
+        value = points[-1][1]
+    else:
+        value = points[-1][1]
+        for (m_hi, v_hi), (m_lo, v_lo) in zip(points, points[1:]):
+            if m_lo <= margin <= m_hi:
+                value = v_lo + (v_hi - v_lo) * (margin - m_lo) / (m_hi - m_lo)
+                break
+    return int(round(min(maximum, max(minimum, value))))
+
+
 @dataclass
 class AdaptivePolicy:
     """In-memory online learner. Persist bounded gains only, never live integrators."""
@@ -125,11 +147,7 @@ class AdaptivePolicy:
             fast_rise |= d_smooth > 0.045
         margin_min = min(margins)
         # Independent safety floor: adaptive parameters never reduce this.
-        safety = (
-            max_percent if margin_min <= 2 else 90 if margin_min <= 5 else
-            75 if margin_min <= 10 else 60 if margin_min <= 15 else
-            50 if margin_min <= 20 else min_percent
-        )
+        safety = margin_ramp(margin_min, min_percent, max_percent)
         wanted = clamp(max(safety, *demands), min_percent, max_percent)
 
         # Normal operation is passive system identification (no test load).

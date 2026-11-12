@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import logging
 import re
 import subprocess
@@ -20,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
-from app.monitoring.fan_strategy import AdaptivePolicy
+from app.monitoring.fan_strategy import AdaptivePolicy, margin_ramp
 
 logger = logging.getLogger("control_deck.fan_control")
 DRM_ROOT = Path("/sys/class/drm")
@@ -30,9 +31,10 @@ SENSOR_RE = re.compile(r"^temp[1-9][0-9]*$")
 STATE_FILE = "amd-fan-control.json"
 INTERVAL = 3.0
 # Bursty LLM workloads must not turn into fan-speed oscillations.
-COOL_HOLD_SECONDS = 180.0
-COOL_STEP_SECONDS = 45.0
-COOL_STEP_PERCENT = 5
+COOL_HOLD_SECONDS = 60.0
+COOL_RATE_PERCENT_PER_MIN = 10.0
+# Decreasing curve writes are rate limited; increases are written at once.
+RAMP_WRITE_SECONDS = 5.0
 ZERO_STABLE_SECONDS = 600.0
 ZERO_STOP_TEMP_C = 55
 ZERO_RISE_LIMIT_C_PER_MIN = 0.5
@@ -51,9 +53,9 @@ class FanSettings(BaseModel):
     min_percent: int = Field(default=35, ge=15, le=70)
     allow_zero_rpm: bool = False
     preset_id: Literal["recommended", "quiet", "cooling", "custom"] = "recommended"
-    cool_hold_seconds: int = Field(default=180, ge=180, le=600)
-    cool_step_seconds: int = Field(default=45, ge=45, le=180)
-    cool_step_percent: int = Field(default=5, ge=1, le=5)
+    # After cooling starts, hold this long, then ramp down continuously.
+    cool_hold_seconds: int = Field(default=60, ge=30, le=600)
+    cool_rate_percent_per_min: float = Field(default=10.0, ge=1.0, le=60.0, allow_inf_nan=False)
     zero_stable_seconds: int = Field(default=600, ge=600, le=1800)
     learning_enabled: bool = True
     ff_gain: float = Field(default=25.0, ge=25.0, le=55.0, allow_inf_nan=False)
@@ -108,6 +110,7 @@ REBOOT_HINT = "GPUのファン設定を標準に戻せません。PCを再起動
 _last_boost_at = 0.0
 _cool_since: float | None = None
 _last_cool_step = 0.0
+_floor_exact = 0.0
 _temp_history: dict[str, list[tuple[float, float]]] = {}
 _zero_stable_since: float | None = None
 _zero_active = False
@@ -123,16 +126,16 @@ _LEARNING_FILE = "amd-fan-learning.json"
 # Sensor goals are resolved per GPU against current critical limits in the UI.
 FAN_PRESETS = (
     {"id": "recommended", "label": "推奨・バランス", "description": "LLM常駐向け。常時低速・昇温時即加速・静かな降速",
-     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 180,
-     "cool_step_seconds": 45, "cool_step_percent": 5, "zero_stable_seconds": 600,
+     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 60,
+     "cool_rate_percent_per_min": 10.0, "zero_stable_seconds": 600,
      "learning_enabled": True, "ff_gain": 25.0, "kp": 1.8, "ki": 0.015, "target_offset_c": 0},
     {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",
-     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 300,
-     "cool_step_seconds": 90, "cool_step_percent": 3, "zero_stable_seconds": 900,
+     "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 180,
+     "cool_rate_percent_per_min": 4.0, "zero_stable_seconds": 900,
      "learning_enabled": True, "ff_gain": 25.0, "kp": 1.8, "ki": 0.015, "target_offset_c": 0},
     {"id": "cooling", "label": "冷却優先", "description": "最低回転と冷却余裕を増やした保守的設定",
-     "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 300,
-     "cool_step_seconds": 90, "cool_step_percent": 3, "zero_stable_seconds": 900,
+     "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 180,
+     "cool_rate_percent_per_min": 5.0, "zero_stable_seconds": 900,
      "learning_enabled": True, "ff_gain": 30.0, "kp": 2.0, "ki": 0.015, "target_offset_c": -5},
 )
 
@@ -147,7 +150,7 @@ def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanS
         return settings.model_copy(update={"preset_id": "custom"})
     keys = (
         "min_percent", "allow_zero_rpm", "cool_hold_seconds",
-        "cool_step_seconds", "cool_step_percent", "zero_stable_seconds",
+        "cool_rate_percent_per_min", "zero_stable_seconds",
         "learning_enabled", "ff_gain", "kp", "ki",
     )
     if any(getattr(settings, key) != preset[key] for key in keys):
@@ -170,6 +173,12 @@ def _load() -> FanSettings:
     path = _setting_path()
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(document, dict) and ("cool_step_seconds" in document or "cool_step_percent" in document):
+            # Legacy stepped descent → continuous ramp of the same average rate.
+            seconds = float(document.pop("cool_step_seconds", 45) or 45)
+            percent = float(document.pop("cool_step_percent", 5) or 5)
+            document.setdefault("cool_rate_percent_per_min",
+                                round(min(60.0, max(1.0, percent * 60 / max(1.0, seconds))), 1))
         settings = FanSettings.model_validate(document)
         # Legacy settings could have custom temperatures without a preset tag.
         if "preset_id" not in document and (
@@ -445,11 +454,10 @@ def _curve(ranges: tuple[int, int, int, int], floor: int) -> str:
 
 
 def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
+    # Cool (>=25°C headroom) follows the user's floor; it used to be a fixed
+    # 35%, so a 15% floor never took effect. Closer to the target it ramps.
     margin = min(sensor["headroom_c"] for sensor in sensors)
-    request = 35 if margin >= 25 else 40 if margin >= 20 else 50 if margin >= 15 else (
-        60 if margin >= 10 else 75 if margin >= 5 else 90 if margin >= 2 else maximum
-    )
-    return min(maximum, max(minimum, request))
+    return margin_ramp(margin, minimum, maximum)
 
 
 def _rise_rate(sensors: list[dict], now: float) -> float:
@@ -489,25 +497,27 @@ def _predictive_floor(sensors: list[dict], minimum: int, maximum: int,
 
 
 def _smooth_floor(wanted: int, current: int, now: float, *,
-                  hold_seconds: int = COOL_HOLD_SECONDS,
-                  step_seconds: int = COOL_STEP_SECONDS,
-                  step_percent: int = COOL_STEP_PERCENT) -> int:
-    """Immediate spin-up, 3-minute hold then 5% steps no faster than 45 s."""
-    global _cool_since, _last_cool_step, _last_boost_at
+                  hold_seconds: float = COOL_HOLD_SECONDS,
+                  rate_percent_per_min: float = COOL_RATE_PERCENT_PER_MIN) -> int:
+    """Immediate spin-up; after a hold, ramp down continuously (no steps)."""
+    global _cool_since, _last_cool_step, _last_boost_at, _floor_exact
     if wanted >= current:
         _cool_since = None
+        _floor_exact = float(wanted)
         if wanted > current:
             _last_boost_at = now
         return wanted
     if _cool_since is None:
         _cool_since = now
+        _floor_exact = float(current)
         return current
     if now - _cool_since < hold_seconds:
+        _last_cool_step = now
         return current
-    if now - _last_cool_step < step_seconds:
-        return current
+    elapsed = max(0.0, min(now - _last_cool_step, 4 * INTERVAL))
     _last_cool_step = now
-    return max(wanted, current - step_percent)
+    _floor_exact = max(float(wanted), min(_floor_exact, float(current)) - rate_percent_per_min * elapsed / 60)
+    return max(wanted, math.ceil(_floor_exact - 1e-9))
 
 
 def _stop_entry_safe(sensors: list[dict], rise: float) -> bool:
@@ -632,7 +642,7 @@ def tick() -> None:
                          strategy["floor_percent"])
             floor = wanted if _active_bdf != bdf else _smooth_floor(
                 wanted, _floor, now, hold_seconds=settings.cool_hold_seconds,
-                step_seconds=settings.cool_step_seconds, step_percent=settings.cool_step_percent,
+                rate_percent_per_min=settings.cool_rate_percent_per_min,
             )
             curve = _curve(device["_range"], floor)
             hot = max(item["value_c"] for item in sensors)
@@ -671,7 +681,7 @@ def tick() -> None:
             # Every increase is applied immediately (not delayed by the
             # slow-down write budget); decreases are spaced apart.
             increasing = floor > _applied_floor
-            if not _zero_active and curve != _last_curve and (increasing or now - _last_write >= 10):
+            if not _zero_active and curve != _last_curve and (increasing or now - _last_write >= RAMP_WRITE_SECONDS):
                 _helper("apply", bdf, curve)
                 _last_curve, _last_write = curve, now
                 _applied_floor = floor
@@ -791,7 +801,7 @@ def status() -> dict:
             "cool_hold_seconds": settings.cool_hold_seconds,
             "zero_stable_seconds": settings.zero_stable_seconds,
             "effective_cool_hold_seconds": settings.cool_hold_seconds,
-            "effective_cool_step_seconds": settings.cool_step_seconds,
+            "effective_cool_rate_percent_per_min": settings.cool_rate_percent_per_min,
             "active": _last_sample if settings.enabled else None,
             "poll_interval_seconds": INTERVAL,
             "warning": "温度上限は目標であり保証値ではありません。CPU・マザーボードのファンは制御しません。",

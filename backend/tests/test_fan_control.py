@@ -241,16 +241,19 @@ def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
             break
     assert fan._cool_since is not None
     assert fan._floor == 100
-    for _ in range(59):
+    for _ in range(19):
         clock[0] += 3
         fan.tick()
-    assert fan._floor == 100  # 177 seconds of observed cooldown
-    clock[0] += 3
-    fan.tick()
-    assert fan._floor == 95  # first reduction after >=180 seconds
-    clock[0] += 3
-    fan.tick()
-    assert fan._floor == 95  # no 5%-per-poll rapid ramp-down
+    assert fan._floor == 100  # 57 seconds of observed cooldown: still held
+    # After the 60 s hold the floor ramps continuously at 10%/min:
+    # 0.5% per 3 s poll, never a 5% step.
+    seen = []
+    for _ in range(20):
+        clock[0] += 3
+        fan.tick()
+        seen.append(fan._floor)
+    assert seen[-1] == 90  # 60 s of ramp at 10%/min
+    assert all(a - b <= 1 for a, b in zip([100] + seen, seen))
 
     # LLM begins another burst: increase instantly, even inside write cooldown.
     (hwmon / "temp3_input").write_text("84000")
@@ -272,7 +275,8 @@ def test_predictive_ramp_uses_temperature_trend_not_utilization():
     # At +8 C/min, headroom 12C lasts ~1.5min -> early >=90%.
     assert _predictive_floor(sensors, 35, 100, 8.0) >= 90
     # Stable temperature has no predictive boost.
-    assert _predictive_floor(sensors, 35, 100, 0.0) == 60
+    # Interpolated between the 15°C (60%) and 10°C (75%) points.
+    assert _predictive_floor(sensors, 35, 100, 0.0) == 69
 
 
 def _add_zero_nodes(device):
@@ -410,8 +414,8 @@ def test_recommended_presets_safe_and_consistent():
     for preset in FAN_PRESETS:
         assert preset["allow_zero_rpm"] is False
         assert preset["min_percent"] >= 30
-        assert preset["cool_hold_seconds"] >= 180
-        assert preset["cool_step_seconds"] >= 45
+        assert preset["cool_hold_seconds"] >= 30
+        assert 1 <= preset["cool_rate_percent_per_min"] <= 60
         assert preset["zero_stable_seconds"] >= 600
         assert preset["learning_enabled"] is True
         assert 25 <= preset["ff_gain"] <= 55
@@ -430,12 +434,12 @@ def test_user_tuning_bounds_and_legacy_settings_migration():
         "min_percent": 35, "allow_zero_rpm": False, "targets_c": {"temp3": 85},
     })
     assert legacy.preset_id == "recommended"
-    assert legacy.cool_hold_seconds == 180
+    assert legacy.cool_hold_seconds == 60
     assert legacy.learning_enabled is True
     for patch in (
-        {"cool_hold_seconds": 179},
-        {"cool_step_seconds": 44},
-        {"cool_step_percent": 6},
+        {"cool_hold_seconds": 29},
+        {"cool_rate_percent_per_min": 0.5},
+        {"cool_rate_percent_per_min": 61},
         {"zero_stable_seconds": 599},
         {"ff_gain": 24.9},
         {"kp": 3.21},
@@ -450,8 +454,8 @@ def test_graphic_custom_settings_persist_without_enabling_gpu(gpu):
     fan, _, _, _, calls = gpu
     edited = fan.FanSettings(
         enabled=False, bdf="0000:03:00.0", preset_id="custom",
-        min_percent=42, cool_hold_seconds=360, cool_step_seconds=90,
-        cool_step_percent=2, zero_stable_seconds=1200,
+        min_percent=42, cool_hold_seconds=360, cool_rate_percent_per_min=2.5,
+        zero_stable_seconds=1200,
         ff_gain=32.0, kp=2.25, ki=0.02, learning_enabled=False,
         targets_c={"temp1": 72, "temp2": 85, "temp3": 78},
     )
@@ -466,7 +470,7 @@ def test_configured_cooldown_parameters_reach_controller(gpu, monkeypatch):
     fan, _, hwmon, _, _ = gpu
     changed = fan.FanSettings(
         enabled=True, bdf="0000:03:00.0",
-        cool_hold_seconds=330, cool_step_seconds=120, cool_step_percent=2,
+        cool_hold_seconds=330, cool_rate_percent_per_min=7.5,
         learning_enabled=False, ff_gain=42.0, kp=2.4, ki=0.02,
         preset_id="custom",
     )
@@ -485,11 +489,7 @@ def test_configured_cooldown_parameters_reach_controller(gpu, monkeypatch):
     for sensor_id, temperature in (("temp1", 35), ("temp2", 40), ("temp3", 40)):
         (hwmon / f"{sensor_id}_input").write_text(str(temperature * 1000))
     fan.tick()
-    assert record[-1] == {
-        "hold_seconds": 330,
-        "step_seconds": 120,
-        "step_percent": 2,
-    }
+    assert record[-1] == {"hold_seconds": 330, "rate_percent_per_min": 7.5}
 
 
 def test_reset_restores_curve_when_zero_rpm_node_is_unadvertised(tmp_path, monkeypatch):
@@ -659,3 +659,30 @@ def test_startup_mode_after_pc_boot(gpu, tmp_path, monkeypatch, mode, expect_ena
 def test_legacy_settings_default_to_reapplying_on_boot(gpu):
     fan, _, _, _, _ = gpu
     assert fan.FanSettings().startup_mode == "apply_saved"
+
+
+
+def test_cool_floor_follows_user_minimum_and_ramps_without_steps():
+    """実機: 冷えていても35%固定で、最低指令15%が効かなかった。"""
+    from app.monitoring.fan_strategy import margin_ramp
+    cool = [{"id": "temp1", "value_c": 30, "headroom_c": 45}]
+    assert fan_module()._desired_floor(cool, 15, 100) == 15
+    values = [margin_ramp(m / 2, 15, 100) for m in range(60, 0, -1)]
+    assert values[0] == 15 and values[-1] == 100
+    assert all(b >= a for a, b in zip(values, values[1:]))
+    assert max(b - a for a, b in zip(values, values[1:])) <= 6  # no band-edge jump
+
+
+def fan_module():
+    from app.monitoring import fan_control
+    return fan_control
+
+
+def test_legacy_step_settings_migrate_to_equivalent_ramp(gpu, tmp_path):
+    fan, _, _, _, _ = gpu
+    (tmp_path / "amd-fan-control.json").write_text(
+        '{"enabled": false, "min_percent": 35, "cool_hold_seconds": 300,'
+        ' "cool_step_seconds": 90, "cool_step_percent": 3, "preset_id": "custom"}')
+    loaded = fan._load()
+    assert loaded.cool_rate_percent_per_min == 2.0
+    assert loaded.cool_hold_seconds == 300

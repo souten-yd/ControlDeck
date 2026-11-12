@@ -10,8 +10,8 @@ type FanSettings = {
   min_percent: number;
   allow_zero_rpm: boolean;
   cool_hold_seconds: number;
-  cool_step_seconds: number;
-  cool_step_percent: number;
+  /** After the hold, the floor ramps down continuously at this rate. */
+  cool_rate_percent_per_min: number;
   zero_stable_seconds: number;
   learning_enabled: boolean;
   ff_gain: number;
@@ -213,7 +213,7 @@ export function FanControlSettings() {
     }
     setDraft({ ...draft, preset_id: preset.id, min_percent: preset.min_percent,
       allow_zero_rpm: preset.allow_zero_rpm, cool_hold_seconds: preset.cool_hold_seconds,
-      cool_step_seconds: preset.cool_step_seconds, cool_step_percent: preset.cool_step_percent,
+      cool_rate_percent_per_min: preset.cool_rate_percent_per_min,
       zero_stable_seconds: preset.zero_stable_seconds, learning_enabled: preset.learning_enabled,
       ff_gain: preset.ff_gain, kp: preset.kp, ki: preset.ki, targets_c: targets,
     });
@@ -374,15 +374,12 @@ export function FanControlSettings() {
           <details className={surface}>
             <summary className="min-h-10 cursor-pointer text-xs font-semibold">詳細な制御パラメータ</summary>
             <div className="mt-3 space-y-3">
-              <RangeControl label="減速前の保持時間" min={180} max={600} step={15}
-                value={draft.cool_hold_seconds} suffix="秒" hint="高温から冷えた直後に速度を急に落としません。"
+              <RangeControl label="減速を始めるまでの保持時間" min={30} max={600} step={15}
+                value={draft.cool_hold_seconds} suffix="秒" hint="冷えた直後はすぐに下げません。短いLLM負荷の谷でファンが上下しないようにします。"
                 onChange={(value) => update({ cool_hold_seconds: value })}/>
-              <RangeControl label="減速指令の更新間隔" min={45} max={180} step={15}
-                value={draft.cool_step_seconds} suffix="秒" hint="長いほどファン回転数の上下が減ります。"
-                onChange={(value) => update({ cool_step_seconds: value })}/>
-              <RangeControl label="1回あたりの最大減速幅" min={1} max={5}
-                value={draft.cool_step_percent} suffix="%" hint="加速にはこの制限を適用しません。"
-                onChange={(value) => update({ cool_step_percent: value })}/>
+              <RangeControl label="減速の速さ（なめらかに下げる）" min={1} max={60} step={1}
+                value={draft.cool_rate_percent_per_min} suffix="%/分" hint="保持のあと、段階ではなく連続的に下げます。加速は常に即時です。"
+                onChange={(value) => update({ cool_rate_percent_per_min: value })}/>
               <RangeControl label="Zero RPM停止判定の継続時間" min={600} max={1800} step={60}
                 value={draft.zero_stable_seconds} suffix="秒" hint="最低10分。短いGPU負荷の谷では停止しません。"
                 onChange={(value) => update({ zero_stable_seconds: value })}/>
