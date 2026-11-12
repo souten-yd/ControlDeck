@@ -219,8 +219,12 @@ def zero_rpm_nodes(device: Path) -> tuple[Path, Path, int]:
             fail("GPU native zero RPM設定はサポートされていません")
     try:
         content = stop.read_text(encoding="ascii")
+        on_info = enable.read_text(encoding="ascii")
     except OSError as exc:
         fail(f"Zero RPMの安全温度範囲を読み取れません: {exc}")
+    if not re.search(r"(?m)^\s*ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
+                     on_info.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in on_info else ""):
+        fail("Zero RPM切替をファームウェアが許可していません")
     # Some AMD drivers prefix the name with FAN_, others do not.
     match = re.search(
         r"(?im)^\s*(?:FAN_)?ZERO_RPM_STOP_(?:TEMP|TEMPERATURE)\s*:\s*(\d+)\s*C?\s+(\d+)\s*C?\s*$",
@@ -229,9 +233,12 @@ def zero_rpm_nodes(device: Path) -> tuple[Path, Path, int]:
     if not match:
         fail("Zero RPM停止温度のOD_RANGEが取得できません")
     minimum, maximum = map(int, match.groups())
-    if minimum > 40 or maximum < 40 or minimum >= maximum:
-        fail("安全な40°C以下のファン停止温度を設定できません")
-    return enable, stop, 40
+    # R9700/RDNA4では下限が50°C以上のGPUもある。
+    # 固定40°Cは非対応になるため実機OD_RANGEから50〜55°Cを選ぶ。
+    stop_value = max(50, minimum)
+    if minimum < 25 or stop_value > 55 or maximum < stop_value or minimum >= maximum:
+        fail("安全な55°C以下のファン停止温度を設定できません")
+    return enable, stop, stop_value
 
 
 def control_zero_rpm(action: str, bdf: str) -> None:
