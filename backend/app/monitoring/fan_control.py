@@ -66,6 +66,8 @@ _zero_rpm_checks = 0
 _state = "disabled"
 _error = ""
 _last_sample: dict = {}
+_pending_reset_bdf: str | None = None
+_last_reset_retry = 0.0
 
 
 def _setting_path() -> Path:
@@ -241,7 +243,7 @@ def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
 
 
 def _failure(exc: Exception, bdf: str | None) -> None:
-    global _state, _error, _active_bdf, _last_curve, _sensor_ids
+    global _state, _error, _active_bdf, _last_curve, _sensor_ids, _pending_reset_bdf
     logger.error("GPUファン制御を停止します: %s", exc)
     reset_error = ""
     if bdf:
@@ -257,15 +259,25 @@ def _failure(exc: Exception, bdf: str | None) -> None:
     except FanControlError:
         logger.exception("GPUファン設定無効化の永続化に失敗")
     _state, _error = "fault", str(exc) + reset_error
+    _pending_reset_bdf = bdf if reset_error else None
     _active_bdf, _last_curve, _sensor_ids = None, None, set()
 
 
 def tick() -> None:
     global _active_bdf, _last_curve, _last_write, _floor, _state, _error, _last_sample
-    global _sensor_ids, _zero_rpm_checks
+    global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry
     with _lock:
         settings = _load()
-        if not settings.enabled:
+        if _pending_reset_bdf and time.monotonic() - _last_reset_retry >= 10:
+            _last_reset_retry = time.monotonic()
+            try:
+                _helper("reset", _pending_reset_bdf)
+                logger.warning("GPU標準ファン制御への復帰リトライに成功しました")
+                _pending_reset_bdf = None
+                _error += " / 標準自動制御への復帰済み"
+            except FanControlError:
+                logger.warning("GPU標準ファン制御の復帰待ち: %s", _pending_reset_bdf)
+        if not settings.enabled or _state == "fault":
             return
         bdf = settings.bdf or _active_bdf
         try:
@@ -305,16 +317,19 @@ def tick() -> None:
 
 
 def configure(settings: FanSettings) -> dict:
-    global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks
+    global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     with _lock:
         prior = _load()
         if settings.enabled:
             device = _select(_devices(), settings.bdf)
             _validate(settings, device)
-            if prior.enabled and _active_bdf and _active_bdf != device["bdf"]:
-                _helper("reset", _active_bdf)
+            previous_bdf = _active_bdf or prior.bdf
+            if prior.enabled and previous_bdf and previous_bdf != device["bdf"]:
+                _helper("reset", previous_bdf)
                 _active_bdf = None
                 _last_curve = None
+            _pending_reset_bdf = None
+            _state, _error = "disabled", ""
             _persist(settings.model_copy(update={"bdf": device["bdf"]}))
             _floor, _sensor_ids, _zero_rpm_checks = settings.min_percent, set(), 0
             tick()
@@ -327,7 +342,7 @@ def configure(settings: FanSettings) -> dict:
                     _helper("reset", target)
             _persist(settings)
             _active_bdf, _last_curve, _sensor_ids = None, None, set()
-            _state, _error = "disabled", ""
+            _state, _error, _pending_reset_bdf = "disabled", "", None
         return status()
 
 
@@ -341,7 +356,8 @@ def status() -> dict:
             "settings": settings.model_dump(), "devices": devices,
             "helper_installed": HELPER.is_file(),
             "state": _state if settings.enabled or _state == "fault" else "disabled",
-            "error": _error, "active": _last_sample if settings.enabled else None,
+            "error": _error, "pending_auto_restore": _pending_reset_bdf is not None,
+            "active": _last_sample if settings.enabled else None,
             "poll_interval_seconds": INTERVAL,
             "warning": "温度上限は目標であり保証値ではありません。CPU・マザーボードのファンは制御しません。",
         }
