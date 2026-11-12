@@ -36,6 +36,6 @@ def put_fan_control(
         db, "system.fan_control", user=user, request=request,
         resource_type="amd-gpu", resource_id=body.bdf or "auto",
         metadata={"enabled": body.enabled, "targets_c": body.targets_c,
-                  "min_percent": body.min_percent},
+                  "min_percent": body.min_percent, "allow_zero_rpm": body.allow_zero_rpm},
     )
     return result
