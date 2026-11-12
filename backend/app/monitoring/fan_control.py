@@ -26,7 +26,15 @@ SYS_ROOT = Path("/sys/devices")
 BDF_RE = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$")
 SENSOR_RE = re.compile(r"^temp[1-9][0-9]*$")
 STATE_FILE = "amd-fan-control.json"
-INTERVAL = 5.0
+INTERVAL = 3.0
+# Bursty LLM workloads must not turn into fan-speed oscillations.
+COOL_HOLD_SECONDS = 180.0
+COOL_STEP_SECONDS = 45.0
+COOL_STEP_PERCENT = 5
+ZERO_STABLE_SECONDS = 300.0
+ZERO_STOP_TEMP_C = 40
+ZERO_RISE_LIMIT_C_PER_MIN = 0.5
+ZERO_START_RISE_C_PER_MIN = 1.0
 
 
 class FanControlError(RuntimeError):
@@ -38,6 +46,7 @@ class FanSettings(BaseModel):
     enabled: bool = False
     bdf: str | None = None
     min_percent: int = Field(default=35, ge=30, le=70)
+    allow_zero_rpm: bool = False  # Opt-in; native PMFW feature required
     targets_c: dict[str, int] = Field(default_factory=dict, max_length=16)
 
     @field_validator("bdf")
@@ -68,6 +77,16 @@ _error = ""
 _last_sample: dict = {}
 _pending_reset_bdf: str | None = None
 _last_reset_retry = 0.0
+# Monotonic state (not based on GPU utilization %).
+_last_boost_at = 0.0
+_cool_since: float | None = None
+_last_cool_step = 0.0
+_temp_history: dict[str, list[tuple[float, float]]] = {}
+_zero_stable_since: float | None = None
+_zero_active = False
+_zero_initialized_bdf: str | None = None
+_last_rise_c_per_min = 0.0
+_applied_floor = 0
 
 
 def _setting_path() -> Path:
@@ -100,6 +119,28 @@ def _read_int(path: Path) -> int | None:
         return int(path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return None
+
+
+def _zero_capable(directory: Path) -> bool:
+    """Fail closed unless both PMFW zero-stop controls advertise a 40C limit."""
+    enable = directory / "fan_zero_rpm_enable"
+    stop = directory / "fan_zero_rpm_stop_temperature"
+    if not all(node.is_file() and not node.is_symlink() for node in (enable, stop)):
+        return False
+    try:
+        contents = stop.read_text(encoding="ascii")
+    except OSError:
+        return False
+    if "OD_RANGE:" not in contents:
+        return False
+    match = re.search(
+        r"(?im)^\s*(?:FAN_)?ZERO_RPM_STOP_(?:TEMP|TEMPERATURE)\s*:\s*(\d+)\s*C?\s+(\d+)\s*C?\s*$",
+        contents.split("OD_RANGE:", 1)[1],
+    )
+    if match is None:
+        return False
+    lower, upper = map(int, match.groups())
+    return lower <= ZERO_STOP_TEMP_C <= upper and lower < upper
 
 
 def _devices() -> list[dict]:
@@ -173,6 +214,7 @@ def _devices() -> list[dict]:
             "bdf": device.name, "vram_bytes": _read_int(device / "mem_info_vram_total") or 0,
             "sensors": sensors, "fan_rpm": _read_int(hwmon / "fan1_input"),
             "curve_supported": curve_range is not None,
+            "zero_rpm_supported": curve_range is not None and _zero_capable(device / "gpu_od/fan_ctrl"),
             "_range": curve_range,
         }
     return sorted(found.values(), key=lambda item: -item["vram_bytes"])
@@ -193,6 +235,8 @@ def _select(devices: list[dict], bdf: str | None) -> dict:
 def _validate(settings: FanSettings, device: dict) -> list[dict]:
     if not device["curve_supported"]:
         raise FanControlError("GPUドライバが安全な5点fan_curve/OD_RANGEを公開していません")
+    if settings.allow_zero_rpm and not device["zero_rpm_supported"]:
+        raise FanControlError("このGPUは安全なPMFW Zero RPM設定に対応していません")
     if not HELPER.is_file():
         raise FanControlError("ControlDeck特権helperが未導入です（./deck.sh serviceで登録）")
     sensors = device["sensors"]
