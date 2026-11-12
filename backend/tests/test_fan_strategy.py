@@ -85,3 +85,41 @@ def test_suspend_resets_low_power_qualification_not_just_monotonic_clock():
     result = step(p, now=5000, stop=True)
     assert not result["zero_stop_eligible"]
     assert result["cooldown_seconds"] == 0
+
+
+
+def test_learning_can_be_disabled_without_disabling_safety_floor():
+    p = AdaptivePolicy(ff_gain=28.0, kp=2.0, ki=0.01)
+    for idx in range(400):
+        result = p.update(
+            sensors(edge=88, hotspot=101, memory=94), power_w=270,
+            power_cap_w=300, min_percent=35, max_percent=100,
+            now=1000 + idx * 5, dt=5, learning_enabled=False,
+        )
+    assert p.ff_gain == 28.0
+    assert p.kp == 2.0
+    assert result["floor_percent"] == 100
+    assert all(v <= 30 for v in p.integral.values())
+
+
+def test_zero_stop_dwell_cannot_shorten_below_ten_minutes():
+    p = AdaptivePolicy()
+    for idx in range(120):
+        result = p.update(
+            sensors(), power_w=10, power_cap_w=300, min_percent=35,
+            max_percent=100, now=1000 + idx * 5, dt=5, allow_stop=True,
+            stop_dwell_seconds=1200,
+        )
+    assert not result["zero_stop_eligible"]
+    for idx in range(120, 240):
+        result = p.update(
+            sensors(), power_w=10, power_cap_w=300, min_percent=35,
+            max_percent=100, now=1000 + idx * 5, dt=5, allow_stop=True,
+            stop_dwell_seconds=1200,
+        )
+    assert not result["zero_stop_eligible"]
+    assert p.update(
+        sensors(), power_w=10, power_cap_w=300, min_percent=35,
+        max_percent=100, now=2200, dt=5, allow_stop=True,
+        stop_dwell_seconds=1200,
+    )["zero_stop_eligible"]
