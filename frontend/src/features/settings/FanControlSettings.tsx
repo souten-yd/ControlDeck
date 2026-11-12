@@ -20,6 +20,8 @@ type Device = {
   fan_rpm: number | null;
   curve_supported: boolean;
   zero_rpm_supported: boolean;
+  power_w: number | null;
+  power_cap_w: number | null;
 };
 type FanSettings = {
   enabled: boolean;
@@ -194,12 +196,19 @@ export function FanControlSettings() {
                   このGPU/ドライバには検証可能なZero RPM専用制御がありません。
                 </span>
               )}
+              {selected && selected.zero_rpm_supported && (
+                selected.fan_rpm === null || selected.power_w === null || selected.power_cap_w === null
+              ) && (
+                <span className="block text-xs text-amber-700 dark:text-amber-300">
+                  Zero RPMにはファンRPM・GPU電力・電力上限の測定が必要です。
+                </span>
+              )}
             </span>
             <input
               type="checkbox"
               aria-label="低温時のファン停止を許可"
               checked={draft.allow_zero_rpm}
-              disabled={!selected?.zero_rpm_supported || saving}
+              disabled={!selected?.zero_rpm_supported || selected.fan_rpm === null || selected.power_w === null || selected.power_cap_w === null || saving}
               onChange={(e) => update({ allow_zero_rpm: e.target.checked })}
               className="h-5 w-5 shrink-0"
             />
@@ -215,7 +224,7 @@ export function FanControlSettings() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={saving || (draft.enabled && (!selected?.curve_supported || !data.helper_installed || (draft.allow_zero_rpm && !selected?.zero_rpm_supported)))}
+              disabled={saving || (draft.enabled && (!selected?.curve_supported || !data.helper_installed || (draft.allow_zero_rpm && (!selected?.zero_rpm_supported || selected.fan_rpm === null || selected.power_w === null || selected.power_cap_w === null))))}
               onClick={() => void save({ ...draft, bdf: selected?.bdf ?? draft.bdf })}
               className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40"
             >
