@@ -115,15 +115,22 @@ def installed() -> bool:
 def _exec(argv: list[str], *, cwd: Path | None = None, timeout: int = 120,
           check: bool = True) -> subprocess.CompletedProcess:
     env = {**os.environ, "MAYA_UPDATE_CHECK": "0"}
+    # Long-running setup can print gigabytes of progress over many hours.
+    # Never accumulate an unbounded subprocess pipe in ControlDeck memory.
+    long_run = timeout > 300
     try:
-        result = subprocess.run(argv, cwd=cwd or root(), env=env, check=False,
-                                capture_output=True, text=True, timeout=timeout,
-                                stdin=subprocess.DEVNULL)
+        result = subprocess.run(
+            argv, cwd=cwd or root(), env=env, check=False,
+            stdout=subprocess.DEVNULL if long_run else subprocess.PIPE,
+            stderr=subprocess.DEVNULL if long_run else subprocess.PIPE,
+            text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise MayaError("Maya操作を実行できないか、タイムアウトしました") from exc
     if check and result.returncode:
-        # Do not display arbitrary upstream installer output; may contain secrets.
-        raise MayaError(f"Maya操作が失敗しました（exit {result.returncode}）")
+        # Maya itself writes maya-setup.log within the engine folder.
+        # Do not include arbitrary upstream output; it may contain secrets.
+        raise MayaError(f"Maya操作が失敗しました（exit {result.returncode}）。maya-setup.logを確認してください")
     return result
 
 
@@ -345,6 +352,9 @@ async def health(alias: str = _ALIAS) -> dict:
             # Maya reports unloaded after an idle unload. Do not claim ready.
             state = response.json()
             if not isinstance(state, dict) or state.get("status") != "ok" or state.get("unloaded") is True:
+                return {"ok": False, "status_code": 200}
+            # A port collision must never make an unrelated server look like our model.
+            if "s24" not in str(state.get("model_label") or "").lower():
                 return {"ok": False, "status_code": 200}
             models = await client.get(f"http://127.0.0.1:{_PORT}/v1/models")
             if models.status_code != 200:
