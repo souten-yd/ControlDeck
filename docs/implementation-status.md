@@ -3791,3 +3791,8 @@ PR351の「実機受入前」は当時の履歴。現在embedding/reranker API�
 PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque sandboxで拒否されることを再現。proxyは上流CSPを維持し、connect-src（またはdefault-src fallback）にselfがある場合だけブラウザ側の正確なHost originを追加する。noneやhashは維持、外部origin/wildcard/unsafe-inlineを追加しない。CSPヘッダーの大小文字差による意図しない二重生成も整理。関連proxy17 tests成功、実画面と全体検証は進行中。ユーザーのパスキー作業を含むlive checkoutの他ファイルは変更しない。
 
 - 最終frontend build成功、backend全1255 tests成功/2skip105.69秒（/tmp/pb-host-csp-full-cwd.log）。初回repo rootからpytestを直接実行したためCLIのapp import2件だけ失敗、規定backend cwdで全再実行成功。live proxyのみ反映/deck.sh再起動後、再現条件のWebKit HTTPでstatus/原文成功。HTTPS WebKit/Chromeと実Host local LLM要約も成功。既存23files hash不変（/tmp/pb-csp-preserved.json）。
+
+
+## AMD GPU Smart Fan Control（2026-11-12、Draft・実機未検証）
+
+Settings > ファンコントロールにamdgpuのファンカーブを使う多温度センサー制御を実装中。R9700実機、ローカルpytest、Frontend build、モバイル表示は未検証。**必要な実機検証までマージ・リリース不可**。設計と検証手順は docs/design-amd-smart-fan.md を参照。
