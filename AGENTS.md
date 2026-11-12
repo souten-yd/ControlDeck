@@ -61,6 +61,20 @@ scripts/ 配下は deck.sh への互換ラッパーのみ。新しい運用操�
 - Frontend: 関数コンポーネント + hooks。API 呼び出しは `src/api/` に集約し TanStack Query 経由。
 - コミットは Phase / 機能単位で日本語 or 英語の簡潔なメッセージ。
 
+## CI使用コストの抑制（必須）
+
+- **自前Ubuntu/開発PCでのローカルテストを最優先**する。集中テスト→必要な全体テスト→Frontend build→実機確認の順に実施。
+- GitHub Actionsは自動実行せず、ローカル検証後に必要な範囲のみ `workflow_dispatch` で手動起動する。PR/commitごとの全テスト実行は原則禁止。
+- 実機にアクセスできない場合は未検証と明記し、実施コマンドを提供する。CIを実機試験の代替にしない。
+- 具体的な費用抑制規定・例外は `docs/development-release-policy.md` を参照。
+
+## PR・リリース運用（必須）
+
+- 仕様・テスト・既存の `main` 実コードを照合してからPRを作る。完了した変更はPRを経てマージする。PR本文だけでなく、実差分・manifest・docs・テスト結果を点検する。
+- マイルストーンが達成された時点で、検証済み `main` のSHAをタグ付けし、GitHub Releaseを公開する。PRのマージとReleaseの発行は別工程として必ず双方を確認する。
+- リリース時は更新方法、前バージョンへの復旧方法、テスト・未検証事項、対応PRを記録する。
+- 運用詳細・チェックリストは `docs/development-release-policy.md` を正とする。
+
 ## 完了の定義
 
 コードを書くだけでは完了ではない。Ubuntu 上で実起動し、API 確認、PC ブラウザ幅とモバイル幅（320px 含む）の
