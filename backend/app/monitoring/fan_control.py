@@ -280,6 +280,10 @@ def _validate(settings: FanSettings, device: dict) -> list[dict]:
         raise FanControlError("GPUドライバが安全な5点fan_curve/OD_RANGEを公開していません")
     if settings.allow_zero_rpm and not device["zero_rpm_supported"]:
         raise FanControlError("このGPUは安全なPMFW Zero RPM設定に対応していません")
+    if settings.allow_zero_rpm and (
+        device["fan_rpm"] is None or device["power_w"] is None or device["power_cap_w"] is None
+    ):
+        raise FanControlError("Zero RPMにはRPM・GPU電力・電力上限の取得が必要です")
     if not HELPER.is_file():
         raise FanControlError("ControlDeck特権helperが未導入です（./deck.sh serviceで登録）")
     sensors = device["sensors"]
