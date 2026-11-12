@@ -216,8 +216,35 @@ def _update() -> dict:
     if _exec(["git", "status", "--porcelain", "--untracked-files=no"],
              cwd=source()).stdout.strip():
         raise MayaError("Mayaのソースに未コミット変更があります。更新しません")
+    previous_commit = _exec(["git", "rev-parse", "HEAD"], cwd=source()).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", previous_commit):
+        raise MayaError("更新前のコミットを確認できません")
     _exec(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=source(), timeout=600)
-    _exec(["git", "checkout", "--detach", tag], cwd=source(), timeout=60)
+    changed = False
+    try:
+        _exec(["git", "checkout", "--detach", tag], cwd=source(), timeout=60)
+        changed = True
+        if _config() is not None:
+            # Rebuild the managed engine explicitly, not during ControlDeck startup.
+            # Upstream --yes never downloads weights unless --download-model is present.
+            gpu = 0
+            try:
+                gpu = int(json.loads(_prepared_marker().read_text(encoding="utf-8")).get("gpu_index", 0))
+            except (ValueError, OSError, AttributeError):
+                pass
+            _exec(["bash", str(entrypoint()), "--setup", "--backend", "hip",
+                   "--gpu", str(gpu), "--model", _MODEL, "--context", "8192",
+                   "--no-vision", "--yes", "--plain", "--no-start",
+                   "--models-dir", str(models_dir()), "--port", str(_PORT),
+                   "--host", "127.0.0.1"], cwd=source(), timeout=3*3600)
+    except MayaError:
+        if changed:
+            try:
+                _exec(["git", "checkout", "--detach", previous_commit],
+                      cwd=source(), timeout=60)
+            except MayaError:
+                raise MayaError("Maya更新とコード復旧に失敗しました。手動確認が必要です") from None
+        raise
     _marker().write_text(json.dumps({"source": _REPO, "tag": tag}), encoding="utf-8")
     return runtime_status()
 
