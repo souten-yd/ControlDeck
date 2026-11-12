@@ -141,7 +141,23 @@ function FanCurvePreview({ device, minimum, activeCurve }: {
     const [a, b] = item.split(":").map(Number);
     return { temp: a, percent: b };
   }).filter((v) => Number.isFinite(v.temp) && Number.isFinite(v.percent)) ?? [];
-  const x = (temp: number) => 28 + 286 * ((temp - t0) / (t1 - t0));
+  // GPUファームウェアはhotspot（junction）温度でファンカーブを引く。今の温度で
+  // カーブが何%を指すかを縦線と点で示す。取れなければ最も高い温度を使う。
+  const hotspot = device.sensors.find((sensor) => /junction|hotspot/i.test(sensor.label) && sensor.value_c != null)
+    ?? [...device.sensors].filter((sensor) => sensor.value_c != null)
+      .sort((a, b) => (b.value_c ?? 0) - (a.value_c ?? 0))[0];
+  const nowTemp = hotspot?.value_c ?? null;
+  const reference = fromHardware.length === 5 ? fromHardware : baseline;
+  const percentAt = (temp: number) => {
+    if (temp <= reference[0].temp) return reference[0].percent;
+    for (let i = 1; i < reference.length; i++) {
+      const a = reference[i - 1], b = reference[i];
+      if (temp <= b.temp) return a.percent + (b.percent - a.percent) * ((temp - a.temp) / Math.max(1, b.temp - a.temp));
+    }
+    return reference[reference.length - 1].percent;
+  };
+  const nowPercent = nowTemp == null ? null : Math.round(percentAt(nowTemp));
+  const x = (temp: number) => 28 + 286 * ((Math.min(t1, Math.max(t0, temp)) - t0) / (t1 - t0));
   const y = (percent: number) => 145 - 117 * (percent / 100);
   const path = (points: { temp: number; percent: number }[]) =>
     points.map((p, i) => (i ? "L" : "M") + x(p.temp).toFixed(1) + " " + y(p.percent).toFixed(1)).join(" ");
@@ -166,8 +182,18 @@ function FanCurvePreview({ device, minimum, activeCurve }: {
         {fromHardware.length === 5 && (
           <path d={path(fromHardware)} fill="none" stroke="#d97706" strokeWidth="1.8" strokeDasharray="5 4" />
         )}
+        {nowTemp != null && nowPercent != null && (
+          <g>
+            <line x1={x(nowTemp)} x2={x(nowTemp)} y1={y(100)} y2={y(0)} stroke="#e11d48" strokeWidth="1.4" />
+            <circle cx={x(nowTemp)} cy={y(nowPercent)} r="4" fill="#e11d48" />
+            <text x={Math.min(x(nowTemp) + 5, 250)} y={Math.max(y(nowPercent) - 7, 12)} fontSize="10" fill="#e11d48" fontWeight="600">
+              {Math.round(nowTemp)}°C → {nowPercent}%
+            </text>
+          </g>
+        )}
       </svg>
       <p className="text-[11px] leading-relaxed text-zinc-500">
+        {nowTemp != null && <><span className="font-semibold text-rose-600 dark:text-rose-400">赤線: 現在の{hotspot?.label ?? "温度"} {Math.round(nowTemp)}°C（GPUがファンカーブで参照する温度）。</span>{" "}</>}
         青: 変更中の基本カーブ（未適用）。{fromHardware.length === 5 && "橙破線: 最後に適用したカーブ。"}
         実際は温度・電力・学習によって青い線より回転を引き上げます。GPUが公開する最大ファン指令までの保護は維持します。
       </p>
