@@ -160,20 +160,33 @@ def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
     device = device_path(bdf)
     curve = fan_curve_path(device)
     if action == "reset":
-        # Restore any native zero-RPM overrides and fan curve to firmware defaults.
-        # A missing optional node is fine, but a present failed node is NOT.
+        # Restore the fan curve FIRST: it is what actually drives the fan, and
+        # it must not depend on optional nodes. Then restore native zero-RPM
+        # overrides, but only where the firmware advertises them (OD_RANGE).
+        # R9700 exposes an empty fan_zero_rpm_enable whose writes fail with
+        # EIO; treating that as a reset failure left the custom curve active.
         try:
-            for name in ("fan_zero_rpm_enable", "fan_zero_rpm_stop_temperature"):
-                node = curve.parent / name
-                if node.is_file():
-                    if node.is_symlink() or node.resolve() != node:
-                        fail("不正なzero RPM node")
-                    node.write_text("r", encoding="ascii")
-                    node.write_text("c", encoding="ascii")
             curve.write_text("r", encoding="ascii")
             curve.write_text("c", encoding="ascii")
         except OSError as exc:
             fail(f"ファン自動制御への復帰に失敗しました: {exc}")
+        for name in ("fan_zero_rpm_enable", "fan_zero_rpm_stop_temperature"):
+            node = curve.parent / name
+            if not node.is_file():
+                continue
+            if node.is_symlink() or node.resolve() != node:
+                fail("不正なzero RPM node")
+            try:
+                advertised = "OD_RANGE:" in node.read_text(encoding="ascii")
+            except OSError:
+                advertised = False
+            if not advertised:
+                continue  # unsupported by firmware: nothing was ever written
+            try:
+                node.write_text("r", encoding="ascii")
+                node.write_text("c", encoding="ascii")
+            except OSError as exc:
+                fail(f"Zero RPM設定の自動復帰に失敗しました: {exc}")
         print(json.dumps({"ok": True, "mode": "auto", "bdf": bdf.lower()}))
         return
 

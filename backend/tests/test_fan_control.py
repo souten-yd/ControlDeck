@@ -490,3 +490,40 @@ def test_configured_cooldown_parameters_reach_controller(gpu, monkeypatch):
         "step_seconds": 120,
         "step_percent": 2,
     }
+
+
+def test_reset_restores_curve_when_zero_rpm_node_is_unadvertised(tmp_path, monkeypatch):
+    """実機R9700: fan_zero_rpm_enable は存在するが中身が空で、書くとEIO。
+    旧実装はそこで失敗し、カスタムカーブが残ったまま「復帰待ち」になった。"""
+    helper, curve = _helper(tmp_path)
+    empty = curve.parent / "fan_zero_rpm_enable"
+    empty.write_text("\n")
+    writes = []
+    original = Path.write_text
+
+    def device(path, text, *args, **kwargs):
+        if path == empty:
+            raise OSError(5, "Input/output error")
+        if path == curve:
+            writes.append(text)
+        return original(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", device)
+    helper.control_fan_curve("reset", "0000:03:00.0")
+    assert writes == ["r", "c"]
+
+
+def test_reset_still_fails_when_advertised_zero_rpm_cannot_be_restored(tmp_path, monkeypatch):
+    helper, curve = _helper(tmp_path)
+    node = curve.parent / "fan_zero_rpm_enable"
+    node.write_text("FAN_ZERO_RPM_ENABLE:\n1\nOD_RANGE:\nZERO_RPM_ENABLE: 0 1\n")
+    original = Path.write_text
+
+    def device(path, text, *args, **kwargs):
+        if path == node:
+            raise OSError(5, "Input/output error")
+        return original(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", device)
+    with pytest.raises(SystemExit):
+        helper.control_fan_curve("reset", "0000:03:00.0")
