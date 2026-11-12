@@ -113,3 +113,13 @@ Settings > ファンコントロールで次の値をスライダーと数値入
 5. 本体が起動していないGPUでの実機テストを省略してはならない（R9700のファン回転とPMFW復帰確認は別途必須）。
 
 集中テスト例: cd backend && ../.venv/bin/python -m pytest tests/test_fan_control.py tests/test_fan_strategy.py -q
+
+## R9700 (SMU 14) 実機検証で分かったこと（2026-11-13）
+
+- `amdgpu.ppfeaturemask=0xfff7ffff`（OverDrive bit 0x4000）で `gpu_od/fan_ctrl/fan_curve` が出る。範囲は 25〜100°C / 15〜100%。`fan_zero_rpm_enable` は存在するが空（未対応）。
+- カーブ適用（5点＋`c`）は成功し、890rpm（PMFW自動）→1745rpm（35%）を確認。
+- **`fan_curve` の `r`（リセット）は SMU に拒否され（`Failed to upload overdrive table!`）、以後の OD アップロードは再起動まで全て EIO になる。** kernel 7.0.0-42。
+- 利用者判断により、SMU 14（`ip_discovery/die/0/MP1/0/major == 14`）ではリセットを一切使わない。無効化・異常・ControlDeck停止時は最後のカーブ（最低指令＋60°C 65% / 77°C 90% / 95°C 100% の安全網）を保持し、PMFW自動へは再起動で戻る。helper も SMU 14 では `reset` を拒否し、適用失敗時の自動リセットもしない。
+- 空の `fan_zero_rpm_enable` への書き込みは EIO になるため、リセット時の Zero RPM 復帰は `OD_RANGE` を広告するノードだけに限定。
+- 最低指令はファームウェア下限の 15% まで。低温側（〜42°C）は最低指令のまま平坦。PMFW自動のアイドル 890rpm は 20%台前半に相当。
+- 拒否されたリセットの自動リトライは3回で停止し、再起動を案内する。

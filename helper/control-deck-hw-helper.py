@@ -158,11 +158,23 @@ def fan_curve_range(text: str) -> tuple[int, int, int, int, int]:
     return t0, t1, p0, p1, len(points)
 
 
+def restore_breaks_od(device: Path) -> bool:
+    """SMU 14 (RDNA4) rejects a fan_curve reset and then every OD upload fails
+    until reboot. Never issue it there."""
+    try:
+        return (device / "ip_discovery/die/0/MP1/0/major").read_text(encoding="ascii").strip() == "14"
+    except OSError:
+        return False
+
+
 def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
     if action not in ("apply", "reset"):
         fail("不正なfan control操作です")
     device = device_path(bdf)
     curve = fan_curve_path(device)
+    no_restore = restore_breaks_od(device)
+    if action == "reset" and no_restore:
+        fail("このGPU（SMU 14）ではファンカーブのリセットで設定が壊れるため実行しません。PCの再起動で標準制御に戻ります")
     if action == "reset":
         # Restore the fan curve FIRST: it is what actually drives the fan, and
         # it must not depend on optional nodes. Then restore native zero-RPM
@@ -215,12 +227,14 @@ def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
             curve.write_text(f"{i} {temperature} {pwm}", encoding="ascii")
         curve.write_text("c", encoding="ascii")
     except OSError as exc:
-        # An incomplete curve must never remain staged.
-        try:
-            curve.write_text("r", encoding="ascii")
-            curve.write_text("c", encoding="ascii")
-        except OSError:
-            pass
+        # An incomplete curve must never remain staged — except on SMU 14,
+        # where a reset breaks all later OD uploads until reboot.
+        if not no_restore:
+            try:
+                curve.write_text("r", encoding="ascii")
+                curve.write_text("c", encoding="ascii")
+            except OSError:
+                pass
         fail(f"fan_curveの適用に失敗しました（auto復帰を試行）: {exc}")
     print(json.dumps({"ok": True, "mode": "curve", "bdf": bdf.lower()}))
 

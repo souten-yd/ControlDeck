@@ -41,6 +41,8 @@ type FanDevice = {
   fan_rpm: number | null;
   curve_supported: boolean;
   zero_rpm_supported: boolean;
+  /** false: SMU 14 (RDNA4). Disabling keeps the last curve until reboot. */
+  restore_supported?: boolean;
   power_w: number | null;
   power_cap_w: number | null;
   curve_limits: {
@@ -260,7 +262,8 @@ export function FanControlSettings() {
             {data.active?.learning && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">
               学習中の係数 FF {data.active.learning.ff_gain.toFixed(1)} / P {data.active.learning.kp.toFixed(2)}
             </p>}
-            {data.error && <p role="alert" className="mt-2 text-xs text-red-600">{data.error}</p>}
+            {data.error && <p role="alert" className={`mt-2 text-xs ${data.state === "fault"
+              ? "text-red-600" : "text-amber-700 dark:text-amber-300"}`}>{data.error}</p>}
           </div>
 
           <label className="block text-xs font-medium">
@@ -283,6 +286,9 @@ export function FanControlSettings() {
                 </option>)}
             </select>
           </label>
+          {selected && selected.restore_supported === false && <p className="text-xs text-amber-700 dark:text-amber-300">
+            このGPUは標準の自動制御へ戻すとファン設定が壊れるため、無効化・異常時・ControlDeck停止時も最後のファンカーブ（最低回転＋60/77/95°Cの安全網）を保持します。標準の自動制御にはPCの再起動で戻ります。
+          </p>}
           {!data.helper_installed && <p className="text-xs text-amber-700">固定権限helperが未登録です。 ./deck.sh service で登録してください。</p>}
 
           <div className="space-y-2">

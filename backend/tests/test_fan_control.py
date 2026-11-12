@@ -56,7 +56,7 @@ def gpu(tmp_path, monkeypatch):
         "_temp_history": {}, "_zero_stable_since": None,
         "_zero_active": False, "_zero_initialized_bdf": None,
         "_last_rise_c_per_min": 0.0, "_applied_floor": 0,
-        "_last_tick_at": None,
+        "_last_tick_at": None, "_no_restore_bdfs": set(),
     }.items():
         monkeypatch.setattr(fan, key, value)
     calls = []
@@ -574,3 +574,60 @@ def test_rejected_auto_restore_stops_retrying_and_asks_for_reboot(gpu, monkeypat
     assert fan.REBOOT_HINT in fan.status()["error"]
     with pytest.raises(fan.FanControlError, match="再起動"):
         fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
+
+
+def _smu14(device):
+    mp1 = device / "ip_discovery" / "die" / "0" / "MP1" / "0"
+    mp1.mkdir(parents=True)
+    (mp1 / "major").write_text("14\n")
+
+
+def test_smu14_never_resets_on_disable_fault_or_shutdown(gpu):
+    """利用者の判断: R9700(SMU 14)ではリセットを一切使わず、最後のカーブを保持する。"""
+    fan, device, hwmon, _, calls = gpu
+    _smu14(device)
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", min_percent=20))
+    assert fan.status()["devices"][0]["restore_supported"] is False
+
+    disabled = fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
+    assert disabled["state"] == "disabled"
+    assert fan.HOLD_NOTICE in disabled["error"]
+    assert disabled["pending_auto_restore"] is False
+
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", min_percent=20))
+    (hwmon / "temp3_input").unlink()
+    fan.tick()
+    assert fan.status()["state"] == "fault"
+    assert fan.status()["pending_auto_restore"] is False
+    fan.shutdown()
+    assert [c for c in calls if c[0] == "reset"] == []
+
+
+def test_non_smu14_still_returns_to_firmware_auto(gpu):
+    fan, _, _, _, calls = gpu
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+    fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
+    assert calls[-1][0] == "reset"
+
+
+def test_helper_refuses_reset_on_smu14_and_skips_revert_on_failed_apply(tmp_path, monkeypatch):
+    helper, curve = _helper(tmp_path)
+    _smu14(curve.parents[2])
+    before = curve.read_text()
+    with pytest.raises(SystemExit):
+        helper.control_fan_curve("reset", "0000:03:00.0")
+    assert curve.read_text() == before
+    writes = []
+    original = Path.write_text
+
+    def device(path, text, *args, **kwargs):
+        if path == curve:
+            writes.append(text)
+            if text == "c":
+                raise OSError(5, "Input/output error")
+        return original(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", device)
+    with pytest.raises(SystemExit):
+        helper.control_fan_curve("apply", "0000:03:00.0", "25:20,42:20,60:65,77:90,95:100")
+    assert "r" not in writes

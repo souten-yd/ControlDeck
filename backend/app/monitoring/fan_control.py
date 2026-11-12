@@ -93,6 +93,12 @@ _reset_retry_failures = 0
 # R9700 + kernel 7.0: once a fan_curve reset is rejected by the SMU, every
 # later OD upload fails until reboot. Do not hammer the SMU every 10 s.
 MAX_RESET_RETRIES = 3
+# SMU 14 (RDNA4, e.g. R9700): a fan_curve reset is rejected by the SMU and
+# breaks every later OD upload until reboot. On such GPUs never reset; keep
+# the last written curve (floor + 60/77/95°C backstop). Reboot restores PMFW auto.
+NO_RESTORE_SMU_MAJOR = {14}
+HOLD_NOTICE = "このGPUは標準の自動制御へ戻すとファン設定が壊れるため、最後のファンカーブを保持しています。PCを再起動すると標準の自動制御に戻ります"
+_no_restore_bdfs: set[str] = set()
 REBOOT_HINT = "GPUのファン設定を標準に戻せません。PCを再起動すると標準の自動制御に戻ります"
 # Monotonic state (not based on GPU utilization %).
 _last_boost_at = 0.0
@@ -259,6 +265,23 @@ def _zero_capable(directory: Path) -> bool:
     return 25 <= lower <= ZERO_STOP_TEMP_C and max(50, lower) <= upper and lower < upper
 
 
+def _smu_major(device: Path) -> int | None:
+    return _read_int(device / "ip_discovery/die/0/MP1/0/major")
+
+
+def _restore_supported(bdf: str | None) -> bool:
+    return bool(bdf) and bdf not in _no_restore_bdfs
+
+
+def _release(bdf: str) -> bool:
+    """Return to firmware auto where that is safe. False: curve is held."""
+    if not _restore_supported(bdf):
+        logger.warning("GPU %s は標準制御へ戻せないため最後のファンカーブを保持します", bdf)
+        return False
+    _helper("reset", bdf)
+    return True
+
+
 def _devices() -> list[dict]:
     found: dict[str, dict] = {}
     for link in sorted(DRM_ROOT.glob("card[0-9]*/device")):
@@ -326,6 +349,9 @@ def _devices() -> list[dict]:
                         curve_range = (t0, t1, p0, p1)
             except OSError:
                 pass
+        restore_supported = _smu_major(device) not in NO_RESTORE_SMU_MAJOR
+        if not restore_supported:
+            _no_restore_bdfs.add(device.name)
         power = _read_int(hwmon / "power1_average")
         if power is None:
             power = _read_int(hwmon / "power1_input")
@@ -337,6 +363,7 @@ def _devices() -> list[dict]:
             "zero_rpm_supported": curve_range is not None and _zero_capable(device / "gpu_od/fan_ctrl"),
             "power_w": round(power / 1_000_000, 1) if power is not None and power >= 0 else None,
             "power_cap_w": round(power_cap / 1_000_000, 1) if power_cap is not None and power_cap > 0 else None,
+            "restore_supported": restore_supported,
             "_range": curve_range,
         }
     return sorted(found.values(), key=lambda item: -item["vram_bytes"])
@@ -512,9 +539,10 @@ def _failure(exc: Exception, bdf: str | None) -> None:
     global _last_tick_at
     logger.error("GPUファン制御を停止します: %s", exc)
     reset_error = ""
+    held = False
     if bdf:
         try:
-            _helper("reset", bdf)
+            held = not _release(bdf)
         except FanControlError as reset_exc:
             reset_error = f" / 自動復帰失敗: {reset_exc}"
             logger.exception("GPU自動ファン制御への復帰に失敗")
@@ -524,7 +552,7 @@ def _failure(exc: Exception, bdf: str | None) -> None:
             _persist(current.model_copy(update={"enabled": False}))
     except FanControlError:
         logger.exception("GPUファン設定無効化の永続化に失敗")
-    _state, _error = "fault", str(exc) + reset_error
+    _state, _error = "fault", str(exc) + reset_error + (f" / {HOLD_NOTICE}" if held else "")
     _pending_reset_bdf = bdf if reset_error else None
     _active_bdf, _last_curve, _sensor_ids = None, None, set()
     _zero_active, _zero_initialized_bdf = False, None
@@ -695,7 +723,7 @@ def configure(settings: FanSettings) -> dict:
             settings = _normalize_preset(settings, device)
             previous_bdf = _active_bdf or prior.bdf
             if prior.enabled and previous_bdf and previous_bdf != device["bdf"]:
-                _helper("reset", previous_bdf)
+                _release(previous_bdf)
                 _active_bdf = None
                 _last_curve = None
             _pending_reset_bdf = None
@@ -719,16 +747,17 @@ def configure(settings: FanSettings) -> dict:
                 _active_bdf,
                 prior.bdf if prior.enabled else None,
             ) if item}
+            held = False
             for target in sorted(targets):
                 try:
-                    _helper("reset", target)
+                    held = (not _release(target)) or held
                 except FanControlError as exc:
                     _pending_reset_bdf = target
                     _state, _error = "fault", f"自動制御へ復帰できません: {exc} / {REBOOT_HINT}"
                     raise FanControlError(_error) from exc
             _persist(settings)
             _active_bdf, _last_curve, _sensor_ids = None, None, set()
-            _state, _error, _pending_reset_bdf = "disabled", "", None
+            _state, _error, _pending_reset_bdf = "disabled", HOLD_NOTICE if held else "", None
             _reset_retry_failures = 0
             _zero_active, _zero_initialized_bdf = False, None
             _temp_history, _zero_stable_since, _cool_since, _last_tick_at = {}, None, None, None
@@ -781,6 +810,6 @@ def shutdown() -> None:
         target = _active_bdf or (settings.bdf if settings.enabled else None)
         if target:
             try:
-                _helper("reset", target)
+                _release(target)
             except FanControlError:
                 logger.exception("停止時にファン自動制御へ復帰できませんでした")
