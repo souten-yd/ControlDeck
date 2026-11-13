@@ -163,3 +163,14 @@ def test_model_json_roundtrip_rejects_garbage():
     again = pid.ThermalModel.from_json(model.to_json())
     assert again.points == model.points and again.idle_c == {"a": 40.0}
     assert pid.ThermalModel.from_json({"points": [{"fan": "x"}]}).points == []
+
+
+def test_pid_asymmetric_pv_filter_retains_cooling_dips_without_slowing_rise():
+    filt = pid.PVFilter(tau_s=2.0, fall_tau_s=30.0)
+    for _ in range(3):
+        filt.update("temp2", 80, 3)
+    hot = filt.update("temp2", 90, 3)
+    assert hot >= 80  # 3-sample median rejects a one-off spike
+    for _ in range(3):
+        filt.update("temp2", 40, 3)
+    assert filt.value["temp2"] > 65  # slow descent after median responds
