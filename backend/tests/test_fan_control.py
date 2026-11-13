@@ -916,3 +916,20 @@ def test_pid_raw_overheat_overrides_filter_and_auto_tune_hold(gpu, monkeypatch):
     fan.tick()
     assert fan._floor == 100
     assert fan.status()["active"]["pid"]["override"] is True
+
+
+def test_reconfigure_resets_curve_hold_before_applying_new_temperature_filter(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid in ("temp1", "temp2", "temp3"):
+        (hwmon / f"{sid}_input").write_text("45000")
+    settings = fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="curve",
+                               min_percent=20, targets_c={"temp2": 90})
+    fan.configure(settings)
+    fan._map.held = 95.0
+    fan._map.peak_at = 100.0
+    clock[0] += 3
+    fan.configure(settings.model_copy(update={"temp_fall_tau_seconds": 60.0}))
+    assert fan._map.held is not None and fan._map.held < 95.0
+    assert fan.status()["state"] == "controlling"
