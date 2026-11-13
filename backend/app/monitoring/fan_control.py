@@ -1056,7 +1056,7 @@ def tick() -> None:
 def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
-    global _cool_since, _last_cool_step, _last_tick_at, _policy, _reset_retry_failures
+    global _cool_since, _last_cool_step, _last_tick_at, _policy, _reset_retry_failures, _map
     with _lock:
         prior = _load()
         if settings.enabled:
