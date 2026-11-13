@@ -7,7 +7,7 @@ import { AutoTuneCard, FanHistoryChart, PidStatus, type PidInfo, type PidLive } 
 type FanSettings = {
   enabled: boolean;
   bdf: string | null;
-  preset_id: "recommended" | "llm_r9700" | "llm_quiet" | "quiet" | "cooling" | "custom";
+  preset_id: "recommended" | "llm_r9700" | "llm_quiet" | "curve_r9700" | "pid_r9700" | "quiet" | "cooling" | "custom";
   min_percent: number;
   allow_zero_rpm: boolean;
   cool_hold_seconds: number;
@@ -25,8 +25,8 @@ type FanSettings = {
   targets_c: Record<string, number>;
   /** PC起動後: 保存設定を自動で再適用 / GPU標準のまま起動 */
   startup_mode?: "apply_saved" | "firmware";
-  /** map: 従来のマップ制御 / pid: 目標温度へPID追従 */
-  control_mode?: "map" | "pid";
+  /** curve: インテリジェントマップ / pid: 目標温度へPID追従 / map: 従来のマップ */
+  control_mode?: "map" | "curve" | "pid";
   pid_kp?: number;
   pid_ti?: number;
   pid_ff_weight?: number;
@@ -34,7 +34,12 @@ type FanSettings = {
 };
 type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c" | "startup_mode"
   | "control_mode" | "pid_kp" | "pid_ti" | "pid_ff_weight" | "pid_auto_tune"> & {
-  id: "recommended" | "llm_r9700" | "llm_quiet" | "quiet" | "cooling";
+  id: "recommended" | "llm_r9700" | "llm_quiet" | "curve_r9700" | "pid_r9700" | "quiet" | "cooling";
+  /** モード付きプリセット（R9700実測）だけが持つ */
+  control_mode?: FanSettings["control_mode"];
+  pid_kp?: number;
+  pid_ti?: number;
+  pid_ff_weight?: number;
   label: string;
   description: string;
   target_offset_c: number;
@@ -97,8 +102,10 @@ type FanStatus = {
     critical_sensor: string;
     observed_at: number;
     curve: string | null;
-    control_mode?: "map" | "pid";
+    control_mode?: "map" | "curve" | "pid";
     pid?: PidLive | null;
+    map?: { held_percent: number; demand_percent: number; trim_percent: number;
+      at_target_percent: number; curve_temps: number[]; curve_percents: number[]; excess_c: number } | null;
   } | null;
   pid?: PidInfo;
   warning: string;
@@ -275,6 +282,8 @@ export function FanControlSettings() {
       zero_stable_seconds: preset.zero_stable_seconds, learning_enabled: preset.learning_enabled,
       ff_gain: preset.ff_gain, kp: preset.kp, ki: preset.ki, targets_c: targets,
       backstop_percent: preset.backstop_percent, backstop_c: preset.backstop_c,
+      ...(preset.control_mode ? { control_mode: preset.control_mode } : {}),
+      ...(preset.pid_kp != null ? { pid_kp: preset.pid_kp, pid_ti: preset.pid_ti, pid_ff_weight: preset.pid_ff_weight } : {}),
     });
   };
 
@@ -306,8 +315,8 @@ export function FanControlSettings() {
       {error && <p role="alert" className="mt-3 text-xs text-red-600">{error instanceof Error ? error.message : "取得失敗"}</p>}
       {data && draft && (
         <div className="mt-4 space-y-4">
-          {data.settings.control_mode === "pid" && data.settings.enabled && <FanHistoryChart/>}
-          {selected && data.settings.control_mode !== "pid" && <FanCurvePreview device={selected} minimum={draft.min_percent}
+          {data.settings.control_mode !== "map" && data.settings.enabled && <FanHistoryChart/>}
+          {selected && (data.settings.control_mode ?? "map") === "map" && <FanCurvePreview device={selected} minimum={draft.min_percent}
             activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}
             backstop={draft.backstop_percent ?? 60} backstopC={draft.backstop_c ?? null}/>}
           <div className={surface} role="status" aria-live="polite">
@@ -329,6 +338,14 @@ export function FanControlSettings() {
               学習中の係数 FF {data.active.learning.ff_gain.toFixed(1)} / P {data.active.learning.kp.toFixed(2)}
             </p>}
             {data.active?.control_mode === "pid" && <PidStatus live={data.active.pid}/>}
+            {data.active?.control_mode === "curve" && data.active.map && (
+              <p className="mt-2 text-[11px] tabular-nums text-zinc-600 dark:text-zinc-300">
+                マップ: 保持 {data.active.map.held_percent.toFixed(1)}%（今の要求 {data.active.map.demand_percent.toFixed(1)}%）・
+                目標温度での回転 {data.active.map.at_target_percent.toFixed(0)}%
+                {data.active.map.trim_percent > 0 && `＋補正 ${data.active.map.trim_percent.toFixed(1)}%`}・
+                カーブ {data.active.map.curve_temps.map((t, i) => `${t}°C ${data.active!.map!.curve_percents[i]}%`).join(" / ")}
+              </p>
+            )}
             {data.error && <p role="alert" className={`mt-2 text-xs ${data.state === "fault"
               ? "text-red-600" : "text-amber-700 dark:text-amber-300"}`}>{data.error}</p>}
           </div>
@@ -350,9 +367,10 @@ export function FanControlSettings() {
                   </p>
           <fieldset className={"space-y-3 " + surface}>
             <legend className="px-1 text-xs font-semibold">制御方式</legend>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {([["map", "マップ制御（従来）", "温度の余裕に応じたファンカーブ＋適応FF/PI"],
-                 ["pid", "PID制御（目標温度に追従）", "目標温度で釣り合う回転に自動で合わせる"]] as const).map(([mode, label, hint]) => (
+            <div className="grid gap-2 sm:grid-cols-3">
+              {([["curve", "グラフ（マップ）制御", "hotspotのスパイクにGPUが即追従、下げはゆっくり。熱モデルから目標温度に収まるカーブを自動設計"],
+                 ["pid", "PID制御（目標温度に追従）", "目標温度で釣り合う回転に自動で合わせる（FF＋PI、バック・カリキュレーション）"],
+                 ["map", "従来のマップ制御", "温度の余裕に応じた下限＋適応FF/PI（旧方式）"]] as const).map(([mode, label, hint]) => (
                 <label key={mode} className={"flex min-h-11 cursor-pointer items-start gap-2 rounded-xl border p-2 text-xs " +
                   ((draft.control_mode ?? "map") === mode ? "border-accent-600" : "border-zinc-200 dark:border-zinc-700")}>
                   <input type="radio" name="fan-control-mode" checked={(draft.control_mode ?? "map") === mode}
@@ -361,6 +379,15 @@ export function FanControlSettings() {
                 </label>
               ))}
             </div>
+            {draft.control_mode === "curve" && (
+              <div className="space-y-3">
+                <p className="text-[11px] leading-relaxed text-zinc-500">
+                  GPUのファームウェアはファンカーブをhotspot温度で直接読み、1秒未満で反応します。カーブは「目標−30°Cから上げ始め、目標温度で連続負荷を目標に収める回転（熱モデルから計算）、目標+5°Cで100%」に自動設計します。
+                  下げ方向はこちらで「保持時間 → 減速の速さ」でゆっくり下げ、LLMの0〜100%の繰り返しで回転が上下しないようにします。VRAMなどhotspot以外は余裕に応じて下限を上げ、目標を超え続けたらカーブを少しずつ持ち上げる補正をかけます。
+                </p>
+                <AutoTuneCard pid={data.pid} enabledPid={data.settings.enabled && data.settings.control_mode === "pid"}/>
+              </div>
+            )}
             {draft.control_mode === "pid" && (
               <div className="space-y-3">
                 <p className="text-[11px] leading-relaxed text-zinc-500">

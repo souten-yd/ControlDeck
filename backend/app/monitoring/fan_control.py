@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
-from app.monitoring import fan_pid
+from app.monitoring import fan_map, fan_pid
 from app.monitoring.fan_strategy import AdaptivePolicy, margin_ramp
 
 logger = logging.getLogger("control_deck.fan_control")
@@ -55,7 +55,8 @@ class FanSettings(BaseModel):
     # Firmware (R9700) accepts 15–100%; the curve also clamps to the device minimum.
     min_percent: int = Field(default=35, ge=15, le=70)
     allow_zero_rpm: bool = False
-    preset_id: Literal["recommended", "llm_r9700", "llm_quiet", "quiet", "cooling", "custom"] = "recommended"
+    preset_id: Literal["recommended", "llm_r9700", "llm_quiet", "curve_r9700", "pid_r9700",
+                       "quiet", "cooling", "custom"] = "recommended"
     # After cooling starts, hold this long, then ramp down continuously.
     cool_hold_seconds: int = Field(default=30, ge=30, le=600)
     cool_rate_percent_per_min: float = Field(default=30.0, ge=1.0, le=60.0, allow_inf_nan=False)
@@ -78,7 +79,9 @@ class FanSettings(BaseModel):
     startup_mode: Literal["apply_saved", "firmware"] = "apply_saved"
     # "map": margin map + adaptive FF/PI floor (original). "pid": the fan
     # follows the target temperatures by PID with a thermal-model feedforward.
-    control_mode: Literal["map", "pid"] = "map"
+    # "curve": intelligent map (firmware curve follows the hotspot at once,
+    # software holds and releases slowly); "map": the original margin map.
+    control_mode: Literal["map", "curve", "pid"] = "map"
     pid_kp: float = Field(default=3.0, ge=0.5, le=10.0, allow_inf_nan=False)
     pid_ti: float = Field(default=90.0, ge=15.0, le=600.0, allow_inf_nan=False)
     # Weight of the feedforward ("D") term from the learned thermal model.
@@ -142,6 +145,8 @@ _last_learning_save = 0.0
 _LEARNING_FILE = "amd-fan-learning.json"
 _MODEL_FILE = "amd-fan-model.json"
 _pid = fan_pid.PIDController()
+_map = fan_map.MapController()
+_last_map: dict | None = None
 _model = fan_pid.ThermalModel()
 _model_bdf: str | None = None
 _tracker = fan_pid.SteadyTracker()
@@ -154,6 +159,7 @@ _last_passive = 0.0
 HISTORY_SECONDS = 3600
 _history: deque = deque(maxlen=int(HISTORY_SECONDS / INTERVAL))
 PASSIVE_SECONDS = 300.0
+PID_MAP_OFFSET_C = 3.0
 _last_tune_log: list = [None]
 
 # Catalog is immutable and does not auto-enable hardware on selection.
@@ -183,6 +189,27 @@ FAN_PRESETS = (
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
      "backstop_percent": 40, "backstop_c": 85, "target_offset_c": 5,
      "target_offsets_c": {"edge": 10}},
+    # Tuned on the R9700 (2026-11-13, Qwen3.8-27B: 3 bursts + 3 min sustained),
+    # targets hotspot 90 / VRAM 90 / edge 85 °C. The thermal model comes from
+    # the auto-tune and is per GPU (data/amd-fan-model.json), not the preset.
+    # curve: bursts ≤33 % (≤1200 rpm, held), sustained hotspot 87 °C ~2470 rpm.
+    {"id": "curve_r9700", "label": "グラフ制御（R9700実測・hotspot/VRAM 90°C）",
+     "description": "hotspotのスパイクにGPUが即追従し、下げは30秒保持のあと毎分20%。連続負荷でhotspot約87°C・約2470rpm",
+     "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
+     "cool_rate_percent_per_min": 20.0, "zero_stable_seconds": 600,
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
+     "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0,
+     "target_offsets_c": {"mem": 5, "edge": 10}, "control_mode": "curve"},
+    # pid: bursts ≤33 % (≤1100 rpm), sustained hotspot ≤90 (avg 88.5) °C
+    # ~2360 rpm, auto-tuned Kp 1.33 / Ti 49.8 s (SIMC lambda = tau/2).
+    {"id": "pid_r9700", "label": "PID制御（R9700実測・hotspot/VRAM 90°C）",
+     "description": "目標温度に追従（FF＋PI、バック・カリキュレーション）。連続負荷でhotspot最高90°C・約2360rpm",
+     "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
+     "cool_rate_percent_per_min": 20.0, "zero_stable_seconds": 600,
+     "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
+     "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0,
+     "target_offsets_c": {"mem": 5, "edge": 10}, "control_mode": "pid",
+     "pid_kp": 1.33, "pid_ti": 49.8, "pid_ff_weight": 1.0},
     {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",
      "min_percent": 30, "allow_zero_rpm": False, "cool_hold_seconds": 120,
      "cool_rate_percent_per_min": 10.0, "zero_stable_seconds": 900,
@@ -208,6 +235,10 @@ def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanS
         "learning_enabled", "ff_gain", "kp", "ki", "backstop_percent", "backstop_c",
     )
     if any(getattr(settings, key) != preset[key] for key in keys):
+        return settings.model_copy(update={"preset_id": "custom"})
+    # Mode presets also fix the control mode and PID gains.
+    if any(getattr(settings, key) != preset[key]
+           for key in ("control_mode", "pid_kp", "pid_ti", "pid_ff_weight") if key in preset):
         return settings.model_copy(update={"preset_id": "custom"})
     if device is not None:
         for sensor in device["sensors"]:
@@ -559,22 +590,6 @@ def _save_model(bdf: str, model: fan_pid.ThermalModel) -> None:
         logger.warning("ファンの熱モデルを保存できません")
 
 
-def _pid_curve(ranges: tuple[int, int, int, int], percent: int, hotspot_target: float | None) -> str:
-    """PID owns the fan: flat at the PID output up to a knee just above the
-    hotspot target (the firmware reads the curve by hotspot), then 100% at
-    the firmware maximum as the backstop that also stays when we stop."""
-    tmin, tmax, pmin, pmax = ranges
-    start, end = max(tmin, 25), min(tmax, 100)
-    if end - start < 6:
-        raise FanControlError("GPUの温度カーブ範囲が狭すぎます")
-    knee = int(round((hotspot_target or 90) + 3))
-    knee = max(start + 3, min(end - 2, knee))
-    temps = [start, round(start + (knee - start) / 3), round(start + (knee - start) * 2 / 3), knee, end]
-    value = min(pmax, max(pmin, percent))
-    speeds = [value, value, value, value, pmax]
-    return ",".join(f"{t}:{p}" for t, p in zip(temps, speeds, strict=True))
-
-
 def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: float,
               minimum: int, maximum: int) -> tuple[int, str]:
     """One PID tick. Returns (fan %, curve)."""
@@ -610,7 +625,7 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
     result = _pid.update(sensors, targets, model=_model, power_w=power, kp=settings.pid_kp,
                          ti=settings.pid_ti, ff_weight=settings.pid_ff_weight,
                          minimum=minimum, maximum=maximum, dt=INTERVAL)
-    if _pid_out is None or handover:
+    if _pid_out is None or (handover and _tune.phase == "done"):
         # Bumpless start from the speed in use (also while/after an auto-tune
         # holds the fan): the integrator absorbs the difference to FF + P.
         current = float(max(minimum, _applied_floor or minimum)) if _pid_out is None else _pid_out
@@ -642,6 +657,8 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
                 _model.add_point(sum(fans) / len(fans), heat, r, weight=0.2)
                 _save_model(device["bdf"], _model)
                 _last_passive = _last_model_save = now
+    # Back-calculation anti-windup on the output actually applied.
+    _pid.track(_pid_out)
     percent = int(math.ceil(_pid_out - 1e-9))
     hotspot = next((s for s in sensors if (s.get("kind") or _sensor_kind(s["label"])) == "junction"), None)
     _last_pid = {
@@ -650,7 +667,14 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
         "governing_sensor": result.governing, "override": result.override,
         "tune_hold_percent": hold,
     }
-    return percent, _pid_curve(device["_range"], percent, hotspot["target_c"] if hotspot else None)
+    # Firmware curve: the map shape (shifted +3 °C) raised to the PID output.
+    # The firmware follows hotspot spikes within a second in proportion to
+    # their height; around the target the PID output decides.
+    hot_target = float(hotspot["target_c"]) if hotspot else 90.0
+    at_target = fan_map.target_speed(_model, hotspot["id"] if hotspot else None, hot_target,
+                                     minimum, maximum)
+    shape = fan_map.design(device["_range"], minimum, hot_target, at_target, 0.0, offset_c=PID_MAP_OFFSET_C)
+    return percent, shape.curve(percent)
 
 
 def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
@@ -810,7 +834,7 @@ def tick() -> None:
     global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry, _reset_retry_failures
     global _zero_active, _zero_initialized_bdf, _zero_stable_since, _temp_history
     global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step, _policy, _last_tick_at
-    global _model, _model_bdf, _tracker, _pid_out, _last_pid
+    global _model, _model_bdf, _tracker, _pid_out, _last_pid, _map, _last_map, _last_model_save
     with _lock:
         try:
             settings = _load()
@@ -875,8 +899,24 @@ def tick() -> None:
                 _model, _model_bdf = _load_model(bdf), bdf
                 _tracker, _pid_out = fan_pid.SteadyTracker(), None
                 _pid.reset()
+                _map = fan_map.MapController()
             pid_mode = settings.control_mode == "pid"
-            if pid_mode:
+            if settings.control_mode != "curve":
+                _last_map = None
+            if settings.control_mode == "curve":
+                _pid_out, _last_pid = None, None
+                if settings.allow_zero_rpm:
+                    settings = settings.model_copy(update={"allow_zero_rpm": False})
+                _tracker.add(now, sensors, device["power_w"], _floor)
+                if fan_pid.update_idle(_model, _tracker, now, device["power_w"], device["power_cap_w"]) \
+                        and now - _last_model_save >= 300:
+                    _save_model(bdf, _model)
+                    _last_model_save = now
+                floor, curve, _last_map = _map.update(
+                    sensors, ranges=device["_range"], model=_model, minimum=settings.min_percent,
+                    maximum=maximum, now=now, dt=INTERVAL, hold_seconds=settings.cool_hold_seconds,
+                    release_percent_per_min=settings.cool_rate_percent_per_min)
+            elif pid_mode:
                 if settings.allow_zero_rpm:
                     settings = settings.model_copy(update={"allow_zero_rpm": False})
                 floor, curve = _pid_step(settings, device, sensors, now, settings.min_percent, maximum)
@@ -965,7 +1005,7 @@ def tick() -> None:
                 "min_predicted_headroom_c": strategy["min_predicted_headroom_c"],
                 "learning": strategy["learning"],
                 "observed_at": time.time(), "curve": _last_curve,
-                "control_mode": settings.control_mode, "pid": _last_pid,
+                "control_mode": settings.control_mode, "pid": _last_pid, "map": _last_map,
             }
             hottest = {(s.get("kind") or _sensor_kind(s["label"])): s for s in sensors}
             _history.append({

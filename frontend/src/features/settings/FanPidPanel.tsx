@@ -191,7 +191,7 @@ export function AutoTuneCard({ pid, enabledPid }: { pid: PidInfo | undefined; en
       <p className="text-[11px] leading-relaxed text-zinc-500">
         アイドル温度を測ったあと、LLMの連続生成などの負荷中にファンを70%から10%ずつ下げ、各回転で温度が落ち着いた点を記録します。
         目標温度の3°C手前まで来たら終了し、熱モデル（フィードフォワード）とP・Iを設定します。負荷は自分では掛けません。負荷が止まると一時停止します。
-        {!enabledPid && " PID制御を有効にして保存してから開始できます。"}
+        グラフ制御でも同じ熱モデルを使います。{!enabledPid && " 自動調整はPID制御を有効にして保存してから開始できます。"}
       </p>
       {tune && tune.phase !== "off" && (
         <p role="status" className="text-[11px]">

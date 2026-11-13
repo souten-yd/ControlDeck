@@ -415,7 +415,7 @@ def test_recommended_presets_safe_and_consistent():
     from app.monitoring.fan_control import FAN_PRESETS, FanSettings
 
     builtins = {preset["id"]: preset for preset in FAN_PRESETS}
-    assert set(builtins) == {"recommended", "llm_r9700", "llm_quiet", "quiet", "cooling"}
+    assert set(builtins) == {"recommended", "llm_r9700", "llm_quiet", "curve_r9700", "pid_r9700", "quiet", "cooling"}
     default = FanSettings()
     assert default.preset_id == "recommended"
     assert default.enabled is False
@@ -780,7 +780,7 @@ def test_hotspot_climb_is_not_extrapolated():
     assert _predictive_floor(mem, 20, 100, {"temp3": 15.0}) > _predictive_floor(mem, 20, 100, {"temp3": 0.0})
 
 
-def test_pid_mode_writes_flat_curve_with_knee_above_hotspot_target(gpu):
+def test_pid_mode_writes_map_shaped_curve_raised_to_pid_output(gpu):
     fan, _, hwmon, _, calls = gpu
     (hwmon / "temp3_input").write_text("60000")  # mem cool
     result = fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="pid",
@@ -788,8 +788,9 @@ def test_pid_mode_writes_flat_curve_with_knee_above_hotspot_target(gpu):
     assert result["state"] == "controlling"
     curve = calls[-1][2]
     points = [tuple(map(int, p.split(":"))) for p in curve.split(",")]
-    assert points[3][0] == 93 and points[-1] == (100, 100)
-    assert len({p for _, p in points[:4]}) == 1  # flat at the PID output
+    # Map shape shifted +3 °C: top at target+3, 100 % at target+8.
+    assert points[3][0] == 93 and points[-1] == (98, 100)
+    assert points[0][1] == points[1][1]  # flat at the PID output below the rise
     assert result["active"]["control_mode"] == "pid" and result["active"]["pid"] is not None
     assert fan.history()["samples"][-1]["targets"]["junction"] == 90
 
@@ -831,3 +832,24 @@ def test_autotune_handover_keeps_the_fan_speed(gpu, monkeypatch):
     fan.tick()  # tune done → handover
     assert abs(fan._pid_out - 50) <= 2
     assert fan._load().pid_kp == 0.8
+
+
+def test_curve_mode_writes_a_valid_map(gpu):
+    fan, _, hwmon, _, calls = gpu
+    (hwmon / "temp3_input").write_text("60000")
+    result = fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="curve",
+                                           min_percent=20, targets_c={"temp2": 90, "temp3": 90}))
+    assert result["state"] == "controlling"
+    points = [tuple(map(int, p.split(":"))) for p in calls[-1][2].split(",")]
+    assert [t for t, _ in points] == sorted(t for t, _ in points) and points[-1][1] == 100
+    assert result["active"]["map"]["curve_temps"][3] == 90
+
+
+def test_mode_presets_carry_mode_and_targets():
+    fan = fan_module()
+    for preset_id, mode in (("curve_r9700", "curve"), ("pid_r9700", "pid")):
+        preset = next(p for p in fan.FAN_PRESETS if p["id"] == preset_id)
+        assert preset["control_mode"] == mode
+        targets = {label: min(95, base + fan.preset_target_offset(preset, {"label": label}))
+                   for label, base in (("edge", 75), ("junction", 90), ("mem", 85))}
+        assert targets == {"edge": 85, "junction": 90, "mem": 90}

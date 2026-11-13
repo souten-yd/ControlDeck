@@ -49,15 +49,20 @@ def test_pid_raises_when_hot_and_antiwindup_holds_at_max():
     for _ in range(200):
         result = ctl.update(sensors_of(93), {"temp2": 90}, model=model, power_w=250, kp=3, ti=60,
                             ff_weight=1, minimum=20, maximum=100, dt=3)
+        ctl.track(result.output)
     assert result.output > 30
     for _ in range(400):
-        ctl.update(sensors_of(94.5), {"temp2": 90}, model=model, power_w=250, kp=10, ti=15,
-                   ff_weight=1, minimum=20, maximum=100, dt=3)
-    assert ctl.integral <= 100
+        r = ctl.update(sensors_of(91.5), {"temp2": 90}, model=model, power_w=250, kp=10, ti=15,
+                       ff_weight=1, minimum=20, maximum=100, dt=3)
+        ctl.track(r.output)
+    # Back-calculation: saturated at 100 %, the integral tracks the limit
+    # instead of growing without bound.
+    assert ctl.v is not None and ctl.v < 110
     # Cooling down: the integrator unwinds quickly instead of holding 100%.
     for _ in range(60):
         result = ctl.update(sensors_of(70), {"temp2": 90}, model=model, power_w=20, kp=3, ti=60,
                             ff_weight=1, minimum=20, maximum=100, dt=3)
+        ctl.track(result.output)
     assert result.output == 20
 
 
@@ -69,6 +74,7 @@ def test_single_noisy_reading_barely_moves_the_output():
         temp = 88 + (6 if i == 30 else 0)  # one 3 s spike
         outs.append(ctl.update(sensors_of(temp), {"temp2": 90}, model=model, power_w=200, kp=3,
                                ti=90, ff_weight=1, minimum=20, maximum=100, dt=3).output)
+        ctl.track(outs[-1])
     assert max(outs[29:33]) - outs[29] < 3
 
 
@@ -134,6 +140,7 @@ def test_feedforward_settles_plant_at_target_after_tuning():
         result = ctl.update(sensors_of(temp), {"temp2": 85}, model=model, power_w=215, kp=kp, ti=ti,
                             ff_weight=1, minimum=20, maximum=100, dt=3)
         fan = result.output
+        ctl.track(fan)
         temp = plant.step(fan, 200, 3)
         temps.append(temp)
     assert abs(sum(temps[-50:]) / 50 - 85) < 1.0

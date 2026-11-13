@@ -12,8 +12,10 @@ Control law (cooling plant, so the error is PV - SV, "too hot" is positive):
   model gives the fan % at which each sensor settles exactly at its target.
 * PV is filtered (median of 3, then EMA) because the hotspot jumps several
   °C for single readings under LLM load.
-* Anti-windup: conditional integration while the output is saturated, and
-  the integrator is bounded.
+* Anti-windup: back-calculation (tracking). The integrator is pulled toward
+  the output actually applied (after min/max, the descent rate limit and
+  the safety floor) with the tracking time Tt = Ti/2 (Astrom: Td <= Tt <= Ti):
+      I += Kp/Ti * e * dt + dt/Tt * (u_applied - v)
 * The model is learned by an explicit auto-tune (staircase from a high fan
   speed down to the target while the GPU is under load) and refined
   passively at steady states during normal operation.
@@ -54,6 +56,12 @@ FF_TAU_DEFAULT_S = 30.0
 COLD_ERROR_LIMIT_C = 4.0
 # The hotspot reacts to power faster than the fan-step time constant.
 FF_LAG_FACTOR = 0.6
+# Feedforward power filter falls slowly (LLM load alternates 0–100 %). The
+# rise keeps the physical lag: a 3 s attack drove 56 % on every short burst
+# (the steady-state need) while the hotspot only reached 67 °C. Spikes are
+# followed by the map-shaped firmware curve instead (see fan_control).
+FF_RELEASE_S = 60.0
+TRACKING_FACTOR = 0.5
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -175,16 +183,17 @@ class PVFilter:
 
 
 class Lag:
-    """First-order lag of the heat input (power) by the thermal time constant."""
+    """First-order lag; optional separate time constant when falling."""
 
     def __init__(self) -> None:
         self.value: float | None = None
 
-    def update(self, value: float, dt: float, tau_s: float) -> float:
+    def update(self, value: float, dt: float, tau_s: float, fall_tau_s: float | None = None) -> float:
         if self.value is None:
             self.value = value
         else:
-            self.value += (1.0 - math.exp(-dt / max(1.0, tau_s))) * (value - self.value)
+            tau = tau_s if fall_tau_s is None or value >= self.value else fall_tau_s
+            self.value += (1.0 - math.exp(-dt / max(1.0, tau))) * (value - self.value)
         return self.value
 
 
@@ -206,6 +215,8 @@ class PIDController:
         self.power = Lag()
         self.power_fast = Lag()
         self.last_output: float | None = None
+        self.v: float | None = None
+        self.ti, self.dt = 90.0, 3.0
 
     def reset(self) -> None:
         self.__init__()
@@ -215,8 +226,9 @@ class PIDController:
                     weight: float) -> float:
         if power_w is None or not model.usable:
             return minimum
-        slow = self.power.update(power_w, dt, model.tau_s * FF_LAG_FACTOR)
-        fast = self.power_fast.update(power_w, dt, min(HOTSPOT_FF_LAG_S, model.tau_s * FF_LAG_FACTOR))
+        slow = self.power.update(power_w, dt, model.tau_s * FF_LAG_FACTOR,
+                                 max(FF_RELEASE_S, model.tau_s * 2))
+        fast = self.power_fast.update(power_w, dt, HOTSPOT_FF_LAG_S, FF_RELEASE_S)
         needed = minimum
         for sensor in sensors:
             sid = sensor["id"]
@@ -244,38 +256,36 @@ class PIDController:
         governing = max(errors, key=errors.get)
         error = max(errors[governing], -COLD_ERROR_LIMIT_C)
         ff = self.feedforward(model, sensors, targets, power_w, dt, minimum, maximum, ff_weight)
-        # Unsmoothed (median only) overshoot is a safety floor, not a PID input: a
-        # ramp from target+2°C to 100% at +5°C (a jump to 100% at +5°C held
-        # the fan high for minutes on the R9700).
-        # Median of the last 3 readings: a single 3 s hotspot jump is noise.
+        # Safety floor above the target from the median of the last 3 raw
+        # readings (one 3 s hotspot jump is noise): +2 °C → ramp → 100 % at +5 °C.
         over = max(median(self.pv.raw[s["id"]]) - targets[s["id"]] for s in sensors)
         safety = minimum
         if over >= OVERSHOOT_START_C:
             safety = minimum + (maximum - minimum) * min(1.0, (over - OVERSHOOT_START_C)
                                                        / (OVERSHOOT_FULL_C - OVERSHOOT_START_C))
         p_term = kp * error
-        unclamped = ff + p_term + self.integral
-        # Conditional integration (anti-windup): do not integrate further into
-        # a saturated output.
-        step = kp / max(1.0, ti) * error * dt
-        # Beyond the cold cap the error is not a real deviation: do not
-        # integrate (it drove the integral to -4% while warming up); instead
-        # the integral relaxes toward 0 over Ti (stale after a load ends).
-        capped = errors[governing] < -COLD_ERROR_LIMIT_C
-        if capped:
+        if errors[governing] < -COLD_ERROR_LIMIT_C:
+            # Far below the target the error is not a real deviation: the
+            # integral relaxes toward 0 over Ti (stale after a load ends).
             self.integral -= self.integral * min(1.0, dt / max(1.0, ti))
-        elif not ((unclamped >= maximum and step > 0) or (unclamped <= minimum and step < 0)):
-            self.integral = clamp(self.integral + step, -maximum, maximum)
-        # Resting at the minimum while cold: a positive integral is stale
-        # (it would over-cool the next load); relax it toward 0 over Ti.
-        if unclamped <= minimum and error < 0 and self.integral > 0:
-            self.integral = max(0.0, self.integral - self.integral * dt / max(1.0, ti) - abs(step))
-        output = clamp(ff + p_term + self.integral, minimum, maximum)
+        else:
+            self.integral += kp / max(1.0, ti) * error * dt
+        self.integral = clamp(self.integral, -maximum, maximum)
+        self.ti, self.dt = ti, dt
+        self.v = ff + p_term + self.integral
+        output = clamp(self.v, minimum, maximum)
         override = safety > output
         output = max(output, safety)
         self.last_output = output
         return PIDResult(round(output, 2), round(ff, 2), round(p_term, 2), round(self.integral, 2),
                          round(error, 2), governing, override)
+
+    def track(self, applied: float) -> None:
+        """Back-calculation: pull the integrator toward the applied output."""
+        if getattr(self, "v", None) is None:
+            return
+        tt = max(self.dt, TRACKING_FACTOR * self.ti)
+        self.integral = clamp(self.integral + self.dt / tt * (applied - self.v), -100.0, 100.0)
 
     def bumpless(self, current_percent: float, ff: float) -> None:
         """Start from the fan speed in use (no jump when switching modes)."""
