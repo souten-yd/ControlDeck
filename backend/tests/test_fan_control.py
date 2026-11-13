@@ -57,6 +57,11 @@ def gpu(tmp_path, monkeypatch):
         "_zero_active": False, "_zero_initialized_bdf": None,
         "_last_rise_c_per_min": 0.0, "_applied_floor": 0,
         "_last_tick_at": None, "_no_restore_bdfs": set(),
+        "_model_bdf": None, "_pid_out": None, "_last_pid": None,
+        "_pid": __import__("app.monitoring.fan_pid", fromlist=["x"]).PIDController(),
+        "_tracker": __import__("app.monitoring.fan_pid", fromlist=["x"]).SteadyTracker(),
+        "_tune": __import__("app.monitoring.fan_pid", fromlist=["x"]).AutoTune(),
+        "_history": __import__("collections").deque(maxlen=1200),
     }.items():
         monkeypatch.setattr(fan, key, value)
     calls = []
@@ -773,3 +778,56 @@ def test_hotspot_climb_is_not_extrapolated():
     assert _predictive_floor(hot, 20, 100, {"temp2": 15.0}) == _predictive_floor(hot, 20, 100, {"temp2": 0.0})
     mem = [{"id": "temp3", "label": "mem", "kind": "mem", "value_c": 81, "headroom_c": 9}]
     assert _predictive_floor(mem, 20, 100, {"temp3": 15.0}) > _predictive_floor(mem, 20, 100, {"temp3": 0.0})
+
+
+def test_pid_mode_writes_flat_curve_with_knee_above_hotspot_target(gpu):
+    fan, _, hwmon, _, calls = gpu
+    (hwmon / "temp3_input").write_text("60000")  # mem cool
+    result = fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="pid",
+                                           min_percent=20, targets_c={"temp2": 90}))
+    assert result["state"] == "controlling"
+    curve = calls[-1][2]
+    points = [tuple(map(int, p.split(":"))) for p in curve.split(",")]
+    assert points[3][0] == 93 and points[-1] == (100, 100)
+    assert len({p for _, p in points[:4]}) == 1  # flat at the PID output
+    assert result["active"]["control_mode"] == "pid" and result["active"]["pid"] is not None
+    assert fan.history()["samples"][-1]["targets"]["junction"] == 90
+
+
+def test_autotune_requires_pid_mode(gpu):
+    fan, *_ = gpu
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
+    with pytest.raises(fan.FanControlError):
+        fan.autotune("start")
+
+
+def test_autotune_handover_keeps_the_fan_speed(gpu, monkeypatch):
+    """実機R9700: 自動調整の終了時に積分をFF抜きで初期化し、50%→100%へ跳ねていた。"""
+    fan, _, hwmon, _, calls = gpu
+    (hwmon / "temp3_input").write_text("60000")
+    (hwmon / "temp2_input").write_text("88000")
+    (hwmon / "power1_average").write_text("210000000")
+    model = fan.fan_pid.ThermalModel(
+        idle_c={"temp1": 32, "temp2": 36, "temp3": 32}, idle_power_w=12,
+        points=[{"fan": 50, "power_w": 198, "r": {"temp1": 0.16, "temp2": 0.27, "temp3": 0.24}},
+                {"fan": 70, "power_w": 198, "r": {"temp1": 0.09, "temp2": 0.18, "temp3": 0.16}}])
+    monkeypatch.setattr(fan, "_load_model", lambda bdf: model)
+    holds = iter([50, 50, None])
+
+    def fake_tune(tune, m, *a, **k):
+        value = next(holds)
+        if value is None:
+            tune.phase = "done"
+            m.tuned = {"kp": 0.8, "ti": 50.0}
+        else:
+            tune.phase = "settling"
+        return value
+
+    monkeypatch.setattr(fan.fan_pid, "tune_step", fake_tune)
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="pid",
+                                  min_percent=20, pid_auto_tune=False,
+                                  targets_c={"temp1": 85, "temp2": 90, "temp3": 90}))
+    fan.tick()  # hold 50
+    fan.tick()  # tune done → handover
+    assert abs(fan._pid_out - 50) <= 2
+    assert fan._load().pid_kp == 0.8

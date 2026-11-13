@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
+import { AutoTuneCard, FanHistoryChart, PidStatus, type PidInfo, type PidLive } from "./FanPidPanel";
 
 type FanSettings = {
   enabled: boolean;
@@ -24,8 +25,15 @@ type FanSettings = {
   targets_c: Record<string, number>;
   /** PC起動後: 保存設定を自動で再適用 / GPU標準のまま起動 */
   startup_mode?: "apply_saved" | "firmware";
+  /** map: 従来のマップ制御 / pid: 目標温度へPID追従 */
+  control_mode?: "map" | "pid";
+  pid_kp?: number;
+  pid_ti?: number;
+  pid_ff_weight?: number;
+  pid_auto_tune?: boolean;
 };
-type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c" | "startup_mode"> & {
+type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c" | "startup_mode"
+  | "control_mode" | "pid_kp" | "pid_ti" | "pid_ff_weight" | "pid_auto_tune"> & {
   id: "recommended" | "llm_r9700" | "llm_quiet" | "quiet" | "cooling";
   label: string;
   description: string;
@@ -89,7 +97,10 @@ type FanStatus = {
     critical_sensor: string;
     observed_at: number;
     curve: string | null;
+    control_mode?: "map" | "pid";
+    pid?: PidLive | null;
   } | null;
+  pid?: PidInfo;
   warning: string;
 };
 
@@ -295,7 +306,8 @@ export function FanControlSettings() {
       {error && <p role="alert" className="mt-3 text-xs text-red-600">{error instanceof Error ? error.message : "取得失敗"}</p>}
       {data && draft && (
         <div className="mt-4 space-y-4">
-          {selected && <FanCurvePreview device={selected} minimum={draft.min_percent}
+          {data.settings.control_mode === "pid" && data.settings.enabled && <FanHistoryChart/>}
+          {selected && data.settings.control_mode !== "pid" && <FanCurvePreview device={selected} minimum={draft.min_percent}
             activeCurve={data.active?.bdf === selected.bdf ? data.active.curve : null}
             backstop={draft.backstop_percent ?? 60} backstopC={draft.backstop_c ?? null}/>}
           <div className={surface} role="status" aria-live="polite">
@@ -316,6 +328,7 @@ export function FanControlSettings() {
             {data.active?.learning && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">
               学習中の係数 FF {data.active.learning.ff_gain.toFixed(1)} / P {data.active.learning.kp.toFixed(2)}
             </p>}
+            {data.active?.control_mode === "pid" && <PidStatus live={data.active.pid}/>}
             {data.error && <p role="alert" className={`mt-2 text-xs ${data.state === "fault"
               ? "text-red-600" : "text-amber-700 dark:text-amber-300"}`}>{data.error}</p>}
           </div>
@@ -335,6 +348,48 @@ export function FanControlSettings() {
                   <p className="text-xs text-amber-700 dark:text-amber-300">
               温度目標は保証された上限ではありません。過熱時の安全制御とGPU本来の温度保護は変更できません。
                   </p>
+          <fieldset className={"space-y-3 " + surface}>
+            <legend className="px-1 text-xs font-semibold">制御方式</legend>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {([["map", "マップ制御（従来）", "温度の余裕に応じたファンカーブ＋適応FF/PI"],
+                 ["pid", "PID制御（目標温度に追従）", "目標温度で釣り合う回転に自動で合わせる"]] as const).map(([mode, label, hint]) => (
+                <label key={mode} className={"flex min-h-11 cursor-pointer items-start gap-2 rounded-xl border p-2 text-xs " +
+                  ((draft.control_mode ?? "map") === mode ? "border-accent-600" : "border-zinc-200 dark:border-zinc-700")}>
+                  <input type="radio" name="fan-control-mode" checked={(draft.control_mode ?? "map") === mode}
+                    onChange={() => update({ control_mode: mode }, false)} className="mt-0.5"/>
+                  <span><span className="block font-semibold">{label}</span><span className="text-[11px] text-zinc-500">{hint}</span></span>
+                </label>
+              ))}
+            </div>
+            {draft.control_mode === "pid" && (
+              <div className="space-y-3">
+                <p className="text-[11px] leading-relaxed text-zinc-500">
+                  出力 ＝ フィードフォワード（D：消費電力とアイドル温度から、目標温度で釣り合う回転を熱モデルで計算）＋ P × 偏差 ＋ 積分（I、飽和時は積分停止）。
+                  偏差は全センサーのうち最も目標に近いものを使います。目標＋5°Cを超えたら即最大。ファンカーブは「出力で平坦 → hotspot目標+3°Cから最大温度で100%」を書き込み、制御が止まってもこの保護が残ります。
+                  下の「各温度センサーの目標値」が追従する目標温度です。減速の速さは詳細パラメータの「減速の速さ」で制限します。
+                </p>
+                <RangeControl label="比例ゲイン Kp" min={0.5} max={10} step={0.1} value={draft.pid_kp ?? 3} suffix="%/°C"
+                  hint="目標から1°Cずれたときに足す回転%。大きいほど速く追従しますが、hotspotの揺れで回転が揺れます。"
+                  onChange={(value) => update({ pid_kp: value }, false)}/>
+                <RangeControl label="積分時間 Ti" min={15} max={600} step={5} value={draft.pid_ti ?? 90} suffix="秒"
+                  hint="小さいほど残った偏差を速く消します（積分 ＝ Kp/Ti × 偏差の時間積分）。"
+                  onChange={(value) => update({ pid_ti: value }, false)}/>
+                <RangeControl label="フィードフォワード（D）の重み" min={0} max={1.5} step={0.05} value={draft.pid_ff_weight ?? 1} suffix="倍"
+                  hint="熱モデルが出す必要回転の効かせ方。0でPIのみ。熱モデルは自動調整と、通常運転中の安定点から学習します。"
+                  onChange={(value) => update({ pid_ff_weight: value }, false)}/>
+                <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-zinc-200 p-3 text-xs dark:border-zinc-700">
+                  <span>
+                    <span className="block font-semibold">未調整なら自動で初期ゲインを決める</span>
+                    <span className="mt-1 block text-[11px] text-zinc-500">熱モデルが無いとき、アイドル温度を測ったあと最初の連続負荷で自動調整を始めます。</span>
+                  </span>
+                  <input type="checkbox" aria-label="未調整なら自動調整" checked={draft.pid_auto_tune ?? true}
+                    onChange={(e) => update({ pid_auto_tune: e.target.checked }, false)} className="h-5 w-5 shrink-0"/>
+                </label>
+                <AutoTuneCard pid={data.pid} enabledPid={data.settings.enabled && data.settings.control_mode === "pid"}/>
+              </div>
+            )}
+          </fieldset>
+
           <label className="block text-xs font-medium">
             対象GPU
             <select value={draft.bdf ?? ""} onChange={(e) => {

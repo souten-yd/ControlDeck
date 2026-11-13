@@ -14,6 +14,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Literal
 
@@ -21,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
+from app.monitoring import fan_pid
 from app.monitoring.fan_strategy import AdaptivePolicy, margin_ramp
 
 logger = logging.getLogger("control_deck.fan_control")
@@ -33,8 +35,9 @@ INTERVAL = 3.0
 # Bursty LLM workloads must not turn into fan-speed oscillations.
 COOL_HOLD_SECONDS = 30.0
 COOL_RATE_PERCENT_PER_MIN = 30.0
-# Decreasing curve writes are rate limited; increases are written at once.
-RAMP_WRITE_SECONDS = 5.0
+# Decreasing curve writes: every tick in small (1–2%) steps. Writing 3% every
+# ~6 s made the PMFW undershoot and recover audibly ("clunk") at each step.
+RAMP_WRITE_SECONDS = 0.0
 ZERO_STABLE_SECONDS = 600.0
 ZERO_STOP_TEMP_C = 55
 ZERO_RISE_LIMIT_C_PER_MIN = 0.5
@@ -73,6 +76,15 @@ class FanSettings(BaseModel):
     # "apply_saved" re-applies these settings; "firmware" keeps GPU auto until
     # the user enables control again.
     startup_mode: Literal["apply_saved", "firmware"] = "apply_saved"
+    # "map": margin map + adaptive FF/PI floor (original). "pid": the fan
+    # follows the target temperatures by PID with a thermal-model feedforward.
+    control_mode: Literal["map", "pid"] = "map"
+    pid_kp: float = Field(default=3.0, ge=0.5, le=10.0, allow_inf_nan=False)
+    pid_ti: float = Field(default=90.0, ge=15.0, le=600.0, allow_inf_nan=False)
+    # Weight of the feedforward ("D") term from the learned thermal model.
+    pid_ff_weight: float = Field(default=1.0, ge=0.0, le=1.5, allow_inf_nan=False)
+    # Without a learned thermal model, auto-tune on the first sustained load.
+    pid_auto_tune: bool = True
 
     @field_validator("bdf")
     @classmethod
@@ -128,6 +140,21 @@ _last_tick_at: float | None = None
 _policy = AdaptivePolicy()
 _last_learning_save = 0.0
 _LEARNING_FILE = "amd-fan-learning.json"
+_MODEL_FILE = "amd-fan-model.json"
+_pid = fan_pid.PIDController()
+_model = fan_pid.ThermalModel()
+_model_bdf: str | None = None
+_tracker = fan_pid.SteadyTracker()
+_tune = fan_pid.AutoTune()
+_pid_out: float | None = None
+_last_pid: dict | None = None
+_last_model_save = 0.0
+_last_passive = 0.0
+# Always recorded (cheap); drawn only while the web page is visible.
+HISTORY_SECONDS = 3600
+_history: deque = deque(maxlen=int(HISTORY_SECONDS / INTERVAL))
+PASSIVE_SECONDS = 300.0
+_last_tune_log: list = [None]
 
 # Catalog is immutable and does not auto-enable hardware on selection.
 # Sensor goals are resolved per GPU against current critical limits in the UI.
@@ -502,6 +529,130 @@ def _curve(ranges: tuple[int, int, int, int], floor: int,
     return ",".join(f"{temp}:{pwm}" for temp, pwm in zip(anchor, speeds, strict=True))
 
 
+def _model_path() -> Path:
+    return data_dir() / _MODEL_FILE
+
+
+def _load_model(bdf: str) -> fan_pid.ThermalModel:
+    try:
+        document = json.loads(_model_path().read_text(encoding="utf-8"))
+        return fan_pid.ThermalModel.from_json(document.get(bdf, {}))
+    except (OSError, ValueError, AttributeError):
+        return fan_pid.ThermalModel()
+
+
+def _save_model(bdf: str, model: fan_pid.ThermalModel) -> None:
+    path = _model_path()
+    try:
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                document = {}
+        except (OSError, ValueError):
+            document = {}
+        document[bdf] = model.to_json()
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        temp.chmod(0o600)
+        temp.replace(path)
+    except OSError:
+        logger.warning("ファンの熱モデルを保存できません")
+
+
+def _pid_curve(ranges: tuple[int, int, int, int], percent: int, hotspot_target: float | None) -> str:
+    """PID owns the fan: flat at the PID output up to a knee just above the
+    hotspot target (the firmware reads the curve by hotspot), then 100% at
+    the firmware maximum as the backstop that also stays when we stop."""
+    tmin, tmax, pmin, pmax = ranges
+    start, end = max(tmin, 25), min(tmax, 100)
+    if end - start < 6:
+        raise FanControlError("GPUの温度カーブ範囲が狭すぎます")
+    knee = int(round((hotspot_target or 90) + 3))
+    knee = max(start + 3, min(end - 2, knee))
+    temps = [start, round(start + (knee - start) / 3), round(start + (knee - start) * 2 / 3), knee, end]
+    value = min(pmax, max(pmin, percent))
+    speeds = [value, value, value, value, pmax]
+    return ",".join(f"{t}:{p}" for t, p in zip(temps, speeds, strict=True))
+
+
+def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: float,
+              minimum: int, maximum: int) -> tuple[int, str]:
+    """One PID tick. Returns (fan %, curve)."""
+    global _pid_out, _last_pid, _last_model_save, _last_passive
+    targets = {s["id"]: float(s["target_c"]) for s in sensors}
+    power = device["power_w"]
+    cap = device["power_cap_w"]
+    _tracker.add(now, sensors, power, _pid_out if _pid_out is not None else minimum)
+    if fan_pid.update_idle(_model, _tracker, now, power, cap) and now - _last_model_save >= 300:
+        _save_model(device["bdf"], _model)
+        _last_model_save = now
+    if settings.pid_auto_tune and not _model.usable and _tune.phase == "off":
+        _tune.start(now, _model)
+        _tune.message = "初回の自動調整: " + _tune.message
+    phase_before = _tune.phase
+    hold = fan_pid.tune_step(_tune, _model, _tracker, now=now, sensors=sensors, targets=targets,
+                             power_w=power, power_cap_w=cap, minimum=minimum, maximum=maximum)
+    if (_tune.phase, _tune.message) != _last_tune_log[0]:
+        _last_tune_log[0] = (_tune.phase, _tune.message)
+        logger.info("ファン自動調整: %s %s", _tune.phase, _tune.message)
+    if phase_before != "done" and _tune.phase == "done" and _model.tuned:
+        _save_model(device["bdf"], _model)
+        try:
+            # Gains found by the auto-tune become the saved PID gains.
+            _persist(_load().model_copy(update={
+                "pid_kp": _model.tuned["kp"], "pid_ti": _model.tuned["ti"]}))
+        except FanControlError:
+            logger.exception("自動調整の結果を保存できません")
+        settings = settings.model_copy(update={"pid_kp": _model.tuned["kp"], "pid_ti": _model.tuned["ti"]})
+        handover = True
+    else:
+        handover = hold is not None
+    result = _pid.update(sensors, targets, model=_model, power_w=power, kp=settings.pid_kp,
+                         ti=settings.pid_ti, ff_weight=settings.pid_ff_weight,
+                         minimum=minimum, maximum=maximum, dt=INTERVAL)
+    if _pid_out is None or handover:
+        # Bumpless start from the speed in use (also while/after an auto-tune
+        # holds the fan): the integrator absorbs the difference to FF + P.
+        current = float(max(minimum, _applied_floor or minimum)) if _pid_out is None else _pid_out
+        # At the minimum there is nothing to carry over (see COLD_ERROR_LIMIT_C).
+        _pid.integral = 0.0 if current <= minimum else fan_pid.clamp(
+            current - result.feedforward - result.p_term, -maximum, maximum)
+        _pid_out = current
+        result = fan_pid.PIDResult(current, result.feedforward, result.p_term, _pid.integral,
+                                   result.error_c, result.governing, result.override)
+    wanted = float(hold) if hold is not None else result.output
+    if wanted >= _pid_out or (_last_pid or {}).get("override"):
+        # Rise at once; after a safety override return straight to the PID
+        # output (the override was not a PID decision to keep).
+        _pid_out = wanted
+    else:
+        _pid_out = max(wanted, _pid_out - settings.cool_rate_percent_per_min * INTERVAL / 60)
+    # Passive refinement of the model at steady loaded states.
+    if (hold is None and _tune.phase not in ("waiting_idle", "waiting_load", "settling")
+            and _model.idle_c and now - _last_passive >= PASSIVE_SECONDS
+            and fan_pid.loaded(power, cap, _model.idle_power_w)
+            and _tracker.power_steady(now, 120.0) and _tracker.stable(now, 120.0)):
+        fans = [v for t, v in _tracker.fan if now - t <= 120]
+        if fans and max(fans) - min(fans) <= 3:
+            temps = _tracker.temp_means(now, 30.0)
+            heat = (_tracker.mean(_tracker.power, now, 60.0) or 0) - (_model.idle_power_w or 0)
+            if heat > 10:
+                r = {sid: max(0.0, (temps[sid] - _model.idle_c[sid]) / heat)
+                     for sid in temps if sid in _model.idle_c}
+                _model.add_point(sum(fans) / len(fans), heat, r, weight=0.2)
+                _save_model(device["bdf"], _model)
+                _last_passive = _last_model_save = now
+    percent = int(math.ceil(_pid_out - 1e-9))
+    hotspot = next((s for s in sensors if (s.get("kind") or _sensor_kind(s["label"])) == "junction"), None)
+    _last_pid = {
+        "output_percent": round(_pid_out, 1), "feedforward_percent": result.feedforward,
+        "p_percent": result.p_term, "i_percent": result.i_term, "error_c": result.error_c,
+        "governing_sensor": result.governing, "override": result.override,
+        "tune_hold_percent": hold,
+    }
+    return percent, _pid_curve(device["_range"], percent, hotspot["target_c"] if hotspot else None)
+
+
 def _desired_floor(sensors: list[dict], minimum: int, maximum: int) -> int:
     # Cool (>=15°C headroom) follows the user's floor; it used to be a fixed
     # 35%, so a 15% floor never took effect. Closer to the target it ramps.
@@ -659,6 +810,7 @@ def tick() -> None:
     global _sensor_ids, _zero_rpm_checks, _pending_reset_bdf, _last_reset_retry, _reset_retry_failures
     global _zero_active, _zero_initialized_bdf, _zero_stable_since, _temp_history
     global _last_rise_c_per_min, _applied_floor, _cool_since, _last_cool_step, _policy, _last_tick_at
+    global _model, _model_bdf, _tracker, _pid_out, _last_pid
     with _lock:
         try:
             settings = _load()
@@ -719,14 +871,27 @@ def tick() -> None:
                 learning_enabled=settings.learning_enabled,
                 stop_dwell_seconds=settings.zero_stable_seconds,
             )
-            # The independent safety floor wins over learned PI/FF output.
-            wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rises),
-                         strategy["floor_percent"])
-            floor = wanted if _active_bdf != bdf else _smooth_floor(
-                wanted, _floor, now, hold_seconds=settings.cool_hold_seconds,
-                rate_percent_per_min=settings.cool_rate_percent_per_min,
-            )
-            curve = _curve(device["_range"], floor, settings.backstop_percent, settings.backstop_c)
+            if _model_bdf != bdf:
+                _model, _model_bdf = _load_model(bdf), bdf
+                _tracker, _pid_out = fan_pid.SteadyTracker(), None
+                _pid.reset()
+            pid_mode = settings.control_mode == "pid"
+            if pid_mode:
+                if settings.allow_zero_rpm:
+                    settings = settings.model_copy(update={"allow_zero_rpm": False})
+                floor, curve = _pid_step(settings, device, sensors, now, settings.min_percent, maximum)
+            else:
+                _pid_out, _last_pid = None, None
+                _tracker.add(now, sensors, device["power_w"], _floor)
+                fan_pid.update_idle(_model, _tracker, now, device["power_w"], device["power_cap_w"])
+                # The independent safety floor wins over learned PI/FF output.
+                wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rises),
+                             strategy["floor_percent"])
+                floor = wanted if _active_bdf != bdf else _smooth_floor(
+                    wanted, _floor, now, hold_seconds=settings.cool_hold_seconds,
+                    rate_percent_per_min=settings.cool_rate_percent_per_min,
+                )
+                curve = _curve(device["_range"], floor, settings.backstop_percent, settings.backstop_c)
             hot = max(item["value_c"] for item in sensors)
             rpm = device["fan_rpm"]
 
@@ -800,7 +965,18 @@ def tick() -> None:
                 "min_predicted_headroom_c": strategy["min_predicted_headroom_c"],
                 "learning": strategy["learning"],
                 "observed_at": time.time(), "curve": _last_curve,
+                "control_mode": settings.control_mode, "pid": _last_pid,
             }
+            hottest = {(s.get("kind") or _sensor_kind(s["label"])): s for s in sensors}
+            _history.append({
+                "t": round(time.time(), 1),
+                "temps": {k: v["value_c"] for k, v in hottest.items()},
+                "targets": {k: v["target_c"] for k, v in hottest.items()},
+                "fan_percent": None if _zero_active else floor, "rpm": rpm,
+                "power_w": device["power_w"],
+                "pid": ({k: _last_pid[k] for k in ("feedforward_percent", "p_percent", "i_percent", "error_c")}
+                        if pid_mode and _last_pid else None),
+            })
         except Exception as exc:  # noqa: BLE001 - fail safe on unexpected sysfs/runtime errors
             _failure(exc, bdf)
 
@@ -889,8 +1065,40 @@ def status() -> dict:
             "effective_cool_rate_percent_per_min": settings.cool_rate_percent_per_min,
             "active": _last_sample if settings.enabled else None,
             "poll_interval_seconds": INTERVAL,
+            "pid": {
+                "model": {
+                    "idle_c": _model.idle_c, "idle_power_w": _model.idle_power_w,
+                    "points": [{"fan": p["fan"], "power_w": round(p["power_w"], 1),
+                                "r": {k: round(v, 4) for k, v in p["r"].items()}} for p in _model.points],
+                    "tau_s": _model.tau_s, "gain_c_per_percent": _model.gain_c_per_percent,
+                    "tuned": _model.tuned, "usable": _model.usable,
+                } if _model_bdf else None,
+                "autotune": _tune.snapshot(time.monotonic()),
+            },
             "warning": "温度上限は目標であり保証値ではありません。CPU・マザーボードのファンは制御しません。",
         }
+
+
+def history(since: float = 0.0) -> dict:
+    """Recorded every tick; the page fetches it only while visible."""
+    with _lock:
+        return {"interval_seconds": INTERVAL,
+                "samples": [item for item in _history if item["t"] > since]}
+
+
+def autotune(action: Literal["start", "cancel"]) -> dict:
+    with _lock:
+        settings = _load()
+        if action == "cancel":
+            if _tune.phase not in ("off", "done", "aborted"):
+                _tune.cancel()
+            return _tune.snapshot(time.monotonic())
+        if not settings.enabled or settings.control_mode != "pid":
+            raise FanControlError("自動調整はPID制御を有効にしてから開始してください")
+        if _state != "controlling" or _model_bdf is None:
+            raise FanControlError("ファン制御が動作中になってから開始してください")
+        _tune.start(time.monotonic(), _model)
+        return _tune.snapshot(time.monotonic())
 
 
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
