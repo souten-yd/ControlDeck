@@ -116,18 +116,24 @@ class MapController:
             self.trim = max(0.0, self.trim - TRIM_DECAY_PER_S * dt)
         at_target = target_speed(model, hot["id"] if hot else None, hot_target, minimum, maximum)
         shape = design(ranges, minimum, hot_target, at_target, self.trim)
-        # Demand now: the hotspot through the map on its peak of the last 3
-        # readings (spikes are followed; the firmware also reacts to them
-        # within a second), slow sensors by their headroom.
+        # With EMA from the orchestrator, do not stack a 3-tick peak hold.
+        # Firmware itself continues to react to raw hotspot temperature.
         demand = float(minimum)
         if hot:
-            window = self.raw.setdefault(hot["id"], [])
-            window.append(float(hot["value_c"]))
-            del window[:-3]
-            demand = max(demand, shape.at(max(window)))  # attack on the peak
+            if "control_c" in hot:
+                demand = max(demand, shape.at(float(hot["control_c"])))
+            else:
+                window = self.raw.setdefault(hot["id"], [])
+                window.append(float(hot["value_c"]))
+                del window[:-3]
+                demand = max(demand, shape.at(max(window)))
         slow = [s for s in sensors if s is not hot]
         if slow:
-            demand = max(demand, margin_ramp(min(float(s["headroom_c"]) for s in slow), minimum, maximum))
+            headroom = min(float(s["target_c"]) - float(s.get("control_c", s["value_c"])) for s in slow)
+            demand = max(demand, margin_ramp(headroom, minimum, maximum))
+        # Emergency software demand is independent of EMA and release hold.
+        if any(float(s["value_c"]) >= float(s["target_c"]) + 5.0 for s in sensors):
+            demand = float(maximum)
         # Fast attack, hold, then a slow continuous release.
         if self.held is None or demand >= self.held:
             self.held, self.peak_at = demand, now
