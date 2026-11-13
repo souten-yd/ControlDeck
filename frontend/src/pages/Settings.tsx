@@ -10,6 +10,7 @@ import { PasskeySettings } from "../features/auth/PasskeySettings";
 import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
+import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
@@ -158,6 +159,8 @@ export default function SettingsPage() {
       </section>
 
       <MobileNavigationSettings />
+
+      {can("settings.manage") && <FanControlSettings />}
 
       {can("settings.manage") && <ControlDeckUpdateSection />}
       {can("settings.manage") && <AddonsSection />}

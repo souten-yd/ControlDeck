@@ -3813,3 +3813,26 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - ローカル稼働Hostは最新main bf53da1と既存terminal修正を統合した別checkoutへ更新済み。更新候補backend 1255 passed/2 skipped、frontend build成功。localhostでPC/320pxのpassword/passkey 2件成功。旧checkout・DB・設定・unitのバックアップ保持。PR本体は未マージ、Strata統合UI・OpenCode・Add-on実経路の最終検証を継続。
 - 本体更新の配布元をmainから正式GitHub Releaseのタグ・検証済みSHAへ修正し、適用前backupと再起動後health確認を追加。
 - 証跡は`/data1tb/ControlDeck/strata-pr355-evidence/`。ベンチマークraw JSONと各段階のログを保持。
+
+
+## AMD GPU Smart Fan Control（2026-11-12着手、2026-11-14 PR #360マージ・`ControlDeck_v0.12`）
+
+Settings > ファンコントロールにamdgpuのファンカーブを使う多温度センサー制御を実装中。GUIには温度・最低ファン・減速保持/間隔/幅・Zero RPM猶予・FF/PIゲイン・学習切替のスライダー、GPU OD_RANGEベースのカーブプレビュー、推奨/静音/冷却優先プリセットを追加。設定の保存/読み取りは既存FanSettingsに統合し、安全上限をバックエンド側で検証。当初の未検証項目は下記の2026-11-13〜14の記録で解消した。設計と検証手順は docs/design-amd-smart-fan.md を参照。
+
+### 2026-11-13 実機検証・PID制御モード
+
+- R9700（SMU 14）実機で、OverDrive 有効化・hw helper 導入・SMU 14 のリセット禁止に対応した。マップ制御を調整し、プリセット `llm_r9700` / `llm_quiet` を追加した。
+- PID制御モード（`control_mode: "pid"`）を追加した。
+  - 熱モデルのフィードフォワード（D）、アンチワインドアップ付き PI、アイドル温度の毎回測定、高回転から下げていく自動調整（SIMC で Kp・Ti を設定）、安定状態からの熱モデル更新。
+  - 温度・ファン履歴を常に記録し、画面が表示されているときだけ描画する。
+- 実機の連続LLM負荷で、hotspot を平均90.0°C（目標90）・約2330rpm一定に保つことを確認した。短い負荷では回転が変わらない。降速時の段差（PMFW の跳ね返り）も解消した。
+- テスト: バックエンド全体 1319件成功・2件スキップ、frontend build 成功。
+- ~~NOT TESTED: ブラウザでの画面確認~~ → 2026-11-14 に利用者が自分のブラウザで確認（下記）。
+
+### 2026-11-14 グラフ／PIDの2モードとリリース
+
+- インテリジェント制御を2モードにした。グラフ（マップ）制御 `control_mode: "curve"`（熱モデルからカーブを自動設計し、上げはファームウェアのカーブで即応、下げはソフトで保持→ゆっくり解放）と、PID制御（バックカリキュレーション型アンチワインドアップ Tt=Ti/2、冷え側偏差の上限−4°C）。
+- R9700実測のプリセット `curve_r9700` / `pid_r9700` を追加（hotspot 90 / VRAM 90 / edge 85°C）。実機の短い負荷3回＋3分連続で、グラフ制御は最高 88/78/63°C・連続時約2470rpm、PID は 90/80/65°C・約2360rpm。どちらも目標超過なし。
+- ブラウザでの画面（制御方式3種、プリセット、状態欄、温度グラフ）は利用者が確認。モバイル幅・物理スマートフォンはNOT TESTED。
+- main（#362まで）を取り込んだ候補で backend **1327 passed / 2 skipped**、`tsc --noEmit` と frontend production build 成功（Ubuntu・R9700 の自前PC）。
+- 配布は従来どおり `ControlDeck_v0.12` のソースアーカイブ。タグは PR #360 のマージコミット。

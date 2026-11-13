@@ -130,6 +130,182 @@ def apply_amd(bdf: str, watts_text: str, memory_mode: str, memory_level_text: st
                       "core_mode": core_mode, "core_level": core_level}))
 
 
+
+# Never below the firmware's advertised minimum, and never a stopped fan.
+MIN_FAN_PERCENT = 15
+
+
+def fan_curve_path(device: Path) -> Path:
+    """Only the GPU's exact amdgpu OD node; never accept a path from the caller."""
+    curve = device / "gpu_od" / "fan_ctrl" / "fan_curve"
+    resolved = curve.resolve()
+    if not curve.is_file() or curve.is_symlink() or resolved != curve:
+        fail("amdgpu fan_curveが利用できません（kernel/OverDrive対応を確認してください）")
+    return curve
+
+
+def fan_curve_range(text: str) -> tuple[int, int, int, int, int]:
+    """Parse firmware-advertised limits; zero/invalid ranges MUST NOT be used."""
+    temps = re.search(r"FAN_CURVE\(hotspot temp\):\s*(\d+)\s*C\s+(\d+)\s*C", text, re.I)
+    speeds = re.search(r"FAN_CURVE\(fan speed\):\s*(\d+)\s*%\s+(\d+)\s*%", text, re.I)
+    points = re.findall(r"^\s*(\d+):\s*\d+\s*C\s+\d+\s*%", text, re.M)
+    if not temps or not speeds or points != [str(i) for i in range(len(points))] or len(points) != 5:
+        fail("fan_curveのOD_RANGE/5-point形式を検証できません")
+    t0, t1 = map(int, temps.groups())
+    p0, p1 = map(int, speeds.groups())
+    if t0 >= t1 or t1 - t0 < 5 or p0 >= p1 or p1 < 90 or p0 > 40 or p1 > 100:
+        fail("fan_curveの温度/PWM範囲が安全に利用できません")
+    return t0, t1, p0, p1, len(points)
+
+
+def restore_breaks_od(device: Path) -> bool:
+    """SMU 14 (RDNA4) rejects a fan_curve reset and then every OD upload fails
+    until reboot. Never issue it there."""
+    try:
+        return (device / "ip_discovery/die/0/MP1/0/major").read_text(encoding="ascii").strip() == "14"
+    except OSError:
+        return False
+
+
+def control_fan_curve(action: str, bdf: str, curve_text: str = "") -> None:
+    if action not in ("apply", "reset"):
+        fail("不正なfan control操作です")
+    device = device_path(bdf)
+    curve = fan_curve_path(device)
+    no_restore = restore_breaks_od(device)
+    if action == "reset" and no_restore:
+        fail("このGPU（SMU 14）ではファンカーブのリセットで設定が壊れるため実行しません。PCの再起動で標準制御に戻ります")
+    if action == "reset":
+        # Restore the fan curve FIRST: it is what actually drives the fan, and
+        # it must not depend on optional nodes. Then restore native zero-RPM
+        # overrides, but only where the firmware advertises them (OD_RANGE).
+        # R9700 exposes an empty fan_zero_rpm_enable whose writes fail with
+        # EIO; treating that as a reset failure left the custom curve active.
+        try:
+            curve.write_text("r", encoding="ascii")
+            curve.write_text("c", encoding="ascii")
+        except OSError as exc:
+            fail(f"ファン自動制御への復帰に失敗しました: {exc}")
+        for name in ("fan_zero_rpm_enable", "fan_zero_rpm_stop_temperature"):
+            node = curve.parent / name
+            if not node.is_file():
+                continue
+            if node.is_symlink() or node.resolve() != node:
+                fail("不正なzero RPM node")
+            try:
+                advertised = "OD_RANGE:" in node.read_text(encoding="ascii")
+            except OSError:
+                advertised = False
+            if not advertised:
+                continue  # unsupported by firmware: nothing was ever written
+            try:
+                node.write_text("r", encoding="ascii")
+                node.write_text("c", encoding="ascii")
+            except OSError as exc:
+                fail(f"Zero RPM設定の自動復帰に失敗しました: {exc}")
+        print(json.dumps({"ok": True, "mode": "auto", "bdf": bdf.lower()}))
+        return
+
+    try:
+        current = curve.read_text(encoding="ascii")
+    except OSError as exc:
+        fail(f"fan_curveを読み取れません: {exc}")
+    tmin, tmax, pmin, pmax, count = fan_curve_range(current)
+    if not re.fullmatch(r"(?:\d{1,3}:\d{1,3},){4}\d{1,3}:\d{1,3}", curve_text):
+        fail("fan_curve指定形式が不正です")
+    points = [tuple(map(int, item.split(":"))) for item in curve_text.split(",")]
+    if len(points) != count or any(
+        not (tmin <= t <= tmax and max(MIN_FAN_PERCENT, pmin) <= p <= pmax)
+        for t, p in points
+    ) or any(
+        points[i][0] <= points[i - 1][0] or points[i][1] < points[i - 1][1]
+        for i in range(1, count)
+    ) or points[-1][1] != pmax:
+        fail("fan_curveが機器上限/単調増加/最大PWMの安全条件を満たしません")
+    try:
+        for i, (temperature, pwm) in enumerate(points):
+            curve.write_text(f"{i} {temperature} {pwm}", encoding="ascii")
+        curve.write_text("c", encoding="ascii")
+    except OSError as exc:
+        # An incomplete curve must never remain staged — except on SMU 14,
+        # where a reset breaks all later OD uploads until reboot.
+        if not no_restore:
+            try:
+                curve.write_text("r", encoding="ascii")
+                curve.write_text("c", encoding="ascii")
+            except OSError:
+                pass
+        fail(f"fan_curveの適用に失敗しました（auto復帰を試行）: {exc}")
+    print(json.dumps({"ok": True, "mode": "curve", "bdf": bdf.lower()}))
+
+
+
+def zero_rpm_nodes(device: Path) -> tuple[Path, Path, int]:
+    """Only hardware-advertised native zero-RPM controls, with safe stop temp."""
+    directory = device / "gpu_od" / "fan_ctrl"
+    enable = directory / "fan_zero_rpm_enable"
+    stop = directory / "fan_zero_rpm_stop_temperature"
+    for node in (enable, stop):
+        if not node.is_file() or node.is_symlink() or node.resolve() != node:
+            fail("GPU native zero RPM設定はサポートされていません")
+    try:
+        content = stop.read_text(encoding="ascii")
+        on_info = enable.read_text(encoding="ascii")
+    except OSError as exc:
+        fail(f"Zero RPMの安全温度範囲を読み取れません: {exc}")
+    if not re.search(r"(?m)^\s*(?:FAN_)?ZERO_RPM_ENABLE\s*:\s*0\s+1\s*$",
+                     on_info.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in on_info else ""):
+        fail("Zero RPM切替をファームウェアが許可していません")
+    # Some AMD drivers prefix the name with FAN_, others do not.
+    match = re.search(
+        r"(?im)^\s*(?:FAN_)?ZERO_RPM_STOP_(?:TEMP|TEMPERATURE)\s*:\s*(\d+)\s*C?\s+(\d+)\s*C?\s*$",
+        content.split("OD_RANGE:", 1)[-1] if "OD_RANGE:" in content else "",
+    )
+    if not match:
+        fail("Zero RPM停止温度のOD_RANGEが取得できません")
+    minimum, maximum = map(int, match.groups())
+    # R9700/RDNA4では下限が50°C以上のGPUもある。
+    # 固定40°Cは非対応になるため実機OD_RANGEから50〜55°Cを選ぶ。
+    stop_value = max(50, minimum)
+    if minimum < 25 or stop_value > 55 or maximum < stop_value or minimum >= maximum:
+        fail("安全な55°C以下のファン停止温度を設定できません")
+    return enable, stop, stop_value
+
+
+def control_zero_rpm(action: str, bdf: str) -> None:
+    """Enable/disable ONLY native PMFW stop feature, not raw PWM=0."""
+    if action not in ("allow", "deny"):
+        fail("不正なZero RPM操作です")
+    device = device_path(bdf)
+    if action == "allow":
+        enable, stop, stop_temp = zero_rpm_nodes(device)
+    else:
+        # On a fault, disabling zero RPM must not depend on the stop-temp
+        # node still existing or advertising the same OD_RANGE.
+        enable = device / "gpu_od/fan_ctrl/fan_zero_rpm_enable"
+        if not enable.is_file() or enable.is_symlink() or enable.resolve() != enable:
+            fail("Zero RPM無効化の制御ノードが利用できません")
+    try:
+        if action == "allow":
+            # Install a conservative firmware fallback before enabling stop.
+            stop.write_text(str(stop_temp), encoding="ascii")
+            stop.write_text("c", encoding="ascii")
+            enable.write_text("1", encoding="ascii")
+            enable.write_text("c", encoding="ascii")
+        else:
+            enable.write_text("0", encoding="ascii")
+            enable.write_text("c", encoding="ascii")
+    except OSError as exc:
+        if action == "allow":
+            try:
+                enable.write_text("0", encoding="ascii")
+                enable.write_text("c", encoding="ascii")
+            except OSError:
+                pass
+        fail(f"Zero RPM {action}に失敗しました: {exc}")
+    print(json.dumps({"ok": True, "action": action, "bdf": bdf.lower()}))
+
+
 def system_service_catalog() -> dict:
     try:
         descriptor = os.open(CATALOG_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -197,7 +373,16 @@ def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == "system-service":
         control_system_service(sys.argv[2], sys.argv[3])
         return
-    fail("usage: control-deck-hw-helper apply-amd ... | system-service ACTION ID")
+    if len(sys.argv) == 4 and sys.argv[1] == "fan-zero-rpm":
+        control_zero_rpm(sys.argv[2], sys.argv[3])
+        return
+    if len(sys.argv) == 5 and sys.argv[1] == "fan-curve" and sys.argv[2] == "apply":
+        control_fan_curve("apply", sys.argv[3], sys.argv[4])
+        return
+    if len(sys.argv) == 4 and sys.argv[1] == "fan-curve" and sys.argv[2] == "reset":
+        control_fan_curve("reset", sys.argv[3])
+        return
+    fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | fan-zero-rpm allow|deny BDF | system-service ACTION ID")
 
 
 if __name__ == "__main__":
