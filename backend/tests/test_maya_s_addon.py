@@ -375,3 +375,14 @@ def test_model_preparation_jobs_are_listed_as_model_jobs():
     router = (Path(__file__).parents[1] / "app" / "features" / "router.py").read_text(encoding="utf-8")
     for kind in ("prepare", "start", "existing"):
         assert f'jobs.create("model.maya-s.{kind}"' in router
+
+
+def test_built_reflects_upstream_hip_build_dir(managed):
+    _installed(managed)
+    assert maya_s.runtime_status()['built'] is False
+    build = maya_s.source() / 'build-hip'
+    build.mkdir(parents=True)
+    (build / 'maya').write_text('bin')
+    assert maya_s.runtime_status()['built'] is False
+    (build / 'MAYA-BUILD.json').write_text('{}')
+    assert maya_s.runtime_status()['built'] is True

@@ -181,6 +181,21 @@ def _running() -> bool:
     return _exec(["systemctl", "--user", "is-active", _UNIT], timeout=15, check=False).stdout.strip() == "active"
 
 
+def _build_dir() -> Path:
+    # Upstream setup compiles the HIP engine here and its config points at it.
+    return source() / "build-hip"
+
+
+def _built(tag: str) -> bool:
+    if not (_build_dir() / "maya").is_file():
+        return False
+    marker = root() / "build-version"
+    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == tag:
+        return True
+    # Built by the upstream setup during model preparation or update.
+    return (_build_dir() / "MAYA-BUILD.json").is_file()
+
+
 def runtime_status() -> dict:
     state = installed()
     tag = ""
@@ -196,9 +211,7 @@ def runtime_status() -> dict:
         "available": available() or state,
         "version": tag,
         "configured": bool(config),
-        "built": ((source() / "build" / "maya").is_file()
-                  and (root() / "build-version").is_file()
-                  and (root() / "build-version").read_text().strip() == tag),
+        "built": _built(tag) if state else False,
         "settings": get_settings(),
         "running": _running() if config else False,
         "entrypoint": str(entrypoint()) if state else "",
@@ -512,7 +525,7 @@ def build_engine() -> dict:
     compiler = rocm / "llvm/bin/clang++"
     if not compiler.is_file():
         raise MayaError("/opt/rocmのHIPコンパイラーが必要です")
-    build = source() / "build"
+    build = _build_dir()
     commands = [
         ["cmake", "-S", str(source()), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release",
          "-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_PREFILL_MMQ=ON",
