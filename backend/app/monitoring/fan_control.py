@@ -646,7 +646,11 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
         _pid_out = current
         result = fan_pid.PIDResult(current, result.feedforward, result.p_term, _pid.integral,
                                    result.error_c, result.governing, result.override)
-    wanted = float(hold) if hold is not None else result.output
+    # Independent raw-temperature emergency override; no EMA/median may
+    # delay a sample at target +5°C, including during auto-tune holds.
+    raw_overheat = any(float(s["value_c"]) >= float(s["target_c"]) + 5.0 for s in sensors)
+    wanted = max(float(hold) if hold is not None else result.output,
+                 float(maximum) if raw_overheat else float(minimum))
     if wanted >= _pid_out or (_last_pid or {}).get("override"):
         # Rise at once; after a safety override return straight to the PID
         # output (the override was not a PID decision to keep).
@@ -675,7 +679,7 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
     _last_pid = {
         "output_percent": round(_pid_out, 1), "feedforward_percent": result.feedforward,
         "p_percent": result.p_term, "i_percent": result.i_term, "error_c": result.error_c,
-        "governing_sensor": result.governing, "override": result.override,
+        "governing_sensor": result.governing, "override": result.override or raw_overheat,
         "tune_hold_percent": hold,
     }
     # Firmware curve: the map shape (shifted +3 °C) raised to the PID output.

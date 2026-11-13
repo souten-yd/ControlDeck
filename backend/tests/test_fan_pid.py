@@ -174,3 +174,11 @@ def test_pid_asymmetric_pv_filter_retains_cooling_dips_without_slowing_rise():
     for _ in range(3):
         filt.update("temp2", 40, 3)
     assert filt.value["temp2"] > 65  # slow descent after median responds
+
+
+def test_pid_ema_does_not_change_raw_median_safety_input():
+    filt = pid.PVFilter(tau_s=2, fall_tau_s=120)
+    for v in (92, 96, 96):
+        filt.update("temp2", v, 3)
+    assert list(filt.raw["temp2"]) == [92, 96, 96]
+    assert filt.value["temp2"] <= 96

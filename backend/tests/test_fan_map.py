@@ -83,3 +83,12 @@ def test_curve_ema_dampens_short_cooling_dip_but_raw_overheat_wins():
     s[0]["control_c"] = 75.0
     floor, _, info = ctl.update(s, now=6, **kw)
     assert floor == 100 and info["demand_percent"] == 100
+
+
+def test_curve_raw_overshoot_applies_before_filter_release():
+    ctl = fan_map.MapController()
+    s = sensors(96)
+    s[0]["control_c"] = 45.0
+    floor, _, info = ctl.update(s, ranges=RANGES, model=model(), minimum=20, maximum=100,
+                                now=0, dt=3.0, hold_seconds=30, release_percent_per_min=20)
+    assert floor == 100 and info["demand_percent"] == 100

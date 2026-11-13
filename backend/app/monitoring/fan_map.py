@@ -8,7 +8,7 @@ handled by the curve itself:
   hotspot target equals what sustained full load needs to settle there,
   rising linearly from 30 °C below the target (hotspot spikes of LLM bursts
   are followed proportionally, not ignored);
-* the software holds the curve's flat level at the highest recent demand and
+* the software computes normal demand from a configurable asymmetric EMA and
   releases it slowly (LLM load alternates 0–100 %), so the fan does not
   oscillate with every token batch;
 * slow sensors (VRAM, edge) are not seen by the firmware curve; their demand

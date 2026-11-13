@@ -900,3 +900,19 @@ def test_legacy_map_raw_overtemperature_wins_over_temperature_ema(gpu, monkeypat
     fan.tick()
     assert fan._floor == 100
     assert fan.status()["active"]["smoothed_temps_c"]["temp2"] < 97
+
+
+def test_pid_raw_overheat_overrides_filter_and_auto_tune_hold(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid in ("temp1", "temp2", "temp3"):
+        (hwmon / f"{sid}_input").write_text("45000")
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="pid",
+                                  pid_auto_tune=False, min_percent=20,
+                                  targets_c={"temp2": 90}))
+    (hwmon / "temp2_input").write_text("96000")
+    clock[0] += 3
+    fan.tick()
+    assert fan._floor == 100
+    assert fan.status()["active"]["pid"]["override"] is True
