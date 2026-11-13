@@ -65,3 +65,30 @@ def test_slow_sensor_raises_the_floor():
     floor, _, _ = ctl.update(sensors(60, mem=84), ranges=RANGES, model=model(), minimum=20, maximum=100,
                              now=0, dt=3.0, hold_seconds=30, release_percent_per_min=20)
     assert floor > 40
+
+
+def test_curve_ema_dampens_short_cooling_dip_but_raw_overheat_wins():
+    ctl = fan_map.MapController()
+    kw = dict(ranges=RANGES, model=model(), minimum=20, maximum=100,
+              dt=3.0, hold_seconds=30, release_percent_per_min=20)
+    s = sensors(80)
+    s[0]["control_c"] = 80.0
+    high, _, _ = ctl.update(s, now=0, **kw)
+    s = sensors(45)
+    s[0]["control_c"] = 76.7
+    floor, _, info = ctl.update(s, now=3, **kw)
+    assert info["demand_percent"] > 20
+    assert floor >= high
+    s = sensors(96)
+    s[0]["control_c"] = 75.0
+    floor, _, info = ctl.update(s, now=6, **kw)
+    assert floor == 100 and info["demand_percent"] == 100
+
+
+def test_curve_raw_overshoot_applies_before_filter_release():
+    ctl = fan_map.MapController()
+    s = sensors(96)
+    s[0]["control_c"] = 45.0
+    floor, _, info = ctl.update(s, ranges=RANGES, model=model(), minimum=20, maximum=100,
+                                now=0, dt=3.0, hold_seconds=30, release_percent_per_min=20)
+    assert floor == 100 and info["demand_percent"] == 100

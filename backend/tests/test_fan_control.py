@@ -853,3 +853,83 @@ def test_mode_presets_carry_mode_and_targets():
         targets = {label: min(95, base + fan.preset_target_offset(preset, {"label": label}))
                    for label, base in (("edge", 75), ("junction", 90), ("mem", 85))}
         assert targets == {"edge": 85, "junction": 90, "mem": 90}
+
+
+@pytest.mark.parametrize("field,value", [("temp_rise_tau_seconds", 0), ("temp_rise_tau_seconds", 16),
+                                         ("temp_fall_tau_seconds", 1), ("temp_fall_tau_seconds", 121),
+                                         ("temp_fall_tau_seconds", float("nan"))])
+def test_temperature_ema_settings_reject_unsafe_values(field, value):
+    from app.monitoring.fan_control import FanSettings
+    with pytest.raises(ValidationError):
+        FanSettings.model_validate({field: value})
+
+
+def test_fan_history_reports_raw_and_smoothed_separately(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid in ("temp1", "temp2", "temp3"):
+        (hwmon / f"{sid}_input").write_text("45000")
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="curve",
+                                  temp_rise_tau_seconds=2, temp_fall_tau_seconds=30))
+    (hwmon / "temp2_input").write_text("80000")
+    clock[0] += 3
+    fan.tick()
+    hot = fan.history()["samples"][-1]
+    assert hot["temps"]["junction"] == 80
+    assert 70 < hot["smoothed_temps"]["junction"] < 80
+    (hwmon / "temp2_input").write_text("45000")
+    clock[0] += 3
+    fan.tick()
+    cool = fan.history()["samples"][-1]
+    assert cool["temps"]["junction"] == 45
+    assert cool["smoothed_temps"]["junction"] > 65
+    assert fan.status()["active"]["smoothed_temps_c"]["temp2"] > 65
+
+
+def test_legacy_map_raw_overtemperature_wins_over_temperature_ema(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid in ("temp1", "temp2", "temp3"):
+        (hwmon / f"{sid}_input").write_text("45000")
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="map",
+                                  min_percent=20, targets_c={"temp2": 90}))
+    (hwmon / "temp2_input").write_text("97000")
+    clock[0] += 3
+    fan.tick()
+    assert fan._floor == 100
+    assert fan.status()["active"]["smoothed_temps_c"]["temp2"] < 97
+
+
+def test_pid_raw_overheat_overrides_filter_and_auto_tune_hold(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid in ("temp1", "temp2", "temp3"):
+        (hwmon / f"{sid}_input").write_text("45000")
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="pid",
+                                  pid_auto_tune=False, min_percent=20,
+                                  targets_c={"temp2": 90}))
+    (hwmon / "temp2_input").write_text("96000")
+    clock[0] += 3
+    fan.tick()
+    assert fan._floor == 100
+    assert fan.status()["active"]["pid"]["override"] is True
+
+
+def test_reconfigure_resets_curve_hold_before_applying_new_temperature_filter(gpu, monkeypatch):
+    fan, _, hwmon, _, _ = gpu
+    clock = [100.0]
+    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    for sid in ("temp1", "temp2", "temp3"):
+        (hwmon / f"{sid}_input").write_text("45000")
+    settings = fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="curve",
+                               min_percent=20, targets_c={"temp2": 90})
+    fan.configure(settings)
+    fan._map.held = 95.0
+    fan._map.peak_at = 100.0
+    clock[0] += 3
+    fan.configure(settings.model_copy(update={"temp_fall_tau_seconds": 60.0}))
+    assert fan._map.held is not None and fan._map.held < 95.0
+    assert fan.status()["state"] == "controlling"
