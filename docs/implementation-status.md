@@ -3854,3 +3854,14 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - ブラウザでの画面（制御方式3種、プリセット、状態欄、温度グラフ）は利用者が確認。モバイル幅・物理スマートフォンはNOT TESTED。
 - main（#362まで）を取り込んだ候補で backend **1327 passed / 2 skipped**、`tsc --noEmit` と frontend production build 成功（Ubuntu・R9700 の自前PC）。
 - 配布は従来どおり `ControlDeck_v0.12` のソースアーカイブ。タグは PR #360 のマージコミット。
+
+### 2026-11-14 PR #359 R9700 実機受け入れ（Maya-S 実推論）
+
+- 利用者がダウンロード済みの `Maya-S-v2-IQ2_XXS`（`/data1tb/LLM/GLM-5.3-Flash-Maya/`、約90GB・3分割）を Models 画面の「既存GGUFで準備」から指定。上流 setup が `build-hip/maya` をビルドし、pack（約0.9GB）を GGUF フォルダ内に作成。モデルの再ダウンロードなし。
+- 起動から ready まで 51〜54 秒。VRAM 約29GB / RAM 約70GB 使用、エキスパート 86GB をRAM/VRAMの2段で保持。
+- ループバック直接・認証付き共通ゲートウェイ（`maya-s`）とも応答成功。ゲートウェイは認証なしで 401、ストリームも成功。
+- 単一リクエスト・thinking low・context 8192 で decode 約24 tok/s（MTP off）、MTP on（`MAYA_GLM_MTP_DECODE=1`、採択率85〜95%）で 24.6〜26.9 tok/s。上流は離散GPUで one-GPU drafting を既定にしないため、ControlDeck の「drafting: on」は停止中の設定保存で初めて反映される。
+- 稼働中の uninstall / 設定保存 / 更新 / 再準備 / ビルドはすべて拒否。停止→設定変更→再起動を確認。不正 alias の起動は拒否。
+- 修正: 上流 setup がビルドした `build-hip/maya` を「HIP未ビルド」と表示していた。`runtime_status().built` を `build-hip` で判定し、ビルドのみ操作も同じディレクトリへ出力するよう変更。
+- main を取り込んだ PR head で backend **1358 passed / 2 skipped**、frontend production build 成功。
+- NOT TESTED: ブラウザでの画面確認（PC・モバイル）、上流の新Releaseへの更新（現在 v1.1.61 が最新）、応答品質の評価。
