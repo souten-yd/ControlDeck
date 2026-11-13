@@ -1,8 +1,6 @@
 """Hardware-free tests for timestamp-aware asymmetric fan temperature EMA."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from app.monitoring.fan_filter import TemperatureEMA

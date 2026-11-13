@@ -341,7 +341,7 @@ export function FanControlSettings() {
               電力(平滑): {data.active.power_ema_w == null ? "N/A" : data.active.power_ema_w + "W"}
             </p>}
             {data.active?.smoothed_temps_c && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">
-              制御用EMA: {data.active.sensors.map((s) => `${s.label} ${data.active!.smoothed_temps_c?.[s.id]?.toFixed(1) ?? "N/A"}°C`).join(" / ")}
+              制御用PV/EMA: {data.active.sensors.map((s) => `${s.label} ${data.active!.smoothed_temps_c?.[s.id]?.toFixed(1) ?? "N/A"}°C`).join(" / ")}
               （昇温 {data.settings.temp_rise_tau_seconds}秒・降温 {data.settings.temp_fall_tau_seconds}秒）
             </p>}
             {data.active?.learning && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">

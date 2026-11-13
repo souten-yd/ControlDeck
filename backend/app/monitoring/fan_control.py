@@ -1022,9 +1022,12 @@ def tick() -> None:
                     _save_learning(bdf, now, settings)
             _active_bdf, _floor, _sensor_ids = bdf, floor, ids
             _state, _error = ("fan-stop" if _zero_active else "controlling"), ""
+            # PID uses a 3-sample median before its asymmetric EMA. Report
+            # the *actual* software PV rather than the separate monitor EMA.
+            displayed_c = _pid.pv.value if pid_mode else filtered_c
             _last_sample = {
                 "bdf": bdf, "sensors": sensors, "fan_rpm": rpm,
-                "smoothed_temps_c": {sid: round(v, 1) for sid, v in filtered_c.items()},
+                "smoothed_temps_c": {sid: round(v, 1) for sid, v in displayed_c.items()},
                 "floor_percent": None if _zero_active else floor,
                 "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
                 "rise_c_per_min": _last_rise_c_per_min,
@@ -1039,7 +1042,7 @@ def tick() -> None:
             _history.append({
                 "t": round(time.time(), 1),
                 "temps": {k: v["value_c"] for k, v in hottest.items()},
-                "smoothed_temps": {k: round(filtered_c[v["id"]], 2) for k, v in hottest.items()},
+                "smoothed_temps": {k: round(displayed_c[v["id"]], 2) for k, v in hottest.items()},
                 "targets": {k: v["target_c"] for k, v in hottest.items()},
                 "fan_percent": None if _zero_active else floor, "rpm": rpm,
                 "power_w": device["power_w"],

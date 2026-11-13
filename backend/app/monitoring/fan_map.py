@@ -108,8 +108,8 @@ class MapController:
         hot = next((s for s in sensors if s.get("kind") == "junction"), None)
         hot_target = float(hot["target_c"]) if hot else 90.0
         # Slow trim from the smoothed excess over any target.
-        excess = max(self.pv.update(s["id"], float(s["value_c"]), dt) - float(s["target_c"])
-                     for s in sensors)
+        excess = max(self.pv.update(s["id"], float(s.get("control_c", s["value_c"])), dt)
+                     - float(s["target_c"]) for s in sensors)
         if excess > 0:
             self.trim = min(TRIM_MAX, self.trim + TRIM_GAIN * excess * dt)
         elif excess < -5:
