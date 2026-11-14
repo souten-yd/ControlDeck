@@ -1,0 +1,274 @@
+/** Maya-S（GLM-5.3-Flash）のモデル準備と個別設定。
+ *
+ * アドオン（設定 → オプション機能）はエンジンのコード導入とHIPビルドだけを持つ。
+ * モデルの取得・既存GGUFの読み込み・個別設定はModels画面に集約する。
+ * どの操作もモデルを自動で起動しない（起動は一覧の「ロード」で明示する）。 */
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "../../api/client";
+import { useAuth, useToasts } from "../../stores";
+import { BottomSheet, ConfirmDialog } from "../../components/ui";
+import { FilePicker } from "../../components/FilePicker";
+import { IconFolder } from "../../components/icons";
+
+export interface MayaSettings {
+  model_path: string;
+  context: number;
+  gpu_index: number;
+  parallel: number;
+  ram_headroom_gb: number;
+  drafting: "on" | "off";
+}
+
+export interface MayaStatus {
+  installed: boolean;
+  configured: boolean;
+  built: boolean;
+  running: boolean;
+  version: string;
+  models_dir: string;
+  settings: MayaSettings;
+  warning: string;
+  error: string;
+}
+
+interface MayaJob { id: string; kind: string; status: string; error: string; progress?: { status?: string } }
+
+const DEFAULT_SETTINGS: MayaSettings = {
+  model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
+};
+
+/** Maya-Sの状態。settings.manage を持たない利用者には問い合わせない。 */
+export function useMayaStatus() {
+  const can = useAuth((s) => s.can);
+  return useQuery({
+    queryKey: ["maya-s-model"],
+    queryFn: () => api<MayaStatus>("/features/maya-s/model"),
+    enabled: can("settings.manage"),
+    refetchInterval: 10000,
+    retry: false,
+  });
+}
+
+/** 実行中のMaya-Sモデルジョブ。終わったら状態と一覧を読み直す。 */
+function useMayaJobs() {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const { data } = useQuery({
+    queryKey: ["maya-s-jobs"],
+    queryFn: () => api<MayaJob[]>("/jobs?kind=model.maya-s."),
+    refetchInterval: (q) => (q.state.data ?? []).some((j) => ["queued", "running"].includes(j.status)) ? 3000 : 15000,
+  });
+  const active = (data ?? []).filter((j) => ["queued", "running"].includes(j.status));
+  const seen = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const job of data ?? []) {
+      const running = ["queued", "running"].includes(job.status);
+      if (running) { seen.current.add(job.id); continue; }
+      if (!seen.current.has(job.id)) continue;
+      seen.current.delete(job.id);
+      void qc.invalidateQueries({ queryKey: ["maya-s-model"] });
+      void qc.invalidateQueries({ queryKey: ["models"] });
+      void qc.invalidateQueries({ queryKey: ["features"] });
+      show(job.status === "succeeded" ? "Maya-Sの操作が完了しました" : job.error || "Maya-Sの操作に失敗しました",
+        job.status === "succeeded" ? "info" : "error");
+    }
+  }, [data]);
+  return { active, refresh: () => qc.invalidateQueries({ queryKey: ["maya-s-jobs"] }) };
+}
+
+/** 未準備のときだけ一覧の上に出す。ダウンロードか既存GGUFかを選ぶ。 */
+export function MayaSSetupCard({ status }: { status: MayaStatus }) {
+  const show = useToasts((s) => s.show);
+  const { active, refresh } = useMayaJobs();
+  const [confirming, setConfirming] = useState(false);
+  const [gpu, setGpu] = useState(status.settings?.gpu_index ?? 0);
+  const [existingOpen, setExistingOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const working = busy || active.length > 0;
+
+  const download = async () => {
+    setConfirming(false);
+    setBusy(true);
+    try {
+      await api("/features/maya-s/model/prepare-jobs", { method: "POST", json: { gpu_index: gpu } });
+      show("Maya-S（約96.5GB）のダウンロードとHIP準備を開始しました。完了後に「ロード」で起動できます");
+      await refresh();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "Maya-Sのダウンロードを開始できませんでした", "error");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mb-3 rounded-2xl border border-dashed border-zinc-300 p-4 dark:border-zinc-700">
+      <p className="text-sm font-semibold">Maya-S（GLM-5.3-Flash）</p>
+      <p className="mt-1 text-xs text-zinc-500">
+        モデルが未準備です。約96.5GBをダウンロードするか、手元にある Maya-S の GGUF を読み込んでください。
+        どちらもモデルは起動しません。準備後に一覧の「ロード」で起動します。
+      </p>
+      {!status.built && (
+        <p className="mt-1 text-[11px] text-zinc-400">HIPエンジンは未ビルドです。準備の途中でビルドされます（設定 → オプション機能から先にビルドもできます）。</p>
+      )}
+      {active.length > 0 ? (
+        <p className="mt-3 text-xs text-accent-700 dark:text-accent-400" role="status">
+          準備中: {active[0].progress?.status || "処理中"}（ブラウザを閉じても継続します）
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" disabled={working} onClick={() => setConfirming(true)}
+            className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+            モデルをダウンロード（約96.5GB）
+          </button>
+          <button type="button" disabled={working} onClick={() => setExistingOpen(true)}
+            className="min-h-11 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            既存のモデルを読み込む
+          </button>
+        </div>
+      )}
+      {confirming && (
+        <ConfirmDialog title="Maya-Sをダウンロードしますか？" danger={false}
+          message="GLM-5.3-Flash Maya-Sのモデル約96.5GBをSSDにダウンロードして検証し、HIPエンジンを準備します。110GB以上の空き容量が必要で、数時間かかることがあります。モデルは起動しません。"
+          confirmLabel="ダウンロードを開始" busy={busy}
+          disabled={!Number.isInteger(gpu) || gpu < 0 || gpu > 15}
+          onConfirm={() => void download()} onClose={() => setConfirming(false)}>
+          <label className="mt-3 flex items-center justify-between gap-2 text-xs">ROCm GPU番号
+            <input aria-label="Maya-S GPU番号" type="number" min={0} max={15} value={gpu}
+              onChange={(e) => setGpu(Number(e.target.value))}
+              className="w-20 rounded-lg border border-zinc-300 bg-transparent px-2 py-2 dark:border-zinc-600" />
+          </label>
+          <p className="mt-2 break-all text-[11px] text-zinc-500">保存先: {status.models_dir}</p>
+        </ConfirmDialog>
+      )}
+      {existingOpen && (
+        <BottomSheet title="Maya-S · 既存のモデルを読み込む" onClose={() => setExistingOpen(false)} wide>
+          <MayaSettingsForm status={status} mode="existing" onDone={() => { setExistingOpen(false); void refresh(); }} />
+        </BottomSheet>
+      )}
+    </div>
+  );
+}
+
+/** 準備済みモデルの個別設定。一覧の行から開く。 */
+export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
+  const { data: status } = useMayaStatus();
+  return (
+    <BottomSheet title="Maya-S · モデル個別設定" onClose={onClose} wide>
+      {status ? <MayaSettingsForm status={status} mode="detail" onDone={onClose} />
+        : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
+    </BottomSheet>
+  );
+}
+
+function MayaSettingsForm({ status, mode, onDone }: {
+  status: MayaStatus; mode: "existing" | "detail"; onDone: () => void;
+}) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const { active, refresh } = useMayaJobs();
+  const [settings, setSettings] = useState<MayaSettings>({ ...DEFAULT_SETTINGS, ...status.settings });
+  const [picker, setPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const locked = status.running || active.length > 0;
+  const modelChanged = settings.model_path !== (status.settings?.model_path ?? "");
+  // 既存モデル読み込みはパス必須。個別設定では、パスを変えたときだけ再準備が要る。
+  const needsPrepare = mode === "existing" || (modelChanged && !!settings.model_path) || !status.configured;
+  const field = "w-28 rounded-lg border border-zinc-300 bg-transparent p-2 text-sm dark:border-zinc-700";
+
+  const save = async (prepare: boolean) => {
+    if (prepare && !settings.model_path.trim()) {
+      show("Maya-S の GGUF（分割モデルは先頭ファイル）を指定してください", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api("/features/maya-s/settings", { method: "PUT", json: { ...settings, model_path: settings.model_path.trim() } });
+      if (prepare) {
+        await api("/features/maya-s/model/existing-jobs", { method: "POST", json: {} });
+        show("既存モデルの準備を開始しました（ダウンロード・起動はしません）");
+        await refresh();
+      } else {
+        show("Maya-Sの設定を保存しました。次回のロードから反映されます");
+      }
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["maya-s-model"] }),
+        qc.invalidateQueries({ queryKey: ["models"] }),
+      ]);
+      onDone();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "Maya-Sの設定を保存できませんでした", "error");
+    } finally { setSaving(false); }
+  };
+
+  const numbers = [
+    ["context", "コンテキスト長", 1024, 262144, 1024],
+    ["gpu_index", "ROCm GPU番号", 0, 15, 1],
+    ["parallel", "同時実行数", 1, 8, 1],
+    ["ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1],
+  ] as const;
+
+  return (
+    <div className="space-y-3 text-sm">
+      {mode === "detail" && (
+        <div className="space-y-1 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
+          <p>状態: {status.running ? "稼働中 · 127.0.0.1:8099" : status.configured ? "準備済み・停止中" : "未準備"}</p>
+          <p>エンジン: Project Maya {status.version || "-"} · {status.built ? "HIPビルド済み" : "HIP未ビルド"}</p>
+          <p className="break-all">モデル: {status.settings?.model_path || `ダウンロード版（${status.models_dir}）`}</p>
+        </div>
+      )}
+      <label className="block text-xs">Maya-S の GGUF（分割モデルは先頭ファイル）{mode === "detail" && "・空欄はダウンロード版"}
+        <div className="mt-1 flex gap-2">
+          <input aria-label="Maya-S GGUFパス" value={settings.model_path} disabled={locked}
+            onChange={(e) => setSettings({ ...settings, model_path: e.target.value })}
+            placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya/.../GLM-5.3-Flash-Maya-S-...-00001-of-00003.gguf"
+            className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-transparent p-2 text-sm dark:border-zinc-700" />
+          <button type="button" disabled={locked} onClick={() => setPicker(true)} aria-label="GGUFを選ぶ"
+            className="grid min-h-11 min-w-11 place-items-center rounded-lg border border-zinc-300 disabled:opacity-40 dark:border-zinc-700">
+            <IconFolder />
+          </button>
+        </div>
+      </label>
+      {numbers.map(([key, label, min, max, step]) => (
+        <label key={key} className="flex flex-wrap items-center justify-between gap-2 text-xs">{label}
+          <input aria-label={`Maya-S ${label}`} type="number" min={min} max={max} step={step} disabled={locked}
+            value={settings[key]} className={field}
+            onChange={(e) => setSettings({ ...settings, [key]: Number(e.target.value) })} />
+        </label>
+      ))}
+      <label className="flex items-center justify-between gap-2 text-xs">投機デコード（MTP）
+        <select aria-label="Maya-S 投機デコード" value={settings.drafting} disabled={locked}
+          onChange={(e) => setSettings({ ...settings, drafting: e.target.value as "on" | "off" })}
+          className="rounded-lg border border-zinc-300 bg-transparent p-2 text-sm dark:border-zinc-700">
+          <option value="on">有効</option>
+          <option value="off">無効</option>
+        </select>
+      </label>
+      {locked && <p className="text-xs text-amber-700 dark:text-amber-300">
+        {status.running ? "設定変更はモデルをアンロードしてから行えます。" : "準備ジョブの完了後に変更できます。"}
+      </p>}
+      <p className="text-[11px] text-zinc-500">
+        保存や準備ではモデルをダウンロード・起動しません。{mode === "detail" && "GGUFを変えた場合は「保存して準備」で読み込み直してください。"}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {mode === "detail" && !needsPrepare && (
+          <button type="button" disabled={saving || locked} onClick={() => void save(false)}
+            className="min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
+            {saving ? "保存中…" : "設定を保存"}
+          </button>
+        )}
+        {(needsPrepare || mode === "detail") && (
+          <button type="button" disabled={saving || locked || !settings.model_path.trim()} onClick={() => void save(true)}
+            className={`min-h-11 flex-1 rounded-xl px-4 text-sm font-medium disabled:opacity-40 ${needsPrepare
+              ? "bg-accent-600 text-white" : "border border-zinc-300 dark:border-zinc-700"}`}>
+            {saving ? "保存中…" : mode === "existing" ? "読み込んで準備" : "保存して準備し直す"}
+          </button>
+        )}
+      </div>
+      {picker && (
+        <FilePicker mode="file" title="Maya-S の GGUF を選択"
+          initialPath={settings.model_path || "/data1tb/LLM"}
+          onSelect={(path) => { setSettings({ ...settings, model_path: path }); setPicker(false); }}
+          onClose={() => setPicker(false)} />
+      )}
+    </div>
+  );
+}

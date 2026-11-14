@@ -63,7 +63,7 @@ class AmdGpuSettings(BaseModel):
 
 
 class RuntimePolicy(BaseModel):
-    selected_runtime: Literal["ollama", "llama.cpp", "strata"] = "ollama"
+    selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s"] = "ollama"
     # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
     selected_backend: Literal["rocm", "vulkan", ""] = ""
     coexistence: Literal["exclusive", "coexist"] = "exclusive"
@@ -214,6 +214,14 @@ async def environment() -> dict:
             "warning": "モデルは明示的に登録・初回起動してください",
             "addon_id": "strata", "experimental": True,
         })
+    from app.models_mgmt import maya_s
+    maya_state = await asyncio.to_thread(maya_s.runtime_status)
+    if maya_state["installed"]:
+        runtimes.append({"id": "maya-s", "runtime": "maya-s", "backend": "",
+                         "label": "Maya-S（GLM-5.3-Flash / R9700）", "available": True,
+                         "installed": True, "selected": policy.selected_runtime == "maya-s",
+                         "running": maya_state["running"], "addon_id": "maya-s",
+                         "warning": "選択だけではモデルを起動しません", "experimental": True})
     gpu_caps = amd_gpu.capabilities()
     if gpu_caps:
         pwr = gpu_caps["power"]
@@ -306,6 +314,20 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                 ok, reason = strata_gateway.stop_instance(str(item["alias"]))
                 if not ok:
                     raise RuntimeError(reason or "Strataモデルを停止できませんでした")
+
+    from app.models_mgmt import maya_s
+    if policy.selected_runtime == "maya-s":
+        if not maya_s.installed():
+            raise ValueError("Maya-Sは未導入です")
+        if policy.coexistence == "exclusive":
+            await _release_ollama()
+            await asyncio.to_thread(_release_llama)
+            await asyncio.to_thread(_release_strata)
+        return  # Selection never loads or downloads Maya weights.
+    if policy.coexistence == "exclusive" and maya_s.installed():
+        ok, reason = await asyncio.to_thread(maya_s.stop_instance)
+        if not ok:
+            raise RuntimeError(reason)
 
     if policy.selected_runtime == "strata":
         if not strata.installed():

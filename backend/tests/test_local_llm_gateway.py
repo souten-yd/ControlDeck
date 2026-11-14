@@ -11,7 +11,7 @@ def test_local_llm_lists_only_managed_llama(monkeypatch):
         {"alias": "embedding", "role": "embedding", "port": 8081, "loaded": False},
     ])
     monkeypatch.setattr(strata_gateway, "list_instances", lambda: [])
-    assert local_llm.RUNTIMES == ("llama.cpp", "strata")
+    assert local_llm.RUNTIMES == ("llama.cpp", "strata", "maya-s")
     listed = local_llm.llm_instances()
     assert [item["alias"] for item in listed] == ["qwen-llama"]
     assert local_llm.runtime_of("qwen-llama") == "llama.cpp"
