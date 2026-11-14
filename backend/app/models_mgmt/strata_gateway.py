@@ -30,7 +30,15 @@ _FAMILIES = {
     "unsloth": {"ud-iq4_xs", "ud-q4_k_xl"},
     "deepseek41": {"ista-das-coder", "ist-das-2.00bpw"},
 }
-_CONTEXTS = {"8k", "16k", "32k", "64k", "128k"}
+# Strata takes any "<N>k"; past the trained 256K it adds yarn scaling itself.
+_CONTEXT = re.compile(r"^([1-9][0-9]{0,3})k$")
+_CONTEXT_MIN_K, _CONTEXT_MAX_K = 4, 1024
+LIFECYCLE_KEYS = ("idle_exclude", "auto_start")
+
+
+def valid_context(value: str) -> bool:
+    match = _CONTEXT.fullmatch(str(value))
+    return bool(match) and _CONTEXT_MIN_K <= int(match[1]) <= _CONTEXT_MAX_K
 _ALIAS = re.compile(r"^[a-z][a-z0-9-]{0,47}$")
 _MIN_PORT, _MAX_PORT = 8081, 65535
 
@@ -233,14 +241,15 @@ def _exclusive_operation(function):
 def save_instance(alias: str, *, family: str, model: str,
                   port: int, context: str = "32k", model_path: str = "",
                   kv: str = "int8", vision: str = "on", parallel: int = 1,
-                  drafting: str = "auto", replace: bool = False) -> dict:
+                  drafting: str = "auto", idle_exclude: bool = False,
+                  auto_start: bool = False, replace: bool = False) -> dict:
     if not strata.installed():
         raise StrataGatewayError("Strataの導入が必要です")
     if not _ALIAS.fullmatch(alias) or alias in {"auto", "strata"}:
         raise StrataGatewayError("別名は小文字英数字とハイフン（先頭英字、最大48文字）にしてください")
     if family not in _FAMILIES or model not in _FAMILIES[family]:
         raise StrataGatewayError("このモデル・量子化はStrataの管理対象外です")
-    if context not in _CONTEXTS or not (_MIN_PORT <= port <= _MAX_PORT):
+    if not valid_context(context) or not (_MIN_PORT <= port <= _MAX_PORT):
         raise StrataGatewayError("コンテキストまたはポートがサポート範囲外です")
     model_path = _validate_model_path(model_path) if model_path else ""
     if kv not in {"int8", "q4_0", "k8v4", "fp16"} or vision not in {"on", "off", "gpu", "cpu"}:
@@ -248,6 +257,17 @@ def save_instance(alias: str, *, family: str, model: str,
     if drafting not in {"auto", "mtp", "dflash2", "off"} or not 1 <= parallel <= 8:
         raise StrataGatewayError("投機デコードまたは同時実行数が不正です")
     items = _read()
+    wanted = {"family": family, "model": model, "port": port, "context": context,
+              "model_path": model_path, "kv": kv, "vision": vision, "parallel": parallel,
+              "drafting": drafting, "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start)}
+    if replace and alias in items:
+        current = items[alias]
+        changed = {key for key, value in wanted.items() if current.get(key) != value}
+        if changed <= set(LIFECYCLE_KEYS):
+            # Lifecycle flags only: Strata's launch settings stay, fine while running.
+            items[alias] = {**current, **{key: wanted[key] for key in LIFECYCLE_KEYS}}
+            _write(items)
+            return get_instance(alias)
     if replace:
         if alias not in items:
             raise KeyError(alias)
@@ -263,9 +283,7 @@ def save_instance(alias: str, *, family: str, model: str,
     if local_llm.port_taken_by_other_runtime(port, "strata"):
         raise StrataGatewayError("別のローカルランタイムがポートを使用しています")
     # Do not auto-start or download weights at registration time.
-    items[alias] = {"family": family, "model": model, "port": port,
-                    "context": context, "activated": False, "model_path": model_path,
-                    "kv": kv, "vision": vision, "parallel": parallel, "drafting": drafting}
+    items[alias] = {**wanted, "activated": False}
     _write(items)
     return get_instance(alias)
 
@@ -332,6 +350,8 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
         if alias in items:
             items[alias]["activated"] = True
             _write(items)
+    from app.models_mgmt import large_model_lifecycle
+    large_model_lifecycle.mark_used(large_model_lifecycle.STRATA, alias)
     return True, ""
 
 
@@ -370,14 +390,25 @@ async def health(alias: str) -> dict:
 
 
 async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
+    from app.models_mgmt import large_model_lifecycle
+
     if (await health(alias))["ok"]:
+        large_model_lifecycle.mark_used(large_model_lifecycle.STRATA, alias)
         return True
+    cfg = _read().get(alias) or {}
+    if cfg.get("activated") and not (await asyncio.to_thread(get_instance, alias))["loaded"]:
+        # Maya-S and Strata cannot both be resident; the requested model wins.
+        try:
+            await large_model_lifecycle.release_for(large_model_lifecycle.STRATA)
+        except RuntimeError:
+            return False
     ok, _error = await asyncio.to_thread(_start, alias, explicit=False)
     if not ok:
         return False
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if (await health(alias))["ok"]:
+            large_model_lifecycle.mark_used(large_model_lifecycle.STRATA, alias)
             return True
         await asyncio.sleep(2)
     return False
@@ -390,5 +421,14 @@ def residency_key(instance: dict) -> str:
 
 
 def mark_used_by_base_url(base_url: str) -> str | None:
-    # Strata's idle state is managed upstream, do not invent a new policy.
-    return None
+    from urllib.parse import urlsplit
+    from app.models_mgmt import large_model_lifecycle
+
+    try:
+        port = urlsplit(base_url).port
+    except ValueError:
+        return None
+    alias = next((key for key, item in _read().items() if item.get("port") == port), None)
+    if alias:
+        large_model_lifecycle.mark_used(large_model_lifecycle.STRATA, alias)
+    return alias

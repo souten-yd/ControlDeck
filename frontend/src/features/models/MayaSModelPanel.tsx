@@ -2,7 +2,8 @@
  *
  * アドオン（設定 → オプション機能）はエンジンのコード導入とHIPビルドだけを持つ。
  * モデルの取得・既存GGUFの読み込み・個別設定はModels画面に集約する。
- * どの操作もモデルを自動で起動しない（起動は一覧の「ロード」で明示する）。 */
+ * 準備・保存ではモデルを起動しない。起動は一覧の「ロード」、または個別設定の
+ * 「要求時に自動起動」「ControlDeck起動時に自動起動」による（llama.cpp と同じ）。 */
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -10,6 +11,7 @@ import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
+import { CTX_PRESETS, PresetOrCustom, Toggle } from "./formControls";
 
 export interface MayaSettings {
   model_path: string;
@@ -18,7 +20,16 @@ export interface MayaSettings {
   parallel: number;
   ram_headroom_gb: number;
   drafting: "on" | "off";
+  on_demand_start: boolean;
+  idle_exclude: boolean;
+  auto_start: boolean;
 }
+
+/** ControlDeck側だけの設定。稼働中でも変更できる（Maya の設定ファイルは変わらない）。 */
+const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start"] as const;
+// GLM-5.3-Flash は最大 1M。Maya は VRAM を超える KV を RAM へ逃がす。
+const MAYA_CTX_PRESETS = [...CTX_PRESETS.filter((p) => Number(p.v) >= 8192),
+  ...[524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }))];
 
 export interface MayaStatus {
   installed: boolean;
@@ -36,6 +47,7 @@ interface MayaJob { id: string; kind: string; status: string; error: string; pro
 
 const DEFAULT_SETTINGS: MayaSettings = {
   model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
+  on_demand_start: true, idle_exclude: false, auto_start: false,
 };
 
 /** Maya-Sの状態。settings.manage を持たない利用者には問い合わせない。 */
@@ -168,7 +180,12 @@ function MayaSettingsForm({ status, mode, onDone }: {
   const [settings, setSettings] = useState<MayaSettings>({ ...DEFAULT_SETTINGS, ...status.settings });
   const [picker, setPicker] = useState(false);
   const [saving, setSaving] = useState(false);
+  const saved = { ...DEFAULT_SETTINGS, ...status.settings };
+  const onlyLifecycle = (Object.keys(settings) as (keyof MayaSettings)[])
+    .every((key) => (LIFECYCLE_KEYS as readonly string[]).includes(key) || settings[key] === saved[key]);
   const locked = status.running || active.length > 0;
+  // 起動・停止の扱いだけなら稼働中でも保存できる。
+  const saveLocked = active.length > 0 || (status.running && !onlyLifecycle);
   const modelChanged = settings.model_path !== (status.settings?.model_path ?? "");
   // 既存モデル読み込みはパス必須。個別設定では、パスを変えたときだけ再準備が要る。
   const needsPrepare = mode === "existing" || (modelChanged && !!settings.model_path) || !status.configured;
@@ -187,7 +204,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
         show("既存モデルの準備を開始しました（ダウンロード・起動はしません）");
         await refresh();
       } else {
-        show("Maya-Sの設定を保存しました。次回のロードから反映されます");
+        show(onlyLifecycle ? "Maya-Sの起動・停止の設定を保存しました" : "Maya-Sの設定を保存しました。次回のロードから反映されます");
       }
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["maya-s-model"] }),
@@ -200,7 +217,6 @@ function MayaSettingsForm({ status, mode, onDone }: {
   };
 
   const numbers = [
-    ["context", "コンテキスト長", 1024, 262144, 1024],
     ["gpu_index", "ROCm GPU番号", 0, 15, 1],
     ["parallel", "同時実行数", 1, 8, 1],
     ["ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1],
@@ -227,6 +243,14 @@ function MayaSettingsForm({ status, mode, onDone }: {
           </button>
         </div>
       </label>
+      <label className="block text-xs">コンテキスト長（CTX）
+        <div className="mt-1">
+          {locked ? <p className="font-mono">{settings.context.toLocaleString()}</p>
+            : <PresetOrCustom value={settings.context} presets={MAYA_CTX_PRESETS} placeholder="8192"
+              onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />}
+        </div>
+        <span className="text-[10px] text-zinc-400">長いほど入力・会話履歴を多く扱えます。8K だと検索結果入りの会話はすぐ上限に届きます（推奨 32K〜128K）。</span>
+      </label>
       {numbers.map(([key, label, min, max, step]) => (
         <label key={key} className="flex flex-wrap items-center justify-between gap-2 text-xs">{label}
           <input aria-label={`Maya-S ${label}`} type="number" min={min} max={max} step={step} disabled={locked}
@@ -242,15 +266,26 @@ function MayaSettingsForm({ status, mode, onDone }: {
           <option value="off">無効</option>
         </select>
       </label>
+      {mode === "detail" && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-zinc-500">起動と停止（稼働中でも変更できます）</p>
+          <Toggle label="要求時に自動起動" hint="チャット・ゲートウェイから使われたときに起動します。Strata や使っていない llama.cpp のモデルは先に停止します"
+            value={settings.on_demand_start} onChange={(v) => setSettings({ ...settings, on_demand_start: v })} />
+          <Toggle label="共通アイドル停止から除外" hint="Models のランタイム設定「アイドル時に自動アンロード」の対象から外し、常駐させます"
+            value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
+          <Toggle label="ControlDeck起動時に自動起動" hint="PC起動後に ControlDeck が立ち上がったら起動します。Strata と両方に付けた場合は Maya-S が優先です"
+            value={settings.auto_start} onChange={(v) => setSettings({ ...settings, auto_start: v })} />
+        </div>
+      )}
       {locked && <p className="text-xs text-amber-700 dark:text-amber-300">
-        {status.running ? "設定変更はモデルをアンロードしてから行えます。" : "準備ジョブの完了後に変更できます。"}
+        {status.running ? "モデルの設定変更はアンロードしてから行えます（起動と停止の設定は変更できます）。" : "準備ジョブの完了後に変更できます。"}
       </p>}
       <p className="text-[11px] text-zinc-500">
         保存や準備ではモデルをダウンロード・起動しません。{mode === "detail" && "GGUFを変えた場合は「保存して準備」で読み込み直してください。"}
       </p>
       <div className="flex flex-wrap gap-2">
         {mode === "detail" && !needsPrepare && (
-          <button type="button" disabled={saving || locked} onClick={() => void save(false)}
+          <button type="button" disabled={saving || saveLocked} onClick={() => void save(false)}
             className="min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
             {saving ? "保存中…" : "設定を保存"}
           </button>

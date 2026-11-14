@@ -315,7 +315,10 @@ def test_settings_while_running_rejected(managed, monkeypatch):
     _installed(managed)
     monkeypatch.setattr(maya_s, '_running', lambda: True)
     with pytest.raises(maya_s.MayaError, match='停止'):
-        maya_s.save_settings(maya_s.get_settings())
+        maya_s.save_settings({**maya_s.get_settings(), 'context': 32768})
+    # Lifecycle flags are ControlDeck-side only and may change while running.
+    maya_s.save_settings({**maya_s.get_settings(), 'idle_exclude': True})
+    assert maya_s.get_settings()['idle_exclude'] is True
 
 
 def test_build_only_never_invokes_installer_or_engine(managed, monkeypatch):

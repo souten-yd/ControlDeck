@@ -29,6 +29,10 @@ _RELEASE = "https://api.github.com/repos/mw00/project-maya/releases/latest"
 _TAG = re.compile(r"^v[0-9]+[.][0-9]+[.][0-9]+$")
 _UNIT = "control-deck-maya-s.service"
 _ALIAS = "maya-s"
+ALIAS = _ALIAS
+# Settings that only change ControlDeck's lifecycle handling, not Maya's config:
+# they may be changed while the model runs (as llama.cpp's idle_exclude can).
+LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start")
 _PORT = 8099
 _MODEL = "glm-maya-s"
 # Maya rejects prompt + max_tokens + 8 > context (its CTX_SLACK, as strata --serve).
@@ -385,6 +389,8 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
                str(_PORT), "--host", "127.0.0.1"], cwd=source(), timeout=45)
     except MayaError as exc:
         return False, str(exc)
+    from app.models_mgmt import large_model_lifecycle
+    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
     return True, ""
 
 
@@ -479,9 +485,41 @@ def residency_key(instance: dict) -> str:
     return "maya-s:glm-5.3-flash"
 
 
-async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
-    # No autonomous start or model download; startup must be explicit.
-    return alias == _ALIAS and (await health(alias))["ok"]
+def is_running() -> bool:
+    return _config() is not None and _running()
+
+
+async def ensure_ready(alias: str, *, timeout_seconds: int = 420, start: bool | None = None) -> bool:
+    """Ready for a request. Starts the prepared model when "要求時に自動起動" is on.
+
+    Never downloads or prepares weights: only an already prepared model starts.
+    `start` overrides the setting (autostart passes True).
+    """
+    from app.models_mgmt import large_model_lifecycle
+
+    if alias != _ALIAS:
+        return False
+    if (await health(alias))["ok"]:
+        large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+        return True
+    allowed = get_settings().get("on_demand_start", True) if start is None else start
+    if not allowed or not await asyncio.to_thread(lambda: _config() is not None):
+        return False
+    if not await asyncio.to_thread(_running):
+        try:
+            await large_model_lifecycle.release_for(large_model_lifecycle.MAYA)
+        except RuntimeError:
+            return False
+        try:
+            ok, _reason = await asyncio.to_thread(start_instance, alias)
+        except MayaError:
+            ok = True  # another request holds the operation lock and is starting it
+        if not ok:
+            return False
+    if not await wait_ready(timeout_seconds=timeout_seconds):
+        return False
+    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+    return True
 
 
 def mark_used_by_base_url(_base_url: str) -> None:
@@ -505,7 +543,8 @@ def uninstall() -> dict:
 
 def get_settings() -> dict:
     defaults = {"model_path": "", "context": 8192, "gpu_index": 0,
-                "parallel": 1, "ram_headroom_gb": 16, "drafting": "on"}
+                "parallel": 1, "ram_headroom_gb": 16, "drafting": "on",
+                "on_demand_start": True, "idle_exclude": False, "auto_start": False}
     path = root() / "settings.json"
     if path.is_file() and not path.is_symlink():
         defaults.update(json.loads(path.read_text(encoding="utf-8")))
@@ -516,9 +555,15 @@ def get_settings() -> dict:
 def save_settings(settings: dict) -> dict:
     if not installed():
         raise MayaError("先にMaya-Sを導入してください")
+    previous = get_settings()
+    value = {**previous, **dict(settings)}
+    changed = {key for key in value if value.get(key) != previous.get(key)}
+    if changed <= set(LIFECYCLE_KEYS) and (changed or _running()):
+        # Lifecycle flags only: no Maya config change, fine while running.
+        (root() / "settings.json").write_text(json.dumps(value, indent=2), encoding="utf-8")
+        return runtime_status()
     if _running():
         raise MayaError("Maya-Sを停止してから設定を変更してください")
-    value = dict(settings)
     if value.get("model_path"):
         from app.files.service import resolve
         path = resolve(value["model_path"])
@@ -529,7 +574,6 @@ def save_settings(settings: dict) -> dict:
                 raise MayaError("GGUFファイルではありません")
         value["model_path"] = str(path)
     config = _config()
-    previous = get_settings()
     if config and value.get("model_path") == previous.get("model_path"):
         cfg = json.loads(config.read_text(encoding="utf-8"))
         args = cfg.get("args", [])

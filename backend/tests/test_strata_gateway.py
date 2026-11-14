@@ -190,3 +190,23 @@ def test_addon_target_can_use_activated_local_strata(monkeypatch, tmp_path):
     strata_gateway._write(items)
     with pytest.raises(ai_gateway.AITargetUnavailable):
         asyncio.run(ai_gateway.resolve_ai_target("text.generate"))
+
+
+def test_lifecycle_flags_change_while_running_and_keep_activation(monkeypatch, tmp_path):
+    from app.models_mgmt import local_llm
+    _managed(monkeypatch, tmp_path)
+    monkeypatch.setattr(local_llm, "find", lambda alias: None)
+    monkeypatch.setattr(local_llm, "port_taken_by_other_runtime", lambda *a: False)
+    strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095, context="256k")
+    items = strata_gateway._read()
+    items["qwen"]["activated"] = True
+    strata_gateway._write(items)
+    monkeypatch.setattr(strata_gateway, "_running", lambda: [{
+        "profile": "launch-cd-qwen", "port": 8095, "state": "ready"}])
+    changed = strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+        context="256k", idle_exclude=True, auto_start=True, replace=True)
+    assert changed["idle_exclude"] is True and changed["auto_start"] is True
+    assert changed["activated"] is True and changed["ctx_size"] == 262144
+    with pytest.raises(strata_gateway.StrataGatewayError, match="停止"):
+        strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+            context="128k", idle_exclude=True, auto_start=True, replace=True)
