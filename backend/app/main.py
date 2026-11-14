@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
     from app.workflows.business_events import delivery_loop as business_event_delivery_loop
     from app.models_mgmt.ollama import idle_unload_loop as ollama_idle_unload_loop
     from app.models_mgmt.llama import idle_unload_loop as llama_idle_unload_loop
+    from app.models_mgmt import large_model_lifecycle
     from app.applications.health import health_check_loop
     from app.addons.health import health_loop as addon_health_loop
     from app.resources.broker import broker as resource_broker
@@ -113,6 +114,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(alert_loop()),
         asyncio.create_task(ollama_idle_unload_loop()),
         asyncio.create_task(llama_idle_unload_loop()),
+        asyncio.create_task(large_model_lifecycle.idle_unload_loop()),
+        asyncio.create_task(large_model_lifecycle.autostart()),
         asyncio.create_task(health_check_loop()),
         asyncio.create_task(addon_health_loop()),
         asyncio.create_task(addon_residency_provider.refresh_loop()),

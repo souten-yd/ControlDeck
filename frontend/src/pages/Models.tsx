@@ -1,6 +1,7 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
+import { CTX_PRESETS, PresetOrCustom, Toggle } from "../features/models/formControls";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
@@ -913,52 +914,6 @@ interface ModelConfig {
   [k: string]: string | number | boolean | undefined;
 }
 
-/** 選択肢（プリセット）から選ぶ + 末尾の「カスタム」で手動入力するハイブリッド入力。 */
-function PresetOrCustom({
-  value,
-  presets,
-  placeholder,
-  numeric = true,
-  onChange,
-}: {
-  value: number | string | undefined;
-  presets: { v: number | string; label: string }[];
-  placeholder?: string;
-  numeric?: boolean;
-  onChange: (v: number | string | undefined) => void;
-}) {
-  const isPreset = value !== undefined && value !== "" && presets.some((p) => p.v === value);
-  const [custom, setCustom] = useState(!isPreset && value !== undefined && value !== "");
-  const sel = "rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  return (
-    <div className="flex gap-1.5">
-      <select
-        value={custom ? "__custom__" : value === undefined || value === "" ? "" : String(value)}
-        onChange={(e) => {
-          if (e.target.value === "__custom__") { setCustom(true); return; }
-          setCustom(false);
-          if (e.target.value === "") onChange(undefined);
-          else onChange(numeric ? Number(e.target.value) : e.target.value);
-        }}
-        className={`${sel} ${custom ? "w-28 shrink-0" : "min-w-0 flex-1"}`}
-      >
-        <option value="">既定</option>
-        {presets.map((p) => <option key={String(p.v)} value={String(p.v)}>{p.label}</option>)}
-        <option value="__custom__">カスタム入力…</option>
-      </select>
-      {custom && (
-        <input
-          type={numeric ? "number" : "text"}
-          value={value === undefined ? "" : String(value)}
-          onChange={(e) => onChange(e.target.value === "" ? undefined : numeric ? Number(e.target.value) : e.target.value)}
-          placeholder={placeholder}
-          autoFocus
-          className={`${sel} min-w-0 flex-1 font-mono text-xs`}
-        />
-      )}
-    </div>
-  );
-}
 
 function DetailSheet({ model, onClose }: { model: string; onClose: () => void }) {
   const { data, isLoading } = useQuery({
@@ -995,7 +950,6 @@ function DetailSheet({ model, onClose }: { model: string; onClose: () => void })
   );
 }
 
-const CTX_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144].map((v) => ({ v, label: v.toLocaleString() }));
 const PREDICT_PRESETS = [
   { v: -1, label: "無制限 (-1)" }, { v: -2, label: "文脈まで (-2)" },
   { v: 256, label: "256" }, { v: 512, label: "512" }, { v: 1024, label: "1024" },
@@ -1131,6 +1085,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
       setPolicyCfg(next.policy);
       qc.setQueryData(["runtime-environment"], next);
       qc.invalidateQueries({ queryKey: ["llama-status"] });
+      // AI アシスタントなどが Models の選択へすぐ追従するように。
+      qc.invalidateQueries({ queryKey: ["llm-endpoints"] });
       show("LLMランタイム設定を適用しました");
     },
     onError: (e) => show(e instanceof Error ? e.message : "ランタイム設定の適用に失敗", "error"),
@@ -1923,12 +1879,6 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
   );
 }
 
-function Toggle({ label, hint, value, disabled = false, onChange }: { label: string; hint?: string; value: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
-  return <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
-    <span className="text-xs">{label}{hint && <span className="block text-[10px] font-normal text-zinc-400">{hint}</span>}</span>
-    <input type="checkbox" checked={value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 shrink-0 disabled:opacity-40" />
-  </label>;
-}
 
 function CacheTypeSelect({ value, onChange, input }: { value: string; onChange: (value: string) => void; input: string }) {
   return <select value={value} onChange={(e) => onChange(e.target.value)} className={input}>
@@ -2072,15 +2022,25 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
-type StrataSettings = { alias: string; family: "qwen" | "deepseek41"; model: string;
+type StrataFamily = "qwen" | "unsloth" | "deepseek41";
+// Must match backend strata_gateway._FAMILIES.
+const STRATA_SIZES: Record<StrataFamily, string[]> = {
+  qwen: ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"],
+  unsloth: ["ud-iq4_xs", "ud-q4_k_xl"],
+  deepseek41: ["ista-das-coder", "ist-das-2.00bpw"],
+};
+type StrataSettings = { alias: string; family: StrataFamily; model: string;
   context: string; port: number; model_path?: string; kv?: string; vision?: string;
-  parallel?: number; drafting?: string; loaded?: boolean };
+  parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean };
+
+// Strata は "<N>k" を受け付け、学習長 256K を超えると yarn を自動で付ける。
+const STRATA_CTX_PRESETS = ["8k", "16k", "32k", "64k", "128k", "256k"].map((v) => ({ v, label: v }));
 
 function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?: StrataSettings }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const [alias, setAlias] = useState(initial?.alias ?? "qwen-flash-next");
-  const [family, setFamily] = useState<"qwen" | "deepseek41">(initial?.family ?? "qwen");
+  const [family, setFamily] = useState<StrataFamily>(initial?.family ?? "qwen");
   const [model, setModel] = useState(initial?.model ?? "iq2_xs");
   const [context, setContext] = useState(initial?.context ?? "32k");
   const [port, setPort] = useState(String(initial?.port ?? 8095));
@@ -2089,12 +2049,16 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
   const [vision, setVision] = useState(initial?.vision ?? "on");
   const [parallel, setParallel] = useState(initial?.parallel ?? 1);
   const [drafting, setDrafting] = useState(initial?.drafting ?? "auto");
+  const [idleExclude, setIdleExclude] = useState(initial?.idle_exclude ?? false);
+  const [autoStart, setAutoStart] = useState(initial?.auto_start ?? false);
   const [saving, setSaving] = useState(false);
+  // 稼働中は起動・停止の設定だけ変更できる（Strata の起動設定は変わらない）。
+  const running = !!initial?.loaded;
   const save = async () => {
     setSaving(true);
     try {
       await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
-        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting },
+        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart },
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["models", "local"] }),
@@ -2114,10 +2078,11 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
     </label>
     <label className="block text-xs">モデル系列
       <select aria-label="Strataモデル系列" value={family} onChange={(e) => {
-        const next = e.target.value as "qwen" | "deepseek41";
-        setFamily(next); setModel(next === "qwen" ? "iq2_xs" : "ista-das-coder");
+        const next = e.target.value as StrataFamily;
+        setFamily(next); setModel(STRATA_SIZES[next][0]);
       }} className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
         <option value="qwen">Qwen Flash-Next</option>
+        <option value="unsloth">Qwen Flash-Next (Unsloth)</option>
         <option value="deepseek41">DeepSeek V4.1 Flash</option>
       </select>
     </label>
@@ -2130,15 +2095,16 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
     <label className="block text-xs">量子化
       <select aria-label="Strataモデル量子化" value={model} onChange={(e) => setModel(e.target.value)}
         className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
-        {(family === "qwen" ? ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"] : ["ista-das-coder", "ist-das-2.00bpw"])
+        {STRATA_SIZES[family]
           .map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
     </label>
-    <label className="block text-xs">コンテキスト
-      <select aria-label="Strataコンテキスト" value={context} onChange={(e) => setContext(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
-        {["8k", "16k", "32k", "64k", "128k"].map((item) => <option key={item}>{item}</option>)}
-      </select>
+    <label className="block text-xs">コンテキスト（4k〜1024k。例: 96k）
+      <div className="mt-1">
+        <PresetOrCustom value={context} presets={STRATA_CTX_PRESETS} numeric={false} placeholder="96k"
+          onChange={(v) => setContext(String(v ?? "32k").trim().toLowerCase())} />
+      </div>
+      <span className="text-zinc-500">256k を超えると Strata が yarn で拡張します（精度は下がり得ます）。</span>
     </label>
     {([
       ["KVキャッシュ", kv, setKv, ["int8", "q4_0", "k8v4", "fp16"]],
@@ -2160,6 +2126,14 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
         onChange={(e) => setPort(e.target.value)}
         className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2" />
     </label>
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-zinc-500">起動と停止{running && "（稼働中はここだけ変更できます）"}</p>
+      <p className="text-[10px] text-zinc-400">一度ロードしたモデルは、チャット・ゲートウェイから使われたときに自動で起動します。Maya-S が動いていれば先に停止します。</p>
+      <Toggle label="共通アイドル停止から除外" hint="Models のランタイム設定「アイドル時に自動アンロード」の対象から外し、常駐させます"
+        value={idleExclude} onChange={setIdleExclude} />
+      <Toggle label="ControlDeck起動時に自動起動" hint="一度ロード済みのモデルだけが対象です。Maya-S と両方に付けた場合は Maya-S が優先です"
+        value={autoStart} onChange={setAutoStart} />
+    </div>
     <button disabled={saving} onClick={() => void save()}
       className="w-full rounded-xl bg-accent-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
       {saving ? "保存中…" : initial ? "設定を保存" : "Strataモデルを登録"}
@@ -2182,6 +2156,7 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
       <p>コンテキスト: {item.context}　ポート: {item.port}</p>
       <p>状態: {item.loaded ? "稼働中" : "停止中"}</p>
       <p>KV: {item.kv ?? "int8"} / 同時実行: {item.parallel ?? 1} / 投機デコード: {item.drafting ?? "auto"}</p>
+      <p>アイドル停止: {item.idle_exclude ? "除外（常駐）" : "共通設定に従う"} / 起動時自動起動: {item.auto_start ? "する" : "しない"}</p>
       {item.model_path && <p className="break-all text-xs">既存モデル: {item.model_path}</p>}
       <button disabled={item.loaded} onClick={() => setEditing(true)}
         className="rounded-lg border border-zinc-500 px-3 py-2 disabled:opacity-40">設定を変更</button>

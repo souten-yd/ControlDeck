@@ -240,20 +240,24 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // LLM エンドポイント自動検出
   const { data: endpoints } = useQuery({
     queryKey: ["llm-endpoints"],
-    queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean }[]>("/workflows/llm-endpoints"),
+    queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean; selected_runtime?: string }[]>("/workflows/llm-endpoints"),
     staleTime: 60_000,
     enabled: can("workflows.edit"),
   });
   // ⚙️の選択runtime（selected=true）へ追従する。選択が前回追従時から変わったら
-  // 保存済みendpointを上書きし、同じ選択のままなら手動指定を尊重する。
+  // 保存済みの接続先とモデルを上書きし、同じ選択のままなら手動指定を尊重する。
+  // ゲートウェイはランタイムを変えてもアドレスが同じなので、Models で選んだ
+  // ランタイムも追従の鍵に含める。変わったらモデルを auto（選んだランタイム）へ戻す。
   useEffect(() => {
     if (!endpoints?.length) return;
     const preferred = endpoints.find((ep) => ep.selected) ?? endpoints[0];
     if (!preferred) return;
-    if (preferred.base_url !== autoBase || !model) {
-      setAutoBase(preferred.base_url);
+    const followKey = preferred.selected_runtime ? `${preferred.base_url}#${preferred.selected_runtime}` : preferred.base_url;
+    if (followKey !== autoBase || !model) {
+      setAutoBase(followKey);
       setBaseUrl(preferred.base_url);
-      if (!preferred.models.includes(model)) setModel(preferred.models[0] ?? "");
+      if (followKey !== autoBase && preferred.models.includes("auto")) setModel("auto");
+      else if (!preferred.models.includes(model)) setModel(preferred.models[0] ?? "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endpoints]);

@@ -1288,10 +1288,14 @@ class StrataModelBody(BaseModel):
     model_path: str = Field(default="", max_length=4096)
     model_config = ConfigDict(extra="forbid")
     alias: str = Field(min_length=1, max_length=48)
-    family: Literal["qwen", "deepseek41"] = "qwen"
+    family: Literal["qwen", "unsloth", "deepseek41"] = "qwen"
     model: str = Field(min_length=1, max_length=50)
-    context: Literal["8k", "16k", "32k", "64k", "128k"] = "32k"
+    # Any "<N>k" from 4k to 1024k; strata_gateway.valid_context checks the range.
+    context: str = Field(default="32k", pattern=r"^[1-9][0-9]{0,3}k$")
     port: int = Field(default=8095, ge=8081, le=65535)
+    # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
+    idle_exclude: bool = False
+    auto_start: bool = False
 
 
 @router.get("/strata/instances")
@@ -1312,6 +1316,7 @@ def strata_create_instance(
             body.alias, family=body.family, model=body.model,
             context=body.context, port=body.port, model_path=body.model_path,
             kv=body.kv, vision=body.vision, parallel=body.parallel, drafting=body.drafting,
+            idle_exclude=body.idle_exclude, auto_start=body.auto_start,
         )
     except strata_gateway.StrataGatewayError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

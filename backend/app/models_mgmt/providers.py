@@ -160,6 +160,9 @@ def _gateway_candidate() -> dict | None:
         "name": "ControlDeck ゲートウェイ", "base_url": gateway.base_url(),
         "managed": True, "installed": True, "experimental": False,
         "available": True, "models": models, "gateway": True,
+        # 画面が「Models の選択が変わった」ことに気づくための値。ゲートウェイの
+        # アドレスはランタイムを変えても同じなので、アドレスだけでは追従できない。
+        "selected_runtime": _selected_runtime(),
         "capabilities": capabilities("control-deck-gateway", managed=True),
     }
 
