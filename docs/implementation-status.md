@@ -3865,3 +3865,13 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - 修正: 上流 setup がビルドした `build-hip/maya` を「HIP未ビルド」と表示していた。`runtime_status().built` を `build-hip` で判定し、ビルドのみ操作も同じディレクトリへ出力するよう変更。
 - main を取り込んだ PR head で backend **1358 passed / 2 skipped**、frontend production build 成功。
 - NOT TESTED: ブラウザでの画面確認（PC・モバイル）、上流の新Releaseへの更新（現在 v1.1.61 が最新）、応答品質の評価。
+
+### 2026-11-14 Maya-S / Strata の起動・停止設定（llama.cpp と同等）
+
+- 共通のアイドル自動アンロード（Models のランタイム設定「アイドル時に自動アンロード」・分数）を Maya-S と Strata にも適用（`large_model_lifecycle.idle_unload_loop`）。モデル個別に「共通アイドル停止から除外」「ControlDeck起動時に自動起動」。Maya-S は「要求時に自動起動」（既定オン。準備済みモデルのみ起動し、ダウンロードはしない）。Strata は従来どおり一度ロードしたモデルを要求時に起動。
+- 2つは同時に載らないため、要求時起動の前にもう一方を停止（Maya-S は使っていない llama.cpp チャットモデルも解放）。ゲートウェイは GPU 予約の前に解放する（broker は llama.cpp しか解放できず、Strata 要求が Maya-S の後ろで 300 秒待って失敗していた）。推論中は止めず、常駐指定のモデルも止めない。
+- 利用時刻は ready 確認ごとに記録し、ポートへ直接つないでいる外部クライアントがいれば停止しない。起動・停止の設定は稼働中でも変更できる。
+- コンテキスト: Maya-S はプリセット（8K〜1M）またはカスタム。Strata は 4k〜1024k の任意の `<N>k`（256K 超は Strata が yarn を付ける）。
+- 修正: llama.cpp の空エンドポイント（ep-8096）が Strata のポートと重なり、停止中の Strata へのチャットが llama 経由になって起動されず失敗していた。登録済み Strata/Maya-S のポートを優先。Strata API が `unsloth` 系列を 422 で拒否していたのも修正。
+- R9700 実機: アイドル停止（常駐指定は維持、30分超で停止）、ゲートウェイとチャット経路の両方で Maya-S → Strata → Maya-S の要求時切替（45〜66秒）を確認。backend 1384 passed / 2 skipped、frontend build 成功。
+- NOT TESTED: ブラウザでの設定画面、ControlDeck 再起動時の自動起動（設定がオフのため）。
