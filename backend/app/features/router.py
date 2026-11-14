@@ -243,8 +243,7 @@ class MayaSettingsBody(BaseModel):
     on_demand_start: bool = True
     idle_exclude: bool = False
     auto_start: bool = False
-    # Output cap advertised to OpenCode (thinking + answer) and Maya's thinking cap.
-    max_output_tokens: int = Field(default=65536, ge=1024, le=262144)
+    # Maya's thinking cap (output length follows the context for every model).
     thinking_budget: int = Field(default=32768, ge=0, le=131072)
 
 

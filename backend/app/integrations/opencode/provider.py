@@ -301,12 +301,11 @@ def _skill_paths() -> list[str]:
         return []
 
 
-# 一度の返答に許す長さ。窓のうちここは常に空けておく必要がある。
-#
-# 8,192 で 30KB 前後の文章に相当する。コードを書く用途で足りなかった実測は無く、
-# 足りなければモデルは続きを書ける。ここを広げるほど圧縮が早く来る（窓は
-# 入力と出力で分け合うため）。
-OPENCODE_MAX_OUTPUT_TOKENS = 8192
+# 1回の応答（思考を含む）に使える長さは窓の半分。固定の上限は置かない。
+# 以前は全モデル一律 8,192 で、思考を出力に数えるモデル（GLM-5.3-Flash など）は
+# 難しい課題で思考の途中で切れていた。半分を入力側に残すのは、OpenCode が
+# limit.input - compaction.reserved を超えたら会話を畳むため。窓を広げれば両方増える。
+OPENCODE_OUTPUT_SHARE = 2
 # 畳む作業そのものに要る余地。要約を書く一往復ぶん。
 OPENCODE_COMPACTION_RESERVED = 4096
 
@@ -410,19 +409,15 @@ def _model_limits(model: str) -> dict[str, int] | None:
 
         match = next(
             (i for i in local_llm.list_instances() if str(i.get("alias") or "") == model), None)
-        own_output = 0
         if match is not None:
             context = _window_of(match)
-            # A runtime may state its own cap (Maya-S: thinking + answer).
-            own_output = int(match.get("max_output_tokens") or 0)
         else:
             # gateway.resolve_instance と同じ候補集合（embedding/reranker は除く）。
             windows = [w for w in map(_window_of, local_llm.llm_instances()) if w > 0]
             context = min(windows) if windows else 0
         if context <= 0:
             return None
-        output = (min(own_output, max(1024, context // 2)) if own_output > 0
-                  else min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4)))
+        output = max(1024, context // OPENCODE_OUTPUT_SHARE)
         return {"context": context, "output": output, "input": context - output}
     except Exception:  # noqa: BLE001 - 窓の大きさが取れないことで session を止めない
         logger.exception("モデルの窓の大きさを取得できませんでした")

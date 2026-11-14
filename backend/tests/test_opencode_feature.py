@@ -354,7 +354,7 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
 
     # 候補のうち狭いほう。広いほうに合わせると、狭いモデルへ回った回だけ溢れが戻る。
     assert provider._model_limits("auto") == {
-        "context": 32768, "output": 8192, "input": 24576}
+        "context": 32768, "output": 16384, "input": 16384}
     # alias が実在するときはそのモデルの窓。embedding は候補に入れない。
     assert provider._model_limits("Wide")["context"] == 131072
     # 共有KVを切っていると ctx_size は slot へ固定配分される。1 request の
@@ -364,12 +364,10 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
          "kv_unified": False, "n_parallel": 4})
     assert provider._model_limits("Split")["context"] == 32768
     instances.pop()
-    # A runtime that states its own output cap (Maya-S: thinking + answer) keeps it,
-    # bounded by half its window so the input side never collapses.
-    instances.append({"alias": "maya-s", "role": "llm", "ctx_size": 1048576, "max_output_tokens": 65536})
-    assert provider._model_limits("maya-s") == {"context": 1048576, "output": 65536, "input": 983040}
-    instances[-1] = {"alias": "maya-s", "role": "llm", "ctx_size": 8192, "max_output_tokens": 65536}
-    assert provider._model_limits("maya-s")["output"] == 4096
+    # No fixed output cap: every model may answer (thinking included) with half its
+    # window, so a 1M-context model is not cut at 8,192 mid-thought.
+    instances.append({"alias": "maya-s", "role": "llm", "ctx_size": 1048576})
+    assert provider._model_limits("maya-s") == {"context": 1048576, "output": 524288, "input": 524288}
     instances.pop()
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
@@ -381,7 +379,7 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
     assert limit["context"] == 32768
     # input がある場合だけ compaction.reserved が読まれる。両方が揃って初めて
     # 発火点が input - reserved になる。
-    assert limit["input"] == 24576
+    assert limit["input"] == 16384
     reserved = payload["compaction"]["reserved"]
     assert limit["input"] - reserved < limit["context"], "発火点が窓を越えている"
 

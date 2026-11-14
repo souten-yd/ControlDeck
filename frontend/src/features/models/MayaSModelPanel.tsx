@@ -23,12 +23,11 @@ export interface MayaSettings {
   on_demand_start: boolean;
   idle_exclude: boolean;
   auto_start: boolean;
-  max_output_tokens: number;
   thinking_budget: number;
 }
 
 /** ControlDeck側だけの設定。稼働中でも変更できる（Maya の設定ファイルは変わらない）。 */
-const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start", "max_output_tokens"] as const;
+const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start"] as const;
 // GLM-5.3-Flash は最大 1M。Maya は VRAM を超える KV を RAM へ逃がす。
 const MAYA_CTX_PRESETS = [...CTX_PRESETS.filter((p) => Number(p.v) >= 8192),
   ...[524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }))];
@@ -50,7 +49,7 @@ interface MayaJob { id: string; kind: string; status: string; error: string; pro
 const DEFAULT_SETTINGS: MayaSettings = {
   model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
   on_demand_start: true, idle_exclude: false, auto_start: false,
-  max_output_tokens: 65536, thinking_budget: 32768,
+  thinking_budget: 32768,
 };
 
 /** Maya-Sの状態。settings.manage を持たない利用者には問い合わせない。 */
@@ -249,21 +248,13 @@ function MayaSettingsForm({ status, mode, onDone }: {
           </button>
         </div>
       </SettingsGroup>
-      <SettingsGroup title="基本" description="扱える長さと、1回に書ける長さ">
+      <SettingsGroup title="基本" description="扱える長さ。1回の応答（思考＋回答）は全モデル共通でコンテキストの半分まで">
         <label className="block text-xs">コンテキスト長（CTX）
           <div className="mt-1">
             <PresetOrCustom ariaLabel="Maya-S コンテキスト長" value={settings.context} presets={MAYA_CTX_PRESETS} placeholder="8192" disabled={locked}
               onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />
           </div>
           <span className="text-[10px] text-zinc-500">GLM-5.3-Flash は最大 1M。この PC では 1M でも速度はほぼ変わりません（KV は RAM に置かれます）。</span>
-        </label>
-        <label className="block text-xs">出力の上限（思考＋回答のトークン）
-          <div className="mt-1">
-            <PresetOrCustom ariaLabel="Maya-S 出力の上限" value={settings.max_output_tokens}
-              presets={[16384, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="65536"
-              onChange={(v) => setSettings({ ...settings, max_output_tokens: Math.min(262144, Math.max(1024, Number(v ?? 65536))) })} />
-          </div>
-          <span className="text-[10px] text-zinc-500">OpenCode へ伝える上限。思考も出力に数えるため、思考の上限より十分大きくします（コンテキストの半分まで）。稼働中も変更できます。</span>
         </label>
       </SettingsGroup>
       {mode === "detail" && (
@@ -298,7 +289,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
         </div>
       </SettingsGroup>
       <SheetActions note={locked ? (status.running
-        ? "稼働中は「起動と停止」と出力の上限だけ変更できます。ほかはアンロードしてから変更してください。"
+        ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。"
         : "準備ジョブの完了後に変更できます。") : undefined}>
         {mode === "detail" && !needsPrepare && (
           <button type="button" disabled={saving || saveLocked} onClick={() => void save(false)} className={primaryButton}>
