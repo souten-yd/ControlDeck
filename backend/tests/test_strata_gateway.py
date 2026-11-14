@@ -174,6 +174,13 @@ def test_settings_update_requires_stopped_model_and_resets_activation(monkeypatc
     assert changed["n_parallel"] == 2
     assert changed["activated"] is False
     assert changed["model"] == "iq3_s"
+    # Same weights, only the context changes: stays prepared (auto and on-demand start keep it).
+    items = strata_gateway._read()
+    items["qwen"]["activated"] = True
+    strata_gateway._write(items)
+    widened = strata_gateway.save_instance("qwen", family="qwen", model="iq3_s", port=8095,
+        context="128k", kv="q4_0", vision="off", parallel=2, drafting="mtp", replace=True)
+    assert widened["activated"] is True and widened["ctx_size"] == 131072
 
 
 def test_addon_target_can_use_activated_local_strata(monkeypatch, tmp_path):

@@ -283,7 +283,13 @@ def save_instance(alias: str, *, family: str, model: str,
     if local_llm.port_taken_by_other_runtime(port, "strata"):
         raise StrataGatewayError("別のローカルランタイムがポートを使用しています")
     # Do not auto-start or download weights at registration time.
-    items[alias] = {**wanted, "activated": False}
+    # 「準備済み（activated）」は重みを用意したかどうか。系列・量子化・GGUF が同じなら
+    # コンテキスト長などを変えても重みはそのまま使えるので、準備済みを保つ。
+    # 落とすと、要求時の自動起動と auto の候補から外れてしまう。
+    previous = items.get(alias) if replace else None
+    same_weights = bool(previous) and all(
+        previous.get(key) == wanted[key] for key in ("family", "model", "model_path"))
+    items[alias] = {**wanted, "activated": bool(same_weights and previous.get("activated"))}
     _write(items)
     return get_instance(alias)
 
