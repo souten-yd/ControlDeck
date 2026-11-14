@@ -143,3 +143,47 @@ def test_release_for_strata_stops_running_maya_only(monkeypatch):
                                       ("2k", False), ("2048k", False), ("32K", False), ("32", False)])
 def test_strata_context_accepts_any_k_size_in_range(value, ok):
     assert strata_gateway.valid_context(value) is ok
+
+
+def test_release_for_keeps_a_resident_model(monkeypatch):
+    from app.models_mgmt import strata
+    stopped = _stops(monkeypatch)
+    monkeypatch.setattr(maya_s, "installed", lambda: True)
+    monkeypatch.setattr(maya_s, "is_running", lambda: True)
+    monkeypatch.setattr(maya_s, "get_settings", lambda: {"idle_exclude": True})
+    monkeypatch.setattr(strata, "installed", lambda: False)
+    with pytest.raises(RuntimeError, match="常駐"):
+        asyncio.run(large_model_lifecycle.release_for("strata"))
+    assert stopped == []
+
+
+def test_gateway_switch_frees_the_other_large_model_only_when_target_is_stopped(monkeypatch):
+    from app.models_mgmt import local_llm
+    calls = []
+    async def release(runtime):
+        calls.append(runtime)
+    async def idle(seconds=60.0):
+        return True
+    monkeypatch.setattr(large_model_lifecycle, "release_for", release)
+    monkeypatch.setattr(large_model_lifecycle, "_wait_idle_requests", idle)
+    rows = {"qwen": {"runtime": "strata", "loaded": False},
+            "maya-s": {"runtime": "maya-s", "loaded": True},
+            "Qwen3.8-27B": {"runtime": "llama.cpp", "loaded": False}}
+    monkeypatch.setattr(local_llm, "find", lambda alias: rows.get(alias))
+    for alias in ("qwen", "maya-s", "Qwen3.8-27B", "missing"):
+        asyncio.run(large_model_lifecycle.prepare_switch(alias))
+    assert calls == ["strata"]
+
+
+def test_gateway_switch_never_cuts_a_running_request(monkeypatch):
+    from app.models_mgmt import local_llm
+    calls = []
+    async def release(runtime):
+        calls.append(runtime)
+    async def busy(seconds=60.0):
+        return False
+    monkeypatch.setattr(large_model_lifecycle, "release_for", release)
+    monkeypatch.setattr(large_model_lifecycle, "_wait_idle_requests", busy)
+    monkeypatch.setattr(local_llm, "find", lambda alias: {"runtime": "strata", "loaded": False})
+    asyncio.run(large_model_lifecycle.prepare_switch("qwen"))
+    assert calls == []

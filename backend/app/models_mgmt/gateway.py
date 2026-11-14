@@ -278,6 +278,10 @@ async def _acquire_gateway_lease(alias: str, request: Request):
     from app.resources.broker import broker
     from app.resources.schema import RequestState
 
+    from app.models_mgmt import large_model_lifecycle
+
+    # Maya-S and Strata cannot both be resident and the broker cannot release them.
+    await large_model_lifecycle.prepare_switch(alias)
     adapter = provider()
     await adapter.enter_request()
     status = None

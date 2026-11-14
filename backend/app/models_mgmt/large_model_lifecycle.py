@@ -73,6 +73,42 @@ def _loaded_models() -> list[tuple[str, dict]]:
     return rows
 
 
+async def _wait_idle_requests(seconds: float = 60.0) -> bool:
+    """True once no local LLM request is in flight (so nothing is cut off)."""
+    from app.models_mgmt.resource_provider import provider
+
+    adapter = provider()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while adapter._active_requests > 0:
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(0.5)
+    return True
+
+
+async def prepare_switch(alias: str) -> None:
+    """Before the gateway reserves GPU for a stopped Maya-S/Strata model, free the other.
+
+    The resource broker only knows how to release llama.cpp models, so without
+    this a request for Strata waits behind a resident Maya-S (and vice versa)
+    until admission times out.
+    """
+    from app.models_mgmt import local_llm
+
+    item = await asyncio.to_thread(local_llm.find, alias)
+    runtime = str((item or {}).get("runtime") or "")
+    if runtime not in (MAYA, STRATA) or (item or {}).get("loaded"):
+        return
+    if not await _wait_idle_requests():
+        logger.info("%s を起動するための解放を見送りました（推論中）", alias)
+        return
+    try:
+        await release_for(runtime)
+    except RuntimeError as exc:
+        logger.info("%s を起動するための解放を見送りました: %s", alias, exc)
+
+
 async def release_for(runtime: str) -> None:
     """Free memory before an on-demand start of `runtime`.
 
@@ -83,12 +119,16 @@ async def release_for(runtime: str) -> None:
     from app.models_mgmt import maya_s, strata, strata_gateway
 
     if runtime != MAYA and maya_s.installed() and await asyncio.to_thread(maya_s.is_running):
+        if maya_s.get_settings().get("idle_exclude"):
+            raise RuntimeError("Maya-Sが常駐指定で稼働中です")
         ok, reason = await asyncio.to_thread(maya_s.stop_instance)
         if not ok:
             raise RuntimeError(reason or "Maya-Sを停止できませんでした")
     if runtime != STRATA and strata.installed():
         for item in await asyncio.to_thread(strata_gateway.list_instances):
             if item.get("loaded"):
+                if item.get("idle_exclude"):
+                    raise RuntimeError(f"Strataモデル {item['alias']} が常駐指定で稼働中です")
                 ok, reason = await asyncio.to_thread(strata_gateway.stop_instance, str(item["alias"]))
                 if not ok:
                     raise RuntimeError(reason or "Strataモデルを停止できませんでした")
