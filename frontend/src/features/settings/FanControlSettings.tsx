@@ -14,6 +14,8 @@ type FanSettings = {
   /** After the hold, the floor ramps down continuously at this rate. */
   cool_rate_percent_per_min: number;
   zero_stable_seconds: number;
+  temp_rise_tau_seconds: number;
+  temp_fall_tau_seconds: number;
   learning_enabled: boolean;
   ff_gain: number;
   kp: number;
@@ -96,6 +98,7 @@ type FanStatus = {
     floor_percent: number | null;
     rise_c_per_min: number;
     zero_rpm_permitted: boolean;
+    smoothed_temps_c?: Record<string, number>;
     power_ema_w?: number | null;
     min_predicted_headroom_c?: number;
     learning?: { ff_gain: number; kp: number; ki: number; observations: number };
@@ -279,7 +282,10 @@ export function FanControlSettings() {
     setDraft({ ...draft, preset_id: preset.id, min_percent: preset.min_percent,
       allow_zero_rpm: preset.allow_zero_rpm, cool_hold_seconds: preset.cool_hold_seconds,
       cool_rate_percent_per_min: preset.cool_rate_percent_per_min,
-      zero_stable_seconds: preset.zero_stable_seconds, learning_enabled: preset.learning_enabled,
+      zero_stable_seconds: preset.zero_stable_seconds,
+      temp_rise_tau_seconds: preset.temp_rise_tau_seconds,
+      temp_fall_tau_seconds: preset.temp_fall_tau_seconds,
+      learning_enabled: preset.learning_enabled,
       ff_gain: preset.ff_gain, kp: preset.kp, ki: preset.ki, targets_c: targets,
       backstop_percent: preset.backstop_percent, backstop_c: preset.backstop_c,
       ...(preset.control_mode ? { control_mode: preset.control_mode } : {}),
@@ -334,6 +340,10 @@ export function FanControlSettings() {
               主センサー: {data.active.critical_sensor} / 昇温: {data.active.rise_c_per_min.toFixed(1)}°C/分 /
               電力(平滑): {data.active.power_ema_w == null ? "N/A" : data.active.power_ema_w + "W"}
             </p>}
+            {data.active?.smoothed_temps_c && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">
+              制御用PV/EMA: {data.active.sensors.map((s) => `${s.label} ${data.active!.smoothed_temps_c?.[s.id]?.toFixed(1) ?? "N/A"}°C`).join(" / ")}
+              （昇温 {data.settings.temp_rise_tau_seconds}秒・降温 {data.settings.temp_fall_tau_seconds}秒）
+            </p>}
             {data.active?.learning && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">
               学習中の係数 FF {data.active.learning.ff_gain.toFixed(1)} / P {data.active.learning.kp.toFixed(2)}
             </p>}
@@ -382,7 +392,7 @@ export function FanControlSettings() {
             {draft.control_mode === "curve" && (
               <div className="space-y-3">
                 <p className="text-[11px] leading-relaxed text-zinc-500">
-                  GPUのファームウェアはファンカーブをhotspot温度で直接読み、1秒未満で反応します。カーブは「目標−30°Cから上げ始め、目標温度で連続負荷を目標に収める回転（熱モデルから計算）、目標+5°Cで100%」に自動設計します。
+                  GPUのファームウェアは生のhotspot温度でカーブを読み、1秒未満で反応します（このハードウェア動作にEMAは適用できません）。カーブは「目標−30°Cから上げ始め、目標温度で連続負荷を目標に収める回転（熱モデルから計算）、目標+5°Cで100%」に自動設計します。
                   下げ方向はこちらで「保持時間 → 減速の速さ」でゆっくり下げ、LLMの0〜100%の繰り返しで回転が上下しないようにします。VRAMなどhotspot以外は余裕に応じて下限を上げ、目標を超え続けたらカーブを少しずつ持ち上げる補正をかけます。
                 </p>
                 <AutoTuneCard pid={data.pid} enabledPid={data.settings.enabled && data.settings.control_mode === "pid"}/>
@@ -504,6 +514,12 @@ export function FanControlSettings() {
           <details className={surface}>
             <summary className="min-h-10 cursor-pointer text-xs font-semibold">詳細な制御パラメータ</summary>
             <div className="mt-3 space-y-3">
+              <RangeControl label="温度平滑化・昇温側の時定数" min={0.5} max={15} step={0.5}
+                value={draft.temp_rise_tau_seconds ?? 2} suffix="秒" hint="上昇時は素早く追従します。高温の安全判定は平滑化せず実測値で行います。"
+                onChange={(value) => update({ temp_rise_tau_seconds: value })}/>
+              <RangeControl label="温度平滑化・降温側の時定数" min={2} max={120} step={1}
+                value={draft.temp_fall_tau_seconds ?? 30} suffix="秒" hint="一瞬の温度低下では通常制御の回転要求を下げません。保持時間・減速制限とは別です。"
+                onChange={(value) => update({ temp_fall_tau_seconds: value })}/>
               <RangeControl label="減速を始めるまでの保持時間" min={30} max={600} step={15}
                 value={draft.cool_hold_seconds} suffix="秒" hint="冷えた直後はすぐに下げません。短いLLM負荷の谷でファンが上下しないようにします。"
                 onChange={(value) => update({ cool_hold_seconds: value })}/>

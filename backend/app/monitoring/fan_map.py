@@ -8,7 +8,7 @@ handled by the curve itself:
   hotspot target equals what sustained full load needs to settle there,
   rising linearly from 30 °C below the target (hotspot spikes of LLM bursts
   are followed proportionally, not ignored);
-* the software holds the curve's flat level at the highest recent demand and
+* the software computes normal demand from a configurable asymmetric EMA and
   releases it slowly (LLM load alternates 0–100 %), so the fan does not
   oscillate with every token batch;
 * slow sensors (VRAM, edge) are not seen by the firmware curve; their demand
@@ -38,6 +38,24 @@ MODEL_MARGIN_PERCENT = 3.0
 TRIM_GAIN = 0.02
 TRIM_DECAY_PER_S = 0.003
 TRIM_MAX = 30.0
+# Release band below the hotspot target: no release within NEAR, full rate
+# from FAR down. Releasing while the hotspot sits just under its target made a
+# limit cycle under sustained load (Maya-S, 212 W): release -> hotspot climbs
+# into the steep top of the curve -> attack to ~70 % -> hold -> release again
+# (a 50-70 % sawtooth every 1.5-2 min). Scaling the release by the distance to
+# the target lets the held level settle on the speed the load needs, for any
+# model, without a learned per-load value.
+RELEASE_NEAR_BELOW_TARGET_C = 3.0
+RELEASE_FAR_BELOW_TARGET_C = 8.0
+
+
+def release_scale(hot_c: float | None, target_c: float) -> float:
+    """0 within NEAR of the target, 1 from FAR below it, linear between."""
+    if hot_c is None:
+        return 1.0
+    below = target_c - hot_c
+    span = RELEASE_FAR_BELOW_TARGET_C - RELEASE_NEAR_BELOW_TARGET_C
+    return min(1.0, max(0.0, (below - RELEASE_NEAR_BELOW_TARGET_C) / span))
 
 
 @dataclass
@@ -108,34 +126,44 @@ class MapController:
         hot = next((s for s in sensors if s.get("kind") == "junction"), None)
         hot_target = float(hot["target_c"]) if hot else 90.0
         # Slow trim from the smoothed excess over any target.
-        excess = max(self.pv.update(s["id"], float(s["value_c"]), dt) - float(s["target_c"])
-                     for s in sensors)
+        excess = max(self.pv.update(s["id"], float(s.get("control_c", s["value_c"])), dt)
+                     - float(s["target_c"]) for s in sensors)
         if excess > 0:
             self.trim = min(TRIM_MAX, self.trim + TRIM_GAIN * excess * dt)
         elif excess < -5:
             self.trim = max(0.0, self.trim - TRIM_DECAY_PER_S * dt)
         at_target = target_speed(model, hot["id"] if hot else None, hot_target, minimum, maximum)
         shape = design(ranges, minimum, hot_target, at_target, self.trim)
-        # Demand now: the hotspot through the map on its peak of the last 3
-        # readings (spikes are followed; the firmware also reacts to them
-        # within a second), slow sensors by their headroom.
+        # With EMA from the orchestrator, do not stack a 3-tick peak hold.
+        # Firmware itself continues to react to raw hotspot temperature.
         demand = float(minimum)
         if hot:
-            window = self.raw.setdefault(hot["id"], [])
-            window.append(float(hot["value_c"]))
-            del window[:-3]
-            demand = max(demand, shape.at(max(window)))  # attack on the peak
+            if "control_c" in hot:
+                demand = max(demand, shape.at(float(hot["control_c"])))
+            else:
+                window = self.raw.setdefault(hot["id"], [])
+                window.append(float(hot["value_c"]))
+                del window[:-3]
+                demand = max(demand, shape.at(max(window)))
         slow = [s for s in sensors if s is not hot]
         if slow:
-            demand = max(demand, margin_ramp(min(float(s["headroom_c"]) for s in slow), minimum, maximum))
+            headroom = min(float(s["target_c"]) - float(s.get("control_c", s["value_c"])) for s in slow)
+            demand = max(demand, margin_ramp(headroom, minimum, maximum))
+        # Emergency software demand is independent of EMA and release hold.
+        if any(float(s["value_c"]) >= float(s["target_c"]) + 5.0 for s in sensors):
+            demand = float(maximum)
         # Fast attack, hold, then a slow continuous release.
         if self.held is None or demand >= self.held:
             self.held, self.peak_at = demand, now
         elif now - self.peak_at >= hold_seconds:
-            self.held = max(demand, self.held - release_percent_per_min * dt / 60)
+            hot_c = float(hot.get("control_c", hot["value_c"])) if hot else None
+            scale = release_scale(hot_c, hot_target)
+            self.held = max(demand, self.held - release_percent_per_min * scale * dt / 60)
         floor = int(round(min(maximum, self.held)))
         info = {"held_percent": round(self.held, 1), "demand_percent": round(demand, 1),
                 "trim_percent": round(self.trim, 2), "at_target_percent": round(at_target, 1),
+                "release_scale": round(release_scale(
+                    float(hot.get("control_c", hot["value_c"])) if hot else None, hot_target), 2),
                 "curve_temps": shape.temps, "curve_percents": shape.percents,
                 "excess_c": round(excess, 2)}
         return floor, shape.curve(floor), info
