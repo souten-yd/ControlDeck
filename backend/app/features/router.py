@@ -245,6 +245,7 @@ class MayaSettingsBody(BaseModel):
     auto_start: bool = False
     # Maya's thinking cap (output length follows the context for every model).
     thinking_budget: int = Field(default=32768, ge=0, le=131072)
+    reasoning_effort: Literal["low", "medium", "high", "max"] = "high"
 
 
 @router.put("/maya-s/settings")

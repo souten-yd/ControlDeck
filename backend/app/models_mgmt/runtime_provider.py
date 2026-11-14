@@ -28,7 +28,9 @@ class RuntimeChatRequest:
     model: str
     messages: list[dict[str, Any]]
     api_key: str = ""
-    temperature: float = 0.4
+    # None は「送らない」: 各モデルの設定（llama.cpp の個別設定、Strata / Maya-S のモデルカード
+    # 推奨値、Ollama の Modelfile）に任せる。構造化生成などで決め打ちしたい呼び出しだけ数値を渡す。
+    temperature: float | None = 0.4
     max_tokens: int = 2048
     thinking: bool | str | None = None
     disable_thinking: bool = False
@@ -163,10 +165,11 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": request.messages,
-            "temperature": request.temperature,
             "stream": stream,
             "max_tokens": request.max_tokens,
         }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
         if request.keep_alive is not None:
             payload["keep_alive"] = request.keep_alive
         if request.disable_thinking or request.thinking is False:
@@ -391,10 +394,9 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         self, request: RuntimeChatRequest, *, stream: bool,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        options: dict[str, Any] = {
-            "temperature": request.temperature,
-            "num_predict": request.max_tokens,
-        }
+        options: dict[str, Any] = {"num_predict": request.max_tokens}
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
         if request.context_window is not None:
             options["num_ctx"] = request.context_window
         payload: dict[str, Any] = {

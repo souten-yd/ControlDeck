@@ -36,6 +36,24 @@ _CONTEXT_MIN_K, _CONTEXT_MAX_K = 4, 1024
 LIFECYCLE_KEYS = ("idle_exclude", "auto_start")
 
 
+# Strata の `--set KEY=VALUE`（STRATA_* の環境変数かエンジン設定）。ControlDeck の既定値に
+# 登録ごとの上書き（cfg["engine_settings"]）を重ねる。値に "off" を渡すと Strata 側の既定に戻る。
+# 既定は「速さのために計算を省く近似」を止めるものだけ。2026-11-14 に R9700 で実測:
+#  - STRATA_ROUTE_TAIL_SKIP=0: VRAM キャッシュに無いエキスパートを順位次第で飛ばす近似（Strata の既定 7、
+#    答えが変わる）を止める。コーディング課題 10 問で正答は同じ 10/10、速度は約 -6%（89.8→84.0 tok/s）。
+#  - STRATA_HC_Q8=0: hyper-connection の重みを読み込み時に Q8 へ量子化しない（bf16 のまま）。速度差は誤差内。
+# 丸め順が変わるだけの高速化（MMQ・CPU 分担・WMMA、KL 0.002〜0.03）は残す。
+DEFAULT_ENGINE_SETTINGS: dict[str, str] = {"STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_HC_Q8": "0"}
+_SETTING_KEY = re.compile(r"^(STRATA_[A-Z0-9_]{1,64}|[a-z][a-z0-9_.-]{0,63})$")
+_SETTING_VALUE = re.compile(r"^[A-Za-z0-9_.:+-]{1,64}$")
+
+
+def engine_settings(cfg: dict) -> dict[str, str]:
+    """起動時に --set で渡す設定。形の合わないものは渡さない（引数の注入を防ぐ）。"""
+    merged = {**DEFAULT_ENGINE_SETTINGS, **{str(k): str(v) for k, v in (cfg.get("engine_settings") or {}).items()}}
+    return {k: v for k, v in merged.items() if _SETTING_KEY.fullmatch(k) and _SETTING_VALUE.fullmatch(v)}
+
+
 def valid_context(value: str) -> bool:
     match = _CONTEXT.fullmatch(str(value))
     return bool(match) and _CONTEXT_MIN_K <= int(match[1]) <= _CONTEXT_MAX_K
@@ -290,6 +308,8 @@ def save_instance(alias: str, *, family: str, model: str,
     same_weights = bool(previous) and all(
         previous.get(key) == wanted[key] for key in ("family", "model", "model_path"))
     items[alias] = {**wanted, "activated": bool(same_weights and previous.get("activated"))}
+    if previous and previous.get("engine_settings"):
+        items[alias]["engine_settings"] = dict(previous["engine_settings"])
     _write(items)
     return get_instance(alias)
 
@@ -342,6 +362,8 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
             args += ["--model-path", _validate_model_path(cfg["model_path"])]
         except StrataGatewayError as exc:
             return False, str(exc)
+    for key, value in engine_settings(cfg).items():
+        args += ["--set", f"{key}={value}"]
     try:
         result = _run(args, timeout=7200 if explicit else 420)
     except StrataGatewayError as exc:

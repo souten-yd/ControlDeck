@@ -332,8 +332,11 @@ def _enable_fit_max_tokens() -> None:
     if config is None:
         return
     cfg = json.loads(config.read_text(encoding="utf-8"))
-    if cfg.get("fit_max_tokens") is not True:
+    # A (re)setup writes the card's defaults; put back what ControlDeck manages.
+    effort = str(get_settings().get("reasoning_effort") or "high")
+    if cfg.get("fit_max_tokens") is not True or cfg.get("reasoning_effort") != effort:
         cfg["fit_max_tokens"] = True
+        cfg["reasoning_effort"] = effort
         config.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
 
 
@@ -547,7 +550,11 @@ def get_settings() -> dict:
                 "parallel": 1, "ram_headroom_gb": 16, "drafting": "on",
                 "on_demand_start": True, "idle_exclude": False, "auto_start": False,
                 # Maya's cap on the thinking; the answer starts past it.
-                "thinking_budget": 32768}
+                "thinking_budget": 32768,
+                # The depth a request gets when it names none. The GLM card's default is max
+                # (about 30 min per coding answer on an R9700); high gave the same passing
+                # code in a quarter of the time, so it is the default for coding here.
+                "reasoning_effort": "high"}
     path = root() / "settings.json"
     if path.is_file() and not path.is_symlink():
         defaults.update(json.loads(path.read_text(encoding="utf-8")))
@@ -590,6 +597,7 @@ def save_settings(settings: dict) -> dict:
         cfg["gpu"] = [value["gpu_index"]]
         # Maya's own cap on the thinking; past it the answer starts.
         cfg["thinking_budget"] = int(value["thinking_budget"])
+        cfg["reasoning_effort"] = str(value["reasoning_effort"])
         cfg.setdefault("env", {})["MAYA_GLM_RAM_HEADROOM_GB"] = str(value["ram_headroom_gb"])
         cfg["env"]["MAYA_GLM_MTP_DECODE"] = "1" if value["drafting"] == "on" else "0"
         config.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
