@@ -595,6 +595,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     try:
         runtime_request = RuntimeChatRequest(
             base_url=base_url, model=model, messages=history,
+            # 会話はモデル側の推奨サンプリングに任せる（一律 0.4 だと思考モデルの推奨 0.6〜1.0 から外れる）。
+            temperature=None,
             max_tokens=max_output_tokens, thinking=think, reasoning_effort=think_spec.reasoning_effort,
             disable_thinking=think is False, keep_alive=_keep_alive(),
         )
