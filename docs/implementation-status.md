@@ -3930,3 +3930,10 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - 思考の既定（要求が指定しないとき）: Radiance は `--reasoning-effort` / `--thinking-token-budget`（high・max の要求は xhigh へ読み替え。テンプレートは low/medium/xhigh のみ）。Strata は `POST /settings`（Strata が保存、稼働中でも即反映。launch --set だと予算がエンジン引数に入り起動不能）。Maya-S（深さ・上限）と llama.cpp は既存。
 - 実機確認: Radiance medium で同じ課題の思考 280 トークン、high 要求が 400 にならない。Strata medium/8192 を起動時に適用、稼働中の解除も反映。
 - 注意: xhigh の思考を小さい上限で打ち切ると、回答が max_tokens まで続くことがある。
+
+### 2026-11-15 モデル表記の統一・全エンジンの前処理/生成表示・Radiance 2.0.0
+- 一覧: タイトルはモデル名（Qwen3.8-27B / Qwen3.8-Flash-Next / GLM-5.3-Flash）、下に「ランタイム · 量子化 · サイズ」。ゲートウェイの名前はツールチップと個別設定のタイトル。全行に同じ「…」メニュー。VISION は Strata（画像入力オン）・Radiance・設定済みの Maya-S に表示。
+- LLM 利用状況: Strata / Maya-S / Radiance も前処理・生成を表示。エンジンが timings を返せばその値、無ければ ControlDeck が中継しながら測る（最初のトークンまで＝前処理、以降＝生成）。止まっている間は前回値。
+- Vulkan: 未導入なら選択肢に出さない（ROCm に統一）。
+- Radiance 2.0.0: 設定は YAML（`--config`）。登録ごとに書き出して読み取り専用でマウント、`--check` で検証。起動 15 秒（1.17.0 は 33 秒）。コーディング課題 10 問 10/10・計 100 秒・12.5K トークン（1.17.0 は 1,259 秒・97K トークン、思考が大幅に短い）。served model 名が一致しない要求はエラーになる（ControlDeck は別名を送るので影響なし）。
+- 大きいモデル（Strata / Radiance）のロードは、同時ロード上限の判定より先に他の大きいモデルを解放する。
