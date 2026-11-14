@@ -92,3 +92,31 @@ def test_curve_raw_overshoot_applies_before_filter_release():
     floor, _, info = ctl.update(s, ranges=RANGES, model=model(), minimum=20, maximum=100,
                                 now=0, dt=3.0, hold_seconds=30, release_percent_per_min=20)
     assert floor == 100 and info["demand_percent"] == 100
+
+
+def test_release_scale_band():
+    assert fan_map.release_scale(89.0, 90) == 0.0
+    assert fan_map.release_scale(87.0, 90) == 0.0
+    assert fan_map.release_scale(84.5, 90) == 0.5
+    assert fan_map.release_scale(80.0, 90) == 1.0
+    assert fan_map.release_scale(None, 90) == 1.0
+
+
+def test_held_level_settles_instead_of_cycling_near_target():
+    """Sustained load hovering just under the target must not saw-tooth."""
+    ctl = fan_map.MapController()
+    kw = dict(ranges=RANGES, model=model(), minimum=20, maximum=100, dt=3.0,
+              hold_seconds=30, release_percent_per_min=30)
+    peak, _, _ = ctl.update(sensors(92), now=0, **kw)   # brief excursion: attack
+    t, floors = 3.0, []
+    for _ in range(100):                                  # 5 min at 88 C (2 below target)
+        floor, _, info = ctl.update(sensors(88), now=t, **kw)
+        floors.append(floor)
+        t += 3
+    assert peak > 60
+    assert min(floors) == max(floors) == peak              # held, never released
+    assert info["release_scale"] == 0.0
+    for _ in range(40):                                   # clearly cool: releases again
+        floor, _, _ = ctl.update(sensors(70), now=t, **kw)
+        t += 3
+    assert floor < peak
