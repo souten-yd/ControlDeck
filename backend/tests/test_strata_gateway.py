@@ -244,3 +244,21 @@ def test_free_form_chat_leaves_sampling_to_the_model():
     assert "temperature" not in free
     fixed = provider._payload(RuntimeChatRequest(base_url="http://x/v1", model="m", messages=[], temperature=0.2), stream=False)
     assert fixed["temperature"] == 0.2
+
+
+def test_thinking_settings_are_passed_to_launch(monkeypatch, tmp_path):
+    from app.models_mgmt import local_llm
+    _managed(monkeypatch, tmp_path)
+    monkeypatch.setattr(local_llm, "find", lambda alias: None)
+    monkeypatch.setattr(local_llm, "port_taken_by_other_runtime", lambda *a: False)
+    row = strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+                                       reasoning_effort="medium", thinking_budget=4096)
+    assert row["reasoning_effort"] == "medium" and row["thinking_budget"] == 4096
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("qwen2", family="qwen", model="iq2_xs", port=8094, reasoning_effort="max")
+    seen = []
+    monkeypatch.setattr(strata_gateway, "_run", lambda args, timeout=0: (seen.append(args),
+                        __import__("subprocess").CompletedProcess(args, 1, "", "stop here"))[1])
+    strata_gateway._start_locked("qwen", explicit=True)
+    joined = " ".join(seen[0])
+    assert "--set reasoning-effort=medium" in joined and "--set reasoning-budget-tokens=4096" in joined

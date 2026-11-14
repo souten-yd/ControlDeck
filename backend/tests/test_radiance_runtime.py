@@ -121,3 +121,16 @@ def test_runtime_policy_and_feature_know_radiance():
     assert registry.FEATURES["radiance"]["kind"] == "gpu-runtime"
     assert gpu_runtime.is_gpu_runtime("radiance")
     assert radiance._TAG.fullmatch(radiance.PINNED_TAG)
+
+
+def test_thinking_defaults_reach_the_server(managed):
+    radiance.save_instance("q", model_path=str(managed), port=8100)
+    args = " ".join(radiance.launch_args("q", radiance._read()["q"]))
+    # The template's own depth, no cap; high/max (OpenCode, GLM-style) mapped to the template's xhigh.
+    assert "--reasoning-effort " not in args and "--thinking-token-budget" not in args
+    assert "--reasoning-effort-map high=xhigh,max=xhigh" in args
+    radiance.save_instance("r", model_path=str(managed), port=8101, reasoning_effort="medium", thinking_budget=8192)
+    args = " ".join(radiance.launch_args("r", radiance._read()["r"]))
+    assert "--reasoning-effort medium" in args and "--thinking-token-budget 8192" in args
+    with pytest.raises(radiance.RadianceError):
+        radiance.save_instance("s", model_path=str(managed), port=8102, reasoning_effort="high")

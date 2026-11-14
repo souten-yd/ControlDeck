@@ -8,7 +8,7 @@ import { BottomSheet } from "../../components/ui";
 import { IconFolder } from "../../components/icons";
 import { useToasts } from "../../stores";
 import {
-  CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton,
+  CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, ThinkingDefaults, Toggle, primaryButton,
 } from "./formControls";
 
 export type RadianceKv = "bf16" | "fp8" | "fp8_v4" | "k6_v4";
@@ -21,6 +21,8 @@ export interface RadianceSettings {
   max_num_seqs: number;
   speculative_tokens: number | null;
   gpu_headroom_mib: number;
+  reasoning_effort: "" | "none" | "low" | "medium" | "xhigh";
+  thinking_budget: number;
   on_demand_start: boolean;
   idle_exclude: boolean;
   auto_start: boolean;
@@ -34,7 +36,7 @@ interface RadianceState {
 const CTX_PRESETS = [32768, 65536, 131072, 200000, 262144].map((v) => ({ v, label: v.toLocaleString() }));
 const DEFAULTS: RadianceSettings = {
   alias: "qwen3.8-27b-radiance", model_path: "", port: 8100, context: 131072, kv_cache: "bf16",
-  max_num_seqs: 4, speculative_tokens: null, gpu_headroom_mib: 1024,
+  max_num_seqs: 4, speculative_tokens: null, gpu_headroom_mib: 1024, reasoning_effort: "", thinking_budget: 0,
   on_demand_start: true, idle_exclude: false, auto_start: false,
 };
 
@@ -61,6 +63,7 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
       const body = { alias: form.alias, model_path: form.model_path.trim(), port: Number(form.port),
         context: Number(form.context), kv_cache: form.kv_cache, max_num_seqs: Number(form.max_num_seqs),
         speculative_tokens: form.speculative_tokens, gpu_headroom_mib: Number(form.gpu_headroom_mib),
+        reasoning_effort: form.reasoning_effort, thinking_budget: Number(form.thinking_budget),
         on_demand_start: form.on_demand_start, idle_exclude: form.idle_exclude, auto_start: form.auto_start };
       await api(initial ? `/models/radiance/instances/${encodeURIComponent(initial.alias)}` : "/models/radiance/instances",
         { method: initial ? "PUT" : "POST", json: body });
@@ -114,8 +117,9 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
       <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
         value={form.idle_exclude} onChange={(v) => set("idle_exclude", v)} />
     </SettingsGroup>
-    <SettingsGroup title="思考">
-      <p className="text-xs text-zinc-500">思考の深さは使う側（チャット・OpenCode）で指定します。</p>
+    <SettingsGroup title="思考" description="要求が深さを指定しないときの既定。high / max の要求は xhigh として扱います">
+      <ThinkingDefaults allowOff disabled={running} effort={form.reasoning_effort} budget={form.thinking_budget}
+        onChange={(effort, budget) => setForm((f) => ({ ...f, reasoning_effort: effort as RadianceSettings["reasoning_effort"], thinking_budget: budget }))} />
     </SettingsGroup>
     <SettingsGroup title="性能" description="同時実行・先読み（投機デコード）" collapsible defaultOpen={!initial}>
       <label className="block text-xs">同時実行数

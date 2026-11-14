@@ -43,6 +43,11 @@ _ALIAS = re.compile(r"^[a-z][a-z0-9.-]{0,47}$")
 _MIN_PORT, _MAX_PORT = 8081, 65535
 _CONTEXT_MIN, _CONTEXT_MAX = 4096, 1_048_576
 KV_TYPES = ("bf16", "fp8", "fp8_v4", "k6_v4")
+# Default thinking depth for requests that name none. "" keeps the template's own (xhigh on
+# Qwen3.8-27B); "none" turns thinking off. Qwen's template takes low, medium and xhigh only, so a
+# client asking for high or max (OpenCode, the GLM-style levels) is mapped to xhigh, not refused.
+REASONING_EFFORTS = ("", "none", "low", "medium", "xhigh")
+_EFFORT_MAP = "high=xhigh,max=xhigh"
 LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start")
 # Requests ask for prompt + max_tokens; leave this much room like Maya's slack.
 CONTEXT_SLACK = 8
@@ -351,7 +356,8 @@ def get_instance(alias: str) -> dict:
 
 def save_instance(alias: str, *, model_path: str, port: int, context: int = 131072,
                   kv_cache: str = "bf16", max_num_seqs: int = 4, speculative_tokens: int | None = None,
-                  gpu_headroom_mib: int = 1024, on_demand_start: bool = True,
+                  gpu_headroom_mib: int = 1024, reasoning_effort: str = "", thinking_budget: int = 0,
+                  on_demand_start: bool = True,
                   idle_exclude: bool = False, auto_start: bool = False, replace: bool = False) -> dict:
     if not installed():
         raise RadianceError("先にRadianceを導入してください（設定 → オプション機能）")
@@ -365,10 +371,13 @@ def save_instance(alias: str, *, model_path: str, port: int, context: int = 1310
         raise RadianceError("先読みトークン数は 0〜15 か自動にしてください")
     if not 96 <= int(gpu_headroom_mib) <= 16384:
         raise RadianceError("GPU の空き確保量は 96〜16384 MiB にしてください")
+    if reasoning_effort not in REASONING_EFFORTS or not 0 <= int(thinking_budget) <= 262144:
+        raise RadianceError("思考の深さまたは思考の上限が不正です")
     wanted = {"model_path": _validate_model_path(model_path), "port": int(port), "context": int(context),
               "kv_cache": kv_cache, "max_num_seqs": int(max_num_seqs),
               "speculative_tokens": None if speculative_tokens is None else int(speculative_tokens),
-              "gpu_headroom_mib": int(gpu_headroom_mib), "on_demand_start": bool(on_demand_start),
+              "gpu_headroom_mib": int(gpu_headroom_mib), "reasoning_effort": reasoning_effort,
+              "thinking_budget": int(thinking_budget), "on_demand_start": bool(on_demand_start),
               "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start)}
     with _registry_lock:
         items = _read()
@@ -427,6 +436,11 @@ def launch_args(alias: str, cfg: dict) -> list[str]:
             "--kv-cache-dtype", cfg["kv_cache"], "--gpu-headroom-mib", str(cfg["gpu_headroom_mib"])]
     if cfg.get("speculative_tokens") is not None:
         args += ["--num-speculative-tokens", str(cfg["speculative_tokens"])]
+    if cfg.get("reasoning_effort"):
+        args += ["--reasoning-effort", str(cfg["reasoning_effort"])]
+    if int(cfg.get("thinking_budget") or 0) > 0:
+        args += ["--thinking-token-budget", str(int(cfg["thinking_budget"]))]
+    args += ["--reasoning-effort-map", _EFFORT_MAP]
     return args
 
 

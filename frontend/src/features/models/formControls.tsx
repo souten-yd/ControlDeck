@@ -154,3 +154,33 @@ export function LifecycleAlwaysOn() {
 
 export const primaryButton = "min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40";
 export const secondaryButton = "min-h-11 flex-1 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800";
+
+/** 思考の既定（要求が深さ・上限を指定しないときに使う値）。Strata / Radiance 共通。
+ * Qwen3.8 系のテンプレートが受け付ける深さは low / medium / xhigh。 */
+export function ThinkingDefaults({ effort, budget, onChange, allowOff = false, disabled = false }: {
+  effort: string; budget: number; onChange: (effort: string, budget: number) => void;
+  allowOff?: boolean; disabled?: boolean;
+}) {
+  const field = "mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
+  return <>
+    <label className="block text-xs">思考の深さ（既定）
+      <select aria-label="思考の深さ" value={effort} disabled={disabled}
+        onChange={(e) => onChange(e.target.value, budget)} className={field}>
+        <option value="">モデルの既定（xhigh・最も深い）</option>
+        <option value="medium">medium（必要なだけ考える）</option>
+        <option value="low">low（短く考える・速い）</option>
+        <option value="xhigh">xhigh（慎重に検証する）</option>
+        {allowOff && <option value="none">考えない（最速）</option>}
+      </select>
+    </label>
+    <label className="block text-xs">思考の上限（トークン）
+      <div className="mt-1">
+        <PresetOrCustom ariaLabel="思考の上限" value={budget} disabled={disabled}
+          presets={[{ v: 0, label: "上限なし" }, { v: 2048, label: "2,048" }, { v: 4096, label: "4,096" },
+            { v: 8192, label: "8,192" }, { v: 16384, label: "16,384" }, { v: 32768, label: "32,768" }]}
+          placeholder="8192" onChange={(v) => onChange(effort, Math.max(0, Math.min(262144, Number(v ?? 0))))} />
+      </div>
+      <span className="text-[11px] text-zinc-500">上限に達すると思考を閉じて回答を始めます。要求が深さや上限を指定したときはそちらが優先です。次の起動から反映されます。</span>
+    </label>
+  </>;
+}

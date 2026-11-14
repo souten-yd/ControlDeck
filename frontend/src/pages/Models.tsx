@@ -1,7 +1,7 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
-import { CTX_PRESETS, CopyText, FileName, LifecycleAlwaysOn, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "../features/models/formControls";
+import { CTX_PRESETS, CopyText, FileName, LifecycleAlwaysOn, ModelStatusSummary, ThinkingDefaults, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "../features/models/formControls";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
@@ -2053,7 +2053,8 @@ const STRATA_SIZES: Record<StrataFamily, string[]> = {
 };
 type StrataSettings = { alias: string; family: StrataFamily; model: string;
   context: string; port: number; model_path?: string; kv?: string; vision?: string;
-  parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean };
+  parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean;
+  reasoning_effort?: string; thinking_budget?: number };
 
 // Strata は "<N>k" を受け付け、学習長 256K を超えると yarn を自動で付ける。
 const STRATA_CTX_PRESETS = ["8k", "16k", "32k", "64k", "128k", "256k"].map((v) => ({ v, label: v }));
@@ -2074,12 +2075,15 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   const [drafting, setDrafting] = useState(initial?.drafting ?? "auto");
   const [idleExclude, setIdleExclude] = useState(initial?.idle_exclude ?? false);
   const [autoStart, setAutoStart] = useState(initial?.auto_start ?? false);
+  const [reasoningEffort, setReasoningEffort] = useState(initial?.reasoning_effort ?? "");
+  const [thinkingBudget, setThinkingBudget] = useState(initial?.thinking_budget ?? 0);
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
     try {
       await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
-        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart },
+        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart,
+          reasoning_effort: reasoningEffort, thinking_budget: thinkingBudget },
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["models", "local"] }),
@@ -2146,8 +2150,9 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
         value={idleExclude} onChange={setIdleExclude} />
     </SettingsGroup>
-    <SettingsGroup title="思考">
-      <p className="text-xs text-zinc-500">思考の深さは使う側（チャット・OpenCode）で指定します。</p>
+    <SettingsGroup title="思考" description="要求が深さを指定しないときの既定">
+      <ThinkingDefaults disabled={running} effort={reasoningEffort} budget={thinkingBudget}
+        onChange={(effort, budget) => { setReasoningEffort(effort); setThinkingBudget(budget); }} />
     </SettingsGroup>
     <SettingsGroup title="性能" description="KVキャッシュ・投機デコード・同時実行" collapsible defaultOpen={!initial}>
       <div className="grid gap-2 sm:grid-cols-2">

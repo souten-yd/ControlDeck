@@ -1266,6 +1266,9 @@ class StrataModelBody(BaseModel):
     # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
     idle_exclude: bool = False
     auto_start: bool = False
+    # Default thinking for requests that name none ("" = the model's own, xhigh) and its cap (0 = none).
+    reasoning_effort: Literal["", "low", "medium", "xhigh"] = ""
+    thinking_budget: int = Field(default=0, ge=0, le=262144)
 
 
 @router.get("/strata/instances")
@@ -1287,6 +1290,7 @@ def strata_create_instance(
             context=body.context, port=body.port, model_path=body.model_path,
             kv=body.kv, vision=body.vision, parallel=body.parallel, drafting=body.drafting,
             idle_exclude=body.idle_exclude, auto_start=body.auto_start,
+            reasoning_effort=body.reasoning_effort, thinking_budget=body.thinking_budget,
         )
     except strata_gateway.StrataGatewayError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1382,6 +1386,9 @@ class RadianceModelBody(BaseModel):
     # None: the container's own drafter depth ("auto"); 0 turns speculative decoding off.
     speculative_tokens: int | None = Field(default=None, ge=0, le=15)
     gpu_headroom_mib: int = Field(default=1024, ge=96, le=16384)
+    # Default thinking for requests that name none ("" = the template's own, xhigh) and its cap (0 = none).
+    reasoning_effort: Literal["", "none", "low", "medium", "xhigh"] = ""
+    thinking_budget: int = Field(default=0, ge=0, le=262144)
     # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
     on_demand_start: bool = True
     idle_exclude: bool = False

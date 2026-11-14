@@ -34,6 +34,9 @@ _FAMILIES = {
 _CONTEXT = re.compile(r"^([1-9][0-9]{0,3})k$")
 _CONTEXT_MIN_K, _CONTEXT_MAX_K = 4, 1024
 LIFECYCLE_KEYS = ("idle_exclude", "auto_start")
+# Default thinking for requests that name none ("" = the model's own, xhigh) and its cap (0 = none),
+# written into Strata's run config through `launch --set` (reasoning-effort / reasoning-budget-tokens).
+REASONING_EFFORTS = ("", "low", "medium", "xhigh")
 
 
 # Strata の `--set KEY=VALUE`（STRATA_* の環境変数かエンジン設定）。ControlDeck の既定値に
@@ -260,7 +263,8 @@ def save_instance(alias: str, *, family: str, model: str,
                   port: int, context: str = "32k", model_path: str = "",
                   kv: str = "int8", vision: str = "on", parallel: int = 1,
                   drafting: str = "auto", idle_exclude: bool = False,
-                  auto_start: bool = False, replace: bool = False) -> dict:
+                  auto_start: bool = False, reasoning_effort: str = "", thinking_budget: int = 0,
+                  replace: bool = False) -> dict:
     if not strata.installed():
         raise StrataGatewayError("Strataの導入が必要です")
     if not _ALIAS.fullmatch(alias) or alias in {"auto", "strata"}:
@@ -274,10 +278,13 @@ def save_instance(alias: str, *, family: str, model: str,
         raise StrataGatewayError("KV形式または画像設定が不正です")
     if drafting not in {"auto", "mtp", "dflash2", "off"} or not 1 <= parallel <= 8:
         raise StrataGatewayError("投機デコードまたは同時実行数が不正です")
+    if reasoning_effort not in REASONING_EFFORTS or not 0 <= int(thinking_budget) <= 262144:
+        raise StrataGatewayError("思考の深さまたは思考の上限が不正です")
     items = _read()
     wanted = {"family": family, "model": model, "port": port, "context": context,
               "model_path": model_path, "kv": kv, "vision": vision, "parallel": parallel,
-              "drafting": drafting, "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start)}
+              "drafting": drafting, "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start),
+              "reasoning_effort": reasoning_effort, "thinking_budget": int(thinking_budget)}
     if replace and alias in items:
         current = items[alias]
         changed = {key for key, value in wanted.items() if current.get(key) != value}
@@ -364,6 +371,10 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
             return False, str(exc)
     for key, value in engine_settings(cfg).items():
         args += ["--set", f"{key}={value}"]
+    # Explicit launch values win over the saved preset; "off" clears one set earlier.
+    args += ["--set", f"reasoning-effort={cfg.get('reasoning_effort') or 'off'}"]
+    budget = int(cfg.get("thinking_budget") or 0)
+    args += ["--set", f"reasoning-budget-tokens={budget if budget > 0 else 'off'}"]
     try:
         result = _run(args, timeout=7200 if explicit else 420)
     except StrataGatewayError as exc:
