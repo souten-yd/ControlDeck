@@ -26,6 +26,8 @@ from app.models_mgmt import strata
 
 _FAMILIES = {
     "qwen": {"q2_0", "iq2_xs", "iq3_xxs", "iq3_s"},
+    # Unsloth's Flash-Next GGUFs: the two sizes Strata recommends for this family.
+    "unsloth": {"ud-iq4_xs", "ud-q4_k_xl"},
     "deepseek41": {"ista-das-coder", "ist-das-2.00bpw"},
 }
 _CONTEXTS = {"8k", "16k", "32k", "64k", "128k"}
