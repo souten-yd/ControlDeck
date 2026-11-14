@@ -37,6 +37,7 @@ export type PidLive = {
 type Sample = {
   t: number;
   temps: Record<string, number | null>;
+  smoothed_temps?: Record<string, number | null>;
   targets: Record<string, number>;
   fan_percent: number | null;
   rpm: number | null;
@@ -64,6 +65,7 @@ function usePageVisible() {
 export function FanHistoryChart() {
   const visible = usePageVisible();
   const [minutes, setMinutes] = useState<(typeof RANGES)[number]>(10);
+  const [showRaw, setShowRaw] = useState(true);
   const samples = useRef<Sample[]>([]);
   const [, force] = useState(0);
   const since = useRef(0);
@@ -106,6 +108,8 @@ export function FanHistoryChart() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-semibold">温度とファン回転の推移</h3>
         <div className="flex gap-1" role="group" aria-label="表示期間">
+          <button type="button" aria-pressed={showRaw} onClick={() => setShowRaw((v) => !v)}
+            className="min-h-8 rounded-lg border border-zinc-300 px-2 text-[11px] dark:border-zinc-600">実測線 {showRaw ? "ON" : "OFF"}</button>
           {RANGES.map((m) => (
             <button key={m} type="button" onClick={() => setMinutes(m)}
               className={"min-h-8 rounded-lg px-2 text-[11px] " + (m === minutes
@@ -128,7 +132,12 @@ export function FanHistoryChart() {
         <path d={line((s) => s.fan_percent, yP)} fill="none" stroke="currentColor" strokeOpacity=".55" strokeWidth="1.6"/>
         <path d={line((s) => s.targets.junction, yT)} fill="none" stroke="#e11d48" strokeDasharray="4 3" strokeOpacity=".6"/>
         {SERIES.map((series) => (
-          <path key={series.kind} d={line((s) => s.temps[series.kind], yT)} fill="none" stroke={series.color} strokeWidth="1.4"/>
+          <g key={series.kind}>
+            {showRaw && <path d={line((s) => s.temps[series.kind], yT)} fill="none" stroke={series.color}
+              strokeWidth="0.8" strokeOpacity=".4" strokeDasharray="2 2"/>}
+            <path d={line((s) => s.smoothed_temps?.[series.kind] ?? s.temps[series.kind], yT)}
+              fill="none" stroke={series.color} strokeWidth="1.8"/>
+          </g>
         ))}
         <text x={L} y={H - 14} fontSize="8" fill="currentColor" opacity=".7">-{minutes}分</text>
         <text x={R} y={H - 14} fontSize="8" textAnchor="end" fill="currentColor" opacity=".7">現在</text>
@@ -138,6 +147,7 @@ export function FanHistoryChart() {
           <span key={series.kind}><span style={{ color: series.color }}>━</span> {series.label}
             {last?.temps[series.kind] != null && ` ${Math.round(last.temps[series.kind] as number)}°C`}</span>
         ))}
+        <span>温度: 太線EMA / {showRaw ? "細い点線は実測" : "実測線OFF"}</span>
         <span><span className="text-rose-600">┅</span> hotspot目標</span>
         <span>━ ファン指令{last?.fan_percent != null && ` ${last.fan_percent}%`}{last?.rpm != null && `（${last.rpm}rpm）`}</span>
       </p>

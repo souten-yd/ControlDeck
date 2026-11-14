@@ -165,10 +165,11 @@ def simc_gains(gain_c_per_percent: float, tau_s: float, dead_time_s: float = LOO
 
 
 class PVFilter:
-    """Median of the last 3 samples, then an EMA."""
+    """Median of the last 3 samples, then an asymmetric EMA."""
 
-    def __init__(self, tau_s: float = 6.0) -> None:
+    def __init__(self, tau_s: float = 6.0, fall_tau_s: float | None = None) -> None:
         self.tau_s = tau_s
+        self.fall_tau_s = fall_tau_s
         self.raw: dict[str, deque] = {}
         self.value: dict[str, float] = {}
 
@@ -177,7 +178,9 @@ class PVFilter:
         window.append(value)
         med = median(window)
         old = self.value.get(sensor_id)
-        alpha = 1.0 - math.exp(-dt / self.tau_s)
+        tau = (self.fall_tau_s if old is not None and med < old and self.fall_tau_s is not None
+               else self.tau_s)
+        alpha = 1.0 - math.exp(-dt / max(0.1, tau))
         self.value[sensor_id] = med if old is None else old + alpha * (med - old)
         return self.value[sensor_id]
 
