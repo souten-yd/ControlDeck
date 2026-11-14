@@ -31,6 +31,8 @@ _UNIT = "control-deck-maya-s.service"
 _ALIAS = "maya-s"
 _PORT = 8099
 _MODEL = "glm-maya-s"
+# Maya rejects prompt + max_tokens + 8 > context (its CTX_SLACK, as strata --serve).
+CONTEXT_SLACK = 8
 # Model bytes are separate from code and deliberately never removed by uninstall.
 
 class MayaError(RuntimeError):
@@ -295,6 +297,7 @@ def _update() -> dict:
             except MayaError:
                 raise MayaError("Maya更新とコード復旧に失敗しました。手動確認が必要です") from None
         raise
+    _enable_fit_max_tokens()
     _marker().write_text(json.dumps({"source": _REPO, "tag": tag}), encoding="utf-8")
     return runtime_status()
 
@@ -317,6 +320,17 @@ async def available_update() -> dict:
     except MayaError as exc:
         return {"installed_tag": current, "latest_tag": "",
                 "update_available": False, "published_at": "", "error": str(exc)}
+
+
+def _enable_fit_max_tokens() -> None:
+    """Let Maya clamp an oversized output cap itself (clients size it for llama.cpp)."""
+    config = _find_config()
+    if config is None:
+        return
+    cfg = json.loads(config.read_text(encoding="utf-8"))
+    if cfg.get("fit_max_tokens") is not True:
+        cfg["fit_max_tokens"] = True
+        config.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
 
 
 @_serialized
@@ -342,6 +356,7 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
           cwd=source(), timeout=8*3600)
     if _find_config() is None:
         raise MayaError("セットアップは終了しましたがHIP設定を確認できません")
+    _enable_fit_max_tokens()
     _prepared_marker().write_text(json.dumps({
         "model": _MODEL, "gpu_index": gpu_index, "port": _PORT
     }), encoding="utf-8")
@@ -430,7 +445,7 @@ async def prompt_room(messages: list) -> tuple[int, int] | None:
         if response.status_code != 200:
             return None
         counted = response.json()
-        return int(counted["tokens"]), int(counted["max_context"])
+        return int(counted["tokens"]), int(counted["max_context"]) - CONTEXT_SLACK
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return None
 
@@ -524,6 +539,7 @@ def save_settings(settings: dict) -> dict:
             else:
                 args.extend([flag, str(value[setting])])
         cfg["args"] = args
+        cfg["fit_max_tokens"] = True
         cfg["gpu"] = [value["gpu_index"]]
         cfg.setdefault("env", {})["MAYA_GLM_RAM_HEADROOM_GB"] = str(value["ram_headroom_gb"])
         cfg["env"]["MAYA_GLM_MTP_DECODE"] = "1" if value["drafting"] == "on" else "0"
@@ -588,6 +604,7 @@ def prepare_existing() -> dict:
           cwd=source(), timeout=8*3600)
     if _find_config() is None:
         raise MayaError("Maya-SのHIP設定を確認できません。他のモデル形式には対応していません")
+    _enable_fit_max_tokens()
     _prepared_marker().write_text(json.dumps({"model": _MODEL, "gpu_index": value["gpu_index"],
                                             "port": _PORT}), encoding="utf-8")
     return runtime_status()

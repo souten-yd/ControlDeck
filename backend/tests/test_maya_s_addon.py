@@ -450,6 +450,17 @@ def test_prompt_room_reads_maya_token_count(monkeypatch):
         assert req.url.path == '/api/tokens'
         return httpx.Response(200, json={'tokens': 18, 'max_context': 8192})
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real(transport=httpx.MockTransport(handler)))
-    assert asyncio.run(maya_s.prompt_room([{'role': 'user', 'content': 'x'}])) == (18, 8192)
+    # Maya's 8-token CTX_SLACK is part of the usable context.
+    assert asyncio.run(maya_s.prompt_room([{'role': 'user', 'content': 'x'}])) == (18, 8184)
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(404))))
     assert asyncio.run(maya_s.prompt_room([])) is None
+
+
+def test_save_settings_enables_maya_output_clamp(managed, monkeypatch):
+    _installed(managed)
+    config = maya_s.source() / 'maya-maya-s-v2-iq2_xxs-hip.json'
+    config.write_text(json.dumps({'args': ['--parallel', '1'], 'env': {}}))
+    maya_s._prepared_marker().write_text(json.dumps({'model': 'glm-maya-s'}))
+    monkeypatch.setattr(maya_s, '_running', lambda: False)
+    maya_s.save_settings(maya_s.get_settings())
+    assert json.loads(config.read_text())['fit_max_tokens'] is True
