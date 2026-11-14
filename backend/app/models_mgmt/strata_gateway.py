@@ -38,7 +38,12 @@ LIFECYCLE_KEYS = ("idle_exclude", "auto_start")
 
 # Strata の `--set KEY=VALUE`（STRATA_* の環境変数かエンジン設定）。ControlDeck の既定値に
 # 登録ごとの上書き（cfg["engine_settings"]）を重ねる。値に "off" を渡すと Strata 側の既定に戻る。
-DEFAULT_ENGINE_SETTINGS: dict[str, str] = {}
+# 既定は「速さのために計算を省く近似」を止めるものだけ。2026-11-14 に R9700 で実測:
+#  - STRATA_ROUTE_TAIL_SKIP=0: VRAM キャッシュに無いエキスパートを順位次第で飛ばす近似（Strata の既定 7、
+#    答えが変わる）を止める。コーディング課題 10 問で正答は同じ 10/10、速度は約 -6%（89.8→84.0 tok/s）。
+#  - STRATA_HC_Q8=0: hyper-connection の重みを読み込み時に Q8 へ量子化しない（bf16 のまま）。速度差は誤差内。
+# 丸め順が変わるだけの高速化（MMQ・CPU 分担・WMMA、KL 0.002〜0.03）は残す。
+DEFAULT_ENGINE_SETTINGS: dict[str, str] = {"STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_HC_Q8": "0"}
 _SETTING_KEY = re.compile(r"^(STRATA_[A-Z0-9_]{1,64}|[a-z][a-z0-9_.-]{0,63})$")
 _SETTING_VALUE = re.compile(r"^[A-Za-z0-9_.:+-]{1,64}$")
 
