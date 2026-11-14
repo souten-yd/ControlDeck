@@ -442,6 +442,35 @@ async def gateway_models(request: Request):
     return {"object": "list", "data": data}
 
 
+@router.post("/v1/models/{model}/load")
+async def gateway_load_model(model: str, request: Request):
+    """モデルの切り替え要請。指定のモデルを載せ、応答できるようになったら返す。
+
+    レビューの前に Maya-S へ、開発に戻るときに Flash-Next へ、のように使い手が
+    切り替えを先回りできる。通常の要求でも同じ切り替えは自動で起きるので、これは
+    待ち時間を先に払うための入口である。推論中のモデルは止めない（解放は推論が
+    終わるまで待ち、待ちきれなければ見送る）。
+    """
+    _authorize(request)
+    import time
+    from app.models_mgmt import large_model_lifecycle, local_llm
+
+    instance = await asyncio.to_thread(resolve_instance, model)
+    alias = str(instance["alias"])
+    if alias != model:
+        raise HTTPException(status_code=404, detail=f"登録されていないモデルです: {model}")
+    started = time.monotonic()
+    already = bool(instance.get("loaded"))
+    async with _model_startup(alias, request):
+        await large_model_lifecycle.prepare_switch(alias)
+        ready = await _wait_for_client(
+            asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=900)), request)
+    if not ready:
+        raise HTTPException(status_code=503, detail="モデルの起動に失敗しました", headers={"Retry-After": "10"})
+    return {"model": alias, "ready": True, "already_loaded": already,
+            "seconds": round(time.monotonic() - started, 1)}
+
+
 @router.post("/v1/chat/completions")
 async def gateway_chat(request: Request):
     """受け入れ制御を挟んでローカルランタイムへ転送する。stream もそのまま中継する。"""

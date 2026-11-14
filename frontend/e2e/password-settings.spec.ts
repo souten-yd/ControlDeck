@@ -24,7 +24,7 @@ test("changes password and revokes the current session without viewport overflow
   const viewports = [{ width: 320, height: 700 }, { width: 1280, height: 800 }];
   for (const [index, viewport] of viewports.entries()) {
     await page.setViewportSize(viewport);
-    await page.goto("/settings");
+    await page.goto("/settings/account");
     await page.getByRole("button", { name: "パスワードを変更" }).click();
     const dialog = page.getByRole("dialog", { name: "パスワードを変更" });
     await expect(dialog).toBeVisible();

@@ -23,6 +23,14 @@ class SettingsBody(AgentTargetBody):
     runtime: str = Field(default="", max_length=8)
 
 
+class WorkflowBody(BaseModel):
+    superpowers: bool | None = None
+    adversarial_review: bool | None = None
+    auto_advisor: str | None = Field(default=None, max_length=16)
+    review_model: str | None = Field(default=None, max_length=200)
+    advisor_model: str | None = Field(default=None, max_length=200)
+
+
 class RunBody(AgentTargetBody):
     # 系列はサーバー側の設定で決める。実行ごとに切り替えさせない
     # （runtime config も CLI の引数も系列ごとに違うため）。
@@ -182,3 +190,25 @@ async def run(
                  resource_id="opencode", request=request,
                  metadata={"operation": body.operation, "project_path": body.project_path})
     return {"job_id": job.id}
+
+
+@router.get("/workflow")
+def get_workflow(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import local_llm
+
+    settings = opencode.get_settings()
+    return {**{key: settings[key] for key in (
+        "superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model")},
+        # 選べるモデル（ゲートウェイの名前）。別のモデルへは要求に合わせて載せ替える。
+        "models": [{"alias": str(item["alias"]), "runtime": str(item.get("runtime") or "")}
+                   for item in local_llm.llm_instances()]}
+
+
+@router.put("/workflow")
+def put_workflow(body: WorkflowBody, user: User = Depends(require_permission("settings.manage"))):
+    try:
+        settings = opencode.save_workflow(body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {key: settings[key] for key in (
+        "superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model")}

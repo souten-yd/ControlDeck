@@ -41,7 +41,7 @@ test("creates a durable application log ERROR alert at mobile and desktop widths
   try {
     for (const [index, viewport] of [{ width: 320, height: 700 }, { width: 1280, height: 800 }].entries()) {
       await page.setViewportSize(viewport);
-      await page.goto("/settings");
+      await page.goto("/settings/notifications");
       const section = page.locator("section").filter({ has: page.getByRole("heading", { name: "アラートルール" }) });
       if (index === 0) {
         await section.getByRole("button", { name: "追加" }).click();

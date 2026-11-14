@@ -32,7 +32,7 @@ _ALIAS = "maya-s"
 ALIAS = _ALIAS
 # Settings that only change ControlDeck's lifecycle handling, not Maya's config:
 # they may be changed while the model runs (as llama.cpp's idle_exclude can).
-LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start", "max_output_tokens")
+LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start")
 _PORT = 8099
 _MODEL = "glm-maya-s"
 # Maya rejects prompt + max_tokens + 8 > context (its CTX_SLACK, as strata --serve).
@@ -478,8 +478,6 @@ def get_instance(alias: str) -> dict:
             "base_url": f"http://127.0.0.1:{_PORT}/v1",
             "loaded": _running(), "model_path": get_settings()["model_path"],
             "ctx_size": get_settings()["context"],
-            "max_output_tokens": min(int(get_settings()["max_output_tokens"]),
-                                     int(get_settings()["context"]) // 2),
             "configured": True, "n_parallel": 1}
 
 
@@ -551,9 +549,8 @@ def get_settings() -> dict:
     defaults = {"model_path": "", "context": 8192, "gpu_index": 0,
                 "parallel": 1, "ram_headroom_gb": 16, "drafting": "on",
                 "on_demand_start": True, "idle_exclude": False, "auto_start": False,
-                # Output for coding: GLM-5.3-Flash thinks before it answers and the
-                # thinking counts toward max_tokens, so the cap must hold both.
-                "max_output_tokens": 65536, "thinking_budget": 32768,
+                # Maya's cap on the thinking; the answer starts past it.
+                "thinking_budget": 32768,
                 # The depth a request gets when it names none. The GLM card's default is max
                 # (about 30 min per coding answer on an R9700); high gave the same passing
                 # code in a quarter of the time, so it is the default for coding here.

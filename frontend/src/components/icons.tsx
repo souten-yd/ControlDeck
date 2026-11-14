@@ -299,3 +299,46 @@ export function addonIcon(name?: string | null, addonId?: string | null) {
   const chosen = (addonId && FIRST_PARTY_ICONS[addonId]) || name;
   return (chosen && ADDON_ICONS[chosen]) || IconPlugin;
 }
+
+export const IconUser = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21a8 8 0 0 1 16 0" />
+  </Icon>
+);
+
+export const IconUsers = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 20a6.5 6.5 0 0 1 13 0" />
+    <path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6" />
+  </Icon>
+);
+
+export const IconPalette = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.9 1.5-1.9l-.4-1.2a1.7 1.7 0 0 1 1.6-2.2H17a4 4 0 0 0 4-4c0-4.9-4-8.7-9-8.7Z" />
+    <circle cx="7.5" cy="11" r="1" />
+    <circle cx="10" cy="7" r="1" />
+    <circle cx="15" cy="7.5" r="1" />
+  </Icon>
+);
+
+export const IconBell = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M6 9a6 6 0 1 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9Z" />
+    <path d="M10 19a2 2 0 0 0 4 0" />
+  </Icon>
+);
+
+export const IconShield = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 3 5 6v5c0 4.5 3 8.2 7 10 4-1.8 7-5.5 7-10V6Z" />
+  </Icon>
+);
+
+export const IconChevronRight = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="m9 6 6 6-6 6" />
+  </Icon>
+);

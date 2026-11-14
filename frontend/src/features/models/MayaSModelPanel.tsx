@@ -11,7 +11,7 @@ import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
-import { CTX_PRESETS, PresetOrCustom, Toggle } from "./formControls";
+import { CTX_PRESETS, CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
 
 export interface MayaSettings {
   model_path: string;
@@ -23,12 +23,12 @@ export interface MayaSettings {
   on_demand_start: boolean;
   idle_exclude: boolean;
   auto_start: boolean;
-  max_output_tokens: number;
   thinking_budget: number;
+  reasoning_effort: "low" | "medium" | "high" | "max";
 }
 
 /** ControlDeck側だけの設定。稼働中でも変更できる（Maya の設定ファイルは変わらない）。 */
-const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start", "max_output_tokens"] as const;
+const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start"] as const;
 // GLM-5.3-Flash は最大 1M。Maya は VRAM を超える KV を RAM へ逃がす。
 const MAYA_CTX_PRESETS = [...CTX_PRESETS.filter((p) => Number(p.v) >= 8192),
   ...[524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }))];
@@ -50,7 +50,8 @@ interface MayaJob { id: string; kind: string; status: string; error: string; pro
 const DEFAULT_SETTINGS: MayaSettings = {
   model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
   on_demand_start: true, idle_exclude: false, auto_start: false,
-  max_output_tokens: 65536, thinking_budget: 32768,
+  thinking_budget: 32768,
+  reasoning_effort: "high",
 };
 
 /** Maya-Sの状態。settings.manage を持たない利用者には問い合わせない。 */
@@ -167,7 +168,7 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
 export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
   const { data: status } = useMayaStatus();
   return (
-    <BottomSheet title="Maya-S · モデル個別設定" onClose={onClose} wide>
+    <BottomSheet title="Maya-S · 個別設定" onClose={onClose} wide>
       {status ? <MayaSettingsForm status={status} mode="detail" onDone={onClose} />
         : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
     </BottomSheet>
@@ -192,7 +193,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
   const modelChanged = settings.model_path !== (status.settings?.model_path ?? "");
   // 既存モデル読み込みはパス必須。個別設定では、パスを変えたときだけ再準備が要る。
   const needsPrepare = mode === "existing" || (modelChanged && !!settings.model_path) || !status.configured;
-  const field = "w-28 rounded-lg border border-zinc-300 bg-transparent p-2 text-sm dark:border-zinc-700";
+  const field = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
 
   const save = async (prepare: boolean) => {
     if (prepare && !settings.model_path.trim()) {
@@ -219,97 +220,106 @@ function MayaSettingsForm({ status, mode, onDone }: {
     } finally { setSaving(false); }
   };
 
-  const numbers = [
-    ["thinking_budget", "思考の上限（トークン・0で無制限）", 0, 131072, 1024],
-    ["gpu_index", "ROCm GPU番号", 0, 15, 1],
-    ["parallel", "同時実行数", 1, 8, 1],
-    ["ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1],
-  ] as const;
+  const num = (key: "gpu_index" | "parallel" | "ram_headroom_gb" | "thinking_budget", label: string, min: number, max: number, step = 1, hint?: string) => (
+    <label className="block text-xs">{label}
+      <input aria-label={`Maya-S ${label}`} type="number" min={min} max={max} step={step} disabled={locked}
+        value={settings[key]} className={`mt-1 ${field}`}
+        onChange={(e) => setSettings({ ...settings, [key]: Number(e.target.value) })} />
+      {hint && <span className="text-[11px] text-zinc-500">{hint}</span>}
+    </label>
+  );
 
   return (
     <div className="space-y-3 text-sm">
       {mode === "detail" && (
-        <div className="space-y-1 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
-          <p>状態: {status.running ? "稼働中 · 127.0.0.1:8099" : status.configured ? "準備済み・停止中" : "未準備"}</p>
-          <p>エンジン: Project Maya {status.version || "-"} · {status.built ? "HIPビルド済み" : "HIP未ビルド"}</p>
-          <p className="break-all">モデル: {status.settings?.model_path || `ダウンロード版（${status.models_dir}）`}</p>
-        </div>
+        <ModelStatusSummary running={status.running} lockedNote={status.running ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
+          ["ランタイム", `Project Maya ${status.version || "-"} · ${status.built ? "HIPビルド済み" : "HIP未ビルド"}`],
+          ["モデル", status.settings?.model_path ? <FileName path={status.settings.model_path} /> : `ダウンロード版（${status.models_dir}）`],
+          ["接続先", <CopyText text="http://127.0.0.1:8099/v1" />],
+        ]} />
       )}
-      <label className="block text-xs">Maya-S の GGUF（分割モデルは先頭ファイル）{mode === "detail" && "・空欄はダウンロード版"}
-        <div className="mt-1 flex gap-2">
+      <SettingsGroup title="モデル" description={mode === "detail" ? "GGUFを変えたときは「保存して準備し直す」" : "手元の Maya-S の GGUF（分割モデルは先頭ファイル）"}>
+        <div className="flex gap-2">
           <input aria-label="Maya-S GGUFパス" value={settings.model_path} disabled={locked}
             onChange={(e) => setSettings({ ...settings, model_path: e.target.value })}
             placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya/.../GLM-5.3-Flash-Maya-S-...-00001-of-00003.gguf"
-            className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-transparent p-2 text-sm dark:border-zinc-700" />
+            className={`min-w-0 flex-1 font-mono text-xs ${field}`} />
           <button type="button" disabled={locked} onClick={() => setPicker(true)} aria-label="GGUFを選ぶ"
-            className="grid min-h-11 min-w-11 place-items-center rounded-lg border border-zinc-300 disabled:opacity-40 dark:border-zinc-700">
+            className="grid min-h-11 min-w-11 place-items-center rounded-xl border border-zinc-300 disabled:opacity-40 dark:border-zinc-700">
             <IconFolder />
           </button>
         </div>
-      </label>
-      <label className="block text-xs">コンテキスト長（CTX）
-        <div className="mt-1">
-          {locked ? <p className="font-mono">{settings.context.toLocaleString()}</p>
-            : <PresetOrCustom value={settings.context} presets={MAYA_CTX_PRESETS} placeholder="8192"
-              onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />}
-        </div>
-        <span className="text-[10px] text-zinc-400">長いほど入力・会話履歴を多く扱えます。8K だと検索結果入りの会話はすぐ上限に届きます（推奨 32K〜128K）。</span>
-      </label>
-      <label className="block text-xs">出力の上限（思考＋回答のトークン）
-        <div className="mt-1">
-          <PresetOrCustom value={settings.max_output_tokens}
-            presets={[16384, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="65536"
-            onChange={(v) => setSettings({ ...settings, max_output_tokens: Math.min(262144, Math.max(1024, Number(v ?? 65536))) })} />
-        </div>
-        <span className="text-[10px] text-zinc-400">OpenCode へ伝える上限。GLM-5.3-Flash は思考も出力に数えるため、思考の上限より十分大きくします（コンテキストの半分まで）。稼働中も変更できます。</span>
-      </label>
-      {numbers.map(([key, label, min, max, step]) => (
-        <label key={key} className="flex flex-wrap items-center justify-between gap-2 text-xs">{label}
-          <input aria-label={`Maya-S ${label}`} type="number" min={min} max={max} step={step} disabled={locked}
-            value={settings[key]} className={field}
-            onChange={(e) => setSettings({ ...settings, [key]: Number(e.target.value) })} />
+      </SettingsGroup>
+      <SettingsGroup title="基本" description="扱える長さ。1回の応答（思考＋回答）は全モデル共通でコンテキストの半分まで">
+        <label className="block text-xs">コンテキスト長（CTX）
+          <div className="mt-1">
+            <PresetOrCustom ariaLabel="Maya-S コンテキスト長" value={settings.context} presets={MAYA_CTX_PRESETS} placeholder="8192" disabled={locked}
+              onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />
+          </div>
+          <span className="text-[11px] text-zinc-500">GLM-5.3-Flash は最大 1M。この PC では 1M でも速度はほぼ変わりません（KV は RAM に置かれます）。</span>
         </label>
-      ))}
-      <label className="flex items-center justify-between gap-2 text-xs">投機デコード（MTP）
-        <select aria-label="Maya-S 投機デコード" value={settings.drafting} disabled={locked}
-          onChange={(e) => setSettings({ ...settings, drafting: e.target.value as "on" | "off" })}
-          className="rounded-lg border border-zinc-300 bg-transparent p-2 text-sm dark:border-zinc-700">
-          <option value="on">有効</option>
-          <option value="off">無効</option>
-        </select>
-      </label>
+      </SettingsGroup>
       {mode === "detail" && (
-        <div className="space-y-2">
-          <p className="text-xs font-medium text-zinc-500">起動と停止（稼働中でも変更できます）</p>
-          <Toggle label="要求時に自動起動" hint="チャット・ゲートウェイから使われたときに起動します。Strata や使っていない llama.cpp のモデルは先に停止します"
+        <SettingsGroup title="起動と停止" description="アイドル時の自動アンロードは共通設定で切り替えます">
+          <Toggle label="使われたときに自動で起動" hint="チャットやゲートウェイから呼ばれたら起動します（Strata や使っていない llama.cpp のモデルは先に停止）"
             value={settings.on_demand_start} onChange={(v) => setSettings({ ...settings, on_demand_start: v })} />
-          <Toggle label="共通アイドル停止から除外" hint="Models のランタイム設定「アイドル時に自動アンロード」の対象から外し、常駐させます"
-            value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
-          <Toggle label="ControlDeck起動時に自動起動" hint="PC起動後に ControlDeck が立ち上がったら起動します。Strata と両方に付けた場合は Maya-S が優先です"
+          <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします。Strata にも付けた場合は Maya-S が優先です"
             value={settings.auto_start} onChange={(v) => setSettings({ ...settings, auto_start: v })} />
-        </div>
+          <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
+            value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
+        </SettingsGroup>
       )}
-      {locked && <p className="text-xs text-amber-700 dark:text-amber-300">
-        {status.running ? "モデルの設定変更はアンロードしてから行えます（起動と停止の設定は変更できます）。" : "準備ジョブの完了後に変更できます。"}
-      </p>}
-      <p className="text-[11px] text-zinc-500">
-        保存や準備ではモデルをダウンロード・起動しません。{mode === "detail" && "GGUFを変えた場合は「保存して準備」で読み込み直してください。"}
-      </p>
-      <div className="flex flex-wrap gap-2">
+      <SettingsGroup title="思考">
+        <label className="block text-xs">思考の深さ（既定）
+          <select aria-label="Maya-S 思考の深さ" value={settings.reasoning_effort ?? "high"} disabled={locked}
+            onChange={(e) => setSettings({ ...settings, reasoning_effort: e.target.value as MayaSettings["reasoning_effort"] })}
+            className={`mt-1 ${field}`}>
+            <option value="low">low（最速）</option>
+            <option value="medium">medium</option>
+            <option value="high">high（推奨・コーディング）</option>
+            <option value="max">max（モデルカード既定・1回答に約30分）</option>
+          </select>
+          <span className="text-[11px] text-zinc-500">要求が深さを指定しないときに使います。この PC の実測では high で max と同じ正答を約4分の1の時間で返しました。</span>
+        </label>
+        <label className="block text-xs">思考の上限（トークン）
+          <div className="mt-1">
+            <PresetOrCustom ariaLabel="Maya-S 思考の上限" value={settings.thinking_budget} disabled={locked}
+              presets={[{ v: 4096, label: "4,096" }, { v: 8192, label: "8,192" }, { v: 16384, label: "16,384" }, { v: 32768, label: "32,768（推奨）" }, { v: 0, label: "無制限" }]}
+              placeholder="32768" onChange={(v) => setSettings({ ...settings, thinking_budget: Math.min(131072, Math.max(0, Number(v ?? 32768))) })} />
+          </div>
+          <span className="text-[11px] text-zinc-500">超えると思考を閉じて回答を始めます。要求ごとの思考の深さ（low〜max）は使う側で指定します。</span>
+        </label>
+      </SettingsGroup>
+      <SettingsGroup title="性能" description="投機デコード・同時実行" collapsible defaultOpen={false}>
+        <label className="block text-xs">投機デコード（MTP）
+          <select aria-label="Maya-S 投機デコード" value={settings.drafting} disabled={locked}
+            onChange={(e) => setSettings({ ...settings, drafting: e.target.value as "on" | "off" })}
+            className={`mt-1 ${field}`}>
+            <option value="on">有効（推奨・この PC で約5%速い）</option>
+            <option value="off">無効</option>
+          </select>
+        </label>
+        {num("parallel", "同時実行数", 1, 8, 1, "2以上にすると KV を VRAM に置くため、エキスパートの置き場が減ります。")}
+      </SettingsGroup>
+      <SettingsGroup title="詳細" description="GPU 番号・RAM の空き確保量" collapsible defaultOpen={false}>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {num("gpu_index", "ROCm GPU番号", 0, 15)}
+          {num("ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1, "小さいほどエキスパートを RAM に多く置けて速くなります（この PC の推奨 8）。")}
+        </div>
+      </SettingsGroup>
+      <SheetActions note={locked && !status.running ? "準備ジョブの完了後に変更できます。" : undefined}>
         {mode === "detail" && !needsPrepare && (
-          <button type="button" disabled={saving || saveLocked} onClick={() => void save(false)}
-            className="min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
-            {saving ? "保存中…" : "設定を保存"}
+          <button type="button" disabled={saving || saveLocked} onClick={() => void save(false)} className={primaryButton}>
+            {saving ? "保存中…" : "保存"}
           </button>
         )}
         {(needsPrepare || mode === "detail") && (
           <button type="button" disabled={saving || locked || !settings.model_path.trim()} onClick={() => void save(true)}
-            className={`min-h-11 flex-1 rounded-xl px-4 text-sm font-medium disabled:opacity-40 ${needsPrepare
-              ? "bg-accent-600 text-white" : "border border-zinc-300 dark:border-zinc-700"}`}>
+            className={needsPrepare ? primaryButton : secondaryButton}>
             {saving ? "保存中…" : mode === "existing" ? "読み込んで準備" : "保存して準備し直す"}
           </button>
         )}
-      </div>
+      </SheetActions>
       {picker && (
         <FilePicker mode="file" title="Maya-S の GGUF を選択"
           initialPath={settings.model_path || "/data1tb/LLM"}

@@ -902,12 +902,12 @@ def test_the_window_comes_from_the_instance_that_serves_the_model(monkeypatch):
                  {"alias": "Qwen3.8-27B", "ctx_size": 65536}],
     )
     limits = provider._model_limits("Qwen3.8-27B")
-    assert limits == {"context": 65536, "output": 8192, "input": 65536 - 8192}
+    assert limits == {"context": 65536, "output": 32768, "input": 65536 - 32768}
     # 小さい窓では、返答の上限も窓に合わせて縮む。8,192 のまま渡すと入力が
     # 窓の半分しか使えなくなる。
-    assert provider._model_limits("other") == {"context": 8192, "output": 2048, "input": 6144}
+    assert provider._model_limits("other") == {"context": 8192, "output": 4096, "input": 4096}
     # gateway は未知aliasも利用可能なLLMへ転送する。候補の最小窓を宣言する。
-    assert provider._model_limits("nope") == {"context": 8192, "output": 2048, "input": 6144}
+    assert provider._model_limits("nope") == {"context": 8192, "output": 4096, "input": 4096}
 
 
 def test_heavy_addon_tools_move_to_specialist_subagents(monkeypatch, tmp_path):

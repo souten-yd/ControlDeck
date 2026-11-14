@@ -107,7 +107,7 @@ export function BottomSheet({
             <IconX />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">{children}</div>
+        <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-5 pb-6 [-webkit-overflow-scrolling:touch] has-[.sheet-actions]:pb-0">{children}</div>
       </div>
     </Overlay>
   );
