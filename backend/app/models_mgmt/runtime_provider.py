@@ -255,6 +255,22 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         payload = self._payload(request, stream=True)
         # 最終chunkで正確なprompt/completionトークン数を得る（OpenAI標準。未対応serverは無視する）
         payload["stream_options"] = {"include_usage": True}
+        from app.models_mgmt import live_stats
+        timing = live_stats.begin(urlsplit(normalize_openai_base(request.base_url)).port or 0)
+        final_usage = None
+        try:
+            async for chunk in self._stream_lines(request, payload, cancel_event):
+                if chunk.type in ("thinking", "content"):
+                    live_stats.delta(timing, thinking=chunk.type == "thinking")
+                elif chunk.type == "usage":
+                    final_usage = chunk.usage
+                yield chunk
+        finally:
+            live_stats.end(timing, final_usage)
+
+    async def _stream_lines(
+        self, request: RuntimeChatRequest, payload: dict[str, Any], cancel_event: asyncio.Event,
+    ) -> AsyncIterator[RuntimeChunk]:
         async with httpx.AsyncClient(timeout=None, trust_env=not request.local_only, follow_redirects=False) as client:
             async with client.stream(
                 "POST", normalize_openai_base(request.base_url) + "/chat/completions",

@@ -587,14 +587,23 @@ async def gateway_chat(request: Request):
             # 違うので、同じ「tok/s」として出すと読めない。
             started_at = asyncio.get_running_loop().time()
             first = True
+            from app.models_mgmt import live_stats
+            timing = live_stats.begin(port)
+            pending = bytearray()
+            usage = None
             try:
                 async for chunk in upstream.aiter_bytes():
                     if first and chunk:
                         record_first_token(started_at)
                         first = False
                     note_stream_phase(chunk)
+                    try:
+                        usage = live_stats.feed_sse(timing, chunk, pending) or usage
+                    except Exception:  # noqa: BLE001 - display only
+                        pass
                     yield chunk
             finally:
+                live_stats.end(timing, usage)
                 clear_stream_phase()
                 await upstream.aclose()
                 await client.aclose()

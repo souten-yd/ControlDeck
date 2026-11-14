@@ -1,0 +1,133 @@
+"""Prefill and generation speed for engines that expose no llama.cpp-style /metrics.
+
+llama.cpp reports its own throughput; Strata, Maya-S and Radiance do not report the same way.
+ControlDeck relays every request to them (the gateway and the internal provider), so it can time
+them itself: prefill = prompt tokens / time to the first streamed token, generation = generated
+tokens / time after it. Keyed by the engine's port. Only in memory; display only.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass, field
+
+_lock = threading.Lock()
+
+
+@dataclass
+class _Request:
+    port: int
+    started: float = field(default_factory=time.monotonic)
+    first_at: float | None = None
+    thinking: bool = False
+    events: int = 0          # streamed deltas: ~tokens while a request is running
+
+
+@dataclass
+class _Last:
+    prefill_tps: float = 0.0
+    decode_tps: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    at: float = 0.0
+
+
+_active: dict[int, list[_Request]] = {}
+_last: dict[int, _Last] = {}
+
+
+def begin(port: int) -> _Request:
+    request = _Request(port=int(port))
+    with _lock:
+        _active.setdefault(request.port, []).append(request)
+    return request
+
+
+def delta(request: _Request, *, thinking: bool) -> None:
+    """One streamed piece of text arrived."""
+    if request.first_at is None:
+        request.first_at = time.monotonic()
+    request.thinking = thinking
+    request.events += 1
+
+
+def end(request: _Request, usage: dict | None = None) -> None:
+    now = time.monotonic()
+    with _lock:
+        rows = _active.get(request.port, [])
+        if request in rows:
+            rows.remove(request)
+        prompt = completion = 0
+        if isinstance(usage, dict):
+            prompt = int(usage.get("prompt_tokens") or 0)
+            completion = int(usage.get("completion_tokens") or 0)
+        completion = completion or request.events
+        last = _last.setdefault(request.port, _Last())
+        if request.first_at is not None:
+            ttft = max(1e-3, request.first_at - request.started)
+            gen_time = max(1e-3, now - request.first_at)
+            if prompt:
+                last.prefill_tps = prompt / ttft
+            if completion > 1:
+                last.decode_tps = (completion - 1) / gen_time
+        last.prompt_tokens, last.completion_tokens, last.at = prompt, completion, now
+
+
+def snapshot(port: int) -> dict:
+    """What the capacity view shows for one engine."""
+    now = time.monotonic()
+    with _lock:
+        rows = list(_active.get(int(port), []))
+        last = _last.get(int(port), _Last())
+    prefilling = [r for r in rows if r.first_at is None]
+    generating = [r for r in rows if r.first_at is not None]
+    live = 0.0
+    for r in generating:
+        elapsed = now - (r.first_at or now)
+        if elapsed > 0.5 and r.events > 1:
+            live += (r.events - 1) / elapsed
+    phase = ("prefill" if prefilling and not generating
+             else "think" if any(r.thinking for r in generating)
+             else "generate" if generating else "idle")
+    return {
+        "busy": len(rows), "prefilling": len(prefilling), "phase": phase,
+        "tokens_per_second": round(live if generating else last.decode_tps, 1),
+        "tokens_per_second_single": round(last.decode_tps, 1),
+        "prefill_tokens_per_second": round(last.prefill_tps, 1),
+        "last_prompt_tokens": last.prompt_tokens, "last_completion_tokens": last.completion_tokens,
+    }
+
+
+def feed_sse(request: _Request, chunk: bytes, buffer: bytearray) -> dict | None:
+    """Read relayed SSE bytes (a chunk may hold several events, or part of one).
+
+    Returns the usage object when the stream carried one. Never changes what is relayed.
+    """
+    import json
+
+    buffer.extend(chunk)
+    usage = None
+    while b"\n" in buffer:
+        line, _, rest = bytes(buffer).partition(b"\n")
+        buffer[:] = rest
+        if not line.startswith(b"data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == b"[DONE]":
+            continue
+        try:
+            item = json.loads(data)
+        except ValueError:
+            continue
+        if isinstance(item.get("usage"), dict):
+            usage = item["usage"]
+        try:
+            piece = item["choices"][0]["delta"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        if isinstance(piece, dict):
+            if piece.get("reasoning_content"):
+                delta(request, thinking=True)
+            elif piece.get("content"):
+                delta(request, thinking=False)
+    return usage
