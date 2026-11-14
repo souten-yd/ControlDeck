@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMeta } from "../api/hooks";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ReactNode, SVGProps } from "react";
 import { api } from "../api/client";
@@ -104,7 +105,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
 const OTHER_SCREEN_ITEMS: { label: string; screen: string; to: string; keywords: string[] }[] = [
   { label: "コンテキスト長・思考・量子化", screen: "AI モデル（個別設定）", to: "/models", keywords: ["コンテキスト", "CTX", "思考", "reasoning", "量子化", "KV", "VISION", "投機デコード", "Maya", "Strata", "llama"] },
   { label: "アイドル時に自動アンロード・既定のランタイム", screen: "AI モデル（共通設定）", to: "/models", keywords: ["アイドル", "自動アンロード", "自動停止", "ランタイム", "排他", "Deep Research", "アシスタント表示名"] },
-  { label: "開発ワークフロー・レビューに使うモデル", screen: "OpenCode 設定", to: "/opencode", keywords: ["Superpowers", "Adversarial", "レビュー", "Auto Advisor", "相談", "OpenCode", "ワークフロー"] },
+  { label: "開発ワークフロー・レビューに使うモデル", screen: "OpenCode 設定", to: "@opencode", keywords: ["Superpowers", "Adversarial", "レビュー", "Auto Advisor", "相談", "OpenCode", "ワークフロー"] },
 ];
 
 function matches(def: SettingsSectionDef, query: string) {
@@ -129,9 +130,13 @@ function SettingsLayout() {
   const current = visible.find((def) => def.id === requested) ?? null;
   const shown = current ?? visible[0];
   const results = visible.map((def) => ({ def, ...matches(def, query) })).filter((r) => r.hit);
+  const { data: meta } = useMeta();
+  // Link to the OpenCode series that is actually enabled (v1 may be off).
+  const opencodePath = meta?.enabled_features.includes("opencode") ? "/opencode"
+    : meta?.enabled_features.includes("opencode-v2") ? "/opencode-v2" : null;
   const q = query.trim().toLowerCase();
-  const elsewhere = q ? OTHER_SCREEN_ITEMS.filter((item) =>
-    item.label.toLowerCase().includes(q) || item.keywords.some((k) => k.toLowerCase().includes(q))) : [];
+  const elsewhere = !q ? [] : OTHER_SCREEN_ITEMS.map((item) => item.to === "@opencode" ? { ...item, to: opencodePath ?? "" } : item).filter((item) => item.to !== "" && (
+    item.label.toLowerCase().includes(q) || item.keywords.some((k) => k.toLowerCase().includes(q))));
 
   return (
     <div className="mx-auto max-w-5xl p-4 md:p-6">
@@ -182,14 +187,14 @@ function SettingsLayout() {
                 <IconChevronRight className="shrink-0 text-zinc-400" />
               </Link>
             </li>
-            <li>
-              <Link to="/opencode" className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
+            {opencodePath && <li>
+              <Link to={opencodePath} className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><IconSettings /></span>
                 <span className="min-w-0 flex-1"><span className="block font-medium">OpenCode</span>
                   <span className="block truncate text-xs text-zinc-500">モデル・開発ワークフローは OpenCode 画面の「設定」</span></span>
                 <IconChevronRight className="shrink-0 text-zinc-400" />
               </Link>
-            </li>
+            </li>}
           </ul>
         </nav>
         <main className={current ? "block" : "hidden md:block"}>
