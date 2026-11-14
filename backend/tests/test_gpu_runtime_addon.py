@@ -112,5 +112,5 @@ def test_strata_install_job_rejects_retired_track_option(admin_client):
     assert response.status_code == 422
 
 def test_release_status_is_only_for_gpu_runtimes(admin_client):
-    response = admin_client.get("/api/v1/features/opencode/release-status")
+    response = admin_client.get("/api/v1/features/opencode-v2/release-status")
     assert response.status_code == 422

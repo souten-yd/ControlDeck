@@ -142,7 +142,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   });
   const assistantName = runtimeEnvironment?.policy.assistant_name || "AIアシスタント";
   const { data: appMeta } = useMeta();
-  const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode") && can("terminal.use");
+  const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode-v2") && can("terminal.use");
   const { data: codeProjects } = useQuery({
     queryKey: ["opencode-projects"],
     queryFn: () => api<{ root: string; projects: { name: string; path: string; git: boolean }[] }>("/opencode/projects"),

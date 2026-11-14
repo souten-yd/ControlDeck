@@ -3902,3 +3902,8 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - Strata: `qwen-flash-next` を Unsloth UD-IQ4_XS（SHA-256 3ファイル一致）・256k に切り替え。実測 prefill 2,172 tok/s @25K・2,990 tok/s @96K、decode 74 / 68 tok/s。KV は 256k で 3.1 GiB（RAM）。IQ2_XS（GGUF 70G・pack 35G）は削除。
 - UI（読み取り専用の UX レビューを反映）: シートの保存ボタンを1本化、起動と停止の文言を3ランタイムで統一、共通設定でランタイム選択が編集を消す不具合と Strata フォームが読み込み完了で消える不具合を修正、OpenCode 設定を1枚のシートに、オプション機能の進捗をジョブのカードだけに表示、監査ログのスマホ表示、ファン設定の並び替え。UI スモーク 106/106（320px / 1280px）。
 - NOT TESTED: 実際のコーディング作業での Adversarial Review / Auto Advisor の挙動。
+
+### 2026-11-14 OpenCode v1 と OMo の撤去、v2 プラグインをオプション機能で管理
+- 撤去: オプション機能 `opencode`（v1・opencode-ai）と v1 専用の `omo`（oh-my-openagent）。OMo の並列数同期（llama のスロット変更時・容量 API の `omo`）とダッシュボードの OMo 表示も削除。OpenCode の系列は常に v2（古い設定の `runtime: v1` は v2 に揃える）。`/opencode` は `/opencode-v2` へ転送（`?session=` を保持）。ナビの表示名は「OpenCode」。
+- 追加: オプション機能に `opencode-superpowers` / `opencode-adversarial-review` / `opencode-auto-advisor`（kind `opencode-plugin`、`opencode-v2` 必須）。導入は検証済みの版（v7.0.2 / 2.0.2 / 2.1.1）、更新は最新版。管理領域へ npm で入れ、セッション設定には `file://` で渡す（OpenCode が実行時に取得しない）。OpenCode v2.3.0 が `file://` のプラグインを読み込むことを `debug agents` で確認。
+- OpenCode の設定は「使う／使わない」とモデル選択だけ。未導入の拡張は選べず、オプション機能への導線を出す。

@@ -28,11 +28,6 @@ interface Status {
   feature: FeatureState; settings: Settings;
   active_runtime: string; runtimes: Record<string, FeatureState>;
 }
-// 同居する OpenCode の系列。未導入のものは選べない（設定だけ変わって動かない状態を作らない）。
-const RUNTIMES: Array<{ id: string; label: string }> = [
-  { id: "v1", label: "v1" },
-  { id: "v2", label: "v2" },
-];
 interface TerminalSession { id: string; name: string; created_at: number; attached: boolean; persistent: boolean; cwd?: string }
 
 /** セッションはCodeDEV配下のプロジェクトで起動するので、作業ディレクトリ名をそのまま名前として使う。 */
@@ -43,10 +38,9 @@ function projectLabel(session: TerminalSession): string {
 interface CodeProject { name: string; path: string; git: boolean; modified_at: number }
 
 const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900";
-// このページで開始したセッションID（表示の絞り込み用）。系列ごとに分ける——
-// v1 の画面に v2 のセッションが並ぶと、どちらで開いたか分からなくなる。
+// このページで開始したセッションID（表示の絞り込み用）。
 function sessionsKey(runtime: string): string {
-  return runtime === "v1" ? "cd-opencode-sessions" : `cd-opencode-${runtime}-sessions`;
+  return `cd-opencode-${runtime}-sessions`;
 }
 
 function loadOwnSessions(runtime: string): string[] {
@@ -58,8 +52,8 @@ function loadOwnSessions(runtime: string): string[] {
   }
 }
 
-/** 系列（v1 / v2）ごとに1枚ずつ開く。画面の作りは同じで、起動する系列だけが違う。 */
-export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
+/** OpenCode（v2）の画面。v1 は撤去した。 */
+export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
   const show = useToasts((state) => state.show);
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
@@ -85,9 +79,6 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
   const [killing, setKilling] = useState<string | null>(null);
   const [deletingProject, setDeletingProject] = useState<string | null>(null);
 
-  // 名指しした系列が未導入だと、サーバーは導入済みのほうへ落として起動する。黙って
-  // 別系列が動くと混乱するので、見出しに出す。
-  const fellBack = Boolean(data?.active_runtime && data.active_runtime !== runtime);
   useEffect(() => { localStorage.setItem(sessionsKey(runtime), JSON.stringify(own.slice(-20))); }, [own, runtime]);
 
   const { data: terminals } = useQuery({
@@ -167,12 +158,12 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
-      <PageHeader title={runtime === "v1" ? "OpenCode" : `OpenCode ${runtime}`}
-        description={`${data?.feature.version ? `v${data.feature.version.replace(/^v/, "")}` : "確認中"}${fellBack ? `（${runtime}が使えないため${data?.active_runtime}で起動します）` : ""} · CLIそのままの対話TUI（tmux永続・再接続可）`}
+      <PageHeader title="OpenCode"
+        description={`${data?.feature.version ? `v${data.feature.version.match(/\d+(?:\.\d+)+/)?.[0] ?? data.feature.version}` : "確認中"} · CLIそのままの対話TUI（tmux永続・再接続可）`}
         actions={<button onClick={() => setSettingsOpen(true)} disabled={!data} aria-label="OpenCode 設定を開く" title="モデル・開発ワークフローの設定"
         className="flex min-h-11 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"><IconSettings className="h-4 w-4" />設定</button>} />
 
-      {settingsOpen && data && <OpenCodeSettingsSheet initial={data} runtime={runtime} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && data && <OpenCodeSettingsSheet initial={data} onClose={() => setSettingsOpen(false)} />}
 
       <BackgroundRuns />
 
@@ -300,7 +291,7 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
 
 /** OpenCode の設定を1枚のシートにまとめる。保存は1本で、内部で2つの API を順に呼ぶ。
  * フォームは開いた時点の値で初期化し、再取得で編集中の値を上書きしない。 */
-function OpenCodeSettingsSheet({ initial, runtime, onClose }: { initial: Status; runtime: string; onClose: () => void }) {
+function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose: () => void }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
@@ -337,32 +328,11 @@ function OpenCodeSettingsSheet({ initial, runtime, onClose }: { initial: Status;
           </select>
           <p className="text-[11px] text-zinc-500">auto にすると起動中のモデルへ流れます（停止中の別モデルを起こしません）。</p>
         </SettingsGroup>
-        {workflow && <WorkflowExtensions value={{ ...workflow, models }} onChange={setWorkflow} runtime={runtime} editable={editable} />}
-        <SettingsGroup title="詳細" description="接続先と、画面を持たない処理が使う系列" collapsible defaultOpen={false}>
+        {workflow && <WorkflowExtensions value={{ ...workflow, models, installed: workflowData?.installed, features: workflowData?.features }} onChange={setWorkflow} editable={editable} />}
+        <SettingsGroup title="詳細" description="接続先" collapsible defaultOpen={false}>
           <label className="block text-xs text-zinc-500">接続先（LLM endpoint）
             <input value={form.base_url} disabled={!editable} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={`${input} mt-1 font-mono`} />
           </label>
-          <div className="text-xs text-zinc-500">
-            AIチャット・ワークフローで使う系列
-            <div className="mt-1 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-              {RUNTIMES.map((series) => {
-                const state = initial.runtimes?.[series.id];
-                const usable = Boolean(state?.enabled);
-                return (
-                  <button key={series.id} type="button" disabled={!usable || !editable}
-                    onClick={() => setForm({ ...form, runtime: series.id })}
-                    title={usable ? state?.version : "オプション機能から導入してください"}
-                    className={`min-h-11 flex-1 rounded-lg text-xs font-medium disabled:opacity-40 ${form.runtime === series.id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                    {series.label}{usable ? "" : "（未導入）"}
-                  </button>
-                );
-              })}
-            </div>
-            <span className="mt-1 block text-[11px] text-zinc-500">
-              この画面のセッションは常に {runtime} で起動します。ここで選ぶのは、画面を持たない
-              AIチャットとワークフロー（code.agent）が使う系列です
-            </span>
-          </div>
         </SettingsGroup>
         {editable && (
           <SheetActions>

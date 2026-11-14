@@ -190,35 +190,7 @@ def test_capacity_api_aggregates_running_endpoints(admin_client, monkeypatch):
     assert [e["id"] for e in body["endpoints"]] == ["ep-8090"]
     assert body["endpoints"][0]["busy"] == 2
     assert body["endpoints"][0]["deferred"] == 1
-    assert body["omo"] is None
-
-
-def test_capacity_api_includes_omo_when_installed(admin_client, monkeypatch):
-    from app.models_mgmt import llama
-
-    monkeypatch.setattr(llama, "list_instances", lambda: [
-        {"alias": "llama", "role": "llm", "n_parallel": 4, "port": 8090},
-    ])
-    monkeypatch.setattr(llama, "list_endpoints", lambda: [
-        {"id": "ep-8090", "label": "メイン", "port": 8090, "running_alias": "llama",
-         "aliases": ["llama"], "base_url": "", "active_alias": "llama"},
-    ])
-
-    async def _cap(port):
-        return {"port": port, "available": True, "slots": 4, "busy": 0,
-                "ctx_total": 8192, "ctx_used": 0, "ctx_free": 6963,
-                "usable": 6963, "deferred": 0, "accepting": True}
-
-    monkeypatch.setattr(llama, "endpoint_capacity", _cap)
-    monkeypatch.setattr("app.features.registry.is_enabled", lambda fid: fid == "omo")
-    monkeypatch.setattr("app.integrations.opencode.provider.get_settings",
-                        lambda: {"model": "llama", "use_gateway": True})
-
-    body = admin_client.get("/api/v1/models/llama/capacity").json()
-    assert body["omo"]["installed"] is True
-    assert body["omo"]["gated"] is True
-    # ゲートウェイ経由なので OMo 既定の論理並列
-    assert body["omo"]["concurrency"] == 5
+    assert "omo" not in body  # OMo は撤去した
 
 
 def test_unavailable_endpoint_reports_zero_slots_not_full(monkeypatch):
@@ -269,39 +241,6 @@ def test_capacity_api_excludes_embedding_and_reranker(admin_client, monkeypatch)
 
     body = admin_client.get("/api/v1/models/llama/capacity").json()
     assert [e["running_alias"] for e in body["endpoints"]] == ["chat"]
-
-
-def test_omo_slots_come_from_the_model_opencode_uses(admin_client, monkeypatch):
-    """OMoの並列は、OpenCodeが使うモデルのスロット数で決める。
-
-    先頭のエンドポイントを見ると、無関係なモデル（embeddingなど）の値を拾う。
-    """
-    from app.models_mgmt import llama
-
-    monkeypatch.setattr(llama, "list_instances", lambda: [
-        # 先頭は OpenCode が使わないモデル。ここを拾ってはいけない。
-        {"alias": "other", "role": "llm", "n_parallel": 1, "port": 8091},
-        {"alias": "used", "role": "llm", "n_parallel": 8, "port": 8090},
-    ])
-    monkeypatch.setattr(llama, "list_endpoints", lambda: [
-        {"id": "ep-8091", "label": "", "port": 8091, "running_alias": "other",
-         "aliases": ["other"], "base_url": "", "active_alias": "other"},
-    ])
-
-    async def _cap(port):
-        return {"port": port, "available": True, "slots": 1, "busy": 0,
-                "ctx_total": 8192, "ctx_used": 0, "ctx_free": 6963,
-                "usable": 6963, "deferred": 0, "accepting": True}
-
-    monkeypatch.setattr(llama, "endpoint_capacity", _cap)
-    monkeypatch.setattr("app.features.registry.is_enabled", lambda fid: fid == "omo")
-    monkeypatch.setattr("app.integrations.opencode.provider.get_settings",
-                        lambda: {"model": "used", "use_gateway": False})
-
-    omo = admin_client.get("/api/v1/models/llama/capacity").json()["omo"]
-    assert omo["model"] == "used"
-    assert omo["slots"] == 8           # 稼働中の other(1) ではなく used(8)
-    assert omo["concurrency"] == 7     # 直結なのでメイン用に1本空ける
 
 
 def test_throughput_survives_polling_slower_than_the_window():
