@@ -157,9 +157,11 @@ export const secondaryButton = "min-h-11 flex-1 rounded-xl border border-zinc-30
 
 /** 思考の既定（要求が深さ・上限を指定しないときに使う値）。Strata / Radiance 共通。
  * Qwen3.8 系のテンプレートが受け付ける深さは low / medium / xhigh。 */
-export function ThinkingDefaults({ effort, budget, onChange, allowOff = false, disabled = false }: {
+export function ThinkingDefaults({ effort, budget, onChange, allowOff = false, disabled = false, live = false }: {
   effort: string; budget: number; onChange: (effort: string, budget: number) => void;
   allowOff?: boolean; disabled?: boolean;
+  /** Applied to the running model on save (Strata) rather than at the next start. */
+  live?: boolean;
 }) {
   const field = "mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
   return <>
@@ -180,7 +182,7 @@ export function ThinkingDefaults({ effort, budget, onChange, allowOff = false, d
             { v: 8192, label: "8,192" }, { v: 16384, label: "16,384" }, { v: 32768, label: "32,768" }]}
           placeholder="8192" onChange={(v) => onChange(effort, Math.max(0, Math.min(262144, Number(v ?? 0))))} />
       </div>
-      <span className="text-[11px] text-zinc-500">上限に達すると思考を閉じて回答を始めます。要求が深さや上限を指定したときはそちらが優先です。次の起動から反映されます。</span>
+      <span className="text-[11px] text-zinc-500">上限に達すると思考を閉じて回答を始めます。要求が深さや上限を指定したときはそちらが優先です。{live ? "稼働中でも保存するとすぐ反映されます。" : "次の起動から反映されます。"}</span>
     </label>
   </>;
 }

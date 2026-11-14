@@ -2151,7 +2151,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
         value={idleExclude} onChange={setIdleExclude} />
     </SettingsGroup>
     <SettingsGroup title="思考" description="要求が深さを指定しないときの既定">
-      <ThinkingDefaults disabled={running} effort={reasoningEffort} budget={thinkingBudget}
+      <ThinkingDefaults live effort={reasoningEffort} budget={thinkingBudget}
         onChange={(effort, budget) => { setReasoningEffort(effort); setThinkingBudget(budget); }} />
     </SettingsGroup>
     <SettingsGroup title="性能" description="KVキャッシュ・投機デコード・同時実行" collapsible defaultOpen={!initial}>
@@ -2192,7 +2192,7 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
   const item = data?.instances.find((model) => model.alias === alias);
   return <BottomSheet title={`${alias} · 個別設定`} onClose={onClose} wide>
     {item ? <div className="space-y-3">
-      <ModelStatusSummary running={!!item.loaded} lockedNote={item.loaded ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
+      <ModelStatusSummary running={!!item.loaded} lockedNote={item.loaded ? "稼働中は「起動と停止」と「思考」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
         ["ランタイム", "Strata"],
         ["モデル", item.model_path ? <FileName path={item.model_path} /> : `${item.family} / ${item.model}（初回ロード時に取得）`],
         ["接続先", <CopyText text={`http://127.0.0.1:${item.port}/v1`} />],

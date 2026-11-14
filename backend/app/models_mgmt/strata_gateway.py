@@ -34,9 +34,12 @@ _FAMILIES = {
 _CONTEXT = re.compile(r"^([1-9][0-9]{0,3})k$")
 _CONTEXT_MIN_K, _CONTEXT_MAX_K = 4, 1024
 LIFECYCLE_KEYS = ("idle_exclude", "auto_start")
-# Default thinking for requests that name none ("" = the model's own, xhigh) and its cap (0 = none),
-# written into Strata's run config through `launch --set` (reasoning-effort / reasoning-budget-tokens).
+# Default thinking for requests that name none ("" = the model's own, xhigh) and its cap (0 = none).
+# Strata keeps these as its server's shared defaults (POST /settings, persisted by Strata itself):
+# `launch --set` would put them into the engine's arguments, which the engine refuses for the budget.
+# Applied after every start and live on save, so they can change while the model runs.
 REASONING_EFFORTS = ("", "low", "medium", "xhigh")
+THINKING_KEYS = ("reasoning_effort", "thinking_budget")
 
 
 # Strata の `--set KEY=VALUE`（STRATA_* の環境変数かエンジン設定）。ControlDeck の既定値に
@@ -288,10 +291,12 @@ def save_instance(alias: str, *, family: str, model: str,
     if replace and alias in items:
         current = items[alias]
         changed = {key for key, value in wanted.items() if current.get(key) != value}
-        if changed <= set(LIFECYCLE_KEYS):
-            # Lifecycle flags only: Strata's launch settings stay, fine while running.
-            items[alias] = {**current, **{key: wanted[key] for key in LIFECYCLE_KEYS}}
+        if changed <= set(LIFECYCLE_KEYS) | set(THINKING_KEYS):
+            # Lifecycle and thinking defaults only: launch settings stay, fine while running.
+            items[alias] = {**current, **{key: wanted[key] for key in (*LIFECYCLE_KEYS, *THINKING_KEYS)}}
             _write(items)
+            if changed & set(THINKING_KEYS) and get_instance(alias)["loaded"]:
+                apply_thinking(alias)
             return get_instance(alias)
     if replace:
         if alias not in items:
@@ -371,10 +376,9 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
             return False, str(exc)
     for key, value in engine_settings(cfg).items():
         args += ["--set", f"{key}={value}"]
-    # Explicit launch values win over the saved preset; "off" clears one set earlier.
-    args += ["--set", f"reasoning-effort={cfg.get('reasoning_effort') or 'off'}"]
-    budget = int(cfg.get("thinking_budget") or 0)
-    args += ["--set", f"reasoning-budget-tokens={budget if budget > 0 else 'off'}"]
+    # Thinking defaults go through POST /settings after the start (apply_thinking); "off" clears
+    # any value an earlier launch saved into the preset's engine arguments.
+    args += ["--set", "reasoning-effort=off", "--set", "reasoning-budget-tokens=off"]
     try:
         result = _run(args, timeout=7200 if explicit else 420)
     except StrataGatewayError as exc:
@@ -389,10 +393,38 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
         if alias in items:
             items[alias]["activated"] = True
             _write(items)
+    apply_thinking(alias)
     from app.models_mgmt import large_model_lifecycle
     large_model_lifecycle.mark_used(large_model_lifecycle.STRATA, alias)
     large_model_lifecycle.follow_selection(large_model_lifecycle.STRATA)
     return True, ""
+
+
+def thinking_defaults(cfg: dict) -> dict | None:
+    """Strata's shared defaults for this registration, or None to clear them."""
+    defaults: dict = {}
+    effort = str(cfg.get("reasoning_effort") or "")
+    if effort:
+        # Strata's /settings names the deepest level "high" (the template's xhigh).
+        defaults["reasoning_effort"] = "high" if effort == "xhigh" else effort
+    budget = int(cfg.get("thinking_budget") or 0)
+    if budget > 0:
+        defaults["reasoning_budget_tokens"] = budget
+    return defaults or None
+
+
+def apply_thinking(alias: str) -> bool:
+    """Send the thinking defaults to the running server. Never raises (a start must not fail on it)."""
+    cfg = _read().get(alias)
+    if not cfg:
+        return False
+    try:
+        with httpx.Client(timeout=10, trust_env=False) as client:
+            res = client.post(f"http://127.0.0.1:{cfg['port']}/settings",
+                              json={"defaults": thinking_defaults(cfg)})
+            return res.status_code == 200
+    except httpx.HTTPError:
+        return False
 
 
 def start_instance(alias: str) -> tuple[bool, str]:
