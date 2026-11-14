@@ -11,9 +11,14 @@ from app.models_mgmt import strata, strata_gateway
 
 
 def _managed(monkeypatch, tmp_path):
+    from app.models_mgmt import large_model_lifecycle, runtime_policy
     monkeypatch.setattr(strata, "installed", lambda: True)
     monkeypatch.setattr(strata_gateway, "_path", lambda: tmp_path / "models.json")
     monkeypatch.setattr(strata_gateway, "_running", lambda: [])
+    # A start makes Strata the selected runtime and records its use: keep both
+    # out of the session-wide data dir so later tests see the default policy.
+    monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
+    monkeypatch.setattr(large_model_lifecycle, "_usage_path", lambda: tmp_path / "usage.json")
 
 
 def test_status_parses_upstream_json_even_when_human_lines_follow(monkeypatch):

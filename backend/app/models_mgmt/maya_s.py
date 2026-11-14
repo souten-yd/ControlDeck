@@ -391,6 +391,7 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
         return False, str(exc)
     from app.models_mgmt import large_model_lifecycle
     large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+    large_model_lifecycle.follow_selection(large_model_lifecycle.MAYA)
     return True, ""
 
 

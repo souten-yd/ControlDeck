@@ -303,8 +303,13 @@ class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
         await super()._prepare(request)
         # Ollamaの暗黙ロードと同等に、停止中のinstanceは生成前に自動起動して
         # /health 200（モデル読み込み完了）まで待つ。
-        from app.models_mgmt import llama
+        from app.models_mgmt import large_model_lifecycle, llama, local_llm
+        from urllib.parse import urlsplit as _split
 
+        target = await asyncio.to_thread(
+            local_llm.instance_for_port, _split(normalize_openai_base(request.base_url)).port or 0)
+        if target is not None:
+            await large_model_lifecycle.prepare_switch(str(target["alias"]))
         ok = await llama.ensure_ready_by_base_url(
             normalize_openai_base(request.base_url), timeout_seconds=self._READY_TIMEOUT_SECONDS,
         )

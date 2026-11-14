@@ -87,18 +87,65 @@ async def _wait_idle_requests(seconds: float = 60.0) -> bool:
     return True
 
 
-async def prepare_switch(alias: str) -> None:
-    """Before the gateway reserves GPU for a stopped Maya-S/Strata model, free the other.
+def follow_selection(runtime: str) -> None:
+    """In exclusive mode the runtime that actually started becomes the selected one.
 
-    The resource broker only knows how to release llama.cpp models, so without
-    this a request for Strata waits behind a resident Maya-S (and vice versa)
-    until admission times out.
+    Models showed "Strata selected" while Maya-S had been started on request:
+    the selection drives the default connection and add-on AI targets, so it
+    must follow what is running. Only the stored choice changes here; the other
+    runtimes were already released by the start path.
+    """
+    from app.models_mgmt.runtime_policy import get_policy, save_policy
+
+    try:
+        policy = get_policy()
+        if policy.coexistence != "exclusive" or policy.selected_runtime == runtime:
+            return
+        update: dict = {"selected_runtime": runtime}
+        if runtime == "llama.cpp":
+            from app.models_mgmt import llama
+
+            backend = str(llama.get_config().get("backend") or "")
+            if backend not in ("rocm", "vulkan"):
+                return
+            update["selected_backend"] = backend
+        save_policy(policy.model_copy(update=update))
+        logger.info("選択中ランタイムを稼働中の %s に合わせました", runtime)
+    except Exception:  # noqa: BLE001 - never fail a start over the stored choice
+        logger.exception("選択中ランタイムを更新できませんでした")
+
+
+async def prepare_switch(alias: str) -> None:
+    """Before a stopped model starts on request, free the large model that blocks it.
+
+    Maya-S and Strata cannot both be resident, and neither fits beside a
+    llama.cpp chat model. The resource broker only knows how to release
+    llama.cpp models, so without this a request for Strata waits behind a
+    resident Maya-S (and vice versa) until admission times out.
     """
     from app.models_mgmt import local_llm
 
     item = await asyncio.to_thread(local_llm.find, alias)
     runtime = str((item or {}).get("runtime") or "")
-    if runtime not in (MAYA, STRATA) or (item or {}).get("loaded"):
+    if (item or {}).get("loaded"):
+        return
+    if runtime == "llama.cpp":
+        # Small helpers (embedding / reranker) fit beside a large model.
+        if str((item or {}).get("role") or "llm") != "llm":
+            return
+        if not await asyncio.to_thread(lambda: bool(_loaded_models())):
+            return
+        if not await _wait_idle_requests():
+            logger.info("%s を起動するための解放を見送りました（推論中）", alias)
+            return
+        try:
+            await release_for("llama.cpp")
+        except RuntimeError as exc:
+            logger.info("%s を起動するための解放を見送りました: %s", alias, exc)
+            return
+        await asyncio.to_thread(follow_selection, "llama.cpp")
+        return
+    if runtime not in (MAYA, STRATA):
         return
     if not await _wait_idle_requests():
         logger.info("%s を起動するための解放を見送りました（推論中）", alias)
@@ -180,10 +227,33 @@ async def idle_unload_once(now: float | None = None) -> list[str]:
     return stopped
 
 
+def reconcile_selection() -> str | None:
+    """Point the selected runtime at the large model that is actually loaded.
+
+    Covers models started before this rule existed or by other paths. Only acts
+    when exactly one runtime holds an LLM, so nothing is guessed.
+    """
+    from app.models_mgmt import llama
+
+    active = {runtime for runtime, _item in _loaded_models()}
+    try:
+        if any(i.get("loaded") and str(i.get("role") or "llm") == "llm" for i in llama.list_instances()):
+            active.add("llama.cpp")
+    except Exception:  # noqa: BLE001
+        pass
+    if len(active) != 1:
+        return None
+    runtime = next(iter(active))
+    follow_selection(runtime)
+    return runtime
+
+
 async def idle_unload_loop() -> None:
+    await asyncio.to_thread(reconcile_selection)
     while True:
         try:
             await asyncio.sleep(60)
+            await asyncio.to_thread(reconcile_selection)
             await idle_unload_once()
         except asyncio.CancelledError:
             raise

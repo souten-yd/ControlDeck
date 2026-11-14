@@ -24,6 +24,10 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(maya_s, "_running", lambda: False)
     monkeypatch.setattr(maya_s, "_ensure_alias_port_available", lambda: None)
     monkeypatch.setattr(maya_s, "_port_busy", lambda: False)
+    from app.models_mgmt import large_model_lifecycle, runtime_policy
+    # A start selects Maya-S and records its use: keep both per test.
+    monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
+    monkeypatch.setattr(large_model_lifecycle, "_usage_path", lambda: tmp_path / "usage.json")
     return tmp_path
 
 

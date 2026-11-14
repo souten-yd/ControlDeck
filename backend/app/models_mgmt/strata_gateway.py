@@ -352,6 +352,7 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
             _write(items)
     from app.models_mgmt import large_model_lifecycle
     large_model_lifecycle.mark_used(large_model_lifecycle.STRATA, alias)
+    large_model_lifecycle.follow_selection(large_model_lifecycle.STRATA)
     return True, ""
 
 

@@ -197,3 +197,58 @@ def test_registered_strata_port_wins_over_an_empty_llama_endpoint(monkeypatch):
     monkeypatch.setattr(maya_s, "list_instances", lambda: [])
     assert runtime_provider.provider_for_base_url("http://127.0.0.1:8096/v1").kind == "strata"
     assert runtime_provider.provider_for_base_url("http://127.0.0.1:8097/v1").kind == "llama.cpp"
+
+
+@pytest.fixture
+def policy_file(tmp_path, monkeypatch):
+    from app.models_mgmt import runtime_policy
+    monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
+    runtime_policy.save_policy(runtime_policy.RuntimePolicy(selected_runtime="strata"))
+    return runtime_policy
+
+
+def test_selection_follows_the_runtime_that_started(policy_file, monkeypatch):
+    from app.models_mgmt import llama
+    large_model_lifecycle.follow_selection("maya-s")
+    assert policy_file.get_policy().selected_runtime == "maya-s"
+    monkeypatch.setattr(llama, "get_config", lambda: {"backend": "rocm"})
+    large_model_lifecycle.follow_selection("llama.cpp")
+    policy = policy_file.get_policy()
+    assert (policy.selected_runtime, policy.selected_backend) == ("llama.cpp", "rocm")
+
+
+def test_selection_is_left_alone_when_runtimes_coexist(policy_file):
+    policy_file.save_policy(policy_file.RuntimePolicy(selected_runtime="strata", coexistence="coexist"))
+    large_model_lifecycle.follow_selection("maya-s")
+    assert policy_file.get_policy().selected_runtime == "strata"
+
+
+def test_reconcile_points_selection_at_the_only_loaded_runtime(policy_file, monkeypatch):
+    from app.models_mgmt import llama
+    monkeypatch.setattr(large_model_lifecycle, "_loaded_models", lambda: [("maya-s", {"alias": "maya-s"})])
+    monkeypatch.setattr(llama, "list_instances", lambda: [{"alias": "embed", "loaded": True, "role": "embedding"}])
+    assert large_model_lifecycle.reconcile_selection() == "maya-s"
+    assert policy_file.get_policy().selected_runtime == "maya-s"
+    # Two runtimes hold an LLM: ambiguous, change nothing.
+    monkeypatch.setattr(llama, "list_instances", lambda: [{"alias": "q", "loaded": True, "role": "llm"}])
+    assert large_model_lifecycle.reconcile_selection() is None
+
+
+def test_llama_chat_model_start_frees_a_resident_large_model(policy_file, monkeypatch):
+    from app.models_mgmt import llama, local_llm
+    calls = []
+    async def release(runtime):
+        calls.append(runtime)
+    async def idle(seconds=60.0):
+        return True
+    monkeypatch.setattr(large_model_lifecycle, "release_for", release)
+    monkeypatch.setattr(large_model_lifecycle, "_wait_idle_requests", idle)
+    monkeypatch.setattr(large_model_lifecycle, "_loaded_models", lambda: [("maya-s", {"alias": "maya-s"})])
+    monkeypatch.setattr(llama, "get_config", lambda: {"backend": "rocm"})
+    rows = {"qwen27": {"runtime": "llama.cpp", "role": "llm", "loaded": False},
+            "embed": {"runtime": "llama.cpp", "role": "embedding", "loaded": False}}
+    monkeypatch.setattr(local_llm, "find", lambda alias: rows.get(alias))
+    asyncio.run(large_model_lifecycle.prepare_switch("embed"))
+    assert calls == []
+    asyncio.run(large_model_lifecycle.prepare_switch("qwen27"))
+    assert calls == ["llama.cpp"] and policy_file.get_policy().selected_runtime == "llama.cpp"
