@@ -370,7 +370,8 @@ if DIST.is_dir():
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         # 系列ごとに画面を分けているので、無効な系列の path は個別に404にする。
         # CSSで隠すだけにせず、未導入の系列が在るように見せない。
-        gate = {"opencode": "opencode", "opencode-v2": "opencode-v2"}.get(full_path.rstrip("/"))
+        # /opencode は v1 撤去後も v2 画面へ転送するので、v2 の有効/無効で判断する。
+        gate = {"opencode": "opencode-v2", "opencode-v2": "opencode-v2"}.get(full_path.rstrip("/"))
         if gate is not None and not feature_enabled(gate):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         candidate = (DIST / full_path).resolve()

@@ -176,7 +176,7 @@ def test_install_autoconfigures_opencode_connection(monkeypatch, tmp_path):
                         lambda feature_id: type("P", (), {"is_file": lambda self: True})())
     monkeypatch.setattr(registry, "status", lambda feature_id: {"installed": True})
 
-    registry.install("opencode")
+    registry.install("opencode-v2")
     settings = provider.get_settings()
     assert settings["base_url"] == provider.gateway_base_url()
     assert settings["model"] == "auto"
@@ -197,7 +197,7 @@ def test_autoconfigure_failure_does_not_break_install(monkeypatch, tmp_path):
         raise RuntimeError("設定できません")
 
     monkeypatch.setattr("app.integrations.opencode.provider.autoconfigure", _boom)
-    assert registry.install("opencode") == {"installed": True}
+    assert registry.install("opencode-v2") == {"installed": True}
 
 
 def test_default_target_prefers_loaded_endpoint(monkeypatch):

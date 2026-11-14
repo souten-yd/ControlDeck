@@ -412,8 +412,7 @@ export default function AppLayout() {
                 navigate("/assistant");
               }}
             />
-            {([["/opencode", "opencode", "OpenCode"],
-               ["/opencode-v2", "opencode-v2", "OpenCode v2"]] as const).map(([to, feature, label]) =>
+            {([["/opencode-v2", "opencode-v2", "OpenCode"]] as const).map(([to, feature, label]) =>
               enabledFeatures.has(feature) && can("workflows.run") ? (
                 <ActionItem
                   key={`action-${feature}`}

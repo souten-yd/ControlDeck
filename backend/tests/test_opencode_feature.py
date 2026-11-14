@@ -8,28 +8,28 @@ from types import SimpleNamespace
 def test_feature_default_is_disabled_and_external_uninstall_is_preserved(monkeypatch, tmp_path):
     from app.features import registry
 
-    external = tmp_path / "bin" / "opencode"
+    external = tmp_path / "bin" / "opencode2"
     external.parent.mkdir()
     external.write_text("#!/bin/sh\necho 1.2.3\n", encoding="utf-8")
     external.chmod(0o755)
     monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
 
     def which(name):
-        if name == "opencode":
+        if name == "opencode2":
             return str(external)
         if name == "npm":
             return "/usr/bin/npm"
         return None
 
     monkeypatch.setattr(registry.shutil, "which", which)
-    current = registry.status("opencode")
+    current = registry.status("opencode-v2")
     assert current["installed"] is True and current["managed"] is False and current["enabled"] is False
-    registry.enable("opencode")
-    assert registry.status("opencode")["enabled"] is True
+    registry.enable("opencode-v2")
+    assert registry.status("opencode-v2")["enabled"] is True
     # user serviceのPATHが対話shellと異なっても、enable時の実体を再利用する。
     monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
-    assert registry.status("opencode")["enabled"] is True
-    after = registry.uninstall("opencode")
+    assert registry.status("opencode-v2")["enabled"] is True
+    after = registry.uninstall("opencode-v2")
     assert external.exists() and after["installed"] is True and after["enabled"] is False
 
 
@@ -42,15 +42,15 @@ def test_managed_install_uses_private_prefix_and_does_not_enable(monkeypatch, tm
 
     def run(argv, **kwargs):
         calls.append(argv)
-        binary = tmp_path / "data" / "features" / "opencode" / "node_modules" / ".bin" / "opencode"
+        binary = tmp_path / "data" / "features" / "opencode-v2" / "node_modules" / ".bin" / "opencode2"
         binary.parent.mkdir(parents=True)
         binary.write_text("#!/bin/sh\necho 9.9.9\n", encoding="utf-8")
         binary.chmod(0o755)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(registry.subprocess, "run", run)
-    installed = registry.install("opencode")
-    assert calls[0][:4] == ["/usr/bin/npm", "install", "--prefix", str(tmp_path / "data" / "features" / "opencode")]
+    installed = registry.install("opencode-v2")
+    assert calls[0][:4] == ["/usr/bin/npm", "install", "--prefix", str(tmp_path / "data" / "features" / "opencode-v2")]
     assert installed["managed"] is True and installed["enabled"] is False
 
 
@@ -59,7 +59,7 @@ def test_update_installs_latest_and_reports_previous_version(monkeypatch, tmp_pa
 
     monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
-    binary = tmp_path / "data" / "features" / "opencode" / "node_modules" / ".bin" / "opencode"
+    binary = tmp_path / "data" / "features" / "opencode-v2" / "node_modules" / ".bin" / "opencode2"
     versions = ["1.18.3"]
     calls = []
 
@@ -75,13 +75,13 @@ def test_update_installs_latest_and_reports_previous_version(monkeypatch, tmp_pa
         return SimpleNamespace(returncode=0, stdout=versions[-1] + "\n", stderr="")
 
     monkeypatch.setattr(registry.subprocess, "run", run)
-    registry.install("opencode")
+    registry.install("opencode-v2")
     calls.clear()
-    updated = registry.update("opencode")
+    updated = registry.update("opencode-v2")
     npm_calls = [argv for argv in calls if argv[0] == "/usr/bin/npm"]
     assert npm_calls == [[
-        "/usr/bin/npm", "install", "--prefix", str(tmp_path / "data" / "features" / "opencode"),
-        "--no-fund", "--no-audit", "opencode-ai@latest",
+        "/usr/bin/npm", "install", "--prefix", str(tmp_path / "data" / "features" / "opencode-v2"),
+        "--no-fund", "--no-audit", "@opencode/cli@latest",
     ]]
     assert updated["previous_version"] == "1.18.3" and updated["version"] == "1.18.16"
 
@@ -91,17 +91,17 @@ def test_update_rejects_external_only_install(monkeypatch, tmp_path):
 
     from app.features import registry
 
-    external = tmp_path / "bin" / "opencode"
+    external = tmp_path / "bin" / "opencode2"
     external.parent.mkdir()
     external.write_text("#!/bin/sh\necho 1.2.3\n", encoding="utf-8")
     external.chmod(0o755)
     monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(
         registry.shutil, "which",
-        lambda name: str(external) if name == "opencode" else "/usr/bin/npm" if name == "npm" else None,
+        lambda name: str(external) if name == "opencode2" else "/usr/bin/npm" if name == "npm" else None,
     )
     with pytest.raises(registry.FeatureError):
-        registry.update("opencode")
+        registry.update("opencode-v2")
     assert external.read_text(encoding="utf-8").strip().endswith("1.2.3")
 
 
@@ -112,14 +112,14 @@ def test_update_job_endpoint_requires_managed_install(admin_client, monkeypatch)
         "/api/v1/features/unknown/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
     ).status_code == 404
     assert admin_client.post(
-        "/api/v1/features/opencode/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
+        "/api/v1/features/opencode-v2/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
     ).status_code == 422  # 未導入（managed=False）
 
-    base = registry.status("opencode")
+    base = registry.status("opencode-v2")
     monkeypatch.setattr(features_router.registry, "status", lambda feature_id: {**base, "managed": True})
     monkeypatch.setattr(features_router.registry, "update", lambda feature_id: {**base, "previous_version": "1.0.0"})
     started = admin_client.post(
-        "/api/v1/features/opencode/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
+        "/api/v1/features/opencode-v2/update-jobs", json={}, headers={"X-Requested-With": "ControlDeck"},
     )
     assert started.status_code == 201 and started.json()["job_id"]
 
@@ -255,8 +255,7 @@ def test_runtime_config_lets_opencode_send_images_and_roam_codedev(monkeypatch, 
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
     monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path / "CodeDEV")
-    path = provider._runtime_config("caps", "http://127.0.0.1:8090/v1", "auto")
-    payload = _json.loads(path.read_text(encoding="utf-8"))
+    payload = provider._config_payload("caps", "http://127.0.0.1:8090/v1", "auto")
 
     model = payload["provider"]["controldeck"]["models"]["auto"]
     # attachment だけでは足りない。modalities.input に image が無いと OpenCode は
@@ -372,8 +371,7 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
     monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path / "CodeDEV")
-    path = provider._runtime_config("window", "http://127.0.0.1:8090/v1", "auto")
-    payload = _json.loads(path.read_text(encoding="utf-8"))
+    payload = provider._config_payload("window", "http://127.0.0.1:8090/v1", "auto")
 
     limit = payload["provider"]["controldeck"]["models"]["auto"]["limit"]
     assert limit["context"] == 32768
@@ -390,15 +388,11 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
 # 「v1 のまま動く」ことと「v2 では v2 の形になる」ことを両方押さえる。
 
 
-def test_v2_installs_into_its_own_prefix_and_leaves_v1_alone(monkeypatch, tmp_path):
+def test_v2_installs_into_its_own_prefix(monkeypatch, tmp_path):
     from app.features import registry
 
     monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
-    v1 = tmp_path / "data" / "features" / "opencode" / "node_modules" / ".bin" / "opencode"
-    v1.parent.mkdir(parents=True)
-    v1.write_text("#!/bin/sh\necho 1.18.30\n", encoding="utf-8")
-    v1.chmod(0o755)
     calls = []
 
     def run(argv, **kwargs):
@@ -416,9 +410,20 @@ def test_v2_installs_into_its_own_prefix_and_leaves_v1_alone(monkeypatch, tmp_pa
                             str(tmp_path / "data" / "features" / "opencode-v2"), "--no-fund"]
     assert calls[0][-1] == "@opencode/cli"
     assert installed["managed"] is True and installed["enabled"] is False
-    # v2 を消しても v1 の導入は残る。
     registry.uninstall("opencode-v2")
-    assert v1.exists() and registry.status("opencode")["installed"] is True
+    assert registry.status("opencode-v2")["installed"] is False
+
+
+def test_opencode_v1_and_omo_are_gone():
+    """v1（opencode-ai）と v1 専用の OMo は撤去した。v2 だけが残る。"""
+    from app.features import registry
+    from app.integrations.opencode import provider as op
+
+    assert "opencode" not in registry.FEATURES and "omo" not in registry.FEATURES
+    assert registry.OPENCODE_FEATURES == ("opencode-v2",)
+    assert op.RUNTIME_FEATURES == {"v2": "opencode-v2"}
+    # 古い設定や画面が v1 を名指ししても v2 で動く。
+    assert op.active_runtime("v1") == "v2"
 
 
 def test_v2_runtime_config_uses_v2_schema_and_xdg_config_home(monkeypatch, tmp_path):
@@ -454,7 +459,6 @@ def test_v2_runtime_config_uses_v2_schema_and_xdg_config_home(monkeypatch, tmp_p
     assert payload["skills"] == [str(tmp_path / "skill")]
     # 読ませ方は XDG_CONFIG_HOME。v2 は OPENCODE_CONFIG を見ない。
     assert op._runtime_env("v2", config) == {"XDG_CONFIG_HOME": str(config)}
-    assert op._runtime_env("v1", config) == {"OPENCODE_CONFIG": str(config)}
     # v2 の runtime config は directory なので、まとめて消えること。
     op._discard_runtime_config("v2", config)
     assert not config.exists()
@@ -465,28 +469,21 @@ def test_v2_run_argv_drops_dir_and_adds_standalone(tmp_path):
 
     binary = tmp_path / "opencode2"
     project = tmp_path / "project"
-    v1 = op._run_argv("v1", binary, "hello", "auto", project)
     v2 = op._run_argv("v2", binary, "hello", "auto", project)
-    assert v1[:3] == [str(binary), "run", "hello"] and "--dir" in v1
-    assert "--standalone" not in v1
     # v2 は --dir を持たない（作業ディレクトリで決まる）。常駐 service へ繋がない。
     assert v2[:3] == [str(binary), "run", "hello"] and "--dir" not in v2
     assert "--standalone" in v2 and "--format" in v2 and "json" in v2
 
 
-def test_active_runtime_falls_back_to_the_installed_one(monkeypatch, tmp_path):
+def test_active_binary_refuses_when_v2_is_disabled(monkeypatch, tmp_path):
     from app.features import registry
     from app.integrations.opencode import provider as op
 
     monkeypatch.setattr(op, "data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(op.files, "resolve", lambda path: tmp_path)
-    op.save_settings({"base_url": "http://127.0.0.1:8765/v1", "model": "auto", "runtime": "v1"})
-    # 設定は v1 だが、導入されているのが v2 だけなら v2 で動かす。
-    monkeypatch.setattr(registry, "is_enabled", lambda feature_id: feature_id == "opencode-v2")
-    assert op.active_runtime() == "v2"
-    monkeypatch.setattr(registry, "is_enabled", lambda feature_id: feature_id == "opencode")
-    assert op.active_runtime() == "v1"
-    # どちらも無効なら実行時に断る。
+    # 古い設定の runtime: v1 は v2 に揃えて保存する。
+    saved = op.save_settings({"base_url": "http://127.0.0.1:8765/v1", "model": "auto", "runtime": "v1"})
+    assert saved["runtime"] == "v2"
     monkeypatch.setattr(registry, "is_enabled", lambda feature_id: False)
     try:
         op.active_binary()
@@ -537,33 +534,6 @@ def test_v2_caps_tool_output_against_the_window_and_formats_after_edits(monkeypa
                           / "opencode" / "opencode.json").read_text(encoding="utf-8"))
     assert unknown["tool_output"] == {"max_lines": op.TOOL_OUTPUT_DEFAULT_LINES,
                                       "max_bytes": op.TOOL_OUTPUT_DEFAULT_BYTES}
-    # v1 側にこれらの鍵は無い。従来の形を変えない。
-    monkeypatch.setattr(op, "_model_limits",
-                        lambda model: {"context": 131072, "output": 8192, "input": 122880})
-    v1 = json.loads(op._runtime_config("v1", "http://127.0.0.1:1/v1", "auto").read_text(encoding="utf-8"))
-    assert "tool_output" not in v1 and "formatter" not in v1
-
-
-def test_each_page_pins_its_own_runtime(monkeypatch, tmp_path):
-    """v1画面とv2画面のボタンが、それぞれ自分の系列で起動する。"""
-    from app.features import registry
-    from app.integrations.opencode import provider as op
-
-    monkeypatch.setattr(op, "data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(op.files, "resolve", lambda path: tmp_path)
-    op.save_settings({"base_url": "http://127.0.0.1:8765/v1", "model": "auto", "runtime": "v1"})
-    monkeypatch.setattr(registry, "is_enabled", lambda feature_id: True)
-
-    # 設定は v1 のままでも、画面が v2 を名指しすれば v2 で起動する。
-    assert op.active_runtime("v2") == "v2"
-    assert op.active_runtime("v1") == "v1"
-    assert op.active_runtime("") == "v1"
-    # 知らない値は設定値へ落とす（任意の系列名を受け付けない）。
-    assert op.active_runtime("v9") == "v1"
-
-    # 名指しした系列が無効なら、有効なほうへ落とす。
-    monkeypatch.setattr(registry, "is_enabled", lambda feature_id: feature_id == "opencode")
-    assert op.active_runtime("v2") == "v1"
 
 
 def test_v2_tui_settings_survive_across_sessions(monkeypatch, tmp_path):
@@ -625,4 +595,3 @@ def test_v2_project_environment_overrides_stale_systemd_pwd(tmp_path):
     config = tmp_path / "config"
     assert op._runtime_env("v2", config, project) == {
         "XDG_CONFIG_HOME": str(config), "PWD": str(project.resolve())}
-    assert op._runtime_env("v1", config, project) == {"OPENCODE_CONFIG": str(config)}

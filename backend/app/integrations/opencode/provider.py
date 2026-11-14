@@ -24,9 +24,8 @@ DEFAULT_SETTINGS = {
     # ControlDeck の OpenAI 互換ゲートウェイ経由にするか。
     # 経由すると KV の受け入れ制御（混雑時の待機・枯渇時の再試行）が効く。
     "use_gateway": True,
-    # 使う OpenCode の系列。"v1"（opencode-ai）か "v2"（@opencode/cli）。
-    # 既定は v1 のまま。v2 を導入しただけでは切り替わらない。
-    "runtime": "v1",
+    # 使う OpenCode の系列。v1 を撤去したので常に "v2"（@opencode/cli）。
+    "runtime": "v2",
     # 開発ワークフローの拡張（ControlDeck から起動した session にだけ効く）。
     "superpowers": False,
     "adversarial_review": False,
@@ -38,23 +37,17 @@ DEFAULT_SETTINGS = {
     "advisor_model": "",
 }
 
-# 版を固定する。OpenCode のプラグイン管理が初回に取得してキャッシュする。
-WORKFLOW_PLUGINS = {
-    "v2": {
-        "superpowers": "superpowers@git+https://github.com/obra/superpowers.git#v7.0.2",
-        "adversarial_review": "@capybearista/opencode-adversarial-review@2.0.2",
-        "auto_advisor": "@capybearista/opencode-auto-advisor@2.1.1",
-    },
-    "v1": {
-        "superpowers": "superpowers@git+https://github.com/obra/superpowers.git#v7.0.2",
-        "adversarial_review": "@capybearista/opencode-adversarial-review@1.0.0",
-    },
+# 拡張とそれを持つアドオン（設定 → オプション機能で導入・更新・削除する）。
+# OpenCode には管理領域のパスを file:// で渡し、実行時に取りに行かせない。
+WORKFLOW_FEATURES = {
+    "superpowers": "opencode-superpowers",
+    "adversarial_review": "opencode-adversarial-review",
+    "auto_advisor": "opencode-auto-advisor",
 }
 AUTO_ADVISOR_MODES = ("off", "observe", "active")
 
-# 同居する OpenCode ランタイムと、それを持つアドオン（feature）の対応。
-# 導入先prefixが別なので、片方だけ導入・片方だけ削除ができる。
-RUNTIME_FEATURES = {"v1": "opencode", "v2": "opencode-v2"}
+# OpenCode ランタイムと、それを持つアドオン（feature）の対応。v2 だけ。
+RUNTIME_FEATURES = {"v2": "opencode-v2"}
 
 
 class CodeAgentError(RuntimeError):
@@ -83,21 +76,11 @@ def get_settings() -> dict:
 
 
 def active_runtime(preferred: str = "") -> str:
-    """実際に使う OpenCode の系列を決める。
+    """実際に使う OpenCode の系列。v1 を撤去したので常に v2。
 
-    `preferred` は画面が名指しする系列（v1 画面／v2 画面のボタン）。空なら設定値を使う。
-    名指しされた系列が無効（未導入・停止）なら、有効なもう一方へ落とす。片方だけ
-    導入している利用者に「設定が v1 のままなので動かない」と言わせないため。
-    どちらも無効なら希望をそのまま返し、判断は呼び出し側（active_binary）へ委ねる。
+    古い設定や呼び出し側が "v1" を渡しても v2 で動かす。
     """
-    if preferred not in RUNTIME_FEATURES:
-        preferred = str(get_settings().get("runtime") or "v1")
-    if preferred not in RUNTIME_FEATURES:
-        preferred = "v1"
-    for name in [preferred, *(n for n in RUNTIME_FEATURES if n != preferred)]:
-        if registry.is_enabled(RUNTIME_FEATURES[name]):
-            return name
-    return preferred
+    return "v2"
 
 
 def active_binary(preferred: str = "") -> tuple[str, Path]:
@@ -211,25 +194,41 @@ def save_workflow(patch: dict) -> dict:
     return settings
 
 
+def workflow_plugin_specs() -> dict[str, str]:
+    """拡張ごとの OpenCode プラグイン指定（file://…）。未導入の拡張は含めない。"""
+    specs: dict[str, str] = {}
+    for key, feature_id in WORKFLOW_FEATURES.items():
+        path = registry.plugin_path(feature_id)
+        if path is not None:
+            specs[key] = path.as_uri()
+    return specs
+
+
+def workflow_installed() -> dict[str, bool]:
+    """画面向け: 拡張ごとにプラグインが導入済みか。"""
+    specs = workflow_plugin_specs()
+    return {key: key in specs for key in WORKFLOW_FEATURES}
+
+
 def _workflow(runtime: str, model: str) -> dict:
     """有効な拡張から、足すプラグイン・モデル・agent 設定・Auto Advisor 設定を作る。"""
     settings = get_settings()
-    specs = WORKFLOW_PLUGINS.get(runtime, {})
+    specs = workflow_plugin_specs()
     plugins: list[str] = []
     models: list[str] = []
     agents: dict[str, Any] = {}
     advisor: dict | None = None
-    if settings.get("superpowers") and "superpowers" in specs:
+    if settings.get("superpowers") and specs.get("superpowers"):
         plugins.append(specs["superpowers"])
     review = str(settings.get("review_model") or "")
-    if settings.get("adversarial_review") and "adversarial_review" in specs:
+    if settings.get("adversarial_review") and specs.get("adversarial_review"):
         plugins.append(specs["adversarial_review"])
         if review and review != model:
             models.append(review)
             for name in ("adversarial-reviewer", "constructive-reviewer"):
                 agents[name] = {"model": f"controldeck/{review}"}
     mode = str(settings.get("auto_advisor") or "off")
-    if mode != "off" and "auto_advisor" in specs:
+    if mode != "off" and specs.get("auto_advisor"):
         plugins.append(specs["auto_advisor"])
         target = str(settings.get("advisor_model") or "")
         if target and target != model:
@@ -252,8 +251,8 @@ def save_settings(patch: dict) -> dict:
         raise ValueError("LLM endpointはhttp(s) URLで指定してください")
     if not settings["model"] or len(settings["model"]) > 200:
         raise ValueError("modelを指定してください")
-    if str(settings.get("runtime") or "") not in RUNTIME_FEATURES:
-        raise ValueError("OpenCodeの系列はv1かv2を指定してください")
+    # 系列は v2 だけ。古い画面や設定が v1 を送ってきても v2 に揃える。
+    settings["runtime"] = "v2"
     project = str(settings.get("project_path") or "")
     if project:
         resolved = files.resolve(project)
@@ -512,10 +511,28 @@ def _runtime_config(
     *,
     owner_user_id: int | None = None,
     project_id: str | None = None,
-    runtime: str = "v1",
+    runtime: str = "v2",
 ) -> Path:
+    """OpenCode v2 のセッション設定を書き、XDG_CONFIG_HOME にするディレクトリを返す。
+
+    `runtime` は旧呼び出し互換のためだけに受け取る（v1 は撤去済みで常に v2）。
+    """
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
-    path = _integration_dir() / f"runtime-config-{safe_job_id}.json"
+    payload = _config_payload(safe_job_id, base_url, model,
+                              owner_user_id=owner_user_id, project_id=project_id)
+    return _write_v2_config(safe_job_id, payload)
+
+
+def _config_payload(
+    safe_job_id: str,
+    base_url: str,
+    model: str,
+    *,
+    owner_user_id: int | None = None,
+    project_id: str | None = None,
+) -> dict:
+    """設定の中身（書き込み前）。形は旧来の OpenCode 形式で、_v2_payload が v2 へ読み替える。"""
+    runtime = "v2"
     limits = _model_limits(model)
     payload = {
         "$schema": "https://opencode.ai/config.json",
@@ -641,21 +658,14 @@ def _runtime_config(
                 },
             }
         }
-    if runtime == "v2":
-        return _write_v2_config(safe_job_id, payload)
-    payload.pop("_auto_advisor", None)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(temp, 0o600)
-    os.replace(temp, path)
-    return path
+    return payload
 
 
 # ---- OpenCode v2 向けの読み替え ----
 #
 # v2 は設定の形が変わっている（provider→providers、permission→permissions、
 # agent→agents、npm→package、options→settings/headers、modalities→capabilities）。
-# 上の payload は v1 の形のままにして、ここで機械的に読み替える。測って書いた
+# 上の payload は旧来（v1 時代）の形で組み、ここで機械的に読み替える。測って書いた
 # コメント（窓の大きさ、圧縮の発火点、重い道具の内訳）を二重に持たないため。
 #
 # v2 は OPENCODE_CONFIG / OPENCODE_CONFIG_DIR / OPENCODE_CONFIG_CONTENT の
@@ -904,20 +914,17 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
 
 def _runtime_env(runtime: str, config: Path, project: Path | None = None) -> dict[str, str]:
     """runtime config を読ませるための環境変数。"""
-    env = {"XDG_CONFIG_HOME": str(config)} if runtime == "v2" else {"OPENCODE_CONFIG": str(config)}
+    env = {"XDG_CONFIG_HOME": str(config)}
     # v2 resolves its workspace from PWD; systemd's inherited PWD can still be
     # HOME even when WorkingDirectory points at the selected project.
-    if runtime == "v2" and project is not None:
+    if project is not None:
         env["PWD"] = str(project.resolve())
     return env
 
 
 def _discard_runtime_config(runtime: str, config: Path) -> None:
-    """job 別の runtime config を消す。v2 は directory なのでまとめて消す。"""
-    if runtime == "v2":
-        shutil.rmtree(config, ignore_errors=True)
-    else:
-        config.unlink(missing_ok=True)
+    """job 別の runtime config（v2 は directory）をまとめて消す。"""
+    shutil.rmtree(config, ignore_errors=True)
 
 
 def _run_argv(runtime: str, binary: Path, message: str, model: str, project: Path) -> list[str]:
@@ -930,7 +937,7 @@ def _run_argv(runtime: str, binary: Path, message: str, model: str, project: Pat
     """
     argv = [str(binary), "run", message, "--format", "json", "--auto",
             "--model", f"controldeck/{model}"]
-    return argv + (["--standalone"] if runtime == "v2" else ["--dir", str(project)])
+    return argv + ["--standalone"]
 
 
 def _event_error(event: dict) -> str:
@@ -1087,7 +1094,7 @@ def tui_command(
     # v2 の root command は --model を持たない（model は config で決まる）。
     # 常駐 service へ繋がないよう --standalone を付ける。TUI を閉じたら一緒に終わる。
     argv = [str(binary)]
-    argv += ["--standalone"] if runtime == "v2" else ["--model", f"controldeck/{model_id}"]
+    argv += ["--standalone"]
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))
@@ -1338,104 +1345,3 @@ class OpenCodeProvider:
 
 
 provider = OpenCodeProvider()
-
-
-# ---- OMo（oh-my-openagent）の並列設定 ----
-#
-# 責務を分ける:
-#   OMo        「いくつの仕事を並行して進めたいか」（論理並列）
-#   ControlDeck「いま GPU へ何本入れて安全か」（受付・待ち行列）
-#   llama.cpp  「実際の同時実行」（slot と共有KV）
-#
-# したがって OMo の並列数を llama の --parallel に一致させる必要はない。
-# エージェントは常に LLM を呼んでいるわけではない（grep やビルドの時間がある）ので、
-# 論理並列 > slot 数 は健全なオーバーサブスクリプションになり、GPU を遊ばせにくい。
-# 溢れた分はゲートウェイの受け入れ制御が待たせる。
-
-# OMo 側の既定（v4.19.4 の schema 実測値）
-OMO_DEFAULT_CONCURRENCY = 5
-OMO_DEFAULT_TEAM_PARALLEL = 4
-
-
-def _omo_config_path() -> Path:
-    """OMo のユーザー設定。~/.omo/omo.jsonc（jsonc が無ければ omo.json）。"""
-    root = Path.home() / ".omo"
-    root.mkdir(parents=True, exist_ok=True)
-    jsonc = root / "omo.jsonc"
-    if jsonc.exists():
-        return jsonc
-    legacy = root / "omo.json"
-    return legacy if legacy.exists() else jsonc
-
-
-def omo_concurrency_for(n_parallel: int, *, gated: bool) -> tuple[int, int]:
-    """(論理並列, Team同時メンバー数) を決める。
-
-    gated=True（ゲートウェイ経由）なら、溢れた分を ControlDeck が待たせられるので
-    OMo 既定のまま少し多めに走らせる。GPU を遊ばせない。
-    gated=False（llama.cpp 直結）なら誰も待たせてくれないため、
-    対話中のメインエージェント用に 1 本空けた保守的な値にする。
-    """
-    if gated:
-        return OMO_DEFAULT_CONCURRENCY, OMO_DEFAULT_TEAM_PARALLEL
-    safe = max(1, int(n_parallel) - 1)
-    return safe, safe
-
-
-def sync_omo_concurrency(n_parallel: int | None = None) -> dict:
-    """OMo の task.default_concurrency / task.team.max_parallel_members を整える。
-
-    OMo は provider_concurrency / model_concurrency を上位に持つので、
-    既定値だけ書き、利用者が付けた個別上書きは残す。
-    schema は .strict() なので、未知のキーを混ぜると設定ごと弾かれる点に注意。
-    """
-    from app.models_mgmt import local_llm
-
-    settings = get_settings()
-    gated = bool(settings.get("use_gateway")) and is_gateway_url(str(settings.get("base_url") or ""))
-    if n_parallel is None:
-        # 並列数は実際に転送される先の設定で決める。解決規則はゲートウェイと共有する。
-        from app.models_mgmt import gateway
-
-        try:
-            alias, _ = gateway.resolve_endpoint(str(settings.get("model") or ""))
-        except Exception:  # noqa: BLE001 - 未登録なら同期対象なし
-            return {"updated": False, "reason": "対象モデルがありません"}
-        instance = local_llm.find(alias)
-        if instance is None:
-            return {"updated": False, "reason": "対象モデルがありません"}
-        # スロット設定が無ければ1とみなす。
-        n_parallel = int(instance.get("n_parallel") or 1)
-
-    concurrency, team_parallel = omo_concurrency_for(n_parallel, gated=gated)
-    path = _omo_config_path()
-    try:
-        raw = path.read_text(encoding="utf-8")
-        config = json.loads(_strip_jsonc(raw))
-        if not isinstance(config, dict):
-            config = {}
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        config = {}
-    task = dict(config.get("task") or {})
-    team = dict(task.get("team") or {})
-    if (task.get("default_concurrency") == concurrency
-            and team.get("max_parallel_members") == team_parallel):
-        return {"updated": False, "concurrency": concurrency, "reason": "変更なし"}
-    task["default_concurrency"] = concurrency
-    team["max_parallel_members"] = team_parallel
-    task["team"] = team
-    config["task"] = task
-    try:
-        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as exc:
-        return {"updated": False, "reason": f"書き込めません: {exc}"}
-    return {"updated": True, "concurrency": concurrency, "team_parallel": team_parallel,
-            "n_parallel": n_parallel, "gated": gated, "path": str(path)}
-
-
-def _strip_jsonc(text: str) -> str:
-    """jsonc のコメントを落とす。利用者が手で書いた設定を壊さず読むため。"""
-    import re
-
-    without_block = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"^\s*//.*$", "", without_block, flags=re.M)

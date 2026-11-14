@@ -60,7 +60,7 @@ def test_recently_used_opencode_session_marks_endpoint_in_use(monkeypatch):
 
     from app.models_mgmt import llama
 
-    monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: feature_id == "opencode")
+    monkeypatch.setattr("app.features.registry.is_enabled", lambda feature_id: feature_id == "opencode-v2")
     monkeypatch.setattr(
         "app.integrations.opencode.provider.get_settings",
         lambda: {"base_url": "http://127.0.0.1:8090/v1", "model": "llama", "project_path": ""},

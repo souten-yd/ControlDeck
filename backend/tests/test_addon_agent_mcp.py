@@ -199,8 +199,8 @@ def test_runtime_config_lets_opencode_drop_old_tool_output(monkeypatch, tmp_path
     from app.integrations.opencode import provider
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
-    config = provider._runtime_config("prune", "http://127.0.0.1:8090/v1", "local")
-    payload = json.loads(config.read_text(encoding="utf-8"))
+    config = provider._config_payload("prune", "http://127.0.0.1:8090/v1", "local")
+    payload = config
     assert payload["compaction"]["prune"] is True
 
 
@@ -216,13 +216,13 @@ def test_runtime_config_projects_mcp_only_with_user_authority(monkeypatch, tmp_p
         return "signed-user-token"
 
     monkeypatch.setattr(agent_mcp, "issue_opencode_token", issue_token)
-    without_user = provider._runtime_config("without-user", "http://127.0.0.1:8090/v1", "local")
-    assert "mcp" not in json.loads(without_user.read_text(encoding="utf-8"))
-    with_user = provider._runtime_config(
+    without_user = provider._config_payload("without-user", "http://127.0.0.1:8090/v1", "local")
+    assert "mcp" not in without_user
+    with_user = provider._config_payload(
         "with-user", "http://127.0.0.1:8090/v1", "local",
         owner_user_id=7, project_id="sample-project",
     )
-    payload = json.loads(with_user.read_text(encoding="utf-8"))
+    payload = with_user
     server = payload["mcp"]["controldeck_addons"]
     assert server["type"] == "local" and server["enabled"] is True
     # client 側で先に切らない。終わりを決めるのは host（進捗が止まったときだけ
@@ -811,8 +811,8 @@ def test_the_session_is_told_how_to_spend_its_context(monkeypatch, tmp_path):
     monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(provider, "_skill_paths", lambda: [])
     monkeypatch.setattr(provider, "_allowed_directories", lambda: {})
-    config = provider._runtime_config("job-notes", "http://127.0.0.1:1/v1", "model")
-    payload = json.loads(config.read_text(encoding="utf-8"))
+    config = provider._config_payload("job-notes", "http://127.0.0.1:1/v1", "model")
+    payload = config
     assert payload["instructions"] == [str(notes)]
 
 
@@ -874,8 +874,8 @@ def test_the_session_declares_the_window_so_compaction_can_fire(monkeypatch, tmp
         provider, "_model_limits",
         lambda model: {"context": 65536, "output": 8192, "input": 57344},
     )
-    config = provider._runtime_config("job-window", "http://127.0.0.1:1/v1", "Qwen3.8-27B")
-    payload = json.loads(config.read_text(encoding="utf-8"))
+    config = provider._config_payload("job-window", "http://127.0.0.1:1/v1", "Qwen3.8-27B")
+    payload = config
     model = payload["provider"]["controldeck"]["models"]["Qwen3.8-27B"]
 
     assert model["limit"] == {"context": 65536, "output": 8192, "input": 57344}
@@ -930,8 +930,8 @@ def test_heavy_addon_tools_move_to_specialist_subagents(monkeypatch, tmp_path):
     monkeypatch.setattr(provider, "_skill_paths", lambda: [])
     monkeypatch.setattr(provider, "_allowed_directories", lambda: {})
     monkeypatch.setattr(provider, "_model_limits", lambda model: None)
-    config = provider._runtime_config("job-agents", "http://127.0.0.1:1/v1", "model")
-    agents = json.loads(config.read_text(encoding="utf-8"))["agent"]
+    config = provider._config_payload("job-agents", "http://127.0.0.1:1/v1", "model")
+    agents = config["agent"]
 
     assert agents["sculptor"]["mode"] == "subagent"
     assert agents["sculptor"]["tools"]["controldeck_addons_media_scene_*"] is True

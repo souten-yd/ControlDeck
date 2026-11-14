@@ -140,26 +140,6 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
             </span>
           </Row>
         ))}
-        {/* OMo はエンドポイント個別ではなく全体の設定なので、まとめて1行だけ出す。 */}
-        {data.omo && (() => {
-          const loads = data.endpoints.map(endpointLoad).filter(Boolean) as string[];
-          const load = loads.includes("高") ? "高" : loads.includes("中") ? "中" : loads[0] ?? null;
-          return (
-            <Row label="OMo負荷">
-              {load ? (
-                <span className={load === "高" ? "text-amber-600 dark:text-amber-400" : ""}>
-                  {load}
-                  <span className="ml-1.5 text-[10px] text-zinc-400">（{data.omo.model}）</span>
-                </span>
-              ) : (
-                // OMoの対象モデルが停止していれば、負荷ではなくその事実を出す。
-                <span className="text-zinc-400">
-                  {data.omo.model ? `${data.omo.model} は停止中` : "—"}
-                </span>
-              )}
-            </Row>
-          );
-        })()}
       </div>
     </section>
   );

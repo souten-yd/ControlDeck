@@ -95,21 +95,20 @@ function FeatureRoute({ feature, children }: { feature: string; children: React.
   return <>{children}</>;
 }
 
+/** /opencode → /opencode-v2。クエリ（?session=…）はそのまま渡す。 */
+function OpenCodeRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/opencode-v2${location.search}`} replace />;
+}
+
 function buildRouter() {
   const featureRoutes = [];
-  {
-    // 系列ごとに1枚ずつ。画面の中身は同じで、起動する系列だけが違う。
-    const series: Array<{ path: string; feature: string; runtime: string }> = [
-      { path: "opencode", feature: "opencode", runtime: "v1" },
-      { path: "opencode-v2", feature: "opencode-v2", runtime: "v2" },
-    ];
-    for (const { path, feature, runtime } of series) {
-      featureRoutes.push({
-        path,
-        element: <FeatureRoute feature={feature}><Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage key={runtime} runtime={runtime} /></Suspense></FeatureRoute>,
-      });
-    }
-  }
+  // OpenCode は v2 だけ。旧 v1 の /opencode（チャットからの ?session= を含む）は v2 画面へ送る。
+  featureRoutes.push({
+    path: "opencode-v2",
+    element: <FeatureRoute feature="opencode-v2"><Suspense fallback={<div className="p-6 text-sm text-zinc-400">OpenCodeを読み込み中...</div>}><OpenCodePage runtime="v2" /></Suspense></FeatureRoute>,
+  });
+  featureRoutes.push({ path: "opencode", element: <OpenCodeRedirect /> });
   return createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
   {
