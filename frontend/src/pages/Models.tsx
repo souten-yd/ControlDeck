@@ -1085,6 +1085,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
       setPolicyCfg(next.policy);
       qc.setQueryData(["runtime-environment"], next);
       qc.invalidateQueries({ queryKey: ["llama-status"] });
+      // AI アシスタントなどが Models の選択へすぐ追従するように。
+      qc.invalidateQueries({ queryKey: ["llm-endpoints"] });
       show("LLMランタイム設定を適用しました");
     },
     onError: (e) => show(e instanceof Error ? e.message : "ランタイム設定の適用に失敗", "error"),
