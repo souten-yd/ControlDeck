@@ -587,14 +587,23 @@ async def gateway_chat(request: Request):
             # 違うので、同じ「tok/s」として出すと読めない。
             started_at = asyncio.get_running_loop().time()
             first = True
+            from app.models_mgmt import live_stats
+            timing = live_stats.begin(port)
+            pending = bytearray()
+            usage = None
             try:
                 async for chunk in upstream.aiter_bytes():
                     if first and chunk:
                         record_first_token(started_at)
                         first = False
                     note_stream_phase(chunk)
+                    try:
+                        usage = live_stats.feed_sse(timing, chunk, pending) or usage
+                    except Exception:  # noqa: BLE001 - display only
+                        pass
                     yield chunk
             finally:
+                live_stats.end(timing, usage, timing.timings)
                 clear_stream_phase()
                 await upstream.aclose()
                 await client.aclose()
@@ -604,8 +613,19 @@ async def gateway_chat(request: Request):
 
     try:
         started_at = asyncio.get_running_loop().time()
-        async with httpx.AsyncClient(timeout=None) as client:
-            upstream = await client.post(target, json=payload)
+        from app.models_mgmt import live_stats
+        timing = live_stats.begin(port)
+        content = None
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                upstream = await client.post(target, json=payload)
+        finally:
+            try:
+                body = upstream.json() if "upstream" in locals() and upstream.status_code < 400 else {}
+            except ValueError:
+                body = {}
+            live_stats.end(timing, body.get("usage") if isinstance(body, dict) else None,
+                           body.get("timings") if isinstance(body, dict) else None)
         _record_gateway_oom(alias, lease_id, upstream)
         record_first_token(started_at)
         try:

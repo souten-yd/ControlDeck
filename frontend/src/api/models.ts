@@ -145,6 +145,8 @@ export interface EndpointCapacity {
   prefilling: number;
   /** 読むべきプロンプトの総量と、そのうち読み終えた量。 */
   prompt_tokens: number; prompt_tokens_done: number;
+  /** Strata / Maya-S / Radiance: ControlDeck times the requests it relays (no KV usage). */
+  runtime?: string; timed_by_controldeck?: boolean;
 }
 
 

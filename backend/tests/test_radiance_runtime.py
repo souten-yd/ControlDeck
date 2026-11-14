@@ -48,17 +48,19 @@ def test_lifecycle_flags_change_while_running_but_launch_settings_do_not(managed
 def test_launch_args_are_fixed_and_loopback_only(managed):
     radiance.save_instance("q", model_path=str(managed), port=8100, kv_cache="fp8",
                            max_num_seqs=2, speculative_tokens=7)
-    args = radiance.launch_args("q", radiance._read()["q"])
+    cfg = radiance._read()["q"]
+    args = radiance.launch_args("q", cfg)
     assert args[1:3] == ["run", "--rm"]
     joined = " ".join(args)
-    # Rootless podman, host network bound to loopback, the model folder read-only.
+    # Rootless podman, host network, the model folder and the settings file read-only.
     assert f"{radiance.IMAGE}:{radiance.PINNED_TAG}" in args and "--network host" in joined
-    assert f"-v {managed.parent}:/models:ro" in joined and f"--model /models/{managed.name}" in joined
-    assert "--host 127.0.0.1" in joined and "--port 8100" in joined and "--tp 1" in joined
-    assert "--kv-cache-dtype fp8" in joined and "--max-num-seqs 2" in joined
-    assert "--num-speculative-tokens 7" in joined and "--served-model-name q" in joined
+    assert f"-v {managed.parent}:/models:ro" in joined and args[-2:] == ["--config", "/config/radiance.yaml"]
+    text = radiance.config_yaml("q", cfg)
+    assert "  host: 127.0.0.1\n  port: 8100\n" in text and f"    model: /models/{managed.name}\n" in text
+    assert "    kv-cache-dtype: fp8\n" in text and "    max-num-seqs: 2\n" in text and "    tp: 1\n" in text
+    assert "    num-speculative-tokens: 7\n" in text
     radiance.save_instance("auto-depth", model_path=str(managed), port=8101)
-    assert "--num-speculative-tokens" not in radiance.launch_args("auto-depth", radiance._read()["auto-depth"])
+    assert "num-speculative-tokens" not in radiance.config_yaml("auto-depth", radiance._read()["auto-depth"])
 
 
 def test_starting_radiance_frees_the_other_large_models(monkeypatch):
@@ -125,12 +127,12 @@ def test_runtime_policy_and_feature_know_radiance():
 
 def test_thinking_defaults_reach_the_server(managed):
     radiance.save_instance("q", model_path=str(managed), port=8100)
-    args = " ".join(radiance.launch_args("q", radiance._read()["q"]))
+    text = radiance.config_yaml("q", radiance._read()["q"])
     # The template's own depth, no cap; high/max (OpenCode, GLM-style) mapped to the template's xhigh.
-    assert "--reasoning-effort " not in args and "--thinking-token-budget" not in args
-    assert "--reasoning-effort-map high=xhigh,max=xhigh" in args
+    assert "reasoning-effort:" not in text.replace("reasoning-effort-map", "") and "thinking-token-budget" not in text
+    assert '    reasoning-effort-map: "high=xhigh,max=xhigh"\n' in text
     radiance.save_instance("r", model_path=str(managed), port=8101, reasoning_effort="medium", thinking_budget=8192)
-    args = " ".join(radiance.launch_args("r", radiance._read()["r"]))
-    assert "--reasoning-effort medium" in args and "--thinking-token-budget 8192" in args
+    text = radiance.config_yaml("r", radiance._read()["r"])
+    assert "    reasoning-effort: medium\n" in text and "    thinking-token-budget: 8192\n" in text
     with pytest.raises(radiance.RadianceError):
         radiance.save_instance("s", model_path=str(managed), port=8102, reasoning_effort="high")

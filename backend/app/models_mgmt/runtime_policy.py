@@ -193,6 +193,10 @@ async def environment() -> dict:
                            ("vulkan", "llama.cpp / Vulkan")):
         if not detected.get(backend) and backend not in installed:
             continue
+        # Vulkan is not offered here any more (ROCm is the supported path); an existing
+        # Vulkan install still shows so it can be selected or left.
+        if backend == "vulkan" and backend not in installed:
+            continue
         runtimes.append({
             "id": f"llama.cpp:{backend}", "runtime": "llama.cpp", "backend": backend,
             "label": label, "available": bool(detected.get(backend)),

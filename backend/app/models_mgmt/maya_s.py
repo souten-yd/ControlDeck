@@ -478,7 +478,16 @@ def get_instance(alias: str) -> dict:
             "base_url": f"http://127.0.0.1:{_PORT}/v1",
             "loaded": _running(), "model_path": get_settings()["model_path"],
             "ctx_size": get_settings()["context"],
-            "configured": True, "n_parallel": 1}
+            "configured": True, "n_parallel": 1, "vision": _vision_configured()}
+
+
+def _vision_configured() -> bool:
+    """Maya reads pictures only when its config names an image encoder ("vision")."""
+    config = _config()
+    try:
+        return bool(config and isinstance(json.loads(config.read_text(encoding="utf-8")).get("vision"), dict))
+    except (OSError, ValueError):
+        return False
 
 
 def list_instances() -> list[dict]:

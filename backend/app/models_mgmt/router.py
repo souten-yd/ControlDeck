@@ -905,14 +905,34 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
         if str(i.get("role", "llm")) == "llm" and i.get("runtime_status") == "FAILED"
     ]
 
-    return {
-        "endpoints": [
-            {"id": e["id"], "label": e["label"], "port": e["port"],
-             "running_alias": e["running_alias"], **capacity}
-            for e, capacity in zip(running, capacities, strict=True)
-        ],
-        "failed": failed,
-    }
+    endpoints = [
+        {"id": e["id"], "label": e["label"], "port": e["port"],
+         "running_alias": e["running_alias"], **capacity}
+        for e, capacity in zip(running, capacities, strict=True)
+    ]
+    # Strata / Maya-S / Radiance report no llama.cpp-style /metrics: ControlDeck times the
+    # requests it relays to them (live_stats). Same shape, so the widget shows them alike.
+    from app.models_mgmt import live_stats, local_llm
+    for item in await asyncio.to_thread(local_llm.llm_instances):
+        if item.get("runtime") == "llama.cpp" or not item.get("loaded"):
+            continue
+        port = int(item.get("port") or 0)
+        stats = live_stats.snapshot(port)
+        slots = max(1, int(item.get("n_parallel") or 1))
+        ctx = int(item.get("ctx_size") or 0)
+        endpoints.append({
+            "id": f"{item['runtime']}:{item['alias']}", "label": str(item["alias"]), "port": port,
+            "running_alias": str(item["alias"]), "runtime": str(item["runtime"]),
+            "available": True, "slots": slots, "busy": min(slots, stats["busy"]),
+            "ctx_total": ctx, "ctx_used": 0, "ctx_free": ctx, "usable": ctx,
+            "deferred": max(0, stats["busy"] - slots), "accepting": stats["busy"] < slots,
+            "tokens_per_second": stats["tokens_per_second"],
+            "tokens_per_second_single": stats["tokens_per_second_single"],
+            "phase": stats["phase"], "prefill_tokens_per_second": stats["prefill_tokens_per_second"],
+            "prefilling": stats["prefilling"], "prompt_tokens": 0, "prompt_tokens_done": 0,
+            "timed_by_controldeck": True,
+        })
+    return {"endpoints": endpoints, "failed": failed}
 
 
 @router.get("/llama/endpoints/{endpoint_id}/capacity")

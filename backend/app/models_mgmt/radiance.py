@@ -37,7 +37,8 @@ RUNTIME = "radiance"
 IMAGE = "docker.io/stilldeadcode/radiance"
 _TAGS = "https://hub.docker.com/v2/repositories/stilldeadcode/radiance/tags?page_size=50"
 # Install takes the tested release; "update" moves to the newest release tag.
-PINNED_TAG = "1.17.0"
+# 2.x reads its settings from a YAML file (`radiance --config FILE`) instead of flags.
+PINNED_TAG = "2.0.0"
 _TAG = re.compile(r"^v?([0-9]+)[.]([0-9]+)[.]([0-9]+)$")
 _ALIAS = re.compile(r"^[a-z][a-z0-9.-]{0,47}$")
 _MIN_PORT, _MAX_PORT = 8081, 65535
@@ -418,30 +419,52 @@ def delete_instance(alias: str) -> dict:
     return {"alias": alias, "config_deleted": True, "model_files_deleted": False}
 
 
+def _config_dir() -> Path:
+    return root() / "configs"
+
+
+def config_yaml(alias: str, cfg: dict) -> str:
+    """The 2.x settings file for one registration. Values are validated, so plain scalars suffice."""
+    model = Path(cfg["model_path"])
+    lines = ["server:", "  host: 127.0.0.1", f"  port: {int(cfg['port'])}",
+             "memory:", f"  gpu-headroom-mib: {int(cfg['gpu_headroom_mib'])}",
+             "models:", f"  {alias}:", f"    model: /models/{model.name}", "    tp: 1",
+             f"    max-model-len: {int(cfg['context'])}", f"    max-num-seqs: {int(cfg['max_num_seqs'])}",
+             f"    kv-cache-dtype: {cfg['kv_cache']}"]
+    if cfg.get("speculative_tokens") is not None:
+        lines.append(f"    num-speculative-tokens: {int(cfg['speculative_tokens'])}")
+    if cfg.get("reasoning_effort"):
+        lines.append(f"    reasoning-effort: {cfg['reasoning_effort']}")
+    if int(cfg.get("thinking_budget") or 0) > 0:
+        lines.append(f"    thinking-token-budget: {int(cfg['thinking_budget'])}")
+    lines.append(f'    reasoning-effort-map: "{_EFFORT_MAP}"')
+    return "\n".join(lines) + "\n"
+
+
+def write_config(alias: str, cfg: dict) -> Path:
+    directory = _config_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / f"{alias}.yaml"
+    temp = path.with_suffix(".tmp")
+    temp.write_text(config_yaml(alias, cfg), encoding="utf-8")
+    os.replace(temp, path)
+    return path
+
+
 def launch_args(alias: str, cfg: dict) -> list[str]:
     """The fixed command line for one registration (exposed for tests).
 
-    The model's folder is mounted read-only at /models; the server binds 127.0.0.1 on the
-    host network, so nothing is published beyond loopback.
+    The model's folder is mounted read-only at /models and its settings file at /config; the
+    server binds 127.0.0.1 on the host network, so nothing is published beyond loopback.
     """
     model = Path(cfg["model_path"])
-    args = [entrypoint().as_posix(), "run", "--rm", "--replace", "--name", _container(alias),
+    config = _config_dir() / f"{alias}.yaml"
+    return [entrypoint().as_posix(), "run", "--rm", "--replace", "--name", _container(alias),
             "--network", "host", "--init", "--ulimit", "host",
             "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "keep-groups",
             "--security-opt", "seccomp=unconfined", "--stop-timeout", "30",
-            "-v", f"{model.parent}:/models:ro", _image_ref(),
-            "--model", f"/models/{model.name}", "--host", "127.0.0.1",
-            "--port", str(cfg["port"]), "--served-model-name", alias, "--tp", "1",
-            "--max-model-len", str(cfg["context"]), "--max-num-seqs", str(cfg["max_num_seqs"]),
-            "--kv-cache-dtype", cfg["kv_cache"], "--gpu-headroom-mib", str(cfg["gpu_headroom_mib"])]
-    if cfg.get("speculative_tokens") is not None:
-        args += ["--num-speculative-tokens", str(cfg["speculative_tokens"])]
-    if cfg.get("reasoning_effort"):
-        args += ["--reasoning-effort", str(cfg["reasoning_effort"])]
-    if int(cfg.get("thinking_budget") or 0) > 0:
-        args += ["--thinking-token-budget", str(int(cfg["thinking_budget"]))]
-    args += ["--reasoning-effort-map", _EFFORT_MAP]
-    return args
+            "-v", f"{model.parent}:/models:ro", "-v", f"{config}:/config/radiance.yaml:ro",
+            _image_ref(), "--config", "/config/radiance.yaml"]
 
 
 def _start(alias: str) -> tuple[bool, str]:
@@ -458,6 +481,7 @@ def _start(alias: str) -> tuple[bool, str]:
         return False, str(exc)
     log = _log_path(alias)
     log.parent.mkdir(parents=True, exist_ok=True)
+    write_config(alias, cfg)
     runner = ["systemd-run", "--user", "--quiet", "--collect", "--unit=" + _unit(alias),
               "--property=UMask=0077", "--property=TimeoutStopSec=60",
               "--property=StandardOutput=append:" + str(log),

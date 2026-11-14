@@ -36,6 +36,8 @@ interface Model {
   /** ROCm 10 / Vulkan のような、そのランタイム内でのビルド種別。 */
   backend_label?: string;
   port?: number;
+  /** 表示用のモデル名（例: Qwen3.8-27B）。ゲートウェイの名前（id）とは別。 */
+  display_name?: string;
 }
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
@@ -292,7 +294,9 @@ export default function ModelsPage() {
           const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
             `/models/providers/${runtime}/models`);
           return common.map((m): Model => ({
-            id: m.id, name: m.name, size: m.size_bytes, parameter_size: "", quantization: "",
+            id: m.id, name: m.name, size: m.size_bytes, parameter_size: "",
+            quantization: String(m.details.quantization ?? ""),
+            display_name: String(m.details.display_name ?? "") || undefined,
             family: "", loaded: !!m.loaded, expires_at: null, vram: null,
             vision_enabled: m.details.vision_enabled === true,
             runtime, backend_label: String(m.details.backend_label ?? ""),
@@ -529,7 +533,7 @@ export default function ModelsPage() {
                   aria-label={isLocal ? `${id}の個別設定を開く` : `${m.name}の詳細を開く`}
                   className="min-w-0 flex-1 text-left">
                   <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
-                    {isLocal ? id : m.name}
+                    <span className="truncate" title={isLocal ? `ゲートウェイでの名前: ${id}` : undefined}>{isLocal ? (m.display_name || id) : m.name}</span>
                     {/* どのランタイムが載せるモデルかを一覧で見分けられるようにする。 */}
                     {shared && (
                       <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
@@ -543,12 +547,13 @@ export default function ModelsPage() {
                     )}
                   </p>
                   <p className="num line-clamp-2 text-xs text-zinc-500 sm:truncate">
-                    {RUNTIME_LABEL[runtime ?? "ollama"] ?? "Ollama"}
-                    {m.backend_label ? ` / ${m.backend_label}` : ""}
-                    {isLocal && m.name && m.name !== id ? ` · ${m.name.replace(/^(Strata|Project Maya-S|Maya-S|Radiance)\s*[・·]\s*/, "")}` : ""}
-                    {m.size ? ` · ${gb(m.size)}` : ""}
-                    {m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
-                    {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
+                    {isLocal
+                      // どのランタイムでも「ランタイム · 量子化 · サイズ」の順にそろえる。
+                      ? [runtime === "llama.cpp" && m.backend_label ? `llama.cpp（${m.backend_label.replace(/（.*?）|\(.*?\)/g, "").trim()}）` : RUNTIME_LABEL[runtime ?? "ollama"],
+                         m.quantization, m.size ? gb(m.size) : "",
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")
+                      : [m.parameter_size, m.quantization, m.size ? gb(m.size) : "",
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")}
                   </p>
                 </button>
                 {isLocal && <IconChevronRight className="hidden h-4 w-4 shrink-0 text-zinc-400 sm:block" aria-hidden />}
@@ -557,7 +562,10 @@ export default function ModelsPage() {
                     <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "", runtime)} className="min-h-11 shrink-0 rounded-xl bg-zinc-100 px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
                       {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
                     </button>
-                    {isLocal && runtime === "maya-s" ? null : isLocal && runtime ? (
+                    {isLocal && runtime === "maya-s" ? (
+                      <DropdownMenu ariaLabel={`${id}の操作`} trigger={<IconDots />}
+                        items={[{ label: "個別設定", onSelect: openDetail }]} />
+                    ) : isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
                         trigger={<IconDots />}
@@ -1473,7 +1481,8 @@ function LlamaRuntimePanel({ registrationOnly = false }: { registrationOnly?: bo
     } catch (e) { show(e instanceof Error ? e.message : "開始に失敗", "error"); }
   };
   if (!st) return <p className="text-xs text-zinc-400">読み込み中...</p>;
-  const missing = st.selectable_backends.filter((backend) => !st.installed_backends.includes(backend));
+  // Vulkan は導入先として出さない（ROCm に統一）。導入済みなら一覧には残る。
+  const missing = st.selectable_backends.filter((backend) => backend !== "vulkan" && !st.installed_backends.includes(backend));
 
   return (
     <div className="space-y-3">

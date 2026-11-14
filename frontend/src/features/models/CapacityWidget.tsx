@@ -66,43 +66,47 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
       </Row>
       {/* 前処理と生成は速さの桁が違う。どちらの最中かを添えないと、
           同じ「tok/s」が 20 倍ぶれて見える。 */}
-      {item.phase === "prefill" && (
-        <Row label="前処理中">
-          <span className="flex flex-wrap items-baseline gap-x-2">
-            <span>{item.prefill_tokens_per_second.toFixed(0)} tok/s</span>
-            {item.prompt_tokens > 0 && (
-              <span className="text-[10px] text-zinc-400">
-                {tokens(item.prompt_tokens_done)} / {tokens(item.prompt_tokens)} 読み込み
-              </span>
-            )}
-          </span>
-        </Row>
-      )}
-      {item.phase !== "prefill" && (item.busy > 0 || item.tokens_per_second > 0) && (
-        // 推論の中身は slot に出ず、応答の流れにしか現れない。ゲートウェイが
-        // 中継の途中で見て記録している。
-        <Row label={item.phase === "think" ? "思考中" : item.busy > 0 ? "生成中" : "生成速度"}>
-          <span className="flex flex-wrap items-baseline gap-x-2">
-            <span>{item.tokens_per_second.toFixed(1)} tok/s</span>
+      {/* 前処理と生成は両方いつも出す。動いていない間は直前に測った値。 */}
+      <Row label={item.phase === "prefill" ? "前処理中" : "前処理"}>
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          {item.prefill_tokens_per_second > 0 || item.phase === "prefill"
+            ? <span>{item.prefill_tokens_per_second.toFixed(0)} tok/s</span>
+            : <span className="text-zinc-400">—</span>}
+          {item.phase === "prefill" && item.prompt_tokens > 0 && (
             <span className="text-[10px] text-zinc-400">
-              1本あたり {item.tokens_per_second_single.toFixed(1)}
+              {tokens(item.prompt_tokens_done)} / {tokens(item.prompt_tokens)} 読み込み
             </span>
-          </span>
-        </Row>
-      )}
+          )}
+          {item.phase !== "prefill" && item.prefill_tokens_per_second > 0 && <span className="text-[10px] text-zinc-400">前回</span>}
+        </span>
+      </Row>
+      <Row label={item.phase === "think" ? "思考中" : item.phase === "generate" ? "生成中" : "生成"}>
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          {item.tokens_per_second > 0 || item.busy > 0
+            ? <span>{item.tokens_per_second.toFixed(1)} tok/s</span>
+            : <span className="text-zinc-400">—</span>}
+          {item.tokens_per_second_single > 0 && (
+            <span className="text-[10px] text-zinc-400">
+              {item.busy > 0 ? `1本あたり ${item.tokens_per_second_single.toFixed(1)}` : "前回"}
+            </span>
+          )}
+        </span>
+      </Row>
       <Row label="待ち行列">
         {item.deferred > 0
           ? <span className="text-amber-600 dark:text-amber-400">{item.deferred} 件待機中</span>
           : <span className="text-zinc-400">なし</span>}
       </Row>
-      <Row label="KV">
+      {item.timed_by_controldeck ? (
+        <Row label="コンテキスト"><span>{tokens(item.ctx_total)}</span></Row>
+      ) : <Row label="KV">
         <span className="flex items-center gap-2">
           <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <span className={`block h-full rounded-full ${tone}`} style={{ width: `${kvPct}%` }} />
           </span>
           <span>{tokens(item.ctx_used)} / {tokens(item.ctx_total)}</span>
         </span>
-      </Row>
+      </Row>}
     </div>
   );
 }

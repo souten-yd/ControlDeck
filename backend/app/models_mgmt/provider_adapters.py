@@ -6,7 +6,7 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from app.models_mgmt import llama, local_llm, ollama, providers, strata_gateway
+from app.models_mgmt import llama, local_llm, model_names, ollama, providers, strata_gateway
 
 
 class ProviderError(RuntimeError):
@@ -155,9 +155,10 @@ async def list_models(provider_id: str) -> list[dict]:
         for config, state in zip(instances, health, strict=True):
             model_path = str(config.get("model_path") or "")
             path = Path(model_path)
+            display, quant = model_names.from_file(model_path)
             result.append({
                 "id": str(config["alias"]), "name": path.name or str(config["alias"]),
-                "size_bytes": path.stat().st_size if path.is_file() else 0,
+                "size_bytes": model_names.file_size(model_path),
                 # health(200) はモデル読み込み完了後のみ。読み込み中も unit 稼働なら loaded 扱いにし、
                 # ロード操作直後にインジケータ/ボタンが未ロード表示のまま残らないようにする。
                 "modified_at": "", "loaded": bool(state.get("ok")) or bool(config.get("loaded")),
@@ -168,28 +169,41 @@ async def list_models(provider_id: str) -> list[dict]:
                     "base_url": config.get("base_url"), "unit": config.get("unit"),
                     "runtime_status": config.get("runtime_status"),
                     "vision_enabled": bool(config.get("mmproj_path")),
+                    "display_name": display or str(config["alias"]), "quantization": quant,
                 },
             })
         return result
     if provider["provider"] == "maya-s" and provider["managed"]:
         from app.models_mgmt import maya_s
-        return [{
-            "id": item["alias"], "name": "Project Maya-S · GLM-5.3-Flash",
-            "size_bytes": 94_700_000_000, "modified_at": "", "loaded": item["loaded"],
-            "details": {"runtime": "maya-s", "backend": "HIP",
-                        "port": item["port"], "base_url": item["base_url"],
-                        "quantization": "Maya-S", "vision_enabled": False}
-        } for item in await asyncio.to_thread(maya_s.list_instances)]
+        def maya_row(item: dict) -> dict:
+            path = str(item.get("model_path") or "")
+            name, quant = model_names.from_file(path) if path else ("", "")
+            # "GLM-5.3-Flash-Maya-S-v2" + "IQ2_XXS": the Maya tier is part of the quantisation.
+            tier = name.removeprefix("GLM-5.3-Flash-") if name.startswith("GLM-5.3-Flash-") else ""
+            quant = " ".join(part for part in (tier, quant) if part)
+            return {
+                "id": item["alias"], "name": "Project Maya-S · GLM-5.3-Flash",
+                "size_bytes": model_names.file_size(path) or 94_700_000_000, "modified_at": "",
+                "loaded": item["loaded"],
+                "details": {"runtime": "maya-s", "backend": "HIP",
+                            "port": item["port"], "base_url": item["base_url"],
+                            "display_name": "GLM-5.3-Flash",
+                            "quantization": quant or "Maya-S",
+                            "vision_enabled": bool(item.get("vision"))}}
+        return [maya_row(item) for item in await asyncio.to_thread(maya_s.list_instances)]
     if provider["provider"] == "strata" and provider["managed"]:
         return [{
             "id": item["alias"],
             "name": f"Strata · {item['family']} / {item['model']}",
-            "size_bytes": 0, "modified_at": "", "loaded": item["loaded"],
+            "size_bytes": model_names.file_size(item.get("model_path") or ""), "modified_at": "",
+            "loaded": item["loaded"],
             "details": {
                 "runtime": "strata", "backend": "ROCm",
                 "port": item["port"], "base_url": item["base_url"],
                 "runtime_status": item["runtime_status"],
-                "quantization": item["model"], "context": item["context"],
+                "display_name": model_names.STRATA_FAMILIES.get(item["family"], item["family"]),
+                "quantization": str(item["model"]).upper(), "context": item["context"],
+                "vision_enabled": item.get("vision", "on") != "off",
             },
         } for item in await asyncio.to_thread(strata_gateway.list_instances)]
     if provider["provider"] == "radiance" and provider["managed"]:
@@ -200,17 +214,22 @@ async def list_models(provider_id: str) -> list[dict]:
                 return os.path.getsize(path)
             except OSError:
                 return 0
-        return [{
-            "id": item["alias"],
-            "name": f"Radiance · {os.path.basename(str(item['model_path'])).removesuffix('.rad')}",
-            "size_bytes": size(str(item["model_path"])), "modified_at": "", "loaded": item["loaded"],
-            "details": {
-                "runtime": "radiance", "backend": "HIP",
-                "port": item["port"], "base_url": item["base_url"],
-                "runtime_status": item["runtime_status"], "context": item["context"],
-                "path": item["model_path"],
-            },
-        } for item in await asyncio.to_thread(radiance.list_instances)]
+        def radiance_row(item: dict) -> dict:
+            display, quant = model_names.from_file(str(item["model_path"]))
+            return {
+                "id": item["alias"],
+                "name": f"Radiance · {os.path.basename(str(item['model_path'])).removesuffix('.rad')}",
+                "size_bytes": size(str(item["model_path"])), "modified_at": "", "loaded": item["loaded"],
+                "details": {
+                    "runtime": "radiance", "backend": "HIP",
+                    "port": item["port"], "base_url": item["base_url"],
+                    "runtime_status": item["runtime_status"], "context": item["context"],
+                    "path": item["model_path"], "display_name": display or item["alias"], "quantization": quant,
+                    # The published Qwen3.8-27B containers carry their vision tower.
+                    "vision_enabled": True,
+                },
+            }
+        return [radiance_row(item) for item in await asyncio.to_thread(radiance.list_instances)]
     return [{
         "id": model, "name": model, "size_bytes": 0, "modified_at": "",
         # OpenAI互換APIだけでは各モデルのロード状態を判定できない。
@@ -229,6 +248,14 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
     except RuntimeError as e:
         raise ProviderError(str(e)) from e
     kind = str(provider["provider"])
+    if kind in ("strata", "radiance"):
+        # A large model takes the card: free the other large models (and, for Radiance, idle
+        # llama.cpp chat models) first, so the load limit counts what will actually remain.
+        from app.models_mgmt import large_model_lifecycle
+        try:
+            await large_model_lifecycle.release_for(kind)
+        except RuntimeError as exc:
+            raise ProviderError(str(exc)) from exc
     reservation = (kind, model_id)
     # 判定と予約を同じ区間で行う。ここを分けると、両方が「まだ空きがある」を
     # 見てから両方が載る。
