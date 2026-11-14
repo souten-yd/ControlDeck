@@ -3907,3 +3907,9 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - 撤去: オプション機能 `opencode`（v1・opencode-ai）と v1 専用の `omo`（oh-my-openagent）。OMo の並列数同期（llama のスロット変更時・容量 API の `omo`）とダッシュボードの OMo 表示も削除。OpenCode の系列は常に v2（古い設定の `runtime: v1` は v2 に揃える）。`/opencode` は `/opencode-v2` へ転送（`?session=` を保持）。ナビの表示名は「OpenCode」。
 - 追加: オプション機能に `opencode-superpowers` / `opencode-adversarial-review` / `opencode-auto-advisor`（kind `opencode-plugin`、`opencode-v2` 必須）。導入は検証済みの版（v7.0.2 / 2.0.2 / 2.1.1）、更新は最新版。管理領域へ npm で入れ、セッション設定には `file://` で渡す（OpenCode が実行時に取得しない）。OpenCode v2.3.0 が `file://` のプラグインを読み込むことを `debug agents` で確認。
 - OpenCode の設定は「使う／使わない」とモデル選択だけ。未導入の拡張は選べず、オプション機能への導線を出す。
+
+### 2026-11-14 コーディング向け: 精度を保ったまま最速の Strata / Maya-S 設定
+- 計測: 実行テスト付きのコーディング課題 10 問（貪欲デコードで近似の影響だけを見る）。
+- Strata（UD-IQ4_XS・128k）: 既定の近似 2 つを止める（`STRATA_ROUTE_TAIL_SKIP=0`: キャッシュに無いエキスパートを飛ばさない、`STRATA_HC_Q8=0`: 重みの追加量子化をしない）。正答は既定と同じ 10/10、速度は 89.8→84.0 tok/s（約 -6%、HC_Q8 は誤差内）。丸め順だけが変わる高速化は残す。ControlDeck の既定にし、登録ごとに `engine_settings` で上書きできる（`--set` で渡す、形を検証）。
+- Maya-S: エンジンは近似なし（MTP の下書きは答えを変えない）。既定の思考の深さを max→high（10/10、全 10 問で 412 秒。max は 1 回答に約 30 分）。設定画面から変更でき、再セットアップ後も戻す。
+- AI アシスタントの会話は temperature を送らず、モデル側の推奨（Qwen 思考: 1.0/0.95/20）に任せる。一律 0.4 では思考が長引き（小説で 15〜16K トークン、1 回は上限で打ち切り）、推奨値では 6〜7K。小説での同じ文言の繰り返しの原因と判断。
