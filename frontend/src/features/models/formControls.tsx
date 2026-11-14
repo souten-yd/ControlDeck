@@ -96,7 +96,10 @@ export function SettingsGroup({ title, description, children, collapsible = fals
 /** シート下端に固定する操作列。スクロールしても保存ボタンに届く。 */
 export function SheetActions({ children, note }: { children: React.ReactNode; note?: React.ReactNode }) {
   return (
-    <div className="sticky bottom-0 -mx-5 -mb-6 mt-4 border-t border-zinc-200 bg-white/95 px-5 pb-4 pt-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
+    // No negative bottom margin: a sticky box stays inside its parent, so -mb-6 made it ride
+    // 24px up over the last setting at the end of the scroll. The sheet drops its own bottom
+    // padding when it has this bar (see BottomSheet).
+    <div className="sheet-actions sticky bottom-0 z-10 -mx-5 mt-4 border-t border-zinc-200 bg-white/95 px-5 pb-4 pt-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
       {note && <p className="mb-2 text-[11px] text-amber-700 dark:text-amber-300">{note}</p>}
       <div className="flex flex-wrap gap-2">{children}</div>
     </div>
