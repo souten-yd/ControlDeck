@@ -2042,7 +2042,14 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
-type StrataSettings = { alias: string; family: "qwen" | "deepseek41"; model: string;
+type StrataFamily = "qwen" | "unsloth" | "deepseek41";
+// Must match backend strata_gateway._FAMILIES.
+const STRATA_SIZES: Record<StrataFamily, string[]> = {
+  qwen: ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"],
+  unsloth: ["ud-iq4_xs", "ud-q4_k_xl"],
+  deepseek41: ["ista-das-coder", "ist-das-2.00bpw"],
+};
+type StrataSettings = { alias: string; family: StrataFamily; model: string;
   context: string; port: number; model_path?: string; kv?: string; vision?: string;
   parallel?: number; drafting?: string; loaded?: boolean };
 
@@ -2050,7 +2057,7 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const [alias, setAlias] = useState(initial?.alias ?? "qwen-flash-next");
-  const [family, setFamily] = useState<"qwen" | "deepseek41">(initial?.family ?? "qwen");
+  const [family, setFamily] = useState<StrataFamily>(initial?.family ?? "qwen");
   const [model, setModel] = useState(initial?.model ?? "iq2_xs");
   const [context, setContext] = useState(initial?.context ?? "32k");
   const [port, setPort] = useState(String(initial?.port ?? 8095));
@@ -2084,10 +2091,11 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
     </label>
     <label className="block text-xs">モデル系列
       <select aria-label="Strataモデル系列" value={family} onChange={(e) => {
-        const next = e.target.value as "qwen" | "deepseek41";
-        setFamily(next); setModel(next === "qwen" ? "iq2_xs" : "ista-das-coder");
+        const next = e.target.value as StrataFamily;
+        setFamily(next); setModel(STRATA_SIZES[next][0]);
       }} className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
         <option value="qwen">Qwen Flash-Next</option>
+        <option value="unsloth">Qwen Flash-Next (Unsloth)</option>
         <option value="deepseek41">DeepSeek V4.1 Flash</option>
       </select>
     </label>
@@ -2100,7 +2108,7 @@ function StrataRegisterPanel({ onDone, initial }: { onDone: () => void; initial?
     <label className="block text-xs">量子化
       <select aria-label="Strataモデル量子化" value={model} onChange={(e) => setModel(e.target.value)}
         className="mt-1 w-full rounded-lg border border-zinc-500 bg-transparent p-2">
-        {(family === "qwen" ? ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"] : ["ista-das-coder", "ist-das-2.00bpw"])
+        {STRATA_SIZES[family]
           .map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
     </label>

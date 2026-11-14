@@ -71,6 +71,16 @@ def test_cannot_register_untrusted_family_or_injected_alias(monkeypatch, tmp_pat
         strata_gateway.save_instance("qwen", family="evil", model="iq2_xs", port=8095)
 
 
+def test_unsloth_flash_next_sizes_are_registrable(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path)
+    saved = strata_gateway.save_instance("qwen-iq4", family="unsloth", model="ud-iq4_xs", port=8097)
+    assert saved["alias"] == "qwen-iq4"
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("qwen-q8", family="unsloth", model="q8_0", port=8098)
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("qwen-mix", family="qwen", model="ud-iq4_xs", port=8098)
+
+
 def test_uninstall_never_deletes_models(monkeypatch, tmp_path):
     # Stop-check uses upstream 'running' array, not the unrelated launch 'serving' key.
     binary = tmp_path / "home" / ".local" / "bin" / "strata"
