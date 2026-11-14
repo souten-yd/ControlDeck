@@ -546,14 +546,18 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
 
         parsed = urlsplit(normalized)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
-            if parsed.port in llama.endpoint_ports():
-                return _LLAMA
+            # A registered Strata/Maya-S model owns its port. Check these before
+            # llama.cpp: an empty llama endpoint left on the same port would
+            # otherwise send a stopped Strata request to llama, which never
+            # starts it ("All connection attempts failed").
             if strata.installed() and parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
                 return _STRATA
             from app.models_mgmt import maya_s
 
             if parsed.port in {int(i["port"]) for i in maya_s.list_instances()}:
                 return _MAYA
+            if parsed.port in llama.endpoint_ports():
+                return _LLAMA
     except Exception:
         pass
     return _OPENAI

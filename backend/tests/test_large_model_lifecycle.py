@@ -187,3 +187,13 @@ def test_gateway_switch_never_cuts_a_running_request(monkeypatch):
     monkeypatch.setattr(local_llm, "find", lambda alias: {"runtime": "strata", "loaded": False})
     asyncio.run(large_model_lifecycle.prepare_switch("qwen"))
     assert calls == []
+
+
+def test_registered_strata_port_wins_over_an_empty_llama_endpoint(monkeypatch):
+    from app.models_mgmt import llama, runtime_provider, strata
+    monkeypatch.setattr(llama, "endpoint_ports", lambda: {8096, 8097})
+    monkeypatch.setattr(strata, "installed", lambda: True)
+    monkeypatch.setattr(strata_gateway, "list_instances", lambda: [{"alias": "qwen", "port": 8096}])
+    monkeypatch.setattr(maya_s, "list_instances", lambda: [])
+    assert runtime_provider.provider_for_base_url("http://127.0.0.1:8096/v1").kind == "strata"
+    assert runtime_provider.provider_for_base_url("http://127.0.0.1:8097/v1").kind == "llama.cpp"
