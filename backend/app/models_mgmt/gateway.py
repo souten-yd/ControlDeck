@@ -117,12 +117,26 @@ def is_gateway_url(url: str) -> bool:
     return API_PATH in str(url or "")
 
 
+def _selected_runtime() -> str:
+    """Models で選択中のランタイム。読めなければ空（従来の選び方になる）。"""
+    try:
+        from app.models_mgmt.runtime_policy import get_policy
+
+        return str(get_policy().selected_runtime)
+    except Exception:  # noqa: BLE001 - 選択が読めなくても転送は続ける
+        return ""
+
+
 def resolve_instance(model: str) -> dict:
     """モデル名(alias)から転送先インスタンスを決める。llama.cpp / Strata を区別しない。
 
-    AUTO_MODEL・未指定・未登録のときは起動中のLLMを優先し、いなければ登録順（=優先度順）
-    の先頭を採る。停止中の別モデルを起こすと同じGPUへ二重にロードすることになり、稼働中の
-    エンドポイントまでVRAM不足で巻き込むため、起動済みがあればそれを使う。
+    AUTO_MODEL・未指定・未登録のときは、Models で選んだランタイム（共通設定の
+    「既定のランタイム」）のモデルを使う。その中で起動中のものを優先し、いなければ
+    登録順（=優先度順）の先頭。選択中のランタイムに使えるモデルが無いときだけ、
+    起動中のLLM → 登録順の先頭へ落とす。
+
+    以前は選択を見ずに「起動中 → 登録順の先頭」で選んでいたため、Strata を選んでいても
+    何も載っていないと先頭の llama.cpp モデルを起こし、選択までそちらへ移っていた。
     """
     from app.models_mgmt import local_llm
 
@@ -133,13 +147,19 @@ def resolve_instance(model: str) -> dict:
     if match is None:
         # Never choose a merely registered, never-activated Strata model by
         # default; it may require a massive first download requiring consent.
+        selected = _selected_runtime()
         llms = [
             i for i in instances
             if str(i.get("role", "llm")) == "llm"
             and (i.get("runtime") != "strata" or i.get("activated"))
-            and (i.get("runtime") != "maya-s" or i.get("loaded"))
+            # Maya-S is only woken when it is the selected runtime.
+            and (i.get("runtime") != "maya-s" or i.get("loaded") or selected == "maya-s")
         ]
-        match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
+        preferred = [i for i in llms if i.get("runtime") == selected]
+        match = (next((i for i in preferred if i.get("loaded")), None)
+                 or (preferred[0] if preferred else None)
+                 or next((i for i in llms if i.get("loaded")), None)
+                 or (llms[0] if llms else None))
     if match is None:
         raise HTTPException(status_code=404, detail="転送先のモデルが登録されていません")
     if not int(match.get("port") or 0):
