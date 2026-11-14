@@ -23,10 +23,12 @@ export interface MayaSettings {
   on_demand_start: boolean;
   idle_exclude: boolean;
   auto_start: boolean;
+  max_output_tokens: number;
+  thinking_budget: number;
 }
 
 /** ControlDeck側だけの設定。稼働中でも変更できる（Maya の設定ファイルは変わらない）。 */
-const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start"] as const;
+const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start", "max_output_tokens"] as const;
 // GLM-5.3-Flash は最大 1M。Maya は VRAM を超える KV を RAM へ逃がす。
 const MAYA_CTX_PRESETS = [...CTX_PRESETS.filter((p) => Number(p.v) >= 8192),
   ...[524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }))];
@@ -48,6 +50,7 @@ interface MayaJob { id: string; kind: string; status: string; error: string; pro
 const DEFAULT_SETTINGS: MayaSettings = {
   model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
   on_demand_start: true, idle_exclude: false, auto_start: false,
+  max_output_tokens: 65536, thinking_budget: 32768,
 };
 
 /** Maya-Sの状態。settings.manage を持たない利用者には問い合わせない。 */
@@ -217,6 +220,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
   };
 
   const numbers = [
+    ["thinking_budget", "思考の上限（トークン・0で無制限）", 0, 131072, 1024],
     ["gpu_index", "ROCm GPU番号", 0, 15, 1],
     ["parallel", "同時実行数", 1, 8, 1],
     ["ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1],
@@ -250,6 +254,14 @@ function MayaSettingsForm({ status, mode, onDone }: {
               onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />}
         </div>
         <span className="text-[10px] text-zinc-400">長いほど入力・会話履歴を多く扱えます。8K だと検索結果入りの会話はすぐ上限に届きます（推奨 32K〜128K）。</span>
+      </label>
+      <label className="block text-xs">出力の上限（思考＋回答のトークン）
+        <div className="mt-1">
+          <PresetOrCustom value={settings.max_output_tokens}
+            presets={[16384, 32768, 65536, 131072].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="65536"
+            onChange={(v) => setSettings({ ...settings, max_output_tokens: Math.min(262144, Math.max(1024, Number(v ?? 65536))) })} />
+        </div>
+        <span className="text-[10px] text-zinc-400">OpenCode へ伝える上限。GLM-5.3-Flash は思考も出力に数えるため、思考の上限より十分大きくします（コンテキストの半分まで）。稼働中も変更できます。</span>
       </label>
       {numbers.map(([key, label, min, max, step]) => (
         <label key={key} className="flex flex-wrap items-center justify-between gap-2 text-xs">{label}

@@ -32,7 +32,7 @@ _ALIAS = "maya-s"
 ALIAS = _ALIAS
 # Settings that only change ControlDeck's lifecycle handling, not Maya's config:
 # they may be changed while the model runs (as llama.cpp's idle_exclude can).
-LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start")
+LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start", "max_output_tokens")
 _PORT = 8099
 _MODEL = "glm-maya-s"
 # Maya rejects prompt + max_tokens + 8 > context (its CTX_SLACK, as strata --serve).
@@ -475,6 +475,8 @@ def get_instance(alias: str) -> dict:
             "base_url": f"http://127.0.0.1:{_PORT}/v1",
             "loaded": _running(), "model_path": get_settings()["model_path"],
             "ctx_size": get_settings()["context"],
+            "max_output_tokens": min(int(get_settings()["max_output_tokens"]),
+                                     int(get_settings()["context"]) // 2),
             "configured": True, "n_parallel": 1}
 
 
@@ -545,7 +547,10 @@ def uninstall() -> dict:
 def get_settings() -> dict:
     defaults = {"model_path": "", "context": 8192, "gpu_index": 0,
                 "parallel": 1, "ram_headroom_gb": 16, "drafting": "on",
-                "on_demand_start": True, "idle_exclude": False, "auto_start": False}
+                "on_demand_start": True, "idle_exclude": False, "auto_start": False,
+                # Output for coding: GLM-5.3-Flash thinks before it answers and the
+                # thinking counts toward max_tokens, so the cap must hold both.
+                "max_output_tokens": 65536, "thinking_budget": 32768}
     path = root() / "settings.json"
     if path.is_file() and not path.is_symlink():
         defaults.update(json.loads(path.read_text(encoding="utf-8")))
@@ -586,6 +591,8 @@ def save_settings(settings: dict) -> dict:
         cfg["args"] = args
         cfg["fit_max_tokens"] = True
         cfg["gpu"] = [value["gpu_index"]]
+        # Maya's own cap on the thinking; past it the answer starts.
+        cfg["thinking_budget"] = int(value["thinking_budget"])
         cfg.setdefault("env", {})["MAYA_GLM_RAM_HEADROOM_GB"] = str(value["ram_headroom_gb"])
         cfg["env"]["MAYA_GLM_MTP_DECODE"] = "1" if value["drafting"] == "on" else "0"
         config.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
