@@ -365,3 +365,13 @@ def test_upstream_error_keeps_the_reason_and_bounds_the_body():
     plain = gateway._upstream_error("local", b"x" * 50_000)
     assert plain["error"]["type"] == "upstream_error"
     assert len(plain["error"]["message"]) <= gateway.UPSTREAM_ERROR_CHARS + len("local: ")
+
+
+def test_gateway_endpoint_reports_the_selected_runtime(monkeypatch):
+    """ゲートウェイのアドレスはランタイムを変えても同じ。画面が選択の変化に気づけるよう返す。"""
+    from app.models_mgmt import local_llm, providers
+
+    monkeypatch.setattr(local_llm, "llm_instances", lambda **kw: [{"alias": "qwen-flash-next"}])
+    monkeypatch.setattr(providers, "_selected_runtime", lambda: "strata")
+    item = providers._gateway_candidate()
+    assert item["models"][0] == "auto" and item["selected_runtime"] == "strata"
