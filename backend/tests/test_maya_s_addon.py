@@ -471,3 +471,12 @@ def test_save_settings_enables_maya_output_clamp(managed, monkeypatch):
     monkeypatch.setattr(maya_s, '_running', lambda: False)
     maya_s.save_settings(maya_s.get_settings())
     assert json.loads(config.read_text())['fit_max_tokens'] is True
+
+
+def test_reasoning_effort_default_is_high_for_coding(monkeypatch, tmp_path):
+    from app.models_mgmt import maya_s
+
+    monkeypatch.setattr(maya_s, "root", lambda: tmp_path)
+    assert maya_s.get_settings()["reasoning_effort"] == "high"
+    from app.features.router import MayaSettingsBody
+    assert MayaSettingsBody.model_fields["reasoning_effort"].default == "high"

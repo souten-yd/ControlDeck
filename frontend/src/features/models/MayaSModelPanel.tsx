@@ -24,6 +24,7 @@ export interface MayaSettings {
   idle_exclude: boolean;
   auto_start: boolean;
   thinking_budget: number;
+  reasoning_effort: "low" | "medium" | "high" | "max";
 }
 
 /** ControlDeck側だけの設定。稼働中でも変更できる（Maya の設定ファイルは変わらない）。 */
@@ -50,6 +51,7 @@ const DEFAULT_SETTINGS: MayaSettings = {
   model_path: "", context: 8192, gpu_index: 0, parallel: 1, ram_headroom_gb: 16, drafting: "on",
   on_demand_start: true, idle_exclude: false, auto_start: false,
   thinking_budget: 32768,
+  reasoning_effort: "high",
 };
 
 /** Maya-Sの状態。settings.manage を持たない利用者には問い合わせない。 */
@@ -268,6 +270,17 @@ function MayaSettingsForm({ status, mode, onDone }: {
         </SettingsGroup>
       )}
       <SettingsGroup title="思考">
+        <label className="block text-xs">思考の深さ（既定）
+          <select aria-label="Maya-S 思考の深さ" value={settings.reasoning_effort ?? "high"} disabled={locked}
+            onChange={(e) => setSettings({ ...settings, reasoning_effort: e.target.value as MayaSettings["reasoning_effort"] })}
+            className={`mt-1 ${field}`}>
+            <option value="low">low（最速）</option>
+            <option value="medium">medium</option>
+            <option value="high">high（推奨・コーディング）</option>
+            <option value="max">max（モデルカード既定・1回答に約30分）</option>
+          </select>
+          <span className="text-[11px] text-zinc-500">要求が深さを指定しないときに使います。この PC の実測では high で max と同じ正答を約4分の1の時間で返しました。</span>
+        </label>
         <label className="block text-xs">思考の上限（トークン）
           <div className="mt-1">
             <PresetOrCustom ariaLabel="Maya-S 思考の上限" value={settings.thinking_budget} disabled={locked}
