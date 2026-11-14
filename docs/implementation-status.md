@@ -3894,3 +3894,11 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - 実測: decode 25.1 tok/s（短い入力）、23.2 tok/s @29K、21.6 tok/s @103K。prefill 約620〜650 tok/s。8K→1M で速度差はほぼ無い（KV は RAM）。
 - 効かない: `--calibrate`（HIP 非対応）、PCIe 0.2/0.7、CPU レーン 6/12、prefetch。PREFILL_MB 8192 は headroom 8 と組み合わせると起動しない。
 - 注意: `MAYA_GLM_PCIE_SHARE` は Maya の config に直接書いており、再セットアップで消える。
+
+### 2026-11-14 ファン・OpenCode 出力上限・開発ワークフロー・Strata UD-IQ4_XS・UI 統一
+- ファン（PR #363 に追加）: hotspot が目標の 3°C 以内では回転を下げず、8°C 以上離れたら通常の速さで下げる。Maya-S（212 W）12分連続負荷で rpm 平均 2,533・標準偏差 131。
+- OpenCode: 全モデル一律の出力上限 8,192 を撤廃し、出力はコンテキストの半分（Maya 専用設定は削除）。
+- 開発ワークフロー: Superpowers v7.0.2 / Adversarial Review 2.0.2 / Auto Advisor 2.1.1 を個別に切替、レビュー・相談のモデルを指定可。ゲートウェイ `POST /api/v1/llm/v1/models/{model}/load`。実機で3つとも読み込み、`/load` で Maya-S 78.7 秒。
+- Strata: `qwen-flash-next` を Unsloth UD-IQ4_XS（SHA-256 3ファイル一致）・256k に切り替え。実測 prefill 2,172 tok/s @25K・2,990 tok/s @96K、decode 74 / 68 tok/s。KV は 256k で 3.1 GiB（RAM）。IQ2_XS（GGUF 70G・pack 35G）は削除。
+- UI（読み取り専用の UX レビューを反映）: シートの保存ボタンを1本化、起動と停止の文言を3ランタイムで統一、共通設定でランタイム選択が編集を消す不具合と Strata フォームが読み込み完了で消える不具合を修正、OpenCode 設定を1枚のシートに、オプション機能の進捗をジョブのカードだけに表示、監査ログのスマホ表示、ファン設定の並び替え。UI スモーク 106/106（320px / 1280px）。
+- NOT TESTED: 実際のコーディング作業での Adversarial Review / Auto Advisor の挙動。
