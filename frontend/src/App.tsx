@@ -68,7 +68,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
   const resolvedUser = user ?? data;
   if (resolvedUser) {
-    if (resolvedUser.totp_required && !resolvedUser.totp_enabled && location.pathname !== "/settings") {
+    if (resolvedUser.totp_required && !resolvedUser.totp_enabled && !location.pathname.startsWith("/settings")) {
       return <Navigate to="/settings" replace />;
     }
     return <>{children}</>;
@@ -137,6 +137,7 @@ function buildRouter() {
       { path: "assistant", element: <AssistantPage /> },
       { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "settings/:section", element: <SettingsPage /> },
       { path: "x/:addonId/:viewId/*", element: <AddonHostPage /> },
       ...featureRoutes,
       { path: "*", element: <Navigate to="/" replace /> },

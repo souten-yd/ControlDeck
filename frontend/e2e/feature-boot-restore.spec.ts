@@ -27,11 +27,12 @@ for (const width of [1280, 320]) {
       page.on("requestfailed", assetRequestFinished);
       await page.setViewportSize({ width, height: 800 });
       await establishSession(page, context);
-      await page.goto("/settings");
+      await page.goto("/settings/features");
       const section = page.getByRole("heading", { name: "オプション機能" })
         .locator("xpath=ancestor::section[1]");
       const row = section.locator("div.rounded-xl.border").filter({ hasText: feature.name }).first();
-      await expect(row).toContainText("利用できます");
+      await expect(row.getByText("詳細と操作")).toBeVisible();
+      await row.getByText("詳細と操作").click();
       await expect(row.getByRole("button", { name: "無効化", exact: true })).toBeVisible();
 
       await page.goto(`/x/${feature.id}/workspace`);

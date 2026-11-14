@@ -30,7 +30,7 @@ test("creates a custom role and manages a user at mobile and desktop widths", as
   await login(page);
 
   await page.setViewportSize({ width: 320, height: 700 });
-  await page.goto("/settings");
+  await page.goto("/settings/users");
   await expect(page.getByText("ユーザーとロール", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
   await page.getByRole("button", { name: "Customロールを追加" }).click();

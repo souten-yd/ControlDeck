@@ -19,7 +19,7 @@ for (const width of [1280, 320]) {
     await page.getByLabel("パスワード", { exact: true }).fill(process.env.CONTROL_DECK_PASSKEY_E2E_PASSWORD!);
     await page.getByRole("button", { name: "ログイン", exact: true }).click();
     await expect(page).not.toHaveURL(/\/login/);
-    await page.goto("/settings");
+    await page.goto("/settings/account");
     const row = page.getByText("顔認証・パスキー", { exact: true }).locator("../..");
     await row.getByRole("button", { name: "管理", exact: true }).click();
     await page.getByLabel("パスキーの名前").fill(`test-${width}`);
@@ -32,7 +32,7 @@ for (const width of [1280, 320]) {
     await expect(page.getByLabel("ユーザー名")).toBeHidden();
     await page.getByRole("button", { name: "顔認証・パスキーでログイン", exact: true }).click();
     await expect(page).not.toHaveURL(/\/login/);
-    await page.goto("/settings");
+    await page.goto("/settings/account");
     await page.getByText("顔認証・パスキー", { exact: true }).locator("../..").getByRole("button", { name: "管理", exact: true }).click();
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("listitem").filter({ hasText: `test-${width}` }).getByRole("button", { name: "削除", exact: true }).click();

@@ -22,14 +22,18 @@ test("updates the installed OpenCode addon from the settings tab", async ({ page
 
   for (const viewport of [{ width: 320, height: 700 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(viewport);
-    await page.goto("/settings");
-    await expect(page.getByRole("button", { name: "更新", exact: true })).toBeVisible();
+    await page.goto("/settings/features");
+    const opencode = page.locator("#feature-opencode");
+    if (!(await opencode.locator("details").evaluate((d) => (d as HTMLDetailsElement).open))) {
+      await opencode.getByText("詳細と操作").click();
+    }
+    await expect(opencode.getByRole("button", { name: "更新", exact: true })).toBeVisible();
     const layout = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
     expect(layout.document).toBeLessThanOrEqual(layout.viewport);
   }
 
   // 更新はサーバー側jobで進むため、完了トーストまで待って結果版数を確認する。
-  await page.getByRole("button", { name: "更新", exact: true }).click();
+  await page.locator("#feature-opencode").getByRole("button", { name: "更新", exact: true }).click();
   await expect(page.getByText(/更新中…/)).toBeVisible();
   await expect(page.getByText(/へ更新しました|すでに最新版です/)).toBeVisible({ timeout: 180_000 });
   await expect(page.getByText(/^v\d+\.\d+\.\d+$/).first()).toBeVisible();

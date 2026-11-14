@@ -27,7 +27,30 @@ DEFAULT_SETTINGS = {
     # 使う OpenCode の系列。"v1"（opencode-ai）か "v2"（@opencode/cli）。
     # 既定は v1 のまま。v2 を導入しただけでは切り替わらない。
     "runtime": "v1",
+    # 開発ワークフローの拡張（ControlDeck から起動した session にだけ効く）。
+    "superpowers": False,
+    "adversarial_review": False,
+    # Auto Advisor: off / observe（判断だけ記録）/ active（必要な場面で相談）。v2 のみ。
+    "auto_advisor": "off",
+    # レビュー・相談に使うモデル（ゲートウェイの名前）。空ならセッションと同じモデル。
+    # 別のモデルを指定すると、ゲートウェイが要求に合わせて載せ替える。
+    "review_model": "",
+    "advisor_model": "",
 }
+
+# 版を固定する。OpenCode のプラグイン管理が初回に取得してキャッシュする。
+WORKFLOW_PLUGINS = {
+    "v2": {
+        "superpowers": "superpowers@git+https://github.com/obra/superpowers.git#v7.0.2",
+        "adversarial_review": "@capybearista/opencode-adversarial-review@2.0.2",
+        "auto_advisor": "@capybearista/opencode-auto-advisor@2.1.1",
+    },
+    "v1": {
+        "superpowers": "superpowers@git+https://github.com/obra/superpowers.git#v7.0.2",
+        "adversarial_review": "@capybearista/opencode-adversarial-review@1.0.0",
+    },
+}
+AUTO_ADVISOR_MODES = ("off", "observe", "active")
 
 # 同居する OpenCode ランタイムと、それを持つアドオン（feature）の対応。
 # 導入先prefixが別なので、片方だけ導入・片方だけ削除ができる。
@@ -160,6 +183,64 @@ def autoconfigure(*, model: str = "") -> dict:
     if target:
         patch["model"] = target
     return save_settings(patch)
+
+
+def save_workflow(patch: dict) -> dict:
+    """開発ワークフロー拡張の有効/無効と、レビュー・相談に使うモデルを保存する。"""
+    from app.models_mgmt import local_llm
+
+    settings = get_settings()
+    for key in ("superpowers", "adversarial_review"):
+        if key in patch:
+            settings[key] = bool(patch[key])
+    if "auto_advisor" in patch:
+        if patch["auto_advisor"] not in AUTO_ADVISOR_MODES:
+            raise ValueError("Auto Advisor は off / observe / active のいずれかです")
+        settings["auto_advisor"] = patch["auto_advisor"]
+    known = {str(item.get("alias")) for item in local_llm.llm_instances()} | {"auto"}
+    for key in ("review_model", "advisor_model"):
+        if key in patch:
+            value = str(patch[key] or "").strip()
+            if value and value not in known:
+                raise ValueError(f"登録されていないモデルです: {value}")
+            settings[key] = value
+    path = _settings_path()
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    return settings
+
+
+def _workflow(runtime: str, model: str) -> dict:
+    """有効な拡張から、足すプラグイン・モデル・agent 設定・Auto Advisor 設定を作る。"""
+    settings = get_settings()
+    specs = WORKFLOW_PLUGINS.get(runtime, {})
+    plugins: list[str] = []
+    models: list[str] = []
+    agents: dict[str, Any] = {}
+    advisor: dict | None = None
+    if settings.get("superpowers") and "superpowers" in specs:
+        plugins.append(specs["superpowers"])
+    review = str(settings.get("review_model") or "")
+    if settings.get("adversarial_review") and "adversarial_review" in specs:
+        plugins.append(specs["adversarial_review"])
+        if review and review != model:
+            models.append(review)
+            for name in ("adversarial-reviewer", "constructive-reviewer"):
+                agents[name] = {"model": f"controldeck/{review}"}
+    mode = str(settings.get("auto_advisor") or "off")
+    if mode != "off" and "auto_advisor" in specs:
+        plugins.append(specs["auto_advisor"])
+        target = str(settings.get("advisor_model") or "")
+        if target and target != model:
+            models.append(target)
+        advisor = {
+            "advisor": {"models": [f"controldeck/{target or model}"]},
+            # 判断（毎回の要否判定）はセッションと同じモデルで行う。別のモデルに
+            # すると判定のたびに載せ替えが起きる。
+            "routing": {"mode": mode, "models": [f"controldeck/{model}"]},
+        }
+    return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor}
 
 
 def save_settings(patch: dict) -> dict:
@@ -301,12 +382,11 @@ def _skill_paths() -> list[str]:
         return []
 
 
-# 一度の返答に許す長さ。窓のうちここは常に空けておく必要がある。
-#
-# 8,192 で 30KB 前後の文章に相当する。コードを書く用途で足りなかった実測は無く、
-# 足りなければモデルは続きを書ける。ここを広げるほど圧縮が早く来る（窓は
-# 入力と出力で分け合うため）。
-OPENCODE_MAX_OUTPUT_TOKENS = 8192
+# 1回の応答（思考を含む）に使える長さは窓の半分。固定の上限は置かない。
+# 以前は全モデル一律 8,192 で、思考を出力に数えるモデル（GLM-5.3-Flash など）は
+# 難しい課題で思考の途中で切れていた。半分を入力側に残すのは、OpenCode が
+# limit.input - compaction.reserved を超えたら会話を畳むため。窓を広げれば両方増える。
+OPENCODE_OUTPUT_SHARE = 2
 # 畳む作業そのものに要る余地。要約を書く一往復ぶん。
 OPENCODE_COMPACTION_RESERVED = 4096
 
@@ -410,19 +490,15 @@ def _model_limits(model: str) -> dict[str, int] | None:
 
         match = next(
             (i for i in local_llm.list_instances() if str(i.get("alias") or "") == model), None)
-        own_output = 0
         if match is not None:
             context = _window_of(match)
-            # A runtime may state its own cap (Maya-S: thinking + answer).
-            own_output = int(match.get("max_output_tokens") or 0)
         else:
             # gateway.resolve_instance と同じ候補集合（embedding/reranker は除く）。
             windows = [w for w in map(_window_of, local_llm.llm_instances()) if w > 0]
             context = min(windows) if windows else 0
         if context <= 0:
             return None
-        output = (min(own_output, max(1024, context // 2)) if own_output > 0
-                  else min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4)))
+        output = max(1024, context // OPENCODE_OUTPUT_SHARE)
         return {"context": context, "output": output, "input": context - output}
     except Exception:  # noqa: BLE001 - 窓の大きさが取れないことで session を止めない
         logger.exception("モデルの窓の大きさを取得できませんでした")
@@ -521,6 +597,18 @@ def _runtime_config(
     # ~/.config/opencode へは書かない——そこは利用者自身のもので、こちらが
     # 足したり消したりしてよい場所ではない。ControlDeck から起動した session
     # にだけ効くので、無効化はこの一覧から外すだけで済む。
+    workflow = _workflow(runtime, model)
+    for extra in workflow["models"]:
+        payload["provider"]["controldeck"]["models"][extra] = {
+            "name": extra, "attachment": True,
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+            **({"limit": extra_limits} if (extra_limits := _model_limits(extra)) else {}),
+        }
+    if workflow["plugins"]:
+        payload["plugin"] = workflow["plugins"]
+    payload["agent"].update(workflow["agents"])
+    if workflow["advisor"]:
+        payload["_auto_advisor"] = workflow["advisor"]
     skill_paths = _skill_paths()
     if skill_paths:
         payload["skills"] = {"paths": skill_paths}
@@ -555,6 +643,7 @@ def _runtime_config(
         }
     if runtime == "v2":
         return _write_v2_config(safe_job_id, payload)
+    payload.pop("_auto_advisor", None)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(temp, 0o600)
@@ -694,6 +783,8 @@ def _v2_payload(payload: dict) -> dict:
         # lint との往復を 1 往復ぶん減らす。v1 に対応する設定は無い。
         "formatter": True,
     }
+    if payload.get("plugin"):
+        v2["plugins"] = list(payload["plugin"])
     # skills は paths/urls をまとめた1本の配列になった。
     skills = (payload.get("skills") or {}).get("paths") or []
     if skills:
@@ -800,6 +891,13 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
     temp.write_text(json.dumps(_v2_payload(payload), ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(temp, 0o600)
     os.replace(temp, path)
+    # Auto Advisor は $XDG_CONFIG_HOME/opencode/auto-advisor.json を読む。
+    advisor_path = config_dir / "auto-advisor.json"
+    if payload.get("_auto_advisor"):
+        advisor_path.write_text(json.dumps(payload["_auto_advisor"], ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(advisor_path, 0o600)
+    else:
+        advisor_path.unlink(missing_ok=True)
     _link_cli_config(config_dir)
     return root
 

@@ -15,7 +15,7 @@ test("manages an installed release bundle and generates through its Add-on", asy
   await page.getByLabel("パスワード").fill(password!);
   await page.getByRole("button", { name: "ログイン" }).click();
   await expect(page).not.toHaveURL(/\/login$/);
-  await page.goto("/settings");
+  await page.goto("/settings/features");
 
   const section = page.getByRole("heading", { name: "オプション機能" }).locator("xpath=ancestor::section[1]");
   const row = section.locator("div.rounded-xl.border").filter({ hasText: "Media Forge" }).first();
@@ -23,6 +23,7 @@ test("manages an installed release bundle and generates through its Add-on", asy
   await expect(row).toContainText("導入済み（無効）");
   await expect(row).not.toContainText("PREVIEW");
   await row.getByRole("button", { name: "有効化" }).click();
+  await row.getByText("詳細と操作").click();
   await expect(row.getByRole("button", { name: "無効化" })).toBeVisible();
 
   await page.setViewportSize({ width: 1280, height: 800 });
