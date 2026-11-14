@@ -222,3 +222,14 @@ def test_lifecycle_flags_change_while_running_and_keep_activation(monkeypatch, t
     with pytest.raises(strata_gateway.StrataGatewayError, match="停止"):
         strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
             context="128k", idle_exclude=True, auto_start=True, replace=True)
+
+
+def test_engine_settings_reach_launch_as_validated_set_flags(monkeypatch):
+    monkeypatch.setattr(strata_gateway, "DEFAULT_ENGINE_SETTINGS", {"STRATA_ROUTE_TAIL_SKIP": "0"})
+    cfg = {"engine_settings": {"STRATA_HC_Q8": "0", "draft-conf": "0.35",
+                               "STRATA_X; rm -rf /": "1", "STRATA_OK": "a b"}}
+    # The default applies, overrides add to it, and anything shaped like an injection is dropped.
+    assert strata_gateway.engine_settings(cfg) == {
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_HC_Q8": "0", "draft-conf": "0.35"}
+    assert strata_gateway.engine_settings({"engine_settings": {"STRATA_ROUTE_TAIL_SKIP": "off"}}) == {
+        "STRATA_ROUTE_TAIL_SKIP": "off"}
