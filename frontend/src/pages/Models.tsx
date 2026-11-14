@@ -15,6 +15,7 @@ import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
 import { MayaSDetailSheet, MayaSSetupCard, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
@@ -38,9 +39,9 @@ interface Model {
 }
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
-type LocalRuntime = "llama.cpp" | "strata" | "maya-s";
+type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
 const RUNTIME_LABEL: Record<string, string> = {
-  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya-S", ollama: "Ollama",
+  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya-S", radiance: "Radiance", ollama: "Ollama",
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
@@ -265,6 +266,7 @@ export default function ModelsPage() {
   const [detail, setDetail] = useState<string | null>(null);
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
   const [strataDetail, setStrataDetail] = useState<string | null>(null);
+  const [radianceDetail, setRadianceDetail] = useState<string | null>(null);
   const [mayaDetail, setMayaDetail] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -285,7 +287,7 @@ export default function ModelsPage() {
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
       if (!isLocal) return api<Model[]>("/models");
-      const fetched = await Promise.all((["llama.cpp", "strata", "maya-s"] as const).map(async (runtime) => {
+      const fetched = await Promise.all((["llama.cpp", "strata", "maya-s", "radiance"] as const).map(async (runtime) => {
         try {
           const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
             `/models/providers/${runtime}/models`);
@@ -406,6 +408,18 @@ export default function ModelsPage() {
         }
         return;
       }
+      if (provider === "radiance") {
+        if (action === "load") {
+          const started = await api<{ job_id: string }>(
+            `/models/radiance/instances/${encodeURIComponent(id)}/start-jobs`, { method: "POST", json: {} });
+          show(`Radianceの起動ジョブを開始しました（${started.job_id}）。読み込みには数十秒〜数分かかります`);
+        } else {
+          await api(`/models/radiance/instances/${encodeURIComponent(id)}/stop`, { method: "POST", json: {} });
+          show("Radianceのモデルを停止しました");
+          await refresh();
+        }
+        return;
+      }
       if (provider === "strata" && action === "load") {
         const started = await api<{ job_id: string }>(
           `/models/strata/instances/${encodeURIComponent(id)}/start-jobs`,
@@ -502,6 +516,7 @@ export default function ModelsPage() {
             const shared = endpoint && endpoint.aliases.length > 1;
             const openDetail = () => {
               if (runtime === "strata") setStrataDetail(id);
+              else if (runtime === "radiance") setRadianceDetail(id);
               else if (runtime === "maya-s") setMayaDetail(true);
               else if (isLlama) setLlamaDetail(id);
               else setDetail(m.name);
@@ -530,7 +545,7 @@ export default function ModelsPage() {
                   <p className="num line-clamp-2 text-xs text-zinc-500 sm:truncate">
                     {RUNTIME_LABEL[runtime ?? "ollama"] ?? "Ollama"}
                     {m.backend_label ? ` / ${m.backend_label}` : ""}
-                    {isLocal && m.name && m.name !== id ? ` · ${m.name.replace(/^(Strata|Project Maya-S|Maya-S)\s*[・·]\s*/, "")}` : ""}
+                    {isLocal && m.name && m.name !== id ? ` · ${m.name.replace(/^(Strata|Project Maya-S|Maya-S|Radiance)\s*[・·]\s*/, "")}` : ""}
                     {m.size ? ` · ${gb(m.size)}` : ""}
                     {m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
                     {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
@@ -575,6 +590,7 @@ export default function ModelsPage() {
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
       {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
       {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
+      {radianceDetail && <RadianceDetailSheet alias={radianceDetail} onClose={() => setRadianceDetail(null)} />}
       {mayaDetail && <MayaSDetailSheet onClose={() => setMayaDetail(false)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
@@ -2008,12 +2024,13 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
     queryKey: ["strata-instances"],
     queryFn: () => api<{ runtime: { installed: boolean }; instances: Array<{alias: string}> }>("/models/strata/instances"),
   });
+  const { data: radianceState } = useRadianceState();
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
       <div className="mb-3 flex gap-2">
-        {(["llama.cpp", "strata"] as const).map((choice) => (
+        {(["llama.cpp", "strata", "radiance"] as const).map((choice) => (
           <button key={choice} type="button" onClick={() => setRuntime(choice)}
-            disabled={choice === "strata" && !strataState?.runtime.installed}
+            disabled={(choice === "strata" && !strataState?.runtime.installed) || (choice === "radiance" && !radianceState?.runtime.installed)}
             className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
             {RUNTIME_LABEL[choice]}
           </button>
@@ -2021,6 +2038,7 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
       </div>
       {runtime === "llama.cpp"
         ? <LlamaRuntimePanel registrationOnly />
+        : runtime === "radiance" ? <RadianceRegisterPanel onDone={onClose} />
         : <StrataRegisterPanel onDone={onClose} />}
     </BottomSheet>
   );

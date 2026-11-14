@@ -26,7 +26,7 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
         # Model lifecycle is administered only through the explicit, authenticated
         # feature prepare/start/stop endpoints (with GPU conflict checks).
         return generation + ["list", "health"]
-    if managed and kind in ("llama.cpp", "strata"):
+    if managed and kind in ("llama.cpp", "strata", "radiance"):
         return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return generation + ["list"]
 
@@ -40,15 +40,15 @@ def _provider_id(kind: str, base_url: str, *, managed: bool) -> str:
     parsed = urlsplit(base_url)
     host = parsed.hostname or "unknown"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return kind if managed and kind in ("ollama", "llama.cpp", "strata", "maya-s") else f"{kind}-{host}-{port}"
+    return kind if managed and kind in ("ollama", "llama.cpp", "strata", "maya-s", "radiance") else f"{kind}-{host}-{port}"
 
 
 # ゲートウェイへ集約するローカルランタイム。個別ポートを候補から外す判定に使う。
-GATEWAY_RUNTIMES = ("llama.cpp", "strata", "maya-s")
+GATEWAY_RUNTIMES = ("llama.cpp", "strata", "maya-s", "radiance")
 
 
 async def _candidates() -> list[dict]:
-    from app.models_mgmt import llama, ollama, strata, strata_gateway, maya_s
+    from app.models_mgmt import llama, ollama, strata, strata_gateway, maya_s, radiance
 
     candidates: dict[str, dict] = {}
 
@@ -112,6 +112,14 @@ async def _candidates() -> list[dict]:
             add(first["base_url"], "maya-s", "Project Maya-S", managed=True,
                 installed=True, experimental=True)
             candidates[_openai_base(first["base_url"])]["aliases"] = [first["alias"]]
+
+    # Radiance: one server per registered model; list them under one provider like Strata.
+    if radiance.installed():
+        radiance_items = await asyncio.to_thread(radiance.list_instances)
+        if radiance_items:
+            first = radiance_items[0]
+            add(first["base_url"], "radiance", "Radiance", managed=True, installed=True, experimental=True)
+            candidates[_openai_base(first["base_url"])]["aliases"] = [str(i["alias"]) for i in radiance_items]
 
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)

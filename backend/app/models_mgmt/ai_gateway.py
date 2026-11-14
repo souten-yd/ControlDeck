@@ -77,6 +77,18 @@ def _strata_target(capability: AICapability) -> AITarget:
     return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
 
 
+def _radiance_target(capability: AICapability) -> AITarget:
+    from app.models_mgmt import radiance
+    if not radiance.installed():
+        raise AITargetUnavailable("Radianceは未導入です")
+    candidates = radiance.list_instances()
+    if not candidates:
+        raise AITargetUnavailable(f"{capability} に使えるRadianceモデルが登録されていません")
+    # The containers carry their vision tower, so text and vision share one model.
+    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"]))
+    return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
+
+
 async def _ollama_target(capability: AICapability) -> AITarget:
     from app.models_mgmt import ollama
 
@@ -132,6 +144,8 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
         return await asyncio.to_thread(_llama_target, capability)
     if runtime == "strata":
         return await asyncio.to_thread(_strata_target, capability)
+    if runtime == "radiance":
+        return await asyncio.to_thread(_radiance_target, capability)
     if runtime == "maya-s":
         from app.models_mgmt import maya_s
         if capability != "text.generate" or not (await maya_s.health())["ok"]:

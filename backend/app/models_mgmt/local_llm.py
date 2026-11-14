@@ -11,11 +11,14 @@ from typing import Any
 LLAMA = "llama.cpp"
 STRATA = "strata"
 MAYA_S = "maya-s"
-RUNTIMES = (LLAMA, STRATA, MAYA_S)
+RADIANCE = "radiance"
+RUNTIMES = (LLAMA, STRATA, MAYA_S, RADIANCE)
 
 
 def module_for(runtime: str):
-    from app.models_mgmt import llama, strata_gateway, maya_s
+    from app.models_mgmt import llama, strata_gateway, maya_s, radiance
+    if runtime == RADIANCE:
+        return radiance
     if runtime == MAYA_S:
         return maya_s
     if runtime == STRATA:
@@ -46,6 +49,12 @@ def _maya_s_instances() -> list[dict]:
     return maya_s.list_instances() if maya_s.installed() else []
 
 
+def _radiance_instances() -> list[dict]:
+    from app.models_mgmt import radiance
+    # A removed engine must not leave selectable ghost models.
+    return radiance.list_instances() if radiance.installed() else []
+
+
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
     """全ローカルランタイムのモデル設定を優先度順で返す。
 
@@ -57,6 +66,8 @@ def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
         items += _strata_instances()
     if runtime in ("", MAYA_S):
         items += _maya_s_instances()
+    if runtime in ("", RADIANCE):
+        items += _radiance_instances()
     if role:
         items = [item for item in items if str(item.get("role", "llm")) == role]
     return items
@@ -190,7 +201,7 @@ async def await_capacity(alias: str, port: int, needed_tokens: int, *,
 def installed_runtimes() -> dict[str, bool]:
     from app.models_mgmt import llama
 
-    from app.models_mgmt import strata, maya_s
+    from app.models_mgmt import strata, maya_s, radiance
 
     return {LLAMA: llama.is_installed(), STRATA: strata.installed(),
-            MAYA_S: maya_s.installed()}
+            MAYA_S: maya_s.installed(), RADIANCE: radiance.installed()}

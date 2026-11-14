@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -191,6 +192,25 @@ async def list_models(provider_id: str) -> list[dict]:
                 "quantization": item["model"], "context": item["context"],
             },
         } for item in await asyncio.to_thread(strata_gateway.list_instances)]
+    if provider["provider"] == "radiance" and provider["managed"]:
+        from app.models_mgmt import radiance
+
+        def size(path: str) -> int:
+            try:
+                return os.path.getsize(path)
+            except OSError:
+                return 0
+        return [{
+            "id": item["alias"],
+            "name": f"Radiance · {os.path.basename(str(item['model_path'])).removesuffix('.rad')}",
+            "size_bytes": size(str(item["model_path"])), "modified_at": "", "loaded": item["loaded"],
+            "details": {
+                "runtime": "radiance", "backend": "HIP",
+                "port": item["port"], "base_url": item["base_url"],
+                "runtime_status": item["runtime_status"], "context": item["context"],
+                "path": item["model_path"],
+            },
+        } for item in await asyncio.to_thread(radiance.list_instances)]
     return [{
         "id": model, "name": model, "size_bytes": 0, "modified_at": "",
         # OpenAI互換APIだけでは各モデルのロード状態を判定できない。
@@ -224,6 +244,13 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
                 raise ProviderError(str(e)) from e
         if local_llm.find(model_id) is None:
             raise ProviderNotFound(f"設定中の{kind}モデルと一致しません")
+        if kind == "radiance":
+            # One Radiance model takes the whole card: free the others first, then wait until it serves.
+            from app.models_mgmt import radiance
+            if not await radiance.ensure_ready(model_id, start=True):
+                tail = await asyncio.to_thread(radiance.log_tail, model_id, 8)
+                raise ProviderError("Radianceの起動に失敗しました" + (f": {tail[-400:]}" if tail else ""))
+            return {"model": model_id, "loaded": True}
         ok, error = await asyncio.to_thread(local_llm.start_instance, model_id)
         if not ok:
             raise ProviderError(error or f"{kind}の起動に失敗しました")
@@ -261,6 +288,13 @@ async def delete_model(provider_id: str, model_id: str) -> None:
             await asyncio.to_thread(strata_gateway.delete_instance, model_id)
             return
         except (KeyError, strata_gateway.StrataGatewayError) as exc:
+            raise ProviderError(str(exc)) from exc
+    if provider["provider"] == "radiance":
+        from app.models_mgmt import radiance
+        try:
+            await asyncio.to_thread(radiance.delete_instance, model_id)
+            return
+        except (KeyError, radiance.RadianceError) as exc:
             raise ProviderError(str(exc)) from exc
     if provider["provider"] == "llama.cpp":
         try:
@@ -351,6 +385,16 @@ async def provider_health(provider_id: str) -> dict:
         return {
             "ok": any(state["ok"] for state in states), "provider": "strata",
             "installed": True,
+            "instances": [{"alias": item["alias"], "port": item["port"],
+                           "ok": state["ok"], "runtime_status": item["runtime_status"]}
+                          for item, state in zip(instances, states, strict=True)],
+        }
+    if provider["provider"] == "radiance" and provider["managed"]:
+        from app.models_mgmt import radiance
+        instances = await asyncio.to_thread(radiance.list_instances)
+        states = await asyncio.gather(*(radiance.health(str(item["alias"])) for item in instances))
+        return {
+            "ok": any(state["ok"] for state in states), "provider": "radiance", "installed": True,
             "instances": [{"alias": item["alias"], "port": item["port"],
                            "ok": state["ok"], "runtime_status": item["runtime_status"]}
                           for item, state in zip(instances, states, strict=True)],

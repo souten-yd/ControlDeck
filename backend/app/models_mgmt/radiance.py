@@ -1,0 +1,581 @@
+"""Radiance (StillDeadcode/radiance): an inference server for AMD GPUs, as an opt-in add-on.
+
+Engine: the official container image (Docker Hub `stilldeadcode/radiance`, which carries its own
+ROCm), pulled at a pinned release tag and run with rootless podman. The source repository on
+Codeberg was too slow to fetch from this network to build from. Install never downloads model
+weights; models are `.rad` containers the user already has (or downloaded explicitly).
+
+Models: registered like Strata's (alias, `.rad` path, port, context, KV type, ...). Each runs as
+its own container in a systemd user unit, bound to 127.0.0.1 and reached through the ControlDeck
+gateway. The model's folder is mounted read-only. Only fixed, validated arguments are passed;
+nothing goes through a shell.
+"""
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+from contextlib import contextmanager
+from functools import wraps
+from pathlib import Path
+
+import httpx
+
+from app.config import data_dir
+
+RUNTIME = "radiance"
+IMAGE = "docker.io/stilldeadcode/radiance"
+_TAGS = "https://hub.docker.com/v2/repositories/stilldeadcode/radiance/tags?page_size=50"
+# Install takes the tested release; "update" moves to the newest release tag.
+PINNED_TAG = "1.17.0"
+_TAG = re.compile(r"^v?([0-9]+)[.]([0-9]+)[.]([0-9]+)$")
+_ALIAS = re.compile(r"^[a-z][a-z0-9.-]{0,47}$")
+_MIN_PORT, _MAX_PORT = 8081, 65535
+_CONTEXT_MIN, _CONTEXT_MAX = 4096, 1_048_576
+KV_TYPES = ("bf16", "fp8", "fp8_v4", "k6_v4")
+LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start")
+# Requests ask for prompt + max_tokens; leave this much room like Maya's slack.
+CONTEXT_SLACK = 8
+
+
+class RadianceError(RuntimeError):
+    pass
+
+
+# ---- paths -------------------------------------------------------------------------------
+
+def root() -> Path:
+    return data_dir().resolve() / "runtimes" / "radiance"
+
+
+def _marker() -> Path:
+    return root() / "managed.json"
+
+
+def _models_path() -> Path:
+    return root() / "models.json"
+
+
+def _log_path(alias: str) -> Path:
+    return root() / "logs" / f"{alias}.log"
+
+
+def _unit(alias: str) -> str:
+    return "control-deck-radiance-" + re.sub(r"[^a-z0-9-]", "-", alias)
+
+
+def _container(alias: str) -> str:
+    return "cd-radiance-" + re.sub(r"[^a-z0-9-]", "-", alias)
+
+
+def _podman() -> str | None:
+    return shutil.which("podman")
+
+
+def entrypoint() -> Path:
+    """What runs the engine (the feature registry shows it): podman, the image is the engine."""
+    return Path(_podman() or "/usr/bin/podman")
+
+
+# ---- engine (image) ------------------------------------------------------------------------
+
+@contextmanager
+def _operation_lock():
+    directory = root()
+    if directory.is_symlink():
+        raise RadianceError("管理ディレクトリがシンボリックリンクです")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(directory / "operation.lock", flags, 0o600)
+    except OSError as exc:
+        raise RadianceError("Radiance操作のロックを作成できません") from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RadianceError("Radianceの別の操作が実行中です") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _serialized(fn):
+    @wraps(fn)
+    def call(*args, **kwargs):
+        if os.geteuid() == 0:
+            raise RadianceError("Radianceの管理操作はrootで実行できません")
+        with _operation_lock():
+            return fn(*args, **kwargs)
+    return call
+
+
+def available() -> bool:
+    return (sys.platform == "linux" and platform.machine().lower() in ("x86_64", "amd64")
+            and _podman() is not None and Path("/dev/kfd").exists())
+
+
+def _read_marker() -> dict:
+    try:
+        value = json.loads(_marker().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _image_ref(tag: str | None = None) -> str:
+    return f"{IMAGE}:{tag or _read_marker().get('tag') or PINNED_TAG}"
+
+
+def _image_exists(ref: str) -> bool:
+    podman = _podman()
+    if podman is None:
+        return False
+    try:
+        return subprocess.run([podman, "image", "exists", ref], capture_output=True,
+                              timeout=30, check=False).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def installed() -> bool:
+    marker = _read_marker()
+    return (_marker().is_file() and not _marker().is_symlink() and bool(marker.get("tag"))
+            and _image_exists(_image_ref(str(marker["tag"]))))
+
+
+def _exec(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RadianceError("Radiance操作を実行できないか、タイムアウトしました") from exc
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
+        raise RadianceError(f"Radiance操作が失敗しました（exit {result.returncode}）: {detail[0][:200]}")
+    return result
+
+
+def _version_key(tag: str) -> tuple[int, int, int]:
+    match = _TAG.fullmatch(tag)
+    return (int(match[1]), int(match[2]), int(match[3])) if match else (-1, -1, -1)
+
+
+def _latest_tag() -> str:
+    try:
+        request = urllib.request.Request(_TAGS, headers={"Accept": "application/json",
+                                                         "User-Agent": "ControlDeck-Radiance"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            rows = json.load(response).get("results", [])
+    except (OSError, ValueError, AttributeError) as exc:
+        raise RadianceError("Radianceのリリースタグを取得できません") from exc
+    tags = [str(row.get("name")) for row in rows
+            if isinstance(row, dict) and _TAG.fullmatch(str(row.get("name")))]
+    if not tags:
+        raise RadianceError("Radianceのリリースタグが見つかりません")
+    return max(tags, key=_version_key)
+
+
+def _pull(tag: str) -> str:
+    podman = _podman()
+    if podman is None:
+        raise RadianceError("podman が必要です")
+    ref = _image_ref(tag)
+    # No --quiet: podman 4.9 panics with it when the image is already present.
+    _exec([podman, "pull", ref], timeout=3600)
+    digest = _exec([podman, "image", "inspect", ref, "--format", "{{.Digest}}"]).stdout.strip()
+    return digest
+
+
+def _write_marker(tag: str, digest: str) -> None:
+    _marker().write_text(json.dumps({"image": IMAGE, "tag": tag, "digest": digest}), encoding="utf-8")
+
+
+def _version() -> str:
+    return str(_read_marker().get("tag") or "")
+
+
+@_serialized
+def _install() -> dict:
+    if not available():
+        raise RadianceError("Linux x86_64・podman・AMD GPU（/dev/kfd）が必要です")
+    if installed():
+        raise RadianceError("Radianceは導入済みです。更新操作を使ってください")
+    root().mkdir(parents=True, exist_ok=True)
+    _write_marker(PINNED_TAG, _pull(PINNED_TAG))
+    return runtime_status()
+
+
+async def install_stream(job=None) -> dict:
+    if job:
+        job.set_progress(f"Radiance {PINNED_TAG} の公式イメージを取得中（約210MB）。モデルはダウンロードしません", 0, 1)
+    return await asyncio.to_thread(_install)
+
+
+@_serialized
+def _update() -> dict:
+    if not installed():
+        raise RadianceError("ControlDeckが導入したRadianceがありません")
+    if any(_running(alias) for alias in _read()):
+        raise RadianceError("Radianceのモデルを停止してから更新してください")
+    tag = _latest_tag()
+    previous = _version()
+    if previous == tag:
+        return runtime_status()
+    # The new image is pulled beside the current one; the marker moves only after it arrived.
+    _write_marker(tag, _pull(tag))
+    if previous and previous != tag and _podman():
+        subprocess.run([_podman(), "rmi", _image_ref(previous)], capture_output=True, timeout=120, check=False)
+    return runtime_status()
+
+
+async def update_stream(job=None) -> dict:
+    if job:
+        job.set_progress("Radianceの最新リリースのイメージを取得中。モデルは再取得しません", 0, 1)
+    return await asyncio.to_thread(_update)
+
+
+async def available_update() -> dict:
+    current = _version()
+    try:
+        latest = await asyncio.to_thread(_latest_tag)
+        newer = bool(current and _version_key(latest) > _version_key(current))
+        return {"installed_tag": current, "latest_tag": latest, "update_available": newer,
+                "published_at": "", "error": ""}
+    except RadianceError as exc:
+        return {"installed_tag": current, "latest_tag": "", "update_available": False,
+                "published_at": "", "error": str(exc)}
+
+
+@_serialized
+def uninstall() -> dict:
+    if not installed():
+        raise RadianceError("ControlDeck管理のRadianceがありません")
+    if any(_running(alias) for alias in _read()):
+        raise RadianceError("モデル稼働中は削除できません。停止してください")
+    # The image only: registrations and .rad model files stay.
+    subprocess.run([_podman() or "podman", "rmi", _image_ref()], capture_output=True, timeout=120, check=False)
+    _marker().unlink(missing_ok=True)
+    return runtime_status()
+
+
+def runtime_status() -> dict:
+    state = installed()
+    marker = _read_marker()
+    return {
+        "installed": state,
+        "available": available() or state,
+        "version": _version() if state else "",
+        "binary": _image_ref() if state else "",
+        "digest": str(marker.get("digest") or "") if state else "",
+        "error": "" if available() else "Linux x86_64・podman・AMD GPU（/dev/kfd）が必要です",
+        "warning": "R9700（RDNA4）向け。公式イメージ（ROCm 入り）を podman で動かします。モデル（.rad）は別に用意します",
+    }
+
+
+# ---- model registrations -------------------------------------------------------------------
+
+_registry_lock = threading.RLock()
+
+
+def _read() -> dict[str, dict]:
+    try:
+        raw = json.loads(_models_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {key: value for key, value in raw.items()
+            if isinstance(key, str) and _ALIAS.fullmatch(key) and isinstance(value, dict)}
+
+
+def _write(items: dict[str, dict]) -> None:
+    path = _models_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _validate_model_path(value: str) -> str:
+    from app.files import service as files
+
+    try:
+        path = files.resolve(value)
+    except (OSError, ValueError) as exc:
+        raise RadianceError("モデルファイルを読み込めません。許可されたパスか確認してください") from exc
+    if not path.is_file() or path.suffix.lower() != ".rad":
+        raise RadianceError("Radianceのモデルは .rad ファイルを指定してください")
+    return str(path)
+
+
+def _running(alias: str) -> bool:
+    try:
+        result = subprocess.run(["systemctl", "--user", "is-active", _unit(alias)],
+                                capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.stdout.strip() in ("active", "activating")
+
+
+def _present(alias: str, cfg: dict) -> dict:
+    loaded = _running(alias)
+    return {
+        "alias": alias, **cfg, "runtime": RUNTIME, "role": "llm",
+        "base_url": f"http://127.0.0.1:{cfg['port']}/v1",
+        "loaded": loaded, "runtime_status": "RUNNING" if loaded else "STOPPED",
+        "ctx_size": int(cfg.get("context") or 0), "n_parallel": int(cfg.get("max_num_seqs") or 1),
+    }
+
+
+def list_instances() -> list[dict]:
+    return [_present(alias, cfg) for alias, cfg in _read().items()]
+
+
+def get_instance(alias: str) -> dict:
+    cfg = _read().get(alias)
+    if cfg is None:
+        raise KeyError(f"Radianceモデル {alias} は未登録です")
+    return _present(alias, cfg)
+
+
+def save_instance(alias: str, *, model_path: str, port: int, context: int = 131072,
+                  kv_cache: str = "bf16", max_num_seqs: int = 4, speculative_tokens: int | None = None,
+                  gpu_headroom_mib: int = 1024, on_demand_start: bool = True,
+                  idle_exclude: bool = False, auto_start: bool = False, replace: bool = False) -> dict:
+    if not installed():
+        raise RadianceError("先にRadianceを導入してください（設定 → オプション機能）")
+    if not _ALIAS.fullmatch(alias) or alias in {"auto", RUNTIME}:
+        raise RadianceError("別名は小文字英数字・ドット・ハイフン（先頭英字、最大48文字）にしてください")
+    if not (_MIN_PORT <= int(port) <= _MAX_PORT) or not (_CONTEXT_MIN <= int(context) <= _CONTEXT_MAX):
+        raise RadianceError("ポートまたはコンテキストがサポート範囲外です")
+    if kv_cache not in KV_TYPES or not 1 <= int(max_num_seqs) <= 32:
+        raise RadianceError("KV形式または同時実行数が不正です")
+    if speculative_tokens is not None and not 0 <= int(speculative_tokens) <= 15:
+        raise RadianceError("先読みトークン数は 0〜15 か自動にしてください")
+    if not 96 <= int(gpu_headroom_mib) <= 16384:
+        raise RadianceError("GPU の空き確保量は 96〜16384 MiB にしてください")
+    wanted = {"model_path": _validate_model_path(model_path), "port": int(port), "context": int(context),
+              "kv_cache": kv_cache, "max_num_seqs": int(max_num_seqs),
+              "speculative_tokens": None if speculative_tokens is None else int(speculative_tokens),
+              "gpu_headroom_mib": int(gpu_headroom_mib), "on_demand_start": bool(on_demand_start),
+              "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start)}
+    with _registry_lock:
+        items = _read()
+        if replace and alias in items:
+            changed = {key for key, value in wanted.items() if items[alias].get(key) != value}
+            if changed <= set(LIFECYCLE_KEYS):
+                # Lifecycle flags only: fine while running.
+                items[alias] = {**items[alias], **{key: wanted[key] for key in LIFECYCLE_KEYS}}
+                _write(items)
+                return get_instance(alias)
+            if _running(alias):
+                raise RadianceError("設定を変更する前にRadianceモデルを停止してください")
+        elif replace:
+            raise KeyError(alias)
+        elif alias in items:
+            raise RadianceError("同じ別名は既に登録されています")
+        if any(item.get("port") == int(port) for key, item in items.items() if key != alias):
+            raise RadianceError("Radiance内でポートが重複しています")
+        from app.models_mgmt import local_llm
+        if not replace and local_llm.find(alias) is not None:
+            raise RadianceError("同じ別名を使用する別のLLMがあります")
+        if local_llm.port_taken_by_other_runtime(int(port), RUNTIME):
+            raise RadianceError("別のローカルランタイムがポートを使用しています")
+        items[alias] = wanted
+        _write(items)
+    return get_instance(alias)
+
+
+def delete_instance(alias: str) -> dict:
+    with _registry_lock:
+        items = _read()
+        if alias not in items:
+            raise KeyError(alias)
+        if _running(alias):
+            raise RadianceError("稼働中のRadianceモデルを先に停止してください")
+        items.pop(alias)
+        _write(items)
+    return {"alias": alias, "config_deleted": True, "model_files_deleted": False}
+
+
+def launch_args(alias: str, cfg: dict) -> list[str]:
+    """The fixed command line for one registration (exposed for tests).
+
+    The model's folder is mounted read-only at /models; the server binds 127.0.0.1 on the
+    host network, so nothing is published beyond loopback.
+    """
+    model = Path(cfg["model_path"])
+    args = [entrypoint().as_posix(), "run", "--rm", "--replace", "--name", _container(alias),
+            "--network", "host", "--init", "--ulimit", "host",
+            "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "keep-groups",
+            "--security-opt", "seccomp=unconfined", "--stop-timeout", "30",
+            "-v", f"{model.parent}:/models:ro", _image_ref(),
+            "--model", f"/models/{model.name}", "--host", "127.0.0.1",
+            "--port", str(cfg["port"]), "--served-model-name", alias, "--tp", "1",
+            "--max-model-len", str(cfg["context"]), "--max-num-seqs", str(cfg["max_num_seqs"]),
+            "--kv-cache-dtype", cfg["kv_cache"], "--gpu-headroom-mib", str(cfg["gpu_headroom_mib"])]
+    if cfg.get("speculative_tokens") is not None:
+        args += ["--num-speculative-tokens", str(cfg["speculative_tokens"])]
+    return args
+
+
+def _start(alias: str) -> tuple[bool, str]:
+    cfg = _read().get(alias)
+    if not cfg:
+        return False, "モデル設定が見つかりません"
+    if not installed():
+        return False, "Radianceは未導入です"
+    if _running(alias):
+        return True, ""
+    try:
+        _validate_model_path(cfg["model_path"])
+    except RadianceError as exc:
+        return False, str(exc)
+    log = _log_path(alias)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    runner = ["systemd-run", "--user", "--quiet", "--collect", "--unit=" + _unit(alias),
+              "--property=UMask=0077", "--property=TimeoutStopSec=60",
+              "--property=StandardOutput=append:" + str(log),
+              "--property=StandardError=append:" + str(log)]
+    try:
+        result = subprocess.run([*runner, *launch_args(alias, cfg)], capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=40, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False, "Radianceを起動できませんでした"
+    if result.returncode:
+        return False, (result.stderr or result.stdout)[-400:].strip() or "Radianceを起動できませんでした"
+    from app.models_mgmt import large_model_lifecycle
+    large_model_lifecycle.mark_used(RUNTIME, alias)
+    large_model_lifecycle.follow_selection(RUNTIME)
+    return True, ""
+
+
+def start_instance(alias: str) -> tuple[bool, str]:
+    with _registry_lock:
+        return _start(alias)
+
+
+def stop_instance(alias: str) -> tuple[bool, str]:
+    if alias not in _read():
+        return False, "Radianceモデルが見つかりません"
+    try:
+        if _podman():
+            subprocess.run([_podman(), "stop", "--ignore", "-t", "30", _container(alias)],
+                           capture_output=True, timeout=60, check=False)
+        subprocess.run(["systemctl", "--user", "stop", _unit(alias)], capture_output=True,
+                       timeout=90, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False, "Radianceモデルを停止できませんでした"
+    return (False, "停止を確認できません") if _running(alias) else (True, "")
+
+
+async def health(alias: str) -> dict:
+    cfg = _read().get(alias)
+    if not cfg or not await asyncio.to_thread(_running, alias):
+        return {"ok": False, "status_code": None}
+    try:
+        async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+            res = await client.get(f"http://127.0.0.1:{cfg['port']}/v1/models")
+            if res.status_code != 200:
+                return {"ok": False, "status_code": res.status_code}
+            data = res.json().get("data")
+            return {"ok": isinstance(data, list) and bool(data), "status_code": 200}
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return {"ok": False, "status_code": None}
+
+
+async def wait_ready(alias: str, *, timeout_seconds: int = 900) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if (await health(alias))["ok"]:
+            return True
+        if not await asyncio.to_thread(_running, alias):
+            return False  # the unit exited: a startup error, the log says why
+        await asyncio.sleep(2)
+    return False
+
+
+async def ensure_ready(alias: str, *, timeout_seconds: int = 900, start: bool | None = None) -> bool:
+    """Ready for a request; starts a registered model when "要求時に自動起動" is on."""
+    from app.models_mgmt import large_model_lifecycle
+
+    if (await health(alias))["ok"]:
+        large_model_lifecycle.mark_used(RUNTIME, alias)
+        return True
+    cfg = _read().get(alias)
+    if not cfg:
+        return False
+    allowed = cfg.get("on_demand_start", True) if start is None else start
+    if not allowed:
+        return False
+    if not await asyncio.to_thread(_running, alias):
+        try:
+            await large_model_lifecycle.release_for(RUNTIME)
+        except RuntimeError:
+            return False
+        ok, _reason = await asyncio.to_thread(start_instance, alias)
+        if not ok:
+            return False
+    if not await wait_ready(alias, timeout_seconds=timeout_seconds):
+        return False
+    large_model_lifecycle.mark_used(RUNTIME, alias)
+    return True
+
+
+async def prompt_room(alias: str, messages: list) -> tuple[int, int] | None:
+    """(prompt tokens, room) via the server's tokenizer, so max_tokens can be fitted."""
+    cfg = _read().get(alias)
+    if not cfg:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            res = await client.post(f"http://127.0.0.1:{cfg['port']}/v1/chat/completions/input_tokens",
+                                    json={"model": alias, "messages": messages})
+            if res.status_code != 200:
+                return None
+            body = res.json()
+            count = int(body.get("input_tokens", body.get("count")))
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return None
+    return count, int(cfg["context"]) - CONTEXT_SLACK
+
+
+def residency_key(instance: dict) -> str:
+    return "radiance:" + hashlib.sha256(
+        (str(instance.get("alias", "")) + ":" + str(instance.get("model_path", ""))).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def mark_used_by_base_url(base_url: str) -> str | None:
+    from urllib.parse import urlsplit
+    from app.models_mgmt import large_model_lifecycle
+
+    try:
+        port = urlsplit(base_url).port
+    except ValueError:
+        return None
+    alias = next((key for key, item in _read().items() if item.get("port") == port), None)
+    if alias:
+        large_model_lifecycle.mark_used(RUNTIME, alias)
+    return alias
+
+
+def log_tail(alias: str, lines: int = 60) -> str:
+    path = _log_path(alias)
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, path.stat().st_size - 32768))
+            return "\n".join(handle.read().decode("utf-8", errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""

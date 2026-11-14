@@ -63,7 +63,7 @@ class AmdGpuSettings(BaseModel):
 
 
 class RuntimePolicy(BaseModel):
-    selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s"] = "ollama"
+    selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"] = "ollama"
     # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
     selected_backend: Literal["rocm", "vulkan", ""] = ""
     coexistence: Literal["exclusive", "coexist"] = "exclusive"
@@ -222,6 +222,15 @@ async def environment() -> dict:
                          "installed": True, "selected": policy.selected_runtime == "maya-s",
                          "running": maya_state["running"], "addon_id": "maya-s",
                          "warning": "選択だけではモデルを起動しません", "experimental": True})
+    from app.models_mgmt import radiance
+    if radiance.installed():
+        radiance_items = await asyncio.to_thread(radiance.list_instances)
+        runtimes.append({"id": "radiance", "runtime": "radiance", "backend": "",
+                         "label": "Radiance（R9700）", "available": True, "installed": True,
+                         "selected": policy.selected_runtime == "radiance",
+                         "running": any(item.get("loaded") for item in radiance_items),
+                         "addon_id": "radiance", "experimental": True,
+                         "warning": "" if radiance_items else "モデル（.rad）を登録してください"})
     gpu_caps = amd_gpu.capabilities()
     if gpu_caps:
         pwr = gpu_caps["power"]
@@ -315,7 +324,31 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                 if not ok:
                     raise RuntimeError(reason or "Strataモデルを停止できませんでした")
 
-    from app.models_mgmt import maya_s
+    from app.models_mgmt import maya_s, radiance
+
+    def _release_radiance() -> None:
+        if not radiance.installed():
+            return
+        for item in radiance.list_instances():
+            if item.get("loaded"):
+                ok, reason = radiance.stop_instance(str(item["alias"]))
+                if not ok:
+                    raise RuntimeError(reason or "Radianceモデルを停止できませんでした")
+
+    if policy.selected_runtime == "radiance":
+        if not radiance.installed():
+            raise ValueError("Radianceは未導入です。オプション機能から導入してください")
+        if policy.coexistence == "exclusive":
+            await _release_ollama()
+            await asyncio.to_thread(_release_llama)
+            await asyncio.to_thread(_release_strata)
+            if maya_s.installed():
+                ok, reason = await asyncio.to_thread(maya_s.stop_instance)
+                if not ok:
+                    raise RuntimeError(reason)
+        return  # Selection never starts a model; a request or 「ロード」 does.
+    if policy.coexistence == "exclusive":
+        await asyncio.to_thread(_release_radiance)
     if policy.selected_runtime == "maya-s":
         if not maya_s.installed():
             raise ValueError("Maya-Sは未導入です")

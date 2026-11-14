@@ -91,6 +91,14 @@ FEATURES: dict[str, dict] = {
         "repo": "mw00/project-maya",
         "summary": "Maya-S（約96.5GB）専用の独立推論エンジン。導入時はコードのみ。モデルは別途明示して取得",
     },
+    "radiance": {
+        "name": "Radiance（AMD GPU 推論サーバー / R9700）",
+        "kind": "gpu-runtime",
+        "executable": "radiance",
+        "route_gated": False,
+        "repo": "StillDeadcode/radiance",
+        "summary": "Qwen3.8-27B などを .rad 形式で速く動かす推論サーバー。導入時に ROCm でビルド。モデルは別途用意",
+    },
     "strata": {
         "name": "Strata（ローカルLLM Terminal / R9700）",
         "kind": "gpu-runtime",
@@ -170,6 +178,10 @@ def _managed_executable(feature_id: str) -> Path:
 
         if feature_id == "llama-cpp":
             return llama.server_path()
+        if feature_id == "radiance":
+            from app.models_mgmt import radiance
+
+            return radiance.entrypoint()
         if feature_id == "maya-s":
             return maya_s.entrypoint()
         return strata.binary_path()

@@ -190,12 +190,15 @@ async def maya_s_start_model(
     if not maya_s.runtime_status()["configured"]:
         raise HTTPException(status_code=422, detail="先にMaya-Sのモデル準備を完了してください")
     # Never auto-evict another engine or secretly switch the shared runtime.
+    from app.models_mgmt import radiance
     others = await asyncio.gather(
         asyncio.to_thread(llama.list_instances),
         asyncio.to_thread(strata_gateway.list_instances),
         ollama.running_models(),
+        asyncio.to_thread(lambda: radiance.list_instances() if radiance.installed() else []),
     )
-    if any(item.get("loaded") for item in others[0]) or any(item.get("loaded") for item in others[1]) or others[2]:
+    if (any(item.get("loaded") for item in others[0]) or any(item.get("loaded") for item in others[1])
+            or others[2] or any(item.get("loaded") for item in others[3])):
         raise HTTPException(status_code=409, detail="別のローカルLLMが稼働中です。GPU競合を解消してから明示起動してください")
 
     async def run(job: jobs.Job) -> dict:
