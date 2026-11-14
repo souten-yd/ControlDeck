@@ -248,6 +248,14 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
     except RuntimeError as e:
         raise ProviderError(str(e)) from e
     kind = str(provider["provider"])
+    if kind in ("strata", "radiance"):
+        # A large model takes the card: free the other large models (and, for Radiance, idle
+        # llama.cpp chat models) first, so the load limit counts what will actually remain.
+        from app.models_mgmt import large_model_lifecycle
+        try:
+            await large_model_lifecycle.release_for(kind)
+        except RuntimeError as exc:
+            raise ProviderError(str(exc)) from exc
     reservation = (kind, model_id)
     # 判定と予約を同じ区間で行う。ここを分けると、両方が「まだ空きがある」を
     # 見てから両方が載る。
