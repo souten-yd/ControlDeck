@@ -638,7 +638,7 @@ interface AddonState {
 }
 
 interface GpuRuntimeDetail {
-  runtime: "llama.cpp" | "strata" | "maya-s";
+  runtime: "llama.cpp" | "strata" | "maya-s" | "radiance";
   warning?: string;
   /** llama.cpp */
   active_backend?: string;

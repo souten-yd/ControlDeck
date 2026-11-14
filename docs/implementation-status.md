@@ -3923,3 +3923,10 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
   - 負荷終了後: 約60秒でアイドル回転に戻った。
 - テスト: 対象4ファイル 79 passed。backend 全体 **1344 passed / 2 skipped**（`-x` 付きの初回は `test_samplebook_chat` が1件落ちたが単独では通る。既知のタイミング依存）。frontend production build 成功。
 - NOT TESTED: 実測温度が目標+5°Cを超えたときの最大指令（実機で安全に再現できないため単体テストのみ）、PIDモードでの実機負荷、ブラウザでの実測/EMAグラフと時定数スライダーの表示。
+
+### 2026-11-15 Radiance ランタイムと、Strata / Radiance の思考設定
+- Radiance（StillDeadcode/radiance、Apache-2.0）を llama.cpp / Strata / Maya-S と同じ扱いで追加。公式イメージ 1.17.0（digest 記録）を rootless podman で動かす（Codeberg のソースは約 7KB/s で取得不能）。モデルごとにコンテナを systemd user unit で 127.0.0.1 に起動、モデルのフォルダは読み取り専用。
+- 実機（R9700 1枚）: Qwen3.8-27B IQ5R-V4（19.4 GiB、SHA-256 一致）。起動 33 秒、重み 18.8 GiB・bf16 KV 10.7 GiB（約 15.3 万トークン）、DFlash2 深さ 7。コーディング課題 10 問（モデルカードのサンプリング）10/10、decode 76〜117 tok/s。llama.cpp UD-Q4_K_M（思考 low）は 10/10・41〜48 tok/s。
+- 思考の既定（要求が指定しないとき）: Radiance は `--reasoning-effort` / `--thinking-token-budget`（high・max の要求は xhigh へ読み替え。テンプレートは low/medium/xhigh のみ）。Strata は `POST /settings`（Strata が保存、稼働中でも即反映。launch --set だと予算がエンジン引数に入り起動不能）。Maya-S（深さ・上限）と llama.cpp は既存。
+- 実機確認: Radiance medium で同じ課題の思考 280 トークン、high 要求が 400 にならない。Strata medium/8192 を起動時に適用、稼働中の解除も反映。
+- 注意: xhigh の思考を小さい上限で打ち切ると、回答が max_tokens まで続くことがある。

@@ -244,3 +244,33 @@ def test_free_form_chat_leaves_sampling_to_the_model():
     assert "temperature" not in free
     fixed = provider._payload(RuntimeChatRequest(base_url="http://x/v1", model="m", messages=[], temperature=0.2), stream=False)
     assert fixed["temperature"] == 0.2
+
+
+def test_thinking_settings_are_strata_shared_defaults(monkeypatch, tmp_path):
+    from app.models_mgmt import local_llm
+    _managed(monkeypatch, tmp_path)
+    monkeypatch.setattr(local_llm, "find", lambda alias: None)
+    monkeypatch.setattr(local_llm, "port_taken_by_other_runtime", lambda *a: False)
+    row = strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+                                       reasoning_effort="xhigh", thinking_budget=4096)
+    assert row["reasoning_effort"] == "xhigh" and row["thinking_budget"] == 4096
+    # /settings names the deepest level "high"; nothing set clears the defaults.
+    assert strata_gateway.thinking_defaults(strata_gateway._read()["qwen"]) == {
+        "reasoning_effort": "high", "reasoning_budget_tokens": 4096}
+    assert strata_gateway.thinking_defaults({"reasoning_effort": "", "thinking_budget": 0}) is None
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("qwen2", family="qwen", model="iq2_xs", port=8094, reasoning_effort="max")
+    # Launch never passes them as engine arguments (the engine refuses the budget there).
+    seen = []
+    monkeypatch.setattr(strata_gateway, "_run", lambda args, timeout=0: (seen.append(args),
+                        __import__("subprocess").CompletedProcess(args, 1, "", "stop here"))[1])
+    strata_gateway._start_locked("qwen", explicit=True)
+    joined = " ".join(seen[0])
+    assert "--set reasoning-effort=off" in joined and "--set reasoning-budget-tokens=off" in joined
+    # While running, a thinking change is applied live instead of refused.
+    sent = []
+    monkeypatch.setattr(strata_gateway, "_running", lambda: [{"profile": "launch-cd-qwen", "port": 8095, "state": "ready"}])
+    monkeypatch.setattr(strata_gateway, "apply_thinking", lambda alias: sent.append(alias) or True)
+    strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+                                 reasoning_effort="low", thinking_budget=0, replace=True)
+    assert sent == ["qwen"]

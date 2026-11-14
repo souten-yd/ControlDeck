@@ -1,7 +1,7 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
 import { useEffect, useState } from "react";
-import { CTX_PRESETS, CopyText, FileName, LifecycleAlwaysOn, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "../features/models/formControls";
+import { CTX_PRESETS, CopyText, FileName, LifecycleAlwaysOn, ModelStatusSummary, ThinkingDefaults, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "../features/models/formControls";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
@@ -15,6 +15,7 @@ import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
 import { MayaSDetailSheet, MayaSSetupCard, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
@@ -38,9 +39,9 @@ interface Model {
 }
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
-type LocalRuntime = "llama.cpp" | "strata" | "maya-s";
+type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
 const RUNTIME_LABEL: Record<string, string> = {
-  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya-S", ollama: "Ollama",
+  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya-S", radiance: "Radiance", ollama: "Ollama",
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
@@ -265,6 +266,7 @@ export default function ModelsPage() {
   const [detail, setDetail] = useState<string | null>(null);
   const [llamaDetail, setLlamaDetail] = useState<string | null>(null);
   const [strataDetail, setStrataDetail] = useState<string | null>(null);
+  const [radianceDetail, setRadianceDetail] = useState<string | null>(null);
   const [mayaDetail, setMayaDetail] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -285,7 +287,7 @@ export default function ModelsPage() {
     queryKey: ["models", selectedProvider],
     queryFn: async (): Promise<Model[]> => {
       if (!isLocal) return api<Model[]>("/models");
-      const fetched = await Promise.all((["llama.cpp", "strata", "maya-s"] as const).map(async (runtime) => {
+      const fetched = await Promise.all((["llama.cpp", "strata", "maya-s", "radiance"] as const).map(async (runtime) => {
         try {
           const common = await api<Array<{ id: string; name: string; size_bytes: number; loaded: boolean | null; details: Record<string, unknown> }>>(
             `/models/providers/${runtime}/models`);
@@ -406,6 +408,18 @@ export default function ModelsPage() {
         }
         return;
       }
+      if (provider === "radiance") {
+        if (action === "load") {
+          const started = await api<{ job_id: string }>(
+            `/models/radiance/instances/${encodeURIComponent(id)}/start-jobs`, { method: "POST", json: {} });
+          show(`Radianceの起動ジョブを開始しました（${started.job_id}）。読み込みには数十秒〜数分かかります`);
+        } else {
+          await api(`/models/radiance/instances/${encodeURIComponent(id)}/stop`, { method: "POST", json: {} });
+          show("Radianceのモデルを停止しました");
+          await refresh();
+        }
+        return;
+      }
       if (provider === "strata" && action === "load") {
         const started = await api<{ job_id: string }>(
           `/models/strata/instances/${encodeURIComponent(id)}/start-jobs`,
@@ -502,6 +516,7 @@ export default function ModelsPage() {
             const shared = endpoint && endpoint.aliases.length > 1;
             const openDetail = () => {
               if (runtime === "strata") setStrataDetail(id);
+              else if (runtime === "radiance") setRadianceDetail(id);
               else if (runtime === "maya-s") setMayaDetail(true);
               else if (isLlama) setLlamaDetail(id);
               else setDetail(m.name);
@@ -530,7 +545,7 @@ export default function ModelsPage() {
                   <p className="num line-clamp-2 text-xs text-zinc-500 sm:truncate">
                     {RUNTIME_LABEL[runtime ?? "ollama"] ?? "Ollama"}
                     {m.backend_label ? ` / ${m.backend_label}` : ""}
-                    {isLocal && m.name && m.name !== id ? ` · ${m.name.replace(/^(Strata|Project Maya-S|Maya-S)\s*[・·]\s*/, "")}` : ""}
+                    {isLocal && m.name && m.name !== id ? ` · ${m.name.replace(/^(Strata|Project Maya-S|Maya-S|Radiance)\s*[・·]\s*/, "")}` : ""}
                     {m.size ? ` · ${gb(m.size)}` : ""}
                     {m.parameter_size && ` · ${m.parameter_size}`}{m.quantization && ` · ${m.quantization}`}
                     {m.loaded && m.vram ? ` · VRAM ${gb(m.vram)}` : ""}
@@ -575,6 +590,7 @@ export default function ModelsPage() {
       {detail && <DetailSheet model={detail} onClose={() => setDetail(null)} />}
       {llamaDetail && <LlamaDetailSheet alias={llamaDetail} onClose={() => setLlamaDetail(null)} />}
       {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
+      {radianceDetail && <RadianceDetailSheet alias={radianceDetail} onClose={() => setRadianceDetail(null)} />}
       {mayaDetail && <MayaSDetailSheet onClose={() => setMayaDetail(false)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
@@ -2008,12 +2024,13 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
     queryKey: ["strata-instances"],
     queryFn: () => api<{ runtime: { installed: boolean }; instances: Array<{alias: string}> }>("/models/strata/instances"),
   });
+  const { data: radianceState } = useRadianceState();
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
       <div className="mb-3 flex gap-2">
-        {(["llama.cpp", "strata"] as const).map((choice) => (
+        {(["llama.cpp", "strata", "radiance"] as const).map((choice) => (
           <button key={choice} type="button" onClick={() => setRuntime(choice)}
-            disabled={choice === "strata" && !strataState?.runtime.installed}
+            disabled={(choice === "strata" && !strataState?.runtime.installed) || (choice === "radiance" && !radianceState?.runtime.installed)}
             className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
             {RUNTIME_LABEL[choice]}
           </button>
@@ -2021,6 +2038,7 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
       </div>
       {runtime === "llama.cpp"
         ? <LlamaRuntimePanel registrationOnly />
+        : runtime === "radiance" ? <RadianceRegisterPanel onDone={onClose} />
         : <StrataRegisterPanel onDone={onClose} />}
     </BottomSheet>
   );
@@ -2035,7 +2053,8 @@ const STRATA_SIZES: Record<StrataFamily, string[]> = {
 };
 type StrataSettings = { alias: string; family: StrataFamily; model: string;
   context: string; port: number; model_path?: string; kv?: string; vision?: string;
-  parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean };
+  parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean;
+  reasoning_effort?: string; thinking_budget?: number };
 
 // Strata は "<N>k" を受け付け、学習長 256K を超えると yarn を自動で付ける。
 const STRATA_CTX_PRESETS = ["8k", "16k", "32k", "64k", "128k", "256k"].map((v) => ({ v, label: v }));
@@ -2056,12 +2075,15 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   const [drafting, setDrafting] = useState(initial?.drafting ?? "auto");
   const [idleExclude, setIdleExclude] = useState(initial?.idle_exclude ?? false);
   const [autoStart, setAutoStart] = useState(initial?.auto_start ?? false);
+  const [reasoningEffort, setReasoningEffort] = useState(initial?.reasoning_effort ?? "");
+  const [thinkingBudget, setThinkingBudget] = useState(initial?.thinking_budget ?? 0);
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
     try {
       await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
-        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart },
+        method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart,
+          reasoning_effort: reasoningEffort, thinking_budget: thinkingBudget },
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["models", "local"] }),
@@ -2128,8 +2150,9 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
         value={idleExclude} onChange={setIdleExclude} />
     </SettingsGroup>
-    <SettingsGroup title="思考">
-      <p className="text-xs text-zinc-500">思考の深さは使う側（チャット・OpenCode）で指定します。</p>
+    <SettingsGroup title="思考" description="要求が深さを指定しないときの既定">
+      <ThinkingDefaults live effort={reasoningEffort} budget={thinkingBudget}
+        onChange={(effort, budget) => { setReasoningEffort(effort); setThinkingBudget(budget); }} />
     </SettingsGroup>
     <SettingsGroup title="性能" description="KVキャッシュ・投機デコード・同時実行" collapsible defaultOpen={!initial}>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -2169,7 +2192,7 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
   const item = data?.instances.find((model) => model.alias === alias);
   return <BottomSheet title={`${alias} · 個別設定`} onClose={onClose} wide>
     {item ? <div className="space-y-3">
-      <ModelStatusSummary running={!!item.loaded} lockedNote={item.loaded ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
+      <ModelStatusSummary running={!!item.loaded} lockedNote={item.loaded ? "稼働中は「起動と停止」と「思考」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
         ["ランタイム", "Strata"],
         ["モデル", item.model_path ? <FileName path={item.model_path} /> : `${item.family} / ${item.model}（初回ロード時に取得）`],
         ["接続先", <CopyText text={`http://127.0.0.1:${item.port}/v1`} />],

@@ -531,10 +531,42 @@ class MayaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         request.max_tokens = min(int(request.max_tokens or room), room)
 
 
+class RadianceRuntimeProvider(OpenAICompatibleRuntimeProvider):
+    """Managed Radiance model: started on request (when allowed), then plain OpenAI chat.
+
+    Radiance cuts an oversized max_tokens to what its context leaves rather than
+    refusing it, so only the prompt itself has to fit.
+    """
+
+    kind = "radiance"
+
+    async def _prepare(self, request: RuntimeChatRequest) -> None:
+        await super()._prepare(request)
+        from app.models_mgmt import radiance
+        from urllib.parse import urlsplit
+
+        port = urlsplit(normalize_openai_base(request.base_url)).port
+        instance = next(
+            (item for item in await asyncio.to_thread(radiance.list_instances) if item["port"] == port), None)
+        if instance is None or not await radiance.ensure_ready(str(instance["alias"])):
+            raise RuntimeProviderError("Radianceモデルが未登録・未起動、または読み込みに失敗しました")
+        counted = await radiance.prompt_room(str(instance["alias"]), request.messages)
+        if counted is not None and counted[0] >= counted[1]:
+            raise RuntimeProviderError(
+                f"入力が長すぎます（{counted[0]}トークン）。このモデルのコンテキストは{counted[1]}トークンです。"
+                "会話を短くするか、Modelsでコンテキストを広げてください")
+
+    def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
+        payload = super()._payload(request, stream=stream)
+        # The server is started with --served-model-name <alias>; any name is served anyway.
+        return payload
+
+
 _OLLAMA = OllamaRuntimeProvider()
 _LLAMA = LlamaCppRuntimeProvider()
 _STRATA = StrataRuntimeProvider()
 _MAYA = MayaRuntimeProvider()
+_RADIANCE = RadianceRuntimeProvider()
 _OPENAI = OpenAICompatibleRuntimeProvider()
 
 
@@ -563,6 +595,10 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
 
             if parsed.port in {int(i["port"]) for i in maya_s.list_instances()}:
                 return _MAYA
+            from app.models_mgmt import radiance
+
+            if radiance.installed() and parsed.port in {int(i["port"]) for i in radiance.list_instances()}:
+                return _RADIANCE
             if parsed.port in llama.endpoint_ports():
                 return _LLAMA
     except Exception:
@@ -588,7 +624,7 @@ def provider_for_request(request: RuntimeChatRequest) -> LlmRuntimeProvider:
     return provider_for_base_url(request.base_url)
 
 
-_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _MAYA, _OPENAI)
+_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _MAYA, _RADIANCE, _OPENAI)
 
 
 def active_request_count() -> int:

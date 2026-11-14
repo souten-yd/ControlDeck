@@ -1266,6 +1266,9 @@ class StrataModelBody(BaseModel):
     # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
     idle_exclude: bool = False
     auto_start: bool = False
+    # Default thinking for requests that name none ("" = the model's own, xhigh) and its cap (0 = none).
+    reasoning_effort: Literal["", "low", "medium", "xhigh"] = ""
+    thinking_budget: int = Field(default=0, ge=0, le=262144)
 
 
 @router.get("/strata/instances")
@@ -1287,6 +1290,7 @@ def strata_create_instance(
             context=body.context, port=body.port, model_path=body.model_path,
             kv=body.kv, vision=body.vision, parallel=body.parallel, drafting=body.drafting,
             idle_exclude=body.idle_exclude, auto_start=body.auto_start,
+            reasoning_effort=body.reasoning_effort, thinking_budget=body.thinking_budget,
         )
     except strata_gateway.StrataGatewayError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1366,3 +1370,132 @@ def strata_delete_instance(
     audit.record(db, "strata.instance_delete", user=user, resource_type="model",
                  resource_id=alias, request=request)
     return result
+
+
+# ---- Radiance（StillDeadcode/radiance）: Strata と同じ形の登録・起動・停止 ----
+
+class RadianceModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(min_length=1, max_length=48)
+    model_path: str = Field(min_length=1, max_length=4096)
+    port: int = Field(default=8100, ge=8081, le=65535)
+    context: int = Field(default=131072, ge=4096, le=1_048_576)
+    # bf16 is exact; fp8 / fp8_v4 / k6_v4 quantise the cache for longer context.
+    kv_cache: Literal["bf16", "fp8", "fp8_v4", "k6_v4"] = "bf16"
+    max_num_seqs: int = Field(default=4, ge=1, le=32)
+    # None: the container's own drafter depth ("auto"); 0 turns speculative decoding off.
+    speculative_tokens: int | None = Field(default=None, ge=0, le=15)
+    gpu_headroom_mib: int = Field(default=1024, ge=96, le=16384)
+    # Default thinking for requests that name none ("" = the template's own, xhigh) and its cap (0 = none).
+    reasoning_effort: Literal["", "none", "low", "medium", "xhigh"] = ""
+    thinking_budget: int = Field(default=0, ge=0, le=262144)
+    # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
+    on_demand_start: bool = True
+    idle_exclude: bool = False
+    auto_start: bool = False
+
+
+@router.get("/radiance/instances")
+def radiance_instances(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import radiance
+    return {"runtime": radiance.runtime_status(),
+            "instances": radiance.list_instances() if radiance.installed() else []}
+
+
+@router.post("/radiance/instances", status_code=201)
+def radiance_create_instance(
+    body: RadianceModelBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import radiance
+    values = body.model_dump()
+    try:
+        result = radiance.save_instance(values.pop("alias"), **values)
+    except radiance.RadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "radiance.instance_create", user=user, resource_type="model",
+                 resource_id=body.alias, request=request)
+    return result
+
+
+@router.put("/radiance/instances/{alias}")
+def radiance_update_instance(
+    alias: str, body: RadianceModelBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import radiance
+    if alias != body.alias:
+        raise HTTPException(status_code=422, detail="モデル別名は変更できません")
+    values = body.model_dump()
+    values.pop("alias")
+    try:
+        result = radiance.save_instance(alias, **values, replace=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Radianceモデル設定がありません") from exc
+    except radiance.RadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "radiance.instance_update", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return result
+
+
+@router.post("/radiance/instances/{alias}/start-jobs", status_code=201)
+async def radiance_start_job(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import radiance
+    if alias not in {item["alias"] for item in await asyncio.to_thread(radiance.list_instances)}:
+        raise HTTPException(status_code=404, detail="Radianceモデル設定がありません")
+
+    async def run(job: jobs.Job) -> dict:
+        job.set_progress("Radianceモデルを読み込んでいます", 0, 1)
+        from app.models_mgmt import provider_adapters
+        await provider_adapters.load_model("radiance", alias)
+        job.set_progress("起動完了", 1, 1)
+        return {"alias": alias, "loaded": True}
+
+    job = jobs.create("model.radiance.start", f"Radiance起動: {alias}", run,
+                      owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "radiance.start", user=user, resource_type="model",
+                 resource_id=alias, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.post("/radiance/instances/{alias}/stop")
+async def radiance_stop_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import radiance
+    ok, error = await asyncio.to_thread(radiance.stop_instance, alias)
+    if not ok:
+        raise HTTPException(status_code=422, detail=error)
+    audit.record(db, "radiance.stop", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return {"alias": alias, "loaded": False}
+
+
+@router.post("/radiance/instances/{alias}/delete")
+def radiance_delete_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import radiance
+    try:
+        result = radiance.delete_instance(alias)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Radianceモデル設定がありません") from exc
+    except radiance.RadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "radiance.instance_delete", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return result
+
+
+@router.get("/radiance/instances/{alias}/log")
+def radiance_instance_log(alias: str, user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import radiance
+    if alias not in {item["alias"] for item in radiance.list_instances()}:
+        raise HTTPException(status_code=404, detail="Radianceモデル設定がありません")
+    return {"alias": alias, "log": radiance.log_tail(alias, 80)}

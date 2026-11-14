@@ -25,6 +25,7 @@ logger = logging.getLogger("control_deck.large_model_lifecycle")
 
 MAYA = "maya-s"
 STRATA = "strata"
+RADIANCE = "radiance"
 _lock = threading.Lock()
 
 
@@ -61,7 +62,7 @@ def last_used(runtime: str, alias: str) -> float | None:
 
 
 def _loaded_models() -> list[tuple[str, dict]]:
-    from app.models_mgmt import maya_s, strata, strata_gateway
+    from app.models_mgmt import maya_s, radiance, strata, strata_gateway
 
     rows: list[tuple[str, dict]] = []
     if maya_s.installed():
@@ -70,6 +71,8 @@ def _loaded_models() -> list[tuple[str, dict]]:
                 rows.append((MAYA, {**item, "idle_exclude": bool(maya_s.get_settings().get("idle_exclude"))}))
     if strata.installed():
         rows += [(STRATA, item) for item in strata_gateway.list_instances() if item.get("loaded")]
+    if radiance.installed():
+        rows += [(RADIANCE, item) for item in radiance.list_instances() if item.get("loaded")]
     return rows
 
 
@@ -145,7 +148,7 @@ async def prepare_switch(alias: str) -> None:
             return
         await asyncio.to_thread(follow_selection, "llama.cpp")
         return
-    if runtime not in (MAYA, STRATA):
+    if runtime not in (MAYA, STRATA, RADIANCE):
         return
     if not await _wait_idle_requests():
         logger.info("%s を起動するための解放を見送りました（推論中）", alias)
@@ -163,7 +166,7 @@ async def release_for(runtime: str) -> None:
     chat models hold. Only models nobody is using are released by llama's own
     guard; Strata/Maya being stopped here is the trade the request asked for.
     """
-    from app.models_mgmt import maya_s, strata, strata_gateway
+    from app.models_mgmt import maya_s, radiance, strata, strata_gateway
 
     if runtime != MAYA and maya_s.installed() and await asyncio.to_thread(maya_s.is_running):
         if maya_s.get_settings().get("idle_exclude"):
@@ -179,7 +182,16 @@ async def release_for(runtime: str) -> None:
                 ok, reason = await asyncio.to_thread(strata_gateway.stop_instance, str(item["alias"]))
                 if not ok:
                     raise RuntimeError(reason or "Strataモデルを停止できませんでした")
-    if runtime == MAYA:
+    if radiance.installed():
+        # One Radiance model holds the card: starting another (or another runtime) frees it.
+        for item in await asyncio.to_thread(radiance.list_instances):
+            if item.get("loaded"):
+                if item.get("idle_exclude"):
+                    raise RuntimeError(f"Radianceモデル {item['alias']} が常駐指定で稼働中です")
+                ok, reason = await asyncio.to_thread(radiance.stop_instance, str(item["alias"]))
+                if not ok:
+                    raise RuntimeError(reason or "Radianceモデルを停止できませんでした")
+    if runtime in (MAYA, RADIANCE):
         from app.models_mgmt import llama
 
         await llama.release_loaded_llms()
@@ -193,7 +205,7 @@ def _client_connected(port: int) -> bool:
 
 async def idle_unload_once(now: float | None = None) -> list[str]:
     """One pass of the idle unload. Returns the stopped "runtime:alias" keys."""
-    from app.models_mgmt import maya_s, strata_gateway
+    from app.models_mgmt import maya_s, radiance, strata_gateway
     from app.models_mgmt.runtime_policy import get_policy
 
     policy = await asyncio.to_thread(get_policy)
@@ -217,7 +229,7 @@ async def idle_unload_once(now: float | None = None) -> list[str]:
         if await asyncio.to_thread(_client_connected, int(item.get("port") or 0)):
             mark_used(runtime, alias, at=now)
             continue
-        module = maya_s if runtime == MAYA else strata_gateway
+        module = {MAYA: maya_s, STRATA: strata_gateway, RADIANCE: radiance}[runtime]
         ok, reason = await asyncio.to_thread(module.stop_instance, alias)
         if ok:
             stopped.append(f"{runtime}:{alias}")
@@ -266,7 +278,7 @@ async def autostart() -> str | None:
 
     Only one of the two can be resident, so at most one is started.
     """
-    from app.models_mgmt import maya_s, strata, strata_gateway
+    from app.models_mgmt import maya_s, radiance, strata, strata_gateway
 
     try:
         if maya_s.installed() and maya_s.get_settings().get("auto_start") and maya_s.list_instances():
@@ -277,6 +289,11 @@ async def autostart() -> str | None:
                 if item.get("auto_start") and item.get("activated"):
                     if await strata_gateway.ensure_ready(str(item["alias"])):
                         return f"{STRATA}:{item['alias']}"
+        if radiance.installed():
+            for item in await asyncio.to_thread(radiance.list_instances):
+                if item.get("auto_start"):
+                    if await radiance.ensure_ready(str(item["alias"]), start=True):
+                        return f"{RADIANCE}:{item['alias']}"
     except Exception:  # noqa: BLE001 - startup must continue
         logger.exception("Maya-S/Strata auto-start failed")
     return None
