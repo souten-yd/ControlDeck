@@ -29,6 +29,10 @@ _RELEASE = "https://api.github.com/repos/mw00/project-maya/releases/latest"
 _TAG = re.compile(r"^v[0-9]+[.][0-9]+[.][0-9]+$")
 _UNIT = "control-deck-maya-s.service"
 _ALIAS = "maya-s"
+ALIAS = _ALIAS
+# Settings that only change ControlDeck's lifecycle handling, not Maya's config:
+# they may be changed while the model runs (as llama.cpp's idle_exclude can).
+LIFECYCLE_KEYS = ("on_demand_start", "idle_exclude", "auto_start", "max_output_tokens")
 _PORT = 8099
 _MODEL = "glm-maya-s"
 # Maya rejects prompt + max_tokens + 8 > context (its CTX_SLACK, as strata --serve).
@@ -328,8 +332,11 @@ def _enable_fit_max_tokens() -> None:
     if config is None:
         return
     cfg = json.loads(config.read_text(encoding="utf-8"))
-    if cfg.get("fit_max_tokens") is not True:
+    # A (re)setup writes the card's defaults; put back what ControlDeck manages.
+    effort = str(get_settings().get("reasoning_effort") or "high")
+    if cfg.get("fit_max_tokens") is not True or cfg.get("reasoning_effort") != effort:
         cfg["fit_max_tokens"] = True
+        cfg["reasoning_effort"] = effort
         config.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
 
 
@@ -385,6 +392,9 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
                str(_PORT), "--host", "127.0.0.1"], cwd=source(), timeout=45)
     except MayaError as exc:
         return False, str(exc)
+    from app.models_mgmt import large_model_lifecycle
+    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+    large_model_lifecycle.follow_selection(large_model_lifecycle.MAYA)
     return True, ""
 
 
@@ -468,6 +478,8 @@ def get_instance(alias: str) -> dict:
             "base_url": f"http://127.0.0.1:{_PORT}/v1",
             "loaded": _running(), "model_path": get_settings()["model_path"],
             "ctx_size": get_settings()["context"],
+            "max_output_tokens": min(int(get_settings()["max_output_tokens"]),
+                                     int(get_settings()["context"]) // 2),
             "configured": True, "n_parallel": 1}
 
 
@@ -479,9 +491,41 @@ def residency_key(instance: dict) -> str:
     return "maya-s:glm-5.3-flash"
 
 
-async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
-    # No autonomous start or model download; startup must be explicit.
-    return alias == _ALIAS and (await health(alias))["ok"]
+def is_running() -> bool:
+    return _config() is not None and _running()
+
+
+async def ensure_ready(alias: str, *, timeout_seconds: int = 420, start: bool | None = None) -> bool:
+    """Ready for a request. Starts the prepared model when "要求時に自動起動" is on.
+
+    Never downloads or prepares weights: only an already prepared model starts.
+    `start` overrides the setting (autostart passes True).
+    """
+    from app.models_mgmt import large_model_lifecycle
+
+    if alias != _ALIAS:
+        return False
+    if (await health(alias))["ok"]:
+        large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+        return True
+    allowed = get_settings().get("on_demand_start", True) if start is None else start
+    if not allowed or not await asyncio.to_thread(lambda: _config() is not None):
+        return False
+    if not await asyncio.to_thread(_running):
+        try:
+            await large_model_lifecycle.release_for(large_model_lifecycle.MAYA)
+        except RuntimeError:
+            return False
+        try:
+            ok, _reason = await asyncio.to_thread(start_instance, alias)
+        except MayaError:
+            ok = True  # another request holds the operation lock and is starting it
+        if not ok:
+            return False
+    if not await wait_ready(timeout_seconds=timeout_seconds):
+        return False
+    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+    return True
 
 
 def mark_used_by_base_url(_base_url: str) -> None:
@@ -505,7 +549,15 @@ def uninstall() -> dict:
 
 def get_settings() -> dict:
     defaults = {"model_path": "", "context": 8192, "gpu_index": 0,
-                "parallel": 1, "ram_headroom_gb": 16, "drafting": "on"}
+                "parallel": 1, "ram_headroom_gb": 16, "drafting": "on",
+                "on_demand_start": True, "idle_exclude": False, "auto_start": False,
+                # Output for coding: GLM-5.3-Flash thinks before it answers and the
+                # thinking counts toward max_tokens, so the cap must hold both.
+                "max_output_tokens": 65536, "thinking_budget": 32768,
+                # The depth a request gets when it names none. The GLM card's default is max
+                # (about 30 min per coding answer on an R9700); high gave the same passing
+                # code in a quarter of the time, so it is the default for coding here.
+                "reasoning_effort": "high"}
     path = root() / "settings.json"
     if path.is_file() and not path.is_symlink():
         defaults.update(json.loads(path.read_text(encoding="utf-8")))
@@ -516,9 +568,15 @@ def get_settings() -> dict:
 def save_settings(settings: dict) -> dict:
     if not installed():
         raise MayaError("先にMaya-Sを導入してください")
+    previous = get_settings()
+    value = {**previous, **dict(settings)}
+    changed = {key for key in value if value.get(key) != previous.get(key)}
+    if changed <= set(LIFECYCLE_KEYS) and (changed or _running()):
+        # Lifecycle flags only: no Maya config change, fine while running.
+        (root() / "settings.json").write_text(json.dumps(value, indent=2), encoding="utf-8")
+        return runtime_status()
     if _running():
         raise MayaError("Maya-Sを停止してから設定を変更してください")
-    value = dict(settings)
     if value.get("model_path"):
         from app.files.service import resolve
         path = resolve(value["model_path"])
@@ -529,7 +587,6 @@ def save_settings(settings: dict) -> dict:
                 raise MayaError("GGUFファイルではありません")
         value["model_path"] = str(path)
     config = _config()
-    previous = get_settings()
     if config and value.get("model_path") == previous.get("model_path"):
         cfg = json.loads(config.read_text(encoding="utf-8"))
         args = cfg.get("args", [])
@@ -541,6 +598,9 @@ def save_settings(settings: dict) -> dict:
         cfg["args"] = args
         cfg["fit_max_tokens"] = True
         cfg["gpu"] = [value["gpu_index"]]
+        # Maya's own cap on the thinking; past it the answer starts.
+        cfg["thinking_budget"] = int(value["thinking_budget"])
+        cfg["reasoning_effort"] = str(value["reasoning_effort"])
         cfg.setdefault("env", {})["MAYA_GLM_RAM_HEADROOM_GB"] = str(value["ram_headroom_gb"])
         cfg["env"]["MAYA_GLM_MTP_DECODE"] = "1" if value["drafting"] == "on" else "0"
         config.write_text(json.dumps(cfg, indent=2), encoding="utf-8")

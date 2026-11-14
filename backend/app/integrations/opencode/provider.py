@@ -410,15 +410,19 @@ def _model_limits(model: str) -> dict[str, int] | None:
 
         match = next(
             (i for i in local_llm.list_instances() if str(i.get("alias") or "") == model), None)
+        own_output = 0
         if match is not None:
             context = _window_of(match)
+            # A runtime may state its own cap (Maya-S: thinking + answer).
+            own_output = int(match.get("max_output_tokens") or 0)
         else:
             # gateway.resolve_instance と同じ候補集合（embedding/reranker は除く）。
             windows = [w for w in map(_window_of, local_llm.llm_instances()) if w > 0]
             context = min(windows) if windows else 0
         if context <= 0:
             return None
-        output = min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4))
+        output = (min(own_output, max(1024, context // 2)) if own_output > 0
+                  else min(OPENCODE_MAX_OUTPUT_TOKENS, max(1024, context // 4)))
         return {"context": context, "output": output, "input": context - output}
     except Exception:  # noqa: BLE001 - 窓の大きさが取れないことで session を止めない
         logger.exception("モデルの窓の大きさを取得できませんでした")

@@ -364,6 +364,13 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
          "kv_unified": False, "n_parallel": 4})
     assert provider._model_limits("Split")["context"] == 32768
     instances.pop()
+    # A runtime that states its own output cap (Maya-S: thinking + answer) keeps it,
+    # bounded by half its window so the input side never collapses.
+    instances.append({"alias": "maya-s", "role": "llm", "ctx_size": 1048576, "max_output_tokens": 65536})
+    assert provider._model_limits("maya-s") == {"context": 1048576, "output": 65536, "input": 983040}
+    instances[-1] = {"alias": "maya-s", "role": "llm", "ctx_size": 8192, "max_output_tokens": 65536}
+    assert provider._model_limits("maya-s")["output"] == 4096
+    instances.pop()
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
     monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path / "CodeDEV")

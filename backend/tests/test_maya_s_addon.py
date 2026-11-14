@@ -24,6 +24,10 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(maya_s, "_running", lambda: False)
     monkeypatch.setattr(maya_s, "_ensure_alias_port_available", lambda: None)
     monkeypatch.setattr(maya_s, "_port_busy", lambda: False)
+    from app.models_mgmt import large_model_lifecycle, runtime_policy
+    # A start selects Maya-S and records its use: keep both per test.
+    monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
+    monkeypatch.setattr(large_model_lifecycle, "_usage_path", lambda: tmp_path / "usage.json")
     return tmp_path
 
 
@@ -315,7 +319,10 @@ def test_settings_while_running_rejected(managed, monkeypatch):
     _installed(managed)
     monkeypatch.setattr(maya_s, '_running', lambda: True)
     with pytest.raises(maya_s.MayaError, match='停止'):
-        maya_s.save_settings(maya_s.get_settings())
+        maya_s.save_settings({**maya_s.get_settings(), 'context': 32768})
+    # Lifecycle flags are ControlDeck-side only and may change while running.
+    maya_s.save_settings({**maya_s.get_settings(), 'idle_exclude': True})
+    assert maya_s.get_settings()['idle_exclude'] is True
 
 
 def test_build_only_never_invokes_installer_or_engine(managed, monkeypatch):
@@ -464,3 +471,12 @@ def test_save_settings_enables_maya_output_clamp(managed, monkeypatch):
     monkeypatch.setattr(maya_s, '_running', lambda: False)
     maya_s.save_settings(maya_s.get_settings())
     assert json.loads(config.read_text())['fit_max_tokens'] is True
+
+
+def test_reasoning_effort_default_is_high_for_coding(monkeypatch, tmp_path):
+    from app.models_mgmt import maya_s
+
+    monkeypatch.setattr(maya_s, "root", lambda: tmp_path)
+    assert maya_s.get_settings()["reasoning_effort"] == "high"
+    from app.features.router import MayaSettingsBody
+    assert MayaSettingsBody.model_fields["reasoning_effort"].default == "high"

@@ -266,6 +266,34 @@ def test_auto_model_follows_the_running_endpoint(monkeypatch):
     assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("top", 8090)
 
 
+def test_auto_model_uses_the_selected_runtime(monkeypatch):
+    """Strata を選んでいるなら、何も載っていなくても先頭の llama.cpp モデルを起こさない。"""
+    from app.models_mgmt import gateway, local_llm
+
+    rows = [
+        {"alias": "Qwen3.8-27B", "role": "llm", "runtime": "llama.cpp", "port": 8097, "loaded": False},
+        {"alias": "qwen-flash-next", "role": "llm", "runtime": "strata", "port": 8096,
+         "loaded": False, "activated": True},
+        {"alias": "maya-s", "role": "llm", "runtime": "maya-s", "port": 8099, "loaded": False},
+    ]
+    monkeypatch.setattr(local_llm, "list_instances", lambda **kw: [dict(r) for r in rows])
+    selected = {"value": "strata"}
+    monkeypatch.setattr(gateway, "_selected_runtime", lambda: selected["value"])
+    assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("qwen-flash-next", 8096)
+    # A loaded model of the selected runtime wins; one of another runtime does not.
+    rows[0]["loaded"] = True
+    assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("qwen-flash-next", 8096)
+    # Maya-S is woken only when it is the selected runtime.
+    selected["value"] = "maya-s"
+    assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("maya-s", 8099)
+    # Nothing usable in the selected runtime (Ollama): fall back to the running model.
+    selected["value"] = "ollama"
+    assert gateway.resolve_endpoint(gateway.AUTO_MODEL) == ("Qwen3.8-27B", 8097)
+    # An explicit model name is never redirected.
+    selected["value"] = "strata"
+    assert gateway.resolve_endpoint("Qwen3.8-27B") == ("Qwen3.8-27B", 8097)
+
+
 def test_stream_failure_is_reported_instead_of_an_empty_ok_stream(admin_client, monkeypatch):
     """転送先の失敗を 200 の空ストリームにしない。
 
@@ -337,3 +365,13 @@ def test_upstream_error_keeps_the_reason_and_bounds_the_body():
     plain = gateway._upstream_error("local", b"x" * 50_000)
     assert plain["error"]["type"] == "upstream_error"
     assert len(plain["error"]["message"]) <= gateway.UPSTREAM_ERROR_CHARS + len("local: ")
+
+
+def test_gateway_endpoint_reports_the_selected_runtime(monkeypatch):
+    """ゲートウェイのアドレスはランタイムを変えても同じ。画面が選択の変化に気づけるよう返す。"""
+    from app.models_mgmt import local_llm, providers
+
+    monkeypatch.setattr(local_llm, "llm_instances", lambda **kw: [{"alias": "qwen-flash-next"}])
+    monkeypatch.setattr(providers, "_selected_runtime", lambda: "strata")
+    item = providers._gateway_candidate()
+    assert item["models"][0] == "auto" and item["selected_runtime"] == "strata"

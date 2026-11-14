@@ -11,9 +11,14 @@ from app.models_mgmt import strata, strata_gateway
 
 
 def _managed(monkeypatch, tmp_path):
+    from app.models_mgmt import large_model_lifecycle, runtime_policy
     monkeypatch.setattr(strata, "installed", lambda: True)
     monkeypatch.setattr(strata_gateway, "_path", lambda: tmp_path / "models.json")
     monkeypatch.setattr(strata_gateway, "_running", lambda: [])
+    # A start makes Strata the selected runtime and records its use: keep both
+    # out of the session-wide data dir so later tests see the default policy.
+    monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
+    monkeypatch.setattr(large_model_lifecycle, "_usage_path", lambda: tmp_path / "usage.json")
 
 
 def test_status_parses_upstream_json_even_when_human_lines_follow(monkeypatch):
@@ -69,6 +74,16 @@ def test_cannot_register_untrusted_family_or_injected_alias(monkeypatch, tmp_pat
         strata_gateway.save_instance("bad;rm", family="qwen", model="iq2_xs", port=8095)
     with pytest.raises(strata_gateway.StrataGatewayError):
         strata_gateway.save_instance("qwen", family="evil", model="iq2_xs", port=8095)
+
+
+def test_unsloth_flash_next_sizes_are_registrable(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path)
+    saved = strata_gateway.save_instance("qwen-iq4", family="unsloth", model="ud-iq4_xs", port=8097)
+    assert saved["alias"] == "qwen-iq4"
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("qwen-q8", family="unsloth", model="q8_0", port=8098)
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("qwen-mix", family="qwen", model="ud-iq4_xs", port=8098)
 
 
 def test_uninstall_never_deletes_models(monkeypatch, tmp_path):
@@ -159,6 +174,13 @@ def test_settings_update_requires_stopped_model_and_resets_activation(monkeypatc
     assert changed["n_parallel"] == 2
     assert changed["activated"] is False
     assert changed["model"] == "iq3_s"
+    # Same weights, only the context changes: stays prepared (auto and on-demand start keep it).
+    items = strata_gateway._read()
+    items["qwen"]["activated"] = True
+    strata_gateway._write(items)
+    widened = strata_gateway.save_instance("qwen", family="qwen", model="iq3_s", port=8095,
+        context="128k", kv="q4_0", vision="off", parallel=2, drafting="mtp", replace=True)
+    assert widened["activated"] is True and widened["ctx_size"] == 131072
 
 
 def test_addon_target_can_use_activated_local_strata(monkeypatch, tmp_path):
@@ -180,3 +202,45 @@ def test_addon_target_can_use_activated_local_strata(monkeypatch, tmp_path):
     strata_gateway._write(items)
     with pytest.raises(ai_gateway.AITargetUnavailable):
         asyncio.run(ai_gateway.resolve_ai_target("text.generate"))
+
+
+def test_lifecycle_flags_change_while_running_and_keep_activation(monkeypatch, tmp_path):
+    from app.models_mgmt import local_llm
+    _managed(monkeypatch, tmp_path)
+    monkeypatch.setattr(local_llm, "find", lambda alias: None)
+    monkeypatch.setattr(local_llm, "port_taken_by_other_runtime", lambda *a: False)
+    strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095, context="256k")
+    items = strata_gateway._read()
+    items["qwen"]["activated"] = True
+    strata_gateway._write(items)
+    monkeypatch.setattr(strata_gateway, "_running", lambda: [{
+        "profile": "launch-cd-qwen", "port": 8095, "state": "ready"}])
+    changed = strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+        context="256k", idle_exclude=True, auto_start=True, replace=True)
+    assert changed["idle_exclude"] is True and changed["auto_start"] is True
+    assert changed["activated"] is True and changed["ctx_size"] == 262144
+    with pytest.raises(strata_gateway.StrataGatewayError, match="停止"):
+        strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
+            context="128k", idle_exclude=True, auto_start=True, replace=True)
+
+
+def test_engine_settings_reach_launch_as_validated_set_flags(monkeypatch):
+    monkeypatch.setattr(strata_gateway, "DEFAULT_ENGINE_SETTINGS", {"STRATA_ROUTE_TAIL_SKIP": "0"})
+    cfg = {"engine_settings": {"STRATA_HC_Q8": "0", "draft-conf": "0.35",
+                               "STRATA_X; rm -rf /": "1", "STRATA_OK": "a b"}}
+    # The default applies, overrides add to it, and anything shaped like an injection is dropped.
+    assert strata_gateway.engine_settings(cfg) == {
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_HC_Q8": "0", "draft-conf": "0.35"}
+    assert strata_gateway.engine_settings({"engine_settings": {"STRATA_ROUTE_TAIL_SKIP": "off"}}) == {
+        "STRATA_ROUTE_TAIL_SKIP": "off"}
+
+
+def test_free_form_chat_leaves_sampling_to_the_model():
+    """The main chat sends no temperature, so each model's own (card / per-model) sampling applies."""
+    from app.models_mgmt.runtime_provider import OpenAICompatibleRuntimeProvider, RuntimeChatRequest
+
+    provider = OpenAICompatibleRuntimeProvider()
+    free = provider._payload(RuntimeChatRequest(base_url="http://x/v1", model="m", messages=[], temperature=None), stream=False)
+    assert "temperature" not in free
+    fixed = provider._payload(RuntimeChatRequest(base_url="http://x/v1", model="m", messages=[], temperature=0.2), stream=False)
+    assert fixed["temperature"] == 0.2

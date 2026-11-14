@@ -28,7 +28,9 @@ class RuntimeChatRequest:
     model: str
     messages: list[dict[str, Any]]
     api_key: str = ""
-    temperature: float = 0.4
+    # None は「送らない」: 各モデルの設定（llama.cpp の個別設定、Strata / Maya-S のモデルカード
+    # 推奨値、Ollama の Modelfile）に任せる。構造化生成などで決め打ちしたい呼び出しだけ数値を渡す。
+    temperature: float | None = 0.4
     max_tokens: int = 2048
     thinking: bool | str | None = None
     disable_thinking: bool = False
@@ -163,10 +165,11 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": request.messages,
-            "temperature": request.temperature,
             "stream": stream,
             "max_tokens": request.max_tokens,
         }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
         if request.keep_alive is not None:
             payload["keep_alive"] = request.keep_alive
         if request.disable_thinking or request.thinking is False:
@@ -303,8 +306,13 @@ class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
         await super()._prepare(request)
         # Ollamaの暗黙ロードと同等に、停止中のinstanceは生成前に自動起動して
         # /health 200（モデル読み込み完了）まで待つ。
-        from app.models_mgmt import llama
+        from app.models_mgmt import large_model_lifecycle, llama, local_llm
+        from urllib.parse import urlsplit as _split
 
+        target = await asyncio.to_thread(
+            local_llm.instance_for_port, _split(normalize_openai_base(request.base_url)).port or 0)
+        if target is not None:
+            await large_model_lifecycle.prepare_switch(str(target["alias"]))
         ok = await llama.ensure_ready_by_base_url(
             normalize_openai_base(request.base_url), timeout_seconds=self._READY_TIMEOUT_SECONDS,
         )
@@ -386,10 +394,9 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         self, request: RuntimeChatRequest, *, stream: bool,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        options: dict[str, Any] = {
-            "temperature": request.temperature,
-            "num_predict": request.max_tokens,
-        }
+        options: dict[str, Any] = {"num_predict": request.max_tokens}
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
         if request.context_window is not None:
             options["num_ctx"] = request.context_window
         payload: dict[str, Any] = {
@@ -546,14 +553,18 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
 
         parsed = urlsplit(normalized)
         if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
-            if parsed.port in llama.endpoint_ports():
-                return _LLAMA
+            # A registered Strata/Maya-S model owns its port. Check these before
+            # llama.cpp: an empty llama endpoint left on the same port would
+            # otherwise send a stopped Strata request to llama, which never
+            # starts it ("All connection attempts failed").
             if strata.installed() and parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
                 return _STRATA
             from app.models_mgmt import maya_s
 
             if parsed.port in {int(i["port"]) for i in maya_s.list_instances()}:
                 return _MAYA
+            if parsed.port in llama.endpoint_ports():
+                return _LLAMA
     except Exception:
         pass
     return _OPENAI

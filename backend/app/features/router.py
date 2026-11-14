@@ -233,11 +233,20 @@ async def maya_s_stop_model(
 class MayaSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_path: str = Field(default="", max_length=4096)
-    context: int = Field(default=8192, ge=1024, le=262144)
+    # GLM-5.3-Flash supports up to 1M tokens; Maya streams KV beyond VRAM.
+    context: int = Field(default=8192, ge=1024, le=1048576)
     gpu_index: int = Field(default=0, ge=0, le=15)
     parallel: int = Field(default=1, ge=1, le=8)
     ram_headroom_gb: int = Field(default=16, ge=1, le=256)
     drafting: Literal["on", "off"] = "on"
+    # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
+    on_demand_start: bool = True
+    idle_exclude: bool = False
+    auto_start: bool = False
+    # Output cap advertised to OpenCode (thinking + answer) and Maya's thinking cap.
+    max_output_tokens: int = Field(default=65536, ge=1024, le=262144)
+    thinking_budget: int = Field(default=32768, ge=0, le=131072)
+    reasoning_effort: Literal["low", "medium", "high", "max"] = "high"
 
 
 @router.put("/maya-s/settings")
