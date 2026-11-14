@@ -100,6 +100,13 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     allowed: (can) => can("settings.manage") || can("audit.view") },
 ];
 
+/** Settings that live on other screens, so a search here still reaches them. */
+const OTHER_SCREEN_ITEMS: { label: string; screen: string; to: string; keywords: string[] }[] = [
+  { label: "コンテキスト長・思考・量子化", screen: "AI モデル（個別設定）", to: "/models", keywords: ["コンテキスト", "CTX", "思考", "reasoning", "量子化", "KV", "VISION", "投機デコード", "Maya", "Strata", "llama"] },
+  { label: "アイドル時に自動アンロード・既定のランタイム", screen: "AI モデル（共通設定）", to: "/models", keywords: ["アイドル", "自動アンロード", "自動停止", "ランタイム", "排他", "Deep Research", "アシスタント表示名"] },
+  { label: "開発ワークフロー・レビューに使うモデル", screen: "OpenCode 設定", to: "/opencode", keywords: ["Superpowers", "Adversarial", "レビュー", "Auto Advisor", "相談", "OpenCode", "ワークフロー"] },
+];
+
 function matches(def: SettingsSectionDef, query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return { hit: true, word: "" };
@@ -122,6 +129,9 @@ function SettingsLayout() {
   const current = visible.find((def) => def.id === requested) ?? null;
   const shown = current ?? visible[0];
   const results = visible.map((def) => ({ def, ...matches(def, query) })).filter((r) => r.hit);
+  const q = query.trim().toLowerCase();
+  const elsewhere = q ? OTHER_SCREEN_ITEMS.filter((item) =>
+    item.label.toLowerCase().includes(q) || item.keywords.some((k) => k.toLowerCase().includes(q))) : [];
 
   return (
     <div className="mx-auto max-w-5xl p-4 md:p-6">
@@ -154,12 +164,29 @@ function SettingsLayout() {
                 </Link>
               </li>;
             })}
-            {results.length === 0 && <li className="px-3 py-4 text-sm text-zinc-500">一致する設定はありません</li>}
+            {elsewhere.map((item) => (
+              <li key={item.label}>
+                <Link to={item.to} className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
+                  <span className="min-w-0 flex-1"><span className="block font-medium">{item.label}</span>
+                    <span className="block truncate text-xs text-zinc-500">{item.screen}</span></span>
+                  <IconChevronRight className="shrink-0 text-zinc-400" />
+                </Link>
+              </li>
+            ))}
+            {results.length === 0 && elsewhere.length === 0 && <li className="px-3 py-4 text-sm text-zinc-500">一致する設定はありません</li>}
             <li className="pt-2">
               <Link to="/models" className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><IconSettings /></span>
                 <span className="min-w-0 flex-1"><span className="block font-medium">AI モデル</span>
                   <span className="block truncate text-xs text-zinc-500">Models 画面で管理します</span></span>
+                <IconChevronRight className="shrink-0 text-zinc-400" />
+              </Link>
+            </li>
+            <li>
+              <Link to="/opencode" className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><IconSettings /></span>
+                <span className="min-w-0 flex-1"><span className="block font-medium">OpenCode</span>
+                  <span className="block truncate text-xs text-zinc-500">モデル・開発ワークフローは OpenCode 画面の「設定」</span></span>
                 <IconChevronRight className="shrink-0 text-zinc-400" />
               </Link>
             </li>
@@ -225,7 +252,7 @@ function AppearanceSection() {
   const setOled = useTheme((s) => s.setOled);
   return (
     <section className={card}>
-      <h3 className="mb-2 text-sm font-semibold text-zinc-500">テーマ</h3>
+      <h3 className="mb-2 text-sm font-semibold">テーマ</h3>
       <div className="flex gap-2">
         {(["system", "light", "dark"] as Theme[]).map((t) => (
           <button key={t} onClick={() => setTheme(t)} aria-pressed={theme === t}
@@ -236,7 +263,7 @@ function AppearanceSection() {
           </button>
         ))}
       </div>
-      <h3 className="mb-2 mt-5 text-sm font-semibold text-zinc-500">アクセントカラー</h3>
+      <h3 className="mb-2 mt-5 text-sm font-semibold">アクセントカラー</h3>
       <div className="flex flex-wrap gap-3">
         {ACCENTS.map((a) => (
           <button key={a.id} onClick={() => setAccent(a.id)} aria-label={a.label} aria-pressed={accent === a.id} title={a.label}
@@ -264,9 +291,17 @@ function AppearanceSection() {
 
 /** オプション機能・拡張機能・推奨スキルは同じカテゴリの中で切り替える。 */
 function FeaturesSection() {
-  const [searchParams] = useSearchParams();
-  const [tab, setTab] = useState<"features" | "extensions" | "skills">(
-    searchParams.get("extension") ? "extensions" : "features");
+  // The tab lives in the URL (?tab=…) so it can be linked to and survives 戻る.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get("tab");
+  const tab: "features" | "extensions" | "skills" = requested === "extensions" || requested === "skills" ? requested
+    : searchParams.get("extension") ? "extensions" : "features";
+  const setTab = (id: "features" | "extensions" | "skills") => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("extension");
+    if (id === "features") next.delete("tab"); else next.set("tab", id);
+    setSearchParams(next);
+  };
   const tabs = [["features", "オプション機能"], ["extensions", "拡張機能"], ["skills", "推奨スキル"]] as const;
   return <>
     <div role="tablist" aria-label="機能と拡張" className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
@@ -308,7 +343,7 @@ function BackupSection() {
   };
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-      <h2 className="mb-3 text-sm font-semibold text-zinc-500">バックアップ</h2>
+      <h2 className="mb-3 text-sm font-semibold">バックアップ</h2>
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm text-zinc-500">
           DB・設定・暗号鍵・アプリ定義をまとめてダウンロードします。
@@ -370,7 +405,7 @@ function SessionsSection() {
   return (
     <section className={card}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-zinc-500">ログイン中の端末{sessions && `（${sessions.length}）`}</h3>
+        <h3 className="text-sm font-semibold">ログイン中の端末{sessions && `（${sessions.length}）`}</h3>
         {others.length > 0 && (
           <button onClick={() => setConfirmAll(true)} className="min-h-11 text-xs font-medium text-red-600 hover:underline dark:text-red-400">
             この端末以外をすべて失効
@@ -419,6 +454,10 @@ function SessionsSection() {
   );
 }
 
+function auditResult(result: string): string {
+  return result === "success" ? "成功" : result === "failure" || result === "failed" || result === "error" ? "失敗" : result;
+}
+
 function AuditSection() {
   const [limit, setLimit] = useState(50);
   const [showAutomated, setShowAutomated] = useState(false);
@@ -434,7 +473,7 @@ function AuditSection() {
   return (
     <section className={card}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-zinc-500">監査ログ</h3>
+        <h3 className="text-sm font-semibold">監査ログ</h3>
         <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500">
           <input type="checkbox" checked={showAutomated} onChange={(e) => setShowAutomated(e.target.checked)} className="h-4 w-4" />
           アドオンの自動処理も表示{!showAutomated && hidden > 0 && `（${hidden}件）`}
@@ -445,7 +484,23 @@ function AuditSection() {
       ) : rows.length === 0 ? (
         <p className="text-sm text-zinc-500">直近 {limit} 件に人の操作はありません</p>
       ) : (
-        <div className="overflow-x-auto">
+        <>
+        {/* Phones: one entry per two lines instead of a table that folds every column. */}
+        <ul className="divide-y divide-zinc-100 text-xs dark:divide-zinc-800 sm:hidden">
+          {rows.map((e) => (
+            <li key={e.id} className="py-2">
+              <p className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono">{e.action}</span>
+                <span className={e.result === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>{auditResult(e.result)}</span>
+              </p>
+              <p className="mt-0.5 truncate text-zinc-500">
+                <span className="num">{new Date(e.timestamp + "Z").toLocaleString("ja-JP")}</span> · {e.username}
+                {e.resource_type && ` · ${e.resource_type}/${e.resource_id}`}
+              </p>
+            </li>
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto sm:block">
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="text-zinc-400">
@@ -463,12 +518,13 @@ function AuditSection() {
                   <td className="py-1.5 pr-3">{e.username}</td>
                   <td className="py-1.5 pr-3 font-mono">{e.action}</td>
                   <td className="py-1.5 pr-3 text-zinc-400">{e.resource_type && `${e.resource_type}/${e.resource_id}`}</td>
-                  <td className={`py-1.5 ${e.result === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>{e.result}</td>
+                  <td className={`py-1.5 ${e.result === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>{auditResult(e.result)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        </>
       )}
       {limit < 500 && (entries?.length ?? 0) >= limit && (
         <button onClick={() => setLimit(Math.min(500, limit * 4))} className="mt-2 min-h-11 text-xs font-medium text-accent-600 dark:text-accent-400">
@@ -520,7 +576,7 @@ function ControlDeckUpdateSection() {
 
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-      <h2 className="text-sm font-semibold text-zinc-500">ControlDeck 本体の更新</h2>
+      <h2 className="text-sm font-semibold">ControlDeck 本体の更新</h2>
       <p className="mt-1 text-xs leading-relaxed text-zinc-400">
         公式GitHubの正式Releaseへ更新します。未コミット変更がある場合は中止します。
         更新は手動のみで、依存導入・画面ビルド後にWebサービスを再起動します。
@@ -537,13 +593,20 @@ function ControlDeckUpdateSection() {
           className="min-h-11 rounded-xl border border-zinc-300 px-4 text-xs font-medium disabled:opacity-40 dark:border-zinc-700">
           {isFetching ? "確認中…" : "更新を確認"}
         </button>
-        <button type="button" onClick={() => setConfirming(true)}
-          disabled={!data?.can_update || !data?.update_available || starting ||
-            ["scheduled", "running"].includes(data?.job?.phase ?? "")}
-          className="min-h-11 rounded-xl bg-accent-600 px-4 text-xs font-semibold text-white disabled:opacity-40">
-          {starting ? "開始中…" : data?.update_available ? "本体を更新" : "最新版"}
-        </button>
+        {data?.update_available && (
+          <button type="button" onClick={() => setConfirming(true)}
+            disabled={!data.can_update || starting || ["scheduled", "running"].includes(data.job?.phase ?? "")}
+            className="min-h-11 rounded-xl bg-accent-600 px-4 text-xs font-semibold text-white disabled:opacity-40">
+            {starting ? "開始中…" : "本体を更新"}
+          </button>
+        )}
       </div>
+      {/* State as text, never as a disabled button that reads like "already latest". */}
+      {!data?.update_available && !isFetching && (
+        <p className="mt-2 text-xs text-zinc-500">
+          {data?.remote_sha && data.current_sha ? "最新です" : `確認できません${data?.error ? `: ${data.error}` : ""}`}
+        </p>
+      )}
       {confirming && <ConfirmDialog
         title="ControlDeck本体を更新しますか？"
         message={`公式Release（${data?.remote_sha?.slice(0, 12) || "不明"}）へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
@@ -713,7 +776,7 @@ function ExtensionsSection() {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div><h2 className="text-sm font-semibold text-zinc-500">拡張機能</h2><p className="mt-1 text-xs text-zinc-400">別プロセスのサービスを、検証済みmanifestと明示した権限で接続します。従来形式も同じ一覧で管理します。</p></div>
+        <div><h2 className="text-sm font-semibold">拡張機能</h2><p className="mt-1 text-xs text-zinc-400">別プロセスのサービスを、検証済みmanifestと明示した権限で接続します。従来形式も同じ一覧で管理します。</p></div>
         <button onClick={() => setShowInstall((value) => !value)} className="shrink-0 rounded-xl bg-accent-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-accent-700">manifest登録</button>
       </div>
       {showInstall && <div className="mb-3 space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-950">
@@ -854,7 +917,7 @@ function MayaSPanel({ addon }: { addon: AddonState }) {
     </p>
     <p className="text-[11px] text-zinc-500">
       モデルのダウンロード・既存モデルの読み込み・個別設定・ロードは{" "}
-      <a href="/models" className="text-accent-600 underline dark:text-accent-400">Models</a> で行います。
+      <Link to="/models" className="text-accent-600 underline dark:text-accent-400">Models</Link> で行います。
     </p>
     <button type="button" disabled={busy || runtime?.running} onClick={() => void build()}
       className="min-h-11 rounded-lg border px-3 text-xs disabled:opacity-40">
@@ -867,11 +930,23 @@ function MayaSPanel({ addon }: { addon: AddonState }) {
 }
 
 /** アドオン管理: 導入（npmユーザー空間・sudo不要）/有効化/無効化/アンインストールをワンタップで。 */
+/** "llama-gpu-b11028" → "b11028", "opencode v2.3.0" → "v2.3.0",
+ * "strata 0.2.13.1 (build …)" → "v0.2.13.1". The full string stays in the tooltip. */
+function shortVersion(raw: string): string {
+  const semver = raw.match(/\bv?(\d+(?:\.\d+){1,3})\b/);
+  if (semver) return `v${semver[1]}`;
+  const build = raw.match(/\b(b\d{3,})\b/);
+  if (build) return build[1];
+  return raw.length > 16 ? `${raw.slice(0, 16)}…` : raw;
+}
+
 function AddonsSection() {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobKind, setJobKind] = useState<"install" | "update">("install");
+  // Which card the running job belongs to: only that card shows progress.
+  const [jobAddon, setJobAddon] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const { data: addons } = useQuery({
@@ -939,6 +1014,7 @@ function AddonsSection() {
     try {
       const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: {} });
       setJobKind("install");
+      setJobAddon(addon.id);
       setJobId(r.job_id);
     } catch (e) {
       show(e instanceof Error ? e.message : "導入開始に失敗しました", "error");
@@ -948,6 +1024,7 @@ function AddonsSection() {
     try {
       const r = await api<{ job_id: string }>(`/features/${addon.id}/update-jobs`, { method: "POST", json: {} });
       setJobKind("update");
+      setJobAddon(addon.id);
       setJobId(r.job_id);
     } catch (e) {
       show(e instanceof Error ? e.message : "更新開始に失敗しました", "error");
@@ -968,8 +1045,10 @@ function AddonsSection() {
   const btn = "min-h-10 rounded-xl px-3.5 text-xs font-medium";
   const busy = jobId !== null || reloading;
   const requiresName = (addon: AddonState) => (addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires;
+  const mine = (addon: AddonState) => jobId !== null && jobAddon === addon.id;
   const statusLine = (addon: AddonState) =>
-    addon.enabled ? addon.summary
+    addon.installed && addon.error ? `修復が必要: ${addon.error}`
+      : addon.enabled ? addon.summary
       : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled ? "導入済み — サービスの復旧が必要です"
       : addon.installed ? "導入済み（無効）— 有効化すると使えます"
       : addon.available ? addon.summary
@@ -980,7 +1059,14 @@ function AddonsSection() {
       return <button onClick={() => void install(addon)} disabled={!addon.available || busy || addon.requires_installed === false}
         title={addon.requires_installed === false ? `先に ${requiresName(addon)} を導入してください` : undefined}
         className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
-        {jobId !== null && jobKind === "install" ? "導入中…" : addon.kind === "gpu-runtime" ? "セットアップ" : "導入"}
+        {mine(addon) && jobKind === "install" ? "導入中…" : addon.kind === "gpu-runtime" ? "セットアップ" : "導入"}
+      </button>;
+    }
+    if (addon.error && !addon.route_gated) {
+      // Installed but broken, with no enable switch: reinstalling is the way out.
+      return <button onClick={() => void install(addon)} disabled={busy}
+        className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
+        {mine(addon) && jobKind === "install" ? "再導入中…" : "再導入"}
       </button>;
     }
     if (!addon.enabled && addon.route_gated) {
@@ -992,7 +1078,7 @@ function AddonsSection() {
     if (addon.managed && releases?.[addon.id]?.update_available) {
       return <button onClick={() => void update(addon)} disabled={busy}
         className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
-        {jobId !== null && jobKind === "update" ? "更新中…" : "更新する"}
+        {mine(addon) && jobKind === "update" ? "更新中…" : "更新する"}
       </button>;
     }
     return null;
@@ -1016,18 +1102,18 @@ function AddonsSection() {
                 return (
                   <div id={`feature-${addon.id}`} key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
                     <div className="flex items-center gap-3">
-                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.installed && addon.error ? "bg-red-500" : addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
                         title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />
                       <div className="min-w-0 flex-1">
                         <p className="flex flex-wrap items-center gap-x-2 text-sm font-semibold">
                           {addon.name}
-                          {addon.version && <span className="num text-[10px] font-normal text-zinc-400">v{addon.version.replace(/^v/, "")}</span>}
+                          {addon.version && <span className="num text-[11px] font-normal text-zinc-500" title={addon.version}>{shortVersion(addon.version)}</span>}
                           {hasUpdate && <span className="rounded bg-accent-50 px-1.5 py-0.5 text-[10px] font-medium text-accent-700 dark:bg-accent-600/15 dark:text-accent-300">更新あり</span>}
                           {addon.preview && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">PREVIEW</span>}
                         </p>
                         <p className="line-clamp-2 text-xs text-zinc-500">
-                          {statusLine(addon)}
-                          {addon.error && <span className="text-red-600 dark:text-red-400"> · {addon.error}</span>}
+                          <span className={addon.installed && addon.error ? "text-red-600 dark:text-red-400" : undefined}>{statusLine(addon)}</span>
+                          {addon.error && !addon.installed && <span className="text-red-600 dark:text-red-400"> · {addon.error}</span>}
                           {addon.requires_installed === false && ` · 先に ${requiresName(addon)} の導入が必要です`}
                         </p>
                       </div>
@@ -1047,7 +1133,7 @@ function AddonsSection() {
                               <button onClick={() => void update(addon)} disabled={busy}
                                 title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
-                                {jobId !== null && jobKind === "update" ? "更新中…" : "更新"}
+                                {mine(addon) && jobKind === "update" ? "更新中…" : "更新"}
                               </button>
                             )}
                             {addon.enabled && addon.route_gated && (
@@ -1063,7 +1149,7 @@ function AddonsSection() {
                         </div>
                       </details>
                     )}
-                    {jobId !== null && (jobKind === "update" ? addon.managed : !addon.installed) && (
+                    {mine(addon) && (
                       <p className="mt-2 animate-pulse text-[11px] text-zinc-400">
                         {job?.progress?.status || (jobKind === "update" ? "更新中…" : "導入中…")} — サーバー側で実行中。この画面を閉じても継続します
                       </p>
@@ -1083,7 +1169,7 @@ function AddonsSection() {
       )}
       {uninstalling && (
         <ConfirmDialog
-          title="オプション機能をアンインストールしますか？"
+          title={`${(addons ?? []).find((a) => a.id === uninstalling)?.name ?? "オプション機能"} をアンインストールしますか？`}
           message="Control Deckが導入したランタイム一式（管理領域）だけを削除します。PATH上の外部インストールと個人設定には触れません。"
           confirmLabel="アンインストールする"
           onConfirm={() => {

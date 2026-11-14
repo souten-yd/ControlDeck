@@ -353,7 +353,7 @@ export function FanControlSettings() {
           <details open={settingsOpen} onToggle={(e) => rememberOpen((e.currentTarget as HTMLDetailsElement).open)}
             className="group rounded-xl border border-zinc-200 dark:border-zinc-700">
             <summary className="flex min-h-11 cursor-pointer items-center justify-between px-3 text-sm font-semibold">
-              <span>設定（GPU・プリセット・温度目標・詳細）</span>
+              <span>設定（有効化・プリセット・目標温度）</span>
               <span className="text-[11px] font-normal text-zinc-500 group-open:hidden">タップで開く</span>
               <span className="hidden text-[11px] font-normal text-zinc-500 group-open:inline">タップで閉じる</span>
             </summary>
@@ -365,12 +365,64 @@ export function FanControlSettings() {
                   <p className="text-xs text-amber-700 dark:text-amber-300">
               温度目標は保証された上限ではありません。過熱時の安全制御とGPU本来の温度保護は変更できません。
                   </p>
+          <label className={"flex min-h-11 items-center justify-between gap-3 " + surface}>
+            <span className="text-sm font-medium">ファン温度制御を有効にする（初期OFF）</span>
+            <input type="checkbox" aria-label="温度制御を有効にする" checked={draft.enabled}
+              onChange={(e) => update({ enabled: e.target.checked }, false)} className="h-5 w-5 shrink-0"/>
+          </label>
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold">プリセットを選択</h3>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {data.presets.map((preset) => (
+                <button key={preset.id} type="button" disabled={saving} onClick={() => selectPreset(preset)}
+                  aria-pressed={draft.preset_id === preset.id}
+                  className={"min-h-20 rounded-xl border p-3 text-left transition-colors disabled:opacity-40 " +
+                    (draft.preset_id === preset.id
+                      ? "border-sky-500 bg-sky-50 dark:bg-sky-950/40"
+                      : "border-zinc-200 dark:border-zinc-700")}>
+                  <span className="block text-xs font-semibold">{preset.label}</span>
+                  <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">{preset.description}</span>
+                </button>
+              ))}
+            </div>
+            {draft.preset_id === "custom" && <p className="text-[11px] text-zinc-500">カスタム調整中。推奨を選び直せば初期値へ戻せます。</p>}
+            <p className="text-[11px] text-zinc-500">プリセットを選ぶだけではGPU設定は変わりません。「保存して適用」で確定します。</p>
+          </div>
+
+          {selected && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold">各温度センサーの目標値</h3>
+              {selected.sensors.map((sensor) => {
+                const goal = draft.targets_c[sensor.id] ?? sensor.default_target_c;
+                return (
+                  <div key={sensor.id} className="space-y-1">
+                    <RangeControl label={sensor.label + " / " + sensor.id} min={45}
+                      max={Math.max(45, sensor.max_target_c)} value={goal} suffix="°C"
+                      hint={"現在 " + (sensor.value_c == null ? "N/A" : sensor.value_c + "°C") +
+                        " ・ HW上限に基づく設定可能上限 " + sensor.max_target_c + "°C"}
+                      onChange={(value) => update({ targets_c: { ...draft.targets_c, [sensor.id]: value } })}/>
+                    {sensor.value_c != null && (
+                      <div className="h-1.5 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800" aria-hidden>
+                        <div className="h-full rounded-full bg-sky-600" style={{ width: Math.max(0, Math.min(100, sensor.value_c / Math.max(1, goal) * 100)) + "%" }}/>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {!selected.sensors.length && <p className="text-xs text-amber-700">使用できるGPU温度センサーがありません。</p>}
+            </div>
+          )}
+
+          <details className={surface}>
+            <summary className="min-h-11 cursor-pointer text-xs font-semibold">詳細（制御方式・対象GPU・最低回転・Zero RPM・起動時の動作）</summary>
+            <div className="mt-3 space-y-4">
           <fieldset className={"space-y-3 " + surface}>
             <legend className="px-1 text-xs font-semibold">制御方式</legend>
             <div className="grid gap-2 sm:grid-cols-3">
               {([["curve", "グラフ（マップ）制御", "hotspotのスパイクにGPUが即追従、下げはゆっくり。熱モデルから目標温度に収まるカーブを自動設計"],
                  ["pid", "PID制御（目標温度に追従）", "目標温度で釣り合う回転に自動で合わせる（FF＋PI、バック・カリキュレーション）"],
-                 ["map", "従来のマップ制御", "温度の余裕に応じた下限＋適応FF/PI（旧方式）"]] as const).map(([mode, label, hint]) => (
+                 ["map", "従来のマップ制御", "温度の余裕に応じた下限＋適応FF/PI（旧方式）"]] as const)
+                .filter(([mode]) => mode !== "map" || (data.settings.control_mode ?? "map") === "map").map(([mode, label, hint]) => (
                 <label key={mode} className={"flex min-h-11 cursor-pointer items-start gap-2 rounded-xl border p-2 text-xs " +
                   ((draft.control_mode ?? "map") === mode ? "border-accent-600" : "border-zinc-200 dark:border-zinc-700")}>
                   <input type="radio" name="fan-control-mode" checked={(draft.control_mode ?? "map") === mode}
@@ -441,49 +493,6 @@ export function FanControlSettings() {
           </p>}
           {!data.helper_installed && <p className="text-xs text-amber-700">固定権限helperが未登録です。 ./deck.sh service で登録してください。</p>}
 
-          <div className="space-y-2">
-            <h3 className="text-xs font-semibold">プリセットを選択</h3>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {data.presets.map((preset) => (
-                <button key={preset.id} type="button" disabled={saving} onClick={() => selectPreset(preset)}
-                  aria-pressed={draft.preset_id === preset.id}
-                  className={"min-h-20 rounded-xl border p-3 text-left transition-colors disabled:opacity-40 " +
-                    (draft.preset_id === preset.id
-                      ? "border-sky-500 bg-sky-50 dark:bg-sky-950/40"
-                      : "border-zinc-200 dark:border-zinc-700")}>
-                  <span className="block text-xs font-semibold">{preset.label}</span>
-                  <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">{preset.description}</span>
-                </button>
-              ))}
-            </div>
-            {draft.preset_id === "custom" && <p className="text-[11px] text-zinc-500">カスタム調整中。推奨を選び直せば初期値へ戻せます。</p>}
-            <p className="text-[11px] text-zinc-500">プリセットを選ぶだけではGPU設定は変わりません。「保存して適用」で確定します。</p>
-          </div>
-
-          {selected && (
-            <div className="space-y-3">
-              <h3 className="text-xs font-semibold">各温度センサーの目標値</h3>
-              {selected.sensors.map((sensor) => {
-                const goal = draft.targets_c[sensor.id] ?? sensor.default_target_c;
-                return (
-                  <div key={sensor.id} className="space-y-1">
-                    <RangeControl label={sensor.label + " / " + sensor.id} min={45}
-                      max={Math.max(45, sensor.max_target_c)} value={goal} suffix="°C"
-                      hint={"現在 " + (sensor.value_c == null ? "N/A" : sensor.value_c + "°C") +
-                        " ・ HW上限に基づく設定可能上限 " + sensor.max_target_c + "°C"}
-                      onChange={(value) => update({ targets_c: { ...draft.targets_c, [sensor.id]: value } })}/>
-                    {sensor.value_c != null && (
-                      <div className="h-1.5 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800" aria-hidden>
-                        <div className="h-full rounded-full bg-sky-600" style={{ width: Math.max(0, Math.min(100, sensor.value_c / Math.max(1, goal) * 100)) + "%" }}/>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {!selected.sensors.length && <p className="text-xs text-amber-700">使用できるGPU温度センサーがありません。</p>}
-            </div>
-          )}
-
           <RangeControl label="アイドル時の最低ファン指令" value={draft.min_percent}
             min={Math.max(15, selected?.curve_limits?.pwm_min_percent ?? 15)} max={70} suffix="%" hint="通常は低速回転を維持し、温度が上がれば自動的に加速します。"
             onChange={(value) => update({ min_percent: value })}/>
@@ -501,6 +510,19 @@ export function FanControlSettings() {
               className="h-5 w-5 shrink-0"/>
           </label>
 
+          <label className={"block space-y-1 " + surface}>
+            <span className="text-sm font-medium">PC起動時の動作</span>
+            <select aria-label="PC起動時の動作" value={draft.startup_mode ?? "apply_saved"}
+              onChange={(e) => update({ startup_mode: e.target.value as "apply_saved" | "firmware" }, false)}
+              className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-950">
+              <option value="apply_saved">保存した設定を自動で適用する</option>
+              <option value="firmware">GPU標準の自動制御で起動する（毎回手動で有効化）</option>
+            </select>
+            <span className="block text-[11px] text-zinc-500">
+              PCを起動した直後はGPU標準の自動制御です。「自動で適用」を選ぶと、ControlDeckの起動後に保存した設定へ切り替えます。
+              ControlDeckだけを再起動したときは、どちらを選んでも制御を続けます。
+            </span>
+          </label>
           <details className={surface}>
             <summary className="min-h-10 cursor-pointer text-xs font-semibold">詳細な制御パラメータ</summary>
             <div className="mt-3 space-y-3">
@@ -542,35 +564,7 @@ export function FanControlSettings() {
             </div>
           </details>
 
-          <label className={"flex min-h-11 items-center justify-between gap-3 " + surface}>
-            <span className="text-sm font-medium">ファン温度制御を有効にする（初期OFF）</span>
-            <input type="checkbox" aria-label="温度制御を有効にする" checked={draft.enabled}
-              onChange={(e) => update({ enabled: e.target.checked }, false)} className="h-5 w-5 shrink-0"/>
-          </label>
-          <label className={"block space-y-1 " + surface}>
-            <span className="text-sm font-medium">PC起動時の動作</span>
-            <select aria-label="PC起動時の動作" value={draft.startup_mode ?? "apply_saved"}
-              onChange={(e) => update({ startup_mode: e.target.value as "apply_saved" | "firmware" }, false)}
-              className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-950">
-              <option value="apply_saved">保存した設定を自動で適用する</option>
-              <option value="firmware">GPU標準の自動制御で起動する（毎回手動で有効化）</option>
-            </select>
-            <span className="block text-[11px] text-zinc-500">
-              PCを起動した直後はGPU標準の自動制御です。「自動で適用」を選ぶと、ControlDeckの起動後に保存した設定へ切り替えます。
-              ControlDeckだけを再起動したときは、どちらを選んでも制御を続けます。
-            </span>
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className={primaryButton}
-              disabled={saving || !canApply}
-              onClick={() => void save({ ...draft, bdf: selected?.bdf ?? draft.bdf })}>
-              {saving ? "保存中…" : "保存して適用"}
-            </button>
-            <button type="button" disabled={saving || !modified}
-              onClick={() => setDraft(data.settings)}
-              className="min-h-11 rounded-xl border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700 disabled:opacity-40">
-              変更を破棄
-            </button>
+              <div className="flex flex-wrap gap-2">
             <button type="button" disabled={saving || (!data.settings.enabled && data.state !== "fault")}
               onClick={() => void save({ ...draft, enabled: false, bdf: data.settings.bdf })}
               className="min-h-11 rounded-xl border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700 disabled:opacity-40">
@@ -580,6 +574,20 @@ export function FanControlSettings() {
               onClick={() => { const preset = data.presets.find((item) => item.id === "recommended"); if (preset) selectPreset(preset); }}
               className="min-h-11 rounded-xl border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700 disabled:opacity-40">
               設定値を初期値（推奨）に戻す
+            </button>
+              </div>
+            </div>
+          </details>
+          <div className="sticky bottom-0 -mx-3 flex flex-wrap items-center gap-2 border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95">
+            <button type="button" className={primaryButton}
+              disabled={saving || !canApply}
+              onClick={() => void save({ ...draft, bdf: selected?.bdf ?? draft.bdf })}>
+              {saving ? "保存中…" : "保存して適用"}
+            </button>
+            <button type="button" disabled={saving || !modified}
+              onClick={() => setDraft(data.settings)}
+              className="min-h-11 rounded-xl border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700 disabled:opacity-40">
+              変更を破棄
             </button>
             {modified && <span className="text-[11px] text-amber-700 dark:text-amber-300">未保存の変更があります</span>}
           </div>

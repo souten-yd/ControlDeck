@@ -9,12 +9,13 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { FilePicker } from "../../components/FilePicker";
-import { ConfirmDialog, Skeleton } from "../../components/ui";
-import { IconFolder, IconPlus, IconTrash } from "../../components/icons";
-import { useToasts } from "../../stores";
+import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
+import { IconFolder, IconPlus, IconSettings, IconTrash } from "../../components/icons";
+import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
 import { BackgroundRuns } from "./BackgroundRuns";
-import { WorkflowExtensions } from "./WorkflowExtensions";
+import { WorkflowExtensions, workflowBody, type Workflow } from "./WorkflowExtensions";
+import { SettingsGroup, SheetActions, primaryButton } from "../models/formControls";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -71,7 +72,6 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
     queryKey: ["opencode-projects"],
     queryFn: () => api<{ root: string; projects: CodeProject[] }>("/opencode/projects"),
   });
-  const [form, setForm] = useState<Settings>({ base_url: "", model: "", project_path: "", runtime: "v1" });
   const [prompt, setPrompt] = useState("");
   // プロジェクト選択: 新規（既定）/ CodeDEV既存一覧 / 📁フォルダ（CodeDEV外はコピー取込）
   const [projectMode, setProjectMode] = useState<"new" | "existing" | "folder">("new");
@@ -85,7 +85,6 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
   const [killing, setKilling] = useState<string | null>(null);
   const [deletingProject, setDeletingProject] = useState<string | null>(null);
 
-  useEffect(() => { if (data) setForm(data.settings); }, [data]);
   // 名指しした系列が未導入だと、サーバーは導入済みのほうへ落として起動する。黙って
   // 別系列が動くと混乱するので、見出しに出す。
   const fellBack = Boolean(data?.active_runtime && data.active_runtime !== runtime);
@@ -102,12 +101,6 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
     [terminals, own],
   );
 
-  const save = useMutation({
-    mutationFn: () => api<Settings>("/opencode/settings", { method: "PUT", json: form }),
-    onSuccess: (settings) => { setForm(settings); qc.invalidateQueries({ queryKey: ["opencode-status"] }); show("OpenCode設定を保存しました"); },
-    onError: (error) => show(error instanceof Error ? error.message : "設定保存に失敗", "error"),
-  });
-
   const startDisabled =
     (projectMode === "new" && !newName.trim()) ||
     (projectMode === "existing" && !existingName) ||
@@ -118,7 +111,7 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
       json: {
         project_name: projectMode === "new" ? newName.trim() : projectMode === "existing" ? existingName : "",
         project_path: projectMode === "folder" ? otherPath : "",
-        prompt, base_url: form.base_url, model: form.model, runtime,
+        prompt, base_url: data?.settings.base_url ?? "", model: data?.settings.model ?? "", runtime,
       },
     }),
     onSuccess: ({ id }) => {
@@ -176,38 +169,10 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
     <div className="mx-auto max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
       <PageHeader title={runtime === "v1" ? "OpenCode" : `OpenCode ${runtime}`}
         description={`${data?.feature.version ? `v${data.feature.version.replace(/^v/, "")}` : "確認中"}${fellBack ? `（${runtime}が使えないため${data?.active_runtime}で起動します）` : ""} · CLIそのままの対話TUI（tmux永続・再接続可）`}
-        actions={<button onClick={() => setSettingsOpen((v) => !v)} aria-label="OpenCode Settings" title="LLM endpoint / model settings"
-        className={`min-h-11 rounded-xl border px-3 py-2 text-sm ${settingsOpen ? "border-accent-500 text-accent-600" : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"}`}>⚙</button>} />
+        actions={<button onClick={() => setSettingsOpen(true)} disabled={!data} aria-label="OpenCode 設定を開く" title="モデル・開発ワークフローの設定"
+        className="flex min-h-11 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"><IconSettings className="h-4 w-4" />設定</button>} />
 
-      {settingsOpen && (
-        <section className="grid gap-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800 sm:grid-cols-2">
-          <label className="text-xs text-zinc-500">LLM endpoint<input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={`${input} mt-1 font-mono`} /></label>
-          <label className="text-xs text-zinc-500">モデル<input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="auto" className={`${input} mt-1 font-mono`} /><span className="mt-1 block text-[11px] text-zinc-500">auto にすると起動中のモデルへ流れます（停止中の別モデルを起こしません）</span></label>
-          <div className="text-xs text-zinc-500 sm:col-span-2">
-            AIチャット・ワークフローで使う系列
-            <div className="mt-1 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-              {RUNTIMES.map((series) => {
-                const state = data?.runtimes?.[series.id];
-                const usable = Boolean(state?.enabled);
-                return (
-                  <button key={series.id} type="button" disabled={!usable}
-                    onClick={() => setForm({ ...form, runtime: series.id })}
-                    title={usable ? state?.version : "アドオン設定から導入してください"}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-medium disabled:opacity-40 ${form.runtime === series.id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                    {series.label}{usable ? "" : "（未導入）"}
-                  </button>
-                );
-              })}
-            </div>
-            <span className="mt-1 block text-[11px] text-zinc-500">
-              この画面のセッションは常に {runtime} で起動します。ここで選ぶのは、画面を持たない
-              AIチャットとワークフロー（code.agent）が使う系列です
-            </span>
-          </div>
-          <button onClick={() => save.mutate()} disabled={save.isPending} className="rounded-xl border border-accent-500 py-2 text-sm text-accent-600 disabled:opacity-50 sm:col-span-2">設定を保存</button>
-        </section>
-      )}
-      {settingsOpen && <WorkflowExtensions runtime={runtime} />}
+      {settingsOpen && data && <OpenCodeSettingsSheet initial={data} runtime={runtime} onClose={() => setSettingsOpen(false)} />}
 
       <BackgroundRuns />
 
@@ -330,5 +295,81 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
         />
       )}
     </div>
+  );
+}
+
+/** OpenCode の設定を1枚のシートにまとめる。保存は1本で、内部で2つの API を順に呼ぶ。
+ * フォームは開いた時点の値で初期化し、再取得で編集中の値を上書きしない。 */
+function OpenCodeSettingsSheet({ initial, runtime, onClose }: { initial: Status; runtime: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const can = useAuth((s) => s.can);
+  const editable = can("settings.manage");
+  const [form, setForm] = useState<Settings>(initial.settings);
+  const { data: workflowData } = useQuery({ queryKey: ["opencode-workflow"], queryFn: () => api<Workflow>("/opencode/workflow") });
+  const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  useEffect(() => { if (workflowData && !workflow) setWorkflow(workflowData); }, [workflowData, workflow]);
+  const models = workflowData?.models ?? [];
+  const save = useMutation({
+    mutationFn: async () => {
+      await api<Settings>("/opencode/settings", { method: "PUT", json: form });
+      if (workflow) await api<Workflow>("/opencode/workflow", { method: "PUT", json: workflowBody(workflow) });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["opencode-status"] });
+      void qc.invalidateQueries({ queryKey: ["opencode-workflow"] });
+      show("OpenCode の設定を保存しました。次に開くセッションから反映されます");
+      onClose();
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "設定を保存できませんでした", "error"),
+  });
+  const known = form.model === "" || form.model === "auto" || models.some((m) => m.alias === form.model);
+  return (
+    <BottomSheet title="OpenCode 設定" onClose={onClose} wide>
+      <div className="space-y-3">
+        {!editable && <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">変更には管理者権限が必要です。</p>}
+        <SettingsGroup title="モデル" description="セッションで使うモデル">
+          <select aria-label="OpenCode モデル" value={known ? (form.model || "auto") : form.model} disabled={!editable}
+            onChange={(e) => setForm({ ...form, model: e.target.value })} className={`${input} min-h-11`}>
+            <option value="auto">起動中のモデルに任せる（auto）</option>
+            {models.map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
+            {!known && <option value={form.model}>{form.model}</option>}
+          </select>
+          <p className="text-[11px] text-zinc-500">auto にすると起動中のモデルへ流れます（停止中の別モデルを起こしません）。</p>
+        </SettingsGroup>
+        {workflow && <WorkflowExtensions value={{ ...workflow, models }} onChange={setWorkflow} runtime={runtime} editable={editable} />}
+        <SettingsGroup title="詳細" description="接続先と、画面を持たない処理が使う系列" collapsible defaultOpen={false}>
+          <label className="block text-xs text-zinc-500">接続先（LLM endpoint）
+            <input value={form.base_url} disabled={!editable} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={`${input} mt-1 font-mono`} />
+          </label>
+          <div className="text-xs text-zinc-500">
+            AIチャット・ワークフローで使う系列
+            <div className="mt-1 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+              {RUNTIMES.map((series) => {
+                const state = initial.runtimes?.[series.id];
+                const usable = Boolean(state?.enabled);
+                return (
+                  <button key={series.id} type="button" disabled={!usable || !editable}
+                    onClick={() => setForm({ ...form, runtime: series.id })}
+                    title={usable ? state?.version : "オプション機能から導入してください"}
+                    className={`min-h-11 flex-1 rounded-lg text-xs font-medium disabled:opacity-40 ${form.runtime === series.id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
+                    {series.label}{usable ? "" : "（未導入）"}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="mt-1 block text-[11px] text-zinc-500">
+              この画面のセッションは常に {runtime} で起動します。ここで選ぶのは、画面を持たない
+              AIチャットとワークフロー（code.agent）が使う系列です
+            </span>
+          </div>
+        </SettingsGroup>
+        {editable && (
+          <SheetActions>
+            <button onClick={() => save.mutate()} disabled={save.isPending || !workflow} className={primaryButton}>{save.isPending ? "保存中…" : "保存"}</button>
+          </SheetActions>
+        )}
+      </div>
+    </BottomSheet>
   );
 }

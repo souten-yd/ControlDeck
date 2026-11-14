@@ -33,13 +33,11 @@ export function ThinkingControl({ mode, budget, onChange, runtime, disabled }: {
   };
 
   return (
-    <div className="space-y-2 rounded-xl border border-zinc-200 p-2.5 dark:border-zinc-700">
-      <div>
-        <p className="text-xs font-medium text-zinc-500">思考（reasoning）</p>
-        <p className="mt-0.5 text-[10px] text-zinc-400">
-          深く考えるほど品質は上がりますが遅くなります。{current.hint}
-        </p>
-      </div>
+    <div className="space-y-2">
+      {/* The enclosing SettingsGroup already says 思考: no second heading or frame here. */}
+      <p className="text-[11px] text-zinc-500">
+        深く考えるほど品質は上がりますが遅くなります。{current.hint}
+      </p>
       <div className="grid grid-cols-4 gap-1 sm:grid-cols-7">
         {MODES.map((m) => (
           <button key={m.value} type="button" disabled={disabled}
@@ -65,12 +63,12 @@ export function ThinkingControl({ mode, budget, onChange, runtime, disabled }: {
         </label>
       )}
       {runtime === "ollama" && mode !== "auto" && mode !== "off" && (
-        <p className="text-[10px] leading-relaxed text-amber-600 dark:text-amber-400">
+        <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
           Ollama はトークン上限に対応していないため、最も近いレベル（低・中・高）として反映されます。
         </p>
       )}
       {runtime === "llama.cpp" && mode !== "auto" && (
-        <p className="text-[10px] leading-relaxed text-zinc-400">
+        <p className="text-[11px] leading-relaxed text-zinc-400">
           llama.cpp では起動引数（--reasoning / --reasoning-budget）になるため、保存後の再起動で反映されます。
         </p>
       )}

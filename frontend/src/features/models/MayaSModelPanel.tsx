@@ -11,7 +11,7 @@ import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
-import { CTX_PRESETS, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
+import { CTX_PRESETS, CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
 
 export interface MayaSettings {
   model_path: string;
@@ -166,7 +166,7 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
 export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
   const { data: status } = useMayaStatus();
   return (
-    <BottomSheet title="Maya-S · モデル個別設定" onClose={onClose} wide>
+    <BottomSheet title="Maya-S · 個別設定" onClose={onClose} wide>
       {status ? <MayaSettingsForm status={status} mode="detail" onDone={onClose} />
         : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
     </BottomSheet>
@@ -223,17 +223,17 @@ function MayaSettingsForm({ status, mode, onDone }: {
       <input aria-label={`Maya-S ${label}`} type="number" min={min} max={max} step={step} disabled={locked}
         value={settings[key]} className={`mt-1 ${field}`}
         onChange={(e) => setSettings({ ...settings, [key]: Number(e.target.value) })} />
-      {hint && <span className="text-[10px] text-zinc-500">{hint}</span>}
+      {hint && <span className="text-[11px] text-zinc-500">{hint}</span>}
     </label>
   );
 
   return (
     <div className="space-y-3 text-sm">
       {mode === "detail" && (
-        <ModelStatusSummary running={status.running} rows={[
+        <ModelStatusSummary running={status.running} lockedNote={status.running ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
           ["ランタイム", `Project Maya ${status.version || "-"} · ${status.built ? "HIPビルド済み" : "HIP未ビルド"}`],
-          ["モデル", <span className="font-mono">{status.settings?.model_path || `ダウンロード版（${status.models_dir}）`}</span>],
-          ["接続先", <span className="font-mono">http://127.0.0.1:8099/v1</span>],
+          ["モデル", status.settings?.model_path ? <FileName path={status.settings.model_path} /> : `ダウンロード版（${status.models_dir}）`],
+          ["接続先", <CopyText text="http://127.0.0.1:8099/v1" />],
         ]} />
       )}
       <SettingsGroup title="モデル" description={mode === "detail" ? "GGUFを変えたときは「保存して準備し直す」" : "手元の Maya-S の GGUF（分割モデルは先頭ファイル）"}>
@@ -254,22 +254,28 @@ function MayaSettingsForm({ status, mode, onDone }: {
             <PresetOrCustom ariaLabel="Maya-S コンテキスト長" value={settings.context} presets={MAYA_CTX_PRESETS} placeholder="8192" disabled={locked}
               onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />
           </div>
-          <span className="text-[10px] text-zinc-500">GLM-5.3-Flash は最大 1M。この PC では 1M でも速度はほぼ変わりません（KV は RAM に置かれます）。</span>
+          <span className="text-[11px] text-zinc-500">GLM-5.3-Flash は最大 1M。この PC では 1M でも速度はほぼ変わりません（KV は RAM に置かれます）。</span>
         </label>
       </SettingsGroup>
       {mode === "detail" && (
-        <SettingsGroup title="起動と停止" description="稼働中でも変更できます。アイドル時の自動アンロードは Models の共通設定で切り替えます">
-          <Toggle label="要求時に自動起動" hint="チャット・ゲートウェイから使われたときに起動します。Strata や使っていない llama.cpp のモデルは先に停止します"
+        <SettingsGroup title="起動と停止" description="アイドル時の自動アンロードは共通設定で切り替えます">
+          <Toggle label="使われたときに自動で起動" hint="チャットやゲートウェイから呼ばれたら起動します（Strata や使っていない llama.cpp のモデルは先に停止）"
             value={settings.on_demand_start} onChange={(v) => setSettings({ ...settings, on_demand_start: v })} />
-          <Toggle label="共通アイドル停止から除外" hint="アイドル時の自動アンロードの対象から外し、常駐させます"
-            value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
-          <Toggle label="ControlDeck起動時に自動起動" hint="PC起動後に ControlDeck が立ち上がったら起動します。Strata と両方に付けた場合は Maya-S が優先です"
+          <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします。Strata にも付けた場合は Maya-S が優先です"
             value={settings.auto_start} onChange={(v) => setSettings({ ...settings, auto_start: v })} />
+          <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
+            value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
         </SettingsGroup>
       )}
       <SettingsGroup title="思考">
-        {num("thinking_budget", "思考の上限（トークン・0で無制限）", 0, 131072, 1024,
-          "超えると思考を閉じて回答を始めます。要求ごとの思考の深さ（low〜max）は使う側で指定します。")}
+        <label className="block text-xs">思考の上限（トークン）
+          <div className="mt-1">
+            <PresetOrCustom ariaLabel="Maya-S 思考の上限" value={settings.thinking_budget} disabled={locked}
+              presets={[{ v: 4096, label: "4,096" }, { v: 8192, label: "8,192" }, { v: 16384, label: "16,384" }, { v: 32768, label: "32,768（推奨）" }, { v: 0, label: "無制限" }]}
+              placeholder="32768" onChange={(v) => setSettings({ ...settings, thinking_budget: Math.min(131072, Math.max(0, Number(v ?? 32768))) })} />
+          </div>
+          <span className="text-[11px] text-zinc-500">超えると思考を閉じて回答を始めます。要求ごとの思考の深さ（low〜max）は使う側で指定します。</span>
+        </label>
       </SettingsGroup>
       <SettingsGroup title="性能" description="投機デコード・同時実行" collapsible defaultOpen={false}>
         <label className="block text-xs">投機デコード（MTP）
@@ -288,12 +294,10 @@ function MayaSettingsForm({ status, mode, onDone }: {
           {num("ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1, "小さいほどエキスパートを RAM に多く置けて速くなります（この PC の推奨 8）。")}
         </div>
       </SettingsGroup>
-      <SheetActions note={locked ? (status.running
-        ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。"
-        : "準備ジョブの完了後に変更できます。") : undefined}>
+      <SheetActions note={locked && !status.running ? "準備ジョブの完了後に変更できます。" : undefined}>
         {mode === "detail" && !needsPrepare && (
           <button type="button" disabled={saving || saveLocked} onClick={() => void save(false)} className={primaryButton}>
-            {saving ? "保存中…" : "設定を保存"}
+            {saving ? "保存中…" : "保存"}
           </button>
         )}
         {(needsPrepare || mode === "detail") && (

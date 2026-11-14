@@ -12,8 +12,11 @@ function PresetOrCustom({
   onChange,
   ariaLabel,
   disabled = false,
+  defaultLabel,
 }: {
   ariaLabel?: string;
+  /** Shown as a first "既定（…）" choice only when the field has a real server default. */
+  defaultLabel?: string;
   disabled?: boolean;
   value: number | string | undefined;
   presets: { v: number | string; label: string }[];
@@ -38,7 +41,7 @@ function PresetOrCustom({
         }}
         className={`${sel} ${custom ? "w-28 shrink-0" : "min-w-0 flex-1"}`}
       >
-        <option value="">既定</option>
+        {(defaultLabel || value === undefined || value === "") && <option value="">{defaultLabel ?? "未設定"}</option>}
         {presets.map((p) => <option key={String(p.v)} value={String(p.v)}>{p.label}</option>)}
         <option value="__custom__">カスタム入力…</option>
       </select>
@@ -59,9 +62,9 @@ function PresetOrCustom({
 }
 
 export function Toggle({ label, hint, value, disabled = false, onChange }: { label: string; hint?: string; value: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
-  return <label className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
-    <span className="text-xs">{label}{hint && <span className="block text-[10px] font-normal text-zinc-400">{hint}</span>}</span>
-    <input type="checkbox" checked={value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 shrink-0 disabled:opacity-40" />
+  return <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+    <span className="text-xs">{label}{hint && <span className="block text-[11px] font-normal text-zinc-500">{hint}</span>}</span>
+    <input type="checkbox" checked={value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="h-5 w-5 shrink-0 disabled:opacity-40" />
   </label>;
 }
 
@@ -101,7 +104,11 @@ export function SheetActions({ children, note }: { children: React.ReactNode; no
 }
 
 /** 個別設定の先頭に出す状態の要約。どのランタイムでも同じ並び。 */
-export function ModelStatusSummary({ running, rows }: { running: boolean; rows: [string, React.ReactNode][] }) {
+export function ModelStatusSummary({ running, rows, lockedNote, action }: {
+  running: boolean; rows: [string, React.ReactNode][];
+  /** Why some fields are locked; said once here, next to the way out. */
+  lockedNote?: string; action?: React.ReactNode;
+}) {
   return (
     <div className="rounded-xl bg-zinc-50 p-3 text-xs dark:bg-zinc-800/60">
       <p className="mb-1.5 flex items-center gap-2 text-sm font-medium">
@@ -109,10 +116,37 @@ export function ModelStatusSummary({ running, rows }: { running: boolean; rows: 
         {running ? "稼働中" : "停止中"}
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-        {rows.map(([label, value]) => <div key={label} className="contents"><dt className="text-zinc-400">{label}</dt><dd className="min-w-0 break-all">{value}</dd></div>)}
+        {rows.map(([label, value]) => <div key={label} className="contents"><dt className="text-zinc-500">{label}</dt><dd className="min-w-0 break-all">{value}</dd></div>)}
       </dl>
+      {(lockedNote || action) && <div className="mt-2 flex flex-wrap items-center gap-2">
+        {lockedNote && <p className="min-w-0 flex-1 text-[11px] text-amber-700 dark:text-amber-300">{lockedNote}</p>}
+        {action}
+      </div>}
     </div>
   );
+}
+
+/** The file name of a model path; the full path stays in the tooltip. */
+export function FileName({ path }: { path: string }) {
+  return <span className="font-mono" title={path}>{path.split("/").pop() || path}</span>;
+}
+
+/** Monospace text with a copy button (endpoints people paste elsewhere). */
+export function CopyText({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return <span className="inline-flex flex-wrap items-center gap-2">
+    <span className="font-mono">{text}</span>
+    <button type="button" onClick={() => { void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }); }}
+      className="rounded-md border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 dark:border-zinc-600 dark:text-zinc-300">{copied ? "コピーしました" : "コピー"}</button>
+  </span>;
+}
+
+/** The on-demand start every runtime has, shown the same way everywhere. */
+export function LifecycleAlwaysOn() {
+  return <div className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-dashed border-zinc-200 px-3 py-2 dark:border-zinc-700">
+    <span className="text-xs">使われたときに自動で起動<span className="block text-[11px] text-zinc-500">チャットやゲートウェイから呼ばれたら起動します</span></span>
+    <span className="shrink-0 text-[11px] text-zinc-500">常に有効</span>
+  </div>;
 }
 
 export const primaryButton = "min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40";
