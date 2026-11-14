@@ -322,11 +322,11 @@ function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose:
         <SettingsGroup title="モデル" description="セッションで使うモデル">
           <select aria-label="OpenCode モデル" value={known ? (form.model || "auto") : form.model} disabled={!editable}
             onChange={(e) => setForm({ ...form, model: e.target.value })} className={`${input} min-h-11`}>
-            <option value="auto">起動中のモデルに任せる（auto）</option>
+            <option value="auto">Models で選んだランタイムに任せる（auto）</option>
             {models.map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
             {!known && <option value={form.model}>{form.model}</option>}
           </select>
-          <p className="text-[11px] text-zinc-500">auto にすると起動中のモデルへ流れます（停止中の別モデルを起こしません）。</p>
+          <p className="text-[11px] text-zinc-500">auto にすると、Models の共通設定で選んだランタイムのモデルを使います（必要なら起動します）。</p>
         </SettingsGroup>
         {workflow && <WorkflowExtensions value={{ ...workflow, models, installed: workflowData?.installed, features: workflowData?.features }} onChange={setWorkflow} editable={editable} />}
         <SettingsGroup title="詳細" description="接続先" collapsible defaultOpen={false}>

@@ -434,7 +434,7 @@ async def gateway_models(request: Request):
     from app.models_mgmt import local_llm
 
     llms = await asyncio.to_thread(local_llm.llm_instances)
-    # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、起動中のモデルへ流れる。
+    # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、Models で選んだランタイムのモデルへ流れる。
     data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck",
              "runtime": "auto"}] if llms else []
     data += [{"id": str(i["alias"]), "object": "model", "owned_by": "control-deck",
