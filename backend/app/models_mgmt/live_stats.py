@@ -21,6 +21,7 @@ class _Request:
     first_at: float | None = None
     thinking: bool = False
     events: int = 0          # streamed deltas: ~tokens while a request is running
+    timings: dict | None = None  # the engine's own, when its stream carries them
 
 
 @dataclass
@@ -51,7 +52,9 @@ def delta(request: _Request, *, thinking: bool) -> None:
     request.events += 1
 
 
-def end(request: _Request, usage: dict | None = None) -> None:
+def end(request: _Request, usage: dict | None = None, timings: dict | None = None) -> None:
+    """Close a request. An engine's own `timings` (llama-server's shape, which Radiance returns)
+    win over ControlDeck's estimate; a non-streamed reply without them gives an overall rate."""
     now = time.monotonic()
     with _lock:
         rows = _active.get(request.port, [])
@@ -63,7 +66,12 @@ def end(request: _Request, usage: dict | None = None) -> None:
             completion = int(usage.get("completion_tokens") or 0)
         completion = completion or request.events
         last = _last.setdefault(request.port, _Last())
-        if request.first_at is not None:
+        if isinstance(timings, dict) and (timings.get("predicted_per_second") or timings.get("prompt_per_second")):
+            last.prefill_tps = float(timings.get("prompt_per_second") or last.prefill_tps)
+            last.decode_tps = float(timings.get("predicted_per_second") or last.decode_tps)
+        elif request.first_at is None and completion > 1:
+            last.decode_tps = completion / max(1e-3, now - request.started)
+        elif request.first_at is not None:
             ttft = max(1e-3, request.first_at - request.started)
             gen_time = max(1e-3, now - request.first_at)
             if prompt:
@@ -121,6 +129,8 @@ def feed_sse(request: _Request, chunk: bytes, buffer: bytearray) -> dict | None:
             continue
         if isinstance(item.get("usage"), dict):
             usage = item["usage"]
+        if isinstance(item.get("timings"), dict):
+            request.timings = item["timings"]
         try:
             piece = item["choices"][0]["delta"]
         except (KeyError, IndexError, TypeError):

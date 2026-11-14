@@ -219,6 +219,16 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
             )
 
     async def _complete_impl(self, request: RuntimeChatRequest) -> str:
+        from app.models_mgmt import live_stats
+        timing = live_stats.begin(urlsplit(normalize_openai_base(request.base_url)).port or 0)
+        body: dict = {}
+        try:
+            text, body = await self._complete_body(request)
+            return text
+        finally:
+            live_stats.end(timing, body.get("usage"), body.get("timings"))
+
+    async def _complete_body(self, request: RuntimeChatRequest) -> tuple[str, dict]:
         payload = self._payload(request, stream=False)
         response: httpx.Response | None = None
         for candidate in response_format_candidates(request.response_format):
@@ -244,8 +254,9 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         if response.status_code >= 300:
             raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
         try:
-            message = response.json()["choices"][0]["message"]
-            return str(message.get("content") or "")
+            body = response.json()
+            message = body["choices"][0]["message"]
+            return str(message.get("content") or ""), body
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise RuntimeProviderError("LLM応答の形式が不正です") from exc
 
@@ -266,7 +277,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
                     final_usage = chunk.usage
                 yield chunk
         finally:
-            live_stats.end(timing, final_usage)
+            live_stats.end(timing, final_usage)  # streamed: ControlDeck's own timing
 
     async def _stream_lines(
         self, request: RuntimeChatRequest, payload: dict[str, Any], cancel_event: asyncio.Event,

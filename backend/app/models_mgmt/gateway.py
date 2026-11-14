@@ -603,7 +603,7 @@ async def gateway_chat(request: Request):
                         pass
                     yield chunk
             finally:
-                live_stats.end(timing, usage)
+                live_stats.end(timing, usage, timing.timings)
                 clear_stream_phase()
                 await upstream.aclose()
                 await client.aclose()
@@ -613,8 +613,19 @@ async def gateway_chat(request: Request):
 
     try:
         started_at = asyncio.get_running_loop().time()
-        async with httpx.AsyncClient(timeout=None) as client:
-            upstream = await client.post(target, json=payload)
+        from app.models_mgmt import live_stats
+        timing = live_stats.begin(port)
+        content = None
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                upstream = await client.post(target, json=payload)
+        finally:
+            try:
+                body = upstream.json() if "upstream" in locals() and upstream.status_code < 400 else {}
+            except ValueError:
+                body = {}
+            live_stats.end(timing, body.get("usage") if isinstance(body, dict) else None,
+                           body.get("timings") if isinstance(body, dict) else None)
         _record_gateway_oom(alias, lease_id, upstream)
         record_first_token(started_at)
         try:
