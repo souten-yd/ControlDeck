@@ -1075,6 +1075,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
       setPolicyCfg(next.policy);
       qc.setQueryData(["runtime-environment"], next);
       qc.invalidateQueries({ queryKey: ["llama-status"] });
+      // AI アシスタントなどが Models の選択へすぐ追従するように。
+      qc.invalidateQueries({ queryKey: ["llm-endpoints"] });
       show("共通設定を保存しました");
       onClose();
     },
