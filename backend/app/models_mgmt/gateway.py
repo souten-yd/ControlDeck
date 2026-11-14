@@ -137,6 +137,7 @@ def resolve_instance(model: str) -> dict:
             i for i in instances
             if str(i.get("role", "llm")) == "llm"
             and (i.get("runtime") != "strata" or i.get("activated"))
+            and (i.get("runtime") != "maya-s" or i.get("loaded"))
         ]
         match = next((i for i in llms if i.get("loaded")), None) or (llms[0] if llms else None)
     if match is None:
@@ -201,6 +202,25 @@ async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
     return await local_llm.await_capacity(
         alias, port, needed, timeout_seconds=CAPACITY_TIMEOUT_SECONDS
     )
+
+
+async def _fit_maya_output(payload: dict[str, Any]) -> None:
+    """Maya-S rejects prompt + output over its context; shrink only the output budget.
+
+    A prompt that alone exceeds the context is left for Maya's own clear 400.
+    """
+    from app.models_mgmt import maya_s
+
+    counted = await maya_s.prompt_room(payload.get("messages") or [])
+    if counted is None:
+        return
+    room = counted[1] - counted[0]
+    if room < 1:
+        return
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = payload.get(key)
+        if isinstance(value, int) and value > room:
+            payload[key] = room
 
 
 async def _wait_for_client(task: asyncio.Task, request: Request):
@@ -383,7 +403,7 @@ def _upstream_error(alias: str, body: bytes) -> dict:
 async def gateway_models(request: Request):
     """OpenAI互換のモデル一覧。登録済みLLMを優先度順で返す。
 
-    llama.cpp と llama.cpp のモデルが1つの一覧に並ぶ。どちらのランタイムかは
+    llama.cpp、Strata、明示準備済みMaya-Sのモデルが1つの一覧に並ぶ。どちらのランタイムかは
     OpenAI 仕様には無い項目なので、互換性を壊さない追加フィールドで示す。
     """
     _authorize(request)
@@ -434,6 +454,8 @@ async def gateway_chat(request: Request):
         await _release_gateway_lease(adapter, lease_id, renew)
         raise
     payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
+    if instance.get("runtime") == "maya-s":
+        await _fit_maya_output(payload)
     # Model-level sampling settings are preserved for all remaining runtimes.
     if greedy_sampling:
         payload["temperature"] = 0.0

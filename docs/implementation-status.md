@@ -3804,6 +3804,16 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 
 - 受け入れ条件：backend pytest、frontend build、旧Lucebox参照grep、Strata導入/削除テスト、本体更新失敗時のロールバック、モバイル画面確認。マージとリリースは検証結果が得られるまで未完了。
 
+
+## 2026-11-12 — Project Maya-S option (PR #359, Draft)
+
+- `feat/maya-s24-optional-addon-20261112` (historical branch name) adds an independent `maya-s` opt-in feature stacked on PR #355. Official Project Maya GitHub Release code only on install; explicit separate GLM-5.3-Flash Maya-S model download (~96.5GB) with confirmation, explicit start/stop and loopback-only API.
+- Uninstall keeps model weights, defaults and other runtimes unchanged. `backend/tests/test_maya_s_addon.py` adds mocked offline checks. See `docs/design-maya-s-optional-addon.md`.
+- **Not merged/released**. Full tests, R9700/ROCm10 and mobile verification remain pending; CI stays manual-only as in the main development rules. Existing PR #355 is an upstream dependency and must merge first.
+
+- Draft PR #359 now also wires the explicitly prepared Maya-S model into the existing ControlDeck provider/model list and authenticated shared gateway. Dormant Maya is not an AUTO candidate and cannot start by chat request. Added offline tests for this contract; actual runtime tests remain pending.
+
+- PR #359 model choice updated to **GLM-5.3-Flash Maya-S** (`glm-maya-s`, ~96.5GB) for the supported R9700. No S24 fallback or migration. Source branch name remains historical; actual runtime, APIs, frontend, docs and tests use `maya-s`. `maya_s.py` rejects old S24 config/marker and the health check requires the Maya-S label. Hardware checks and full CI remain pending.
 ## 2026-11-12 PR #355 ローカルStrata受け入れ（進行中）
 
 - 管理Terminal 0.2.13.1 / HIP engine 0.1.59をR9700へ導入。既存Flash-Next IQ2_XSの2分割GGUFを`/data1tb/LLM`から使用し、元ファイルを移動・削除せず推論用packを管理領域へ作成。
@@ -3814,6 +3824,14 @@ PatentBuddyのHTTP LAN起動を実WebKitで調べ、connect-src 'self'がopaque 
 - 本体更新の配布元をmainから正式GitHub Releaseのタグ・検証済みSHAへ修正し、適用前backupと再起動後health確認を追加。
 - 証跡は`/data1tb/ControlDeck/strata-pr355-evidence/`。ベンチマークraw JSONと各段階のログを保持。
 
+## 2026-11-12 PR #359 build-only acceptance (in progress)
+
+- User scope: install/build Maya-S, integrate add-in lifecycle/settings/runtime selection; **do not download model weights or load/run the Maya model**. Existing separately downloaded GGUF can be selected later.
+- Official Maya v1.1.61 code installed. HIP build-only action is independent of model setup; one compiler job limits RAM use. Settings save does not run setup or inference. Existing-model preparation never passes `--download-model` and disables speed calibration.
+- Added context/GPU/parallel/RAM headroom/drafting settings, selected-runtime policy and Add-on text capability wiring. Unready Maya is rejected, not started by a generation request. OpenCode receives the configured context through local_llm.
+- Local backend 1281 passed / 2 skipped before final resource-accounting test; frontend build passed. Final build/UI/CI acceptance pending. Maya inference/performance/quality explicitly NOT TESTED by user instruction.
+- PR #355 merged to main as d01dddca after final manual CI 43236566272 passed.
+- 2026-11-12 (UI split): Add-on panel now holds only engine state and the HIP build action. Model download (~96.5GB, GPU index + confirmation), "load an existing GGUF", per-model settings (GGUF path / context / GPU / parallel / RAM headroom / MTP drafting) and load/unload moved to **Models**. The download/existing buttons appear only while Maya-S is installed but not prepared; once prepared, the Maya-S row opens a per-model settings sheet. Added read-only `GET /features/maya-s/model`; prepare/start/existing jobs use `model.maya-s.*` kinds so they appear in Models' active job list. Focused + full backend (1286 passed / 2 skipped) and frontend build pass. Real model load/inference still NOT TESTED (waiting for the user's RAM upgrade).
 
 ## AMD GPU Smart Fan Control（2026-11-12着手、2026-11-14 PR #360マージ・`ControlDeck_v0.12`）
 
@@ -3836,3 +3854,14 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - ブラウザでの画面（制御方式3種、プリセット、状態欄、温度グラフ）は利用者が確認。モバイル幅・物理スマートフォンはNOT TESTED。
 - main（#362まで）を取り込んだ候補で backend **1327 passed / 2 skipped**、`tsc --noEmit` と frontend production build 成功（Ubuntu・R9700 の自前PC）。
 - 配布は従来どおり `ControlDeck_v0.12` のソースアーカイブ。タグは PR #360 のマージコミット。
+
+### 2026-11-14 PR #359 R9700 実機受け入れ（Maya-S 実推論）
+
+- 利用者がダウンロード済みの `Maya-S-v2-IQ2_XXS`（`/data1tb/LLM/GLM-5.3-Flash-Maya/`、約90GB・3分割）を Models 画面の「既存GGUFで準備」から指定。上流 setup が `build-hip/maya` をビルドし、pack（約0.9GB）を GGUF フォルダ内に作成。モデルの再ダウンロードなし。
+- 起動から ready まで 51〜54 秒。VRAM 約29GB / RAM 約70GB 使用、エキスパート 86GB をRAM/VRAMの2段で保持。
+- ループバック直接・認証付き共通ゲートウェイ（`maya-s`）とも応答成功。ゲートウェイは認証なしで 401、ストリームも成功。
+- 単一リクエスト・thinking low・context 8192 で decode 約24 tok/s（MTP off）、MTP on（`MAYA_GLM_MTP_DECODE=1`、採択率85〜95%）で 24.6〜26.9 tok/s。上流は離散GPUで one-GPU drafting を既定にしないため、ControlDeck の「drafting: on」は停止中の設定保存で初めて反映される。
+- 稼働中の uninstall / 設定保存 / 更新 / 再準備 / ビルドはすべて拒否。停止→設定変更→再起動を確認。不正 alias の起動は拒否。
+- 修正: 上流 setup がビルドした `build-hip/maya` を「HIP未ビルド」と表示していた。`runtime_status().built` を `build-hip` で判定し、ビルドのみ操作も同じディレクトリへ出力するよう変更。
+- main を取り込んだ PR head で backend **1358 passed / 2 skipped**、frontend production build 成功。
+- NOT TESTED: ブラウザでの画面確認（PC・モバイル）、上流の新Releaseへの更新（現在 v1.1.61 が最新）、応答品質の評価。

@@ -132,6 +132,12 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
         return await asyncio.to_thread(_llama_target, capability)
     if runtime == "strata":
         return await asyncio.to_thread(_strata_target, capability)
+    if runtime == "maya-s":
+        from app.models_mgmt import maya_s
+        if capability != "text.generate" or not (await maya_s.health())["ok"]:
+            raise AITargetUnavailable("Maya-Sのテキストモデルを明示的に起動してください")
+        instance = await asyncio.to_thread(maya_s.get_instance, "maya-s")
+        return AITarget(base_url=instance["base_url"], model=instance["alias"], gateway_managed=True)
     if runtime == "ollama":
         return await _ollama_target(capability)
     raise AITargetUnavailable(f"選択中 runtime {runtime!r} は AI gateway に未対応です")

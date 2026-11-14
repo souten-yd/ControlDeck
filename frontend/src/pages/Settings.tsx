@@ -411,7 +411,7 @@ interface AddonState {
 }
 
 interface GpuRuntimeDetail {
-  runtime: "llama.cpp" | "strata";
+  runtime: "llama.cpp" | "strata" | "maya-s";
   warning?: string;
   /** llama.cpp */
   active_backend?: string;
@@ -423,6 +423,10 @@ interface GpuRuntimeDetail {
   /** Strata Terminal (managed user-local installation). */
   cli_path?: string;
   models_dir?: string;
+  built?: boolean;
+  settings?: Record<string, unknown>;
+  configured?: boolean;
+  running?: boolean;
 }
 
 interface ReleaseStatus {
@@ -645,6 +649,63 @@ function GpuRuntimeDetails({ addon, release }: {
   );
 }
 
+
+/** Maya-S アドオンが持つのはエンジン（コード導入・HIPビルド）だけ。
+ * モデルのダウンロード・既存GGUFの読み込み・個別設定・ロードは Models 画面で行う。 */
+function MayaSPanel({ addon }: { addon: AddonState }) {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { data: job } = useQuery({
+    queryKey: ["maya-s-job", jobId],
+    queryFn: () => api<{status: string; error?: string; progress?: {status?: string}}>(`/jobs/${jobId}`),
+    enabled: jobId !== null,
+    refetchInterval: (q) => q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1500,
+  });
+  useEffect(() => {
+    if (!jobId || !job || ["queued", "running"].includes(job.status)) return;
+    setJobId(null);
+    setBusy(false);
+    void qc.invalidateQueries({ queryKey: ["features"] });
+    show(job.status === "succeeded" ? "Maya-SのHIPビルドが完了しました" : job.error || "Maya-SのHIPビルドに失敗しました",
+      job.status === "succeeded" ? "info" : "error");
+  }, [jobId, job?.status]);
+
+  const build = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const started = await api<{job_id: string}>("/features/maya-s/model/build-jobs", { method: "POST", json: {} });
+      setJobId(started.job_id);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "HIPビルドを開始できませんでした", "error");
+      setBusy(false);
+    }
+  };
+
+  const runtime = addon.runtime;
+  return <div className="mt-3 space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+    <p className="text-xs font-semibold">Maya-S エンジン</p>
+    <p className="text-[11px] text-zinc-500">
+      {runtime?.running ? "モデル稼働中 · 127.0.0.1:8099"
+        : runtime?.configured ? "HIPモデル準備済み・停止中"
+        : runtime?.built ? "HIPビルド済み・モデル未準備" : "HIP未ビルド・モデル未準備"}
+    </p>
+    <p className="text-[11px] text-zinc-500">
+      モデルのダウンロード・既存モデルの読み込み・個別設定・ロードは{" "}
+      <a href="/models" className="text-accent-600 underline dark:text-accent-400">Models</a> で行います。
+    </p>
+    <button type="button" disabled={busy || runtime?.running} onClick={() => void build()}
+      className="min-h-11 rounded-lg border px-3 text-xs disabled:opacity-40">
+      {runtime?.built ? "HIPを再ビルド" : "HIPをビルド"}（モデル取得なし）
+    </button>
+    {jobId && <p className="text-xs text-zinc-500" role="status">
+      ジョブ {job?.status ?? "queued"} · {job?.progress?.status || "処理中"}
+    </p>}
+  </div>;
+}
+
 /** アドオン管理: 導入（npmユーザー空間・sudo不要）/有効化/無効化/アンインストールをワンタップで。 */
 function AddonsSection() {
   const show = useToasts((s) => s.show);
@@ -751,7 +812,7 @@ function AddonsSection() {
       <p className="mb-3 text-xs text-zinc-400">オプトイン機能の導入と管理。導入はユーザー領域へのインストールでパスワードは不要です。</p>
       <div className="space-y-2.5">
         {(addons ?? []).map((addon) => (
-          <div key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+          <div id={`feature-${addon.id}`} key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
             <div className="flex flex-wrap items-center gap-2">
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
                 title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />
@@ -774,6 +835,7 @@ function AddonsSection() {
                 {addon.kind === "gpu-runtime" && (
                   <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />
                 )}
+                {addon.id === "maya-s" && addon.installed && <MayaSPanel addon={addon} />}
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                 {addon.installed && addon.managed && (

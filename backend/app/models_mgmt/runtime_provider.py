@@ -495,9 +495,39 @@ class StrataRuntimeProvider(OpenAICompatibleRuntimeProvider):
         return payload
 
 
+class MayaRuntimeProvider(OpenAICompatibleRuntimeProvider):
+    """Managed Maya-S. It never truncates: prompt + max_tokens over its context is a 400.
+
+    llama.cpp quietly accepts an oversized max_tokens, so callers size it for the
+    model rather than for this server. Count the prompt with Maya's own template
+    first and shrink only the output budget to fit.
+    """
+
+    kind = "maya-s"
+
+    async def _prepare(self, request: RuntimeChatRequest) -> None:
+        await super()._prepare(request)
+        from app.models_mgmt import maya_s
+
+        if not await maya_s.ensure_ready("maya-s"):
+            raise RuntimeProviderError("Maya-Sが起動していないか、読み込み中です。Modelsで起動してください")
+        counted = await maya_s.prompt_room(request.messages)
+        if counted is None:
+            # Count unavailable: let the server decide, as before.
+            return
+        prompt, context = counted
+        room = context - prompt
+        if room < 1:
+            raise RuntimeProviderError(
+                f"入力が長すぎます（{prompt}トークン）。Maya-Sのコンテキストは{context}トークンです。"
+                "会話を短くするか、Modelsでコンテキストを広げてください")
+        request.max_tokens = min(int(request.max_tokens or room), room)
+
+
 _OLLAMA = OllamaRuntimeProvider()
 _LLAMA = LlamaCppRuntimeProvider()
 _STRATA = StrataRuntimeProvider()
+_MAYA = MayaRuntimeProvider()
 _OPENAI = OpenAICompatibleRuntimeProvider()
 
 
@@ -520,6 +550,10 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
                 return _LLAMA
             if strata.installed() and parsed.port in {int(i["port"]) for i in strata_gateway.list_instances()}:
                 return _STRATA
+            from app.models_mgmt import maya_s
+
+            if parsed.port in {int(i["port"]) for i in maya_s.list_instances()}:
+                return _MAYA
     except Exception:
         pass
     return _OPENAI
@@ -543,7 +577,7 @@ def provider_for_request(request: RuntimeChatRequest) -> LlmRuntimeProvider:
     return provider_for_base_url(request.base_url)
 
 
-_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _OPENAI)
+_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _MAYA, _OPENAI)
 
 
 def active_request_count() -> int:
