@@ -14,6 +14,7 @@ import { IconFolder, IconPlus, IconTrash } from "../../components/icons";
 import { useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
 import { BackgroundRuns } from "./BackgroundRuns";
+import { WorkflowExtensions } from "./WorkflowExtensions";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -206,6 +207,7 @@ export default function OpenCodePage({ runtime = "v1" }: { runtime?: string }) {
           <button onClick={() => save.mutate()} disabled={save.isPending} className="rounded-xl border border-accent-500 py-2 text-sm text-accent-600 disabled:opacity-50 sm:col-span-2">設定を保存</button>
         </section>
       )}
+      {settingsOpen && <WorkflowExtensions runtime={runtime} />}
 
       <BackgroundRuns />
 
