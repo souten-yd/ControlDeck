@@ -22,7 +22,8 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
 
   await page.getByRole("button", { name: "LLM 共通設定" }).click();
   const common = page.getByRole("dialog", { name: "LLM 共通設定" });
-  await expect(common.getByText("全ランタイム共通")).toBeVisible();
+  await expect(common.getByText("起動と停止", { exact: true })).toBeVisible();
+  await common.locator("summary", { hasText: "Deep Research" }).click();
   await expect(common.getByText("Deep Research専用CTX")).toHaveCount(0);
   await expect(common.getByText("チャット・ワークフロー生成の出力token上限")).toHaveCount(0);
   await expect(common.getByLabel("統合する根拠文字数上限")).toHaveValue("90000");
@@ -42,6 +43,8 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   const alias = status.selected_alias as string;
   await page.getByRole("button", { name: `${alias}の個別設定を開く` }).click();
   const sheet = page.getByRole("dialog", { name: `${alias} · モデル個別設定` });
+  // 使う頻度の低い項目は「詳細」に畳んである。
+  await sheet.locator("summary", { hasText: "詳細" }).click();
   await expect(sheet.getByText("Deep Research専用CTX", { exact: true })).toBeVisible();
   await expect(sheet.getByLabel("コンテキスト長（CTX）").locator("option[value='262144']")).toHaveCount(1);
   await expect(sheet.getByLabel("最大出力トークン").locator("option[value='262144']")).toHaveCount(1);

@@ -115,7 +115,7 @@ test("configures up to six mobile destinations while keeping More fixed", async 
   await page.getByLabel("パスワード").fill(password!);
   await page.getByRole("button", { name: "ログイン" }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
-  await page.goto("/settings");
+  await page.goto("/settings/appearance");
 
   const settings = page.getByRole("region", { name: "Bottom Navigation" });
   await expect(settings.getByText("5 / 6", { exact: true })).toBeVisible();

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import type { ReactNode, SVGProps } from "react";
 import { api } from "../api/client";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
@@ -14,6 +15,7 @@ import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
+import { IconBell, IconChevronLeft, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconSettings, IconShield, IconUser, IconUsers } from "../components/icons";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
@@ -39,13 +41,6 @@ interface AuditEntry {
 
 export default function SettingsPage() {
   const user = useAuth((s) => s.user);
-  const can = useAuth((s) => s.can);
-  const theme = useTheme((s) => s.theme);
-  const setTheme = useTheme((s) => s.setTheme);
-  const accent = useTheme((s) => s.accent);
-  const setAccent = useTheme((s) => s.setAccent);
-  const oled = useTheme((s) => s.oled);
-  const setOled = useTheme((s) => s.setOled);
 
   if (user?.totp_required && !user.totp_enabled) {
     return (
@@ -64,118 +59,229 @@ export default function SettingsPage() {
     );
   }
 
+  return <SettingsLayout />;
+}
+
+type SectionId = "account" | "users" | "appearance" | "notifications" | "features" | "hardware" | "system";
+type Can = (permission: string) => boolean;
+
+interface SettingsSectionDef {
+  id: SectionId;
+  label: string;
+  summary: string;
+  icon: (p: SVGProps<SVGSVGElement>) => ReactNode;
+  /** 検索で拾う語。画面に出る見出し・項目名をそのまま並べる。 */
+  keywords: string[];
+  allowed: (can: Can) => boolean;
+}
+
+/** 設定のカテゴリ。順番は「よく触る順」。ここに無い設定はカテゴリ内の「詳細」に入れる。 */
+const SETTINGS_SECTIONS: SettingsSectionDef[] = [
+  { id: "account", label: "アカウント", summary: "パスワード・二要素認証・パスキー・ログイン中の端末",
+    icon: IconUser, keywords: ["パスワード", "二要素", "TOTP", "パスキー", "顔認証", "指紋", "セッション", "ログアウト", "端末"],
+    allowed: () => true },
+  { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・モバイルの下部メニュー",
+    icon: IconPalette, keywords: ["テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル"],
+    allowed: () => true },
+  { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、拡張機能、推奨スキル",
+    icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "PatentBuddy", "スキル", "manifest"],
+    allowed: (can) => can("settings.manage") },
+  { id: "hardware", label: "ハードウェア", summary: "GPUのファン制御と温度",
+    icon: IconChip, keywords: ["ファン", "温度", "GPU", "R9700", "回転数", "PID", "カーブ"],
+    allowed: (can) => can("settings.manage") },
+  { id: "notifications", label: "通知", summary: "通知チャンネルとアラートルール",
+    icon: IconBell, keywords: ["通知", "アラート", "Discord", "Slack", "メール", "Webhook", "CPU"],
+    allowed: (can) => can("system.view") },
+  { id: "users", label: "ユーザーと権限", summary: "ユーザーの追加・ロール・権限",
+    icon: IconUsers, keywords: ["ユーザー", "ロール", "権限", "管理者", "アカウント追加"],
+    allowed: (can) => can("users.manage") },
+  { id: "system", label: "システム", summary: "本体の更新・バックアップ・監査ログ",
+    icon: IconShield, keywords: ["更新", "アップデート", "リリース", "バックアップ", "復元", "監査ログ", "ログ"],
+    allowed: (can) => can("settings.manage") || can("audit.view") },
+];
+
+function matches(def: SettingsSectionDef, query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return { hit: true, word: "" };
+  if (def.label.toLowerCase().includes(q) || def.summary.toLowerCase().includes(q)) return { hit: true, word: "" };
+  const word = def.keywords.find((k) => k.toLowerCase().includes(q)) ?? "";
+  return { hit: !!word, word };
+}
+
+/** 設定のカテゴリ一覧（PC は左、モバイルは最初の画面）と選んだカテゴリの中身。
+ * カテゴリごとに URL（/settings/:section）を持ち、他の画面から直接リンクできる。 */
+function SettingsLayout() {
+  const can = useAuth((s) => s.can);
+  const { section } = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const visible = SETTINGS_SECTIONS.filter((def) => def.allowed(can));
+  // 旧リンク（/settings?extension=...）は拡張機能のカテゴリへ。
+  const requested = searchParams.get("extension") ? "features" : section;
+  const current = visible.find((def) => def.id === requested) ?? null;
+  const shown = current ?? visible[0];
+  const results = visible.map((def) => ({ def, ...matches(def, query) })).filter((r) => r.hit);
+
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-4 md:p-6">
-      <PageHeader title="Settings" />
-
-      <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-        <h2 className="mb-3 text-sm font-semibold text-zinc-500">アカウント</h2>
-        <dl className="space-y-2 text-sm">
-          <div className="flex gap-4">
-            <dt className="w-28 text-zinc-400">ユーザー名</dt>
-            <dd>{user?.username}</dd>
-          </div>
-          <div className="flex gap-4">
-            <dt className="w-28 text-zinc-400">ロール</dt>
-            <dd>{user?.role}</dd>
-          </div>
-        </dl>
-        <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-          <TotpSettings />
-        </div>
-        <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-          <PasswordSettings />
-        </div>
-        <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-          <PasskeySettings />
-        </div>
-      </section>
-
-      {can("users.manage") && (
-        <Suspense fallback={<Skeleton className="h-40 rounded-2xl" />}>
-          <AccessManagement />
-        </Suspense>
-      )}
-
-      <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-        <h2 className="mb-3 text-sm font-semibold text-zinc-500">外観</h2>
-        <p className="mb-2 text-xs text-zinc-400">モード</p>
-        <div className="flex gap-2">
-          {(["system", "light", "dark"] as Theme[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTheme(t)}
-              aria-pressed={theme === t}
-              className={`rounded-xl px-4 py-2 text-sm font-medium ${
-                theme === t
-                  ? "bg-accent-600 text-white"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"
-              }`}
-            >
-              {t === "system" ? "システム" : t === "light" ? "ライト" : "ダーク"}
-            </button>
-          ))}
-        </div>
-
-        <p className="mb-2 mt-5 text-xs text-zinc-400">アクセントカラー</p>
-        <div className="flex flex-wrap gap-3">
-          {ACCENTS.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => setAccent(a.id)}
-              aria-label={a.label}
-              aria-pressed={accent === a.id}
-              title={a.label}
-              className={`grid h-11 w-11 place-items-center rounded-full transition-transform hover:scale-105 ${
-                accent === a.id
-                  ? "ring-2 ring-offset-2 ring-zinc-400 dark:ring-zinc-500 dark:ring-offset-zinc-900"
-                  : ""
-              }`}
-              style={{ backgroundColor: a.color }}
-            >
-              {accent === a.id && (
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="m5 12 5 5L20 7" />
-                </svg>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <label className="mt-5 flex items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 dark:border-zinc-700">
-          <span>
-            <span className="block text-sm">OLED 完全黒</span>
-            <span className="block text-xs text-zinc-400">
-              ダークモード時に背景を純黒にします（有機 EL の省電力向け）
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={oled}
-            onChange={(e) => setOled(e.target.checked)}
-            className="h-5 w-5 accent-current"
-          />
-        </label>
-      </section>
-
-      <MobileNavigationSettings />
-
-      {can("settings.manage") && <FanControlSettings />}
-
-      {can("settings.manage") && <ControlDeckUpdateSection />}
-      {can("settings.manage") && <AddonsSection />}
-      {can("settings.manage") && <ExtensionsSection />}
-      {can("settings.manage") && <RecommendedSkills />}
-
-      {can("system.view") && <AlertsSettings />}
-
-      {can("settings.manage") && <BackupSection />}
-
-      <SessionsSection />
-
-      {can("audit.view") && <AuditSection />}
+    <div className="mx-auto max-w-5xl p-4 md:p-6">
+      <div className="md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:gap-6">
+        <nav aria-label="設定のカテゴリ" className={current ? "hidden md:block" : "block"}>
+          <PageHeader title="Settings" />
+          <label className="relative mb-3 block">
+            <span className="sr-only">設定を検索</span>
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="設定を検索（例: パスワード）"
+              onKeyDown={(e) => { if (e.key === "Enter" && results[0]) navigate(`/settings/${results[0].def.id}`); }}
+              className="min-h-11 w-full rounded-xl border border-zinc-200 bg-white pl-9 pr-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+          </label>
+          <ul className="space-y-1 md:sticky md:top-4">
+            {results.map(({ def, word }) => {
+              const Icon = def.icon;
+              const active = def.id === shown?.id;
+              return <li key={def.id}>
+                <Link to={`/settings/${def.id}`} aria-current={active ? "page" : undefined}
+                  className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${active
+                    ? "md:bg-accent-50 md:text-accent-700 md:dark:bg-accent-600/15 md:dark:text-accent-300"
+                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/70"}`}>
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><Icon /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{def.label}</span>
+                    <span className="block truncate text-xs text-zinc-500 md:hidden">{word ? `一致: ${word}` : def.summary}</span>
+                    {word && <span className="hidden text-xs text-zinc-500 md:block">一致: {word}</span>}
+                  </span>
+                  <IconChevronRight className="shrink-0 text-zinc-400 md:hidden" />
+                </Link>
+              </li>;
+            })}
+            {results.length === 0 && <li className="px-3 py-4 text-sm text-zinc-500">一致する設定はありません</li>}
+            <li className="pt-2">
+              <Link to="/models" className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><IconSettings /></span>
+                <span className="min-w-0 flex-1"><span className="block font-medium">AI モデル</span>
+                  <span className="block truncate text-xs text-zinc-500">Models 画面で管理します</span></span>
+                <IconChevronRight className="shrink-0 text-zinc-400" />
+              </Link>
+            </li>
+          </ul>
+        </nav>
+        <main className={current ? "block" : "hidden md:block"}>
+          {shown && <>
+            <Link to="/settings" className="mb-2 inline-flex min-h-11 items-center gap-1 text-sm text-accent-600 md:hidden dark:text-accent-400">
+              <IconChevronLeft /> 設定
+            </Link>
+            <header className="mb-4 md:pt-1">
+              <h2 className="text-xl font-semibold tracking-tight">{shown.label}</h2>
+              <p className="mt-1 text-xs text-zinc-500">{shown.summary}</p>
+            </header>
+            <div className="space-y-6"><SettingsSectionBody id={shown.id} /></div>
+          </>}
+        </main>
+      </div>
     </div>
   );
+}
+
+function SettingsSectionBody({ id }: { id: SectionId }) {
+  const can = useAuth((s) => s.can);
+  switch (id) {
+    case "account": return <><AccountSection /><SessionsSection /></>;
+    case "appearance": return <><AppearanceSection /><MobileNavigationSettings /></>;
+    case "features": return <FeaturesSection />;
+    case "hardware": return <FanControlSettings />;
+    case "notifications": return <AlertsSettings />;
+    case "users": return <Suspense fallback={<Skeleton className="h-40 rounded-2xl" />}><AccessManagement /></Suspense>;
+    case "system": return <>
+      {can("settings.manage") && <ControlDeckUpdateSection />}
+      {can("settings.manage") && <BackupSection />}
+      {can("audit.view") && <AuditSection />}
+    </>;
+  }
+}
+
+const card = "rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5";
+
+function AccountSection() {
+  const user = useAuth((s) => s.user);
+  return (
+    <section className={card}>
+      <dl className="flex flex-wrap gap-x-8 gap-y-1 text-sm">
+        <div className="flex gap-3"><dt className="text-zinc-400">ユーザー名</dt><dd>{user?.username}</dd></div>
+        <div className="flex gap-3"><dt className="text-zinc-400">ロール</dt><dd>{user?.role}</dd></div>
+      </dl>
+      <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800"><TotpSettings /></div>
+      <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800"><PasswordSettings /></div>
+      <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800"><PasskeySettings /></div>
+    </section>
+  );
+}
+
+function AppearanceSection() {
+  const theme = useTheme((s) => s.theme);
+  const setTheme = useTheme((s) => s.setTheme);
+  const accent = useTheme((s) => s.accent);
+  const setAccent = useTheme((s) => s.setAccent);
+  const oled = useTheme((s) => s.oled);
+  const setOled = useTheme((s) => s.setOled);
+  return (
+    <section className={card}>
+      <h3 className="mb-2 text-sm font-semibold text-zinc-500">テーマ</h3>
+      <div className="flex gap-2">
+        {(["system", "light", "dark"] as Theme[]).map((t) => (
+          <button key={t} onClick={() => setTheme(t)} aria-pressed={theme === t}
+            className={`min-h-11 rounded-xl px-4 text-sm font-medium ${theme === t
+              ? "bg-accent-600 text-white"
+              : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"}`}>
+            {t === "system" ? "システム" : t === "light" ? "ライト" : "ダーク"}
+          </button>
+        ))}
+      </div>
+      <h3 className="mb-2 mt-5 text-sm font-semibold text-zinc-500">アクセントカラー</h3>
+      <div className="flex flex-wrap gap-3">
+        {ACCENTS.map((a) => (
+          <button key={a.id} onClick={() => setAccent(a.id)} aria-label={a.label} aria-pressed={accent === a.id} title={a.label}
+            className={`grid h-11 w-11 place-items-center rounded-full transition-transform hover:scale-105 ${accent === a.id
+              ? "ring-2 ring-offset-2 ring-zinc-400 dark:ring-zinc-500 dark:ring-offset-zinc-900" : ""}`}
+            style={{ backgroundColor: a.color }}>
+            {accent === a.id && (
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="m5 12 5 5L20 7" />
+              </svg>
+            )}
+          </button>
+        ))}
+      </div>
+      <label className="mt-5 flex items-center justify-between rounded-xl border border-zinc-200 px-4 py-3 dark:border-zinc-700">
+        <span>
+          <span className="block text-sm">OLED 完全黒</span>
+          <span className="block text-xs text-zinc-400">ダークモード時に背景を純黒にします（有機 EL の省電力向け）</span>
+        </span>
+        <input type="checkbox" checked={oled} onChange={(e) => setOled(e.target.checked)} className="h-5 w-5 accent-current" />
+      </label>
+    </section>
+  );
+}
+
+/** オプション機能・拡張機能・推奨スキルは同じカテゴリの中で切り替える。 */
+function FeaturesSection() {
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<"features" | "extensions" | "skills">(
+    searchParams.get("extension") ? "extensions" : "features");
+  const tabs = [["features", "オプション機能"], ["extensions", "拡張機能"], ["skills", "推奨スキル"]] as const;
+  return <>
+    <div role="tablist" aria-label="機能と拡張" className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+      {tabs.map(([id, label]) => (
+        <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
+          className={`min-h-10 rounded-lg px-2 text-sm font-medium ${tab === id
+            ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+    {tab === "features" && <AddonsSection />}
+    {tab === "extensions" && <ExtensionsSection />}
+    {tab === "skills" && <RecommendedSkills />}
+  </>;
 }
 
 function BackupSection() {
@@ -216,13 +322,33 @@ function BackupSection() {
   );
 }
 
+/** ブラウザ名とOSだけの短い表記。全文は title で見られる。 */
+function describeAgent(ua: string) {
+  const browser = /Edg\/(\d+)/.exec(ua) ? `Edge ${/Edg\/(\d+)/.exec(ua)![1]}`
+    : /HeadlessChrome\/(\d+)/.exec(ua) ? `自動テスト（Chrome ${/HeadlessChrome\/(\d+)/.exec(ua)![1]}）`
+    : /Chrome\/(\d+)/.exec(ua) ? `Chrome ${/Chrome\/(\d+)/.exec(ua)![1]}`
+    : /Firefox\/(\d+)/.exec(ua) ? `Firefox ${/Firefox\/(\d+)/.exec(ua)![1]}`
+    : /Version\/(\d+).*Safari/.exec(ua) ? `Safari ${/Version\/(\d+).*Safari/.exec(ua)![1]}`
+    : /^([\w.-]+)\/[\d.]+/.exec(ua)?.[1] ?? "不明なブラウザ";
+  const os = /iPhone|iPad/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows"
+    : /Mac OS X/.test(ua) ? "macOS" : /Linux|X11/.test(ua) ? "Linux" : "";
+  return os ? `${browser} · ${os}` : browser;
+}
+
 function SessionsSection() {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
+  const [expanded, setExpanded] = useState(false);
+  const [confirmAll, setConfirmAll] = useState(false);
   const { data: sessions } = useQuery({
     queryKey: ["sessions"],
     queryFn: () => api<SessionInfo[]>("/auth/sessions"),
   });
+  // 現在の端末を先頭に、残りは最後に使った順。多いときは先頭の数件だけ見せる。
+  const ordered = [...(sessions ?? [])].sort((a, b) =>
+    Number(b.current) - Number(a.current) || (b.last_seen_at || "").localeCompare(a.last_seen_at || ""));
+  const others = ordered.filter((s) => !s.current);
+  const visible = expanded ? ordered : ordered.slice(0, 5);
 
   const revoke = async (id: number) => {
     try {
@@ -233,32 +359,45 @@ function SessionsSection() {
       show(e instanceof Error ? e.message : "失効に失敗しました", "error");
     }
   };
+  const revokeOthers = async () => {
+    setConfirmAll(false);
+    const results = await Promise.allSettled(others.map((s) => api(`/auth/sessions/${s.id}`, { method: "DELETE" })));
+    qc.invalidateQueries({ queryKey: ["sessions"] });
+    const failed = results.filter((r) => r.status === "rejected").length;
+    show(failed ? `${failed}件を失効できませんでした` : "この端末以外のセッションをすべて失効しました", failed ? "error" : "info");
+  };
 
   return (
-    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-      <h2 className="mb-3 text-sm font-semibold text-zinc-500">アクティブなセッション</h2>
+    <section className={card}>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-500">ログイン中の端末{sessions && `（${sessions.length}）`}</h3>
+        {others.length > 0 && (
+          <button onClick={() => setConfirmAll(true)} className="min-h-11 text-xs font-medium text-red-600 hover:underline dark:text-red-400">
+            この端末以外をすべて失効
+          </button>
+        )}
+      </div>
       {!sessions ? (
         <Skeleton className="h-16" />
       ) : (
         <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
-          {sessions.map((s) => (
+          {visible.map((s) => (
             <li key={s.id} className="flex items-center gap-3 py-2.5 text-sm">
               <div className="min-w-0 flex-1">
                 <p className="truncate">
                   {s.ip_address}
                   {s.current && (
                     <span className="ml-2 rounded bg-accent-50 px-1.5 py-0.5 text-[10px] font-medium text-accent-700 dark:bg-accent-600/15 dark:text-accent-400">
-                      現在のセッション
+                      この端末
                     </span>
                   )}
                 </p>
-                <p className="truncate text-xs text-zinc-400">{s.user_agent}</p>
+                <p className="truncate text-xs text-zinc-400" title={s.user_agent}>
+                  {describeAgent(s.user_agent)}{s.last_seen_at && ` · 最終 ${new Date(s.last_seen_at + "Z").toLocaleString("ja-JP")}`}
+                </p>
               </div>
               {!s.current && (
-                <button
-                  onClick={() => revoke(s.id)}
-                  className="shrink-0 text-xs font-medium text-red-600 hover:underline dark:text-red-400"
-                >
+                <button onClick={() => revoke(s.id)} className="min-h-11 shrink-0 px-2 text-xs font-medium text-red-600 hover:underline dark:text-red-400">
                   失効
                 </button>
               )}
@@ -266,21 +405,45 @@ function SessionsSection() {
           ))}
         </ul>
       )}
+      {ordered.length > 5 && (
+        <button onClick={() => setExpanded(!expanded)} className="mt-1 min-h-11 text-xs font-medium text-accent-600 dark:text-accent-400">
+          {expanded ? "折りたたむ" : `すべて表示（他 ${ordered.length - 5} 件）`}
+        </button>
+      )}
+      {confirmAll && (
+        <ConfirmDialog title="この端末以外のセッションを失効しますか？"
+          message={`${others.length}件のセッションをログアウトさせます。この端末はログインしたままです。`}
+          confirmLabel="すべて失効" onConfirm={() => void revokeOthers()} onClose={() => setConfirmAll(false)} />
+      )}
     </section>
   );
 }
 
 function AuditSection() {
+  const [limit, setLimit] = useState(50);
+  const [showAutomated, setShowAutomated] = useState(false);
   const { data: entries } = useQuery({
-    queryKey: ["audit"],
-    queryFn: () => api<AuditEntry[]>("/audit?limit=50"),
+    queryKey: ["audit", limit],
+    queryFn: () => api<AuditEntry[]>(`/audit?limit=${limit}`),
     refetchInterval: 30_000,
   });
+  // アドオンが数秒ごとに行う自動処理（トークン確認など）は人の操作を埋もれさせるので既定で隠す。
+  const automated = (e: AuditEntry) => e.username.startsWith("addon:");
+  const rows = (entries ?? []).filter((e) => showAutomated || !automated(e));
+  const hidden = (entries ?? []).length - rows.length;
   return (
-    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-      <h2 className="mb-3 text-sm font-semibold text-zinc-500">監査ログ（最近 50 件）</h2>
+    <section className={card}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-500">監査ログ</h3>
+        <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500">
+          <input type="checkbox" checked={showAutomated} onChange={(e) => setShowAutomated(e.target.checked)} className="h-4 w-4" />
+          アドオンの自動処理も表示{!showAutomated && hidden > 0 && `（${hidden}件）`}
+        </label>
+      </div>
       {!entries ? (
         <Skeleton className="h-24" />
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-zinc-500">直近 {limit} 件に人の操作はありません</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
@@ -294,26 +457,23 @@ function AuditSection() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {entries.map((e) => (
+              {rows.map((e) => (
                 <tr key={e.id}>
-                  <td className="num whitespace-nowrap py-1.5 pr-3 text-zinc-400">
-                    {new Date(e.timestamp + "Z").toLocaleString("ja-JP")}
-                  </td>
+                  <td className="num whitespace-nowrap py-1.5 pr-3 text-zinc-400">{new Date(e.timestamp + "Z").toLocaleString("ja-JP")}</td>
                   <td className="py-1.5 pr-3">{e.username}</td>
                   <td className="py-1.5 pr-3 font-mono">{e.action}</td>
-                  <td className="py-1.5 pr-3 text-zinc-400">
-                    {e.resource_type && `${e.resource_type}/${e.resource_id}`}
-                  </td>
-                  <td
-                    className={`py-1.5 ${e.result === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-                  >
-                    {e.result}
-                  </td>
+                  <td className="py-1.5 pr-3 text-zinc-400">{e.resource_type && `${e.resource_type}/${e.resource_id}`}</td>
+                  <td className={`py-1.5 ${e.result === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>{e.result}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {limit < 500 && (entries?.length ?? 0) >= limit && (
+        <button onClick={() => setLimit(Math.min(500, limit * 4))} className="mt-2 min-h-11 text-xs font-medium text-accent-600 dark:text-accent-400">
+          さらに古い記録を読み込む
+        </button>
       )}
     </section>
   );
@@ -805,83 +965,113 @@ function AddonsSection() {
     }
   };
 
-  const btn = "rounded-xl px-3.5 py-2 text-xs font-medium";
+  const btn = "min-h-10 rounded-xl px-3.5 text-xs font-medium";
+  const busy = jobId !== null || reloading;
+  const requiresName = (addon: AddonState) => (addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires;
+  const statusLine = (addon: AddonState) =>
+    addon.enabled ? addon.summary
+      : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled ? "導入済み — サービスの復旧が必要です"
+      : addon.installed ? "導入済み（無効）— 有効化すると使えます"
+      : addon.available ? addon.summary
+      : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です";
+  /** その時に必要な操作だけを1つ前に出す。残りは「詳細」に入れる。 */
+  const primary = (addon: AddonState) => {
+    if (!addon.installed) {
+      return <button onClick={() => void install(addon)} disabled={!addon.available || busy || addon.requires_installed === false}
+        title={addon.requires_installed === false ? `先に ${requiresName(addon)} を導入してください` : undefined}
+        className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
+        {jobId !== null && jobKind === "install" ? "導入中…" : addon.kind === "gpu-runtime" ? "セットアップ" : "導入"}
+      </button>;
+    }
+    if (!addon.enabled && addon.route_gated) {
+      return <button onClick={() => void act(addon, "enable")} disabled={busy}
+        className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
+        {addon.kind === "release-bundle" && addon.requested_enabled ? "起動して復旧" : "有効化"}
+      </button>;
+    }
+    if (addon.managed && releases?.[addon.id]?.update_available) {
+      return <button onClick={() => void update(addon)} disabled={busy}
+        className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
+        {jobId !== null && jobKind === "update" ? "更新中…" : "更新する"}
+      </button>;
+    }
+    return null;
+  };
+  const groups: [string, AddonState[]][] = [
+    ["利用中", (addons ?? []).filter((a) => a.enabled)],
+    ["導入済み（無効）", (addons ?? []).filter((a) => a.installed && !a.enabled)],
+    ["導入できる機能", (addons ?? []).filter((a) => !a.installed)],
+  ];
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
-      <h2 className="mb-1 text-sm font-semibold text-zinc-500">オプション機能</h2>
-      <p className="mb-3 text-xs text-zinc-400">オプトイン機能の導入と管理。導入はユーザー領域へのインストールでパスワードは不要です。</p>
-      <div className="space-y-2.5">
-        {(addons ?? []).map((addon) => (
-          <div id={`feature-${addon.id}`} key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
-                title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">{addon.name}
-                  {addon.version && <span className="num ml-2 text-[10px] font-normal text-zinc-400">v{addon.version.replace(/^v/, "")}</span>}
-                </p>
-                <p className="text-[11px] text-zinc-400">
-                  {addon.enabled ? `利用できます — ${addon.summary}`
-                    : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled
-                      ? "導入済み — サービスの復旧が必要です"
-                    : addon.installed ? "導入済み（無効）— 有効化すると使えます"
-                    : addon.available ? `未導入 — ${addon.summary}（${addon.kind === "release-bundle" ? "検証済みbundle" : addon.kind === "pip" ? "pip・1〜2分" : "npm・1〜2分"}）`
-                    : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です"}
-                  {addon.error && ` · ${addon.error}`}
-                  {addon.requires_installed === false &&
-                    ` · 先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} の導入が必要です`}
-                </p>
-                {addon.preview && <p className="mt-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">PREVIEW — release署名またはcatalog digest固定前</p>}
-                {addon.kind === "gpu-runtime" && (
-                  <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />
-                )}
-                {addon.id === "maya-s" && addon.installed && <MayaSPanel addon={addon} />}
-              </div>
-              <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                {addon.installed && addon.managed && (
-                  <button onClick={() => void update(addon)} disabled={jobId !== null || reloading}
-                    title={addon.kind === "gpu-runtime"
-                      ? `${addon.repo ?? "配布元"} の最新リリースへ更新します`
-                      : "npmの最新版へ更新します"}
-                    className={`${btn} border ${releases?.[addon.id]?.update_available
-                      ? "border-accent-300 bg-accent-50 text-accent-700 hover:bg-accent-100 dark:border-accent-700 dark:bg-accent-600/10 dark:text-accent-300"
-                      : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"} disabled:opacity-40`}>
-                    {jobId !== null && jobKind === "update" ? "更新中…"
-                      : releases?.[addon.id]?.update_available ? "更新する" : "更新"}
-                  </button>
-                )}
-                {!addon.installed && (
-                  <button onClick={() => void install(addon)}
-                    disabled={!addon.available || jobId !== null || addon.requires_installed === false}
-                    title={addon.requires_installed === false
-                      ? `先に ${(addons ?? []).find((a) => a.id === addon.requires)?.name ?? addon.requires} を導入してください`
-                      : undefined}
-                    className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
-                    {jobId !== null ? "導入中…" : addon.kind === "gpu-runtime" ? "セットアップ" : "導入"}
-                  </button>
-                )}
-                {addon.installed && !addon.enabled && addon.route_gated && (
-                  <button onClick={() => void act(addon, "enable")} disabled={reloading || jobId !== null}
-                    className={`${btn} bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-40`}>
-                    {addon.kind === "release-bundle" && addon.requested_enabled ? "起動して復旧" : "有効化"}
-                  </button>
-                )}
-                {addon.installed && addon.enabled && addon.route_gated && (
-                  <button onClick={() => void act(addon, "disable")} disabled={reloading || jobId !== null}
-                    className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
-                )}
-                {/* llama.cpp は登録済みモデル全部の土台なので、アドオン画面からは消させない。 */}
-                {addon.installed && addon.id !== "llama-cpp" && (
-                  <button onClick={() => setUninstalling(addon.id)} disabled={reloading || jobId !== null}
-                    className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>削除</button>
-                )}
-              </div>
+      <h2 className="sr-only">オプション機能</h2>
+      <p className="mb-3 text-xs text-zinc-500">導入はユーザー領域へのインストールで、パスワードは不要です。</p>
+      <div className="space-y-5">
+        {groups.filter(([, items]) => items.length > 0).map(([title, items]) => (
+          <div key={title}>
+            <h3 className="mb-2 text-xs font-semibold text-zinc-500">{title}（{items.length}）</h3>
+            <div className="space-y-2">
+              {items.map((addon) => {
+                const hasUpdate = releases?.[addon.id]?.update_available;
+                return (
+                  <div id={`feature-${addon.id}`} key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+                    <div className="flex items-center gap-3">
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
+                        title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />
+                      <div className="min-w-0 flex-1">
+                        <p className="flex flex-wrap items-center gap-x-2 text-sm font-semibold">
+                          {addon.name}
+                          {addon.version && <span className="num text-[10px] font-normal text-zinc-400">v{addon.version.replace(/^v/, "")}</span>}
+                          {hasUpdate && <span className="rounded bg-accent-50 px-1.5 py-0.5 text-[10px] font-medium text-accent-700 dark:bg-accent-600/15 dark:text-accent-300">更新あり</span>}
+                          {addon.preview && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">PREVIEW</span>}
+                        </p>
+                        <p className="line-clamp-2 text-xs text-zinc-500">
+                          {statusLine(addon)}
+                          {addon.error && <span className="text-red-600 dark:text-red-400"> · {addon.error}</span>}
+                          {addon.requires_installed === false && ` · 先に ${requiresName(addon)} の導入が必要です`}
+                        </p>
+                      </div>
+                      <div className="shrink-0">{primary(addon)}</div>
+                    </div>
+                    {addon.installed && (
+                      <details className="group mt-2">
+                        <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
+                          <IconChevronRight className="transition-transform group-open:rotate-90" /> 詳細と操作
+                        </summary>
+                        <div className="mt-2 space-y-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                          {addon.preview && <p className="text-[11px] text-amber-700 dark:text-amber-300">PREVIEW — release署名またはcatalog digest固定前</p>}
+                          {addon.kind === "gpu-runtime" && <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />}
+                          {addon.id === "maya-s" && <MayaSPanel addon={addon} />}
+                          <div className="flex flex-wrap gap-1.5">
+                            {addon.managed && !hasUpdate && (
+                              <button onClick={() => void update(addon)} disabled={busy}
+                                title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : "npmの最新版へ更新します"}
+                                className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
+                                {jobId !== null && jobKind === "update" ? "更新中…" : "更新"}
+                              </button>
+                            )}
+                            {addon.enabled && addon.route_gated && (
+                              <button onClick={() => void act(addon, "disable")} disabled={busy}
+                                className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
+                            )}
+                            {/* llama.cpp は登録済みモデル全部の土台なので、アドオン画面からは消させない。 */}
+                            {addon.id !== "llama-cpp" && (
+                              <button onClick={() => setUninstalling(addon.id)} disabled={busy}
+                                className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>アンインストール</button>
+                            )}
+                          </div>
+                        </div>
+                      </details>
+                    )}
+                    {jobId !== null && (jobKind === "update" ? addon.managed : !addon.installed) && (
+                      <p className="mt-2 animate-pulse text-[11px] text-zinc-400">
+                        {job?.progress?.status || (jobKind === "update" ? "更新中…" : "導入中…")} — サーバー側で実行中。この画面を閉じても継続します
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-            {jobId !== null && (jobKind === "update" ? addon.managed : !addon.installed) && (
-              <p className="mt-2 animate-pulse text-[11px] text-zinc-400">
-                {job?.progress?.status || (jobKind === "update" ? "更新中…" : "導入中…")} — サーバー側で実行中。この画面を閉じても継続します
-              </p>
-            )}
           </div>
         ))}
         {addons?.length === 0 && <p className="text-xs text-zinc-400">利用可能なオプション機能はありません</p>}

@@ -39,7 +39,8 @@ test("renders v2 contributions and state without a host reload", async ({ page, 
   const manifest = await readFile(manifestPath, "utf8");
   await login(page);
   await deleteFakeAddon(page);
-  await page.goto("/settings");
+  await page.goto("/settings/features");
+  await page.getByRole("tab", { name: "拡張機能" }).click();
 
   await page.getByRole("button", { name: "manifest登録" }).click();
   await page.getByLabel("Extension manifest JSON").fill(manifest);
