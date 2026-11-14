@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
 from app.monitoring import fan_map, fan_pid
+from app.monitoring.fan_filter import TemperatureEMA
 from app.monitoring.fan_strategy import AdaptivePolicy, margin_ramp
 
 logger = logging.getLogger("control_deck.fan_control")
@@ -61,6 +62,8 @@ class FanSettings(BaseModel):
     cool_hold_seconds: int = Field(default=30, ge=30, le=600)
     cool_rate_percent_per_min: float = Field(default=30.0, ge=1.0, le=60.0, allow_inf_nan=False)
     zero_stable_seconds: int = Field(default=600, ge=600, le=1800)
+    temp_rise_tau_seconds: float = Field(default=2.0, ge=0.5, le=15.0, allow_inf_nan=False)
+    temp_fall_tau_seconds: float = Field(default=30.0, ge=2.0, le=120.0, allow_inf_nan=False)
     learning_enabled: bool = True
     ff_gain: float = Field(default=10.0, ge=0.0, le=55.0, allow_inf_nan=False)
     kp: float = Field(default=1.0, ge=0.5, le=3.2, allow_inf_nan=False)
@@ -134,6 +137,7 @@ _cool_since: float | None = None
 _last_cool_step = 0.0
 _floor_exact = 0.0
 _temp_history: dict[str, list[tuple[float, float]]] = {}
+_temp_filter = TemperatureEMA()
 _zero_stable_since: float | None = None
 _zero_active = False
 _zero_initialized_bdf: str | None = None
@@ -168,6 +172,7 @@ FAN_PRESETS = (
     {"id": "recommended", "label": "推奨・バランス", "description": "LLM常駐向け。常時低速・昇温時即加速・静かな降速",
      "min_percent": 35, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0},
     # Tuned on the R9700 with Qwen3.8-27B (llama.cpp) bursts and a 3 min
     # sustained run (2026-11-13): idle ~890 rpm, short bursts stay at idle,
@@ -177,6 +182,7 @@ FAN_PRESETS = (
      "description": "実機のLLM負荷で調整。短い負荷では回さず、連続負荷でも約3100rpm。終了後約25秒で静音に戻る",
      "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0},
     # Same R9700 workload (2026-11-13): hotspot 95, mem 90, edge 85°C
     # (criticals 110/108/110°C) and the backstop moved to 85°C→40%.
@@ -186,6 +192,7 @@ FAN_PRESETS = (
      "description": "温度目標を上げ（hotspot 95・mem 90・edge 85°C）、安全点を85°Cに移した静音版。連続負荷でも約2400rpmで一定",
      "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 30.0, "zero_stable_seconds": 600,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
      "backstop_percent": 40, "backstop_c": 85, "target_offset_c": 5,
      "target_offsets_c": {"edge": 10}},
@@ -197,6 +204,7 @@ FAN_PRESETS = (
      "description": "hotspotのスパイクにGPUが即追従し、下げは30秒保持のあと毎分20%。連続負荷でhotspot約87°C・約2470rpm",
      "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 20.0, "zero_stable_seconds": 600,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
      "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0,
      "target_offsets_c": {"mem": 5, "edge": 10}, "control_mode": "curve"},
@@ -206,6 +214,7 @@ FAN_PRESETS = (
      "description": "目標温度に追従（FF＋PI、バック・カリキュレーション）。連続負荷でhotspot最高90°C・約2360rpm",
      "min_percent": 20, "allow_zero_rpm": False, "cool_hold_seconds": 30,
      "cool_rate_percent_per_min": 20.0, "zero_stable_seconds": 600,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 10.0, "kp": 1.0, "ki": 0.015,
      "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0,
      "target_offsets_c": {"mem": 5, "edge": 10}, "control_mode": "pid",
@@ -213,10 +222,12 @@ FAN_PRESETS = (
     {"id": "quiet", "label": "静音・変動抑制", "description": "長めの保持でファン回転数の上下を最小化",
      "min_percent": 30, "allow_zero_rpm": False, "cool_hold_seconds": 120,
      "cool_rate_percent_per_min": 10.0, "zero_stable_seconds": 900,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 5.0, "kp": 0.8, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": 0},
     {"id": "cooling", "label": "冷却優先", "description": "最低回転と冷却余裕を増やした保守的設定",
      "min_percent": 45, "allow_zero_rpm": False, "cool_hold_seconds": 60,
      "cool_rate_percent_per_min": 15.0, "zero_stable_seconds": 900,
+     "temp_rise_tau_seconds": 2.0, "temp_fall_tau_seconds": 30.0,
      "learning_enabled": True, "ff_gain": 20.0, "kp": 2.0, "ki": 0.015, "backstop_percent": 60, "backstop_c": None, "target_offset_c": -5},
 )
 
@@ -232,7 +243,7 @@ def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanS
     keys = (
         "min_percent", "allow_zero_rpm", "cool_hold_seconds",
         "cool_rate_percent_per_min", "zero_stable_seconds",
-        "learning_enabled", "ff_gain", "kp", "ki", "backstop_percent", "backstop_c",
+        "temp_rise_tau_seconds", "temp_fall_tau_seconds", "learning_enabled", "ff_gain", "kp", "ki", "backstop_percent", "backstop_c",
     )
     if any(getattr(settings, key) != preset[key] for key in keys):
         return settings.model_copy(update={"preset_id": "custom"})
@@ -635,7 +646,11 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
         _pid_out = current
         result = fan_pid.PIDResult(current, result.feedforward, result.p_term, _pid.integral,
                                    result.error_c, result.governing, result.override)
-    wanted = float(hold) if hold is not None else result.output
+    # Independent raw-temperature emergency override; no EMA/median may
+    # delay a sample at target +5°C, including during auto-tune holds.
+    raw_overheat = any(float(s["value_c"]) >= float(s["target_c"]) + 5.0 for s in sensors)
+    wanted = max(float(hold) if hold is not None else result.output,
+                 float(maximum) if raw_overheat else float(minimum))
     if wanted >= _pid_out or (_last_pid or {}).get("override"):
         # Rise at once; after a safety override return straight to the PID
         # output (the override was not a PID decision to keep).
@@ -664,7 +679,7 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
     _last_pid = {
         "output_percent": round(_pid_out, 1), "feedforward_percent": result.feedforward,
         "p_percent": result.p_term, "i_percent": result.i_term, "error_c": result.error_c,
-        "governing_sensor": result.governing, "override": result.override,
+        "governing_sensor": result.governing, "override": result.override or raw_overheat,
         "tune_hold_percent": hold,
     }
     # Firmware curve: the map shape (shifted +3 °C) raised to the PID output.
@@ -807,6 +822,7 @@ def _failure(exc: Exception, bdf: str | None) -> None:
     global _state, _error, _active_bdf, _last_curve, _sensor_ids, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since
     global _last_tick_at
+    _temp_filter.reset()
     logger.error("GPUファン制御を停止します: %s", exc)
     reset_error = ""
     held = False
@@ -848,6 +864,7 @@ def tick() -> None:
             now < _last_tick_at or now - _last_tick_at > 4 * INTERVAL
         ):
             _temp_history = {}
+            _temp_filter.reset()
             _cool_since = None
             _zero_stable_since = None
             _policy.reset_dwell(now)
@@ -882,13 +899,20 @@ def tick() -> None:
                 raise FanControlError("制御中に温度センサー構成が変化しました")
             if _active_bdf != bdf:
                 _temp_history, _cool_since, _zero_stable_since = {}, None, None
+                _temp_filter.reset()
                 _new_policy(settings, bdf)
             maximum = device["_range"][3]
+            filtered_c = _temp_filter.update(
+                sensors, now, settings.temp_rise_tau_seconds, settings.temp_fall_tau_seconds)
+            # EMA is for software feedback only: safety and wake checks retain raw sensors.
+            software_sensors = [{**s, "value_c": filtered_c[s["id"]],
+                                 "headroom_c": s["target_c"] - filtered_c[s["id"]]}
+                                for s in sensors]
             rises = _rise_rates(sensors, now)
             rise = max(rises.values(), default=0.0)
             _last_rise_c_per_min = round(rise, 2)
             strategy = _policy.update(
-                sensors,
+                software_sensors,
                 power_w=device["power_w"], power_cap_w=device["power_cap_w"],
                 min_percent=settings.min_percent, max_percent=maximum,
                 now=now, dt=INTERVAL, allow_stop=settings.allow_zero_rpm,
@@ -913,10 +937,12 @@ def tick() -> None:
                     _save_model(bdf, _model)
                     _last_model_save = now
                 floor, curve, _last_map = _map.update(
-                    sensors, ranges=device["_range"], model=_model, minimum=settings.min_percent,
+                    [{**s, "control_c": filtered_c[s["id"]]} for s in sensors], ranges=device["_range"], model=_model, minimum=settings.min_percent,
                     maximum=maximum, now=now, dt=INTERVAL, hold_seconds=settings.cool_hold_seconds,
                     release_percent_per_min=settings.cool_rate_percent_per_min)
             elif pid_mode:
+                _pid.pv.tau_s = settings.temp_rise_tau_seconds
+                _pid.pv.fall_tau_s = settings.temp_fall_tau_seconds
                 if settings.allow_zero_rpm:
                     settings = settings.model_copy(update={"allow_zero_rpm": False})
                 floor, curve = _pid_step(settings, device, sensors, now, settings.min_percent, maximum)
@@ -925,8 +951,9 @@ def tick() -> None:
                 _tracker.add(now, sensors, device["power_w"], _floor)
                 fan_pid.update_idle(_model, _tracker, now, device["power_w"], device["power_cap_w"])
                 # The independent safety floor wins over learned PI/FF output.
-                wanted = max(_predictive_floor(sensors, settings.min_percent, maximum, rises),
-                             strategy["floor_percent"])
+                wanted = max(_predictive_floor(software_sensors, settings.min_percent, maximum, rises),
+                             strategy["floor_percent"],
+                             _desired_floor(sensors, settings.min_percent, maximum))
                 floor = wanted if _active_bdf != bdf else _smooth_floor(
                     wanted, _floor, now, hold_seconds=settings.cool_hold_seconds,
                     rate_percent_per_min=settings.cool_rate_percent_per_min,
@@ -995,8 +1022,12 @@ def tick() -> None:
                     _save_learning(bdf, now, settings)
             _active_bdf, _floor, _sensor_ids = bdf, floor, ids
             _state, _error = ("fan-stop" if _zero_active else "controlling"), ""
+            # PID uses a 3-sample median before its asymmetric EMA. Report
+            # the *actual* software PV rather than the separate monitor EMA.
+            displayed_c = _pid.pv.value if pid_mode else filtered_c
             _last_sample = {
                 "bdf": bdf, "sensors": sensors, "fan_rpm": rpm,
+                "smoothed_temps_c": {sid: round(v, 1) for sid, v in displayed_c.items()},
                 "floor_percent": None if _zero_active else floor,
                 "critical_sensor": min(sensors, key=lambda x: x["headroom_c"])["id"],
                 "rise_c_per_min": _last_rise_c_per_min,
@@ -1011,6 +1042,7 @@ def tick() -> None:
             _history.append({
                 "t": round(time.time(), 1),
                 "temps": {k: v["value_c"] for k, v in hottest.items()},
+                "smoothed_temps": {k: round(displayed_c[v["id"]], 2) for k, v in hottest.items()},
                 "targets": {k: v["target_c"] for k, v in hottest.items()},
                 "fan_percent": None if _zero_active else floor, "rpm": rpm,
                 "power_w": device["power_w"],
@@ -1024,7 +1056,7 @@ def tick() -> None:
 def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
-    global _cool_since, _last_cool_step, _last_tick_at, _policy, _reset_retry_failures
+    global _cool_since, _last_cool_step, _last_tick_at, _policy, _reset_retry_failures, _map
     with _lock:
         prior = _load()
         if settings.enabled:
@@ -1044,6 +1076,10 @@ def configure(settings: FanSettings) -> dict:
             _floor, _sensor_ids, _zero_rpm_checks = settings.min_percent, set(), 0
             _cool_since, _last_cool_step, _zero_stable_since = None, 0.0, None
             _temp_history = {}
+            _temp_filter.reset()
+            _pid.pv = fan_pid.PVFilter(tau_s=settings.temp_rise_tau_seconds,
+                                       fall_tau_s=settings.temp_fall_tau_seconds)
+            _map = fan_map.MapController()
             _last_tick_at = None
             _applied_floor = 0
             _new_policy(settings, device["bdf"])
@@ -1076,6 +1112,7 @@ def configure(settings: FanSettings) -> dict:
             _reset_retry_failures = 0
             _zero_active, _zero_initialized_bdf = False, None
             _temp_history, _zero_stable_since, _cool_since, _last_tick_at = {}, None, None, None
+            _temp_filter.reset()
             _policy = AdaptivePolicy()
         return status()
 
