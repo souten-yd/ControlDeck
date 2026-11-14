@@ -17,17 +17,8 @@ FeatureAction = Literal["install", "update", "enable", "disable", "uninstall"]
 
 # アドオン定義。npmはユーザー空間のprefix、pipは専用venvへ導入する（どちらもsudo不要）。
 FEATURES: dict[str, dict] = {
-    "opencode": {
-        "name": "OpenCode",
-        "kind": "npm",
-        "package": "opencode-ai",
-        "executable": "opencode",
-        # 有効化でAPI/画面/ノードを登録するため、反映にプラットフォーム再読み込みが必要。
-        "route_gated": True,
-        "summary": "OpenCode画面とAIチャットのcodeモードで使うコーディングエージェント",
-    },
-    # OpenCode v2 は別パッケージ（@opencode/cli、bin に opencode2 を持つ）で、v1 と
-    # 同居できる。v1 と別のprefixへ入れるので、片方を消してももう片方は残る。
+    # OpenCode は v2（@opencode/cli、bin は opencode2）だけを扱う。v1（opencode-ai）と
+    # v1 専用だった OMo は撤去した。
     #
     # 実行ファイルに opencode2 を選ぶのは、PATH 上の外部 v1 を「外部導入の v2」と
     # 誤検出しないため。v1 の bin は opencode だけで、opencode2 を持つのは v2 だけ。
@@ -37,20 +28,41 @@ FEATURES: dict[str, dict] = {
         "package": "@opencode/cli",
         "executable": "opencode2",
         "route_gated": True,
-        "summary": "OpenCodeの次世代系列。v1と同居でき、画面から切り替えて使う",
+        "summary": "OpenCode画面とAIチャットのcodeモードで使うコーディングエージェント",
     },
-    "omo": {
-        "name": "OMo（多エージェント編成）",
-        "kind": "npm",
-        "package": "oh-my-openagent",
-        "executable": "omo",
-        # OpenCode のプラグインとして動くため、OpenCode 側の導入が前提。
+    # OpenCode v2 のプラグイン。ControlDeck の管理領域へ npm で入れ、セッションの設定から
+    # file:// で読ませる（OpenCode が実行時に取りに行かない）。使う/使わないと、
+    # レビュー・相談に使うモデルは OpenCode 画面の設定で選ぶ。
+    # 導入は検証済みの版に固定し、更新で最新版へ上げる。
+    "opencode-superpowers": {
+        "name": "Superpowers（OpenCode v2 プラグイン）",
+        "kind": "opencode-plugin",
+        "package": "superpowers@git+https://github.com/obra/superpowers.git#v7.0.2",
+        "latest_package": "superpowers@git+https://github.com/obra/superpowers.git",
+        "module": "superpowers",
         "route_gated": False,
-        # OMo は OpenCode v1 のプラグイン API（@opencode-ai/plugin 1.x）に固定されている。
-        # 5.0.0-beta.56 でも依存は 1.18.22 のままで、v2（@opencode/plugin 2.x）には
-        # 載っていない。v2 を選ぶと OMo は効かないので、summary で先に伝える。
-        "summary": "OpenCodeで複数エージェントを並列に動かす。v1系列のみ対応（v2は未対応）",
-        "requires": "opencode",
+        "summary": "計画→テスト駆動→実装→レビューの進め方をスキルとして使う。使うかどうかは OpenCode の設定で選ぶ",
+        "requires": "opencode-v2",
+    },
+    "opencode-adversarial-review": {
+        "name": "Adversarial Review（OpenCode v2 プラグイン）",
+        "kind": "opencode-plugin",
+        "package": "@capybearista/opencode-adversarial-review@2.0.2",
+        "latest_package": "@capybearista/opencode-adversarial-review@latest",
+        "module": "@capybearista/opencode-adversarial-review",
+        "route_gated": False,
+        "summary": "会話を持たない別の文脈で差分をレビューする。使うかどうかとレビューのモデルは OpenCode の設定で選ぶ",
+        "requires": "opencode-v2",
+    },
+    "opencode-auto-advisor": {
+        "name": "Auto Advisor（OpenCode v2 プラグイン）",
+        "kind": "opencode-plugin",
+        "package": "@capybearista/opencode-auto-advisor@2.1.1",
+        "latest_package": "@capybearista/opencode-auto-advisor@latest",
+        "module": "@capybearista/opencode-auto-advisor",
+        "route_gated": False,
+        "summary": "行き詰まった場面で別のモデルに相談する。使い方と相談先のモデルは OpenCode の設定で選ぶ",
+        "requires": "opencode-v2",
     },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
@@ -102,7 +114,7 @@ def _release_catalog() -> dict[str, dict]:
 
 
 FEATURES.update(_release_catalog())
-NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] == "npm"}
+NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] in ("npm", "opencode-plugin")}
 KNOWN_FEATURES = set(FEATURES)
 
 
@@ -168,7 +180,19 @@ def _managed_executable(feature_id: str) -> Path:
         return root / "current" / selected[0].entrypoint if selected else root / "current" / "missing"
     if spec["kind"] == "pip":
         return root / "venv" / "bin" / spec["executable"]
+    if spec["kind"] == "opencode-plugin":
+        # プラグインは実行ファイルを持たない。導入済みの印は package.json。
+        return root / "node_modules" / spec["module"] / "package.json"
     return root / "node_modules" / ".bin" / spec["executable"]
+
+
+def plugin_path(feature_id: str) -> Path | None:
+    """導入済み OpenCode プラグインのディレクトリ。未導入なら None。"""
+    spec = FEATURES.get(feature_id)
+    if not spec or spec["kind"] != "opencode-plugin":
+        return None
+    marker = _managed_executable(feature_id)
+    return marker.parent if marker.is_file() else None
 
 
 def executable(feature_id: str) -> Path | None:
@@ -180,6 +204,10 @@ def executable(feature_id: str) -> Path | None:
     if spec["kind"] == "release-bundle":
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() and os.access(managed, os.X_OK) else None
+    if spec["kind"] == "opencode-plugin":
+        # 管理領域に入れたものだけを扱う（外部の同名パッケージは拾わない）。
+        managed = _managed_executable(feature_id)
+        return managed.resolve() if managed.is_file() else None
     binary_name = spec["executable"]
     managed = _managed_executable(feature_id)
     if managed.is_file() and os.access(managed, os.X_OK):
@@ -249,6 +277,13 @@ def status(feature_id: str) -> dict:
                 release_enabled = bool(addon_registry.status(str(spec["addon_id"]))["enabled"])
             except addon_registry.AddonRegistryError:
                 release_enabled = False
+    elif spec["kind"] == "opencode-plugin" and binary is not None:
+        try:
+            meta = json.loads(binary.read_text(encoding="utf-8"))
+            version = str(meta.get("version") or "")[:80]
+            healthy = True
+        except (OSError, json.JSONDecodeError):
+            error = "プラグインの package.json を読めません"
     elif binary is not None:
         try:
             result = subprocess.run(
@@ -264,7 +299,7 @@ def status(feature_id: str) -> dict:
     installed = binary is not None if spec["kind"] != "release-bundle" else installed
     toolchain = (
         True if spec["kind"] == "release-bundle"
-        else shutil.which("npm") if spec["kind"] == "npm" else shutil.which("python3")
+        else shutil.which("npm") if spec["kind"] in ("npm", "opencode-plugin") else shutil.which("python3")
     )
     # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
     enabled = (
@@ -284,8 +319,7 @@ def status(feature_id: str) -> dict:
         "preview": bool(spec.get("preview", False)),
         "requires_installed": (
             True if not spec.get("requires")
-            else _managed_executable(spec["requires"]).is_file()
-            or shutil.which(FEATURES[spec["requires"]]["executable"]) is not None
+            else executable(spec["requires"]) is not None
         ),
         "available": toolchain is not None or installed,
         "installed": installed,
@@ -336,9 +370,8 @@ def is_enabled(feature_id: str) -> bool:
         return False
 
 
-# OpenCode は v1 と v2 が同居する。ルート・ノード・カタログの登録は
-# 「どちらかが使える」で判断する。片方だけ導入した利用者にも画面を出すため。
-OPENCODE_FEATURES = ("opencode", "opencode-v2")
+# OpenCode は v2 だけ。ルート・ノード・カタログの登録はこれで判断する。
+OPENCODE_FEATURES = ("opencode-v2",)
 
 
 def opencode_enabled() -> bool:
@@ -382,6 +415,9 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
     package = spec["package"]
     if spec["kind"] == "pip":
         return _pip_install(feature_id, package)
+    if spec["kind"] == "opencode-plugin":
+        # 版を固定した指定に @latest は付けられない。更新用の指定を別に持つ。
+        return _npm_install(feature_id, spec["latest_package"] if latest else package)
     return _npm_install(feature_id, f"{package}@latest" if latest else package)
 
 
@@ -415,15 +451,10 @@ def _autoconfigure(feature_id: str) -> None:
     （後から設定画面で直せるため、ここで導入を巻き戻す方が不便）。
     """
     try:
-        if feature_id in ("opencode", "opencode-v2"):
+        if feature_id == "opencode-v2":
             from app.integrations.opencode.provider import autoconfigure
 
             autoconfigure()
-        elif feature_id == "omo":
-            # 背景タスクの同時実行数をモデルのスロット数へ揃える。
-            from app.integrations.opencode.provider import sync_omo_concurrency
-
-            sync_omo_concurrency()
     except Exception:  # noqa: BLE001 - 自動設定の失敗で導入を失敗にしない
         logger.exception("%sの自動設定に失敗しました", feature_id)
 

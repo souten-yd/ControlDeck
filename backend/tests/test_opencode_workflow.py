@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,10 +18,13 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(local_llm, "list_instances", lambda **kw: list(rows))
     monkeypatch.setattr(local_llm, "llm_instances", lambda **kw: list(rows))
     monkeypatch.setattr(provider, "_api_key_for", lambda base: "key")
-    return tmp_path
+    # All three plugins installed by default; a test can remove one from `installed`.
+    installed = {fid: tmp_path / "plugins" / fid for fid in provider.WORKFLOW_FEATURES.values()}
+    monkeypatch.setattr(provider.registry, "plugin_path", lambda fid: installed.get(fid))
+    return SimpleNamespace(path=tmp_path, installed=installed)
 
 
-def _v2(tmp_path, model="qwen-flash-next"):
+def _v2(env, model="qwen-flash-next"):
     root = provider._runtime_config("job", "http://127.0.0.1:8765/api/v1/llm/v1", model, runtime="v2")
     config = root / "opencode"
     payload = json.loads((config / "opencode.json").read_text())
@@ -39,8 +43,9 @@ def test_develop_with_flash_next_and_review_with_maya(isolated):
                             "review_model": "maya-s", "advisor_model": "maya-s"})
     payload, advisor = _v2(isolated)
     plugins = payload["plugins"]
-    assert plugins == [provider.WORKFLOW_PLUGINS["v2"][k] for k in ("superpowers", "adversarial_review", "auto_advisor")]
-    assert all("@latest" not in p for p in plugins), "plugins must be pinned"
+    # Loaded from ControlDeck's managed installs, never fetched by OpenCode at run time.
+    assert plugins == [(isolated.path / "plugins" / fid).as_uri() for fid in (
+        "opencode-superpowers", "opencode-adversarial-review", "opencode-auto-advisor")]
     models = payload["providers"]["controldeck"]["models"]
     assert set(models) == {"qwen-flash-next", "maya-s"}
     assert models["maya-s"]["limit"]["context"] == 1048576
@@ -62,13 +67,49 @@ def test_turning_off_removes_plugins_and_advisor_file(isolated):
     assert "plugins" not in payload and advisor is None
 
 
-def test_v1_gets_only_what_v1_supports(isolated):
-    provider.save_workflow({"superpowers": True, "adversarial_review": True, "auto_advisor": "active"})
-    path = provider._runtime_config("job1", "http://127.0.0.1:8765/api/v1/llm/v1", "qwen-flash-next")
-    payload = json.loads(path.read_text())
-    assert payload["plugin"] == [provider.WORKFLOW_PLUGINS["v1"]["superpowers"],
-                                 provider.WORKFLOW_PLUGINS["v1"]["adversarial_review"]]
-    assert "_auto_advisor" not in payload
+def test_an_enabled_extension_without_its_plugin_is_left_out(isolated):
+    """Enabled in OpenCode settings but not installed in オプション機能: skip it, do not fetch."""
+    isolated.installed.pop("opencode-adversarial-review")
+    provider.save_workflow({"superpowers": True, "adversarial_review": True, "review_model": "maya-s"})
+    payload, _ = _v2(isolated)
+    assert payload["plugins"] == [(isolated.path / "plugins" / "opencode-superpowers").as_uri()]
+    assert "adversarial-reviewer" not in payload["agents"]
+    assert provider.workflow_installed() == {"superpowers": True, "adversarial_review": False, "auto_advisor": True}
+
+
+def test_plugins_are_managed_options_requiring_opencode_v2(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.features import registry
+
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    spec = registry.FEATURES["opencode-adversarial-review"]
+    assert spec["kind"] == "opencode-plugin" and spec["requires"] == "opencode-v2"
+    assert registry.status("opencode-adversarial-review")["installed"] is False
+    assert registry.plugin_path("opencode-adversarial-review") is None
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        package = tmp_path / "data" / "features" / "opencode-adversarial-review" / "node_modules" / spec["module"]
+        package.mkdir(parents=True, exist_ok=True)
+        version = "2.9.0" if argv[-1].endswith("@latest") else "2.0.2"
+        (package / "package.json").write_text(json.dumps({"name": spec["module"], "version": version}))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(registry.subprocess, "run", run)
+    monkeypatch.setattr(registry, "executable", lambda fid, _orig=registry.executable:
+                        (tmp_path / "opencode2") if fid == "opencode-v2" else _orig(fid))
+    installed = registry.install("opencode-adversarial-review")
+    assert calls[-1][-1] == "@capybearista/opencode-adversarial-review@2.0.2"   # pinned
+    assert installed["installed"] and installed["enabled"] and installed["version"] == "2.0.2"
+    updated = registry.update("opencode-adversarial-review")
+    assert calls[-1][-1] == "@capybearista/opencode-adversarial-review@latest"
+    assert updated["previous_version"] == "2.0.2" and updated["version"] == "2.9.0"
+    assert registry.plugin_path("opencode-adversarial-review").name == "opencode-adversarial-review"
+    registry.uninstall("opencode-adversarial-review")
+    assert registry.plugin_path("opencode-adversarial-review") is None
 
 
 def test_workflow_validation(isolated):

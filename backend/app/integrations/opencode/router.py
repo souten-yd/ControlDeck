@@ -42,9 +42,7 @@ class RunBody(AgentTargetBody):
 def status(runtime: str = "", user: User = Depends(require_permission("workflows.run"))):
     """画面が必要とする状態。
 
-    feature は実際に使われる系列の状態を返す（v1 だけの頃と同じ意味）。v1画面／v2画面は
-    自分の系列を `runtime` で名指しし、その系列の状態を受け取る。
-    runtimes は系列ごとの導入状況で、切り替え UI が選べる先を判断するために使う。
+    feature は OpenCode v2 の状態。v1 は撤去したので runtimes は v2 だけを持つ。
     """
     runtimes = opencode.runtime_states()
     active = opencode.active_runtime(runtime)
@@ -201,7 +199,10 @@ def get_workflow(user: User = Depends(require_permission("workflows.run"))):
         "superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model")},
         # 選べるモデル（ゲートウェイの名前）。別のモデルへは要求に合わせて載せ替える。
         "models": [{"alias": str(item["alias"]), "runtime": str(item.get("runtime") or "")}
-                   for item in local_llm.llm_instances()]}
+                   for item in local_llm.llm_instances()],
+        # 拡張ごとのプラグインが導入済みか。導入・更新・削除は 設定 → オプション機能。
+        "installed": opencode.workflow_installed(),
+        "features": dict(opencode.WORKFLOW_FEATURES)}
 
 
 @router.put("/workflow")

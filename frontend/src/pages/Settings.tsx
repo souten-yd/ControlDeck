@@ -131,9 +131,8 @@ function SettingsLayout() {
   const shown = current ?? visible[0];
   const results = visible.map((def) => ({ def, ...matches(def, query) })).filter((r) => r.hit);
   const { data: meta } = useMeta();
-  // Link to the OpenCode series that is actually enabled (v1 may be off).
-  const opencodePath = meta?.enabled_features.includes("opencode") ? "/opencode"
-    : meta?.enabled_features.includes("opencode-v2") ? "/opencode-v2" : null;
+  // OpenCode の画面（無効なら出さない）。
+  const opencodePath = meta?.enabled_features.includes("opencode-v2") ? "/opencode-v2" : null;
   const q = query.trim().toLowerCase();
   const elsewhere = !q ? [] : OTHER_SCREEN_ITEMS.map((item) => item.to === "@opencode" ? { ...item, to: opencodePath ?? "" } : item).filter((item) => item.to !== "" && (
     item.label.toLowerCase().includes(q) || item.keywords.some((k) => k.toLowerCase().includes(q))));
@@ -960,6 +959,17 @@ function AddonsSection() {
     refetchInterval: jobId ? false : 15_000,
   });
   const { data: releases } = useReleaseStatus(addons);
+  // /settings/features#feature-<id>（OpenCode の設定などから来たとき）はそのカードへ移動する。
+  const hash = typeof window === "undefined" ? "" : window.location.hash;
+  useEffect(() => {
+    if (!addons || !hash.startsWith("#feature-")) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return;
+    target.scrollIntoView({ block: "center" });
+    target.classList.add("ring-2", "ring-accent-500");
+    const timer = window.setTimeout(() => target.classList.remove("ring-2", "ring-accent-500"), 2000);
+    return () => window.clearTimeout(timer);
+  }, [addons, hash]);
   const { data: job } = useQuery({
     queryKey: ["feature-job", jobId],
     queryFn: () => api<{

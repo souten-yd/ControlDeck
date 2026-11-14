@@ -142,7 +142,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   });
   const assistantName = runtimeEnvironment?.policy.assistant_name || "AIアシスタント";
   const { data: appMeta } = useMeta();
-  const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode") && can("terminal.use");
+  const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode-v2") && can("terminal.use");
   const { data: codeProjects } = useQuery({
     queryKey: ["opencode-projects"],
     queryFn: () => api<{ root: string; projects: { name: string; path: string; git: boolean }[] }>("/opencode/projects"),
@@ -663,7 +663,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     endpoints?.flatMap((ep) => ep.models.map((m) => ({
       base: ep.base_url, model: m, managed: !!ep.managed,
       // auto は特定モデルを固定しない仮想モデル。転送先は ControlDeck が決める。
-      label: m === "auto" ? "自動（起動中のモデル）" : ep.managed ? m : `${m} — ${ep.base_url}`,
+      label: m === "auto" ? "自動（Models で選んだランタイム）" : ep.managed ? m : `${m} — ${ep.base_url}`,
     }))) ?? [];
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;

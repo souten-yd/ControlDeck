@@ -147,13 +147,6 @@ export interface EndpointCapacity {
   prompt_tokens: number; prompt_tokens_done: number;
 }
 
-export interface OmoStatus {
-  installed: boolean;
-  /** OMo（OpenCode）が使うモデル。ここのスロット数が並列の上限になる。 */
-  model: string;
-  slots: number;
-  concurrency: number; team_parallel: number; gated: boolean;
-}
 
 /** 起動に失敗して再試行待ちのモデル。読み込み中と紛らわしいので理由付きで分けて出す。 */
 export interface FailedInstance {
@@ -163,5 +156,5 @@ export interface FailedInstance {
 }
 
 export const getLlamaCapacity = () =>
-  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; omo: OmoStatus | null }>(
+  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[] }>(
     "/models/llama/capacity");
