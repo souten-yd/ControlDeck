@@ -386,3 +386,70 @@ def test_built_reflects_upstream_hip_build_dir(managed):
     assert maya_s.runtime_status()['built'] is False
     (build / 'MAYA-BUILD.json').write_text('{}')
     assert maya_s.runtime_status()['built'] is True
+
+
+def _maya_request(max_tokens):
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest
+    return RuntimeChatRequest(base_url='http://127.0.0.1:8099/v1', model='maya-s',
+                              messages=[{'role': 'user', 'content': 'hi'}], max_tokens=max_tokens)
+
+
+def _count_tokens(monkeypatch, prompt, context):
+    from app.models_mgmt import runtime_provider
+    async def room(_messages):
+        return prompt, context
+    monkeypatch.setattr(maya_s, 'prompt_room', room)
+    async def ready(*_a, **_k):
+        return True
+    monkeypatch.setattr(maya_s, 'ensure_ready', ready)
+    async def nothing(*_a, **_k):
+        return None
+    monkeypatch.setattr(runtime_provider.OpenAICompatibleRuntimeProvider, '_prepare', nothing)
+
+
+def test_maya_provider_shrinks_output_budget_to_fit_context(monkeypatch):
+    from app.models_mgmt.runtime_provider import MayaRuntimeProvider
+    _count_tokens(monkeypatch, prompt=3000, context=8192)
+    request = _maya_request(16384)
+    asyncio.run(MayaRuntimeProvider()._prepare(request))
+    assert request.max_tokens == 5192
+    small = _maya_request(1024)
+    asyncio.run(MayaRuntimeProvider()._prepare(small))
+    assert small.max_tokens == 1024
+
+
+def test_maya_provider_reports_prompt_longer_than_context(monkeypatch):
+    from app.models_mgmt.runtime_provider import MayaRuntimeProvider, RuntimeProviderError
+    _count_tokens(monkeypatch, prompt=9000, context=8192)
+    with pytest.raises(RuntimeProviderError, match='入力が長すぎます'):
+        asyncio.run(MayaRuntimeProvider()._prepare(_maya_request(2048)))
+
+
+def test_maya_endpoint_uses_maya_provider(managed, monkeypatch):
+    from app.models_mgmt import runtime_provider
+    monkeypatch.setattr(maya_s, 'list_instances', lambda: [{'port': 8099}])
+    assert runtime_provider.provider_for_base_url('http://127.0.0.1:8099/v1').kind == 'maya-s'
+
+
+def test_gateway_fits_maya_output_budget(monkeypatch):
+    from app.models_mgmt import gateway
+    _count_tokens(monkeypatch, prompt=3000, context=8192)
+    payload = {'messages': [], 'max_tokens': 32000, 'max_completion_tokens': 100}
+    asyncio.run(gateway._fit_maya_output(payload))
+    assert payload == {'messages': [], 'max_tokens': 5192, 'max_completion_tokens': 100}
+    _count_tokens(monkeypatch, prompt=9000, context=8192)
+    over = {'messages': [], 'max_tokens': 32000}
+    asyncio.run(gateway._fit_maya_output(over))
+    assert over['max_tokens'] == 32000  # Maya's own 400 explains it
+
+
+def test_prompt_room_reads_maya_token_count(monkeypatch):
+    import httpx
+    real = httpx.AsyncClient
+    def handler(req):
+        assert req.url.path == '/api/tokens'
+        return httpx.Response(200, json={'tokens': 18, 'max_context': 8192})
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real(transport=httpx.MockTransport(handler)))
+    assert asyncio.run(maya_s.prompt_room([{'role': 'user', 'content': 'x'}])) == (18, 8192)
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(404))))
+    assert asyncio.run(maya_s.prompt_room([])) is None

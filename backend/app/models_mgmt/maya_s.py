@@ -417,6 +417,24 @@ async def health(alias: str = _ALIAS) -> dict:
         return {"ok": False, "status_code": None}
 
 
+async def prompt_room(messages: list) -> tuple[int, int] | None:
+    """(prompt tokens, context) counted by Maya's own chat template; None if unknown.
+
+    Maya never truncates: prompt + max_tokens over its context is rejected with 400.
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=30) as client:
+            response = await client.post(f"http://127.0.0.1:{_PORT}/api/tokens",
+                                         json={"messages": messages})
+        if response.status_code != 200:
+            return None
+        counted = response.json()
+        return int(counted["tokens"]), int(counted["max_context"])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return None
+
+
 async def wait_ready(*, timeout_seconds: int = 900) -> bool:
     import time
     deadline = time.monotonic() + timeout_seconds

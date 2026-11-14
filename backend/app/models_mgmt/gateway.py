@@ -204,6 +204,25 @@ async def _admit(alias: str, port: int, payload: dict[str, Any]) -> dict:
     )
 
 
+async def _fit_maya_output(payload: dict[str, Any]) -> None:
+    """Maya-S rejects prompt + output over its context; shrink only the output budget.
+
+    A prompt that alone exceeds the context is left for Maya's own clear 400.
+    """
+    from app.models_mgmt import maya_s
+
+    counted = await maya_s.prompt_room(payload.get("messages") or [])
+    if counted is None:
+        return
+    room = counted[1] - counted[0]
+    if room < 1:
+        return
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = payload.get(key)
+        if isinstance(value, int) and value > room:
+            payload[key] = room
+
+
 async def _wait_for_client(task: asyncio.Task, request: Request):
     while not task.done():
         done, _ = await asyncio.wait((task,), timeout=0.25)
@@ -435,6 +454,8 @@ async def gateway_chat(request: Request):
         await _release_gateway_lease(adapter, lease_id, renew)
         raise
     payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
+    if instance.get("runtime") == "maya-s":
+        await _fit_maya_output(payload)
     # Model-level sampling settings are preserved for all remaining runtimes.
     if greedy_sampling:
         payload["temperature"] = 0.0
