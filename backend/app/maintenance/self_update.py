@@ -135,8 +135,13 @@ def status(*, refresh: bool = True) -> dict:
     return result
 
 
-def start(expected_sha: str) -> dict:
-    """Launch a detached systemd user unit; the server survives until restart."""
+def start(expected_sha: str, *, automatic: bool = False, release_tag: str = "") -> dict:
+    """Launch a detached systemd user unit; the server survives until restart.
+
+    automatic: started by auto_update (L1 policy) rather than by an administrator. The flag
+    and the release tag travel through every state write so the restarted server can report
+    the outcome once.
+    """
     if not _SHA_RE.fullmatch(expected_sha):
         raise SelfUpdateError("更新先コミットが不正です")
     current = status()
@@ -146,12 +151,13 @@ def start(expected_sha: str) -> dict:
         raise SelfUpdateError("Releaseが変更されたか、既に最新版です。再確認してください")
     if _cmd(["systemctl", "--user", "is-active", _SERVICE], check=False) != "active":
         raise SelfUpdateError("ControlDeckユーザーサービスが見つかりません")
-    _write_state({"phase": "scheduled", "target_sha": expected_sha, "started_at": int(time.time())})
+    _write_state({"phase": "scheduled", "target_sha": expected_sha, "started_at": int(time.time()),
+                  "automatic": bool(automatic), "release_tag": release_tag or current.get("release_tag", "")})
     unit = "control-deck-update-" + expected_sha[:12]
     command = [
         "systemd-run", "--user", "--collect", "--unit", unit,
         "--working-directory", str(REPO_ROOT / "backend"),
-        "--description", "Explicit ControlDeck update",
+        "--description", "Automatic ControlDeck update" if automatic else "Explicit ControlDeck update",
         str(REPO_ROOT / ".venv" / "bin" / "python"), "-m",
         "app.maintenance.self_update", "--apply", expected_sha,
     ]
@@ -169,20 +175,39 @@ def _prepare() -> None:
 
 
 def _health_check() -> None:
+    """更新後の確認。health だけでは画面やゲートウェイが壊れていても通るので、利用者が
+    最初に触る面（画面の配信・meta・ゲートウェイ）まで確かめる。どれかが駄目なら巻き戻す。"""
     import httpx
     from app.config import get_config
     port = get_config().server.port
-    deadline = time.monotonic() + 30
-    with httpx.Client(timeout=3, trust_env=False) as client:
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 60
+    with httpx.Client(timeout=5, trust_env=False) as client:
         while time.monotonic() < deadline:
             try:
-                response = client.get(f"http://127.0.0.1:{port}/api/v1/health")
+                response = client.get(f"{base}/api/v1/health")
                 if response.status_code == 200 and response.json().get("ok") is True:
-                    return
+                    break
             except (httpx.HTTPError, ValueError, AttributeError):
                 pass
             time.sleep(1)
-    raise SelfUpdateError("更新後のControlDeckが正常応答しません")
+        else:
+            raise SelfUpdateError("更新後のControlDeckが正常応答しません")
+        try:
+            page = client.get(f"{base}/")
+            if page.status_code != 200 or 'id="root"' not in page.text:
+                raise SelfUpdateError("更新後の画面が配信されません")
+            if client.get(f"{base}/api/v1/meta").status_code != 200:
+                raise SelfUpdateError("更新後の meta が応答しません")
+            from app.models_mgmt import gateway
+
+            key = gateway.get_api_key(create=False)
+            if key:
+                models = client.get(f"{base}/api/v1/llm/v1/models", headers={"Authorization": f"Bearer {key}"})
+                if models.status_code != 200:
+                    raise SelfUpdateError("更新後の LLM ゲートウェイが応答しません")
+        except httpx.HTTPError as exc:
+            raise SelfUpdateError("更新後の確認で接続できません") from exc
 
 
 def apply(expected_sha: str) -> None:
@@ -197,9 +222,15 @@ def apply(expected_sha: str) -> None:
             raise SelfUpdateError("既に更新中です") from exc
         old = ""
         updated = False
+        # 自動更新の印と Release 名は、途中の状態の書き込みでも保つ（再起動後に結果を一度だけ知らせるため）。
+        carried = {key: value for key, value in _saved_state().items() if key in ("automatic", "release_tag")}
+
+        def save(value: dict[str, Any]) -> None:
+            _write_state(dict(value, **carried))
+
         try:
             old = _preflight()
-            _write_state({"phase": "running", "step": "fetch", "old_sha": old,
+            save({"phase": "running", "step": "fetch", "old_sha": old,
                           "target_sha": expected_sha, "started_at": int(time.time())})
             # Use the repository's trusted origin and never accept a client-supplied URL/ref.
             tag, release_sha = _remote_release()
@@ -211,7 +242,7 @@ def apply(expected_sha: str) -> None:
                 raise SelfUpdateError("更新中にReleaseのコミットが変わりました。再確認してください")
             _git("merge-base", "--is-ancestor", old, fetched)
             if old == fetched:
-                _write_state({"phase": "succeeded", "old_sha": old, "new_sha": old})
+                save({"phase": "succeeded", "old_sha": old, "new_sha": old})
                 return
             backup = _state_path().parent / ("backup-" + str(int(time.time())))
             backup.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -219,13 +250,13 @@ def apply(expected_sha: str) -> None:
             # Do not destroy user data or overwrite local edits.
             _git("merge", "--ff-only", fetched, timeout=60)
             updated = True
-            _write_state({"phase": "running", "step": "build", "old_sha": old, "target_sha": fetched})
+            save({"phase": "running", "step": "build", "old_sha": old, "target_sha": fetched})
             _prepare()
-            _write_state({"phase": "running", "step": "restart", "old_sha": old, "target_sha": fetched})
+            save({"phase": "running", "step": "restart", "old_sha": old, "target_sha": fetched})
             _cmd(["systemctl", "--user", "restart", _SERVICE], timeout=120)
             _cmd(["systemctl", "--user", "is-active", _SERVICE], timeout=15)
             _health_check()
-            _write_state({"phase": "succeeded", "old_sha": old, "new_sha": fetched,
+            save({"phase": "succeeded", "old_sha": old, "new_sha": fetched,
                           "finished_at": int(time.time())})
         except Exception as exc:
             error = str(exc) if isinstance(exc, SelfUpdateError) else "更新に失敗しました"
@@ -243,7 +274,7 @@ def apply(expected_sha: str) -> None:
                         error += "。作業ツリーが変更されているため手動復旧が必要です"
                 except Exception:
                     error += "。自動ロールバックできませんでした"
-            _write_state({"phase": "failed", "error": error,
+            save({"phase": "failed", "error": error,
                           "old_sha": old, "target_sha": expected_sha,
                           "finished_at": int(time.time())})
             raise

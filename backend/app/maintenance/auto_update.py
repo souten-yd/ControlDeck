@@ -1,0 +1,189 @@
+"""ControlDeck 本体の自動適用（docs/POLICY-autonomous-development.md の L1）。
+
+正式 Release が出ていて、ControlDeck が使われていない時間が続いたら、管理者が押すのと同じ
+更新（self_update.start）を始める。更新そのもの（バックアップ・build・再起動・確認・失敗時の
+巻き戻し）は self_update が行う。ここが決めるのは「いつ始めるか」と「結果を知らせる」だけ。
+
+使われているとみなすもの（どれか 1 つでもあれば待つ）:
+- ゲートウェイの推論中（OpenCode・チャット・Add-on の AI）、Add-on へ GPU を貸している最中
+- 実行中・待機中の Job（Workflow・Add-on の生成・OpenCode の headless 実行）
+- 開いている OpenCode の対話セッション（再起動で LLM への接続が切れる）
+- Add-on が持っている GPU の lease
+
+検証用インスタンス（CONTROL_DECK_ISOLATED）では動かない。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+from pathlib import Path
+
+from app.config import data_dir
+
+logger = logging.getLogger("control_deck.auto_update")
+
+DEFAULTS = {"enabled": True, "idle_minutes": 10, "check_interval_minutes": 30}
+OPENCODE_COMMANDS = {"opencode", "opencode2", "podman"}
+
+
+def _settings_path() -> Path:
+    return data_dir() / "updates" / "auto.json"
+
+
+def get_settings() -> dict:
+    values = dict(DEFAULTS)
+    try:
+        raw = json.loads(_settings_path().read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            values.update({key: raw[key] for key in DEFAULTS if key in raw})
+    except (OSError, ValueError):
+        pass
+    values["enabled"] = bool(values["enabled"])
+    values["idle_minutes"] = max(1, min(240, int(values["idle_minutes"])))
+    values["check_interval_minutes"] = max(5, min(1440, int(values["check_interval_minutes"])))
+    return values
+
+
+def save_settings(patch: dict) -> dict:
+    values = get_settings()
+    for key in DEFAULTS:
+        if key in patch:
+            values[key] = patch[key]
+    path = _settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(values), encoding="utf-8")
+    os.replace(tmp, path)
+    return get_settings()
+
+
+def busy_reasons() -> list[str]:
+    """いま本番が使われている理由。空なら使われていない。"""
+    reasons: list[str] = []
+    try:
+        from app.models_mgmt.resource_provider import provider
+
+        llm = provider()
+        if llm._active_requests > 0:
+            reasons.append("LLM の推論中")
+        if llm.lending():
+            reasons.append("Add-on へ GPU を貸出中")
+    except Exception:  # noqa: BLE001 - 判定できないものは使用中とみなす
+        reasons.append("LLM の状態を確認できない")
+    try:
+        from app.jobs import service as jobs
+
+        if any(job.status in ("queued", "running") for job in list(jobs._jobs.values())):
+            reasons.append("実行中の Job")
+    except Exception:  # noqa: BLE001
+        reasons.append("Job の状態を確認できない")
+    try:
+        from app.terminals.manager import manager as terminals
+
+        for session in terminals.list_sessions():
+            if str(session.get("program") or "") in OPENCODE_COMMANDS:
+                reasons.append("OpenCode のセッションが開いている")
+                break
+    except Exception:  # noqa: BLE001
+        reasons.append("ターミナルの状態を確認できない")
+    try:
+        from app.resources.broker import broker
+
+        if any(lease.owner.startswith("addon:") for lease in broker.leases.current()):
+            reasons.append("Add-on が GPU を使用中")
+    except Exception:  # noqa: BLE001
+        reasons.append("GPU の状態を確認できない")
+    return reasons
+
+
+async def notify(title: str, message: str) -> None:
+    """有効な通知先すべてへ送る。届かなくても更新は止めない。"""
+    try:
+        from app.alerts.notify import send_notification
+        from app.database import SessionLocal
+        from app.models import NotificationChannel
+        from app.security.crypto import decrypt_text
+
+        def channels() -> list[tuple[str, str]]:
+            with SessionLocal() as db:
+                rows = db.query(NotificationChannel).filter(NotificationChannel.enabled.is_(True)).all()
+                result = []
+                for row in rows:
+                    try:
+                        result.append((row.channel_type, decrypt_text(row.url_encrypted)))
+                    except Exception:  # noqa: BLE001
+                        continue
+                return result
+
+        for channel_type, url in await asyncio.to_thread(channels):
+            await send_notification(channel_type, url, title, message)
+    except Exception:  # noqa: BLE001 - 通知の失敗で更新を止めない
+        logger.exception("更新の通知を送れませんでした")
+
+
+async def report_result_once() -> None:
+    """再起動の後、直前の更新の結果を一度だけ知らせる。"""
+    from app.maintenance import self_update
+
+    state = await asyncio.to_thread(self_update._saved_state)
+    if not state.get("automatic") or state.get("reported") or state.get("phase") not in ("succeeded", "failed"):
+        return
+    if state["phase"] == "succeeded":
+        await notify("ControlDeck を更新しました",
+                     f"{state.get('release_tag') or ''} を自動で適用しました（{str(state.get('new_sha', ''))[:12]}）。")
+    else:
+        await notify("ControlDeck の自動更新に失敗しました",
+                     f"{state.get('error') or '原因不明'}。前の版で動いています。")
+    state["reported"] = True
+    await asyncio.to_thread(self_update._write_state, state)
+
+
+async def tick(idle_since: float | None, now: float) -> float | None:
+    """1 回分の判断。戻り値は「使われていない状態がいつから続いているか」。"""
+    from app.maintenance import self_update
+
+    settings = get_settings()
+    if not settings["enabled"]:
+        return None
+    current = await asyncio.to_thread(self_update.status)
+    if current.get("error") or not current.get("update_available"):
+        return None
+    if str((current.get("job") or {}).get("phase")) in ("scheduled", "running"):
+        return None
+    reasons = await asyncio.to_thread(busy_reasons)
+    if reasons:
+        logger.info("更新 %s を待っています: %s", current.get("release_tag"), "、".join(reasons))
+        return None
+    idle_since = idle_since or now
+    if now - idle_since < settings["idle_minutes"] * 60:
+        return idle_since
+    target = str(current["remote_sha"])
+    await asyncio.to_thread(self_update.start, target, automatic=True, release_tag=str(current.get("release_tag") or ""))
+    await notify("ControlDeck を自動更新します",
+                 f"{current.get('release_tag')} を適用します。数分で再起動し、異常があれば自動で前の版へ戻します。")
+    return None
+
+
+async def auto_update_loop() -> None:
+    from app.config import isolated
+
+    if isolated():
+        return
+    try:
+        await report_result_once()
+    except Exception:  # noqa: BLE001
+        logger.exception("更新結果の通知に失敗しました")
+    idle_since: float | None = None
+    while True:
+        try:
+            # 使われていない時間を数えるため、確認は短い間隔で行う。Release の取得は
+            # self_update.status が行うので、GitHub への問い合わせは check_interval に合わせる。
+            idle_since = await tick(idle_since, time.time())
+        except Exception:  # noqa: BLE001 - 判断の失敗で service を止めない
+            logger.exception("自動更新の判断に失敗しました")
+            idle_since = None
+        interval = 60 if idle_since else get_settings()["check_interval_minutes"] * 60
+        await asyncio.sleep(interval)

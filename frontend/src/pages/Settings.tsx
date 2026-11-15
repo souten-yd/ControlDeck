@@ -552,7 +552,10 @@ interface ControlDeckUpdateStatus {
   job?: { phase?: string; step?: string; error?: string; old_sha?: string; new_sha?: string };
 }
 
-/** Only explicit administrator interaction can schedule a platform update. */
+interface AutoUpdateSettings { enabled: boolean; idle_minutes: number; check_interval_minutes: number; busy: string[] }
+
+/** 正式 Release は、使われていない時間に自動で適用する（L1、docs/POLICY-autonomous-development.md）。
+ * 手動の「本体を更新」も残す。自動で適用した結果は通知先へ届く。 */
 function ControlDeckUpdateSection() {
   const show = useToasts((state) => state.show);
   const qc = useQueryClient();
@@ -564,6 +567,21 @@ function ControlDeckUpdateSection() {
     refetchInterval: (q) => ["scheduled", "running"].includes(q.state.data?.job?.phase ?? "") ? 10000 : 300000,
     retry: false,
   });
+  const auto = useQuery({
+    queryKey: ["control-deck-auto-update"],
+    queryFn: () => api<AutoUpdateSettings>("/system/control-deck-update/auto"),
+    refetchInterval: 60000,
+    retry: false,
+  });
+  const saveAuto = async (patch: Partial<AutoUpdateSettings>) => {
+    try {
+      await api("/system/control-deck-update/auto", { method: "PUT", json: patch });
+      void qc.invalidateQueries({ queryKey: ["control-deck-auto-update"] });
+      show(patch.enabled === false ? "自動適用を止めました。更新は手動で行います" : "保存しました");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "保存できませんでした", "error");
+    }
+  };
   const apply = async () => {
     if (!data?.remote_sha || starting) return;
     setStarting(true);
@@ -584,8 +602,32 @@ function ControlDeckUpdateSection() {
       <h2 className="text-sm font-semibold">ControlDeck 本体の更新</h2>
       <p className="mt-1 text-xs leading-relaxed text-zinc-400">
         公式GitHubの正式Releaseへ更新します。未コミット変更がある場合は中止します。
-        更新は手動のみで、依存導入・画面ビルド後にWebサービスを再起動します。
+        依存導入・画面ビルド後にWebサービスを再起動し、画面・ゲートウェイまで確かめて、異常なら自動で前の版へ戻します。
       </p>
+      {auto.data && (
+        <div className="mt-3 space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/40">
+          <label className="flex min-h-11 items-center justify-between gap-3">
+            <span className="text-xs">使われていない時間に自動で適用する
+              <span className="block text-[11px] text-zinc-500">LLM の推論・OpenCode のセッション・Job・Add-on の生成が無い状態が続いたら適用し、結果を通知します</span>
+            </span>
+            <input type="checkbox" checked={auto.data.enabled} onChange={(e) => void saveAuto({ enabled: e.target.checked })}
+              aria-label="自動で適用する" className="h-5 w-5 shrink-0" />
+          </label>
+          {auto.data.enabled && (
+            <label className="block text-xs">使われていない時間がこれだけ続いたら
+              <select value={auto.data.idle_minutes} onChange={(e) => void saveAuto({ idle_minutes: Number(e.target.value) })}
+                className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                {[5, 10, 30, 60, 120].map((m) => <option key={m} value={m}>{m} 分</option>)}
+              </select>
+            </label>
+          )}
+          {auto.data.enabled && data?.update_available && (
+            <p className="text-[11px] text-zinc-500">
+              {auto.data.busy.length ? `待っています: ${auto.data.busy.join("、")}` : "使われていない状態が続けば適用します"}
+            </p>
+          )}
+        </div>
+      )}
       <div className="mt-3 space-y-1 text-xs text-zinc-500">
         <p>現在: <span className="font-mono">{data?.current_sha?.slice(0, 12) || "確認中"}</span></p>
         <p>正式Release: <span className="font-mono">{data?.remote_sha?.slice(0, 12) || "-"}</span></p>
