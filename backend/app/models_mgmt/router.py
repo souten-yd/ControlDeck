@@ -1400,8 +1400,8 @@ class RadianceModelBody(BaseModel):
     model_path: str = Field(min_length=1, max_length=4096)
     port: int = Field(default=8100, ge=8081, le=65535)
     context: int = Field(default=131072, ge=4096, le=1_048_576)
-    # bf16 is exact; fp8 / fp8_v4 / k6_v4 quantise the cache for longer context.
-    kv_cache: Literal["bf16", "fp8", "fp8_v4", "k6_v4"] = "bf16"
+    # bf16 is exact; i8 halves the cache for a longer context (fp8 is GLM-5.3's latent cache only).
+    kv_cache: Literal["bf16", "i8", "fp8"] = "bf16"
     max_num_seqs: int = Field(default=4, ge=1, le=32)
     # None: the container's own drafter depth ("auto"); 0 turns speculative decoding off.
     speculative_tokens: int | None = Field(default=None, ge=0, le=15)
@@ -1409,6 +1409,9 @@ class RadianceModelBody(BaseModel):
     # Default thinking for requests that name none ("" = the template's own, xhigh) and its cap (0 = none).
     reasoning_effort: Literal["", "none", "low", "medium", "xhigh"] = ""
     thinking_budget: int = Field(default=0, ge=0, le=262144)
+    # More VRAM for the cache (delta-net state f16, vision tower in RAM); weights may leave the card (slow).
+    memory_saver: bool = False
+    ram_offload: bool = False
     # Lifecycle, as llama.cpp's per-model settings. Changeable while running.
     on_demand_start: bool = True
     idle_exclude: bool = False

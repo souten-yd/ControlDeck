@@ -43,7 +43,13 @@ _TAG = re.compile(r"^v?([0-9]+)[.]([0-9]+)[.]([0-9]+)$")
 _ALIAS = re.compile(r"^[a-z][a-z0-9.-]{0,47}$")
 _MIN_PORT, _MAX_PORT = 8081, 65535
 _CONTEXT_MIN, _CONTEXT_MAX = 4096, 1_048_576
-KV_TYPES = ("bf16", "fp8", "fp8_v4", "k6_v4")
+# 2.x: bf16 | i8 | fp8. i8 halves a token's KV (K and V as int8, a scale per token and head);
+# fp8 is GLM-5.3's latent cache only, so a Qwen container takes bf16 or i8.
+KV_TYPES = ("bf16", "i8", "fp8")
+# Qwen3.8-27B's training context. Longer windows need YaRN (rope-scaling), set automatically.
+TRAINING_CONTEXT = 262_144
+# Pinned host RAM for weights when ram_offload lets them leave the card.
+OFFLOAD_HOST_POOL_MIB = 22_528
 # Default thinking depth for requests that name none. "" keeps the template's own (xhigh on
 # Qwen3.8-27B); "none" turns thinking off. Qwen's template takes low, medium and xhigh only, so a
 # client asking for high or max (OpenCode, the GLM-style levels) is mapped to xhigh, not refused.
@@ -358,6 +364,7 @@ def get_instance(alias: str) -> dict:
 def save_instance(alias: str, *, model_path: str, port: int, context: int = 131072,
                   kv_cache: str = "bf16", max_num_seqs: int = 4, speculative_tokens: int | None = None,
                   gpu_headroom_mib: int = 1024, reasoning_effort: str = "", thinking_budget: int = 0,
+                  memory_saver: bool = False, ram_offload: bool = False,
                   on_demand_start: bool = True,
                   idle_exclude: bool = False, auto_start: bool = False, replace: bool = False) -> dict:
     if not installed():
@@ -378,7 +385,9 @@ def save_instance(alias: str, *, model_path: str, port: int, context: int = 1310
               "kv_cache": kv_cache, "max_num_seqs": int(max_num_seqs),
               "speculative_tokens": None if speculative_tokens is None else int(speculative_tokens),
               "gpu_headroom_mib": int(gpu_headroom_mib), "reasoning_effort": reasoning_effort,
-              "thinking_budget": int(thinking_budget), "on_demand_start": bool(on_demand_start),
+              "thinking_budget": int(thinking_budget),
+              "memory_saver": bool(memory_saver), "ram_offload": bool(ram_offload),
+              "on_demand_start": bool(on_demand_start),
               "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start)}
     with _registry_lock:
         items = _read()
@@ -431,6 +440,20 @@ def config_yaml(alias: str, cfg: dict) -> str:
              "models:", f"  {alias}:", f"    model: /models/{model.name}", "    tp: 1",
              f"    max-model-len: {int(cfg['context'])}", f"    max-num-seqs: {int(cfg['max_num_seqs'])}",
              f"    kv-cache-dtype: {cfg['kv_cache']}"]
+    context = int(cfg["context"])
+    if context > TRAINING_CONTEXT:
+        # Past the training context the rotary keys need YaRN; the factor is just what is asked for.
+        lines.append(f'    rope-scaling: "yarn:{context / TRAINING_CONTEXT:g}:{TRAINING_CONTEXT}"')
+    if cfg.get("memory_saver"):
+        # More VRAM for the KV cache: the delta-net state in f16 (half the state pool) and the
+        # vision tower in pinned RAM, read once an image. Measured 2026-11-15: 6 seqs x i8 at
+        # 327,680 fit all in VRAM with these (337,824 tokens of cache), at full speed.
+        lines += ["    state-cache-dtype: f16", "    vision-tower-placement: ram"]
+    if cfg.get("ram_offload"):
+        # Weights may leave the card so one full-length sequence fits. Slow: 1.7 GiB off the card
+        # cut decode from 205 to 50 tok/s, 5.8 GiB (512K) to 32 (2026-11-15).
+        lines += ["    placement: layer_offload", f"    host-pool-mib: {OFFLOAD_HOST_POOL_MIB}",
+                  f"    flex: {{kv: {{min-tokens: {context}}}}}"]
     if cfg.get("speculative_tokens") is not None:
         lines.append(f"    num-speculative-tokens: {int(cfg['speculative_tokens'])}")
     if cfg.get("reasoning_effort"):

@@ -3953,3 +3953,9 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
   - Maya-S（--parallel 2, 1M ctx）: 20 分たっても起動しない（2 本目の会話状態の確保で RAM 92GB が尽きる）。個別設定から同時実行数を外し、1 件ずつ処理と表示。
   - 試験の途中で、Strata の起動が llama.cpp のチャットモデルを止めず VRAM 不足で失敗する不具合を発見。`release_for(STRATA)` も llama.cpp のチャットモデルを解放するよう修正（Maya-S / Radiance と同じ）。
   - 既定値は変えていない（llama.cpp 1、Strata 1、Maya-S 1、Radiance 4）。
+
+- 2026-11-15 Radiance の長いコンテキスト（R9700、Qwen3.8-27B IQ5R-V4、同時実行数 6）:
+  - 2.x の KV 形式は bf16 / i8 / fp8 のみ（fp8 は GLM-5.3 の latent 専用）。1.x の fp8_v4・k6_v4 を外し i8 を追加。学習長 262,144 を超えると YaRN（`rope-scaling: yarn:<倍率>:262144`）を自動で書く。
+  - `memory_saver`（状態 f16・画像エンコーダーを RAM）で KV に VRAM を回す。`ram_offload`（layer_offload・host pool 22GiB・flex kv）で重みを RAM へ逃がす。
+  - 実測（i8・6 本）: 262K 全VRAM 1本 203 / 6本合計 744 tok/s。**320K 全VRAM（memory_saver）205 / 796**、KV 337,824 トークン。384K（重み 1.7GiB を RAM）50 / 272。512K（5.8GiB）32 / 171。640K 以上は静的な重みが VRAM に残せず起動しない。1M は 1 本の KV だけで 34GiB 要り不可。19 万トークン入力の読み取りはすべて正答。
+  - 稼働設定: 327,680・i8・6 本・memory_saver（RAM へは逃がさない）。
