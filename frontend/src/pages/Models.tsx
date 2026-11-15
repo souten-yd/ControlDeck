@@ -2300,11 +2300,11 @@ function AddonGpuSettingsGroup({ policy, state, onChange }: {
         </>
       )}
       <ul className="space-y-0.5 text-[11px] text-zinc-600 dark:text-zinc-300">
-        <li>画像 1 枚: GPU 約3秒 ／ GPU が埋まったまま RAM で 14〜235 秒</li>
+        <li>画像 1 枚（FLUX.2 Klein）: GPU を借りて約11秒 ／ LLM が載ったままだと 14〜235 秒</li>
         <li>{RUNTIME_LABEL[policy.selected_runtime] ?? policy.selected_runtime} の載せ直し: {reload ?? "—"}</li>
       </ul>
       <p className="text-[10px] leading-relaxed text-zinc-500">
-        目安: 音楽や枚数の多い画像は「自動」か「GPU 優先」が速い。載せ直しが重い Strata / Maya-S で画像を 1 枚だけ作るなら「LLM 優先」の方が早く済むこともあります。
+        目安: 音楽や枚数の多い画像は「自動」か「GPU 優先」が速い。載せ直しが重い Strata / Maya-S で画像を数枚だけ作るなら、「LLM 優先」の方が全体では早く済みます（画像の差は数秒、載せ直しは約1分）。
       </p>
       {state?.lending && (
         <p className="rounded-lg bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">

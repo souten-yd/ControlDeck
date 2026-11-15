@@ -313,11 +313,20 @@ class LocalLlmCapacityProvider(ResourceProvider):
                 logger.info("%s の載せ直しを見送りました: %s", alias, status.state.value)
                 return
             await broker.activate(status.lease_id)
+            from app.models_mgmt.gateway import _renew_gateway_lease
+
+            # lease は 30 秒で切れる。Strata の起動は 50 秒以上かかるので、起動の間も更新する
+            # （更新しないと起動の途中で場所を手放し、来た生成と取り合う。2026-11-15 実機）。
+            renew = asyncio.create_task(_renew_gateway_lease(status.lease_id))
             try:
                 ready = await local_llm.ensure_ready(alias, timeout_seconds=900)
                 logger.info("Add-on の生成が終わったので %s を載せ直しました（ready=%s）", alias, ready)
             finally:
-                await broker.release(status.lease_id)
+                renew.cancel()
+                try:
+                    await broker.release(status.lease_id)
+                except Exception:  # noqa: BLE001 - 期限切れなら既に返っている
+                    pass
         except Exception:  # noqa: BLE001 - 次の要求が自分で起こす
             logger.exception("%s を載せ直せませんでした", alias)
 
