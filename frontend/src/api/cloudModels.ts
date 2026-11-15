@@ -16,7 +16,15 @@ export interface CloudProvider {
   /** 0 は上限なし。 */
   monthly_budget_usd: number;
   spent_this_month_usd: number;
+  /** 入力の扱い（OpenRouter だけ。ほかは null）。ゲートウェイが要求ごとに強制する。 */
+  data_policy?: CloudDataPolicy | null;
 }
+
+/** zdr = 保存しない提供元だけ / deny = 収集・学習する提供元へは送らない（既定）/ allow = 制限しない。 */
+export type CloudDataPolicy = "zdr" | "deny" | "allow";
+
+/** zdr = 保存しない経路がある / may_store = 保存されることがある / may_train = 学習・記録に使われうる（無料）/ direct = そのプロバイダの規約。 */
+export type CloudPrivacy = "zdr" | "may_store" | "may_train" | "direct";
 
 export interface CloudState {
   providers: CloudProvider[];
@@ -32,6 +40,7 @@ export interface CloudProviderPatch {
   models?: string[];
   monthly_budget_usd?: number;
   base_url?: string;
+  data_policy?: CloudDataPolicy;
 }
 
 export interface CloudRemoteModel {
@@ -39,7 +48,29 @@ export interface CloudRemoteModel {
   name: string;
   context_length: number | null;
   free: boolean;
+  /** 公開日（unix 秒）。 */
+  created?: number | null;
+  /** USD / 100 万トークン。 */
+  price_input?: number | null;
+  price_output?: number | null;
+  privacy?: CloudPrivacy;
 }
+
+/** プロバイダ側の残高と使用額（OpenRouter だけ）。ControlDeck が数えた使用額とは別物。 */
+export type CloudAccount =
+  | { supported: false }
+  | {
+    supported: true;
+    /** キーの利用上限（USD）。null は上限なし。 */
+    limit: number | null;
+    limit_remaining: number | null;
+    usage: number | null;
+    usage_monthly: number | null;
+    usage_daily: number | null;
+    is_free_tier: boolean;
+    /** 無料モデルの今日の残り回数。 */
+    free_requests_remaining: number | null;
+  };
 
 export interface CloudUsageRow {
   at: number;
@@ -64,6 +95,9 @@ export const saveCloudEgress = (patch: Record<string, boolean>) =>
 
 export const listCloudRemoteModels = (provider: string) =>
   api<{ models: CloudRemoteModel[] }>(`/models/cloud/${encodeURIComponent(provider)}/remote-models`);
+
+export const getCloudAccount = (provider: string) =>
+  api<CloudAccount>(`/models/cloud/${encodeURIComponent(provider)}/account`);
 
 export const getCloudUsage = (days = 30) =>
   api<{ rows: CloudUsageRow[] }>(`/models/cloud-usage?days=${days}`);

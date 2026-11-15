@@ -6,12 +6,15 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CLOUD_QUERY_KEY, cloudGatewayId, getCloudState, getCloudUsage, listCloudRemoteModels,
+  CLOUD_QUERY_KEY, cloudGatewayId, getCloudAccount, getCloudState, getCloudUsage, listCloudRemoteModels,
   saveCloudEgress, saveCloudProvider,
-  type CloudProvider, type CloudProviderPatch, type CloudRemoteModel, type CloudState, type CloudUsageRow,
+  type CloudDataPolicy, type CloudPrivacy, type CloudProvider, type CloudProviderPatch, type CloudRemoteModel,
+  type CloudState, type CloudUsageRow,
 } from "../../api/cloudModels";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
-import { IconSearch, IconShield, IconX } from "../../components/icons";
+import {
+  IconBan, IconDatabase, IconFile, IconRestart, IconSearch, IconShield, IconShieldCheck, IconWarning, IconX,
+} from "../../components/icons";
 import { useToasts } from "../../stores";
 import { SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
 
@@ -40,6 +43,90 @@ function contextLabel(n: number | null): string {
 
 function errorText(e: unknown, fallback: string): string {
   return e instanceof Error && e.message ? e.message : fallback;
+}
+
+/** 100 万トークンあたりの価格。安いモデルは桁を残す。 */
+function price(value: number): string {
+  if (value > 0 && value < 0.001) return "<$0.001";
+  return `$${+value.toFixed(value >= 10 ? 1 : value >= 1 ? 2 : 3)}`;
+}
+
+/** 並べ替えと価格帯に使う 1 つの数字: 入力 3 : 出力 1 でならした 100 万トークンあたりの USD。
+ * 会話でもコード作業でも入力のほうがずっと多いので、出力の単価に引きずられないようにする。 */
+function blendedPrice(m: CloudRemoteModel): number | null {
+  if (m.free) return 0;
+  const input = m.price_input ?? m.price_output;
+  const output = m.price_output ?? m.price_input;
+  return input == null || output == null ? null : (input * 3 + output) / 4;
+}
+
+/** 価格帯の境目（ならした USD / 100 万トークン）。
+ *   1 安い   $0.5 未満 … 小型・格安のモデル
+ *   2 ふつう $3 未満   … 中型
+ *   3 高め   $10 未満  … 各社の主力
+ *   4 高い   $10 以上  … 最上位 */
+const TIER_LIMITS = [0.5, 3, 10];
+const TIER_LABELS = ["安い", "ふつう", "高め", "高い"];
+const priceTier = (blended: number) => TIER_LIMITS.filter((limit) => blended >= limit).length + 1;
+
+type IconType = typeof IconShield;
+
+/** モデルごとの、入力の扱いの目安。色だけに頼らず、必ずアイコンと文字を並べる。 */
+const PRIVACY: Record<CloudPrivacy, { label: string; detail: string; Icon: IconType; tone: string }> = {
+  zdr: { label: "保存しない経路あり", detail: "入力を保存しない提供元（Zero Data Retention）を通せます", Icon: IconShieldCheck, tone: "text-emerald-700 dark:text-emerald-400" },
+  may_store: { label: "保存されることがある", detail: "提供元の方針で、入力が一定期間保存されることがあります", Icon: IconDatabase, tone: "text-zinc-600 dark:text-zinc-300" },
+  may_train: { label: "学習・保存されうる", detail: "無料のモデル。提供元が入力を学習や記録に使うことがあります", Icon: IconWarning, tone: "text-amber-700 dark:text-amber-400" },
+  direct: { label: "プロバイダの規約", detail: "プロバイダ自身の API。入力の扱いはそのプロバイダの規約によります", Icon: IconFile, tone: "text-zinc-500 dark:text-zinc-400" },
+};
+
+/** OpenRouter がどの提供元へ回してよいか。ゲートウェイがすべての要求に付ける。 */
+const POLICIES: Array<{ id: CloudDataPolicy; label: string; short: string; hint: string; Icon: IconType; tone: string }> = [
+  { id: "zdr", label: "保存しない提供元だけ（ZDR）", short: "保存しない提供元だけ", hint: "最も安全。入力を保存しない提供元にだけ送ります。使えるモデルは減ります", Icon: IconShieldCheck, tone: "text-emerald-700 dark:text-emerald-400" },
+  { id: "deny", label: "学習に使う提供元へは送らない（推奨）", short: "学習する提供元を除外", hint: "入力を収集・学習に使う提供元へは送りません。既定の設定です", Icon: IconShield, tone: "text-zinc-600 dark:text-zinc-300" },
+  { id: "allow", label: "制限しない", short: "制限なし", hint: "無料モデルなど、入力が学習・保存されうる提供元にも送ります", Icon: IconWarning, tone: "text-amber-700 dark:text-amber-400" },
+];
+
+/** いまの「データの扱い」だと、このモデルへは送られない。 */
+function excludedByPolicy(policy: CloudDataPolicy | null | undefined, privacy: CloudPrivacy | undefined): boolean {
+  if (!policy || !privacy || privacy === "direct") return false;
+  return policy === "zdr" ? privacy !== "zdr" : policy === "deny" && privacy === "may_train";
+}
+
+/** 費用と入力の扱いを 1 行で。モデル選択の行と、カードの「使うモデル」で同じものを出す。 */
+function ModelMeta({ model: m, policy }: { model: CloudRemoteModel; policy?: CloudDataPolicy | null }) {
+  const blended = blendedPrice(m);
+  const tier = blended === null ? 0 : priceTier(blended);
+  const privacy = m.privacy ? PRIVACY[m.privacy] : null;
+  const ctx = contextLabel(m.context_length);
+  return (
+    <span className="num mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-zinc-600 dark:text-zinc-300">
+      {m.free ? (
+        <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">無料</span>
+      ) : blended !== null ? (
+        <span className="inline-flex items-center gap-1 whitespace-nowrap"
+          title={`価格帯 ${tier}/4（${TIER_LABELS[tier - 1]}）· 100 万トークンあたり 入力 ${price(m.price_input ?? 0)} / 出力 ${price(m.price_output ?? 0)}`}>
+          <span aria-hidden className="font-semibold text-zinc-800 dark:text-zinc-100">
+            {"$".repeat(tier)}<span className="font-normal text-zinc-300 dark:text-zinc-600">{"$".repeat(4 - tier)}</span>
+          </span>
+          <span className="sr-only">価格帯 {tier}/4（{TIER_LABELS[tier - 1]}）入力 / 出力</span>
+          <span>{price(m.price_input ?? 0)} / {price(m.price_output ?? 0)}</span>
+        </span>
+      ) : privacy && m.privacy !== "direct" ? (
+        <span className="text-zinc-500" title="価格を取得できませんでした">価格 —</span>
+      ) : null}
+      {privacy && (
+        <span className={`inline-flex items-center gap-1 ${privacy.tone}`} title={privacy.detail}>
+          <privacy.Icon className="h-3.5 w-3.5 shrink-0" />{privacy.label}
+        </span>
+      )}
+      {ctx && <span className="text-zinc-500" title="コンテキスト長">{ctx}</span>}
+      {excludedByPolicy(policy, m.privacy) && (
+        <span className="inline-flex items-center gap-1 text-zinc-500" title="いまの「データの扱い」の設定では、このモデルへは送信されません">
+          <IconBan className="h-3.5 w-3.5 shrink-0" />この設定では送られません
+        </span>
+      )}
+    </span>
+  );
 }
 
 function useSaveProvider(provider: string) {
@@ -141,6 +228,7 @@ function ProviderCard({ provider: p }: { provider: CloudProvider }) {
   const [key, setKey] = useState("");
   const [removing, setRemoving] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [confirmingAllow, setConfirmingAllow] = useState(false);
   const [baseUrl, setBaseUrl] = useState(p.base_url);
   const [budget, setBudget] = useState(p.monthly_budget_usd ? String(p.monthly_budget_usd) : "");
   const isCustom = p.id === "custom";
@@ -176,13 +264,36 @@ function ProviderCard({ provider: p }: { provider: CloudProvider }) {
   const enableBlocked = !p.configured ? "先に API キーを保存します"
     : isCustom && !p.base_url ? "先に送信先の URL を保存します" : "";
   const ratio = p.monthly_budget_usd > 0 ? p.spent_this_month_usd / p.monthly_budget_usd : 0;
+  const policy = POLICIES.find((o) => o.id === p.data_policy);
+  const hasAccount = p.id === "openrouter";
+  // 「使うモデル」に費用と入力の扱いを添えるため。モデル選択と同じ取得結果を使い回す。
+  const remote = useQuery({
+    queryKey: ["cloud-remote-models", p.id], queryFn: () => listCloudRemoteModels(p.id),
+    staleTime: 5 * 60_000, retry: false, enabled: open && p.enabled && p.models.length > 0,
+  });
+  const remoteById = useMemo(() => new Map((remote.data?.models ?? []).map((m) => [m.id, m])), [remote.data]);
+  const savePolicy = (next: CloudDataPolicy, done?: () => void) => save.mutate({ data_policy: next }, {
+    onSuccess: () => { done?.(); show(`データの扱いを「${POLICIES.find((o) => o.id === next)?.short ?? next}」にしました`); },
+    onError: () => done?.(),
+  });
+  const choosePolicy = (next: CloudDataPolicy) => {
+    if (next === p.data_policy) return;
+    // 緩める方向だけ確かめる。厳しくするのは安全側なので即時。
+    if (next === "allow") setConfirmingAllow(true); else savePolicy(next);
+  };
 
   return (
     <li className="rounded-xl bg-zinc-50 dark:bg-zinc-800/50">
       <button type="button" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen(!open)}
         className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left">
         <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold">{p.name}<StatusChip provider={p} /></span>
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold">{p.name}<StatusChip provider={p} />
+            {policy && (
+              <span className={`inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-normal ${policy.tone}`} title={`データの扱い: ${policy.hint}`}>
+                <policy.Icon className="h-3.5 w-3.5 shrink-0" /><span className="sr-only">データの扱い: </span>{policy.short}
+              </span>
+            )}
+          </span>
           <span className="mt-0.5 block text-[11px] leading-relaxed text-zinc-500">{p.note}</span>
         </span>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"
@@ -248,9 +359,13 @@ function ProviderCard({ provider: p }: { provider: CloudProvider }) {
                 <ul className="mt-1 space-y-1" aria-label={`${p.name} で使うモデル`}>
                   {p.models.map((m) => {
                     const gatewayId = cloudGatewayId(p.id, m);
+                    const info = remoteById.get(m);
                     return (
                       <li key={m} className="flex items-center gap-1 rounded-lg bg-white pl-2.5 dark:bg-zinc-900">
-                        <span className="min-w-0 flex-1 break-all py-1.5 font-mono text-[11px] leading-snug">{gatewayId}</span>
+                        <span className="min-w-0 flex-1 py-1.5">
+                          <span className="block break-all font-mono text-[11px] leading-snug">{gatewayId}</span>
+                          {info && <ModelMeta model={{ ...info, context_length: null }} policy={p.data_policy} />}
+                        </span>
                         <button type="button" onClick={() => copy(gatewayId)} aria-label={`${gatewayId} をコピー`}
                           className="min-h-11 shrink-0 rounded-lg px-2 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">コピー</button>
                         <button type="button" disabled={busy} aria-label={`${m} を外す`}
@@ -265,9 +380,32 @@ function ProviderCard({ provider: p }: { provider: CloudProvider }) {
             </div>
           )}
 
+          {policy && (
+            <fieldset disabled={busy} className="text-xs">
+              <legend className="font-medium">データの扱い</legend>
+              <p className="text-[11px] leading-relaxed text-zinc-500">{p.name} がどの提供元へ回してよいか。ControlDeck がすべての要求に付けます。</p>
+              <div className="mt-1 space-y-1.5">
+                {POLICIES.map((o) => (
+                  <label key={o.id} className={`flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2 ${o.id === p.data_policy
+                    ? "border-zinc-400 bg-white dark:border-zinc-500 dark:bg-zinc-900" : "border-zinc-200 dark:border-zinc-700"}`}>
+                    <input type="radio" name={`${panelId}-policy`} checked={o.id === p.data_policy} onChange={() => choosePolicy(o.id)}
+                      className="mt-0.5 h-5 w-5 shrink-0 disabled:opacity-40" />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 font-medium"><o.Icon className={`h-4 w-4 shrink-0 ${o.tone}`} />{o.label}</span>
+                      <span className="block text-[11px] leading-relaxed text-zinc-500">{o.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
+
+          {p.configured && hasAccount && <AccountBlock provider={p} />}
+
           {p.configured && (
             <form onSubmit={submitBudget} className="text-xs">
-              <label htmlFor={`${panelId}-budget`} className="font-medium">月の上限（USD）</label>
+              <label htmlFor={`${panelId}-budget`} className="font-medium">{hasAccount ? "ControlDeck の月の上限（USD）" : "月の上限（USD）"}</label>
+              {hasAccount && <p className="text-[11px] leading-relaxed text-zinc-500">ControlDeck が数えた使用額で送信を止める上限です。{p.name} の残高とは別に働きます。</p>}
               <div className="mt-1 flex gap-2">
                 <input id={`${panelId}-budget`} type="number" inputMode="decimal" min={0} max={100000} step="any" value={budget}
                   onChange={(e) => setBudget(e.target.value)} placeholder="上限なし" className={`${field} num`} />
@@ -300,9 +438,89 @@ function ProviderCard({ provider: p }: { provider: CloudProvider }) {
             onError: () => setRemoving(false),
           })} />
       )}
+      {confirmingAllow && (
+        <ConfirmDialog danger={false} title="データの扱いを「制限しない」にしますか？"
+          message={`${p.name} が、入力を保存したり学習に使ったりする提供元にも回せるようになります（無料モデルの多くが該当します）。プロンプト・会話・コードが相手側に残ることがあります。機密の作業では選ばないでください。`}
+          confirmLabel="制限しない" busy={busy} onClose={() => setConfirmingAllow(false)}
+          onConfirm={() => savePolicy("allow", () => setConfirmingAllow(false))} />
+      )}
       {picking && <ModelPickerSheet provider={p} onClose={() => setPicking(false)} />}
     </li>
   );
+}
+
+/** プロバイダ側の残高と使用額。カードを開いているあいだだけ取りに行く。 */
+function AccountBlock({ provider: p }: { provider: CloudProvider }) {
+  // キーを替えたら別の口座なので、末尾 4 文字を鍵に入れて取り直す。
+  const account = useQuery({
+    queryKey: ["cloud-account", p.id, p.key_hint], queryFn: () => getCloudAccount(p.id), staleTime: 60_000, retry: false,
+  });
+  const a = account.data;
+  if (a && !a.supported) return null;
+  const money = (value: number | null) => (value === null ? "—" : usd(value));
+  return (
+    <section aria-label={`${p.name} の残高`} className="rounded-xl bg-white px-3 py-2 text-xs dark:bg-zinc-900">
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 font-medium">{p.name} の残高
+          <span className="block text-[11px] font-normal leading-relaxed text-zinc-500">{p.name} 側の数字です（キーの利用上限の残り）</span>
+        </p>
+        <button type="button" onClick={() => account.refetch()} disabled={account.isFetching} aria-label={`残高を更新（${p.name}）`} title="更新"
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800">
+          <IconRestart className={`h-4 w-4 ${account.isFetching ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+      {account.isLoading ? <Skeleton className="h-12" />
+        : !a ? (
+          <p role="alert" className="pb-1 text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">残高を取得できませんでした: {errorText(account.error, "不明なエラー")}</p>
+        ) : (
+          <div className="num pb-1">
+            <p className="flex flex-wrap items-baseline gap-x-2">
+              <span className="text-lg font-semibold">{a.limit_remaining === null ? "上限なし" : usd(a.limit_remaining)}</span>
+              <span className="text-[11px] text-zinc-500">
+                {a.limit_remaining === null ? "このキーに利用上限はありません" : a.limit !== null ? `残り / 上限 ${usd(a.limit)}` : "残り"}
+              </span>
+            </p>
+            {a.limit_remaining !== null && a.limit_remaining <= 0 && (
+              <p className="flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-400">
+                <IconWarning className="mt-0.5 h-3.5 w-3.5 shrink-0" />残高がありません。有料モデルは {p.name} 側で止められます。
+              </p>
+            )}
+            <dl className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]" aria-label="使用額">
+              {([["今月", a.usage_monthly], ["今日", a.usage_daily], ["累計", a.usage]] as const).map(([label, value]) => (
+                <div key={label} className="min-w-0">
+                  <dt className="text-zinc-500">使用額 {label}</dt>
+                  <dd className="break-all font-medium">{money(value)}</dd>
+                </div>
+              ))}
+            </dl>
+            {(a.is_free_tier || a.free_requests_remaining !== null) && (
+              <p className="mt-1.5 text-[11px] text-zinc-600 dark:text-zinc-300">
+                {a.is_free_tier ? "無料枠のキー" : "無料モデル"}
+                {a.free_requests_remaining !== null && ` · 今日はあと ${a.free_requests_remaining.toLocaleString()} 回`}
+              </p>
+            )}
+            {account.isError && <p className="mt-1 text-[11px] text-zinc-500">更新できませんでした。前回の数字を表示しています。</p>}
+          </div>
+        )}
+    </section>
+  );
+}
+
+type SortKey = "name" | "cheap" | "pricey" | "new" | "context";
+const SORTS: Array<[SortKey, string]> = [
+  ["name", "名前"], ["cheap", "安い順"], ["pricey", "高い順"], ["new", "新しい順"], ["context", "コンテキストが長い順"],
+];
+const nameCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
+
+/** 値が無い行は、昇順でも降順でも最後。同じ値は名前順のまま（sort は安定）。 */
+function sortModels(list: CloudRemoteModel[], sort: SortKey): CloudRemoteModel[] {
+  const sorted = [...list].sort((a, b) => nameCollator.compare(a.name || a.id, b.name || b.id));
+  if (sort === "name") return sorted;
+  const value = (m: CloudRemoteModel) => (sort === "new" ? m.created : sort === "context" ? m.context_length : blendedPrice(m)) ?? null;
+  const direction = sort === "cheap" ? 1 : -1;
+  const keyed = sorted.map((m) => [m, value(m)] as const);
+  keyed.sort(([, a], [, b]) => (a === null ? (b === null ? 0 : 1) : b === null ? -1 : (a - b) * direction));
+  return keyed.map(([m]) => m);
 }
 
 /** 使うモデルを選ぶ。OpenRouter は数千件あるので、絞り込んだ先頭だけを描く。 */
@@ -317,6 +535,8 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
   const [query, setQuery] = useState("");
   const [freeOnly, setFreeOnly] = useState(false);
   const [selectedOnly, setSelectedOnly] = useState(false);
+  const [zdrOnly, setZdrOnly] = useState(false);
+  const [sort, setSort] = useState<SortKey>("name");
   const [limit, setLimit] = useState(PAGE);
   const deferredQuery = useDeferredValue(query);
 
@@ -325,20 +545,22 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
     const list = remote.data?.models ?? [];
     const known = new Set(list.map((m) => m.id));
     const extra = [...selected].filter((id) => !known.has(id)).map((id) => ({ id, name: id, context_length: null, free: false }));
-    return [...extra, ...list];
-    // 並びは開いたときと読み込み後だけ決める。チェックのたびに行が動かないように selected は見ない。
-  }, [remote.data]);
+    return [...extra, ...sortModels(list, sort)];
+    // 並びは開いたとき・読み込み後・並び順を変えたときだけ決める。チェックのたびに行が動かないように selected は見ない。
+  }, [remote.data, sort]);
   const hasFree = p.id === "openrouter" || all.some((m) => m.free);
+  const hasZdr = p.id === "openrouter" || all.some((m) => m.privacy === "zdr");
   const matches = useMemo(() => {
     const words = deferredQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((m) => {
       if (freeOnly && !m.free) return false;
       if (selectedOnly && !selected.has(m.id)) return false;
+      if (zdrOnly && m.privacy !== "zdr") return false;
       if (words.length === 0) return true;
       const text = `${m.id} ${m.name}`.toLowerCase();
       return words.every((w) => text.includes(w));
     });
-  }, [all, deferredQuery, freeOnly, selectedOnly, selected]);
+  }, [all, deferredQuery, freeOnly, selectedOnly, zdrOnly, selected]);
   const typed = query.trim();
   const canAddTyped = MODEL_ID.test(typed) && !all.some((m) => m.id === typed) && !selected.has(typed);
   const full = selected.size >= MAX_MODELS;
@@ -361,10 +583,21 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
           <input type="search" value={query} onChange={(e) => { setQuery(e.target.value); setLimit(PAGE); }}
             placeholder="名前や ID で検索" autoComplete="off" spellCheck={false} className={`${field} pl-9`} />
         </label>
+        <label className="flex items-center gap-2 text-xs">
+          <span className="shrink-0">並び順</span>
+          <select value={sort} onChange={(e) => { setSort(e.target.value as SortKey); setLimit(PAGE); }} className={field}>
+            {SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </label>
         <div className="flex flex-wrap items-center gap-x-4 text-xs">
           {hasFree && (
             <label className="flex min-h-11 items-center gap-2">
               <input type="checkbox" checked={freeOnly} onChange={(e) => { setFreeOnly(e.target.checked); setLimit(PAGE); }} className="h-5 w-5" />無料だけ
+            </label>
+          )}
+          {hasZdr && (
+            <label className="flex min-h-11 items-center gap-2">
+              <input type="checkbox" checked={zdrOnly} onChange={(e) => { setZdrOnly(e.target.checked); setLimit(PAGE); }} className="h-5 w-5" />保存しない経路あり（ZDR）だけ
             </label>
           )}
           <label className="flex min-h-11 items-center gap-2">
@@ -376,6 +609,7 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
         </div>
       </div>
 
+      <MetaLegend policy={p.data_policy} />
       {remote.isLoading && (
         <div className="space-y-2" aria-busy="true">
           <p className="text-xs text-zinc-500">モデルの一覧を取得しています（数秒かかることがあります）</p>
@@ -393,7 +627,6 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {matches.slice(0, limit).map((m) => {
               const checked = selected.has(m.id);
-              const ctx = contextLabel(m.context_length);
               return (
                 <li key={m.id}>
                   <label className={`flex min-h-11 items-start gap-3 py-2 ${!checked && full ? "opacity-50" : "cursor-pointer"}`}>
@@ -402,10 +635,7 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
                     <span className="min-w-0 flex-1">
                       {m.name && m.name !== m.id && <span className="block break-words text-sm">{m.name}</span>}
                       <span className="block break-all font-mono text-[11px] text-zinc-600 dark:text-zinc-300">{m.id}</span>
-                    </span>
-                    <span className="num flex shrink-0 flex-col items-end gap-0.5 text-[11px] text-zinc-500">
-                      {ctx && <span title="コンテキスト長">{ctx}</span>}
-                      {m.free && <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">無料</span>}
+                      <ModelMeta model={m} policy={p.data_policy} />
                     </span>
                   </label>
                 </li>
@@ -435,6 +665,55 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
         </button>
       </SheetActions>
     </BottomSheet>
+  );
+}
+
+/** 行に並ぶアイコンの読み方。畳んでおき、必要なときだけ開く。 */
+function MetaLegend({ policy }: { policy?: CloudDataPolicy | null }) {
+  const current = POLICIES.find((o) => o.id === policy);
+  const row = "flex items-start gap-2";
+  return (
+    <details className="group/legend mb-2 rounded-xl bg-zinc-50 text-xs dark:bg-zinc-800/50">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 font-medium">
+        <span className="flex-1">アイコンの見方</span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" className="text-zinc-400 transition-transform group-open/legend:rotate-90" aria-hidden><path d="m9 6 6 6-6 6" /></svg>
+      </summary>
+      <div className="space-y-3 px-3 pb-3 text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+        <div>
+          <p className="font-medium text-zinc-900 dark:text-zinc-100">費用</p>
+          <p><span className="num">$3 / $15</span> は 100 万トークンあたりの 入力 / 出力（USD）。$ の数は価格帯です（入力 3 : 出力 1 でならした額）。</p>
+          <dl className="num mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5">
+            {TIER_LABELS.map((label, i) => (
+              <div key={label} className="flex items-baseline gap-2">
+                <dt className="w-9 shrink-0 font-semibold text-zinc-800 dark:text-zinc-100">{"$".repeat(i + 1)}</dt>
+                <dd>{label}（{i === 3 ? `$${TIER_LIMITS[2]} 以上` : `$${TIER_LIMITS[i]} 未満`}）</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        <div>
+          <p className="font-medium text-zinc-900 dark:text-zinc-100">入力の扱い</p>
+          <dl className="mt-1 space-y-1.5">
+            {(Object.keys(PRIVACY) as CloudPrivacy[]).map((id) => {
+              const { Icon, label, detail, tone } = PRIVACY[id];
+              return (
+                <div key={id} className={row}>
+                  <Icon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${tone}`} />
+                  <div className="min-w-0"><dt className={`font-medium ${tone}`}>{label}</dt><dd>{detail}</dd></div>
+                </div>
+              );
+            })}
+            <div className={row}>
+              <IconBan className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-500" />
+              <div className="min-w-0">
+                <dt className="font-medium">この設定では送られません</dt>
+                <dd>いまの「データの扱い」{current ? `（${current.short}）` : ""}では、このモデルへは送信されません。選んでおくことはできます。</dd>
+              </div>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </details>
   );
 }
 
