@@ -463,7 +463,8 @@ def test_v2_runtime_config_uses_v2_schema_and_xdg_config_home(monkeypatch, tmp_p
     assert payload["compaction"] == {"auto": True, "buffer": op.OPENCODE_COMPACTION_RESERVED}
     assert payload["skills"] == [str(tmp_path / "skill")]
     # 読ませ方は XDG_CONFIG_HOME。v2 は OPENCODE_CONFIG を見ない。
-    assert op._runtime_env("v2", config) == {"XDG_CONFIG_HOME": str(config)}
+    assert op._runtime_env("v2", config) == {
+        "XDG_CONFIG_HOME": str(config), "OPENCODE_CONFIG_DIR": str(config / "opencode")}
     # v2 の runtime config は directory なので、まとめて消えること。
     op._discard_runtime_config("v2", config)
     assert not config.exists()
@@ -600,7 +601,8 @@ def test_v2_project_environment_overrides_stale_systemd_pwd(tmp_path):
     project.mkdir()
     config = tmp_path / "config"
     assert op._runtime_env("v2", config, project) == {
-        "XDG_CONFIG_HOME": str(config), "PWD": str(project.resolve())}
+        "XDG_CONFIG_HOME": str(config), "OPENCODE_CONFIG_DIR": str(config / "opencode"),
+        "PWD": str(project.resolve())}
 
 
 def test_opencode_compaction_follows_the_shared_setting(monkeypatch):

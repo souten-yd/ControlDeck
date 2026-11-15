@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-15 OpenCode v2 のオプションプラグイン読み込み修正（検証中）
+
+- 原因: Podman の管理ツール一覧に Superpowers / Adversarial Review / Auto Advisor がなく、ホストの npm 導入先を箱内から読めなかった。箱内に npm・node は存在する。
+- 修正: ３件の feature ディレクトリを依存ごと同じ絶対パスへ読み取り専用マウント。features 全体や他の拡張は公開しない。
+- 二次原因: Adversarial Review 2.0.2 は XDG_CONFIG_HOME ではなく OPENCODE_CONFIG_DIR をコマンド配置に使う。セッション専用 opencode ディレクトリを明示し、HOME 内の親ディレクトリ不在による初期化失敗と設定先不一致を防ぐ。
+- 実機検証: 独立した Podman + OpenCode v2 に本番と同じ file:// 指定を渡し、/api/plugin で３件 active、/api/command で adversarial-review と constructive-review を確認。プラグイン読み取り可・書き込み不可、本番 DB 不可視を確認。関連37テスト成功、Frontend build 成功。独立レビューの重大・要修正指摘0件。
+- 既存セッションのマウントは変わらないため、適用後は OpenCode のターミナルを閉じて開き直す。復旧は本修正の直前の正式 Release へ戻して同様に開き直す。全体テスト・ミラー検証・L2承認・マージ・正式Release・本番適用は後続の記録で確定する。
+
 ## 2026-11-15 OpenCode をプロジェクトの箱で動かす（#388）と本番の Release 追従化
 
 - OpenCode（TUI・チャットの code モード・headless 実行）を既定で podman の箱で起こす（`provider._launch`、`sandbox.container_argv` を共有）。書けるのはプロジェクト・session の設定・UI 検証の写真・MCP の長い結果・OpenCode 自身の履歴だけ。本番の data・秘密鍵・他のプロジェクト・~/.ssh・ControlDeck のコードは見えない（実機で確認）。ast-grep・OpenCode・Chrome・git・LLM ゲートウェイ・Add-on の MCP bridge は使える。設定 `isolation: host` か podman が無ければ従来どおり。

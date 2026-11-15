@@ -154,7 +154,10 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False) -> Sand
 def _tool_dirs() -> list[Path]:
     """箱の中から使う、ControlDeck が管理領域に入れた道具（読み取り専用）。"""
     features = _data_dir() / "features"
-    names = ("opencode-v2", "playwright-mcp", "context7-mcp", "ast-grep")
+    # プラグインも依存を含む feature 単位で見せる。設定の file:// はホストと同じ
+    # 絶対パスなので、これがないと npm 導入済みでも箱内では存在しない。
+    names = ("opencode-v2", "opencode-superpowers", "opencode-adversarial-review",
+             "opencode-auto-advisor", "playwright-mcp", "context7-mcp", "ast-grep")
     dirs = [features / n for n in names if (features / n).is_dir()]
     browsers = _data_dir() / "cache" / "ms-playwright"
     if browsers.is_dir():

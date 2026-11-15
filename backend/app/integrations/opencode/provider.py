@@ -1169,6 +1169,9 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
 def _runtime_env(runtime: str, config: Path, project: Path | None = None) -> dict[str, str]:
     """runtime config を読ませるための環境変数。"""
     env = {"XDG_CONFIG_HOME": str(config)}
+    # v2 本体は XDG を読むが、Adversarial Review のコマンド配置先はこの変数を
+    # 読む。HOME へ配置すると session の設定から見えず、初回は親も存在しない。
+    env["OPENCODE_CONFIG_DIR"] = str(config / "opencode")
     # session は XDG_CONFIG_HOME を job ごとの場所へ向けるので、gh は ~/.config/gh を見失う
     # （"not logged into any GitHub hosts"、2026-11-15 実機）。使わせる設定のときだけ、
     # gh の設定の場所だけを元へ向ける。他の個人設定は引き続き読ませない。
