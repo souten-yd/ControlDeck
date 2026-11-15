@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-15 ControlDeck_v0.12 リリース
+
+- 対象: `origin/main`（PR #347〜#373 と本記録）。前回 `ControlDeck_v0.11` から 304 commit。
+- 主な内容: パスキーログイン（#347）、Add-on のローカル限定推論とリソース確認（#349〜#354）、Strata（#355）・Maya-S（#359）・Radiance（#367）の任意導入と寿命管理（#364）、AMD GPU ファン制御（#360・#363）、Settings/Models の整理（#365・#368）、OpenCode v2 への一本化（#366）、Maya-S の画像入力（#369）、会話の自動圧縮（#370）、同時実行数の整理（#371）、Radiance の長いコンテキスト（#372）、ターミナルの長い履歴（#373）。
+- 移行: 起動時に DB を移行（パスキー用テーブル `a19b48d207f1`）。依存 `webauthn>=2.8,<3` を追加（`./deck.sh update-prepare` / 本体更新で導入）。OpenCode v1 と OMo は撤去済み（`/opencode` は `/opencode-v2` へ移動）。v2 のプラグインは 設定 → オプション機能 で導入・更新・削除する。
+- 検証: main（#373 マージ後）で backend **1426 passed / 2 skipped**、frontend production build 成功。全体実行で `test_addon_execution` の1件が一度だけ落ちたが、単独・再実行で通過（タイミング依存）。GitHub Actions は無く、ローカル検証。稼働中のデプロイ枝とコードが一致することを確認（差分なし）。
+- 未検証: Models 画面の新しい設定項目と AI アシスタントの画像添付のブラウザ操作、物理スマートフォン。
+
 ## 2026-10-13 ターミナルの長い履歴を実 tmux から参照
 
 通常 Terminal の wheel/touch/右端バーを tmux の保持履歴へ接続。大量出力で xterm の
