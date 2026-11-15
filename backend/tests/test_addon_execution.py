@@ -114,7 +114,7 @@ def test_remote_execution_rejects_redirect_invalid_schema_and_oversize(isolated_
 
 def test_execution_discovery_filters_permission_availability_and_invalid_schema(addon_api, monkeypatch):
     client, registry = addon_api
-    from app.addons import execution
+    from app.addons import execution, health
     from app.addons.schema import AddonHealthReport
 
     execution.reset_for_tests()
@@ -122,6 +122,14 @@ def test_execution_discovery_filters_permission_availability_and_invalid_schema(
     value["contributions"]["agent_tools"][0]["permission"] = "settings.manage"
     assert client.post("/api/v1/addons", json=value, headers=CSRF_HEADERS).status_code == 201
     assert client.post("/api/v1/addons/fake-addon/enable", headers=CSRF_HEADERS).status_code == 200
+    # Discovery uses the observation below. The fixture's periodic "healthy"
+    # response must not overwrite it while this test checks unavailable actions.
+    async def preserve_observation(addon_id: str, client=None):
+        return registry.status(addon_id)
+
+    monkeypatch.setattr(health, "recheck", preserve_observation)
+    # Drain an already-entered fixture recheck on the application's event loop.
+    client.portal.call(health.poll_once)
     registry.update_health("fake-addon", AddonHealthReport.model_validate({
         "status": "degraded", "contract_version": "2.0",
         "reason_code": "service_unreachable", "message": "partial", "action": {"kind": "retry"},
@@ -131,6 +139,8 @@ def test_execution_discovery_filters_permission_availability_and_invalid_schema(
             "context_action:fake.inspect": "unavailable",
         },
     }))
+    # Exercise the competing periodic poll deterministically.
+    client.portal.call(health.poll_once)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("workflow-input"):
