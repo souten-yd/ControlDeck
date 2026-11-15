@@ -935,3 +935,85 @@ def test_reconfigure_resets_curve_hold_before_applying_new_temperature_filter(gp
     fan.configure(settings.model_copy(update={"temp_fall_tau_seconds": 60.0}))
     assert fan._map.held is not None and fan._map.held < 95.0
     assert fan.status()["state"] == "controlling"
+
+
+def test_temperature_margin_validation_and_persistence(gpu):
+    fan, *_ = gpu
+    for invalid in (-0.1, 20.1, float('nan'), float('inf')):
+        with pytest.raises(ValidationError):
+            fan.FanSettings(temperature_margin_c=invalid)
+    fan.configure(fan.FanSettings(control_mode="target", temperature_margin_c=7.5))
+    assert fan._load().temperature_margin_c == 7.5
+    assert fan._load().control_mode == "target"
+
+
+def test_target_mode_tracks_below_ceiling_with_limited_rise(gpu):
+    fan, _, hwmon, _, _ = gpu
+    for n, value in [(1, 50000), (2, 88000), (3, 60000)]:
+        (hwmon / f'temp{n}_input').write_text(str(value))
+    result = fan.configure(fan.FanSettings(enabled=True, control_mode="target", min_percent=20,
+        targets_c={"temp1": 85, "temp2": 90, "temp3": 90}, temperature_margin_c=5,
+        warm_rate_percent_per_min=30, pid_auto_tune=False))
+    live = result['active']['pid']
+    assert live['control_targets_c']['temp2'] == 85
+    assert live['ceilings_c']['temp2'] == 90
+    assert not live['override']
+    assert fan._tune.phase == 'off'
+    previous = live['output_percent']
+    for _ in range(20):
+        fan.tick()
+        live = fan.status()['active']['pid']
+        assert 0 <= live['output_percent'] - previous <= 1.51
+        previous = live['output_percent']
+    assert previous > 20
+    points = [tuple(map(int, point.split(':'))) for point in fan.status()['active']['curve'].split(',')]
+    assert points[-2][0] == 90 and points[-1] == (91, 100)
+    assert len(set(p for _, p in points[:-1])) == 1
+
+
+@pytest.mark.parametrize('sensor_id', ['temp1', 'temp2', 'temp3'])
+def test_target_raw_ceiling_bypasses_filters_and_slew(gpu, sensor_id):
+    fan, _, hwmon, _, _ = gpu
+    for n in range(1, 4):
+        (hwmon / f'temp{n}_input').write_text('50000')
+    settings = fan.FanSettings(enabled=True, control_mode='target', min_percent=20,
+        targets_c={"temp1": 85, "temp2": 90, "temp3": 90}, temperature_margin_c=10,
+        warm_rate_percent_per_min=5, pid_auto_tune=False,
+        temp_rise_tau_seconds=15, temp_fall_tau_seconds=120)
+    fan.configure(settings)
+    (hwmon / f'{sensor_id}_input').write_text(str(settings.targets_c[sensor_id] * 1000))
+    fan.tick()
+    live = fan.status()['active']['pid']
+    assert live['output_percent'] == 100 and live['override']
+    (hwmon / f'{sensor_id}_input').write_text('50000')
+    fan.tick()
+    assert fan.status()['active']['pid']['output_percent'] == pytest.approx(
+        100 - settings.cool_rate_percent_per_min * fan.INTERVAL / 60)
+
+
+@pytest.mark.parametrize('margin', [5, 10])
+def test_target_mode_converges_under_sustained_synthetic_heat(gpu, monkeypatch, margin):
+    import math
+    fan, *_ = gpu
+    model = fan.fan_pid.ThermalModel(idle_c={'hot': 38}, idle_power_w=15,
+        points=[{'fan': float(f), 'power_w': 200, 'r': {'hot': .08 + 6 / f}}
+                for f in (30, 40, 50, 60, 70)])
+    monkeypatch.setattr(fan, '_model', model)
+    monkeypatch.setattr(fan, '_save_model', lambda *a: None)
+    monkeypatch.setattr(fan, '_last_passive', 1e10)
+    fan._applied_floor = 20
+    settings = fan.FanSettings(control_mode='target', min_percent=20,
+        temperature_margin_c=margin, pid_kp=1.33, pid_ti=49.8)
+    temp, percent, samples = 38., 20, []
+    for i in range(600):
+        heat = 200 if i >= 20 else 0
+        temp += (1 - math.exp(-3 / 40)) * (38 + heat * (.08 + 6 / max(percent, 5)) - temp)
+        sensor = {'id': 'hot', 'kind': 'junction', 'label': 'junction',
+                  'value_c': temp, 'target_c': 90}
+        percent, _ = fan._pid_step(settings,
+            {'bdf': 'test', 'power_w': heat + 15, 'power_cap_w': 300, '_range': (20, 105, 15, 100)},
+            [sensor], i * 3, 20, 100)
+        samples.append(temp)
+    assert abs(temp - (90 - margin)) < 1
+    assert max(samples[-100:]) - min(samples[-100:]) < 1
+    assert max(samples) < 90

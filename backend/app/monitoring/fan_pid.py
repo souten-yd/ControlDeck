@@ -68,6 +68,22 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def ceiling_curve(ranges: tuple[int, int, int, int], floor: int, ceiling_c: float) -> str:
+    """Five legal points: constant below the ceiling, full one degree above.
+
+    Clamp to firmware limits conservatively when the requested ceiling is
+    outside its representable range. Firmware thermal protection stays active.
+    """
+    tmin, tmax, pmin, pmax = ranges
+    start = max(tmin, 25)
+    top = max(start + 3, min(tmax - 1, math.floor(ceiling_c)))
+    full = top + 1
+    span = top - start
+    temps = [start, start + span // 3, start + 2 * span // 3, top, full]
+    pwm = int(clamp(floor, pmin, pmax))
+    return ",".join(f"{t}:{pwm if i < 4 else pmax}" for i, t in enumerate(temps))
+
+
 @dataclass
 class ThermalModel:
     """Learned per GPU. Points are equilibria: fan % → ΔT/ΔP per sensor."""
@@ -251,7 +267,8 @@ class PIDController:
 
     def update(self, sensors: list[dict], targets: dict[str, float], *, model: ThermalModel,
                power_w: float | None, kp: float, ti: float, ff_weight: float,
-               minimum: float, maximum: float, dt: float) -> PIDResult:
+               minimum: float, maximum: float, dt: float,
+               safety_targets: dict[str, float] | None = None) -> PIDResult:
         errors = {}
         for sensor in sensors:
             pv = self.pv.update(sensor["id"], float(sensor["value_c"]), dt)
@@ -261,7 +278,8 @@ class PIDController:
         ff = self.feedforward(model, sensors, targets, power_w, dt, minimum, maximum, ff_weight)
         # Safety floor above the target from the median of the last 3 raw
         # readings (one 3 s hotspot jump is noise): +2 °C → ramp → 100 % at +5 °C.
-        over = max(median(self.pv.raw[s["id"]]) - targets[s["id"]] for s in sensors)
+        limits = targets if safety_targets is None else safety_targets
+        over = max(median(self.pv.raw[s["id"]]) - limits[s["id"]] for s in sensors)
         safety = minimum
         if over >= OVERSHOOT_START_C:
             safety = minimum + (maximum - minimum) * min(1.0, (over - OVERSHOOT_START_C)

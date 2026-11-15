@@ -84,7 +84,10 @@ class FanSettings(BaseModel):
     # follows the target temperatures by PID with a thermal-model feedforward.
     # "curve": intelligent map (firmware curve follows the hotspot at once,
     # software holds and releases slowly); "map": the original margin map.
-    control_mode: Literal["map", "curve", "pid"] = "map"
+    control_mode: Literal["map", "curve", "pid", "target"] = "map"
+    # In target mode targets_c are ceilings; regulate this far below them.
+    temperature_margin_c: float = Field(default=5.0, ge=0.0, le=20.0, allow_inf_nan=False)
+    warm_rate_percent_per_min: float = Field(default=30.0, ge=5.0, le=120.0, allow_inf_nan=False)
     pid_kp: float = Field(default=3.0, ge=0.5, le=10.0, allow_inf_nan=False)
     pid_ti: float = Field(default=90.0, ge=15.0, le=600.0, allow_inf_nan=False)
     # Weight of the feedforward ("D") term from the learned thermal model.
@@ -239,6 +242,8 @@ def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanS
         return settings
     preset = next((entry for entry in FAN_PRESETS if entry["id"] == settings.preset_id), None)
     if preset is None:
+        return settings.model_copy(update={"preset_id": "custom"})
+    if settings.control_mode != preset.get("control_mode", "map"):
         return settings.model_copy(update={"preset_id": "custom"})
     keys = (
         "min_percent", "allow_zero_rpm", "cool_hold_seconds",
@@ -605,19 +610,23 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
               minimum: int, maximum: int) -> tuple[int, str]:
     """One PID tick. Returns (fan %, curve)."""
     global _pid_out, _last_pid, _last_model_save, _last_passive
-    targets = {s["id"]: float(s["target_c"]) for s in sensors}
+    target_mode = settings.control_mode == "target"
+    ceilings = {s["id"]: float(s["target_c"]) for s in sensors}
+    targets = {sid: ceiling - (settings.temperature_margin_c if target_mode else 0.0)
+               for sid, ceiling in ceilings.items()}
     power = device["power_w"]
     cap = device["power_cap_w"]
     _tracker.add(now, sensors, power, _pid_out if _pid_out is not None else minimum)
     if fan_pid.update_idle(_model, _tracker, now, power, cap) and now - _last_model_save >= 300:
         _save_model(device["bdf"], _model)
         _last_model_save = now
-    if settings.pid_auto_tune and not _model.usable and _tune.phase == "off":
+    if not target_mode and settings.pid_auto_tune and not _model.usable and _tune.phase == "off":
         _tune.start(now, _model)
         _tune.message = "初回の自動調整: " + _tune.message
     phase_before = _tune.phase
-    hold = fan_pid.tune_step(_tune, _model, _tracker, now=now, sensors=sensors, targets=targets,
-                             power_w=power, power_cap_w=cap, minimum=minimum, maximum=maximum)
+    hold = (None if target_mode else fan_pid.tune_step(
+        _tune, _model, _tracker, now=now, sensors=sensors, targets=targets,
+        power_w=power, power_cap_w=cap, minimum=minimum, maximum=maximum))
     if (_tune.phase, _tune.message) != _last_tune_log[0]:
         _last_tune_log[0] = (_tune.phase, _tune.message)
         logger.info("ファン自動調整: %s %s", _tune.phase, _tune.message)
@@ -635,7 +644,8 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
         handover = hold is not None
     result = _pid.update(sensors, targets, model=_model, power_w=power, kp=settings.pid_kp,
                          ti=settings.pid_ti, ff_weight=settings.pid_ff_weight,
-                         minimum=minimum, maximum=maximum, dt=INTERVAL)
+                         minimum=minimum, maximum=maximum, dt=INTERVAL,
+                         safety_targets=ceilings if target_mode else None)
     if _pid_out is None or (handover and _tune.phase == "done"):
         # Bumpless start from the speed in use (also while/after an auto-tune
         # holds the fan): the integrator absorbs the difference to FF + P.
@@ -646,12 +656,15 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
         _pid_out = current
         result = fan_pid.PIDResult(current, result.feedforward, result.p_term, _pid.integral,
                                    result.error_c, result.governing, result.override)
-    # Independent raw-temperature emergency override; no EMA/median may
-    # delay a sample at target +5°C, including during auto-tune holds.
-    raw_overheat = any(float(s["value_c"]) >= float(s["target_c"]) + 5.0 for s in sensors)
+    # Raw emergency: at the ceiling in target mode, target+5°C in legacy PID.
+    # No EMA/median or active tuning hold may delay this decision.
+    raw_overheat = any(float(s["value_c"]) >= float(s["target_c"]) + (0.0 if target_mode else 5.0)
+                       for s in sensors)
     wanted = max(float(hold) if hold is not None else result.output,
                  float(maximum) if raw_overheat else float(minimum))
-    if wanted >= _pid_out or (_last_pid or {}).get("override"):
+    if target_mode and not raw_overheat and wanted > _pid_out:
+        _pid_out = min(wanted, _pid_out + settings.warm_rate_percent_per_min * INTERVAL / 60)
+    elif wanted >= _pid_out or (not target_mode and (_last_pid or {}).get("override")):
         # Rise at once; after a safety override return straight to the PID
         # output (the override was not a PID decision to keep).
         _pid_out = wanted
@@ -681,11 +694,18 @@ def _pid_step(settings: FanSettings, device: dict, sensors: list[dict], now: flo
         "p_percent": result.p_term, "i_percent": result.i_term, "error_c": result.error_c,
         "governing_sensor": result.governing, "override": result.override or raw_overheat,
         "tune_hold_percent": hold,
+        "temperature_margin_c": settings.temperature_margin_c if target_mode else None,
+        "control_targets_c": targets,
+        "ceilings_c": ceilings,
     }
     # Firmware curve: the map shape (shifted +3 °C) raised to the PID output.
     # The firmware follows hotspot spikes within a second in proportion to
     # their height; around the target the PID output decides.
     hot_target = float(hotspot["target_c"]) if hotspot else 90.0
+    if target_mode:
+        # Flat up to the ceiling: firmware must not undo the normal slew limit
+        # on every hotspot spike. The steep last segment survives a worker crash.
+        return percent, fan_pid.ceiling_curve(device["_range"], percent, hot_target)
     at_target = fan_map.target_speed(_model, hotspot["id"] if hotspot else None, hot_target,
                                      minimum, maximum)
     shape = fan_map.design(device["_range"], minimum, hot_target, at_target, 0.0, offset_c=PID_MAP_OFFSET_C)
@@ -924,7 +944,7 @@ def tick() -> None:
                 _tracker, _pid_out = fan_pid.SteadyTracker(), None
                 _pid.reset()
                 _map = fan_map.MapController()
-            pid_mode = settings.control_mode == "pid"
+            pid_mode = settings.control_mode in ("pid", "target")
             if settings.control_mode != "curve":
                 _last_map = None
             if settings.control_mode == "curve":
@@ -1044,6 +1064,9 @@ def tick() -> None:
                 "temps": {k: v["value_c"] for k, v in hottest.items()},
                 "smoothed_temps": {k: round(displayed_c[v["id"]], 2) for k, v in hottest.items()},
                 "targets": {k: v["target_c"] for k, v in hottest.items()},
+                "control_targets": {k: v["target_c"] - (settings.temperature_margin_c
+                                    if settings.control_mode == "target" else 0.0)
+                                    for k, v in hottest.items()},
                 "fan_percent": None if _zero_active else floor, "rpm": rpm,
                 "power_w": device["power_w"],
                 "pid": ({k: _last_pid[k] for k in ("feedforward_percent", "p_percent", "i_percent", "error_c")}
@@ -1057,6 +1080,7 @@ def configure(settings: FanSettings) -> dict:
     global _active_bdf, _last_curve, _floor, _sensor_ids, _state, _error, _zero_rpm_checks, _pending_reset_bdf
     global _zero_active, _zero_initialized_bdf, _temp_history, _zero_stable_since, _applied_floor
     global _cool_since, _last_cool_step, _last_tick_at, _policy, _reset_retry_failures, _map
+    global _pid_out
     with _lock:
         prior = _load()
         if settings.enabled:
@@ -1077,6 +1101,12 @@ def configure(settings: FanSettings) -> dict:
             _cool_since, _last_cool_step, _zero_stable_since = None, 0.0, None
             _temp_history = {}
             _temp_filter.reset()
+            _pid.reset()
+            _pid_out = (float(max(settings.min_percent, _applied_floor))
+                        if settings.control_mode == "target" and prior.enabled
+                        and previous_bdf == device["bdf"] else None)
+            if settings.control_mode == "target" and _tune.phase in ("waiting_idle", "waiting_load", "settling"):
+                _tune.cancel()
             _pid.pv = fan_pid.PVFilter(tau_s=settings.temp_rise_tau_seconds,
                                        fall_tau_s=settings.temp_fall_tau_seconds)
             _map = fan_map.MapController()
@@ -1133,7 +1163,8 @@ def status() -> dict:
             "helper_installed": HELPER.is_file(),
             "state": _state if settings.enabled or _state == "fault" else "disabled",
             "error": _error, "pending_auto_restore": _pending_reset_bdf is not None,
-            "control_policy": "adaptive_ff_pi_antiwindup_fast_rise_slow_fall",
+            "control_policy": ("ceiling_margin_slew_limited_pi" if settings.control_mode == "target"
+                               else "adaptive_ff_pi_antiwindup_fast_rise_slow_fall"),
             "learned_parameters": _policy.learned_parameters(),
             "presets": list(FAN_PRESETS),
             "cool_hold_seconds": settings.cool_hold_seconds,
