@@ -60,6 +60,14 @@ BUNDLED = (
         license="MIT",
     ),
     SkillEntry(
+        id="controldeck-addon-development",
+        name="Add-on 開発",
+        summary="ControlDeck Add-on の契約・安全境界・UI 規約と、実画面で確かめてから完成とする手順。",
+        version="1.0.0",
+        source="bundled",
+        license="MIT",
+    ),
+    SkillEntry(
         id="controldeck-sound-effects",
         name="効果音制作",
         summary="音源・素材感・空間・長さを組み立ててから SonicForge へ渡す手順。",

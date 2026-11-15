@@ -29,6 +29,12 @@ class WorkflowBody(BaseModel):
     auto_advisor: str | None = Field(default=None, max_length=16)
     review_model: str | None = Field(default=None, max_length=200)
     advisor_model: str | None = Field(default=None, max_length=200)
+    ui_verify: bool | None = None
+    ui_verify_allow_external: bool | None = None
+
+
+WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model",
+                 "ui_verify", "ui_verify_allow_external")
 
 
 class RunBody(AgentTargetBody):
@@ -117,6 +123,8 @@ class SessionBody(BaseModel):
     # このセッションで使う系列。v1画面とv2画面がそれぞれ自分の系列を名指しする。
     # 空なら設定値（チャットやワークフローと同じ既定）を使う。
     runtime: str = Field(default="", max_length=8)
+    # 作業の種類（ui_verify / research / review）。空ならふつうのセッション。
+    task: str = Field(default="", max_length=16)
 
 
 _llm_warmup_tasks: set = set()
@@ -155,7 +163,7 @@ async def create_session(
             imported = await asyncio.to_thread(opencode.import_project, project_path)
             project_path = imported["path"]
         command, project = opencode.tui_command(
-            project_path=project_path, prompt=body.prompt,
+            project_path=project_path, prompt=opencode.task_prompt(body.task, body.prompt),
             base_url=body.base_url, model=body.model, owner_user_id=user.id,
             runtime=body.runtime,
         )
@@ -167,7 +175,7 @@ async def create_session(
     audit.record(db, "feature.opencode.session", user=user, resource_type="feature",
                  resource_id="opencode", request=request,
                  metadata={"terminal_id": session["id"], "project_path": project,
-                           "with_prompt": bool(body.prompt.strip()),
+                           "with_prompt": bool(body.prompt.strip()), "task": body.task,
                            "runtime": opencode.active_runtime(body.runtime)})
     return {**session, "project_path": project}
 
@@ -195,14 +203,15 @@ def get_workflow(user: User = Depends(require_permission("workflows.run"))):
     from app.models_mgmt import local_llm
 
     settings = opencode.get_settings()
-    return {**{key: settings[key] for key in (
-        "superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model")},
+    return {**{key: settings[key] for key in WORKFLOW_KEYS},
         # 選べるモデル（ゲートウェイの名前）。別のモデルへは要求に合わせて載せ替える。
         "models": [{"alias": str(item["alias"]), "runtime": str(item.get("runtime") or "")}
                    for item in local_llm.llm_instances()],
         # 拡張ごとのプラグインが導入済みか。導入・更新・削除は 設定 → オプション機能。
         "installed": opencode.workflow_installed(),
-        "features": dict(opencode.WORKFLOW_FEATURES)}
+        "features": {**opencode.WORKFLOW_FEATURES, **opencode.WORKFLOW_MCP_FEATURES},
+        # UI 検証はこの PC の Chrome を使う。無ければ画面で案内する。
+        "browser": bool(opencode._browser_executable())}
 
 
 @router.put("/workflow")
@@ -211,5 +220,73 @@ def put_workflow(body: WorkflowBody, user: User = Depends(require_permission("se
         settings = opencode.save_workflow(body.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {key: settings[key] for key in (
-        "superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model")}
+    return {key: settings[key] for key in WORKFLOW_KEYS}
+
+
+@router.post("/tools/ui-verify/diagnose")
+async def diagnose_ui_verify(user: User = Depends(require_permission("settings.manage"))):
+    """UI 検証の道具（Playwright MCP）を session と同じ指定で起こし、どこまで動くかを返す。"""
+    from app.integrations.opencode.diagnose import diagnose_ui_verify as run
+
+    return await run()
+
+
+# ---- 作業の結果（UI 検証・精密調査・レビュー） ----
+
+
+def _report_owner(user: User) -> int | None:
+    """管理者は全員分を見られる。それ以外は自分の session の結果だけ。"""
+    from app.security.deps import user_permissions
+
+    return None if "settings.manage" in user_permissions(user) else user.id
+
+
+@router.get("/reports")
+def list_reports(limit: int = 50, user: User = Depends(require_permission("workflows.run"))):
+    from app.integrations.opencode import reports
+
+    return {"reports": reports.list_reports(owner_user_id=_report_owner(user), limit=max(1, min(limit, 200)))}
+
+
+@router.get("/reports/{report_id}")
+def get_report(report_id: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.integrations.opencode import reports
+
+    try:
+        record = reports.get(report_id, owner_user_id=_report_owner(user))
+    except reports.ReportError:
+        record = None
+    if record is None:
+        raise HTTPException(status_code=404, detail="結果が見つかりません")
+    return record
+
+
+@router.get("/reports/{report_id}/images/{name}")
+def get_report_image(report_id: str, name: str, user: User = Depends(require_permission("workflows.run"))):
+    from fastapi.responses import FileResponse
+
+    from app.integrations.opencode import reports
+
+    try:
+        path = reports.image_path(report_id, name, owner_user_id=_report_owner(user))
+    except reports.ReportError:
+        path = None
+    if path is None:
+        raise HTTPException(status_code=404, detail="画面写真が見つかりません")
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.delete("/reports/{report_id}")
+def delete_report(report_id: str, request: Request,
+                  user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    from app.integrations.opencode import reports
+
+    try:
+        removed = reports.delete(report_id, owner_user_id=_report_owner(user))
+    except reports.ReportError:
+        removed = False
+    if not removed:
+        raise HTTPException(status_code=404, detail="結果が見つかりません")
+    audit.record(db, "opencode.report.delete", user=user, resource_type="opencode_report",
+                 resource_id=report_id, request=request)
+    return {"deleted": True}

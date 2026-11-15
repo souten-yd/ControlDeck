@@ -94,8 +94,8 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 
 | 項目 | 状態 | PR |
 |---|---|---|
-| 計画・引き継ぎ | 進行中 | — |
-| 第 1 段階 B（backend） | 未着手 | — |
+| 計画・引き継ぎ | 完了 | #377 |
+| 第 1 段階 B（backend） | 実装済み（Playwright MCP 導入・接続診断を実機で確認） | #378 |
 | 第 1 段階 C（画面） | 未着手 | — |
 | 第 1 段階 D（E2E） | 未着手 | — |
 | 第 2 段階 | 未着手 | — |
@@ -110,3 +110,11 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | `@upstash/context7-mcp` | 4.4.4 | 精密調査（任意） |
 | `@ast-grep/cli` | 0.51.0 | レビュー（任意） |
 | `chrome-devtools-mcp` | 1.12.0 | 見送り。必要になったら |
+
+## 実装メモ（引き継ぎ用）
+
+- v2 の agent の指示は `system`。v1 形の `prompt` は `_v2_agents` が読み替える（そのままだと黙って無視される。2.3.0 の `opencode2 debug agents` で確認）。
+- Playwright MCP 0.0.84 は既定で 25 個の道具、定義は約 22KB（約 6,300 トークン）。主の `build` からは `playwright_*` を deny で外し、`ui-verifier` だけが持つ。
+- 画面写真は `data/integrations/opencode/ui-verify/<session>/` に撮られ、`control_deck.report` の時点で `reports/<id>/images/` へ取り込む。TUI の session 名は利用者ごと（`tui-<user>`）なので、取り込まないと次の session が上書きする。
+- 接続診断: `POST /api/v1/opencode/tools/ui-verify/diagnose`（導入 → Chrome → 起動 → 道具の一覧 → about:blank を開く）。
+- 結果: `GET /api/v1/opencode/reports`、`/reports/{id}`、`/reports/{id}/images/{name}`、`DELETE /reports/{id}`。管理者（settings.manage）は全員分、それ以外は自分の分だけ。
