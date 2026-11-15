@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-15 Add-on への GPU の貸し出し（Models「Add-on への GPU の譲り方」）
+
+- 不具合: LLM の resource provider は全ランタイムの VRAM を申告するのに、退くときは llama.cpp しか降ろさなかった。Strata / Radiance / Maya-S が載っていると「0 バイト空けた」と答え、MediaForge / SonicForge は待つか RAM へ流れた（画像 cpu_offload 235 秒、GPU なら約 3 秒）。
+- `large_model_lifecycle.release_for_addon()` で大きなランタイムも降ろす（常駐指定・接続中は断る）。別の LLM の要求では降ろさない（それは prepare_switch の役目）。
+- 方針 `RuntimePolicy.addon_gpu`: `auto`（既定。LLM が推論していなければ貸す、推論中なら待たずに RAM）／`swap`（推論の終わりを待って必ず貸す。drain 中の新しい要求は取り消しの合図にせず待たせる）／`llm_first`（降ろさない）。明示の `/addon-runtime/.../ai/release` も方針に従う。
+- broker は RAM や小さい枠で受ける前に、一度だけ GPU を借りられないか試す（`_try_lending_first`、provider の `would_step_aside`）。
+- 貸している間は LLM 要求と `local_llm.ensure_ready` を待たせる（LLM の受け入れは空きに合わせて縮むので、待たせないと生成中の隣へ載って両方落ちる）。`lending_loop` が Add-on の lease と待ち要求が消えたのを見て返し、`restore_delay_sec` 後に broker を通して載せ直す。LLM 要求が待っていれば即座に返す。`max_lend_sec` で打ち切る。
+- 画面: Models の設定に方針・載せ直し・間隔・上限、載せ直しの実測時間、貸出中の表示。
+
 ## 2026-11-15 ControlDeck_v0.12 リリース
 
 - 対象: `origin/main`（PR #347〜#373 と本記録）。前回 `ControlDeck_v0.11` から 304 commit。

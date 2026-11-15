@@ -216,7 +216,7 @@ def test_addon_ai_release_is_refused_while_another_consumer_is_using_the_model(
     from app.models_mgmt import resource_provider
 
     class BusyProvider:
-        async def release_on_request(self):
+        async def release_on_request(self, **_kwargs):
             return False, "opencode_active", 0
 
     monkeypatch.setattr(
@@ -240,7 +240,7 @@ def test_addon_ai_release_reports_the_freed_residency(runtime_ai_api, monkeypatc
     from app.models_mgmt import resource_provider
 
     class FreeProvider:
-        async def release_on_request(self):
+        async def release_on_request(self, **_kwargs):
             return True, "released", 17_000_000_000
 
     monkeypatch.setattr(

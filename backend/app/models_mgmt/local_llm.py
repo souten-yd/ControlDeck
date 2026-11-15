@@ -150,6 +150,12 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
     item = find(alias)
     if item is None:
         return False
+    if not item.get("loaded"):
+        # Add-on へ GPU を貸している間は起こさない。生成中の隣へ載ると両方落ちる。
+        from app.models_mgmt.resource_provider import provider
+
+        if not await provider().wait_returned(timeout=timeout_seconds):
+            return False
     return await module_for(str(item["runtime"])).ensure_ready(alias, timeout_seconds=timeout_seconds)
 
 

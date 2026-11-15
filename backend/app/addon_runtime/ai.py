@@ -260,8 +260,15 @@ async def ai_release(request: Request, principal: AIAuth, body: AIReleaseRequest
         if not target.gateway_managed:
             released, reason, freed = False, "runtime_not_gateway_managed", 0
         else:
+            from app.models_mgmt.runtime_policy import get_policy
+
             provider = resource_provider.provider()
-            released, reason, freed = await provider.release_on_request()
+            owner = f"addon:{principal.addon_id}"
+            if get_policy().addon_gpu.mode == "llm_first":
+                # 利用者が「LLM を降ろさない」を選んでいる。Add-on は RAM で動く。
+                released, reason, freed = False, "llm_first", 0
+            else:
+                released, reason, freed = await provider.release_on_request(lend_to=owner)
             # embedding / reranker は既定では降ろさない。小さく、RAG が常時
             # 使うので、毎回外すのは無駄な載せ替えになる。ただし小さいことと
             # 無害であることは違う: 1.16GB の embedding が載っているだけで、
@@ -270,7 +277,7 @@ async def ai_release(request: Request, principal: AIAuth, body: AIReleaseRequest
             required = int(body.required_bytes) if body else 0
             if released and required and await _admitted_free_bytes() < required:
                 escalated, escalated_reason, extra = await provider.release_on_request(
-                    include_helpers=True
+                    include_helpers=True, lend_to=owner
                 )
                 if escalated and extra:
                     reason = "released_with_helpers"

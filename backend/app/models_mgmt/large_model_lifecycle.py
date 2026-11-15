@@ -200,6 +200,38 @@ async def release_for(runtime: str) -> None:
         await llama.release_loaded_llms()
 
 
+async def release_for_addon() -> tuple[list[tuple[str, str]], str]:
+    """Stop the large runtimes (Maya-S / Strata / Radiance) so an add-on can use the card.
+
+    The resource provider used to stop only llama.cpp here, while it reported every
+    runtime's VRAM to the broker. With Strata resident it answered "already released,
+    0 bytes", the broker read that as a refusal, and MediaForge / SonicForge waited until
+    they fell back to RAM (image 235 s instead of ~3 s, 2026-11-15).
+
+    The caller has already drained in-flight gateway requests. A live connection or the
+    operator's "never release" still refuses. Returns the (runtime, alias) pairs stopped,
+    so they can be brought back, and "" or the refusal reason.
+    """
+    from app.models_mgmt import maya_s, radiance, strata_gateway
+
+    loaded = await asyncio.to_thread(_loaded_models)
+    for runtime, item in loaded:
+        if item.get("idle_exclude"):
+            return [], "idle_excluded"
+        if await asyncio.to_thread(_client_connected, int(item.get("port") or 0)):
+            return [], "clients_connected"
+    stopped: list[tuple[str, str]] = []
+    for runtime, item in loaded:
+        alias = str(item["alias"])
+        module = {MAYA: maya_s, STRATA: strata_gateway, RADIANCE: radiance}[runtime]
+        ok, reason = await asyncio.to_thread(module.stop_instance, alias)
+        if not ok:
+            logger.warning("%s %s を add-on のために降ろせませんでした: %s", runtime, alias, reason)
+            return stopped, "stop_failed"
+        stopped.append((runtime, alias))
+    return stopped, ""
+
+
 def _client_connected(port: int) -> bool:
     from app.models_mgmt import llama
 

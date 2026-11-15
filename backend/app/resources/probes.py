@@ -46,7 +46,17 @@ class ProviderRegistry:
             key=lambda key: (getattr(self._providers[key], "step_aside_order", 50), key),
         )
 
-    async def step_aside(self, device_id: str, needed_bytes: int) -> tuple[bool, str, int]:
+    def would_lend(self, device_id: str, request: ResourceRequest) -> bool:
+        """この要求のために GPU を丸ごと空けてくれる provider が居るか（いま聞くだけ）。"""
+        return any(
+            getattr(provider, "would_step_aside", None) is not None
+            and provider.would_step_aside(device_id, request)
+            for provider in self._providers.values()
+        )
+
+    async def step_aside(
+        self, device_id: str, needed_bytes: int, *, request: ResourceRequest | None = None,
+    ) -> tuple[bool, str, int]:
         """その device で場所を空けられる provider に、順に一度だけ頼む。
 
         必要量に届いた時点でやめる。全部に頼んで回ると、要らない分まで降ろす。
@@ -59,7 +69,11 @@ class ProviderRegistry:
             if not any(item.device_id == device_id and item.reserved_bytes > 0
                        for item in provider.reservations()):
                 continue
-            released, reason, bytes_freed = await provider.step_aside(device_id)
+            # 誰のために退くかで答えが変わる provider（常駐 LLM）にだけ要求を渡す。
+            if getattr(provider, "step_aside_takes_request", False):
+                released, reason, bytes_freed = await provider.step_aside(device_id, request=request)
+            else:
+                released, reason, bytes_freed = await provider.step_aside(device_id)
             reasons.append(f"{provider_id}:{reason}")
             if released:
                 freed += bytes_freed
