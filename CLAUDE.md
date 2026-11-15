@@ -23,6 +23,10 @@
 - 重い道具（3D・音）は主の会話に載せず、子エージェントへ分ける（`provider.py::_SUBAGENT_TOOLS`）。新しい MCP の道具も同じ方針で足す。
 - ローカル LLM は 1 枚の R9700 を取り合う。モデルの載せ替えとコンテキストの消費を増やす変更は、測ってから入れる。
 
+## 誰が判断するか
+
+`docs/POLICY-autonomous-development.md`。L0・L1 は統括（Claude）が関門を通して自動で進め、L2 だけ利用者の承認を得る。区分は `./deck.sh change-class`。
+
 ## 開発の進め方（2026-11-15 から）
 
 AI に開発させるときは `./deck.sh sandbox new <名前> --repo <リポジトリ>` で箱を作り、箱の中の OpenCode（`./deck.sh sandbox opencode <名前> [--run 指示]`）とミラー（`mirror-start`）で直して確かめる。本番の ControlDeck は止めない。公開はプレリリースまで、正式化と本番への適用は利用者。

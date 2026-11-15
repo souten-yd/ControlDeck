@@ -1,0 +1,77 @@
+{
+ "name": "ControlDeck",
+ "default": "L1",
+ "rules": [
+  {
+   "tier": "L2",
+   "why": "認証・権限・秘密値",
+   "paths": [
+    "backend/app/security/**",
+    "backend/app/auth/**",
+    "backend/app/access/**",
+    "backend/app/addons/tokens.py",
+    "backend/app/addon_runtime/auth.py",
+    "backend/app/addon_runtime/grants.py",
+    "backend/app/addon_runtime/device_sessions.py",
+    "backend/app/main.py"
+   ]
+  },
+  {
+   "tier": "L2",
+   "why": "利用者データの移行",
+   "paths": [
+    "backend/app/database/migrations.py",
+    "backend/app/database/backup_archive.py",
+    "backend/app/models/**"
+   ]
+  },
+  {
+   "tier": "L2",
+   "why": "更新・隔離・起動の仕組み（自動化そのものの安全装置）",
+   "paths": [
+    "backend/app/maintenance/self_update.py",
+    "backend/app/maintenance/auto_update.py",
+    "backend/app/maintenance/sandbox.py",
+    "backend/app/maintenance/change_policy.py",
+    "deck.sh",
+    "deploy/**",
+    "helper/**",
+    "config/change-policy/**",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/POLICY-autonomous-development.md"
+   ]
+  },
+  {
+   "tier": "L2",
+   "why": "AI の権限・外部への送信・隔離の規則（実際に強制する backend だけ）",
+   "patterns": [
+    "_FORBIDDEN",
+    "external_directory",
+    "GH_CONFIG_DIR",
+    "allowed-origins",
+    "blocked-origins",
+    "research_external",
+    "ui_verify_allow_external",
+    "--isolated",
+    "def _authorize",
+    "csrf",
+    "require_permission\\(",
+    "local_only"
+   ],
+   "scope": [
+    "backend/app/**"
+   ]
+  },
+  {
+   "tier": "L0",
+   "why": "文書・テストだけ",
+   "paths": [
+    "docs/**",
+    "*.md",
+    "backend/tests/**",
+    "frontend/e2e/**"
+   ]
+  }
+ ]
+}
