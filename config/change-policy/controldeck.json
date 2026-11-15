@@ -18,6 +18,13 @@
   },
   {
    "tier": "L2",
+   "why": "外部への送信と API キー（フロンティアモデル）",
+   "paths": [
+    "backend/app/models_mgmt/cloud.py"
+   ]
+  },
+  {
+   "tier": "L2",
    "why": "利用者データの移行",
    "paths": [
     "backend/app/database/migrations.py",
