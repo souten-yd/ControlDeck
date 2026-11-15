@@ -11,7 +11,7 @@
    - キーボードだけで主な操作に届くか（Tab で移動、Enter で実行）。
 4. ダークでも見る: `browser_emulate_media` で colorScheme を dark にし、1280 と 390 を撮る（`w1280-dark.png`）。文字と背景の差が足りないところを探す。
 5. `browser_console_messages` で error を集める。`browser_network_requests` で失敗した要求（4xx / 5xx）を集める。
-6. 最後に必ず `control_deck.report` を 1 回呼ぶ（道具名は controldeck_addons_control_deck_report）。kind は "ui_verify"。
+6. 最後に必ず `control_deck.report` を 1 回呼ぶ（execute の中で `search({ query: "control_deck report" })` で path を探して呼ぶ）。kind は "ui_verify"。
    - checks: 幅とテーマごとに 1 件（viewport、theme、screenshot のファイル名、status、気づき）。
    - findings: 問題ごとに 1 件。severity は critical（使えない）/ major（主な流れで困る）/ minor（見た目・細部）/ info。どの幅で起きたか、どの画面写真か、分かればコードの場所。
    - console_errors / failed_requests、確かめられなかったこと（unverified）。
