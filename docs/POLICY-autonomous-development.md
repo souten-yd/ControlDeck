@@ -61,4 +61,4 @@
 1. 関門を通し、PR を作る（Draft にしない）。
 2. `./deck.sh approval request --repo <owner/name> --pr <番号> --title "<平易な題名>" --summary "<何が変わり、利用者に何が起きるか>" --risk "<なぜ承認が要るか>"`（区分の理由は `./deck.sh change-class` の guarded をそのまま使う）。
 3. 利用者が承認すると ControlDeck がその時点のコミットだけをマージする。PR が変わっていたらマージしない（依頼し直す）。
-4. マージ後の Release は統括が出す（L1 と同じ）。本番は自動適用。
+4. 承認されると ControlDeck が次の版の正式 Release を出し（ControlDeck 本体だけ）、本番は使われていなければ 10 分の待ちを飛ばしてすぐ適用する。

@@ -25,10 +25,12 @@ type FanSettings = {
   /** 安全点の温度。null = GPU範囲の3/4（R9700は77°C） */
   backstop_c: number | null;
   targets_c: Record<string, number>;
+  temperature_margin_c?: number;
+  warm_rate_percent_per_min?: number;
   /** PC起動後: 保存設定を自動で再適用 / GPU標準のまま起動 */
   startup_mode?: "apply_saved" | "firmware";
   /** curve: インテリジェントマップ / pid: 目標温度へPID追従 / map: 従来のマップ */
-  control_mode?: "map" | "curve" | "pid";
+  control_mode?: "map" | "curve" | "pid" | "target";
   pid_kp?: number;
   pid_ti?: number;
   pid_ff_weight?: number;
@@ -105,7 +107,7 @@ type FanStatus = {
     critical_sensor: string;
     observed_at: number;
     curve: string | null;
-    control_mode?: "map" | "curve" | "pid";
+    control_mode?: "map" | "curve" | "pid" | "target";
     pid?: PidLive | null;
     map?: { held_percent: number; demand_percent: number; trim_percent: number;
       at_target_percent: number; curve_temps: number[]; curve_percents: number[]; excess_c: number } | null;
@@ -288,7 +290,7 @@ export function FanControlSettings() {
       learning_enabled: preset.learning_enabled,
       ff_gain: preset.ff_gain, kp: preset.kp, ki: preset.ki, targets_c: targets,
       backstop_percent: preset.backstop_percent, backstop_c: preset.backstop_c,
-      ...(preset.control_mode ? { control_mode: preset.control_mode } : {}),
+      control_mode: preset.control_mode ?? "map",
       ...(preset.pid_kp != null ? { pid_kp: preset.pid_kp, pid_ti: preset.pid_ti, pid_ff_weight: preset.pid_ff_weight } : {}),
     });
   };
@@ -347,7 +349,7 @@ export function FanControlSettings() {
             {data.active?.learning && <p className="mt-1 text-[11px] text-zinc-500 tabular-nums">
               学習中の係数 FF {data.active.learning.ff_gain.toFixed(1)} / P {data.active.learning.kp.toFixed(2)}
             </p>}
-            {data.active?.control_mode === "pid" && <PidStatus live={data.active.pid}/>}
+            {(data.active?.control_mode === "pid" || data.active?.control_mode === "target") && <PidStatus live={data.active.pid}/>}
             {data.active?.control_mode === "curve" && data.active.map && (
               <p className="mt-2 text-[11px] tabular-nums text-zinc-600 dark:text-zinc-300">
                 マップ: 保持 {data.active.map.held_percent.toFixed(1)}%（今の要求 {data.active.map.demand_percent.toFixed(1)}%）・
@@ -370,7 +372,7 @@ export function FanControlSettings() {
             <div className="space-y-4 border-t border-zinc-200 p-3 dark:border-zinc-700">
             <p className="text-xs leading-relaxed text-zinc-500">
               GPU本体・Hotspot・VRAMなど、実際に取得できる温度のうち余裕が最小のセンサーを優先します。
-              ファン加速は早く、減速はゆっくり。短いLLM負荷のON/OFFではファンを細かく動かしません。
+              温度追従では通常の加減速を緩やかにし、設定上限に達した場合に即時加速します。
                   </p>
                   <p className="text-xs text-amber-700 dark:text-amber-300">
               温度目標は保証された上限ではありません。過熱時の安全制御とGPU本来の温度保護は変更できません。
@@ -401,7 +403,11 @@ export function FanControlSettings() {
 
           {selected && (
             <div className="space-y-3">
-              <h3 className="text-xs font-semibold">各温度センサーの目標値</h3>
+              <h3 className="text-xs font-semibold">各温度センサーの{draft.control_mode === "target" ? "上限温度" : "目標値"}</h3>
+              {draft.control_mode === "target" && <RangeControl label="温度マージン" min={0} max={20} step={0.5}
+                value={draft.temperature_margin_c ?? 5} suffix="°C"
+                hint="通常は「上限温度 − マージン」を目標に緩やかに追従します。実測温度が上限に達したら、直ちに最大回転へ加速します。"
+                onChange={(value) => update({ temperature_margin_c: value })}/>}
               {selected.sensors.map((sensor) => {
                 const goal = draft.targets_c[sensor.id] ?? sensor.default_target_c;
                 return (
@@ -409,6 +415,7 @@ export function FanControlSettings() {
                     <RangeControl label={sensor.label + " / " + sensor.id} min={45}
                       max={Math.max(45, sensor.max_target_c)} value={goal} suffix="°C"
                       hint={"現在 " + (sensor.value_c == null ? "N/A" : sensor.value_c + "°C") +
+                        (draft.control_mode === "target" ? " ・ 追従温度 " + (goal - (draft.temperature_margin_c ?? 5)) + "°C" : "") +
                         " ・ HW上限に基づく設定可能上限 " + sensor.max_target_c + "°C"}
                       onChange={(value) => update({ targets_c: { ...draft.targets_c, [sensor.id]: value } })}/>
                     {sensor.value_c != null && (
@@ -429,7 +436,8 @@ export function FanControlSettings() {
           <fieldset className={"space-y-3 " + surface}>
             <legend className="px-1 text-xs font-semibold">制御方式</legend>
             <div className="grid gap-2 sm:grid-cols-3">
-              {([["curve", "グラフ（マップ）制御", "hotspotのスパイクにGPUが即追従、下げはゆっくり。熱モデルから目標温度に収まるカーブを自動設計"],
+              {([["target", "温度追従（上限とマージン）", "上限よりマージン分低い温度へ緩やかに追従。上限到達時は即最大回転"],
+                 ["curve", "グラフ（マップ）制御", "hotspotのスパイクにGPUが即追従、下げはゆっくり。熱モデルから目標温度に収まるカーブを自動設計"],
                  ["pid", "PID制御（目標温度に追従）", "目標温度で釣り合う回転に自動で合わせる（FF＋PI、バック・カリキュレーション）"],
                  ["map", "従来のマップ制御", "温度の余裕に応じた下限＋適応FF/PI（旧方式）"]] as const)
                 .filter(([mode]) => mode !== "map" || (data.settings.control_mode ?? "map") === "map").map(([mode, label, hint]) => (
@@ -441,6 +449,16 @@ export function FanControlSettings() {
                 </label>
               ))}
             </div>
+            {draft.control_mode === "target" && <div className="space-y-3">
+              <p className="text-[11px] leading-relaxed text-zinc-500">
+                各センサーの上限温度から温度マージンを引いた値へ追従します。通常の加速と減速には速度制限を設け、上限に達したときは平滑化や速度制限を使わず最大回転にします。
+                GPU側にもhotspot上限付近で最大回転になる保護カーブを残します。初回の自動調整は行わず、既存の熱モデルがあれば利用します。
+              </p>
+              <RangeControl label="通常の加速の速さ" min={5} max={120} step={5}
+                value={draft.warm_rate_percent_per_min ?? 30} suffix="%/分"
+                hint="上限未満でのファン指令の増加幅。30%/分なら3秒ごとに最大1.5ポイントずつ上げます。上限到達時は即時加速します。"
+                onChange={(value) => update({ warm_rate_percent_per_min: value })}/>
+            </div>}
             {draft.control_mode === "curve" && (
               <div className="space-y-3">
                 <p className="text-[11px] leading-relaxed text-zinc-500">
@@ -546,12 +564,16 @@ export function FanControlSettings() {
                 value={draft.cool_hold_seconds} suffix="秒" hint="冷えた直後はすぐに下げません。短いLLM負荷の谷でファンが上下しないようにします。"
                 onChange={(value) => update({ cool_hold_seconds: value })}/>
               <RangeControl label="減速の速さ（なめらかに下げる）" min={1} max={60} step={1}
-                value={draft.cool_rate_percent_per_min} suffix="%/分" hint="保持のあと、段階ではなく連続的に下げます。加速は常に即時です。"
+                value={draft.cool_rate_percent_per_min} suffix="%/分" hint={draft.control_mode === "target"
+                  ? "温度追従では、この速さで連続的に下げます。上限到達時の加速は即時です。"
+                  : "保持のあと、段階ではなく連続的に下げます。加速は常に即時です。"}
                 onChange={(value) => update({ cool_rate_percent_per_min: value })}/>
               <RangeControl label="ファンカーブ安全点の温度（hotspot）" min={70} max={90} step={1}
+                disabled={draft.control_mode === "target"}
                 value={draft.backstop_c ?? 77} suffix="°C" hint="この温度で下の回転数、最大温度で100%になります。高くするとLLMの連続負荷で静か。制御が止まってもGPUがこの曲線で冷やします。"
                 onChange={(value) => update({ backstop_c: value })}/>
               <RangeControl label="ファンカーブ安全点の回転数" min={25} max={100} step={5}
+                disabled={draft.control_mode === "target"}
                 value={draft.backstop_percent ?? 60} suffix="%" hint="コントローラが停止してもGPUに残る保護。低くするほど静かですが、保護は弱くなります。"
                 onChange={(value) => update({ backstop_percent: value })}/>
               <RangeControl label="Zero RPM停止判定の継続時間" min={600} max={1800} step={60}

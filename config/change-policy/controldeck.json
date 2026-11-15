@@ -46,7 +46,8 @@
     "config/change-policy/**",
     "AGENTS.md",
     "CLAUDE.md",
-    "docs/POLICY-autonomous-development.md"
+    "docs/POLICY-autonomous-development.md",
+    "backend/app/maintenance/approvals.py"
    ]
   },
   {

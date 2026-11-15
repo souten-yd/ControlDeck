@@ -60,6 +60,25 @@ def save_settings(patch: dict) -> dict:
     return get_settings()
 
 
+def _prompt_path() -> Path:
+    return data_dir() / "updates" / "apply-now.json"
+
+
+def request_prompt_apply(release_tag: str) -> None:
+    """利用者が承認した Release は、使われていなければ待たずに適用する（10 分の待ちを飛ばす）。"""
+    path = _prompt_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"release_tag": release_tag, "at": time.time()}), encoding="utf-8")
+
+
+def _prompt_requested(release_tag: str) -> bool:
+    try:
+        value = json.loads(_prompt_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return value.get("release_tag") == release_tag and time.time() - float(value.get("at") or 0) < 86400
+
+
 def busy_reasons() -> list[str]:
     """いま本番が使われている理由。空なら使われていない。"""
     reasons: list[str] = []
@@ -158,8 +177,11 @@ async def tick(idle_since: float | None, now: float) -> float | None:
         logger.info("更新 %s を待っています: %s", current.get("release_tag"), "、".join(reasons))
         return None
     idle_since = idle_since or now
-    if now - idle_since < settings["idle_minutes"] * 60:
+    prompt = _prompt_requested(str(current.get("release_tag") or ""))
+    if not prompt and now - idle_since < settings["idle_minutes"] * 60:
         return idle_since
+    if prompt:
+        _prompt_path().unlink(missing_ok=True)
     target = str(current["remote_sha"])
     await asyncio.to_thread(self_update.start, target, automatic=True, release_tag=str(current.get("release_tag") or ""))
     await notify("ControlDeck を自動更新します",
@@ -185,5 +207,11 @@ async def auto_update_loop() -> None:
         except Exception:  # noqa: BLE001 - 判断の失敗で service を止めない
             logger.exception("自動更新の判断に失敗しました")
             idle_since = None
-        interval = 60 if idle_since else get_settings()["check_interval_minutes"] * 60
-        await asyncio.sleep(interval)
+        # 承認された Release が待っていれば 1 分ごとに見る（使われていなくなったらすぐ適用）。
+        # 長く眠っている間に承認されても気づけるよう、眠りは 1 分ずつに分ける。
+        waiting = idle_since or _prompt_path().exists()
+        interval = 60 if waiting else get_settings()["check_interval_minutes"] * 60
+        for _ in range(max(1, interval // 60)):
+            await asyncio.sleep(60)
+            if not waiting and _prompt_path().exists():
+                break

@@ -1,5 +1,6 @@
 import itertools
 """llama.cpp ランタイム管理のテスト（DL/GPU 不要のロジック部分）。"""
+from types import SimpleNamespace
 
 
 def test_backend_asset_matching():
@@ -423,7 +424,7 @@ def test_start_instance_restarts_running_unit_to_apply_saved_settings(monkeypatc
     monkeypatch.setattr(llama, "mark_used_by_base_url", lambda url: None)
     monkeypatch.setattr("app.models_mgmt.runtime_policy.ensure_gpu_profile",
                         lambda **kwargs: {})
-    monkeypatch.setattr(llama.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(llama, "time", SimpleNamespace(**{**vars(llama.time), "sleep": lambda seconds: None}))
     gguf = tmp_path / "m.gguf"
     gguf.write_bytes(b"GGUF")
 

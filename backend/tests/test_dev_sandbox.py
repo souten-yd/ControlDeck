@@ -54,6 +54,22 @@ def test_podman_mounts_only_the_box_writable(repo, monkeypatch):
     assert argv[argv.index("--rootfs") + 1] == str(sandbox._rootfs())
 
 
+def test_opencode_plugins_visible_readonly_without_exposing_other_features(repo, monkeypatch):
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    features = sandbox._data_dir() / "features"
+    names = ("opencode-superpowers", "opencode-adversarial-review", "opencode-auto-advisor")
+    for name in (*names, "unrelated-addon"):
+        (features / name / "node_modules").mkdir(parents=True)
+    box = sandbox.create("plugins", str(repo))
+    argv = sandbox.podman_argv(box, ["true"])
+    volumes = [argv[i + 1] for i, item in enumerate(argv) if item == "-v"]
+    for name in names:
+        path = features / name
+        assert f"{path}:{path}:ro" in volumes
+    assert not any("unrelated-addon" in volume for volume in volumes)
+    assert [v for v in volumes if v.endswith(":rw")] == [f"{box.path}:{box.path}:rw"]
+
+
 def test_github_config_only_when_allowed(repo, monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".config" / "gh").mkdir(parents=True)
