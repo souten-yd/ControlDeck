@@ -37,6 +37,10 @@ export interface Workflow {
   github_cli?: boolean;
   /** この PC の gh が導入・ログイン済みか。 */
   github?: { installed: boolean; configured: boolean };
+  /** OpenCode を動かす場所。box: プロジェクトの箱（推奨）、host: 利用者と同じ権限。 */
+  isolation?: "box" | "host";
+  /** いま実際に使われる場所（podman が無ければ host）。 */
+  isolation_effective?: "box" | "host";
   /** レビューで構文検索（ast-grep）が使えるか。 */
   review_tool?: boolean;
   /** このPCに Chrome が見つかったか。 */
@@ -53,7 +57,7 @@ export function workflowBody(value: Workflow) {
     auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
     ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
     research_tool: value.research_tool ?? true, research_external: value.research_external ?? false,
-    context7: value.context7 ?? false, github_cli: value.github_cli ?? false };
+    context7: value.context7 ?? false, github_cli: value.github_cli ?? false, isolation: value.isolation ?? "box" };
 }
 
 export function WorkflowExtensions({ value, onChange, editable }: {
@@ -79,6 +83,12 @@ export function WorkflowExtensions({ value, onChange, editable }: {
   );
   return (
     <SettingsGroup title="開発ワークフロー" description="ControlDeck から開く OpenCode セッションに足す拡張。次に開くセッションから反映されます">
+      <Toggle label="プロジェクトの箱で動かす（推奨）"
+        hint={value.isolation_effective === "host" && (value.isolation ?? "box") === "box"
+          ? "podman が見つからないため、いまは利用者と同じ権限で動いています"
+          : "AI が書けるのは開いたプロジェクトだけになります。本番のデータ・他のプロジェクト・秘密鍵は見えません。ホストの機能（systemd やファン）を直す作業だけはオフにします"}
+        value={(value.isolation ?? "box") === "box"} disabled={!editable}
+        onChange={(v) => onChange({ ...value, isolation: v ? "box" : "host" })} />
       {missing.length > 0 && (
         <p className="rounded-xl bg-zinc-50 px-3 py-2 text-[11px] text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
           未導入の拡張は選べません。導入・更新・削除は <Link to="/settings/features" className="text-accent-600 underline dark:text-accent-400">設定 → オプション機能</Link> で行います。

@@ -42,6 +42,9 @@ DEFAULT_SETTINGS = {
     # 精密調査（ControlDeck の Deep Research を道具として渡す）。外部検索は別に許可が要る。
     "research_tool": True,
     "research_external": False,
+    # OpenCode をどこで動かすか。box: プロジェクトの箱（podman、書けるのはプロジェクトだけ）、
+    # host: これまでどおり利用者と同じ権限で。箱が使えない（podman が無い）ときは host。
+    "isolation": "box",
     # Context7（ライブラリの公式文書）。問い合わせが外部へ出るので既定はオフ。
     "context7": False,
     # この PC で設定済みの gh（GitHub CLI）を session から使わせるか。AI に利用者の GitHub の
@@ -205,6 +208,10 @@ def save_workflow(patch: dict) -> dict:
                 "research_tool", "research_external", "context7", "github_cli"):
         if key in patch:
             settings[key] = bool(patch[key])
+    if "isolation" in patch:
+        if patch["isolation"] not in ("box", "host"):
+            raise ValueError("isolation は box / host のどちらかです")
+        settings["isolation"] = patch["isolation"]
     if "auto_advisor" in patch:
         if patch["auto_advisor"] not in AUTO_ADVISOR_MODES:
             raise ValueError("Auto Advisor は off / observe / active のいずれかです")
@@ -1160,6 +1167,66 @@ def _runtime_env(runtime: str, config: Path, project: Path | None = None) -> dic
     return env
 
 
+def isolation_mode() -> str:
+    """OpenCode を動かす場所。設定が box でも podman が無ければ host。"""
+    if get_settings().get("isolation", "box") == "box" and shutil.which("podman"):
+        return "box"
+    return "host"
+
+
+def _opencode_home() -> Path:
+    """箱の中の HOME。OpenCode 自身の履歴（~/.local/share/opencode など）は元の場所を共有する。"""
+    home = data_dir().resolve() / "sandboxes" / ".opencode-home"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
+            interactive: bool, readonly: tuple[Path, ...] = ()) -> tuple[list[str], dict[str, str]]:
+    """OpenCode を起こす argv と環境変数。箱なら podman の argv（環境変数は箱の中へ渡す）。
+
+    箱で書けるもの: プロジェクト、この session の設定、UI 検証の写真・MCP の長い結果の置き場、
+    OpenCode 自身の履歴。読み取り専用: ホストの /usr・/etc・/opt、管理領域の道具、ControlDeck の
+    Python（MCP bridge）と指示ファイル、有効なスキル、Add-on の資産、ターミナルの添付、git の設定、
+    （GitHub 連携をオンにしたときだけ）gh の設定。本番の data・秘密鍵・他のプロジェクトは見えない。
+    """
+    env = _runtime_env(runtime, config, project)
+    if isolation_mode() != "box":
+        return command, env
+    from app.maintenance import sandbox
+    from app.terminals import attachments
+
+    home = _opencode_home()
+    real_home = Path.home()
+    opencode_state = [real_home / ".local" / "share" / "opencode", real_home / ".local" / "state" / "opencode",
+                      real_home / ".cache" / "opencode"]
+    for path in opencode_state:
+        path.mkdir(parents=True, exist_ok=True)
+    ui_shots = _integration_dir() / "ui-verify"
+    ui_shots.mkdir(parents=True, exist_ok=True)
+    writable = [project, config, home, *opencode_state, _mcp_result_dir(), ui_shots]
+    readonly_paths = [Path(sys.prefix), Path(__file__).resolve().parent, *map(Path, _skill_paths()),
+                      *_addon_asset_roots(), attachments.store.root, *readonly]
+    gitconfig = real_home / ".gitconfig"
+    if gitconfig.is_file():
+        readonly_paths.append(gitconfig)
+    if env.get("GH_CONFIG_DIR"):
+        readonly_paths.append(Path(env["GH_CONFIG_DIR"]))
+    box_env = {
+        **env,
+        "HOME": str(home), "XDG_DATA_HOME": str(real_home / ".local" / "share"),
+        "XDG_STATE_HOME": str(real_home / ".local" / "state"), "XDG_CACHE_HOME": str(real_home / ".cache"),
+        "GIT_CONFIG_GLOBAL": str(gitconfig) if gitconfig.is_file() else "/dev/null",
+        "PLAYWRIGHT_BROWSERS_PATH": str(data_dir().resolve() / "cache" / "ms-playwright"),
+        "CONTROL_DECK_OPENCODE_BOX": "1",
+        # 管理領域の道具（ast-grep など）は箱の PATH に入っている。ホストの PATH は持ち込まない。
+        "PATH": sandbox.tool_path(),
+    }
+    argv = sandbox.container_argv(command, workdir=project, writable=writable, readonly=readonly_paths,
+                                  env=box_env, interactive=interactive)
+    return argv, {}
+
+
 def _discard_runtime_config(runtime: str, config: Path) -> None:
     """job 別の runtime config（v2 は directory）をまとめて消す。"""
     shutil.rmtree(config, ignore_errors=True)
@@ -1336,8 +1403,9 @@ def tui_command(
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))
-    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config, project).items())
-    command = f"{env} exec " + " ".join(shlex.quote(a) for a in argv)
+    argv, launch_env = _launch(runtime, argv, project, config, interactive=True)
+    env = " ".join(f"{key}={shlex.quote(value)}" for key, value in launch_env.items())
+    command = (f"{env} " if env else "") + "exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
 
 
@@ -1465,14 +1533,16 @@ async def run_chat(
 
     await local_llm.ensure_ready_by_base_url(endpoint)
     unit = f"cdfeature-opencode-{re.sub(r'[^a-zA-Z0-9_-]', '', job.id)[:24]}"
+    command = _run_argv(runtime, binary, instruction[:32_000], model_id, project)
+    if session_id:
+        command += ["--session", session_id]
+    command, launch_env = _launch(runtime, command, project, runtime_config, interactive=False)
     argv = [
         systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
         f"--unit={unit}", f"--working-directory={project}",
-        *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config, project).items()),
-        *_run_argv(runtime, binary, instruction[:32_000], model_id, project),
+        *(f"--setenv={key}={value}" for key, value in launch_env.items()),
+        *command,
     ]
-    if session_id:
-        argv += ["--session", session_id]
     job.set_progress("OpenCodeを起動", 0, 1)
     events = 0
     emitted: set[str] = set()
@@ -1567,13 +1637,15 @@ class OpenCodeProvider:
         prompt_path.write_text(_prompt(operation, instruction), encoding="utf-8")
         os.chmod(prompt_path, 0o600)
         unit = f"cdfeature-opencode-{re.sub(r'[^a-zA-Z0-9_-]', '', job.id)[:24]}"
+        command = [*_run_argv(runtime, binary, "添付されたControl Deckの指示を実行してください。",
+                              model_id, project), "--file", str(prompt_path)]
+        command, launch_env = _launch(runtime, command, project, runtime_config, interactive=False,
+                                      readonly=(prompt_path,))
         argv = [
             systemd_run, "--user", "--quiet", "--wait", "--pipe", "--collect",
             f"--unit={unit}", f"--working-directory={project}",
-            *(f"--setenv={key}={value}" for key, value in _runtime_env(runtime, runtime_config, project).items()),
-            *_run_argv(runtime, binary, "添付されたControl Deckの指示を実行してください。",
-                       model_id, project),
-            "--file", str(prompt_path),
+            *(f"--setenv={key}={value}" for key, value in launch_env.items()),
+            *command,
         ]
         job.set_progress("OpenCodeを起動", 0, 1)
         proc = None
