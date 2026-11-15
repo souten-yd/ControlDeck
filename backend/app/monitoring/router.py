@@ -126,6 +126,36 @@ def control_deck_update_start(
     return result
 
 
+@router.get("/control-deck-update/auto")
+def control_deck_auto_update(user: User = Depends(require_permission("settings.manage"))):
+    """自動適用の設定と、いま待っている理由（使用中なら何で使われているか）。"""
+    from app.maintenance import auto_update
+
+    return {**auto_update.get_settings(), "busy": auto_update.busy_reasons()}
+
+
+@router.put("/control-deck-update/auto")
+def control_deck_auto_update_save(
+    body: dict, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    from app.audit import service as audit
+    from app.maintenance import auto_update
+
+    allowed = set(auto_update.DEFAULTS)
+    if not body or set(body) - allowed:
+        raise HTTPException(status_code=422, detail="enabled / idle_minutes / check_interval_minutes だけ指定できます")
+    if "enabled" in body and not isinstance(body["enabled"], bool):
+        raise HTTPException(status_code=422, detail="enabled は true / false です")
+    for key in ("idle_minutes", "check_interval_minutes"):
+        if key in body and (not isinstance(body[key], int) or isinstance(body[key], bool)):
+            raise HTTPException(status_code=422, detail=f"{key} は整数です")
+    result = auto_update.save_settings(body)
+    audit.record(db, "system.control_deck_auto_update", user=user, resource_type="system",
+                 request=request, metadata={key: result[key] for key in allowed})
+    return {**result, "busy": auto_update.busy_reasons()}
+
+
 @router.get("/disk")
 def disk(user: User = Depends(require_permission("system.view"))):
     from app.monitoring.disks import disk_telemetry

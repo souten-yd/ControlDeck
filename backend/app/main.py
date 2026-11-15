@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     from app.monitoring.fan_control import run as fan_control_loop
     from app.alerts.engine import alert_loop
     from app.maintenance.service import maintenance_loop
+    from app.maintenance.auto_update import auto_update_loop
     from app.maintenance.watchdog import (
         _loop_ticker,
         notify_ready,
@@ -131,6 +132,8 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(llama_idle_unload_loop()),
             asyncio.create_task(large_model_lifecycle.idle_unload_loop()),
             asyncio.create_task(large_model_lifecycle.autostart()),
+            # 正式 Release を、使われていない時間に自動適用する（L1、docs/POLICY-autonomous-development.md）。
+            asyncio.create_task(auto_update_loop()),
         ]
         # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
         from app.workflows import searxng

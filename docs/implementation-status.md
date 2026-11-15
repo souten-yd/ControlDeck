@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-15 本体の自動適用（L1、#387）
+
+- `app/maintenance/auto_update.py`: 正式 Release があり、使われていない状態（LLM の推論・GPU の貸出・Job・OpenCode のセッション・Add-on の lease が無い）が設定の時間（既定 10 分）続いたら、管理者の操作と同じ `self_update.start` を始める。開始と結果（成功・巻き戻し）を通知先へ送る。検証用インスタンスでは動かない。
+- `self_update`: 適用後の確認を health だけから、画面の配信・meta・LLM ゲートウェイまでに広げた（駄目なら従来どおり自動で前の版へ戻す）。自動の印と Release 名を途中の状態でも保つ。
+- 設定 → システム「ControlDeck 本体の更新」: 自動適用のオン・オフ、待つ時間、いま待っている理由。API `GET/PUT /api/v1/system/control-deck-update/auto`。
+
 ## 2026-11-15 自律開発の方針と変更の区分（#386）
 
 - `docs/POLICY-autonomous-development.md`: 役割（利用者・統括・実装・機械）、区分 L0（自動）/L1（自動＋事後報告、関門を通れば Release と本番の自動適用・自動の巻き戻し）/L2（利用者承認）、関門、適用の条件。
