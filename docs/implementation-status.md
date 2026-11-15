@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-15 OpenCode をプロジェクトの箱で動かす（#388）と本番の Release 追従化
+
+- OpenCode（TUI・チャットの code モード・headless 実行）を既定で podman の箱で起こす（`provider._launch`、`sandbox.container_argv` を共有）。書けるのはプロジェクト・session の設定・UI 検証の写真・MCP の長い結果・OpenCode 自身の履歴だけ。本番の data・秘密鍵・他のプロジェクト・~/.ssh・ControlDeck のコードは見えない（実機で確認）。ast-grep・OpenCode・Chrome・git・LLM ゲートウェイ・Add-on の MCP bridge は使える。設定 `isolation: host` か podman が無ければ従来どおり。
+- 本番 `app-strata` を main（正式 Release 追従）へ切り替え、ControlDeck_v0.13 を本物の更新機能で適用（約 30 秒、バックアップ・build・再起動・画面/meta/ゲートウェイの確認）。旧ブランチは `backup/deploy-strata-20261115`。
+
 ## 2026-11-15 本体の自動適用（L1、#387）
 
 - `app/maintenance/auto_update.py`: 正式 Release があり、使われていない状態（LLM の推論・GPU の貸出・Job・OpenCode のセッション・Add-on の lease が無い）が設定の時間（既定 10 分）続いたら、管理者の操作と同じ `self_update.start` を始める。開始と結果（成功・巻き戻し）を通知先へ送る。検証用インスタンスでは動かない。

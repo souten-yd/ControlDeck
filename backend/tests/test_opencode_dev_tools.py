@@ -291,3 +291,50 @@ def test_gh_token_and_destructive_commands_are_denied():
     for command in ("gh auth", "gh auth *", "* gh repo delete *", "*;gh secret *", "gh api *"):
         assert rules.get(command) == "deny", command
     assert "gh pr *" not in rules
+
+
+# ---- プロジェクトの箱（OpenCode を podman の中で動かす） ----
+
+
+def test_opencode_runs_in_a_project_box(monkeypatch, tmp_path):
+    from app.maintenance import sandbox
+
+    project = tmp_path / "CodeDEV" / "game"
+    project.mkdir(parents=True)
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS})
+    monkeypatch.setattr(provider.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path / "integration")
+    monkeypatch.setattr(provider, "_skill_paths", lambda: [])
+    monkeypatch.setattr(provider, "_addon_asset_roots", lambda: [])
+    monkeypatch.setattr(sandbox, "_data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(provider.Path, "home", lambda: tmp_path / "home")
+    argv, env = provider._launch("v2", ["opencode2", "--standalone"], project, config, interactive=True)
+    assert env == {}, "環境変数は箱の中へ渡す"
+    assert argv[:2] == ["/usr/bin/podman", "run"] and "-it" in argv
+    volumes = [argv[i + 1] for i, item in enumerate(argv) if item == "-v"]
+    writable = {v.split(":")[0] for v in volumes if v.endswith(":rw")}
+    assert str(project) in writable and str(config) in writable
+    assert not any("CodeDEV:" in v or v.startswith(f"{tmp_path / 'data'}:") for v in volumes), "他のプロジェクト・本番の data は見せない"
+    assert argv[argv.index("-w") + 1] == str(project)
+    assert argv[-2:] == ["opencode2", "--standalone"]
+    assert "CONTROL_DECK_OPENCODE_BOX=1" in argv
+
+
+def test_host_mode_and_missing_podman_fall_back(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS, "isolation": "host"})
+    assert provider.isolation_mode() == "host"
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS})
+    monkeypatch.setattr(provider.shutil, "which", lambda name: None)
+    assert provider.isolation_mode() == "host"
+    argv, env = provider._launch("v2", ["opencode2"], tmp_path, tmp_path, interactive=True)
+    assert argv == ["opencode2"] and env["XDG_CONFIG_HOME"] == str(tmp_path)
+
+
+def test_isolation_setting_is_validated(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider, "_settings_path", lambda: tmp_path / "settings.json")
+    assert provider.save_workflow({"isolation": "host"})["isolation"] == "host"
+    with pytest.raises(ValueError):
+        provider.save_workflow({"isolation": "vm"})
