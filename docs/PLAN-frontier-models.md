@@ -57,8 +57,16 @@
 
 | 段階 | 状態 | PR |
 |---|---|---|
-| F1 | 未着手 | — |
+| F1 | 実装（API プロバイダ・暗号化したキー・ゲートウェイの振り分け・呼び出し元ごとの許可・記録と月の上限・OpenCode の一覧） | #390 |
 | F2 | 未着手 | — |
 | F3 | 未着手 | — |
 | F4 | 未着手 | — |
 | F5 | 未着手 | — |
+
+## 実装メモ（F1）
+
+- `app/models_mgmt/cloud.py`: プロバイダの定義（送信先は固定、custom だけ HTTPS を指定）、`data/cloud-providers.json`（0600、キーは `encrypt_text`）、`cloud-usage.jsonl`（本文なし）。
+- ゲートウェイ: `cloud:` のモデルは `_cloud_chat` で転送（GPU の受け入れ制御は通らない）。呼び出し元は `X-Control-Deck-Client`（opencode など。無ければ api）。OpenRouter には費用を含めてもらい、月の上限に使う。
+- API: `GET /models/cloud`、`PUT /models/cloud/{provider}`、`PUT /models/cloud/egress`、`GET /models/cloud/{provider}/remote-models`、`GET /models/cloud-usage`（すべて settings.manage）。
+- OpenCode: OpenCode からの外部送信を許可したときだけ、有効な外部モデルを「（外部）」付きでモデル一覧に並べる。
+- 未着手（F4 で行う）: AI アシスタントからの呼び出し（いまはゲートウェイを通らず内部の実体を直接呼ぶ）、プロジェクトごとの「機密（外部モデルを使わない）」。
