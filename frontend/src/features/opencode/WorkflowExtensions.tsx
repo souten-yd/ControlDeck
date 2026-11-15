@@ -27,6 +27,10 @@ export interface Workflow {
   ui_verify?: boolean;
   /** UI 検証のブラウザに localhost 以外への通信を許すか。既定は許さない。 */
   ui_verify_allow_external?: boolean;
+  /** 精密調査（ControlDeck の Deep Research を OpenCode の道具として渡す）。 */
+  research_tool?: boolean;
+  /** 精密調査で Web・GitHub・論文の検索を使うか。既定はローカル（コード・RAG）だけ。 */
+  research_external?: boolean;
   /** このPCに Chrome が見つかったか。 */
   browser?: boolean;
   models?: { alias: string; runtime: string }[];
@@ -39,7 +43,8 @@ export interface Workflow {
 export function workflowBody(value: Workflow) {
   return { superpowers: value.superpowers, adversarial_review: value.adversarial_review,
     auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
-    ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false };
+    ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
+    research_tool: value.research_tool ?? true, research_external: value.research_external ?? false };
 }
 
 export function WorkflowExtensions({ value, onChange, editable }: {
@@ -108,6 +113,21 @@ export function WorkflowExtensions({ value, onChange, editable }: {
           value={Boolean(value.ui_verify_allow_external)} disabled={!editable}
           onChange={(v) => onChange({ ...value, ui_verify_allow_external: v })} />
         {editable && <UiVerifyDiagnosis />}
+      </>}
+      <Toggle label="精密調査（ControlDeck の Deep Research）"
+        hint="AI が根拠を集める道具。計画→検索→反証→引用の確認まで行い、結果は「結果」に残ります"
+        value={value.research_tool ?? true} disabled={!editable}
+        onChange={(v) => onChange({ ...value, research_tool: v })} />
+      {(value.research_tool ?? true) && <>
+        <Toggle label="精密調査で外部の検索を使う"
+          hint="既定ではこのプロジェクトのコードと RAG だけを調べます。オンにすると Web・GitHub・論文の検索サービスへ検索語が送られます"
+          value={Boolean(value.research_external)} disabled={!editable}
+          onChange={(v) => onChange({ ...value, research_external: v })} />
+        {value.research_external && (
+          <p className="-mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            未公開の発明・請求項・秘密の情報を扱うプロジェクトではオフにしてください。検索語は外部のサービスに残ります。
+          </p>
+        )}
       </>}
     </SettingsGroup>
   );

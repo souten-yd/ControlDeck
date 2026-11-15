@@ -49,6 +49,26 @@ CONTRACT_TOOL = "control_deck.tool_contract"
 # 作業の結果（UI 検証・精密調査・レビュー）を ControlDeck へ渡す道具。画面はこれを
 # 幅ごとの写真・指摘・根拠の一覧として出す。自由形式の文章だと画面が読み取れない。
 REPORT_TOOL = "control_deck.report"
+# ControlDeck の Deep Research を OpenCode から呼ぶ道具。既定はローカル（コード・RAG）だけ。
+RESEARCH_TOOL = "control_deck.research"
+
+
+def _research_tool() -> dict[str, Any] | None:
+    from app.integrations.opencode import provider as opencode
+    from app.integrations.opencode.research import RESEARCH_SCHEMA, allowed_sources
+
+    settings = opencode.get_settings()
+    if not settings.get("research_tool"):
+        return None
+    reach = "Web・GitHub・論文も使える" if "web" in allowed_sources(settings) else "このプロジェクトのコードと RAG だけを調べる（外部へ問い合わせない）"
+    return {
+        "name": RESEARCH_TOOL,
+        "description": (
+            "根拠付きの精密調査（ControlDeck の Deep Research）。計画→検索→再評価→反証→引用検証を繰り返し、"
+            f"出典付きのレポートを返す。{reach}。数分かかる。結果は ControlDeck の画面にも残る。"
+        ),
+        "inputSchema": execution.model_facing_schema(RESEARCH_SCHEMA),
+    }
 
 
 def _report_tool() -> dict[str, Any]:
@@ -115,6 +135,57 @@ def _save_report(arguments: dict[str, Any], user: User, claims: dict[str, Any], 
                  metadata={"kind": body.kind, "verdict": body.verdict, "findings": len(body.findings)})
     return {"id": record["id"], "missing_images": record["missing_images"],
             "message": "ControlDeck の OpenCode 画面の「結果」に表示しました"}
+
+
+async def _run_research(arguments: dict[str, Any], user: User, claims: dict[str, Any], db: Session, request: Request) -> dict:
+    from app.integrations.opencode import provider as opencode
+    from app.integrations.opencode import reports, research
+    from app.workflows.chat_router import SearchBody, _deep_search
+
+    settings = opencode.get_settings()
+    if not settings.get("research_tool"):
+        raise HTTPException(status_code=404, detail="精密調査の道具は無効です")
+    project_path: Path | None = None
+    project_id = claims.get("project_id")
+    if isinstance(project_id, str) and project_id:
+        try:
+            project_path = _resolve_project_directory(project_id, ".")
+        except HTTPException:
+            project_path = None
+    if project_path is None:
+        project_path = research.resolve_project(arguments.get("project_dir"), codedev=opencode.codedev_root())
+    try:
+        planned = research.plan(arguments, settings, project_path=project_path)
+    except research.ResearchRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    body = SearchBody(
+        query=planned["question"], mode="deep", depth=planned["depth"],
+        base_url=str(settings.get("base_url") or ""), model=str(settings.get("model") or ""),
+        source_types=planned["sources"], local_project_path=planned["project_path"],
+    )
+    try:
+        result = await _deep_search(body)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 調査の失敗を道具の失敗として返す
+        raise HTTPException(status_code=502, detail=f"調査に失敗しました: {str(exc)[:300]}") from exc
+    report_body = reports.ReportBody.model_validate(
+        research.to_report(planned["question"], result, refused=planned["refused"]))
+    session = str(claims.get("sub") or "").removeprefix("opencode:")
+    record = reports.save(report_body, owner_user_id=user.id, session=session, images_from=None)
+    audit.record(db, "opencode.research", user=user, resource_type="opencode_report",
+                 resource_id=record["id"], request=request,
+                 metadata={"sources": planned["sources"], "depth": planned["depth"],
+                           "external": any(item in research.EXTERNAL_SOURCES for item in planned["sources"])})
+    report_text = str(result.get("report") or "")
+    return {
+        "report_id": record["id"],
+        "report": report_text[:research.REPORT_INLINE_CHARS],
+        "truncated": len(report_text) > research.REPORT_INLINE_CHARS,
+        "sources": [{"title": item["title"], "url": item["url"]} for item in report_body.model_dump()["sources"][:40]],
+        "unverified": report_body.unverified,
+        "used_sources": planned["sources"],
+    }
 
 
 def issue_opencode_token(user_id: int, correlation_id: str, *, project_id: str | None = None) -> str:
@@ -378,6 +449,9 @@ async def list_tools(
     if threshold > 0 and tools:
         tools.append(_contract_tool())
     tools.append(_report_tool())
+    research = _research_tool()
+    if research is not None:
+        tools.append(research)
     return {"tools": tools}
 
 
@@ -404,6 +478,8 @@ async def call_tool(
         return {"name": requested, "inputSchema": contract}
     if body.name == REPORT_TOOL:
         return _save_report(body.arguments, user, claims, db, request)
+    if body.name == RESEARCH_TOOL:
+        return await _run_research(body.arguments, user, claims, db, request)
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:
         project_id = claims.get("project_id")
         available = _project_output_tool(project_id, permissions)

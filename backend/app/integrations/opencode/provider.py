@@ -39,6 +39,9 @@ DEFAULT_SETTINGS = {
     "ui_verify": True,
     # UI 検証のブラウザに外部サイトへの通信を許すか。既定は手元（loopback）だけ。
     "ui_verify_allow_external": False,
+    # 精密調査（ControlDeck の Deep Research を道具として渡す）。外部検索は別に許可が要る。
+    "research_tool": True,
+    "research_external": False,
 }
 
 # 拡張とそれを持つアドオン（設定 → オプション機能で導入・更新・削除する）。
@@ -187,7 +190,8 @@ def save_workflow(patch: dict) -> dict:
     from app.models_mgmt import local_llm
 
     settings = get_settings()
-    for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external"):
+    for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external",
+                "research_tool", "research_external"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "auto_advisor" in patch:
@@ -1223,7 +1227,8 @@ SESSION_TASKS = {
         "【精密調査】結論を急がず、根拠を集めてから答えてください。公式文書・仕様・ソースコード（一次資料）を優先し、"
         "使っている版（package.json・lock file・manifest）に合う資料かを確かめます。主張ごとに出典の URL・公開日または版・取得日時を控え、"
         "反対の根拠も探します。リポジトリについての主張は、文書ではなく main の実ファイル・テスト・CI で確かめます。"
-        "最後に control_deck.report（kind: research）で、結論・出典（primary / stance）・確かめられなかったことを渡してください。"
+        "control_deck.research が使えるなら、まずそれで根拠を集めてください（結果は ControlDeck の画面に残ります）。"
+        "自分で調べた分は、最後に control_deck.report（kind: research）で、結論・出典（primary / stance）・確かめられなかったことを渡してください。"
         "未公開の発明・請求項・秘密の情報を検索語に入れないでください。"
     ),
     "review": (
