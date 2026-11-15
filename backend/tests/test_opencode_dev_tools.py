@@ -317,6 +317,10 @@ def test_opencode_runs_in_a_project_box(monkeypatch, tmp_path):
     volumes = [argv[i + 1] for i, item in enumerate(argv) if item == "-v"]
     writable = {v.split(":")[0] for v in volumes if v.endswith(":rw")}
     assert str(project) in writable and str(config) in writable
+    shared_cli = provider.cli_config_path()
+    assert f"{shared_cli}:{shared_cli}:ro" in volumes
+    assert str(shared_cli) not in writable
+    assert not any(v.startswith(f"{shared_cli.parent}:") for v in volumes)
     assert not any("CodeDEV:" in v or v.startswith(f"{tmp_path / 'data'}:") for v in volumes), "他のプロジェクト・本番の data は見せない"
     assert argv[argv.index("-w") + 1] == str(project)
     assert argv[-2:] == ["opencode2", "--standalone"]
