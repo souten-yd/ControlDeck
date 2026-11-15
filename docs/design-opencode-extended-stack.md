@@ -1,6 +1,12 @@
 # OpenCode Extended Stack — Managed Installation Design
 
-Status: proposed ControlDeck-side design
+> **置き換え済み（2026-11-15）。** この文書の ECA / OMO / v1 を前提にした部分は現行仕様ではない。
+> OpenCode は v2（`@opencode/cli`）だけを扱い、OMO と v1 は撤去、ECA は扱っていない。
+> 現行の拡張は v2 プラグイン 3 本（Superpowers・Adversarial Review・Auto Advisor）で、
+> これからの開発環境の計画は `docs/PLAN-opencode-dev-environment.md` が正。
+> 末尾の Blender スキルの節（BlenderMCP を入れない、型付きの scene 道具を使う）は今も有効。
+
+Status: superseded (historical) — proposed ControlDeck-side design
 Date: 2026-08-16
 Scope owner: ControlDeck
 
