@@ -97,7 +97,7 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | 計画・引き継ぎ | 完了 | #377 |
 | 第 1 段階 B（backend） | 実装済み（Playwright MCP 導入・接続診断を実機で確認） | #378 |
 | 第 1 段階 C（画面） | 未着手 | — |
-| 第 1 段階 D（E2E） | 未着手 | — |
+| 第 1 段階 D（E2E） | 実装済み（`./deck.sh e2e`、axe 12 件合格） | #380 |
 | 第 2 段階 | 未着手 | — |
 | 第 3 段階 | 未着手 | — |
 
@@ -118,3 +118,6 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 - 画面写真は `data/integrations/opencode/ui-verify/<session>/` に撮られ、`control_deck.report` の時点で `reports/<id>/images/` へ取り込む。TUI の session 名は利用者ごと（`tui-<user>`）なので、取り込まないと次の session が上書きする。
 - 接続診断: `POST /api/v1/opencode/tools/ui-verify/diagnose`（導入 → Chrome → 起動 → 道具の一覧 → about:blank を開く）。
 - 結果: `GET /api/v1/opencode/reports`、`/reports/{id}`、`/reports/{id}/images/{name}`、`DELETE /reports/{id}`。管理者（settings.manage）は全員分、それ以外は自分の分だけ。
+- E2E は `./deck.sh e2e [spec]` で、本番とは別の検証用インスタンス（一時 data、ポート 18765、使い捨ての管理者）を起こして流す。`CONTROL_DECK_ISOLATED=1` でファン制御・通知・保守・Ollama/LLM の管理・SearXNG の停止を起動しない。
+- axe（`e2e/a11y.spec.ts`）は critical だけで落とす。serious 以下は結果に添付する。2026-11-15 時点で主要 6 画面 × 320/1280 すべて critical 0・横スクロール無し。
+- `e2e/support/session.ts` のログインは「ログイン」と「顔認証・パスキーでログイン」の 2 つに当たって全 spec が落ちていた（`exact: true` で直した）。

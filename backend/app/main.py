@@ -100,34 +100,42 @@ async def lifespan(app: FastAPI):
         resource_broker.providers.register(addon_residency_provider)
     except ValueError:
         pass  # 同上
+    from app.config import isolated
+
+    machine_wide = not isolated()
+    if not machine_wide:
+        logger.warning("検証用インスタンス（CONTROL_DECK_ISOLATED=1）: ファン制御・通知・外部プロセスの管理を起動しません")
     tasks = [
-        asyncio.create_task(asyncio.to_thread(restore_enabled_services)),
         asyncio.create_task(collector.run()),
-        asyncio.create_task(fan_control_loop()),
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(pause_recovery_loop()),
         asyncio.create_task(system_event_loop()),
         asyncio.create_task(business_event_delivery_loop()),
         # Add-on へ貸した GPU を、生成が終わったら LLM へ返す。
         asyncio.create_task(llama_resource_provider().lending_loop()),
-        asyncio.create_task(maintenance_loop()),
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(_loop_ticker()),
-        asyncio.create_task(alert_loop()),
-        asyncio.create_task(ollama_idle_unload_loop()),
-        asyncio.create_task(llama_idle_unload_loop()),
-        asyncio.create_task(large_model_lifecycle.idle_unload_loop()),
-        asyncio.create_task(large_model_lifecycle.autostart()),
         asyncio.create_task(health_check_loop()),
         asyncio.create_task(addon_health_loop()),
         asyncio.create_task(addon_residency_provider.refresh_loop()),
         asyncio.create_task(resource_broker.reaper_loop()),
         asyncio.create_task(resource_device_refresh_loop(resource_broker.devices)),
     ]
-    # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
-    from app.workflows import searxng
+    if machine_wide:
+        tasks += [
+            asyncio.create_task(asyncio.to_thread(restore_enabled_services)),
+            asyncio.create_task(fan_control_loop()),
+            asyncio.create_task(maintenance_loop()),
+            asyncio.create_task(alert_loop()),
+            asyncio.create_task(ollama_idle_unload_loop()),
+            asyncio.create_task(llama_idle_unload_loop()),
+            asyncio.create_task(large_model_lifecycle.idle_unload_loop()),
+            asyncio.create_task(large_model_lifecycle.autostart()),
+        ]
+        # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
+        from app.workflows import searxng
 
-    tasks.append(asyncio.create_task(searxng.idle_stop_loop()))
+        tasks.append(asyncio.create_task(searxng.idle_stop_loop()))
     start_stall_watcher()
     notify_ready()
     logger.info("Control Deck 起動完了")

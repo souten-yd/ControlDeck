@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-15 E2E を隔離した検証用インスタンスで（第 1 段階 D）
+
+- `./deck.sh e2e [spec]`: 一時 data・別ポート（18765）・使い捨て管理者で ControlDeck を起こし、Playwright を流して片付ける。これまでの E2E は既定で本番 8765 を向いていた。
+- `CONTROL_DECK_ISOLATED=1` のとき、機械全体に効く処理（ファン制御・通知・保守・Ollama/llama/大きなランタイムの idle unload と自動起動・SearXNG の停止・オプション機能の復旧）を起動しない。
+- `app.cli create-admin <name> --password-stdin`。
+- `@axe-core/playwright` 4.14.0 と `e2e/a11y.spec.ts`（WCAG 2.1 A/AA、critical で失敗、横スクロール検査）。HTML レポートを `playwright-report/` に残す。
+- 実行結果: a11y 12/12 合格。ログイン helper の不具合（パスキーのボタンと重なる）を修正。OpenCode 未導入の環境では opencode-focus を skip。
+
 ## 2026-11-15 OpenCode の UI 検証（第 1 段階 B、計画: PLAN-opencode-dev-environment.md）
 
 - オプション機能に種類 `opencode-mcp` と `playwright-mcp`（@playwright/mcp 0.0.84、版固定、ブラウザは取得せずこの PC の Chrome）。
