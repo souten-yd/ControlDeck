@@ -33,7 +33,9 @@ AI に開発させるときは `./deck.sh sandbox new <名前> --repo <リポジ
 
 ## 実機で確かめるとき
 
-- 本番の deploy worktree は `/data1tb/ControlDeck/app-strata`、開発は `/data1tb/ControlDeck/runtime-lifecycle`。
+- 本番は `/data1tb/ControlDeck/app-strata` の **main ブランチ（正式 Release に追従）**。手で merge して再起動しない。マージ → 正式 Release → 本番の更新機能（使われていない時間に自動、または設定画面のボタン）で入る。旧 deploy ブランチは `backup/deploy-strata-20261115` に残してある。
+- 開発は `/data1tb/ControlDeck/runtime-lifecycle`。**ここで main を checkout しない**（本番の worktree が main を使っている）。`git checkout -B dev-base origin/main` から作業ブランチを切る。
+- OpenCode は既定で「プロジェクトの箱」（podman）で動く。設定 `isolation: host` で従来どおり。
 - 隔離テストは `env -u CONTROL_DECK_CONFIG`（外さないと本番の data に書く）。
 - ゲートウェイの鍵・受け入れ用アカウントのパスワードを表示しない。
 - 外部からの取得（npm・モデル・ブラウザ）は利用者の許可を得てから行う。

@@ -175,8 +175,22 @@ def _rootfs() -> Path:
     return base
 
 
-def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
-                detach: bool = False, env: dict[str, str] | None = None) -> list[str]:
+BASE_READONLY = (Path("/usr"), Path("/etc"), Path("/opt"))
+
+
+def tool_path() -> str:
+    """箱の中の PATH。管理領域の道具（OpenCode・ast-grep など）を先に置く。"""
+    return ":".join([*(str(p / "node_modules" / ".bin") for p in _tool_dirs() if (p / "node_modules" / ".bin").is_dir()),
+                     "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin"])
+
+
+def container_argv(command: list[str], *, workdir: Path, writable: list[Path], readonly: list[Path] = (),
+                   overlays: list[tuple[Path, Path]] = (), env: dict[str, str] | None = None,
+                   interactive: bool = False, name: str = "", detach: bool = False) -> list[str]:
+    """イメージを使わない箱の podman 引数。書けるのは writable だけ、他はホストを読み取り専用で見せる。
+
+    サンドボックス（./deck.sh sandbox）と OpenCode のプロジェクトの箱が共有する。
+    """
     podman = shutil.which("podman")
     if not podman:
         raise SandboxError("podman が必要です")
@@ -188,32 +202,52 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
         argv += ["-d"]
     if name:
         argv += ["--name", name]
-    for path in ("/usr", "/etc", "/opt"):
-        argv += ["-v", f"{path}:{path}:ro"]
-    argv += ["-v", f"{box.meta['git_common_dir']}:{box.meta['git_common_dir']}:ro"]
+    seen: set[str] = set()
+
+    def mount(source: Path, target: Path, mode: str) -> None:
+        key = str(target)
+        if key in seen or not source.exists():
+            return
+        seen.add(key)
+        argv.extend(["-v", f"{source}:{target}:{mode}"])
+
+    for path in [*BASE_READONLY, *readonly, *_tool_dirs()]:
+        mount(path, path, "ro")
+    for source, target in overlays:
+        mount(source, target, "O")
+    for path in writable:
+        mount(path, path, "rw")
+    for key, value in (env or {}).items():
+        argv += ["-e", f"{key}={value}"]
+    argv += ["-w", str(workdir), "--rootfs", str(_rootfs()), *command]
+    return argv
+
+
+def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
+                detach: bool = False, env: dict[str, str] | None = None) -> list[str]:
+    readonly = [Path(box.meta["git_common_dir"])]
+    overlays = []
     for entry in box.meta.get("overlays") or []:
         source_path, target = (entry, entry) if isinstance(entry, str) else entry
-        if Path(source_path).exists():
-            argv += ["-v", f"{source_path}:{target}:O"]
-    for path in _tool_dirs():
-        argv += ["-v", f"{path}:{path}:ro"]
-    argv += ["-v", f"{box.path}:{box.path}:rw"]
+        overlays.append((Path(source_path), Path(target)))
     environment = {
         "HOME": str(box.home), "XDG_CONFIG_HOME": str(box.home / ".config"),
         "XDG_DATA_HOME": str(box.home / ".local/share"), "XDG_STATE_HOME": str(box.home / ".local/state"),
         "XDG_CACHE_HOME": str(box.home / ".cache"), "CONTROL_DECK_SANDBOX": box.name,
         "PLAYWRIGHT_BROWSERS_PATH": str(_data_dir() / "cache" / "ms-playwright"),
-        "PATH": ":".join([*(str(p / "node_modules" / ".bin") for p in _tool_dirs() if (p / "node_modules" / ".bin").is_dir()),
-                          "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin"]),
+        "PATH": tool_path(),
         **(env or {}),
     }
     gh = Path.home() / ".config" / "gh"
+    extra: list[str] = []
     if box.meta.get("github") and (gh / "hosts.yml").is_file():
-        argv += ["-v", f"{gh}:/run/gh:ro"]
+        extra = ["-v", f"{gh}:/run/gh:ro"]
         environment["GH_CONFIG_DIR"] = "/run/gh"
-    for key, value in environment.items():
-        argv += ["-e", f"{key}={value}"]
-    argv += ["-w", str(box.repo), "--rootfs", str(_rootfs()), *command]
+    argv = container_argv(command, workdir=box.repo, writable=[box.path], readonly=readonly,
+                          overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach)
+    if extra:
+        index = argv.index("--rootfs")
+        argv[index:index] = extra
     return argv
 
 
