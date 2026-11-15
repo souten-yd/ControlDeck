@@ -276,13 +276,15 @@ def _update() -> dict:
     if not re.fullmatch(r"[0-9a-f]{40}", previous_commit):
         raise MayaError("更新前のコミットを確認できません")
     _exec(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=source(), timeout=600)
+    keep_env = _config_env()
     changed = False
     try:
         _exec(["git", "checkout", "--detach", tag], cwd=source(), timeout=60)
         changed = True
         if _config() is not None:
             # Rebuild the managed engine explicitly, not during ControlDeck startup.
-            # Upstream --yes never downloads weights unless --download-model is present.
+            # Upstream --yes never downloads weights unless --download-model is present;
+            # it does fetch the 1.14 GB image encoder once (pictures are on).
             gpu = 0
             try:
                 gpu = int(json.loads(_prepared_marker().read_text(encoding="utf-8")).get("gpu_index", 0))
@@ -290,7 +292,7 @@ def _update() -> dict:
                 pass
             _exec(["bash", str(entrypoint()), "--setup", "--backend", "hip",
                    "--gpu", str(gpu), "--model", _MODEL, "--context", "8192",
-                   "--no-vision", "--yes", "--plain", "--no-start",
+                   "--yes", "--plain", "--no-start",
                    "--models-dir", str(models_dir()), "--port", str(_PORT),
                    "--host", "127.0.0.1"], cwd=source(), timeout=3*3600)
     except MayaError:
@@ -301,7 +303,7 @@ def _update() -> dict:
             except MayaError:
                 raise MayaError("Maya更新とコード復旧に失敗しました。手動確認が必要です") from None
         raise
-    _enable_fit_max_tokens()
+    _enable_fit_max_tokens(keep_env)
     _marker().write_text(json.dumps({"source": _REPO, "tag": tag}), encoding="utf-8")
     return runtime_status()
 
@@ -326,17 +328,35 @@ async def available_update() -> dict:
                 "update_available": False, "published_at": "", "error": str(exc)}
 
 
-def _enable_fit_max_tokens() -> None:
-    """Let Maya clamp an oversized output cap itself (clients size it for llama.cpp)."""
+def _config_env() -> dict:
+    """The engine env of the current config (tuning such as MAYA_GLM_PCIE_SHARE lives there)."""
+    config = _find_config()
+    try:
+        env = json.loads(config.read_text(encoding="utf-8")).get("env") if config else None
+    except (OSError, ValueError):
+        return {}
+    return dict(env) if isinstance(env, dict) else {}
+
+
+def _enable_fit_max_tokens(keep_env: dict | None = None) -> None:
+    """Let Maya clamp an oversized output cap itself (clients size it for llama.cpp).
+
+    `keep_env`: the env before a (re)setup. The setup writes its own env again and drops
+    keys it does not know (measured tuning); those come back, the setup's values win.
+    """
     config = _find_config()
     if config is None:
         return
     cfg = json.loads(config.read_text(encoding="utf-8"))
     # A (re)setup writes the card's defaults; put back what ControlDeck manages.
     effort = str(get_settings().get("reasoning_effort") or "high")
-    if cfg.get("fit_max_tokens") is not True or cfg.get("reasoning_effort") != effort:
+    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    missing = {k: v for k, v in (keep_env or {}).items() if k not in env}
+    if cfg.get("fit_max_tokens") is not True or cfg.get("reasoning_effort") != effort or missing:
         cfg["fit_max_tokens"] = True
         cfg["reasoning_effort"] = effort
+        if missing:
+            cfg["env"] = {**env, **missing}
         config.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
 
 
@@ -357,7 +377,7 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
     if shutil.disk_usage(models_dir()).free < 110 * 1000**3:
         raise MayaError("モデル準備には約110GB以上の空き領域が必要です")
     _exec(["bash", str(entrypoint()), "--backend", "hip", "--gpu", str(gpu_index),
-           "--model", _MODEL, "--context", "8192", "--no-vision",
+           "--model", _MODEL, "--context", "8192",
            "--yes", "--plain", "--download-model", "--no-start",
            "--models-dir", str(models_dir()), "--port", str(_PORT), "--host", "127.0.0.1"],
           cwd=source(), timeout=8*3600)
@@ -659,18 +679,19 @@ def prepare_existing() -> dict:
     if not value["model_path"] or not path.is_file() or path.suffix.lower() != ".gguf":
         raise MayaError("詳細設定で既存GGUFを指定してください")
     _ensure_alias_port_available()
+    keep_env = _config_env()
     _prepared_marker().unlink(missing_ok=True)
     _exec(["bash", str(entrypoint()), "--setup", "--backend", "hip",
            "--gguf-dir", str(path), "--gpu", str(value["gpu_index"]),
            "--context", str(value["context"]), "--parallel", str(value["parallel"]),
            "--env", f"MAYA_GLM_RAM_HEADROOM_GB={value['ram_headroom_gb']}",
            "--drafting", value["drafting"], "--no-speed-calibration",
-           "--no-vision", "--yes", "--plain", "--no-start",
+           "--yes", "--plain", "--no-start",
            "--models-dir", str(models_dir()), "--port", str(_PORT), "--host", "127.0.0.1"],
           cwd=source(), timeout=8*3600)
     if _find_config() is None:
         raise MayaError("Maya-SのHIP設定を確認できません。他のモデル形式には対応していません")
-    _enable_fit_max_tokens()
+    _enable_fit_max_tokens(keep_env)
     _prepared_marker().write_text(json.dumps({"model": _MODEL, "gpu_index": value["gpu_index"],
                                             "port": _PORT}), encoding="utf-8")
     return runtime_status()

@@ -148,9 +148,11 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
         return await asyncio.to_thread(_radiance_target, capability)
     if runtime == "maya-s":
         from app.models_mgmt import maya_s
-        if capability != "text.generate" or not (await maya_s.health())["ok"]:
+        if not (await maya_s.health())["ok"]:
             raise AITargetUnavailable("Maya-Sのテキストモデルを明示的に起動してください")
         instance = await asyncio.to_thread(maya_s.get_instance, "maya-s")
+        if capability == "vision.analyze" and not instance.get("vision"):
+            raise AITargetUnavailable("Maya-Sの画像入力が設定されていません（再セットアップで有効になります）")
         return AITarget(base_url=instance["base_url"], model=instance["alias"], gateway_managed=True)
     if runtime == "ollama":
         return await _ollama_target(capability)
