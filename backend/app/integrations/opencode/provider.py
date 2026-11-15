@@ -42,6 +42,11 @@ DEFAULT_SETTINGS = {
     # 精密調査（ControlDeck の Deep Research を道具として渡す）。外部検索は別に許可が要る。
     "research_tool": True,
     "research_external": False,
+    # Context7（ライブラリの公式文書）。問い合わせが外部へ出るので既定はオフ。
+    "context7": False,
+    # この PC で設定済みの gh（GitHub CLI）を session から使わせるか。AI に利用者の GitHub の
+    # 権限（repo・workflow など）を渡すことになるので既定はオフ。
+    "github_cli": False,
 }
 
 # 拡張とそれを持つアドオン（設定 → オプション機能で導入・更新・削除する）。
@@ -55,7 +60,13 @@ AUTO_ADVISOR_MODES = ("off", "observe", "active")
 # 作業の道具（MCP サーバー）とそれを持つオプション機能。
 WORKFLOW_MCP_FEATURES = {
     "ui_verify": "playwright-mcp",
+    "context7": "context7-mcp",
 }
+# レビューの影響範囲を構文で探す道具（MCP ではなく session の PATH に足す CLI）。
+REVIEW_TOOL_FEATURE = "ast-grep"
+CONTEXT7_SERVER = "context7"
+# レビューの子エージェントはファイルを変えない。
+REVIEWER_DENIED = ("edit", "write", "patch")
 # UI 検証の子エージェントが持つ道具。OpenCode は MCP の道具名に server 名を前置する。
 UI_VERIFY_SERVER = "playwright"
 UI_VERIFY_TOOLS = f"{UI_VERIFY_SERVER}_*"
@@ -191,7 +202,7 @@ def save_workflow(patch: dict) -> dict:
 
     settings = get_settings()
     for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external",
-                "research_tool", "research_external"):
+                "research_tool", "research_external", "context7", "github_cli"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "auto_advisor" in patch:
@@ -286,12 +297,70 @@ def ui_verify_server(safe_job_id: str) -> dict | None:
     return {"type": "local", "command": command, "enabled": True, "timeout": 600_000}
 
 
-def _ui_verifier_prompt() -> str:
-    path = Path(__file__).with_name("agents") / "ui-verifier.md"
+def _agent_prompt(name: str) -> str:
+    path = Path(__file__).with_name("agents") / f"{name}.md"
     try:
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def _ui_verifier_prompt() -> str:
+    return _agent_prompt("ui-verifier")
+
+
+def context7_server() -> dict | None:
+    """Context7 の MCP サーバー。設定でオンにし、導入済みのときだけ。"""
+    if not get_settings().get("context7"):
+        return None
+    entry = registry.mcp_entry(WORKFLOW_MCP_FEATURES["context7"])
+    node = shutil.which("node")
+    if entry is None or not node:
+        return None
+    return {"type": "local", "command": [node, str(entry)], "enabled": True, "timeout": 120_000}
+
+
+def github_cli_config_dir() -> Path | None:
+    """session に渡す gh の設定の場所。使わない設定・未設定なら None。"""
+    if not get_settings().get("github_cli"):
+        return None
+    configured = os.environ.get("GH_CONFIG_DIR")
+    if configured:
+        path = Path(configured).expanduser()
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        path = Path(base).expanduser() / "gh"
+    return path if (path / "hosts.yml").is_file() else None
+
+
+def github_cli_status() -> dict:
+    """画面向け: この PC の gh が使える状態か（token は読まない）。"""
+    gh = shutil.which("gh")
+    base = os.environ.get("GH_CONFIG_DIR") or str(Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gh")
+    return {"installed": bool(gh), "configured": (Path(base).expanduser() / "hosts.yml").is_file()}
+
+
+def review_tool_bin() -> Path | None:
+    """管理領域に入れた ast-grep の置き場（session の PATH の先頭に足す）。"""
+    managed = registry._managed_executable(REVIEW_TOOL_FEATURE)
+    if not managed.is_file() or not os.access(managed, os.X_OK):
+        return None
+    return managed.parent
+
+
+def _reviewer_agent() -> dict:
+    has_ast_grep = review_tool_bin() is not None
+    return {
+        "mode": "subagent",
+        "description": (
+            "コードレビューの係。差分を読み、変えた関数・設定の呼び出し側まで影響を追い"
+            + ("（ast-grep で構文検索）" if has_ast_grep else "")
+            + "、テストが変更を確かめているかを見て、指摘を重大度順に ControlDeck へ報告する。ファイルは変更しない。"
+            "レビューする範囲（ブランチ・コミット・ファイル）と気になる点を渡す。"
+        ),
+        "prompt": _agent_prompt("reviewer"),
+        "tools": {name: False for name in REVIEWER_DENIED},
+    }
 
 
 def _workflow(runtime: str, model: str) -> dict:
@@ -415,6 +484,12 @@ _FORBIDDEN_COMMANDS = (
     "kill", "pkill", "killall", "skill", "fuser",
     "systemctl", "service", "shutdown", "reboot", "halt",
 )
+# gh で、token を表に出す・取り返しのつかない操作。gh を使わせる設定でも禁じる。
+# git の credential helper（gh auth git-credential）は git が直接呼ぶので、この規則に当たらない。
+_FORBIDDEN_GH_COMMANDS = (
+    "gh auth", "gh repo delete", "gh repo archive", "gh secret", "gh variable",
+    "gh ssh-key", "gh gpg-key", "gh api",
+)
 # 先頭（区切り無し）と、区切りの直後。
 _COMMAND_SEPARATORS = ("", " ", ";", "&", "|", "(", "\t")
 
@@ -426,7 +501,7 @@ def _forbidden_commands() -> dict[str, str]:
     ために他人の process を探して撃つ、という形にしない。
     """
     rules: dict[str, str] = {}
-    for name in _FORBIDDEN_COMMANDS:
+    for name in (*_FORBIDDEN_COMMANDS, *_FORBIDDEN_GH_COMMANDS):
         for separator in _COMMAND_SEPARATORS:
             head = f"*{separator}" if separator else ""
             rules[f"{head}{name}"] = "deny"
@@ -729,6 +804,8 @@ def _config_payload(
     notes = Path(__file__).with_name("agent-notes.md")
     if notes.exists():
         payload["instructions"] = [str(notes)]
+    payload["agent"]["reviewer"] = _reviewer_agent()
+    docs_server = context7_server()
     browser = ui_verify_server(safe_job_id)
     if browser is not None:
         payload["agent"]["ui-verifier"] = {
@@ -765,6 +842,9 @@ def _config_payload(
         }
     if browser is not None:
         payload.setdefault("mcp", {})[UI_VERIFY_SERVER] = browser
+    if docs_server is not None:
+        # 道具は 2 つで小さいので主にも持たせる（版を確かめながら書く場面は主にある）。
+        payload.setdefault("mcp", {})[CONTEXT7_SERVER] = docs_server
     return payload
 
 
@@ -1026,6 +1106,16 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
 def _runtime_env(runtime: str, config: Path, project: Path | None = None) -> dict[str, str]:
     """runtime config を読ませるための環境変数。"""
     env = {"XDG_CONFIG_HOME": str(config)}
+    # session は XDG_CONFIG_HOME を job ごとの場所へ向けるので、gh は ~/.config/gh を見失う
+    # （"not logged into any GitHub hosts"、2026-11-15 実機）。使わせる設定のときだけ、
+    # gh の設定の場所だけを元へ向ける。他の個人設定は引き続き読ませない。
+    gh_dir = github_cli_config_dir()
+    if gh_dir is not None:
+        env["GH_CONFIG_DIR"] = str(gh_dir)
+    # 管理領域に入れた CLI（ast-grep）を session から使えるようにする。
+    tools = review_tool_bin()
+    if tools is not None:
+        env["PATH"] = f"{tools}{os.pathsep}{os.environ.get('PATH', '')}"
     # v2 resolves its workspace from PWD; systemd's inherited PWD can still be
     # HOME even when WorkingDirectory points at the selected project.
     if project is not None:
@@ -1232,10 +1322,11 @@ SESSION_TASKS = {
         "未公開の発明・請求項・秘密の情報を検索語に入れないでください。"
     ),
     "review": (
-        "【コードレビュー】ファイルは変更しないでください。差分（git diff、対象ブランチと main の差）を読み、"
-        "変更が呼ばれる箇所・呼ぶ箇所まで影響を追い、テストが変更を本当に確かめているかを見ます。"
-        "Adversarial Review が使えるなら /adversarial-review で別の文脈からも読みます。"
-        "最後に control_deck.report（kind: review）で、指摘を重大度順に（location に file:line）渡してください。"
+        "【コードレビュー】ファイルは変更しないでください。子エージェント reviewer に、レビューする範囲"
+        "（作業中の変更、またはブランチと main の差）と気になる点を渡して任せます。reviewer は呼び出し側まで影響を追い、"
+        "テストを確かめ、control_deck.report（kind: review）で指摘を重大度順に ControlDeck へ渡します。"
+        "Adversarial Review が使えるなら /adversarial-review で別の文脈からも読み、食い違いがあれば利用者に伝えてください。"
+        "指摘を直すかどうかは利用者に確かめてから進めます。"
     ),
 }
 

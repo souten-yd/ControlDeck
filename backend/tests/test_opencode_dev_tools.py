@@ -233,3 +233,58 @@ def test_research_tool_can_be_turned_off(monkeypatch):
     assert agent_mcp._research_tool() is None
     monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS})
     assert "外部へ問い合わせない" in agent_mcp._research_tool()["description"]
+
+
+# ---- Context7・レビュー（第 2・3 段階） ----
+
+
+def test_context7_is_off_until_turned_on(installed, monkeypatch, tmp_path):
+    package = tmp_path / "data" / "features" / "context7-mcp" / "node_modules" / "@upstash" / "context7-mcp"
+    (package / "dist").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"version": "4.4.4", "bin": {"context7-mcp": "dist/index.js"}}))
+    (package / "dist" / "index.js").write_text("// x")
+    assert provider.context7_server() is None, "外部へ問い合わせるので既定はオフ"
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS, "context7": True})
+    server = provider.context7_server()
+    assert server["command"] == ["/usr/bin/node", str((package / "dist" / "index.js").resolve())]
+    payload = provider._config_payload("job1", "http://127.0.0.1:8090/v1", "auto")
+    assert "context7" in payload["mcp"]
+
+
+def test_reviewer_cannot_edit_and_gets_ast_grep(installed, monkeypatch, tmp_path):
+    payload = provider._config_payload("job1", "http://127.0.0.1:8090/v1", "auto")
+    reviewer = payload["agent"]["reviewer"]
+    assert reviewer["mode"] == "subagent" and "control_deck.report" in reviewer["prompt"]
+    assert reviewer["tools"] == {"edit": False, "write": False, "patch": False}
+    assert "ast-grep" not in reviewer["description"], "未導入なら名前を出さない"
+    assert "PATH" not in provider._runtime_env("v2", tmp_path)
+
+    bin_dir = tmp_path / "data" / "features" / "ast-grep" / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "ast-grep").write_text("#!/bin/sh\necho ast-grep 0.51.0\n")
+    (bin_dir / "ast-grep").chmod(0o755)
+    assert provider.review_tool_bin() == bin_dir
+    assert provider._runtime_env("v2", tmp_path)["PATH"].startswith(str(bin_dir))
+    assert "ast-grep" in provider._reviewer_agent()["description"]
+    assert "reviewer" in provider.task_prompt("review", "")
+
+
+def test_github_cli_only_when_allowed(monkeypatch, tmp_path):
+    gh = tmp_path / "gh-config"
+    gh.mkdir()
+    (gh / "hosts.yml").write_text("github.com: {}\n")
+    monkeypatch.setenv("GH_CONFIG_DIR", str(gh))
+    monkeypatch.setattr(provider, "review_tool_bin", lambda: None)
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS})
+    assert "GH_CONFIG_DIR" not in provider._runtime_env("v2", tmp_path), "既定は渡さない"
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS, "github_cli": True})
+    assert provider._runtime_env("v2", tmp_path)["GH_CONFIG_DIR"] == str(gh)
+    (gh / "hosts.yml").unlink()
+    assert "GH_CONFIG_DIR" not in provider._runtime_env("v2", tmp_path), "ログインしていなければ渡さない"
+
+
+def test_gh_token_and_destructive_commands_are_denied():
+    rules = provider._forbidden_commands()
+    for command in ("gh auth", "gh auth *", "* gh repo delete *", "*;gh secret *", "gh api *"):
+        assert rules.get(command) == "deny", command
+    assert "gh pr *" not in rules

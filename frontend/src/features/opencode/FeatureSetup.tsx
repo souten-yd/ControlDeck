@@ -16,6 +16,7 @@ export const OPENCODE_SETUP_KEYS: Record<string, ExtensionKey> = {
   "opencode-adversarial-review": "adversarial_review",
   "opencode-auto-advisor": "auto_advisor",
   "playwright-mcp": "ui_verify",
+  "context7-mcp": "context7",
 };
 
 export const workflowQueryKey = ["opencode-workflow"];
@@ -33,6 +34,8 @@ export function useOpenCodeWorkflow(enabled: boolean) {
 export function setupPending(featureId: string, workflow: Workflow | undefined): boolean {
   const key = OPENCODE_SETUP_KEYS[featureId];
   if (!key || !workflow) return false;
+  // 外部へ送る道具は、オフのままが既定。未設定として促さない。
+  if (key === "context7") return false;
   if (key === "auto_advisor") return workflow.auto_advisor === "off";
   return !workflow[key];
 }
@@ -69,7 +72,9 @@ export function OpenCodeFeatureSetup({ featureId }: { featureId: string }) {
         </label>
       ) : (
         <Toggle label="OpenCode で使う"
-          hint={key === "ui_verify" ? "子エージェント ui-verifier が、開発中の画面を実ブラウザで確かめます" : "ControlDeck から開く OpenCode のセッションに足します"}
+          hint={key === "ui_verify" ? "子エージェント ui-verifier が、開発中の画面を実ブラウザで確かめます"
+            : key === "context7" ? "ライブラリ名と調べたい内容が外部（context7.com）へ送られます。未公開の情報を扱うプロジェクトでは使わないでください"
+            : "ControlDeck から開く OpenCode のセッションに足します"}
           value={Boolean(workflow[key])} disabled={busy}
           onChange={(v) => save.mutate({ [key]: v })} />
       )}

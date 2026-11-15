@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-15 Context7・レビュー係・GitHub 連携（第 2・3 段階）
+
+- オプション機能 `context7-mcp`（既定オフ。外部へ問い合わせる旨を画面に明記）と `ast-grep`（構文検索、session の PATH へ）。
+- 子エージェント `reviewer`（ファイルを変えない）。「レビュー」の作業はこれに任せ、`control_deck.report` で指摘を返す。
+- OpenCode の設定「GitHub 連携（この PC の gh を使う）」: オンのときだけ `GH_CONFIG_DIR` を渡す。token の表示や破壊的な gh の操作は常に禁止。
+- 実機: Context7 でライブラリ ID 取得、reviewer が呼び出し側の取りこぼしを critical で検出（ファイル変更なし）、session の環境で gh がログイン済みとして動くこと。
+
 ## 2026-11-15 OpenCode から Deep Research（第 2 段階、精密調査）
 
 - ControlDeck の MCP に `control_deck.research`（AI チャットの Deep Research をそのまま使う。新しい調査エージェントは作らない）。結果は「結果」に `kind: research` で残り、出典・取得日時・一次資料・確かめられなかったことを持つ。

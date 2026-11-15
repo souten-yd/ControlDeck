@@ -77,6 +77,29 @@ FEATURES: dict[str, dict] = {
         "summary": "AI が開発中の画面を実際のブラウザ（このPCの Chrome）で開き、幅を変えて操作・撮影する。OpenCode の「UI 検証」で使う",
         "requires": "opencode-v2",
     },
+    # 版に合った公式文書を引く（精密調査）。問い合わせは外部（context7.com）へ出るので、
+    # 導入しても OpenCode の設定で明示的にオンにするまで session には載せない。
+    "context7-mcp": {
+        "name": "Context7 MCP（ライブラリ文書）",
+        "kind": "opencode-mcp",
+        "package": "@upstash/context7-mcp@4.4.4",
+        "latest_package": "@upstash/context7-mcp@latest",
+        "module": "@upstash/context7-mcp",
+        "route_gated": False,
+        "summary": "使っているライブラリの版に合った公式文書を AI が引けるようにする。問い合わせは外部（context7.com）へ送られる",
+        "requires": "opencode-v2",
+    },
+    # 構文で探す検索（レビューの影響範囲の洗い出し）。OpenCode の session の PATH に足す。
+    "ast-grep": {
+        "name": "ast-grep（構文検索・レビュー）",
+        "kind": "npm",
+        "package": "@ast-grep/cli@0.51.0",
+        "latest_package": "@ast-grep/cli@latest",
+        "executable": "ast-grep",
+        "route_gated": False,
+        "summary": "関数の呼び出し元や同じ形のコードを構文で探す。OpenCode の「レビュー」で影響範囲を洗い出すのに使う",
+        "requires": "opencode-v2",
+    },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
         "kind": "pip",
@@ -469,6 +492,8 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
     if spec["kind"] in NPM_MODULE_KINDS:
         # 版を固定した指定に @latest は付けられない。更新用の指定を別に持つ。
         return _npm_install(feature_id, spec["latest_package"] if latest else package)
+    if latest and spec.get("latest_package"):
+        return _npm_install(feature_id, spec["latest_package"])
     return _npm_install(feature_id, f"{package}@latest" if latest else package)
 
 
