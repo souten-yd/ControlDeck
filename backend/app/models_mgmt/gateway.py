@@ -439,6 +439,11 @@ async def gateway_models(request: Request):
              "runtime": "auto"}] if llms else []
     data += [{"id": str(i["alias"]), "object": "model", "owned_by": "control-deck",
               "runtime": str(i.get("runtime") or "")} for i in llms]
+    # 外部のフロンティアモデル。使ってよいかは呼び出しのときに呼び出し元ごとに判定する。
+    from app.models_mgmt import cloud
+
+    data += [{"id": item["id"], "object": "model", "owned_by": item["provider"], "runtime": "cloud",
+              "external": True} for item in await asyncio.to_thread(cloud.enabled_models)]
     return {"object": "list", "data": data}
 
 
@@ -471,6 +476,88 @@ async def gateway_load_model(model: str, request: Request):
             "seconds": round(time.monotonic() - started, 1)}
 
 
+def _sse_usage(buffer: bytearray, chunk: bytes) -> dict | None:
+    """SSE の流れから最後の usage を拾う（本文は見ない）。"""
+    buffer.extend(chunk)
+    usage = None
+    while b"\n" in buffer:
+        line, _, rest = bytes(buffer).partition(b"\n")
+        buffer[:] = rest
+        if line.startswith(b"data:") and b'"usage"' in line:
+            try:
+                value = json.loads(line[5:].strip())
+                if isinstance(value.get("usage"), dict):
+                    usage = value["usage"]
+            except ValueError:
+                continue
+    return usage
+
+
+async def _cloud_chat(request: Request, payload: dict):
+    """外部のフロンティアモデルへ転送する（docs/PLAN-frontier-models.md）。GPU の受け入れ制御は通らない。"""
+    from app.models_mgmt import cloud
+
+    header = request.headers.get(CLIENT_HEADER, "")
+    caller = header if header in cloud.CALLERS else "api"
+    try:
+        target = await asyncio.to_thread(cloud.resolve, str(payload["model"]), caller=caller)
+    except cloud.CloudError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    body = dict(payload, model=target.model)
+    headers = {"Authorization": f"Bearer {target.api_key}"}
+    if target.provider == "openrouter":
+        # 費用を応答に含めてもらう（月の上限の計算に使う）。
+        body["usage"] = {"include": True}
+        headers["X-Title"] = "ControlDeck"
+    url = f"{target.base_url}/chat/completions"
+    if body.get("stream"):
+        body.setdefault("stream_options", {"include_usage": True})
+        client = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20), follow_redirects=False)
+        try:
+            upstream = await client.send(client.build_request("POST", url, json=body, headers=headers), stream=True)
+        except (Exception, asyncio.CancelledError) as exc:
+            await client.aclose()
+            await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502)
+            raise HTTPException(status_code=502, detail="外部のプロバイダに接続できませんでした") from exc
+        if upstream.status_code >= 400:
+            await upstream.aread()
+            await upstream.aclose()
+            await client.aclose()
+            await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=upstream.status_code)
+            raise HTTPException(status_code=502 if upstream.status_code >= 500 else upstream.status_code,
+                                detail=f"外部のプロバイダがエラーを返しました（HTTP {upstream.status_code}）")
+
+        async def relay():
+            pending = bytearray()
+            usage = None
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    usage = _sse_usage(pending, chunk) or usage
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+                await asyncio.to_thread(cloud.record_usage, target, caller, usage, status_code=200)
+
+        return StreamingResponse(relay(), media_type="text/event-stream")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20), follow_redirects=False) as client:
+            response = await client.post(url, json=body, headers=headers)
+    except httpx.HTTPError as exc:
+        await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502)
+        raise HTTPException(status_code=502, detail="外部のプロバイダに接続できませんでした") from exc
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    await asyncio.to_thread(cloud.record_usage, target, caller,
+                            data.get("usage") if isinstance(data, dict) else None, status_code=response.status_code)
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502 if response.status_code >= 500 else response.status_code,
+                            detail=f"外部のプロバイダがエラーを返しました（HTTP {response.status_code}）")
+    return JSONResponse(content=data)
+
+
 @router.post("/v1/chat/completions")
 async def gateway_chat(request: Request):
     """受け入れ制御を挟んでローカルランタイムへ転送する。stream もそのまま中継する。"""
@@ -481,6 +568,8 @@ async def gateway_chat(request: Request):
         payload = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSONボディが不正です") from None
+    if str(payload.get("model") or "").startswith("cloud:"):
+        return await _cloud_chat(request, payload)
     instance = await asyncio.to_thread(resolve_instance, str(payload.get("model") or ""))
     alias, port = str(instance["alias"]), int(instance["port"])
     # 起動前に方針を決める（ensure_ready の後では「起動していたか」が分からない）。

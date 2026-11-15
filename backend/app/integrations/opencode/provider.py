@@ -647,6 +647,18 @@ def _compaction_enabled() -> bool:
         return True
 
 
+def _cloud_models_for_opencode() -> list[dict]:
+    try:
+        from app.models_mgmt import cloud
+
+        if not cloud.status()["egress"].get("opencode"):
+            return []
+        return cloud.enabled_models()
+    except Exception:  # noqa: BLE001 - 外部モデルの都合で session を止めない
+        logger.exception("外部モデルの一覧を読めませんでした")
+        return []
+
+
 def _model_limits(model: str) -> dict[str, int] | None:
     """そのモデルの窓の大きさを OpenCode へ伝える。
 
@@ -809,6 +821,13 @@ def _config_payload(
     # 足したり消したりしてよい場所ではない。ControlDeck から起動した session
     # にだけ効くので、無効化はこの一覧から外すだけで済む。
     workflow = _workflow(runtime, model)
+    # 外部のフロンティアモデル。OpenCode からの外部送信を利用者が許可したときだけ並べる
+    # （許可はゲートウェイでも呼び出しごとに確かめる）。docs/PLAN-frontier-models.md
+    for item in _cloud_models_for_opencode():
+        payload["provider"]["controldeck"]["models"].setdefault(item["id"], {
+            "name": f"{item['name']}（外部）", "attachment": True,
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+        })
     for extra in workflow["models"]:
         payload["provider"]["controldeck"]["models"][extra] = {
             "name": extra, "attachment": True,

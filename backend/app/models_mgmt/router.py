@@ -1522,3 +1522,67 @@ def radiance_instance_log(alias: str, user: User = Depends(require_permission("w
     if alias not in {item["alias"] for item in radiance.list_instances()}:
         raise HTTPException(status_code=404, detail="Radianceモデル設定がありません")
     return {"alias": alias, "log": radiance.log_tail(alias, 80)}
+
+
+# ---- 外部のフロンティアモデル（docs/PLAN-frontier-models.md） ----
+# 秘密値と外部への送信を扱うので、見るのも変えるのも settings.manage に限る。
+
+
+def _cloud_error(exc) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=str(exc))
+
+
+@router.get("/cloud")
+def cloud_status(user: User = Depends(require_permission("settings.manage"))):
+    from app.models_mgmt import cloud
+
+    return cloud.status()
+
+
+@router.put("/cloud/egress")
+def cloud_egress(body: dict, request: Request,
+                 user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    from app.models_mgmt import cloud
+
+    try:
+        result = cloud.save_egress(body)
+    except cloud.CloudError as exc:
+        raise _cloud_error(exc) from exc
+    audit.record(db, "models.cloud.egress", user=user, resource_type="cloud", request=request,
+                 metadata={key: bool(value) for key, value in body.items()})
+    return result
+
+
+@router.put("/cloud/{provider_id}")
+def cloud_save(provider_id: str, body: dict, request: Request,
+               user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    from app.models_mgmt import cloud
+
+    try:
+        result = cloud.save_provider(provider_id, body)
+    except cloud.CloudError as exc:
+        raise _cloud_error(exc) from exc
+    # キーの値は記録しない。変えたという事実と、どの項目かだけ。
+    audit.record(db, "models.cloud.provider", user=user, resource_type="cloud", resource_id=provider_id,
+                 request=request, metadata={"fields": sorted(body), "key_set": bool(body.get("api_key"))})
+    return result
+
+
+@router.get("/cloud/{provider_id}/remote-models")
+async def cloud_remote_models(provider_id: str, user: User = Depends(require_permission("settings.manage"))):
+    from app.models_mgmt import cloud
+
+    try:
+        return {"models": await cloud.list_remote_models(provider_id)}
+    except cloud.CloudError as exc:
+        raise _cloud_error(exc) from exc
+
+
+@router.get("/cloud-usage")
+def cloud_usage(days: int = Query(default=30, ge=1, le=366),
+                user: User = Depends(require_permission("settings.manage"))):
+    import time as _time
+
+    from app.models_mgmt import cloud
+
+    return {"rows": cloud.usage_rows(since=_time.time() - days * 86400, limit=2000)}
