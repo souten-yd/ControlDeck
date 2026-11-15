@@ -342,3 +342,33 @@ export const IconChevronRight = (p: SVGProps<SVGSVGElement>) => (
     <path d="m9 6 6 6-6 6" />
   </Icon>
 );
+
+export const IconShieldCheck = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 3 5 6v5c0 4.5 3 8.2 7 10 4-1.8 7-5.5 7-10V6Z" />
+    <path d="m9 12 2.2 2.2L15 10" />
+  </Icon>
+);
+
+export const IconDatabase = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <ellipse cx="12" cy="6" rx="7" ry="3" />
+    <path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
+    <path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+  </Icon>
+);
+
+export const IconWarning = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 3.5 2.5 20h19Z" />
+    <path d="M12 10v4.5" />
+    <path d="M12 17.3v.2" />
+  </Icon>
+);
+
+export const IconBan = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="m5.6 5.6 12.8 12.8" />
+  </Icon>
+);

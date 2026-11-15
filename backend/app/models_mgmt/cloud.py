@@ -49,6 +49,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "custom": {"name": "OpenAI 互換（任意）", "base_url": "", "keys_url": "",
                "note": "OpenAI 互換の API を持つ任意の送信先（HTTPS のみ）"},
 }
+# OpenRouter のデータの扱い（要求ごとに provider へ付ける）。既定は収集する提供元へ送らない。
+#   zdr: 保存しない（Zero Data Retention）提供元だけ
+#   deny: 入力を収集・学習に使う提供元へは送らない（provider.data_collection = "deny"）
+#   allow: 制限しない
+DATA_POLICIES = ("zdr", "deny", "allow")
+DEFAULT_DATA_POLICY = "deny"
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
 _lock = threading.RLock()
 
@@ -118,6 +124,7 @@ def status() -> dict:
             "models": list(entry.get("models") or []),
             "monthly_budget_usd": float(entry.get("monthly_budget_usd") or 0),
             "spent_this_month_usd": round(spent_this_month(provider_id), 4),
+            "data_policy": str(entry.get("data_policy") or DEFAULT_DATA_POLICY) if provider_id == "openrouter" else None,
         })
     egress = {caller: bool(state["egress"].get(caller)) for caller in CALLERS}
     return {"providers": providers, "egress": egress, "caller_labels": CALLER_LABELS}
@@ -128,7 +135,7 @@ def save_provider(provider_id: str, patch: dict) -> dict:
     from app.security.crypto import encrypt_text
 
     _provider(provider_id)
-    allowed = {"api_key", "enabled", "models", "monthly_budget_usd", "base_url"}
+    allowed = {"api_key", "enabled", "models", "monthly_budget_usd", "base_url", "data_policy"}
     if set(patch) - allowed:
         raise CloudError("指定できない項目があります")
     with _lock:
@@ -159,6 +166,10 @@ def save_provider(provider_id: str, patch: dict) -> dict:
             if not isinstance(budget, (int, float)) or isinstance(budget, bool) or not 0 <= budget <= 100_000:
                 raise CloudError("月の上限額は 0〜100000（USD）です。0 は上限なし")
             entry["monthly_budget_usd"] = float(budget)
+        if "data_policy" in patch:
+            if provider_id != "openrouter" or patch["data_policy"] not in DATA_POLICIES:
+                raise CloudError(f"データの扱いは OpenRouter だけで、{' / '.join(DATA_POLICIES)} のどれかです")
+            entry["data_policy"] = patch["data_policy"]
         if "enabled" in patch:
             if patch["enabled"] and not entry.get("key"):
                 raise CloudError("先に API キーを設定してください")
@@ -202,6 +213,17 @@ class CloudTarget:
     model: str
     base_url: str
     api_key: str
+    data_policy: str = DEFAULT_DATA_POLICY
+
+    def routing(self) -> dict | None:
+        """OpenRouter へ付ける provider の指定（データの扱い）。"""
+        if self.provider != "openrouter":
+            return None
+        if self.data_policy == "zdr":
+            return {"data_collection": "deny", "zdr": True}
+        if self.data_policy == "deny":
+            return {"data_collection": "deny"}
+        return None
 
 
 def resolve(model: str, *, caller: str) -> CloudTarget:
@@ -227,7 +249,8 @@ def resolve(model: str, *, caller: str) -> CloudTarget:
     budget = float(entry.get("monthly_budget_usd") or 0)
     if budget > 0 and spent_this_month(provider_id) >= budget:
         raise CloudError(f"{PROVIDERS[provider_id]['name']} の今月の上限額（{budget} USD）に達しました", 429)
-    return CloudTarget(provider_id, provider_model, _base_url(provider_id, entry), decrypt_text(entry["key"]))
+    return CloudTarget(provider_id, provider_model, _base_url(provider_id, entry), decrypt_text(entry["key"]),
+                       str(entry.get("data_policy") or DEFAULT_DATA_POLICY))
 
 
 def record_usage(target: CloudTarget, caller: str, usage: dict | None, *, status_code: int) -> None:
@@ -299,13 +322,99 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         raise CloudError("API キーが受け付けられませんでした", 400)
     if response.status_code >= 400:
         raise CloudError(f"モデルの一覧を取得できませんでした（HTTP {response.status_code}）", 502)
+    zdr_models = await _zdr_models() if provider_id == "openrouter" else set()
     rows = []
     for item in (response.json().get("data") or [])[:2000]:
         model_id = str(item.get("id") or "")
         if not _MODEL.fullmatch(model_id):
             continue
         pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+        prompt, completion = _per_million(pricing.get("prompt")), _per_million(pricing.get("completion"))
+        free = prompt == 0 and completion == 0
         rows.append({"id": model_id, "name": str(item.get("name") or model_id)[:200],
-                     "context_length": item.get("context_length"),
-                     "free": pricing.get("prompt") in ("0", 0) and pricing.get("completion") in ("0", 0)})
+                     "context_length": item.get("context_length"), "free": free,
+                     "created": item.get("created") if isinstance(item.get("created"), int) else None,
+                     # USD / 100 万トークン。分からなければ None。
+                     "price_input": prompt, "price_output": completion,
+                     "privacy": _privacy(provider_id, model_id, free, zdr_models)})
     return rows
+
+
+def _per_million(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return round(number * 1_000_000, 6) if number >= 0 else None
+
+
+def _privacy(provider_id: str, model_id: str, free: bool, zdr_models: set[str]) -> str:
+    """入力の扱いの目安。
+
+    zdr: 保存しないプロバイダの経路がある（OpenRouter の ZDR 一覧に載っている）
+    may_train: 無料のモデル。提供元が入力を学習や記録に使うことがある（OpenRouter の利用規約）
+    may_store: 提供元の方針に従って保存されることがある
+    direct: プロバイダ自身の API（OpenAI・Anthropic・Gemini）。扱いはそのプロバイダの規約による
+    """
+    if provider_id != "openrouter":
+        return "direct"
+    if free:
+        return "may_train"
+    base = model_id.split(":", 1)[0]
+    return "zdr" if model_id in zdr_models or base in zdr_models else "may_store"
+
+
+_zdr_cache: tuple[float, set[str]] = (0.0, set())
+
+
+async def _zdr_models() -> set[str]:
+    """OpenRouter の、保存しない（Zero Data Retention）経路があるモデル。公開の一覧で、キーは送らない。1 時間持つ。"""
+    import httpx
+
+    global _zdr_cache
+    if time.time() - _zdr_cache[0] < 3600 and _zdr_cache[1]:
+        return _zdr_cache[1]
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            response = await client.get("https://openrouter.ai/api/v1/endpoints/zdr")
+        models = {str(item.get("model_id") or "") for item in (response.json().get("data") or [])}
+        models.discard("")
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return _zdr_cache[1]
+    _zdr_cache = (time.time(), models)
+    return models
+
+
+async def account(provider_id: str) -> dict:
+    """残高と使用額（OpenRouter の /key）。他のプロバイダは API で残高を返さない。"""
+    import httpx
+
+    from app.security.crypto import decrypt_text
+
+    _provider(provider_id)
+    if provider_id != "openrouter":
+        return {"supported": False}
+    entry = _read()["providers"].get(provider_id, {})
+    if not entry.get("key"):
+        raise CloudError("先に API キーを設定してください")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            response = await client.get("https://openrouter.ai/api/v1/key",
+                                        headers={"Authorization": f"Bearer {decrypt_text(entry['key'])}"})
+    except httpx.HTTPError as exc:
+        raise CloudError("OpenRouter に接続できませんでした", 502) from exc
+    if response.status_code in (401, 403):
+        raise CloudError("API キーが受け付けられませんでした", 400)
+    if response.status_code >= 400:
+        raise CloudError(f"残高を取得できませんでした（HTTP {response.status_code}）", 502)
+    data = (response.json() or {}).get("data") or {}
+
+    def number(key: str) -> float | None:
+        value = data.get(key)
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    free = data.get("free_model_daily_requests") if isinstance(data.get("free_model_daily_requests"), dict) else {}
+    return {"supported": True, "limit": number("limit"), "limit_remaining": number("limit_remaining"),
+            "usage": number("usage"), "usage_monthly": number("usage_monthly"), "usage_daily": number("usage_daily"),
+            "is_free_tier": bool(data.get("is_free_tier")),
+            "free_requests_remaining": free.get("remaining") if isinstance(free.get("remaining"), int) else None}
