@@ -11,7 +11,7 @@ import {
   CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, ThinkingDefaults, Toggle, primaryButton,
 } from "./formControls";
 
-export type RadianceKv = "bf16" | "fp8" | "fp8_v4" | "k6_v4";
+export type RadianceKv = "bf16" | "i8" | "fp8";
 export interface RadianceSettings {
   alias: string;
   model_path: string;
@@ -23,6 +23,10 @@ export interface RadianceSettings {
   gpu_headroom_mib: number;
   reasoning_effort: "" | "none" | "low" | "medium" | "xhigh";
   thinking_budget: number;
+  /** 会話ごとの状態を f16、画像用エンコーダーを RAM へ。KV に VRAM を回す（速さは変わらない） */
+  memory_saver: boolean;
+  /** VRAM に入らない重みを RAM へ（長くできるが生成が大きく遅くなる） */
+  ram_offload: boolean;
   on_demand_start: boolean;
   idle_exclude: boolean;
   auto_start: boolean;
@@ -33,11 +37,11 @@ interface RadianceState {
   instances: RadianceSettings[];
 }
 
-const CTX_PRESETS = [32768, 65536, 131072, 200000, 262144].map((v) => ({ v, label: v.toLocaleString() }));
+const CTX_PRESETS = [32768, 65536, 131072, 262144, 327680, 524288].map((v) => ({ v, label: v.toLocaleString() }));
 const DEFAULTS: RadianceSettings = {
   alias: "qwen3.8-27b-radiance", model_path: "", port: 8100, context: 131072, kv_cache: "bf16",
   max_num_seqs: 4, speculative_tokens: null, gpu_headroom_mib: 1024, reasoning_effort: "", thinking_budget: 0,
-  on_demand_start: true, idle_exclude: false, auto_start: false,
+  memory_saver: false, ram_offload: false, on_demand_start: true, idle_exclude: false, auto_start: false,
 };
 
 export function useRadianceState() {
@@ -64,6 +68,7 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
         context: Number(form.context), kv_cache: form.kv_cache, max_num_seqs: Number(form.max_num_seqs),
         speculative_tokens: form.speculative_tokens, gpu_headroom_mib: Number(form.gpu_headroom_mib),
         reasoning_effort: form.reasoning_effort, thinking_budget: Number(form.thinking_budget),
+        memory_saver: form.memory_saver, ram_offload: form.ram_offload,
         on_demand_start: form.on_demand_start, idle_exclude: form.idle_exclude, auto_start: form.auto_start };
       await api(initial ? `/models/radiance/instances/${encodeURIComponent(initial.alias)}` : "/models/radiance/instances",
         { method: initial ? "PUT" : "POST", json: body });
@@ -97,17 +102,19 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
       <label className="block text-xs">コンテキスト長（トークン）
         <div className="mt-1"><PresetOrCustom ariaLabel="Radianceコンテキスト" value={form.context} presets={CTX_PRESETS}
           placeholder="131072" disabled={running} onChange={(v) => set("context", Math.min(1048576, Math.max(4096, Number(v ?? 131072))))} /></div>
-        <span className="text-[11px] text-zinc-500">Qwen3.8-27B の学習長は 262,144。長くするほど同時に持てる会話が減ります。</span>
+        <span className="text-[11px] text-zinc-500">Qwen3.8-27B の学習長は 262,144。超える分は YaRN で自動的に伸ばします。KV は全スロットで共有するので、長くするほど同時に長い会話を持てる本数が減ります。</span>
       </label>
       <label className="block text-xs">KV キャッシュ
         <select aria-label="Radiance KVキャッシュ" value={form.kv_cache} disabled={running}
           onChange={(e) => set("kv_cache", e.target.value as RadianceKv)} className={field}>
-          <option value="bf16">bf16（推奨・量子化なし）</option>
-          <option value="fp8">fp8（容量 2 倍・わずかに近似）</option>
-          <option value="fp8_v4">fp8_v4（さらに +28%）</option>
-          <option value="k6_v4">k6_v4（さらに +46%）</option>
+          <option value="bf16">bf16（量子化なし）</option>
+          <option value="i8">i8（容量 2 倍・わずかに近似）</option>
         </select>
       </label>
+      <Toggle label="KV に VRAM を回す（省メモリ）" hint="会話ごとの状態を f16 に、画像用エンコーダーを RAM に置きます。速さは変わりません（実測: i8・6本で 327,680 まで全部 VRAM）"
+        value={form.memory_saver} onChange={(v) => !running && set("memory_saver", v)} />
+      <Toggle label="入らない重みを RAM へ逃がす（遅い）" hint="VRAM を超える長さでも起動できます。代わりに生成が 4〜6 分の 1 に落ちます（実測: 384K で 50、512K で 32 tok/s。全部 VRAM なら 205）。640K 以上は起動しません"
+        value={form.ram_offload} onChange={(v) => !running && set("ram_offload", v)} />
     </SettingsGroup>
     <SettingsGroup title="起動と停止" description="アイドル時の自動アンロードは共通設定で切り替えます">
       <Toggle label="使われたときに自動で起動" hint="チャットやゲートウェイから呼ばれたら起動します（Strata・Maya-S・使っていない llama.cpp のモデルは先に停止）"
@@ -125,7 +132,7 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
       <label className="block text-xs">同時実行数（スロット）
         <input aria-label="Radiance同時実行数" type="number" min={1} max={32} value={form.max_num_seqs} disabled={running}
           onChange={(e) => set("max_num_seqs", Math.max(1, Math.min(32, Number(e.target.value) || 1)))} className={field} />
-        <span className="text-[11px] text-zinc-500">同時に処理するほど合計が速くなります（実測: 1件 171 / 4件同時 合計 480 tok/s）。OpenCode のサブエージェントを並べるなら 2〜4。1 にするとその分コンテキストに回せます。</span>
+        <span className="text-[11px] text-zinc-500">同時に処理するほど合計が速くなります（実測: 1件 177・6件 577・8件 642 tok/s が頂点、9件以上は逆効果）。OpenCode は本体 1 + サブエージェント 5 で 6 本同時になるので 6 が目安です。</span>
       </label>
       <label className="block text-xs">先読みトークン数（DFlash2）
         <select aria-label="Radiance先読み" value={form.speculative_tokens === null ? "auto" : String(form.speculative_tokens)} disabled={running}

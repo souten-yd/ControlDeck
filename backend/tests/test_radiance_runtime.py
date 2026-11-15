@@ -153,3 +153,23 @@ def test_starting_strata_frees_a_resident_llama_chat_model(monkeypatch):
     monkeypatch.setattr(llama, "release_loaded_llms", release_llms)
     asyncio.run(large_model_lifecycle.release_for(large_model_lifecycle.STRATA))
     assert stopped == ["llama"]
+
+
+def test_long_context_uses_yarn_and_memory_options(managed):
+    """Past the training context YaRN is set; i8 / memory saver / RAM offload reach the file."""
+    radiance.save_instance("long", model_path=str(managed), port=8100, context=327680,
+                           kv_cache="i8", max_num_seqs=6, memory_saver=True)
+    text = radiance.config_yaml("long", radiance._read()["long"])
+    assert '    rope-scaling: "yarn:1.25:262144"\n' in text and "    kv-cache-dtype: i8\n" in text
+    assert "    state-cache-dtype: f16\n" in text and "    vision-tower-placement: ram\n" in text
+    assert "placement: layer_offload" not in text and "    max-num-seqs: 6\n" in text
+    radiance.save_instance("far", model_path=str(managed), port=8101, context=524288,
+                           kv_cache="i8", ram_offload=True)
+    text = radiance.config_yaml("far", radiance._read()["far"])
+    assert '"yarn:2:262144"' in text and "    placement: layer_offload\n" in text
+    assert "    flex: {kv: {min-tokens: 524288}}\n" in text
+    # Within the training context nothing is scaled, and 1.x's cache formats are gone.
+    radiance.save_instance("short", model_path=str(managed), port=8102)
+    assert "rope-scaling" not in radiance.config_yaml("short", radiance._read()["short"])
+    with pytest.raises(radiance.RadianceError):
+        radiance.save_instance("old", model_path=str(managed), port=8103, kv_cache="k6_v4")
