@@ -298,7 +298,7 @@ export default function ModelsPage() {
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
   const [params, setParams] = useSearchParams();
-  const tab = (params.get("tab") ?? "llm") as "llm" | "embed" | "tts";
+  const tab = (params.get("tab") ?? "llm") as "llm" | "embed" | "tts" | "frontier";
   const [pulling, setPulling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
@@ -499,15 +499,18 @@ export default function ModelsPage() {
           {can("workflows.edit") && (
             <button onClick={() => setSettingsOpen(true)} aria-label="LLM 共通設定" title="LLM 共通設定" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300"><IconSettings /> <span className="hidden sm:inline">共通設定</span></button>
           )}
-          {can("workflows.edit") && (
+          {/* ローカルのモデルを足す操作。外部（フロンティア）のタブでは使わない。 */}
+          {can("workflows.edit") && tab !== "frontier" && (
             <button onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
               <IconPlus /> {isLocal ? "モデル登録" : "モデル取得"}
             </button>
           )}
         </div>} />
-      {/* タブ: LLM/VLM・Embed/Reranker・TTS */}
+      {/* タブ: ローカル（LLM/VLM・Embed/Reranker・TTS）と、外部のフロンティアモデル。
+          外部は送信先が違うので、ローカルのモデルとは混ぜずに別のタブにする。 */}
       <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"], ["tts", "TTS"]] as const).map(([id, label]) => (
+        {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"], ["tts", "TTS"],
+          ...(can("settings.manage") ? [["frontier", "フロンティア（外部）"]] as const : [])] as const).map(([id, label]) => (
           <button key={id} onClick={() => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
             className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${tab === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"}`}>
             {label}
@@ -532,6 +535,7 @@ export default function ModelsPage() {
       )}
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "tts" && <TtsPanel />}
+      {tab === "frontier" && can("settings.manage") && <FrontierModelsGroup />}
       {tab === "llm" && (<>
       {!isLocal && status && !status.available ? (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
@@ -628,7 +632,7 @@ export default function ModelsPage() {
         </ul>
       )}
       {/* 外部の API モデル。秘密値と外部送信を扱うので、設定を管理できる人にだけ出す。 */}
-      {can("settings.manage") && <div className="mt-4"><FrontierModelsGroup /></div>}
+
       </>)}
 
       {pulling && <PullSheet onClose={() => setPulling(false)} onDone={refresh} />}

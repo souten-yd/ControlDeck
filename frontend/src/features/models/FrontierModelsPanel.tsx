@@ -72,10 +72,9 @@ export function FrontierModelsGroup() {
 
 function FrontierModelsLoaded({ state }: { state: CloudState }) {
   // 開閉は最初の状態で決める。キーを消した瞬間に足元で畳まれないように、あとからは変えない。
-  const [initiallyOpen] = useState(() => state.providers.some((p) => p.configured));
   const active = state.providers.filter((p) => p.enabled);
   return (
-    <SettingsGroup title="フロンティアモデル" collapsible defaultOpen={initiallyOpen}
+    <SettingsGroup title="フロンティアモデル"
       description={active.length > 0
         ? `外部の API モデル · ${active.map((p) => p.name).join("・")} が有効`
         : "外部の API モデル（OpenRouter・OpenAI・Claude・Gemini ほか）· 既定では使いません"}>

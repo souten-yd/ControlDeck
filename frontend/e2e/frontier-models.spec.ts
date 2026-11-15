@@ -15,11 +15,12 @@ test("キーを保存して有効にし、モデルを選び、確認のうえ�
   await establishSession(page, context);
   await page.goto("/models");
 
-  // 何も設定していなければ畳まれている。開くと「送信されない」と言い切る。
-  const group = page.locator("details", { has: page.locator("summary", { hasText: "フロンティアモデル" }) });
-  await expect(group).not.toHaveAttribute("open", /.*/);
-  await group.locator("summary").first().click();
-  await expect(group.getByText("いまは外部へ何も送信されません")).toBeVisible();
+  // ローカルのモデルとは別のタブ。開くと「送信されない」と言い切る。
+  await page.getByRole("button", { name: "フロンティア（外部）" }).click();
+  await expect(page).toHaveURL(/tab=frontier/);
+  // タブの中はフロンティアモデルだけなので、ページ全体を範囲にする。
+  const group = page.locator("body");
+  await expect(page.getByText("いまは外部へ何も送信されません")).toBeVisible();
   await expect(group.getByText(/Codex CLI \/ Claude Code に機器認証でログイン/)).toBeVisible();
 
   const card = group.locator("li", { has: page.getByRole("button", { name: /^OpenRouter/ }) });
