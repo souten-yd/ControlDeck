@@ -191,7 +191,10 @@ async def release_for(runtime: str) -> None:
                 ok, reason = await asyncio.to_thread(radiance.stop_instance, str(item["alias"]))
                 if not ok:
                     raise RuntimeError(reason or "Radianceモデルを停止できませんでした")
-    if runtime in (MAYA, RADIANCE):
+    # Every large runtime needs the card a llama.cpp chat model holds. Strata used to be
+    # left out: with Qwen3.8-27B resident its start failed ("no VRAM is left for the
+    # expert cache", 2026-11-15). Embedding / reranker helpers stay (llama's own guard).
+    if runtime in (MAYA, STRATA, RADIANCE):
         from app.models_mgmt import llama
 
         await llama.release_loaded_llms()

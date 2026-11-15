@@ -3945,3 +3945,11 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
   - 会話の自動圧縮を共通設定にした（`RuntimePolicy.compaction`: enabled / mode auto・percent / percent / max_tokens）。発火点は `app/models_mgmt/compaction.py`: 自動なら窓 〜32K 70%・〜128K 75%・〜256K 80%・それ以上 85%、上限 262,144 トークン（1M の窓で毎ターン 90 万トークンを読み直さない）。返答の取り分は削らない。
   - OpenCode: `limit.input = 発火点 + compaction.reserved`（v1 は input - reserved、v2 は min(input, context) - buffer で発火するのを実装で確認）。`auto` の窓は選択中ランタイムのモデルで決める。圧縮を切ると `compaction.auto=false` で従来の「窓 - 返答」。
   - AI アシスタント: これまで履歴を全件送っていた。閾値を超えたら古いやり取りを同じモデルで要約し（思考オフ）、直近（閾値の 35%）は原文のまま残す。要約はその回の assistant メッセージの `meta.compaction` に保存し、次の回は要約から再開する。窓より大きい履歴（広いモデルから乗り換えた会話）は分割して積み上げ要約する（実機 Radiance: 5 つの事実を全部保持）。要約に失敗したら圧縮せずに続ける。
+
+- 2026-11-15 同時実行数（スロット）をランタイムごとに実測して整理（ゲートウェイ経由で 1 件と同時 N 件、合計 tok/s）:
+  - llama.cpp Qwen3.8-27B（4 スロット・共有KV）: 1件 66 → 4件 合計 195 tok/s。設定を残す。
+  - Radiance（max-num-seqs 4）: 1件 171 → 4件 合計 480 tok/s。設定を残す。
+  - Strata（--parallel 4）: 1件 102 → 4件 合計 106 tok/s。同時に受けて同時に返すが合計は伸びない。設定は残し、その旨を表示。
+  - Maya-S（--parallel 2, 1M ctx）: 20 分たっても起動しない（2 本目の会話状態の確保で RAM 92GB が尽きる）。個別設定から同時実行数を外し、1 件ずつ処理と表示。
+  - 試験の途中で、Strata の起動が llama.cpp のチャットモデルを止めず VRAM 不足で失敗する不具合を発見。`release_for(STRATA)` も llama.cpp のチャットモデルを解放するよう修正（Maya-S / Radiance と同じ）。
+  - 既定値は変えていない（llama.cpp 1、Strata 1、Maya-S 1、Radiance 4）。

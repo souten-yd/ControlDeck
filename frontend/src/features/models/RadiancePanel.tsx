@@ -122,10 +122,10 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
         onChange={(effort, budget) => setForm((f) => ({ ...f, reasoning_effort: effort as RadianceSettings["reasoning_effort"], thinking_budget: budget }))} />
     </SettingsGroup>
     <SettingsGroup title="性能" description="同時実行・先読み（投機デコード）" collapsible defaultOpen={!initial}>
-      <label className="block text-xs">同時実行数
+      <label className="block text-xs">同時実行数（スロット）
         <input aria-label="Radiance同時実行数" type="number" min={1} max={32} value={form.max_num_seqs} disabled={running}
           onChange={(e) => set("max_num_seqs", Math.max(1, Math.min(32, Number(e.target.value) || 1)))} className={field} />
-        <span className="text-[11px] text-zinc-500">OpenCode のサブエージェントを並べるなら 2〜4。1 にするとその分コンテキストに回せます。</span>
+        <span className="text-[11px] text-zinc-500">同時に処理するほど合計が速くなります（実測: 1件 171 / 4件同時 合計 480 tok/s）。OpenCode のサブエージェントを並べるなら 2〜4。1 にするとその分コンテキストに回せます。</span>
       </label>
       <label className="block text-xs">先読みトークン数（DFlash2）
         <select aria-label="Radiance先読み" value={form.speculative_tokens === null ? "auto" : String(form.speculative_tokens)} disabled={running}

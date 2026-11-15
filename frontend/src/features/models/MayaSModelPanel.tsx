@@ -299,7 +299,9 @@ function MayaSettingsForm({ status, mode, onDone }: {
             <option value="off">無効</option>
           </select>
         </label>
-        {num("parallel", "同時実行数", 1, 8, 1, "2以上にすると KV を VRAM に置くため、エキスパートの置き場が減ります。")}
+        {/* 同時実行数は出さない。2 にすると 1M の会話をもう 1 本ぶん RAM に確保し、
+            92GB の RAM では 20 分たっても起動しなかった（2026-11-15 実測）。1 本ずつ順に処理する。 */}
+        <p className="text-[10px] leading-relaxed text-zinc-500">Maya-S は 1 件ずつ順に処理します（同時に受けると RAM が足りず起動しません）。</p>
       </SettingsGroup>
       <SettingsGroup title="詳細" description="GPU 番号・RAM の空き確保量" collapsible defaultOpen={false}>
         <div className="grid gap-2 sm:grid-cols-2">

@@ -1728,10 +1728,11 @@ function LlamaInstanceControls({ initial, isNew = false, onCancel, onDelete, onC
       </SettingsGroup>
       <SettingsGroup title="性能" description="GPU・同時実行・KVキャッシュ・投機デコード" collapsible defaultOpen={isNew}>
         <L label="GPUオフロード層"><PresetOrCustom value={cfg.n_gpu_layers} presets={GPU_PRESETS.map((p) => p.v === -1 ? { ...p, v: 999, label: "全部 (999)" } : p)} placeholder="999" onChange={(v) => set("n_gpu_layers", Number(v ?? 999))} /></L>
-      <L label="最大同時リクエスト数（スロット）">
+      <L label="同時実行数（スロット）">
         <input type="number" min={1} max={64} value={cfg.n_parallel}
           onChange={(e) => set("n_parallel", Math.max(1, Math.min(64, Number(e.target.value) || 1)))}
           className={`${input} font-mono`} />
+        <span className="text-[11px] text-zinc-500">同時に処理するほど合計が速くなります（実測 Qwen3.8-27B: 1件 66 / 4件同時 合計 195 tok/s）。OpenCode のサブエージェントを並べるなら 2〜4。</span>
       </L>
       <Toggle label="KVを共有プールにする（推奨）"
         hint="1本で大きく使う／複数本で分け合う を同じ設定のまま切り替えられます"
@@ -2196,9 +2197,10 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
         {select("KVキャッシュ", kv, setKv, [["int8", "int8（推奨）"], ["k8v4", "k8v4"], ["q4_0", "q4_0（省メモリ）"], ["fp16", "fp16（最高精度）"]])}
         {select("投機デコード", drafting, setDrafting, [["auto", "自動（推奨）"], ["mtp", "MTP"], ["dflash2", "DFlash2"], ["off", "使わない"]])}
       </div>
-      <label className="block text-xs">同時実行数
+      <label className="block text-xs">同時実行数（スロット）
         <input aria-label="Strata同時実行数" type="number" min={1} max={8} value={parallel} disabled={running}
           onChange={(e) => setParallel(Number(e.target.value))} className={field} />
+        <span className="text-[11px] text-zinc-500">同時に受けて同時に返しますが、合計の速さは 1 件のときと同じです（実測: 1件 102 / 4件同時 合計 106 tok/s）。待たせたくないときだけ上げてください。</span>
       </label>
     </SettingsGroup>
     <SettingsGroup title="詳細" description="待受ポート" collapsible defaultOpen={false}>
