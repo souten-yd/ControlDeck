@@ -136,3 +136,20 @@ def test_thinking_defaults_reach_the_server(managed):
     assert "    reasoning-effort: medium\n" in text and "    thinking-token-budget: 8192\n" in text
     with pytest.raises(radiance.RadianceError):
         radiance.save_instance("s", model_path=str(managed), port=8102, reasoning_effort="high")
+
+
+def test_starting_strata_frees_a_resident_llama_chat_model(monkeypatch):
+    """Strata does not fit beside Qwen3.8-27B on the R9700: its start must free it too."""
+    from app.models_mgmt import large_model_lifecycle, llama, maya_s, strata, strata_gateway
+
+    stopped = []
+    monkeypatch.setattr(maya_s, "installed", lambda: False)
+    monkeypatch.setattr(strata, "installed", lambda: True)
+    monkeypatch.setattr(strata_gateway, "list_instances", lambda: [])
+    monkeypatch.setattr(radiance, "installed", lambda: False)
+
+    async def release_llms():
+        stopped.append("llama")
+    monkeypatch.setattr(llama, "release_loaded_llms", release_llms)
+    asyncio.run(large_model_lifecycle.release_for(large_model_lifecycle.STRATA))
+    assert stopped == ["llama"]
