@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-15 開発用の軽量サンドボックス（`./deck.sh sandbox`）
+
+- podman の空のルートにホストの /usr・/etc・/opt と道具を読み取り専用でつなぐ。イメージ不要・起動 0.07 秒。書けるのは箱のフォルダだけ、依存は overlay。
+- 作業ツリーは `git clone --shared`（数百 ms）。箱の中で frontend の build（18.8 秒）と backend のテストが通り、ホストは変わらない。
+- 箱の中のミラー（`mirror-start`、2.8 秒で起動）と箱の中の OpenCode（`opencode --run`）。箱の中の AI に確かめさせ、本番の DB と gh の token が見えないことを確認。
+- OpenCode から本番を止める deck.sh のコマンドを禁止。
+
 ## 2026-11-15 子エージェントが MCP を呼べなかった不具合（#384）
 
 - v2 の agent の `system` は既定の指示（Code Mode の呼び方を含む）を置き換えるので、ui-verifier / reviewer は Playwright MCP や control_deck.report を見つけられなかった。子の指示の先頭に Code Mode の呼び方を足した。
