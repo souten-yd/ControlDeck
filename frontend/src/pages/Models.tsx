@@ -1172,28 +1172,49 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <div className="grid gap-2 sm:grid-cols-3">
           {runtimeEnv.runtimes.filter((r) => r.available || r.installed).map((item) => {
             const selected = policy.selected_runtime === item.runtime && (item.runtime === "ollama" || policy.selected_backend === item.backend);
+            const models = (runtimeEnv.startup_models ?? []).filter((m) => m.runtime === item.runtime);
+            const model = policy.preferred_models?.[item.runtime] ?? "";
             return (
-              <button key={item.id} type="button" onClick={() => chooseRuntime(item)} disabled={!item.installed || savePolicy.isPending} aria-pressed={selected}
-                className={`rounded-xl border p-3 text-left disabled:opacity-50 ${selected ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-500 dark:bg-accent-600/10" : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700"}`}>
-                <span className="flex flex-wrap items-center gap-1.5 text-sm font-semibold">
-                  {item.label}
-                  {item.experimental && (
-                    <span className="shrink-0 whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
-                  )}
-                </span>
-                <span className={`mt-1 block text-[10px] ${selected ? "text-accent-600 dark:text-accent-400" : "text-zinc-400"}`}>
-                  {selected ? "● 選択中" : !item.installed ? "導入が必要" : item.running ? "稼働中 · 選択する" : "利用可能 · 選択する"}
-                </span>
-                {/* ホストROCmとビルドのメジャー不一致など、選ぶ前に知るべきことをその場に出す。 */}
-                {item.warning && (
-                  <span className="mt-1.5 block rounded-lg bg-amber-50 px-2 py-1.5 text-[10px] leading-relaxed text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                    {item.warning}
+              <div key={item.id} role="group" aria-label={`${item.label} のランタイム設定`}
+                className={`min-w-0 rounded-xl border ${selected ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-500 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
+                <button type="button" onClick={() => chooseRuntime(item)} disabled={!item.installed || savePolicy.isPending} aria-pressed={selected}
+                  className="w-full rounded-xl p-3 text-left disabled:opacity-50">
+                  <span className="flex flex-wrap items-center gap-1.5 text-sm font-semibold">
+                    {item.label}
+                    {item.experimental && (
+                      <span className="shrink-0 whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">実験的</span>
+                    )}
                   </span>
-                )}
-              </button>
+                  <span className={`mt-1 block text-[10px] ${selected ? "text-accent-600 dark:text-accent-400" : "text-zinc-400"}`}>
+                    {selected ? "● 選択中" : !item.installed ? "導入が必要" : item.running ? "稼働中 · 選択する" : "利用可能 · 選択する"}
+                  </span>
+                  {/* ホストROCmとビルドのメジャー不一致など、選ぶ前に知るべきことをその場に出す。 */}
+                  {item.warning && (
+                    <span className="mt-1.5 block rounded-lg bg-amber-50 px-2 py-1.5 text-[10px] leading-relaxed text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                      {item.warning}
+                    </span>
+                  )}
+                </button>
+                {models.length > 1 && <div className="px-3 pb-3">
+                  <label className="block text-[11px] text-zinc-500">
+                    起動するモデル
+                    <select aria-label={`${item.label} の起動するモデル`} className={`${input} mt-1 min-w-0 text-xs`}
+                      disabled={!item.installed || savePolicy.isPending} value={model}
+                      onChange={(e) => setPolicyCfg({ ...policy,
+                        preferred_models: { ...policy.preferred_models, [item.runtime]: e.target.value } })}>
+                      <option value="">自動</option>
+                      {model && !models.some((m) => m.alias === model) && <option value={model}>登録解除済み: {model}</option>}
+                      {models.map((m) => <option key={m.alias} value={m.alias} disabled={!m.ready}>
+                        {m.name}{m.ready ? "" : "（初回起動の確認が必要）"}
+                      </option>)}
+                    </select>
+                  </label>
+                </div>}
+              </div>
             );
           })}
         </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">複数モデルが登録されているランタイムでは、起動するモデルを選べます。初期値は「自動」です。保存後、モデルが未起動のときの利用に反映されます。</p>
         {runtimeEnv.runtimes.some((item) => !item.installed && item.addon_id) && (
           <p className="mt-2 text-[10px] text-zinc-400">
             未導入のランタイムは <Link to="/settings/features" className="text-accent-600 underline dark:text-accent-400">設定 → オプション機能</Link> から導入・更新します。
@@ -1201,23 +1222,6 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         )}
       </SettingsGroup>
       <SettingsGroup title="起動と停止" description="全ランタイム共通。モデルごとの除外は各モデルの個別設定で指定します">
-        {[...new Set((runtimeEnv.startup_models ?? []).map((m) => m.runtime))].map((runtime) => {
-          const models = (runtimeEnv.startup_models ?? []).filter((m) => m.runtime === runtime);
-          if (models.length < 2) return null;
-          const preferred = policy.preferred_models?.[runtime] ?? "";
-          return <L key={runtime} label={`${RUNTIME_LABEL[runtime] ?? runtime} の優先起動モデル`}>
-            <select aria-label={`${RUNTIME_LABEL[runtime] ?? runtime} の優先起動モデル`} className={input}
-              value={preferred} onChange={(e) => setPolicyCfg({ ...policy,
-                preferred_models: { ...policy.preferred_models, [runtime]: e.target.value } })}>
-              <option value="">自動（従来の順序）</option>
-              {preferred && !models.some((m) => m.alias === preferred) && <option value={preferred}>登録解除済み: {preferred}</option>}
-              {models.map((m) => <option key={m.alias} value={m.alias} disabled={!m.ready}>
-                {m.name}{m.ready ? "" : "（初回起動の確認が必要）"}
-              </option>)}
-            </select>
-          </L>;
-        })}
-        <p className="text-[10px] leading-relaxed text-zinc-500">優先起動モデルは、モデル名を指定しない要求や、自動起動が有効なモデル同士の選択に使います。保存だけでは起動・切り替え・ダウンロードは行いません。稼働中モデルと明示的なモデル指定を優先します。</p>
         <Toggle label="アイドル時に自動アンロード" hint="使われていないモデルを止めて GPU と RAM を空けます"
           value={policy.idle_unload_enabled} onChange={(v) => setPolicyCfg({ ...policy, idle_unload_enabled: v })} />
         {policy.idle_unload_enabled && <L label="止めるまでの時間"><PresetOrCustom value={policy.idle_unload_minutes} presets={[5, 15, 30, 60, 240].map((v) => ({ v, label: `${v}分` }))} placeholder="30" onChange={(v) => setPolicyCfg({ ...policy, idle_unload_minutes: Number(v ?? 30) })} /></L>}

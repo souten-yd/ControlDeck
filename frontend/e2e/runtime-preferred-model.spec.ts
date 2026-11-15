@@ -11,6 +11,12 @@ for (const width of [320, 1280]) {
     await page.route("**/api/v1/models/runtime-environment", async (route) => {
       if (!snapshot) {
         snapshot = await (await route.fetch()).json();
+        snapshot.policy = { ...snapshot.policy, selected_runtime: "strata", selected_backend: "", preferred_models: {} };
+        snapshot.runtimes = [
+          { id: "strata", runtime: "strata", backend: "", label: "Strata", installed: true, available: true },
+          { id: "llama.cpp:rocm", runtime: "llama.cpp", backend: "rocm", label: "llama.cpp", installed: true, available: true },
+          { id: "maya-s", runtime: "maya-s", backend: "", label: "Maya-S", installed: true, available: true },
+        ];
         snapshot.startup_models = [
           { runtime: "strata", alias: "strata-first", name: "Strata first", ready: true },
           { runtime: "strata", alias: "strata-second", name: "Strata second", ready: true },
@@ -29,15 +35,23 @@ for (const width of [320, 1280]) {
     });
     await page.goto("/models");
     await page.getByRole("button", { name: "LLM 共通設定", exact: true }).click();
-    const strata = page.getByRole("combobox", { name: "Strata の優先起動モデル", exact: true });
-    const llama = page.getByRole("combobox", { name: "llama.cpp の優先起動モデル", exact: true });
+    const strataCard = page.getByRole("group", { name: "Strata のランタイム設定", exact: true });
+    const llamaCard = page.getByRole("group", { name: "llama.cpp のランタイム設定", exact: true });
+    const strata = strataCard.getByRole("combobox", { name: "Strata の起動するモデル", exact: true });
+    const llama = llamaCard.getByRole("combobox", { name: "llama.cpp の起動するモデル", exact: true });
+    await expect(strata).toHaveValue("");
+    await expect(llama).toHaveValue("");
+    await expect(strata.locator('option[value=""]')).toHaveText("自動");
     await strata.selectOption("strata-second");
     await llama.selectOption("llama-second");
     await expect(strata.locator('option[value="unprepared"]')).toHaveAttribute("disabled", "");
-    await expect(page.getByRole("combobox", { name: "Maya-S の優先起動モデル", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: "Maya-S の起動するモデル", exact: true })).toHaveCount(0);
+    await expect(strataCard.getByRole("button")).toHaveAttribute("aria-pressed", "true");
+    await expect(llamaCard.getByRole("button")).toHaveAttribute("aria-pressed", "false");
     await page.getByRole("button", { name: "保存", exact: true }).click();
     await expect.poll(() => saved?.preferred_models?.strata).toBe("strata-second");
     expect(saved.preferred_models["llama.cpp"]).toBe("llama-second");
+    expect(saved.selected_runtime).toBe("strata");
     await page.getByRole("button", { name: "LLM 共通設定", exact: true }).click();
     await expect(strata).toHaveValue("strata-second");
     await expect(llama).toHaveValue("llama-second");
