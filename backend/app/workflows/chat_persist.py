@@ -592,6 +592,20 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         if len(parts) > 1:
             history[-1] = {**history[-1], "content": parts}
 
+    # 窓に応じた閾値を超えるなら、古いやり取りを同じモデルで要約して畳む（Models の共通設定）。
+    from app.workflows import chat_compaction
+
+    if mode != "code":
+        history, compacted = await chat_compaction.compact(
+            history, base_url=base_url, model=model, output_reserve=max_output_tokens, provider=provider)
+        if compacted is not None:
+            buf["meta"]["compaction"] = compacted
+            job.log("compaction", tokens_before=compacted["tokens_before"],
+                    tokens_after=compacted["tokens_after"], threshold=compacted["threshold"],
+                    folded_messages=compacted["folded_messages"])
+            await asyncio.to_thread(checkpoint)
+    history = chat_compaction.strip_private(history)
+
     try:
         runtime_request = RuntimeChatRequest(
             base_url=base_url, model=model, messages=history,
@@ -925,9 +939,15 @@ async def send_message(
                 "内容を推測せず、必要なら利用者へIDの確認を求めてください。"
             ),
         })
-    for m in past:
+    # 自動圧縮済みなら、要約から再開する（要約に含めた古い発話は送らない）。
+    from app.workflows import chat_compaction
+
+    summary, resume_at = chat_compaction.resume_point(list(past))
+    if summary:
+        history.append(chat_compaction.summary_message(summary))
+    for m in past[resume_at:]:
         if m.role in ("user", "assistant") and m.content:
-            history.append({"role": m.role, "content": m.content})
+            history.append({"role": m.role, "content": m.content, chat_compaction.ID_KEY: m.id})
     history.append({"role": "user", "content": body.content})
 
     user_msg = ChatMessage(id=_new_id(), conversation_id=conv_id, role="user",
@@ -1039,6 +1059,12 @@ async def stream_message(websocket: WebSocket, message_id: str):
                         "type": "progress", "phase": ev.get("phase", ""), "label": ev.get("label", ""),
                         "iteration": ev.get("iteration", 0), "details": ev.get("details", {}),
                     }, ensure_ascii=False))
+                elif ev.get("message") == "compaction":
+                    await websocket.send_text(json.dumps({
+                        "type": "compaction", "tokens_before": ev.get("tokens_before"),
+                        "tokens_after": ev.get("tokens_after"), "threshold": ev.get("threshold"),
+                        "folded_messages": ev.get("folded_messages"),
+                    }))
                 elif ev.get("message") == "stats":
                     await websocket.send_text(json.dumps({
                         "type": "stats", "phase": ev.get("phase", ""),

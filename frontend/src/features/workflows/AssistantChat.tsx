@@ -58,7 +58,7 @@ interface PersistMsg {
   status: string;
   job_id: string | null;
   model: string;
-  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult };
+  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote };
 }
 
 interface Msg {
@@ -77,7 +77,11 @@ interface Msg {
   plan?: AssistantPlan;
   progress?: ResearchProgress[];
   research?: DeepResearchResult;
+  /** この回答の前に古いやり取りを自動で要約した（会話の自動圧縮） */
+  compaction?: CompactionNote;
 }
+
+interface CompactionNote { tokens_before?: number; tokens_after?: number; threshold?: number; folded_messages?: number }
 
 const LS_KEY = "cd-assistant-settings";
 const LS_CONV = "cd-chat-conversation"; // 永続チャットの会話 ID（本文は DB に保存）
@@ -183,6 +187,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           plan: m.meta?.plan,
           progress: m.meta?.progress,
           research: m.meta?.research,
+          compaction: m.meta?.compaction,
         }));
         if (restored.length > 0) setMessages(restored);
         // 生成中のまま残っているメッセージを購読再開
@@ -327,6 +332,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             });
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
+          else if (d.type === "compaction") patchMsg((m) => ({ ...m, compaction: d }));
           else if (d.type === "progress") patchMsg((m) => ({
             ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration, details: d.details }],
           }));
@@ -1108,6 +1114,14 @@ function MessageBubble({
   return (
     <div className="flex min-w-0 justify-start">
       <div className="min-w-0 max-w-[96%] space-y-2 break-words rounded-2xl rounded-bl-md border border-zinc-200 bg-white px-4 py-3 text-sm shadow-sm [overflow-wrap:anywhere] dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[88%]">
+        {msg.compaction && (
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400" role="status">
+            🗜️ 会話が長くなったため、古いやり取り{msg.compaction.folded_messages ? `（${msg.compaction.folded_messages}件）` : ""}を要約して続けました
+            {msg.compaction.tokens_before && msg.compaction.tokens_after
+              ? `：約${msg.compaction.tokens_before.toLocaleString()} → ${msg.compaction.tokens_after.toLocaleString()}トークン`
+              : ""}
+          </p>
+        )}
         {msg.connectionState === "reconnecting" && (
           <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400" role="status">接続を復旧しています。生成はサーバー側で継続中です…</p>
         )}

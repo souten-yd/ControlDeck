@@ -40,6 +40,23 @@ interface Model {
   display_name?: string;
 }
 
+interface CompactionPolicy { enabled: boolean; mode: "auto" | "percent"; percent: number; max_tokens: number }
+
+/** 会話を畳み始めるプロンプトの大きさ。backend の app/models_mgmt/compaction.py と同じ式。 */
+const COMPACTION_BANDS: Array<[number, number]> = [[32768, 70], [131072, 75], [262144, 80]];
+function compactionThreshold(window: number, c: CompactionPolicy): number | null {
+  if (!c.enabled || window <= 0) return null;
+  let value: number;
+  if (c.mode === "percent") value = Math.floor((window * c.percent) / 100);
+  else {
+    const percent = COMPACTION_BANDS.find(([limit]) => window <= limit)?.[1] ?? 85;
+    value = Math.floor((window * percent) / 100);
+    if (c.max_tokens) value = Math.min(value, c.max_tokens);
+  }
+  return value > 0 ? Math.max(2048, value) : null;
+}
+const DEFAULT_COMPACTION: CompactionPolicy = { enabled: true, mode: "auto", percent: 80, max_tokens: 262144 };
+
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
 type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
 const RUNTIME_LABEL: Record<string, string> = {
@@ -64,6 +81,7 @@ interface RuntimePolicy {
     max_report_tokens: number;
     timeout_seconds: number;
   };
+  compaction: CompactionPolicy;
   amd_gpu: {
     enabled: boolean;
     profile: "quiet" | "balanced" | "full" | "custom";
@@ -85,8 +103,12 @@ interface RuntimeEnvironment {
     /** 導入・更新を担当するアドオンのid。未導入時の導線に使う。 */
     addon_id?: string;
     experimental?: boolean;
+    /** 他のモデルと同時にロードできるか。Strata / Maya-S / Radiance は GPU を占有するので false。 */
+    coexist?: boolean;
   }>;
   policy: RuntimePolicy;
+  /** チャットモデルごとの 1 リクエストの窓（会話の自動圧縮のプレビュー用） */
+  compaction_windows?: Array<{ alias: string; runtime: string; name: string; window: number }>;
   amd_gpu: null | {
     bdf: string;
     vram_bytes: number;
@@ -1159,7 +1181,11 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <Toggle label="アイドル時に自動アンロード" hint="使われていないモデルを止めて GPU と RAM を空けます"
           value={policy.idle_unload_enabled} onChange={(v) => setPolicyCfg({ ...policy, idle_unload_enabled: v })} />
         {policy.idle_unload_enabled && <L label="止めるまでの時間"><PresetOrCustom value={policy.idle_unload_minutes} presets={[5, 15, 30, 60, 240].map((v) => ({ v, label: `${v}分` }))} placeholder="30" onChange={(v) => setPolicyCfg({ ...policy, idle_unload_minutes: Number(v ?? 30) })} /></L>}
-        <div className="grid gap-2 sm:grid-cols-2">
+        {runtimeEnv.runtimes.find((item) => item.selected)?.coexist === false ? (
+          <p className="text-[10px] leading-relaxed text-zinc-500">
+            {RUNTIME_LABEL[policy.selected_runtime] ?? policy.selected_runtime} は GPU を占有するため、他のモデルと同時にはロードしません（起動時に他のモデルを止めます）。
+          </p>
+        ) : <div className="grid gap-2 sm:grid-cols-2">
           <L label="利用方式">
             <select value={policy.coexistence} onChange={(e) => setPolicyCfg({ ...policy, coexistence: e.target.value as RuntimePolicy["coexistence"] })} className={input}>
               <option value="exclusive">排他（推奨・VRAM競合を防ぐ）</option>
@@ -1169,9 +1195,11 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           {policy.coexistence === "coexist" && <L label="同時にロードできるモデル数">
             <PresetOrCustom value={policy.max_loaded_models} presets={[1, 2, 3, 4, 8].map((v) => ({ v, label: `${v}モデル` }))} placeholder="1" onChange={(v) => setPolicyCfg({ ...policy, max_loaded_models: Number(v ?? 1) })} />
           </L>}
-        </div>
+        </div>}
         <p className="text-[10px] leading-relaxed text-zinc-500">思考（reasoning）の深さはモデルごとに違うため、各モデルの個別設定で指定します。</p>
       </SettingsGroup>
+      <CompactionSettingsGroup policy={policy} windows={runtimeEnv.compaction_windows ?? []}
+        onChange={(compaction) => setPolicyCfg({ ...policy, compaction })} />
       <SettingsGroup title="AIアシスタント">
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
       </SettingsGroup>
@@ -2210,4 +2238,61 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
       <StrataRegisterPanel key={alias} initial={item} running={!!item.loaded} onDone={onClose} />
     </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
   </BottomSheet>;
+}
+
+
+/** 会話の自動圧縮（AIアシスタントと OpenCode で共通）。窓の大きさに応じた発火点をモデルごとに見せる。 */
+function CompactionSettingsGroup({ policy, windows, onChange }: {
+  policy: RuntimePolicy;
+  windows: NonNullable<RuntimeEnvironment["compaction_windows"]>;
+  onChange: (value: CompactionPolicy) => void;
+}) {
+  const c = policy.compaction ?? DEFAULT_COMPACTION;
+  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  const set = (patch: Partial<CompactionPolicy>) => onChange({ ...c, ...patch });
+  return (
+    <SettingsGroup title="会話の自動圧縮" description="会話が長くなったら古いやり取りを要約して続けます。AIアシスタントと OpenCode に効きます">
+      <Toggle label="自動圧縮を有効にする" hint="切ると溢れるまで全文を送り、溢れたときだけ OpenCode が畳みます"
+        value={c.enabled} onChange={(v) => set({ enabled: v })} />
+      {c.enabled && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <L label="圧縮を始める大きさ">
+            <select value={c.mode} onChange={(e) => set({ mode: e.target.value as CompactionPolicy["mode"] })} className={input}>
+              <option value="auto">自動（コンテキスト長に応じて・推奨）</option>
+              <option value="percent">コンテキストに対する割合</option>
+            </select>
+          </L>
+          {c.mode === "percent" ? (
+            <L label="割合（%）">
+              <PresetOrCustom value={c.percent} presets={[60, 70, 75, 80, 85, 90].map((v) => ({ v, label: `${v}%` }))} placeholder="80"
+                onChange={(v) => set({ percent: Math.max(40, Math.min(95, Number(v ?? 80))) })} />
+            </L>
+          ) : (
+            <L label="上限（トークン）">
+              <PresetOrCustom value={c.max_tokens} presets={[65536, 131072, 262144, 524288, 0].map((v) => ({ v, label: v ? v.toLocaleString() : "上限なし" }))} placeholder="262144"
+                onChange={(v) => set({ max_tokens: Math.max(0, Number(v ?? 262144)) })} />
+            </L>
+          )}
+        </div>
+      )}
+      {c.enabled && c.mode === "auto" && (
+        <p className="text-[10px] leading-relaxed text-zinc-500">
+          自動: 〜32K は 70%、〜128K は 75%、〜256K は 80%、それより広い窓は 85%。窓が広くても上限を超えたら畳みます（読み直しが遅くなり、精度も落ちるため）。
+        </p>
+      )}
+      {c.enabled && windows.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-zinc-600 dark:text-zinc-300">
+          {windows.map((w) => {
+            const at = compactionThreshold(w.window, c);
+            return (
+              <li key={w.alias} className="flex flex-wrap justify-between gap-x-2">
+                <span className="font-mono">{w.alias}<span className="ml-1 font-sans text-zinc-400">{RUNTIME_LABEL[w.runtime] ?? w.runtime}</span></span>
+                <span>{at ? `${at.toLocaleString()} / ${w.window.toLocaleString()} で圧縮（${Math.round((100 * at) / w.window)}%）` : "—"}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </SettingsGroup>
+  );
 }
