@@ -1,6 +1,8 @@
 """Hardware-free regression tests for AMD fan controller and privileged allowlist."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import importlib.util
 from pathlib import Path
 
@@ -230,7 +232,7 @@ def test_unexpected_temperature_read_error_fails_closed(gpu, monkeypatch):
 def test_llm_bursts_do_not_chatter_on_cooling(gpu, monkeypatch):
     fan, _, hwmon, _, calls = gpu
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
     assert fan._floor == 100
 
@@ -302,7 +304,7 @@ def test_zero_rpm_only_after_stable_ten_minutes_and_immediate_wake(gpu, monkeypa
     fan, device, hwmon, _, calls = gpu
     _add_zero_nodes(device)
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     for sid, temp in (("temp1", 31), ("temp2", 34), ("temp3", 39)):
         (hwmon / f"{sid}_input").write_text(str(temp * 1000))
     (hwmon / "fan1_input").write_text("0")
@@ -386,7 +388,7 @@ def test_stalled_monitor_loop_cannot_count_as_5_minutes_of_cooling(gpu, monkeypa
     fan, device, hwmon, _, calls = gpu
     _add_zero_nodes(device)
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     for sid, temp in (("temp1", 31), ("temp2", 34), ("temp3", 39)):
         (hwmon / f"{sid}_input").write_text(str(temp * 1000))
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", allow_zero_rpm=True))
@@ -565,7 +567,7 @@ def test_rejected_auto_restore_stops_retrying_and_asks_for_reboot(gpu, monkeypat
     10秒ごとに叩き続けず、3回で止めて再起動を案内する。"""
     fan, _, hwmon, _, calls = gpu
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
 
     def rejecting(action, bdf, curve=None):
@@ -867,7 +869,7 @@ def test_temperature_ema_settings_reject_unsafe_values(field, value):
 def test_fan_history_reports_raw_and_smoothed_separately(gpu, monkeypatch):
     fan, _, hwmon, _, _ = gpu
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     for sid in ("temp1", "temp2", "temp3"):
         (hwmon / f"{sid}_input").write_text("45000")
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="curve",
@@ -890,7 +892,7 @@ def test_fan_history_reports_raw_and_smoothed_separately(gpu, monkeypatch):
 def test_legacy_map_raw_overtemperature_wins_over_temperature_ema(gpu, monkeypatch):
     fan, _, hwmon, _, _ = gpu
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     for sid in ("temp1", "temp2", "temp3"):
         (hwmon / f"{sid}_input").write_text("45000")
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="map",
@@ -905,7 +907,7 @@ def test_legacy_map_raw_overtemperature_wins_over_temperature_ema(gpu, monkeypat
 def test_pid_raw_overheat_overrides_filter_and_auto_tune_hold(gpu, monkeypatch):
     fan, _, hwmon, _, _ = gpu
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     for sid in ("temp1", "temp2", "temp3"):
         (hwmon / f"{sid}_input").write_text("45000")
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="pid",
@@ -921,7 +923,7 @@ def test_pid_raw_overheat_overrides_filter_and_auto_tune_hold(gpu, monkeypatch):
 def test_reconfigure_resets_curve_hold_before_applying_new_temperature_filter(gpu, monkeypatch):
     fan, _, hwmon, _, _ = gpu
     clock = [100.0]
-    monkeypatch.setattr(fan.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
     for sid in ("temp1", "temp2", "temp3"):
         (hwmon / f"{sid}_input").write_text("45000")
     settings = fan.FanSettings(enabled=True, bdf="0000:03:00.0", control_mode="curve",

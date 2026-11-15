@@ -1,12 +1,13 @@
 # 実装状況
 
-## 2026-11-15 OpenCode v2 のオプションプラグイン読み込み修正（検証中）
+## 2026-11-15 OpenCode v2 のオプションプラグイン読み込み修正（#395、L2承認前）
 
 - 原因: Podman の管理ツール一覧に Superpowers / Adversarial Review / Auto Advisor がなく、ホストの npm 導入先を箱内から読めなかった。箱内に npm・node は存在する。
 - 修正: ３件の feature ディレクトリを依存ごと同じ絶対パスへ読み取り専用マウント。features 全体や他の拡張は公開しない。
 - 二次原因: Adversarial Review 2.0.2 は XDG_CONFIG_HOME ではなく OPENCODE_CONFIG_DIR をコマンド配置に使う。セッション専用 opencode ディレクトリを明示し、HOME 内の親ディレクトリ不在による初期化失敗と設定先不一致を防ぐ。
-- 実機検証: 独立した Podman + OpenCode v2 に本番と同じ file:// 指定を渡し、/api/plugin で３件 active、/api/command で adversarial-review と constructive-review を確認。プラグイン読み取り可・書き込み不可、本番 DB 不可視を確認。関連37テスト成功、Frontend build 成功。独立レビューの重大・要修正指摘0件。
-- 既存セッションのマウントは変わらないため、適用後は OpenCode のターミナルを閉じて開き直す。復旧は本修正の直前の正式 Release へ戻して同様に開き直す。全体テスト・ミラー検証・L2承認・マージ・正式Release・本番適用は後続の記録で確定する。
+- 実機検証: 独立した Podman + OpenCode v2 に本番と同じ file:// 指定を渡し、/api/plugin で３件 active、/api/command で adversarial-review と constructive-review を確認。プラグイン読み取り可・書き込み不可、本番 DB 不可視を確認。関連37テスト成功、Frontend build 成功。ミラーの起動・health・認証後の OpenCode 画面を1280px/320pxで確認。独立レビュー（プラグイン修正・時計隔離修正）の重大・要修正指摘0件。
+- 最初の最終CIで既存のworkflow復旧2テストが失敗。計測テストが標準 time.monotonic をプロセス全体で差し替え、別threadのasyncio復旧timerを遠未来にずらす干渉を特定。Python 3.11.18・稼働時間100秒を模した環境で修正前は同じ2件失敗、修正後は83件成功。6テストファイルのclock/sleepをモジュール内のtime参照だけへ限定。llama._throughput の重複importを除去し既存の先頭importを使う（通常動作は同じ）。workflow本体と復旧テストの期待値は変更なし。関連159件成功、短い稼働時間を模したPython 3.11全件1520成功・2skip（111.20秒）。
+- 既存セッションのマウントは変わらないため、適用後は OpenCode のターミナルを閉じて開き直す。復旧は本修正の直前の正式 Release へ戻して同様に開き直す。最終CI・L2承認・マージ・正式Release・本番適用はPRで追跡し、未達を完了扱いしない。
 
 ## 2026-11-15 OpenCode をプロジェクトの箱で動かす（#388）と本番の Release 追従化
 

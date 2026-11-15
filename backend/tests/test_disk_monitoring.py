@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +17,12 @@ def test_disk_telemetry_snapshot_rates_temperature_and_smart(monkeypatch):
         ]
     )
     times = iter([100.0, 102.0])
+    real_monotonic = time.monotonic
     monkeypatch.setattr(disks.psutil, "disk_io_counters", lambda perdisk: next(counters))
-    monkeypatch.setattr(disks.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(disks, "time", SimpleNamespace(**{**vars(disks.time), "monotonic": lambda: next(times)}))
+    # The session TestClient runs asyncio timers on another thread. A telemetry
+    # clock must never change that loop's clock or consume this finite iterator.
+    assert time.monotonic is real_monotonic
     monkeypatch.setattr(disks, "_physical_block_device", lambda _device: Path("/dev/nvme0n1"))
     monkeypatch.setattr(disks, "_sysfs_temperature", lambda _name: (41.5, "Composite"))
     monkeypatch.setattr(disks, "_read_smartctl", lambda _block: (True, "passed", 43.0))

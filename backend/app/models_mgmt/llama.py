@@ -2140,8 +2140,6 @@ def _throughput(port: int, tokens_total: float) -> float:
 
     呼び出し間隔に依存しないよう、窓の中で最も古い観測点と比較する。
     """
-    import time
-
     now = time.monotonic()
     samples = _THROUGHPUT_SAMPLES.setdefault(int(port), deque(maxlen=64))
     # 大きく巻き戻ったらサーバー再起動とみなして基準を捨てる。
