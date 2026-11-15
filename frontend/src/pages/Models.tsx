@@ -298,7 +298,9 @@ export default function ModelsPage() {
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
   const [params, setParams] = useSearchParams();
-  const tab = (params.get("tab") ?? "llm") as "llm" | "embed" | "tts" | "frontier";
+  // TTS / ASR は SonicForge（拡張アプリ）が持つ。以前の ?tab=tts は LLM / VLM へ。
+  const requestedTab = params.get("tab") ?? "llm";
+  const tab = (["llm", "embed", "frontier"].includes(requestedTab) ? requestedTab : "llm") as "llm" | "embed" | "frontier";
   const [pulling, setPulling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
@@ -506,10 +508,10 @@ export default function ModelsPage() {
             </button>
           )}
         </div>} />
-      {/* タブ: ローカル（LLM/VLM・Embed/Reranker・TTS）と、外部のフロンティアモデル。
+      {/* タブ: ローカル（LLM/VLM・Embed/Reranker）と、外部のフロンティアモデル。
           外部は送信先が違うので、ローカルのモデルとは混ぜずに別のタブにする。 */}
       <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"], ["tts", "TTS"],
+        {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"],
           ...(can("settings.manage") ? [["frontier", "フロンティア（外部）"]] as const : [])] as const).map(([id, label]) => (
           <button key={id} onClick={() => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
             className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${tab === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"}`}>
@@ -534,7 +536,6 @@ export default function ModelsPage() {
         <MayaSSetupCard status={mayaStatus} />
       )}
       {tab === "embed" && <EmbedRerankPanel />}
-      {tab === "tts" && <TtsPanel />}
       {tab === "frontier" && can("settings.manage") && <FrontierModelsGroup />}
       {tab === "llm" && (<>
       {!isLocal && status && !status.available ? (
@@ -2067,16 +2068,6 @@ function EmbedRerankPanel() {
 }
 
 /** TTS タブ（今後対応のプレースホルダー）。 */
-function TtsPanel() {
-  return (
-    <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-      <p className="text-2xl">🔊</p>
-      <p className="mt-2 text-sm font-medium">TTS（音声合成）</p>
-      <p className="mt-1 text-xs text-zinc-400">今後のアップデートで対応予定です。モデル管理・音声設定はこのタブに追加されます。</p>
-    </div>
-  );
-}
-
 /** Register only models explicitly requested by the user. */
 function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
