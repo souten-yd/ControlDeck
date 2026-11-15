@@ -96,7 +96,7 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 |---|---|---|
 | 計画・引き継ぎ | 完了 | #377 |
 | 第 1 段階 B（backend） | 実装済み（Playwright MCP 導入・接続診断を実機で確認） | #378 |
-| 第 1 段階 C（画面） | 未着手 | — |
+| 第 1 段階 C（画面） | 完了（Fable 担当。検証用インスタンスで 320/1280・ライト/ダークを撮影確認） | #379, #381 |
 | 第 1 段階 D（E2E） | 実装済み（`./deck.sh e2e`、axe 12 件合格） | #380 |
 | 第 2 段階 | 未着手 | — |
 | 第 3 段階 | 未着手 | — |
@@ -121,3 +121,5 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 - E2E は `./deck.sh e2e [spec]` で、本番とは別の検証用インスタンス（一時 data、ポート 18765、使い捨ての管理者）を起こして流す。`CONTROL_DECK_ISOLATED=1` でファン制御・通知・保守・Ollama/LLM の管理・SearXNG の停止を起動しない。
 - axe（`e2e/a11y.spec.ts`）は critical だけで落とす。serious 以下は結果に添付する。2026-11-15 時点で主要 6 画面 × 320/1280 すべて critical 0・横スクロール無し。
 - `e2e/support/session.ts` のログインは「ログイン」と「顔認証・パスキーでログイン」の 2 つに当たって全 spec が落ちていた（`exact: true` で直した）。
+- オプション機能の画面（設定 → 機能と拡張）で、OpenCode の拡張・作業の道具の「初期設定」（OpenCode で使う・外部通信・接続診断）ができる。導入済みで未設定なら一覧に「初期設定がまだです」と出し、「詳細と操作」を開いておく（`features/opencode/FeatureSetup.tsx`）。
+- OpenCode が入っていない検証用インスタンスで OpenCode 画面を試すときは `e2e/support/opencode.ts` の `openOpenCode`（meta の enabled_features を補い、最初に読む API を差し替える）。

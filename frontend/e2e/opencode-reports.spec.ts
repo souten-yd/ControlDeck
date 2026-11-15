@@ -1,4 +1,5 @@
 import { expect, test, type Route } from "@playwright/test";
+import { openOpenCode } from "./support/opencode";
 import { establishSession, hasSession } from "./support/session";
 
 /** OpenCode の「結果」: 一覧 → 詳細 → 画面写真の拡大、を 320px で通す。
@@ -53,7 +54,7 @@ test("結果の一覧から詳細を開き、画面写真を拡大して前後�
   await page.route("**/api/v1/opencode/reports/r-ui/images/*", (route) =>
     route.fulfill({ status: 200, contentType: "image/svg+xml", body: IMAGE }));
   await establishSession(page, context);
-  await page.goto("/opencode", { waitUntil: "domcontentloaded" });
+  await openOpenCode(page);
 
   // 新しい順に並び、判定が文字で読める。
   const rows = page.getByRole("button", { name: /の結果「.*」を開く/ });
