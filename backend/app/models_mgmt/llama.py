@@ -723,9 +723,21 @@ def _sync_endpoint_units(endpoint_id: str) -> None:
     from app.applications import systemd as sd
 
     members = instances_on_endpoint(endpoint_id) if endpoint_id else []
+    from app.models_mgmt.runtime_policy import get_policy, prefer_models
+    policy = get_policy()
+    members = prefer_models(members, "llama.cpp", policy)
+    preferred = policy.preferred_models.get("llama.cpp", "")
+    # In exclusive mode, independent endpoints must not race to load different
+    # chat models at boot. Helper models (embedding/reranker) remain independent.
+    exclusive_winner = preferred if policy.coexistence == "exclusive" and any(
+        str(i["alias"]) == preferred and str(i.get("role") or "llm") == "llm"
+        and i.get("auto_start") and Path(str(i.get("model_path") or "")).is_file()
+        for i in list_instances()) else ""
     auto_start_winner = next(
         (str(i["alias"]) for i in members
-         if i.get("auto_start") and Path(str(i.get("model_path") or "")).is_file()),
+         if i.get("auto_start") and Path(str(i.get("model_path") or "")).is_file()
+         and (not exclusive_winner or str(i.get("role") or "llm") != "llm"
+              or str(i["alias"]) == exclusive_winner)),
         None,
     )
     for instance in members:

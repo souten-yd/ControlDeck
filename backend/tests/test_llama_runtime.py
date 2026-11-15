@@ -788,3 +788,48 @@ def test_existing_vision_instances_inherit_the_image_token_floor(monkeypatch, tm
 
     assert llama.get_config()["instances"]["old"]["image_min_tokens"] == 1024
     assert '"--image-min-tokens" "1024"' in llama._unit_content("old")
+
+
+def test_boot_enablement_uses_preferred_model_on_shared_endpoint(monkeypatch, tmp_path):
+    from app.models_mgmt import runtime_policy as rp
+    from app.models_mgmt import llama
+    from app.applications import systemd as sd
+    model = tmp_path / 'model.gguf'
+    model.write_bytes(b'gguf')
+    members = [{'alias': a, 'model_path': str(model), 'auto_start': True} for a in ('first', 'second')]
+    monkeypatch.setattr(llama, 'is_installed', lambda: True)
+    monkeypatch.setattr(llama, 'instances_on_endpoint', lambda _: members)
+    monkeypatch.setattr(llama, '_unit_content', lambda alias: 'unit '+alias)
+    monkeypatch.setattr(rp, 'get_policy', lambda: rp.RuntimePolicy(preferred_models={'llama.cpp': 'second'}))
+    monkeypatch.setattr(sd, 'write_unit', lambda *a: None)
+    enabled = {}
+    monkeypatch.setattr(sd, 'set_enabled', lambda name, value: enabled.update({name: value}))
+    llama._sync_endpoint_units('shared')
+    assert enabled == {llama.unit_name('first'): False, llama.unit_name('second'): True}
+    members[1]['auto_start'] = False
+    llama._sync_endpoint_units('shared')
+    assert enabled == {llama.unit_name('first'): True, llama.unit_name('second'): False}
+
+
+def test_exclusive_preferred_boot_model_wins_across_endpoints_but_keeps_helpers(monkeypatch, tmp_path):
+    from app.models_mgmt import llama, runtime_policy as rp
+    from app.applications import systemd as sd
+    model = tmp_path / 'model.gguf'
+    model.write_bytes(b'gguf')
+    rows = [{'alias': a, 'endpoint_id': a, 'role': role, 'model_path': str(model), 'auto_start': True}
+            for a, role in [('first', 'llm'), ('second', 'llm'), ('embed', 'embedding')]]
+    monkeypatch.setattr(llama, 'is_installed', lambda: True)
+    monkeypatch.setattr(llama, 'list_instances', lambda: rows)
+    monkeypatch.setattr(llama, 'instances_on_endpoint', lambda endpoint: [i for i in rows if i['endpoint_id'] == endpoint])
+    monkeypatch.setattr(llama, '_unit_content', lambda alias: 'unit '+alias)
+    policy = rp.RuntimePolicy(preferred_models={'llama.cpp': 'second'})
+    monkeypatch.setattr(rp, 'get_policy', lambda: policy)
+    monkeypatch.setattr(sd, 'write_unit', lambda *a: None)
+    enabled = {}
+    monkeypatch.setattr(sd, 'set_enabled', lambda name, value: enabled.update({name: value}))
+    for row in rows:
+        llama._sync_endpoint_units(row['endpoint_id'])
+    assert enabled == {llama.unit_name('first'): False, llama.unit_name('second'): True, llama.unit_name('embed'): True}
+    policy.coexistence = 'coexist'
+    llama._sync_endpoint_units('first')
+    assert enabled[llama.unit_name('first')] is True

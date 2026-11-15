@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -102,6 +103,8 @@ class RuntimePolicy(BaseModel):
     gateway_only: bool = True
     drain_timeout_sec: int = Field(default=120, ge=1, le=600)
     default_model_ref: str = Field(default="", max_length=512)
+    preferred_models: dict[Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"],
+                           Annotated[str, Field(max_length=512)]] = Field(default_factory=dict)
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
     deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
@@ -152,6 +155,29 @@ def save_policy(policy: RuntimePolicy) -> RuntimePolicy:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(policy.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
     return policy
+
+
+def prefer_models(items: list[dict], runtime: str, policy: RuntimePolicy | None = None) -> list[dict]:
+    """Stable preference among eligible candidates; never changes eligibility."""
+    alias = (policy or get_policy()).preferred_models.get(runtime, "")
+    return sorted(items, key=lambda item: str(item.get("alias") or item.get("name") or "") != alias)
+
+
+async def startup_models() -> list[dict]:
+    from app.models_mgmt import local_llm, ollama
+
+    items = await asyncio.to_thread(local_llm.llm_instances)
+    rows = [{"runtime": i["runtime"], "alias": str(i["alias"]),
+             "name": str(i.get("name") or i["alias"]),
+             "ready": i.get("runtime") != "strata" or bool(i.get("activated"))}
+            for i in items]
+    try:
+        rows += [{"runtime": "ollama", "alias": str(i.get("name") or i.get("model") or ""),
+                  "name": str(i.get("name") or i.get("model") or ""), "ready": True}
+                 for i in await ollama.list_models()]
+    except ollama.OllamaError:
+        logging.getLogger(__name__).debug("Ollama startup-model choices are unavailable")
+    return rows
 
 
 def ensure_gpu_profile(*, force: bool = False, base_url: str = "") -> dict:
@@ -282,6 +308,7 @@ async def environment() -> dict:
     return {
         "platform": "Linux", "gpu": "AMD" if detected.get("rocm") else "GPU",
         "runtimes": runtimes, "policy": policy.model_dump(), "amd_gpu": gpu_caps,
+        "startup_models": await startup_models(),
         "compaction_windows": await asyncio.to_thread(_compaction_windows),
         "addon_gpu_state": _addon_gpu_state(),
     }

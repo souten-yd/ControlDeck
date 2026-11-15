@@ -437,3 +437,21 @@ def test_reloading_a_model_that_is_already_loaded_is_allowed(_one_model_at_a_tim
 
     asyncio.run(run())
     assert loaded == {"a"}
+
+
+def test_ollama_provider_orders_preferred_registered_model_first(monkeypatch):
+    from app.models_mgmt import providers, runtime_policy as rp
+    server = ThreadingHTTPServer(('127.0.0.1', 0), _ModelsHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    async def candidates():
+        return [{'id': 'ollama', 'provider': 'ollama', 'name': 'Ollama', 'managed': True,
+                 'base_url': f'http://127.0.0.1:{server.server_port}/v1'}]
+    monkeypatch.setattr(providers, '_candidates', candidates)
+    monkeypatch.setattr(rp, 'get_policy', lambda: rp.RuntimePolicy(
+        selected_runtime='ollama', preferred_models={'ollama': 'model-b'}))
+    try:
+        result = asyncio.run(providers.list_providers())
+        assert result[0]['models'] == ['model-b', 'model-a']
+    finally:
+        server.shutdown()
+        server.server_close()

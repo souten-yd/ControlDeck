@@ -184,7 +184,7 @@ def test_addon_ai_rejects_unbounded_or_missing_vision_input(runtime_ai_api, payl
 def test_ai_gateway_llama_vision_requires_mmproj_and_prefers_loaded(monkeypatch):
     from app.models_mgmt import ai_gateway, llama, runtime_policy
 
-    monkeypatch.setattr(runtime_policy, "get_policy", lambda: SimpleNamespace(selected_runtime="llama.cpp"))
+    monkeypatch.setattr(runtime_policy, "get_policy", lambda: runtime_policy.RuntimePolicy(selected_runtime="llama.cpp"))
     monkeypatch.setattr(llama, "list_instances", lambda: [
         {
             "alias": "text-only", "role": "llm", "mmproj_path": "",
@@ -496,3 +496,19 @@ def test_provenance_stream_cancellation_releases_without_attesting(runtime_ai_ap
         await generator.aclose()
     asyncio.run(run())
     assert captures == [True] and releases == [True]
+
+
+def test_strata_ai_target_uses_preference_after_capability_and_loaded_filters(monkeypatch):
+    from app.models_mgmt import ai_gateway, runtime_policy, strata, strata_gateway
+    monkeypatch.setattr(strata, 'installed', lambda: True)
+    monkeypatch.setattr(runtime_policy, 'get_policy', lambda: runtime_policy.RuntimePolicy(
+        selected_runtime='strata', preferred_models={'strata': 'second'}))
+    rows = [{'alias': a, 'base_url': 'http://127.0.0.1:8090/v1', 'loaded': False,
+             'activated': True, 'vision': 'on'} for a in ('first', 'second')]
+    monkeypatch.setattr(strata_gateway, 'list_instances', lambda: rows)
+    assert ai_gateway._strata_target('text.generate').model == 'second'
+    rows[0]['loaded'] = True
+    assert ai_gateway._strata_target('text.generate').model == 'first'
+    rows[0]['loaded'] = False
+    rows[1]['vision'] = 'off'
+    assert ai_gateway._strata_target('vision.analyze').model == 'first'

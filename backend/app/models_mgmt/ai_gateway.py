@@ -51,8 +51,11 @@ def _llama_target(capability: AICapability) -> AITarget:
         candidates = [item for item in candidates if str(item.get("mmproj_path") or "").strip()]
     if not candidates:
         raise AITargetUnavailable(f"{capability} に対応する llama.cpp モデルがありません")
+    from app.models_mgmt.runtime_policy import get_policy
+    preferred = get_policy().preferred_models.get("llama.cpp", "")
     candidates.sort(key=lambda item: (
         not bool(item.get("loaded")),
+        str(item.get("alias")) != preferred,
         _order(item.get("order")),
         str(item.get("alias") or ""),
     ))
@@ -73,7 +76,9 @@ def _strata_target(capability: AICapability) -> AITarget:
         candidates = [item for item in candidates if item.get("vision", "on") != "off"]
     if not candidates:
         raise AITargetUnavailable(f"{capability} に対応する起動確認済みStrataモデルがありません")
-    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"]))
+    from app.models_mgmt.runtime_policy import get_policy
+    preferred = get_policy().preferred_models.get("strata", "")
+    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"] != preferred, item["alias"]))
     return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
 
 
@@ -85,7 +90,9 @@ def _radiance_target(capability: AICapability) -> AITarget:
     if not candidates:
         raise AITargetUnavailable(f"{capability} に使えるRadianceモデルが登録されていません")
     # The containers carry their vision tower, so text and vision share one model.
-    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"]))
+    from app.models_mgmt.runtime_policy import get_policy
+    preferred = get_policy().preferred_models.get("radiance", "")
+    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"] != preferred, item["alias"]))
     return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
 
 
@@ -102,9 +109,9 @@ async def _ollama_target(capability: AICapability) -> AITarget:
         ollama.normalize_model_name(str(item.get("name") or item.get("model") or ""))
         for item in running
     }
-    default_name = ollama.normalize_model_name(
-        str(ollama.get_settings().get("default_model") or "")
-    )
+    from app.models_mgmt.runtime_policy import get_policy
+    default_name = ollama.normalize_model_name(str(get_policy().preferred_models.get("ollama")
+                                                  or ollama.get_settings().get("default_model") or ""))
     candidates: list[tuple[dict, dict]] = []
     for item in models:
         name = str(item.get("name") or item.get("model") or "").strip()

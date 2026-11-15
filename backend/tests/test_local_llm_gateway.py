@@ -105,3 +105,19 @@ def test_auto_does_not_choose_unactivated_strata(monkeypatch):
         gateway.resolve_instance(gateway.AUTO_MODEL)
     assert exc.value.status_code == 404
     assert gateway.resolve_endpoint("unactivated") == ("unactivated", 8095)
+
+
+def test_cold_auto_uses_runtime_preference_but_keeps_running_and_explicit_models(monkeypatch):
+    from app.models_mgmt import runtime_policy as rp
+    policy = rp.RuntimePolicy(selected_runtime='strata', preferred_models={'strata': 'second'})
+    monkeypatch.setattr(rp, 'get_policy', lambda: policy)
+    rows = [{'runtime': 'strata', 'alias': a, 'port': 8090+i, 'role': 'llm',
+             'activated': True, 'loaded': False} for i,a in enumerate(('first', 'second'))]
+    monkeypatch.setattr(local_llm, 'list_instances', lambda **kw: rows)
+    assert gateway.resolve_instance(gateway.AUTO_MODEL)['alias'] == 'second'
+    assert gateway.resolve_instance('first')['alias'] == 'first'
+    rows[0]['loaded'] = True
+    assert gateway.resolve_instance(gateway.AUTO_MODEL)['alias'] == 'first'
+    rows[0]['loaded'] = False
+    rows[1]['activated'] = False
+    assert gateway.resolve_instance(gateway.AUTO_MODEL)['alias'] == 'first'

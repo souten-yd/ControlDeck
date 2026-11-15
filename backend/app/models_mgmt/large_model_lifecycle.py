@@ -314,18 +314,19 @@ async def autostart() -> str | None:
     Only one of the two can be resident, so at most one is started.
     """
     from app.models_mgmt import maya_s, radiance, strata, strata_gateway
+    from app.models_mgmt.runtime_policy import prefer_models
 
     try:
         if maya_s.installed() and maya_s.get_settings().get("auto_start") and maya_s.list_instances():
             if await maya_s.ensure_ready(maya_s.ALIAS, start=True):
                 return f"{MAYA}:{maya_s.ALIAS}"
         if strata.installed():
-            for item in await asyncio.to_thread(strata_gateway.list_instances):
+            for item in prefer_models(await asyncio.to_thread(strata_gateway.list_instances), STRATA):
                 if item.get("auto_start") and item.get("activated"):
                     if await strata_gateway.ensure_ready(str(item["alias"])):
                         return f"{STRATA}:{item['alias']}"
         if radiance.installed():
-            for item in await asyncio.to_thread(radiance.list_instances):
+            for item in prefer_models(await asyncio.to_thread(radiance.list_instances), RADIANCE):
                 if item.get("auto_start"):
                     if await radiance.ensure_ready(str(item["alias"]), start=True):
                         return f"{RADIANCE}:{item['alias']}"

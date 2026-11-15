@@ -34,24 +34,46 @@ async def put_runtime_policy(
 
     current = runtime_policy.get_policy().model_dump()
     merged = {**current, **body}
-    for nested in ("chat", "deep_research", "amd_gpu"):
+    for nested in ("chat", "deep_research", "amd_gpu", "preferred_models"):
         if isinstance(current.get(nested), dict) and isinstance(body.get(nested), dict):
             merged[nested] = {**current[nested], **body[nested]}
     try:
         policy = runtime_policy.RuntimePolicy.model_validate(merged)
-        policy = runtime_policy.normalize_gpu_profile(policy)
+        preference_only = policy.model_dump(exclude={"preferred_models"}) == {
+            k: v for k, v in current.items() if k != "preferred_models"}
+        if not preference_only:
+            policy = runtime_policy.normalize_gpu_profile(policy)
+        changed_preferences = {key: alias for key, alias in policy.preferred_models.items()
+                               if alias and alias != current.get("preferred_models", {}).get(key)}
+        if changed_preferences:
+            choices = await runtime_policy.startup_models()
+            for runtime, alias in changed_preferences.items():
+                if not any(i["runtime"] == runtime and i["alias"] == alias and i["ready"] for i in choices):
+                    raise ValueError(f"{runtime} の起動可能な登録モデルを選択してください: {alias}")
         from app.models_mgmt import amd_gpu
-        amd_gpu.apply_profile(policy.amd_gpu, force=True)
-        await runtime_policy.apply_selection(policy)
+        # A preference-only save must not stop models or rewrite the GPU profile.
+        if not preference_only:
+            amd_gpu.apply_profile(policy.amd_gpu, force=True)
+            await runtime_policy.apply_selection(policy)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     runtime_policy.save_policy(policy)
+    if current.get("preferred_models", {}).get("llama.cpp") != policy.preferred_models.get("llama.cpp"):
+        from app.models_mgmt import llama
+        # Update boot enablement only; no model is started or stopped.
+        seen_endpoints: set[str] = set()
+        for item in await asyncio.to_thread(llama.list_instances):
+            endpoint = str(item.get("endpoint_id") or "")
+            if endpoint and endpoint not in seen_endpoints:
+                await asyncio.to_thread(llama.sync_instance_unit, str(item["alias"]))
+                seen_endpoints.add(endpoint)
     audit.record(db, "model.runtime_policy", user=user, resource_type="model-runtime",
                  request=request, metadata={"runtime": policy.selected_runtime,
                                             "backend": policy.selected_backend,
                                             "coexistence": policy.coexistence,
+                                            "preferred_models": policy.preferred_models,
                                             "gpu_profile": policy.amd_gpu.profile if policy.amd_gpu.enabled else "disabled"})
     return await runtime_policy.environment()
 

@@ -156,6 +156,8 @@ def resolve_instance(model: str) -> dict:
             and (i.get("runtime") != "maya-s" or i.get("loaded") or selected == "maya-s")
         ]
         preferred = [i for i in llms if i.get("runtime") == selected]
+        from app.models_mgmt.runtime_policy import prefer_models
+        preferred = prefer_models(preferred, selected)
         match = (next((i for i in preferred if i.get("loaded")), None)
                  or (preferred[0] if preferred else None)
                  or next((i for i in llms if i.get("loaded")), None)
