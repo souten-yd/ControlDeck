@@ -98,8 +98,8 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | 第 1 段階 B（backend） | 実装済み（Playwright MCP 導入・接続診断を実機で確認） | #378 |
 | 第 1 段階 C（画面） | 完了（Fable 担当。検証用インスタンスで 320/1280・ライト/ダークを撮影確認） | #379, #381 |
 | 第 1 段階 D（E2E） | 実装済み（`./deck.sh e2e`、axe 12 件合格） | #380 |
-| 第 2 段階 | 精密調査の道具を実装・実機確認（ローカルのみで 113 秒・出典 5 件）。Context7 は未着手 | #382 |
-| 第 3 段階 | 未着手 | — |
+| 第 2 段階 | 完了（精密調査 #382、Context7 #383。どちらも実機確認） | #382, #383 |
+| 第 3 段階 | 完了（reviewer 子エージェント＋ast-grep。実機で呼び出し側の取りこぼしを critical で検出） | #383 |
 
 ## 版の固定（2026-11-15 時点、公開から 2 週間以上経った版）
 
@@ -124,3 +124,7 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 - オプション機能の画面（設定 → 機能と拡張）で、OpenCode の拡張・作業の道具の「初期設定」（OpenCode で使う・外部通信・接続診断）ができる。導入済みで未設定なら一覧に「初期設定がまだです」と出し、「詳細と操作」を開いておく（`features/opencode/FeatureSetup.tsx`）。
 - OpenCode が入っていない検証用インスタンスで OpenCode 画面を試すときは `e2e/support/opencode.ts` の `openOpenCode`（meta の enabled_features を補い、最初に読む API を差し替える）。
 - 精密調査: ControlDeck の MCP に `control_deck.research`。AI チャットの `_deep_search` をそのまま呼び、結果を `kind: research` の報告として残す。情報源は既定で `local_code`（と `rag`）だけ。`research_external` をオンにしたときだけ web / academic / github / direct を使う。外部を頼まれて許可が無いときは落として、報告の「確かめられなかったこと」に書く。`project_dir` は CodeDEV 配下だけ受ける（Project Lab の project_id があればそちらが優先）。
+- Context7（`context7-mcp`、@upstash/context7-mcp 4.4.4）: 設定 `context7` をオンにしたときだけ session に載せる（既定オフ、未設定として促さない）。道具は 2 つで小さいので主にも持たせる。実機で Phaser のライブラリ ID を 5 件引けた。
+- レビュー: 子エージェント `reviewer`（edit / write / patch を deny、指示は agents/reviewer.md）。`ast-grep`（@ast-grep/cli 0.51.0、npm 種類、版固定）を導入していれば session の PATH の先頭に足す。実機の試験（関数の引数を増やし、呼び出し側を 1 つ直し忘れた差分）で、取りこぼしを critical として検出し、ファイルは変更しなかった。
+- GitHub 連携: session は XDG_CONFIG_HOME を job ごとに向けるので、gh は `~/.config/gh` を見失う（未ログイン扱い、git の https push も gh の credential helper 経由で失敗）。設定 `github_cli` をオンにしたときだけ `GH_CONFIG_DIR` を渡す（既定オフ）。`gh auth`・`gh repo delete/archive`・`gh secret`・`gh variable`・`gh ssh-key`・`gh gpg-key`・`gh api` は常に deny。
+- 観察: レビューの実機試験で、Adversarial Review が無効のとき主のエージェントが利用者の `~/.config/opencode` を読んで探し回った（書き込みは無し）。有効にするか、指示から外すかは今後の課題。

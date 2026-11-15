@@ -8,8 +8,8 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { SettingsGroup, Toggle } from "../models/formControls";
 
-export type ExtensionKey = "superpowers" | "adversarial_review" | "auto_advisor" | "ui_verify";
-const EXTENSIONS: ExtensionKey[] = ["superpowers", "adversarial_review", "auto_advisor", "ui_verify"];
+export type ExtensionKey = "superpowers" | "adversarial_review" | "auto_advisor" | "ui_verify" | "context7";
+const EXTENSIONS: ExtensionKey[] = ["superpowers", "adversarial_review", "auto_advisor", "ui_verify", "context7"];
 
 interface Diagnosis {
   ok: boolean;
@@ -31,6 +31,14 @@ export interface Workflow {
   research_tool?: boolean;
   /** 精密調査で Web・GitHub・論文の検索を使うか。既定はローカル（コード・RAG）だけ。 */
   research_external?: boolean;
+  /** Context7（ライブラリの版に合った公式文書）。問い合わせは外部へ出る。 */
+  context7?: boolean;
+  /** この PC で設定済みの gh を session から使わせるか。 */
+  github_cli?: boolean;
+  /** この PC の gh が導入・ログイン済みか。 */
+  github?: { installed: boolean; configured: boolean };
+  /** レビューで構文検索（ast-grep）が使えるか。 */
+  review_tool?: boolean;
   /** このPCに Chrome が見つかったか。 */
   browser?: boolean;
   models?: { alias: string; runtime: string }[];
@@ -44,7 +52,8 @@ export function workflowBody(value: Workflow) {
   return { superpowers: value.superpowers, adversarial_review: value.adversarial_review,
     auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
     ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
-    research_tool: value.research_tool ?? true, research_external: value.research_external ?? false };
+    research_tool: value.research_tool ?? true, research_external: value.research_external ?? false,
+    context7: value.context7 ?? false, github_cli: value.github_cli ?? false };
 }
 
 export function WorkflowExtensions({ value, onChange, editable }: {
@@ -129,6 +138,27 @@ export function WorkflowExtensions({ value, onChange, editable }: {
           </p>
         )}
       </>}
+      <Toggle label="ライブラリの公式文書（Context7）"
+        hint={!has("context7") ? "未導入です"
+          : "使っているライブラリの版に合った文書を AI が引きます。ライブラリ名と調べたい内容が外部（context7.com）へ送られます"}
+        value={Boolean(value.context7) && has("context7")} disabled={!editable || !has("context7")}
+        onChange={(v) => onChange({ ...value, context7: v })} />
+      {!has("context7") && <p className="-mt-1 text-[11px]">{installLink("context7")}</p>}
+      <Toggle label="GitHub 連携（この PC の gh を使う）"
+        hint={!value.github?.installed ? "gh（GitHub CLI）が見つかりません"
+          : !value.github?.configured ? "gh がログインしていません。ターミナルで gh auth login を実行してください"
+          : "AI が gh と git push で PR・Issue・Actions を扱えます。この PC の GitHub の権限をそのまま使います"}
+        value={Boolean(value.github_cli)} disabled={!editable || !value.github?.configured}
+        onChange={(v) => onChange({ ...value, github_cli: v })} />
+      {value.github_cli && (
+        <p className="-mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          AI が push・PR の作成やマージまで行えるようになります。token の表示（gh auth）、リポジトリの削除・アーカイブ、secret の操作、gh api は禁止しています。
+        </p>
+      )}
+      <p className="text-[11px] text-zinc-500">
+        レビューは子エージェント reviewer が行います（ファイルは変更しません）。
+        {value.review_tool ? "ast-grep で呼び出し側まで構文で追います。" : "ast-grep を導入すると、呼び出し側を構文で正確に追えます。"}
+      </p>
     </SettingsGroup>
   );
 }

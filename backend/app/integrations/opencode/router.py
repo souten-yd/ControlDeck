@@ -33,10 +33,12 @@ class WorkflowBody(BaseModel):
     ui_verify_allow_external: bool | None = None
     research_tool: bool | None = None
     research_external: bool | None = None
+    context7: bool | None = None
+    github_cli: bool | None = None
 
 
 WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model",
-                 "ui_verify", "ui_verify_allow_external", "research_tool", "research_external")
+                 "ui_verify", "ui_verify_allow_external", "research_tool", "research_external", "context7", "github_cli")
 
 
 class RunBody(AgentTargetBody):
@@ -213,7 +215,11 @@ def get_workflow(user: User = Depends(require_permission("workflows.run"))):
         "installed": opencode.workflow_installed(),
         "features": {**opencode.WORKFLOW_FEATURES, **opencode.WORKFLOW_MCP_FEATURES},
         # UI 検証はこの PC の Chrome を使う。無ければ画面で案内する。
-        "browser": bool(opencode._browser_executable())}
+        "browser": bool(opencode._browser_executable()),
+        # レビューで構文検索（ast-grep）が使えるか。
+        "review_tool": opencode.review_tool_bin() is not None,
+        # この PC の gh が導入・ログイン済みか（token は読まない）。
+        "github": opencode.github_cli_status()}
 
 
 @router.put("/workflow")
