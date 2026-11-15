@@ -72,6 +72,23 @@ class CompactionSettings(BaseModel):
     max_tokens: int = Field(default=262144, ge=0, le=4_194_304)
 
 
+class AddonGpuSettings(BaseModel):
+    """Add-on（MediaForge / SonicForge）が GPU を要るときに、常駐 LLM をどう譲るか。
+
+    auto:      LLM が推論していなければ降ろして GPU を貸す。推論中なら待たずに RAM へ回す。
+    swap:      必ず GPU を貸す。走っている推論は終わるまで待ち、新しい LLM 要求は生成が終わるまで待たせる。
+    llm_first: LLM は降ろさない。Add-on は RAM（CPU）で動くか、空くまで待つ。
+
+    どれでも、走っている推論は切らない。貸した LLM は生成が終わると載せ直す（restore）。
+    """
+    mode: Literal["auto", "swap", "llm_first"] = "auto"
+    restore: bool = True
+    # 生成が終わってから載せ直すまでの間。続けて来る生成（画像を何枚も）の間に載せ直さないため。
+    restore_delay_sec: int = Field(default=15, ge=0, le=600)
+    # 貸している間、LLM 要求を待たせる上限。Add-on が抜けなくなっても会話が止まり続けないため。
+    max_lend_sec: int = Field(default=1800, ge=60, le=7200)
+
+
 class RuntimePolicy(BaseModel):
     selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"] = "ollama"
     # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
@@ -89,6 +106,7 @@ class RuntimePolicy(BaseModel):
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
     deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
+    addon_gpu: AddonGpuSettings = Field(default_factory=AddonGpuSettings)
     amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
     # 空なら libraries.py が data_dir/models/gguf の既定1件を合成する（後方互換）。
     model_libraries: list[ModelLibrary] = Field(default_factory=list)
@@ -265,7 +283,17 @@ async def environment() -> dict:
         "platform": "Linux", "gpu": "AMD" if detected.get("rocm") else "GPU",
         "runtimes": runtimes, "policy": policy.model_dump(), "amd_gpu": gpu_caps,
         "compaction_windows": await asyncio.to_thread(_compaction_windows),
+        "addon_gpu_state": _addon_gpu_state(),
     }
+
+
+def _addon_gpu_state() -> dict:
+    try:
+        from app.models_mgmt.resource_provider import provider
+
+        return provider().lending_state()
+    except Exception:  # noqa: BLE001 - 画面の表示で environment を落とさない
+        return {"lending": False, "lent": [], "since": 0, "waiting_llm_requests": 0}
 
 
 def _compaction_windows() -> list[dict]:

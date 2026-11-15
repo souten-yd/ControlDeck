@@ -58,6 +58,8 @@ class _RequestRecord:
     status: RequestStatus
     sequence: int
     completed: asyncio.Event
+    # GPU を借りられないか、一度だけ試したか。RAM や小さい枠で受ける前に試す。
+    lend_tried: bool = False
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,16 @@ class ResourceBroker:
                 await self._bump()
             return {"requests": requests, "leases": leases}
 
+    async def owner_active(self, prefix: str, device_id: str) -> bool:
+        """その device を、owner が prefix で始まる誰かが使っているか待っているか。"""
+        async with self._lock:
+            if any(item.owner.startswith(prefix) and item.device_id == device_id
+                   for item in self.leases.current()):
+                return True
+            return any(record.status.state == RequestState.WAITING
+                       and record.request.owner.startswith(prefix)
+                       for record in self._requests.values())
+
     async def snapshot(self) -> dict:
         async with self._lock:
             provider_values = self.providers.reservations()
@@ -439,6 +451,11 @@ class ResourceBroker:
                     # 進めなくなり、drain が終わらないまま期限切れになる。実際
                     # broker ごと固まり、/resources すら返らなくなった。
                     self._want_room(record.request, record.status.request_id)
+                if fit.device_id is not None and self._try_lending_first(record, fit):
+                    record.status.reason = WaitReason.PROVIDER_DRAINING
+                    record.status.queue_position = position
+                    record.status.actions = ["cancel"]
+                    continue
                 if fit.device_id is not None:
                     lease = self.leases.grant(
                         candidate.request_id,
@@ -553,12 +570,35 @@ class ResourceBroker:
         best = candidates[0]
         return _Fit(best[3], None, granted_bytes=best[4])
 
-    def _want_room(self, request: ResourceRequest, request_id: str) -> None:
-        """退去要求を lock の外で走らせる。同時に何本も走らせない。"""
+    def _try_lending_first(self, record: _RequestRecord, fit: _Fit) -> bool:
+        """RAM や小さい枠で受ける前に、GPU を丸ごと借りられないか一度だけ試す。
+
+        置き場所が「どこにも無い」ときしか退去を頼んでいなかったので、RAM を挙げた
+        Add-on は LLM が暇でも RAM へ流れていた。実測 2026-11-15: Strata 常駐中の
+        画像生成が cpu_offload で 235 秒（GPU なら約 3 秒）。貸すかどうかは provider
+        が利用者の方針（Models の「Add-on への GPU の譲り方」）で決める。
+        """
+        if record.lend_tried:
+            return False
+        gpus = [item for item in self._eligible_devices(record.request) if item.kind == "gpu"]
+        if not gpus:
+            return False
+        gpu = gpus[0]
+        short = fit.device_id != gpu.id or fit.granted_bytes < self._required_bytes(record.request, gpu.id)
+        if not short or not self.providers.would_lend(gpu.id, record.request):
+            return False
+        if not self._want_room(record.request, record.status.request_id):
+            return False
+        record.lend_tried = True
+        return True
+
+    def _want_room(self, request: ResourceRequest, request_id: str) -> bool:
+        """退去要求を lock の外で走らせる。同時に何本も走らせない。走らせたら True。"""
         task = self._room_task
         if task is not None and not task.done():
-            return
+            return False
         self._room_task = asyncio.create_task(self._make_room(request, request_id))
+        return True
 
     async def _make_room(self, request: ResourceRequest, request_id: str) -> None:
         """置き場所が無い要求のために、使っていない provider へ退去を頼む。
@@ -567,13 +607,14 @@ class ResourceBroker:
         再走査（2 秒ごと）が引く `_schedule_locked` で、そこから改めてここへ
         来る。断られる理由のほとんどは「いま使用中」であり、待てば変わる。
         """
-        del request_id
         try:
             made = await self._ask_for_room(request)
         except Exception:  # noqa: BLE001 - 退去の失敗で admission を止めない
             logger.exception("step aside failed for %s", request.job_id)
-            return
-        if not made:
+            made = False
+        record = self._requests.get(request_id)
+        # 貸してもらえなかった要求は、待たせずに RAM / 小さい枠で受ける。
+        if not made and not (record is not None and record.lend_tried):
             return
         async with self._lock:
             await self._schedule_locked(self._clock())
@@ -588,7 +629,7 @@ class ResourceBroker:
             if device.kind != "gpu":
                 continue
             needed = self._floor_bytes(request, device.id)
-            released, reason, freed = await self.providers.step_aside(device.id, needed)
+            released, reason, freed = await self.providers.step_aside(device.id, needed, request=request)
             self.telemetry.record(
                 "provider.step_aside",
                 device_id=device.id,

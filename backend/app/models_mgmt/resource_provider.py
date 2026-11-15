@@ -7,6 +7,7 @@ models_mgmt/local_llm.py が吸収する。
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
@@ -21,6 +22,11 @@ from app.resources.devices import DeviceCollection
 from app.resources.providers import ProviderReservation, ResourceProvider
 from app.resources.schema import ResourceRequest
 from app.resources.telemetry import ResourceTelemetry
+
+logger = logging.getLogger("control_deck.resources")
+
+# 大きなランタイムの GPU の目安。reservations() と同じ値（実際は ~28GiB を抱える）。
+LARGE_RUNTIME_BYTES = 28 * 1024**3
 
 
 
@@ -67,6 +73,16 @@ class LocalLlmCapacityProvider(ResourceProvider):
         # ControlDeck restarts, they disappear without requiring orphan cleanup.
         self._hold_lock = threading.RLock()
         self._residency_holds: dict[str, tuple[str, str, float]] = {}
+        # Add-on へ GPU を貸している間の状態。貸した (runtime, alias) と、貸し始めた時刻。
+        # 0 なら貸していない。貸している間、新しい LLM 要求は返ってくるまで待つ——
+        # 待たせないと、LLM の受け入れは空きに合わせて縮む（resource_request）ので、
+        # 生成中の Add-on の隣へ LLM が載って両方 OOM で落ちる。
+        self._lent: list[tuple[str, str]] = []
+        self._lent_since = 0.0
+        self._lent_quiet_since = 0.0
+        # swap: 退くための drain 中に来た要求を、取り消しの合図にせず待たせる。
+        self._hold_new = False
+        self._held_waiters = 0
 
     def resource_request(self, alias: str, job_id: str) -> ResourceRequest:
         instance = local_llm.get_instance(alias)
@@ -197,13 +213,146 @@ class LocalLlmCapacityProvider(ResourceProvider):
 
     async def enter_request(self) -> None:
         async with self._condition:
-            if self._draining and not self._stopping:
+            if self._draining and not self._stopping and not self._hold_new:
                 self._draining = False
                 self._telemetry.record("release.drain_canceled", reason="llm_request")
-            while self._stopping:
-                await self._condition.wait()
+            self._held_waiters += 1
+            try:
+                while self._stopping or self._hold_new or self.lending():
+                    try:
+                        # 貸出の上限は時計で切れるので、通知が無くても見直す。
+                        await asyncio.wait_for(self._condition.wait(), timeout=2.0)
+                    except TimeoutError:
+                        pass
+            finally:
+                self._held_waiters -= 1
             self._active_requests += 1
             self._condition.notify_all()
+
+    # ── Add-on への GPU の貸し出し ─────────────────────────────────────
+
+    def lending(self) -> bool:
+        """いま Add-on へ GPU を貸しているか。上限を過ぎた貸出は貸していないものとする。"""
+        if not self._lent_since:
+            return False
+        return self._clock() - self._lent_since < get_policy().addon_gpu.max_lend_sec
+
+    def lending_state(self) -> dict:
+        return {
+            "lending": self.lending(),
+            "lent": [{"runtime": runtime, "alias": alias} for runtime, alias in self._lent],
+            "since": self._lent_since,
+            "waiting_llm_requests": self._held_waiters,
+        }
+
+    async def wait_returned(self, timeout: float = 0.0) -> bool:
+        """GPU が LLM へ返ってくるまで待つ。起動を伴う呼び出しが Add-on の隣へ載らないため。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout if timeout > 0 else None
+        async with self._condition:
+            self._held_waiters += 1
+            try:
+                while self.lending() or self._hold_new:
+                    remaining = None if deadline is None else deadline - loop.time()
+                    if remaining is not None and remaining <= 0:
+                        return False
+                    try:
+                        await asyncio.wait_for(self._condition.wait(),
+                                               timeout=2.0 if remaining is None else min(2.0, remaining))
+                    except TimeoutError:
+                        pass
+            finally:
+                self._held_waiters -= 1
+        return True
+
+    def _addon_mode(self, request: ResourceRequest | None) -> str:
+        """Add-on の要求なら方針（auto / swap / llm_first）、それ以外は ""。"""
+        if request is None or not request.owner.startswith("addon:"):
+            return ""
+        return get_policy().addon_gpu.mode
+
+    def would_step_aside(self, device_id: str, request: ResourceRequest) -> bool:
+        """RAM や小さい枠で受けさせる前に、GPU を丸ごと貸せるか（broker がいま聞くだけ）。"""
+        mode = self._addon_mode(request)
+        if device_id != "gpu0" or mode in ("", "llm_first"):
+            return False
+        policy = get_policy()
+        if not policy.gateway_only or self.has_residency_hold() or self._stopping:
+            return False
+        if not any(item.get("loaded") and str(item.get("role", "llm")) == "llm"
+                   for item in local_llm.list_instances()):
+            return False
+        # auto は推論中の LLM を待たない。待つと会話（OpenCode のサブエージェント）が止まる。
+        return mode == "swap" or self._active_requests == 0
+
+    async def return_gpu(self, *, restore: bool) -> None:
+        """貸出を終える。生成を終えた Add-on が抱えたままの model を降ろしてもらい、LLM を戻す。"""
+        lent = list(self._lent)
+        try:
+            from app.resources.addon_provider import provider as addon_residency
+
+            await addon_residency.step_aside("gpu0")
+        except Exception:  # noqa: BLE001 - 返すこと自体は止めない
+            logger.debug("add-on step aside before restore failed", exc_info=True)
+        async with self._condition:
+            self._lent, self._lent_since, self._lent_quiet_since = [], 0.0, 0.0
+            self._condition.notify_all()
+        self._telemetry.record("release.returned", reason=f"restore={restore} lent={len(lent)}")
+        if restore:
+            for _runtime, alias in lent:
+                await self._restore(alias)
+
+    async def _restore(self, alias: str) -> None:
+        """broker を通して載せ直す。素通しで起こすと、来たばかりの生成と取り合う。"""
+        from app.resources.broker import broker
+        from app.resources.schema import RequestState
+
+        try:
+            status = await broker.acquire(self.resource_request(alias, f"restore-{uuid.uuid4().hex[:12]}"))
+            if status.state != RequestState.GRANTED or not status.lease_id:
+                logger.info("%s の載せ直しを見送りました: %s", alias, status.state.value)
+                return
+            await broker.activate(status.lease_id)
+            try:
+                ready = await local_llm.ensure_ready(alias, timeout_seconds=900)
+                logger.info("Add-on の生成が終わったので %s を載せ直しました（ready=%s）", alias, ready)
+            finally:
+                await broker.release(status.lease_id)
+        except Exception:  # noqa: BLE001 - 次の要求が自分で起こす
+            logger.exception("%s を載せ直せませんでした", alias)
+
+    async def lending_tick(self) -> None:
+        """貸出中の 1 回分の見回り。Add-on が GPU を使い終えたら返す。"""
+        if not self._lent_since:
+            return
+        from app.resources.broker import broker
+
+        policy = get_policy().addon_gpu
+        now = self._clock()
+        if now - self._lent_since >= policy.max_lend_sec:
+            logger.warning("Add-on への GPU の貸出が %s 秒を超えたので LLM へ戻します", policy.max_lend_sec)
+            await self.return_gpu(restore=policy.restore)
+            return
+        if await broker.owner_active("addon:", "gpu0"):
+            self._lent_quiet_since = 0.0
+            return
+        if not self._lent_quiet_since:
+            self._lent_quiet_since = now
+        # LLM を待っている要求があるなら、間を置かずに返す。その要求が自分で載せる。
+        if self._held_waiters:
+            await self.return_gpu(restore=False)
+        elif now - self._lent_quiet_since >= policy.restore_delay_sec:
+            await self.return_gpu(restore=policy.restore)
+
+    async def lending_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(2)
+                await self.lending_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 見回りの失敗で service を止めない
+                logger.exception("GPU lending tick failed")
 
     async def leave_request(self) -> None:
         async with self._condition:
@@ -212,8 +361,9 @@ class LocalLlmCapacityProvider(ResourceProvider):
 
 
     can_step_aside = True
+    step_aside_takes_request = True
 
-    async def step_aside(self, device_id: str) -> tuple[bool, str, int]:
+    async def step_aside(self, device_id: str, *, request: ResourceRequest | None = None) -> tuple[bool, str, int]:
         """他に置き場所が無い要求のために、使っていない LLM だけを降ろす。
 
         broker が「どの device にも置けない」と判じる直前に呼ばれる。判断は
@@ -227,12 +377,23 @@ class LocalLlmCapacityProvider(ResourceProvider):
         """
         if device_id != "gpu0":
             return False, "not_this_device", 0
-        released, reason, freed = await self.release_on_request()
+        mode = self._addon_mode(request)
+        if mode == "llm_first":
+            return False, "llm_first", 0
+        if mode == "auto" and self._active_requests:
+            return False, "in_use", 0
+        # 別の LLM のために大きなランタイムを降ろすのは起動側（prepare_switch）の仕事。
+        large = request is None or not request.owner.startswith("llm:")
+        released, reason, freed = await self.release_on_request(
+            hold_new=mode == "swap", lend_to=request.owner if mode else "", large=large)
         if released:
             self._telemetry.record("release.step_aside", reason="no_room_elsewhere")
         return released, reason, freed
 
-    async def release_on_request(self, *, include_helpers: bool = False) -> tuple[bool, str, int]:
+    async def release_on_request(
+        self, *, include_helpers: bool = False, hold_new: bool = False, lend_to: str = "",
+        large: bool = True,
+    ) -> tuple[bool, str, int]:
         """Honour an explicit "my AI turn is over" declaration from a consumer.
 
         This is the same decision the idle-unload loop makes after 30 minutes,
@@ -260,39 +421,82 @@ class LocalLlmCapacityProvider(ResourceProvider):
             if self._stopping:
                 return False, "already_stopping", 0
             self._draining = True
+            self._hold_new = hold_new
             deadline = asyncio.get_running_loop().time() + policy.drain_timeout_sec
             while self._active_requests and self._draining:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    self._draining = False
+                    self._draining = self._hold_new = False
                     self._condition.notify_all()
                     return False, "drain_timeout", 0
                 try:
                     await asyncio.wait_for(self._condition.wait(), timeout=remaining)
                 except TimeoutError:
-                    self._draining = False
+                    self._draining = self._hold_new = False
                     self._condition.notify_all()
                     return False, "drain_timeout", 0
             if not self._draining:
+                self._hold_new = False
                 return False, "in_use", 0
             self._stopping = True
+        lent: list[tuple[str, str]] = []
         try:
-            from app.models_mgmt import llama
+            from app.models_mgmt import large_model_lifecycle, llama
 
+            llama_loaded = [
+                ("llama.cpp", str(item.get("alias") or "llama"))
+                for item in await asyncio.to_thread(local_llm.list_instances, runtime="llama.cpp")
+                if item.get("loaded") and str(item.get("role", "llm")) == "llm"
+            ]
             # add-on のための退避は「戻ってくる退避」である。会話の KV を
             # 預けておけば、戻ったときに読み直さずに済む（実測 165 秒 →
             # 0.44 秒）。時間経過や手動で降ろすときは預けない。
             released, reason, freed = await llama.release_loaded_llms(
                 include_helpers=include_helpers, preserve_state=True
             )
+            if released and freed:
+                lent += llama_loaded
+            # Strata / Radiance / Maya-S も降ろす。ここが llama.cpp だけだったので、
+            # 大きなランタイムが載っていると「0 バイト空けた」と答え、Add-on は
+            # 永遠に GPU を貰えなかった。
+            if released and large:
+                stopped, refusal = await large_model_lifecycle.release_for_addon()
+                lent += stopped
+                freed += LARGE_RUNTIME_BYTES * len(stopped)
+                if refusal and not stopped and not freed:
+                    released, reason = False, refusal
+                elif stopped:
+                    reason = "released"
+            if released and freed:
+                await asyncio.to_thread(self._reobserve)
         finally:
             async with self._condition:
                 self._stopping = False
                 self._draining = False
+                self._hold_new = False
+                if lend_to and lent:
+                    self._lent = lent
+                    self._lent_since = self._clock()
+                    self._lent_quiet_since = 0.0
+                    logger.info("%s のために GPU を貸しました: %s", lend_to,
+                                ", ".join(f"{r}:{a}" for r, a in lent))
                 self._condition.notify_all()
         if released and freed:
             self._telemetry.record("release.explicit", reason="consumer_request")
         return released, reason, freed
+
+
+    def _reobserve(self) -> None:
+        """降ろした直後の空きを broker へ見せる。2 秒ごとの再走査を待つと、まだ埋まって
+        見えるので、借りた Add-on が RAM へ流れてしまう。"""
+        try:
+            from app.resources.devices import observed_system_devices
+
+            observed = observed_system_devices().list()
+            if observed:
+                self._devices.replace(observed)
+        except Exception:  # noqa: BLE001 - 次の再走査が拾う
+            logger.debug("device re-observation failed", exc_info=True)
 
 
 _provider: LocalLlmCapacityProvider | None = None

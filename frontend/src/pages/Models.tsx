@@ -64,6 +64,17 @@ const RUNTIME_LABEL: Record<string, string> = {
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
+interface AddonGpuPolicy {
+  mode: "auto" | "swap" | "llm_first";
+  restore: boolean;
+  restore_delay_sec: number;
+  max_lend_sec: number;
+}
+const DEFAULT_ADDON_GPU: AddonGpuPolicy = { mode: "auto", restore: true, restore_delay_sec: 15, max_lend_sec: 1800 };
+/** 降ろした LLM を載せ直すのにかかる時間の実測（R9700）。会話の KV は llama.cpp 以外は失う。 */
+const RELOAD_SECONDS: Record<string, string> = {
+  "llama.cpp": "約10秒（会話の KV も戻る）", radiance: "約15秒＋読み直し", strata: "約50〜120秒＋読み直し", "maya-s": "約60秒以上＋読み直し",
+};
 interface RuntimePolicy {
   selected_runtime: "ollama" | LocalRuntime;
   selected_backend: "rocm" | "vulkan" | "";
@@ -82,6 +93,7 @@ interface RuntimePolicy {
     timeout_seconds: number;
   };
   compaction: CompactionPolicy;
+  addon_gpu?: AddonGpuPolicy;
   amd_gpu: {
     enabled: boolean;
     profile: "quiet" | "balanced" | "full" | "custom";
@@ -109,6 +121,7 @@ interface RuntimeEnvironment {
   policy: RuntimePolicy;
   /** チャットモデルごとの 1 リクエストの窓（会話の自動圧縮のプレビュー用） */
   compaction_windows?: Array<{ alias: string; runtime: string; name: string; window: number }>;
+  addon_gpu_state?: { lending: boolean; lent: Array<{ runtime: string; alias: string }>; waiting_llm_requests: number };
   amd_gpu: null | {
     bdf: string;
     vram_bytes: number;
@@ -1200,6 +1213,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
       </SettingsGroup>
       <CompactionSettingsGroup policy={policy} windows={runtimeEnv.compaction_windows ?? []}
         onChange={(compaction) => setPolicyCfg({ ...policy, compaction })} />
+      <AddonGpuSettingsGroup policy={policy} state={runtimeEnv.addon_gpu_state}
+        onChange={(addon_gpu) => setPolicyCfg({ ...policy, addon_gpu })} />
       <SettingsGroup title="AIアシスタント">
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
       </SettingsGroup>
@@ -2242,6 +2257,63 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
   </BottomSheet>;
 }
 
+
+const ADDON_GPU_MODES: Array<{ v: AddonGpuPolicy["mode"]; label: string; hint: string }> = [
+  { v: "auto", label: "自動（推奨）", hint: "LLM が推論していなければ降ろして GPU で生成し、終わったら載せ直します。推論中（OpenCode のサブエージェントなど）は待たずに RAM で生成します。" },
+  { v: "swap", label: "GPU 優先（入れ替え）", hint: "必ず GPU で生成します。走っている推論が終わるのを待って LLM を降ろし、生成中に来た LLM の要求は終わるまで待たせます。" },
+  { v: "llm_first", label: "LLM 優先（降ろさない）", hint: "LLM は降ろしません。画像・音楽は RAM（CPU）で生成するか、GPU が空くまで待ちます。会話は止まりませんが生成は遅くなります。" },
+];
+
+/** MediaForge / SonicForge が GPU を要るとき、常駐 LLM をどう譲るか。 */
+function AddonGpuSettingsGroup({ policy, state, onChange }: {
+  policy: RuntimePolicy;
+  state: RuntimeEnvironment["addon_gpu_state"];
+  onChange: (value: AddonGpuPolicy) => void;
+}) {
+  const g = policy.addon_gpu ?? DEFAULT_ADDON_GPU;
+  const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+  const set = (patch: Partial<AddonGpuPolicy>) => onChange({ ...g, ...patch });
+  const mode = ADDON_GPU_MODES.find((m) => m.v === g.mode) ?? ADDON_GPU_MODES[0];
+  const reload = RELOAD_SECONDS[policy.selected_runtime];
+  return (
+    <SettingsGroup title="Add-on への GPU の譲り方" description="画像（MediaForge）や音楽（SonicForge）の生成が GPU を要るとき、常駐している LLM をどうするか">
+      <L label="方針">
+        <select value={g.mode} onChange={(e) => set({ mode: e.target.value as AddonGpuPolicy["mode"] })} className={input}>
+          {ADDON_GPU_MODES.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+        </select>
+      </L>
+      <p className="text-[10px] leading-relaxed text-zinc-500">{mode.hint}どの方針でも、走っている推論は切りません。</p>
+      {g.mode !== "llm_first" && (
+        <>
+          <Toggle label="生成が終わったら LLM を載せ直す" hint="切ると、次に LLM を使うときに載せ直します"
+            value={g.restore} onChange={(v) => set({ restore: v })} />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <L label="載せ直すまでの間">
+              <PresetOrCustom value={g.restore_delay_sec} presets={[0, 15, 30, 60, 120].map((v) => ({ v, label: `${v}秒` }))} placeholder="15"
+                onChange={(v) => set({ restore_delay_sec: Math.max(0, Math.min(600, Number(v ?? 15))) })} />
+            </L>
+            <L label="貸す時間の上限">
+              <PresetOrCustom value={g.max_lend_sec} presets={[600, 1800, 3600, 7200].map((v) => ({ v, label: `${v / 60}分` }))} placeholder="1800"
+                onChange={(v) => set({ max_lend_sec: Math.max(60, Math.min(7200, Number(v ?? 1800))) })} />
+            </L>
+          </div>
+        </>
+      )}
+      <ul className="space-y-0.5 text-[11px] text-zinc-600 dark:text-zinc-300">
+        <li>画像 1 枚: GPU 約3秒 ／ GPU が埋まったまま RAM で 14〜235 秒</li>
+        <li>{RUNTIME_LABEL[policy.selected_runtime] ?? policy.selected_runtime} の載せ直し: {reload ?? "—"}</li>
+      </ul>
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        目安: 音楽や枚数の多い画像は「自動」か「GPU 優先」が速い。載せ直しが重い Strata / Maya-S で画像を 1 枚だけ作るなら「LLM 優先」の方が早く済むこともあります。
+      </p>
+      {state?.lending && (
+        <p className="rounded-lg bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          いま Add-on へ GPU を貸しています（{state.lent.map((x) => x.alias).join("、")}）{state.waiting_llm_requests ? `。LLM の要求 ${state.waiting_llm_requests} 件が待っています` : ""}
+        </p>
+      )}
+    </SettingsGroup>
+  );
+}
 
 /** 会話の自動圧縮（AIアシスタントと OpenCode で共通）。窓の大きさに応じた発火点をモデルごとに見せる。 */
 function CompactionSettingsGroup({ policy, windows, onChange }: {

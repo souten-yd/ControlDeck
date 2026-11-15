@@ -108,6 +108,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(pause_recovery_loop()),
         asyncio.create_task(system_event_loop()),
         asyncio.create_task(business_event_delivery_loop()),
+        # Add-on へ貸した GPU を、生成が終わったら LLM へ返す。
+        asyncio.create_task(llama_resource_provider().lending_loop()),
         asyncio.create_task(maintenance_loop()),
         asyncio.create_task(watchdog_loop()),
         asyncio.create_task(_loop_ticker()),
