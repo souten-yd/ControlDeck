@@ -46,6 +46,22 @@ _INPUT_CAPABILITIES = {"projects.pick", "files.pick"}
 # 一覧に全部の契約を載せると、使わない道具のぶんまで毎ターン払うことになる。
 # 名前と説明だけを載せ、schema は使うと決めてから取らせる。
 CONTRACT_TOOL = "control_deck.tool_contract"
+# 作業の結果（UI 検証・精密調査・レビュー）を ControlDeck へ渡す道具。画面はこれを
+# 幅ごとの写真・指摘・根拠の一覧として出す。自由形式の文章だと画面が読み取れない。
+REPORT_TOOL = "control_deck.report"
+
+
+def _report_tool() -> dict[str, Any]:
+    from app.integrations.opencode.reports import REPORT_SCHEMA
+
+    return {
+        "name": REPORT_TOOL,
+        "description": (
+            "UI 検証・精密調査・コードレビューの結果を ControlDeck の画面へ渡す。作業の最後に 1 回呼ぶ。"
+            "画面写真は撮ったときのファイル名で指す（ControlDeck が取り込む）。返り値の id を利用者へ伝える。"
+        ),
+        "inputSchema": execution.model_facing_schema(REPORT_SCHEMA),
+    }
 
 
 def _contract_threshold() -> int:
@@ -77,6 +93,28 @@ def _contract_tool() -> dict[str, Any]:
 class AgentMcpCall(BaseModel):
     name: str = Field(min_length=1, max_length=192)
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=64)
+
+
+def _save_report(arguments: dict[str, Any], user: User, claims: dict[str, Any], db: Session, request: Request) -> dict:
+    from pydantic import ValidationError
+
+    from app.integrations.opencode import provider as opencode
+    from app.integrations.opencode import reports
+
+    try:
+        body = reports.ReportBody.model_validate(arguments)
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        where = ".".join(str(part) for part in first.get("loc", ()))
+        raise HTTPException(status_code=422, detail=f"報告の形が不正です: {where} {first.get('msg', '')}".strip()) from exc
+    session = str(claims.get("sub") or "").removeprefix("opencode:")
+    record = reports.save(body, owner_user_id=user.id, session=session,
+                          images_from=opencode.ui_verify_dir(session) if session else None)
+    audit.record(db, "opencode.report", user=user, resource_type="opencode_report",
+                 resource_id=record["id"], request=request,
+                 metadata={"kind": body.kind, "verdict": body.verdict, "findings": len(body.findings)})
+    return {"id": record["id"], "missing_images": record["missing_images"],
+            "message": "ControlDeck の OpenCode 画面の「結果」に表示しました"}
 
 
 def issue_opencode_token(user_id: int, correlation_id: str, *, project_id: str | None = None) -> str:
@@ -339,6 +377,7 @@ async def list_tools(
             tools.append(project_tool)
     if threshold > 0 and tools:
         tools.append(_contract_tool())
+    tools.append(_report_tool())
     return {"tools": tools}
 
 
@@ -363,6 +402,8 @@ async def call_tool(
         if contract is None:
             raise HTTPException(status_code=404, detail="Add-on agent toolが見つかりません")
         return {"name": requested, "inputSchema": contract}
+    if body.name == REPORT_TOOL:
+        return _save_report(body.arguments, user, claims, db, request)
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:
         project_id = claims.get("project_id")
         available = _project_output_tool(project_id, permissions)

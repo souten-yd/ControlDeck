@@ -35,6 +35,10 @@ DEFAULT_SETTINGS = {
     # 別のモデルを指定すると、ゲートウェイが要求に合わせて載せ替える。
     "review_model": "",
     "advisor_model": "",
+    # UI 検証（Playwright MCP）。導入済みなら、子エージェント ui-verifier の道具として載せる。
+    "ui_verify": True,
+    # UI 検証のブラウザに外部サイトへの通信を許すか。既定は手元（loopback）だけ。
+    "ui_verify_allow_external": False,
 }
 
 # 拡張とそれを持つアドオン（設定 → オプション機能で導入・更新・削除する）。
@@ -45,6 +49,16 @@ WORKFLOW_FEATURES = {
     "auto_advisor": "opencode-auto-advisor",
 }
 AUTO_ADVISOR_MODES = ("off", "observe", "active")
+# 作業の道具（MCP サーバー）とそれを持つオプション機能。
+WORKFLOW_MCP_FEATURES = {
+    "ui_verify": "playwright-mcp",
+}
+# UI 検証の子エージェントが持つ道具。OpenCode は MCP の道具名に server 名を前置する。
+UI_VERIFY_SERVER = "playwright"
+UI_VERIFY_TOOLS = f"{UI_VERIFY_SERVER}_*"
+# ブラウザでコードを任意に走らせる道具は使わせない（検証には要らない）。
+UI_VERIFY_DENIED = (f"{UI_VERIFY_SERVER}_browser_run_code_unsafe",)
+UI_VERIFY_VIEWPORT = "1280x800"
 
 # OpenCode ランタイムと、それを持つアドオン（feature）の対応。v2 だけ。
 RUNTIME_FEATURES = {"v2": "opencode-v2"}
@@ -173,7 +187,7 @@ def save_workflow(patch: dict) -> dict:
     from app.models_mgmt import local_llm
 
     settings = get_settings()
-    for key in ("superpowers", "adversarial_review"):
+    for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "auto_advisor" in patch:
@@ -205,9 +219,75 @@ def workflow_plugin_specs() -> dict[str, str]:
 
 
 def workflow_installed() -> dict[str, bool]:
-    """画面向け: 拡張ごとにプラグインが導入済みか。"""
+    """画面向け: 拡張ごとにプラグイン・MCP サーバーが導入済みか。"""
     specs = workflow_plugin_specs()
-    return {key: key in specs for key in WORKFLOW_FEATURES}
+    return {**{key: key in specs for key in WORKFLOW_FEATURES},
+            **{key: registry.mcp_entry(feature) is not None for key, feature in WORKFLOW_MCP_FEATURES.items()}}
+
+
+def ui_verify_dir(safe_job_id: str) -> Path:
+    """UI 検証の画面写真の置き場（session ごと）。ControlDeck が持つ領域で、プロジェクトは汚さない。"""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", safe_job_id)[:64] or "session"
+    return _integration_dir() / "ui-verify" / safe
+
+
+def _blocked_origins() -> list[str]:
+    """ControlDeck 本体。検証用のブラウザに管理画面を触らせない。"""
+    from app.config import get_config
+
+    port = int(get_config().server.port)
+    return [f"http://127.0.0.1:{port}", f"http://localhost:{port}", f"http://[::1]:{port}"]
+
+
+LOOPBACK_ORIGINS = (
+    "http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*",
+    "https://localhost:*", "https://127.0.0.1:*",
+)
+
+
+def _browser_executable() -> str:
+    """このPCの Chrome。Playwright のブラウザを別に取りに行かない。"""
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def ui_verify_server(safe_job_id: str) -> dict | None:
+    """UI 検証の MCP サーバー（Playwright MCP）。使わない・未導入・ブラウザが無いなら None。"""
+    settings = get_settings()
+    if not settings.get("ui_verify"):
+        return None
+    entry = registry.mcp_entry(WORKFLOW_MCP_FEATURES["ui_verify"])
+    node = shutil.which("node")
+    browser = _browser_executable()
+    if entry is None or not node or not browser:
+        return None
+    output = ui_verify_dir(safe_job_id)
+    output.mkdir(parents=True, exist_ok=True)
+    command = [
+        node, str(entry),
+        "--browser", "chrome", "--executable-path", browser,
+        # 使い捨てのプロファイル。利用者の Chrome のログイン状態や履歴を持ち込まない。
+        "--headless", "--isolated",
+        "--viewport-size", UI_VERIFY_VIEWPORT,
+        "--output-dir", str(output),
+        "--console-level", "warning",
+        "--blocked-origins", ";".join(_blocked_origins()),
+    ]
+    if not settings.get("ui_verify_allow_external"):
+        # 安全境界ではない（Playwright MCP 自身の注意書き）。外へ出さないための既定。
+        command += ["--allowed-origins", ";".join(LOOPBACK_ORIGINS)]
+    return {"type": "local", "command": command, "enabled": True, "timeout": 600_000}
+
+
+def _ui_verifier_prompt() -> str:
+    path = Path(__file__).with_name("agents") / "ui-verifier.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _workflow(runtime: str, model: str) -> dict:
@@ -645,6 +725,19 @@ def _config_payload(
     notes = Path(__file__).with_name("agent-notes.md")
     if notes.exists():
         payload["instructions"] = [str(notes)]
+    browser = ui_verify_server(safe_job_id)
+    if browser is not None:
+        payload["agent"]["ui-verifier"] = {
+            "mode": "subagent",
+            "description": (
+                "UI 検証の係。開発中の画面（localhost の URL）を実ブラウザで開き、幅 320/390/768/1280 と"
+                "ダークで撮影・操作して、問題を重大度つきで ControlDeck へ報告する。コードは直さない。"
+                "検証したい URL と、確かめたい流れを渡す。"
+            ),
+            "prompt": _ui_verifier_prompt(),
+            "tools": {UI_VERIFY_TOOLS: True, **{name: False for name in UI_VERIFY_DENIED}},
+        }
+        payload["agent"].setdefault("build", {}).setdefault("tools", {})[UI_VERIFY_TOOLS] = False
     if owner_user_id is not None:
         from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS, issue_opencode_token
         from app.config import get_config
@@ -666,6 +759,8 @@ def _config_payload(
                 },
             }
         }
+    if browser is not None:
+        payload.setdefault("mcp", {})[UI_VERIFY_SERVER] = browser
     return payload
 
 
@@ -711,7 +806,11 @@ def _v2_agents(agent: dict) -> dict:
     """
     agents: dict[str, Any] = {}
     for name, spec in agent.items():
-        converted = {key: value for key, value in spec.items() if key != "tools"}
+        converted = {key: value for key, value in spec.items() if key not in ("tools", "prompt")}
+        # v1 の prompt は v2 で system になった。prompt のままだと黙って無視される
+        # （2.3.0 の debug agents で確認）。
+        if spec.get("prompt"):
+            converted["system"] = spec["prompt"]
         tools = spec.get("tools") or {}
         rules = [
             {"action": pattern, "resource": "*", "effect": "allow" if allowed else "deny"}
@@ -1109,6 +1208,41 @@ def tui_command(
     env = " ".join(f"{key}={shlex.quote(value)}" for key, value in _runtime_env(runtime, config, project).items())
     command = f"{env} exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
+
+
+# 作業の種類（OpenCode 画面のセッション開始で選ぶ）。選ぶと最初の指示の前に手順が付く。
+# 道具そのものは設定で載せてあり、ここでは「どれを使い、結果をどこへ返すか」だけを決める。
+SESSION_TASKS = {
+    "ui_verify": (
+        "【UI 検証】子エージェント ui-verifier に任せて、開発中の画面を実ブラウザで確かめてください。"
+        "まず確かめる URL（localhost）と主な流れを決め、開発サーバーが動いていなければ起動してから ui-verifier を呼びます。"
+        "ui-verifier は幅 320/390/768/1280 とダークで撮影・操作し、control_deck.report で結果を ControlDeck に渡します。"
+        "問題が見つかったら、直すかどうかを利用者に確かめてから直し、直したら同じ検証をもう一度行ってください。"
+    ),
+    "research": (
+        "【精密調査】結論を急がず、根拠を集めてから答えてください。公式文書・仕様・ソースコード（一次資料）を優先し、"
+        "使っている版（package.json・lock file・manifest）に合う資料かを確かめます。主張ごとに出典の URL・公開日または版・取得日時を控え、"
+        "反対の根拠も探します。リポジトリについての主張は、文書ではなく main の実ファイル・テスト・CI で確かめます。"
+        "最後に control_deck.report（kind: research）で、結論・出典（primary / stance）・確かめられなかったことを渡してください。"
+        "未公開の発明・請求項・秘密の情報を検索語に入れないでください。"
+    ),
+    "review": (
+        "【コードレビュー】ファイルは変更しないでください。差分（git diff、対象ブランチと main の差）を読み、"
+        "変更が呼ばれる箇所・呼ぶ箇所まで影響を追い、テストが変更を本当に確かめているかを見ます。"
+        "Adversarial Review が使えるなら /adversarial-review で別の文脈からも読みます。"
+        "最後に control_deck.report（kind: review）で、指摘を重大度順に（location に file:line）渡してください。"
+    ),
+}
+
+
+def task_prompt(task: str, prompt: str) -> str:
+    """作業の種類の手順を、利用者の指示の前に付ける。種類が無ければ指示そのまま。"""
+    if not task:
+        return prompt
+    if task not in SESSION_TASKS:
+        raise CodeAgentError("未対応の作業の種類です")
+    request = prompt.strip()
+    return f"{SESSION_TASKS[task]}\n\n利用者の指示:\n{request}" if request else SESSION_TASKS[task]
 
 
 def _prompt(operation: str, instruction: str) -> str:

@@ -74,7 +74,10 @@ def test_an_enabled_extension_without_its_plugin_is_left_out(isolated):
     payload, _ = _v2(isolated)
     assert payload["plugins"] == [(isolated.path / "plugins" / "opencode-superpowers").as_uri()]
     assert "adversarial-reviewer" not in payload["agents"]
-    assert provider.workflow_installed() == {"superpowers": True, "adversarial_review": False, "auto_advisor": True}
+    installed = provider.workflow_installed()
+    assert {key: installed[key] for key in ("superpowers", "adversarial_review", "auto_advisor")} == {
+        "superpowers": True, "adversarial_review": False, "auto_advisor": True}
+    assert installed["ui_verify"] is False
 
 
 def test_plugins_are_managed_options_requiring_opencode_v2(tmp_path, monkeypatch):

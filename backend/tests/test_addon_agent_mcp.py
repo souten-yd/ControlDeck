@@ -295,7 +295,8 @@ def test_project_output_grant_tool_is_project_scoped_and_opaque(admin_client, mo
     headers = {"Authorization": f"Bearer {scoped}", "X-Requested-With": "ControlDeck"}
     listed = local_client.get("/api/v1/addons/agent-mcp/tools", headers=headers)
     assert listed.status_code == 200
-    assert [tool["name"] for tool in listed.json()["tools"]] == [agent_mcp.PROJECT_OUTPUT_GRANT_TOOL]
+    # 結果を渡す道具（control_deck.report）は project に関係なく常にある。
+    assert [tool["name"] for tool in listed.json()["tools"]] == [agent_mcp.PROJECT_OUTPUT_GRANT_TOOL, agent_mcp.REPORT_TOOL]
     created = local_client.post(
         "/api/v1/addons/agent-mcp/call",
         headers=headers,
@@ -325,7 +326,7 @@ def test_project_output_grant_tool_is_project_scoped_and_opaque(admin_client, mo
 
     unscoped = agent_mcp.issue_opencode_token(user.id, "no-project")
     unscoped_headers = {"Authorization": f"Bearer {unscoped}", "X-Requested-With": "ControlDeck"}
-    assert local_client.get("/api/v1/addons/agent-mcp/tools", headers=unscoped_headers).json()["tools"] == []
+    assert [t["name"] for t in local_client.get("/api/v1/addons/agent-mcp/tools", headers=unscoped_headers).json()["tools"]] == [agent_mcp.REPORT_TOOL]
     denied = local_client.post(
         "/api/v1/addons/agent-mcp/call",
         headers=unscoped_headers,
@@ -384,7 +385,8 @@ def test_project_input_grant_tool_reads_only_files_inside_the_project(admin_clie
     scoped = agent_mcp.issue_opencode_token(user.id, "project-input", project_id="game")
     headers = {"Authorization": f"Bearer {scoped}", "X-Requested-With": "ControlDeck"}
     listed = local_client.get("/api/v1/addons/agent-mcp/tools", headers=headers)
-    assert [tool["name"] for tool in listed.json()["tools"]] == [agent_mcp.PROJECT_INPUT_GRANT_TOOL]
+    # 結果を渡す道具（control_deck.report）は project に関係なく常にある。
+    assert [tool["name"] for tool in listed.json()["tools"]] == [agent_mcp.PROJECT_INPUT_GRANT_TOOL, agent_mcp.REPORT_TOOL]
 
     def call(path):
         return local_client.post(
@@ -409,7 +411,7 @@ def test_project_input_grant_tool_reads_only_files_inside_the_project(admin_clie
 
     unscoped = agent_mcp.issue_opencode_token(user.id, "no-project")
     unscoped_headers = {"Authorization": f"Bearer {unscoped}", "X-Requested-With": "ControlDeck"}
-    assert local_client.get("/api/v1/addons/agent-mcp/tools", headers=unscoped_headers).json()["tools"] == []
+    assert [t["name"] for t in local_client.get("/api/v1/addons/agent-mcp/tools", headers=unscoped_headers).json()["tools"]] == [agent_mcp.REPORT_TOOL]
     denied = local_client.post(
         "/api/v1/addons/agent-mcp/call",
         headers=unscoped_headers,

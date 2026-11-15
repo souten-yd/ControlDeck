@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-15 OpenCode の UI 検証（第 1 段階 B、計画: PLAN-opencode-dev-environment.md）
+
+- オプション機能に種類 `opencode-mcp` と `playwright-mcp`（@playwright/mcp 0.0.84、版固定、ブラウザは取得せずこの PC の Chrome）。
+- session に Playwright MCP を足し、道具は子エージェント `ui-verifier` だけへ（主からは deny）。headless・使い捨てプロファイル・ControlDeck 本体（8765）を遮る・既定は loopback だけ。`browser_run_code_unsafe` は deny。
+- ControlDeck の MCP に `control_deck.report`（UI 検証・精密調査・レビューの結果を構造化して受け取り、画面写真を取り込む）と結果の API。
+- セッション開始の「作業の種類」（ui_verify / research / review）で最初の指示に手順を付ける。
+- 同梱スキル `controldeck-addon-development`。接続診断 API。
+- 実機: 導入・診断（道具 25 個、about:blank を 164ms で開く）と、v2 が子エージェントの指示と権限を読むこと（`debug agents`）を確認。
+
 ## 2026-11-15 Add-on への GPU の貸し出し（Models「Add-on への GPU の譲り方」）
 
 - 不具合: LLM の resource provider は全ランタイムの VRAM を申告するのに、退くときは llama.cpp しか降ろさなかった。Strata / Radiance / Maya-S が載っていると「0 バイト空けた」と答え、MediaForge / SonicForge は待つか RAM へ流れた（画像 cpu_offload 235 秒、GPU なら約 3 秒）。

@@ -64,6 +64,19 @@ FEATURES: dict[str, dict] = {
         "summary": "行き詰まった場面で別のモデルに相談する。使い方と相談先のモデルは OpenCode の設定で選ぶ",
         "requires": "opencode-v2",
     },
+    # OpenCode v2 に足す MCP サーバー。プラグインと同じく管理領域へ npm で版固定して入れ、
+    # 使う作業（UI 検証など）を選んだ session にだけ、専用の子エージェントの道具として載せる。
+    # 主の会話には載せない（道具の説明だけで数万トークンを使うため）。
+    "playwright-mcp": {
+        "name": "Playwright MCP（UI 検証）",
+        "kind": "opencode-mcp",
+        "package": "@playwright/mcp@0.0.84",
+        "latest_package": "@playwright/mcp@latest",
+        "module": "@playwright/mcp",
+        "route_gated": False,
+        "summary": "AI が開発中の画面を実際のブラウザ（このPCの Chrome）で開き、幅を変えて操作・撮影する。OpenCode の「UI 検証」で使う",
+        "requires": "opencode-v2",
+    },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
         "kind": "pip",
@@ -122,7 +135,9 @@ def _release_catalog() -> dict[str, dict]:
 
 
 FEATURES.update(_release_catalog())
-NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] in ("npm", "opencode-plugin")}
+# package.json を導入の印にする npm の種類（実行ファイルを PATH に持たない）。
+NPM_MODULE_KINDS = ("opencode-plugin", "opencode-mcp")
+NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] in ("npm", *NPM_MODULE_KINDS)}
 KNOWN_FEATURES = set(FEATURES)
 
 
@@ -192,8 +207,8 @@ def _managed_executable(feature_id: str) -> Path:
         return root / "current" / selected[0].entrypoint if selected else root / "current" / "missing"
     if spec["kind"] == "pip":
         return root / "venv" / "bin" / spec["executable"]
-    if spec["kind"] == "opencode-plugin":
-        # プラグインは実行ファイルを持たない。導入済みの印は package.json。
+    if spec["kind"] in NPM_MODULE_KINDS:
+        # プラグインと MCP サーバーは PATH 上の実行ファイルを持たない。導入済みの印は package.json。
         return root / "node_modules" / spec["module"] / "package.json"
     return root / "node_modules" / ".bin" / spec["executable"]
 
@@ -207,6 +222,28 @@ def plugin_path(feature_id: str) -> Path | None:
     return marker.parent if marker.is_file() else None
 
 
+def mcp_entry(feature_id: str) -> Path | None:
+    """導入済み MCP サーバーの起動スクリプト（package.json の bin）。未導入なら None。"""
+    spec = FEATURES.get(feature_id)
+    if not spec or spec["kind"] != "opencode-mcp":
+        return None
+    marker = _managed_executable(feature_id)
+    try:
+        meta = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    binary = meta.get("bin")
+    if isinstance(binary, dict):
+        binary = next(iter(binary.values()), None)
+    if not isinstance(binary, str) or not binary:
+        return None
+    entry = (marker.parent / binary).resolve()
+    # 管理領域の外を指す bin は使わない。
+    if not entry.is_file() or not entry.is_relative_to(marker.parent.resolve()):
+        return None
+    return entry
+
+
 def executable(feature_id: str) -> Path | None:
     spec = FEATURES[_known(feature_id)]
     if spec["kind"] == "gpu-runtime":
@@ -216,7 +253,7 @@ def executable(feature_id: str) -> Path | None:
     if spec["kind"] == "release-bundle":
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() and os.access(managed, os.X_OK) else None
-    if spec["kind"] == "opencode-plugin":
+    if spec["kind"] in NPM_MODULE_KINDS:
         # 管理領域に入れたものだけを扱う（外部の同名パッケージは拾わない）。
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() else None
@@ -289,7 +326,7 @@ def status(feature_id: str) -> dict:
                 release_enabled = bool(addon_registry.status(str(spec["addon_id"]))["enabled"])
             except addon_registry.AddonRegistryError:
                 release_enabled = False
-    elif spec["kind"] == "opencode-plugin" and binary is not None:
+    elif spec["kind"] in NPM_MODULE_KINDS and binary is not None:
         try:
             meta = json.loads(binary.read_text(encoding="utf-8"))
             version = str(meta.get("version") or "")[:80]
@@ -311,7 +348,7 @@ def status(feature_id: str) -> dict:
     installed = binary is not None if spec["kind"] != "release-bundle" else installed
     toolchain = (
         True if spec["kind"] == "release-bundle"
-        else shutil.which("npm") if spec["kind"] in ("npm", "opencode-plugin") else shutil.which("python3")
+        else shutil.which("npm") if spec["kind"] in ("npm", *NPM_MODULE_KINDS) else shutil.which("python3")
     )
     # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
     enabled = (
@@ -396,9 +433,11 @@ def _npm_install(feature_id: str, package: str) -> subprocess.CompletedProcess[s
     if npm is None:
         raise FeatureError("npmが必要です")
     root.mkdir(parents=True, exist_ok=True)
+    # Playwright 系はブラウザ本体を取りに行かない。このPCの Chrome を使う。
+    env = {**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
     return subprocess.run(
         [npm, "install", "--prefix", str(root), "--no-fund", "--no-audit", package],
-        capture_output=True, text=True, timeout=600, check=False,
+        capture_output=True, text=True, timeout=600, check=False, env=env,
     )
 
 
@@ -427,7 +466,7 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
     package = spec["package"]
     if spec["kind"] == "pip":
         return _pip_install(feature_id, package)
-    if spec["kind"] == "opencode-plugin":
+    if spec["kind"] in NPM_MODULE_KINDS:
         # 版を固定した指定に @latest は付けられない。更新用の指定を別に持つ。
         return _npm_install(feature_id, spec["latest_package"] if latest else package)
     return _npm_install(feature_id, f"{package}@latest" if latest else package)
