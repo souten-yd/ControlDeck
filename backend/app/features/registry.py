@@ -27,6 +27,7 @@ FEATURES: dict[str, dict] = {
         "kind": "npm",
         "package": "@opencode/cli",
         "executable": "opencode2",
+        "category": "opencode",
         "route_gated": True,
         "summary": "OpenCode画面とAIチャットのcodeモードで使うコーディングエージェント",
     },
@@ -96,6 +97,7 @@ FEATURES: dict[str, dict] = {
         "package": "@ast-grep/cli@0.51.0",
         "latest_package": "@ast-grep/cli@latest",
         "executable": "ast-grep",
+        "category": "opencode",
         "route_gated": False,
         "summary": "関数の呼び出し元や同じ形のコードを構文で探す。OpenCode の「レビュー」で影響範囲を洗い出すのに使う",
         "requires": "opencode-v2",
@@ -144,6 +146,29 @@ FEATURES: dict[str, dict] = {
         "summary": "公式Strata Terminalを管理領域へ導入。モデル取得・起動は任意操作、既存ランタイムは変更しません",
     },
 }
+
+
+# 画面での分け方。導入・更新の仕組み（kind）ではなく、利用者から見た用途で分ける。
+CATEGORIES = {
+    "opencode": "OpenCode（開発）",
+    "runtime": "LLM ランタイム（GPU）",
+    "addon": "拡張アプリ",
+    "tools": "その他の道具",
+}
+
+
+def category(feature_id: str) -> str:
+    spec = FEATURES[feature_id]
+    if spec.get("category") in CATEGORIES:
+        return str(spec["category"])
+    kind = spec.get("kind")
+    if kind in ("opencode-plugin", "opencode-mcp"):
+        return "opencode"
+    if kind == "gpu-runtime":
+        return "runtime"
+    if kind == "release-bundle":
+        return "addon"
+    return "tools"
 
 
 def _release_catalog() -> dict[str, dict]:
@@ -304,6 +329,7 @@ def _gpu_runtime_status(feature_id: str, spec: dict) -> dict:
         "name": spec["name"],
         "summary": spec["summary"],
         "kind": spec["kind"],
+        "category": category(feature_id),
         "route_gated": spec["route_gated"],
         "requires": spec.get("requires", ""),
         "preview": bool(spec.get("preview", False)),
@@ -385,6 +411,7 @@ def status(feature_id: str) -> dict:
         "name": spec["name"],
         "summary": spec["summary"],
         "kind": spec["kind"],
+        "category": category(feature_id),
         "route_gated": spec["route_gated"],
         # 依存アドオン。未導入なら UI で導入順を案内する。
         "requires": spec.get("requires", ""),
