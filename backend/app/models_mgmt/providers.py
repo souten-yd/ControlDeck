@@ -218,6 +218,10 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
                 raise httpx.HTTPStatusError("unexpected status", request=response.request, response=response)
             payload = response.json()
             models = [m.get("id", "") for m in payload.get("data", []) if isinstance(m, dict)]
+            if item.get("managed") and item.get("provider") == "ollama":
+                from app.models_mgmt.runtime_policy import get_policy
+                preferred = get_policy().preferred_models.get("ollama", "")
+                models.sort(key=lambda name: name != preferred)
             return {**item, "available": True, "models": [m for m in models if m][:50],
                     "capabilities": capabilities(item["provider"], managed=item["managed"])}
         except (httpx.HTTPError, ValueError, TypeError):

@@ -723,6 +723,8 @@ def _sync_endpoint_units(endpoint_id: str) -> None:
     from app.applications import systemd as sd
 
     members = instances_on_endpoint(endpoint_id) if endpoint_id else []
+    from app.models_mgmt.runtime_policy import prefer_models
+    members = prefer_models(members, "llama.cpp")
     auto_start_winner = next(
         (str(i["alias"]) for i in members
          if i.get("auto_start") and Path(str(i.get("model_path") or "")).is_file()),

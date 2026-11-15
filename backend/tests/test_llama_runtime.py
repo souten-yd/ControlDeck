@@ -788,3 +788,24 @@ def test_existing_vision_instances_inherit_the_image_token_floor(monkeypatch, tm
 
     assert llama.get_config()["instances"]["old"]["image_min_tokens"] == 1024
     assert '"--image-min-tokens" "1024"' in llama._unit_content("old")
+
+
+def test_boot_enablement_uses_preferred_model_on_shared_endpoint(monkeypatch, tmp_path):
+    from app.models_mgmt import runtime_policy as rp
+    from app.models_mgmt import llama
+    from app.applications import systemd as sd
+    model = tmp_path / 'model.gguf'
+    model.write_bytes(b'gguf')
+    members = [{'alias': a, 'model_path': str(model), 'auto_start': True} for a in ('first', 'second')]
+    monkeypatch.setattr(llama, 'is_installed', lambda: True)
+    monkeypatch.setattr(llama, 'instances_on_endpoint', lambda _: members)
+    monkeypatch.setattr(llama, '_unit_content', lambda alias: 'unit '+alias)
+    monkeypatch.setattr(rp, 'get_policy', lambda: rp.RuntimePolicy(preferred_models={'llama.cpp': 'second'}))
+    monkeypatch.setattr(sd, 'write_unit', lambda *a: None)
+    enabled = {}
+    monkeypatch.setattr(sd, 'set_enabled', lambda name, value: enabled.update({name: value}))
+    llama._sync_endpoint_units('shared')
+    assert enabled == {llama.unit_name('first'): False, llama.unit_name('second'): True}
+    members[1]['auto_start'] = False
+    llama._sync_endpoint_units('shared')
+    assert enabled == {llama.unit_name('first'): True, llama.unit_name('second'): False}

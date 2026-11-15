@@ -252,3 +252,24 @@ def test_llama_chat_model_start_frees_a_resident_large_model(policy_file, monkey
     assert calls == []
     asyncio.run(large_model_lifecycle.prepare_switch("qwen27"))
     assert calls == ["llama.cpp"] and policy_file.get_policy().selected_runtime == "llama.cpp"
+
+
+def test_autostart_prefers_model_without_enabling_disabled_models(monkeypatch):
+    from app.models_mgmt import runtime_policy as rp, strata, radiance
+    monkeypatch.setattr(rp, 'get_policy', lambda: rp.RuntimePolicy(preferred_models={'strata': 'second'}))
+    monkeypatch.setattr(maya_s, 'installed', lambda: False)
+    monkeypatch.setattr(strata, 'installed', lambda: True)
+    monkeypatch.setattr(radiance, 'installed', lambda: False)
+    rows = [{'alias': a, 'auto_start': True, 'activated': True} for a in ('first', 'second')]
+    monkeypatch.setattr(strata_gateway, 'list_instances', lambda: rows)
+    calls = []
+    async def ready(alias):
+        calls.append(alias)
+        return True
+    monkeypatch.setattr(strata_gateway, 'ensure_ready', ready)
+    assert asyncio.run(large_model_lifecycle.autostart()) == 'strata:second'
+    assert calls == ['second']
+    rows[1]['auto_start'] = False
+    assert asyncio.run(large_model_lifecycle.autostart()) == 'strata:first'
+    rows[0]['auto_start'] = False
+    assert asyncio.run(large_model_lifecycle.autostart()) is None

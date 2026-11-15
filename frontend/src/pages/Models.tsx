@@ -86,6 +86,7 @@ interface RuntimePolicy {
   gateway_only: boolean;
   drain_timeout_sec: number;
   default_model_ref: string;
+  preferred_models?: Partial<Record<"ollama" | LocalRuntime, string>>;
   assistant_name: string;
   chat: { timeout_seconds: number };
   deep_research: {
@@ -120,6 +121,7 @@ interface RuntimeEnvironment {
     coexist?: boolean;
   }>;
   policy: RuntimePolicy;
+  startup_models?: Array<{ runtime: "ollama" | LocalRuntime; alias: string; name: string; ready: boolean }>;
   /** チャットモデルごとの 1 リクエストの窓（会話の自動圧縮のプレビュー用） */
   compaction_windows?: Array<{ alias: string; runtime: string; name: string; window: number }>;
   addon_gpu_state?: { lending: boolean; lent: Array<{ runtime: string; alias: string }>; waiting_llm_requests: number };
@@ -1199,6 +1201,23 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         )}
       </SettingsGroup>
       <SettingsGroup title="起動と停止" description="全ランタイム共通。モデルごとの除外は各モデルの個別設定で指定します">
+        {[...new Set((runtimeEnv.startup_models ?? []).map((m) => m.runtime))].map((runtime) => {
+          const models = (runtimeEnv.startup_models ?? []).filter((m) => m.runtime === runtime);
+          if (models.length < 2) return null;
+          const preferred = policy.preferred_models?.[runtime] ?? "";
+          return <L key={runtime} label={`${RUNTIME_LABEL[runtime] ?? runtime} の優先起動モデル`}>
+            <select aria-label={`${RUNTIME_LABEL[runtime] ?? runtime} の優先起動モデル`} className={input}
+              value={preferred} onChange={(e) => setPolicyCfg({ ...policy,
+                preferred_models: { ...policy.preferred_models, [runtime]: e.target.value } })}>
+              <option value="">自動（従来の順序）</option>
+              {preferred && !models.some((m) => m.alias === preferred) && <option value={preferred}>登録解除済み: {preferred}</option>}
+              {models.map((m) => <option key={m.alias} value={m.alias} disabled={!m.ready}>
+                {m.name}{m.ready ? "" : "（初回起動の確認が必要）"}
+              </option>)}
+            </select>
+          </L>;
+        })}
+        <p className="text-[10px] leading-relaxed text-zinc-500">優先起動モデルは、モデル名を指定しない要求や、自動起動が有効なモデル同士の選択に使います。保存だけでは起動・切り替え・ダウンロードは行いません。稼働中モデルと明示的なモデル指定を優先します。</p>
         <Toggle label="アイドル時に自動アンロード" hint="使われていないモデルを止めて GPU と RAM を空けます"
           value={policy.idle_unload_enabled} onChange={(v) => setPolicyCfg({ ...policy, idle_unload_enabled: v })} />
         {policy.idle_unload_enabled && <L label="止めるまでの時間"><PresetOrCustom value={policy.idle_unload_minutes} presets={[5, 15, 30, 60, 240].map((v) => ({ v, label: `${v}分` }))} placeholder="30" onChange={(v) => setPolicyCfg({ ...policy, idle_unload_minutes: Number(v ?? 30) })} /></L>}
