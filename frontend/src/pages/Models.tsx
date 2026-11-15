@@ -15,6 +15,7 @@ import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { FrontierModelsGroup } from "../features/models/FrontierModelsPanel";
 import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
 import { MayaSDetailSheet, MayaSSetupCard, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
@@ -626,6 +627,8 @@ export default function ModelsPage() {
           })}
         </ul>
       )}
+      {/* 外部の API モデル。秘密値と外部送信を扱うので、設定を管理できる人にだけ出す。 */}
+      {can("settings.manage") && <div className="mt-4"><FrontierModelsGroup /></div>}
       </>)}
 
       {pulling && <PullSheet onClose={() => setPulling(false)} onDone={refresh} />}
