@@ -1229,6 +1229,10 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
     writable = [project, config, home, *opencode_state, _mcp_result_dir(), ui_shots]
     readonly_paths = [Path(sys.prefix), Path(__file__).resolve().parent, *map(Path, _skill_paths()),
                       *_addon_asset_roots(), attachments.store.root, *readonly]
+    # session の cli.json は共有設定への絶対 symlink。config だけのマウントでは
+    # リンク先が箱の外になり、Tab の plan 切替など利用者のキー設定が消える。
+    # integration 全体を公開せず、TUI 設定の1枚だけを読み取り専用で渡す。
+    readonly_paths.append(cli_config_path())
     gitconfig = real_home / ".gitconfig"
     if gitconfig.is_file():
         readonly_paths.append(gitconfig)

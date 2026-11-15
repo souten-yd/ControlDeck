@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-16 OpenCode の Tab / Plan 切替の復旧
+
+- 原因: session の `cli.json` は共有設定への絶対 symlink だが、プロジェクトの箱へリンク先を渡しておらず、OpenCode はキー設定を読めなかった。稼働中の箱でリンク先が存在しないことを確認。
+- 修正: `_launch` で共有 `cli.json` 1枚だけを読み取り専用マウント。integration ディレクトリ全体は公開せず、利用者の既存キー設定と session 側の設定を保持する。
+- 実機: 稼働環境と同じマウント・環境変数の独立 Podman + OpenCode 2.3.0 で、設定読み取りと Tab による Build → Plan、Shift+Tab による Plan → Build を確認（128列）。実行中の利用者セッションは停止していない。関連45テスト成功、Frontend build 成功。Backend全体1525成功・2skip（133.36秒）。最終CI・反映結果はPRで追跡。
+- 適用後、新しく開くターミナルから有効。既存の箱にはマウントを追加できないため、OpenCode ターミナルを閉じて開き直す必要がある。復旧は直前の Release へ戻して同様に開き直す。ブラウザの物理キーボード・モバイル補助キーからの操作は未検証。
+
 ## 2026-11-15 OpenCode v2 のオプションプラグイン読み込み修正（#395、L2承認前）
 
 - 原因: Podman の管理ツール一覧に Superpowers / Adversarial Review / Auto Advisor がなく、ホストの npm 導入先を箱内から読めなかった。箱内に npm・node は存在する。
