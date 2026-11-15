@@ -1,53 +1,35 @@
-# CLAUDE.md — ControlDeck implementation lead
+# CLAUDE.md — ControlDeck 実装の引き継ぎ
 
-## Active responsibility
+規約の原本は `AGENTS.md`（root で動かさない、`shell=True` 禁止、秘密をログに出さない、パス検証、監査、ローカル優先の検証、PR とリリースの運用）。ここには、いま進んでいる仕事と、引き継ぐ AI が最初に知るべきことだけを書く。
 
-You are the implementation lead for the **ControlDeck side** of the managed OpenCode extended stack.
+## いま進んでいる仕事
 
-ControlDeck must make these combinations easy for users to install, update, enable/disable, repair and rollback:
+**OpenCode v2 を ControlDeck の開発環境にする**（UI 検証・精密調査・コードレビュー）。
+計画・評価・段階・進捗は `docs/PLAN-opencode-dev-environment.md` が正。続きを始める前に必ず読み、終えたら「進捗」の表を更新する。
 
-- OpenCode only
-- OpenCode + ExtendCodeAgent (ECA)
-- OpenCode + OMO
-- OpenCode + ECA + OMO
-
-ControlDeck owns distribution/setup UX only. OpenCode remains the runtime, ECA owns Project Intelligence, and OMO owns orchestration. Do not add ControlDeck-private APIs to ECA/OMO and do not modify those repositories as part of this task.
-
-## Read first
+## 読む順
 
 1. `AGENTS.md`
-2. `docs/design-opencode-extended-stack.md`
-3. `docs/design-opencode-feature.md`
-4. `docs/implementation-status.md`
-5. existing `backend/app/features/registry.py`, `backend/app/features/cli.py`, `backend/app/integrations/opencode/`, and `deck.sh`
+2. `docs/PLAN-opencode-dev-environment.md`
+3. `docs/design-opencode-feature.md`（v2 の設定の形、ゲートウェイ、MCP、圧縮）
+4. `docs/implementation-status.md`（新しい順。最新の数件）
+5. コード: `backend/app/features/registry.py`（オプション機能）、`backend/app/integrations/opencode/provider.py`（session の設定生成）、`backend/app/addons/agent_mcp.py`（ControlDeck の MCP）、`backend/app/skills/`（スキル）
 
-## Execution policy
+## 現行構成（2026-11-15）
 
-- Reuse and extend the existing feature manager; do not build a parallel installer framework.
-- Separate component management (`opencode`, `extendcodeagent`, `omo`) from stack profiles.
-- Use a ControlDeck-owned compatibility manifest with exact tested version tuples. `latest` is experimental, never implicitly recommended.
-- Keep all managed installs in ControlDeck user-space data roots; never overwrite/delete unrelated external installs or the user's global OpenCode config.
-- Stage updates transactionally, health-check before activation, preserve the previous known-good tuple, and support repair/rollback.
-- Generate an isolated OpenCode runtime config that composes the existing provider/model config with ECA and OMO as ordinary OpenCode plugins.
-- ECA is currently installed from a pinned generic release/tag/commit into its own venv, then `adapters/opencode` is built with `npm ci && npm run build`; isolate this behind an installer backend so a future ECA release artifact can replace it without redesign.
-- Resolve the supported OMO package/version from the compatibility manifest; do not spread historical package names through the codebase.
-- ECA and OMO must be independently enable/disable-able. OMO Team Mode defaults OFF until the ECA-side coexistence gate certifies it.
-- Normal UX should offer OpenCode only / recommended extended stack / custom, with installed vs recommended vs latest clearly separated.
-- Add deterministic plugin ordering, duplicate-plugin detection, compact combined health smoke, failure attribution, responsive UI and tests.
-- Follow `AGENTS.md` security/process rules (`shell=True` prohibited, no secrets in logs, no root execution, path validation, local tests/build, status docs update).
+- OpenCode は **v2 だけ**（`@opencode/cli`、実行ファイル `opencode2`）。v1（opencode-ai）と OMO は撤去済み。ECA は扱っていない。古い文書に残る ECA / OMO / v1 の記述は過去の経緯であって現行仕様ではない。
+- v2 の拡張は OpenCode プラグイン 3 本（Superpowers・Adversarial Review・Auto Advisor）。管理領域へ npm で版固定して入れ、session の設定から `file://` で読ませる。使う/使わないは OpenCode 画面の設定。
+- session の設定は job ごとに作る config directory に書き、`XDG_CONFIG_HOME` で向ける。利用者の `~/.config/opencode` は読まない・書かない。
+- 重い道具（3D・音）は主の会話に載せず、子エージェントへ分ける（`provider.py::_SUBAGENT_TOOLS`）。新しい MCP の道具も同じ方針で足す。
+- ローカル LLM は 1 枚の R9700 を取り合う。モデルの載せ替えとコンテキストの消費を増やす変更は、測ってから入れる。
 
-## PR sequence
+## 実機で確かめるとき
 
-Prefer small PRs:
+- 本番の deploy worktree は `/data1tb/ControlDeck/app-strata`、開発は `/data1tb/ControlDeck/runtime-lifecycle`。
+- 隔離テストは `env -u CONTROL_DECK_CONFIG`（外さないと本番の data に書く）。
+- ゲートウェイの鍵・受け入れ用アカウントのパスワードを表示しない。
+- 外部からの取得（npm・モデル・ブラウザ）は利用者の許可を得てから行う。
 
-1. stack/component/compatibility-manifest + transactional state/rollback foundation;
-2. ECA managed installer + config + health;
-3. OMO managed installer + config + health;
-4. combined coexistence smoke/repair/plugin-order handling;
-5. user-facing stack UX.
+## 完了の条件
 
-Before each PR, inspect current code and consolidate with existing abstractions rather than duplicating them. Update `docs/design-opencode-extended-stack.md` and `docs/implementation-status.md` as implementation decisions change.
-
-## Done condition
-
-Do not call the work complete until OpenCode-only remains intact, the recommended tested tuple can be installed from a clean state without manual JSON edits, ECA/OMO can be toggled independently, failed staging leaves the previous stack usable, rollback works, combined health detects missing/duplicate components, desktop/mobile UI works, and local tests/build pass.
+コードを書いただけでは完了ではない。テスト（集中 → 全体 `./deck.sh test` → `cd frontend && npm run build`）、実画面（PC 幅と 320px）、`docs/implementation-status.md` と計画文書の更新、PR のマージまでそろえて完了とする。
