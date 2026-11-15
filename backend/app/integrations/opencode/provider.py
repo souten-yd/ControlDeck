@@ -494,6 +494,15 @@ _FORBIDDEN_GH_COMMANDS = (
 _COMMAND_SEPARATORS = ("", " ", ";", "&", "|", "(", "\t")
 
 
+# deck.sh のうち、本番の ControlDeck を止める・作り替えるもの。OpenCode からは使わせない。
+# 本番の ControlDeck を再起動すると、その OpenCode 自身が LLM を使っているゲートウェイも止まる。
+# 開発と確認はサンドボックスとミラー（./deck.sh sandbox）、検証用インスタンス（./deck.sh e2e）で行う。
+_FORBIDDEN_DECK_COMMANDS = (
+    "start", "service", "stop", "restore", "database", "admin", "passwd", "reset-totp",
+    "enable-desktop", "disable-desktop", "feature", "plugin", "update-prepare", "searxng",
+)
+
+
 def _forbidden_commands() -> dict[str, str]:
     """止める道具を禁じる規則を組む。
 
@@ -506,6 +515,17 @@ def _forbidden_commands() -> dict[str, str]:
             head = f"*{separator}" if separator else ""
             rules[f"{head}{name}"] = "deny"
             rules[f"{head}{name} *"] = "deny"
+    # 引数なしの ./deck.sh は起動（再起動）になる。区切りの後ろでも同じ。
+    for script in ("deck.sh", "./deck.sh", "bash deck.sh", "bash ./deck.sh"):
+        for separator in _COMMAND_SEPARATORS:
+            head = f"*{separator}" if separator else ""
+            rules[f"{head}{script}"] = "deny"
+            for tail in (";*", " ;*", " &*", " |*", "&*", "|*"):
+                rules[f"{head}{script}{tail}"] = "deny"
+    for sub in _FORBIDDEN_DECK_COMMANDS:
+        rules[f"*deck.sh {sub}"] = "deny"
+        rules[f"*deck.sh {sub} *"] = "deny"
+        rules[f"*deck.sh {sub};*"] = "deny"
     return rules
 
 

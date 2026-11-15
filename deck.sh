@@ -17,6 +17,7 @@
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
+#   ./deck.sh sandbox ...  開発用の軽量サンドボックス（new|list|status|shell|exec|opencode|mirror-start|mirror-stop|destroy）
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
 #   ./deck.sh update-prepare    明示的なControlDeck本体更新の依存導入・UIビルド（内部用）
 #   ./deck.sh feature <status|install|update|enable|disable|uninstall> [feature-id]
@@ -584,6 +585,15 @@ YAML
   return "$status"
 }
 
+# 開発用の軽量サンドボックス。本番の ControlDeck には触れず、箱の中で直してミラーで確かめる。
+# 詳細は backend/app/maintenance/sandbox.py と docs/PLAN-opencode-dev-environment.md。
+cmd_sandbox() {
+  check_root; check_python; ensure_venv
+  command -v podman >/dev/null || die "podman が必要です"
+  cd "$REPO_ROOT/backend"
+  exec "$VENV/bin/python" -m app.maintenance.sandbox "$@"
+}
+
 cmd_backup() {
   check_root; check_python; ensure_venv; load_database_env
   exec bash "$REPO_ROOT/scripts/backup.sh" "$@"
@@ -796,6 +806,7 @@ case "${1:-start}" in
   disable-desktop) shift; cmd_disable_desktop "$@" ;;
   test)    shift; cmd_test "$@" ;;
   e2e)     shift; cmd_e2e "$@" ;;
+  sandbox) shift; cmd_sandbox "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;
   feature) shift; cmd_feature "$@" ;;
   update-prepare) shift; cmd_update_prepare "$@" ;;

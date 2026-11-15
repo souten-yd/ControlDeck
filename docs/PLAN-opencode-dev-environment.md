@@ -99,6 +99,7 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | 第 1 段階 C（画面） | 完了（Fable 担当。検証用インスタンスで 320/1280・ライト/ダークを撮影確認） | #379, #381 |
 | 第 1 段階 D（E2E） | 実装済み（`./deck.sh e2e`、axe 12 件合格） | #380 |
 | 第 2 段階 | 完了（精密調査 #382、Context7 #383。どちらも実機確認） | #382, #383 |
+| 開発用サンドボックス | 第 1 段階完了（`./deck.sh sandbox`。ミラー・箱の中の OpenCode・本番 deck.sh の禁止） | #385 |
 | 第 3 段階 | 完了（reviewer 子エージェント＋ast-grep。実機で呼び出し側の取りこぼしを critical で検出） | #383 |
 
 ## 版の固定（2026-11-15 時点、公開から 2 週間以上経った版）
@@ -130,3 +131,25 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 - 観察: レビューの実機試験で、Adversarial Review が無効のとき主のエージェントが利用者の `~/.config/opencode` を読んで探し回った（書き込みは無し）。有効にするか、指示から外すかは今後の課題。
 - **v2 の agent の `system` は既定の指示を丸ごと置き換える。** 既定には Code Mode（MCP の道具は `execute` の中で JavaScript から `tools.<名前空間>.<道具>()` で呼び、`search()` で探す）の説明が入っている。置き換えた子（ui-verifier / reviewer）は MCP を見つけられず `<function=search>` を本文に書いて止まり、自前で CDP のスクリプトを書いて代用した。`_v2_agents` が子の指示の先頭に `CODE_MODE_PRIMER` を足す（#384）。
 - 実機の通し試験（#384 の後）: ローカル LLM が UI 検証の作業で ui-verifier に任せ、Playwright MCP で 320/390/768/1280 × ライト/ダークを撮影（17 枚）、仕込んだ不具合（ダークの文字色、空送信）に加え、数量の検証漏れ 13 例・タップ領域・aria-live 不足を検出。コードは変更しなかった。報告の送信（control_deck.report）は Add-on の bridge が要るため、この試験では未確認（単体テスト済み）。
+
+## 開発用サンドボックス（2026-11-15 決定・実装）
+
+本番の ControlDeck には触れず、箱の中で直し、箱の中のミラー（別ポートの ControlDeck）で確かめ、
+GitHub のプレリリースまで出す。正式 Release への格上げと本番への適用（更新機能）は利用者が行う。
+更新機能（`maintenance/self_update.py`）は正式 Release しか取り込まないので、プレリリースは本番に入らない。
+
+方式の比較（実機で確認）:
+
+| 方式 | 判断 |
+|---|---|
+| ホストでミラーだけ別ポート | AI は同じ利用者のシェルを持つので隔離が弱い |
+| コンテナのイメージに一式を入れる | 数 GB の取得・作り直しが遅い。ホストの Chrome を使えない |
+| **podman の空のルート＋ホストの /usr・/etc・/opt を読み取り専用（採用）** | イメージ不要、起動 0.07 秒、ホストの Chrome・node・python・gh・git・OpenCode がそのまま動く。書けるのは箱のフォルダだけ |
+| bubblewrap | Ubuntu の非特権 user namespace の制限で動かない |
+| 仮想マシン | GPU が 1 枚で渡せない |
+
+- `./deck.sh sandbox new <名前> [--repo パス] [--ref 版] [--github]`: `git clone --shared` で作業ツリーを作る（オブジェクトは元を読み取り専用で参照、コミットは箱の中だけ、push 先は origin＝GitHub）。`.venv` と `frontend/node_modules` は overlay でつなぐ（箱の中で pip / npm を使ってもホストは変わらない）。
+- `shell` / `exec` / `opencode [--run 指示]`（箱の中の OpenCode。設定は本番と同じ生成処理、Add-on の bridge は載せない、UI 検証の写真は箱の中）/ `mirror-start`（`CONTROL_DECK_ISOLATED=1`、ポート 18800〜、使い捨て管理者）/ `mirror-stop` / `status` / `list` / `destroy`。
+- 箱から見えないもの: 本番の data（DB・秘密鍵・ログ）、gh の token（`--github` のときだけ読み取り専用で見せる）。箱の中の AI 自身に確かめさせて、見えないことを確認した。
+- OpenCode から本番を止める `deck.sh`（引数なし・start・service・stop・restore・update-prepare など）を禁止した。`test`・`e2e`・`ext lint`・`sandbox` は使える。
+- 確かめられないもの: systemd のサービス・ファン・GPU ランタイムの起動停止など、ホストそのものが要る機能。
