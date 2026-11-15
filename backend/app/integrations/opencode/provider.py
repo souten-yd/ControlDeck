@@ -447,23 +447,18 @@ _SUBAGENT_DESCRIPTIONS = {
 
 
 def _window_of(instance: dict) -> int:
-    """そのモデル設定で 1 request が使える窓の大きさ。
+    from app.models_mgmt.compaction import window_of
 
-    鍵の名前はランタイムで違う（llama.cpp は ctx_size）。
-    共有KVを切っている llama.cpp は ctx_size を slot 数へ固定配分するので、
-    1 request の取り分はその割り算のあとになる。総量をそのまま宣言すると、
-    宣言した窓に届く前に転送先が溢れて、後追いの圧縮に戻る。
-    """
-    context = 0
-    for key in ("ctx_size", "max_ctx"):
-        context = int(instance.get(key) or 0)
-        if context > 0:
-            break
-    if context <= 0:
-        return 0
-    if not instance.get("kv_unified", True):
-        context //= max(1, int(instance.get("n_parallel") or 1))
-    return context
+    return window_of(instance)
+
+
+def _compaction_enabled() -> bool:
+    try:
+        from app.models_mgmt.runtime_policy import get_policy
+
+        return bool(get_policy().compaction.enabled)
+    except Exception:  # noqa: BLE001 - 設定が読めなくても session は止めない
+        return True
 
 
 def _model_limits(model: str) -> dict[str, int] | None:
@@ -493,12 +488,24 @@ def _model_limits(model: str) -> dict[str, int] | None:
             context = _window_of(match)
         else:
             # gateway.resolve_instance と同じ候補集合（embedding/reranker は除く）。
-            windows = [w for w in map(_window_of, local_llm.llm_instances()) if w > 0]
+            # auto は選択中ランタイムのモデルへ回るので、そのランタイムの窓で決める。
+            from app.models_mgmt import gateway
+
+            candidates = local_llm.llm_instances()
+            selected = gateway._selected_runtime()
+            mine = [i for i in candidates if str(i.get("runtime") or "") == selected]
+            windows = [w for w in map(_window_of, mine or candidates) if w > 0]
             context = min(windows) if windows else 0
         if context <= 0:
             return None
         output = max(1024, context // OPENCODE_OUTPUT_SHARE)
-        return {"context": context, "output": output, "input": context - output}
+        # 発火点は OpenCode の式で input - reserved。共通の圧縮設定（窓に応じた閾値）に合わせる。
+        # 圧縮を切っているときは従来どおり「窓 - 返答」を宣言する（溢れたときの後追いだけ残る）。
+        from app.models_mgmt import compaction
+
+        fire = compaction.threshold(context)
+        limit_input = fire + OPENCODE_COMPACTION_RESERVED if fire else context - output
+        return {"context": context, "output": output, "input": min(context, limit_input)}
     except Exception:  # noqa: BLE001 - 窓の大きさが取れないことで session を止めない
         logger.exception("モデルの窓の大きさを取得できませんでした")
     return None
@@ -596,6 +603,7 @@ def _config_payload(
         # 剪定（prune）は別物で、完了した道具の出力だけを捨てる。直近 40,000
         # トークン分は守られる（OpenCode 側の固定値で、設定では変えられない）。
         "compaction": {
+            "auto": _compaction_enabled(),
             "prune": True,
             "reserved": OPENCODE_COMPACTION_RESERVED,
         },

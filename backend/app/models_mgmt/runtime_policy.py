@@ -62,6 +62,16 @@ class AmdGpuSettings(BaseModel):
     core_clock_level: int = Field(default=0, ge=0, le=63)
 
 
+class CompactionSettings(BaseModel):
+    """会話の自動圧縮（AIアシスタントと OpenCode で共通）。発火点は compaction.threshold が決める。"""
+    enabled: bool = True
+    # auto: コンテキスト長に応じた割合（短い窓ほど早め）＋上限。percent: 窓に対する固定割合。
+    mode: Literal["auto", "percent"] = "auto"
+    percent: int = Field(default=80, ge=40, le=95)
+    # auto の上限トークン。窓が広くても、これを超える会話は読み直しが遅く精度も落ちるため畳む。0 = 上限なし。
+    max_tokens: int = Field(default=262144, ge=0, le=4_194_304)
+
+
 class RuntimePolicy(BaseModel):
     selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"] = "ollama"
     # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
@@ -78,6 +88,7 @@ class RuntimePolicy(BaseModel):
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
     deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
+    compaction: CompactionSettings = Field(default_factory=CompactionSettings)
     amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
     # 空なら libraries.py が data_dir/models/gguf の既定1件を合成する（後方互換）。
     model_libraries: list[ModelLibrary] = Field(default_factory=list)
@@ -187,7 +198,7 @@ async def environment() -> dict:
     runtimes = [{
         "id": "ollama", "runtime": "ollama", "backend": "auto", "label": "Ollama",
         "available": bool(ollama_status.get("available")), "installed": True,
-        "selected": policy.selected_runtime == "ollama",
+        "selected": policy.selected_runtime == "ollama", "coexist": True,
     }]
     for backend, label in (("rocm", f"llama.cpp / ROCm {llama.ROCM_SERIES_MAJOR}"),
                            ("vulkan", "llama.cpp / Vulkan")):
@@ -204,7 +215,7 @@ async def environment() -> dict:
             "selected": policy.selected_runtime == "llama.cpp" and policy.selected_backend == backend,
             "running": any_llama_running and llama_status.get("backend") == backend,
             "warning": llama.backend_warning(backend),
-            "addon_id": "llama-cpp",
+            "addon_id": "llama-cpp", "coexist": True,
         })
     # Strata appears only once the optional managed terminal has been installed.
     if strata.installed():
@@ -216,7 +227,7 @@ async def environment() -> dict:
             "selected": policy.selected_runtime == "strata",
             "running": any(item.get("loaded") for item in instances),
             "warning": "モデルは明示的に登録・初回起動してください",
-            "addon_id": "strata", "experimental": True,
+            "addon_id": "strata", "experimental": True, "coexist": False,
         })
     from app.models_mgmt import maya_s
     maya_state = await asyncio.to_thread(maya_s.runtime_status)
@@ -225,7 +236,8 @@ async def environment() -> dict:
                          "label": "Maya-S（GLM-5.3-Flash / R9700）", "available": True,
                          "installed": True, "selected": policy.selected_runtime == "maya-s",
                          "running": maya_state["running"], "addon_id": "maya-s",
-                         "warning": "選択だけではモデルを起動しません", "experimental": True})
+                         "warning": "選択だけではモデルを起動しません", "experimental": True,
+                         "coexist": False})
     from app.models_mgmt import radiance
     if radiance.installed():
         radiance_items = await asyncio.to_thread(radiance.list_instances)
@@ -233,7 +245,7 @@ async def environment() -> dict:
                          "label": "Radiance（R9700）", "available": True, "installed": True,
                          "selected": policy.selected_runtime == "radiance",
                          "running": any(item.get("loaded") for item in radiance_items),
-                         "addon_id": "radiance", "experimental": True,
+                         "addon_id": "radiance", "experimental": True, "coexist": False,
                          "warning": "" if radiance_items else "モデル（.rad）を登録してください"})
     gpu_caps = amd_gpu.capabilities()
     if gpu_caps:
@@ -252,7 +264,25 @@ async def environment() -> dict:
     return {
         "platform": "Linux", "gpu": "AMD" if detected.get("rocm") else "GPU",
         "runtimes": runtimes, "policy": policy.model_dump(), "amd_gpu": gpu_caps,
+        "compaction_windows": await asyncio.to_thread(_compaction_windows),
     }
+
+
+def _compaction_windows() -> list[dict]:
+    """Each chat model's per-request window, for the compaction preview on the Models page."""
+    from app.models_mgmt import compaction, local_llm
+
+    try:
+        rows = local_llm.llm_instances()
+    except Exception:  # noqa: BLE001 - the preview is optional
+        return []
+    out = []
+    for item in rows:
+        window = compaction.window_of(item)
+        if window > 0:
+            out.append({"alias": str(item.get("alias") or ""), "runtime": str(item.get("runtime") or ""),
+                        "name": str(item.get("display_name") or item.get("alias") or ""), "window": window})
+    return out
 
 
 def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:

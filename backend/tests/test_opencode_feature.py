@@ -352,8 +352,10 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
         lambda **kw: [i for i in instances if i["role"] == "llm"])
 
     # 候補のうち狭いほう。広いほうに合わせると、狭いモデルへ回った回だけ溢れが戻る。
+    # input は発火点（共通の圧縮設定: 32K の窓なら 70%）+ 予備。発火は input - reserved。
+    fire = 32768 * 70 // 100
     assert provider._model_limits("auto") == {
-        "context": 32768, "output": 16384, "input": 16384}
+        "context": 32768, "output": 16384, "input": fire + provider.OPENCODE_COMPACTION_RESERVED}
     # alias が実在するときはそのモデルの窓。embedding は候補に入れない。
     assert provider._model_limits("Wide")["context"] == 131072
     # 共有KVを切っていると ctx_size は slot へ固定配分される。1 request の
@@ -366,7 +368,9 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
     # No fixed output cap: every model may answer (thinking included) with half its
     # window, so a 1M-context model is not cut at 8,192 mid-thought.
     instances.append({"alias": "maya-s", "role": "llm", "ctx_size": 1048576})
-    assert provider._model_limits("maya-s") == {"context": 1048576, "output": 524288, "input": 524288}
+    # 1M の窓でも 262,144 トークンで畳む（自動の上限）。
+    assert provider._model_limits("maya-s") == {
+        "context": 1048576, "output": 524288, "input": 262144 + provider.OPENCODE_COMPACTION_RESERVED}
     instances.pop()
 
     monkeypatch.setattr(provider, "_integration_dir", lambda: tmp_path)
@@ -377,7 +381,8 @@ def test_runtime_config_declares_the_window_even_for_the_auto_model(monkeypatch,
     assert limit["context"] == 32768
     # input がある場合だけ compaction.reserved が読まれる。両方が揃って初めて
     # 発火点が input - reserved になる。
-    assert limit["input"] == 16384
+    assert limit["input"] == fire + provider.OPENCODE_COMPACTION_RESERVED
+    assert payload["compaction"]["auto"] is True
     reserved = payload["compaction"]["reserved"]
     assert limit["input"] - reserved < limit["context"], "発火点が窓を越えている"
 
@@ -585,7 +590,8 @@ def test_strata_context_limits_reach_opencode(monkeypatch):
     monkeypatch.setattr(local_llm, "list_instances", lambda: [instance])
     limits = provider._model_limits("flash")
     assert limits["context"] == 32768
-    assert limits["input"] + limits["output"] == 32768
+    from app.models_mgmt import compaction
+    assert limits["input"] == compaction.threshold(32768) + provider.OPENCODE_COMPACTION_RESERVED
 
 
 def test_v2_project_environment_overrides_stale_systemd_pwd(tmp_path):
@@ -595,3 +601,23 @@ def test_v2_project_environment_overrides_stale_systemd_pwd(tmp_path):
     config = tmp_path / "config"
     assert op._runtime_env("v2", config, project) == {
         "XDG_CONFIG_HOME": str(config), "PWD": str(project.resolve())}
+
+
+def test_opencode_compaction_follows_the_shared_setting(monkeypatch):
+    """圧縮を切ると発火点を宣言しない（窓 - 返答）。auto も false になる。"""
+    from app.integrations.opencode import provider
+    from app.models_mgmt import local_llm, runtime_policy
+
+    rows = [{"alias": "Q", "role": "llm", "runtime": "llama.cpp", "ctx_size": 65536},
+            {"alias": "M", "role": "llm", "runtime": "maya-s", "ctx_size": 1048576}]
+    monkeypatch.setattr(local_llm, "list_instances", lambda **kw: list(rows))
+    monkeypatch.setattr(local_llm, "llm_instances", lambda **kw: list(rows))
+    off = runtime_policy.RuntimePolicy(selected_runtime="maya-s")
+    off.compaction.enabled = False
+    monkeypatch.setattr(runtime_policy, "get_policy", lambda: off)
+    assert provider._model_limits("M") == {"context": 1048576, "output": 524288, "input": 524288}
+    assert provider._compaction_enabled() is False
+    # auto は選択中ランタイム（Maya-S）の窓で決める。狭い llama.cpp には合わせない。
+    on = runtime_policy.RuntimePolicy(selected_runtime="maya-s")
+    monkeypatch.setattr(runtime_policy, "get_policy", lambda: on)
+    assert provider._model_limits("auto")["context"] == 1048576

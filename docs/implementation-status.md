@@ -3939,3 +3939,9 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - 大きいモデル（Strata / Radiance）のロードは、同時ロード上限の判定より先に他の大きいモデルを解放する。
 
 - 2026-11-15 Maya-S の画像入力を有効化: セットアップ・再セットアップ・更新で `--no-vision` を渡さない（画像エンコーダー 1.14GB を一度だけ取得・ビルド）。エンコーダーの CMake が `/opt/rocm-*/core-*` を ROCm ルートと誤認して構成に失敗するため、`ROCM_PATH=/opt/rocm` を渡す。再セットアップで消えていた実測 env（`MAYA_GLM_PCIE_SHARE`）を戻す。画像入力が設定済みなら AI ゲートウェイの `vision.analyze` も Maya-S に振る。
+
+- 2026-11-15 Models の共存設定と会話の自動圧縮:
+  - 「利用方式（排他／共存）」と「同時にロードできるモデル数」は、共存できるランタイム（llama.cpp・Ollama）を選んでいるときだけ表示する。Strata・Maya-S・Radiance は起動時に他のモデルを止めるため、選択中は説明だけを出す（runtime カードの `coexist`）。同時実行数（並列リクエスト）は 4 ランタイムとも対応しているので残す。
+  - 会話の自動圧縮を共通設定にした（`RuntimePolicy.compaction`: enabled / mode auto・percent / percent / max_tokens）。発火点は `app/models_mgmt/compaction.py`: 自動なら窓 〜32K 70%・〜128K 75%・〜256K 80%・それ以上 85%、上限 262,144 トークン（1M の窓で毎ターン 90 万トークンを読み直さない）。返答の取り分は削らない。
+  - OpenCode: `limit.input = 発火点 + compaction.reserved`（v1 は input - reserved、v2 は min(input, context) - buffer で発火するのを実装で確認）。`auto` の窓は選択中ランタイムのモデルで決める。圧縮を切ると `compaction.auto=false` で従来の「窓 - 返答」。
+  - AI アシスタント: これまで履歴を全件送っていた。閾値を超えたら古いやり取りを同じモデルで要約し（思考オフ）、直近（閾値の 35%）は原文のまま残す。要約はその回の assistant メッセージの `meta.compaction` に保存し、次の回は要約から再開する。窓より大きい履歴（広いモデルから乗り換えた会話）は分割して積み上げ要約する（実機 Radiance: 5 つの事実を全部保持）。要約に失敗したら圧縮せずに続ける。
