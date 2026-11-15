@@ -77,7 +77,10 @@ def test_the_browser_tools_go_to_the_subagent_only(installed):
     assert v2["mcp"]["servers"]["playwright"]["disabled"] is False
     rules = v2["agents"]["ui-verifier"]["permissions"]
     assert rules[-1] == {"action": "playwright_browser_run_code_unsafe", "resource": "*", "effect": "deny"}
-    assert "幅" in v2["agents"]["ui-verifier"]["system"] and "prompt" not in v2["agents"]["ui-verifier"]
+    system = v2["agents"]["ui-verifier"]["system"]
+    assert "幅" in system and "prompt" not in v2["agents"]["ui-verifier"]
+    # system は既定の指示を置き換えるので、Code Mode の呼び方を先頭に足す（無いと MCP を呼べない）。
+    assert system.startswith(provider.CODE_MODE_PRIMER) and "tools.playwright" in system
     assert {"action": "playwright_*", "resource": "*", "effect": "deny"} in v2["agents"]["build"]["permissions"]
 
 

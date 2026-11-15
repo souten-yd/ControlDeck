@@ -876,6 +876,23 @@ def _v2_permissions(permission: dict) -> list[dict]:
     return rules
 
 
+# v2 の agent の system は既定の指示を丸ごと置き換える。既定の指示には Code Mode（MCP の
+# 道具は execute の中で JavaScript から呼ぶ）の説明が入っていて、置き換えると子は道具を
+# 見つけられず、`<function=search>` を本文に書いて止まった（2.3.0、2026-11-15 実機。
+# system を外すと同じ子が tools.playwright.browser_navigate で開けた）。
+# 子の指示の先頭に、その呼び方だけを足す。
+CODE_MODE_PRIMER = """## 道具の呼び方（OpenCode）
+
+ファイルの読み書きとコマンドは read / shell など通常の道具で行う。MCP の道具（playwright・controldeck_addons・context7 など）は
+execute の道具の中で JavaScript を書いて呼ぶ。名前が分からなければ、まず execute で
+`return (await search({ query: "browser navigate", limit: 10 })).items.map(i => i.path)` のように探し、
+見つかった path をそのまま `await tools.<名前空間>.<道具名>({ ... })` で呼ぶ
+（例: `await tools.playwright.browser_navigate({ url: "http://127.0.0.1:5173/" })`）。
+1 回の execute で複数の道具を順に呼び、必要な値だけを return してよい。
+
+"""
+
+
 def _v2_agents(agent: dict) -> dict:
     """v1 の agent 定義を v2 へ読み替える。
 
@@ -894,7 +911,7 @@ def _v2_agents(agent: dict) -> dict:
         # v1 の prompt は v2 で system になった。prompt のままだと黙って無視される
         # （2.3.0 の debug agents で確認）。
         if spec.get("prompt"):
-            converted["system"] = spec["prompt"]
+            converted["system"] = CODE_MODE_PRIMER + spec["prompt"]
         tools = spec.get("tools") or {}
         rules = [
             {"action": pattern, "resource": "*", "effect": "allow" if allowed else "deny"}

@@ -10,7 +10,7 @@
    - 引数の数や意味、戻り値の形、例外、既定値が変わったなら、呼び出し側が全部追随しているかを見る。
 4. テストを見る。変更を本当に確かめているか（期待値を変更に合わせて書き換えただけになっていないか）。関係するテストを実行できるなら実行する（例: `pytest -q tests/<該当>`、`npx tsc --noEmit -p .`）。実行できなければその旨を書く。
 5. 安全と運用を見る。秘密値をログ・URL・応答に出していないか、権限・認証の検査を外していないか、`shell=True` やパスの検証漏れ、`async` の中の同期 I/O、例外の握り潰し。
-6. 最後に必ず `control_deck.report` を 1 回呼ぶ（道具名は controldeck_addons_control_deck_report）。kind は "review"。
+6. 最後に必ず `control_deck.report` を 1 回呼ぶ（execute の中で `search({ query: "control_deck report" })` で path を探して呼ぶ）。kind は "review"。
    - findings: 指摘ごとに 1 件。severity は critical（壊れる・危険）/ major（誤りの可能性が高い・抜け）/ minor（読みにくさ・小さな改善）/ info。location は `path:line`。detail には、なぜ問題か・どんな入力で壊れるかを具体的に。
    - target: レビューした範囲（ブランチ、コミット、ファイル）。
    - unverified: 実行できなかったテストや、確かめきれなかったこと。

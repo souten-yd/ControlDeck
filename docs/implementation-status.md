@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-15 子エージェントが MCP を呼べなかった不具合（#384）
+
+- v2 の agent の `system` は既定の指示（Code Mode の呼び方を含む）を置き換えるので、ui-verifier / reviewer は Playwright MCP や control_deck.report を見つけられなかった。子の指示の先頭に Code Mode の呼び方を足した。
+- 実機: 修正後、ui-verifier が Playwright MCP で 17 枚を撮影し、仕込んだ不具合を検出。
+
 ## 2026-11-15 Context7・レビュー係・GitHub 連携（第 2・3 段階）
 
 - オプション機能 `context7-mcp`（既定オフ。外部へ問い合わせる旨を画面に明記）と `ast-grep`（構文検索、session の PATH へ）。
