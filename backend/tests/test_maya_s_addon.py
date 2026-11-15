@@ -480,3 +480,33 @@ def test_reasoning_effort_default_is_high_for_coding(monkeypatch, tmp_path):
     assert maya_s.get_settings()["reasoning_effort"] == "high"
     from app.features.router import MayaSettingsBody
     assert MayaSettingsBody.model_fields["reasoning_effort"].default == "high"
+
+
+def test_resetup_keeps_measured_env_and_turns_pictures_on(managed, monkeypatch):
+    _installed(managed)
+    config = maya_s.source() / 'maya-maya-s-v2-iq2_xxs-hip.json'
+    config.write_text(json.dumps({'args': [], 'env': {'MAYA_GLM_PCIE_SHARE': '0.3', 'MAYA_GLM_SPLIT': '1'}}))
+    keep = maya_s._config_env()
+    # The setup writes its own env (and an image encoder); unknown tuning is dropped by it.
+    config.write_text(json.dumps({'args': [], 'env': {'MAYA_GLM_SPLIT': '0'}, 'vision': {'exe': 'x'}}))
+    maya_s._enable_fit_max_tokens(keep)
+    cfg = json.loads(config.read_text())
+    assert cfg['env'] == {'MAYA_GLM_SPLIT': '0', 'MAYA_GLM_PCIE_SHARE': '0.3'}
+    maya_s._prepared_marker().write_text(json.dumps({'model': 'glm-maya-s'}))
+    assert maya_s.get_instance('maya-s')['vision'] is True
+    import inspect
+    assert '--no-vision' not in inspect.getsource(maya_s)
+
+
+def test_vision_requests_reach_maya_once_its_encoder_is_set_up(managed, monkeypatch):
+    from app.models_mgmt import ai_gateway, runtime_policy
+    monkeypatch.setattr(runtime_policy, 'get_policy', lambda: SimpleNamespace(selected_runtime='maya-s'))
+    async def ready(*args):
+        return {'ok': True}
+    monkeypatch.setattr(maya_s, 'health', ready)
+    row = {'alias': 'maya-s', 'base_url': 'http://127.0.0.1:8099/v1', 'vision': False}
+    monkeypatch.setattr(maya_s, 'get_instance', lambda alias: dict(row))
+    with pytest.raises(ai_gateway.AITargetUnavailable):
+        asyncio.run(ai_gateway.resolve_ai_target('vision.analyze'))
+    row['vision'] = True
+    assert asyncio.run(ai_gateway.resolve_ai_target('vision.analyze')).model == 'maya-s'
