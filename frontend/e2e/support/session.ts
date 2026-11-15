@@ -27,6 +27,6 @@ export async function establishSession(page: Page, context: BrowserContext): Pro
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(process.env.CONTROL_DECK_E2E_USER!);
   await page.getByLabel("パスワード").fill(process.env.CONTROL_DECK_E2E_PASSWORD!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await page.waitForURL((current) => !current.pathname.startsWith("/login"));
 }

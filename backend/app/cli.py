@@ -96,7 +96,14 @@ def main() -> None:
         if command == "register-local-desktop":
             _register_local_desktop(db)
         elif command == "create-admin":
-            password = _read_password()
+            # --password-stdin: 検証用インスタンス（./deck.sh e2e）が対話なしで作るため。
+            if "--password-stdin" in sys.argv[3:]:
+                password = sys.stdin.readline().rstrip("\n")
+                if len(password) < 8:
+                    print("パスワードは 8 文字以上にしてください", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                password = _read_password()
             user = create_admin(db, username, password)
             print(f"管理者 {user.username} を作成しました")
         elif command == "reset-password":

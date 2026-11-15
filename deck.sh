@@ -16,6 +16,7 @@
 #                                 --active で現在のログインセッション共有
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
+#   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
 #   ./deck.sh update-prepare    明示的なControlDeck本体更新の依存導入・UIビルド（内部用）
 #   ./deck.sh feature <status|install|update|enable|disable|uninstall> [feature-id]
@@ -520,6 +521,69 @@ cmd_test() {
   exec "$VENV/bin/python" -m pytest -q "$@"
 }
 
+# 画面の E2E を、本番とは別の検証用インスタンスで走らせる。
+#
+# これまでの E2E は既定で本番（8765）へ繋いでいた。利用者の設定を変える spec（権限・
+# パスワード・TOTP）を本番へ当てるのは危険で、AI が画面を確かめる用途にも使えなかった。
+# ここでは一時ディレクトリに data を作り、別ポートで ControlDeck を起こし、使い捨ての
+# 管理者で入って spec を流し、終わったら片付ける。ファン制御・通知・Ollama や LLM の
+# 管理など機械全体に効く処理は CONTROL_DECK_ISOLATED=1 で起動しない。
+cmd_e2e() {
+  check_root; check_python; ensure_venv
+  command -v npx >/dev/null || die "npx が必要です"
+  export_cache_paths
+  [ -f "$REPO_ROOT/frontend/dist/index.html" ] || (cd "$REPO_ROOT/frontend" && npm run build) || die "frontend のビルドに失敗しました"
+  local port="${CONTROL_DECK_E2E_PORT:-18765}"
+  if curl -fsS -o /dev/null "http://127.0.0.1:$port/api/v1/health" 2>/dev/null; then
+    die "ポート $port は使用中です（CONTROL_DECK_E2E_PORT で変えられます）"
+  fi
+  # trap は関数を抜けた後に走るので local にしない（set -u で未定義になる）。
+  E2E_WORK="$(mktemp -d "${TMPDIR:-/tmp}/control-deck-e2e.XXXXXX")"; E2E_PID=""
+  local work="$E2E_WORK"
+  chmod 700 "$work"
+  cat > "$work/config.yaml" <<YAML
+server:
+  host: 127.0.0.1
+  port: $port
+data_dir: $work/data
+codedev_dir: $work/CodeDEV
+git_apps_dir: $work/apps
+YAML
+  local password; password="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(18))')"
+  cleanup_e2e() {
+    if [ -n "${E2E_PID:-}" ]; then kill "$E2E_PID" 2>/dev/null; wait "$E2E_PID" 2>/dev/null || true; fi
+    [ -n "${E2E_WORK:-}" ] && rm -rf "$E2E_WORK"
+    E2E_PID=""; E2E_WORK=""
+  }
+  trap cleanup_e2e EXIT INT TERM
+  # exec で subshell を server そのものに置き換える。そうしないと kill が subshell にしか
+  # 届かず、server が残ってポートを持ったままになる。
+  (
+    cd "$REPO_ROOT/backend"
+    exec env -u CONTROL_DECK_DB_URL CONTROL_DECK_CONFIG="$work/config.yaml" CONTROL_DECK_ISOLATED=1 \
+      "$VENV/bin/python" -m app.server >"$work/server.log" 2>&1
+  ) &
+  E2E_PID=$!
+  local pid="$E2E_PID" waited=0
+  until curl -fsS -o /dev/null "http://127.0.0.1:$port/api/v1/health" 2>/dev/null; do
+    sleep 1; waited=$((waited + 1))
+    if [ "$waited" -ge 60 ] || ! kill -0 "$pid" 2>/dev/null; then
+      tail -20 "$work/server.log" >&2
+      die "検証用インスタンスが起動しませんでした"
+    fi
+  done
+  (cd "$REPO_ROOT/backend" && printf '%s\n' "$password" | \
+    env -u CONTROL_DECK_DB_URL CONTROL_DECK_CONFIG="$work/config.yaml" CONTROL_DECK_ISOLATED=1 \
+    "$VENV/bin/python" -m app.cli create-admin e2e-admin --password-stdin >/dev/null) || die "検証用の管理者を作れませんでした"
+  info "検証用インスタンス: http://127.0.0.1:$port（終了時に片付けます）"
+  local status=0
+  (cd "$REPO_ROOT/frontend" && \
+    CONTROL_DECK_E2E_URL="http://127.0.0.1:$port" CONTROL_DECK_E2E_USER=e2e-admin CONTROL_DECK_E2E_PASSWORD="$password" \
+    npx playwright test "$@") || status=$?
+  [ "$status" -eq 0 ] || info "失敗した spec の trace と画面写真: frontend/test-results/、一覧: frontend/playwright-report/"
+  return "$status"
+}
+
 cmd_backup() {
   check_root; check_python; ensure_venv; load_database_env
   exec bash "$REPO_ROOT/scripts/backup.sh" "$@"
@@ -731,6 +795,7 @@ case "${1:-start}" in
   enable-desktop)  shift; cmd_enable_desktop "$@" ;;
   disable-desktop) shift; cmd_disable_desktop "$@" ;;
   test)    shift; cmd_test "$@" ;;
+  e2e)     shift; cmd_e2e "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;
   feature) shift; cmd_feature "$@" ;;
   update-prepare) shift; cmd_update_prepare "$@" ;;

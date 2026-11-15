@@ -223,6 +223,16 @@ def _config_path() -> Path | None:
     return None
 
 
+def isolated() -> bool:
+    """E2E などで本番と並べて起こした検証用のインスタンスか（`./deck.sh e2e`）。
+
+    検証用のインスタンスは自分の data_dir しか持たないが、ファンや外部プロセス
+    （Ollama・SearXNG のコンテナ・LLM の自動起動）は本番と同じ機械のものを触る。
+    そうした「機械全体に効く」処理は、このとき起動しない。
+    """
+    return os.environ.get("CONTROL_DECK_ISOLATED") == "1"
+
+
 @lru_cache
 def get_config() -> Config:
     path = _config_path()
