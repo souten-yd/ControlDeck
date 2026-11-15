@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-15 自律開発の方針と変更の区分（#386）
+
+- `docs/POLICY-autonomous-development.md`: 役割（利用者・統括・実装・機械）、区分 L0（自動）/L1（自動＋事後報告、関門を通れば Release と本番の自動適用・自動の巻き戻し）/L2（利用者承認）、関門、適用の条件。
+- `config/change-policy/{controldeck,patentbuddy,codedev}.json` と `./deck.sh change-class`（`app/maintenance/change_policy.py`）。場所と変更内容で判定、内容の規則は強制する backend だけ。今日マージした PR に当てて妥当性を確認（外部送信・権限・隔離に触れたものは L2、画面だけは L1）。
+- AGENTS.md の「本体アップデーターは管理者の明示操作のみ」を、利用者の承認を得て区分による運用へ改訂。
+
 ## 2026-11-15 開発用の軽量サンドボックス（`./deck.sh sandbox`）
 
 - podman の空のルートにホストの /usr・/etc・/opt と道具を読み取り専用でつなぐ。イメージ不要・起動 0.07 秒。書けるのは箱のフォルダだけ、依存は overlay。

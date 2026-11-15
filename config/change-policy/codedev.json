@@ -1,0 +1,7 @@
+{
+  "name": "CodeDEV プロジェクト（アプリ・ゲーム）",
+  "default": "L0",
+  "rules": [
+    {"tier": "L2", "why": "秘密値・鍵", "paths": ["**/.env", "**/.env.*", "**/*secret*", "**/*.pem", "**/*.key"]}
+  ]
+}

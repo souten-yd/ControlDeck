@@ -1,0 +1,58 @@
+{
+ "name": "PatentBuddy",
+ "default": "L1",
+ "rules": [
+  {
+   "tier": "L2",
+   "why": "認証・権限・秘密値",
+   "paths": [
+    "qnaplibrary/auth.py",
+    "qnaplibrary/local_auth.py",
+    "qnaplibrary/webauthn.py",
+    "qnaplibrary/config.py"
+   ]
+  },
+  {
+   "tier": "L2",
+   "why": "機密の境界（外部 LLM・公開 API・送信）",
+   "paths": [
+    "qnaplibrary/llm.py",
+    "qnaplibrary/public_api.py",
+    "docs/privacy-boundary.md"
+   ],
+   "patterns": [
+    "confirm_public",
+    "published",
+    "openrouter",
+    "exit_gate",
+    "local_only",
+    "verified-local"
+   ],
+   "scope": [
+    "qnaplibrary/**"
+   ]
+  },
+  {
+   "tier": "L2",
+   "why": "正本データの移行・更新の仕組み",
+   "paths": [
+    "qnaplibrary/store.py",
+    "qnaplibrary/updater.py",
+    "qnaplibrary/backup.py",
+    "qpkg/**",
+    "packaging/**",
+    "AGENTS.md",
+    "CLAUDE.md"
+   ]
+  },
+  {
+   "tier": "L0",
+   "why": "文書・テストだけ",
+   "paths": [
+    "docs/**",
+    "*.md",
+    "tests/**"
+   ]
+  }
+ ]
+}
