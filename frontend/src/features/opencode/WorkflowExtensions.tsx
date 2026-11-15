@@ -1,12 +1,21 @@
-/** 開発ワークフローの拡張（Superpowers・Adversarial Review・Auto Advisor）。
+/** 開発ワークフローの拡張（Superpowers・Adversarial Review・Auto Advisor・UI 検証）。
  * ここでは「使う／使わない」と、レビュー・相談に使うモデルだけを選ぶ。プラグイン自体の
  * 導入・更新・削除は 設定 → オプション機能 で行う。
  * ControlDeck から起動する OpenCode セッションにだけ効く。レビュー・相談に別のモデルを
  * 選ぶと、ゲートウェイが要求に合わせて載せ替える（例: Flash-Next で開発し Maya-S でレビュー）。 */
+import { useMutation } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { api } from "../../api/client";
 import { SettingsGroup, Toggle } from "../models/formControls";
 
-type ExtensionKey = "superpowers" | "adversarial_review" | "auto_advisor";
+type ExtensionKey = "superpowers" | "adversarial_review" | "auto_advisor" | "ui_verify";
+const EXTENSIONS: ExtensionKey[] = ["superpowers", "adversarial_review", "auto_advisor", "ui_verify"];
+
+interface Diagnosis {
+  ok: boolean;
+  tools: number;
+  steps: { name: string; ok: boolean; detail: string; ms: number | null }[];
+}
 
 export interface Workflow {
   superpowers: boolean;
@@ -14,16 +23,23 @@ export interface Workflow {
   auto_advisor: "off" | "observe" | "active";
   review_model: string;
   advisor_model: string;
+  /** UI 検証（Playwright MCP）を session に載せるか。 */
+  ui_verify?: boolean;
+  /** UI 検証のブラウザに localhost 以外への通信を許すか。既定は許さない。 */
+  ui_verify_allow_external?: boolean;
+  /** このPCに Chrome が見つかったか。 */
+  browser?: boolean;
   models?: { alias: string; runtime: string }[];
   /** 拡張ごとのプラグインが導入済みか（オプション機能で入れる）。 */
-  installed?: Record<ExtensionKey, boolean>;
+  installed?: Partial<Record<ExtensionKey, boolean>>;
   /** 拡張に対応するオプション機能の id。 */
-  features?: Record<ExtensionKey, string>;
+  features?: Partial<Record<ExtensionKey, string>>;
 }
 
 export function workflowBody(value: Workflow) {
   return { superpowers: value.superpowers, adversarial_review: value.adversarial_review,
-    auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model };
+    auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
+    ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false };
 }
 
 export function WorkflowExtensions({ value, onChange, editable }: {
@@ -31,7 +47,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
 }) {
   const field = "mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
   const has = (key: ExtensionKey) => value.installed?.[key] ?? false;
-  const missing = (["superpowers", "adversarial_review", "auto_advisor"] as const).filter((key) => !has(key));
+  const missing = EXTENSIONS.filter((key) => !has(key));
   const installLink = (key: ExtensionKey) => (
     <Link to={`/settings/features#feature-${value.features?.[key] ?? ""}`} className="text-accent-600 underline dark:text-accent-400">
       設定 → オプション機能で導入
@@ -79,6 +95,61 @@ export function WorkflowExtensions({ value, onChange, editable }: {
       </label>
       {value.auto_advisor !== "off" && has("auto_advisor") && modelSelect("相談先のモデル", "advisor_model",
         "要否の判断はセッションと同じモデルで行い、相談するときだけこのモデルへ載せ替えます")}
+      <Toggle label="UI 検証（Playwright MCP）"
+        hint={!has("ui_verify") ? "未導入です"
+          : value.browser === false ? "このPCに Chrome が見つかりません。Google Chrome を入れると使えます"
+          : "AI が開発中の画面を実際のブラウザで開き、幅を変えて撮影・操作します"}
+        value={Boolean(value.ui_verify) && has("ui_verify")} disabled={!editable || !has("ui_verify")}
+        onChange={(v) => onChange({ ...value, ui_verify: v })} />
+      {!has("ui_verify") && <p className="-mt-1 text-[11px]">{installLink("ui_verify")}</p>}
+      {has("ui_verify") && value.ui_verify && <>
+        <Toggle label="外部サイトへの通信を許す"
+          hint="既定では localhost だけに届き、ControlDeck 自身は開けません。許すと AI のブラウザが外部のサイトも開けます"
+          value={Boolean(value.ui_verify_allow_external)} disabled={!editable}
+          onChange={(v) => onChange({ ...value, ui_verify_allow_external: v })} />
+        {editable && <UiVerifyDiagnosis />}
+      </>}
     </SettingsGroup>
+  );
+}
+
+/** UI 検証の接続診断。導入 → Chrome → 起動 → 道具の一覧 → 空のページを開く、の順に確かめる。 */
+function UiVerifyDiagnosis() {
+  const run = useMutation({
+    mutationFn: () => api<Diagnosis>("/opencode/tools/ui-verify/diagnose", { method: "POST" }),
+  });
+  const result = run.data;
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <button type="button" onClick={() => run.mutate()} disabled={run.isPending}
+          className="min-h-11 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800">
+          {run.isPending ? "診断中…（10 秒ほど）" : "接続を診断"}
+        </button>
+        <span className="min-w-0 flex-1 text-[11px] text-zinc-500">保存済みの設定でブラウザを実際に起こして確かめます</span>
+      </div>
+      <div aria-live="polite" className="space-y-2">
+        {run.isError && <p role="alert" className="break-words text-xs text-zinc-600 dark:text-zinc-300">
+          診断できませんでした。{run.error instanceof Error ? run.error.message : ""}
+        </p>}
+        {result && <>
+          <p className={`text-xs font-medium ${result.ok ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}>
+            {result.ok ? `✓ 使えます（道具 ${result.tools} 個）` : "✗ 途中で止まりました。下の ✗ の行を確かめてください"}
+          </p>
+          <ol className="divide-y divide-zinc-100 rounded-xl border border-zinc-200 text-xs dark:divide-zinc-800 dark:border-zinc-700">
+            {result.steps.map((step, index) => (
+              <li key={index} className="flex items-start gap-2 px-3 py-2">
+                <span aria-hidden className={`shrink-0 font-semibold ${step.ok ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>{step.ok ? "✓" : "✗"}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="break-words font-medium">{step.name}<span className="sr-only">{step.ok ? "（成功）" : "（失敗）"}</span></span>
+                  {step.detail && <span className="block break-all text-[11px] text-zinc-500">{step.detail}</span>}
+                </span>
+                {step.ms != null && <span className="shrink-0 tabular-nums text-[11px] text-zinc-400">{Math.round(step.ms)} ms</span>}
+              </li>
+            ))}
+          </ol>
+        </>}
+      </div>
+    </div>
   );
 }

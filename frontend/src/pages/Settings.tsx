@@ -625,7 +625,7 @@ function ControlDeckUpdateSection() {
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime"; route_gated: boolean;
+  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp"; route_gated: boolean;
   available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string; preview?: boolean;
