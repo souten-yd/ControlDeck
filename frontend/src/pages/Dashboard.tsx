@@ -9,6 +9,7 @@ import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
 import { PageHeader } from "../components/PageHeader";
 import { AgentToolWidget } from "../features/addons/AgentToolWidget";
+import { PendingApprovals } from "../features/approvals/PendingApprovals";
 
 interface HistorySample {
   timestamp: string;
@@ -80,6 +81,7 @@ export default function DashboardPage() {
       <div className="hidden md:block">
         <PageHeader title="Home" className="mb-0" />
       </div>
+      <PendingApprovals />
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
         <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 md:mb-2">

@@ -17,6 +17,7 @@
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
+#   ./deck.sh approval ... L2 の承認を依頼する（request|list）。利用者はホーム画面で承認・却下
 #   ./deck.sh change-class 変更の危険度の区分（L0/L1/L2、docs/POLICY-autonomous-development.md）
 #   ./deck.sh sandbox ...  開発用の軽量サンドボックス（new|list|status|shell|exec|opencode|mirror-start|mirror-stop|destroy）
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
@@ -595,6 +596,12 @@ cmd_sandbox() {
   exec "$VENV/bin/python" -m app.maintenance.sandbox "$@"
 }
 
+cmd_approval() {
+  check_root; check_python; ensure_venv
+  cd "$REPO_ROOT/backend"
+  exec "$VENV/bin/python" -m app.maintenance.approvals "$@"
+}
+
 cmd_change_class() {
   check_root; check_python; ensure_venv
   cd "$REPO_ROOT/backend"
@@ -815,6 +822,7 @@ case "${1:-start}" in
   e2e)     shift; cmd_e2e "$@" ;;
   sandbox) shift; cmd_sandbox "$@" ;;
   change-class) shift; cmd_change_class "$@" ;;
+  approval) shift; cmd_approval "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;
   feature) shift; cmd_feature "$@" ;;
   update-prepare) shift; cmd_update_prepare "$@" ;;
