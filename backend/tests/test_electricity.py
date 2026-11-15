@@ -1,6 +1,7 @@
 """PSU 電力読み取りと電気代積算のテスト。"""
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,7 +140,7 @@ def test_accumulator_integrates_and_skips_gaps(monkeypatch):
     acc._loaded = True
     # monotonic と wall を制御
     fake = {"mono": 1000.0, "wall": datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone(timedelta(hours=9)))}
-    monkeypatch.setattr(el.time, "monotonic", lambda: fake["mono"])
+    monkeypatch.setattr(el, "time", SimpleNamespace(**{**vars(el.time), "monotonic": lambda: fake["mono"]}))
     monkeypatch.setattr(el, "_local_now", lambda: fake["wall"])
     # persist を無効化（DB 触らない）
     monkeypatch.setattr(acc, "persist", lambda reason="interval": None)

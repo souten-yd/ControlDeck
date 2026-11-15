@@ -1,6 +1,8 @@
 """Control Deckを経由しない利用（OpenCode等）でllama instanceを止めない。"""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -240,7 +242,7 @@ def test_throughput_is_measured_from_the_cumulative_counter(monkeypatch):
     from app.models_mgmt import llama
 
     clock = {"now": 100.0}
-    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(llama, "time", SimpleNamespace(**{**vars(llama.time), "monotonic": lambda: clock["now"]}))
     llama._THROUGHPUT_SAMPLES.pop(9999, None)
 
     # 初回は基準を取るだけ

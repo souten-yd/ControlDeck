@@ -321,6 +321,7 @@ def test_opencode_runs_in_a_project_box(monkeypatch, tmp_path):
     assert argv[argv.index("-w") + 1] == str(project)
     assert argv[-2:] == ["opencode2", "--standalone"]
     assert "CONTROL_DECK_OPENCODE_BOX=1" in argv
+    assert f"OPENCODE_CONFIG_DIR={config / 'opencode'}" in argv
 
 
 def test_host_mode_and_missing_podman_fall_back(monkeypatch, tmp_path):

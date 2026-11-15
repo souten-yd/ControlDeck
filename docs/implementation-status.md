@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-15 OpenCode v2 のオプションプラグイン読み込み修正（#395、L2承認前）
+
+- 原因: Podman の管理ツール一覧に Superpowers / Adversarial Review / Auto Advisor がなく、ホストの npm 導入先を箱内から読めなかった。箱内に npm・node は存在する。
+- 修正: ３件の feature ディレクトリを依存ごと同じ絶対パスへ読み取り専用マウント。features 全体や他の拡張は公開しない。
+- 二次原因: Adversarial Review 2.0.2 は XDG_CONFIG_HOME ではなく OPENCODE_CONFIG_DIR をコマンド配置に使う。セッション専用 opencode ディレクトリを明示し、HOME 内の親ディレクトリ不在による初期化失敗と設定先不一致を防ぐ。
+- 実機検証: 独立した Podman + OpenCode v2 に本番と同じ file:// 指定を渡し、/api/plugin で３件 active、/api/command で adversarial-review と constructive-review を確認。プラグイン読み取り可・書き込み不可、本番 DB 不可視を確認。関連37テスト成功、Frontend build 成功。ミラーの起動・health・認証後の OpenCode 画面を1280px/320pxで確認。独立レビュー（プラグイン修正・時計隔離修正）の重大・要修正指摘0件。
+- 最初の最終CIで既存のworkflow復旧2テストが失敗。計測テストが標準 time.monotonic をプロセス全体で差し替え、別threadのasyncio復旧timerを遠未来にずらす干渉を特定。Python 3.11.18・稼働時間100秒を模した環境で修正前は同じ2件失敗、修正後は83件成功。6テストファイルのclock/sleepをモジュール内のtime参照だけへ限定。llama._throughput の重複importを除去し既存の先頭importを使う（通常動作は同じ）。workflow本体と復旧テストの期待値は変更なし。関連159件成功、短い稼働時間を模したPython 3.11全件1520成功・2skip（111.20秒）。
+- 後続CIの Add-on discovery テストも、fixture の定期healthy応答が手動degraded観測を上書きする競合をローカルで再現。対象テストの recheck だけ観測保持へ差替え、注入前に既存呼出しをdrainし、注入後もpollを明示実行して競合を検証する。既存の利用不可フィルターの期待値は維持。関連Addonテスト成功、Python 3.12全件1520成功・2skip（108.63秒）、Python 3.11短uptime全件1520成功・2skip（114.88秒）。
+- 既存セッションのマウントは変わらないため、適用後は OpenCode のターミナルを閉じて開き直す。復旧は本修正の直前の正式 Release へ戻して同様に開き直す。最終CI・L2承認・マージ・正式Release・本番適用はPRで追跡し、未達を完了扱いしない。
+
 ## 2026-11-15 OpenCode をプロジェクトの箱で動かす（#388）と本番の Release 追従化
 
 - OpenCode（TUI・チャットの code モード・headless 実行）を既定で podman の箱で起こす（`provider._launch`、`sandbox.container_argv` を共有）。書けるのはプロジェクト・session の設定・UI 検証の写真・MCP の長い結果・OpenCode 自身の履歴だけ。本番の data・秘密鍵・他のプロジェクト・~/.ssh・ControlDeck のコードは見えない（実機で確認）。ast-grep・OpenCode・Chrome・git・LLM ゲートウェイ・Add-on の MCP bridge は使える。設定 `isolation: host` か podman が無ければ従来どおり。
