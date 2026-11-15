@@ -14,6 +14,7 @@ import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
 import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
+import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 import { IconBell, IconChevronLeft, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconSettings, IconShield, IconUser, IconUsers } from "../components/icons";
@@ -959,6 +960,13 @@ function AddonsSection() {
     refetchInterval: jobId ? false : 15_000,
   });
   const { data: releases } = useReleaseStatus(addons);
+  // OpenCode の拡張・作業の道具は、導入しただけでは使われない。初期設定の状態を見るために読む。
+  const needsWorkflow = (addons ?? []).some((a) => a.installed && OPENCODE_SETUP_KEYS[a.id]);
+  const { data: workflow } = useOpenCodeWorkflow(needsWorkflow);
+  const pendingSetup = (addon: AddonState) => addon.installed && !addon.error && setupPending(addon.id, workflow);
+  // 初期設定が要るカードは「詳細と操作」を開いておく。設定を済ませても閉じない（閉じるのは利用者）。
+  const [autoOpened] = useState(() => new Set<string>());
+  for (const addon of addons ?? []) if (pendingSetup(addon)) autoOpened.add(addon.id);
   // /settings/features#feature-<id>（OpenCode の設定などから来たとき）はそのカードへ移動する。
   const hash = typeof window === "undefined" ? "" : window.location.hash;
   useEffect(() => {
@@ -1063,6 +1071,7 @@ function AddonsSection() {
   const mine = (addon: AddonState) => jobId !== null && jobAddon === addon.id;
   const statusLine = (addon: AddonState) =>
     addon.installed && addon.error ? `修復が必要: ${addon.error}`
+      : addon.enabled && pendingSetup(addon) ? "導入済み — 初期設定がまだです（「詳細と操作」で OpenCode で使う設定をオンに）"
       : addon.enabled ? addon.summary
       : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled ? "導入済み — サービスの復旧が必要です"
       : addon.installed ? "導入済み（無効）— 有効化すると使えます"
@@ -1135,7 +1144,7 @@ function AddonsSection() {
                       <div className="shrink-0">{primary(addon)}</div>
                     </div>
                     {addon.installed && (
-                      <details className="group mt-2">
+                      <details className="group mt-2" open={autoOpened.has(addon.id) || undefined}>
                         <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
                           <IconChevronRight className="transition-transform group-open:rotate-90" /> 詳細と操作
                         </summary>
@@ -1143,6 +1152,7 @@ function AddonsSection() {
                           {addon.preview && <p className="text-[11px] text-amber-700 dark:text-amber-300">PREVIEW — release署名またはcatalog digest固定前</p>}
                           {addon.kind === "gpu-runtime" && <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />}
                           {addon.id === "maya-s" && <MayaSPanel addon={addon} />}
+                          {OPENCODE_SETUP_KEYS[addon.id] && <OpenCodeFeatureSetup featureId={addon.id} />}
                           <div className="flex flex-wrap gap-1.5">
                             {addon.managed && !hasUpdate && (
                               <button onClick={() => void update(addon)} disabled={busy}

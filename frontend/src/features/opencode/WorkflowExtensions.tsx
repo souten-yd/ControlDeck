@@ -8,7 +8,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { SettingsGroup, Toggle } from "../models/formControls";
 
-type ExtensionKey = "superpowers" | "adversarial_review" | "auto_advisor" | "ui_verify";
+export type ExtensionKey = "superpowers" | "adversarial_review" | "auto_advisor" | "ui_verify";
 const EXTENSIONS: ExtensionKey[] = ["superpowers", "adversarial_review", "auto_advisor", "ui_verify"];
 
 interface Diagnosis {
@@ -114,7 +114,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
 }
 
 /** UI 検証の接続診断。導入 → Chrome → 起動 → 道具の一覧 → 空のページを開く、の順に確かめる。 */
-function UiVerifyDiagnosis() {
+export function UiVerifyDiagnosis() {
   const run = useMutation({
     mutationFn: () => api<Diagnosis>("/opencode/tools/ui-verify/diagnose", { method: "POST" }),
   });
