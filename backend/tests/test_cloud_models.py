@@ -178,3 +178,63 @@ def test_opencode_lists_cloud_models_only_when_allowed(store, monkeypatch, tmp_p
     cloud.save_egress({"opencode": True})
     models = provider._config_payload("j", "http://127.0.0.1:8765/api/v1/llm/v1", "auto")["provider"]["controldeck"]["models"]
     assert models["cloud:openrouter/anthropic/claude-x"]["name"].endswith("（外部）")
+
+
+# ---- 費用・データの扱い・残高（OpenRouter） ----
+
+
+def test_data_policy_is_enforced_on_every_openrouter_request(client, store, monkeypatch):
+    _configure()
+    cloud.save_egress({"opencode": True})
+    assert next(p for p in cloud.status()["providers"] if p["id"] == "openrouter")["data_policy"] == "deny"
+    upstream = _Upstream(monkeypatch, httpx.Response(200, json={"choices": [], "usage": {}}))
+    body = {"model": "cloud:openrouter/anthropic/claude-x", "messages": [],
+            "provider": {"data_collection": "allow", "order": ["x"]}}
+    client.post("/api/v1/llm/v1/chat/completions", headers=_gateway_headers("opencode"), json=body)
+    sent = json.loads(upstream.sent[-1].content)["provider"]
+    assert sent["data_collection"] == "deny" and sent["order"] == ["x"], "呼び出し元に緩めさせない"
+    cloud.save_provider("openrouter", {"data_policy": "zdr"})
+    client.post("/api/v1/llm/v1/chat/completions", headers=_gateway_headers("opencode"), json=body)
+    assert json.loads(upstream.sent[-1].content)["provider"]["zdr"] is True
+    with pytest.raises(cloud.CloudError):
+        cloud.save_provider("openai", {"data_policy": "zdr"})
+    with pytest.raises(cloud.CloudError):
+        cloud.save_provider("openrouter", {"data_policy": "none"})
+
+
+def test_remote_models_carry_price_and_privacy(store, monkeypatch):
+    import asyncio
+
+    _configure()
+    monkeypatch.setattr(cloud, "_zdr_models", lambda: _async({"vendor/safe"}))
+    _Upstream(monkeypatch, httpx.Response(200, json={"data": [
+        {"id": "vendor/safe", "name": "Safe", "pricing": {"prompt": "0.000003", "completion": "0.000015"}, "created": 1700000000},
+        {"id": "vendor/stored", "name": "Stored", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+        {"id": "vendor/free:free", "name": "Free", "pricing": {"prompt": "0", "completion": "0"}},
+    ]}))
+    rows = {row["id"]: row for row in asyncio.run(cloud.list_remote_models("openrouter"))}
+    assert rows["vendor/safe"]["price_input"] == 3.0 and rows["vendor/safe"]["price_output"] == 15.0
+    assert rows["vendor/safe"]["privacy"] == "zdr" and rows["vendor/safe"]["created"] == 1700000000
+    assert rows["vendor/stored"]["privacy"] == "may_store"
+    assert rows["vendor/free:free"]["privacy"] == "may_train" and rows["vendor/free:free"]["free"] is True
+
+
+def test_account_reports_the_remaining_balance(store, monkeypatch):
+    import asyncio
+
+    _configure()
+    upstream = _Upstream(monkeypatch, httpx.Response(200, json={"data": {
+        "limit": 20, "limit_remaining": 12.5, "usage": 7.5, "usage_monthly": 3.25, "is_free_tier": False,
+        "free_model_daily_requests": {"used": 3, "limit": 1000, "remaining": 997}}}))
+    result = asyncio.run(cloud.account("openrouter"))
+    assert result["limit_remaining"] == 12.5 and result["usage_monthly"] == 3.25 and result["free_requests_remaining"] == 997
+    assert str(upstream.sent[0].url) == "https://openrouter.ai/api/v1/key"
+    assert asyncio.run(cloud.account("openai")) == {"supported": False}
+
+
+async def _async_value(value):
+    return value
+
+
+def _async(value):
+    return _async_value(value)

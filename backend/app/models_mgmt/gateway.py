@@ -511,6 +511,10 @@ async def _cloud_chat(request: Request, payload: dict):
         # 費用を応答に含めてもらう（月の上限の計算に使う）。
         body["usage"] = {"include": True}
         headers["X-Title"] = "ControlDeck"
+        # データの扱い（利用者の設定）。呼び出し元が付けた provider の指定より強く、緩めさせない。
+        routing = target.routing()
+        if routing:
+            body["provider"] = {**(body.get("provider") if isinstance(body.get("provider"), dict) else {}), **routing}
     url = f"{target.base_url}/chat/completions"
     if body.get("stream"):
         body.setdefault("stream_options", {"include_usage": True})

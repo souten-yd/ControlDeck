@@ -1600,6 +1600,16 @@ async def cloud_remote_models(provider_id: str, user: User = Depends(require_per
         raise _cloud_error(exc) from exc
 
 
+@router.get("/cloud/{provider_id}/account")
+async def cloud_account(provider_id: str, user: User = Depends(require_permission("settings.manage"))):
+    from app.models_mgmt import cloud
+
+    try:
+        return await cloud.account(provider_id)
+    except cloud.CloudError as exc:
+        raise _cloud_error(exc) from exc
+
+
 @router.get("/cloud-usage")
 def cloud_usage(days: int = Query(default=30, ge=1, le=366),
                 user: User = Depends(require_permission("settings.manage"))):
