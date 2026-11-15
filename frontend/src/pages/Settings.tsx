@@ -666,9 +666,19 @@ function ControlDeckUpdateSection() {
   );
 }
 
+/** オプション機能の分け方（backend の features.registry.CATEGORIES と同じ順）。 */
+const FEATURE_CATEGORIES: [string, string, string][] = [
+  ["opencode", "OpenCode（開発）", "OpenCode 本体と、そこで使う拡張・道具（レビュー、UI 検証、文書の参照など）"],
+  ["runtime", "LLM ランタイム（GPU）", "ローカル LLM を動かす推論エンジン。モデルの登録と切り替えは Models で行います"],
+  ["addon", "拡張アプリ", "画像・音・特許などのアプリ。導入すると左のメニューに並びます"],
+  ["tools", "その他の道具", "アプリの書き出しなど、特定の機能で使う道具"],
+];
+
 interface AddonState {
   id: string; name: string; summary: string;
   kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp"; route_gated: boolean;
+  /** 用途の分類（opencode / runtime / addon / tools）。 */
+  category?: string;
   available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string; preview?: boolean;
@@ -1149,19 +1159,26 @@ function AddonsSection() {
     }
     return null;
   };
-  const groups: [string, AddonState[]][] = [
-    ["利用中", (addons ?? []).filter((a) => a.enabled)],
-    ["導入済み（無効）", (addons ?? []).filter((a) => a.installed && !a.enabled)],
-    ["導入できる機能", (addons ?? []).filter((a) => !a.installed)],
-  ];
+  // 用途で分ける（導入の仕組みではなく、利用者から見た使い道）。各分類の中は
+  // 利用中 → 導入済み（無効）→ 導入できる、の順。OpenCode 本体は拡張より先に置く。
+  const rank = (a: AddonState) => (a.id === "opencode-v2" ? -1 : a.enabled ? 0 : a.installed ? 1 : 2);
+  const groups: [string, string, AddonState[]][] = FEATURE_CATEGORIES.map(([key, title, description]) => [
+    title, description,
+    (addons ?? []).filter((a) => (a.category ?? "tools") === key)
+      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "ja")),
+  ]);
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="sr-only">オプション機能</h2>
       <p className="mb-3 text-xs text-zinc-500">導入はユーザー領域へのインストールで、パスワードは不要です。</p>
       <div className="space-y-5">
-        {groups.filter(([, items]) => items.length > 0).map(([title, items]) => (
+        {groups.filter(([, , items]) => items.length > 0).map(([title, description, items]) => (
           <div key={title}>
-            <h3 className="mb-2 text-xs font-semibold text-zinc-500">{title}（{items.length}）</h3>
+            <h3 className="flex flex-wrap items-baseline gap-x-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+              {title}
+              <span className="num font-normal text-zinc-400">利用中 {items.filter((a) => a.enabled).length} / {items.length}</span>
+            </h3>
+            <p className="mb-2 text-[11px] text-zinc-400">{description}</p>
             <div className="space-y-2">
               {items.map((addon) => {
                 const hasUpdate = releases?.[addon.id]?.update_available;
