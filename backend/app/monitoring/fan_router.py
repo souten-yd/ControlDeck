@@ -65,6 +65,8 @@ def put_fan_control(
         metadata={"enabled": body.enabled, "targets_c": body.targets_c,
                   "min_percent": body.min_percent, "allow_zero_rpm": body.allow_zero_rpm,
                   "startup_mode": body.startup_mode,
-                  "control_mode": body.control_mode},
+                  "control_mode": body.control_mode,
+                  "temperature_margin_c": body.temperature_margin_c,
+                  "warm_rate_percent_per_min": body.warm_rate_percent_per_min},
     )
     return result

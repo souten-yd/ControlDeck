@@ -182,3 +182,14 @@ def test_pid_ema_does_not_change_raw_median_safety_input():
         filt.update("temp2", v, 3)
     assert list(filt.raw["temp2"]) == [92, 96, 96]
     assert filt.value["temp2"] <= 96
+
+
+def test_ceiling_firmware_backstop_respects_hardware_range():
+    for ceiling in (45, 90, 100):
+        points = [tuple(map(int, p.split(':'))) for p in pid.ceiling_curve((20, 95, 15, 100), 37, ceiling).split(',')]
+        assert len(points) == 5
+        assert all(20 <= t <= 95 and 15 <= p <= 100 for t, p in points)
+        assert all(a[0] < b[0] and a[1] <= b[1] for a, b in zip(points, points[1:]))
+        assert points[-1][1] == 100
+        assert all(p == 37 for _, p in points[:-1])
+        assert points[-2][0] <= ceiling and points[-1][0] <= ceiling + 1

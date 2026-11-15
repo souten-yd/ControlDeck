@@ -318,7 +318,8 @@ def test_file_run_executes_single_source_without_manifest(admin_client, tmp_path
     (project / "src" / "style.css").write_text("body{}", encoding="utf-8")
     monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     monkeypatch.setattr(runs, "_systemd_tools", lambda: ("/usr/bin/systemd-run", "/usr/bin/systemctl", "/usr/bin/journalctl"))
-    monkeypatch.setattr(runs.shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(runs, "shutil", SimpleNamespace(**{**vars(runs.shutil),
+        "which": lambda value: f"/usr/bin/{value}"}))
     calls: list[list[str]] = []
 
     def fake_run(argv, **kwargs):
@@ -329,7 +330,8 @@ def test_file_run_executes_single_source_without_manifest(admin_client, tmp_path
             return SimpleNamespace(returncode=0, stdout="LoadState=loaded\nActiveState=active\nSubState=running\n", stderr="")
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(runs.subprocess, "run", fake_run)
+    # Keep background telemetry (sensors -j) out of this module's launch calls.
+    monkeypatch.setattr(runs, "subprocess", SimpleNamespace(**{**vars(runs.subprocess), "run": fake_run}))
     started = admin_client.post(
         "/api/v1/project-lab/projects/plain/file-runs",
         json={"path": "src/main.py", "timeout_seconds": 30}, headers={"X-Requested-With": "ControlDeck"},

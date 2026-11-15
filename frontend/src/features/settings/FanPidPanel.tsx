@@ -32,6 +32,8 @@ export type PidLive = {
   governing_sensor: string;
   override: boolean;
   tune_hold_percent: number | null;
+  temperature_margin_c?: number | null;
+  control_targets_c?: Record<string, number>;
 };
 
 type Sample = {
@@ -39,6 +41,7 @@ type Sample = {
   temps: Record<string, number | null>;
   smoothed_temps?: Record<string, number | null>;
   targets: Record<string, number>;
+  control_targets?: Record<string, number>;
   fan_percent: number | null;
   rpm: number | null;
   power_w: number | null;
@@ -131,6 +134,7 @@ export function FanHistoryChart() {
         ))}
         <path d={line((s) => s.fan_percent, yP)} fill="none" stroke="currentColor" strokeOpacity=".55" strokeWidth="1.6"/>
         <path d={line((s) => s.targets.junction, yT)} fill="none" stroke="#e11d48" strokeDasharray="4 3" strokeOpacity=".6"/>
+        <path d={line((s) => s.control_targets?.junction, yT)} fill="none" stroke="#16a34a" strokeDasharray="2 3" strokeOpacity=".8"/>
         {SERIES.map((series) => (
           <g key={series.kind}>
             {showRaw && <path d={line((s) => s.temps[series.kind], yT)} fill="none" stroke={series.color}
@@ -148,7 +152,8 @@ export function FanHistoryChart() {
             {last?.temps[series.kind] != null && ` ${Math.round(last.temps[series.kind] as number)}°C`}</span>
         ))}
         <span>温度: 太線EMA / {showRaw ? "細い点線は実測" : "実測線OFF"}</span>
-        <span><span className="text-rose-600">┅</span> hotspot目標</span>
+        <span><span className="text-rose-600">┅</span> hotspot設定温度</span>
+        {last?.control_targets && <span><span className="text-green-600">┅</span> 追従温度</span>}
         <span>━ ファン指令{last?.fan_percent != null && ` ${last.fan_percent}%`}{last?.rpm != null && `（${last.rpm}rpm）`}</span>
       </p>
     </div>
@@ -166,7 +171,8 @@ export function PidStatus({ live }: { live: PidLive | null | undefined }) {
     <p className="mt-2 text-[11px] tabular-nums text-zinc-600 dark:text-zinc-300">
       PID出力 {live.output_percent.toFixed(1)}% ＝ FF {live.feedforward_percent.toFixed(1)} ＋ P {live.p_percent.toFixed(1)} ＋ I {live.i_percent.toFixed(1)}
       （偏差 {live.error_c > 0 ? "+" : ""}{live.error_c.toFixed(1)}°C）
-      {live.override && <span className="ml-1 font-semibold text-red-600">目標+5°C超過のため最大</span>}
+      {live.override && <span className="ml-1 font-semibold text-red-600">{live.temperature_margin_c != null ? "上限温度に達したため最大" : "目標超過の保護制御"}</span>}
+      {live.temperature_margin_c != null && <span>・温度マージン {live.temperature_margin_c}°C</span>}
       {live.tune_hold_percent != null && <span className="ml-1 font-semibold text-accent-600">自動調整で{live.tune_hold_percent}%に固定中</span>}
     </p>
   );
