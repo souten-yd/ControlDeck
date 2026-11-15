@@ -156,6 +156,36 @@ def control_deck_auto_update_save(
     return {**result, "busy": auto_update.busy_reasons()}
 
 
+# L2 の承認（docs/POLICY-autonomous-development.md）。依頼は CLI（./deck.sh approval request）から作る。
+@router.get("/approvals")
+def approvals_list(include_done: bool = False, user: User = Depends(require_permission("settings.manage"))):
+    from app.maintenance import approvals
+
+    return {"approvals": approvals.list_all(include_done=include_done)}
+
+
+@router.post("/approvals/{approval_id}/{action}")
+def approvals_decide(
+    approval_id: str, action: str, request: Request, body: dict | None = None,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    from app.audit import service as audit
+    from app.maintenance import approvals
+
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=404, detail="操作が不正です")
+    try:
+        if action == "approve":
+            record = approvals.approve(approval_id, user=user.username)
+        else:
+            record = approvals.reject(approval_id, user=user.username, reason=str((body or {}).get("reason") or ""))
+    except approvals.ApprovalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(db, f"system.approval.{action}", user=user, resource_type="approval", resource_id=approval_id,
+                 request=request, metadata={"repo": record["repo"], "pr": record["pr"], "status": record["status"]})
+    return record
+
+
 @router.get("/disk")
 def disk(user: User = Depends(require_permission("system.view"))):
     from app.monitoring.disks import disk_telemetry

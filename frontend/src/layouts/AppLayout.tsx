@@ -25,6 +25,7 @@ import {
 } from "../components/icons";
 import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
+import { ApprovalsCenter } from "../features/approvals/PendingApprovals";
 import { Logo } from "../components/Logo";
 import { PRODUCT_NAMES } from "../constants/productNames";
 import { canAccessNavigationItem, IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
@@ -271,6 +272,8 @@ export default function AppLayout() {
             </button>
           </div>
           <div className="flex items-center gap-3">
+            {/* L2 の承認待ち。どの画面でも見え、新しい依頼はポップアップで開く。 */}
+            <ApprovalsCenter />
             {/* 初回接続を「再接続中」と出さない。まだ一度も繋がっていないのに
                 再接続と言われると、壊れているように見える。 */}
             {streamStatus !== "live" && can("system.view") && (

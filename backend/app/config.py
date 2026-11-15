@@ -16,6 +16,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
+    # 利用者が外から開く URL（例: Tailscale の https://<名前>.ts.net）。通知に開くための
+    # リンクを付けるのに使う。空ならリンクを付けない。
+    public_url: str = ""
 
 
 class SecurityConfig(BaseModel):
