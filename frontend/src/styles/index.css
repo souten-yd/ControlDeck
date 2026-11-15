@@ -178,6 +178,9 @@ label:has([data-snippet-code]) + p code {
 }
 
 /* xterm標準scrollbarはiPhoneでdragしにくいため、文字幅を削らないoverlay trackへ置換する。 */
+.terminal-xterm-host[data-terminal-persistent="true"] .xterm-scrollable-element > .scrollbar.vertical {
+  display: none !important;
+}
 @media (max-width: 767px) and (pointer: coarse) {
   .terminal-xterm-host .xterm-scrollable-element > .scrollbar.vertical {
     display: none !important;

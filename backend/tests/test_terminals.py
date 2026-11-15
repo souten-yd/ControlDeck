@@ -211,15 +211,16 @@ def test_tmux_history_scroll_uses_bounded_copy_mode_commands(monkeypatch):
 
     def fake_run(argv, **_kwargs):
         calls.append(argv)
-        stdout = "7\n" if "display-message" in argv else ""
+        stdout = "7|100000\n" if "display-message" in argv else ""
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr("app.terminals.manager.subprocess.run", fake_run)
     conn = TerminalConnection(master_fd=123, pid=456, owns_process=False, tmux_target="cdterm-0123abcd")
-    assert conn.scroll_history(-250) is True
+    assert conn.scroll_history(-200000) is True
     assert calls == [
         ["tmux", "copy-mode", "-e", "-t", "cdterm-0123abcd"],
-        ["tmux", "send-keys", "-t", "cdterm-0123abcd", "-X", "-N", "100", "scroll-up"],
+        ["tmux", "display-message", "-p", "-t", "cdterm-0123abcd", "#{scroll_position}|#{history_size}"],
+        ["tmux", "send-keys", "-t", "cdterm-0123abcd", "-X", "goto-line", "100000"],
     ]
 
 
@@ -228,7 +229,7 @@ def test_tmux_history_scroll_down_exits_at_live_edge(monkeypatch):
 
     def fake_run(argv, **_kwargs):
         calls.append(argv)
-        stdout = "0\n" if "display-message" in argv else ""
+        stdout = "7|100000\n" if "display-message" in argv else ""
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr("app.terminals.manager.subprocess.run", fake_run)
@@ -290,6 +291,9 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
             self.history_scroll_calls.append(lines)
             return True
 
+        def history_state(self) -> dict[str, int]:
+            return {"position": 12, "total": 1200}
+
         def exit_history(self) -> bool:
             self.history_exit_calls += 1
             return True
@@ -327,6 +331,7 @@ def test_terminal_websocket_resize_ack_tracks_generations(admin_client, monkeypa
         }))
         assert websocket.receive_json() == {
             "type": "history_scroll_ack", "success": True, "connectionGeneration": 3,
+            "position": 12, "total": 1200,
         }
         websocket.send_text(json.dumps({"type": "history_exit", "connectionGeneration": 3}))
         websocket.send_text(json.dumps({

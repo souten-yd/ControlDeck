@@ -16,7 +16,7 @@ from app.database import SessionLocal, get_db
 from app.models import User
 from app.security.deps import authenticate_websocket, require_permission
 from app.terminals import attachments
-from app.terminals.manager import manager, tmux_available
+from app.terminals.manager import HISTORY_LINES, manager, tmux_available
 from app.terminals.stream import JournalEntry, TerminalClientStream, TerminalStreamRegistry
 
 logger = logging.getLogger("control_deck.terminals")
@@ -229,10 +229,18 @@ async def terminal_ws(
         entries = stream.journal.after(0 if created_stream else baseline, presentation_through) or []
         for entry in entries:
             await send_output(entry)
+        history_info: dict[str, int] = {}
+        if getattr(conn, "tmux_target", None):
+            try:
+                history = await asyncio.to_thread(conn.history_state)
+                history_info = {"historyTotal": history["total"], "historyPosition": history["position"]}
+            except OSError:
+                logger.warning("terminal history position unavailable for %s", session_id)
         await send_control({
             "type": "history_end",
             "connectionGeneration": connection_generation,
             "sequence": presentation_through,
+            **history_info,
         })
         return presentation_through
 
@@ -460,15 +468,18 @@ async def terminal_ws(
                         lines = int(ctrl["lines"])
                         if message_connection_generation != stream.connection_generation:
                             raise ValueError("stale connection generation")
-                        if lines == 0 or not -100 <= lines <= 100:
+                        if lines == 0 or not -HISTORY_LINES <= lines <= HISTORY_LINES:
                             raise ValueError("invalid history scroll distance")
                         try:
                             moved = await asyncio.to_thread(conn.scroll_history, lines)
+                            history = await asyncio.to_thread(conn.history_state) if moved else {}
                         except OSError:
                             moved = False
+                            history = {}
                         await send_control({
                             "type": "history_scroll_ack", "success": moved,
                             "connectionGeneration": message_connection_generation,
+                            **history,
                         })
                     elif ctrl.get("type") == "history_exit":
                         if pending_input is not None or pending_presentation is not None:
