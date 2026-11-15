@@ -114,12 +114,51 @@ def approve(approval_id: str, *, user: str) -> dict:
     )
     if result.returncode == 0:
         record.update(status="merged", result="マージしました")
+        if record["repo"] == RELEASE_REPO:
+            # 承認されたものは、そのまま本番まで進める: 次の版の正式 Release を出し、
+            # 本番の自動適用に「使われていなければすぐ」と伝える（10 分の待ちを飛ばす）。
+            try:
+                tag = _release(record)
+                record.update(release_tag=tag, result=f"マージし、{tag} を出しました。使われていなければすぐ本番へ適用します")
+                from app.maintenance import auto_update
+
+                auto_update.request_prompt_apply(tag)
+            except ApprovalError as exc:
+                record.update(result=f"マージしました（Release は出せませんでした: {exc}）")
     else:
         # gh の出力は URL などを含みうるので、利用者へは固定の文言だけを出す。
         changed = "head" in (result.stderr or "").lower() and "match" in (result.stderr or "").lower()
         record.update(status="failed", result="PR が依頼の後に変わったためマージしませんでした" if changed
                       else "マージできませんでした（PR の状態を確認してください）")
     return _write(record)
+
+
+RELEASE_REPO = "souten-yd/ControlDeck"
+_TAG = re.compile(r"^ControlDeck_v(\d+)\.(\d+)$")
+
+
+def _release(record: dict) -> str:
+    """マージ後の main から次の版の正式 Release を出す（ControlDeck 本体だけ）。"""
+    def gh(*args: str) -> str:
+        out = subprocess.run([_gh(), *args, "--repo", RELEASE_REPO], capture_output=True, text=True,
+                             timeout=120, check=False, stdin=subprocess.DEVNULL)
+        if out.returncode != 0:
+            raise ApprovalError("GitHub の操作に失敗しました")
+        return out.stdout.strip()
+
+    merged = gh("pr", "view", str(record["pr"]), "--json", "mergeCommit", "-q", ".mergeCommit.oid")
+    if not _SHA.fullmatch(merged):
+        raise ApprovalError("マージのコミットを確認できません")
+    tags = [m for m in (_TAG.match(line.split("\t")[0].strip()) for line in
+                         gh("release", "list", "--limit", "50", "--json", "tagName", "-q", ".[].tagName").splitlines()) if m]
+    major, minor = max(((int(m.group(1)), int(m.group(2))) for m in tags), default=(0, 0))
+    tag = f"ControlDeck_v{major}.{minor + 1}"
+    notes = (f"## ControlDeck v{major}.{minor + 1}\n\n### 主な変更\n- **{record['title']}**（#{record['pr']}）\n\n"
+             f"{record['summary']}\n\n### 判断\n- 利用者が承認（L2）: {', '.join(record.get('risks') or [])}\n\n"
+             "### 更新方法\n使われていなければすぐ本番へ自動で適用されます。\n\n"
+             "### 前の版へ戻すには\n更新後の確認に失敗すると自動で前の版へ戻ります。\n")
+    gh("release", "create", tag, "--target", merged, "--title", f"ControlDeck v{major}.{minor + 1}", "--notes", notes)
+    return tag
 
 
 def reject(approval_id: str, *, user: str, reason: str = "") -> dict:

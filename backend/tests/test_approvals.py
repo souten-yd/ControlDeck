@@ -85,3 +85,34 @@ def test_web_requires_settings_manage(admin_client, monkeypatch, tmp_path):
     assert admin_client.post(f"/api/v1/system/approvals/{record['id']}/delete", headers=headers).status_code == 404
     assert admin_client.post(f"/api/v1/system/approvals/{record['id']}/reject", json={},
                              headers=headers).json()["status"] == "rejected"
+
+
+def test_an_approved_controldeck_pr_is_released_and_applied_promptly(store, monkeypatch):
+    from app.maintenance import auto_update
+
+    monkeypatch.setattr(auto_update, "data_dir", lambda: store)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv[1:])
+        if argv[1:3] == ["pr", "view"]:
+            return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\n", "")
+        if argv[1:3] == ["release", "list"]:
+            return subprocess.CompletedProcess(argv, 0, "ControlDeck_v0.16\nControlDeck_v0.9\nother\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(approvals.subprocess, "run", run)
+    record = approvals.approve(_request()["id"], user="admin")
+    assert record["status"] == "merged" and record["release_tag"] == "ControlDeck_v0.17"
+    create = next(c for c in calls if c[:2] == ["release", "create"])
+    assert create[2] == "ControlDeck_v0.17" and create[create.index("--target") + 1] == "b" * 40
+    assert auto_update._prompt_requested("ControlDeck_v0.17")
+
+
+def test_other_repositories_are_only_merged(store, monkeypatch):
+    calls = []
+    monkeypatch.setattr(approvals.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv[1:]) or subprocess.CompletedProcess(argv, 0, "", ""))
+    record = approvals.approve(_request(repo="souten-yd/PatentBuddy")["id"], user="admin")
+    assert record["status"] == "merged" and "release_tag" not in record
+    assert not any(c[:2] == ["release", "create"] for c in calls)

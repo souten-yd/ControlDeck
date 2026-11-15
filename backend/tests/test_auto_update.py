@@ -83,3 +83,23 @@ def test_busy_reasons_cover_open_opencode_sessions(monkeypatch):
 
     monkeypatch.setattr(terminal_manager.manager, "list_sessions", lambda: [{"program": "opencode2"}])
     assert "OpenCode のセッションが開いている" in auto_update.busy_reasons()
+
+
+def test_an_approved_release_skips_the_idle_wait(env):
+    auto_update.request_prompt_apply("ControlDeck_v0.13")
+    assert run(auto_update.tick(None, 1000.0)) is None
+    assert env["started"] == [("a" * 40, {"automatic": True, "release_tag": "ControlDeck_v0.13"})]
+    assert not auto_update._prompt_path().exists()
+
+
+def test_an_approved_release_still_waits_while_busy(env):
+    auto_update.request_prompt_apply("ControlDeck_v0.13")
+    env["busy"] = ["LLM の推論中"]
+    assert run(auto_update.tick(None, 1000.0)) is None
+    assert env["started"] == [] and auto_update._prompt_path().exists()
+
+
+def test_a_prompt_for_another_release_is_ignored(env):
+    auto_update.request_prompt_apply("ControlDeck_v0.99")
+    assert run(auto_update.tick(None, 1000.0)) == 1000.0
+    assert env["started"] == []
