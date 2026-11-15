@@ -147,6 +147,12 @@ def installed() -> bool:
 def _exec(argv: list[str], *, cwd: Path | None = None, timeout: int = 120,
           check: bool = True) -> subprocess.CompletedProcess:
     env = {**os.environ, "MAYA_UPDATE_CHECK": "0"}
+    # The image encoder's CMake guesses the ROCm root from the first clang it finds
+    # (/opt/rocm-*/core-*, which has no hip-lang package) and stops configuring; the
+    # engine build already uses /opt/rocm, so point the encoder at the same one.
+    rocm = Path("/opt/rocm").resolve()
+    if "ROCM_PATH" not in env and (rocm / "lib/cmake/hip-lang/hip-lang-config.cmake").is_file():
+        env["ROCM_PATH"] = str(rocm)
     # Long-running setup can print gigabytes of progress over many hours.
     # Never accumulate an unbounded subprocess pipe in ControlDeck memory.
     long_run = timeout > 300
