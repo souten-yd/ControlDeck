@@ -165,3 +165,71 @@ def test_report_tool_is_offered_and_saves(monkeypatch, report_root):
     with pytest.raises(HTTPException) as caught:
         agent_mcp._save_report({"kind": "nope", "title": "x"}, _User(), {"sub": "opencode:tui-7"}, None, None)
     assert caught.value.status_code == 422
+
+
+# ---- 精密調査（control_deck.research、第 2 段階） ----
+
+from app.integrations.opencode import research  # noqa: E402
+
+
+def test_research_stays_local_unless_allowed(tmp_path):
+    local = {"research_tool": True, "research_external": False}
+    planned = research.plan({"question": "x", "sources": ["web", "local_code"]}, local, project_path=tmp_path)
+    assert planned["sources"] == ["local_code"] and planned["refused"] == ["web"]
+    with pytest.raises(research.ResearchRefused):
+        research.plan({"question": "x", "sources": ["web"]}, local, project_path=tmp_path)
+    opened = research.plan({"question": "x"}, {**local, "research_external": True}, project_path=None)
+    assert "web" in opened["sources"] and "local_code" not in opened["sources"]
+
+
+def test_research_project_must_be_inside_codedev(tmp_path):
+    codedev = tmp_path / "CodeDEV"
+    (codedev / "game").mkdir(parents=True)
+    (tmp_path / "secret").mkdir()
+    assert research.resolve_project(str(codedev / "game"), codedev=codedev) == (codedev / "game").resolve()
+    assert research.resolve_project(str(tmp_path / "secret"), codedev=codedev) is None
+    assert research.resolve_project(str(codedev / "game" / ".." / ".." / "secret"), codedev=codedev) is None
+    assert research.resolve_project("/etc", codedev=codedev) is None
+
+
+def test_research_tool_runs_deep_research_and_keeps_a_report(monkeypatch, report_root):
+    import asyncio
+
+    from app.addons import agent_mcp
+    from app.workflows import chat_router
+
+    codedev = report_root / "CodeDEV"
+    (codedev / "game").mkdir(parents=True)
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS, "model": "auto"})
+    monkeypatch.setattr(provider, "codedev_root", lambda: codedev)
+    seen = {}
+
+    async def fake_deep(body, progress=None):
+        seen["sources"], seen["path"] = body.source_types, body.local_project_path
+        return {"report": "結論 [1]", "sources": [
+            {"title": "main.py", "url": "", "source": "local_code", "kind": "document", "snippet": "def f()", "meta": {}}],
+            "research": {"citation_metrics": {"citation_coverage": 1.0}, "coverage_limits": []}}
+
+    monkeypatch.setattr(chat_router, "_deep_search", fake_deep)
+    monkeypatch.setattr(agent_mcp.audit, "record", lambda *a, **k: None)
+
+    class _User:
+        id = 3
+
+    result = asyncio.run(agent_mcp._run_research(
+        {"question": "f はどこで呼ばれる？", "sources": ["local_code", "web"], "project_dir": str(codedev / "game")},
+        _User(), {"sub": "opencode:tui-3"}, None, None))
+    assert seen == {"sources": ["local_code"], "path": str((codedev / "game").resolve())}
+    assert result["used_sources"] == ["local_code"] and result["report"] == "結論 [1]"
+    saved = reports.get(result["report_id"], owner_user_id=3)
+    assert saved["kind"] == "research" and saved["sources"][0]["primary"] is True
+    assert any("web" in item for item in saved["unverified"]), "許可されなかった情報源を記録する"
+
+
+def test_research_tool_can_be_turned_off(monkeypatch):
+    from app.addons import agent_mcp
+
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS, "research_tool": False})
+    assert agent_mcp._research_tool() is None
+    monkeypatch.setattr(provider, "get_settings", lambda: {**provider.DEFAULT_SETTINGS})
+    assert "外部へ問い合わせない" in agent_mcp._research_tool()["description"]

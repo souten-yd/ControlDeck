@@ -31,10 +31,12 @@ class WorkflowBody(BaseModel):
     advisor_model: str | None = Field(default=None, max_length=200)
     ui_verify: bool | None = None
     ui_verify_allow_external: bool | None = None
+    research_tool: bool | None = None
+    research_external: bool | None = None
 
 
 WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model",
-                 "ui_verify", "ui_verify_allow_external")
+                 "ui_verify", "ui_verify_allow_external", "research_tool", "research_external")
 
 
 class RunBody(AgentTargetBody):

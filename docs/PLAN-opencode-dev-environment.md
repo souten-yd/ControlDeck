@@ -98,7 +98,7 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | 第 1 段階 B（backend） | 実装済み（Playwright MCP 導入・接続診断を実機で確認） | #378 |
 | 第 1 段階 C（画面） | 完了（Fable 担当。検証用インスタンスで 320/1280・ライト/ダークを撮影確認） | #379, #381 |
 | 第 1 段階 D（E2E） | 実装済み（`./deck.sh e2e`、axe 12 件合格） | #380 |
-| 第 2 段階 | 未着手 | — |
+| 第 2 段階 | 精密調査の道具を実装・実機確認（ローカルのみで 113 秒・出典 5 件）。Context7 は未着手 | #382 |
 | 第 3 段階 | 未着手 | — |
 
 ## 版の固定（2026-11-15 時点、公開から 2 週間以上経った版）
@@ -123,3 +123,4 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 - `e2e/support/session.ts` のログインは「ログイン」と「顔認証・パスキーでログイン」の 2 つに当たって全 spec が落ちていた（`exact: true` で直した）。
 - オプション機能の画面（設定 → 機能と拡張）で、OpenCode の拡張・作業の道具の「初期設定」（OpenCode で使う・外部通信・接続診断）ができる。導入済みで未設定なら一覧に「初期設定がまだです」と出し、「詳細と操作」を開いておく（`features/opencode/FeatureSetup.tsx`）。
 - OpenCode が入っていない検証用インスタンスで OpenCode 画面を試すときは `e2e/support/opencode.ts` の `openOpenCode`（meta の enabled_features を補い、最初に読む API を差し替える）。
+- 精密調査: ControlDeck の MCP に `control_deck.research`。AI チャットの `_deep_search` をそのまま呼び、結果を `kind: research` の報告として残す。情報源は既定で `local_code`（と `rag`）だけ。`research_external` をオンにしたときだけ web / academic / github / direct を使う。外部を頼まれて許可が無いときは落として、報告の「確かめられなかったこと」に書く。`project_dir` は CodeDEV 配下だけ受ける（Project Lab の project_id があればそちらが優先）。
