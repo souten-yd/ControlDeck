@@ -4125,5 +4125,5 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
 - Strata、Maya各系列、Radiance、llama.cppのネイティブな予約設定へ次回起動時に自動変換。個別予約が大きければ維持。保存だけで推論を止めない。
 - llama.cppは保存時に永続unitも同期。固定GPU層数や古いバイナリで自動調整できない場合は明示エラー。Mayaは設定ファイルの同一性・思考設定を維持し、元の予約を記録して縮小にも対応。
 - 外部Ollamaのサービス環境変数変更は対象外。画面に共通値から換算した `OLLAMA_GPU_OVERHEAD` を表示。
-- 検証: Backend全体1583件成功/2件skip（旧設定の同値保存テスト追加前）。Frontend production build成功。320px/1280pxの設定保存・再読込、関連Models UI、アクセシビリティ18件成功。Strata実CLIのplanとllama.cpp実バイナリhelpで対応引数を確認。
-- 大型モデルの再ロード・推論負荷試験は未実施。詳細は `docs/models-vram-margin.md`。最終全体テスト・独立レビュー・ミラー・CI・配備の記録は追記する。
+- 検証: Backend全体1584件成功/2件skip、最終Maya重複フラグ修正後の独立集中テスト16件成功。Frontend production build成功。320px/1280pxの設定保存・再読込、関連Models UI、アクセシビリティ18件成功。Strata実CLIのplanとllama.cpp実バイナリhelpで対応引数を確認。
+- 大型モデルの再ロード・推論負荷試験は未実施。詳細は `docs/models-vram-margin.md`。独立レビューは必須修正0件。サンドボックスミラーでも320px/1280pxの共通設定保存を確認。最終コードのCI: `43872798598`。PR #405。配備は正式Releaseから行う。
