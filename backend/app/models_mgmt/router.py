@@ -966,8 +966,12 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
             # 実行中（無ければ直前）の 1 本の「プロンプト + 生成」。KV の使用量ではない。
             "ctx_active": ctx_active,
         })
+    # 動いているモデルが無いとき、Home に出す「最後に見えていたローカル LLM」（アンロード中の表示）。
+    from app.models_mgmt import llm_last_seen
+    last_local = await asyncio.to_thread(llm_last_seen.update, endpoints)
     # LLM が処理していた間の PC 全体の電力と電気代（Home の LLM カード）。
-    return {"endpoints": endpoints, "failed": failed, "power": accumulator.llm_snapshot()}
+    return {"endpoints": endpoints, "failed": failed, "power": accumulator.llm_snapshot(),
+            "last_local": last_local}
 
 
 async def _engine_context(item: dict) -> tuple[int | None, int | None]:

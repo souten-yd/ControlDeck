@@ -151,6 +151,9 @@ export interface EndpointCapacity {
   ctx_active?: number | null;
 }
 
+/** 動いているモデルが無いときの、最後に見えていたローカル LLM（at は最後に見えた時刻、UNIX 秒）。 */
+export type LastLocal = Pick<EndpointCapacity, "running_alias"> & Partial<EndpointCapacity> & { at?: number };
+
 /** LLM が処理していた間の PC 全体の電力と電気代（PSU のコンセント側換算）。 */
 export interface LlmPower {
   enabled: boolean;
@@ -174,5 +177,5 @@ export interface FailedInstance {
 }
 
 export const getLlamaCapacity = () =>
-  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; power?: LlmPower }>(
+  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; power?: LlmPower; last_local?: LastLocal | null }>(
     "/models/llama/capacity");

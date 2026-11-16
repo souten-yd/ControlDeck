@@ -3,10 +3,11 @@
  * 左右は同じ作り: 見出し → モデル名 → 前処理（OpenRouter は初回応答）・生成・ctx → 区切り →
  * お金の 2 行（ローカルは LLM 処理中の電力と今日の電気代、OpenRouter は残りクレジットと今日の使用）。
  * 携帯（320px〜）でも左右半分ずつで、モデル名が切れない幅を先に確保している。
- * どちらも無ければカードごと出さない。外部側は settings.manage の利用者だけ。 */
+ * ローカル側は workflows.run の利用者に常に出す（アンロード中は最後に動いていたモデルの値を薄く）。
+ * 外部側は settings.manage の利用者だけ。 */
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getLlamaCapacity, type EndpointCapacity, type FailedInstance, type LlmPower } from "../../api/models";
+import { getLlamaCapacity, type EndpointCapacity, type FailedInstance, type LastLocal, type LlmPower } from "../../api/models";
 import {
   CLOUD_QUERY_KEY, getCloudAccount, getCloudState, getCloudSummary, type CloudSummary,
 } from "../../api/cloudModels";
@@ -62,12 +63,15 @@ function CtxBar({ used, total }: { used: number | null | undefined; total: numbe
   );
 }
 
-function Column({ heading, to, model, children }: {
-  heading: string; to: string; model: React.ReactNode; children: React.ReactNode;
+function Column({ heading, to, model, badge, children }: {
+  heading: string; to: string; model: React.ReactNode; badge?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <div className="min-w-0">
-      <Link to={to} className="block truncate text-[10px] font-semibold text-zinc-500 hover:underline md:text-xs">{heading}</Link>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Link to={to} className="truncate text-[10px] font-semibold text-zinc-500 hover:underline md:text-xs">{heading}</Link>
+        {badge}
+      </div>
       <div className="mb-1 mt-0.5 flex min-w-0 items-center gap-1.5 text-xs md:text-sm">{model}</div>
       <div className="md:max-w-[18rem]">{children}</div>
     </div>
@@ -86,37 +90,48 @@ function ModelName({ name, title, active, more = 0 }: { name: string; title?: st
   );
 }
 
-function LocalColumn({ endpoints, failed, power }: {
+function LocalColumn({ endpoints, failed, power, lastSeen }: {
   endpoints: EndpointCapacity[]; failed: FailedInstance[]; power: LlmPower | undefined;
+  lastSeen: LastLocal | null | undefined;
 }) {
-  // 複数動いていれば、処理中のものを先に出す。
-  const item = [...endpoints].sort((a, b) => b.busy - a.busy)[0];
-  const loading = !!item && (!item.available || item.slots === 0);
+  // 複数動いていれば、処理中のものを先に出す。動いていなければ最後に見えていたモデルを「アンロード」で出す。
+  const live = [...endpoints].sort((a, b) => b.busy - a.busy)[0];
+  const item: Partial<EndpointCapacity> | null | undefined = live ?? lastSeen;
+  const unloaded = !live && !!lastSeen;
+  const loading = !!live && (!live.available || live.slots === 0);
   const used = item ? (item.timed_by_controldeck ? item.ctx_active : item.ctx_used) : null;
+  const total = item?.ctx_total ?? 0;
+  const prefill = item?.prefill_tokens_per_second ?? 0;
+  // 待機中に 0 を返す実行環境では、直前の 1 本の速さを出す。
+  const decode = (item?.tokens_per_second || item?.tokens_per_second_single) ?? 0;
   const on = power?.enabled;
   const watts = power?.busy ? power.now_w : power?.avg_w;
+  const past = unloaded ? "text-zinc-500" : "";
   return (
     <Column heading="ローカル LLM" to="/models?tab=llm"
-      model={item
-        ? <ModelName name={item.running_alias} title={`${item.running_alias} :${item.port}`} active={item.busy > 0} more={endpoints.length - 1} />
-        : <span className="truncate text-red-600 dark:text-red-400">起動失敗: {failed[0]?.alias}</span>}>
-      {item && (
-        <>
-          <Row label={item.phase === "prefill" ? "前処理中" : "前処理"}>
-            {loading ? <Muted>起動中…</Muted>
-              : item.prefill_tokens_per_second > 0 ? <>{Math.round(item.prefill_tokens_per_second).toLocaleString()} <Unit>tok/s</Unit></>
-              : <Muted />}
-          </Row>
-          <Row label={item.phase === "think" ? "思考中" : "生成"}>
-            {!loading && (item.tokens_per_second > 0 || item.busy > 0)
-              ? <>{item.tokens_per_second.toFixed(1)} <Unit>tok/s</Unit></> : <Muted />}
-          </Row>
-          <Row label="ctx">
-            {used != null ? tokens(used) : <Muted />} / {item.ctx_total > 0 ? tokens(item.ctx_total) : "—"}
-          </Row>
-          <CtxBar used={used} total={item.ctx_total} />
-        </>
+      badge={unloaded && (
+        <span className="shrink-0 rounded border border-zinc-300 px-1 text-[9px] leading-tight text-zinc-500 dark:border-zinc-600 md:text-[10px]">アンロード</span>
       )}
+      model={live
+        ? <ModelName name={live.running_alias} title={`${live.running_alias} :${live.port}`} active={live.busy > 0} more={endpoints.length - 1} />
+        : unloaded
+          ? <ModelName name={lastSeen!.running_alias ?? ""} title={`${lastSeen!.running_alias}（最後に動いていたモデル）`} active={false} />
+          : failed.length > 0
+            ? <span className="truncate text-red-600 dark:text-red-400">起動失敗: {failed[0].alias}</span>
+            : <Muted>未ロード</Muted>}>
+      <Row label={live?.phase === "prefill" ? "前処理中" : "前処理"}>
+        {loading ? <Muted>起動中…</Muted>
+          : prefill > 0 ? <span className={past}>{Math.round(prefill).toLocaleString()} <Unit>tok/s</Unit></span>
+          : <Muted />}
+      </Row>
+      <Row label={live?.phase === "think" ? "思考中" : "生成"}>
+        {!loading && decode > 0
+          ? <span className={past}>{decode.toFixed(1)} <Unit>tok/s</Unit></span> : <Muted />}
+      </Row>
+      <Row label="ctx">
+        <span className={past}>{used != null ? tokens(used) : <Muted />} / {total > 0 ? tokens(total) : "—"}</span>
+      </Row>
+      <CtxBar used={used} total={total} />
       <Divider />
       <Row label={power?.busy ? "電力" : "平均"}>
         {on && watts != null
@@ -198,7 +213,8 @@ export function LlmHomeCard() {
 
   const endpoints = capacity?.endpoints ?? [];
   const failed = capacity?.failed ?? [];
-  const hasLocal = endpoints.length > 0 || failed.length > 0;
+  // ローカル側は、見られる利用者には常に出す（アンロード中は最後に動いていたモデル、無ければ「未ロード」）。
+  const hasLocal = canLocal && !!capacity;
   if (!hasLocal && !hasCloud) return null;
 
   const both = hasLocal && hasCloud;
@@ -207,7 +223,7 @@ export function LlmHomeCard() {
     <section aria-label="LLM の利用状況"
       className="rounded-2xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
       <div className={both ? "grid grid-cols-2 gap-x-3 md:gap-x-6" : ""}>
-        {hasLocal && <LocalColumn endpoints={endpoints} failed={failed} power={capacity?.power} />}
+        {hasLocal && <LocalColumn endpoints={endpoints} failed={failed} power={capacity?.power} lastSeen={capacity?.last_local} />}
         {hasCloud && (
           <div className={both ? "min-w-0 border-l border-zinc-100 pl-3 dark:border-zinc-800 md:pl-6" : "min-w-0"}>
             <CloudColumn summary={summary.data}
