@@ -12,7 +12,7 @@ import {
   type CloudModelStat, type CloudRunningCall,
 } from "../../api/cloudModels";
 import { useAuth } from "../../stores";
-import { CapacityWidget, Row } from "./CapacityWidget";
+import { CapacityWidget, DenseRows, Row } from "./CapacityWidget";
 
 function usd(v: number | null | undefined): string {
   if (v == null) return "—";
@@ -57,15 +57,15 @@ function RunningCall({ call }: { call: CloudRunningCall }) {
 
 function ModelLine({ m }: { m: CloudModelStat }) {
   return (
-    <li className="flex items-baseline gap-2 text-[11px] md:text-xs">
+    <li className="flex items-baseline gap-1.5 text-[11px] md:gap-2 md:text-xs">
       <span className="min-w-0 flex-1 truncate" title={m.model}>{shortModel(m.model)}</span>
       <span className="num shrink-0 text-zinc-500">
         {m.tokens_per_second != null ? `${m.tokens_per_second.toFixed(0)} tok/s` : "—"}
       </span>
-      <span className="num w-14 shrink-0 text-right text-[10px] text-zinc-400" title="最初のトークンまでの平均">
+      <span className="num w-14 shrink-0 text-right text-[10px] text-zinc-400 max-sm:hidden" title="最初のトークンまでの平均">
         {m.ttft_s != null ? `初回 ${m.ttft_s.toFixed(1)}s` : ""}
       </span>
-      <span className="num w-10 shrink-0 text-right text-[10px] text-zinc-400">{m.calls}回</span>
+      <span className="num w-10 shrink-0 text-right text-[10px] text-zinc-400 max-sm:hidden">{m.calls}回</span>
     </li>
   );
 }
@@ -92,9 +92,9 @@ function OpenRouterSection() {
 
   return (
     <div className="min-w-0">
-      <div className="mb-1 flex items-baseline gap-2">
+      <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
         <h3 className="text-[11px] font-semibold text-zinc-500 md:text-xs">OpenRouter</h3>
-        <Link to="/models?tab=frontier" className="ml-auto text-[11px] text-zinc-400 hover:underline" title="アカウントの残高（入金 − 使用）">
+        <Link to="/models?tab=frontier" className="ml-auto whitespace-nowrap text-[11px] text-zinc-400 hover:underline" title="アカウントの残高（入金 − 使用）">
           残高 <span className={`num font-semibold ${a?.balance != null && a.balance < 1 ? "text-amber-600 dark:text-amber-400" : "text-zinc-700 dark:text-zinc-200"}`}>
             {a ? usd(a.balance) : account.isError ? "取得不可" : "…"}
           </span>
@@ -149,7 +149,7 @@ function OpenRouterSection() {
       </div>
       {s && s.models.length > 0 && (
         <div className="mt-1.5 border-t border-zinc-100 pt-1.5 dark:border-zinc-800">
-          <p className="mb-0.5 text-[10px] text-zinc-400">最近 7 日のモデル（平均の速さ）</p>
+          <p className="mb-0.5 text-[10px] text-zinc-400">最近 7 日<span className="max-sm:hidden">のモデル（平均の速さ）</span></p>
           <ul className="space-y-0.5">
             {s.models.filter((m) => m.provider === "openrouter").slice(0, 3).map((m) => <ModelLine key={m.model} m={m} />)}
           </ul>
@@ -175,22 +175,26 @@ export function LlmHomeCard() {
   const hasCloud = canCloud && !!openrouter?.configured && !!openrouter.enabled;
   if (!hasLocal && !hasCloud) return null;
 
+  // 両方あるときは携帯でも左右半分ずつ。狭い幅ではラベルを短くした詰めた表示にする。
+  const both = hasLocal && hasCloud;
   return (
     <section aria-label="LLM の利用状況"
       className="rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
-      <div className={`grid gap-x-6 gap-y-2.5 ${hasLocal && hasCloud ? "sm:grid-cols-2" : ""}`}>
-        {hasLocal && (
-          <div className="min-w-0">
-            <h3 className="mb-1 text-[11px] font-semibold text-zinc-500 md:text-xs">ローカル LLM</h3>
-            <CapacityWidget compact showAlias />
-          </div>
-        )}
-        {hasCloud && (
-          <div className={hasLocal ? "border-t border-zinc-100 pt-2 dark:border-zinc-800 sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0" : ""}>
-            <OpenRouterSection />
-          </div>
-        )}
-      </div>
+      <DenseRows.Provider value={both}>
+        <div className={both ? "grid grid-cols-2 gap-x-2.5 sm:gap-x-6" : ""}>
+          {hasLocal && (
+            <div className="min-w-0">
+              <h3 className="mb-1 text-[11px] font-semibold text-zinc-500 md:text-xs">ローカル LLM</h3>
+              <CapacityWidget compact showAlias />
+            </div>
+          )}
+          {hasCloud && (
+            <div className={both ? "min-w-0 border-l border-zinc-100 pl-2.5 dark:border-zinc-800 sm:pl-6" : "min-w-0"}>
+              <OpenRouterSection />
+            </div>
+          )}
+        </div>
+      </DenseRows.Provider>
     </section>
   );
 }

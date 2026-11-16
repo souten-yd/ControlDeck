@@ -2,6 +2,7 @@
  *
  * ターミナルを開かなくても「今何本使っていて、何本待っているか」が分かるようにする。
  * 共有KVでは slot が空いていても KV が尽きれば通せないので、両方を並べる。 */
+import { createContext, useContext } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getLlamaCapacity, type EndpointCapacity } from "../../api/models";
 
@@ -21,10 +22,18 @@ function SlotDots({ busy, slots }: { busy: number; slots: number }) {
   );
 }
 
+/** 詰めた表示（Home で半分の幅に置くとき）。ラベルを短く・狭くし、携帯では KV のバーを省く。 */
+export const DenseRows = createContext(false);
+
+const SHORT_LABELS: Record<string, string> = { "LLM並列": "並列", "待ち行列": "待ち", "コンテキスト": "ctx" };
+
 export function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  const dense = useContext(DenseRows);
   return (
-    <div className="flex items-center gap-3">
-      <span className="w-[4.5rem] shrink-0 text-[10px] text-zinc-400 md:text-[11px]">{label}</span>
+    <div className={`flex items-center ${dense ? "gap-1.5 sm:gap-3" : "gap-3"}`}>
+      <span className={`shrink-0 text-[10px] text-zinc-400 md:text-[11px] ${dense ? "w-[2.6rem] sm:w-[4.5rem]" : "w-[4.5rem]"}`}>
+        {dense ? (SHORT_LABELS[label] ?? label) : label}
+      </span>
       <span className="num min-w-0 flex-1 text-[11px] md:text-xs">{children}</span>
     </div>
   );
@@ -39,6 +48,7 @@ export function endpointLoad(item: EndpointCapacity): "低" | "中" | "高" | nu
 }
 
 function EndpointRows({ item }: { item: EndpointCapacity }) {
+  const dense = useContext(DenseRows);
   // モデル読込中などで /slots を取れないと slots=0 になる。
   // このとき 0/0 を「満杯」と読んでしまわないよう、状態表示に切り替える。
   if (!item.available || item.slots === 0) {
@@ -101,7 +111,7 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
         <Row label="コンテキスト"><span>{tokens(item.ctx_total)}</span></Row>
       ) : <Row label="KV">
         <span className="flex items-center gap-2">
-          <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+          <span className={`h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700 ${dense ? "max-sm:hidden" : ""}`}>
             <span className={`block h-full rounded-full ${tone}`} style={{ width: `${kvPct}%` }} />
           </span>
           <span>{tokens(item.ctx_used)} / {tokens(item.ctx_total)}</span>
