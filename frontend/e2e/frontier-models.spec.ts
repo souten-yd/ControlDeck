@@ -235,9 +235,11 @@ for (const width of [320, 1280]) {
     await expect(total).toContainText(count((m) => (m.params_b ?? 0) >= 70 && m.tools && m.context_length >= 128_000));
     await expect(toggle).toHaveText("絞り込み（3）");
 
-    // 「パラメータ数が多い順」で、いちばん大きいものが先頭に来る。
+    // 「パラメータ数が多い順」で、条件に合う中でいちばん大きいものが先頭に来る。
     await sheet.getByLabel("並び順").selectOption({ label: "パラメータ数が多い順" });
-    await expect(rows.first()).toContainText("規模 405B");
+    const largest = Math.max(...all.filter((m) => (m.params_b ?? 0) >= 70 && m.tools && m.context_length >= 128_000)
+      .map((m) => m.params_b ?? 0));
+    await expect(rows.first()).toContainText(`規模 ${largest}B`);
 
     // まとめて外せる。
     await sheet.getByRole("button", { name: "条件をクリア" }).click();

@@ -663,7 +663,9 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
 
   return (
     <BottomSheet title={`${p.name} のモデルを選ぶ`} onClose={onClose} sideOnDesktop stable>
-      <div className="sticky top-0 z-10 -mx-5 space-y-2 bg-white px-5 pb-2 dark:bg-zinc-900">
+      {/* 検索と並び順は上に固定する。ただし絞り込みを開いている間は固定しない（狭い画面では
+          固定した部分が画面の大半を占め、下の「条件をクリア」が保存ボタンの下に隠れて押せない）。 */}
+      <div className={`${filtersOpen ? "" : "sticky top-0 z-10"} -mx-5 space-y-2 bg-white px-5 pb-2 dark:bg-zinc-900`}>
         <label className="relative block">
           <span className="sr-only">モデルを検索</span>
           <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" aria-hidden />
