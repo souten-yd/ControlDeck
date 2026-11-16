@@ -4117,3 +4117,13 @@ Settings > ファンコントロールにamdgpuのファンカーブを使う多
   - `memory_saver`（状態 f16・画像エンコーダーを RAM）で KV に VRAM を回す。`ram_offload`（layer_offload・host pool 22GiB・flex kv）で重みを RAM へ逃がす。
   - 実測（i8・6 本）: 262K 全VRAM 1本 203 / 6本合計 744 tok/s。**320K 全VRAM（memory_saver）205 / 796**、KV 337,824 トークン。384K（重み 1.7GiB を RAM）50 / 272。512K（5.8GiB）32 / 171。640K 以上は静的な重みが VRAM に残せず起動しない。1M は 1 本の KV だけで 34GiB 要り不可。19 万トークン入力の読み取りはすべて正答。
   - 稼働設定: 327,680・i8・6 本・memory_saver（RAM へは逃がさない）。
+
+
+### 2026-11-16 Models 共通 VRAM マージン
+
+- Models → 共通設定 → GPU メモリに GiB 単位の VRAM マージンを追加（既定3GiB、RAM余裕とは別）。
+- Strata、Maya各系列、Radiance、llama.cppのネイティブな予約設定へ次回起動時に自動変換。個別予約が大きければ維持。保存だけで推論を止めない。
+- llama.cppは保存時に永続unitも同期。固定GPU層数や古いバイナリで自動調整できない場合は明示エラー。Mayaは設定ファイルの同一性・思考設定を維持し、元の予約を記録して縮小にも対応。
+- 外部Ollamaのサービス環境変数変更は対象外。画面に共通値から換算した `OLLAMA_GPU_OVERHEAD` を表示。
+- 検証: Backend全体1584件成功/2件skip、最終Maya重複フラグ修正後の独立集中テスト16件成功。Frontend production build成功。320px/1280pxの設定保存・再読込、関連Models UI、アクセシビリティ18件成功。Strata実CLIのplanとllama.cpp実バイナリhelpで対応引数を確認。
+- 大型モデルの再ロード・推論負荷試験は未実施。詳細は `docs/models-vram-margin.md`。独立レビューは必須修正0件。サンドボックスミラーでも320px/1280pxの共通設定保存を確認。最終コードのCI: `43872798598`。PR #405。配備は正式Releaseから行う。

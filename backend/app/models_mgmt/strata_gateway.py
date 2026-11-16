@@ -65,6 +65,19 @@ def engine_settings(cfg: dict) -> dict[str, str]:
     return {k: v for k, v in merged.items() if _SETTING_KEY.fullmatch(k) and _SETTING_VALUE.fullmatch(v)}
 
 
+def launch_engine_settings(cfg: dict) -> dict[str, str]:
+    from app.models_mgmt.runtime_policy import vram_margin_mib
+
+    settings = engine_settings(cfg)
+    key = "reserve-mib" if cfg.get("family") == "deepseek41" else "vram-reserve-mib"
+    try:
+        reserve = max(vram_margin_mib(), math.ceil(float(settings.get(key, "0"))))
+    except (ValueError, OverflowError):
+        reserve = vram_margin_mib()
+    settings[key] = str(reserve)
+    return settings
+
+
 def valid_context(value: str) -> bool:
     match = _CONTEXT.fullmatch(str(value))
     return bool(match) and _CONTEXT_MIN_K <= int(match[1]) <= _CONTEXT_MAX_K
@@ -414,7 +427,7 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
             args += ["--model-path", _validate_model_path(cfg["model_path"])]
         except StrataGatewayError as exc:
             return False, str(exc)
-    for key, value in engine_settings(cfg).items():
+    for key, value in launch_engine_settings(cfg).items():
         args += ["--set", f"{key}={value}"]
     # Thinking defaults go through POST /settings after the start (apply_thinking); "off" clears
     # any value an earlier launch saved into the preset's engine arguments.

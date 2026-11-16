@@ -63,6 +63,7 @@ def test_explicit_start_uses_fixed_cli_args_and_records_activation(monkeypatch, 
     assert ok and not error
     assert commands[0][:5] == ["launch", "--family", "qwen", "--model", "iq2_xs"]
     assert "--no-tui" in commands[0] and "--yes" in commands[0]
+    assert "vram-reserve-mib=3072" in commands[0]
     assert "--access" in commands[0] and "local" in commands[0]
     assert "--restart" not in commands[0]
     assert json.loads(models.read_text())["qwen"]["activated"] is True

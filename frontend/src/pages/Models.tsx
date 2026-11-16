@@ -84,6 +84,7 @@ interface RuntimePolicy {
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
   max_loaded_models: number;
+  vram_margin_gib: number;
   gateway_only: boolean;
   drain_timeout_sec: number;
   default_model_ref: string;
@@ -1247,6 +1248,15 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           </L>}
         </div>}
         <p className="text-[10px] leading-relaxed text-zinc-500">思考（reasoning）の深さはモデルごとに違うため、各モデルの個別設定で指定します。</p>
+      </SettingsGroup>
+      <SettingsGroup title="GPU メモリ" description="LLM ランタイム共通。次回のモデル起動から適用します">
+        <L label="VRAM マージン（GiB）">
+          <input aria-label="VRAM マージン（GiB）" type="number" min="0" max="256" step="0.25"
+            value={policy.vram_margin_gib ?? 3} className={input}
+            onChange={(e) => setPolicyCfg({ ...policy, vram_margin_gib: Number(e.target.value) })} />
+        </L>
+        <p className="text-[10px] leading-relaxed text-zinc-500">デスクトップや他の GPU 処理のために空ける目安です。RAM の余裕とは別です。Strata・Maya・Radiance・llama.cpp の起動設定へ自動適用し、モデル個別にもっと大きな予約があればそちらを使います。llama.cpp は GPU 層数を自動（999）にする必要があります。実際の空き容量を保証するものではありません。</p>
+        <p className="text-[10px] leading-relaxed text-zinc-500">Ollama は外部サービス側の設定が必要です。OLLAMA_GPU_OVERHEAD={Math.ceil((policy.vram_margin_gib ?? 3) * 1024) * 1024 * 1024}（バイト）をサービスの環境変数に設定し、再起動してください。</p>
       </SettingsGroup>
       <CompactionSettingsGroup policy={policy} windows={runtimeEnv.compaction_windows ?? []}
         onChange={(compaction) => setPolicyCfg({ ...policy, compaction })} />

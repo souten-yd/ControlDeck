@@ -79,7 +79,10 @@ def test_starting_one_model_stops_the_other_first(engine):
     assert maya_s.start_instance("maya-deepseek-xs") == (True, "")
     assert engine.running == {"control-deck-maya-deepseek-xs.service"}
     run = next(c for c in engine.calls if c[:2] == ["systemd-run", "--user"])
-    assert str(engine.source / "maya-ds4-hip.json") in run and "8100" in run
+    launch_config = engine.source / "maya-ds4-hip.json"
+    assert str(launch_config) in run and "8100" in run
+    assert "--reserve-mib" in json.loads(launch_config.read_text())["args"]
+    assert json.loads(launch_config.read_text())["control_deck_vram_margin"]["original"] is None
     assert maya_s.running_alias() == "maya-deepseek-xs"
 
 
