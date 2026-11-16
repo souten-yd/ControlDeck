@@ -274,8 +274,8 @@ class CallTimer:
     provider: str
     model: str
     caller: str
-    started: float = field(default_factory=time.monotonic)
-    started_at: float = field(default_factory=time.time)
+    started: float = field(default_factory=lambda: time.monotonic())
+    started_at: float = field(default_factory=lambda: time.time())
     first_at: float | None = None
     events: int = 0  # 流れてきた差分の数（おおよそのトークン数）
 
@@ -375,7 +375,7 @@ def _day_start(now: float | None = None) -> float:
 
 
 def summary(*, now: float | None = None) -> dict:
-    """Home 用のまとめ: 実行中の呼び出し、今日・今月の合計、最近使ったモデルの速さ。"""
+    """Home 用のまとめ: 実行中の呼び出しと、今日・今月の合計。"""
     now = now or time.time()
     mono = time.monotonic()
     with _lock:
@@ -396,7 +396,7 @@ def summary(*, now: float | None = None) -> dict:
         })
 
     month_start, day_start = _month_start(now), _day_start(now)
-    rows = usage_rows(since=min(month_start, now - 7 * 86400), limit=1_000_000)
+    rows = usage_rows(since=month_start, limit=1_000_000)
 
     def totals(items: list[dict]) -> dict:
         return {
@@ -407,36 +407,10 @@ def summary(*, now: float | None = None) -> dict:
             "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in items), 6),
         }
 
-    by_model: dict[tuple[str, str], dict] = {}
-    for r in rows:  # 新しい順
-        if r.get("at", 0) < now - 7 * 86400:
-            continue
-        key = (str(r.get("provider")), str(r.get("model")))
-        entry = by_model.setdefault(key, {"provider": key[0], "model": key[1], "calls": 0, "cost_usd": 0.0,
-                                          "last_at": r.get("at"), "_tps": [], "_ttft": []})
-        entry["calls"] += 1
-        entry["cost_usd"] += float(r.get("cost_usd") or 0)
-        if r.get("tokens_per_second") and len(entry["_tps"]) < 20:
-            entry["_tps"].append(float(r["tokens_per_second"]))
-        if r.get("ttft_s") is not None and len(entry["_ttft"]) < 20:
-            entry["_ttft"].append(float(r["ttft_s"]))
-    models = []
-    for entry in sorted(by_model.values(), key=lambda e: e["last_at"] or 0, reverse=True)[:5]:
-        tps, ttft = entry.pop("_tps"), entry.pop("_ttft")
-        entry["cost_usd"] = round(entry["cost_usd"], 6)
-        entry["tokens_per_second"] = round(sum(tps) / len(tps), 1) if tps else None
-        entry["ttft_s"] = round(sum(ttft) / len(ttft), 2) if ttft else None
-        models.append(entry)
-
-    last = rows[0] if rows else None
     return {
         "running": running,
         "today": totals([r for r in rows if r.get("at", 0) >= day_start]),
         "month": totals([r for r in rows if r.get("at", 0) >= month_start]),
-        "models": models,
-        "last": ({k: last.get(k) for k in ("at", "caller", "provider", "model", "status", "prompt_tokens",
-                                           "completion_tokens", "cost_usd", "duration_s", "ttft_s",
-                                           "tokens_per_second")} if last else None),
     }
 
 

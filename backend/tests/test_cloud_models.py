@@ -522,8 +522,6 @@ def test_summary_reports_running_calls_totals_and_speed(store, monkeypatch):
     assert row["ttft_s"] == 1.0 and row["duration_s"] == 3.0 and row["tokens_per_second"] == 20.0
     assert data["today"]["calls"] == 1 and data["today"]["cost_usd"] == 0.01
     assert data["month"]["completion_tokens"] == 41
-    assert data["models"][0]["tokens_per_second"] == 20.0 and data["models"][0]["ttft_s"] == 1.0
-    assert data["last"]["model"] == "anthropic/claude-x"
 
 
 def test_summary_endpoint_requires_settings_manage(admin_client, store):
@@ -533,4 +531,4 @@ def test_summary_endpoint_requires_settings_manage(admin_client, store):
 
     assert TestClient(app).get("/api/v1/models/cloud-summary").status_code in (401, 403)
     data = admin_client.get("/api/v1/models/cloud-summary").json()
-    assert data["running"] == [] and data["today"]["calls"] == 0 and data["last"] is None
+    assert data["running"] == [] and data["today"]["calls"] == 0 and set(data) == {"running", "today", "month"}

@@ -2,10 +2,10 @@
 
 ## 2026-11-17 Home に LLM カード（ローカル + OpenRouter）
 
-- Home の「実行中のアプリ」の上に LLM カードを追加。ローカル LLM の利用状況（並列・前処理/生成の速さ・待ち行列・コンテキスト、モデル名つき）と、OpenRouter の状況を 1 枚に左右半分ずつ並べる（携帯でも半分ずつ。狭い幅ではラベルを短くし、KV のバー・モデル別の初回秒数と回数を省く）。どちらも無ければ出さない。OpenRouter 側は settings.manage の利用者だけ。
-- OpenRouter 側: 残高（5 分ごと・Models のフロンティアへのリンク）、実行中の呼び出し（モデル・応答待ち/生成中・おおよその tok/s・経過秒・呼び出し元）、今日・今月の使用額/回数/トークン（月の上限があれば割合）、前回の呼び出し（モデル・tok/s・費用）、無料枠の残り、最近 7 日のモデル別の平均の生成速度と最初のトークンまでの秒数。
-- Backend: ゲートウェイの外部モデル中継で、所要時間・最初のトークンまでの時間・生成速度を `cloud-usage.jsonl` の行に足した（本文は従来どおり記録しない）。実行中の呼び出しはメモリだけで持つ（15 分で掃除）。`GET /api/v1/models/cloud-summary`（settings.manage）を追加。
-- 検証: 作業環境に依存（fastapi・node_modules）が無く、テスト・ビルドは未実施。実機で `./deck.sh test`（`tests/test_cloud_models.py` に集中テスト 2 件を追加）、`cd frontend && npm run build`、Home の 320px / PC 幅の確認が必要。
+- Home の「実行中のアプリ」の上に LLM カードを追加。ローカル LLM と OpenRouter を 1 枚に左右半分ずつ並べる（携帯でも半分ずつ）。どちらも無ければ出さない。OpenRouter 側は settings.manage の利用者だけ。
+- 出すのは端的な項目だけ（細目は Models 画面）。ローカル: モデル・tok/s。OpenRouter: 実行中のモデル・tok/s・残りクレジット（5 分ごと）・今日の使用額・今日の回数。利用者の確認で、最近 7 日のモデル別・前回の呼び出し・無料枠・トークン数・今月の行は外した。
+- Backend: ゲートウェイの外部モデル中継で、所要時間・最初のトークンまでの時間・生成速度を `cloud-usage.jsonl` の行に足した（本文は従来どおり記録しない）。実行中の呼び出しはメモリだけで持つ（15 分で掃除）。`GET /api/v1/models/cloud-summary`（settings.manage、実行中・今日・今月の合計）を追加。
+- 検証（sandbox `home-llm`）: `pytest` 全件 1632 passed / 2 skipped、`npm run build` 成功。集中テストで見つかった不具合（`CallTimer` の既定値が定義時の `time.monotonic` を掴み、時計の差し替えが効かず `ttft_s` が負になる）を修正。ミラー（API 応答を差し替え）で Home を PC 幅と 320px・ライト/ダークで確認。
 
 ## 2026-11-17 Maya のモデルを登録画面から導入・削除・更新
 

@@ -123,25 +123,10 @@ export interface CloudTotals {
   cost_usd: number;
 }
 
-export interface CloudModelStat {
-  provider: string;
-  model: string;
-  calls: number;
-  cost_usd: number;
-  last_at: number;
-  /** 直近の呼び出しの平均（生成の速さ）。 */
-  tokens_per_second: number | null;
-  /** 最初のトークンまでの平均秒数。 */
-  ttft_s: number | null;
-}
-
 export interface CloudSummary {
   running: CloudRunningCall[];
   today: CloudTotals;
   month: CloudTotals;
-  /** 直近 7 日に使ったモデル（新しい順、最大 5）。 */
-  models: CloudModelStat[];
-  last: (CloudUsageRow & { duration_s?: number; ttft_s?: number; tokens_per_second?: number }) | null;
 }
 
 export const getCloudSummary = () => api<CloudSummary>("/models/cloud-summary");

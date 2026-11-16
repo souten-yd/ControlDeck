@@ -22,7 +22,7 @@ function SlotDots({ busy, slots }: { busy: number; slots: number }) {
   );
 }
 
-/** 詰めた表示（Home で半分の幅に置くとき）。ラベルを短く・狭くし、携帯では KV のバーを省く。 */
+/** 詰めた表示（Home の LLM カード）。行をモデルと速さに絞り、ラベルを狭くする。 */
 export const DenseRows = createContext(false);
 
 const SHORT_LABELS: Record<string, string> = { "LLM並列": "並列", "待ち行列": "待ち", "コンテキスト": "ctx" };
@@ -65,6 +65,21 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
   // 色は受付の線を基準にする。線に届いたら赤、手前で橙。
   const admitPct = item.usable > 0 ? (item.ctx_used / item.usable) * 100 : 0;
   const tone = admitPct >= 100 ? "bg-red-500" : admitPct >= 75 ? "bg-amber-500" : "bg-accent-600";
+  // 詰めた表示（Home）は「どのモデルが、どれだけの速さで」だけ。
+  if (dense) {
+    return (
+      <div>
+        <Row label="モデル"><span className="block truncate" title={item.running_alias}>{item.running_alias}</span></Row>
+        <Row label="tok/s">
+          {item.phase === "prefill"
+            ? <span className="text-zinc-400">読み込み中</span>
+            : item.tokens_per_second > 0 || item.busy > 0
+              ? <span>{item.tokens_per_second.toFixed(1)}</span>
+              : <span className="text-zinc-400">—</span>}
+        </Row>
+      </div>
+    );
+  }
   // 待ち行列と埋まり具合から、体感の混み具合を一語で示す。
   return (
     <div>
@@ -111,7 +126,7 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
         <Row label="コンテキスト"><span>{tokens(item.ctx_total)}</span></Row>
       ) : <Row label="KV">
         <span className="flex items-center gap-2">
-          <span className={`h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700 ${dense ? "max-sm:hidden" : ""}`}>
+          <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <span className={`block h-full rounded-full ${tone}`} style={{ width: `${kvPct}%` }} />
           </span>
           <span>{tokens(item.ctx_used)} / {tokens(item.ctx_total)}</span>
@@ -121,7 +136,8 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
   );
 }
 
-export function CapacityWidget({ compact = false, showAlias = false }: { compact?: boolean; showAlias?: boolean }) {
+export function CapacityWidget({ compact = false }: { compact?: boolean }) {
+  const dense = useContext(DenseRows);
   const { data } = useQuery({
     queryKey: ["llama-capacity"], queryFn: getLlamaCapacity,
     // 稼働中だけ短い間隔で追う。止まっていれば無駄に叩かない。
@@ -135,7 +151,7 @@ export function CapacityWidget({ compact = false, showAlias = false }: { compact
       <div className="space-y-3">
         {data.endpoints.map((item) => (
           <div key={item.id}>
-            {(showAlias || data.endpoints.length > 1) && (
+            {!dense && data.endpoints.length > 1 && (
               <p className="mb-0.5 truncate text-[11px] font-medium text-zinc-500">
                 {item.running_alias} <span className="text-zinc-400">:{item.port}</span>
               </p>
