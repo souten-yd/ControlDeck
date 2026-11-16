@@ -507,8 +507,10 @@ export default function ModelsPage() {
           )}
           {/* ローカルのモデルを足す操作。外部（フロンティア）のタブでは使わない。 */}
           {can("workflows.edit") && tab !== "frontier" && (
-            <button onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              <IconPlus /> {isLocal ? "モデル登録" : "モデル取得"}
+            <button onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)}
+              aria-label={isLocal ? "モデル登録" : "モデル取得"} title={isLocal ? "モデル登録" : "モデル取得"}
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-600 text-white shadow-sm hover:bg-accent-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-500 [&_svg]:h-5 [&_svg]:w-5">
+              <IconPlus />
             </button>
           )}
         </div>} />
@@ -551,7 +553,7 @@ export default function ModelsPage() {
       ) : !liveModels || liveModels.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
           <p className="text-sm text-zinc-400">
-            モデルがありません。「{isLocal ? "モデル登録" : "モデル取得"}」から追加してください。
+            モデルがありません。右上の「＋」から追加してください。
           </p>
         </div>
       ) : (
