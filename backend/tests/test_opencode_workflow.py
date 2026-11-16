@@ -241,3 +241,26 @@ def test_workflow_api_exposes_roles_and_cloud_choices(isolated, cloud_store):
     saved = api.put_workflow(api.WorkflowBody(developer_agent=True, developer_model=CLOUD), user=None)
     assert saved["developer_agent"] is True and saved["developer_model"] == CLOUD
     assert api.get_workflow(user=None)["cloud_models"][0]["id"] == CLOUD
+
+
+def test_auto_review_is_on_by_default_and_adds_the_review_procedure(isolated):
+    payload, _ = _v2(isolated)
+    instructions = payload.get("instructions") or []
+    assert any(path.endswith("auto-review.md") for path in instructions)
+    text = (provider.Path(provider.__file__).with_name("auto-review.md")).read_text()
+    assert "reviewer" in text and "advisor()" in text
+    # No review model chosen: the reviewer inherits the session model.
+    assert "model" not in payload["agents"]["reviewer"]
+
+
+def test_auto_review_can_be_turned_off(isolated):
+    provider.save_workflow({"auto_review": False})
+    payload, _ = _v2(isolated)
+    assert not any(path.endswith("auto-review.md") for path in payload.get("instructions") or [])
+
+
+def test_review_model_applies_to_the_builtin_reviewer(isolated):
+    provider.save_workflow({"review_model": "maya-s"})
+    payload, _ = _v2(isolated)
+    assert payload["agents"]["reviewer"]["model"] == "controldeck/maya-s"
+    assert "maya-s" in payload["providers"]["controldeck"]["models"]

@@ -20,6 +20,8 @@ interface Diagnosis {
 export interface Workflow {
   superpowers: boolean;
   adversarial_review: boolean;
+  /** 自動レビュー: コードを変えたら完了の前に reviewer で確かめ、行き詰まったら advisor() で相談する。 */
+  auto_review?: boolean;
   auto_advisor: "off" | "observe" | "active";
   review_model: string;
   advisor_model: string;
@@ -61,7 +63,7 @@ export interface Workflow {
 }
 
 export function workflowBody(value: Workflow) {
-  return { superpowers: value.superpowers, adversarial_review: value.adversarial_review,
+  return { superpowers: value.superpowers, adversarial_review: value.adversarial_review, auto_review: value.auto_review ?? true,
     auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
     developer_agent: value.developer_agent ?? false, developer_model: value.developer_model ?? "",
     ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
@@ -133,14 +135,18 @@ export function WorkflowExtensions({ value, onChange, editable }: {
         value={value.superpowers && has("superpowers")} disabled={!editable || !has("superpowers")}
         onChange={(v) => onChange({ ...value, superpowers: v })} />
       {!has("superpowers") && <p className="-mt-1 text-[11px]">{installLink("superpowers")}</p>}
+      <Toggle label="自動レビュー（完了の前に別の目で確かめる）"
+        hint="コードを変えたら、完了を報告する前に子エージェント reviewer が差分を読み、重大な指摘は直してから終えます。同じ失敗が続いたり指摘が消えないときは、下の相談先のモデルに自動で相談します"
+        value={value.auto_review ?? true} disabled={!editable}
+        onChange={(v) => onChange({ ...value, auto_review: v })} />
+      {((value.auto_review ?? true) || (value.adversarial_review && has("adversarial_review"))) && modelSelect("レビューに使うモデル", "review_model",
+        "例: 開発は Flash-Next、レビューは別のモデル。別のモデルを選ぶとレビューのたびに載せ替えます（ローカルは約1分）")}
       <Toggle label="別の目によるレビュー（Adversarial Review）"
-        hint={has("adversarial_review") ? "/adversarial-review と /constructive-review。会話を持たない別の文脈で差分を読み、出荷できない理由を探します" : "未導入です"}
+        hint={has("adversarial_review") ? "大きな変更（公開の API・認証・データの移行や削除）では、自動レビューの後に出荷できない理由を探す係も読みます。/adversarial-review で手動でも呼べます" : "未導入です"}
         value={value.adversarial_review && has("adversarial_review")} disabled={!editable || !has("adversarial_review")}
         onChange={(v) => onChange({ ...value, adversarial_review: v })} />
       {!has("adversarial_review") && <p className="-mt-1 text-[11px]">{installLink("adversarial_review")}</p>}
-      {value.adversarial_review && has("adversarial_review") && modelSelect("レビューに使うモデル", "review_model",
-        "例: 開発は Flash-Next、レビューは Maya-S。別のモデルを選ぶとレビューのたびに載せ替えます（約1分）")}
-      <label className="block text-xs">行き詰まり時の相談（Auto Advisor）
+      <label className="block text-xs">行き詰まったら別のモデルに相談（Auto Advisor）
         <select aria-label="Auto Advisor" value={has("auto_advisor") ? value.auto_advisor : "off"} disabled={!editable || !has("auto_advisor")}
           onChange={(e) => onChange({ ...value, auto_advisor: e.target.value as Workflow["auto_advisor"] })} className={field}>
           <option value="off">使わない</option>
@@ -148,7 +154,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
           <option value="active">必要な場面で相談する</option>
         </select>
         <span className="text-[11px] text-zinc-500">{has("auto_advisor")
-          ? "方針を決める・行き詰まる・完了を宣言する場面で、別のモデルに作業を見てもらいます。advisor() ツールでいつでも呼べます"
+          ? "方針を決める・行き詰まる・完了を宣言する場面で、相談先のモデルが作業を見て助言します。自動レビューで指摘が消えないときも相談します"
           : installLink("auto_advisor")}</span>
       </label>
       {value.auto_advisor !== "off" && has("auto_advisor") && modelSelect("相談先のモデル", "advisor_model",

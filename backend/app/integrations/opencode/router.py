@@ -26,6 +26,7 @@ class SettingsBody(AgentTargetBody):
 class WorkflowBody(BaseModel):
     superpowers: bool | None = None
     adversarial_review: bool | None = None
+    auto_review: bool | None = None
     auto_advisor: str | None = Field(default=None, max_length=16)
     review_model: str | None = Field(default=None, max_length=200)
     advisor_model: str | None = Field(default=None, max_length=200)
@@ -40,7 +41,7 @@ class WorkflowBody(BaseModel):
     isolation: str | None = Field(default=None, max_length=8)
 
 
-WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model",
+WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_review", "auto_advisor", "review_model", "advisor_model",
                  "developer_agent", "developer_model",
                  "ui_verify", "ui_verify_allow_external", "research_tool", "research_external", "context7", "github_cli", "isolation")
 
@@ -132,7 +133,6 @@ class SessionBody(BaseModel):
     # 空なら設定値（チャットやワークフローと同じ既定）を使う。
     runtime: str = Field(default="", max_length=8)
     # 作業の種類（ui_verify / research / review）。空ならふつうのセッション。
-    task: str = Field(default="", max_length=16)
 
 
 _llm_warmup_tasks: set = set()
@@ -171,7 +171,7 @@ async def create_session(
             imported = await asyncio.to_thread(opencode.import_project, project_path)
             project_path = imported["path"]
         command, project = opencode.tui_command(
-            project_path=project_path, prompt=opencode.task_prompt(body.task, body.prompt),
+            project_path=project_path, prompt=body.prompt,
             base_url=body.base_url, model=body.model, owner_user_id=user.id,
             runtime=body.runtime,
         )
@@ -183,7 +183,7 @@ async def create_session(
     audit.record(db, "feature.opencode.session", user=user, resource_type="feature",
                  resource_id="opencode", request=request,
                  metadata={"terminal_id": session["id"], "project_path": project,
-                           "with_prompt": bool(body.prompt.strip()), "task": body.task,
+                           "with_prompt": bool(body.prompt.strip()),
                            "runtime": opencode.active_runtime(body.runtime)})
     return {**session, "project_path": project}
 

@@ -15,7 +15,6 @@ import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
 import { BackgroundRuns } from "./BackgroundRuns";
 import { Reports } from "./Reports";
-import { TaskPicker, uiVerifyBlocker, withTarget, type SessionTask } from "./TaskPicker";
 import { WorkflowExtensions, workflowBody, type Workflow } from "./WorkflowExtensions";
 import { SettingsGroup, SheetActions, primaryButton } from "../models/formControls";
 
@@ -69,16 +68,6 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
     queryFn: () => api<{ root: string; projects: CodeProject[] }>("/opencode/projects"),
   });
   const [prompt, setPrompt] = useState("");
-  const [task, setTask] = useState<SessionTask>("");
-  const [targetUrl, setTargetUrl] = useState("");
-  const canWorkflow = useAuth((state) => state.can("workflows.run"));
-  // UI 検証を選んだときだけ、道具が使える状態かを確かめる（設定シートと同じキャッシュ）。
-  const { data: workflowState } = useQuery({
-    queryKey: ["opencode-workflow"],
-    queryFn: () => api<Workflow>("/opencode/workflow"),
-    enabled: canWorkflow && task === "ui_verify",
-  });
-  const blocker = task === "ui_verify" ? uiVerifyBlocker(workflowState) : null;
   // プロジェクト選択: 新規（既定）/ CodeDEV既存一覧 / 📁フォルダ（CodeDEV外はコピー取込）
   const [projectMode, setProjectMode] = useState<"new" | "existing" | "folder">("new");
   const [newName, setNewName] = useState("");
@@ -105,7 +94,6 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
   );
 
   const startDisabled =
-    blocker !== null ||
     (projectMode === "new" && !newName.trim()) ||
     (projectMode === "existing" && !existingName) ||
     (projectMode === "folder" && !otherPath.trim());
@@ -115,14 +103,13 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
       json: {
         project_name: projectMode === "new" ? newName.trim() : projectMode === "existing" ? existingName : "",
         project_path: projectMode === "folder" ? otherPath : "",
-        prompt: task === "ui_verify" ? withTarget(targetUrl, prompt) : prompt, task,
+        prompt,
         base_url: data?.settings.base_url ?? "", model: data?.settings.model ?? "", runtime,
       },
     }),
     onSuccess: ({ id }) => {
       setOwn((prev) => [...prev.filter((v) => v !== id), id]);
       setPrompt("");
-      setTargetUrl("");
       qc.invalidateQueries({ queryKey: ["opencode-reports"] });
       qc.invalidateQueries({ queryKey: ["terminals"] });
       qc.invalidateQueries({ queryKey: ["opencode-projects"] });
@@ -241,8 +228,6 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
             <p className="text-[10px] text-zinc-400">CodeDEV外のフォルダは ~/CodeDEV へコピーして取り込みます（node_modules等の依存物は除外）</p>
           </div>
         )}
-        <TaskPicker task={task} onTask={setTask} targetUrl={targetUrl} onTargetUrl={setTargetUrl}
-          blocker={blocker} onOpenSettings={() => setSettingsOpen(true)} inputClass={input} />
         <label className="block text-xs text-zinc-500">最初の指示（任意 — 起動と同時に送信）
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={2} className={`${input} mt-1 resize-y`} placeholder="空のままでもOK。TUI内でいつでも指示できます" />
         </label>

@@ -29,6 +29,9 @@ DEFAULT_SETTINGS = {
     # 開発ワークフローの拡張（ControlDeck から起動した session にだけ効く）。
     "superpowers": False,
     "adversarial_review": False,
+    # 自動レビュー: コードを変えたら、完了の前に子エージェント reviewer で確かめ、行き詰まったら
+    # advisor() で相談する、という手順を session の指示に足す（auto-review.md）。
+    "auto_review": True,
     # Auto Advisor: off / observe（判断だけ記録）/ active（必要な場面で相談）。v2 のみ。
     "auto_advisor": "off",
     # レビュー・相談に使うモデル（ゲートウェイの名前）。空ならセッションと同じモデル。
@@ -210,7 +213,8 @@ def save_workflow(patch: dict) -> dict:
 
     settings = get_settings()
     for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external",
-                "research_tool", "research_external", "context7", "github_cli", "developer_agent"):
+                "research_tool", "research_external", "context7", "github_cli", "developer_agent",
+                "auto_review"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "isolation" in patch:
@@ -417,9 +421,10 @@ def review_tool_bin() -> Path | None:
     return managed.parent
 
 
-def _reviewer_agent() -> dict:
+def _reviewer_agent(model: str | None = None) -> dict:
     has_ast_grep = review_tool_bin() is not None
     return {
+        **({"model": f"controldeck/{model}"} if model else {}),
         "mode": "subagent",
         "description": (
             "コードレビューの係。差分を読み、変えた関数・設定の呼び出し側まで影響を追い"
@@ -443,6 +448,9 @@ def _workflow(runtime: str, model: str) -> dict:
     if settings.get("superpowers") and specs.get("superpowers"):
         plugins.append(specs["superpowers"])
     review = role_model(settings, "review_model")
+    reviewer_model = review if review and review != model else None
+    if reviewer_model:
+        models.append(reviewer_model)
     if settings.get("adversarial_review") and specs.get("adversarial_review"):
         plugins.append(specs["adversarial_review"])
         if review and review != model:
@@ -466,7 +474,8 @@ def _workflow(runtime: str, model: str) -> dict:
         if developer and developer != model:
             models.append(developer)
         agents["developer"] = _developer_agent(developer if developer != model else None)
-    return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor}
+    return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor,
+            "reviewer_model": reviewer_model, "auto_review": bool(settings.get("auto_review", True))}
 
 
 def save_settings(patch: dict) -> dict:
@@ -918,9 +927,15 @@ def _config_payload(
     # 受け取ったコマンドの出力だった。どちらも「読む前に当たりを付ける」だけで
     # 桁が変わる。プロジェクト側の AGENTS.md は残したまま、こちらを足す。
     notes = Path(__file__).with_name("agent-notes.md")
-    if notes.exists():
-        payload["instructions"] = [str(notes)]
-    payload["agent"]["reviewer"] = _reviewer_agent()
+    instructions = [str(notes)] if notes.exists() else []
+    review_notes = Path(__file__).with_name("auto-review.md")
+    if workflow.get("auto_review") and review_notes.exists():
+        # 完了の前に reviewer、行き詰まったら advisor()。拡張は道具を足すだけなので、
+        # 「いつ使うか」をここで決めて自動で回るようにする。
+        instructions.append(str(review_notes))
+    if instructions:
+        payload["instructions"] = instructions
+    payload["agent"]["reviewer"] = _reviewer_agent(workflow.get("reviewer_model"))
     docs_server = context7_server()
     browser = ui_verify_server(safe_job_id)
     if browser is not None:
@@ -1503,43 +1518,6 @@ def tui_command(
     env = " ".join(f"{key}={shlex.quote(value)}" for key, value in launch_env.items())
     command = (f"{env} " if env else "") + "exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
-
-
-# 作業の種類（OpenCode 画面のセッション開始で選ぶ）。選ぶと最初の指示の前に手順が付く。
-# 道具そのものは設定で載せてあり、ここでは「どれを使い、結果をどこへ返すか」だけを決める。
-SESSION_TASKS = {
-    "ui_verify": (
-        "【UI 検証】子エージェント ui-verifier に任せて、開発中の画面を実ブラウザで確かめてください。"
-        "まず確かめる URL（localhost）と主な流れを決め、開発サーバーが動いていなければ起動してから ui-verifier を呼びます。"
-        "ui-verifier は幅 320/390/768/1280 とダークで撮影・操作し、control_deck.report で結果を ControlDeck に渡します。"
-        "問題が見つかったら、直すかどうかを利用者に確かめてから直し、直したら同じ検証をもう一度行ってください。"
-    ),
-    "research": (
-        "【精密調査】結論を急がず、根拠を集めてから答えてください。公式文書・仕様・ソースコード（一次資料）を優先し、"
-        "使っている版（package.json・lock file・manifest）に合う資料かを確かめます。主張ごとに出典の URL・公開日または版・取得日時を控え、"
-        "反対の根拠も探します。リポジトリについての主張は、文書ではなく main の実ファイル・テスト・CI で確かめます。"
-        "control_deck.research が使えるなら、まずそれで根拠を集めてください（結果は ControlDeck の画面に残ります）。"
-        "自分で調べた分は、最後に control_deck.report（kind: research）で、結論・出典（primary / stance）・確かめられなかったことを渡してください。"
-        "未公開の発明・請求項・秘密の情報を検索語に入れないでください。"
-    ),
-    "review": (
-        "【コードレビュー】ファイルは変更しないでください。子エージェント reviewer に、レビューする範囲"
-        "（作業中の変更、またはブランチと main の差）と気になる点を渡して任せます。reviewer は呼び出し側まで影響を追い、"
-        "テストを確かめ、control_deck.report（kind: review）で指摘を重大度順に ControlDeck へ渡します。"
-        "Adversarial Review が使えるなら /adversarial-review で別の文脈からも読み、食い違いがあれば利用者に伝えてください。"
-        "指摘を直すかどうかは利用者に確かめてから進めます。"
-    ),
-}
-
-
-def task_prompt(task: str, prompt: str) -> str:
-    """作業の種類の手順を、利用者の指示の前に付ける。種類が無ければ指示そのまま。"""
-    if not task:
-        return prompt
-    if task not in SESSION_TASKS:
-        raise CodeAgentError("未対応の作業の種類です")
-    request = prompt.strip()
-    return f"{SESSION_TASKS[task]}\n\n利用者の指示:\n{request}" if request else SESSION_TASKS[task]
 
 
 def _prompt(operation: str, instruction: str) -> str:
