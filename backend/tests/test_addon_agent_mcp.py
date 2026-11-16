@@ -815,7 +815,9 @@ def test_the_session_is_told_how_to_spend_its_context(monkeypatch, tmp_path):
     monkeypatch.setattr(provider, "_allowed_directories", lambda: {})
     config = provider._config_payload("job-notes", "http://127.0.0.1:1/v1", "model")
     payload = config
-    assert payload["instructions"] == [str(notes)]
+    # 文脈の使い方が先頭。自動レビュー（既定オン）の手順がその後に続く。
+    assert payload["instructions"][0] == str(notes)
+    assert payload["instructions"][1:] == [str(notes.with_name("auto-review.md"))]
 
 
 def test_the_contract_description_is_published_once_not_twice(monkeypatch):
