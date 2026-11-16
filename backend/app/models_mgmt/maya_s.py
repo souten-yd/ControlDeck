@@ -1038,7 +1038,12 @@ async def register_stream(job=None, **kwargs) -> dict:
 def unregister(alias: str) -> dict:
     """Forget a registered Maya model: its engine config only. The model files stay."""
     if alias == _ALIAS:
-        raise MayaError("最初のMayaモデルはここでは削除できません")
+        # 最初のモデル（maya-s）は準備済みの印を外して一覧から消す。エンジンの設定ファイルと
+        # 調整した値（env・思考設定）は残すので、ファイルを戻して準備し直せば同じ設定で使える。
+        if _running(alias):
+            raise MayaError("モデルを停止してから削除してください")
+        _prepared_marker().unlink(missing_ok=True)
+        return {"alias": alias, "removed": True}
     row = next((r for r in _registry() if r["alias"] == alias), None)
     if row is None:
         raise MayaError("登録されたMayaモデルが見つかりません")

@@ -182,8 +182,6 @@ def test_unregister_removes_only_the_config(engine, tmp_path):
     model.parent.mkdir()
     model.write_text("weights")
     _register_row(engine)
-    with pytest.raises(maya_s.MayaError):
-        maya_s.unregister("maya-s")
     engine.running.add("control-deck-maya-deepseek-xs.service")
     with pytest.raises(maya_s.MayaError, match="停止してから"):
         maya_s.unregister("maya-deepseek-xs")
@@ -191,6 +189,17 @@ def test_unregister_removes_only_the_config(engine, tmp_path):
     assert maya_s.unregister("maya-deepseek-xs")["removed"]
     assert not (engine.source / "maya-ds4-hip.json").exists() and model.exists()
     assert [row["alias"] for row in maya_s.list_instances()] == ["maya-s"]
+
+
+def test_the_first_model_can_be_removed_but_keeps_its_engine_config(engine):
+    engine.running.add("control-deck-maya-s.service")
+    with pytest.raises(maya_s.MayaError, match="停止してから"):
+        maya_s.unregister("maya-s")
+    engine.running.clear()
+    assert maya_s.unregister("maya-s")["removed"]
+    assert maya_s.list_instances() == []
+    # The tuned engine config (env such as MAYA_GLM_PCIE_SHARE) stays for a later re-prepare.
+    assert (engine.source / "maya-maya-s-v2-iq2_xxs-hip.json").exists()
 
 
 def test_registry_ignores_rows_that_could_escape_the_engine_folder(engine):
