@@ -59,6 +59,39 @@ def test_a_changed_pr_is_not_merged(store, monkeypatch):
     assert "GraphQL" not in record["result"], "gh の出力をそのまま見せない"
 
 
+@pytest.fixture(autouse=True)
+def _no_wait(monkeypatch):
+    monkeypatch.setattr(approvals.time, "sleep", lambda _s: None)
+
+
+def test_a_merge_github_reports_as_failed_but_did_land_counts_as_merged(store, monkeypatch):
+    """gh can answer 'Merge already in progress' although the merge went through (seen on #411)."""
+    import json as _json
+
+    def run(argv, **kwargs):
+        if argv[1:3] == ["pr", "merge"]:
+            return subprocess.CompletedProcess(argv, 1, "", "GraphQL: Merge already in progress (mergePullRequest)")
+        if argv[1:3] == ["pr", "view"] and "state,headRefOid" in argv:
+            return subprocess.CompletedProcess(argv, 0, _json.dumps({"state": "MERGED", "headRefOid": SHA}), "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(approvals.subprocess, "run", run)
+    record = approvals.approve(_request(repo="souten-yd/PatentBuddy")["id"], user="admin")
+    assert record["status"] == "merged"
+
+
+def test_a_pr_merged_at_another_commit_is_still_a_failure(store, monkeypatch):
+    import json as _json
+
+    def run(argv, **kwargs):
+        if argv[1:3] == ["pr", "merge"]:
+            return subprocess.CompletedProcess(argv, 1, "", "error")
+        return subprocess.CompletedProcess(argv, 0, _json.dumps({"state": "MERGED", "headRefOid": "c" * 40}), "")
+
+    monkeypatch.setattr(approvals.subprocess, "run", run)
+    assert approvals.approve(_request(repo="souten-yd/PatentBuddy")["id"], user="admin")["status"] == "failed"
+
+
 def test_reject(store):
     record = approvals.reject(_request()["id"], user="admin", reason="今は不要")
     assert record["status"] == "rejected" and approvals.list_all() == []
