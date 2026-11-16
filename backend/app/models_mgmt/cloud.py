@@ -281,6 +281,25 @@ class CallTimer:
 
 
 _inflight: list[CallTimer] = []
+# モデルごとのコンテキスト長（モデル一覧を取ったときに覚える。Home の ctx 表示用、メモリだけ）
+_context_lengths: dict[tuple[str, str], int] = {}
+_context_fetch_at: dict[str, float] = {}
+
+
+def context_length(provider_id: str, model: str) -> int | None:
+    return _context_lengths.get((provider_id, model))
+
+
+def needs_context_lengths(provider_id: str, model: str, *, every: float = 3600) -> bool:
+    """このモデルの長さを知らず、最近（既定 1 時間）一覧を取りに行っていなければ True（取りに行く印も付ける）。"""
+    if (provider_id, model) in _context_lengths:
+        return False
+    now = time.monotonic()
+    last = _context_fetch_at.get(provider_id)
+    if last is not None and now - last < every:
+        return False
+    _context_fetch_at[provider_id] = now
+    return True
 
 
 def begin_call(target: CloudTarget, caller: str) -> CallTimer:
@@ -393,6 +412,7 @@ def summary(*, now: float | None = None) -> dict:
             "caller_label": CALLER_LABELS.get(t.caller, t.caller),
             "elapsed_s": round(elapsed, 1), "phase": "generate" if t.first_at is not None else "waiting",
             "tokens": t.events, "tokens_per_second": live,
+            "ttft_s": round(t.first_at - t.started, 2) if t.first_at is not None else None,
         })
 
     month_start, day_start = _month_start(now), _day_start(now)
@@ -407,10 +427,18 @@ def summary(*, now: float | None = None) -> dict:
             "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in items), 6),
         }
 
+    # 直前に終わった呼び出し（成功したもの）: 初回応答の秒数と、コンテキストに入った量。
+    last = next((r for r in rows if int(r.get("status") or 0) < 400 and r.get("prompt_tokens")), None)
     return {
         "running": running,
         "today": totals([r for r in rows if r.get("at", 0) >= day_start]),
         "month": totals([r for r in rows if r.get("at", 0) >= month_start]),
+        "last": ({"provider": last.get("provider"), "model": last.get("model"), "at": last.get("at"),
+                  "ttft_s": last.get("ttft_s"), "tokens_per_second": last.get("tokens_per_second"),
+                  "prompt_tokens": int(last.get("prompt_tokens") or 0),
+                  "completion_tokens": int(last.get("completion_tokens") or 0),
+                  "context_length": context_length(str(last.get("provider")), str(last.get("model")))}
+                 if last else None),
     }
 
 
@@ -460,6 +488,8 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         if provider_id == "openrouter":
             # 絞り込み用（賢さの目安・対応機能・提供元）。他のプロバイダは /models に情報が無い。
             row.update(_capabilities(item, model_id))
+        if isinstance(row["context_length"], int) and row["context_length"] > 0:
+            _context_lengths[(provider_id, model_id)] = row["context_length"]
         rows.append(row)
     return rows
 

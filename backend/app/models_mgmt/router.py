@@ -943,13 +943,15 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
     # Strata / Maya-S / Radiance report no llama.cpp-style /metrics: ControlDeck times the
     # requests it relays to them (live_stats). Same shape, so the widget shows them alike.
     from app.models_mgmt import live_stats, local_llm
-    for item in await asyncio.to_thread(local_llm.llm_instances):
-        if item.get("runtime") == "llama.cpp" or not item.get("loaded"):
-            continue
+    from app.monitoring.electricity import accumulator
+    others = [item for item in await asyncio.to_thread(local_llm.llm_instances)
+              if item.get("runtime") != "llama.cpp" and item.get("loaded")]
+    contexts = await asyncio.gather(*(_engine_context(item) for item in others)) if others else []
+    for item, (ctx_active, ctx_max) in zip(others, contexts, strict=True):
         port = int(item.get("port") or 0)
         stats = live_stats.snapshot(port)
         slots = max(1, int(item.get("n_parallel") or 1))
-        ctx = int(item.get("ctx_size") or 0)
+        ctx = ctx_max or int(item.get("ctx_size") or 0)
         endpoints.append({
             "id": f"{item['runtime']}:{item['alias']}", "label": str(item["alias"]), "port": port,
             "running_alias": str(item["alias"]), "runtime": str(item["runtime"]),
@@ -961,8 +963,34 @@ async def llama_capacity(user: User = Depends(require_permission("workflows.run"
             "phase": stats["phase"], "prefill_tokens_per_second": stats["prefill_tokens_per_second"],
             "prefilling": stats["prefilling"], "prompt_tokens": 0, "prompt_tokens_done": 0,
             "timed_by_controldeck": True,
+            # 実行中（無ければ直前）の 1 本の「プロンプト + 生成」。KV の使用量ではない。
+            "ctx_active": ctx_active,
         })
-    return {"endpoints": endpoints, "failed": failed}
+    # LLM が処理していた間の PC 全体の電力と電気代（Home の LLM カード）。
+    return {"endpoints": endpoints, "failed": failed, "power": accumulator.llm_snapshot()}
+
+
+async def _engine_context(item: dict) -> tuple[int | None, int | None]:
+    """(コンテキストに入っているトークン数, 最大)。Strata と Maya-S は自分の /metrics を読み、
+    それ以外（Radiance）は ControlDeck が中継した直前の 1 本から数える。"""
+    import httpx
+
+    from app.models_mgmt import live_stats
+
+    port = int(item.get("port") or 0)
+    if item.get("runtime") in ("strata", "maya-s") and port:
+        try:
+            async with httpx.AsyncClient(trust_env=False, timeout=1.5) as client:
+                response = await client.get(f"http://127.0.0.1:{port}/metrics")
+            if response.status_code == 200:
+                data = response.json()
+                engine = data.get("engine") if isinstance(data, dict) and isinstance(data.get("engine"), dict) else {}
+                limit = engine.get("max_context")
+                return (live_stats.context_from_metrics(data),
+                        int(limit) if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None)
+        except (httpx.HTTPError, ValueError):
+            pass
+    return live_stats.last_context(port), None
 
 
 @router.get("/llama/endpoints/{endpoint_id}/capacity")
@@ -1654,8 +1682,17 @@ def cloud_usage(days: int = Query(default=30, ge=1, le=366),
 
 
 @router.get("/cloud-summary")
-def cloud_summary(user: User = Depends(require_permission("settings.manage"))):
-    """Home の LLM カード用。実行中の呼び出し・今日/今月の合計・最近のモデルの速さ（本文なし）。"""
+async def cloud_summary(user: User = Depends(require_permission("settings.manage"))):
+    """Home の LLM カード用。実行中の呼び出し・今日/今月の合計・直前の呼び出し（本文なし）。"""
     from app.models_mgmt import cloud
 
-    return cloud.summary()
+    data = await asyncio.to_thread(cloud.summary)
+    last = data.get("last")
+    # ctx の分母（モデルのコンテキスト長）を知らなければ、モデル一覧を 1 時間に 1 回まで取りに行く。
+    if last and last.get("context_length") is None and cloud.needs_context_lengths(str(last["provider"]), str(last["model"])):
+        try:
+            await cloud.list_remote_models(str(last["provider"]))
+        except (cloud.CloudError, ValueError):  # 長さが分からないだけ。Home の表示は分母なしで続ける
+            pass
+        last["context_length"] = cloud.context_length(str(last["provider"]), str(last["model"]))
+    return data

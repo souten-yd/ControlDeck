@@ -4,21 +4,44 @@
 - 積分間隔は time.monotonic()（実時刻変更に非依存）。日付キーはローカルタイムゾーン。
 - メモリ上で高頻度に積算し、SQLite へは低頻度（既定10分）+ 境界/終了時にチェックポイント保存。
 - 起動セッションは boot ID 単位。バックエンド再起動では維持、OS 再起動で 0 から。
+- ローカル LLM が処理していた間の電力量も別に積算する（Home の LLM カード）。処理中の PC 全体の
+  電力をそのまま数える（基本電力を差し引く推定はしない）。日別に data の JSON へ保存する。
 
 SSD 書き込み抑制のため、2秒毎のサンプルは DB に書かず、未保存差分方式で日別を UPSERT する。
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 logger = logging.getLogger("control_deck.electricity")
 
 MS_PER_HOUR = 3_600_000  # W·秒 → kWh は /3_600_000
 # 異常なサンプル間隔の上限（秒）。既定周期2秒に対し、これを超える区間は積算しない
 MAX_SAMPLE_GAP_SEC = 30.0
+# LLM 処理中の日別を残す日数
+LLM_KEEP_DAYS = 62
+
+
+def _llm_busy(since: float | None) -> tuple[bool, bool]:
+    """(前回のサンプルから今までに LLM が処理していたか, いま処理中か)。取れなければ処理していない扱い。"""
+    try:
+        from app.models_mgmt import live_stats
+
+        return live_stats.busy_during(since), live_stats.busy_now()
+    except Exception:  # noqa: BLE001 - 電気代の積算を LLM 側の不具合で止めない
+        return False, False
+
+
+def _llm_path() -> Path:
+    from app.config import data_dir
+
+    return data_dir() / "electricity-llm.json"
 
 
 def read_boot_id() -> str:
@@ -78,6 +101,10 @@ class ElectricityAccumulator:
         self._last_persist_monotonic = time.monotonic()
         self._last_persisted_at: datetime | None = None
         self._loaded = False
+        # LLM が処理していた間の日別（date -> {"energy_kwh","cost_yen","seconds"}）と、処理中ならいまの入力電力
+        self._llm: dict[str, dict] = {}
+        self._llm_persisted: dict[str, dict] = {}
+        self._llm_now_w: float | None = None
 
     # ---- 設定取得 ----
     def _cfg(self):
@@ -116,6 +143,17 @@ class ElectricityAccumulator:
             logger.exception("電気代の復元に失敗（0 から継続）")
         finally:
             db.close()
+        try:
+            data = json.loads(_llm_path().read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for day, row in data.items():
+                    if isinstance(row, dict):
+                        self._llm[str(day)] = {k: float(row.get(k) or 0.0) for k in ("energy_kwh", "cost_yen", "seconds")}
+                self._llm_persisted = {k: dict(v) for k, v in self._llm.items()}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError):
+            logger.exception("LLM 処理中の電気代の復元に失敗（0 から継続）")
         self._loaded = True
 
     # ---- サンプル受信（collector から約2秒毎） ----
@@ -131,13 +169,19 @@ class ElectricityAccumulator:
                 self._prev_input_w = None
                 self._prev_monotonic = None
                 self._prev_wall = None
+                self._llm_now_w = None
                 return
             input_w = output_power_w / cfg.psu_efficiency
+            llm_during, llm_now = _llm_busy(self._prev_monotonic)
+            self._llm_now_w = input_w if llm_now else None
             if self._prev_input_w is not None and self._prev_monotonic is not None and self._prev_wall is not None:
                 dt = now_mono - self._prev_monotonic
                 # 異常間隔（逆行・欠測・サスペンド跨ぎ）は積算しない
                 if 0 < dt <= MAX_SAMPLE_GAP_SEC:
                     self._integrate(self._prev_input_w, input_w, self._prev_wall, now_wall, cfg.price_per_kwh_yen)
+                    if llm_during:
+                        self._integrate_llm(self._prev_input_w, input_w, self._prev_wall, now_wall,
+                                            cfg.price_per_kwh_yen)
             self._prev_input_w = input_w
             self._prev_monotonic = now_mono
             self._prev_wall = now_wall
@@ -158,6 +202,30 @@ class ElectricityAccumulator:
             if d["first"] is None:
                 d["first"] = start
             d["last"] = end
+
+    def _integrate_llm(self, prev_w: float, cur_w: float, start: datetime, end: datetime, price: float) -> None:
+        for day, kwh, sec in _split_energy_by_day(prev_w, cur_w, start, end):
+            d = self._llm.setdefault(day, {"energy_kwh": 0.0, "cost_yen": 0.0, "seconds": 0.0})
+            d["energy_kwh"] += kwh
+            d["cost_yen"] += kwh * price
+            d["seconds"] += sec
+
+    def _persist_llm(self) -> None:
+        with self._lock:
+            keep = sorted(self._llm)[-LLM_KEEP_DAYS:]
+            self._llm = {k: self._llm[k] for k in keep}
+            snapshot = {k: dict(v) for k, v in self._llm.items()}
+        if snapshot == self._llm_persisted:
+            return
+        path = _llm_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+            self._llm_persisted = snapshot
+        except OSError:
+            logger.exception("LLM 処理中の電気代の保存に失敗（メモリ累積は保持）")
 
     # ---- 永続化 ----
     def _maybe_persist(self, cfg) -> None:
@@ -214,8 +282,34 @@ class ElectricityAccumulator:
             db.rollback()
         finally:
             db.close()
+        self._persist_llm()
 
     # ---- 参照（API 用） ----
+    def llm_snapshot(self) -> dict:
+        """Home の LLM カード用: いまの電力（処理中だけ）、今日の処理中の平均電力・電気代・時間。"""
+        cfg = self._cfg()
+        if not cfg.enabled:
+            return {"enabled": False}
+        today_key = _local_now().strftime("%Y-%m-%d")
+        with self._lock:
+            today = dict(self._llm.get(today_key) or {"energy_kwh": 0.0, "cost_yen": 0.0, "seconds": 0.0})
+            now_w = self._llm_now_w
+        seconds = today["seconds"]
+        # 数秒だけの平均は揺れが大きいので出さない
+        avg_w = today["energy_kwh"] * MS_PER_HOUR / seconds if seconds >= 10 else None
+        watts = now_w if now_w is not None else avg_w
+        price = cfg.price_per_kwh_yen
+        return {
+            "enabled": True,
+            "busy": now_w is not None,
+            "now_w": round(now_w, 1) if now_w is not None else None,
+            "avg_w": round(avg_w, 1) if avg_w is not None else None,
+            "yen_per_hour": round(watts / 1000 * price, 2) if watts is not None else None,
+            "today_yen": round(today["cost_yen"], 2),
+            "today_seconds": round(seconds),
+            "price_per_kwh_yen": price,
+        }
+
     def snapshot(self) -> dict:
         from app.database import SessionLocal
         from app.models import ElectricityDaily

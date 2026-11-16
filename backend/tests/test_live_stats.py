@@ -25,3 +25,24 @@ def test_model_names_are_uniform():
     assert model_names.from_file("/m/Qwen3.8-27B-UD-Q4_K_M.gguf") == ("Qwen3.8-27B", "UD-Q4_K_M")
     assert model_names.from_file("/m/qwen3.8-27b-iq5r-v4.rad") == ("Qwen3.8-27B", "IQ5R-V4")
     assert model_names.from_file("/m/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf") == ("Qwen3.8-Flash-Next", "UD-IQ4_XS")
+
+
+def test_busy_during_covers_requests_that_ended_since_the_last_sample():
+    since = time.monotonic()
+    timing = live_stats.begin(9998)
+    assert live_stats.busy_now() and live_stats.busy_during(since)
+    live_stats.end(timing, {"prompt_tokens": 1200, "completion_tokens": 30})
+    assert not live_stats.busy_now()
+    assert live_stats.busy_during(since)                 # ended after the last sample: still counted
+    assert not live_stats.busy_during(time.monotonic() + 1)
+    assert live_stats.last_context(9998) == 1230
+
+
+def test_context_from_engine_metrics():
+    running = {"live": {"prompt_total": 180000, "prompt_tokens": 2000, "generated": 512}, "requests": []}
+    assert live_stats.context_from_metrics(running) == 180512
+    idle = {"live": {"prompt_tokens": None, "generated": None},
+            "requests": [{"prompt_total": 9000, "output_tokens": 300}, {"prompt_total": 1, "output_tokens": 1}]}
+    assert live_stats.context_from_metrics(idle) == 9300
+    assert live_stats.context_from_metrics({"live": {}, "requests": []}) is None
+    assert live_stats.context_from_metrics("broken") is None

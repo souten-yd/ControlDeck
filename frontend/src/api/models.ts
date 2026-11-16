@@ -147,6 +147,22 @@ export interface EndpointCapacity {
   prompt_tokens: number; prompt_tokens_done: number;
   /** Strata / Maya-S / Radiance: ControlDeck times the requests it relays (no KV usage). */
   runtime?: string; timed_by_controldeck?: boolean;
+  /** Strata / Maya-S / Radiance: 実行中（無ければ直前）の 1 本の「プロンプト + 生成」。KV の使用量ではない。 */
+  ctx_active?: number | null;
+}
+
+/** LLM が処理していた間の PC 全体の電力と電気代（PSU のコンセント側換算）。 */
+export interface LlmPower {
+  enabled: boolean;
+  busy?: boolean;
+  /** 処理中だけ。 */
+  now_w?: number | null;
+  /** 今日、処理していた間の平均。 */
+  avg_w?: number | null;
+  /** いま（処理中）または平均の電力での 1 時間あたり。 */
+  yen_per_hour?: number | null;
+  today_yen?: number;
+  today_seconds?: number;
 }
 
 
@@ -158,5 +174,5 @@ export interface FailedInstance {
 }
 
 export const getLlamaCapacity = () =>
-  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[] }>(
+  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; power?: LlmPower }>(
     "/models/llama/capacity");

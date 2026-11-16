@@ -35,6 +35,21 @@ class _Last:
 
 _active: dict[int, list[_Request]] = {}
 _last: dict[int, _Last] = {}
+_last_end = 0.0  # monotonic time the last request ended (any port)
+
+
+def busy_during(since: float | None) -> bool:
+    """Was any local LLM request running between `since` (monotonic) and now? The electricity
+    accumulator asks this every sample to count the PC's power while an LLM was working."""
+    with _lock:
+        if any(_active.values()):
+            return True
+        return since is not None and _last_end >= since
+
+
+def busy_now() -> bool:
+    with _lock:
+        return any(_active.values())
 
 
 def begin(port: int) -> _Request:
@@ -55,11 +70,13 @@ def delta(request: _Request, *, thinking: bool) -> None:
 def end(request: _Request, usage: dict | None = None, timings: dict | None = None) -> None:
     """Close a request. An engine's own `timings` (llama-server's shape, which Radiance returns)
     win over ControlDeck's estimate; a non-streamed reply without them gives an overall rate."""
+    global _last_end
     now = time.monotonic()
     with _lock:
         rows = _active.get(request.port, [])
         if request in rows:
             rows.remove(request)
+        _last_end = now
         prompt = completion = 0
         if isinstance(usage, dict):
             prompt = int(usage.get("prompt_tokens") or 0)
@@ -141,3 +158,34 @@ def feed_sse(request: _Request, chunk: bytes, buffer: bytearray) -> dict | None:
             elif piece.get("content"):
                 delta(request, thinking=False)
     return usage
+
+
+def context_from_metrics(data: object) -> int | None:
+    """Tokens in the context from a Strata / Maya-S `/metrics` reply: the running request's prompt and
+    what it generated so far, else the last finished request's. None when the reply says neither."""
+    if not isinstance(data, dict):
+        return None
+
+    def num(value: object) -> int:
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+    live = data.get("live") if isinstance(data.get("live"), dict) else {}
+    prompt = num(live.get("prompt_total")) or num(live.get("prompt_tokens"))
+    if prompt:
+        return prompt + num(live.get("generated"))
+    requests = data.get("requests") if isinstance(data.get("requests"), list) else []
+    last = requests[0] if requests and isinstance(requests[0], dict) else None
+    if last:
+        prompt = num(last.get("prompt_total")) or num(last.get("prompt_tokens"))
+        if prompt:
+            return prompt + num(last.get("output_tokens"))
+    return None
+
+
+def last_context(port: int) -> int | None:
+    """The last relayed request's prompt + output on this port (engines without their own metrics)."""
+    with _lock:
+        last = _last.get(int(port))
+    if last is None or not last.prompt_tokens:
+        return None
+    return last.prompt_tokens + last.completion_tokens
