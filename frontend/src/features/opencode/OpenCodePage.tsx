@@ -13,7 +13,6 @@ import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
 import { IconFolder, IconPlus, IconSettings, IconTrash } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
-import { BackgroundRuns } from "./BackgroundRuns";
 import { Reports } from "./Reports";
 import { TaskPicker, uiVerifyBlocker, withTarget, type SessionTask } from "./TaskPicker";
 import { WorkflowExtensions, workflowBody, type Workflow } from "./WorkflowExtensions";
@@ -181,7 +180,6 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
 
       {settingsOpen && data && <OpenCodeSettingsSheet initial={data} onClose={() => setSettingsOpen(false)} />}
 
-      <BackgroundRuns />
 
       {/* セッション開始 */}
       <section className="space-y-3 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
