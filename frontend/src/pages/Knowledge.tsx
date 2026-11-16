@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
@@ -63,9 +63,7 @@ export default function KnowledgePage() {
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
       <PageHeader title="Knowledge" description="RAG 用ナレッジベース。文書を取り込み、チャンク戦略・検索方式を設定して、ワークフローの RAG 検索ノードから利用できます。" actions={can("workflows.edit") && (
-          <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-            <IconPlus /> コレクション作成
-          </button>
+          <IconButton variant="primary" label="コレクション作成" onClick={() => setCreating(true)}><IconPlus /></IconButton>
         )} />
 
       {isLoading ? (

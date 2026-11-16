@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 
@@ -90,21 +90,19 @@ export default function GitHubPage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <PageHeader title="GitHub" actions={<div className="flex items-center gap-2">
+      <PageHeader title="GitHub"
+        // ログイン中の表示は見出しと幅を取り合うので、行の下へ出す。
+        description={auth?.logged_in ? `${auth.account} でログイン中` : undefined}
+        actions={<>
           {auth?.available && !auth.logged_in && can("apps.edit") && (
-            <button onClick={login} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
+            <button onClick={login} className="min-h-10 rounded-full bg-zinc-100 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700">
               GitHub にログイン
             </button>
           )}
-          {auth?.logged_in && (
-            <span className="text-xs text-zinc-400">{auth.account} でログイン中</span>
-          )}
           {can("apps.edit") && (
-            <button onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              <IconPlus /> リポジトリを追加
-            </button>
+            <IconButton variant="primary" label="リポジトリを追加" onClick={() => setAdding(true)}><IconPlus /></IconButton>
           )}
-        </div>} />
+        </>} />
 
       {isLoading ? (
         <Skeleton className="h-24" />

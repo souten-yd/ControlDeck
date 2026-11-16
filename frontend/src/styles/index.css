@@ -129,6 +129,39 @@ body {
   }
 }
 
+/* ---- 文字の濃さ（補足文の読みやすさ） ----
+   補足文は text-zinc-500 / text-zinc-400 で書かれている。暗い背景の zinc-500（4.1:1）と
+   明るい背景の zinc-400（2.6:1）は小さい字では読みにくいので、テーマごとに一段寄せる。
+   色の変数を差し替えるだけなので、個々の画面のクラスは変えない。 */
+:root.dark {
+  --color-zinc-500: #8c8c96; /* zinc-950 上で 5.9:1 */
+}
+:root:not(.dark) {
+  --color-zinc-400: #85858f; /* 白の上で 3.7:1 */
+}
+
+/* ---- フォーカスリング ----
+   キーボード操作のときだけ出す。base 層に置くので、自前の輪を持つ部品
+   （outline-none + ring）はそのまま優先される。入力欄はブラウザ既定のまま。 */
+@layer base {
+  :where(a, button, summary, [role="button"], [role="menuitem"]):focus-visible {
+    outline: 2px solid var(--color-accent-500);
+    outline-offset: 2px;
+  }
+}
+
+/* ---- アイコンボタン ----
+   見た目は40px。指で押す領域だけ44pxまで広げる（隣のボタンとは重ならない幅）。 */
+.cd-icon-button::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 9999px;
+}
+.cd-icon-button:active {
+  transform: scale(0.94);
+}
+
 .num {
   font-variant-numeric: tabular-nums;
 }

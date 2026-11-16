@@ -323,7 +323,8 @@ export default function AppLayout() {
               aria-label="More"
               className="flex min-h-[52px] min-w-0 max-w-24 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-zinc-600 dark:text-zinc-400"
             >
-              <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-600 text-white">
+              {/* 他の項目のアイコン（20px）と同じ高さに収め、ラベルの行をそろえる。 */}
+              <span className="grid h-5 w-9 place-items-center rounded-full bg-accent-600 text-sm text-white">
                 <IconPlus />
               </span>
               <span className="max-w-full truncate px-0.5 text-[10px]">More</span>

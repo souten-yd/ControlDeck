@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useToasts } from "../stores";
-import { ConfirmDialog, Skeleton } from "../components/ui";
+import { ConfirmDialog, IconButton, Skeleton } from "../components/ui";
 import { IconPlus, IconSettings } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { useSessionOrder } from "../features/terminal/useSessionOrder";
@@ -134,20 +134,20 @@ export default function TerminalPage() {
       {terminalLabV2 && <div role="status" className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">
         Terminal V2 Labです。このtabで新規作成した検証sessionだけをV2で開き、既存sessionは常に安定版で開きます。
       </div>}
-      <PageHeader title="Terminal" actions={<div className="flex items-center gap-2"><button
+      <PageHeader title="Terminal" actions={<>
+        <IconButton
+          label="Snippets"
           onClick={() => {
             setAutomationSession(null);
             setAutomationOpen(true);
           }}
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
         >
-          <IconSettings /> Snippets
-        </button><button
-          onClick={create}
-          className="flex min-h-11 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-medium text-white hover:bg-accent-700"
-        >
-          <IconPlus /> {terminalLabV2 ? "V2検証セッション" : "新規セッション"}
-        </button></div>} />
+          <IconSettings />
+        </IconButton>
+        <IconButton variant="primary" label={terminalLabV2 ? "V2検証セッション" : "新規セッション"} onClick={create}>
+          <IconPlus />
+        </IconButton>
+      </>} />
 
       {data && !data.tmux && (
         <p className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
@@ -221,7 +221,7 @@ export default function TerminalPage() {
                     onClick={() => { setAutomationSession(s.id); setAutomationOpen(true); }}
                     aria-label={`${s.program || s.name}のオートメーション設定`}
                     title="オートメーション設定"
-                    className="grid h-9 w-9 place-items-center rounded-lg text-base hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 dark:hover:bg-zinc-800"
+                    className="grid h-9 w-9 place-items-center rounded-full text-base hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 dark:hover:bg-zinc-800"
                   >
                     <span aria-hidden="true">🔧</span>
                   </button>
@@ -230,14 +230,14 @@ export default function TerminalPage() {
                     onClick={() => setKilling(s.id)}
                     aria-label={`${s.program || s.name}のセッションを削除`}
                     title="セッションを削除"
-                    className="grid h-9 w-9 place-items-center rounded-lg text-base text-red-600 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40"
+                    className="grid h-9 w-9 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40"
                   >
                     <span aria-hidden="true">🗑️</span>
                   </button>
                   <button
                     data-terminal-connect
                     onClick={() => setActive(s.id)}
-                    className="min-h-9 shrink-0 rounded-lg bg-accent-50 px-3 text-xs font-semibold text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
+                    className="min-h-9 shrink-0 rounded-full bg-accent-50 px-3 text-xs font-semibold text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-400"
                   >
                     Connect
                   </button>

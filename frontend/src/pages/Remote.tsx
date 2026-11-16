@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 
@@ -57,9 +57,7 @@ export default function RemotePage() {
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
       <PageHeader title="Remote Desktop" actions={can("remote_desktop.use") && (
-          <button onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-            <IconPlus /> 接続を追加
-          </button>
+          <IconButton variant="primary" label="接続を追加" onClick={() => setAdding(true)}><IconPlus /></IconButton>
         )} />
 
       {status && !status.guacd_available && (

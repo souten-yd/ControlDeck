@@ -9,6 +9,7 @@ import {
   BottomSheet,
   ConfirmDialog,
   DropdownMenu,
+  IconButton,
   Skeleton,
   StatusBadge,
 } from "../components/ui";
@@ -94,13 +95,7 @@ export default function AppsPage() {
   return (
     <div className="mx-auto max-w-5xl p-4 md:p-6">
       <PageHeader title="Apps" actions={can("apps.edit") && (
-          <button
-            onClick={() => setParams({ add: "1" })}
-            aria-label="アプリを追加"
-            className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-700"
-          >
-            <IconPlus /><span className="hidden sm:inline"> アプリを追加</span>
-          </button>
+          <IconButton variant="primary" label="アプリを追加" onClick={() => setParams({ add: "1" })}><IconPlus /></IconButton>
         )} />
 
       {isLoading ? (

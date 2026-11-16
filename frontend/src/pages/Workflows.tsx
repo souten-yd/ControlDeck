@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
-import { IconDots, IconPlay, IconPlus } from "../components/icons";
+import { BottomSheet, ConfirmDialog, DropdownMenu, IconButton, Skeleton } from "../components/ui";
+import { IconBookOpen, IconDots, IconPlay, IconPlus } from "../components/icons";
 import { DEFAULT_DEFINITION } from "../features/workflows/nodeTypes";
 import { PageHeader } from "../components/PageHeader";
 
@@ -151,24 +151,12 @@ function WorkflowList() {
 
   return (
     <div className="mx-auto max-w-4xl p-4 md:p-6">
-      <PageHeader title="Workflows" actions={<div className="flex items-center gap-1.5">
-          {can("workflows.edit") && (
-            <button
-              onClick={() => create.mutate()}
-              aria-label="新規ワークフロー"
-              title="新規ワークフロー"
-              className="grid h-10 w-10 place-items-center rounded-xl bg-accent-600 text-white shadow-sm hover:bg-accent-700 md:hidden"
-            >
-              <IconPlus />
-            </button>
+      <PageHeader title="Workflows" actions={<>
+          {canEdit && (
+            <IconButton label="サンプルブック" title="サンプルワークフロー集とノードリファレンス" onClick={() => setShowSamples(true)}>
+              <IconBookOpen />
+            </IconButton>
           )}
-          {canEdit && <button
-            onClick={() => setShowSamples(true)}
-            className="flex min-h-10 items-center gap-1.5 rounded-xl border border-zinc-200 px-3 py-2 text-sm font-medium hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
-            title="サンプルワークフロー集とノードリファレンス"
-          >
-            📖<span className="hidden sm:inline"> サンプルブック</span>
-          </button>}
           {canEdit && (
             <>
               <input
@@ -186,16 +174,14 @@ function WorkflowList() {
                   { label: "🔑 Secret Manager", onSelect: () => setShowSecrets(true) },
                 ]}
               />
-              <button
-                onClick={() => create.mutate()}
-                disabled={create.isPending}
-                className="hidden items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700 md:flex"
-              >
-                <IconPlus /> 新規ワークフロー
-              </button>
             </>
           )}
-        </div>} />
+          {can("workflows.edit") && (
+            <IconButton variant="primary" label="新規ワークフロー" onClick={() => create.mutate()} disabled={create.isPending}>
+              <IconPlus />
+            </IconButton>
+          )}
+        </>} />
 
       {isLoading ? (
         <div className="space-y-3">

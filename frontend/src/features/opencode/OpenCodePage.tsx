@@ -9,7 +9,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { FilePicker } from "../../components/FilePicker";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
+import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../../components/ui";
 import { IconFolder, IconPlus, IconSettings, IconTrash } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
@@ -176,8 +176,8 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
     <div className="mx-auto max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
       <PageHeader title="OpenCode"
         description={`${data?.feature.version ? `v${data.feature.version.match(/\d+(?:\.\d+)+/)?.[0] ?? data.feature.version}` : "確認中"} · CLIそのままの対話TUI（tmux永続・再接続可）`}
-        actions={<button onClick={() => setSettingsOpen(true)} disabled={!data} aria-label="OpenCode 設定を開く" title="モデル・開発ワークフローの設定"
-        className="flex min-h-11 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 py-2 text-sm text-zinc-600 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"><IconSettings className="h-4 w-4" />設定</button>} />
+        actions={<IconButton label="OpenCode 設定を開く" title="モデル・開発ワークフローの設定"
+          onClick={() => setSettingsOpen(true)} disabled={!data}><IconSettings /></IconButton>} />
 
       {settingsOpen && data && <OpenCodeSettingsSheet initial={data} onClose={() => setSettingsOpen(false)} />}
 
