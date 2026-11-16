@@ -360,9 +360,9 @@ def test_internal_generation_keeps_cloud_models_on_the_gateway():
 
     base = gateway.base_url()
     assert gateway.resolve_internal_target(base, "cloud:openrouter/anthropic/claude-x") == (base, "cloud:openrouter/anthropic/claude-x")
-    assert gateway.client_headers(base) == {gateway.CLIENT_HEADER: "assistant"}
+    assert gateway.client_headers(base, "assistant") == {gateway.CLIENT_HEADER: "assistant"}
     assert gateway.client_headers(base, "workflows") == {gateway.CLIENT_HEADER: "workflows"}
-    assert gateway.client_headers("https://api.example.com/v1") == {}, "外部の endpoint へは名乗らない"
+    assert gateway.client_headers("https://api.example.com/v1", "assistant") == {}, "外部の endpoint へは名乗らない"
 
 
 def _mock_runtime_http(monkeypatch, handler):
@@ -397,7 +397,7 @@ def test_assistant_requests_name_their_caller_to_the_gateway(monkeypatch):
     rp = _mock_runtime_http(monkeypatch, handler)
     base, model = rp.resolve_target(gateway.base_url(), "cloud:openrouter/anthropic/claude-x")
     provider = rp.provider_for_base_url(base)
-    request = rp.RuntimeChatRequest(base, model, [{"role": "user", "content": "x"}])
+    request = rp.RuntimeChatRequest(base, model, [{"role": "user", "content": "x"}], client="assistant")
 
     async def run():
         text = await provider.complete(request)
@@ -457,3 +457,17 @@ def test_assistant_chat_reaches_the_provider_through_the_gateway(client, store, 
     response = client.post("/api/v1/llm/v1/chat/completions", headers=_gateway_headers("assistant"), json=body)
     assert response.status_code == 200 and len(upstream.sent) == 1
     assert cloud.usage_rows()[0]["caller"] == "assistant"
+
+
+def test_only_assistant_paths_claim_the_assistant_caller():
+    """Add-ons and other internal callers must not borrow the assistant's egress permission."""
+    from app.addon_runtime import ai
+    from app.models_mgmt import gateway
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest, _request_headers
+
+    assert RuntimeChatRequest(base_url="x", model="m", messages=[]).client == "internal"
+    body = ai.RuntimeAIRequest(capability="text.generate", messages=[{"role": "user", "content": "hi"}])
+    target = type("T", (), {"base_url": gateway.base_url(), "model": "cloud:openrouter/a/b"})()
+    request = ai._runtime_request(body, target)
+    headers = _request_headers(request)
+    assert headers.get(gateway.CLIENT_HEADER) not in ("assistant", "opencode", "workflows")

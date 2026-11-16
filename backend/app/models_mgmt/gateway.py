@@ -210,7 +210,7 @@ OPENCODE_CLIENT = "opencode"
 ASSISTANT_CLIENT = "assistant"
 
 
-def client_headers(base: str, caller: str = ASSISTANT_CLIENT) -> dict[str, str]:
+def client_headers(base: str, caller: str) -> dict[str, str]:
     """ControlDeck 内部からゲートウェイへ送るときの呼び出し元ヘッダ。
 
     外部モデルへ送ってよいかは呼び出し元ごとに決まる。付けないと「外部クライアント」

@@ -89,6 +89,7 @@ async def _llm(
     think_spec = resolve_think(base_url, model)
     think = False if disable_thinking else think_spec.ollama_think
     request = RuntimeChatRequest(
+        client="assistant",
         base_url=base_url, model=model, messages=messages, api_key=api_key,
         temperature=temperature, max_tokens=max_tokens,
         thinking=think, disable_thinking=disable_thinking,
@@ -138,6 +139,7 @@ async def chat_stream(websocket: WebSocket):
     provider = provider_for_base_url(base)
     request_id = f"legacy-ws-{id(websocket)}"
     runtime_request = RuntimeChatRequest(
+        client="assistant",
         base_url=base, model=model, messages=messages, max_tokens=2048,
         thinking=think, disable_thinking=think is False, keep_alive=_keep_alive(),
         reasoning_effort=think_spec.reasoning_effort,

@@ -445,7 +445,7 @@ async def _llm_complete(prompt: str, base_url: str, model: str, api_key: str, te
             base_url.rstrip("/") + "/chat/completions",
             json={"model": model, "messages": [{"role": "user", "content": prompt}],
                   "temperature": temperature, "stream": False, "max_tokens": 2048},
-            headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}", **gateway.client_headers(base_url)},
+            headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}", **gateway.client_headers(base_url, gateway.ASSISTANT_CLIENT)},
         )
     if r.status_code >= 400:
         raise RagError(f"LLM エラー {r.status_code}: {r.text[:150]}")

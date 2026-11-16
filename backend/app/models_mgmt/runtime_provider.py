@@ -43,7 +43,9 @@ class RuntimeChatRequest:
     timeout_seconds: int = 300
     local_only: bool = False
     # ゲートウェイへ送るときに名乗る呼び出し元（外部モデルの許可はこの単位）。
-    client: str = "assistant"
+    # 既定は許可の対象外（internal → ゲートウェイでは api 扱い）。AI アシスタントの経路だけが
+    # 明示的に "assistant" を名乗る。Add-on などが黙ってアシスタントの許可を使わないため。
+    client: str = "internal"
 
 
 @dataclass(slots=True)
