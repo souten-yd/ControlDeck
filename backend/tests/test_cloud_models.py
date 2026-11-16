@@ -474,3 +474,24 @@ def test_only_assistant_paths_claim_the_assistant_caller():
     request = ai._runtime_request(body, target)
     headers = _request_headers(request)
     assert headers.get(gateway.CLIENT_HEADER) not in ("assistant", "opencode", "workflows")
+
+
+def test_internal_requests_to_the_gateway_carry_its_key(monkeypatch):
+    """The assistant reaches cloud models through the gateway, which needs its key (was 401)."""
+    from app.models_mgmt import gateway
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest, _request_headers
+
+    monkeypatch.setattr(gateway, "get_api_key", lambda create=False: "gw-key")
+    base = gateway.base_url()
+    headers = _request_headers(RuntimeChatRequest(base, "cloud:openrouter/a/b", [], client="assistant"))
+    assert headers["Authorization"] == "Bearer gw-key"
+    assert gateway.internal_api_key("http://127.0.0.1:8096/v1") == "sk-no-key", "直結のランタイムへは鍵を送らない"
+    assert gateway.internal_api_key(base, "given") == "given"
+
+
+def test_account_flags_a_management_key(store, monkeypatch):
+    import asyncio
+
+    _configure()
+    _Upstream(monkeypatch, httpx.Response(200, json={"data": {"is_management_key": True, "limit": None}}))
+    assert asyncio.run(cloud.account("openrouter"))["management_key"] is True

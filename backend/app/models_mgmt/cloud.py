@@ -508,7 +508,10 @@ async def account(provider_id: str) -> dict:
 
     total, spent = credit("total_credits"), credit("total_usage")
     balance = round(total - spent, 4) if total is not None and spent is not None else None
-    return {"supported": True, "balance": balance, "credits_total": total, "credits_used": spent, "limit": number("limit"), "limit_remaining": number("limit_remaining"),
+    # 管理用キー（Management / Provisioning key）はキーの管理と残高の確認だけができ、
+    # モデルへの問い合わせは "User not found"（401）で断られる。画面で知らせる。
+    management = bool(data.get("is_management_key") or data.get("is_provisioning_key"))
+    return {"supported": True, "management_key": management, "balance": balance, "credits_total": total, "credits_used": spent, "limit": number("limit"), "limit_remaining": number("limit_remaining"),
             "usage": number("usage"), "usage_monthly": number("usage_monthly"), "usage_daily": number("usage_daily"),
             "is_free_tier": bool(data.get("is_free_tier")),
             "free_requests_remaining": free.get("remaining") if isinstance(free.get("remaining"), int) else None}

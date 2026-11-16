@@ -483,6 +483,12 @@ function AccountBlock({ provider: p }: { provider: CloudProvider }) {
           <p role="alert" className="pb-1 text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">残高を取得できませんでした: {errorText(account.error, "不明なエラー")}</p>
         ) : (
           <div className="num pb-1">
+            {a.management_key && (
+              <p role="alert" className="mb-1.5 flex items-start gap-1 rounded-lg bg-red-50 px-2 py-1.5 text-[11px] leading-relaxed text-red-800 dark:bg-red-950/40 dark:text-red-200">
+                <IconWarning className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>このキーは管理用キーです。残高は見られますが、モデルへの問い合わせはできません。{p.name} の Keys で通常の API キーを作り、「変更」から入れ直してください。</span>
+              </p>
+            )}
             {a.balance !== null ? (
               <p className="flex flex-wrap items-baseline gap-x-2">
                 <span className="text-lg font-semibold">{usd(a.balance)}</span>

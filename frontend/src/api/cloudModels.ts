@@ -73,6 +73,8 @@ export type CloudAccount =
   | { supported: false }
   | {
     supported: true;
+    /** 管理用キー（推論に使えない）。 */
+    management_key?: boolean;
     /** アカウントの残高（入金 − 使用、USD）。取得できなければ null。 */
     balance: number | null;
     credits_total: number | null;
