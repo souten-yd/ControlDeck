@@ -112,7 +112,10 @@ def approve(approval_id: str, *, user: str) -> dict:
          "--match-head-commit", record["head_sha"]],
         capture_output=True, text=True, timeout=120, check=False, stdin=subprocess.DEVNULL,
     )
-    if result.returncode == 0:
+    # GitHub はマージを受け付けたのに "Merge already in progress" などを返すことがある。
+    # 失敗と決める前に、承認したコミットのまま実際にマージされたかを確かめる。
+    merged = result.returncode == 0 or _merged_at_approved_head(record)
+    if merged:
         record.update(status="merged", result="マージしました")
         if record["repo"] == RELEASE_REPO:
             # 承認されたものは、そのまま本番まで進める: 次の版の正式 Release を出し、
@@ -131,6 +134,24 @@ def approve(approval_id: str, *, user: str) -> dict:
         record.update(status="failed", result="PR が依頼の後に変わったためマージしませんでした" if changed
                       else "マージできませんでした（PR の状態を確認してください）")
     return _write(record)
+
+
+def _merged_at_approved_head(record: dict) -> bool:
+    """PR が承認したコミットのままマージ済みか。少し待って数回だけ確かめる。"""
+    for attempt in range(4):
+        if attempt:
+            time.sleep(5)
+        out = subprocess.run(
+            [_gh(), "pr", "view", str(record["pr"]), "--repo", record["repo"], "--json", "state,headRefOid"],
+            capture_output=True, text=True, timeout=60, check=False, stdin=subprocess.DEVNULL,
+        )
+        try:
+            info = json.loads(out.stdout or "{}")
+        except ValueError:
+            continue
+        if info.get("state") == "MERGED":
+            return info.get("headRefOid") == record["head_sha"]
+    return False
 
 
 RELEASE_REPO = "souten-yd/ControlDeck"
