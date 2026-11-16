@@ -483,14 +483,15 @@ def _apply_vram_margin(record: dict) -> Path:
     args = list(cfg.get("args") or [])
 
     def reserve_value(values: list[str]) -> str | None:
+        reserves: list[str] = []
         for index, arg in enumerate(values):
             if arg.startswith(flag + "="):
-                return arg.split("=", 1)[1]
+                reserves.append(arg.split("=", 1)[1])
             if arg == flag:
                 if index + 1 >= len(values):
                     raise ValueError(f"{flag} の値がありません")
-                return values[index + 1]
-        return None
+                reserves.append(values[index + 1])
+        return max(reserves, key=float) if reserves else None
 
     original = reserve_value(args)
     managed = cfg.get("control_deck_vram_margin") or {}

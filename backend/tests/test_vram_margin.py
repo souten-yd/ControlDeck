@@ -156,3 +156,24 @@ def test_same_displayed_default_in_legacy_policy_refreshes_units(policy, monkeyp
                                headers={'X-Requested-With': 'ControlDeck'})
     assert response.status_code == 200, response.text
     assert calls == [3072]
+
+
+def test_maya_duplicate_original_reserves_and_native_edits_are_preserved(policy):
+    from app.models_mgmt import maya_s
+
+    path = policy / 'maya.json'
+    path.write_text(json.dumps({'args': ['--reserve-mib', '700', '--reserve-mib=4096']}))
+    record = {'alias': 'test', 'family': 'deepseek', 'config': path}
+    maya_s._apply_vram_margin(record)
+    rp.save_policy(rp.RuntimePolicy(vram_margin_gib=2))
+    maya_s._apply_vram_margin(record)
+    cfg = json.loads(path.read_text())
+    assert cfg['args'][-1] == '4096'
+    cfg['args'][-1] = '5120'
+    cfg['args'] += ['--max-context', '65536']
+    path.write_text(json.dumps(cfg))
+    maya_s._apply_vram_margin(record)
+    cfg = json.loads(path.read_text())
+    assert cfg['args'][-1] == '5120'
+    assert cfg['control_deck_vram_margin']['original'] == '5120'
+    assert '--max-context' in cfg['args']
