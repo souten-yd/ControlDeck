@@ -293,7 +293,8 @@ class ElectricityAccumulator:
 
     # ---- 参照（API 用） ----
     def llm_snapshot(self) -> dict:
-        """Home の LLM カード用: いまの電力（処理中だけ）、今日の処理中の平均電力・電気代・時間。"""
+        """Home の LLM カード用: 今日、LLM が処理していた間の平均電力（積算した電力量 ÷ 積算した時間）、
+        その平均での 1 時間あたりの電気代、今日の電気代と時間。いまの電力（処理中だけ）も添える。"""
         cfg = self._cfg()
         if not cfg.enabled:
             return {"enabled": False}
@@ -302,16 +303,15 @@ class ElectricityAccumulator:
             today = dict(self._llm.get(today_key) or {"energy_kwh": 0.0, "cost_yen": 0.0, "seconds": 0.0})
             now_w = self._llm_now_w
         seconds = today["seconds"]
-        # 数秒だけの平均は揺れが大きいので出さない
-        avg_w = today["energy_kwh"] * MS_PER_HOUR / seconds if seconds >= 10 else None
-        watts = now_w if now_w is not None else avg_w
+        # 平均は処理中かどうかにかかわらず、今日の積算から出す（瞬間の値で揺らさない）。
+        avg_w = today["energy_kwh"] * MS_PER_HOUR / seconds if seconds > 0 else None
         price = cfg.price_per_kwh_yen
         return {
             "enabled": True,
             "busy": now_w is not None,
             "now_w": round(now_w, 1) if now_w is not None else None,
             "avg_w": round(avg_w, 1) if avg_w is not None else None,
-            "yen_per_hour": round(watts / 1000 * price, 2) if watts is not None else None,
+            "yen_per_hour": round(avg_w / 1000 * price, 2) if avg_w is not None else None,
             "today_yen": round(today["cost_yen"], 2),
             "today_seconds": round(seconds),
             "price_per_kwh_yen": price,

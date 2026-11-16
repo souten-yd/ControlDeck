@@ -151,15 +151,18 @@ export interface EndpointCapacity {
   ctx_active?: number | null;
 }
 
+/** 動いているモデルが無いときの、最後に見えていたローカル LLM（at は最後に見えた時刻、UNIX 秒）。 */
+export type LastLocal = Pick<EndpointCapacity, "running_alias"> & Partial<EndpointCapacity> & { at?: number };
+
 /** LLM が処理していた間の PC 全体の電力と電気代（PSU のコンセント側換算）。 */
 export interface LlmPower {
   enabled: boolean;
   busy?: boolean;
   /** 処理中だけ。 */
   now_w?: number | null;
-  /** 今日、処理していた間の平均。 */
+  /** 今日、処理していた間の平均（積算した電力量 ÷ 積算した時間）。 */
   avg_w?: number | null;
-  /** いま（処理中）または平均の電力での 1 時間あたり。 */
+  /** 平均の電力での 1 時間あたり。 */
   yen_per_hour?: number | null;
   today_yen?: number;
   today_seconds?: number;
@@ -174,5 +177,5 @@ export interface FailedInstance {
 }
 
 export const getLlamaCapacity = () =>
-  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; power?: LlmPower }>(
+  api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; power?: LlmPower; last_local?: LastLocal | null }>(
     "/models/llama/capacity");

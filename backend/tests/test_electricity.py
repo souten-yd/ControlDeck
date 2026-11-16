@@ -197,7 +197,10 @@ def test_llm_energy_counts_only_while_an_llm_works(tmp_path, monkeypatch):
     expected_kwh = (250 * 2 + 400 * 18) / 3_600_000
     assert abs(snap["today_yen"] - round(expected_kwh * price, 2)) < 0.01
     assert snap["today_seconds"] == 20
-    assert snap["yen_per_hour"] == round(400 / 1000 * price, 2)
+    # 平均と ¥/h は処理中でも今日の積算（電力量 ÷ 時間）から出す。瞬間の 400 W ではない。
+    avg = expected_kwh * 3_600_000 / 20
+    assert abs(snap["avg_w"] - avg) < 0.1
+    assert snap["yen_per_hour"] == round(avg / 1000 * price, 2)
     busy.update(during=False, now=False)
     step(85.0)                                   # 終わった後は数えない。平均は処理中の分だけ
     after = acc.llm_snapshot()
@@ -231,6 +234,21 @@ def test_llm_energy_reload_skips_a_broken_day(tmp_path, monkeypatch):
     acc = el.ElectricityAccumulator()
     acc.load()
     assert set(acc._llm) == {"2026-07-15"}
+
+
+def test_llm_average_shows_even_after_a_few_seconds(tmp_path, monkeypatch):
+    """4 秒だけ処理した日でも、平均（電力量 ÷ 時間）と ¥/h を出す。"""
+    import app.monitoring.electricity as el
+
+    (tmp_path / "electricity-llm.json").write_text(
+        '{"2026-07-15": {"energy_kwh": 0.00025, "cost_yen": 0.0089, "seconds": 4}}', encoding="utf-8")
+    monkeypatch.setattr(el, "_llm_path", lambda: tmp_path / "electricity-llm.json")
+    monkeypatch.setattr(el, "_local_now", lambda: datetime(2026, 7, 15, 20, 0, tzinfo=timezone(timedelta(hours=9))))
+    acc = el.ElectricityAccumulator()
+    acc.load()
+    snap = acc.llm_snapshot()
+    assert snap["avg_w"] == 225.0
+    assert snap["yen_per_hour"] == round(225 / 1000 * acc._cfg().price_per_kwh_yen, 2)
 
 
 # ---- 設定検証 ----
