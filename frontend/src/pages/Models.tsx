@@ -61,6 +61,8 @@ const DEFAULT_COMPACTION: CompactionPolicy = { enabled: true, mode: "auto", perc
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
 type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
+/** 補足文の1項目（「18.6 GB」など）の途中で折り返さない。折り返しは項目の区切りでだけ起こす。 */
+const nowrap = (text: string) => text.replace(/ /g, "\u00a0");
 const RUNTIME_LABEL: Record<string, string> = {
   "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya", radiance: "Radiance", ollama: "Ollama",
 };
@@ -590,9 +592,9 @@ export default function ModelsPage() {
                       // どのランタイムでも「ランタイム · 量子化 · サイズ」の順にそろえる。
                       ? [runtime === "llama.cpp" && m.backend_label ? `llama.cpp（${m.backend_label.replace(/（.*?）|\(.*?\)/g, "").trim()}）` : RUNTIME_LABEL[runtime ?? "ollama"],
                          m.quantization, m.size ? gb(m.size) : "",
-                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).map(nowrap).join(" · ")
                       : [m.parameter_size, m.quantization, m.size ? gb(m.size) : "",
-                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")}
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).map(nowrap).join(" · ")}
                   </p>
                 </button>
                 {can("workflows.edit") && (
