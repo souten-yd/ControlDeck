@@ -12,6 +12,7 @@ def fresh(tmp_path, monkeypatch):
     monkeypatch.setattr(seen, "_path", lambda: path)
     monkeypatch.setattr(seen, "_last", None)
     monkeypatch.setattr(seen, "_saved", None)
+    monkeypatch.setattr(seen, "_attempted", None)
     monkeypatch.setattr(seen, "_loaded", False)
     return path
 
@@ -58,6 +59,7 @@ def test_survives_a_restart_and_ignores_a_loading_model(fresh, monkeypatch):
     seen.update([], now=1001.0)
     monkeypatch.setattr(seen, "_last", None)
     monkeypatch.setattr(seen, "_saved", None)
+    monkeypatch.setattr(seen, "_attempted", None)
     monkeypatch.setattr(seen, "_loaded", False)
     loading = _endpoint("next-model", available=False, slots=0)
     last = seen.update([loading], now=1500.0)                     # 読み込み中は「動いている」に数えない
@@ -67,3 +69,31 @@ def test_survives_a_restart_and_ignores_a_loading_model(fresh, monkeypatch):
 def test_broken_file_is_treated_as_nothing(fresh):
     fresh.write_text("{broken", encoding="utf-8")
     assert seen.update([], now=1.0) is None
+
+
+def test_a_failing_disk_is_not_retried_every_poll(fresh, monkeypatch):
+    calls = []
+
+    def broken_replace(src, dst):
+        calls.append(dst)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(seen.os, "replace", broken_replace)
+    for t in range(5):
+        seen.update([_endpoint()], now=1000.0 + t)
+    assert len(calls) == 1                                         # 書き直し続けない
+    assert not list(fresh.parent.glob(".llm-last-seen.json.*.tmp"))  # 一時ファイルを残さない
+    assert seen.update([], now=1100.0)["running_alias"] == "qwen-flash-next"  # 表示は続く
+
+
+def test_two_loaded_models_keep_the_same_pick_while_both_idle(fresh, monkeypatch):
+    writes = []
+    real = seen._save
+    monkeypatch.setattr(seen, "_save", lambda item: (writes.append(item["running_alias"]), real(item)))
+    a, b = _endpoint("model-a"), _endpoint("model-b")
+    seen.update([a, b], now=1.0)
+    seen.update([b, a], now=2.0)                                  # 並び順が変わっても同じモデル
+    seen.update([a, b], now=3.0)
+    assert writes == ["model-a"]
+    seen.update([a, _endpoint("model-b", busy=1)], now=4.0)       # 処理中が先
+    assert writes == ["model-a", "model-b"]

@@ -97,7 +97,10 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
   // 複数動いていれば、処理中のものを先に出す。動いていなければ最後に見えていたモデルを「アンロード」で出す。
   const live = [...endpoints].sort((a, b) => b.busy - a.busy)[0];
   const item: Partial<EndpointCapacity> | null | undefined = live ?? lastSeen;
-  const unloaded = !live && !!lastSeen;
+  // 起動に失敗しているときは、アンロードより失敗を先に出す（速さの行は最後の値を薄く）。
+  const startFailed = !live && failed.length > 0;
+  const unloaded = !live && !startFailed && !!lastSeen;
+  const past = !live ? "text-zinc-500" : "";
   const loading = !!live && (!live.available || live.slots === 0);
   const used = item ? (item.timed_by_controldeck ? item.ctx_active : item.ctx_used) : null;
   const total = item?.ctx_total ?? 0;
@@ -106,7 +109,6 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
   const decode = (item?.tokens_per_second || item?.tokens_per_second_single) ?? 0;
   const on = power?.enabled;
   const watts = power?.busy ? power.now_w : power?.avg_w;
-  const past = unloaded ? "text-zinc-500" : "";
   return (
     <Column heading="ローカル LLM" to="/models?tab=llm"
       badge={unloaded && (
@@ -114,10 +116,10 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
       )}
       model={live
         ? <ModelName name={live.running_alias} title={`${live.running_alias} :${live.port}`} active={live.busy > 0} more={endpoints.length - 1} />
-        : unloaded
-          ? <ModelName name={lastSeen!.running_alias ?? ""} title={`${lastSeen!.running_alias}（最後に動いていたモデル）`} active={false} />
-          : failed.length > 0
-            ? <span className="truncate text-red-600 dark:text-red-400">起動失敗: {failed[0].alias}</span>
+        : startFailed
+          ? <span className="truncate text-red-600 dark:text-red-400" title={failed[0].error}>起動失敗: {failed[0].alias}</span>
+          : unloaded
+            ? <ModelName name={lastSeen!.running_alias ?? ""} title={`${lastSeen!.running_alias}（最後に動いていたモデル）`} active={false} />
             : <Muted>未ロード</Muted>}>
       <Row label={live?.phase === "prefill" ? "前処理中" : "前処理"}>
         {loading ? <Muted>起動中…</Muted>

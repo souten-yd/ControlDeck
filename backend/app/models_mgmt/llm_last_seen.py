@@ -22,6 +22,7 @@ FIELDS = ("id", "label", "port", "running_alias", "runtime", "ctx_total", "ctx_u
 _lock = threading.Lock()
 _last: dict | None = None
 _saved: dict | None = None
+_attempted: dict | None = None  # 最後に書こうとした内容（失敗しても同じ内容を書き直し続けない）
 _loaded = False
 
 
@@ -32,7 +33,7 @@ def _path() -> Path:
 
 
 def _load_once() -> None:
-    global _last, _saved, _loaded
+    global _last, _saved, _attempted, _loaded
     if _loaded:
         return
     _loaded = True
@@ -46,27 +47,32 @@ def _load_once() -> None:
     if isinstance(data, dict) and data.get("running_alias"):
         _last = {k: data.get(k) for k in (*FIELDS, "at")}
         _saved = dict(_last)
+        _attempted = dict(_last)
 
 
 def _save(item: dict) -> None:
-    global _saved
+    global _saved, _attempted
+    _attempted = dict(item)
     path = _path()
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
         _saved = dict(item)
-    except OSError:
-        logger.exception("最後に見えていたローカル LLM の保存に失敗（表示は続ける）")
+    except OSError as exc:
+        # 次にモデルが変わるかアンロードされるまで書き直さない（3 秒ごとにログを出し続けない）。
+        logger.warning("最後に見えていたローカル LLM の保存に失敗（表示は続ける）: %s", exc)
+        tmp.unlink(missing_ok=True)
 
 
-def _pick(endpoints: list[dict]) -> dict | None:
-    """表示と同じ選び方: 処理中のものを先に、次に読み込み済みのもの。"""
+def _pick(endpoints: list[dict], prev_alias: str | None) -> dict | None:
+    """処理中のものを先に、次に読み込み済みのもの。並んだら前回と同じモデルを選ぶ
+    （2 台が同時に動いているとき、処理中の側が入れ替わるたびに書かないため）。"""
     ready = [e for e in endpoints if e.get("available") and int(e.get("slots") or 0) > 0]
     if not ready:
         return None
-    return sorted(ready, key=lambda e: int(e.get("busy") or 0), reverse=True)[0]
+    return max(ready, key=lambda e: (int(e.get("busy") or 0) > 0, e.get("running_alias") == prev_alias))
 
 
 def update(endpoints: list[dict], *, now: float | None = None) -> dict | None:
@@ -74,7 +80,7 @@ def update(endpoints: list[dict], *, now: float | None = None) -> dict | None:
     global _last
     with _lock:
         _load_once()
-        item = _pick(endpoints)
+        item = _pick(endpoints, (_last or {}).get("running_alias"))
         if item is not None:
             prev = _last
             entry = {k: item.get(k) for k in FIELDS}
@@ -85,9 +91,9 @@ def update(endpoints: list[dict], *, now: float | None = None) -> dict | None:
                         entry[key] = prev[key]
             entry["at"] = now or time.time()
             _last = entry
-            if not _saved or _saved.get("running_alias") != entry["running_alias"]:
+            if not _attempted or _attempted.get("running_alias") != entry["running_alias"]:
                 _save(entry)
             return None
-        if _last is not None and _saved != _last:
+        if _last is not None and _attempted != _last:
             _save(_last)  # アンロードされた: 最後の値を残す
         return dict(_last) if _last else None

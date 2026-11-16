@@ -4,7 +4,7 @@
 
 - ローカル側の列は、workflows.run の利用者には常に出す。モデルがアンロードされている間は、最後に動いていたモデル名と、その前処理・生成の速さ・ctx を薄い色で出し、見出しの隣に「アンロード」の札を付ける。一度も動いていなければ「未ロード」と「—」。
 - Backend: `app/models_mgmt/llm_last_seen.py`。容量 API が返した 1 台（処理中のものを先に）を覚え、`/models/llama/capacity` の `last_local` で返す（動いているモデルがあるときは null）。待機中に速さが 0 になる実行環境で直前の速さを 0 で上書きしない。ファイル（`data/llm-last-seen.json`）へ書くのはモデルが変わったときとアンロードされたときだけで、再起動後も前回の値を出す。
-- 検証（sandbox `llm-unload`）: 集中テスト `tests/test_llm_last_seen.py` 5 件、`pytest` 全件、`npm run build`。ミラー（API 応答を差し替え）でアンロード中・未ロード・稼働中を 320px（ライト/ダーク）と PC 幅で確認（横あふれ 0、画面のエラー 0）。
+- 検証（sandbox `llm-unload`）: 集中テスト `tests/test_llm_last_seen.py` 7 件、`pytest` 全件 1647 passed、`npm run build`。ミラー（API 応答を差し替え）でアンロード中・未ロード・稼働中を 320px（ライト/ダーク）と PC 幅で確認（横あふれ 0、画面のエラー 0）。
 
 ## 2026-11-17 Home に LLM カード（ローカル + OpenRouter）
 
