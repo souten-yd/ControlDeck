@@ -109,9 +109,9 @@ async def _candidates() -> list[dict]:
         maya_items = await asyncio.to_thread(maya_s.list_instances)
         if maya_items:
             first = maya_items[0]
-            add(first["base_url"], "maya-s", "Project Maya-S", managed=True,
+            add(first["base_url"], "maya-s", "Maya", managed=True,
                 installed=True, experimental=True)
-            candidates[_openai_base(first["base_url"])]["aliases"] = [first["alias"]]
+            candidates[_openai_base(first["base_url"])]["aliases"] = [str(i["alias"]) for i in maya_items]
 
     # Radiance: one server per registered model; list them under one provider like Strata.
     if radiance.installed():

@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-16 Maya のモデルを複数登録（手元のファイルから）
+
+- Models → モデル登録に「Maya」を追加。Maya の量子化（GLM-5.3-Flash / DeepSeek-V4.1-Flash / MiniMax-M3.1-Flash の各段階）を、選んだフォルダにファイルがそろっていれば登録できる。足りないときは不足ファイルと `hf download` のコマンドを出すだけで、ダウンロードはしない（セットアップは通信先を閉じたプロキシに向けて実行し、何か取得しようとすれば失敗する）。一覧と照合は Maya 自身の一覧（`tools/maya_quants.py`・`glm_downloads`・`tools/ds4|mm3/download_gguf.json`）を `backend/app/models_mgmt/maya_probe.py` が Maya の venv で読む。
+- 登録したモデルは別の alias（`maya-<系列>-<段階>`、例 `maya-deepseek-xs`）・ポート（8100〜8139）・systemd unit・設定ファイルを持ち、一覧に別の行で出る。Maya のモデルは同時に 1 つだけ（起動すると他の Maya モデルを先に止める）。最初のモデル（alias `maya-s`・8099・設定・`MAYA_GLM_PCIE_SHARE` などの調整）は変えない。セットアップが他のモデルの設定ファイルを書き換えたら元に戻して登録を失敗にする。削除は登録（設定）だけで、モデルのファイルは残す。
+- 表示名: ランタイムは「Maya」、モデルは「<モデル> · <段階>」（例 DeepSeek-V4.1-Flash · Maya-XS）。内部の識別子（runtime `maya-s`、経路、設定ファイル）は互換のため据え置き。
+- 検証: backend 全体 1553 件、frontend build、e2e `maya-register.spec.ts`（320px・1280px、モック）。実ファイルへの照合は `/data1tb/LLM/GLM-5.3-Flash-Maya`（Maya-S24 の 3 分割がそろう）で読み取りのみ確認。実際の登録（エンジンのセットアップ）と DeepSeek の gfx1201 での動作は未確認（DeepSeek は約 282GB の取得と、Maya の venv への `tokenizers` 導入が先に要る）。
+
 ## 2026-11-16 起動モデルの選択をランタイムカードへ配置
 
 - Models → 共通設定 → 既定のランタイムで、各ランタイムの選択カード内に「起動するモデル」のドロップダウンを配置。複数モデルが登録されているランタイムで表示し、初期値は「自動」。選択したモデルはランタイムごとに保存する。

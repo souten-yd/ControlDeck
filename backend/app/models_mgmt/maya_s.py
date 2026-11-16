@@ -73,10 +73,10 @@ def _ensure_alias_port_available() -> None:
         raise MayaError(f"別のランタイム({other})がMaya-SのAPIポートを使用しています")
 
 
-def _port_busy() -> bool:
+def _port_busy(port: int = _PORT) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
         conn.settimeout(0.5)
-        return conn.connect_ex(("127.0.0.1", _PORT)) == 0
+        return conn.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _prepared_marker() -> Path:
@@ -84,8 +84,11 @@ def _prepared_marker() -> Path:
 
 
 def _find_config() -> Path | None:
+    # Configs of the models registered beside it (instances.json) are never the first model's,
+    # even when their name also says "maya-s" (MiniMax's Maya-S: maya-maya-s-hip.json).
+    others = {str(row.get("config") or "") for row in _registry()}
     files = [p for p in source().glob("maya-*-hip.json")
-             if re.search(r"maya-s(?![a-z0-9])", p.name.lower())]
+             if re.search(r"maya-s(?![a-z0-9])", p.name.lower()) and p.name not in others]
     return files[0] if len(files) == 1 and files[0].is_file() and not files[0].is_symlink() else None
 
 
@@ -189,8 +192,13 @@ def _latest_release() -> str:
     return tag
 
 
-def _running() -> bool:
-    return _exec(["systemctl", "--user", "is-active", _UNIT], timeout=15, check=False).stdout.strip() == "active"
+def _running(alias: str = _ALIAS) -> bool:
+    return _exec(["systemctl", "--user", "is-active", _unit(alias)], timeout=15,
+                 check=False).stdout.strip() == "active"
+
+
+def _any_running() -> bool:
+    return _running(_ALIAS) or any(_running(row["alias"]) for row in _registry())
 
 
 def _build_dir() -> Path:
@@ -268,7 +276,7 @@ async def install_stream(job=None) -> dict:
 def _update() -> dict:
     if not installed():
         raise MayaError("管理導入したMaya-Sがありません")
-    if _running():
+    if _any_running():
         raise MayaError("Mayaを停止してから更新してください")
     tag = _latest_release()
     current = runtime_status()["version"]
@@ -372,7 +380,7 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
         raise MayaError("GPU番号が範囲外です")
     if not installed():
         raise MayaError("先にMaya-Sランタイムを導入してください")
-    if _running():
+    if _any_running():
         raise MayaError("モデル準備の前にMayaを停止してください")
     if _config() is not None:
         raise MayaError("Maya-Sはセットアップ済みです。再設定は手動で行ってください")
@@ -402,49 +410,120 @@ async def prepare_model_stream(job=None, *, gpu_index: int = 0) -> dict:
     return await asyncio.to_thread(_prepare_model, gpu_index=gpu_index)
 
 
+# ---- instances: the first model (alias maya-s, port 8099, its settings) and the ones registered
+# beside it (instances.json). One Maya model holds the card at a time.
+
+FAMILY_LABEL = {"glm": "GLM-5.3-Flash", "deepseek": "DeepSeek-V4.1-Flash", "minimax": "MiniMax-M3.1-Flash"}
+_PORTS = range(8100, 8140)
+_CONFIG_NAME = re.compile(r"^maya-[a-z0-9._-]{1,120}\.json$")
+_NEW_ALIAS = re.compile(r"^maya-(glm|deepseek|minimax)-[a-z0-9-]{1,40}$")
+
+
+def _registry_path() -> Path:
+    return root() / "instances.json"
+
+
+def _registry() -> list[dict]:
+    path = _registry_path()
+    if not path.is_file() or path.is_symlink():
+        return []
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [row for row in rows if isinstance(row, dict) and _NEW_ALIAS.fullmatch(str(row.get("alias") or ""))
+            and _CONFIG_NAME.fullmatch(str(row.get("config") or ""))] if isinstance(rows, list) else []
+
+
+def _save_registry(rows: list[dict]) -> None:
+    path = _registry_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _unit(alias: str) -> str:
+    return _UNIT if alias == _ALIAS else f"control-deck-{alias}.service"
+
+
+def _record(alias: str) -> dict | None:
+    """An instance's identity: alias, port, engine config, labels. None if not ready to run."""
+    if alias == _ALIAS:
+        config = _config()
+        if config is None:
+            return None
+        return {"alias": _ALIAS, "port": _PORT, "config": config, "family": "glm", "tier": "Maya-S",
+                "model_label": "glm-5.3-flash · maya-s", "legacy": True}
+    row = next((r for r in _registry() if r["alias"] == alias), None)
+    if row is None or not installed():
+        return None
+    config = source() / row["config"]
+    if not config.is_file() or config.is_symlink():
+        return None
+    return {**row, "config": config, "legacy": False}
+
+
+def _records() -> list[dict]:
+    rows = [_record(_ALIAS)] + [_record(r["alias"]) for r in _registry()]
+    return [row for row in rows if row is not None]
+
+
+def display_name(record: dict) -> str:
+    return f"{FAMILY_LABEL.get(str(record.get('family')), str(record.get('family')))} · {record.get('tier')}"
+
+
 @_serialized
 def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
-    if alias != _ALIAS or _config() is None:
-        return False, "明示的なMaya-Sモデル準備が必要です"
-    if _running():
+    record = _record(alias)
+    if record is None:
+        return False, "明示的なMayaモデル準備が必要です"
+    if _running(alias):
         return True, ""
     try:
-        _ensure_alias_port_available()
-        if _port_busy():
-            raise MayaError("127.0.0.1:8099が別のサーバーに使用されています")
+        if record["legacy"]:
+            _ensure_alias_port_available()
+        # One Maya model fills the card: stop the other one first.
+        for other in _records():
+            if other["alias"] != alias and _running(other["alias"]):
+                _exec(["systemctl", "--user", "stop", _unit(other["alias"])], timeout=600)
+        if _port_busy(record["port"]):
+            raise MayaError(f"127.0.0.1:{record['port']}が別のサーバーに使用されています")
         _exec(["systemd-run", "--user", "--collect", "--unit",
-               _UNIT.removesuffix(".service"), "--working-directory", str(source()),
-               "bash", str(entrypoint()), "--config", str(_config()), "--port",
-               str(_PORT), "--host", "127.0.0.1"], cwd=source(), timeout=45)
+               _unit(alias).removesuffix(".service"), "--working-directory", str(source()),
+               "bash", str(entrypoint()), "--config", str(record["config"]), "--port",
+               str(record["port"]), "--host", "127.0.0.1"], cwd=source(), timeout=45)
     except MayaError as exc:
         return False, str(exc)
     from app.models_mgmt import large_model_lifecycle
-    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, alias)
     large_model_lifecycle.follow_selection(large_model_lifecycle.MAYA)
     return True, ""
 
 
 @_serialized
-def stop_instance(alias: str = _ALIAS) -> tuple[bool, str]:
-    if alias != _ALIAS:
-        return False, "Maya-Sのモデル名が不正です"
+def stop_instance(alias: str | None = None) -> tuple[bool, str]:
+    """Stop one Maya model, or (no alias) whichever is running."""
+    if alias is not None and alias != _ALIAS and not any(r["alias"] == alias for r in _registry()):
+        return False, "Mayaのモデル名が不正です"
     try:
-        if _running():
-            _exec(["systemctl", "--user", "stop", _UNIT], timeout=600)
+        for name in [alias] if alias is not None else [_ALIAS] + [r["alias"] for r in _registry()]:
+            if _running(name):
+                _exec(["systemctl", "--user", "stop", _unit(name)], timeout=600)
         return True, ""
     except MayaError as exc:
         return False, str(exc)
 
 
-
 async def health(alias: str = _ALIAS) -> dict:
     """Only accept our loopback instance; a launched unit is not a ready model."""
-    if alias != _ALIAS or not await asyncio.to_thread(lambda: _config() is not None and _running()):
+    record = await asyncio.to_thread(_record, alias)
+    if record is None or not await asyncio.to_thread(_running, alias):
         return {"ok": False, "status_code": None}
     import httpx
+    port = int(record["port"])
     try:
         async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
-            response = await client.get(f"http://127.0.0.1:{_PORT}/health")
+            response = await client.get(f"http://127.0.0.1:{port}/health")
             if response.status_code != 200:
                 return {"ok": False, "status_code": response.status_code}
             # Maya reports unloaded after an idle unload. Do not claim ready.
@@ -452,9 +531,13 @@ async def health(alias: str = _ALIAS) -> dict:
             if not isinstance(state, dict) or state.get("status") != "ok" or state.get("unloaded") is True:
                 return {"ok": False, "status_code": 200}
             # A port collision must never make an unrelated server look like our model.
-            if str(state.get("model_label") or "").strip().casefold() != "glm-5.3-flash · maya-s":
+            label = str(state.get("model_label") or "").strip().casefold()
+            if record["legacy"]:
+                if label != record["model_label"]:
+                    return {"ok": False, "status_code": 200}
+            elif label and str(record.get("tier") or "").casefold() not in label:
                 return {"ok": False, "status_code": 200}
-            models = await client.get(f"http://127.0.0.1:{_PORT}/v1/models")
+            models = await client.get(f"http://127.0.0.1:{port}/v1/models")
             if models.status_code != 200:
                 return {"ok": False, "status_code": models.status_code}
             payload = models.json()
@@ -468,7 +551,7 @@ async def health(alias: str = _ALIAS) -> dict:
         return {"ok": False, "status_code": None}
 
 
-async def prompt_room(messages: list) -> tuple[int, int] | None:
+async def prompt_room(messages: list, *, port: int = _PORT) -> tuple[int, int] | None:
     """(prompt tokens, context) counted by Maya's own chat template; None if unknown.
 
     Maya never truncates: prompt + max_tokens over its context is rejected with 400.
@@ -476,7 +559,7 @@ async def prompt_room(messages: list) -> tuple[int, int] | None:
     import httpx
     try:
         async with httpx.AsyncClient(trust_env=False, timeout=30) as client:
-            response = await client.post(f"http://127.0.0.1:{_PORT}/api/tokens",
+            response = await client.post(f"http://127.0.0.1:{port}/api/tokens",
                                          json={"messages": messages})
         if response.status_code != 200:
             return None
@@ -486,46 +569,76 @@ async def prompt_room(messages: list) -> tuple[int, int] | None:
         return None
 
 
-async def wait_ready(*, timeout_seconds: int = 900) -> bool:
+async def wait_ready(*, timeout_seconds: int = 900, alias: str = _ALIAS) -> bool:
     import time
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if (await health())["ok"]:
+        if (await health(alias))["ok"]:
             return True
         await asyncio.sleep(3)
     return False
 
 
-def get_instance(alias: str) -> dict:
-    if alias != _ALIAS or _config() is None:
-        raise KeyError(alias)
-    return {"alias": _ALIAS, "runtime": "maya-s", "role": "llm",
-            "model": _MODEL, "port": _PORT,
-            "base_url": f"http://127.0.0.1:{_PORT}/v1",
-            "loaded": _running(), "model_path": get_settings()["model_path"],
-            "ctx_size": get_settings()["context"],
-            "configured": True, "n_parallel": 1, "vision": _vision_configured()}
+def _config_context(config: Path) -> int:
+    try:
+        args = json.loads(config.read_text(encoding="utf-8")).get("args") or []
+        return int(args[args.index("--max-context") + 1])
+    except (OSError, ValueError, IndexError, TypeError):
+        return 0
 
 
-def _vision_configured() -> bool:
+def _config_vision(config: Path | None) -> bool:
     """Maya reads pictures only when its config names an image encoder ("vision")."""
-    config = _config()
     try:
         return bool(config and isinstance(json.loads(config.read_text(encoding="utf-8")).get("vision"), dict))
     except (OSError, ValueError):
         return False
 
 
+def get_instance(alias: str) -> dict:
+    record = _record(alias)
+    if record is None:
+        raise KeyError(alias)
+    if record["legacy"]:
+        return {"alias": _ALIAS, "runtime": "maya-s", "role": "llm",
+                "model": _MODEL, "port": _PORT,
+                "base_url": f"http://127.0.0.1:{_PORT}/v1",
+                "loaded": _running(), "model_path": get_settings()["model_path"],
+                "ctx_size": get_settings()["context"],
+                "configured": True, "n_parallel": 1, "vision": _vision_configured(),
+                "family": "glm", "tier": "Maya-S", "display_name": display_name(record)}
+    return {"alias": alias, "runtime": "maya-s", "role": "llm", "model": record["setup_id"],
+            "port": int(record["port"]), "base_url": f"http://127.0.0.1:{record['port']}/v1",
+            "loaded": _running(alias), "model_path": str(record.get("model_dir") or ""),
+            "ctx_size": _config_context(record["config"]), "configured": True, "n_parallel": 1,
+            "vision": _config_vision(record["config"]), "family": record["family"], "tier": record["tier"],
+            "size_gb": record.get("size_gb"), "display_name": display_name(record)}
+
+
+def _vision_configured() -> bool:
+    return _config_vision(_config())
+
+
 def list_instances() -> list[dict]:
-    return [get_instance(_ALIAS)] if _config() is not None else []
+    return [get_instance(record["alias"]) for record in _records()]
 
 
 def residency_key(instance: dict) -> str:
-    return "maya-s:glm-5.3-flash"
+    if instance.get("alias", _ALIAS) == _ALIAS:
+        return "maya-s:glm-5.3-flash"
+    return f"maya-s:{instance.get('family')}:{str(instance.get('tier') or '').lower()}"
 
 
 def is_running() -> bool:
-    return _config() is not None and _running()
+    return any(_running(record["alias"]) for record in _records())
+
+
+def running_alias() -> str:
+    """The Maya model now running, else the first one (the default target)."""
+    for record in _records():
+        if _running(record["alias"]):
+            return record["alias"]
+    return _ALIAS
 
 
 async def ensure_ready(alias: str, *, timeout_seconds: int = 420, start: bool | None = None) -> bool:
@@ -536,15 +649,15 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 420, start: bool | 
     """
     from app.models_mgmt import large_model_lifecycle
 
-    if alias != _ALIAS:
+    if await asyncio.to_thread(_record, alias) is None:
         return False
     if (await health(alias))["ok"]:
-        large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+        large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, alias)
         return True
     allowed = get_settings().get("on_demand_start", True) if start is None else start
-    if not allowed or not await asyncio.to_thread(lambda: _config() is not None):
+    if not allowed:
         return False
-    if not await asyncio.to_thread(_running):
+    if not await asyncio.to_thread(_running, alias):
         try:
             await large_model_lifecycle.release_for(large_model_lifecycle.MAYA)
         except RuntimeError:
@@ -555,9 +668,9 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 420, start: bool | 
             ok = True  # another request holds the operation lock and is starting it
         if not ok:
             return False
-    if not await wait_ready(timeout_seconds=timeout_seconds):
+    if not await wait_ready(timeout_seconds=timeout_seconds, alias=alias):
         return False
-    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, _ALIAS)
+    large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, alias)
     return True
 
 
@@ -568,7 +681,7 @@ def mark_used_by_base_url(_base_url: str) -> None:
 def uninstall() -> dict:
     if not installed():
         raise MayaError("ControlDeck管理のMaya-Sがありません")
-    if _running():
+    if _any_running():
         raise MayaError("モデル稼働中は削除できません。停止してください")
     target = root()
     if target.is_symlink() or source().is_symlink() or not source().is_dir():
@@ -645,7 +758,7 @@ def save_settings(settings: dict) -> dict:
 @_serialized
 def build_engine() -> dict:
     """Compile code only. Never invoke the model installer or inference engine."""
-    if not installed() or _running():
+    if not installed() or _any_running():
         raise MayaError("導入済み・停止中のMaya-Sが必要です")
     rocm = Path("/opt/rocm").resolve()
     compiler = rocm / "llvm/bin/clang++"
@@ -677,7 +790,7 @@ def build_engine() -> dict:
 @_serialized
 def prepare_existing() -> dict:
     """Prepare a user-supplied GGUF without downloading weights or running a benchmark."""
-    if not installed() or _running():
+    if not installed() or _any_running():
         raise MayaError("導入済み・停止中のMaya-Sが必要です")
     value = get_settings()
     from app.files.service import resolve
@@ -701,3 +814,190 @@ def prepare_existing() -> dict:
     _prepared_marker().write_text(json.dumps({"model": _MODEL, "gpu_index": value["gpu_index"],
                                             "port": _PORT}), encoding="utf-8")
     return runtime_status()
+
+
+# ---- registering more Maya models from files already on disk (never downloads)
+
+_PROBE = Path(__file__).with_name("maya_probe.py")
+# Every way the setup could reach the network goes to a closed port: a file it would have to
+# download makes the setup fail instead (the owner downloads by hand, with the shown command).
+_OFFLINE_ENV = {**{key: "http://127.0.0.1:9" for key in (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")},
+    "NO_PROXY": "", "no_proxy": "", "HF_HUB_OFFLINE": "1", "PIP_NO_INDEX": "1", "MAYA_UPDATE_CHECK": "0"}
+
+
+def memory() -> dict:
+    """RAM and the largest card's VRAM in GB: what a Maya model's files are compared with."""
+    ram = vram = 0.0
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                ram = int(line.split()[1]) * 1024 / 1e9
+    except (OSError, ValueError, IndexError):
+        pass
+    for path in Path("/sys/class/drm").glob("card*/device/mem_info_vram_total"):
+        try:
+            vram = max(vram, int(path.read_text(encoding="utf-8").strip()) / 1e9)
+        except (OSError, ValueError):
+            continue
+    return {"ram_gb": round(ram, 1), "vram_gb": round(vram, 1)}
+
+
+def _alias_for(family: str, tier: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", tier.lower()).strip("-").removeprefix("maya-") or "model"
+    return f"maya-{family}-{slug}"
+
+
+def _folder(folder: str) -> Path:
+    from app.files.service import resolve
+    path = resolve(folder)
+    if not path.is_dir():
+        raise MayaError("フォルダを指定してください")
+    return path
+
+
+def _probe(folder: Path | None) -> dict:
+    python = source() / ".venv" / "bin" / "python"
+    if not installed() or not python.is_file():
+        raise MayaError("先にMayaを導入してください")
+    try:
+        result = subprocess.run([str(python), "-I", str(_PROBE), str(source()), str(folder) if folder else "-"],
+                                cwd=source(), env={**os.environ, **_OFFLINE_ENV}, capture_output=True, text=True,
+                                timeout=180, check=False, stdin=subprocess.DEVNULL)
+        data = json.loads(result.stdout.strip().splitlines()[-1]) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as exc:
+        raise MayaError("Mayaの量子化一覧を読めません") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("quants"), list):
+        raise MayaError("Mayaの量子化一覧を読めません")
+    return data
+
+
+def catalog(folder: str = "") -> dict:
+    """Maya's quants, and (with a folder) whether their files are there. Reads only."""
+    path = _folder(folder) if folder else None
+    data = _probe(path)
+    registered = {"glm-maya-s": _ALIAS} if _config() is not None else {}
+    registered.update({row["setup_id"]: row["alias"] for row in _registry()})
+    rows = []
+    for item in data["quants"]:
+        files = item.get("files") or []
+        missing = [f for f in files if f.get("required") and not f.get("present")]
+        item.update(
+            alias=_alias_for(item["family"], item["tier"]), registered=registered.get(item["setup_id"], ""),
+            missing_gb=round(sum(int(f.get("size") or 0) for f in missing) / 1e9, 1),
+            ready=bool(path and files and not missing and not item.get("error") and not item.get("blockers")
+                       and not item.get("folder_error") and item.get("published", True)))
+        rows.append(item)
+    return {"folder": str(path) if path else "", "memory": memory(), "build": data.get("build") or {},
+            "version": data.get("version", ""), "quants": rows}
+
+
+def _free_port() -> int:
+    from app.models_mgmt import local_llm
+    used = {int(row.get("port") or 0) for row in _registry()}
+    for port in _PORTS:
+        if port in used or local_llm.port_taken_by_other_runtime(port, "maya-s") or _port_busy(port):
+            continue
+        return port
+    raise MayaError("Mayaに使える空きポートがありません（8100〜8139）")
+
+
+def _snapshot() -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in source().glob("maya-*.json") if p.is_file() and not p.is_symlink()}
+
+
+@_serialized
+def register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int = 0) -> dict:
+    """Set up one Maya quant from files already in `folder`, beside the first model. No download."""
+    if _any_running():
+        raise MayaError("Mayaのモデルを停止してから登録してください")
+    if not 1024 <= int(context) <= 1048576 or not 0 <= int(gpu_index) <= 15:
+        raise MayaError("コンテキストかGPU番号が範囲外です")
+    item = next((q for q in catalog(folder)["quants"] if q["setup_id"] == setup_id), None)
+    if item is None:
+        raise MayaError("Mayaの量子化が見つかりません")
+    if item["registered"]:
+        raise MayaError(f"{display_name(item)} は登録済みです（{item['registered']}）")
+    if not item["ready"]:
+        why = item.get("folder_error") or "; ".join(item.get("blockers") or []) or item.get("error") or \
+            f"ファイルが足りません（あと約{item['missing_gb']}GB）。先に取得してください: {item.get('hf', '')}"
+        raise MayaError(why)
+    alias = item["alias"]
+    from app.models_mgmt import local_llm
+    if local_llm.alias_taken_by_other_runtime(alias, "maya-s"):
+        raise MayaError(f"モデル名 {alias} は別のランタイムが使っています")
+    port = _free_port()
+    model_dir = Path(item["model_dir"])
+    argv = ["bash", str(entrypoint()), "--setup", "--backend", "hip", "--gpu", str(int(gpu_index)),
+            "--context", str(int(context)), "--parallel", "1", "--no-speed-calibration",
+            "--yes", "--plain", "--no-start", "--port", str(port), "--host", "127.0.0.1"]
+    if item["family"] == "glm":
+        argv += ["--gguf-dir", str(model_dir), "--models-dir", str(models_dir())]
+        vision = [f for f in item.get("files") or [] if f.get("what") == "vision"]
+        if not vision or not all(f.get("present") for f in vision):
+            argv.append("--no-vision")
+    else:
+        # Their vision towers come from other repos: text only until the owner adds them.
+        argv += ["--model", setup_id, "--model-dir", str(model_dir), "--models-dir", str(item["models_dir"]),
+                 "--no-vision"]
+    before = _snapshot()
+    owned = {name for name in before if name in {r["config"] for r in _registry()}}
+    first = _find_config()
+    if first is not None:
+        owned.add(first.name)
+    log = root() / f"register-{alias}.log"
+    try:
+        with log.open("w", encoding="utf-8") as stream:
+            result = subprocess.run(argv, cwd=source(), env={**os.environ, **_OFFLINE_ENV},
+                                    stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
+                                    timeout=8 * 3600, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MayaError(f"Mayaのセットアップを実行できませんでした（{log.name}）") from exc
+    after = _snapshot()
+    # The other models' configs are theirs: put back anything the setup rewrote.
+    clobbered = [name for name in owned if after.get(name) != before.get(name)]
+    for name in clobbered:
+        (source() / name).write_bytes(before[name])
+    changed = [name for name in after if name not in owned and after[name] != before.get(name)]
+    if result.returncode or clobbered or not changed:
+        for name in changed:
+            if name not in before:
+                (source() / name).unlink(missing_ok=True)
+        if clobbered:
+            raise MayaError("このモデルの設定は既存のMayaモデルと同じ設定ファイルを使うため登録できません")
+        raise MayaError(f"Mayaのセットアップに失敗しました（exit {result.returncode}）。{log} を確認してください")
+    name = max(changed, key=lambda n: (source() / n).stat().st_mtime)
+    config = source() / name
+    cfg = json.loads(config.read_text(encoding="utf-8"))
+    cfg["fit_max_tokens"] = True
+    cfg["port"] = port
+    config.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    rows = [r for r in _registry() if r["alias"] != alias]
+    rows.append({"alias": alias, "setup_id": setup_id, "family": item["family"], "tier": item["tier"],
+                 "config": name, "port": port, "model_dir": str(model_dir), "size_gb": item.get("size_gb"),
+                 "created_at": int(__import__("time").time())})
+    _save_registry(rows)
+    return get_instance(alias)
+
+
+async def register_stream(job=None, **kwargs) -> dict:
+    if job:
+        job.set_progress("Mayaのモデルを手元のファイルから準備中（ダウンロードしません）", 0, 1)
+    return await asyncio.to_thread(register, **kwargs)
+
+
+@_serialized
+def unregister(alias: str) -> dict:
+    """Forget a registered Maya model: its engine config only. The model files stay."""
+    if alias == _ALIAS:
+        raise MayaError("最初のMayaモデルはここでは削除できません")
+    row = next((r for r in _registry() if r["alias"] == alias), None)
+    if row is None:
+        raise MayaError("登録されたMayaモデルが見つかりません")
+    if _running(alias):
+        raise MayaError("モデルを停止してから削除してください")
+    config = source() / row["config"]
+    if config.is_file() and not config.is_symlink():
+        config.unlink()
+    _save_registry([r for r in _registry() if r["alias"] != alias])
+    return {"alias": alias, "removed": True}

@@ -18,6 +18,7 @@ import { CapacityWidget } from "../features/models/CapacityWidget";
 import { FrontierModelsGroup } from "../features/models/FrontierModelsPanel";
 import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
 import { MayaSDetailSheet, MayaSSetupCard, useMayaStatus } from "../features/models/MayaSModelPanel";
+import { MayaModelSheet, MayaRegisterPanel } from "../features/models/MayaRegisterPanel";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
 interface Model {
@@ -61,7 +62,7 @@ const DEFAULT_COMPACTION: CompactionPolicy = { enabled: true, mode: "auto", perc
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
 type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
 const RUNTIME_LABEL: Record<string, string> = {
-  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya-S", radiance: "Radiance", ollama: "Ollama",
+  "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya", radiance: "Radiance", ollama: "Ollama",
 };
 interface RunningModel { name?: string; model?: string; digest?: string; size_vram?: number; expires_at?: string }
 interface OllamaStatus { available: boolean; version: string; base_url: string }
@@ -310,6 +311,7 @@ export default function ModelsPage() {
   const [strataDetail, setStrataDetail] = useState<string | null>(null);
   const [radianceDetail, setRadianceDetail] = useState<string | null>(null);
   const [mayaDetail, setMayaDetail] = useState(false);
+  const [mayaModel, setMayaModel] = useState<{ alias: string; title: string } | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [localDeleting, setLocalDeleting] = useState<{ alias: string; runtime: LocalRuntime } | null>(null);
@@ -443,11 +445,11 @@ export default function ModelsPage() {
       if (provider === "maya-s") {
         if (action === "load") {
           const started = await api<{job_id: string}>("/features/maya-s/model/start-jobs",
-            {method: "POST", json: {}});
-          show(`Maya-Sの起動ジョブを開始しました（${started.job_id}）。ジョブ一覧で進捗を確認できます`);
+            {method: "POST", json: {alias: id}});
+          show(`Mayaの起動ジョブを開始しました（${started.job_id}）。ジョブ一覧で進捗を確認できます`);
         } else {
-          await api("/features/maya-s/model/stop", {method: "POST", json: {}});
-          show("Maya-Sを停止しました");
+          await api("/features/maya-s/model/stop", {method: "POST", json: {alias: id}});
+          show("Mayaを停止しました");
           await refresh();
         }
         return;
@@ -564,7 +566,8 @@ export default function ModelsPage() {
             const openDetail = () => {
               if (runtime === "strata") setStrataDetail(id);
               else if (runtime === "radiance") setRadianceDetail(id);
-              else if (runtime === "maya-s") setMayaDetail(true);
+              else if (runtime === "maya-s" && id === "maya-s") setMayaDetail(true);
+              else if (runtime === "maya-s") setMayaModel({ alias: id, title: m.display_name || id });
               else if (isLlama) setLlamaDetail(id);
               else setDetail(m.name);
             };
@@ -645,6 +648,7 @@ export default function ModelsPage() {
       {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
       {radianceDetail && <RadianceDetailSheet alias={radianceDetail} onClose={() => setRadianceDetail(null)} />}
       {mayaDetail && <MayaSDetailSheet onClose={() => setMayaDetail(false)} />}
+      {mayaModel && <MayaModelSheet alias={mayaModel.alias} title={mayaModel.title} onClose={() => setMayaModel(null)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
@@ -2099,12 +2103,14 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
     queryFn: () => api<{ runtime: { installed: boolean }; instances: Array<{alias: string}> }>("/models/strata/instances"),
   });
   const { data: radianceState } = useRadianceState();
+  const { data: mayaStatus } = useMayaStatus();
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
-      <div className="mb-3 flex gap-2">
-        {(["llama.cpp", "strata", "radiance"] as const).map((choice) => (
+      <div className="mb-3 flex flex-wrap gap-2">
+        {(["llama.cpp", "strata", "radiance", "maya-s"] as const).map((choice) => (
           <button key={choice} type="button" onClick={() => setRuntime(choice)}
-            disabled={(choice === "strata" && !strataState?.runtime.installed) || (choice === "radiance" && !radianceState?.runtime.installed)}
+            disabled={(choice === "strata" && !strataState?.runtime.installed) || (choice === "radiance" && !radianceState?.runtime.installed)
+              || (choice === "maya-s" && !mayaStatus?.installed)}
             className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
             {RUNTIME_LABEL[choice]}
           </button>
@@ -2113,6 +2119,7 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
       {runtime === "llama.cpp"
         ? <LlamaRuntimePanel registrationOnly />
         : runtime === "radiance" ? <RadianceRegisterPanel onDone={onClose} />
+        : runtime === "maya-s" ? <MayaRegisterPanel onDone={onClose} />
         : <StrataRegisterPanel onDone={onClose} />}
     </BottomSheet>
   );
@@ -2219,7 +2226,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
     </SettingsGroup>
     <SettingsGroup title="起動と停止" description="アイドル時の自動アンロードは共通設定で切り替えます">
       <LifecycleAlwaysOn />
-      <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします（一度ロード済みのモデルだけ）。Maya-S にも付けた場合は Maya-S が優先です"
+      <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします（一度ロード済みのモデルだけ）。Maya にも付けた場合は Maya が優先です"
         value={autoStart} onChange={setAutoStart} />
       <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
         value={idleExclude} onChange={setIdleExclude} />
@@ -2325,7 +2332,7 @@ function AddonGpuSettingsGroup({ policy, state, onChange }: {
         <li>{RUNTIME_LABEL[policy.selected_runtime] ?? policy.selected_runtime} の載せ直し: {reload ?? "—"}</li>
       </ul>
       <p className="text-[10px] leading-relaxed text-zinc-500">
-        目安: 音楽や枚数の多い画像は「自動」か「GPU 優先」が速い。載せ直しが重い Strata / Maya-S で画像を数枚だけ作るなら、「LLM 優先」の方が全体では早く済みます（画像の差は数秒、載せ直しは約1分）。
+        目安: 音楽や枚数の多い画像は「自動」か「GPU 優先」が速い。載せ直しが重い Strata / Maya で画像を数枚だけ作るなら、「LLM 優先」の方が全体では早く済みます（画像の差は数秒、載せ直しは約1分）。
       </p>
       {state?.lending && (
         <p className="rounded-lg bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
