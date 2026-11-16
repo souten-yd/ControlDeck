@@ -143,3 +143,124 @@ def test_gateway_switch_request_loads_the_named_model(monkeypatch):
         response = client.post("/api/v1/llm/v1/models/maya-s/load")
     assert response.status_code == 200 and response.json()["ready"] is True
     assert calls == [("prepare", "maya-s"), ("ready", "maya-s")]
+
+
+# ---- 役割（レビュー・相談・開発担当）に外部モデルを選ぶ ----
+
+CLOUD = "cloud:openrouter/anthropic/claude-x"
+
+
+@pytest.fixture
+def cloud_store(monkeypatch, tmp_path):
+    from app.models_mgmt import cloud
+
+    (tmp_path / "cloud").mkdir()
+    monkeypatch.setattr(cloud, "data_dir", lambda: tmp_path / "cloud")
+    cloud.save_provider("openrouter", {"api_key": "sk-or-v1-secretvalue1234"})
+    cloud.save_provider("openrouter", {"enabled": True, "models": ["anthropic/claude-x"]})
+    return cloud
+
+
+def test_cloud_role_models_need_the_opencode_egress_switch(isolated, cloud_store):
+    with pytest.raises(ValueError, match="外部への送信を許可"):
+        provider.save_workflow({"review_model": CLOUD})
+    assert provider.cloud_choices() == {"cloud_models": [], "cloud_blocked": True}
+    cloud_store.save_egress({"assistant": True})
+    with pytest.raises(ValueError):
+        provider.save_workflow({"advisor_model": CLOUD})  # AI アシスタントへの許可は OpenCode には効かない
+    cloud_store.save_egress({"opencode": True})
+    assert provider.cloud_choices() == {"cloud_blocked": False, "cloud_models": [
+        {"id": CLOUD, "name": "OpenRouter / anthropic/claude-x", "provider": "openrouter"}]}
+    with pytest.raises(ValueError):
+        provider.save_workflow({"review_model": "cloud:openrouter/not/selected"})
+    saved = provider.save_workflow({"review_model": CLOUD, "advisor_model": CLOUD, "developer_model": CLOUD})
+    assert (saved["review_model"], saved["advisor_model"], saved["developer_model"]) == (CLOUD, CLOUD, CLOUD)
+
+
+def test_cloud_models_serve_as_reviewer_advisor_and_developer(isolated, cloud_store):
+    cloud_store.save_egress({"opencode": True})
+    provider.save_workflow({"adversarial_review": True, "auto_advisor": "active", "developer_agent": True,
+                            "review_model": CLOUD, "advisor_model": CLOUD, "developer_model": CLOUD})
+    payload, advisor = _v2(isolated)
+    models = payload["providers"]["controldeck"]["models"]
+    assert models[CLOUD]["name"].endswith("（外部）"), "外部と分かる名前のまま並ぶ"
+    assert payload["agents"]["adversarial-reviewer"]["model"] == f"controldeck/{CLOUD}"
+    assert payload["agents"]["constructive-reviewer"]["model"] == f"controldeck/{CLOUD}"
+    assert advisor["advisor"]["models"] == [f"controldeck/{CLOUD}"]
+    # 要否の判断は毎回走るので、セッションと同じ（ローカルの）モデルのまま。
+    assert advisor["routing"]["models"] == ["controldeck/qwen-flash-next"]
+    developer = payload["agents"]["developer"]
+    assert developer["mode"] == "subagent" and developer["model"] == f"controldeck/{CLOUD}"
+    assert "開発担当" in developer["description"]
+
+
+def test_revoking_egress_drops_cloud_role_models_from_new_sessions(isolated, cloud_store):
+    cloud_store.save_egress({"opencode": True})
+    provider.save_workflow({"adversarial_review": True, "auto_advisor": "active", "developer_agent": True,
+                            "review_model": CLOUD, "advisor_model": CLOUD, "developer_model": CLOUD})
+    cloud_store.save_egress({"opencode": False})
+    payload, advisor = _v2(isolated)
+    assert CLOUD not in json.dumps(payload) and CLOUD not in json.dumps(advisor)
+    assert advisor["advisor"]["models"] == ["controldeck/qwen-flash-next"]
+    assert "model" not in payload["agents"]["developer"], "セッションと同じモデルで動く"
+    # 保存済みの値を送り返すだけの保存（ほかの項目の変更）は止めない。新しく選ぶことはできない。
+    saved = provider.save_workflow({"superpowers": True, "review_model": CLOUD, "advisor_model": CLOUD, "developer_model": CLOUD})
+    assert saved["superpowers"] is True
+    provider.save_workflow({"developer_model": ""})
+    with pytest.raises(ValueError):
+        provider.save_workflow({"developer_model": CLOUD})
+
+
+def test_developer_agent_is_optional_and_can_use_a_local_model(isolated):
+    payload, _ = _v2(isolated)
+    assert "developer" not in payload["agents"]
+    provider.save_workflow({"developer_agent": True})
+    payload, _ = _v2(isolated)
+    assert "model" not in payload["agents"]["developer"]
+    provider.save_workflow({"developer_model": "maya-s"})
+    payload, _ = _v2(isolated)
+    assert payload["agents"]["developer"]["model"] == "controldeck/maya-s"
+    assert payload["providers"]["controldeck"]["models"]["maya-s"]["limit"]["context"] == 1048576
+    with pytest.raises(ValueError, match="登録されていない"):
+        provider.save_workflow({"developer_model": "not-registered"})
+
+
+def test_workflow_api_exposes_roles_and_cloud_choices(isolated, cloud_store):
+    # 経路は機能が有効なときだけ登録されるので、endpoint の関数を直接呼ぶ。
+    from fastapi import HTTPException
+
+    from app.integrations.opencode import router as api
+
+    shown = api.get_workflow(user=None)
+    assert shown["developer_agent"] is False and shown["developer_model"] == ""
+    assert shown["cloud_models"] == [] and shown["cloud_blocked"] is True
+    with pytest.raises(HTTPException) as refused:
+        api.put_workflow(api.WorkflowBody(developer_model=CLOUD), user=None)
+    assert refused.value.status_code == 422
+    cloud_store.save_egress({"opencode": True})
+    saved = api.put_workflow(api.WorkflowBody(developer_agent=True, developer_model=CLOUD), user=None)
+    assert saved["developer_agent"] is True and saved["developer_model"] == CLOUD
+    assert api.get_workflow(user=None)["cloud_models"][0]["id"] == CLOUD
+
+
+def test_auto_review_is_on_by_default_and_adds_the_review_procedure(isolated):
+    payload, _ = _v2(isolated)
+    instructions = payload.get("instructions") or []
+    assert any(path.endswith("auto-review.md") for path in instructions)
+    text = (provider.Path(provider.__file__).with_name("auto-review.md")).read_text()
+    assert "reviewer" in text and "advisor()" in text
+    # No review model chosen: the reviewer inherits the session model.
+    assert "model" not in payload["agents"]["reviewer"]
+
+
+def test_auto_review_can_be_turned_off(isolated):
+    provider.save_workflow({"auto_review": False})
+    payload, _ = _v2(isolated)
+    assert not any(path.endswith("auto-review.md") for path in payload.get("instructions") or [])
+
+
+def test_review_model_applies_to_the_builtin_reviewer(isolated):
+    provider.save_workflow({"review_model": "maya-s"})
+    payload, _ = _v2(isolated)
+    assert payload["agents"]["reviewer"]["model"] == "controldeck/maya-s"
+    assert "maya-s" in payload["providers"]["controldeck"]["models"]

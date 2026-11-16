@@ -429,7 +429,7 @@ def list_collections() -> list[dict]:
 
 
 async def _llm_complete(prompt: str, base_url: str, model: str, api_key: str, temperature: float = 0.3) -> str:
-    from app.models_mgmt import llama
+    from app.models_mgmt import gateway, llama
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
     from app.models_mgmt.runtime_provider import resolve_target
 
@@ -445,7 +445,7 @@ async def _llm_complete(prompt: str, base_url: str, model: str, api_key: str, te
             base_url.rstrip("/") + "/chat/completions",
             json={"model": model, "messages": [{"role": "user", "content": prompt}],
                   "temperature": temperature, "stream": False, "max_tokens": 2048},
-            headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}"},
+            headers={"Authorization": f"Bearer {api_key or 'sk-no-key'}", **gateway.client_headers(base_url, gateway.ASSISTANT_CLIENT)},
         )
     if r.status_code >= 400:
         raise RagError(f"LLM エラー {r.status_code}: {r.text[:150]}")

@@ -29,12 +29,20 @@ DEFAULT_SETTINGS = {
     # 開発ワークフローの拡張（ControlDeck から起動した session にだけ効く）。
     "superpowers": False,
     "adversarial_review": False,
+    # 自動レビュー: コードを変えたら、完了の前に子エージェント reviewer で確かめ、行き詰まったら
+    # advisor() で相談する、という手順を session の指示に足す（auto-review.md）。
+    "auto_review": True,
     # Auto Advisor: off / observe（判断だけ記録）/ active（必要な場面で相談）。v2 のみ。
     "auto_advisor": "off",
     # レビュー・相談に使うモデル（ゲートウェイの名前）。空ならセッションと同じモデル。
     # 別のモデルを指定すると、ゲートウェイが要求に合わせて載せ替える。
     "review_model": "",
     "advisor_model": "",
+    # 開発担当（実装を任せる子エージェント developer）。モデルは空ならセッションと同じ。
+    # レビュー・相談・開発担当には外部モデル（cloud:<プロバイダ>/<モデル>）も選べるが、
+    # 利用者が OpenCode からの外部送信を許可し、そのモデルを有効にしているときだけ使う。
+    "developer_agent": False,
+    "developer_model": "",
     # UI 検証（Playwright MCP）。導入済みなら、子エージェント ui-verifier の道具として載せる。
     "ui_verify": True,
     # UI 検証のブラウザに外部サイトへの通信を許すか。既定は手元（loopback）だけ。
@@ -205,7 +213,8 @@ def save_workflow(patch: dict) -> dict:
 
     settings = get_settings()
     for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external",
-                "research_tool", "research_external", "context7", "github_cli"):
+                "research_tool", "research_external", "context7", "github_cli", "developer_agent",
+                "auto_review"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "isolation" in patch:
@@ -217,17 +226,74 @@ def save_workflow(patch: dict) -> dict:
             raise ValueError("Auto Advisor は off / observe / active のいずれかです")
         settings["auto_advisor"] = patch["auto_advisor"]
     known = {str(item.get("alias")) for item in local_llm.llm_instances()} | {"auto"}
-    for key in ("review_model", "advisor_model"):
+    for key in ROLE_MODEL_KEYS:
         if key in patch:
             value = str(patch[key] or "").strip()
-            if value and value not in known:
-                raise ValueError(f"登録されていないモデルです: {value}")
+            # 保存済みの値をそのまま送り返してきただけなら通す（外部送信の許可を後から外しても、
+            # ほかの項目の保存まで止めない。使えない外部モデルは session を作るときに外す）。
+            if value and value != str(settings.get(key) or ""):
+                if value.startswith(CLOUD_PREFIX):
+                    if not _cloud_usable(value):
+                        raise ValueError(
+                            "この外部モデルは選べません。Models → フロンティア（外部）でモデルを有効にし、"
+                            "OpenCode からの外部への送信を許可してください")
+                elif value not in known:
+                    raise ValueError(f"登録されていないモデルです: {value}")
             settings[key] = value
     path = _settings_path()
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temp, path)
     return settings
+
+
+ROLE_MODEL_KEYS = ("review_model", "advisor_model", "developer_model")
+CLOUD_PREFIX = "cloud:"
+
+
+def _cloud_usable(model: str) -> bool:
+    """その外部モデルを、いま OpenCode から使ってよいか（送信の許可・有効・選ばれている）。"""
+    return any(item["id"] == model for item in _cloud_models_for_opencode())
+
+
+def role_model(settings: dict, key: str) -> str:
+    """役割（レビュー・相談・開発担当）に使うモデル。空ならセッションと同じモデル。
+
+    外部モデルは、利用者が許可を外したりモデルを外したりした時点で使わない。設定に名前が
+    残っていても session には載せず、セッションと同じ（ローカルの）モデルへ戻す。
+    """
+    value = str(settings.get(key) or "")
+    if value.startswith(CLOUD_PREFIX) and not _cloud_usable(value):
+        return ""
+    return value
+
+
+def cloud_choices() -> dict:
+    """画面向け: 役割に選べる外部モデルと、許可が無くて選べない状態かどうか。"""
+    allowed = [{"id": item["id"], "name": item["name"], "provider": item["provider"]}
+               for item in _cloud_models_for_opencode()]
+    blocked = False
+    if not allowed:
+        try:
+            from app.models_mgmt import cloud
+
+            blocked = bool(cloud.enabled_models())
+        except Exception:  # noqa: BLE001 - 外部モデルの都合で設定画面を止めない
+            blocked = False
+    return {"cloud_models": allowed, "cloud_blocked": blocked}
+
+
+def _developer_agent(model: str | None) -> dict:
+    return {
+        "mode": "subagent",
+        "description": (
+            "開発担当。決まった方針に沿って、まとまった実装（機能の追加・修正・テスト）を自分の文脈で行い、"
+            "変えたファイル・実行した確認・残った課題を短く返す。"
+            "何を作るか、対象のファイルや範囲、完了の条件、守ること（触らない場所）を渡す。"
+        ),
+        "prompt": _agent_prompt("developer"),
+        **({"model": f"controldeck/{model}"} if model else {}),
+    }
 
 
 def workflow_plugin_specs() -> dict[str, str]:
@@ -355,9 +421,10 @@ def review_tool_bin() -> Path | None:
     return managed.parent
 
 
-def _reviewer_agent() -> dict:
+def _reviewer_agent(model: str | None = None) -> dict:
     has_ast_grep = review_tool_bin() is not None
     return {
+        **({"model": f"controldeck/{model}"} if model else {}),
         "mode": "subagent",
         "description": (
             "コードレビューの係。差分を読み、変えた関数・設定の呼び出し側まで影響を追い"
@@ -380,7 +447,10 @@ def _workflow(runtime: str, model: str) -> dict:
     advisor: dict | None = None
     if settings.get("superpowers") and specs.get("superpowers"):
         plugins.append(specs["superpowers"])
-    review = str(settings.get("review_model") or "")
+    review = role_model(settings, "review_model")
+    reviewer_model = review if review and review != model else None
+    if reviewer_model:
+        models.append(reviewer_model)
     if settings.get("adversarial_review") and specs.get("adversarial_review"):
         plugins.append(specs["adversarial_review"])
         if review and review != model:
@@ -390,7 +460,7 @@ def _workflow(runtime: str, model: str) -> dict:
     mode = str(settings.get("auto_advisor") or "off")
     if mode != "off" and specs.get("auto_advisor"):
         plugins.append(specs["auto_advisor"])
-        target = str(settings.get("advisor_model") or "")
+        target = role_model(settings, "advisor_model")
         if target and target != model:
             models.append(target)
         advisor = {
@@ -399,7 +469,13 @@ def _workflow(runtime: str, model: str) -> dict:
             # すると判定のたびに載せ替えが起きる。
             "routing": {"mode": mode, "models": [f"controldeck/{model}"]},
         }
-    return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor}
+    if settings.get("developer_agent"):
+        developer = role_model(settings, "developer_model")
+        if developer and developer != model:
+            models.append(developer)
+        agents["developer"] = _developer_agent(developer if developer != model else None)
+    return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor,
+            "reviewer_model": reviewer_model, "auto_review": bool(settings.get("auto_review", True))}
 
 
 def save_settings(patch: dict) -> dict:
@@ -829,6 +905,9 @@ def _config_payload(
             "modalities": {"input": ["text", "image"], "output": ["text"]},
         })
     for extra in workflow["models"]:
+        if extra.startswith(CLOUD_PREFIX):
+            # 外部モデルは上で並べ済み（名前に「外部」と付く）。ローカル用の項目で上書きしない。
+            continue
         payload["provider"]["controldeck"]["models"][extra] = {
             "name": extra, "attachment": True,
             "modalities": {"input": ["text", "image"], "output": ["text"]},
@@ -848,9 +927,15 @@ def _config_payload(
     # 受け取ったコマンドの出力だった。どちらも「読む前に当たりを付ける」だけで
     # 桁が変わる。プロジェクト側の AGENTS.md は残したまま、こちらを足す。
     notes = Path(__file__).with_name("agent-notes.md")
-    if notes.exists():
-        payload["instructions"] = [str(notes)]
-    payload["agent"]["reviewer"] = _reviewer_agent()
+    instructions = [str(notes)] if notes.exists() else []
+    review_notes = Path(__file__).with_name("auto-review.md")
+    if workflow.get("auto_review") and review_notes.exists():
+        # 完了の前に reviewer、行き詰まったら advisor()。拡張は道具を足すだけなので、
+        # 「いつ使うか」をここで決めて自動で回るようにする。
+        instructions.append(str(review_notes))
+    if instructions:
+        payload["instructions"] = instructions
+    payload["agent"]["reviewer"] = _reviewer_agent(workflow.get("reviewer_model"))
     docs_server = context7_server()
     browser = ui_verify_server(safe_job_id)
     if browser is not None:
@@ -1433,43 +1518,6 @@ def tui_command(
     env = " ".join(f"{key}={shlex.quote(value)}" for key, value in launch_env.items())
     command = (f"{env} " if env else "") + "exec " + " ".join(shlex.quote(a) for a in argv)
     return command, str(project)
-
-
-# 作業の種類（OpenCode 画面のセッション開始で選ぶ）。選ぶと最初の指示の前に手順が付く。
-# 道具そのものは設定で載せてあり、ここでは「どれを使い、結果をどこへ返すか」だけを決める。
-SESSION_TASKS = {
-    "ui_verify": (
-        "【UI 検証】子エージェント ui-verifier に任せて、開発中の画面を実ブラウザで確かめてください。"
-        "まず確かめる URL（localhost）と主な流れを決め、開発サーバーが動いていなければ起動してから ui-verifier を呼びます。"
-        "ui-verifier は幅 320/390/768/1280 とダークで撮影・操作し、control_deck.report で結果を ControlDeck に渡します。"
-        "問題が見つかったら、直すかどうかを利用者に確かめてから直し、直したら同じ検証をもう一度行ってください。"
-    ),
-    "research": (
-        "【精密調査】結論を急がず、根拠を集めてから答えてください。公式文書・仕様・ソースコード（一次資料）を優先し、"
-        "使っている版（package.json・lock file・manifest）に合う資料かを確かめます。主張ごとに出典の URL・公開日または版・取得日時を控え、"
-        "反対の根拠も探します。リポジトリについての主張は、文書ではなく main の実ファイル・テスト・CI で確かめます。"
-        "control_deck.research が使えるなら、まずそれで根拠を集めてください（結果は ControlDeck の画面に残ります）。"
-        "自分で調べた分は、最後に control_deck.report（kind: research）で、結論・出典（primary / stance）・確かめられなかったことを渡してください。"
-        "未公開の発明・請求項・秘密の情報を検索語に入れないでください。"
-    ),
-    "review": (
-        "【コードレビュー】ファイルは変更しないでください。子エージェント reviewer に、レビューする範囲"
-        "（作業中の変更、またはブランチと main の差）と気になる点を渡して任せます。reviewer は呼び出し側まで影響を追い、"
-        "テストを確かめ、control_deck.report（kind: review）で指摘を重大度順に ControlDeck へ渡します。"
-        "Adversarial Review が使えるなら /adversarial-review で別の文脈からも読み、食い違いがあれば利用者に伝えてください。"
-        "指摘を直すかどうかは利用者に確かめてから進めます。"
-    ),
-}
-
-
-def task_prompt(task: str, prompt: str) -> str:
-    """作業の種類の手順を、利用者の指示の前に付ける。種類が無ければ指示そのまま。"""
-    if not task:
-        return prompt
-    if task not in SESSION_TASKS:
-        raise CodeAgentError("未対応の作業の種類です")
-    request = prompt.strip()
-    return f"{SESSION_TASKS[task]}\n\n利用者の指示:\n{request}" if request else SESSION_TASKS[task]
 
 
 def _prompt(operation: str, instruction: str) -> str:

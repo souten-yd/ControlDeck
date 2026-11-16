@@ -20,9 +20,19 @@ interface Diagnosis {
 export interface Workflow {
   superpowers: boolean;
   adversarial_review: boolean;
+  /** 自動レビュー: コードを変えたら完了の前に reviewer で確かめ、行き詰まったら advisor() で相談する。 */
+  auto_review?: boolean;
   auto_advisor: "off" | "observe" | "active";
   review_model: string;
   advisor_model: string;
+  /** 開発担当（実装を任せる子エージェント developer）を session に足すか。 */
+  developer_agent?: boolean;
+  /** 開発担当に使うモデル。空ならセッションと同じモデル。 */
+  developer_model?: string;
+  /** 役割に選べる外部のモデル（OpenCode からの外部送信を許可したときだけ並ぶ）。 */
+  cloud_models?: { id: string; name: string; provider: string }[];
+  /** 有効な外部モデルはあるが、OpenCode からの送信が許可されていない。 */
+  cloud_blocked?: boolean;
   /** UI 検証（Playwright MCP）を session に載せるか。 */
   ui_verify?: boolean;
   /** UI 検証のブラウザに localhost 以外への通信を許すか。既定は許さない。 */
@@ -53,8 +63,9 @@ export interface Workflow {
 }
 
 export function workflowBody(value: Workflow) {
-  return { superpowers: value.superpowers, adversarial_review: value.adversarial_review,
+  return { superpowers: value.superpowers, adversarial_review: value.adversarial_review, auto_review: value.auto_review ?? true,
     auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
+    developer_agent: value.developer_agent ?? false, developer_model: value.developer_model ?? "",
     ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
     research_tool: value.research_tool ?? true, research_external: value.research_external ?? false,
     context7: value.context7 ?? false, github_cli: value.github_cli ?? false, isolation: value.isolation ?? "box" };
@@ -71,16 +82,41 @@ export function WorkflowExtensions({ value, onChange, editable }: {
       設定 → オプション機能で導入
     </Link>
   );
-  const modelSelect = (label: string, key: "review_model" | "advisor_model", hint: string) => (
-    <label className="block text-xs">{label}
-      <select aria-label={label} value={value[key]} disabled={!editable}
-        onChange={(e) => onChange({ ...value, [key]: e.target.value })} className={field}>
-        <option value="">セッションと同じモデル</option>
-        {(value.models ?? []).map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
-      </select>
-      <span className="text-[11px] text-zinc-500">{hint}</span>
-    </label>
-  );
+  const cloudModels = value.cloud_models ?? [];
+  const modelSelect = (label: string, key: "review_model" | "advisor_model" | "developer_model", hint: string) => {
+    const current = value[key] ?? "";
+    const external = cloudModels.find((m) => m.id === current);
+    // 保存済みの外部モデルが、いまは選べない（送信の許可を外した・モデルを外した）。
+    const stale = current.startsWith("cloud:") && !external;
+    return (
+      <div className="block text-xs">
+        <label className="block">{label}
+          <select aria-label={label} value={current} disabled={!editable}
+            onChange={(e) => onChange({ ...value, [key]: e.target.value })} className={field}>
+            <option value="">セッションと同じモデル</option>
+            {(value.models ?? []).map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
+            {cloudModels.length > 0 && (
+              <optgroup label="外部（フロンティア）— 外部へ送信">
+                {cloudModels.map((m) => <option key={m.id} value={m.id}>外部｜{m.name}</option>)}
+              </optgroup>
+            )}
+            {stale && <option value={current}>{current}（いまは使えません）</option>}
+          </select>
+        </label>
+        <span className="text-[11px] text-zinc-500">{hint}</span>
+        {external && (
+          <p role="note" className="mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            外部へ送信: この役割に渡す指示・コード・ファイルの内容が {external.name.split(" / ")[0]} へ送られます。未公開の情報を扱うプロジェクトではローカルのモデルを選んでください。
+          </p>
+        )}
+        {stale && (
+          <p role="note" className="mt-1 rounded-lg bg-zinc-50 px-2 py-1.5 text-[11px] leading-relaxed text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
+            この外部モデルはいま使えないため、セッションと同じモデルで動きます（Models → フロンティア（外部）で、モデルと OpenCode からの送信を確かめてください）。
+          </p>
+        )}
+      </div>
+    );
+  };
   return (
     <SettingsGroup title="開発ワークフロー" description="ControlDeck から開く OpenCode セッションに足す拡張。次に開くセッションから反映されます">
       <Toggle label="プロジェクトの箱で動かす（推奨）"
@@ -99,14 +135,18 @@ export function WorkflowExtensions({ value, onChange, editable }: {
         value={value.superpowers && has("superpowers")} disabled={!editable || !has("superpowers")}
         onChange={(v) => onChange({ ...value, superpowers: v })} />
       {!has("superpowers") && <p className="-mt-1 text-[11px]">{installLink("superpowers")}</p>}
+      <Toggle label="自動レビュー（完了の前に別の目で確かめる）"
+        hint="コードを変えたら、完了を報告する前に子エージェント reviewer が差分を読み、重大な指摘は直してから終えます。同じ失敗が続いたり指摘が消えないときは、下の相談先のモデルに自動で相談します"
+        value={value.auto_review ?? true} disabled={!editable}
+        onChange={(v) => onChange({ ...value, auto_review: v })} />
+      {((value.auto_review ?? true) || (value.adversarial_review && has("adversarial_review"))) && modelSelect("レビューに使うモデル", "review_model",
+        "例: 開発は Flash-Next、レビューは別のモデル。別のモデルを選ぶとレビューのたびに載せ替えます（ローカルは約1分）")}
       <Toggle label="別の目によるレビュー（Adversarial Review）"
-        hint={has("adversarial_review") ? "/adversarial-review と /constructive-review。会話を持たない別の文脈で差分を読み、出荷できない理由を探します" : "未導入です"}
+        hint={has("adversarial_review") ? "大きな変更（公開の API・認証・データの移行や削除）では、自動レビューの後に出荷できない理由を探す係も読みます。/adversarial-review で手動でも呼べます" : "未導入です"}
         value={value.adversarial_review && has("adversarial_review")} disabled={!editable || !has("adversarial_review")}
         onChange={(v) => onChange({ ...value, adversarial_review: v })} />
       {!has("adversarial_review") && <p className="-mt-1 text-[11px]">{installLink("adversarial_review")}</p>}
-      {value.adversarial_review && has("adversarial_review") && modelSelect("レビューに使うモデル", "review_model",
-        "例: 開発は Flash-Next、レビューは Maya-S。別のモデルを選ぶとレビューのたびに載せ替えます（約1分）")}
-      <label className="block text-xs">行き詰まり時の相談（Auto Advisor）
+      <label className="block text-xs">行き詰まったら別のモデルに相談（Auto Advisor）
         <select aria-label="Auto Advisor" value={has("auto_advisor") ? value.auto_advisor : "off"} disabled={!editable || !has("auto_advisor")}
           onChange={(e) => onChange({ ...value, auto_advisor: e.target.value as Workflow["auto_advisor"] })} className={field}>
           <option value="off">使わない</option>
@@ -114,11 +154,24 @@ export function WorkflowExtensions({ value, onChange, editable }: {
           <option value="active">必要な場面で相談する</option>
         </select>
         <span className="text-[11px] text-zinc-500">{has("auto_advisor")
-          ? "方針を決める・行き詰まる・完了を宣言する場面で、別のモデルに作業を見てもらいます。advisor() ツールでいつでも呼べます"
+          ? "方針を決める・行き詰まる・完了を宣言する場面で、相談先のモデルが作業を見て助言します。自動レビューで指摘が消えないときも相談します"
           : installLink("auto_advisor")}</span>
       </label>
       {value.auto_advisor !== "off" && has("auto_advisor") && modelSelect("相談先のモデル", "advisor_model",
         "要否の判断はセッションと同じモデルで行い、相談するときだけこのモデルへ載せ替えます")}
+      <Toggle label="開発担当（実装を任せる子エージェント）"
+        hint="子エージェント developer を足します。主の会話は方針と確認に集中し、まとまった実装を別の文脈（別のモデルも可）へ任せられます"
+        value={Boolean(value.developer_agent)} disabled={!editable}
+        onChange={(v) => onChange({ ...value, developer_agent: v })} />
+      {value.developer_agent && modelSelect("開発担当のモデル", "developer_model",
+        "例: 相談と確認は手元のモデル、実装は別のモデル。ローカルの別モデルを選ぶと、任せるたびに載せ替えます")}
+      {value.cloud_blocked && (
+        <p className="rounded-xl bg-zinc-50 px-3 py-2 text-[11px] leading-relaxed text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
+          外部のモデル（OpenRouter など）をレビュー・相談・開発担当に使うには、
+          <Link to="/models?tab=frontier" className="text-accent-600 underline dark:text-accent-400">Models → フロンティア（外部）</Link>
+          で「OpenCode」からの外部への送信を許可します。
+        </p>
+      )}
       <Toggle label="UI 検証（Playwright MCP）"
         hint={!has("ui_verify") ? "未導入です"
           : value.browser === false ? "このPCに Chrome が見つかりません。Google Chrome を入れると使えます"

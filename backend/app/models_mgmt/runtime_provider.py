@@ -42,6 +42,10 @@ class RuntimeChatRequest:
     context_window: int | None = None
     timeout_seconds: int = 300
     local_only: bool = False
+    # ゲートウェイへ送るときに名乗る呼び出し元（外部モデルの許可はこの単位）。
+    # 既定は許可の対象外（internal → ゲートウェイでは api 扱い）。AI アシスタントの経路だけが
+    # 明示的に "assistant" を名乗る。Add-on などが黙ってアシスタントの許可を使わないため。
+    client: str = "internal"
 
 
 @dataclass(slots=True)
@@ -131,6 +135,9 @@ class LlmRuntimeProvider(ABC):
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         if request.local_only:
+            # ゲートウェイは loopback だが、cloud: はそこから外部へ出る。ローカル専用の要求では通さない。
+            if str(request.model or "").startswith("cloud:"):
+                raise RuntimeProviderError("local-only transport cannot use an external model")
             try:
                 url = urlsplit(request.base_url)
                 if (url.scheme != "http" or not ipaddress.ip_address(url.hostname or "").is_loopback
@@ -152,6 +159,27 @@ class LlmRuntimeProvider(ABC):
     async def _stream_impl(
         self, request: RuntimeChatRequest, cancel_event: asyncio.Event,
     ) -> AsyncIterator[RuntimeChunk]: ...
+
+
+def _request_headers(request: RuntimeChatRequest) -> dict[str, str]:
+    """生成要求のヘッダ。ゲートウェイ宛にだけ呼び出し元を名乗る（1 か所で付ける）。"""
+    from app.models_mgmt import gateway
+
+    return {"Authorization": f"Bearer {request.api_key or 'sk-no-key'}",
+            **gateway.client_headers(request.base_url, request.client)}
+
+
+def _http_error(request: RuntimeChatRequest, status_code: int, body: bytes | str = b"") -> RuntimeProviderError:
+    """ゲートウェイが返した理由（外部送信が未許可・上限額など）は利用者へそのまま伝える。"""
+    from app.models_mgmt import gateway
+
+    detail = ""
+    if gateway.is_gateway_url(request.base_url):
+        try:
+            detail = str(json.loads(body).get("detail") or "")[:300]
+        except (ValueError, AttributeError, TypeError):
+            detail = ""
+    return RuntimeProviderError(detail or f"LLM HTTPエラー {status_code}")
 
 
 class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
@@ -215,7 +243,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
             return await client.post(
                 normalize_openai_base(request.base_url) + "/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {request.api_key or 'sk-no-key'}"},
+                headers=_request_headers(request),
             )
 
     async def _complete_impl(self, request: RuntimeChatRequest) -> str:
@@ -252,7 +280,7 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         if response is None:
             raise RuntimeProviderError("LLM応答がありません")
         if response.status_code >= 300:
-            raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
+            raise _http_error(request, response.status_code, response.content)
         try:
             body = response.json()
             message = body["choices"][0]["message"]
@@ -286,10 +314,10 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
             async with client.stream(
                 "POST", normalize_openai_base(request.base_url) + "/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {request.api_key or 'sk-no-key'}"},
+                headers=_request_headers(request),
             ) as response:
                 if response.status_code >= 300:
-                    raise RuntimeProviderError(f"LLM HTTPエラー {response.status_code}")
+                    raise _http_error(request, response.status_code, await response.aread())
                 async for line in response.aiter_lines():
                     if cancel_event.is_set():
                         raise GenerationCancelled("生成をキャンセルしました")
@@ -308,7 +336,8 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
                     except (KeyError, IndexError, TypeError):
                         delta = {}
                     if isinstance(delta, dict):
-                        reasoning = str(delta.get("reasoning_content") or "")
+                        # 外部のプロバイダ（OpenRouter）は推論を reasoning で流す。
+                        reasoning = str(delta.get("reasoning_content") or delta.get("reasoning") or "")
                         content = str(delta.get("content") or "")
                         if reasoning:
                             yield RuntimeChunk("thinking", content=reasoning)

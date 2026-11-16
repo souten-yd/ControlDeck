@@ -120,6 +120,15 @@ function ModelMeta({ model: m, policy }: { model: CloudRemoteModel; policy?: Clo
         </span>
       )}
       {ctx && <span className="text-zinc-500" title="コンテキスト長">{ctx}</span>}
+      {m.params_b !== undefined && (
+        <span className={m.params_b ? "font-medium text-zinc-700 dark:text-zinc-200" : "text-zinc-500"}
+          title={m.params_b ? "パラメータ数（名前から読み取った目安）" : "パラメータ数は公開されていないか、名前から読み取れません"}>
+          規模 {paramsLabel(m)}
+        </span>
+      )}
+      {m.modalities?.includes("image") && <span className="text-zinc-500" title="画像を入力できます">画像</span>}
+      {m.tools && <span className="text-zinc-500" title="道具の呼び出し（function calling）に対応">道具</span>}
+      {m.reasoning && <span className="text-zinc-500" title="推論（思考）に対応">推論</span>}
       {excludedByPolicy(policy, m.privacy) && (
         <span className="inline-flex items-center gap-1 text-zinc-500" title="いまの「データの扱い」の設定では、このモデルへは送信されません">
           <IconBan className="h-3.5 w-3.5 shrink-0" />この設定では送られません
@@ -506,17 +515,68 @@ function AccountBlock({ provider: p }: { provider: CloudProvider }) {
   );
 }
 
-type SortKey = "name" | "cheap" | "pricey" | "new" | "context";
+type SortKey = "name" | "cheap" | "pricey" | "new" | "context" | "params";
 const SORTS: Array<[SortKey, string]> = [
   ["name", "名前"], ["cheap", "安い順"], ["pricey", "高い順"], ["new", "新しい順"], ["context", "コンテキストが長い順"],
+  ["params", "パラメータ数が多い順"],
 ];
+
+/** 「賢さ」の目安にするパラメータ数（10 億単位）。公開されていないモデルは「不明」。 */
+function paramsLabel(m: CloudRemoteModel): string {
+  if (!m.params_b) return "不明";
+  const size = (value: number) => (value >= 1 ? `${+value.toFixed(1)}B` : `${Math.round(value * 1000)}M`);
+  return m.active_params_b && m.active_params_b !== m.params_b ? `${size(m.params_b)}（稼働 ${size(m.active_params_b)}）` : size(m.params_b);
+}
+
+/** 絞り込みの条件。すべて AND。空（既定値）の項目は見ない。 */
+interface Filters {
+  /** 賢さ（パラメータ数の帯）。 */
+  size: "" | "small" | "medium" | "large" | "unknown";
+  /** コンテキスト長の下限（トークン）。 */
+  minContext: number;
+  /** ならした価格の上限（USD / 100 万トークン）。0 は指定なし。 */
+  maxPrice: number;
+  vendor: string;
+  image: boolean;
+  tools: boolean;
+  reasoning: boolean;
+}
+const NO_FILTERS: Filters = { size: "", minContext: 0, maxPrice: 0, vendor: "", image: false, tools: false, reasoning: false };
+const SIZE_OPTIONS: Array<[Filters["size"], string]> = [
+  ["", "指定なし"], ["small", "〜15B（小型）"], ["medium", "15〜70B（中型）"], ["large", "70B〜（大型）"], ["unknown", "不明（非公開）"],
+];
+const CONTEXT_OPTIONS: Array<[number, string]> = [[0, "指定なし"], [32_000, "32K 以上"], [128_000, "128K 以上"], [200_000, "200K 以上"], [1_000_000, "1M 以上"]];
+const PRICE_OPTIONS: Array<[number, string]> = [[0, "指定なし"], [0.5, "$0.5 未満（安い）"], [3, "$3 未満（ふつう）"], [10, "$10 未満（高め）"]];
+
+function matchesFilters(m: CloudRemoteModel, f: Filters): boolean {
+  if (f.size) {
+    const b = m.params_b ?? null;
+    if (f.size === "unknown" ? b !== null : b === null) return false;
+    if (f.size === "small" && b! >= 15) return false;
+    if (f.size === "medium" && (b! < 15 || b! >= 70)) return false;
+    if (f.size === "large" && b! < 70) return false;
+  }
+  if (f.minContext && (m.context_length ?? 0) < f.minContext) return false;
+  if (f.maxPrice) {
+    const blended = blendedPrice(m);
+    if (blended === null || blended >= f.maxPrice) return false;
+  }
+  if (f.vendor && (m.vendor ?? m.id.split("/")[0]) !== f.vendor) return false;
+  if (f.image && !m.modalities?.includes("image")) return false;
+  if (f.tools && !m.tools) return false;
+  if (f.reasoning && !m.reasoning) return false;
+  return true;
+}
+const activeFilterCount = (f: Filters) =>
+  (Object.keys(NO_FILTERS) as Array<keyof Filters>).filter((key) => f[key] !== NO_FILTERS[key]).length;
 const nameCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
 
 /** 値が無い行は、昇順でも降順でも最後。同じ値は名前順のまま（sort は安定）。 */
 function sortModels(list: CloudRemoteModel[], sort: SortKey): CloudRemoteModel[] {
   const sorted = [...list].sort((a, b) => nameCollator.compare(a.name || a.id, b.name || b.id));
   if (sort === "name") return sorted;
-  const value = (m: CloudRemoteModel) => (sort === "new" ? m.created : sort === "context" ? m.context_length : blendedPrice(m)) ?? null;
+  const value = (m: CloudRemoteModel) => (sort === "new" ? m.created : sort === "context" ? m.context_length
+    : sort === "params" ? (m.params_b || null) : blendedPrice(m)) ?? null;
   const direction = sort === "cheap" ? 1 : -1;
   const keyed = sorted.map((m) => [m, value(m)] as const);
   keyed.sort(([, a], [, b]) => (a === null ? (b === null ? 0 : 1) : b === null ? -1 : (a - b) * direction));
@@ -537,7 +597,11 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [zdrOnly, setZdrOnly] = useState(false);
   const [sort, setSort] = useState<SortKey>("name");
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [limit, setLimit] = useState(PAGE);
+  const filterCount = activeFilterCount(filters);
+  const setFilter = (patch: Partial<Filters>) => { setFilters((current) => ({ ...current, ...patch })); setLimit(PAGE); };
   const deferredQuery = useDeferredValue(query);
 
   // 選んであるのに一覧に無いもの（提供終了・手入力）も、外せるように先頭へ並べる。
@@ -550,17 +614,40 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
   }, [remote.data, sort]);
   const hasFree = p.id === "openrouter" || all.some((m) => m.free);
   const hasZdr = p.id === "openrouter" || all.some((m) => m.privacy === "zdr");
+  // 規模・対応機能はプロバイダが返したときだけ出す（OpenRouter 以外は項目自体が無い）。
+  const hasDetails = all.some((m) => m.params_b !== undefined);
+  const vendors = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const m of all) {
+      const vendor = m.vendor ?? (m.id.includes("/") ? m.id.split("/")[0] : "");
+      if (vendor) counts.set(vendor, (counts.get(vendor) ?? 0) + 1);
+    }
+    return [...counts].sort(([a], [b]) => nameCollator.compare(a, b));
+  }, [all]);
   const matches = useMemo(() => {
     const words = deferredQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((m) => {
       if (freeOnly && !m.free) return false;
       if (selectedOnly && !selected.has(m.id)) return false;
       if (zdrOnly && m.privacy !== "zdr") return false;
+      if (!matchesFilters(m, filters)) return false;
       if (words.length === 0) return true;
       const text = `${m.id} ${m.name}`.toLowerCase();
       return words.every((w) => text.includes(w));
     });
-  }, [all, deferredQuery, freeOnly, selectedOnly, zdrOnly, selected]);
+  }, [all, deferredQuery, freeOnly, selectedOnly, zdrOnly, selected, filters]);
+  const anyCondition = filterCount > 0 || freeOnly || zdrOnly || selectedOnly || query.trim() !== "";
+  const clearConditions = () => {
+    setFilters(NO_FILTERS); setFreeOnly(false); setZdrOnly(false); setSelectedOnly(false); setQuery(""); setLimit(PAGE);
+  };
+  const chip = (label: string, key: "image" | "tools" | "reasoning") => (
+    <button type="button" aria-pressed={filters[key]} onClick={() => setFilter({ [key]: !filters[key] })}
+      className={`min-h-11 rounded-full border px-3.5 text-xs font-medium ${filters[key]
+        ? "border-accent-500 bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-300"
+        : "border-zinc-300 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"}`}>
+      {label}
+    </button>
+  );
   const typed = query.trim();
   const canAddTyped = MODEL_ID.test(typed) && !all.some((m) => m.id === typed) && !selected.has(typed);
   const full = selected.size >= MAX_MODELS;
@@ -576,19 +663,68 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
 
   return (
     <BottomSheet title={`${p.name} のモデルを選ぶ`} onClose={onClose} sideOnDesktop stable>
-      <div className="sticky top-0 z-10 -mx-5 space-y-2 bg-white px-5 pb-2 dark:bg-zinc-900">
+      {/* 検索と並び順は上に固定する。ただし絞り込みを開いている間は固定しない（狭い画面では
+          固定した部分が画面の大半を占め、下の「条件をクリア」が保存ボタンの下に隠れて押せない）。 */}
+      <div className={`${filtersOpen ? "" : "sticky top-0 z-10"} -mx-5 space-y-2 bg-white px-5 pb-2 dark:bg-zinc-900`}>
         <label className="relative block">
           <span className="sr-only">モデルを検索</span>
           <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" aria-hidden />
           <input type="search" value={query} onChange={(e) => { setQuery(e.target.value); setLimit(PAGE); }}
             placeholder="名前や ID で検索" autoComplete="off" spellCheck={false} className={`${field} pl-9`} />
         </label>
-        <label className="flex items-center gap-2 text-xs">
-          <span className="shrink-0">並び順</span>
-          <select value={sort} onChange={(e) => { setSort(e.target.value as SortKey); setLimit(PAGE); }} className={field}>
-            {SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-          </select>
-        </label>
+        <div className="flex items-center gap-2">
+          <label className="flex min-w-0 flex-1 items-center gap-2 text-xs">
+            <span className="shrink-0">並び順</span>
+            <select value={sort} onChange={(e) => { setSort(e.target.value as SortKey); setLimit(PAGE); }} className={field}>
+              {SORTS.filter(([id]) => id !== "params" || hasDetails).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
+          <button type="button" aria-expanded={filtersOpen} aria-controls="cloud-model-filters"
+            onClick={() => setFiltersOpen((open) => !open)}
+            className={`${smallButton} ${filterCount > 0 ? "border-accent-500 text-accent-700 dark:text-accent-300" : ""}`}>
+            絞り込み{filterCount > 0 ? `（${filterCount}）` : ""}
+          </button>
+        </div>
+        {filtersOpen && (
+          <div id="cloud-model-filters" role="group" aria-label="絞り込み"
+            className="max-h-[45dvh] space-y-2 overflow-y-auto overscroll-contain rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+            <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2">
+              {hasDetails && (
+                <label className="block text-xs">賢さ（パラメータ数）
+                  <select value={filters.size} onChange={(e) => setFilter({ size: e.target.value as Filters["size"] })} className={`${field} mt-1`}>
+                    {SIZE_OPTIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                  </select>
+                </label>
+              )}
+              <label className="block text-xs">コンテキスト長
+                <select value={filters.minContext} onChange={(e) => setFilter({ minContext: Number(e.target.value) })} className={`${field} mt-1`}>
+                  {CONTEXT_OPTIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </label>
+              <label className="block text-xs">価格の上限
+                <select value={filters.maxPrice} onChange={(e) => setFilter({ maxPrice: Number(e.target.value) })} className={`${field} mt-1`}>
+                  {PRICE_OPTIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </label>
+              {vendors.length > 1 && (
+                <label className="block text-xs">提供元
+                  <select value={filters.vendor} onChange={(e) => setFilter({ vendor: e.target.value })} className={`${field} mt-1`}>
+                    <option value="">すべて</option>
+                    {vendors.map(([vendor, count]) => <option key={vendor} value={vendor}>{vendor}（{count}）</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+            {hasDetails && (
+              <div className="flex flex-wrap gap-2" role="group" aria-label="対応している機能">
+                {chip("画像入力", "image")}{chip("道具の呼び出し", "tools")}{chip("推論", "reasoning")}
+              </div>
+            )}
+            <p className="text-[11px] leading-relaxed text-zinc-500">
+              条件はすべて満たすものだけに絞ります。{hasDetails && "パラメータ数は名前から読み取った目安で、非公開のモデル（Claude・GPT など）は「不明」です。"}
+            </p>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-x-4 text-xs">
           {hasFree && (
             <label className="flex min-h-11 items-center gap-2">
@@ -603,8 +739,11 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
           <label className="flex min-h-11 items-center gap-2">
             <input type="checkbox" checked={selectedOnly} onChange={(e) => { setSelectedOnly(e.target.checked); setLimit(PAGE); }} className="h-5 w-5" />選択中だけ
           </label>
-          <span className="num ml-auto text-[11px] text-zinc-500" aria-live="polite">
-            {remote.data ? `${matches.length.toLocaleString()} 件` : ""} · 選択 {selected.size}/{MAX_MODELS}
+          <span className="num ml-auto flex items-center gap-2 text-[11px] text-zinc-500">
+            {anyCondition && (
+              <button type="button" onClick={clearConditions} className="min-h-11 text-accent-600 underline dark:text-accent-400">条件をクリア</button>
+            )}
+            <span aria-live="polite">{remote.data ? `${matches.length.toLocaleString()} 件` : ""} · 選択 {selected.size}/{MAX_MODELS}</span>
           </span>
         </div>
       </div>

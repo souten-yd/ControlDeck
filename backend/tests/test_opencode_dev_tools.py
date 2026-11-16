@@ -84,15 +84,6 @@ def test_the_browser_tools_go_to_the_subagent_only(installed):
     assert {"action": "playwright_*", "resource": "*", "effect": "deny"} in v2["agents"]["build"]["permissions"]
 
 
-def test_task_prompt():
-    assert provider.task_prompt("", "hello") == "hello"
-    text = provider.task_prompt("ui_verify", "ログイン画面")
-    assert text.startswith("【UI 検証】") and text.endswith("ログイン画面")
-    assert "control_deck.report" in provider.task_prompt("research", "")
-    with pytest.raises(provider.CodeAgentError):
-        provider.task_prompt("deploy", "x")
-
-
 @pytest.fixture
 def report_root(monkeypatch, tmp_path):
     monkeypatch.setattr(reports, "data_dir", lambda: tmp_path / "data")
@@ -269,7 +260,7 @@ def test_reviewer_cannot_edit_and_gets_ast_grep(installed, monkeypatch, tmp_path
     assert provider.review_tool_bin() == bin_dir
     assert provider._runtime_env("v2", tmp_path)["PATH"].startswith(str(bin_dir))
     assert "ast-grep" in provider._reviewer_agent()["description"]
-    assert "reviewer" in provider.task_prompt("review", "")
+    assert "reviewer" in provider.Path(provider.__file__).with_name("auto-review.md").read_text()
 
 
 def test_github_cli_only_when_allowed(monkeypatch, tmp_path):

@@ -26,9 +26,12 @@ class SettingsBody(AgentTargetBody):
 class WorkflowBody(BaseModel):
     superpowers: bool | None = None
     adversarial_review: bool | None = None
+    auto_review: bool | None = None
     auto_advisor: str | None = Field(default=None, max_length=16)
     review_model: str | None = Field(default=None, max_length=200)
     advisor_model: str | None = Field(default=None, max_length=200)
+    developer_agent: bool | None = None
+    developer_model: str | None = Field(default=None, max_length=200)
     ui_verify: bool | None = None
     ui_verify_allow_external: bool | None = None
     research_tool: bool | None = None
@@ -38,7 +41,8 @@ class WorkflowBody(BaseModel):
     isolation: str | None = Field(default=None, max_length=8)
 
 
-WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model",
+WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_review", "auto_advisor", "review_model", "advisor_model",
+                 "developer_agent", "developer_model",
                  "ui_verify", "ui_verify_allow_external", "research_tool", "research_external", "context7", "github_cli", "isolation")
 
 
@@ -129,7 +133,6 @@ class SessionBody(BaseModel):
     # 空なら設定値（チャットやワークフローと同じ既定）を使う。
     runtime: str = Field(default="", max_length=8)
     # 作業の種類（ui_verify / research / review）。空ならふつうのセッション。
-    task: str = Field(default="", max_length=16)
 
 
 _llm_warmup_tasks: set = set()
@@ -168,7 +171,7 @@ async def create_session(
             imported = await asyncio.to_thread(opencode.import_project, project_path)
             project_path = imported["path"]
         command, project = opencode.tui_command(
-            project_path=project_path, prompt=opencode.task_prompt(body.task, body.prompt),
+            project_path=project_path, prompt=body.prompt,
             base_url=body.base_url, model=body.model, owner_user_id=user.id,
             runtime=body.runtime,
         )
@@ -180,7 +183,7 @@ async def create_session(
     audit.record(db, "feature.opencode.session", user=user, resource_type="feature",
                  resource_id="opencode", request=request,
                  metadata={"terminal_id": session["id"], "project_path": project,
-                           "with_prompt": bool(body.prompt.strip()), "task": body.task,
+                           "with_prompt": bool(body.prompt.strip()),
                            "runtime": opencode.active_runtime(body.runtime)})
     return {**session, "project_path": project}
 
@@ -212,6 +215,8 @@ def get_workflow(user: User = Depends(require_permission("workflows.run"))):
         # 選べるモデル（ゲートウェイの名前）。別のモデルへは要求に合わせて載せ替える。
         "models": [{"alias": str(item["alias"]), "runtime": str(item.get("runtime") or "")}
                    for item in local_llm.llm_instances()],
+        # 役割に選べる外部モデル（OpenCode からの外部送信を許可したときだけ）。
+        **opencode.cloud_choices(),
         # 拡張ごとのプラグインが導入済みか。導入・更新・削除は 設定 → オプション機能。
         "installed": opencode.workflow_installed(),
         "features": {**opencode.WORKFLOW_FEATURES, **opencode.WORKFLOW_MCP_FEATURES},

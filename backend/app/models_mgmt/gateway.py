@@ -189,6 +189,10 @@ def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
     """
     if not is_gateway_url(base):
         return base, model
+    if str(model or "").startswith("cloud:"):
+        # 外部のフロンティアモデルに実インスタンスは無い。ゲートウェイ自身へ送り、
+        # 送ってよいか（呼び出し元の許可・上限額・データの扱い）をそこで判定させる。
+        return base, model
     instance = resolve_instance(model)
     alias, port = str(instance["alias"]), int(instance["port"])
     upstream_id = "strata" if instance.get("runtime") == "strata" else alias
@@ -203,6 +207,17 @@ CAPACITY_TIMEOUT_SECONDS = 300
 # 現在はログ・診断用で、サンプリング方針の判断には使わない（下記参照）。
 CLIENT_HEADER = "x-control-deck-client"
 OPENCODE_CLIENT = "opencode"
+ASSISTANT_CLIENT = "assistant"
+
+
+def client_headers(base: str, caller: str) -> dict[str, str]:
+    """ControlDeck 内部からゲートウェイへ送るときの呼び出し元ヘッダ。
+
+    外部モデルへ送ってよいかは呼び出し元ごとに決まる。付けないと「外部クライアント」
+    （api）として扱われ、AI アシスタントの許可が効かない。ゲートウェイ以外の接続先
+    （利用者が指定した外部の OpenAI 互換 endpoint など）へは付けない。
+    """
+    return {CLIENT_HEADER: caller} if is_gateway_url(base) else {}
 
 
 def _greedy_sampling_for(instance: dict, request: Request) -> bool:

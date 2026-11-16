@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { emptyCloud, mockCloud } from "./support/cloudModels";
+import { emptyCloud, mockCloud, remoteModels } from "./support/cloudModels";
 import { establishSession, hasSession } from "./support/session";
 
 /** Models の「フロンティアモデル」: キーを保存 → 有効 → モデルを選ぶ → 外部への送信を許可、を 320px で通す。
@@ -190,3 +190,78 @@ test("OpenRouter の費用・入力の扱い・残高が見え、並べ替えと
   await expect(sheet.getByText("プロバイダ自身の API。入力の扱いはそのプロバイダの規約によります")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+for (const width of [320, 1280]) {
+  test(`賢さ・コンテキスト・価格・対応機能・提供元を組み合わせて絞り込める（${width}px）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "E2E credentials are required");
+    await page.setViewportSize({ width, height: width === 320 ? 700 : 900 });
+    const state = emptyCloud();
+    Object.assign(state.providers[0], { configured: true, key_hint: "9f3c", enabled: true, models: [] });
+    await mockCloud(page, state);
+    await establishSession(page, context);
+    await page.goto("/models?tab=frontier");
+    const card = page.locator("li", { has: page.getByRole("button", { name: /^OpenRouter/ }) });
+    await card.getByRole("button", { name: "モデルを選ぶ" }).click();
+    const sheet = page.getByRole("dialog", { name: "OpenRouter のモデルを選ぶ" });
+    const rows = sheet.getByRole("listitem");
+
+    // 期待する件数はモックのデータから数える（画面と同じ条件を、別の書き方で）。
+    type Row = { id: string; params_b: number | null; context_length: number; modalities: string[]; tools: boolean; reasoning: boolean; vendor: string; free: boolean; price_input: number; price_output: number };
+    const all = remoteModels() as unknown as Row[];
+    const count = (pick: (m: Row) => boolean) => `${all.filter(pick).length.toLocaleString()} 件`;
+    const total = sheet.getByText(/^[\d,]+ 件 · 選択/);
+    await expect(total).toContainText(count(() => true));
+
+    // 行には規模の目安が出る。非公開のモデルは「不明」。
+    await expect(rows.first()).toContainText("規模 不明");
+    await sheet.getByRole("searchbox").fill("llama-test");
+    await expect(rows.first()).toContainText("規模 70B");
+    await sheet.getByRole("searchbox").fill("");
+
+    // 絞り込みは畳んであり、開くと条件が並ぶ。
+    const toggle = sheet.getByRole("button", { name: /^絞り込み/ });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    const filters = sheet.getByRole("group", { name: "絞り込み", exact: true });
+    await filters.getByLabel("賢さ（パラメータ数）").selectOption({ label: "70B〜（大型）" });
+    await expect(total).toContainText(count((m) => (m.params_b ?? 0) >= 70));
+    await expect(toggle).toHaveText("絞り込み（1）");
+
+    // 条件は AND で重なる。
+    await filters.getByRole("button", { name: "道具の呼び出し" }).click();
+    await expect(filters.getByRole("button", { name: "道具の呼び出し" })).toHaveAttribute("aria-pressed", "true");
+    await expect(total).toContainText(count((m) => (m.params_b ?? 0) >= 70 && m.tools));
+    await filters.getByLabel("コンテキスト長").selectOption({ label: "128K 以上" });
+    await expect(total).toContainText(count((m) => (m.params_b ?? 0) >= 70 && m.tools && m.context_length >= 128_000));
+    await expect(toggle).toHaveText("絞り込み（3）");
+
+    // 「パラメータ数が多い順」で、条件に合う中でいちばん大きいものが先頭に来る。
+    await sheet.getByLabel("並び順").selectOption({ label: "パラメータ数が多い順" });
+    const largest = Math.max(...all.filter((m) => (m.params_b ?? 0) >= 70 && m.tools && m.context_length >= 128_000)
+      .map((m) => m.params_b ?? 0));
+    await expect(rows.first()).toContainText(`規模 ${largest}B`);
+
+    // まとめて外せる。
+    await sheet.getByRole("button", { name: "条件をクリア" }).click();
+    await expect(total).toContainText(count(() => true));
+    await expect(toggle).toHaveText("絞り込み");
+    await expect(sheet.getByRole("button", { name: "条件をクリア" })).toHaveCount(0);
+
+    // 不明だけ・画像入力・提供元・価格。
+    await filters.getByLabel("賢さ（パラメータ数）").selectOption({ label: "不明（非公開）" });
+    await filters.getByRole("button", { name: "画像入力" }).click();
+    await expect(total).toContainText(count((m) => m.params_b === null && m.modalities.includes("image")));
+    await filters.getByLabel("提供元").selectOption("anthropic");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("anthropic/claude-test");
+    await filters.getByLabel("価格の上限").selectOption({ label: "$0.5 未満（安い）" });
+    await expect(rows).toHaveCount(0);
+    await expect(sheet.getByText("条件に合うモデルがありません")).toBeVisible();
+    await sheet.getByRole("button", { name: "条件をクリア" }).click();
+    await filters.getByRole("button", { name: "推論" }).click();
+    await expect(total).toContainText(count((m) => m.reasoning));
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: `/tmp/frontier-filters-${width}.png` });
+  });
+}

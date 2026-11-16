@@ -171,6 +171,7 @@ async def compact(history: list[dict[str, Any]], *, base_url: str, model: str,
         for piece in _chunks(fold, budget):
             body = f"これまでの要約:\n{summary}\n\n続きの会話:\n{piece}" if summary else piece
             request = RuntimeChatRequest(
+                client="assistant",
                 base_url=base_url, model=model, temperature=None, max_tokens=summary_tokens,
                 disable_thinking=True, thinking=False,
                 messages=[{"role": "system", "content": SUMMARY_SYSTEM}, {"role": "user", "content": body}],
