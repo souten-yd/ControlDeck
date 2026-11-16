@@ -86,7 +86,7 @@ function useMayaJobs() {
       void qc.invalidateQueries({ queryKey: ["maya-s-model"] });
       void qc.invalidateQueries({ queryKey: ["models"] });
       void qc.invalidateQueries({ queryKey: ["features"] });
-      show(job.status === "succeeded" ? "Maya-Sの操作が完了しました" : job.error || "Maya-Sの操作に失敗しました",
+      show(job.status === "succeeded" ? "Mayaの操作が完了しました" : job.error || "Mayaの操作に失敗しました",
         job.status === "succeeded" ? "info" : "error");
     }
   }, [data]);
@@ -117,7 +117,7 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
 
   return (
     <div className="mb-3 rounded-2xl border border-dashed border-zinc-300 p-4 dark:border-zinc-700">
-      <p className="text-sm font-semibold">Maya-S（GLM-5.3-Flash）</p>
+      <p className="text-sm font-semibold">Maya · GLM-5.3-Flash · Maya-S</p>
       <p className="mt-1 text-xs text-zinc-500">
         モデルが未準備です。約96.5GBをダウンロードするか、手元にある Maya-S の GGUF を読み込んでください。
         どちらもモデルは起動しません。準備後に一覧の「ロード」で起動します。
@@ -156,7 +156,7 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
         </ConfirmDialog>
       )}
       {existingOpen && (
-        <BottomSheet title="Maya-S · 既存のモデルを読み込む" onClose={() => setExistingOpen(false)} wide>
+        <BottomSheet title="Maya · 既存のモデルを読み込む" onClose={() => setExistingOpen(false)} wide>
           <MayaSettingsForm status={status} mode="existing" onDone={() => { setExistingOpen(false); void refresh(); }} />
         </BottomSheet>
       )}
@@ -168,7 +168,7 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
 export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
   const { data: status } = useMayaStatus();
   return (
-    <BottomSheet title="Maya-S · 個別設定" onClose={onClose} wide>
+    <BottomSheet title="GLM-5.3-Flash · Maya-S · 個別設定" onClose={onClose} wide>
       {status ? <MayaSettingsForm status={status} mode="detail" onDone={onClose} />
         : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
     </BottomSheet>
@@ -208,7 +208,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
         show("既存モデルの準備を開始しました（ダウンロード・起動はしません）");
         await refresh();
       } else {
-        show(onlyLifecycle ? "Maya-Sの起動・停止の設定を保存しました" : "Maya-Sの設定を保存しました。次回のロードから反映されます");
+        show(onlyLifecycle ? "Mayaの起動・停止の設定を保存しました" : "Mayaの設定を保存しました。次回のロードから反映されます");
       }
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["maya-s-model"] }),
@@ -216,7 +216,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
       ]);
       onDone();
     } catch (e) {
-      show(e instanceof Error ? e.message : "Maya-Sの設定を保存できませんでした", "error");
+      show(e instanceof Error ? e.message : "Mayaの設定を保存できませんでした", "error");
     } finally { setSaving(false); }
   };
 
@@ -263,7 +263,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
         <SettingsGroup title="起動と停止" description="アイドル時の自動アンロードは共通設定で切り替えます">
           <Toggle label="使われたときに自動で起動" hint="チャットやゲートウェイから呼ばれたら起動します（Strata や使っていない llama.cpp のモデルは先に停止）"
             value={settings.on_demand_start} onChange={(v) => setSettings({ ...settings, on_demand_start: v })} />
-          <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします。Strata にも付けた場合は Maya-S が優先です"
+          <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします。Strata にも付けた場合は Maya が優先です"
             value={settings.auto_start} onChange={(v) => setSettings({ ...settings, auto_start: v })} />
           <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
             value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
@@ -301,7 +301,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
         </label>
         {/* 同時実行数は出さない。2 にすると 1M の会話をもう 1 本ぶん RAM に確保し、
             92GB の RAM では 20 分たっても起動しなかった（2026-11-15 実測）。1 本ずつ順に処理する。 */}
-        <p className="text-[10px] leading-relaxed text-zinc-500">Maya-S は 1 件ずつ順に処理します（同時に受けると RAM が足りず起動しません）。</p>
+        <p className="text-[10px] leading-relaxed text-zinc-500">Maya は 1 件ずつ順に処理します（同時に受けると RAM が足りず起動しません）。</p>
       </SettingsGroup>
       <SettingsGroup title="詳細" description="GPU 番号・RAM の空き確保量" collapsible defaultOpen={false}>
         <div className="grid gap-2 sm:grid-cols-2">
