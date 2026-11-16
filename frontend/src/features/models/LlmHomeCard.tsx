@@ -108,7 +108,8 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
   // 待機中に 0 を返す実行環境では、直前の 1 本の速さを出す。
   const decode = (item?.tokens_per_second || item?.tokens_per_second_single) ?? 0;
   const on = power?.enabled;
-  const watts = power?.busy ? power.now_w : power?.avg_w;
+  // 平均は今日 LLM が処理していた間の積算（電力量 ÷ 時間）。処理中でも瞬間の値にしない。
+  const watts = power?.avg_w;
   return (
     <Column heading="ローカル LLM" to="/models?tab=llm"
       badge={unloaded && (
@@ -135,7 +136,7 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
       </Row>
       <CtxBar used={used} total={total} />
       <Divider />
-      <Row label={power?.busy ? "電力" : "平均"}>
+      <Row label="平均">
         {on && watts != null
           ? <>{Math.round(watts)} <Unit>W</Unit> · {yen(power!.yen_per_hour ?? 0)}<Unit>/h</Unit></>
           : <Muted />}

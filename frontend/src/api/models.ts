@@ -160,9 +160,9 @@ export interface LlmPower {
   busy?: boolean;
   /** 処理中だけ。 */
   now_w?: number | null;
-  /** 今日、処理していた間の平均。 */
+  /** 今日、処理していた間の平均（積算した電力量 ÷ 積算した時間）。 */
   avg_w?: number | null;
-  /** いま（処理中）または平均の電力での 1 時間あたり。 */
+  /** 平均の電力での 1 時間あたり。 */
   yen_per_hour?: number | null;
   today_yen?: number;
   today_seconds?: number;
