@@ -210,6 +210,18 @@ OPENCODE_CLIENT = "opencode"
 ASSISTANT_CLIENT = "assistant"
 
 
+def internal_api_key(base: str, api_key: str | None = None) -> str:
+    """ControlDeck 内部からゲートウェイへ送るときの鍵。
+
+    ローカルのモデルは解決の段階で各ランタイムへ直結するので鍵が要らないが、外部の
+    フロンティアモデル（cloud:）はゲートウェイを通る。鍵が無いと 401 になるため、
+    ゲートウェイ宛で鍵が渡されていなければ発行済みの鍵を使う。
+    """
+    if api_key:
+        return api_key
+    return (get_api_key(create=True) or "sk-no-key") if is_gateway_url(base) else "sk-no-key"
+
+
 def client_headers(base: str, caller: str) -> dict[str, str]:
     """ControlDeck 内部からゲートウェイへ送るときの呼び出し元ヘッダ。
 

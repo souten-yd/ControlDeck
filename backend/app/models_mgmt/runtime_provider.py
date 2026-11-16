@@ -165,7 +165,7 @@ def _request_headers(request: RuntimeChatRequest) -> dict[str, str]:
     """生成要求のヘッダ。ゲートウェイ宛にだけ呼び出し元を名乗る（1 か所で付ける）。"""
     from app.models_mgmt import gateway
 
-    return {"Authorization": f"Bearer {request.api_key or 'sk-no-key'}",
+    return {"Authorization": f"Bearer {gateway.internal_api_key(request.base_url, request.api_key)}",
             **gateway.client_headers(request.base_url, request.client)}
 
 
