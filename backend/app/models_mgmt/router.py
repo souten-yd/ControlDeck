@@ -1651,3 +1651,11 @@ def cloud_usage(days: int = Query(default=30, ge=1, le=366),
     from app.models_mgmt import cloud
 
     return {"rows": cloud.usage_rows(since=_time.time() - days * 86400, limit=2000)}
+
+
+@router.get("/cloud-summary")
+def cloud_summary(user: User = Depends(require_permission("settings.manage"))):
+    """Home の LLM カード用。実行中の呼び出し・今日/今月の合計・最近のモデルの速さ（本文なし）。"""
+    from app.models_mgmt import cloud
+
+    return cloud.summary()

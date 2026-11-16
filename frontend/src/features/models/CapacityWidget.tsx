@@ -21,7 +21,7 @@ function SlotDots({ busy, slots }: { busy: number; slots: number }) {
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+export function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-3">
       <span className="w-[4.5rem] shrink-0 text-[10px] text-zinc-400 md:text-[11px]">{label}</span>
@@ -111,7 +111,7 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
   );
 }
 
-export function CapacityWidget({ compact = false }: { compact?: boolean }) {
+export function CapacityWidget({ compact = false, showAlias = false }: { compact?: boolean; showAlias?: boolean }) {
   const { data } = useQuery({
     queryKey: ["llama-capacity"], queryFn: getLlamaCapacity,
     // 稼働中だけ短い間隔で追う。止まっていれば無駄に叩かない。
@@ -125,7 +125,7 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
       <div className="space-y-3">
         {data.endpoints.map((item) => (
           <div key={item.id}>
-            {data.endpoints.length > 1 && (
+            {(showAlias || data.endpoints.length > 1) && (
               <p className="mb-0.5 truncate text-[11px] font-medium text-zinc-500">
                 {item.running_alias} <span className="text-zinc-400">:{item.port}</span>
               </p>

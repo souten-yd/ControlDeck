@@ -101,6 +101,51 @@ export interface CloudUsageRow {
   cost_usd: number | null;
 }
 
+/** Home の LLM カード用のまとめ（ControlDeck が中継した呼び出しから数える。本文は含まない）。 */
+export interface CloudRunningCall {
+  provider: string;
+  model: string;
+  caller: string;
+  caller_label: string;
+  elapsed_s: number;
+  /** waiting = 最初の応答待ち / generate = 生成中 */
+  phase: "waiting" | "generate";
+  /** 流れてきた差分の数（おおよそのトークン数）。 */
+  tokens: number;
+  tokens_per_second: number | null;
+}
+
+export interface CloudTotals {
+  calls: number;
+  errors: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+}
+
+export interface CloudModelStat {
+  provider: string;
+  model: string;
+  calls: number;
+  cost_usd: number;
+  last_at: number;
+  /** 直近の呼び出しの平均（生成の速さ）。 */
+  tokens_per_second: number | null;
+  /** 最初のトークンまでの平均秒数。 */
+  ttft_s: number | null;
+}
+
+export interface CloudSummary {
+  running: CloudRunningCall[];
+  today: CloudTotals;
+  month: CloudTotals;
+  /** 直近 7 日に使ったモデル（新しい順、最大 5）。 */
+  models: CloudModelStat[];
+  last: (CloudUsageRow & { duration_s?: number; ttft_s?: number; tokens_per_second?: number }) | null;
+}
+
+export const getCloudSummary = () => api<CloudSummary>("/models/cloud-summary");
+
 export const CLOUD_QUERY_KEY = ["cloud-models"] as const;
 
 export const getCloudState = () => api<CloudState>("/models/cloud");

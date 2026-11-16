@@ -21,7 +21,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -268,16 +268,76 @@ def resolve(model: str, *, caller: str) -> CloudTarget:
                        str(entry.get("data_policy") or DEFAULT_DATA_POLICY))
 
 
-def record_usage(target: CloudTarget, caller: str, usage: dict | None, *, status_code: int) -> None:
+@dataclass
+class CallTimer:
+    """実行中の 1 回の呼び出し（Home の表示用。メモリだけ、本文は持たない）。"""
+    provider: str
+    model: str
+    caller: str
+    started: float = field(default_factory=time.monotonic)
+    started_at: float = field(default_factory=time.time)
+    first_at: float | None = None
+    events: int = 0  # 流れてきた差分の数（おおよそのトークン数）
+
+
+_inflight: list[CallTimer] = []
+
+
+def begin_call(target: CloudTarget, caller: str) -> CallTimer:
+    timer = CallTimer(target.provider, target.model, caller)
+    with _lock:
+        _inflight.append(timer)
+    return timer
+
+
+def note_stream(timer: CallTimer, chunk: bytes) -> None:
+    """中継した SSE の塊から、最初の応答の時刻と差分の数だけを数える（本文は見ない）。"""
+    count = chunk.count(b"data:")
+    if count and timer.first_at is None:
+        timer.first_at = time.monotonic()
+    timer.events += count
+
+
+def _finish(timer: CallTimer | None) -> tuple[float | None, float | None]:
+    if timer is None:
+        return None, None
+    with _lock:
+        if timer in _inflight:
+            _inflight.remove(timer)
+    duration = time.monotonic() - timer.started
+    ttft = (timer.first_at - timer.started) if timer.first_at is not None else None
+    return duration, ttft
+
+
+def _speed(completion: int, duration: float | None, ttft: float | None) -> float | None:
+    """生成の速さ（tok/s）。stream なら最初のトークンより後の時間で割る。"""
+    if not duration or completion <= 1:
+        return None
+    if ttft is not None and duration - ttft > 0.05:
+        return (completion - 1) / (duration - ttft)
+    return completion / duration
+
+
+def record_usage(target: CloudTarget, caller: str, usage: dict | None, *, status_code: int,
+                 timer: CallTimer | None = None) -> None:
     """1 回の呼び出しの記録。本文は残さない。"""
     usage = usage or {}
     cost = usage.get("cost")
+    duration, ttft = _finish(timer)
+    completion = int(usage.get("completion_tokens") or 0)
+    speed = _speed(completion, duration, ttft) if status_code < 400 else None
     row = {
         "at": time.time(), "caller": caller, "provider": target.provider, "model": target.model,
         "status": status_code, "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "completion_tokens": completion,
         "cost_usd": float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
     }
+    if duration is not None:
+        row["duration_s"] = round(duration, 3)
+    if ttft is not None:
+        row["ttft_s"] = round(ttft, 3)
+    if speed is not None:
+        row["tokens_per_second"] = round(speed, 1)
     path = _usage_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _lock, path.open("a", encoding="utf-8") as handle:
@@ -307,6 +367,77 @@ def usage_rows(*, since: float = 0.0, limit: int = 500) -> list[dict]:
 def _month_start(now: float | None = None) -> float:
     local = time.localtime(now or time.time())
     return time.mktime((local.tm_year, local.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+
+
+def _day_start(now: float | None = None) -> float:
+    local = time.localtime(now or time.time())
+    return time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def summary(*, now: float | None = None) -> dict:
+    """Home 用のまとめ: 実行中の呼び出し、今日・今月の合計、最近使ったモデルの速さ。"""
+    now = now or time.time()
+    mono = time.monotonic()
+    with _lock:
+        # 中継が始まらずに捨てられた呼び出しは記録されないまま残るので、上流の時間切れ（600 秒）を過ぎたら外す。
+        _inflight[:] = [t for t in _inflight if mono - t.started < 900]
+        active = list(_inflight)
+    running = []
+    for t in active:
+        elapsed = mono - t.started
+        live = None
+        if t.first_at is not None and t.events > 1 and mono - t.first_at > 0.5:
+            live = round((t.events - 1) / (mono - t.first_at), 1)
+        running.append({
+            "provider": t.provider, "model": t.model, "caller": t.caller,
+            "caller_label": CALLER_LABELS.get(t.caller, t.caller),
+            "elapsed_s": round(elapsed, 1), "phase": "generate" if t.first_at is not None else "waiting",
+            "tokens": t.events, "tokens_per_second": live,
+        })
+
+    month_start, day_start = _month_start(now), _day_start(now)
+    rows = usage_rows(since=min(month_start, now - 7 * 86400), limit=1_000_000)
+
+    def totals(items: list[dict]) -> dict:
+        return {
+            "calls": len(items),
+            "errors": sum(1 for r in items if int(r.get("status") or 0) >= 400),
+            "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in items),
+            "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in items),
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in items), 6),
+        }
+
+    by_model: dict[tuple[str, str], dict] = {}
+    for r in rows:  # 新しい順
+        if r.get("at", 0) < now - 7 * 86400:
+            continue
+        key = (str(r.get("provider")), str(r.get("model")))
+        entry = by_model.setdefault(key, {"provider": key[0], "model": key[1], "calls": 0, "cost_usd": 0.0,
+                                          "last_at": r.get("at"), "_tps": [], "_ttft": []})
+        entry["calls"] += 1
+        entry["cost_usd"] += float(r.get("cost_usd") or 0)
+        if r.get("tokens_per_second") and len(entry["_tps"]) < 20:
+            entry["_tps"].append(float(r["tokens_per_second"]))
+        if r.get("ttft_s") is not None and len(entry["_ttft"]) < 20:
+            entry["_ttft"].append(float(r["ttft_s"]))
+    models = []
+    for entry in sorted(by_model.values(), key=lambda e: e["last_at"] or 0, reverse=True)[:5]:
+        tps, ttft = entry.pop("_tps"), entry.pop("_ttft")
+        entry["cost_usd"] = round(entry["cost_usd"], 6)
+        entry["tokens_per_second"] = round(sum(tps) / len(tps), 1) if tps else None
+        entry["ttft_s"] = round(sum(ttft) / len(ttft), 2) if ttft else None
+        models.append(entry)
+
+    last = rows[0] if rows else None
+    return {
+        "running": running,
+        "today": totals([r for r in rows if r.get("at", 0) >= day_start]),
+        "month": totals([r for r in rows if r.get("at", 0) >= month_start]),
+        "models": models,
+        "last": ({k: last.get(k) for k in ("at", "caller", "provider", "model", "status", "prompt_tokens",
+                                           "completion_tokens", "cost_usd", "duration_s", "ttft_s",
+                                           "tokens_per_second")} if last else None),
+    }
 
 
 def spent_this_month(provider_id: str) -> float:
