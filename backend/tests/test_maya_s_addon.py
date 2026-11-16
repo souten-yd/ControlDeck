@@ -117,6 +117,30 @@ def test_prepare_checks_space_and_refuses_invalid_gpu(managed, monkeypatch):
     assert not called
 
 
+def test_prepare_downloads_into_a_chosen_folder(managed, monkeypatch, tmp_path):
+    _installed(managed)
+    args_seen = []
+    config = maya_s.source() / "maya-glm-maya-s-hip.json"
+
+    def fake_exec(argv, **kwargs):
+        args_seen.append(argv)
+        config.write_text('{"host":"127.0.0.1"}')
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    target = tmp_path / "LLM"
+    target.mkdir()
+    from app.files import service as files
+    monkeypatch.setattr(files, "resolve", lambda path: __import__("pathlib").Path(path))
+    monkeypatch.setattr(maya_s.shutil, "disk_usage", lambda path: SimpleNamespace(free=150*1000**3))
+    monkeypatch.setattr(maya_s, "_exec", fake_exec)
+    maya_s._prepare_model(gpu_index=0, download_dir=str(target))
+    argv = args_seen[0]
+    assert argv[argv.index("--models-dir") + 1] == str(target)
+    with pytest.raises(maya_s.MayaError, match="既存のフォルダ"):
+        maya_s._download_dir(str(tmp_path / "missing"))
+    assert maya_s._download_dir("") == maya_s.models_dir()
+
+
 def test_start_requires_preparation_and_uses_user_unit(managed, monkeypatch):
     _installed(managed)
     assert maya_s.start_instance() == (False, "明示的なMayaモデル準備が必要です")

@@ -101,13 +101,16 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
   const [gpu, setGpu] = useState(status.settings?.gpu_index ?? 0);
   const [existingOpen, setExistingOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // ダウンロードの保存先。空なら既定の置き場（status.models_dir）。
+  const [downloadDir, setDownloadDir] = useState("");
+  const [dirPicker, setDirPicker] = useState(false);
   const working = busy || active.length > 0;
 
   const download = async () => {
     setConfirming(false);
     setBusy(true);
     try {
-      await api("/features/maya-s/model/prepare-jobs", { method: "POST", json: { gpu_index: gpu } });
+      await api("/features/maya-s/model/prepare-jobs", { method: "POST", json: { gpu_index: gpu, download_dir: downloadDir } });
       show("Maya-S（約96.5GB）のダウンロードとHIP準備を開始しました。完了後に「ロード」で起動できます");
       await refresh();
     } catch (e) {
@@ -152,8 +155,26 @@ export function MayaSSetupCard({ status }: { status: MayaStatus }) {
               onChange={(e) => setGpu(Number(e.target.value))}
               className="w-20 rounded-lg border border-zinc-300 bg-transparent px-2 py-2 dark:border-zinc-600" />
           </label>
-          <p className="mt-2 break-all text-[11px] text-zinc-500">保存先: {status.models_dir}</p>
+          <div className="mt-3 text-xs">
+            <p>保存先</p>
+            <div className="mt-1 flex items-center gap-2">
+              <p className="min-w-0 flex-1 break-all rounded-lg bg-zinc-100 px-2 py-2 font-mono text-[11px] dark:bg-zinc-800">
+                {downloadDir || status.models_dir}{downloadDir ? "" : "（既定）"}
+              </p>
+              <button type="button" onClick={() => setDirPicker(true)}
+                className="min-h-11 shrink-0 rounded-xl border border-zinc-300 px-3 text-xs dark:border-zinc-600">変更</button>
+            </div>
+            {downloadDir && (
+              <button type="button" onClick={() => setDownloadDir("")} className="mt-1 min-h-11 text-[11px] text-accent-600 underline dark:text-accent-400">既定に戻す</button>
+            )}
+            <p className="mt-1 text-[11px] text-zinc-500">選んだフォルダに約110GB以上の空きが必要です。NVMe の SSD を選んでください。</p>
+          </div>
         </ConfirmDialog>
+      )}
+      {dirPicker && (
+        <FilePicker mode="dir" title="Maya のモデルの保存先" initialPath={downloadDir || "/data1tb/LLM"}
+          onSelect={(path) => { setDownloadDir(path); setDirPicker(false); }}
+          onClose={() => setDirPicker(false)} />
       )}
       {existingOpen && (
         <BottomSheet title="Maya · 既存のモデルを読み込む" onClose={() => setExistingOpen(false)} wide>
