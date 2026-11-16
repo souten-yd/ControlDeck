@@ -223,12 +223,15 @@ def test_account_reports_the_remaining_balance(store, monkeypatch):
     import asyncio
 
     _configure()
+    # /key（このキー）と /credits（アカウント全体）の両方に同じ形の data を返す。
     upstream = _Upstream(monkeypatch, httpx.Response(200, json={"data": {
         "limit": 20, "limit_remaining": 12.5, "usage": 7.5, "usage_monthly": 3.25, "is_free_tier": False,
-        "free_model_daily_requests": {"used": 3, "limit": 1000, "remaining": 997}}}))
+        "free_model_daily_requests": {"used": 3, "limit": 1000, "remaining": 997},
+        "total_credits": 20, "total_usage": 16.93}}))
     result = asyncio.run(cloud.account("openrouter"))
     assert result["limit_remaining"] == 12.5 and result["usage_monthly"] == 3.25 and result["free_requests_remaining"] == 997
-    assert str(upstream.sent[0].url) == "https://openrouter.ai/api/v1/key"
+    assert result["balance"] == 3.07 and result["credits_total"] == 20
+    assert [str(r.url) for r in upstream.sent] == ["https://openrouter.ai/api/v1/key", "https://openrouter.ai/api/v1/credits"]
     assert asyncio.run(cloud.account("openai")) == {"supported": False}
 
 

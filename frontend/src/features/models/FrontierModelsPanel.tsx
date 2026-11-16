@@ -483,21 +483,33 @@ function AccountBlock({ provider: p }: { provider: CloudProvider }) {
           <p role="alert" className="pb-1 text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">残高を取得できませんでした: {errorText(account.error, "不明なエラー")}</p>
         ) : (
           <div className="num pb-1">
-            <p className="flex flex-wrap items-baseline gap-x-2">
-              <span className="text-lg font-semibold">{a.limit_remaining === null ? "上限なし" : usd(a.limit_remaining)}</span>
-              <span className="text-[11px] text-zinc-500">
-                {a.limit_remaining === null ? "このキーに利用上限はありません" : a.limit !== null ? `残り / 上限 ${usd(a.limit)}` : "残り"}
-              </span>
+            {a.balance !== null ? (
+              <p className="flex flex-wrap items-baseline gap-x-2">
+                <span className="text-lg font-semibold">{usd(a.balance)}</span>
+                <span className="text-[11px] text-zinc-500">
+                  アカウントの残高{a.credits_total !== null ? `（入金 ${usd(a.credits_total)} − 使用 ${money(a.credits_used)}）` : ""}
+                </span>
+              </p>
+            ) : (
+              <p className="text-[11px] text-zinc-500">アカウントの残高は取得できませんでした。</p>
+            )}
+            <p className="text-[11px] text-zinc-500">
+              このキーの上限: {a.limit_remaining === null ? "なし" : `残り ${usd(a.limit_remaining)}${a.limit !== null ? ` / ${usd(a.limit)}` : ""}`}
             </p>
-            {a.limit_remaining !== null && a.limit_remaining <= 0 && (
+            {((a.balance !== null && a.balance <= 0) || (a.limit_remaining !== null && a.limit_remaining <= 0)) && (
               <p className="flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-400">
                 <IconWarning className="mt-0.5 h-3.5 w-3.5 shrink-0" />残高がありません。有料モデルは {p.name} 側で止められます。
               </p>
             )}
-            <dl className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]" aria-label="使用額">
+            {a.balance !== null && a.balance > 0 && a.balance < 1 && (
+              <p className="flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-400">
+                <IconWarning className="mt-0.5 h-3.5 w-3.5 shrink-0" />残高が $1 を切りました。
+              </p>
+            )}
+            <dl className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]" aria-label="このキーの使用額">
               {([["今月", a.usage_monthly], ["今日", a.usage_daily], ["累計", a.usage]] as const).map(([label, value]) => (
                 <div key={label} className="min-w-0">
-                  <dt className="text-zinc-500">使用額 {label}</dt>
+                  <dt className="text-zinc-500">このキー {label}</dt>
                   <dd className="break-all font-medium">{money(value)}</dd>
                 </div>
               ))}
