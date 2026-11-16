@@ -120,11 +120,12 @@ test("OpenRouter の費用・入力の扱い・残高が見え、並べ替えと
 
   // 残高は OpenRouter 側の数字。ControlDeck の上限とは別のものとして並ぶ。
   const balance = card.getByRole("region", { name: "OpenRouter の残高" });
-  await expect(balance).toContainText("$12.50");
-  await expect(balance).toContainText("上限 $20.00");
-  await expect(balance).toContainText("使用額 今月$7.50");
-  await expect(balance).toContainText("使用額 今日$0.4200");
-  await expect(balance).toContainText("使用額 累計$31.25");
+  await expect(balance).toContainText("$3.07");
+  await expect(balance).toContainText("アカウントの残高");
+  await expect(balance).toContainText("このキーの上限: 残り $12.50 / $20.00");
+  await expect(balance).toContainText("このキー 今月$7.50");
+  await expect(balance).toContainText("このキー 今日$0.4200");
+  await expect(balance).toContainText("このキー 累計$31.25");
   await expect(balance).toContainText("今日はあと 950 回");
   await expect(balance.getByRole("button", { name: "残高を更新（OpenRouter）" })).toBeEnabled();
   await expect(card.getByLabel("ControlDeck の月の上限（USD）")).toBeVisible();

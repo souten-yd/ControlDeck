@@ -73,6 +73,10 @@ export type CloudAccount =
   | { supported: false }
   | {
     supported: true;
+    /** アカウントの残高（入金 − 使用、USD）。取得できなければ null。 */
+    balance: number | null;
+    credits_total: number | null;
+    credits_used: number | null;
     /** キーの利用上限（USD）。null は上限なし。 */
     limit: number | null;
     limit_remaining: number | null;

@@ -58,7 +58,7 @@ export function remoteModels(count = 1500) {
 
 /** OpenRouter の /key 相当。上限 $20 のうち $12.5 が残っているキー。 */
 export const ACCOUNT = {
-  supported: true, limit: 20, limit_remaining: 12.5, usage: 31.25, usage_monthly: 7.5, usage_daily: 0.42,
+  supported: true, balance: 3.07, credits_total: 20, credits_used: 16.93, limit: 20, limit_remaining: 12.5, usage: 31.25, usage_monthly: 7.5, usage_daily: 0.42,
   is_free_tier: false, free_requests_remaining: 950,
 };
 

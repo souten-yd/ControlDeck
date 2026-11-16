@@ -476,10 +476,18 @@ async def account(provider_id: str) -> dict:
     entry = _read()["providers"].get(provider_id, {})
     if not entry.get("key"):
         raise CloudError("先に API キーを設定してください")
+    headers = {"Authorization": f"Bearer {decrypt_text(entry['key'])}"}
+    credits: dict = {}
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
-            response = await client.get("https://openrouter.ai/api/v1/key",
-                                        headers={"Authorization": f"Bearer {decrypt_text(entry['key'])}"})
+            response = await client.get("https://openrouter.ai/api/v1/key", headers=headers)
+            # アカウント全体の入金額と使用額（残高）。/key はこのキーの上限と使用額だけ。
+            try:
+                paid = await client.get("https://openrouter.ai/api/v1/credits", headers=headers)
+                if paid.status_code == 200:
+                    credits = (paid.json() or {}).get("data") or {}
+            except (httpx.HTTPError, ValueError):
+                credits = {}
     except httpx.HTTPError as exc:
         raise CloudError("OpenRouter に接続できませんでした", 502) from exc
     if response.status_code in (401, 403):
@@ -493,7 +501,14 @@ async def account(provider_id: str) -> dict:
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
     free = data.get("free_model_daily_requests") if isinstance(data.get("free_model_daily_requests"), dict) else {}
-    return {"supported": True, "limit": number("limit"), "limit_remaining": number("limit_remaining"),
+
+    def credit(key: str) -> float | None:
+        value = credits.get(key)
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    total, spent = credit("total_credits"), credit("total_usage")
+    balance = round(total - spent, 4) if total is not None and spent is not None else None
+    return {"supported": True, "balance": balance, "credits_total": total, "credits_used": spent, "limit": number("limit"), "limit_remaining": number("limit_remaining"),
             "usage": number("usage"), "usage_monthly": number("usage_monthly"), "usage_daily": number("usage_daily"),
             "is_free_tier": bool(data.get("is_free_tier")),
             "free_requests_remaining": free.get("remaining") if isinstance(free.get("remaining"), int) else None}
