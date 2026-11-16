@@ -12,7 +12,7 @@ test("merges branches and resumes a typed human approval at mobile width", async
   await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0;
 
@@ -108,7 +108,7 @@ test("edits durable delay, try branches, and a system trigger at 320px", async (
   await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0;
 

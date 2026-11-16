@@ -31,7 +31,7 @@ test("durable typed state is shared by published runs and configurable on mobile
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0;
 

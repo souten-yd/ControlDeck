@@ -13,7 +13,7 @@ test("starts, previews, and stops an isolated Project Lab Web profile", async ({
   await page.goto("/project-lab");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/project-lab");
   await page.getByRole("button", { name: /Codex Project Web E2E/ }).click();

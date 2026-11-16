@@ -12,7 +12,7 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
   await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0;
 
@@ -100,7 +100,7 @@ test("approves a published workflow from the mobile public app", async ({ page }
   await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0;
 

@@ -27,7 +27,7 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
   await page.goto("/");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
   await page.getByRole("button", { name: "More" }).click();
@@ -69,7 +69,7 @@ test("keeps Workflows below the logo with an iPhone standalone safe area", async
   await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
   await page.evaluate(() => {
@@ -96,7 +96,7 @@ test("migrates the saved Play destination to Workflows", async ({ page }) => {
   await page.goto("/workflows");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
 
   const navigation = page.getByRole("navigation", { name: "Main navigation" });
   await expect(navigation.getByRole("link", { name: "Workflows" })).toBeVisible();
@@ -113,7 +113,7 @@ test("configures up to six mobile destinations while keeping More fixed", async 
   await page.goto("/settings");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/settings/appearance");
 

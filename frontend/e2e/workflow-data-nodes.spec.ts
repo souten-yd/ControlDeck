@@ -9,7 +9,7 @@ test("deterministic data nodes execute and appear in the mobile library", async 
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
   const created = await page.evaluate(async () => {

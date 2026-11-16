@@ -13,7 +13,7 @@ test("App Builder uses a focused responsive workspace without losing draft edits
   await page.goto("/applications");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   errors.length = 0;
 
@@ -186,7 +186,7 @@ test("E7 source preview keeps Secret names opaque and blocks unauthenticated sid
   await page.goto("/applications");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   errors.length = 0;
 

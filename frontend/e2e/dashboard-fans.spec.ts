@@ -9,7 +9,7 @@ test("dashboard shows CPU and GPU fan values without mobile overflow", async ({ 
   await page.goto("/");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   const summary = page.getByRole("region", { name: "システムサマリー" });
   await expect(summary.getByText(/FAN (?:N\/A|[\d,.]+ RPM)/)).toHaveCount(2);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

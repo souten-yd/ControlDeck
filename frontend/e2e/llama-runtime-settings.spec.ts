@@ -9,7 +9,7 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
   await page.goto("/models");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/models");
 
@@ -73,7 +73,7 @@ test("Ollama running state updates the indicator and lifecycle button", async ({
   await page.goto("/models");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
   let loaded = false;

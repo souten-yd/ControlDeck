@@ -13,7 +13,7 @@ test("manages an installed release bundle and generates through its Add-on", asy
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page).not.toHaveURL(/\/login$/);
   await page.goto("/settings/features");
 

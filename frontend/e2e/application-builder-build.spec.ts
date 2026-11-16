@@ -14,7 +14,7 @@ test("App Studio builds and tests generated source in an isolated systemd user u
   await page.goto("/applications");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   browserErrors.length = 0;
 
