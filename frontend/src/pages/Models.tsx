@@ -86,6 +86,7 @@ interface RuntimePolicy {
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
   max_loaded_models: number;
+  vram_margin_gib: number;
   gateway_only: boolean;
   drain_timeout_sec: number;
   default_model_ref: string;
@@ -414,6 +415,10 @@ export default function ModelsPage() {
 
   const removeLocal = useMutation({
     mutationFn: async ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) => {
+      if (runtime === "maya-s") {
+        await api(`/features/maya-s/models/${encodeURIComponent(alias)}`, { method: "DELETE" });
+        return { ok: true, gguf_deleted: false, reason: "Mayaのモデルファイルは保持" };
+      }
       if (runtime === "strata") {
         await api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} });
         return { ok: true, gguf_deleted: false, reason: "Strataモデルファイルは保持" };
@@ -615,7 +620,9 @@ export default function ModelsPage() {
                     })()}
                     {isLocal && runtime === "maya-s" ? (
                       <DropdownMenu ariaLabel={`${id}の操作`} trigger={<IconDots />}
-                        items={[{ label: "個別設定", onSelect: openDetail }]} />
+                        items={[{ label: "個別設定", onSelect: openDetail },
+                          { label: "削除", danger: true, separated: true,
+                            onSelect: () => setLocalDeleting({ alias: id, runtime }) }]} />
                     ) : isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
@@ -661,14 +668,15 @@ export default function ModelsPage() {
       {localDeleting && (
         <ConfirmDialog
           title={`「${localDeleting.alias}」を削除しますか？`}
-          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
+          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。"
+            : localDeleting.runtime === "maya-s" ? "Mayaのモデル登録だけを削除します。モデルのファイルは消しません。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
           confirmLabel="削除する"
           danger
           busy={removeLocal.isPending}
           onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
           onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
-          {localDeleting.runtime !== "strata" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+          {localDeleting.runtime !== "strata" && localDeleting.runtime !== "maya-s" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="text-xs">GGUF ファイル本体も削除する
               <span className="block text-[10px] text-zinc-500">
@@ -1241,6 +1249,15 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           </L>}
         </div>}
         <p className="text-[10px] leading-relaxed text-zinc-500">思考（reasoning）の深さはモデルごとに違うため、各モデルの個別設定で指定します。</p>
+      </SettingsGroup>
+      <SettingsGroup title="GPU メモリ" description="LLM ランタイム共通。次回のモデル起動から適用します">
+        <L label="VRAM マージン（GiB）">
+          <input aria-label="VRAM マージン（GiB）" type="number" min="0" max="256" step="0.25"
+            value={policy.vram_margin_gib ?? 3} className={input}
+            onChange={(e) => setPolicyCfg({ ...policy, vram_margin_gib: Number(e.target.value) })} />
+        </L>
+        <p className="text-[10px] leading-relaxed text-zinc-500">デスクトップや他の GPU 処理のために空ける目安です。RAM の余裕とは別です。Strata・Maya・Radiance・llama.cpp の起動設定へ自動適用し、モデル個別にもっと大きな予約があればそちらを使います。llama.cpp は GPU 層数を自動（999）にする必要があります。実際の空き容量を保証するものではありません。</p>
+        <p className="text-[10px] leading-relaxed text-zinc-500">Ollama は外部サービス側の設定が必要です。OLLAMA_GPU_OVERHEAD={Math.ceil((policy.vram_margin_gib ?? 3) * 1024) * 1024 * 1024}（バイト）をサービスの環境変数に設定し、再起動してください。</p>
       </SettingsGroup>
       <CompactionSettingsGroup policy={policy} windows={runtimeEnv.compaction_windows ?? []}
         onChange={(compaction) => setPolicyCfg({ ...policy, compaction })} />

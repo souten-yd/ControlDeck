@@ -39,9 +39,9 @@ async def put_runtime_policy(
             merged[nested] = {**current[nested], **body[nested]}
     try:
         policy = runtime_policy.RuntimePolicy.model_validate(merged)
-        preference_only = policy.model_dump(exclude={"preferred_models"}) == {
-            k: v for k, v in current.items() if k != "preferred_models"}
-        if not preference_only:
+        deferred_only = policy.model_dump(exclude={"preferred_models", "vram_margin_gib"}) == {
+            k: v for k, v in current.items() if k not in {"preferred_models", "vram_margin_gib"}}
+        if not deferred_only:
             policy = runtime_policy.normalize_gpu_profile(policy)
         changed_preferences = {key: alias for key, alias in policy.preferred_models.items()
                                if alias and alias != current.get("preferred_models", {}).get(key)}
@@ -51,14 +51,21 @@ async def put_runtime_policy(
                 if not any(i["runtime"] == runtime and i["alias"] == alias and i["ready"] for i in choices):
                     raise ValueError(f"{runtime} の起動可能な登録モデルを選択してください: {alias}")
         from app.models_mgmt import amd_gpu
-        # A preference-only save must not stop models or rewrite the GPU profile.
-        if not preference_only:
+        # Preference and margin changes take effect on the next start without interrupting inference.
+        if not deferred_only:
             amd_gpu.apply_profile(policy.amd_gpu, force=True)
             await runtime_policy.apply_selection(policy)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+    if "vram_margin_gib" in body:
+        import math
+        from app.models_mgmt import llama
+        try:
+            await asyncio.to_thread(llama.sync_vram_margin, math.ceil(policy.vram_margin_gib * 1024))
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     runtime_policy.save_policy(policy)
     if current.get("preferred_models", {}).get("llama.cpp") != policy.preferred_models.get("llama.cpp"):
         from app.models_mgmt import llama
@@ -74,6 +81,7 @@ async def put_runtime_policy(
                                             "backend": policy.selected_backend,
                                             "coexistence": policy.coexistence,
                                             "preferred_models": policy.preferred_models,
+                                            "vram_margin_gib": policy.vram_margin_gib,
                                             "gpu_profile": policy.amd_gpu.profile if policy.amd_gpu.enabled else "disabled"})
     return await runtime_policy.environment()
 

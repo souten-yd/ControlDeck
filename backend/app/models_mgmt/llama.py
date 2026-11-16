@@ -1362,7 +1362,7 @@ async def restore_prompt_state(alias: str) -> int:
     return restored
 
 
-def _unit_content(alias: str | None = None) -> str:
+def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) -> str:
     from app.applications.systemd import _escape_exec_arg
 
     inst = get_instance(alias)
@@ -1394,6 +1394,17 @@ def _unit_content(alias: str | None = None) -> str:
         "--repeat-penalty", str(inst.get("repeat_penalty", 1.0)),
         "--seed", str(inst.get("seed", -1)),
     ]
+    from app.models_mgmt.runtime_policy import vram_margin_mib
+
+    margin = vram_margin_mib() if margin_mib is None else margin_mib
+    if margin and int(inst.get("n_gpu_layers", 999)) != 0:
+        if is_installed() and "--fit-target" not in _help_text_sync():
+            raise RuntimeError("VRAMマージンの自動適用には --fit-target 対応の llama.cpp が必要です。ランタイムを更新してください")
+        if int(inst.get("n_gpu_layers", 999)) not in (999, -1):
+            raise RuntimeError("VRAMマージンの自動適用にはGPU層数を自動（999）にしてください。固定層数を使う場合は共通VRAMマージンを0にしてください")
+        if int(inst.get("n_gpu_layers", 999)) in (999, -1):
+            args[args.index("--n-gpu-layers") + 1] = "auto"
+        args += ["--fit", "on", "--fit-target", str(margin)]
     cache_ram = int(inst.get("cache_ram_mib") or 0)
     if cache_ram > 0:
         args += ["--cache-ram", str(cache_ram)]
@@ -1535,6 +1546,19 @@ def _log_tail(alias: str, max_chars: int = 300) -> str:
     error_lines = [ln for ln in lines[-40:] if re.search(r"error|failed|abort", ln, re.I)]
     tail = error_lines[-2:] if error_lines else lines[-2:]
     return " / ".join(tail)[-max_chars:]
+
+
+def sync_vram_margin(margin_mib: int) -> None:
+    """Refresh persisted boot units without restarting or changing enablement."""
+    from app.applications import systemd as sd
+
+    if not is_installed():
+        return
+    # Validate every unit before writing any, including fixed-layer incompatibility.
+    units = [(unit_name(str(item["alias"])), _unit_content(str(item["alias"]), margin_mib=margin_mib))
+             for item in list_instances() if item.get("model_path")]
+    for name, content in units:
+        sd.write_unit(name, content)
 
 
 def start_instance(alias: str | None = None) -> tuple[bool, str]:
