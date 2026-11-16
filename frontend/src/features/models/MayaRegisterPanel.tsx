@@ -1,6 +1,6 @@
-/** Maya（Project Maya）のモデルを、手元にあるファイルから登録する。
+/** Maya（Project Maya）のモデルを登録する。手元のファイルから、または「ダウンロードして登録」で。
  *
- * ここではダウンロードしない。足りないファイルは、取得するコマンドを見せるだけ。
+ * ダウンロードは利用者が大きさと保存先を確かめて押したときだけ行う（Maya の一覧の版に固定）。
  * 最初のモデル（GLM-5.3-Flash · Maya-S、alias maya-s）は従来どおり MayaSDetailSheet で扱う。 */
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +11,7 @@ import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
 import { CopyText, PresetOrCustom, SettingsGroup, SheetActions, primaryButton, secondaryButton } from "./formControls";
 
-export interface MayaQuantFile { name: string; path: string; size: number | null; present: boolean; required: boolean; what: string }
+export interface MayaQuantFile { name: string; path: string; size: number | null; present: boolean; required: boolean; what: string; sha256?: string }
 export interface MayaQuant {
   family: "glm" | "deepseek" | "minimax";
   setup_id: string;
@@ -30,6 +30,12 @@ export interface MayaQuant {
   blockers: string[];
   error?: string;
   files?: MayaQuantFile[];
+  /** 「ダウンロードして登録」の見積もり（フォルダを選んだとき）。 */
+  download_root?: string;
+  download_gb?: number;
+  free_gb?: number;
+  download_files?: string[];
+  can_download?: boolean;
 }
 export interface MayaCatalog { folder: string; memory: { ram_gb: number; vram_gb: number }; quants: MayaQuant[] }
 
@@ -86,6 +92,25 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     rows: quants.filter((q) => q.family === family),
   })).filter((g) => g.rows.length), [quants]);
 
+  const [confirmDownload, setConfirmDownload] = useState(false);
+  const download = async () => {
+    if (!pick) return;
+    setConfirmDownload(false);
+    setSaving(true);
+    try {
+      const job = await api<{ job_id: string; alias: string }>("/features/maya-s/models/download-jobs", {
+        method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0 },
+      });
+      await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
+      show(`${mayaModelName(pick.model, pick.tier)} のダウンロードと登録を始めました（${job.alias}）。ジョブ一覧で進捗を確認できます`);
+      onDone();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "ダウンロードを始められませんでした", "error");
+    } finally { setSaving(false); }
+  };
+  const canDownload = Boolean(pick && !pick.ready && !pick.registered && pick.can_download && (pick.download_files ?? []).length
+    && !pick.blockers.length);
+
   const register = async (start: boolean) => {
     if (!pick) return;
     setSaving(true);
@@ -103,8 +128,8 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
 
   const field = "mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   return <div className="space-y-3">
-    <p className="text-xs text-zinc-500">手元にある Maya の量子化ファイルを登録します。ここではダウンロードしません。足りないファイルは取得のコマンドを出します。</p>
-    <SettingsGroup title="フォルダ" description="hf download の --local-dir に指定したフォルダ">
+    <p className="text-xs text-zinc-500">保存先のフォルダを選び、量子化を選びます。ファイルがそろっていればそのまま登録、足りなければ「ダウンロードして登録」で取得します。</p>
+    <SettingsGroup title="フォルダ" description="モデルのファイルがある（または保存する）フォルダ">
       <div className="flex gap-2">
         <input aria-label="Mayaモデルのフォルダ" value={typed} onChange={(e) => setTyped(e.target.value)}
           placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya" className={`${field} min-w-0 flex-1 font-mono text-xs`} />
@@ -159,10 +184,16 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
           </li>)}
         </ul>
       </div>}
-      {pick.hf && !pick.ready && <div className="space-y-1 text-[11px]">
-        <p className="text-xs font-medium">取得のコマンド（ターミナルで実行）</p>
-        <div className="overflow-x-auto rounded-lg bg-zinc-100 p-2 dark:bg-zinc-800"><CopyText text={pick.hf} /></div>
+      {data?.folder && !pick.ready && !pick.registered && (pick.download_files ?? []).length > 0 && <div className="space-y-1 rounded-xl bg-zinc-50 p-3 text-xs dark:bg-zinc-800/60">
+        <p className="font-medium">ダウンロードして登録</p>
+        <p className="num text-[11px] text-zinc-600 dark:text-zinc-300">約 {pick.download_gb} GB · 空き {pick.free_gb} GB</p>
+        <p className="break-all font-mono text-[11px] text-zinc-500">保存先: {pick.download_root}</p>
+        {!pick.can_download && <p className="text-[11px] text-amber-700 dark:text-amber-400">空き容量が足りません。別のフォルダを選んでください。</p>}
       </div>}
+      {pick.hf && !pick.ready && <details className="text-[11px]">
+        <summary className="min-h-11 cursor-pointer py-2 text-xs text-zinc-500">自分で取得する場合のコマンド</summary>
+        <div className="overflow-x-auto rounded-lg bg-zinc-100 p-2 dark:bg-zinc-800"><CopyText text={pick.hf} /></div>
+      </details>}
       <label className="block text-xs">コンテキスト長（トークン）
         <div className="mt-1"><PresetOrCustom ariaLabel="Mayaコンテキスト" value={context} presets={CTX} placeholder="65536"
           onChange={(v) => setContext(Math.min(1048576, Math.max(1024, Number(v ?? 65536))))} /></div>
@@ -170,20 +201,49 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
       </label>
     </SettingsGroup>}
 
-    <SheetActions note={pick && !pick.ready ? "ファイルがそろうと登録できます" : "登録には数分〜十数分かかります（エンジンの準備を含む）"}>
-      <button disabled={!pick?.ready || saving} onClick={() => void register(true)} className={secondaryButton}>登録して起動</button>
-      <button disabled={!pick?.ready || saving} onClick={() => void register(false)} className={primaryButton}>{saving ? "開始中…" : "登録"}</button>
+    <SheetActions note={pick && !pick.ready ? (canDownload ? "足りないファイルをダウンロードしてから登録します" : "ファイルがそろうと登録できます")
+      : "登録には数分〜十数分かかります（エンジンの準備を含む）"}>
+      {canDownload ? (
+        <button disabled={saving} onClick={() => setConfirmDownload(true)} className={primaryButton}>ダウンロードして登録</button>
+      ) : <>
+        <button disabled={!pick?.ready || saving} onClick={() => void register(true)} className={secondaryButton}>登録して起動</button>
+        <button disabled={!pick?.ready || saving} onClick={() => void register(false)} className={primaryButton}>{saving ? "開始中…" : "登録"}</button>
+      </>}
     </SheetActions>
+    {confirmDownload && pick && <ConfirmDialog title={`${mayaModelName(pick.model, pick.tier)} をダウンロード`} danger={false}
+      message={`約 ${pick.download_gb} GB を ${pick.download_root} にダウンロードし、検証してから登録します（空き ${pick.free_gb} GB）。数時間かかることがあります。途中で止まっても、もう一度押すと続きから取ります。`}
+      confirmLabel="ダウンロードを開始" onConfirm={() => void download()} onClose={() => setConfirmDownload(false)}>
+      <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto">
+        {(pick.download_files ?? []).map((name) => <li key={name} className="truncate font-mono text-[11px] text-zinc-500" title={name}>{name}</li>)}
+      </ul>
+    </ConfirmDialog>}
     {picker && <FilePicker mode="dir" title="Maya のモデルのフォルダを選択" initialPath={folder || "/data1tb/LLM"}
       onSelect={(path) => { setTyped(path); setFolder(path); setPicker(false); }} onClose={() => setPicker(false)} />}
   </div>;
 }
 
 /** 追加で登録した Maya のモデルの個別画面（情報と削除）。 */
-export function MayaModelSheet({ alias, title, onClose }: { alias: string; title: string; onClose: () => void }) {
+export function MayaModelSheet({ alias, title, update, onClose }: {
+  alias: string; title: string; update?: { gb: number; setupId: string; folder: string }; onClose: () => void;
+}) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const [confirm, setConfirm] = useState(false);
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
+  const startUpdate = async () => {
+    if (!update) return;
+    setConfirmUpdate(false);
+    try {
+      await api("/features/maya-s/models/download-jobs", {
+        method: "POST", json: { setup_id: update.setupId, folder: update.folder, replace: alias },
+      });
+      await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
+      show(`${title} の新しい版のダウンロードを始めました。終わると準備し直します（古いファイルは残します）`);
+      onClose();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "更新を始められませんでした", "error");
+    }
+  };
   const remove = async () => {
     try {
       await api(`/features/maya-s/models/${encodeURIComponent(alias)}`, { method: "DELETE" });
@@ -200,10 +260,17 @@ export function MayaModelSheet({ alias, title, onClose }: { alias: string; title
         <p className="text-xs">ゲートウェイでの名前: <CopyText text={alias} /></p>
         <p className="text-[11px] text-zinc-500">起動・停止は一覧の「ロード」で行います。Maya のモデルは一度に 1 つだけ動きます（ほかの Maya のモデルは先に止まります）。</p>
       </SettingsGroup>
+      {update && <SettingsGroup title="新しい版あり" description="Maya の更新で、このモデルのファイルに新しい版が出ました">
+        <p className="num text-xs">ダウンロード 約 {update.gb} GB → <span className="break-all font-mono text-[11px]">{update.folder}</span></p>
+        <button onClick={() => setConfirmUpdate(true)} className={primaryButton}>更新（ダウンロード {update.gb} GB）</button>
+      </SettingsGroup>}
       <SheetActions>
         <button onClick={() => setConfirm(true)} className={`${secondaryButton} text-red-600`}>登録を削除</button>
       </SheetActions>
     </div>
+    {confirmUpdate && update && <ConfirmDialog title={`${title} を更新`} danger={false}
+      message={`新しい版のファイル 約 ${update.gb} GB を ${update.folder} にダウンロードし、検証して準備し直します。設定（調整値・思考）はそのまま、古いファイルは残します。`}
+      confirmLabel="ダウンロードを開始" onConfirm={() => void startUpdate()} onClose={() => setConfirmUpdate(false)} />}
     {confirm && <ConfirmDialog title="登録を削除" message={`${title}（${alias}）の登録を削除します。ダウンロードしたモデルのファイルは残します。`}
       confirmLabel="削除" onConfirm={() => { setConfirm(false); void remove(); }} onClose={() => setConfirm(false)} />}
   </BottomSheet>;

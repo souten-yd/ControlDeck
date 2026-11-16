@@ -368,12 +368,59 @@ async def maya_register(request: Request, body: MayaRegisterBody,
 
 
 @router.delete("/maya-s/models/{alias}")
-def maya_unregister(alias: str, request: Request,
+def maya_unregister(alias: str, request: Request, delete_files: bool = False,
                     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
     from app.models_mgmt import maya_s
     try:
-        state = maya_s.unregister(alias)
+        state = maya_s.unregister(alias, delete_files=delete_files)
     except maya_s.MayaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    audit.record(db, "maya-s.unregister", user=user, resource_type="feature", resource_id=alias, request=request)
+    audit.record(db, "maya-s.unregister", user=user, resource_type="feature", resource_id=alias, request=request,
+                 metadata={"delete_files": delete_files, "deleted_files": state.get("deleted_files", 0)})
     return state
+
+
+class MayaDownloadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    setup_id: str = Field(pattern=r"^[a-z0-9.-]{3,60}$")
+    folder: str = Field(min_length=1, max_length=4096)
+    context: int = Field(default=65536, ge=1024, le=1048576)
+    gpu_index: int = Field(default=0, ge=0, le=15)
+    # 登録済みのモデルを新しい版のファイルで準備し直す（その alias）。空なら新しく登録する。
+    replace: str = Field(default="", max_length=64)
+
+
+@router.post("/maya-s/models/download-jobs", status_code=201)
+async def maya_download(request: Request, body: MayaDownloadBody,
+                        user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    """利用者が「ダウンロードして登録」（または「更新」）を押したときだけ呼ばれる。"""
+    from app.models_mgmt import maya_s
+    if not maya_s.installed():
+        raise HTTPException(status_code=422, detail="先にMayaを導入してください")
+    try:
+        item = next((q for q in (await asyncio.to_thread(maya_s.catalog, body.folder))["quants"]
+                     if q["setup_id"] == body.setup_id), None)
+    except (maya_s.MayaError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None or (item["registered"] and not body.replace):
+        raise HTTPException(status_code=422, detail="この量子化はダウンロードできません（登録済み）")
+    if body.replace and item["registered"] != body.replace:
+        raise HTTPException(status_code=422, detail="更新するモデルが一致しません")
+    if item.get("download_files") and not item.get("can_download"):
+        raise HTTPException(status_code=422, detail=f"空き容量が足りません（必要 約{item.get('download_gb')}GB・"
+                                                    f"空き {item.get('free_gb')}GB）")
+
+    async def run(job: jobs.Job) -> dict:
+        state = await maya_s.download_and_register_stream(
+            job, setup_id=body.setup_id, folder=body.folder, context=body.context,
+            gpu_index=body.gpu_index, replace=body.replace)
+        job.set_progress("ダウンロードして登録しました", 3, 3)
+        return state
+
+    title = f"Mayaダウンロード {maya_s.display_name(item)}"
+    job = jobs.create("model.maya-s.download", title, run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "maya-s.download", user=user, resource_type="feature", resource_id=item["alias"],
+                 request=request, metadata={"job_id": job.id, "setup_id": body.setup_id,
+                                            "download_gb": item.get("download_gb"), "root": item.get("download_root")})
+    return {"job_id": job.id, "alias": item["alias"]}

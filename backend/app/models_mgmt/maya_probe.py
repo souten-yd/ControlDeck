@@ -41,9 +41,11 @@ def _size_ok(path: Path, size: int | None) -> bool:
         return False
 
 
-def _files(base: Path, rows: dict, *, required: bool = True, what: str = "") -> list[dict]:
+def _files(base: Path, rows: dict, *, required: bool = True, what: str = "", sha: dict | None = None) -> list[dict]:
+    sha = sha or {}
     return [{"path": str(base / name), "name": name, "size": size, "present": _size_ok(base / name, size),
-             "required": required, "what": what} for name, size in rows.items()]
+             "required": required, "what": what, "sha256": sha.get(name) or sha.get(Path(name).name) or ""}
+            for name, size in rows.items()]
 
 
 def _hf(repo: str, revision: str, includes: list[str], local_dir: str) -> str:
@@ -61,11 +63,15 @@ def glm_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> 
     row = {"family": "glm", "setup_id": setup_id, "tier": tier, "quant": key,
            "size_gb": round(float(m.get("download_gb") or 0), 1), "memory_gb": round(float(m.get("download_gb") or 0)),
            "repo": m.get("repo", ""), "folder_name": "", "subfolder": sub}
+    row["revision"] = str(m.get("revision") or "main")
     row["hf"] = _hf(row["repo"], str(m.get("revision") or ""), [f"{sub}/*"], "<フォルダ>")
     if folder is not None:
         d = folder if folder.name == sub else folder / sub
         row["model_dir"] = str(d)
-        row["files"] = _files(d, {n: sizes.get(n) for n in names}, what="model")
+        # ダウンロードの --local-dir（リポジトリの中の相対パスがこの下にそのまま並ぶ）。
+        row["repo_root"] = str(d.parent)
+        sha = m.get("sha256") if isinstance(m.get("sha256"), dict) else {}
+        row["files"] = _files(d, {n: sizes.get(n) for n in names}, what="model", sha=sha)
         vision = m.get("vision") or {}
         if vision:
             vd = d / vision.get("folder", "vision")
@@ -88,7 +94,12 @@ def ds4_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> 
     tables = {Path(k).name: v[0] for k, v in tier_files.items() if Path(k).name in table_names}
     includes = [f"{sub}/*"] + ([f"dspark/{Path(own['json']).stem}*"] if own else [])
     size = sum((m.get("files") or {}).values()) + sum(tables.values()) + sum((own or {}).get("files", {}).values())
-    row = {"family": "deepseek", "setup_id": setup_id, "tier": tier, "quant": sub,
+    raw = ((my.get("quants") or {}).get(sub) or {})
+    sha = {Path(k).name: v[1] for k, v in (raw.get("files") or {}).items() if isinstance(v, list) and len(v) > 1}
+    sha.update({Path(k).name: v[1] for k, v in tier_files.items() if isinstance(v, list) and len(v) > 1})
+    sha.update({Path(k).name: v[1] for k, v in ((raw.get("drafter") or {}).get("files") or {}).items()
+                if isinstance(v, list) and len(v) > 1})
+    row = {"family": "deepseek", "setup_id": setup_id, "tier": tier, "quant": sub, "revision": my.get("revision", ""),
            "size_gb": round(size / 1e9, 1) if size else 0.0,
            "memory_gb": round(float(_quiet(maya.ds4_memory_gb, key) or 0)),
            "published": bool(m), "repo": my.get("repo", ""), "folder_name": repo_folder, "subfolder": sub,
@@ -97,10 +108,11 @@ def ds4_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> 
         d = folder / sub
         row["model_dir"] = str(d)
         row["models_dir"] = str(folder.parent)
-        row["files"] = _files(d, dict(m.get("files") or {}), what="model")
-        row["files"] += _files(d, tables, what="tables")
+        row["repo_root"] = str(folder)
+        row["files"] = _files(d, dict(m.get("files") or {}), what="model", sha=sha)
+        row["files"] += _files(d, tables, what="tables", sha=sha)
         if own:
-            row["files"] += _files(folder / "dspark", dict(own["files"]), required=False, what="drafter")
+            row["files"] += _files(folder / "dspark", dict(own["files"]), required=False, what="drafter", sha=sha)
         row["hf"] = _hf(my.get("repo", ""), my.get("revision", ""), includes, str(folder))
         if folder.name != repo_folder:
             row["folder_error"] = f"DeepSeek はフォルダ名を {repo_folder} にしてください（Maya の n-gram 表をそこから読みます）"
@@ -112,16 +124,19 @@ def mm3_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> 
     name = maya.MM3_QUANTS[key]
     q = (man.get("quants") or {}).get(name) or {}
     files = {k: v[0] for k, v in (q.get("files") or {}).items()}
+    sha = {Path(k).name: v[1] for k, v in (q.get("files") or {}).items() if isinstance(v, list) and len(v) > 1}
     sub = Path(next(iter(files))).parent.name if files else tier
     row = {"family": "minimax", "setup_id": setup_id, "tier": tier, "quant": name,
            "size_gb": round(sum(files.values()) / 1e9, 1), "memory_gb": int(q.get("memory_gb") or 0),
            "published": bool(files), "repo": man.get("repo", ""), "folder_name": "", "subfolder": sub,
+           "revision": man.get("revision", ""),
            "hf": _hf(man.get("repo", ""), man.get("revision", ""), [f"{sub}/*"], "<フォルダ>")}
     if folder is not None:
         d = folder / sub
         row["model_dir"] = str(d)
         row["models_dir"] = str(folder.parent)
-        row["files"] = _files(d, {Path(k).name: v for k, v in files.items()}, what="model")
+        row["repo_root"] = str(folder)
+        row["files"] = _files(d, {Path(k).name: v for k, v in files.items()}, what="model", sha=sha)
         row["hf"] = _hf(man.get("repo", ""), man.get("revision", ""), [f"{sub}/*"], str(folder))
     return row
 

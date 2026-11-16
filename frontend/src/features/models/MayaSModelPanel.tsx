@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
-import { BottomSheet, ConfirmDialog } from "../../components/ui";
+import { BottomSheet } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
 import { CTX_PRESETS, CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
@@ -93,97 +93,6 @@ function useMayaJobs() {
   return { active, refresh: () => qc.invalidateQueries({ queryKey: ["maya-s-jobs"] }) };
 }
 
-/** 未準備のときだけ一覧の上に出す。ダウンロードか既存GGUFかを選ぶ。 */
-export function MayaSSetupCard({ status }: { status: MayaStatus }) {
-  const show = useToasts((s) => s.show);
-  const { active, refresh } = useMayaJobs();
-  const [confirming, setConfirming] = useState(false);
-  const [gpu, setGpu] = useState(status.settings?.gpu_index ?? 0);
-  const [existingOpen, setExistingOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  // ダウンロードの保存先。空なら既定の置き場（status.models_dir）。
-  const [downloadDir, setDownloadDir] = useState("");
-  const [dirPicker, setDirPicker] = useState(false);
-  const working = busy || active.length > 0;
-
-  const download = async () => {
-    setConfirming(false);
-    setBusy(true);
-    try {
-      await api("/features/maya-s/model/prepare-jobs", { method: "POST", json: { gpu_index: gpu, download_dir: downloadDir } });
-      show("Maya-S（約96.5GB）のダウンロードとHIP準備を開始しました。完了後に「ロード」で起動できます");
-      await refresh();
-    } catch (e) {
-      show(e instanceof Error ? e.message : "Maya-Sのダウンロードを開始できませんでした", "error");
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div className="mb-3 rounded-2xl border border-dashed border-zinc-300 p-4 dark:border-zinc-700">
-      <p className="text-sm font-semibold">Maya · GLM-5.3-Flash · Maya-S</p>
-      <p className="mt-1 text-xs text-zinc-500">
-        モデルが未準備です。約96.5GBをダウンロードするか、手元にある Maya-S の GGUF を読み込んでください。
-        どちらもモデルは起動しません。準備後に一覧の「ロード」で起動します。
-      </p>
-      {!status.built && (
-        <p className="mt-1 text-[11px] text-zinc-400">HIPエンジンは未ビルドです。準備の途中でビルドされます（設定 → オプション機能から先にビルドもできます）。</p>
-      )}
-      {active.length > 0 ? (
-        <p className="mt-3 text-xs text-accent-700 dark:text-accent-400" role="status">
-          準備中: {active[0].progress?.status || "処理中"}（ブラウザを閉じても継続します）
-        </p>
-      ) : (
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" disabled={working} onClick={() => setConfirming(true)}
-            className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-            モデルをダウンロード（約96.5GB）
-          </button>
-          <button type="button" disabled={working} onClick={() => setExistingOpen(true)}
-            className="min-h-11 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800">
-            既存のモデルを読み込む
-          </button>
-        </div>
-      )}
-      {confirming && (
-        <ConfirmDialog title="Maya-Sをダウンロードしますか？" danger={false}
-          message="GLM-5.3-Flash Maya-Sのモデル約96.5GBをSSDにダウンロードして検証し、HIPエンジンを準備します。110GB以上の空き容量が必要で、数時間かかることがあります。モデルは起動しません。"
-          confirmLabel="ダウンロードを開始" busy={busy}
-          disabled={!Number.isInteger(gpu) || gpu < 0 || gpu > 15}
-          onConfirm={() => void download()} onClose={() => setConfirming(false)}>
-          <label className="mt-3 flex items-center justify-between gap-2 text-xs">ROCm GPU番号
-            <input aria-label="Maya-S GPU番号" type="number" min={0} max={15} value={gpu}
-              onChange={(e) => setGpu(Number(e.target.value))}
-              className="w-20 rounded-lg border border-zinc-300 bg-transparent px-2 py-2 dark:border-zinc-600" />
-          </label>
-          <div className="mt-3 text-xs">
-            <p>保存先</p>
-            <div className="mt-1 flex items-center gap-2">
-              <p className="min-w-0 flex-1 break-all rounded-lg bg-zinc-100 px-2 py-2 font-mono text-[11px] dark:bg-zinc-800">
-                {downloadDir || status.models_dir}{downloadDir ? "" : "（既定）"}
-              </p>
-              <button type="button" onClick={() => setDirPicker(true)}
-                className="min-h-11 shrink-0 rounded-xl border border-zinc-300 px-3 text-xs dark:border-zinc-600">変更</button>
-            </div>
-            {downloadDir && (
-              <button type="button" onClick={() => setDownloadDir("")} className="mt-1 min-h-11 text-[11px] text-accent-600 underline dark:text-accent-400">既定に戻す</button>
-            )}
-            <p className="mt-1 text-[11px] text-zinc-500">選んだフォルダに約110GB以上の空きが必要です。NVMe の SSD を選んでください。</p>
-          </div>
-        </ConfirmDialog>
-      )}
-      {dirPicker && (
-        <FilePicker mode="dir" title="Maya のモデルの保存先" initialPath={downloadDir || "/data1tb/LLM"}
-          onSelect={(path) => { setDownloadDir(path); setDirPicker(false); }}
-          onClose={() => setDirPicker(false)} />
-      )}
-      {existingOpen && (
-        <BottomSheet title="Maya · 既存のモデルを読み込む" onClose={() => setExistingOpen(false)} wide>
-          <MayaSettingsForm status={status} mode="existing" onDone={() => { setExistingOpen(false); void refresh(); }} />
-        </BottomSheet>
-      )}
-    </div>
-  );
-}
 
 /** 準備済みモデルの個別設定。一覧の行から開く。 */
 export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
