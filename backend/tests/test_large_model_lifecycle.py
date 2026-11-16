@@ -78,7 +78,7 @@ def _maya_prepared(monkeypatch, *, on_demand=True):
         return {"ok": healthy["ok"], "status_code": None}
     monkeypatch.setattr(maya_s, "health", health)
     monkeypatch.setattr(maya_s, "_config", lambda: object())
-    monkeypatch.setattr(maya_s, "_running", lambda: False)
+    monkeypatch.setattr(maya_s, "_running", lambda *_a: False)
     monkeypatch.setattr(maya_s, "get_settings", lambda: {"on_demand_start": on_demand})
     async def released(runtime):
         released.calls.append(runtime)
@@ -90,7 +90,7 @@ def _maya_prepared(monkeypatch, *, on_demand=True):
         healthy["ok"] = True
         return True, ""
     monkeypatch.setattr(maya_s, "start_instance", start)
-    async def wait_ready(*, timeout_seconds=900):
+    async def wait_ready(*, timeout_seconds=900, alias="maya-s"):
         return healthy["ok"]
     monkeypatch.setattr(maya_s, "wait_ready", wait_ready)
     return started, released.calls

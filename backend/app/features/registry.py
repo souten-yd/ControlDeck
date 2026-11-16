@@ -122,7 +122,7 @@ FEATURES: dict[str, dict] = {
         "summary": "GGUFモデルを動かすローカルLLMランタイム。ROCmビルドはROCm 10系へ統一",
     },
     "maya-s": {
-        "name": "Project Maya-S（GLM-5.3-Flash / R9700）",
+        "name": "Project Maya（R9700）",
         "kind": "gpu-runtime",
         "executable": "maya.sh",
         "route_gated": False,

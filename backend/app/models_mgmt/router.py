@@ -1296,6 +1296,8 @@ class StrataModelBody(BaseModel):
     kv: Literal["int8", "q4_0", "k8v4", "fp16"] = "int8"
     vision: Literal["on", "off", "gpu", "cpu"] = "on"
     parallel: int = Field(default=1, ge=1, le=8)
+    kv_resident: int | None = Field(default=None, ge=4096, le=1048576, multiple_of=1024)
+    ram_keep_gib: float | None = Field(default=None, ge=0, le=256, allow_inf_nan=False)
     drafting: Literal["auto", "mtp", "dflash2", "off"] = "auto"
     model_path: str = Field(default="", max_length=4096)
     model_config = ConfigDict(extra="forbid")
@@ -1319,6 +1321,25 @@ def strata_instances(user: User = Depends(require_permission("workflows.run"))):
     return {"runtime": strata.runtime_status(), "instances": strata_gateway.list_instances()}
 
 
+@router.post("/strata/memory-estimate")
+def strata_memory_estimate(body: StrataModelBody, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import strata_gateway, strata_memory
+    if not strata_gateway.valid_context(body.context) or body.model not in strata_gateway._FAMILIES[body.family]:
+        raise HTTPException(status_code=422, detail="モデルまたはコンテキストが不正です")
+    cfg = body.model_dump()
+    return strata_memory.estimate(cfg, strata_memory.hardware(), strata_memory.model_info(cfg))
+
+
+@router.get("/strata/instances/{alias}/memory")
+def strata_memory_allocations(alias: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import strata_gateway, strata_memory
+    try:
+        cfg = strata_gateway.get_instance(alias)
+        return strata_memory.observed(alias, cfg)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Strataモデルが見つかりません") from exc
+
+
 @router.post("/strata/instances", status_code=201)
 def strata_create_instance(
     body: StrataModelBody, request: Request,
@@ -1333,6 +1354,7 @@ def strata_create_instance(
             kv=body.kv, vision=body.vision, parallel=body.parallel, drafting=body.drafting,
             idle_exclude=body.idle_exclude, auto_start=body.auto_start,
             reasoning_effort=body.reasoning_effort, thinking_budget=body.thinking_budget,
+            kv_resident=body.kv_resident, ram_keep_gib=body.ram_keep_gib,
         )
     except strata_gateway.StrataGatewayError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1350,7 +1372,10 @@ def strata_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     try:
-        result = strata_gateway.save_instance(**body.model_dump(), replace=True)
+        payload = body.model_dump()
+        for key in {"kv_resident", "ram_keep_gib"} - body.model_fields_set:
+            payload.pop(key)
+        result = strata_gateway.save_instance(**payload, replace=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Strataモデル設定がありません") from exc
     except strata_gateway.StrataGatewayError as exc:

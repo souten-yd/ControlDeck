@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 from functools import wraps
 import json
+import math
 import os
 import re
 import subprocess
@@ -57,6 +58,10 @@ _SETTING_VALUE = re.compile(r"^[A-Za-z0-9_.:+-]{1,64}$")
 def engine_settings(cfg: dict) -> dict[str, str]:
     """起動時に --set で渡す設定。形の合わないものは渡さない（引数の注入を防ぐ）。"""
     merged = {**DEFAULT_ENGINE_SETTINGS, **{str(k): str(v) for k, v in (cfg.get("engine_settings") or {}).items()}}
+    if cfg.get("kv_resident") is not None:
+        merged["kv-resident"] = str(int(cfg["kv_resident"]))
+    if cfg.get("ram_keep_gib") is not None:
+        merged["STRATA_RAM_KEEP_GIB"] = format(float(cfg["ram_keep_gib"]), "g")
     return {k: v for k, v in merged.items() if _SETTING_KEY.fullmatch(k) and _SETTING_VALUE.fullmatch(v)}
 
 
@@ -65,6 +70,7 @@ def valid_context(value: str) -> bool:
     return bool(match) and _CONTEXT_MIN_K <= int(match[1]) <= _CONTEXT_MAX_K
 _ALIAS = re.compile(r"^[a-z][a-z0-9-]{0,47}$")
 _MIN_PORT, _MAX_PORT = 8081, 65535
+_UNSET = object()
 
 
 _operation_lock = threading.RLock()
@@ -267,6 +273,7 @@ def save_instance(alias: str, *, family: str, model: str,
                   kv: str = "int8", vision: str = "on", parallel: int = 1,
                   drafting: str = "auto", idle_exclude: bool = False,
                   auto_start: bool = False, reasoning_effort: str = "", thinking_budget: int = 0,
+                  kv_resident: Any = _UNSET, ram_keep_gib: Any = _UNSET,
                   replace: bool = False) -> dict:
     if not strata.installed():
         raise StrataGatewayError("Strataの導入が必要です")
@@ -284,13 +291,41 @@ def save_instance(alias: str, *, family: str, model: str,
     if reasoning_effort not in REASONING_EFFORTS or not 0 <= int(thinking_budget) <= 262144:
         raise StrataGatewayError("思考の深さまたは思考の上限が不正です")
     items = _read()
+    previous_config = items.get(alias, {}) if replace else {}
+    kv_supplied, ram_supplied = kv_resident is not _UNSET, ram_keep_gib is not _UNSET
+    if not kv_supplied:
+        kv_resident = previous_config.get("kv_resident")
+    if not ram_supplied:
+        ram_keep_gib = previous_config.get("ram_keep_gib")
+    if kv_resident is not None and (not isinstance(kv_resident, int) or not 4096 <= kv_resident <= 1048576
+                                    or kv_resident % 1024):
+        raise StrataGatewayError("KVのVRAM保持長は4K〜1024Kの範囲で、1024トークン単位にしてください")
+    if ram_keep_gib is not None and (not isinstance(ram_keep_gib, (int, float)) or not math.isfinite(ram_keep_gib) or not 0 <= ram_keep_gib <= 256):
+        raise StrataGatewayError("RAM余裕は0〜256GiBにしてください")
+    if family == "deepseek41" and (kv_resident is not None or ram_keep_gib is not None):
+        raise StrataGatewayError("KVのVRAM保持長とRAM余裕の指定はQwen系モデルで利用できます")
     wanted = {"family": family, "model": model, "port": port, "context": context,
               "model_path": model_path, "kv": kv, "vision": vision, "parallel": parallel,
               "drafting": drafting, "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start),
-              "reasoning_effort": reasoning_effort, "thinking_budget": int(thinking_budget)}
+              "reasoning_effort": reasoning_effort, "thinking_budget": int(thinking_budget),
+              "kv_resident": kv_resident, "ram_keep_gib": ram_keep_gib}
     if replace and alias in items:
         current = items[alias]
         changed = {key for key, value in wanted.items() if current.get(key) != value}
+        legacy = dict(current.get("engine_settings") or {})
+        desired_legacy = dict(legacy)
+        if kv_supplied:
+            desired_legacy.pop("kv-resident", None)
+        if ram_supplied:
+            for key in ("STRATA_RAM_KEEP_GIB", "ram-keep-gib"):
+                desired_legacy.pop(key, None)
+        desired_settings = engine_settings({**wanted, "engine_settings": desired_legacy})
+        current_settings = engine_settings(current)
+        for field, setting in (("kv_resident", "kv-resident"), ("ram_keep_gib", "STRATA_RAM_KEEP_GIB")):
+            if desired_settings.get(setting) == current_settings.get(setting):
+                changed.discard(field)
+            else:
+                changed.add(field)
         if changed <= set(LIFECYCLE_KEYS) | set(THINKING_KEYS):
             # Lifecycle and thinking defaults only: launch settings stay, fine while running.
             items[alias] = {**current, **{key: wanted[key] for key in (*LIFECYCLE_KEYS, *THINKING_KEYS)}}
@@ -322,6 +357,11 @@ def save_instance(alias: str, *, family: str, model: str,
     items[alias] = {**wanted, "activated": bool(same_weights and previous.get("activated"))}
     if previous and previous.get("engine_settings"):
         items[alias]["engine_settings"] = dict(previous["engine_settings"])
+        if kv_supplied:
+            items[alias]["engine_settings"].pop("kv-resident", None)
+        if ram_supplied:
+            for key in ("STRATA_RAM_KEEP_GIB", "ram-keep-gib"):
+                items[alias]["engine_settings"].pop(key, None)
     _write(items)
     return get_instance(alias)
 

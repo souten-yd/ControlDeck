@@ -274,3 +274,45 @@ def test_thinking_settings_are_strata_shared_defaults(monkeypatch, tmp_path):
     strata_gateway.save_instance("qwen", family="qwen", model="iq2_xs", port=8095,
                                  reasoning_effort="low", thinking_budget=0, replace=True)
     assert sent == ["qwen"]
+
+
+def test_memory_settings_preserve_omitted_clear_auto_and_forward(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path)
+    args = dict(family="unsloth", model="ud-iq4_xs", context="256k", port=8096, parallel=6)
+    result = strata_gateway.save_instance("memory-test", **args, kv_resident=32768, ram_keep_gib=8)
+    assert result["kv_resident"] == 32768
+    strata_gateway.save_instance("memory-test", **args, replace=True)
+    cfg = strata_gateway._read()["memory-test"]
+    assert cfg["ram_keep_gib"] == 8
+    settings = strata_gateway.engine_settings(cfg)
+    assert settings["kv-resident"] == "32768"
+    assert settings["STRATA_RAM_KEEP_GIB"] == "8"
+    strata_gateway.save_instance("memory-test", **args, replace=True, kv_resident=None, ram_keep_gib=None)
+    settings = strata_gateway.engine_settings(strata_gateway._read()["memory-test"])
+    assert "kv-resident" not in settings
+    assert "STRATA_RAM_KEEP_GIB" not in settings
+
+
+@pytest.mark.parametrize("change", [{"kv_resident": 4097}, {"kv_resident": 1024}, {"ram_keep_gib": -1}, {"ram_keep_gib": float("nan")}, {"ram_keep_gib": 257}])
+def test_invalid_memory_settings_are_rejected(monkeypatch, tmp_path, change):
+    _managed(monkeypatch, tmp_path)
+    with pytest.raises(strata_gateway.StrataGatewayError):
+        strata_gateway.save_instance("memory-test", family="unsloth", model="ud-iq4_xs", port=8096, **change)
+
+
+def test_legacy_memory_values_are_not_launch_changes_when_equal(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path)
+    args = dict(family="unsloth", model="ud-iq4_xs", context="256k", port=8096, parallel=6)
+    strata_gateway.save_instance("legacy-memory", **args)
+    items = strata_gateway._read()
+    items["legacy-memory"]["engine_settings"] = {"kv-resident": "32768", "STRATA_RAM_KEEP_GIB": "8"}
+    strata_gateway._write(items)
+    monkeypatch.setattr(strata_gateway, "_running", lambda: [{"profile": "launch-cd-legacy-memory", "port": 8096, "state": "ready"}])
+    # UI hydration of a legacy override must not block live lifecycle-only edits.
+    result = strata_gateway.save_instance("legacy-memory", **args, replace=True, idle_exclude=True, kv_resident=32768, ram_keep_gib=8)
+    assert result["idle_exclude"]
+    with pytest.raises(strata_gateway.StrataGatewayError, match="停止"):
+        strata_gateway.save_instance("legacy-memory", **args, replace=True, kv_resident=None, ram_keep_gib=None)
+    monkeypatch.setattr(strata_gateway, "_running", lambda: [])
+    strata_gateway.save_instance("legacy-memory", **args, replace=True, kv_resident=None, ram_keep_gib=None)
+    assert "kv-resident" not in strata_gateway.engine_settings(strata_gateway._read()["legacy-memory"])

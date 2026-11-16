@@ -277,9 +277,9 @@ async def environment() -> dict:
     maya_state = await asyncio.to_thread(maya_s.runtime_status)
     if maya_state["installed"]:
         runtimes.append({"id": "maya-s", "runtime": "maya-s", "backend": "",
-                         "label": "Maya-S（GLM-5.3-Flash / R9700）", "available": True,
+                         "label": "Maya（R9700）", "available": True,
                          "installed": True, "selected": policy.selected_runtime == "maya-s",
-                         "running": maya_state["running"], "addon_id": "maya-s",
+                         "running": await asyncio.to_thread(maya_s.is_running), "addon_id": "maya-s",
                          "warning": "選択だけではモデルを起動しません", "experimental": True,
                          "coexist": False})
     from app.models_mgmt import radiance

@@ -177,17 +177,23 @@ async def list_models(provider_id: str) -> list[dict]:
         from app.models_mgmt import maya_s
         def maya_row(item: dict) -> dict:
             path = str(item.get("model_path") or "")
-            name, quant = model_names.from_file(path) if path else ("", "")
-            # "GLM-5.3-Flash-Maya-S-v2" + "IQ2_XXS": the Maya tier is part of the quantisation.
-            tier = name.removeprefix("GLM-5.3-Flash-") if name.startswith("GLM-5.3-Flash-") else ""
-            quant = " ".join(part for part in (tier, quant) if part)
+            if item["alias"] == maya_s.ALIAS:
+                name, quant = model_names.from_file(path) if path else ("", "")
+                # "GLM-5.3-Flash-Maya-S-v2" + "IQ2_XXS": the Maya tier is part of the quantisation.
+                tier = name.removeprefix("GLM-5.3-Flash-") if name.startswith("GLM-5.3-Flash-") else ""
+                quant = " ".join(part for part in (tier, quant) if part)
+                size = model_names.file_size(path) or 94_700_000_000
+            else:
+                quant = str(item.get("tier") or "")
+                size = int(float(item.get("size_gb") or 0) * 1e9)
+            model = str(item.get("display_name") or "GLM-5.3-Flash · Maya-S").split(" · ")[0]
             return {
-                "id": item["alias"], "name": "Project Maya-S · GLM-5.3-Flash",
-                "size_bytes": model_names.file_size(path) or 94_700_000_000, "modified_at": "",
+                "id": item["alias"], "name": f"Maya · {item.get('display_name') or model}",
+                "size_bytes": size, "modified_at": "",
                 "loaded": item["loaded"],
                 "details": {"runtime": "maya-s", "backend": "HIP",
                             "port": item["port"], "base_url": item["base_url"],
-                            "display_name": "GLM-5.3-Flash",
+                            "display_name": str(item.get("display_name") or model),
                             "quantization": quant or "Maya-S",
                             "vision_enabled": bool(item.get("vision"))}}
         return [maya_row(item) for item in await asyncio.to_thread(maya_s.list_instances)]
@@ -404,8 +410,12 @@ async def provider_health(provider_id: str) -> dict:
                 "installed": llama.is_installed(), "instances": details}
     if provider["provider"] == "maya-s" and provider["managed"]:
         from app.models_mgmt import maya_s
-        state = await maya_s.health()
-        return {"ok": bool(state["ok"]), "provider": "maya-s", "instances": [state]}
+        items = await asyncio.to_thread(maya_s.list_instances)
+        states = await asyncio.gather(*(maya_s.health(str(item["alias"])) for item in items)) if items else [
+            await maya_s.health()]
+        return {"ok": any(bool(state["ok"]) for state in states), "provider": "maya-s",
+                "instances": [{"alias": item["alias"], "port": item["port"], **state}
+                              for item, state in zip(items, states)] if items else list(states)}
     if provider["provider"] == "strata" and provider["managed"]:
         instances = await asyncio.to_thread(strata_gateway.list_instances)
         states = await asyncio.gather(*(strata_gateway.health(str(item["alias"])) for item in instances))

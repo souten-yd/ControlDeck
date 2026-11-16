@@ -21,9 +21,9 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(maya_s, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(maya_s, "available", lambda: True)
     monkeypatch.setattr(maya_s.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(maya_s, "_running", lambda: False)
+    monkeypatch.setattr(maya_s, "_running", lambda *_a: False)
     monkeypatch.setattr(maya_s, "_ensure_alias_port_available", lambda: None)
-    monkeypatch.setattr(maya_s, "_port_busy", lambda: False)
+    monkeypatch.setattr(maya_s, "_port_busy", lambda *_a: False)
     from app.models_mgmt import large_model_lifecycle, runtime_policy
     # A start selects Maya-S and records its use: keep both per test.
     monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
@@ -119,7 +119,7 @@ def test_prepare_checks_space_and_refuses_invalid_gpu(managed, monkeypatch):
 
 def test_start_requires_preparation_and_uses_user_unit(managed, monkeypatch):
     _installed(managed)
-    assert maya_s.start_instance() == (False, "明示的なMaya-Sモデル準備が必要です")
+    assert maya_s.start_instance() == (False, "明示的なMayaモデル準備が必要です")
     (maya_s.source() / "maya-glm-maya-s-hip.json").write_text("{}")
     maya_s._prepared_marker().write_text('{"model":"glm-maya-s"}')
     calls = []
@@ -138,11 +138,11 @@ def test_uninstall_rejects_running_service_and_preserves_weights(managed, monkey
     weights = maya_s.models_dir() / "Maya-S" / "model.gguf"
     weights.parent.mkdir(parents=True)
     weights.write_bytes(b"saved")
-    monkeypatch.setattr(maya_s, "_running", lambda: True)
+    monkeypatch.setattr(maya_s, "_running", lambda *_a: True)
     with pytest.raises(maya_s.MayaError, match="稼働中"):
         maya_s.uninstall()
     assert maya_s.installed() and weights.exists()
-    monkeypatch.setattr(maya_s, "_running", lambda: False)
+    monkeypatch.setattr(maya_s, "_running", lambda *_a: False)
     result = maya_s.uninstall()
     assert not result["installed"]
     assert weights.read_bytes() == b"saved"
@@ -221,7 +221,7 @@ def test_lock_prevents_parallel_model_operations(managed):
 
 def test_update_refuses_active_model_before_git_fetch(managed, monkeypatch):
     _installed(managed)
-    monkeypatch.setattr(maya_s, "_running", lambda: True)
+    monkeypatch.setattr(maya_s, "_running", lambda *_a: True)
     monkeypatch.setattr(maya_s, "_latest_release", lambda: "v1.1.61")
     monkeypatch.setattr(maya_s, "_exec",
                         lambda *args, **kw: pytest.fail("unexpected git change"))
@@ -255,7 +255,7 @@ def test_health_requires_real_loaded_maya_s(monkeypatch, managed):
     _installed(managed)
     (maya_s.source() / "maya-glm-maya-s-hip.json").write_text("{}")
     maya_s._prepared_marker().write_text('{"model":"glm-maya-s"}')
-    monkeypatch.setattr(maya_s, "_running", lambda: True)
+    monkeypatch.setattr(maya_s, "_running", lambda *_a: True)
 
     class Client:
         label = "GLM-5.3-Flash · Maya-S"
@@ -281,7 +281,7 @@ def test_maya_port_conflict_prevents_start(managed, monkeypatch):
     _installed(managed)
     (maya_s.source() / "maya-glm-maya-s-hip.json").write_text("{}")
     maya_s._prepared_marker().write_text('{"model":"glm-maya-s"}')
-    monkeypatch.setattr(maya_s, "_port_busy", lambda: True)
+    monkeypatch.setattr(maya_s, "_port_busy", lambda *_a: True)
     monkeypatch.setattr(maya_s, "_exec",
                         lambda *a, **kw: pytest.fail("should not launch Maya"))
     ok, msg = maya_s.start_instance()
@@ -317,7 +317,7 @@ def test_settings_reject_outside_allowed_roots(managed):
 
 def test_settings_while_running_rejected(managed, monkeypatch):
     _installed(managed)
-    monkeypatch.setattr(maya_s, '_running', lambda: True)
+    monkeypatch.setattr(maya_s, '_running', lambda *_a: True)
     with pytest.raises(maya_s.MayaError, match='停止'):
         maya_s.save_settings({**maya_s.get_settings(), 'context': 32768})
     # Lifecycle flags are ControlDeck-side only and may change while running.
@@ -403,7 +403,7 @@ def _maya_request(max_tokens):
 
 def _count_tokens(monkeypatch, prompt, context):
     from app.models_mgmt import runtime_provider
-    async def room(_messages):
+    async def room(_messages, **_kw):
         return prompt, context
     monkeypatch.setattr(maya_s, 'prompt_room', room)
     async def ready(*_a, **_k):
@@ -442,11 +442,11 @@ def test_gateway_fits_maya_output_budget(monkeypatch):
     from app.models_mgmt import gateway
     _count_tokens(monkeypatch, prompt=3000, context=8192)
     payload = {'messages': [], 'max_tokens': 32000, 'max_completion_tokens': 100}
-    asyncio.run(gateway._fit_maya_output(payload))
+    asyncio.run(gateway._fit_maya_output(payload, 8099))
     assert payload == {'messages': [], 'max_tokens': 5192, 'max_completion_tokens': 100}
     _count_tokens(monkeypatch, prompt=9000, context=8192)
     over = {'messages': [], 'max_tokens': 32000}
-    asyncio.run(gateway._fit_maya_output(over))
+    asyncio.run(gateway._fit_maya_output(over, 8099))
     assert over['max_tokens'] == 32000  # Maya's own 400 explains it
 
 
@@ -468,7 +468,7 @@ def test_save_settings_enables_maya_output_clamp(managed, monkeypatch):
     config = maya_s.source() / 'maya-maya-s-v2-iq2_xxs-hip.json'
     config.write_text(json.dumps({'args': ['--parallel', '1'], 'env': {}}))
     maya_s._prepared_marker().write_text(json.dumps({'model': 'glm-maya-s'}))
-    monkeypatch.setattr(maya_s, '_running', lambda: False)
+    monkeypatch.setattr(maya_s, '_running', lambda *_a: False)
     maya_s.save_settings(maya_s.get_settings())
     assert json.loads(config.read_text())['fit_max_tokens'] is True
 
@@ -495,7 +495,9 @@ def test_resetup_keeps_measured_env_and_turns_pictures_on(managed, monkeypatch):
     maya_s._prepared_marker().write_text(json.dumps({'model': 'glm-maya-s'}))
     assert maya_s.get_instance('maya-s')['vision'] is True
     import inspect
-    assert '--no-vision' not in inspect.getsource(maya_s)
+    # The first model keeps pictures on (only models registered beside it may be text only).
+    for fn in (maya_s.prepare_existing, maya_s._prepare_model, maya_s._update):
+        assert '--no-vision' not in inspect.getsource(fn)
 
 
 def test_vision_requests_reach_maya_once_its_encoder_is_set_up(managed, monkeypatch):

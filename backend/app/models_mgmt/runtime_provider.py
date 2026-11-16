@@ -570,9 +570,12 @@ class MayaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         await super()._prepare(request)
         from app.models_mgmt import maya_s
 
-        if not await maya_s.ensure_ready("maya-s"):
-            raise RuntimeProviderError("Maya-Sが起動していないか、読み込み中です。Modelsで起動してください")
-        counted = await maya_s.prompt_room(request.messages)
+        alias = await asyncio.to_thread(maya_s.running_alias)
+        if not await maya_s.ensure_ready(alias):
+            raise RuntimeProviderError("Mayaが起動していないか、読み込み中です。Modelsで起動してください")
+        port = next((int(item["port"]) for item in await asyncio.to_thread(maya_s.list_instances)
+                     if item["alias"] == alias), maya_s._PORT)
+        counted = await maya_s.prompt_room(request.messages, port=port)
         if counted is None:
             # Count unavailable: let the server decide, as before.
             return
@@ -580,7 +583,7 @@ class MayaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         room = context - prompt
         if room < 1:
             raise RuntimeProviderError(
-                f"入力が長すぎます（{prompt}トークン）。Maya-Sのコンテキストは{context}トークンです。"
+                f"入力が長すぎます（{prompt}トークン）。Mayaのコンテキストは{context}トークンです。"
                 "会話を短くするか、Modelsでコンテキストを広げてください")
         request.max_tokens = min(int(request.max_tokens or room), room)
 
