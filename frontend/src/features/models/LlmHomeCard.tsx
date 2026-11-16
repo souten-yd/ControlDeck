@@ -138,7 +138,9 @@ function CloudColumn({ summary, balance, balanceError }: {
   const last = summary?.last?.provider === "openrouter" ? summary.last : null;
   const ttft = call?.ttft_s ?? (call ? null : last?.ttft_s);
   const speed = call ? (call.phase === "generate" ? call.tokens_per_second : null) : last?.tokens_per_second;
-  const ctxUsed = last ? last.prompt_tokens + last.completion_tokens : null;
+  // ctx は終わった呼び出しの値。実行中が別のモデルなら、見出しと食い違うので出さない。
+  const ctxFrom = last && (!call || call.model === last.model) ? last : null;
+  const ctxUsed = ctxFrom ? ctxFrom.prompt_tokens + ctxFrom.completion_tokens : null;
   const pending = <Muted>…</Muted>;
   return (
     <Column heading="OpenRouter" to="/models?tab=frontier"
@@ -150,9 +152,9 @@ function CloudColumn({ summary, balance, balanceError }: {
       </Row>
       <Row label="生成">{speed != null ? <>{speed.toFixed(1)} <Unit>tok/s</Unit></> : <Muted />}</Row>
       <Row label="ctx">
-        {ctxUsed != null ? tokens(ctxUsed) : <Muted />}{last?.context_length ? ` / ${tokens(last.context_length)}` : ""}
+        {ctxUsed != null ? tokens(ctxUsed) : <Muted />}{ctxFrom?.context_length ? ` / ${tokens(ctxFrom.context_length)}` : ""}
       </Row>
-      <CtxBar used={ctxUsed} total={last?.context_length} />
+      <CtxBar used={ctxUsed} total={ctxFrom?.context_length} />
       <Divider />
       <Row label="残り">
         <span className={balance != null && balance < 1 ? "text-amber-600 dark:text-amber-400" : ""}>
@@ -171,9 +173,11 @@ function CloudColumn({ summary, balance, balanceError }: {
 export function LlmHomeCard() {
   const can = useAuth((s) => s.can);
   const canCloud = can("settings.manage");
+  // ローカル側の API は workflows.run が要る。無い利用者には取りに行かない（403 を出し続けない）。
+  const canLocal = can("workflows.run");
   // Models 画面の CapacityWidget と同じキーなので、取得は 1 回で済む。
   const { data: capacity } = useQuery({
-    queryKey: ["llama-capacity"], queryFn: getLlamaCapacity,
+    queryKey: ["llama-capacity"], queryFn: getLlamaCapacity, enabled: canLocal,
     refetchInterval: (q) => (q.state.data?.endpoints.length ? 3000 : 20000),
   });
   const { data: cloudState } = useQuery({

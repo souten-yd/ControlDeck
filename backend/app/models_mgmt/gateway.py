@@ -582,6 +582,9 @@ async def _cloud_chat(request: Request, payload: dict):
     except httpx.HTTPError as exc:
         await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502, timer=timer)
         raise HTTPException(status_code=502, detail="外部のプロバイダに接続できませんでした") from exc
+    except asyncio.CancelledError:
+        cloud.abandon_call(timer)  # 呼び出し元が切れた。実行中の表示に残さない
+        raise
     try:
         data = response.json()
     except ValueError:

@@ -328,6 +328,11 @@ def _finish(timer: CallTimer | None) -> tuple[float | None, float | None]:
     return duration, ttft
 
 
+def abandon_call(timer: CallTimer) -> None:
+    """記録せずに実行中から外す（呼び出し元が途中で切れたとき）。"""
+    _finish(timer)
+
+
 def _speed(completion: int, duration: float | None, ttft: float | None) -> float | None:
     """生成の速さ（tok/s）。stream なら最初のトークンより後の時間で割る。"""
     if not duration or completion <= 1:
@@ -472,7 +477,14 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         raise CloudError(f"モデルの一覧を取得できませんでした（HTTP {response.status_code}）", 502)
     zdr_models = await _zdr_models() if provider_id == "openrouter" else set()
     rows = []
-    for item in (response.json().get("data") or [])[:2000]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise CloudError("モデルの一覧を読めませんでした", 502) from exc
+    items = payload.get("data") if isinstance(payload, dict) else None
+    for item in (items if isinstance(items, list) else [])[:2000]:
+        if not isinstance(item, dict):
+            continue
         model_id = str(item.get("id") or "")
         if not _MODEL.fullmatch(model_id):
             continue

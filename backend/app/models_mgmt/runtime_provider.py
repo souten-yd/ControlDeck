@@ -14,6 +14,18 @@ from urllib.parse import urlsplit
 import httpx
 
 
+
+def _timing_target(base_url: str) -> tuple[int, bool]:
+    """(ポート, ローカルのエンジンか)。外部モデルはゲートウェイ自身へ送られ（cloud:）、外の URL は
+    この PC で動いていないので、LLM の電気代の「処理中」に数えない。"""
+    from app.models_mgmt.gateway import is_gateway_url
+
+    base = normalize_openai_base(base_url)
+    parts = urlsplit(base)
+    host = (parts.hostname or "").lower()
+    local = host in ("127.0.0.1", "localhost", "::1") and not is_gateway_url(base)
+    return parts.port or 0, local
+
 class RuntimeProviderError(RuntimeError):
     """provider固有情報や秘密値を含めない生成エラー。"""
 
@@ -248,7 +260,8 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
 
     async def _complete_impl(self, request: RuntimeChatRequest) -> str:
         from app.models_mgmt import live_stats
-        timing = live_stats.begin(urlsplit(normalize_openai_base(request.base_url)).port or 0)
+        port, local = _timing_target(request.base_url)
+        timing = live_stats.begin(port, local=local)
         body: dict = {}
         try:
             text, body = await self._complete_body(request)
@@ -295,7 +308,8 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
         # 最終chunkで正確なprompt/completionトークン数を得る（OpenAI標準。未対応serverは無視する）
         payload["stream_options"] = {"include_usage": True}
         from app.models_mgmt import live_stats
-        timing = live_stats.begin(urlsplit(normalize_openai_base(request.base_url)).port or 0)
+        port, local = _timing_target(request.base_url)
+        timing = live_stats.begin(port, local=local)
         final_usage = None
         try:
             async for chunk in self._stream_lines(request, payload, cancel_event):

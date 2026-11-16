@@ -221,6 +221,18 @@ def test_llm_energy_reloads_from_file(tmp_path, monkeypatch):
     assert snap["today_yen"] == 17.8 and snap["avg_w"] == 500.0 and snap["now_w"] is None
 
 
+def test_llm_energy_reload_skips_a_broken_day(tmp_path, monkeypatch):
+    import app.monitoring.electricity as el
+
+    (tmp_path / "electricity-llm.json").write_text(
+        '{"2026-07-14": "broken", "2026-07-15": {"energy_kwh": 0.5, "cost_yen": 17.8, "seconds": 3600}}',
+        encoding="utf-8")
+    monkeypatch.setattr(el, "_llm_path", lambda: tmp_path / "electricity-llm.json")
+    acc = el.ElectricityAccumulator()
+    acc.load()
+    assert set(acc._llm) == {"2026-07-15"}
+
+
 # ---- 設定検証 ----
 
 def test_config_validation():

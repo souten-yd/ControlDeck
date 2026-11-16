@@ -46,3 +46,17 @@ def test_context_from_engine_metrics():
     assert live_stats.context_from_metrics(idle) == 9300
     assert live_stats.context_from_metrics({"live": {}, "requests": []}) is None
     assert live_stats.context_from_metrics("broken") is None
+
+
+def test_external_model_calls_are_not_a_local_llm_working():
+    """外部モデル（ゲートウェイ経由の cloud:・外の URL）を待っている間は、LLM の電気代に数えない。"""
+    from app.models_mgmt.runtime_provider import _timing_target
+
+    assert _timing_target("http://127.0.0.1:8096/v1") == (8096, True)
+    assert _timing_target("http://127.0.0.1:8765/api/v1/llm/v1")[1] is False
+    assert _timing_target("https://api.example.com/v1") == (0, False)
+    since = time.monotonic()
+    timing = live_stats.begin(8765, local=False)
+    assert not live_stats.busy_now() and not live_stats.busy_during(since)
+    live_stats.end(timing, None)
+    assert not live_stats.busy_during(since)

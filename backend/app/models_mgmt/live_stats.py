@@ -22,6 +22,7 @@ class _Request:
     thinking: bool = False
     events: int = 0          # streamed deltas: ~tokens while a request is running
     timings: dict | None = None  # the engine's own, when its stream carries them
+    local: bool = True           # a local engine (counts as "an LLM is working" for electricity)
 
 
 @dataclass
@@ -42,18 +43,20 @@ def busy_during(since: float | None) -> bool:
     """Was any local LLM request running between `since` (monotonic) and now? The electricity
     accumulator asks this every sample to count the PC's power while an LLM was working."""
     with _lock:
-        if any(_active.values()):
+        if any(r.local for rows in _active.values() for r in rows):
             return True
         return since is not None and _last_end >= since
 
 
 def busy_now() -> bool:
     with _lock:
-        return any(_active.values())
+        return any(r.local for rows in _active.values() for r in rows)
 
 
-def begin(port: int) -> _Request:
-    request = _Request(port=int(port))
+def begin(port: int, *, local: bool = True) -> _Request:
+    """`local=False` for a request that leaves the PC (an external model through the gateway):
+    it is timed like the others but never counted as a local LLM working."""
+    request = _Request(port=int(port), local=bool(local))
     with _lock:
         _active.setdefault(request.port, []).append(request)
     return request
@@ -76,7 +79,8 @@ def end(request: _Request, usage: dict | None = None, timings: dict | None = Non
         rows = _active.get(request.port, [])
         if request in rows:
             rows.remove(request)
-        _last_end = now
+        if request.local:
+            _last_end = now
         prompt = completion = 0
         if isinstance(usage, dict):
             prompt = int(usage.get("prompt_tokens") or 0)

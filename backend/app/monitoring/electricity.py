@@ -105,6 +105,7 @@ class ElectricityAccumulator:
         self._llm: dict[str, dict] = {}
         self._llm_persisted: dict[str, dict] = {}
         self._llm_now_w: float | None = None
+        self._llm_save_lock = threading.Lock()  # 定期保存と終了時の保存が重ならないように
 
     # ---- 設定取得 ----
     def _cfg(self):
@@ -147,8 +148,10 @@ class ElectricityAccumulator:
             data = json.loads(_llm_path().read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 for day, row in data.items():
-                    if isinstance(row, dict):
+                    try:  # 壊れた日だけ飛ばす（ほかの日は残す）
                         self._llm[str(day)] = {k: float(row.get(k) or 0.0) for k in ("energy_kwh", "cost_yen", "seconds")}
+                    except (AttributeError, TypeError, ValueError):
+                        logger.warning("LLM 処理中の電気代: 読めない日を飛ばしました (%s)", str(day)[:20])
                 self._llm_persisted = {k: dict(v) for k, v in self._llm.items()}
         except FileNotFoundError:
             pass
@@ -211,6 +214,10 @@ class ElectricityAccumulator:
             d["seconds"] += sec
 
     def _persist_llm(self) -> None:
+        with self._llm_save_lock:
+            self._persist_llm_locked()
+
+    def _persist_llm_locked(self) -> None:
         with self._lock:
             keep = sorted(self._llm)[-LLM_KEEP_DAYS:]
             self._llm = {k: self._llm[k] for k in keep}
