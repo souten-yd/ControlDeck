@@ -413,6 +413,10 @@ export default function ModelsPage() {
 
   const removeLocal = useMutation({
     mutationFn: async ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) => {
+      if (runtime === "maya-s") {
+        await api(`/features/maya-s/models/${encodeURIComponent(alias)}`, { method: "DELETE" });
+        return { ok: true, gguf_deleted: false, reason: "Mayaのモデルファイルは保持" };
+      }
       if (runtime === "strata") {
         await api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} });
         return { ok: true, gguf_deleted: false, reason: "Strataモデルファイルは保持" };
@@ -613,7 +617,9 @@ export default function ModelsPage() {
                     </button>
                     {isLocal && runtime === "maya-s" ? (
                       <DropdownMenu ariaLabel={`${id}の操作`} trigger={<IconDots />}
-                        items={[{ label: "個別設定", onSelect: openDetail }]} />
+                        items={[{ label: "個別設定", onSelect: openDetail },
+                          { label: "削除", danger: true, separated: true,
+                            onSelect: () => setLocalDeleting({ alias: id, runtime }) }]} />
                     ) : isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
@@ -659,14 +665,15 @@ export default function ModelsPage() {
       {localDeleting && (
         <ConfirmDialog
           title={`「${localDeleting.alias}」を削除しますか？`}
-          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
+          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。"
+            : localDeleting.runtime === "maya-s" ? "Mayaのモデル登録だけを削除します。モデルのファイルは消しません。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
           confirmLabel="削除する"
           danger
           busy={removeLocal.isPending}
           onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
           onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
-          {localDeleting.runtime !== "strata" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+          {localDeleting.runtime !== "strata" && localDeleting.runtime !== "maya-s" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="text-xs">GGUF ファイル本体も削除する
               <span className="block text-[10px] text-zinc-500">
