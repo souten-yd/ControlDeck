@@ -472,6 +472,52 @@ def display_name(record: dict) -> str:
     return f"{FAMILY_LABEL.get(str(record.get('family')), str(record.get('family')))} · {record.get('tier')}"
 
 
+def _apply_vram_margin(record: dict) -> Path:
+    """Keep the native config identity and remember the model's original reserve."""
+    from app.models_mgmt.runtime_policy import with_margin_arg
+
+    path = Path(record["config"])
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    family = record.get("family", "glm")
+    flag = {"deepseek": "--reserve-mib", "minimax": "--reserve-gb"}.get(family, "--vram-reserve-mib")
+    args = list(cfg.get("args") or [])
+
+    def reserve_value(values: list[str]) -> str | None:
+        for index, arg in enumerate(values):
+            if arg.startswith(flag + "="):
+                return arg.split("=", 1)[1]
+            if arg == flag:
+                if index + 1 >= len(values):
+                    raise ValueError(f"{flag} の値がありません")
+                return values[index + 1]
+        return None
+
+    original = reserve_value(args)
+    managed = cfg.get("control_deck_vram_margin") or {}
+    if managed.get("flag") == flag and original == managed.get("applied"):
+        # Undo only our previous reserve; keep any other changes from the native UI.
+        original = managed.get("original")
+        restored: list[str] = []
+        index = 0
+        while index < len(args):
+            if args[index] == flag:
+                index += 2
+            elif args[index].startswith(flag + "="):
+                index += 1
+            else:
+                restored.append(args[index])
+                index += 1
+        args = restored + ([flag, original] if original is not None else [])
+    cfg["args"] = with_margin_arg(args, flag, gib=family == "minimax")
+    cfg["control_deck_vram_margin"] = {"flag": flag, "original": original, "applied": cfg["args"][-1]}
+    temp = path.with_suffix(".tmp")
+    temp.touch(mode=0o600, exist_ok=True)
+    temp.chmod(0o600)
+    temp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    return path
+
+
 @_serialized
 def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
     record = _record(alias)
@@ -488,11 +534,12 @@ def start_instance(alias: str = _ALIAS) -> tuple[bool, str]:
                 _exec(["systemctl", "--user", "stop", _unit(other["alias"])], timeout=600)
         if _port_busy(record["port"]):
             raise MayaError(f"127.0.0.1:{record['port']}が別のサーバーに使用されています")
+        launch_config = _apply_vram_margin(record)
         _exec(["systemd-run", "--user", "--collect", "--unit",
                _unit(alias).removesuffix(".service"), "--working-directory", str(source()),
-               "bash", str(entrypoint()), "--config", str(record["config"]), "--port",
+               "bash", str(entrypoint()), "--config", str(launch_config), "--port",
                str(record["port"]), "--host", "127.0.0.1"], cwd=source(), timeout=45)
-    except MayaError as exc:
+    except (MayaError, OSError, ValueError) as exc:
         return False, str(exc)
     from app.models_mgmt import large_model_lifecycle
     large_model_lifecycle.mark_used(large_model_lifecycle.MAYA, alias)

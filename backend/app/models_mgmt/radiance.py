@@ -434,9 +434,12 @@ def _config_dir() -> Path:
 
 def config_yaml(alias: str, cfg: dict) -> str:
     """The 2.x settings file for one registration. Values are validated, so plain scalars suffice."""
+    from app.models_mgmt.runtime_policy import vram_margin_mib
+
+    headroom = max(int(cfg["gpu_headroom_mib"]), vram_margin_mib())
     model = Path(cfg["model_path"])
     lines = ["server:", "  host: 127.0.0.1", f"  port: {int(cfg['port'])}",
-             "memory:", f"  gpu-headroom-mib: {int(cfg['gpu_headroom_mib'])}",
+             "memory:", f"  gpu-headroom-mib: {headroom}",
              "models:", f"  {alias}:", f"    model: /models/{model.name}", "    tp: 1",
              f"    max-model-len: {int(cfg['context'])}", f"    max-num-seqs: {int(cfg['max_num_seqs'])}",
              f"    kv-cache-dtype: {cfg['kv_cache']}"]
