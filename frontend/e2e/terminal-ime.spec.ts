@@ -142,7 +142,7 @@ async function openTerminal(page: Page): Promise<void> {
   await expect(page.getByLabel("ユーザー名")).toBeVisible();
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/terminal");
   await expect(page.getByRole("heading", { name: "Terminal" })).toBeVisible();
@@ -194,7 +194,7 @@ test("initial terminal connection reveals one stable frame without viewport raci
   await page.goto("/terminal");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/terminal");
   await expect(page.getByRole("heading", { name: "Terminal" })).toBeVisible();

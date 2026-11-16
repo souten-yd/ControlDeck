@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, EmptyState, IconButton, Skeleton, primaryButtonClass } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 
@@ -90,39 +90,30 @@ export default function GitHubPage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <PageHeader title="GitHub" actions={<div className="flex items-center gap-2">
+      <PageHeader title="GitHub"
+        // ログイン中の表示は見出しと幅を取り合うので、行の下へ出す。
+        description={auth?.logged_in ? `${auth.account} でログイン中` : undefined}
+        actions={<>
           {auth?.available && !auth.logged_in && can("apps.edit") && (
-            <button onClick={login} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
+            <button onClick={login} className="min-h-10 rounded-full bg-zinc-100 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700">
               GitHub にログイン
             </button>
           )}
-          {auth?.logged_in && (
-            <span className="text-xs text-zinc-400">{auth.account} でログイン中</span>
-          )}
           {can("apps.edit") && (
-            <button onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              <IconPlus /> リポジトリを追加
-            </button>
+            <IconButton variant="primary" label="リポジトリを追加" onClick={() => setAdding(true)}><IconPlus /></IconButton>
           )}
-        </div>} />
+        </>} />
 
       {isLoading ? (
         <Skeleton className="h-24" />
       ) : !repos || repos.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">
-            リポジトリ URL を追加すると、クローン・更新・保存・リバートをボタンで操作できます。
-          </p>
-          {can("apps.edit") && (
-            <button onClick={() => setAdding(true)} className="mt-3 rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              最初のリポジトリを追加
-            </button>
-          )}
-        </div>
+        <EmptyState actions={can("apps.edit") && (
+          <button onClick={() => setAdding(true)} className={primaryButtonClass}>最初のリポジトリを追加</button>
+        )}>リポジトリ URL を追加すると、クローン・更新・保存・リバートをボタンで操作できます。</EmptyState>
       ) : (
         <ul className="space-y-3">
           {repos.map((r) => (
-            <li key={r.id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <li key={r.id} className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold">

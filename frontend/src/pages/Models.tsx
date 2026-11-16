@@ -7,9 +7,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, DropdownMenu, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, IconButton, SegmentedTabs, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
-import { IconChevronRight, IconDots, IconFolder, IconPlus, IconSearch, IconSettings, IconTrash } from "../components/icons";
+import { IconDots, IconFolder, IconPlay, IconPlus, IconSearch, IconSettings, IconStop, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
@@ -61,6 +61,8 @@ const DEFAULT_COMPACTION: CompactionPolicy = { enabled: true, mode: "auto", perc
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
 type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
+/** 補足文の1項目（「18.6 GB」など）の途中で折り返さない。折り返しは項目の区切りでだけ起こす。 */
+const nowrap = (text: string) => text.replace(/ /g, "\u00a0");
 const RUNTIME_LABEL: Record<string, string> = {
   "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya", radiance: "Radiance", ollama: "Ollama",
 };
@@ -506,32 +508,25 @@ export default function ModelsPage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <PageHeader title="Models" actions={<div className="flex items-center gap-2">
-          {can("workflows.edit") && (
-            <button onClick={() => setSettingsOpen(true)} aria-label="LLM 共通設定" title="LLM 共通設定" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-zinc-300 px-3 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300"><IconSettings /> <span className="hidden sm:inline">共通設定</span></button>
-          )}
+      <PageHeader title="Models" actions={can("workflows.edit") && <>
+          <IconButton label="LLM 共通設定" onClick={() => setSettingsOpen(true)}><IconSettings /></IconButton>
           {/* ローカルのモデルを足す操作。外部（フロンティア）のタブでは使わない。 */}
-          {can("workflows.edit") && tab !== "frontier" && (
-            <button onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)}
-              aria-label={isLocal ? "モデル登録" : "モデル取得"} title={isLocal ? "モデル登録" : "モデル取得"}
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-600 text-white shadow-sm hover:bg-accent-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-500 [&_svg]:h-5 [&_svg]:w-5">
-              <IconPlus />
-            </button>
+          {tab !== "frontier" && (
+            <IconButton variant="primary" label={isLocal ? "モデル登録" : "モデル取得"}
+              onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)}><IconPlus /></IconButton>
           )}
-        </div>} />
+        </>} />
       {/* タブ: ローカル（LLM/VLM・Embed/Reranker）と、外部のフロンティアモデル。
           外部は送信先が違うので、ローカルのモデルとは混ぜずに別のタブにする。 */}
-      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        {([["llm", "LLM / VLM"], ["embed", "Embed / Reranker"],
-          ...(can("settings.manage") ? [["frontier", "フロンティア（外部）"]] as const : [])] as const).map(([id, label]) => (
-          <button key={id} onClick={() => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
-            className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${tab === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"}`}>
-            {label}
-          </button>
-        ))}
-      </div>
+      <SegmentedTabs
+        className="mb-3"
+        value={tab}
+        onChange={(id) => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
+        tabs={[["llm", "LLM / VLM"], ["embed", "Embed / Reranker"],
+          ...(can("settings.manage") ? [["frontier", "フロンティア（外部）", "フロンティア"]] as const : [])] as const}
+      />
       {tab === "llm" && (
-      <p className="mb-4 text-xs text-zinc-400">
+      <p className="mb-3 px-0.5 text-xs leading-relaxed text-zinc-500">
         使用中のランタイム: {isLocal
           ? `${RUNTIME_LABEL[selectedRuntime] ?? selectedRuntime}${selectedRuntime === "llama.cpp" && runtimeEnv?.policy.selected_backend
             ? ` / ${BACKEND_LABEL[runtimeEnv.policy.selected_backend] ?? runtimeEnv.policy.selected_backend}` : ""}`
@@ -556,13 +551,9 @@ export default function ModelsPage() {
       ) : isLoading ? (
         <Skeleton className="h-24" />
       ) : !liveModels || liveModels.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">
-            モデルがありません。右上の「＋」から追加してください。
-          </p>
-        </div>
+        <EmptyState>モデルがありません。右上の「＋」から追加してください。</EmptyState>
       ) : (
-        <ul className="space-y-3">
+        <ul className="space-y-2">
           {liveModels.map((m) => {
             const id = m.id ?? m.name;
             const runtime = m.runtime === "ollama" ? undefined : m.runtime;
@@ -579,13 +570,15 @@ export default function ModelsPage() {
               else setDetail(m.name);
             };
             return (
-            <li key={id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <li key={id} className={`rounded-2xl border bg-white py-2 pl-3.5 pr-2 shadow-sm transition-colors dark:bg-zinc-900 sm:pl-4 ${m.loaded
+              ? "border-emerald-300/70 dark:border-emerald-800/70"
+              : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"}`}>
               <div className="flex items-center gap-2 sm:gap-3">
-                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
+                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${m.loaded ? "bg-emerald-500 ring-4 ring-emerald-500/15" : "bg-zinc-300 dark:bg-zinc-600"}`} title={m.loaded ? "ロード中" : "未ロード"} />
                 <button onClick={openDetail}
                   aria-label={isLocal ? `${id}の個別設定を開く` : `${m.name}の詳細を開く`}
-                  className="min-w-0 flex-1 text-left">
-                  <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
+                  className="min-h-11 min-w-0 flex-1 py-0.5 text-left">
+                  <p className="flex items-center gap-1.5 truncate text-sm font-semibold leading-5">
                     <span className="truncate" title={isLocal ? `ゲートウェイでの名前: ${id}` : undefined}>{isLocal ? (m.display_name || id) : m.name}</span>
                     {/* どのランタイムが載せるモデルかを一覧で見分けられるようにする。 */}
                     {shared && (
@@ -599,22 +592,32 @@ export default function ModelsPage() {
                       </span>
                     )}
                   </p>
-                  <p className="num line-clamp-2 text-xs text-zinc-500 sm:truncate">
+                  <p className="num mt-0.5 line-clamp-2 text-xs leading-4 text-zinc-500 sm:truncate">
                     {isLocal
                       // どのランタイムでも「ランタイム · 量子化 · サイズ」の順にそろえる。
                       ? [runtime === "llama.cpp" && m.backend_label ? `llama.cpp（${m.backend_label.replace(/（.*?）|\(.*?\)/g, "").trim()}）` : RUNTIME_LABEL[runtime ?? "ollama"],
                          m.quantization, m.size ? gb(m.size) : "",
-                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).map(nowrap).join(" · ")
                       : [m.parameter_size, m.quantization, m.size ? gb(m.size) : "",
-                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")}
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).map(nowrap).join(" · ")}
                   </p>
                 </button>
-                {isLocal && <IconChevronRight className="hidden h-4 w-4 shrink-0 text-zinc-400 sm:block" aria-hidden />}
                 {can("workflows.edit") && (
                   <>
-                    <button disabled={acting === id} onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "", runtime)} className="min-h-11 shrink-0 rounded-xl bg-zinc-100 px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-800 dark:text-zinc-300">
-                      {acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード")}
-                    </button>
+                    {/* 携帯は記号だけ、広い画面は記号＋文字（Apps の起動・停止と同じ形）。 */}
+                    {(() => {
+                      const label = acting === id ? (m.loaded ? "停止中..." : "ロード中...") : (m.loaded ? "アンロード" : "ロード");
+                      return (
+                        <button disabled={acting === id} aria-label={label} title={label}
+                          onClick={() => act(id, m.loaded ? "unload" : "load", shared ? endpoint!.running_alias : "", runtime)}
+                          className={`cd-icon-button relative flex h-10 min-w-10 shrink-0 items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors disabled:cursor-wait disabled:opacity-60 sm:px-3.5 ${m.loaded
+                            ? "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                            : "bg-accent-50 text-accent-700 hover:bg-accent-100 dark:bg-accent-600/15 dark:text-accent-300 dark:hover:bg-accent-600/25"}`}>
+                          {m.loaded ? <IconStop className="text-sm" /> : <IconPlay className="text-sm" />}
+                          <span className="hidden sm:inline">{label}</span>
+                        </button>
+                      );
+                    })()}
                     {isLocal && runtime === "maya-s" ? (
                       <DropdownMenu ariaLabel={`${id}の操作`} trigger={<IconDots />}
                         items={[{ label: "個別設定", onSelect: openDetail },
@@ -636,7 +639,7 @@ export default function ModelsPage() {
                         ]}
                       />
                     ) : (
-                      <button onClick={() => setDeleting(m.name)} aria-label="削除" className="shrink-0 rounded-lg p-2 text-zinc-400 hover:text-red-600"><IconTrash /></button>
+                      <IconButton variant="ghost" label="削除" onClick={() => setDeleting(m.name)} className="hover:!text-red-600"><IconTrash /></IconButton>
                     )}
                   </>
                 )}
@@ -759,11 +762,8 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
 
   return (
     <BottomSheet title="モデル取得" onClose={onClose} wide>
-      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        <button onClick={() => setTab("registry")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "registry" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>Ollama レジストリ</button>
-        <button onClick={() => setTab("hf")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "hf" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>HuggingFace (GGUF)</button>
-        <button onClick={() => setTab("local")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "local" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>ローカル登録</button>
-      </div>
+      <SegmentedTabs className="mb-3" value={tab} onChange={setTab}
+        tabs={[["registry", "Ollama レジストリ"], ["hf", "HuggingFace (GGUF)"], ["local", "ローカル登録"]] as const} />
 
       {tab === "registry" ? (
         <div className="space-y-2">
@@ -775,14 +775,8 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
       ) : tab === "hf" ? (
         <div className="space-y-3">
           {/* llama.cpp はGGUFを直接置く。Ollamaは自分でpullする。取得経路が違うので分ける。 */}
-          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-            {([["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const).map(([id, label]) => (
-              <button key={id} onClick={() => setHfMode(id)}
-                className={`flex-1 rounded-lg py-1.5 text-[11px] font-medium ${hfMode === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                {label}
-              </button>
-            ))}
-          </div>
+          <SegmentedTabs value={hfMode} onChange={setHfMode}
+            tabs={[["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const} />
           {hfMode === "direct"
             ? <HuggingFaceDownload onStarted={setJobId} />
             : <HFSearch onPull={start} running={running} />}

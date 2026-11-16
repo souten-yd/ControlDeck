@@ -8,7 +8,7 @@ async function login(page: Page, credential: string) {
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(credential);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page).not.toHaveURL(/\/login/);
 }
 

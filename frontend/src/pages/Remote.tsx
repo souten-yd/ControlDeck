@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, EmptyState, IconButton, Skeleton } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 
@@ -57,9 +57,7 @@ export default function RemotePage() {
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
       <PageHeader title="Remote Desktop" actions={can("remote_desktop.use") && (
-          <button onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-accent-700">
-            <IconPlus /> 接続を追加
-          </button>
+          <IconButton variant="primary" label="接続を追加" onClick={() => setAdding(true)}><IconPlus /></IconButton>
         )} />
 
       {status && !status.guacd_available && (
@@ -104,7 +102,7 @@ export default function RemotePage() {
               {others.length > 0 && (
                 <ul className="space-y-3">
                   {others.map((c) => (
-                    <li key={c.id} className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                    <li key={c.id} className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
                       <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800">{PROTO_LABEL[c.protocol]}</span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{c.name}</p>
@@ -128,9 +126,7 @@ export default function RemotePage() {
               )}
 
               {!selfConn && others.length === 0 && (
-                <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-                  <p className="text-sm text-zinc-400">RDP / VNC / SSH の接続を追加してブラウザから操作できます。</p>
-                </div>
+                <EmptyState>RDP / VNC / SSH の接続を追加してブラウザから操作できます。</EmptyState>
               )}
             </div>
           );

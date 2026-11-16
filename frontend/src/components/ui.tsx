@@ -3,12 +3,101 @@ import {
   useEffect,
   useRef,
   useState,
+  type ButtonHTMLAttributes,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { useToasts } from "../stores";
 import type { AppStatus } from "../types";
 import { IconX } from "./icons";
+
+// ---- アイコンボタン（ページ見出し・行・シートの操作を1つの形にそろえる）----
+const ICON_BUTTON_VARIANT = {
+  /** その画面の主操作（追加・作成）。1画面に1つ。 */
+  primary: "bg-accent-600 text-white shadow-sm shadow-accent-600/30 hover:bg-accent-700 active:bg-accent-800",
+  /** 主操作の隣に置く補助操作（設定など）。 */
+  soft: "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 active:bg-zinc-300 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
+  /** 行の中やシートの見出しの控えめな操作。 */
+  ghost: "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+  /** 破壊的操作の入口（確認ダイアログを開く）。 */
+  danger: "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40",
+} as const;
+
+/** 見た目は40pxの丸。タップ領域は ::after で44pxまで広げる。
+ *  文字を出さないので、label は必ず渡す（aria-label と title になる）。 */
+export function IconButton({
+  label,
+  variant = "soft",
+  className = "",
+  children,
+  ...props
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label"> & {
+  label: string;
+  variant?: keyof typeof ICON_BUTTON_VARIANT;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      {...props}
+      aria-label={label}
+      className={`cd-icon-button relative grid h-10 w-10 shrink-0 place-items-center rounded-full text-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${ICON_BUTTON_VARIANT[variant]} ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** 一覧が空のときの箱。破線の枠 + 1行の案内 + （あれば）最初の1件を足す操作。 */
+export function EmptyState({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-zinc-300 px-6 py-10 text-center dark:border-zinc-700">
+      <p className="mx-auto max-w-md text-sm leading-relaxed text-zinc-500">{children}</p>
+      {actions && <div className="mt-4 flex flex-wrap items-center justify-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+/** 文字つきのボタン（空の状態・シートの中の主操作と補助操作）。高さは44px。 */
+export const primaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40";
+export const secondaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:hover:border-zinc-600";
+
+/** 画面内の切替（タブ）。幅は文字数に比例させ、長いラベルだけが切れるのを防ぐ。
+ *  3つ目の要素は380px未満でだけ出す短い表記（読み上げ名は常に元のラベル）。 */
+export function SegmentedTabs<T extends string>({
+  tabs,
+  value,
+  onChange,
+  className = "",
+}: {
+  tabs: ReadonlyArray<readonly [T, string, string?]>;
+  value: T;
+  onChange: (value: T) => void;
+  className?: string;
+}) {
+  return (
+    <div className={`flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800/80 ${className}`}>
+      {tabs.map(([id, label, short]) => (
+        <button
+          key={id}
+          type="button"
+          aria-label={short ? label : undefined}
+          aria-pressed={value === id}
+          onClick={() => onChange(id)}
+          className={`min-h-9 min-w-0 flex-auto truncate rounded-lg px-1 text-xs font-medium transition min-[380px]:px-2 ${
+            value === id
+              ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-50"
+              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+          }`}
+        >
+          {short ? <><span className="min-[380px]:hidden">{short}</span><span className="hidden min-[380px]:inline">{label}</span></> : label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // ---- オーバーレイ共通（Esc / 背景クリックで閉じる + フォーカス移動）----
 function Overlay({
@@ -95,14 +184,14 @@ export function BottomSheet({
           sideOnDesktop ? "sm:h-dvh sm:max-h-dvh sm:w-[min(720px,60vw)] sm:rounded-none" : ""
         } safe-bottom`}
       >
-        <div className="relative flex shrink-0 items-center gap-2 px-5 pt-4 pb-2">
-          <div className="mx-auto h-1 w-9 rounded-full bg-zinc-300 dark:bg-zinc-700 sm:hidden absolute left-1/2 -translate-x-1/2 top-2" />
-          <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
+        <div className="relative flex min-h-14 shrink-0 items-center gap-2 px-5 pt-3 pb-1 sm:pt-2">
+          <div aria-hidden className="absolute left-1/2 top-1.5 h-1 w-9 -translate-x-1/2 rounded-full bg-zinc-300 dark:bg-zinc-700 sm:hidden" />
+          <h2 className="min-w-0 flex-1 truncate text-base font-semibold leading-6">{title}</h2>
           {headerActions && <div className="flex shrink-0 items-center gap-1">{headerActions}</div>}
           <button
             onClick={onClose}
             aria-label="閉じる"
-            className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className="-mr-2 grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
           >
             <IconX />
           </button>
@@ -170,12 +259,12 @@ export function Drawer({
         aria-label={title}
         className="flex h-dvh w-full max-w-[100dvw] flex-col bg-white shadow-xl dark:bg-zinc-900 sm:w-[520px]"
       >
-        <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800 safe-top">
-          <h2 className="text-base font-semibold">{title}</h2>
+        <div className="flex min-h-14 items-center justify-between gap-2 border-b border-zinc-200 px-5 py-1.5 dark:border-zinc-800 safe-top">
+          <h2 className="min-w-0 flex-1 truncate text-base font-semibold leading-6">{title}</h2>
           <button
             onClick={onClose}
             aria-label="閉じる"
-            className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className="-mr-2 grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
           >
             <IconX />
           </button>
@@ -213,22 +302,22 @@ export function ConfirmDialog({
       <div
         role="alertdialog"
         aria-label={title}
-        className="safe-bottom mx-4 max-h-[calc(100dvh-2rem)] w-[min(420px,90vw)] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-zinc-900"
+        className="safe-bottom mx-4 max-h-[calc(100dvh-2rem)] w-[min(420px,90vw)] overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-zinc-900"
       >
-        <h2 className="text-base font-semibold">{title}</h2>
-        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
+        <h2 className="text-base font-semibold leading-6">{title}</h2>
+        <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">{message}</p>
         {children}
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex gap-2 sm:justify-end">
           <button
             onClick={onClose}
-            className="rounded-xl px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            className="min-h-11 flex-1 rounded-xl bg-zinc-100 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 sm:flex-none"
           >
             キャンセル
           </button>
           <button
             onClick={onConfirm}
             disabled={busy || disabled}
-            className={`rounded-xl px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+            className={`min-h-11 flex-1 rounded-xl px-4 text-sm font-medium text-white disabled:opacity-50 sm:flex-none ${
               danger ? "bg-red-600 hover:bg-red-700" : "bg-accent-600 hover:bg-accent-700"
             }`}
           >
@@ -283,14 +372,14 @@ export function DropdownMenu({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="grid min-h-11 min-w-11 place-items-center rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+        className="cd-icon-button relative grid h-10 w-10 shrink-0 place-items-center rounded-full text-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
       >
         {trigger}
       </button>
       {open && (
         <div
           role="menu"
-          className="absolute right-0 z-40 mt-1 w-44 overflow-hidden rounded-xl border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+          className="cd-pop cd-pop-right absolute right-0 z-40 mt-1 w-48 overflow-hidden rounded-2xl border border-zinc-200 bg-white p-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-800"
         >
           {items.map((item) => (
             <button
@@ -302,7 +391,7 @@ export function DropdownMenu({
                 setOpen(false);
                 item.onSelect();
               }}
-              className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-zinc-100 data-[separated]:mt-1 data-[separated]:border-t data-[separated]:border-zinc-200 data-[separated]:pt-2.5 dark:hover:bg-zinc-700 dark:data-[separated]:border-zinc-700 ${
+              className={`block min-h-11 w-full rounded-xl px-3 py-2.5 text-left text-sm hover:bg-zinc-100 data-[separated]:mt-1 data-[separated]:rounded-t-none data-[separated]:border-t data-[separated]:border-zinc-200 dark:hover:bg-zinc-700 dark:data-[separated]:border-zinc-700 ${
                 item.danger ? "text-red-600 dark:text-red-400" : ""
               }`}
             >

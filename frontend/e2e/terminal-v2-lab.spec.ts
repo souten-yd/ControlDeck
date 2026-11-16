@@ -49,7 +49,7 @@ test("uses V2 only for this tab's dedicated Lab session and resumes its local hi
   await page.goto("/terminal?terminalLab=v2");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/terminal?terminalLab=v2");
   runtimeErrors.length = 0;

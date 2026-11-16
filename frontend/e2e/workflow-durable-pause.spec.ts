@@ -9,7 +9,7 @@ test("public runner edits and resumes a durable approval on mobile", async ({ pa
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
   const workflowId = await page.evaluate(async (assignee) => {
@@ -55,7 +55,7 @@ test("public runner submits a durable typed human form", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
   const workflowId = await page.evaluate(async (assignee) => {

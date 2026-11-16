@@ -8,17 +8,20 @@ interface PageHeaderProps {
   className?: string;
 }
 
-/** 通常ページ共通header。独立viewer/editorは対象外。 */
+/** 通常ページ共通header。独立viewer/editorは対象外。
+ *
+ *  見出しと操作は必ず1行に収める。操作は IconButton（主操作は primary、補助は soft）で渡す。
+ *  説明は操作と幅を取り合わないよう、行の下に全幅で置く。 */
 export function PageHeader({ title, description, actions, leading, className = "" }: PageHeaderProps) {
   return (
-    // 操作ボタンが無いheaderは高さを見出しだけに詰める（min-h-11はタップ領域用）。
-    <header className={`mb-5 flex flex-wrap items-start gap-3 ${actions || leading ? "min-h-11" : ""} ${className}`}>
-      {leading}
-      <div className="min-w-0 flex-1 pt-0.5">
-        <h1 className="text-xl font-semibold leading-7 tracking-tight">{title}</h1>
-        {description && <p className="mt-1 max-w-3xl text-xs leading-relaxed text-zinc-500">{description}</p>}
+    <header className={`${/(^|\s)mb-/.test(className) ? "" : "mb-4"} ${className}`}>
+      {/* 操作が無いheaderは高さを見出しだけに詰める（min-h-11はタップ領域用）。 */}
+      <div className={`flex items-center gap-3 ${actions || leading ? "min-h-11" : ""}`}>
+        {leading}
+        <h1 className="min-w-0 flex-1 truncate text-xl font-semibold leading-7 tracking-tight">{title}</h1>
+        {actions && <div className="flex shrink-0 items-center justify-end gap-2">{actions}</div>}
       </div>
-      {actions && <div className="flex min-h-11 min-w-0 flex-wrap items-center justify-end gap-2">{actions}</div>}
+      {description && <p className="mt-1.5 max-w-3xl text-xs leading-relaxed text-zinc-500">{description}</p>}
     </header>
   );
 }

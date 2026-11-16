@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-11-16 UI の共通部品の刷新（見出しの操作を＋ボタンへ）
+
+- ページ見出しの操作を丸いアイコンボタン（`IconButton`、見た目40px・タップ領域44px）へ統一。Models の「＋ モデル登録」は ＋ だけのボタンになり、隣に共通設定（歯車）。Apps・Workflows・Terminal・Remote・Knowledge・GitHub・OpenCode も同じ形（主操作は色付きの＋、補助は淡色）。読み上げ名とツールチップは従来の文言のまま（「モデル登録」「新規セッション」など）。フロンティアのタブで＋を出さない動作も維持。
+- `PageHeader` は見出しと操作を必ず1行に収め、説明は行の下へ全幅で出す（Knowledge の説明が操作に押されて細くなる、GitHub のログイン表示が見出しに重なる問題を解消）。
+- Models の一覧: 行を詰め、ロード中の行は緑の枠と輪つきの点で示す。ロード/アンロードは携帯では記号だけ・広い画面では記号＋文字（Apps の起動・停止と同じ形）。タブは共通の `SegmentedTabs` にし、幅を文字数に比例させて 390px で「フロンティア（外部）」が切れないようにした（380px 未満は「フロンティア」と表示、読み上げ名は同じ）。
+- 共通: シート・ドロワーの閉じるボタンを44pxへ、確認ダイアログのボタンを44px・携帯では横いっぱいに、メニューの項目を44pxへ。キーボード操作時のフォーカスリングを全ボタン・リンクへ。補足文の色を一段寄せて読みやすくした（暗い背景の zinc-500 と明るい背景の zinc-400。色の変数の差し替えで、各画面のクラスは変えていない）。下部ナビの More は他の項目とラベルの行がそろう高さにした。
+- 全画面の統一: 空の状態を共通の `EmptyState`（破線の枠 + 1行の案内 + 最初の1件を足す操作）へ（Apps・Workflows・Terminal・Remote・Knowledge・GitHub・Models）。画面内の切替を `SegmentedTabs` へ（Models、モデル取得、Knowledge の詳細・取り込み、OpenCode のプロジェクト選択）。一覧の行は枠・影・名前の太さ・補足文の色をそろえた（Apps・Workflows・Knowledge・GitHub・Remote・Models）。
+- 変えていないもの: 経路・API・Backend・文言の意味・読み上げ名。Terminal の行の絵文字ボタン（E2E が形を固定している）、モデル登録シートの中身、各画面個別のフォームやシート内の配置、App Studio / Project Lab の独自の見出し。
+- E2E: 各 spec の login helper が「顔認証・パスキーでログイン」にも当たって 81 件がログインで落ちていたため、ボタンの指定を完全一致にした（UI の変更とは無関係の既存不具合）。
+- 検証: `tsc`・Frontend build。E2E は 5 spec 以下の組に分けて実行し、main（+ 上のログイン修正）と失敗の集合を比較 — この環境では main でも 55 件が落ちる（Add-on・App Studio・Terminal の実 tmux・Workflow の一部など）が、失敗の集合は一致し、刷新で新しく落ちたものは 0 件。a11y は 12 件すべて成功。320px/390px（ダーク）と 1280px（ライト/ダーク）の前後の画面写真で横スクロールなしを確認。
+
 ## 2026-11-16 Maya のモデルを複数登録（手元のファイルから）
 
 - Models → モデル登録に「Maya」を追加。Maya の量子化（GLM-5.3-Flash / DeepSeek-V4.1-Flash / MiniMax-M3.1-Flash の各段階）を、選んだフォルダにファイルがそろっていれば登録できる。足りないときは不足ファイルと `hf download` のコマンドを出すだけで、ダウンロードはしない（セットアップは通信先を閉じたプロキシに向けて実行し、何か取得しようとすれば失敗する）。一覧と照合は Maya 自身の一覧（`tools/maya_quants.py`・`glm_downloads`・`tools/ds4|mm3/download_gguf.json`）を `backend/app/models_mgmt/maya_probe.py` が Maya の venv で読む。

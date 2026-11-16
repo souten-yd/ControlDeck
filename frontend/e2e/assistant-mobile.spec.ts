@@ -26,7 +26,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await page.goto("/assistant");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   runtimeErrors.length = 0; // 未認証状態での初回 /auth/me 401 はログイン画面の正常な判定
   await page.goto("/assistant");
@@ -202,7 +202,7 @@ test("shows compact conversation references and inserts one into the prompt", as
   await page.goto("/assistant");
   await page.getByLabel("ユーザー名").fill(username!);
   await page.getByLabel("パスワード").fill(password!);
-  await page.getByRole("button", { name: "ログイン" }).click();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.evaluate((id) => localStorage.setItem("cd-chat-conversation", id), referenceConversation!);
   await page.goto("/assistant");
