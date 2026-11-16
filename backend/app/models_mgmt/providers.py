@@ -158,21 +158,36 @@ def _gateway_candidate() -> dict | None:
     from app.models_mgmt import gateway, local_llm
 
     models = [str(i["alias"]) for i in local_llm.llm_instances()]
-    if not models:
+    external = _external_models()
+    if not models and not external:
         return None
     # 先頭は仮想モデル。どれを使うかをControlDeckに任せると、停止中の別モデルを
     # 起こさずに済む（起動中があればそれを使う）。
-    models = [gateway.AUTO_MODEL, *models]
+    models = [gateway.AUTO_MODEL, *models] if models else []
     return {
         "id": "control-deck-gateway", "provider": "control-deck-gateway",
         "name": "ControlDeck ゲートウェイ", "base_url": gateway.base_url(),
         "managed": True, "installed": True, "experimental": False,
-        "available": True, "models": models, "gateway": True,
+        # 外部のフロンティアモデルはローカルの後ろに並べ、画面が見分けられるよう別に名前を渡す。
+        "available": True, "models": [*models, *(item["id"] for item in external)], "gateway": True,
+        "external_models": external,
         # 画面が「Models の選択が変わった」ことに気づくための値。ゲートウェイの
         # アドレスはランタイムを変えても同じなので、アドレスだけでは追従できない。
         "selected_runtime": _selected_runtime(),
         "capabilities": capabilities("control-deck-gateway", managed=True),
     }
+
+
+def _external_models() -> list[dict]:
+    """AI アシスタントが選べる外部モデル（利用者が送信を許可したときだけ）。"""
+    try:
+        from app.models_mgmt import cloud
+
+        return [{"id": item["id"], "name": item["name"], "provider": item["provider"]}
+                for item in cloud.models_for("assistant")]
+    except Exception:  # noqa: BLE001 - 外部モデルの都合でローカルの一覧を止めない
+        logger.exception("外部モデルの一覧を読めませんでした")
+        return []
 
 
 def _selected_runtime() -> str:
@@ -198,7 +213,8 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
     selected_runtime = _selected_runtime()
     # llama.cpp運用時の既定接続先はゲートウェイ。個別ポートも選べるよう一覧には残す。
     # モデル管理画面のようにランタイム自体を扱う用途では出さない（保有モデルはllama.cpp側）。
-    gateway_item = (_gateway_candidate()
+    # 登録モデルと外部モデルの設定はファイルから読む。event loop を止めないよう thread へ出す。
+    gateway_item = (await asyncio.to_thread(_gateway_candidate)
                     if include_gateway and selected_runtime in GATEWAY_RUNTIMES else None)
     for item in candidates:
         item["selected"] = (
@@ -248,5 +264,20 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
                  if not str(item.get("provider") or "").startswith(GATEWAY_RUNTIMES)]
         gateway_item["selected"] = True
         found.append(gateway_item)
+    elif include_gateway:
+        # Ollama 運用などゲートウェイを既定にしないときも、外部モデルの入口はゲートウェイだけ。
+        # 既定の接続先（selected）は変えず、選択肢として足す。
+        external = await asyncio.to_thread(_external_models)
+        if external:
+            from app.models_mgmt import gateway
+
+            found.append({
+                "id": "control-deck-gateway", "provider": "control-deck-gateway",
+                "name": "ControlDeck ゲートウェイ（外部モデル）", "base_url": gateway.base_url(),
+                "managed": True, "installed": True, "experimental": False, "available": True,
+                "models": [item["id"] for item in external], "gateway": True, "selected": False,
+                "external_models": external, "selected_runtime": selected_runtime,
+                "capabilities": capabilities("control-deck-gateway", managed=True),
+            })
     return sorted(found,
                   key=lambda x: (not x.get("selected"), not x["managed"], x["name"], x["base_url"]))

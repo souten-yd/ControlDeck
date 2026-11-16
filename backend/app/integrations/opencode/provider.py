@@ -35,6 +35,11 @@ DEFAULT_SETTINGS = {
     # 別のモデルを指定すると、ゲートウェイが要求に合わせて載せ替える。
     "review_model": "",
     "advisor_model": "",
+    # 開発担当（実装を任せる子エージェント developer）。モデルは空ならセッションと同じ。
+    # レビュー・相談・開発担当には外部モデル（cloud:<プロバイダ>/<モデル>）も選べるが、
+    # 利用者が OpenCode からの外部送信を許可し、そのモデルを有効にしているときだけ使う。
+    "developer_agent": False,
+    "developer_model": "",
     # UI 検証（Playwright MCP）。導入済みなら、子エージェント ui-verifier の道具として載せる。
     "ui_verify": True,
     # UI 検証のブラウザに外部サイトへの通信を許すか。既定は手元（loopback）だけ。
@@ -205,7 +210,7 @@ def save_workflow(patch: dict) -> dict:
 
     settings = get_settings()
     for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external",
-                "research_tool", "research_external", "context7", "github_cli"):
+                "research_tool", "research_external", "context7", "github_cli", "developer_agent"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "isolation" in patch:
@@ -217,17 +222,74 @@ def save_workflow(patch: dict) -> dict:
             raise ValueError("Auto Advisor は off / observe / active のいずれかです")
         settings["auto_advisor"] = patch["auto_advisor"]
     known = {str(item.get("alias")) for item in local_llm.llm_instances()} | {"auto"}
-    for key in ("review_model", "advisor_model"):
+    for key in ROLE_MODEL_KEYS:
         if key in patch:
             value = str(patch[key] or "").strip()
-            if value and value not in known:
-                raise ValueError(f"登録されていないモデルです: {value}")
+            # 保存済みの値をそのまま送り返してきただけなら通す（外部送信の許可を後から外しても、
+            # ほかの項目の保存まで止めない。使えない外部モデルは session を作るときに外す）。
+            if value and value != str(settings.get(key) or ""):
+                if value.startswith(CLOUD_PREFIX):
+                    if not _cloud_usable(value):
+                        raise ValueError(
+                            "この外部モデルは選べません。Models → フロンティア（外部）でモデルを有効にし、"
+                            "OpenCode からの外部への送信を許可してください")
+                elif value not in known:
+                    raise ValueError(f"登録されていないモデルです: {value}")
             settings[key] = value
     path = _settings_path()
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temp, path)
     return settings
+
+
+ROLE_MODEL_KEYS = ("review_model", "advisor_model", "developer_model")
+CLOUD_PREFIX = "cloud:"
+
+
+def _cloud_usable(model: str) -> bool:
+    """その外部モデルを、いま OpenCode から使ってよいか（送信の許可・有効・選ばれている）。"""
+    return any(item["id"] == model for item in _cloud_models_for_opencode())
+
+
+def role_model(settings: dict, key: str) -> str:
+    """役割（レビュー・相談・開発担当）に使うモデル。空ならセッションと同じモデル。
+
+    外部モデルは、利用者が許可を外したりモデルを外したりした時点で使わない。設定に名前が
+    残っていても session には載せず、セッションと同じ（ローカルの）モデルへ戻す。
+    """
+    value = str(settings.get(key) or "")
+    if value.startswith(CLOUD_PREFIX) and not _cloud_usable(value):
+        return ""
+    return value
+
+
+def cloud_choices() -> dict:
+    """画面向け: 役割に選べる外部モデルと、許可が無くて選べない状態かどうか。"""
+    allowed = [{"id": item["id"], "name": item["name"], "provider": item["provider"]}
+               for item in _cloud_models_for_opencode()]
+    blocked = False
+    if not allowed:
+        try:
+            from app.models_mgmt import cloud
+
+            blocked = bool(cloud.enabled_models())
+        except Exception:  # noqa: BLE001 - 外部モデルの都合で設定画面を止めない
+            blocked = False
+    return {"cloud_models": allowed, "cloud_blocked": blocked}
+
+
+def _developer_agent(model: str | None) -> dict:
+    return {
+        "mode": "subagent",
+        "description": (
+            "開発担当。決まった方針に沿って、まとまった実装（機能の追加・修正・テスト）を自分の文脈で行い、"
+            "変えたファイル・実行した確認・残った課題を短く返す。"
+            "何を作るか、対象のファイルや範囲、完了の条件、守ること（触らない場所）を渡す。"
+        ),
+        "prompt": _agent_prompt("developer"),
+        **({"model": f"controldeck/{model}"} if model else {}),
+    }
 
 
 def workflow_plugin_specs() -> dict[str, str]:
@@ -380,7 +442,7 @@ def _workflow(runtime: str, model: str) -> dict:
     advisor: dict | None = None
     if settings.get("superpowers") and specs.get("superpowers"):
         plugins.append(specs["superpowers"])
-    review = str(settings.get("review_model") or "")
+    review = role_model(settings, "review_model")
     if settings.get("adversarial_review") and specs.get("adversarial_review"):
         plugins.append(specs["adversarial_review"])
         if review and review != model:
@@ -390,7 +452,7 @@ def _workflow(runtime: str, model: str) -> dict:
     mode = str(settings.get("auto_advisor") or "off")
     if mode != "off" and specs.get("auto_advisor"):
         plugins.append(specs["auto_advisor"])
-        target = str(settings.get("advisor_model") or "")
+        target = role_model(settings, "advisor_model")
         if target and target != model:
             models.append(target)
         advisor = {
@@ -399,6 +461,11 @@ def _workflow(runtime: str, model: str) -> dict:
             # すると判定のたびに載せ替えが起きる。
             "routing": {"mode": mode, "models": [f"controldeck/{model}"]},
         }
+    if settings.get("developer_agent"):
+        developer = role_model(settings, "developer_model")
+        if developer and developer != model:
+            models.append(developer)
+        agents["developer"] = _developer_agent(developer if developer != model else None)
     return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor}
 
 
@@ -829,6 +896,9 @@ def _config_payload(
             "modalities": {"input": ["text", "image"], "output": ["text"]},
         })
     for extra in workflow["models"]:
+        if extra.startswith(CLOUD_PREFIX):
+            # 外部モデルは上で並べ済み（名前に「外部」と付く）。ローカル用の項目で上書きしない。
+            continue
         payload["provider"]["controldeck"]["models"][extra] = {
             "name": extra, "attachment": True,
             "modalities": {"input": ["text", "image"], "output": ["text"]},

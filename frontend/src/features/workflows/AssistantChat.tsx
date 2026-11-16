@@ -245,7 +245,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // LLM エンドポイント自動検出
   const { data: endpoints } = useQuery({
     queryKey: ["llm-endpoints"],
-    queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean; selected_runtime?: string }[]>("/workflows/llm-endpoints"),
+    queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean; selected_runtime?: string;
+      /** 外部のフロンティアモデル（AI アシスタントからの送信を許可したときだけ並ぶ）。 */
+      external_models?: { id: string; name: string; provider: string }[] }[]>("/workflows/llm-endpoints"),
     staleTime: 60_000,
     enabled: can("workflows.edit"),
   });
@@ -262,7 +264,11 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       setAutoBase(followKey);
       setBaseUrl(preferred.base_url);
       if (followKey !== autoBase && preferred.models.includes("auto")) setModel("auto");
-      else if (!preferred.models.includes(model)) setModel(preferred.models[0] ?? "");
+      // 外部のモデルを既定にはしない（送信は利用者が自分で選んだときだけ）。
+      else if (!preferred.models.includes(model)) {
+        const external = new Set((preferred.external_models ?? []).map((item) => item.id));
+        setModel(preferred.models.find((item) => !external.has(item)) ?? "");
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endpoints]);
@@ -666,11 +672,18 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   // 管理下のモデルは接続先を意識させない（どのポートで動くかは ControlDeck が決める）。
   // 外部エンドポイントだけ、区別が付くようURLを添える。
   const modelOptions =
-    endpoints?.flatMap((ep) => ep.models.map((m) => ({
-      base: ep.base_url, model: m, managed: !!ep.managed,
-      // auto は特定モデルを固定しない仮想モデル。転送先は ControlDeck が決める。
-      label: m === "auto" ? "自動（Models で選んだランタイム）" : ep.managed ? m : `${m} — ${ep.base_url}`,
-    }))) ?? [];
+    endpoints?.flatMap((ep) => ep.models.map((m) => {
+      const external = ep.external_models?.find((item) => item.id === m);
+      return {
+        base: ep.base_url, model: m, managed: !!ep.managed, external: !!external,
+        // auto は特定モデルを固定しない仮想モデル。転送先は ControlDeck が決める。
+        label: external ? `外部｜${external.name}`
+          : m === "auto" ? "自動（Models で選んだランタイム）" : ep.managed ? m : `${m} — ${ep.base_url}`,
+      };
+    })) ?? [];
+  const localOptions = modelOptions.filter((o) => !o.external);
+  const externalOptions = modelOptions.filter((o) => o.external);
+  const externalSelected = externalOptions.find((o) => o.base === baseUrl && o.model === model);
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;
 
@@ -781,17 +794,35 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                   }}
                   className="w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm"
                 >
-                  {modelOptions.map((o) => (
+                  {!modelOptions.some((o) => o.base === baseUrl && o.model === model) && (
+                    <option value={`${baseUrl}|${model}`}>{model || "モデルを選択"}</option>
+                  )}
+                  {localOptions.map((o) => (
                     <option key={`${o.base}|${o.model}`} value={`${o.base}|${o.model}`}>
                       {o.label}
                     </option>
                   ))}
+                  {/* 外部のモデルはローカルと混ぜず、送信されることが分かる見出しの下に並べる。 */}
+                  {externalOptions.length > 0 && (
+                    <optgroup label="外部（フロンティア）— 外部へ送信">
+                      {externalOptions.map((o) => (
+                        <option key={`${o.base}|${o.model}`} value={`${o.base}|${o.model}`}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               ) : (
                 <div className="flex min-w-0 gap-1.5">
                   <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:11434/v1" className="min-w-0 w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
                   <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="llama3.2" className="min-w-0 w-1/2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
                 </div>
+              )}
+              {externalSelected && (
+                <span role="note" className="mt-1 block rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                  外部へ送信: 会話・添付・検索や道具の結果が {externalSelected.label.replace(/^外部｜/, "").split(" / ")[0]} へ送られます。秘密の情報を扱う会話ではローカルのモデルを選んでください。
+                </span>
               )}
             </label>
             {effectiveMode === "deep" && (

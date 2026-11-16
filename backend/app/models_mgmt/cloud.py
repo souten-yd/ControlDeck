@@ -207,6 +207,21 @@ def enabled_models() -> list[dict]:
     return rows
 
 
+def models_for(caller: str) -> list[dict]:
+    """その呼び出し元が選べる外部モデル。外部への送信を許可していなければ空。
+
+    画面の選択肢に使う。実際に送ってよいかは resolve() が呼び出しのたびに確かめる。
+    """
+    if caller not in CALLERS or not _read()["egress"].get(caller):
+        return []
+    return enabled_models()
+
+
+def usable(model: str, *, caller: str) -> bool:
+    """`cloud:…` が、いまその呼び出し元から使えるか（許可あり・有効・選ばれている）。"""
+    return any(item["id"] == model for item in models_for(caller))
+
+
 @dataclass(frozen=True)
 class CloudTarget:
     provider: str
@@ -331,13 +346,77 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
         prompt, completion = _per_million(pricing.get("prompt")), _per_million(pricing.get("completion"))
         free = prompt == 0 and completion == 0
-        rows.append({"id": model_id, "name": str(item.get("name") or model_id)[:200],
-                     "context_length": item.get("context_length"), "free": free,
-                     "created": item.get("created") if isinstance(item.get("created"), int) else None,
-                     # USD / 100 万トークン。分からなければ None。
-                     "price_input": prompt, "price_output": completion,
-                     "privacy": _privacy(provider_id, model_id, free, zdr_models)})
+        row = {"id": model_id, "name": str(item.get("name") or model_id)[:200],
+               "context_length": item.get("context_length"), "free": free,
+               "created": item.get("created") if isinstance(item.get("created"), int) else None,
+               # USD / 100 万トークン。分からなければ None。
+               "price_input": prompt, "price_output": completion,
+               "privacy": _privacy(provider_id, model_id, free, zdr_models)}
+        if provider_id == "openrouter":
+            # 絞り込み用（賢さの目安・対応機能・提供元）。他のプロバイダは /models に情報が無い。
+            row.update(_capabilities(item, model_id))
+        rows.append(row)
     return rows
+
+
+# 「70b」「8x22b」「a3b」「135m」。前後が英数字のもの（4bit・v2b・32k など）は拾わない。
+_PARAMS = re.compile(r"(?<![a-z0-9.])(?:(\d{1,3})x)?(\d{1,4}(?:\.\d{1,2})?)([bm])(?![a-z0-9])", re.IGNORECASE)
+_ACTIVE_PARAMS = re.compile(r"(?<![a-z0-9.])a(\d{1,4}(?:\.\d{1,2})?)b(?![a-z0-9])", re.IGNORECASE)
+# gemma-3n の「e4b」（実効 4B）のように、数字の前に 1 文字付く表記。
+_EFFECTIVE_PARAMS = re.compile(r"(?<![a-z0-9.])e(\d{1,3}(?:\.\d{1,2})?)b(?![a-z0-9])", re.IGNORECASE)
+
+
+def parameter_count(*names: object) -> tuple[float | None, float | None]:
+    """名前からパラメータ数（10 億単位）を読み取る。(全体, 実際に動く分)。
+
+    OpenRouter の /models にパラメータ数の項目は無い。オープンなモデルは名前に書く習慣が
+    あるので、hugging_face_id・id・表示名の順に見る。Claude や GPT のように公開していない
+    モデルは None（画面では「不明」）。賢さの目安であって、正確な値ではない。
+    """
+    total: float | None = None
+    active: float | None = None
+    for name in names:
+        text = str(name or "")
+        if not text:
+            continue
+        if total is None:
+            sizes = []
+            for count, number, unit in _PARAMS.findall(text):
+                value = float(number) * (int(count) if count else 1)
+                value = value / 1000 if unit.lower() == "m" else value
+                if 0.01 <= value <= 2000:
+                    sizes.append(value)
+            if not sizes:
+                sizes = [float(number) for number in _EFFECTIVE_PARAMS.findall(text) if 0.01 <= float(number) <= 2000]
+            if sizes:
+                # 「30b-a3b」「17b-128e」のように複数あれば、いちばん大きいものが全体。
+                total = round(max(sizes), 3)
+        if active is None:
+            found = _ACTIVE_PARAMS.search(text)
+            if found:
+                active = round(float(found.group(1)), 3)
+        if total is not None and active is not None:
+            break
+    if active is not None and (total is None or active >= total):
+        active = None
+    return total, active
+
+
+def _capabilities(item: dict, model_id: str) -> dict:
+    architecture = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
+    modalities = architecture.get("input_modalities")
+    if not isinstance(modalities, list):
+        # 古い形式: "text+image->text"
+        modalities = str(architecture.get("modality") or "").split("->", 1)[0].split("+")
+    supported = item.get("supported_parameters") if isinstance(item.get("supported_parameters"), list) else []
+    params, active = parameter_count(item.get("hugging_face_id"), model_id, item.get("name"))
+    return {
+        "vendor": model_id.split("/", 1)[0] if "/" in model_id else "",
+        "params_b": params, "active_params_b": active,
+        "modalities": sorted({str(m).strip().lower() for m in modalities if str(m).strip()})[:8],
+        "tools": "tools" in supported,
+        "reasoning": "reasoning" in supported or "include_reasoning" in supported,
+    }
 
 
 def _per_million(value: object) -> float | None:

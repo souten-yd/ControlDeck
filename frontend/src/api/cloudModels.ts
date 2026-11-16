@@ -54,6 +54,18 @@ export interface CloudRemoteModel {
   price_input?: number | null;
   price_output?: number | null;
   privacy?: CloudPrivacy;
+  /** 提供元（ID の "/" より前）。 */
+  vendor?: string;
+  /** パラメータ数（10 億単位）。名前から読み取れないものは null。 */
+  params_b?: number | null;
+  /** 実際に動くパラメータ数（MoE の a3b など）。 */
+  active_params_b?: number | null;
+  /** 入力できる種類（text / image / audio / file …）。 */
+  modalities?: string[];
+  /** 道具の呼び出し（function calling）に対応。 */
+  tools?: boolean;
+  /** 推論（思考）に対応。 */
+  reasoning?: boolean;
 }
 
 /** プロバイダ側の残高と使用額（OpenRouter だけ）。ControlDeck が数えた使用額とは別物。 */

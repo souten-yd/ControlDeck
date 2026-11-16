@@ -36,8 +36,10 @@ export function emptyCloud(): MockCloud {
  * 保存しない経路（zdr）があるのは Claude Test と、3 の倍数で無料でない行。 */
 export function remoteModels(count = 1500) {
   const models: Array<Record<string, unknown>> = [
-    { id: "anthropic/claude-test", name: "Claude Test", context_length: 200000, free: false, created: 1_760_000_000, price_input: 3, price_output: 15, privacy: "zdr" },
-    { id: "meta/llama-test:free", name: "Llama Test (free)", context_length: 131072, free: true, created: 1_750_000_000, price_input: 0, price_output: 0, privacy: "may_train" },
+    { id: "anthropic/claude-test", name: "Claude Test", context_length: 200000, free: false, created: 1_760_000_000, price_input: 3, price_output: 15, privacy: "zdr",
+      vendor: "anthropic", params_b: null, active_params_b: null, modalities: ["image", "text"], tools: true, reasoning: true },
+    { id: "meta/llama-test:free", name: "Llama Test (free)", context_length: 131072, free: true, created: 1_750_000_000, price_input: 0, price_output: 0, privacy: "may_train",
+      vendor: "meta", params_b: 70, active_params_b: null, modalities: ["text"], tools: true, reasoning: false },
   ];
   for (let i = 0; i < count; i += 1) {
     const free = i % 50 === 0;
@@ -46,6 +48,9 @@ export function remoteModels(count = 1500) {
       id: `vendor-${i % 40}/model-${i}`, name: `Model ${i}`, context_length: 8192 * (1 + (i % 16)), free,
       created: 1_700_000_000 + i * 3600, price_input: input, price_output: input * 4,
       privacy: free ? "may_train" : i % 3 === 0 ? "zdr" : "may_store",
+      // 絞り込み用。5 件に 1 件は規模が不明（非公開のモデル）。
+      vendor: `vendor-${i % 40}`, params_b: i % 5 === 0 ? null : [8, 30, 72, 405][i % 4], active_params_b: i % 4 === 1 && i % 5 !== 0 ? 3 : null,
+      modalities: i % 4 === 0 ? ["image", "text"] : ["text"], tools: i % 2 === 0, reasoning: i % 10 === 0,
     });
   }
   return models;

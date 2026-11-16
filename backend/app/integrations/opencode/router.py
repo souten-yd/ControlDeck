@@ -29,6 +29,8 @@ class WorkflowBody(BaseModel):
     auto_advisor: str | None = Field(default=None, max_length=16)
     review_model: str | None = Field(default=None, max_length=200)
     advisor_model: str | None = Field(default=None, max_length=200)
+    developer_agent: bool | None = None
+    developer_model: str | None = Field(default=None, max_length=200)
     ui_verify: bool | None = None
     ui_verify_allow_external: bool | None = None
     research_tool: bool | None = None
@@ -39,6 +41,7 @@ class WorkflowBody(BaseModel):
 
 
 WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_advisor", "review_model", "advisor_model",
+                 "developer_agent", "developer_model",
                  "ui_verify", "ui_verify_allow_external", "research_tool", "research_external", "context7", "github_cli", "isolation")
 
 
@@ -212,6 +215,8 @@ def get_workflow(user: User = Depends(require_permission("workflows.run"))):
         # 選べるモデル（ゲートウェイの名前）。別のモデルへは要求に合わせて載せ替える。
         "models": [{"alias": str(item["alias"]), "runtime": str(item.get("runtime") or "")}
                    for item in local_llm.llm_instances()],
+        # 役割に選べる外部モデル（OpenCode からの外部送信を許可したときだけ）。
+        **opencode.cloud_choices(),
         # 拡張ごとのプラグインが導入済みか。導入・更新・削除は 設定 → オプション機能。
         "installed": opencode.workflow_installed(),
         "features": {**opencode.WORKFLOW_FEATURES, **opencode.WORKFLOW_MCP_FEATURES},
