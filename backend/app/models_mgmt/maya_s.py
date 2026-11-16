@@ -375,7 +375,27 @@ def _enable_fit_max_tokens(keep_env: dict | None = None) -> None:
 
 
 @_serialized
-def _prepare_model(*, gpu_index: int = 0) -> dict:
+def _download_dir(target: str = "") -> Path:
+    """ダウンロードの保存先。指定が無ければ既定の置き場（data/models/maya-s）。
+
+    指定はファイル操作と同じ検証（許可された場所の中だけ）を通し、既存のフォルダに限る。
+    """
+    if not target:
+        return models_dir()
+    from app.files.service import resolve
+
+    try:
+        path = resolve(target)
+    except Exception as exc:  # noqa: BLE001 - 許可外・存在しないパスは同じ扱い
+        raise MayaError("保存先のフォルダを使えません") from exc
+    if not path.is_dir() or path.is_symlink():
+        raise MayaError("保存先は既存のフォルダを選んでください")
+    if not os.access(path, os.W_OK):
+        raise MayaError("保存先のフォルダに書き込めません")
+    return path
+
+
+def _prepare_model(*, gpu_index: int = 0, download_dir: str = "") -> dict:
     if not 0 <= gpu_index <= 15:
         raise MayaError("GPU番号が範囲外です")
     if not installed():
@@ -387,13 +407,14 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
     if os.geteuid() == 0:
         raise MayaError("root実行は禁止されています")
     _ensure_alias_port_available()
-    models_dir().mkdir(parents=True, exist_ok=True)
-    if shutil.disk_usage(models_dir()).free < 110 * 1000**3:
-        raise MayaError("モデル準備には約110GB以上の空き領域が必要です")
+    target = _download_dir(download_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(target).free < 110 * 1000**3:
+        raise MayaError(f"保存先（{target}）に約110GB以上の空き領域が必要です")
     _exec(["bash", str(entrypoint()), "--backend", "hip", "--gpu", str(gpu_index),
            "--model", _MODEL, "--context", "8192",
            "--yes", "--plain", "--download-model", "--no-start",
-           "--models-dir", str(models_dir()), "--port", str(_PORT), "--host", "127.0.0.1"],
+           "--models-dir", str(target), "--port", str(_PORT), "--host", "127.0.0.1"],
           cwd=source(), timeout=8*3600)
     if _find_config() is None:
         raise MayaError("セットアップは終了しましたがHIP設定を確認できません")
@@ -404,10 +425,10 @@ def _prepare_model(*, gpu_index: int = 0) -> dict:
     return runtime_status()
 
 
-async def prepare_model_stream(job=None, *, gpu_index: int = 0) -> dict:
+async def prepare_model_stream(job=None, *, gpu_index: int = 0, download_dir: str = "") -> dict:
     if job:
         job.set_progress("約96.5GBのMaya-Sを取得・検証、HIPエンジンを準備中", 0, 1)
-    return await asyncio.to_thread(_prepare_model, gpu_index=gpu_index)
+    return await asyncio.to_thread(_prepare_model, gpu_index=gpu_index, download_dir=download_dir)
 
 
 # ---- instances: the first model (alias maya-s, port 8099, its settings) and the ones registered

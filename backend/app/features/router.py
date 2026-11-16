@@ -37,6 +37,8 @@ class FeatureJobRequest(BaseModel):
 class MayaSetupBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gpu_index: int = Field(default=0, ge=0, le=15)
+    # ダウンロードの保存先（既存のフォルダ）。空なら既定の置き場。
+    download_dir: str = Field(default="", max_length=4096)
 
 
 @router.get("")
@@ -165,17 +167,22 @@ async def maya_s_prepare_model(
         raise HTTPException(status_code=422, detail="先にMaya-Sをオプション機能から導入してください")
     if maya_s.runtime_status()["configured"]:
         raise HTTPException(status_code=422, detail="Maya-Sモデルはセットアップ済みです")
+    try:
+        maya_s._download_dir(body.download_dir)
+    except maya_s.MayaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     async def run(job: jobs.Job) -> dict:
         job.set_progress("Maya-S約96.5GBの明示取得とROCm HIP準備中", 0, 1)
-        state = await maya_s.prepare_model_stream(job, gpu_index=body.gpu_index)
+        state = await maya_s.prepare_model_stream(job, gpu_index=body.gpu_index, download_dir=body.download_dir)
         job.set_progress("モデルの準備完了（まだ起動していません）", 1, 1)
         return state
 
     job = jobs.create("model.maya-s.prepare", "Maya-Sモデル準備", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
     audit.record(db, "maya-s.prepare", user=user, resource_type="feature",
-                 resource_id="maya-s", request=request, metadata={"job_id": job.id, "gpu_index": body.gpu_index})
+                 resource_id="maya-s", request=request, metadata={"job_id": job.id, "gpu_index": body.gpu_index,
+                                                                 "download_dir": body.download_dir})
     return {"job_id": job.id}
 
 
