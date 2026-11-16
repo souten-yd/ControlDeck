@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, EmptyState, IconButton, Skeleton, primaryButtonClass } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 
@@ -107,20 +107,13 @@ export default function GitHubPage() {
       {isLoading ? (
         <Skeleton className="h-24" />
       ) : !repos || repos.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">
-            リポジトリ URL を追加すると、クローン・更新・保存・リバートをボタンで操作できます。
-          </p>
-          {can("apps.edit") && (
-            <button onClick={() => setAdding(true)} className="mt-3 rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700">
-              最初のリポジトリを追加
-            </button>
-          )}
-        </div>
+        <EmptyState actions={can("apps.edit") && (
+          <button onClick={() => setAdding(true)} className={primaryButtonClass}>最初のリポジトリを追加</button>
+        )}>リポジトリ URL を追加すると、クローン・更新・保存・リバートをボタンで操作できます。</EmptyState>
       ) : (
         <ul className="space-y-3">
           {repos.map((r) => (
-            <li key={r.id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <li key={r.id} className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold">

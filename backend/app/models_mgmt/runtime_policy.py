@@ -98,6 +98,7 @@ class RuntimePolicy(BaseModel):
     idle_unload_enabled: bool = False
     idle_unload_minutes: int = Field(default=30, ge=1, le=1440)
     max_loaded_models: int = Field(default=1, ge=1, le=16)
+    vram_margin_gib: float = Field(default=3, ge=0, le=256, allow_inf_nan=False)
     # 画像生成などGPUを使う他の処理はVRAMが空いていなければRAM(host)へ載るので、
     # LLMを退避させる経路そのものを持たない。明示的な解放要求だけ受け付ける。
     gateway_only: bool = True
@@ -155,6 +156,37 @@ def save_policy(policy: RuntimePolicy) -> RuntimePolicy:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(policy.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
     return policy
+
+
+def vram_margin_mib() -> int:
+    """Common minimum headroom, rounded up to whole MiB."""
+    import math
+
+    return math.ceil(get_policy().vram_margin_gib * 1024)
+
+
+def with_margin_arg(args: list[str], flag: str, *, gib: bool = False) -> list[str]:
+    """Replace duplicate reserve flags, keeping a larger per-model reserve."""
+    import math
+
+    margin = vram_margin_mib() / 1024 if gib else vram_margin_mib()
+    result: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == flag or arg.startswith(flag + "="):
+            if arg == flag and index + 1 >= len(args):
+                raise ValueError(f"{flag} の値がありません")
+            value = arg.split("=", 1)[1] if "=" in arg else args[index + 1]
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{flag} の値が不正です")
+            margin = max(margin, value)
+            index += 1 if "=" in arg else 2
+        else:
+            result.append(arg)
+            index += 1
+    return result + [flag, format(margin, "g") if gib else str(math.ceil(margin))]
 
 
 def prefer_models(items: list[dict], runtime: str, policy: RuntimePolicy | None = None) -> list[dict]:

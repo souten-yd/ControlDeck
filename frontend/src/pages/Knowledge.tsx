@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, EmptyState, IconButton, SegmentedTabs, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
@@ -69,18 +69,16 @@ export default function KnowledgePage() {
       {isLoading ? (
         <Skeleton className="h-24" />
       ) : !cols || cols.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">コレクションがありません。作成して文書を取り込みましょう。</p>
-        </div>
+        <EmptyState>コレクションがありません。作成して文書を取り込みましょう。</EmptyState>
       ) : (
         <ul className="space-y-3">
           {cols.map((c) => (
-            <li key={c.collection} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <li key={c.collection} className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex items-center gap-3">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-600/15 text-accent-600 dark:text-accent-400">📚</span>
                 <button onClick={() => setOpenName(c.collection)} className="min-w-0 flex-1 text-left">
                   <p className="truncate text-sm font-semibold">{c.collection}</p>
-                  <p className="num truncate text-xs text-zinc-400">
+                  <p className="num mt-0.5 truncate text-xs text-zinc-500">
                     {c.documents} 文書 · {c.chunks} チャンク · {c.strategy} · 検索 {MODE_LABEL[c.search_mode] ?? c.search_mode}
                   </p>
                 </button>
@@ -248,13 +246,7 @@ function CollectionSheet({ name, onClose }: { name: string; onClose: () => void 
 
   return (
     <BottomSheet title={name} onClose={onClose} wide>
-      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        {tabs.map(([t, label]) => (
-          <button key={t} onClick={() => setTab(t)} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === t ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-            {label}
-          </button>
-        ))}
-      </div>
+      <SegmentedTabs className="mb-3" tabs={tabs} value={tab} onChange={setTab} />
 
       {isLoading || !data ? (
         <Skeleton className="h-24" />
@@ -306,13 +298,7 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
   });
   return (
     <div className="space-y-3">
-      <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        {(["text", "url", "file"] as const).map((s) => (
-          <button key={s} onClick={() => setSrc(s)} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${src === s ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-            {s === "text" ? "テキスト" : s === "url" ? "URL" : "ファイル"}
-          </button>
-        ))}
-      </div>
+      <SegmentedTabs tabs={[["text", "テキスト"], ["url", "URL"], ["file", "ファイル"]] as const} value={src} onChange={setSrc} />
       {src === "text" && <textarea value={text} onChange={(e) => setText(e.target.value)} rows={6} placeholder="取り込むテキスト" className={input} />}
       {src === "url" && <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/doc" className={`${input} font-mono text-xs`} />}
       {src === "file" && (

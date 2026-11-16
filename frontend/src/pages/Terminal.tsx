@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useToasts } from "../stores";
-import { ConfirmDialog, IconButton, Skeleton } from "../components/ui";
+import { ConfirmDialog, EmptyState, IconButton, Skeleton, primaryButtonClass } from "../components/ui";
 import { IconPlus, IconSettings } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { useSessionOrder } from "../features/terminal/useSessionOrder";
@@ -159,15 +159,9 @@ export default function TerminalPage() {
       {isLoading ? (
         <Skeleton className="h-24" />
       ) : !data || visibleSessions.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">アクティブなセッションはありません</p>
-          <button
-            onClick={create}
-            className="mt-3 rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
-          >
-            セッションを開始
-          </button>
-        </div>
+        <EmptyState actions={<button onClick={create} className={primaryButtonClass}>セッションを開始</button>}>
+          アクティブなセッションはありません
+        </EmptyState>
       ) : (
         <ul className="grid gap-2">
           {ordered.map((s, index) => (

@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, DropdownMenu, IconButton, SegmentedTabs, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, IconButton, SegmentedTabs, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconDots, IconFolder, IconPlay, IconPlus, IconSearch, IconSettings, IconStop, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
@@ -61,6 +61,8 @@ const DEFAULT_COMPACTION: CompactionPolicy = { enabled: true, mode: "auto", perc
 
 /** ControlDeckが常駐管理するローカルLLMランタイム。Ollamaは外部プロセス扱い。 */
 type LocalRuntime = "llama.cpp" | "strata" | "maya-s" | "radiance";
+/** 補足文の1項目（「18.6 GB」など）の途中で折り返さない。折り返しは項目の区切りでだけ起こす。 */
+const nowrap = (text: string) => text.replace(/ /g, "\u00a0");
 const RUNTIME_LABEL: Record<string, string> = {
   "llama.cpp": "llama.cpp", strata: "Strata", "maya-s": "Maya", radiance: "Radiance", ollama: "Ollama",
 };
@@ -84,6 +86,7 @@ interface RuntimePolicy {
   idle_unload_enabled: boolean;
   idle_unload_minutes: number;
   max_loaded_models: number;
+  vram_margin_gib: number;
   gateway_only: boolean;
   drain_timeout_sec: number;
   default_model_ref: string;
@@ -412,6 +415,10 @@ export default function ModelsPage() {
 
   const removeLocal = useMutation({
     mutationFn: async ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) => {
+      if (runtime === "maya-s") {
+        await api(`/features/maya-s/models/${encodeURIComponent(alias)}`, { method: "DELETE" });
+        return { ok: true, gguf_deleted: false, reason: "Mayaのモデルファイルは保持" };
+      }
       if (runtime === "strata") {
         await api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} });
         return { ok: true, gguf_deleted: false, reason: "Strataモデルファイルは保持" };
@@ -544,11 +551,7 @@ export default function ModelsPage() {
       ) : isLoading ? (
         <Skeleton className="h-24" />
       ) : !liveModels || liveModels.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">
-            モデルがありません。右上の ＋（{isLocal ? "モデル登録" : "モデル取得"}）から追加してください。
-          </p>
-        </div>
+        <EmptyState>モデルがありません。右上の「＋」から追加してください。</EmptyState>
       ) : (
         <ul className="space-y-2">
           {liveModels.map((m) => {
@@ -567,7 +570,7 @@ export default function ModelsPage() {
               else setDetail(m.name);
             };
             return (
-            <li key={id} className={`rounded-2xl border bg-white py-2 pl-3.5 pr-2 transition-colors dark:bg-zinc-900 sm:pl-4 ${m.loaded
+            <li key={id} className={`rounded-2xl border bg-white py-2 pl-3.5 pr-2 shadow-sm transition-colors dark:bg-zinc-900 sm:pl-4 ${m.loaded
               ? "border-emerald-300/70 dark:border-emerald-800/70"
               : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"}`}>
               <div className="flex items-center gap-2 sm:gap-3">
@@ -594,9 +597,9 @@ export default function ModelsPage() {
                       // どのランタイムでも「ランタイム · 量子化 · サイズ」の順にそろえる。
                       ? [runtime === "llama.cpp" && m.backend_label ? `llama.cpp（${m.backend_label.replace(/（.*?）|\(.*?\)/g, "").trim()}）` : RUNTIME_LABEL[runtime ?? "ollama"],
                          m.quantization, m.size ? gb(m.size) : "",
-                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).map(nowrap).join(" · ")
                       : [m.parameter_size, m.quantization, m.size ? gb(m.size) : "",
-                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).join(" · ")}
+                         m.loaded && m.vram ? `VRAM ${gb(m.vram)}` : ""].filter(Boolean).map(nowrap).join(" · ")}
                   </p>
                 </button>
                 {can("workflows.edit") && (
@@ -617,7 +620,9 @@ export default function ModelsPage() {
                     })()}
                     {isLocal && runtime === "maya-s" ? (
                       <DropdownMenu ariaLabel={`${id}の操作`} trigger={<IconDots />}
-                        items={[{ label: "個別設定", onSelect: openDetail }]} />
+                        items={[{ label: "個別設定", onSelect: openDetail },
+                          { label: "削除", danger: true, separated: true,
+                            onSelect: () => setLocalDeleting({ alias: id, runtime }) }]} />
                     ) : isLocal && runtime ? (
                       <DropdownMenu
                         ariaLabel={`${m.name}の操作`}
@@ -663,14 +668,15 @@ export default function ModelsPage() {
       {localDeleting && (
         <ConfirmDialog
           title={`「${localDeleting.alias}」を削除しますか？`}
-          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
+          message={localDeleting.runtime === "strata" ? "Strataモデル登録だけを削除します。ダウンロードしたモデル本体は保持します。"
+            : localDeleting.runtime === "maya-s" ? "Mayaのモデル登録だけを削除します。モデルのファイルは消しません。" : `${RUNTIME_LABEL[localDeleting.runtime]} のモデル設定と systemd unit を削除します。`}
           confirmLabel="削除する"
           danger
           busy={removeLocal.isPending}
           onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
           onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
-          {localDeleting.runtime !== "strata" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+          {localDeleting.runtime !== "strata" && localDeleting.runtime !== "maya-s" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="text-xs">GGUF ファイル本体も削除する
               <span className="block text-[10px] text-zinc-500">
@@ -756,11 +762,8 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
 
   return (
     <BottomSheet title="モデル取得" onClose={onClose} wide>
-      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        <button onClick={() => setTab("registry")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "registry" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>Ollama レジストリ</button>
-        <button onClick={() => setTab("hf")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "hf" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>HuggingFace (GGUF)</button>
-        <button onClick={() => setTab("local")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "local" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>ローカル登録</button>
-      </div>
+      <SegmentedTabs className="mb-3" value={tab} onChange={setTab}
+        tabs={[["registry", "Ollama レジストリ"], ["hf", "HuggingFace (GGUF)"], ["local", "ローカル登録"]] as const} />
 
       {tab === "registry" ? (
         <div className="space-y-2">
@@ -772,14 +775,8 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
       ) : tab === "hf" ? (
         <div className="space-y-3">
           {/* llama.cpp はGGUFを直接置く。Ollamaは自分でpullする。取得経路が違うので分ける。 */}
-          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-            {([["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const).map(([id, label]) => (
-              <button key={id} onClick={() => setHfMode(id)}
-                className={`flex-1 rounded-lg py-1.5 text-[11px] font-medium ${hfMode === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                {label}
-              </button>
-            ))}
-          </div>
+          <SegmentedTabs value={hfMode} onChange={setHfMode}
+            tabs={[["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const} />
           {hfMode === "direct"
             ? <HuggingFaceDownload onStarted={setJobId} />
             : <HFSearch onPull={start} running={running} />}
@@ -1252,6 +1249,15 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           </L>}
         </div>}
         <p className="text-[10px] leading-relaxed text-zinc-500">思考（reasoning）の深さはモデルごとに違うため、各モデルの個別設定で指定します。</p>
+      </SettingsGroup>
+      <SettingsGroup title="GPU メモリ" description="LLM ランタイム共通。次回のモデル起動から適用します">
+        <L label="VRAM マージン（GiB）">
+          <input aria-label="VRAM マージン（GiB）" type="number" min="0" max="256" step="0.25"
+            value={policy.vram_margin_gib ?? 3} className={input}
+            onChange={(e) => setPolicyCfg({ ...policy, vram_margin_gib: Number(e.target.value) })} />
+        </L>
+        <p className="text-[10px] leading-relaxed text-zinc-500">デスクトップや他の GPU 処理のために空ける目安です。RAM の余裕とは別です。Strata・Maya・Radiance・llama.cpp の起動設定へ自動適用し、モデル個別にもっと大きな予約があればそちらを使います。llama.cpp は GPU 層数を自動（999）にする必要があります。実際の空き容量を保証するものではありません。</p>
+        <p className="text-[10px] leading-relaxed text-zinc-500">Ollama は外部サービス側の設定が必要です。OLLAMA_GPU_OVERHEAD={Math.ceil((policy.vram_margin_gib ?? 3) * 1024) * 1024 * 1024}（バイト）をサービスの環境変数に設定し、再起動してください。</p>
       </SettingsGroup>
       <CompactionSettingsGroup policy={policy} windows={runtimeEnv.compaction_windows ?? []}
         onChange={(compaction) => setPolicyCfg({ ...policy, compaction })} />

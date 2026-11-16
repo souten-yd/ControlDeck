@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, DropdownMenu, IconButton, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, IconButton, Skeleton, primaryButtonClass, secondaryButtonClass } from "../components/ui";
 import { IconBookOpen, IconDots, IconPlay, IconPlus } from "../components/icons";
 import { DEFAULT_DEFINITION } from "../features/workflows/nodeTypes";
 import { PageHeader } from "../components/PageHeader";
@@ -190,27 +190,12 @@ function WorkflowList() {
           ))}
         </div>
       ) : !workflows || workflows.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">
-            {canEdit ? "ワークフローはまだありません。ノードをつないで PC 操作を自動化できます。" : "公開済みのワークフローはありません。"}
-          </p>
-          {canEdit && (
-            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-              <button
-                onClick={() => setShowSamples(true)}
-                className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
-              >
-                📖 サンプルから始める
-              </button>
-              <button
-                onClick={() => create.mutate()}
-                className="rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
-              >
-                最初のワークフローを作成
-              </button>
-            </div>
-          )}
-        </div>
+        <EmptyState actions={canEdit && <>
+          <button onClick={() => setShowSamples(true)} className={secondaryButtonClass}>📖 サンプルから始める</button>
+          <button onClick={() => create.mutate()} className={primaryButtonClass}>最初のワークフローを作成</button>
+        </>}>
+          {canEdit ? "ワークフローはまだありません。ノードをつないで PC 操作を自動化できます。" : "公開済みのワークフローはありません。"}
+        </EmptyState>
       ) : (
         <ul className="space-y-3">
           {workflows.map((wf) => {
@@ -218,12 +203,12 @@ function WorkflowList() {
             return (
               <li
                 key={wf.id}
-                className="flex cursor-pointer items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                className="flex cursor-pointer items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
                 onClick={() => navigate(canEdit ? `/workflows/${wf.id}` : `/runner?workflow=${wf.id}`)}
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{wf.name}</p>
-                  <p className="mt-0.5 text-xs text-zinc-400">
+                  <p className="truncate text-sm font-semibold">{wf.name}</p>
+                  <p className="num mt-0.5 truncate text-xs text-zinc-500">
                     {canEdit ? `ノード ${wf.definition.nodes?.length ?? 0} 個` : `Published v${wf.published_version}`}
                     {st && (
                       <>
