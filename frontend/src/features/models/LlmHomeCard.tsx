@@ -1,0 +1,220 @@
+/** Home の LLM カード: ローカル LLM と OpenRouter（外部モデル）の「いま」を 1 枚にまとめる。
+ *
+ * 左右は同じ作り: 見出し → モデル名 → 前処理（OpenRouter は初回応答）・生成・ctx → 区切り →
+ * お金の 2 行（ローカルは LLM 処理中の電力と今日の電気代、OpenRouter は残りクレジットと今日の使用）。
+ * 携帯（320px〜）でも左右半分ずつで、モデル名が切れない幅を先に確保している。
+ * どちらも無ければカードごと出さない。外部側は settings.manage の利用者だけ。 */
+import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { getLlamaCapacity, type EndpointCapacity, type FailedInstance, type LlmPower } from "../../api/models";
+import {
+  CLOUD_QUERY_KEY, getCloudAccount, getCloudState, getCloudSummary, type CloudSummary,
+} from "../../api/cloudModels";
+import { useAuth } from "../../stores";
+
+function usd(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (v === 0) return "$0";
+  if (v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+function yen(v: number): string {
+  return v < 100 ? `¥${v.toFixed(1)}` : `¥${Math.round(v).toLocaleString()}`;
+}
+
+function tokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${Math.round(n / 1000)}K`;
+  return String(n);
+}
+
+function duration(seconds: number): string {
+  if (seconds < 60) return `${seconds}秒`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}分`;
+  return `${(seconds / 3600).toFixed(1)}時間`;
+}
+
+/** "anthropic/claude-sonnet-4.5" → "claude-sonnet-4.5"（全体は title に出す）。 */
+function shortModel(id: string): string {
+  const i = id.indexOf("/");
+  return i >= 0 ? id.slice(i + 1) : id;
+}
+
+const Muted = ({ children = "—" }: { children?: React.ReactNode }) => <span className="text-zinc-400">{children}</span>;
+const Unit = ({ children }: { children: React.ReactNode }) => <span className="text-[10px] text-zinc-400 md:text-[11px]">{children}</span>;
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="num flex items-baseline justify-between gap-1.5 text-[11px] leading-relaxed md:text-[13px]">
+      <span className="shrink-0 text-[10px] text-zinc-400 md:text-[11px]">{label}</span>
+      <span className="min-w-0 truncate text-right">{children}</span>
+    </div>
+  );
+}
+
+function CtxBar({ used, total }: { used: number | null | undefined; total: number | null | undefined }) {
+  const pct = used != null && total ? Math.min(100, (used / total) * 100) : 0;
+  return (
+    <div className="mb-0.5 mt-px h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+      <div className={`h-full rounded-full ${pct >= 90 ? "bg-amber-500" : "bg-accent-500"}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function Column({ heading, to, model, children }: {
+  heading: string; to: string; model: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <Link to={to} className="block truncate text-[10px] font-semibold text-zinc-500 hover:underline md:text-xs">{heading}</Link>
+      <div className="mb-1 mt-0.5 flex min-w-0 items-center gap-1.5 text-xs md:text-sm">{model}</div>
+      <div className="md:max-w-[18rem]">{children}</div>
+    </div>
+  );
+}
+
+const Divider = () => <div className="my-1 border-t border-zinc-100 dark:border-zinc-800" />;
+
+function ModelName({ name, title, active, more = 0 }: { name: string; title?: string; active: boolean; more?: number }) {
+  return (
+    <>
+      {active && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent-500" />}
+      <span className={`min-w-0 truncate ${active ? "" : "text-zinc-500"}`} title={title ?? name}>{name}</span>
+      {more > 0 && <span className="shrink-0 text-[10px] text-zinc-400">+{more}</span>}
+    </>
+  );
+}
+
+function LocalColumn({ endpoints, failed, power }: {
+  endpoints: EndpointCapacity[]; failed: FailedInstance[]; power: LlmPower | undefined;
+}) {
+  // 複数動いていれば、処理中のものを先に出す。
+  const item = [...endpoints].sort((a, b) => b.busy - a.busy)[0];
+  const loading = !!item && (!item.available || item.slots === 0);
+  const used = item ? (item.timed_by_controldeck ? item.ctx_active : item.ctx_used) : null;
+  const on = power?.enabled;
+  const watts = power?.busy ? power.now_w : power?.avg_w;
+  return (
+    <Column heading="ローカル LLM" to="/models?tab=llm"
+      model={item
+        ? <ModelName name={item.running_alias} title={`${item.running_alias} :${item.port}`} active={item.busy > 0} more={endpoints.length - 1} />
+        : <span className="truncate text-red-600 dark:text-red-400">起動失敗: {failed[0]?.alias}</span>}>
+      {item && (
+        <>
+          <Row label={item.phase === "prefill" ? "前処理中" : "前処理"}>
+            {loading ? <Muted>起動中…</Muted>
+              : item.prefill_tokens_per_second > 0 ? <>{Math.round(item.prefill_tokens_per_second).toLocaleString()} <Unit>tok/s</Unit></>
+              : <Muted />}
+          </Row>
+          <Row label={item.phase === "think" ? "思考中" : "生成"}>
+            {!loading && (item.tokens_per_second > 0 || item.busy > 0)
+              ? <>{item.tokens_per_second.toFixed(1)} <Unit>tok/s</Unit></> : <Muted />}
+          </Row>
+          <Row label="ctx">
+            {used != null ? tokens(used) : <Muted />} / {item.ctx_total > 0 ? tokens(item.ctx_total) : "—"}
+          </Row>
+          <CtxBar used={used} total={item.ctx_total} />
+        </>
+      )}
+      <Divider />
+      <Row label={power?.busy ? "電力" : "平均"}>
+        {on && watts != null
+          ? <>{Math.round(watts)} <Unit>W</Unit> · {yen(power!.yen_per_hour ?? 0)}<Unit>/h</Unit></>
+          : <Muted />}
+      </Row>
+      <Row label="今日">
+        {on ? <>{yen(power!.today_yen ?? 0)} <Unit>· {duration(power!.today_seconds ?? 0)}</Unit></> : <Muted />}
+      </Row>
+    </Column>
+  );
+}
+
+function CloudColumn({ summary, balance, balanceError }: {
+  summary: CloudSummary | undefined; balance: number | null | undefined; balanceError: boolean;
+}) {
+  const running = summary?.running.filter((r) => r.provider === "openrouter") ?? [];
+  const call = running[0];
+  const last = summary?.last?.provider === "openrouter" ? summary.last : null;
+  const ttft = call?.ttft_s ?? (call ? null : last?.ttft_s);
+  const speed = call ? (call.phase === "generate" ? call.tokens_per_second : null) : last?.tokens_per_second;
+  // ctx は終わった呼び出しの値。実行中が別のモデルなら、見出しと食い違うので出さない。
+  const ctxFrom = last && (!call || call.model === last.model) ? last : null;
+  const ctxUsed = ctxFrom ? ctxFrom.prompt_tokens + ctxFrom.completion_tokens : null;
+  const pending = <Muted>…</Muted>;
+  return (
+    <Column heading="OpenRouter" to="/models?tab=frontier"
+      model={call ? <ModelName name={shortModel(call.model)} title={call.model} active more={running.length - 1} />
+        : last ? <ModelName name={shortModel(last.model)} title={`${last.model}（直前）`} active={false} />
+        : <Muted>{summary ? "なし" : "…"}</Muted>}>
+      <Row label="初回応答">
+        {call?.phase === "waiting" ? <Muted>応答待ち</Muted> : ttft != null ? <>{ttft.toFixed(1)} <Unit>s</Unit></> : <Muted />}
+      </Row>
+      <Row label="生成">{speed != null ? <>{speed.toFixed(1)} <Unit>tok/s</Unit></> : <Muted />}</Row>
+      <Row label="ctx">
+        {ctxUsed != null ? tokens(ctxUsed) : <Muted />}{ctxFrom?.context_length ? ` / ${tokens(ctxFrom.context_length)}` : ""}
+      </Row>
+      <CtxBar used={ctxUsed} total={ctxFrom?.context_length} />
+      <Divider />
+      <Row label="残り">
+        <span className={balance != null && balance < 1 ? "text-amber-600 dark:text-amber-400" : ""}>
+          {balance !== undefined ? usd(balance) : balanceError ? <Muted>取得不可</Muted> : pending}
+        </span>
+      </Row>
+      <Row label="今日">
+        {summary
+          ? <>{usd(summary.today.cost_usd)} <Unit>· {summary.today.calls}回</Unit></>
+          : pending}
+      </Row>
+    </Column>
+  );
+}
+
+export function LlmHomeCard() {
+  const can = useAuth((s) => s.can);
+  const canCloud = can("settings.manage");
+  // ローカル側の API は workflows.run が要る。無い利用者には取りに行かない（403 を出し続けない）。
+  const canLocal = can("workflows.run");
+  // Models 画面の CapacityWidget と同じキーなので、取得は 1 回で済む。
+  const { data: capacity } = useQuery({
+    queryKey: ["llama-capacity"], queryFn: getLlamaCapacity, enabled: canLocal,
+    refetchInterval: (q) => (q.state.data?.endpoints.length ? 3000 : 20000),
+  });
+  const { data: cloudState } = useQuery({
+    queryKey: CLOUD_QUERY_KEY, queryFn: getCloudState, enabled: canCloud, staleTime: 60_000,
+  });
+  const openrouter = cloudState?.providers.find((p) => p.id === "openrouter");
+  const hasCloud = canCloud && !!openrouter?.configured && !!openrouter.enabled;
+  const summary = useQuery({
+    queryKey: ["cloud-summary"], queryFn: getCloudSummary, enabled: hasCloud,
+    // 実行中だけ短い間隔で追う。
+    refetchInterval: (q) => (q.state.data?.running.length ? 3000 : 15000),
+  });
+  // 残高は OpenRouter へ問い合わせるので、頻繁には取りに行かない。
+  const account = useQuery({
+    queryKey: ["cloud-account", "openrouter"], queryFn: () => getCloudAccount("openrouter"), enabled: hasCloud,
+    staleTime: 60_000, refetchInterval: 300_000, retry: false,
+  });
+
+  const endpoints = capacity?.endpoints ?? [];
+  const failed = capacity?.failed ?? [];
+  const hasLocal = endpoints.length > 0 || failed.length > 0;
+  if (!hasLocal && !hasCloud) return null;
+
+  const both = hasLocal && hasCloud;
+  const acct = account.data?.supported ? account.data : null;
+  return (
+    <section aria-label="LLM の利用状況"
+      className="rounded-2xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
+      <div className={both ? "grid grid-cols-2 gap-x-3 md:gap-x-6" : ""}>
+        {hasLocal && <LocalColumn endpoints={endpoints} failed={failed} power={capacity?.power} />}
+        {hasCloud && (
+          <div className={both ? "min-w-0 border-l border-zinc-100 pl-3 dark:border-zinc-800 md:pl-6" : "min-w-0"}>
+            <CloudColumn summary={summary.data}
+              balance={acct ? acct.balance : undefined} balanceError={account.isError} />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}

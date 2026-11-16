@@ -543,6 +543,7 @@ async def _cloud_chat(request: Request, payload: dict):
         if routing:
             body["provider"] = {**(body.get("provider") if isinstance(body.get("provider"), dict) else {}), **routing}
     url = f"{target.base_url}/chat/completions"
+    timer = cloud.begin_call(target, caller)
     if body.get("stream"):
         body.setdefault("stream_options", {"include_usage": True})
         client = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20), follow_redirects=False)
@@ -550,13 +551,14 @@ async def _cloud_chat(request: Request, payload: dict):
             upstream = await client.send(client.build_request("POST", url, json=body, headers=headers), stream=True)
         except (Exception, asyncio.CancelledError) as exc:
             await client.aclose()
-            await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502)
+            await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502, timer=timer)
             raise HTTPException(status_code=502, detail="外部のプロバイダに接続できませんでした") from exc
         if upstream.status_code >= 400:
             await upstream.aread()
             await upstream.aclose()
             await client.aclose()
-            await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=upstream.status_code)
+            await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=upstream.status_code,
+                                    timer=timer)
             raise HTTPException(status_code=502 if upstream.status_code >= 500 else upstream.status_code,
                                 detail=f"外部のプロバイダがエラーを返しました（HTTP {upstream.status_code}）")
 
@@ -566,25 +568,30 @@ async def _cloud_chat(request: Request, payload: dict):
             try:
                 async for chunk in upstream.aiter_bytes():
                     usage = _sse_usage(pending, chunk) or usage
+                    cloud.note_stream(timer, chunk)
                     yield chunk
             finally:
                 await upstream.aclose()
                 await client.aclose()
-                await asyncio.to_thread(cloud.record_usage, target, caller, usage, status_code=200)
+                await asyncio.to_thread(cloud.record_usage, target, caller, usage, status_code=200, timer=timer)
 
         return StreamingResponse(relay(), media_type="text/event-stream")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20), follow_redirects=False) as client:
             response = await client.post(url, json=body, headers=headers)
     except httpx.HTTPError as exc:
-        await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502)
+        await asyncio.to_thread(cloud.record_usage, target, caller, None, status_code=502, timer=timer)
         raise HTTPException(status_code=502, detail="外部のプロバイダに接続できませんでした") from exc
+    except asyncio.CancelledError:
+        cloud.abandon_call(timer)  # 呼び出し元が切れた。実行中の表示に残さない
+        raise
     try:
         data = response.json()
     except ValueError:
         data = {}
     await asyncio.to_thread(cloud.record_usage, target, caller,
-                            data.get("usage") if isinstance(data, dict) else None, status_code=response.status_code)
+                            data.get("usage") if isinstance(data, dict) else None, status_code=response.status_code,
+                            timer=timer)
     if response.status_code >= 400:
         raise HTTPException(status_code=502 if response.status_code >= 500 else response.status_code,
                             detail=f"外部のプロバイダがエラーを返しました（HTTP {response.status_code}）")

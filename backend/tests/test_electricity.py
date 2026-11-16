@@ -163,6 +163,76 @@ def test_accumulator_integrates_and_skips_gaps(monkeypatch):
     assert acc.session_energy_kwh == e1  # 欠測直後は積算されない
 
 
+def test_llm_energy_counts_only_while_an_llm_works(tmp_path, monkeypatch):
+    """LLM が処理していた区間だけ、PC 全体の電力を LLM の電気代へ数える。日別に JSON へ残す。"""
+    import json
+
+    import app.monitoring.electricity as el
+
+    acc = el.ElectricityAccumulator()
+    acc._loaded = True
+    fake = {"mono": 1000.0, "wall": datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone(timedelta(hours=9)))}
+    monkeypatch.setattr(el, "time", SimpleNamespace(**{**vars(el.time), "monotonic": lambda: fake["mono"]}))
+    monkeypatch.setattr(el, "_local_now", lambda: fake["wall"])
+    monkeypatch.setattr(acc, "persist", lambda reason="interval": None)
+    monkeypatch.setattr(el, "_llm_path", lambda: tmp_path / "electricity-llm.json")
+    busy = {"during": False, "now": False}
+    monkeypatch.setattr(el, "_llm_busy", lambda since: (busy["during"], busy["now"]))
+
+    def step(output_w, seconds=2.0):
+        fake["mono"] += seconds
+        fake["wall"] += timedelta(seconds=seconds)
+        acc.update(output_w)
+
+    acc.update(85.0)
+    step(85.0)                                   # 待機中: LLM 側は 0
+    assert acc.llm_snapshot()["today_yen"] == 0 and acc.llm_snapshot()["busy"] is False
+    busy.update(during=True, now=True)
+    for _ in range(10):                          # 20 秒、入力 400 W（出力 340 W / 効率 0.85）
+        step(340.0)
+    snap = acc.llm_snapshot()
+    price = acc._cfg().price_per_kwh_yen
+    assert snap["busy"] is True and snap["now_w"] == 400.0
+    # 最初の区間は 100 W → 400 W の台形。残り 9 区間は 400 W。
+    expected_kwh = (250 * 2 + 400 * 18) / 3_600_000
+    assert abs(snap["today_yen"] - round(expected_kwh * price, 2)) < 0.01
+    assert snap["today_seconds"] == 20
+    assert snap["yen_per_hour"] == round(400 / 1000 * price, 2)
+    busy.update(during=False, now=False)
+    step(85.0)                                   # 終わった後は数えない。平均は処理中の分だけ
+    after = acc.llm_snapshot()
+    assert after["busy"] is False and after["now_w"] is None and after["today_seconds"] == 20
+    assert abs(after["avg_w"] - expected_kwh * 3_600_000 / 20) < 0.1
+    acc._persist_llm()
+    saved = json.loads((tmp_path / "electricity-llm.json").read_text(encoding="utf-8"))
+    assert saved["2026-07-15"]["seconds"] == 20
+
+
+def test_llm_energy_reloads_from_file(tmp_path, monkeypatch):
+    import app.monitoring.electricity as el
+
+    (tmp_path / "electricity-llm.json").write_text(
+        '{"2026-07-15": {"energy_kwh": 0.5, "cost_yen": 17.8, "seconds": 3600}}', encoding="utf-8")
+    monkeypatch.setattr(el, "_llm_path", lambda: tmp_path / "electricity-llm.json")
+    monkeypatch.setattr(el, "_local_now", lambda: datetime(2026, 7, 15, 20, 0, tzinfo=timezone(timedelta(hours=9))))
+    acc = el.ElectricityAccumulator()
+    acc.load()
+    snap = acc.llm_snapshot()
+    assert snap["today_yen"] == 17.8 and snap["avg_w"] == 500.0 and snap["now_w"] is None
+
+
+def test_llm_energy_reload_skips_a_broken_day(tmp_path, monkeypatch):
+    import app.monitoring.electricity as el
+
+    (tmp_path / "electricity-llm.json").write_text(
+        '{"2026-07-14": "broken", "2026-07-15": {"energy_kwh": 0.5, "cost_yen": 17.8, "seconds": 3600}}',
+        encoding="utf-8")
+    monkeypatch.setattr(el, "_llm_path", lambda: tmp_path / "electricity-llm.json")
+    acc = el.ElectricityAccumulator()
+    acc.load()
+    assert set(acc._llm) == {"2026-07-15"}
+
+
 # ---- 設定検証 ----
 
 def test_config_validation():

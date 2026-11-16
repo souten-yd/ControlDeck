@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-17 Home に LLM カード（ローカル + OpenRouter）
+
+- Home の「実行中のアプリ」の上に LLM カードを追加。ローカル LLM と OpenRouter を 1 枚に左右半分ずつ並べる（携帯でも半分ずつ）。どちらも無ければ出さない。OpenRouter 側は settings.manage の利用者だけ。
+- 左右は同じ作り: モデル名 → 前処理（OpenRouter は初回応答の秒数）・生成 tok/s・ctx（使用 / 最大とバー）→ 区切り → お金の 2 行。ローカルは「電力（処理中は今の W、待機中は今日の処理中の平均）· ¥/h」と「今日の LLM 電気代 · 処理していた時間」。OpenRouter は「残りクレジット」と「今日の使用額 · 回数」。利用者との擦り合わせで、最近 7 日のモデル別・無料枠・トークン数・キャッシュ率・今月の行は出さない。
+- ctx の出どころ: llama.cpp は KV の使用量。Strata と Maya-S はエンジンの `/metrics`（実行中の 1 本の「プロンプト + 生成」、無ければ直前の 1 本、最大は engine.max_context）。Radiance は ControlDeck が中継した直前の 1 本。OpenRouter は直前の呼び出しの「プロンプト + 生成」/ モデルのコンテキスト長（モデル一覧を取ったときに覚える。知らなければ 1 時間に 1 回まで一覧を取りに行く）。
+- LLM の電気代: 利用者の選択で「LLM が処理していた間の PC 全体」（基本電力を差し引く推定はしない）。PSU の電力（コンセント側換算）を 2 秒ごとに積算する既存の仕組みで、ゲートウェイ・内部の中継が LLM へ要求を出していた区間だけを別に数える。ControlDeck を通さずポートへ直接来た要求は数えない。日別に `data/electricity-llm.json` へ保存（62 日分、DB の変更なし）。
+- Backend: ゲートウェイの外部モデル中継で、所要時間・最初のトークンまでの時間・生成速度を `cloud-usage.jsonl` の行に足した（本文は従来どおり記録しない）。実行中の呼び出しはメモリだけで持つ（15 分で掃除）。`GET /api/v1/models/cloud-summary`（settings.manage）を追加。`/models/llama/capacity` に `power` と `ctx_active` を足した。
+- 検証（sandbox `home-llm`）: `pytest` 全件、`npm run build`。集中テストで見つかった不具合（`CallTimer` の既定値が定義時の `time.monotonic` を掴み、時計の差し替えが効かず `ttft_s` が負になる）を修正。ミラー（API 応答を差し替え）で Home を PC 幅・375px・320px、ライト/ダーク、実行中/待機中で確認（横あふれ 0、画面のエラー 0）。本番で LLM が動いていない時間で、Strata / Maya-S の `/metrics` を実機では読めていない。
+
 ## 2026-11-17 Maya のモデルを登録画面から導入・削除・更新
 
 - Models の一覧から Maya の「モデルが未準備です」カードを撤去。GLM-5.3-Flash · Maya-S も含め、Maya のモデルは「＋」→「Maya」から導入する（GLM Maya-S を登録すると従来の maya-s として戻り、調整値を引き継ぐ）。

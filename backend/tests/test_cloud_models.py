@@ -495,3 +495,67 @@ def test_account_flags_a_management_key(store, monkeypatch):
     _configure()
     _Upstream(monkeypatch, httpx.Response(200, json={"data": {"is_management_key": True, "limit": None}}))
     assert asyncio.run(cloud.account("openrouter"))["management_key"] is True
+
+
+# ---- Home のまとめ ----
+
+
+def test_summary_reports_running_calls_totals_and_speed(store, monkeypatch):
+    _configure()
+    cloud.save_egress({"opencode": True})
+    target = cloud.resolve("cloud:openrouter/anthropic/claude-x", caller="opencode")
+    clock = [100.0]
+    monkeypatch.setattr(cloud.time, "monotonic", lambda: clock[0])
+    timer = cloud.begin_call(target, "opencode")
+    clock[0] = 101.0
+    cloud.note_stream(timer, b"data: {}\n\ndata: {}\n\n")
+    clock[0] = 102.0
+    running = cloud.summary()["running"]
+    assert running[0]["model"] == "anthropic/claude-x" and running[0]["phase"] == "generate"
+    assert running[0]["tokens"] == 2 and running[0]["caller_label"] == "OpenCode"
+    clock[0] = 103.0
+    cloud.record_usage(target, "opencode", {"prompt_tokens": 100, "completion_tokens": 41, "cost": 0.01},
+                       status_code=200, timer=timer)
+    data = cloud.summary()
+    assert data["running"] == []
+    row = cloud.usage_rows()[0]
+    assert row["ttft_s"] == 1.0 and row["duration_s"] == 3.0 and row["tokens_per_second"] == 20.0
+    assert data["today"]["calls"] == 1 and data["today"]["cost_usd"] == 0.01
+    assert data["month"]["completion_tokens"] == 41
+    # 直前の呼び出し: 初回応答とコンテキストに入った量。長さはモデル一覧を取ったときに覚える。
+    assert data["last"]["ttft_s"] == 1.0 and data["last"]["prompt_tokens"] == 100
+    assert data["last"]["context_length"] is None
+    cloud._context_lengths[("openrouter", "anthropic/claude-x")] = 200000
+    assert cloud.summary()["last"]["context_length"] == 200000
+
+
+def test_running_call_reports_time_to_first_token(store, monkeypatch):
+    _configure()
+    cloud.save_egress({"opencode": True})
+    target = cloud.resolve("cloud:openrouter/anthropic/claude-x", caller="opencode")
+    clock = [50.0]
+    monkeypatch.setattr(cloud.time, "monotonic", lambda: clock[0])
+    timer = cloud.begin_call(target, "opencode")
+    assert cloud.summary()["running"][0]["ttft_s"] is None
+    clock[0] = 51.5
+    cloud.note_stream(timer, b"data: {}\n\n")
+    assert cloud.summary()["running"][0]["ttft_s"] == 1.5
+    cloud.record_usage(target, "opencode", None, status_code=200, timer=timer)
+
+
+def test_context_lengths_are_fetched_at_most_hourly():
+    cloud._context_fetch_at.clear()
+    assert cloud.needs_context_lengths("openrouter", "x/unknown") is True
+    assert cloud.needs_context_lengths("openrouter", "x/unknown") is False
+    cloud._context_lengths[("openrouter", "x/known")] = 1000
+    assert cloud.needs_context_lengths("openrouter", "x/known") is False
+
+
+def test_summary_endpoint_requires_settings_manage(admin_client, store):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    assert TestClient(app).get("/api/v1/models/cloud-summary").status_code in (401, 403)
+    data = admin_client.get("/api/v1/models/cloud-summary").json()
+    assert data["running"] == [] and data["today"]["calls"] == 0 and data["last"] is None

@@ -21,7 +21,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -268,16 +268,100 @@ def resolve(model: str, *, caller: str) -> CloudTarget:
                        str(entry.get("data_policy") or DEFAULT_DATA_POLICY))
 
 
-def record_usage(target: CloudTarget, caller: str, usage: dict | None, *, status_code: int) -> None:
+@dataclass
+class CallTimer:
+    """実行中の 1 回の呼び出し（Home の表示用。メモリだけ、本文は持たない）。"""
+    provider: str
+    model: str
+    caller: str
+    started: float = field(default_factory=lambda: time.monotonic())
+    started_at: float = field(default_factory=lambda: time.time())
+    first_at: float | None = None
+    events: int = 0  # 流れてきた差分の数（おおよそのトークン数）
+
+
+_inflight: list[CallTimer] = []
+# モデルごとのコンテキスト長（モデル一覧を取ったときに覚える。Home の ctx 表示用、メモリだけ）
+_context_lengths: dict[tuple[str, str], int] = {}
+_context_fetch_at: dict[str, float] = {}
+
+
+def context_length(provider_id: str, model: str) -> int | None:
+    return _context_lengths.get((provider_id, model))
+
+
+def needs_context_lengths(provider_id: str, model: str, *, every: float = 3600) -> bool:
+    """このモデルの長さを知らず、最近（既定 1 時間）一覧を取りに行っていなければ True（取りに行く印も付ける）。"""
+    if (provider_id, model) in _context_lengths:
+        return False
+    now = time.monotonic()
+    last = _context_fetch_at.get(provider_id)
+    if last is not None and now - last < every:
+        return False
+    _context_fetch_at[provider_id] = now
+    return True
+
+
+def begin_call(target: CloudTarget, caller: str) -> CallTimer:
+    timer = CallTimer(target.provider, target.model, caller)
+    with _lock:
+        _inflight.append(timer)
+    return timer
+
+
+def note_stream(timer: CallTimer, chunk: bytes) -> None:
+    """中継した SSE の塊から、最初の応答の時刻と差分の数だけを数える（本文は見ない）。"""
+    count = chunk.count(b"data:")
+    if count and timer.first_at is None:
+        timer.first_at = time.monotonic()
+    timer.events += count
+
+
+def _finish(timer: CallTimer | None) -> tuple[float | None, float | None]:
+    if timer is None:
+        return None, None
+    with _lock:
+        if timer in _inflight:
+            _inflight.remove(timer)
+    duration = time.monotonic() - timer.started
+    ttft = (timer.first_at - timer.started) if timer.first_at is not None else None
+    return duration, ttft
+
+
+def abandon_call(timer: CallTimer) -> None:
+    """記録せずに実行中から外す（呼び出し元が途中で切れたとき）。"""
+    _finish(timer)
+
+
+def _speed(completion: int, duration: float | None, ttft: float | None) -> float | None:
+    """生成の速さ（tok/s）。stream なら最初のトークンより後の時間で割る。"""
+    if not duration or completion <= 1:
+        return None
+    if ttft is not None and duration - ttft > 0.05:
+        return (completion - 1) / (duration - ttft)
+    return completion / duration
+
+
+def record_usage(target: CloudTarget, caller: str, usage: dict | None, *, status_code: int,
+                 timer: CallTimer | None = None) -> None:
     """1 回の呼び出しの記録。本文は残さない。"""
     usage = usage or {}
     cost = usage.get("cost")
+    duration, ttft = _finish(timer)
+    completion = int(usage.get("completion_tokens") or 0)
+    speed = _speed(completion, duration, ttft) if status_code < 400 else None
     row = {
         "at": time.time(), "caller": caller, "provider": target.provider, "model": target.model,
         "status": status_code, "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "completion_tokens": completion,
         "cost_usd": float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
     }
+    if duration is not None:
+        row["duration_s"] = round(duration, 3)
+    if ttft is not None:
+        row["ttft_s"] = round(ttft, 3)
+    if speed is not None:
+        row["tokens_per_second"] = round(speed, 1)
     path = _usage_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _lock, path.open("a", encoding="utf-8") as handle:
@@ -307,6 +391,60 @@ def usage_rows(*, since: float = 0.0, limit: int = 500) -> list[dict]:
 def _month_start(now: float | None = None) -> float:
     local = time.localtime(now or time.time())
     return time.mktime((local.tm_year, local.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+
+
+def _day_start(now: float | None = None) -> float:
+    local = time.localtime(now or time.time())
+    return time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def summary(*, now: float | None = None) -> dict:
+    """Home 用のまとめ: 実行中の呼び出しと、今日・今月の合計。"""
+    now = now or time.time()
+    mono = time.monotonic()
+    with _lock:
+        # 中継が始まらずに捨てられた呼び出しは記録されないまま残るので、上流の時間切れ（600 秒）を過ぎたら外す。
+        _inflight[:] = [t for t in _inflight if mono - t.started < 900]
+        active = list(_inflight)
+    running = []
+    for t in active:
+        elapsed = mono - t.started
+        live = None
+        if t.first_at is not None and t.events > 1 and mono - t.first_at > 0.5:
+            live = round((t.events - 1) / (mono - t.first_at), 1)
+        running.append({
+            "provider": t.provider, "model": t.model, "caller": t.caller,
+            "caller_label": CALLER_LABELS.get(t.caller, t.caller),
+            "elapsed_s": round(elapsed, 1), "phase": "generate" if t.first_at is not None else "waiting",
+            "tokens": t.events, "tokens_per_second": live,
+            "ttft_s": round(t.first_at - t.started, 2) if t.first_at is not None else None,
+        })
+
+    month_start, day_start = _month_start(now), _day_start(now)
+    rows = usage_rows(since=month_start, limit=1_000_000)
+
+    def totals(items: list[dict]) -> dict:
+        return {
+            "calls": len(items),
+            "errors": sum(1 for r in items if int(r.get("status") or 0) >= 400),
+            "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in items),
+            "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in items),
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in items), 6),
+        }
+
+    # 直前に終わった呼び出し（成功したもの）: 初回応答の秒数と、コンテキストに入った量。
+    last = next((r for r in rows if int(r.get("status") or 0) < 400 and r.get("prompt_tokens")), None)
+    return {
+        "running": running,
+        "today": totals([r for r in rows if r.get("at", 0) >= day_start]),
+        "month": totals([r for r in rows if r.get("at", 0) >= month_start]),
+        "last": ({"provider": last.get("provider"), "model": last.get("model"), "at": last.get("at"),
+                  "ttft_s": last.get("ttft_s"), "tokens_per_second": last.get("tokens_per_second"),
+                  "prompt_tokens": int(last.get("prompt_tokens") or 0),
+                  "completion_tokens": int(last.get("completion_tokens") or 0),
+                  "context_length": context_length(str(last.get("provider")), str(last.get("model")))}
+                 if last else None),
+    }
 
 
 def spent_this_month(provider_id: str) -> float:
@@ -339,7 +477,14 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         raise CloudError(f"モデルの一覧を取得できませんでした（HTTP {response.status_code}）", 502)
     zdr_models = await _zdr_models() if provider_id == "openrouter" else set()
     rows = []
-    for item in (response.json().get("data") or [])[:2000]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise CloudError("モデルの一覧を読めませんでした", 502) from exc
+    items = payload.get("data") if isinstance(payload, dict) else None
+    for item in (items if isinstance(items, list) else [])[:2000]:
+        if not isinstance(item, dict):
+            continue
         model_id = str(item.get("id") or "")
         if not _MODEL.fullmatch(model_id):
             continue
@@ -355,6 +500,8 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         if provider_id == "openrouter":
             # 絞り込み用（賢さの目安・対応機能・提供元）。他のプロバイダは /models に情報が無い。
             row.update(_capabilities(item, model_id))
+        if isinstance(row["context_length"], int) and row["context_length"] > 0:
+            _context_lengths[(provider_id, model_id)] = row["context_length"]
         rows.append(row)
     return rows
 

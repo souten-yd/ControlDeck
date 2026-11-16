@@ -10,6 +10,7 @@ import type { MetricsSnapshot } from "../types";
 import { PageHeader } from "../components/PageHeader";
 import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 import { PendingApprovals } from "../features/approvals/PendingApprovals";
+import { LlmHomeCard } from "../features/models/LlmHomeCard";
 
 interface HistorySample {
   timestamp: string;
@@ -232,6 +233,10 @@ export default function DashboardPage() {
           Home からは何も起きていないように見えていた。一度も呼ばれていなければ
           widget 側で出さない。 */}
       {can("workflows.run") && <AgentToolWidget />}
+
+      {/* LLM の利用状況（ローカル + OpenRouter）。Models 画面へ行かなくても、
+          いま動いているもの・速さ・使った額が分かるようにする。どちらも無ければ出さない。 */}
+      <LlmHomeCard />
 
       {/* 実行中アプリ */}
       <section>
