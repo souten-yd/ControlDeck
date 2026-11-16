@@ -179,16 +179,23 @@ async def maya_s_prepare_model(
     return {"job_id": job.id}
 
 
+class MayaAliasBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(default="maya-s", pattern=r"^maya-[a-z0-9-]{1,60}$")
+
+
 @router.post("/maya-s/model/start-jobs", status_code=201)
 async def maya_s_start_model(
-    request: Request, user: User = Depends(require_permission("settings.manage")),
+    request: Request, body: MayaAliasBody | None = None,
+    user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
     from app.models_mgmt import maya_s
     from app.models_mgmt import llama, strata_gateway, ollama
 
-    if not maya_s.runtime_status()["configured"]:
-        raise HTTPException(status_code=422, detail="先にMaya-Sのモデル準備を完了してください")
+    alias = body.alias if body else maya_s.ALIAS
+    if not any(item["alias"] == alias for item in await asyncio.to_thread(maya_s.list_instances)):
+        raise HTTPException(status_code=422, detail="先にMayaのモデル準備を完了してください")
     # Never auto-evict another engine or secretly switch the shared runtime.
     from app.models_mgmt import radiance
     others = await asyncio.gather(
@@ -202,30 +209,31 @@ async def maya_s_start_model(
         raise HTTPException(status_code=409, detail="別のローカルLLMが稼働中です。GPU競合を解消してから明示起動してください")
 
     async def run(job: jobs.Job) -> dict:
-        job.set_progress("Maya-Sを独立systemdユーザーサービスで起動中", 0, 1)
-        ok, message = await asyncio.to_thread(maya_s.start_instance)
+        job.set_progress("Mayaを独立systemdユーザーサービスで起動中", 0, 1)
+        ok, message = await asyncio.to_thread(maya_s.start_instance, alias)
         if not ok:
             raise RuntimeError(message)
         # Avoid reporting success on a service launch that immediately fails.
-        if not await maya_s.wait_ready(timeout_seconds=900):
-            raise RuntimeError("Maya-SのAPIを確認できません。systemd --user のjournalを確認してください")
-        job.set_progress("Maya-S APIの起動を確認", 1, 1)
+        if not await maya_s.wait_ready(timeout_seconds=900, alias=alias):
+            raise RuntimeError("MayaのAPIを確認できません。systemd --user のjournalを確認してください")
+        job.set_progress("Maya APIの起動を確認", 1, 1)
         return maya_s.runtime_status()
 
-    job = jobs.create("model.maya-s.start", "Maya-S起動", run,
+    job = jobs.create("model.maya-s.start", "Maya起動", run,
                       owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
     audit.record(db, "maya-s.start", user=user, resource_type="feature",
-                 resource_id="maya-s", request=request, metadata={"job_id": job.id})
+                 resource_id=alias, request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
 
 
 @router.post("/maya-s/model/stop")
 async def maya_s_stop_model(
-    request: Request, user: User = Depends(require_permission("settings.manage")),
+    request: Request, body: MayaAliasBody | None = None,
+    user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
     from app.models_mgmt import maya_s
-    ok, message = await asyncio.to_thread(maya_s.stop_instance)
+    ok, message = await asyncio.to_thread(maya_s.stop_instance, body.alias if body else None)
     if not ok:
         raise HTTPException(status_code=422, detail=message)
     audit.record(db, "maya-s.stop", user=user, resource_type="feature",
@@ -296,3 +304,69 @@ async def maya_existing(request: Request,
     audit.record(db, "maya-s.existing", user=user, resource_type="feature",
                  resource_id="maya-s", request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}
+
+
+# More Maya models from files already on disk. Nothing here downloads: a missing file is
+# reported with the command that fetches it, for the owner to run.
+@router.get("/maya-s/catalog")
+def maya_catalog(folder: str = "", user: User = Depends(require_permission("settings.manage"))):
+    from app.models_mgmt import maya_s
+    try:
+        return maya_s.catalog(folder)
+    except (maya_s.MayaError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class MayaRegisterBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    setup_id: str = Field(pattern=r"^[a-z0-9.-]{3,60}$")
+    folder: str = Field(min_length=1, max_length=4096)
+    context: int = Field(default=65536, ge=1024, le=1048576)
+    gpu_index: int = Field(default=0, ge=0, le=15)
+    start: bool = False
+
+
+@router.post("/maya-s/models/register-jobs", status_code=201)
+async def maya_register(request: Request, body: MayaRegisterBody,
+                        user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    from app.models_mgmt import maya_s
+    if not maya_s.installed():
+        raise HTTPException(status_code=422, detail="先にMayaを導入してください")
+    try:
+        item = next((q for q in (await asyncio.to_thread(maya_s.catalog, body.folder))["quants"]
+                     if q["setup_id"] == body.setup_id), None)
+    except (maya_s.MayaError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None or item["registered"] or not item["ready"]:
+        raise HTTPException(status_code=422, detail="この量子化は登録できません（登録済み、またはファイル不足）")
+
+    async def run(job: jobs.Job) -> dict:
+        state = await maya_s.register_stream(job, setup_id=body.setup_id, folder=body.folder,
+                                             context=body.context, gpu_index=body.gpu_index)
+        if body.start:
+            job.set_progress("登録しました。起動中", 0, 1)
+            ok, message = await asyncio.to_thread(maya_s.start_instance, state["alias"])
+            if not ok:
+                raise RuntimeError(message)
+            if not await maya_s.wait_ready(timeout_seconds=900, alias=state["alias"]):
+                raise RuntimeError("MayaのAPIを確認できません。systemd --user のjournalを確認してください")
+        job.set_progress("登録しました", 1, 1)
+        return state
+
+    job = jobs.create("model.maya-s.register", f"Maya登録 {item['model']} · {item['tier']}", run,
+                      owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "maya-s.register", user=user, resource_type="feature", resource_id=item["alias"],
+                 request=request, metadata={"job_id": job.id, "setup_id": body.setup_id})
+    return {"job_id": job.id, "alias": item["alias"]}
+
+
+@router.delete("/maya-s/models/{alias}")
+def maya_unregister(alias: str, request: Request,
+                    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    from app.models_mgmt import maya_s
+    try:
+        state = maya_s.unregister(alias)
+    except maya_s.MayaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "maya-s.unregister", user=user, resource_type="feature", resource_id=alias, request=request)
+    return state

@@ -1,0 +1,168 @@
+"""Maya の量子化の一覧と、指定フォルダにファイルがそろっているかを調べる（読むだけ）。
+
+ControlDeck 本体からは import しない。Maya の venv の Python で次のように実行する:
+
+    <engine>/.venv/bin/python -I maya_probe.py <engine> [<folder>]
+
+Maya 自身の一覧（tools/maya_quants.py、maya.py の glm_downloads、tools/ds4・mm3 の
+download_gguf.json）をそのまま使い、ファイル名・大きさの食い違いを作らない。何もダウンロード
+しないし、書き込まない。結果は JSON 1 行で標準出力へ出す。
+
+フォルダの決まり（`hf download <repo> --local-dir <folder>` で取った形のまま）:
+- GLM-5.3-Flash: <folder>/<量子化のフォルダ>/*.gguf（例 Maya-S24/）。量子化のフォルダそのものでもよい
+- DeepSeek-V4.1-Flash: <folder> は DeepSeek-V4.1-Flash-1017-Maya-GGUF（Maya の n-gram 表をそこから
+  共有するため、この名前が要る）。<folder>/Maya-XS/ と <folder>/dspark/
+- MiniMax-M3.1-Flash: <folder>/Maya-XS/ など
+"""
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import sys
+from pathlib import Path
+
+FAMILY_LABEL = {"glm": "GLM-5.3-Flash", "deepseek": "DeepSeek-V4.1-Flash", "minimax": "MiniMax-M3.1-Flash"}
+
+
+def _quiet(fn, *args):
+    """Maya's helpers print and call sys.exit on a damaged manifest: keep both out of the JSON."""
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            return fn(*args)
+        except SystemExit:
+            return None
+
+
+def _size_ok(path: Path, size: int | None) -> bool:
+    try:
+        return path.is_file() and (size is None or path.stat().st_size == int(size))
+    except OSError:
+        return False
+
+
+def _files(base: Path, rows: dict, *, required: bool = True, what: str = "") -> list[dict]:
+    return [{"path": str(base / name), "name": name, "size": size, "present": _size_ok(base / name, size),
+             "required": required, "what": what} for name, size in rows.items()]
+
+
+def _hf(repo: str, revision: str, includes: list[str], local_dir: str) -> str:
+    rev = f" --revision {revision}" if revision and revision != "main" else ""
+    inc = "".join(f' --include "{item}"' for item in includes)
+    return f"hf download {repo}{rev}{inc} --local-dir {local_dir}"
+
+
+def glm_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> dict:
+    m = maya.glm_downloads().get(key) or {}
+    shards = int(m.get("shards") or 0)
+    names = [m["file"].format(i=i, n=shards) for i in range(1, shards + 1)] if m.get("file") else []
+    sizes = m.get("bytes") or {}
+    sub = m.get("folder") or key
+    row = {"family": "glm", "setup_id": setup_id, "tier": tier, "quant": key,
+           "size_gb": round(float(m.get("download_gb") or 0), 1), "memory_gb": round(float(m.get("download_gb") or 0)),
+           "repo": m.get("repo", ""), "folder_name": "", "subfolder": sub}
+    row["hf"] = _hf(row["repo"], str(m.get("revision") or ""), [f"{sub}/*"], "<フォルダ>")
+    if folder is not None:
+        d = folder if folder.name == sub else folder / sub
+        row["model_dir"] = str(d)
+        row["files"] = _files(d, {n: sizes.get(n) for n in names}, what="model")
+        vision = m.get("vision") or {}
+        if vision:
+            vd = d / vision.get("folder", "vision")
+            row["files"] += _files(vd, {vision[k]: None for k in ("mmproj", "vocab") if vision.get(k)},
+                                   required=False, what="vision")
+        row["hf"] = _hf(row["repo"], str(m.get("revision") or ""), [f"{sub}/*"], str(d.parent))
+    return row
+
+
+def ds4_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> dict:
+    m = _quiet(maya.ds4_gguf_model, key) or {}
+    man = json.loads(maya.DS4_GGUF_MANIFEST.read_text(encoding="utf-8"))
+    my = man.get("maya") or {}
+    sub = maya.DS4_QUANTS[key]
+    repo_folder = f"{maya.DS4}-Maya-GGUF"
+    own = _quiet(maya.ds4_quant_drafter, key)
+    eg = (man.get("abliterated") or {}).get("engram") or {}
+    table_names = [Path(n).name for n in (eg.get("from") or {}).get(sub, [])]
+    tier_files = maya.ds4_tier_files(my, sub)
+    tables = {Path(k).name: v[0] for k, v in tier_files.items() if Path(k).name in table_names}
+    includes = [f"{sub}/*"] + ([f"dspark/{Path(own['json']).stem}*"] if own else [])
+    size = sum((m.get("files") or {}).values()) + sum(tables.values()) + sum((own or {}).get("files", {}).values())
+    row = {"family": "deepseek", "setup_id": setup_id, "tier": tier, "quant": sub,
+           "size_gb": round(size / 1e9, 1) if size else 0.0,
+           "memory_gb": round(float(_quiet(maya.ds4_memory_gb, key) or 0)),
+           "published": bool(m), "repo": my.get("repo", ""), "folder_name": repo_folder, "subfolder": sub,
+           "hf": _hf(my.get("repo", ""), my.get("revision", ""), includes, f"<フォルダ>/{repo_folder}")}
+    if folder is not None:
+        d = folder / sub
+        row["model_dir"] = str(d)
+        row["models_dir"] = str(folder.parent)
+        row["files"] = _files(d, dict(m.get("files") or {}), what="model")
+        row["files"] += _files(d, tables, what="tables")
+        if own:
+            row["files"] += _files(folder / "dspark", dict(own["files"]), required=False, what="drafter")
+        row["hf"] = _hf(my.get("repo", ""), my.get("revision", ""), includes, str(folder))
+        if folder.name != repo_folder:
+            row["folder_error"] = f"DeepSeek はフォルダ名を {repo_folder} にしてください（Maya の n-gram 表をそこから読みます）"
+    return row
+
+
+def mm3_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> dict:
+    man = json.loads((maya.ROOT / "tools" / "mm3" / "download_gguf.json").read_text(encoding="utf-8"))
+    name = maya.MM3_QUANTS[key]
+    q = (man.get("quants") or {}).get(name) or {}
+    files = {k: v[0] for k, v in (q.get("files") or {}).items()}
+    sub = Path(next(iter(files))).parent.name if files else tier
+    row = {"family": "minimax", "setup_id": setup_id, "tier": tier, "quant": name,
+           "size_gb": round(sum(files.values()) / 1e9, 1), "memory_gb": int(q.get("memory_gb") or 0),
+           "published": bool(files), "repo": man.get("repo", ""), "folder_name": "", "subfolder": sub,
+           "hf": _hf(man.get("repo", ""), man.get("revision", ""), [f"{sub}/*"], "<フォルダ>")}
+    if folder is not None:
+        d = folder / sub
+        row["model_dir"] = str(d)
+        row["models_dir"] = str(folder.parent)
+        row["files"] = _files(d, {Path(k).name: v for k, v in files.items()}, what="model")
+        row["hf"] = _hf(man.get("repo", ""), man.get("revision", ""), [f"{sub}/*"], str(folder))
+    return row
+
+
+def blockers(family: str) -> list[str]:
+    """Things the setup would have to download (and so must not run without the owner's go-ahead)."""
+    out = []
+    if family == "deepseek":
+        try:
+            import tokenizers  # noqa: F401
+        except ImportError:
+            out.append("Maya の Python に tokenizers がありません（DeepSeek の pack に要ります）。"
+                       "導入: <engine>/.venv/bin/pip install tokenizers")
+    return out
+
+
+def main(argv: list[str]) -> int:
+    engine = Path(argv[1]).resolve()
+    folder = Path(argv[2]).resolve() if len(argv) > 2 and argv[2] not in ("", "-") else None
+    sys.path.insert(0, str(engine))
+    with contextlib.redirect_stdout(io.StringIO()):
+        import maya  # type: ignore[import-not-found]
+        from tools import maya_quants as Q  # type: ignore[import-not-found]
+    rows = []
+    build = {"maya": (engine / "build-hip" / "maya").is_file(),
+             "maya-ds4": (engine / "build-hip" / "maya-ds4").is_file()}
+    for family, key, tier, setup_id in Q.QUANTS:
+        maker = {"glm": glm_entry, "deepseek": ds4_entry, "minimax": mm3_entry}.get(family)
+        if maker is None:
+            continue
+        try:
+            row = maker(maya, key, tier, setup_id, folder)
+        except Exception as exc:  # noqa: BLE001 - one damaged entry must not hide the others
+            row = {"family": family, "setup_id": setup_id, "tier": tier, "quant": key, "error": str(exc)[:200]}
+        row["model"] = FAMILY_LABEL.get(family, family)
+        row["blockers"] = blockers(family)
+        rows.append(row)
+    print(json.dumps({"version": (engine / "VERSION").read_text(encoding="utf-8").strip()
+                      if (engine / "VERSION").is_file() else "", "build": build, "quants": rows}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
