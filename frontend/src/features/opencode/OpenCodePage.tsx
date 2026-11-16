@@ -13,7 +13,6 @@ import { BottomSheet, ConfirmDialog, IconButton, SegmentedTabs, Skeleton } from 
 import { IconFolder, IconPlus, IconSettings, IconTrash } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
-import { Reports } from "./Reports";
 import { WorkflowExtensions, workflowBody, type Workflow } from "./WorkflowExtensions";
 import { SettingsGroup, SheetActions, primaryButton } from "../models/formControls";
 
@@ -255,7 +254,6 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
         </section>
       )}
 
-      <Reports />
 
       {picker && <FilePicker mode="dir" title="既存プロジェクトを選択" initialPath={otherPath || undefined} onSelect={(path) => { setOtherPath(path); setPicker(false); }} onClose={() => setPicker(false)} />}
       {killing && (

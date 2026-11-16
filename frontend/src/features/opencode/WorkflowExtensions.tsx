@@ -187,7 +187,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
         {editable && <UiVerifyDiagnosis />}
       </>}
       <Toggle label="精密調査（ControlDeck の Deep Research）"
-        hint="AI が根拠を集める道具。計画→検索→反証→引用の確認まで行い、結果は「結果」に残ります"
+        hint="AI が根拠を集める道具。計画→検索→反証→引用の確認まで行い、根拠つきで答えます"
         value={value.research_tool ?? true} disabled={!editable}
         onChange={(v) => onChange({ ...value, research_tool: v })} />
       {(value.research_tool ?? true) && <>
