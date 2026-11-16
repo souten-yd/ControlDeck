@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, wsUrl } from "../api/client";
 import { discardSocket, looksAlive, retryDelayMs, watchForReturn } from "../lib/liveConnection";
 import { useAuth, useToasts } from "../stores";
-import { BottomSheet, ConfirmDialog, DropdownMenu, IconButton, SegmentedTabs, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, IconButton, SegmentedTabs, Skeleton } from "../components/ui";
 import { FilePicker } from "../components/FilePicker";
 import { IconDots, IconFolder, IconPlay, IconPlus, IconSearch, IconSettings, IconStop, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
@@ -544,11 +544,7 @@ export default function ModelsPage() {
       ) : isLoading ? (
         <Skeleton className="h-24" />
       ) : !liveModels || liveModels.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">
-            モデルがありません。右上の ＋（{isLocal ? "モデル登録" : "モデル取得"}）から追加してください。
-          </p>
-        </div>
+        <EmptyState>モデルがありません。右上の「＋」から追加してください。</EmptyState>
       ) : (
         <ul className="space-y-2">
           {liveModels.map((m) => {
@@ -567,7 +563,7 @@ export default function ModelsPage() {
               else setDetail(m.name);
             };
             return (
-            <li key={id} className={`rounded-2xl border bg-white py-2 pl-3.5 pr-2 transition-colors dark:bg-zinc-900 sm:pl-4 ${m.loaded
+            <li key={id} className={`rounded-2xl border bg-white py-2 pl-3.5 pr-2 shadow-sm transition-colors dark:bg-zinc-900 sm:pl-4 ${m.loaded
               ? "border-emerald-300/70 dark:border-emerald-800/70"
               : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"}`}>
               <div className="flex items-center gap-2 sm:gap-3">
@@ -756,11 +752,8 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
 
   return (
     <BottomSheet title="モデル取得" onClose={onClose} wide>
-      <div className="mb-3 flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-        <button onClick={() => setTab("registry")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "registry" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>Ollama レジストリ</button>
-        <button onClick={() => setTab("hf")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "hf" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>HuggingFace (GGUF)</button>
-        <button onClick={() => setTab("local")} className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${tab === "local" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>ローカル登録</button>
-      </div>
+      <SegmentedTabs className="mb-3" value={tab} onChange={setTab}
+        tabs={[["registry", "Ollama レジストリ"], ["hf", "HuggingFace (GGUF)"], ["local", "ローカル登録"]] as const} />
 
       {tab === "registry" ? (
         <div className="space-y-2">
@@ -772,14 +765,8 @@ function PullSheet({ onClose, onDone }: { onClose: () => void; onDone: () => voi
       ) : tab === "hf" ? (
         <div className="space-y-3">
           {/* llama.cpp はGGUFを直接置く。Ollamaは自分でpullする。取得経路が違うので分ける。 */}
-          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-            {([["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const).map(([id, label]) => (
-              <button key={id} onClick={() => setHfMode(id)}
-                className={`flex-1 rounded-lg py-1.5 text-[11px] font-medium ${hfMode === id ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                {label}
-              </button>
-            ))}
-          </div>
+          <SegmentedTabs value={hfMode} onChange={setHfMode}
+            tabs={[["direct", "GGUFを直接取得"], ["ollama", "Ollamaへpull"]] as const} />
           {hfMode === "direct"
             ? <HuggingFaceDownload onStarted={setJobId} />
             : <HFSearch onPull={start} running={running} />}

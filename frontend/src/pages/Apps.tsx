@@ -9,7 +9,9 @@ import {
   BottomSheet,
   ConfirmDialog,
   DropdownMenu,
+  EmptyState,
   IconButton,
+  primaryButtonClass,
   Skeleton,
   StatusBadge,
 } from "../components/ui";
@@ -105,17 +107,9 @@ export default function AppsPage() {
           ))}
         </div>
       ) : !apps || apps.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
-          <p className="text-sm text-zinc-400">登録されたアプリはありません</p>
-          {can("apps.edit") && (
-            <button
-              onClick={() => setParams({ add: "1" })}
-              className="mt-3 rounded-xl bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
-            >
-              最初のアプリを追加
-            </button>
-          )}
-        </div>
+        <EmptyState actions={can("apps.edit") && (
+          <button onClick={() => setParams({ add: "1" })} className={primaryButtonClass}>最初のアプリを追加</button>
+        )}>登録されたアプリはありません</EmptyState>
       ) : (
         <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {apps.map((app) => {
@@ -126,7 +120,7 @@ export default function AppsPage() {
               <li
                 key={app.id}
                 data-app-card
-                className="cursor-pointer rounded-2xl border border-zinc-200 bg-white p-3.5 text-zinc-900 shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:border-zinc-600"
+                className="cursor-pointer rounded-2xl border border-zinc-200 bg-white p-3.5 text-zinc-900 shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:border-zinc-700"
                 onClick={() => setDetail(app)}
               >
                 <div className="flex min-w-0 items-start gap-3">

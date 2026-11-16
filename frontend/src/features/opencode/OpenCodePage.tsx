@@ -9,7 +9,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { FilePicker } from "../../components/FilePicker";
-import { BottomSheet, ConfirmDialog, IconButton, Skeleton } from "../../components/ui";
+import { BottomSheet, ConfirmDialog, IconButton, SegmentedTabs, Skeleton } from "../../components/ui";
 import { IconFolder, IconPlus, IconSettings, IconTrash } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
@@ -188,16 +188,8 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
         <div className="block text-xs text-zinc-500">
           <p>プロジェクト（CodeDEVで管理: {projectsData?.root ?? "~/CodeDEV"}）</p>
           <div className="mt-1 flex gap-1.5">
-            <div className="flex flex-1 gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
-              <button type="button" onClick={() => setProjectMode("new")}
-                className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${projectMode === "new" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                ➕ 新規作成
-              </button>
-              <button type="button" onClick={() => setProjectMode("existing")}
-                className={`flex-1 rounded-lg py-1.5 text-xs font-medium ${projectMode === "existing" ? "bg-white shadow-sm dark:bg-zinc-900" : "text-zinc-500"}`}>
-                📚 既存のプロジェクト
-              </button>
-            </div>
+            <SegmentedTabs className="flex-1" value={projectMode} onChange={setProjectMode}
+              tabs={[["new", "➕ 新規作成"], ["existing", "📚 既存のプロジェクト"]] as const} />
             <button type="button" onClick={() => { setProjectMode("folder"); setPicker(true); }}
               aria-label="フォルダから選択"
               title="フォルダから選択（CodeDEV外はコピーして取り込みます）"

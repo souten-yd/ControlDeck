@@ -48,6 +48,22 @@ export function IconButton({
   );
 }
 
+/** 一覧が空のときの箱。破線の枠 + 1行の案内 + （あれば）最初の1件を足す操作。 */
+export function EmptyState({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-zinc-300 px-6 py-10 text-center dark:border-zinc-700">
+      <p className="mx-auto max-w-md text-sm leading-relaxed text-zinc-500">{children}</p>
+      {actions && <div className="mt-4 flex flex-wrap items-center justify-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+/** 文字つきのボタン（空の状態・シートの中の主操作と補助操作）。高さは44px。 */
+export const primaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40";
+export const secondaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:hover:border-zinc-600";
+
 /** 画面内の切替（タブ）。幅は文字数に比例させ、長いラベルだけが切れるのを防ぐ。
  *  3つ目の要素は380px未満でだけ出す短い表記（読み上げ名は常に元のラベル）。 */
 export function SegmentedTabs<T extends string>({
