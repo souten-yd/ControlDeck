@@ -2,7 +2,6 @@
  *
  * ターミナルを開かなくても「今何本使っていて、何本待っているか」が分かるようにする。
  * 共有KVでは slot が空いていても KV が尽きれば通せないので、両方を並べる。 */
-import { createContext, useContext } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getLlamaCapacity, type EndpointCapacity } from "../../api/models";
 
@@ -22,18 +21,10 @@ function SlotDots({ busy, slots }: { busy: number; slots: number }) {
   );
 }
 
-/** 詰めた表示（Home の LLM カード）。行をモデルと速さに絞り、ラベルを狭くする。 */
-export const DenseRows = createContext(false);
-
-const SHORT_LABELS: Record<string, string> = { "LLM並列": "並列", "待ち行列": "待ち", "コンテキスト": "ctx" };
-
-export function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  const dense = useContext(DenseRows);
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className={`flex items-center ${dense ? "gap-1.5 sm:gap-3" : "gap-3"}`}>
-      <span className={`shrink-0 text-[10px] text-zinc-400 md:text-[11px] ${dense ? "w-[2.6rem] sm:w-[4.5rem]" : "w-[4.5rem]"}`}>
-        {dense ? (SHORT_LABELS[label] ?? label) : label}
-      </span>
+    <div className="flex items-center gap-3">
+      <span className="w-[4.5rem] shrink-0 text-[10px] text-zinc-400 md:text-[11px]">{label}</span>
       <span className="num min-w-0 flex-1 text-[11px] md:text-xs">{children}</span>
     </div>
   );
@@ -48,7 +39,6 @@ export function endpointLoad(item: EndpointCapacity): "低" | "中" | "高" | nu
 }
 
 function EndpointRows({ item }: { item: EndpointCapacity }) {
-  const dense = useContext(DenseRows);
   // モデル読込中などで /slots を取れないと slots=0 になる。
   // このとき 0/0 を「満杯」と読んでしまわないよう、状態表示に切り替える。
   if (!item.available || item.slots === 0) {
@@ -65,21 +55,6 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
   // 色は受付の線を基準にする。線に届いたら赤、手前で橙。
   const admitPct = item.usable > 0 ? (item.ctx_used / item.usable) * 100 : 0;
   const tone = admitPct >= 100 ? "bg-red-500" : admitPct >= 75 ? "bg-amber-500" : "bg-accent-600";
-  // 詰めた表示（Home）は「どのモデルが、どれだけの速さで」だけ。
-  if (dense) {
-    return (
-      <div>
-        <Row label="モデル"><span className="block truncate" title={item.running_alias}>{item.running_alias}</span></Row>
-        <Row label="tok/s">
-          {item.phase === "prefill"
-            ? <span className="text-zinc-400">読み込み中</span>
-            : item.tokens_per_second > 0 || item.busy > 0
-              ? <span>{item.tokens_per_second.toFixed(1)}</span>
-              : <span className="text-zinc-400">—</span>}
-        </Row>
-      </div>
-    );
-  }
   // 待ち行列と埋まり具合から、体感の混み具合を一語で示す。
   return (
     <div>
@@ -137,7 +112,6 @@ function EndpointRows({ item }: { item: EndpointCapacity }) {
 }
 
 export function CapacityWidget({ compact = false }: { compact?: boolean }) {
-  const dense = useContext(DenseRows);
   const { data } = useQuery({
     queryKey: ["llama-capacity"], queryFn: getLlamaCapacity,
     // 稼働中だけ短い間隔で追う。止まっていれば無駄に叩かない。
@@ -151,7 +125,7 @@ export function CapacityWidget({ compact = false }: { compact?: boolean }) {
       <div className="space-y-3">
         {data.endpoints.map((item) => (
           <div key={item.id}>
-            {!dense && data.endpoints.length > 1 && (
+            {data.endpoints.length > 1 && (
               <p className="mb-0.5 truncate text-[11px] font-medium text-zinc-500">
                 {item.running_alias} <span className="text-zinc-400">:{item.port}</span>
               </p>
