@@ -2135,10 +2135,63 @@ const STRATA_SIZES: Record<StrataFamily, string[]> = {
 type StrataSettings = { alias: string; family: StrataFamily; model: string;
   context: string; port: number; model_path?: string; kv?: string; vision?: string;
   parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean;
-  reasoning_effort?: string; thinking_budget?: number };
+  reasoning_effort?: string; thinking_budget?: number; kv_resident?: number | null; ram_keep_gib?: number | null; engine_settings?: Record<string, string> };
 
 // Strata は "<N>k" を受け付け、学習長 256K を超えると yarn を自動で付ける。
-const STRATA_CTX_PRESETS = ["8k", "16k", "32k", "64k", "128k", "256k"].map((v) => ({ v, label: v }));
+const STRATA_CTX_PRESETS = ["8k", "16k", "32k", "64k", "128k", "256k", "512k", "768k", "1024k"].map((v) => ({ v, label: v }));
+
+type StrataMemoryEstimate = {
+  supported: boolean; note: string; context_tokens: number; parallel: number;
+  model: { disk_bytes: number | null; expert_bytes: number | null };
+  hardware: { ram_total: number; ram_available: number; gpu: { device: string; total: number; available: number } | null };
+  kv_ram_bytes?: number; kv_ram_min_bytes?: number; kv_vram_min_bytes?: number; kv_vram_max_bytes?: number;
+  full_ram_estimate_bytes?: number | null; full_ram_context_tokens?: number | null; full_ram_parallel?: number | null; vram_budget_fits?: boolean | null;
+};
+const strataGiB = (value: number | null | undefined) => value == null ? "不明" : `${(value / 2 ** 30).toFixed(2)} GiB`;
+function StrataMemoryGuide({ estimate, error, alias }: { estimate?: StrataMemoryEstimate; error: boolean; alias?: string }) {
+  const observed = useQuery<{ active: boolean; status: string; note: string; processes?: Array<{ category: string; ram_bytes: number; vram_bytes: number | null }>; rows: Array<{ category: string; location: string; bytes: number | null; source: string }> }>({
+    queryKey: ["strata-memory", alias], queryFn: () => api(`/models/strata/instances/${encodeURIComponent(alias!)}/memory`), enabled: !!alias, refetchInterval: 5000,
+  });
+  return <div className="space-y-3 rounded-xl bg-zinc-100 p-3 text-xs dark:bg-zinc-800" aria-label="Strataメモリ目安">
+    <p className="font-medium">設定時の概算</p>
+    {error ? <p>概算を取得できません。入力値を確認してください。</p> : !estimate ? <p>計算中…</p> : <>
+      <dl className="grid grid-cols-2 gap-2 tabular-nums">
+        <dt>GGUF（ディスク）</dt><dd>{strataGiB(estimate.model.disk_bytes)}</dd>
+        <dt>エキスパート本体</dt><dd>{strataGiB(estimate.model.expert_bytes)}</dd>
+        <dt>RAM 空き / 全体</dt><dd>{strataGiB(estimate.hardware.ram_available)} / {strataGiB(estimate.hardware.ram_total)}</dd>
+        <dt>VRAM 空き / 全体</dt><dd>{strataGiB(estimate.hardware.gpu?.available)} / {strataGiB(estimate.hardware.gpu?.total)}</dd>
+        {estimate.supported && <>
+          <dt>KV RAM概算</dt><dd>{estimate.kv_ram_min_bytes !== estimate.kv_ram_bytes ? `${strataGiB(estimate.kv_ram_min_bytes)}〜` : ""}{strataGiB(estimate.kv_ram_bytes)}</dd>
+          <dt>KV・セッション VRAM概算</dt><dd>{strataGiB(estimate.kv_vram_min_bytes)}〜{strataGiB(estimate.kv_vram_max_bytes)}</dd>
+          <dt>RAM小計（VLM等は別途）</dt><dd>{strataGiB(estimate.full_ram_estimate_bytes)}</dd>
+          <dt>RAM常駐できる長さの目安 / 会話</dt><dd>{estimate.full_ram_context_tokens == null ? "不明（対応するpack情報なし）" : `${Math.floor(estimate.full_ram_context_tokens / 1024)}K × ${estimate.parallel}会話`}</dd>
+          <dt>RAM常駐での並列数目安</dt><dd>{estimate.full_ram_parallel == null ? "不明（KV保持長の明示・対応pack情報が必要）" : `最大 ${estimate.full_ram_parallel} 会話`}</dd>
+          <dt>VRAM目安</dt><dd>{estimate.vram_budget_fits == null ? "不明" : estimate.vram_budget_fits ? "計算上は予算内" : "不足する可能性（自動設定では幅あり）"}</dd>
+        </>}
+      </dl>
+      {estimate.vram_budget_fits === false && <p>VRAMが概算の予算を超えています。KVのVRAM保持長や並列数を下げてください。</p>}
+      <p className="text-[10px] text-zinc-500">{estimate.note}</p>
+      <p className="text-[10px] text-zinc-500">VRAMはモデル・VLM・投機・作業用に6GiB、エキスパートキャッシュに2GiBを仮置き。RAMに収まらない場合はSSDへのアクセスで遅くなることがあります。稼働中は現在の空き容量が減るため、再起動時の目安と異なります。</p>
+    </>}
+    {alias && <>
+      <p className="font-medium">起動中の確保内訳（RAM / VRAM）</p>
+      {observed.isError ? <p>内訳を取得できません</p> : !observed.data ? <p>取得中…</p> : !observed.data.active ? <p>停止中。起動すると表示します。</p> : <>
+        <p>{observed.data.status}</p>
+        {!!observed.data.processes?.length && <>
+          <p className="font-medium">現在のプロセス使用量（内訳と重複・合算不可）</p>
+          {observed.data.processes.map((process, i) => <div key={i} className="space-y-1 border-b border-zinc-200 py-1 dark:border-zinc-700">
+            <p>{process.category}</p><p className="tabular-nums">RAM（RSS） {strataGiB(process.ram_bytes)} / VRAM {strataGiB(process.vram_bytes)}</p>
+          </div>)}
+        </>}
+        <p className="font-medium">用途別の確保量（起動ログ）</p>
+        <div className="overflow-x-auto"><table className="w-full text-left tabular-nums"><thead><tr><th>用途</th><th>配置</th><th>確保量</th></tr></thead><tbody>
+          {observed.data.rows.map((row, i) => <tr key={i} title={row.source}><td className="py-1">{row.category}</td><td>{row.location}</td><td className="whitespace-nowrap">{strataGiB(row.bytes)}</td></tr>)}
+        </tbody></table></div>
+        <p className="text-[10px] text-zinc-500">{observed.data.note}</p>
+      </>}
+    </>}
+  </div>;
+}
 
 function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () => void; initial?: StrataSettings; running?: boolean }) {
   const qc = useQueryClient();
@@ -2154,6 +2207,17 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   const [vision, setVision] = useState(initial?.vision ?? "on");
   const [parallel, setParallel] = useState(initial?.parallel ?? 1);
   const [drafting, setDrafting] = useState(initial?.drafting ?? "auto");
+  const [kvResident, setKvResident] = useState(String(initial?.kv_resident ?? initial?.engine_settings?.["kv-resident"] ?? ""));
+  const [ramKeep, setRamKeep] = useState(String(initial?.ram_keep_gib ?? initial?.engine_settings?.STRATA_RAM_KEEP_GIB ?? initial?.engine_settings?.["ram-keep-gib"] ?? ""));
+  const memoryConfig = { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting,
+    kv_resident: family === "deepseek41" || kvResident === "" ? null : Number(kvResident),
+    ram_keep_gib: family === "deepseek41" || ramKeep === "" ? null : Number(ramKeep) };
+  const [estimateConfig, setEstimateConfig] = useState(memoryConfig);
+  const memoryConfigKey = JSON.stringify(memoryConfig);
+  useEffect(() => { const timer = setTimeout(() => setEstimateConfig(JSON.parse(memoryConfigKey)), 400); return () => clearTimeout(timer); }, [memoryConfigKey]);
+  const memoryEstimate = useQuery<StrataMemoryEstimate>({ queryKey: ["strata-memory-estimate", estimateConfig],
+    queryFn: () => api("/models/strata/memory-estimate", { method: "POST", json: estimateConfig }), retry: false,
+    enabled: /^[1-9][0-9]{0,3}k$/.test(estimateConfig.context), staleTime: 5000, refetchInterval: 5000 });
   const [idleExclude, setIdleExclude] = useState(initial?.idle_exclude ?? false);
   const [autoStart, setAutoStart] = useState(initial?.auto_start ?? false);
   const [reasoningEffort, setReasoningEffort] = useState(initial?.reasoning_effort ?? "");
@@ -2164,7 +2228,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
     try {
       await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
         method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart,
-          reasoning_effort: reasoningEffort, thinking_budget: thinkingBudget },
+          reasoning_effort: reasoningEffort, thinking_budget: thinkingBudget, kv_resident: memoryConfig.kv_resident, ram_keep_gib: memoryConfig.ram_keep_gib },
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["models", "local"] }),
@@ -2220,7 +2284,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       <label className="block text-xs">コンテキスト長（4k〜1024k）
         <div className="mt-1"><PresetOrCustom ariaLabel="Strataコンテキスト" value={context} presets={STRATA_CTX_PRESETS} numeric={false}
           placeholder="96k" disabled={running} onChange={(v) => setContext(String(v ?? "32k").trim().toLowerCase())} /></div>
-        <span className="text-[10px] text-zinc-500">256k を超えると Strata が yarn で拡張します（精度は下がり得ます）。</span>
+        <span className="text-[10px] text-zinc-500">Qwen系は256kを超えるとyarnで拡張します（精度は下がり得ます）。</span>
       </label>
       {select("画像入力", vision, setVision, [["on", "自動（推奨）"], ["gpu", "GPUで処理"], ["cpu", "CPUで処理"], ["off", "使わない"]])}
     </SettingsGroup>
@@ -2235,7 +2299,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       <ThinkingDefaults live effort={reasoningEffort} budget={thinkingBudget}
         onChange={(effort, budget) => { setReasoningEffort(effort); setThinkingBudget(budget); }} />
     </SettingsGroup>
-    <SettingsGroup title="性能" description="KVキャッシュ・投機デコード・同時実行" collapsible defaultOpen={!initial}>
+    <SettingsGroup title="同時実行とメモリ" description="コンテキストは1会話ごとの上限。KVは会話ごとに独立して確保します">
       <div className="grid gap-2 sm:grid-cols-2">
         {select("KVキャッシュ", kv, setKv, [["int8", "int8（推奨）"], ["k8v4", "k8v4"], ["q4_0", "q4_0（省メモリ）"], ["fp16", "fp16（最高精度）"]])}
         {select("投機デコード", drafting, setDrafting, [["auto", "自動（推奨）"], ["mtp", "MTP"], ["dflash2", "DFlash2"], ["off", "使わない"]])}
@@ -2243,8 +2307,19 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       <label className="block text-xs">同時実行数（スロット）
         <input aria-label="Strata同時実行数" type="number" min={1} max={8} value={parallel} disabled={running}
           onChange={(e) => setParallel(Number(e.target.value))} className={field} />
-        <span className="text-[11px] text-zinc-500">同時に受けて同時に返しますが、合計の速さは 1 件のときと同じです（実測: 1件 102 / 4件同時 合計 106 tok/s）。待たせたくないときだけ上げてください。</span>
+        <span className="text-[11px] text-zinc-500">待たせずに同時に受けますが、合計の速さはほぼ増えません（実測: 1件 102 / 4件同時 合計 106 tok/s）。並列数を増やすほどKVと会話セッションのメモリが増えます（コンテキスト長を並列数で分ける方式ではありません）。</span>
       </label>
+      {family !== "deepseek41" && <div className="grid gap-2 sm:grid-cols-2">
+        <label className="block text-xs">KVのVRAM保持長（トークン）
+          <input aria-label="StrataKVのVRAM保持長" type="number" min={4096} max={1048576} step={1024} placeholder="自動" value={kvResident} disabled={running} onChange={(e) => setKvResident(e.target.value)} className={field} />
+          <span className="text-[10px] text-zinc-500">空欄は自動。例: 32768。残りのKVはRAMから転送します。</span>
+        </label>
+        <label className="block text-xs">RAM余裕（GiB）
+          <input aria-label="StrataRAM余裕" type="number" min={0} max={256} step={1} placeholder="自動" value={ramKeep} disabled={running} onChange={(e) => setRamKeep(e.target.value)} className={field} />
+          <span className="text-[10px] text-zinc-500">起動時に残す余裕の目標値。実行中の使用量の上限ではありません。</span>
+        </label>
+      </div>}
+      <StrataMemoryGuide estimate={memoryEstimate.data} error={memoryEstimate.isError} alias={initial?.alias} />
     </SettingsGroup>
     <SettingsGroup title="詳細" description="待受ポート" collapsible defaultOpen={false}>
       <label className="block text-xs">ポート
