@@ -17,7 +17,7 @@ import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
 import { FrontierModelsGroup } from "../features/models/FrontierModelsPanel";
 import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
-import { MayaSDetailSheet, MayaSSetupCard, useMayaStatus } from "../features/models/MayaSModelPanel";
+import { MayaSDetailSheet, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { MayaModelSheet, MayaRegisterPanel } from "../features/models/MayaRegisterPanel";
 import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 
@@ -40,6 +40,11 @@ interface Model {
   port?: number;
   /** 表示用のモデル名（例: Qwen3.8-27B）。ゲートウェイの名前（id）とは別。 */
   display_name?: string;
+  /** Maya: エンジンの更新でファイルに新しい版がある（ダウンロードの大きさ GB）。 */
+  update_gb?: number;
+  update_available?: boolean;
+  setup_id?: string;
+  folder?: string;
 }
 
 interface CompactionPolicy { enabled: boolean; mode: "auto" | "percent"; percent: number; max_tokens: number }
@@ -314,7 +319,7 @@ export default function ModelsPage() {
   const [strataDetail, setStrataDetail] = useState<string | null>(null);
   const [radianceDetail, setRadianceDetail] = useState<string | null>(null);
   const [mayaDetail, setMayaDetail] = useState(false);
-  const [mayaModel, setMayaModel] = useState<{ alias: string; title: string } | null>(null);
+  const [mayaModel, setMayaModel] = useState<{ alias: string; title: string; update?: { gb: number; setupId: string; folder: string } } | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [localDeleting, setLocalDeleting] = useState<{ alias: string; runtime: LocalRuntime } | null>(null);
@@ -324,7 +329,6 @@ export default function ModelsPage() {
   const [reordering, setReordering] = useState(false);
   const [swapConfirm, setSwapConfirm] = useState<{ id: string; running: string } | null>(null);
 
-  const { data: mayaStatus } = useMayaStatus();
   const { data: status } = useQuery({ queryKey: ["ollama-status"], queryFn: () => api<OllamaStatus>("/models/status"), refetchInterval: 15000 });
   const { data: runtimeEnv } = useQuery({ queryKey: ["runtime-environment"], queryFn: () => api<RuntimeEnvironment>("/models/runtime-environment") });
   const selectedRuntime = runtimeEnv?.policy.selected_runtime ?? "ollama";
@@ -346,6 +350,10 @@ export default function ModelsPage() {
             vision_enabled: m.details.vision_enabled === true,
             runtime, backend_label: String(m.details.backend_label ?? ""),
             port: typeof m.details.port === "number" ? m.details.port : undefined,
+            update_available: m.details.update_available === true,
+            update_gb: typeof m.details.update_gb === "number" ? m.details.update_gb : undefined,
+            setup_id: typeof m.details.setup_id === "string" ? m.details.setup_id : undefined,
+            folder: typeof m.details.folder === "string" ? m.details.folder : undefined,
           }));
         } catch {
           // 片方が未導入でも、もう片方の一覧は出す。
@@ -416,8 +424,10 @@ export default function ModelsPage() {
   const removeLocal = useMutation({
     mutationFn: async ({ alias, runtime, file }: { alias: string; runtime: LocalRuntime; file: boolean }) => {
       if (runtime === "maya-s") {
-        await api(`/features/maya-s/models/${encodeURIComponent(alias)}`, { method: "DELETE" });
-        return { ok: true, gguf_deleted: false, reason: "Mayaのモデルファイルは保持" };
+        const r = await api<{ deleted_files?: number }>(
+          `/features/maya-s/models/${encodeURIComponent(alias)}${file ? "?delete_files=true" : ""}`, { method: "DELETE" });
+        return file ? { ok: true, gguf_deleted: (r.deleted_files ?? 0) > 0, reason: `モデルのファイル ${r.deleted_files ?? 0} 個を削除` }
+          : { ok: true, gguf_deleted: false, reason: "Mayaのモデルファイルは保持" };
       }
       if (runtime === "strata") {
         await api<{ model_files_deleted?: boolean }>(`/models/strata/instances/${encodeURIComponent(alias)}/delete`, { method: "POST", json: {} });
@@ -538,9 +548,6 @@ export default function ModelsPage() {
 
       <ActiveModelJobs />
       {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
-      {tab === "llm" && isLocal && mayaStatus?.installed && !mayaStatus.configured && can("workflows.edit") && (
-        <MayaSSetupCard status={mayaStatus} />
-      )}
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "frontier" && can("settings.manage") && <FrontierModelsGroup />}
       {tab === "llm" && (<>
@@ -565,7 +572,8 @@ export default function ModelsPage() {
               if (runtime === "strata") setStrataDetail(id);
               else if (runtime === "radiance") setRadianceDetail(id);
               else if (runtime === "maya-s" && id === "maya-s") setMayaDetail(true);
-              else if (runtime === "maya-s") setMayaModel({ alias: id, title: m.display_name || id });
+              else if (runtime === "maya-s") setMayaModel({ alias: id, title: m.display_name || id,
+                update: m.update_available && m.setup_id && m.folder ? { gb: m.update_gb ?? 0, setupId: m.setup_id, folder: m.folder } : undefined });
               else if (isLlama) setLlamaDetail(id);
               else setDetail(m.name);
             };
@@ -584,6 +592,11 @@ export default function ModelsPage() {
                     {shared && (
                       <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
                         :{endpoint!.port} 共有
+                      </span>
+                    )}
+                    {m.update_available && (
+                      <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                        新しい版あり
                       </span>
                     )}
                     {m.vision_enabled && (
@@ -621,6 +634,8 @@ export default function ModelsPage() {
                     {isLocal && runtime === "maya-s" ? (
                       <DropdownMenu ariaLabel={`${id}の操作`} trigger={<IconDots />}
                         items={[{ label: "個別設定", onSelect: openDetail },
+                          ...(m.update_available && id !== "maya-s"
+                            ? [{ label: `更新（ダウンロード ${m.update_gb ?? 0} GB）`, onSelect: openDetail }] : []),
                           { label: "削除", danger: true, separated: true,
                             onSelect: () => setLocalDeleting({ alias: id, runtime }) }]} />
                     ) : isLocal && runtime ? (
@@ -660,7 +675,7 @@ export default function ModelsPage() {
       {strataDetail && <StrataDetailSheet alias={strataDetail} onClose={() => setStrataDetail(null)} />}
       {radianceDetail && <RadianceDetailSheet alias={radianceDetail} onClose={() => setRadianceDetail(null)} />}
       {mayaDetail && <MayaSDetailSheet onClose={() => setMayaDetail(false)} />}
-      {mayaModel && <MayaModelSheet alias={mayaModel.alias} title={mayaModel.title} onClose={() => setMayaModel(null)} />}
+      {mayaModel && <MayaModelSheet alias={mayaModel.alias} title={mayaModel.title} update={mayaModel.update} onClose={() => setMayaModel(null)} />}
       {registerOpen && <ModelRegisterSheet onClose={() => { setRegisterOpen(false); refresh(); }} />}
       {deleting && (
         <ConfirmDialog title={`「${deleting}」を削除しますか？`} message="モデルファイルが削除されます。取り消せません。" confirmLabel="削除する" busy={del.isPending} onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />
@@ -676,6 +691,14 @@ export default function ModelsPage() {
           onConfirm={() => removeLocal.mutate({ ...localDeleting, file: deleteFile })}
           onClose={() => { setLocalDeleting(null); setDeleteFile(false); }}
         >
+          {localDeleting.runtime === "maya-s" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
+            <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="text-xs">モデルのファイルも削除する
+              <span className="block text-[10px] text-zinc-500">
+                取り消せません。このモデルの一覧に載っているファイルだけを消します。ほかの Maya のモデルが使う共有のファイル（n-gram 表など）は残します。
+              </span>
+            </span>
+          </label>}
           {localDeleting.runtime !== "strata" && localDeleting.runtime !== "maya-s" && <label className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20">
             <input type="checkbox" checked={deleteFile} onChange={(e) => setDeleteFile(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="text-xs">GGUF ファイル本体も削除する

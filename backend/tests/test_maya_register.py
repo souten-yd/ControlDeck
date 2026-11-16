@@ -5,6 +5,7 @@ No engine, GPU, systemd or network: the setup and systemctl are replaced.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
@@ -205,4 +206,155 @@ def test_the_first_model_can_be_removed_but_keeps_its_engine_config(engine):
 def test_registry_ignores_rows_that_could_escape_the_engine_folder(engine):
     maya_s._save_registry([{"alias": "maya-glm-x", "config": "../../etc/passwd", "port": 8100},
                            {"alias": "rm -rf", "config": "maya-x.json", "port": 8100}])
+    assert maya_s._registry() == []
+
+
+# ---- ダウンロードして登録・ファイルの削除・更新後の準備し直し ----
+
+
+def _ds_catalog(engine, monkeypatch, root, *, present=False):
+    files = []
+    for name, what, required in (("Maya-XS/m-1.gguf", "model", True), ("Maya-XS/t-4.gguf", "tables", True),
+                                 ("dspark/d.bin", "drafter", False)):
+        path = root / name
+        files.append({"name": Path(name).name, "path": str(path), "size": 10, "required": required, "what": what,
+                      "present": present or path.is_file(), "sha256": ""})
+    row = {"family": "deepseek", "setup_id": "deepseek-maya-xs", "tier": "Maya-XS", "model": "DeepSeek-V4.1-Flash",
+           "size_gb": 0.1, "memory_gb": 1, "published": True, "blockers": [], "repo": "peasantsmith/ds",
+           "revision": "c33d87b", "folder_name": "DeepSeek-V4.1-Flash-1017-Maya-GGUF",
+           "repo_root": str(root), "model_dir": str(root / "Maya-XS"), "models_dir": str(root.parent), "files": files}
+    if root.name != row["folder_name"]:
+        row["folder_error"] = "名前が違います"
+    return row
+
+
+def test_download_plan_uses_the_repo_named_folder_and_checks_space(engine, monkeypatch):
+    base = engine.root / "LLM"
+    base.mkdir(exist_ok=True)
+    item = _ds_catalog(engine, monkeypatch, base)
+    plan = maya_s._download_plan(item, base)
+    assert plan["download_root"] == str(base / "DeepSeek-V4.1-Flash-1017-Maya-GGUF")
+    assert plan["download_files"] == ["m-1.gguf", "t-4.gguf", "d.bin"] and plan["can_download"]
+    monkeypatch.setattr(maya_s.shutil, "disk_usage", lambda _p: SimpleNamespace(free=1))
+    assert not maya_s._download_plan(item, base)["can_download"]
+
+
+def test_download_fetches_only_the_manifest_files_at_the_pinned_revision(engine, monkeypatch):
+    base = engine.root / "LLM"
+    root = base / "DeepSeek-V4.1-Flash-1017-Maya-GGUF"
+    base.mkdir(exist_ok=True)
+    monkeypatch.setattr(maya_s, "_folder", lambda folder: Path(folder))
+    monkeypatch.setattr(maya_s, "_probe", lambda folder: {"quants": [_ds_catalog(engine, monkeypatch, Path(folder))],
+                                                         "build": {}, "version": "x"})
+    monkeypatch.setattr(maya_s, "_hf_bin", lambda: "/usr/bin/hf")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        for i, a in enumerate(argv):
+            if a == "--include":
+                p = root / argv[i + 1]
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"x" * 10)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(maya_s.subprocess, "run", fake_run)
+    item, got = maya_s._download("deepseek-maya-xs", str(base))
+    argv = seen[0]
+    assert got == root and argv[:3] == ["/usr/bin/hf", "download", "peasantsmith/ds"]
+    assert argv[argv.index("--revision") + 1] == "c33d87b" and argv[argv.index("--local-dir") + 1] == str(root)
+    includes = [argv[i + 1] for i, a in enumerate(argv) if a == "--include"]
+    assert includes == ["Maya-XS/m-1.gguf", "Maya-XS/t-4.gguf", "dspark/d.bin"]
+    # Everything there now: a second run downloads nothing.
+    seen.clear()
+    maya_s._download("deepseek-maya-xs", str(base))
+    assert seen == []
+
+
+def test_download_refuses_without_space(engine, monkeypatch):
+    base = engine.root / "LLM"
+    base.mkdir(exist_ok=True)
+    monkeypatch.setattr(maya_s, "_folder", lambda folder: Path(folder))
+    monkeypatch.setattr(maya_s, "_probe", lambda folder: {"quants": [_ds_catalog(engine, monkeypatch, Path(folder))],
+                                                         "build": {}, "version": "x"})
+    monkeypatch.setattr(maya_s.shutil, "disk_usage", lambda _p: SimpleNamespace(free=1))
+    ran = []
+    monkeypatch.setattr(maya_s.subprocess, "run", lambda *a, **k: ran.append(a))
+    with pytest.raises(maya_s.MayaError, match="空き容量"):
+        maya_s._download("deepseek-maya-xs", str(base))
+    assert ran == []
+
+
+def test_deleting_files_keeps_shared_tables_and_anything_outside(engine, monkeypatch):
+    root = engine.root / "LLM" / "DeepSeek-V4.1-Flash-1017-Maya-GGUF"
+    for name in ("Maya-XS/m-1.gguf", "Maya-XS/t-4.gguf", "dspark/d.bin", "keep.txt"):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(b"x" * 10)
+    _register_row(engine)
+    _register_row(engine, "maya-deepseek-s", "maya-ds4s-hip.json", 8101)
+    rows = maya_s._registry()
+    for row in rows:
+        row["folder"] = str(root)
+    rows[1]["setup_id"] = "deepseek-maya-s"
+    maya_s._save_registry(rows)
+    other = {"setup_id": "deepseek-maya-s", "files": [{"path": str(root / "Maya-XS/t-4.gguf")}]}
+
+    def probe(folder):
+        return {"quants": [_ds_catalog(engine, monkeypatch, Path(folder)), other], "build": {}, "version": "x"}
+
+    monkeypatch.setattr(maya_s, "_probe", probe)
+    result = maya_s.unregister("maya-deepseek-xs", delete_files=True)
+    assert result["deleted_files"] == 2
+    assert not (root / "Maya-XS/m-1.gguf").exists() and not (root / "dspark").exists()
+    assert (root / "Maya-XS/t-4.gguf").exists(), "共有の n-gram 表はほかのモデルが使う"
+    assert (root / "keep.txt").exists()
+    assert [r["alias"] for r in maya_s._registry()] == ["maya-deepseek-s"]
+
+
+def test_refresh_after_an_engine_update_keeps_port_and_tuning(engine, monkeypatch):
+    root = engine.root / "LLM" / "DeepSeek-V4.1-Flash-1017-Maya-GGUF"
+    root.mkdir(parents=True)
+    _register_row(engine)
+    rows = maya_s._registry()
+    rows[0]["folder"] = str(root)
+    maya_s._save_registry(rows)
+    config = engine.source / "maya-ds4-hip.json"
+    config.write_text(json.dumps({"args": ["--max-context", "131072"], "env": {"MAYA_DS4_TUNE": "1"},
+                                  "reasoning_effort": "max"}))
+    monkeypatch.setattr(maya_s, "_folder", lambda folder: Path(folder))
+    monkeypatch.setattr(maya_s, "_probe", lambda folder: {"quants": [_ds_catalog(engine, monkeypatch, Path(folder),
+                                                                                  present=True)],
+                                                         "build": {}, "version": "x"})
+
+    def setup(argv, **kwargs):
+        config.write_text(json.dumps({"args": ["--max-context", "131072"], "env": {"NEW": "1"}}))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(maya_s.subprocess, "run", setup)
+    assert maya_s.refresh_registered() == [{"alias": "maya-deepseek-xs", "status": "refreshed"}]
+    cfg = json.loads(config.read_text())
+    assert cfg["env"] == {"NEW": "1", "MAYA_DS4_TUNE": "1"} and cfg["reasoning_effort"] == "max"
+    row = maya_s._registry()[0]
+    assert row["port"] == 8100 and row["update_available"] is False
+
+    # A new version lists files that are not there: the old registration stays and is flagged.
+    monkeypatch.setattr(maya_s, "_probe", lambda folder: {"quants": [_ds_catalog(engine, monkeypatch, Path(folder))],
+                                                         "build": {}, "version": "y"})
+    assert maya_s.refresh_registered()[0]["status"] == "new_version"
+    assert maya_s.get_instance("maya-deepseek-xs")["update_available"] is True
+
+
+def test_glm_maya_s_from_the_sheet_comes_back_as_the_first_model(engine, monkeypatch):
+    maya_s.unregister("maya-s")  # files were removed; the first model is gone from the list
+    assert maya_s.list_instances() == []
+    _catalog(engine, monkeypatch, setup_id="glm-maya-s", tier="Maya-S")
+
+    def setup(argv, **kwargs):
+        assert argv[argv.index("--port") + 1] == "8099"
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(maya_s.subprocess, "run", setup)
+    row = maya_s.register("glm-maya-s", "/LLM")
+    assert row["alias"] == "maya-s" and row["port"] == 8099
+    assert json.loads(engine.first.read_text())["env"]["MAYA_GLM_PCIE_SHARE"] == "0.3"
     assert maya_s._registry() == []

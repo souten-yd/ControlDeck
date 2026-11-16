@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import contextlib
 from contextlib import contextmanager
 from functools import wraps
 import json
@@ -325,7 +326,13 @@ def _update() -> dict:
 async def update_stream(job=None) -> dict:
     if job:
         job.set_progress("Project Maya正式Releaseへ更新中。モデルは再取得しません", 0, 1)
-    return await asyncio.to_thread(_update)
+    state = await asyncio.to_thread(_update)
+    # 追加で登録したモデルも新しいエンジンと一覧に合わせて準備し直す（ダウンロードはしない）。
+    if _registry():
+        if job:
+            job.set_progress("登録済みのモデルを新しい版に合わせて準備し直しています", 0, 1)
+        state = {**state, "refreshed": await asyncio.to_thread(refresh_registered)}
+    return state
 
 
 async def available_update() -> dict:
@@ -681,7 +688,9 @@ def get_instance(alias: str) -> dict:
             "loaded": _running(alias), "model_path": str(record.get("model_dir") or ""),
             "ctx_size": _config_context(record["config"]), "configured": True, "n_parallel": 1,
             "vision": _config_vision(record["config"]), "family": record["family"], "tier": record["tier"],
-            "size_gb": record.get("size_gb"), "display_name": display_name(record)}
+            "size_gb": record.get("size_gb"), "display_name": display_name(record),
+            "update_available": bool(record.get("update_available")), "update_gb": record.get("update_gb") or 0,
+            "setup_id": record["setup_id"], "folder": str(_row_folder(record) or "")}
 
 
 def _vision_configured() -> bool:
@@ -951,6 +960,8 @@ def catalog(folder: str = "") -> dict:
     for item in data["quants"]:
         files = item.get("files") or []
         missing = [f for f in files if f.get("required") and not f.get("present")]
+        if path is not None:
+            item.update(_download_plan(item, path))
         item.update(
             alias=_alias_for(item["family"], item["tier"]), registered=registered.get(item["setup_id"], ""),
             missing_gb=round(sum(int(f.get("size") or 0) for f in missing) / 1e9, 1),
@@ -978,6 +989,16 @@ def _snapshot() -> dict[str, bytes]:
 @_serialized
 def register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int = 0) -> dict:
     """Set up one Maya quant from files already in `folder`, beside the first model. No download."""
+    return _register(setup_id, folder, context=context, gpu_index=gpu_index)
+
+
+def _register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int = 0,
+              port: int | None = None, keep: dict | None = None) -> dict:
+    """The work of register(), without the lock (download and refresh call it while holding it).
+
+    `port` / `keep`: when a model is set up again (an engine update, a newer version of its files),
+    keep its port and what ControlDeck tuned in its config (env, thinking settings).
+    """
     if _any_running():
         raise MayaError("Mayaのモデルを停止してから登録してください")
     if not 1024 <= int(context) <= 1048576 or not 0 <= int(gpu_index) <= 15:
@@ -991,11 +1012,15 @@ def register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int
         why = item.get("folder_error") or "; ".join(item.get("blockers") or []) or item.get("error") or \
             f"ファイルが足りません（あと約{item['missing_gb']}GB）。先に取得してください: {item.get('hf', '')}"
         raise MayaError(why)
-    alias = item["alias"]
+    # GLM-5.3-Flash · Maya-S is the first model (alias maya-s, port 8099, its own settings):
+    # setting it up again from here puts it back under that identity.
+    legacy = setup_id == _MODEL
+    alias = _ALIAS if legacy else item["alias"]
     from app.models_mgmt import local_llm
     if local_llm.alias_taken_by_other_runtime(alias, "maya-s"):
         raise MayaError(f"モデル名 {alias} は別のランタイムが使っています")
-    port = _free_port()
+    port = _PORT if legacy else (port or _free_port())
+    legacy_env = _config_env() if legacy else {}
     model_dir = Path(item["model_dir"])
     argv = ["bash", str(entrypoint()), "--setup", "--backend", "hip", "--gpu", str(int(gpu_index)),
             "--context", str(int(context)), "--parallel", "1", "--no-speed-calibration",
@@ -1012,7 +1037,7 @@ def register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int
     before = _snapshot()
     owned = {name for name in before if name in {r["config"] for r in _registry()}}
     first = _find_config()
-    if first is not None:
+    if first is not None and not legacy:
         owned.add(first.name)
     log = root() / f"register-{alias}.log"
     try:
@@ -1028,6 +1053,17 @@ def register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int
     for name in clobbered:
         (source() / name).write_bytes(before[name])
     changed = [name for name in after if name not in owned and after[name] != before.get(name)]
+    if legacy and not result.returncode and not clobbered and _find_config() is not None:
+        # The first model's config keeps its name; it may come back byte for byte.
+        _prepared_marker().write_text(json.dumps({"model": _MODEL, "gpu_index": int(gpu_index), "port": _PORT}),
+                                      encoding="utf-8")
+        _enable_fit_max_tokens({**legacy_env, **dict((keep or {}).get("env") or {})})
+        settings = get_settings()
+        first_file = next((f for f in item.get("files") or [] if f.get("what") == "model" and f.get("path")), None)
+        if first_file:
+            settings["model_path"] = str(first_file["path"])
+            (root() / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        return get_instance(_ALIAS)
     if result.returncode or clobbered or not changed:
         for name in changed:
             if name not in before:
@@ -1040,10 +1076,18 @@ def register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: int
     cfg = json.loads(config.read_text(encoding="utf-8"))
     cfg["fit_max_tokens"] = True
     cfg["port"] = port
+    if keep:
+        # The setup writes its defaults; put back what was tuned (its values win only for new keys).
+        env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+        cfg["env"] = {**env, **dict(keep.get("env") or {})}
+        for key in _KEPT_KEYS:
+            if key in keep:
+                cfg[key] = keep[key]
     config.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     rows = [r for r in _registry() if r["alias"] != alias]
     rows.append({"alias": alias, "setup_id": setup_id, "family": item["family"], "tier": item["tier"],
                  "config": name, "port": port, "model_dir": str(model_dir), "size_gb": item.get("size_gb"),
+                 "folder": str(item.get("repo_root") or model_dir.parent),
                  "created_at": int(__import__("time").time())})
     _save_registry(rows)
     return get_instance(alias)
@@ -1056,22 +1100,305 @@ async def register_stream(job=None, **kwargs) -> dict:
 
 
 @_serialized
-def unregister(alias: str) -> dict:
-    """Forget a registered Maya model: its engine config only. The model files stay."""
+def unregister(alias: str, *, delete_files: bool = False) -> dict:
+    """Forget a registered Maya model: its engine config. With `delete_files`, also the files its
+    manifest lists inside its folder (never anything else, never files another model still uses)."""
+    if _running(alias):
+        raise MayaError("モデルを停止してから削除してください")
+    deleted: list[str] = []
     if alias == _ALIAS:
         # 最初のモデル（maya-s）は準備済みの印を外して一覧から消す。エンジンの設定ファイルと
         # 調整した値（env・思考設定）は残すので、ファイルを戻して準備し直せば同じ設定で使える。
-        if _running(alias):
-            raise MayaError("モデルを停止してから削除してください")
+        if delete_files:
+            deleted = _delete_model_files(_MODEL, _legacy_folder(), alias)
         _prepared_marker().unlink(missing_ok=True)
-        return {"alias": alias, "removed": True}
+        return {"alias": alias, "removed": True, "deleted_files": len(deleted)}
     row = next((r for r in _registry() if r["alias"] == alias), None)
     if row is None:
         raise MayaError("登録されたMayaモデルが見つかりません")
-    if _running(alias):
-        raise MayaError("モデルを停止してから削除してください")
+    if delete_files:
+        deleted = _delete_model_files(row["setup_id"], _row_folder(row), alias)
     config = source() / row["config"]
     if config.is_file() and not config.is_symlink():
         config.unlink()
     _save_registry([r for r in _registry() if r["alias"] != alias])
-    return {"alias": alias, "removed": True}
+    return {"alias": alias, "removed": True, "deleted_files": len(deleted)}
+
+
+# ---- ダウンロード・ファイルの削除・エンジン更新後の登録し直し ----
+
+# Settings ControlDeck writes into a model's engine config; kept when it is set up again.
+_KEPT_KEYS = ("reasoning_effort", "thinking_budget", "fit_max_tokens", "gpu", "control_deck_vram_margin")
+
+
+def _row_folder(row: dict) -> Path | None:
+    folder = str(row.get("folder") or "")
+    if folder:
+        return Path(folder)
+    model_dir = str(row.get("model_dir") or "")
+    return Path(model_dir).parent if model_dir else None
+
+
+def _legacy_folder() -> Path | None:
+    """The first model's folder (the one holding its quant folder), from its settings."""
+    model_path = str(get_settings().get("model_path") or "")
+    return Path(model_path).parent.parent if model_path else models_dir()
+
+
+def _hf_bin() -> str:
+    found = shutil.which("hf") or str(Path.home() / ".local" / "bin" / "hf")
+    if not Path(found).is_file():
+        raise MayaError("hf（Hugging Face の CLI）が見つかりません")
+    return found
+
+
+def _existing_parent(path: Path) -> Path:
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return path
+
+
+def _download_root(item: dict, folder: Path) -> Path:
+    """Where the files go. DeepSeek reads its n-gram tables from a folder with the repo's own name,
+    so a folder of another name gets that folder made inside it."""
+    name = str(item.get("folder_name") or "")
+    if name and folder.name != name:
+        return folder / name
+    return Path(str(item.get("repo_root") or folder))
+
+
+def _wanted(item: dict) -> list[dict]:
+    """The files a download fetches: the required ones and the quant's own drafter."""
+    return [f for f in item.get("files") or [] if f.get("required") or f.get("what") == "drafter"]
+
+
+def _download_plan(item: dict, folder: Path) -> dict:
+    """Size, destination and free space for 「ダウンロードして登録」 (shown before the owner agrees)."""
+    root = _download_root(item, folder)
+    wanted = [f for f in _wanted(item) if not f.get("present")]
+    known = sum(int(f.get("size") or 0) for f in wanted)
+    unknown = any(f.get("size") is None for f in wanted)
+    # GLM's manifest has no byte counts for every file: use the quant's whole size then.
+    need = float(item.get("size_gb") or 0) * 1e9 if unknown else known
+    try:
+        free = shutil.disk_usage(_existing_parent(root)).free
+    except OSError:
+        free = 0
+    return {"download_root": str(root), "download_gb": round(need / 1e9, 1), "free_gb": round(free / 1e9, 1),
+            "download_files": [f["name"] for f in wanted], "can_download": bool(
+                wanted and item.get("repo") and item.get("published", True) and not item.get("error")
+                and need + 2e9 <= free)}
+
+
+def _download_argv(item: dict, root: Path) -> list[str]:
+    includes = []
+    for f in _wanted(item):
+        if f.get("present"):
+            continue
+        rel = Path(f["path"]).resolve().relative_to(root.resolve())
+        includes += ["--include", str(rel)]
+    if not includes:
+        return []
+    argv = [_hf_bin(), "download", str(item["repo"])]
+    if item.get("revision"):
+        argv += ["--revision", str(item["revision"])]
+    return argv + includes + ["--local-dir", str(root)]
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(16 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download(setup_id: str, folder: str, job=None) -> tuple[dict, Path]:
+    """Fetch exactly the manifest's files for one quant at its pinned revision. Only on the owner's
+    explicit request (「ダウンロードして登録」). Resumable: hf keeps partial files in <root>/.cache."""
+    base = _folder(folder)
+    item = next((q for q in catalog(str(base))["quants"] if q["setup_id"] == setup_id), None)
+    if item is None:
+        raise MayaError("Mayaの量子化が見つかりません")
+    plan = _download_plan(item, base)
+    root = Path(plan["download_root"])
+    if not plan["can_download"] and plan["download_files"]:
+        raise MayaError(f"空き容量が足りません（必要 約{plan['download_gb']}GB・空き {plan['free_gb']}GB）"
+                        if plan["download_gb"] * 1e9 + 2e9 > plan["free_gb"] * 1e9 else "この量子化はダウンロードできません")
+    root.mkdir(parents=True, exist_ok=True)
+    if root != base:
+        item = next(q for q in catalog(str(root))["quants"] if q["setup_id"] == setup_id)
+    argv = _download_argv(item, root)
+    if argv:
+        if job:
+            job.set_progress(f"{display_name(item)} をダウンロード中（約{plan['download_gb']}GB → {root}）", 0, 3)
+        log = root.parent / f".maya-download-{setup_id}.log" if os.access(root.parent, os.W_OK) else root / ".maya-download.log"
+        try:
+            with log.open("w", encoding="utf-8") as stream:
+                result = subprocess.run(argv, cwd=str(root), stdin=subprocess.DEVNULL, stdout=stream,
+                                        stderr=subprocess.STDOUT, timeout=48 * 3600, check=False,
+                                        env={**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"})
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise MayaError("ダウンロードを実行できませんでした") from exc
+        if result.returncode:
+            raise MayaError(f"ダウンロードに失敗しました（exit {result.returncode}）。もう一度実行すると続きから取ります。{log}")
+    item = next(q for q in catalog(str(root))["quants"] if q["setup_id"] == setup_id)
+    missing = [f["name"] for f in _wanted(item) if not f.get("present")]
+    if missing:
+        raise MayaError(f"ファイルがそろいません: {', '.join(missing[:3])}")
+    if job:
+        job.set_progress("ファイルを検証中（SHA-256）", 1, 3)
+    for f in _wanted(item):
+        if f.get("sha256") and _sha256(Path(f["path"])) != f["sha256"]:
+            raise MayaError(f"{f['name']} の SHA-256 が一致しません。消して取り直してください")
+    return item, root
+
+
+async def download_and_register_stream(job=None, *, setup_id: str, folder: str, context: int = 65536,
+                                       gpu_index: int = 0, replace: str = "") -> dict:
+    def run() -> dict:
+        with _operation_lock():
+            item, root = _download(setup_id, folder, job)
+            if job:
+                job.set_progress("Mayaのセットアップ中（ダウンロードは終わりました）", 2, 3)
+            if replace:
+                return _setup_again(replace, root)
+            return _register(setup_id, str(root), context=context, gpu_index=gpu_index)
+    return await asyncio.to_thread(run)
+
+
+def _keep_of(config: Path | None) -> dict:
+    try:
+        cfg = json.loads(config.read_text(encoding="utf-8")) if config else {}
+    except (OSError, ValueError):
+        return {}
+    keep = {key: cfg[key] for key in _KEPT_KEYS if key in cfg}
+    if isinstance(cfg.get("env"), dict):
+        keep["env"] = dict(cfg["env"])
+    return keep
+
+
+def _setup_again(alias: str, folder: Path | None = None) -> dict:
+    """Set a registered model up again (engine update, newer files) keeping its alias, port and
+    tuning. Lock held by the caller."""
+    if alias == _ALIAS:
+        record = _record(_ALIAS)
+        keep = _keep_of(record["config"] if record else _find_config())
+        target = folder or _legacy_folder()
+        _prepared_marker().unlink(missing_ok=True)
+        return _register(_MODEL, str(target), context=int(get_settings().get("context") or 65536),
+                         gpu_index=int(get_settings().get("gpu_index") or 0), keep=keep)
+    row = next((r for r in _registry() if r["alias"] == alias), None)
+    if row is None:
+        raise MayaError("登録されたMayaモデルが見つかりません")
+    config = source() / row["config"]
+    keep = _keep_of(config)
+    context = _config_context(config) or 65536
+    backup = config.read_bytes() if config.is_file() else b""
+    rows = _registry()
+    _save_registry([r for r in rows if r["alias"] != alias])
+    if config.is_file():
+        config.unlink()
+    try:
+        return _register(row["setup_id"], str(folder or _row_folder(row)), context=context,
+                         gpu_index=int((keep.get("gpu") or [0])[0]) if isinstance(keep.get("gpu"), list) else 0,
+                         port=int(row["port"]), keep=keep)
+    except MayaError:
+        # Put the working registration back: a failed refresh must not lose the model.
+        if backup:
+            config.write_bytes(backup)
+        _save_registry(rows)
+        raise
+
+
+def refresh_registered() -> list[dict]:
+    """After an engine update: set every registered model up again (no download) so its config
+    follows the new engine and manifest. A model whose manifest now lists other files (a new
+    version of the weights) keeps its old registration and is marked 「新しい版あり」."""
+    results = []
+    with _operation_lock():
+        for row in list(_registry()):
+            folder = _row_folder(row)
+            item = None
+            try:
+                item = next((q for q in _probe(folder)["quants"] if q["setup_id"] == row["setup_id"]), None) \
+                    if folder and folder.is_dir() else None
+            except MayaError:
+                item = None
+            missing = [f for f in (item or {}).get("files") or [] if f.get("required") and not f.get("present")]
+            if item is None or missing:
+                gb = round(sum(int(f.get("size") or 0) for f in missing) / 1e9, 1)
+                _mark(row["alias"], update_available=True, update_gb=gb)
+                results.append({"alias": row["alias"], "status": "new_version", "update_gb": gb})
+                continue
+            try:
+                _setup_again(row["alias"], folder)
+                _mark(row["alias"], update_available=False, update_gb=0)
+                results.append({"alias": row["alias"], "status": "refreshed"})
+            except MayaError as exc:
+                results.append({"alias": row["alias"], "status": "failed", "error": str(exc)[:200]})
+    return results
+
+
+def _mark(alias: str, **fields) -> None:
+    rows = _registry()
+    for row in rows:
+        if row["alias"] == alias:
+            row.update(fields)
+    _save_registry(rows)
+
+
+def _delete_model_files(setup_id: str, folder: Path | None, alias: str) -> list[str]:
+    """Delete the manifest's files of one quant inside its folder. Files another registered model
+    lists (shared n-gram tables) and anything outside the folder or behind a symlink are left."""
+    if folder is None or not folder.is_dir() or folder.is_symlink():
+        raise MayaError("モデルのフォルダが見つからないため、ファイルは消せません")
+    base = folder.resolve()
+    item = next((q for q in _probe(folder)["quants"] if q["setup_id"] == setup_id), None)
+    if item is None:
+        raise MayaError("Mayaの量子化が見つかりません")
+    others: set[str] = set()
+    for row in _registry():
+        if row["alias"] == alias:
+            continue
+        other = _row_folder(row)
+        if other and other.is_dir():
+            try:
+                q = next((x for x in _probe(other)["quants"] if x["setup_id"] == row["setup_id"]), None)
+            except MayaError:
+                q = None
+            others.update(str(Path(f["path"]).resolve()) for f in (q or {}).get("files") or [])
+    if alias != _ALIAS and _config() is not None:
+        legacy = _legacy_folder()
+        if legacy and legacy.is_dir():
+            try:
+                q = next((x for x in _probe(legacy)["quants"] if x["setup_id"] == _MODEL), None)
+            except MayaError:
+                q = None
+            others.update(str(Path(f["path"]).resolve()) for f in (q or {}).get("files") or [])
+    deleted, parents = [], set()
+    for f in item.get("files") or []:
+        path = Path(f["path"])
+        if path.is_symlink() or not path.is_file():
+            continue
+        real = path.resolve()
+        if not real.is_relative_to(base) or str(real) in others:
+            continue
+        real.unlink()
+        deleted.append(str(real))
+        parents.add(real.parent)
+    # Empty folders left behind (the quant's folder, dspark/): never the chosen folder itself,
+    # except DeepSeek's repo-named folder, which was made for these files.
+    for parent in sorted(parents, key=lambda p: len(p.parts), reverse=True):
+        p = parent
+        while p != base and p.is_relative_to(base) and p.is_dir() and not any(p.iterdir()):
+            p.rmdir()
+            p = p.parent
+    if item.get("folder_name") and base.name == item["folder_name"] and base.is_dir():
+        cache = base / ".cache"
+        if not any(x for x in base.iterdir() if x != cache):
+            shutil.rmtree(cache, ignore_errors=True)
+            with contextlib.suppress(OSError):
+                base.rmdir()
+    return deleted

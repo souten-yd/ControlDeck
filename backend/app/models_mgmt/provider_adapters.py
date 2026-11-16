@@ -195,7 +195,12 @@ async def list_models(provider_id: str) -> list[dict]:
                             "port": item["port"], "base_url": item["base_url"],
                             "display_name": str(item.get("display_name") or model),
                             "quantization": quant or "Maya-S",
-                            "vision_enabled": bool(item.get("vision"))}}
+                            "vision_enabled": bool(item.get("vision")),
+                            # エンジンの更新で、このモデルのファイルに新しい版が出た。
+                            "update_available": bool(item.get("update_available")),
+                            "update_gb": item.get("update_gb") or 0,
+                            "setup_id": str(item.get("setup_id") or ""),
+                            "folder": str(item.get("folder") or "")}}
         return [maya_row(item) for item in await asyncio.to_thread(maya_s.list_instances)]
     if provider["provider"] == "strata" and provider["managed"]:
         return [{
