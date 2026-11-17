@@ -44,6 +44,13 @@ if (isIPhoneStandalone) {
   syncStandaloneHeight();
   window.addEventListener("resize", syncStandaloneHeight);
   window.addEventListener("orientationchange", () => window.setTimeout(syncStandaloneHeight, 300));
+  // 起動の直後は 873 で、文書の高さ（index.css の min-height）を見た iOS が少し後に 932 へ広げる。
+  // このとき window の resize が来ないことがある（実機 2026-11-17: innerHeight 932 なのに殻 873 のまま）ので、
+  // 読み込み完了・表示の切り替え・少し後にも合わせ直す。
+  window.visualViewport?.addEventListener("resize", syncStandaloneHeight);
+  window.addEventListener("load", syncStandaloneHeight);
+  document.addEventListener("visibilitychange", syncStandaloneHeight);
+  for (const delay of [300, 1000, 2500]) window.setTimeout(syncStandaloneHeight, delay);
 }
 
 // デプロイ（再ビルド）後、開きっぱなしの旧画面が存在しない旧チャンクを遅延ロードして

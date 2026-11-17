@@ -489,6 +489,13 @@ test("standalone iPhone: shell fits the shortened web view and drops the bottom 
   // 入力欄は描ける範囲（報告された高さ）の中に収まる
   expect(viewport.composer_bottom).toBeGreaterThan(0);
   expect(viewport.composer_bottom).toBeLessThanOrEqual(894);
+  // iOS が後から満寸へ広げても window の resize が来ないことがある（実機 2026-11-17）。表示の切り替えなどで合わせ直す
+  await page.evaluate(() => {
+    Object.defineProperty(window, "innerHeight", { configurable: true, get: () => 956 });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById("root")!).height)).toBe("956px");
+  await page.evaluate(() => { delete (window as unknown as { innerHeight?: number }).innerHeight; });
   // 短くなっていないとき（満寸）は Safe Area をそのまま使う
   await page.setViewportSize({ width: 440, height: 956 });
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue("--cd-safe-area-bottom"))).toBe("");
