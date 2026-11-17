@@ -443,3 +443,25 @@ test("drawer and settings are flat on a phone", async ({ page }) => {
   await expect(categories).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
+
+// 根拠: iPhone のホーム画面アプリは再読み込み後に 100vh/innerHeight を上の Safe Area 分（約 62pt）縮めて
+// 報告し、殻の下端が画面に届かず入力欄が切れた（2026-11-17、実機の画面写真）。殻は画面の実寸に合わせる。
+test("standalone iPhone: shell uses the real screen height when the viewport is reported shrunk", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
+    Object.defineProperty(window.screen, "width", { configurable: true, get: () => 440 });
+    Object.defineProperty(window.screen, "height", { configurable: true, get: () => 956 });
+  });
+  await page.setViewportSize({ width: 440, height: 894 }); // 956 - 62（縮んだ報告）
+  await login(page);
+  await expect(page.locator("[data-assistant-shell]")).toBeVisible();
+  const state = await page.evaluate(() => ({
+    root: getComputedStyle(document.getElementById("root")!).height,
+    shrunk: document.documentElement.dataset.viewportShrunk,
+  }));
+  expect(state).toEqual({ root: "956px", shrunk: "62" });
+  // キーボードほどの差（> 100px）は実寸で上書きしない
+  await page.setViewportSize({ width: 440, height: 600 });
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById("root")!).height)).not.toBe("956px");
+});
