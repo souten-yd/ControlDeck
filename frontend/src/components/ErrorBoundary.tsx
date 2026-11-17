@@ -66,9 +66,9 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="mx-auto max-w-3xl p-4 md:p-6">
         <div className="rounded-2xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40">
-          <h1 className="text-base font-semibold text-red-800 dark:text-red-300">
+          <h2 className="text-base font-semibold text-red-800 dark:text-red-300">
             この画面を表示できませんでした
-          </h1>
+          </h2>
           <p className="mt-2 text-sm text-red-700 dark:text-red-400">
             他の画面は使えます。同じ操作で繰り返し起きるなら、下の内容をお知らせください。
           </p>

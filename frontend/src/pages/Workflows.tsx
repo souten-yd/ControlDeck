@@ -7,6 +7,7 @@ import { BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, IconButton, Skele
 import { IconBookOpen, IconDots, IconPlay, IconPlus } from "../components/icons";
 import { DEFAULT_DEFINITION } from "../features/workflows/nodeTypes";
 import { PageHeader } from "../components/PageHeader";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 const WorkflowEditor = lazy(() => import("../features/workflows/WorkflowEditor"));
 const SampleBook = lazy(() => import("../features/workflows/SampleBook"));
@@ -149,10 +150,12 @@ function WorkflowList() {
     onError: (e) => show(e instanceof Error ? e.message : "削除に失敗しました", "error"),
   });
 
+  const narrow = useMediaQuery("(max-width: 479px)");
   return (
     <div className="mx-auto max-w-4xl p-4 md:p-6">
       <PageHeader title="Workflows" actions={<>
-          {canEdit && (
+          {/* 狭い画面では上の行に主操作とメニューだけを置き、残りはメニューへ入れる。 */}
+          {canEdit && !narrow && (
             <IconButton label="サンプルブック" title="サンプルワークフロー集とノードリファレンス" onClick={() => setShowSamples(true)}>
               <IconBookOpen />
             </IconButton>
@@ -170,6 +173,7 @@ function WorkflowList() {
                 ariaLabel="Workflow menu"
                 trigger={<IconDots />}
                 items={[
+                  ...(narrow ? [{ label: "📖 サンプルブック", onSelect: () => setShowSamples(true) }] : []),
                   { label: "📥 Import JSON", onSelect: () => importRef.current?.click() },
                   { label: "🔑 Secret Manager", onSelect: () => setShowSecrets(true) },
                 ]}

@@ -15,8 +15,19 @@ import {
 } from "./components/icons";
 import { PRODUCT_NAMES } from "./constants/productNames";
 
+/** ドロワー／サイドバーでのまとまり。並びは NAV_GROUPS の順。 */
+export type NavigationGroup = "main" | "dev" | "ai" | "system";
+
+export const NAV_GROUPS: { id: NavigationGroup; label: string }[] = [
+  { id: "main", label: "メイン" },
+  { id: "dev", label: "開発" },
+  { id: "ai", label: "AI" },
+  { id: "system", label: "システム" },
+];
+
 export interface NavigationItem {
   to: string;
+  group: NavigationGroup;
   label: string;
   icon: ComponentType<SVGProps<SVGSVGElement>>;
   feature?: string;
@@ -31,22 +42,22 @@ export function canAccessNavigationItem(item: NavigationItem, can: (permission: 
 }
 
 export const NAVIGATION: NavigationItem[] = [
-  { to: "/", label: "Home", icon: IconHome },
-  { to: "/apps", label: "Apps", icon: IconGrid },
-  { to: "/workflows", label: "Workflows", icon: IconFlow, anyPermission: ["workflows.run", "workflows.edit"] },
-  { to: "/applications", label: PRODUCT_NAMES.appStudio, icon: IconPackage, permission: "application_builder.view" },
-  { to: "/project-lab", label: "Project Lab", icon: IconFlask, permission: "project_lab.view" },
-  { to: "/remote", label: "Remote", icon: IconRemote },
-  { to: "/files", label: "Files", icon: IconFile },
-  { to: "/terminal", label: "Terminal", icon: IconTerminal },
-  { to: "/assistant", label: "AI Assistant", icon: IconAssistant },
-  { to: "/github", label: "GitHub", icon: IconBranch },
-  { to: "/knowledge", label: "Knowledge", icon: IconBook },
-  { to: "/models", label: "Models", icon: IconChip },
-  { to: "/opencode-v2", label: "OpenCode", icon: IconCode, feature: "opencode-v2" },
-  { to: "/logs", label: "Logs", icon: IconLogs },
-  { to: "/system", label: "System", icon: IconChart },
-  { to: "/settings", label: "Settings", icon: IconSettings },
+  { to: "/", group: "main", label: "Home", icon: IconHome },
+  { to: "/apps", group: "main", label: "Apps", icon: IconGrid, permission: "apps.view" },
+  { to: "/workflows", group: "dev", label: "Workflows", icon: IconFlow, anyPermission: ["workflows.run", "workflows.edit"] },
+  { to: "/applications", group: "dev", label: PRODUCT_NAMES.appStudio, icon: IconPackage, permission: "application_builder.view" },
+  { to: "/project-lab", group: "dev", label: "Project Lab", icon: IconFlask, permission: "project_lab.view" },
+  { to: "/remote", group: "main", label: "Remote", icon: IconRemote, permission: "remote_desktop.use" },
+  { to: "/files", group: "main", label: "Files", icon: IconFile, permission: "files.view" },
+  { to: "/terminal", group: "dev", label: "Terminal", icon: IconTerminal, permission: "terminal.use" },
+  { to: "/assistant", group: "ai", label: "AI Assistant", icon: IconAssistant },
+  { to: "/github", group: "dev", label: "GitHub", icon: IconBranch, permission: "apps.view" },
+  { to: "/knowledge", group: "ai", label: "Knowledge", icon: IconBook, permission: "workflows.run" },
+  { to: "/models", group: "ai", label: "Models", icon: IconChip, permission: "workflows.run" },
+  { to: "/opencode-v2", group: "dev", label: "OpenCode", icon: IconCode, feature: "opencode-v2" },
+  { to: "/logs", group: "system", label: "Logs", icon: IconLogs },
+  { to: "/system", group: "system", label: "System", icon: IconChart },
+  { to: "/settings", group: "system", label: "Settings", icon: IconSettings },
 ];
 
 export function IconFlow(props: SVGProps<SVGSVGElement>) {

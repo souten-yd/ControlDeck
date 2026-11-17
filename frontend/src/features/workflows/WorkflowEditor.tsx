@@ -52,6 +52,7 @@ import type { ManagedApp } from "../../types";
 import { WorkflowOutline } from "./WorkflowOutline";
 import { ProjectIntelligencePanel } from "./ProjectIntelligencePanel";
 import { collapseGraph, groupPosition, type WorkflowGroup } from "./largeFlow";
+import { ShellMenuButton } from "../../layouts/shell";
 
 interface DefNode {
   id: string;
@@ -847,9 +848,12 @@ export default function WorkflowEditor({ workflowId }: { workflowId: number }) {
   };
 
   return (
-    <div className="flex h-full flex-col">
-      {/* ツールバー */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800 sm:gap-2 sm:px-3 sm:py-2">
+    <div className="safe-top flex h-full flex-col">
+      {/* ツールバー。殻の上の行は出さず、この行が兼ねる（キャンバスを広く使う）。
+          ☰ は幅に余裕があるときだけ置く（狭い画面では名前の欄が潰れる。左端の × で
+          一覧へ戻れば ☰ がある）。 */}
+      <div className="relative z-30 flex shrink-0 items-center gap-1.5 border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800 sm:gap-2 sm:px-3 sm:py-2">
+        <span className="hidden sm:contents"><ShellMenuButton /></span>
         <button onClick={() => navigate("/workflows")} aria-label="一覧へ戻る" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
           <IconX />
         </button>

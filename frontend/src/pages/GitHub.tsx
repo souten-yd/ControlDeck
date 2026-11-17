@@ -95,8 +95,10 @@ export default function GitHubPage() {
         description={auth?.logged_in ? `${auth.account} でログイン中` : undefined}
         actions={<>
           {auth?.available && !auth.logged_in && can("apps.edit") && (
-            <button onClick={login} className="min-h-10 rounded-full bg-zinc-100 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700">
-              GitHub にログイン
+            <button onClick={login} aria-label="GitHub にログイン" className="min-h-10 shrink-0 whitespace-nowrap rounded-full bg-zinc-100 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700">
+              {/* 狭い画面では題名（GitHub）が隣にあるので、短く書く。 */}
+              <span className="min-[480px]:hidden">ログイン</span>
+              <span className="hidden min-[480px]:inline">GitHub にログイン</span>
             </button>
           )}
           {can("apps.edit") && (

@@ -92,5 +92,5 @@ export default function AddonHostPage() {
 
 function MissingAddon({ addonId }: { addonId: string }) {
   const navigate = useNavigate();
-  return <div className="mx-auto max-w-xl p-4 md:p-6"><section className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"><h1 className="font-semibold">拡張機能を利用できません</h1><p className="mt-2 text-sm text-zinc-500">{addonId || "指定された拡張機能"} は無効、未登録、権限不足のいずれかです。</p><div className="mt-4 flex gap-2"><button onClick={() => navigate("/settings")} className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white">設定を開く</button><button onClick={() => navigate("/")} className="min-h-11 rounded-xl px-4 text-sm">ホームへ戻る</button></div></section></div>;
+  return <div className="mx-auto max-w-xl p-4 md:p-6"><section className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"><h2 className="font-semibold">拡張機能を利用できません</h2><p className="mt-2 text-sm text-zinc-500">{addonId || "指定された拡張機能"} は無効、未登録、権限不足のいずれかです。</p><div className="mt-4 flex gap-2"><button onClick={() => navigate("/settings")} className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white">設定を開く</button><button onClick={() => navigate("/")} className="min-h-11 rounded-xl px-4 text-sm">ホームへ戻る</button></div></section></div>;
 }

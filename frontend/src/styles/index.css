@@ -114,6 +114,27 @@ html.pwa-standalone #root {
   height: 100vh;
 }
 
+/* ---- アプリの殻 ----
+   殻の中では文書そのものを動かさない。スクロールするのは main や一覧だけ。
+   iPhone は文書が動かせる状態だと、指を動かしたとき画面全体（上の行も入力欄も）を
+   ゴムのように引っ張る。ログイン画面など殻の外は従来どおり文書がスクロールする。 */
+html.cd-app-shell,
+html.cd-app-shell body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+/* iPhone はキーボードを出しても layout viewport を縮めず、見えている範囲
+   （visual viewport）だけを縮めて文書を上へずらす。そのままだと上の行が画面の外へ
+   出るので、キーボードが出ている間は殻を見えている範囲にぴったり合わせる
+   （値は useKeyboardViewportFit が入れる）。 */
+html.cd-keyboard-fit #root {
+  position: fixed;
+  top: var(--cd-app-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--cd-app-height, 100dvh);
+}
+
 body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
   -webkit-tap-highlight-color: transparent;

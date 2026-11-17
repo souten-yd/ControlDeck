@@ -160,6 +160,18 @@ export const IconDots = (p: SVGProps<SVGSVGElement>) => (
     <circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" />
   </Icon>
 );
+export const IconMenu = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M4 7h16M4 12h16M4 17h16" />
+  </Icon>
+);
+/** 新しい会話（紙と鉛筆）。 */
+export const IconCompose = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
+    <path d="M18.4 3.6a2 2 0 0 1 2.8 2.8L12 15.6 8.5 16.5l.9-3.5 9-9.4z" />
+  </Icon>
+);
 export const IconPlus = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M12 5v14M5 12h14" />

@@ -4,6 +4,8 @@ import { canAccessNavigationItem, NAVIGATION } from "../../navigation";
 import { useAuth } from "../../stores";
 import { MOBILE_NAV_MAX_ITEMS, useMobileNavigation } from "../../stores/mobileNavigation";
 
+/** メニュー（左上の ☰ で開くドロワー／PC のサイドバー）の先頭に固定する機能を選ぶ。
+ *  以前の「下部ナビ」の選択をそのまま引き継ぐ（保存先は同じ）。 */
 export function MobileNavigationSettings() {
   const can = useAuth((state) => state.can);
   const { data: meta } = useMeta();
@@ -34,11 +36,11 @@ export function MobileNavigationSettings() {
   };
 
   return (
-    <section aria-labelledby="bottom-navigation-settings-title" className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
+    <section aria-labelledby="pinned-navigation-settings-title" className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 id="bottom-navigation-settings-title" className="text-sm font-semibold text-zinc-500">Bottom Navigation</h2>
-          <p className="mt-1 text-xs leading-relaxed text-zinc-400">この端末の下部メニューを最大6件まで選択できます。Moreは常に右端へ表示されます。</p>
+          <h2 id="pinned-navigation-settings-title" className="text-sm font-semibold text-zinc-500">よく使う機能</h2>
+          <p className="mt-1 text-xs leading-relaxed text-zinc-400">メニュー（左上の ☰）の先頭に固定する機能を、この端末で最大6件まで選べます。選ばなかった機能も、メニューのまとまりの中に並びます。</p>
         </div>
         <button type="button" onClick={reset} className="min-h-11 shrink-0 rounded-xl px-3 text-xs font-medium text-accent-600 hover:bg-accent-50 dark:hover:bg-accent-600/10">Reset</button>
       </div>
@@ -48,7 +50,7 @@ export function MobileNavigationSettings() {
           <span className="text-xs font-medium">表示順</span>
           <span className="num text-xs text-zinc-400">{selected.length} / {MOBILE_NAV_MAX_ITEMS}</span>
         </div>
-        {selected.length === 0 ? <p className="rounded-lg border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-400 dark:border-zinc-700">Moreのみ表示します。下の候補から機能を選択してください。</p> : (
+        {selected.length === 0 ? <p className="rounded-lg border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-400 dark:border-zinc-700">固定する機能はありません。下の候補から選ぶと、メニューの先頭に並びます。</p> : (
           <ol className="space-y-1">
             {selected.map((path, index) => {
               const item = available.find((candidate) => candidate.to === path)!;
