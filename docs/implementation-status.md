@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-18 OpenCode: 日本語のプロジェクト名で回答が作れない（UnicodeEncodeError）
+
+- プロジェクト「コンバータシム」で OpenCode が「処理に失敗しました（UnicodeEncodeError）」。OpenCode の server へ送るヘッダー `x-opencode-directory` にプロジェクトのパスをそのまま入れていて、日本語が入ると HTTP のヘッダー（ASCII だけ）を作る前に落ちていた。
+- OpenCode 自身と同じく URL エンコードして送る（server 側は decodeURIComponent で戻す。v2 本体で確認）。ASCII だけのパスは今までと同じ値。
+- 検証: `tests/test_opencode_chat_server.py`（既存のファイルに 1 件）、backend 全体。
+
 ## 2026-11-17 AI アシスタント: 検索系の機能を「調査」1 つにまとめる（検索の統合 その 2）
 
 - 機能の選択欄に Web Search・Academic・Deep Research・Research が並んでいた（#423 は自動判定の振り分けだけ）。「🔎 調査」1 つにし、深さ（自動・速い＝Web・標準＝Web と論文・深い＝Deep Research のレポート・論文だけ）を入力欄の下で選ぶ。

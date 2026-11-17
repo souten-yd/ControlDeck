@@ -438,3 +438,22 @@ def test_code_mode_rejects_a_second_message_while_working_and_never_stays_genera
                                json={"content": "y", "mode": "code", "model": "t", "code_project": "demo"},
                                headers=CSRF_HEADERS)
     assert second.status_code == 409
+
+
+def test_japanese_project_directory_is_sent_url_encoded(tmp_path):
+    """日本語のプロジェクト名でも、ヘッダーを送れる（ASCII だけ）。OpenCode は decodeURIComponent で戻す。
+    根拠: 2026-11-17 プロジェクト「コンバータシム」で OpenCode が UnicodeEncodeError になり、回答を作れなかった。"""
+    from urllib.parse import unquote
+
+    from app.integrations.opencode import chat_server
+
+    project = "/data1tb/CodeDEV/コンバータシム"
+    server = chat_server.Server(key="abc123", port=1, password="p", unit="u", config=str(tmp_path),
+                                project=project, permission_file=str(tmp_path / "perm.json"),
+                                started_at=0.0, last_used=0.0)
+    value = server.headers()["x-opencode-directory"]
+    value.encode("ascii")
+    assert unquote(value) == project
+    assert chat_server.Server(key="a", port=1, password="p", unit="u", config="c", project="/data1tb/CodeDEV/my-app",
+                              permission_file="p", started_at=0.0, last_used=0.0).headers()["x-opencode-directory"] \
+        == "/data1tb/CodeDEV/my-app"

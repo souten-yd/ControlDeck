@@ -24,6 +24,7 @@ import os
 import secrets
 import shutil
 import socket
+from urllib.parse import quote
 import subprocess
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -69,7 +70,10 @@ class Server:
 
     def headers(self) -> dict[str, str]:
         token = base64.b64encode(f"opencode:{self.password}".encode()).decode()
-        return {"Authorization": f"Basic {token}", "x-opencode-directory": self.project}
+        # HTTP のヘッダーは ASCII だけ。日本語のプロジェクト名（例: コンバータシム）でそのまま送ると、送る前に
+        # UnicodeEncodeError で落ちる（2026-11-17）。OpenCode 自身も encodeURIComponent で送り、受け側で戻している
+        return {"Authorization": f"Basic {token}",
+                "x-opencode-directory": quote(self.project, safe="/-_.~")}
 
 
 # ---- 状態 ----------------------------------------------------------------------------------
