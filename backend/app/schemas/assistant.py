@@ -15,6 +15,8 @@ class AssistantPlan(BaseModel):
     steps: list[ResearchStep] = Field(default_factory=list, max_length=6)
     max_iterations: int = Field(default=3, ge=1, le=5)
     decided_by: Literal["rule", "llm", "fallback"] = "llm"
+    # 調べる深さ。web=速い、academic/research=標準、deep=深い。チャットなどは None
+    depth: Literal["quick", "standard", "deep"] | None = None
 
 
 class ResearchEvaluation(BaseModel):

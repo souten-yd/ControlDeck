@@ -4,11 +4,37 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 
 from app.schemas.assistant import AssistantPlan, ResearchEvaluation, ResearchStep
 from app.workflows.chat_router import _llm
 
 logger = logging.getLogger(__name__)
+
+# 自動判定の語は画面（assistantMode.ts）と同じ表を読む。ずれると画面とサーバーで判定が食い違う
+# （例: 画面は「調べて」を Web 検索と見るのに、サーバーは LLM に回してチャットにしていた）。
+_WORDS_PATH = Path(__file__).resolve().parents[3] / "frontend" / "src" / "features" / "workflows" / "routingWords.json"
+_FALLBACK_WORDS = {"deep": ["deep research", "徹底的に調査", "調査レポート"], "academic": ["論文", "arxiv", "学術"],
+                   "current": ["最新", "ニュース", "価格", "天気"], "search": ["調べて", "検索して"],
+                   "combined": ["横断", "両方"], "greeting": ["こんにちは", "ありがとう", "hello", "hi"]}
+
+
+def routing_words() -> dict[str, tuple[str, ...]]:
+    try:
+        raw = json.loads(_WORDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("自動判定の語の表を読めません（%s）。最小の表で判定します", _WORDS_PATH)
+        raw = _FALLBACK_WORDS
+    return {key: tuple(str(w).lower() for w in raw.get(key, ())) for key in _FALLBACK_WORDS}
+
+
+DEPTH_BY_MODE = {"web": "quick", "academic": "standard", "research": "standard", "deep": "deep"}
+
+
+def _with_depth(plan: AssistantPlan) -> AssistantPlan:
+    """調べる深さ（速い / 標準 / 深い）を mode から付ける。チャットは None。"""
+    plan.depth = DEPTH_BY_MODE.get(plan.mode)
+    return plan
 
 
 PLAN_SCHEMA = {
@@ -16,7 +42,7 @@ PLAN_SCHEMA = {
     "additionalProperties": False,
     "required": ["mode", "reason", "steps", "max_iterations"],
     "properties": {
-        "mode": {"type": "string", "enum": ["chat", "web", "academic", "research"]},
+        "mode": {"type": "string", "enum": ["chat", "web", "academic", "research", "deep"]},
         "reason": {"type": "string", "maxLength": 200},
         "steps": {
             "type": "array", "maxItems": 6,
@@ -53,15 +79,21 @@ def _contains(text: str, words: tuple[str, ...]) -> bool:
 
 def rule_plan(query: str) -> AssistantPlan | None:
     """確度の高い入力だけを即時判定し、曖昧ならNoneを返す。"""
+    plan = _rule_plan(query)
+    return _with_depth(plan) if plan is not None else None
+
+
+def _rule_plan(query: str) -> AssistantPlan | None:
     text = query.strip().lower()
     if not text:
         return AssistantPlan(mode="chat", reason="通常の対話", decided_by="rule")
-    academic = _contains(text, ("論文", "arxiv", "openalex", "crossref", "学術", "先行研究", "査読"))
-    current = _contains(text, ("最新", "現在", "今日", "ニュース", "web検索", "ウェブ検索", "価格", "天気"))
-    combined = _contains(text, ("組み合わせ", "横断", "両方", "複数ソース", "比較調査"))
-    if _contains(text, ("deep research", "deepサーチ", "ディープリサーチ", "徹底的に調査", "調査レポート")):
+    words = routing_words()
+    academic = _contains(text, words["academic"])
+    current = _contains(text, words["current"]) or _contains(text, words["search"])
+    combined = _contains(text, words["combined"])
+    if _contains(text, words["deep"]):
         return AssistantPlan(mode="deep", reason="複数ソースを使う詳細調査", decided_by="rule")
-    if academic and (current or combined):
+    if academic and (combined or _contains(text, words["current"])):
         return AssistantPlan(
             mode="research", reason="Webと学術情報を組み合わせる依頼",
             steps=[ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)],
@@ -71,7 +103,8 @@ def rule_plan(query: str) -> AssistantPlan | None:
         return AssistantPlan(mode="academic", reason="学術情報の明示的な検索", decided_by="rule")
     if current:
         return AssistantPlan(mode="web", reason="現在のWeb情報が必要", decided_by="rule")
-    if re.fullmatch(r"[\s\W]*(こんにちは|こんばんは|おはよう|やあ|ありがとう|hello|hi)[\s\W]*", text):
+    greeting = "|".join(re.escape(w) for w in words["greeting"])
+    if greeting and re.fullmatch(rf"[\s\W]*({greeting})[\s\W]*", text):
         return AssistantPlan(mode="chat", reason="挨拶・通常の対話", decided_by="rule")
     return None
 
@@ -95,8 +128,9 @@ async def decide(query: str, base_url: str, model: str, api_key: str = "") -> As
         return immediate
     system = (
         "あなたはControl Deckの処理ルーターです。利用者の依頼を分類してください。"
-        "単なる説明・相談はchat、現在の公開情報が必要ならweb、論文中心ならacademic、"
-        "Webと学術の併用や複数観点の調査ならresearchです。researchだけ具体的な検索手順をstepsへ入れ、"
+        "単なる説明・相談はchat、現在の公開情報や店・場所・製品などを調べるならweb、論文中心ならacademic、"
+        "Webと学術の併用や複数観点の調査ならresearch、多数の出典を集めて比較・網羅するレポートが要る"
+        "深い調査ならdeepです。researchだけ具体的な検索手順をstepsへ入れ、"
         "通常は最大3回、特に広い調査だけ4〜5回にします。指定JSON以外は出力しません。"
     )
     try:
@@ -111,7 +145,7 @@ async def decide(query: str, base_url: str, model: str, api_key: str = "") -> As
             plan.steps = [ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)]
         if plan.mode != "research":
             plan.steps = []
-        return plan
+        return _with_depth(plan)
     except Exception as exc:
         logger.warning("AIアシスタントのLLM判定をruleへfallback: %s", type(exc).__name__)
         return AssistantPlan(mode="chat", reason="LLM判定を利用できないため通常対話へフォールバック", decided_by="fallback")
