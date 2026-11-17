@@ -473,3 +473,15 @@ def test_archive_hides_from_list_and_restores(admin_client):
     admin_client.patch(f"/api/v1/chat/conversations/{conv_id}", json={"archived": False}, headers=CSRF_HEADERS)
     assert conv_id in [c["id"] for c in admin_client.get("/api/v1/chat/conversations").json()]
     assert admin_client.patch(f"/api/v1/chat/conversations/{conv_id}", json={}, headers=CSRF_HEADERS).status_code == 422
+
+
+def test_japanese_questions_get_a_final_language_instruction():
+    """日本語の質問には、生成の直前に「日本語で」を足す（2026-11-17: DS-XS が検索資料に引かれて中国語で答えた）。"""
+    from app.workflows.chat_persist import language_guard
+
+    history = [{"role": "system", "content": "資料: 特朗普政府…"}, {"role": "user", "content": "トランプ大統領の近況を調査して"}]
+    guarded = language_guard(history, "トランプ大統領の近況を調査して")
+    assert guarded[0] == history[0] and len(guarded) == 2              # 途中に system を足さない（テンプレートが嫌う）
+    assert guarded[-1]["role"] == "user" and guarded[-1]["content"].startswith("トランプ大統領の近況を調査して")
+    assert "日本語" in guarded[-1]["content"] and history[-1]["content"] == "トランプ大統領の近況を調査して"  # 元は変えない
+    assert language_guard(history, "What is new with Trump?") == history     # かなの無い質問には足さない
