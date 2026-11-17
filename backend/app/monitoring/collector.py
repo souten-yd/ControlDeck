@@ -37,15 +37,21 @@ def net_memory(mem) -> dict[str, Any]:
             for line in stream:
                 key, _, rest = line.partition(":")
                 info[key] = int(rest.split()[0]) * 1024
-        total = info["MemTotal"]
+        usable = info["MemTotal"]
+        # 搭載量: Linux が使える量（91.8GiB）を 8GiB 単位へ切り上げる（96GiB）。差（内蔵 GPU の映像用・BIOS・
+        # カーネルが起動前に取る約 4GiB）は常に使っている分として数える（利用者の依頼 2026-11-17）
+        step = 8 * 2**30 if usable > 24 * 2**30 else 2 * 2**30
+        installed = -(-usable // step) * step
+        reserved = installed - usable
         idle_cache = max(0, info.get("Cached", 0) - info.get("Mapped", 0) - info.get("Shmem", 0))
-        used = max(0, total - info.get("MemFree", 0) - info.get("Buffers", 0)
-                   - info.get("SReclaimable", 0) - idle_cache)
-        return {"used": used, "percent": round(used / total * 100, 1) if total else 0.0,
-                "used_by_programs": mem.used, "mapped_files": info.get("Mapped", 0), "idle_cache": idle_cache}
+        used = max(0, usable - info.get("MemFree", 0) - info.get("Buffers", 0)
+                   - info.get("SReclaimable", 0) - idle_cache) + reserved
+        return {"total": installed, "used": used, "percent": round(used / installed * 100, 1),
+                "used_by_programs": mem.used, "mapped_files": info.get("Mapped", 0), "idle_cache": idle_cache,
+                "reserved": reserved}
     except (OSError, KeyError, ValueError):
-        return {"used": mem.used, "percent": mem.percent, "used_by_programs": mem.used,
-                "mapped_files": None, "idle_cache": None}
+        return {"total": mem.total, "used": mem.used, "percent": mem.percent, "used_by_programs": mem.used,
+                "mapped_files": None, "idle_cache": None, "reserved": 0}
 
 
 class MetricsCollector:
@@ -127,7 +133,6 @@ class MetricsCollector:
                 "cores": len(per_cpu),
             },
             "memory": {
-                "total": mem.total,
                 **net_memory(mem),
                 "available": mem.available,
                 "cached": getattr(mem, "cached", 0),
