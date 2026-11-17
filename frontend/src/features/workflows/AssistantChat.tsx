@@ -1557,6 +1557,10 @@ export default function AssistantChat() {
               <span className="min-w-0 truncate [@media(pointer:coarse)]:hidden">Enterで送信 · Shift+Enterで改行</span>
             )}
           </div>
+          {/* 行を畳んだときは、ホームバーの帯の分だけ空ける（帯が無い・WebView が短いときは最小限） */}
+          {!(showComposerStatus || effectiveMode === "code") && (
+            <div aria-hidden className="assistant-composer-gap hidden [@media(pointer:coarse)]:block" />
+          )}
           </div>
         </div>
       </div>

@@ -230,6 +230,11 @@ label:has([data-snippet-code]) + p code {
 .assistant-composer-safe {
   padding-bottom: max(0px, calc(var(--cd-safe-area-bottom) - 0.875rem));
 }
+/* 指で使う端末で状態の行（32px）を畳んだとき、その代わりに空ける高さ。
+   上の余白（Safe Area − 14px）と合わせて Safe Area ちょうどになり、帯が無いときも 8px は空ける。 */
+.assistant-composer-gap {
+  height: max(0.5rem, min(var(--cd-safe-area-bottom), 0.875rem));
+}
 /* キーボードが出ている間は、ホームバーの帯が無いので余白も要らない */
 html.cd-keyboard-fit .assistant-composer-safe {
   padding-bottom: 0;
