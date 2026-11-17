@@ -100,6 +100,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       inputRow: rect("[data-assistant-input-row]"),
       statusRow: rect("[data-assistant-composer-status]"),
       statusRows: document.querySelectorAll("[data-assistant-composer-status]").length,
+      gap: rect(".assistant-composer-gap"),
     };
   });
   const layout = await measure();
@@ -130,9 +131,12 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   expect(layout.composerBackground).toBe("rgba(0, 0, 0, 0)");
   // 入力カードの中は本文が上、道具の行が下。状態の行はカードの下。
   expect(layout.inputRow.top).toBeGreaterThanOrEqual(layout.input.bottom - 1);
-  expect(layout.statusRow.top).toBeGreaterThanOrEqual(layout.inputCard.bottom);
-  expect(layout.statusRow.bottom).toBeLessThanOrEqual(layout.viewportHeight);
-  await expect(dialog.getByText("Enterで送信 · Shift+Enterで改行")).toBeVisible();
+  // 指で使う端末では、出すものが無いとき状態の行（キーボードの案内）を畳み、ホームバーの帯の分だけ空ける
+  // （2026-11-17: iPhone で入力欄の下が空きすぎていた）
+  expect(layout.statusRow.height).toBe(0);
+  expect(layout.gap.top).toBeGreaterThanOrEqual(layout.inputCard.bottom);
+  expect(layout.gap.bottom).toBeLessThanOrEqual(layout.viewportHeight);
+  await expect(dialog.getByText("Enterで送信 · Shift+Enterで改行")).toBeHidden();
   await expect(page.getByRole("navigation", { name: "メインナビゲーション" })).toBeHidden();
 
   const idleInputTop = layout.inputRow.top;
