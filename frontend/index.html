@@ -11,7 +11,10 @@
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- 上の帯（時計・電池）に画面を広げない。2026-11-17 の実機（iPhone 16 Plus）では、black-translucent だと
+         iOS が描画範囲を「画面 − 上の帯」の高さで作って上端に置き、下の 59pt が描かれなかった（起動直後も同じ）。
+         black なら iOS が帯の下から画面を置くので、同じ高さでも下まで届く。 -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <meta name="apple-mobile-web-app-title" content="Control Deck" />
     <title>Ubuntu Control Deck</title>
   </head>

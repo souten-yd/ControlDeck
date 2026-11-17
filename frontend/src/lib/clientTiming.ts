@@ -72,6 +72,8 @@ function measureViewport(): Record<string, number> {
     nav_type: ({ navigate: 0, reload: 1, back_forward: 2, prerender: 3 } as Record<string, number>)[
       (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type ?? ""] ?? -1,
     since_load_s: Math.round(performance.now() / 1000),
+    // iOS の版（例 26.1 → 26.1）。描画範囲が短くなるのが iOS の更新からかを見るため
+    ios: Number((/OS (\d+)_(\d+)/.exec(navigator.userAgent) ?? []).slice(1, 3).join(".") || -1),
     keyboard_fit: document.documentElement.classList.contains("cd-keyboard-fit") ? 1 : 0,
   };
 }

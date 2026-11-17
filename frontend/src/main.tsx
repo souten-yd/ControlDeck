@@ -27,7 +27,14 @@ if (isIPhoneStandalone) {
     const full = portrait ? Math.max(window.screen.width, window.screen.height) : Math.min(window.screen.width, window.screen.height);
     const reported = window.innerHeight;
     // 短くなるのは Safe Area 程度（20〜100px）。それより大きい差（キーボードなど）は別の処理に任せる
-    const shrunk = full - reported >= 20 && full - reported <= 100;
+    // 上の帯に画面を広げているとき（上の Safe Area がある）だけ「短い」と見る。帯の下から置かれているとき
+    // （status-bar-style: black、上の Safe Area 0）は、描画範囲が下端まで届くので下の Safe Area をそのまま使う
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;visibility:hidden;padding-top:var(--cd-safe-area-top, env(safe-area-inset-top))";
+    document.body.appendChild(probe);
+    const safeTop = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+    probe.remove();
+    const shrunk = safeTop >= 20 && full - reported >= 20 && full - reported <= 100;
     root.style.setProperty("--cd-standalone-height", `${reported}px`);
     if (shrunk) root.style.setProperty("--cd-safe-area-bottom", "0px");
     else root.style.removeProperty("--cd-safe-area-bottom");
