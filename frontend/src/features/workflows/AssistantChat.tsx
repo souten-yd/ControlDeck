@@ -17,7 +17,7 @@ import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/she
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
-import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
+import { detectAssistantMode, SEARCH_MODES, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
@@ -210,6 +210,8 @@ export default function AssistantChat() {
 
   const saved = useRef(loadSettings()).current;
   const [modeChoice, setModeChoice] = useState<AssistantModeChoice>("auto");
+  // 「調査」の深さ。自動は依頼の中身から Web / Web+論文 / Deep / 論文 を選ぶ
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>("auto");
   const [messages, setMessages] = useState<Msg[]>([]); // 会話本文は DB から復元
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -331,7 +333,8 @@ export default function AssistantChat() {
   // SearXNG は基本停止・使う時だけ起動。検索系モード + SearXNG 選択時に先読み起動して
   // 実際の検索でコールドスタート（2〜3 秒）を待たずに済むようにする
   useEffect(() => {
-    const detected = modeChoice === "auto" ? detectAssistantMode(input, [], can("workflows.edit"), opencodeAvailable).mode : modeChoice;
+    const detected = modeChoice === "auto" || modeChoice === "investigate"
+      ? detectAssistantMode(input, [], can("workflows.edit"), opencodeAvailable).mode : modeChoice;
     if ((detected === "web" || detected === "deep" || detected === "research") && engine === "searxng" && !searxngUrl) {
       api("/chat/searxng-warmup", { method: "POST" }).catch(() => {});
     }
@@ -393,7 +396,10 @@ export default function AssistantChat() {
 
   const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable);
   const displayedDecision = input.trim() ? autoDecision : (resolvedDecision ?? autoDecision);
-  const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode : modeChoice;
+  const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
+    : modeChoice === "investigate"
+      ? (researchDepth !== "auto" ? researchDepth : SEARCH_MODES.includes(displayedDecision.mode) ? displayedDecision.mode : "web")
+      : modeChoice;
 
   const append = (m: Msg) => setMessages((prev) => [...prev, m]);
   const patchLast = (fn: (m: Msg) => Msg) =>
@@ -861,7 +867,8 @@ export default function AssistantChat() {
     const text = (providedText ?? input).trim() || (readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
     if (!text || busy) return;
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable);
-    let selectedMode = modeChoice === "auto" ? decision.mode : modeChoice;
+    let selectedMode: Mode = modeChoice === "auto" ? decision.mode
+      : modeChoice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : modeChoice;
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
     if (selectedMode === "run" && selectedRunTarget === "") {
@@ -881,14 +888,21 @@ export default function AssistantChat() {
     const userMsg: Msg = { role: "user", content: text, images: readyImages.map((a) => a.preview ?? "").filter(Boolean) };
     append(userMsg);
     try {
-      if (modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") {
+      const investigateAuto = modeChoice === "investigate" && researchDepth === "auto";
+      if ((modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") || investigateAuto) {
         setRouting(true);
         selectedPlan = await api<AssistantPlan>("/chat/route", {
           method: "POST", json: { content: text, base_url: baseUrl, model },
         });
-        selectedMode = selectedPlan.mode;
-        setResolvedDecision(selectedPlan);
         setRouting(false);
+        if (investigateAuto && !SEARCH_MODES.includes(selectedPlan.mode)) {
+          // 「調査」を選んだのに対話と判定されたら、少なくとも Web を調べる
+          selectedMode = "web";
+          selectedPlan = undefined;
+        } else {
+          selectedMode = selectedPlan.mode;
+          setResolvedDecision(selectedPlan);
+        }
       }
       if (selectedMode === "chat" || selectedMode === "web" || selectedMode === "academic" || selectedMode === "deep" || selectedMode === "research") {
         // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
@@ -1081,9 +1095,13 @@ export default function AssistantChat() {
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;
 
+  // 検索系（Web・論文・Deep Research・Research）は「調査」1 つにまとめ、深さは入力欄の下で選ぶ
   const modeOptions = MODES
-    .filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable))
-    .map((item) => ({ id: item.id, icon: item.icon, label: item.label, hint: item.short }));
+    .filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable)
+      && !SEARCH_MODES.includes(item.id))
+    .map((item): { id: string; icon: string; label: string; hint: string } => ({ id: item.id, icon: item.icon, label: item.label, hint: item.short }));
+  modeOptions.splice(1, 0, { id: "investigate", icon: "🔎", label: "調査", hint: "Web・論文を調べて根拠つきで回答（深さは自動か指定）" });
+  const showDepth = modeChoice === "investigate";
   const historyProps = {
     conversations,
     currentId: convId,
@@ -1545,7 +1563,20 @@ export default function AssistantChat() {
               （iPhone で入力欄の下が空きすぎていた。2026-11-17） */}
           <div data-assistant-composer-status aria-live="polite"
             className={`min-w-0 items-center gap-2 px-3 text-[10px] leading-none text-zinc-500 ${
-              showComposerStatus || effectiveMode === "code" ? "flex h-8" : "hidden h-8 [@media(pointer:fine)]:flex"}`}>
+              showComposerStatus || effectiveMode === "code" || showDepth ? "flex h-8" : "hidden h-8 [@media(pointer:fine)]:flex"}`}>
+            {showDepth && (
+              <label className="flex shrink-0 items-center gap-1">
+                <span>深さ</span>
+                <select aria-label="調べる深さ" value={researchDepth} onChange={(e) => setResearchDepth(e.target.value as ResearchDepth)}
+                  className="h-7 rounded-lg border border-zinc-300 bg-white px-1.5 text-[11px] text-zinc-700 outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
+                  <option value="auto">自動{researchDepth === "auto" && displayedDecision && SEARCH_MODES.includes(displayedDecision.mode) ? `（${MODES.find((m) => m.id === displayedDecision.mode)?.label}）` : ""}</option>
+                  <option value="web">速い（Web）</option>
+                  <option value="research">標準（Web と論文）</option>
+                  <option value="deep">深い（レポート・数分）</option>
+                  <option value="academic">論文だけ</option>
+                </select>
+              </label>
+            )}
             {effectiveMode === "code" && (
               <PermissionModeChip mode={permissionMode} editable={canChangePermissionMode} onChange={(m) => void changePermissionMode(m)} />
             )}
@@ -1558,7 +1589,7 @@ export default function AssistantChat() {
             )}
           </div>
           {/* 行を畳んだときは、ホームバーの帯の分だけ空ける（帯が無い・WebView が短いときは最小限） */}
-          {!(showComposerStatus || effectiveMode === "code") && (
+          {!(showComposerStatus || effectiveMode === "code" || showDepth) && (
             <div aria-hidden className="assistant-composer-gap hidden [@media(pointer:coarse)]:block" />
           )}
           </div>

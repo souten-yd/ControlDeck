@@ -75,7 +75,9 @@ async function mockChat(page: Page) {
   });
   await page.route(/\/api\/v1\/chat\/route$/, (route) => route.fulfill({ json: plan }));
   await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/send$/, (route) => {
-    calls.push(`send:${(route.request().postDataJSON() as { content: string }).content}`);
+    const body = route.request().postDataJSON() as { content: string; mode: string };
+    calls.push(`send:${body.content}`);
+    calls.push(`mode:${body.mode}`);
     return route.fulfill({ json: { assistant_message_id: "a-retry", user_message_id: "u-retry" } });
   });
   return calls;
@@ -202,7 +204,7 @@ for (const width of [1280, 320]) {
     test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
     await page.setViewportSize({ width, height: 700 });
     await login(page);
-    await mockChat(page);
+    const calls = await mockChat(page);
     await page.route(/\/api\/v1\/meta$/, async (route) => {
       const response = await route.fetch();
       const meta = await response.json();
@@ -228,8 +230,12 @@ for (const width of [1280, 320]) {
     await chip.click();
     const menu = page.getByRole("menu", { name: "処理モード" });
     await expect(menu).toBeVisible();
-    for (const id of ["auto", "chat", "web", "academic", "deep", "research", "gen", "run", "code"]) {
+    // 検索系は「調査」1 つにまとめた（2026-11-17: 利用者「検索を改修したはずだがこの部分は変わらないのか」）
+    for (const id of ["auto", "chat", "investigate", "gen", "run", "code"]) {
       await expect(menu.locator(`[data-mode-option="${id}"]`)).toBeVisible();
+    }
+    for (const id of ["web", "academic", "deep", "research"]) {
+      await expect(menu.locator(`[data-mode-option="${id}"]`)).toHaveCount(0);
     }
     await expect(menu.getByRole("menuitemradio", { name: /自動判定/ })).toHaveAttribute("aria-checked", "true");
     const menuBox = (await menu.boundingBox())!;
@@ -237,11 +243,18 @@ for (const width of [1280, 320]) {
     expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(width);
     expect(menuBox.y).toBeGreaterThanOrEqual(0);
     expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(chipBox.y);
-    const optionBox = (await menu.locator('[data-mode-option="academic"]').boundingBox())!;
+    const optionBox = (await menu.locator('[data-mode-option="investigate"]').boundingBox())!;
     expect(optionBox.height).toBeGreaterThanOrEqual(44);
-    await menu.locator('[data-mode-option="academic"]').click();
+    await menu.locator('[data-mode-option="investigate"]').click();
     await expect(menu).toHaveCount(0);
-    await expect(chip.locator("[data-mode-label]")).toHaveText("Academic");
+    await expect(chip.locator("[data-mode-label]")).toHaveText("調査");
+    // 深さは入力欄の下。「深い」を選んで送ると Deep Research になる
+    const depth = shell.getByLabel("調べる深さ");
+    await expect(depth).toHaveValue("auto");
+    await depth.selectOption("deep");
+    await textarea.fill("SSD の寿命について");
+    await shell.getByRole("button", { name: "送信" }).click();
+    await expect.poll(() => calls).toContain("mode:deep");
 
     // Escape で閉じる
     await chip.click();
