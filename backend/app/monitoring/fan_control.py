@@ -36,8 +36,11 @@ SENSOR_RE = re.compile(r"^temp[1-9][0-9]*$")
 STATE_FILE = "amd-fan-control.json"
 _MODEL_FILE = "amd-fan-model.json"
 INTERVAL = 3.0
-# 既定の上限温度（センサーの種類ごと）。ハードウェアの crit−5 / emergency−10 を超えない
-DEFAULT_LIMIT_C = {"junction": 90, "mem": 90, "edge": 85}
+# 既定の上限温度（センサーの種類ごと）。ハードウェアの crit−5 / emergency−10 を超えない。
+# hotspot は 95°C を超えたら最大、普段は 90°C 以下（マージン 5°C）（2026-11-17 利用者の指示）
+DEFAULT_LIMIT_C = {"junction": 95, "mem": 90, "edge": 85}
+# 全力で一定の回転のまま落ち着いた状態から、熱モデルを少しずつ更新する間隔（外気温・埃で熱抵抗が変わる）
+PASSIVE_SECONDS = 300.0
 
 
 class FanControlError(RuntimeError):
@@ -123,6 +126,7 @@ _model = fan_pid.ThermalModel()
 _model_bdf: str | None = None
 _tracker = fan_pid.SteadyTracker()
 _last_model_save = 0.0
+_last_passive = 0.0
 HISTORY_SECONDS = 3600
 _history: deque = deque(maxlen=int(HISTORY_SECONDS / INTERVAL))
 
@@ -379,6 +383,25 @@ def core_settings(settings: FanSettings, sensors: list[dict], maximum: float) ->
     )
 
 
+def _refine_model(now: float, device: dict) -> bool:
+    """全力で回転も温度も 2 分落ち着いていたら、そのときの熱抵抗を熱モデルへ少しだけ混ぜる。
+    アイドル温度（外気温の基準）は fan_pid.update_idle が休むたびに測り直す。"""
+    if not (_model.idle_c and _model.idle_power_w is not None
+            and fan_pid.loaded(device["power_w"], device["power_cap_w"], _model.idle_power_w)
+            and _tracker.power_steady(now, 120.0) and _tracker.stable(now, 120.0)):
+        return False
+    fans = [v for t, v in _tracker.fan if now - t <= 120]
+    if not fans or max(fans) - min(fans) > 3:
+        return False
+    temps = _tracker.temp_means(now, 30.0)
+    heat = (_tracker.mean(_tracker.power, now, 60.0) or 0.0) - _model.idle_power_w
+    if heat <= 10:
+        return False
+    r = {sid: max(0.0, (temps[sid] - _model.idle_c[sid]) / heat) for sid in temps if sid in _model.idle_c}
+    _model.add_point(sum(fans) / len(fans), heat, r, weight=0.2)
+    return True
+
+
 def _failure(exc: Exception, bdf: str | None) -> None:
     global _state, _error, _active_bdf, _last_curve, _sensor_ids, _pending_reset_bdf, _last_tick_at
     logger.error("GPUファン制御を停止します: %s", exc)
@@ -423,6 +446,7 @@ def _retry_reset(now: float) -> None:
 def tick() -> None:
     global _active_bdf, _last_curve, _applied_percent, _state, _error, _last_sample
     global _sensor_ids, _zero_rpm_checks, _last_tick_at, _model, _model_bdf, _tracker, _last_model_save
+    global _last_passive
     from app.monitoring import fan_tune
 
     with _lock:
@@ -463,6 +487,9 @@ def tick() -> None:
             # 自動調整の最中は、調整役が回転数を決める（安全の判定は step と同じく生の温度）
             held = fan_tune.hold_percent(now, device, sensors, core, _model, _tracker, step)
             wanted = step.percent if held is None or step.emergency else held
+            if held is None and now - _last_passive >= PASSIVE_SECONDS and _refine_model(now, device):
+                save_model(bdf, _model)
+                _last_passive = _last_model_save = now
             percent = int(math.ceil(min(maximum, max(settings.min_percent, wanted)) - 1e-9))
             hotspot = next((s for s in sensors if s["kind"] == "junction"), max(sensors, key=lambda s: s["value_c"]))
             curve = fan_pid.ceiling_curve(device["_range"], percent, float(hotspot["limit_c"]))

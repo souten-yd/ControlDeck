@@ -76,6 +76,7 @@ def test_curve_is_flat_to_the_hotspot_limit_then_full(gpu):
     """ファームウェアのカーブ: 上限までは制御の出力で一定、上限 +1°C で最大。アプリが止まっても上限での最大は残る。"""
     fan, _, _, _, calls = gpu
     result = fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", limits_c={"temp2": 92}))
+    assert fan.DEFAULT_LIMIT_C["junction"] == 95   # 利用者の指示: hotspot は 95°C 超えで最大、普段は 90°C 以下
     assert result["state"] == "controlling"
     points = _points(calls[-1][2])
     assert points[-1] == (93, 100) and points[-2][0] == 92
@@ -147,16 +148,15 @@ def test_history_records_limits_targets_and_fan(gpu):
     assert sample["fan_percent"] >= 20 and "smoothed_temps" in sample
 
 
-def test_autotune_requires_control_and_a_load_model(gpu, monkeypatch):
+def test_autotune_requires_control_and_an_llm(gpu, monkeypatch):
     from app.monitoring import fan_tune
 
     fan, _, _, _, _ = gpu
     with pytest.raises(fan.FanControlError, match="有効"):
-        fan_tune.start()
-    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0"))
-    monkeypatch.setattr(fan_tune, "_load_command", lambda: (_ for _ in ()).throw(RuntimeError("モデルが登録されていません")))
-    with pytest.raises(fan.FanControlError, match="モデル"):
-        fan_tune.start()
+        fan_tune.start({"alias": "x", "base_url": "http://127.0.0.1:1/v1"})
+    monkeypatch.setattr("app.models_mgmt.local_llm.llm_instances", lambda: [])
+    with pytest.raises(RuntimeError, match="LLM"):
+        fan_tune.choose_llm(None)
 
 
 def test_autotune_cancel_during_verify_restores_settings_and_stops_load(gpu, monkeypatch):
@@ -165,10 +165,9 @@ def test_autotune_cancel_during_verify_restores_settings_and_stops_load(gpu, mon
 
     fan, _, _, _, _ = gpu
     fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", mode="map", smoothing_s=90))
-    monkeypatch.setattr(fan_tune, "_load_command", lambda: ["true"])
     stopped = []
     monkeypatch.setattr(fan_tune, "stop_load", lambda: stopped.append(1))
-    fan_tune.start()
+    fan_tune.start({"alias": "x", "base_url": "http://127.0.0.1:1/v1"})
     fan_tune._tune.result = {"pid_kp": 2.0, "pid_ti": 40.0, "smoothing_s": 30.0, "margin_c": 5.0,
                              "map_points": [{"below_c": 20, "percent": 20}, {"below_c": 0, "percent": 55}]}
     fan_tune._start_verify(0.0, "pid")

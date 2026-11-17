@@ -10,18 +10,16 @@ GPU に自分で全力の負荷（電力上限いっぱい）をかけて、次�
 5. ``verify``: 決めた値で実際に 0%↔100% の往復（10 秒ずつ・30 秒ずつ）と全力をかけ、上限に近づかないか、
    緊急の最大回転に入らないかを確かめる。近づいたらマージンを 1°C 広げてやり直す（2 回まで）
 
-負荷は llama.cpp の ``llama-bench``（登録済みの最も小さいモデル）。0% にするときはプロセスを一時停止する。
+負荷は実際に使う LLM に、毎回同じ文言で長文を書かせる（行列計算だけの負荷とは温度の分布が違う）。
+0% にするときは生成の接続を切る。
 自動調整中も、上限を超えたときの最大回転は通常どおり効く。
 """
 from __future__ import annotations
 
 import logging
-import os
-import signal
-import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from app.monitoring import fan_core, fan_pid
 
@@ -34,7 +32,8 @@ STAIRS_START_PERCENT = 70
 VERIFY_PATTERNS = (("sq20", 10.0, 10.0, 120.0), ("sq60", 30.0, 30.0, 180.0), ("steady", 0.0, 0.0, 120.0))
 VERIFY_HEADROOM_C = 1.0       # 上限まで最低これだけ残す
 MAX_MARGIN_RAISES = 2
-TOTAL_MAX_SECONDS = 75 * 60.0
+# 階段（最大 6 段 × 5 分）と確認（2 方式 × 7 分）に足りるよう、十分に取る
+TOTAL_MAX_SECONDS = 120 * 60.0
 
 
 @dataclass
@@ -64,76 +63,108 @@ _load_proc: subprocess.Popen | None = None
 _load_paused = False
 
 
-# ---- 負荷役（llama-bench） ----
+# ---- 負荷役（LLM に長文を書かせる） ----
+# 行列計算だけの負荷は、LLM と温度の分布が違う（R9700 実測 2026-11-17: bf16 の行列積 210 W で hotspot 88・
+# VRAM 62°C、LLM の連続生成では VRAM がもっと熱くなる）。実際に使う LLM で、毎回同じ文言で書かせる。
+TUNE_PROMPT = (
+    "日本の四季の移ろいと、各地方の年中行事・食文化・気候の違いについて、北海道から沖縄まで順に、"
+    "それぞれ具体的な例を挙げながら、できるだけ長く詳しく書き続けてください。要約や締めくくりは不要です。"
+)
+TUNE_MAX_TOKENS = 4096
 
-def _load_command() -> list[str]:
-    from app.models_mgmt import llama
 
-    bench = llama.current_link() / "llama-bench"
-    if not bench.is_file():
-        raise RuntimeError("llama.cpp の llama-bench が見つかりません（llama.cpp を導入してください）")
-    models = []
-    for item in llama.list_instances():
-        path = Path(str(item.get("model_path") or ""))
-        if path.suffix == ".gguf" and path.is_file() and "mmproj" not in path.name and item.get("role") != "embedding":
-            models.append(path)
-    if not models:
-        raise RuntimeError("負荷をかけるための llama.cpp のモデルが登録されていません")
-    model = min(models, key=lambda p: p.stat().st_size)
-    return [str(bench), "-m", str(model), "-p", "2048", "-n", "0", "-r", "100000", "-ngl", "99", "-o", "csv"]
+class _LLMLoad:
+    """別スレッドで生成を流し続ける。pause 中は接続を切って生成を止める。"""
+
+    def __init__(self, base_url: str, model: str) -> None:
+        self.base_url, self.model = base_url.rstrip("/"), model
+        self.paused = False
+        self.stopped = False
+        self.failures = 0
+        self.tokens = 0
+        self.thread = threading.Thread(target=self._run, name="fan-tune-load", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        import httpx
+
+        body = {"model": self.model, "messages": [{"role": "user", "content": TUNE_PROMPT}],
+                "max_tokens": TUNE_MAX_TOKENS, "temperature": 0.8, "stream": True}
+        while not self.stopped:
+            if self.paused:
+                time.sleep(0.2)
+                continue
+            try:
+                with httpx.stream("POST", f"{self.base_url}/chat/completions", json=body,
+                                  timeout=httpx.Timeout(30.0, read=120.0)) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if self.stopped or self.paused:
+                            break        # 接続を切ると生成が止まる
+                        if line.startswith("data:"):
+                            self.tokens += 1
+                self.failures = 0
+            except Exception:  # noqa: BLE001 - 連続で失敗したら調整を止める（alive で見る）
+                self.failures += 1
+                time.sleep(2.0)
+
+    def alive(self) -> bool:
+        return self.thread.is_alive() and self.failures < 3
+
+
+_load: _LLMLoad | None = None
+_llm: dict | None = None
+
+
+def choose_llm(alias: str | None) -> dict:
+    """自動調整に使う LLM。指定が無ければ登録済みの最初の LLM。"""
+    from app.models_mgmt import local_llm
+
+    items = local_llm.llm_instances()
+    if alias:
+        items = [i for i in items if i.get("alias") == alias]
+    if not items:
+        raise RuntimeError("自動調整に使う LLM が登録されていません")
+    item = items[0]
+    return {"alias": str(item["alias"]), "base_url": str(item["base_url"])}
 
 
 def start_load() -> None:
-    global _load_proc, _load_paused
-    if _load_proc is not None and _load_proc.poll() is None:
-        resume_load()
+    global _load
+    if _load is not None and _load.alive():
+        _load.paused = False
         return
-    from app.models_mgmt import llama
-
-    env = {**os.environ, "LD_LIBRARY_PATH": str(llama.current_link())}
-    _load_proc = subprocess.Popen(_load_command(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                  env=env, start_new_session=True)
-    _load_paused = False
+    if _llm is None:
+        raise RuntimeError("自動調整に使う LLM が決まっていません")
+    _load = _LLMLoad(_llm["base_url"], _llm["alias"])
 
 
 def pause_load() -> None:
-    global _load_paused
-    if _load_proc is not None and _load_proc.poll() is None and not _load_paused:
-        os.killpg(_load_proc.pid, signal.SIGSTOP)
-        _load_paused = True
+    if _load is not None:
+        _load.paused = True
 
 
 def resume_load() -> None:
-    global _load_paused
-    if _load_proc is not None and _load_proc.poll() is None and _load_paused:
-        os.killpg(_load_proc.pid, signal.SIGCONT)
-        _load_paused = False
+    if _load is not None:
+        _load.paused = False
 
 
 def stop_load() -> None:
-    global _load_proc, _load_paused
-    proc = _load_proc
-    _load_proc, _load_paused = None, False
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGCONT)
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
+    global _load
+    if _load is not None:
+        _load.stopped = True
+    _load = None
 
 
 def _load_alive() -> bool:
-    return _load_proc is not None and _load_proc.poll() is None
+    return _load is not None and _load.alive()
 
 
 # ---- 操作 ----
 
-def start() -> dict:
+def start(llm: dict) -> dict:
+    """llm: choose_llm の結果。LLM は呼び出し側（API）が起動を確かめてから渡す。"""
+    global _llm
     from app.monitoring import fan_control
 
     with fan_control._lock:
@@ -142,16 +173,13 @@ def start() -> dict:
             raise fan_control.FanControlError("ファン制御を有効にしてから自動調整を始めてください")
         if _tune.phase in ("idle", "jump", "stairs", "verify"):
             raise fan_control.FanControlError("自動調整は実行中です")
-        try:
-            _load_command()
-        except RuntimeError as exc:
-            raise fan_control.FanControlError(str(exc)) from exc
+        _llm = llm
         now = time.monotonic()
         _tune.__init__()
         _tune.backup = settings.model_dump()
         _tune.started_at = _tune.phase_since = now
         _tune.phase, _tune.hold = "idle", float(IDLE_HOLD_PERCENT)
-        _tune.message = "アイドルの温度を測っています（GPU を使わないでください。最大 5 分）"
+        _tune.message = f"アイドルの温度を測っています（{llm['alias']} で調整します。GPU を使わないでください。最大 5 分）"
         logger.info("ファン自動調整を開始")
         return snapshot()
 
@@ -177,7 +205,9 @@ def snapshot() -> dict:
     running = _tune.phase not in ("off", "done", "aborted")
     return {"phase": _tune.phase, "message": _tune.message, "running": running,
             "elapsed_s": round(time.monotonic() - _tune.started_at) if running else None,
-            "hold_percent": _tune.hold if running else None, "result": _tune.result}
+            "hold_percent": _tune.hold if running else None, "result": _tune.result,
+            "llm": (_llm or {}).get("alias") if running else None,
+            "tokens": _load.tokens if running and _load is not None else None}
 
 
 def _set(phase: str, message: str, now: float, hold: float | None) -> None:
@@ -222,10 +252,10 @@ def _advance(now, device, sensors, core, model, tracker, step) -> float | None:
                 model.idle_power_w = round(sum(recent) / len(recent), 1)
             _tune.jump_before = float(hot["value_c"]) if hot else None
             start_load()
-            _set("jump", "全力の負荷をかけ、直後の温度の跳ねを測っています", now, float(STAIRS_START_PERCENT))
+            _set("jump", "LLM に書かせ始め、直後の温度の跳ねを測っています", now, float(STAIRS_START_PERCENT))
         return _tune.hold
     if not _load_alive():
-        cancel("負荷役（llama-bench）が止まったため中止しました。GPU のメモリが空いているか確かめてください")
+        cancel("LLM の生成が続けられなくなったため中止しました（LLM が止まった・応答しない）")
         return None
     if _tune.phase == "jump":
         if now - _tune.phase_since >= JUMP_WAIT_SECONDS and power:

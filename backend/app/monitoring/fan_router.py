@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.audit import service as audit
 from app.database import get_db
@@ -30,20 +30,31 @@ def get_fan_history(since: float = 0.0, user: User = Depends(require_permission(
 
 class AutoTuneRequest(BaseModel):
     action: Literal["start", "cancel"]
+    # 調整に使う LLM（未指定なら登録済みの最初の LLM）。止まっていれば起動してから始める
+    llm: str | None = Field(default=None, max_length=120)
 
 
 @router.post("/autotune")
-def post_fan_autotune(
+async def post_fan_autotune(
     body: AutoTuneRequest,
     request: Request,
     user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
-    """自動調整: GPU に全力の負荷をかけて、PID の効き具合・なめらかさ・温度マップを決める（30〜60 分）。"""
+    """自動調整: LLM に同じ文言で長文を書かせ続けて、PID の効き具合・なめらかさ・温度マップを決める（30〜90 分）。"""
+    from app.models_mgmt import local_llm
     from app.monitoring import fan_tune
 
+    if body.action == "cancel":
+        return fan_tune.cancel()
     try:
-        result = fan_tune.start() if body.action == "start" else fan_tune.cancel()
+        llm = fan_tune.choose_llm(body.llm)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not await local_llm.ensure_ready(llm["alias"]):
+        raise HTTPException(status_code=422, detail=f"{llm['alias']} を起動できませんでした")
+    try:
+        result = fan_tune.start(llm)
     except fan_control.FanControlError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, "system.fan_control.autotune", user=user, request=request,
