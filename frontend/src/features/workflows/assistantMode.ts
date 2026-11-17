@@ -1,5 +1,8 @@
 export type AssistantMode = "chat" | "web" | "academic" | "deep" | "research" | "gen" | "run" | "code";
-export type AssistantModeChoice = "auto" | AssistantMode;
+/** "investigate" は「調査」: Web・論文・Deep Research をまとめた選択。深さ（ResearchDepth）で中身が決まる。 */
+export type AssistantModeChoice = "auto" | "investigate" | AssistantMode;
+export type ResearchDepth = "auto" | "web" | "research" | "deep" | "academic";
+export const SEARCH_MODES: AssistantMode[] = ["web", "academic", "research", "deep"];
 
 export interface ModeDecision {
   mode: AssistantMode;
