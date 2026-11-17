@@ -41,12 +41,16 @@ def test_an_addon_may_leave_the_icon_out():
     assert manifest(None).contributions.navigation[0].model_dump(mode="json")["icon"] is None
 
 
-def test_the_ui_reads_the_declared_icon_in_both_places():
-    """サイドバーだけ直して Quick Actions を忘れると、片方だけ Apps と同じ形の
-    ままになる。実際にそうなっていた。"""
+def test_the_ui_reads_the_declared_icon_wherever_addon_navigation_is_built():
+    """以前はサイドバーと Quick Actions の 2 か所で項目を作っていて、片方だけ直すと
+    Apps と同じ形のままになった。いまは殻（AppLayout）の 1 か所で作り、ドロワーと
+    PC のサイドバーの両方がそれを使う（Quick Actions は撤去）。項目を作る所が増えても、
+    どれもが宣言されたアイコンを読むこと。"""
     layout = (FRONTEND / "layouts" / "AppLayout.tsx").read_text(encoding="utf-8")
 
-    assert layout.count("addonIcon(contribution.icon, contribution.addon_id)") == 2
+    builds = layout.count("addonNavigation.map(")
+    assert builds >= 1
+    assert layout.count("addonIcon(contribution.icon, contribution.addon_id)") == builds
 
 
 def test_an_unknown_icon_never_falls_back_to_the_apps_glyph():
