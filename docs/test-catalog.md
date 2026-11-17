@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 165 ファイル、1482 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、135 テスト
+- backend: 166 ファイル、1484 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、136 テスト
 
 ## backend（backend/tests）
 
@@ -1349,6 +1349,13 @@
 - `test_vision_requests_reach_maya_once_its_encoder_is_set_up`
 - `test_start_lowers_ondemand_helpers_but_refuses_other_llms` — 資料検索の補助（埋め込み・並べ替え）は Maya の起動を塞がず、先に降ろす。本物の LLM は 409。
 
+### backend/tests/test_memory_net_usage.py
+
+目的: RAM の正味の利用量。 目的: Home・履歴・警告の RAM の割合が、プログラムが映して使っているファイル（モデル）を含めた正味の量になること。 根拠: 2026-11-17 DS-XS（Maya）でモデル約 75GiB をメモリに映して RAM をほぼ使い切っていたのに、psutil の percent（キャッシュを数えない）で 15% と出ていた（利用者「正味の利用量を出して欲しい」）。
+
+- `test_mapped_model_files_count_as_used_but_idle_cache_does_not`
+- `test_falls_back_to_psutil_when_meminfo_is_unreadable`
+
 ### backend/tests/test_metrics_history.py
 
 目的: **未記入**
@@ -2429,8 +2436,9 @@
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone
-- standalone iPhone: shell uses the real screen height when the viewport is reported shrunk
+- standalone iPhone: shell fits the shortened web view and drops the bottom safe area
 - history rows swipe right to archive and left to delete, with undo
+- standalone iPhone: with the status bar outside the page the bottom safe area stays
 
 ### frontend/e2e/assistant-message-actions.spec.ts
 

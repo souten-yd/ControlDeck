@@ -144,7 +144,8 @@ export default function DashboardPage() {
             value={m ? formatPercent(m.memory.percent) : null}
             percent={m?.memory.percent ?? null}
             values={ramValues}
-            sub={m ? `${(m.memory.used / 1024 ** 3).toFixed(1)} / ${(m.memory.total / 1024 ** 3).toFixed(0)} GB` : undefined}
+            sub={m ? `${(m.memory.used / 1024 ** 3).toFixed(1)} / ${(m.memory.total / 1024 ** 3).toFixed(1)} GiB${
+              m.memory.mapped_files ? `（うちモデル等のファイル ${(m.memory.mapped_files / 1024 ** 3).toFixed(0)}）` : ""}` : undefined}
           />
           <MetricTile
             label="GPU"
