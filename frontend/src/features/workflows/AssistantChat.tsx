@@ -6,7 +6,7 @@
  * - フロー生成: 目的→定義生成→登録→動作確認→自動修正（ビルドログ表示）
  * - フロー実行: 既存ワークフローをチャットから実行し signal.display を表示
  */
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -18,6 +18,16 @@ import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
+
+// Markdown（表・見出し・コード）と TeX の式。ライブラリは回答を描くときに初めて読む。
+const MarkdownMessage = lazy(() => import("./MarkdownMessage"));
+
+/** 添付した画像を返す URL（送った発言の中に出す）。 */
+const attachmentUrl = (convId: string, id: string) =>
+  `/api/v1/chat/conversations/${encodeURIComponent(convId)}/attachments/${encodeURIComponent(id)}`;
+
+/** 本文が無く画像だけを送るときの発言。 */
+const IMAGE_ONLY_PROMPT = "添付した画像を見てください。";
 
 const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: boolean }[] = [
   { id: "chat", icon: "💬", label: "Chat", hint: "LLM と自由に対話します" },
@@ -58,12 +68,14 @@ interface PersistMsg {
   status: string;
   job_id: string | null;
   model: string;
-  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote };
+  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[] };
 }
 
 interface Msg {
   role: "user" | "assistant";
   content: string;
+  /** 送った画像（表示用の URL） */
+  images?: string[];
   kind?: "text" | "sources" | "gen" | "build" | "run";
   sources?: SourceItem[];
   gen?: GenData;
@@ -125,7 +137,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [codeFolderPath, setCodeFolderPath] = useState("");
   const [codePicker, setCodePicker] = useState(false);
   // 📎添付: 画像は次の送信でVLMへ、文書はアップロード時に会話コレクションへRAG登録済み
-  const [attachments, setAttachments] = useState<{ id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready" }[]>([]);
+  const [attachments, setAttachments] = useState<{ id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready"; preview?: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
   const [conversationTitle, setConversationTitle] = useState("新しい会話");
@@ -178,6 +190,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         const restored: Msg[] = data.messages.map((m) => ({
           role: m.role,
           content: m.content,
+          images: m.meta?.attachments?.map((a) => attachmentUrl(id!, a)),
           thinking: m.thinking || undefined,
           messageId: m.id,
           persistStatus: m.status,
@@ -380,6 +393,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     const restored: Msg[] = data.messages.map((message) => ({
       role: message.role,
       content: message.content,
+      images: message.meta?.attachments?.map((a) => attachmentUrl(id, a)),
       thinking: message.thinking || undefined,
       messageId: message.id,
       persistStatus: message.status,
@@ -437,8 +451,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   };
 
   /** 📎添付アップロード。画像→保存（送信時にVLMへ）、文書/PDF→会話コレクションへ即RAG登録。 */
-  const attachFiles = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  // FileList は選択欄と連動していて、選択欄を空にすると中身も消える。呼ぶ側で File[] に写してから渡す。
+  const attachFiles = async (files: File[]) => {
+    if (files.length === 0) return;
     let cid: string;
     try {
       cid = await ensureConversation();
@@ -446,21 +461,26 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       show(e instanceof Error ? e.message : "会話の作成に失敗しました", "error");
       return;
     }
-    for (const file of Array.from(files).slice(0, 8)) {
-      const tempId = `up-${Date.now()}-${file.name}`;
-      setAttachments((prev) => [...prev, { id: tempId, name: file.name, kind: file.type.startsWith("image/") ? "image" : "document", status: "uploading" }]);
+    for (const [index, file] of files.slice(0, 8).entries()) {
+      const tempId = `up-${Date.now()}-${index}-${file.name}`;
+      const isImage = file.type.startsWith("image/");
+      // 貼り付けた画像は名前が「image.png」だけになりがち。時刻で見分けられるようにする。
+      const name = isImage && /^image\.\w+$/.test(file.name) ? `貼り付け ${new Date().toLocaleTimeString()}.${file.name.split(".").pop()}` : file.name;
+      const preview = isImage ? URL.createObjectURL(file) : undefined;
+      setAttachments((prev) => [...prev, { id: tempId, name, kind: isImage ? "image" : "document", status: "uploading", preview }]);
       try {
         const form = new FormData();
-        form.append("file", file);
+        form.append("file", file, name);
         const response = await fetch(`/api/v1/chat/conversations/${cid}/attachments`, {
           method: "POST", body: form, credentials: "same-origin",
           headers: { "X-Requested-With": "ControlDeck" },
         });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail ?? `アップロード失敗 (${response.status})`);
         const data = (await response.json()) as { kind: "image" | "document"; id: string; name: string; chunks?: number };
-        setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready" } : a)));
+        setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready", preview: a.preview } : a)));
         if (data.kind === "document") show(`「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
       } catch (e) {
+        if (preview) URL.revokeObjectURL(preview);
         setAttachments((prev) => prev.filter((a) => a.id !== tempId));
         show(e instanceof Error ? e.message : "添付に失敗しました", "error");
       }
@@ -468,7 +488,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   };
 
   const send = async (providedText?: string) => {
-    const text = (providedText ?? input).trim();
+    const readyImages = attachments.filter((a) => a.kind === "image" && a.status === "ready");
+    if (attachments.some((a) => a.status === "uploading")) {
+      show("添付のアップロードが終わってから送信してください", "error");
+      return;
+    }
+    const text = (providedText ?? input).trim() || (readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
     if (!text || busy) return;
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable);
     let selectedMode = modeChoice === "auto" ? decision.mode : modeChoice;
@@ -488,7 +513,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setGenStats(null);
     let buildContinues = false;
-    const userMsg: Msg = { role: "user", content: text };
+    const userMsg: Msg = { role: "user", content: text, images: readyImages.map((a) => a.preview ?? "").filter(Boolean) };
     append(userMsg);
     try {
       if (modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") {
@@ -503,7 +528,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       if (selectedMode === "chat" || selectedMode === "web" || selectedMode === "academic" || selectedMode === "deep" || selectedMode === "research") {
         // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
         const cid = await ensureConversation();
-        const imageIds = attachments.filter((a) => a.kind === "image" && a.status === "ready").map((a) => a.id);
+        const imageIds = readyImages.map((a) => a.id);
         const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: {
@@ -970,14 +995,16 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             <div className="mb-1.5 flex flex-wrap gap-1.5">
               {attachments.map((a) => (
                 <span key={a.id} className="flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white py-1 pl-2.5 pr-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-                  <span aria-hidden>{a.kind === "image" ? "🖼️" : "📄"}</span>
+                  {a.preview
+                    ? <img src={a.preview} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
+                    : <span aria-hidden>{a.kind === "image" ? "🖼️" : "📄"}</span>}
                   <span className="max-w-[10rem] truncate">{a.name}</span>
                   {a.status === "uploading" ? (
                     <span className="animate-pulse pr-1.5 text-zinc-400">…</span>
                   ) : a.kind === "document" ? (
                     <span className="pr-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">資料登録済</span>
                   ) : (
-                    <button type="button" onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                    <button type="button" onClick={() => { if (a.preview) URL.revokeObjectURL(a.preview); setAttachments((prev) => prev.filter((x) => x.id !== a.id)); }}
                       aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
                   )}
                 </span>
@@ -986,7 +1013,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           )}
           <input ref={fileInputRef} type="file" multiple className="hidden"
             accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql"
-            onChange={(e) => { void attachFiles(e.target.files); e.target.value = ""; }} />
+            onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attachFiles(picked); }} />
           {/* 状態は入力欄の下に固定高で置き、表示切替でも入力位置を変えない。 */}
           <div data-assistant-input-card className="w-full min-w-0 overflow-hidden rounded-2xl border border-zinc-300 bg-zinc-50 shadow-sm transition focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
             <div data-assistant-input-row className="flex w-full min-w-0 items-end gap-1.5 p-1.5">
@@ -1017,6 +1044,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={(e) => {
+                // クリップボードの画像（スクリーンショット・コピーした画像）を添付にする。文字の貼り付けはそのまま。
+                const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+                if (images.length === 0) return;
+                e.preventDefault();
+                void attachFiles(images);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -1035,7 +1069,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             />
             <button
               onClick={() => void send()}
-              disabled={busy || !input.trim()}
+              disabled={busy || (!input.trim() && !attachments.some((a) => a.kind === "image" && a.status === "ready"))}
               aria-label="送信"
               className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50"
             >
@@ -1136,8 +1170,20 @@ function MessageBubble({
   if (msg.role === "user") {
     return (
       <div className="flex min-w-0 justify-end">
-        <div className="min-w-0 max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
-          {msg.content}
+        <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5">
+          {msg.images && msg.images.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {msg.images.map((src) => (
+                <a key={src} href={src} target="_blank" rel="noopener noreferrer">
+                  <img src={src} alt="添付した画像" loading="lazy"
+                    className="max-h-40 max-w-[12rem] rounded-xl border border-zinc-200 object-contain dark:border-zinc-700" />
+                </a>
+              ))}
+            </div>
+          )}
+          <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
+            {msg.content}
+          </div>
         </div>
       </div>
     );
@@ -1203,10 +1249,12 @@ function MessageBubble({
           </details>
         )}
         {msg.content && (
-          <p className="whitespace-pre-wrap leading-relaxed">
-            {msg.content}
+          <div>
+            <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>}>
+              <MarkdownMessage text={msg.content} />
+            </Suspense>
             {msg.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent-500 align-middle" />}
-          </p>
+          </div>
         )}
 
         {/* 出典リスト（既定は最小化。タップで開閉） */}

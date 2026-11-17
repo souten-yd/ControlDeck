@@ -257,3 +257,63 @@ def test_rag_ingest_job_endpoint(admin_client, monkeypatch):
         json={"text": "テスト"}, headers=CSRF_HEADERS,
     )
     assert r.status_code == 404
+
+
+def test_sent_image_is_kept_on_the_message_served_and_removed_with_the_conversation(admin_client, monkeypatch):
+    """送った画像は発言の meta に残り、本人だけが取得でき、会話を消すと一緒に消える。"""
+    import app.workflows.chat_persist as cp
+
+    async def fake_job(job, assistant_id, conv_id, history, params):
+        # 画像は最後の user 発言へ content 配列として渡る（ここでは受け取ったことだけ確かめる）
+        assert params["attachments"]
+        return {"assistant_message_id": assistant_id}
+
+    monkeypatch.setattr(cp, "_run_chat_job", fake_job)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    png = b"\x89PNG\r\n\x1a\nfake"
+    image_id = admin_client.post(
+        f"/api/v1/chat/conversations/{conv_id}/attachments",
+        files={"file": ("貼り付け.png", png, "image/png")}, headers=CSRF_HEADERS,
+    ).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send",
+                          json={"content": "これは何？", "model": "test", "attachments": [image_id, "../evil"]},
+                          headers=CSRF_HEADERS)
+    assert r.status_code == 201, r.text
+    msgs = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+    user = next(m for m in msgs if m["role"] == "user")
+    assert user["meta"]["attachments"] == [image_id]          # 形の正しい ID だけ残す
+
+    got = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/attachments/{image_id}")
+    assert got.status_code == 200 and got.content == png and got.headers["content-type"] == "image/png"
+    assert admin_client.get(f"/api/v1/chat/conversations/{conv_id}/attachments/..%2Fx.png").status_code == 404
+    assert admin_client.get(f"/api/v1/chat/conversations/{conv_id}/attachments/0000000000000000.png").status_code == 404
+    assert admin_client.get(f"/api/v1/chat/conversations/nope/attachments/{image_id}").status_code == 404
+
+    folder = cp._attachment_root(conv_id)
+    assert folder.is_dir()
+    assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}", headers=CSRF_HEADERS).status_code == 204
+    assert not folder.exists()
+
+
+def test_unsupported_image_type_is_rejected_clearly(admin_client):
+    """HEIC など対応していない画像は、文書として読もうとせず理由を返す。"""
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/attachments",
+                          files={"file": ("IMG_0001.HEIC", b"heic-bytes", "image/heic")}, headers=CSRF_HEADERS)
+    assert r.status_code == 415 and "PNG" in r.json()["detail"]
+
+
+def test_document_upload_says_when_the_embedding_model_is_unreachable(admin_client, monkeypatch):
+    """文書は読めたのに埋め込みモデルへ届かないときは、「読めない」ではなく接続できないと伝える。"""
+    import httpx
+
+    import app.workflows.chat_persist as cp
+
+    async def unreachable(conv_id, text, source):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    monkeypatch.setattr(cp, "register_chat_document", unreachable)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/attachments",
+                          files={"file": ("note.md", ("本文" * 60).encode(), "text/markdown")}, headers=CSRF_HEADERS)
+    assert r.status_code == 503 and "埋め込みモデル" in r.json()["detail"]
