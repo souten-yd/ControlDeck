@@ -48,7 +48,7 @@ for (const width of [1280, 320]) {
     await expect(page.getByLabel("ユーザー名")).toBeHidden();
     const calls = await mockConversation(page);
     await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "orig"));
-    await page.reload();
+    await page.goto("/assistant");
     const shell = page.locator("[data-assistant-shell]");
     await expect(shell.getByText("次の回答")).toBeVisible();
 
@@ -96,7 +96,7 @@ test("attachment chip shows upload progress", async ({ page }) => {
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await mockConversation(page);
   await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "orig"));
-  await page.reload();
+  await page.goto("/assistant");
   const shell = page.locator("[data-assistant-shell]");
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
   await shell.locator('input[type="file"]').setInputFiles({ name: "a.png", mimeType: "image/png", buffer: png });
