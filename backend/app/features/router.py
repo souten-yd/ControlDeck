@@ -191,6 +191,9 @@ class MayaAliasBody(BaseModel):
     alias: str = Field(default="maya-s", pattern=r"^maya-[a-z0-9-]{1,60}$")
 
 
+_ONDEMAND_HELPER_ROLES = {"embedding", "reranker"}
+
+
 @router.post("/maya-s/model/start-jobs", status_code=201)
 async def maya_s_start_model(
     request: Request, body: MayaAliasBody | None = None,
@@ -211,9 +214,19 @@ async def maya_s_start_model(
         ollama.running_models(),
         asyncio.to_thread(lambda: radiance.list_instances() if radiance.installed() else []),
     )
-    if (any(item.get("loaded") for item in others[0]) or any(item.get("loaded") for item in others[1])
-            or others[2] or any(item.get("loaded") for item in others[3])):
-        raise HTTPException(status_code=409, detail="別のローカルLLMが稼働中です。GPU競合を解消してから明示起動してください")
+    # 資料検索の補助（埋め込み・並べ替え）は必要なときに自動で起きる小さなモデル。LLM の競合とは
+    # 数えず、Maya の前に降ろす（以前は Strata を止めた直後に自動で起きたこれが起動を 409 で塞いでいた）。
+    helpers = [item for item in others[0] if item.get("loaded") and item.get("role") in _ONDEMAND_HELPER_ROLES]
+    llms = [item for item in others[0] if item.get("loaded") and item.get("role") not in _ONDEMAND_HELPER_ROLES]
+    busy = [str(item.get("alias") or "") for item in llms]
+    busy += [str(item.get("alias") or "") for item in others[1] if item.get("loaded")]
+    busy += [str(row.get("name") or row.get("model") or "ollama") if isinstance(row, dict) else str(row) for row in (others[2] or [])]
+    busy += [str(item.get("alias") or "") for item in others[3] if item.get("loaded")]
+    if busy:
+        raise HTTPException(status_code=409, detail=(
+            f"別のローカルLLMが稼働中です（{', '.join(filter(None, busy))[:120]}）。止めてから起動してください"))
+    for item in helpers:
+        await asyncio.to_thread(llama.stop_instance, item.get("alias"))
 
     async def run(job: jobs.Job) -> dict:
         job.set_progress("Mayaを独立systemdユーザーサービスで起動中", 0, 1)
