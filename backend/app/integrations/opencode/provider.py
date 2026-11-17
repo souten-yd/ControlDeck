@@ -58,7 +58,12 @@ DEFAULT_SETTINGS = {
     # この PC で設定済みの gh（GitHub CLI）を session から使わせるか。AI に利用者の GitHub の
     # 権限（repo・workflow など）を渡すことになるので既定はオフ。
     "github_cli": False,
+    # AI アシスタントから使うときの権限モード（plugins/controldeck-permission）。
+    # auto: 編集・読むだけ・テスト/ビルドは自動、危ない操作と判断できないものは確認。
+    # ask: 判断させる操作（shell・edit・write・webfetch・execute）はすべて確認。
+    "chat_permission_mode": "auto",
 }
+CHAT_PERMISSION_MODES = ("auto", "ask")
 
 # 拡張とそれを持つアドオン（設定 → オプション機能で導入・更新・削除する）。
 # OpenCode には管理領域のパスを file:// で渡し、実行時に取りに行かせない。
@@ -225,6 +230,10 @@ def save_workflow(patch: dict) -> dict:
         if patch["auto_advisor"] not in AUTO_ADVISOR_MODES:
             raise ValueError("Auto Advisor は off / observe / active のいずれかです")
         settings["auto_advisor"] = patch["auto_advisor"]
+    if "chat_permission_mode" in patch:
+        if patch["chat_permission_mode"] not in CHAT_PERMISSION_MODES:
+            raise ValueError("権限モードは auto / ask のどちらかです")
+        settings["chat_permission_mode"] = patch["chat_permission_mode"]
     known = {str(item.get("alias")) for item in local_llm.llm_instances()} | {"auto"}
     for key in ROLE_MODEL_KEYS:
         if key in patch:
@@ -793,15 +802,37 @@ def _runtime_config(
     owner_user_id: int | None = None,
     project_id: str | None = None,
     runtime: str = "v2",
+    chat_server: bool = False,
 ) -> Path:
     """OpenCode v2 のセッション設定を書き、XDG_CONFIG_HOME にするディレクトリを返す。
 
     `runtime` は旧呼び出し互換のためだけに受け取る（v1 は撤去済みで常に v2）。
+    `chat_server` は AI アシスタント用の常駐サーバー（chat_server.py）の設定にする:
+    権限を判断させる操作を ask にし、ControlDeck の権限プラグインを読ませる。
     """
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
     payload = _config_payload(safe_job_id, base_url, model,
                               owner_user_id=owner_user_id, project_id=project_id)
+    if chat_server:
+        payload["_chat_server"] = True
     return _write_v2_config(safe_job_id, payload)
+
+
+# 権限プラグイン（依存なし）。ControlDeck のコードと一緒に配る（npm で取りに行かない）。
+PERMISSION_PLUGIN = Path(__file__).resolve().parent / "plugins" / "controldeck-permission"
+# 権限プラグインに判断させる操作。v2 は規則の既定が allow（shell も聞かずに通る。2.3.0 実測）
+# なので、ここで ask にしてプラグインの evaluate へ回す。後に一致した規則が勝つので、
+# 禁止リスト（deny）より前に置く（禁止は緩まない）。
+CHAT_SERVER_ASK_ACTIONS = ("shell", "edit", "write", "webfetch", "execute")
+
+
+def _apply_chat_server(v2: dict) -> dict:
+    """AI アシスタント用サーバーの設定に、ask の規則と権限プラグインを足す。"""
+    asks = [{"action": action, "resource": "*", "effect": "ask"} for action in CHAT_SERVER_ASK_ACTIONS]
+    v2["permissions"] = [*asks, *(v2.get("permissions") or [])]
+    plugins = [p for p in (v2.get("plugins") or []) if p != PERMISSION_PLUGIN.as_uri()]
+    v2["plugins"] = [PERMISSION_PLUGIN.as_uri(), *plugins]
+    return v2
 
 
 def _config_payload(
@@ -1237,7 +1268,10 @@ def _write_v2_config(safe_job_id: str, payload: dict) -> Path:
     os.chmod(config_dir, 0o700)
     path = config_dir / "opencode.json"
     temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(_v2_payload(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+    v2 = _v2_payload(payload)
+    if payload.get("_chat_server"):
+        v2 = _apply_chat_server(v2)
+    temp.write_text(json.dumps(v2, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(temp, 0o600)
     os.replace(temp, path)
     # Auto Advisor は $XDG_CONFIG_HOME/opencode/auto-advisor.json を読む。
@@ -1289,7 +1323,8 @@ def _opencode_home() -> Path:
 
 
 def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
-            interactive: bool, readonly: tuple[Path, ...] = ()) -> tuple[list[str], dict[str, str]]:
+            interactive: bool, readonly: tuple[Path, ...] = (), extra_env: dict[str, str] | None = None,
+            env_file: Path | None = None) -> tuple[list[str], dict[str, str]]:
     """OpenCode を起こす argv と環境変数。箱なら podman の argv（環境変数は箱の中へ渡す）。
 
     箱で書けるもの: プロジェクト、この session の設定、UI 検証の写真・MCP の長い結果の置き場、
@@ -1297,7 +1332,7 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
     Python（MCP bridge）と指示ファイル、有効なスキル、Add-on の資産、ターミナルの添付、git の設定、
     （GitHub 連携をオンにしたときだけ）gh の設定。本番の data・秘密鍵・他のプロジェクトは見えない。
     """
-    env = _runtime_env(runtime, config, project)
+    env = {**_runtime_env(runtime, config, project), **(extra_env or {})}
     if isolation_mode() != "box":
         return command, env
     from app.maintenance import sandbox
@@ -1334,7 +1369,7 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
         "PATH": sandbox.tool_path(),
     }
     argv = sandbox.container_argv(command, workdir=project, writable=writable, readonly=readonly_paths,
-                                  env=box_env, interactive=interactive)
+                                  env=box_env, interactive=interactive, env_file=env_file)
     return argv, {}
 
 

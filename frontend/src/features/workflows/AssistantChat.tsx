@@ -18,6 +18,10 @@ import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
+import {
+  OpenCodeActivity, PERMISSION_MODES, PermissionModeChip,
+  type OpenCodePermission, type OpenCodeTool, type PermissionMode,
+} from "./OpenCodeActivity";
 
 // Markdown（表・見出し・コード）と TeX の式。ライブラリは回答を描くときに初めて読む。
 const MarkdownMessage = lazy(() => import("./MarkdownMessage"));
@@ -68,7 +72,8 @@ interface PersistMsg {
   status: string;
   job_id: string | null;
   model: string;
-  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[] };
+  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
+    tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
 
 interface Msg {
@@ -76,6 +81,11 @@ interface Msg {
   content: string;
   /** 送った画像（表示用の URL） */
   images?: string[];
+  /** OpenCode: 道具の実行と許可の問い合わせ */
+  tools?: OpenCodeTool[];
+  permissions?: OpenCodePermission[];
+  /** 生成中のジョブ（停止に使う） */
+  jobId?: string | null;
   kind?: "text" | "sources" | "gen" | "build" | "run";
   sources?: SourceItem[];
   gen?: GenData;
@@ -191,6 +201,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           role: m.role,
           content: m.content,
           images: m.meta?.attachments?.map((a) => attachmentUrl(id!, a)),
+          tools: m.meta?.tools,
+          permissions: m.meta?.permissions,
+          jobId: m.job_id,
           thinking: m.thinking || undefined,
           messageId: m.id,
           persistStatus: m.status,
@@ -352,6 +365,18 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
           else if (d.type === "compaction") patchMsg((m) => ({ ...m, compaction: d }));
+          else if (d.type === "tool") patchMsg((m) => {
+            const tool = d.tool as OpenCodeTool;
+            const tools = m.tools ?? [];
+            return { ...m, tools: tools.some((t) => t.id === tool.id)
+              ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool] };
+          });
+          else if (d.type === "permission") patchMsg((m) => {
+            const item = d.permission as OpenCodePermission;
+            const list = m.permissions ?? [];
+            return { ...m, permissions: list.some((p) => p.id === item.id)
+              ? list.map((p) => (p.id === item.id ? { ...p, ...item } : p)) : [...list, item] };
+          });
           else if (d.type === "progress") patchMsg((m) => ({
             ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration, details: d.details }],
           }));
@@ -394,6 +419,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       role: message.role,
       content: message.content,
       images: message.meta?.attachments?.map((a) => attachmentUrl(id, a)),
+      tools: message.meta?.tools,
+      permissions: message.meta?.permissions,
+      jobId: message.job_id,
       thinking: message.thinking || undefined,
       messageId: message.id,
       persistStatus: message.status,
@@ -490,6 +518,52 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     }
   };
 
+  // ---- OpenCode: 権限モード・許可への返答・停止 ----
+  const { data: permissionModeData } = useQuery({
+    queryKey: ["opencode-permission-mode"],
+    queryFn: () => api<{ mode: PermissionMode }>("/chat/opencode/permission-mode"),
+    staleTime: 60_000,
+  });
+  const permissionMode: PermissionMode = permissionModeData?.mode ?? "auto";
+  const canChangePermissionMode = can("settings.manage");
+  const changePermissionMode = async (mode: PermissionMode) => {
+    if (!canChangePermissionMode || mode === permissionMode) return;
+    try {
+      await api("/chat/opencode/permission-mode", { method: "PUT", json: { mode } });
+      qc.setQueryData(["opencode-permission-mode"], { mode });
+      show(`権限: ${PERMISSION_MODES.find((m) => m.id === mode)?.label}（次の操作から）`);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "権限モードを変えられませんでした", "error");
+    }
+  };
+  const cyclePermissionMode = () => {
+    const index = PERMISSION_MODES.findIndex((m) => m.id === permissionMode);
+    void changePermissionMode(PERMISSION_MODES[(index + 1) % PERMISSION_MODES.length].id);
+  };
+  const answerPermission = async (messageId: string, requestId: string, decision: "once" | "always" | "reject") => {
+    if (!convId) return;
+    try {
+      await api(`/chat/conversations/${convId}/opencode/permission`, {
+        method: "POST", json: { message_id: messageId, request_id: requestId, decision },
+      });
+      setMessages((prev) => prev.map((m) => (m.messageId === messageId
+        ? { ...m, permissions: (m.permissions ?? []).map((p) => (p.id === requestId ? { ...p, status: decision } : p)) }
+        : m)));
+    } catch (e) {
+      show(e instanceof Error ? e.message : "許可を伝えられませんでした", "error");
+    }
+  };
+  const runningJob = messages.find((m) => m.streaming && m.jobId)?.jobId ?? null;
+  const stopRunning = async () => {
+    if (!runningJob) return;
+    try {
+      await api(`/jobs/${encodeURIComponent(runningJob)}/cancel`, { method: "POST" });
+      show("止めています…");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "止められませんでした", "error");
+    }
+  };
+
   const send = async (providedText?: string) => {
     const readyImages = attachments.filter((a) => a.kind === "image" && a.status === "ready");
     if (attachments.some((a) => a.status === "uploading")) {
@@ -553,7 +627,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         // 進捗・結果をこのチャットへストリームする（Codex/Claude風）。
         // 同じ会話では前回のopencodeセッションを自動継続する。
         const cid = await ensureConversation();
-        const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
+        const res = await api<{ assistant_message_id: string; job_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder },
         });
@@ -564,7 +638,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           setCodeNewName("");
         }
         setModeChoice("code");
-        append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
+        append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
+          persistStatus: "generating", jobId: res.job_id ?? null });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "gen") {
         // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
@@ -930,6 +1005,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 onReference={(referenceId) => {
                   setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
                 }}
+                onAnswerPermission={answerPermission}
               />
             ))}
           </div>
@@ -1059,6 +1135,10 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   void send();
+                } else if (e.key === "Tab" && e.shiftKey && effectiveMode === "code" && canChangePermissionMode) {
+                  // Claude Code と同じく Shift+Tab で権限モードを切り替える
+                  e.preventDefault();
+                  cyclePermissionMode();
                 }
               }}
               rows={input.includes("\n") ? 3 : 1}
@@ -1071,6 +1151,13 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               }
               className="max-h-32 w-0 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-base outline-none placeholder:text-zinc-400 sm:text-sm"
             />
+            {busy && runningJob ? (
+              <button type="button" onClick={() => void stopRunning()} aria-label="止める"
+                className="flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-zinc-900 px-3.5 font-mono text-sm font-semibold text-white shadow-sm hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
+                <IconStop className="text-base" />
+                <span className="hidden sm:inline">止める</span>
+              </button>
+            ) : (
             <button
               onClick={() => void send()}
               disabled={busy || (!input.trim() && !attachments.some((a) => a.kind === "image" && a.status === "ready"))}
@@ -1080,8 +1167,12 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               {busy ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
               <span className="hidden sm:inline">送信</span>
             </button>
+            )}
             </div>
-            <div data-assistant-composer-status className="flex h-6 min-w-0 items-center gap-2 border-t border-zinc-200/80 px-2 text-[10px] leading-none text-zinc-500 dark:border-zinc-700" aria-live="polite">
+            <div data-assistant-composer-status className="flex h-8 min-w-0 items-center gap-2 border-t border-zinc-200/80 px-2 text-[10px] leading-none text-zinc-500 dark:border-zinc-700" aria-live="polite">
+              {effectiveMode === "code" && (
+                <PermissionModeChip mode={permissionMode} editable={canChangePermissionMode} onChange={(m) => void changePermissionMode(m)} />
+              )}
               {showComposerStatus ? (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
                 <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
               ) : (
@@ -1164,12 +1255,14 @@ function MessageBubble({
   onAutoBuild,
   onOpen,
   onReference,
+  onAnswerPermission,
 }: {
   msg: Msg;
   onRegister: (g: GenData) => void;
   onAutoBuild: (g: GenData, useExisting: boolean) => void;
   onOpen: (id: number) => void;
   onReference: (referenceId: string) => void;
+  onAnswerPermission: (messageId: string, requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
 }) {
   if (msg.role === "user") {
     return (
@@ -1242,6 +1335,11 @@ function MessageBubble({
               <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">未完結の可能性: {msg.research!.citation_metrics!.possibly_truncated_sections!.join("、")}</p>
             )}
           </details>
+        )}
+        {/* OpenCode: 道具の実行と許可の確認（タップで出力を開く・許可はボタンで答える） */}
+        {msg.messageId && (
+          <OpenCodeActivity tools={msg.tools} permissions={msg.permissions}
+            onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
         )}
         {/* 思考トレース（推論モデル・折り畳み） */}
         {msg.thinking && (
