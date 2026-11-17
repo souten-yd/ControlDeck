@@ -1,0 +1,435 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const username = process.env.CONTROL_DECK_E2E_USER;
+const password = process.env.CONTROL_DECK_E2E_PASSWORD;
+
+const DAY = 86_400_000;
+const FAILED_ERROR = "RuntimeProviderError: Strataモデルが未登録・未起動、または読み込みに失敗しました";
+
+async function login(page: Page, path = "/assistant") {
+  await page.goto(path);
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+}
+
+const msg = (id: string, role: "user" | "assistant", content: string, extra: Record<string, unknown> = {}) => ({
+  id, role, content, thinking: "", status: "completed", job_id: null, model: "", error: "", meta: {},
+  created_at: "2026-11-17T00:00:00Z", ...extra,
+});
+
+/** 会話の一覧と中身は API を差し替えて用意する（LLM を動かさない）。 */
+async function mockChat(page: Page) {
+  const calls: string[] = [];
+  const now = Date.now();
+  let conversations = [
+    { id: "today1", title: "今日の献立の相談", updated_at: new Date(now).toISOString() },
+    { id: "failed", title: "グランフロントの店", updated_at: new Date(now - 60_000).toISOString() },
+    { id: "yest1", title: "昨日の買い物メモ", updated_at: new Date(now - DAY).toISOString() },
+    { id: "week1", title: "週の振り返り", updated_at: new Date(now - 4 * DAY).toISOString() },
+    { id: "old1", title: "先月の旅行計画", updated_at: new Date(now - 40 * DAY).toISOString() },
+  ];
+  const plan = { mode: "chat", reason: "通常の対話", steps: [], max_iterations: 1, decided_by: "rule" };
+  const messages: Record<string, ReturnType<typeof msg>[]> = {
+    failed: [
+      msg("u1", "user", "グランフロントの店を教えて"),
+      msg("a1", "assistant", "", { status: "failed", error: FAILED_ERROR, meta: { plan } }),
+      msg("u2", "user", "もう一度お願い"),
+      msg("a2", "assistant", "", { status: "canceled", error: "キャンセルされました", meta: { plan } }),
+    ],
+  };
+  await page.route(/\/api\/v1\/chat\/conversations$/, (route) => {
+    if (route.request().method() === "POST") return route.fulfill({ status: 201, json: { id: "new1", title: "新しい会話", updated_at: new Date().toISOString() } });
+    return route.fulfill({ json: conversations });
+  });
+  await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/messages$/, (route) => {
+    const id = route.request().url().split("/").slice(-2)[0];
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation) return route.fulfill({ status: 404, json: { detail: "会話が見つかりません" } });
+    return route.fulfill({ json: { conversation, messages: messages[id] ?? [msg(`${id}-u`, "user", `${conversation.title}の質問`), msg(`${id}-a`, "assistant", `${conversation.title}の回答`)] } });
+  });
+  await page.route(/\/api\/v1\/chat\/conversations\/[^/]+$/, (route) => {
+    const id = route.request().url().split("/").pop()!;
+    if (route.request().method() === "PATCH") {
+      const title = (route.request().postDataJSON() as { title: string }).title;
+      calls.push(`rename:${id}:${title}`);
+      conversations = conversations.map((item) => (item.id === id ? { ...item, title } : item));
+      return route.fulfill({ json: conversations.find((item) => item.id === id) });
+    }
+    if (route.request().method() === "DELETE") {
+      calls.push(`delete:${id}`);
+      conversations = conversations.filter((item) => item.id !== id);
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.fallback();
+  });
+  await page.route(/\/api\/v1\/chat\/route$/, (route) => route.fulfill({ json: plan }));
+  await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/send$/, (route) => {
+    calls.push(`send:${(route.request().postDataJSON() as { content: string }).content}`);
+    return route.fulfill({ json: { assistant_message_id: "a-retry", user_message_id: "u-retry" } });
+  });
+  return calls;
+}
+
+const noOverflow = async (page: Page, width: number) =>
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+
+for (const width of [1280, 320]) {
+  test(`history list: groups, search, open, rename, delete, new chat (${width}px)`, async ({ page }) => {
+    test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+    const mobile = width < 1024;
+    await page.setViewportSize({ width, height: 800 });
+    await login(page);
+    const calls = await mockChat(page);
+    await page.goto("/assistant");
+    const shell = page.locator("[data-assistant-shell]");
+    await expect(shell.locator("[data-assistant-title]")).toHaveText("新しいチャット");
+    // 上の行の切替（select）と新規・削除ボタンは無い。履歴へ移した。
+    await expect(shell.locator("[data-assistant-topbar] select")).toHaveCount(0);
+    await expect(shell.getByRole("button", { name: "選択中の会話を削除" })).toHaveCount(0);
+
+    const openHistory = async () => {
+      if (!mobile) return page.locator("[data-assistant-history-sidebar]");
+      const sheet = page.getByRole("dialog", { name: "会話の履歴" });
+      if (!(await sheet.isVisible())) await shell.getByRole("button", { name: "会話の履歴" }).click();
+      await expect(sheet).toBeVisible();
+      return sheet;
+    };
+    let history = await openHistory();
+    if (mobile) {
+      // ☰ はアプリ全体のドロワーのまま、履歴は別のボタン。
+      await expect(shell.getByRole("button", { name: "メニューを開く" })).toBeVisible();
+      await expect(history).toHaveAttribute("aria-modal", "true");
+    } else {
+      await expect(history).toBeVisible();
+    }
+
+    // 日付ごとのまとまり
+    await expect(history.locator("[data-history-group]")).toHaveCount(4);
+    for (const [group, title] of [["今日", "今日の献立の相談"], ["昨日", "昨日の買い物メモ"], ["過去7日間", "週の振り返り"], ["それ以前", "先月の旅行計画"]] as const) {
+      const section = history.getByRole("region", { name: group, exact: true });
+      await expect(section.getByRole("heading", { name: group })).toBeVisible();
+      await expect(section.getByRole("button", { name: title, exact: true })).toBeVisible();
+    }
+
+    // 検索（題名で絞り込む）
+    const search = history.getByPlaceholder("会話を検索");
+    await search.fill("買い物");
+    await expect(history.locator("[data-history-row]")).toHaveCount(1);
+    await expect(history.locator("[data-history-group]")).toHaveCount(1);
+    await search.fill("どこにも無い題名");
+    await expect(history.getByText("一致する会話はありません")).toBeVisible();
+    await search.fill("");
+    await expect(history.locator("[data-history-row]")).toHaveCount(5);
+
+    // 開く: 題名が上の行に出て、いまの会話に印が付く
+    await history.getByRole("button", { name: "昨日の買い物メモ", exact: true }).click();
+    await expect(shell.locator("[data-assistant-title]")).toHaveText("昨日の買い物メモ");
+    await expect(shell.getByText("昨日の買い物メモの回答")).toBeVisible();
+    if (mobile) await expect(page.getByRole("dialog", { name: "会話の履歴" })).toHaveCount(0);
+    history = await openHistory();
+    await expect(history.locator('[aria-current="true"]')).toHaveText("昨日の買い物メモ");
+
+    // 名前を変更（行の ⋯）
+    const menuButton = history.getByRole("button", { name: "「週の振り返り」の操作" });
+    if (!mobile) await history.locator('[data-history-row="week1"]').hover();
+    const menuButtonBox = (await menuButton.boundingBox())!;
+    expect(menuButtonBox.width).toBeGreaterThanOrEqual(44);
+    expect(menuButtonBox.height).toBeGreaterThanOrEqual(44);
+    await menuButton.click();
+    const renameItem = page.getByRole("menuitem", { name: "名前を変更" });
+    const itemBox = (await renameItem.boundingBox())!;
+    expect(itemBox.height).toBeGreaterThanOrEqual(44);
+    expect(itemBox.x).toBeGreaterThanOrEqual(0);
+    expect(itemBox.x + itemBox.width).toBeLessThanOrEqual(width);
+    await renameItem.click();
+    const editor = history.getByLabel("「週の振り返り」の新しい名前");
+    await editor.fill("今週のまとめ");
+    await editor.press("Enter");
+    await expect.poll(() => calls).toContain("rename:week1:今週のまとめ");
+    await expect(history.getByRole("button", { name: "今週のまとめ", exact: true })).toBeVisible();
+
+    // 削除（確認つき）
+    if (!mobile) await history.locator('[data-history-row="old1"]').hover();
+    await history.getByRole("button", { name: "「先月の旅行計画」の操作" }).click();
+    await page.getByRole("menuitem", { name: "削除" }).click();
+    await page.getByRole("button", { name: "削除する" }).click();
+    await expect.poll(() => calls).toContain("delete:old1");
+    await expect(history.locator('[data-history-row="old1"]')).toHaveCount(0);
+    await expect(shell.locator("[data-assistant-title]")).toHaveText("昨日の買い物メモ");
+
+    // 上の行の題名を押して名前を変更
+    if (mobile) await page.keyboard.press("Escape");
+    await shell.locator("[data-assistant-title]").click();
+    const titleEditor = shell.getByLabel("会話名", { exact: true });
+    await titleEditor.fill("買い物メモ（改）");
+    await titleEditor.press("Enter");
+    await expect.poll(() => calls).toContain("rename:yest1:買い物メモ（改）");
+    await expect(shell.locator("[data-assistant-title]")).toHaveText("買い物メモ（改）");
+
+    // 新しいチャット
+    history = await openHistory();
+    await history.getByRole("button", { name: "新しいチャット" }).click();
+    await expect(shell.locator("[data-assistant-title]")).toHaveText("新しいチャット");
+    await expect(shell.locator("[data-assistant-empty]")).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("cd-chat-conversation"))).toBeNull();
+    if (mobile) await expect(page.getByRole("dialog", { name: "会話の履歴" })).toHaveCount(0);
+
+    if (!mobile) {
+      // PC: 履歴の列は畳める。上の行のボタンで戻す。畳んだ状態は端末に覚える。
+      await history.getByRole("button", { name: "履歴を閉じる" }).click();
+      await expect(page.locator("[data-assistant-history-sidebar]")).toHaveCount(0);
+      expect(await page.evaluate(() => localStorage.getItem("cd-assistant-history"))).toBe("min");
+      await shell.getByRole("button", { name: "会話の履歴" }).click();
+      await expect(page.locator("[data-assistant-history-sidebar]")).toBeVisible();
+    }
+    await noOverflow(page, width);
+  });
+}
+
+for (const width of [1280, 320]) {
+  test(`mode chip menu in the composer (${width}px)`, async ({ page }) => {
+    test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+    await page.setViewportSize({ width, height: 700 });
+    await login(page);
+    await mockChat(page);
+    await page.route(/\/api\/v1\/meta$/, async (route) => {
+      const response = await route.fetch();
+      const meta = await response.json();
+      meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+      return route.fulfill({ response, json: meta });
+    });
+    await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [] } }));
+    await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
+    await page.goto("/assistant");
+    const shell = page.locator("[data-assistant-shell]");
+    const chip = shell.locator("[data-assistant-mode-chip]");
+    await expect(chip.locator("[data-mode-label]")).toHaveText("自動");
+    await expect(shell.getByLabel("処理モード", { exact: true })).toHaveCount(0); // 旧 select
+    const chipBox = (await chip.boundingBox())!;
+    expect(chipBox.height).toBeGreaterThanOrEqual(44);
+
+    // 自動判定は入力に合わせて札の表示が変わる
+    const textarea = shell.locator("[data-assistant-input]");
+    await textarea.fill("最新のGPUニュースを検索して");
+    await expect(chip.locator("[data-mode-detected]")).toContainText("Web Search");
+    await textarea.fill("");
+
+    await chip.click();
+    const menu = page.getByRole("menu", { name: "処理モード" });
+    await expect(menu).toBeVisible();
+    for (const id of ["auto", "chat", "web", "academic", "deep", "research", "gen", "run", "code"]) {
+      await expect(menu.locator(`[data-mode-option="${id}"]`)).toBeVisible();
+    }
+    await expect(menu.getByRole("menuitemradio", { name: /自動判定/ })).toHaveAttribute("aria-checked", "true");
+    const menuBox = (await menu.boundingBox())!;
+    expect(menuBox.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(width);
+    expect(menuBox.y).toBeGreaterThanOrEqual(0);
+    expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(chipBox.y);
+    const optionBox = (await menu.locator('[data-mode-option="academic"]').boundingBox())!;
+    expect(optionBox.height).toBeGreaterThanOrEqual(44);
+    await menu.locator('[data-mode-option="academic"]').click();
+    await expect(menu).toHaveCount(0);
+    await expect(chip.locator("[data-mode-label]")).toHaveText("Academic");
+
+    // Escape で閉じる
+    await chip.click();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+
+    // OpenCode を選ぶと、権限モードの札が入力欄のすぐ下に出る
+    await chip.click();
+    await menu.locator('[data-mode-option="code"]').click();
+    await expect(chip.locator("[data-mode-label]")).toHaveText("OpenCode");
+    const permission = shell.locator("[data-assistant-composer-status]").getByRole("button", { name: /auto/i });
+    await expect(permission).toBeVisible();
+    await expect(shell.getByPlaceholder("プロジェクト名（例: my-app）")).toBeVisible();
+
+    // 添付と音声のボタンは残す
+    for (const name of [/ファイルを添付/, "音声で入力", "送信"]) {
+      const box = (await shell.getByRole("button", { name }).boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+    await noOverflow(page, width);
+  });
+}
+
+test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await login(page);
+  const calls = await mockChat(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "failed"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  const failed = shell.locator('[data-assistant-unsettled="failed"]');
+  await expect(failed).toBeVisible();
+  await expect(failed).toHaveAttribute("role", "alert");
+  await expect(failed).toContainText("回答を生成できませんでした");
+  await expect(failed).toContainText("Strataモデルが未登録・未起動、または読み込みに失敗しました");
+  const canceled = shell.locator('[data-assistant-unsettled="canceled"]');
+  await expect(canceled).toContainText("回答を停止しました");
+  const box = (await failed.boundingBox())!;
+  expect(box.x + box.width).toBeLessThanOrEqual(320);
+  // 本文の無い失敗でも、削除はできる（コピーは出さない）
+  await shell.locator('[data-assistant-message="failed"]').getByRole("button", { name: "メッセージの操作" }).click();
+  await expect(page.getByRole("menuitem", { name: /削除/ })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /コピー/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  const retry = failed.getByRole("button", { name: "再試行" });
+  expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await retry.click();
+  await expect.poll(() => calls).toContain("send:グランフロントの店を教えて");
+  await noOverflow(page, 320);
+});
+
+const SHELL_PAGES = ["/", "/apps", "/workflows", "/files", "/terminal", "/models", "/knowledge", "/logs", "/system", "/settings"];
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 700 }]) {
+  test(`standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)`, async ({ page }) => {
+    test.setTimeout(90_000);
+    test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+    const SAFE_TOP = 59;
+    const SAFE_BOTTOM = 34;
+    await page.addInitScript(([top, bottom]) => {
+      Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
+      // Chromium は Safe Area を持たないので、CSS 変数の境界から iPhone の値を入れる。
+      document.documentElement.style.setProperty("--cd-safe-area-top", `${top}px`);
+      document.documentElement.style.setProperty("--cd-safe-area-bottom", `${bottom}px`);
+    }, [SAFE_TOP, SAFE_BOTTOM]);
+    await page.setViewportSize(viewport);
+    await login(page);
+    await mockChat(page);
+    await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+    await page.goto("/assistant");
+    await expect(page.locator("html")).toHaveClass(/pwa-standalone/);
+    const shell = page.locator("[data-assistant-shell]");
+    await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
+
+    const layout = await page.evaluate(() => {
+      const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON() as DOMRect;
+      const topbar = document.querySelector<HTMLElement>("[data-assistant-topbar]")!;
+      const style = getComputedStyle(topbar);
+      return {
+        height: window.innerHeight,
+        root: rect("#root"),
+        rootPosition: getComputedStyle(document.getElementById("root")!).position,
+        topbar: rect("[data-assistant-topbar]"),
+        topbarBackground: style.backgroundColor,
+        topbarBackdrop: style.backdropFilter,
+        menu: rect('[data-assistant-topbar] [aria-label="メニューを開く"]'),
+        title: rect("[data-assistant-title]"),
+        messages: rect("[data-assistant-messages]"),
+        composer: rect("[data-assistant-composer]"),
+        card: rect("[data-assistant-input-card]"),
+        status: rect("[data-assistant-composer-status]"),
+        scrollY: window.scrollY,
+        scrollWidth: document.documentElement.scrollWidth,
+      };
+    });
+    // 殻は画面へ直接貼ってあり、文書の高さに切られない。
+    expect(layout.rootPosition).toBe("fixed");
+    expect(layout.root.top).toBe(0);
+    expect(layout.root.bottom).toBe(layout.height);
+    expect(layout.scrollY).toBe(0);
+    // 上: 上の行は画面の上端から始まり、操作と題名はステータスバーの下。面は不透明。
+    expect(layout.topbar.top).toBe(0);
+    expect(layout.menu.top).toBeGreaterThanOrEqual(SAFE_TOP);
+    expect(layout.title.top).toBeGreaterThanOrEqual(SAFE_TOP);
+    expect(layout.topbar.bottom).toBe(SAFE_TOP + 56 + 1);
+    expect(layout.topbarBackground).toMatch(/^rgb\(/);
+    expect(layout.topbarBackdrop).toBe("none");
+    expect(layout.messages.top).toBeGreaterThanOrEqual(layout.topbar.bottom);
+    // 下: 入力カードは画面の中にあり、ホームバー（下端から約 13px）に重ならない。
+    expect(layout.composer.bottom).toBe(layout.height);
+    expect(layout.card.bottom).toBeLessThanOrEqual(layout.height - SAFE_BOTTOM);
+    expect(layout.status.bottom).toBeLessThanOrEqual(layout.height - 13);
+    expect(layout.card.top).toBeGreaterThanOrEqual(layout.messages.bottom);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(viewport.width);
+
+    // 会話を動かしても、上の行と入力欄は動かない。
+    await page.locator("[data-assistant-messages]").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const after = await page.evaluate(() => ({
+      top: document.querySelector("[data-assistant-topbar]")!.getBoundingClientRect().top,
+      bottom: document.querySelector("[data-assistant-composer]")!.getBoundingClientRect().bottom,
+    }));
+    expect(after.top).toBe(0);
+    expect(after.bottom).toBe(layout.height);
+
+    // 履歴のシートも Safe Area の中。
+    await shell.getByRole("button", { name: "会話の履歴" }).click();
+    const sheet = page.getByRole("dialog", { name: "会話の履歴" });
+    await expect(sheet).toBeVisible();
+    expect((await sheet.getByRole("button", { name: "履歴を閉じる" }).boundingBox())!.y).toBeGreaterThanOrEqual(SAFE_TOP);
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+
+    // ほかの画面: 上の行は上端から、操作はステータスバーの下、中身の下端にホームバーの余白。
+    for (const path of SHELL_PAGES) {
+      await page.goto(path);
+      await expect(page.locator("[data-shell-topbar]")).toBeVisible();
+      const shellLayout = await page.evaluate(() => {
+        const topbar = document.querySelector("[data-shell-topbar]")!.getBoundingClientRect();
+        const menu = document.querySelector('[data-shell-topbar] [aria-label="メニューを開く"]')!.getBoundingClientRect();
+        const main = document.querySelector("main")!;
+        const root = document.getElementById("root")!.getBoundingClientRect();
+        return {
+          topbarTop: topbar.top, topbarBottom: topbar.bottom, menuTop: menu.top, menuBottom: menu.bottom,
+          mainTop: main.getBoundingClientRect().top, mainBottom: main.getBoundingClientRect().bottom,
+          mainPaddingBottom: Number.parseFloat(getComputedStyle(main).paddingBottom),
+          rootTop: root.top, rootBottom: root.bottom, height: window.innerHeight,
+          scrollWidth: document.documentElement.scrollWidth,
+        };
+      });
+      expect(shellLayout.rootTop, path).toBe(0);
+      expect(shellLayout.rootBottom, path).toBe(shellLayout.height);
+      expect(shellLayout.topbarTop, path).toBe(0);
+      expect(shellLayout.menuTop, path).toBeGreaterThanOrEqual(SAFE_TOP);
+      expect(shellLayout.menuBottom, path).toBeLessThanOrEqual(shellLayout.topbarBottom);
+      expect(shellLayout.mainTop, path).toBe(shellLayout.topbarBottom);
+      expect(shellLayout.mainBottom, path).toBe(shellLayout.height);
+      expect(shellLayout.mainPaddingBottom, path).toBe(SAFE_BOTTOM);
+      expect(shellLayout.scrollWidth, path).toBeLessThanOrEqual(viewport.width);
+    }
+  });
+}
+
+test("drawer and settings are flat on a phone", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await login(page, "/");
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  const drawer = page.getByRole("dialog", { name: "メニュー" });
+  // 「システム」というまとまりの中に「System」がある、という入れ子に見える並びをやめた。
+  await expect(drawer.getByRole("group", { name: "システム" })).toHaveCount(0);
+  const admin = drawer.getByRole("group", { name: "管理" });
+  for (const name of ["Logs", "System", "Settings"]) await expect(admin.getByRole("link", { name, exact: true })).toBeVisible();
+  // どの行も行き先へ直接行く（押して開くだけのまとまりは無い）。
+  await expect(drawer.locator("nav button")).toHaveCount(0);
+  await admin.getByRole("link", { name: "System", exact: true }).click();
+  await expect(page).toHaveURL(/\/system$/);
+  await expect(drawer).toHaveCount(0);
+
+  // Settings: 携帯でもカテゴリの一覧だけの画面を挟まず、すぐ中身が出る。
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  await drawer.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { level: 2, name: "アカウント" })).toBeVisible();
+  const categories = page.getByRole("navigation", { name: "設定のカテゴリ" });
+  await expect(categories.getByRole("link", { name: "アカウント" })).toHaveAttribute("aria-current", "page");
+  await expect(categories.getByRole("link", { name: "システム", exact: true })).toHaveCount(0);
+  const chip = categories.getByRole("link", { name: "更新とバックアップ" });
+  await chip.scrollIntoViewIfNeeded();
+  expect((await chip.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await chip.click();
+  await expect(page).toHaveURL(/\/settings\/system$/);
+  await expect(page.getByRole("heading", { level: 2, name: "更新とバックアップ" })).toBeVisible();
+  await expect(categories).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+});
