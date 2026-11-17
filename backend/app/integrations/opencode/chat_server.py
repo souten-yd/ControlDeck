@@ -58,6 +58,7 @@ class Server:
     permission_file: str
     started_at: float
     last_used: float
+    owner: int | None = None
 
     @property
     def base(self) -> str:
@@ -137,6 +138,16 @@ def set_mode(server: Server, mode: str) -> None:
     tmp.write_text(json.dumps({"mode": mode}), encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def apply_mode_to_running(owner_user_id: int | None, mode: str) -> int:
+    """この利用者の動いているサーバーへ権限モードをすぐ効かせる（起こし直さない）。"""
+    count = 0
+    for server in _all():
+        if server.owner == owner_user_id:
+            set_mode(server, mode)
+            count += 1
+    return count
 
 
 def get_mode(server: Server) -> str:
@@ -222,7 +233,7 @@ def _start(project: Path, owner_user_id: int | None, key: str) -> Server:
     os.chmod(env_file, 0o600)
     server = Server(key=key, port=port, password=password, unit=f"cd-opencode-chat-{key}",
                     config=str(config), project=str(project), permission_file=str(permission_file),
-                    started_at=time.time(), last_used=time.time())
+                    started_at=time.time(), last_used=time.time(), owner=owner_user_id)
     set_mode(server, str(settings.get("chat_permission_mode") or "auto"))
     command = [str(binary), "serve", "--hostname", "127.0.0.1", "--port", str(port)]
     command, launch_env = provider._launch(

@@ -101,7 +101,20 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | 第 2 段階 | 完了（精密調査 #382、Context7 #383。どちらも実機確認） | #382, #383 |
 | 開発用サンドボックス | 第 1 段階完了（`./deck.sh sandbox`。ミラー・箱の中の OpenCode・本番 deck.sh の禁止） | #385 |
 | 第 3 段階 | 完了（reviewer 子エージェント＋ast-grep。実機で呼び出し側の取りこぼしを critical で検出） | #383 |
+| AI アシスタントで OpenCode をフル機能（2026-11-17、利用者の依頼）段階 1 | `opencode serve` の API へ切替。道具のカード・許可の確認（今回だけ/常に/拒否）・停止・権限モード（Auto 既定 / 確認、タップと Shift+Tab）。段階 2: ローカル LLM による許可の判断・5 つのモード・`/` コマンド・実行中の追加の指示。段階 3: 子エージェント・計画・セッション一覧・スクショの共有 | 本 PR |
 | 作業の種類 → 自動レビュー（2026-11-16、利用者の依頼） | 「作業の種類」の選択を撤去。代わりに session の指示 `auto-review.md`（既定オン）で、コードを変えたら完了前に reviewer、行き詰まったら advisor()。レビュー・相談・開発担当に外部モデルも可 | 本 PR |
+
+## AI アシスタントの OpenCode（opencode serve の API、2026-11-17）
+
+方式の比較（利用者と合意）: ACP（`opencode acp`）は private server で TUI とセッションを共有できず、エディタ向けの共通部分しか使えない。公式 Web アプリの埋め込みは画面の部品の取得元とスマホでの使い勝手が不明。**常駐サーバーの API（公式 `@opencode/client` と同じ HTTP + SSE）を ControlDeck の backend から使い、画面は今のアシスタントのまま**にした。
+
+- `integrations/opencode/chat_server.py`: プロジェクト × 利用者ごとに `opencode serve` を systemd のユーザーユニット（`cd-opencode-chat-<key>`）で、プロジェクトの箱の中に起こす（隔離は今の箱と同じ: 書けるのはそのプロジェクトだけ）。パスワードは環境変数ファイル（0600、`podman --env-file` / `EnvironmentFile`）で渡し argv に載せない。30 分使われなければ止める。セッションの記録は既存の OpenCode と同じ場所（TUI からも見える）。
+- 1 回分の対話（`run_turn`）: `/api/event`（SSE）を先に開き、`/api/session/{id}/prompt` を送る。`session.text.delta`・`session.reasoning.delta`・`session.tool.*`・`permission.asked/replied`・`session.execution.*` をチャットへ流す。ジョブが止められたら `/interrupt`。
+- 権限: `plugins/controldeck-permission`（依存なし。`package.json` の `exports["./server"]` でディレクトリとして渡す。ファイルで渡すと WARN だけで読まれない）。判断させる操作（shell・edit・write・webfetch・execute）は設定で ask にしてプラグインの `permission.hook("evaluate")` に回す（v2 は規則の既定が allow で、shell も聞かずに通るため）。ask は禁止リスト（deny）より前に置くので、プラグインから禁止は緩まない。モードは設定ディレクトリの `controldeck-permission.json` を毎回読む（画面で切り替えると次の操作から効く）。
+  - auto（既定）: 編集・読むだけ・テスト/ビルドは自動。削除・上書き・push・外への通信・パッケージの導入・sudo などと、判断できないものは確認。
+  - ask: 判断させる操作はすべて確認。
+- API: `GET/PUT /api/v1/chat/opencode/permission-mode`（切替は settings.manage）、`POST /api/v1/chat/conversations/{id}/opencode/permission`（once / always / reject、監査あり）。停止は既存の `POST /api/v1/jobs/{id}/cancel`。
+- 実測（v2.3.0）: ネットワークを切った箱で、`evaluate` が呼ばれ、allow で問い合わせなしに実行、ask のままなら `permission.asked`、reply 204 で続く、reject で道具が失敗しそのターンは interrupted、`/interrupt` で `session.execution.interrupted`。本物の OpenCode を `chat_server.ensure`（systemd + 箱）で起こし、偽の OpenAI 互換サーバーで 3 場面（Auto の ls・Auto の rm → 許可・確認モードの ls → 拒否）を確認。
 
 ## 版の固定（2026-11-15 時点、公開から 2 週間以上経った版）
 

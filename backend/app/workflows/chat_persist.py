@@ -442,6 +442,35 @@ def get_attachment(
                                                          "X-Content-Type-Options": "nosniff"})
 
 
+class PermissionModeBody(BaseModel):
+    mode: str = Field(pattern="^(auto|ask)$")
+
+
+@router.get("/opencode/permission-mode")
+def get_permission_mode(user: User = Depends(require_permission("workflows.run"))):
+    """AI アシスタントの OpenCode の権限モード（auto: AI が判断し危ない操作だけ確認 / ask: 毎回確認）。"""
+    from app.integrations.opencode import provider
+
+    return {"mode": str(provider.get_settings().get("chat_permission_mode") or "auto")}
+
+
+@router.put("/opencode/permission-mode")
+def set_permission_mode(
+    body: PermissionModeBody, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db: Session = Depends(get_db),
+):
+    """権限モードを切り替える。次の操作から効く（動いているサーバーも起こし直さない）。
+
+    AI が聞かずにどこまで実行するかを決める設定なので、設定の管理権限を求める。"""
+    from app.integrations.opencode import chat_server, provider
+
+    provider.save_workflow({"chat_permission_mode": body.mode})
+    applied = chat_server.apply_mode_to_running(user.id, body.mode)
+    audit.record(db, "opencode.permission_mode", user=user, resource_type="opencode", resource_id="chat",
+                 request=request, metadata={"mode": body.mode, "running_servers": applied})
+    return {"mode": body.mode}
+
+
 class OpenCodePermissionBody(BaseModel):
     message_id: str = Field(min_length=1, max_length=64)
     request_id: str = Field(min_length=1, max_length=128)
@@ -645,6 +674,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             if item.get("status") == "pending":
                 item["status"] = "expired"
         if result["status"] == "interrupted":
+            if any(item.get("status") == "reject" for item in permissions):
+                buf["content"] += ("\n\n" if buf["content"] else "") + "（許可されなかったため、ここで止めました）"
             await asyncio.to_thread(checkpoint, True, "canceled", "中断しました")
             return {"assistant_message_id": assistant_id, "opencode_session": buf["meta"]["opencode_session"]}
         if result["status"] == "failed":

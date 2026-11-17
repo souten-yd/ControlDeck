@@ -305,3 +305,30 @@ def test_code_mode_records_tools_and_permissions_and_answers_them(admin_client, 
     assert final["status"] == "completed" and final["content"] == "片付けました。"
     assert final["meta"]["permissions"][0]["status"] == "once" and final["meta"]["tools"][0]["status"] == "completed"
     assert replies == ["once"]
+
+
+def test_permission_mode_api_saves_and_applies_to_running_servers(admin_client, monkeypatch, tmp_path):
+    from app.integrations.opencode import chat_server
+
+    monkeypatch.setattr(chat_server, "_state_dir", lambda: tmp_path)
+    mine = _server(tmp_path)
+    mine.owner = 1
+    chat_server._save(mine)
+    other = _server(tmp_path)
+    other.key, other.owner, other.permission_file = "zzz999", 999, str(tmp_path / "other.json")
+    chat_server._save(other)
+    chat_server.set_mode(mine, "auto")
+    chat_server.set_mode(other, "auto")
+
+    assert admin_client.get("/api/v1/chat/opencode/permission-mode").json()["mode"] in ("auto", "ask")
+    bad = admin_client.put("/api/v1/chat/opencode/permission-mode", json={"mode": "yolo"}, headers=CSRF_HEADERS)
+    assert bad.status_code == 422
+    admin_id = admin_client.get("/api/v1/auth/me").json()["id"]
+    mine.owner = admin_id
+    chat_server._save(mine)
+    r = admin_client.put("/api/v1/chat/opencode/permission-mode", json={"mode": "ask"}, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["mode"] == "ask"
+    assert admin_client.get("/api/v1/chat/opencode/permission-mode").json()["mode"] == "ask"
+    assert chat_server.get_mode(chat_server.load(mine.key)) == "ask"      # 動いている自分のサーバーに効く
+    assert chat_server.get_mode(chat_server.load(other.key)) == "auto"    # 他人のサーバーは変えない
+    admin_client.put("/api/v1/chat/opencode/permission-mode", json={"mode": "auto"}, headers=CSRF_HEADERS)
