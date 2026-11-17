@@ -19,6 +19,33 @@ import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
+import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
+import { ConfirmDialog } from "../../components/ui";
+
+/** 進み具合の取れるアップロード（fetch では送信の進捗が取れない）。 */
+function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: number) => void): Promise<{ ok: boolean; status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("X-Requested-With", "ControlDeck");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
+    };
+    xhr.upload.onload = () => onProgress(1);
+    xhr.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        body = null;
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, body });
+    };
+    xhr.onerror = () => reject(new Error("アップロードに失敗しました（接続が切れました）"));
+    xhr.send(form);
+  });
+}
 import {
   OpenCodeActivity, PERMISSION_MODES, PermissionModeChip,
   type OpenCodePermission, type OpenCodeTool, type PermissionMode,
@@ -152,7 +179,11 @@ export default function AssistantChat() {
   const [codeFolderPath, setCodeFolderPath] = useState("");
   const [codePicker, setCodePicker] = useState(false);
   // 📎添付: 画像は次の送信でVLMへ、文書はアップロード時に会話コレクションへRAG登録済み
-  const [attachments, setAttachments] = useState<{ id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready"; preview?: string }[]>([]);
+  const [attachments, setAttachments] = useState<{
+    id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready"; preview?: string;
+    /** 0〜1。送り終わった文書は、資料への登録（サーバー側の処理）を待つ */
+    progress?: number; size?: number;
+  }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
   const [conversationTitle, setConversationTitle] = useState("新しい会話");
@@ -473,8 +504,10 @@ export default function AssistantChat() {
     show("会話を削除しました");
   };
 
+  const convIdRef = useRef(convId);
+  convIdRef.current = convId;
   const ensureConversation = async (): Promise<string> => {
-    if (convId) return convId;
+    if (convIdRef.current) return convIdRef.current;
     const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
     localStorage.setItem(LS_CONV, c.id);
     setConvId(c.id);
@@ -498,16 +531,15 @@ export default function AssistantChat() {
       // 貼り付けた画像は名前が「image.png」だけになりがち。時刻で見分けられるようにする。
       const name = isImage && /^image\.\w+$/.test(file.name) ? `貼り付け ${new Date().toLocaleTimeString()}.${file.name.split(".").pop()}` : file.name;
       const preview = isImage ? URL.createObjectURL(file) : undefined;
-      setAttachments((prev) => [...prev, { id: tempId, name, kind: isImage ? "image" : "document", status: "uploading", preview }]);
+      setAttachments((prev) => [...prev, { id: tempId, name, kind: isImage ? "image" : "document", status: "uploading", preview, progress: 0, size: file.size }]);
       try {
         const form = new FormData();
         form.append("file", file, name);
-        const response = await fetch(`/api/v1/chat/conversations/${cid}/attachments`, {
-          method: "POST", body: form, credentials: "same-origin",
-          headers: { "X-Requested-With": "ControlDeck" },
+        const response = await uploadWithProgress(`/api/v1/chat/conversations/${cid}/attachments`, form, (ratio) => {
+          setAttachments((prev) => prev.map((a) => (a.id === tempId ? { ...a, progress: ratio } : a)));
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail ?? `アップロード失敗 (${response.status})`);
-        const data = (await response.json()) as { kind: "image" | "document"; id: string; name: string; chunks?: number };
+        if (!response.ok) throw new Error((response.body as { detail?: string } | null)?.detail ?? `アップロード失敗 (${response.status})`);
+        const data = response.body as { kind: "image" | "document"; id: string; name: string; chunks?: number };
         setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready", preview: a.preview } : a)));
         if (data.kind === "document") show(`「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
       } catch (e) {
@@ -515,6 +547,75 @@ export default function AssistantChat() {
         setAttachments((prev) => prev.filter((a) => a.id !== tempId));
         show(e instanceof Error ? e.message : "添付に失敗しました", "error");
       }
+    }
+  };
+
+  // ---- 会話の分岐・編集・削除 ----
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Msg | null>(null);
+  const pendingResend = useRef<string | null>(null);
+  const forkAt = async (messageId: string, include: boolean): Promise<string | null> => {
+    if (!convIdRef.current) return null;
+    try {
+      const fork = await api<{ id: string; title: string }>(`/chat/conversations/${convIdRef.current}/fork`, {
+        method: "POST", json: { message_id: messageId, include },
+      });
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      await openConversation(fork.id);
+      convIdRef.current = fork.id;
+      return fork.id;
+    } catch (e) {
+      show(e instanceof Error ? e.message : "分岐できませんでした", "error");
+      return null;
+    }
+  };
+  const onMessageAction = async (msg: Msg, action: MessageAction) => {
+    if (action === "copy") {
+      try {
+        await navigator.clipboard.writeText(msg.content);
+        show("コピーしました");
+      } catch {
+        show("コピーできませんでした", "error");
+      }
+      return;
+    }
+    if (!msg.messageId) return;
+    if (action === "fork") {
+      if (await forkAt(msg.messageId, true)) show("ここから分岐しました（元の会話は履歴に残っています）");
+    } else if (action === "edit") {
+      setEditingId(msg.messageId);
+    } else if (action === "delete") {
+      setDeleting(msg);
+    }
+  };
+  const resendEdited = async (messageId: string, text: string) => {
+    setEditingId(null);
+    if (!(await forkAt(messageId, false))) return;
+    // 分岐した会話の表示が整ってから送る（会話 ID は ref で新しい方を指している）
+    pendingResend.current = text;
+  };
+  useEffect(() => {
+    const text = pendingResend.current;
+    if (!text || busy) return;
+    pendingResend.current = null;
+    void send(text);
+  });
+  const confirmDelete = async () => {
+    const target = deleting;
+    setDeleting(null);
+    if (!target?.messageId || !convIdRef.current) return;
+    try {
+      await api(`/chat/conversations/${convIdRef.current}/messages/${target.messageId}`, { method: "DELETE" });
+      setMessages((prev) => {
+        const index = prev.findIndex((m) => m.messageId === target.messageId);
+        if (index < 0) return prev;
+        let end = index + 1;
+        if (target.role === "user") while (end < prev.length && prev[end].role !== "user") end += 1;
+        return [...prev.slice(0, index), ...prev.slice(end)];
+      });
+      show("削除しました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "削除できませんでした", "error");
     }
   };
 
@@ -606,7 +707,7 @@ export default function AssistantChat() {
         // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
         const cid = await ensureConversation();
         const imageIds = readyImages.map((a) => a.id);
-        const res = await api<{ assistant_message_id: string }>(`/chat/conversations/${cid}/send`, {
+        const res = await api<{ assistant_message_id: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: {
             content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model,
@@ -616,6 +717,7 @@ export default function AssistantChat() {
           },
         });
         setAttachments([]);
+        if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         const hint =
           selectedMode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
           selectedMode === "research" ? "🧭 調査計画に沿って複数ソースを確認中..." :
@@ -627,7 +729,7 @@ export default function AssistantChat() {
         // 進捗・結果をこのチャットへストリームする（Codex/Claude風）。
         // 同じ会話では前回のopencodeセッションを自動継続する。
         const cid = await ensureConversation();
-        const res = await api<{ assistant_message_id: string; job_id?: string }>(`/chat/conversations/${cid}/send`, {
+        const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder },
         });
@@ -638,6 +740,7 @@ export default function AssistantChat() {
           setCodeNewName("");
         }
         setModeChoice("code");
+        if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
           persistStatus: "generating", jobId: res.job_id ?? null });
         await streamMessage(res.assistant_message_id);
@@ -1000,8 +1103,22 @@ export default function AssistantChat() {
                   setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
                 }}
                 onAnswerPermission={answerPermission}
+                editing={!!m.messageId && editingId === m.messageId}
+                actionsDisabled={busy}
+                onAction={(action) => void onMessageAction(m, action)}
+                onResend={(text) => m.messageId && void resendEdited(m.messageId, text)}
+                onCancelEdit={() => setEditingId(null)}
               />
             ))}
+            {deleting && (
+              <ConfirmDialog
+                title="メッセージを削除"
+                message={deleting.role === "user" ? "この発言と、その回答を削除します。元に戻せません。" : "この回答を削除します。元に戻せません。"}
+                confirmLabel="削除する"
+                onConfirm={() => void confirmDelete()}
+                onClose={() => setDeleting(null)}
+              />
+            )}
           </div>
         </div>
 
@@ -1067,13 +1184,24 @@ export default function AssistantChat() {
           {attachments.length > 0 && (
             <div className="mb-1.5 flex flex-wrap gap-1.5">
               {attachments.map((a) => (
-                <span key={a.id} className="flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white py-1 pl-2.5 pr-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                <span key={a.id} className="relative flex items-center gap-1.5 overflow-hidden rounded-full border border-zinc-200 bg-white py-1 pl-2.5 pr-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                   {a.preview
                     ? <img src={a.preview} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
                     : <span aria-hidden>{a.kind === "image" ? "🖼️" : "📄"}</span>}
                   <span className="max-w-[10rem] truncate">{a.name}</span>
                   {a.status === "uploading" ? (
-                    <span className="animate-pulse pr-1.5 text-zinc-400">…</span>
+                    <span className="flex shrink-0 items-center gap-1 pr-1.5 tabular-nums text-zinc-500"
+                      role="progressbar" aria-label={`${a.name}を送信中`} aria-valuemin={0} aria-valuemax={100}
+                      aria-valuenow={Math.round((a.progress ?? 0) * 100)}>
+                      {(a.progress ?? 0) >= 1
+                        ? <span className="animate-pulse">{a.kind === "document" ? "資料に登録中…" : "保存中…"}</span>
+                        : <>{Math.round((a.progress ?? 0) * 100)}%</>}
+                      {/* チップの下端の進捗バー。送り終わったら処理中の流れる帯にする */}
+                      <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-zinc-100 dark:bg-zinc-800">
+                        <span className={`block h-full bg-accent-500 transition-[width] duration-200 ${(a.progress ?? 0) >= 1 ? "animate-pulse" : ""}`}
+                          style={{ width: `${Math.max(4, Math.round((a.progress ?? 0) * 100))}%` }} />
+                      </span>
+                    </span>
                   ) : a.kind === "document" ? (
                     <span className="pr-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">資料登録済</span>
                   ) : (
@@ -1248,7 +1376,17 @@ function MessageBubble({
   onOpen,
   onReference,
   onAnswerPermission,
+  editing = false,
+  actionsDisabled = false,
+  onAction,
+  onResend,
+  onCancelEdit,
 }: {
+  editing?: boolean;
+  actionsDisabled?: boolean;
+  onAction: (action: MessageAction) => void;
+  onResend: (text: string) => void;
+  onCancelEdit: () => void;
   msg: Msg;
   onRegister: (g: GenData) => void;
   onAutoBuild: (g: GenData, useExisting: boolean) => void;
@@ -1270,15 +1408,25 @@ function MessageBubble({
               ))}
             </div>
           )}
-          <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
-            {msg.content}
-          </div>
+          {editing ? (
+            <MessageEditor initial={msg.content} onSubmit={onResend} onCancel={onCancelEdit} />
+          ) : (
+            <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
+              {msg.content}
+            </div>
+          )}
+          {!editing && (
+            <MessageActions align="end" disabled={actionsDisabled}
+              actions={msg.messageId ? ["copy", "edit", "fork", "delete"] : ["copy"]} onSelect={onAction} />
+          )}
         </div>
       </div>
     );
   }
+  const assistantActions: MessageAction[] = msg.messageId && !msg.streaming ? ["copy", "fork", "delete"] : ["copy"];
   return (
-    <div className="flex min-w-0 justify-start">
+    <div className="flex min-w-0 flex-col items-start gap-0.5">
+    <div className="flex w-full min-w-0 justify-start">
       <div className="min-w-0 max-w-[96%] space-y-2 break-words rounded-2xl rounded-bl-md border border-zinc-200 bg-white px-4 py-3 text-sm shadow-sm [overflow-wrap:anywhere] dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[88%]">
         {msg.compaction && (
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400" role="status">
@@ -1449,6 +1597,8 @@ function MessageBubble({
           </div>
         )}
       </div>
+    </div>
+    {!msg.streaming && msg.content && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
     </div>
   );
 }
