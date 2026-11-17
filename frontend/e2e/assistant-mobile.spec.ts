@@ -44,92 +44,94 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   // 専用の「閉じる」は無い。殻と同じ ☰ から同じドロワーで移動する。
   await expect(dialog.getByRole("button", { name: "AIアシスタントを閉じる" })).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "メニューを開く" })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "選択中の会話を削除" })).toBeVisible();
+  // 会話の切替・新規・削除は履歴（上の行のボタンで開くシート）へ、機能の選択は入力欄の札へ移した。
+  await expect(dialog.getByRole("button", { name: "選択中の会話を削除" })).toHaveCount(0);
+  await expect(dialog.locator("[data-assistant-topbar] select")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "会話の履歴" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
-  await expect(dialog.getByLabel("処理モード")).toHaveValue("auto");
+  const chip = dialog.locator("[data-assistant-mode-chip]");
+  const pickMode = async (id: string) => {
+    await chip.click();
+    await page.getByRole("menu", { name: "処理モード" }).locator(`[data-mode-option="${id}"]`).click();
+  };
+  await expect(chip.locator("[data-mode-label]")).toHaveText("自動");
   const textarea = dialog.locator("textarea");
   await expect(textarea).toBeVisible();
   await textarea.fill("最新のGPUニュースを検索して");
-  await expect(dialog.getByLabel("現在の機能")).toHaveText("自動判定: Web Search");
-  await dialog.getByLabel("処理モード").selectOption("academic");
-  await expect(dialog.getByLabel("現在の機能")).toHaveText("選択: Academic");
-  await dialog.getByLabel("処理モード").selectOption("auto");
+  await expect(chip.locator("[data-mode-detected]")).toContainText("Web Search");
+  await pickMode("academic");
+  await expect(chip.locator("[data-mode-label]")).toHaveText("Academic");
+  await pickMode("auto");
   await textarea.fill("20ノードのワークフローを作って");
-  await expect(dialog.getByLabel("現在の機能")).toHaveText("自動判定: Generate Flow");
-  await dialog.getByLabel("処理モード").selectOption("deep");
+  await expect(chip.locator("[data-mode-detected]")).toContainText("Generate Flow");
+  await pickMode("deep");
   await dialog.getByRole("button", { name: "AI設定を開く" }).click();
   await expect(dialog.getByText("Deep Research 検索深度")).toBeVisible();
   await expect(dialog.getByText("添付PDF・文書は会話RAGから再利用します。", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   await dialog.getByRole("button", { name: "AI設定を閉じる" }).click();
-  await dialog.getByLabel("処理モード").selectOption("auto");
+  await pickMode("auto");
   await textarea.fill("mobile-overflow-" + "abcdefghijklmnopqrstuvwxyz0123456789".repeat(30));
 
-  const layout = await page.evaluate(() => {
-    const input = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="メッセージを入力..."]')!;
-    const row = input.parentElement!;
-    const dialog = document.querySelector<HTMLElement>("[data-assistant-shell]")!;
-    const rect = (element: Element) => element.getBoundingClientRect();
+  const measure = () => page.evaluate(() => {
+    const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON() as DOMRect;
+    const input = document.querySelector<HTMLTextAreaElement>("[data-assistant-input]")!;
+    const composer = document.querySelector<HTMLElement>("[data-assistant-composer]")!;
     return {
       viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
       documentScrollWidth: document.documentElement.scrollWidth,
       bodyScrollWidth: document.body.scrollWidth,
-      shell: rect(document.querySelector("[data-assistant-shell]")!).toJSON(),
-      dialog: rect(dialog).toJSON(),
-      row: rect(row).toJSON(),
-      input: rect(input).toJSON(),
-      mic: rect(document.querySelector('[aria-label="音声で入力"]')!).toJSON(),
-      close: rect(document.querySelector('[data-assistant-shell] [aria-label="メニューを開く"]')!).toJSON(),
-      topbar: rect(document.querySelector("[data-assistant-topbar]")!).toJSON(),
+      shell: rect("[data-assistant-shell]"),
+      input: input.getBoundingClientRect().toJSON() as DOMRect,
+      inputFontSize: Number.parseFloat(getComputedStyle(input).fontSize),
+      mic: rect('[aria-label="音声で入力"]'),
+      menu: rect('[data-assistant-shell] [aria-label="メニューを開く"]'),
+      history: rect("[data-assistant-history-button]"),
+      chip: rect("[data-assistant-mode-chip]"),
+      send: rect('[data-assistant-shell] [aria-label="送信"]'),
+      topbar: rect("[data-assistant-topbar]"),
       messagesOverscroll: getComputedStyle(document.querySelector("[data-assistant-messages]")!).overscrollBehaviorY,
       rootOverscroll: getComputedStyle(document.documentElement).overscrollBehaviorY,
       rootOverflow: getComputedStyle(document.documentElement).overflowY,
-      trash: rect(document.querySelector('[aria-label="選択中の会話を削除"]')!).toJSON(),
-      mode: rect(document.querySelector('[aria-label="処理モード"]')!).toJSON(),
-      history: rect(document.querySelector('[aria-label="会話を切替"]')!).toJSON(),
-      inputScrollWidth: input.scrollWidth,
-      inputFontSize: Number.parseFloat(getComputedStyle(input).fontSize),
-      inputMinWidth: getComputedStyle(input).minWidth,
-      composer: rect(document.querySelector("[data-assistant-composer]")!).toJSON(),
-      composerBackground: getComputedStyle(document.querySelector("[data-assistant-composer]")!).backgroundColor,
-      composerBorderTop: getComputedStyle(document.querySelector("[data-assistant-composer]")!).borderTopWidth,
-      inputCard: rect(document.querySelector("[data-assistant-input-card]")!).toJSON(),
-      inputRow: rect(document.querySelector("[data-assistant-input-row]")!).toJSON(),
-      statusRow: rect(document.querySelector("[data-assistant-composer-status]")!).toJSON(),
+      composer: composer.getBoundingClientRect().toJSON() as DOMRect,
+      composerBackground: getComputedStyle(composer).backgroundColor,
+      inputCard: rect("[data-assistant-input-card]"),
+      inputRow: rect("[data-assistant-input-row]"),
+      statusRow: rect("[data-assistant-composer-status]"),
       statusRows: document.querySelectorAll("[data-assistant-composer-status]").length,
     };
   });
+  const layout = await measure();
   console.log("ASSISTANT_MOBILE_LAYOUT", JSON.stringify(layout));
   expect(layout.documentScrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
-  expect(layout.dialog.right).toBeLessThanOrEqual(layout.viewportWidth);
-  expect(layout.row.right).toBeLessThanOrEqual(layout.viewportWidth - 12);
-  expect(layout.input.right).toBeLessThanOrEqual(layout.viewportWidth - 69);
-  expect(layout.mic.width).toBeGreaterThanOrEqual(44);
-  expect(layout.close.width).toBeGreaterThanOrEqual(44);
-  expect(layout.close.left).toBeLessThan(16);
+  expect(layout.shell.right).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.inputCard.right).toBeLessThanOrEqual(layout.viewportWidth - 12);
+  expect(layout.input.right).toBeLessThanOrEqual(layout.inputCard.right);
+  expect(layout.send.right).toBeLessThanOrEqual(layout.inputCard.right);
+  for (const target of [layout.mic, layout.menu, layout.history, layout.send]) {
+    expect(target.width).toBeGreaterThanOrEqual(44);
+    expect(target.height).toBeGreaterThanOrEqual(44);
+  }
+  expect(layout.chip.height).toBeGreaterThanOrEqual(44);
+  expect(layout.chip.right).toBeLessThanOrEqual(layout.mic.left);
+  expect(layout.menu.left).toBeLessThan(16);
   // 動くのは会話の一覧だけ。文書は動かさず、上の行と入力欄は画面の端に留まる。
   expect(layout.topbar.top).toBe(0);
+  expect(layout.topbar.height).toBe(57); // 殻の上の行と同じ 1 段（56px + 罫線）
   expect(layout.messagesOverscroll).toBe("contain");
   expect(layout.rootOverscroll).toBe("none");
   expect(layout.rootOverflow).toBe("hidden");
-  expect(layout.trash.width).toBeGreaterThanOrEqual(44);
-  expect(layout.mode.right).toBeLessThanOrEqual(layout.history.left);
-  expect(layout.mode.height).toBe(layout.history.height);
-  expect(layout.mode.width).toBe(112);
-  expect(layout.history.width).toBeGreaterThanOrEqual(60);
-  expect(layout.history.width).toBeGreaterThanOrEqual(80);
-  expect(layout.mode.height).toBe(36);
   expect(layout.inputFontSize).toBeGreaterThanOrEqual(16);
-  expect(layout.inputMinWidth).toBe("0px");
   expect(layout.statusRows).toBe(1);
-  expect(layout.shell.bottom).toBe(layout.dialog.bottom);
-  expect(layout.composer.bottom).toBe(layout.dialog.bottom);
+  expect(layout.composer.bottom).toBe(layout.shell.bottom);
+  expect(layout.shell.bottom).toBe(layout.viewportHeight);
   expect(layout.composerBackground).toBe("rgba(0, 0, 0, 0)");
-  expect(layout.composerBorderTop).toBe("0px");
-  expect(layout.inputCard.bottom).toBe(layout.dialog.bottom);
-  expect(layout.statusRow.top).toBeGreaterThanOrEqual(layout.inputRow.bottom);
-  expect(layout.inputCard.bottom - layout.statusRow.bottom).toBeLessThanOrEqual(1);
+  // 入力カードの中は本文が上、道具の行が下。状態の行はカードの下。
+  expect(layout.inputRow.top).toBeGreaterThanOrEqual(layout.input.bottom - 1);
+  expect(layout.statusRow.top).toBeGreaterThanOrEqual(layout.inputCard.bottom);
+  expect(layout.statusRow.bottom).toBeLessThanOrEqual(layout.viewportHeight);
   await expect(dialog.getByText("Enterで送信 · Shift+Enterで改行")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "メインナビゲーション" })).toBeHidden();
 
@@ -150,55 +152,31 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
-  const iphoneLayout = await page.evaluate(() => {
-    const shell = document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect();
-    const dialog = document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect();
-    const composer = document.querySelector<HTMLElement>("[data-assistant-composer]")!;
-    const card = document.querySelector<HTMLElement>("[data-assistant-input-card]")!.getBoundingClientRect();
-    const row = document.querySelector<HTMLElement>("[data-assistant-input-row]")!.getBoundingClientRect();
-    const status = document.querySelector<HTMLElement>("[data-assistant-composer-status]")!.getBoundingClientRect();
-    return {
-      shellBottom: shell.bottom,
-      dialogBottom: dialog.bottom,
-      composerBottom: composer.getBoundingClientRect().bottom,
-      cardBottom: card.bottom,
-      rowBottom: row.bottom,
-      statusTop: status.top,
-      statusBottom: status.bottom,
-      composerPaddingBottom: Number.parseFloat(getComputedStyle(composer).paddingBottom),
-      documentScrollWidth: document.documentElement.scrollWidth,
-    };
-  });
+  const iphoneLayout = await measure();
   console.log("ASSISTANT_IPHONE_LAYOUT", JSON.stringify(iphoneLayout));
   expect(iphoneLayout.documentScrollWidth).toBeLessThanOrEqual(390);
-  expect(iphoneLayout.shellBottom).toBe(iphoneLayout.dialogBottom);
-  expect(iphoneLayout.composerBottom).toBe(iphoneLayout.dialogBottom);
-  expect(iphoneLayout.cardBottom).toBe(iphoneLayout.dialogBottom);
-  expect(iphoneLayout.statusTop).toBeGreaterThanOrEqual(iphoneLayout.rowBottom);
-  expect(iphoneLayout.cardBottom - iphoneLayout.statusBottom).toBeLessThanOrEqual(1);
-  expect(iphoneLayout.composerPaddingBottom).toBe(0);
+  expect(iphoneLayout.composer.bottom).toBe(iphoneLayout.viewportHeight);
+  expect(iphoneLayout.statusRow.top).toBeGreaterThanOrEqual(iphoneLayout.inputCard.bottom);
+  expect(iphoneLayout.statusRow.bottom).toBeLessThanOrEqual(iphoneLayout.viewportHeight);
   await testInfo.attach("assistant-mobile-390x844", {
     body: await page.screenshot(),
     contentType: "image/png",
   });
 
   await page.setViewportSize({ width: 1280, height: 800 });
-  const desktopLayout = await page.evaluate(() => ({
-    viewportWidth: window.innerWidth,
-    documentScrollWidth: document.documentElement.scrollWidth,
-    bodyScrollWidth: document.body.scrollWidth,
-    dialogRight: document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect().right,
-  }));
+  const desktopLayout = await measure();
   console.log("ASSISTANT_DESKTOP_LAYOUT", JSON.stringify(desktopLayout));
   expect(desktopLayout.documentScrollWidth).toBeLessThanOrEqual(desktopLayout.viewportWidth);
   expect(desktopLayout.bodyScrollWidth).toBeLessThanOrEqual(desktopLayout.viewportWidth);
-  expect(desktopLayout.dialogRight).toBeLessThanOrEqual(desktopLayout.viewportWidth);
+  expect(desktopLayout.shell.right).toBeLessThanOrEqual(desktopLayout.viewportWidth);
 
-  // 選択中の履歴は確認ダイアログなしで削除され、直ちに新規会話へ切り替わる。
-  await dialog.getByRole("button", { name: "選択中の会話を削除" }).click();
-  await expect(dialog.getByRole("alertdialog")).toHaveCount(0);
-  await expect(dialog.getByLabel("会話を切替")).toHaveValue("");
-  await expect(dialog.getByLabel("会話を切替").locator("option:checked")).toHaveText("履歴を選択");
+  // 履歴の列から会話を消す（確認つき）と、新しいチャットへ切り替わる。
+  const sidebar = page.locator("[data-assistant-history-sidebar]");
+  await sidebar.locator(`[data-history-row="${conversationId}"]`).getByRole("button", { name: /の操作$/ }).click();
+  await page.getByRole("menuitem", { name: "削除" }).click();
+  await page.getByRole("button", { name: "削除する" }).click();
+  await expect(sidebar.locator(`[data-history-row="${conversationId}"]`)).toHaveCount(0);
+  await expect(dialog.locator("[data-assistant-title]")).toHaveText("新しいチャット");
 
   await dialog.getByRole("button", { name: "音声で入力" }).click();
   await expect(dialog.getByRole("button", { name: "音声認識を停止" })).toBeVisible();

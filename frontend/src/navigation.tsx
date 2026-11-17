@@ -22,7 +22,7 @@ export const NAV_GROUPS: { id: NavigationGroup; label: string }[] = [
   { id: "main", label: "メイン" },
   { id: "dev", label: "開発" },
   { id: "ai", label: "AI" },
-  { id: "system", label: "システム" },
+  { id: "system", label: "管理" },
 ];
 
 export interface NavigationItem {

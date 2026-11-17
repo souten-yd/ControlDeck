@@ -257,7 +257,7 @@ export function Drawer({
       <div
         role="dialog"
         aria-label={title}
-        className="flex h-dvh w-full max-w-[100dvw] flex-col bg-white shadow-xl dark:bg-zinc-900 sm:w-[520px]"
+        className="flex h-full w-full max-w-[100dvw] flex-col bg-white shadow-xl dark:bg-zinc-900 sm:w-[520px]"
       >
         <div className="flex min-h-14 items-center justify-between gap-2 border-b border-zinc-200 px-5 py-1.5 dark:border-zinc-800 safe-top">
           <h2 className="min-w-0 flex-1 truncate text-base font-semibold leading-6">{title}</h2>

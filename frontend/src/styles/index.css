@@ -103,6 +103,7 @@ body,
 :root {
   /* テスト時にも上部Safe Areaを再現できるようCSS変数を境界にする。 */
   --cd-safe-area-top: env(safe-area-inset-top);
+  --cd-safe-area-bottom: env(safe-area-inset-bottom);
 }
 /* アプリシェルの高さ基準を #root に統一。既定は dvh（ブラウザで toolbar 追従）。 */
 #root {
@@ -122,6 +123,17 @@ html.cd-app-shell,
 html.cd-app-shell body {
   overflow: hidden;
   overscroll-behavior: none;
+}
+/* 殻は画面（viewport）へ直接貼る。body は高さ 100%（＝ブラウザが報告する viewport）で、
+   overflow: hidden だと中身をその高さで切る。iPhone のホーム画面アプリは再読み込みの後に
+   報告する高さだけが Safe Area の分縮むことがあり（実際の描画は満寸）、body に切らせると
+   100vh の殻の下端（入力欄）が欠ける。fixed にすると body に切られず、文書がずれても
+   上の行が画面の上端から離れない。 */
+html.cd-app-shell #root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
 }
 /* iPhone はキーボードを出しても layout viewport を縮めず、見えている範囲
    （visual viewport）だけを縮めて文書を上へずらす。そのままだと上の行が画面の外へ
@@ -205,17 +217,20 @@ label:has([data-snippet-code]) + p code {
 
 /* Safe Area */
 .safe-bottom {
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--cd-safe-area-bottom);
 }
 .safe-top {
   padding-top: var(--cd-safe-area-top);
 }
 
-/* AI入力欄はdynamic viewportの下端へ直接置く。
-   env(safe-area-inset-bottom)を足すとiPhoneで34px前後の空白帯になり、
-   入力欄全体が持ち上がる。ブラウザUIはinteractive-widget=resizes-contentで
-   viewportから除外されるため、ここでは追加の下余白を作らない。 */
+/* AI 入力欄の下端。入力カードはホームバー（下端から約 13px）に重ねない。
+   Safe Area をそのまま足すと 34px の空白帯になるので、状態の行（32px）をその帯へ置き、
+   足りない分だけ余白を足す。Safe Area の無い端末では 0。 */
 .assistant-composer-safe {
+  padding-bottom: max(0px, calc(var(--cd-safe-area-bottom) - 0.875rem));
+}
+/* キーボードが出ている間は、ホームバーの帯が無いので余白も要らない */
+html.cd-keyboard-fit .assistant-composer-safe {
   padding-bottom: 0;
 }
 

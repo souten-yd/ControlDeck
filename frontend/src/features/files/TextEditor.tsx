@@ -99,7 +99,7 @@ export default function TextEditor({
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-zinc-950">
+    <div className="safe-bottom fixed inset-0 z-50 flex flex-col bg-white dark:bg-zinc-950">
       <div className="safe-top flex shrink-0 items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <p className="min-w-0 truncate text-sm font-medium">
           {name}

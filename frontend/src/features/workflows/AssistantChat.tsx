@@ -12,7 +12,7 @@ import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
-import { IconChip, IconCompose, IconMic, IconPaperclip, IconSend, IconStop, IconTrash } from "../../components/icons";
+import { IconChip, IconMic, IconPaperclip, IconSend, IconStop } from "../../components/icons";
 import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/shell";
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
@@ -22,6 +22,11 @@ import { useAssistantAsr } from "./useAssistantAsr";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { ConfirmDialog } from "../../components/ui";
 import { writeClipboard } from "../../lib/clipboard";
+import {
+  ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
+  type ConversationSummary,
+} from "./ConversationHistory";
+import { ModeChip } from "./ModeChip";
 
 /** 進み具合の取れるアップロード（fetch では送信の進捗が取れない）。 */
 function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: number) => void): Promise<{ ok: boolean; status: number; body: unknown }> {
@@ -65,22 +70,22 @@ const attachmentUrl = (convId: string, id: string) =>
 /** 本文が無く画像だけを送るときの発言。 */
 const IMAGE_ONLY_PROMPT = "添付した画像を見てください。";
 
-const MODES: { id: Mode; icon: string; label: string; hint: string; needsEdit?: boolean }[] = [
-  { id: "chat", icon: "💬", label: "Chat", hint: "LLM と自由に対話します" },
-  { id: "web", icon: "🌐", label: "Web Search", hint: "Web 検索（DuckDuckGo / SearXNG）の結果を根拠に回答します" },
-  { id: "academic", icon: "🎓", label: "Academic", hint: "学術ソース串刺し検索（OpenAlex/arXiv 等）を根拠に回答します" },
-  { id: "deep", icon: "🔬", label: "Deep Research", hint: "テーマを分解して収集し、引用付きレポートを生成します（数分かかります）" },
-  { id: "research", icon: "🧭", label: "Research", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
-  { id: "gen", icon: "⚙️", label: "Generate Flow", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
-  { id: "run", icon: "▶", label: "Run Flow", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
-  { id: "code", icon: "⌨️", label: "OpenCode", hint: "コーディングエージェント（OpenCode）がこのチャット内で作業し、進捗と結果を表示します（同じ会話で継続対話。フル操作はOpenCode画面から）" },
+/** hint は空の会話に出す説明、short は機能メニューの一行。 */
+const MODES: { id: Mode; icon: string; label: string; hint: string; short: string; needsEdit?: boolean }[] = [
+  { id: "chat", icon: "💬", label: "Chat", short: "LLM と自由に対話", hint: "LLM と自由に対話します" },
+  { id: "web", icon: "🌐", label: "Web Search", short: "Web を検索して根拠つきで回答", hint: "Web 検索（DuckDuckGo / SearXNG）の結果を根拠に回答します" },
+  { id: "academic", icon: "🎓", label: "Academic", short: "論文・学術ソースを検索して回答", hint: "学術ソース串刺し検索（OpenAlex/arXiv 等）を根拠に回答します" },
+  { id: "deep", icon: "🔬", label: "Deep Research", short: "分解して調べ、引用付きレポート（数分）", hint: "テーマを分解して収集し、引用付きレポートを生成します（数分かかります）" },
+  { id: "research", icon: "🧭", label: "Research", short: "Web と学術を組み合わせて調査", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
+  { id: "gen", icon: "⚙️", label: "Generate Flow", short: "ワークフローを自動で作って確認", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
+  { id: "run", icon: "▶", label: "Run Flow", short: "既存のワークフローを実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
+  { id: "code", icon: "⌨️", label: "OpenCode", short: "コーディングエージェントが作業", hint: "コーディングエージェント（OpenCode）がこのチャット内で作業し、進捗と結果を表示します（同じ会話で継続対話。フル操作はOpenCode画面から）" },
 ];
 
 interface SourceItem { reference_id?: string; title: string; url: string; snippet?: string; source?: string; kind?: string }
 interface Quality { score: number; label: string; breakdown: Record<string, number>; errors: string[]; warnings: string[] }
 interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string; quality?: Quality }
 interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean; quality?: Quality }
-interface ConversationSummary { id: string; title: string; updated_at: string }
 interface ResearchStep { tool: "web" | "academic"; query: string }
 interface AssistantPlan { mode: "chat" | "web" | "academic" | "deep" | "research"; reason: string; steps: ResearchStep[]; max_iterations: number; decided_by: "rule" | "llm" | "fallback" }
 interface ResearchProgress { phase: string; label: string; iteration: number; details?: Record<string, unknown> }
@@ -104,6 +109,8 @@ interface PersistMsg {
   status: string;
   job_id: string | null;
   model: string;
+  /** 失敗・中断の理由（成功した回答では空）。 */
+  error?: string;
   meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
@@ -127,6 +134,8 @@ interface Msg {
   // 永続チャット（DB 会話）: assistant メッセージの ID と状態
   messageId?: string;
   persistStatus?: string; // generating / completed / failed / interrupted / canceled
+  /** 失敗・中断の理由（サーバーが記録したもの）。 */
+  error?: string;
   connectionState?: "live" | "reconnecting";
   plan?: AssistantPlan;
   progress?: ResearchProgress[];
@@ -137,7 +146,47 @@ interface Msg {
 
 interface CompactionNote { tokens_before?: number; tokens_after?: number; threshold?: number; folded_messages?: number }
 
+/** 回答が最後まで出なかった終わり方。ジョブの状態（succeeded など）と発言の状態の両方を受ける。 */
+function settledStatus(status: unknown): string {
+  if (status === "failed" || status === "canceled" || status === "interrupted") return status;
+  if (status === "cancelled") return "canceled";
+  return "completed";
+}
+
+/** DB の発言を画面の形へ。 */
+function restoreMessage(convId: string, m: PersistMsg): Msg {
+  return {
+    role: m.role,
+    content: m.content,
+    images: m.meta?.attachments?.map((a) => attachmentUrl(convId, a)),
+    tools: m.meta?.tools,
+    permissions: m.meta?.permissions,
+    jobId: m.job_id,
+    thinking: m.thinking || undefined,
+    messageId: m.id,
+    persistStatus: m.status,
+    error: m.error || undefined,
+    streaming: m.status === "generating",
+    sources: m.meta?.sources,
+    kind: m.meta?.sources?.length ? "sources" : "text",
+    plan: m.meta?.plan,
+    progress: m.meta?.progress,
+    research: m.meta?.research,
+    compaction: m.meta?.compaction,
+  };
+}
+
 const LS_KEY = "cd-assistant-settings";
+const LS_HISTORY = "cd-assistant-history"; // PC の履歴の列を畳んだか（"min"）
+const NEW_CHAT_TITLE = "新しいチャット";
+
+function readHistoryCollapsed(): boolean {
+  try {
+    return localStorage.getItem(LS_HISTORY) === "min";
+  } catch {
+    return false;
+  }
+}
 const LS_CONV = "cd-chat-conversation"; // 永続チャットの会話 ID（本文は DB に保存）
 
 function loadSettings() {
@@ -190,7 +239,7 @@ export default function AssistantChat() {
   }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
-  const [conversationTitle, setConversationTitle] = useState("新しい会話");
+  const [conversationTitle, setConversationTitle] = useState(NEW_CHAT_TITLE);
   const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
   const [routing, setRouting] = useState(false);
   // 生成統計（右下表示）: フェーズ / tok/s / コンテキスト使用量
@@ -237,24 +286,7 @@ export default function AssistantChat() {
         }
         const data = await api<{ messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
         if (cancelled) return;
-        const restored: Msg[] = data.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          images: m.meta?.attachments?.map((a) => attachmentUrl(id!, a)),
-          tools: m.meta?.tools,
-          permissions: m.meta?.permissions,
-          jobId: m.job_id,
-          thinking: m.thinking || undefined,
-          messageId: m.id,
-          persistStatus: m.status,
-          streaming: m.status === "generating",
-          sources: m.meta?.sources,
-          kind: m.meta?.sources?.length ? "sources" : "text",
-          plan: m.meta?.plan,
-          progress: m.meta?.progress,
-          research: m.meta?.research,
-          compaction: m.meta?.compaction,
-        }));
+        const restored = data.messages.map((m) => restoreMessage(id, m));
         if (restored.length > 0) setMessages(restored);
         // 生成中のまま残っているメッセージを購読再開
         const gen = data.messages.find((m) => m.role === "assistant" && m.status === "generating");
@@ -418,7 +450,10 @@ export default function AssistantChat() {
           else if (d.type === "done") {
             receivedDone = true;
             flush();
-            patchMsg((m) => ({ ...m, streaming: false, persistStatus: d.status, connectionState: "live" }));
+            patchMsg((m) => ({
+              ...m, streaming: false, persistStatus: settledStatus(d.status),
+              error: typeof d.error === "string" && d.error ? d.error : m.error, connectionState: "live",
+            }));
           } else if (d.type === "error") {
             receivedDone = true;
             flush();
@@ -450,23 +485,7 @@ export default function AssistantChat() {
     if (!id || id === convId || busy) return false;
     wsRef.current?.close();
     const data = await api<{ conversation: ConversationSummary; messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
-    const restored: Msg[] = data.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-      images: message.meta?.attachments?.map((a) => attachmentUrl(id, a)),
-      tools: message.meta?.tools,
-      permissions: message.meta?.permissions,
-      jobId: message.job_id,
-      thinking: message.thinking || undefined,
-      messageId: message.id,
-      persistStatus: message.status,
-      streaming: message.status === "generating",
-      sources: message.meta?.sources,
-      kind: message.meta?.sources?.length ? "sources" : "text",
-      plan: message.meta?.plan,
-      progress: message.meta?.progress,
-      research: message.meta?.research,
-    }));
+    const restored = data.messages.map((message) => restoreMessage(id, message));
     localStorage.setItem(LS_CONV, id);
     setAttachments([]); // 別の会話の添付を持ち越さない
     setConvId(id);
@@ -480,33 +499,93 @@ export default function AssistantChat() {
     return true;
   };
 
-  const newConversation = async () => {
+  const newConversation = () => {
     if (busy) return;
+    wsRef.current?.close();
     localStorage.removeItem(LS_CONV);
     setConvId("");
-    setConversationTitle("新しい会話");
+    setConversationTitle(NEW_CHAT_TITLE);
     setMessages([]);
     setAttachments([]); // 前の会話の添付を持ち越さない
+    setResolvedDecision(null);
+    setGenStats(null);
+    setHistoryOpen(false);
+    // シートが閉じるときに元のボタンへフォーカスを戻すので、その後で入力欄へ
+    window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 50);
   };
 
-  const renameConversation = async () => {
-    const title = conversationTitle.trim();
-    if (!convId || !title) return;
-    await api(`/chat/conversations/${convId}`, { method: "PATCH", json: { title } });
-    show("会話名を変更しました");
-    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+  const renameConversation = async (id: string, title: string) => {
+    const next = title.trim();
+    if (!id || !next) return;
+    try {
+      await api(`/chat/conversations/${id}`, { method: "PATCH", json: { title: next } });
+      if (id === convIdRef.current) setConversationTitle(next);
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      show("会話名を変更しました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "会話名を変更できませんでした", "error");
+    }
   };
 
-  const deleteConversation = async () => {
-    if (!convId) return;
-    await api(`/chat/conversations/${convId}`, { method: "DELETE" });
-    localStorage.removeItem(LS_CONV);
-    setConvId("");
-    setConversationTitle("新しい会話");
-    setMessages([]);
-    setAttachments([]); // 消した会話の添付を持ち越さない
-    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
-    show("会話を削除しました");
+  const [deletingConversation, setDeletingConversation] = useState<ConversationSummary | null>(null);
+  const confirmDeleteConversation = async () => {
+    const target = deletingConversation;
+    setDeletingConversation(null);
+    if (!target) return;
+    try {
+      await api(`/chat/conversations/${target.id}`, { method: "DELETE" });
+      if (target.id === convIdRef.current) {
+        wsRef.current?.close();
+        localStorage.removeItem(LS_CONV);
+        setConvId("");
+        setConversationTitle(NEW_CHAT_TITLE);
+        setMessages([]);
+        setAttachments([]); // 消した会話の添付を持ち越さない
+      }
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      show("会話を削除しました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "会話を削除できませんでした", "error");
+    }
+  };
+
+  // ---- 履歴（PC は左の列、携帯は左から出るシート）と題名の書き換え ----
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(readHistoryCollapsed);
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const setHistoryCollapsedSaved = (next: boolean) => {
+    setHistoryCollapsed(next);
+    try {
+      localStorage.setItem(LS_HISTORY, next ? "min" : "full");
+    } catch { /* 保存できなくても、この場の開閉は効く */ }
+  };
+  const toggleHistory = () => {
+    if (window.matchMedia("(min-width: 1024px)").matches) setHistoryCollapsedSaved(!historyCollapsed);
+    else setHistoryOpen(true);
+  };
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => query.matches && setHistoryOpen(false);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  /* 入力欄は中身に合わせて伸びる（上限まで。超えたら中をスクロール）。 */
+  useEffect(() => {
+    const element = composerRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
+  }, [input]);
+  const pickConversation = async (id: string) => {
+    setHistoryOpen(false);
+    if (id === convIdRef.current) return;
+    try {
+      await openConversation(id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "会話を開けませんでした", "error");
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+    }
   };
 
   const convIdRef = useRef(convId);
@@ -515,7 +594,9 @@ export default function AssistantChat() {
     if (convIdRef.current) return convIdRef.current;
     const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
     localStorage.setItem(LS_CONV, c.id);
+    convIdRef.current = c.id;
     setConvId(c.id);
+    qc.invalidateQueries({ queryKey: ["chat-conversations"] });
     return c.id;
   };
 
@@ -782,6 +863,8 @@ export default function AssistantChat() {
     } finally {
       setRouting(false);
       if (!buildContinues) setBusy(false);
+      // 題名（最初の発言から付く）と並び順（更新日時）を履歴へ反映する
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
     }
   };
 
@@ -903,78 +986,128 @@ export default function AssistantChat() {
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;
 
+  const modeOptions = MODES
+    .filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable))
+    .map((item) => ({ id: item.id, icon: item.icon, label: item.label, hint: item.short }));
+  const historyProps = {
+    conversations,
+    currentId: convId,
+    busy,
+    onOpen: (id: string) => void pickConversation(id),
+    onNew: newConversation,
+    onRename: renameConversation,
+    onDelete: setDeletingConversation,
+  };
+  /** 失敗・中断した回答の「再試行」: 直前の自分の発言をもう一度送る。 */
+  /** 失敗した最後の回答をやり直す: 直前の自分の発言を、付けていた画像ごと送り直す。
+   * 入力欄の下書き・添付を巻き込まないよう、それがあるときは再試行を出さない。 */
+  const retryFrom = (index: number) => {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const original = messages[i];
+      if (original.role !== "user") continue;
+      const imageIds = (original.images ?? [])
+        .map((url) => decodeURIComponent(url.split("/").pop() ?? ""))
+        .filter((id) => /^[0-9a-f]{16}\.(png|jpg|webp|gif)$/.test(id));
+      if (imageIds.length && convIdRef.current) {
+        // 画像を添付に戻してから送る（描き直しの後で送る。send は描画時点の添付を読む）
+        const cid = convIdRef.current;
+        setAttachments(imageIds.map((id) => ({ id, name: id, kind: "image" as const, status: "ready" as const, preview: attachmentUrl(cid, id) })));
+        pendingResend.current = original.content;
+      } else {
+        void send(original.content);
+      }
+      return;
+    }
+  };
+  const canRetry = !busy && !input.trim() && attachments.length === 0;
+
   return (
     <section
       data-assistant-shell
       aria-label={assistantName}
-      className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden overscroll-none bg-zinc-50 dark:bg-zinc-950"
+      className="flex h-full min-h-0 w-full min-w-0 max-w-full overflow-hidden overscroll-none bg-zinc-50 dark:bg-zinc-950"
     >
-        {/* 上の行。殻の上の行と同じ高さ・同じ面。携帯は 2 段目に切替を置く。 */}
+      {/* PC: 会話の履歴の列（畳める。状態は端末に覚える） */}
+      {!historyCollapsed && (
+        <aside data-assistant-history-sidebar className="hidden w-72 shrink-0 border-r border-zinc-200/80 bg-zinc-100/60 dark:border-zinc-800/80 dark:bg-zinc-900/60 lg:block">
+          <ConversationHistory
+            {...historyProps}
+            header={<HistoryHeader action={
+              <button type="button" onClick={() => setHistoryCollapsedSaved(true)} aria-label="履歴を閉じる" aria-expanded title="履歴を閉じる"
+                className="-mr-1.5 grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl text-zinc-600 transition-colors hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800">
+                <IconHistoryPanel />
+              </button>
+            } />}
+          />
+        </aside>
+      )}
+      {/* 携帯: 上の行の履歴ボタンで左から出るシート */}
+      <HistorySheet open={historyOpen} onClose={() => setHistoryOpen(false)}>
+        <ConversationHistory {...historyProps} header={<HistoryHeader action={<HistoryCloseButton onClose={() => setHistoryOpen(false)} />} />} />
+      </HistorySheet>
+      {deletingConversation && (
+        <ConfirmDialog
+          title="会話を削除"
+          message={`「${deletingConversation.title}」を削除します。発言・添付・会話の資料も消え、元に戻せません。`}
+          confirmLabel="削除する"
+          onConfirm={() => void confirmDeleteConversation()}
+          onClose={() => setDeletingConversation(null)}
+        />
+      )}
+
+      <div data-assistant-main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* 上の行。殻の上の行と同じ高さ・同じ面: ☰・履歴・題名（押して名前を変更）・モデル。 */}
         <div data-assistant-topbar className={SHELL_TOPBAR_CLASS}>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-1 px-3 sm:flex-nowrap sm:gap-x-2 md:px-5">
-          <div className="flex h-14 min-w-0 flex-1 items-center gap-1 sm:flex-none">
-            <ShellMenuButton className="-ml-1.5" />
-            <div className="min-w-0 md:max-w-[12rem]">
-              <h1 className="truncate text-[15px] font-semibold leading-5 tracking-tight">{assistantName}</h1>
-              <p className="truncate text-[11px] leading-4 text-zinc-500 dark:text-zinc-400" aria-label="現在の機能" aria-live="polite">
-                {modeChoice === "auto" ? routing ? "自動判定: 計画中…" : `自動判定: ${currentMode.label}` : `選択: ${currentMode.label}`}
-              </p>
-            </div>
-          </div>
-          <div className="order-last flex min-w-0 basis-full items-center gap-1 pb-2 sm:order-none sm:ml-auto sm:w-[26rem] sm:basis-auto sm:pb-0">
-            <select
-              value={modeChoice}
-              onChange={(event) => setModeChoice(event.target.value as AssistantModeChoice)}
-              aria-label="処理モード"
-              title="処理モード"
-              className="h-9 w-28 shrink-0 rounded-xl border border-zinc-200 bg-white px-2 text-xs font-medium outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-900 sm:w-32"
-            >
-              <option value="auto">✦ 自動判定</option>
-              {MODES.filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable)).map((item) => (
-                <option key={item.id} value={item.id}>{item.icon} {item.label}</option>
-              ))}
-            </select>
-            <select
-              value={convId}
-              onChange={(event) => void openConversation(event.target.value)}
-              aria-label="会話を切替"
-              className="h-9 min-w-0 flex-1 rounded-xl border border-zinc-200 bg-white px-2.5 text-xs outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-900"
-            >
-              {!convId && <option value="">履歴を選択</option>}
-              {(conversations ?? []).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
-            </select>
-            <button
-              type="button"
-              onClick={() => void newConversation()}
-              disabled={busy || (!convId && messages.length === 0)}
-              aria-label="新しい会話を開始"
-              title="新しい会話を開始"
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-900 focus:outline-none focus:ring-2 focus:ring-accent-500/30 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-            >
-              <IconCompose className="text-lg" />
-            </button>
-            <button
-              type="button"
-              onClick={() => void deleteConversation()}
-              disabled={busy || !convId}
-              aria-label="選択中の会話を削除"
-              title="選択中の会話を削除"
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-red-50 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500/30 disabled:opacity-40 dark:hover:bg-red-950/40"
-            >
-              <IconTrash className="text-lg" />
-            </button>
-          </div>
+        <div className="flex h-14 min-w-0 items-center gap-1 px-3 md:px-5">
+          <ShellMenuButton className="-ml-1.5" />
+          <button
+            type="button"
+            onClick={toggleHistory}
+            aria-label="会話の履歴"
+            aria-haspopup="dialog"
+            title="会話の履歴"
+            data-assistant-history-button
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl text-zinc-600 transition-colors hover:bg-zinc-200/60 active:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:active:bg-zinc-700 md:-ml-1.5 ${historyCollapsed ? "" : "lg:hidden"}`}
+          >
+            <IconHistoryPanel />
+          </button>
+          <h1 className="min-w-0 flex-1 text-[15px] font-semibold leading-6 tracking-tight">
+            {renamingTitle && convId ? (
+              <TitleEditor
+                initial={conversationTitle}
+                label="会話名"
+                onDone={(title) => {
+                  setRenamingTitle(false);
+                  if (title && title !== conversationTitle) void renameConversation(convId, title);
+                }}
+                className="h-10 w-full min-w-0 rounded-lg border border-accent-500 bg-white px-2 text-[15px] font-medium outline-none ring-2 ring-accent-500/20 dark:bg-zinc-900"
+              />
+            ) : convId ? (
+              <button
+                type="button"
+                onClick={() => setRenamingTitle(true)}
+                title="押して名前を変更"
+                aria-label={`会話名: ${conversationTitle}（押して名前を変更）`}
+                data-assistant-title
+                className="block min-h-11 max-w-full truncate rounded-lg px-2 text-left transition-colors hover:bg-zinc-200/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:hover:bg-zinc-800"
+              >
+                {conversationTitle}
+              </button>
+            ) : (
+              <span data-assistant-title className="block truncate px-2">{NEW_CHAT_TITLE}</span>
+            )}
+          </h1>
           <button
             onClick={() => setShowSettings((v) => !v)}
             aria-label={showSettings ? "AI設定を閉じる" : "AI設定を開く"}
             aria-expanded={showSettings}
             title={model || "設定"}
-            className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-colors sm:shrink ${
+            className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-colors ${
               showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800"
             }`}
           >
             <IconChip className="shrink-0 text-lg" />
-            <span className="max-w-[6.5rem] truncate sm:max-w-[9rem]">{model || "設定"}</span>
+            <span className="max-w-[5.5rem] truncate max-[359px]:hidden sm:max-w-[10rem]">{model || "設定"}</span>
           </button>
           {shell?.extras}
         </div>
@@ -983,15 +1116,6 @@ export default function AssistantChat() {
         {/* 設定パネル */}
         {showSettings && (
           <div className="grid max-h-[50dvh] min-w-0 shrink-0 gap-2.5 overflow-y-auto overflow-x-hidden overscroll-contain border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-900/60 sm:grid-cols-2">
-            <label className="block sm:col-span-2">
-              <span className="mb-1 block text-xs text-zinc-500">現在の会話名</span>
-              <div className="flex min-w-0 flex-wrap gap-1.5 sm:flex-nowrap">
-                <input value={conversationTitle} onChange={(event) => setConversationTitle(event.target.value)} maxLength={200}
-                  className="min-w-0 basis-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:flex-1 sm:basis-auto sm:text-sm" />
-                <button onClick={() => void renameConversation()} className="shrink-0 rounded-lg bg-zinc-200 px-3 py-1.5 text-xs font-medium dark:bg-zinc-700">名前を保存</button>
-                <button onClick={() => void deleteConversation()} disabled={busy} className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950/40">削除</button>
-              </div>
-            </label>
             <label className="block">
               <span className="mb-1 block text-xs text-zinc-500">LLM モデル</span>
               {modelOptions.length ? (
@@ -1090,23 +1214,26 @@ export default function AssistantChat() {
           className="min-h-0 min-w-0 flex-1 touch-pan-y space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-5 [-webkit-overflow-scrolling:touch] sm:px-5"
         >
           {messages.length === 0 && (
-            <div className="mx-auto max-w-md pt-10 text-center">
-              <p className="text-3xl">{currentMode.icon}</p>
-              <p className="mt-2 text-sm font-medium">{assistantName} · {currentMode.label}</p>
-              <p className="mt-1 text-xs leading-relaxed text-zinc-400">{currentMode.hint}</p>
+            <div data-assistant-empty className="mx-auto max-w-md pt-[12vh] text-center">
+              <p aria-hidden className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-accent-50 text-2xl text-accent-600 dark:bg-accent-600/15 dark:text-accent-300">{modeChoice === "auto" ? "✦" : currentMode.icon}</p>
+              <p className="mt-4 text-xl font-semibold tracking-tight">{assistantName}</p>
+              <p className="mt-1.5 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                {modeChoice === "auto" ? "何でも聞いてください。内容に合わせて、対話・検索・調査・ワークフローを自動で選びます。" : `${currentMode.label} — ${currentMode.hint}`}
+              </p>
               {effectiveMode === "gen" && (
-                <p className="mt-3 rounded-xl bg-zinc-50 p-3 text-left text-xs leading-relaxed text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400">
+                <p className="mt-3 rounded-xl bg-zinc-100 p-3 text-left text-xs leading-relaxed text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400">
                   例:「毎朝 8 時に arXiv で LLM の論文を検索して要約を Discord に送る」
                   「URL を入力すると本文を要約してナレッジに登録するフロー」
                 </p>
               )}
             </div>
           )}
-          <div className="mx-auto max-w-5xl space-y-4">
+          <div className="mx-auto max-w-3xl space-y-5">
             {messages.map((m, i) => (
               <MessageBubble
                 key={m.messageId ?? i}
                 msg={m}
+                onRetry={canRetry && i === messages.length - 1 ? () => retryFrom(i) : undefined}
                 onRegister={registerOnly}
                 onAutoBuild={autoBuild}
                 onOpen={(id) => navigate(`/workflows/${id}`)}
@@ -1137,9 +1264,9 @@ export default function AssistantChat() {
         {/* 入力欄 */}
         <div
           data-assistant-composer
-          className="assistant-composer-safe min-w-0 max-w-full shrink-0 overflow-x-hidden bg-transparent px-3 pt-3 sm:px-5"
+          className="assistant-composer-safe min-w-0 max-w-full shrink-0 bg-transparent px-3 pt-2 sm:px-5"
         >
-          <div className="mx-auto max-w-5xl">
+          <div className="mx-auto max-w-3xl">
           {effectiveMode === "run" && (
             <select
               value={runTarget}
@@ -1227,34 +1354,12 @@ export default function AssistantChat() {
           <input ref={fileInputRef} type="file" multiple className="hidden"
             accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql"
             onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attachFiles(picked); }} />
-          {/* 状態は入力欄の下に固定高で置き、表示切替でも入力位置を変えない。 */}
-          <div data-assistant-input-card className="w-full min-w-0 overflow-hidden rounded-2xl border border-zinc-300 bg-zinc-50 shadow-sm transition focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-800">
-            <div data-assistant-input-row className="flex w-full min-w-0 items-end gap-1.5 p-1.5">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={busy}
-              aria-label="ファイルを添付（画像はVLM、文書は会話の資料へ）"
-              title="ファイルを添付 — 画像はVLMへ、コード/文書/PDFは会話の資料（RAG）へ登録"
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-lg text-zinc-600 transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-700"
-            >
-              <IconPaperclip />
-            </button>
-            <button
-              type="button"
-              onClick={() => void asr.toggle()}
-              disabled={busy || !["idle", "error", "listening"].includes(asr.phase)}
-              aria-label={asr.listening ? "音声認識を停止" : "音声で入力"}
-              aria-pressed={asr.listening}
-              title={asr.phase === "installing" ? "音声入力モデルを導入中" : asr.listening ? "停止して認識" : "音声で入力"}
-              className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-xl text-lg transition focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50 ${
-                asr.listening ? "bg-red-600 text-white shadow-sm" : "text-zinc-600 hover:bg-white dark:text-zinc-300 dark:hover:bg-zinc-700"
-              }`}
-            >
-              {asr.listening ? <IconStop /> : <IconMic />}
-              {asr.listening && <span className="absolute inset-0 -z-10 rounded-xl bg-red-400 opacity-40" style={{ transform: `scale(${1 + asr.level * 0.35})` }} />}
-            </button>
+          {/* 入力カード（上が本文、下が道具の行: 添付・機能・音声・送信）。状態は
+              カードの下に固定高で置き、表示が変わっても入力位置を動かさない。 */}
+          <div data-assistant-input-card className="w-full min-w-0 rounded-3xl border border-zinc-200 bg-white shadow-sm transition focus-within:border-accent-500/70 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-900">
             <textarea
+              ref={composerRef}
+              data-assistant-input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onPaste={(e) => {
@@ -1275,7 +1380,7 @@ export default function AssistantChat() {
                   cyclePermissionMode();
                 }
               }}
-              rows={input.includes("\n") ? 3 : 1}
+              rows={1}
               placeholder={
                 effectiveMode === "gen"
                   ? "作りたいワークフローを日本語で説明..."
@@ -1283,41 +1388,75 @@ export default function AssistantChat() {
                     ? "ワークフローへの入力（{{trigger.message}}）..."
                     : "メッセージを入力..."
               }
-              className="max-h-32 w-0 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-base outline-none placeholder:text-zinc-400 sm:text-sm"
+              className="block max-h-40 w-full min-w-0 resize-none border-0 bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 outline-none placeholder:text-zinc-400 sm:text-[15px]"
             />
-            {busy && runningJob ? (
-              <button type="button" onClick={() => void stopRunning()} aria-label="止める"
-                className="flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-zinc-900 px-3.5 font-mono text-sm font-semibold text-white shadow-sm hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
-                <IconStop className="text-base" />
-                <span className="hidden sm:inline">止める</span>
+            <div data-assistant-input-row className="flex w-full min-w-0 items-center gap-1 p-1.5">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy}
+                aria-label="ファイルを添付（画像はVLM、文書は会話の資料へ）"
+                title="ファイルを添付 — 画像はVLMへ、コード/文書/PDFは会話の資料（RAG）へ登録"
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-600 transition hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                <IconPaperclip />
               </button>
-            ) : (
-            <button
-              onClick={() => void send()}
-              disabled={busy || (!input.trim() && !attachments.some((a) => a.kind === "image" && a.status === "ready"))}
-              aria-label="送信"
-              className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 disabled:opacity-50"
-            >
-              {busy ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
-              <span className="hidden sm:inline">送信</span>
-            </button>
-            )}
-            </div>
-            <div data-assistant-composer-status className="flex h-8 min-w-0 items-center gap-2 border-t border-zinc-200/80 px-2 text-[10px] leading-none text-zinc-500 dark:border-zinc-700" aria-live="polite">
-              {effectiveMode === "code" && (
-                <PermissionModeChip mode={permissionMode} editable={canChangePermissionMode} onChange={(m) => void changePermissionMode(m)} />
-              )}
-              {showComposerStatus ? (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
-                <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
+              <div className="flex min-w-0 flex-1 items-center">
+                <ModeChip
+                  value={modeChoice}
+                  options={modeOptions}
+                  detectedLabel={currentMode.label}
+                  routing={routing}
+                  onChange={(id) => setModeChoice(id as AssistantModeChoice)}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void asr.toggle()}
+                disabled={busy || !["idle", "error", "listening"].includes(asr.phase)}
+                aria-label={asr.listening ? "音声認識を停止" : "音声で入力"}
+                aria-pressed={asr.listening}
+                title={asr.phase === "installing" ? "音声入力モデルを導入中" : asr.listening ? "停止して認識" : "音声で入力"}
+                className={`relative isolate grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-50 ${
+                  asr.listening ? "bg-red-600 text-white shadow-sm" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {asr.listening ? <IconStop /> : <IconMic />}
+                {asr.listening && <span className="absolute inset-0 -z-10 rounded-full bg-red-400 opacity-40" style={{ transform: `scale(${1 + asr.level * 0.35})` }} />}
+              </button>
+              {busy && runningJob ? (
+                <button type="button" onClick={() => void stopRunning()} aria-label="止める" title="止める"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-zinc-900 text-white shadow-sm transition hover:bg-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
+                  <IconStop className="text-base" />
+                </button>
               ) : (
-                <GenStatsBadge stats={genStats} busy={busy} />
-              )) : (
-                <span className="min-w-0 truncate">Enterで送信 · Shift+Enterで改行</span>
+                <button
+                  onClick={() => void send()}
+                  disabled={busy || (!input.trim() && !attachments.some((a) => a.kind === "image" && a.status === "ready"))}
+                  aria-label="送信"
+                  title="送信（Enter）"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:bg-zinc-200 disabled:text-zinc-400 disabled:shadow-none dark:disabled:bg-zinc-800 dark:disabled:text-zinc-600"
+                >
+                  {busy ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
+                </button>
               )}
             </div>
+          </div>
+          <div data-assistant-composer-status className="flex h-8 min-w-0 items-center gap-2 px-3 text-[10px] leading-none text-zinc-500" aria-live="polite">
+            {effectiveMode === "code" && (
+              <PermissionModeChip mode={permissionMode} editable={canChangePermissionMode} onChange={(m) => void changePermissionMode(m)} />
+            )}
+            {showComposerStatus ? (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
+              <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
+            ) : (
+              <GenStatsBadge stats={genStats} busy={busy} />
+            )) : (
+              <span className="min-w-0 truncate">Enterで送信 · Shift+Enterで改行</span>
+            )}
           </div>
           </div>
         </div>
+      </div>
     </section>
   );
 }
@@ -1393,8 +1532,11 @@ function MessageBubble({
   onAction,
   onResend,
   onCancelEdit,
+  onRetry,
   resendDisabled = false,
 }: {
+  /** 失敗・中断した回答をやり直す（直前の自分の発言を送り直す）。生成中は渡さない。 */
+  onRetry?: () => void;
   resendDisabled?: boolean;
   editing?: boolean;
   actionsDisabled?: boolean;
@@ -1425,7 +1567,7 @@ function MessageBubble({
           {editing ? (
             <MessageEditor initial={msg.content} disabled={resendDisabled} onSubmit={onResend} onCancel={onCancelEdit} />
           ) : (
-            <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
+            <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-[15px] leading-6 text-white [overflow-wrap:anywhere]">
               {msg.content}
             </div>
           )}
@@ -1437,11 +1579,14 @@ function MessageBubble({
       </div>
     );
   }
-  const assistantActions: MessageAction[] = msg.messageId && !msg.streaming ? ["copy", "fork", "delete"] : ["copy"];
+  const unsettled = !msg.streaming && (msg.persistStatus === "failed" || msg.persistStatus === "canceled" || msg.persistStatus === "interrupted")
+    ? msg.persistStatus : null;
+  const assistantActions: MessageAction[] = (msg.messageId && !msg.streaming ? ["copy", "fork", "delete"] as MessageAction[] : ["copy"] as MessageAction[])
+    .filter((action) => action !== "copy" || !!msg.content);
   return (
-    <div className="flex min-w-0 flex-col items-start gap-0.5">
+    <div data-assistant-message={msg.persistStatus ?? ""} className="flex min-w-0 flex-col items-start gap-0.5">
     <div className="flex w-full min-w-0 justify-start">
-      <div className="min-w-0 max-w-[96%] space-y-2 break-words rounded-2xl rounded-bl-md border border-zinc-200 bg-white px-4 py-3 text-sm shadow-sm [overflow-wrap:anywhere] dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[88%]">
+      <div className="w-full min-w-0 space-y-2 break-words px-1 text-[15px] leading-7 [overflow-wrap:anywhere]">
         {msg.compaction && (
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400" role="status">
             🗜️ 会話が長くなったため、古いやり取り{msg.compaction.folded_messages ? `（${msg.compaction.folded_messages}件）` : ""}を要約して続けました
@@ -1455,7 +1600,7 @@ function MessageBubble({
         )}
         {(msg.plan || msg.research || (msg.progress && msg.progress.length > 0)) && (
           /* 機能選択判断は選択結果のみ表示し、理由・計画・統計はタップで展開する */
-          <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20">
+          <details className="w-fit max-w-full rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-1.5 open:w-full dark:border-accent-900 dark:bg-accent-950/20">
             <summary className="cursor-pointer text-xs font-semibold text-accent-700 dark:text-accent-300">
               {msg.progress?.[0]?.phase === "opencode" ? "⌨️ OpenCode" : `🧭 ${MODES.find((m) => m.id === msg.plan?.mode)?.label ?? "調査"}`}{msg.streaming ? "（実行中）" : ""}
             </summary>
@@ -1504,6 +1649,13 @@ function MessageBubble({
             <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{msg.thinking}</p>
           </details>
         )}
+        {msg.streaming && !msg.content && !msg.thinking && !msg.build && (
+          <p role="status" aria-label="回答を待っています" className="flex h-7 items-center gap-1">
+            {[0, 1, 2].map((dot) => (
+              <span key={dot} className="h-1.5 w-1.5 animate-pulse rounded-full bg-zinc-400" style={{ animationDelay: `${dot * 180}ms` }} />
+            ))}
+          </p>
+        )}
         {msg.content && (
           <div>
             <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>}>
@@ -1512,6 +1664,9 @@ function MessageBubble({
             {msg.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent-500 align-middle" />}
           </div>
         )}
+
+        {/* 失敗・停止・中断: 本文が無くても、何が起きたかと理由を必ず出す。 */}
+        {unsettled && <UnsettledNotice status={unsettled} error={msg.error} partial={!!msg.content} onRetry={onRetry} />}
 
         {/* 出典リスト（既定は最小化。タップで開閉） */}
         {msg.sources && msg.sources.length > 0 && (
@@ -1612,7 +1767,39 @@ function MessageBubble({
         )}
       </div>
     </div>
-    {!msg.streaming && msg.content && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
+    {!msg.streaming && assistantActions.length > 0 && (msg.content || msg.messageId) && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
+    </div>
+  );
+}
+
+/** 最後まで出なかった回答の知らせ。失敗は赤（重大なエラー）、停止・中断は控えめな色。 */
+function UnsettledNotice({ status, error, partial, onRetry }: {
+  status: "failed" | "canceled" | "interrupted"; error?: string; partial: boolean; onRetry?: () => void;
+}) {
+  const failed = status === "failed";
+  const title = failed
+    ? (partial ? "回答の途中で失敗しました" : "回答を生成できませんでした")
+    : status === "canceled" ? "回答を停止しました" : "回答が中断されました";
+  const detail = error?.trim()
+    || (status === "interrupted" ? "サーバーの再起動などで生成が途切れました。" : failed ? "原因は記録されていません。" : "");
+  return (
+    <div
+      role={failed ? "alert" : "status"}
+      data-assistant-unsettled={status}
+      className={`rounded-2xl border px-3.5 py-3 text-sm leading-6 ${failed
+        ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200"
+        : "border-zinc-200 bg-zinc-100/70 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-200"}`}
+    >
+      <p className="font-semibold">{failed ? "⚠️ " : status === "canceled" ? "⏹ " : "⏸ "}{title}</p>
+      {detail && <p className="mt-0.5 whitespace-pre-wrap break-words text-xs leading-relaxed opacity-90 [overflow-wrap:anywhere]">{detail}</p>}
+      {onRetry && (
+        <button type="button" onClick={onRetry}
+          className={`mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 ${failed
+            ? "border-red-300 bg-white text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200 dark:hover:bg-red-900/40"
+            : "border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"}`}>
+          <span aria-hidden>↻</span>再試行
+        </button>
+      )}
     </div>
   );
 }
