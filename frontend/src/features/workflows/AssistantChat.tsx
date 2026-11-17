@@ -1009,10 +1009,13 @@ export default function AssistantChat() {
         .map((url) => decodeURIComponent(url.split("/").pop() ?? ""))
         .filter((id) => /^[0-9a-f]{16}\.(png|jpg|webp|gif)$/.test(id));
       if (imageIds.length && convIdRef.current) {
+        // 画像を添付に戻してから送る（描き直しの後で送る。send は描画時点の添付を読む）
         const cid = convIdRef.current;
         setAttachments(imageIds.map((id) => ({ id, name: id, kind: "image" as const, status: "ready" as const, preview: attachmentUrl(cid, id) })));
+        pendingResend.current = original.content;
+      } else {
+        void send(original.content);
       }
-      pendingResend.current = original.content;
       return;
     }
   };
