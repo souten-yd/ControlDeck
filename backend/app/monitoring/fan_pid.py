@@ -94,11 +94,14 @@ class ThermalModel:
     tau_s: float = FF_TAU_DEFAULT_S
     gain_c_per_percent: float | None = None
     tuned: dict | None = None
+    # 電力が入った瞬間の hotspot の跳ね（°C/W）。自動調整で測る（fan_core.Plant が使う）
+    hotspot_jump_c_per_w: float | None = None
 
     def to_json(self) -> dict:
         return {"idle_c": self.idle_c, "idle_power_w": self.idle_power_w,
                 "points": self.points, "tau_s": self.tau_s,
-                "gain_c_per_percent": self.gain_c_per_percent, "tuned": self.tuned}
+                "gain_c_per_percent": self.gain_c_per_percent, "tuned": self.tuned,
+                "hotspot_jump_c_per_w": self.hotspot_jump_c_per_w}
 
     @classmethod
     def from_json(cls, data: dict) -> "ThermalModel":
@@ -120,6 +123,8 @@ class ThermalModel:
             gain = data.get("gain_c_per_percent")
             model.gain_c_per_percent = None if gain is None else float(gain)
             model.tuned = data.get("tuned") if isinstance(data.get("tuned"), dict) else None
+            jump = data.get("hotspot_jump_c_per_w")
+            model.hotspot_jump_c_per_w = None if jump is None else clamp(float(jump), 0.0, 1.0)
         except (KeyError, TypeError, ValueError):
             return cls()
         return model
