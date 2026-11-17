@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 165 ファイル、1479 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、133 テスト
+- backend: 165 ファイル、1482 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、135 テスト
 
 ## backend（backend/tests）
 
@@ -512,6 +512,7 @@
 - `test_delete_message_removes_its_reply_and_refuses_while_generating`
 - `test_fork_remaps_compaction_carries_edit_images_and_copies_documents`
 - `test_stale_generating_message_can_be_deleted` — 再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。
+- `test_archive_hides_from_list_and_restores` — 会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。
 
 ### backend/tests/test_chat_references.py
 
@@ -666,6 +667,7 @@
 - `test_stall_watcher_records_the_blocking_function` — loop を 1.6 秒塞ぐと、塞いだ関数の場所が記録に残る。
 - `test_api_requires_admin_and_returns_report`
 - `test_agent_mcp_offers_diagnostics_to_admins`
+- `test_client_timing_is_recorded_and_summarised` — 画面側の時間（2026-11-17「会話の読み込みが遅い」: サーバー側は速く、通信か描画かを分けるため）。
 
 ### backend/tests/test_disk_monitoring.py
 
@@ -789,6 +791,7 @@
 - `test_target_mode_tracks_below_ceiling_with_limited_rise`
 - `test_target_raw_ceiling_bypasses_filters_and_slew`
 - `test_target_mode_converges_under_sustained_synthetic_heat`
+- `test_user_presets_can_be_added_selected_and_deleted` — 利用者のプリセット（2026-11-17 の依頼: 追加と削除）。組み込みは消せず、使っていたものを消すとカスタムに戻る。
 
 ### backend/tests/test_fan_filter.py
 
@@ -2427,6 +2430,7 @@
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone
 - standalone iPhone: shell uses the real screen height when the viewport is reported shrunk
+- history rows swipe right to archive and left to delete, with undo
 
 ### frontend/e2e/assistant-message-actions.spec.ts
 
@@ -2479,9 +2483,10 @@
 
 ### frontend/e2e/fan-temperature-margin.spec.ts
 
-目的: **未記入**
+目的: 目的: ファン設定の画面で、温度マージンの編集・保存と、利用者プリセットの保存・削除ができること。 根拠: 温度マージン（目標追従の導入時）。プリセットの追加と削除は 2026-11-17 の依頼。
 
 - temperature margin is editable and saved at ${width}px
+- user fan presets can be saved from the current settings and deleted
 
 ### frontend/e2e/feature-boot-restore.spec.ts
 
