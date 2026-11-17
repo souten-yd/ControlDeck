@@ -36,6 +36,9 @@ if (isIPhoneStandalone) {
 
 // デプロイ（再ビルド）後、開きっぱなしの旧画面が存在しない旧チャンクを遅延ロードして
 // 404 になる（ターミナル/リモート等が開けない）。失敗時は自動で 1 回だけ再読み込みする。
+// 診断: 画面の寸法（ログインしていないときは送っても 401 で捨てられる）
+void import("./lib/clientTiming").then(({ startViewportDiagnostics }) => startViewportDiagnostics());
+
 window.addEventListener("vite:preloadError", (e) => {
   const last = Number(sessionStorage.getItem("cd-chunk-reload") || 0);
   if (Date.now() - last > 10_000) {

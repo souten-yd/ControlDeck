@@ -463,6 +463,12 @@ test("standalone iPhone: shell uses the real screen height when the viewport is 
     Object.defineProperty(window.screen, "height", { configurable: true, get: () => 956 });
   });
   await page.setViewportSize({ width: 440, height: 894 }); // 956 - 62（縮んだ報告）
+  // 診断: 画面の寸法が送られる（下が切れる件を実機の値で追うため）
+  const sent: Array<{ page: string; marks: Record<string, number> }> = [];
+  await page.route("**/api/v1/diagnostics/client", (route) => {
+    sent.push(route.request().postDataJSON());
+    return route.fulfill({ status: 204, body: "" });
+  });
   await login(page);
   await page.goto("/assistant");
   await expect(page.locator("[data-assistant-shell]")).toBeVisible();
@@ -471,6 +477,10 @@ test("standalone iPhone: shell uses the real screen height when the viewport is 
     shrunk: document.documentElement.dataset.viewportShrunk,
   }));
   expect(state).toEqual({ root: "956px", shrunk: "62" });
+  await expect.poll(() => sent.find((r) => r.page === "viewport")?.marks.root_h, { timeout: 8000 }).toBe(956);
+  const viewport = sent.find((r) => r.page === "viewport")!.marks;
+  expect(viewport).toMatchObject({ screen_h: 956, inner_h: 894, shrunk: 62 });
+  expect(viewport.composer_bottom).toBeGreaterThan(0);
   // キーボードほどの差（> 100px）は実寸で上書きしない
   await page.setViewportSize({ width: 440, height: 600 });
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById("root")!).height)).not.toBe("956px");
