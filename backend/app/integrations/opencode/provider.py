@@ -1508,6 +1508,9 @@ def import_project(source_path: str) -> dict:
     return {"name": destination.name, "path": str(destination), "imported": True}
 
 
+RESUME_SESSION_RE = re.compile(r"ses_[A-Za-z0-9]{8,64}")
+
+
 def tui_command(
     *,
     project_path: str,
@@ -1516,8 +1519,12 @@ def tui_command(
     model: str = "",
     owner_user_id: int | None = None,
     runtime: str = "",
+    resume: str = "",
 ) -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
+
+    resume: "" は新しい会話、"last" はそのプロジェクトの最後の会話の続き（--continue）、
+    "ses_…" はその会話の続き（--session）。TUI は閉じると終わるので、開き直すときに使う。
 
     ターミナル基盤（tmux）の上でopencode TUIをそのまま動かす。設定は永続config
     （Control Deck LLM provider）を都度再生成して渡す。
@@ -1546,6 +1553,12 @@ def tui_command(
     # 常駐 service へ繋がないよう --standalone を付ける。TUI を閉じたら一緒に終わる。
     argv = [str(binary)]
     argv += ["--standalone"]
+    if resume == "last":
+        argv += ["--continue"]
+    elif resume:
+        if not RESUME_SESSION_RE.fullmatch(resume):
+            raise CodeAgentError("続きから開く会話の ID が正しくありません")
+        argv += ["--session", resume]
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))

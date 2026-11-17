@@ -105,11 +105,14 @@ interface PersistMsg {
   job_id: string | null;
   model: string;
   meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
-    tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
+    tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode;
+    opencode_session?: string; project_path?: string };
 }
 
 interface Msg {
   role: "user" | "assistant";
+  /** OpenCode の回答: 同じ会話を OpenCode 画面（TUI）で続けるための ID とプロジェクト */
+  opencode?: { session: string; project: string };
   content: string;
   /** 送った画像（表示用の URL） */
   images?: string[];
@@ -253,6 +256,7 @@ export default function AssistantChat() {
           plan: m.meta?.plan,
           progress: m.meta?.progress,
           research: m.meta?.research,
+          opencode: m.meta?.opencode_session && m.meta?.project_path ? { session: m.meta.opencode_session, project: m.meta.project_path } : undefined,
           compaction: m.meta?.compaction,
         }));
         if (restored.length > 0) setMessages(restored);
@@ -466,6 +470,7 @@ export default function AssistantChat() {
       plan: message.meta?.plan,
       progress: message.meta?.progress,
       research: message.meta?.research,
+      opencode: message.meta?.opencode_session && message.meta?.project_path ? { session: message.meta.opencode_session, project: message.meta.project_path } : undefined,
     }));
     localStorage.setItem(LS_CONV, id);
     setAttachments([]); // 別の会話の添付を持ち越さない
@@ -627,6 +632,18 @@ export default function AssistantChat() {
       show("削除しました");
     } catch (e) {
       show(e instanceof Error ? e.message : "削除できませんでした", "error");
+    }
+  };
+
+  // ---- OpenCode の会話を OpenCode 画面（TUI）で続ける ----
+  const openInOpenCode = async (target: { session: string; project: string }) => {
+    try {
+      const started = await api<{ id: string }>("/opencode/sessions", {
+        method: "POST", json: { project_path: target.project, resume: target.session, runtime: "v2" },
+      });
+      navigate(`/opencode-v2?session=${encodeURIComponent(started.id)}`);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "OpenCode 画面で開けませんでした", "error");
     }
   };
 
@@ -1110,6 +1127,7 @@ export default function AssistantChat() {
                 onRegister={registerOnly}
                 onAutoBuild={autoBuild}
                 onOpen={(id) => navigate(`/workflows/${id}`)}
+                onOpenInOpenCode={m.opencode && !busy ? () => void openInOpenCode(m.opencode!) : undefined}
                 onReference={(referenceId) => {
                   setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
                 }}
@@ -1388,6 +1406,7 @@ function MessageBubble({
   onOpen,
   onReference,
   onAnswerPermission,
+  onOpenInOpenCode,
   editing = false,
   actionsDisabled = false,
   onAction,
@@ -1395,6 +1414,7 @@ function MessageBubble({
   onCancelEdit,
   resendDisabled = false,
 }: {
+  onOpenInOpenCode?: () => void;
   resendDisabled?: boolean;
   editing?: boolean;
   actionsDisabled?: boolean;
@@ -1612,7 +1632,17 @@ function MessageBubble({
         )}
       </div>
     </div>
-    {!msg.streaming && msg.content && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
+    {!msg.streaming && (msg.content || onOpenInOpenCode) && (
+      <div className="flex items-center gap-1">
+        {msg.content && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
+        {onOpenInOpenCode && (
+          <button type="button" onClick={onOpenInOpenCode} title="同じ会話を OpenCode 画面（TUI）で続ける"
+            className="min-h-8 rounded-lg px-2.5 text-xs font-medium text-accent-700 hover:bg-accent-50 dark:text-accent-400 dark:hover:bg-accent-600/15 [@media(pointer:coarse)]:min-h-11">
+            ⌨️ OpenCode 画面で続ける
+          </button>
+        )}
+      </div>
+    )}
     </div>
   );
 }
