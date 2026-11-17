@@ -333,8 +333,8 @@ export default function AppLayout() {
 
         {/* overflow-x-hidden: リロード直後等に幅超過要素があってもページ全体を横に広げない */}
         {/* 下端の Safe Area（ホームバー）に中身が潜らないよう余白を取る。AI アシスタントは
-            入力欄を下端へぴったり置く作りなので除く。 */}
-        <main className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain ${location.pathname === "/assistant" ? "" : "pb-[env(safe-area-inset-bottom)]"}`}>
+            入力欄の側で自分の余白を取る（assistant-composer-safe）ので除く。 */}
+        <main className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain ${location.pathname === "/assistant" ? "" : "safe-bottom"}`}>
           {/* 1 画面の例外で全体を白くしない。path が変われば境界も解除する。 */}
           <ErrorBoundary resetKey={location.pathname}>
             <Outlet />
