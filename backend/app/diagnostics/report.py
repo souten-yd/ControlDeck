@@ -92,6 +92,30 @@ def _failed_jobs(limit: int = 20) -> list[dict]:
                  "title": row.title, "error": (row.error or "")[:400]} for row in rows]
 
 
+def _pct(values: list[float], q: float) -> float:
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(len(ordered) * q))], 1) if ordered else 0.0
+
+
+def _client_timing(events: list[dict]) -> list[dict]:
+    """画面ごと・計測点ごとの p50 / p95、遅かった API（画面側から見た時間）。"""
+    pages: dict[str, dict] = {}
+    for event in events:
+        page = pages.setdefault(event.get("page", "?"), {"count": 0, "marks": defaultdict(list), "api": defaultdict(list)})
+        page["count"] += 1
+        for key, value in (event.get("marks") or {}).items():
+            page["marks"][key].append(float(value))
+        for row in event.get("api") or []:
+            page["api"][row.get("path", "")].append(float(row.get("ms", 0)))
+    out = []
+    for name, page in pages.items():
+        out.append({"page": name, "count": page["count"],
+                    "marks": {k: {"p50": _pct(v, 0.5), "p95": _pct(v, 0.95)} for k, v in page["marks"].items()},
+                    "slow_api": sorted(({"path": k, "p50": _pct(v, 0.5), "p95": _pct(v, 0.95), "count": len(v)}
+                                        for k, v in page["api"].items()), key=lambda r: r["p95"], reverse=True)[:8]})
+    return out
+
+
 def build(hours: float = 24.0, include_tests: bool = False) -> dict:
     since = time.time() - hours * 3600
     events = store.read(since=since, limit=None)
@@ -130,6 +154,7 @@ def build(hours: float = 24.0, include_tests: bool = False) -> dict:
         "memory_now": recorder.memory_sample(top=10),
         "memory_low": [e for e in events if e.get("kind") == "memory_low"][-10:],
         "failed_jobs": _failed_jobs(),
+        "client_timing": _client_timing([e for e in events if e.get("kind") == "client_timing"]),
         "tests": next((e for e in events if e.get("kind") == "tests"), None),
     }
     if include_tests:
@@ -181,6 +206,13 @@ def to_markdown(data: dict) -> str:
         for low in data["memory_low"]:
             top = "、".join(f"{p['name']} {p['rss_gb']}GiB" for p in low.get("top", [])[:4])
             out.append(f"- {_fmt(low['ts'])} 空き {low['available_gb']} GiB: {top}")
+    out += ["", "## 画面側の時間（携帯などで測ったもの、ms）", ""]
+    for page in data.get("client_timing") or []:
+        marks = "、".join(f"{k} p50 {v['p50']} / p95 {v['p95']}" for k, v in page["marks"].items())
+        out.append(f"- {page['page']}（{page['count']} 回）: {marks}")
+        out += [f"  - {a['path']}: p50 {a['p50']} / p95 {a['p95']}（{a['count']} 回）" for a in page["slow_api"][:5]]
+    if not data.get("client_timing"):
+        out.append("- 記録なし")
     out += ["", "## 失敗したジョブ（新しい順）", ""]
     out += [f"- {_fmt(jb['ts'])} {jb['kind']} {jb['title']}: {jb['error'][:200]}" for jb in data["failed_jobs"]] or ["- なし"]
     if data.get("tests"):

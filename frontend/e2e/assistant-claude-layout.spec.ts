@@ -23,6 +23,7 @@ const msg = (id: string, role: "user" | "assistant", content: string, extra: Rec
 async function mockChat(page: Page) {
   const calls: string[] = [];
   const now = Date.now();
+  let archived: { id: string; title: string; updated_at: string }[] = [];
   let conversations = [
     { id: "today1", title: "今日の献立の相談", updated_at: new Date(now).toISOString().replace("Z", "") },
     { id: "failed", title: "グランフロントの店", updated_at: new Date(now - 60_000).toISOString().replace("Z", "") },
@@ -39,9 +40,9 @@ async function mockChat(page: Page) {
       msg("a2", "assistant", "", { status: "canceled", error: "キャンセルされました", meta: { plan } }),
     ],
   };
-  await page.route(/\/api\/v1\/chat\/conversations$/, (route) => {
+  await page.route(/\/api\/v1\/chat\/conversations(\?archived=true)?$/, (route) => {
     if (route.request().method() === "POST") return route.fulfill({ status: 201, json: { id: "new1", title: "新しい会話", updated_at: new Date().toISOString() } });
-    return route.fulfill({ json: conversations });
+    return route.fulfill({ json: route.request().url().endsWith("archived=true") ? archived : conversations });
   });
   await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/messages$/, (route) => {
     const id = route.request().url().split("/").slice(-2)[0];
@@ -52,7 +53,15 @@ async function mockChat(page: Page) {
   await page.route(/\/api\/v1\/chat\/conversations\/[^/]+$/, (route) => {
     const id = route.request().url().split("/").pop()!;
     if (route.request().method() === "PATCH") {
-      const title = (route.request().postDataJSON() as { title: string }).title;
+      const body = route.request().postDataJSON() as { title?: string; archived?: boolean };
+      if (body.archived !== undefined) {
+        calls.push(`${body.archived ? "archive" : "unarchive"}:${id}`);
+        const row = [...conversations, ...archived].find((item) => item.id === id)!;
+        conversations = body.archived ? conversations.filter((item) => item.id !== id) : [row, ...conversations];
+        archived = body.archived ? [row, ...archived] : archived.filter((item) => item.id !== id);
+        return route.fulfill({ json: { ...row, archived: body.archived } });
+      }
+      const title = body.title!;
       calls.push(`rename:${id}:${title}`);
       conversations = conversations.map((item) => (item.id === id ? { ...item, title } : item));
       return route.fulfill({ json: conversations.find((item) => item.id === id) });
@@ -465,4 +474,47 @@ test("standalone iPhone: shell uses the real screen height when the viewport is 
   // キーボードほどの差（> 100px）は実寸で上書きしない
   await page.setViewportSize({ width: 440, height: 600 });
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById("root")!).height)).not.toBe("956px");
+});
+
+// 根拠: 2026-11-17 の依頼「会話履歴は左右のスワイプでアーカイブか削除。離すと適用し、連続的に操作できる」。
+test("history rows swipe right to archive and left to delete, with undo", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await login(page);
+  const calls = await mockChat(page);
+  await page.goto("/assistant");
+  const history = page.locator("[data-assistant-history]").first();
+  await expect(history.getByText("週の振り返り")).toBeVisible();
+  const swipe = async (title: string, dx: number) => {
+    const box = (await history.locator(`[data-swipe-row="${title}"]`).boundingBox())!;
+    const y = box.y + box.height / 2;
+    const x = box.x + box.width / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i += 1) await page.mouse.move(x + (dx * i) / 8, y);
+    await page.mouse.up();
+  };
+  // 右へ: アーカイブ（確認なし）→ 続けて左へ: 削除
+  await swipe("週の振り返り", 160);
+  await expect.poll(() => calls).toContain("archive:week1");
+  await expect(history.locator('[data-swipe-row="週の振り返り"]')).toHaveCount(0);
+  await swipe("先月の旅行計画", -160);
+  await expect(history.locator('[data-swipe-row="先月の旅行計画"]')).toHaveCount(0);
+  expect(calls).not.toContain("delete:old1");                 // 「元に戻す」の間は消さない
+  await page.getByRole("button", { name: "元に戻す" }).last().click();
+  await expect(history.getByText("先月の旅行計画")).toBeVisible();
+  await page.waitForTimeout(6500);
+  expect(calls).not.toContain("delete:old1");                 // 取り消したので消えない
+  // 少しだけ引いたときは何もしない（戻る）
+  await swipe("昨日の買い物メモ", 40);
+  await expect(history.getByText("昨日の買い物メモ")).toBeVisible();
+  expect(calls.filter((c) => c.includes("yest1"))).toEqual([]);
+  // アーカイブした会話は下に出て、右へスワイプで戻せる
+  await history.getByRole("button", { name: "アーカイブした会話" }).click();
+  await expect(history.getByRole("list", { name: "アーカイブした会話" }).getByText("週の振り返り")).toBeVisible();
+  await swipe("週の振り返り", 160);
+  await expect.poll(() => calls).toContain("unarchive:week1");
+  // 左へで消したものは時間が経つと本当に消える
+  await swipe("先月の旅行計画", -160);
+  await expect.poll(() => calls, { timeout: 9000 }).toContain("delete:old1");
 });

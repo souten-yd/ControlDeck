@@ -416,7 +416,16 @@ export function Toasts() {
   };
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-20 z-[60] flex flex-col items-center gap-2 px-4 sm:bottom-6">
-      {toasts.map((t) => (
+      {toasts.map((t) => t.action ? (
+        <div key={t.id} role="status"
+          className={`pointer-events-auto flex max-w-full items-center gap-1 rounded-xl border bg-white py-1 pl-4 pr-1 text-sm shadow-lg dark:bg-zinc-800 ${colors[t.kind]}`}>
+          <span className="min-w-0 flex-1">{t.message}</span>
+          <button type="button" onClick={() => { t.action!.onClick(); dismiss(t.id); }}
+            className="min-h-10 shrink-0 rounded-lg px-3 font-semibold text-accent-700 hover:bg-accent-50 dark:text-accent-400 dark:hover:bg-accent-600/15">
+            {t.action.label}
+          </button>
+        </div>
+      ) : (
         <button
           key={t.id}
           onClick={() => dismiss(t.id)}
