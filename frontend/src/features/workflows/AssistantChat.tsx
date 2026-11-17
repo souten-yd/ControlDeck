@@ -21,6 +21,7 @@ import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoi
 import { useAssistantAsr } from "./useAssistantAsr";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { ConfirmDialog } from "../../components/ui";
+import { writeClipboard } from "../../lib/clipboard";
 
 /** 進み具合の取れるアップロード（fetch では送信の進捗が取れない）。 */
 function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: number) => void): Promise<{ ok: boolean; status: number; body: unknown }> {
@@ -42,7 +43,10 @@ function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: num
       }
       resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, body });
     };
+    xhr.timeout = 10 * 60_000;
     xhr.onerror = () => reject(new Error("アップロードに失敗しました（接続が切れました）"));
+    xhr.onabort = () => reject(new Error("アップロードを中断しました"));
+    xhr.ontimeout = () => reject(new Error("アップロードが時間切れになりました"));
     xhr.send(form);
   });
 }
@@ -442,8 +446,8 @@ export default function AssistantChat() {
       connect();
     });
 
-  const openConversation = async (id: string) => {
-    if (!id || id === convId || busy) return;
+  const openConversation = async (id: string): Promise<boolean> => {
+    if (!id || id === convId || busy) return false;
     wsRef.current?.close();
     const data = await api<{ conversation: ConversationSummary; messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
     const restored: Msg[] = data.messages.map((message) => ({
@@ -473,6 +477,7 @@ export default function AssistantChat() {
       setBusy(true);
       streamMessage(generating.id).finally(() => setBusy(false));
     }
+    return true;
   };
 
   const newConversation = async () => {
@@ -554,16 +559,20 @@ export default function AssistantChat() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Msg | null>(null);
   const pendingResend = useRef<string | null>(null);
-  const forkAt = async (messageId: string, include: boolean): Promise<string | null> => {
-    if (!convIdRef.current) return null;
+  type ForkResult = { id: string; title: string; attachments: string[]; documents_copied: boolean; opencode_context_reset: boolean };
+  const forkAt = async (messageId: string, include: boolean): Promise<ForkResult | null> => {
+    if (!convIdRef.current || busy) return null;
     try {
-      const fork = await api<{ id: string; title: string }>(`/chat/conversations/${convIdRef.current}/fork`, {
+      const fork = await api<ForkResult>(`/chat/conversations/${convIdRef.current}/fork`, {
         method: "POST", json: { message_id: messageId, include },
       });
       qc.invalidateQueries({ queryKey: ["chat-conversations"] });
-      await openConversation(fork.id);
-      convIdRef.current = fork.id;
-      return fork.id;
+      if (!(await openConversation(fork.id))) {
+        show("分岐した会話を開けませんでした。履歴から開いてください", "error");
+        return null;
+      }
+      if (fork.opencode_context_reset) show("分岐しました。OpenCode は新しいセッションで始まります（前のやり取りは引き継がれません）");
+      return fork;
     } catch (e) {
       show(e instanceof Error ? e.message : "分岐できませんでした", "error");
       return null;
@@ -571,17 +580,14 @@ export default function AssistantChat() {
   };
   const onMessageAction = async (msg: Msg, action: MessageAction) => {
     if (action === "copy") {
-      try {
-        await navigator.clipboard.writeText(msg.content);
-        show("コピーしました");
-      } catch {
-        show("コピーできませんでした", "error");
-      }
+      const ok = await writeClipboard(msg.content);
+      show(ok ? "コピーしました" : "コピーできませんでした", ok ? undefined : "error");
       return;
     }
     if (!msg.messageId) return;
     if (action === "fork") {
-      if (await forkAt(msg.messageId, true)) show("ここから分岐しました（元の会話は履歴に残っています）");
+      const fork = await forkAt(msg.messageId, true);
+      if (fork && !fork.opencode_context_reset) show("ここから分岐しました（元の会話は履歴に残っています）");
     } else if (action === "edit") {
       setEditingId(msg.messageId);
     } else if (action === "delete") {
@@ -589,9 +595,14 @@ export default function AssistantChat() {
     }
   };
   const resendEdited = async (messageId: string, text: string) => {
+    const fork = await forkAt(messageId, false);
+    if (!fork) return;
     setEditingId(null);
-    if (!(await forkAt(messageId, false))) return;
-    // 分岐した会話の表示が整ってから送る（会話 ID は ref で新しい方を指している）
+    // 書き直した発言に付いていた画像は、分岐先に写してあるので送り直しに載せる
+    if (fork.attachments.length) {
+      setAttachments(fork.attachments.map((id) => ({ id, name: id, kind: "image" as const, status: "ready" as const, preview: attachmentUrl(fork.id, id) })));
+    }
+    // 分岐した会話の表示が整ってから送る（次の描画で会話 ID が新しい方になる）
     pendingResend.current = text;
   };
   useEffect(() => {
@@ -1107,6 +1118,7 @@ export default function AssistantChat() {
                 actionsDisabled={busy}
                 onAction={(action) => void onMessageAction(m, action)}
                 onResend={(text) => m.messageId && void resendEdited(m.messageId, text)}
+                resendDisabled={busy}
                 onCancelEdit={() => setEditingId(null)}
               />
             ))}
@@ -1381,7 +1393,9 @@ function MessageBubble({
   onAction,
   onResend,
   onCancelEdit,
+  resendDisabled = false,
 }: {
+  resendDisabled?: boolean;
   editing?: boolean;
   actionsDisabled?: boolean;
   onAction: (action: MessageAction) => void;
@@ -1409,7 +1423,7 @@ function MessageBubble({
             </div>
           )}
           {editing ? (
-            <MessageEditor initial={msg.content} onSubmit={onResend} onCancel={onCancelEdit} />
+            <MessageEditor initial={msg.content} disabled={resendDisabled} onSubmit={onResend} onCancel={onCancelEdit} />
           ) : (
             <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-accent-600 px-3.5 py-2.5 text-sm text-white [overflow-wrap:anywhere]">
               {msg.content}

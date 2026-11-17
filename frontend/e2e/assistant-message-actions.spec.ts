@@ -24,7 +24,7 @@ async function mockConversation(page: Page) {
     const all = conversations.orig;
     const index = all.findIndex((m) => m.id === body.message_id);
     conversations.fork1 = all.slice(0, body.include ? index + 1 : index);
-    return route.fulfill({ status: 201, json: { id: "fork1", title: "分岐: 元の会話" } });
+    return route.fulfill({ status: 201, json: { id: "fork1", title: "分岐: 元の会話", attachments: [], documents_copied: false, opencode_context_reset: false } });
   });
   await page.route(/\/api\/v1\/chat\/conversations\/orig\/messages\/[^/]+$/, (route) => {
     calls.push(`delete:${route.request().url().split("/").pop()}`);

@@ -31,11 +31,18 @@ export function MessageActions({ actions, align, disabled, onSelect }: {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
+    // 画面に固定したメニューなので、スクロールや回転でボタンから離れたら閉じる
+    const dismiss = () => setOpen(false);
     window.addEventListener("pointerdown", close);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
     return () => {
       window.removeEventListener("pointerdown", close);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
     };
   }, [open]);
   const toggle = () => {
@@ -76,8 +83,8 @@ export function MessageActions({ actions, align, disabled, onSelect }: {
 }
 
 /** 自分の発言をその場で書き直す欄。 */
-export function MessageEditor({ initial, onSubmit, onCancel }: {
-  initial: string; onSubmit: (text: string) => void; onCancel: () => void;
+export function MessageEditor({ initial, disabled = false, onSubmit, onCancel }: {
+  initial: string; disabled?: boolean; onSubmit: (text: string) => void; onCancel: () => void;
 }) {
   const [text, setText] = useState(initial);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -93,14 +100,14 @@ export function MessageEditor({ initial, onSubmit, onCancel }: {
         aria-label="発言を書き直す"
         onKeyDown={(event) => {
           if (event.key === "Escape") onCancel();
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) onSubmit(text.trim());
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim() && !disabled) onSubmit(text.trim());
         }}
         className="w-full resize-none bg-transparent px-1.5 py-1 text-base outline-none sm:text-sm" />
-      <p className="px-1.5 text-[11px] text-zinc-500">送り直すと、ここから別の会話になります（元の会話は残ります）。</p>
+      <p className="px-1.5 text-[11px] text-zinc-500">{disabled ? "回答の生成が終わってから送り直せます。" : "送り直すと、ここから別の会話になります（元の会話は残ります）。"}</p>
       <div className="mt-1.5 flex justify-end gap-2">
         <button type="button" onClick={onCancel}
           className="min-h-11 rounded-xl px-4 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">取消</button>
-        <button type="button" onClick={() => text.trim() && onSubmit(text.trim())} disabled={!text.trim()}
+        <button type="button" onClick={() => text.trim() && onSubmit(text.trim())} disabled={!text.trim() || disabled}
           className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white hover:bg-accent-700 disabled:opacity-50">送り直す</button>
       </div>
     </div>

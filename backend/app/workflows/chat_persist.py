@@ -164,17 +164,19 @@ class ForkBody(BaseModel):
     include: bool = True
 
 
-def _owned_conversation(db: Session, conv_id: str, user: User) -> Conversation:
-    conv = db.get(Conversation, conv_id)
-    if conv is None or conv.owner_user_id != user.id:
-        raise HTTPException(status_code=404, detail="会話が見つかりません")
-    return conv
-
-
 def _ordered_messages(db: Session, conv_id: str) -> list[ChatMessage]:
     return list(db.execute(
         select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
     ).scalars().all())
+
+
+def _still_generating(m: ChatMessage) -> bool:
+    """本当に生成中か。再起動などでジョブが消えた「generating」は生成中とみなさない
+    （止める相手がいないのに消せない・分岐できない、を防ぐ）。"""
+    if m.status != "generating":
+        return False
+    job = jobs.get(m.job_id) if m.job_id else None
+    return job is not None and job.status in ("queued", "running")
 
 
 def _copy_attachments(source_conv: str, target_conv: str, ids: list[str]) -> list[str]:
@@ -210,12 +212,13 @@ def fork_conversation(
     if index is None:
         raise HTTPException(status_code=404, detail="メッセージが見つかりません")
     picked = messages[: index + 1 if body.include else index]
-    if any(m.status == "generating" for m in picked):
+    if any(_still_generating(m) for m in picked):
         raise HTTPException(status_code=409, detail="生成中のメッセージは分岐できません")
     target = Conversation(id=_new_id(), owner_user_id=user.id,
                           title=f"分岐: {source.title}"[:200] if source.title else "分岐した会話")
     db.add(target)
     db.flush()
+    new_ids = {m.id: _new_id() for m in picked}
     for m in picked:
         try:
             meta = json.loads(m.meta_json or "{}")
@@ -226,11 +229,29 @@ def fork_conversation(
                 meta.pop(key, None)
             if meta.get("attachments"):
                 meta["attachments"] = _copy_attachments(conv_id, target.id, list(meta["attachments"]))
+            # 分岐先では許可に答えられない（OpenCode のセッションが別になる）
+            for item in meta.get("permissions") or []:
+                if isinstance(item, dict) and item.get("status") == "pending":
+                    item["status"] = "expired"
+            # 圧縮の要約は「どこまでを畳んだか」をメッセージ ID で持つ。分岐先の ID に付け替える
+            state = meta.get("compaction")
+            if isinstance(state, dict) and state.get("covers_until") in new_ids:
+                state["covers_until"] = new_ids[state["covers_until"]]
+        status = "interrupted" if m.status == "generating" else m.status
         db.add(ChatMessage(
-            id=_new_id(), conversation_id=target.id, role=m.role, content=m.content, thinking=m.thinking,
-            status=m.status, model=m.model, error=m.error, created_at=m.created_at,
+            id=new_ids[m.id], conversation_id=target.id, role=m.role, content=m.content, thinking=m.thinking,
+            status=status, model=m.model, error=m.error, created_at=m.created_at,
             meta_json=json.dumps(meta, ensure_ascii=False),
         ))
+    # 編集して送り直すときは、書き直す発言の添付画像も分岐先へ写して、送り直しに載せる
+    carry: list[str] = []
+    if not body.include:
+        try:
+            edited_meta = json.loads(messages[index].meta_json or "{}")
+        except json.JSONDecodeError:
+            edited_meta = {}
+        if isinstance(edited_meta, dict) and edited_meta.get("attachments"):
+            carry = _copy_attachments(conv_id, target.id, list(edited_meta["attachments"]))
     for ref in db.execute(select(ChatReference).where(ChatReference.conversation_id == conv_id)).scalars().all():
         db.add(ChatReference(
             conversation_id=target.id, sequence=ref.sequence, short_id=ref.short_id,
@@ -238,9 +259,20 @@ def fork_conversation(
             provider=ref.provider, excerpt=ref.excerpt, metadata_json=ref.metadata_json,
         ))
     db.commit()
+    # 会話の資料（📎 文書・検索資料）も写す。失敗しても分岐は成り立つので、記録だけ残す
+    from app.workflows import rag
+
+    documents = False
+    try:
+        documents = rag.copy_collection(conversation_collection(conv_id), conversation_collection(target.id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会話 %s の資料を分岐先へ写せませんでした: %s", conv_id, exc)
     audit.record(db, "chat.conversation.fork", user=user, resource_type="conversation", resource_id=target.id,
                  request=request, metadata={"source": conv_id, "messages": len(picked), "include": body.include})
-    return _conv_out(target)
+    return {**_conv_out(target), "attachments": carry, "documents_copied": documents,
+            "opencode_context_reset": any(
+                (json.loads(m.meta_json or "{}") or {}).get("opencode_session") for m in picked if m.meta_json
+            )}
 
 
 @router.delete("/conversations/{conv_id}/messages/{message_id}", status_code=204)
@@ -249,7 +281,7 @@ def delete_message(
     user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
 ):
     """メッセージを消す。自分の発言を消したら、その回答（次の自分の発言までの assistant）も消す。"""
-    _owned_conversation(db, conv_id, user)
+    conv = _owned_conversation(db, conv_id, user)
     messages = _ordered_messages(db, conv_id)
     index = next((i for i, m in enumerate(messages) if m.id == message_id), None)
     if index is None:
@@ -260,11 +292,22 @@ def delete_message(
             if m.role == "user":
                 break
             doomed.append(m)
-    if any(m.status == "generating" for m in doomed):
+    if any(_still_generating(m) for m in doomed):
         raise HTTPException(status_code=409, detail="生成中です。止めてから消してください")
+    images: list[str] = []
     for m in doomed:
+        try:
+            images += list((json.loads(m.meta_json or "{}") or {}).get("attachments") or [])
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
         db.delete(m)
+    conv.updated_at = utcnow()
     db.commit()
+    # 消した発言の添付画像も消す
+    root = _attachment_root(conv_id)
+    for attachment_id in images:
+        if isinstance(attachment_id, str) and _ATTACHMENT_ID_RE.fullmatch(attachment_id):
+            (root / attachment_id).unlink(missing_ok=True)
     audit.record(db, "chat.message.delete", user=user, resource_type="conversation", resource_id=conv_id,
                  request=request, metadata={"messages": len(doomed)})
 

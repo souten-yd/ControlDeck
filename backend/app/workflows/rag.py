@@ -149,6 +149,23 @@ def create_collection(collection: str, config: dict | None = None) -> dict:
     return {"collection": collection, "config": get_config(collection)}
 
 
+def copy_collection(source: str, target: str) -> bool:
+    """コレクションを丸ごと写す（会話の分岐で資料を引き継ぐ）。sqlite の backup で整合した複写を作る。"""
+    if not COLLECTION_RE.match(source) or not COLLECTION_RE.match(target):
+        raise RagError("不正なコレクション名")
+    src_path, dst_path = _rag_dir() / f"{source}.db", _rag_dir() / f"{target}.db"
+    if not src_path.exists() or dst_path.exists():
+        return False
+    src = sqlite3.connect(src_path)
+    dst = sqlite3.connect(dst_path)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    return True
+
+
 def delete_collection(collection: str) -> None:
     if not COLLECTION_RE.match(collection):
         raise RagError("不正なコレクション名")

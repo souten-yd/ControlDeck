@@ -378,9 +378,14 @@ def test_fork_copies_up_to_the_message_and_keeps_the_original(admin_client):
                              headers=CSRF_HEADERS).status_code == 404
 
 
-def test_delete_message_removes_its_reply_and_refuses_while_generating(admin_client):
+def test_delete_message_removes_its_reply_and_refuses_while_generating(admin_client, monkeypatch):
+    from types import SimpleNamespace
+
+    import app.workflows.chat_persist as cp
     from app.database import SessionLocal
     from app.models import ChatMessage
+
+    monkeypatch.setattr(cp.jobs, "get", lambda job_id: SimpleNamespace(status="running") if job_id == "live" else None)
 
     conv_id, ids, _ = _seed_conversation(admin_client)
     r = admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u1']}", headers=CSRF_HEADERS)
@@ -389,7 +394,8 @@ def test_delete_message_removes_its_reply_and_refuses_while_generating(admin_cli
     assert [m["content"] for m in left] == ["次の質問", "次の回答"]                               # 回答も消える
 
     with SessionLocal() as db:
-        db.get(ChatMessage, ids["a2"]).status = "generating"
+        m = db.get(ChatMessage, ids["a2"])
+        m.status, m.job_id = "generating", "live"
         db.commit()
     assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u2']}",
                                headers=CSRF_HEADERS).status_code == 409
@@ -403,3 +409,53 @@ def test_delete_message_removes_its_reply_and_refuses_while_generating(admin_cli
                                headers=CSRF_HEADERS).status_code == 204
     left = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
     assert [m["content"] for m in left] == ["次の質問"]
+
+
+def test_fork_remaps_compaction_carries_edit_images_and_copies_documents(admin_client):
+    import json as _json
+
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+    from app.workflows import rag
+
+    conv_id, ids, image_id = _seed_conversation(admin_client)
+    with SessionLocal() as db:
+        a2 = db.get(ChatMessage, ids["a2"])
+        a2.meta_json = _json.dumps({"compaction": {"summary": "要約", "covers_until": ids["a1"]},
+                                    "permissions": [{"id": "p1", "status": "pending"}]})
+        db.commit()
+    rag.set_config(cp.conversation_collection(conv_id), {})
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": ids["a2"]}, headers=CSRF_HEADERS)
+    body = r.json()
+    assert body["documents_copied"] is True and rag.collection_exists(cp.conversation_collection(body["id"]))
+    assert body["opencode_context_reset"] is True
+    msgs = admin_client.get(f"/api/v1/chat/conversations/{body['id']}/messages").json()["messages"]
+    assert msgs[3]["meta"]["compaction"]["covers_until"] == msgs[1]["id"]          # 分岐先の ID に付け替え
+    assert msgs[3]["meta"]["permissions"][0]["status"] == "expired"
+
+    # 編集して送り直す: 書き直す発言の画像を分岐先へ写して返す
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork",
+                          json={"message_id": ids["u1"], "include": False}, headers=CSRF_HEADERS)
+    assert r.json()["attachments"] == [image_id]
+    assert (cp._attachment_root(r.json()["id"]) / image_id).is_file()
+
+
+def test_stale_generating_message_can_be_deleted(admin_client):
+    """再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。"""
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    conv_id, ids, image_id = _seed_conversation(admin_client)
+    with SessionLocal() as db:
+        m = db.get(ChatMessage, ids["a1"])
+        m.status, m.job_id = "generating", "gone-job"
+        db.commit()
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": ids["a1"]}, headers=CSRF_HEADERS)
+    assert r.status_code == 201
+    forked = admin_client.get(f"/api/v1/chat/conversations/{r.json()['id']}/messages").json()["messages"]
+    assert forked[1]["status"] == "interrupted"
+    assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u1']}",
+                               headers=CSRF_HEADERS).status_code == 204
+    assert not (cp._attachment_root(conv_id) / image_id).exists()                     # 画像も消える
