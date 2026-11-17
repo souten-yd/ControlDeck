@@ -344,6 +344,34 @@ async def _synthesize(
         except Exception:
             pass
     metrics.setdefault("revised", False)
+    # 中身の検証: 引用先の本文が文を支えているか。弱い文だけを一度直させ、残ったものは末尾に並べる
+    from app.workflows.claim_check import check_claims, weak_claims_note
+
+    claims = check_claims(report, sources)
+    if claims["weak"]:
+        try:
+            listing = "\n".join(f"- {item['sentence']}（引用 {item['cited']}）" for item in claims["weak"][:20])
+            fix = (
+                "次のレポートで、引用先の本文に支えられていない文があります。下の文だけを、引用先の内容に合わせて"
+                "書き直すか、支えられない部分を削ってください。他の文・章立て・引用番号の体系は変えず、"
+                "レポート全体を返してください。\n\n支えが弱い文:\n" + listing +
+                f"\n\nレポート:\n{report}\n\n根拠:\n{corpus}"
+            )
+            revised = await complete([{"role": "system", "content": system}, {"role": "user", "content": fix}],
+                                     max_tokens=max(8192, min(max_report_tokens, 16384)))
+            revised_claims = check_claims(revised, sources)
+            revised_metrics = citation_metrics(revised, len(sources))
+            if (len(revised) >= int(len(report) * 0.8) and not revised_metrics["invalid_citations"]
+                    and revised_claims["weak_claims"] < claims["weak_claims"]):
+                report, claims = revised, revised_claims
+                metrics.update({k: v for k, v in revised_metrics.items()})
+                metrics["claims_revised"] = True
+        except Exception:
+            pass
+    metrics.setdefault("claims_revised", False)
+    metrics.update({"claims_checked": claims["claims_checked"], "weak_claims": claims["weak_claims"],
+                    "supported_ratio": claims["supported_ratio"]})
+    report += weak_claims_note(claims)
     return report, metrics
 
 
@@ -508,7 +536,8 @@ async def run_deep_research(
         query, plan, selected, assessment, coverage_limits, complete,
         max_context_chars=max_evidence_chars, max_report_tokens=max_report_tokens,
     )
-    emit("verify", f"引用coverage {metrics['citation_coverage'] * 100:.0f}%", rounds, metrics=metrics)
+    emit("verify", f"引用coverage {metrics['citation_coverage'] * 100:.0f}% · 出典の支え "
+         f"{metrics.get('supported_ratio', 1.0) * 100:.0f}%（弱い主張 {metrics.get('weak_claims', 0)}件）", rounds, metrics=metrics)
     return {
         "mode": "deep", "report": report, "sources": selected,
         "sub_questions": plan.sub_questions,

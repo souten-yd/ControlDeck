@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 166 ファイル、1485 テスト（目的の未記入 93 ファイル）
+- backend: 166 ファイル、1488 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、136 テスト
 
 ## backend（backend/tests）
@@ -513,6 +513,7 @@
 - `test_fork_remaps_compaction_carries_edit_images_and_copies_documents`
 - `test_stale_generating_message_can_be_deleted` — 再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。
 - `test_archive_hides_from_list_and_restores` — 会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。
+- `test_japanese_questions_get_a_final_language_instruction` — 日本語の質問には、生成の直前に「日本語で」を足す（2026-11-17: DS-XS が検索資料に引かれて中国語で答えた）。
 
 ### backend/tests/test_chat_references.py
 
@@ -642,6 +643,8 @@
 - `test_sources_without_urls_deduplicate_by_title_not_root_path`
 - `test_local_project_adapter_excludes_secrets_dependencies_and_symlinks`
 - `test_workflow_deep_node_uses_shared_assistant_engine`
+- `test_claim_check_flags_sentences_their_sources_do_not_support` — 引用先の本文に支えられていない文・出典に無い数値を見つける（2026-11-17: 引用は番号の形式しか見ていなかった）。
+- `test_synthesize_rewrites_weak_claims_once_and_keeps_the_better_report` — 弱い文があれば一度だけ直させ、弱い文が減ったときだけ採る。残りは末尾に並べる。
 
 ### backend/tests/test_dev_sandbox.py
 

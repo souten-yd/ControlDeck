@@ -338,3 +338,54 @@ def test_workflow_deep_node_uses_shared_assistant_engine(monkeypatch):
     assert body.source_types == ["web", "github", "local_code"]
     assert body.max_search_calls == 30 and body.model == "model-x"
     assert result["report"] == "shared report" and result["count"] == 1
+
+
+def test_claim_check_flags_sentences_their_sources_do_not_support():
+    """引用先の本文に支えられていない文・出典に無い数値を見つける（2026-11-17: 引用は番号の形式しか見ていなかった）。"""
+    from app.workflows.claim_check import check_claims, weak_claims_note
+
+    sources = [
+        {"title": "R9700 の仕様", "snippet": "Radeon AI PRO R9700 は 32GB の GDDR6 メモリを搭載し、消費電力は 300W である。"},
+        {"title": "別の話題", "snippet": "東京の天気は晴れ。気温は 20 度。"},
+    ]
+    report = (
+        "R9700 は 32GB の GDDR6 メモリを搭載している[1]。\n"
+        "R9700 の消費電力は 450W に達する[1]。\n"            # 数値が出典に無い
+        "量子コンピューターで暗号が破られた[2]。\n"            # 出典と無関係
+        "引用の無い文はここでは数えない。"
+    )
+    result = check_claims(report, sources)
+    assert result["claims_checked"] == 3 and result["weak_claims"] == 2
+    reasons = {item["sentence"][:12]: item for item in result["weak"]}
+    assert any(item["missing_numbers"] == ["450"] for item in result["weak"])
+    assert any(item["support"] < 0.15 and item["cited"] == [2] for item in result["weak"])
+    note = weak_claims_note(result)
+    assert "根拠の確認が弱い主張" in note and "450" in note
+    assert check_claims("", sources)["supported_ratio"] == 1.0
+    assert reasons
+
+
+def test_synthesize_rewrites_weak_claims_once_and_keeps_the_better_report():
+    """弱い文があれば一度だけ直させ、弱い文が減ったときだけ採る。残りは末尾に並べる。"""
+    from app.workflows.deep_research import DeepAssessment, DeepPlan, _synthesize
+
+    prompts = []
+
+    async def complete(messages, *, max_tokens, response_format=None):
+        prompt = messages[-1]["content"]
+        prompts.append(prompt)
+        if "支えられていない文" in prompt:
+            draft = prompt.split("レポート:\n", 1)[1].split("\n\n根拠:", 1)[0]
+            return draft.replace("999W", "300W")
+        return "R9700 は 32GB の GDDR6 メモリを搭載し、消費電力は 999W である[1]。\n<!-- CONTROLDECK_SECTION_COMPLETE -->"
+
+    report, metrics = run(_synthesize(
+        "R9700", DeepPlan(objective="仕様", sub_questions=["メモリ", "電力"], search_queries=["r9700 spec", "r9700 memory"],
+                          evaluation_criteria=["正確"], source_types=["web"]),
+        [{"title": "R9700 の仕様", "url": "https://example.test", "source": "web",
+          "snippet": "Radeon AI PRO R9700 は 32GB の GDDR6 メモリを搭載し、消費電力は 300W である。"}],
+        DeepAssessment(sufficient=True, coverage_score=100), [], complete,
+        max_context_chars=12000, max_report_tokens=32768,
+    ))
+    assert sum("支えられていない文" in p for p in prompts) == 1
+    assert "999W" not in report and metrics["claims_revised"] is True and metrics["weak_claims"] == 0
