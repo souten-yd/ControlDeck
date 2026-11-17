@@ -1368,6 +1368,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
         saved_content = msg.content if msg else ""
         saved_thinking = msg.thinking if msg else ""
         saved_status = msg.status if msg else "failed"
+        saved_error = (msg.error or "") if msg else ""
     finally:
         db.close()
     await websocket.accept()
@@ -1384,7 +1385,8 @@ async def stream_message(websocket: WebSocket, message_id: str):
     job = jobs.get(job_id) if job_id else None
     if job is None:
         # ジョブがメモリに無い = 完了済み or 再起動で消失。DB の最終状態を返す
-        await websocket.send_text(json.dumps({"type": "done", "status": saved_status}))
+        await websocket.send_text(json.dumps({"type": "done", "status": saved_status, "error": saved_error},
+                                             ensure_ascii=False))
         await websocket.close()
         return
 
@@ -1441,14 +1443,18 @@ async def stream_message(websocket: WebSocket, message_id: str):
                 break
         # checkpointはジョブ完了より先にcommitされる。最後に全文を再送し、再接続や
         # journal切詰めがあっても表示をDBの正本へ収束させる。
+        # 画面へ出す理由は発言に記録したもの（利用者向けの文）を優先する。
+        final_error = ""
         with SessionLocal() as final_db:
             final = final_db.get(ChatMessage, message_id)
             if final is not None:
+                final_error = final.error or ""
                 await websocket.send_text(json.dumps({
                     "type": "snapshot", "content": final.content,
                     "thinking": final.thinking or "",
                 }, ensure_ascii=False))
-        await websocket.send_text(json.dumps({"type": "done", "status": job.status, "error": job.error}))
+        await websocket.send_text(json.dumps(
+            {"type": "done", "status": job.status, "error": final_error or job.error}, ensure_ascii=False))
     except WebSocketDisconnect:
         return  # 切断してもジョブは継続（DB に保存され続ける）
     except Exception:
