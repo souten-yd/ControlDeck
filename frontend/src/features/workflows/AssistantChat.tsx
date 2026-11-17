@@ -799,7 +799,7 @@ export default function AssistantChat() {
         <div data-assistant-topbar className={SHELL_TOPBAR_CLASS}>
         <div className="flex min-w-0 flex-wrap items-center gap-x-1 px-3 sm:flex-nowrap sm:gap-x-2 md:px-5">
           <div className="flex h-14 min-w-0 flex-1 items-center gap-1 sm:flex-none">
-            <ShellMenuButton />
+            <ShellMenuButton className="-ml-1.5" />
             <div className="min-w-0 md:max-w-[12rem]">
               <h1 className="truncate text-[15px] font-semibold leading-5 tracking-tight">{assistantName}</h1>
               <p className="truncate text-[11px] leading-4 text-zinc-500 dark:text-zinc-400" aria-label="現在の機能" aria-live="polite">

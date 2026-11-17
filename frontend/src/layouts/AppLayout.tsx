@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
@@ -78,6 +78,12 @@ export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  /* 題名を自分で出す画面（PageHeader）の数。0 の間だけ殻が予備の題名を出す。 */
+  const [headerCount, setHeaderCount] = useState(0);
+  const registerHeader = useCallback(() => {
+    setHeaderCount((count) => count + 1);
+    return () => setHeaderCount((count) => count - 1);
+  }, []);
   const [actionOpen, setActionOpen] = useState(false);
   const [powerAction, setPowerAction] = useState<"reboot" | "shutdown" | null>(null);
   const [platformReloading, setPlatformReloading] = useState(false);
@@ -151,7 +157,8 @@ export default function AppLayout() {
     }
   };
   /* 自前の上の行を持つ画面。殻の上の行は出さず、その画面が同じ ☰ を置く。 */
-  const ownsTopBar = location.pathname === "/assistant";
+  /* ワークフローのエディタは自分の道具の行だけにする（キャンバスを広く使う）。 */
+  const ownsTopBar = location.pathname === "/assistant" || /^\/workflows\/[^/]+$/.test(location.pathname);
 
   useMetricsStream(can("system.view") && !enrollmentPending);
 
@@ -159,6 +166,7 @@ export default function AppLayout() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
+        setDrawerOpen(false);
         setPaletteOpen((v) => !v);
       }
     };
@@ -274,7 +282,7 @@ export default function AppLayout() {
   const extras = <ApprovalsCenter />;
 
   return (
-    <ShellContext.Provider value={{ openNav: () => setDrawerOpen(true), navOpen: drawerOpen, extras, headerSlot: ownsTopBar ? null : headerSlot }}>
+    <ShellContext.Provider value={{ openNav: () => setDrawerOpen(true), navOpen: drawerOpen, extras, headerSlot: ownsTopBar ? null : headerSlot, registerHeader }}>
     <div className="flex h-full overflow-hidden">
       {/* PC: 折りたためるサイドバー（☰ で開閉。状態は端末に覚える） */}
       <aside
@@ -293,11 +301,13 @@ export default function AppLayout() {
           <header data-shell-topbar className={SHELL_TOPBAR_CLASS}>
             <div className="flex h-14 items-center gap-1 px-3 md:px-5">
               {/* 携帯は左上の ☰ からすべての機能へ行く。題名は「いまどこか」。 */}
-              <ShellMenuButton />
+              <ShellMenuButton className="-ml-1.5" />
               {/* PageHeader を使う画面は、題名（h1）と主操作をここへ描く。使わない画面
                   （エディタ・拡張機能など）は、殻が「いまどこか」だけを出す。 */}
-              <div ref={setHeaderSlot} data-shell-header-slot className="peer flex min-w-0 flex-1 items-center gap-2 pl-1 empty:hidden" />
-              <h1 data-shell-title className="hidden min-w-0 flex-1 truncate pl-1 text-lg font-semibold leading-7 tracking-tight peer-empty:block">{currentTitle}</h1>
+              <div ref={setHeaderSlot} data-shell-header-slot className="flex min-w-0 flex-1 items-center gap-2 pl-1 empty:hidden" />
+              {headerCount === 0 && (
+                <h1 data-shell-title className="min-w-0 flex-1 truncate pl-1 text-lg font-semibold leading-7 tracking-tight">{currentTitle}</h1>
+              )}
               <div className="flex shrink-0 items-center gap-2">
                 {/* L2 の承認待ち。どの画面でも見え、新しい依頼はポップアップで開く。 */}
                 {extras}
@@ -322,7 +332,9 @@ export default function AppLayout() {
         )}
 
         {/* overflow-x-hidden: リロード直後等に幅超過要素があってもページ全体を横に広げない */}
-        <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
+        {/* 下端の Safe Area（ホームバー）に中身が潜らないよう余白を取る。AI アシスタントは
+            入力欄を下端へぴったり置く作りなので除く。 */}
+        <main className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain ${location.pathname === "/assistant" ? "" : "pb-[env(safe-area-inset-bottom)]"}`}>
           {/* 1 画面の例外で全体を白くしない。path が変われば境界も解除する。 */}
           <ErrorBoundary resetKey={location.pathname}>
             <Outlet />
@@ -487,7 +499,7 @@ function NavPanel({ compact, appName, sections, userName, toggleLabel, toggleExp
           <div key={section.id} role="group" aria-label={section.label} data-nav-section={section.id}>
             {compact
               ? index > 0 && <div aria-hidden className="mx-2 my-2 border-t border-zinc-200 dark:border-zinc-800" />
-              : <p className="px-3 pb-1 pt-4 text-[11px] font-medium tracking-wide text-zinc-500 dark:text-zinc-500">{section.label}</p>}
+              : <p className="px-3 pb-1 pt-4 text-[11px] font-medium tracking-wide text-zinc-600 dark:text-zinc-400">{section.label}</p>}
             {compact && index === 0 && <div className="h-1" />}
             <ul className="space-y-0.5">
               {section.entries.map((entry) => {

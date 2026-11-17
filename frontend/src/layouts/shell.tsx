@@ -10,6 +10,9 @@ export interface ShellContextValue {
   extras: ReactNode;
   /** 殻の上の行にある、題名と主操作の置き場。PageHeader がここへ描く。 */
   headerSlot: HTMLElement | null;
+  /** PageHeader が「題名は自分が出す」と届け出る。届け出がある間、殻は予備の題名を
+   *  出さない（h1 は画面に 1 つだけ）。戻り値で取り消す。 */
+  registerHeader: () => () => void;
 }
 
 export const ShellContext = createContext<ShellContextValue | null>(null);
@@ -18,9 +21,11 @@ export function useShell(): ShellContextValue | null {
   return useContext(ShellContext);
 }
 
-/** 上の行の高さと面。殻の上の行と、自前の上の行を持つ画面とで揃える。 */
+/** 上の行の高さと面。殻の上の行と、自前の上の行を持つ画面とで揃える。
+ *  backdrop-blur は重なりの文脈を作るので、上の行から開くメニューがページの中身の
+ *  下に潜らないよう z-30 で前に出す（シート・ドロワーの z-50 よりは下）。 */
 export const SHELL_TOPBAR_CLASS =
-  "safe-top shrink-0 border-b border-zinc-200/80 bg-white/80 backdrop-blur dark:border-zinc-800/80 dark:bg-zinc-950/80";
+  "safe-top relative z-30 shrink-0 border-b border-zinc-200/80 bg-white/80 backdrop-blur dark:border-zinc-800/80 dark:bg-zinc-950/80";
 
 export const shellIconButtonClass =
   "grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl text-zinc-600 transition-colors hover:bg-zinc-200/60 active:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:active:bg-zinc-700";
@@ -37,7 +42,7 @@ export function ShellMenuButton({ className = "" }: { className?: string }) {
       aria-label="メニューを開く"
       aria-haspopup="dialog"
       aria-expanded={shell.navOpen}
-      className={`${shellIconButtonClass} -ml-1.5 md:hidden ${className}`}
+      className={`${shellIconButtonClass} md:hidden ${className}`}
     >
       <IconMenu />
     </button>

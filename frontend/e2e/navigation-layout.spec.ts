@@ -62,24 +62,18 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
       await page.goto(path);
       const heading = page.getByRole("heading", { level: 1, name: title, exact: true });
       await expect(heading).toBeVisible();
-      const layout = await heading.evaluate((element) => {
-        const style = getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return {
-          fontSize: style.fontSize,
-          lineHeight: style.lineHeight,
-          top: rect.top,
-          viewport: window.innerWidth,
-          document: document.documentElement.scrollWidth,
-          body: document.body.scrollWidth,
-        };
-      });
-      // 題名は殻の上の行（☰ の右）に 1 つだけ出る。
+      // 題名は殻の上の行（☰ の右）に 1 つだけ出る。画面の読み込み中は殻の予備の題名が
+      // 出て、PageHeader の h1 に入れ替わる。要素を掴んだまま測らず、待てる照合で確かめる。
       await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
-      expect(await heading.evaluate((element) => !!element.closest("[data-shell-topbar]"))).toBe(true);
-      expect(layout.fontSize).toBe("18px");
-      expect(layout.lineHeight).toBe("28px");
-      expect(layout.top).toBeGreaterThanOrEqual(0);
+      await expect(page.locator("[data-shell-topbar] h1")).toHaveCount(1);
+      await expect(heading).toHaveCSS("font-size", "18px");
+      await expect(heading).toHaveCSS("line-height", "28px");
+      expect((await heading.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+      const layout = await page.evaluate(() => ({
+        viewport: window.innerWidth,
+        document: document.documentElement.scrollWidth,
+        body: document.body.scrollWidth,
+      }));
       expect(layout.document, `${path} document overflow`).toBeLessThanOrEqual(layout.viewport);
       expect(layout.body, `${path} body overflow`).toBeLessThanOrEqual(layout.viewport);
     }

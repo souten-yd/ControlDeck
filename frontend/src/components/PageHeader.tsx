@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useShell } from "../layouts/shell";
 
@@ -20,6 +20,9 @@ interface PageHeaderProps {
  *  説明は操作と幅を取り合わないよう、行の下に全幅で置く。 */
 export function PageHeader({ title, description, actions, leading, className = "" }: PageHeaderProps) {
   const shell = useShell();
+  const registerHeader = shell?.registerHeader;
+  /* 描く前に届け出る。殻の予備の題名と自分の h1 が同時に出る瞬間を作らない。 */
+  useLayoutEffect(() => registerHeader?.(), [registerHeader]);
   if (shell) {
     const slot = shell.headerSlot;
     return (
@@ -32,7 +35,10 @@ export function PageHeader({ title, description, actions, leading, className = "
           </>,
           slot,
         )}
-        {description && <p className="mb-4 max-w-3xl text-xs leading-relaxed text-zinc-500">{description}</p>}
+        {/* ページ側に残るのは説明だけ。余白や帯の指定（className）は説明の行に効かせる。 */}
+        {description && (
+          <p className={`max-w-3xl text-xs leading-relaxed text-zinc-500 ${/(^|\s)mb-/.test(className) ? "" : "mb-4"} ${className}`}>{description}</p>
+        )}
       </>
     );
   }

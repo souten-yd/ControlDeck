@@ -8,6 +8,7 @@
 - コマンドパレット（Ctrl/⌘K）の行き先を `NAVIGATION` から作るようにした（手で並べた 8 件だけだった。Files・Terminal・Models などが無かった）。
 - AI アシスタントは全画面のポータルをやめ、殻の中の 1 画面にした。上の行は殻と同じ形で、同じ ☰ が同じドロワーを開く（PC はサイドバーが出たまま）。専用の「閉じる」は撤去。
 - iPhone で会話を指で動かすと入力欄ごと画面が動く不具合: 殻の中では文書をスクロールさせない（`html.cd-app-shell` に `overflow: hidden` と `overscroll-behavior: none`）、動くのは会話の一覧だけ（`overscroll-contain`）。キーボードが出ている間は殻を visual viewport に合わせ、上の行が画面の外へ出ないようにする（`hooks/useKeyboardViewportFit.ts`）。
+- レビュー後の修正: h1 は画面に 1 つ（`PageHeader` が届け出ている間、殻は予備の題名を描かない。Add-on の案内・エラー表示の見出しは h2）。`NAVIGATION` に権限を付け、権限の無い利用者のドロワーとコマンドパレットに出さない（Terminal・Files・Remote・Apps・GitHub・Knowledge・Models）。上の行を `z-30` にしてメニューが中身の下に潜らないようにした。公開ランナー（`/runner`）の題名・戻る・停止は上の行へ。ワークフローのエディタは殻の上の行を出さず自分の道具の行だけ。320px の Workflows はサンプルブックをメニューへ、GitHub のログインは短い表記。`main` に下端の Safe Area の余白。
 - 検証（sandbox `ui-shell`）: `npm run build`、`tests/test_opencode_chat_server.py`。ミラーで 320px（ダーク）・390px（タッチ）・PC 幅（ライト/ダーク）を撮影。横あふれ 0、画面のエラー 0、h1 は各画面 1 つ。ドロワーの開閉（Escape・外側・左へ払う）と焦点の閉じ込め、サイドバーの折りたたみの保存、会話の一覧を指で動かしても上の行と入力欄の位置が変わらないことを確認。E2E（`navigation-layout`・`assistant-mobile`・`addon-v2-ui`・`workflow-runner`）は新しいナビに合わせて書き換えたが未実行。iOS Safari の実機（ゴム引き・キーボード）は未確認。
 
 ## 2026-11-17 AI アシスタントで OpenCode をフル機能で（段階 1）

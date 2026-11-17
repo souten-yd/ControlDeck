@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { IconChevronLeft, IconPlay, IconStop } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 import { initialRuntimeValues, RuntimeField, RuntimeOutputView, type RuntimeOutput } from "../features/workflows/RuntimeComponents";
 import { ApprovalResponseFields, missingRequiredFormFields, type ApprovalFormSchema } from "../features/workflows/ApprovalResponseFields";
 import type { TriggerInputDef } from "../features/workflows/nodeTypes";
@@ -92,15 +93,18 @@ function RunnerWorkspace({ workflowId, onBack }: { workflowId: number; onBack: (
   };
   const missing = fields.filter((field) => field.required && (values[field.key] === "" || values[field.key] == null || (Array.isArray(values[field.key]) && (values[field.key] as unknown[]).length === 0)));
 
-  if (isLoading) return <div className="grid h-full place-items-center text-sm text-zinc-400">読み込み中…</div>;
-  if (detailError || !detail) return <div className="grid h-full place-items-center p-6"><div className="max-w-sm text-center"><p className="text-sm font-semibold">公開アプリを開けません</p><p className="mt-2 text-xs leading-relaxed text-zinc-500">削除または非公開になった可能性があります。ワークフローの公開状態を確認してください。</p><button onClick={onBack} className="mt-4 min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white">Back to Workflows</button></div></div>;
+  /* 題名・戻る・停止は殻の上の行へ出す（アプリ名と画面の見出しが二重にならない）。 */
+  const back = <button onClick={onBack} aria-label="Back to Workflows" className="-ml-1 grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800"><IconChevronLeft /></button>;
+  if (isLoading) return <><PageHeader title="Workflows" leading={back} /><div className="grid h-full place-items-center text-sm text-zinc-400">読み込み中…</div></>;
+  if (detailError || !detail) return <><PageHeader title="Workflows" leading={back} /><div className="grid h-full place-items-center p-6"><div className="max-w-sm text-center"><p className="text-sm font-semibold">公開アプリを開けません</p><p className="mt-2 text-xs leading-relaxed text-zinc-500">削除または非公開になった可能性があります。ワークフローの公開状態を確認してください。</p><button onClick={onBack} className="mt-4 min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white">Back to Workflows</button></div></div></>;
   return <>
-    <header className="flex min-h-16 shrink-0 items-center gap-2 border-b border-zinc-200 bg-white px-3 dark:border-zinc-800 dark:bg-zinc-950 md:px-5">
-      <button onClick={onBack} aria-label="Back to Workflows" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-900"><IconChevronLeft /></button>
-      <div className="min-w-0 flex-1"><h2 className="truncate text-base font-semibold">{detail.name}</h2><p className="truncate text-[10px] text-zinc-400">公開版 v{detail.version} · {new Date(detail.published_at).toLocaleString("ja-JP")}</p></div>
-      {execution && ACTIVE.has(execution.status) && <button onClick={() => void action("cancel")} aria-label="実行を停止" className="flex min-h-11 items-center gap-2 rounded-xl border border-zinc-300 px-3 text-xs dark:border-zinc-700"><IconStop className="h-4 w-4" />停止</button>}
-    </header>
+    <PageHeader
+      title={detail.name}
+      leading={back}
+      actions={execution && ACTIVE.has(execution.status) && <button onClick={() => void action("cancel")} aria-label="実行を停止" className="flex min-h-10 items-center gap-2 rounded-full border border-zinc-300 px-3 text-xs dark:border-zinc-700"><IconStop className="h-4 w-4" />停止</button>}
+    />
     <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:p-5">
+      <p className="mx-auto mb-3 max-w-5xl px-1 text-[11px] text-zinc-500">公開版 v{detail.version} · {new Date(detail.published_at).toLocaleString("ja-JP")}</p>
       <div className="mx-auto grid max-w-5xl gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,.8fr)]">
         <div className="space-y-4">
           {detail.description && <p className="rounded-2xl bg-white p-4 text-sm leading-relaxed text-zinc-600 shadow-sm dark:bg-zinc-950 dark:text-zinc-300">{detail.description}</p>}
