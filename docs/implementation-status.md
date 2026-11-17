@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-17 Maya: 登録したモデル（DS-XS など）の個別設定
+
+- これまで設定画面は最初のモデル（GLM-5.3-Flash · Maya-S）だけで、後から登録した DS-XS などは何も変えられなかった。個別設定のシートに設定欄を足した（`maya_s.instance_settings` / `save_instance_settings`、`GET/PUT /api/v1/features/maya-s/models/{alias}/settings`、監査）。
+- 共通: コンテキスト長（--max-context）、思考の深さ・思考の上限・temperature・top_p（エンジンの config）、GPU 番号、起動と停止（Maya 全体で共通の設定）。
+- DeepSeek（maya-ds4）: 下書き（--dspark）、エキスパートを VRAM に置く割合（--vram-experts）、mmap（--mmap-experts）、SSD キャッシュ（--ssd-cache）、CPU スレッド数、先読みの単位（--prefill-chunk）。既定（自動）に戻すとオプションごと外す。
+- 起動中は起動と停止の設定だけ変えられる。エンジンの設定は次の起動から効く。
+- 検証（sandbox `maya-set`）: `tests/test_maya_register.py`（既存のファイルに観点を足した）、本番の設定ファイルを読み取りで確認、`npm run build`。画面の操作は未確認。
+
 ## 2026-11-17 RAM を正味の利用量で出す
 
 - Home・履歴・RAM の警告の割合を、プログラムが確保した分に「プログラムが映して使っているファイル」（モデルなど）を足した正味の量にした（`collector.net_memory`、/proc/meminfo の Mapped）。誰も使っていないキャッシュだけ除く。DS-XS（Maya）でモデル約 75GiB を映して RAM をほぼ使い切っていたのに、15% と出ていた。

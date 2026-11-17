@@ -292,6 +292,50 @@ def maya_settings(request: Request, body: MayaSettingsBody,
     return state
 
 
+class MayaInstanceSettingsBody(BaseModel):
+    """登録したモデル（DS-XS など）の調整値。DeepSeek の欄は DeepSeek のモデルだけで効く。"""
+    model_config = ConfigDict(extra="forbid")
+    context: int | None = Field(default=None, ge=8192, le=1048576)
+    parallel: int | None = Field(default=None, ge=1, le=4)
+    gpu_index: int | None = Field(default=None, ge=0, le=15)
+    reasoning_effort: Literal["low", "medium", "high", "max"] | None = None
+    thinking_budget: int | None = Field(default=None, ge=0, le=131072)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    on_demand_start: bool | None = None
+    idle_exclude: bool | None = None
+    auto_start: bool | None = None
+    dspark: Literal["on", "off"] | None = None
+    cpu_threads: int | None = Field(default=None, ge=0, le=256)
+    vram_experts: float | None = Field(default=None, ge=0.0, le=1.0)
+    mmap_experts: Literal["auto", "on", "off"] | None = None
+    ssd_cache: str | None = Field(default=None, pattern=r"^(off|auto|[1-9][0-9]{0,3})$")
+    prefill_chunk: int | None = Field(default=None, ge=0, le=65536)
+
+
+@router.get("/maya-s/models/{alias}/settings")
+def maya_instance_settings(alias: str, user: User = Depends(require_permission("settings.manage"))):
+    from app.models_mgmt import maya_s
+    try:
+        return maya_s.instance_settings(alias)
+    except maya_s.MayaError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.put("/maya-s/models/{alias}/settings")
+def maya_instance_settings_save(alias: str, body: MayaInstanceSettingsBody, request: Request,
+                                user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    from app.models_mgmt import maya_s
+    values = body.model_dump(exclude_none=True)
+    try:
+        result = maya_s.save_instance_settings(alias, values)
+    except maya_s.MayaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "maya-s.instance_settings", user=user, resource_type="model", resource_id=alias,
+                 request=request, metadata={"changed": sorted(values)})
+    return result
+
+
 @router.post("/maya-s/model/build-jobs", status_code=201)
 async def maya_build(request: Request,
                user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
