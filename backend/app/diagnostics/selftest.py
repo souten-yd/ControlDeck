@@ -36,7 +36,7 @@ def _database():
 def _disk():
     usage = shutil.disk_usage(data_dir())
     free = usage.free / usage.total
-    detail = f"空き {usage.free / 2**30:.0f} GB（{free:.0%}）"
+    detail = f"空き {usage.free / 2**30:.0f} GiB（{free:.0%}）"
     return (True if free >= 0.10 else "warn" if free >= 0.05 else False), detail
 
 
@@ -44,7 +44,7 @@ def _memory():
     import psutil
 
     vm = psutil.virtual_memory()
-    detail = f"空き {vm.available / 2**30:.1f} GB / {vm.total / 2**30:.0f} GB、swap {psutil.swap_memory().used / 2**30:.1f} GB"
+    detail = f"空き {vm.available / 2**30:.1f} GiB / {vm.total / 2**30:.1f} GiB、swap {psutil.swap_memory().used / 2**30:.1f} GiB"
     return (True if vm.available > 8 * 2**30 else "warn" if vm.available > 3 * 2**30 else False), detail
 
 

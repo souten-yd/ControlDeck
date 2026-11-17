@@ -13,7 +13,8 @@ from pathlib import Path
 
 from app.diagnostics import journal, recorder, selftest, store
 
-_KEYWORD = r"[\w.-]*(?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|auth|cookie|session|credential|private[_-]?key|sig(?:nature)?|key)[\w.-]*"
+_KEYWORD = (r"(?:[\w.-]*(?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|auth|cookie|session|credential|"
+            r"private[_-]?key|signature|key)[\w.-]*|sig)")
 _SECRETS = [
     # Authorization: Bearer/Basic/Token <値>
     (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 ***"),
@@ -21,8 +22,11 @@ _SECRETS = [
     (re.compile(r"\b(?:cdk|sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abprs]|hf)[-_][A-Za-z0-9_-]{8,}"), "***"),
     # JWT
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"), "***"),
-    # 鍵らしい名前の後の値: key=v / key: v / "key": "v" / 'key': 'v' / --api-key v / ?sig=v
-    (re.compile(r"(?i)(" + _KEYWORD + r")([\"']?\s*(?:[:=]|\s)\s*[\"']?)(?!\*\*\*)[^\s\"',;&}]{4,}"), r"\1\2***"),
+    # 鍵らしい名前の後の値: key=v / key: v / "key": "v" / 'key': 'v' / ?sig=v
+    # （区切りは : か = だけ。空白区切りまで拾うと「SIGTERM received」のような文まで伏せてしまう）
+    (re.compile(r"(?i)(?<![A-Za-z])(" + _KEYWORD + r")([\"']?\s*[:=]\s*[\"']?)(?!\*\*\*)[^\s\"',;&}]{4,}"), r"\1\2***"),
+    # コマンドの引数: --api-key v / --token v / --password v
+    (re.compile(r"(?i)(--[\w-]*(?:token|secret|password|passwd|api-key|apikey|key)\b)(\s+)(?!\*\*\*)[^\s\"']{4,}"), r"\1\2***"),
     # メールアドレス
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
 ]
@@ -147,7 +151,7 @@ def to_markdown(data: dict) -> str:
     out += [f"- {_fmt(r['ts'])} {r['cause']}：{' / '.join(r.get('details', [])[-2:])}"
             for r in j["restarts"] if r["cause"] not in ("更新", "手動・通常の再起動")][-10:] + [""]
     out += ["## OOM で強制終了されたプロセス", ""]
-    out += [f"- {_fmt(o['ts'])} {o['process']}（{o['unit']}）anon {o['anon_rss_gb']} GB / shmem {o['shmem_rss_gb']} GB"
+    out += [f"- {_fmt(o['ts'])} {o['process']}（{o['unit']}）anon {o['anon_rss_gb']} GiB / shmem {o['shmem_rss_gb']} GiB"
             for o in j["oom_kills"]] or ["- なし"]
     out += ["", "## 管理下の常駐の異常終了", ""]
     fails = Counter((f["unit"], f["kind"]) for f in j["unit_failures"] if f["kind"] in ("failed", "oom", "watchdog"))
@@ -169,14 +173,14 @@ def to_markdown(data: dict) -> str:
     if not data["errors"]:
         out += ["- 記録なし"]
     m = data["memory_now"]
-    out += ["", f"## メモリ（いま）: 空き {m['available_gb']} GB / {m['total_gb']} GB、swap {m['swap_used_gb']} GB", ""]
-    out += [f"- VRAM {g['card']}: {g['used_gb']} / {g['total_gb']} GB" for g in m["vram"]]
-    out += [f"- {p['rss_gb']} GB {p['name']}（{p['unit'] or '-'}）" for p in m["top"]]
+    out += ["", f"## メモリ（いま）: 空き {m['available_gb']} GiB / {m['total_gb']} GiB、swap {m['swap_used_gb']} GiB", ""]
+    out += [f"- VRAM {g['card']}: {g['used_gb']} / {g['total_gb']} GiB" for g in m["vram"]]
+    out += [f"- {p['rss_gb']} GiB {p['name']}（{p['unit'] or '-'}）" for p in m["top"]]
     if data["memory_low"]:
         out += ["", "### 空きが少なかったとき", ""]
         for low in data["memory_low"]:
-            top = "、".join(f"{p['name']} {p['rss_gb']}GB" for p in low.get("top", [])[:4])
-            out.append(f"- {_fmt(low['ts'])} 空き {low['available_gb']} GB: {top}")
+            top = "、".join(f"{p['name']} {p['rss_gb']}GiB" for p in low.get("top", [])[:4])
+            out.append(f"- {_fmt(low['ts'])} 空き {low['available_gb']} GiB: {top}")
     out += ["", "## 失敗したジョブ（新しい順）", ""]
     out += [f"- {_fmt(jb['ts'])} {jb['kind']} {jb['title']}: {jb['error'][:200]}" for jb in data["failed_jobs"]] or ["- なし"]
     if data.get("tests"):

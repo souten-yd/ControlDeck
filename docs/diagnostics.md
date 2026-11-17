@@ -17,7 +17,7 @@ AI へは MCP の道具 `control_deck.diagnostics` と「AI 用レポートを�
 
 | 何を見つけるか | どう見るか | きっかけ |
 |---|---|---|
-| 本体の再起動と理由 | systemd の記録（watchdog / OOM / 異常終了 / 更新 / 手動） | watchdog に落とされた回数と理由が分からなかった |
+| 本体の再起動と理由 | systemd の記録（watchdog / 終了処理の詰まり / OOM / 異常終了 / 更新 / 手動）。止める指示の後の watchdog は「終了処理の詰まり」 | watchdog に落とされた回数と理由が分からなかった。2026-11-17 の 5 回はすべて終了処理の詰まりだった |
 | 常駐の異常終了 | control-deck-* / cdapp-* / cd-* の Failed / OOM / Watchdog | 並べ替えのモデルが 2 日で 51 回落ちていたのに誰も気づかなかった |
 | OOM で強制終了されたプロセス | カーネルの OOM killer の記録（プロセス・RSS・unit） | 2026-11-16 Strata の OOM |
 

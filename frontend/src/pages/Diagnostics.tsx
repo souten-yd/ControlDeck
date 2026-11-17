@@ -121,6 +121,7 @@ export default function DiagnosticsPage() {
 
   const restarts = data?.journal.restarts ?? [];
   const abnormal = restarts.filter((r) => r.cause !== "更新" && r.cause !== "手動・通常の再起動");
+  const stopHangs = abnormal.filter((r) => r.cause.startsWith("終了処理")).length;
   const failures = Object.entries((data?.journal.unit_failures ?? [])
     .filter((f) => f.kind !== "exited")
     .reduce<Record<string, { unit: string; kind: string; count: number; last: number }>>((acc, f) => {
@@ -182,7 +183,7 @@ export default function DiagnosticsPage() {
 
           <Section title="本体の再起動" count={restarts.length}>
             <p className="mb-1.5 text-xs text-zinc-500">
-              更新 {restarts.filter((r) => r.cause === "更新").length} 回 · 手動など {restarts.filter((r) => r.cause === "手動・通常の再起動").length} 回 · 異常 {abnormal.length} 回（直近 {Math.round(data.journal.hours)} 時間）
+              更新 {restarts.filter((r) => r.cause === "更新").length} 回 · 手動など {restarts.filter((r) => r.cause === "手動・通常の再起動").length} 回 · 異常 {abnormal.length} 回{stopHangs ? `（うち終了処理の詰まり ${stopHangs}）` : ""}（直近 {Math.round(data.journal.hours)} 時間）
             </p>
             {abnormal.length ? (
               <ul className="space-y-1 text-xs">
@@ -199,13 +200,13 @@ export default function DiagnosticsPage() {
                 {data.journal.oom_kills.slice().reverse().map((o) => (
                   <li key={`${o.ts}-${o.process}`} className="break-words">
                     <span className="tabular-nums text-zinc-500">{when(o.ts)}</span> <span className="font-medium">{o.process}</span>
-                    {" "}<span className="text-zinc-500">{o.anon_rss_gb + o.shmem_rss_gb > 0 ? `${(o.anon_rss_gb + o.shmem_rss_gb).toFixed(1)} GB` : ""} · {o.unit}</span>
+                    {" "}<span className="text-zinc-500">{o.anon_rss_gb + o.shmem_rss_gb > 0 ? `${(o.anon_rss_gb + o.shmem_rss_gb).toFixed(1)} GiB` : ""} · {o.unit}</span>
                   </li>
                 ))}
               </ul>
             ) : <Empty text="ありません" />}
             {data.memory_low.length > 0 && (
-              <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">空きメモリが少なかった時刻: {data.memory_low.slice(-3).map((m) => `${when(m.ts)}（${m.available_gb} GB）`).join("、")}</p>
+              <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">空きメモリが少なかった時刻: {data.memory_low.slice(-3).map((m) => `${when(m.ts)}（${m.available_gb} GiB）`).join("、")}</p>
             )}
           </Section>
 
@@ -262,12 +263,12 @@ export default function DiagnosticsPage() {
 
           <Section title="メモリ（いま）">
             <p className="mb-1.5 text-xs">
-              空き <span className="font-semibold">{data.memory_now.available_gb} GB</span> / {data.memory_now.total_gb} GB · swap {data.memory_now.swap_used_gb} GB
-              {data.memory_now.vram.map((g) => ` · VRAM ${g.used_gb}/${g.total_gb} GB`).join("")}
+              空き <span className="font-semibold">{data.memory_now.available_gb} GiB</span> / {data.memory_now.total_gb} GiB · swap {data.memory_now.swap_used_gb} GiB
+              {data.memory_now.vram.map((g) => ` · VRAM ${g.used_gb}/${g.total_gb} GiB`).join("")}
             </p>
             <ul className="space-y-0.5 text-xs">
               {data.memory_now.top.slice(0, 6).map((p, i) => (
-                <li key={i} className="flex gap-2"><span className="w-14 shrink-0 text-right tabular-nums">{p.rss_gb} GB</span><span className="min-w-0 truncate">{p.name} <span className="text-zinc-500">{p.unit}</span></span></li>
+                <li key={i} className="flex gap-2"><span className="w-14 shrink-0 text-right tabular-nums">{p.rss_gb} GiB</span><span className="min-w-0 truncate">{p.name} <span className="text-zinc-500">{p.unit}</span></span></li>
               ))}
             </ul>
           </Section>

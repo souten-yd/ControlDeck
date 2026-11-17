@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 165 ファイル、1479 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、132 テスト
+- E2E: 79 spec、133 テスト
 
 ## backend（backend/tests）
 
@@ -2426,6 +2426,7 @@
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone
+- standalone iPhone: shell uses the real screen height when the viewport is reported shrunk
 
 ### frontend/e2e/assistant-message-actions.spec.ts
 
@@ -2472,7 +2473,7 @@
 
 ### frontend/e2e/diagnostics.spec.ts
 
-目的: **未記入**
+目的: 目的: 診断の画面が実データで開き、要の欄が出て、レポートに秘密（メールアドレス）が出ないこと。 根拠: 2026-11-17 診断の追加。同日、携帯でカードが右へはみ出した（ページの横幅だけ見ていて見逃した）。
 
 - diagnostics page shows self-test, restarts and a redacted report (${width}px)
 
