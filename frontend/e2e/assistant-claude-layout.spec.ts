@@ -455,6 +455,7 @@ test("standalone iPhone: shell uses the real screen height when the viewport is 
   });
   await page.setViewportSize({ width: 440, height: 894 }); // 956 - 62（縮んだ報告）
   await login(page);
+  await page.goto("/assistant");
   await expect(page.locator("[data-assistant-shell]")).toBeVisible();
   const state = await page.evaluate(() => ({
     root: getComputedStyle(document.getElementById("root")!).height,
