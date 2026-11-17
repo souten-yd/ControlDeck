@@ -716,6 +716,27 @@ async def route_message(
     return (await decide(body.content, base_url, model)).model_dump()
 
 
+_KANA = re.compile(r"[\u3040-\u30ff]")
+
+
+def language_guard(history: list[dict], user_query: str) -> list[dict]:
+    """日本語の質問には日本語で答えさせる。
+
+    DeepSeek（DS-XS）は、検索資料や長い文脈に中国語・英語が混ざると、最初の system に「日本語で」とあっても
+    中国語で答えることがあった（2026-11-17、トランプ大統領の近況の調査）。指示は文脈の最後ほど効くので、
+    生成の直前（最後の発言の後ろ）に短い指示を足す。かなを含まない質問（英語など）には足さない。
+    """
+    if not _KANA.search(user_query or ""):
+        return history
+    # 途中の system を受け付けないチャットテンプレートがあるので、最後の利用者の発言へ書き添える（送る分だけ。保存はしない）
+    note = "\n\n（回答は必ず日本語で書いてください。資料が中国語や英語でも、本文は日本語にすること）"
+    for index in range(len(history) - 1, -1, -1):
+        message = history[index]
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            return [*history[:index], {**message, "content": message["content"] + note}, *history[index + 1:]]
+    return history
+
+
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         history: list[dict], params: dict) -> dict:
     """サーバー側で検索/生成し、assistant メッセージへ部分出力を保存する（全モード対応）。"""
@@ -968,6 +989,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                     folded_messages=compacted["folded_messages"])
             await asyncio.to_thread(checkpoint)
     history = chat_compaction.strip_private(history)
+    history = language_guard(history, user_query)
 
     try:
         runtime_request = RuntimeChatRequest(
