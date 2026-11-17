@@ -317,3 +317,145 @@ def test_document_upload_says_when_the_embedding_model_is_unreachable(admin_clie
     r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/attachments",
                           files={"file": ("note.md", ("本文" * 60).encode(), "text/markdown")}, headers=CSRF_HEADERS)
     assert r.status_code == 503 and "埋め込みモデル" in r.json()["detail"]
+
+
+def _seed_conversation(admin_client):
+    """user → assistant（OpenCode・画像つき）→ user → assistant の会話を DB に直接作る。"""
+    import json as _json
+    from datetime import timedelta
+
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.models import ChatMessage, utcnow
+
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    image_id = admin_client.post(
+        f"/api/v1/chat/conversations/{conv_id}/attachments",
+        files={"file": ("a.png", b"\x89PNG\r\n\x1a\nx", "image/png")}, headers=CSRF_HEADERS,
+    ).json()["id"]
+    base = utcnow()
+    rows = [
+        ("u1", "user", "最初の質問", {"attachments": [image_id]}),
+        ("a1", "assistant", "最初の回答", {"mode": "code", "opencode_session": "ses_x", "server_key": "abc"}),
+        ("u2", "user", "次の質問", {}),
+        ("a2", "assistant", "次の回答", {}),
+    ]
+    ids = {}
+    with SessionLocal() as db:
+        for i, (key, role, content, meta) in enumerate(rows):
+            mid = cp._new_id()
+            ids[key] = mid
+            db.add(ChatMessage(id=mid, conversation_id=conv_id, role=role, content=content, status="completed",
+                               meta_json=_json.dumps(meta), created_at=base + timedelta(seconds=i)))
+        db.commit()
+    return conv_id, ids, image_id
+
+
+def test_fork_copies_up_to_the_message_and_keeps_the_original(admin_client):
+    import app.workflows.chat_persist as cp
+
+    conv_id, ids, image_id = _seed_conversation(admin_client)
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": ids["a1"]}, headers=CSRF_HEADERS)
+    assert r.status_code == 201, r.text
+    fork_id = r.json()["id"]
+    msgs = admin_client.get(f"/api/v1/chat/conversations/{fork_id}/messages").json()["messages"]
+    assert [m["content"] for m in msgs] == ["最初の質問", "最初の回答"]
+    assert "opencode_session" not in msgs[1]["meta"] and msgs[1]["meta"]["mode"] == "code"   # 別のセッションにする
+    assert msgs[0]["meta"]["attachments"] == [image_id]
+    assert (cp._attachment_root(fork_id) / image_id).is_file()                                # 画像も写す
+    original = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+    assert len(original) == 4                                                                   # 元は残る
+
+    # 編集して送り直す: その発言の手前まで
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork",
+                          json={"message_id": ids["u2"], "include": False}, headers=CSRF_HEADERS)
+    edit_msgs = admin_client.get(f"/api/v1/chat/conversations/{r.json()['id']}/messages").json()["messages"]
+    assert [m["content"] for m in edit_msgs] == ["最初の質問", "最初の回答"]
+
+    assert admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": "nope"},
+                             headers=CSRF_HEADERS).status_code == 404
+    assert admin_client.post("/api/v1/chat/conversations/nope/fork", json={"message_id": ids["u1"]},
+                             headers=CSRF_HEADERS).status_code == 404
+
+
+def test_delete_message_removes_its_reply_and_refuses_while_generating(admin_client, monkeypatch):
+    from types import SimpleNamespace
+
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    monkeypatch.setattr(cp.jobs, "get", lambda job_id: SimpleNamespace(status="running") if job_id == "live" else None)
+
+    conv_id, ids, _ = _seed_conversation(admin_client)
+    r = admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u1']}", headers=CSRF_HEADERS)
+    assert r.status_code == 204
+    left = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+    assert [m["content"] for m in left] == ["次の質問", "次の回答"]                               # 回答も消える
+
+    with SessionLocal() as db:
+        m = db.get(ChatMessage, ids["a2"])
+        m.status, m.job_id = "generating", "live"
+        db.commit()
+    assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u2']}",
+                               headers=CSRF_HEADERS).status_code == 409
+    assert admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": ids["a2"]},
+                             headers=CSRF_HEADERS).status_code == 409
+    # 回答だけを消す
+    with SessionLocal() as db:
+        db.get(ChatMessage, ids["a2"]).status = "completed"
+        db.commit()
+    assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['a2']}",
+                               headers=CSRF_HEADERS).status_code == 204
+    left = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+    assert [m["content"] for m in left] == ["次の質問"]
+
+
+def test_fork_remaps_compaction_carries_edit_images_and_copies_documents(admin_client):
+    import json as _json
+
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+    from app.workflows import rag
+
+    conv_id, ids, image_id = _seed_conversation(admin_client)
+    with SessionLocal() as db:
+        a2 = db.get(ChatMessage, ids["a2"])
+        a2.meta_json = _json.dumps({"compaction": {"summary": "要約", "covers_until": ids["a1"]},
+                                    "permissions": [{"id": "p1", "status": "pending"}]})
+        db.commit()
+    rag.set_config(cp.conversation_collection(conv_id), {})
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": ids["a2"]}, headers=CSRF_HEADERS)
+    body = r.json()
+    assert body["documents_copied"] is True and rag.collection_exists(cp.conversation_collection(body["id"]))
+    assert body["opencode_context_reset"] is True
+    msgs = admin_client.get(f"/api/v1/chat/conversations/{body['id']}/messages").json()["messages"]
+    assert msgs[3]["meta"]["compaction"]["covers_until"] == msgs[1]["id"]          # 分岐先の ID に付け替え
+    assert msgs[3]["meta"]["permissions"][0]["status"] == "expired"
+
+    # 編集して送り直す: 書き直す発言の画像を分岐先へ写して返す
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork",
+                          json={"message_id": ids["u1"], "include": False}, headers=CSRF_HEADERS)
+    assert r.json()["attachments"] == [image_id]
+    assert (cp._attachment_root(r.json()["id"]) / image_id).is_file()
+
+
+def test_stale_generating_message_can_be_deleted(admin_client):
+    """再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。"""
+    import app.workflows.chat_persist as cp
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    conv_id, ids, image_id = _seed_conversation(admin_client)
+    with SessionLocal() as db:
+        m = db.get(ChatMessage, ids["a1"])
+        m.status, m.job_id = "generating", "gone-job"
+        db.commit()
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/fork", json={"message_id": ids["a1"]}, headers=CSRF_HEADERS)
+    assert r.status_code == 201
+    forked = admin_client.get(f"/api/v1/chat/conversations/{r.json()['id']}/messages").json()["messages"]
+    assert forked[1]["status"] == "interrupted"
+    assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u1']}",
+                               headers=CSRF_HEADERS).status_code == 204
+    assert not (cp._attachment_root(conv_id) / image_id).exists()                     # 画像も消える
