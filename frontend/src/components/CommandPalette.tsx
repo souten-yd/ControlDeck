@@ -7,6 +7,7 @@ import { IconSearch } from "./icons";
 import { addonLabel, invokeAddonCommand, type EffectiveAddons } from "../api/addons";
 import { addonStateMessage } from "../features/addons/AddonStatus";
 import { ApiError } from "../api/client";
+import { canAccessNavigationItem, NAVIGATION } from "../navigation";
 
 interface Command {
   id: string;
@@ -37,19 +38,12 @@ export function CommandPalette({
   useEffect(() => inputRef.current?.focus(), []);
 
   const commands = useMemo<Command[]>(() => {
-    const list: Command[] = [
-      { id: "nav-home", label: "Open Home", run: () => navigate("/") },
-      { id: "nav-apps", label: "Open Apps", run: () => navigate("/apps") },
-      { id: "nav-assistant", label: "Open AI Assistant", run: () => navigate("/assistant") },
-      ...(can("workflows.run") || can("workflows.edit")
-        ? [{ id: "nav-workflows", label: "Open Workflows", run: () => navigate("/workflows") }]
-        : []),
-      { id: "nav-logs", label: "Open Logs", run: () => navigate("/logs") },
-      { id: "nav-system", label: "Open System", run: () => navigate("/system") },
-      { id: "nav-settings", label: "Open Settings", run: () => navigate("/settings") },
-    ];
-    if (meta?.enabled_features.includes("opencode-v2"))
-      list.push({ id: "nav-opencode-v2", label: "Open OpenCode", run: () => navigate("/opencode-v2") });
+    /* 行き先はドロワーと同じ定義（NAVIGATION）から作る。別に手で並べると、
+       ここにだけ無い画面・ここにだけある画面ができる。 */
+    const enabledFeatures = new Set(meta?.enabled_features ?? []);
+    const list: Command[] = NAVIGATION
+      .filter((item) => (!item.feature || enabledFeatures.has(item.feature)) && canAccessNavigationItem(item, can))
+      .map((item) => ({ id: `nav-${item.to}`, label: `Open ${item.label}`, run: () => navigate(item.to) }));
     for (const plugin of meta?.plugin_navigation ?? []) {
       if (can(plugin.permission))
         list.push({ id: `plugin-${plugin.id}`, label: `Open ${plugin.label}`, run: () => window.open(plugin.url, "_blank", "noopener,noreferrer") });

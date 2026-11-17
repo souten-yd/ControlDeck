@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-17 画面の殻を刷新: 左上の ☰ で開くドロワー／折りたためるサイドバー
+
+- ナビゲーションを 1 つにした。携帯（〜767px）は左上の ☰ で左から出るドロワー、PC（768px〜）は ☰ で折りたためるサイドバー（状態は `cd-sidebar` に保存）。携帯の下部ナビと、同じ行き先を並べていた More / Quick Actions の一覧、PC の上の行の検索欄・電源ボタン・利用者名は撤去。`AGENTS.md` の「ボトムシート + 下部ナビ」の決まりも新しいナビの説明へ置き換えた。
+- ドロワーの中身は PC と携帯で同じ部品（`AppLayout.tsx` の `NavPanel`）。先頭に「よく使う」（以前の下部ナビの選択 `cd-mobile-navigation-v1` をそのまま引き継ぐ。設定 → 外観の「よく使う機能」で最大 6 件）、続けて メイン / 開発 / AI / 拡張機能 / システム。同じ行き先は 1 回だけ出す。行の高さは携帯 44px。背景を押す・左へ払う・Escape・☰ で閉じ、開いている間は Tab を中に留め、閉じると ☰ へ焦点を戻す（`role="dialog"` `aria-modal`）。最下段は利用者（サインアウト・拡張機能の quick action・電源）。
+- 上の行を全画面で統一: ☰・題名（h1）・主操作。`PageHeader` は殻の中では題名と操作を上の行へ描く（`layouts/shell.tsx` の `headerSlot`）。題名が上の行とページ先頭の 2 か所に出ていたのを 1 か所にした。`PageHeader` を使わない画面は殻が題名を出す。
+- コマンドパレット（Ctrl/⌘K）の行き先を `NAVIGATION` から作るようにした（手で並べた 8 件だけだった。Files・Terminal・Models などが無かった）。
+- AI アシスタントは全画面のポータルをやめ、殻の中の 1 画面にした。上の行は殻と同じ形で、同じ ☰ が同じドロワーを開く（PC はサイドバーが出たまま）。専用の「閉じる」は撤去。
+- iPhone で会話を指で動かすと入力欄ごと画面が動く不具合: 殻の中では文書をスクロールさせない（`html.cd-app-shell` に `overflow: hidden` と `overscroll-behavior: none`）、動くのは会話の一覧だけ（`overscroll-contain`）。キーボードが出ている間は殻を visual viewport に合わせ、上の行が画面の外へ出ないようにする（`hooks/useKeyboardViewportFit.ts`）。
+- 検証（sandbox `ui-shell`）: `npm run build`、`tests/test_opencode_chat_server.py`。ミラーで 320px（ダーク）・390px（タッチ）・PC 幅（ライト/ダーク）を撮影。横あふれ 0、画面のエラー 0、h1 は各画面 1 つ。ドロワーの開閉（Escape・外側・左へ払う）と焦点の閉じ込め、サイドバーの折りたたみの保存、会話の一覧を指で動かしても上の行と入力欄の位置が変わらないことを確認。E2E（`navigation-layout`・`assistant-mobile`・`addon-v2-ui`・`workflow-runner`）は新しいナビに合わせて書き換えたが未実行。iOS Safari の実機（ゴム引き・キーボード）は未確認。
+
 ## 2026-11-17 AI アシスタントで OpenCode をフル機能で（段階 1）
 
 - AI アシスタントの OpenCode モードを、発言ごとの `opencode run --auto --standalone`（本文の文字だけ受け取る）から、OpenCode v2 のサーバー（`opencode serve`）の API へ切り替えた。本文・思考・道具の実行（コマンド・編集・出力）・許可の問い合わせ・停止がチャットに出る。詳細と実測は `docs/PLAN-opencode-dev-environment.md` の「AI アシスタントの OpenCode」。

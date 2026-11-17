@@ -58,11 +58,16 @@ test("renders v2 contributions and state without a host reload", async ({ page, 
 
   await page.setViewportSize({ width: 320, height: 700 });
   await page.goto("/");
-  await page.getByRole("button", { name: "More" }).click();
-  const quickActions = page.getByRole("dialog", { name: "Quick Actions" });
-  await expect(quickActions.getByRole("button", { name: "テスト拡張" })).toBeVisible();
+  // 画面の移動はドロワー、実行する操作は「アカウントと操作」。
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  const drawer = page.getByRole("dialog", { name: "メニュー" });
+  await expect(drawer.getByRole("link", { name: /テスト拡張/ })).toBeVisible();
+  await drawer.getByRole("button", { name: "アカウントと操作" }).click();
+  const quickActions = page.getByRole("dialog", { name: "アカウントと操作" });
   await expect(quickActions.getByRole("button", { name: "Quick fake generate" })).toBeVisible();
-  await quickActions.getByRole("button", { name: "テスト拡張" }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  await drawer.getByRole("link", { name: /テスト拡張/ }).click();
   await expect(page).toHaveURL(/\/x\/fake-addon\/workspace$/);
   await expect(page.getByRole("heading", { level: 1, name: "Control Deck Fake Add-on" })).toBeVisible();
   const mobileLayout = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));

@@ -17,8 +17,10 @@ test("runs a published workflow without exposing its canvas at mobile and deskto
   runtimeErrors.length = 0;
 
   await page.goto("/");
-  await page.getByRole("button", { name: "More" }).click();
-  await page.getByRole("button", { name: "Workflows", exact: true }).click();
+  // PC 幅ではサイドバー、携帯幅では ☰ で開くドロワーの中にある。
+  const menuButton = page.getByRole("button", { name: "メニューを開く" });
+  if (await menuButton.isVisible()) await menuButton.click();
+  await page.getByRole("navigation", { name: "メインナビゲーション" }).getByRole("link", { name: "Workflows", exact: true }).click();
   await expect(page).toHaveURL(/\/workflows$/);
 
   const workflowId = await page.evaluate(async () => {

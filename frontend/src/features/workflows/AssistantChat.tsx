@@ -7,13 +7,14 @@
  * - フロー実行: 既存ワークフローをチャットから実行し signal.display を表示
  */
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
-import { IconMic, IconPaperclip, IconSend, IconStop, IconTrash, IconX } from "../../components/icons";
+import { IconChip, IconCompose, IconMic, IconPaperclip, IconSend, IconStop, IconTrash } from "../../components/icons";
+import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/shell";
+import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
@@ -116,7 +117,11 @@ function loadSettings() {
   }
 }
 
-export default function AssistantChat({ onClose }: { onClose: () => void }) {
+/** アプリの殻（AppLayout）の中に置く 1 画面。上の行は殻と同じ形で、左上の ☰ が
+ *  同じドロワーを開く。画面は高さ固定で、動くのは会話の一覧だけ。 */
+export default function AssistantChat() {
+  const shell = useShell();
+  useKeyboardViewportFit();
   const can = useAuth((s) => s.can);
   const show = useToasts((s) => s.show);
   const navigate = useNavigate();
@@ -257,12 +262,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   }, [messages]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
     return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -764,7 +764,6 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         json: { name: gen.name, definition: gen.definition },
       });
       show(`「${res.name}」を登録しました`);
-      onClose();
       navigate(`/workflows/${res.id}`);
     } catch (e) {
       show(e instanceof Error ? e.message : "登録に失敗しました", "error");
@@ -790,36 +789,31 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
     || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;
 
-  return createPortal(
-    <div
+  return (
+    <section
       data-assistant-shell
-      className="fixed inset-0 z-50 h-full min-h-0 max-w-full overflow-hidden bg-zinc-100 dark:bg-zinc-950"
-      role="presentation"
+      aria-label={assistantName}
+      className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden overscroll-none bg-zinc-50 dark:bg-zinc-950"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={assistantName}
-        className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-950"
-      >
-        {/* ヘッダー */}
-        <div className="safe-top flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-zinc-200/80 bg-white/90 px-3 py-2.5 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/90 sm:flex-nowrap sm:px-5">
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-600 text-white shadow-sm" aria-hidden="true">✦</div>
-            <div className="min-w-0">
-              <h2 className="truncate text-sm font-semibold">{assistantName}</h2>
-              <p className="truncate text-[11px] font-medium text-accent-700 dark:text-accent-300" aria-label="現在の機能" aria-live="polite">
+        {/* 上の行。殻の上の行と同じ高さ・同じ面。携帯は 2 段目に切替を置く。 */}
+        <div data-assistant-topbar className={SHELL_TOPBAR_CLASS}>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1 px-3 sm:flex-nowrap sm:gap-x-2 md:px-5">
+          <div className="flex h-14 min-w-0 flex-1 items-center gap-1 sm:flex-none">
+            <ShellMenuButton />
+            <div className="min-w-0 md:max-w-[12rem]">
+              <h1 className="truncate text-[15px] font-semibold leading-5 tracking-tight">{assistantName}</h1>
+              <p className="truncate text-[11px] leading-4 text-zinc-500 dark:text-zinc-400" aria-label="現在の機能" aria-live="polite">
                 {modeChoice === "auto" ? routing ? "自動判定: 計画中…" : `自動判定: ${currentMode.label}` : `選択: ${currentMode.label}`}
               </p>
             </div>
           </div>
-          <div className="order-last flex min-w-0 basis-full items-center gap-1 sm:order-none sm:w-[26rem] sm:basis-auto">
+          <div className="order-last flex min-w-0 basis-full items-center gap-1 pb-2 sm:order-none sm:ml-auto sm:w-[26rem] sm:basis-auto sm:pb-0">
             <select
               value={modeChoice}
               onChange={(event) => setModeChoice(event.target.value as AssistantModeChoice)}
               aria-label="処理モード"
               title="処理モード"
-              className="h-9 w-28 shrink-0 rounded-xl border border-zinc-200 bg-zinc-50 px-2 text-xs font-medium shadow-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800 sm:w-32"
+              className="h-9 w-28 shrink-0 rounded-xl border border-zinc-200 bg-white px-2 text-xs font-medium outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-900 sm:w-32"
             >
               <option value="auto">✦ 自動判定</option>
               {MODES.filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable)).map((item) => (
@@ -830,7 +824,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               value={convId}
               onChange={(event) => void openConversation(event.target.value)}
               aria-label="会話を切替"
-              className="h-9 min-w-0 flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-2.5 text-xs shadow-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-800"
+              className="h-9 min-w-0 flex-1 rounded-xl border border-zinc-200 bg-white px-2.5 text-xs outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 dark:border-zinc-700 dark:bg-zinc-900"
             >
               {!convId && <option value="">履歴を選択</option>}
               {(conversations ?? []).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
@@ -841,9 +835,9 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               disabled={busy || (!convId && messages.length === 0)}
               aria-label="新しい会話を開始"
               title="新しい会話を開始"
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-accent-50 hover:text-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500/30 disabled:opacity-40 dark:hover:bg-accent-600/15 dark:hover:text-accent-400"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-900 focus:outline-none focus:ring-2 focus:ring-accent-500/30 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             >
-              <span className="text-lg font-semibold" aria-hidden>＋</span>
+              <IconCompose className="text-lg" />
             </button>
             <button
               type="button"
@@ -859,23 +853,22 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           <button
             onClick={() => setShowSettings((v) => !v)}
             aria-label={showSettings ? "AI設定を閉じる" : "AI設定を開く"}
+            aria-expanded={showSettings}
             title={model || "設定"}
-            className={`ml-auto flex min-h-11 min-w-0 items-center gap-1 rounded-xl px-3 py-2 text-xs font-medium transition ${
-              showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-colors sm:shrink ${
+              showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800"
             }`}
           >
-            <span className="shrink-0">🧩</span>
-            <span className="max-w-[9rem] truncate">{model || "設定"}</span>
+            <IconChip className="shrink-0 text-lg" />
+            <span className="max-w-[6.5rem] truncate sm:max-w-[9rem]">{model || "設定"}</span>
           </button>
-          <button onClick={onClose} aria-label="AIアシスタントを閉じる" className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 shadow-sm transition hover:border-zinc-400 hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700">
-            <IconX className="text-lg" />
-            <span className="hidden sm:inline">閉じる</span>
-          </button>
+          {shell?.extras}
+        </div>
         </div>
 
         {/* 設定パネル */}
         {showSettings && (
-          <div className="grid min-w-0 shrink-0 gap-2.5 overflow-x-hidden border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-800/40 sm:grid-cols-2">
+          <div className="grid max-h-[50dvh] min-w-0 shrink-0 gap-2.5 overflow-y-auto overflow-x-hidden overscroll-contain border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-900/60 sm:grid-cols-2">
             <label className="block sm:col-span-2">
               <span className="mb-1 block text-xs text-zinc-500">現在の会話名</span>
               <div className="flex min-w-0 flex-wrap gap-1.5 sm:flex-nowrap">
@@ -979,7 +972,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             const element = event.currentTarget;
             stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
           }}
-          className="min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-3 py-5 sm:px-5"
+          data-assistant-messages
+          className="min-h-0 min-w-0 flex-1 touch-pan-y space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-5 [-webkit-overflow-scrolling:touch] sm:px-5"
         >
           {messages.length === 0 && (
             <div className="mx-auto max-w-md pt-10 text-center">
@@ -1001,7 +995,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
                 msg={m}
                 onRegister={registerOnly}
                 onAutoBuild={autoBuild}
-                onOpen={(id) => { onClose(); navigate(`/workflows/${id}`); }}
+                onOpen={(id) => navigate(`/workflows/${id}`)}
                 onReference={(referenceId) => {
                   setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
                 }}
@@ -1184,9 +1178,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           </div>
           </div>
         </div>
-      </div>
-    </div>,
-    document.body,
+    </section>
   );
 }
 

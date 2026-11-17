@@ -30,11 +30,31 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
   await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
 
-  await page.getByRole("button", { name: "More" }).click();
-  const quickActions = page.getByRole("dialog", { name: "Quick Actions" });
-  await expect(quickActions.getByRole("button", { name: "AI Assistant", exact: true })).toBeVisible();
-  await quickActions.getByRole("button", { name: "AI Assistant", exact: true }).click();
+  // 下部ナビは無い。左上の ☰ で開くドロワーが唯一の主なナビ。
+  await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "More" })).toHaveCount(0);
+  const menuButton = page.getByRole("button", { name: "メニューを開く" });
+  const menuBox = (await menuButton.boundingBox())!;
+  expect(menuBox.width).toBeGreaterThanOrEqual(44);
+  expect(menuBox.height).toBeGreaterThanOrEqual(44);
+  expect(menuBox.x).toBeLessThan(16);
+  await menuButton.click();
+  const drawer = page.getByRole("dialog", { name: "メニュー" });
+  await expect(drawer).toHaveAttribute("aria-modal", "true");
+  await expect(drawer.locator('[aria-current="page"]')).toHaveText("Home");
+  // 同じ行き先は 1 回だけ並ぶ。
+  await expect(drawer.getByRole("link", { name: "AI Assistant", exact: true })).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  await expect(menuButton).toBeFocused();
+  await menuButton.click();
+  await drawer.getByRole("link", { name: "AI Assistant", exact: true }).click();
   await expect(page).toHaveURL(/\/assistant$/);
+  await expect(drawer).toHaveCount(0);
+  // アシスタントも同じ ☰ から同じドロワーを開く。
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  await expect(drawer.locator('[aria-current="page"]')).toHaveText("AI Assistant");
+  await page.keyboard.press("Escape");
 
   for (const viewport of [{ width: 320, height: 700 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(viewport);
@@ -54,7 +74,10 @@ test("uses one page-title layout without horizontal overflow", async ({ page }) 
           body: document.body.scrollWidth,
         };
       });
-      expect(layout.fontSize).toBe("20px");
+      // 題名は殻の上の行（☰ の右）に 1 つだけ出る。
+      await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
+      expect(await heading.evaluate((element) => !!element.closest("[data-shell-topbar]"))).toBe(true);
+      expect(layout.fontSize).toBe("18px");
       expect(layout.lineHeight).toBe("28px");
       expect(layout.top).toBeGreaterThanOrEqual(0);
       expect(layout.document, `${path} document overflow`).toBeLessThanOrEqual(layout.viewport);
@@ -98,16 +121,18 @@ test("migrates the saved Play destination to Workflows", async ({ page }) => {
   await page.getByLabel("パスワード").fill(password!);
   await page.getByRole("button", { name: "ログイン", exact: true }).click();
 
-  const navigation = page.getByRole("navigation", { name: "Main navigation" });
-  await expect(navigation.getByRole("link", { name: "Workflows" })).toBeVisible();
-  await expect(navigation.getByRole("link", { name: "Play" })).toHaveCount(0);
-  await expect(navigation.locator("a")).toHaveCount(5);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  const pinned = page.getByRole("dialog", { name: "メニュー" }).getByRole("group", { name: "よく使う" });
+  await expect(pinned.getByRole("link", { name: "Workflows" })).toBeVisible();
+  await expect(pinned.getByRole("link", { name: "Play" })).toHaveCount(0);
+  await expect(pinned.getByRole("link")).toHaveCount(5);
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("cd-mobile-navigation-v1") ?? "[]"));
   expect(stored).not.toContain("/runner");
   expect(stored).toContain("/workflows");
 });
 
-test("configures up to six mobile destinations while keeping More fixed", async ({ page }) => {
+test("pins up to six favorites at the top of the drawer", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 700 });
   await page.goto("/settings");
@@ -117,7 +142,7 @@ test("configures up to six mobile destinations while keeping More fixed", async 
   await expect(page.getByLabel("ユーザー名")).toBeHidden();
   await page.goto("/settings/appearance");
 
-  const settings = page.getByRole("region", { name: "Bottom Navigation" });
+  const settings = page.getByRole("region", { name: "よく使う機能" });
   await expect(settings.getByText("5 / 6", { exact: true })).toBeVisible();
   await settings.getByRole("button", { name: /Files/ }).click();
   await expect(settings.getByText("6 / 6", { exact: true })).toBeVisible();
@@ -128,10 +153,13 @@ test("configures up to six mobile destinations while keeping More fixed", async 
   }
   await page.reload();
 
-  const navigation = page.getByRole("navigation", { name: "Main navigation" });
-  await expect(navigation.locator("a")).toHaveCount(6);
-  await expect(navigation.locator("a").first()).toContainText("Workflows");
-  await expect(navigation.getByRole("button", { name: "More" })).toBeVisible();
+  await page.getByRole("button", { name: "メニューを開く" }).click();
+  const drawer = page.getByRole("dialog", { name: "メニュー" });
+  const pinned = drawer.getByRole("group", { name: "よく使う" });
+  await expect(pinned.getByRole("link")).toHaveCount(6);
+  await expect(pinned.getByRole("link").first()).toContainText("Workflows");
+  // 固定した機能は、まとまりの側には重ねて出さない。
+  await expect(drawer.getByRole("link", { name: "Workflows", exact: true })).toHaveCount(1);
   const overflow = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
   expect(overflow.document).toBeLessThanOrEqual(overflow.viewport);
 });

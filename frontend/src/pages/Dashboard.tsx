@@ -78,10 +78,8 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-2.5 p-3 md:space-y-4 md:p-6">
-      {/* 狭い画面では見出しを省いて1画面に収める（現在地は下部ナビで分かる） */}
-      <div className="hidden md:block">
-        <PageHeader title="Home" className="mb-0" />
-      </div>
+      {/* 題名は殻の上の行（☰ の右）に出る。ページの中には場所を取らない。 */}
+      <PageHeader title="Home" className="mb-0" />
       <PendingApprovals />
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">

@@ -40,8 +40,10 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await page.reload();
   await expect(page.locator("html")).toHaveClass(/pwa-standalone/);
 
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("button", { name: "AIアシスタントを閉じる" })).toBeVisible();
+  const dialog = page.locator("[data-assistant-shell]");
+  // 専用の「閉じる」は無い。殻と同じ ☰ から同じドロワーで移動する。
+  await expect(dialog.getByRole("button", { name: "AIアシスタントを閉じる" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "メニューを開く" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "選択中の会話を削除" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
   await expect(dialog.getByLabel("処理モード")).toHaveValue("auto");
@@ -66,7 +68,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   const layout = await page.evaluate(() => {
     const input = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="メッセージを入力..."]')!;
     const row = input.parentElement!;
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const dialog = document.querySelector<HTMLElement>("[data-assistant-shell]")!;
     const rect = (element: Element) => element.getBoundingClientRect();
     return {
       viewportWidth: window.innerWidth,
@@ -77,7 +79,11 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       row: rect(row).toJSON(),
       input: rect(input).toJSON(),
       mic: rect(document.querySelector('[aria-label="音声で入力"]')!).toJSON(),
-      close: rect(document.querySelector('[aria-label="AIアシスタントを閉じる"]')!).toJSON(),
+      close: rect(document.querySelector('[data-assistant-shell] [aria-label="メニューを開く"]')!).toJSON(),
+      topbar: rect(document.querySelector("[data-assistant-topbar]")!).toJSON(),
+      messagesOverscroll: getComputedStyle(document.querySelector("[data-assistant-messages]")!).overscrollBehaviorY,
+      rootOverscroll: getComputedStyle(document.documentElement).overscrollBehaviorY,
+      rootOverflow: getComputedStyle(document.documentElement).overflowY,
       trash: rect(document.querySelector('[aria-label="選択中の会話を削除"]')!).toJSON(),
       mode: rect(document.querySelector('[aria-label="処理モード"]')!).toJSON(),
       history: rect(document.querySelector('[aria-label="会話を切替"]')!).toJSON(),
@@ -101,6 +107,12 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   expect(layout.input.right).toBeLessThanOrEqual(layout.viewportWidth - 69);
   expect(layout.mic.width).toBeGreaterThanOrEqual(44);
   expect(layout.close.width).toBeGreaterThanOrEqual(44);
+  expect(layout.close.left).toBeLessThan(16);
+  // 動くのは会話の一覧だけ。文書は動かさず、上の行と入力欄は画面の端に留まる。
+  expect(layout.topbar.top).toBe(0);
+  expect(layout.messagesOverscroll).toBe("contain");
+  expect(layout.rootOverscroll).toBe("none");
+  expect(layout.rootOverflow).toBe("hidden");
   expect(layout.trash.width).toBeGreaterThanOrEqual(44);
   expect(layout.mode.right).toBeLessThanOrEqual(layout.history.left);
   expect(layout.mode.height).toBe(layout.history.height);
@@ -140,7 +152,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await page.setViewportSize({ width: 390, height: 844 });
   const iphoneLayout = await page.evaluate(() => {
     const shell = document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect();
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!.getBoundingClientRect();
+    const dialog = document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect();
     const composer = document.querySelector<HTMLElement>("[data-assistant-composer]")!;
     const card = document.querySelector<HTMLElement>("[data-assistant-input-card]")!.getBoundingClientRect();
     const row = document.querySelector<HTMLElement>("[data-assistant-input-row]")!.getBoundingClientRect();
@@ -175,7 +187,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
     viewportWidth: window.innerWidth,
     documentScrollWidth: document.documentElement.scrollWidth,
     bodyScrollWidth: document.body.scrollWidth,
-    dialogRight: document.querySelector<HTMLElement>('[role="dialog"]')!.getBoundingClientRect().right,
+    dialogRight: document.querySelector<HTMLElement>("[data-assistant-shell]")!.getBoundingClientRect().right,
   }));
   console.log("ASSISTANT_DESKTOP_LAYOUT", JSON.stringify(desktopLayout));
   expect(desktopLayout.documentScrollWidth).toBeLessThanOrEqual(desktopLayout.viewportWidth);
@@ -207,7 +219,7 @@ test("shows compact conversation references and inserts one into the prompt", as
   await page.evaluate((id) => localStorage.setItem("cd-chat-conversation", id), referenceConversation!);
   await page.goto("/assistant");
 
-  const dialog = page.getByRole("dialog");
+  const dialog = page.locator("[data-assistant-shell]");
   await expect(dialog.getByText("会話内文献（1 件）")).toBeVisible();
   await dialog.locator("details").first().locator("summary").click();
   await expect(dialog.getByText("探索 4 round")).toBeVisible();

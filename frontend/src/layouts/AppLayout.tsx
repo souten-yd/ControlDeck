@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ComponentType, type SVGProps } from "react";
+import { useEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
+import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useMeta } from "../api/hooks";
@@ -7,31 +8,54 @@ import { useMetricsStream } from "../hooks/useMetricsStream";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   addonIcon,
-  IconBook,
-  IconBranch,
-  IconChart,
-  IconChevronLeft,
-  IconChip,
-  IconFile,
-  IconGrid,
-  IconPlugin,
+  IconDots,
+  IconLogout,
+  IconMenu,
   IconPlay,
-  IconPlus,
+  IconPlugin,
   IconPower,
   IconRestart,
-  IconSettings,
-  IconTerminal,
-  IconLogout,
+  IconSearch,
 } from "../components/icons";
 import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { ApprovalsCenter } from "../features/approvals/PendingApprovals";
 import { Logo } from "../components/Logo";
-import { PRODUCT_NAMES } from "../constants/productNames";
-import { canAccessNavigationItem, IconAssistant, IconCode, IconFlow, IconRemote, NAVIGATION } from "../navigation";
+import { canAccessNavigationItem, NAV_GROUPS, NAVIGATION } from "../navigation";
 import { useMobileNavigation } from "../stores/mobileNavigation";
 import { addonLabel, invokeAddonCommand, useEffectiveAddons } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
+import { SHELL_TOPBAR_CLASS, ShellContext, ShellMenuButton, shellIconButtonClass } from "./shell";
+
+const SIDEBAR_KEY = "cd-sidebar";
+
+/** localStorage は private mode や容量超過で例外を投げる。殻の描画を止めない。 */
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "min";
+  } catch {
+    return false;
+  }
+}
+
+type NavIcon = ComponentType<SVGProps<SVGSVGElement>>;
+
+/** ドロワー／サイドバーの 1 行。内部の画面も、別タブで開くプラグインも同じ形にする。 */
+interface NavEntry {
+  key: string;
+  to: string;
+  label: string;
+  icon: NavIcon;
+  external?: boolean;
+  title?: string;
+  trailing?: ReactNode;
+}
+
+interface NavSection {
+  id: string;
+  label: string;
+  entries: NavEntry[];
+}
 
 export default function AppLayout() {
   const user = useAuth((s) => s.user);
@@ -42,16 +66,6 @@ export default function AppLayout() {
   const addonById = new Map((effectiveAddons?.addons ?? []).map((addon) => [addon.id, addon]));
   const addonNavigation = effectiveAddons?.contributions.navigation ?? [];
   const addonQuickActions = effectiveAddons?.contributions.quick_actions ?? [];
-  // Quick Actions のアイコンは NAVIGATION から引く。二重管理すると
-  // Project Lab と OpenCode が同じ <> になるような取り違えが再発する。
-  const navigationIcon = useMemo(
-    () => new Map(NAVIGATION.map((item) => [item.to, item.icon])),
-    [],
-  );
-  const RouteIcon = ({ to, fallback: Fallback }: { to: string; fallback: ComponentType<SVGProps<SVGSVGElement>> }) => {
-    const Ico = navigationIcon.get(to) ?? Fallback;
-    return <Ico />;
-  };
 
   const enabledFeatures = new Set(meta?.enabled_features ?? []);
   const enrollmentPending = Boolean(user?.totp_required && !user.totp_enabled);
@@ -59,11 +73,11 @@ export default function AppLayout() {
     (!enrollmentPending || item.to === "/settings")
     && (!item.feature || enabledFeatures.has(item.feature))
     && canAccessNavigationItem(item, can));
-  const mobilePaths = useMobileNavigation((state) => state.paths);
-  const mobileNav = mobilePaths.map((path) => visibleNav.find((item) => item.to === path)).filter((item) => item !== undefined);
-  const [collapsed, setCollapsed] = useState(
-    localStorage.getItem("cd-sidebar") === "min",
-  );
+  /* 「よく使う」は以前の下部ナビの選択をそのまま引き継ぐ（保存先も同じ）。 */
+  const pinnedPaths = useMobileNavigation((state) => state.paths);
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
   const [actionOpen, setActionOpen] = useState(false);
   const [powerAction, setPowerAction] = useState<"reboot" | "shutdown" | null>(null);
   const [platformReloading, setPlatformReloading] = useState(false);
@@ -71,6 +85,48 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const show = useToasts((s) => s.show);
+  const appName = meta?.app_name ?? "Control Deck";
+
+  /* メニューの中身。よく使うものを先頭に固定し、残りをまとまりごとに並べる。
+     同じ行き先を 2 回は出さない（いまどこにいるかの印が 1 つに決まる）。 */
+  const sections = ((): NavSection[] => {
+    const toEntry = (item: (typeof visibleNav)[number]): NavEntry => ({
+      key: item.to, to: item.to, label: item.label, icon: item.icon,
+    });
+    const pinned = pinnedPaths
+      .map((path) => visibleNav.find((item) => item.to === path))
+      .filter((item) => item !== undefined);
+    const pinnedSet = new Set(pinned.map((item) => item.to));
+    const result: NavSection[] = [];
+    if (pinned.length) result.push({ id: "pinned", label: "よく使う", entries: pinned.map(toEntry) });
+    const extensions: NavEntry[] = [
+      ...addonNavigation.map((contribution): NavEntry => {
+        const addon = addonById.get(contribution.addon_id);
+        const label = addonLabel(contribution.label);
+        return {
+          key: `addon-${contribution.addon_id}-${contribution.id}`,
+          to: contribution.route || `/x/${contribution.addon_id}/${contribution.id}`,
+          label,
+          icon: addonIcon(contribution.icon, contribution.addon_id),
+          title: `${label}${addon && addon.state !== "healthy" ? ` — ${addonStateMessage(addon.state)}` : ""}`,
+          trailing: addon ? <AddonStatusChip state={addon.state} compact /> : undefined,
+        };
+      }),
+      ...(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin): NavEntry => ({
+        key: `plugin-${plugin.id}`, to: plugin.url, label: plugin.label, icon: IconPlugin, external: true,
+      })),
+    ];
+    for (const group of NAV_GROUPS) {
+      const entries = visibleNav.filter((item) => item.group === group.id && !pinnedSet.has(item.to)).map(toEntry);
+      if (entries.length) result.push({ id: group.id, label: group.label, entries });
+      /* 拡張機能は AI の次、システムの前。 */
+      if (group.id === "ai" && extensions.length && !enrollmentPending) {
+        result.push({ id: "extensions", label: "拡張機能", entries: extensions });
+      }
+    }
+    return result;
+  })();
+
   /* 上の行に出す「いまどこか」。拡張機能の画面なら拡張機能の名前を出す。 */
   const currentTitle = (() => {
     const contribution = addonNavigation.find((item) =>
@@ -82,7 +138,7 @@ export default function AppLayout() {
     }
     const item = [...visibleNav].sort((a, b) => b.to.length - a.to.length)
       .find((entry) => entry.to === "/" ? location.pathname === "/" : location.pathname.startsWith(entry.to));
-    return item?.label ?? meta?.app_name ?? "Control Deck";
+    return item?.label ?? appName;
   })();
   /** 宣言された quick action を実行し、拡張機能が返した route へ遷移する。 */
   const runQuickAction = async (addonId: string, contributionId: string) => {
@@ -94,8 +150,8 @@ export default function AppLayout() {
       show(error instanceof ApiError ? error.message : "拡張機能の操作を実行できませんでした", "error");
     }
   };
-  // ワークフローエディタ（/workflows/:id）等は全画面表示（ヘッダー・下部ナビを隠す）
-  const immersive = location.pathname === "/assistant" || /^\/workflows\/[^/]+$/.test(location.pathname);
+  /* 自前の上の行を持つ画面。殻の上の行は出さず、その画面が同じ ☰ を置く。 */
+  const ownsTopBar = location.pathname === "/assistant";
 
   useMetricsStream(can("system.view") && !enrollmentPending);
 
@@ -115,10 +171,30 @@ export default function AppLayout() {
     };
   }, []);
 
+  /* 殻の中では文書そのものをスクロールさせない。iPhone で指を動かしたとき、
+     画面全体（入力欄ごと）がゴムのように引っ張られるのを止める。 */
+  useEffect(() => {
+    document.documentElement.classList.add("cd-app-shell");
+    return () => document.documentElement.classList.remove("cd-app-shell");
+  }, []);
+
+  /* 画面を移ったらドロワーは閉じる。PC 幅へ広がったときも閉じる。 */
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname, location.search]);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 768px)");
+    const onChange = () => query.matches && setDrawerOpen(false);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
   const toggleSidebar = () => {
     const next = !collapsed;
     setCollapsed(next);
-    localStorage.setItem("cd-sidebar", next ? "min" : "full");
+    try {
+      localStorage.setItem(SIDEBAR_KEY, next ? "min" : "full");
+    } catch { /* 保存できなくても、この場の開閉は効く */ }
   };
 
   const doPower = async ({ delayMinutes, mode, totpCode }: {
@@ -173,277 +249,96 @@ export default function AppLayout() {
     }
   };
 
+
+  const openPalette = () => {
+    setDrawerOpen(false);
+    setPaletteOpen(true);
+  };
+  const openActions = () => {
+    setDrawerOpen(false);
+    setActionOpen(true);
+  };
+  const navPanel = (compact: boolean, onToggle: () => void, toggleLabel: string, expanded: boolean) => (
+    <NavPanel
+      compact={compact}
+      appName={appName}
+      sections={sections}
+      userName={user?.display_name ?? ""}
+      toggleLabel={toggleLabel}
+      toggleExpanded={expanded}
+      onToggle={onToggle}
+      onSearch={openPalette}
+      onAccount={openActions}
+    />
+  );
+  const extras = <ApprovalsCenter />;
+
   return (
-    <div className="flex h-full">
-      {/* デスクトップサイドバー */}
+    <ShellContext.Provider value={{ openNav: () => setDrawerOpen(true), navOpen: drawerOpen, extras, headerSlot: ownsTopBar ? null : headerSlot }}>
+    <div className="flex h-full overflow-hidden">
+      {/* PC: 折りたためるサイドバー（☰ で開閉。状態は端末に覚える） */}
       <aside
-        className={`hidden shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800 md:flex ${
-          collapsed ? "w-16" : "w-56"
-        } transition-[width] duration-150`}
+        data-shell-sidebar
+        data-collapsed={collapsed}
+        className={`hidden shrink-0 border-r border-zinc-200/80 bg-zinc-100/60 transition-[width] duration-200 ease-out motion-reduce:transition-none dark:border-zinc-800/80 dark:bg-zinc-900/60 md:block ${
+          collapsed ? "w-[60px]" : "w-64"
+        }`}
       >
-        <div className="flex h-14 items-center gap-2 px-4">
-          <Logo size={28} className="shrink-0" />
-          {!collapsed && (
-            <span className="truncate text-sm font-semibold">
-              {meta?.app_name ?? "Control Deck"}
-            </span>
-          )}
-        </div>
-        <nav className="flex-1 space-y-1 px-2 py-2">
-          {visibleNav.map(({ to, label, icon: Ico }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === "/"}
-              title={label}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${
-                  isActive
-                    ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400"
-                    : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
-                }`
-              }
-            >
-              <Ico className="shrink-0 text-lg" />
-              {!collapsed && label}
-            </NavLink>
-          ))}
-          {addonNavigation.map((contribution) => {
-            const addon = addonById.get(contribution.addon_id);
-            const label = addonLabel(contribution.label);
-            return <NavLink
-              key={`addon-${contribution.addon_id}-${contribution.id}`}
-              to={contribution.route || `/x/${contribution.addon_id}/${contribution.id}`}
-              title={`${label}${addon && addon.state !== "healthy" ? ` — ${addonStateMessage(addon.state)}` : ""}`}
-              className={({ isActive }) => `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${
-                isActive ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
-              }`}
-            >
-              {(() => { const Ico = addonIcon(contribution.icon, contribution.addon_id); return <Ico className="shrink-0 text-lg" />; })()}
-              {!collapsed && <><span className="min-w-0 flex-1 truncate">{label}</span>{addon && <AddonStatusChip state={addon.state} compact />}</>}
-            </NavLink>;
-          })}
-          {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
-            <a
-              key={`plugin-${plugin.id}`}
-              href={plugin.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={plugin.label}
-              className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
-            >
-              <IconPlugin className="shrink-0 text-lg" />
-              {!collapsed && plugin.label}
-            </a>
-          ))}
-        </nav>
-        <div className="px-2 pb-3">
-          <button
-            onClick={toggleSidebar}
-            aria-label={collapsed ? "サイドバーを展開" : "サイドバーを縮小"}
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900"
-          >
-            <IconChevronLeft
-              className={`text-lg transition-transform ${collapsed ? "rotate-180" : ""}`}
-            />
-            {!collapsed && "縮小"}
-          </button>
-        </div>
+        {navPanel(collapsed, toggleSidebar, collapsed ? "サイドバーを開く" : "サイドバーを閉じる", !collapsed)}
       </aside>
 
       {/* メイン */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="safe-top flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 dark:border-zinc-800 md:min-h-14">
-          {/* 携帯ではここが唯一の題名の置き場になる。拡張機能は自分の1行を
-              操作で使い切るので、いまどこにいるかはこの行が受け持つ。 */}
-          <div className="flex min-w-0 items-center gap-2 md:hidden">
-            <Logo size={24} />
-            <span className="min-w-0 truncate text-sm font-semibold">{currentTitle}</span>
-          </div>
-          <div className="hidden md:block">
-            <button
-              onClick={() => setPaletteOpen(true)}
-              className="flex w-64 items-center gap-2 rounded-xl border border-zinc-200 px-3 py-1.5 text-sm text-zinc-400 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
-            >
-              Search or run a command
-              <kbd className="ml-auto rounded bg-zinc-100 px-1.5 text-[10px] text-zinc-500 dark:bg-zinc-800">
-                Ctrl K
-              </kbd>
-            </button>
-          </div>
-          <div className="flex items-center gap-3">
-            {/* L2 の承認待ち。どの画面でも見え、新しい依頼はポップアップで開く。 */}
-            <ApprovalsCenter />
-            {/* 初回接続を「再接続中」と出さない。まだ一度も繋がっていないのに
-                再接続と言われると、壊れているように見える。 */}
-            {streamStatus !== "live" && can("system.view") && (
-              streamStatus === "reconnecting" ? (
-                <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-                  再接続中
-                </span>
-              ) : (
-                <span className="flex items-center gap-1.5 text-xs text-zinc-400 dark:text-zinc-500">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-zinc-400" />
-                  接続中
-                </span>
-              )
-            )}
-            <button
-              onClick={() => setActionOpen(true)}
-              aria-label="Quick Actions"
-              className="hidden rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
-            >
-              <IconPower />
-            </button>
-            <span className="text-xs text-zinc-400">{user?.display_name}</span>
-          </div>
-        </header>
+        {!ownsTopBar && (
+          <header data-shell-topbar className={SHELL_TOPBAR_CLASS}>
+            <div className="flex h-14 items-center gap-1 px-3 md:px-5">
+              {/* 携帯は左上の ☰ からすべての機能へ行く。題名は「いまどこか」。 */}
+              <ShellMenuButton />
+              {/* PageHeader を使う画面は、題名（h1）と主操作をここへ描く。使わない画面
+                  （エディタ・拡張機能など）は、殻が「いまどこか」だけを出す。 */}
+              <div ref={setHeaderSlot} data-shell-header-slot className="peer flex min-w-0 flex-1 items-center gap-2 pl-1 empty:hidden" />
+              <h1 data-shell-title className="hidden min-w-0 flex-1 truncate pl-1 text-lg font-semibold leading-7 tracking-tight peer-empty:block">{currentTitle}</h1>
+              <div className="flex shrink-0 items-center gap-2">
+                {/* L2 の承認待ち。どの画面でも見え、新しい依頼はポップアップで開く。 */}
+                {extras}
+                {/* 初回接続を「再接続中」と出さない。まだ一度も繋がっていないのに
+                    再接続と言われると、壊れているように見える。 */}
+                {streamStatus !== "live" && can("system.view") && (
+                  streamStatus === "reconnecting" ? (
+                    <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+                      再接続中
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-xs text-zinc-400 dark:text-zinc-500">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-zinc-400" />
+                      接続中
+                    </span>
+                  )
+                )}
+              </div>
+            </div>
+          </header>
+        )}
 
         {/* overflow-x-hidden: リロード直後等に幅超過要素があってもページ全体を横に広げない */}
-        <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
           {/* 1 画面の例外で全体を白くしない。path が変われば境界も解除する。 */}
           <ErrorBoundary resetKey={location.pathname}>
             <Outlet />
           </ErrorBoundary>
         </main>
-
-        {/* モバイル下部ナビ（フロー内配置で iOS の fixed 浮き上がりを回避）。
-            全画面ページ（エディタ等）では非表示にして没入表示にする。 */}
-        <nav
-          aria-label="Main navigation"
-          className={`safe-bottom z-30 shrink-0 border-t border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 ${immersive ? "hidden" : "md:hidden"}`}
-        >
-          <div className="flex justify-around">
-            {mobileNav.map((n) => (
-              <MobileNavLink key={n.to} {...n} />
-            ))}
-            <button
-              onClick={() => setActionOpen(true)}
-              aria-label="More"
-              className="flex min-h-[52px] min-w-0 max-w-24 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-zinc-600 dark:text-zinc-400"
-            >
-              {/* 他の項目のアイコン（20px）と同じ高さに収め、ラベルの行をそろえる。 */}
-              <span className="grid h-5 w-9 place-items-center rounded-full bg-accent-600 text-sm text-white">
-                <IconPlus />
-              </span>
-              <span className="max-w-full truncate px-0.5 text-[10px]">More</span>
-            </button>
-          </div>
-        </nav>
       </div>
 
-      {/* グローバル操作シート */}
+      {/* 携帯: 左から出るドロワー */}
+      <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+        {navPanel(false, () => setDrawerOpen(false), "メニューを閉じる", true)}
+      </NavDrawer>
+
+      {/* アカウントと操作（画面の移動はドロワー、ここは「実行するもの」だけ） */}
       {actionOpen && (
-        <BottomSheet title="Quick Actions" onClose={() => setActionOpen(false)}>
-          <div className="grid grid-cols-2 gap-1">
-            {/* 下段ナビから溢れると行き場が無くなる。Quick Actions にも置く。 */}
-            {can("apps.view") && (
-              <ActionItem
-                icon={<RouteIcon to="/apps" fallback={IconGrid} />}
-                label="Apps"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/apps");
-                }}
-              />
-            )}
-            {can("apps.edit") && (
-              <ActionItem
-                icon={<IconPlus />}
-                label="Add App"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/apps?add=1");
-                }}
-              />
-            )}
-            {(can("workflows.run") || can("workflows.edit")) && (
-              <ActionItem
-                icon={<RouteIcon to="/workflows" fallback={IconFlow} />}
-                label="Workflows"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/workflows");
-                }}
-              />
-            )}
-            {can("application_builder.view") && (
-              <ActionItem
-                icon={<RouteIcon to="/applications" fallback={IconGrid} />}
-                label={PRODUCT_NAMES.appStudio}
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/applications");
-                }}
-              />
-            )}
-            {can("project_lab.view") && (
-              <ActionItem
-                icon={<RouteIcon to="/project-lab" fallback={IconCode} />}
-                label="Project Lab"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/project-lab");
-                }}
-              />
-            )}
-            {can("remote_desktop.use") && (
-              <ActionItem
-                icon={<RouteIcon to="/remote" fallback={IconRemote} />}
-                label="Remote Desktop"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/remote");
-                }}
-              />
-            )}
-            {can("terminal.use") && (
-              <ActionItem
-                icon={<RouteIcon to="/terminal" fallback={IconTerminal} />}
-                label="Terminal"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/terminal");
-                }}
-              />
-            )}
-            <ActionItem
-              icon={<RouteIcon to="/assistant" fallback={IconAssistant} />}
-              label="AI Assistant"
-              onClick={() => {
-                setActionOpen(false);
-                navigate("/assistant");
-              }}
-            />
-            {([["/opencode-v2", "opencode-v2", "OpenCode"]] as const).map(([to, feature, label]) =>
-              enabledFeatures.has(feature) && can("workflows.run") ? (
-                <ActionItem
-                  key={`action-${feature}`}
-                  icon={<RouteIcon to={to} fallback={IconCode} />}
-                  label={label}
-                  onClick={() => {
-                    setActionOpen(false);
-                    navigate(to);
-                  }}
-                />
-              ) : null)}
-            {addonNavigation.map((contribution) => {
-              const addon = addonById.get(contribution.addon_id);
-              // Apps と同じ IconGrid を使っていたので、Media が Apps と
-              // 見分けられなかった。Add-on が manifest で名乗った形を使う。
-              const Ico = addonIcon(contribution.icon, contribution.addon_id);
-              return <ActionItem
-                key={`addon-navigation-${contribution.addon_id}-${contribution.id}`}
-                icon={<Ico />}
-                label={addonLabel(contribution.label)}
-                hint={addon && addon.state !== "healthy" ? addonStateMessage(addon.state) : undefined}
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate(contribution.route || `/x/${contribution.addon_id}/${contribution.id}`);
-                }}
-              />;
-            })}
+        <BottomSheet title="アカウントと操作" onClose={() => setActionOpen(false)}>
+          <div className="space-y-1">
             {addonQuickActions.map((contribution) => <ActionItem
               key={`addon-quick-${contribution.addon_id}-${contribution.id}`}
               icon={<IconPlay />}
@@ -454,88 +349,19 @@ export default function AppLayout() {
                 void runQuickAction(contribution.addon_id, contribution.id);
               }}
             />)}
-            {(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin) => (
-              <ActionItem
-                key={`plugin-${plugin.id}`}
-                // Apps と同じ IconGrid を使っていたので、Media が Apps と
-                // 見分けられなかった。差し込まれた機能だと分かる形にする。
-                icon={<IconPlugin />}
-                label={plugin.label}
-                onClick={() => {
-                  setActionOpen(false);
-                  window.open(plugin.url, "_blank", "noopener,noreferrer");
-                }}
-              />
-            ))}
-            {can("files.view") && (
-              <ActionItem
-                icon={<RouteIcon to="/files" fallback={IconFile} />}
-                label="File Manager"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/files");
-                }}
-              />
-            )}
-            {can("apps.view") && (
-              <ActionItem
-                icon={<RouteIcon to="/github" fallback={IconBranch} />}
-                label="GitHub"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/github");
-                }}
-              />
-            )}
-            {can("workflows.run") && (
-              <ActionItem
-                icon={<RouteIcon to="/knowledge" fallback={IconBook} />}
-                label="Knowledge (RAG)"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/knowledge");
-                }}
-              />
-            )}
-            {can("workflows.run") && (
-              <ActionItem
-                icon={<RouteIcon to="/models" fallback={IconChip} />}
-                label="Models & LLM"
-                onClick={() => {
-                  setActionOpen(false);
-                  navigate("/models");
-                }}
-              />
-            )}
             <ActionItem
-              icon={<RouteIcon to="/system" fallback={IconChart} />}
-              label="System Monitor"
+              icon={<IconLogout />}
+              label={`Sign Out (${user?.display_name ?? ""})`}
               onClick={() => {
                 setActionOpen(false);
-                navigate("/system");
-              }}
-            />
-            <ActionItem
-              icon={<RouteIcon to="/settings" fallback={IconSettings} />}
-              label="Settings"
-              onClick={() => {
-                setActionOpen(false);
-                navigate("/settings");
+                void logout();
               }}
             />
           </div>
-          <div className="my-3 border-t border-zinc-200 dark:border-zinc-800" />
-          <ActionItem
-            icon={<IconLogout />}
-            label={`Sign Out (${user?.display_name ?? ""})`}
-            onClick={() => {
-              setActionOpen(false);
-              void logout();
-            }}
-          />
           {can("power.manage") && (
             <>
-              <p className="mb-1 mt-3 px-1 text-xs text-zinc-400">Power</p>
+              <div className="my-3 border-t border-zinc-200 dark:border-zinc-800" />
+              <p className="mb-1 px-1 text-xs text-zinc-400">Power</p>
               <div className="space-y-1">
                 <ActionItem
                   icon={<IconRestart />}
@@ -585,6 +411,266 @@ export default function AppLayout() {
 
       <Toasts />
     </div>
+    </ShellContext.Provider>
+  );
+}
+
+/** メニューの中身。PC のサイドバーと携帯のドロワーで同じものを使う。
+ *  compact は PC で折りたたんだ状態（アイコンだけの細い列）。 */
+function NavPanel({ compact, appName, sections, userName, toggleLabel, toggleExpanded, onToggle, onSearch, onAccount }: {
+  compact: boolean;
+  appName: string;
+  sections: NavSection[];
+  userName: string;
+  toggleLabel: string;
+  toggleExpanded: boolean;
+  onToggle: () => void;
+  onSearch: () => void;
+  onAccount: () => void;
+}) {
+  const rowBase = `flex min-h-11 items-center rounded-xl text-sm transition-colors md:min-h-9 ${
+    compact ? "w-11 justify-center" : "w-full gap-3 px-3"
+  }`;
+  const rowIdle = "text-zinc-600 hover:bg-zinc-200/60 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/80 dark:hover:text-zinc-100";
+  const rowActive = "bg-white font-medium text-zinc-900 shadow-sm ring-1 ring-zinc-200/80 dark:bg-zinc-800 dark:text-white dark:ring-zinc-700/60";
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className={`safe-top shrink-0 ${compact ? "px-2" : "px-3"}`}>
+        <div className="flex h-14 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={toggleLabel}
+            aria-expanded={toggleExpanded}
+            title={toggleLabel}
+            data-nav-toggle
+            className={`${shellIconButtonClass} ${compact ? "" : "-ml-1.5"}`}
+          >
+            <IconMenu />
+          </button>
+          {!compact && (
+            <>
+              <Logo size={24} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight">{appName}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className={`shrink-0 pb-1 ${compact ? "px-2" : "px-3"}`}>
+        <button
+          type="button"
+          onClick={onSearch}
+          aria-label="検索・コマンド"
+          title="検索・コマンド（Ctrl K）"
+          className={compact
+            ? `${rowBase} ${rowIdle}`
+            : "flex min-h-11 w-full items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-200 md:min-h-10"}
+        >
+          <IconSearch className="shrink-0 text-lg" />
+          {!compact && (
+            <>
+              <span className="min-w-0 flex-1 truncate text-left">検索・コマンド</span>
+              <kbd className="hidden shrink-0 rounded-md bg-zinc-100 px-1.5 py-0.5 font-sans text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400 md:block">
+                Ctrl K
+              </kbd>
+            </>
+          )}
+        </button>
+      </div>
+
+      <nav
+        aria-label="メインナビゲーション"
+        className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pb-3 ${compact ? "px-2" : "px-3"}`}
+      >
+        {sections.map((section, index) => (
+          <div key={section.id} role="group" aria-label={section.label} data-nav-section={section.id}>
+            {compact
+              ? index > 0 && <div aria-hidden className="mx-2 my-2 border-t border-zinc-200 dark:border-zinc-800" />
+              : <p className="px-3 pb-1 pt-4 text-[11px] font-medium tracking-wide text-zinc-500 dark:text-zinc-500">{section.label}</p>}
+            {compact && index === 0 && <div className="h-1" />}
+            <ul className="space-y-0.5">
+              {section.entries.map((entry) => {
+                const Ico = entry.icon;
+                const inner = (
+                  <>
+                    <Ico className="shrink-0 text-[18px]" />
+                    {!compact && <span className="min-w-0 flex-1 truncate">{entry.label}</span>}
+                    {!compact && entry.trailing}
+                  </>
+                );
+                return (
+                  <li key={entry.key}>
+                    {entry.external ? (
+                      <a
+                        href={entry.to}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={entry.title ?? entry.label}
+                        aria-label={compact ? entry.label : undefined}
+                        className={`${rowBase} ${rowIdle}`}
+                      >
+                        {inner}
+                      </a>
+                    ) : (
+                      <NavLink
+                        to={entry.to}
+                        end={entry.to === "/"}
+                        title={entry.title ?? entry.label}
+                        aria-label={compact ? entry.label : undefined}
+                        className={({ isActive }) => `${rowBase} ${isActive ? rowActive : rowIdle}`}
+                      >
+                        {inner}
+                      </NavLink>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </nav>
+
+      {/* 利用者。サインアウトと電源はここから。 */}
+      <div className={`safe-bottom shrink-0 border-t border-zinc-200/80 dark:border-zinc-800/80 ${compact ? "px-2" : "px-3"}`}>
+        <button
+          type="button"
+          onClick={onAccount}
+          aria-label="アカウントと操作"
+          aria-haspopup="dialog"
+          title={userName || "アカウントと操作"}
+          className={`my-2 flex min-h-11 items-center rounded-xl text-left text-sm transition-colors hover:bg-zinc-200/60 dark:hover:bg-zinc-800/80 ${
+            compact ? "w-11 justify-center" : "w-full gap-3 px-2"
+          }`}
+        >
+          <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-600 text-xs font-semibold uppercase text-white">
+            {(userName.trim()[0] ?? "?")}
+          </span>
+          {!compact && (
+            <>
+              <span className="min-w-0 flex-1 truncate font-medium text-zinc-800 dark:text-zinc-100">{userName}</span>
+              <IconDots className="shrink-0 text-lg text-zinc-400" />
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const DRAWER_FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** 携帯のドロワー。左から滑り込み、背景を暗くする。
+ *  閉じ方は、外側を押す・左へ払う・Escape・☰。開いている間は Tab をこの中に留める。 */
+function NavDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  const [shown, setShown] = useState(false);
+  const [dragX, setDragX] = useState(0);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const touchRef = useRef<{ x: number; y: number; horizontal: boolean | null } | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      return;
+    }
+    setShown(false);
+    setDragX(0);
+    const timer = window.setTimeout(() => setMounted(false), 220);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+
+  useEffect(() => {
+    if (!mounted || !open) return;
+    /* 閉じた位置を一度描かせてから開いた位置へ移す（滑り込みの起点）。 */
+    const frame = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(frame);
+  }, [mounted, open]);
+
+  useEffect(() => {
+    if (!mounted || !open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    panel?.querySelector<HTMLElement>("[data-nav-toggle]")?.focus({ preventScroll: true });
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !panel) return;
+      const items = [...panel.querySelectorAll<HTMLElement>(DRAWER_FOCUSABLE)].filter((el) => el.offsetParent !== null);
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || !panel.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      /* 開いたボタンへ戻す。画面を移って消えていれば何もしない。 */
+      if (previous && document.contains(previous)) previous.focus({ preventScroll: true });
+    };
+  }, [mounted, open]);
+
+  if (!mounted) return null;
+  return createPortal(
+    <div data-nav-drawer data-state={shown ? "open" : "closed"} className="fixed inset-0 z-50 md:hidden" role="presentation">
+      <div
+        aria-hidden
+        data-nav-backdrop
+        onClick={onClose}
+        className={`absolute inset-0 bg-black/45 backdrop-blur-[2px] transition-opacity duration-200 motion-reduce:transition-none ${shown ? "opacity-100" : "opacity-0"}`}
+      />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="メニュー"
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          touchRef.current = { x: touch.clientX, y: touch.clientY, horizontal: null };
+        }}
+        onTouchMove={(event) => {
+          const start = touchRef.current;
+          if (!start) return;
+          const dx = event.touches[0].clientX - start.x;
+          const dy = event.touches[0].clientY - start.y;
+          /* 縦に動かし始めたら一覧のスクロール。横に動かし始めたときだけ引き出しを動かす。 */
+          if (start.horizontal === null && Math.abs(dx) + Math.abs(dy) > 8) start.horizontal = Math.abs(dx) > Math.abs(dy);
+          if (start.horizontal) setDragX(Math.min(0, dx));
+        }}
+        onTouchEnd={() => {
+          const close = dragX < -64;
+          touchRef.current = null;
+          setDragX(0);
+          if (close) onClose();
+        }}
+        onTouchCancel={() => {
+          touchRef.current = null;
+          setDragX(0);
+        }}
+        style={shown && dragX ? { transform: `translateX(${dragX}px)`, transition: "none" } : undefined}
+        className={`absolute inset-y-0 left-0 w-[min(19rem,calc(100vw-3rem))] touch-pan-y border-r border-zinc-200/80 bg-zinc-50 shadow-2xl transition-transform duration-200 ease-out motion-reduce:transition-none dark:border-zinc-800 dark:bg-zinc-900 ${
+          shown ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        {children}
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -600,34 +686,6 @@ function IconRestartPower(props: React.SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
-
-function MobileNavLink({
-  to,
-  label,
-  icon: Ico,
-}: {
-  to: string;
-  label: string;
-  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-}) {
-  return (
-    <NavLink
-      to={to}
-      end={to === "/"}
-      className={({ isActive }) =>
-        `flex min-h-[52px] min-w-0 max-w-24 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 ${
-          isActive
-            ? "text-accent-600 dark:text-accent-400"
-            : "text-zinc-500 dark:text-zinc-400"
-        }`
-      }
-    >
-      <Ico className="text-xl" />
-      <span className="max-w-full truncate px-0.5 text-[10px]">{label}</span>
-    </NavLink>
-  );
-}
-
 /** 長い注記は折り返しの原因になる。意味を保った短い印にする。 */
 function hintMark(hint: string): string {
   if (hint === "拡張機能") return "EXT";
