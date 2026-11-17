@@ -1153,7 +1153,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
             />
             {busy && runningJob ? (
               <button type="button" onClick={() => void stopRunning()} aria-label="止める"
-                className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-zinc-700 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:bg-zinc-600">
+                className="flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-zinc-900 px-3.5 font-mono text-sm font-semibold text-white shadow-sm hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
                 <IconStop className="text-base" />
                 <span className="hidden sm:inline">止める</span>
               </button>
