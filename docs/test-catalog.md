@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 166 ファイル、1485 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、136 テスト
+- backend: 164 ファイル、1442 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、137 テスト
 
 ## backend（backend/tests）
 
@@ -513,6 +513,7 @@
 - `test_fork_remaps_compaction_carries_edit_images_and_copies_documents`
 - `test_stale_generating_message_can_be_deleted` — 再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。
 - `test_archive_hides_from_list_and_restores` — 会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。
+- `test_japanese_questions_get_a_final_language_instruction` — 日本語の質問には、生成の直前に「日本語で」を足す（2026-11-17: DS-XS が検索資料に引かれて中国語で答えた）。
 
 ### backend/tests/test_chat_references.py
 
@@ -733,34 +734,30 @@
 
 ### backend/tests/test_fan_control.py
 
-目的: Hardware-free regression tests for AMD fan controller and privileged allowlist.
+目的: ファン制御 v2（PID / 温度マップ）の、実機を使わないテスト。 目的: 2 方式の設定・旧設定の引き継ぎ・ファームウェアへ書くカーブ・故障時の安全側の動き・helper の許可範囲を守る。 根拠: 2026-11-17 に 4 方式・7 プリセットから作り直した（docs/design-amd-smart-fan.md）。helper・SMU14・起動時の テストは旧版から引き継いだ（R9700 の実機で踏んだ不具合）。
 
-- `test_multisensor_prefers_vram_even_when_core_is_cool`
+- `test_curve_is_flat_to_the_hotspot_limit_then_full` — ファームウェアのカーブ: 上限までは制御の出力で一定、上限 +1°C で最大。アプリが止まっても上限での最大は残る。
+- `test_over_the_limit_goes_to_full_speed_at_once` — 上限を超えたら、なめらかさの上限を待たずに最大回転（どの方式でも）。
+- `test_old_settings_are_carried_over` — 旧版の設定（本番の curve_r9700・温度追従）から、上限温度・方式・マージン・PID の効き具合を引き継ぐ。
+- `test_map_points_must_rise_toward_the_target`
+- `test_switching_mode_keeps_the_fan_speed` — 方式を切り替えても回転数は今の値から続く（段差を作らない）。
+- `test_history_records_limits_targets_and_fan`
+- `test_autotune_requires_control_and_an_llm`
+- `test_autotune_cancel_during_verify_restores_settings_and_stops_load` — 確認のために仮に保存した値は、中止したら元に戻る。負荷役も止める。
 - `test_missing_sensor_stops_and_resets`
 - `test_zero_rpm_under_heat_trips_fault`
 - `test_disable_restores_firmware_auto`
 - `test_unusable_firmware_range_is_not_enabled`
-- `test_targets_cannot_exceed_reported_critical_margin`
+- `test_limits_cannot_exceed_reported_critical_margin` — 上限温度はハードウェアの crit − 5°C を超えられない。
 - `test_settings_reject_untrusted_names_and_bdf`
 - `test_helper_rejects_unsafe_curve_and_bad_path`
 - `test_helper_commits_five_points_and_reset`
 - `test_explicit_restore_retries_pending_auto_failure`
 - `test_unexpected_temperature_read_error_fails_closed`
-- `test_llm_bursts_do_not_chatter_on_cooling`
-- `test_predictive_ramp_uses_temperature_trend_not_utilization`
-- `test_zero_rpm_only_after_stable_ten_minutes_and_immediate_wake`
-- `test_zero_rpm_is_default_off_and_unavailable_without_native_support`
 - `test_helper_zero_rpm_control_uses_fixed_nodes_and_stop_temp`
 - `test_helper_refuses_zero_rpm_when_stop_temperature_is_unsafe`
-- `test_stalled_monitor_loop_cannot_count_as_5_minutes_of_cooling`
-- `test_zero_rpm_requires_reliable_fan_and_power_readings`
-- `test_recommended_presets_safe_and_consistent`
-- `test_user_tuning_bounds_and_legacy_settings_migration`
-- `test_graphic_custom_settings_persist_without_enabling_gpu`
-- `test_configured_cooldown_parameters_reach_controller`
 - `test_reset_restores_curve_when_zero_rpm_node_is_unadvertised` — 実機R9700: fan_zero_rpm_enable は存在するが中身が空で、書くとEIO。
 - `test_reset_still_fails_when_advertised_zero_rpm_cannot_be_restored`
-- `test_floor_can_go_down_to_firmware_minimum_and_low_curve_is_flat` — 実機R9700: 旧実装は25°C 35% / 42°C 45%を固定で敷き、最低指令を30%に
 - `test_helper_accepts_firmware_minimum_but_not_below`
 - `test_rejected_auto_restore_stops_retrying_and_asks_for_reboot` — 実機R9700: SMUがリセットを拒否すると以後のOD書き込みは再起動まで全て失敗する。
 - `test_smu14_never_resets_on_disable_fault_or_shutdown` — 利用者の判断: R9700(SMU 14)ではリセットを一切使わず、最後のカーブを保持する。
@@ -768,53 +765,17 @@
 - `test_helper_refuses_reset_on_smu14_and_skips_revert_on_failed_apply`
 - `test_startup_mode_after_pc_boot` — PC起動後に保存設定を自動で再適用するか、GPU標準のまま起動するかを選べる。
 - `test_legacy_settings_default_to_reapplying_on_boot`
-- `test_cool_floor_follows_user_minimum_and_ramps_without_steps` — 実機: 冷えていても35%固定で、最低指令15%が効かなかった。
-- `test_legacy_step_settings_migrate_to_equivalent_ramp`
-- `test_hotspot_jump_far_from_target_does_not_max_the_fan` — 実機: LLM開始時のhotspotの跳ね上がり（数秒で約20°C）を毎分80°C超と
-- `test_rise_rate_ignores_plateau_after_load_start_jump` — 実機R9700: hotspotが72→81°Cへ跳ねた直後に横ばいでも、30秒窓の傾きだけで
-- `test_prediction_uses_each_sensors_own_rise` — hotspot 80/90°Cで横ばい、mem 66/85°Cが上昇中のとき、memの上昇を
-- `test_curve_backstop_point_can_move_later`
-- `test_single_hotspot_spike_is_not_a_rise` — 3秒1回だけの+8°Cの跳ねを上昇と見なし、予測で84%に上げていた。
-- `test_llm_quiet_preset_targets_per_sensor_kind`
-- `test_hotspot_climb_is_not_extrapolated` — hotspotは数秒でファンに追従する。86/95°Cへの上昇を先読みして83〜100%にしていた。
-- `test_pid_mode_writes_map_shaped_curve_raised_to_pid_output`
-- `test_autotune_requires_pid_mode`
-- `test_autotune_handover_keeps_the_fan_speed` — 実機R9700: 自動調整の終了時に積分をFF抜きで初期化し、50%→100%へ跳ねていた。
-- `test_curve_mode_writes_a_valid_map`
-- `test_mode_presets_carry_mode_and_targets`
-- `test_temperature_ema_settings_reject_unsafe_values`
-- `test_fan_history_reports_raw_and_smoothed_separately`
-- `test_legacy_map_raw_overtemperature_wins_over_temperature_ema`
-- `test_pid_raw_overheat_overrides_filter_and_auto_tune_hold`
-- `test_reconfigure_resets_curve_hold_before_applying_new_temperature_filter`
-- `test_temperature_margin_validation_and_persistence`
-- `test_target_mode_tracks_below_ceiling_with_limited_rise`
-- `test_target_raw_ceiling_bypasses_filters_and_slew`
-- `test_target_mode_converges_under_sustained_synthetic_heat`
-- `test_user_presets_can_be_added_selected_and_deleted` — 利用者のプリセット（2026-11-17 の依頼: 追加と削除）。組み込みは消せず、使っていたものを消すとカスタムに戻る。
 
-### backend/tests/test_fan_filter.py
+### backend/tests/test_fan_core.py
 
-目的: Hardware-free tests for timestamp-aware asymmetric fan temperature EMA.
+目的: ファン制御 v2 の本体（fan_core）のテスト。 目的: 2 方式（PID＋電力の先読み / 温度マップ）が、利用者の要件どおりに動くことを模擬で確かめる。 - 休みから急に全力: 上限を超えず、最大回転に跳ねない（マージンの範囲で止まる） - 0%↔100% の往復負荷: 回転が往復を追いかけない - 上限を超えたら即座に最大回転 - 自動調整は上限を超えない値のうち、回転が最も低いものを選ぶ 根拠: 2026-11-17 利用者の指示。熱モデルは R9700 の実測（data/amd-fan-model.json、210 W 上限）。
 
-- `test_fast_rise_slow_fall_and_no_finite_overshoot`
-- `test_discontinuity_resets_instead_of_resuming_stale_state`
-- `test_sensor_removal_drops_its_state`
-- `test_nonfinite_input_rejected`
-
-### backend/tests/test_fan_map.py
-
-目的: Intelligent map control: hotspot spikes followed, slow release, trim (no hardware).
-
-- `test_design_is_valid_for_the_firmware`
-- `test_target_speed_from_model_keeps_hotspot_at_target`
-- `test_hotspot_spike_is_followed_and_released_slowly`
-- `test_trim_raises_curve_when_over_target_and_decays`
-- `test_slow_sensor_raises_the_floor`
-- `test_curve_ema_dampens_short_cooling_dip_but_raw_overheat_wins`
-- `test_curve_raw_overshoot_applies_before_filter_release`
-- `test_release_scale_band`
-- `test_held_level_settles_instead_of_cycling_near_target` — Sustained load hovering just under the target must not saw-tooth.
+- `test_sudden_full_load_stays_inside_the_margin` — 休みから急に全力でも、上限を超えず緊急の最大回転に入らない。
+- `test_square_load_does_not_drive_the_fan_back_and_forth` — 10 秒ずつの 0%↔100% を続けても、回転の振れは 10 ポイント以内。
+- `test_over_the_limit_is_full_speed_until_back_at_the_target`
+- `test_map_shape_min_far_from_target_and_full_at_the_limit`
+- `test_tune_picks_the_lowest_fan_that_is_safe_and_calm`
+- `test_without_a_thermal_model_the_pid_still_follows_the_target` — 熱モデルがまだ無い（先読みなし）でも、PI だけで目標へ向かって回転を上げる。
 
 ### backend/tests/test_fan_pid.py
 
@@ -832,20 +793,6 @@
 - `test_pid_asymmetric_pv_filter_retains_cooling_dips_without_slowing_rise`
 - `test_pid_ema_does_not_change_raw_median_safety_input`
 - `test_ceiling_firmware_backstop_respects_hardware_range`
-
-### backend/tests/test_fan_strategy.py
-
-目的: Pure thermal-strategy simulations: no GPU hardware or privileged writes.
-
-- `test_zero_rpm_is_never_available_without_explicit_opt_in_or_power_telemetry`
-- `test_stable_thermal_power_required_for_ten_minutes_then_fast_power_wake`
-- `test_positive_temperature_slope_accelerates_without_cooling_slew_limit`
-- `test_policy_reports_raw_demand_and_leaves_cooldown_to_controller` — 降速の保持と連続ランプは fan_control._smooth_floor だけが持つ。
-- `test_integrator_clamps_and_adaptive_gains_remain_in_safe_bounds`
-- `test_suspend_resets_low_power_qualification_not_just_monotonic_clock`
-- `test_learning_can_be_disabled_without_disabling_safety_floor`
-- `test_zero_stop_dwell_cannot_shorten_below_ten_minutes`
-- `test_llm_burst_far_from_target_stays_gentle` — 実機R9700: hotspotが36→64°C（目標90°C）、239Wの約20秒の負荷で85%まで上がった。
 
 ### backend/tests/test_feature_boot_restore.py
 
@@ -2480,7 +2427,7 @@
 
 ### frontend/e2e/dashboard-fans.spec.ts
 
-目的: **未記入**
+目的: 目的: ホームのシステムサマリーで、CPU・GPU のファン回転（rpm）が数値で表示され、 320px（iPhone の最小幅）と PC 幅のどちらでも横にはみ出さないこと。 根拠: ファン回転をサマリーのカードに入れたとき（モバイルで横スクロールが出た）。2026-11-17 のファン制御 v2 で 「FAN 1,500 RPM」の文字表記がアイコン＋「1500 RPM」になっていたのに合わせて書き直した。 ファンの値は実機のセンサー次第（無ければ出さない）なので、出ている分の形式と幅だけを確かめる。
 
 - dashboard shows CPU and GPU fan values without mobile overflow
 
@@ -2492,10 +2439,11 @@
 
 ### frontend/e2e/fan-temperature-margin.spec.ts
 
-目的: 目的: ファン設定の画面で、温度マージンの編集・保存と、利用者プリセットの保存・削除ができること。 根拠: 温度マージン（目標追従の導入時）。プリセットの追加と削除は 2026-11-17 の依頼。
+目的: 目的: ファン制御 v2 の設定画面で、利用者が決める最小限の値（上限温度・マージン・方式・温度マップ）を 編集して保存でき、自動調整を確認してから始められること。iPhone 幅（320px）でも横にはみ出さないこと。 根拠: 2026-11-17 利用者の依頼「設定が多すぎて分からない・入れ子・プリセットが謎」で画面を作り直した （4 方式・プリセット・入れ子を撤去し、PID / 温度マップの 2 方式と 1 画面に）。旧画面の 「プリセットの保存・削除」と「温度追従のマージン」の確認はこのファイルで置き換えた。 API は page.route で模擬する（実機の GPU とファンを動かさない）。
 
-- temperature margin is editable and saved at ${width}px
-- user fan presets can be saved from the current settings and deleted
+- fan limits and margin are edited and saved at ${width}px
+- temperature map is shown only in map mode and its points are saved in order
+- auto tuning asks for confirmation, then shows its stage and a cancel button
 
 ### frontend/e2e/feature-boot-restore.spec.ts
 
