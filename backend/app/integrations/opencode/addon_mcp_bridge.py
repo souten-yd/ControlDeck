@@ -40,7 +40,8 @@ RESULT_DIR_ENV = "CONTROL_DECK_ADDON_MCP_RESULT_DIR"
 # 契約を取りに来る道具の返り値は、契約そのものである。これを削ると、契約を
 # 一覧から外した意味が無くなる——読ませるために取りに来させているのに、
 # 読める形で渡らない。呼ぶ側が要ると判断して取りに来たものなので、そのまま渡す。
-RESULT_VERBATIM_TOOLS = frozenset({"control_deck.tool_contract"})
+# 診断レポートは AI が全文を読む前提（削ると原因の stack や traceback が落ちる）
+RESULT_VERBATIM_TOOLS = frozenset({"control_deck.tool_contract", "control_deck.diagnostics"})
 # 落とした全文を置いておく日数。読み返すのは同じ会話の中だけである。
 RESULT_RETENTION_SECONDS = 3 * 24 * 60 * 60
 

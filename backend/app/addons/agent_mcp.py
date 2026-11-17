@@ -71,6 +71,26 @@ def _research_tool() -> dict[str, Any] | None:
     }
 
 
+DIAGNOSTICS_TOOL = "control_deck.diagnostics"
+
+
+def _diagnostics_tool() -> dict[str, Any]:
+    return {
+        "name": DIAGNOSTICS_TOOL,
+        "description": (
+            "ControlDeck 自身の診断レポート（Markdown、秘密は伏せ済み）を返す。自己診断の結果、本体の再起動と"
+            "その理由、OOM で強制終了されたプロセス、管理下の常駐の異常終了、event loop の詰まり（塞いだ関数の"
+            "stack つき）、遅い API、警告・エラーのまとめ（traceback つき）、メモリ、失敗したジョブ。"
+            "ControlDeck の不具合や遅さ・落ちる原因を調べるときに最初に呼ぶ。"
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"hours": {"type": "number", "minimum": 1, "maximum": 168,
+                                     "description": "遡る時間（既定 24）"}},
+        },
+    }
+
+
 def _report_tool() -> dict[str, Any]:
     from app.integrations.opencode.reports import REPORT_SCHEMA
 
@@ -452,6 +472,8 @@ async def list_tools(
     research = _research_tool()
     if research is not None:
         tools.append(research)
+    if "settings.manage" in permissions:
+        tools.append(_diagnostics_tool())
     return {"tools": tools}
 
 
@@ -478,6 +500,20 @@ async def call_tool(
         return {"name": requested, "inputSchema": contract}
     if body.name == REPORT_TOOL:
         return _save_report(body.arguments, user, claims, db, request)
+    if body.name == DIAGNOSTICS_TOOL:
+        if "settings.manage" not in permissions or not set(body.arguments) <= {"hours"}:
+            raise HTTPException(status_code=404, detail="diagnostics toolが見つかりません")
+        hours = body.arguments.get("hours", 24)
+        if not isinstance(hours, (int, float)) or not 1 <= hours <= 168:
+            raise HTTPException(status_code=422, detail="hours は 1〜168 です")
+        import asyncio as _asyncio
+
+        from app.diagnostics import report as diagnostics_report
+
+        data = await _asyncio.to_thread(diagnostics_report.build, float(hours))
+        audit.record(db, "diagnostics.report", user=user, resource_type="system", resource_id="diagnostics",
+                     request=request, metadata={"hours": hours, "via": "agent_mcp"})
+        return {"report_markdown": diagnostics_report.to_markdown(data)}
     if body.name == RESEARCH_TOOL:
         return await _run_research(body.arguments, user, claims, db, request)
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:

@@ -106,7 +106,10 @@ async def lifespan(app: FastAPI):
     machine_wide = not isolated()
     if not machine_wide:
         logger.warning("検証用インスタンス（CONTROL_DECK_ISOLATED=1）: ファン制御・通知・外部プロセスの管理を起動しません")
+    from app.diagnostics import recorder as diagnostics_recorder
+
     tasks = [
+        *diagnostics_recorder.start(),
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(pause_recovery_loop()),
@@ -165,6 +168,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)
 # 携帯から使うので、圧縮の有無がそのまま待ち時間になる。逐次流すものは素通しする。
 app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
+# 診断: 要求ごとの所要時間（遅い API を記録する）
+from app.diagnostics import recorder as _diag_recorder  # noqa: E402
+
+_diag_recorder.install_middleware(app)
 
 
 @app.exception_handler(RequestValidationError)
@@ -333,6 +340,9 @@ app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)
 app.include_router(features_router, prefix=API)
+from app.diagnostics.router import router as diagnostics_router  # noqa: E402
+
+app.include_router(diagnostics_router, prefix=API)
 app.include_router(skills_router, prefix=API)
 app.include_router(plugins_router, prefix=API)
 app.include_router(addons_router, prefix=API)
