@@ -11,6 +11,8 @@
 import { readFileSync, statSync } from "node:fs";
 
 const FILE = process.env.CONTROLDECK_PERMISSION_FILE || "";
+// 箱の外（host）で動くときは境界が無いので、Auto でもコマンドは自動にしない
+const HOST = process.env.CONTROLDECK_ISOLATION === "host";
 let cache = { mtime: -1, mode: "auto" };
 
 export function currentMode() {
@@ -46,12 +48,22 @@ const DANGEROUS = [
   /(^|[^<])>\s*[^&\s]/, // 上書きのリダイレクト（>&2 などは除く）
   /\|\s*(sh|bash|zsh|python3?|node)(\s|$)/,
   /(^|[\s;&|(])(eval|exec|source)\s/,
+  // 1 つのコマンドの中で別のコマンドを走らせる形（判定を素通りする）
+  /`|\$\(|<\(|>\(|\n|\r/,
+  /(^|[\s;&|(])(sh|bash|zsh|dash|fish|python3?|node|deno|bun|perl|ruby|php)\s+(-[a-zA-Z]*[ce]\b|<<)/,
+  /(^|[\s;&|(])(xargs|nohup|setsid|timeout|nice|ionice|stdbuf|watch)(\s|$)/,
+  /(^|[\s;&|(])find\s+(.*\s)?-(fprint|fprintf|fls|fprint0)(\s|$)/,
+  /(^|[\s;&|(])sort\s+(.*\s)?(-[a-zA-Z]*o|--output)(\s|=|$)/,
+  /--output(=|\s)/,
+  /(^|[\s;&|(])git\s+(switch|checkout)\s.*(-f\b|--force|--discard-changes)/,
+  /(^|[\s;&|(])git\s+branch\s.*(-f\b|--force|-M\b|-C\b)/,
+  /(^|[\s;&|(])git\s+-c\s/,
 ];
 
 // 自動でよい形（全体がこれだけで出来ていること）。読むだけ・テスト・ビルド・整形。
 const SAFE_HEAD = new Set([
   "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "grep", "rg", "ag", "find", "fd", "tree",
-  "file", "stat", "du", "df", "which", "type", "env", "date", "diff", "cmp", "sort", "uniq", "cut", "tr",
+  "file", "stat", "du", "df", "which", "date", "diff", "cmp", "sort", "uniq", "cut", "tr",
   "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum", "true", "test", "[",
   "mkdir", "touch", "cd",
 ]);
@@ -92,6 +104,7 @@ export function decide(mode, action, resources) {
     case "execute":
       return { effect: "allow", message: "Auto: ControlDeck の道具（MCP）" };
     case "shell": {
+      if (HOST) return { effect: "ask", message: "Auto: 箱の外（host）で動いているため確認します" };
       const verdicts = (resources || []).map(judgeShell);
       const asked = verdicts.find((verdict) => verdict.effect !== "allow");
       return asked || verdicts[0] || { effect: "ask", message: "空のコマンド" };

@@ -41,6 +41,9 @@ IDLE_SECONDS = 30 * 60
 START_TIMEOUT = 60.0
 TOOL_OUTPUT_LIMIT = 4000
 _locks: dict[str, asyncio.Lock] = {}
+# いま発言を処理中のサーバー（このプロセス内）。掃除の対象から外す。
+_active: dict[str, int] = {}
+TOUCH_SECONDS = 60
 
 
 class ChatServerError(RuntimeError):
@@ -100,7 +103,7 @@ def load(key: str) -> Server | None:
 
 def _save(server: Server) -> None:
     path = _state_path(server.key)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     tmp.write_text(json.dumps(server.__dict__), encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
@@ -140,13 +143,12 @@ def set_mode(server: Server, mode: str) -> None:
     os.replace(tmp, path)
 
 
-def apply_mode_to_running(owner_user_id: int | None, mode: str) -> int:
-    """この利用者の動いているサーバーへ権限モードをすぐ効かせる（起こし直さない）。"""
+def apply_mode_to_running(mode: str) -> int:
+    """動いている全サーバーへ権限モードをすぐ効かせる（設定は全体で 1 つ。起こし直さない）。"""
     count = 0
     for server in _all():
-        if server.owner == owner_user_id:
-            set_mode(server, mode)
-            count += 1
+        set_mode(server, mode)
+        count += 1
     return count
 
 
@@ -199,7 +201,7 @@ def reap_idle(now: float | None = None, *, keep: str = "") -> list[str]:
     now = now or time.time()
     stopped = []
     for server in _all():
-        if server.key != keep and now - server.last_used > IDLE_SECONDS:
+        if server.key != keep and server.key not in _active and now - server.last_used > IDLE_SECONDS:
             stop(server.key)
             stopped.append(server.key)
     return stopped
@@ -238,7 +240,8 @@ def _start(project: Path, owner_user_id: int | None, key: str) -> Server:
     command = [str(binary), "serve", "--hostname", "127.0.0.1", "--port", str(port)]
     command, launch_env = provider._launch(
         runtime, command, project, config, interactive=False,
-        extra_env={"CONTROLDECK_PERMISSION_FILE": str(permission_file)}, env_file=env_file,
+        extra_env={"CONTROLDECK_PERMISSION_FILE": str(permission_file),
+                   "CONTROLDECK_ISOLATION": provider.isolation_mode()}, env_file=env_file,
     )
     _stop_unit(server.unit)  # 前回の残り（状態ファイルを失ったもの）
     argv = [systemd_run, "--user", "--quiet", "--collect", f"--unit={server.unit}",
@@ -288,21 +291,24 @@ async def resolve_project(project_name: str = "", project_path: str = "") -> Pat
         imported = await asyncio.to_thread(provider.import_project, project_path)
         project = Path(imported["path"])
     else:
-        raw = provider.get_settings().get("project_path") or ""
+        raw = (await asyncio.to_thread(provider.get_settings)).get("project_path") or ""
         if not raw:
             raise ChatServerError("プロジェクトを指定してください")
         project = files.resolve(raw)
-    if not project.is_dir():
+    if not await asyncio.to_thread(project.is_dir):
         raise ChatServerError("プロジェクトはディレクトリを指定してください")
-    return project.resolve()
+    return await asyncio.to_thread(project.resolve)
 
 
 # ---- API -----------------------------------------------------------------------------------
 
 async def _call(server: Server, method: str, path: str, body: dict | None = None) -> Any:
-    async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-        response = await client.request(method, f"{server.base}{path}", headers=server.headers(),
-                                         json=body)
+    try:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            response = await client.request(method, f"{server.base}{path}", headers=server.headers(),
+                                             json=body)
+    except httpx.HTTPError as exc:
+        raise ChatServerError(f"OpenCode のサーバーにつながりません（{type(exc).__name__}）") from exc
     if response.status_code == 404:
         return None
     if response.status_code >= 400:
@@ -367,12 +373,23 @@ def _tool_text(content: Any) -> str:
 Callback = Callable[[dict], Awaitable[None]]
 
 
+async def _session_active(server: Server, session_id: str) -> bool:
+    """このセッションがまだ処理中か（つなぎ直したあと、途中で終わっていないかを確かめる）。"""
+    try:
+        active = await _call(server, "GET", "/api/session/active")
+    except ChatServerError:
+        return True  # 分からなければ待ち続ける
+    return session_id in json.dumps(active)
+
+
 async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
                    on_tool: Callback, on_permission: Callback) -> dict:
     """1 回分の発言を送り、終わるまでイベントを呼び出し元へ渡す。中断されたら OpenCode も止める。
 
+    子エージェント（このセッションから作られた別セッション）の許可の問い合わせも渡す
+    （答えないと親の発言が止まり続けるため）。許可には sessionID を添える（返答先）。
     戻り値: {"status": "succeeded" | "failed" | "interrupted", "error": str}
     """
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -384,6 +401,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
             try:
                 async for event in events(server):
                     if event.get("type") == "server.connected":
+                        if attempts:
+                            await queue.put({"type": "__reconnected"})
                         ready.set()
                         attempts = 0
                     await queue.put(event)
@@ -394,24 +413,46 @@ async def run_turn(server: Server, session_id: str, text: str, *,
             await asyncio.sleep(1)
         await queue.put(None)
 
+    _active[server.key] = _active.get(server.key, 0) + 1
     task = asyncio.create_task(reader())
     tools: dict[str, dict] = {}
+    family = {session_id}          # このセッションと、そこから作られた子
+    last_touch = time.monotonic()
     try:
         await asyncio.wait_for(ready.wait(), timeout=15)
         await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=TOUCH_SECONDS)
+            except asyncio.TimeoutError:
+                event = {"type": "__tick"}
+            if time.monotonic() - last_touch >= TOUCH_SECONDS:
+                last_touch = time.monotonic()
+                await asyncio.to_thread(touch, server)   # 長い作業や許可待ちの間に掃除されないように
             if event is None:
                 return {"status": "failed", "error": "OpenCode のイベントが途切れました"}
-            data = event.get("data") if isinstance(event.get("data"), dict) else {}
-            if data.get("sessionID") not in (None, session_id) and not event.get("type", "").startswith("permission."):
-                continue  # 子エージェント（別セッション）は段階 2 で出す
             kind = str(event.get("type") or "")
+            if kind == "__reconnected":
+                if not await _session_active(server, session_id):
+                    return {"status": "succeeded", "error": ""}  # 切れている間に終わっていた
+                continue
+            if kind == "__tick":
+                continue
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            sid = data.get("sessionID")
+            if kind == "session.created" and data.get("parentID") in family and data.get("id"):
+                family.add(str(data["id"]))
+                continue
+            if kind.startswith("permission."):
+                if sid not in family:
+                    continue
+            elif sid not in (None, session_id):
+                continue  # 子エージェントの本文・道具は段階 2 で出す
             if kind == "session.text.delta":
                 await on_text(str(data.get("delta") or ""))
             elif kind == "session.reasoning.delta":
                 await on_reasoning(str(data.get("delta") or ""))
-            elif kind == "session.tool.input.started":
+            elif kind == "session.tool.input.started" and data.get("id"):
                 tools[data["id"]] = {"id": data["id"], "name": data.get("name", ""), "status": "running",
                                      "input": {}, "output": ""}
                 await on_tool(tools[data["id"]])
@@ -425,12 +466,13 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 if kind.endswith("failed"):
                     tool["output"] = str((data.get("error") or {}).get("message") or "失敗しました")
                 await on_tool(tool)
-            elif kind == "permission.asked" and data.get("sessionID") == session_id:
-                await on_permission({"id": data.get("id"), "action": data.get("action"),
+            elif kind == "permission.asked" and data.get("id"):
+                await on_permission({"id": data.get("id"), "sessionID": sid, "child": sid != session_id,
+                                     "action": data.get("action"),
                                      "resources": list(data.get("resources") or []),
                                      "save": list(data.get("save") or []),
                                      "tool": (data.get("source") or {}).get("id"), "status": "pending"})
-            elif kind == "permission.replied" and data.get("sessionID") == session_id:
+            elif kind == "permission.replied" and data.get("requestID"):
                 await on_permission({"id": data.get("requestID"), "status": str(data.get("reply") or "")})
             elif kind == "session.execution.succeeded":
                 return {"status": "succeeded", "error": ""}
@@ -442,11 +484,16 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     except asyncio.CancelledError:
         try:
             await asyncio.shield(interrupt(server, session_id))
-        except (httpx.HTTPError, ChatServerError):
+        except ChatServerError:
             logger.warning("OpenCode の中断を伝えられませんでした")
         raise
+    except asyncio.TimeoutError as exc:
+        raise ChatServerError("OpenCode のイベントにつながりませんでした") from exc
     finally:
         task.cancel()
+        _active[server.key] = _active.get(server.key, 1) - 1
+        if _active[server.key] <= 0:
+            _active.pop(server.key, None)
         try:
             await asyncio.shield(asyncio.to_thread(touch, server))
         except Exception:  # noqa: BLE001 - 使った時刻の記録に失敗しても会話は終える

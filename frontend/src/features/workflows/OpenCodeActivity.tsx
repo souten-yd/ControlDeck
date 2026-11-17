@@ -25,7 +25,7 @@ export interface OpenCodePermission {
 export type PermissionMode = "auto" | "ask";
 
 export const PERMISSION_MODES: { id: PermissionMode; label: string; icon: string; hint: string }[] = [
-  { id: "auto", label: "Auto", icon: "⏵⏵", hint: "編集・読むだけ・テスト/ビルドは自動。危ない操作と判断できないものだけ確認" },
+  { id: "auto", label: "Auto", icon: "⏵⏵", hint: "箱の中で、編集・読むだけ・テスト/ビルドは自動。危ない操作と判断できないものだけ確認" },
   // U+FE0E: 携帯で絵文字にならないよう文字の形で出す
   { id: "ask", label: "確認", icon: "⏸\uFE0E", hint: "コマンドの実行・編集・外部への取得は毎回確認" },
 ];
@@ -139,7 +139,7 @@ function PermissionPrompt({ item, onAnswer }: {
   const options: { decision: "once" | "always" | "reject"; label: string; title?: string }[] = [
     { decision: "once", label: "はい（今回だけ）" },
     { decision: "always", label: save ? `はい、以後「${save}」は聞かない` : "はい、以後は聞かない",
-      title: save ? `この会話では「${save}」を聞かずに許可します` : undefined },
+      title: save ? `このプロジェクトでは「${save}」を聞かずに許可します` : undefined },
     { decision: "reject", label: "いいえ（拒否）" },
   ];
   return (

@@ -465,7 +465,7 @@ def set_permission_mode(
     from app.integrations.opencode import chat_server, provider
 
     provider.save_workflow({"chat_permission_mode": body.mode})
-    applied = chat_server.apply_mode_to_running(user.id, body.mode)
+    applied = chat_server.apply_mode_to_running(body.mode)
     audit.record(db, "opencode.permission_mode", user=user, resource_type="opencode", resource_id="chat",
                  request=request, metadata={"mode": body.mode, "running_servers": applied})
     return {"mode": body.mode}
@@ -505,14 +505,17 @@ async def opencode_permission(
     from app.integrations.opencode import chat_server
 
     meta = await asyncio.to_thread(_opencode_meta, conv_id, body.message_id, user.id)
-    pending = {str(p.get("id")) for p in meta.get("permissions") or [] if p.get("status") == "pending"}
+    pending = {str(p.get("id")): p for p in meta.get("permissions") or [] if p.get("status") == "pending"}
     if body.request_id not in pending:
+        raise HTTPException(status_code=409, detail="この許可はもう答えられません")
+    target_session = str(pending[body.request_id].get("sessionID") or meta["opencode_session"])
+    if not target_session.startswith("ses_"):
         raise HTTPException(status_code=409, detail="この許可はもう答えられません")
     server = await asyncio.to_thread(chat_server.load, str(meta["server_key"]))
     if server is None:
         raise HTTPException(status_code=409, detail="OpenCode のサーバーが止まっています")
     try:
-        await chat_server.reply_permission(server, str(meta["opencode_session"]), body.request_id, body.decision)
+        await chat_server.reply_permission(server, target_session, body.request_id, body.decision)
     except chat_server.ChatServerError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     def record() -> None:
@@ -644,6 +647,12 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             job.log("permission", permission=dict(entry or item))
             await asyncio.to_thread(checkpoint)
 
+        def expire_pending() -> None:
+            for item in permissions:
+                if item.get("status") == "pending":
+                    item["status"] = "expired"
+                    job.log("permission", permission=dict(item))
+
         try:
             project = await chat_server.resolve_project(params.get("code_project", ""),
                                                         params.get("code_project_path", ""))
@@ -651,28 +660,35 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             from app.models_mgmt import local_llm
 
             # LLM（llama.cpp 等）は ondemand の仕組みを通らないので、先に起こしておく
-            await local_llm.ensure_ready_by_base_url(str(opencode_provider.get_settings()["base_url"]))
+            settings = await asyncio.to_thread(opencode_provider.get_settings)
+            await local_llm.ensure_ready_by_base_url(str(settings["base_url"]))
             job.log("progress", phase="opencode", label="OpenCode を準備しています", iteration=0, details={})
             server = await chat_server.ensure(project, job.owner_user_id)
             session_id = await asyncio.to_thread(_last_code_session)
             if not (session_id and await chat_server.session_exists(server, session_id)):
                 session_id = await chat_server.create_session(server, query[:60])
             buf["meta"].update({"opencode_session": session_id, "project_path": str(project),
-                                "server_key": server.key, "permission_mode": chat_server.get_mode(server)})
+                                "server_key": server.key,
+                                "permission_mode": await asyncio.to_thread(chat_server.get_mode, server)})
             await asyncio.to_thread(checkpoint)
             result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
                                                 on_reasoning=on_reasoning, on_tool=on_tool,
                                                 on_permission=on_permission)
         except asyncio.CancelledError:
+            expire_pending()
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
             raise
         except chat_server.ChatServerError as e:
+            expire_pending()
             await asyncio.to_thread(checkpoint, True, "failed", str(e))
             raise
+        except Exception as e:  # noqa: BLE001 - 想定外でも「生成中」のまま残さない
+            logger.exception("OpenCode の発言の処理に失敗しました")
+            expire_pending()
+            await asyncio.to_thread(checkpoint, True, "failed", f"OpenCode の処理に失敗しました（{type(e).__name__}）")
+            raise
         # 答えを待っていた許可は、終わった時点で無効（OpenCode 側でも取り消される）
-        for item in permissions:
-            if item.get("status") == "pending":
-                item["status"] = "expired"
+        expire_pending()
         if result["status"] == "interrupted":
             if any(item.get("status") == "reject" for item in permissions):
                 buf["content"] += ("\n\n" if buf["content"] else "") + "（許可されなかったため、ここで止めました）"
@@ -1086,6 +1102,12 @@ async def send_message(
     allowed_modes = {"auto", "chat", "web", "academic", "deep", "research", "code"}
     if body.mode not in allowed_modes:
         raise HTTPException(status_code=422, detail="未対応のチャットモードです")
+    if body.mode == "code" and db.query(ChatMessage).filter(
+        ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+        ChatMessage.status == "generating",
+    ).first() is not None:
+        # 同じセッションのイベントを 2 つの発言が取り合わないように
+        raise HTTPException(status_code=409, detail="OpenCode が作業中です。終わるか止めてから送ってください")
     if body.plan is not None and body.mode not in ("auto", body.plan.mode):
         raise HTTPException(status_code=422, detail="モードと調査計画が一致しません")
     # 履歴（system + 過去 + 今回）

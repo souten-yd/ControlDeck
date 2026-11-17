@@ -24,7 +24,12 @@ def test_permission_plugin_auto_allows_safe_work_and_asks_for_danger(tmp_path):
       const out = {{}};
       for (const c of ["ls -la", "git status && git diff", "npm run build", "python -m pytest -q", "rg foo | head",
                        "rm -rf build", "git push origin main", "curl https://x", "echo x > a.txt", "npm install left-pad",
-                       "sudo ls", "find . -delete", "some-unknown-tool --flag", "cat a | sh"]) {{
+                       "sudo ls", "find . -delete", "some-unknown-tool --flag", "cat a | sh",
+                       "env bash -c id", "env sh -c 'git push --force'", "echo `rm -rf ~`", "echo $(/bin/rm -rf x)",
+                       "cat <(bash -c id)", "ls\\nnode -e 'x'", "echo x | env sh", "find . -fprint /etc/x",
+                       "sort -o important.py a", "git diff --output=src/main.py", "git switch --discard-changes main",
+                       "git branch -f main HEAD~5", "node -e 'x'", "python3 -c 'x'", "xargs rm < list",
+                       "git -c core.fsmonitor=x status"]) {{
         out[c] = judgeShell(c).effect;
       }}
       out.edit = decide("auto", "edit", ["a.py"]).effect;
@@ -46,10 +51,31 @@ def test_permission_plugin_auto_allows_safe_work_and_asks_for_danger(tmp_path):
     for safe in ("ls -la", "git status && git diff", "npm run build", "python -m pytest -q", "rg foo | head"):
         assert out[safe] == "allow", safe
     for danger in ("rm -rf build", "git push origin main", "curl https://x", "echo x > a.txt",
-                   "npm install left-pad", "sudo ls", "find . -delete", "some-unknown-tool --flag", "cat a | sh"):
+                   "npm install left-pad", "sudo ls", "find . -delete", "some-unknown-tool --flag", "cat a | sh",
+                   # レビューで見つかった、判定を素通りしていた形
+                   "env bash -c id", "env sh -c 'git push --force'", "echo `rm -rf ~`", "echo $(/bin/rm -rf x)",
+                   "cat <(bash -c id)", "ls\nnode -e 'x'", "echo x | env sh", "find . -fprint /etc/x",
+                   "sort -o important.py a", "git diff --output=src/main.py", "git switch --discard-changes main",
+                   "git branch -f main HEAD~5", "node -e 'x'", "python3 -c 'x'", "xargs rm < list",
+                   "git -c core.fsmonitor=x status"):
         assert out[danger] == "ask", danger
     assert out["edit"] == "allow" and out["webfetch"] is None and out["askMode"] is None
     assert out["hook"][:3] == ["allow", "deny", "ask"] and out["hook"][3].startswith("Auto")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い")
+def test_permission_plugin_asks_for_every_command_outside_the_box(tmp_path):
+    """箱の外（host）では境界が無いので、Auto でもコマンドは確認（編集は自動のまま）。"""
+    mode_file = tmp_path / "mode.json"
+    mode_file.write_text(json.dumps({"mode": "auto"}))
+    script = f"""
+      import {{ decide }} from {json.dumps((PLUGIN / "index.mjs").as_uri())};
+      console.log(JSON.stringify([decide("auto", "shell", ["ls"]).effect, decide("auto", "edit", ["a"]).effect]));
+    """
+    result = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True,
+                            env={"CONTROLDECK_PERMISSION_FILE": str(mode_file), "CONTROLDECK_ISOLATION": "host",
+                                 "PATH": "/usr/bin:/bin"}, timeout=30, check=True)
+    assert json.loads(result.stdout) == ["ask", "allow"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node が無い")
@@ -329,6 +355,86 @@ def test_permission_mode_api_saves_and_applies_to_running_servers(admin_client, 
     r = admin_client.put("/api/v1/chat/opencode/permission-mode", json={"mode": "ask"}, headers=CSRF_HEADERS)
     assert r.status_code == 200 and r.json()["mode"] == "ask"
     assert admin_client.get("/api/v1/chat/opencode/permission-mode").json()["mode"] == "ask"
-    assert chat_server.get_mode(chat_server.load(mine.key)) == "ask"      # 動いている自分のサーバーに効く
-    assert chat_server.get_mode(chat_server.load(other.key)) == "auto"    # 他人のサーバーは変えない
+    # 設定は全体で 1 つ: 動いているすべてのサーバーに効く（他の利用者のものも。画面の表示と食い違わない）
+    assert chat_server.get_mode(chat_server.load(mine.key)) == "ask"
+    assert chat_server.get_mode(chat_server.load(other.key)) == "ask"
     admin_client.put("/api/v1/chat/opencode/permission-mode", json={"mode": "auto"}, headers=CSRF_HEADERS)
+
+
+def test_run_turn_passes_child_permissions_and_survives_a_reconnect(monkeypatch, tmp_path):
+    from app.integrations.opencode import chat_server
+
+    sid = "ses_1"
+    sequence = [
+        {"type": "session.created", "data": {"id": "ses_child", "parentID": sid}},
+        {"type": "permission.asked", "data": {"id": "per_c", "sessionID": "ses_child", "action": "shell",
+                                               "resources": ["rm x"], "save": [], "source": {}}},
+        {"type": "permission.asked", "data": {"id": "per_other", "sessionID": "ses_unrelated", "action": "shell",
+                                               "resources": ["rm y"], "save": [], "source": {}}},
+        {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+    ]
+    calls: list = []
+    _fake_events(monkeypatch, sequence, calls)
+    perms = []
+
+    async def on_permission(item):
+        perms.append(dict(item))
+
+    noop = lambda *_: asyncio.sleep(0)  # noqa: E731
+    result = asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop,
+                                              on_tool=noop, on_permission=on_permission))
+    assert result["status"] == "succeeded"
+    assert [p["id"] for p in perms] == ["per_c"]                      # 関係ないセッションの許可は出さない
+    assert perms[0]["sessionID"] == "ses_child" and perms[0]["child"] is True
+
+
+def test_running_servers_are_not_reaped(monkeypatch, tmp_path):
+    from app.integrations.opencode import chat_server
+
+    monkeypatch.setattr(chat_server, "_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(chat_server, "_stop_unit", lambda unit: None)
+    server = _server(tmp_path)
+    server.last_used = time.time() - chat_server.IDLE_SECONDS - 5
+    chat_server._save(server)
+    chat_server._active[server.key] = 1
+    try:
+        assert chat_server.reap_idle() == []          # 発言を処理中のサーバーは止めない
+    finally:
+        chat_server._active.pop(server.key, None)
+    assert chat_server.reap_idle() == [server.key]
+
+
+def test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating(admin_client, monkeypatch, tmp_path):
+    import app.workflows.chat_persist as cp
+    from app.integrations.opencode import chat_server
+    from app.models_mgmt import local_llm
+
+    async def boom(name="", path=""):
+        raise KeyError("unexpected")
+
+    async def fake_ready(url):
+        return None
+
+    monkeypatch.setattr(chat_server, "resolve_project", boom)
+    monkeypatch.setattr(local_llm, "ensure_ready_by_base_url", fake_ready)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send",
+                          json={"content": "x", "mode": "code", "model": "t", "code_project": "demo"}, headers=CSRF_HEADERS)
+    aid = r.json()["assistant_message_id"]
+    for _ in range(100):
+        msgs = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+        status = next(m for m in msgs if m["id"] == aid)["status"]
+        if status != "generating":
+            break
+        time.sleep(0.05)
+    assert status == "failed"                         # 想定外の例外でも「生成中」のまま残らない
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+    with SessionLocal() as db:                        # 作業中の発言があれば、次は 409
+        db.get(ChatMessage, aid).status = "generating"
+        db.commit()
+    second = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send",
+                               json={"content": "y", "mode": "code", "model": "t", "code_project": "demo"},
+                               headers=CSRF_HEADERS)
+    assert second.status_code == 409
