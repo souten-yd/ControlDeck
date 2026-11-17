@@ -13,6 +13,7 @@ const isStandalone =
   window.matchMedia("(display-mode: standalone)").matches;
 if (isStandalone) document.documentElement.classList.add("pwa-standalone");
 
+// 根本の対処は index.css の html の min-height（WebKit 301108）。ここはそれが効かなかったときの保険。
 // iPhone のホーム画面アプリは、再読み込みの後に WebView 自体が上の Safe Area（約 59pt）の分だけ短くなり、
 // 画面の下端より上で描画が終わる（実機の診断 2026-11-17: screen 932 / innerHeight 873 / safe 59・34。
 // 画面写真でも 873 で切れ、その下は描画されない黒い帯）。#428 は「描画は満寸」と見て殻を 932 に
