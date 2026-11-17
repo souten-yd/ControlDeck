@@ -297,9 +297,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 700 }
     test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
     const SAFE_TOP = 59;
     const SAFE_BOTTOM = 34;
-    await page.addInitScript(([top, bottom]) => {
+    await page.addInitScript(() => {
       Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
-      // Chromium は Safe Area を持たないので、CSS 変数の境界から iPhone の値を入れる。
+    });
+    // Chromium は Safe Area を持たないので、CSS 変数の境界から iPhone の値を入れる。
+    const applySafeArea = () => page.evaluate(([top, bottom]) => {
       document.documentElement.style.setProperty("--cd-safe-area-top", `${top}px`);
       document.documentElement.style.setProperty("--cd-safe-area-bottom", `${bottom}px`);
     }, [SAFE_TOP, SAFE_BOTTOM]);
@@ -308,6 +310,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 700 }
     await mockChat(page);
     await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
     await page.goto("/assistant");
+    await applySafeArea();
     await expect(page.locator("html")).toHaveClass(/pwa-standalone/);
     const shell = page.locator("[data-assistant-shell]");
     await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
@@ -343,7 +346,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 700 }
     expect(layout.menu.top).toBeGreaterThanOrEqual(SAFE_TOP);
     expect(layout.title.top).toBeGreaterThanOrEqual(SAFE_TOP);
     expect(layout.topbar.bottom).toBe(SAFE_TOP + 56 + 1);
-    expect(layout.topbarBackground).toMatch(/^rgb\(/);
+    expect(layout.topbarBackground).not.toMatch(/\/|rgba|transparent/); // 透けていない
     expect(layout.topbarBackdrop).toBe("none");
     expect(layout.messages.top).toBeGreaterThanOrEqual(layout.topbar.bottom);
     // 下: 入力カードは画面の中にあり、ホームバー（下端から約 13px）に重ならない。
@@ -373,6 +376,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 700 }
     // ほかの画面: 上の行は上端から、操作はステータスバーの下、中身の下端にホームバーの余白。
     for (const path of SHELL_PAGES) {
       await page.goto(path);
+      await applySafeArea();
       await expect(page.locator("[data-shell-topbar]")).toBeVisible();
       const shellLayout = await page.evaluate(() => {
         const topbar = document.querySelector("[data-shell-topbar]")!.getBoundingClientRect();

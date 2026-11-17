@@ -1586,7 +1586,7 @@ function MessageBubble({
         )}
         {(msg.plan || msg.research || (msg.progress && msg.progress.length > 0)) && (
           /* 機能選択判断は選択結果のみ表示し、理由・計画・統計はタップで展開する */
-          <details className="rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950/20">
+          <details className="w-fit max-w-full rounded-xl border border-accent-200 bg-accent-50/50 px-3 py-1.5 open:w-full dark:border-accent-900 dark:bg-accent-950/20">
             <summary className="cursor-pointer text-xs font-semibold text-accent-700 dark:text-accent-300">
               {msg.progress?.[0]?.phase === "opencode" ? "⌨️ OpenCode" : `🧭 ${MODES.find((m) => m.id === msg.plan?.mode)?.label ?? "調査"}`}{msg.streaming ? "（実行中）" : ""}
             </summary>

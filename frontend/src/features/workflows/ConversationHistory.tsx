@@ -318,13 +318,14 @@ export function HistorySheet({ open, onClose, children }: { open: boolean; onClo
     const previous = document.activeElement as HTMLElement | null;
     panel.current?.querySelector<HTMLElement>("[data-history-close]")?.focus({ preventScroll: true });
     const onKey = (event: KeyboardEvent) => {
+      /* 行の「⋯」のメニューと削除の確認は body に出す。開いている間はそちらに任せる
+         （Escape は確認だけを閉じ、Tab は確認の中を回る）。 */
+      if (document.querySelector('[role="menu"], [role="alertdialog"]')) return;
       if (event.key === "Escape") {
         closeRef.current();
         return;
       }
       if (event.key !== "Tab" || !panel.current) return;
-      /* 行の「⋯」のメニューは body に出す。開いている間はそちらに任せる。 */
-      if (document.querySelector('[role="menu"]')) return;
       const items = [...panel.current.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE)].filter((el) => el.offsetParent !== null);
       if (items.length === 0) return;
       const first = items[0];

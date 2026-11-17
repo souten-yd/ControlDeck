@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 export interface ModeOption { id: string; icon: string; label: string; hint: string }
 
 export const AUTO_MODE_OPTION: ModeOption = {
-  id: "auto", icon: "✦", label: "自動判定", hint: "入力した内容から、使う機能を自動で選びます",
+  id: "auto", icon: "✦", label: "自動判定", hint: "内容に合わせて機能を自動で選ぶ",
 };
 
 export function ModeChip({ value, options, detectedLabel, routing, disabled, onChange }: {
