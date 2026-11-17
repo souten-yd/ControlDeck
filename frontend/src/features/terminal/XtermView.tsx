@@ -12,6 +12,33 @@ import { createUuid } from "../../lib/clientId";
 import { discardSocket, looksAlive, looksDead } from "../../lib/liveConnection";
 import { useToasts } from "../../stores";
 import { IconSettings, IconX } from "../../components/icons";
+
+/** 文字列をクリップボードへ。navigator.clipboard が使えない（http など）ときは一時 textarea で写す。 */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 下の方法を試す
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
 import { TerminalGeometryController } from "./controllers/TerminalGeometryController";
 import { TerminalDiagnostics } from "./controllers/TerminalDiagnostics";
 import { TerminalConnectionController } from "./controllers/TerminalConnectionController";
@@ -87,7 +114,7 @@ export default function XtermView({
   const ctrlArmed = useRef(false);
   const pasteGestureRef = useRef({ startY: 0, triggered: false });
   const suppressPasteClickRef = useRef(false);
-  const copyRef = useRef<HTMLTextAreaElement>(null);
+  const copyRef = useRef<HTMLPreElement>(null);
   const show = useToasts((s) => s.show);
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -157,6 +184,17 @@ export default function XtermView({
     })();
     fit.fit();
     termRef.current = term;
+    // 文字を選んでいるときの Ctrl+C / Cmd+C / Ctrl+Shift+C はコピーにする（Windows Terminal と同じ）。
+    // 選んでいなければ従来どおり ^C（中断）を送る。
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || event.altKey || !(event.ctrlKey || event.metaKey)) return true;
+      if (event.key.toLowerCase() !== "c" || !term.hasSelection()) return true;
+      const selected = term.getSelection();
+      event.preventDefault();
+      term.clearSelection();
+      void writeClipboard(selected).then((ok) => show(ok ? "コピーしました" : "コピーできませんでした", ok ? undefined : "error"));
+      return false;
+    });
     const persistentHistory = currentSession?.persistent === true;
     host.dataset.terminalPersistent = String(persistentHistory);
     let serverHistoryActive = false;
@@ -1396,26 +1434,27 @@ export default function XtermView({
   };
 
   const copyAll = async () => {
-    const text = copyRef.current?.value ?? copyText;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        show("コピーしました");
-        setCopySheet(false);
-        return;
-      }
-    } catch {
-      // 非secure originでは選択済みtextareaを使う。
-    }
-    const textarea = copyRef.current;
-    if (!textarea) return;
-    textarea.focus();
-    textarea.setSelectionRange(0, textarea.value.length);
-    if (document.execCommand("copy")) {
-      show("コピーしました");
+    if (await writeClipboard(copyText)) {
+      show("すべてコピーしました");
       setCopySheet(false);
     } else {
-      show("自動コピーできません。選択範囲をコピーしてください", "error");
+      show("自動でコピーできません。長押しで選んでコピーしてください", "error");
+    }
+  };
+
+  /** 選択シートの中で長押し・ドラッグで選んだ部分だけを写す。 */
+  const copySelected = async () => {
+    const selection = window.getSelection();
+    const text = selection && copyRef.current?.contains(selection.anchorNode) ? selection.toString() : "";
+    if (!text) {
+      show("文字を長押し（PC はドラッグ）で選んでから押してください", "error");
+      return;
+    }
+    if (await writeClipboard(text)) {
+      show("選択範囲をコピーしました");
+      setCopySheet(false);
+    } else {
+      show("自動でコピーできません。選んだ文字の「コピー」を使ってください", "error");
     }
   };
 
@@ -1470,9 +1509,11 @@ export default function XtermView({
         </div>
         <button
           onClick={openCopy}
-          className="ml-auto hidden rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:block"
+          aria-label="文字を選んでコピー"
+          title="文字を選んでコピー（PC は選んで Ctrl+C でも可）"
+          className="ml-auto min-h-11 shrink-0 rounded-lg px-2.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 md:min-h-0 md:py-1.5"
         >
-          コピー
+          選択・コピー
         </button>
         {onAutomation && <button
           {...NO_FOCUS_PRESS}
@@ -1612,7 +1653,36 @@ export default function XtermView({
         </div>
       </div>
 
-      {copySheet && <div className="absolute inset-0 z-40 flex items-end bg-black/40" onClick={() => setCopySheet(false)}><div role="dialog" aria-label="コピー" className="safe-bottom w-full rounded-t-2xl bg-white p-4 dark:bg-zinc-900" onClick={(event) => event.stopPropagation()}><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold">コピー</h2><button onClick={() => setCopySheet(false)} aria-label="閉じる" className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button></div><textarea ref={copyRef} readOnly rows={10} value={copyText} className="w-full resize-none rounded-xl border border-zinc-300 bg-zinc-50 p-3 font-mono text-base dark:border-zinc-700 dark:bg-zinc-950" /><p className="mt-1 text-xs text-zinc-400">選択した文字がある場合は選択範囲、それ以外は履歴全体です。</p><button onClick={() => void copyAll()} className="mt-2 min-h-11 w-full rounded-xl bg-accent-600 text-sm font-medium text-white hover:bg-accent-700">コピーする</button></div></div>}
+      {copySheet && (
+        <div className="absolute inset-0 z-40 flex flex-col bg-black/50 md:items-center md:justify-center md:p-6" onClick={() => setCopySheet(false)}>
+          <div role="dialog" aria-label="文字を選んでコピー" onClick={(event) => event.stopPropagation()}
+            className="safe-top safe-bottom flex min-h-0 w-full flex-1 flex-col bg-white dark:bg-zinc-900 md:max-w-4xl md:flex-none md:rounded-2xl md:shadow-2xl">
+            <div className="flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+              <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">文字を選んでコピー</h2>
+              <button onClick={() => setCopySheet(false)} aria-label="閉じる"
+                className="grid min-h-11 min-w-11 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"><IconX /></button>
+            </div>
+            <p className="shrink-0 px-3 pt-2 text-[11px] text-zinc-500">長押し（PC はドラッグ）で選び、下のボタンで写します。最新の行が一番下です。</p>
+            <pre
+              ref={(node) => {
+                (copyRef as React.MutableRefObject<HTMLPreElement | null>).current = node;
+                // 開いたら最新の行（一番下）を見せる
+                if (node && !node.dataset.scrolled) {
+                  node.dataset.scrolled = "1";
+                  node.scrollTop = node.scrollHeight;
+                }
+              }}
+              className="m-3 min-h-0 flex-1 select-text overflow-auto whitespace-pre rounded-xl bg-zinc-950 p-3 font-mono text-[13px] leading-snug text-zinc-100 [-webkit-user-select:text] md:max-h-[60vh]"
+            >{copyText || "（表示する文字がありません）"}</pre>
+            <div className="grid shrink-0 grid-cols-2 gap-2 px-3 pb-3">
+              <button onClick={() => void copySelected()}
+                className="min-h-11 rounded-xl bg-accent-600 text-sm font-semibold text-white hover:bg-accent-700">選択範囲をコピー</button>
+              <button onClick={() => void copyAll()}
+                className="min-h-11 rounded-xl border border-zinc-300 text-sm font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800">すべてコピー</button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>,
     document.body,
