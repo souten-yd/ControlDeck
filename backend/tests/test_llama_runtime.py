@@ -389,8 +389,12 @@ def test_unit_content_role_embedding_and_reranker(monkeypatch, tmp_path):
     assert "--embedding" in embed_unit and "--pooling" in embed_unit
     # embedding/reranker では投機的デコーディングを付けない
     assert "--spec-type" not in embed_unit
-    rerank_unit = llama._unit_content("rerank")
+    rerank_unit = llama._unit_content("rerank", margin_mib=0)
     assert "--rerank" in rerank_unit and "--embedding" not in rerank_unit
+    # 補助は共通の VRAM マージンが 0 でも、空いている分だけ GPU に載せる
+    assert '"--n-gpu-layers" "auto"' in rerank_unit and '"--fit" "on"' in rerank_unit
+    # 起動の失敗が続いたら諦める（2026-11-16〜17: VRAM の取り合いで 2 日に 51 回起動し直した）
+    assert "StartLimitBurst=5" in rerank_unit
 
 
 def test_find_role_instance(monkeypatch, tmp_path):

@@ -21,6 +21,10 @@ def test_redact_hides_secrets():
     out = redact(text)
     for secret in secrets:
         assert secret not in out, (secret, out)
+    # 伏せすぎない: signal の語や普通の文はそのまま（以前は「SIGTERM received」の SIG を鍵と取り違えた）
+    plain = "SIGTERM received from uid=1000 pid=2009 systemd; session started; key points: none"
+    assert redact("SIGTERM received from uid=1000 pid=2009 systemd") == "SIGTERM received from uid=1000 pid=2009 systemd"
+    assert "SIGTERM" in redact(plain) and "uid=1000" in redact(plain)
     # JSON に通しても壊れない（以前は escape を消して JSONDecodeError になった）
     event = {"message": 'password=abcd"efg', "detail": {"token": "zzzz9999"}, "kind": "log"}
     cleaned = redact_value(json.loads(json.dumps(event)))
@@ -73,6 +77,10 @@ def test_journal_parses_oom_and_restarts(monkeypatch):
                     "shmem_rss_gb": 10.97, "unit": "control-deck-strata-x.service"}]
     events = journal.unit_events(t - 1)
     assert [r["cause"] for r in events["restarts"]] == ["watchdog（応答なし）"]
+    # 停止の指示の後の時間切れは「終了処理の詰まり」（2026-11-17: watchdog 5 回はすべてこれだった）
+    stopping = [{"ts": t - 50, "message": "Stopping control-deck-web.service - Ubuntu Control Deck Web...", "unit": "control-deck-web.service"}] + user
+    monkeypatch.setattr(journal, "_journal", lambda args, since, timeout=30: kernel if "-k" in args else stopping)
+    assert [r["cause"] for r in journal.unit_events(t - 60)["restarts"]] == ["終了処理の詰まり（watchdog）"]
     assert [f["unit"] for f in events["failures"]] == ["cdapp-llama-rerank-x.service"]
 
 

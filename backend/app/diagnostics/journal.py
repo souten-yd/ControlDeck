@@ -109,7 +109,9 @@ def unit_events(since: float) -> dict:
 def _cause(reasons: list[str]) -> str:
     text = " ".join(reasons)
     if "Watchdog timeout" in text or "'watchdog'" in text:
-        return "watchdog（応答なし）"
+        # 止める指示（Stopping）の後の時間切れは、動作中の無応答ではなく終了処理が詰まったもの
+        stopping_first = bool(reasons) and reasons[0].startswith("Stopping ")
+        return "終了処理の詰まり（watchdog）" if stopping_first else "watchdog（応答なし）"
     if "OOM" in text or "oom-kill" in text:
         return "OOM"
     if "code=killed" in text or "code=dumped" in text:

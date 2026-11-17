@@ -1397,6 +1397,12 @@ def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) ->
     from app.models_mgmt.runtime_policy import vram_margin_mib
 
     margin = vram_margin_mib() if margin_mib is None else margin_mib
+    # 資料検索の補助（埋め込み・並べ替え）は、大きな LLM が VRAM を使い切っていることが多い。
+    # 共通の VRAM マージンが 0 でも、補助は空いている分だけ GPU に載せ、残りは CPU で動かす（--fit）。
+    helper = str(inst.get("role") or "") in ("embedding", "reranker")
+    if helper and not margin and int(inst.get("n_gpu_layers", 999)) in (999, -1) \
+            and (not is_installed() or "--fit-target" in _help_text_sync()):
+        margin = 512
     if margin and int(inst.get("n_gpu_layers", 999)) != 0:
         if is_installed() and "--fit-target" not in _help_text_sync():
             raise RuntimeError("VRAMマージンの自動適用には --fit-target 対応の llama.cpp が必要です。ランタイムを更新してください")
@@ -1498,6 +1504,12 @@ def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) ->
         "[Unit]",
         f"Description=Control Deck llama.cpp server ({inst.get('alias', 'llama')})",
         "After=network.target",
+        # 起動に失敗し続けるときは 5 分に 5 回で諦める（延々と起動し直して journal と GPU を占めない）。
+        # 2026-11-16〜17: 並べ替えのモデルが、--fit で見積もった直後に大きな LLM が VRAM を取り、
+        # 確保に失敗して Restart=on-failure で 2 日に 51 回起動し直していた。
+        # 止まった unit は診断の「常駐の異常終了」と「失敗した unit」に出る。
+        "StartLimitIntervalSec=300",
+        "StartLimitBurst=5",
         "",
         "[Service]",
         "Type=simple",
