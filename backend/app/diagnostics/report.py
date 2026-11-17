@@ -154,7 +154,10 @@ def build(hours: float = 24.0, include_tests: bool = False) -> dict:
         "memory_now": recorder.memory_sample(top=10),
         "memory_low": [e for e in events if e.get("kind") == "memory_low"][-10:],
         "failed_jobs": _failed_jobs(),
-        "client_timing": _client_timing([e for e in events if e.get("kind") == "client_timing"]),
+        "client_timing": _client_timing([e for e in events if e.get("kind") == "client_timing" and e.get("page") != "viewport"]),
+        # 画面の寸法は平均に意味が無いので、新しいものをそのまま
+        "viewport": [{"ts": e["ts"], "standalone": e.get("standalone"), "path": e.get("connection"), **(e.get("marks") or {})}
+                     for e in events if e.get("kind") == "client_timing" and e.get("page") == "viewport"][:8],
         "tests": next((e for e in events if e.get("kind") == "tests"), None),
     }
     if include_tests:
@@ -213,6 +216,11 @@ def to_markdown(data: dict) -> str:
         out += [f"  - {a['path']}: p50 {a['p50']} / p95 {a['p95']}（{a['count']} 回）" for a in page["slow_api"][:5]]
     if not data.get("client_timing"):
         out.append("- 記録なし")
+    if data.get("viewport"):
+        out += ["", "## 画面の寸法（新しい順、CSS px）", ""]
+        for v in data["viewport"]:
+            fields = " ".join(f"{k}={v[k]}" for k in v if k not in ("ts",))
+            out.append(f"- {_fmt(v['ts'])} {fields}")
     out += ["", "## 失敗したジョブ（新しい順）", ""]
     out += [f"- {_fmt(jb['ts'])} {jb['kind']} {jb['title']}: {jb['error'][:200]}" for jb in data["failed_jobs"]] or ["- なし"]
     if data.get("tests"):
