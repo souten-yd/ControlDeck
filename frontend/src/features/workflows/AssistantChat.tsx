@@ -1541,7 +1541,11 @@ export default function AssistantChat() {
               )}
             </div>
           </div>
-          <div data-assistant-composer-status className="flex h-8 min-w-0 items-center gap-2 px-3 text-[10px] leading-none text-zinc-500" aria-live="polite">
+          {/* 状態の行。指で使う端末（キーボードの案内が要らない）では、出すものが無いとき行ごと畳む
+              （iPhone で入力欄の下が空きすぎていた。2026-11-17） */}
+          <div data-assistant-composer-status aria-live="polite"
+            className={`min-w-0 items-center gap-2 px-3 text-[10px] leading-none text-zinc-500 ${
+              showComposerStatus || effectiveMode === "code" ? "flex h-8" : "hidden h-8 [@media(pointer:fine)]:flex"}`}>
             {effectiveMode === "code" && (
               <PermissionModeChip mode={permissionMode} editable={canChangePermissionMode} onChange={(m) => void changePermissionMode(m)} />
             )}
@@ -1550,9 +1554,13 @@ export default function AssistantChat() {
             ) : (
               <GenStatsBadge stats={genStats} busy={busy} />
             )) : (
-              <span className="min-w-0 truncate">Enterで送信 · Shift+Enterで改行</span>
+              <span className="min-w-0 truncate [@media(pointer:coarse)]:hidden">Enterで送信 · Shift+Enterで改行</span>
             )}
           </div>
+          {/* 行を畳んだときは、ホームバーの帯の分だけ空ける（帯が無い・WebView が短いときは最小限） */}
+          {!(showComposerStatus || effectiveMode === "code") && (
+            <div aria-hidden className="assistant-composer-gap hidden [@media(pointer:coarse)]:block" />
+          )}
           </div>
         </div>
       </div>

@@ -67,6 +67,11 @@ function measureViewport(): Record<string, number> {
     root_bottom: root ? Math.round(root.bottom) : -1,
     composer_bottom: composer ? Math.round(composer.bottom) : -1,
     shrunk: Number(document.documentElement.dataset.viewportShrunk || 0),
+    // このページが起動（0）・再読み込み（1）・戻る（2）のどれで開かれたか。iPhone は再読み込みの後に
+    // WebView が短くなると見ている（2026-11-17）ので、その裏付けに
+    nav_type: ({ navigate: 0, reload: 1, back_forward: 2, prerender: 3 } as Record<string, number>)[
+      (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type ?? ""] ?? -1,
+    since_load_s: Math.round(performance.now() / 1000),
     keyboard_fit: document.documentElement.classList.contains("cd-keyboard-fit") ? 1 : 0,
   };
 }
