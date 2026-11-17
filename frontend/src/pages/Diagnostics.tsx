@@ -40,7 +40,7 @@ const LABEL: Record<Status, string> = { ok: "正常", warn: "注意", fail: "異
 
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
         {title}
         {count !== undefined && <span className="rounded-full bg-zinc-100 px-2 text-[11px] font-medium text-zinc-500 dark:bg-zinc-800">{count}</span>}
@@ -131,7 +131,7 @@ export default function DiagnosticsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4 pb-24 sm:p-6">
-      <PageHeader title="診断" description="再起動・OOM・応答の詰まり・遅い API・エラーを記録し、AI に渡せるレポートにします" />
+      <PageHeader title="Diagnostics" description="再起動・OOM・応答の詰まり・遅い API・エラーを記録し、AI に渡せるレポートにします" />
 
       <div className="flex flex-wrap items-center gap-2">
         <SegmentedTabs value={hours} onChange={(value) => setHours(value as "6" | "24" | "72")}
@@ -152,7 +152,7 @@ export default function DiagnosticsPage() {
         </div>
       </div>
       <p className="text-[11px] text-zinc-500">
-        レポートは鍵・トークン・メールアドレスを伏せてあります。AI アシスタント（OpenCode）は道具 <code>control_deck.diagnostics</code> で同じ内容を直接読めます。
+        レポートは鍵・トークン・メールアドレスを伏せてあります。AI アシスタント（OpenCode）は道具 <code className="break-all">control_deck.diagnostics</code> で同じ内容を直接読めます。
       </p>
 
       {error && !data && (
@@ -161,7 +161,7 @@ export default function DiagnosticsPage() {
         </p>
       )}
       {!data ? (!error && <Skeleton className="h-64" />) : (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 [&>*]:min-w-0">
           <Section title="自己診断">
             <div className="mb-2 flex items-center gap-2">
               <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${TONE[data.selftest.overall]}`}>{LABEL[data.selftest.overall]}</span>

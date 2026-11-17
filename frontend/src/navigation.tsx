@@ -55,7 +55,7 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/knowledge", group: "ai", label: "Knowledge", icon: IconBook, permission: "workflows.run" },
   { to: "/models", group: "ai", label: "Models", icon: IconChip, permission: "workflows.run" },
   { to: "/opencode-v2", group: "dev", label: "OpenCode", icon: IconCode, feature: "opencode-v2" },
-  { to: "/diagnostics", group: "system", label: "診断", icon: IconPulse, permission: "settings.manage" },
+  { to: "/diagnostics", group: "system", label: "Diagnostics", icon: IconPulse, permission: "settings.manage" },
   { to: "/logs", group: "system", label: "Logs", icon: IconLogs },
   { to: "/system", group: "system", label: "System", icon: IconChart },
   { to: "/settings", group: "system", label: "Settings", icon: IconSettings },

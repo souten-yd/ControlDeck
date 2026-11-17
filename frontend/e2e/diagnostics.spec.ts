@@ -1,3 +1,5 @@
+// 目的: 診断の画面が実データで開き、要の欄が出て、レポートに秘密（メールアドレス）が出ないこと。
+// 根拠: 2026-11-17 診断の追加。同日、携帯でカードが右へはみ出した（ページの横幅だけ見ていて見逃した）。
 import { expect, test } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;
@@ -20,6 +22,10 @@ for (const width of [1280, 390]) {
       await expect(page.getByRole("heading", { name: new RegExp(title.replace(/[()（）]/g, ".")) })).toBeVisible();
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    // カードが画面の右へはみ出さない（ページの横幅だけでは、main の中で切られたはみ出しを見逃した）
+    const overflow = await page.evaluate((w) => Array.from(document.querySelectorAll("main section"))
+      .map((el) => el.getBoundingClientRect()).filter((r) => r.right > w + 0.5).length, width);
+    expect(overflow).toBe(0);
     const report = await page.evaluate(async () => (await fetch("/api/v1/diagnostics/report?format=md", { credentials: "same-origin" })).text());
     expect(report).toContain("# ControlDeck 診断レポート");
     expect(report).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
