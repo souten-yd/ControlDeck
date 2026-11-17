@@ -3,6 +3,16 @@ import { expect, test } from "@playwright/test";
 const username = process.env.CONTROL_DECK_E2E_USER;
 const password = process.env.CONTROL_DECK_E2E_PASSWORD;
 
+/** 検証用インスタンスは OpenCode を入れていないので、サーバーは /opencode-v2 を 404 にする。
+ * 画面の中の移動（history）で開く。 */
+async function openOpenCodePage(page: import("@playwright/test").Page) {
+  await page.goto("/");
+  await page.evaluate(() => {
+    history.pushState({}, "", "/opencode-v2");
+    dispatchEvent(new PopStateEvent("popstate"));
+  });
+}
+
 /** OpenCode 画面: 閉じた（TUI を終えた）セッションが一覧に残り、続きから開ける。API は差し替える。 */
 for (const width of [1280, 320]) {
   test(`closed OpenCode session can be resumed (${width}px)`, async ({ page }) => {
@@ -44,7 +54,7 @@ for (const width of [1280, 320]) {
       ] } });
     });
 
-    await page.goto("/opencode-v2");
+    await openOpenCodePage(page);
     const row = page.getByRole("listitem").filter({ hasText: "Train" });
     await expect(page.getByText("閉じたセッション（続きから開けます）")).toBeVisible();
     await expect(row.getByText("終了済み")).toBeVisible();
@@ -57,7 +67,7 @@ for (const width of [1280, 320]) {
     expect(posted[0]).toMatchObject({ project_path: "/CodeDEV/Train", resume: "last" });
 
     // 一覧から外す
-    await page.goto("/opencode-v2");
+    await openOpenCodePage(page);
     await page.getByRole("button", { name: "Train を一覧から外す" }).click();
     await expect(page.getByText("閉じたセッション（続きから開けます）")).toHaveCount(0);
   });
