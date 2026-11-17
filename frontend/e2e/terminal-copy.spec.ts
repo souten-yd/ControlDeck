@@ -13,6 +13,8 @@ for (const width of [1280, 320]) {
       await context.grantPermissions(["clipboard-read", "clipboard-write"]);
       await page.setViewportSize({ width, height: 800 });
       await establishSession(page, context);
+      // テスト用のフック（__controlDeckTerminalTest）を有効にする
+      await page.addInitScript(() => localStorage.setItem("control-deck:terminal-geometry-debug", "1"));
       const response = await context.request.post("/api/v1/terminals", { headers: CSRF });
       expect(response.status()).toBe(201);
       const { id } = await response.json();
