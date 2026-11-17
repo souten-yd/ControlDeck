@@ -45,6 +45,7 @@ function lazyPage<P extends object>(load: () => Promise<{ default: React.Compone
 }
 
 const OpenCodePage = lazyPage(() => import("./features/opencode/OpenCodePage"));
+const DiagnosticsPage = lazyPage(() => import("./pages/Diagnostics"));
 const ApplicationsPage = lazyPage(() => import("./pages/Applications"));
 const ProjectLabPage = lazyPage(() => import("./pages/ProjectLab"));
 
@@ -122,6 +123,7 @@ function buildRouter() {
       { index: true, element: <DashboardPage /> },
       { path: "apps", element: <AppsPage /> },
       { path: "logs", element: <LogsPage /> },
+      { path: "diagnostics", element: <Suspense fallback={null}><DiagnosticsPage /></Suspense> },
       { path: "files", element: <FilesPage /> },
       { path: "terminal", element: <TerminalPage /> },
       { path: "workflows", element: <WorkflowsPage /> },
