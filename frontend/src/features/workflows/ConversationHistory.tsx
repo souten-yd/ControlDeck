@@ -17,7 +17,9 @@ const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(),
 
 /** 更新日時から、どのまとまりに入るかを決める（利用者の端末の暦日で数える）。 */
 export function historyGroupOf(updatedAt: string, now: Date = new Date()): HistoryGroup {
-  const time = Date.parse(updatedAt);
+  // サーバーの時刻はタイムゾーン無しの UTC（SQLite）。付いていなければ UTC として読む
+  const iso = updatedAt.endsWith("Z") || /[+-]\d\d:\d\d$/.test(updatedAt) ? updatedAt : `${updatedAt}Z`;
+  const time = Date.parse(iso);
   if (Number.isNaN(time)) return "それ以前";
   const days = Math.round((startOfDay(now) - startOfDay(new Date(time))) / DAY);
   if (days <= 0) return "今日";

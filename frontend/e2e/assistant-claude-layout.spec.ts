@@ -24,11 +24,11 @@ async function mockChat(page: Page) {
   const calls: string[] = [];
   const now = Date.now();
   let conversations = [
-    { id: "today1", title: "今日の献立の相談", updated_at: new Date(now).toISOString() },
-    { id: "failed", title: "グランフロントの店", updated_at: new Date(now - 60_000).toISOString() },
-    { id: "yest1", title: "昨日の買い物メモ", updated_at: new Date(now - DAY).toISOString() },
-    { id: "week1", title: "週の振り返り", updated_at: new Date(now - 4 * DAY).toISOString() },
-    { id: "old1", title: "先月の旅行計画", updated_at: new Date(now - 40 * DAY).toISOString() },
+    { id: "today1", title: "今日の献立の相談", updated_at: new Date(now).toISOString().replace("Z", "") },
+    { id: "failed", title: "グランフロントの店", updated_at: new Date(now - 60_000).toISOString().replace("Z", "") },
+    { id: "yest1", title: "昨日の買い物メモ", updated_at: new Date(now - DAY).toISOString().replace("Z", "") },
+    { id: "week1", title: "週の振り返り", updated_at: new Date(now - 4 * DAY).toISOString().replace("Z", "") },
+    { id: "old1", title: "先月の旅行計画", updated_at: new Date(now - 40 * DAY).toISOString().replace("Z", "") },
   ];
   const plan = { mode: "chat", reason: "通常の対話", steps: [], max_iterations: 1, decided_by: "rule" };
   const messages: Record<string, ReturnType<typeof msg>[]> = {

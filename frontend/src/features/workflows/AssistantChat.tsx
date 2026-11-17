@@ -510,7 +510,8 @@ export default function AssistantChat() {
     setResolvedDecision(null);
     setGenStats(null);
     setHistoryOpen(false);
-    composerRef.current?.focus({ preventScroll: true });
+    // シートが閉じるときに元のボタンへフォーカスを戻すので、その後で入力欄へ
+    window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 50);
   };
 
   const renameConversation = async (id: string, title: string) => {
@@ -998,14 +999,24 @@ export default function AssistantChat() {
     onDelete: setDeletingConversation,
   };
   /** 失敗・中断した回答の「再試行」: 直前の自分の発言をもう一度送る。 */
+  /** 失敗した最後の回答をやり直す: 直前の自分の発言を、付けていた画像ごと送り直す。
+   * 入力欄の下書き・添付を巻き込まないよう、それがあるときは再試行を出さない。 */
   const retryFrom = (index: number) => {
     for (let i = index - 1; i >= 0; i -= 1) {
-      if (messages[i].role === "user") {
-        void send(messages[i].content);
-        return;
+      const original = messages[i];
+      if (original.role !== "user") continue;
+      const imageIds = (original.images ?? [])
+        .map((url) => decodeURIComponent(url.split("/").pop() ?? ""))
+        .filter((id) => /^[0-9a-f]{16}\.(png|jpg|webp|gif)$/.test(id));
+      if (imageIds.length && convIdRef.current) {
+        const cid = convIdRef.current;
+        setAttachments(imageIds.map((id) => ({ id, name: id, kind: "image" as const, status: "ready" as const, preview: attachmentUrl(cid, id) })));
       }
+      pendingResend.current = original.content;
+      return;
     }
   };
+  const canRetry = !busy && !input.trim() && attachments.length === 0;
 
   return (
     <section
@@ -1219,7 +1230,7 @@ export default function AssistantChat() {
               <MessageBubble
                 key={m.messageId ?? i}
                 msg={m}
-                onRetry={busy ? undefined : () => retryFrom(i)}
+                onRetry={canRetry && i === messages.length - 1 ? () => retryFrom(i) : undefined}
                 onRegister={registerOnly}
                 onAutoBuild={autoBuild}
                 onOpen={(id) => navigate(`/workflows/${id}`)}

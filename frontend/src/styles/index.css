@@ -229,6 +229,10 @@ label:has([data-snippet-code]) + p code {
 .assistant-composer-safe {
   padding-bottom: max(0px, calc(var(--cd-safe-area-bottom) - 0.875rem));
 }
+/* キーボードが出ている間は、ホームバーの帯が無いので余白も要らない */
+html.cd-keyboard-fit .assistant-composer-safe {
+  padding-bottom: 0;
+}
 
 /* xtermの履歴はページではなくterminal viewport内で指スクロールする。 */
 .terminal-xterm-host .xterm,
