@@ -9,7 +9,7 @@ import { useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
-import { CopyText, PresetOrCustom, SettingsGroup, SheetActions, primaryButton, secondaryButton } from "./formControls";
+import { CopyText, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
 
 export interface MayaQuantFile { name: string; path: string; size: number | null; present: boolean; required: boolean; what: string; sha256?: string }
 export interface MayaQuant {
@@ -222,6 +222,146 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
   </div>;
 }
 
+interface MayaInstanceSettings {
+  family: "glm" | "deepseek" | "minimax";
+  context: number; parallel: number; gpu_index: number;
+  reasoning_effort: "low" | "medium" | "high" | "max"; thinking_budget: number;
+  temperature: number; top_p: number; vram_reserve_mib: number;
+  on_demand_start: boolean; idle_exclude: boolean; auto_start: boolean; running: boolean;
+  dspark?: "on" | "off"; cpu_threads?: number; vram_experts?: number;
+  mmap_experts?: "auto" | "on" | "off"; ssd_cache?: string; prefill_chunk?: number;
+}
+
+const settingField = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
+const LIFECYCLE = ["on_demand_start", "idle_exclude", "auto_start"] as const;
+
+/** 登録したモデル（DS-XS など）の調整値。DeepSeek のエンジン（maya-ds4）の起動オプションも扱う。 */
+function MayaInstanceSettingsForm({ alias, title }: { alias: string; title: string }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const { data } = useQuery({
+    queryKey: ["maya-instance-settings", alias],
+    queryFn: () => api<MayaInstanceSettings>(`/features/maya-s/models/${encodeURIComponent(alias)}/settings`),
+  });
+  const [draft, setDraft] = useState<MayaInstanceSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (data) setDraft(data); }, [data]);
+  if (!draft || !data) return <p className="text-xs text-zinc-500">設定を読み込み中…</p>;
+  const set = <K extends keyof MayaInstanceSettings>(key: K, value: MayaInstanceSettings[K]) => setDraft({ ...draft, [key]: value });
+  const changed = (Object.keys(draft) as (keyof MayaInstanceSettings)[]).filter((k) => k !== "running" && draft[k] !== data[k]);
+  const engineChanged = changed.some((k) => !(LIFECYCLE as readonly string[]).includes(k));
+  const locked = data.running;   // 起動中はエンジンの設定を変えられない（起動と停止だけ）
+  const ds = draft.family === "deepseek";
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = Object.fromEntries(changed.map((k) => [k, draft[k]]));
+      const result = await api<MayaInstanceSettings>(`/features/maya-s/models/${encodeURIComponent(alias)}/settings`, { method: "PUT", json: body });
+      qc.setQueryData(["maya-instance-settings", alias], result);
+      await qc.invalidateQueries({ queryKey: ["models"] });
+      show(engineChanged ? `${title} の設定を保存しました（次の起動から効きます）` : "保存しました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "保存できませんでした", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const num = (key: "cpu_threads" | "prefill_chunk" | "gpu_index", label: string, max: number, hint: string) => (
+    <label className="block text-xs">{label}
+      <input type="number" min={0} max={max} value={draft[key] ?? 0} disabled={locked} aria-label={`${title} ${label}`}
+        onChange={(e) => set(key, Math.max(0, Math.min(max, Number(e.target.value) || 0)))} className={`mt-1 ${settingField}`} />
+      <span className="text-[11px] text-zinc-500">{hint}</span>
+    </label>
+  );
+  return <>
+    {locked && <p className="rounded-xl bg-amber-50 p-2.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+      起動中です。起動と停止の設定は変えられます。ほかの設定は、モデルを停止してから変えてください。</p>}
+    <SettingsGroup title="基本" description="扱える長さ。長くするほど KV キャッシュに RAM・VRAM を使います">
+      <label className="block text-xs">コンテキスト長
+        <div className="mt-1"><PresetOrCustom ariaLabel={`${title} コンテキスト長`} value={draft.context} disabled={locked}
+          presets={[32768, 65536, 131072, 262144, 524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }))}
+          placeholder="65536" onChange={(v) => set("context", Math.max(8192, Math.min(1048576, Number(v ?? 65536))))} /></div>
+      </label>
+    </SettingsGroup>
+    <SettingsGroup title="起動と停止" description="Maya のモデル全体で共通（同時に動く Maya は 1 つ）">
+      <Toggle label="使われたときに自動で起動" value={draft.on_demand_start} onChange={(v) => set("on_demand_start", v)}
+        hint="チャットやゲートウェイから呼ばれたら起動します（ほかのローカル LLM は先に停止）" />
+      <Toggle label="PC起動時に自動で起動" value={draft.auto_start} onChange={(v) => set("auto_start", v)} />
+      <Toggle label="アイドルでも止めない（常駐）" value={draft.idle_exclude} onChange={(v) => set("idle_exclude", v)}
+        hint="共通設定の「アイドル時に自動アンロード」の対象から外します" />
+    </SettingsGroup>
+    <SettingsGroup title="思考と生成">
+      <label className="block text-xs">思考の深さ（既定）
+        <select aria-label={`${title} 思考の深さ`} value={draft.reasoning_effort} disabled={locked}
+          onChange={(e) => set("reasoning_effort", e.target.value as MayaInstanceSettings["reasoning_effort"])} className={`mt-1 ${settingField}`}>
+          <option value="low">low（最速）</option><option value="medium">medium</option>
+          <option value="high">high（推奨）</option><option value="max">max（最も深い・時間がかかる）</option>
+        </select>
+      </label>
+      <label className="block text-xs">思考の上限（トークン）
+        <div className="mt-1"><PresetOrCustom ariaLabel={`${title} 思考の上限`} value={draft.thinking_budget} disabled={locked}
+          presets={[{ v: 0, label: "エンジン既定" }, { v: 8192, label: "8,192" }, { v: 16384, label: "16,384" }, { v: 32768, label: "32,768" }]}
+          placeholder="0" onChange={(v) => set("thinking_budget", Math.max(0, Math.min(131072, Number(v ?? 0))))} /></div>
+      </label>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="block text-xs">temperature
+          <input type="number" step={0.05} min={0} max={2} value={draft.temperature} disabled={locked} aria-label={`${title} temperature`}
+            onChange={(e) => set("temperature", Math.max(0, Math.min(2, Number(e.target.value))))} className={`mt-1 ${settingField}`} />
+        </label>
+        <label className="block text-xs">top_p
+          <input type="number" step={0.01} min={0.01} max={1} value={draft.top_p} disabled={locked} aria-label={`${title} top_p`}
+            onChange={(e) => set("top_p", Math.max(0.01, Math.min(1, Number(e.target.value))))} className={`mt-1 ${settingField}`} />
+        </label>
+      </div>
+      <span className="text-[11px] text-zinc-500">要求が値を指定しないときに使います。モデルカードの推奨は 1.0 / 1.0 です。</span>
+    </SettingsGroup>
+    {ds && <SettingsGroup title="性能（DeepSeek）" description="エンジン maya-ds4 の起動オプション" collapsible defaultOpen={false}>
+      <label className="block text-xs">下書き（DSpark・投機デコード）
+        <select aria-label={`${title} 下書き`} value={draft.dspark} disabled={locked}
+          onChange={(e) => set("dspark", e.target.value as "on" | "off")} className={`mt-1 ${settingField}`}>
+          <option value="on">有効（推奨）</option><option value="off">無効</option>
+        </select>
+      </label>
+      <label className="block text-xs">エキスパートを VRAM に置く割合
+        <div className="mt-1"><PresetOrCustom ariaLabel={`${title} VRAM に置く割合`} value={draft.vram_experts ?? 0} disabled={locked}
+          presets={[{ v: 0, label: "自動（推奨）" }, { v: 0.25, label: "25%" }, { v: 0.5, label: "50%" }, { v: 0.75, label: "75%" }]}
+          placeholder="0" onChange={(v) => set("vram_experts", Math.max(0, Math.min(1, Number(v ?? 0))))} /></div>
+        <span className="text-[11px] text-zinc-500">残りは RAM と SSD から読みます。KV キャッシュに VRAM を回したいときは下げます。</span>
+      </label>
+      <label className="block text-xs">モデルファイルの読み方（mmap）
+        <select aria-label={`${title} mmap`} value={draft.mmap_experts} disabled={locked}
+          onChange={(e) => set("mmap_experts", e.target.value as "auto" | "on" | "off")} className={`mt-1 ${settingField}`}>
+          <option value="auto">自動（推奨）</option><option value="on">メモリに映す（RAM のキャッシュを使う）</option><option value="off">都度読む</option>
+        </select>
+      </label>
+      <label className="block text-xs">SSD キャッシュ
+        <select aria-label={`${title} SSD キャッシュ`} value={["off", "auto"].includes(draft.ssd_cache ?? "off") ? draft.ssd_cache : "custom"} disabled={locked}
+          onChange={(e) => set("ssd_cache", e.target.value === "custom" ? "32" : e.target.value)} className={`mt-1 ${settingField}`}>
+          <option value="off">使わない（既定）</option><option value="auto">自動</option><option value="custom">大きさを指定（GB）</option>
+        </select>
+        {!["off", "auto"].includes(draft.ssd_cache ?? "off") && (
+          <input type="number" min={1} max={9999} value={Number(draft.ssd_cache)} disabled={locked} aria-label={`${title} SSD キャッシュの大きさ`}
+            onChange={(e) => set("ssd_cache", String(Math.max(1, Math.min(9999, Number(e.target.value) || 1))))} className={`mt-1 ${settingField}`} />
+        )}
+        <span className="text-[11px] text-zinc-500">よく使うエキスパートを RAM の置き場に並べ替えて持ちます（試験的）。</span>
+      </label>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {num("cpu_threads", "CPU スレッド数", 256, "0 は自動")}
+        {num("prefill_chunk", "先読みの単位（トークン）", 65536, "0 は自動")}
+      </div>
+    </SettingsGroup>}
+    <SettingsGroup title="詳細" collapsible defaultOpen={false}>
+      {num("gpu_index", "ROCm GPU 番号", 15, "")}
+      <p className="text-[11px] text-zinc-500">VRAM の余白: {draft.vram_reserve_mib.toLocaleString()} MiB（共通設定の「VRAM マージン」で変わります）</p>
+    </SettingsGroup>
+    <SheetActions>
+      <button type="button" onClick={() => void save()} disabled={saving || changed.length === 0 || (locked && engineChanged)} className={primaryButton}>
+        {saving ? "保存中…" : "保存"}
+      </button>
+    </SheetActions>
+  </>;
+}
+
 /** 追加で登録した Maya のモデルの個別画面（情報と削除）。 */
 export function MayaModelSheet({ alias, title, update, onClose }: {
   alias: string; title: string; update?: { gb: number; setupId: string; folder: string }; onClose: () => void;
@@ -256,17 +396,18 @@ export function MayaModelSheet({ alias, title, update, onClose }: {
   };
   return <BottomSheet title={`${title} · 個別設定`} onClose={onClose} wide>
     <div className="space-y-3">
-      <SettingsGroup title="モデル" description="Maya の設定は登録時のセットアップで決まります">
+      <SettingsGroup title="モデル">
         <p className="text-xs">ゲートウェイでの名前: <CopyText text={alias} /></p>
         <p className="text-[11px] text-zinc-500">起動・停止は一覧の「ロード」で行います。Maya のモデルは一度に 1 つだけ動きます（ほかの Maya のモデルは先に止まります）。</p>
       </SettingsGroup>
+      <MayaInstanceSettingsForm alias={alias} title={title} />
       {update && <SettingsGroup title="新しい版あり" description="Maya の更新で、このモデルのファイルに新しい版が出ました">
         <p className="num text-xs">ダウンロード 約 {update.gb} GB → <span className="break-all font-mono text-[11px]">{update.folder}</span></p>
         <button onClick={() => setConfirmUpdate(true)} className={primaryButton}>更新（ダウンロード {update.gb} GB）</button>
       </SettingsGroup>}
-      <SheetActions>
+      <div className="flex justify-end">
         <button onClick={() => setConfirm(true)} className={`${secondaryButton} text-red-600`}>登録を削除</button>
-      </SheetActions>
+      </div>
     </div>
     {confirmUpdate && update && <ConfirmDialog title={`${title} を更新`} danger={false}
       message={`新しい版のファイル 約 ${update.gb} GB を ${update.folder} にダウンロードし、検証して準備し直します。設定（調整値・思考）はそのまま、古いファイルは残します。`}

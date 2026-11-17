@@ -693,6 +693,106 @@ def get_instance(alias: str) -> dict:
             "setup_id": record["setup_id"], "folder": str(_row_folder(record) or "")}
 
 
+# ---- 追加で登録したモデル（DS-XS など）の設定。エンジンの設定ファイル（args・config）へ直接書く ----
+# DeepSeek（maya-ds4）だけが持つ起動オプション。値が None / "auto" のときはオプションを付けない（エンジン既定）。
+_DS4_FLAGS = {"dspark": "--dspark", "cpu_threads": "--cpu-threads", "vram_experts": "--vram-experts",
+              "mmap_experts": "--mmap-experts", "ssd_cache": "--ssd-cache", "prefill_chunk": "--prefill-chunk"}
+
+
+def _flag(args: list[str], flag: str) -> str | None:
+    return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
+
+
+def _set_flag(args: list[str], flag: str, value: str | None) -> None:
+    if flag in args:
+        i = args.index(flag)
+        del args[i:i + 2]
+    if value is not None:
+        args.extend([flag, value])
+
+
+def instance_settings(alias: str) -> dict:
+    """登録したモデルの調整値（画面の「個別設定」）。最初のモデル（maya-s）は get_settings を使う。"""
+    record = _record(alias)
+    if record is None or record["legacy"]:
+        raise MayaError("登録したモデルが見つかりません")
+    cfg = json.loads(Path(record["config"]).read_text(encoding="utf-8"))
+    args = list(cfg.get("args") or [])
+    sampling = cfg.get("sampling") or {}
+    shared = get_settings()
+    out = {
+        "family": record["family"],
+        "context": int(_flag(args, "--max-context") or 0) or 65536,
+        "parallel": int(_flag(args, "--parallel") or 1),
+        "gpu_index": int((cfg.get("gpu") or [0])[0]),
+        "reasoning_effort": str(cfg.get("reasoning_effort") or "high"),
+        "thinking_budget": int(cfg.get("thinking_budget") or 0),
+        "temperature": float(sampling.get("temperature", 1.0)),
+        "top_p": float(sampling.get("top_p", 1.0)),
+        "vram_reserve_mib": int(_flag(args, "--reserve-mib") or 0),
+        # 起動と停止は Maya 全体で共通（同時に動く Maya は 1 つ）
+        "on_demand_start": bool(shared.get("on_demand_start", True)),
+        "idle_exclude": bool(shared.get("idle_exclude", False)),
+        "auto_start": bool(shared.get("auto_start", False)),
+        "running": _running(alias),
+    }
+    if record["family"] == "deepseek":
+        out.update({
+            "dspark": _flag(args, "--dspark") or "on",
+            "cpu_threads": int(_flag(args, "--cpu-threads") or 0),
+            "vram_experts": float(_flag(args, "--vram-experts") or 0),
+            "mmap_experts": _flag(args, "--mmap-experts") or "auto",
+            "ssd_cache": _flag(args, "--ssd-cache") or "off",
+            "prefill_chunk": int(_flag(args, "--prefill-chunk") or 0),
+        })
+    return out
+
+
+@_serialized
+def save_instance_settings(alias: str, values: dict) -> dict:
+    """登録したモデルの調整値を設定ファイルへ書く。起動と停止の切り替えだけなら稼働中でもよい。"""
+    record = _record(alias)
+    if record is None or record["legacy"]:
+        raise MayaError("登録したモデルが見つかりません")
+    current = instance_settings(alias)
+    changed = {k for k, v in values.items() if k in current and current[k] != v}
+    lifecycle = {k: values[k] for k in LIFECYCLE_KEYS if k in values and values[k] != current[k]}
+    if lifecycle:
+        shared = get_settings()
+        shared.update(lifecycle)
+        (root() / "settings.json").write_text(json.dumps(shared, indent=2), encoding="utf-8")
+    engine = changed - set(LIFECYCLE_KEYS)
+    if not engine:
+        return instance_settings(alias)
+    if _running(alias):
+        raise MayaError("このモデルを停止してから変えてください（起動中は起動の設定だけ変えられます）")
+    path = Path(record["config"])
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    args = list(cfg.get("args") or [])
+    v = {**current, **values}
+    _set_flag(args, "--max-context", str(int(v["context"])))
+    _set_flag(args, "--parallel", str(int(v["parallel"])))
+    cfg["gpu"] = [int(v["gpu_index"])]
+    cfg["reasoning_effort"] = str(v["reasoning_effort"])
+    if int(v.get("thinking_budget") or 0) > 0:
+        cfg["thinking_budget"] = int(v["thinking_budget"])
+    else:
+        cfg.pop("thinking_budget", None)
+    cfg["sampling"] = {**(cfg.get("sampling") or {}), "temperature": float(v["temperature"]), "top_p": float(v["top_p"])}
+    if record["family"] == "deepseek":
+        _set_flag(args, "--dspark", str(v["dspark"]))
+        _set_flag(args, "--cpu-threads", str(int(v["cpu_threads"])) if int(v["cpu_threads"]) > 0 else None)
+        _set_flag(args, "--vram-experts", f"{float(v['vram_experts']):g}" if float(v["vram_experts"]) > 0 else None)
+        _set_flag(args, "--mmap-experts", None if v["mmap_experts"] == "auto" else str(v["mmap_experts"]))
+        _set_flag(args, "--ssd-cache", None if str(v["ssd_cache"]) == "off" else str(v["ssd_cache"]))
+        _set_flag(args, "--prefill-chunk", str(int(v["prefill_chunk"])) if int(v["prefill_chunk"]) > 0 else None)
+    cfg["args"] = args
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return instance_settings(alias)
+
+
 def _vision_configured() -> bool:
     return _config_vision(_config())
 

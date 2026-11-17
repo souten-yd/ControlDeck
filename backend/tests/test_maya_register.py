@@ -358,3 +358,35 @@ def test_glm_maya_s_from_the_sheet_comes_back_as_the_first_model(engine, monkeyp
     assert row["alias"] == "maya-s" and row["port"] == 8099
     assert json.loads(engine.first.read_text())["env"]["MAYA_GLM_PCIE_SHARE"] == "0.3"
     assert maya_s._registry() == []
+
+
+def test_registered_model_settings_write_the_engine_config(engine, admin_client=None):
+    """登録したモデル（DS-XS）の個別設定（2026-11-17 の依頼: 設定が一切無い）。エンジンの args・config へ書き、
+    既定（auto）に戻した項目はオプションごと外す。起動中は起動と停止の設定だけ変えられる。"""
+    _register_row(engine)
+    current = maya_s.instance_settings("maya-deepseek-xs")
+    assert current["context"] == 65536 and current["dspark"] == "on" and current["mmap_experts"] == "auto"
+    maya_s.save_instance_settings("maya-deepseek-xs", {
+        "context": 131072, "dspark": "off", "cpu_threads": 12, "vram_experts": 0.5, "ssd_cache": "auto",
+        "reasoning_effort": "medium", "thinking_budget": 8192, "temperature": 0.6, "top_p": 0.95})
+    cfg = json.loads((engine.source / "maya-ds4-hip.json").read_text())
+    args = cfg["args"]
+    assert args[args.index("--max-context") + 1] == "131072"
+    assert args[args.index("--dspark") + 1] == "off"
+    assert args[args.index("--cpu-threads") + 1] == "12"
+    assert args[args.index("--vram-experts") + 1] == "0.5"
+    assert args[args.index("--ssd-cache") + 1] == "auto"
+    assert "--mmap-experts" not in args
+    assert cfg["reasoning_effort"] == "medium" and cfg["thinking_budget"] == 8192
+    assert cfg["sampling"] == {"temperature": 0.6, "top_p": 0.95}
+    # 既定へ戻すとオプションごと外す
+    maya_s.save_instance_settings("maya-deepseek-xs", {"cpu_threads": 0, "vram_experts": 0, "ssd_cache": "off"})
+    args = json.loads((engine.source / "maya-ds4-hip.json").read_text())["args"]
+    assert "--cpu-threads" not in args and "--vram-experts" not in args and "--ssd-cache" not in args
+    # 起動中: 起動と停止の設定は変えられ、エンジンの設定は断る
+    engine.running.add(maya_s._unit("maya-deepseek-xs"))
+    assert maya_s.save_instance_settings("maya-deepseek-xs", {"idle_exclude": True})["idle_exclude"] is True
+    with pytest.raises(maya_s.MayaError):
+        maya_s.save_instance_settings("maya-deepseek-xs", {"context": 65536})
+    with pytest.raises(maya_s.MayaError):
+        maya_s.instance_settings("maya-s")                      # 最初のモデルは従来の設定画面
