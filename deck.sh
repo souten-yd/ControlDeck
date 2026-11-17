@@ -110,23 +110,57 @@ PY
   export CONTROL_DECK_DB_URL="$database_url"
 }
 
+# frontend の build に要る node の最小の版（vite 5 が 18 以上）。
+NODE_MIN_MAJOR=18
+
+node_major() {
+  command -v node >/dev/null || { echo 0; return; }
+  node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
+}
+
+# node と npm を用意する（初期設定・更新の両方から呼ぶ）。無ければ apt で入れ、古ければ理由を出して止める。
+ensure_node() {
+  if ! command -v npm >/dev/null || [ "$(node_major)" -lt "$NODE_MIN_MAJOR" ]; then
+    info "Node.js と npm を導入します（frontend のビルドに使います）"
+    apt_install nodejs npm || true
+  fi
+  command -v npm >/dev/null \
+    || die "frontend のビルドに Node.js（npm）が必要です: sudo apt install nodejs npm"
+  local major; major="$(node_major)"
+  if [ "$major" -lt "$NODE_MIN_MAJOR" ]; then
+    die "Node.js $major は古すぎます（$NODE_MIN_MAJOR 以上が必要）。NodeSource などで新しい版を入れてください: https://github.com/nodesource/distributions"
+  fi
+}
+
+# package-lock.json が変わっていたら lock どおりに入れ直す（依存を足した版へ更新したときに build が落ちないように）。
+ensure_frontend_deps() {
+  local lock="$REPO_ROOT/frontend/package-lock.json"
+  local stamp="$REPO_ROOT/frontend/node_modules/.deck-lock-stamp"
+  local current=""
+  [ -f "$lock" ] && current="$(sha256sum "$lock" | cut -d' ' -f1)"
+  if [ ! -d "$REPO_ROOT/frontend/node_modules" ] || [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$current" ]; then
+    info "フロントエンド依存をインストールしています ..."
+    if [ -n "$current" ]; then
+      (cd "$REPO_ROOT/frontend" && npm ci --silent --no-fund --no-audit) || die "フロントエンド依存の導入に失敗しました"
+    else
+      (cd "$REPO_ROOT/frontend" && npm install --silent --no-fund --no-audit) || die "フロントエンド依存の導入に失敗しました"
+    fi
+    echo "$current" > "$stamp"
+  fi
+}
+
 ensure_frontend() {
   local dist="$REPO_ROOT/frontend/dist/index.html"
   local need_build=0
   if [ ! -f "$dist" ]; then
     need_build=1
-  elif [ -n "$(find "$REPO_ROOT/frontend/src" "$REPO_ROOT/frontend/package.json" \
+  elif [ -n "$(find "$REPO_ROOT/frontend/src" "$REPO_ROOT/frontend/package.json" "$REPO_ROOT/frontend/package-lock.json" \
                -newer "$dist" -print -quit 2>/dev/null)" ]; then
     need_build=1
   fi
   if [ "$need_build" -eq 1 ]; then
-    if ! command -v npm >/dev/null; then
-      apt_install nodejs npm || die "フロントエンドのビルドに npm が必要です: sudo apt install nodejs npm"
-    fi
-    if [ ! -d "$REPO_ROOT/frontend/node_modules" ]; then
-      info "フロントエンド依存をインストールしています ..."
-      (cd "$REPO_ROOT/frontend" && npm install --silent --no-fund --no-audit)
-    fi
+    ensure_node
+    ensure_frontend_deps
     info "フロントエンドをビルドしています ..."
     (cd "$REPO_ROOT/frontend" && npm run build --silent)
   fi
@@ -753,10 +787,9 @@ cmd_update_prepare() {
   check_python
   ensure_venv
   ensure_config
-  if ! command -v npm >/dev/null; then
-    die "更新のためにnpmが必要です"
-  fi
+  ensure_node
   (cd "$REPO_ROOT/frontend" && npm ci --silent --no-fund --no-audit)
+  sha256sum "$REPO_ROOT/frontend/package-lock.json" | cut -d' ' -f1 > "$REPO_ROOT/frontend/node_modules/.deck-lock-stamp"
   (cd "$REPO_ROOT/frontend" && npm run build --silent)
 }
 
