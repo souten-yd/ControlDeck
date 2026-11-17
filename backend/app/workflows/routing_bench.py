@@ -2,7 +2,7 @@
 
     cd backend && .venv/bin/python -m app.workflows.routing_bench --base-url http://127.0.0.1:8096/v1 --model auto
 
-tests/data/assistant_routing_cases.json の依頼を decide() に通し、期待した mode との一致率と
+tests/fixtures/assistant_routing_cases.json の依頼を decide() に通し、期待した mode との一致率と
 判定時間を出す。LLM を使うので、テストではなく手で流す（モデルを変えたときの比較用）。
 """
 from __future__ import annotations
@@ -13,7 +13,8 @@ import json
 import time
 from pathlib import Path
 
-CASES = Path(__file__).resolve().parents[2] / "tests" / "data" / "assistant_routing_cases.json"
+# tests/data/ は .gitignore の data/ に掛かるので fixtures に置く
+CASES = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "assistant_routing_cases.json"
 
 
 async def run(base_url: str, model: str, api_key: str = "") -> dict:

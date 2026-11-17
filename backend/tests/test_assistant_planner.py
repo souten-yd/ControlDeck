@@ -125,7 +125,7 @@ def _routing_cases():
     import json
     from pathlib import Path
 
-    return json.loads((Path(__file__).parent / "data" / "assistant_routing_cases.json").read_text(encoding="utf-8"))
+    return json.loads((Path(__file__).parent / "fixtures" / "assistant_routing_cases.json").read_text(encoding="utf-8"))
 
 
 def test_rule_plan_matches_routing_cases_and_sets_depth():
