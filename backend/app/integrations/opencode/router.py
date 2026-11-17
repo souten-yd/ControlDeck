@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -5,10 +7,12 @@ from app.audit import service as audit
 from app.database import get_db
 from app.features import registry
 from app.integrations.opencode import provider as opencode
+from app.integrations.opencode import tui_history as opencode_tui_history
 from app.jobs import service as jobs
 from app.models import User
 from app.security.deps import require_permission
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/opencode", tags=["opencode"])
 
 
@@ -133,9 +137,83 @@ class SessionBody(BaseModel):
     # 空なら設定値（チャットやワークフローと同じ既定）を使う。
     runtime: str = Field(default="", max_length=8)
     # 作業の種類（ui_verify / research / review）。空ならふつうのセッション。
+    # 続きから開く: "last"（そのプロジェクトの最後の会話）か OpenCode の会話 ID（ses_…）
+    resume: str = Field(default="", max_length=80)
 
 
 _llm_warmup_tasks: set = set()
+
+
+@router.get("/sessions")
+def list_tui_sessions(user: User = Depends(require_permission("terminal.use"))):
+    """OpenCode 画面のセッション一覧: 動いているもの（接続できる）と、閉じたもの（続きから開ける）。
+
+    以前はブラウザの localStorage に覚えた ID だけを出していたので、TUI を閉じる（OpenCode を
+    終える）と一覧から消え、別の端末からも見えなかった。サーバーに記録して返す。
+    """
+    from app.terminals.manager import manager as terminals
+
+    alive = {s["id"]: s for s in terminals.list_sessions()}
+    return {"sessions": opencode_tui_history.listing(user.id, alive)}
+
+
+def _chat_sessions(db) -> set[str]:
+    """AI アシスタント（code モード）が使っている OpenCode の会話。TUI では開かない
+    （同じ会話を 2 つのサーバーが同時に書くと壊れる）。"""
+    import json as _json
+
+    from sqlalchemy import select
+
+    from app.models import ChatMessage
+
+    ids: set[str] = set()
+    rows = db.execute(select(ChatMessage.meta_json).where(ChatMessage.meta_json.like('%"opencode_session"%'))).scalars()
+    for raw in rows:
+        try:
+            value = (_json.loads(raw or "{}") or {}).get("opencode_session")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(value, str):
+            ids.add(value)
+    return ids
+
+
+def _resolve_resume(resume: str, project_path: str, runtime: str, db) -> str:
+    """「続きから開く」を、そのプロジェクトで TUI が使っていた最新の会話 ID にする。
+
+    --continue は「そのプロジェクトで最後の会話」なので、AI アシスタントの会話を掴むことがある。
+    AI アシスタントの会話を除いた最新を --session で開く。無ければ新しい会話で始める。
+    """
+    from app.files import service as files
+
+    chat = _chat_sessions(db)
+    if resume != "last":
+        if not opencode.RESUME_SESSION_RE.fullmatch(resume):
+            raise HTTPException(status_code=422, detail="続きから開く会話の ID が正しくありません")
+        if resume in chat:
+            raise HTTPException(status_code=409, detail="AI アシスタントの会話です。AI アシスタントで続けてください")
+        return resume
+    try:
+        project = str(files.resolve(project_path))
+    except Exception:  # noqa: BLE001
+        return ""
+    for row in opencode.project_sessions(project, runtime):
+        if row["id"] not in chat:
+            return row["id"]
+    return ""
+
+
+class ForgetBody(BaseModel):
+    project_path: str = Field(min_length=1, max_length=4096)
+
+
+@router.post("/sessions/forget", status_code=204)
+def forget_tui_sessions(body: ForgetBody, user: User = Depends(require_permission("terminal.use"))):
+    """閉じたセッションを一覧から外す（OpenCode の会話そのものは消さない）。"""
+    from app.terminals.manager import manager as terminals
+
+    alive = {s["id"] for s in terminals.list_sessions()}
+    opencode_tui_history.forget_project(body.project_path, user.id, alive)
 
 
 @router.post("/sessions", status_code=201)
@@ -170,12 +248,19 @@ async def create_session(
         elif project_path.strip():
             imported = await asyncio.to_thread(opencode.import_project, project_path)
             project_path = imported["path"]
+        resume = body.resume.strip()
+        if resume:
+            resume = await asyncio.to_thread(_resolve_resume, resume, project_path, body.runtime, db)
         command, project = opencode.tui_command(
             project_path=project_path, prompt=body.prompt,
             base_url=body.base_url, model=body.model, owner_user_id=user.id,
-            runtime=body.runtime,
+            runtime=body.runtime, resume=resume,
         )
         session = terminals.create_session(cwd=project, command=command)
+        try:
+            opencode_tui_history.record(session["id"], project, user.id, resume=resume)
+        except OSError as exc:  # 記録できなくても TUI は使える（一覧に出ないだけ）
+            logger.warning("OpenCode TUI の記録に失敗しました: %s", exc)
     except opencode.CodeAgentError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -183,7 +268,7 @@ async def create_session(
     audit.record(db, "feature.opencode.session", user=user, resource_type="feature",
                  resource_id="opencode", request=request,
                  metadata={"terminal_id": session["id"], "project_path": project,
-                           "with_prompt": bool(body.prompt.strip()),
+                           "with_prompt": bool(body.prompt.strip()), "resume": body.resume.strip()[:80],
                            "runtime": opencode.active_runtime(body.runtime)})
     return {**session, "project_path": project}
 

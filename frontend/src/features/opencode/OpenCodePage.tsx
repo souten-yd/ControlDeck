@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { FilePicker } from "../../components/FilePicker";
 import { BottomSheet, ConfirmDialog, IconButton, SegmentedTabs, Skeleton } from "../../components/ui";
-import { IconFolder, IconPlus, IconSettings, IconTrash } from "../../components/icons";
+import { IconFolder, IconPlus, IconSettings, IconTrash, IconX } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
 import { WorkflowExtensions, workflowBody, type Workflow } from "./WorkflowExtensions";
@@ -27,6 +27,7 @@ interface Status {
   feature: FeatureState; settings: Settings;
   active_runtime: string; runtimes: Record<string, FeatureState>;
 }
+interface TuiSession { terminal_id: string; project_path: string; project_name: string; started_at: number; running: boolean }
 interface TerminalSession { id: string; name: string; created_at: number; attached: boolean; persistent: boolean; cwd?: string }
 
 /** セッションはCodeDEV配下のプロジェクトで起動するので、作業ディレクトリ名をそのまま名前として使う。 */
@@ -85,11 +86,46 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
     queryFn: () => api<{ tmux: boolean; sessions: TerminalSession[] }>("/terminals"),
     refetchInterval: active ? false : 10_000,
   });
-  // このページで開始したセッションだけを表示（通常のターミナルとは混ぜない）
-  const sessions = useMemo(
-    () => (terminals?.sessions ?? []).filter((s) => own.includes(s.id)),
-    [terminals, own],
-  );
+  // OpenCode のセッションはサーバーが覚えている（閉じたものも「続きから開く」で戻れる。別の端末からも見える）
+  const { data: tuiData } = useQuery({
+    queryKey: ["opencode-tui-sessions"],
+    queryFn: () => api<{ sessions: TuiSession[] }>("/opencode/sessions"),
+    refetchInterval: active ? false : 10_000,
+  });
+  const tuiSessions = tuiData?.sessions ?? [];
+  const sessions = useMemo(() => {
+    const known = new Set(tuiSessions.filter((s) => s.running).map((s) => s.terminal_id));
+    // 記録の無い古いセッション（この端末で開いたもの）も出す
+    return (terminals?.sessions ?? []).filter((s) => known.has(s.id) || own.includes(s.id));
+  }, [terminals, tuiSessions, own]);
+  const closedSessions = tuiSessions.filter((s) => !s.running);
+  const [resuming, setResuming] = useState<string | null>(null);
+  const resume = async (session: TuiSession) => {
+    setResuming(session.project_path);
+    try {
+      const started = await api<{ id: string }>("/opencode/sessions", {
+        method: "POST",
+        json: { project_path: session.project_path, resume: "last", runtime,
+          base_url: data?.settings.base_url ?? "", model: data?.settings.model ?? "" },
+      });
+      setOwn((prev) => [...prev.filter((v) => v !== started.id), started.id]);
+      qc.invalidateQueries({ queryKey: ["terminals"] });
+      qc.invalidateQueries({ queryKey: ["opencode-tui-sessions"] });
+      setActive(started.id);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "続きから開けませんでした", "error");
+    } finally {
+      setResuming(null);
+    }
+  };
+  const forget = async (session: TuiSession) => {
+    try {
+      await api("/opencode/sessions/forget", { method: "POST", json: { project_path: session.project_path } });
+      qc.invalidateQueries({ queryKey: ["opencode-tui-sessions"] });
+    } catch (error) {
+      show(error instanceof Error ? error.message : "一覧から外せませんでした", "error");
+    }
+  };
 
   const startDisabled =
     (projectMode === "new" && !newName.trim()) ||
@@ -107,6 +143,7 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
     }),
     onSuccess: ({ id }) => {
       setOwn((prev) => [...prev.filter((v) => v !== id), id]);
+      qc.invalidateQueries({ queryKey: ["opencode-tui-sessions"] });
       setPrompt("");
       qc.invalidateQueries({ queryKey: ["opencode-reports"] });
       qc.invalidateQueries({ queryKey: ["terminals"] });
@@ -120,6 +157,7 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
     try {
       await api(`/terminals/${id}`, { method: "DELETE" });
       qc.invalidateQueries({ queryKey: ["terminals"] });
+      qc.invalidateQueries({ queryKey: ["opencode-tui-sessions"] });
       setOwn((prev) => prev.filter((v) => v !== id));
       if (active === id) setActive(null);
       show("セッションを終了しました");
@@ -151,6 +189,7 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
           onExit={() => {
             setActive(null);
             qc.invalidateQueries({ queryKey: ["terminals"] });
+            qc.invalidateQueries({ queryKey: ["opencode-tui-sessions"] });
           }}
         />
       </Suspense>
@@ -255,9 +294,36 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
       )}
 
 
+      {closedSessions.length > 0 && (
+        <section>
+          <p className="mb-2 text-xs font-medium text-zinc-500">閉じたセッション（続きから開けます）</p>
+          <ul className="divide-y divide-zinc-100 overflow-hidden rounded-2xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+            {closedSessions.map((s) => (
+              <li key={s.terminal_id} className="flex items-center gap-3 bg-white px-4 py-3 dark:bg-zinc-900">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm">
+                    <span className="text-zinc-400">OpenCode · </span>
+                    <span className="font-semibold">{s.project_name}</span>
+                  </p>
+                  <p className="truncate text-xs text-zinc-400">
+                    {s.started_at ? `${new Date(s.started_at * 1000).toLocaleString("ja-JP")} に開始` : ""} · 終了済み
+                  </p>
+                </div>
+                <button onClick={() => void resume(s)} disabled={resuming !== null}
+                  className="min-h-11 shrink-0 rounded-xl bg-accent-50 px-3.5 text-sm font-medium text-accent-700 hover:bg-accent-100 disabled:opacity-50 dark:bg-accent-600/15 dark:text-accent-400">
+                  {resuming === s.project_path ? "起動中…" : "続きから開く"}
+                </button>
+                <button onClick={() => void forget(s)} aria-label={`${s.project_name} を一覧から外す`}
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800"><IconX /></button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {picker && <FilePicker mode="dir" title="既存プロジェクトを選択" initialPath={otherPath || undefined} onSelect={(path) => { setOtherPath(path); setPicker(false); }} onClose={() => setPicker(false)} />}
       {killing && (
-        <ConfirmDialog title="OpenCodeセッションを終了しますか？" message="TUIと実行中の処理は終了します。この操作は取り消せません。" confirmLabel="終了する" onConfirm={() => kill(killing)} onClose={() => setKilling(null)} />
+        <ConfirmDialog title="OpenCodeセッションを終了しますか？" message="TUIと実行中の処理は終了します。会話は残るので、あとで「続きから開く」で再開できます。" confirmLabel="終了する" onConfirm={() => kill(killing)} onClose={() => setKilling(null)} />
       )}
       {deletingProject && (
         <ConfirmDialog

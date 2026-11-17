@@ -1508,6 +1508,35 @@ def import_project(source_path: str) -> dict:
     return {"name": destination.name, "path": str(destination), "imported": True}
 
 
+RESUME_SESSION_RE = re.compile(r"ses_[A-Za-z0-9_-]{8,64}")
+
+
+def project_sessions(project: str, runtime: str = "") -> list[dict]:
+    """そのプロジェクトの OpenCode の会話（新しい順）。`opencode session list --format json`。
+
+    会話の保存先は TUI と AI アシスタントで共有なので、両方の会話が混ざって返る。
+    利用者の ~/.config/opencode は読ませない（空の config directory を渡す）。
+    """
+    import subprocess
+    import tempfile
+
+    _, binary = active_binary(runtime)
+    with tempfile.TemporaryDirectory(prefix="cd-oc-list-") as empty:
+        env = {**os.environ, "XDG_CONFIG_HOME": empty, "OPENCODE_CONFIG_DIR": empty}
+        try:
+            result = subprocess.run(
+                [str(binary), "session", "list", "--standalone", "--format", "json", "-n", "50"],
+                cwd=project, env=env, capture_output=True, text=True, timeout=30,
+            )
+            rows = json.loads(result.stdout or "[]") if result.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            return []
+    out = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+           and str(row.get("directory") or "").rstrip("/") == str(project).rstrip("/")]
+    out.sort(key=lambda row: float(row.get("updated") or 0), reverse=True)
+    return out
+
+
 def tui_command(
     *,
     project_path: str,
@@ -1516,8 +1545,12 @@ def tui_command(
     model: str = "",
     owner_user_id: int | None = None,
     runtime: str = "",
+    resume: str = "",
 ) -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
+
+    resume: "" は新しい会話、"last" はそのプロジェクトの最後の会話の続き（--continue）、
+    "ses_…" はその会話の続き（--session）。TUI は閉じると終わるので、開き直すときに使う。
 
     ターミナル基盤（tmux）の上でopencode TUIをそのまま動かす。設定は永続config
     （Control Deck LLM provider）を都度再生成して渡す。
@@ -1546,6 +1579,12 @@ def tui_command(
     # 常駐 service へ繋がないよう --standalone を付ける。TUI を閉じたら一緒に終わる。
     argv = [str(binary)]
     argv += ["--standalone"]
+    if resume == "last":
+        argv += ["--continue"]
+    elif resume:
+        if not RESUME_SESSION_RE.fullmatch(resume):
+            raise CodeAgentError("続きから開く会話の ID が正しくありません")
+        argv += ["--session", resume]
     if prompt.strip():
         argv += ["--prompt", prompt.strip()]
     argv.append(str(project))
