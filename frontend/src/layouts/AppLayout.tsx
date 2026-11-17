@@ -266,9 +266,10 @@ export default function AppLayout() {
     setDrawerOpen(false);
     setActionOpen(true);
   };
-  const navPanel = (compact: boolean, onToggle: () => void, toggleLabel: string, expanded: boolean) => (
+  const navPanel = (compact: boolean, onToggle: () => void, toggleLabel: string, expanded: boolean, twoColumn = false) => (
     <NavPanel
       compact={compact}
+      twoColumn={twoColumn}
       appName={appName}
       sections={sections}
       userName={user?.display_name ?? ""}
@@ -344,7 +345,7 @@ export default function AppLayout() {
 
       {/* 携帯: 左から出るドロワー */}
       <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        {navPanel(false, () => setDrawerOpen(false), "メニューを閉じる", true)}
+        {navPanel(false, () => setDrawerOpen(false), "メニューを閉じる", true, true)}
       </NavDrawer>
 
       {/* アカウントと操作（画面の移動はドロワー、ここは「実行するもの」だけ） */}
@@ -429,8 +430,10 @@ export default function AppLayout() {
 
 /** メニューの中身。PC のサイドバーと携帯のドロワーで同じものを使う。
  *  compact は PC で折りたたんだ状態（アイコンだけの細い列）。 */
-function NavPanel({ compact, appName, sections, userName, toggleLabel, toggleExpanded, onToggle, onSearch, onAccount }: {
+function NavPanel({ compact, twoColumn = false, appName, sections, userName, toggleLabel, toggleExpanded, onToggle, onSearch, onAccount }: {
   compact: boolean;
+  /** 携帯のドロワー: 項目を 2 列に並べ、スクロールせずに見渡せるようにする */
+  twoColumn?: boolean;
   appName: string;
   sections: NavSection[];
   userName: string;
@@ -441,7 +444,7 @@ function NavPanel({ compact, appName, sections, userName, toggleLabel, toggleExp
   onAccount: () => void;
 }) {
   const rowBase = `flex min-h-11 items-center rounded-xl text-sm transition-colors md:min-h-9 ${
-    compact ? "w-11 justify-center" : "w-full gap-3 px-3"
+    compact ? "w-11 justify-center" : twoColumn ? "w-full gap-2 px-2.5" : "w-full gap-3 px-3"
   }`;
   const rowIdle = "text-zinc-600 hover:bg-zinc-200/60 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/80 dark:hover:text-zinc-100";
   const rowActive = "bg-white font-medium text-zinc-900 shadow-sm ring-1 ring-zinc-200/80 dark:bg-zinc-800 dark:text-white dark:ring-zinc-700/60";
@@ -501,7 +504,7 @@ function NavPanel({ compact, appName, sections, userName, toggleLabel, toggleExp
               ? index > 0 && <div aria-hidden className="mx-2 my-2 border-t border-zinc-200 dark:border-zinc-800" />
               : <p className="px-3 pb-1 pt-4 text-[11px] font-medium tracking-wide text-zinc-600 dark:text-zinc-400">{section.label}</p>}
             {compact && index === 0 && <div className="h-1" />}
-            <ul className="space-y-0.5">
+            <ul className={twoColumn ? "grid grid-cols-2 gap-x-1 gap-y-0.5" : "space-y-0.5"}>
               {section.entries.map((entry) => {
                 const Ico = entry.icon;
                 const inner = (
