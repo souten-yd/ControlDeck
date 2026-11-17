@@ -18,7 +18,7 @@ from collections import deque
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
@@ -56,8 +56,8 @@ class FanSettings(BaseModel):
     # Firmware (R9700) accepts 15–100%; the curve also clamps to the device minimum.
     min_percent: int = Field(default=35, ge=15, le=70)
     allow_zero_rpm: bool = False
-    preset_id: Literal["recommended", "llm_r9700", "llm_quiet", "curve_r9700", "pid_r9700",
-                       "quiet", "cooling", "custom"] = "recommended"
+    # 組み込みの id、"custom"、または利用者が保存したプリセット（user-xxxxxxxx）
+    preset_id: str = Field(default="recommended", pattern=r"^(recommended|llm_r9700|llm_quiet|curve_r9700|pid_r9700|quiet|cooling|custom|user-[0-9a-f]{8})$")
     # After cooling starts, hold this long, then ramp down continuously.
     cool_hold_seconds: int = Field(default=30, ge=30, le=600)
     cool_rate_percent_per_min: float = Field(default=30.0, ge=1.0, le=60.0, allow_inf_nan=False)
@@ -236,9 +236,83 @@ FAN_PRESETS = (
 
 
 
+# ---- 利用者のプリセット（data/fan-user-presets.json） ----
+USER_PRESET_FILE = "fan-user-presets.json"
+USER_PRESET_LIMIT = 20
+# プリセットに入れる設定（有効/無効・対象の GPU・起動時の扱いは入れない）
+USER_PRESET_KEYS = tuple(name for name in FanSettings.model_fields
+                         if name not in ("enabled", "bdf", "preset_id", "startup_mode"))
+
+
+def _user_preset_path() -> Path:
+    return data_dir() / USER_PRESET_FILE
+
+
+def user_presets() -> list[dict]:
+    try:
+        raw = json.loads(_user_preset_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict) or not re.fullmatch(r"user-[0-9a-f]{8}", str(entry.get("id", ""))):
+            continue
+        try:
+            settings = FanSettings(**{k: v for k, v in (entry.get("settings") or {}).items() if k in USER_PRESET_KEYS})
+        except ValidationError:
+            continue
+        out.append({"id": entry["id"], "label": str(entry.get("label") or "")[:60],
+                    "description": str(entry.get("description") or "")[:200], "user": True,
+                    "created_at": entry.get("created_at"),
+                    "settings": settings.model_dump(include=set(USER_PRESET_KEYS))})
+    return out
+
+
+def _save_user_presets(rows: list[dict]) -> None:
+    path = _user_preset_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def add_user_preset(label: str, description: str, settings: FanSettings) -> dict:
+    """いまの設定（画面で調整中のもの）をプリセットとして保存する。"""
+    import secrets as _secrets
+
+    label = label.strip()
+    if not 1 <= len(label) <= 60:
+        raise FanControlError("プリセット名は 1〜60 文字にしてください")
+    with _lock:
+        rows = user_presets()
+        if len(rows) >= USER_PRESET_LIMIT:
+            raise FanControlError(f"保存できるプリセットは {USER_PRESET_LIMIT} 件までです。使わないものを削除してください")
+        if any(row["label"] == label for row in rows):
+            raise FanControlError("同じ名前のプリセットがあります")
+        entry = {"id": f"user-{_secrets.token_hex(4)}", "label": label, "description": description.strip()[:200],
+                 "created_at": time.time(), "settings": settings.model_dump(include=set(USER_PRESET_KEYS))}
+        _save_user_presets([{k: v for k, v in row.items() if k != "user"} for row in rows] + [entry])
+    return {**entry, "user": True}
+
+
+def delete_user_preset(preset_id: str) -> None:
+    with _lock:
+        rows = user_presets()
+        if not any(row["id"] == preset_id for row in rows):
+            raise FanControlError("プリセットが見つかりません")
+        _save_user_presets([{k: v for k, v in row.items() if k != "user"} for row in rows if row["id"] != preset_id])
+        current = _load()
+        if current.preset_id == preset_id:  # 使っていたものを消したら「カスタム」として残す
+            _persist(current.model_copy(update={"preset_id": "custom"}))
+
+
 def _normalize_preset(settings: FanSettings, device: dict | None = None) -> FanSettings:
     """Saved preset label must describe the actual immutable catalog snapshot."""
     if settings.preset_id == "custom":
+        return settings
+    if settings.preset_id.startswith("user-"):
+        saved = next((row for row in user_presets() if row["id"] == settings.preset_id), None)
+        if saved is None or any(getattr(settings, key) != value for key, value in saved["settings"].items()):
+            return settings.model_copy(update={"preset_id": "custom"})
         return settings
     preset = next((entry for entry in FAN_PRESETS if entry["id"] == settings.preset_id), None)
     if preset is None:
@@ -1166,7 +1240,7 @@ def status() -> dict:
             "control_policy": ("ceiling_margin_slew_limited_pi" if settings.control_mode == "target"
                                else "adaptive_ff_pi_antiwindup_fast_rise_slow_fall"),
             "learned_parameters": _policy.learned_parameters(),
-            "presets": list(FAN_PRESETS),
+            "presets": list(FAN_PRESETS) + user_presets(),
             "cool_hold_seconds": settings.cool_hold_seconds,
             "zero_stable_seconds": settings.zero_stable_seconds,
             "effective_cool_hold_seconds": settings.cool_hold_seconds,
