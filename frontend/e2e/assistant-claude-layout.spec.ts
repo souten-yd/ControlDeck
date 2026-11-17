@@ -453,9 +453,10 @@ test("drawer and settings are flat on a phone", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
-// 根拠: iPhone のホーム画面アプリは再読み込み後に 100vh/innerHeight を上の Safe Area 分（約 62pt）縮めて
-// 報告し、殻の下端が画面に届かず入力欄が切れた（2026-11-17、実機の画面写真）。殻は画面の実寸に合わせる。
-test("standalone iPhone: shell uses the real screen height when the viewport is reported shrunk", async ({ page }) => {
+// 根拠: iPhone のホーム画面アプリは再読み込み後に WebView 自体が上の Safe Area 分（59pt）短くなり、
+// 描画はその高さで終わる（2026-11-17 の実機の診断: screen 932 / innerHeight 873）。殻を実寸に広げた #428 は
+// 逆効果で入力欄が切れた。殻は報告された高さ、下の Safe Area は 0（ホームバーは描画領域の外）。
+test("standalone iPhone: shell fits the shortened web view and drops the bottom safe area", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
@@ -476,14 +477,18 @@ test("standalone iPhone: shell uses the real screen height when the viewport is 
     root: getComputedStyle(document.getElementById("root")!).height,
     shrunk: document.documentElement.dataset.viewportShrunk,
   }));
-  expect(state).toEqual({ root: "956px", shrunk: "62" });
-  await expect.poll(() => sent.find((r) => r.page === "viewport")?.marks.root_h, { timeout: 8000 }).toBe(956);
+  expect(state).toEqual({ root: "894px", shrunk: "62" });
+  // 下の Safe Area は 0（入力欄の下に余白を足さない）
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--cd-safe-area-bottom").trim())).toBe("0px");
+  await expect.poll(() => sent.find((r) => r.page === "viewport")?.marks.root_h, { timeout: 8000 }).toBe(894);
   const viewport = sent.find((r) => r.page === "viewport")!.marks;
   expect(viewport).toMatchObject({ screen_h: 956, inner_h: 894, shrunk: 62 });
+  // 入力欄は描ける範囲（報告された高さ）の中に収まる
   expect(viewport.composer_bottom).toBeGreaterThan(0);
-  // キーボードほどの差（> 100px）は実寸で上書きしない
-  await page.setViewportSize({ width: 440, height: 600 });
-  await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById("root")!).height)).not.toBe("956px");
+  expect(viewport.composer_bottom).toBeLessThanOrEqual(894);
+  // 短くなっていないとき（満寸）は Safe Area をそのまま使う
+  await page.setViewportSize({ width: 440, height: 956 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue("--cd-safe-area-bottom"))).toBe("");
 });
 
 // 根拠: 2026-11-17 の依頼「会話履歴は左右のスワイプでアーカイブか削除。離すと適用し、連続的に操作できる」。

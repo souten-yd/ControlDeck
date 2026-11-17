@@ -112,7 +112,7 @@ body,
 /* iOS standalone(ホーム画面アプリ)はリロード後に dvh/innerHeight が縮んだ値で
    固定され下部ナビが浮く。縮まない large viewport(100vh)で満寸に固定する。 */
 html.pwa-standalone #root {
-  /* iPhone は main.tsx が画面の実寸を入れる（100vh が Safe Area の分縮んで報告されることがある） */
+  /* iPhone は main.tsx が報告された高さを入れる（再読み込み後は WebView 自体が短くなる。100vh は満寸を指す） */
   height: var(--cd-standalone-height, 100vh);
 }
 

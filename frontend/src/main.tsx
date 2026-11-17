@@ -13,21 +13,25 @@ const isStandalone =
   window.matchMedia("(display-mode: standalone)").matches;
 if (isStandalone) document.documentElement.classList.add("pwa-standalone");
 
-// iPhone のホーム画面アプリは、再読み込みの後に 100vh / innerHeight を上の Safe Area
-// （Dynamic Island の機種で約 62pt）の分だけ小さく報告することがある。描画は満寸なので、
-// 100vh の殻だと下端が画面に届かず、入力欄が切れて下に黒い帯が出る。
-// 画面の実寸（screen）と比べて、縮んで報告されているときは実寸を殻の高さにする。
+// iPhone のホーム画面アプリは、再読み込みの後に WebView 自体が上の Safe Area（約 59pt）の分だけ短くなり、
+// 画面の下端より上で描画が終わる（実機の診断 2026-11-17: screen 932 / innerHeight 873 / safe 59・34。
+// 画面写真でも 873 で切れ、その下は描画されない黒い帯）。#428 は「描画は満寸」と見て殻を 932 に
+// 広げたが逆効果で、入力欄の下が描けない領域へはみ出した。殻は報告された高さに合わせ、この状態では
+// ホームバーが描画領域の外にあるので、下の Safe Area の余白も付けない。
 const isIPhoneStandalone = (window.navigator as unknown as { standalone?: boolean }).standalone === true
   && Math.min(window.screen.width, window.screen.height) <= 500;
 if (isIPhoneStandalone) {
   const syncStandaloneHeight = () => {
+    const root = document.documentElement;
     const portrait = window.innerHeight >= window.innerWidth;
     const full = portrait ? Math.max(window.screen.width, window.screen.height) : Math.min(window.screen.width, window.screen.height);
     const reported = window.innerHeight;
-    // 縮みは Safe Area 程度（〜100px）。それより大きい差（キーボードなど）は触らない
-    const shrunk = full > reported && full - reported <= 100;
-    document.documentElement.style.setProperty("--cd-standalone-height", `${shrunk ? full : reported}px`);
-    document.documentElement.dataset.viewportShrunk = shrunk ? String(full - reported) : "";
+    // 短くなるのは Safe Area 程度（20〜100px）。それより大きい差（キーボードなど）は別の処理に任せる
+    const shrunk = full - reported >= 20 && full - reported <= 100;
+    root.style.setProperty("--cd-standalone-height", `${reported}px`);
+    if (shrunk) root.style.setProperty("--cd-safe-area-bottom", "0px");
+    else root.style.removeProperty("--cd-safe-area-bottom");
+    root.dataset.viewportShrunk = shrunk ? String(full - reported) : "";
   };
   syncStandaloneHeight();
   window.addEventListener("resize", syncStandaloneHeight);
