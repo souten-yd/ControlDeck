@@ -314,7 +314,7 @@ export function FanControlSettings() {
       const preset = await api<FanPreset>("/system/fan-control/presets", {
         method: "POST", json: { label: presetName.trim(), description: "", settings: draft },
       });
-      await qc.invalidateQueries({ queryKey: ["fan-control"] });
+      await qc.invalidateQueries({ queryKey: ["system-fan-control"] });
       setDraft({ ...draft, preset_id: preset.id });
       setPresetName("");
       show(`プリセット「${preset.label}」を保存しました`);
@@ -328,7 +328,7 @@ export function FanControlSettings() {
     setDeletingPreset(null);
     try {
       await api(`/system/fan-control/presets/${encodeURIComponent(preset.id)}`, { method: "DELETE" });
-      await qc.invalidateQueries({ queryKey: ["fan-control"] });
+      await qc.invalidateQueries({ queryKey: ["system-fan-control"] });
       if (draft?.preset_id === preset.id) setDraft({ ...draft, preset_id: "custom" });
       show(`プリセット「${preset.label}」を削除しました`);
     } catch (e) {
