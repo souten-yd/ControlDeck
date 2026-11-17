@@ -1017,3 +1017,28 @@ def test_target_mode_converges_under_sustained_synthetic_heat(gpu, monkeypatch, 
     assert abs(temp - (90 - margin)) < 1
     assert max(samples[-100:]) - min(samples[-100:]) < 1
     assert max(samples) < 90
+
+
+def test_user_presets_can_be_added_selected_and_deleted(gpu):
+    """利用者のプリセット（2026-11-17 の依頼: 追加と削除）。組み込みは消せず、使っていたものを消すとカスタムに戻る。"""
+    fan = gpu[0]
+    tuned = fan.FanSettings(min_percent=25, control_mode="pid", pid_kp=2.0, pid_ti=60.0, targets_c={"temp2": 88})
+    preset = fan.add_user_preset("夜の静音", "寝る前", tuned)
+    assert preset["id"].startswith("user-") and preset["settings"]["min_percent"] == 25
+    listed = fan.status()["presets"]
+    assert listed[-1]["id"] == preset["id"] and listed[-1]["user"] is True
+    assert any(p["id"] == "recommended" for p in listed)
+    with pytest.raises(fan.FanControlError):
+        fan.add_user_preset("夜の静音", "", tuned)                       # 同じ名前は不可
+
+    # 選んだプリセットの値そのままなら、その名前のまま。値を変えたらカスタム
+    chosen = tuned.model_copy(update={"preset_id": preset["id"]})
+    assert fan._normalize_preset(chosen).preset_id == preset["id"]
+    assert fan._normalize_preset(chosen.model_copy(update={"min_percent": 30})).preset_id == "custom"
+
+    fan._persist(chosen)
+    fan.delete_user_preset(preset["id"])
+    assert all(p["id"] != preset["id"] for p in fan.status()["presets"])
+    assert fan._load().preset_id == "custom"
+    with pytest.raises(fan.FanControlError):
+        fan.delete_user_preset(preset["id"])

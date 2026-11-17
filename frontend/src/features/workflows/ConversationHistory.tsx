@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconCompose, IconSearch, IconX } from "../../components/icons";
 
-export interface ConversationSummary { id: string; title: string; updated_at: string }
+export interface ConversationSummary { id: string; title: string; updated_at: string; archived?: boolean }
 
 export const HISTORY_GROUPS = ["今日", "昨日", "過去7日間", "それ以前"] as const;
 export type HistoryGroup = (typeof HISTORY_GROUPS)[number];
@@ -56,11 +56,24 @@ interface HistoryProps {
   onNew: () => void;
   onRename: (id: string, title: string) => Promise<void> | void;
   onDelete: (conversation: ConversationSummary) => void;
+  /** 右へスワイプ: アーカイブ（archived=false で戻す） */
+  onArchive?: (conversation: ConversationSummary, archived: boolean) => void;
+  /** 左へスワイプ: 確認なしで削除（呼び出し側が「元に戻す」を出す） */
+  onSwipeDelete?: (conversation: ConversationSummary) => void;
+  /** アーカイブした会話（開いたときだけ読む） */
+  archivedConversations?: ConversationSummary[];
+  onShowArchived?: (show: boolean) => void;
 }
 
 /** 履歴の中身（列とシートで共通）。 */
-export function ConversationHistory({ conversations, currentId, busy, onOpen, onNew, onRename, onDelete, header }: HistoryProps & { header: ReactNode }) {
+export function ConversationHistory({ conversations, currentId, busy, onOpen, onNew, onRename, onDelete, onArchive,
+  onSwipeDelete, archivedConversations, onShowArchived, header }: HistoryProps & { header: ReactNode }) {
   const [query, setQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const toggleArchived = () => {
+    setShowArchived((v) => !v);
+    onShowArchived?.(!showArchived);
+  };
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const filtered = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ja");
@@ -105,30 +118,148 @@ export function ConversationHistory({ conversations, currentId, busy, onOpen, on
             <h3 className="px-3 pb-1 pt-3 text-[11px] font-medium tracking-wide text-zinc-500 dark:text-zinc-400">{group.label}</h3>
             <ul className="space-y-0.5">
               {group.items.map((conversation) => (
-                <HistoryRow
+                <SwipeRow
                   key={conversation.id}
-                  conversation={conversation}
-                  active={conversation.id === currentId}
-                  busy={busy}
-                  renaming={renamingId === conversation.id}
-                  onOpen={() => onOpen(conversation.id)}
-                  onStartRename={() => setRenamingId(conversation.id)}
-                  onRename={async (title) => {
-                    setRenamingId(null);
-                    if (title && title !== conversation.title) await onRename(conversation.id, title);
-                  }}
-                  onDelete={() => onDelete(conversation)}
-                />
+                  label={conversation.title}
+                  disabled={renamingId === conversation.id || (busy && conversation.id === currentId)}
+                  right={onArchive ? { label: "アーカイブ", tone: "archive", onCommit: () => onArchive(conversation, true) } : undefined}
+                  left={onSwipeDelete ? { label: "削除", tone: "delete", onCommit: () => onSwipeDelete(conversation) } : undefined}
+                >
+                  <HistoryRow
+                    conversation={conversation}
+                    active={conversation.id === currentId}
+                    busy={busy}
+                    renaming={renamingId === conversation.id}
+                    onOpen={() => onOpen(conversation.id)}
+                    onStartRename={() => setRenamingId(conversation.id)}
+                    onRename={async (title) => {
+                      setRenamingId(null);
+                      if (title && title !== conversation.title) await onRename(conversation.id, title);
+                    }}
+                    onDelete={() => onDelete(conversation)}
+                    onArchive={onArchive ? () => onArchive(conversation, true) : undefined}
+                  />
+                </SwipeRow>
               ))}
             </ul>
           </section>
         ))}
+        {onArchive && (
+          <div className="mt-3 border-t border-zinc-200 pt-2 dark:border-zinc-800">
+            <button type="button" onClick={toggleArchived} aria-expanded={showArchived}
+              className="flex min-h-11 w-full items-center justify-between rounded-xl px-3 text-left text-xs font-medium text-zinc-500 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/70">
+              アーカイブした会話
+              <span aria-hidden>{showArchived ? "▾" : "▸"}</span>
+            </button>
+            {showArchived && (
+              <ul className="space-y-0.5" aria-label="アーカイブした会話">
+                {archivedConversations === undefined && <li className="px-3 py-2 text-xs text-zinc-500">読み込み中…</li>}
+                {archivedConversations?.length === 0 && <li className="px-3 py-2 text-xs text-zinc-500">ありません。会話を右へスワイプするとここへ移ります</li>}
+                {(archivedConversations ?? []).map((conversation) => (
+                  <SwipeRow key={conversation.id} label={conversation.title}
+                    right={{ label: "戻す", tone: "archive", onCommit: () => onArchive(conversation, false) }}
+                    left={onSwipeDelete ? { label: "削除", tone: "delete", onCommit: () => onSwipeDelete(conversation) } : undefined}>
+                    <div className="flex min-w-0 items-center rounded-xl hover:bg-zinc-200/60 dark:hover:bg-zinc-800/70">
+                      <button type="button" onClick={() => onOpen(conversation.id)} disabled={busy}
+                        className="min-h-11 min-w-0 flex-1 truncate rounded-xl px-3 text-left text-sm text-zinc-500 disabled:opacity-50">
+                        {conversation.title}
+                      </button>
+                      <button type="button" onClick={() => onArchive(conversation, false)}
+                        className="min-h-11 shrink-0 rounded-xl px-3 text-xs font-medium text-accent-700 hover:bg-accent-50 dark:text-accent-400 dark:hover:bg-accent-600/15">
+                        戻す
+                      </button>
+                    </div>
+                  </SwipeRow>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </nav>
     </div>
   );
 }
 
-function HistoryRow({ conversation, active, busy, renaming, onOpen, onStartRename, onRename, onDelete }: {
+type SwipeAction = { label: string; tone: "archive" | "delete"; onCommit: () => void };
+
+/** 行の左右スワイプ（iPhone のメールと同じ）。右へ: アーカイブ、左へ: 削除。
+ *  一定以上引いて指を離すとすぐ適用する（確認なし。呼び出し側が「元に戻す」を出す）ので、続けて操作できる。
+ *  縦の指の動きはそのまま一覧のスクロールに任せる（最初の動きの向きで決める）。 */
+function SwipeRow({ children, label, left, right, disabled = false }: {
+  children: ReactNode; label: string; left?: SwipeAction; right?: SwipeAction; disabled?: boolean;
+}) {
+  const [dx, setDx] = useState(0);
+  const [leaving, setLeaving] = useState<0 | 1 | -1>(0);
+  const start = useRef<{ x: number; y: number; id: number; axis: "" | "x" | "y"; width: number } | null>(null);
+  const moved = useRef(false);
+  const threshold = (width: number) => Math.min(120, width * 0.35);
+  const onPointerDown = (event: React.PointerEvent<HTMLLIElement>) => {
+    if (disabled || leaving || (event.pointerType === "mouse" && event.button !== 0)) return;
+    start.current = { x: event.clientX, y: event.clientY, id: event.pointerId, axis: "", width: event.currentTarget.offsetWidth };
+    moved.current = false;
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLLIElement>) => {
+    const s = start.current;
+    if (!s || s.id !== event.pointerId) return;
+    const mx = event.clientX - s.x;
+    const my = event.clientY - s.y;
+    if (!s.axis) {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      s.axis = Math.abs(mx) > Math.abs(my) * 1.4 ? "x" : "y";
+      if (s.axis === "x") event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    if (s.axis !== "x") return;
+    moved.current = true;
+    const allowed = (mx > 0 && right) || (mx < 0 && left) ? mx : mx / 6;  // 動作の無い側は少しだけ動く
+    setDx(allowed);
+  };
+  const finish = (event: React.PointerEvent<HTMLLIElement>) => {
+    const s = start.current;
+    start.current = null;
+    if (!s || s.axis !== "x") return;
+    const width = s.width;
+    const action = dx > 0 ? right : left;
+    if (action && Math.abs(dx) >= threshold(width)) {
+      setLeaving(dx > 0 ? 1 : -1);
+      setDx(dx > 0 ? width : -width);
+      window.setTimeout(() => {
+        action.onCommit();
+        setLeaving(0);
+        setDx(0);
+      }, 180);
+    } else {
+      setDx(0);
+    }
+    void event;
+  };
+  const showing = dx > 0 ? right : dx < 0 ? left : undefined;
+  const armed = showing && start.current?.width ? Math.abs(dx) >= threshold(start.current.width) : Boolean(leaving);
+  return (
+    <li className="relative list-none overflow-hidden rounded-xl" data-swipe-row={label}
+      style={{ touchAction: "pan-y" }}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={finish} onPointerCancel={finish}
+      onClickCapture={(event) => {
+        // スワイプの後の click で会話を開かない
+        if (moved.current) { event.stopPropagation(); event.preventDefault(); moved.current = false; }
+      }}>
+      {showing && (
+        <div aria-hidden className={`absolute inset-0 flex items-center px-4 text-sm font-semibold text-white transition-colors ${
+          dx > 0 ? "justify-start" : "justify-end"} ${showing.tone === "delete"
+          ? (armed ? "bg-red-600" : "bg-red-400")
+          : (armed ? "bg-emerald-600" : "bg-emerald-400")}`}>
+          {showing.label}
+        </div>
+      )}
+      <div className={`relative bg-zinc-50 dark:bg-zinc-900 ${start.current ? "" : "transition-transform duration-200 ease-out"}`}
+        style={{ transform: dx ? `translateX(${dx}px)` : undefined }}>
+        {children}
+      </div>
+    </li>
+  );
+}
+
+function HistoryRow({ conversation, active, busy, renaming, onOpen, onStartRename, onRename, onDelete, onArchive }: {
+  onArchive?: () => void;
   conversation: ConversationSummary;
   active: boolean;
   busy: boolean;
@@ -140,14 +271,14 @@ function HistoryRow({ conversation, active, busy, renaming, onOpen, onStartRenam
 }) {
   if (renaming) {
     return (
-      <li>
+      <div>
         <TitleEditor initial={conversation.title} label={`「${conversation.title}」の新しい名前`} onDone={onRename}
           className="min-h-11 w-full rounded-xl border border-accent-500 bg-white px-3 text-sm outline-none ring-2 ring-accent-500/20 dark:bg-zinc-950" />
-      </li>
+      </div>
     );
   }
   return (
-    <li
+    <div
       data-history-row={conversation.id}
       className={`group flex min-w-0 items-center rounded-xl transition-colors ${active
         ? "bg-white shadow-sm ring-1 ring-zinc-200/80 dark:bg-zinc-800 dark:ring-zinc-700/60"
@@ -168,10 +299,11 @@ function HistoryRow({ conversation, active, busy, renaming, onOpen, onStartRenam
         label={`「${conversation.title}」の操作`}
         items={[
           { id: "rename", label: "名前を変更", onSelect: onStartRename },
+          ...(onArchive ? [{ id: "archive", label: "アーカイブ", disabled: busy && active, onSelect: onArchive }] : []),
           { id: "delete", label: "削除", danger: true, disabled: busy && active, onSelect: onDelete },
         ]}
       />
-    </li>
+    </div>
   );
 }
 

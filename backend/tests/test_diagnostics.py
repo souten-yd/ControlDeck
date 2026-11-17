@@ -135,3 +135,22 @@ def test_agent_mcp_offers_diagnostics_to_admins(monkeypatch):
     tool = agent_mcp._diagnostics_tool()
     assert tool["name"] == "control_deck.diagnostics"
     assert set(tool["inputSchema"]["properties"]) == {"hours"}
+
+
+def test_client_timing_is_recorded_and_summarised(admin_client, tmp_path, monkeypatch):
+    """画面側の時間（2026-11-17「会話の読み込みが遅い」: サーバー側は速く、通信か描画かを分けるため）。"""
+    from app.diagnostics import report, store
+
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    for ms in (800, 1200, 5000):
+        r = admin_client.post("/api/v1/diagnostics/client", headers=CSRF_HEADERS, json={
+            "page": "assistant_open", "marks": {"rendered_ms": ms, "messages_ms": ms - 100},
+            "api": [{"path": "/api/v1/chat/conversations/{id}/messages", "ms": ms - 200, "wait_ms": 50, "kb": 3}],
+            "standalone": True, "connection": "4g"})
+        assert r.status_code == 204, r.text
+    rows = report._client_timing(store.read(kinds={"client_timing"}))
+    assert rows[0]["page"] == "assistant_open" and rows[0]["count"] == 3
+    assert rows[0]["marks"]["rendered_ms"]["p95"] == 5000.0
+    assert rows[0]["slow_api"][0]["path"] == "/api/v1/chat/conversations/{id}/messages"
+    assert admin_client.post("/api/v1/diagnostics/client", headers=CSRF_HEADERS,
+                             json={"page": "../x", "marks": {}}).status_code == 422

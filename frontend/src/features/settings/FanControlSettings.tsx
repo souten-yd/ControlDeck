@@ -2,12 +2,14 @@ import { useEffect, useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
+import { ConfirmDialog } from "../../components/ui";
 import { AutoTuneCard, FanHistoryChart, PidStatus, type PidInfo, type PidLive } from "./FanPidPanel";
 
 type FanSettings = {
   enabled: boolean;
   bdf: string | null;
-  preset_id: "recommended" | "llm_r9700" | "llm_quiet" | "curve_r9700" | "pid_r9700" | "quiet" | "cooling" | "custom";
+  /** 組み込みの id、"custom"、または利用者が保存したプリセット（user-xxxxxxxx） */
+  preset_id: string;
   min_percent: number;
   allow_zero_rpm: boolean;
   cool_hold_seconds: number;
@@ -38,7 +40,10 @@ type FanSettings = {
 };
 type FanPreset = Omit<FanSettings, "enabled" | "bdf" | "preset_id" | "targets_c" | "startup_mode"
   | "control_mode" | "pid_kp" | "pid_ti" | "pid_ff_weight" | "pid_auto_tune"> & {
-  id: "recommended" | "llm_r9700" | "llm_quiet" | "curve_r9700" | "pid_r9700" | "quiet" | "cooling";
+  id: string;
+  /** 利用者が保存したプリセット（追加・削除できる）。値は settings にそのまま入っている */
+  user?: boolean;
+  settings?: Partial<FanSettings>;
   /** モード付きプリセット（R9700実測）だけが持つ */
   control_mode?: FanSettings["control_mode"];
   pid_kp?: number;
@@ -277,6 +282,10 @@ export function FanControlSettings() {
 
   const selectPreset = (preset: FanPreset) => {
     if (!draft) return;
+    if (preset.user && preset.settings) {
+      setDraft({ ...draft, ...preset.settings, preset_id: preset.id });
+      return;
+    }
     const targets: Record<string, number> = {};
     for (const sensor of selected?.sensors ?? []) {
       targets[sensor.id] = presetTarget(preset, sensor);
@@ -293,6 +302,38 @@ export function FanControlSettings() {
       control_mode: preset.control_mode ?? "map",
       ...(preset.pid_kp != null ? { pid_kp: preset.pid_kp, pid_ti: preset.pid_ti, pid_ff_weight: preset.pid_ff_weight } : {}),
     });
+  };
+
+  const [presetName, setPresetName] = useState("");
+  const [savingPreset, setSavingPreset] = useState(false);
+  const [deletingPreset, setDeletingPreset] = useState<FanPreset | null>(null);
+  const savePreset = async () => {
+    if (!draft || !presetName.trim()) return;
+    setSavingPreset(true);
+    try {
+      const preset = await api<FanPreset>("/system/fan-control/presets", {
+        method: "POST", json: { label: presetName.trim(), description: "", settings: draft },
+      });
+      await qc.invalidateQueries({ queryKey: ["system-fan-control"] });
+      setDraft({ ...draft, preset_id: preset.id });
+      setPresetName("");
+      show(`プリセット「${preset.label}」を保存しました`);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "プリセットを保存できませんでした", "error");
+    } finally {
+      setSavingPreset(false);
+    }
+  };
+  const deletePreset = async (preset: FanPreset) => {
+    setDeletingPreset(null);
+    try {
+      await api(`/system/fan-control/presets/${encodeURIComponent(preset.id)}`, { method: "DELETE" });
+      await qc.invalidateQueries({ queryKey: ["system-fan-control"] });
+      if (draft?.preset_id === preset.id) setDraft({ ...draft, preset_id: "custom" });
+      show(`プリセット「${preset.label}」を削除しました`);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "削除できませんでした", "error");
+    }
   };
 
   const canUseZero = Boolean(selected?.zero_rpm_supported && selected.fan_rpm != null
@@ -386,17 +427,49 @@ export function FanControlSettings() {
             <h3 className="text-xs font-semibold">プリセットを選択</h3>
             <div className="grid gap-2 sm:grid-cols-2">
               {data.presets.map((preset) => (
-                <button key={preset.id} type="button" disabled={saving} onClick={() => selectPreset(preset)}
-                  aria-pressed={draft.preset_id === preset.id}
-                  className={"min-h-20 rounded-xl border p-3 text-left transition-colors disabled:opacity-40 " +
-                    (draft.preset_id === preset.id
-                      ? "border-sky-500 bg-sky-50 dark:bg-sky-950/40"
-                      : "border-zinc-200 dark:border-zinc-700")}>
-                  <span className="block text-xs font-semibold">{preset.label}</span>
-                  <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">{preset.description}</span>
-                </button>
+                <div key={preset.id} className="relative">
+                  <button type="button" disabled={saving} onClick={() => selectPreset(preset)}
+                    aria-pressed={draft.preset_id === preset.id}
+                    className={"min-h-20 w-full rounded-xl border p-3 text-left transition-colors disabled:opacity-40 " +
+                      (preset.user ? "pr-12 " : "") +
+                      (draft.preset_id === preset.id
+                        ? "border-sky-500 bg-sky-50 dark:bg-sky-950/40"
+                        : "border-zinc-200 dark:border-zinc-700")}>
+                    <span className="block text-xs font-semibold">
+                      {preset.label}
+                      {preset.user && <span className="ml-1.5 rounded bg-zinc-100 px-1 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800">保存した設定</span>}
+                    </span>
+                    <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">
+                      {preset.user
+                        ? `${{ map: "マップ", curve: "グラフ", pid: "PID", target: "温度追従" }[preset.settings?.control_mode ?? "map"] ?? ""}制御 · 最低 ${preset.settings?.min_percent ?? "-"}%`
+                        : preset.description}
+                    </span>
+                  </button>
+                  {preset.user && (
+                    <button type="button" onClick={() => setDeletingPreset(preset)} disabled={saving}
+                      aria-label={`プリセット「${preset.label}」を削除`}
+                      className="absolute right-1 top-1 grid h-11 w-11 place-items-center rounded-lg text-zinc-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40">
+                      ×
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
+            <div className="flex gap-2">
+              <input value={presetName} onChange={(e) => setPresetName(e.target.value)} maxLength={60}
+                placeholder="いまの設定に名前を付けて保存" aria-label="保存するプリセットの名前"
+                onKeyDown={(e) => { if (e.key === "Enter") void savePreset(); }}
+                className="min-h-11 min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 text-base outline-none focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm" />
+              <button type="button" onClick={() => void savePreset()} disabled={savingPreset || !presetName.trim()}
+                className="min-h-11 shrink-0 rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+                {savingPreset ? "保存中…" : "プリセットに保存"}
+              </button>
+            </div>
+            {deletingPreset && (
+              <ConfirmDialog title="プリセットを削除" confirmLabel="削除する"
+                message={`「${deletingPreset.label}」を削除します。いまの GPU の設定は変わりません。`}
+                onConfirm={() => void deletePreset(deletingPreset)} onClose={() => setDeletingPreset(null)} />
+            )}
             {draft.preset_id === "custom" && <p className="text-[11px] text-zinc-500">カスタム調整中。推奨を選び直せば初期値へ戻せます。</p>}
             <p className="text-[11px] text-zinc-500">プリセットを選ぶだけではGPU設定は変わりません。「保存して適用」で確定します。</p>
           </div>

@@ -118,7 +118,8 @@ class ConversationOut(BaseModel):
 
 
 def _conv_out(c: Conversation) -> dict:
-    return {"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat() if c.updated_at else ""}
+    return {"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat() if c.updated_at else "",
+            "archived": c.archived_at is not None}
 
 
 @router.post("/conversations", status_code=201)
@@ -130,16 +131,23 @@ def create_conversation(user: User = Depends(require_permission("workflows.run")
 
 
 @router.get("/conversations")
-def list_conversations(user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)):
+def list_conversations(
+    archived: bool = False,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """会話の一覧。既定はアーカイブしていないもの、archived=true でアーカイブしたもの。"""
+    condition = Conversation.archived_at.is_not(None) if archived else Conversation.archived_at.is_(None)
     rows = db.execute(
-        select(Conversation).where(Conversation.owner_user_id == user.id)
+        select(Conversation).where(Conversation.owner_user_id == user.id, condition)
         .order_by(Conversation.updated_at.desc()).limit(100)
     ).scalars().all()
     return [_conv_out(c) for c in rows]
 
 
 class ConversationUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    # True でアーカイブ、False で戻す（一覧の左右スワイプ）
+    archived: bool | None = None
 
 
 @router.patch("/conversations/{conv_id}")
@@ -150,11 +158,18 @@ def update_conversation(
     conv = db.get(Conversation, conv_id)
     if conv is None or conv.owner_user_id != user.id:
         raise HTTPException(status_code=404, detail="会話が見つかりません")
-    conv.title = body.title.strip()
-    conv.updated_at = utcnow()
+    if body.title is None and body.archived is None:
+        raise HTTPException(status_code=422, detail="変える項目がありません")
+    if body.title is not None:
+        conv.title = body.title.strip()
+        conv.updated_at = utcnow()
+        action = "chat.conversation.rename"
+    if body.archived is not None:
+        # アーカイブは更新時刻を変えない（戻したときに元の並びへ戻る）
+        conv.archived_at = utcnow() if body.archived else None
+        action = "chat.conversation.archive" if body.archived else "chat.conversation.unarchive"
     db.commit()
-    audit.record(db, "chat.conversation.rename", user=user, resource_type="conversation",
-                 resource_id=conv_id, request=request)
+    audit.record(db, action, user=user, resource_type="conversation", resource_id=conv_id, request=request)
     return _conv_out(conv)
 
 

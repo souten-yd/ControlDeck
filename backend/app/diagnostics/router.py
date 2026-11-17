@@ -91,3 +91,28 @@ async def download_report(hours: float = Query(24.0, ge=1, le=168), format: str 
     if format == "json":
         return data
     return PlainTextResponse(report.to_markdown(data), media_type="text/markdown; charset=utf-8")
+
+
+class ClientTiming(BaseModel):
+    """画面側で測った時間（ミリ秒）。携帯の「遅い」を、通信・API・描画に分けて残す。"""
+    page: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_-]+$")
+    marks: dict[str, float] = Field(default_factory=dict, max_length=20)
+    api: list[dict] = Field(default_factory=list, max_length=12)
+    standalone: bool = False
+    connection: str = Field(default="", max_length=20)
+
+
+@router.post("/client", status_code=204)
+def client_timing(body: ClientTiming, user: User = Depends(require_permission("workflows.run"))):
+    del user
+    marks = {k[:40]: round(float(v), 1) for k, v in body.marks.items() if 0 <= float(v) < 600_000}
+    api = []
+    for row in body.api[:12]:
+        try:
+            api.append({"path": str(row.get("path", ""))[:120], "ms": round(float(row.get("ms", 0)), 1),
+                        "wait_ms": round(float(row.get("wait_ms", 0)), 1), "kb": round(float(row.get("kb", 0)), 1)})
+        except (TypeError, ValueError):
+            continue
+    store.record("client_timing", page=body.page, marks=marks, api=api, standalone=body.standalone,
+                 connection=body.connection, rate_key=f"client|{body.page}")
+

@@ -20,6 +20,7 @@ import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, type AssistantMode as Mode, type AssistantModeChoice } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
+import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
 import { writeClipboard } from "../../lib/clipboard";
 import {
@@ -268,6 +269,12 @@ export default function AssistantChat() {
     queryKey: ["chat-conversations"],
     queryFn: () => api<ConversationSummary[]>("/chat/conversations"),
   });
+  // 診断用: 画面を開いた時刻と、会話の一覧が届いた時刻
+  const openedAtRef = useRef(performance.now());
+  const listLoadedAtRef = useRef(0);
+  useEffect(() => {
+    if (conversations && !listLoadedAtRef.current) listLoadedAtRef.current = performance.now();
+  }, [conversations]);
 
   useEffect(() => {
     const current = conversations?.find((conversation) => conversation.id === convId);
@@ -278,6 +285,7 @@ export default function AssistantChat() {
   // これにより、生成中にブラウザを閉じても回答はサーバー側で保存され、再度開くと続きが見える。
   useEffect(() => {
     let cancelled = false;
+    const openedAt = openedAtRef.current;
     (async () => {
       let id = convId;
       try {
@@ -286,8 +294,18 @@ export default function AssistantChat() {
         }
         const data = await api<{ messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
         if (cancelled) return;
+        const fetchedAt = performance.now();
         const restored = data.messages.map((m) => restoreMessage(id, m));
         if (restored.length > 0) setMessages(restored);
+        // 診断: 開いてから会話が描かれるまで（2 フレーム後＝描画が済んだ時点）を送る
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const renderedAt = performance.now();
+          window.setTimeout(() => reportClientTiming("assistant_open", openedAt, {
+            messages_ms: fetchedAt - openedAt, rendered_ms: renderedAt - openedAt,
+            list_ms: listLoadedAtRef.current ? listLoadedAtRef.current - openedAt : -1,
+            message_count: restored.length,
+          }), 1500);
+        }));
         // 生成中のまま残っているメッセージを購読再開
         const gen = data.messages.find((m) => m.role === "assistant" && m.status === "generating");
         if (gen) {
@@ -548,6 +566,83 @@ export default function AssistantChat() {
       show(e instanceof Error ? e.message : "会話を削除できませんでした", "error");
     }
   };
+
+  // ---- 履歴のスワイプ: 右でアーカイブ、左で削除（確認なし・数秒は「元に戻す」） ----
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: archivedConversations } = useQuery({
+    queryKey: ["chat-conversations", "archived"],
+    queryFn: () => api<ConversationSummary[]>("/chat/conversations?archived=true"),
+    enabled: showArchived,
+  });
+  const pendingDeletes = useRef(new Map<string, number>());
+  const leaveIfCurrent = (id: string) => {
+    if (id !== convIdRef.current) return;
+    wsRef.current?.close();
+    localStorage.removeItem(LS_CONV);
+    setConvId("");
+    setConversationTitle(NEW_CHAT_TITLE);
+    setMessages([]);
+    setAttachments([]);
+  };
+  const dropFromLists = (id: string) => {
+    for (const key of [["chat-conversations"], ["chat-conversations", "archived"]]) {
+      qc.setQueryData<ConversationSummary[]>(key, (list) => list?.filter((item) => item.id !== id));
+    }
+  };
+  const archiveConversation = async (conversation: ConversationSummary, archived: boolean) => {
+    dropFromLists(conversation.id);
+    if (archived) leaveIfCurrent(conversation.id);
+    try {
+      await api(`/chat/conversations/${conversation.id}`, { method: "PATCH", json: { archived } });
+      show(archived ? `「${conversation.title}」をアーカイブしました` : `「${conversation.title}」を戻しました`, "success",
+        archived ? { label: "元に戻す", onClick: () => void archiveConversation(conversation, false) } : undefined);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "アーカイブできませんでした", "error");
+    } finally {
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+    }
+  };
+  const flushDelete = async (conversation: ConversationSummary) => {
+    pendingDeletes.current.delete(conversation.id);
+    try {
+      await api(`/chat/conversations/${conversation.id}`, { method: "DELETE" });
+    } catch (e) {
+      show(e instanceof Error ? e.message : "会話を削除できませんでした", "error");
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+    }
+  };
+  const swipeDeleteConversation = (conversation: ConversationSummary) => {
+    // すぐ一覧から消し、6 秒後に本当に消す（その間は「元に戻す」で取り消せる）
+    dropFromLists(conversation.id);
+    leaveIfCurrent(conversation.id);
+    const timer = window.setTimeout(() => void flushDelete(conversation), 6000);
+    pendingDeletes.current.set(conversation.id, timer);
+    show(`「${conversation.title}」を削除しました`, "success", {
+      label: "元に戻す",
+      onClick: () => {
+        window.clearTimeout(pendingDeletes.current.get(conversation.id));
+        pendingDeletes.current.delete(conversation.id);
+        qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      },
+    }, 6000);
+  };
+  // 画面を離れる・閉じるときは、待っている削除をすぐ済ませる
+  useEffect(() => {
+    const flushAll = () => {
+      for (const [id, timer] of pendingDeletes.current) {
+        window.clearTimeout(timer);
+        void fetch(`/api/v1/chat/conversations/${encodeURIComponent(id)}`, {
+          method: "DELETE", credentials: "same-origin", keepalive: true, headers: { "X-Requested-With": "ControlDeck" },
+        });
+      }
+      pendingDeletes.current.clear();
+    };
+    window.addEventListener("pagehide", flushAll);
+    return () => {
+      window.removeEventListener("pagehide", flushAll);
+      flushAll();
+    };
+  }, []);
 
   // ---- 履歴（PC は左の列、携帯は左から出るシート）と題名の書き換え ----
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -997,6 +1092,10 @@ export default function AssistantChat() {
     onNew: newConversation,
     onRename: renameConversation,
     onDelete: setDeletingConversation,
+    onArchive: (conversation: ConversationSummary, archived: boolean) => void archiveConversation(conversation, archived),
+    onSwipeDelete: swipeDeleteConversation,
+    archivedConversations,
+    onShowArchived: setShowArchived,
   };
   /** 失敗・中断した回答の「再試行」: 直前の自分の発言をもう一度送る。 */
   /** 失敗した最後の回答をやり直す: 直前の自分の発言を、付けていた画像ごと送り直す。

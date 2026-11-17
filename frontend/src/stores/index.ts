@@ -115,23 +115,25 @@ export interface Toast {
   id: number;
   message: string;
   kind: "success" | "error" | "info";
+  /** 「元に戻す」など。押すと実行して通知を閉じる */
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastState {
   toasts: Toast[];
-  show: (message: string, kind?: Toast["kind"]) => void;
+  show: (message: string, kind?: Toast["kind"], action?: Toast["action"], ms?: number) => void;
   dismiss: (id: number) => void;
 }
 
 let toastId = 0;
 export const useToasts = create<ToastState>((set) => ({
   toasts: [],
-  show: (message, kind = "success") => {
+  show: (message, kind = "success", action, ms) => {
     const id = ++toastId;
-    set((st) => ({ toasts: [...st.toasts.slice(-2), { id, message, kind }] }));
+    set((st) => ({ toasts: [...st.toasts.slice(-2), { id, message, kind, action }] }));
     setTimeout(
       () => set((st) => ({ toasts: st.toasts.filter((t) => t.id !== id) })),
-      4000,
+      ms ?? (action ? 6000 : 4000),
     );
   },
   dismiss: (id) =>

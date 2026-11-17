@@ -459,3 +459,17 @@ def test_stale_generating_message_can_be_deleted(admin_client):
     assert admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/messages/{ids['u1']}",
                                headers=CSRF_HEADERS).status_code == 204
     assert not (cp._attachment_root(conv_id) / image_id).exists()                     # 画像も消える
+
+
+def test_archive_hides_from_list_and_restores(admin_client):
+    """会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。"""
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.patch(f"/api/v1/chat/conversations/{conv_id}", json={"archived": True}, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["archived"] is True
+    assert conv_id not in [c["id"] for c in admin_client.get("/api/v1/chat/conversations").json()]
+    archived = admin_client.get("/api/v1/chat/conversations?archived=true").json()
+    assert [c["id"] for c in archived] == [conv_id] and archived[0]["archived"] is True
+    assert admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").status_code == 200   # 中身は残る
+    admin_client.patch(f"/api/v1/chat/conversations/{conv_id}", json={"archived": False}, headers=CSRF_HEADERS)
+    assert conv_id in [c["id"] for c in admin_client.get("/api/v1/chat/conversations").json()]
+    assert admin_client.patch(f"/api/v1/chat/conversations/{conv_id}", json={}, headers=CSRF_HEADERS).status_code == 422
