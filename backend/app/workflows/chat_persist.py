@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +31,8 @@ from app.models import utcnow
 from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
 from app.workflows.chat_router import _keep_alive, resolve_think
+
+logger = logging.getLogger("control_deck.chat_persist")
 
 router = APIRouter(prefix="/chat", tags=["chat-persist"])
 
@@ -166,6 +170,7 @@ def delete_conversation(
     db.query(ChatMessage).filter(ChatMessage.conversation_id == conv_id).delete()
     db.delete(conv)
     db.commit()
+    _remove_attachments(conv_id)
     audit.record(db, "chat.conversation.delete", user=user, resource_type="conversation",
                  resource_id=conv_id, request=request)
 
@@ -286,12 +291,36 @@ def conversation_collection(conv_id: str) -> str:
     return f"chat-{conv_id}"
 
 
-def _attachment_dir(conv_id: str):
+def _attachment_root(conv_id: str):
+    """会話の添付の置き場所。chat-uploads の直下だけを許す（会話 ID で外へ出ない）。"""
     from app.config import data_dir
 
-    root = (data_dir() / "chat-uploads" / conv_id).resolve()
+    base = (data_dir() / "chat-uploads").resolve()
+    root = (base / conv_id).resolve()
+    if root.parent != base:
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    return root
+
+
+def _attachment_dir(conv_id: str):
+    root = _attachment_root(conv_id)
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _remove_attachments(conv_id: str) -> None:
+    """会話を消したら、添付した画像も消す（残すと会話が無いのにディスクに残り続ける）。"""
+    import shutil
+
+    try:
+        root = _attachment_root(conv_id)
+    except HTTPException:
+        return
+    if root.exists():
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            logger.warning("会話 %s の添付を消せませんでした: %s", conv_id, exc)
 
 
 def _collection_embed_override() -> dict:
@@ -363,22 +392,54 @@ async def upload_attachment(
     name = file.filename or "attachment"
     if content_type in ATTACHMENT_IMAGE_TYPES:
         attachment_id = uuid.uuid4().hex[:16] + ATTACHMENT_IMAGE_TYPES[content_type]
-        (_attachment_dir(conv_id) / attachment_id).write_bytes(data)
+        target = _attachment_dir(conv_id) / attachment_id
+        await asyncio.to_thread(target.write_bytes, data)  # event loop を止めない
         return {"kind": "image", "id": attachment_id, "name": name}
+    if content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="画像は PNG・JPEG・WebP・GIF を添付してください")
     from app.workflows import rag
 
+    import httpx
+
     try:
-        text = _extract_document_text(name, content_type, data)
+        # PDF の読み取りは重いことがあるので event loop の外で行う。
+        text = await asyncio.to_thread(_extract_document_text, name, content_type, data)
+    except Exception as exc:  # pypdf等の解析失敗
+        raise HTTPException(status_code=422, detail=f"文書を読み取れません: {exc}") from exc
+    try:
         result = await register_chat_document(conv_id, text, name)
     except rag.RagError as exc:
         raise HTTPException(status_code=422, detail=f"RAG登録に失敗: {exc}") from exc
-    except Exception as exc:  # pypdf等の解析失敗
-        raise HTTPException(status_code=422, detail=f"文書を読み取れません: {exc}") from exc
+    except (httpx.HTTPError, OSError) as exc:
+        # 読めたが、資料の登録先（埋め込みモデル）に届かない。文書のせいにしない。
+        raise HTTPException(
+            status_code=503,
+            detail="資料の登録先（埋め込みモデル）に接続できませんでした。Models で埋め込みモデルが動いているか確認してください",
+        ) from exc
     if result is None:
         raise HTTPException(status_code=422, detail="テキストを抽出できませんでした（80文字未満）")
     return {"kind": "document", "id": name, "name": name,
             "collection": conversation_collection(conv_id),
             "chunks": result.get("added_chunks")}
+
+
+@router.get("/conversations/{conv_id}/attachments/{attachment_id}")
+def get_attachment(
+    conv_id: str, attachment_id: str,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """送った画像を返す（会話の発言に出す）。本人の会話の、形の正しい ID だけ。"""
+    if not _ATTACHMENT_ID_RE.fullmatch(attachment_id):
+        raise HTTPException(status_code=404, detail="添付が見つかりません")
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.owner_user_id != user.id:  # 発言の一覧と同じ厳しさ
+        raise HTTPException(status_code=404, detail="添付が見つかりません")
+    path = _attachment_root(conv_id) / attachment_id
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="添付が見つかりません")
+    media = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}[path.suffix]
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "private, max-age=86400",
+                                                         "X-Content-Type-Options": "nosniff"})
 
 
 class RouteBody(BaseModel):
@@ -953,6 +1014,11 @@ async def send_message(
 
     user_msg = ChatMessage(id=_new_id(), conversation_id=conv_id, role="user",
                            content=body.content, status="completed")
+    sent_images = [a for a in body.attachments
+                   if _ATTACHMENT_ID_RE.fullmatch(a) and (_attachment_root(conv_id) / a).is_file()]
+    if sent_images:
+        # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
+        user_msg.meta_json = json.dumps({"attachments": sent_images})
     assistant = ChatMessage(id=_new_id(), conversation_id=conv_id, role="assistant",
                             content="", status="generating", model=body.model)
     db.add(user_msg)
