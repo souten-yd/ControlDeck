@@ -4,7 +4,7 @@
 
 - 自動判定の語を `frontend/src/features/workflows/routingWords.json` にまとめ、画面（`assistantMode.ts`）とサーバー（`assistant_planner.py`）が同じ表を読む。以前は画面が「調べて」を Web 検索と見るのに、サーバーは LLM に回してチャットにしていた（「グランフロントの店を調べて教えて」がチャットになり、検索されなかった）。
 - 「調べて・探して・検索して」は Web、「詳しく調べて・網羅的に・レポートにまとめて」は Deep。LLM の判定の選択肢に deep を足した（以前は deep をルールでしか選べず、ほとんど使われなかった）。計画に調べる深さ `depth`（quick / standard / deep）を持たせた。
-- 評価セット `backend/tests/data/assistant_routing_cases.json`（26 件）と、LLM 込みで測る `python -m app.workflows.routing_bench --base-url … --model …`。実測（ローカル auto）: main 81%（21/26、LLM 判定 6/9）→ 100%（26/26）。
+- 評価セット `backend/tests/fixtures/assistant_routing_cases.json`（26 件）と、LLM 込みで測る `python -m app.workflows.routing_bench --base-url … --model …`。実測（ローカル auto）: main 81%（21/26、LLM 判定 6/9）→ 100%（26/26）。
 - 検証（sandbox `research-route`）: `tests/test_assistant_planner.py` 9 件、backend 全体 1676 件、`npm run build`。
 
 ## 2026-11-17 AI アシスタント: 会話の分岐・編集・削除、添付の進み具合
