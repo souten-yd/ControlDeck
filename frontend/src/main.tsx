@@ -13,6 +13,27 @@ const isStandalone =
   window.matchMedia("(display-mode: standalone)").matches;
 if (isStandalone) document.documentElement.classList.add("pwa-standalone");
 
+// iPhone のホーム画面アプリは、再読み込みの後に 100vh / innerHeight を上の Safe Area
+// （Dynamic Island の機種で約 62pt）の分だけ小さく報告することがある。描画は満寸なので、
+// 100vh の殻だと下端が画面に届かず、入力欄が切れて下に黒い帯が出る。
+// 画面の実寸（screen）と比べて、縮んで報告されているときは実寸を殻の高さにする。
+const isIPhoneStandalone = (window.navigator as unknown as { standalone?: boolean }).standalone === true
+  && Math.min(window.screen.width, window.screen.height) <= 500;
+if (isIPhoneStandalone) {
+  const syncStandaloneHeight = () => {
+    const portrait = window.innerHeight >= window.innerWidth;
+    const full = portrait ? Math.max(window.screen.width, window.screen.height) : Math.min(window.screen.width, window.screen.height);
+    const reported = window.innerHeight;
+    // 縮みは Safe Area 程度（〜100px）。それより大きい差（キーボードなど）は触らない
+    const shrunk = full > reported && full - reported <= 100;
+    document.documentElement.style.setProperty("--cd-standalone-height", `${shrunk ? full : reported}px`);
+    document.documentElement.dataset.viewportShrunk = shrunk ? String(full - reported) : "";
+  };
+  syncStandaloneHeight();
+  window.addEventListener("resize", syncStandaloneHeight);
+  window.addEventListener("orientationchange", () => window.setTimeout(syncStandaloneHeight, 300));
+}
+
 // デプロイ（再ビルド）後、開きっぱなしの旧画面が存在しない旧チャンクを遅延ロードして
 // 404 になる（ターミナル/リモート等が開けない）。失敗時は自動で 1 回だけ再読み込みする。
 window.addEventListener("vite:preloadError", (e) => {
