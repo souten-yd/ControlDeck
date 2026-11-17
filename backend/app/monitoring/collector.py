@@ -23,6 +23,31 @@ METRIC_FIELDS = (
 )
 
 
+def net_memory(mem) -> dict[str, Any]:
+    """RAM の正味の利用量（利用者の依頼 2026-11-17）。
+
+    psutil の used / percent は「プログラムが確保した分」だけで、ファイルを読み書きの速さのために置いている
+    キャッシュを数えない。DS-XS（Maya）などはモデルのファイルをメモリに映して使う（約 75GiB）ので、RAM を
+    ほぼ使い切っていても 15% と出ていた。ここでは、プログラムが確保した分に、プログラムが映して使っている
+    ファイル（Mapped）を足し、誰も使っていない（映されていない）キャッシュだけを除く。
+    """
+    try:
+        info: dict[str, int] = {}
+        with open("/proc/meminfo", encoding="ascii") as stream:
+            for line in stream:
+                key, _, rest = line.partition(":")
+                info[key] = int(rest.split()[0]) * 1024
+        total = info["MemTotal"]
+        idle_cache = max(0, info.get("Cached", 0) - info.get("Mapped", 0) - info.get("Shmem", 0))
+        used = max(0, total - info.get("MemFree", 0) - info.get("Buffers", 0)
+                   - info.get("SReclaimable", 0) - idle_cache)
+        return {"used": used, "percent": round(used / total * 100, 1) if total else 0.0,
+                "used_by_programs": mem.used, "mapped_files": info.get("Mapped", 0), "idle_cache": idle_cache}
+    except (OSError, KeyError, ValueError):
+        return {"used": mem.used, "percent": mem.percent, "used_by_programs": mem.used,
+                "mapped_files": None, "idle_cache": None}
+
+
 class MetricsCollector:
     def __init__(self) -> None:
         cfg = get_config().monitoring
@@ -42,7 +67,7 @@ class MetricsCollector:
 
     # ---- 収集 ----
 
-    def _collect_once(self) -> dict[str, Any]:
+    def _collect_once(self) -> dict[str, Any]:  # noqa: C901
         now = time.monotonic()
         dt = max(0.001, now - self._last_time)
 
@@ -103,9 +128,8 @@ class MetricsCollector:
             },
             "memory": {
                 "total": mem.total,
-                "used": mem.used,
+                **net_memory(mem),
                 "available": mem.available,
-                "percent": mem.percent,
                 "cached": getattr(mem, "cached", 0),
                 "swap_total": swap.total,
                 "swap_used": swap.used,

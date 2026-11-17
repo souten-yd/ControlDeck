@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-17 RAM を正味の利用量で出す
+
+- Home・履歴・RAM の警告の割合を、プログラムが確保した分に「プログラムが映して使っているファイル」（モデルなど）を足した正味の量にした（`collector.net_memory`、/proc/meminfo の Mapped）。誰も使っていないキャッシュだけ除く。DS-XS（Maya）でモデル約 75GiB を映して RAM をほぼ使い切っていたのに、15% と出ていた。
+- Home の RAM の欄は「使用 / 全体 GiB（うちモデル等のファイル）」。単位は GiB（Linux が使える 91.8 GiB。搭載 96GiB から内蔵 GPU などの予約を引いた量）。
+- DS-XS を動かしている間は RAM の警告（memory_percent）が出やすくなる（実際に使い切っているため）。
+- 検証（sandbox `ram`）: `tests/test_memory_net_usage.py`、実機の /proc/meminfo で値を確認、`npm run build`。
+
 ## 2026-11-17 ファンの利用者プリセット・会話履歴のスワイプ・画面側の時間の診断
 
 - ファン: 画面で調整中の設定に名前を付けて保存し、削除できる（`data/fan-user-presets.json`、20 件まで）。組み込みのプリセットは消せない。使っていたプリセットを消すと「カスタム」として残る。`POST/DELETE /api/v1/system/fan-control/presets`（settings.manage・監査）。

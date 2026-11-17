@@ -105,6 +105,10 @@ export interface MetricsSnapshot {
     swap_total: number;
     swap_used: number;
     swap_percent: number;
+    /** 正味の利用量の内訳（used はプログラムの分 + 映して使っているファイル） */
+    used_by_programs?: number;
+    mapped_files?: number | null;
+    idle_cache?: number | null;
   };
   gpu: {
     name: string;
