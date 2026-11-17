@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-17 診断: 不調の記録と AI に渡せるレポート
+
+- `backend/app/diagnostics/`: 常駐の記録係（`recorder.py`）が、警告以上のログ（traceback つき）、**event loop の 1 秒以上の詰まり**（loop の外の thread から、塞いでいた関数の stack を撮る）、2 秒以上かかった API と API ごとの所要時間（p50/p95）、30 秒ごとのメモリ（空き・swap・VRAM・RSS 上位と unit）と空きが少ないときの上位を `data/diagnostics/events-YYYYMMDD.jsonl`（7 日分）へ残す。既存の watchdog の見張り（12 秒で全 thread を stderr）では、画面の「遅い」の原因になる数秒の詰まりが残らなかった。
+- `journal.py`: 本体の再起動とその理由（watchdog・OOM・異常終了・更新・手動）、管理下の常駐（control-deck-* / cdapp-* / cd-*）の異常終了、カーネルの OOM killer の記録（プロセス・RSS・unit）を journal から抜き出す。
+- `selftest.py`: DB の quick_check、ディスク、メモリ、詰まり、失敗した unit、ローカル LLM、画面の build、必要なコマンド、メトリクス収集。backend のテストを本番のデータに触らずにジョブで流す（`CONTROL_DECK_CONFIG` を外す）。
+- `report.py`: 一式を Markdown/JSON にまとめ、鍵・トークン・パスワード・メールアドレスを伏せる。API `/api/v1/diagnostics/{summary,events,memory,journal,selftest,tests,report}`（settings.manage）。OpenCode などの AI は MCP の道具 `control_deck.diagnostics` で同じレポートを全文読める（橋渡しで削らない）。
+- 画面「診断」（ドロワーの システム）: 自己診断・再起動・OOM・常駐の異常終了・詰まり・遅い API・警告/エラー・メモリ・失敗したジョブ・テスト実行、「AI 用レポートをコピー」「ダウンロード」。
+- 本番の記録から分かったこと（2026-11-17）: 11/16 に Strata（qwen-flash-next）が 65〜67GB で 2 回 OOM、並べ替えの llama.cpp（rerank-qwen3-4b）が 51 回異常終了、本体の watchdog 再起動 3 回（いずれも終了処理の途中で addons の待ちに塞がれていた。#419 で直した部分）。
+- 検証（sandbox `diag`）: `tests/test_diagnostics.py`（秘密伏せ・記録・journal の解析・詰まりの検出で塞いだ関数名が残ること・API）、`tests/test_addon_agent_mcp.py`、`npm run build`、E2E `diagnostics`（1280px・390px、実データ）。
+
 ## 2026-11-17 AI アシスタントを Claude と同じ形に・iPhone のホーム画面アプリで上下が欠けるのを修正
 
 - 上下の欠け（iPhone のホーム画面アプリ）: 殻（`#root`）を `position: fixed` で画面へ直接貼った（`html.cd-app-shell #root`）。これまでは `html`/`body` に `overflow: hidden` を掛けた上で `#root` を 100vh にしていたので、iOS が再読み込みの後に報告する高さ（`body` の 100%）が Safe Area の分だけ縮むと（#40 で実測した現象）、`body` が殻の下端を切り、入力欄が画面の下へ欠けた。fixed なら `body` に切られず、文書がずれても上の行が上端から離れない。上の行（`SHELL_TOPBAR_CLASS`）は半透明＋ぼかしをやめて不透明にした（下へ中身が潜る作りではなく、ステータスバーの帯と重なって題名が曇って見えた）。AI 入力欄はホームバーに重ねない（`.assistant-composer-safe`: 状態の行 32px を Safe Area の帯へ置き、足りない分だけ余白）。下端の Safe Area は `--cd-safe-area-bottom` を境界にした（上端と同じく e2e から iPhone の値を入れられる）。

@@ -53,26 +53,30 @@ def test_journal_parses_oom_and_restarts(monkeypatch):
 
 
 def test_stall_watcher_records_the_blocking_function(tmp_path, monkeypatch):
-    """loop を 1.5 秒塞ぐと、塞いだ関数の場所が記録に残る。"""
-    import asyncio
+    """loop を 1.6 秒塞ぐと、塞いだ関数の場所が記録に残る。"""
+    import threading
 
     from app.diagnostics import recorder, store
 
     monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    state = {"tick": time.monotonic(), "thread": threading.get_ident()}
+    stop = threading.Event()
 
     def blocking_helper_for_test():
         time.sleep(1.6)
 
-    async def scenario():
-        ticker = asyncio.create_task(recorder._loop_ticker())
-        await asyncio.sleep(0.3)
-        blocking_helper_for_test()
-        await asyncio.sleep(1.0)
-        ticker.cancel()
-
-    import threading
-    threading.Thread(target=recorder._stall_watcher, daemon=True).start()
-    asyncio.run(scenario())
+    watcher = threading.Thread(target=recorder._stall_watcher, daemon=True,
+                               args=(lambda: state["tick"], lambda: state["thread"], stop))
+    watcher.start()
+    for _ in range(4):
+        state["tick"] = time.monotonic()
+        time.sleep(0.1)
+    blocking_helper_for_test()
+    for _ in range(6):
+        state["tick"] = time.monotonic()
+        time.sleep(0.1)
+    stop.set()
+    watcher.join(timeout=2)
     stalls = store.read(kinds={"loop_stall"})
     assert stalls and stalls[0]["seconds"] >= 1.0
     assert any("blocking_helper_for_test" in line for line in stalls[0]["stack"])

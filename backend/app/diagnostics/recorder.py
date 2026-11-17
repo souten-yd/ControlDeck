@@ -68,17 +68,18 @@ def _app_frames(frame) -> list[str]:
     return (app[-12:] + ["…"] + tail) if app and app[-1] not in tail else lines[-16:]
 
 
-def _stall_watcher() -> None:
+def _stall_watcher(tick=lambda: _loop_tick, thread=lambda: _loop_thread_id, stop: threading.Event | None = None) -> None:
+    """tick / thread は差し替えられる（テストで別の loop を見張るため）。"""
     samples: list[list[str]] = []
     stalled_since: float | None = None
-    while True:
+    while not (stop and stop.is_set()):
         time.sleep(0.25)
-        age = time.monotonic() - _loop_tick
+        age = time.monotonic() - tick()
         if age >= STALL_SECONDS:
             if stalled_since is None:
                 stalled_since = time.time() - age
                 samples = []
-            frame = sys._current_frames().get(_loop_thread_id or 0)
+            frame = sys._current_frames().get(thread() or 0)
             if frame is not None and len(samples) < 8:
                 samples.append(_app_frames(frame))
             continue

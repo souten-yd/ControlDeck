@@ -119,7 +119,7 @@ export default function DiagnosticsPage() {
   };
 
   const restarts = data?.journal.restarts ?? [];
-  const abnormal = restarts.filter((r) => r.cause !== "更新");
+  const abnormal = restarts.filter((r) => r.cause !== "更新" && r.cause !== "手動・通常の再起動");
   const failures = Object.entries((data?.journal.unit_failures ?? [])
     .filter((f) => f.kind !== "exited")
     .reduce<Record<string, { unit: string; kind: string; count: number; last: number }>>((acc, f) => {
@@ -176,7 +176,7 @@ export default function DiagnosticsPage() {
 
           <Section title="本体の再起動" count={restarts.length}>
             <p className="mb-1.5 text-xs text-zinc-500">
-              更新 {restarts.length - abnormal.length} 回 · 異常 {abnormal.length} 回（直近 {Math.round(data.journal.hours)} 時間）
+              更新 {restarts.filter((r) => r.cause === "更新").length} 回 · 手動など {restarts.filter((r) => r.cause === "手動・通常の再起動").length} 回 · 異常 {abnormal.length} 回（直近 {Math.round(data.journal.hours)} 時間）
             </p>
             {abnormal.length ? (
               <ul className="space-y-1 text-xs">

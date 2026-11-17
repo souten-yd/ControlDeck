@@ -101,7 +101,7 @@ def unit_events(since: float) -> dict:
     updates = [row["ts"] for row in rows if row["message"].startswith("Started control-deck-update-")]
     for restart in restarts:
         stopped = restart.get("stopped_at") or restart["ts"]
-        if restart["cause"] == "停止→起動" and any(0 <= stopped - ts <= 600 for ts in updates):
+        if restart["cause"] == "手動・通常の再起動" and any(0 <= stopped - ts <= 600 for ts in updates):
             restart["cause"] = "更新"
     return {"restarts": restarts, "failures": failures}
 
@@ -116,7 +116,7 @@ def _cause(reasons: list[str]) -> str:
         return "シグナルで終了"
     if "'exit-code'" in text or "status=1" in text:
         return "異常終了"
-    return "停止→起動"
+    return "手動・通常の再起動"
 
 
 def summary(hours: float = 72.0) -> dict:

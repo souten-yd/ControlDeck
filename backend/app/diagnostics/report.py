@@ -121,7 +121,8 @@ def to_markdown(data: dict) -> str:
     out += [f"## 本体の再起動（直近 {j['hours']:.0f} 時間、{len(j['restarts'])} 回）", ""]
     causes = Counter(r["cause"] for r in j["restarts"])
     out += [f"- 内訳: " + "、".join(f"{k} {n}" for k, n in causes.most_common())] if causes else ["- なし"]
-    out += [f"- {_fmt(r['ts'])} {r['cause']}" for r in j["restarts"] if r["cause"] != "更新"][-10:] + [""]
+    out += [f"- {_fmt(r['ts'])} {r['cause']}：{' / '.join(r.get('details', [])[-2:])}"
+            for r in j["restarts"] if r["cause"] not in ("更新", "手動・通常の再起動")][-10:] + [""]
     out += ["## OOM で強制終了されたプロセス", ""]
     out += [f"- {_fmt(o['ts'])} {o['process']}（{o['unit']}）anon {o['anon_rss_gb']} GB / shmem {o['shmem_rss_gb']} GB"
             for o in j["oom_kills"]] or ["- なし"]
