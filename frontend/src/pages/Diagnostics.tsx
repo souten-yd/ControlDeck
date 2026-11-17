@@ -56,10 +56,11 @@ export default function DiagnosticsPage() {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [hours, setHours] = useState<"6" | "24" | "72">("24");
-  const { data, isFetching, refetch } = useQuery({
+  const { data, error, isFetching, refetch } = useQuery({
     queryKey: ["diagnostics", hours],
     queryFn: () => api<Summary>(`/diagnostics/summary?hours=${hours}`),
-    staleTime: 30_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
   const [testJob, setTestJob] = useState<string | null>(null);
   const [selection, setSelection] = useState("");
@@ -154,7 +155,12 @@ export default function DiagnosticsPage() {
         レポートは鍵・トークン・メールアドレスを伏せてあります。AI アシスタント（OpenCode）は道具 <code>control_deck.diagnostics</code> で同じ内容を直接読めます。
       </p>
 
-      {!data ? <Skeleton className="h-64" /> : (
+      {error && !data && (
+        <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400">
+          診断を読み込めませんでした: {error instanceof Error ? error.message : String(error)}
+        </p>
+      )}
+      {!data ? (!error && <Skeleton className="h-64" />) : (
         <div className="grid gap-4 lg:grid-cols-2">
           <Section title="自己診断">
             <div className="mb-2 flex items-center gap-2">

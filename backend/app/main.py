@@ -103,7 +103,9 @@ async def lifespan(app: FastAPI):
         pass  # 同上
     from app.config import isolated
 
-    machine_wide = not isolated()
+    # 診断の画面から本番の隣でテストを流すときは、機械全体に効く常駐（ファン・常駐の復元・自動更新・
+    # モデルの自動起動と自動停止）だけを止める（CONTROL_DECK_ISOLATED は他の振る舞いも変えるので使わない）。
+    machine_wide = not isolated() and os.environ.get("CONTROL_DECK_NO_MACHINE_TASKS") != "1"
     if not machine_wide:
         logger.warning("検証用インスタンス（CONTROL_DECK_ISOLATED=1）: ファン制御・通知・外部プロセスの管理を起動しません")
     from app.diagnostics import recorder as diagnostics_recorder
@@ -153,7 +155,8 @@ async def lifespan(app: FastAPI):
     from app.monitoring.electricity import accumulator
 
     await asyncio.to_thread(accumulator.persist, "shutdown")
-    await searxng.lifecycle_stop()  # SearXNG も一緒に停止
+    if machine_wide:  # 起こしたときだけ止める（検証用・テスト用では読み込んでいない）
+        await searxng.lifecycle_stop()  # SearXNG も一緒に停止
     import contextlib
 
     for task in tasks:
@@ -161,8 +164,10 @@ async def lifespan(app: FastAPI):
         with contextlib.suppress(asyncio.CancelledError):
             await task
     # Controllerが再適用しないよう先にタスクを停止してからautoへ戻す。
-    from app.monitoring.fan_control import shutdown as fan_control_shutdown
-    await asyncio.to_thread(fan_control_shutdown)
+    # ファン制御を起こしたときだけ戻す（検証用・テスト用のインスタンスが本番のファンを触らない）
+    if machine_wide:
+        from app.monitoring.fan_control import shutdown as fan_control_shutdown
+        await asyncio.to_thread(fan_control_shutdown)
 
 
 app = FastAPI(title="Ubuntu Control Deck", lifespan=lifespan, docs_url=None, redoc_url=None)

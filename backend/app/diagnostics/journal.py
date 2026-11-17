@@ -124,3 +124,17 @@ def summary(hours: float = 72.0) -> dict:
     units = unit_events(since)
     return {"hours": hours, "restarts": units["restarts"], "unit_failures": units["failures"],
             "oom_kills": oom_kills(since)}
+
+
+_cache: dict[float, tuple[float, dict]] = {}
+
+
+def cached_summary(hours: float = 72.0, ttl: float = 60.0) -> dict:
+    """画面を開くたびに journalctl を読み直さない（1 分は使い回す）。"""
+    hit = _cache.get(hours)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    result = summary(hours)
+    _cache.clear()
+    _cache[hours] = (time.time(), result)
+    return result

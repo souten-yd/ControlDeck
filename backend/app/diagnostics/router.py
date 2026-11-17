@@ -31,7 +31,7 @@ def events(hours: float = Query(24.0, ge=0.1, le=168), kind: str = Query("", max
            limit: int = Query(300, ge=1, le=2000), user: User = Depends(ADMIN)):
     del user
     kinds = {k for k in kind.split(",") if k} or None
-    return {"events": [report.redact_event(e) for e in store.read(since=time.time() - hours * 3600, kinds=kinds, limit=limit)]}
+    return {"events": report.redact_value(store.read(since=time.time() - hours * 3600, kinds=kinds, limit=limit))}
 
 
 @router.get("/memory")
@@ -62,7 +62,12 @@ class TestsBody(BaseModel):
 @router.post("/tests", status_code=201)
 async def run_tests(body: TestsBody, request: Request, user: User = Depends(ADMIN), db=Depends(get_db)):
     """backend のテストをジョブで流す（本番のデータには触らない）。数分かかる。"""
-    _ensure_selection_ok(body.selection)
+    try:
+        selftest.check_selection(body.selection)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if selftest.tests_running():
+        raise HTTPException(status_code=409, detail="テストはもう実行中です")
 
     async def run(job: jobs.Job) -> dict:
         job.set_progress("テストを実行中", 0, 1)
@@ -86,8 +91,3 @@ async def download_report(hours: float = Query(24.0, ge=1, le=168), format: str 
     if format == "json":
         return data
     return PlainTextResponse(report.to_markdown(data), media_type="text/markdown; charset=utf-8")
-
-
-def _ensure_selection_ok(selection: str) -> None:
-    if selection and not all(ch.isalnum() or ch in "/_.:- " for ch in selection):
-        raise HTTPException(status_code=422, detail="テストの指定に使えない文字があります")

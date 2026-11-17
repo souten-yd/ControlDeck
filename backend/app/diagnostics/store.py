@@ -29,10 +29,29 @@ def _file(day: datetime) -> Path:
     return root() / f"events-{day:%Y%m%d}.jsonl"
 
 
-def record(kind: str, **fields) -> dict:
+# 同じ内容の記録は 1 分に 20 件まで（警告の連発でファイルが膨らまないように）。超えた分は数だけ数える
+_RATE_WINDOW = 60.0
+_RATE_LIMIT = 20
+_rate: dict[str, list] = {}
+
+
+def record(kind: str, *, rate_key: str = "", **fields) -> dict:
     """1 件残す。書けなくても例外を出さない（診断のせいで本体を止めない）。"""
-    event = {"ts": time.time(), "kind": kind, **fields}
+    now = time.time()
+    event = {"ts": now, "kind": kind, **fields}
     with _lock:
+        if rate_key:
+            window = _rate.get(rate_key)
+            if window is None or now - window[0] > _RATE_WINDOW:
+                if window and window[2]:
+                    event["suppressed_before"] = window[2]
+                _rate[rate_key] = window = [now, 0, 0]
+                if len(_rate) > 5000:
+                    _rate.clear()
+            window[1] += 1
+            if window[1] > _RATE_LIMIT:
+                window[2] += 1
+                return event
         _recent.append(event)
         try:
             with _file(datetime.now()).open("a", encoding="utf-8") as stream:
@@ -42,7 +61,7 @@ def record(kind: str, **fields) -> dict:
     return event
 
 
-def read(since: float = 0.0, kinds: set[str] | None = None, limit: int = 2000) -> list[dict]:
+def read(since: float = 0.0, kinds: set[str] | None = None, limit: int | None = 2000) -> list[dict]:
     """新しい順。ファイルから読む（再起動の前の記録も含む）。"""
     out: list[dict] = []
     days = sorted(root().glob("events-*.jsonl"), reverse=True)
@@ -61,7 +80,7 @@ def read(since: float = 0.0, kinds: set[str] | None = None, limit: int = 2000) -
             if kinds and event.get("kind") not in kinds:
                 continue
             out.append(event)
-            if len(out) >= limit:
+            if limit is not None and len(out) >= limit:
                 return out
     return out
 

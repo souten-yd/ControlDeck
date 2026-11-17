@@ -47,16 +47,20 @@ class _EventHandler(logging.Handler):
         event = {"level": record.levelname, "logger": record.name, "message": message[:2000]}
         if record.exc_info:
             event["traceback"] = "".join(traceback.format_exception(*record.exc_info))[-6000:]
-        store.record("log", **event)
+        store.record("log", rate_key=f"{record.name}|{record.levelname}|{str(record.msg)[:200]}", **event)
 
 
 # ---- event loop の詰まり ------------------------------------------------
 async def _loop_ticker() -> None:
     global _loop_tick, _loop_thread_id
     _loop_thread_id = threading.get_ident()
-    while True:
-        _loop_tick = time.monotonic()
-        await asyncio.sleep(0.25)
+    try:
+        while True:
+            _loop_tick = time.monotonic()
+            await asyncio.sleep(0.25)
+    finally:
+        # loop が終わった（lifespan の終了）。次に始まるまでは見張らない
+        _loop_thread_id = None
 
 
 def _app_frames(frame) -> list[str]:
@@ -75,6 +79,9 @@ def _stall_watcher(tick=lambda: _loop_tick, thread=lambda: _loop_thread_id, stop
     while not (stop and stop.is_set()):
         time.sleep(0.25)
         age = time.monotonic() - tick()
+        if thread() is None:
+            stalled_since = None
+            continue
         if age >= STALL_SECONDS:
             if stalled_since is None:
                 stalled_since = time.time() - age
@@ -108,7 +115,7 @@ def install_middleware(app) -> None:
         finally:
             seconds = time.monotonic() - started
             route = request.scope.get("route")
-            key = f"{request.method} {getattr(route, 'path', None) or request.url.path}"
+            key = f"{request.method} {getattr(route, 'path', None) or '<unmatched>'}"
             _route_times[key].append(seconds)
             if seconds >= SLOW_REQUEST_SECONDS and not key.endswith(("/stream", "/events")):
                 store.record("slow_request", route=key, seconds=round(seconds, 2), status=status)
@@ -159,7 +166,7 @@ def memory_sample(top: int = 8) -> dict:
     vm = psutil.virtual_memory()
     swap = psutil.swap_memory()
     procs = []
-    for proc in psutil.process_iter(["pid", "name", "memory_info", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "name", "memory_info"]):
         try:
             rss = proc.info["memory_info"].rss
         except (psutil.Error, AttributeError):
@@ -168,9 +175,9 @@ def memory_sample(top: int = 8) -> dict:
     procs.sort(key=lambda row: row[0], reverse=True)
     rows = []
     for rss, proc in procs[:top]:
-        cmd = " ".join(proc.info.get("cmdline") or [])[:160]
+        # コマンドラインは残さない（--token などの秘密が入りうる）。名前と unit だけ
         rows.append({"pid": proc.info["pid"], "name": proc.info["name"], "rss_gb": round(rss / 2**30, 2),
-                     "unit": _unit_of(proc.info["pid"]), "cmd": cmd})
+                     "unit": _unit_of(proc.info["pid"])})
     return {"ts": time.time(), "total_gb": round(vm.total / 2**30, 1),
             "available_gb": round(vm.available / 2**30, 2), "used_percent": vm.percent,
             "swap_used_gb": round(swap.used / 2**30, 2), "vram": _vram(), "top": rows}

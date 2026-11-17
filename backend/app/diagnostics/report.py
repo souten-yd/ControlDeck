@@ -13,11 +13,17 @@ from pathlib import Path
 
 from app.diagnostics import journal, recorder, selftest, store
 
+_KEYWORD = r"[\w.-]*(?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|auth|cookie|session|credential|private[_-]?key|sig(?:nature)?|key)[\w.-]*"
 _SECRETS = [
-    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{12,}"), r"\1 ***"),
-    (re.compile(r"\b(cdk|sk|pk|rk|ghp|gho|github_pat|xox[abp])[-_][A-Za-z0-9_-]{8,}"), "***"),
-    (re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key|apikey|authorization)\b(\s*[:=]\s*)(\"?)[^\s\"',;]{4,}"),
-     r"\1\2\3***"),
+    # Authorization: Bearer/Basic/Token <値>
+    (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 ***"),
+    # 既知の形の鍵（ControlDeck のゲートウェイ cdk-、OpenAI/OpenRouter sk-、GitHub、Slack、Hugging Face）
+    (re.compile(r"\b(?:cdk|sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abprs]|hf)[-_][A-Za-z0-9_-]{8,}"), "***"),
+    # JWT
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"), "***"),
+    # 鍵らしい名前の後の値: key=v / key: v / "key": "v" / 'key': 'v' / --api-key v / ?sig=v
+    (re.compile(r"(?i)(" + _KEYWORD + r")([\"']?\s*(?:[:=]|\s)\s*[\"']?)(?!\*\*\*)[^\s\"',;&}]{4,}"), r"\1\2***"),
+    # メールアドレス
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
 ]
 
@@ -28,12 +34,29 @@ def redact(text: str) -> str:
     return text
 
 
+def redact_value(value):
+    """dict / list をたどって文字列の値ごとに伏せる（JSON 文字列にかけると引用符の escape を壊す）。"""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {key: ("***" if isinstance(key, str) and re.fullmatch("(?i)" + _KEYWORD, key)
+                      and key not in _SAFE_KEYS and isinstance(item, str) else redact_value(item))
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_value(item) for item in value]
+    return value
+
+
+# 名前に key/session などを含むが、値が秘密でない欄
+_SAFE_KEYS = {"kind", "key", "route", "session_key", "monkey"}
+
+
 def redact_event(event: dict) -> dict:
-    return json.loads(redact(json.dumps(event, ensure_ascii=False, default=str)))
+    return redact_value(event)
 
 
 def _fmt(ts: float | None) -> str:
-    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S") if ts else "-"
+    return datetime.fromtimestamp(ts).astimezone().strftime("%m-%d %H:%M:%S%z") if ts else "-"
 
 
 def _version() -> dict:
@@ -67,7 +90,7 @@ def _failed_jobs(limit: int = 20) -> list[dict]:
 
 def build(hours: float = 24.0, include_tests: bool = False) -> dict:
     since = time.time() - hours * 3600
-    events = store.read(since=since)
+    events = store.read(since=since, limit=None)
     logs = [e for e in events if e.get("kind") == "log"]
     grouped: dict[str, dict] = {}
     for event in logs:
@@ -93,8 +116,8 @@ def build(hours: float = 24.0, include_tests: bool = False) -> dict:
     slow = Counter(e.get("route") for e in events if e.get("kind") == "slow_request")
     data = {
         "generated_at": time.time(), "hours": hours, "version": _version(),
-        "selftest": selftest.run(),
-        "journal": journal.summary(hours=max(hours, 72.0)),
+        "selftest": selftest.latest() or selftest.run(record=False),
+        "journal": journal.cached_summary(hours=max(hours, 72.0)),
         "errors": sorted(grouped.values(), key=lambda row: row["count"], reverse=True)[:40],
         "loop_stalls": sorted(({"where": k, **v} for k, v in stall_groups.items()),
                               key=lambda row: row["total_seconds"], reverse=True)[:15],
@@ -107,7 +130,7 @@ def build(hours: float = 24.0, include_tests: bool = False) -> dict:
     }
     if include_tests:
         data["tests"] = selftest.run_tests()
-    return json.loads(redact(json.dumps(data, ensure_ascii=False, default=str)))
+    return redact_value(json.loads(json.dumps(data, ensure_ascii=False, default=str)))
 
 
 def to_markdown(data: dict) -> str:

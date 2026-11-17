@@ -8,6 +8,9 @@
 - `report.py`: 一式を Markdown/JSON にまとめ、鍵・トークン・パスワード・メールアドレスを伏せる。API `/api/v1/diagnostics/{summary,events,memory,journal,selftest,tests,report}`（settings.manage）。OpenCode などの AI は MCP の道具 `control_deck.diagnostics` で同じレポートを全文読める（橋渡しで削らない）。
 - 画面「診断」（ドロワーの システム）: 自己診断・再起動・OOM・常駐の異常終了・詰まり・遅い API・警告/エラー・メモリ・失敗したジョブ・テスト実行、「AI 用レポートをコピー」「ダウンロード」。
 - 本番の記録から分かったこと（2026-11-17）: 11/16 に Strata（qwen-flash-next）が 65〜67GB で 2 回 OOM、並べ替えの llama.cpp（rerank-qwen3-4b）が 51 回異常終了、本体の watchdog 再起動 3 回（いずれも終了処理の途中で addons の待ちに塞がれていた。#419 で直した部分）。
+- 伏せ字は JSON の値ごとにかける（文字列にかけると escape を壊す）。鍵らしい名前（token・secret・password・key・cookie・session…）の後の値、Bearer/Basic、JWT、cdk-/sk-/ghp_/hf_ などの形、メールアドレス。プロセスのコマンドラインは記録しない。同じ警告は 1 分に 20 件まで。
+- テストの実行: 指定は `tests/…​.py(::名前)` だけ（pytest のオプションは通さない。`--basetemp` に本番の data を渡すと消える）、同時に 1 本、`CONTROL_DECK_NO_MACHINE_TASKS=1` と一時の HOME/XDG で、機械全体に効く常駐（ファン・常駐の復元・自動更新・モデルの自動起動/停止）を起こさない。
+- 本体の終了処理の不具合 2 件を直した: 機械全体の処理を起こしていない（検証用・テスト）ときに `searxng` を参照して落ちる、本番のファンを自動に戻していた。
 - 検証（sandbox `diag`）: `tests/test_diagnostics.py`（秘密伏せ・記録・journal の解析・詰まりの検出で塞いだ関数名が残ること・API）、`tests/test_addon_agent_mcp.py`、`npm run build`、E2E `diagnostics`（1280px・390px、実データ）。
 
 ## 2026-11-17 AI アシスタントを Claude と同じ形に・iPhone のホーム画面アプリで上下が欠けるのを修正

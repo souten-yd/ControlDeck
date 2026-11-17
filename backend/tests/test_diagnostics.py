@@ -5,14 +5,38 @@ from tests.conftest import CSRF_HEADERS
 
 
 def test_redact_hides_secrets():
-    from app.diagnostics.report import redact
+    import json
 
+    from app.diagnostics.report import redact, redact_value
+
+    secrets = ["abcdefghijklmnopqrstuvwxyz", "supersecret123", "0123456789abcdef", "xyz12345",
+               "me@example.com", "sk-abcdefghijklmnop", "hunter2xx", "refreshvalue9", "hf_abcdefghijklmnop",
+               "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl", "dXNlcjpwYXNzd29yZA==",
+               "sessionvalue7", "clivalue123", "urlsig12345"]
     text = ("Authorization: Bearer abcdefghijklmnopqrstuvwxyz token=supersecret123 cdk-0123456789abcdef "
-            "api_key: \"xyz12345\" mail me@example.com sk-abcdefghijklmnop")
+            "api_key: \"xyz12345\" mail me@example.com sk-abcdefghijklmnop {'password': 'hunter2xx'} "
+            "refresh_token=refreshvalue9 hf download --token hf_abcdefghijklmnop "
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl Authorization: Basic dXNlcjpwYXNzd29yZA== "
+            "Cookie: session=sessionvalue7 --api-key clivalue123 https://x/y?sig=urlsig12345")
     out = redact(text)
-    for secret in ("abcdefghijklmnopqrstuvwxyz", "supersecret123", "0123456789abcdef", "xyz12345",
-                   "me@example.com", "sk-abcdefghijklmnop"):
-        assert secret not in out, out
+    for secret in secrets:
+        assert secret not in out, (secret, out)
+    # JSON に通しても壊れない（以前は escape を消して JSONDecodeError になった）
+    event = {"message": 'password=abcd"efg', "detail": {"token": "zzzz9999"}, "kind": "log"}
+    cleaned = redact_value(json.loads(json.dumps(event)))
+    assert "abcd" not in json.dumps(cleaned) and "zzzz9999" not in json.dumps(cleaned)
+    assert cleaned["kind"] == "log"
+
+
+def test_test_selection_refuses_pytest_options():
+    import pytest
+
+    from app.diagnostics import selftest
+
+    assert selftest.check_selection("tests/test_a.py tests/test_b.py::test_x") == ["tests/test_a.py", "tests/test_b.py::test_x"]
+    for bad in ("--basetemp /data1tb/ControlDeck/data", "-p evil", "tests/../app/main.py", "/etc/passwd", "tests/x.py;rm"):
+        with pytest.raises(ValueError):
+            selftest.check_selection(bad)
 
 
 def test_store_round_trip(tmp_path, monkeypatch):
@@ -92,6 +116,8 @@ def test_api_requires_admin_and_returns_report(admin_client, monkeypatch):
     assert "# ControlDeck 診断レポート" in r.text and "## 自己診断" in r.text
     assert admin_client.post("/api/v1/diagnostics/selftest", headers=CSRF_HEADERS).json()["overall"] in ("ok", "warn", "fail")
     assert admin_client.post("/api/v1/diagnostics/tests", json={"selection": "tests/x.py; rm -rf /"},
+                             headers=CSRF_HEADERS).status_code == 422
+    assert admin_client.post("/api/v1/diagnostics/tests", json={"selection": "--basetemp /tmp/x"},
                              headers=CSRF_HEADERS).status_code == 422
 
 
