@@ -71,3 +71,34 @@ def test_closed_session_stays_listed_and_can_be_forgotten(monkeypatch, tmp_path)
     oc_router.forget_tui_sessions(oc_router.ForgetBody(project_path=str(project)), user=user)
     listed = oc_router.list_tui_sessions(user=user)["sessions"]
     assert [s["project_name"] for s in listed] == ["Other"]
+
+
+def test_resume_last_skips_assistant_sessions(admin_client, monkeypatch, tmp_path):
+    """「続きから開く」は AI アシスタントの会話を掴まない（同じ会話を 2 つのサーバーが書かない）。"""
+    import json
+
+    from fastapi import HTTPException
+
+    from app.database import SessionLocal
+    from app.integrations.opencode import provider as op
+    from app.integrations.opencode import router as oc_router
+    from app.models import ChatMessage, Conversation
+
+    project = tmp_path / "Train"
+    project.mkdir()
+    monkeypatch.setattr("app.files.service.resolve", lambda raw, **kw: __import__("pathlib").Path(raw))
+    rows = [{"id": "ses_chatchatchat01", "directory": str(project), "updated": 3},
+            {"id": "ses_tuituituitui01", "directory": str(project), "updated": 2}]
+    monkeypatch.setattr(op, "project_sessions", lambda project, runtime="": rows)
+    with SessionLocal() as db:
+        db.add(Conversation(id="convresume000001", owner_user_id=None))
+        db.flush()
+        db.add(ChatMessage(id="msgresume0000001", conversation_id="convresume000001", role="assistant",
+                           content="x", meta_json=json.dumps({"opencode_session": "ses_chatchatchat01"})))
+        db.commit()
+        assert oc_router._resolve_resume("last", str(project), "v2", db) == "ses_tuituituitui01"
+        with pytest.raises(HTTPException) as refused:
+            oc_router._resolve_resume("ses_chatchatchat01", str(project), "v2", db)
+        assert refused.value.status_code == 409
+        rows.pop()                                                  # TUI の会話が無ければ新しく始める
+        assert oc_router._resolve_resume("last", str(project), "v2", db) == ""

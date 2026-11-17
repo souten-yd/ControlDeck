@@ -12,7 +12,8 @@ from pathlib import Path
 
 from app.config import data_dir
 
-MAX_ENTRIES = 40
+MAX_ENTRIES = 40  # 利用者ごと
+# 単一プロセス（uvicorn の workers 指定なし）が前提。複数 worker にするならファイルロックへ替える。
 _lock = threading.Lock()
 
 
@@ -33,7 +34,14 @@ def _save(items: list[dict]) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(items[-MAX_ENTRIES:], ensure_ascii=False), encoding="utf-8")
+    kept: list[dict] = []
+    per_user: dict = {}
+    for item in reversed(items):  # 新しいものから、利用者ごとに MAX_ENTRIES 件
+        owner = item.get("owner_user_id")
+        per_user[owner] = per_user.get(owner, 0) + 1
+        if per_user[owner] <= MAX_ENTRIES:
+            kept.append(item)
+    tmp.write_text(json.dumps(list(reversed(kept)), ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -46,10 +54,12 @@ def record(terminal_id: str, project_path: str, owner_user_id: int | None, *, re
         _save(items)
 
 
-def forget_project(project_path: str, owner_user_id: int | None) -> None:
+def forget_project(project_path: str, owner_user_id: int | None, alive: set[str] | frozenset = frozenset()) -> None:
+    """閉じた記録だけを外す（別の端末で開いたばかりの動いているものは残す）。"""
     with _lock:
         _save([item for item in _load()
-               if not (item.get("project_path") == project_path and item.get("owner_user_id") == owner_user_id)])
+               if not (item.get("project_path") == project_path and item.get("owner_user_id") == owner_user_id
+                       and item.get("terminal_id") not in alive)])
 
 
 def listing(owner_user_id: int | None, alive: dict[str, dict]) -> list[dict]:
