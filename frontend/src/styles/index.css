@@ -121,6 +121,11 @@ body,
     min-height: min(100lvh, calc(100% + env(safe-area-inset-top)));
   }
 }
+/* キーボードが出ている間は外す（main.tsx が付ける）。文書が見える高さより長いと、iOS が入力欄を見せようと
+   文書をスクロールして画面全体が上へずれる。 */
+html.cd-viewport-keyboard {
+  min-height: 0 !important;
+}
 html.pwa-standalone #root {
   /* iPhone は main.tsx が報告された高さを入れる（再読み込み後は WebView 自体が短くなる。100vh は満寸を指す） */
   height: var(--cd-standalone-height, 100vh);
