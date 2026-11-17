@@ -111,6 +111,16 @@ body,
 }
 /* iOS standalone(ホーム画面アプリ)はリロード後に dvh/innerHeight が縮んだ値で
    固定され下部ナビが浮く。縮まない large viewport(100vh)で満寸に固定する。 */
+/* iOS 26 のホーム画面アプリは、文書が画面より短いと描画範囲を「画面 − 上の帯」の高さで作り、下の 59pt を
+   描かない（WebKit 301108。2026-11-17 の実機: screen 932 / innerHeight 873。#419 で文書のスクロールを止めて
+   高さを画面ちょうどにしたのがきっかけ）。文書を画面の高さ以上にしておくと、満寸の描画範囲になる。
+   min() の上限は、上の帯に広げない設定（上の Safe Area 0）のとき 100lvh だけ伸びてスクロールしないため。
+   参考: frappe-ui #1284。 */
+@media (display-mode: standalone) {
+  html {
+    min-height: min(100lvh, calc(100% + env(safe-area-inset-top)));
+  }
+}
 html.pwa-standalone #root {
   /* iPhone は main.tsx が報告された高さを入れる（再読み込み後は WebView 自体が短くなる。100vh は満寸を指す） */
   height: var(--cd-standalone-height, 100vh);
