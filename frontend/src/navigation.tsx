@@ -55,10 +55,15 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/knowledge", group: "ai", label: "Knowledge", icon: IconBook, permission: "workflows.run" },
   { to: "/models", group: "ai", label: "Models", icon: IconChip, permission: "workflows.run" },
   { to: "/opencode-v2", group: "dev", label: "OpenCode", icon: IconCode, feature: "opencode-v2" },
+  { to: "/diagnostics", group: "system", label: "診断", icon: IconPulse, permission: "settings.manage" },
   { to: "/logs", group: "system", label: "Logs", icon: IconLogs },
   { to: "/system", group: "system", label: "System", icon: IconChart },
   { to: "/settings", group: "system", label: "Settings", icon: IconSettings },
 ];
+
+export function IconPulse(props: SVGProps<SVGSVGElement>) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}><path d="M3 12h4l2.5-6 4 12 2.5-6H21" /></svg>;
+}
 
 export function IconFlow(props: SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}><rect x="2" y="4" width="7" height="6" rx="1.5" /><rect x="15" y="14" width="7" height="6" rx="1.5" /><path d="M9 7h4a2 2 0 0 1 2 2v5" /></svg>;
