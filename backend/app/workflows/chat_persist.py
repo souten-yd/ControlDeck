@@ -442,6 +442,59 @@ def get_attachment(
                                                          "X-Content-Type-Options": "nosniff"})
 
 
+class OpenCodePermissionBody(BaseModel):
+    message_id: str = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=1, max_length=128)
+    decision: str = Field(pattern="^(once|always|reject)$")
+
+
+def _opencode_meta(conv_id: str, message_id: str, user_id: int) -> dict:
+    """許可に答えてよい OpenCode の回答か確かめ、その meta を返す（スレッドで呼ぶ。DB は自前で開く）。"""
+    with SessionLocal() as db:
+        conv = db.get(Conversation, conv_id)
+        if conv is None or conv.owner_user_id != user_id:
+            raise HTTPException(status_code=404, detail="会話が見つかりません")
+        message = db.get(ChatMessage, message_id)
+        if message is None or message.conversation_id != conv_id or message.role != "assistant":
+            raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+        raw = message.meta_json or "{}"
+    try:
+        meta = json.loads(raw)
+    except json.JSONDecodeError:
+        meta = {}
+    if meta.get("mode") != "code" or not meta.get("server_key") or not meta.get("opencode_session"):
+        raise HTTPException(status_code=409, detail="OpenCode の回答ではありません")
+    return meta
+
+
+@router.post("/conversations/{conv_id}/opencode/permission", status_code=204)
+async def opencode_permission(
+    conv_id: str, body: OpenCodePermissionBody, request: Request,
+    user: User = Depends(require_permission("workflows.run")),
+):
+    """OpenCode が求めた許可に答える（今回だけ・常に・拒否）。"""
+    from app.integrations.opencode import chat_server
+
+    meta = await asyncio.to_thread(_opencode_meta, conv_id, body.message_id, user.id)
+    pending = {str(p.get("id")) for p in meta.get("permissions") or [] if p.get("status") == "pending"}
+    if body.request_id not in pending:
+        raise HTTPException(status_code=409, detail="この許可はもう答えられません")
+    server = await asyncio.to_thread(chat_server.load, str(meta["server_key"]))
+    if server is None:
+        raise HTTPException(status_code=409, detail="OpenCode のサーバーが止まっています")
+    try:
+        await chat_server.reply_permission(server, str(meta["opencode_session"]), body.request_id, body.decision)
+    except chat_server.ChatServerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    def record() -> None:
+        with SessionLocal() as db:
+            audit.record(db, "opencode.permission", user=user, resource_type="conversation",
+                         resource_id=conv_id, request=request,
+                         metadata={"decision": body.decision, "request_id": body.request_id})
+
+    await asyncio.to_thread(record)
+
+
 class RouteBody(BaseModel):
     content: str = Field(min_length=1, max_length=32000)
     base_url: str = "http://127.0.0.1:11434/v1"
@@ -502,14 +555,15 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             buf["last_ckpt"] = now
             await asyncio.to_thread(checkpoint)
 
-    # ---- OpenCodeチャット実行: TUIへ遷移せずheadlessで実行し、本文をストリームする ----
+    # ---- OpenCode: プロジェクトごとの OpenCode サーバー（opencode serve）へ発言を送り、
+    # 本文・思考・道具の実行・許可の問い合わせをこのチャットへそのまま流す ----
     if mode == "code":
-        from app.integrations.opencode import provider as opencode_provider
+        from app.integrations.opencode import chat_server
 
         query = str(history[-1].get("content") or "") if history else ""
 
         def _last_code_session() -> str:
-            """この会話の直近のopencodeセッションID（継続対話用）。"""
+            """この会話の直近の OpenCode セッション ID（継続対話用）。"""
             db = SessionLocal()
             try:
                 rows = db.execute(
@@ -529,46 +583,78 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             finally:
                 db.close()
 
-        previous_session = await asyncio.to_thread(_last_code_session)
+        tools: list[dict] = []
+        permissions: list[dict] = []
+        buf["meta"] = {"mode": "code", "tools": tools, "permissions": permissions}
 
-        async def on_text(text: str) -> None:
-            buf["content"] += text + "\n\n"
-            job.log("delta", delta=text + "\n\n")
+        async def on_text(delta: str) -> None:
+            buf["content"] += delta
+            job.log("delta", delta=delta)
             await maybe_ckpt()
 
-        # ツール実行等のイベントを間引いて進捗表示（作業中に無反応にならないように）
-        event_state = {"last": 0.0}
+        async def on_reasoning(delta: str) -> None:
+            buf["thinking"] += delta
+            job.log("thinking", delta=delta)
+            await maybe_ckpt()
 
-        async def on_event(event_type: str, events: int) -> None:
-            now = asyncio.get_event_loop().time()
-            if now - event_state["last"] < 1.5:
-                return
-            event_state["last"] = now
-            label = {"tool_use": "ツール実行", "tool_result": "ツール結果", "step-start": "ステップ開始",
-                     "step-finish": "ステップ完了", "message": "応答生成", "text": "応答生成"}.get(event_type, event_type or "処理中")
-            job.log("progress", phase="opencode", label=f"{label}（{events}イベント）", iteration=events, details={})
-            job.log("stats", phase="code", tok_per_sec=0.0, gen_tokens=events,
-                    prompt_tokens=None, context_max=None)
+        async def on_tool(tool: dict) -> None:
+            entry = next((t for t in tools if t["id"] == tool["id"]), None)
+            if entry is None:
+                tools.append(dict(tool))
+            else:
+                entry.update(tool)
+            job.log("tool", tool=dict(tool))
+            await asyncio.to_thread(checkpoint)
+
+        async def on_permission(item: dict) -> None:
+            entry = next((p for p in permissions if p["id"] == item["id"]), None)
+            if entry is None:
+                permissions.append(dict(item))
+            else:
+                entry.update(item)
+            job.log("permission", permission=dict(entry or item))
+            await asyncio.to_thread(checkpoint)
 
         try:
-            result = await opencode_provider.run_chat(
-                job, instruction=query, project_name=params.get("code_project", ""),
-                project_path=params.get("code_project_path", ""),
-                session_id=previous_session, on_text=on_text, on_event=on_event,
-            )
+            project = await chat_server.resolve_project(params.get("code_project", ""),
+                                                        params.get("code_project_path", ""))
+            from app.integrations.opencode import provider as opencode_provider
+            from app.models_mgmt import local_llm
+
+            # LLM（llama.cpp 等）は ondemand の仕組みを通らないので、先に起こしておく
+            await local_llm.ensure_ready_by_base_url(str(opencode_provider.get_settings()["base_url"]))
+            job.log("progress", phase="opencode", label="OpenCode を準備しています", iteration=0, details={})
+            server = await chat_server.ensure(project, job.owner_user_id)
+            session_id = await asyncio.to_thread(_last_code_session)
+            if not (session_id and await chat_server.session_exists(server, session_id)):
+                session_id = await chat_server.create_session(server, query[:60])
+            buf["meta"].update({"opencode_session": session_id, "project_path": str(project),
+                                "server_key": server.key, "permission_mode": chat_server.get_mode(server)})
+            await asyncio.to_thread(checkpoint)
+            result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
+                                                on_reasoning=on_reasoning, on_tool=on_tool,
+                                                on_permission=on_permission)
         except asyncio.CancelledError:
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
             raise
-        except opencode_provider.CodeAgentError as e:
+        except chat_server.ChatServerError as e:
             await asyncio.to_thread(checkpoint, True, "failed", str(e))
             raise
-        buf["meta"] = {"mode": "code", "opencode_session": result.get("session_id", ""),
-                       "project_path": result.get("project_path", "")}
+        # 答えを待っていた許可は、終わった時点で無効（OpenCode 側でも取り消される）
+        for item in permissions:
+            if item.get("status") == "pending":
+                item["status"] = "expired"
+        if result["status"] == "interrupted":
+            await asyncio.to_thread(checkpoint, True, "canceled", "中断しました")
+            return {"assistant_message_id": assistant_id, "opencode_session": buf["meta"]["opencode_session"]}
+        if result["status"] == "failed":
+            await asyncio.to_thread(checkpoint, True, "failed", result["error"])
+            raise chat_server.ChatServerError(result["error"])
         if not buf["content"].strip():
-            buf["content"] = result.get("output") or "（OpenCodeからの出力はありませんでした）"
+            buf["content"] = "（OpenCode からの本文はありませんでした。上の道具の結果を確認してください）"
         await asyncio.to_thread(checkpoint, True, "completed")
         await asyncio.to_thread(_maybe_title, conv_id)
-        return {"assistant_message_id": assistant_id, "opencode_session": result.get("session_id", "")}
+        return {"assistant_message_id": assistant_id, "opencode_session": buf["meta"]["opencode_session"]}
 
     # APIからautoが直接送られた場合もサーバー側で判定する。UIが先にroute APIで判定した
     # 場合は、検証済みplanを再利用して余分なLLM呼び出しを避ける。
@@ -1119,6 +1205,11 @@ async def stream_message(websocket: WebSocket, message_id: str):
                     await websocket.send_text(json.dumps({"type": "thinking", "content": ev.get("delta", "")}))
                 elif ev.get("message") == "sources":
                     await websocket.send_text(json.dumps({"type": "sources", "sources": ev.get("sources", [])}, ensure_ascii=False))
+                elif ev.get("message") == "tool":
+                    await websocket.send_text(json.dumps({"type": "tool", "tool": ev.get("tool", {})}, ensure_ascii=False))
+                elif ev.get("message") == "permission":
+                    await websocket.send_text(json.dumps({"type": "permission", "permission": ev.get("permission", {})},
+                                                         ensure_ascii=False))
                 elif ev.get("message") == "plan":
                     await websocket.send_text(json.dumps({"type": "plan", "plan": ev.get("plan", {})}, ensure_ascii=False))
                 elif ev.get("message") == "progress":

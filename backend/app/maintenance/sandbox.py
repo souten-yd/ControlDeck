@@ -189,7 +189,8 @@ def tool_path() -> str:
 
 def container_argv(command: list[str], *, workdir: Path, writable: list[Path], readonly: list[Path] = (),
                    overlays: list[tuple[Path, Path]] = (), env: dict[str, str] | None = None,
-                   interactive: bool = False, name: str = "", detach: bool = False) -> list[str]:
+                   interactive: bool = False, name: str = "", detach: bool = False,
+                   env_file: Path | None = None) -> list[str]:
     """イメージを使わない箱の podman 引数。書けるのは writable だけ、他はホストを読み取り専用で見せる。
 
     サンドボックス（./deck.sh sandbox）と OpenCode のプロジェクトの箱が共有する。
@@ -222,6 +223,9 @@ def container_argv(command: list[str], *, workdir: Path, writable: list[Path], r
         mount(path, path, "rw")
     for key, value in (env or {}).items():
         argv += ["-e", f"{key}={value}"]
+    if env_file is not None:
+        # 秘密（パスワード）は argv に載せない（ps や systemctl show から見える）。
+        argv += ["--env-file", str(env_file)]
     argv += ["-w", str(workdir), "--rootfs", str(_rootfs()), *command]
     return argv
 

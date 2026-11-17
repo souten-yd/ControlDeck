@@ -1,0 +1,10 @@
+{
+  "name": "controldeck-permission",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ControlDeck のチャットから使う OpenCode の権限モード（確認 / Auto）。依存なし。",
+  "exports": {
+    "./server": "./index.mjs"
+  }
+}
