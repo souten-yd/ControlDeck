@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-17 AI アシスタント: 会話の分岐・編集・削除、添付の進み具合
+
+- 各メッセージの下の「⋯」（`features/workflows/MessageActions.tsx`）: コピー・ここから分岐・編集して送り直す（自分の発言）・削除。メニューは画面に固定して出し、行は 44px 以上、スクロール・回転・外側・Escape で閉じる。
+- 分岐 `POST /chat/conversations/{id}/fork`（`include=false` はその発言の手前まで＝編集して送り直す）。元の会話は残す。添付画像・会話の資料（RAG コレクション、`rag.copy_collection`）・文献を写し、圧縮の要約の `covers_until` は新しい ID へ付け替え、許可待ちは expired にする。OpenCode のセッションは引き継がない（分岐先で新しいセッション。画面で通知）。編集の送り直しは書き直す発言の画像も載せ直す。
+- 削除 `DELETE /chat/conversations/{id}/messages/{mid}`: 自分の発言を消すとその回答も消す。添付画像のファイルも消す。本当に動いているジョブの生成中だけ 409（再起動でジョブが消えた generating は生成中とみなさない）。
+- 添付は `XMLHttpRequest` で送り、チップに % と下端の進捗バー、送り終わったら「保存中…」/「資料に登録中…」。http でも動くコピー（`lib/clipboard.ts`、ターミナルと共通）。
+- 検証（sandbox `conv-edit`）: `tests/test_chat_persist.py` ほか 22 件、backend 全体 1668 件成功（1 回目は既知のフレーキー 3 件）、`npm run build`、E2E `assistant-message-actions`（1280px・320px、API は差し替え）と `terminal-copy`。独立レビュー: 重大 0、要修正 5 件を修正。未確認: 本物の LLM での送り直し、iOS Safari 実機。
+
 ## 2026-11-17 画面の殻を刷新: 左上の ☰ で開くドロワー／折りたためるサイドバー
 
 - ナビゲーションを 1 つにした。携帯（〜767px）は左上の ☰ で左から出るドロワー、PC（768px〜）は ☰ で折りたためるサイドバー（状態は `cd-sidebar` に保存）。携帯の下部ナビと、同じ行き先を並べていた More / Quick Actions の一覧、PC の上の行の検索欄・電源ボタン・利用者名は撤去。`AGENTS.md` の「ボトムシート + 下部ナビ」の決まりも新しいナビの説明へ置き換えた。
