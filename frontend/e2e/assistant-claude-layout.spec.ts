@@ -462,6 +462,9 @@ test("standalone iPhone: shell fits the shortened web view and drops the bottom 
     Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
     Object.defineProperty(window.screen, "width", { configurable: true, get: () => 440 });
     Object.defineProperty(window.screen, "height", { configurable: true, get: () => 956 });
+    // 上の帯に画面を広げている（black-translucent）状態の Safe Area
+    // 文書の要素ができてから（アプリのスクリプトより先）に入れる
+    document.addEventListener("readystatechange", () => document.documentElement.style.setProperty("--cd-safe-area-top", "62px"), { once: true });
   });
   await page.setViewportSize({ width: 440, height: 894 }); // 956 - 62（縮んだ報告）
   // 診断: 画面の寸法が送られる（下が切れる件を実機の値で追うため）
@@ -532,4 +535,28 @@ test("history rows swipe right to archive and left to delete, with undo", async 
   // 左へで消したものは時間が経つと本当に消える
   await swipe("先月の旅行計画", -160);
   await expect.poll(() => calls, { timeout: 9000 }).toContain("delete:old1");
+});
+
+// 根拠: 2026-11-17 の実機では起動直後も描画範囲が 59 短かった（black-translucent）。上の帯に画面を広げない
+// black にしたとき（上の Safe Area 0）は、描画範囲が下端まで届くので、下の Safe Area を外さない。
+test("standalone iPhone: with the status bar outside the page the bottom safe area stays", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
+    Object.defineProperty(window.screen, "width", { configurable: true, get: () => 430 });
+    Object.defineProperty(window.screen, "height", { configurable: true, get: () => 932 });
+    // 文書の要素ができてから（アプリのスクリプトより先）に入れる
+    document.addEventListener("readystatechange", () => document.documentElement.style.setProperty("--cd-safe-area-top", "0px"), { once: true });
+  });
+  await page.setViewportSize({ width: 430, height: 873 }); // 932 - 59（帯の下から置かれた高さ）
+  await login(page);
+  await page.goto("/assistant");
+  await expect(page.locator("[data-assistant-shell]")).toBeVisible();
+  const state = await page.evaluate(() => ({
+    root: getComputedStyle(document.getElementById("root")!).height,
+    shrunk: document.documentElement.dataset.viewportShrunk,
+    bottomOverride: document.documentElement.style.getPropertyValue("--cd-safe-area-bottom"),
+    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.getAttribute("content"),
+  }));
+  expect(state).toEqual({ root: "873px", shrunk: "", bottomOverride: "", statusBar: "black" });
 });
