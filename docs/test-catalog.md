@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 166 ファイル、1488 テスト（目的の未記入 93 ファイル）
+- backend: 166 ファイル、1489 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、136 テスト
 
 ## backend（backend/tests）
@@ -1461,6 +1461,7 @@
 - `test_run_turn_passes_child_permissions_and_survives_a_reconnect`
 - `test_running_servers_are_not_reaped`
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`
+- `test_japanese_project_directory_is_sent_url_encoded` — 日本語のプロジェクト名でも、ヘッダーを送れる（ASCII だけ）。OpenCode は decodeURIComponent で戻す。
 
 ### backend/tests/test_opencode_dev_tools.py
 
