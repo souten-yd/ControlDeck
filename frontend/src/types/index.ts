@@ -109,6 +109,8 @@ export interface MetricsSnapshot {
     used_by_programs?: number;
     mapped_files?: number | null;
     idle_cache?: number | null;
+    /** 搭載量のうち Linux から見えない分（内蔵 GPU の映像用・BIOS・カーネル）。used に含む */
+    reserved?: number;
   };
   gpu: {
     name: string;

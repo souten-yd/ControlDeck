@@ -3,7 +3,7 @@
 ## 2026-11-17 RAM を正味の利用量で出す
 
 - Home・履歴・RAM の警告の割合を、プログラムが確保した分に「プログラムが映して使っているファイル」（モデルなど）を足した正味の量にした（`collector.net_memory`、/proc/meminfo の Mapped）。誰も使っていないキャッシュだけ除く。DS-XS（Maya）でモデル約 75GiB を映して RAM をほぼ使い切っていたのに、15% と出ていた。
-- Home の RAM の欄は「使用 / 全体 GiB（うちモデル等のファイル）」。単位は GiB（Linux が使える 91.8 GiB。搭載 96GiB から内蔵 GPU などの予約を引いた量）。
+- 全体は搭載量 96GB（Linux が使える 91.8GiB を 8GiB 単位へ切り上げ）、差の約 4GB（内蔵 GPU の映像用・BIOS・カーネル）は常に使っている分として足す（利用者の依頼）。Home の欄は「使用 / 96 GB（うちモデル）」。
 - DS-XS を動かしている間は RAM の警告（memory_percent）が出やすくなる（実際に使い切っているため）。
 - 検証（sandbox `ram`）: `tests/test_memory_net_usage.py`、実機の /proc/meminfo で値を確認、`npm run build`。
 
