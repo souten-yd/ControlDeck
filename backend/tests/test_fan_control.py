@@ -53,6 +53,9 @@ def gpu(tmp_path, monkeypatch):
     monkeypatch.setattr(fan, "SYS_ROOT", sys)
     monkeypatch.setattr(fan, "HELPER", helper)
     monkeypatch.setattr(fan, "data_dir", lambda: tmp_path)
+    # 診断の記録（fan_log）も一時ディレクトリへ（本番の data/diagnostics に書かない）
+    monkeypatch.setattr(fan.fan_log, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(fan.fan_log, "_recorder", fan.fan_log.Recorder())
     for key, value in {
         "_active_bdf": None, "_last_curve": None, "_applied_percent": 0, "_sensor_ids": set(),
         "_zero_rpm_checks": 0, "_state": "disabled", "_error": "", "_last_sample": {},
@@ -91,19 +94,19 @@ def test_curve_is_flat_to_the_hotspot_limit_then_full(gpu):
 def test_over_the_limit_goes_to_full_speed_at_once(gpu):
     """上限を超えたら、なめらかさの上限を待たずに最大回転（どの方式でも）。"""
     fan, _, hwmon, _, calls = gpu
-    for mode in ("pid", "map"):
-        fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
-        (hwmon / "temp3_input").write_text("84000")
-        fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", mode=mode, smoothing_s=300))
-        assert fan._applied_percent < 100
-        (hwmon / "temp3_input").write_text("90500")
-        fan.tick()
-        assert fan._applied_percent == 100, mode
-        assert fan._last_sample["control"]["emergency"] is True
+    fan.configure(fan.FanSettings(enabled=False, bdf="0000:03:00.0"))
+    (hwmon / "temp3_input").write_text("84000")
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", smoothing_s=300))
+    assert fan._applied_percent < 100
+    (hwmon / "temp3_input").write_text("90500")
+    fan.tick()
+    assert fan._applied_percent == 100
+    assert fan._last_sample["control"]["emergency"] is True
 
 
 def test_old_settings_are_carried_over(gpu, tmp_path):
-    """旧版の設定（本番の curve_r9700・温度追従）から、上限温度・方式・マージン・PID の効き具合を引き継ぐ。"""
+    """旧版の設定（本番の curve_r9700・温度追従）から引き継ぐのは有効/無効・GPU・最低回転・マージンだけ。
+    旧版の targets_c は「目標」なので「上限」へ移さず既定（hotspot 上限 95）にする。旧版の弱い Kp も捨てる。"""
     fan, _, _, _, _ = gpu
     old = {"enabled": True, "bdf": "0000:03:00.0", "min_percent": 20, "allow_zero_rpm": False,
            "preset_id": "curve_r9700", "cool_hold_seconds": 30, "targets_c": {"temp1": 85, "temp2": 90, "temp3": 90},
@@ -111,33 +114,25 @@ def test_old_settings_are_carried_over(gpu, tmp_path):
            "backstop_percent": 60, "startup_mode": "apply_saved"}
     (tmp_path / fan.STATE_FILE).write_text(json.dumps(old))
     settings = fan._load()
-    assert settings.mode == "map" and settings.limits_c == old["targets_c"] and settings.margin_c == 5.0
-    assert settings.pid_kp == 1.33 and settings.enabled is True
+    assert settings.limits_c == {} and settings.margin_c == 5.0 and settings.enabled is True
+    assert settings.pid_kp == 2.5
     (tmp_path / fan.STATE_FILE).write_text(json.dumps({**old, "control_mode": "target", "temperature_margin_c": 7}))
-    assert fan._load().mode == "pid" and fan._load().margin_c == 7.0
+    assert fan._load().margin_c == 7.0
+    # v2 の途中版（温度マップがあった版）の項目は読み捨てる
+    (tmp_path / fan.STATE_FILE).write_text(json.dumps({"enabled": True, "limits_c": {"temp2": 95}, "mode": "map",
+                                                       "map_points": [{"below_c": 0, "percent": 50}]}))
+    assert fan._load().limits_c == {"temp2": 95}
 
 
-def test_map_points_must_rise_toward_the_target():
-    from app.monitoring.fan_control import FanSettings, MapPoint
-
-    good = FanSettings(map_points=[MapPoint(below_c=0, percent=60), MapPoint(below_c=20, percent=20)])
-    assert [p.below_c for p in good.map_points] == [20, 0]   # 冷たい順に並べ直す
+def test_margin_below_two_degrees_is_rejected():
     with pytest.raises(ValidationError):
-        FanSettings(map_points=[MapPoint(below_c=0, percent=30), MapPoint(below_c=20, percent=50)])
-    with pytest.raises(ValidationError):
-        FanSettings(margin_c=1)   # マージン 0〜1°C は上限を必ず超える
+        fan_settings_cls()(margin_c=1)   # マージン 0〜1°C は上限を必ず超える
 
 
-def test_switching_mode_keeps_the_fan_speed(gpu, monkeypatch):
-    """方式を切り替えても回転数は今の値から続く（段差を作らない）。"""
-    fan, _, hwmon, _, _ = gpu
-    clock = [100.0]
-    monkeypatch.setattr(fan, "time", SimpleNamespace(**{**vars(fan.time), "monotonic": lambda: clock[0]}))
-    (hwmon / "temp3_input").write_text("86000")
-    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", mode="map"))
-    before = fan._applied_percent
-    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", mode="pid", smoothing_s=300))
-    assert abs(fan._applied_percent - before) <= 3
+def fan_settings_cls():
+    from app.monitoring.fan_control import FanSettings
+
+    return FanSettings
 
 
 def test_history_records_limits_targets_and_fan(gpu):
@@ -164,16 +159,15 @@ def test_autotune_cancel_during_verify_restores_settings_and_stops_load(gpu, mon
     from app.monitoring import fan_tune
 
     fan, _, _, _, _ = gpu
-    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", mode="map", smoothing_s=90))
+    fan.configure(fan.FanSettings(enabled=True, bdf="0000:03:00.0", smoothing_s=90))
     stopped = []
     monkeypatch.setattr(fan_tune, "stop_load", lambda: stopped.append(1))
     fan_tune.start({"alias": "x", "base_url": "http://127.0.0.1:1/v1"})
-    fan_tune._tune.result = {"pid_kp": 2.0, "pid_ti": 40.0, "smoothing_s": 30.0, "margin_c": 5.0,
-                             "map_points": [{"below_c": 20, "percent": 20}, {"below_c": 0, "percent": 55}]}
-    fan_tune._start_verify(0.0, "pid")
-    assert fan._load().mode == "pid" and fan._load().smoothing_s == 30.0
+    fan_tune._tune.result = {"pid_kp": 2.0, "pid_ti": 40.0, "smoothing_s": 30.0, "margin_c": 5.0}
+    fan_tune._start_verify(0.0)
+    assert fan._load().pid_kp == 2.0 and fan._load().smoothing_s == 30.0
     fan_tune.cancel()
-    assert fan._load().mode == "map" and fan._load().smoothing_s == 90.0 and fan._load().enabled
+    assert fan._load().pid_kp == 2.5 and fan._load().smoothing_s == 90.0 and fan._load().enabled
     assert stopped and fan_tune.snapshot()["phase"] == "aborted"
 
 

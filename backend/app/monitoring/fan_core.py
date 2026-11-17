@@ -1,21 +1,17 @@
 """ファン制御 v2 の本体（sysfs に触らない純粋な計算）。
 
-方式は 2 つだけ（2026-11-17 利用者の指示で整理。旧: マップ・グラフ・PID・温度追従の 4 方式と 7 プリセット）。
+方式は PID だけ（2026-11-18 利用者の指示「いい方式のみ採用」。R9700 実機で温度マップと比べ、
+全力が続くときの hotspot のばらつきが ±1.05°C → ±0.5°C、VRAM は ±0.96°C → ±0.0°C だった）。
 
-* ``pid``: 「上限温度 − マージン」を目標に追従する PI 制御。電力から熱モデルで必要な回転数を先読み
-  （フィードフォワード）して足す。
-* ``map``: 温度マップ。目標（上限 − マージン）から何度下にいるかで回転数を決める。
-
-どちらにも共通:
-
-* 上限温度の手前に「マージン」を取って制御する。上限そのものを目標にすると、行き過ぎで必ず上限を超える。
+* 目標 = 上限温度 − マージン（R9700 の hotspot は 95 − 5 = 90°C）。目標との差に比例して回転を決め（P）、
+  差が残れば回転を上乗せする（I）。電力から熱モデルで必要な回転数を先読み（フィードフォワード）して足す。
+* 上乗せ（積分）は「先読みの不足分」= 外気温・季節・埃のずれを覚えている。休み中も捨てず、
+  熱モデルのファイルに保存して再起動後も引き継ぐ（外気温 37°C でも目標に戻るため）。
+* 温度の上がる側は遅らせずに見る。下がる側と電力の下がる側はゆっくり（往復負荷で回転を落としすぎない）。
 * 上限を超えたら即座に最大回転にする（ソフトとファームウェアのカーブの両方）。目標まで下がるまで保持。
-* 0%↔100% を往復する負荷に過敏に反応しない: 温度は「上げは速く・下げはゆっくり」の平滑、
-  電力は熱の時定数ほどの遅れで平らにし、回転数の上げ下げにも速さの上限を付ける。
-  その強さは 1 つの値「なめらかさ（秒）」で決める。
-* 最低回転数を守る。目標まで温度を使い切るので、回転は必要最低限になる。
+* 回転数の振れは気にしない（利用者の指示 2026-11-18: 温度の変動を小さくするほうを優先）。
 
-模擬（``Plant``）は学習済みの熱モデルから温度を計算し、自動調整とテストに使う。
+模擬（``Plant``）は学習済みの熱モデルから温度を計算し、テストに使う。
 """
 from __future__ import annotations
 
@@ -28,19 +24,16 @@ from app.monitoring.fan_pid import (
     COLD_ERROR_LIMIT_C, HOTSPOT_FF_LAG_S, LOOP_DEAD_TIME_S, ThermalModel, clamp, simc_gains,
 )
 
-# 平滑の内訳（なめらかさ S 秒に対する比）。根拠は fan_core の模擬と R9700 実測（docs/design-amd-smart-fan.md）
-PV_RISE_SHARE = 1 / 12      # 温度の上げ側の平滑: S=60 で 5 秒（PID の遅れを増やしすぎない）
-PV_FALL_SHARE = 1 / 2       # 温度の下げ側: S=60 で 30 秒
+# 平滑の内訳（なめらかさ S 秒に対する比）。根拠は R9700 実測（docs/design-amd-smart-fan.md）
+PV_FALL_SHARE = 1 / 2       # 温度の下げ側: S=60 で 30 秒（上げ側は遅らせない: PV_RISE_S）
+PV_RISE_S = 2.0             # 上げ側を S/12 秒遅らせたら、hotspot が 93〜95°C まで行き過ぎた（2026-11-18）
 POWER_RISE_S = 3.0          # 先読みの電力の上げ側は速く（休みから全力で hotspot が 10 秒台で上がるため）
 POWER_FALL_SHARE = 3 / 2    # 先読みの電力の下げ側: S=60 で 90 秒（短い休みで回転を落とさない）
 UP_SHARE = 1 / 4            # 回転の上げ: 最低→最大を S/4 秒（S=60 で 15 秒）
-DOWN_SHARE = 2.0            # 回転の下げ: 最大→最低を 2S 秒（S=60 で 2 分）。往復負荷では高めを保つ
+DOWN_SHARE = 2.0            # 回転の下げ: 最大→最低を 2S 秒（S=60 で 2 分）
 DEFAULT_SMOOTHING_S = 60.0
 EMERGENCY_HOLD_S = 15.0
-# 既定のマップ: 目標から何度下か → 目標での回転数に対する割合
-MAP_SHAPE = ((20.0, 0.0), (10.0, 0.45), (5.0, 0.75), (0.0, 1.0))
-MAP_DEFAULT_AT_TARGET = 60.0
-MODEL_EXTRA_PERCENT = 3.0
+INTEGRAL_RANGE = (-20.0, 50.0)   # 上乗せの範囲（%）。外気温 37°C で先読みより +15% ほど要る見込み
 
 
 def sensor_kind(sensor: dict) -> str:
@@ -57,56 +50,16 @@ def sensor_kind(sensor: dict) -> str:
 
 @dataclass
 class CoreSettings:
-    mode: str                         # "pid" | "map"
     limits_c: dict[str, float]        # センサーごとの上限温度
     margin_c: float = 5.0
     min_percent: float = 20.0
     max_percent: float = 100.0
     smoothing_s: float = DEFAULT_SMOOTHING_S
-    kp: float = 1.33
+    kp: float = 2.5
     ti: float = 50.0
-    # [(目標から何度下か, 回転数%)]。空なら熱モデルか既定値から作る
-    map_points: list[tuple[float, float]] = field(default_factory=list)
 
     def targets(self) -> dict[str, float]:
         return {sid: limit - self.margin_c for sid, limit in self.limits_c.items()}
-
-
-def default_map(model: ThermalModel | None, sensors: list[dict], settings: CoreSettings,
-                full_power_w: float | None) -> list[tuple[float, float]]:
-    """目標での回転数 = 電力上限いっぱいの負荷で目標に落ち着く回転数（熱モデル）＋少しの余裕。"""
-    at_target = MAP_DEFAULT_AT_TARGET
-    if model is not None and model.usable and full_power_w:
-        heat = max(1.0, full_power_w - (model.idle_power_w or 0.0))
-        need = settings.min_percent
-        for sensor in sensors:
-            sid = sensor["id"]
-            idle = model.idle_c.get(sid)
-            if idle is None or sid not in settings.limits_c:
-                continue
-            allowed = settings.targets()[sid] - idle
-            need = max(need, settings.max_percent if allowed <= 0 else
-                       model.fan_for(sid, allowed / heat, settings.min_percent, settings.max_percent))
-        at_target = need + MODEL_EXTRA_PERCENT
-    at_target = clamp(at_target, settings.min_percent, settings.max_percent)
-    return [(below, round(settings.min_percent + share * (at_target - settings.min_percent), 1))
-            for below, share in MAP_SHAPE]
-
-
-def map_percent(points: list[tuple[float, float]], below_c: float, settings: CoreSettings) -> float:
-    """目標から below_c 度下のときの回転数。目標を超えたら上限で最大になるよう直線で上げる。"""
-    pts = sorted(points, key=lambda p: -p[0])  # 遠い（冷たい）順
-    if below_c >= pts[0][0]:
-        return max(settings.min_percent, pts[0][1])
-    if below_c <= 0:
-        at_target = pts[-1][1]
-        over = min(1.0, -below_c / max(0.5, settings.margin_c))
-        return at_target + over * (settings.max_percent - at_target)
-    for (b0, p0), (b1, p1) in zip(pts, pts[1:]):
-        if b1 <= below_c <= b0:
-            share = (b0 - below_c) / max(1e-6, b0 - b1)
-            return p0 + share * (p1 - p0)
-    return pts[-1][1]
 
 
 class _Lag:
@@ -153,6 +106,7 @@ class Controller:
         self.emergency_until = -1.0
         self.emergency_active = False
         self.t = 0.0
+        self.integral_loaded = False
 
     def reset(self, start_percent: float | None = None) -> None:
         self.__init__()
@@ -196,9 +150,7 @@ class Controller:
                 over_limit = True
             if median(window) > targets[sid]:
                 raw_over_target = True
-            # マップは温度だけで決めるので、上がる側は遅らせない（遅らせると急な上昇に間に合わない）
-            rise_s = 2.0 if settings.mode == "map" else max(2.0, s * PV_RISE_SHARE)
-            filtered = self.pv.setdefault(sid, _Lag()).update(median(window), dt, rise_s, s * PV_FALL_SHARE)
+            filtered = self.pv.setdefault(sid, _Lag()).update(median(window), dt, PV_RISE_S, s * PV_FALL_SHARE)
             pv[sid] = filtered
             errors[sid] = filtered - targets[sid]
         governing = max(errors, key=errors.get) if errors else ""
@@ -215,39 +167,40 @@ class Controller:
             idle_power = (model.idle_power_w if model is not None and model.idle_power_w is not None else 0.0)
             smooth_power = self.power.update(float(power_w), dt, POWER_RISE_S, s * POWER_FALL_SHARE)
             heat = max(0.0, smooth_power - idle_power)
-        ff = p_term = 0.0
-        if settings.mode == "pid":
-            ff = self.feedforward(model, settings, sensors, heat)
-            e = max(error, -COLD_ERROR_LIMIT_C)
-            p_term = settings.kp * e
-            if error < -COLD_ERROR_LIMIT_C:
-                self.integral -= self.integral * min(1.0, dt / max(1.0, settings.ti))
-            else:
-                self.integral += settings.kp / max(1.0, settings.ti) * e * dt
-            self.integral = clamp(self.integral, -settings.max_percent, settings.max_percent)
-            wanted = ff + p_term + self.integral
-        else:
-            points = settings.map_points or default_map(model, sensors, settings, None)
-            wanted = map_percent(points, -error, settings)
-        wanted = clamp(wanted, settings.min_percent, settings.max_percent)
+        if not self.integral_loaded:
+            # 上乗せは熱モデルに保存してある（再起動・設定の変更をまたいで引き継ぐ）
+            self.integral = clamp(model.integral_percent, *INTEGRAL_RANGE) if model is not None else 0.0
+            self.integral_loaded = True
+        ff = self.feedforward(model, settings, sensors, heat)
+        e = max(error, -COLD_ERROR_LIMIT_C)
+        p_term = settings.kp * e
+        # 休み中（目標より COLD_ERROR_LIMIT_C 以上下）と緊急の最大回転の間は、上乗せを動かさない。
+        # 上乗せは「先読み（熱モデル）の不足分」を覚えているので、休むたびに捨てると次の全力のたびに
+        # 同じだけ行き過ぎる（R9700 実測 2026-11-18: 先読み 46% に対し必要 51%、捨てる版は 93〜95°C）
+        frozen = error < -COLD_ERROR_LIMIT_C or emergency
+        if not frozen:
+            self.integral = clamp(self.integral + settings.kp / max(1.0, settings.ti) * e * dt, *INTEGRAL_RANGE)
+        wanted = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
 
         if emergency:
             out = settings.max_percent
         elif self.out is None:
             out = wanted
         else:
-            # 上げは速く・下げはゆっくり。往復負荷で回転が上下しない
+            # 上げは速く・下げはゆっくり
             span = settings.max_percent - settings.min_percent
             up = span / (s * UP_SHARE) * dt
             down = span / (s * DOWN_SHARE) * dt
             out = min(wanted, self.out + up) if wanted > self.out else max(wanted, self.out - down)
-        if settings.mode == "pid":
-            # 逆算型のワインドアップ防止: 実際に出した値へ積分を寄せる
+        if not frozen:
+            # 逆算型のワインドアップ防止: 実際に出した値へ上乗せを寄せる
             v = ff + p_term + self.integral
             tt = max(dt, 0.5 * settings.ti)
-            self.integral = clamp(self.integral + dt / tt * (out - v), -settings.max_percent, settings.max_percent)
+            self.integral = clamp(self.integral + dt / tt * (out - v), *INTEGRAL_RANGE)
+        if model is not None:
+            model.integral_percent = self.integral
         self.out = out
-        return Step(out, settings.mode, governing, error, ff, p_term, self.integral, emergency, pv)
+        return Step(out, "pid", governing, error, ff, p_term, self.integral, emergency, pv)
 
 
 # ---- 模擬（熱モデルから温度を計算する） ----
@@ -339,9 +292,6 @@ def simulate(model: ThermalModel, settings: CoreSettings, sensors: list[dict], p
 # 試験の型: (名前, 種類, 周期秒)。0%↔100% の往復は 10 秒・30 秒・60 秒周期の半々
 TEST_PATTERNS = (("steady", "steady", 0.0), ("sq20", "square", 20.0), ("sq60", "square", 60.0),
                  ("sq120", "square", 120.0))
-SMOOTHING_CANDIDATES = (30.0, 45.0, 60.0, 90.0, 120.0, 180.0)
-# 往復負荷での回転の振れの許容（ポイント）。短い往復（10・30 秒ずつ）は抑え、1 分ずつの往復は多少追ってよい
-SWING_LIMITS = {"sq20": 10.0, "sq60": 10.0, "sq120": 20.0}
 
 
 def evaluate(model: ThermalModel, settings: CoreSettings, sensors: list[dict], full_w: float,
@@ -359,34 +309,23 @@ def evaluate(model: ThermalModel, settings: CoreSettings, sensors: list[dict], f
     return out
 
 
-def tune(model: ThermalModel, base: CoreSettings, sensors: list[dict], full_w: float) -> dict:
-    """熱モデルから PID の効き具合とマップを決め、なめらかさは模擬の試験で選ぶ。
+def pid_gains(model: ThermalModel) -> tuple[float, float]:
+    """熱モデルから PID の効き具合（Kp %/°C, Ti 秒）。SIMC で閉ループの時定数を遅れ時間と同じにする（強め）。
 
-    選び方: 上限を超えず・緊急の最大回転に入らず、往復負荷での回転の振れが SWING_LIMITS 以内のうち、
-    平均回転数がいちばん低いもの（最低限の回転）。どれも満たさなければ最も振れの小さいもの。
+    閉ループの時定数を熱の時定数の半分にした旧版（R9700 で Kp 1.33）は弱く、往復負荷で hotspot が
+    93〜95°C まで行き過ぎた。遅れ時間と同じ（Kp 2.5）で hotspot は全力中 90.0±0.5°C（実測 2026-11-18）。
     """
-    result: dict = {}
-    if model.gain_c_per_percent:
-        kp, ti = simc_gains(model.gain_c_per_percent, model.tau_s, LOOP_DEAD_TIME_S)
-    else:
-        kp, ti = base.kp, base.ti
-    result["kp"], result["ti"] = kp, ti
-    candidate = CoreSettings(**{**base.__dict__, "kp": kp, "ti": ti})
-    result["map_points"] = default_map(model, sensors, candidate, full_w)
-    trials = []
-    for smoothing in SMOOTHING_CANDIDATES:
-        trial = CoreSettings(**{**candidate.__dict__, "smoothing_s": smoothing,
-                                "map_points": result["map_points"]})
-        metrics = evaluate(model, trial, sensors, full_w)
-        swing = max(metrics[k]["fan_swing"] / limit for k, limit in SWING_LIMITS.items())
-        safe = not any(m["over_limit"] or m["emergency_steps"] for m in metrics.values())
-        mean = sum(m["fan_mean"] for m in metrics.values()) / len(metrics)
-        trials.append({"smoothing_s": smoothing, "swing_ratio": round(swing, 2), "safe": safe,
-                       "fan_mean": round(mean, 1), "headroom_c": min(m["headroom_c"] for m in metrics.values()),
-                       "swing": {k: metrics[k]["fan_swing"] for k in SWING_LIMITS}})
-    good = [t for t in trials if t["safe"] and t["swing_ratio"] <= 1.0]
-    best = min(good, key=lambda t: (t["fan_mean"], t["smoothing_s"])) if good else \
-        min(trials, key=lambda t: (not t["safe"], t["swing_ratio"]))
-    result["smoothing_s"] = best["smoothing_s"]
-    result["trials"] = trials
-    return result
+    if not model.gain_c_per_percent:
+        return CoreSettings.kp, CoreSettings.ti
+    return simc_gains(model.gain_c_per_percent, model.tau_s, LOOP_DEAD_TIME_S, lam=LOOP_DEAD_TIME_S)
+
+
+def tune(model: ThermalModel, base: CoreSettings, sensors: list[dict], full_w: float) -> dict:
+    """熱モデルから PID の効き具合を決め、模擬の試験の結果を添える（参考。値の選択には使わない:
+    模擬の hotspot は電力が入った瞬間に跳ねるだけで、実機の約 1 分かけた上昇を再現しないため）。"""
+    kp, ti = pid_gains(model)
+    trial = CoreSettings(**{**base.__dict__, "kp": kp, "ti": ti})
+    metrics = evaluate(model, trial, sensors, full_w)
+    return {"kp": kp, "ti": ti, "smoothing_s": base.smoothing_s,
+            "simulated": {name: {"peak_c": m["peak_c"], "fan_mean": m["fan_mean"],
+                                 "emergency_steps": m["emergency_steps"]} for name, m in metrics.items()}}

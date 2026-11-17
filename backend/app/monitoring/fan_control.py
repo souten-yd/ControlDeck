@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import data_dir
 from app.models_mgmt.amd_gpu import HELPER
-from app.monitoring import fan_core, fan_pid
+from app.monitoring import fan_core, fan_log, fan_pid
 
 logger = logging.getLogger("control_deck.fan_control")
 
@@ -47,28 +47,21 @@ class FanControlError(RuntimeError):
     pass
 
 
-class MapPoint(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    below_c: float = Field(ge=0.0, le=40.0, allow_inf_nan=False)   # 目標から何度下か
-    percent: float = Field(ge=0.0, le=100.0, allow_inf_nan=False)
-
-
 class FanSettings(BaseModel):
-    """利用者が決めるのはこれだけ。PID の効き具合とマップは自動調整が埋める（手でも直せる）。"""
-    # 旧版（4 方式・プリセット）の項目は読み捨てる。_load が上限温度などを引き継ぐ
+    """利用者が決めるのはこれだけ。PID の効き具合は自動調整が埋める（手でも直せる）。"""
+    # 旧版（4 方式・プリセット・温度マップ）の項目は読み捨てる。_load が上限温度などを引き継ぐ
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
     bdf: str | None = None
-    mode: Literal["pid", "map"] = "pid"
     # センサーごとの上限温度。これを超えたら最大回転。制御の目標は「上限 − マージン」
     limits_c: dict[str, int] = Field(default_factory=dict, max_length=16)
     margin_c: float = Field(default=5.0, ge=2.0, le=15.0, allow_inf_nan=False)
     min_percent: int = Field(default=20, ge=15, le=70)
     # 応答のなめらかさ（秒）。大きいほど 0%↔100% の往復負荷で回転が動かない
     smoothing_s: float = Field(default=60.0, ge=20.0, le=300.0, allow_inf_nan=False)
-    pid_kp: float = Field(default=1.33, ge=0.3, le=10.0, allow_inf_nan=False)
+    # 既定は R9700 の実測（2026-11-18、fan_core.pid_gains）。自動調整が GPU ごとに決め直す
+    pid_kp: float = Field(default=2.5, ge=0.3, le=10.0, allow_inf_nan=False)
     pid_ti: float = Field(default=50.0, ge=10.0, le=600.0, allow_inf_nan=False)
-    map_points: list[MapPoint] = Field(default_factory=list, max_length=8)
     # PC 起動直後: 保存した設定で制御する / GPU 標準の自動制御のまま
     startup_mode: Literal["apply_saved", "firmware"] = "apply_saved"
 
@@ -87,18 +80,6 @@ class FanSettings(BaseModel):
             raise ValueError("上限温度はtempN形式、50〜100°Cの整数にしてください")
         return values
 
-    @field_validator("map_points")
-    @classmethod
-    def valid_map(cls, points: list[MapPoint]) -> list[MapPoint]:
-        if points and len(points) < 2:
-            raise ValueError("温度マップは2点以上にしてください")
-        belows = [p.below_c for p in points]
-        if len(set(belows)) != len(belows):
-            raise ValueError("温度マップの温度が重複しています")
-        ordered = sorted(points, key=lambda p: -p.below_c)
-        if any(b.percent < a.percent for a, b in zip(ordered, ordered[1:])):
-            raise ValueError("温度マップは目標に近いほど回転数を上げてください")
-        return ordered
 
 
 _lock = threading.RLock()
@@ -126,7 +107,9 @@ _model = fan_pid.ThermalModel()
 _model_bdf: str | None = None
 _tracker = fan_pid.SteadyTracker()
 _last_model_save = 0.0
+_saved_integral = 0.0
 _last_passive = 0.0
+_last_log_prune = -1e9
 HISTORY_SECONDS = 3600
 _history: deque = deque(maxlen=int(HISTORY_SECONDS / INTERVAL))
 
@@ -136,22 +119,21 @@ def _setting_path() -> Path:
 
 
 def _migrate(document: dict) -> dict:
-    """旧版の設定から引き継ぐ: 目標温度→上限温度、方式、温度追従のマージン、PID の効き具合。"""
+    """旧版の設定から引き継ぐのは、有効/無効・GPU・最低回転数・起動時の扱い・温度追従のマージンだけ。
+
+    * 旧版の targets_c は「目標」だった（R9700: hotspot 90°C）。新しい版の limits_c は「上限」なので、
+      そのまま移すと目標が 5°C 下がる。引き継がず既定（hotspot 上限 95・目標 90°C、2026-11-17 利用者の指示）にする
+    * PID の効き具合も引き継がない（旧版の Kp は弱すぎた。R9700 で 1.33 → 2.5、2026-11-18 実測）
+    """
     if "limits_c" in document or not any(k in document for k in ("targets_c", "control_mode", "preset_id")):
         return document
-    old_mode = document.get("control_mode", "map")
-    migrated = {
+    old_mode = document.get("control_mode")
+    return {
         "enabled": document.get("enabled", False), "bdf": document.get("bdf"),
-        "mode": "pid" if old_mode in ("pid", "target") else "map",
-        "limits_c": document.get("targets_c") or {},
         "margin_c": float(document.get("temperature_margin_c", 5.0)) if old_mode == "target" else 5.0,
         "min_percent": max(15, int(document.get("min_percent", 20))),
         "startup_mode": document.get("startup_mode", "apply_saved"),
     }
-    for old, new in (("pid_kp", "pid_kp"), ("pid_ti", "pid_ti")):
-        if old in document:
-            migrated[new] = document[old]
-    return migrated
 
 
 def _load() -> FanSettings:
@@ -374,12 +356,41 @@ def save_model(bdf: str, model: fan_pid.ThermalModel) -> None:
         logger.warning("ファンの熱モデルを保存できません")
 
 
+def refit_from_log() -> dict:
+    """診断の記録（直近 2 日）から熱モデルと PID の効き具合を作り直して保存する（数秒。GPU は使わない）。
+
+    自動調整（30〜90 分）の代わり。上乗せ（積分）は 0 から学び直す（熱モデルが今の外気温に合ったため）。
+    """
+    global _model, _model_bdf
+    with _lock:
+        settings = _load()
+        device = _select(_devices(), settings.bdf or _active_bdf)
+        sensors = _validate(settings, device)
+        sensor_ids = {s["kind"]: s["id"] for s in sensors if s["kind"] in fan_log.KIND_COLUMN}
+        bdf = device["bdf"]
+        model = fan_pid.ThermalModel.from_json(load_model(bdf).to_json())
+        rows = fan_log.read(since=time.time() - fan_log.KEEP_DAYS * 86400)
+        changes = fan_log.refit(rows, model, sensor_ids, device["power_cap_w"])   # ValueError は呼び出し側へ
+        kp, ti = fan_core.pid_gains(model)
+        model.integral_percent = 0.0
+        save_model(bdf, model)
+        if _model_bdf == bdf:
+            _model = model
+            _controller.integral_loaded = False
+        _persist(settings.model_copy(update={"pid_kp": kp, "pid_ti": ti}))
+        logger.info("ファン制御を記録から作り直しました: %s Kp=%s Ti=%s", changes, kp, ti)
+        return {"changes": changes, "pid_kp": kp, "pid_ti": ti, "minutes": len(rows)}
+
+
+def log_summary(hours: float = 24.0) -> dict:
+    return fan_log.summary(fan_log.read(since=time.time() - hours * 3600))
+
+
 def core_settings(settings: FanSettings, sensors: list[dict], maximum: float) -> fan_core.CoreSettings:
     return fan_core.CoreSettings(
-        mode=settings.mode, limits_c={s["id"]: float(s["limit_c"]) for s in sensors},
+        limits_c={s["id"]: float(s["limit_c"]) for s in sensors},
         margin_c=settings.margin_c, min_percent=float(settings.min_percent), max_percent=float(maximum),
         smoothing_s=settings.smoothing_s, kp=settings.pid_kp, ti=settings.pid_ti,
-        map_points=[(p.below_c, p.percent) for p in settings.map_points],
     )
 
 
@@ -446,6 +457,7 @@ def _retry_reset(now: float) -> None:
 def tick() -> None:
     global _active_bdf, _last_curve, _applied_percent, _state, _error, _last_sample
     global _sensor_ids, _zero_rpm_checks, _last_tick_at, _model, _model_bdf, _tracker, _last_model_save
+    global _saved_integral, _last_log_prune
     global _last_passive
     from app.monitoring import fan_tune
 
@@ -474,6 +486,7 @@ def tick() -> None:
                 raise FanControlError("制御中に温度センサー構成が変化しました")
             if _model_bdf != bdf:
                 _model, _model_bdf = load_model(bdf), bdf
+                _saved_integral = _model.integral_percent
                 _tracker = fan_pid.SteadyTracker()
                 _controller.reset()
             maximum = device["_range"][3]
@@ -484,6 +497,9 @@ def tick() -> None:
                 save_model(bdf, _model)
                 _last_model_save = now
             step = _controller.step(sensors, device["power_w"], INTERVAL, core, _model)
+            if abs(_model.integral_percent - _saved_integral) >= 1.0 and now - _last_model_save >= 300:
+                save_model(bdf, _model)
+                _saved_integral, _last_model_save = _model.integral_percent, now
             # 自動調整の最中は、調整役が回転数を決める（安全の判定は step と同じく生の温度）
             held = fan_tune.hold_percent(now, device, sensors, core, _model, _tracker, step)
             wanted = step.percent if held is None or step.emergency else held
@@ -517,9 +533,17 @@ def tick() -> None:
                 "limits": {k: v["limit_c"] for k, v in by_kind.items()},
                 "targets": {k: v["target_c"] for k, v in by_kind.items()},
                 "fan_percent": percent, "rpm": rpm, "power_w": device["power_w"],
-                "feedforward_percent": round(step.feedforward, 1) if settings.mode == "pid" else None,
+                "feedforward_percent": round(step.feedforward, 1),
                 "emergency": step.emergency, "tuning": held is not None,
             })
+            # 診断用の記録（1 分ごとのまとめ、直近 2 日）。逸脱の検知と、記録からの作り直しに使う
+            fan_log.add(time.time(), temps={k: v["value_c"] for k, v in by_kind.items()},
+                        targets={k: v["target_c"] for k, v in by_kind.items()}, power_w=device["power_w"],
+                        rpm=rpm, percent=percent, ff=step.feedforward, integral=step.i_term,
+                        error_c=step.error_c, emergency=step.emergency, tuning=held is not None)
+            if now - _last_log_prune >= 3600:
+                fan_log.prune()
+                _last_log_prune = now
         except Exception as exc:  # noqa: BLE001 - sysfs や想定外の失敗でも安全側へ
             _failure(exc, bdf)
 
@@ -597,6 +621,7 @@ def status() -> dict:
                 "usable": model.usable, "idle_c": model.idle_c, "idle_power_w": model.idle_power_w,
                 "tau_s": model.tau_s, "points": len(model.points),
                 "hotspot_jump_c_per_w": model.hotspot_jump_c_per_w,
+                "integral_percent": round(model.integral_percent, 1),
             } if model is not None else None,
             "autotune": fan_tune.snapshot(),
             "warning": "上限温度は保証値ではありません。CPU・マザーボードのファンは制御しません。",

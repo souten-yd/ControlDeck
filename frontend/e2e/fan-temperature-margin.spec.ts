@@ -1,8 +1,10 @@
-// 目的: ファン制御 v2 の設定画面で、利用者が決める最小限の値（上限温度・マージン・方式・温度マップ）を
-//       編集して保存でき、自動調整を確認してから始められること。iPhone 幅（320px）でも横にはみ出さないこと。
-// 根拠: 2026-11-17 利用者の依頼「設定が多すぎて分からない・入れ子・プリセットが謎」で画面を作り直した
-//       （4 方式・プリセット・入れ子を撤去し、PID / 温度マップの 2 方式と 1 画面に）。旧画面の
-//       「プリセットの保存・削除」と「温度追従のマージン」の確認はこのファイルで置き換えた。
+// 目的: ファン制御 v2 の設定画面で、利用者が決める最小限の値（上限温度・マージン）を編集して保存でき、
+//       方式の選択・温度マップ・プリセットが無く（PID だけ）、推移に各部の温度とファンの回転数（rpm）が出て、
+//       自動調整を確認してから始められること。iPhone 幅（320px）でも横にはみ出さないこと。
+// 根拠: 2026-11-17 利用者の依頼「設定が多すぎて分からない・入れ子・プリセットが謎」で画面を作り直し、
+//       2026-11-18 実機の比較で PID だけを残した（「いい方式のみ採用」「調整していないプリセットは消す。
+//       デフォルトは残す」「回転数と各部の温度のグラフを出す」）。旧画面の「プリセットの保存・削除」と
+//       「温度追従のマージン」の確認はこのファイルで置き換えた。
 //       API は page.route で模擬する（実機の GPU とファンを動かさない）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
@@ -17,8 +19,8 @@ function snapshot(overrides: Record<string, unknown> = {}) {
   ];
   return {
     settings: {
-      enabled: true, bdf: BDF, mode: "pid", limits_c: { temp1: 85, temp2: 95, temp3: 90 }, margin_c: 5,
-      min_percent: 20, smoothing_s: 60, pid_kp: 1.33, pid_ti: 50, map_points: [], startup_mode: "apply_saved",
+      enabled: true, bdf: BDF, limits_c: { temp1: 85, temp2: 95, temp3: 90 }, margin_c: 5,
+      min_percent: 20, smoothing_s: 60, pid_kp: 2.5, pid_ti: 50, startup_mode: "apply_saved",
     },
     devices: [{ bdf: BDF, vram_bytes: 32 * 2 ** 30, sensors, fan_rpm: 1500, curve_supported: true,
       power_w: 180, power_cap_w: 300, restore_supported: false,
@@ -28,7 +30,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
       bdf: BDF, fan_rpm: 1500, fan_percent: 42, power_w: 180, governing_sensor: "temp2",
       sensors: sensors.map((s) => ({ ...s, limit_c: s.default_limit_c, target_c: s.default_limit_c - 5,
         headroom_c: s.default_limit_c - s.value_c })),
-      control: { output_percent: 42, mode: "pid", governing_sensor: "temp2", error_c: -18, feedforward_percent: 30,
+      control: { output_percent: 42, governing_sensor: "temp2", error_c: -18, feedforward_percent: 30,
         p_percent: 4, i_percent: 8, emergency: false, pv_c: { temp2: 72 } },
     },
     poll_interval_seconds: 3, model: null,
@@ -38,8 +40,30 @@ function snapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** 直近 10 分の記録: 30 秒ずつの全力と休み。回転数は 900〜2800 rpm。 */
+function history() {
+  const now = Date.now() / 1000;
+  return Array.from({ length: 200 }, (_, i) => {
+    const on = Math.floor(i / 10) % 2 === 0;
+    return {
+      t: now - (200 - i) * 3,
+      temps: { junction: on ? 88 : 60, mem: on ? 64 : 50, edge: on ? 60 : 48 },
+      smoothed_temps: { junction: on ? 88 : 70, mem: on ? 64 : 55, edge: on ? 60 : 52 },
+      limits: { junction: 95, mem: 90, edge: 85 }, targets: { junction: 90, mem: 85, edge: 80 },
+      fan_percent: on ? 52 : 25, rpm: on ? 2800 : 900, power_w: on ? 210 : 8,
+    };
+  });
+}
+
 /** GET はいまの状態、PUT は送られた設定をそのまま保存したことにする。history は空で返す。 */
-async function mockFanApi(page: Page, state: { status: any; saved?: any; tune?: any }) {
+async function mockFanApi(page: Page, state: { status: any; saved?: any; tune?: any; refit?: number }) {
+  await page.route("**/api/v1/system/fan-control/log-summary**", (route) => route.fulfill({
+    json: { minutes: 600, deviations: 4, deviation_seconds: 300, emergency_minutes: 1, peak_c: { hot: 95, mem: 66 } } }));
+  await page.route("**/api/v1/system/fan-control/refit", (route) => {
+    state.refit = (state.refit ?? 0) + 1;
+    return route.fulfill({ json: { pid_kp: 2.4, pid_ti: 48, minutes: 600,
+      changes: { points: [{ fan: 50, count: 3 }, { fan: 60, count: 2 }] } } });
+  });
   await page.route("**/api/v1/system/fan-control", async (route) => {
     if (route.request().method() === "PUT") {
       state.saved = route.request().postDataJSON();
@@ -47,7 +71,7 @@ async function mockFanApi(page: Page, state: { status: any; saved?: any; tune?: 
     }
     await route.fulfill({ json: state.status });
   });
-  await page.route("**/api/v1/system/fan-control/history**", (route) => route.fulfill({ json: { samples: [] } }));
+  await page.route("**/api/v1/system/fan-control/history**", (route) => route.fulfill({ json: { samples: history() } }));
   await page.route("**/api/v1/system/fan-control/autotune", async (route) => {
     state.tune = route.request().postDataJSON();
     state.status = { ...state.status, autotune: { phase: "idle", message: "アイドルの温度を測っています",
@@ -94,12 +118,12 @@ for (const width of [320, 1280]) {
     await saveButton.click();
     await expect.poll(() => state.saved?.margin_c).toBe(7.5);
     expect(state.saved.limits_c.temp3).toBe(88);
-    expect(state.saved.mode).toBe("pid");
+    expect(state.saved).not.toHaveProperty("mode");
     await expect(saveButton).toHaveCount(0);
   });
 }
 
-test("temperature map is shown only in map mode and its points are saved in order", async ({ page, context }) => {
+test("only the PID control is offered and the history shows each temperature and the fan rpm", async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 844 });
   await establishSession(page, context);
@@ -107,34 +131,37 @@ test("temperature map is shown only in map mode and its points are saved in orde
   await mockFanApi(page, state);
   await page.goto("/settings/hardware");
 
-  // PID のときは効き具合（Kp・Ti）だけ、マップは無い
+  // 方式の選択・温度マップは無い。効き具合（Kp・Ti）だけ
   await expect(page.getByTestId("fan-pid-gains")).toBeVisible();
-  await expect(page.getByTestId("fan-map")).toHaveCount(0);
+  await expect(page.getByRole("radiogroup", { name: "制御の方式" })).toHaveCount(0);
+  await expect(page.getByText(/温度マップ/)).toHaveCount(0);
+  // デフォルト（GPU 標準）は起動時の動作として残る
+  await expect(page.getByRole("radio", { name: /GPU標準のまま（デフォルト）/ })).toBeVisible();
 
-  const mapMode = page.getByRole("radio", { name: /^温度マップ/ });
-  expect((await mapMode.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-  await mapMode.click();
-  await expect(mapMode).toHaveAttribute("aria-checked", "true");
-  await expect(page.getByTestId("fan-pid-gains")).toHaveCount(0);
-  const map = page.getByTestId("fan-map");
-  await expect(map.getByRole("img", { name: /温度マップ/ })).toBeVisible();
-  // 自動調整前は既定の 4 点（目標 90°C から 20・10・5・0°C 下）
-  await expect(map.getByRole("spinbutton", { name: /の温度$/ })).toHaveCount(4);
-  await expect(map.getByRole("spinbutton", { name: "点1の温度" })).toHaveValue("70");
-
-  // 回転を下げすぎると（温度が高いほど低い）保存できない
-  await map.getByRole("spinbutton", { name: "点4の回転" }).fill("10");
-  await expect(map.getByRole("alert")).toContainText("回転を同じか高く");
-  await expect(page.getByRole("button", { name: "保存して適用" })).toBeDisabled();
-  await map.getByRole("spinbutton", { name: "点4の回転" }).fill("65");
-  await expect(map.getByRole("alert")).toHaveCount(0);
+  // 推移: 温度と回転数（rpm）の 2 段
+  const chart = page.getByRole("region", { name: "直近の推移" });
+  await expect(chart.getByRole("img", { name: /温度の推移/ })).toBeVisible();
+  await expect(chart.getByRole("img", { name: /ファンの回転数（rpm）の推移/ })).toBeVisible();
+  await expect(chart.getByText(/ファン 900 rpm/)).toBeVisible();   // 最新（休み）の読み取り
+  await expect(chart.getByText("3k")).toBeVisible();     // 縦軸は 1000 rpm 単位で切り上げ
   await noOverflow(page);
+});
 
-  await page.getByRole("button", { name: "保存して適用" }).click();
-  await expect.poll(() => state.saved?.mode).toBe("map");
-  expect(state.saved.map_points).toHaveLength(4);
-  expect(state.saved.map_points[0].below_c).toBe(20);
-  expect(state.saved.map_points[3]).toEqual({ below_c: 0, percent: 65 });
+test("deviations from the log are shown and the controller is rebuilt from the log in one click", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await establishSession(page, context);
+  const state: any = { status: snapshot() };
+  await mockFanApi(page, state);
+  await page.goto("/settings/hardware");
+
+  const section = page.getByRole("region", { name: "記録から作り直す" });
+  await expect(section.getByRole("status")).toContainText("目標超え 4 回・緊急の最大回転 1 分");
+  await expect(section.getByRole("status")).toContainText("作り直しをおすすめします");
+  await section.getByRole("button", { name: "記録から作り直す" }).click();
+  await expect.poll(() => state.refit).toBe(1);
+  await expect(page.getByText(/記録から作り直しました（Kp 2.4・Ti 48 秒・測れた回転 50%・60%）/)).toBeVisible();
+  await noOverflow(page);
 });
 
 test("auto tuning asks for confirmation, then shows its stage and a cancel button", async ({ page, context }) => {

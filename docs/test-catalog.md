@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 164 ファイル、1442 テスト（目的の未記入 93 ファイル）
+- backend: 164 ファイル、1443 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、137 テスト
 
 ## backend（backend/tests）
@@ -738,9 +738,8 @@
 
 - `test_curve_is_flat_to_the_hotspot_limit_then_full` — ファームウェアのカーブ: 上限までは制御の出力で一定、上限 +1°C で最大。アプリが止まっても上限での最大は残る。
 - `test_over_the_limit_goes_to_full_speed_at_once` — 上限を超えたら、なめらかさの上限を待たずに最大回転（どの方式でも）。
-- `test_old_settings_are_carried_over` — 旧版の設定（本番の curve_r9700・温度追従）から、上限温度・方式・マージン・PID の効き具合を引き継ぐ。
-- `test_map_points_must_rise_toward_the_target`
-- `test_switching_mode_keeps_the_fan_speed` — 方式を切り替えても回転数は今の値から続く（段差を作らない）。
+- `test_old_settings_are_carried_over` — 旧版の設定（本番の curve_r9700・温度追従）から引き継ぐのは有効/無効・GPU・最低回転・マージンだけ。
+- `test_margin_below_two_degrees_is_rejected`
 - `test_history_records_limits_targets_and_fan`
 - `test_autotune_requires_control_and_an_llm`
 - `test_autotune_cancel_during_verify_restores_settings_and_stops_load` — 確認のために仮に保存した値は、中止したら元に戻る。負荷役も止める。
@@ -768,13 +767,15 @@
 
 ### backend/tests/test_fan_core.py
 
-目的: ファン制御 v2 の本体（fan_core）のテスト。 目的: 2 方式（PID＋電力の先読み / 温度マップ）が、利用者の要件どおりに動くことを模擬で確かめる。 - 休みから急に全力: 上限を超えず、最大回転に跳ねない（マージンの範囲で止まる） - 0%↔100% の往復負荷: 回転が往復を追いかけない - 上限を超えたら即座に最大回転 - 自動調整は上限を超えない値のうち、回転が最も低いものを選ぶ 根拠: 2026-11-17 利用者の指示。熱モデルは R9700 の実測（data/amd-fan-model.json、210 W 上限）。
+目的: ファン制御 v2 の本体（fan_core）のテスト。 目的: PID（＋電力の先読み）が、利用者の要件どおりに動くことを模擬と単体の入力で確かめる。 - 休みから急に全力: 上限を超えず、緊急の最大回転に入らない - 上限を超えたら即座に最大回転。目標まで下がるまで保持 - 温度の上がりを遅らせずに見る（遅らせた版は実機で 93〜95°C まで行き過ぎた） - 上乗せ（積分）は休み中・緊急中に動かさず、熱モデルへ保存して再起動後も引き継ぐ - 外気温が 17°C 上がっても（冬に学んだ熱モデルのまま）、上乗せで目標に戻り上限を超えない 根拠: 2026-11-17・18 利用者の指示（温度マップは外し PID だけ、回転の振れは気にせず温度を一定に、 外気温 37°C まで）。熱モデルは R9700 の実測（data/amd-fan-model.json、210 W 上限）。
 
-- `test_sudden_full_load_stays_inside_the_margin` — 休みから急に全力でも、上限を超えず緊急の最大回転に入らない。
-- `test_square_load_does_not_drive_the_fan_back_and_forth` — 10 秒ずつの 0%↔100% を続けても、回転の振れは 10 ポイント以内。
+- `test_sudden_full_load_stays_inside_the_limit` — 休みから急に全力でも、上限を超えず緊急の最大回転に入らない。
 - `test_over_the_limit_is_full_speed_until_back_at_the_target`
-- `test_map_shape_min_far_from_target_and_full_at_the_limit`
-- `test_tune_picks_the_lowest_fan_that_is_safe_and_calm`
+- `test_rising_temperature_is_seen_without_delay` — 上がる温度は遅らせない: 中央値の窓（3 回）がそろえば誤差に出る。下がる側だけゆっくり。
+- `test_integral_is_kept_while_idle_and_during_an_emergency` — 上乗せ（先読みの不足分）は、休み中と緊急の最大回転の間に動かさない。
+- `test_integral_is_saved_in_the_model_and_restored_after_a_restart`
+- `test_hot_summer_with_a_winter_model_stays_near_the_target` — 外気温が 17°C 上がっても（熱モデルは冬のまま）、上乗せで目標近くに戻り、上限を超えない。
+- `test_tune_uses_the_strong_simc_gains` — 自動調整の効き具合は、閉ループの時定数を遅れ時間と同じにした SIMC（R9700 で Kp 約 2.5）。
 - `test_without_a_thermal_model_the_pid_still_follows_the_target` — 熱モデルがまだ無い（先読みなし）でも、PI だけで目標へ向かって回転を上げる。
 
 ### backend/tests/test_fan_pid.py

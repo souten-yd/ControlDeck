@@ -1,13 +1,12 @@
-"""ファン制御の自動調整（2 方式の両方の値を決める）。
+"""ファン制御の自動調整（PID の効き具合を決める）。
 
 GPU に自分で全力の負荷（電力上限いっぱい）をかけて、次の順に進む（2026-11-17 利用者の指示）。
 
 1. ``idle``: 負荷なしで温度が落ち着くのを待ち、アイドルの温度と電力を測る
 2. ``jump``: 全力にした直後の hotspot の跳ね（°C/W）を測る
 3. ``stairs``: 全力のまま回転数を 70% から 10% ずつ下げ、各段で温度が落ち着いた点を熱モデルにする。
-   目標（上限 − マージン）の手前で止める。ここで PID の効き具合（SIMC）が決まる
-4. ``simulate``: 熱モデルの模擬で、なめらかさと温度マップを選ぶ（fan_core.tune）
-5. ``verify``: 決めた値で実際に 0%↔100% の往復（10 秒ずつ・30 秒ずつ）と全力をかけ、上限に近づかないか、
+   目標（上限 − マージン）の手前で止める。ここで PID の効き具合（fan_core.pid_gains）が決まる
+4. ``verify``: 決めた値で実際に 0%↔100% の往復（10 秒ずつ・30 秒ずつ）と全力をかけ、上限に近づかないか、
    緊急の最大回転に入らないかを確かめる。近づいたらマージンを 1°C 広げてやり直す（2 回まで）
 
 負荷は実際に使う LLM に、毎回同じ文言で長文を書かせる（行列計算だけの負荷とは温度の分布が違う）。
@@ -32,7 +31,7 @@ STAIRS_START_PERCENT = 70
 VERIFY_PATTERNS = (("sq20", 10.0, 10.0, 120.0), ("sq60", 30.0, 30.0, 180.0), ("steady", 0.0, 0.0, 120.0))
 VERIFY_HEADROOM_C = 1.0       # 上限まで最低これだけ残す
 MAX_MARGIN_RAISES = 2
-# 階段（最大 6 段 × 5 分）と確認（2 方式 × 7 分）に足りるよう、十分に取る
+# 階段（最大 6 段 × 5 分）と確認（7 分、マージンを広げてやり直す分も）に足りるよう、十分に取る
 TOTAL_MAX_SECONDS = 120 * 60.0
 
 
@@ -46,7 +45,6 @@ class _Tune:
     stairs: fan_pid.AutoTune = field(default_factory=fan_pid.AutoTune)
     jump_before: float | None = None
     result: dict | None = None
-    verify_mode: str = ""
     verify_index: int = 0
     verify_since: float = 0.0
     verify_log: list = field(default_factory=list)
@@ -59,8 +57,6 @@ class _Tune:
 
 
 _tune = _Tune()
-_load_proc: subprocess.Popen | None = None
-_load_paused = False
 
 
 # ---- 負荷役（LLM に長文を書かせる） ----
@@ -281,35 +277,30 @@ def _advance(now, device, sensors, core, model, tracker, step) -> float | None:
         fan_control.save_model(device["bdf"], model)
         found = fan_core.tune(model, core, sensors, device["power_cap_w"] or power or 200.0)
         _tune.result = {"pid_kp": found["kp"], "pid_ti": found["ti"], "smoothing_s": found["smoothing_s"],
-                        "map_points": [{"below_c": b, "percent": p} for b, p in found["map_points"]],
-                        "margin_c": core.margin_c, "simulated": found["trials"]}
-        _start_verify(now, "pid")
+                        "margin_c": core.margin_c, "simulated": found["simulated"]}
+        _start_verify(now)
         return None
     if _tune.phase == "verify":
         return _verify(now, sensors, core, step, device)
     return None
 
 
-def _start_verify(now: float, mode: str) -> None:
-    _tune.verify_mode, _tune.verify_index, _tune.verify_since = mode, 0, now
+def _start_verify(now: float) -> None:
+    _tune.verify_index, _tune.verify_since = 0, now
     _tune.verify_peak, _tune.verify_emergency, _tune.verify_fan = {}, False, []
-    label = "PID" if mode == "pid" else "温度マップ"
-    _set("verify", f"{label}で 0%↔100% の往復を試しています（10 秒ずつ）", now, None)
+    _set("verify", "決めた値で 0%↔100% の往復を試しています（10 秒ずつ）", now, None)
     # 試すのは決めた値。tick は保存された設定で動くので、ここで仮に保存する
-    _apply_result(mode, final=False)
+    _apply_result()
 
 
-def _apply_result(mode: str, *, final: bool) -> None:
+def _apply_result() -> None:
     from app.monitoring import fan_control
 
     result = _tune.result or {}
     settings = fan_control._load()
-    update = {"pid_kp": result["pid_kp"], "pid_ti": result["pid_ti"], "smoothing_s": result["smoothing_s"],
-              "map_points": [fan_control.MapPoint(**p) for p in result["map_points"]],
-              "margin_c": result["margin_c"]}
-    if not final:
-        update["mode"] = mode
-    fan_control._persist(settings.model_copy(update=update))
+    fan_control._persist(settings.model_copy(update={
+        "pid_kp": result["pid_kp"], "pid_ti": result["pid_ti"], "smoothing_s": result["smoothing_s"],
+        "margin_c": result["margin_c"]}))
 
 
 def _verify(now, sensors, core, step, device) -> float | None:
@@ -328,7 +319,7 @@ def _verify(now, sensors, core, step, device) -> float | None:
         return None
     swing = (max(_tune.verify_fan) - min(_tune.verify_fan)) if _tune.verify_fan else 0.0
     headroom = min(core.limits_c[sid] - peak for sid, peak in _tune.verify_peak.items() if sid in core.limits_c)
-    _tune.verify_log.append({"mode": _tune.verify_mode, "pattern": name, "headroom_c": round(headroom, 1),
+    _tune.verify_log.append({"pattern": name, "headroom_c": round(headroom, 1),
                              "fan_swing": round(swing, 1), "emergency": _tune.verify_emergency,
                              "margin_c": core.margin_c})
     if _tune.verify_emergency or headroom < VERIFY_HEADROOM_C:
@@ -337,19 +328,15 @@ def _verify(now, sensors, core, step, device) -> float | None:
             return None
         _tune.margin_raises += 1
         _tune.result["margin_c"] = round(core.margin_c + 1.0, 1)
-        _start_verify(now, _tune.verify_mode)
+        _start_verify(now)
         _tune.message += f"（上限に近づいたため、マージンを {_tune.result['margin_c']}°C にしてやり直し）"
         return None
     _tune.verify_index += 1
     _tune.verify_since, _tune.verify_peak, _tune.verify_emergency, _tune.verify_fan = now, {}, False, []
     if _tune.verify_index < len(VERIFY_PATTERNS):
-        label = "PID" if _tune.verify_mode == "pid" else "温度マップ"
         nxt = VERIFY_PATTERNS[_tune.verify_index]
-        _tune.message = (f"{label}で 0%↔100% の往復を試しています（{nxt[1]:.0f} 秒ずつ）" if nxt[1]
-                         else f"{label}で全力を続けています")
-        return None
-    if _tune.verify_mode == "pid":
-        _start_verify(now, "map")
+        _tune.message = (f"決めた値で 0%↔100% の往復を試しています（{nxt[1]:.0f} 秒ずつ）" if nxt[1]
+                         else "決めた値で全力を続けています")
         return None
     _finish(now)
     return None
@@ -360,10 +347,7 @@ def _finish(now: float) -> None:
 
     stop_load()
     _tune.result["verified"] = _tune.verify_log
-    original_mode = (_tune.backup or {}).get("mode", "pid")
-    settings = fan_control._load()
-    fan_control._persist(settings.model_copy(update={"mode": original_mode}))
-    _apply_result(original_mode, final=True)
-    _set("done", "調整が完了しました。PID の効き具合・なめらかさ・温度マップを保存しました", now, None)
+    _apply_result()
+    _set("done", "調整が完了しました。PID の効き具合を保存しました", now, None)
     _tune.phase = "done"
 

@@ -96,12 +96,15 @@ class ThermalModel:
     tuned: dict | None = None
     # 電力が入った瞬間の hotspot の跳ね（°C/W）。自動調整で測る（fan_core.Plant が使う）
     hotspot_jump_c_per_w: float | None = None
+    # PID の上乗せ（積分、%）= 先読みの不足分（外気温・季節・埃）。再起動しても引き継ぐ（fan_core）
+    integral_percent: float = 0.0
 
     def to_json(self) -> dict:
         return {"idle_c": self.idle_c, "idle_power_w": self.idle_power_w,
                 "points": self.points, "tau_s": self.tau_s,
                 "gain_c_per_percent": self.gain_c_per_percent, "tuned": self.tuned,
-                "hotspot_jump_c_per_w": self.hotspot_jump_c_per_w}
+                "hotspot_jump_c_per_w": self.hotspot_jump_c_per_w,
+                "integral_percent": round(self.integral_percent, 2)}
 
     @classmethod
     def from_json(cls, data: dict) -> "ThermalModel":
@@ -125,6 +128,8 @@ class ThermalModel:
             model.tuned = data.get("tuned") if isinstance(data.get("tuned"), dict) else None
             jump = data.get("hotspot_jump_c_per_w")
             model.hotspot_jump_c_per_w = None if jump is None else clamp(float(jump), 0.0, 1.0)
+            integral = float(data.get("integral_percent") or 0.0)
+            model.integral_percent = clamp(integral, -20.0, 50.0) if math.isfinite(integral) else 0.0
         except (KeyError, TypeError, ValueError):
             return cls()
         return model
@@ -173,13 +178,14 @@ class ThermalModel:
         return clamp(f1 + (r1 - r_required) * (f1 - f0) / (r0 - r1), minimum, maximum)
 
 
-def simc_gains(gain_c_per_percent: float, tau_s: float, dead_time_s: float = LOOP_DEAD_TIME_S) -> tuple[float, float]:
+def simc_gains(gain_c_per_percent: float, tau_s: float, dead_time_s: float = LOOP_DEAD_TIME_S,
+               lam: float | None = None) -> tuple[float, float]:
     """SIMC (Skogestad) PI tuning for a first-order-plus-dead-time plant.
     lambda = tau/2: calm without a lasting offset. With lambda = tau the
     R9700 hotspot sat 1–2°C above its target for minutes (Kp 0.77).
     Returns (Kp in %/°C, Ti in s)."""
     k = max(0.02, abs(gain_c_per_percent))
-    lam = max(tau_s / 2, dead_time_s)
+    lam = max(tau_s / 2, dead_time_s) if lam is None else max(1.0, lam)
     kp = tau_s / (k * (lam + dead_time_s))
     ti = min(tau_s, 4 * (lam + dead_time_s))
     return round(clamp(kp, *KP_RANGE), 2), round(clamp(ti, *TI_RANGE), 1)

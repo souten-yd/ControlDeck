@@ -1,4 +1,4 @@
-/** ファン制御の画面のグラフ 2 つ（直近の推移・温度マップ）。外部のグラフ部品は使わず SVG で描く。 */
+/** ファン制御の画面のグラフ（直近の推移: 各部の温度とファンの回転数）。外部のグラフ部品は使わず SVG で描く。 */
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -47,8 +47,8 @@ function clock(t: number) {
   return new Date(t * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-/** 温度とファン回転の推移。記録はサーバーが常時行い、ここでは画面が見えている間だけ差分を取りに行く。
- *  温度とファン%は単位が違うので、軸を共有せず上下 2 段に分ける。 */
+/** 温度とファンの回転数（rpm）の推移。記録はサーバーが常時行い、ここでは画面が見えている間だけ差分を取りに行く。
+ *  温度と回転数は単位が違うので、軸を共有せず上下 2 段に分ける（2026-11-18 利用者の指示: 回転数と各部の温度を出す）。 */
 export function FanHistoryChart() {
   const visible = usePageVisible();
   const [minutes, setMinutes] = useState<(typeof RANGES)[number]>(10);
@@ -90,8 +90,11 @@ export function FanHistoryChart() {
   const hi = values.length ? Math.ceil((Math.max(...values) + 3) / 10) * 10 : 100;
   const TT = 8, TB = 128;
   const yT = (c: number) => TB - (TB - TT) * ((Math.min(hi, Math.max(lo, c)) - lo) / (hi - lo || 1));
+  // 回転数の縦軸: 0 から、見えている最大を 1000 rpm 単位で切り上げたところまで
+  const rpms = shown.map((s) => s.rpm).filter((v): v is number => v != null);
+  const rpmTop = Math.max(1000, Math.ceil((rpms.length ? Math.max(...rpms) : 0) / 1000) * 1000);
   const FT = 6, FB = 60;
-  const yF = (p: number) => FB - (FB - FT) * (Math.min(100, Math.max(0, p)) / 100);
+  const yF = (rpm: number) => FB - (FB - FT) * (Math.min(rpmTop, Math.max(0, rpm)) / rpmTop);
 
   const path = (pick: (s: Sample) => number | null | undefined, y: (v: number) => number) => {
     let d = "";
@@ -104,9 +107,9 @@ export function FanHistoryChart() {
     }
     return d;
   };
-  const fanLine = path((s) => s.fan_percent, yF);
-  const firstFan = shown.find((s) => s.fan_percent != null);
-  const lastFan = [...shown].reverse().find((s) => s.fan_percent != null);
+  const fanLine = path((s) => s.rpm, yF);
+  const firstFan = shown.find((s) => s.rpm != null);
+  const lastFan = [...shown].reverse().find((s) => s.rpm != null);
   const fanArea = fanLine && firstFan && lastFan
     ? `${fanLine}L${x(lastFan.t).toFixed(1)} ${FB}L${x(firstFan.t).toFixed(1)} ${FB}Z` : "";
 
@@ -158,7 +161,7 @@ export function FanHistoryChart() {
               <span className="text-zinc-400">（実測 {focus.temps[kind]!.toFixed(0)}）</span>
             </span>
           ))}
-          <span className="mr-2">ファン {focus.fan_percent ?? "—"}%{focus.rpm != null && `（${focus.rpm} rpm）`}</span>
+          <span className="mr-2">ファン {focus.rpm != null ? `${focus.rpm.toLocaleString()} rpm` : "—"}{focus.fan_percent != null && `（${focus.fan_percent}%）`}</span>
           {focus.power_w != null && <span className="mr-2">電力 {Math.round(focus.power_w)} W</span>}
           {focus.emergency && <span className="mr-2 font-semibold text-red-600 dark:text-red-400">上限超え・最大回転</span>}
           {focus.tuning && <span className="text-accent-600 dark:text-accent-400">自動調整中</span>}
@@ -196,11 +199,11 @@ export function FanHistoryChart() {
       </svg>
 
       <svg viewBox={`0 0 ${W} 66`} role="img" className="w-full touch-pan-y select-none text-zinc-500" {...handlers}
-        aria-label={`ファン回転（%）の推移（直近${minutes}分）。赤い印は上限を超えて最大回転にしたとき`}>
-        {[0, 50, 100].map((p) => (
-          <g key={p}>
-            <line x1={L} x2={R} y1={yF(p)} y2={yF(p)} className="stroke-zinc-200 dark:stroke-zinc-800" strokeWidth="1" />
-            <text x={L - 4} y={yF(p) + 3} fontSize="9" textAnchor="end" className="fill-current">{p}%</text>
+        aria-label={`ファンの回転数（rpm）の推移（直近${minutes}分）。赤い印は上限を超えて最大回転にしたとき`}>
+        {[0, rpmTop / 2, rpmTop].map((rpm) => (
+          <g key={rpm}>
+            <line x1={L} x2={R} y1={yF(rpm)} y2={yF(rpm)} className="stroke-zinc-200 dark:stroke-zinc-800" strokeWidth="1" />
+            <text x={L - 4} y={yF(rpm) + 3} fontSize="9" textAnchor="end" className="fill-current">{rpm >= 1000 ? `${rpm / 1000}k` : rpm}</text>
           </g>
         ))}
         {fanArea && <path d={fanArea} className="fill-accent-500/15" />}
@@ -218,81 +221,8 @@ export function FanHistoryChart() {
         <span>太線＝平滑・細線＝実測</span>
         <span>点線＝hotspot の目標</span>
         <span className="text-red-600 dark:text-red-400">赤い点線＝上限</span>
-        <span>下段＝ファン回転%</span>
+        <span>下段＝ファンの回転数（rpm）</span>
       </p>
     </section>
-  );
-}
-
-export type MapPoint = { below_c: number; percent: number };
-
-/** 温度マップのグラフ。横軸は hotspot の温度（目標 − below_c）。
- *  サーバーの map_percent と同じ形: いちばん冷たい点より下は平ら、点の間は直線、
- *  最後の点から目標までは平ら、目標から上限へ 100% まで直線、上限より上は 100%。 */
-export function FanMapChart({ points, target, limit, minPercent, currentTemp }: {
-  points: MapPoint[]; target: number; limit: number; minPercent: number; currentTemp: number | null;
-}) {
-  const sorted = [...points].sort((a, b) => b.below_c - a.below_c);
-  if (sorted.length < 2) return null;
-  const coldest = target - sorted[0].below_c;
-  const x0 = Math.floor((coldest - 5) / 5) * 5;
-  const x1 = Math.ceil((limit + 4) / 5) * 5;
-  const H = 168, T = 10, B = 140;
-  const x = (c: number) => L + (R - L) * ((Math.min(x1, Math.max(x0, c)) - x0) / (x1 - x0));
-  const y = (p: number) => B - (B - T) * (Math.min(100, Math.max(0, p)) / 100);
-  const floor = (p: number) => Math.max(minPercent, p);
-  const atTarget = floor(sorted[sorted.length - 1].percent);
-  const curve: [number, number][] = [[x0, floor(sorted[0].percent)]];
-  for (const p of sorted) curve.push([target - p.below_c, floor(p.percent)]);
-  curve.push([target, atTarget]);
-  const d = (pts: [number, number][]) => pts.map(([c, p], i) => `${i ? "L" : "M"}${x(c).toFixed(1)} ${y(p).toFixed(1)}`).join("");
-  const rise: [number, number][] = [[target, atTarget], [limit, 100], [x1, 100]];
-  const percentAt = (c: number) => {
-    const all = [...curve, ...rise.slice(1)];
-    if (c <= all[0][0]) return all[0][1];
-    for (let i = 1; i < all.length; i++) {
-      const [ca, pa] = all[i - 1], [cb, pb] = all[i];
-      if (c <= cb) return cb === ca ? pb : pa + (pb - pa) * ((c - ca) / (cb - ca));
-    }
-    return 100;
-  };
-  const ticks: number[] = [];
-  for (let c = x0; c <= x1; c += x1 - x0 > 40 ? 10 : 5) ticks.push(c);
-  const now = currentTemp != null ? Math.round(percentAt(currentTemp)) : null;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" className="w-full select-none text-zinc-500"
-      aria-label={`温度マップ。横軸は hotspot の温度、縦軸はファン回転%。目標 ${target}°C で ${Math.round(atTarget)}%、上限 ${limit}°C で 100%`}>
-      {[0, 25, 50, 75, 100].map((p) => (
-        <g key={p}>
-          <line x1={L} x2={R} y1={y(p)} y2={y(p)} className="stroke-zinc-200 dark:stroke-zinc-800" strokeWidth="1" />
-          <text x={L - 4} y={y(p) + 3} fontSize="9" textAnchor="end" className="fill-current">{p}%</text>
-        </g>
-      ))}
-      {ticks.map((c) => (
-        <text key={c} x={x(c)} y={B + 13} fontSize="9" textAnchor="middle" className="fill-current">{c}°</text>
-      ))}
-      <line x1={x(target)} x2={x(target)} y1={T} y2={B} className="stroke-zinc-500 dark:stroke-zinc-400" strokeWidth="1" strokeDasharray="4 3" />
-      <text x={x(target) - 3} y={T + 8} fontSize="9" textAnchor="end" className="fill-current">目標 {target}°</text>
-      <line x1={x(limit)} x2={x(limit)} y1={T} y2={B} className="stroke-red-500" strokeWidth="1" strokeDasharray="2 3" />
-      <text x={x(limit) + 3} y={y(100) + 12} fontSize="9" className="fill-red-600 dark:fill-red-400">上限 {limit}°</text>
-      <path d={d(curve)} fill="none" className="stroke-accent-600 dark:stroke-accent-400" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" />
-      {/* 目標から上限までは自動で 100% へ上げる（点では決めない） */}
-      <path d={d(rise)} fill="none" className="stroke-accent-600 dark:stroke-accent-400" strokeWidth="2.2" strokeDasharray="5 3" strokeLinejoin="round" />
-      {sorted.map((p) => (
-        <circle key={p.below_c} cx={x(target - p.below_c)} cy={y(floor(p.percent))} r="4.5"
-          className="fill-white stroke-accent-600 dark:fill-zinc-900 dark:stroke-accent-400" strokeWidth="2">
-          <title>{`${target - p.below_c}°C → ${p.percent}%`}</title>
-        </circle>
-      ))}
-      {currentTemp != null && now != null && currentTemp >= x0 && currentTemp <= x1 && (
-        <g>
-          <line x1={x(currentTemp)} x2={x(currentTemp)} y1={T} y2={B} className="stroke-zinc-400" strokeWidth="1" />
-          <circle cx={x(currentTemp)} cy={y(now)} r="4" className="fill-zinc-700 stroke-white dark:fill-zinc-200 dark:stroke-zinc-900" strokeWidth="2" />
-          <text x={Math.min(x(currentTemp) + 6, R - 70)} y={Math.min(y(now) + 14, B - 4)} fontSize="9" className="fill-zinc-700 dark:fill-zinc-200">
-            今 {Math.round(currentTemp)}° → {now}%
-          </text>
-        </g>
-      )}
-    </svg>
   );
 }

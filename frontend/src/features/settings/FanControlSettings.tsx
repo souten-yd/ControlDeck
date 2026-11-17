@@ -1,8 +1,9 @@
 /** GPU ファン制御の設定画面（v2）。
  *
  * 2026-11-17 利用者の依頼「設定が多すぎて分からない・入れ子・プリセットが謎」を受けて作り直した。
- * 方式は PID（電力の先読みつき）と温度マップの 2 つだけ。利用者が決めるのは上限温度・マージン・最低回転・
- * なめらかさ・起動時の動作だけで、PID の効き具合とマップは自動調整が決める（手でも直せる）。
+ * 方式は PID（電力の先読みつき）だけ（2026-11-18 実機で温度マップと比べ、温度が一定に保てたほうを採用）。
+ * プリセットは無い。選べるのは「この制御」か「GPU 標準（デフォルト）」だけ。利用者が決めるのは上限温度・
+ * マージン・最低回転・なめらかさ・起動時の動作で、PID の効き具合は自動調整が決める（手でも直せる）。
  * 入れ子（開閉する詳細）は作らない。上から「今の状態 → 推移 → 設定 → 自動調整」と並べる。
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
@@ -11,19 +12,17 @@ import { api } from "../../api/client";
 import { getLlamaCapacity } from "../../api/models";
 import { useToasts } from "../../stores";
 import { ConfirmDialog, primaryButtonClass, secondaryButtonClass } from "../../components/ui";
-import { FanHistoryChart, FanMapChart, SENSOR_KINDS, type MapPoint, type SensorKind } from "./FanCharts";
+import { FanHistoryChart, SENSOR_KINDS, type SensorKind } from "./FanCharts";
 
 type FanSettings = {
   enabled: boolean;
   bdf: string | null;
-  mode: "pid" | "map";
   limits_c: Record<string, number>;
   margin_c: number;
   min_percent: number;
   smoothing_s: number;
   pid_kp: number;
   pid_ti: number;
-  map_points: MapPoint[];
   startup_mode: "apply_saved" | "firmware";
 };
 
@@ -54,7 +53,6 @@ type FanDevice = {
 
 type Control = {
   output_percent: number;
-  mode: "pid" | "map";
   governing_sensor: string;
   error_c: number;
   feedforward_percent: number;
@@ -74,7 +72,7 @@ type AutoTune = {
   llm?: string | null;
   tokens?: number | null;
   result: {
-    pid_kp: number; pid_ti: number; smoothing_s: number; margin_c: number; map_points: MapPoint[];
+    pid_kp: number; pid_ti: number; smoothing_s: number; margin_c: number;
   } | null;
 };
 
@@ -108,26 +106,6 @@ const sortSensors = (sensors: Sensor[]) =>
 const card = "rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5";
 const muted = "text-[11px] leading-relaxed text-zinc-500";
 const inputClass = "min-h-11 w-20 rounded-xl border border-zinc-300 bg-white px-2 text-right text-base tabular-nums outline-none focus:border-accent-500 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-950 sm:text-sm";
-
-/** 自動調整の前の温度マップ。サーバーの fan_core.default_map（熱モデルなし）と同じ形。 */
-function defaultMap(minPercent: number): MapPoint[] {
-  const atTarget = Math.min(100, Math.max(minPercent, 60));
-  return ([[20, 0], [10, 0.45], [5, 0.75], [0, 1]] as const).map(([below, share]) => ({
-    below_c: below, percent: Math.round((minPercent + share * (atTarget - minPercent)) * 10) / 10,
-  }));
-}
-
-function mapProblem(points: MapPoint[]): string {
-  if (points.length === 0) return "";
-  if (points.length < 2) return "温度マップは 2 点以上にしてください";
-  const belows = points.map((p) => p.below_c);
-  if (new Set(belows).size !== belows.length) return "温度マップに同じ温度の点があります";
-  const sorted = [...points].sort((a, b) => b.below_c - a.below_c);
-  if (sorted.some((p, i) => i > 0 && p.percent < sorted[i - 1].percent)) {
-    return "温度マップは、温度が高い点ほど回転を同じか高くしてください";
-  }
-  return "";
-}
 
 /** 数値の入力。打っている途中（「7.」など）を消さないよう文字列で持ち、範囲内になったら反映する。 */
 function NumberInput({ value, min, max, step, label, onChange, disabled }: {
@@ -177,7 +155,7 @@ function Field({ label, value, min, max, step = 1, unit, aside, hint, onChange }
   );
 }
 
-/** 大きな 2 択（方式・起動時の動作）。各選択肢に 1 行の説明を付ける。 */
+/** 大きな 2 択（起動時の動作）。各選択肢に 1 行の説明を付ける。 */
 function Choice<T extends string>({ name, value, options, onChange }: {
   name: string; value: T; options: ReadonlyArray<{ id: T; label: string; hint: string }>; onChange: (value: T) => void;
 }) {
@@ -246,13 +224,65 @@ const TUNE_STEPS: ReadonlyArray<{ phase: TunePhase; label: string; hint: string 
   { phase: "verify", label: "往復で確認", hint: "0%↔100% の負荷で上限に近づかないか" },
 ];
 
+type LogSummary = {
+  minutes: number; deviations: number; deviation_seconds: number; emergency_minutes: number;
+  peak_c: { hot?: number | null; mem?: number | null };
+};
+
+/** 診断の記録（1 分ごと・直近 2 日）から: 逸脱の数と、記録からの作り直し（数秒、GPU は使わない）。
+ *  2026-11-18 利用者の依頼「PID が逸脱した際に毎回長時間調整するのが面倒」。 */
+function RefitSection({ enabled }: { enabled: boolean }) {
+  const show = useToasts((state) => state.show);
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const { data: summary } = useQuery({
+    queryKey: ["system-fan-log-summary"], enabled,
+    queryFn: () => api<LogSummary>("/system/fan-control/log-summary?hours=24"), refetchInterval: 60_000,
+  });
+  const refit = async () => {
+    setBusy(true);
+    try {
+      const result = await api<{ pid_kp: number; pid_ti: number; changes: { points: { fan: number }[] } }>(
+        "/system/fan-control/refit", { method: "POST" });
+      show(`記録から作り直しました（Kp ${result.pid_kp}・Ti ${result.pid_ti} 秒・測れた回転 ${result.changes.points.map((p) => `${p.fan}%`).join("・")}）`);
+      await qc.invalidateQueries({ queryKey: ["system-fan-control"] });
+    } catch (e) {
+      show(e instanceof Error ? e.message : "記録から作り直せません", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const warn = summary && (summary.emergency_minutes > 0 || summary.deviations >= 3);
+  return (
+    <section aria-labelledby="fan-refit-title" className={card}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 id="fan-refit-title" className="text-sm font-semibold">記録から作り直す</h3>
+        <button type="button" disabled={busy || !enabled} onClick={() => void refit()} className={primaryButtonClass}>
+          {busy ? "作り直しています…" : "記録から作り直す"}
+        </button>
+      </div>
+      <p className={"mt-1 " + muted}>
+        制御中の温度・電力・回転を 1 分ごとに記録しています（直近 2 日）。目標から外れるようになったら、
+        この記録の「全力で落ち着いていた区間」と「休みの区間」から熱の特性と効き具合を数秒で作り直せます。GPU は使いません。
+      </p>
+      {summary && (
+        <p role="status" className={"mt-2 text-xs tabular-nums " + (warn ? "text-amber-700 dark:text-amber-300" : "text-zinc-600 dark:text-zinc-300")}>
+          直近 24 時間（記録 {summary.minutes} 分）: 目標超え {summary.deviations} 回・緊急の最大回転 {summary.emergency_minutes} 分・
+          hotspot 最高 {summary.peak_c.hot ?? "—"}°C
+          {warn && "。作り直しをおすすめします"}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function duration(seconds: number) {
   const m = Math.floor(seconds / 60);
   return m >= 60 ? `${Math.floor(m / 60)}時間${m % 60}分` : `${m}分${seconds % 60}秒`;
 }
 
-function AutoTuneSection({ tune, canStart, startHint, target }: {
-  tune: AutoTune; canStart: boolean; startHint: string; target: number | null;
+function AutoTuneSection({ tune, canStart, startHint }: {
+  tune: AutoTune; canStart: boolean; startHint: string;
 }) {
   const show = useToasts((state) => state.show);
   const qc = useQueryClient();
@@ -296,7 +326,7 @@ function AutoTuneSection({ tune, canStart, startHint, target }: {
           </button>}
       </div>
       <p className={"mt-1 " + muted}>
-        PID の効き具合（Kp・Ti）・なめらかさ・温度マップ・マージンを、この PC で実際に測って決めます。LLM に長文を書かせ続けて
+        記録が無いとき（初めて・GPU や冷却を変えたとき）に使います。PID の効き具合（Kp・Ti）とマージンを、この PC で実際に測って決めます。LLM に長文を書かせ続けて
         GPU を全力にし、回転を変えながら温度の動きを測ります。終わると結果を保存します（そのまま使えます）。
         {!canStart && !tune.running && <span className="mt-1 block text-amber-700 dark:text-amber-300">{startHint}</span>}
       </p>
@@ -341,10 +371,6 @@ function AutoTuneSection({ tune, canStart, startHint, target }: {
             <div><dt className="text-zinc-500">なめらかさ</dt><dd className="font-semibold">{result.smoothing_s} 秒</dd></div>
             <div><dt className="text-zinc-500">マージン</dt><dd className="font-semibold">{result.margin_c}°C</dd></div>
           </dl>
-          <p className="mt-1 text-xs tabular-nums text-zinc-600 dark:text-zinc-300">
-            マップ: {[...result.map_points].sort((a, b) => b.below_c - a.below_c).map((p) =>
-              target != null ? `${Math.round((target - p.below_c) * 10) / 10}°C→${p.percent}%` : `目標−${p.below_c}°C→${p.percent}%`).join("・")}
-          </p>
         </div>
       )}
       {confirming && (
@@ -406,10 +432,6 @@ export function FanControlSettings() {
   const liveSensors = new Map((data.active?.sensors ?? []).map((s) => [s.id, s]));
   const update = (patch: Partial<FanSettings>) => setDraft((current) => (current ? { ...current, ...patch } : current));
   const limitOf = (s: Sensor, settings: FanSettings) => settings.limits_c[s.id] ?? s.default_limit_c;
-  const hotspot = sensors.find((s) => s.kind === "junction") ?? sensors[0];
-  const draftTarget = hotspot ? limitOf(hotspot, draft) - draft.margin_c : null;
-  const mapPoints = draft.map_points.length ? draft.map_points : defaultMap(draft.min_percent);
-  const mapError = draft.mode === "map" ? mapProblem(draft.map_points) : "";
   const minFloor = Math.max(15, selected?.curve_limits?.pwm_min_percent ?? 15);
 
   const modified = JSON.stringify(draft) !== base.current;
@@ -421,14 +443,11 @@ export function FanControlSettings() {
   }).find(Boolean) ?? "";
   const blocker = !draft.enabled ? "" : !data.helper_installed ? "helper が未登録のため有効にできません"
     : !selected ? "対象の GPU を選んでください" : !selected.curve_supported ? "この GPU はファン制御に対応していません"
-      : limitError || mapError;
+      : limitError;
 
   const save = async () => {
     setSaving(true);
-    const body: FanSettings = {
-      ...draft, bdf: selected?.bdf ?? draft.bdf,
-      map_points: [...draft.map_points].sort((a, b) => b.below_c - a.below_c),
-    };
+    const body: FanSettings = { ...draft, bdf: selected?.bdf ?? draft.bdf };
     try {
       const result = await api<FanStatus>("/system/fan-control", { method: "PUT", json: body });
       base.current = JSON.stringify(result.settings);
@@ -445,25 +464,6 @@ export function FanControlSettings() {
   const discard = () => {
     base.current = JSON.stringify(data.settings);
     setDraft(data.settings);
-  };
-
-  const setPoint = (index: number, patch: Partial<MapPoint>) => {
-    const next = mapPoints.map((p, i) => (i === index ? { ...p, ...patch } : p));
-    update({ map_points: next });
-  };
-  const addPoint = () => {
-    const sorted = [...mapPoints].sort((a, b) => b.below_c - a.below_c);
-    let gap = 0, at = 0;
-    for (let i = 1; i < sorted.length; i++) {
-      if (sorted[i - 1].below_c - sorted[i].below_c > gap) { gap = sorted[i - 1].below_c - sorted[i].below_c; at = i; }
-    }
-    if (gap < 1) return;
-    const a = sorted[at - 1], b = sorted[at];
-    sorted.splice(at, 0, {
-      below_c: Math.round(((a.below_c + b.below_c) / 2) * 10) / 10,
-      percent: Math.round(((a.percent + b.percent) / 2) * 10) / 10,
-    });
-    update({ map_points: sorted });
   };
 
   const tune = data.autotune;
@@ -537,10 +537,10 @@ export function FanControlSettings() {
             })}
           </ul>
         )}
-        {control && control.mode === "pid" && !emergency && (
+        {control && !emergency && (
           <p className={"mt-2 tabular-nums " + muted}>
             出力 {control.output_percent.toFixed(1)}% ＝ 先読み {control.feedforward_percent.toFixed(1)} ＋ P {control.p_percent.toFixed(1)} ＋ I {control.i_percent.toFixed(1)}
-            （先読み＝電力から、目標で釣り合う回転を見積もった分）
+            （先読み＝電力から目標で釣り合う回転を見積もった分。I＝上乗せ: 先読みの不足分（外気温・季節）を覚えた分）
           </p>
         )}
         {emergency && <p className="mt-2 text-xs text-red-700 dark:text-red-300">上限温度を超えたため、なめらかさを無視して最大回転にしています。上限を下回ると通常の制御に戻ります。</p>}
@@ -565,13 +565,6 @@ export function FanControlSettings() {
           </label>
         )}
 
-        <div className="mt-3">
-          <Choice name="制御の方式" value={draft.mode} onChange={(mode) => update({ mode })} options={[
-            { id: "pid", label: "PID（電力の先読みつき）", hint: "目標温度に合わせて回転を自動で探す。電力が上がった瞬間に先回りで上げる" },
-            { id: "map", label: "温度マップ", hint: "hotspot の温度ごとに回転を決めた表に従う。動きが読みやすい" },
-          ]} />
-        </div>
-
         <div className="mt-4 divide-y divide-zinc-100 dark:divide-zinc-800">
           <div className="pb-1">
             <p className="text-sm font-medium">上限温度</p>
@@ -592,82 +585,31 @@ export function FanControlSettings() {
             hint="冷えていてもこれより下げません。"
             onChange={(min_percent) => update({ min_percent: Math.round(min_percent) })} />
           <Field label="なめらかさ" value={draft.smoothing_s} min={20} max={300} step={5} unit="秒"
-            hint="回転をどれだけゆっくり変えるか。大きいほど、LLM のように 0%↔100% を繰り返す負荷でも回転が上下しません。小さいほど温度に早く追いつきます。上限を超えたときは関係なくすぐ最大です。"
+            hint="回転を下げるときと、温度・電力が下がったと見るまでの遅さ。上げる側は温度の上昇をすぐ追います。上限を超えたときは関係なくすぐ最大です。"
             onChange={(smoothing_s) => update({ smoothing_s })} />
 
-          {draft.mode === "pid" && (
-            <div className="py-3" data-testid="fan-pid-gains">
-              <p className="text-sm font-medium">効き具合 <span className="text-[11px] font-normal text-zinc-500">（自動調整が決めます）</span></p>
-              <p className={muted}>
-                出力 ＝ 先読み（フィードフォワード）＋ Kp × 目標との差 ＋ 積分。普段は触らなくて大丈夫です。手で直すこともできます。
-              </p>
-              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-xs">
-                <label className="flex items-center gap-1.5">Kp（比例）
-                  <NumberInput value={draft.pid_kp} min={0.3} max={10} step={0.01} label="Kp（比例）" onChange={(pid_kp) => update({ pid_kp })} />
-                  <span className="text-zinc-500">%/°C</span>
-                </label>
-                <label className="flex items-center gap-1.5">Ti（積分時間）
-                  <NumberInput value={draft.pid_ti} min={10} max={600} step={1} label="Ti（積分時間）" onChange={(pid_ti) => update({ pid_ti })} />
-                  <span className="text-zinc-500">秒</span>
-                </label>
-              </div>
+          <div className="py-3" data-testid="fan-pid-gains">
+            <p className="text-sm font-medium">効き具合 <span className="text-[11px] font-normal text-zinc-500">（自動調整が決めます）</span></p>
+            <p className={muted}>
+              出力 ＝ 先読み（フィードフォワード）＋ Kp × 目標との差 ＋ 上乗せ（積分）。普段は触らなくて大丈夫です。手で直すこともできます。
+            </p>
+            <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+              <label className="flex items-center gap-1.5">Kp（比例）
+                <NumberInput value={draft.pid_kp} min={0.3} max={10} step={0.01} label="Kp（比例）" onChange={(pid_kp) => update({ pid_kp })} />
+                <span className="text-zinc-500">%/°C</span>
+              </label>
+              <label className="flex items-center gap-1.5">Ti（積分時間）
+                <NumberInput value={draft.pid_ti} min={10} max={600} step={1} label="Ti（積分時間）" onChange={(pid_ti) => update({ pid_ti })} />
+                <span className="text-zinc-500">秒</span>
+              </label>
             </div>
-          )}
-
-          {draft.mode === "map" && hotspot && draftTarget != null && (
-            <div className="py-3" data-testid="fan-map">
-              <p className="text-sm font-medium">温度マップ <span className="text-[11px] font-normal text-zinc-500">（自動調整が決めます）</span></p>
-              <p className={muted}>
-                hotspot の温度（横）ごとの回転（縦）。目標から上限までは自動で 100% まで上げます（点線）。
-                点は「目標から何度下か」で保存するので、上限やマージンを変えると一緒に動きます。
-                {draft.map_points.length === 0 && " いまは自動調整前の既定値です。"}
-              </p>
-              <div className="mt-2">
-                <FanMapChart points={mapPoints} target={draftTarget} limit={limitOf(hotspot, draft)}
-                  minPercent={draft.min_percent} currentTemp={liveSensors.get(hotspot.id)?.value_c ?? hotspot.value_c} />
-              </div>
-              <ul className="mt-1 space-y-1" aria-label="温度マップの点">
-                {mapPoints.map((p, index) => {
-                  const temp = Math.round((draftTarget - p.below_c) * 10) / 10;
-                  return (
-                    <li key={index} className="flex items-center gap-2 text-xs tabular-nums">
-                      <label className="flex items-center gap-1">
-                        <NumberInput value={temp} min={Math.round((draftTarget - 40) * 10) / 10} max={draftTarget} step={0.5}
-                          label={`点${index + 1}の温度`}
-                          onChange={(c) => setPoint(index, { below_c: Math.round((draftTarget - c) * 10) / 10 })} />
-                        °C
-                      </label>
-                      <span aria-hidden className="text-zinc-400">→</span>
-                      <label className="flex items-center gap-1">
-                        <NumberInput value={p.percent} min={0} max={100} step={1} label={`点${index + 1}の回転`}
-                          onChange={(percent) => setPoint(index, { percent })} />
-                        %
-                      </label>
-                      <span className="hidden text-[11px] text-zinc-400 min-[400px]:inline">目標−{p.below_c}°C</span>
-                      <button type="button" disabled={mapPoints.length <= 2} aria-label={`点${index + 1}を削除`}
-                        onClick={() => update({ map_points: mapPoints.filter((_, i) => i !== index) })}
-                        className="ml-auto grid h-11 w-11 shrink-0 place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-30 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
-                        ×
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button type="button" onClick={addPoint} disabled={mapPoints.length >= 8} className={secondaryButtonClass}>点を追加</button>
-                {draft.map_points.length > 0 && (
-                  <button type="button" onClick={() => update({ map_points: [] })} className={secondaryButtonClass}>既定値に戻す</button>
-                )}
-              </div>
-              {mapError && <p role="alert" className="mt-2 text-xs text-amber-700 dark:text-amber-300">{mapError}</p>}
-            </div>
-          )}
+          </div>
 
           <div className="py-3">
             <p className="mb-2 text-sm font-medium">PC起動時の動作</p>
             <Choice name="PC起動時の動作" value={draft.startup_mode} onChange={(startup_mode) => update({ startup_mode })} options={[
               { id: "apply_saved", label: "保存した設定で制御", hint: "ControlDeck が起動したら自動で制御を始める" },
-              { id: "firmware", label: "GPU標準のまま", hint: "起動のたびに手で有効にする" },
+              { id: "firmware", label: "GPU標準のまま（デフォルト）", hint: "起動後にファンカーブを書かない。GPU の標準の自動制御で動く" },
             ]} />
             <p className={"mt-1 " + muted}>ControlDeck だけを再起動したときは、どちらでも制御を続けます。</p>
           </div>
@@ -675,8 +617,11 @@ export function FanControlSettings() {
         <p className={"mt-2 " + muted}>{data.warning}</p>
       </section>
 
+      {/* ---- 記録から作り直す（ふだんはこちら） ---- */}
+      <RefitSection enabled={data.settings.enabled && data.state === "controlling" && !tune.running} />
+
       {/* ---- 自動調整 ---- */}
-      <AutoTuneSection tune={tune} target={draftTarget}
+      <AutoTuneSection tune={tune}
         canStart={data.settings.enabled && data.state === "controlling" && !modified}
         startHint={modified ? "変更を保存してから始められます。" : "ファン制御を有効にして保存してから始められます。"} />
 

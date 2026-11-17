@@ -41,7 +41,7 @@ async def post_fan_autotune(
     user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
-    """自動調整: LLM に同じ文言で長文を書かせ続けて、PID の効き具合・なめらかさ・温度マップを決める（30〜90 分）。"""
+    """自動調整: LLM に同じ文言で長文を書かせ続けて、熱モデルと PID の効き具合を決める（30〜90 分）。"""
     from app.models_mgmt import local_llm
     from app.monitoring import fan_tune
 
@@ -62,6 +62,30 @@ async def post_fan_autotune(
     return result
 
 
+@router.get("/log-summary")
+def get_fan_log_summary(hours: float = 24.0, user: User = Depends(require_permission("system.view"))):
+    """診断の記録（1 分ごと）から、目標を超えた回数・緊急の最大回転の回数など。"""
+    return fan_control.log_summary(max(1.0, min(hours, 48.0)))
+
+
+@router.post("/refit")
+def post_fan_refit(
+    request: Request,
+    user: User = Depends(require_permission("settings.manage")),
+    db=Depends(get_db),
+):
+    """記録から作り直す: 直近 2 日の記録で熱モデルと PID の効き具合を作り直す（数秒、GPU は使わない）。"""
+    try:
+        result = fan_control.refit_from_log()
+    except (fan_control.FanControlError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "system.fan_control.refit", user=user, request=request,
+                 resource_type="amd-gpu", resource_id="active",
+                 metadata={"pid_kp": result["pid_kp"], "pid_ti": result["pid_ti"],
+                           "points": result["changes"]["points"]})
+    return result
+
+
 @router.put("")
 def put_fan_control(
     body: fan_control.FanSettings,
@@ -76,7 +100,7 @@ def put_fan_control(
     audit.record(
         db, "system.fan_control", user=user, request=request,
         resource_type="amd-gpu", resource_id=body.bdf or "auto",
-        metadata={"enabled": body.enabled, "mode": body.mode, "limits_c": body.limits_c,
+        metadata={"enabled": body.enabled, "limits_c": body.limits_c,
                   "margin_c": body.margin_c, "min_percent": body.min_percent,
                   "smoothing_s": body.smoothing_s, "startup_mode": body.startup_mode},
     )
