@@ -127,3 +127,38 @@ def test_effective_event_stream_emits_revision_and_user_specific_etag(addon_api)
     payload = json.loads(event.split("data: ", 1)[1])
     assert payload["revision"] == registry.revision()
     assert payload["etag"] == registry.effective_for_permissions({"apps.view"})["etag"]
+
+
+def test_effective_event_stream_ends_quickly_after_disconnect_without_parking_a_thread(addon_api, monkeypatch):
+    """切断された SSE はすぐ終わり、変化待ちでスレッドを占有しない。
+
+    以前は wait_for_revision を to_thread で最大 25 秒待ち、再読み込みが続くと共有のスレッドが
+    埋まって、to_thread を使う他の API（容量・Job 一覧など）が止まった。"""
+    import time
+
+    from app.addons import registry as addon_registry
+    from app.addons import router as addon_router
+
+    monkeypatch.setattr(addon_router, "EVENT_STREAM_POLL_SECONDS", 0.01)
+
+    def must_not_wait(*_args, **_kwargs):  # 古い待ち方へ戻ったら落とす
+        raise AssertionError("wait_for_revision をスレッドで待ってはいけない")
+
+    monkeypatch.setattr(addon_registry, "wait_for_revision", must_not_wait)
+
+    class Request:
+        calls = 0
+
+        async def is_disconnected(self):
+            Request.calls += 1
+            return Request.calls > 2
+
+    async def drain():
+        events = []
+        async for event in addon_router._effective_event_stream(Request(), {"apps.view"}):
+            events.append(event)
+        return events
+
+    started = time.monotonic()
+    events = asyncio.run(drain())
+    assert len(events) == 1 and time.monotonic() - started < 2.0

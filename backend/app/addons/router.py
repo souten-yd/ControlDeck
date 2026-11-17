@@ -201,17 +201,33 @@ async def invoke_context_action(
     return result
 
 
+EVENT_STREAM_POLL_SECONDS = 1.0
+EVENT_STREAM_KEEPALIVE_SECONDS = 25.0
+
+
 async def _effective_event_stream(request: Request, permissions: set[str]):
+    """Add-on の有効な一覧が変わったら知らせる SSE。
+
+    以前は変化を `asyncio.to_thread(registry.wait_for_revision, …, 25)` で待っていた。接続ごとに
+    スレッドを最大 25 秒占有し、切断されても待ち終わるまで返さない。再読み込みや画面の開き直しが
+    続くと共有のスレッドが埋まり、to_thread を使う他の API（容量・Job 一覧など）が止まった
+    （E2E で 28 回の読み込みのあと、公開ワークフローの実行が返らなくなった）。
+    いまはスレッドを使わず、1 秒ごとに版の番号と切断だけを確かめて待つ。"""
     previous = -1
+    loop = asyncio.get_running_loop()
     while True:
-        payload = registry.effective_for_permissions(permissions)
+        payload = await asyncio.to_thread(registry.effective_for_permissions, permissions)
         current = payload["revision"]
         if current != previous:
             yield f"event: addons.effective.changed\ndata: {json.dumps({'revision': current, 'etag': payload['etag']})}\n\n"
             previous = current
+        deadline = loop.time() + EVENT_STREAM_KEEPALIVE_SECONDS
+        while registry.revision_nowait() == previous and loop.time() < deadline:
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(EVENT_STREAM_POLL_SECONDS)
         if await request.is_disconnected():
             return
-        await asyncio.to_thread(registry.wait_for_revision, previous, 25.0)
 
 
 @router.get("/effective/events")

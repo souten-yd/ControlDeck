@@ -153,6 +153,12 @@ def revision() -> int:
         return _revision
 
 
+def revision_nowait() -> int:
+    """ロックを取らずに今の版を返す（int の読み取りは原子的）。event loop から呼ぶ用。
+    導入中は _LOCK を長く持つので、ここで待つと loop 全体が止まる。"""
+    return _revision
+
+
 def health_observation(addon_id: str) -> HealthObservation | None:
     with _LOCK:
         status(addon_id)
