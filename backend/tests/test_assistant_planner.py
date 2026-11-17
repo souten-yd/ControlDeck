@@ -119,3 +119,51 @@ def test_research_combines_sources_and_deduplicates(monkeypatch):
     assert len({source["url"] for source in buf["meta"]["sources"]}) == 3
     assert "[R1]" in history[0]["content"]
     assert any(message == "progress" and data["phase"] == "sufficient" for message, data in job.events)
+
+
+def _routing_cases():
+    import json
+    from pathlib import Path
+
+    return json.loads((Path(__file__).parent / "data" / "assistant_routing_cases.json").read_text(encoding="utf-8"))
+
+
+def test_rule_plan_matches_routing_cases_and_sets_depth():
+    """ルールで決まるべき依頼はルールで正しく決まる（LLM に回してチャットにしない）。"""
+    from app.workflows.assistant_planner import DEPTH_BY_MODE, rule_plan
+
+    wrong = []
+    for case in _routing_cases():
+        plan = rule_plan(case["q"])
+        if not case["rule"]:
+            continue
+        if plan is None or plan.mode != case["mode"]:
+            wrong.append((case["q"], plan.mode if plan else None, case["mode"]))
+        elif plan.depth != DEPTH_BY_MODE.get(case["mode"]):
+            wrong.append((case["q"], f"depth={plan.depth}", case["mode"]))
+    assert not wrong, wrong
+
+
+def test_frontend_and_backend_share_the_routing_words():
+    """画面とサーバーが同じ語の表を読む（ずれると判定が食い違う）。"""
+    from pathlib import Path
+
+    from app.workflows import assistant_planner as planner
+
+    assert planner._WORDS_PATH.is_file()
+    words = planner.routing_words()
+    assert "調べて" in words["search"] and "論文" in words["academic"]
+    ts = (Path(planner._WORDS_PATH).parent / "assistantMode.ts").read_text(encoding="utf-8")
+    assert 'from "./routingWords.json"' in ts
+
+
+def test_llm_plan_can_choose_deep(monkeypatch):
+    import app.workflows.assistant_planner as planner
+
+    async def fake_llm(*args, **kwargs):
+        assert "deep" in kwargs["response_format"]["schema"]["properties"]["mode"]["enum"]
+        return '{"mode":"deep","reason":"網羅的な比較","steps":[],"max_iterations":3}'
+
+    monkeypatch.setattr(planner, "_llm", fake_llm)
+    plan = asyncio.run(planner.decide("電気自動車の市場と研究の進展をまとめたい", "http://local/v1", "test"))
+    assert plan.mode == "deep" and plan.depth == "deep" and plan.decided_by == "llm"
