@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 164 ファイル、1443 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、137 テスト
+- backend: 165 ファイル、1449 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、138 テスト
 
 ## backend（backend/tests）
 
@@ -734,7 +734,7 @@
 
 ### backend/tests/test_fan_control.py
 
-目的: ファン制御 v2（PID / 温度マップ）の、実機を使わないテスト。 目的: 2 方式の設定・旧設定の引き継ぎ・ファームウェアへ書くカーブ・故障時の安全側の動き・helper の許可範囲を守る。 根拠: 2026-11-17 に 4 方式・7 プリセットから作り直した（docs/design-amd-smart-fan.md）。helper・SMU14・起動時の テストは旧版から引き継いだ（R9700 の実機で踏んだ不具合）。
+目的: ファン制御 v2（PID）の、実機を使わないテスト。 目的: 2 方式の設定・旧設定の引き継ぎ・ファームウェアへ書くカーブ・故障時の安全側の動き・helper の許可範囲を守る。 根拠: 2026-11-17 に 4 方式・7 プリセットから作り直した（docs/design-amd-smart-fan.md）。helper・SMU14・起動時の テストは旧版から引き継いだ（R9700 の実機で踏んだ不具合）。
 
 - `test_curve_is_flat_to_the_hotspot_limit_then_full` — ファームウェアのカーブ: 上限までは制御の出力で一定、上限 +1°C で最大。アプリが止まっても上限での最大は残る。
 - `test_over_the_limit_goes_to_full_speed_at_once` — 上限を超えたら、なめらかさの上限を待たずに最大回転（どの方式でも）。
@@ -777,6 +777,17 @@
 - `test_hot_summer_with_a_winter_model_stays_near_the_target` — 外気温が 17°C 上がっても（熱モデルは冬のまま）、上乗せで目標近くに戻り、上限を超えない。
 - `test_tune_uses_the_strong_simc_gains` — 自動調整の効き具合は、閉ループの時定数を遅れ時間と同じにした SIMC（R9700 で Kp 約 2.5）。
 - `test_without_a_thermal_model_the_pid_still_follows_the_target` — 熱モデルがまだ無い（先読みなし）でも、PI だけで目標へ向かって回転を上げる。
+
+### backend/tests/test_fan_log.py
+
+目的: ファン制御の診断の記録（fan_log）と、記録からの作り直しのテスト。 目的: 2026-11-18 利用者の依頼「温度を診断に記録して、PID が逸脱したとき長い自動調整をせずに直したい」 「全部記録すると容量がパンクするので、AI に読み込める程度の容量に」を満たすこと。 - 3 秒ごとの値を 1 分 1 行にまとめる（1 日分でも AI が読める大きさ）。2 日より古い記録は消す - 目標 +2°C が 60 秒続いたときだけ逸脱として数える（全力の始まりの一瞬は数えない）。緊急も数える - 記録の「全力で落ち着いた 3 分」「休みで落ち着いた 3 分」から、熱モデルとゲインを作り直せる - 自己診断は、逸脱や緊急があれば「記録から作り直す」を勧める
+
+- `test_one_row_per_minute_and_a_day_fits_an_ai_context`
+- `test_deviation_needs_a_minute_over_target_and_emergencies_are_counted`
+- `test_old_logs_are_pruned`
+- `test_refit_rebuilds_idle_points_and_gain_from_the_log`
+- `test_refit_needs_idle_and_loaded_records`
+- `test_selftest_recommends_refit_after_deviations`
 
 ### backend/tests/test_fan_pid.py
 
@@ -2440,10 +2451,11 @@
 
 ### frontend/e2e/fan-temperature-margin.spec.ts
 
-目的: 目的: ファン制御 v2 の設定画面で、利用者が決める最小限の値（上限温度・マージン・方式・温度マップ）を 編集して保存でき、自動調整を確認してから始められること。iPhone 幅（320px）でも横にはみ出さないこと。 根拠: 2026-11-17 利用者の依頼「設定が多すぎて分からない・入れ子・プリセットが謎」で画面を作り直した （4 方式・プリセット・入れ子を撤去し、PID / 温度マップの 2 方式と 1 画面に）。旧画面の 「プリセットの保存・削除」と「温度追従のマージン」の確認はこのファイルで置き換えた。 API は page.route で模擬する（実機の GPU とファンを動かさない）。
+目的: 目的: ファン制御 v2 の設定画面で、利用者が決める最小限の値（上限温度・マージン）を編集して保存でき、 方式の選択・温度マップ・プリセットが無く（PID だけ）、推移に各部の温度とファンの回転数（rpm）が出て、 自動調整を確認してから始められること。iPhone 幅（320px）でも横にはみ出さないこと。 根拠: 2026-11-17 利用者の依頼「設定が多すぎて分からない・入れ子・プリセットが謎」で画面を作り直し、 2026-11-18 実機の比較で PID だけを残した（「いい方式のみ採用」「調整していないプリセットは消す。 デフォルトは残す」「回転数と各部の温度のグラフを出す」）。旧画面の「プリセットの保存・削除」と 「温度追従のマージン」の確認はこのファイルで置き換えた。 API は page.route で模擬する（実機の GPU とファンを動かさない）。
 
 - fan limits and margin are edited and saved at ${width}px
-- temperature map is shown only in map mode and its points are saved in order
+- only the PID control is offered and the history shows each temperature and the fan rpm
+- deviations from the log are shown and the controller is rebuilt from the log in one click
 - auto tuning asks for confirmation, then shows its stage and a cancel button
 
 ### frontend/e2e/feature-boot-restore.spec.ts
