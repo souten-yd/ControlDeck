@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-17 決まり: 異常には診断を足す・テストは目的と根拠を書いて重複させない
+
+- `AGENTS.md` に「不具合・診断・テストの決まり」を追加（利用者の決まり）。異常が起きたら検知できる診断を足す（軽微・一度きりは作らない、常時の見張りが重いものは診断のテストケースに）。テストは目的と根拠を書き、足す前に目録で重複を探して直す・広げる・統廃合する。
+- `docs/diagnostics.md`: 今ある診断の一覧（何を・どう見るか・きっかけ）と足し方。
+- `docs/test-catalog.md`: テストの目録（`./deck.sh test-catalog` が各ファイルの目的と各テストの 1 行目から作る）。backend 164 ファイル・1476 テスト、E2E 79 spec・132 テスト。目的の未記入 93 ファイルは `tests/test_test_catalog.py` の一覧に残し、新しいファイルには目的の docstring を必須にした。
+
 ## 2026-11-17 診断: 不調の記録と AI に渡せるレポート
 
 - `backend/app/diagnostics/`: 常駐の記録係（`recorder.py`）が、警告以上のログ（traceback つき）、**event loop の 1 秒以上の詰まり**（loop の外の thread から、塞いでいた関数の stack を撮る）、2 秒以上かかった API と API ごとの所要時間（p50/p95）、30 秒ごとのメモリ（空き・swap・VRAM・RSS 上位と unit）と空きが少ないときの上位を `data/diagnostics/events-YYYYMMDD.jsonl`（7 日分）へ残す。既存の watchdog の見張り（12 秒で全 thread を stderr）では、画面の「遅い」の原因になる数秒の詰まりが残らなかった。
