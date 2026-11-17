@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 
@@ -30,6 +31,8 @@ from app.models import utcnow
 from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
 from app.workflows.chat_router import _keep_alive, resolve_think
+
+logger = logging.getLogger("control_deck.chat_persist")
 
 router = APIRouter(prefix="/chat", tags=["chat-persist"])
 
@@ -310,9 +313,14 @@ def _remove_attachments(conv_id: str) -> None:
     import shutil
 
     try:
-        shutil.rmtree(_attachment_root(conv_id), ignore_errors=True)
+        root = _attachment_root(conv_id)
     except HTTPException:
-        pass
+        return
+    if root.exists():
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            logger.warning("会話 %s の添付を消せませんでした: %s", conv_id, exc)
 
 
 def _collection_embed_override() -> dict:
@@ -424,7 +432,7 @@ def get_attachment(
     if not _ATTACHMENT_ID_RE.fullmatch(attachment_id):
         raise HTTPException(status_code=404, detail="添付が見つかりません")
     conv = db.get(Conversation, conv_id)
-    if conv is None or (conv.owner_user_id is not None and conv.owner_user_id != user.id):
+    if conv is None or conv.owner_user_id != user.id:  # 発言の一覧と同じ厳しさ
         raise HTTPException(status_code=404, detail="添付が見つかりません")
     path = _attachment_root(conv_id) / attachment_id
     if not path.is_file():
@@ -1006,7 +1014,8 @@ async def send_message(
 
     user_msg = ChatMessage(id=_new_id(), conversation_id=conv_id, role="user",
                            content=body.content, status="completed")
-    sent_images = [a for a in body.attachments if _ATTACHMENT_ID_RE.fullmatch(a)]
+    sent_images = [a for a in body.attachments
+                   if _ATTACHMENT_ID_RE.fullmatch(a) and (_attachment_root(conv_id) / a).is_file()]
     if sent_images:
         # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
         user_msg.meta_json = json.dumps({"attachments": sent_images})

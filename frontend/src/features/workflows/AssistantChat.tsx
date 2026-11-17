@@ -405,6 +405,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       research: message.meta?.research,
     }));
     localStorage.setItem(LS_CONV, id);
+    setAttachments([]); // 別の会話の添付を持ち越さない
     setConvId(id);
     setConversationTitle(data.conversation.title);
     setMessages(restored);
@@ -421,6 +422,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     setConvId("");
     setConversationTitle("新しい会話");
     setMessages([]);
+    setAttachments([]); // 前の会話の添付を持ち越さない
   };
 
   const renameConversation = async () => {
@@ -438,6 +440,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
     setConvId("");
     setConversationTitle("新しい会話");
     setMessages([]);
+    setAttachments([]); // 消した会話の添付を持ち越さない
     qc.invalidateQueries({ queryKey: ["chat-conversations"] });
     show("会話を削除しました");
   };
@@ -1047,7 +1050,8 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
               onPaste={(e) => {
                 // クリップボードの画像（スクリーンショット・コピーした画像）を添付にする。文字の貼り付けはそのまま。
                 const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
-                if (images.length === 0) return;
+                // Excel・Word などは文字と一緒に画像版も入れる。文字があれば文字の貼り付けとして扱う。
+                if (images.length === 0 || e.clipboardData.getData("text/plain").trim()) return;
                 e.preventDefault();
                 void attachFiles(images);
               }}

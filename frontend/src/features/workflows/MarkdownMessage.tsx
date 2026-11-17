@@ -2,6 +2,7 @@
  *
  * AssistantChat から遅延読み込みする（ライブラリと KaTeX の CSS はアシスタント画面でだけ読む）。
  * 生の HTML は描かない（react-markdown の既定。回答に紛れた <script> などは文字のまま）。 */
+import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -9,15 +10,21 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 
 /** LLM がよく使う \( … \) と \[ … \] を、remark-math の $ … $ / $$ … $$ に直す。
- * コードブロック（``` で囲んだ所）と `インラインのコード` の中は触らない。 */
+ * - コード（``` / ~~~ のブロック、`…` と ``…`` のインライン）の中は触らない。
+ * - 行の頭から始まる \[ … \] だけ別行の式にする。行の途中（表のセル・リスト）は改行を入れず
+ *   その場の式にする（改行を入れると表やリストが壊れる）。
+ * - 金額の $（「$5 と $10」）は式にしない: 数字の直前の $ を文字の $ にする。 */
 export function normalizeMath(text: string): string {
   return text
-    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/g)
+    .split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|``[^`\n]+``|`[^`\n]*`)/g)
     .map((part, i) => {
       if (i % 2 === 1) return part; // コード
       return part
-        .replace(/\\\[([\s\S]+?)\\\]/g, (_m, body: string) => `\n$$\n${body.trim()}\n$$\n`)
-        .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => `$${body.trim()}$`);
+        .replace(/(^|\n)([ \t]*)\\\[([\s\S]+?)\\\]/g,
+          (_m, head: string, indent: string, body: string) => `${head}${indent}$$\n${body.trim()}\n$$`)
+        .replace(/\\\[([^\n]+?)\\\]/g, (_m, body: string) => `$${body.trim()}$`)
+        .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => `$${body.trim()}$`)
+        .replace(/(?<![$\\])\$(?=\d)/g, "\\$");
     })
     .join("");
 }
@@ -53,7 +60,8 @@ const components: Components = {
     <td style={style} className="min-w-[5rem] border-b border-zinc-100 px-2 py-1.5 align-top dark:border-zinc-800">{children}</td>
   ),
   pre: ({ children }) => (
-    <pre className="my-2 max-w-full overflow-x-auto rounded-lg bg-zinc-900 p-2.5 text-[12px] leading-snug text-zinc-100 dark:bg-black/40">{children}</pre>
+    // ブロックの中の code にはインラインコードの見た目を当てない（言語指定なしの ``` が読めなくなる）。
+    <pre className="my-2 max-w-full overflow-x-auto rounded-lg bg-zinc-900 p-2.5 text-[12px] leading-snug text-zinc-100 dark:bg-black/40 [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit">{children}</pre>
   ),
   code: ({ className, children }) => {
     // ``` のブロックは pre の中（言語の className が付く）。それ以外はインライン。
@@ -62,7 +70,7 @@ const components: Components = {
   },
 };
 
-export default function MarkdownMessage({ text }: { text: string }) {
+function MarkdownMessage({ text }: { text: string }) {
   return (
     <div className="min-w-0 break-words text-sm [overflow-wrap:anywhere] [&_.katex-display]:my-2 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1">
       <ReactMarkdown
@@ -75,3 +83,6 @@ export default function MarkdownMessage({ text }: { text: string }) {
     </div>
   );
 }
+
+// 本文が変わらなければ描き直さない（生成中に過去の発言の式まで作り直さない）。
+export default memo(MarkdownMessage);
