@@ -158,6 +158,117 @@ def update_conversation(
     return _conv_out(conv)
 
 
+class ForkBody(BaseModel):
+    message_id: str = Field(min_length=1, max_length=64)
+    # True: そのメッセージまでを含める（「ここから分岐」）。False: その手前まで（「編集して送り直す」）
+    include: bool = True
+
+
+def _owned_conversation(db: Session, conv_id: str, user: User) -> Conversation:
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    return conv
+
+
+def _ordered_messages(db: Session, conv_id: str) -> list[ChatMessage]:
+    return list(db.execute(
+        select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
+    ).scalars().all())
+
+
+def _copy_attachments(source_conv: str, target_conv: str, ids: list[str]) -> list[str]:
+    """発言に付いた画像を新しい会話の置き場へ写す（元の会話を消しても分岐先に残るように）。"""
+    import shutil
+
+    copied = []
+    source, target = _attachment_root(source_conv), _attachment_dir(target_conv)
+    for attachment_id in ids:
+        if not _ATTACHMENT_ID_RE.fullmatch(attachment_id):
+            continue
+        path = source / attachment_id
+        if path.is_file():
+            shutil.copy2(path, target / attachment_id)
+            copied.append(attachment_id)
+    return copied
+
+
+@router.post("/conversations/{conv_id}/fork", status_code=201)
+def fork_conversation(
+    conv_id: str, body: ForkBody, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """会話を分岐する: 指定したメッセージまで（include=False ならその手前まで）を新しい会話へ写す。
+
+    元の会話はそのまま残す（編集で書き直しても、前の続きは元の会話で読める）。
+    OpenCode の回答は、写した先で別の OpenCode セッションになる（同じセッションを 2 つの会話で
+    取り合わないように opencode_session を外す）。会話の資料（RAG）は写さない。
+    """
+    source = _owned_conversation(db, conv_id, user)
+    messages = _ordered_messages(db, conv_id)
+    index = next((i for i, m in enumerate(messages) if m.id == body.message_id), None)
+    if index is None:
+        raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+    picked = messages[: index + 1 if body.include else index]
+    if any(m.status == "generating" for m in picked):
+        raise HTTPException(status_code=409, detail="生成中のメッセージは分岐できません")
+    target = Conversation(id=_new_id(), owner_user_id=user.id,
+                          title=f"分岐: {source.title}"[:200] if source.title else "分岐した会話")
+    db.add(target)
+    db.flush()
+    for m in picked:
+        try:
+            meta = json.loads(m.meta_json or "{}")
+        except json.JSONDecodeError:
+            meta = {}
+        if isinstance(meta, dict):
+            for key in ("opencode_session", "server_key"):
+                meta.pop(key, None)
+            if meta.get("attachments"):
+                meta["attachments"] = _copy_attachments(conv_id, target.id, list(meta["attachments"]))
+        db.add(ChatMessage(
+            id=_new_id(), conversation_id=target.id, role=m.role, content=m.content, thinking=m.thinking,
+            status=m.status, model=m.model, error=m.error, created_at=m.created_at,
+            meta_json=json.dumps(meta, ensure_ascii=False),
+        ))
+    for ref in db.execute(select(ChatReference).where(ChatReference.conversation_id == conv_id)).scalars().all():
+        db.add(ChatReference(
+            conversation_id=target.id, sequence=ref.sequence, short_id=ref.short_id,
+            canonical_key=ref.canonical_key, kind=ref.kind, title=ref.title, url=ref.url,
+            provider=ref.provider, excerpt=ref.excerpt, metadata_json=ref.metadata_json,
+        ))
+    db.commit()
+    audit.record(db, "chat.conversation.fork", user=user, resource_type="conversation", resource_id=target.id,
+                 request=request, metadata={"source": conv_id, "messages": len(picked), "include": body.include})
+    return _conv_out(target)
+
+
+@router.delete("/conversations/{conv_id}/messages/{message_id}", status_code=204)
+def delete_message(
+    conv_id: str, message_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """メッセージを消す。自分の発言を消したら、その回答（次の自分の発言までの assistant）も消す。"""
+    _owned_conversation(db, conv_id, user)
+    messages = _ordered_messages(db, conv_id)
+    index = next((i for i, m in enumerate(messages) if m.id == message_id), None)
+    if index is None:
+        raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+    doomed = [messages[index]]
+    if messages[index].role == "user":
+        for m in messages[index + 1:]:
+            if m.role == "user":
+                break
+            doomed.append(m)
+    if any(m.status == "generating" for m in doomed):
+        raise HTTPException(status_code=409, detail="生成中です。止めてから消してください")
+    for m in doomed:
+        db.delete(m)
+    db.commit()
+    audit.record(db, "chat.message.delete", user=user, resource_type="conversation", resource_id=conv_id,
+                 request=request, metadata={"messages": len(doomed)})
+
+
 @router.delete("/conversations/{conv_id}", status_code=204)
 def delete_conversation(
     conv_id: str, request: Request,
