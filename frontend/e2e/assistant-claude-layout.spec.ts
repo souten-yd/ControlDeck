@@ -282,10 +282,16 @@ test("failed and canceled answers show their status, the error and a retry", asy
   await expect(page.getByRole("menuitem", { name: /コピー/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
 
-  const retry = failed.getByRole("button", { name: "再試行" });
+  // 再試行は最後の回答だけ（途中の失敗から送り直すと、会話の末尾に古い質問が重なるため）
+  await expect(failed.getByRole("button", { name: "再試行" })).toHaveCount(0);
+  const retry = canceled.getByRole("button", { name: "再試行" });
   expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  // 入力欄に下書きがある間は出さない（下書きを巻き込まない）
+  await shell.locator("textarea").first().fill("書きかけ");
+  await expect(retry).toHaveCount(0);
+  await shell.locator("textarea").first().fill("");
   await retry.click();
-  await expect.poll(() => calls).toContain("send:グランフロントの店を教えて");
+  await expect.poll(() => calls).toContain("send:もう一度お願い");
   await noOverflow(page, 320);
 });
 
