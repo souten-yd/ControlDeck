@@ -17,7 +17,7 @@ import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
-import { IconBell, IconChevronLeft, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconSettings, IconShield, IconUser, IconUsers } from "../components/icons";
+import { IconBell, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconSettings, IconShield, IconUser, IconUsers } from "../components/icons";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
@@ -97,7 +97,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "users", label: "ユーザーと権限", summary: "ユーザーの追加・ロール・権限",
     icon: IconUsers, keywords: ["ユーザー", "ロール", "権限", "管理者", "アカウント追加"],
     allowed: (can) => can("users.manage") },
-  { id: "system", label: "システム", summary: "本体の更新・バックアップ・監査ログ",
+  { id: "system", label: "更新とバックアップ", summary: "本体の更新・バックアップ・監査ログ",
     icon: IconShield, keywords: ["更新", "アップデート", "リリース", "バックアップ", "復元", "監査ログ", "ログ"],
     allowed: (can) => can("settings.manage") || can("audit.view") },
 ];
@@ -141,7 +141,9 @@ function SettingsLayout() {
   return (
     <div className="mx-auto max-w-5xl p-4 md:p-6">
       <div className="md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:gap-6">
-        <nav aria-label="設定のカテゴリ" className={current ? "hidden md:block" : "block"}>
+        {/* 携帯でもカテゴリの一覧だけの画面は挟まない（☰ → Settings → 一覧 → 中身、と
+            入れ子が深くなる）。横に流れる札で切り替え、中身はすぐ下に出す。PC は左の一覧。 */}
+        <nav aria-label="設定のカテゴリ" className="mb-4 min-w-0 md:mb-0">
           <PageHeader title="Settings" />
           <label className="relative mb-3 block">
             <span className="sr-only">設定を検索</span>
@@ -150,58 +152,53 @@ function SettingsLayout() {
               onKeyDown={(e) => { if (e.key === "Enter" && results[0]) navigate(`/settings/${results[0].def.id}`); }}
               className="min-h-11 w-full rounded-xl border border-zinc-200 bg-white pl-9 pr-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
           </label>
-          <ul className="space-y-1 md:sticky md:top-4">
+          <ul data-settings-categories className="-mx-4 flex gap-1.5 overflow-x-auto overscroll-x-contain px-4 pb-1 [scrollbar-width:none] md:sticky md:top-4 md:mx-0 md:block md:space-y-1 md:overflow-visible md:px-0 md:pb-0">
             {results.map(({ def, word }) => {
               const Icon = def.icon;
               const active = def.id === shown?.id;
-              return <li key={def.id}>
-                <Link to={`/settings/${def.id}`} aria-current={active ? "page" : undefined}
-                  className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${active
-                    ? "md:bg-accent-50 md:text-accent-700 md:dark:bg-accent-600/15 md:dark:text-accent-300"
-                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/70"}`}>
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><Icon /></span>
+              return <li key={def.id} className="shrink-0">
+                <Link to={`/settings/${def.id}`} aria-current={active ? "page" : undefined} title={def.summary}
+                  className={`flex min-h-11 items-center gap-2 rounded-full border px-3.5 text-sm transition-colors md:min-h-12 md:gap-3 md:rounded-xl md:border-0 md:px-3 md:py-2 ${active
+                    ? "border-accent-500/50 bg-accent-50 text-accent-700 dark:border-accent-500/40 dark:bg-accent-600/15 dark:text-accent-300"
+                    : "border-zinc-200 bg-white hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70 md:bg-transparent md:dark:bg-transparent"}`}>
+                  <span className="hidden h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 md:grid"><Icon /></span>
                   <span className="min-w-0 flex-1">
-                    <span className="block font-medium">{def.label}</span>
-                    <span className="block truncate text-xs text-zinc-500 md:hidden">{word ? `一致: ${word}` : def.summary}</span>
+                    <span className="block whitespace-nowrap font-medium">{def.label}</span>
                     {word && <span className="hidden text-xs text-zinc-500 md:block">一致: {word}</span>}
                   </span>
-                  <IconChevronRight className="shrink-0 text-zinc-400 md:hidden" />
                 </Link>
               </li>;
             })}
             {elsewhere.map((item) => (
-              <li key={item.label}>
-                <Link to={item.to} className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
-                  <span className="min-w-0 flex-1"><span className="block font-medium">{item.label}</span>
-                    <span className="block truncate text-xs text-zinc-500">{item.screen}</span></span>
+              <li key={item.label} className="shrink-0">
+                <Link to={item.to} title={item.screen} className="flex min-h-11 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70 md:min-h-12 md:gap-3 md:rounded-xl md:border-0 md:bg-transparent md:px-3 md:py-2 md:dark:bg-transparent">
+                  <span className="min-w-0 flex-1"><span className="block whitespace-nowrap font-medium md:whitespace-normal">{item.label}</span>
+                    <span className="hidden truncate text-xs text-zinc-500 md:block">{item.screen}</span></span>
                   <IconChevronRight className="shrink-0 text-zinc-400" />
                 </Link>
               </li>
             ))}
-            {results.length === 0 && elsewhere.length === 0 && <li className="px-3 py-4 text-sm text-zinc-500">一致する設定はありません</li>}
-            <li className="pt-2">
-              <Link to="/models" className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><IconSettings /></span>
-                <span className="min-w-0 flex-1"><span className="block font-medium">AI モデル</span>
-                  <span className="block truncate text-xs text-zinc-500">Models 画面で管理します</span></span>
+            {results.length === 0 && elsewhere.length === 0 && <li className="px-3 py-3 text-sm text-zinc-500">一致する設定はありません</li>}
+            <li className="shrink-0 md:pt-2">
+              <Link to="/models" title="Models 画面で管理します" className="flex min-h-11 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70 md:min-h-12 md:gap-3 md:rounded-xl md:border-0 md:bg-transparent md:px-3 md:py-2 md:dark:bg-transparent">
+                <span className="hidden h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 md:grid"><IconSettings /></span>
+                <span className="min-w-0 flex-1"><span className="block whitespace-nowrap font-medium">AI モデル</span>
+                  <span className="hidden truncate text-xs text-zinc-500 md:block">Models 画面で管理します</span></span>
                 <IconChevronRight className="shrink-0 text-zinc-400" />
               </Link>
             </li>
-            {opencodePath && <li>
-              <Link to={opencodePath} className="flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800/70">
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"><IconSettings /></span>
-                <span className="min-w-0 flex-1"><span className="block font-medium">OpenCode</span>
-                  <span className="block truncate text-xs text-zinc-500">モデル・開発ワークフローは OpenCode 画面の「設定」</span></span>
+            {opencodePath && <li className="shrink-0">
+              <Link to={opencodePath} title="モデル・開発ワークフローは OpenCode 画面の「設定」" className="flex min-h-11 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70 md:min-h-12 md:gap-3 md:rounded-xl md:border-0 md:bg-transparent md:px-3 md:py-2 md:dark:bg-transparent">
+                <span className="hidden h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 md:grid"><IconSettings /></span>
+                <span className="min-w-0 flex-1"><span className="block whitespace-nowrap font-medium">OpenCode</span>
+                  <span className="hidden truncate text-xs text-zinc-500 md:block">モデル・開発ワークフローは OpenCode 画面の「設定」</span></span>
                 <IconChevronRight className="shrink-0 text-zinc-400" />
               </Link>
             </li>}
           </ul>
         </nav>
-        <main className={current ? "block" : "hidden md:block"}>
+        <main className="min-w-0">
           {shown && <>
-            <Link to="/settings" className="mb-2 inline-flex min-h-11 items-center gap-1 text-sm text-accent-600 md:hidden dark:text-accent-400">
-              <IconChevronLeft /> 設定
-            </Link>
             <header className="mb-4 md:pt-1">
               <h2 className="text-xl font-semibold tracking-tight">{shown.label}</h2>
               <p className="mt-1 text-xs text-zinc-500">{shown.summary}</p>
