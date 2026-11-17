@@ -40,6 +40,12 @@ if (isIPhoneStandalone) {
     if (shrunk) root.style.setProperty("--cd-safe-area-bottom", "0px");
     else root.style.removeProperty("--cd-safe-area-bottom");
     root.dataset.viewportShrunk = shrunk ? String(full - reported) : "";
+    // キーボードが出ている（報告される高さが 100 以上縮む）間は、文書の最低の高さ（index.css、WebKit 301108 の
+    // 対処）を外す。外さないと文書が見える高さより長くなり、iOS が入力欄を見せようと文書を下へスクロールして、
+    // 画面全体が上へずれる（実機 2026-11-17: innerHeight 516・スクロール 357・入力欄の下端 125）。
+    const keyboard = full - reported > 100;
+    root.classList.toggle("cd-viewport-keyboard", keyboard);
+    if (keyboard && (window.scrollY || document.scrollingElement?.scrollTop)) window.scrollTo(0, 0);
   };
   syncStandaloneHeight();
   window.addEventListener("resize", syncStandaloneHeight);
@@ -48,6 +54,8 @@ if (isIPhoneStandalone) {
   // このとき window の resize が来ないことがある（実機 2026-11-17: innerHeight 932 なのに殻 873 のまま）ので、
   // 読み込み完了・表示の切り替え・少し後にも合わせ直す。
   window.visualViewport?.addEventListener("resize", syncStandaloneHeight);
+  // キーボードの出始めに iOS が文書をスクロールしたら戻す
+  window.visualViewport?.addEventListener("scroll", syncStandaloneHeight);
   window.addEventListener("load", syncStandaloneHeight);
   document.addEventListener("visibilitychange", syncStandaloneHeight);
   for (const delay of [300, 1000, 2500]) window.setTimeout(syncStandaloneHeight, delay);

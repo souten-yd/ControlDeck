@@ -491,13 +491,38 @@ test("standalone iPhone: shell fits the shortened web view and drops the bottom 
   expect(viewport.composer_bottom).toBeLessThanOrEqual(894);
   // iOS が後から満寸へ広げても window の resize が来ないことがある（実機 2026-11-17）。表示の切り替えなどで合わせ直す
   await page.evaluate(() => {
+    const w = window as unknown as { __innerHeight?: PropertyDescriptor };
+    w.__innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight")
+      ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(window), "innerHeight");
     Object.defineProperty(window, "innerHeight", { configurable: true, get: () => 956 });
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById("root")!).height)).toBe("956px");
-  await page.evaluate(() => { delete (window as unknown as { innerHeight?: number }).innerHeight; });
+  await page.evaluate(() => {
+    const w = window as unknown as { __innerHeight?: PropertyDescriptor };
+    // 上書きを外して元の（実際の高さを返す）定義へ戻す
+    if (w.__innerHeight) Object.defineProperty(window, "innerHeight", { ...w.__innerHeight, configurable: true });
+    else delete (window as unknown as { innerHeight?: number }).innerHeight;
+  });
   // 短くなっていないとき（満寸）は Safe Area をそのまま使う
   await page.setViewportSize({ width: 440, height: 956 });
+  // キーボード（報告される高さが 956 → 520 に縮む）: 文書の最低の高さを外し、スクロールしない・入力欄が見える範囲に
+  // （実機 2026-11-17: 縮んだ高さより文書が長く、iOS が 357 スクロールして画面全体が上へずれた）
+  await page.setViewportSize({ width: 440, height: 520 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("cd-viewport-keyboard"))).toBe(true);
+  const keyboard = await page.evaluate(() => ({
+    scrollY: window.scrollY,
+    rootHeight: getComputedStyle(document.getElementById("root")!).height,
+    composerBottom: document.querySelector("[data-assistant-input-card]")!.getBoundingClientRect().bottom,
+    topbarTop: document.querySelector("[data-assistant-topbar]")!.getBoundingClientRect().top,
+  }));
+  expect(keyboard.scrollY).toBe(0);
+  expect(keyboard.rootHeight).toBe("520px");
+  expect(keyboard.topbarTop).toBeGreaterThanOrEqual(0);
+  expect(keyboard.composerBottom).toBeLessThanOrEqual(520);
+  expect(keyboard.composerBottom).toBeGreaterThan(400);
+  await page.setViewportSize({ width: 440, height: 956 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("cd-viewport-keyboard"))).toBe(false);
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue("--cd-safe-area-bottom"))).toBe("");
 });
 
