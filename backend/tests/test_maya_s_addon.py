@@ -536,3 +536,36 @@ def test_vision_requests_reach_maya_once_its_encoder_is_set_up(managed, monkeypa
         asyncio.run(ai_gateway.resolve_ai_target('vision.analyze'))
     row['vision'] = True
     assert asyncio.run(ai_gateway.resolve_ai_target('vision.analyze')).model == 'maya-s'
+
+
+def test_start_lowers_ondemand_helpers_but_refuses_other_llms(admin_client, monkeypatch):
+    """資料検索の補助（埋め込み・並べ替え）は Maya の起動を塞がず、先に降ろす。本物の LLM は 409。"""
+    from app.models_mgmt import llama, maya_s, ollama, radiance, strata_gateway
+
+    instances = [{"alias": "embed-bge-m3", "role": "embedding", "loaded": True},
+                 {"alias": "rerank-qwen3-4b", "role": "reranker", "loaded": True}]
+    stopped = []
+    monkeypatch.setattr(maya_s, "list_instances", lambda: [{"alias": "maya-deepseek-xs"}])
+    monkeypatch.setattr(llama, "list_instances", lambda: instances)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias, **kw: stopped.append(alias) or (True, ""))
+    monkeypatch.setattr(strata_gateway, "list_instances", lambda: [])
+    monkeypatch.setattr(radiance, "installed", lambda: False)
+
+    async def none():
+        return []
+
+    monkeypatch.setattr(ollama, "running_models", none)
+    monkeypatch.setattr(maya_s, "start_instance", lambda alias: (True, ""))
+
+    async def ready(**kw):
+        return True
+
+    monkeypatch.setattr(maya_s, "wait_ready", ready)
+    headers = {"X-Requested-With": "ControlDeck"}
+    r = admin_client.post("/api/v1/features/maya-s/model/start-jobs", json={"alias": "maya-deepseek-xs"}, headers=headers)
+    assert r.status_code == 201, r.text
+    assert stopped == ["embed-bge-m3", "rerank-qwen3-4b"]
+
+    instances.append({"alias": "qwen-27b", "role": "llm", "loaded": True})
+    r = admin_client.post("/api/v1/features/maya-s/model/start-jobs", json={"alias": "maya-deepseek-xs"}, headers=headers)
+    assert r.status_code == 409 and "qwen-27b" in r.json()["detail"]
