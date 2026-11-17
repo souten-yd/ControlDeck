@@ -463,7 +463,8 @@ test("standalone iPhone: shell fits the shortened web view and drops the bottom 
     Object.defineProperty(window.screen, "width", { configurable: true, get: () => 440 });
     Object.defineProperty(window.screen, "height", { configurable: true, get: () => 956 });
     // 上の帯に画面を広げている（black-translucent）状態の Safe Area
-    document.documentElement.style.setProperty("--cd-safe-area-top", "62px");
+    // 文書の要素ができてから（アプリのスクリプトより先）に入れる
+    document.addEventListener("readystatechange", () => document.documentElement.style.setProperty("--cd-safe-area-top", "62px"), { once: true });
   });
   await page.setViewportSize({ width: 440, height: 894 }); // 956 - 62（縮んだ報告）
   // 診断: 画面の寸法が送られる（下が切れる件を実機の値で追うため）
@@ -544,7 +545,8 @@ test("standalone iPhone: with the status bar outside the page the bottom safe ar
     Object.defineProperty(navigator, "standalone", { configurable: true, value: true });
     Object.defineProperty(window.screen, "width", { configurable: true, get: () => 430 });
     Object.defineProperty(window.screen, "height", { configurable: true, get: () => 932 });
-    document.documentElement.style.setProperty("--cd-safe-area-top", "0px");
+    // 文書の要素ができてから（アプリのスクリプトより先）に入れる
+    document.addEventListener("readystatechange", () => document.documentElement.style.setProperty("--cd-safe-area-top", "0px"), { once: true });
   });
   await page.setViewportSize({ width: 430, height: 873 }); // 932 - 59（帯の下から置かれた高さ）
   await login(page);
