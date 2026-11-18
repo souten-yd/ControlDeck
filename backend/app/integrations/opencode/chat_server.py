@@ -455,9 +455,33 @@ async def session_is_active(server: Server, session_id: str) -> bool:
     return session_id in json.dumps(await _call(server, "GET", "/api/session/active") or [])
 
 
+async def _required(server: Server, method: str, path: str, body: dict | None = None) -> Any:
+    """見つからない（404）を成功として扱わない。"""
+    result = await _call(server, method, path, body)
+    if result is None:
+        raise ChatServerError("OpenCode のセッションが見つかりません")
+    return result
+
+
+# 途中で伝えた要望が、まだ届いていないかもしれないセッション
+_steered: set[str] = set()
+
+
+async def _steer_pending(server: Server, session_id: str) -> bool:
+    """最後の段の途中で伝えると、回の終わりの後に次の実行が始まる。それを待つか。"""
+    if session_id not in _steered:
+        return False
+    _steered.discard(session_id)
+    try:
+        return bool(await _call(server, "GET", f"/api/session/{session_id}/inbox"))
+    except ChatServerError:
+        return False
+
+
 async def steer_turn(server: Server, session_id: str, text: str) -> None:
     """作業中のセッションへ伝える。今の道具が終わったところでモデルに届く（実測 2026-11-18）。"""
-    await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text, "delivery": "steer"})
+    await _required(server, "POST", f"/api/session/{session_id}/prompt", {"text": text, "delivery": "steer"})
+    _steered.add(session_id)
 
 
 async def turn_changes(server: Server, session_id: str, message_id: str) -> list[dict]:
@@ -468,9 +492,9 @@ async def turn_changes(server: Server, session_id: str, message_id: str) -> list
 
 async def revert_turn(server: Server, session_id: str, message_id: str) -> None:
     """その依頼の前へ戻す（ファイルとセッションの両方）。確定に失敗したら元へ戻す。"""
-    await _call(server, "POST", f"/api/session/{session_id}/revert/stage", {"messageID": message_id, "files": True})
+    await _required(server, "POST", f"/api/session/{session_id}/revert/stage", {"messageID": message_id, "files": True})
     try:
-        await _call(server, "POST", f"/api/session/{session_id}/revert/commit")
+        await _required(server, "POST", f"/api/session/{session_id}/revert/commit")
     except ChatServerError:
         await _call(server, "DELETE", f"/api/session/{session_id}/revert")
         raise
@@ -592,6 +616,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
         await switch_agent(server, session_id, agent)
         prompted = await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
         message_id = str((prompted or {}).get("id") or "")   # この回の変更を調べる・取り消す目印
+        if message_id and on_status:                         # 止めた回でも変更を確かめられるよう、先に知らせる
+            await on_status({"phase": "waiting", "message_id": message_id})
         parent_running = True
         await status("waiting", "モデルの応答を待っています", force=True)
         while True:
@@ -699,6 +725,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 await on_permission({"id": data.get("requestID"), "status": str(data.get("reply") or "")})
             elif kind == "session.execution.succeeded":
                 parent_running = False
+                if await _steer_pending(server, session_id):   # 伝えた要望の続きが始まるのを待つ
+                    follow_up_due = True
                 resumed = True
                 if follow_up_due:                       # 結果を受けた続きは、親が終わってから始まる
                     follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS

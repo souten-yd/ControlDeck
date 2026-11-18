@@ -244,7 +244,7 @@ def fork_conversation(
         except json.JSONDecodeError:
             meta = {}
         if isinstance(meta, dict):
-            for key in ("opencode_session", "server_key"):
+            for key in ("opencode_session", "server_key", "opencode_message", "changes", "reverted"):
                 meta.pop(key, None)
             if meta.get("attachments"):
                 meta["attachments"] = _copy_attachments(conv_id, target.id, list(meta["attachments"]))
@@ -819,6 +819,7 @@ class OpenCodePermissionBody(BaseModel):
 
 # 動いている OpenCode の回へ、送信待ちの要望を今すぐ伝える口（発言 ID → 関数）
 _steer_targets: dict[str, Any] = {}
+_reverting: set[str] = set()          # 取り消し中の会話（その間は OpenCode へ送らない）
 MAX_CHANGE_FILES = 200
 MAX_PATCH_CHARS = 200_000
 
@@ -927,18 +928,25 @@ async def opencode_revert(conv_id: str, body: OpenCodeRevertBody, request: Reque
                 ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
             ).order_by(ChatMessage.created_at.desc())).scalars().all()
             latest = next((row.id for row in rows if '"opencode_session"' in (row.meta_json or "")), "")
-            return latest, any(row.status == "generating" for row in rows)
+            return latest, any(_still_generating(row) for row in rows)
 
-    latest, generating = await asyncio.to_thread(latest_turn)
-    if generating:
-        raise HTTPException(status_code=409, detail="作業が終わってから取り消してください")
-    if latest != body.message_id or meta.get("reverted"):
-        raise HTTPException(status_code=409, detail="取り消せるのは最新の OpenCode の回だけです")
-    try:
-        server = await _turn_server(meta, user.id)
-        await chat_server.revert_turn(server, str(meta["opencode_session"]), str(meta["opencode_message"]))
-    except chat_server.ChatServerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    # 確かめてから戻すまでの間に、次の回が始まらないようにする
+    async with _queue_locks.setdefault(conv_id, asyncio.Lock()):
+        if conv_id in _reverting:
+            raise HTTPException(status_code=409, detail="取り消しています")
+        _reverting.add(conv_id)
+        try:
+            latest, generating = await asyncio.to_thread(latest_turn)
+            if generating:
+                raise HTTPException(status_code=409, detail="作業が終わってから取り消してください")
+            if latest != body.message_id or meta.get("reverted"):
+                raise HTTPException(status_code=409, detail="取り消せるのは最新の OpenCode の回だけです")
+            server = await _turn_server(meta, user.id)
+            await chat_server.revert_turn(server, str(meta["opencode_session"]), str(meta["opencode_message"]))
+        except chat_server.ChatServerError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            _reverting.discard(conv_id)
 
     def record() -> None:
         with SessionLocal() as db:
@@ -1007,6 +1015,13 @@ def language_guard(history: list[dict], user_query: str) -> list[dict]:
 def _utf16_len(text: str) -> int:
     """画面（JavaScript）の文字位置に合わせた長さ。絵文字は 2 と数える。"""
     return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _changes_of(message) -> list:
+    try:
+        return list((json.loads(message.meta_json or "{}") or {}).get("changes") or [])
+    except (ValueError, TypeError, AttributeError):
+        return []
 
 
 def _timeline_of(message) -> list:
@@ -1209,6 +1224,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await maybe_ckpt()
 
         async def on_status(item: dict) -> None:
+            if item.get("message_id"):
+                buf["meta"]["opencode_message"] = item["message_id"]
+                return
             _latest_stats[assistant_id] = {"type": "stats", "phase": item["phase"], "detail": item.get("detail", ""),
                                            "tok_per_sec": item.get("tok_per_sec", 0), "gen_tokens": item.get("gen_tokens", 0),
                                            "prompt_tokens": None, "context_max": None}
@@ -1379,14 +1397,32 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 job.log("steer", text=text)
                 await asyncio.to_thread(checkpoint)
 
+            async def record_changes() -> None:
+                """この回で変わったファイルを記録する。止めた回でも。失敗しても回答の保存は止めない。"""
+                message_id = buf["meta"].get("opencode_message")
+                if not message_id:
+                    return
+                try:
+                    files = await asyncio.wait_for(chat_server.turn_changes(server, session_id, message_id), 10)
+                    changes = _change_summary(files)
+                    if changes:
+                        buf["meta"]["changes"] = changes
+                        job.log("changes", changes=changes)
+                except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
+                    logger.warning("OpenCode の変更を確かめられませんでした: %s", type(exc).__name__)
+
             _steer_targets[assistant_id] = steer
             try:
                 result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
                                                     on_reasoning=on_reasoning, on_tool=on_tool,
                                                     on_permission=on_permission,
                                                     agent=params.get("code_agent", "build"), on_status=on_status)
+            except BaseException:
+                await record_changes()
+                raise
             finally:
                 _steer_targets.pop(assistant_id, None)
+            await record_changes()
         except asyncio.CancelledError:
             expire_pending()
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
@@ -1402,16 +1438,6 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             raise
         # 答えを待っていた許可は、終わった時点で無効（OpenCode 側でも取り消される）
         expire_pending()
-        # この回で変わったファイルを記録する（差分は開いたときに読む）。調べられなくても回答は残す
-        if result.get("message_id"):
-            buf["meta"]["opencode_message"] = result["message_id"]
-            try:
-                changes = _change_summary(await chat_server.turn_changes(server, session_id, result["message_id"]))
-                if changes:
-                    buf["meta"]["changes"] = changes
-                    job.log("changes", changes=changes)
-            except chat_server.ChatServerError as exc:
-                logger.warning("OpenCode の変更を確かめられませんでした: %s", exc)
         if result["status"] == "interrupted":
             if any(item.get("status") == "reject" for item in permissions):
                 buf["content"] += ("\n\n" if buf["content"] else "") + "（許可されなかったため、ここで止めました）"
@@ -1953,6 +1979,8 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     allowed_modes = {"auto", "chat", "web", "academic", "deep", "research", "code"}
     if body.mode not in allowed_modes:
         raise HTTPException(status_code=422, detail="未対応のチャットモードです")
+    if body.mode == "code" and conv_id in _reverting:
+        raise HTTPException(status_code=409, detail="変更を取り消しています。終わってから送ってください")
     if body.mode == "code" and db.query(ChatMessage).filter(
         ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
         ChatMessage.status == "generating",
@@ -2360,7 +2388,8 @@ async def steer_queue(conv_id: str, item_id: str,
         item = _queue_item(db, conv_id, item_id, user)
         if item.status != "queued":
             raise HTTPException(status_code=409, detail="もう送りました")
-        if json.loads(item.body_json or "{}").get("attachments"):
+        request_body = json.loads(item.body_json or "{}")
+        if request_body.get("attachments"):
             raise HTTPException(status_code=409, detail="添付のある要望は、回答が終わってから送ります")
         running = db.execute(select(ChatMessage).where(
             ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant", ChatMessage.status == "generating",
@@ -2368,6 +2397,14 @@ async def steer_queue(conv_id: str, item_id: str,
         steer = _steer_targets.get(running.id) if running else None
         if steer is None:
             raise HTTPException(status_code=409, detail="今は伝えられません。回答が終わったら送ります")
+        # 動いている回と同じ送り先の要望だけ（別の機能・フォルダ・プランの要望を混ぜない）
+        running_meta = json.loads(running.meta_json or "{}")
+        folder = Path(str(running_meta.get("project_path") or ""))
+        wanted_name, wanted_path = str(request_body.get("code_project") or ""), str(request_body.get("code_project_path") or "")
+        same_folder = (not wanted_name or wanted_name == folder.name) and (not wanted_path or _same_folder(wanted_path, folder))
+        if request_body.get("mode") != "code" or request_body.get("code_research") or not same_folder \
+                or str(request_body.get("code_agent") or "build") != str(running_meta.get("agent") or "build"):
+            raise HTTPException(status_code=409, detail="この要望は送り先が違うので、回答が終わってから送ります")
         try:
             await steer(item.content)
         except chat_server.ChatServerError as exc:
@@ -2442,6 +2479,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
         saved_content = msg.content if msg else ""
         saved_thinking = msg.thinking if msg else ""
         saved_timeline = _timeline_of(msg) if msg else []
+        saved_changes = _changes_of(msg) if msg else []
         # 本文がまだ無くても、思考や並びがあれば今の内容を送る（送らないと最初からの出来事を重ねて流し、
         # 同じ思考が 2 つの窓に出る。レビュー指摘 2026-11-18）
         has_saved = bool(saved_content or saved_thinking or saved_timeline)
@@ -2459,7 +2497,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
     # それ以前のdeltaを再送しない。最終snapshotでもDB内容へ必ず収束させる。
     if has_saved:
         await websocket.send_text(json.dumps({"type": "snapshot", "content": saved_content, "thinking": saved_thinking,
-                                              "timeline": saved_timeline}))
+                                              "timeline": saved_timeline, "changes": saved_changes}))
     if message_id in _latest_stats:     # 開き直しても、いまの段階をすぐ出す
         await websocket.send_text(json.dumps(_latest_stats[message_id], ensure_ascii=False))
 
@@ -2484,7 +2522,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
                     if current is not None:
                         await websocket.send_text(json.dumps({
                             "type": "snapshot", "content": current.content,
-                            "thinking": current.thinking or "", "timeline": _timeline_of(current),
+                            "thinking": current.thinking or "", "timeline": _timeline_of(current), "changes": _changes_of(current),
                         }, ensure_ascii=False))
                 cursor = next_cursor
                 continue
@@ -2539,7 +2577,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
                 final_error = final.error or ""
                 await websocket.send_text(json.dumps({
                     "type": "snapshot", "content": final.content,
-                    "thinking": final.thinking or "", "timeline": _timeline_of(final),
+                    "thinking": final.thinking or "", "timeline": _timeline_of(final), "changes": _changes_of(final),
                 }, ensure_ascii=False))
         await websocket.send_text(json.dumps(
             {"type": "done", "status": job.status, "error": final_error or job.error}, ensure_ascii=False))

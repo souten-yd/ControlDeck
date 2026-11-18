@@ -173,6 +173,7 @@ def test_changes_are_recorded_and_the_latest_turn_can_be_reverted(admin_client, 
 
     async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
         count["n"] += 1
+        await on_status({"phase": "waiting", "message_id": f"msg_{count['n']}"})
         await on_text("直しました")
         return {"status": "succeeded", "error": "", "message_id": f"msg_{count['n']}"}
 
@@ -232,7 +233,9 @@ def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypa
     answer = admin_client.post(f"{base}/send", headers=CSRF_HEADERS,
                                json={"content": "作って", "mode": "code", "model": "test", "code_project": "demo"}).json()
     item = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
-                             json={"content": "色は青で", "mode": "code", "model": "test", "code_project": "demo"}).json()["item"]
+                             json={"content": "色は青で", "mode": "code", "model": "test", "code_project": tmp_path.name}).json()["item"]
+    chat = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
+                             json={"content": "別の質問", "mode": "chat", "model": "test"}).json()["item"]
     try:
         for _ in range(100):
             result = admin_client.post(f"{base}/queue/{item['id']}/steer", headers=CSRF_HEADERS)
@@ -240,10 +243,13 @@ def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypa
                 break
             time.sleep(0.05)
         assert result.status_code == 200 and told == ["色は青で"]
+        other = admin_client.post(f"{base}/queue/{chat['id']}/steer", headers=CSRF_HEADERS)
+        admin_client.delete(f"{base}/queue/{chat['id']}", headers=CSRF_HEADERS)
     finally:
         release["go"] = True
     final = _wait_done(admin_client, conv_id, answer["assistant_message_id"])
     assert {"k": "n", "text": "色は青で"} in final["meta"]["timeline"]
+    assert other.status_code == 409 and told == ["色は青で"]                        # 送り先の違う要望は混ぜない
     assert admin_client.get(f"{base}/queue").json()["items"] == []
 
 

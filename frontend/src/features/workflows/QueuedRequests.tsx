@@ -74,7 +74,7 @@ export function QueuedRequests({ items, held, removed, onEdit, onDelete, onResto
                   <p className="line-clamp-3 whitespace-pre-wrap break-words text-[13px] leading-snug text-zinc-800 dark:text-zinc-100">{item.content}</p>
                   {item.status === "failed" && <p className="mt-0.5 text-[11px] text-red-600 dark:text-red-400">送れませんでした: {item.error}</p>}
                 </div>
-                {canSteer && item.status === "queued" && (
+                {canSteer && item.status === "queued" && item.mode === "code" && (
                   <button type="button" onClick={() => onSteer?.(item.id)} aria-label={`送信待ち ${index + 1} を今すぐ伝える`} title="今の作業が一区切りしたところで OpenCode に届きます"
                     className="grid h-8 shrink-0 place-items-center rounded-lg px-1.5 text-xs font-semibold text-accent-700 hover:bg-accent-50 dark:text-accent-300 dark:hover:bg-accent-950/40 [@media(pointer:coarse)]:h-11">今すぐ伝える</button>
                 )}

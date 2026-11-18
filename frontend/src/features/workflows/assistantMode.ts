@@ -47,6 +47,8 @@ export function updateConversationPrefs(id: string, changed: Partial<Conversatio
 export function resolveConversationPrefs(id: string, sent: Partial<ConversationPrefs>, sentId: string,
   orderedIds: string[]): Partial<ConversationPrefs> {
   const saved = allPrefs()[id] ?? {};
+  // 分岐の目印は最初に開いたときだけ。以後は発言の位置で比べる（別の端末の新しい発言を見落とさない）
+  if (saved.seen === "*" && orderedIds.length) updateConversationPrefs(id, {}, orderedIds[orderedIds.length - 1]);
   const localIsCurrent = saved.seen === "*" || !sentId
     || (saved.seen !== undefined && orderedIds.indexOf(saved.seen) >= orderedIds.indexOf(sentId));
   const pick = <K extends PrefField>(field: K): ConversationPrefs[K] | undefined => {

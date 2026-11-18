@@ -518,7 +518,8 @@ export default function AssistantChat() {
           if (d.type === "snapshot") {
             flush();
             patchMsg((m) => ({ ...m, content: d.content, thinking: d.thinking || undefined,
-              timeline: Array.isArray(d.timeline) && d.timeline.length ? d.timeline : m.timeline }));
+              timeline: Array.isArray(d.timeline) && d.timeline.length ? d.timeline : m.timeline,
+              changes: Array.isArray(d.changes) && d.changes.length ? d.changes : m.changes }));
           } else if (d.type === "delta") {
             if (pendingThinking) flush();   // 種類が変わる所で区切る（思考と本文の順番を保つ）
             pendingContent += d.content;
