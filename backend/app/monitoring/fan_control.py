@@ -716,6 +716,13 @@ async def run() -> None:
             await asyncio.to_thread(sample_raw)
         except Exception:  # noqa: BLE001 - 記録の失敗で制御を止めない
             logger.debug("1 秒ごとの記録に失敗しました", exc_info=True)
+        if count % 30 == 5:     # ファンの最初の更新の後。GPU のオフセットの自動適用（有効なときだけ）
+            try:
+                from app.monitoring import gpu_tuning
+
+                await asyncio.to_thread(gpu_tuning.boot_tick)
+            except Exception:  # noqa: BLE001 - ファン制御を止めない
+                logger.exception("GPU のオフセットの自動適用に失敗しました")
         count += 1
         await asyncio.sleep(RAW_INTERVAL)
 

@@ -46,6 +46,23 @@ async def post_apply(body: ApplyBody, request: Request, user: User = Depends(req
     return result
 
 
+class BootBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/boot")
+async def post_boot(body: BootBody, request: Request, user: User = Depends(require_permission("settings.manage")),
+                    db=Depends(get_db)):
+    """再起動後の自動適用。有効にすると、いま適用している値を次の起動から使う。"""
+    try:
+        result = await asyncio.to_thread(gpu_tuning.set_boot, body.enabled)
+    except gpu_tuning.GpuTuningError as exc:
+        raise _http(exc) from exc
+    audit.record(db, "gpu.tuning.boot", user=user, resource_type="gpu", resource_id=result.get("bdf", ""), request=request,
+                 metadata={"enabled": body.enabled, "core": result["boot"]["core"], "voltage": result["boot"]["voltage"]})
+    return result
+
+
 @router.post("/restore")
 async def post_restore(request: Request, user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
     try:

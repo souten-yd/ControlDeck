@@ -15,6 +15,7 @@ interface GpuTuning {
   items?: { core: OdItem; voltage: OdItem };
   previous?: { core?: number; voltage?: number };
   preset: { label: string; core: number; voltage: number };
+  boot?: { enabled: boolean; core: number | null; voltage: number | null; state: string; message: string };
   live?: { core_mhz: number | null; power_w: number | null; power_limit_w: number | null; hotspot_c: number | null; fan_rpm: number | null; busy_percent: number | null };
 }
 interface AmdGpuPolicy {
@@ -73,6 +74,11 @@ function TuningPanel() {
     mutationFn: () => api<GpuTuning>("/system/gpu-tuning/restore", { method: "POST" }),
     onSuccess: (next) => done(next, "適用前の値に戻しました"), onError: failed,
   });
+  const boot = useMutation({
+    mutationFn: (enabled: boolean) => api<GpuTuning>("/system/gpu-tuning/boot", { method: "POST", json: { enabled } }),
+    onSuccess: (next) => { qc.setQueryData(["gpu-tuning"], next); show(next.boot?.enabled ? "次の起動から自動で適用します" : "自動適用をやめました"); },
+    onError: failed,
+  });
   if (!data) return null;
   const previous = Object.entries(data.previous ?? {});
   const valid = (text: string) => text.trim() === "" || Number.isInteger(Number(text));
@@ -82,7 +88,7 @@ function TuningPanel() {
     <section data-gpu-tuning className="space-y-3 rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <div>
         <h3 className="text-sm font-semibold">発熱を抑える（コア周波数・電圧）</h3>
-        <p className="mt-1 text-xs leading-relaxed text-zinc-500">まず周波数だけを少しずつ下げ、効果を見てから電圧を試します。再起動すると元に戻り、自動では適用しません。</p>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-500">まず周波数だけを少しずつ下げ、効果を見てから電圧を試します。再起動すると元に戻ります（下の自動適用を有効にしたときを除く）。</p>
       </div>
       {!data.available ? <p className="text-sm text-amber-700 dark:text-amber-300">{data.message}</p> : <>
         <p className="text-xs text-zinc-500">対象: {data.bdf}{data.xfx ? "（XFX Radeon AI PRO R9700）" : ""}</p>
@@ -100,6 +106,17 @@ function TuningPanel() {
           {previous.length > 0 && <button type="button" className={secondaryButtonClass} disabled={!canManage || !data.helper_ready || restore.isPending} onClick={() => restore.mutate()}>適用前の値に戻す</button>}
         </div>
         {previous.length > 0 && <p className="text-xs text-zinc-500">戻す内容: {previous.map(([key, value]) => key === "core" ? `周波数 ${signed(value, "MHz")}` : `電圧 ${signed(value, "mV")}`).join("、")}</p>}
+        <label data-gpu-boot className="flex min-h-11 items-start gap-2.5 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+          <input type="checkbox" className="mt-0.5 h-4 w-4" checked={!!data.boot?.enabled} disabled={!canManage || !data.helper_ready || boot.isPending}
+            onChange={(e) => boot.mutate(e.target.checked)} />
+          <span className="min-w-0 text-sm">再起動後も自動で適用する
+            <span className="mt-0.5 block text-xs leading-relaxed text-zinc-500">
+              {data.boot?.enabled ? `起動後、ファン制御の開始を待って ${signed(data.boot.core, "MHz")} / ${signed(data.boot.voltage, "mV")} を適用します。` : "いま適用している値を、次の起動から使います。"}
+              電力制限とファン制御はそのままです。適用の直後に PC が止まった場合は、次の起動で自動的に無効にします。
+            </span>
+            {data.boot?.message && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">{data.boot.message}</span>}
+          </span>
+        </label>
         <div>
           <h4 className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">いまの実測（設定値とは別）</h4>
           <dl data-gpu-live className="mt-1.5 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">

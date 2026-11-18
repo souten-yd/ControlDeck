@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 174 ファイル、1539 テスト（目的の未記入 93 ファイル）
+- backend: 174 ファイル、1545 テスト（目的の未記入 93 ファイル）
 - E2E: 84 spec、164 テスト
 
 ## backend（backend/tests）
@@ -1040,6 +1040,12 @@
 - `test_only_the_changed_item_is_restored`
 - `test_a_read_failure_is_not_reported_as_missing_support`
 - `test_helper_ready_needs_the_passwordless_rule` — 管理者は sudo -l コマンドが成功するので、それでは未導入を見分けられない（2026-11-18 実機）。
+- `test_boot_apply_runs_once_per_boot_and_leaves_manual_changes_alone`
+- `test_boot_apply_waits_after_startup`
+- `test_a_crash_after_boot_apply_disables_it`
+- `test_a_stable_boot_is_confirmed`
+- `test_boot_apply_undoes_itself_if_the_power_limit_changes`
+- `test_boot_needs_an_applied_value`
 - `test_previous_values_do_not_survive_a_reboot`
 - `test_api_requires_an_admin_and_maps_errors`
 

@@ -7,6 +7,7 @@ import { establishSession, hasSession } from "./support/session";
 const state = (core: number, voltage: number, previous = {}) => ({
   available: true, bdf: "0000:03:00.0", xfx: true, helper_ready: true, previous,
   preset: { label: "XFX R9700 試験設定（−500 MHz / −25 mV）", core: -500, voltage: -25 },
+  boot: { enabled: false, core: null, voltage: null, state: "", message: "" },
   items: { core: { supported: true, unit: "MHz", current: core, min: -500, max: 1000 }, voltage: { supported: true, unit: "mV", current: voltage, min: -200, max: 0 } },
   live: { core_mhz: 2976, power_w: 205, power_limit_w: 210, hotspot_c: 90, fan_rpm: 2647, busy_percent: 100 },
 });
@@ -32,6 +33,7 @@ for (const width of [320, 1280]) {
     await expect.poll(() => applied.length).toBe(1);
     expect(applied[0]).toEqual({ core_offset_mhz: -500, voltage_offset_mv: -25 });
     await expect(panel.getByRole("button", { name: "適用前の値に戻す" })).toBeVisible();
+    await expect(panel.locator("[data-gpu-boot]")).toContainText("再起動後も自動で適用する");
     await expect(page.getByRole("link", { name: /^温度管理/ }).first()).toBeVisible();
     await expect(page.getByRole("link", { name: /^AI モデル/ })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);

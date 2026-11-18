@@ -2,8 +2,11 @@
 
 2026-11-18 利用者「電力制限 210 W は有効のまま、ホットスポット温度を下げてファンの回転数を下げたい」。
 ドライバが定義する最大周波数・電圧に対する「オフセット」だけを扱う。絶対値には変換しない。
-書き込みは固定の helper（gpu-od）だけ。電力・VRAM・ファンの設定には触らず、起動時に自動で適用もしない。
+書き込みは固定の helper（gpu-od）だけ。電力・VRAM・ファンの設定には触らない。
 全体のリセット（`r`）は使わない（SMU 14 では以後の OD 書き込みが再起動まで失敗する）。
+
+再起動後の自動適用は、利用者が有効にしたときだけ。ファン制御が動き始めた後に、起動ごとに 1 回だけ適用する
+（helper の排他でファンカーブの更新と重ならない）。適用後すぐ止まった起動があれば、次は適用せず無効にする。
 """
 from __future__ import annotations
 
@@ -26,6 +29,9 @@ TARGET_DEVICES = {"0x7551"}          # Radeon AI PRO R9700（Navi 48）
 XFX_SUBSYSTEM = ("0x1eae", "0x9801")
 ITEMS = {"core": ("OD_SCLK_OFFSET", "SCLK_OFFSET", "MHz"), "voltage": ("OD_VDDGFX_OFFSET", "VDDGFX_OFFSET", "mV")}
 PRESET = {"id": "xfx-r9700-test", "label": "XFX R9700 試験設定（−500 MHz / −25 mV）", "core": -500, "voltage": -25}
+BOOT_DELAY_S = 60          # 起動直後を避ける（ファン制御の最初の更新の後）
+BOOT_STABLE_S = 600        # 適用からこの時間動けば安定とみなす
+UPTIME = Path("/proc/uptime")
 _sudo_cache: tuple[float, bool] = (0.0, False)
 _write_lock = threading.Lock()       # 読む・書く・確かめるを 1 組にする
 logger = logging.getLogger(__name__)
@@ -99,23 +105,32 @@ def _boot_id() -> str:
     return _read(BOOT_ID)
 
 
-def _load_previous() -> dict:
+def _load_state() -> dict:
     try:
         saved = json.loads((data_dir() / STATE_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def _write_state(state: dict) -> None:
+    path = data_dir() / STATE_FILE
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:      # GPU には適用済み。適用の結果は変えない
+        logger.warning("GPU 設定の記録を保存できませんでした: %s", exc)
+
+
+def _load_previous() -> dict:
+    saved = _load_state()
     # 再起動するとドライバの値は 0 に戻るので、前の起動の記録は使わない
     return saved.get("previous") or {} if saved.get("boot_id") == _boot_id() else {}
 
 
 def _save_previous(previous: dict) -> None:
-    path = data_dir() / STATE_FILE
-    tmp = path.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps({"boot_id": _boot_id(), "previous": previous}), encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:      # GPU には適用済み。適用の結果は変えない
-        logger.warning("GPU 設定の復元用の値を保存できませんでした: %s", exc)
+    _write_state({**_load_state(), "boot_id": _boot_id(), "previous": previous})
 
 
 def helper_ready() -> bool:
@@ -149,7 +164,8 @@ def status() -> dict:
     subsystem = (_read(device / "subsystem_vendor").lower(), _read(device / "subsystem_device").lower())
     message = "" if text else "ドライバが OverDrive を公開していません（amdgpu.ppfeaturemask を確認してください）"
     return {"available": bool(text), "message": message, "bdf": device.name, "xfx": subsystem == XFX_SUBSYSTEM,
-            "items": items, "previous": _load_previous(), "helper_ready": helper_ready(), "preset": PRESET, "live": _live(device)}
+            "items": items, "previous": _load_previous(), "helper_ready": helper_ready(), "preset": PRESET, "live": _live(device),
+            "boot": _boot_status()}
 
 
 def _run_helper(bdf: str, core: int | None, voltage: int | None) -> None:
@@ -240,3 +256,85 @@ def restore() -> dict:
         _apply({key: int(value) for key, value in previous.items()})
         _save_previous({})
     return status()
+
+
+def _boot_status() -> dict:
+    boot = _load_state().get("boot") or {}
+    return {"enabled": bool(boot.get("enabled")), "core": boot.get("core"), "voltage": boot.get("voltage"),
+            "state": boot.get("state", ""), "message": boot.get("message", "")}
+
+
+def _update_boot(**changes) -> None:
+    state = _load_state()
+    _write_state({**state, "boot": {**(state.get("boot") or {}), **changes}})
+
+
+def set_boot(enabled: bool) -> dict:
+    """再起動後の自動適用。有効にするときは、いまドライバに入っている値を覚える。"""
+    with _write_lock:
+        if not enabled:
+            _update_boot(enabled=False, state="", message="")
+            return status()
+        device = find_target()
+        if device is None:
+            raise GpuTuningError("unsupported", "対象の Radeon AI PRO R9700 が見つかりません")
+        items = parse_od(_read_od(device / "pp_od_clk_voltage"))
+        values = {key: items[key]["current"] for key in ITEMS if items[key]["supported"]}
+        if not any(values.values()):
+            raise GpuTuningError("range", "先に値を適用してください（いまは両方とも 0 です）")
+        # 今の起動では適用済みなので、次の起動から効く
+        _update_boot(enabled=True, core=values.get("core"), voltage=values.get("voltage"),
+                     applied_boot=_boot_id(), state="confirmed", message="")
+    return status()
+
+
+def _uptime() -> float:
+    try:
+        return float(_read(UPTIME).split()[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _guarded_values(device: Path) -> tuple[str, str]:
+    """適用で変わってはいけないもの（電力制限と VRAM の設定）。"""
+    hwmon = next(iter(sorted(device.glob("hwmon/hwmon*"))), None)
+    cap = _read(hwmon / "power1_cap") if hwmon else ""
+    match = re.search(r"^OD_MCLK:\s*\n((?:\s*\d+:.*\n)+)", _read_od(device / "pp_od_clk_voltage"), re.M)
+    return cap, match[1] if match else ""
+
+
+def boot_tick() -> None:
+    """ファン制御のループから定期的に呼ぶ。起動ごとに 1 回だけ適用し、安定したら記録する。"""
+    with _write_lock:
+        boot = _load_state().get("boot") or {}
+        if not boot.get("enabled"):
+            return
+        current = _boot_id()
+        if boot.get("applied_boot") == current:
+            if boot.get("state") == "applied" and time.time() - float(boot.get("applied_at") or 0) >= BOOT_STABLE_S:
+                _update_boot(state="confirmed", message="")
+            return
+        if boot.get("state") == "applied":     # 前の起動は、安定を確かめる前に止まった
+            _update_boot(enabled=False, state="disabled", applied_boot=current,
+                         message="前回は適用の直後に PC が止まった可能性があるため、自動適用を無効にしました")
+            logger.warning("GPU のオフセットの自動適用を無効にしました（前回の起動が安定を確認する前に終わりました）")
+            return
+        if _uptime() < BOOT_DELAY_S:
+            return
+        values = {key: boot[key] for key in ITEMS if boot.get(key) is not None}
+        device = find_target()
+        try:
+            if device is None:
+                raise GpuTuningError("unsupported", "対象の Radeon AI PRO R9700 が見つかりません")
+            guarded = _guarded_values(device)
+            # 止まっても次の起動で分かるよう、書く前に記録する
+            _update_boot(applied_boot=current, applied_at=time.time(), state="applied", message="")
+            before, changed = _apply(values)
+            if _guarded_values(device) != guarded:
+                _apply({key: before[key]["current"] for key in changed})
+                raise GpuTuningError("verify", "電力制限か VRAM の設定が変わったため、適用を取り消しました")
+            if changed:
+                _save_previous({key: before[key]["current"] for key in changed})
+        except GpuTuningError as exc:
+            _update_boot(applied_boot=current, state="failed", message=exc.message)
+            logger.warning("GPU のオフセットを自動適用できませんでした: %s", exc.message)

@@ -216,6 +216,86 @@ def test_helper_ready_needs_the_passwordless_rule(tmp_path, monkeypatch):
         assert gt.helper_ready() is expected
 
 
+def _boot(gpu, name: str) -> None:
+    """再起動: 値は 0 に戻り、起動 ID が変わる。"""
+    gpu.boot.write_text(name + "\n")
+    gpu.core, gpu.voltage = 0, 0
+    gpu.sync()
+    gpu.commands.clear()
+
+
+@pytest.fixture
+def booted(gpu, monkeypatch):
+    monkeypatch.setattr(gt, "_uptime", lambda: 300.0)
+    return gpu
+
+
+def test_boot_apply_runs_once_per_boot_and_leaves_manual_changes_alone(booted):
+    gt.apply(-200, -25)
+    assert gt.set_boot(True)["boot"]["core"] == -200
+    gt.boot_tick()
+    assert booted.commands[-1] == "c" and len(booted.commands) == 3    # 今の起動では書き直さない
+    gt._update_boot(state="confirmed")
+    _boot(booted, "boot-2")
+    gt.boot_tick()
+    assert booted.commands == ["s -200", "vo -25", "c"] and (booted.core, booted.voltage) == (-200, -25)
+    assert gt.status()["previous"] == {"core": 0, "voltage": 0}        # 自動適用の後も元へ戻せる
+    gt.restore()
+    booted.commands.clear()
+    gt.boot_tick()
+    assert booted.commands == [] and booted.core == 0                  # 手で戻したら同じ起動では再適用しない
+
+
+def test_boot_apply_waits_after_startup(booted, monkeypatch):
+    gt.apply(-200, None)
+    gt.set_boot(True)
+    _boot(booted, "boot-2")
+    monkeypatch.setattr(gt, "_uptime", lambda: 10.0)
+    gt.boot_tick()
+    assert booted.commands == []
+
+
+def test_a_crash_after_boot_apply_disables_it(booted):
+    gt.apply(-200, -25)
+    gt.set_boot(True)
+    _boot(booted, "boot-2")
+    gt.boot_tick()
+    assert gt.status()["boot"]["state"] == "applied"
+    _boot(booted, "boot-3")                                            # 安定を確かめる前に止まった
+    gt.boot_tick()
+    state = gt.status()["boot"]
+    assert state["enabled"] is False and "無効" in state["message"] and booted.commands == []
+
+
+def test_a_stable_boot_is_confirmed(booted, monkeypatch):
+    gt.apply(-200, None)
+    gt.set_boot(True)
+    _boot(booted, "boot-2")
+    gt.boot_tick()
+    monkeypatch.setattr(gt.time, "time", lambda: 10**12)
+    gt.boot_tick()
+    assert gt.status()["boot"]["state"] == "confirmed"
+    _boot(booted, "boot-3")
+    gt.boot_tick()
+    assert booted.core == -200
+
+
+def test_boot_apply_undoes_itself_if_the_power_limit_changes(booted, monkeypatch):
+    gt.apply(-200, None)
+    gt.set_boot(True)
+    _boot(booted, "boot-2")
+    values = iter([("210", "m"), ("180", "m")])
+    monkeypatch.setattr(gt, "_guarded_values", lambda _device: next(values))
+    gt.boot_tick()
+    state = gt.status()["boot"]
+    assert booted.core == 0 and state["state"] == "failed" and "電力制限" in state["message"]
+
+
+def test_boot_needs_an_applied_value(booted):
+    with pytest.raises(gt.GpuTuningError):
+        gt.set_boot(True)
+
+
 def test_previous_values_do_not_survive_a_reboot(gpu):
     gt.apply(-100, None)
     gpu.boot.write_text("boot-2\n")
