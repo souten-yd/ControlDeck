@@ -183,6 +183,25 @@ class ChatMessage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class ChatQueuedRequest(Base):
+    """生成中に送った要望（送信待ち）。生成が正常に終わったら、サーバーが順に会話へ送る。
+    2026-11-18 利用者「実行中に要望を送信したい。サーバー側で保存しておき、適切なタイミングで LLM に送る」。"""
+
+    __tablename__ = "chat_queued_requests"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    # 送るときの指定（SendBody。content を除く）
+    body_json: Mapped[str] = mapped_column(Text, default="{}")
+    # queued / sent / deleted / failed
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ChatReference(Base):
     """会話内で再利用する文献。短いIDは会話内だけで一意とする。"""
 

@@ -134,6 +134,38 @@ def _opencode_box():
     return True, text
 
 
+def _chat_queue():
+    """送信待ちの要望が、送られるはずなのに残っていないか（回答が正常に終わり、生成中のものも無いのに 2 分以上）。
+    2026-11-18 生成中に送った要望をサーバーが貯めて、回答の後に送るようにした。送り損ねると気付けないため。"""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage, ChatQueuedRequest, utcnow
+
+    db = SessionLocal()
+    try:
+        cutoff = utcnow() - timedelta(minutes=2)
+        waiting = db.execute(select(ChatQueuedRequest).where(ChatQueuedRequest.status == "queued")).scalars().all()
+        stuck: set[str] = set()
+        failed = db.query(ChatQueuedRequest).filter(ChatQueuedRequest.status == "failed").count()
+        for item in waiting:
+            created = item.created_at if item.created_at.tzinfo else item.created_at.replace(tzinfo=cutoff.tzinfo)
+            if created > cutoff or item.conversation_id in stuck:
+                continue
+            last = db.execute(select(ChatMessage).where(
+                ChatMessage.conversation_id == item.conversation_id, ChatMessage.role == "assistant",
+            ).order_by(ChatMessage.created_at.desc()).limit(1)).scalar_one_or_none()
+            if last is not None and last.status == "completed":
+                stuck.add(item.conversation_id)
+        if stuck:
+            return "warn", f"回答が終わったのに送られていない送信待ちが {len(stuck)} 会話にあります（画面の「今すぐ送る」で送れます。続くなら不具合）"
+        return True, f"送信待ち {len(waiting)} 件（送り損ねなし）" + (f"・送れなかった {failed} 件" if failed else "")
+    finally:
+        db.close()
+
+
 def _maya_vision():
     """動いている Maya が画像を読めるかと、ControlDeck の判定（設定ファイル）が合っているか。
     2026-11-18: DeepSeek の画像を「読めない」と判定し続け、ゲートウェイの画像の解析が断っていた（気付かれずに残った）。"""
@@ -167,7 +199,8 @@ DEVIATION_WARN = 3
 CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモリ", _memory), ("応答（event loop）", _event_loop),
           ("常駐サービス", _failed_units), ("ローカル LLM", _llms), ("画面の build", _frontend),
           ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan), ("OpenCode の箱", _opencode_box),
-          ("Maya の画像の読み取り", _maya_vision)]
+          ("Maya の画像の読み取り", _maya_vision),
+          ("AI アシスタントの送信待ち", _chat_queue)]
 
 
 _latest: dict | None = None

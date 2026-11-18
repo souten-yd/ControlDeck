@@ -20,6 +20,7 @@ import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, SEARCH_MODES, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
+import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
@@ -969,7 +970,7 @@ export default function AssistantChat() {
     }
     const text = (providedText ?? input).trim()
       || (readyArchives.length > 0 ? ARCHIVE_ONLY_PROMPT : readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
-    if (!text || busy) return;
+    if (!text) return;
     // 画像は OpenCode に渡せない（VLM のチャットで見る）。画像があるときは会話の流れで OpenCode へ回さない
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
@@ -998,6 +999,30 @@ export default function AssistantChat() {
     // この会話に OpenCode の回答があれば、空でもサーバーが最後のプロジェクトで続ける
     if (selectedMode === "code" && !codeProjectName && !codeFolder && !messages.some((m) => m.projectPath)) {
       show("OpenCodeのプロジェクトを指定してください（新規名の入力・既存の選択・📁フォルダ）", "error");
+      return;
+    }
+    if (busy) {
+      // 生成中は送信待ちへ（サーバーが持ち、回答が終わったら送る。2026-11-18 利用者の依頼）
+      if (selectedMode === "gen" || selectedMode === "run") {
+        show("ワークフローの作成・実行は、いまの回答が終わってから送ってください", "error");
+        return;
+      }
+      const cid = await ensureConversation();
+      const json = selectedMode === "code"
+        ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
+          attachments: readyArchives.map((a) => a.id), code_research: researchFirst }
+        : { content: text, mode: modeChoice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
+          searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
+          code_project_path: deepSources.includes("local_code") ? deepProjectPath : "" };
+      try {
+        await api(`/chat/conversations/${cid}/queue`, { method: "POST", json });
+        setInput("");
+        setAttachments([]);
+      } catch (e) {
+        show(e instanceof Error ? e.message : "送信待ちに入れられませんでした", "error");
+      } finally {
+        void refetchQueue();
+      }
       return;
     }
     setInput("");
@@ -1099,14 +1124,93 @@ export default function AssistantChat() {
     }
   };
 
+  // 音声入力: 話の区切りごとに入力欄へ足す（送信はしない）。✕ で取り消すと、始めた時の文に戻す
+  const voiceBaseRef = useRef("");
   const asr = useAssistantAsr({
-    busy,
-    onTranscript: async (text) => {
-      setInput(text);
-      await send(text);
-    },
+    onText: (text) => setInput((prev) => {
+      const sep = prev && /[A-Za-z0-9.,!?]$/.test(prev) && /^[A-Za-z0-9]/.test(text) ? " " : "";
+      return prev + sep + text;
+    }),
     onError: (message) => show(message, "error"),
   });
+  const startVoice = () => {
+    voiceBaseRef.current = input;
+    void asr.start();
+  };
+  const cancelVoice = () => {
+    asr.cancel();
+    setInput(voiceBaseRef.current);
+  };
+
+  // ---- 送信待ちの要望（生成中に送ったもの。サーバーが持ち、回答が終わったら送る） ----
+  type QueueState = { items: QueuedItem[]; generating_message_id: string | null; held: boolean };
+  const { data: queue, refetch: refetchQueue } = useQuery({
+    queryKey: ["chat-queue", convId],
+    queryFn: () => api<QueueState>(`/chat/conversations/${convId}/queue`),
+    enabled: Boolean(convId),
+    refetchInterval: (q) => (busy || (q.state.data?.items.length ?? 0) > 0 ? 1500 : false),
+  });
+  const queueItems = convId ? queue?.items ?? [] : [];
+  const [removedQueue, setRemovedQueue] = useState<{ ids: string[]; label: string } | null>(null);
+  useEffect(() => {
+    if (!removedQueue) return;
+    const timer = window.setTimeout(() => setRemovedQueue(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [removedQueue]);
+  const queueCall = async <T,>(path: string, init: Parameters<typeof api>[1], fail: string): Promise<T | null> => {
+    try {
+      return await api<T>(`/chat/conversations/${convId}/queue${path}`, init);
+    } catch (e) {
+      show(e instanceof Error ? e.message : fail, "error");
+      return null;
+    } finally {
+      void refetchQueue();
+    }
+  };
+  const editQueued = async (id: string, content: string) =>
+    (await queueCall(`/${id}`, { method: "PATCH", json: { content } }, "書き直せませんでした")) !== null;
+  const deleteQueued = async (id: string) => {
+    if (await queueCall(`/${id}`, { method: "DELETE" }, "取り消せませんでした")) {
+      setRemovedQueue({ ids: [id], label: "送信待ちを 1 件取り消しました" });
+    }
+  };
+  const clearQueued = async () => {
+    const result = await queueCall<{ ids: string[] }>("", { method: "DELETE" }, "取り消せませんでした");
+    if (result?.ids.length) setRemovedQueue({ ids: result.ids, label: `送信待ちを ${result.ids.length} 件取り消しました` });
+  };
+  const restoreQueued = async () => {
+    const ids = removedQueue?.ids ?? [];
+    setRemovedQueue(null);
+    for (const id of ids) await queueCall(`/${id}/restore`, { method: "POST" }, "戻せませんでした");
+  };
+  const sendQueuedNow = async () => { await queueCall("/dispatch", { method: "POST" }, "送れませんでした"); };
+  // サーバーが送信待ちを送り始めたら（この画面の外で始まった生成も）、会話を読み直して購読する
+  const syncingRef = useRef(false);
+  useEffect(() => {
+    const generating = queue?.generating_message_id;
+    if (!convId || busy || !generating || syncingRef.current) return;
+    if (messages.some((m) => m.messageId === generating && !m.streaming)) return;   // 終わったのを知っている
+    syncingRef.current = true;
+    const cid = convId;
+    void (async () => {
+      try {
+        const data = await api<{ conversation: ConversationSummary; messages: PersistMsg[] }>(`/chat/conversations/${cid}/messages`);
+        setMessages(data.messages.map((m) => restoreMessage(cid, m)));
+        const live = data.messages.find((m) => m.role === "assistant" && m.status === "generating");
+        if (live) {
+          setBusy(true);
+          try { await streamMessage(live.id); } finally { setBusy(false); }
+        }
+      } catch {
+        // 次の確認で拾い直す
+      } finally {
+        syncingRef.current = false;
+        void refetchQueue();
+        qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue?.generating_message_id, busy, convId]);
 
   /** 実行完了までポーリングし、signal.display の値を集めて返す。 */
   const pollExecution = async (execId: number): Promise<string> => {
@@ -1214,8 +1318,7 @@ export default function AssistantChat() {
   const localOptions = modelOptions.filter((o) => !o.external);
   const externalOptions = modelOptions.filter((o) => o.external);
   const externalSelected = externalOptions.find((o) => o.base === baseUrl && o.model === model);
-  const showComposerStatus = asr.phase === "installing" || asr.phase === "permission"
-    || asr.listening || asr.phase === "transcribing" || busy || genStats !== null;
+  const showComposerStatus = asr.phase === "installing" || asr.active || busy || genStats !== null;
 
   // 検索系（Web・論文・Deep Research・Research）は「調査」1 つにまとめ、深さは入力欄の下で選ぶ
   const modeOptions = MODES
@@ -1587,6 +1690,9 @@ export default function AssistantChat() {
               onClose={() => setCodePicker(false)}
             />
           )}
+          {convId && <QueuedRequests items={queueItems} held={Boolean(queue?.held)} removed={removedQueue}
+            onEdit={editQueued} onDelete={(id) => void deleteQueued(id)} onRestore={() => void restoreQueued()}
+            onSendNow={() => void sendQueuedNow()} onClear={() => void clearQueued()} />}
           {attachments.length > 0 && (
             <div className="mb-1.5 flex flex-wrap gap-1.5">
               {attachments.map((a) => (
@@ -1668,6 +1774,18 @@ export default function AssistantChat() {
               className="block max-h-40 w-full min-w-0 resize-none border-0 bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 outline-none placeholder:text-zinc-400 sm:text-[15px]"
             />
             <div data-assistant-input-row className="flex w-full min-w-0 items-center gap-1 p-1.5">
+              {asr.active ? (
+                <>
+                  {/* 聞いている間（Claude のように波形と時間を出す）。✕ は取り消し（この回の文字を戻す）、✓ は終わり */}
+                  <button type="button" onClick={cancelVoice} aria-label="音声入力を取り消す" title="取り消す（この回に入れた文字を戻す）"
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-600 hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:text-zinc-300 dark:hover:bg-zinc-800">✕</button>
+                  <VoiceWave levels={asr.levels} elapsedMs={asr.elapsedMs} pending={asr.pending} finishing={asr.phase === "finishing"} />
+                  <button type="button" onClick={() => void asr.finish()} disabled={asr.phase !== "listening"}
+                    aria-label="音声入力を終える" title="終える（文字は入力欄に残ります）"
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-lg font-bold text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-60">✓</button>
+                </>
+              ) : (
+                <>
               <PlusMenu
                 attachDisabled={busy}
                 onAttach={() => fileInputRef.current?.click()}
@@ -1698,33 +1816,33 @@ export default function AssistantChat() {
               </div>
               <button
                 type="button"
-                onClick={() => void asr.toggle()}
-                disabled={busy || !["idle", "error", "listening"].includes(asr.phase)}
-                aria-label={asr.listening ? "音声認識を停止" : "音声で入力"}
-                aria-pressed={asr.listening}
-                title={asr.phase === "installing" ? "音声入力モデルを導入中" : asr.listening ? "停止して認識" : "音声で入力"}
-                className={`relative isolate grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-50 ${
-                  asr.listening ? "bg-red-600 text-white shadow-sm" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                }`}
+                onClick={startVoice}
+                disabled={asr.phase === "installing"}
+                aria-label="音声で入力"
+                title={asr.phase === "installing" ? "音声入力モデルを導入中" : "音声で入力（止めるまで聞き続けます）"}
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-600 transition hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
               >
-                {asr.listening ? <IconStop /> : <IconMic />}
-                {asr.listening && <span className="absolute inset-0 -z-10 rounded-full bg-red-400 opacity-40" style={{ transform: `scale(${1 + asr.level * 0.35})` }} />}
+                <IconMic />
               </button>
-              {busy && runningJob ? (
+              {busy && runningJob && (
                 <button type="button" onClick={() => void stopRunning()} aria-label="止める" title="止める"
                   className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-zinc-900 text-white shadow-sm transition hover:bg-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
                   <IconStop className="text-base" />
                 </button>
-              ) : (
+              )}
+              {/* 生成中も、書いてあれば送れる（送信待ちに入り、回答が終わったら送る） */}
+              {(!busy || !runningJob || (input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready"))) && (
                 <button
                   onClick={() => void send()}
-                  disabled={busy || (!input.trim() && !attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready"))}
-                  aria-label="送信"
-                  title="送信（Enter）"
+                  disabled={!(input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready")) || (busy && !runningJob && !(input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready")))}
+                  aria-label={busy ? "送信待ちに入れる" : "送信"}
+                  title={busy ? "送信待ちに入れる（回答が終わったら送ります）" : "送信（Enter）"}
                   className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:bg-zinc-200 disabled:text-zinc-400 disabled:shadow-none dark:disabled:bg-zinc-800 dark:disabled:text-zinc-600"
                 >
-                  {busy ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
+                  {busy && !(input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready")) ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
                 </button>
+              )}
+                </>
               )}
             </div>
           </div>
@@ -1746,8 +1864,9 @@ export default function AssistantChat() {
                 </select>
               </label>
             )}
-            {showComposerStatus ? (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
-              <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
+            {showComposerStatus ? (asr.phase === "installing" || asr.active ? (
+              <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…"
+                : asr.listening ? "話した区切りごとに入力欄へ入れます · ✓ で終わる（最長 60 分）" : "残りを文字にしています…"}</span>
             ) : (
               <GenStatsBadge stats={genStats} busy={busy} />
             )) : (

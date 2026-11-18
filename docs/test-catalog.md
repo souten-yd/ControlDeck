@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 170 ファイル、1488 テスト（目的の未記入 93 ファイル）
-- E2E: 80 spec、150 テスト
+- backend: 171 ファイル、1495 テスト（目的の未記入 93 ファイル）
+- E2E: 81 spec、152 テスト
 
 ## backend（backend/tests）
 
@@ -529,6 +529,18 @@
 - `test_stale_generating_message_can_be_deleted` — 再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。
 - `test_archive_hides_from_list_and_restores` — 会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。
 - `test_japanese_questions_get_a_final_language_instruction` — 日本語の質問には、生成の直前に「日本語で」を足す（2026-11-17: DS-XS が検索資料に引かれて中国語で答えた）。
+
+### backend/tests/test_chat_queue.py
+
+目的: AI アシスタント: 生成中に送った要望（送信待ち）をサーバーが持ち、回答が終わったら送る。 目的: 2026-11-18 利用者「実行中に要望を送信したい。送信した要望はサーバー側で保存しておき、適切なタイミングで LLM に送信してほしい。複数の要望の送信や削除、編集、取り消しなどを可能に」。 - 生成中に貯めた要望は、回答が正常に終わったら自動で送る。同じ送り方の続きは 1 つの発言にまとめる - 止めた・失敗した回答の後は送らずに保留し、「今すぐ送る」で送る - 編集・削除（元に戻す）・すべて取り消す。送った後は編集できない
+
+- `test_requests_sent_during_a_run_are_sent_together_when_it_finishes`
+- `test_a_different_way_of_sending_waits_for_the_next_turn`
+- `test_after_a_stopped_run_the_queue_is_held_until_sent_now`
+- `test_edit_delete_restore_and_clear`
+- `test_a_request_queued_when_nothing_runs_is_sent_at_once`
+- `test_the_asr_reads_only_the_spoken_length` — whisper は 30 秒に詰め物して読む。短い区切りは読む範囲を絞って速くする（6 秒で 14〜17 秒 → 約 3 秒。実測）。
+- `test_selftest_warns_when_a_finished_conversation_still_has_waiting_requests` — 送り損ね（回答は正常に終わったのに、送信待ちが 2 分以上残る）に自己診断で気付けるように。
 
 ### backend/tests/test_chat_references.py
 
@@ -2487,6 +2499,13 @@
 
 - assistant input stays flush in standalone iPhone viewports
 - shows compact conversation references and inserts one into the prompt
+
+### frontend/e2e/assistant-queue-voice.spec.ts
+
+目的: 目的: 生成中に送った要望が「送信待ち」に入り、編集・削除（元に戻す）・すべて取り消すができ、回答が終わって サーバーが送ったら会話に出ること。音声入力は波形と時間が出て、黙っても止まらず、区切りごとに入力欄へ 文字が入り（送信はしない）、✓ で終わり、✕ でこの回の文字を戻すこと。320px と PC 幅ではみ出さないこと。 根拠: 2026-11-18 利用者「実行中に要望を送信したい。サーバー側で保存し、適切なタイミングで LLM に送る。複数の送信・ 削除・編集・取り消し」「Claude のように波形が出て、確かめながら文字入力したい」「すぐ止まった。長時間を想定して」。 API・WebSocket・マイクは模擬する（LLM と音声認識を動かさない）。
+
+- requests sent during a run wait, can be edited, removed and restored, then arrive (${width}px)
+- voice input shows a waveform, keeps listening through silence and types each phrase (${width}px)
 
 ### frontend/e2e/background-return.spec.ts
 
