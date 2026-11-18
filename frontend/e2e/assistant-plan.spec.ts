@@ -166,6 +166,9 @@ test("research with plan goes to OpenCode: investigate first, then plan", async 
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-mode-option="investigate"]').click();
   await expect(shell.locator("[data-plan-banner]")).toContainText("調べた結果をもとに計画します");
+  // 書き込み先が分かり、選べる（2026-11-18 利用者「プロジェクトを選べない。どこに書き込まれるのか」）
+  await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toBeVisible();
+  await expect(shell.locator("[data-plan-target]")).toContainText("app");
   const input = shell.locator("[data-assistant-input]");
   await input.fill("Plan15 の作り方を検討して");
   await input.press("Enter");

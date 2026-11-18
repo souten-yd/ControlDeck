@@ -253,6 +253,7 @@ export default function AssistantChat() {
 
   const saved = useRef(loadSettings()).current;
   const [storedChoice, setModeChoice] = useState<AssistantModeChoice>("auto");
+  const [codeAgent, setCodeAgent] = useState<"build" | "plan">("build");
   // 「調査」の深さ。自動は依頼の中身から Web / Web+論文 / Deep / 論文 を選ぶ
   const [researchDepth, setResearchDepth] = useState<ResearchDepth>("auto");
   const [messages, setMessages] = useState<Msg[]>([]); // 会話本文は DB から復元
@@ -447,13 +448,19 @@ export default function AssistantChat() {
   const pendingHandoff = messages.slice(lastCodeIndex + 1).some((m) => m.role === "assistant" && !m.streaming && m.content.trim());
   const conversationContext = { inCodeConversation, hasAnswers: pendingHandoff };
   const archiveWaiting = attachments.some((a) => a.kind === "archive" && a.status === "ready");
+  // プランは OpenCode の機能。プラン中は、調査は「調べて計画」、自動のチャットも OpenCode の計画として扱う。
+  // 2026-11-18 利用者「調査とプランを選べるが、プロジェクトを選べない。どこに書き込まれるのか」
+  const plansInOpenCode = codeAgent === "plan" && opencodeAvailable && !attachments.some((a) => a.kind === "image");
+  const detected = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
   const autoDecision = archiveWaiting && opencodeAvailable
     ? { mode: "code" as const, reason: "圧縮ファイルを OpenCode のプロジェクトへ展開" }
-    : detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
+    : plansInOpenCode && (detected.mode === "chat" || SEARCH_MODES.includes(detected.mode))
+      ? { mode: "code" as const, research: SEARCH_MODES.includes(detected.mode), reason: "プランは OpenCode で作ります" }
+      : detected;
   const displayedDecision = input.trim() || archiveWaiting ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
     : modeChoice === "investigate"
-      ? (researchDepth !== "auto" ? researchDepth : SEARCH_MODES.includes(displayedDecision.mode) ? displayedDecision.mode : "web")
+      ? plansInOpenCode ? "code" : (researchDepth !== "auto" ? researchDepth : SEARCH_MODES.includes(displayedDecision.mode) ? displayedDecision.mode : "web")
       : modeChoice;
 
   const append = (m: Msg) => setMessages((prev) => [...prev, m]);
@@ -601,7 +608,13 @@ export default function AssistantChat() {
     returnChoiceRef.current = null;
     setCodeAgent(prefs.agent ?? (last?.meta?.agent === "plan" ? "plan" : "build"));
     const path = last?.meta?.project_path;
-    if (!path) return;
+    if (!path) {
+      // OpenCode を使っていない会話に、別の会話で選んだフォルダを持ち越さない（知らない場所で作業しない）
+      setCodeProject("__new__");
+      setCodeNewName("");
+      setCodeFolderPath("");
+      return;
+    }
     const name = path.split("/").pop() ?? "";
     const listed = codeProjects?.projects.some((p) => p.name === name && (p.path === path || codeProjects.root.replace(/\/+$/, "") === path.slice(0, -name.length - 1)));
     if (listed) {
@@ -994,7 +1007,6 @@ export default function AssistantChat() {
   };
   // OpenCode のエージェント: ビルド（作る・直す）／プラン（計画だけ。ファイルも状態も変えない）。
   // 2026-11-18 利用者「プランの切り替えを追加し、プランの際はビルドモードではないことが明確にわかること」
-  const [codeAgent, setCodeAgent] = useState<"build" | "plan">("build");
   const planFromCycleRef = useRef(false);
   // 「調べて OpenCode に渡す」は 1 回だけ調査にして、送ったら元の選択へ戻す
   const returnChoiceRef = useRef<AssistantModeChoice | null>(null);
@@ -1074,16 +1086,16 @@ export default function AssistantChat() {
     // 画像は OpenCode に渡せない（VLM のチャットで見る）。画像があるときは会話の流れで OpenCode へ回さない
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
+    const planInOpenCode = agent === "plan" && opencodeAvailable && attachments.every((a) => a.kind !== "image");
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
     let researchFirst = choice === "auto" ? Boolean(decision.research)
       : choice === "code" ? wantsResearch(text) : false;
     let selectedMode: Mode = choice === "auto" ? (readyArchives.length > 0 && opencodeAvailable ? "code" : decision.mode)
       : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
     // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）
-    const planFromResearch = () => agent === "plan" && opencodeAvailable && readyImages.length === 0;
-    if (planFromResearch() && SEARCH_MODES.includes(selectedMode)) {
+    if (planInOpenCode && (SEARCH_MODES.includes(selectedMode) || (choice === "auto" && selectedMode === "chat"))) {
+      researchFirst = SEARCH_MODES.includes(selectedMode);
       selectedMode = "code";
-      researchFirst = true;
     }
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
@@ -1093,7 +1105,6 @@ export default function AssistantChat() {
     }
     const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
     const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
-    const hasCodeProject = Boolean(codeProjectName || codeFolder || messages.some((m) => m.projectPath));
     if (readyImages.length > 0 && selectedMode === "code") {
       // OpenCode は画像を受け取れない。黙って落とさず、知らせる（レビュー指摘 2026-11-18）
       show("画像は OpenCode に渡せません。＋から Chat を選ぶと画像を見て答えます", "error");
@@ -1161,12 +1172,6 @@ export default function AssistantChat() {
         } else {
           selectedMode = selectedPlan.mode;
           setResolvedDecision(selectedPlan);
-        }
-        // 判定で調査になったときも、プラン中は調べた結果で OpenCode が計画する
-        if (planFromResearch() && hasCodeProject && SEARCH_MODES.includes(selectedMode)) {
-          selectedMode = "code";
-          researchFirst = true;
-          selectedPlan = undefined;
         }
       }
       if (selectedMode === "chat" || selectedMode === "web" || selectedMode === "academic" || selectedMode === "deep" || selectedMode === "research") {
@@ -1472,6 +1477,10 @@ export default function AssistantChat() {
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
   // プランは OpenCode を使う場面でだけ効く（チャット・調査では関係ない）
   const planActive = opencodeAvailable && codeAgent === "plan";
+  const planIgnored = planActive && effectiveMode !== "code";   // Chat などを固定している
+  const lastProjectPath = [...messages].reverse().find((m) => m.projectPath)?.projectPath ?? "";
+  const planFolder = codeProject === "__folder__" ? codeFolderPath
+    : codeProject === "__new__" ? (codeNewName.trim() || lastProjectPath.split("/").pop() || "") : codeProject;
   const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [];
@@ -1900,7 +1909,7 @@ export default function AssistantChat() {
             <div data-plan-banner role="status"
               className="mb-2 flex w-full min-w-0 items-center gap-2 rounded-2xl border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-100">
               <span aria-hidden className="text-base">📋</span>
-              <span className="min-w-0 flex-1 leading-snug"><b>プラン</b> — {modeChoice === "investigate" ? "調べた結果をもとに計画します。" : "計画だけを立てます。"}ファイルの編集や変更を伴うコマンドはしません。</span>
+              <span className="min-w-0 flex-1 leading-snug"><b>プラン</b> — {planIgnored ? "いまは OpenCode を使わない機能なので、プランは使われません。" : modeChoice === "investigate" ? "調べた結果をもとに計画します。" : "計画だけを立てます。"}{!planIgnored && <span data-plan-target> 作業フォルダ: {planFolder || "未選択（下で選んでください）"}。</span>}ファイルの編集や変更を伴うコマンドはしません。</span>
               <button type="button" onClick={() => changeCodeAgent("build")}
                 className="min-h-9 shrink-0 rounded-lg border border-sky-300 bg-white px-2.5 text-xs font-semibold text-sky-800 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900 dark:text-sky-100 dark:hover:bg-sky-800 [@media(pointer:coarse)]:min-h-11">ビルドに切り替える</button>
             </div>
