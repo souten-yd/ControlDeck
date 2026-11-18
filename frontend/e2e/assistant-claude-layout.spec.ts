@@ -439,10 +439,11 @@ test("in an OpenCode conversation, an ordinary request stays with OpenCode", asy
   expect(Boolean(sent.code_research)).toBe(false);
 });
 
-test("in an OpenCode conversation, a plain question is answered in chat", async ({ page }) => {
+test("in an OpenCode conversation, a plain question stays in OpenCode", async ({ page }) => {
+  // 2026-11-18 本番: チャットへ回すと道具が無く、モデルが <tool_call> を文字で書いた。チャットは＋で選ぶ
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   const { sent } = await sendWithAutoRouting(page, { code: true, text: "ありがとう、ところで WAL って何?" });
-  expect(sent.mode).toBe("chat");
+  expect(sent.mode).toBe("code");
 });
 
 test("in an OpenCode conversation, an image goes to the chat that can see it", async ({ page }) => {
