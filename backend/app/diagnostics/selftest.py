@@ -134,6 +134,34 @@ def _opencode_box():
     return True, text
 
 
+def _opencode_background():
+    """終わった回答に「実行中」のままの裏のエージェントが残っていないか（結果を受け取り損ねた印）。
+    2026-11-18: レビューを裏で依頼した後、親のターンの終わりで聞くのをやめ、結果が画面に出なかった。"""
+    import json
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    db = SessionLocal()
+    try:
+        rows = db.execute(select(ChatMessage).where(ChatMessage.role == "assistant", ChatMessage.status == "completed")
+                          .order_by(ChatMessage.created_at.desc()).limit(50)).scalars().all()
+        lost = 0
+        for row in rows:
+            try:
+                tools = json.loads(row.meta_json or "{}").get("tools") or []
+            except ValueError:
+                continue
+            lost += sum(1 for t in tools if t.get("name") in ("subagent", "task") and t.get("status") == "running")
+    finally:
+        db.close()
+    if lost:
+        return "warn", f"終わった回答に、実行中のままの裏のエージェントが {lost} 件あります（結果を受け取れていない可能性）"
+    return True, "裏のエージェントの結果は受け取れています"
+
+
 def _chat_queue():
     """送信待ちの要望が、送られるはずなのに残っていないか（回答が正常に終わり、生成中のものも無いのに 2 分以上）。
     2026-11-18 生成中に送った要望をサーバーが貯めて、回答の後に送るようにした。送り損ねると気付けないため。"""
@@ -200,7 +228,8 @@ CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモ�
           ("常駐サービス", _failed_units), ("ローカル LLM", _llms), ("画面の build", _frontend),
           ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan), ("OpenCode の箱", _opencode_box),
           ("Maya の画像の読み取り", _maya_vision),
-          ("AI アシスタントの送信待ち", _chat_queue)]
+          ("AI アシスタントの送信待ち", _chat_queue),
+          ("OpenCode の裏のエージェント", _opencode_background)]
 
 
 _latest: dict | None = None

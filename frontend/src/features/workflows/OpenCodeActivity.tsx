@@ -10,6 +10,16 @@ export interface OpenCodeTool {
   status: "running" | "completed" | "failed";
   input?: Record<string, unknown>;
   output?: string;
+  started_at?: number;
+  ended_at?: number;
+}
+
+const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString("ja-JP", { hour12: false });
+
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${Math.round(seconds - minutes * 60)} 秒`;
 }
 
 export interface OpenCodePermission {
@@ -98,11 +108,19 @@ function ToolRow({ tool }: { tool: OpenCodeTool }) {
         )}
       </button>
       {open && (
-        <div className="flex min-w-0 gap-2 pb-2.5 pl-7 pr-3 font-mono text-[11px] leading-snug">
+        <div className="pb-2.5 pl-7 pr-3 font-mono text-[11px] leading-snug">
+          {tool.started_at && (
+            <p data-tool-time className="mb-1 text-zinc-500 dark:text-zinc-400">
+              開始 {clock(tool.started_at)}
+              {tool.ended_at ? ` · 終了 ${clock(tool.ended_at)} · ${formatDuration(Math.max(0, tool.ended_at - tool.started_at))}` : " · 実行中"}
+            </p>
+          )}
+          <div className="flex min-w-0 gap-2">
           <span aria-hidden className="shrink-0 text-zinc-400 dark:text-zinc-500">⎿</span>
           <pre className={`max-h-60 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all border-l border-zinc-200 pl-2.5 dark:border-zinc-700/80 ${failed ? "text-red-600 dark:text-red-400" : "text-zinc-600 dark:text-zinc-400"}`}>
             {output || (running ? "実行中…" : "（出力なし）")}
           </pre>
+          </div>
         </div>
       )}
     </div>

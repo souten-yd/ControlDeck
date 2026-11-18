@@ -48,7 +48,7 @@ def _fake_opencode(monkeypatch, tmp_path, resolved: list):
     async def fake_ready(url):
         return None
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build"):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
         AGENTS.append(agent)
         await on_reasoning("まず")
         await on_reasoning("見る。")
@@ -220,3 +220,31 @@ def test_plan_is_passed_to_opencode_and_recorded_on_the_answer(admin_client, mon
                             json={"content": "x", "mode": "code", "model": "test", "code_project": "demo",
                                   "code_agent": "yolo"})
     assert bad.status_code == 422
+
+
+def test_a_conversation_is_titled_when_it_starts_and_todos_keep_their_times(admin_client, monkeypatch, tmp_path):
+    from app.integrations.opencode import chat_server
+
+    resolved: list = []
+    _fake_opencode(monkeypatch, tmp_path, resolved)
+
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        await on_status({"phase": "prefill", "detail": "読み込み"})
+        await on_tool({"id": "t", "name": "todowrite", "status": "completed", "output": "",
+                       "input": {"todos": [{"content": "設計", "status": "completed"}, {"content": "実装", "status": "in_progress"},
+                                           {"content": "確認", "status": "pending"}]}})
+        await on_text("できました。")
+        return {"status": "succeeded", "error": ""}
+
+    monkeypatch.setattr(chat_server, "run_turn", fake_turn)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                          json={"content": "発電機を\\(L_d, L_q\\)のdq軸モデルで計算して。詳しく", "mode": "code", "model": "test", "code_project": "demo"})
+    titles = admin_client.get("/api/v1/chat/conversations").json()
+    rows = titles if isinstance(titles, list) else titles.get("conversations", titles.get("items", []))
+    assert next(c for c in rows if c["id"] == conv_id)["title"] == "発電機をL_d, L_qのdq軸モデルで計算して"
+    final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+    todos = final["meta"]["todos"]
+    assert [t["status"] for t in todos] == ["completed", "in_progress", "pending"]
+    assert todos[0]["completed_at"] and todos[1]["started_at"] and "completed_at" not in todos[1]
+    assert not final["meta"]["tools"]                                # 道具の行には出さない

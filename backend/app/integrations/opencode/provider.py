@@ -831,6 +831,8 @@ def _apply_chat_server(v2: dict) -> dict:
     """AI アシスタント用サーバーの設定に、ask の規則と権限プラグインを足す。"""
     asks = [{"action": action, "resource": "*", "effect": "ask"} for action in CHAT_SERVER_ASK_ACTIONS]
     v2["permissions"] = [*asks, *(v2.get("permissions") or [])]
+    # アクションリスト（todowrite）。v2 では実験機能で既定は切（2026-11-18 利用者「いつ終わるのかわからん」）
+    v2["experimental"] = {**(v2.get("experimental") or {}), "todo": True}
     plugins = [p for p in (v2.get("plugins") or []) if p != PERMISSION_PLUGIN.as_uri()]
     v2["plugins"] = [PERMISSION_PLUGIN.as_uri(), *plugins]
     return v2

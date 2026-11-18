@@ -20,6 +20,7 @@ import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, SEARCH_MODES, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
+import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
@@ -131,7 +132,7 @@ interface PersistMsg {
   error?: string;
   meta?: { mode?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
-    tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
+    tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
 
 interface Msg {
@@ -143,6 +144,7 @@ interface Msg {
   archives?: string[];
   /** OpenCode: 道具の実行と許可の問い合わせ */
   tools?: OpenCodeTool[];
+  todos?: OpenCodeTodo[];
   /** 回答した機能（"code" = OpenCode）。保存した発言から */
   answeredBy?: string;
   /** OpenCode のエージェント（plan は計画だけ。何も変えない） */
@@ -176,6 +178,11 @@ interface Msg {
 interface CompactionNote { tokens_before?: number; tokens_after?: number; threshold?: number; folded_messages?: number }
 
 /** 回答が最後まで出なかった終わり方。ジョブの状態（succeeded など）と発言の状態の両方を受ける。 */
+interface GenStats {
+  phase: string; tokPerSec: number; genTokens: number;
+  promptTokens: number | null; contextMax: number | null; detail?: string;
+}
+
 function settledStatus(status: unknown): string {
   if (status === "failed" || status === "canceled" || status === "interrupted") return status;
   if (status === "cancelled") return "canceled";
@@ -190,6 +197,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     images: m.meta?.attachments?.map((a) => attachmentUrl(convId, a)),
     archives: m.meta?.archives?.map((a) => a.name),
     tools: m.meta?.tools,
+    todos: m.meta?.todos,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     agent: m.meta?.agent,
@@ -281,10 +289,7 @@ export default function AssistantChat() {
   const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
   const [routing, setRouting] = useState(false);
   // 生成統計（右下表示）: フェーズ / tok/s / コンテキスト使用量
-  const [genStats, setGenStats] = useState<{
-    phase: string; tokPerSec: number; genTokens: number;
-    promptTokens: number | null; contextMax: number | null;
-  } | null>(null);
+  const [genStats, setGenStats] = useState<GenStats | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -449,7 +454,11 @@ export default function AssistantChat() {
 
   /** 永続チャット: assistant メッセージの生成を購読する（切断してもサーバーは継続）。
    * 対象メッセージ（messageId 一致）へ delta/thinking を書き込む。 */
-  const streamMessage = (messageId: string) =>
+  const streamMessage = (messageId: string) => {
+    setGenStats(null);   // 前の回答の「完了」を残さない（段階はサーバーからすぐ届く）
+    return streamMessageInner(messageId);
+  };
+  const streamMessageInner = (messageId: string) =>
     new Promise<void>((resolve) => {
       const patchMsg = (fn: (m: Msg) => Msg) =>
         setMessages((prev) => prev.map((m) => (m.messageId === messageId ? fn(m) : m)));
@@ -501,8 +510,10 @@ export default function AssistantChat() {
           } else if (d.type === "stats") {
             setGenStats({
               phase: d.phase || "", tokPerSec: d.tok_per_sec ?? 0, genTokens: d.gen_tokens ?? 0,
-              promptTokens: d.prompt_tokens ?? null, contextMax: d.context_max ?? null,
+              promptTokens: d.prompt_tokens ?? null, contextMax: d.context_max ?? null, detail: d.detail || "",
             });
+          } else if (d.type === "todos") {
+            patchMsg((m) => ({ ...m, todos: d.todos as OpenCodeTodo[] }));
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
           else if (d.type === "compaction") patchMsg((m) => ({ ...m, compaction: d }));
@@ -1106,6 +1117,7 @@ export default function AssistantChat() {
           },
         });
         setAttachments([]);
+        qc.invalidateQueries({ queryKey: ["chat-conversations"] });   // 話し始めたらすぐ題名を出す
         if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         const hint =
           selectedMode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
@@ -1125,6 +1137,7 @@ export default function AssistantChat() {
         });
         setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
+        qc.invalidateQueries({ queryKey: ["chat-conversations"] });
         // 新規作成したプロジェクトを以後の既定として維持し、モードもOpenCodeのまま継続する
         if (codeProject === "__new__" && codeProjectName) {
           setCodeProject(codeProjectName);
@@ -1162,8 +1175,11 @@ export default function AssistantChat() {
     } finally {
       setRouting(false);
       if (!buildContinues) setBusy(false);
-      // 題名（最初の発言から付く）と並び順（更新日時）を履歴へ反映する
+      // 題名（最初の発言から付く）と並び順（更新日時）を履歴へ反映する。内容から作る題名は回答の少し後に届く
       qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      for (const wait of [12_000, 30_000, 75_000]) {
+        window.setTimeout(() => qc.invalidateQueries({ queryKey: ["chat-conversations"] }), wait);
+      }
     }
   };
 
@@ -1387,6 +1403,7 @@ export default function AssistantChat() {
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
   // プランは OpenCode を使う場面でだけ効く（チャット・調査では関係ない）
   const planActive = opencodeAvailable && codeAgent === "plan";
+  const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
@@ -1639,6 +1656,9 @@ export default function AssistantChat() {
           data-assistant-messages
           className="min-h-0 min-w-0 flex-1 touch-pan-y space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-5 [-webkit-overflow-scrolling:touch] sm:px-5"
         >
+          {/* いまの回答のリストだけ。動いている間か、終わっていない項目があるときに出す */}
+          <TodoFloat todos={latestAssistant?.todos}
+            active={busy || Boolean(latestAssistant?.todos?.some((t) => t.status !== "completed" && t.status !== "cancelled"))} />
           {messages.length === 0 && (
             <div data-assistant-empty className="mx-auto max-w-md pt-[12vh] text-center">
               <p aria-hidden className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-accent-50 text-2xl text-accent-600 dark:bg-accent-600/15 dark:text-accent-300">{modeChoice === "auto" ? "✦" : currentMode.icon}</p>
@@ -1970,52 +1990,58 @@ function fmtTok(n: number): string {
 
 /** 生成統計の左下表示: 思考状態 / tok/s / コンテキスト使用量。
  * ヒント文と同じ行高に収まる枠なしのプレーン表示（入力欄の位置を動かさない）。 */
+const PHASE_LABEL: Record<string, string> = {
+  loading: "モデル準備中", waiting: "応答待ち", prefill: "プリフィル中", thinking: "思考中", answer: "生成中", answering: "生成中",
+  tool: "道具を実行中", background: "裏のエージェント作業中", retry: "再試行待ち", code: "OpenCode 実行中",
+};
+
 function GenStatsBadge({ stats, busy }: {
-  stats: { phase: string; tokPerSec: number; genTokens: number; promptTokens: number | null; contextMax: number | null } | null;
+  stats: GenStats | null;
   busy: boolean;
 }) {
+  // いまの段階に入ってからの秒数（プリフィルやモデルの読み込みは速度が出ないので、動いていることを時間で見せる）
+  const [startedAt, setStartedAt] = useState(() => Date.now());
+  const [, tick] = useState(0);
+  const phaseKey = `${stats?.phase ?? ""}:${stats?.detail ?? ""}`;
+  useEffect(() => setStartedAt(Date.now()), [phaseKey]);
+  useEffect(() => {
+    if (!busy) return;
+    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
   const row = "num flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap";
   const sep = <span className="text-zinc-300 dark:text-zinc-600">·</span>;
+  const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   if (!stats) {
     if (!busy) return null;
     return (
-      <span className={row}>
-        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />応答待ち
+      <span className={row} data-gen-phase="sending">
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />送信中{sep}{elapsed} 秒
       </span>
     );
   }
   const done = stats.phase === "done" || !busy;
-  if (!done && stats.phase === "code") {
-    return (
-      <span className={row}>
-        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-violet-500" />
-        OpenCode実行中
-        {sep}
-        {stats.genTokens.toLocaleString()} イベント
-      </span>
-    );
-  }
-  const phaseLabel = done ? "完了" : stats.phase === "thinking" ? "思考中" : "回答中";
-  const dot = done ? "bg-zinc-400" : stats.phase === "thinking" ? "animate-pulse bg-violet-500" : "animate-pulse bg-emerald-500";
+  const label = done ? "完了" : stats.phase === "tool" && stats.detail ? `${stats.detail} を実行中` : PHASE_LABEL[stats.phase] ?? "生成中";
+  const dot = done ? "bg-zinc-400" : stats.phase === "thinking" ? "animate-pulse bg-violet-500"
+    : ["loading", "waiting", "prefill", "retry"].includes(stats.phase) ? "animate-pulse bg-amber-500" : "animate-pulse bg-emerald-500";
   const used = (stats.promptTokens ?? 0) + stats.genTokens;
   const pct = stats.contextMax ? Math.min(100, (used / stats.contextMax) * 100) : 0;
   return (
-    <span className={`${row} ${done ? "opacity-60" : ""}`}>
+    <span className={`${row} ${done ? "opacity-60" : ""}`} data-gen-phase={done ? "done" : stats.phase} title={stats.detail || undefined}>
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
-      {phaseLabel}
-      {sep}
-      {stats.tokPerSec.toFixed(1)} tok/s
-      {sep}
+      {label}
+      {!done && <>{sep}{elapsed} 秒</>}
+      {stats.tokPerSec > 0 && <>{sep}{stats.tokPerSec.toFixed(1)} tok/s</>}
       {stats.contextMax ? (
-        <span className="flex items-center gap-1.5" title={`コンテキスト ${used.toLocaleString()} / ${stats.contextMax.toLocaleString()} トークン`}>
+        <>{sep}<span className="flex items-center gap-1.5" title={`コンテキスト ${used.toLocaleString()} / ${stats.contextMax.toLocaleString()} トークン`}>
           <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <span className="block h-full rounded-full bg-accent-500 transition-[width] duration-500" style={{ width: `${pct}%` }} />
           </span>
           {fmtTok(used)}/{fmtTok(stats.contextMax)}
-        </span>
-      ) : (
-        <span>{fmtTok(stats.genTokens)} tok</span>
-      )}
+        </span></>
+      ) : stats.genTokens > 0 ? (
+        <>{sep}<span>{fmtTok(stats.genTokens)} tok</span></>
+      ) : null}
     </span>
   );
 }
