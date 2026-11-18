@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 171 ファイル、1502 テスト（目的の未記入 93 ファイル）
-- E2E: 82 spec、155 テスト
+- backend: 171 ファイル、1504 テスト（目的の未記入 93 ファイル）
+- E2E: 83 spec、156 テスト
 
 ## backend（backend/tests）
 
@@ -1487,6 +1487,7 @@
 - `test_plan_agent_changes_nothing_even_in_auto_mode` — プラン（plan エージェント）では何も変えない。2026-11-18 利用者「プランの際はビルドモードではないことが明確に」。
 - `test_run_turn_switches_to_the_plan_agent`
 - `test_switch_agent_is_checked_by_reading_the_session_back` — v2 は知らない名前でも 204 を返す（実測）。読み直して切り替わっていなければ止める（レビュー指摘）。
+- `test_run_turn_waits_for_a_background_subagent_and_keeps_the_follow_up` — 裏のレビュー: 親のターンが一度終わっても聞き続け、子が終わった後の親の続き（結果）を受け取る（2026-11-18 本番）。
 
 ### backend/tests/test_opencode_chat_timeline.py
 
@@ -1500,6 +1501,7 @@
 - `test_deleting_a_project_removes_its_box_tmp`
 - `test_selftest_checks_the_project_box_isolation` — 箱の /tmp が専用で、CodeDEV が覆われているかを自己診断で確かめる（同じことが起きたら気付けるように）。
 - `test_plan_is_passed_to_opencode_and_recorded_on_the_answer` — プランで送ると、OpenCode に plan のエージェントで渡り、回答に印が残る（画面が「プラン」と出す）。
+- `test_a_conversation_is_titled_when_it_starts_and_todos_keep_their_times`
 
 ### backend/tests/test_opencode_dev_tools.py
 
@@ -2507,6 +2509,12 @@
 
 - assistant input stays flush in standalone iPhone viewports
 - shows compact conversation references and inserts one into the prompt
+
+### frontend/e2e/assistant-opencode-progress.spec.ts
+
+目的: 目的: OpenCode の作業中に、段階（プリフィル・思考・道具など）と時間が入力欄の下に出ること。アクションリストはある ときだけ浮かび、タップで作業中・完了・時刻が見えること。道具を開くと開始・終了の時刻が見えること。 根拠: 2026-11-18 利用者「ずっと応答待ちと記載されている」「いつ終わるのかわからん」「項目の詳細に時間があれば」。
+
+- progress, action list and tool times are shown (${width}px)
 
 ### frontend/e2e/assistant-plan.spec.ts
 

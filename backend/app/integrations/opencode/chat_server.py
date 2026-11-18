@@ -22,12 +22,14 @@ import json
 import threading
 import logging
 import os
+import re
 import secrets
 import shutil
 import socket
 from urllib.parse import quote
 import subprocess
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -417,6 +419,15 @@ async def _session_active(server: Server, session_id: str) -> bool:
 
 
 AGENTS = ("build", "plan")
+FOLLOW_UP_SECONDS = 20.0   # 裏の子が終わってから、親が続きを始めるまで待つ長さ
+_BACKGROUND_RE = re.compile(r"working in the background \(sessionID:\s*(ses_[A-Za-z0-9]+)\)")
+
+
+def _background_child(tool: dict) -> str | None:
+    if tool.get("name") not in ("subagent", "task"):
+        return None
+    found = _BACKGROUND_RE.search(str(tool.get("output") or ""))
+    return found.group(1) if found else None
 
 
 async def switch_agent(server: Server, session_id: str, agent: str) -> None:
@@ -441,7 +452,8 @@ async def switch_agent(server: Server, session_id: str, agent: str) -> None:
 async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
-                   on_tool: Callback, on_permission: Callback, agent: str = "build") -> dict:
+                   on_tool: Callback, on_permission: Callback, agent: str = "build",
+                   on_status: Callback | None = None) -> dict:
     """1 回分の発言を送り、終わるまでイベントを呼び出し元へ渡す。中断されたら OpenCode も止める。
 
     子エージェント（このセッションから作られた別セッション）の許可の問い合わせも渡す
@@ -474,14 +486,43 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     tools: dict[str, dict] = {}
     family = {session_id}          # このセッションと、そこから作られた子
     last_touch = time.monotonic()
+    # 裏で動く子エージェント（レビューなど）。親のターンは依頼した時点で一度終わり、子が終わると親が続きを動かす。
+    # 親の 1 回目の終わりで聞くのをやめると、続き（レビューの結果）が画面に届かなかった（2026-11-18 本番）
+    background: dict[str, str] = {}     # 子のセッション ID → 道具の ID
+    follow_up_until = 0.0               # 子が終わった後、親が続きを始めるのを待つ期限
+    parent_running = False
+    resumed = False
+    needs_break = False
+    phase = ""
+    deltas: deque[float] = deque()
+    last_status = 0.0
+    total_deltas = 0
+
+    async def status(next_phase: str, detail: str = "", *, force: bool = False) -> None:
+        nonlocal phase, last_status
+        now = time.monotonic()
+        while deltas and now - deltas[0] > 4.0:
+            deltas.popleft()
+        if on_status is None or (next_phase == phase and not force and now - last_status < 1.0):
+            return
+        phase, last_status = next_phase, now
+        await on_status({"phase": next_phase, "detail": detail, "tok_per_sec": round(len(deltas) / 4.0, 1),
+                         "gen_tokens": total_deltas})
+
+    def finished_waiting() -> bool:
+        return not background and not parent_running and time.monotonic() >= follow_up_until
+
     try:
         await asyncio.wait_for(ready.wait(), timeout=15)
         # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
         await switch_agent(server, session_id, agent)
         await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
+        parent_running = True
+        await status("waiting", "モデルの応答を待っています", force=True)
         while True:
+            waiting_background = not parent_running and (background or follow_up_until)
             try:
-                event = await asyncio.wait_for(queue.get(), timeout=TOUCH_SECONDS)
+                event = await asyncio.wait_for(queue.get(), timeout=2.0 if waiting_background else TOUCH_SECONDS)
             except asyncio.TimeoutError:
                 event = {"type": "__tick"}
             if time.monotonic() - last_touch >= TOUCH_SECONDS:
@@ -495,25 +536,57 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                     return {"status": "succeeded", "error": ""}  # 切れている間に終わっていた
                 continue
             if kind == "__tick":
+                if waiting_background and finished_waiting():
+                    return {"status": "succeeded", "error": ""}
                 continue
             data = event.get("data") if isinstance(event.get("data"), dict) else {}
             sid = data.get("sessionID")
             if kind == "session.created" and data.get("parentID") in family and data.get("id"):
                 family.add(str(data["id"]))
                 continue
+            if sid in background and kind in ("session.execution.succeeded", "session.execution.failed",
+                                              "session.execution.interrupted"):
+                tool = tools.get(background.pop(str(sid)), None)
+                if tool is not None:
+                    tool["status"] = "failed" if kind.endswith("failed") else "completed"
+                    tool["output"] = "裏のエージェントが終わりました"
+                    tool["ended_at"] = time.time()
+                    await on_tool(tool)
+                follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS
+                if not parent_running and not background:
+                    await status("waiting", "裏のエージェントの結果を受け取っています", force=True)
+                continue
             if kind.startswith("permission."):
                 if sid not in family:
                     continue
             elif sid not in (None, session_id):
                 continue  # 子エージェントの本文・道具は段階 2 で出す
-            if kind == "session.text.delta":
+            if kind == "session.execution.started":
+                parent_running, follow_up_until = True, 0.0
+                needs_break = resumed
+                await status("waiting", "モデルの応答を待っています", force=True)
+            elif kind == "session.step.started":
+                await status("prefill", "プロンプトを読み込んでいます", force=True)
+            elif kind == "session.retry.scheduled":
+                await status("retry", "再試行を待っています", force=True)
+            elif kind == "session.text.delta":
+                if needs_break:
+                    needs_break = False
+                    await on_text("\n\n")
+                deltas.append(time.monotonic())
+                total_deltas += 1
                 await on_text(str(data.get("delta") or ""))
+                await status("answer")
             elif kind == "session.reasoning.delta":
+                deltas.append(time.monotonic())
+                total_deltas += 1
                 await on_reasoning(str(data.get("delta") or ""))
+                await status("thinking")
             elif kind == "session.tool.input.started" and data.get("id"):
                 tools[data["id"]] = {"id": data["id"], "name": data.get("name", ""), "status": "running",
-                                     "input": {}, "output": ""}
+                                     "input": {}, "output": "", "started_at": time.time()}
                 await on_tool(tools[data["id"]])
+                await status("tool", str(data.get("name") or ""), force=True)
             elif kind == "session.tool.called" and data.get("id") in tools:
                 tools[data["id"]]["input"] = data.get("input") or {}
                 await on_tool(tools[data["id"]])
@@ -521,9 +594,16 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 tool = tools[data["id"]]
                 tool["status"] = "completed" if kind.endswith("success") else "failed"
                 tool["output"] = _tool_text(data.get("content"))
+                tool["ended_at"] = time.time()
                 if kind.endswith("failed"):
                     tool["output"] = str((data.get("error") or {}).get("message") or "失敗しました")
+                child = _background_child(tool) if kind.endswith("success") else None
+                if child and child in family:
+                    background[child] = tool["id"]
+                    tool["status"] = "running"          # 裏で動いている間は実行中のまま見せる
+                    tool.pop("ended_at", None)
                 await on_tool(tool)
+                await status("waiting", "モデルの応答を待っています", force=True)
             elif kind == "permission.asked" and data.get("id"):
                 await on_permission({"id": data.get("id"), "sessionID": sid, "child": sid != session_id,
                                      "action": data.get("action"),
@@ -533,7 +613,11 @@ async def run_turn(server: Server, session_id: str, text: str, *,
             elif kind == "permission.replied" and data.get("requestID"):
                 await on_permission({"id": data.get("requestID"), "status": str(data.get("reply") or "")})
             elif kind == "session.execution.succeeded":
-                return {"status": "succeeded", "error": ""}
+                parent_running = False
+                resumed = True
+                if finished_waiting():
+                    return {"status": "succeeded", "error": ""}
+                await status("background", f"裏のエージェント {len(background)} 件の完了を待っています", force=True)
             elif kind == "session.execution.interrupted":
                 return {"status": "interrupted", "error": ""}
             elif kind == "session.execution.failed":
@@ -542,6 +626,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     except asyncio.CancelledError:
         try:
             await asyncio.shield(interrupt(server, session_id))
+            for child in list(background):
+                await asyncio.shield(interrupt(server, child))
         except ChatServerError:
             logger.warning("OpenCode の中断を伝えられませんでした")
         raise

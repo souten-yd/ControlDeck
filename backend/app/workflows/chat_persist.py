@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -1005,7 +1006,42 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             job.log("thinking", delta=delta)
             await maybe_ckpt()
 
+        async def on_status(item: dict) -> None:
+            job.log("stats", phase=item["phase"], detail=item.get("detail", ""), tok_per_sec=item.get("tok_per_sec", 0),
+                    gen_tokens=item.get("gen_tokens", 0), prompt_tokens=None, context_max=None)
+
+        todo_state: dict[str, dict] = {}
+
+        async def on_todos(items: list) -> None:
+            """アクションリスト（todowrite）。始まった・終わった時刻を覚えて画面へ出す。"""
+            now = time.time()
+            out = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("content") or item.get("title") or "").strip()
+                if not text:
+                    continue
+                status = str(item.get("status") or "pending")
+                row = todo_state.setdefault(text, {"content": text})
+                row["status"] = status
+                if status == "in_progress":
+                    row.setdefault("started_at", now)
+                if status == "completed":
+                    row.setdefault("started_at", now)
+                    row.setdefault("completed_at", now)
+                out.append(dict(row))
+            buf["meta"]["todos"] = out
+            job.log("todos", todos=out)
+            await asyncio.to_thread(checkpoint)
+
         async def on_tool(tool: dict) -> None:
+            if tool.get("name") in ("todowrite", "todo_write"):
+                # 道具の行には出さない（画面の上のアクションリストに出す）
+                todos = (tool.get("input") or {}).get("todos")
+                if isinstance(todos, list):
+                    await on_todos(todos)
+                return
             entry = next((t for t in tools if t["id"] == tool["id"]), None)
             if entry is None:
                 tools.append(dict(tool))
@@ -1038,6 +1074,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
 
             # LLM（llama.cpp 等）は ondemand の仕組みを通らないので、先に起こしておく
             settings = await asyncio.to_thread(opencode_provider.get_settings)
+            await on_status({"phase": "loading", "detail": "モデルを準備しています"})
             await local_llm.ensure_ready_by_base_url(str(settings["base_url"]))
             job.log("progress", phase="opencode", label="OpenCode を準備しています", iteration=0, details={})
             server = await chat_server.ensure(project, job.owner_user_id)
@@ -1095,7 +1132,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
                                                 on_reasoning=on_reasoning, on_tool=on_tool,
                                                 on_permission=on_permission,
-                                                agent=params.get("code_agent", "build"))
+                                                agent=params.get("code_agent", "build"), on_status=on_status)
         except asyncio.CancelledError:
             expire_pending()
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
@@ -1251,6 +1288,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                     tok_per_sec=round(rate, 1), gen_tokens=stats["gen_tokens"],
                     prompt_tokens=stats["prompt_tokens"], context_max=stats["context_max"])
 
+        job.log("stats", phase="prefill", detail="モデルの準備とプロンプトの読み込み", tok_per_sec=0, gen_tokens=0,
+                prompt_tokens=None, context_max=stats["context_max"])
         async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
             if chunk.type == "usage":
                 usage = chunk.usage or {}
@@ -1544,6 +1583,50 @@ async def _server_research(
     ]
 
 
+def quick_title(text: str) -> str:
+    """最初の発言から、すぐ付ける題名（数式の記号・URL・コードを除いた最初の 1 文、28 字まで）。"""
+    body = re.sub(r"```.*?```", " ", text, flags=re.S)
+    body = re.sub(r"https?://\S+", " ", body)
+    body = re.sub(r"\\[()\[\]]|\$+|[`*#>]", "", body)
+    line = next((part.strip() for part in re.split(r"[\n。！？!?]", body) if part.strip()), "")
+    line = re.sub(r"\s+", " ", line)
+    return (line[:28] + "…" if len(line) > 28 else line) or "新しい会話"
+
+
+async def _refine_title(conv_id: str, base_url: str, model: str) -> None:
+    """最初の回答の後で、会話の内容から短い題名を作る（失敗しても最初の題名のまま）。"""
+    db = SessionLocal()
+    try:
+        conv = db.get(Conversation, conv_id)
+        users = db.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv_id, ChatMessage.role == "user")
+                           .order_by(ChatMessage.created_at)).scalars().all()
+        if conv is None or len(users) != 1 or conv.title != quick_title(users[0].content):
+            return
+        current, question = conv.title, users[0].content[:1500]
+    finally:
+        db.close()
+    from app.workflows.chat_router import _llm
+
+    try:
+        answer = await _llm([{"role": "system", "content": "会話の題名だけを日本語 20 字以内で出力してください。記号や説明は付けません。"},
+                             {"role": "user", "content": question}], base_url, model, "", temperature=0.2, max_tokens=48,
+                            disable_thinking=True, timeout_seconds=60)
+    except Exception:  # noqa: BLE001 - 題名は無くても会話は続く
+        logger.debug("会話の題名を作れませんでした", exc_info=True)
+        return
+    title = quick_title(re.sub(r"<think>.*?</think>", "", answer, flags=re.S).strip().strip("「」\"'"))
+    if not title or title == "新しい会話":
+        return
+    db = SessionLocal()
+    try:
+        conv = db.get(Conversation, conv_id)
+        if conv is not None and conv.title == current:   # 利用者が変えていれば触らない
+            conv.title = title[:60]
+            db.commit()
+    finally:
+        db.close()
+
+
 def _maybe_title(conv_id: str) -> None:
     db = SessionLocal()
     try:
@@ -1555,7 +1638,7 @@ def _maybe_title(conv_id: str) -> None:
             .order_by(ChatMessage.created_at).limit(1)
         ).scalar_one_or_none()
         if first:
-            conv.title = first.content[:40]
+            conv.title = quick_title(first.content)
             db.commit()
     finally:
         db.close()
@@ -1670,6 +1753,8 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
                             content="", status="generating", model=body.model)
     db.add(user_msg)
     db.add(assistant)
+    if conv.title == "新しい会話":
+        conv.title = quick_title(body.content)   # 話し始めたらすぐ付ける（回答が終わるまで「新しい会話」のままだった）
     conv.updated_at = utcnow()
     db.commit()
     assistant_id = assistant.id
@@ -1719,6 +1804,10 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
         result = await _run_chat_job(j, assistant_id, conv_id, history, params)
         # 正常に終わったら、送信待ちの要望を送る（止めた・失敗したときは送らずに保留する）
         _after_turn(conv_id, assistant_id, j)
+        # 題名はジョブの外で（送信待ちの自動送信を遅らせない）
+        task = asyncio.get_running_loop().create_task(_refine_title(conv_id, params["base_url"], params["model"]))
+        _queue_tasks.add(task)
+        task.add_done_callback(_queue_tasks.discard)
         return result
 
     job = jobs.create(
@@ -2090,7 +2179,10 @@ async def stream_message(websocket: WebSocket, message_id: str):
                         "type": "stats", "phase": ev.get("phase", ""),
                         "tok_per_sec": ev.get("tok_per_sec"), "gen_tokens": ev.get("gen_tokens"),
                         "prompt_tokens": ev.get("prompt_tokens"), "context_max": ev.get("context_max"),
+                        "detail": ev.get("detail", ""),
                     }))
+                elif ev.get("message") == "todos":
+                    await websocket.send_text(json.dumps({"type": "todos", "todos": ev.get("todos", [])}, ensure_ascii=False))
             cursor = next_cursor
             if job.status not in ("queued", "running") and cursor >= job.event_sequence:
                 break
