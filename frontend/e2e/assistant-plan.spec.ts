@@ -147,7 +147,7 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
   await expect(shell.locator("[data-mode-detected]")).toHaveCount(0);
   await expect(pill).toHaveText("Chat");
   await shell.getByRole("button", { name: "会話の履歴" }).click();
-  await page.locator("button:visible", { hasText: "新しいチャット" }).first().click();
+  await page.getByRole("button", { name: "新しいチャット", exact: true }).locator("visible=true").first().click();
   await expect(pill).toHaveCount(0);                                     // 新しい会話は自動から
 });
 
