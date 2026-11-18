@@ -357,7 +357,8 @@ test("an archive is attached for OpenCode, switches to OpenCode and is sent with
   await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
   await shell.locator('input[type="file"]').setInputFiles({ name: "tool.zip", mimeType: "application/zip", buffer: Buffer.from("PK") });
   await expect(shell.getByText("12 ファイル・送ると展開")).toBeVisible();
-  await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toHaveText("OpenCode");
+  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");    // 自動のまま OpenCode へ回す
+  await expect(shell.locator('[data-composer-pill="mode"]')).toHaveCount(0);
   // 文字を打たなくても送れる（中身の説明を頼む）
   await shell.getByRole("combobox").first().selectOption("app").catch(() => {});
   await shell.getByRole("button", { name: "送信" }).click();

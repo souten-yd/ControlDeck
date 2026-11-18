@@ -85,10 +85,12 @@ for (const width of [320, 1280]) {
     const build = shell.locator("[data-build-from-plan]");
     await expect(build).toBeVisible();
     // 機能をチャットに変えていても、「このプランで作る」は OpenCode で送る（レビュー指摘）
-    await shell.locator('[data-composer-pill="mode"]').getByRole("button", { name: /外す/ }).click().catch(() => undefined);
+    await shell.locator("[data-assistant-plus]").click();
+    await page.locator('[data-mode-option="chat"]').click();
     await build.click();
     await expect.poll(() => sent.length).toBe(2);
     expect(sent[1]).toMatchObject({ mode: "code", code_agent: "build", content: "このプランで実装してください。" });
+    await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toHaveText("Chat");   // 固定は変えない
     await expect(banner).toHaveCount(0);
     await expect(card).toHaveAttribute("data-agent", "build");
   });
@@ -117,6 +119,38 @@ test("the plus menu switches between build and plan, and Shift+Tab leaves plan b
 });
 
 
+test("auto stays auto, and a fixed mode survives reopening per conversation", async ({ page, context }) => {
+  // 2026-11-18 利用者「勝手に変わる。固定している場合は変わって欲しくない。開き直すと固定が外れないか」
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  const input = shell.locator("[data-assistant-input]");
+  const pill = shell.locator('[data-composer-pill="mode"] [data-pill-label]');
+  await input.fill("続きを直して");
+  await input.press("Enter");
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ mode: "code", mode_choice: "auto" });
+  await expect(shell.getByText("画面を分ける")).toBeVisible();
+  await expect(pill).toHaveCount(0);                                     // OpenCode で答えても自動のまま
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="chat"]').click();
+  await expect(pill).toHaveText("Chat");
+  await page.reload();
+  await expect(shell.getByText("作りました")).toBeVisible();
+  await expect(pill).toHaveText("Chat");                                 // 開き直しても固定のまま
+  await input.fill("続きを直して");                                        // 作業の語があっても固定を優先
+  await expect(shell.locator("[data-mode-detected]")).toHaveCount(0);
+  await expect(pill).toHaveText("Chat");
+  await shell.getByRole("button", { name: "会話の履歴" }).click();
+  await page.getByRole("button", { name: "新しいチャット", exact: true }).locator("visible=true").first().click();
+  await expect(pill).toHaveCount(0);                                     // 新しい会話は自動から
+});
+
 test("research with plan goes to OpenCode: investigate first, then plan", async ({ page, context }) => {
   // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」
   test.skip(!hasSession(), "E2E credentials required");
@@ -132,6 +166,9 @@ test("research with plan goes to OpenCode: investigate first, then plan", async 
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-mode-option="investigate"]').click();
   await expect(shell.locator("[data-plan-banner]")).toContainText("調べた結果をもとに計画します");
+  // 書き込み先が分かり、選べる（2026-11-18 利用者「プロジェクトを選べない。どこに書き込まれるのか」）
+  await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toBeVisible();
+  await expect(shell.locator("[data-plan-target]")).toContainText("app");
   const input = shell.locator("[data-assistant-input]");
   await input.fill("Plan15 の作り方を検討して");
   await input.press("Enter");

@@ -456,6 +456,10 @@ class SendBody(BaseModel):
     code_project_path: str = Field(default="", max_length=4096)
     # OpenCode に渡す前に、ControlDeck の調査（Web・論文）で調べて結果を付ける（「調べて反映して」）
     code_research: bool = False
+    # 画面の機能の選択（自動・固定）と調査の深さ。会話を開き直したときに戻す
+    mode_choice: str = Field(default="", max_length=16)
+    research_depth: str = Field(default="", max_length=16)
+    agent_choice: str = Field(default="", max_length=16)
     code_research_depth: str = Field(default="auto", max_length=16)   # 調査の深さ（web・academic なら絞る）
     # OpenCode のエージェント: build（作る・直す）／plan（計画だけ。編集もコマンドの変更もしない）
     code_agent: Literal["build", "plan"] = "build"
@@ -1924,6 +1928,12 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     if sent_archives and body.mode != "code":
         raise HTTPException(status_code=422, detail="圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください")
     user_meta: dict = {}
+    if body.mode_choice:
+        user_meta["mode_choice"] = body.mode_choice
+    if body.research_depth:
+        user_meta["research_depth"] = body.research_depth
+    if body.agent_choice:
+        user_meta["agent_choice"] = body.agent_choice
     if sent_images:
         # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
         user_meta["attachments"] = sent_images
@@ -2043,7 +2053,7 @@ def _queued(db: Session, conv_id: str, statuses: tuple[str, ...] = ("queued",)) 
 
 def _same_way(a: dict, b: dict) -> bool:
     """同じ送り方か（本文・添付を除いて比べる）。"""
-    skip = {"content", "attachments"}
+    skip = {"content", "attachments", "mode_choice", "research_depth", "agent_choice"}   # 画面の記録は送り方に関係しない
     return {k: v for k, v in a.items() if k not in skip} == {k: v for k, v in b.items() if k not in skip}
 
 
@@ -2082,8 +2092,10 @@ async def dispatch_queue(conv_id: str) -> dict | None:
                         if a not in attachments:
                             attachments.append(a)
                 try:
+                    # 画面の選択は、待っている間に変わることがあるので記録しない（古い選択で上書きしない）
                     body = SendBody.model_validate({**first, "content": "\n\n".join(i.content for i in group),
-                                                    "attachments": attachments})
+                                                    "attachments": attachments, "mode_choice": "",
+                                                    "research_depth": "", "agent_choice": ""})
                     result = await _start_send(db, conv, body, conv.owner_user_id)
                 except Exception as e:  # noqa: BLE001 - 送れないまとまりは印を付けて次へ
                     db.rollback()

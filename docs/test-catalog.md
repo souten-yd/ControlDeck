@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 173 ファイル、1525 テスト（目的の未記入 93 ファイル）
-- E2E: 83 spec、160 テスト
+- backend: 173 ファイル、1526 テスト（目的の未記入 93 ファイル）
+- E2E: 83 spec、161 テスト
 
 ## backend（backend/tests）
 
@@ -1514,6 +1514,7 @@
 
 - `test_thinking_tools_and_text_are_recorded_in_arrival_order`
 - `test_changing_the_project_starts_a_new_session_and_hands_over` — 2026-11-18 本番: mokei を選んでも conv のセッションのまま、箱の中の空の conv で作業していた。
+- `test_the_chosen_mode_is_kept_on_the_sent_message` — 別の端末や開き直しでも、機能の固定を送った発言から戻せる。
 - `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
 - `test_a_deleted_last_project_is_not_reopened`
@@ -2554,6 +2555,7 @@
 
 - plan is clearly shown, sent as plan and can be built afterwards (${width}px)
 - the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
+- auto stays auto, and a fixed mode survives reopening per conversation
 - research with plan goes to OpenCode: investigate first, then plan
 - the plus menu stays on a short screen, scrolls inside and follows the arrow keys
 - a question during an OpenCode conversation stays in OpenCode

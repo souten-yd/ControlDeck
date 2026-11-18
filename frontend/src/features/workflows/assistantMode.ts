@@ -4,6 +4,60 @@ export type AssistantModeChoice = "auto" | "investigate" | AssistantMode;
 export type ResearchDepth = "auto" | "web" | "research" | "deep" | "academic";
 export const SEARCH_MODES: AssistantMode[] = ["web", "academic", "research", "deep"];
 
+/** 会話ごとに覚える選択。2026-11-18 利用者「固定している場合は変わって欲しくない。開き直すと外れないか」。
+ *  「自動」は毎回判定し、機能を選んだときだけ固定する。固定は送信や判定では変えない。 */
+export interface ConversationPrefs { choice: AssistantModeChoice; depth: ResearchDepth; agent: "build" | "plan" }
+const LS_PREFS = "cd-chat-conversation-prefs";
+const MAX_REMEMBERED = 200;
+const CHOICES: AssistantModeChoice[] = ["auto", "investigate", "chat", "gen", "run", "code"];
+const DEPTHS: ResearchDepth[] = ["auto", "web", "research", "deep", "academic"];
+
+export const validChoice = (value: unknown): AssistantModeChoice | undefined =>
+  CHOICES.includes(value as AssistantModeChoice) ? value as AssistantModeChoice : undefined;
+export const validDepth = (value: unknown): ResearchDepth | undefined =>
+  DEPTHS.includes(value as ResearchDepth) ? value as ResearchDepth : undefined;
+
+type PrefField = keyof ConversationPrefs;
+/** seen: この端末が選択を決めた時点で見えていた最後の発言（"*" は分岐のように「いまの選択が正」） */
+type SavedPrefs = Partial<ConversationPrefs> & { seen?: string };
+
+function allPrefs(): Record<string, SavedPrefs> {
+  try {
+    const value = JSON.parse(localStorage.getItem(LS_PREFS) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 変えた項目だけを覚える（読み込み前の既定値で、他の項目を上書きしない） */
+export function updateConversationPrefs(id: string, changed: Partial<ConversationPrefs>, seen?: string): void {
+  try {
+    const { [id]: previous = {}, ...rest } = allPrefs();
+    const next: SavedPrefs = { ...previous, ...changed, ...(seen ? { seen } : {}) };
+    const entries = [...Object.entries(rest), [id, next] as const].slice(-MAX_REMEMBERED);
+    localStorage.setItem(LS_PREFS, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // 保存できない環境でも、送った発言の記録から戻せる
+  }
+}
+
+/** 発言の順で新旧を決める（端末とサーバーの時計は比べない）。この端末が見ていない新しい発言があれば
+ *  別の端末の選択を使い、そうでなければこの端末の選択を使う。 */
+export function resolveConversationPrefs(id: string, sent: Partial<ConversationPrefs>, sentId: string,
+  orderedIds: string[]): Partial<ConversationPrefs> {
+  const saved = allPrefs()[id] ?? {};
+  const localIsCurrent = saved.seen === "*" || !sentId
+    || (saved.seen !== undefined && orderedIds.indexOf(saved.seen) >= orderedIds.indexOf(sentId));
+  const pick = <K extends PrefField>(field: K): ConversationPrefs[K] | undefined => {
+    const local = saved[field] as ConversationPrefs[K] | undefined;
+    return localIsCurrent ? local ?? sent[field] : sent[field] ?? local;
+  };
+  const agent = pick("agent");
+  return { choice: validChoice(pick("choice")), depth: validDepth(pick("depth")),
+    agent: agent === "plan" || agent === "build" ? agent : undefined };
+}
+
 export interface ModeDecision {
   mode: AssistantMode;
   reason: string;

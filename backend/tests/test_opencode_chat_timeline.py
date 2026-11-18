@@ -150,6 +150,19 @@ def test_changing_the_project_starts_a_new_session_and_hands_over(admin_client, 
     assert list((second / ".controldeck/attachments").iterdir())
 
 
+def test_the_chosen_mode_is_kept_on_the_sent_message(admin_client, monkeypatch, tmp_path):
+    """別の端末や開き直しでも、機能の固定を送った発言から戻せる。"""
+    _fake_opencode(monkeypatch, tmp_path, [])
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                          json={"content": "直して", "mode": "code", "model": "test", "code_project": "demo",
+                                "mode_choice": "code", "research_depth": "academic", "agent_choice": "plan"})
+    _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+    messages = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+    meta = next(m for m in messages if m["role"] == "user")["meta"]
+    assert meta["mode_choice"] == "code" and meta["research_depth"] == "academic" and meta["agent_choice"] == "plan"
+
+
 def test_timeline_offsets_use_the_browsers_character_positions():
     """絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。"""
     from app.workflows.chat_persist import _utf16_len
