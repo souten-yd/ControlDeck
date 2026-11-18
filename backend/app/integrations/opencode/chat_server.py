@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import threading
 import logging
 import os
 import secrets
@@ -140,11 +141,40 @@ def set_mode(server: Server, mode: str) -> None:
 
     if mode not in CHAT_PERMISSION_MODES:
         raise ChatServerError("権限モードは auto / ask のどちらかです")
+    _update_permission_file(server, lambda data: {**data, "mode": mode})
+
+
+_permission_lock = threading.Lock()
+PLAN_SESSIONS_KEPT = 256
+_session_agents: dict[tuple[str, str], str] = {}   # 直近に切り替えたエージェント（同じなら切り替えない）
+
+
+def _update_permission_file(server: Server, change: Callable[[dict], dict]) -> None:
+    """権限プラグインが読むファイル（{"mode", "plan_sessions"}）を書き換える。プラグインは呼ばれるたびに読む。"""
     path = Path(server.permission_file)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"mode": mode}), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    with _permission_lock:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(change(data)), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+
+
+def mark_plan_session(server: Server, session_id: str, plan: bool) -> None:
+    """プランで動くセッションを権限プラグインへ知らせる。プラグインはエージェント名に加えてこれでも判断する
+    （エージェント名は省略されうる。レビュー指摘 2026-11-18）。"""
+    def change(data: dict) -> dict:
+        sessions = [str(s) for s in data.get("plan_sessions") or [] if str(s) != session_id]
+        if plan:
+            sessions.append(session_id)
+        return {**data, "plan_sessions": sessions[-PLAN_SESSIONS_KEPT:]}
+
+    _update_permission_file(server, change)
 
 
 def apply_mode_to_running(mode: str) -> int:
@@ -386,10 +416,32 @@ async def _session_active(server: Server, session_id: str) -> bool:
     return session_id in json.dumps(active)
 
 
+AGENTS = ("build", "plan")
+
+
+async def switch_agent(server: Server, session_id: str, agent: str) -> None:
+    """このセッションのエージェントを切り替える（build＝作る・直す、plan＝計画だけで何も変えない）。"""
+    if agent not in AGENTS:
+        raise ChatServerError(f"未対応のエージェントです: {agent}")
+    if _session_agents.get((server.key, session_id)) == agent:
+        return
+    # 先に権限プラグインへ知らせる（切り替えの途中でも、プランの間は止める側に倒す）
+    await asyncio.to_thread(mark_plan_session, server, session_id, agent == "plan")
+    if await _call(server, "POST", f"/api/session/{session_id}/agent", {"agent": agent}) is None:
+        raise ChatServerError("OpenCode のセッションが見つかりません")
+    # v2 は名前を確かめずに 204 を返す（実測）。読み直して本当に切り替わったかを確かめる
+    session = await _call(server, "GET", f"/api/session/{session_id}")
+    if isinstance(session, dict) and session.get("agent") not in (None, agent):
+        raise ChatServerError(f"OpenCode のエージェントを {agent} に切り替えられませんでした")
+    if len(_session_agents) > 1024:
+        _session_agents.clear()
+    _session_agents[(server.key, session_id)] = agent
+
+
 async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
-                   on_tool: Callback, on_permission: Callback) -> dict:
+                   on_tool: Callback, on_permission: Callback, agent: str = "build") -> dict:
     """1 回分の発言を送り、終わるまでイベントを呼び出し元へ渡す。中断されたら OpenCode も止める。
 
     子エージェント（このセッションから作られた別セッション）の許可の問い合わせも渡す
@@ -424,6 +476,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     last_touch = time.monotonic()
     try:
         await asyncio.wait_for(ready.wait(), timeout=15)
+        # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
+        await switch_agent(server, session_id, agent)
         await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
         while True:
             try:

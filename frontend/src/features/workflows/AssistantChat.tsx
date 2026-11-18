@@ -129,7 +129,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { mode?: string; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+  meta?: { mode?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
@@ -145,6 +145,8 @@ interface Msg {
   tools?: OpenCodeTool[];
   /** 回答した機能（"code" = OpenCode）。保存した発言から */
   answeredBy?: string;
+  /** OpenCode のエージェント（plan は計画だけ。何も変えない） */
+  agent?: "build" | "plan";
   /** OpenCode: 届いた順の並び（思考・本文は文字の位置、道具は ID）。思考を道具の前後で分けて出す */
   timeline?: TimelineSeg[];
   /** OpenCode: この回答が動いたプロジェクト（解決したパス） */
@@ -190,6 +192,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     tools: m.meta?.tools,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
+    agent: m.meta?.agent,
     timeline: m.meta?.timeline,
     projectPath: m.meta?.project_path,
     jobId: m.job_id,
@@ -564,6 +567,7 @@ export default function AssistantChat() {
    *  「AI アシスタントを閉じて戻ると作業フォルダの設定が外れる」。画面の中だけで覚えていたので、既定の新規作成に戻っていた。 */
   const restoreCodeProject = (rows: PersistMsg[]) => {
     const last = [...rows].reverse().find((m) => m.role === "assistant" && m.meta?.mode === "code" && m.meta?.project_path);
+    setCodeAgent(last?.meta?.agent === "plan" ? "plan" : "build");
     const path = last?.meta?.project_path;
     if (!path) return;
     const name = path.split("/").pop() ?? "";
@@ -619,6 +623,7 @@ export default function AssistantChat() {
     setConversationTitle(NEW_CHAT_TITLE);
     setMessages([]);
     setAttachments([]); // 前の会話の添付を持ち越さない
+    setCodeAgent("build"); // プランは会話ごと（新しい会話へ持ち越さない）
     setResolvedDecision(null);
     setGenStats(null);
     setHistoryOpen(false);
@@ -923,19 +928,50 @@ export default function AssistantChat() {
   });
   const permissionMode: PermissionMode = permissionModeData?.mode ?? "auto";
   const canChangePermissionMode = can("settings.manage");
+  const permissionChainRef = useRef<Promise<void>>(Promise.resolve());
   const changePermissionMode = async (mode: PermissionMode) => {
     if (!canChangePermissionMode || mode === permissionMode) return;
-    try {
-      await api("/chat/opencode/permission-mode", { method: "PUT", json: { mode } });
-      qc.setQueryData(["opencode-permission-mode"], { mode });
-      show(`権限: ${PERMISSION_MODES.find((m) => m.id === mode)?.label}（次の操作から）`);
-    } catch (e) {
-      show(e instanceof Error ? e.message : "権限モードを変えられませんでした", "error");
-    }
+    // 先に画面を変える（返事を待つと、Shift+Tab を続けて押したときに古い状態から数えて同じ所へ戻っていた）
+    qc.setQueryData(["opencode-permission-mode"], { mode });
+    // 送るのは 1 つずつ順に（続けて押すと、先に押した方が後で届いてサーバーと画面が食い違っていた。レビュー指摘）
+    const run = permissionChainRef.current.then(async () => {
+      try {
+        await api("/chat/opencode/permission-mode", { method: "PUT", json: { mode } });
+        show(`権限: ${PERMISSION_MODES.find((m) => m.id === mode)?.label}（次の操作から）`);
+      } catch (e) {
+        show(e instanceof Error ? e.message : "権限モードを変えられませんでした", "error");
+        // 失敗したらサーバーの値に合わせ直す（手元の古い値へ戻さない）
+        await qc.invalidateQueries({ queryKey: ["opencode-permission-mode"] });
+      }
+    });
+    permissionChainRef.current = run;
+    await run;
   };
+  // OpenCode のエージェント: ビルド（作る・直す）／プラン（計画だけ。ファイルも状態も変えない）。
+  // 2026-11-18 利用者「プランの切り替えを追加し、プランの際はビルドモードではないことが明確にわかること」
+  const [codeAgent, setCodeAgent] = useState<"build" | "plan">("build");
+  const planFromCycleRef = useRef(false);
+  const changeCodeAgent = (agent: "build" | "plan") => {
+    if (agent === codeAgent) return;
+    setCodeAgent(agent);
+    show(agent === "plan" ? "プラン: 計画だけを立てます（ファイルは変えません）" : "ビルド: 作る・直すに戻しました");
+  };
+  // Shift+Tab と札: Auto → 確認 → プラン → Auto（Claude Code と同じ並び）。権限を変えられない人はビルド ⇄ プラン
   const cyclePermissionMode = () => {
+    if (codeAgent === "plan") {
+      changeCodeAgent("build");
+      // Shift+Tab で 確認 → プラン と来たときだけ Auto へ進む（＋から入ったプランを出ても権限は変えない）
+      if (canChangePermissionMode && planFromCycleRef.current) void changePermissionMode(PERMISSION_MODES[0].id);
+      planFromCycleRef.current = false;
+      return;
+    }
     const index = PERMISSION_MODES.findIndex((m) => m.id === permissionMode);
-    void changePermissionMode(PERMISSION_MODES[(index + 1) % PERMISSION_MODES.length].id);
+    if (!canChangePermissionMode || index === PERMISSION_MODES.length - 1) {
+      planFromCycleRef.current = canChangePermissionMode;
+      changeCodeAgent("plan");
+      return;
+    }
+    void changePermissionMode(PERMISSION_MODES[index + 1].id);
   };
   const answerPermission = async (messageId: string, requestId: string, decision: "once" | "always" | "reject") => {
     if (!convId) return;
@@ -961,7 +997,10 @@ export default function AssistantChat() {
     }
   };
 
-  const send = async (providedText?: string) => {
+  const send = async (providedText?: string, agentOverride?: "build" | "plan", modeOverride?: AssistantModeChoice) => {
+    const agent = agentOverride ?? codeAgent;
+    // 「このプランで作る」は OpenCode に決め打ちで送る（機能をチャットなどに変えていても）
+    const choice = modeOverride ?? modeChoice;
     const readyImages = attachments.filter((a) => a.kind === "image" && a.status === "ready");
     const readyArchives = attachments.filter((a) => a.kind === "archive" && a.status === "ready");
     if (attachments.some((a) => a.status === "uploading")) {
@@ -975,10 +1014,10 @@ export default function AssistantChat() {
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
-    const researchFirst = modeChoice === "auto" ? Boolean(decision.research)
-      : modeChoice === "code" ? wantsResearch(text) : false;
-    let selectedMode: Mode = modeChoice === "auto" ? decision.mode
-      : modeChoice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : modeChoice;
+    const researchFirst = choice === "auto" ? Boolean(decision.research)
+      : choice === "code" ? wantsResearch(text) : false;
+    let selectedMode: Mode = choice === "auto" ? decision.mode
+      : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
     if (selectedMode === "run" && selectedRunTarget === "") {
@@ -1014,8 +1053,8 @@ export default function AssistantChat() {
       if (hold) deferredQueueRef.current = true;
       const json = selectedMode === "code"
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-          attachments: readyArchives.map((a) => a.id), code_research: researchFirst }
-        : { content: text, mode: modeChoice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
+          attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_agent: agent }
+        : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
           searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "" };
       try {
@@ -1037,8 +1076,8 @@ export default function AssistantChat() {
       archives: readyArchives.map((a) => a.name) };
     append(userMsg);
     try {
-      const investigateAuto = modeChoice === "investigate" && researchDepth === "auto";
-      if ((modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") || investigateAuto) {
+      const investigateAuto = choice === "investigate" && researchDepth === "auto";
+      if ((choice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") || investigateAuto) {
         setRouting(true);
         selectedPlan = await api<AssistantPlan>("/chat/route", {
           method: "POST", json: { content: text, base_url: baseUrl, model },
@@ -1082,7 +1121,7 @@ export default function AssistantChat() {
         const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-            attachments: readyArchives.map((a) => a.id), code_research: researchFirst },
+            attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_agent: agent },
         });
         setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
@@ -1094,7 +1133,7 @@ export default function AssistantChat() {
         setModeChoice("code");
         if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
-          persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code" });
+          persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code", agent });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "gen") {
         // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
@@ -1346,6 +1385,8 @@ export default function AssistantChat() {
   // OpenCode の会話（道具を使った回答がある）か、いま OpenCode で送るなら、権限の札を出す
   const showPermissionPill = opencodeAvailable && (effectiveMode === "code" || inCodeConversation);
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
+  // プランは OpenCode を使う場面でだけ効く（チャット・調査では関係ない）
+  const planActive = opencodeAvailable && codeAgent === "plan";
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
@@ -1626,6 +1667,8 @@ export default function AssistantChat() {
                   setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
                 }}
                 onAnswerPermission={answerPermission}
+                onBuildFromPlan={!busy && !hasContent && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
+                  ? () => { setCodeAgent("build"); setModeChoice("code"); void send("このプランで実装してください。", "build", "code"); } : undefined}
                 editing={!!m.messageId && editingId === m.messageId}
                 actionsDisabled={busy}
                 onAction={(action) => void onMessageAction(m, action)}
@@ -1755,7 +1798,19 @@ export default function AssistantChat() {
             onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attachFiles(picked); }} />
           {/* 入力カード（上が本文、下が道具の行: 添付・機能・音声・送信）。状態は
               カードの下に固定高で置き、表示が変わっても入力位置を動かさない。 */}
-          <div data-assistant-input-card className="w-full min-w-0 rounded-3xl border border-zinc-200 bg-white shadow-sm transition focus-within:border-accent-500/70 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700 dark:bg-zinc-900">
+          {planActive && (
+            /* プラン中はビルドではないことを、入力欄の真上ではっきり出す */
+            <div data-plan-banner role="status"
+              className="mb-2 flex w-full min-w-0 items-center gap-2 rounded-2xl border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-100">
+              <span aria-hidden className="text-base">📋</span>
+              <span className="min-w-0 flex-1 leading-snug"><b>プラン</b> — 計画だけを立てます。ファイルの編集や変更を伴うコマンドはしません。</span>
+              <button type="button" onClick={() => changeCodeAgent("build")}
+                className="min-h-9 shrink-0 rounded-lg border border-sky-300 bg-white px-2.5 text-xs font-semibold text-sky-800 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900 dark:text-sky-100 dark:hover:bg-sky-800 [@media(pointer:coarse)]:min-h-11">ビルドに切り替える</button>
+            </div>
+          )}
+          <div data-assistant-input-card data-agent={planActive ? "plan" : "build"} className={`w-full min-w-0 rounded-3xl border bg-white shadow-sm transition dark:bg-zinc-900 ${planActive
+            ? "border-sky-400 ring-2 ring-sky-400/20 dark:border-sky-600"
+            : "border-zinc-200 focus-within:border-accent-500/70 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700"}`}>
             <textarea
               ref={composerRef}
               data-assistant-input
@@ -1773,7 +1828,7 @@ export default function AssistantChat() {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   void send();
-                } else if (e.key === "Tab" && e.shiftKey && showPermissionPill && canChangePermissionMode) {
+                } else if (e.key === "Tab" && e.shiftKey && showPermissionPill) {
                   // Claude Code と同じく Shift+Tab で権限モードを切り替える
                   e.preventDefault();
                   cyclePermissionMode();
@@ -1781,7 +1836,8 @@ export default function AssistantChat() {
               }}
               rows={1}
               placeholder={
-                effectiveMode === "gen"
+                planActive ? "プラン: 何を計画しますか（ファイルは変えません）"
+                : effectiveMode === "gen"
                   ? "作りたいワークフローを日本語で説明..."
                   : effectiveMode === "run"
                     ? "ワークフローへの入力（{{trigger.message}}）..."
@@ -1811,6 +1867,7 @@ export default function AssistantChat() {
                 routing={routing}
                 onModeChange={(id) => setModeChoice(id as AssistantModeChoice)}
                 permission={opencodeAvailable ? { mode: permissionMode, editable: canChangePermissionMode, onChange: (m) => void changePermissionMode(m) } : null}
+                agent={opencodeAvailable ? { mode: codeAgent, onChange: changeCodeAgent } : null}
                 actions={plusActions}
               />
               <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
@@ -1823,11 +1880,15 @@ export default function AssistantChat() {
                     label={modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}
                     title="機能（＋で変更）" kind="mode" onClear={() => setModeChoice("auto")} />
                 )}
-                {showPermissionPill && (
+                {planActive ? (
+                  <ComposerPill icon="📋" label="プラン" tone="plan"
+                    title="プラン: 計画だけ。ファイルの編集・変更を伴うコマンドはしません（押すと切替・PC は Shift+Tab）"
+                    kind="plan" onClick={cyclePermissionMode} />
+                ) : showPermissionPill && (
                   <ComposerPill icon={<span className="font-mono tracking-[-0.2em]">{currentPermission.icon}</span>}
                     label={currentPermission.label} tone={permissionMode === "auto" ? "accent" : "amber"}
-                    title={canChangePermissionMode ? `OpenCode の権限: ${currentPermission.label}（押すと切替・PC は Shift+Tab）` : `OpenCode の権限: ${currentPermission.label}（変更は管理者）`}
-                    kind="permission" onClick={canChangePermissionMode ? cyclePermissionMode : undefined} />
+                    title={canChangePermissionMode ? `OpenCode の権限: ${currentPermission.label}（押すと切替・PC は Shift+Tab）` : `OpenCode: ビルド（押すとプランへ）`}
+                    kind="permission" onClick={cyclePermissionMode} />
                 )}
               </div>
               <button
@@ -2073,6 +2134,7 @@ function MessageBubble({
   onOpen,
   onReference,
   onAnswerPermission,
+  onBuildFromPlan,
   editing = false,
   actionsDisabled = false,
   onAction,
@@ -2083,6 +2145,8 @@ function MessageBubble({
 }: {
   /** 失敗・中断した回答をやり直す（直前の自分の発言を送り直す）。生成中は渡さない。 */
   onRetry?: () => void;
+  /** プランの回答の後で、そのプランをビルドで実装する */
+  onBuildFromPlan?: () => void;
   resendDisabled?: boolean;
   editing?: boolean;
   actionsDisabled?: boolean;
@@ -2142,6 +2206,11 @@ function MessageBubble({
     <div data-assistant-message={msg.persistStatus ?? ""} className="flex min-w-0 flex-col items-start gap-0.5">
     <div className="flex w-full min-w-0 justify-start">
       <div className="w-full min-w-0 space-y-2 break-words px-1 text-[15px] leading-7 [overflow-wrap:anywhere]">
+        {msg.agent === "plan" && (
+          <p data-plan-answer className="inline-flex items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold leading-5 text-sky-800 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-200">
+            <span aria-hidden>📋</span>プラン（ファイルは変えていません）
+          </p>
+        )}
         {msg.compaction && (
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400" role="status">
             🗜️ 会話が長くなったため、古いやり取り{msg.compaction.folded_messages ? `（${msg.compaction.folded_messages}件）` : ""}を要約して続けました
@@ -2324,6 +2393,12 @@ function MessageBubble({
         )}
       </div>
     </div>
+    {onBuildFromPlan && (
+      <button type="button" data-build-from-plan onClick={onBuildFromPlan}
+        className="mt-1 inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 [@media(pointer:coarse)]:min-h-11">
+        <span aria-hidden>🛠️</span>このプランで作る（ビルドに切り替えて送る）
+      </button>
+    )}
     {!msg.streaming && assistantActions.length > 0 && (msg.content || msg.messageId) && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
     </div>
   );

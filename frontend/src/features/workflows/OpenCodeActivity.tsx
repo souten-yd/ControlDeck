@@ -25,7 +25,7 @@ export interface OpenCodePermission {
 export type PermissionMode = "auto" | "ask";
 
 export const PERMISSION_MODES: { id: PermissionMode; label: string; icon: string; hint: string }[] = [
-  { id: "auto", label: "Auto", icon: "⏵⏵", hint: "箱の中で、編集・読むだけ・テスト/ビルドは自動。危ない操作と判断できないものだけ確認" },
+  { id: "auto", label: "Auto", icon: "⏵⏵", hint: "箱の中は確認なしで進める（禁止リストの操作だけ止める）" },
   // U+FE0E: 携帯で絵文字にならないよう文字の形で出す
   { id: "ask", label: "確認", icon: "⏸\uFE0E", hint: "コマンドの実行・編集・外部への取得は毎回確認" },
 ];
