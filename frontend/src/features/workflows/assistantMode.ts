@@ -17,7 +17,10 @@ export const validChoice = (value: unknown): AssistantModeChoice | undefined =>
 export const validDepth = (value: unknown): ResearchDepth | undefined =>
   DEPTHS.includes(value as ResearchDepth) ? value as ResearchDepth : undefined;
 
-function allPrefs(): Record<string, ConversationPrefs> {
+type PrefField = keyof ConversationPrefs;
+type SavedPrefs = Partial<ConversationPrefs> & { at?: Partial<Record<PrefField, number>> };
+
+function allPrefs(): Record<string, SavedPrefs> {
   try {
     const value = JSON.parse(localStorage.getItem(LS_PREFS) || "{}");
     return value && typeof value === "object" ? value : {};
@@ -26,20 +29,29 @@ function allPrefs(): Record<string, ConversationPrefs> {
   }
 }
 
-export function readConversationPrefs(id: string): Partial<ConversationPrefs> {
-  const saved = allPrefs()[id];
-  return saved ? { choice: validChoice(saved.choice), depth: validDepth(saved.depth),
-    agent: saved.agent === "plan" || saved.agent === "build" ? saved.agent : undefined } : {};
-}
-
-export function writeConversationPrefs(id: string, prefs: ConversationPrefs): void {
+/** 変えた項目だけを覚える（読み込み前の既定値で、他の項目を上書きしない） */
+export function updateConversationPrefs(id: string, changed: Partial<ConversationPrefs>): void {
   try {
-    const { [id]: _previous, ...rest } = allPrefs();
-    const entries = [...Object.entries(rest), [id, prefs] as const].slice(-MAX_REMEMBERED);
+    const { [id]: previous = {}, ...rest } = allPrefs();
+    const now = Date.now();
+    const at = { ...previous.at, ...Object.fromEntries(Object.keys(changed).map((key) => [key, now])) };
+    const entries = [...Object.entries(rest), [id, { ...previous, ...changed, at }] as const].slice(-MAX_REMEMBERED);
     localStorage.setItem(LS_PREFS, JSON.stringify(Object.fromEntries(entries)));
   } catch {
     // 保存できない環境でも、送った発言の記録から戻せる
   }
+}
+
+/** この端末の選択と、送った発言の記録のうち新しいほうを項目ごとに使う（別の端末で変えた分も戻る） */
+export function resolveConversationPrefs(id: string, sent: Partial<ConversationPrefs>, sentAt: number): Partial<ConversationPrefs> {
+  const saved = allPrefs()[id] ?? {};
+  const pick = <K extends PrefField>(field: K): ConversationPrefs[K] | undefined => {
+    const local = saved[field] as ConversationPrefs[K] | undefined;
+    return local !== undefined && (sent[field] === undefined || (saved.at?.[field] ?? 0) >= sentAt) ? local : sent[field];
+  };
+  const agent = pick("agent");
+  return { choice: validChoice(pick("choice")), depth: validDepth(pick("depth")),
+    agent: agent === "plan" || agent === "build" ? agent : undefined };
 }
 
 export interface ModeDecision {

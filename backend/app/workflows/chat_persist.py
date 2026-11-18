@@ -459,6 +459,7 @@ class SendBody(BaseModel):
     # 画面の機能の選択（自動・固定）と調査の深さ。会話を開き直したときに戻す
     mode_choice: str = Field(default="", max_length=16)
     research_depth: str = Field(default="", max_length=16)
+    agent_choice: str = Field(default="", max_length=16)
     code_research_depth: str = Field(default="auto", max_length=16)   # 調査の深さ（web・academic なら絞る）
     # OpenCode のエージェント: build（作る・直す）／plan（計画だけ。編集もコマンドの変更もしない）
     code_agent: Literal["build", "plan"] = "build"
@@ -1931,6 +1932,8 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
         user_meta["mode_choice"] = body.mode_choice
     if body.research_depth:
         user_meta["research_depth"] = body.research_depth
+    if body.agent_choice:
+        user_meta["agent_choice"] = body.agent_choice
     if sent_images:
         # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
         user_meta["attachments"] = sent_images
@@ -2050,7 +2053,7 @@ def _queued(db: Session, conv_id: str, statuses: tuple[str, ...] = ("queued",)) 
 
 def _same_way(a: dict, b: dict) -> bool:
     """同じ送り方か（本文・添付を除いて比べる）。"""
-    skip = {"content", "attachments"}
+    skip = {"content", "attachments", "mode_choice", "research_depth", "agent_choice"}   # 画面の記録は送り方に関係しない
     return {k: v for k, v in a.items() if k not in skip} == {k: v for k, v in b.items() if k not in skip}
 
 

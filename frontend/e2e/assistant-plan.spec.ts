@@ -146,6 +146,9 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
   await input.fill("続きを直して");                                        // 作業の語があっても固定を優先
   await expect(shell.locator("[data-mode-detected]")).toHaveCount(0);
   await expect(pill).toHaveText("Chat");
+  await shell.getByRole("button", { name: "会話の履歴" }).click();
+  await page.locator("button:visible", { hasText: "新しいチャット" }).first().click();
+  await expect(pill).toHaveCount(0);                                     // 新しい会話は自動から
 });
 
 test("research with plan goes to OpenCode: investigate first, then plan", async ({ page, context }) => {
