@@ -1322,6 +1322,15 @@ def _opencode_home() -> Path:
     return home
 
 
+def _sibling_projects(project: Path) -> list[Path]:
+    """箱の中で隠す場所: CodeDEV のプロジェクトなら CodeDEV 全体（その上にこのプロジェクトだけをつなぐ）。"""
+    try:
+        root = codedev_root().resolve()
+    except Exception:  # noqa: BLE001 - 分からなければ隠さない（今まで通り）
+        return []
+    return [root] if project.resolve().parent == root else []
+
+
 def project_tmp_dir(project: Path) -> Path:
     """プロジェクトの箱の /tmp（箱の外に残る。プロジェクトごとに別）。
 
@@ -1386,7 +1395,8 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
     }
     argv = sandbox.container_argv(command, workdir=project, writable=writable, readonly=readonly_paths,
                                   env=box_env, interactive=interactive, env_file=env_file,
-                                  binds=[(project_tmp_dir(project), Path("/tmp"))])
+                                  binds=[(project_tmp_dir(project), Path("/tmp"))],
+                                  hide=_sibling_projects(project))
     return argv, {}
 
 

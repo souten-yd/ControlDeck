@@ -124,3 +124,22 @@ def test_each_project_box_gets_its_own_tmp_that_outlives_the_box(monkeypatch, tm
     monkeypatch.setattr(sandbox, "_rootfs", lambda: tmp_path / "rootfs")
     argv = sandbox.container_argv(["true"], workdir=a, writable=[a], binds=[(tmp_a, Path("/tmp"))])
     assert f"{tmp_a}:/tmp:rw" in argv
+
+
+def test_other_projects_are_hidden_inside_a_project_box(monkeypatch, tmp_path):
+    """箱の中で CodeDEV を空の場所で覆い、このプロジェクトだけをつなぐ。前に開いた別のプロジェクトの
+    空のつなぎ口（Conv など）が見えて、OpenCode が書けない場所へ書こうとしたため（2026-11-18）。"""
+    from app.integrations.opencode import provider
+    from app.maintenance import sandbox
+
+    root = tmp_path / "CodeDEV"
+    project = root / "conv"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(provider, "codedev_root", lambda: root)
+    assert provider._sibling_projects(project) == [root.resolve()]
+    assert provider._sibling_projects(tmp_path / "elsewhere") == []
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: "/usr/bin/podman")
+    monkeypatch.setattr(sandbox, "_rootfs", lambda: tmp_path / "rootfs")
+    argv = sandbox.container_argv(["true"], workdir=project, writable=[project], hide=[root])
+    assert argv[argv.index("--tmpfs") + 1].startswith(f"{root}:")
+    assert f"{project}:{project}:rw" in argv            # このプロジェクトは隠した上につながる
