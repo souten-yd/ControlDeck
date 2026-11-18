@@ -110,13 +110,37 @@ def _fan():
     return True, text
 
 
+def _opencode_box():
+    """OpenCode のプロジェクトの箱が、別のプロジェクトを見せていないか（/tmp が専用・CodeDEV を覆う）。
+    2026-11-18: 全部の箱が /tmp を共有し、前に開いたプロジェクトのつなぎ口も見えていた（気付かれずに残っていた）。"""
+    from app.integrations.opencode import provider
+    from app.maintenance import sandbox
+
+    if provider.isolation_mode() != "box":
+        return True, "箱を使わない設定（isolation: host）"
+    root = provider.codedev_root().resolve()
+    probe = root / "selftest-probe"
+    argv = sandbox.container_argv(["true"], workdir=probe, writable=[], binds=[(provider.project_tmp_dir(probe), Path("/tmp"))],
+                                  hide=provider._sibling_projects(probe))
+    shutil.rmtree(provider.project_tmp_dir(probe), ignore_errors=True)
+    if not any(a.endswith(":/tmp:rw") for a in argv) or "--tmpfs" not in argv:
+        return False, "箱の /tmp か CodeDEV の覆いが付いていません（別のプロジェクトが見えます）"
+    tmp_root = data_dir() / "sandboxes" / "project-tmp"
+    folders = [p for p in tmp_root.iterdir() if p.is_dir()] if tmp_root.is_dir() else []
+    size = sum(f.stat().st_size for d in folders for f in d.rglob("*") if f.is_file())
+    text = f"/tmp はプロジェクトごと・他のプロジェクトは見えない。下書きの置き場 {len(folders)} 個・{size / 2**30:.1f} GiB"
+    if size > 10 * 2**30:
+        return "warn", text + "（大きい。不要なプロジェクトの下書きを data/sandboxes/project-tmp から消してください）"
+    return True, text
+
+
 # 目標超えがこの回数を超えたら警告（全力の始まりの 1 回ずつは起こりうるので、数回までは許す）
 DEVIATION_WARN = 3
 
 
 CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモリ", _memory), ("応答（event loop）", _event_loop),
           ("常駐サービス", _failed_units), ("ローカル LLM", _llms), ("画面の build", _frontend),
-          ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan)]
+          ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan), ("OpenCode の箱", _opencode_box)]
 
 
 _latest: dict | None = None

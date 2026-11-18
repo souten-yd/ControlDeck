@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 169 ファイル、1478 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、147 テスト
+- backend: 170 ファイル、1485 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、148 テスト
 
 ## backend（backend/tests）
 
@@ -1467,6 +1467,18 @@
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`
 - `test_japanese_project_directory_is_sent_url_encoded` — 日本語のプロジェクト名でも、ヘッダーを送れる（ASCII だけ）。OpenCode は decodeURIComponent で戻す。
 
+### backend/tests/test_opencode_chat_timeline.py
+
+目的: AI アシスタントの OpenCode: 思考・道具・本文を届いた順に記録する／作業フォルダを会話で続ける／箱ごとの /tmp。 目的: 2026-11-18 利用者の依頼。 - 「思考が全部 1 つの窓に入っている。Bash などの操作の前後で分かれるはず」→ 届いた順の並び（timeline）を記録する （思考・本文は文字の位置、道具は ID）。画面はそれで思考を道具の前後に分けて出す - 「AI アシスタントを開き直すと作業フォルダの設定が外れる」→ 指定が空なら、その会話で最後に OpenCode が 動いたプロジェクトで続ける - 「proto1〜3 が Project Lab に無い」→ 箱の /tmp は全部の箱で共有されていた。プロジェクトごとに別の、 箱の外に残る場所へつなぐ
+
+- `test_thinking_tools_and_text_are_recorded_in_arrival_order`
+- `test_an_empty_project_continues_in_the_conversations_last_project`
+- `test_a_deleted_last_project_is_not_reopened`
+- `test_each_project_box_gets_its_own_tmp_that_outlives_the_box`
+- `test_other_projects_are_hidden_inside_a_project_box` — 箱の中で CodeDEV を空の場所で覆い、このプロジェクトだけをつなぐ。前に開いた別のプロジェクトの
+- `test_deleting_a_project_removes_its_box_tmp`
+- `test_selftest_checks_the_project_box_isolation` — 箱の /tmp が専用で、CodeDEV が覆われているかを自己診断で確かめる（同じことが起きたら気付けるように）。
+
 ### backend/tests/test_opencode_dev_tools.py
 
 目的: OpenCode の作業の道具（UI 検証 = Playwright MCP）と、作業の結果（control_deck.report）。 計画: docs/PLAN-opencode-dev-environment.md 第 1 段階。
@@ -2450,7 +2462,8 @@
 - in an OpenCode conversation, an ordinary request stays with OpenCode
 - in an OpenCode conversation, a plain question is answered in chat
 - in an OpenCode conversation, an image goes to the chat that can see it
-- a long thinking trace opens from its heading and closes by tapping inside it
+- a long thinking trace opens from its heading and closes by tapping inside it at ${width}px
+- an OpenCode answer shows thinking split around its tools and reopening keeps the work folder
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone

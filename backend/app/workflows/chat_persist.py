@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -823,6 +824,14 @@ def language_guard(history: list[dict], user_query: str) -> list[dict]:
     return history
 
 
+def _timeline_of(message) -> list:
+    """発言に記録した届いた順の並び（OpenCode の回答だけ）。無ければ空。"""
+    try:
+        return list((json.loads(message.meta_json or "{}") or {}).get("timeline") or [])
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return []
+
+
 HANDOFF_MODE_LABEL = {"chat": "チャット", "web": "調査（Web）", "academic": "調査（論文）", "research": "調査",
                       "deep": "調査（Deep Research）", "auto": "チャット"}
 
@@ -968,14 +977,25 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
 
         tools: list[dict] = []
         permissions: list[dict] = []
-        buf["meta"] = {"mode": "code", "tools": tools, "permissions": permissions}
+        # 届いた順の並び（思考・本文は文字の位置、道具は ID）。画面は思考を道具の前後で分けて出す
+        # （2026-11-18 利用者「思考が全部 1 つの窓に入っている。操作の前後で分かれるはず」）
+        timeline: list[dict] = []
+        buf["meta"] = {"mode": "code", "tools": tools, "permissions": permissions, "timeline": timeline}
+
+        def mark(kind: str, start: int, length: int) -> None:
+            if timeline and timeline[-1].get("k") == kind:
+                timeline[-1]["to"] = start + length
+            else:
+                timeline.append({"k": kind, "from": start, "to": start + length})
 
         async def on_text(delta: str) -> None:
+            mark("x", len(buf["content"]), len(delta))
             buf["content"] += delta
             job.log("delta", delta=delta)
             await maybe_ckpt()
 
         async def on_reasoning(delta: str) -> None:
+            mark("t", len(buf["thinking"]), len(delta))
             buf["thinking"] += delta
             job.log("thinking", delta=delta)
             await maybe_ckpt()
@@ -984,6 +1004,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             entry = next((t for t in tools if t["id"] == tool["id"]), None)
             if entry is None:
                 tools.append(dict(tool))
+                timeline.append({"k": "u", "id": tool["id"]})
             else:
                 entry.update(tool)
             job.log("tool", tool=dict(tool))
@@ -1552,6 +1573,28 @@ async def send_message(
     ).first() is not None:
         # 同じセッションのイベントを 2 つの発言が取り合わないように
         raise HTTPException(status_code=409, detail="OpenCode が作業中です。終わるか止めてから送ってください")
+    if body.mode == "code" and not body.code_project and not body.code_project_path:
+        # 作業フォルダの指定が空なら、この会話で最後に OpenCode が動いたプロジェクトで続ける
+        # （画面を開き直すと選択が外れていた。2026-11-18 利用者の依頼）
+        for row in db.execute(select(ChatMessage).where(
+                ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+        ).order_by(ChatMessage.created_at.desc()).limit(50)).scalars():
+            try:
+                previous = json.loads(row.meta_json or "{}").get("project_path")
+            except (json.JSONDecodeError, AttributeError):
+                previous = None
+            if previous:
+                # CodeDEV の直下なら名前で開く（フォルダの取り込みの道を通すと、設定によって失敗するか、
+                # 丸ごと複製した別のプロジェクトで作業してしまう。レビュー指摘 2026-11-18）。消えていれば戻さない
+                from app.integrations.opencode import provider as opencode_provider
+
+                previous_path = Path(str(previous))
+                root = opencode_provider.codedev_root().resolve()
+                if previous_path.is_dir() and previous_path.resolve().parent == root:
+                    body.code_project = previous_path.resolve().name
+                elif previous_path.is_dir():
+                    body.code_project_path = str(previous_path)
+                break
     if body.plan is not None and body.mode not in ("auto", body.plan.mode):
         raise HTTPException(status_code=422, detail="モードと調査計画が一致しません")
     # 履歴（system + 過去 + 今回）
@@ -1671,6 +1714,10 @@ async def stream_message(websocket: WebSocket, message_id: str):
         job_id = msg.job_id if msg else None
         saved_content = msg.content if msg else ""
         saved_thinking = msg.thinking if msg else ""
+        saved_timeline = _timeline_of(msg) if msg else []
+        # 本文がまだ無くても、思考や並びがあれば今の内容を送る（送らないと最初からの出来事を重ねて流し、
+        # 同じ思考が 2 つの窓に出る。レビュー指摘 2026-11-18）
+        has_saved = bool(saved_content or saved_thinking or saved_timeline)
         saved_status = msg.status if msg else "failed"
         saved_error = (msg.error or "") if msg else ""
     finally:
@@ -1683,8 +1730,9 @@ async def stream_message(websocket: WebSocket, message_id: str):
 
     # まず現在までの保存済み内容を送る（再接続時の即時復元）。snapshotを送った場合は
     # それ以前のdeltaを再送しない。最終snapshotでもDB内容へ必ず収束させる。
-    if saved_content:
-        await websocket.send_text(json.dumps({"type": "snapshot", "content": saved_content, "thinking": saved_thinking}))
+    if has_saved:
+        await websocket.send_text(json.dumps({"type": "snapshot", "content": saved_content, "thinking": saved_thinking,
+                                              "timeline": saved_timeline}))
 
     job = jobs.get(job_id) if job_id else None
     if job is None:
@@ -1695,7 +1743,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
         return
 
     try:
-        cursor = job.event_sequence if saved_content else job.event_offset
+        cursor = job.event_sequence if has_saved else job.event_offset
         while True:
             await jobs.wait_events(job, cursor)
             events, next_cursor, truncated = job.events_since(cursor)
@@ -1707,7 +1755,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
                     if current is not None:
                         await websocket.send_text(json.dumps({
                             "type": "snapshot", "content": current.content,
-                            "thinking": current.thinking or "",
+                            "thinking": current.thinking or "", "timeline": _timeline_of(current),
                         }, ensure_ascii=False))
                 cursor = next_cursor
                 continue
@@ -1755,7 +1803,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
                 final_error = final.error or ""
                 await websocket.send_text(json.dumps({
                     "type": "snapshot", "content": final.content,
-                    "thinking": final.thinking or "",
+                    "thinking": final.thinking or "", "timeline": _timeline_of(final),
                 }, ensure_ascii=False))
         await websocket.send_text(json.dumps(
             {"type": "done", "status": job.status, "error": final_error or job.error}, ensure_ascii=False))
