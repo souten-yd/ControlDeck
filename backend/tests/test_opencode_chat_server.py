@@ -59,8 +59,9 @@ def test_permission_plugin_auto_allows_safe_work_and_asks_for_danger(tmp_path):
                    "git branch -f main HEAD~5", "node -e 'x'", "python3 -c 'x'", "xargs rm < list",
                    "git -c core.fsmonitor=x status"):
         assert out[danger] == "ask", danger
-    assert out["edit"] == "allow" and out["webfetch"] is None and out["askMode"] is None
-    assert out["hook"][:3] == ["allow", "deny", "ask"] and out["hook"][3].startswith("Auto")
+    # Auto は箱の中なら確認しない（利用者 2026-11-18）。禁止（deny）は緩めない
+    assert out["edit"] == "allow" and out["webfetch"]["effect"] == "allow" and out["askMode"] is None
+    assert out["hook"][:3] == ["allow", "deny", "allow"] and out["hook"][3].startswith("Auto")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node が無い")
@@ -186,7 +187,10 @@ def test_run_turn_streams_text_tools_and_permissions(monkeypatch, tmp_path):
         on_text=lambda d: collect(text, d), on_reasoning=lambda d: collect(thinking, d),
         on_tool=lambda t: collect(tools, t), on_permission=lambda p: collect(perms, p)))
     assert result == {"status": "succeeded", "error": ""}
-    assert calls[0] == ("POST", f"/api/session/{sid}/prompt", {"text": "片付けて"})
+    # 毎回エージェントをそろえてから送る（既定はビルド）
+    assert calls[0] == ("POST", f"/api/session/{sid}/agent", {"agent": "build"})
+    assert calls[1] == ("GET", f"/api/session/{sid}", None)          # 切り替わったかを読み直す
+    assert calls[2] == ("POST", f"/api/session/{sid}/prompt", {"text": "片付けて"})
     assert "".join(text) == "## 結果\n完了" and thinking == ["考える"]
     assert tools[-1]["status"] == "completed" and tools[-1]["input"] == {"command": "rm -rf build"}
     assert perms[0]["status"] == "pending" and perms[0]["save"] == ["rm *"] and perms[1]["status"] == "once"
@@ -266,7 +270,7 @@ def test_code_mode_records_tools_and_permissions_and_answers_them(admin_client, 
 
     hold = asyncio.Event()
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build"):
         await on_tool({"id": "call_1", "name": "shell", "status": "running", "input": {"command": "rm -rf build"}, "output": ""})
         await on_permission({"id": "per_1", "action": "shell", "resources": ["rm -rf build"], "save": [],
                              "tool": "call_1", "status": "pending"})
@@ -457,3 +461,93 @@ def test_japanese_project_directory_is_sent_url_encoded(tmp_path):
     assert chat_server.Server(key="a", port=1, password="p", unit="u", config="c", project="/data1tb/CodeDEV/my-app",
                               permission_file="p", started_at=0.0, last_used=0.0).headers()["x-opencode-directory"] \
         == "/data1tb/CodeDEV/my-app"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い")
+def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
+    """プラン（plan エージェント）では何も変えない。2026-11-18 利用者「プランの際はビルドモードではないことが明確に」。
+    レビュー指摘（同日）: 規則で allow に決まったもの（ビルドで「いつも許可」）・子のエージェント・書ける読むだけ風の
+    コマンド（fd -x・uniq IN OUT・rg --pre）も止める。確認モード・箱の外では読むだけのコマンドも確認する。
+    エージェント名が無くても、ControlDeck が書いたプランのセッション一覧で判断する。"""
+    results = {}
+    for mode in ("auto", "ask"):
+        mode_file = tmp_path / f"{mode}.json"
+        mode_file.write_text(json.dumps({"mode": mode, "plan_sessions": ["ses_plan"]}))
+        script = f"""
+          import plugin from {json.dumps((PLUGIN / "index.mjs").as_uri())};
+          const hooks = {{}};
+          await plugin.setup({{ permission: {{ hook: async (name, fn) => {{ hooks[name] = fn; }} }} }});
+          const out = {{}};
+          const cases = [["edit", ["a.py"], "ask"], ["write", ["b.py"], "allow"], ["shell", ["ls -la"], "ask"],
+                         ["shell", ["git status && git diff"], "ask"], ["shell", ["rg foo | head"], "ask"], ["shell", ["grep -n -C 3 foo a.py"], "ask"],
+                         ["shell", ["npm run build"], "ask"], ["shell", ["git commit -m x"], "ask"], ["shell", ["mkdir x"], "ask"],
+                         ["shell", ["python -m pytest -q"], "ask"], ["shell", ["rm -rf build"], "allow"],
+                         ["shell", ["fd . -x touch {{}}"], "ask"], ["shell", ["uniq a.txt src/app.py"], "ask"],
+                         ["shell", ["rg --pre ./x.sh foo"], "ask"], ["subagent", ["developer"], "allow"],
+                         ["execute", ["sculpt"], "allow"], ["webfetch", ["https://x"], "ask"], ["shell", ["systemctl stop x"], "deny"]];
+          for (const [action, resources, effect] of cases) {{
+            const event = {{ action, resources, effect, agent: "plan", sessionID: "ses_x" }};
+            hooks.evaluate(event);
+            out[action + ":" + resources[0]] = event.effect;
+          }}
+          // エージェント名が無くても、プランのセッション一覧で止める
+          const bySession = {{ action: "edit", resources: ["a.py"], effect: "allow", sessionID: "ses_plan" }};
+          hooks.evaluate(bySession);
+          out.bySession = bySession.effect;
+          const build = {{ action: "edit", resources: ["a.py"], effect: "ask", agent: "build", sessionID: "ses_b" }};
+          hooks.evaluate(build);
+          out.build = build.effect;
+          console.log(JSON.stringify(out));
+        """
+        result = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True,
+                                env={"CONTROLDECK_PERMISSION_FILE": str(mode_file), "PATH": "/usr/bin:/bin"},
+                                timeout=30, check=True)
+        results[mode] = json.loads(result.stdout)
+    for mode, out in results.items():
+        assert out["edit:a.py"] == "deny" and out["write:b.py"] == "deny", mode       # allow で決まった書き込みも止める
+        for change in ("npm run build", "git commit -m x", "mkdir x", "python -m pytest -q", "rm -rf build",
+                       "fd . -x touch {}", "uniq a.txt src/app.py", "rg --pre ./x.sh foo"):
+            assert out[f"shell:{change}"] == "deny", (mode, change)
+        assert out["subagent:developer"] == "deny", mode
+        assert out["execute:sculpt"] == "ask" and out["webfetch:https://x"] == "ask", mode
+        assert out["shell:systemctl stop x"] == "deny", mode                            # 禁止は緩めない
+        assert out["bySession"] == "deny", mode
+    for read in ("ls -la", "rg foo | head", "grep -n -C 3 foo a.py"):
+        assert results["auto"][f"shell:{read}"] == "allow", read
+        assert results["ask"][f"shell:{read}"] == "ask", read                          # 確認モードでは緩めない
+    assert results["auto"]["shell:git status && git diff"] == "ask"                    # git はリポジトリの設定を動かしうる
+    assert results["auto"]["build"] == "allow" and results["ask"]["build"] == "ask"
+
+
+def test_run_turn_switches_to_the_plan_agent(monkeypatch, tmp_path):
+    from app.integrations.opencode import chat_server
+
+    sid = "ses_p"
+    calls: list = []
+    _fake_events(monkeypatch, [{"type": "session.execution.succeeded", "data": {"sessionID": sid}}], calls)
+
+    async def noop(_):
+        return None
+
+    result = asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "計画して", on_text=noop, on_reasoning=noop,
+                                              on_tool=noop, on_permission=noop, agent="plan"))
+    assert result["status"] == "succeeded"
+    assert calls[0] == ("POST", f"/api/session/{sid}/agent", {"agent": "plan"})
+    # 権限プラグインへ、このセッションがプランだと知らせる（エージェント名が無くても止められるように）
+    assert json.loads(Path(_server(tmp_path).permission_file).read_text())["plan_sessions"] == [sid]
+
+
+def test_switch_agent_is_checked_by_reading_the_session_back(monkeypatch, tmp_path):
+    """v2 は知らない名前でも 204 を返す（実測）。読み直して切り替わっていなければ止める（レビュー指摘）。"""
+    from app.integrations.opencode import chat_server
+
+    async def fake_call(server, method, path, body=None):
+        return {"agent": "build"} if method == "GET" else {}
+
+    monkeypatch.setattr(chat_server, "_call", fake_call)
+    import pytest as _pytest
+    with _pytest.raises(chat_server.ChatServerError):
+        asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_1", "plan"))
+    asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_1", "build"))
+    with _pytest.raises(chat_server.ChatServerError):
+        asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_1", "yolo"))
