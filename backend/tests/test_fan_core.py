@@ -57,7 +57,9 @@ def test_over_the_limit_is_full_speed_until_back_at_the_target():
         step = ctl.step(hot(80.0), 200, 3.0, s, r9700())
     assert step.percent < 100 and not step.emergency
     step = ctl.step(hot(95.2), 200, 3.0, s, r9700())
-    assert step.percent == 100 and step.emergency
+    assert not step.emergency            # 1 回だけの跳ねでは入らない（hotspot は 1 秒だけ +3〜+7°C 跳ねる）
+    step = ctl.step(hot(95.2), 200, 3.0, s, r9700())
+    assert step.percent == 100 and step.emergency   # 3 回の中央値が上限 → 入る
     # 目標（90）より上にいる間は最大のまま
     for _ in range(10):
         step = ctl.step(hot(92.0), 200, 3.0, s, r9700())
@@ -89,10 +91,13 @@ def test_integral_is_kept_while_idle_and_during_an_emergency():
     for _ in range(30):                        # 休みに入る（下がる側の平滑で、しばらくは目標の近くに見える）
         ctl.step(hot(45.0), 4, 3.0, s, model)
     learned = ctl.integral
-    for _ in range(100):                       # 休みが続く（目標よりずっと下）
+    for _ in range(100):                       # 休みが続く（電力が低い）
         ctl.step(hot(45.0), 4, 3.0, s, model)
     assert ctl.integral == pytest.approx(learned)
-    for _ in range(5):                         # 緊急の最大回転
+    ctl.step(hot(96.0), 200, 3.0, s, model)
+    ctl.step(hot(96.0), 200, 3.0, s, model)    # ここから緊急の最大回転
+    learned = ctl.integral
+    for _ in range(5):
         step = ctl.step(hot(96.0), 200, 3.0, s, model)
     assert step.emergency and ctl.integral == pytest.approx(learned)
 
@@ -126,14 +131,15 @@ def test_hot_summer_with_a_winter_model_stays_near_the_target(pattern, period):
     finally:
         core.Plant.__init__ = original
     assert result["emergency_steps"] == 0
-    assert result["peak_c"]["temp2"] <= 92.0
+    assert result["peak_c"]["temp2"] < 94.0
 
 
 def test_tune_uses_the_strong_simc_gains():
-    """自動調整の効き具合は、閉ループの時定数を遅れ時間と同じにした SIMC（R9700 で Kp 約 2.5）。"""
+    """自動調整の効き具合: Kp は閉ループの時定数を遅れ時間と同じにした SIMC（R9700 で約 2.5）、
+    Ti は熱の時定数の 1.6 倍（約 80 秒。2 段の模型でマージン 5°C・外気温 +10°C まで緊急 0 回だった値）。"""
     result = core.tune(r9700(), settings(), SENSORS, 210)
     assert result["kp"] == pytest.approx(2.5, abs=0.1)
-    assert result["ti"] == pytest.approx(49.8, abs=0.5)
+    assert result["ti"] == pytest.approx(79.7, abs=0.5)
     assert "steady" in result["simulated"]
 
 
@@ -143,3 +149,44 @@ def test_without_a_thermal_model_the_pid_still_follows_the_target():
     s = settings()
     outs = [ctl.step(hot(93.0), 200, 3.0, s, None).percent for _ in range(40)]
     assert outs[-1] > outs[0] + 5 and outs == sorted(outs)
+
+
+def test_after_an_emergency_the_slow_descent_does_not_inflate_the_integral():
+    """緊急の最大回転の後、回転をゆっくり下げている間（冷えて見える）に上乗せを動かさない。
+    本番 2026-11-18: 実際の回転数へ寄せていたので 3 → 17.6% に膨らみ、86% で回り続けた。"""
+    ctl = core.Controller()
+    s = settings()
+    model = r9700()
+    for _ in range(30):
+        ctl.step(hot(90.0), 200, 3.0, s, model)
+    before = ctl.integral
+    for _ in range(3):
+        ctl.step(hot(96.0), 200, 3.0, s, model)          # 緊急
+    for _ in range(20):
+        step = ctl.step(hot(78.0), 200, 3.0, s, model)   # 最大回転で冷えた。ゆっくり下げている途中
+        assert step.percent > step.feedforward + step.p_term + step.i_term
+    assert ctl.integral <= before + 0.6        # 膨らまない（下がる側は PI の通常の動き）
+
+
+def test_a_too_large_integral_comes_back_down_under_load():
+    """上乗せが大きすぎて、負荷中でも回転を下げきって冷えすぎているなら、ゆっくり減らす（冷えたまま残さない）。"""
+    model = r9700()
+    model.integral_percent = 17.6
+    ctl = core.Controller()
+    s = settings()
+    for _ in range(300):
+        ctl.step(hot(80.0), 200, 3.0, s, model)
+    assert ctl.integral < 12.0
+
+
+def test_idle_is_judged_from_the_raw_power_not_the_slow_feedforward_power():
+    """休み（上乗せを動かさない）は生の電力で判定する。先読みの電力はゆっくり下げてあるので、休みでも高く見える。"""
+    ctl = core.Controller()
+    s = settings()
+    model = r9700()
+    for _ in range(30):
+        ctl.step(hot(91.5), 200, 3.0, s, model)
+    learned = ctl.integral
+    for _ in range(10):
+        ctl.step(hot(60.0), 8, 3.0, s, model)            # 休みに入った直後
+    assert ctl.integral == pytest.approx(learned)

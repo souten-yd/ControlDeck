@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 168 ファイル、1471 テスト（目的の未記入 93 ファイル）
+- backend: 169 ファイル、1476 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、146 テスト
 
 ## backend（backend/tests）
@@ -775,6 +775,7 @@
 - `test_curve_is_flat_to_the_hotspot_limit_then_full` — ファームウェアのカーブ: 上限までは制御の出力で一定、上限 +1°C で最大。アプリが止まっても上限での最大は残る。
 - `test_over_the_limit_goes_to_full_speed_at_once` — 上限を超えたら、なめらかさの上限を待たずに最大回転（どの方式でも）。
 - `test_old_settings_are_carried_over` — 旧版の設定（本番の curve_r9700・温度追従）から引き継ぐのは有効/無効・GPU・最低回転・マージンだけ。
+- `test_v068_settings_with_the_old_default_ti_get_the_new_default` — v0.68 で保存した設定は、画面が既定の Ti 50 秒も一緒に書いていた。今の既定（80 秒）へ。手で変えた値は残す。
 - `test_margin_below_two_degrees_is_rejected`
 - `test_history_records_limits_targets_and_fan`
 - `test_autotune_requires_control_and_an_llm`
@@ -811,8 +812,11 @@
 - `test_integral_is_kept_while_idle_and_during_an_emergency` — 上乗せ（先読みの不足分）は、休み中と緊急の最大回転の間に動かさない。
 - `test_integral_is_saved_in_the_model_and_restored_after_a_restart`
 - `test_hot_summer_with_a_winter_model_stays_near_the_target` — 外気温が 17°C 上がっても（熱モデルは冬のまま）、上乗せで目標近くに戻り、上限を超えない。
-- `test_tune_uses_the_strong_simc_gains` — 自動調整の効き具合は、閉ループの時定数を遅れ時間と同じにした SIMC（R9700 で Kp 約 2.5）。
+- `test_tune_uses_the_strong_simc_gains` — 自動調整の効き具合: Kp は閉ループの時定数を遅れ時間と同じにした SIMC（R9700 で約 2.5）、
 - `test_without_a_thermal_model_the_pid_still_follows_the_target` — 熱モデルがまだ無い（先読みなし）でも、PI だけで目標へ向かって回転を上げる。
+- `test_after_an_emergency_the_slow_descent_does_not_inflate_the_integral` — 緊急の最大回転の後、回転をゆっくり下げている間（冷えて見える）に上乗せを動かさない。
+- `test_a_too_large_integral_comes_back_down_under_load` — 上乗せが大きすぎて、負荷中でも回転を下げきって冷えすぎているなら、ゆっくり減らす（冷えたまま残さない）。
+- `test_idle_is_judged_from_the_raw_power_not_the_slow_feedforward_power` — 休み（上乗せを動かさない）は生の電力で判定する。先読みの電力はゆっくり下げてあるので、休みでも高く見える。
 
 ### backend/tests/test_fan_log.py
 
@@ -841,6 +845,12 @@
 - `test_pid_asymmetric_pv_filter_retains_cooling_dips_without_slowing_rise`
 - `test_pid_ema_does_not_change_raw_median_safety_input`
 - `test_ceiling_firmware_backstop_respects_hardware_range`
+
+### backend/tests/test_fan_two_stage.py
+
+目的: 実機の記録に当てはめた 2 段の熱の模型で、ファン制御がマージン 5°C で緊急の最大回転に入らないことを確かめる。 目的: 2026-11-18 利用者「温度がオーバーした」「模擬で確かめてマージン 5 度でゲイン調整できると良い」。 本番（v0.68）では、負荷が止まると回転を急に下げ、再開で 95°C に届いて緊急の最大回転に入り、その後に上乗せが 膨らんで回り続けた。hotspot の読みは全力中でも 1 秒だけ +3〜+7°C 跳ねる。 fan_core の簡単な模型（瞬間の跳ね＋1 段）は直す前の版でも最高 90.7°C で本番を再現できなかったので、 本番の 1 秒ごとの記録に「放熱板（遅い・回転で冷え方が変わる）＋ダイ（速い）」の模型を当てはめた （hotspot の誤差 1.3°C。tests/fixtures/fan_r9700_two_stage.json）。この模型と実際の揺れの分布で、直す前の版は 本番と同じく最高 98°C・緊急 5 回を再現し、直した版は 0 回。 - 記録した実際の電力の流れ・全力と 20〜60 秒の休みの繰り返し・休みから全力を、外気温そのまま／+10°C で流す - 上乗せは本番と同じく育った状態から（全力 15 分の慣らし） - 緊急の最大回転 0 回、全力中の平均が目標 90°C の ±2.5°C
+
+- `test_margin_five_holds_without_emergency_on_the_fitted_r9700_model`
 
 ### backend/tests/test_feature_boot_restore.py
 
