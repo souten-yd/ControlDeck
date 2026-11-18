@@ -92,8 +92,11 @@ def test_thinking_tools_and_text_are_recorded_in_arrival_order(admin_client, mon
 
 
 def test_an_empty_project_continues_in_the_conversations_last_project(admin_client, monkeypatch, tmp_path):
+    from app.integrations.opencode import provider
+
     resolved: list = []
     _fake_opencode(monkeypatch, tmp_path, resolved)
+    monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path.parent)
     conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
     first = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
                               json={"content": "作って", "mode": "code", "model": "test", "code_project": "demo"})
@@ -104,7 +107,27 @@ def test_an_empty_project_continues_in_the_conversations_last_project(admin_clie
     assert second.status_code == 201, second.text
     _wait_done(admin_client, conv_id, second.json()["assistant_message_id"])
     assert resolved[0] == ("demo", "")
-    assert resolved[1] == ("", str(tmp_path))       # 前回のプロジェクトで続けた
+    # CodeDEV の直下なので名前で開く（フォルダの取り込みの道を通すと失敗・複製のおそれ。レビュー指摘）
+    assert resolved[1] == (tmp_path.name, "")
+
+
+def test_a_deleted_last_project_is_not_reopened(admin_client, monkeypatch, tmp_path):
+    from app.integrations.opencode import provider
+
+    resolved: list = []
+    project = tmp_path / "gone"
+    project.mkdir()
+    _fake_opencode(monkeypatch, project, resolved)
+    monkeypatch.setattr(provider, "codedev_root", lambda: tmp_path)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    first = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                              json={"content": "作って", "mode": "code", "model": "test", "code_project": "gone"})
+    _wait_done(admin_client, conv_id, first.json()["assistant_message_id"])
+    project.rmdir()                                   # Project Lab で消した
+    second = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                               json={"content": "続けて", "mode": "code", "model": "test"})
+    _wait_done(admin_client, conv_id, second.json()["assistant_message_id"])
+    assert resolved[1] == ("", "")                    # 作り直さない（既定のプロジェクトの扱いへ）
 
 
 def test_each_project_box_gets_its_own_tmp_that_outlives_the_box(monkeypatch, tmp_path):
@@ -143,3 +166,37 @@ def test_other_projects_are_hidden_inside_a_project_box(monkeypatch, tmp_path):
     argv = sandbox.container_argv(["true"], workdir=project, writable=[project], hide=[root])
     assert argv[argv.index("--tmpfs") + 1].startswith(f"{root}:")
     assert f"{project}:{project}:rw" in argv            # このプロジェクトは隠した上につながる
+
+
+def test_deleting_a_project_removes_its_box_tmp(monkeypatch, tmp_path):
+    from app.integrations.opencode import provider
+
+    root = tmp_path / "CodeDEV"
+    (root / "old").mkdir(parents=True)
+    monkeypatch.setattr(provider, "codedev_root", lambda: root)
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
+    scratch = provider.project_tmp_dir(root / "old")
+    (scratch / "proto.js").write_text("x")
+    provider.delete_project("old")
+    assert not scratch.exists()
+
+
+def test_selftest_checks_the_project_box_isolation(monkeypatch, tmp_path):
+    """箱の /tmp が専用で、CodeDEV が覆われているかを自己診断で確かめる（同じことが起きたら気付けるように）。"""
+    from app.diagnostics import selftest
+    from app.integrations.opencode import provider
+    from app.maintenance import sandbox
+
+    root = tmp_path / "CodeDEV"
+    root.mkdir()
+    monkeypatch.setattr(provider, "isolation_mode", lambda: "box")
+    monkeypatch.setattr(provider, "codedev_root", lambda: root)
+    monkeypatch.setattr(provider, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(selftest, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: "/usr/bin/podman")
+    monkeypatch.setattr(sandbox, "_rootfs", lambda: tmp_path / "rootfs")
+    ok, text = selftest._opencode_box()
+    assert ok is True and "他のプロジェクトは見えない" in text
+    monkeypatch.setattr(provider, "_sibling_projects", lambda project: [])   # 覆いが外れた
+    ok, text = selftest._opencode_box()
+    assert ok is False and "別のプロジェクト" in text

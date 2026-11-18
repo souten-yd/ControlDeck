@@ -89,7 +89,8 @@ def settings(
 @router.get("/projects")
 def list_projects(user: User = Depends(require_permission("workflows.run"))):
     """CodeDEV（~/CodeDEV）配下の管理プロジェクト一覧。"""
-    return {"root": str(opencode.codedev_root()), "projects": opencode.list_projects()}
+    # 解決したパスで返す（発言に記録した project_path は解決済み。比べて会話の作業フォルダを戻す）
+    return {"root": str(opencode.codedev_root().resolve()), "projects": opencode.list_projects()}
 
 
 class ProjectBody(BaseModel):

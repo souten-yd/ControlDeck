@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 170 ファイル、1482 テスト（目的の未記入 93 ファイル）
+- backend: 170 ファイル、1485 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、148 テスト
 
 ## backend（backend/tests）
@@ -1473,8 +1473,11 @@
 
 - `test_thinking_tools_and_text_are_recorded_in_arrival_order`
 - `test_an_empty_project_continues_in_the_conversations_last_project`
+- `test_a_deleted_last_project_is_not_reopened`
 - `test_each_project_box_gets_its_own_tmp_that_outlives_the_box`
 - `test_other_projects_are_hidden_inside_a_project_box` — 箱の中で CodeDEV を空の場所で覆い、このプロジェクトだけをつなぐ。前に開いた別のプロジェクトの
+- `test_deleting_a_project_removes_its_box_tmp`
+- `test_selftest_checks_the_project_box_isolation` — 箱の /tmp が専用で、CodeDEV が覆われているかを自己診断で確かめる（同じことが起きたら気付けるように）。
 
 ### backend/tests/test_opencode_dev_tools.py
 

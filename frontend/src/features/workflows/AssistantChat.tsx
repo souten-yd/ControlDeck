@@ -146,6 +146,8 @@ interface Msg {
   answeredBy?: string;
   /** OpenCode: 届いた順の並び（思考・本文は文字の位置、道具は ID）。思考を道具の前後で分けて出す */
   timeline?: TimelineSeg[];
+  /** OpenCode: この回答が動いたプロジェクト（解決したパス） */
+  projectPath?: string;
   permissions?: OpenCodePermission[];
   /** 生成中のジョブ（停止に使う） */
   jobId?: string | null;
@@ -188,6 +190,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     timeline: m.meta?.timeline,
+    projectPath: m.meta?.project_path,
     jobId: m.job_id,
     thinking: m.thinking || undefined,
     messageId: m.id,
@@ -505,8 +508,12 @@ export default function AssistantChat() {
               const tool = d.tool as OpenCodeTool;
               const tools = m.tools ?? [];
               const known = tools.some((t) => t.id === tool.id);
-              return { ...m, tools: known ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool],
-                timeline: known || m.answeredBy !== "code" ? m.timeline : [...(m.timeline ?? []), { k: "u", id: tool.id }] };
+              // 道具が届くのは OpenCode だけ。準備中に開き直した発言はまだ印が無いので、ここで付ける。
+              // それまでの思考は 1 つのまとまりとして並びの先頭に置く
+              const base = m.timeline?.length ? m.timeline
+                : m.thinking ? [{ k: "t" as const, from: 0, to: m.thinking.length }] : [];
+              return { ...m, answeredBy: "code", tools: known ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool],
+                timeline: known ? (m.timeline ?? base) : [...base, { k: "u", id: tool.id }] };
             });
           }
           else if (d.type === "permission") patchMsg((m) => {
@@ -558,22 +565,27 @@ export default function AssistantChat() {
     const last = [...rows].reverse().find((m) => m.role === "assistant" && m.meta?.mode === "code" && m.meta?.project_path);
     const path = last?.meta?.project_path;
     if (!path) return;
-    const root = (codeProjects?.root ?? "").replace(/\/+$/, "");
     const name = path.split("/").pop() ?? "";
-    if (root && path === `${root}/${name}` && name) {
+    const listed = codeProjects?.projects.some((p) => p.name === name && (p.path === path || codeProjects.root.replace(/\/+$/, "") === path.slice(0, -name.length - 1)));
+    if (listed) {
       setCodeProject(name);
-    } else {
+    } else if (!codeProjects) {
+      // 一覧がまだ届いていない。フォルダとして持っておき、一覧が届いたら名前に直す（下の useEffect）
       setCodeFolderPath(path);
       setCodeProject("__folder__");
+    } else {
+      return;   // 消した・名前を変えたプロジェクトは選び直さない（送ると空のプロジェクトが作り直される）
     }
     setCodeNewName("");
   };
 
   // プロジェクトの一覧が後から届いたら、CodeDEV の中のフォルダ指定はプロジェクト名の選択に直す
   useEffect(() => {
-    const root = (codeProjects?.root ?? "").replace(/\/+$/, "");
+    if (codeProject !== "__folder__" || !codeProjects) return;
+    const root = codeProjects.root.replace(/\/+$/, "");
     const name = codeFolderPath.split("/").pop() ?? "";
-    if (codeProject === "__folder__" && root && name && codeFolderPath === `${root}/${name}`) {
+    const listed = codeProjects.projects.some((p) => p.name === name && (p.path === codeFolderPath || codeFolderPath === `${root}/${name}`));
+    if (listed) {
       setCodeProject(name);
       setCodeFolderPath("");
     }
@@ -984,7 +996,7 @@ export default function AssistantChat() {
       return;
     }
     // この会話に OpenCode の回答があれば、空でもサーバーが最後のプロジェクトで続ける
-    if (selectedMode === "code" && !codeProjectName && !codeFolder && !inCodeConversation) {
+    if (selectedMode === "code" && !codeProjectName && !codeFolder && !messages.some((m) => m.projectPath)) {
       show("OpenCodeのプロジェクトを指定してください（新規名の入力・既存の選択・📁フォルダ）", "error");
       return;
     }

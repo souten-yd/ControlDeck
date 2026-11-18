@@ -1501,6 +1501,8 @@ def delete_project(name: str) -> dict:
     if not path.is_dir():
         raise CodeAgentError("プロジェクトが見つかりません")
     shutil.rmtree(path)
+    # 箱の /tmp（プロジェクトごと・箱の外）も消す。残すと誰も使わない一時ファイルが溜まる
+    shutil.rmtree(project_tmp_dir(path), ignore_errors=True)
     return {"name": cleaned, "path": str(path)}
 
 

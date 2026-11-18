@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -1583,7 +1584,16 @@ async def send_message(
             except (json.JSONDecodeError, AttributeError):
                 previous = None
             if previous:
-                body.code_project_path = str(previous)
+                # CodeDEV の直下なら名前で開く（フォルダの取り込みの道を通すと、設定によって失敗するか、
+                # 丸ごと複製した別のプロジェクトで作業してしまう。レビュー指摘 2026-11-18）。消えていれば戻さない
+                from app.integrations.opencode import provider as opencode_provider
+
+                previous_path = Path(str(previous))
+                root = opencode_provider.codedev_root().resolve()
+                if previous_path.is_dir() and previous_path.resolve().parent == root:
+                    body.code_project = previous_path.resolve().name
+                elif previous_path.is_dir():
+                    body.code_project_path = str(previous_path)
                 break
     if body.plan is not None and body.mode not in ("auto", body.plan.mode):
         raise HTTPException(status_code=422, detail="モードと調査計画が一致しません")
@@ -1705,6 +1715,9 @@ async def stream_message(websocket: WebSocket, message_id: str):
         saved_content = msg.content if msg else ""
         saved_thinking = msg.thinking if msg else ""
         saved_timeline = _timeline_of(msg) if msg else []
+        # 本文がまだ無くても、思考や並びがあれば今の内容を送る（送らないと最初からの出来事を重ねて流し、
+        # 同じ思考が 2 つの窓に出る。レビュー指摘 2026-11-18）
+        has_saved = bool(saved_content or saved_thinking or saved_timeline)
         saved_status = msg.status if msg else "failed"
         saved_error = (msg.error or "") if msg else ""
     finally:
@@ -1717,7 +1730,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
 
     # まず現在までの保存済み内容を送る（再接続時の即時復元）。snapshotを送った場合は
     # それ以前のdeltaを再送しない。最終snapshotでもDB内容へ必ず収束させる。
-    if saved_content:
+    if has_saved:
         await websocket.send_text(json.dumps({"type": "snapshot", "content": saved_content, "thinking": saved_thinking,
                                               "timeline": saved_timeline}))
 
@@ -1730,7 +1743,7 @@ async def stream_message(websocket: WebSocket, message_id: str):
         return
 
     try:
-        cursor = job.event_sequence if saved_content else job.event_offset
+        cursor = job.event_sequence if has_saved else job.event_offset
         while True:
             await jobs.wait_events(job, cursor)
             events, next_cursor, truncated = job.events_since(cursor)
