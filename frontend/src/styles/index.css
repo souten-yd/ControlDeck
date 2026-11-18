@@ -232,10 +232,10 @@ label:has([data-snippet-code]) + p code {
 }
 
 /* iOS 26 の上端のぼかし対策（layouts/shell.tsx の StatusBarStrip）。押された判定を受ける必要がある。
-   上の帯の外に画面が置かれると Safe Area は 0 なので、最低 8px は確保する。 */
+   Safe Area が 0 なら高さも 0（上の行のボタンを塞がない）。 */
 html.pwa-standalone [data-status-strip] {
   display: block;
-  height: max(var(--cd-safe-area-top), 8px);
+  height: var(--cd-safe-area-top);
 }
 
 /* Safe Area */

@@ -10,12 +10,13 @@ for (const width of [320, 1280]) {
     test.skip(!hasSession(), "E2E credentials required");
     await page.setViewportSize({ width, height: 800 });
     await establishSession(page, context);
-    const first = "表示を確認します:";
+    const first = "🎉表示を確認します:";                                      // 絵文字があっても位置がずれない
     const last = "3相とも正しいです。";
+    const notice = "（許可されなかったため、ここで止めました）";                // 並びに載らない追記は最後に出す
     await page.route(/\/api\/v1\/chat\/conversations\/r1\/messages$/, (route) => route.fulfill({ json: {
       conversation: { id: "r1", title: "読みやすさ" },
       messages: [{ id: "u", role: "user", content: "確認して", thinking: "", status: "completed", job_id: null, model: "", error: "", meta: {}, created_at: "2026-11-18T00:00:00Z" },
-        { id: "a", role: "assistant", content: first + last, thinking: "考える", status: "completed", job_id: null, model: "", error: "", created_at: "2026-11-18T00:00:01Z",
+        { id: "a", role: "assistant", content: first + last + notice, thinking: "考える", status: "completed", job_id: null, model: "", error: "", created_at: "2026-11-18T00:00:01Z",
           meta: { mode: "code", tools: [{ id: "c", name: "shell", status: "completed", input: { command: "ls" }, output: "a" }],
             timeline: [{ k: "x", from: 0, to: first.length }, { k: "t", from: 0, to: 3 }, { k: "u", id: "c" }, { k: "x", from: first.length, to: first.length + last.length }] } }],
     } }));
@@ -27,6 +28,8 @@ for (const width of [320, 1280]) {
     await expect(texts).toHaveCount(2);
     await expect(texts.nth(0)).toContainText(first);
     await expect(texts.nth(1)).toContainText(last);
+    await expect(texts.nth(1)).not.toContainText(notice);
+    await expect(shell.getByText(notice)).toBeVisible();
     const card = shell.locator("[data-code-steps]");
     await expect(card).toHaveCount(1);                                       // 思考と道具は同じカード
     await expect(card.locator("[data-thinking]")).toHaveCount(1);

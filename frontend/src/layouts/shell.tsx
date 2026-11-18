@@ -21,18 +21,19 @@ export function useShell(): ShellContextValue | null {
   return useContext(ShellContext);
 }
 
+/** iOS 26 のホーム画面アプリは、画面上端にぼかし（scroll edge effect）を重ね、上の行までにじませる。
+ *  消す設定は無いが、上端に不透明で全幅の fixed / sticky の箱があると色を伸ばすだけになると報告されている
+ *  （WebKit の判定は公開情報。実機で要確認）。上の行を sticky にし、上の帯（Safe Area）に箱を置く。
+ *  Safe Area が 0 のときは高さ 0 で、上の行がその役を担う（操作の邪魔をしない）。 */
+export function StatusBarStrip() {
+  return <div aria-hidden data-status-strip className="fixed inset-x-0 top-[var(--cd-app-top,0px)] z-40 hidden bg-zinc-50 dark:bg-zinc-950" />;
+}
+
 /** 上の行の高さと面。殻の上の行と、自前の上の行を持つ画面とで揃える。
  *  面は不透明にする。上の行の下へ中身が潜る作りではないので透かす意味が無く、
  *  iPhone のホーム画面アプリでは半透明＋ぼかしがステータスバーの帯と重なって、
  *  題名が曇って見える。上の行から開くメニューがページの中身の下に潜らないよう
  *  z-30 で前に出す（シート・ドロワーの z-50 よりは下）。 */
-/** iOS 26 のホーム画面アプリは、画面上端にぼかし（scroll edge effect）を重ね、上の行までにじませる。
- *  消す設定は無いが、上端に不透明で全幅の fixed / sticky の箱があると色を伸ばすだけになると報告されている
- *  （WebKit の判定は公開情報。実機で要確認）。上の行を sticky にし、上端に帯を置く。 */
-export function StatusBarStrip() {
-  return <div aria-hidden data-status-strip className="fixed inset-x-0 top-0 z-40 hidden bg-zinc-50 dark:bg-zinc-950" />;
-}
-
 export const SHELL_TOPBAR_CLASS =
   "safe-top sticky top-0 z-30 shrink-0 border-b border-zinc-200/80 bg-zinc-50 dark:border-zinc-800/80 dark:bg-zinc-950";
 

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 172 ファイル、1519 テスト（目的の未記入 93 ファイル）
-- E2E: 83 spec、157 テスト
+- backend: 172 ファイル、1520 テスト（目的の未記入 93 ファイル）
+- E2E: 83 spec、159 テスト
 
 ## backend（backend/tests）
 
@@ -1513,6 +1513,7 @@
 目的: AI アシスタントの OpenCode: 思考・道具・本文を届いた順に記録する／作業フォルダを会話で続ける／箱ごとの /tmp。 目的: 2026-11-18 利用者の依頼。 - 「思考が全部 1 つの窓に入っている。Bash などの操作の前後で分かれるはず」→ 届いた順の並び（timeline）を記録する （思考・本文は文字の位置、道具は ID）。画面はそれで思考を道具の前後に分けて出す - 「AI アシスタントを開き直すと作業フォルダの設定が外れる」→ 指定が空なら、その会話で最後に OpenCode が 動いたプロジェクトで続ける - 「proto1〜3 が Project Lab に無い」→ 箱の /tmp は全部の箱で共有されていた。プロジェクトごとに別の、 箱の外に残る場所へつなぐ
 
 - `test_thinking_tools_and_text_are_recorded_in_arrival_order`
+- `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
 - `test_a_deleted_last_project_is_not_reopened`
 - `test_each_project_box_gets_its_own_tmp_that_outlives_the_box`
@@ -2534,6 +2535,7 @@
 
 目的: 目的: OpenCode の作業中に、段階（プリフィル・思考・道具など）と時間が入力欄の下に出ること。アクションリストはある ときだけ浮かび、タップで作業中・完了・時刻が見えること。道具を開くと開始・終了の時刻が見えること。 根拠: 2026-11-18 利用者「ずっと応答待ちと記載されている」「いつ終わるのかわからん」「項目の詳細に時間があれば」。
 
+- text stays between the work steps and steps share one card (${width}px)
 - progress, action list and tool times are shown (${width}px)
 
 ### frontend/e2e/assistant-plan.spec.ts
@@ -2542,6 +2544,7 @@
 
 - plan is clearly shown, sent as plan and can be built afterwards (${width}px)
 - the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
+- the plus menu stays on a short screen, scrolls inside and follows the arrow keys
 - a question during an OpenCode conversation stays in OpenCode
 
 ### frontend/e2e/assistant-queue-voice.spec.ts

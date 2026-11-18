@@ -527,7 +527,8 @@ export default function AssistantChat() {
               // 道具が届くのは OpenCode だけ。準備中に開き直した発言はまだ印が無いので、ここで付ける。
               // それまでの思考は 1 つのまとまりとして並びの先頭に置く
               const base = m.timeline?.length ? m.timeline
-                : m.thinking ? [{ k: "t" as const, from: 0, to: m.thinking.length }] : [];
+                : [...(m.thinking ? [{ k: "t" as const, from: 0, to: m.thinking.length }] : []),
+                  ...(m.content ? [{ k: "x" as const, from: 0, to: m.content.length }] : [])];
               return { ...m, answeredBy: "code", tools: known ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool],
                 timeline: known ? (m.timeline ?? base) : [...base, { k: "u", id: tool.id }] };
             });
@@ -2112,52 +2113,58 @@ function ThinkingBlock({ text, thinking, flat = false }: { text: string; thinkin
   );
 }
 
-/** OpenCode の回答を届いた順に並べる。続けて実行した道具は 1 つの枠、思考はまとまりごとに別の窓。
- *  本文はこれまでどおり下に出す（引用・コピーなどの扱いを変えない）。許可の確認は最後にまとめて出す。 */
-/** 本文の断片が content を隙間なく覆っているか（古い記録は覆っていないので、従来どおり最後にまとめて出す） */
-function timelineCoversContent(msg: Msg): boolean {
+/** 作業の間に置ける本文の終わりの位置（0 は置けない）。古い記録は位置が合わないので従来どおり下にまとめる。
+ *  後ろに残る分（許可されなかった旨など、並びに載らない追記）は呼び出し側が下に出す。
+ *  コードの囲みが区切りをまたぐと、別々に表示して崩れるので、まとめて出す。 */
+function inlineTextEnd(msg: Msg): number {
+  const segments = msg.timeline ?? [];
   let at = 0;
-  for (const seg of msg.timeline ?? []) {
+  for (const [i, seg] of segments.entries()) {
     if (seg.k !== "x") continue;
-    if (seg.from !== at) return false;
+    if (seg.from !== at || seg.to > msg.content.length) return 0;
+    const fences = msg.content.slice(seg.from, seg.to).match(/^ {0,3}(```|~~~)/gm)?.length ?? 0;
+    if (i < segments.length - 1 && fences % 2 === 1) return 0;
     at = seg.to;
   }
-  return at > 0 && at === msg.content.length;
+  return at;
 }
 
-/** 2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。本文を作業の前後の位置に出し
- *  （「確認します:3相とも…」と別の段階の文がつながっていた）、続く思考と道具は 1 枚のカードにまとめる。 */
-function CodeTimeline({ msg, onAnswer }: {
-  msg: Msg; onAnswer: (requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
+/** OpenCode の回答を届いた順に並べる。続く思考と道具は 1 枚のカードに、本文は作業の前後の位置に出す
+ *  （2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。段階ごとの文が 1 段落につながっていた）。
+ *  許可の確認は最後に出す。 */
+function CodeTimeline({ msg, textEnd, onAnswer }: {
+  msg: Msg; textEnd: number; onAnswer: (requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
 }) {
   const segments = msg.timeline ?? [];
   const tools = new Map((msg.tools ?? []).map((t) => [t.id, t]));
   const thinking = msg.thinking ?? "";
   const lastThinking = segments.reduce((last, seg, i) => (seg.k === "t" ? i : last), -1);
-  const inlineText = timelineCoversContent(msg);
-  const lastText = segments.reduce((last, seg, i) => (seg.k === "x" ? i : last), -1);
   const blocks: ReactNode[] = [];
   let steps: ReactNode[] = [];
-  const flushSteps = (key: string) => {
-    if (steps.length) blocks.push(<div key={key} data-code-steps className={CODE_STEPS_CARD}>{steps}</div>);
+  let stepsFrom = 0;   // カードの鍵は最初の項目の位置（本文が続いても作り直さず、開いた行を保つ）
+  const addStep = (i: number, step: ReactNode) => {
+    if (!steps.length) stepsFrom = i;
+    steps.push(step);
+  };
+  const flushSteps = () => {
+    if (steps.length) blocks.push(<div key={`steps-${stepsFrom}`} data-code-steps className={CODE_STEPS_CARD}>{steps}</div>);
     steps = [];
   };
   segments.forEach((seg, i) => {
     if (seg.k === "u") {
       const tool = tools.get(seg.id);
-      if (tool) steps.push(<ToolRow key={tool.id} tool={tool} />);
+      if (tool) addStep(i, <ToolRow key={tool.id} tool={tool} />);
       return;
     }
     if (seg.k === "x") {
       const text = msg.content.slice(seg.from, seg.to);
-      if (!inlineText || !text.trim()) return;
-      flushSteps(`steps-${i}`);
+      if (!textEnd || !text.trim()) return;
+      flushSteps();
       blocks.push(
         <div key={`text-${i}`} data-code-text>
           <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{text}</p>}>
             <MarkdownMessage text={text} />
           </Suspense>
-          {msg.streaming && i === lastText && i === segments.length - 1 && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent-500 align-middle" />}
         </div>,
       );
       return;
@@ -2166,9 +2173,9 @@ function CodeTimeline({ msg, onAnswer }: {
     if (!text.trim()) return;
     // 考えている途中なのは、最後の思考で、その後ろに道具も本文も無いときだけ
     const active = Boolean(msg.streaming) && i === lastThinking && i === segments.length - 1;
-    steps.push(<ThinkingBlock key={`think-${i}`} text={text} thinking={active} flat />);
+    addStep(i, <ThinkingBlock key={`think-${i}`} text={text} thinking={active} flat />);
   });
-  flushSteps("steps-end");
+  flushSteps();
   // 並びに載っていない道具（古い記録・途中から購読）も落とさない
   const listed = new Set(segments.flatMap((seg) => (seg.k === "u" ? [seg.id] : [])));
   const rest = (msg.tools ?? []).filter((t) => !listed.has(t.id));
@@ -2254,6 +2261,8 @@ function MessageBubble({
   }
   const unsettled = !msg.streaming && (msg.persistStatus === "failed" || msg.persistStatus === "canceled" || msg.persistStatus === "interrupted")
     ? msg.persistStatus : null;
+  const textEnd = msg.timeline?.length && msg.messageId ? inlineTextEnd(msg) : 0;
+  const restText = msg.content.slice(textEnd);
   const assistantActions: MessageAction[] = (msg.messageId && !msg.streaming ? ["copy", "fork", "delete"] as MessageAction[] : ["copy"] as MessageAction[])
     .filter((action) => action !== "copy" || !!msg.content);
   return (
@@ -2315,7 +2324,7 @@ function MessageBubble({
         )}
         {msg.timeline?.length && msg.messageId ? (
           // OpenCode: 届いた順に「思考 → 道具 → 思考 → …」。思考はひとまとまりごとに別の窓
-          <CodeTimeline msg={msg} onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
+          <CodeTimeline msg={msg} textEnd={textEnd} onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
         ) : (
           <>
             {/* OpenCode: 道具の実行と許可の確認（タップで出力を開く・許可はボタンで答える） */}
@@ -2336,14 +2345,16 @@ function MessageBubble({
             ))}
           </p>
         )}
-        {msg.content && !(msg.timeline?.length && msg.messageId && timelineCoversContent(msg)) && (
+        {restText && (
           <div>
-            <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>}>
-              <MarkdownMessage text={msg.content} />
+            <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{restText}</p>}>
+              <MarkdownMessage text={restText} />
             </Suspense>
             {msg.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent-500 align-middle" />}
           </div>
         )}
+        {/* 本文を作業の間に出した後も、続いていることが分かるように（道具の後で長く考えている間など） */}
+        {msg.streaming && msg.content && !restText && <span aria-hidden data-streaming-cursor className="block h-3.5 w-1.5 animate-pulse bg-accent-500" />}
 
         {/* 失敗・停止・中断: 本文が無くても、何が起きたかと理由を必ず出す。 */}
         {unsettled && <UnsettledNotice status={unsettled} error={msg.error} partial={!!msg.content} onRetry={onRetry} />}

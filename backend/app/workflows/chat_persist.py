@@ -830,6 +830,11 @@ def language_guard(history: list[dict], user_query: str) -> list[dict]:
     return history
 
 
+def _utf16_len(text: str) -> int:
+    """画面（JavaScript）の文字位置に合わせた長さ。絵文字は 2 と数える。"""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
 def _timeline_of(message) -> list:
     """発言に記録した届いた順の並び（OpenCode の回答だけ）。無ければ空。"""
     try:
@@ -995,13 +1000,13 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 timeline.append({"k": kind, "from": start, "to": start + length})
 
         async def on_text(delta: str) -> None:
-            mark("x", len(buf["content"]), len(delta))
+            mark("x", _utf16_len(buf["content"]), _utf16_len(delta))
             buf["content"] += delta
             job.log("delta", delta=delta)
             await maybe_ckpt()
 
         async def on_reasoning(delta: str) -> None:
-            mark("t", len(buf["thinking"]), len(delta))
+            mark("t", _utf16_len(buf["thinking"]), _utf16_len(delta))
             buf["thinking"] += delta
             job.log("thinking", delta=delta)
             await maybe_ckpt()
