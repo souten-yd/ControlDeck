@@ -17,7 +17,7 @@ import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/she
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
-import { detectAssistantMode, SEARCH_MODES, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
+import { detectAssistantMode, SEARCH_MODES, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
@@ -412,7 +412,7 @@ export default function AssistantChat() {
   const lastCodeIndex = messages.reduce((last, m, i) => (isCodeAnswer(m) ? i : last), -1);
   const inCodeConversation = lastCodeIndex >= 0;
   const pendingHandoff = messages.slice(lastCodeIndex + 1).some((m) => m.role === "assistant" && !m.streaming && m.content.trim());
-  const conversationContext = { inCodeConversation, hasAnswers: messages.some((m) => m.role === "assistant" && m.content.trim() !== "") };
+  const conversationContext = { inCodeConversation, hasAnswers: pendingHandoff };
   const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
   const displayedDecision = input.trim() ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
@@ -902,11 +902,12 @@ export default function AssistantChat() {
     const text = (providedText ?? input).trim()
       || (readyArchives.length > 0 ? ARCHIVE_ONLY_PROMPT : readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
     if (!text || busy) return;
-    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
+    // 画像は OpenCode に渡せない（VLM のチャットで見る）。画像があるときは会話の流れで OpenCode へ回さない
+    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
+      readyImages.length > 0 ? {} : conversationContext);
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
     const researchFirst = modeChoice === "auto" ? Boolean(decision.research)
-      : modeChoice === "code" ? Boolean(detectAssistantMode(text, [], false, opencodeAvailable, { inCodeConversation: true }).research)
-        : false;
+      : modeChoice === "code" ? wantsResearch(text) : false;
     let selectedMode: Mode = modeChoice === "auto" ? decision.mode
       : modeChoice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : modeChoice;
     let selectedPlan: AssistantPlan | undefined;
@@ -917,6 +918,11 @@ export default function AssistantChat() {
     }
     const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
     const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    if (readyImages.length > 0 && selectedMode === "code") {
+      // OpenCode は画像を受け取れない。黙って落とさず、知らせる（レビュー指摘 2026-11-18）
+      show("画像は OpenCode に渡せません。＋から Chat を選ぶと画像を見て答えます", "error");
+      return;
+    }
     if (readyArchives.length > 0 && selectedMode !== "code") {
       show("圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください", "error");
       return;

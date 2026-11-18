@@ -24,9 +24,13 @@ export interface ConversationContext {
 const WORK_WORDS = ["実装", "反映", "直して", "修正", "書き換え", "作り替え", "追加して", "組み込", "改良", "改善して",
   "リファクタ", "コードに", "プログラムに", "アプリに", "ウェブアプリ", "webアプリ", "スクリプトに", "ツールに", "移植",
   "作って", "書いて", "使って", "適用", "置き換え", "fix", "implement", "refactor"];
-// チャットの後でも OpenCode へ切り替える、はっきりした開発の依頼
-const BUILD_WORDS = ["実装して", "実装する", "コードにして", "コード化", "プログラムにして", "アプリにして", "アプリ化",
-  "ウェブアプリ", "webアプリ", "スクリプトにして", "ツールにして", "これで作って", "これを作って", "開発して", "移植して"];
+// チャットの後でも OpenCode へ切り替える、はっきりした開発の依頼（動詞の形だけ。名詞だけでは切り替えない:
+// 「ウェブアプリとネイティブの違いは？」はチャット。レビュー指摘 2026-11-18）
+const BUILD_WORDS = ["実装して", "実装する", "コードにして", "コード化して", "プログラムにして", "アプリにして",
+  "アプリ化して", "ウェブアプリにして", "webアプリにして", "スクリプトにして", "ツールにして", "これで作って",
+  "これを作って", "開発して", "移植して"];
+// 質問（作業の依頼ではない）。OpenCode の会話中でも、作業の語が無ければチャットで答える
+const QUESTION_WORDS = ["?", "？", "とは", "って何", "ってなに", "教えて", "違いは", "なぜ", "どうして", "ありがとう"];
 
 interface NamedWorkflow { id: number; name: string }
 
@@ -35,6 +39,13 @@ import routingWords from "./routingWords.json";
 const includesAny = (text: string, words: string[]) => words.some((word) => text.includes(word.toLocaleLowerCase("ja")));
 
 /** 入力だけで説明可能・即時に判定する。明示性の高い副作用モードを優先する。 */
+/** OpenCode に送る前に調べるか（OpenCode を手で選んでいるとき用）。調べる語と作業の語の両方がある */
+export function wantsResearch(input: string): boolean {
+  const text = input.trim().toLocaleLowerCase("ja");
+  const base = detectWithoutContext(text, [], false, true);
+  return SEARCH_MODES.includes(base.mode) && includesAny(text, WORK_WORDS);
+}
+
 export function detectAssistantMode(
   input: string,
   workflows: NamedWorkflow[] = [],
@@ -51,9 +62,14 @@ export function detectAssistantMode(
   const research = SEARCH_MODES.includes(base.mode);
   const work = includesAny(text, WORK_WORDS);
   if (context.inCodeConversation) {
-    // OpenCode の会話中: 調べる語があれば、ControlDeck の調査で調べてから OpenCode へ渡す（同じ 1 回の送信で）。
-    // それ以外は OpenCode のまま（チャットへ判定し直さない）
-    if (research) return { mode: "code", research: true, reason: work ? "調べてから OpenCode が反映" : "調べた結果を OpenCode に渡す" };
+    // OpenCode の会話中:
+    //  調べる語＋作業の語（調べて反映して）→ 同じ 1 回の送信で調べてから OpenCode へ
+    //  調べる語だけ（詳しく調査してレポートに等）→ 調査で答える（結果は次に OpenCode へ送るとき引き継がれる）
+    //  作業の語の無い質問（〜とは？・ありがとう）→ チャットで答える
+    //  それ以外 → OpenCode のまま（チャットへ判定し直さない）
+    if (research && work) return { mode: "code", research: true, reason: "調べてから OpenCode が反映" };
+    if (research) return { ...base, reason: `${base.reason}（結果は次に OpenCode へ引き継ぎ）` };
+    if (!work && includesAny(text, QUESTION_WORDS)) return { mode: "chat", reason: "質問への回答（OpenCode の作業はそのまま）" };
     return { mode: "code", reason: "この会話は OpenCode で作業中" };
   }
   if (base.mode === "chat" && context.hasAnswers && includesAny(text, BUILD_WORDS)) {

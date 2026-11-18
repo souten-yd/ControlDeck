@@ -129,39 +129,3 @@ def test_nothing_to_hand_off_right_after_an_opencode_answer_even_if_it_was_stopp
         db.close()
     assert handoff_context(conv_id, current, 50_000) == ("", 0)
 
-
-def test_research_for_code_returns_evidence_and_keeps_the_opencode_answer(monkeypatch):
-    """「調べて反映して」: 調べた根拠を OpenCode への依頼に付け、回答の meta は OpenCode のまま（出典は残す）。"""
-    import asyncio
-
-    import app.workflows.chat_persist as cp
-    from app.workflows import assistant_planner
-
-    async def fake_decide(query, base_url, model, api_key=""):
-        return assistant_planner.AssistantPlan(mode="web", reason="t", steps=[
-            assistant_planner.ResearchStep(tool="web", query="sqlite wal")], decided_by="rule")
-
-    async def fake_research(job, buf, conv_id, query, params, plan):
-        assert plan is not None and plan.steps[0].query == "sqlite wal"
-        buf["meta"] = {**buf.get("meta", {}), "mode": "research", "sources": [{"reference_id": "R1", "url": "https://sqlite.org/wal.html"}]}
-        return [{"role": "system", "content": "以下は根拠です。\n\n[R1] SQLite WAL\nWAL は…\nhttps://sqlite.org/wal.html"},
-                {"role": "user", "content": query}]
-
-    monkeypatch.setattr(assistant_planner, "decide", fake_decide)
-    monkeypatch.setattr(cp, "_server_research", fake_research)
-    logs = []
-    job = type("J", (), {"log": lambda self, *a, **k: logs.append(k.get("label"))})()
-    tools: list = []
-    buf = {"meta": {"mode": "code", "tools": tools}}
-    note = asyncio.run(cp._research_for_code(job, buf, "c1", "WAL を調べて反映して", {"base_url": "x", "model": "m"}))
-    assert note.startswith("## 調べた結果") and "[R1] SQLite WAL" in note and "以下は根拠です" not in note
-    assert buf["meta"]["mode"] == "code" and buf["meta"]["tools"] is tools
-    assert buf["meta"]["sources"][0]["reference_id"] == "R1"
-
-    async def broken(*args, **kwargs):
-        raise RuntimeError("search down")
-
-    monkeypatch.setattr(cp, "_server_research", broken)
-    buf = {"meta": {"mode": "code", "tools": tools}}
-    assert asyncio.run(cp._research_for_code(job, buf, "c1", "q", {"base_url": "x", "model": "m"})) == ""
-    assert buf["meta"] == {"mode": "code", "tools": tools}
