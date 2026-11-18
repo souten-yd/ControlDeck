@@ -553,7 +553,8 @@ def tick() -> None:
             fan_log.add(time.time(), temps={k: v["value_c"] for k, v in by_kind.items()},
                         targets={k: v["target_c"] for k, v in by_kind.items()}, power_w=device["power_w"],
                         rpm=rpm, percent=percent, ff=step.feedforward, integral=step.i_term,
-                        error_c=step.error_c, emergency=step.emergency, tuning=held is not None)
+                        error_c=step.error_c, emergency=step.emergency, tuning=held is not None,
+                        floor=step.floor, reserve_c=step.reserve_c)
             if now - _last_log_prune >= 3600:
                 fan_log.prune()
                 _last_log_prune = now
@@ -684,14 +685,39 @@ def startup() -> None:
             logger.info(FIRMWARE_STARTUP_NOTICE)
 
 
+RAW_INTERVAL = 1.0
+
+
+def sample_raw() -> None:
+    """1 秒ごとの記録（熱の模型の当てはめ用）。制御している GPU だけ。読むだけ（1 回 約 2 ms）。
+    制御の周期は 3 秒のまま: 1 秒にすると hotspot の 1 秒の跳ね（+3〜+7°C）に反応して、模擬で緊急の最大回転が
+    かえって増えた（2026-11-18）。"""
+    if not _active_bdf or _state != "controlling":
+        return
+    device = next((d for d in _devices() if d["bdf"] == _active_bdf), None)
+    if device is None:
+        return
+    temps = {s["kind"]: s["value_c"] for s in device["sensors"]}
+    fan_log.add_raw(time.time(), fan=float(_applied_percent) if _applied_percent else None,
+                    power=device["power_w"], temps=temps, rpm=device.get("fan_rpm"))
+
+
 async def run() -> None:
     await asyncio.to_thread(startup)
+    every = max(1, round(INTERVAL / RAW_INTERVAL))
+    count = 0
     while True:
+        if count % every == 0:
+            try:
+                await asyncio.to_thread(tick)
+            except Exception:  # noqa: BLE001 - 監視をウェブサーバーから切り離す
+                logger.exception("GPU fan controller tick failed")
         try:
-            await asyncio.to_thread(tick)
-        except Exception:  # noqa: BLE001 - 監視をウェブサーバーから切り離す
-            logger.exception("GPU fan controller tick failed")
-        await asyncio.sleep(INTERVAL)
+            await asyncio.to_thread(sample_raw)
+        except Exception:  # noqa: BLE001 - 記録の失敗で制御を止めない
+            logger.debug("1 秒ごとの記録に失敗しました", exc_info=True)
+        count += 1
+        await asyncio.sleep(RAW_INTERVAL)
 
 
 def shutdown() -> None:
