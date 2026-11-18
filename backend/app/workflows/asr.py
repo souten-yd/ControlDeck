@@ -211,6 +211,21 @@ async def _exec_capture(*args: str, cwd: Path, timeout: float) -> tuple[int, str
     return process.returncode or 0, diagnostics
 
 
+def speed_args(wav_bytes: int) -> list[str]:
+    """短い区切りを速く文字にする設定。
+
+    whisper は音声を 30 秒に詰め物して読むので、6 秒の区切りでも 14〜17 秒かかっていた（2026-11-18 実測・CPU）。
+    読む範囲（audio_ctx。50 で 1 秒）を区切りの長さ＋余裕に絞ると約 3 秒になる。スレッドは 8 が最も速かった
+    （16 は遅い）。長さは 16 kHz・16 bit・1 ch の WAV の大きさから出す。"""
+    seconds = max(0.0, (wav_bytes - 44) / 32000)
+    ctx = min(1500, max(256, int((seconds + 2.0) * 50 + 63) // 64 * 64))
+    threads = max(1, min(8, os.cpu_count() or 4))
+    args = ["-t", str(threads)]
+    if ctx < 1500:
+        args += ["-ac", str(ctx)]
+    return args
+
+
 @router.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
@@ -251,7 +266,7 @@ async def transcribe(
             raise HTTPException(status_code=422, detail="音声を変換できませんでした")
         code, diagnostics = await _exec_capture(
             str(binary_path()), "-m", str(model_path()), "-f", str(wav),
-            "-l", "ja", "-nt", "-np", "-otxt", "-of", str(output),
+            "-l", "ja", "-nt", "-np", "-otxt", "-of", str(output), *speed_args(wav.stat().st_size),
             cwd=request_dir, timeout=120,
         )
         transcript_file = output.with_suffix(".txt")
