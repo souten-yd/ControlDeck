@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 173 ファイル、1528 テスト（目的の未記入 93 ファイル）
-- E2E: 83 spec、162 テスト
+- backend: 174 ファイル、1535 テスト（目的の未記入 93 ファイル）
+- E2E: 84 spec、163 テスト
 
 ## backend（backend/tests）
 
@@ -1027,6 +1027,18 @@
 - `test_features_api_lists_gpu_runtimes`
 - `test_strata_install_job_rejects_retired_track_option`
 - `test_release_status_is_only_for_gpu_runtimes`
+
+### backend/tests/test_gpu_tuning.py
+
+目的: R9700 のコア周波数・電圧オフセット（疑似 sysfs。実機には書かない）。 根拠: 2026-11-18 利用者の依頼。対象の選別、符号と単位、片方だけ未対応、失敗時の復元、他の設定に書かないことを確かめる。
+
+- `test_only_the_r9700_is_selected_and_negative_offsets_are_parsed`
+- `test_core_and_voltage_change_independently_and_restore_only_what_changed`
+- `test_the_preset_applies_both_offsets_and_never_sends_a_reset_or_other_settings`
+- `test_out_of_range_and_unsupported_are_reported_separately`
+- `test_a_failed_write_restores_the_values_before_it`
+- `test_previous_values_do_not_survive_a_reboot`
+- `test_api_requires_an_admin_and_maps_errors`
 
 ### backend/tests/test_hf_download.py
 
@@ -2657,6 +2669,12 @@
 目的: **未記入**
 
 - keeps generated typed client state in memory and updates safe consumers
+
+### frontend/e2e/gpu-settings.spec.ts
+
+目的: 目的: 設定の「GPU 設定」で、周波数と電圧を別々に指定でき、試験設定は入力欄を埋めるだけで「適用」を押すまで書かないこと。 設定値と実測を分けて見られ、Models の共通設定から電力・静音が移り、移動ボタンが消えていること。 根拠: 2026-11-18 利用者「電力制限 210 W のままホットスポット温度を下げたい」。API は模擬する（実機へ書かない）。
+
+- GPU settings apply only on request (${width}px)
 
 ### frontend/e2e/llama-runtime-settings.spec.ts
 

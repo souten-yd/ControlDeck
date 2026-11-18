@@ -13,11 +13,12 @@ import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
 import { FanControlSettings } from "../features/settings/FanControlSettings";
+import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
-import { IconBell, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconSettings, IconShield, IconUser, IconUsers } from "../components/icons";
+import { IconBell, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
@@ -64,7 +65,7 @@ export default function SettingsPage() {
   return <SettingsLayout />;
 }
 
-type SectionId = "account" | "users" | "appearance" | "notifications" | "features" | "hardware" | "system";
+type SectionId = "account" | "users" | "appearance" | "notifications" | "features" | "gpu" | "hardware" | "system";
 type Can = (permission: string) => boolean;
 
 interface SettingsSectionDef {
@@ -88,7 +89,10 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、拡張機能、推奨スキル",
     icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "PatentBuddy", "スキル", "manifest"],
     allowed: (can) => can("settings.manage") },
-  { id: "hardware", label: "ハードウェア", summary: "GPUのファン制御と温度",
+  { id: "gpu", label: "GPU 設定", summary: "発熱を抑えるクロック・電圧と、電力・静音",
+    icon: IconChip, keywords: ["GPU", "クロック", "周波数", "電圧", "アンダーボルト", "電力", "静音", "VRAM", "R9700", "ホットスポット"],
+    allowed: (can) => can("settings.manage") },
+  { id: "hardware", label: "温度管理", summary: "GPUのファン制御と温度",
     icon: IconChip, keywords: ["ファン", "温度", "GPU", "R9700", "回転数", "PID", "カーブ"],
     allowed: (can) => can("settings.manage") },
   { id: "notifications", label: "通知", summary: "通知チャンネルとアラートルール",
@@ -179,22 +183,6 @@ function SettingsLayout() {
               </li>
             ))}
             {results.length === 0 && elsewhere.length === 0 && <li className="px-3 py-3 text-sm text-zinc-500">一致する設定はありません</li>}
-            <li className="shrink-0 md:pt-2">
-              <Link to="/models" title="Models 画面で管理します" className="flex min-h-11 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70 md:min-h-12 md:gap-3 md:rounded-xl md:border-0 md:bg-transparent md:px-3 md:py-2 md:dark:bg-transparent">
-                <span className="hidden h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 md:grid"><IconSettings /></span>
-                <span className="min-w-0 flex-1"><span className="block whitespace-nowrap font-medium">AI モデル</span>
-                  <span className="hidden truncate text-xs text-zinc-500 md:block">Models 画面で管理します</span></span>
-                <IconChevronRight className="shrink-0 text-zinc-400" />
-              </Link>
-            </li>
-            {opencodePath && <li className="shrink-0">
-              <Link to={opencodePath} title="モデル・開発ワークフローは OpenCode 画面の「設定」" className="flex min-h-11 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70 md:min-h-12 md:gap-3 md:rounded-xl md:border-0 md:bg-transparent md:px-3 md:py-2 md:dark:bg-transparent">
-                <span className="hidden h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-base text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 md:grid"><IconSettings /></span>
-                <span className="min-w-0 flex-1"><span className="block whitespace-nowrap font-medium">OpenCode</span>
-                  <span className="hidden truncate text-xs text-zinc-500 md:block">モデル・開発ワークフローは OpenCode 画面の「設定」</span></span>
-                <IconChevronRight className="shrink-0 text-zinc-400" />
-              </Link>
-            </li>}
           </ul>
         </nav>
         <main className="min-w-0">
@@ -217,6 +205,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
     case "account": return <><AccountSection /><SessionsSection /></>;
     case "appearance": return <><AppearanceSection /><MobileNavigationSettings /></>;
     case "features": return <FeaturesSection />;
+    case "gpu": return <GpuSettings />;
     case "hardware": return <FanControlSettings />;
     case "notifications": return <AlertsSettings />;
     case "users": return <Suspense fallback={<Skeleton className="h-40 rounded-2xl" />}><AccessManagement /></Suspense>;

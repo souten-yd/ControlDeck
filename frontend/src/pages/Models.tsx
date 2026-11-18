@@ -1344,12 +1344,6 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         </div>
         <p className="text-[10px] text-zinc-500">自動にすると、根拠の文字数とレポートの長さの上限は使いません（上の「コンテキストに合わせた量」の値になります）。専用CTXは全体へ強制せず、各モデルの個別設定で指定します。</p>
       </SettingsGroup>
-      {runtimeEnv.amd_gpu && (
-        <SettingsGroup title="GPU の電力・静音" description="LLM の起動・生成の前に適用します" collapsible defaultOpen={false}>
-          <AmdGpuProfilePanel env={runtimeEnv.amd_gpu} policy={policy} onChange={setPolicyCfg} />
-          <p className="text-[10px] leading-relaxed text-zinc-500">画像生成などGPUを使う他の処理は、VRAMが空いていなければシステムRAMへ載ります。</p>
-        </SettingsGroup>
-      )}
       <SettingsGroup title="モデルの保存場所" description="GGUF を探すライブラリ" collapsible defaultOpen={false}>
         <ModelLibraryPanel />
       </SettingsGroup>
@@ -1361,72 +1355,6 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AmdGpuProfilePanel({ env, policy, onChange }: {
-  env: NonNullable<RuntimeEnvironment["amd_gpu"]>;
-  policy: RuntimePolicy;
-  onChange: (next: RuntimePolicy) => void;
-}) {
-  const gpu = policy.amd_gpu;
-  const setGpu = (patch: Partial<RuntimePolicy["amd_gpu"]>) => onChange({ ...policy, amd_gpu: { ...gpu, ...patch } });
-  const choose = (profile: "quiet" | "balanced" | "full") => setGpu({ enabled: true, profile, ...env.presets[profile] });
-  const labels = { quiet: "静音", balanced: "バランス", full: "フルパワー" } as const;
-  return (
-    <div className="space-y-2.5 rounded-xl border border-emerald-200 bg-emerald-50/30 p-3 dark:border-emerald-900 dark:bg-emerald-950/20">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">AMD GPU 電力・VRAM静音設定</p>
-          <p className="text-[10px] text-zinc-400">{env.bdf} · 現在の電力上限 {env.power.current_watts}W · MCLK {env.memory.levels.find((v) => v.current)?.mhz ?? "N/A"}MHz</p>
-        </div>
-        <input type="checkbox" checked={gpu.enabled} onChange={(e) => setGpu({ enabled: e.target.checked })} aria-label="AMD GPU設定を有効化" className="h-4 w-4" />
-      </div>
-      {gpu.enabled && (
-        <>
-          <div className="grid grid-cols-3 gap-1.5">
-            {(Object.keys(labels) as Array<keyof typeof labels>).map((profile) => (
-              <button key={profile} type="button" onClick={() => choose(profile)}
-                className={`rounded-lg border px-2 py-2 text-xs ${gpu.profile === profile ? "border-accent-500 bg-white font-semibold text-accent-700 dark:bg-zinc-900 dark:text-accent-300" : "border-zinc-200 bg-white/60 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900/60"}`}>
-                {labels[profile]}
-              </button>
-            ))}
-          </div>
-          <button type="button" onClick={() => setGpu({ profile: "custom" })} className="text-[11px] font-medium text-accent-600 dark:text-accent-400">カスタム設定</button>
-          <p className="rounded-lg bg-white/70 px-2.5 py-2 text-[10px] leading-relaxed text-zinc-500 dark:bg-zinc-900/60">
-            {gpu.profile === "quiet" && `静音: ${env.power.min_watts}W・MCLK上限 ${env.memory.levels[Math.max(0, env.memory.levels.length - 2)]?.mhz}MHz（最大から1段だけ低下）。`}
-            {gpu.profile === "balanced" && `バランス: ${env.presets.balanced.power_limit_watts}W・MCLK自動。アイドル時は最低周波数へ戻ります。`}
-            {gpu.profile === "full" && `フルパワー: 既定${env.power.default_watts}W・MCLK自動。性能優先です。`}
-            {gpu.profile === "custom" && "実機が公開する安全範囲内で電力、VRAMクロック、GPUコア上限を個別指定します。"}
-          </p>
-          {gpu.profile === "custom" && (
-            <div className="space-y-2.5">
-              <L label={`電力上限 ${gpu.power_limit_watts}W（${env.power.min_watts}〜${env.power.max_watts}W）`}>
-                <input type="range" min={env.power.min_watts} max={env.power.max_watts} step={1} value={gpu.power_limit_watts}
-                  onChange={(e) => setGpu({ power_limit_watts: Number(e.target.value) })} className="w-full accent-current" />
-              </L>
-              {env.memory.supported && <L label="VRAMクロック上限（MCLK）">
-                <select value={gpu.memory_clock_mode === "auto" ? "auto" : String(gpu.memory_clock_level)}
-                  onChange={(e) => e.target.value === "auto" ? setGpu({ memory_clock_mode: "auto", memory_clock_level: 0 }) : setGpu({ memory_clock_mode: "limit", memory_clock_level: Number(e.target.value) })}
-                  className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-                  <option value="auto">自動（既定・アイドル時は最低へ低下）</option>
-                  {env.memory.levels.map((item) => <option key={item.level} value={item.level}>{item.mhz}MHz 以下</option>)}
-                </select>
-              </L>}
-              {env.core.supported && <L label="GPUコアクロック上限（SCLK）">
-                <select value={gpu.core_clock_mode === "auto" ? "auto" : String(gpu.core_clock_level)}
-                  onChange={(e) => e.target.value === "auto" ? setGpu({ core_clock_mode: "auto", core_clock_level: 0 }) : setGpu({ core_clock_mode: "limit", core_clock_level: Number(e.target.value) })}
-                  className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-                  <option value="auto">自動（既定）</option>
-                  {env.core.levels.filter((item) => item.mhz > 0).map((item) => <option key={item.level} value={item.level}>{item.mhz}MHz 以下</option>)}
-                </select>
-              </L>}
-            </div>
-          )}
-          {!env.helper_installed && <p className="text-[10px] text-amber-700 dark:text-amber-300">適用helperが未登録です。サーバーで ./deck.sh service を実行すると登録されます。</p>}
-          <p className="text-[10px] text-zinc-400">設定はサーバーへ保存され、Control Deck経由のチャット・ワークフロー・手動/自動モデル起動前に適用されます。</p>
-        </>
-      )}
-    </div>
-  );
-}
 
 function Row({ k, v }: { k: string; v: string }) {
   return (

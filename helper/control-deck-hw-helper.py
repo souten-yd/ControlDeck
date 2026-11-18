@@ -306,6 +306,85 @@ def control_zero_rpm(action: str, bdf: str) -> None:
     print(json.dumps({"ok": True, "action": action, "bdf": bdf.lower()}))
 
 
+OD_DEVICES = {"0x7551"}   # Radeon AI PRO R9700 だけ
+OD_ITEMS = {"core": ("OD_SCLK_OFFSET", "SCLK_OFFSET", "s"), "voltage": ("OD_VDDGFX_OFFSET", "VDDGFX_OFFSET", "vo")}
+OD_VALUE_RE = re.compile(r"^-?\d{1,5}$")
+
+
+def od_fail(code: str, message: str) -> "NoReturn":
+    print(json.dumps({"ok": False, "code": code, "error": message}, ensure_ascii=False), file=sys.stderr)
+    raise SystemExit(3)
+
+
+def od_read(node: Path) -> str:
+    return node.read_text(encoding="ascii")
+
+
+def od_write(node: Path, command: str) -> None:
+    with node.open("w", encoding="ascii") as stream:
+        stream.write(command + "\n")
+
+
+def od_parse(text: str) -> dict:
+    items = {}
+    for key, (section, range_name, _) in OD_ITEMS.items():
+        current = re.search(rf"^{section}:\s*\n\s*(-?\d+)\s*m[hv]", text, re.M | re.I)
+        limits = re.search(rf"^{range_name}:\s*(-?\d+)\s*m[hv]\w*\s+(-?\d+)\s*m[hv]", text, re.M | re.I)
+        if current and limits:
+            items[key] = {"current": int(current[1]), "min": int(limits[1]), "max": int(limits[2])}
+    return items
+
+
+def od_commit(node: Path, values: dict[str, int]) -> None:
+    for key, value in values.items():
+        od_write(node, f"{OD_ITEMS[key][2]} {value}")
+    od_write(node, "c")
+
+
+def control_gpu_od(bdf: str, core_text: str, voltage_text: str) -> None:
+    """R9700 のコア周波数・電圧オフセットだけを変える。全体のリセット（r）は送らない。
+
+    書いた値を読み戻し、合わなければ変更した項目だけを元の値へ戻す。"""
+    device = device_path(bdf)
+    if device.joinpath("device").read_text(encoding="ascii").strip().lower() not in OD_DEVICES:
+        od_fail("unsupported", "対象の GPU ではありません")
+    node = device / "pp_od_clk_voltage"
+    if not node.is_file() or node.is_symlink():
+        od_fail("unsupported", "ドライバが OverDrive を公開していません")
+    before = od_parse(od_read(node))
+    values: dict[str, int] = {}
+    for key, text in (("core", core_text), ("voltage", voltage_text)):
+        if text == "keep":
+            continue
+        if not OD_VALUE_RE.fullmatch(text):
+            od_fail("range", "オフセットの値が不正です")
+        if key not in before:
+            od_fail("unsupported", f"ドライバが {OD_ITEMS[key][1]} を公開していません")
+        value = int(text)
+        if not before[key]["min"] <= value <= before[key]["max"]:
+            od_fail("range", f"{OD_ITEMS[key][1]} は {before[key]['min']}〜{before[key]['max']} の範囲です")
+        values[key] = value
+    if not values:
+        od_fail("range", "変更する値がありません")
+    reason = ""
+    try:
+        od_commit(node, values)
+        after = od_parse(od_read(node))
+        if any(after.get(key, {}).get("current") != value for key, value in values.items()):
+            reason = "読み戻した値が指定と違います"
+    except OSError as exc:
+        reason = f"ドライバが書き込みを拒否しました（{exc.strerror or type(exc).__name__}）"
+    if not reason:
+        print(json.dumps({"ok": True, "after": {key: after[key]["current"] for key in after}}))
+        return
+    try:
+        od_commit(node, {key: before[key]["current"] for key in values})
+        restored = "適用前の値へ戻しました"
+    except OSError:
+        restored = "適用前の値へ戻せませんでした"
+    od_fail("failed", f"{reason}。{restored}")
+
+
 def system_service_catalog() -> dict:
     try:
         descriptor = os.open(CATALOG_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -372,6 +451,9 @@ def main() -> None:
         return
     if len(sys.argv) == 4 and sys.argv[1] == "system-service":
         control_system_service(sys.argv[2], sys.argv[3])
+        return
+    if len(sys.argv) == 6 and sys.argv[1] == "gpu-od" and sys.argv[2] == "apply":
+        control_gpu_od(sys.argv[3], sys.argv[4], sys.argv[5])
         return
     if len(sys.argv) == 4 and sys.argv[1] == "fan-zero-rpm":
         control_zero_rpm(sys.argv[2], sys.argv[3])
