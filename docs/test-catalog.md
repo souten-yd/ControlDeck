@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 168 ファイル、1507 テスト（目的の未記入 93 ファイル）
+- backend: 168 ファイル、1508 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、138 テスト
 
 ## backend（backend/tests）
@@ -621,6 +621,7 @@
 - `test_for_model_uses_the_managed_window`
 - `test_handoff_carries_chat_and_research_after_the_last_opencode_answer`
 - `test_nothing_to_hand_off_right_after_an_opencode_answer_even_if_it_was_stopped`
+- `test_research_for_code_returns_evidence_and_keeps_the_opencode_answer` — 「調べて反映して」: 調べた根拠を OpenCode への依頼に付け、回答の meta は OpenCode のまま（出典は残す）。
 
 ### backend/tests/test_control_deck_self_update.py
 

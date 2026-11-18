@@ -365,6 +365,54 @@ test("an archive is attached for OpenCode, switches to OpenCode and is sent with
   await expect(shell.getByText("12 ファイル・送ると展開")).toHaveCount(0);
 });
 
+for (const scenario of [
+  { name: "a chat answer is handed to OpenCode by just asking to implement it", code: false,
+    text: "これを実装して", research: false },
+  { name: "in an OpenCode conversation, asking to look something up and apply it researches first", code: true,
+    text: "最新の SQLite の WAL の仕様を調べて反映して", research: true },
+  { name: "in an OpenCode conversation, an ordinary request stays with OpenCode", code: true,
+    text: "テストも足しておいて", research: false },
+]) {
+  test(scenario.name, async ({ page }) => {
+    // 2026-11-18 利用者の依頼: 「OpenCode に引き継ぐ」「調べて OpenCode に渡す」をボタンを押さずに
+    test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+    await page.setViewportSize({ width: 390, height: 800 });
+    await login(page);
+    await mockChat(page);
+    await page.route(/\/api\/v1\/meta$/, async (route) => {
+      const response = await route.fetch();
+      const meta = await response.json();
+      meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+      return route.fulfill({ response, json: meta });
+    });
+    await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [{ name: "app", path: "/CodeDEV/app", git: true }] } }));
+    await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
+    if (scenario.code) {
+      await page.route(/\/api\/v1\/chat\/conversations\/today1\/messages$/, (route) => route.fulfill({ json: {
+        conversation: { id: "today1", title: "今日の献立の相談", updated_at: new Date().toISOString().replace("Z", "") },
+        messages: [msg("u1", "user", "献立アプリを作って"),
+          msg("a1", "assistant", "作りました", { meta: { mode: "code", opencode_session: "s1", tools: [] } })],
+      } }));
+    }
+    let sent: { mode?: string; code_research?: boolean } | null = null;
+    await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/send$/, (route) => {
+      sent = route.request().postDataJSON();
+      return route.fulfill({ json: { assistant_message_id: "a-code", user_message_id: "u-code", job_id: "j1" } });
+    });
+    await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+    await page.goto("/assistant");
+    const shell = page.locator("[data-assistant-shell]");
+    await expect(shell.locator("[data-assistant-input]")).toBeVisible();
+    await expect(shell.getByText(scenario.code ? "作りました" : "今日の献立の相談の回答")).toBeVisible();
+    await shell.locator("[data-assistant-input]").fill(scenario.text);
+    await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");
+    await shell.getByRole("combobox").first().selectOption("app").catch(() => {});
+    await shell.getByRole("button", { name: "送信" }).click();
+    await expect.poll(() => sent?.mode).toBe("code");
+    expect(Boolean(sent!.code_research)).toBe(scenario.research);
+  });
+}
+
 test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 800 });
