@@ -10,6 +10,7 @@ import hashlib
 import logging
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -356,12 +357,22 @@ def speed_args(wav_bytes: int) -> list[str]:
     読む範囲（audio_ctx。50 で 1 秒）を区切りの長さ＋余裕に絞ると約 3 秒になる。スレッドは 8 が最も速かった
     （16 は遅い）。長さは 16 kHz・16 bit・1 ch の WAV の大きさから出す。"""
     seconds = max(0.0, (wav_bytes - 44) / 32000)
-    ctx = min(1500, max(256, int((seconds + 2.0) * 50 + 63) // 64 * 64))
+    # 下限 768: 256〜512 に絞ると 3 秒の区切りで「私は私は私は」と繰り返し、無い言葉も出た（2026-11-18 本番・再現済み）
+    ctx = min(1500, max(768, int((seconds + 2.0) * 50 + 63) // 64 * 64))
     threads = max(1, min(8, os.cpu_count() or 4))
     args = ["-t", str(threads)]
     if ctx < 1500:
         args += ["-ac", str(ctx)]
     return args
+
+
+_REPEATED_PHRASE = re.compile(r"(.{4,80}?)(?:[、。，．,.!?！？\s]*\1)+", re.S)
+_WHISPER_PHANTOMS = {"ご視聴ありがとうございました", "ご視聴ありがとうございました。", "チャンネル登録お願いします"}
+
+
+def clean_transcript(text: str) -> str:
+    """同じ言い回しの連続を 1 回にする（whisper の繰り返し対策。Haas でも念のため通す）。"""
+    return _REPEATED_PHRASE.sub(r"\1", text.strip()).strip()
 
 
 @router.post("/transcribe")
@@ -405,7 +416,7 @@ async def transcribe(
         if haas_ready():
             global last_fallback, fallback_worked
             try:
-                text = await _transcribe_haas(wav, request_dir)
+                text = clean_transcript(await _transcribe_haas(wav, request_dir))
                 last_fallback, fallback_worked = "", False
                 if not text:
                     raise HTTPException(status_code=422, detail="音声を認識できませんでした")
@@ -426,8 +437,8 @@ async def transcribe(
         if code != 0 or not transcript_file.is_file():
             logger.warning("ASR transcription failed: %s", diagnostics)
             raise HTTPException(status_code=502, detail="音声認識に失敗しました")
-        text = transcript_file.read_text(encoding="utf-8", errors="replace").strip()
-        if not text or text in ("[BLANK_AUDIO]", "[無音]"):
+        text = clean_transcript(transcript_file.read_text(encoding="utf-8", errors="replace"))
+        if not text or text in ("[BLANK_AUDIO]", "[無音]") or text in _WHISPER_PHANTOMS:
             raise HTTPException(status_code=422, detail="音声を認識できませんでした")
         fallback_worked = bool(last_fallback)
         return {"text": text, "language": "ja", "model": MODEL_NAME}

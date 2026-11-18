@@ -113,3 +113,15 @@ def test_haas_is_used_when_installed_and_whisper_is_the_fallback(admin_client, m
     second = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
     assert second["text"] == "控えの結果" and asr.last_fallback.startswith("RuntimeError") and asr.fallback_worked
     asr.last_fallback, asr.fallback_worked = "", False
+
+
+
+def test_repeated_phrases_are_collapsed_and_short_segments_keep_enough_context():
+    """短い区切りで whisper が同じ言葉を繰り返した（2026-11-18 本番の画面・手元の音声で再現）。"""
+    from app.workflows import asr
+
+    assert asr.clean_transcript("電流波形のFFTも追加してほしいです。電流波形のFFTも追加してほしいです。") == "電流波形のFFTも追加してほしいです。"
+    assert asr.clean_transcript("日本には約7000日本には約7000日本には約7000") == "日本には約7000"
+    assert asr.clean_transcript("はいはい、わかりました") == "はいはい、わかりました"
+    args = asr.speed_args(44 + 32000 * 3)
+    assert int(args[args.index("-ac") + 1]) >= 768
