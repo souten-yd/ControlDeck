@@ -150,6 +150,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   const activeInputTop = await dialog.locator("[data-assistant-input-row]").evaluate((element) => element.getBoundingClientRect().top);
   // 指で使う端末は、普段畳んでいる状態の行が開く分だけ上がる（それ以上は動かない）
   const activeStatusHeight = await dialog.locator("[data-assistant-composer-status]").evaluate((element) => element.getBoundingClientRect().height);
+  expect(idleInputTop - activeInputTop).toBeGreaterThanOrEqual(0);
   expect(idleInputTop - activeInputTop).toBeLessThanOrEqual(activeStatusHeight);
   await testInfo.attach("assistant-mobile-status-active", {
     body: await page.screenshot(),
