@@ -5,6 +5,38 @@ import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
 for (const width of [320, 1280]) {
+  test(`text stays between the work steps and steps share one card (${width}px)`, async ({ page, context }) => {
+    // 2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。段階ごとの文が 1 段落につながっていた
+    test.skip(!hasSession(), "E2E credentials required");
+    await page.setViewportSize({ width, height: 800 });
+    await establishSession(page, context);
+    const first = "表示を確認します:";
+    const last = "3相とも正しいです。";
+    await page.route(/\/api\/v1\/chat\/conversations\/r1\/messages$/, (route) => route.fulfill({ json: {
+      conversation: { id: "r1", title: "読みやすさ" },
+      messages: [{ id: "u", role: "user", content: "確認して", thinking: "", status: "completed", job_id: null, model: "", error: "", meta: {}, created_at: "2026-11-18T00:00:00Z" },
+        { id: "a", role: "assistant", content: first + last, thinking: "考える", status: "completed", job_id: null, model: "", error: "", created_at: "2026-11-18T00:00:01Z",
+          meta: { mode: "code", tools: [{ id: "c", name: "shell", status: "completed", input: { command: "ls" }, output: "a" }],
+            timeline: [{ k: "x", from: 0, to: first.length }, { k: "t", from: 0, to: 3 }, { k: "u", id: "c" }, { k: "x", from: first.length, to: first.length + last.length }] } }],
+    } }));
+    await page.route(/\/api\/v1\/chat\/conversations\/r1\/queue$/, (route) => route.fulfill({ json: { items: [], generating_message_id: null, held: false } }));
+    await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "r1"));
+    await page.goto("/assistant");
+    const shell = page.locator("[data-assistant-shell]");
+    const texts = shell.locator("[data-code-text]");
+    await expect(texts).toHaveCount(2);
+    await expect(texts.nth(0)).toContainText(first);
+    await expect(texts.nth(1)).toContainText(last);
+    const card = shell.locator("[data-code-steps]");
+    await expect(card).toHaveCount(1);                                       // 思考と道具は同じカード
+    await expect(card.locator("[data-thinking]")).toHaveCount(1);
+    await expect(card.getByRole("button", { name: /Bash/ })).toBeVisible();
+    const cardTop = (await card.boundingBox())!.y;
+    expect((await texts.nth(0).boundingBox())!.y).toBeLessThan(cardTop);
+    expect((await texts.nth(1).boundingBox())!.y).toBeGreaterThan(cardTop);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+  });
+
   test(`progress, action list and tool times are shown (${width}px)`, async ({ page, context }) => {
     test.skip(!hasSession(), "E2E credentials required");
     await page.setViewportSize({ width, height: 800 });

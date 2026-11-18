@@ -69,7 +69,10 @@ const ACTION_QUESTION: Record<string, string> = {
   external_directory: "プロジェクト外のフォルダを使いますか？",
 };
 
-function ToolRow({ tool }: { tool: OpenCodeTool }) {
+/** 道具と思考を 1 枚にまとめるカード（行ごとに区切る） */
+export const CODE_STEPS_CARD = "min-w-0 divide-y divide-zinc-100 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900";
+
+export function ToolRow({ tool }: { tool: OpenCodeTool }) {
   const [open, setOpen] = useState(false);
   const summary = toolSummary(tool);
   const running = tool.status === "running";
@@ -89,21 +92,21 @@ function ToolRow({ tool }: { tool: OpenCodeTool }) {
           <span className={`min-w-0 flex-1 ${open ? "whitespace-pre-wrap break-all" : "flex"}`}>
             <span className="shrink-0 font-bold text-zinc-900 dark:text-zinc-50">{TOOL_LABEL[tool.name] ?? tool.name}</span>
             {summary && (open ? (
-              <span className="text-zinc-600 dark:text-zinc-300">({summary})</span>
+              <span className="text-zinc-700 dark:text-zinc-200">({summary})</span>
             ) : (
               <>
-                <span className="shrink-0 text-zinc-400 dark:text-zinc-500">(</span>
-                <span className="min-w-0 truncate text-zinc-600 dark:text-zinc-300">{summary}</span>
-                <span className="shrink-0 text-zinc-400 dark:text-zinc-500">)</span>
+                <span className="shrink-0 text-zinc-500 dark:text-zinc-400">(</span>
+                <span className="min-w-0 truncate text-zinc-700 dark:text-zinc-200">{summary}</span>
+                <span className="shrink-0 text-zinc-500 dark:text-zinc-400">)</span>
               </>
             ))}
           </span>
         </span>
         {!open && preview && (
-          <span className="flex w-full min-w-0 gap-2 pl-4 text-[11px] text-zinc-400 dark:text-zinc-500">
+          <span className="flex w-full min-w-0 gap-2 pl-4 text-[11px] text-zinc-600 dark:text-zinc-400">
             <span aria-hidden className="shrink-0">⎿</span>
             <span className={`min-w-0 truncate ${failed ? "text-red-500/90 dark:text-red-400/90" : ""}`}>{preview}</span>
-            {more > 0 && <span className="shrink-0 text-zinc-400/80 dark:text-zinc-600">+{more} 行</span>}
+            {more > 0 && <span className="shrink-0 text-zinc-500 dark:text-zinc-500">+{more} 行</span>}
           </span>
         )}
       </button>
@@ -199,7 +202,7 @@ export function OpenCodeActivity({ tools, permissions, onAnswer }: {
   return (
     <div className="min-w-0 space-y-1.5">
       {!!tools?.length && (
-        <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200/80 bg-zinc-50/70 py-0.5 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <div className={CODE_STEPS_CARD}>
           {tools.map((tool) => <ToolRow key={tool.id} tool={tool} />)}
         </div>
       )}

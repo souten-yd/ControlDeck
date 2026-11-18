@@ -61,6 +61,7 @@ function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: num
 }
 import {
   OpenCodeActivity, PERMISSION_MODES,
+  CODE_STEPS_CARD, ToolRow,
   type OpenCodePermission, type OpenCodeTool, type PermissionMode,
 } from "./OpenCodeActivity";
 
@@ -2051,7 +2052,7 @@ function GenStatsBadge({ stats, busy }: {
  *  考え始めたら 1 回だけ自動で開き、回答が始まったら自動で閉じる（利用者が触っていれば、どちらもしない）。
  *  閉じたら会話の欄の中だけをスクロールして見出しの位置まで戻す（iPhone の外側の画面は動かさない）。
  *  欄の中のタップは、ダブルクリックや文字の選択の途中では閉じない（コピーできるように）。 */
-function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) {
+function ThinkingBlock({ text, thinking, flat = false }: { text: string; thinking: boolean; /** 作業のカードの 1 行として出す */ flat?: boolean }) {
   const [open, setOpen] = useState(thinking);
   const touched = useRef(false);
   const autoOpened = useRef(thinking);
@@ -2085,9 +2086,9 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
     else setOpen(true);
   };
   return (
-    <div data-thinking className="rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70">
+    <div data-thinking className={flat ? "px-3 py-0.5" : "rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70"}>
       <button ref={head} type="button" aria-expanded={open} onClick={toggle}
-        className="flex min-h-8 w-full items-center gap-1 text-left text-[11px] font-medium text-zinc-500 focus:outline-none focus-visible:underline">
+        className="flex min-h-9 w-full items-center gap-1 text-left text-xs font-medium text-zinc-600 focus:outline-none focus-visible:underline dark:text-zinc-400">
         <span aria-hidden className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
         💭 思考プロセス{thinking ? "（考え中…）" : ""}
       </button>
@@ -2103,7 +2104,7 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
               if (!window.getSelection()?.toString()) close();
             }, 280);
           }}
-          className="mt-1 cursor-pointer whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          className="mb-1.5 mt-0.5 cursor-pointer whitespace-pre-wrap text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
           {text}
         </p>
       )}
@@ -2113,6 +2114,19 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
 
 /** OpenCode の回答を届いた順に並べる。続けて実行した道具は 1 つの枠、思考はまとまりごとに別の窓。
  *  本文はこれまでどおり下に出す（引用・コピーなどの扱いを変えない）。許可の確認は最後にまとめて出す。 */
+/** 本文の断片が content を隙間なく覆っているか（古い記録は覆っていないので、従来どおり最後にまとめて出す） */
+function timelineCoversContent(msg: Msg): boolean {
+  let at = 0;
+  for (const seg of msg.timeline ?? []) {
+    if (seg.k !== "x") continue;
+    if (seg.from !== at) return false;
+    at = seg.to;
+  }
+  return at > 0 && at === msg.content.length;
+}
+
+/** 2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。本文を作業の前後の位置に出し
+ *  （「確認します:3相とも…」と別の段階の文がつながっていた）、続く思考と道具は 1 枚のカードにまとめる。 */
 function CodeTimeline({ msg, onAnswer }: {
   msg: Msg; onAnswer: (requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
 }) {
@@ -2120,27 +2134,41 @@ function CodeTimeline({ msg, onAnswer }: {
   const tools = new Map((msg.tools ?? []).map((t) => [t.id, t]));
   const thinking = msg.thinking ?? "";
   const lastThinking = segments.reduce((last, seg, i) => (seg.k === "t" ? i : last), -1);
+  const inlineText = timelineCoversContent(msg);
+  const lastText = segments.reduce((last, seg, i) => (seg.k === "x" ? i : last), -1);
   const blocks: ReactNode[] = [];
-  let group: OpenCodeTool[] = [];
-  const flushGroup = (key: string) => {
-    if (group.length) blocks.push(<OpenCodeActivity key={key} tools={group} permissions={[]} onAnswer={onAnswer} />);
-    group = [];
+  let steps: ReactNode[] = [];
+  const flushSteps = (key: string) => {
+    if (steps.length) blocks.push(<div key={key} data-code-steps className={CODE_STEPS_CARD}>{steps}</div>);
+    steps = [];
   };
   segments.forEach((seg, i) => {
     if (seg.k === "u") {
       const tool = tools.get(seg.id);
-      if (tool) group.push(tool);
+      if (tool) steps.push(<ToolRow key={tool.id} tool={tool} />);
       return;
     }
-    if (seg.k !== "t") return;
-    flushGroup(`tools-${i}`);
+    if (seg.k === "x") {
+      const text = msg.content.slice(seg.from, seg.to);
+      if (!inlineText || !text.trim()) return;
+      flushSteps(`steps-${i}`);
+      blocks.push(
+        <div key={`text-${i}`} data-code-text>
+          <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{text}</p>}>
+            <MarkdownMessage text={text} />
+          </Suspense>
+          {msg.streaming && i === lastText && i === segments.length - 1 && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent-500 align-middle" />}
+        </div>,
+      );
+      return;
+    }
     const text = thinking.slice(seg.from, seg.to);
     if (!text.trim()) return;
     // 考えている途中なのは、最後の思考で、その後ろに道具も本文も無いときだけ
     const active = Boolean(msg.streaming) && i === lastThinking && i === segments.length - 1;
-    blocks.push(<ThinkingBlock key={`think-${i}`} text={text} thinking={active} />);
+    steps.push(<ThinkingBlock key={`think-${i}`} text={text} thinking={active} flat />);
   });
-  flushGroup("tools-end");
+  flushSteps("steps-end");
   // 並びに載っていない道具（古い記録・途中から購読）も落とさない
   const listed = new Set(segments.flatMap((seg) => (seg.k === "u" ? [seg.id] : [])));
   const rest = (msg.tools ?? []).filter((t) => !listed.has(t.id));
@@ -2308,7 +2336,7 @@ function MessageBubble({
             ))}
           </p>
         )}
-        {msg.content && (
+        {msg.content && !(msg.timeline?.length && msg.messageId && timelineCoversContent(msg)) && (
           <div>
             <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>}>
               <MarkdownMessage text={msg.content} />

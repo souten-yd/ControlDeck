@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles/index.css";
+import { StatusBarStrip } from "./layouts/shell";
 
 // iOS standalone(ホーム画面アプリ)ではリロード後に動的ビューポート高(dvh/innerHeight)が
 // 縮んだ値で固定され下部ナビが浮く。standalone では縮まない large viewport(100vh)を
@@ -90,6 +91,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       {/* 画面より上（layout や認証）で落ちても白くしないための最後の受け皿 */}
       <ErrorBoundary>
+        <StatusBarStrip />
         <App />
       </ErrorBoundary>
     </QueryClientProvider>

@@ -26,8 +26,15 @@ export function useShell(): ShellContextValue | null {
  *  iPhone のホーム画面アプリでは半透明＋ぼかしがステータスバーの帯と重なって、
  *  題名が曇って見える。上の行から開くメニューがページの中身の下に潜らないよう
  *  z-30 で前に出す（シート・ドロワーの z-50 よりは下）。 */
+/** iOS 26 のホーム画面アプリは、画面上端にぼかし（scroll edge effect）を重ね、上の行までにじませる。
+ *  消す設定は無いが、上端に不透明で全幅の fixed / sticky の箱があると色を伸ばすだけになると報告されている
+ *  （WebKit の判定は公開情報。実機で要確認）。上の行を sticky にし、上端に帯を置く。 */
+export function StatusBarStrip() {
+  return <div aria-hidden data-status-strip className="fixed inset-x-0 top-0 z-40 hidden bg-zinc-50 dark:bg-zinc-950" />;
+}
+
 export const SHELL_TOPBAR_CLASS =
-  "safe-top relative z-30 shrink-0 border-b border-zinc-200/80 bg-zinc-50 dark:border-zinc-800/80 dark:bg-zinc-950";
+  "safe-top sticky top-0 z-30 shrink-0 border-b border-zinc-200/80 bg-zinc-50 dark:border-zinc-800/80 dark:bg-zinc-950";
 
 export const shellIconButtonClass =
   "grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl text-zinc-600 transition-colors hover:bg-zinc-200/60 active:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:active:bg-zinc-700";
