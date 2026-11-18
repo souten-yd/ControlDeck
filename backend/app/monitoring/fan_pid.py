@@ -33,6 +33,10 @@ OVERSHOOT_FULL_C = 5.0
 # The hotspot follows power within ~10–20 s (R9700: 50→95°C in 45 s at 20%
 # fan), much faster than mem/edge; its feedforward uses this short lag.
 HOTSPOT_FF_LAG_S = 12.0
+# 熱モデルの範囲の外を延ばすべき乗の指数（R ∝ fan^-b）の安全側の境目。実機に当てはめた 2 段の模型で
+# 放熱板の空気側は b≈1.8（hotspot）。本番の点（50〜70%）の傾きは 1.1〜1.3 で、ダイの分（回転で変わらない）を含む
+LOW_EXPONENT_MIN = 1.5
+HIGH_EXPONENT_MAX = 1.0
 # Steady state for idle / equilibrium detection.
 STABLE_SLOPE_C_PER_MIN = 0.5
 IDLE_STABLE_SECONDS = 120.0
@@ -154,7 +158,12 @@ class ThermalModel:
 
     def fan_for(self, sensor_id: str, r_required: float, minimum: float, maximum: float) -> float:
         """Smallest fan % whose thermal resistance does not exceed r_required.
-        Resistance falls with fan speed; interpolate, extrapolate linearly."""
+
+        測った範囲の中は点を結ぶ。外はべき乗（R ∝ fan^-b）で延ばす。前は直線で延ばしていて、50〜70% しか
+        測っていない本番の熱モデルで 130 W の先読みが 23%（べき乗なら約 39%）になり、軽い局面で回転を下げすぎて
+        重い局面で上限に届いた（R9700 本番 2026-11-18 14:26）。放熱の悪さは回転を下げるほど急に増えるので、
+        直線は低い回転側で必ず甘くなる。b は測った端の 2 点の傾きから取り、安全側（回転が多めになる側）に寄せる:
+        低い側は LOW_EXPONENT_MIN 以上、高い側は HIGH_EXPONENT_MAX 以下。"""
         pts = [(p["fan"], p["r"][sensor_id]) for p in self.points if sensor_id in p["r"]]
         if len(pts) < 2:
             return minimum
@@ -162,20 +171,30 @@ class ThermalModel:
         mono: list[tuple[float, float]] = []
         for fan, r in pts:
             mono.append((fan, min(r, mono[-1][1]) if mono else r))
+        if r_required <= 0:
+            return maximum
+
+        def exponent(p0: tuple[float, float], p1: tuple[float, float]) -> float:
+            (f0, r0), (f1, r1) = p0, p1
+            if f0 <= 0 or f1 <= f0 or r0 <= 0 or r1 <= 0 or r1 >= r0:
+                return 0.0
+            return math.log(r0 / r1) / math.log(f1 / f0)
+
         if r_required >= mono[0][1]:
-            (f0, r0), (f1, r1) = mono[0], mono[1]
-            if r0 - r1 <= 1e-9:
-                return minimum
-            return clamp(f0 - (r_required - r0) * (f1 - f0) / (r0 - r1), minimum, maximum)
+            f0, r0 = mono[0]
+            b = max(exponent(mono[0], mono[1]), LOW_EXPONENT_MIN)
+            return clamp(f0 * (r0 / r_required) ** (1 / b), minimum, maximum)
         for (f0, r0), (f1, r1) in zip(mono, mono[1:]):
             if r1 <= r_required <= r0:
                 if r0 - r1 <= 1e-9:
                     return clamp(f1, minimum, maximum)
                 return clamp(f0 + (r0 - r_required) * (f1 - f0) / (r0 - r1), minimum, maximum)
-        (f0, r0), (f1, r1) = mono[-2], mono[-1]
-        if r0 - r1 <= 1e-9:
+        f1, r1 = mono[-1]
+        b = exponent(mono[-2], mono[-1])
+        if b <= 0:
             return maximum
-        return clamp(f1 + (r1 - r_required) * (f1 - f0) / (r0 - r1), minimum, maximum)
+        b = min(b, HIGH_EXPONENT_MAX)
+        return clamp(f1 * (r1 / r_required) ** (1 / b), minimum, maximum)
 
 
 def simc_gains(gain_c_per_percent: float, tau_s: float, dead_time_s: float = LOOP_DEAD_TIME_S,
