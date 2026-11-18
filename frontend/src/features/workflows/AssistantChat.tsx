@@ -7,6 +7,7 @@
  * - フロー実行: 既存ワークフローをチャットから実行し signal.display を表示
  */
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
@@ -106,6 +107,17 @@ interface DeepResearchResult {
   context_profile?: { enabled?: boolean; requested_tokens?: number; applied?: boolean; runtime?: string; reason?: string };
 }
 
+/** 届いた順の並び。t = 思考（thinking の from〜to 文字）、x = 本文（content の from〜to）、u = 道具（id） */
+type TimelineSeg = { k: "t" | "x"; from: number; to: number } | { k: "u"; id: string };
+
+/** 思考・本文の断片を並びの最後へ足す（同じ種類が続けば伸ばす）。 */
+function extendTimeline(timeline: TimelineSeg[] | undefined, k: "t" | "x", start: number, length: number): TimelineSeg[] {
+  const list = timeline ?? [];
+  const last = list[list.length - 1];
+  if (last && last.k === k) return [...list.slice(0, -1), { ...last, to: start + length }];
+  return [...list, { k, from: start, to: start + length }];
+}
+
 interface PersistMsg {
   id: string;
   role: "user" | "assistant";
@@ -116,7 +128,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { mode?: string; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+  meta?: { mode?: string; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
@@ -132,6 +144,8 @@ interface Msg {
   tools?: OpenCodeTool[];
   /** 回答した機能（"code" = OpenCode）。保存した発言から */
   answeredBy?: string;
+  /** OpenCode: 届いた順の並び（思考・本文は文字の位置、道具は ID）。思考を道具の前後で分けて出す */
+  timeline?: TimelineSeg[];
   permissions?: OpenCodePermission[];
   /** 生成中のジョブ（停止に使う） */
   jobId?: string | null;
@@ -173,6 +187,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     tools: m.meta?.tools,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
+    timeline: m.meta?.timeline,
     jobId: m.job_id,
     thinking: m.thinking || undefined,
     messageId: m.id,
@@ -312,6 +327,7 @@ export default function AssistantChat() {
         const fetchedAt = performance.now();
         const restored = data.messages.map((m) => restoreMessage(id, m));
         if (restored.length > 0) setMessages(restored);
+        restoreCodeProject(data.messages);
         // 診断: 開いてから会話が描かれるまで（2 フレーム後＝描画が済んだ時点）を送る
         requestAnimationFrame(() => requestAnimationFrame(() => {
           const renderedAt = performance.now();
@@ -443,10 +459,15 @@ export default function AssistantChat() {
         const thinking = pendingThinking;
         pendingContent = "";
         pendingThinking = "";
-        patchMsg((m) => ({
-          ...m, content: m.content + content,
-          thinking: (m.thinking ?? "") + thinking,
-        }));
+        patchMsg((m) => {
+          // OpenCode の回答だけ並びを持つ（flush の前に種類が変わったら先に flush しているので、1 回の flush は 1 種類）
+          let timeline = m.timeline;
+          if (m.answeredBy === "code") {
+            if (thinking) timeline = extendTimeline(timeline, "t", (m.thinking ?? "").length, thinking.length);
+            if (content) timeline = extendTimeline(timeline, "x", m.content.length, content.length);
+          }
+          return { ...m, content: m.content + content, thinking: (m.thinking ?? "") + thinking, timeline };
+        });
       };
       const scheduleFlush = () => {
         if (!flushTimer) flushTimer = window.setTimeout(flush, 40);
@@ -460,11 +481,14 @@ export default function AssistantChat() {
           const d = JSON.parse(ev.data);
           if (d.type === "snapshot") {
             flush();
-            patchMsg((m) => ({ ...m, content: d.content, thinking: d.thinking || undefined }));
+            patchMsg((m) => ({ ...m, content: d.content, thinking: d.thinking || undefined,
+              timeline: Array.isArray(d.timeline) && d.timeline.length ? d.timeline : m.timeline }));
           } else if (d.type === "delta") {
+            if (pendingThinking) flush();   // 種類が変わる所で区切る（思考と本文の順番を保つ）
             pendingContent += d.content;
             scheduleFlush();
           } else if (d.type === "thinking") {
+            if (pendingContent) flush();
             pendingThinking += d.content;
             scheduleFlush();
           } else if (d.type === "stats") {
@@ -475,12 +499,16 @@ export default function AssistantChat() {
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
           else if (d.type === "compaction") patchMsg((m) => ({ ...m, compaction: d }));
-          else if (d.type === "tool") patchMsg((m) => {
-            const tool = d.tool as OpenCodeTool;
-            const tools = m.tools ?? [];
-            return { ...m, tools: tools.some((t) => t.id === tool.id)
-              ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool] };
-          });
+          else if (d.type === "tool") {
+            flush();   // 道具より前に届いた思考・本文を先に並べる
+            patchMsg((m) => {
+              const tool = d.tool as OpenCodeTool;
+              const tools = m.tools ?? [];
+              const known = tools.some((t) => t.id === tool.id);
+              return { ...m, tools: known ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool],
+                timeline: known || m.answeredBy !== "code" ? m.timeline : [...(m.timeline ?? []), { k: "u", id: tool.id }] };
+            });
+          }
           else if (d.type === "permission") patchMsg((m) => {
             const item = d.permission as OpenCodePermission;
             const list = m.permissions ?? [];
@@ -524,6 +552,33 @@ export default function AssistantChat() {
       connect();
     });
 
+  /** 会話の作業フォルダを戻す: 最後の OpenCode の回答が動いたプロジェクト。2026-11-18 利用者
+   *  「AI アシスタントを閉じて戻ると作業フォルダの設定が外れる」。画面の中だけで覚えていたので、既定の新規作成に戻っていた。 */
+  const restoreCodeProject = (rows: PersistMsg[]) => {
+    const last = [...rows].reverse().find((m) => m.role === "assistant" && m.meta?.mode === "code" && m.meta?.project_path);
+    const path = last?.meta?.project_path;
+    if (!path) return;
+    const root = (codeProjects?.root ?? "").replace(/\/+$/, "");
+    const name = path.split("/").pop() ?? "";
+    if (root && path === `${root}/${name}` && name) {
+      setCodeProject(name);
+    } else {
+      setCodeFolderPath(path);
+      setCodeProject("__folder__");
+    }
+    setCodeNewName("");
+  };
+
+  // プロジェクトの一覧が後から届いたら、CodeDEV の中のフォルダ指定はプロジェクト名の選択に直す
+  useEffect(() => {
+    const root = (codeProjects?.root ?? "").replace(/\/+$/, "");
+    const name = codeFolderPath.split("/").pop() ?? "";
+    if (codeProject === "__folder__" && root && name && codeFolderPath === `${root}/${name}`) {
+      setCodeProject(name);
+      setCodeFolderPath("");
+    }
+  }, [codeProjects?.root, codeProject, codeFolderPath]);
+
   const openConversation = async (id: string): Promise<boolean> => {
     if (!id || id === convId || busy) return false;
     wsRef.current?.close();
@@ -534,6 +589,7 @@ export default function AssistantChat() {
     setConvId(id);
     setConversationTitle(data.conversation.title);
     setMessages(restored);
+    restoreCodeProject(data.messages);
     const generating = data.messages.find((message) => message.role === "assistant" && message.status === "generating");
     if (generating) {
       setBusy(true);
@@ -927,7 +983,8 @@ export default function AssistantChat() {
       show("圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください", "error");
       return;
     }
-    if (selectedMode === "code" && !codeProjectName && !codeFolder) {
+    // この会話に OpenCode の回答があれば、空でもサーバーが最後のプロジェクトで続ける
+    if (selectedMode === "code" && !codeProjectName && !codeFolder && !inCodeConversation) {
       show("OpenCodeのプロジェクトを指定してください（新規名の入力・既存の選択・📁フォルダ）", "error");
       return;
     }
@@ -1481,6 +1538,7 @@ export default function AssistantChat() {
           {effectiveMode === "code" && (
             <div className="mb-2 flex min-w-0 gap-1.5">
               <select
+                aria-label="作業フォルダ（OpenCode のプロジェクト）"
                 value={codeProject}
                 onChange={(e) => setCodeProject(e.target.value)}
                 className={`rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 ${codeProject === "__new__" ? "w-32 shrink-0" : "min-w-0 flex-1"}`}
@@ -1819,6 +1877,48 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
   );
 }
 
+/** OpenCode の回答を届いた順に並べる。続けて実行した道具は 1 つの枠、思考はまとまりごとに別の窓。
+ *  本文はこれまでどおり下に出す（引用・コピーなどの扱いを変えない）。許可の確認は最後にまとめて出す。 */
+function CodeTimeline({ msg, onAnswer }: {
+  msg: Msg; onAnswer: (requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
+}) {
+  const segments = msg.timeline ?? [];
+  const tools = new Map((msg.tools ?? []).map((t) => [t.id, t]));
+  const thinking = msg.thinking ?? "";
+  const lastThinking = segments.reduce((last, seg, i) => (seg.k === "t" ? i : last), -1);
+  const blocks: ReactNode[] = [];
+  let group: OpenCodeTool[] = [];
+  const flushGroup = (key: string) => {
+    if (group.length) blocks.push(<OpenCodeActivity key={key} tools={group} permissions={[]} onAnswer={onAnswer} />);
+    group = [];
+  };
+  segments.forEach((seg, i) => {
+    if (seg.k === "u") {
+      const tool = tools.get(seg.id);
+      if (tool) group.push(tool);
+      return;
+    }
+    if (seg.k !== "t") return;
+    flushGroup(`tools-${i}`);
+    const text = thinking.slice(seg.from, seg.to);
+    if (!text.trim()) return;
+    // 考えている途中なのは、最後の思考で、その後ろに道具も本文も無いときだけ
+    const active = Boolean(msg.streaming) && i === lastThinking && i === segments.length - 1;
+    blocks.push(<ThinkingBlock key={`think-${i}`} text={text} thinking={active} />);
+  });
+  flushGroup("tools-end");
+  // 並びに載っていない道具（古い記録・途中から購読）も落とさない
+  const listed = new Set(segments.flatMap((seg) => (seg.k === "u" ? [seg.id] : [])));
+  const rest = (msg.tools ?? []).filter((t) => !listed.has(t.id));
+  return (
+    <>
+      {blocks}
+      {rest.length > 0 && <OpenCodeActivity tools={rest} permissions={[]} onAnswer={onAnswer} />}
+      {(msg.permissions?.length ?? 0) > 0 && <OpenCodeActivity tools={[]} permissions={msg.permissions} onAnswer={onAnswer} />}
+    </>
+  );
+}
+
 function MessageBubble({
   msg,
   onRegister,
@@ -1943,14 +2043,21 @@ function MessageBubble({
             )}
           </details>
         )}
-        {/* OpenCode: 道具の実行と許可の確認（タップで出力を開く・許可はボタンで答える） */}
-        {msg.messageId && (
-          <OpenCodeActivity tools={msg.tools} permissions={msg.permissions}
-            onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
-        )}
-        {/* 思考トレース（推論モデル・折り畳み） */}
-        {msg.thinking && (
-          <ThinkingBlock text={msg.thinking} thinking={Boolean(!msg.content && msg.streaming)} />
+        {msg.timeline?.length && msg.messageId ? (
+          // OpenCode: 届いた順に「思考 → 道具 → 思考 → …」。思考はひとまとまりごとに別の窓
+          <CodeTimeline msg={msg} onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
+        ) : (
+          <>
+            {/* OpenCode: 道具の実行と許可の確認（タップで出力を開く・許可はボタンで答える） */}
+            {msg.messageId && (
+              <OpenCodeActivity tools={msg.tools} permissions={msg.permissions}
+                onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
+            )}
+            {/* 思考トレース（推論モデル・折り畳み） */}
+            {msg.thinking && (
+              <ThinkingBlock text={msg.thinking} thinking={Boolean(!msg.content && msg.streaming)} />
+            )}
+          </>
         )}
         {msg.streaming && !msg.content && !msg.thinking && !msg.build && (
           <p role="status" aria-label="回答を待っています" className="flex h-7 items-center gap-1">

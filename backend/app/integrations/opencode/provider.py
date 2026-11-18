@@ -1322,6 +1322,22 @@ def _opencode_home() -> Path:
     return home
 
 
+def project_tmp_dir(project: Path) -> Path:
+    """プロジェクトの箱の /tmp（箱の外に残る。プロジェクトごとに別）。
+
+    以前は --rootfs の /tmp（data/sandboxes/.rootfs/tmp）を全部の箱が共有していて、別のプロジェクトの下書きが
+    見えた（2026-11-18 利用者「proto1〜3 が Project Lab に無い」で判明。178 ファイル・730 MB）。プロジェクトの
+    中には置かない（ブラウザの検証などで大きな一時ファイルが溜まり、git や Project Lab を汚す）。
+    """
+    import hashlib
+
+    resolved = project.resolve()
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in resolved.name)[:40] or "project"
+    folder = data_dir().resolve() / "sandboxes" / "project-tmp" / f"{safe}-{hashlib.sha1(str(resolved).encode()).hexdigest()[:10]}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
             interactive: bool, readonly: tuple[Path, ...] = (), extra_env: dict[str, str] | None = None,
             env_file: Path | None = None) -> tuple[list[str], dict[str, str]]:
@@ -1369,7 +1385,8 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
         "PATH": sandbox.tool_path(),
     }
     argv = sandbox.container_argv(command, workdir=project, writable=writable, readonly=readonly_paths,
-                                  env=box_env, interactive=interactive, env_file=env_file)
+                                  env=box_env, interactive=interactive, env_file=env_file,
+                                  binds=[(project_tmp_dir(project), Path("/tmp"))])
     return argv, {}
 
 

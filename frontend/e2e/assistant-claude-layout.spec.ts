@@ -493,6 +493,49 @@ for (const width of [320, 1280]) {
   });
 }
 
+test("an OpenCode answer shows thinking split around its tools and reopening keeps the work folder", async ({ page }) => {
+  // 2026-11-18 利用者: 思考が全部 1 つの窓に入っている（操作の前後で分かれるはず）／開き直すと作業フォルダが外れる
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 390, height: 900 });
+  await login(page);
+  await mockChat(page);
+  await page.route(/\/api\/v1\/meta$/, async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+    return route.fulfill({ response, json: meta });
+  });
+  await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [
+    { name: "other", path: "/CodeDEV/other", git: true }, { name: "app", path: "/CodeDEV/app", git: true }] } }));
+  await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
+  await page.route(/\/api\/v1\/chat\/conversations\/today1\/messages$/, (route) => route.fulfill({ json: {
+    conversation: { id: "today1", title: "今日の献立の相談", updated_at: new Date().toISOString().replace("Z", "") },
+    messages: [msg("u1", "user", "直して"), msg("a1", "assistant", "直しました。", {
+      thinking: "まず見る。a.py を直す。",
+      meta: { mode: "code", project_path: "/CodeDEV/app", opencode_session: "s1",
+        tools: [{ id: "call_1", name: "shell", status: "completed", input: { command: "ls" }, output: "a.py" },
+          { id: "call_2", name: "edit", status: "completed", input: { filePath: "a.py" }, output: "" }],
+        timeline: [{ k: "t", from: 0, to: 5 }, { k: "u", id: "call_1" }, { k: "t", from: 5, to: 14 },
+          { k: "u", id: "call_2" }, { k: "x", from: 0, to: 6 }] },
+    })],
+  } }));
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("直しました。")).toBeVisible();
+  const heads = shell.getByRole("button", { name: /思考プロセス/ });
+  await expect(heads).toHaveCount(2);                       // 道具の前と後で別の窓
+  for (const head of await heads.all()) await head.click();
+  const text = await shell.locator("[data-assistant-messages]").innerText();
+  const order = ["まず見る。", "ls", "a.py を直す。", "a.py", "直しました。"].map((s, i, all) => text.indexOf(s, i ? text.indexOf(all[i - 1]) : 0));
+  expect(order.every((x) => x >= 0)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);  // 届いた順
+  // 作業フォルダはこの会話のプロジェクト（app）に戻っている
+  await shell.locator("[data-assistant-plus]").click();
+  await page.getByRole("menu", { name: "添付・機能・権限" }).locator('[data-mode-option="code"]').click();
+  await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toHaveValue("app");
+});
+
 test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 800 });
