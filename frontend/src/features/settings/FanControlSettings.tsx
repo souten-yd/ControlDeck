@@ -56,6 +56,8 @@ type Control = {
   governing_sensor: string;
   error_c: number;
   feedforward_percent: number;
+  floor_percent?: number;
+  kick_percent?: number;
   p_percent: number;
   i_percent: number;
   emergency: boolean;
@@ -540,7 +542,10 @@ export function FanControlSettings() {
         {control && !emergency && (
           <p className={"mt-2 tabular-nums " + muted}>
             出力 {control.output_percent.toFixed(1)}% ＝ 先読み {control.feedforward_percent.toFixed(1)} ＋ P {control.p_percent.toFixed(1)} ＋ I {control.i_percent.toFixed(1)}
-            （先読み＝電力から目標で釣り合う回転を見積もった分。I＝上乗せ: 先読みの不足分（外気温・季節）を覚えた分）
+            {(control.floor_percent ?? 0) > control.output_percent - 0.05 && (control.floor_percent ?? 0) > 0 && (
+              <>（負荷中の床 {control.floor_percent!.toFixed(1)}%{(control.kick_percent ?? 0) > 0 ? `・電力の跳ね上がりで +${control.kick_percent!.toFixed(0)}%` : ""}）</>
+            )}
+            （先読み＝電力から目標で釣り合う回転を見積もった分。負荷中は先読みより下げない。I＝上乗せ: 先読みの不足分（外気温・季節）を覚えた分）
           </p>
         )}
         {emergency && <p className="mt-2 text-xs text-red-700 dark:text-red-300">上限温度を超えたため、なめらかさを無視して最大回転にしています。上限を下回ると通常の制御に戻ります。</p>}

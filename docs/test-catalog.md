@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 171 ファイル、1498 テスト（目的の未記入 93 ファイル）
+- backend: 171 ファイル、1500 テスト（目的の未記入 93 ファイル）
 - E2E: 81 spec、153 テスト
 
 ## backend（backend/tests）
@@ -862,12 +862,14 @@
 - `test_pid_asymmetric_pv_filter_retains_cooling_dips_without_slowing_rise`
 - `test_pid_ema_does_not_change_raw_median_safety_input`
 - `test_ceiling_firmware_backstop_respects_hardware_range`
+- `test_production_model_feedforward_is_not_starved_below_the_measured_range` — 本番の熱モデル（50〜70% だけ測った点）で、軽い局面の先読みが少なすぎないこと。
 
 ### backend/tests/test_fan_two_stage.py
 
 目的: 実機の記録に当てはめた 2 段の熱の模型で、ファン制御がマージン 5°C で緊急の最大回転に入らないことを確かめる。 目的: 2026-11-18 利用者「温度がオーバーした」「模擬で確かめてマージン 5 度でゲイン調整できると良い」。 本番（v0.68）では、負荷が止まると回転を急に下げ、再開で 95°C に届いて緊急の最大回転に入り、その後に上乗せが 膨らんで回り続けた。hotspot の読みは全力中でも 1 秒だけ +3〜+7°C 跳ねる。 fan_core の簡単な模型（瞬間の跳ね＋1 段）は直す前の版でも最高 90.7°C で本番を再現できなかったので、 本番の 1 秒ごとの記録に「放熱板（遅い・回転で冷え方が変わる）＋ダイ（速い）」の模型を当てはめた （hotspot の誤差 1.3°C。tests/fixtures/fan_r9700_two_stage.json）。この模型と実際の揺れの分布で、直す前の版は 本番と同じく最高 98°C・緊急 5 回を再現し、直した版は 0 回。 - 記録した実際の電力の流れ・全力と 20〜60 秒の休みの繰り返し・休みから全力を、外気温そのまま／+10°C で流す - 上乗せは本番と同じく育った状態から（全力 15 分の慣らし） - 緊急の最大回転 0 回、全力中の平均が目標 90°C の ±2.5°C
 
 - `test_margin_five_holds_without_emergency_on_the_fitted_r9700_model`
+- `test_llm_like_load_holds_margin_five_without_emergency` — 軽い局面と重い局面を行き来する負荷で、マージン 5°C・外気温 +4°C でも緊急の最大回転に入らない。
 
 ### backend/tests/test_feature_boot_restore.py
 

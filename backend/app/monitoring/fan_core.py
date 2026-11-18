@@ -44,6 +44,16 @@ IDLE_HEAT_W = 30.0
 IDLE_FALLBACK_W = 30.0
 # 目標より冷えすぎで、回転を下げている途中でもないときに上乗せを減らす速さ（通常の比）
 COLD_DECAY_SHARE = 0.1
+# 負荷がかかっている間の回転の床: 先読みからこれ以上は下げない（%）。LLM の負荷は軽い局面（生成）と重い局面
+# （読み込み）を行き来する。軽い局面で目標より冷えると、比例の項とマイナスの上乗せが回転を先読みより大きく下げ、
+# 重い局面が来ると追いつかずに上限へ届いた（R9700 本番 2026-11-18 14:26: 負荷中に 52→35%、10 秒後に緊急）。
+# 電力が上がったら、上げの速さの上限を待たずにすぐ床まで上げる（電力の急変への先読み）
+LOAD_FLOOR_BELOW_FF = 0.0
+# 電力が跳ね上がったとき（直前の読みより STEP_KICK_W 以上）は、STEP_KICK_S 秒のあいだ先読みに STEP_KICK_PERCENT を
+# 足して先に冷やす（ダイの温度は電力に一瞬で追いつき、放熱板は数十秒遅れる）
+STEP_KICK_W = 40.0
+STEP_KICK_PERCENT = 15.0
+STEP_KICK_S = 30.0
 
 
 def sensor_kind(sensor: dict) -> str:
@@ -96,12 +106,15 @@ class Step:
     i_term: float
     emergency: bool
     pv_c: dict[str, float]
+    floor: float = 0.0       # 負荷中の床（先読み＋跳ね上がりの上乗せ）。休み中は最低回転
+    kick: float = 0.0        # 電力の跳ね上がりへの上乗せ（%）
 
     def as_dict(self) -> dict:
         return {"output_percent": round(self.percent, 1), "mode": self.mode, "governing_sensor": self.governing,
                 "error_c": round(self.error_c, 2), "feedforward_percent": round(self.feedforward, 1),
                 "p_percent": round(self.p_term, 1), "i_percent": round(self.i_term, 1),
-                "emergency": self.emergency, "pv_c": {k: round(v, 1) for k, v in self.pv_c.items()}}
+                "emergency": self.emergency, "pv_c": {k: round(v, 1) for k, v in self.pv_c.items()},
+                "floor_percent": round(self.floor, 1), "kick_percent": round(self.kick, 1)}
 
 
 class Controller:
@@ -117,6 +130,8 @@ class Controller:
         self.emergency_active = False
         self.t = 0.0
         self.integral_loaded = False
+        self.last_power: float | None = None
+        self.kick_until = -1.0
 
     def reset(self, start_percent: float | None = None) -> None:
         self.__init__()
@@ -207,9 +222,25 @@ class Controller:
             rate = 0.0 if descending else rate * COLD_DECAY_SHARE
         if not frozen and rate < 0 and self.integral <= 0 and ff + p_term + self.integral <= settings.min_percent:
             rate = 0.0   # 最低回転で止まっているのに、上乗せをマイナスへ膨らませない（次の負荷で遅れる）
+        if not frozen and rate < 0:
+            # 冷えているのが自分の回転のせいなら減らさない: 回転をゆっくり下げている途中（緊急の最大回転の後など）、
+            # または負荷中の床（先読み）で支えている間。減らすと上乗せが −20% まで張り付き、先読みが足りない GPU で
+            # 「冷える → 減らす → 上限 → 最大回転」を繰り返した（模擬 2026-11-18）
+            loaded_now = power_w is not None and float(power_w) - idle_power >= IDLE_HEAT_W
+            v_now = ff + p_term + self.integral
+            if (self.out is not None and self.out > max(v_now, settings.min_percent) + 0.5) or (loaded_now and v_now < ff):
+                rate = 0.0
         if not frozen:
             self.integral = clamp(self.integral + rate, *INTEGRAL_RANGE)
         wanted = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
+        loaded = power_w is not None and float(power_w) - idle_power >= IDLE_HEAT_W
+        if power_w is not None:
+            if self.last_power is not None and float(power_w) - self.last_power >= STEP_KICK_W:
+                self.kick_until = self.t + STEP_KICK_S
+            self.last_power = float(power_w)
+        kick = STEP_KICK_PERCENT if loaded and self.t < self.kick_until else 0.0
+        floor = clamp(ff - LOAD_FLOOR_BELOW_FF + kick, settings.min_percent, settings.max_percent) if loaded else settings.min_percent
+        wanted = max(wanted, floor)
 
         if emergency:
             out = settings.max_percent
@@ -221,6 +252,7 @@ class Controller:
             up = span / (s * UP_SHARE) * dt
             down = span / (s * DOWN_SHARE) * dt
             out = min(wanted, self.out + up) if wanted > self.out else max(wanted, self.out - down)
+            out = max(out, floor)   # 床まではすぐ上げる
         v = ff + p_term + self.integral
         if not frozen and out < v:
             # 逆算型のワインドアップ防止: 上げが追いつかない・最大で頭打ちのときだけ、実際に出した値へ寄せる。
@@ -231,7 +263,7 @@ class Controller:
         if model is not None:
             model.integral_percent = self.integral
         self.out = out
-        return Step(out, "pid", governing, error, ff, p_term, self.integral, emergency, pv)
+        return Step(out, "pid", governing, error, ff, p_term, self.integral, emergency, pv, floor, kick)
 
 
 # ---- 模擬（熱モデルから温度を計算する） ----

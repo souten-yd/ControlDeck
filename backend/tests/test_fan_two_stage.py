@@ -56,11 +56,23 @@ def _pauses() -> list[float]:
     return out
 
 
-def _run(power: list[float], ambient_add: float) -> dict:
+def _llm(seed: int) -> list[float]:
+    """LLM らしい負荷: 生成（130〜160 W）と読み込み（205〜225 W）を 5〜40 秒で行き来し、ときどき休む。
+    2026-11-18 14:26 の本番はこの形で、負荷中に回転を下げすぎて上限に届いた（一定の全力では再現しなかった）。"""
+    rnd = random.Random(seed)
+    out = [12.0] * 300
+    for _ in range(40):
+        for _ in range(rnd.randint(2, 8)):
+            out += [rnd.uniform(130, 160)] * rnd.randint(10, 40) + [rnd.uniform(205, 225)] * rnd.randint(5, 30)
+        out += [12.0] * rnd.randint(5, 120)
+    return out
+
+
+def _run(power: list[float], ambient_add: float, margin: float = 5.0) -> dict:
     # 先読みに使う熱モデルは、記録したときの本番のもの（上乗せは 0 から慣らしで育てる）
     model = ThermalModel.from_json(FIXTURE["controller_model"])
     kp, ti = core.pid_gains(model)
-    settings = core.CoreSettings(limits_c=dict(LIMITS), margin_c=5.0, min_percent=20.0, smoothing_s=60.0, kp=kp, ti=ti)
+    settings = core.CoreSettings(limits_c=dict(LIMITS), margin_c=margin, min_percent=20.0, smoothing_s=60.0, kp=kp, ti=ti)
     plant = TwoStage(ambient_add)
     ctl = core.Controller()
     rnd = random.Random(3)
@@ -93,4 +105,16 @@ def test_margin_five_holds_without_emergency_on_the_fitted_r9700_model(pattern, 
              "step": [12.0] * 300 + [210.0] * 600}[pattern]
     result = _run(power, ambient_add)
     assert result["emergencies"] == 0
-    assert 87.5 <= result["mean"] <= 92.5
+    # 目標 90°C を超えない・冷やしすぎない。負荷中は先読みを床にし、電力の跳ね上がりで上乗せするので、外気温が
+    # 低いときは目標より冷たく保つ（2026-11-18 利用者「回転数変動は気にしなくて良い。温度変動を緩慢に」）
+    assert 80.0 <= result["mean"] <= 92.5
+
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_llm_like_load_holds_margin_five_without_emergency(seed):
+    """軽い局面と重い局面を行き来する負荷で、マージン 5°C・外気温 +4°C でも緊急の最大回転に入らない。
+    直す前は 1 時間あまりで 350〜430 回（3 秒ごとの数）入り、模型の最高は 111〜113°C だった。"""
+    result = _run(_llm(seed), 4.0)
+    assert result["emergencies"] == 0
+    assert result["mean"] <= 90.0

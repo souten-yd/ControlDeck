@@ -32,8 +32,12 @@ def test_fan_for_interpolates_and_extrapolates():
                              points=[{"fan": 40, "power_w": 200, "r": {"t": 0.25}},
                                      {"fan": 60, "power_w": 200, "r": {"t": 0.18}}])
     assert model.fan_for("t", 0.215, 20, 100) == 50
-    assert model.fan_for("t", 0.30, 20, 100) < 40  # below the measured range
-    assert 80 < model.fan_for("t", 0.10, 20, 100) < 86  # linear beyond the last point
+    # 範囲の外はべき乗（R ∝ fan^-b）で、直線より多く回す側（2026-11-18 本番: 直線で 130 W の先読みが 23%）
+    below = model.fan_for("t", 0.30, 20, 100)
+    linear_below = 40 - (0.30 - 0.25) * 20 / 0.07
+    assert linear_below < below < 40
+    assert abs(below - 40 * (0.25 / 0.30) ** (1 / 1.5)) < 0.01        # 低い側の指数は 1.5 以上
+    assert model.fan_for("t", 0.10, 20, 100) > 86                       # 直線（約 83%）より多い
     assert model.fan_for("t", 0.01, 20, 100) == 100
 
 
@@ -193,3 +197,16 @@ def test_ceiling_firmware_backstop_respects_hardware_range():
         assert points[-1][1] == 100
         assert all(p == 37 for _, p in points[:-1])
         assert points[-2][0] <= ceiling and points[-1][0] <= ceiling + 1
+
+
+
+def test_production_model_feedforward_is_not_starved_below_the_measured_range():
+    """本番の熱モデル（50〜70% だけ測った点）で、軽い局面の先読みが少なすぎないこと。
+    2026-11-18 14:26: 直線で延ばして 130 W の先読みが 23%（模型では約 39% 要る）、負荷中に回転を 35% まで
+    下げ、重い局面で上限に届いた。"""
+    model = pid.ThermalModel(idle_c={"temp2": 36.97}, idle_power_w=8.1, points=[
+        {"fan": 50.0, "power_w": 199, "r": {"temp2": 0.272}}, {"fan": 60.0, "power_w": 196, "r": {"temp2": 0.214}},
+        {"fan": 70.0, "power_w": 197, "r": {"temp2": 0.181}}])
+    allowed = 89 - 36.97
+    assert model.fan_for("temp2", allowed / (130 - 8.1), 20, 100) > 35
+    assert model.fan_for("temp2", allowed / (150 - 8.1), 20, 100) > 39
