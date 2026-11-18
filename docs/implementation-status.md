@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-18 ファン制御 v2: PID だけ・診断の記録・記録から作り直す
+
+- 実機（R9700）で PID と温度マップを比べ、温度を一定に保てた PID だけを残した（全力中の hotspot 90.0±0.5°C、温度マップは 89.3±1.05°C）。温度マップ・方式の選択を撤去。プリセットは無く、選べるのは「この制御」か「GPU 標準（デフォルト）」。
+- PID: 上がる温度を遅らせない、上乗せ（積分）を休み中も保持して熱モデルへ保存（再起動・夏の外気温でも引き継ぐ）、効き具合を強めに（Kp 1.33 → 2.5）。旧設定の targets_c は上限へ移さない。
+- 診断の記録: 制御中の値を 1 分ごとに `data/diagnostics/fan-*.csv`（1 日約 120 KB・2 日分）。逸脱（目標 +2°C が 60 秒）と緊急を自己診断・報告へ。「記録から作り直す」（`POST /api/v1/system/fan-control/refit`、数秒）で熱モデルと Kp・Ti を作り直す。
+- 推移のグラフの下段を回転数（rpm）に。
+- 検証: `tests/test_fan_core.py`・`test_fan_control.py`・`test_fan_log.py`（新規）、実機の比較（docs/design-amd-smart-fan.md）、`npm run build`。E2E と実画面は下記。
+
 ## 2026-11-18 OpenCode: 日本語のプロジェクト名で回答が作れない（UnicodeEncodeError）
 
 - プロジェクト「コンバータシム」で OpenCode が「処理に失敗しました（UnicodeEncodeError）」。OpenCode の server へ送るヘッダー `x-opencode-directory` にプロジェクトのパスをそのまま入れていて、日本語が入ると HTTP のヘッダー（ASCII だけ）を作る前に落ちていた。
