@@ -480,7 +480,8 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
           const out = {{}};
           const cases = [["edit", ["a.py"], "ask"], ["write", ["b.py"], "allow"], ["shell", ["ls -la"], "ask"],
                          ["shell", ["ls -la x 2>/dev/null | head -5; echo done"], "ask"], ["shell", ["node --version 2>&1"], "ask"],
-                         ["shell", ["git -C /p status --short 2>&1 | head"], "ask"], ["shell", ["ls > out.txt"], "ask"],
+                         ["shell", ["git -C /p status --short 2>&1 | head"], "ask"], ["shell", ["ls > out.txt"], "ask"], ["shell", ["ls >&out.txt"], "ask"], ["shell", ["echo x 1<>f.txt"], "ask"],
+                         ["shell", ["cat a & npm run build"], "ask"], ["shell", ["git remote -v add x http://e"], "ask"],
                          ["shell", ["cat a 2>/dev/nullx"], "ask"], ["shell", ["node x.js"], "ask"],
                          ["shell", ["git status && git diff"], "ask"], ["shell", ["rg foo | head"], "ask"], ["shell", ["grep -n -C 3 foo a.py"], "ask"],
                          ["shell", ["npm run build"], "ask"], ["shell", ["git commit -m x"], "ask"], ["shell", ["mkdir x"], "ask"],
@@ -510,7 +511,8 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
         assert out["edit:a.py"] == "deny" and out["write:b.py"] == "deny", mode       # allow で決まった書き込みも止める
         for change in ("npm run build", "git commit -m x", "mkdir x", "python -m pytest -q", "rm -rf build",
                        "fd . -x touch {}", "uniq a.txt src/app.py", "rg --pre ./x.sh foo",
-                       "ls > out.txt", "cat a 2>/dev/nullx", "node x.js"):
+                       "ls > out.txt", "cat a 2>/dev/nullx", "node x.js", "ls >&out.txt", "echo x 1<>f.txt",
+                       "cat a & npm run build", "git remote -v add x http://e"):
             assert out[f"shell:{change}"] == "deny", (mode, change)
         assert out["subagent:developer"] == "deny", mode
         assert out["execute:sculpt"] == "ask", mode

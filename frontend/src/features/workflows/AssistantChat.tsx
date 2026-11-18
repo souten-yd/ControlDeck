@@ -1032,7 +1032,8 @@ export default function AssistantChat() {
     let selectedMode: Mode = choice === "auto" ? decision.mode
       : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
     // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）
-    if (agent === "plan" && opencodeAvailable && SEARCH_MODES.includes(selectedMode)) {
+    const planFromResearch = () => agent === "plan" && opencodeAvailable && readyImages.length === 0;
+    if (planFromResearch() && SEARCH_MODES.includes(selectedMode)) {
       selectedMode = "code";
       researchFirst = true;
     }
@@ -1044,6 +1045,7 @@ export default function AssistantChat() {
     }
     const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
     const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    const hasCodeProject = Boolean(codeProjectName || codeFolder || messages.some((m) => m.projectPath));
     if (readyImages.length > 0 && selectedMode === "code") {
       // OpenCode は画像を受け取れない。黙って落とさず、知らせる（レビュー指摘 2026-11-18）
       show("画像は OpenCode に渡せません。＋から Chat を選ぶと画像を見て答えます", "error");
@@ -1071,7 +1073,7 @@ export default function AssistantChat() {
       if (hold) deferredQueueRef.current = true;
       const json = selectedMode === "code"
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-          attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_agent: agent }
+          attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent }
         : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
           searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "" };
@@ -1109,6 +1111,12 @@ export default function AssistantChat() {
           selectedMode = selectedPlan.mode;
           setResolvedDecision(selectedPlan);
         }
+        // 判定で調査になったときも、プラン中は調べた結果で OpenCode が計画する
+        if (planFromResearch() && hasCodeProject && SEARCH_MODES.includes(selectedMode)) {
+          selectedMode = "code";
+          researchFirst = true;
+          selectedPlan = undefined;
+        }
       }
       if (selectedMode === "chat" || selectedMode === "web" || selectedMode === "academic" || selectedMode === "deep" || selectedMode === "research") {
         // 全て永続パス: サーバー側ジョブで検索/生成し DB 保存。ブラウザを閉じても継続・復元できる。
@@ -1140,7 +1148,7 @@ export default function AssistantChat() {
         const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-            attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_agent: agent },
+            attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent },
         });
         setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
@@ -1150,7 +1158,7 @@ export default function AssistantChat() {
           setCodeProject(codeProjectName);
           setCodeNewName("");
         }
-        setModeChoice("code");
+        if (choice !== "investigate") setModeChoice("code");   // 「調査」を選んでいるなら次も調査のまま
         if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
           persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code", agent });
@@ -1813,7 +1821,14 @@ export default function AssistantChat() {
                         aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
                     </>
                   ) : (
-                    <button type="button" onClick={() => { if (a.preview) URL.revokeObjectURL(a.preview); setAttachments((prev) => prev.filter((x) => x.id !== a.id)); }}
+                    <button type="button" onClick={() => {
+                      if (a.preview) URL.revokeObjectURL(a.preview);
+                      setAttachments((prev) => prev.filter((x) => x.id !== a.id));
+                      // 保存した PDF も消す（送らないものを OpenCode や調査に渡さない）
+                      if (a.kind === "document" && /^[0-9a-f]{16}$/.test(a.id) && convIdRef.current) {
+                        void api(`/chat/conversations/${convIdRef.current}/attachments/${a.id}`, { method: "DELETE" }).catch(() => {});
+                      }
+                    }}
                       aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
                   )}
                 </span>

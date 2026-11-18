@@ -137,13 +137,13 @@ def test_changing_the_project_starts_a_new_session_and_hands_over(admin_client, 
     uploaded = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/attachments", headers=CSRF_HEADERS,
                                  files={"file": ("Plan15.pdf", pdf.getvalue(), "application/pdf")})
     assert uploaded.status_code == 201 and uploaded.json()["pages"] == 1 and uploaded.json()["note"]   # 画像だけでも受ける
-    for project, text in (("conv", "作って"), ("conv", "続けて"), ("mokei", "こちらで")):
+    for project, text in (("conv", "作って"), ("conv", "続けて"), ("mokei", "こちらで"), ("conv", "戻って")):
         r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
                               json={"content": text, "mode": "code", "model": "test", "code_project": project,
                                     "code_agent": "plan"})
         final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
         assert final["status"] == "completed", final["error"]
-    assert [sid for sid, _ in turns] == ["ses_0", "ses_0", "ses_1"]              # 同じフォルダは続ける、変えたら新しく
+    assert [sid for sid, _ in turns] == ["ses_0", "ses_0", "ses_1", "ses_0"]     # フォルダごとにセッションを続ける
     assert "## 添付された PDF" in turns[0][1] and "## 添付された PDF" not in turns[1][1]
     moved = turns[2][1]
     assert "今回の作業フォルダは" in moved and "前の回答です。" in moved and "## 添付された PDF" in moved and "## プラン" in moved

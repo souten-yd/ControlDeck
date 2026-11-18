@@ -76,19 +76,21 @@ const READ_ONLY_HEAD = new Set([
 ]);
 // git は読むだけに見えても、リポジトリの設定（core.fsmonitor・diff.external）のプログラムを動かしうる。
 // 確認モードと箱の外では確認し、Auto の箱の中は通す（2026-11-18 利用者「箱の中は許可不要」。止めると作業が途切れた）
-const GIT_READ = /^git\s+(-C\s+\S+\s+)?(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/;
+const GIT_READ = /^git\s+(-C\s+\S+\s+)?((status|diff|log|show|rev-parse|ls-files|blame|describe)(\s|$)|remote\s+-v$)/;
 // 版を見るだけ（プログラムは動くが何も変えない）
 const VERSION_ONLY = /^(node|python3?|npm|pnpm|yarn|bun|git|rg|uname)\s+(--version|-v|-V)$/;
 // rg --pre は別のプログラムを動かす（grep -C・find -o のような読むための引数は止めない）
-const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)--pre(-glob)?(\s|=|$)/;
+const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)(--pre(-glob)?|--ext-diff|--textconv)(\s|=|$)/;
 
 // 捨てるだけの出力先（2>/dev/null・2>&1）は何も書かない。これで読むだけのコマンドが「変更」扱いになっていた
 // （2026-11-18 本番: `ls -la x 2>/dev/null | head` がプランで止まり、書き込もうとしているように見えた）
-const DISCARD_OUTPUT = /(^|\s)(\d?>>?\s*\/dev\/null|\d?>&\d)(?=\s|;|&|\||$)/g;
+// 決まった形だけを外し、残った > や <>・単独の &（裏で別のコマンドを動かす）は読むだけと認めない
+const DISCARD_OUTPUT = /(^|\s)([12]?>{1,2}\s*\/dev\/null|2>&1|1>&2)(?=\s|;|\||&&|$)/g;
 
 export function isReadOnly(command) {
   const text = String(command || "").replace(DISCARD_OUTPUT, "$1").trim();
   if (!text || DANGEROUS.some((pattern) => pattern.test(text)) || READ_ONLY_FORBIDDEN_ARGS.test(text)) return false;
+  if (/>/.test(text) || /&/.test(text.replace(/&&/g, ""))) return false;
   return splitCommands(text).every((part) => READ_ONLY_HEAD.has(part.split(/\s+/)[0])
     || GIT_READ.test(part) || VERSION_ONLY.test(part));
 }
