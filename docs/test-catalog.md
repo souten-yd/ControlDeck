@@ -1517,7 +1517,7 @@
 - `test_the_chosen_mode_is_kept_on_the_sent_message` — 別の端末や開き直しでも、機能の固定を送った発言から戻せる。
 - `test_changes_are_recorded_and_the_latest_turn_can_be_reverted` — 回答ごとの変更・差分・取り消し。取り消せるのは最新の回だけ。
 - `test_a_queued_request_can_be_told_to_the_running_turn` — 送信待ちを作業中の OpenCode へ伝えると、回答の並びに残り、送信待ちから消える。
-- `test_a_stale_action_list_gets_a_reminder_and_updates_reset_the_count` — 本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。
+- `test_the_action_list_records_when_it_was_updated_and_the_request_asks_for_updates` — 本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。
 - `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
 - `test_a_deleted_last_project_is_not_reopened`

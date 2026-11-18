@@ -23,7 +23,7 @@ test("an action list that was not updated says so", async ({ page, context }) =>
   await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "s1"));
   await page.goto("/assistant");
   const list = page.locator("[data-assistant-todos]");
-  await expect(list).toContainText("未更新 · その後 12 操作");
+  await expect(list).toContainText("更新後 12 操作");
   await list.getByRole("button").click();
   await expect(list.locator("[data-todo-stale]")).toContainText("実際はこの表示より進んでいる可能性");
 });
