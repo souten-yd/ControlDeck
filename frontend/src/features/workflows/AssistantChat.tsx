@@ -1755,31 +1755,62 @@ function GenStatsBadge({ stats, busy }: {
 }
 
 /** 思考プロセス（推論モデル・折り畳み）。2026-11-18 利用者の依頼:
- *  見出しのタップで開閉し、開いた欄の中をタップしても閉じる（長い思考の下から上へ戻らずに済む）。
- *  考えている間は最初に 1 回だけ自動で開き、閉じたら開き直さない（以前は描き直すたびに open を入れ直していた）。
- *  閉じたら見出しの位置まで画面を戻す。文字を選んでいるときは閉じない（コピーできるように）。 */
+ *  見出しのタップで開閉し、開いた欄の中のタップでも閉じる（長い思考の下から上へ戻らずに済む）。
+ *  考え始めたら 1 回だけ自動で開き、回答が始まったら自動で閉じる（利用者が触っていれば、どちらもしない）。
+ *  閉じたら会話の欄の中だけをスクロールして見出しの位置まで戻す（iPhone の外側の画面は動かさない）。
+ *  欄の中のタップは、ダブルクリックや文字の選択の途中では閉じない（コピーできるように）。 */
 function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) {
   const [open, setOpen] = useState(thinking);
   const touched = useRef(false);
+  const autoOpened = useRef(thinking);
   const head = useRef<HTMLButtonElement>(null);
+  const pendingClose = useRef<number | null>(null);
   useEffect(() => {
-    if (thinking && !touched.current) setOpen(true);
+    if (touched.current) return;
+    if (thinking && !autoOpened.current) {
+      autoOpened.current = true;
+      setOpen(true);
+    } else if (!thinking) {
+      setOpen(false);   // 回答が始まった（または回答済み）
+    }
   }, [thinking]);
+  useEffect(() => () => { if (pendingClose.current) window.clearTimeout(pendingClose.current); }, []);
+  const scrollBackToHead = () => {
+    const button = head.current;
+    const scroller = button?.closest<HTMLElement>("[data-assistant-messages]");
+    if (!button || !scroller) return;
+    const top = button.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (top < 0) scroller.scrollTop += top - 8;
+  };
   const close = () => {
     touched.current = true;
     setOpen(false);
-    window.requestAnimationFrame(() => head.current?.scrollIntoView({ block: "nearest" }));
+    window.requestAnimationFrame(scrollBackToHead);
+  };
+  const toggle = () => {
+    touched.current = true;
+    if (open) close();
+    else setOpen(true);
   };
   return (
     <div data-thinking className="rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70">
-      <button ref={head} type="button" aria-expanded={open} onClick={() => (open ? close() : (touched.current = true, setOpen(true)))}
+      <button ref={head} type="button" aria-expanded={open} onClick={toggle}
         className="flex min-h-8 w-full items-center gap-1 text-left text-[11px] font-medium text-zinc-500 focus:outline-none focus-visible:underline">
         <span aria-hidden className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
         💭 思考プロセス{thinking ? "（考え中…）" : ""}
       </button>
       {open && (
         <p data-thinking-body title="タップで閉じる"
-          onClick={() => { if (!window.getSelection()?.toString()) close(); }}
+          onClick={(event) => {
+            // 1 回目のクリックだけで判断しない（ダブルクリックで語を選ぶ途中で閉じない）
+            if (pendingClose.current) window.clearTimeout(pendingClose.current);
+            pendingClose.current = null;
+            if (event.detail !== 1) return;
+            pendingClose.current = window.setTimeout(() => {
+              pendingClose.current = null;
+              if (!window.getSelection()?.toString()) close();
+            }, 280);
+          }}
           className="mt-1 cursor-pointer whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
           {text}
         </p>
