@@ -163,6 +163,90 @@ def test_the_chosen_mode_is_kept_on_the_sent_message(admin_client, monkeypatch, 
     assert meta["mode_choice"] == "code" and meta["research_depth"] == "academic" and meta["agent_choice"] == "plan"
 
 
+def test_changes_are_recorded_and_the_latest_turn_can_be_reverted(admin_client, monkeypatch, tmp_path):
+    """回答ごとの変更・差分・取り消し。取り消せるのは最新の回だけ。"""
+    from app.integrations.opencode import chat_server
+
+    _fake_opencode(monkeypatch, tmp_path, [])
+    reverted: list[tuple[str, str]] = []
+    count = {"n": 0}
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        count["n"] += 1
+        await on_text("直しました")
+        return {"status": "succeeded", "error": "", "message_id": f"msg_{count['n']}"}
+
+    async def changes(srv, sid, message_id):
+        return [{"file": "a.py", "patch": "@@ -1 +1 @@\n-a\n+b\n", "additions": 1, "deletions": 1, "status": "modified"}]
+
+    async def revert(srv, sid, message_id):
+        reverted.append((sid, message_id))
+
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    monkeypatch.setattr(chat_server, "turn_changes", changes)
+    monkeypatch.setattr(chat_server, "revert_turn", revert)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    answers = []
+    for text in ("一つ目", "二つ目"):
+        r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                              json={"content": text, "mode": "code", "model": "test", "code_project": "demo"})
+        answers.append(_wait_done(admin_client, conv_id, r.json()["assistant_message_id"]))
+    assert answers[1]["meta"]["changes"] == [{"file": "a.py", "additions": 1, "deletions": 1, "status": "modified"}]
+    base = f"/api/v1/chat/conversations/{conv_id}/opencode"
+    detail = admin_client.get(f"{base}/changes", params={"message_id": answers[1]["id"]}).json()
+    assert detail["files"][0]["patch"].startswith("@@")
+    old = admin_client.post(f"{base}/revert", headers=CSRF_HEADERS, json={"message_id": answers[0]["id"]})
+    assert old.status_code == 409 and reverted == []
+    assert admin_client.post(f"{base}/revert", headers=CSRF_HEADERS, json={"message_id": answers[1]["id"]}).status_code == 200
+    assert reverted == [("ses_new", "msg_2")]
+    again = admin_client.post(f"{base}/revert", headers=CSRF_HEADERS, json={"message_id": answers[1]["id"]})
+    assert again.status_code == 409
+
+
+def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypatch, tmp_path):
+    """送信待ちを作業中の OpenCode へ伝えると、回答の並びに残り、送信待ちから消える。"""
+    import asyncio
+
+    from app.integrations.opencode import chat_server
+
+    _fake_opencode(monkeypatch, tmp_path, [])
+    told: list[str] = []
+    release = {"go": False}
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        while not release["go"]:
+            await asyncio.sleep(0.02)
+        return {"status": "succeeded", "error": ""}
+
+    async def active(srv, sid):
+        return True
+
+    async def steer(srv, sid, text):
+        told.append(text)
+
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    monkeypatch.setattr(chat_server, "session_is_active", active)
+    monkeypatch.setattr(chat_server, "steer_turn", steer)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    base = f"/api/v1/chat/conversations/{conv_id}"
+    answer = admin_client.post(f"{base}/send", headers=CSRF_HEADERS,
+                               json={"content": "作って", "mode": "code", "model": "test", "code_project": "demo"}).json()
+    item = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
+                             json={"content": "色は青で", "mode": "code", "model": "test", "code_project": "demo"}).json()["item"]
+    try:
+        for _ in range(100):
+            result = admin_client.post(f"{base}/queue/{item['id']}/steer", headers=CSRF_HEADERS)
+            if result.status_code == 200:
+                break
+            time.sleep(0.05)
+        assert result.status_code == 200 and told == ["色は青で"]
+    finally:
+        release["go"] = True
+    final = _wait_done(admin_client, conv_id, answer["assistant_message_id"])
+    assert {"k": "n", "text": "色は青で"} in final["meta"]["timeline"]
+    assert admin_client.get(f"{base}/queue").json()["items"] == []
+
+
 def test_timeline_offsets_use_the_browsers_character_positions():
     """絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。"""
     from app.workflows.chat_persist import _utf16_len

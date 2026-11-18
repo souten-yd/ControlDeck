@@ -186,7 +186,7 @@ def test_run_turn_streams_text_tools_and_permissions(monkeypatch, tmp_path):
         _server(tmp_path), sid, "片付けて",
         on_text=lambda d: collect(text, d), on_reasoning=lambda d: collect(thinking, d),
         on_tool=lambda t: collect(tools, t), on_permission=lambda p: collect(perms, p)))
-    assert result == {"status": "succeeded", "error": ""}
+    assert result["status"] == "succeeded" and result["error"] == ""
     # 毎回エージェントをそろえてから送る（既定はビルド）
     assert calls[0] == ("POST", f"/api/session/{sid}/agent", {"agent": "build"})
     assert calls[1] == ("GET", f"/api/session/{sid}", None)          # 切り替わったかを読み直す
@@ -205,7 +205,7 @@ def test_run_turn_reports_failure_and_interrupts_when_cancelled(monkeypatch, tmp
     noop = lambda *_: asyncio.sleep(0)  # noqa: E731
     result = asyncio.run(chat_server.run_turn(_server(tmp_path), "ses_1", "x", on_text=noop, on_reasoning=noop,
                                               on_tool=noop, on_permission=noop))
-    assert result == {"status": "failed", "error": "model error"}
+    assert result["status"] == "failed" and result["error"] == "model error"
 
     calls.clear()
     _fake_events(monkeypatch, ["WAIT"], calls)

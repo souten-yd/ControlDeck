@@ -22,6 +22,7 @@ import { detectAssistantMode, resolveConversationPrefs, SEARCH_MODES, updateConv
 import { useAssistantAsr } from "./useAssistantAsr";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
+import { OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
@@ -111,7 +112,7 @@ interface DeepResearchResult {
 }
 
 /** 届いた順の並び。t = 思考（thinking の from〜to 文字）、x = 本文（content の from〜to）、u = 道具（id） */
-type TimelineSeg = { k: "t" | "x"; from: number; to: number } | { k: "u"; id: string };
+type TimelineSeg = { k: "t" | "x"; from: number; to: number } | { k: "u"; id: string } | { k: "n"; text: string };
 
 /** 思考・本文の断片を並びの最後へ足す（同じ種類が続けば伸ばす）。 */
 function extendTimeline(timeline: TimelineSeg[] | undefined, k: "t" | "x", start: number, length: number): TimelineSeg[] {
@@ -131,7 +132,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+  meta?: { changes?: CodeChange[]; reverted?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
@@ -139,6 +140,9 @@ interface PersistMsg {
 interface Msg {
   role: "user" | "assistant";
   content: string;
+  /** OpenCode がこの回で変えたファイル */
+  changes?: CodeChange[];
+  reverted?: boolean;
   /** 送った画像（表示用の URL） */
   images?: string[];
   /** 送った圧縮ファイルの名前（OpenCode のプロジェクトへ展開した） */
@@ -199,6 +203,8 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     archives: m.meta?.archives?.map((a) => a.name),
     tools: m.meta?.tools,
     todos: m.meta?.todos,
+    changes: m.meta?.changes,
+    reverted: m.meta?.reverted,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     agent: m.meta?.agent,
@@ -528,6 +534,10 @@ export default function AssistantChat() {
             });
           } else if (d.type === "todos") {
             patchMsg((m) => ({ ...m, todos: d.todos as OpenCodeTodo[] }));
+          } else if (d.type === "changes") {
+            patchMsg((m) => ({ ...m, changes: d.changes as CodeChange[] }));
+          } else if (d.type === "steer") {
+            patchMsg((m) => ({ ...m, timeline: [...(m.timeline ?? []), { k: "n" as const, text: String(d.text ?? "") }] }));
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
           else if (d.type === "plan") patchMsg((m) => ({ ...m, plan: d.plan }));
           else if (d.type === "compaction") patchMsg((m) => ({ ...m, compaction: d }));
@@ -1322,6 +1332,9 @@ export default function AssistantChat() {
       setRemovedQueue({ ids: [id], label: "送信待ちを 1 件取り消しました" });
     }
   };
+  const steerQueued = async (id: string) => {
+    if (await queueCall(`/${id}/steer`, { method: "POST" }, "今は伝えられませんでした")) show("作業中の OpenCode に伝えました");
+  };
   const clearQueued = async () => {
     const result = await queueCall<{ ids: string[] }>("", { method: "DELETE" }, "取り消せませんでした");
     if (result?.ids.length) setRemovedQueue({ ids: result.ids, label: `送信待ちを ${result.ids.length} 件取り消しました` });
@@ -1497,6 +1510,8 @@ export default function AssistantChat() {
   const planFolder = codeProject === "__folder__" ? codeFolderPath
     : codeProject === "__new__" ? (codeNewName.trim() || lastProjectPath.split("/").pop() || "") : codeProject;
   const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const latestCodeTurnId = [...messages].reverse().find((m) => m.role === "assistant" && m.answeredBy === "code" && m.messageId)?.messageId;
+  const canSteer = busy && Boolean(latestAssistant?.streaming && latestAssistant.messageId && latestAssistant.answeredBy === "code");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
@@ -1773,6 +1788,12 @@ export default function AssistantChat() {
               <MessageBubble
                 key={m.messageId ?? i}
                 msg={m}
+                conversationId={convId}
+                canRevertChanges={!busy && !!m.messageId && m.messageId === latestCodeTurnId}
+                onChangesReverted={(id) => {
+                  setMessages((prev) => prev.map((x) => (x.messageId === id ? { ...x, reverted: true } : x)));
+                  show("この回の変更を取り消しました");
+                }}
                 onRetry={canRetry && i === messages.length - 1 ? () => retryFrom(i) : undefined}
                 onRegister={registerOnly}
                 onAutoBuild={autoBuild}
@@ -1865,7 +1886,8 @@ export default function AssistantChat() {
           )}
           {convId && <QueuedRequests items={queueItems} held={Boolean(queue?.held)} removed={removedQueue}
             onEdit={editQueued} onDelete={(id) => void deleteQueued(id)} onRestore={() => void restoreQueued()}
-            onSendNow={() => void sendQueuedNow()} onClear={() => void clearQueued()} />}
+            onSendNow={() => void sendQueuedNow()} onClear={() => void clearQueued()}
+            canSteer={canSteer} onSteer={(id) => void steerQueued(id)} />}
           {attachments.length > 0 && (
             <div className="mb-1.5 flex flex-wrap gap-1.5">
               {attachments.map((a) => (
@@ -2255,6 +2277,11 @@ function CodeTimeline({ msg, textEnd, onAnswer }: {
       if (tool) addStep(i, <ToolRow key={tool.id} tool={tool} />);
       return;
     }
+    if (seg.k === "n") {
+      addStep(i, <p key={`steer-${i}`} data-code-steer className="px-3 py-2 text-xs leading-relaxed text-zinc-700 dark:text-zinc-200">
+        <span className="font-semibold text-accent-700 dark:text-accent-300">↪ 途中で伝えた</span> <span className="whitespace-pre-wrap">{seg.text}</span></p>);
+      return;
+    }
     if (seg.k === "x") {
       const text = msg.content.slice(seg.from, seg.to);
       if (!textEnd || !text.trim()) return;
@@ -2302,7 +2329,14 @@ function MessageBubble({
   onCancelEdit,
   onRetry,
   resendDisabled = false,
+  conversationId = "",
+  canRevertChanges = false,
+  onChangesReverted,
 }: {
+  conversationId?: string;
+  /** 最新の OpenCode の回で、作業が止まっているときだけ */
+  canRevertChanges?: boolean;
+  onChangesReverted?: (messageId: string) => void;
   /** 失敗・中断した回答をやり直す（直前の自分の発言を送り直す）。生成中は渡さない。 */
   onRetry?: () => void;
   /** プランの回答の後で、そのプランをビルドで実装する */
@@ -2454,6 +2488,11 @@ function MessageBubble({
         )}
         {/* 本文を作業の間に出した後も、続いていることが分かるように（道具の後で長く考えている間など） */}
         {msg.streaming && msg.content && !restText && <span aria-hidden data-streaming-cursor className="block h-3.5 w-1.5 animate-pulse bg-accent-500" />}
+
+        {!msg.streaming && msg.messageId && conversationId && (msg.changes?.length ?? 0) > 0 && (
+          <OpenCodeChanges conversationId={conversationId} messageId={msg.messageId} changes={msg.changes!} reverted={msg.reverted}
+            canRevert={canRevertChanges} onReverted={() => onChangesReverted?.(msg.messageId!)} />
+        )}
 
         {/* 失敗・停止・中断: 本文が無くても、何が起きたかと理由を必ず出す。 */}
         {unsettled && <UnsettledNotice status={unsettled} error={msg.error} partial={!!msg.content} onRetry={onRetry} />}

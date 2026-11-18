@@ -451,6 +451,31 @@ async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     _session_agents[(server.key, session_id)] = agent
 
 
+async def session_is_active(server: Server, session_id: str) -> bool:
+    return session_id in json.dumps(await _call(server, "GET", "/api/session/active") or [])
+
+
+async def steer_turn(server: Server, session_id: str, text: str) -> None:
+    """作業中のセッションへ伝える。今の道具が終わったところでモデルに届く（実測 2026-11-18）。"""
+    await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text, "delivery": "steer"})
+
+
+async def turn_changes(server: Server, session_id: str, message_id: str) -> list[dict]:
+    """その依頼の回で変わったファイル（from だけ渡すと、その回の分が返る。実測 2026-11-18）。"""
+    data = await _call(server, "GET", f"/api/session/{session_id}/diff?from={quote(message_id, safe='')}")
+    return [item for item in (data or []) if isinstance(item, dict) and item.get("file")]
+
+
+async def revert_turn(server: Server, session_id: str, message_id: str) -> None:
+    """その依頼の前へ戻す（ファイルとセッションの両方）。確定に失敗したら元へ戻す。"""
+    await _call(server, "POST", f"/api/session/{session_id}/revert/stage", {"messageID": message_id, "files": True})
+    try:
+        await _call(server, "POST", f"/api/session/{session_id}/revert/commit")
+    except ChatServerError:
+        await _call(server, "DELETE", f"/api/session/{session_id}/revert")
+        raise
+
+
 async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
@@ -560,11 +585,13 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 await on_tool(tool)
         background.clear()
 
+    message_id = ""
     try:
         await asyncio.wait_for(ready.wait(), timeout=15)
         # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
         await switch_agent(server, session_id, agent)
-        await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
+        prompted = await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
+        message_id = str((prompted or {}).get("id") or "")   # この回の変更を調べる・取り消す目印
         parent_running = True
         await status("waiting", "モデルの応答を待っています", force=True)
         while True:
@@ -578,15 +605,15 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 if time.monotonic() - last_check >= BACKGROUND_CHECK_SECONDS:
                     await reconcile()
                 if finished_waiting():
-                    return {"status": "succeeded", "error": ""}
+                    return {"status": "succeeded", "error": "", "message_id": message_id}
                 if background and time.monotonic() - background_since > BACKGROUND_MAX_SECONDS:
                     await stop_children("待ち時間の上限で止めました")
-                    return {"status": "succeeded", "error": ""}
+                    return {"status": "succeeded", "error": "", "message_id": message_id}
             if time.monotonic() - last_touch >= TOUCH_SECONDS:
                 last_touch = time.monotonic()
                 await asyncio.to_thread(touch, server)   # 長い作業や許可待ちの間に掃除されないように
             if event is None:
-                return {"status": "failed", "error": "OpenCode のイベントが途切れました"}
+                return {"status": "failed", "error": "OpenCode のイベントが途切れました", "message_id": message_id}
             kind = str(event.get("type") or "")
             if kind == "__reconnected":
                 was_running = parent_running
@@ -594,7 +621,7 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 if was_running and not parent_running:
                     resumed = True
                 if finished_waiting():
-                    return {"status": "succeeded", "error": ""}  # 切れている間に終わっていた
+                    return {"status": "succeeded", "error": "", "message_id": message_id}  # 切れている間に終わっていた
                 continue
             if kind == "__tick":
                 continue
@@ -676,15 +703,15 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 if follow_up_due:                       # 結果を受けた続きは、親が終わってから始まる
                     follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS
                 if finished_waiting():
-                    return {"status": "succeeded", "error": ""}
+                    return {"status": "succeeded", "error": "", "message_id": message_id}
                 await status("background", f"裏のエージェント {len(background)} 件の完了を待っています", force=True)
             elif kind == "session.execution.interrupted":
                 await stop_children("親の作業を止めたので止めました")
-                return {"status": "interrupted", "error": ""}
+                return {"status": "interrupted", "error": "", "message_id": message_id}
             elif kind == "session.execution.failed":
                 error = data.get("error") if isinstance(data.get("error"), dict) else {}
                 await stop_children("親の作業が失敗したので止めました")
-                return {"status": "failed", "error": str(error.get("message") or "OpenCode の実行に失敗しました")[:300]}
+                return {"status": "failed", "error": str(error.get("message") or "OpenCode の実行に失敗しました")[:300], "message_id": message_id}
     except asyncio.CancelledError:
         try:
             await asyncio.shield(interrupt(server, session_id))

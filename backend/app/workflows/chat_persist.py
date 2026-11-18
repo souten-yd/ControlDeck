@@ -21,7 +21,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -817,6 +817,12 @@ class OpenCodePermissionBody(BaseModel):
     decision: str = Field(pattern="^(once|always|reject)$")
 
 
+# 動いている OpenCode の回へ、送信待ちの要望を今すぐ伝える口（発言 ID → 関数）
+_steer_targets: dict[str, Any] = {}
+MAX_CHANGE_FILES = 200
+MAX_PATCH_CHARS = 200_000
+
+
 def _opencode_meta(conv_id: str, message_id: str, user_id: int) -> dict:
     """許可に答えてよい OpenCode の回答か確かめ、その meta を返す（スレッドで呼ぶ。DB は自前で開く）。"""
     with SessionLocal() as db:
@@ -865,6 +871,85 @@ async def opencode_permission(
                          metadata={"decision": body.decision, "request_id": body.request_id})
 
     await asyncio.to_thread(record)
+
+
+def _change_summary(files: list[dict]) -> list[dict]:
+    return [{"file": str(item["file"]), "additions": int(item.get("additions") or 0),
+             "deletions": int(item.get("deletions") or 0), "status": str(item.get("status") or "modified")}
+            for item in files[:MAX_CHANGE_FILES]]
+
+
+async def _turn_server(meta: dict, user_id: int):
+    """その回のプロジェクトの OpenCode（止まっていれば起こす）。"""
+    from app.integrations.opencode import chat_server
+
+    project = Path(str(meta.get("project_path") or ""))
+    if not meta.get("opencode_message") or not await asyncio.to_thread(project.is_dir):
+        raise HTTPException(status_code=409, detail="この回の変更はもう確かめられません")
+    return await chat_server.ensure(project, user_id)
+
+
+@router.get("/conversations/{conv_id}/opencode/changes")
+async def opencode_changes(conv_id: str, message_id: str, user: User = Depends(require_permission("workflows.run"))):
+    """OpenCode の回答で変わったファイルと差分。"""
+    from app.integrations.opencode import chat_server
+
+    meta = await asyncio.to_thread(_opencode_meta, conv_id, message_id, user.id)
+    try:
+        server = await _turn_server(meta, user.id)
+        files = await chat_server.turn_changes(server, str(meta["opencode_session"]), str(meta["opencode_message"]))
+    except chat_server.ChatServerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    left = MAX_PATCH_CHARS
+    out = []
+    for summary, item in zip(_change_summary(files), files):
+        patch = str(item.get("patch") or "")
+        out.append({**summary, "patch": patch[:max(0, left)], "truncated": len(patch) > left})
+        left -= len(patch)
+    return {"files": out}
+
+
+class OpenCodeRevertBody(BaseModel):
+    message_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/conversations/{conv_id}/opencode/revert")
+async def opencode_revert(conv_id: str, body: OpenCodeRevertBody, request: Request,
+                          user: User = Depends(require_permission("workflows.run"))):
+    """最新の OpenCode の回を取り消す（ファイルを戻し、OpenCode の記憶からも外す）。"""
+    from app.integrations.opencode import chat_server
+
+    meta = await asyncio.to_thread(_opencode_meta, conv_id, body.message_id, user.id)
+
+    def latest_turn() -> tuple[str, bool]:
+        with SessionLocal() as db:
+            rows = db.execute(select(ChatMessage).where(
+                ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+            ).order_by(ChatMessage.created_at.desc())).scalars().all()
+            latest = next((row.id for row in rows if '"opencode_session"' in (row.meta_json or "")), "")
+            return latest, any(row.status == "generating" for row in rows)
+
+    latest, generating = await asyncio.to_thread(latest_turn)
+    if generating:
+        raise HTTPException(status_code=409, detail="作業が終わってから取り消してください")
+    if latest != body.message_id or meta.get("reverted"):
+        raise HTTPException(status_code=409, detail="取り消せるのは最新の OpenCode の回だけです")
+    try:
+        server = await _turn_server(meta, user.id)
+        await chat_server.revert_turn(server, str(meta["opencode_session"]), str(meta["opencode_message"]))
+    except chat_server.ChatServerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def record() -> None:
+        with SessionLocal() as db:
+            row = db.get(ChatMessage, body.message_id)
+            row.meta_json = json.dumps({**json.loads(row.meta_json or "{}"), "reverted": True}, ensure_ascii=False)
+            db.commit()
+            audit.record(db, "opencode.revert", user=user, resource_type="conversation", resource_id=conv_id,
+                         request=request, metadata={"message_id": body.message_id})
+
+    await asyncio.to_thread(record)
+    return {"reverted": True}
 
 
 class RouteBody(BaseModel):
@@ -1284,10 +1369,24 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                                 "server_key": server.key, "agent": params.get("code_agent", "build"),
                                 "permission_mode": await asyncio.to_thread(chat_server.get_mode, server)})
             await asyncio.to_thread(checkpoint)
-            result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
-                                                on_reasoning=on_reasoning, on_tool=on_tool,
-                                                on_permission=on_permission,
-                                                agent=params.get("code_agent", "build"), on_status=on_status)
+
+            async def steer(text: str) -> None:
+                # 終わりかけの回へ送ると、次の実行の出力を画面で受け取れない
+                if not await chat_server.session_is_active(server, session_id):
+                    raise chat_server.ChatServerError("この回はもう終わりました")
+                await chat_server.steer_turn(server, session_id, text)
+                timeline.append({"k": "n", "text": text})
+                job.log("steer", text=text)
+                await asyncio.to_thread(checkpoint)
+
+            _steer_targets[assistant_id] = steer
+            try:
+                result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
+                                                    on_reasoning=on_reasoning, on_tool=on_tool,
+                                                    on_permission=on_permission,
+                                                    agent=params.get("code_agent", "build"), on_status=on_status)
+            finally:
+                _steer_targets.pop(assistant_id, None)
         except asyncio.CancelledError:
             expire_pending()
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
@@ -1303,6 +1402,16 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             raise
         # 答えを待っていた許可は、終わった時点で無効（OpenCode 側でも取り消される）
         expire_pending()
+        # この回で変わったファイルを記録する（差分は開いたときに読む）。調べられなくても回答は残す
+        if result.get("message_id"):
+            buf["meta"]["opencode_message"] = result["message_id"]
+            try:
+                changes = _change_summary(await chat_server.turn_changes(server, session_id, result["message_id"]))
+                if changes:
+                    buf["meta"]["changes"] = changes
+                    job.log("changes", changes=changes)
+            except chat_server.ChatServerError as exc:
+                logger.warning("OpenCode の変更を確かめられませんでした: %s", exc)
         if result["status"] == "interrupted":
             if any(item.get("status") == "reject" for item in permissions):
                 buf["content"] += ("\n\n" if buf["content"] else "") + "（許可されなかったため、ここで止めました）"
@@ -2240,6 +2349,34 @@ async def delete_queue(conv_id: str, item_id: str,
         return _queue_out(item)
 
 
+@router.post("/conversations/{conv_id}/queue/{item_id}/steer")
+async def steer_queue(conv_id: str, item_id: str,
+                      user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)):
+    """送信待ちの要望を、作業中の OpenCode へ今すぐ伝える（今の道具が終わったところで届く）。"""
+    from app.integrations.opencode import chat_server
+
+    async with _queue_locks.setdefault(conv_id, asyncio.Lock()):
+        db.expire_all()
+        item = _queue_item(db, conv_id, item_id, user)
+        if item.status != "queued":
+            raise HTTPException(status_code=409, detail="もう送りました")
+        if json.loads(item.body_json or "{}").get("attachments"):
+            raise HTTPException(status_code=409, detail="添付のある要望は、回答が終わってから送ります")
+        running = db.execute(select(ChatMessage).where(
+            ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant", ChatMessage.status == "generating",
+        ).order_by(ChatMessage.created_at.desc())).scalars().first()
+        steer = _steer_targets.get(running.id) if running else None
+        if steer is None:
+            raise HTTPException(status_code=409, detail="今は伝えられません。回答が終わったら送ります")
+        try:
+            await steer(item.content)
+        except chat_server.ChatServerError as exc:
+            raise HTTPException(status_code=409, detail=f"今は伝えられません（{exc}）") from exc
+        item.status = "sent"     # 回答の中に「途中で伝えた」として残る
+        db.commit()
+        return _queue_out(item)
+
+
 @router.post("/conversations/{conv_id}/queue/{item_id}/restore")
 async def restore_queue(conv_id: str, item_id: str,
                         user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)):
@@ -2385,6 +2522,10 @@ async def stream_message(websocket: WebSocket, message_id: str):
                     }))
                 elif ev.get("message") == "todos":
                     await websocket.send_text(json.dumps({"type": "todos", "todos": ev.get("todos", [])}, ensure_ascii=False))
+                elif ev.get("message") == "changes":
+                    await websocket.send_text(json.dumps({"type": "changes", "changes": ev.get("changes", [])}, ensure_ascii=False))
+                elif ev.get("message") == "steer":
+                    await websocket.send_text(json.dumps({"type": "steer", "text": ev.get("text", "")}, ensure_ascii=False))
             cursor = next_cursor
             if job.status not in ("queued", "running") and cursor >= job.event_sequence:
                 break
