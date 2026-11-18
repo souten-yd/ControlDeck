@@ -117,6 +117,35 @@ test("the plus menu switches between build and plan, and Shift+Tab leaves plan b
 });
 
 
+test("the plus menu stays on a short screen, scrolls inside and follows the arrow keys", async ({ page, context }) => {
+  // 2026-11-18 利用者「項目が多すぎてはみ出る。スライドも微妙にできない」
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 360 });
+  await establishSession(page, context);
+  await mock(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  await shell.locator("[data-assistant-plus]").click();
+  const menu = page.getByRole("menu", { name: "添付・機能・権限" });
+  expect((await menu.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+  await expect(menu.locator('[data-permission-option="auto"]')).toContainText("箱の中は確認なし");   // 選ぶ前に読める
+  // 会話の欄の自動スクロールでは閉じない（生成中に触っている最中に消えていた）
+  await shell.getByText("作りました").evaluate((el) => el.dispatchEvent(new Event("scroll")));
+  await expect(menu).toBeVisible();
+  await menu.hover();
+  await page.mouse.wheel(0, 1000);
+  await expect.poll(() => menu.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(menu).toBeVisible();                                      // 中のスクロールでは閉じない
+  await expect(menu.locator('[data-permission-option="ask"]')).toBeInViewport();
+  await menu.locator('[data-mode-option="auto"]').focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(menu.locator('[data-mode-option="chat"]')).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(menu.locator('[data-mode-option="run"]')).toBeFocused();    // 真下のタイル
+});
+
 test("a question during an OpenCode conversation stays in OpenCode", async ({ page, context }) => {
   // 2026-11-18 本番: 「〜できるか？」がチャットへ回り、道具の無いモデルが <tool_call> を文字で書いた
   test.skip(!hasSession(), "E2E credentials required");

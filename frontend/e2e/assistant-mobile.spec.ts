@@ -144,15 +144,19 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await expect(page.getByRole("navigation", { name: "メインナビゲーション" })).toBeHidden();
 
   const idleInputTop = layout.inputRow.top;
+  await page.route("**/api/v1/chat/asr/status", (route) => route.fulfill({ json: { ready: true, installing: false, job_id: null } }));
   await dialog.getByRole("button", { name: "音声で入力" }).click();
-  await expect(dialog.getByText("聞いています。1.2秒の無音で送信します")).toBeVisible();
+  await expect(dialog.locator("[data-assistant-voice]")).toBeVisible();   // 聞いている間は波形（v0.72 から）
   const activeInputTop = await dialog.locator("[data-assistant-input-row]").evaluate((element) => element.getBoundingClientRect().top);
-  expect(activeInputTop).toBe(idleInputTop);
+  // 指で使う端末は、普段畳んでいる状態の行が開く分だけ上がる（それ以上は動かない）
+  const activeStatusHeight = await dialog.locator("[data-assistant-composer-status]").evaluate((element) => element.getBoundingClientRect().height);
+  expect(idleInputTop - activeInputTop).toBeGreaterThanOrEqual(0);
+  expect(idleInputTop - activeInputTop).toBeLessThanOrEqual(activeStatusHeight);
   await testInfo.attach("assistant-mobile-status-active", {
     body: await page.screenshot(),
     contentType: "image/png",
   });
-  await dialog.getByRole("button", { name: "音声認識を停止" }).click();
+  await dialog.getByRole("button", { name: "音声入力を終える" }).click();
   await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
   await testInfo.attach("assistant-mobile-320x700", {
     body: await page.screenshot(),
@@ -160,12 +164,12 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(async () => (await measure()).composer.bottom).toBe(844);   // 殻の高さは少し遅れて追う
   const iphoneLayout = await measure();
   console.log("ASSISTANT_IPHONE_LAYOUT", JSON.stringify(iphoneLayout));
   expect(iphoneLayout.documentScrollWidth).toBeLessThanOrEqual(390);
   expect(iphoneLayout.composer.bottom).toBe(iphoneLayout.viewportHeight);
-  expect(iphoneLayout.statusRow.top).toBeGreaterThanOrEqual(iphoneLayout.inputCard.bottom);
-  expect(iphoneLayout.statusRow.bottom).toBeLessThanOrEqual(iphoneLayout.viewportHeight);
+  expect(iphoneLayout.statusRow.height).toBe(0);                                // 出すものが無ければ畳んだまま
   await testInfo.attach("assistant-mobile-390x844", {
     body: await page.screenshot(),
     contentType: "image/png",
@@ -187,9 +191,8 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await expect(dialog.locator("[data-assistant-title]")).toHaveText("新しいチャット");
 
   await dialog.getByRole("button", { name: "音声で入力" }).click();
-  await expect(dialog.getByRole("button", { name: "音声認識を停止" })).toBeVisible();
-  await expect(dialog.getByText("聞いています。1.2秒の無音で送信します")).toBeVisible();
-  await dialog.getByRole("button", { name: "音声認識を停止" }).click();
+  await expect(dialog.locator("[data-assistant-voice]")).toBeVisible();   // 聞いている間は波形（v0.72 から）
+  await dialog.getByRole("button", { name: "音声入力を終える" }).click();
   await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });

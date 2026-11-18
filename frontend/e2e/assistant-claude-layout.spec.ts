@@ -250,6 +250,9 @@ for (const width of [1280, 320]) {
     expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(width);
     expect(menuBox.y).toBeGreaterThanOrEqual(0);
     expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(plusBox.y);
+    // 全部が 1 画面に収まる高さ（2026-11-18 利用者「項目が多すぎてはみ出る。高さを減らして」。前は約 1200px）
+    expect(menuBox.height).toBeLessThanOrEqual(480);
+    expect(await menu.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
     const option = menu.locator('[data-mode-option="investigate"]');
     await option.scrollIntoViewIfNeeded();
     expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(44);
