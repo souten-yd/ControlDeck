@@ -59,8 +59,9 @@ def test_permission_plugin_auto_allows_safe_work_and_asks_for_danger(tmp_path):
                    "git branch -f main HEAD~5", "node -e 'x'", "python3 -c 'x'", "xargs rm < list",
                    "git -c core.fsmonitor=x status"):
         assert out[danger] == "ask", danger
-    assert out["edit"] == "allow" and out["webfetch"] is None and out["askMode"] is None
-    assert out["hook"][:3] == ["allow", "deny", "ask"] and out["hook"][3].startswith("Auto")
+    # Auto は箱の中なら確認しない（利用者 2026-11-18）。禁止（deny）は緩めない
+    assert out["edit"] == "allow" and out["webfetch"]["effect"] == "allow" and out["askMode"] is None
+    assert out["hook"][:3] == ["allow", "deny", "allow"] and out["hook"][3].startswith("Auto")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node が無い")
@@ -478,7 +479,7 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
           await plugin.setup({{ permission: {{ hook: async (name, fn) => {{ hooks[name] = fn; }} }} }});
           const out = {{}};
           const cases = [["edit", ["a.py"], "ask"], ["write", ["b.py"], "allow"], ["shell", ["ls -la"], "ask"],
-                         ["shell", ["git status && git diff"], "ask"], ["shell", ["rg foo | head"], "ask"],
+                         ["shell", ["git status && git diff"], "ask"], ["shell", ["rg foo | head"], "ask"], ["shell", ["grep -n -C 3 foo a.py"], "ask"],
                          ["shell", ["npm run build"], "ask"], ["shell", ["git commit -m x"], "ask"], ["shell", ["mkdir x"], "ask"],
                          ["shell", ["python -m pytest -q"], "ask"], ["shell", ["rm -rf build"], "allow"],
                          ["shell", ["fd . -x touch {{}}"], "ask"], ["shell", ["uniq a.txt src/app.py"], "ask"],
@@ -511,9 +512,10 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
         assert out["execute:sculpt"] == "ask" and out["webfetch:https://x"] == "ask", mode
         assert out["shell:systemctl stop x"] == "deny", mode                            # 禁止は緩めない
         assert out["bySession"] == "deny", mode
-    for read in ("ls -la", "git status && git diff", "rg foo | head"):
+    for read in ("ls -la", "rg foo | head", "grep -n -C 3 foo a.py"):
         assert results["auto"][f"shell:{read}"] == "allow", read
         assert results["ask"][f"shell:{read}"] == "ask", read                          # 確認モードでは緩めない
+    assert results["auto"]["shell:git status && git diff"] == "ask"                    # git はリポジトリの設定を動かしうる
     assert results["auto"]["build"] == "allow" and results["ask"]["build"] == "ask"
 
 

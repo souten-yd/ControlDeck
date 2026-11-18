@@ -7,21 +7,23 @@
 // モードは CONTROLDECK_PERMISSION_FILE（JSON {"mode": "ask" | "auto"}）から呼ばれるたびに読む。
 // 画面で切り替えた結果が、サーバーを起こし直さずに次の操作から効く。
 //   ask  … 判断させる操作はすべて確認（Claude Code の既定に近い）
-//   auto … 編集・読むだけのコマンド・テスト/ビルドは自動、危ない操作と判断できないものは確認
+//   auto … 箱の中は全部自動（設定の禁止リストを除く）。箱の外（host）は編集だけ自動
 import { readFileSync, statSync } from "node:fs";
 
 const FILE = process.env.CONTROLDECK_PERMISSION_FILE || "";
 // 箱の外（host）で動くときは境界が無いので、Auto でもコマンドは自動にしない
 const HOST = process.env.CONTROLDECK_ISOLATION === "host";
-let cache = { mtime: -1, mode: "auto", plan: new Set() };
+let cache = { stamp: "", mode: "auto", plan: new Set() };
 
 function readState() {
   if (!FILE) return { mode: "auto", plan: new Set() };
   try {
-    const mtime = statSync(FILE).mtimeMs;
-    if (mtime !== cache.mtime) {
+    // 同じ時刻の刻みの中で 2 回書かれても読み直せるように、inode と大きさも見る（置き換えで inode が変わる）
+    const info = statSync(FILE);
+    const stamp = `${info.mtimeMs}:${info.ino}:${info.size}`;
+    if (stamp !== cache.stamp) {
       const data = JSON.parse(readFileSync(FILE, "utf8"));
-      cache = { mtime, mode: data.mode === "ask" ? "ask" : "auto",
+      cache = { stamp, mode: data.mode === "ask" ? "ask" : "auto",
         plan: new Set(Array.isArray(data.plan_sessions) ? data.plan_sessions.map(String) : []) };
     }
   } catch {
@@ -72,14 +74,15 @@ const READ_ONLY_HEAD = new Set([
   "diff", "cmp", "cut", "tr", "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum",
   "true", "test", "[", "cd",
 ]);
-const READ_ONLY_COMMANDS = [/^git\s+(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/];
-// 読むだけの形でも、書く・動かす引数があれば読むだけではない
-const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)(--pre|--pre-glob|--exec|--exec-batch|-x|-X|--output|-o|-C|--fix)(\s|=|$)/;
+// git は読むだけに見えても、リポジトリの設定（core.fsmonitor・diff.external）のプログラムを動かす。プランでは確認する
+const GIT_READ = /^git\s+(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/;
+// rg --pre は別のプログラムを動かす（grep -C・find -o のような読むための引数は止めない）
+const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)--pre(-glob)?(\s|=|$)/;
 
 export function isReadOnly(command) {
   const text = String(command || "").trim();
   if (!text || judgeShell(text).effect !== "allow" || READ_ONLY_FORBIDDEN_ARGS.test(text)) return false;
-  return splitCommands(text).every((part) => READ_ONLY_HEAD.has(part.split(/\s+/)[0]) || READ_ONLY_COMMANDS.some((p) => p.test(part)));
+  return splitCommands(text).every((part) => READ_ONLY_HEAD.has(part.split(/\s+/)[0]) || GIT_READ.test(part));
 }
 
 // 自動でよい形（全体がこれだけで出来ていること）。読むだけに、テスト・ビルド・整形・作業用のフォルダ作りを足したもの
@@ -132,7 +135,8 @@ export function decidePlan(action, resources, mode = "auto") {
       if (commands.length === 0 || !commands.every(isReadOnly)) {
         return { effect: "deny", message: "プラン: 変更を伴うコマンドは実行しません。ビルドに切り替えてください" };
       }
-      return mode === "auto" && !HOST ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
+      const usesGit = commands.some((command) => splitCommands(command).some((part) => GIT_READ.test(part)));
+      return mode === "auto" && !HOST && !usesGit ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
         : { effect: "ask", message: "プラン: 読むだけのコマンドです（確認モードのため確認します）" };
     }
     case "execute":
@@ -149,21 +153,19 @@ export function isPlanEvent(event, state = readState()) {
   return event?.agent === "plan" || (event?.sessionID != null && state.plan.has(String(event.sessionID)));
 }
 
-export function decide(mode, action, resources, agent) {
-  if (agent === "plan") return decidePlan(action, resources, mode);
+export function decide(mode, action, resources) {
   if (mode !== "auto") return null; // 確認モード: 設定どおり（ask）
+  // Auto: 箱の中は何をしても確認しない（2026-11-18 利用者「Auto モードは箱の中であればなにしても許可不要で進めて良い」）。
+  // 設定の禁止リスト（deny）はこのフックより先に決まるので緩まない
+  if (!HOST) return { effect: "allow", message: "Auto: 箱の中" };
   switch (action) {
     case "edit":
     case "write":
       return { effect: "allow", message: "Auto: プロジェクト内の編集" };
     case "execute":
       return { effect: "allow", message: "Auto: ControlDeck の道具（MCP）" };
-    case "shell": {
-      if (HOST) return { effect: "ask", message: "Auto: 箱の外（host）で動いているため確認します" };
-      const verdicts = (resources || []).map(judgeShell);
-      const asked = verdicts.find((verdict) => verdict.effect !== "allow");
-      return asked || verdicts[0] || { effect: "ask", message: "空のコマンド" };
-    }
+    case "shell":
+      return { effect: "ask", message: "Auto: 箱の外（host）で動いているため確認します" };
     default:
       return null; // webfetch など外へ出るものは確認のまま
   }
@@ -185,7 +187,7 @@ export default {
         return;
       }
       if (event.effect !== "ask") return; // ビルド: allow で決まったものは触らない
-      const verdict = decide(state.mode, event.action, event.resources, event.agent);
+      const verdict = decide(state.mode, event.action, event.resources);
       if (!verdict) return;
       event.effect = verdict.effect;
       event.message = verdict.message;

@@ -145,7 +145,8 @@ def set_mode(server: Server, mode: str) -> None:
 
 
 _permission_lock = threading.Lock()
-PLAN_SESSIONS_KEPT = 64
+PLAN_SESSIONS_KEPT = 256
+_session_agents: dict[tuple[str, str], str] = {}   # 直近に切り替えたエージェント（同じなら切り替えない）
 
 
 def _update_permission_file(server: Server, change: Callable[[dict], dict]) -> None:
@@ -422,6 +423,8 @@ async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     """このセッションのエージェントを切り替える（build＝作る・直す、plan＝計画だけで何も変えない）。"""
     if agent not in AGENTS:
         raise ChatServerError(f"未対応のエージェントです: {agent}")
+    if _session_agents.get((server.key, session_id)) == agent:
+        return
     # 先に権限プラグインへ知らせる（切り替えの途中でも、プランの間は止める側に倒す）
     await asyncio.to_thread(mark_plan_session, server, session_id, agent == "plan")
     if await _call(server, "POST", f"/api/session/{session_id}/agent", {"agent": agent}) is None:
@@ -430,6 +433,9 @@ async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     session = await _call(server, "GET", f"/api/session/{session_id}")
     if isinstance(session, dict) and session.get("agent") not in (None, agent):
         raise ChatServerError(f"OpenCode のエージェントを {agent} に切り替えられませんでした")
+    if len(_session_agents) > 1024:
+        _session_agents.clear()
+    _session_agents[(server.key, session_id)] = agent
 
 
 async def run_turn(server: Server, session_id: str, text: str, *,

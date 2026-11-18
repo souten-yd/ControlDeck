@@ -702,6 +702,7 @@ def _delegated_agents() -> dict[str, Any]:
             "tools": {pattern: True for pattern in patterns},
         }
     agents["build"] = {"tools": build_tools}
+    agents["plan"] = {"tools": dict(build_tools)}   # 重い道具はプランの主の会話にも載せない
     return agents
 
 
@@ -981,6 +982,7 @@ def _config_payload(
             "tools": {UI_VERIFY_TOOLS: True, **{name: False for name in UI_VERIFY_DENIED}},
         }
         payload["agent"].setdefault("build", {}).setdefault("tools", {})[UI_VERIFY_TOOLS] = False
+        payload["agent"].setdefault("plan", {}).setdefault("tools", {})[UI_VERIFY_TOOLS] = False
     if owner_user_id is not None:
         from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS, issue_opencode_token
         from app.config import get_config

@@ -242,8 +242,7 @@ export default function AssistantChat() {
   const qc = useQueryClient();
 
   const saved = useRef(loadSettings()).current;
-  const [modeChoiceState, setModeChoice] = useState<AssistantModeChoice>("auto");
-  const modeChoice = modeChoiceState;
+  const [modeChoice, setModeChoice] = useState<AssistantModeChoice>("auto");
   // 「調査」の深さ。自動は依頼の中身から Web / Web+論文 / Deep / 論文 を選ぶ
   const [researchDepth, setResearchDepth] = useState<ResearchDepth>("auto");
   const [messages, setMessages] = useState<Msg[]>([]); // 会話本文は DB から復元
@@ -951,6 +950,7 @@ export default function AssistantChat() {
   // OpenCode のエージェント: ビルド（作る・直す）／プラン（計画だけ。ファイルも状態も変えない）。
   // 2026-11-18 利用者「プランの切り替えを追加し、プランの際はビルドモードではないことが明確にわかること」
   const [codeAgent, setCodeAgent] = useState<"build" | "plan">("build");
+  const planFromCycleRef = useRef(false);
   const changeCodeAgent = (agent: "build" | "plan") => {
     if (agent === codeAgent) return;
     setCodeAgent(agent);
@@ -960,11 +960,14 @@ export default function AssistantChat() {
   const cyclePermissionMode = () => {
     if (codeAgent === "plan") {
       changeCodeAgent("build");
-      if (canChangePermissionMode) void changePermissionMode(PERMISSION_MODES[0].id);
+      // Shift+Tab で 確認 → プラン と来たときだけ Auto へ進む（＋から入ったプランを出ても権限は変えない）
+      if (canChangePermissionMode && planFromCycleRef.current) void changePermissionMode(PERMISSION_MODES[0].id);
+      planFromCycleRef.current = false;
       return;
     }
     const index = PERMISSION_MODES.findIndex((m) => m.id === permissionMode);
     if (!canChangePermissionMode || index === PERMISSION_MODES.length - 1) {
+      planFromCycleRef.current = canChangePermissionMode;
       changeCodeAgent("plan");
       return;
     }
@@ -997,7 +1000,7 @@ export default function AssistantChat() {
   const send = async (providedText?: string, agentOverride?: "build" | "plan", modeOverride?: AssistantModeChoice) => {
     const agent = agentOverride ?? codeAgent;
     // 「このプランで作る」は OpenCode に決め打ちで送る（機能をチャットなどに変えていても）
-    const modeChoice = modeOverride ?? modeChoiceState;
+    const choice = modeOverride ?? modeChoice;
     const readyImages = attachments.filter((a) => a.kind === "image" && a.status === "ready");
     const readyArchives = attachments.filter((a) => a.kind === "archive" && a.status === "ready");
     if (attachments.some((a) => a.status === "uploading")) {
@@ -1011,10 +1014,10 @@ export default function AssistantChat() {
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
-    const researchFirst = modeChoice === "auto" ? Boolean(decision.research)
-      : modeChoice === "code" ? wantsResearch(text) : false;
-    let selectedMode: Mode = modeChoice === "auto" ? decision.mode
-      : modeChoice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : modeChoice;
+    const researchFirst = choice === "auto" ? Boolean(decision.research)
+      : choice === "code" ? wantsResearch(text) : false;
+    let selectedMode: Mode = choice === "auto" ? decision.mode
+      : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
     if (selectedMode === "run" && selectedRunTarget === "") {
@@ -1051,7 +1054,7 @@ export default function AssistantChat() {
       const json = selectedMode === "code"
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
           attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_agent: agent }
-        : { content: text, mode: modeChoice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
+        : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
           searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "" };
       try {
@@ -1073,8 +1076,8 @@ export default function AssistantChat() {
       archives: readyArchives.map((a) => a.name) };
     append(userMsg);
     try {
-      const investigateAuto = modeChoice === "investigate" && researchDepth === "auto";
-      if ((modeChoice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") || investigateAuto) {
+      const investigateAuto = choice === "investigate" && researchDepth === "auto";
+      if ((choice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") || investigateAuto) {
         setRouting(true);
         selectedPlan = await api<AssistantPlan>("/chat/route", {
           method: "POST", json: { content: text, base_url: baseUrl, model },
@@ -1383,7 +1386,7 @@ export default function AssistantChat() {
   const showPermissionPill = opencodeAvailable && (effectiveMode === "code" || inCodeConversation);
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
   // プランは OpenCode を使う場面でだけ効く（チャット・調査では関係ない）
-  const planActive = showPermissionPill && codeAgent === "plan";
+  const planActive = opencodeAvailable && codeAgent === "plan";
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
@@ -1664,7 +1667,7 @@ export default function AssistantChat() {
                   setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}[${referenceId}] `);
                 }}
                 onAnswerPermission={answerPermission}
-                onBuildFromPlan={!busy && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
+                onBuildFromPlan={!busy && !hasContent && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
                   ? () => { setCodeAgent("build"); setModeChoice("code"); void send("このプランで実装してください。", "build", "code"); } : undefined}
                 editing={!!m.messageId && editingId === m.messageId}
                 actionsDisabled={busy}
