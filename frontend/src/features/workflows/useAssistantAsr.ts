@@ -12,7 +12,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api/client";
 
 export type AsrPhase = "idle" | "installing" | "permission" | "listening" | "finishing" | "error";
-interface AsrStatus { ready: boolean; installing: boolean; job_id: string | null }
+interface AsrStatus { ready: boolean; installing: boolean; job_id: string | null; upgrade_available?: boolean }
 interface JobStatus { status: string; error?: string }
 
 export const WAVE_BARS = 48;
@@ -116,7 +116,11 @@ export function useAssistantAsr({ onText, onError }: {
 
   const ensureInstalled = async () => {
     const current = await api<AsrStatus>("/chat/asr/status");
-    if (current.ready) return;
+    if (current.ready) {
+      // いまのエンジンで使いながら、速いモデルを裏で入れる（待たせない）
+      if (current.upgrade_available && !current.job_id) void api("/chat/asr/install-jobs", { method: "POST" }).catch(() => undefined);
+      return;
+    }
     setPhase("installing");
     const installation = current.job_id
       ? { job_id: current.job_id }

@@ -162,6 +162,20 @@ def _opencode_background():
     return True, "裏のエージェントの結果は受け取れています"
 
 
+def _voice_input():
+    """音声入力: どのエンジンか、Haas-ja が失敗して控えへ回っていないか。"""
+    from app.workflows import asr
+
+    if asr.last_fallback:
+        how = "whisper で動きました" if asr.fallback_worked else "文字にできませんでした"
+        return "warn", f"Haas-ja が失敗し、{how}: {asr.last_fallback}"
+    if asr.last_install_error:
+        return "warn", f"Haas-ja を導入できず whisper で動いています: {asr.last_install_error}"
+    if not asr.is_ready():
+        return True, "音声入力は未導入（初回に導入します）"
+    return True, f"音声入力のエンジン: {'Haas-ja' if asr.haas_ready() else 'whisper（Haas-ja は未導入）'}"
+
+
 def _chat_tool_text():
     """道具の無い回答に、呼び出しの文字（<tool_call>）が出ていないか（実行されたように見えて何も起きない）。"""
     import json
@@ -257,7 +271,8 @@ CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモ�
           ("Maya の画像の読み取り", _maya_vision),
           ("AI アシスタントの送信待ち", _chat_queue),
           ("道具の呼び出しの文字", _chat_tool_text),
-          ("OpenCode の裏のエージェント", _opencode_background)]
+          ("OpenCode の裏のエージェント", _opencode_background),
+          ("音声入力", _voice_input)]
 
 
 _latest: dict | None = None
