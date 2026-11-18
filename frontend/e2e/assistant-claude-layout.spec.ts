@@ -452,6 +452,47 @@ test("in an OpenCode conversation, an image goes to the chat that can see it", a
   expect(sent.attachments).toEqual(["0123456789abcdef.png"]);
 });
 
+for (const width of [320, 1280]) {
+  test(`a long thinking trace opens from its heading and closes by tapping inside it at ${width}px`, async ({ page }) => {
+    // 2026-11-18 利用者の依頼: 思考が長いと開きっぱなしで上へ戻るのが大変。開いた欄の中のタップでも閉じる
+    test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+    await page.setViewportSize({ width, height: 700 });
+    await login(page);
+    await mockChat(page);
+    const longThinking = Array.from({ length: 120 }, (_, i) => `考えている ${i + 1} 行目。`).join("\n");
+    // 思考の後ろに長い回答を置く（閉じても下に続きがあり、戻さなければ見出しが画面の外のまま）
+    const longAnswer = Array.from({ length: 80 }, (_, i) => `回答の ${i + 1} 行目。`).join("\n\n");
+    await page.route(/\/api\/v1\/chat\/conversations\/today1\/messages$/, (route) => route.fulfill({ json: {
+      conversation: { id: "today1", title: "今日の献立の相談", updated_at: new Date().toISOString().replace("Z", "") },
+      messages: [msg("u1", "user", "献立を考えて"), msg("a1", "assistant", longAnswer, { thinking: longThinking })],
+    } }));
+    await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+    await page.goto("/assistant");
+    const shell = page.locator("[data-assistant-shell]");
+    const head = shell.getByRole("button", { name: /思考プロセス/ });
+    await expect(head).toHaveAttribute("aria-expanded", "false");          // 回答済みは閉じて出す
+    await head.scrollIntoViewIfNeeded();
+    await head.click();
+    await expect(head).toHaveAttribute("aria-expanded", "true");
+    const body = shell.locator("[data-thinking-body]");
+    await expect(body).toContainText("120 行目");
+    await body.getByText("考えている 110 行目。", { exact: false }).scrollIntoViewIfNeeded();
+    await expect(head).not.toBeInViewport();                               // 長い思考の下の方にいる
+    await body.getByText("考えている 110 行目。", { exact: false }).click();
+    await expect(head).toHaveAttribute("aria-expanded", "false");
+    await expect(body).toHaveCount(0);
+    await expect(head).toBeInViewport();                                   // 見出しまで戻っている
+    await head.click();
+    await expect(head).toHaveAttribute("aria-expanded", "true");           // もう一度開ける
+    await body.getByText("考えている 3 行目。", { exact: false }).dblclick();
+    await page.waitForTimeout(400);
+    await expect(head).toHaveAttribute("aria-expanded", "true");           // ダブルクリック（語の選択）では閉じない
+    await head.click();
+    await expect(head).toHaveAttribute("aria-expanded", "false");          // 見出しでも閉じる
+    await noOverflow(page, width);
+  });
+}
+
 test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 800 });

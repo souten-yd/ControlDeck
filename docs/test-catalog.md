@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 169 ファイル、1478 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、146 テスト
+- E2E: 79 spec、147 テスト
 
 ## backend（backend/tests）
 
@@ -2450,6 +2450,7 @@
 - in an OpenCode conversation, an ordinary request stays with OpenCode
 - in an OpenCode conversation, a plain question is answered in chat
 - in an OpenCode conversation, an image goes to the chat that can see it
+- a long thinking trace opens from its heading and closes by tapping inside it
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone
