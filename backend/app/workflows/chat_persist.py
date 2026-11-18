@@ -449,6 +449,8 @@ class SendBody(BaseModel):
     code_project: str = Field(default="", max_length=64)
     # 任意フォルダ指定（CodeDEV外はサーバー側でコピー取り込み）
     code_project_path: str = Field(default="", max_length=4096)
+    # OpenCode に渡す前に、ControlDeck の調査（Web・論文）で調べて結果を付ける（「調べて反映して」）
+    code_research: bool = False
 
 
 # ---- 添付（画像=VLM入力 / 文書=会話別RAGコレクション登録） ----
@@ -1037,10 +1039,23 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             from app.models_mgmt import context_budget
 
             budget = context_budget.for_model(str(settings["base_url"]), str(settings.get("model") or ""))
+            # 調べる回は、引き継ぎと調べた結果で上限を半分ずつ使う（合わせて上限を超えない）
+            handoff_limit = budget.handoff_chars // 2 if params.get("code_research") else budget.handoff_chars
             handoff, handoff_count = await asyncio.to_thread(
-                handoff_context, conv_id, params.get("user_message_id"), budget.handoff_chars)
-            # 依頼の前に付けるもの: これまでの会話 → 展開した圧縮ファイル → 今回の依頼
-            preface = ([handoff] if handoff else []) + archive_notes
+                handoff_context, conv_id, params.get("user_message_id"), handoff_limit)
+            # 「調べて反映して」: ControlDeck の調査で調べ、出典つきの根拠を OpenCode に渡す（同じ 1 回の送信で）
+            research_note = ""
+            if params.get("code_research"):
+                # OpenCode のモデルで調べる（別のモデルを起こさない）。量は引き継ぎの上限の半分まで
+                from app.models_mgmt.runtime_provider import resolve_target
+
+                # ゲートウェイ宛なら実エンドポイントへ（鍵の要らない直の口で調査の LLM を呼ぶ）
+                code_base, code_model = resolve_target(str(settings["base_url"]), str(settings.get("model") or params["model"]))
+                research_params = {**params, "base_url": code_base, "model": code_model}
+                research_note = await _research_for_code(job, buf, conv_id, query, research_params,
+                                                         budget.handoff_chars // 2)
+            # 依頼の前に付けるもの: これまでの会話 → 調べた結果 → 展開した圧縮ファイル → 今回の依頼
+            preface = ([handoff] if handoff else []) + ([research_note] if research_note else []) + archive_notes
             if preface:
                 query = "\n\n".join(preface) + f"\n\n## 今回の依頼\n{query}"
             if handoff:
@@ -1368,6 +1383,45 @@ def _register_conversation_sources(conv_id: str, sources: list[dict]) -> list[di
         return register_sources(db, conv_id, sources)
 
 
+async def _research_for_code(job: jobs.Job, buf: dict, conv_id: str, query: str, params: dict,
+                             limit_chars: int = 60_000) -> str:
+    """OpenCode の依頼の前に調べる。調査の計画（assistant_planner.decide）で検索語を決め、Web・論文から根拠を集める。
+
+    2026-11-18 利用者の依頼「『この会話を OpenCode に引き継ぐ』『調べて OpenCode に渡す』をボタンを押さずに」。
+    集めた出典は会話の出典として登録し（[R..] で参照できる）、この発言の meta.sources と調べた経過を残す。
+    params の base_url / model は OpenCode のモデルを渡す（チャットのモデルを起こすと、1 枚の GPU から
+    OpenCode のモデルを追い出す。レビュー指摘 2026-11-18）。量は limit_chars まで。
+    失敗しても OpenCode の作業は止めない（調べた結果なしで続ける）。
+    """
+    from app.workflows.assistant_planner import decide
+
+    code_meta = dict(buf.get("meta") or {})
+    try:
+        job.log("progress", phase="code_research", label="OpenCode に渡す前に調べています", iteration=0, details={})
+        plan = await decide(query, params["base_url"], params["model"])
+        if plan.mode not in ("web", "academic", "research", "deep") or not plan.steps:
+            plan = None
+        messages = await _server_research(job, buf, conv_id, query, params, plan)
+        sources = (buf.get("meta") or {}).get("sources") or []
+        evidence = str(messages[0].get("content") or "") if messages else ""
+        evidence = evidence.split("\n\n", 1)[1] if "\n\n" in evidence else evidence
+    except Exception:  # noqa: BLE001 - 調べられなくても依頼は OpenCode へ
+        logger.exception("OpenCode に渡す前の調査に失敗しました")
+        buf["meta"] = code_meta
+        job.log("progress", phase="code_research", label="調べられなかったため、そのまま OpenCode に渡します",
+                iteration=0, details={})
+        return ""
+    # _server_research が mode を research にするので、OpenCode の回答に戻す（出典と調べた経過は残す）
+    progress = (buf.get("meta") or {}).get("progress") or []
+    buf["meta"] = {**code_meta, "sources": sources, **({"progress": progress} if progress else {})}
+    if not evidence.strip():
+        return ""
+    head = ("## 調べた結果（ControlDeck の調査。Web・論文。出典は [R..]）\n"
+            "依頼に関係するところを使い、使った根拠は出典の番号と URL を示してください。\n\n")
+    body = evidence[: max(1_000, limit_chars - len(head))]
+    return head + body
+
+
 async def _server_research(
     job: jobs.Job, buf: dict, conv_id: str, query: str, params: dict, plan: AssistantPlan | None,
 ) -> list[dict]:
@@ -1584,6 +1638,7 @@ async def send_message(
               "user_message_id": user_msg.id,
               # OpenCode のプロジェクトへ展開する圧縮ファイル
               "archives": sent_archives,
+              "code_research": body.code_research and body.mode == "code",
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")

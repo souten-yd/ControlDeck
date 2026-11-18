@@ -128,3 +128,4 @@ def test_nothing_to_hand_off_right_after_an_opencode_answer_even_if_it_was_stopp
     finally:
         db.close()
     assert handoff_context(conv_id, current, 50_000) == ("", 0)
+

@@ -17,7 +17,7 @@ import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/she
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
-import { detectAssistantMode, SEARCH_MODES, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
+import { detectAssistantMode, SEARCH_MODES, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
@@ -407,7 +407,13 @@ export default function AssistantChat() {
     enabled: can("workflows.run"),
   });
 
-  const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable);
+  // 会話の流れ: OpenCode が作業中か、引き継ぐ回答があるか（ボタンを押さずに引き継ぐ判定に使う）
+  const isCodeAnswer = (m: Msg) => m.answeredBy === "code" || (m.tools?.length ?? 0) > 0 || (m.permissions?.length ?? 0) > 0;
+  const lastCodeIndex = messages.reduce((last, m, i) => (isCodeAnswer(m) ? i : last), -1);
+  const inCodeConversation = lastCodeIndex >= 0;
+  const pendingHandoff = messages.slice(lastCodeIndex + 1).some((m) => m.role === "assistant" && !m.streaming && m.content.trim());
+  const conversationContext = { inCodeConversation, hasAnswers: pendingHandoff };
+  const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
   const displayedDecision = input.trim() ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
     : modeChoice === "investigate"
@@ -896,7 +902,12 @@ export default function AssistantChat() {
     const text = (providedText ?? input).trim()
       || (readyArchives.length > 0 ? ARCHIVE_ONLY_PROMPT : readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
     if (!text || busy) return;
-    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable);
+    // 画像は OpenCode に渡せない（VLM のチャットで見る）。画像があるときは会話の流れで OpenCode へ回さない
+    const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
+      readyImages.length > 0 ? {} : conversationContext);
+    // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
+    const researchFirst = modeChoice === "auto" ? Boolean(decision.research)
+      : modeChoice === "code" ? wantsResearch(text) : false;
     let selectedMode: Mode = modeChoice === "auto" ? decision.mode
       : modeChoice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : modeChoice;
     let selectedPlan: AssistantPlan | undefined;
@@ -907,6 +918,11 @@ export default function AssistantChat() {
     }
     const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
     const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    if (readyImages.length > 0 && selectedMode === "code") {
+      // OpenCode は画像を受け取れない。黙って落とさず、知らせる（レビュー指摘 2026-11-18）
+      show("画像は OpenCode に渡せません。＋から Chat を選ぶと画像を見て答えます", "error");
+      return;
+    }
     if (readyArchives.length > 0 && selectedMode !== "code") {
       show("圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください", "error");
       return;
@@ -968,7 +984,7 @@ export default function AssistantChat() {
         const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-            attachments: readyArchives.map((a) => a.id) },
+            attachments: readyArchives.map((a) => a.id), code_research: researchFirst },
         });
         setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
@@ -1140,13 +1156,9 @@ export default function AssistantChat() {
   modeOptions.splice(1, 0, { id: "investigate", icon: "🔎", label: "調査", hint: "Web・論文を調べて根拠つきで回答（深さは自動か指定）" });
   const showDepth = modeChoice === "investigate";
   // OpenCode の会話（道具を使った回答がある）か、いま OpenCode で送るなら、権限の札を出す
-  const isCodeAnswer = (m: Msg) => m.answeredBy === "code" || (m.tools?.length ?? 0) > 0 || (m.permissions?.length ?? 0) > 0;
-  const inCodeConversation = messages.some(isCodeAnswer);
   const showPermissionPill = opencodeAvailable && (effectiveMode === "code" || inCodeConversation);
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
-  const lastCodeIndex = messages.reduce((last, m, i) => (isCodeAnswer(m) ? i : last), -1);
-  const pendingHandoff = messages.slice(lastCodeIndex + 1).some((m) => m.role === "assistant" && !m.streaming && m.content.trim());
   const plusActions: PlusAction[] = [];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
     plusActions.push({

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 167 ファイル、1470 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、140 テスト
+- backend: 168 ファイル、1471 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、146 テスト
 
 ## backend（backend/tests）
 
@@ -584,6 +584,12 @@
 - `test_running_call_reports_time_to_first_token`
 - `test_context_lengths_are_fetched_at_most_hourly`
 - `test_summary_endpoint_requires_settings_manage`
+
+### backend/tests/test_code_research.py
+
+目的: OpenCode に渡す前に ControlDeck の調査で調べる（chat_persist._research_for_code）。 目的: 2026-11-18 利用者の依頼「『調べて OpenCode に渡す』をボタンを押さずに」。OpenCode の会話で「〜を調べて反映して」と 送ると、同じ 1 回の送信の中で調べ、出典つきの根拠を OpenCode への依頼に付ける。 - 調べた根拠は見出しを付けて返し、回答の meta は OpenCode のまま（道具の一覧は同じもの）。出典と調べた経過は残す - 量は上限まで（引き継ぎと合わせて OpenCode のコンテキストを超えない） - 調べられなくても OpenCode の作業は止めない（空を返し、meta を元に戻す）
+
+- `test_research_for_code_returns_evidence_and_keeps_the_opencode_answer` — 「調べて反映して」: 調べた根拠を OpenCode への依頼に付け、回答の meta は OpenCode のまま（出典は残す）。
 
 ### backend/tests/test_compaction.py
 
@@ -2426,6 +2432,12 @@
 - mode chip menu in the composer (${width}px)
 - a chat can be handed off to OpenCode from the plus menu in the same conversation
 - an archive is attached for OpenCode, switches to OpenCode and is sent with the message
+- a chat answer is handed to OpenCode by just asking to implement it
+- a question that only mentions web apps stays in chat
+- in an OpenCode conversation, asking to look something up and apply it researches first
+- in an OpenCode conversation, an ordinary request stays with OpenCode
+- in an OpenCode conversation, a plain question is answered in chat
+- in an OpenCode conversation, an image goes to the chat that can see it
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone

@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-18 AI アシスタント: ボタンを押さずに OpenCode へ引き継ぐ・調べてから渡す
+
+- 自動判定が会話の流れを見る（`assistantMode.detectAssistantMode` の context）。
+  - OpenCode が作業している会話では、チャットへ判定し直さず OpenCode に送る。調べる語（調べて・最新・論文など）があれば、その 1 回の送信の中で ControlDeck の調査（Web・論文、調査の計画で検索語を決める）を先に行い、出典つきの根拠を OpenCode への依頼に付ける（`chat_persist._research_for_code`、SendBody.code_research）。OpenCode を手で選んでいても同じ。
+  - チャットや調査の回答がある会話で「実装して」「アプリにして」「コードにして」などと送ると、OpenCode に切り替えて、それまでの会話を引き継ぐ（引き継ぎは #448 の handoff_context）。
+- ＋の「この会話を OpenCode に引き継ぐ」「調べて OpenCode に渡す」は手で選びたいとき用に残す。
+- 調べられなかったときは、調べた結果なしで OpenCode に渡す（作業は止めない）。
+- レビューの指摘（9 件）を直した: OpenCode の会話中でも、作業の語の無い質問はチャット、調べる語だけなら調査で答える（結果は次に引き継ぐ）。画像があるときは OpenCode へ回さない（OpenCode を手で選んでいたら知らせる）。調べる LLM は OpenCode のモデル（別のモデルを起こして GPU から追い出さない）。調べた結果と引き継ぎで上限を半分ずつ。「ウェブアプリ」などの名詞だけでは切り替えない。調べた経過を残す。
+- 検証: `tests/test_context_budget.py`（調べた結果の付け方・失敗時）、E2E `assistant-claude-layout`（16 件。チャット→「これを実装して」、OpenCode の会話で「調べて反映して」・通常の依頼）。
+
 ## 2026-11-18 AI アシスタント: 圧縮ファイルを添付して OpenCode のプロジェクトへ展開
 
 - ZIP・7z・RAR・tar（.gz・.bz2・.xz）を添付できる（200 MiB まで）。添付の時点で中身の一覧を確かめ、`..`・絶対パス・リンク・特殊ファイル・パスワード付き・展開後 2 GiB 超・2 万ファイル超を断る（`workflows/archive_import.py`）。

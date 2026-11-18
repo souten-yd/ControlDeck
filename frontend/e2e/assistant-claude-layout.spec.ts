@@ -365,6 +365,93 @@ test("an archive is attached for OpenCode, switches to OpenCode and is sent with
   await expect(shell.getByText("12 ファイル・送ると展開")).toHaveCount(0);
 });
 
+/** 自動判定が会話の流れを見て OpenCode へ回すか（2026-11-18 利用者の依頼: 引き継ぎ・調べて渡すをボタンなしで） */
+async function sendWithAutoRouting(page: Page, { code, text, image = false }: { code: boolean; text: string; image?: boolean }) {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await login(page);
+  await mockChat(page);
+  await page.route(/\/api\/v1\/meta$/, async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+    return route.fulfill({ response, json: meta });
+  });
+  await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [{ name: "app", path: "/CodeDEV/app", git: true }] } }));
+  await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
+  if (code) {
+    await page.route(/\/api\/v1\/chat\/conversations\/today1\/messages$/, (route) => route.fulfill({ json: {
+      conversation: { id: "today1", title: "今日の献立の相談", updated_at: new Date().toISOString().replace("Z", "") },
+      messages: [msg("u1", "user", "献立アプリを作って"),
+        msg("a1", "assistant", "作りました", { meta: { mode: "code", opencode_session: "s1", tools: [] } })],
+    } }));
+  }
+  if (image) {
+    await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/attachments$/, (route) => route.fulfill({
+      status: 201, json: { kind: "image", id: "0123456789abcdef.png", name: "shot.png" } }));
+  }
+  const state: { sent: { mode?: string; code_research?: boolean; attachments?: string[] } | null } = { sent: null };
+  await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/send$/, (route) => {
+    state.sent = route.request().postDataJSON();
+    return route.fulfill({ json: { assistant_message_id: "a-x", user_message_id: "u-x", job_id: "j1" } });
+  });
+  await page.route(/\/api\/v1\/chat\/route$/, (route) => route.fulfill({ json: { mode: "chat", reason: "通常の対話", steps: [], max_iterations: 1, decided_by: "rule" } }));
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText(code ? "作りました" : "今日の献立の相談の回答")).toBeVisible();
+  if (image) {
+    await shell.locator('input[type="file"]').setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: Buffer.from("x") });
+  }
+  await shell.locator("[data-assistant-input]").fill(text);
+  const detected = await shell.locator("[data-mode-detected]").innerText();
+  if (detected.includes("OpenCode")) await shell.getByRole("combobox").first().selectOption("app", { timeout: 2000 }).catch(() => {});
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => state.sent?.mode).toBeTruthy();
+  return { sent: state.sent!, detected };
+}
+
+test("a chat answer is handed to OpenCode by just asking to implement it", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const { sent, detected } = await sendWithAutoRouting(page, { code: false, text: "これを実装して" });
+  expect(detected).toContain("OpenCode");
+  expect(sent.mode).toBe("code");
+  expect(Boolean(sent.code_research)).toBe(false);
+});
+
+test("a question that only mentions web apps stays in chat", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const { sent } = await sendWithAutoRouting(page, { code: false, text: "ウェブアプリとネイティブの違いは?" });
+  expect(sent.mode).not.toBe("code");
+});
+
+test("in an OpenCode conversation, asking to look something up and apply it researches first", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const { sent, detected } = await sendWithAutoRouting(page, { code: true, text: "最新の SQLite の WAL の仕様を調べて反映して" });
+  expect(detected).toContain("OpenCode");
+  expect(sent.mode).toBe("code");
+  expect(sent.code_research).toBe(true);
+});
+
+test("in an OpenCode conversation, an ordinary request stays with OpenCode", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const { sent } = await sendWithAutoRouting(page, { code: true, text: "テストも足しておいて" });
+  expect(sent.mode).toBe("code");
+  expect(Boolean(sent.code_research)).toBe(false);
+});
+
+test("in an OpenCode conversation, a plain question is answered in chat", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const { sent } = await sendWithAutoRouting(page, { code: true, text: "ありがとう、ところで WAL って何?" });
+  expect(sent.mode).toBe("chat");
+});
+
+test("in an OpenCode conversation, an image goes to the chat that can see it", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  const { sent } = await sendWithAutoRouting(page, { code: true, text: "この画面を直して", image: true });
+  expect(sent.mode).not.toBe("code");
+  expect(sent.attachments).toEqual(["0123456789abcdef.png"]);
+});
+
 test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 800 });
