@@ -10,7 +10,7 @@ RAG・チャット・コード開発のすべてで自動で設定できるよ�
   短い入力の半分の性能に落ちると報告。Chroma の Context Rot（2025）も、課題を変えずに長さだけ伸ばすと
   不安定になると報告。→ 窓が 1M でも「根拠の本文」は窓に比例させ続けず、上限（EVIDENCE_CAP_TOKENS）で止める。
 * RAG は取り出す数を増やすほど良くなるわけではない（増やした分は邪魔になる）。実務の目安は 3〜8 件＋再順位付け。
-  → 件数は窓で 4〜8 件、本文の総量は窓の 8%・上限 32K トークン。
+  → 件数は窓で 4〜8 件、本文の総量は窓の 8%・上限 16K トークン（毎回の発言にかかるので、読み込みの実測から）。
 * コーディングエージェントの自動圧縮は窓の 80〜90% で発火する実装が多く、早め（50〜80%）を勧める声も多い。
   → 会話の圧縮は既存の compaction（auto: 窓に応じて 70〜85%、上限 256K）に任せる。ここでは引き継ぎの量だけ決める。
 * 出力の分は入力と別に必ず空けておく（OUTPUT_SHARE）。
@@ -72,7 +72,9 @@ def for_window(window: int) -> Budget:
     exhaustive_report = min(report * 2, 131_072, max(1_024, w // 2))
     exhaustive_evidence = min(evidence_tokens * 2, int(EVIDENCE_CAP_TOKENS * 1.5),
                               max(2_000, w - exhaustive_report - 2_000))
-    rag_tokens = _clamp(w * 0.08, 2_000, 32_768)
+    # RAG は毎回の発言にかかる。R9700 の実測（qwen-flash-next、2026-11-18）で読み込みは約 3,100 トークン/秒、
+    # 32K トークンで 10 秒。毎回待たせないよう 16K（約 5 秒）で止める
+    rag_tokens = _clamp(w * 0.08, 2_000, 16_384)
     rag_top_k = 4 if w <= 32_768 else 6 if w <= 131_072 else 8
     search_pages = 5 if w <= 32_768 else 8 if w <= 131_072 else 10
     handoff_tokens = _clamp(w * 0.15, 4_000, 98_304)
