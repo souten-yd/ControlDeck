@@ -78,3 +78,38 @@ def test_asr_transcribe_rejects_non_audio(admin_client, monkeypatch):
         files={"audio": ("note.txt", b"not audio", "text/plain")},
     )
     assert response.status_code == 422
+
+
+
+def test_haas_is_used_when_installed_and_whisper_is_the_fallback(admin_client, monkeypatch, tmp_path):
+    """既定は Haas-ja。失敗しても whisper があれば音声入力を止めない（2026-11-18 利用者の依頼で採用）。"""
+    from app.workflows import asr
+
+    monkeypatch.setattr(asr, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "haas_ready", lambda: True)
+    monkeypatch.setattr(asr, "whisper_ready", lambda: True)
+    monkeypatch.setattr(asr.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    async def fake_exec(*args, cwd, timeout):
+        if "ffmpeg" in args[0]:
+            Path(args[args.index("-c:a") + 2]).write_bytes(b"RIFF")
+            return 0, ""
+        Path(args[args.index("-of") + 1] + ".txt").write_text("控えの結果", encoding="utf-8")
+        return 0, ""
+
+    async def haas(wav, cwd):
+        return "こんにちは。"
+
+    monkeypatch.setattr(asr, "_exec_capture", fake_exec)
+    monkeypatch.setattr(asr, "_transcribe_haas", haas)
+    files = {"audio": ("a.webm", b"x", "audio/webm")}
+    first = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
+    assert first == {"text": "こんにちは。", "language": "ja", "model": "Haas-ja-v1.0"}
+
+    async def broken(wav, cwd):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(asr, "_transcribe_haas", broken)
+    second = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
+    assert second["text"] == "控えの結果" and asr.last_fallback.startswith("RuntimeError")
+    asr.last_fallback = ""

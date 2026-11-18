@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 172 ファイル、1516 テスト（目的の未記入 93 ファイル）
+- backend: 172 ファイル、1517 テスト（目的の未記入 93 ファイル）
 - E2E: 83 spec、156 テスト
 
 ## backend（backend/tests）
@@ -507,6 +507,7 @@
 - `test_asr_install_job_is_reused_while_running`
 - `test_asr_transcribe_converts_and_cleans_temp`
 - `test_asr_transcribe_rejects_non_audio`
+- `test_haas_is_used_when_installed_and_whisper_is_the_fallback` — 既定は Haas-ja。失敗しても whisper があれば音声入力を止めない（2026-11-18 利用者の依頼で採用）。
 
 ### backend/tests/test_chat_persist.py
 
