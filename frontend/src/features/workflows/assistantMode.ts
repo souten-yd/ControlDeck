@@ -30,7 +30,6 @@ const BUILD_WORDS = ["実装して", "実装する", "コードにして", "コ�
   "アプリ化して", "ウェブアプリにして", "webアプリにして", "スクリプトにして", "ツールにして", "これで作って",
   "これを作って", "開発して", "移植して"];
 // 質問（作業の依頼ではない）。OpenCode の会話中でも、作業の語が無ければチャットで答える
-const QUESTION_WORDS = ["?", "？", "とは", "って何", "ってなに", "教えて", "違いは", "なぜ", "どうして", "ありがとう"];
 
 interface NamedWorkflow { id: number; name: string }
 
@@ -65,11 +64,10 @@ export function detectAssistantMode(
     // OpenCode の会話中:
     //  調べる語＋作業の語（調べて反映して）→ 同じ 1 回の送信で調べてから OpenCode へ
     //  調べる語だけ（詳しく調査してレポートに等）→ 調査で答える（結果は次に OpenCode へ送るとき引き継がれる）
-    //  作業の語の無い質問（〜とは？・ありがとう）→ チャットで答える
-    //  それ以外 → OpenCode のまま（チャットへ判定し直さない）
+    //  それ以外（質問も含む）→ OpenCode のまま。作業中の質問はファイルを見ないと答えられず、チャットへ回すと
+    //  道具が無いのにモデルが <tool_call> を文字で書いていた（2026-11-18 本番）。チャットにしたいときは＋で選ぶ
     if (research && work) return { mode: "code", research: true, reason: "調べてから OpenCode が反映" };
     if (research) return { ...base, reason: `${base.reason}（結果は次に OpenCode へ引き継ぎ）` };
-    if (!work && includesAny(text, QUESTION_WORDS)) return { mode: "chat", reason: "質問への回答（OpenCode の作業はそのまま）" };
     return { mode: "code", reason: "この会話は OpenCode で作業中" };
   }
   if (base.mode === "chat" && context.hasAnswers && includesAny(text, BUILD_WORDS)) {

@@ -162,6 +162,33 @@ def _opencode_background():
     return True, "裏のエージェントの結果は受け取れています"
 
 
+def _chat_tool_text():
+    """道具の無い回答に、呼び出しの文字（<tool_call>）が出ていないか（実行されたように見えて何も起きない）。"""
+    import json
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    db = SessionLocal()
+    try:
+        rows = db.execute(select(ChatMessage).where(ChatMessage.role == "assistant", ChatMessage.status == "completed")
+                          .order_by(ChatMessage.created_at.desc()).limit(50)).scalars().all()
+        count = 0
+        for row in rows:
+            try:
+                mode = json.loads(row.meta_json or "{}").get("mode")
+            except ValueError:
+                mode = None
+            count += int(mode != "code" and "<tool_call>" in (row.content or ""))
+    finally:
+        db.close()
+    if count:
+        return "warn", f"直近の回答 {count} 件で、実行されない道具の呼び出しが文字のまま出ています"
+    return True, "道具の呼び出しの文字は出ていません"
+
+
 def _chat_queue():
     """送信待ちの要望が、送られるはずなのに残っていないか（回答が正常に終わり、生成中のものも無いのに 2 分以上）。
     2026-11-18 生成中に送った要望をサーバーが貯めて、回答の後に送るようにした。送り損ねると気付けないため。"""
@@ -229,6 +256,7 @@ CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモ�
           ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan), ("OpenCode の箱", _opencode_box),
           ("Maya の画像の読み取り", _maya_vision),
           ("AI アシスタントの送信待ち", _chat_queue),
+          ("道具の呼び出しの文字", _chat_tool_text),
           ("OpenCode の裏のエージェント", _opencode_background)]
 
 

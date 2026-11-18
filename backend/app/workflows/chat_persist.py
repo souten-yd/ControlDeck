@@ -1731,6 +1731,10 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     )
 
     history = [{"role": "system", "content": body.system + "\n\n" + REFERENCE_SYSTEM_GUIDANCE}]
+    if body.mode != "code" and any('"mode": "code"' in (m.meta_json or "") for m in past if m.role == "assistant"):
+        # OpenCode の作業の履歴があると、道具の無いチャットでも呼び出しを文字で書いてしまう（2026-11-18 本番）
+        history.append({"role": "system", "content": "この返答では道具やコマンドを実行できません。<tool_call> などの呼び出しを"
+                        "書かず、分かる範囲を文章で答えてください。ファイルの確認や変更が必要なら、OpenCode で続けるよう伝えてください。"})
     requested_ids = extract_reference_ids(body.content)
     requested_refs = resolve_references(db, conv_id, requested_ids)
     if requested_refs:

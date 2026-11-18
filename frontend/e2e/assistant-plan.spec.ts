@@ -115,3 +115,22 @@ test("the plus menu switches between build and plan, and Shift+Tab leaves plan b
   await shell.locator("[data-plan-banner]").getByRole("button", { name: "ビルドに切り替える" }).click();
   await expect(shell.locator("[data-plan-banner]")).toHaveCount(0);
 });
+
+
+test("a question during an OpenCode conversation stays in OpenCode", async ({ page, context }) => {
+  // 2026-11-18 本番: 「〜できるか？」がチャットへ回り、道具の無いモデルが <tool_call> を文字で書いた
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  const input = shell.locator("[data-assistant-input]");
+  await input.fill("3レベルインバータの波形をシミュレートできるか？");
+  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");
+  await input.press("Enter");
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ mode: "code", code_project: "app" });
+});
