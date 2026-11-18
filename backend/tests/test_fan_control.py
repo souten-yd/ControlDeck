@@ -100,6 +100,7 @@ def test_over_the_limit_goes_to_full_speed_at_once(gpu):
     assert fan._applied_percent < 100
     (hwmon / "temp3_input").write_text("90500")
     fan.tick()
+    fan.tick()   # 上限の判定は 3 回の中央値（1 回だけの跳ねでは入らない）
     assert fan._applied_percent == 100
     assert fan._last_sample["control"]["emergency"] is True
 
@@ -122,6 +123,21 @@ def test_old_settings_are_carried_over(gpu, tmp_path):
     (tmp_path / fan.STATE_FILE).write_text(json.dumps({"enabled": True, "limits_c": {"temp2": 95}, "mode": "map",
                                                        "map_points": [{"below_c": 0, "percent": 50}]}))
     assert fan._load().limits_c == {"temp2": 95}
+
+
+def test_v068_settings_with_the_old_default_ti_get_the_new_default(gpu, tmp_path):
+    """v0.68 で保存した設定は、画面が既定の Ti 50 秒も一緒に書いていた。今の既定（80 秒）へ。手で変えた値は残す。"""
+    fan, _, _, _, _ = gpu
+    saved = {"enabled": True, "bdf": "0000:03:00.0", "limits_c": {"temp2": 95}, "margin_c": 6.0,
+             "pid_kp": 2.5, "pid_ti": 50.0}
+    (tmp_path / fan.STATE_FILE).write_text(json.dumps(saved))
+    assert fan._load().pid_ti == 80.0 and fan._load().margin_c == 6.0
+    (tmp_path / fan.STATE_FILE).write_text(json.dumps({**saved, "pid_ti": 49.8}))   # 自動調整の値
+    assert fan._load().pid_ti == 80.0
+    (tmp_path / fan.STATE_FILE).write_text(json.dumps({**saved, "pid_ti": 65.0}))
+    assert fan._load().pid_ti == 65.0
+    (tmp_path / fan.STATE_FILE).write_text(json.dumps({**saved, "gains_version": 2}))
+    assert fan._load().pid_ti == 50.0     # 今の版で 50 を選んで保存したなら、そのまま
 
 
 def test_margin_below_two_degrees_is_rejected():
