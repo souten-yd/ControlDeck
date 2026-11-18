@@ -14,7 +14,7 @@ export interface QueuedItem {
   error: string;
 }
 
-export function QueuedRequests({ items, held, removed, onEdit, onDelete, onRestore, onSendNow, onClear }: {
+export function QueuedRequests({ items, held, removed, onEdit, onDelete, onRestore, onSendNow, onClear, canSteer = false, onSteer }: {
   items: QueuedItem[];
   /** 生成中でないのに残っている（止めた・失敗した後） */
   held: boolean;
@@ -25,6 +25,9 @@ export function QueuedRequests({ items, held, removed, onEdit, onDelete, onResto
   onRestore: () => void;
   onSendNow: () => void;
   onClear: () => void;
+  /** OpenCode が作業中なら、回答を待たずに伝えられる（今の道具が終わったところで届く） */
+  canSteer?: boolean;
+  onSteer?: (id: string) => void;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -71,6 +74,10 @@ export function QueuedRequests({ items, held, removed, onEdit, onDelete, onResto
                   <p className="line-clamp-3 whitespace-pre-wrap break-words text-[13px] leading-snug text-zinc-800 dark:text-zinc-100">{item.content}</p>
                   {item.status === "failed" && <p className="mt-0.5 text-[11px] text-red-600 dark:text-red-400">送れませんでした: {item.error}</p>}
                 </div>
+                {canSteer && item.status === "queued" && item.mode === "code" && (
+                  <button type="button" onClick={() => onSteer?.(item.id)} aria-label={`送信待ち ${index + 1} を今すぐ伝える`} title="今の作業が一区切りしたところで OpenCode に届きます"
+                    className="grid h-8 shrink-0 place-items-center rounded-lg px-1.5 text-xs font-semibold text-accent-700 hover:bg-accent-50 dark:text-accent-300 dark:hover:bg-accent-950/40 [@media(pointer:coarse)]:h-11">今すぐ伝える</button>
+                )}
                 <button type="button" onClick={() => { setDraft(item.content); setEditing(item.id); }} aria-label={`送信待ち ${index + 1} を編集`}
                   className="grid h-8 min-w-9 shrink-0 place-items-center rounded-lg text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 [@media(pointer:coarse)]:h-11">編集</button>
                 <button type="button" onClick={() => onDelete(item.id)} aria-label={`送信待ち ${index + 1} を削除`}

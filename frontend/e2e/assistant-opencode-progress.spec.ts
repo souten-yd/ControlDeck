@@ -5,6 +5,38 @@ import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
 for (const width of [320, 1280]) {
+  test(`changes open as a diff and the latest turn can be reverted (${width}px)`, async ({ page, context }) => {
+    // 2026-11-18 利用者の依頼: OpenCode の差分・取り消しを AI アシスタントから使えるように
+    test.skip(!hasSession(), "E2E credentials required");
+    await page.setViewportSize({ width, height: 800 });
+    await establishSession(page, context);
+    let reverted = 0;
+    const change = { file: "src/very/long/path/to/the/component/name.tsx", additions: 2, deletions: 1, status: "modified" };
+    await page.route(/\/api\/v1\/chat\/conversations\/d1\/messages$/, (route) => route.fulfill({ json: {
+      conversation: { id: "d1", title: "差分" },
+      messages: [{ id: "u", role: "user", content: "直して", thinking: "", status: "completed", job_id: null, model: "", error: "", meta: {}, created_at: "2026-11-18T00:00:00Z" },
+        { id: "a", role: "assistant", content: "直しました", thinking: "", status: "completed", job_id: null, model: "", error: "", created_at: "2026-11-18T00:00:01Z",
+          meta: { mode: "code", opencode_session: "ses_1", changes: [change] } }],
+    } }));
+    await page.route(/\/api\/v1\/chat\/conversations\/d1\/queue$/, (route) => route.fulfill({ json: { items: [], generating_message_id: null, held: false } }));
+    await page.route(/\/opencode\/changes\?/, (route) => route.fulfill({ json: { files: [{ ...change, patch: "diff --git a b\n@@ -1 +1,2 @@\n-古い行\n+新しい行\n+追加した長い行".concat("あ".repeat(200)) }] } }));
+    await page.route(/\/opencode\/revert$/, (route) => { reverted += 1; return route.fulfill({ json: { reverted: true } }); });
+    await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "d1"));
+    await page.goto("/assistant");
+    const card = page.locator("[data-code-changes]");
+    await expect(card).toContainText("変更 1 ファイル");
+    await card.getByRole("button", { name: /変更 1 ファイル/ }).click();
+    await card.getByRole("button", { name: /name\.tsx/ }).click();
+    await expect(card.locator("[data-code-patch]")).toContainText("新しい行");
+    await expect(card.locator("[data-code-patch]")).not.toContainText("diff --git");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+    await card.locator("[data-code-revert]").click();
+    await page.getByRole("button", { name: "取り消す", exact: true }).click();
+    await expect(card).toContainText("取り消した変更");
+    await expect(card.locator("[data-code-revert]")).toHaveCount(0);
+    expect(reverted).toBe(1);
+  });
+
   test(`text stays between the work steps and steps share one card (${width}px)`, async ({ page, context }) => {
     // 2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。段階ごとの文が 1 段落につながっていた
     test.skip(!hasSession(), "E2E credentials required");
