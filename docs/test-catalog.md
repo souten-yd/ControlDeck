@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 169 ファイル、1476 テスト（目的の未記入 93 ファイル）
+- backend: 169 ファイル、1478 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、146 テスト
 
 ## backend（backend/tests）
@@ -817,6 +817,8 @@
 - `test_after_an_emergency_the_slow_descent_does_not_inflate_the_integral` — 緊急の最大回転の後、回転をゆっくり下げている間（冷えて見える）に上乗せを動かさない。
 - `test_a_too_large_integral_comes_back_down_under_load` — 上乗せが大きすぎて、負荷中でも回転を下げきって冷えすぎているなら、ゆっくり減らす（冷えたまま残さない）。
 - `test_idle_is_judged_from_the_raw_power_not_the_slow_feedforward_power` — 休み（上乗せを動かさない）は生の電力で判定する。先読みの電力はゆっくり下げてあるので、休みでも高く見える。
+- `test_without_a_power_reading_the_integral_still_works` — 電力が読めないときも、休みとみなして上乗せを止めない（P だけの制御にならない。レビュー指摘）。
+- `test_light_load_at_minimum_fan_does_not_inflate_the_integral` — 軽い負荷で最低回転・目標よりずっと下のとき、上乗せを上へ寄せない（レビュー指摘: 最低で寄せると +6% 膨らむ）。
 
 ### backend/tests/test_fan_log.py
 

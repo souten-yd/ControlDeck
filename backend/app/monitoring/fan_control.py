@@ -63,7 +63,7 @@ class FanSettings(BaseModel):
     pid_kp: float = Field(default=2.5, ge=0.3, le=10.0, allow_inf_nan=False)
     pid_ti: float = Field(default=80.0, ge=10.0, le=600.0, allow_inf_nan=False)
     # 効き具合の既定値の版。1: Ti 50 秒（v0.68）、2: Ti 80 秒（2026-11-18、2 段の模型で選び直した）
-    gains_version: int = 2
+    gains_version: Literal[2] = 2
     # PC 起動直後: 保存した設定で制御する / GPU 標準の自動制御のまま
     startup_mode: Literal["apply_saved", "firmware"] = "apply_saved"
 
@@ -139,11 +139,12 @@ def _migrate(document: dict) -> dict:
 
 
 def _upgrade_gains(document: dict) -> dict:
-    """v0.68 で保存した設定の Ti が当時の既定値（50 秒）のままなら、今の既定（80 秒）にする。
-    手で変えた値はそのまま。マージンなどを画面で保存すると、既定値の Ti も一緒に書かれていた。"""
-    if "limits_c" in document and "gains_version" not in document:
+    """v0.68 で保存した設定の Ti が当時の値（既定 50 秒・自動調整の約 49.8 秒）なら、今の既定（80 秒）にする。
+    手で変えた値（45〜55 秒の外）はそのまま。マージンなどを画面で保存すると、既定値の Ti も一緒に書かれていた。"""
+    if "limits_c" in document and document.get("gains_version") != 2:
         document = {**document, "gains_version": 2}
-        if float(document.get("pid_ti", 50.0)) == 50.0:
+        # 当時の既定（50 秒）と、自動調整・記録から作り直した値（SIMC で約 49.8 秒）の両方
+        if 45.0 <= float(document.get("pid_ti", 50.0)) <= 55.0:
             document["pid_ti"] = 80.0
     return document
 

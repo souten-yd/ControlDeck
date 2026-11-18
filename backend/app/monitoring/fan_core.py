@@ -8,7 +8,7 @@
 * 上乗せ（積分）は「先読みの不足分」= 外気温・季節・埃のずれを覚えている。休み中も捨てず、
   熱モデルのファイルに保存して再起動後も引き継ぐ（外気温 37°C でも目標に戻るため）。
 * 温度の上がる側は遅らせずに見る。下がる側と電力の下がる側はゆっくり（往復負荷で回転を落としすぎない）。
-* 上限を超えたら即座に最大回転にする（ソフトとファームウェアのカーブの両方）。目標まで下がるまで保持。
+* 上限を超えたら最大回転にする。ソフトは直近 3 回（9 秒）の中央値で判定（hotspot の 1 秒の跳ねでは入らない）、ファームウェアのカーブは上限 +1°C で最大。目標まで下がるまで保持。
 * 回転数の振れは気にしない（利用者の指示 2026-11-18: 温度の変動を小さくするほうを優先）。
 
 模擬（``Plant``）は学習済みの熱モデルから温度を計算し、テストに使う。
@@ -33,13 +33,17 @@ UP_SHARE = 1 / 4            # 回転の上げ: 最低→最大を S/4 秒（S=60
 DOWN_SHARE = 2.0            # 回転の下げ: 最大→最低を 2S 秒（S=60 で 2 分）
 DEFAULT_SMOOTHING_S = 60.0
 EMERGENCY_HOLD_S = 15.0
-INTEGRAL_RANGE = (-20.0, 50.0)
+INTEGRAL_RANGE = (-20.0, 50.0)   # 上乗せの範囲（%）。外気温 37°C で先読みより +15% ほど要る見込み
 # 目標より下にいるときの比例の効き（上にいるときに対する比）。負荷が止まると hotspot は一瞬で 25°C ほど下がり、
 # 等倍だと回転を一気に落とす。再開すると遅れて上がり、行き過ぎる（R9700 本番 2026-11-18: 52%→39% に落ち、
 # 再開で 95°C・緊急の最大回転）。休み中の回転は先読み（電力の下げ側はゆっくり）で保つ
 COLD_P_SHARE = 0.6   # 実機の記録に当てはめた模型で選んだ（docs/design-amd-smart-fan.md「2 段の模型」）
+# 生の電力がアイドル電力＋これより小さければ「休み」（上乗せを動かさない）。アイドル電力をまだ測っていなければ
+# IDLE_FALLBACK_W を使う（マルチモニターなどでアイドルが 30 W を超える GPU もある）
 IDLE_HEAT_W = 30.0
-COLD_DECAY_SHARE = 0.1   # これより発熱が小さければ「休み」（上乗せを動かさない）   # 上乗せの範囲（%）。外気温 37°C で先読みより +15% ほど要る見込み
+IDLE_FALLBACK_W = 30.0
+# 目標より冷えすぎで、回転を下げている途中でもないときに上乗せを減らす速さ（通常の比）
+COLD_DECAY_SHARE = 0.1
 
 
 def sensor_kind(sensor: dict) -> str:
@@ -151,14 +155,16 @@ class Controller:
             value = float(sensor["value_c"])
             window = self.raw.setdefault(sid, deque(maxlen=3))
             window.append(value)
+            recent = median(window)   # 上限・目標・平滑の 3 つとも同じ値で判断する
             # 上限の判定は直近 3 回（9 秒）の中央値。hotspot は全力が続いていても 1 秒だけ +3〜+7°C 跳ねる
             # （R9700 本番 2026-11-18 の 1 秒ごとの記録: 210 W・回転一定で 87→98→91）。1 回の読みで判定すると、
-            # 平均が目標でも跳ねに当たって最大回転に入る。超えたまま続けば 6 秒以内に入る（危険温度 110°C まで余裕）
-            if median(window) >= settings.limits_c[sid]:
+            # 平均が目標でも跳ねに当たって最大回転に入る。2 回続けて超えれば入る（3 秒ごとなので 6 秒以内。
+            # 危険温度 110°C まで余裕がある。ファームウェアのカーブも上限 +1°C で最大にしてある）
+            if recent >= settings.limits_c[sid]:
                 over_limit = True
-            if median(window) > targets[sid]:
+            if recent > targets[sid]:
                 raw_over_target = True
-            filtered = self.pv.setdefault(sid, _Lag()).update(median(window), dt, PV_RISE_S, s * PV_FALL_SHARE)
+            filtered = self.pv.setdefault(sid, _Lag()).update(recent, dt, PV_RISE_S, s * PV_FALL_SHARE)
             pv[sid] = filtered
             errors[sid] = filtered - targets[sid]
         governing = max(errors, key=errors.get) if errors else ""
@@ -171,10 +177,11 @@ class Controller:
         self.emergency_active = emergency
 
         heat = 0.0
+        known_idle = model is not None and model.idle_power_w is not None
+        idle_power = model.idle_power_w if known_idle else IDLE_FALLBACK_W
         if power_w is not None:
-            idle_power = (model.idle_power_w if model is not None and model.idle_power_w is not None else 0.0)
             smooth_power = self.power.update(float(power_w), dt, POWER_RISE_S, s * POWER_FALL_SHARE)
-            heat = max(0.0, smooth_power - idle_power)
+            heat = max(0.0, smooth_power - (idle_power if known_idle else 0.0))
         if not self.integral_loaded:
             # 上乗せは熱モデルに保存してある（再起動・設定の変更をまたいで引き継ぐ）
             self.integral = clamp(model.integral_percent, *INTEGRAL_RANGE) if model is not None else 0.0
@@ -189,13 +196,17 @@ class Controller:
         #    回転をゆっくり下げている途中（自分の高い回転で冷えた）でも冷えて見えるので、そこで減らすと次に行き過ぎる
         #    （模擬 2026-11-18: −9〜−20% まで下がって 95°C 超えを繰り返した）。下げている途中でなければ
         #    COLD_DECAY_SHARE の速さでだけ減らし、季節が変わって要らなくなった上乗せを時間をかけて戻す
-        idle_power = (model.idle_power_w if model is not None and model.idle_power_w is not None else 0.0)
-        idle = power_w is None or float(power_w) - idle_power < IDLE_HEAT_W
+        # 電力が読めないときは休みとみなさない（上乗せが止まったままになる）
+        idle = power_w is not None and float(power_w) - idle_power < IDLE_HEAT_W
         frozen = idle or emergency
         rate = settings.kp / max(1.0, settings.ti) * e * dt
         if not frozen and error < -COLD_ERROR_LIMIT_C:
-            descending = self.out is not None and self.out > ff + p_term + self.integral + 0.5
+            # 下げている途中 = 出している回転が、いま欲しい回転（最低〜最大に収めた値）より高い
+            wanted_now = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
+            descending = self.out is not None and self.out > wanted_now + 0.5
             rate = 0.0 if descending else rate * COLD_DECAY_SHARE
+        if not frozen and rate < 0 and self.integral <= 0 and ff + p_term + self.integral <= settings.min_percent:
+            rate = 0.0   # 最低回転で止まっているのに、上乗せをマイナスへ膨らませない（次の負荷で遅れる）
         if not frozen:
             self.integral = clamp(self.integral + rate, *INTEGRAL_RANGE)
         wanted = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
@@ -211,8 +222,7 @@ class Controller:
             down = span / (s * DOWN_SHARE) * dt
             out = min(wanted, self.out + up) if wanted > self.out else max(wanted, self.out - down)
         v = ff + p_term + self.integral
-        # 最低回転で止まっている間も寄せる（寄せないと上乗せがマイナスへ膨らみ、次の負荷で遅れて 100°C 超え。模擬 2026-11-18）
-        if not frozen and (out < v or out <= settings.min_percent):
+        if not frozen and out < v:
             # 逆算型のワインドアップ防止: 上げが追いつかない・最大で頭打ちのときだけ、実際に出した値へ寄せる。
             # 下げをゆっくりにしている間（out > v）に寄せると、上乗せが膨らむ（本番 2026-11-18: 緊急の最大回転の
             # 後に 3 → 17.6%）

@@ -190,3 +190,23 @@ def test_idle_is_judged_from_the_raw_power_not_the_slow_feedforward_power():
     for _ in range(10):
         ctl.step(hot(60.0), 8, 3.0, s, model)            # 休みに入った直後
     assert ctl.integral == pytest.approx(learned)
+
+
+def test_without_a_power_reading_the_integral_still_works():
+    """電力が読めないときも、休みとみなして上乗せを止めない（P だけの制御にならない。レビュー指摘）。"""
+    ctl = core.Controller()
+    s = settings()
+    for _ in range(30):
+        ctl.step(hot(92.0), None, 3.0, s, r9700())
+    assert ctl.integral > 0.5
+
+
+def test_light_load_at_minimum_fan_does_not_inflate_the_integral():
+    """軽い負荷で最低回転・目標よりずっと下のとき、上乗せを上へ寄せない（レビュー指摘: 最低で寄せると +6% 膨らむ）。"""
+    model = r9700()
+    ctl = core.Controller()
+    s = settings()
+    for _ in range(200):
+        step = ctl.step(hot(60.0), 60, 3.0, s, model)
+    assert step.percent == pytest.approx(20.0)
+    assert -0.5 <= ctl.integral <= 0.5

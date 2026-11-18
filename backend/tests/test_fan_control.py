@@ -132,6 +132,8 @@ def test_v068_settings_with_the_old_default_ti_get_the_new_default(gpu, tmp_path
              "pid_kp": 2.5, "pid_ti": 50.0}
     (tmp_path / fan.STATE_FILE).write_text(json.dumps(saved))
     assert fan._load().pid_ti == 80.0 and fan._load().margin_c == 6.0
+    (tmp_path / fan.STATE_FILE).write_text(json.dumps({**saved, "pid_ti": 49.8}))   # 自動調整の値
+    assert fan._load().pid_ti == 80.0
     (tmp_path / fan.STATE_FILE).write_text(json.dumps({**saved, "pid_ti": 65.0}))
     assert fan._load().pid_ti == 65.0
     (tmp_path / fan.STATE_FILE).write_text(json.dumps({**saved, "gains_version": 2}))
