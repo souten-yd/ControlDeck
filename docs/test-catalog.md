@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 167 ファイル、1497 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、137 テスト
+- backend: 168 ファイル、1503 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、138 テスト
 
 ## backend（backend/tests）
 
@@ -424,6 +424,17 @@
 - `test_url_shortcut_create`
 - `test_url_shortcut_rejects_bad_url`
 - `test_app_icon_upload_sanitizes_and_does_not_leak_path`
+
+### backend/tests/test_archive_import.py
+
+目的: チャットに添付した圧縮ファイルを OpenCode のプロジェクトへ展開する（archive_import）と、添付・送信の受け口。 目的: 2026-11-18 利用者の依頼「OpenCode の開発中に ZIP や RAR を添付し、中身がソースコードならプログラムの フォルダに置いて参照できるように」。外から来たファイルなので、展開する前と後の両方で危ないものを断る。 - ZIP・7z・tar を展開できる（RAR は 7z が読む。作る道具が無いので 7z で代表する） - 空のプロジェクトなら直下へ、既存のファイルがあれば imports/<名前>/ へ。上書きしない - 中身が 1 つのフォルダだけなら、その中を展開先の直下にする - `..`・絶対パス・リンク・宣言を偽った圧縮爆弾・パスワード付きを断る - OpenCode 以外の機能で圧縮ファイルを送ると断る（展開先が無い）
+
+- `test_zip_into_an_empty_project_lands_at_the_root`
+- `test_existing_project_gets_imports_folder_and_nothing_is_overwritten`
+- `test_tar_and_7z_are_extracted`
+- `test_dangerous_entries_are_rejected_before_extracting`
+- `test_a_bomb_that_lies_about_its_size_stops_while_writing`
+- `test_upload_accepts_archives_and_send_requires_opencode`
 
 ### backend/tests/test_assistant_planner.py
 
@@ -2452,6 +2463,7 @@
 - history list: groups, search, open, rename, delete, new chat (${width}px)
 - mode chip menu in the composer (${width}px)
 - a chat can be handed off to OpenCode from the plus menu in the same conversation
+- an archive is attached for OpenCode, switches to OpenCode and is sent with the message
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone
