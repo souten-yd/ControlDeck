@@ -126,8 +126,10 @@ def helper_ready() -> bool:
         return _sudo_cache[1]
     try:
         known = "gpu-od" in HELPER.read_text(encoding="utf-8", errors="replace")
-        allowed = known and subprocess.run(["sudo", "-n", "-l", str(HELPER), "gpu-od", "apply", "0000:00:00.0", "keep", "keep"],
-                                           capture_output=True, timeout=5, check=False).returncode == 0
+        # 「sudo -l コマンド」はパスワードが要る許可でも成功するので、NOPASSWD の行を見る
+        listed = subprocess.run(["sudo", "-n", "-l"], capture_output=True, text=True, timeout=5, check=False,
+                                env={**os.environ, "LC_ALL": "C"}).stdout if known else ""
+        allowed = any("NOPASSWD" in line and f"{HELPER} gpu-od" in line for line in listed.splitlines())
     except (OSError, subprocess.SubprocessError):
         allowed = False
     _sudo_cache = (now, allowed)

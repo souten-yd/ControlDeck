@@ -202,6 +202,20 @@ def test_a_read_failure_is_not_reported_as_missing_support(gpu, monkeypatch):
     assert state["available"] is False and "読み取れません" in state["message"]
 
 
+def test_helper_ready_needs_the_passwordless_rule(tmp_path, monkeypatch):
+    """管理者は sudo -l コマンドが成功するので、それでは未導入を見分けられない（2026-11-18 実機）。"""
+    import subprocess
+
+    helper = tmp_path / "helper"
+    helper.write_text("gpu-od")
+    monkeypatch.setattr(gt, "HELPER", helper)
+    outputs = ["    (ALL : ALL) ALL\n", f"    (root) NOPASSWD: {helper} gpu-od *\n"]
+    for expected, output in zip((False, True), outputs):
+        monkeypatch.setattr(gt, "_sudo_cache", (-100.0, False))
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, output, ""))
+        assert gt.helper_ready() is expected
+
+
 def test_previous_values_do_not_survive_a_reboot(gpu):
     gt.apply(-100, None)
     gpu.boot.write_text("boot-2\n")

@@ -203,6 +203,37 @@ def _chat_tool_text():
     return True, "道具の呼び出しの文字は出ていません"
 
 
+def _opencode_todos():
+    """OpenCode のアクションリストが、作業の進みに合わせて更新されているか。"""
+    import json
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    db = SessionLocal()
+    try:
+        rows = db.execute(select(ChatMessage).where(ChatMessage.role == "assistant", ChatMessage.status == "completed")
+                          .order_by(ChatMessage.created_at.desc()).limit(50)).scalars().all()
+    finally:
+        db.close()
+    stale = 0
+    for row in rows:
+        try:
+            meta = json.loads(row.meta_json or "{}")
+        except ValueError:
+            continue
+        todos = meta.get("todos") or []
+        updated = max((t.get("updated_at") or 0 for t in todos), default=0)
+        if updated and any(t.get("status") in ("pending", "in_progress") for t in todos) \
+                and sum((t.get("started_at") or 0) > updated for t in meta.get("tools") or []) >= 20:
+            stale += 1
+    if stale:
+        return "warn", f"直近の回答 {stale} 件で、アクションリストが更新されないまま作業が進みました"
+    return True, "アクションリストは作業に合わせて更新されています"
+
+
 def _chat_queue():
     """送信待ちの要望が、送られるはずなのに残っていないか（回答が正常に終わり、生成中のものも無いのに 2 分以上）。
     2026-11-18 生成中に送った要望をサーバーが貯めて、回答の後に送るようにした。送り損ねると気付けないため。"""
@@ -271,6 +302,7 @@ CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモ�
           ("Maya の画像の読み取り", _maya_vision),
           ("AI アシスタントの送信待ち", _chat_queue),
           ("道具の呼び出しの文字", _chat_tool_text),
+          ("OpenCode のアクションリスト", _opencode_todos),
           ("OpenCode の裏のエージェント", _opencode_background),
           ("音声入力", _voice_input)]
 

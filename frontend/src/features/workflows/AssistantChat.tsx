@@ -1767,7 +1767,7 @@ export default function AssistantChat() {
           className="min-h-0 min-w-0 flex-1 touch-pan-y space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-5 [-webkit-overflow-scrolling:touch] sm:px-5"
         >
           {/* いまの回答のリストだけ。動いている間か、終わっていない項目があるときに出す */}
-          <TodoFloat todos={latestAssistant?.todos}
+          <TodoFloat todos={latestAssistant?.todos} tools={latestAssistant?.tools}
             active={busy || Boolean(latestAssistant?.todos?.some((t) => t.status !== "completed" && t.status !== "cancelled"))} />
           {messages.length === 0 && (
             <div data-assistant-empty className="mx-auto max-w-md pt-[12vh] text-center">

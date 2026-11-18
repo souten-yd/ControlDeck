@@ -819,6 +819,9 @@ class OpenCodePermissionBody(BaseModel):
 
 # 動いている OpenCode の回へ、送信待ちの要望を今すぐ伝える口（発言 ID → 関数）
 _steer_targets: dict[str, Any] = {}
+# 2026-11-18 本番: 91 回の操作の間、アクションリストは最初の 1 回しか更新されなかった。依頼の前に一言だけ添える
+# （作業中に割り込むと、止めた後に動き出したり最後に余計な回答が増えたりする。レビュー指摘）
+TODO_GUIDE = "## アクションリスト\ntodowrite を使うなら、項目を終えるたびに更新してください（画面で進み具合を見ています）。"
 _reverting: set[str] = set()          # 取り消し中の会話（その間は OpenCode へ送らない）
 MAX_CHANGE_FILES = 200
 MAX_PATCH_CHARS = 200_000
@@ -1265,6 +1268,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 status = str(item.get("status") or "pending")
                 row = todo_state.setdefault(text, {"content": text})
                 row["status"] = status
+                row["updated_at"] = now               # 画面が「古いまま」を見分ける
                 if status == "in_progress":
                     row.setdefault("started_at", now)
                 if status == "completed":
@@ -1367,7 +1371,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             document_note, documents = await asyncio.to_thread(_install_documents, conv_id, project, fresh_session)
             if documents:
                 buf["meta"]["documents"] = [{"name": d["name"], "path": d["relative"], "pages": d["pages"]} for d in documents]
-            lead: list[str] = []
+            lead: list[str] = [TODO_GUIDE]
             if params.get("code_agent") == "plan":
                 lead.append("## プラン\nいまはプランです。ファイルの編集や変更を伴うコマンドはせず、read・grep・glob・"
                             "webfetch で調べ、実装の手順をまとめて利用者の確認を求めてください。")

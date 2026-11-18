@@ -253,6 +253,29 @@ def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypa
     assert admin_client.get(f"{base}/queue").json()["items"] == []
 
 
+def test_the_action_list_records_when_it_was_updated_and_the_request_asks_for_updates(admin_client, monkeypatch, tmp_path):
+    """本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。"""
+    from app.integrations.opencode import chat_server
+    from app.workflows import chat_persist
+
+    _fake_opencode(monkeypatch, tmp_path, [])
+    prompts: list[str] = []
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        prompts.append(text)
+        await on_tool({"id": "t1", "name": "todowrite", "status": "completed",
+                       "input": {"todos": [{"content": "作る", "status": "in_progress"}]}})
+        await on_text("できました")
+        return {"status": "succeeded", "error": ""}
+
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                          json={"content": "作って", "mode": "code", "model": "test", "code_project": "demo"})
+    final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+    assert chat_persist.TODO_GUIDE in prompts[0] and final["meta"]["todos"][0]["updated_at"]
+
+
 def test_timeline_offsets_use_the_browsers_character_positions():
     """絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。"""
     from app.workflows.chat_persist import _utf16_len
