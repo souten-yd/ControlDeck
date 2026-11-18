@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 172 ファイル、1506 テスト（目的の未記入 93 ファイル）
+- backend: 172 ファイル、1508 テスト（目的の未記入 93 ファイル）
 - E2E: 81 spec、153 テスト
 
 ## backend（backend/tests）
@@ -873,6 +873,8 @@
 - `test_raw_log_round_trip_and_keeps_two_hours`
 - `test_minute_log_with_an_old_header_is_upgraded_before_appending` — 列（floor・rsv）を足したので、今日の古い見出しのファイルに足すと列がずれていた。書き直してから足す。
 - `test_tune_optimizes_gains_on_the_plant_and_keeps_the_centre_when_differences_are_noise`
+- `test_a_predicted_overshoot_raises_the_fan_to_the_peak_power_level_without_teaching_the_integral` — 全力に戻ると間に合わないと予測したら、最大電力で目標を保てる回転まで先に上げる（利用者の案 2026-11-18）。
+- `test_refit_uses_the_longest_run_and_checks_on_held_out_data`
 
 ### backend/tests/test_fan_two_stage.py
 

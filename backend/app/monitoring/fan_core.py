@@ -56,11 +56,16 @@ FLOOR_NEGATIVE_I_MAX = 5.0
 #  一定の全力で目標より冷やしすぎた。模擬 2026-11-18）
 # 上限の判定に使う直近の読みの中央値の幅（秒）。周期 3 秒で 3 回分だった
 EMERGENCY_WINDOW_S = 9.0
-# 重い局面への余白: hotspot は電力が上がると一瞬で（3 秒以内）「ダイの係数 × 電力の差」だけ跳ね、回転では防げない
-# （模型 2026-11-18: 154→223 W で 85.8→94.8°C）。直近 PEAK_WINDOW_S 秒の最大電力に戻ったときの跳ねを見積もり、
-# その分 hotspot が熱いとみなして制御する（軽い局面のうちに放熱板を冷やしておく）。利用者の案（2026-11-18
-# 「ピーク温度に対する現状温度の差で制御できないか」）
+# 重い局面の先読み: hotspot は電力が上がると 3 秒以内に「ダイの係数 × 電力の差」だけ跳ね、その瞬間は回転では防げない
+# （模型 2026-11-18: 154→223 W で 85.8→94.8°C）。今の温度に、直近 PEAK_WINDOW_S 秒の最大電力へ戻ったときの跳ねを足し、
+# 目標 ＋ PREDICT_ON_C に届く見込みなら、最大電力でも目標温度を保てる回転まで先に上げて保つ（目標 − PREDICT_OFF_C を
+# 下回るまで）。hotspot の読みは 1 秒だけ +3〜+7°C 跳ねるので、上限ぎりぎりで判断すると遅い。それでも超えるなら PI が微調整する。利用者の案（2026-11-18「全力に戻しても間に合わないという結果が
+# 出た場合は 90 度で制御可能な回転数まで早めに上げ、それでもオーバーするようであれば微調整」）。
+# 温度の誤差には足さない（足すと上乗せが一時的な余白を外気温の分として覚えた。レビュー指摘）。電力は 3 回の中央値で、
+# 1 回だけの跳ね（254 W など）を最大電力と見ない
 PEAK_WINDOW_S = 180.0
+PREDICT_ON_C = -4.0
+PREDICT_OFF_C = 6.0
 
 
 def sensor_kind(sensor: dict) -> str:
@@ -138,7 +143,9 @@ class Controller:
         self.t = 0.0
         self.integral_loaded = False
         self.peaks: deque = deque()
+        self.recent_power: deque = deque(maxlen=3)
         self.reserve_c = 0.0
+        self.prepared = False
 
     def reset(self, start_percent: float | None = None) -> None:
         self.__init__()
@@ -189,22 +196,6 @@ class Controller:
             filtered = self.pv.setdefault(sid, _Lag()).update(recent, dt, PV_RISE_S, s * PV_FALL_SHARE)
             pv[sid] = filtered
             errors[sid] = filtered - targets[sid]
-        # 重い局面への余白（hotspot だけ。負荷中だけ）
-        jump_c_per_w = (model.hotspot_jump_c_per_w if model is not None and model.hotspot_jump_c_per_w else HOTSPOT_JUMP_C_PER_W)
-        if power_w is not None:
-            self.peaks.append((self.t, float(power_w)))
-            while self.peaks and self.peaks[0][0] < self.t - PEAK_WINDOW_S:
-                self.peaks.popleft()
-        reserve = 0.0
-        if power_w is not None and self.peaks:
-            idle_guess = model.idle_power_w if model is not None and model.idle_power_w is not None else IDLE_FALLBACK_W
-            if float(power_w) - idle_guess >= IDLE_HEAT_W:
-                peak_w = max(w for _, w in self.peaks)
-                reserve = max(0.0, jump_c_per_w * (peak_w - float(power_w)))
-                for sensor in sensors:
-                    if sensor_kind(sensor) == "junction" and sensor["id"] in errors:
-                        errors[sensor["id"]] += reserve
-        self.reserve_c = reserve
         governing = max(errors, key=errors.get) if errors else ""
         error = errors.get(governing, -99.0)
         if over_limit:
@@ -252,6 +243,30 @@ class Controller:
         wanted = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
         loaded = power_w is not None and not idle
         floor = clamp(ff + max(min(self.integral, 0.0), -FLOOR_NEGATIVE_I_MAX), settings.min_percent, settings.max_percent) if loaded else 0.0
+        self.reserve_c = 0.0
+        if power_w is not None:
+            self.recent_power.append(float(power_w))
+            steady_w = median(self.recent_power)
+            self.peaks.append((self.t, steady_w))
+            while self.peaks and self.peaks[0][0] < self.t - PEAK_WINDOW_S:
+                self.peaks.popleft()
+            peak_w = max(w for _, w in self.peaks)
+            jump = (model.hotspot_jump_c_per_w if model is not None and model.hotspot_jump_c_per_w else HOTSPOT_JUMP_C_PER_W)
+            hot = next((x for x in sensors if sensor_kind(x) == "junction" and x["id"] in pv), None)
+            if loaded and hot is not None:
+                self.reserve_c = max(0.0, jump * (peak_w - steady_w))
+                predicted = pv[hot["id"]] + self.reserve_c
+                target = targets[hot["id"]]
+                if predicted >= target + PREDICT_ON_C:
+                    self.prepared = True
+                elif predicted < target - PREDICT_OFF_C:
+                    self.prepared = False
+                if self.prepared:
+                    heat_peak = max(0.0, peak_w - (idle_power if known_idle else 0.0))
+                    ready = self.feedforward(model, settings, sensors, heat_peak) + self.integral
+                    floor = max(floor, clamp(ready, settings.min_percent, settings.max_percent))
+            elif not loaded:
+                self.prepared = False
         wanted = max(wanted, floor)
 
         if emergency:
@@ -405,7 +420,11 @@ def pid_gains(model: ThermalModel) -> tuple[float, float]:
     return kp, round(min(600.0, max(15.0, model.tau_s * 1.6)), 1)
 
 
-def optimize_gains(plant, model: ThermalModel, base: CoreSettings) -> dict:
+def fan_kinds() -> tuple[str, str, str]:
+    return ("junction", "mem", "edge")
+
+
+def optimize_gains(plant, model: ThermalModel, base: CoreSettings, sensor_ids: dict[str, str] | None = None) -> dict:
     """実機に当てはめた 2 段の模型（fan_plant）で PID の効き具合を選ぶ。熱モデルからの値（pid_gains）を中心に
     Kp・Ti を 0.8〜1.25 倍で試し、LLM らしい負荷・休みから全力・外気温 +10°C で緊急の最大回転が 0 回のものの
     うち、負荷中の温度の揺れが一番小さいもの。どれも 0 回にならなければ回数が一番少ないもの。"""
@@ -418,14 +437,19 @@ def optimize_gains(plant, model: ThermalModel, base: CoreSettings) -> dict:
     for kf in (0.8, 1.0, 1.25):
         for tf in (0.8, 1.0, 1.25):
             trial = CoreSettings(**{**base.__dict__, "kp": round(kp0 * kf, 2), "ti": round(ti0 * tf, 1)})
-            results = [simulate_plant(plant, model, trial, power, dt=3.0, ambient_add=amb, ambient_ramp=ramp, seed=i + 1)
+            results = [simulate_plant(plant, model, trial, power, dt=3.0, ambient_add=amb, ambient_ramp=ramp, seed=i + 1,
+                                      sensor_ids=sensor_ids)
                        for i, (power, amb, ramp) in enumerate(loads)]
             tried.append({"kp": trial.kp, "ti": trial.ti, "emergencies": sum(r["emergencies"] for r in results),
                           "spread_c": round(max(r["spread_c"] for r in results), 2),
                           "peak_c": max(r["peak_c"] for r in results),
                           "centre": kf == 1.0 and tf == 1.0})
     # 揺れの差が 0.25°C 未満なら差が無いとみなし、熱モデルからの値（中心）を選ぶ（模擬の揺らぎで選ばない）
-    best = min(tried, key=lambda t: (t["emergencies"], round(t["spread_c"] * 4) / 4, not t["centre"]))
+    fewest = min(t["emergencies"] for t in tried)
+    safe = [t for t in tried if t["emergencies"] == fewest]
+    calm = min(t["spread_c"] for t in safe)
+    close = [t for t in safe if t["spread_c"] < calm + 0.25]
+    best = next((t for t in close if t["centre"]), None) or min(close, key=lambda t: t["spread_c"])
     return {"kp": best["kp"], "ti": best["ti"], "tried": tried, "plant": plant.summary()}
 
 
@@ -435,7 +459,8 @@ def tune(model: ThermalModel, base: CoreSettings, sensors: list[dict], full_w: f
     無ければ熱モデルからの値のまま（簡単な模型の hotspot は実機の約 1 分かけた上昇を再現しないため、選択には使わない）。"""
     kp, ti = pid_gains(model)
     if plant is not None:
-        chosen = optimize_gains(plant, model, base)
+        ids = {sensor_kind(x): x["id"] for x in sensors}
+        chosen = optimize_gains(plant, model, base, ids if set(fan_kinds()) <= set(ids) else None)
         kp, ti = chosen["kp"], chosen["ti"]
     trial = CoreSettings(**{**base.__dict__, "kp": kp, "ti": ti})
     metrics = evaluate(model, trial, sensors, full_w)
@@ -459,6 +484,7 @@ def simulate_plant(plant, model: ThermalModel, settings: CoreSettings, power: li
     from app.monitoring.fan_plant import TwoStage
 
     ids = sensor_ids or plant.data.get("sensor_ids") or {"junction": "temp2", "mem": "temp3", "edge": "temp1"}
+    model = ThermalModel.from_json(model.to_json())   # 模擬で本物の上乗せを書き換えない・試行どうしを独立にする
     sensors = [{"id": ids[kind], "kind": kind} for kind in ("junction", "mem", "edge")]
     rnd = random.Random(seed)
     noise = plant.noise

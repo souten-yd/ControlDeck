@@ -4,9 +4,9 @@
 ファン制御の最適化に使えるようにし、更新したら新しいものに更新することとして」。
 
 * 模型は `plant_models/*.json`（版・作った日・誤差つき）。GPU の PCI device ID で選ぶ。
-* 本番の 1 秒ごとの記録（fan_log の `fan-1s-*.csv`）から当てはめ直せる（`fit`）。良くなったら
-  `plant_models/` の JSON を差し替えてコミットする（`python -m app.maintenance.fan_plant_fit`）。
-  手元で当てはめ直したものは data の `amd-fan-plant.json` に置かれ、こちらを優先する。
+* 本番の 1 秒ごとの記録（fan_log の `fanraw-*.csv`）から当てはめ直せる（`fit`）。
+  `python -m app.maintenance.fan_plant_fit --write` は data の `amd-fan-plant.json` へ保存し、本番はこちらを優先する。
+  `--export <path>` で書き出した JSON を開発側の `plant_models/` へ入れ、PR で同梱の模型を更新する。
 
 模型（1 秒刻み）: 放熱板 S は 外気温＋空気への熱抵抗 a·(f/50)^-b × 熱 に時定数 tau_s で近づき、センサー T は
 S ＋ k × 熱 に時定数 tau_d で近づく。f はファンの回転で、指示に時定数 tau_f で追いつく。熱＝電力 − アイドル電力。

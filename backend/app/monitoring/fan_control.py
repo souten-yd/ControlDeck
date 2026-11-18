@@ -698,7 +698,7 @@ def sample_raw() -> None:
     if device is None:
         return
     temps = {s["kind"]: s["value_c"] for s in device["sensors"]}
-    fan_log.add_raw(time.time(), fan=float(_applied_percent) if _applied_percent else None,
+    fan_log.add_raw(time.time(), fan=float(_applied_percent) if _applied_percent is not None else None,
                     power=device["power_w"], temps=temps, rpm=device.get("fan_rpm"))
 
 

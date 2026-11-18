@@ -86,3 +86,56 @@ def test_tune_optimizes_gains_on_the_plant_and_keeps_the_centre_when_differences
     assert len(found["optimized"]["tried"]) == 9
     assert all(t["emergencies"] == 0 for t in found["optimized"]["tried"] if t["centre"])
     assert (found["kp"], found["ti"]) == core.pid_gains(model)
+
+
+def _controller_case():
+    plant = fan_plant.builtin()
+    model = ThermalModel.from_json(plant.data["controller_model"])
+    settings = core.CoreSettings(limits_c={"temp1": 85.0, "temp2": 95.0, "temp3": 90.0}, margin_c=5.0, min_percent=20.0)
+    return model, settings
+
+
+def _reading(hot):
+    return [{"id": "temp2", "kind": "junction", "value_c": hot}, {"id": "temp3", "kind": "mem", "value_c": 60},
+            {"id": "temp1", "kind": "edge", "value_c": 50}]
+
+
+def test_a_predicted_overshoot_raises_the_fan_to_the_peak_power_level_without_teaching_the_integral():
+    """全力に戻ると間に合わないと予測したら、最大電力で目標を保てる回転まで先に上げる（利用者の案 2026-11-18）。
+    予測の分は積分へ入れない。1 回だけの電力の跳ねは最大電力と見ない。"""
+    model, settings = _controller_case()
+    ctl = core.Controller()
+    model.integral_percent = 0.0
+    for _ in range(5):
+        ctl.step(_reading(84), 215.0, 3.0, settings, model)
+    for _ in range(5):
+        step = ctl.step(_reading(84), 145.0, 3.0, settings, model)
+    light = ctl.feedforward(model, settings, _reading(84), 145.0 - model.idle_power_w)
+    assert step.floor > light + 5 and step.reserve_c > 5
+    assert step.i_term <= 0.5
+
+    spike = core.Controller()
+    for power in (145.0, 145.0, 254.0, 145.0, 145.0, 145.0):
+        last = spike.step(_reading(80), power, 3.0, settings, model)
+    assert last.reserve_c == 0
+
+
+def test_refit_uses_the_longest_run_and_checks_on_held_out_data():
+    from app.maintenance import fan_plant_fit as fit
+
+    plant = fan_plant.builtin()
+    twin = fan_plant.TwoStage(plant, start_fan=50.0)
+    rows, t = [], 1000.0
+    for i in range(1800):
+        power = 12.0 if (i // 300) % 2 == 0 else 200.0
+        twin.step(50.0, power)
+        rows.append({"t": t, "fan": 50.0, "power": power, "temps": dict(twin.T)})
+        t += 1.0
+    broken = rows[:200] + [{**r, "t": r["t"] + 600} for r in rows[200:]]
+    assert len(fit.longest_run(broken)) == 1600
+    result = fit.evaluate(rows, plant)
+    assert result["samples"] == 1800 and set(result["after_rmse"]) == set(fan_plant.KINDS)
+    only_load = [{**r, "power": 200.0} for r in rows]
+    import pytest
+    with pytest.raises(ValueError):
+        fit.evaluate(only_load, plant)

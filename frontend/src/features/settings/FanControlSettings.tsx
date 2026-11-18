@@ -545,8 +545,8 @@ export function FanControlSettings() {
             {(control.floor_percent ?? 0) > 0 && (control.floor_percent ?? 0) > control.output_percent - 0.05 && (
               <>（負荷中の床 {control.floor_percent!.toFixed(1)}%）</>
             )}
-            {(control.reserve_c ?? 0) >= 0.5 && <>（重い局面への余白 +{control.reserve_c!.toFixed(1)}°C）</>}
-            （先読み＝電力から目標で釣り合う回転を見積もった分。負荷中は先読みより下げない。余白＝直近 3 分の最大電力に戻ったときの hotspot の跳ねを見込んだ分。I＝上乗せ: 先読みの不足分（外気温・季節）を覚えた分）
+            {(control.reserve_c ?? 0) >= 0.5 && <>（重い局面の見込み +{control.reserve_c!.toFixed(1)}°C）</>}
+            （先読み＝電力から目標で釣り合う回転を見積もった分。負荷中は先読みより下げない。見込み＝直近 3 分の最大電力に戻ったときの hotspot の跳ね。間に合わない見込みなら先に回転を上げる。I＝上乗せ: 先読みの不足分（外気温・季節）を覚えた分）
           </p>
         )}
         {emergency && <p className="mt-2 text-xs text-red-700 dark:text-red-300">上限温度を超えたため、なめらかさを無視して最大回転にしています。上限を下回ると通常の制御に戻ります。</p>}
