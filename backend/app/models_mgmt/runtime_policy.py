@@ -20,6 +20,9 @@ class ChatDefaults(BaseModel):
 
 
 class DeepResearchSettings(BaseModel):
+    # True: 根拠の量とレポートの長さを、使うモデルのコンテキスト長から決める（context_budget）。
+    # False: 下の 2 つの固定値を使う（2026-11-18 から既定は True）
+    auto_from_context: bool = True
     evidence_context_chars: int = Field(default=90000, ge=12000, le=500000)
     max_report_tokens: int = Field(default=32768, ge=8192, le=262144)
     timeout_seconds: int = Field(default=1800, ge=300, le=7200)
@@ -342,6 +345,7 @@ async def environment() -> dict:
         "runtimes": runtimes, "policy": policy.model_dump(), "amd_gpu": gpu_caps,
         "startup_models": await startup_models(),
         "compaction_windows": await asyncio.to_thread(_compaction_windows),
+        "context_budgets": await asyncio.to_thread(_context_budgets),
         "addon_gpu_state": _addon_gpu_state(),
     }
 
@@ -370,6 +374,13 @@ def _compaction_windows() -> list[dict]:
             out.append({"alias": str(item.get("alias") or ""), "runtime": str(item.get("runtime") or ""),
                         "name": str(item.get("display_name") or item.get("alias") or ""), "window": window})
     return out
+
+
+def _context_budgets() -> list[dict]:
+    """モデルごとに、コンテキスト長から決まる各機能の量（モデル画面の一覧）。"""
+    from app.models_mgmt import context_budget
+
+    return [{**row, **context_budget.for_window(row["window"]).as_dict()} for row in _compaction_windows()]
 
 
 def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:

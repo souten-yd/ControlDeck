@@ -12,7 +12,7 @@ import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
-import { IconChip, IconMic, IconPaperclip, IconSend, IconStop } from "../../components/icons";
+import { IconChip, IconMic, IconSearch, IconSend, IconStop, IconTerminal } from "../../components/icons";
 import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/shell";
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
@@ -27,7 +27,7 @@ import {
   ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
   type ConversationSummary,
 } from "./ConversationHistory";
-import { ModeChip } from "./ModeChip";
+import { ComposerPill, PlusMenu, type PlusAction } from "./PlusMenu";
 
 /** 進み具合の取れるアップロード（fetch では送信の進捗が取れない）。 */
 function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: number) => void): Promise<{ ok: boolean; status: number; body: unknown }> {
@@ -57,7 +57,7 @@ function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: num
   });
 }
 import {
-  OpenCodeActivity, PERMISSION_MODES, PermissionModeChip,
+  OpenCodeActivity, PERMISSION_MODES,
   type OpenCodePermission, type OpenCodeTool, type PermissionMode,
 } from "./OpenCodeActivity";
 
@@ -112,7 +112,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
+  meta?: { mode?: string; handoff?: { messages: number; chars: number }; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
 
@@ -123,6 +123,8 @@ interface Msg {
   images?: string[];
   /** OpenCode: 道具の実行と許可の問い合わせ */
   tools?: OpenCodeTool[];
+  /** 回答した機能（"code" = OpenCode）。保存した発言から */
+  answeredBy?: string;
   permissions?: OpenCodePermission[];
   /** 生成中のジョブ（停止に使う） */
   jobId?: string | null;
@@ -162,6 +164,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     images: m.meta?.attachments?.map((a) => attachmentUrl(convId, a)),
     tools: m.meta?.tools,
     permissions: m.meta?.permissions,
+    answeredBy: m.meta?.mode,
     jobId: m.job_id,
     thinking: m.thinking || undefined,
     messageId: m.id,
@@ -943,7 +946,7 @@ export default function AssistantChat() {
         setModeChoice("code");
         if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
-          persistStatus: "generating", jobId: res.job_id ?? null });
+          persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code" });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "gen") {
         // 利用者の追補指定により、自動判定した生成は確認を挟まず、そのまま
@@ -1102,6 +1105,37 @@ export default function AssistantChat() {
     .map((item): { id: string; icon: string; label: string; hint: string } => ({ id: item.id, icon: item.icon, label: item.label, hint: item.short }));
   modeOptions.splice(1, 0, { id: "investigate", icon: "🔎", label: "調査", hint: "Web・論文を調べて根拠つきで回答（深さは自動か指定）" });
   const showDepth = modeChoice === "investigate";
+  // OpenCode の会話（道具を使った回答がある）か、いま OpenCode で送るなら、権限の札を出す
+  const isCodeAnswer = (m: Msg) => m.answeredBy === "code" || (m.tools?.length ?? 0) > 0 || (m.permissions?.length ?? 0) > 0;
+  const inCodeConversation = messages.some(isCodeAnswer);
+  const showPermissionPill = opencodeAvailable && (effectiveMode === "code" || inCodeConversation);
+  const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
+  // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
+  const lastCodeIndex = messages.reduce((last, m, i) => (isCodeAnswer(m) ? i : last), -1);
+  const pendingHandoff = messages.slice(lastCodeIndex + 1).some((m) => m.role === "assistant" && !m.streaming && m.content.trim());
+  const plusActions: PlusAction[] = [];
+  if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
+    plusActions.push({
+      id: "handoff", icon: <IconTerminal />, label: "この会話を OpenCode に引き継ぐ",
+      hint: "ここまでのチャット・調査の結果（出典つき）を前提に、同じ会話で OpenCode が作業します",
+      onSelect: () => {
+        setModeChoice("code");
+        if (!input.trim()) setInput("ここまでの会話の内容をもとに実装してください。");
+        window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 50);
+      },
+    });
+  }
+  if (opencodeAvailable && inCodeConversation && effectiveMode === "code") {
+    plusActions.push({
+      id: "investigate-for-code", icon: <IconSearch />, label: "調べて OpenCode に渡す",
+      hint: "いったん調査に切り替えます。調べた結果は、次に OpenCode へ送るときに自動で引き継がれます",
+      onSelect: () => {
+        setModeChoice("investigate");
+        show("調査の結果は、次に OpenCode で送るときに引き継がれます");
+        window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 50);
+      },
+    });
+  }
   const historyProps = {
     conversations,
     currentId: convId,
@@ -1508,24 +1542,33 @@ export default function AssistantChat() {
               className="block max-h-40 w-full min-w-0 resize-none border-0 bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 outline-none placeholder:text-zinc-400 sm:text-[15px]"
             />
             <div data-assistant-input-row className="flex w-full min-w-0 items-center gap-1 p-1.5">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
+              <PlusMenu
                 disabled={busy}
-                aria-label="ファイルを添付（画像はVLM、文書は会話の資料へ）"
-                title="ファイルを添付 — 画像はVLMへ、コード/文書/PDFは会話の資料（RAG）へ登録"
-                className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-600 transition hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                <IconPaperclip />
-              </button>
-              <div className="flex min-w-0 flex-1 items-center">
-                <ModeChip
-                  value={modeChoice}
-                  options={modeOptions}
-                  detectedLabel={currentMode.label}
-                  routing={routing}
-                  onChange={(id) => setModeChoice(id as AssistantModeChoice)}
-                />
+                onAttach={() => fileInputRef.current?.click()}
+                mode={modeChoice}
+                modeOptions={modeOptions}
+                detectedLabel={currentMode.label}
+                routing={routing}
+                onModeChange={(id) => setModeChoice(id as AssistantModeChoice)}
+                permission={opencodeAvailable ? { mode: permissionMode, editable: canChangePermissionMode, onChange: (m) => void changePermissionMode(m) } : null}
+                actions={plusActions}
+              />
+              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                {modeChoice === "auto" ? (
+                  <span data-mode-detected aria-live="polite" className="min-w-0 truncate px-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span aria-hidden>✦ </span>自動 · {routing ? "計画中…" : currentMode.label}
+                  </span>
+                ) : (
+                  <ComposerPill icon={modeOptions.find((o) => o.id === modeChoice)?.icon ?? "✦"}
+                    label={modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}
+                    title="機能（＋で変更）" kind="mode" onClear={() => setModeChoice("auto")} />
+                )}
+                {showPermissionPill && (
+                  <ComposerPill icon={<span className="font-mono tracking-[-0.2em]">{currentPermission.icon}</span>}
+                    label={currentPermission.label} tone={permissionMode === "auto" ? "accent" : "amber"}
+                    title={canChangePermissionMode ? `OpenCode の権限: ${currentPermission.label}（押すと切替・PC は Shift+Tab）` : `OpenCode の権限: ${currentPermission.label}（変更は管理者）`}
+                    kind="permission" onClick={canChangePermissionMode ? cyclePermissionMode : undefined} />
+                )}
               </div>
               <button
                 type="button"
@@ -1563,7 +1606,7 @@ export default function AssistantChat() {
               （iPhone で入力欄の下が空きすぎていた。2026-11-17） */}
           <div data-assistant-composer-status aria-live="polite"
             className={`min-w-0 items-center gap-2 px-3 text-[10px] leading-none text-zinc-500 ${
-              showComposerStatus || effectiveMode === "code" || showDepth ? "flex h-8" : "hidden h-8 [@media(pointer:fine)]:flex"}`}>
+              showComposerStatus || showDepth ? "flex h-8" : "hidden h-8 [@media(pointer:fine)]:flex"}`}>
             {showDepth && (
               <label className="flex shrink-0 items-center gap-1">
                 <span>深さ</span>
@@ -1577,9 +1620,6 @@ export default function AssistantChat() {
                 </select>
               </label>
             )}
-            {effectiveMode === "code" && (
-              <PermissionModeChip mode={permissionMode} editable={canChangePermissionMode} onChange={(m) => void changePermissionMode(m)} />
-            )}
             {showComposerStatus ? (asr.phase === "installing" || asr.phase === "permission" || asr.listening || asr.phase === "transcribing" ? (
               <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…" : asr.listening ? "聞いています。1.2秒の無音で送信します" : "音声を文字に変換中…"}</span>
             ) : (
@@ -1589,7 +1629,7 @@ export default function AssistantChat() {
             )}
           </div>
           {/* 行を畳んだときは、ホームバーの帯の分だけ空ける（帯が無い・WebView が短いときは最小限） */}
-          {!(showComposerStatus || effectiveMode === "code" || showDepth) && (
+          {!(showComposerStatus || showDepth) && (
             <div aria-hidden className="assistant-composer-gap hidden [@media(pointer:coarse)]:block" />
           )}
           </div>

@@ -99,6 +99,7 @@ interface RuntimePolicy {
   assistant_name: string;
   chat: { timeout_seconds: number };
   deep_research: {
+    auto_from_context?: boolean;
     evidence_context_chars: number;
     max_report_tokens: number;
     timeout_seconds: number;
@@ -133,6 +134,11 @@ interface RuntimeEnvironment {
   startup_models?: Array<{ runtime: "ollama" | LocalRuntime; alias: string; name: string; ready: boolean }>;
   /** チャットモデルごとの 1 リクエストの窓（会話の自動圧縮のプレビュー用） */
   compaction_windows?: Array<{ alias: string; runtime: string; name: string; window: number }>;
+  context_budgets?: Array<{
+    alias: string; name: string; window: number; output_tokens: number;
+    research_evidence_chars: number; research_report_tokens: number; research_max_sources: number;
+    search_pages: number; investigate_calls: number; rag_top_k: number; rag_chars: number; handoff_chars: number;
+  }>;
   addon_gpu_state?: { lending: boolean; lent: Array<{ runtime: string; alias: string }>; waiting_llm_requests: number };
   amd_gpu: null | {
     bdf: string;
@@ -1289,8 +1295,43 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
       <SettingsGroup title="AIアシスタント">
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
       </SettingsGroup>
+      <SettingsGroup title="コンテキストに合わせた量" description="Deep Research・調査・検索・RAG・OpenCode への引き継ぎ" collapsible defaultOpen={false}>
+        <p className="text-[10px] leading-relaxed text-zinc-500">
+          使うモデルのコンテキスト長から、各機能が LLM に入れる量を自動で決めます。窓が広いほど多く入れますが、
+          根拠の本文は 13 万トークン（約 39 万文字）で止めます。長い入力ほど精度が落ちることが分かっているためです
+          （RULER・NoLiMa・Context Rot）。RAG は 4〜8 件、回答の分は窓の 10% を空けます。会話の圧縮は上の「会話の自動圧縮」の設定です。
+        </p>
+        {(runtimeEnv.context_budgets ?? []).length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[34rem] text-left text-[11px] tabular-nums" aria-label="モデルごとの量">
+              <thead className="text-zinc-500">
+                <tr><th className="py-1 pr-2 font-medium">モデル</th><th className="pr-2 font-medium">窓</th>
+                  <th className="pr-2 font-medium">Deep Research 根拠 / レポート</th><th className="pr-2 font-medium">調査の検索</th>
+                  <th className="pr-2 font-medium">RAG</th><th className="font-medium">OpenCode への引き継ぎ</th></tr>
+              </thead>
+              <tbody>
+                {(runtimeEnv.context_budgets ?? []).map((b) => (
+                  <tr key={b.alias} className="border-t border-zinc-100 dark:border-zinc-800">
+                    <td className="py-1 pr-2">{b.name}</td>
+                    <td className="pr-2">{(b.window / 1024).toLocaleString()}K</td>
+                    <td className="pr-2">{Math.round(b.research_evidence_chars / 1000).toLocaleString()}千字 / {Math.round(b.research_report_tokens / 1024)}K・出典 {b.research_max_sources}</td>
+                    <td className="pr-2">{b.investigate_calls} 回・{b.search_pages} 件</td>
+                    <td className="pr-2">{b.rag_top_k} 件・{Math.round(b.rag_chars / 1000)}千字</td>
+                    <td>{Math.round(b.handoff_chars / 1000)}千字</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SettingsGroup>
       <SettingsGroup title="Deep Research" description="根拠の量・レポートの長さ・時間の上限" collapsible defaultOpen={false}>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <label className="flex min-h-11 items-center gap-2 text-xs">
+          <input type="checkbox" checked={policy.deep_research.auto_from_context ?? true}
+            onChange={(e) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, auto_from_context: e.target.checked } })} />
+          根拠の量とレポートの長さを、モデルのコンテキスト長から自動で決める（おすすめ）
+        </label>
+        <div className={"grid grid-cols-1 gap-2 sm:grid-cols-3 " + ((policy.deep_research.auto_from_context ?? true) ? "[&>label:nth-child(-n+2)]:opacity-50" : "")}>
           <L label="根拠の文字数上限">
             <PresetOrCustom value={policy.deep_research.evidence_context_chars} presets={[30000, 60000, 90000, 150000, 300000].map((v) => ({ v, label: v.toLocaleString() }))} placeholder="90000" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, evidence_context_chars: Number(v ?? 90000) } })} />
           </L>
@@ -1301,7 +1342,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
             <PresetOrCustom value={policy.deep_research.timeout_seconds} presets={[300, 600, 1200, 1800, 3600].map((v) => ({ v, label: `${v}秒` }))} placeholder="1800" onChange={(v) => setPolicyCfg({ ...policy, deep_research: { ...policy.deep_research, timeout_seconds: Number(v ?? 1800) } })} />
           </L>
         </div>
-        <p className="text-[10px] text-zinc-500">専用CTXは全体へ強制せず、各モデルの個別設定で指定します。</p>
+        <p className="text-[10px] text-zinc-500">自動にすると、根拠の文字数とレポートの長さの上限は使いません（上の「コンテキストに合わせた量」の値になります）。専用CTXは全体へ強制せず、各モデルの個別設定で指定します。</p>
       </SettingsGroup>
       {runtimeEnv.amd_gpu && (
         <SettingsGroup title="GPU の電力・静音" description="LLM の起動・生成の前に適用します" collapsible defaultOpen={false}>

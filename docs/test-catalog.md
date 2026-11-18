@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 166 ファイル、1489 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、136 テスト
+- backend: 167 ファイル、1495 テスト（目的の未記入 93 ファイル）
+- E2E: 79 spec、137 テスト
 
 ## backend（backend/tests）
 
@@ -593,6 +593,17 @@
 - `test_event_streams_are_left_alone_wherever_they_are`
 - `test_websocket_scopes_are_never_touched`
 - `test_the_addon_frame_actually_shrinks` — 実際に縮むこと。ここが効かないと携帯では待ち時間になる。
+
+### backend/tests/test_context_budget.py
+
+目的: LLM を使う機能の量を、モデルのコンテキスト長から決める（context_budget）と、チャットから OpenCode への引き継ぎ。 目的: 2026-11-18 利用者の依頼「コンテキスト長（512K〜1M）を考慮した値に、Deep Research・検索・調査・RAG・チャット・ コード開発で自動設定」「チャットの結果を同じ会話で OpenCode に引き継ぐ」「OpenCode の開発中に調査を挟んで反映」。 - 窓が広いほど多く入れるが、根拠の本文は上限で止める（長い入力ほど精度が落ちる: RULER・NoLiMa・Context Rot） - 短い窓では、根拠＋回答の分が窓を超えない - 窓が分からないときは従来の固定値（Deep Research 90,000 文字前後）と同程度 - 引き継ぐのは前回の OpenCode の回答より後のチャット・調査（出典つき）。上限を超えたら古いほうから落とす
+
+- `test_bigger_windows_get_more_but_evidence_is_capped`
+- `test_short_windows_leave_room_for_the_answer`
+- `test_unknown_window_is_close_to_the_old_fixed_values`
+- `test_for_model_uses_the_managed_window`
+- `test_handoff_carries_chat_and_research_after_the_last_opencode_answer`
+- `test_nothing_to_hand_off_right_after_an_opencode_answer`
 
 ### backend/tests/test_control_deck_self_update.py
 
@@ -2438,6 +2449,7 @@
 
 - history list: groups, search, open, rename, delete, new chat (${width}px)
 - mode chip menu in the composer (${width}px)
+- a chat can be handed off to OpenCode from the plus menu in the same conversation
 - failed and canceled answers show their status, the error and a retry
 - standalone iPhone: top bar and composer stay inside the screen (${viewport.width}px)
 - drawer and settings are flat on a phone

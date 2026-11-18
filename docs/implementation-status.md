@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-18 AI アシスタント: ＋メニュー・OpenCode への引き継ぎ・コンテキスト長に合わせた量
+
+- 入力欄の左下に＋を置き、添付・機能の選択・OpenCode の権限を 1 つのメニューにまとめた（Claude と同じ形）。選んだ機能と権限は＋の隣に小さな札で出す。
+- 権限が消えた原因: 入力欄の下の行に「いまの判定が OpenCode のときだけ」出していたので、自動判定が文字を打つたびにチャットへ判定し直すと消えた。OpenCode が使えるなら、いつでも＋から変えられる。
+- OpenCode への引き継ぎ: 前回の OpenCode の回答より後のチャット・調査（出典つき）を、OpenCode への依頼の前に付ける（`chat_persist.handoff_context`）。＋に「この会話を OpenCode に引き継ぐ」「調べて OpenCode に渡す」。
+- コンテキスト長に合わせた量: Deep Research の根拠・レポート・出典、調査の検索回数と抜粋、Web 検索の件数、RAG の件数と量、OpenCode への引き継ぎの量を、モデルの窓から決める（`context_budget`、根拠は docs/design-context-budget.md）。モデル画面に一覧。
+- 検証: `tests/test_context_budget.py`（新規）、全体 1703 件、E2E `assistant-claude-layout`（12 件）、実画面（390px・1280px）。`assistant-mobile` の 1 件は main でも同じく落ちる（検証用インスタンスで音声入力が使えない）。
+
 ## 2026-11-18 OpenCode: 日本語のプロジェクト名で回答が作れない（UnicodeEncodeError）
 
 - プロジェクト「コンバータシム」で OpenCode が「処理に失敗しました（UnicodeEncodeError）」。OpenCode の server へ送るヘッダー `x-opencode-directory` にプロジェクトのパスをそのまま入れていて、日本語が入ると HTTP のヘッダー（ASCII だけ）を作る前に落ちていた。
