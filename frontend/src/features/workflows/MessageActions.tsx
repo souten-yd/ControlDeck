@@ -3,6 +3,7 @@
  * 各メッセージの下に小さな「⋯」を置き、タップ（クリック）でメニューを開く。メニューは画面に固定して
  * 出す（会話の枠や入力欄に切られない）。行は 44px 以上で、携帯でも押しやすくする。 */
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export type MessageAction = "copy" | "fork" | "edit" | "delete";
 
@@ -22,39 +23,55 @@ export function MessageActions({ actions, align, disabled, onSelect }: {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLUListElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!ref.current?.contains(target) && !menu.current?.contains(target)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
-    // 画面に固定したメニューなので、スクロールや回転でボタンから離れたら閉じる
+    // スクロールしたらボタンに付いて動く（書いている途中の回答で会話の欄が動き続けても閉じない）。
+    // ボタンが画面から外れたら閉じる
+    const follow = () => {
+      const next = place();
+      if (next) setPos(next);
+      else setOpen(false);
+    };
     const dismiss = () => setOpen(false);
     window.addEventListener("pointerdown", close);
     window.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("scroll", follow, true);
     window.addEventListener("resize", dismiss);
-    ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
+    menu.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
     return () => {
       window.removeEventListener("pointerdown", close);
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("scroll", follow, true);
       window.removeEventListener("resize", dismiss);
     };
   }, [open]);
-  const toggle = () => {
+  /** ボタンの位置からメニューの位置を決める。ボタンが画面に見えていなければ null。 */
+  const place = (): { left: number; top: number } | null => {
     const rect = button.current?.getBoundingClientRect();
-    if (rect) {
+    if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) return null;
+    {
       const width = Math.min(272, window.innerWidth - 32);
       const height = actions.length * 56 + 8;
       const left = align === "end" ? rect.right - width : rect.left;
-      // 下に入らなければ上に開く
-      const top = rect.bottom + 4 + height > window.innerHeight ? Math.max(8, rect.top - 4 - height) : rect.bottom + 4;
-      setPos({ left: Math.max(16, Math.min(left, window.innerWidth - width - 16)), top });
+      // 下に入らなければ上に開く。下の端は入力欄の上端（入力欄に隠れて押せなかった。2026-11-18 利用者の画面）
+      const composer = document.querySelector("[data-assistant-composer]")?.getBoundingClientRect();
+      const bottom = composer && composer.top > rect.bottom ? composer.top - 8 : window.innerHeight - 8;
+      const top = rect.bottom + 4 + height > bottom ? Math.max(8, rect.top - 4 - height) : rect.bottom + 4;
+      return { left: Math.max(16, Math.min(left, window.innerWidth - width - 16)), top };
     }
+  };
+  const toggle = () => {
+    const next = place();
+    if (next) setPos(next);
     setOpen((v) => !v);
   };
   return (
@@ -64,8 +81,9 @@ export function MessageActions({ actions, align, disabled, onSelect }: {
         className="grid h-8 min-w-11 place-items-center rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 [@media(pointer:coarse)]:h-11">
         <span aria-hidden className="text-base leading-none tracking-widest">⋯</span>
       </button>
-      {open && pos && (
-        <ul role="menu" aria-label="メッセージの操作" style={{ left: pos.left, top: pos.top }}
+      {/* 画面のいちばん手前に出す（会話の欄の中に置くと、入力欄より奥に描かれて隠れる） */}
+      {open && pos && createPortal(
+        <ul ref={menu} role="menu" aria-label="メッセージの操作" style={{ left: pos.left, top: pos.top }}
           className="fixed z-[100] w-[min(17rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-zinc-200 bg-white py-1 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
           {actions.map((action) => (
             <li key={action} role="none">
@@ -76,7 +94,8 @@ export function MessageActions({ actions, align, disabled, onSelect }: {
               </button>
             </li>
           ))}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   );

@@ -106,3 +106,38 @@ test("attachment chip shows upload progress", async ({ page }) => {
   await expect(bar).toHaveCount(0, { timeout: 5000 });
   await expect(shell.getByRole("button", { name: "a.pngを取り消す" })).toBeVisible();
 });
+
+test("the menu of the last message opens above the composer and its items can be pressed", async ({ page }) => {
+  // 2026-11-18 利用者: 最後の自分の発言の「⋯」を押すと、メニューが下の入力欄に隠れて「編集」を押せなかった
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.goto("/assistant");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
+  await expect(page.getByLabel("ユーザー名")).toBeHidden();
+  await mockConversation(page);
+  // 最後が自分の発言（回答待ち）で、会話の欄のいちばん下にある
+  await page.route(/\/api\/v1\/chat\/conversations\/orig\/messages$/, (route) => route.fulfill({ json: {
+    conversation: { id: "orig", title: "元の会話" },
+    messages: [...Array.from({ length: 6 }, (_, i) => [msg(`u${i}`, "user", `質問 ${i}`), msg(`a${i}`, "assistant", `回答 ${i}\n\n`.repeat(4))]).flat(),
+      msg("ulast", "user", "インダクタンスの最小値を1マイクロヘンリーにしてまた電圧の最大値は")],
+  } }));
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "orig"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("インダクタンスの最小値", { exact: false })).toBeVisible();
+  const last = shell.getByRole("button", { name: "メッセージの操作" }).last();
+  await last.scrollIntoViewIfNeeded();
+  const menu = page.getByRole("menu", { name: "メッセージの操作" });
+  // 開いた直後は、いちばん下へ合わせるスクロールが続くことがある（スクロールでメニューは閉じる）。落ち着いてから
+  await expect(async () => {
+    await last.click();
+    await expect(menu).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
+  const composer = (await shell.locator("[data-assistant-composer]").boundingBox())!;
+  const box = (await menu.boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(composer.y);           // 入力欄より上に収まる
+  await page.getByRole("menuitem", { name: /編集して送り直す/ }).click(); // 押せる（隠れていない）
+  await expect(shell.getByLabel("発言を書き直す")).toHaveValue(/インダクタンスの最小値/);
+});
