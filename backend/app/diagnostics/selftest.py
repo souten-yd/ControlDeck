@@ -93,9 +93,30 @@ def _collector():
     return age < 120, f"メトリクス収集の最終更新 {age:.0f} 秒前"
 
 
+def _fan():
+    """ファン制御が目標から外れていないか（直近 24 時間の記録）。外れていたら「記録から作り直す」を勧める。"""
+    from app.monitoring import fan_control
+
+    if not fan_control._load().enabled:
+        return True, "無効（GPU 標準の自動制御）"
+    s = fan_control.log_summary(24.0)
+    if not s["minutes"]:
+        return "warn", "制御中の記録がありません"
+    peak = s["peak_c"].get("hot")
+    text = (f"直近 {s['minutes']} 分: 目標超え（+{fan_control.fan_log.DEVIATION_C:.0f}°C が 1 分以上）{s['deviations']} 回・"
+            f"緊急の最大回転 {s['emergency_minutes']} 分・hotspot 最高 {peak if peak is not None else '—'}°C")
+    if s["emergency_minutes"] or s["deviations"] >= DEVIATION_WARN:
+        return "warn", text + "。設定のファン制御で「記録から作り直す」を試してください"
+    return True, text
+
+
+# 目標超えがこの回数を超えたら警告（全力の始まりの 1 回ずつは起こりうるので、数回までは許す）
+DEVIATION_WARN = 3
+
+
 CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモリ", _memory), ("応答（event loop）", _event_loop),
           ("常駐サービス", _failed_units), ("ローカル LLM", _llms), ("画面の build", _frontend),
-          ("必要なコマンド", _tools), ("メトリクス収集", _collector)]
+          ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan)]
 
 
 _latest: dict | None = None

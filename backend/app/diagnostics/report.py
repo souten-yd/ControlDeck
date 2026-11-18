@@ -116,6 +116,15 @@ def _client_timing(events: list[dict]) -> list[dict]:
     return out
 
 
+def _fan_summary(hours: float) -> dict | None:
+    try:
+        from app.monitoring import fan_control
+
+        return fan_control.log_summary(min(hours, 48.0)) if fan_control._load().enabled else None
+    except Exception:  # noqa: BLE001 - 報告はファンの不調で止めない
+        return None
+
+
 def build(hours: float = 24.0, include_tests: bool = False) -> dict:
     since = time.time() - hours * 3600
     events = store.read(since=since, limit=None)
@@ -159,6 +168,7 @@ def build(hours: float = 24.0, include_tests: bool = False) -> dict:
         "viewport": [{"ts": e["ts"], "standalone": e.get("standalone"), "path": e.get("connection"), **(e.get("marks") or {})}
                      for e in events if e.get("kind") == "client_timing" and e.get("page") == "viewport"][:8],
         "tests": next((e for e in events if e.get("kind") == "tests"), None),
+        "fan": _fan_summary(hours),
     }
     if include_tests:
         data["tests"] = selftest.run_tests()
@@ -184,6 +194,11 @@ def to_markdown(data: dict) -> str:
     out += ["", "## 管理下の常駐の異常終了", ""]
     fails = Counter((f["unit"], f["kind"]) for f in j["unit_failures"] if f["kind"] in ("failed", "oom", "watchdog"))
     out += [f"- {unit}: {kind} × {n}" for (unit, kind), n in fails.most_common(15)] or ["- なし"]
+    fan = data.get("fan")
+    if fan is not None:
+        out += ["", "## ファン制御（1 分ごとの記録: data/diagnostics/fan-*.csv）", ""]
+        out += [f"- 記録 {fan['minutes']} 分・目標超え（+2°C が 1 分以上）{fan['deviations']} 回・計 {fan['deviation_seconds']} 秒"
+                f"・緊急の最大回転 {fan['emergency_minutes']} 分・最高 hotspot {fan['peak_c'].get('hot')}°C / VRAM {fan['peak_c'].get('mem')}°C"]
     out += ["", "## event loop の詰まり（画面が遅くなる原因）", ""]
     for s in data["loop_stalls"]:
         out += [f"- {s['where']}: {s['count']} 回、計 {s['total_seconds']:.1f} 秒、最長 {s['max_seconds']:.1f} 秒",
