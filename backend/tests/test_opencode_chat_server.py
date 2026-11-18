@@ -479,6 +479,9 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
           await plugin.setup({{ permission: {{ hook: async (name, fn) => {{ hooks[name] = fn; }} }} }});
           const out = {{}};
           const cases = [["edit", ["a.py"], "ask"], ["write", ["b.py"], "allow"], ["shell", ["ls -la"], "ask"],
+                         ["shell", ["ls -la x 2>/dev/null | head -5; echo done"], "ask"], ["shell", ["node --version 2>&1"], "ask"],
+                         ["shell", ["git -C /p status --short 2>&1 | head"], "ask"], ["shell", ["ls > out.txt"], "ask"],
+                         ["shell", ["cat a 2>/dev/nullx"], "ask"], ["shell", ["node x.js"], "ask"],
                          ["shell", ["git status && git diff"], "ask"], ["shell", ["rg foo | head"], "ask"], ["shell", ["grep -n -C 3 foo a.py"], "ask"],
                          ["shell", ["npm run build"], "ask"], ["shell", ["git commit -m x"], "ask"], ["shell", ["mkdir x"], "ask"],
                          ["shell", ["python -m pytest -q"], "ask"], ["shell", ["rm -rf build"], "allow"],
@@ -506,16 +509,20 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
     for mode, out in results.items():
         assert out["edit:a.py"] == "deny" and out["write:b.py"] == "deny", mode       # allow で決まった書き込みも止める
         for change in ("npm run build", "git commit -m x", "mkdir x", "python -m pytest -q", "rm -rf build",
-                       "fd . -x touch {}", "uniq a.txt src/app.py", "rg --pre ./x.sh foo"):
+                       "fd . -x touch {}", "uniq a.txt src/app.py", "rg --pre ./x.sh foo",
+                       "ls > out.txt", "cat a 2>/dev/nullx", "node x.js"):
             assert out[f"shell:{change}"] == "deny", (mode, change)
         assert out["subagent:developer"] == "deny", mode
-        assert out["execute:sculpt"] == "ask" and out["webfetch:https://x"] == "ask", mode
+        assert out["execute:sculpt"] == "ask", mode
         assert out["shell:systemctl stop x"] == "deny", mode                            # 禁止は緩めない
         assert out["bySession"] == "deny", mode
-    for read in ("ls -la", "rg foo | head", "grep -n -C 3 foo a.py"):
+    # 調べて計画するので、Auto の箱の中では Web を読める（確認モードは確認する）
+    assert results["auto"]["webfetch:https://x"] == "allow" and results["ask"]["webfetch:https://x"] == "ask"
+    # 2026-11-18 本番: 出力を捨てるだけの形が「変更」扱いで止まっていた
+    for read in ("ls -la", "rg foo | head", "grep -n -C 3 foo a.py", "ls -la x 2>/dev/null | head -5; echo done",
+                 "node --version 2>&1", "git -C /p status --short 2>&1 | head", "git status && git diff"):
         assert results["auto"][f"shell:{read}"] == "allow", read
         assert results["ask"][f"shell:{read}"] == "ask", read                          # 確認モードでは緩めない
-    assert results["auto"]["shell:git status && git diff"] == "ask"                    # git はリポジトリの設定を動かしうる
     assert results["auto"]["build"] == "allow" and results["ask"]["build"] == "ask"
 
 

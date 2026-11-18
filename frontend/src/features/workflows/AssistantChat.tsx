@@ -842,9 +842,9 @@ export default function AssistantChat() {
           setAttachments((prev) => prev.map((a) => (a.id === tempId ? { ...a, progress: ratio } : a)));
         });
         if (!response.ok) throw new Error((response.body as { detail?: string } | null)?.detail ?? `アップロード失敗 (${response.status})`);
-        const data = response.body as { kind: "image" | "document" | "archive"; id: string; name: string; chunks?: number; files?: number };
+        const data = response.body as { kind: "image" | "document" | "archive"; id: string; name: string; chunks?: number; files?: number; note?: string };
         setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready", preview: a.preview, files: data.files } : a)));
-        if (data.kind === "document") show(`「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
+        if (data.kind === "document") show(data.note || `「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
         if (data.kind === "archive") {
           // 圧縮ファイルは OpenCode がプロジェクトへ展開して使う（2026-11-18 利用者の依頼）
           setModeChoice("code");
@@ -1027,10 +1027,15 @@ export default function AssistantChat() {
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
-    const researchFirst = choice === "auto" ? Boolean(decision.research)
+    let researchFirst = choice === "auto" ? Boolean(decision.research)
       : choice === "code" ? wantsResearch(text) : false;
     let selectedMode: Mode = choice === "auto" ? decision.mode
       : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
+    // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）
+    if (agent === "plan" && opencodeAvailable && SEARCH_MODES.includes(selectedMode)) {
+      selectedMode = "code";
+      researchFirst = true;
+    }
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
     if (selectedMode === "run" && selectedRunTarget === "") {
@@ -1089,11 +1094,11 @@ export default function AssistantChat() {
       archives: readyArchives.map((a) => a.name) };
     append(userMsg);
     try {
-      const investigateAuto = choice === "investigate" && researchDepth === "auto";
+      const investigateAuto = choice === "investigate" && researchDepth === "auto" && selectedMode !== "code";
       if ((choice === "auto" && selectedMode !== "gen" && selectedMode !== "run" && selectedMode !== "code") || investigateAuto) {
         setRouting(true);
         selectedPlan = await api<AssistantPlan>("/chat/route", {
-          method: "POST", json: { content: text, base_url: baseUrl, model },
+          method: "POST", json: { content: text, base_url: baseUrl, model, conversation_id: convIdRef.current ?? "" },
         });
         setRouting(false);
         if (investigateAuto && !SEARCH_MODES.includes(selectedPlan.mode)) {
@@ -1825,7 +1830,7 @@ export default function AssistantChat() {
             <div data-plan-banner role="status"
               className="mb-2 flex w-full min-w-0 items-center gap-2 rounded-2xl border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-100">
               <span aria-hidden className="text-base">📋</span>
-              <span className="min-w-0 flex-1 leading-snug"><b>プラン</b> — 計画だけを立てます。ファイルの編集や変更を伴うコマンドはしません。</span>
+              <span className="min-w-0 flex-1 leading-snug"><b>プラン</b> — {modeChoice === "investigate" ? "調べた結果をもとに計画します。" : "計画だけを立てます。"}ファイルの編集や変更を伴うコマンドはしません。</span>
               <button type="button" onClick={() => changeCodeAgent("build")}
                 className="min-h-9 shrink-0 rounded-lg border border-sky-300 bg-white px-2.5 text-xs font-semibold text-sky-800 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900 dark:text-sky-100 dark:hover:bg-sky-800 [@media(pointer:coarse)]:min-h-11">ビルドに切り替える</button>
             </div>

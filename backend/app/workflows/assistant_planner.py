@@ -122,7 +122,8 @@ def _json_object(text: str) -> dict:
     raise ValueError("LLM応答に有効なJSON objectがありません")
 
 
-async def decide(query: str, base_url: str, model: str, api_key: str = "") -> AssistantPlan:
+async def decide(query: str, base_url: str, model: str, api_key: str = "", context: str = "") -> AssistantPlan:
+    """context は添付資料の要約。ルールの判定には使わず、LLM が依頼の対象を取り違えないために渡す。"""
     immediate = rule_plan(query)
     if immediate is not None:
         return immediate
@@ -135,7 +136,8 @@ async def decide(query: str, base_url: str, model: str, api_key: str = "") -> As
     )
     try:
         raw = await _llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": query}],
+            [{"role": "system", "content": system},
+             {"role": "user", "content": f"{query}\n\n添付資料（依頼の対象を判断する材料）:\n{context}" if context else query}],
             base_url, model, api_key, temperature=0, max_tokens=768, disable_thinking=True,
             response_format={"type": "json_schema", "name": "assistant_plan", "schema": PLAN_SCHEMA, "strict": True},
         )

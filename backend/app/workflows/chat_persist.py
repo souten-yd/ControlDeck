@@ -580,13 +580,44 @@ def _collection_embed_override() -> dict:
 
 def _extract_document_text(filename: str, content_type: str, data: bytes) -> str:
     if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
-        import io
+        from app.workflows import pdf_import
 
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(data))
-        return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+        return pdf_import.extract(data)[0]
     return data.decode("utf-8", errors="replace")
+
+
+def _documents_dir(conv_id: str):
+    """添付した PDF の原本・文字・ページ画像の置き場所（会話を消すと一緒に消える）。"""
+    return _attachment_root(conv_id) / "documents"
+
+
+def _document_brief(conv_id: str, limit: int = 1500) -> str:
+    from app.workflows import pdf_import
+
+    try:
+        return pdf_import.brief(_documents_dir(conv_id), limit)
+    except OSError:
+        return ""
+
+
+def _install_documents(conv_id: str, project: Path, always: bool) -> tuple[str, list[dict]]:
+    """添付した PDF を OpenCode のプロジェクトへ置き、依頼の前に付ける説明を返す。
+
+    説明は、新しく置いたときと新しいセッションのときだけ付ける（同じセッションは覚えている）。
+    1 つ失敗しても他と依頼は止めない。
+    """
+    from app.workflows import pdf_import
+
+    folder = _documents_dir(conv_id)
+    placed: list[dict] = []
+    for item in pdf_import.saved(folder):
+        try:
+            placed.append(pdf_import.install(folder, item, project))
+        except OSError as exc:
+            logger.warning("PDF をプロジェクトへ置けませんでした: %s", type(exc).__name__)
+    if not placed or not (always or any(item["new"] for item in placed)):
+        return "", placed
+    return pdf_import.prompt_note(placed), placed
 
 
 async def register_chat_document(conv_id: str, text: str, source: str) -> dict | None:
@@ -615,6 +646,30 @@ async def register_chat_document(conv_id: str, text: str, source: str) -> dict |
         conversation_collection(conv_id), cleaned[:800_000], source,
         config_override={"description": description, **_collection_embed_override()},
     )
+
+
+async def _save_pdf(conv_id: str, name: str, data: bytes) -> dict:
+    """PDF は原本ごと残す。画像だけの PDF や埋め込みモデルが無いときも、OpenCode はページを画像で読める。"""
+    from app.workflows import pdf_import, rag
+
+    import httpx
+
+    try:
+        text, pages = await asyncio.to_thread(pdf_import.extract, data)
+    except Exception as exc:  # pypdf等の解析失敗
+        raise HTTPException(status_code=422, detail=f"文書を読み取れません: {exc}") from exc
+    await asyncio.to_thread(pdf_import.save, _attachment_dir(conv_id) / "documents", name, data, text, pages)
+    chunks = 0
+    note = ""
+    try:
+        result = await register_chat_document(conv_id, text, name)
+        chunks = int((result or {}).get("added_chunks") or 0)
+        if result is None:
+            note = f"「{name}」は文字がほとんど無いので、OpenCode がページを画像として読みます"
+    except (rag.RagError, httpx.HTTPError, OSError):
+        note = f"「{name}」を保存しました。検索用の登録はできませんでしたが、OpenCode は読めます"
+    return {"kind": "document", "id": name, "name": name, "collection": conversation_collection(conv_id),
+            "chunks": chunks, "pages": pages, "note": note}
 
 
 @router.post("/conversations/{conv_id}/attachments", status_code=201)
@@ -651,6 +706,8 @@ async def upload_attachment(
 
     import httpx
 
+    if content_type == "application/pdf" or name.lower().endswith(".pdf"):
+        return await _save_pdf(conv_id, name, data)
     try:
         # PDF の読み取りは重いことがあるので event loop の外で行う。
         text = await asyncio.to_thread(_extract_document_text, name, content_type, data)
@@ -791,6 +848,7 @@ async def opencode_permission(
 
 class RouteBody(BaseModel):
     content: str = Field(min_length=1, max_length=32000)
+    conversation_id: str = Field(default="", max_length=64)   # 添付資料を判定の材料にする
     base_url: str = "http://127.0.0.1:11434/v1"
     model: str = "llama3.2"
 
@@ -800,13 +858,23 @@ async def route_message(
     body: RouteBody, user: User = Depends(require_permission("workflows.run")),
 ):
     """明確な依頼はルール、曖昧な依頼はLLMで構造化判定する。"""
-    del user
     from app.workflows.assistant_planner import decide
 
     from app.models_mgmt.runtime_provider import resolve_target
 
+    def brief() -> str:
+        if not body.conversation_id:
+            return ""
+        db = SessionLocal()
+        try:
+            conv = db.get(Conversation, body.conversation_id)
+            allowed = conv is not None and conv.owner_user_id in (None, user.id)
+        finally:
+            db.close()
+        return _document_brief(body.conversation_id) if allowed else ""
+
     base_url, model = resolve_target(body.base_url, body.model)
-    return (await decide(body.content, base_url, model)).model_dump()
+    return (await decide(body.content, base_url, model, context=await asyncio.to_thread(brief))).model_dump()
 
 
 _KANA = re.compile(r"[\u3040-\u30ff]")
@@ -847,13 +915,20 @@ HANDOFF_MODE_LABEL = {"chat": "チャット", "web": "調査（Web）", "academi
                       "deep": "調査（Deep Research）", "auto": "チャット"}
 
 
-def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int) -> tuple[str, int]:
+def _same_folder(a: object, b: object) -> bool:
+    return Path(str(a)).resolve() == Path(str(b)).resolve()
+
+
+def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int,
+                    project_path: str | None = None) -> tuple[str, int]:
     """OpenCode へ引き継ぐ、前回の OpenCode の回答より後の会話（チャット・調査の結果と出典）。
 
     2026-11-18 利用者の依頼「チャットで始めた会話の結果を、同じ会話の中で OpenCode に引き継ぎたい」
     「OpenCode で開発している中で調査を入れ、その結果を開発に反映したい」。OpenCode には毎回その発言しか
     渡していなかったので、間に挟んだチャットや調査を OpenCode は知らなかった。
     量は limit_chars まで（context_budget.handoff_chars）。超えたら古いほうから落とす（新しい結論を残す）。
+    project_path を渡すと、別の作業フォルダで動いた OpenCode の回答も引き継ぐ（フォルダを変えると
+    セッションも新しくなり、前の回答を知らないため）。
     返り値は (本文, 引き継いだ発言の数)。引き継ぐものが無ければ ("", 0)。
     """
     db = SessionLocal()
@@ -872,7 +947,8 @@ def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int)
             meta = {}
         # OpenCode のセッションが一度でも受け取った発言までは引き継がない（止めた・失敗した回も、
         # その依頼は同じセッションが見ている。二重に渡さない）
-        if meta.get("mode") == "code" and meta.get("opencode_session") and row.status != "generating":
+        if meta.get("mode") == "code" and meta.get("opencode_session") and row.status != "generating" and (
+                project_path is None or not meta.get("project_path") or _same_folder(meta["project_path"], project_path)):
             start = index + 1
     blocks: list[str] = []
     for row in rows[start:]:
@@ -889,9 +965,12 @@ def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int)
         except json.JSONDecodeError:
             meta = {}
         mode = str(meta.get("mode") or "chat")
-        if mode == "code":
+        if mode == "code" and (project_path is None or not meta.get("project_path")
+                               or _same_folder(meta["project_path"], project_path)):
             continue
-        lines = [f"### アシスタント（{HANDOFF_MODE_LABEL.get(mode, mode)}）", content]
+        label = (f"OpenCode（前の作業フォルダ {Path(str(meta['project_path'])).name}）" if mode == "code"
+                 else HANDOFF_MODE_LABEL.get(mode, mode))
+        lines = [f"### アシスタント（{label}）", content]
         sources = [x for x in (meta.get("sources") or []) if isinstance(x, dict) and x.get("url")]
         if sources:
             lines.append("出典:")
@@ -965,8 +1044,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
 
         query = str(history[-1].get("content") or "") if history else ""
 
-        def _last_code_session() -> str:
-            """この会話の直近の OpenCode セッション ID（継続対話用）。"""
+        def _last_code_session() -> tuple[str, str]:
+            """この会話の直近の OpenCode セッション ID と、その作業フォルダ（継続対話用）。"""
             db = SessionLocal()
             try:
                 rows = db.execute(
@@ -981,8 +1060,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         continue
                     session = str(meta.get("opencode_session") or "")
                     if session:
-                        return session
-                return ""
+                        return session, str(meta.get("project_path") or "")
+                return "", ""
             finally:
                 db.close()
 
@@ -1105,8 +1184,12 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await local_llm.ensure_ready_by_base_url(str(settings["base_url"]))
             job.log("progress", phase="opencode", label="OpenCode を準備しています", iteration=0, details={})
             server = await chat_server.ensure(project, job.owner_user_id)
-            session_id = await asyncio.to_thread(_last_code_session)
-            if not (session_id and await chat_server.session_exists(server, session_id)):
+            session_id, previous_project = await asyncio.to_thread(_last_code_session)
+            # セッションは作った時の作業フォルダで動き続ける。フォルダを変えたら作り直す
+            # （2026-11-18 本番: mokei を選んでも conv のセッションのまま、箱の中の空の conv で作業していた）
+            moved = bool(session_id and previous_project and not _same_folder(previous_project, project))
+            fresh_session = moved or not (session_id and await chat_server.session_exists(server, session_id))
+            if fresh_session:
                 session_id = await chat_server.create_session(server, query[:60])
             # 添付した圧縮ファイルをプロジェクトへ展開し、どこに何を置いたかを依頼の前に付ける
             archive_notes: list[str] = []
@@ -1132,7 +1215,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             # 調べる回は、引き継ぎと調べた結果で上限を半分ずつ使う（合わせて上限を超えない）
             handoff_limit = budget.handoff_chars // 2 if params.get("code_research") else budget.handoff_chars
             handoff, handoff_count = await asyncio.to_thread(
-                handoff_context, conv_id, params.get("user_message_id"), handoff_limit)
+                handoff_context, conv_id, params.get("user_message_id"), handoff_limit, str(project))
             # 「調べて反映して」: ControlDeck の調査で調べ、出典つきの根拠を OpenCode に渡す（同じ 1 回の送信で）
             research_note = ""
             if params.get("code_research"):
@@ -1144,8 +1227,20 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 research_params = {**params, "base_url": code_base, "model": code_model}
                 research_note = await _research_for_code(job, buf, conv_id, query, research_params,
                                                          budget.handoff_chars // 2)
-            # 依頼の前に付けるもの: これまでの会話 → 調べた結果 → 展開した圧縮ファイル → 今回の依頼
-            preface = ([handoff] if handoff else []) + ([research_note] if research_note else []) + archive_notes
+            job.log("progress", phase="documents", label="添付した資料を用意しています", iteration=0, details={})
+            document_note, documents = await asyncio.to_thread(_install_documents, conv_id, project, fresh_session)
+            if documents:
+                buf["meta"]["documents"] = [{"name": d["name"], "path": d["relative"], "pages": d["pages"]} for d in documents]
+            lead: list[str] = []
+            if params.get("code_agent") == "plan":
+                lead.append("## プラン\nいまはプランです。ファイルの編集や変更を伴うコマンドはせず、read・grep・glob・"
+                            "webfetch で調べ、実装の手順をまとめて利用者の確認を求めてください。")
+            if moved:
+                lead.append(f"## 作業フォルダ\n今回の作業フォルダは `{project}` です（前は `{previous_project}`）。"
+                            "前のフォルダのファイルはここからは見えません。")
+            # 依頼の前に付けるもの: プラン・作業フォルダ → これまでの会話 → 調べた結果 → 資料 → 今回の依頼
+            preface = lead + ([handoff] if handoff else []) + ([research_note] if research_note else []) \
+                + archive_notes + ([document_note] if document_note else [])
             if preface:
                 query = "\n\n".join(preface) + f"\n\n## 今回の依頼\n{query}"
             if handoff:
@@ -1196,7 +1291,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     if mode == "auto" and plan is None:
         from app.workflows.assistant_planner import decide
 
-        plan = await decide(history[-1]["content"], base_url, model)
+        plan = await decide(history[-1]["content"], base_url, model,
+                            context=await asyncio.to_thread(_document_brief, conv_id))
         mode = plan.mode
     elif mode == "auto" and plan is not None:
         mode = plan.mode
@@ -1257,6 +1353,16 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                                 + str(found["context"])[:budget.rag_chars]}, *history]
         except Exception:
             pass  # 資料検索の失敗は通常チャットへフォールバック
+
+    # 調査の回答でも、添付した PDF の内容を根拠に入れる（2026-11-18 本番: 添付を見ずに別物を調べて答えた）
+    if mode in ("web", "academic", "research") and history and history[0].get("role") == "system":
+        from app.models_mgmt import context_budget
+
+        brief = await asyncio.to_thread(_document_brief, conv_id,
+                                        context_budget.for_model(base_url, model).rag_chars)
+        if brief:
+            history = [{**history[0], "content": f"{history[0].get('content') or ''}\n\n"
+                        f"利用者が添付した資料です。依頼の対象はまずこの資料で判断してください:\n{brief}"}, *history[1:]]
 
     # 画像添付（VLM）: 最後のuser発話をOpenAI互換のcontent配列（text+image_url）へ変換
     attachment_ids = [str(a) for a in (params.get("attachments") or []) if _ATTACHMENT_ID_RE.fullmatch(str(a))]
@@ -1491,7 +1597,8 @@ async def _research_for_code(job: jobs.Job, buf: dict, conv_id: str, query: str,
     code_meta = dict(buf.get("meta") or {})
     try:
         job.log("progress", phase="code_research", label="OpenCode に渡す前に調べています", iteration=0, details={})
-        plan = await decide(query, params["base_url"], params["model"])
+        plan = await decide(query, params["base_url"], params["model"],
+                            context=await asyncio.to_thread(_document_brief, conv_id))
         if plan.mode not in ("web", "academic", "research", "deep") or not plan.steps:
             plan = None
         messages = await _server_research(job, buf, conv_id, query, params, plan)

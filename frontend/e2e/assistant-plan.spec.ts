@@ -117,6 +117,28 @@ test("the plus menu switches between build and plan, and Shift+Tab leaves plan b
 });
 
 
+test("research with plan goes to OpenCode: investigate first, then plan", async ({ page, context }) => {
+  // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-agent-option="plan"]').click();
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="investigate"]').click();
+  await expect(shell.locator("[data-plan-banner]")).toContainText("調べた結果をもとに計画します");
+  const input = shell.locator("[data-assistant-input]");
+  await input.fill("Plan15 の作り方を検討して");
+  await input.press("Enter");
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ mode: "code", code_research: true, code_agent: "plan" });
+});
+
 test("the plus menu stays on a short screen, scrolls inside and follows the arrow keys", async ({ page, context }) => {
   // 2026-11-18 利用者「項目が多すぎてはみ出る。スライドも微妙にできない」
   test.skip(!hasSession(), "E2E credentials required");
