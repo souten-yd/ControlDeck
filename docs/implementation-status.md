@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-18 Maya: DeepSeek（DS-XS）の画像の読み取りを ControlDeck が正しく扱う
+
+- DS-XS に vision tower を入れた（Maya の設定し直し、DeepSeek の checkpoint の shard 1 と config.json、約 0.97 GB）。ところが ControlDeck は GLM の見方（config の `vision`）でしか判定しておらず、DeepSeek は画像を読めても「読めない」扱いだった（ゲートウェイの画像の解析が断る、モデル画面に印が出ない）。
+- DeepSeek（maya-ds4）は pack に vision tower が入っていて `--vision off` でなければ画像を読む、と判定する（Maya の ds4_pack_has_vision と同じ見方）。個別設定に「画像の読み取り」の入／切を足した（tower が無いモデルでは選べない・入にできない）。
+- 検証: `tests/test_maya_register.py`（既存のファイルに 1 件）、全体 1694 件、E2E `maya-register`、本番の DS-XS の設定で判定が「読める」になることを読み取りで確かめた。個別設定の画面の入／切は E2E 未作成（型チェックとビルドのみ）。
+
 ## 2026-11-18 AI アシスタントの OpenCode: 思考を操作の前後で分ける・作業フォルダを会話で続ける・箱ごとの /tmp
 
 - 思考が全部 1 つの窓に入っていた: 思考の断片を 1 つの文字列に足し込み、道具の一覧と別の枠に出していた。届いた順の並び（`meta.timeline`。思考・本文は文字の位置、道具は ID）を記録し、画面は「思考 → 道具 → 思考 → …」の順に、思考はまとまりごとの窓で出す。再接続の snapshot にも並びを付ける。

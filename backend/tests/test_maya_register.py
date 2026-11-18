@@ -390,3 +390,33 @@ def test_registered_model_settings_write_the_engine_config(engine, admin_client=
         maya_s.save_instance_settings("maya-deepseek-xs", {"context": 65536})
     with pytest.raises(maya_s.MayaError):
         maya_s.instance_settings("maya-s")                      # 最初のモデルは従来の設定画面
+
+
+def test_deepseek_vision_is_detected_from_the_pack_and_can_be_switched(engine, tmp_path):
+    """DeepSeek（maya-ds4）は pack に vision tower が入っていて --vision off でなければ画像を読む（Maya #416）。
+    以前は GLM の見方（config の "vision"）だけで、画像を読めても「読めない」扱いだった（2026-11-18、
+    ゲートウェイの画像の解析が断り、モデル画面に印が出なかった）。個別設定で入／切できる。tower が無ければ入にできない。"""
+    pack = tmp_path / "maya-ds4"
+    pack.mkdir()
+    (pack / "ds4.txt").write_text("vision.num_hidden_layers 32\n")
+    (engine.source / "maya-ds4-hip.json").write_text(json.dumps({
+        "exe": "/x/build-hip/maya-ds4", "args": ["--pack", str(pack), "--vision", "off", "--max-context", "65536"]}))
+    rows = maya_s._registry() + [{"alias": "maya-deepseek-xs", "setup_id": "deepseek-maya-xs", "family": "deepseek",
+                                  "tier": "Maya-XS", "config": "maya-ds4-hip.json", "port": 8100, "size_gb": 282.4}]
+    maya_s._save_registry(rows)
+    config = engine.source / "maya-ds4-hip.json"
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is False          # --vision off
+    s = maya_s.instance_settings("maya-deepseek-xs")
+    assert s["vision"] == "off" and s["vision_available"] is True
+    maya_s.save_instance_settings("maya-deepseek-xs", {"vision": "on"})
+    assert "--vision" not in json.loads(config.read_text())["args"]           # 既定（読む）に戻す
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is True
+    maya_s.save_instance_settings("maya-deepseek-xs", {"vision": "off"})
+    args = json.loads(config.read_text())["args"]
+    assert args[args.index("--vision") + 1] == "off"
+    # tower が入っていない pack では入にできない
+    (pack / "ds4.txt").write_text("layers 61\n")
+    assert maya_s.instance_settings("maya-deepseek-xs")["vision_available"] is False
+    with pytest.raises(maya_s.MayaError, match="vision tower"):
+        maya_s.save_instance_settings("maya-deepseek-xs", {"vision": "on"})
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is False

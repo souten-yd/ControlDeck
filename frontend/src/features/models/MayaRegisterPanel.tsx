@@ -230,6 +230,8 @@ interface MayaInstanceSettings {
   on_demand_start: boolean; idle_exclude: boolean; auto_start: boolean; running: boolean;
   dspark?: "on" | "off"; cpu_threads?: number; vram_experts?: number;
   mmap_experts?: "auto" | "on" | "off"; ssd_cache?: string; prefill_chunk?: number;
+  /** 画像の読み取り（vision tower を pack に入れたときだけ選べる） */
+  vision?: "on" | "off"; vision_available?: boolean;
 }
 
 const settingField = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
@@ -316,6 +318,17 @@ function MayaInstanceSettingsForm({ alias, title }: { alias: string; title: stri
       <span className="text-[11px] text-zinc-500">要求が値を指定しないときに使います。モデルカードの推奨は 1.0 / 1.0 です。</span>
     </SettingsGroup>
     {ds && <SettingsGroup title="性能（DeepSeek）" description="エンジン maya-ds4 の起動オプション" collapsible defaultOpen={false}>
+      <label className="block text-xs">画像の読み取り（vision）
+        <select aria-label={`${title} 画像の読み取り`} value={draft.vision ?? "off"} disabled={locked || !draft.vision_available}
+          onChange={(e) => set("vision", e.target.value as "on" | "off")} className={`mt-1 ${settingField}`}>
+          <option value="on">読む</option><option value="off">読まない（文字だけ）</option>
+        </select>
+        <span className="text-[11px] text-zinc-500">
+          {draft.vision_available
+            ? "画像の部品の重み（約 1 GB）は RAM に置き、読むときだけ VRAM を約 320 MB 使います。"
+            : "画像の部品（vision tower）が入っていません。Maya の設定し直しで入れると選べます。"}
+        </span>
+      </label>
       <label className="block text-xs">下書き（DSpark・投機デコード）
         <select aria-label={`${title} 下書き`} value={draft.dspark} disabled={locked}
           onChange={(e) => set("dspark", e.target.value as "on" | "off")} className={`mt-1 ${settingField}`}>

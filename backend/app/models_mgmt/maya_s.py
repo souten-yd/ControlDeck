@@ -663,12 +663,30 @@ def _config_context(config: Path) -> int:
         return 0
 
 
-def _config_vision(config: Path | None) -> bool:
-    """Maya reads pictures only when its config names an image encoder ("vision")."""
+def _ds4_pack_has_vision(args: list) -> bool:
+    """DeepSeek（maya-ds4）: pack に vision tower が入っているか（Maya の ds4_pack_has_vision と同じ見方: ds4.txt）。"""
+    pack = _flag(args, "--pack")
     try:
-        return bool(config and isinstance(json.loads(config.read_text(encoding="utf-8")).get("vision"), dict))
+        return bool(pack) and any(line.startswith("vision.num_hidden_layers ") for line in
+                                  (Path(pack) / "ds4.txt").read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return False
+
+
+def _config_vision(config: Path | None) -> bool:
+    """Maya が画像を読めるか。GLM は config の "vision"（画像エンコーダー）で、DeepSeek（maya-ds4）は pack に
+    vision tower が入っていて `--vision off` でないとき（engine が tower を自分で動かす。Maya #416）。
+    以前は GLM の見方だけで、DeepSeek は画像を読めても「読めない」扱いだった（2026-11-18）。"""
+    try:
+        cfg = json.loads(config.read_text(encoding="utf-8")) if config else {}
     except (OSError, ValueError):
         return False
+    if isinstance(cfg.get("vision"), dict):
+        return True
+    args = list(cfg.get("args") or [])
+    if Path(str(cfg.get("exe") or "")).name.startswith("maya-ds4"):
+        return _flag(args, "--vision") != "off" and _ds4_pack_has_vision(args)
+    return False
 
 
 def get_instance(alias: str) -> dict:
@@ -744,6 +762,9 @@ def instance_settings(alias: str) -> dict:
             "mmap_experts": _flag(args, "--mmap-experts") or "auto",
             "ssd_cache": _flag(args, "--ssd-cache") or "off",
             "prefill_chunk": int(_flag(args, "--prefill-chunk") or 0),
+            # 画像の読み取り。vision tower を pack に入れたときだけ選べる（入れるのは Maya の設定し直し）
+            "vision_available": _ds4_pack_has_vision(args),
+            "vision": "off" if _flag(args, "--vision") == "off" or not _ds4_pack_has_vision(args) else "on",
         })
     return out
 
@@ -786,6 +807,10 @@ def save_instance_settings(alias: str, values: dict) -> dict:
         _set_flag(args, "--mmap-experts", None if v["mmap_experts"] == "auto" else str(v["mmap_experts"]))
         _set_flag(args, "--ssd-cache", None if str(v["ssd_cache"]) == "off" else str(v["ssd_cache"]))
         _set_flag(args, "--prefill-chunk", str(int(v["prefill_chunk"])) if int(v["prefill_chunk"]) > 0 else None)
+        if str(v.get("vision")) == "on" and not _ds4_pack_has_vision(args):
+            raise MayaError("このモデルには画像の部品（vision tower）が入っていません。Maya の設定し直しで入れてください")
+        # 既定（付けない）で読む。切るときだけ --vision off（pack に tower が無ければ付けても同じ）
+        _set_flag(args, "--vision", "off" if str(v.get("vision")) == "off" else None)
     cfg["args"] = args
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")

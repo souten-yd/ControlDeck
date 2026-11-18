@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 170 ファイル、1485 テスト（目的の未記入 93 ファイル）
+- backend: 170 ファイル、1486 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、148 テスト
 
 ## backend（backend/tests）
@@ -1310,6 +1310,7 @@
 - `test_refresh_after_an_engine_update_keeps_port_and_tuning`
 - `test_glm_maya_s_from_the_sheet_comes_back_as_the_first_model`
 - `test_registered_model_settings_write_the_engine_config` — 登録したモデル（DS-XS）の個別設定（2026-11-17 の依頼: 設定が一切無い）。エンジンの args・config へ書き、
+- `test_deepseek_vision_is_detected_from_the_pack_and_can_be_switched` — DeepSeek（maya-ds4）は pack に vision tower が入っていて --vision off でなければ画像を読む（Maya #416）。
 
 ### backend/tests/test_maya_s_addon.py
 
