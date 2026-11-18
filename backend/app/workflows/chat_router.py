@@ -332,8 +332,8 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
         "quick": (2, 8, min(30_000, evidence), min(8_192, report)),
         "standard": (3, 16, min(60_000, evidence), min(16_384, report)),
         "deep": (4, 24, evidence, report),
-        "exhaustive": (6, 36, min(evidence * 2, (budget.window * 2 * 3 // 5) if budget else 300_000),
-                       min(report * 2, 131_072)),
+        "exhaustive": (6, 36, budget.exhaustive_evidence_chars if budget else min(300_000, evidence * 2),
+                       budget.exhaustive_report_tokens if budget else min(131_072, report * 2)),
     }
     preset = presets.get(body.depth, presets["deep"])
     max_rounds = body.max_rounds or preset[0]

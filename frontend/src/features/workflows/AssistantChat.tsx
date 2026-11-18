@@ -1525,7 +1525,7 @@ export default function AssistantChat() {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   void send();
-                } else if (e.key === "Tab" && e.shiftKey && effectiveMode === "code" && canChangePermissionMode) {
+                } else if (e.key === "Tab" && e.shiftKey && showPermissionPill && canChangePermissionMode) {
                   // Claude Code と同じく Shift+Tab で権限モードを切り替える
                   e.preventDefault();
                   cyclePermissionMode();
@@ -1543,7 +1543,7 @@ export default function AssistantChat() {
             />
             <div data-assistant-input-row className="flex w-full min-w-0 items-center gap-1 p-1.5">
               <PlusMenu
-                disabled={busy}
+                attachDisabled={busy}
                 onAttach={() => fileInputRef.current?.click()}
                 mode={modeChoice}
                 modeOptions={modeOptions}

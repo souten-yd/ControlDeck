@@ -764,7 +764,9 @@ def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int)
             meta = json.loads(row.meta_json or "{}")
         except json.JSONDecodeError:
             meta = {}
-        if meta.get("mode") == "code" and row.status == "completed":
+        # OpenCode のセッションが一度でも受け取った発言までは引き継がない（止めた・失敗した回も、
+        # その依頼は同じセッションが見ている。二重に渡さない）
+        if meta.get("mode") == "code" and meta.get("opencode_session") and row.status != "generating":
             start = index + 1
     blocks: list[str] = []
     for row in rows[start:]:
@@ -792,21 +794,22 @@ def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int)
         blocks.append("\n".join(lines))
     if not blocks:
         return "", 0
+    head = "## これまでの会話（この会話で OpenCode の前に話した内容・調べた結果。依頼の前提として使ってください）\n\n"
+    note = "（古い {} 件は量の上限のため省略）\n\n"
+    budget = max(200, limit_chars - len(head) - len(note) - 8)   # 見出しと省略の注記も上限に数える
     kept: list[str] = []
     used = 0
     for block in reversed(blocks):
-        if used + len(block) > limit_chars:
+        cost = len(block) + (2 if kept else 0)            # 区切りの空行
+        if used + cost > budget:
             if not kept:   # 最新の 1 つだけでも入れる（末尾を残す）
-                kept.append("…（前略）\n" + block[-max(1_000, limit_chars - 20):])
+                kept.append("…（前略）\n" + block[-max(100, budget - 10):])
             break
         kept.append(block)
-        used += len(block)
+        used += cost
     kept.reverse()
-    head = ("## これまでの会話（この会話で OpenCode の前に話した内容・調べた結果。依頼の前提として使ってください）\n\n")
     omitted = len(blocks) - len(kept)
-    if omitted:
-        head += f"（古い {omitted} 件は量の上限のため省略）\n\n"
-    return head + "\n\n".join(kept), len(kept)
+    return head + (note.format(omitted) if omitted else "") + "\n\n".join(kept), len(kept)
 
 
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,

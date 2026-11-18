@@ -33,6 +33,22 @@ def test_unknown_window_is_close_to_the_old_fixed_values():
     b = cb.for_window(0)
     assert not b.known and b.window == cb.DEFAULT_WINDOW
     assert 80_000 <= b.research_evidence_chars <= 110_000   # 旧既定 90,000 文字
+    assert b.research_report_tokens == 32_768               # 旧既定。短くしない（レビュー指摘）
+
+
+def test_exhaustive_stays_within_the_cap_and_the_window():
+    for window in (8_192, 32_768, 131_072, 1_048_576):
+        b = cb.for_window(window)
+        assert b.exhaustive_evidence_chars <= int(cb.EVIDENCE_CAP_TOKENS * 1.5) * cb.CHARS_PER_TOKEN
+        assert b.exhaustive_evidence_chars // cb.CHARS_PER_TOKEN + b.exhaustive_report_tokens <= window
+
+
+def test_custom_deep_research_values_from_before_stay_in_use():
+    from app.models_mgmt.runtime_policy import DeepResearchSettings
+
+    assert DeepResearchSettings.model_validate({"evidence_context_chars": 300000}).auto_from_context is False
+    assert DeepResearchSettings.model_validate({}).auto_from_context is True
+    assert DeepResearchSettings.model_validate({"evidence_context_chars": 300000, "auto_from_context": True}).auto_from_context
 
 
 def test_for_model_uses_the_managed_window(monkeypatch):
@@ -44,7 +60,7 @@ def test_for_model_uses_the_managed_window(monkeypatch):
     assert cb.for_model("http://x", "y").known is False
 
 
-def _add(db, conv_id, role, content, *, mode=None, status="completed", sources=None, at=0):
+def _add(db, conv_id, role, content, *, mode=None, status="completed", sources=None, at=0, session=None):
     import json
     from datetime import datetime, timedelta
 
@@ -54,6 +70,8 @@ def _add(db, conv_id, role, content, *, mode=None, status="completed", sources=N
     meta = {"mode": mode} if mode else {}
     if sources:
         meta["sources"] = sources
+    if session:
+        meta["opencode_session"] = session
     row = ChatMessage(id=_new_id(), conversation_id=conv_id, role=role, content=content, status=status,
                       meta_json=json.dumps(meta) if meta else None,
                       created_at=datetime(2026, 11, 18) + timedelta(seconds=at))
@@ -74,8 +92,8 @@ def test_handoff_carries_chat_and_research_after_the_last_opencode_answer(admin_
         _add(db, conv_id, "user", "古い相談", at=1)
         _add(db, conv_id, "assistant", "古い回答", mode="chat", at=2)
         _add(db, conv_id, "user", "実装して", at=3)
-        _add(db, conv_id, "assistant", "実装しました", mode="code", at=4)         # ここより後だけ引き継ぐ
-        _add(db, conv_id, "user", "SQLite の WAL を調べて", at=5)
+        _add(db, conv_id, "assistant", "実装しました", mode="code", at=4, session="ses1")   # ここより後だけ
+        _add(db, conv_id, "user", "SQLite の WAL を調べて。" + "詳しく。" * 80, at=5)
         _add(db, conv_id, "assistant", "WAL は書き込みを別ファイルに…", mode="deep", at=6,
              sources=[{"reference_id": "R1", "title": "SQLite WAL", "url": "https://sqlite.org/wal.html"}])
         _add(db, conv_id, "assistant", "途中で失敗", mode="chat", status="failed", at=7)
@@ -90,11 +108,12 @@ def test_handoff_carries_chat_and_research_after_the_last_opencode_answer(admin_
     assert "調べた結果で直して" not in text      # 今回の発言は依頼として別に付く
 
     # 上限を超えたら古いほうから落とし、最新の結論を残す
-    text, count = handoff_context(conv_id, current, 120)
+    text, count = handoff_context(conv_id, current, 400)
     assert count == 1 and "WAL は書き込み" in text and "省略" in text
+    assert len(text) <= 400 + 10
 
 
-def test_nothing_to_hand_off_right_after_an_opencode_answer(admin_client):
+def test_nothing_to_hand_off_right_after_an_opencode_answer_even_if_it_was_stopped(admin_client):
     from tests.conftest import CSRF_HEADERS
 
     from app.database import SessionLocal
@@ -104,7 +123,7 @@ def test_nothing_to_hand_off_right_after_an_opencode_answer(admin_client):
     db = SessionLocal()
     try:
         _add(db, conv_id, "user", "実装して", at=1)
-        _add(db, conv_id, "assistant", "実装しました", mode="code", at=2)
+        _add(db, conv_id, "assistant", "途中で止めた", mode="code", status="canceled", at=2, session="ses1")
         current = _add(db, conv_id, "user", "続けて", at=3)
     finally:
         db.close()

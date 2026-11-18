@@ -34,13 +34,14 @@ class Budget:
     window: int                 # 1 回の要求で使える窓（トークン）
     known: bool                 # 窓が分かっていたか
     output_tokens: int          # 回答に空けておく分
-    # Deep Research: 根拠の本文（文字）・レポートの長さ（トークン）・集める出典の数
+    # Deep Research: 根拠の本文（文字）・レポートの長さ（トークン）・集める出典の数。exhaustive は「徹底」
     research_evidence_chars: int
     research_report_tokens: int
     research_max_sources: int
-    # 調査（標準）・Web 検索: 読むページ数と 1 ページの文字数
+    exhaustive_evidence_chars: int
+    exhaustive_report_tokens: int
+    # Web 検索: 回答の根拠にする検索結果の件数（抜粋だけを読む）
     search_pages: int
-    search_page_chars: int
     # 調査（標準）: 検索の回数の上限と、1 件の抜粋の文字数
     investigate_calls: int
     snippet_chars: int
@@ -63,12 +64,16 @@ def for_window(window: int) -> Budget:
     w = window if known else DEFAULT_WINDOW
     output = _clamp(w * OUTPUT_SHARE, 4_096, 32_768)
     evidence_tokens = _clamp(w * 0.25, 8_000, EVIDENCE_CAP_TOKENS)
-    report = min(_clamp(w * 0.06, 8_192, 65_536), max(1_024, w // 2))
+    # レポートは従来の既定（32,768）を下限に、広い窓では伸ばす。窓の半分を超えない
+    report = min(_clamp(max(32_768, w * 0.06), 8_192, 65_536), max(1_024, w // 2))
     # 根拠の分＋出力の分が窓を超えないように（短い窓）
     evidence_tokens = min(evidence_tokens, max(4_000, w - output - report // 2 - 4_000))
+    # 徹底: 根拠は 2 倍まで、ただし上限の 1.5 倍と「窓 − レポート」を超えない
+    exhaustive_report = min(report * 2, 131_072, max(1_024, w // 2))
+    exhaustive_evidence = min(evidence_tokens * 2, int(EVIDENCE_CAP_TOKENS * 1.5),
+                              max(2_000, w - exhaustive_report - 2_000))
     rag_tokens = _clamp(w * 0.08, 2_000, 32_768)
     rag_top_k = 4 if w <= 32_768 else 6 if w <= 131_072 else 8
-    search_tokens = _clamp(w * 0.12, 6_000, 49_152)
     search_pages = 5 if w <= 32_768 else 8 if w <= 131_072 else 10
     handoff_tokens = _clamp(w * 0.15, 4_000, 98_304)
     return Budget(
@@ -76,8 +81,9 @@ def for_window(window: int) -> Budget:
         research_evidence_chars=evidence_tokens * CHARS_PER_TOKEN,
         research_report_tokens=report,
         research_max_sources=24 if w <= 32_768 else 36 if w <= 131_072 else 48,
+        exhaustive_evidence_chars=exhaustive_evidence * CHARS_PER_TOKEN,
+        exhaustive_report_tokens=exhaustive_report,
         search_pages=search_pages,
-        search_page_chars=search_tokens * CHARS_PER_TOKEN // search_pages,
         investigate_calls=6 if w <= 32_768 else 8 if w <= 131_072 else 12,
         snippet_chars=500 if w <= 32_768 else 700 if w <= 131_072 else 1_200,
         rag_top_k=rag_top_k,
