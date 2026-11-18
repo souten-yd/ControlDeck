@@ -312,7 +312,10 @@ def delete_message(
     images: list[str] = []
     for m in doomed:
         try:
-            images += list((json.loads(m.meta_json or "{}") or {}).get("attachments") or [])
+            meta = json.loads(m.meta_json or "{}") or {}
+            images += list(meta.get("attachments") or [])
+            # 展開に失敗して残った圧縮ファイルも消す
+            images += [a.get("id") for a in meta.get("archives") or [] if isinstance(a, dict)]
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
         db.delete(m)
@@ -323,6 +326,8 @@ def delete_message(
     for attachment_id in images:
         if isinstance(attachment_id, str) and _ATTACHMENT_ID_RE.fullmatch(attachment_id):
             (root / attachment_id).unlink(missing_ok=True)
+        elif isinstance(attachment_id, str) and _ARCHIVE_ID_RE.fullmatch(attachment_id):
+            _remove_archive(conv_id, attachment_id)
     audit.record(db, "chat.message.delete", user=user, resource_type="conversation", resource_id=conv_id,
                  request=request, metadata={"messages": len(doomed)})
 
@@ -453,6 +458,68 @@ ATTACHMENT_IMAGE_TYPES = {
 }
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _ATTACHMENT_ID_RE = re.compile(r"^[0-9a-f]{16}\.(png|jpg|webp|gif)$")
+# 圧縮ファイル（OpenCode のプロジェクトへ展開する。archive_import）
+_ARCHIVE_ID_RE = re.compile(r"^[0-9a-f]{16}(\.tar\.gz|\.tar\.bz2|\.tar\.xz|\.tgz|\.tbz2|\.txz|\.tar|\.zip|\.7z|\.rar)$")
+
+
+def _archive_path(conv_id: str, archive_id: str):
+    if not _ARCHIVE_ID_RE.fullmatch(archive_id):
+        raise HTTPException(status_code=404, detail="添付が見つかりません")
+    return _attachment_root(conv_id) / "archives" / archive_id
+
+
+def _remove_archive(conv_id: str, archive_id: str) -> None:
+    """展開し終えた・取り消した圧縮ファイルを消す（最大 200 MiB を会話が消えるまで残さない）。"""
+    path = _archive_path(conv_id, archive_id)
+    path.unlink(missing_ok=True)
+    path.with_name(archive_id + ".json").unlink(missing_ok=True)
+
+
+def _sent_archives(conv_id: str, ids: list[str]) -> list[dict]:
+    return [{"id": a, "name": _archive_name(conv_id, a)} for a in ids
+            if _ARCHIVE_ID_RE.fullmatch(a) and _archive_path(conv_id, a).is_file()]
+
+
+def _archive_name(conv_id: str, archive_id: str) -> str:
+    try:
+        return json.loads((_archive_path(conv_id, archive_id).with_name(archive_id + ".json")).read_text())["name"]
+    except (OSError, ValueError, KeyError):
+        return archive_id
+
+
+async def _save_archive(conv_id: str, file: UploadFile, name: str) -> dict:
+    """圧縮ファイルをディスクへ流し込み（メモリに全部載せない）、中身を確かめる。危なければ消して断る。"""
+    from app.workflows import archive_import
+
+    suffix = archive_import.suffix_of(name) or ""
+    archive_id = uuid.uuid4().hex[:16] + suffix
+    folder = _attachment_dir(conv_id) / "archives"
+    folder.mkdir(exist_ok=True)
+    target = folder / archive_id
+
+    def write() -> int:
+        size = 0
+        with target.open("wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > archive_import.MAX_ARCHIVE_BYTES:
+                    raise HTTPException(status_code=413, detail=f"圧縮ファイルは {archive_import.MAX_ARCHIVE_BYTES // 2**20} MiB 以内にしてください")
+                out.write(chunk)
+        return size
+
+    try:
+        size = await asyncio.to_thread(write)
+        if size == 0:
+            raise HTTPException(status_code=422, detail="ファイルが空です")
+        info = await asyncio.to_thread(archive_import.inspect, target, name)
+    except archive_import.ArchiveError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    await asyncio.to_thread(target.with_name(archive_id + ".json").write_text, json.dumps({"name": name}, ensure_ascii=False))
+    return {"kind": "archive", "id": archive_id, "name": name, "files": info["files"], "bytes": info["bytes"]}
 
 
 def conversation_collection(conv_id: str) -> str:
@@ -552,6 +619,11 @@ async def upload_attachment(
     conv = db.get(Conversation, conv_id)
     if conv is None or (conv.owner_user_id is not None and conv.owner_user_id != user.id):
         raise HTTPException(status_code=404, detail="会話が見つかりません")
+    from app.workflows import archive_import
+
+    if archive_import.suffix_of(file.filename or ""):
+        # 圧縮ファイル: OpenCode に送るときにプロジェクトへ展開する（2026-11-18 利用者の依頼）
+        return await _save_archive(conv_id, file, file.filename or "archive.zip")
     data = await file.read()
     if len(data) == 0:
         raise HTTPException(status_code=422, detail="ファイルが空です")
@@ -590,6 +662,18 @@ async def upload_attachment(
     return {"kind": "document", "id": name, "name": name,
             "collection": conversation_collection(conv_id),
             "chunks": result.get("added_chunks")}
+
+
+@router.delete("/conversations/{conv_id}/attachments/{attachment_id}", status_code=204)
+async def delete_archive_attachment(
+    conv_id: str, attachment_id: str,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    """送る前に取り消した圧縮ファイルを消す（画面の ×）。"""
+    conv = db.get(Conversation, conv_id)
+    if conv is None or (conv.owner_user_id is not None and conv.owner_user_id != user.id):
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    await asyncio.to_thread(_remove_archive, conv_id, attachment_id)
 
 
 @router.get("/conversations/{conv_id}/attachments/{attachment_id}")
@@ -932,14 +1016,34 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             session_id = await asyncio.to_thread(_last_code_session)
             if not (session_id and await chat_server.session_exists(server, session_id)):
                 session_id = await chat_server.create_session(server, query[:60])
+            # 添付した圧縮ファイルをプロジェクトへ展開し、どこに何を置いたかを依頼の前に付ける
+            archive_notes: list[str] = []
+            for archive_id in params.get("archives") or []:
+                from app.workflows import archive_import
+
+                archive_name = await asyncio.to_thread(_archive_name, conv_id, archive_id)
+                job.log("progress", phase="archive", label=f"「{archive_name}」をプロジェクトへ展開しています",
+                        iteration=0, details={})
+                try:
+                    imported = await asyncio.to_thread(archive_import.extract_into_project,
+                                                       _archive_path(conv_id, archive_id), archive_name, project)
+                except archive_import.ArchiveError as exc:
+                    raise chat_server.ChatServerError(f"「{archive_name}」を展開できません: {exc}") from exc
+                archive_notes.append(archive_import.prompt_note(archive_name, imported))
+                await asyncio.to_thread(_remove_archive, conv_id, archive_id)   # 展開したら元は要らない
+                buf["meta"].setdefault("imports", []).append(
+                    {"name": archive_name, "path": imported["relative"], "files": imported["files"]})
             # 前回の OpenCode の回答より後のチャット・調査を、今回の依頼の前に付けて渡す
             from app.models_mgmt import context_budget
 
             budget = context_budget.for_model(str(settings["base_url"]), str(settings.get("model") or ""))
             handoff, handoff_count = await asyncio.to_thread(
                 handoff_context, conv_id, params.get("user_message_id"), budget.handoff_chars)
+            # 依頼の前に付けるもの: これまでの会話 → 展開した圧縮ファイル → 今回の依頼
+            preface = ([handoff] if handoff else []) + archive_notes
+            if preface:
+                query = "\n\n".join(preface) + f"\n\n## 今回の依頼\n{query}"
             if handoff:
-                query = f"{handoff}\n\n## 今回の依頼\n{query}"
                 buf["meta"]["handoff"] = {"messages": handoff_count, "chars": len(handoff)}
                 job.log("progress", phase="handoff", label=f"この会話の {handoff_count} 件を OpenCode に引き継ぎます",
                         iteration=0, details={"chars": len(handoff)})
@@ -1441,9 +1545,18 @@ async def send_message(
                            content=body.content, status="completed")
     sent_images = [a for a in body.attachments
                    if _ATTACHMENT_ID_RE.fullmatch(a) and (_attachment_root(conv_id) / a).is_file()]
+    archive_rows = await asyncio.to_thread(_sent_archives, conv_id, list(body.attachments))
+    sent_archives = [row["id"] for row in archive_rows]
+    if sent_archives and body.mode != "code":
+        raise HTTPException(status_code=422, detail="圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください")
+    user_meta: dict = {}
     if sent_images:
         # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
-        user_msg.meta_json = json.dumps({"attachments": sent_images})
+        user_meta["attachments"] = sent_images
+    if sent_archives:
+        user_meta["archives"] = archive_rows
+    if user_meta:
+        user_msg.meta_json = json.dumps(user_meta, ensure_ascii=False)
     assistant = ChatMessage(id=_new_id(), conversation_id=conv_id, role="assistant",
                             content="", status="generating", model=body.model)
     db.add(user_msg)
@@ -1469,6 +1582,8 @@ async def send_message(
               "code_project_path": body.code_project_path,
               # OpenCode への引き継ぎで、今回の発言そのものを重ねて入れないため
               "user_message_id": user_msg.id,
+              # OpenCode のプロジェクトへ展開する圧縮ファイル
+              "archives": sent_archives,
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")

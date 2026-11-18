@@ -327,6 +327,44 @@ test("a chat can be handed off to OpenCode from the plus menu in the same conver
   expect(calls.filter((c) => c.startsWith("send:"))).toHaveLength(0);
 });
 
+test("an archive is attached for OpenCode, switches to OpenCode and is sent with the message", async ({ page }) => {
+  // 2026-11-18 利用者の依頼: ZIP・RAR などを添付して、OpenCode のプロジェクトへ展開して使う
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await login(page);
+  await mockChat(page);
+  await page.route(/\/api\/v1\/meta$/, async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+    return route.fulfill({ response, json: meta });
+  });
+  await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [{ name: "app", path: "/CodeDEV/app", git: true }] } }));
+  await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
+  await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/attachments$/, (route) => route.fulfill({
+    status: 201, json: { kind: "archive", id: "0123456789abcdef.zip", name: "tool.zip", files: 12, bytes: 4096 } }));
+  let sent: { mode?: string; attachments?: string[]; content?: string } | null = null;
+  await page.route(/\/api\/v1\/chat\/conversations\/[^/]+\/send$/, (route) => {
+    sent = route.request().postDataJSON();
+    return route.fulfill({ json: { assistant_message_id: "a-code", user_message_id: "u-code", job_id: "j1" } });
+  });
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
+  await shell.locator('input[type="file"]').setInputFiles({ name: "tool.zip", mimeType: "application/zip", buffer: Buffer.from("PK") });
+  await expect(shell.getByText("12 ファイル・送ると展開")).toBeVisible();
+  await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toHaveText("OpenCode");
+  // 文字を打たなくても送れる（中身の説明を頼む）
+  await shell.getByRole("combobox").first().selectOption("app").catch(() => {});
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => sent?.mode).toBe("code");
+  expect(sent!.attachments).toEqual(["0123456789abcdef.zip"]);
+  expect(sent!.content).toContain("圧縮ファイル");
+  await expect(shell.getByLabel("送った圧縮ファイル")).toContainText("tool.zip");
+  await expect(shell.getByText("12 ファイル・送ると展開")).toHaveCount(0);
+});
+
 test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 800 });
