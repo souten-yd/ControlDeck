@@ -70,6 +70,9 @@ const attachmentUrl = (convId: string, id: string) =>
 
 /** 本文が無く画像だけを送るときの発言。 */
 const IMAGE_ONLY_PROMPT = "添付した画像を見てください。";
+const ARCHIVE_ONLY_PROMPT = "添付した圧縮ファイルの中身を確認して、構成と内容を説明してください。";
+/** 圧縮ファイルの名前（サーバーの archive_import.SUFFIXES と同じ） */
+const ARCHIVE_RE = /\.(zip|7z|rar|tar|tgz|tbz2|txz|tar\.gz|tar\.bz2|tar\.xz)$/i;
 
 /** hint は空の会話に出す説明、short は機能メニューの一行。 */
 const MODES: { id: Mode; icon: string; label: string; hint: string; short: string; needsEdit?: boolean }[] = [
@@ -112,7 +115,8 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { mode?: string; handoff?: { messages: number; chars: number }; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
+  meta?: { mode?: string; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+    imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
 
@@ -121,6 +125,8 @@ interface Msg {
   content: string;
   /** 送った画像（表示用の URL） */
   images?: string[];
+  /** 送った圧縮ファイルの名前（OpenCode のプロジェクトへ展開した） */
+  archives?: string[];
   /** OpenCode: 道具の実行と許可の問い合わせ */
   tools?: OpenCodeTool[];
   /** 回答した機能（"code" = OpenCode）。保存した発言から */
@@ -162,6 +168,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     role: m.role,
     content: m.content,
     images: m.meta?.attachments?.map((a) => attachmentUrl(convId, a)),
+    archives: m.meta?.archives?.map((a) => a.name),
     tools: m.meta?.tools,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
@@ -239,7 +246,9 @@ export default function AssistantChat() {
   const [codePicker, setCodePicker] = useState(false);
   // 📎添付: 画像は次の送信でVLMへ、文書はアップロード時に会話コレクションへRAG登録済み
   const [attachments, setAttachments] = useState<{
-    id: string; name: string; kind: "image" | "document"; status: "uploading" | "ready"; preview?: string;
+    id: string; name: string; kind: "image" | "document" | "archive"; status: "uploading" | "ready"; preview?: string;
+    /** 圧縮ファイルの中のファイル数 */
+    files?: number;
     /** 0〜1。送り終わった文書は、資料への登録（サーバー側の処理）を待つ */
     progress?: number; size?: number;
   }[]>([]);
@@ -718,10 +727,15 @@ export default function AssistantChat() {
     for (const [index, file] of files.slice(0, 8).entries()) {
       const tempId = `up-${Date.now()}-${index}-${file.name}`;
       const isImage = file.type.startsWith("image/");
+      const isArchive = ARCHIVE_RE.test(file.name);
+      if (isArchive && !opencodeAvailable) {
+        show("圧縮ファイルは OpenCode で展開して使います（OpenCode が使えません）", "error");
+        continue;
+      }
       // 貼り付けた画像は名前が「image.png」だけになりがち。時刻で見分けられるようにする。
       const name = isImage && /^image\.\w+$/.test(file.name) ? `貼り付け ${new Date().toLocaleTimeString()}.${file.name.split(".").pop()}` : file.name;
       const preview = isImage ? URL.createObjectURL(file) : undefined;
-      setAttachments((prev) => [...prev, { id: tempId, name, kind: isImage ? "image" : "document", status: "uploading", preview, progress: 0, size: file.size }]);
+      setAttachments((prev) => [...prev, { id: tempId, name, kind: isImage ? "image" : isArchive ? "archive" : "document", status: "uploading", preview, progress: 0, size: file.size }]);
       try {
         const form = new FormData();
         form.append("file", file, name);
@@ -729,9 +743,14 @@ export default function AssistantChat() {
           setAttachments((prev) => prev.map((a) => (a.id === tempId ? { ...a, progress: ratio } : a)));
         });
         if (!response.ok) throw new Error((response.body as { detail?: string } | null)?.detail ?? `アップロード失敗 (${response.status})`);
-        const data = response.body as { kind: "image" | "document"; id: string; name: string; chunks?: number };
-        setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready", preview: a.preview } : a)));
+        const data = response.body as { kind: "image" | "document" | "archive"; id: string; name: string; chunks?: number; files?: number };
+        setAttachments((prev) => prev.map((a) => (a.id === tempId ? { id: data.id, name: data.name, kind: data.kind, status: "ready", preview: a.preview, files: data.files } : a)));
         if (data.kind === "document") show(`「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
+        if (data.kind === "archive") {
+          // 圧縮ファイルは OpenCode がプロジェクトへ展開して使う（2026-11-18 利用者の依頼）
+          setModeChoice("code");
+          show(`「${data.name}」（${data.files ?? 0} ファイル）は、送ると OpenCode のプロジェクトへ展開します`);
+        }
       } catch (e) {
         if (preview) URL.revokeObjectURL(preview);
         setAttachments((prev) => prev.filter((a) => a.id !== tempId));
@@ -863,11 +882,13 @@ export default function AssistantChat() {
 
   const send = async (providedText?: string) => {
     const readyImages = attachments.filter((a) => a.kind === "image" && a.status === "ready");
+    const readyArchives = attachments.filter((a) => a.kind === "archive" && a.status === "ready");
     if (attachments.some((a) => a.status === "uploading")) {
       show("添付のアップロードが終わってから送信してください", "error");
       return;
     }
-    const text = (providedText ?? input).trim() || (readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
+    const text = (providedText ?? input).trim()
+      || (readyArchives.length > 0 ? ARCHIVE_ONLY_PROMPT : readyImages.length > 0 ? IMAGE_ONLY_PROMPT : "");
     if (!text || busy) return;
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable);
     let selectedMode: Mode = modeChoice === "auto" ? decision.mode
@@ -880,6 +901,10 @@ export default function AssistantChat() {
     }
     const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
     const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    if (readyArchives.length > 0 && selectedMode !== "code") {
+      show("圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください", "error");
+      return;
+    }
     if (selectedMode === "code" && !codeProjectName && !codeFolder) {
       show("OpenCodeのプロジェクトを指定してください（新規名の入力・既存の選択・📁フォルダ）", "error");
       return;
@@ -888,7 +913,8 @@ export default function AssistantChat() {
     setBusy(true);
     setGenStats(null);
     let buildContinues = false;
-    const userMsg: Msg = { role: "user", content: text, images: readyImages.map((a) => a.preview ?? "").filter(Boolean) };
+    const userMsg: Msg = { role: "user", content: text, images: readyImages.map((a) => a.preview ?? "").filter(Boolean),
+      archives: readyArchives.map((a) => a.name) };
     append(userMsg);
     try {
       const investigateAuto = modeChoice === "investigate" && researchDepth === "auto";
@@ -935,8 +961,10 @@ export default function AssistantChat() {
         const cid = await ensureConversation();
         const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
-          json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder },
+          json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
+            attachments: readyArchives.map((a) => a.id) },
         });
+        setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
         // 新規作成したプロジェクトを以後の既定として維持し、モードもOpenCodeのまま継続する
         if (codeProject === "__new__" && codeProjectName) {
@@ -1477,14 +1505,14 @@ export default function AssistantChat() {
                 <span key={a.id} className="relative flex items-center gap-1.5 overflow-hidden rounded-full border border-zinc-200 bg-white py-1 pl-2.5 pr-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                   {a.preview
                     ? <img src={a.preview} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
-                    : <span aria-hidden>{a.kind === "image" ? "🖼️" : "📄"}</span>}
+                    : <span aria-hidden>{a.kind === "image" ? "🖼️" : a.kind === "archive" ? "📦" : "📄"}</span>}
                   <span className="max-w-[10rem] truncate">{a.name}</span>
                   {a.status === "uploading" ? (
                     <span className="flex shrink-0 items-center gap-1 pr-1.5 tabular-nums text-zinc-500"
                       role="progressbar" aria-label={`${a.name}を送信中`} aria-valuemin={0} aria-valuemax={100}
                       aria-valuenow={Math.round((a.progress ?? 0) * 100)}>
                       {(a.progress ?? 0) >= 1
-                        ? <span className="animate-pulse">{a.kind === "document" ? "資料に登録中…" : "保存中…"}</span>
+                        ? <span className="animate-pulse">{a.kind === "document" ? "資料に登録中…" : a.kind === "archive" ? "中身を確認中…" : "保存中…"}</span>
                         : <>{Math.round((a.progress ?? 0) * 100)}%</>}
                       {/* チップの下端の進捗バー。送り終わったら処理中の流れる帯にする */}
                       <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-zinc-100 dark:bg-zinc-800">
@@ -1494,6 +1522,12 @@ export default function AssistantChat() {
                     </span>
                   ) : a.kind === "document" ? (
                     <span className="pr-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">資料登録済</span>
+                  ) : a.kind === "archive" ? (
+                    <>
+                      <span className="text-[10px] text-zinc-500">{a.files ?? 0} ファイル・送ると展開</span>
+                      <button type="button" onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                        aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
+                    </>
                   ) : (
                     <button type="button" onClick={() => { if (a.preview) URL.revokeObjectURL(a.preview); setAttachments((prev) => prev.filter((x) => x.id !== a.id)); }}
                       aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
@@ -1503,7 +1537,7 @@ export default function AssistantChat() {
             </div>
           )}
           <input ref={fileInputRef} type="file" multiple className="hidden"
-            accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql"
+            accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql,.zip,.7z,.rar,.tar,.gz,.tgz,.bz2,.tbz2,.xz,.txz"
             onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attachFiles(picked); }} />
           {/* 入力カード（上が本文、下が道具の行: 添付・機能・音声・送信）。状態は
               カードの下に固定高で置き、表示が変わっても入力位置を動かさない。 */}
@@ -1592,7 +1626,7 @@ export default function AssistantChat() {
               ) : (
                 <button
                   onClick={() => void send()}
-                  disabled={busy || (!input.trim() && !attachments.some((a) => a.kind === "image" && a.status === "ready"))}
+                  disabled={busy || (!input.trim() && !attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready"))}
                   aria-label="送信"
                   title="送信（Enter）"
                   className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:bg-zinc-200 disabled:text-zinc-400 disabled:shadow-none dark:disabled:bg-zinc-800 dark:disabled:text-zinc-600"
@@ -1732,6 +1766,15 @@ function MessageBubble({
     return (
       <div className="flex min-w-0 justify-end">
         <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5">
+          {msg.archives && msg.archives.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1.5" aria-label="送った圧縮ファイル">
+              {msg.archives.map((name) => (
+                <span key={name} className="flex max-w-full items-center gap-1 rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                  <span aria-hidden>📦</span><span className="min-w-0 truncate">{name}</span>
+                </span>
+              ))}
+            </div>
+          )}
           {msg.images && msg.images.length > 0 && (
             <div className="flex flex-wrap justify-end gap-1.5">
               {msg.images.map((src) => (
