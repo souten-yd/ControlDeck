@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 170 ファイル、1488 テスト（目的の未記入 93 ファイル）
-- E2E: 80 spec、150 テスト
+- E2E: 80 spec、151 テスト
 
 ## backend（backend/tests）
 
@@ -2480,6 +2480,7 @@
 
 - message menu forks, deletes and edits (${width}px)
 - attachment chip shows upload progress
+- the menu of the last message stays above the composer and its items can be pressed (${width}px)
 
 ### frontend/e2e/assistant-mobile.spec.ts
 
