@@ -1008,6 +1008,10 @@ export default function AssistantChat() {
         return;
       }
       const cid = await ensureConversation();
+      // サーバーでまだ生成が始まっていない（自動判定中・ワークフロー）なら、すぐには送らせない。前の発言が
+      // 終わったときに送る（先に送られて順番が入れ替わっていた。レビュー指摘）
+      const hold = !messages.some((m) => m.role === "assistant" && m.streaming && m.messageId);
+      if (hold) deferredQueueRef.current = true;
       const json = selectedMode === "code"
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
           attachments: readyArchives.map((a) => a.id), code_research: researchFirst }
@@ -1015,7 +1019,7 @@ export default function AssistantChat() {
           searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "" };
       try {
-        await api(`/chat/conversations/${cid}/queue`, { method: "POST", json });
+        await api(`/chat/conversations/${cid}/queue`, { method: "POST", json: { ...json, hold } });
         setInput("");
         setAttachments([]);
       } catch (e) {
@@ -1184,6 +1188,17 @@ export default function AssistantChat() {
     for (const id of ids) await queueCall(`/${id}/restore`, { method: "POST" }, "戻せませんでした");
   };
   const sendQueuedNow = async () => { await queueCall("/dispatch", { method: "POST" }, "送れませんでした"); };
+  // hold で貯めた要望: 画面の処理（自動判定・ワークフロー）が終わったら送る。止めた・失敗した後は送らない
+  const deferredQueueRef = useRef(false);
+  useEffect(() => {
+    if (busy || !deferredQueueRef.current || !convId) return;
+    deferredQueueRef.current = false;
+    const last = [...messages].reverse().find((m) => m.role === "assistant");
+    if (last && ["canceled", "failed", "interrupted"].includes(last.persistStatus ?? "")) return;
+    // サーバーの生成で終わったなら、サーバーがもう送っている（409 は気にしない）
+    void api(`/chat/conversations/${convId}/queue/dispatch`, { method: "POST" }).catch(() => undefined).finally(() => void refetchQueue());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, convId]);
   // サーバーが送信待ちを送り始めたら（この画面の外で始まった生成も）、会話を読み直して購読する
   const syncingRef = useRef(false);
   useEffect(() => {
@@ -1318,6 +1333,7 @@ export default function AssistantChat() {
   const localOptions = modelOptions.filter((o) => !o.external);
   const externalOptions = modelOptions.filter((o) => o.external);
   const externalSelected = externalOptions.find((o) => o.base === baseUrl && o.model === model);
+  const hasContent = Boolean(input.trim()) || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready");
   const showComposerStatus = asr.phase === "installing" || asr.active || busy || genStats !== null;
 
   // 検索系（Web・論文・Deep Research・Research）は「調査」1 つにまとめ、深さは入力欄の下で選ぶ
@@ -1779,7 +1795,7 @@ export default function AssistantChat() {
                   {/* 聞いている間（Claude のように波形と時間を出す）。✕ は取り消し（この回の文字を戻す）、✓ は終わり */}
                   <button type="button" onClick={cancelVoice} aria-label="音声入力を取り消す" title="取り消す（この回に入れた文字を戻す）"
                     className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-600 hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:text-zinc-300 dark:hover:bg-zinc-800">✕</button>
-                  <VoiceWave levels={asr.levels} elapsedMs={asr.elapsedMs} pending={asr.pending} finishing={asr.phase === "finishing"} />
+                  <VoiceWave meter={asr.meter} pending={asr.pending} finishing={asr.phase === "finishing"} />
                   <button type="button" onClick={() => void asr.finish()} disabled={asr.phase !== "listening"}
                     aria-label="音声入力を終える" title="終える（文字は入力欄に残ります）"
                     className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-lg font-bold text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-60">✓</button>
@@ -1831,15 +1847,15 @@ export default function AssistantChat() {
                 </button>
               )}
               {/* 生成中も、書いてあれば送れる（送信待ちに入り、回答が終わったら送る） */}
-              {(!busy || !runningJob || (input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready"))) && (
+              {(!busy || !runningJob || hasContent) && (
                 <button
                   onClick={() => void send()}
-                  disabled={!(input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready")) || (busy && !runningJob && !(input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready")))}
+                  disabled={!hasContent}
                   aria-label={busy ? "送信待ちに入れる" : "送信"}
                   title={busy ? "送信待ちに入れる（回答が終わったら送ります）" : "送信（Enter）"}
                   className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:bg-zinc-200 disabled:text-zinc-400 disabled:shadow-none dark:disabled:bg-zinc-800 dark:disabled:text-zinc-600"
                 >
-                  {busy && !(input.trim() || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready")) ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
+                  {busy && !hasContent ? <span className="animate-pulse">…</span> : <IconSend className="text-base" />}
                 </button>
               )}
                 </>

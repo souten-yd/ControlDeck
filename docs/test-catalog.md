@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 171 ファイル、1495 テスト（目的の未記入 93 ファイル）
+- backend: 171 ファイル、1498 テスト（目的の未記入 93 ファイル）
 - E2E: 81 spec、152 テスト
 
 ## backend（backend/tests）
@@ -541,6 +541,9 @@
 - `test_a_request_queued_when_nothing_runs_is_sent_at_once`
 - `test_the_asr_reads_only_the_spoken_length` — whisper は 30 秒に詰め物して読む。短い区切りは読む範囲を絞って速くする（6 秒で 14〜17 秒 → 約 3 秒。実測）。
 - `test_selftest_warns_when_a_finished_conversation_still_has_waiting_requests` — 送り損ね（回答は正常に終わったのに、送信待ちが 2 分以上残る）に自己診断で気付けるように。
+- `test_review_fixes_hold_restore_and_a_failing_group_does_not_block_the_rest` — レビュー指摘（2026-11-18）:
+- `test_a_failure_after_writing_the_message_does_not_leave_it_generating` — 発言を書いた後でジョブを作れなかったら「生成中」のまま残さない（残ると送信待ちも OpenCode も止まる）。
+- `test_groups_respect_the_attachment_budget` — まとめると添付が 8 個を超えるなら、そこで分ける（黙って落としていた）。
 
 ### backend/tests/test_chat_references.py
 

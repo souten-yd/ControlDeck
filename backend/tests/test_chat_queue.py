@@ -173,3 +173,76 @@ def test_selftest_warns_when_a_finished_conversation_still_has_waiting_requests(
     assert status == "warn" and "1 会話" in text
     admin_client.delete(f"/api/v1/chat/conversations/{conv}/queue", headers=CSRF_HEADERS)
     assert selftest._chat_queue()[0] is True
+
+
+def test_review_fixes_hold_restore_and_a_failing_group_does_not_block_the_rest(admin_client, monkeypatch):
+    """レビュー指摘（2026-11-18）:
+    - 画面が前の発言を送っている途中（自動判定）に貯めた要望は、すぐには送らない（hold。順番が入れ替わっていた）
+    - 送れないまとまりは「送れなかった」にして、後ろの要望は送る（先頭が詰まって永久に残っていた）
+    - 回答が終わった後に戻した要望は、そのまま送る（保留のまま残っていた）"""
+    from app.workflows import chat_persist
+
+    gate = threading.Event()
+    gate.set()
+    _fake_runner(monkeypatch, gate, [])
+    conv = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    base = f"/api/v1/chat/conversations/{conv}/queue"
+    held = admin_client.post(base, headers=CSRF_HEADERS, json={"content": "後で", "mode": "chat", "model": "test", "hold": True}).json()
+    assert held["dispatched"] is None
+    admin_client.delete(base, headers=CSRF_HEADERS)
+
+    real = chat_persist._start_send
+
+    async def picky(db, conv_row, body, owner):
+        if body.content.startswith("だめ"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="送れない内容")
+        return await real(db, conv_row, body, owner)
+
+    monkeypatch.setattr(chat_persist, "_start_send", picky)
+    bad = admin_client.post(base, headers=CSRF_HEADERS, json={"content": "だめな要望", "mode": "chat", "model": "test", "hold": True}).json()
+    admin_client.post(base, headers=CSRF_HEADERS, json={"content": "よい要望", "mode": "web", "model": "test", "hold": True})
+    assert admin_client.post(f"{base}/dispatch", headers=CSRF_HEADERS).status_code == 200
+    _wait(lambda: any(m["content"] == "よい要望" for m in _messages(admin_client, conv)), "後ろの要望が送られない")
+    items = admin_client.get(base).json()["items"]
+    assert [(i["id"], i["status"], i["error"]) for i in items] == [(bad["item"]["id"], "failed", "送れない内容")]
+    _wait(lambda: _messages(admin_client, conv)[-1]["status"] == "completed", "終わらない")
+
+    # 回答が終わった後に戻した要望は、そのまま送る
+    later = admin_client.post(base, headers=CSRF_HEADERS, json={"content": "戻す要望", "mode": "chat", "model": "test", "hold": True}).json()
+    admin_client.delete(f"{base}/{later['item']['id']}", headers=CSRF_HEADERS)
+    assert admin_client.post(f"{base}/{later['item']['id']}/restore", headers=CSRF_HEADERS).status_code == 200
+    _wait(lambda: any(m["content"] == "戻す要望" for m in _messages(admin_client, conv)), "戻した要望が送られない")
+
+
+def test_a_failure_after_writing_the_message_does_not_leave_it_generating(admin_client, monkeypatch):
+    """発言を書いた後でジョブを作れなかったら「生成中」のまま残さない（残ると送信待ちも OpenCode も止まる）。"""
+    from app.jobs import service as jobs
+
+    def broken(*args, **kwargs):
+        raise ValueError("idempotency")
+
+    monkeypatch.setattr(jobs, "create", broken)
+    conv = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv}/queue", headers=CSRF_HEADERS,
+                          json={"content": "送る", "mode": "chat", "model": "test"})
+    assert r.status_code == 201 and r.json()["dispatched"] is None
+    rows = _messages(admin_client, conv)
+    assert rows[-1]["role"] == "assistant" and rows[-1]["status"] == "failed"
+    state = admin_client.get(f"/api/v1/chat/conversations/{conv}/queue").json()
+    assert state["generating_message_id"] is None and state["items"][0]["status"] == "failed"
+
+
+def test_groups_respect_the_attachment_budget():
+    """まとめると添付が 8 個を超えるなら、そこで分ける（黙って落としていた）。"""
+    import json as _json
+
+    from app.models import ChatQueuedRequest
+    from app.workflows.chat_persist import _groups
+
+    def item(i, n):
+        return ChatQueuedRequest(id=f"g{i}", conversation_id="c", content=f"要望{i}",
+                                 body_json=_json.dumps({"mode": "chat", "model": "m", "attachments": [f"{i}{k}" for k in range(n)]}))
+
+    groups = _groups([item(1, 4), item(2, 4), item(3, 4)])
+    assert [[i.id for i in g] for g in groups] == [["g1", "g2"], ["g3"]]

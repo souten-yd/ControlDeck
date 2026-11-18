@@ -8,7 +8,7 @@
  *   区切りは「話した後の 0.7 秒の無音」。長く話し続けたら 12 秒からの短い無音、最長 15 秒で区切る
  *   （whisper は 20 秒を超えると繰り返しで崩れることがあった。8 秒前後なら約 3 秒で文字になる。実測）
  * - 波形は直近の音の大きさの棒で出す。✕ で取り消すと、この回に足した文字を戻す */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api/client";
 
 export type AsrPhase = "idle" | "installing" | "permission" | "listening" | "finishing" | "error";
@@ -22,8 +22,26 @@ const PAUSE_MS = 700;
 const SOFT_CUT_MS = 12_000;
 const SOFT_PAUSE_MS = 150;
 const HARD_CUT_MS = 15_000;
-const SILENT_RESTART_MS = 30_000;
+// 黙っている間は 3 秒ごとに録り直す（区切りの頭に長い無音が付くと、whisper が無い言葉を書くことがある。
+// 長さは話し始めから数える。レビュー指摘 2026-11-18）
+const SILENT_RESTART_MS = 3_000;
 export const MAX_RECORDING_MS = 60 * 60_000;
+
+/** 波形と経過時間は、ここを購読する部品だけが描き直す（会話全体を 1 秒に 20 回描き直さない。レビュー指摘） */
+export interface VoiceMeter { levels: number[]; elapsedMs: number }
+function createMeter() {
+  let value: VoiceMeter = { levels: Array(WAVE_BARS).fill(0), elapsedMs: 0 };
+  const listeners = new Set<() => void>();
+  return {
+    get: () => value,
+    set: (next: VoiceMeter) => { value = next; listeners.forEach((l) => l()); },
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+  };
+}
+export type VoiceMeterStore = ReturnType<typeof createMeter>;
+export function useVoiceMeter(store: VoiceMeterStore): VoiceMeter {
+  return useSyncExternalStore(store.subscribe, store.get);
+}
 
 export function useAssistantAsr({ onText, onError }: {
   /** 区切りの文字が届いたとき（古い順） */
@@ -31,8 +49,10 @@ export function useAssistantAsr({ onText, onError }: {
   onError: (message: string) => void;
 }) {
   const [phase, setPhase] = useState<AsrPhase>("idle");
-  const [levels, setLevels] = useState<number[]>(() => Array(WAVE_BARS).fill(0));
-  const [elapsedMs, setElapsedMs] = useState(0);
+  const meterRef = useRef<VoiceMeterStore | null>(null);
+  if (!meterRef.current) meterRef.current = createMeter();
+  const meter = meterRef.current;
+  const resetMeter = () => meter.set({ levels: Array(WAVE_BARS).fill(0), elapsedMs: 0 });
   const [pending, setPending] = useState(0);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
@@ -119,6 +139,7 @@ export function useAssistantAsr({ onText, onError }: {
         throw new Error("この接続ではマイクを利用できません。HTTPSまたはlocalhostで開いてください");
       }
       await ensureInstalled();
+      if (session !== sessionRef.current) return;   // 取り消された
       setPhase("permission");
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -130,6 +151,10 @@ export function useAssistantAsr({ onText, onError }: {
         const wake = (navigator as Navigator & { wakeLock?: { request: (t: "screen") => Promise<{ release: () => Promise<void> }> } }).wakeLock;
         wakeRef.current = wake ? await wake.request("screen") : null;
       } catch { wakeRef.current = null; }
+      if (session !== sessionRef.current) {          // 待っている間に取り消された（レビュー指摘）
+        release();
+        return;
+      }
       const context = new AudioContext();
       contextRef.current = context;
       const analyser = context.createAnalyser();
@@ -140,10 +165,10 @@ export function useAssistantAsr({ onText, onError }: {
       recorderRef.current = current.recorder;
       const startedAt = performance.now();
       let segmentAt = startedAt;
+      let spokeAt = 0;      // この区切りで話し始めた時刻（0 は、まだ話していない）
       let lastVoiceAt = 0;
       const bars = Array(WAVE_BARS).fill(0) as number[];
-      setLevels([...bars]);
-      setElapsedMs(0);
+      resetMeter();
       setPhase("listening");
       const cut = () => {
         const previous = current;
@@ -151,6 +176,7 @@ export function useAssistantAsr({ onText, onError }: {
         recorderRef.current = current.recorder;
         previous.recorder.stop();
         segmentAt = performance.now();
+        spokeAt = 0;
       };
       timerRef.current = window.setInterval(() => {
         analyser.getByteTimeDomainData(samples);
@@ -163,13 +189,13 @@ export function useAssistantAsr({ onText, onError }: {
         const now = performance.now();
         bars.shift();
         bars.push(Math.min(1, rms * 9));
-        setLevels([...bars]);
-        setElapsedMs(now - startedAt);
+        meter.set({ levels: [...bars], elapsedMs: now - startedAt });
         if (rms >= VOICE_RMS) {
+          if (!current.state.voiced) spokeAt = now;
           current.state.voiced = true;
           lastVoiceAt = now;
         }
-        const length = now - segmentAt;
+        const length = current.state.voiced ? now - spokeAt : now - segmentAt;
         const quiet = now - lastVoiceAt;
         if (current.state.voiced) {
           if ((quiet >= PAUSE_MS && length >= 1500) || (length >= SOFT_CUT_MS && quiet >= SOFT_PAUSE_MS) || length >= HARD_CUT_MS) cut();
@@ -205,7 +231,7 @@ export function useAssistantAsr({ onText, onError }: {
     const session = sessionRef.current;
     await chainRef.current;
     if (session === sessionRef.current) setPhase("idle");
-    setLevels(Array(WAVE_BARS).fill(0));
+    resetMeter();
   };
 
   /** 取り消す（録音も、文字にしている途中の区切りも捨てる） */
@@ -216,7 +242,7 @@ export function useAssistantAsr({ onText, onError }: {
     if (recorder && recorder.state !== "inactive") recorder.stop();
     release();
     setPhase("idle");
-    setLevels(Array(WAVE_BARS).fill(0));
+    resetMeter();
   };
 
   useEffect(() => () => {
@@ -226,6 +252,6 @@ export function useAssistantAsr({ onText, onError }: {
     release();
   }, []);
 
-  return { phase, levels, elapsedMs, pending, start, finish, cancel,
+  return { phase, meter, pending, start, finish, cancel,
     listening: phase === "listening", active: phase === "listening" || phase === "finishing" || phase === "permission" };
 }

@@ -1668,6 +1668,23 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     conv.updated_at = utcnow()
     db.commit()
     assistant_id = assistant.id
+    try:
+        return await _start_job(db, conv_id, body, owner_user_id, history, user_msg.id, assistant_id,
+                                sent_archives)
+    except BaseException as e:
+        # 発言を書いた後で失敗したら「生成中」のまま残さない（残ると、この会話の送信待ちも OpenCode も止まる。
+        # レビュー指摘 2026-11-18）
+        db.rollback()
+        row = db.get(ChatMessage, assistant_id)
+        if row is not None and row.status == "generating":
+            row.status = "failed"
+            row.error = f"生成を始められませんでした（{type(e).__name__}）"
+            db.commit()
+        raise
+
+
+async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: int | None, history: list[dict],
+                     user_message_id: str, assistant_id: str, sent_archives: list[str]) -> dict:
 
     from app.models_mgmt.runtime_policy import get_policy, model_output_tokens
     from app.models_mgmt.runtime_provider import resolve_target
@@ -1685,7 +1702,7 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
               "code_project": body.code_project,
               "code_project_path": body.code_project_path,
               # OpenCode への引き継ぎで、今回の発言そのものを重ねて入れないため
-              "user_message_id": user_msg.id,
+              "user_message_id": user_message_id,
               # OpenCode のプロジェクトへ展開する圧縮ファイル
               "archives": sent_archives,
               "code_research": body.code_research and body.mode == "code",
@@ -1695,7 +1712,7 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     async def run(j: jobs.Job) -> dict:
         result = await _run_chat_job(j, assistant_id, conv_id, history, params)
         # 正常に終わったら、送信待ちの要望を送る（止めた・失敗したときは送らずに保留する）
-        _after_turn(conv_id, assistant_id)
+        _after_turn(conv_id, assistant_id, j)
         return result
 
     job = jobs.create(
@@ -1705,7 +1722,7 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     # assistant メッセージに job_id を紐付け（再接続時に購読を再開できる）
     db.query(ChatMessage).filter(ChatMessage.id == assistant_id).update({"job_id": job.id})
     db.commit()
-    return {"user_message_id": user_msg.id, "assistant_message_id": assistant_id, "job_id": job.id, "status": "generating"}
+    return {"user_message_id": user_message_id, "assistant_message_id": assistant_id, "job_id": job.id, "status": "generating"}
 
 
 # ---- 送信待ちの要望（生成中に送ったもの。2026-11-18 利用者の依頼） ----
@@ -1747,8 +1764,26 @@ def _same_way(a: dict, b: dict) -> bool:
     return {k: v for k, v in a.items() if k not in skip} == {k: v for k, v in b.items() if k not in skip}
 
 
+def _groups(items: list[ChatQueuedRequest]) -> list[list[ChatQueuedRequest]]:
+    """送る単位に分ける: 送り方が同じ続きを、本文 32000 字・添付 8 個に収まるまでまとめる。"""
+    groups: list[list[ChatQueuedRequest]] = []
+    for item in items:
+        body = json.loads(item.body_json or "{}")
+        attachments = len(body.get("attachments", []))
+        if groups:
+            head = json.loads(groups[-1][0].body_json or "{}")
+            length = sum(len(i.content) + 2 for i in groups[-1])
+            count = sum(len(json.loads(i.body_json or "{}").get("attachments", [])) for i in groups[-1])
+            if _same_way(head, body) and length + len(item.content) <= 32000 and count + attachments <= 8:
+                groups[-1].append(item)
+                continue
+        groups.append([item])
+    return groups
+
+
 async def dispatch_queue(conv_id: str) -> dict | None:
-    """生成中でなければ、送信待ちの先頭（同じ送り方の続きはまとめて）を送る。送ったら send の結果を返す。"""
+    """生成中でなければ、送信待ちの先頭のまとまりを送る。送れないまとまりは「送れなかった」にして次へ進む
+    （先頭が送れないと後ろが永久に残っていた。レビュー指摘）。送ったら send の結果を返す。"""
     lock = _queue_locks.setdefault(conv_id, asyncio.Lock())
     async with lock:
         db = SessionLocal()
@@ -1756,47 +1791,50 @@ async def dispatch_queue(conv_id: str) -> dict | None:
             conv = db.get(Conversation, conv_id)
             if conv is None or _generating_id(db, conv_id):
                 return None
-            items = _queued(db, conv_id)
-            if not items:
-                return None
-            first = json.loads(items[0].body_json or "{}")
-            group = [items[0]]
-            length = len(items[0].content)
-            for item in items[1:]:
-                other = json.loads(item.body_json or "{}")
-                if not _same_way(first, other) or length + 2 + len(item.content) > 32000:
-                    break
-                group.append(item)
-                length += 2 + len(item.content)
-            attachments: list[str] = []
-            for item in group:
-                for a in json.loads(item.body_json or "{}").get("attachments", []):
-                    if a not in attachments and len(attachments) < 8:
-                        attachments.append(a)
-            body = SendBody.model_validate({**first, "content": "\n\n".join(i.content for i in group),
-                                            "attachments": attachments})
-            try:
-                result = await _start_send(db, conv, body, conv.owner_user_id)
-            except HTTPException as e:
-                db.rollback()
+            for group in _groups(_queued(db, conv_id)):
+                first = json.loads(group[0].body_json or "{}")
+                attachments: list[str] = []
                 for item in group:
-                    item.status = "failed"
-                    item.error = str(e.detail)[:500]
+                    for a in json.loads(item.body_json or "{}").get("attachments", []):
+                        if a not in attachments:
+                            attachments.append(a)
+                try:
+                    body = SendBody.model_validate({**first, "content": "\n\n".join(i.content for i in group),
+                                                    "attachments": attachments})
+                    result = await _start_send(db, conv, body, conv.owner_user_id)
+                except Exception as e:  # noqa: BLE001 - 送れないまとまりは印を付けて次へ
+                    db.rollback()
+                    detail = e.detail if isinstance(e, HTTPException) else f"{type(e).__name__}: {e}"
+                    for item in group:
+                        item.status = "failed"
+                        item.error = str(detail)[:500]
+                    db.commit()
+                    logger.warning("送信待ちの要望を送れませんでした: %s", detail)
+                    continue
+                for item in group:
+                    item.status = "sent"
+                    item.message_id = result["user_message_id"]
+                    item.error = ""
                 db.commit()
-                logger.warning("送信待ちの要望を送れませんでした: %s", e.detail)
-                return None
-            for item in group:
-                item.status = "sent"
-                item.message_id = result["user_message_id"]
-                item.error = ""
-            db.commit()
-            return result
+                return result
+            return None
         finally:
             db.close()
 
 
-def _after_turn(conv_id: str, assistant_id: str) -> None:
-    """生成が終わったとき（ジョブの中から呼ぶ）。正常に終わっていれば、少し待って（画面へ「終わり」が届いてから）送る。"""
+def _turn_finished(db: Session, conv_id: str) -> bool:
+    """自動で送ってよい状態か: 生成中が無く、最後の回答が正常に終わっている（止めた・失敗した後は保留）。"""
+    if _generating_id(db, conv_id):
+        return False
+    last = db.execute(select(ChatMessage).where(
+        ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+    ).order_by(ChatMessage.created_at.desc()).limit(1)).scalar_one_or_none()
+    return last is None or last.status == "completed"
+
+
+def _after_turn(conv_id: str, assistant_id: str, job: jobs.Job | None = None) -> None:
+    """生成が終わったとき（ジョブの中から呼ぶ）。正常に終わっていれば、ジョブが片付いて（資源を返し、画面へ
+    「終わり」が届いて）から送る。決まった秒数で待つと、混んでいるときに前のジョブと重なっていた（レビュー指摘）。"""
     db = SessionLocal()
     try:
         row = db.get(ChatMessage, assistant_id)
@@ -1806,7 +1844,9 @@ def _after_turn(conv_id: str, assistant_id: str) -> None:
         db.close()
 
     async def later() -> None:
-        await asyncio.sleep(0.5)
+        deadline = asyncio.get_running_loop().time() + 60
+        while job is not None and job.finished_at is None and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
         try:
             await dispatch_queue(conv_id)
         except Exception:  # noqa: BLE001 - 送れなくても生成の結果には響かせない（保留として残る）
@@ -1827,8 +1867,14 @@ def list_queue(conv_id: str, user: User = Depends(require_permission("workflows.
             "held": bool(not generating and any(i.status == "queued" for i in items))}
 
 
+class QueueBody(SendBody):
+    # 画面がまだ前の発言を送っている途中（自動判定・ワークフロー）なら、すぐには送らない（前の発言より先に
+    # 送られて順番が入れ替わっていた。レビュー指摘）。その発言が終わったときに送る
+    hold: bool = False
+
+
 @router.post("/conversations/{conv_id}/queue", status_code=201)
-async def add_queue(conv_id: str, body: SendBody, user: User = Depends(require_permission("workflows.run")),
+async def add_queue(conv_id: str, body: QueueBody, user: User = Depends(require_permission("workflows.run")),
                     db: Session = Depends(get_db)):
     _owned_conversation(db, conv_id, user)
     if body.mode not in {"auto", "chat", "web", "academic", "deep", "research", "code"}:
@@ -1836,13 +1882,24 @@ async def add_queue(conv_id: str, body: SendBody, user: User = Depends(require_p
     if len(_queued(db, conv_id, ("queued", "failed"))) >= QUEUE_LIMIT:
         raise HTTPException(status_code=409, detail=f"送信待ちは {QUEUE_LIMIT} 件までです")
     item = ChatQueuedRequest(id=_new_id(), conversation_id=conv_id, content=body.content,
-                             body_json=json.dumps(body.model_dump(exclude={"content"}), ensure_ascii=False))
+                             body_json=json.dumps(body.model_dump(exclude={"content", "hold"}), ensure_ascii=False))
     db.add(item)
     db.commit()
     out = _queue_out(item)
     # ちょうど生成が終わっていたら、すぐ送る
-    dispatched = None if _generating_id(db, conv_id) else await dispatch_queue(conv_id)
+    dispatched = None if body.hold or _generating_id(db, conv_id) else await dispatch_queue(conv_id)
     return {"item": out, "dispatched": dispatched}
+
+
+async def _send_if_finished(conv_id: str) -> None:
+    """戻した・直した要望を、回答がもう正常に終わっていれば送る（保留のまま残っていた。レビュー指摘）。"""
+    db = SessionLocal()
+    try:
+        ready = _turn_finished(db, conv_id)
+    finally:
+        db.close()
+    if ready:
+        await dispatch_queue(conv_id)
 
 
 class QueueEdit(BaseModel):
@@ -1869,7 +1926,9 @@ async def edit_queue(conv_id: str, item_id: str, body: QueueEdit,
         item.status = "queued"
         item.error = ""
         db.commit()
-        return _queue_out(item)
+        out = _queue_out(item)
+    await _send_if_finished(conv_id)
+    return out
 
 
 @router.delete("/conversations/{conv_id}/queue/{item_id}")
@@ -1897,7 +1956,9 @@ async def restore_queue(conv_id: str, item_id: str,
         item.status = "queued"
         item.error = ""
         db.commit()
-        return _queue_out(item)
+        out = _queue_out(item)
+    await _send_if_finished(conv_id)
+    return out
 
 
 @router.delete("/conversations/{conv_id}/queue")

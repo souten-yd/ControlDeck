@@ -4,7 +4,7 @@
  * 複数の送信・削除・編集・取り消しができるように」「Claude のように波形が出て、音声が入っているのを確かめたい」。
  * 送信待ちはサーバーが持ち、回答が正常に終わったら古い順に送る（同じ送り方の続きは 1 つにまとめる）。 */
 import { useState } from "react";
-import { WAVE_BARS } from "./useAssistantAsr";
+import { WAVE_BARS, useVoiceMeter, type VoiceMeterStore } from "./useAssistantAsr";
 
 export interface QueuedItem {
   id: string;
@@ -97,9 +97,10 @@ function clock(ms: number): string {
 }
 
 /** 聞いている間の波形（直近の音の大きさの棒）と経過時間 */
-export function VoiceWave({ levels, elapsedMs, pending, finishing }: {
-  levels: number[]; elapsedMs: number; pending: number; finishing: boolean;
+export function VoiceWave({ meter, pending, finishing }: {
+  meter: VoiceMeterStore; pending: number; finishing: boolean;
 }) {
+  const { levels, elapsedMs } = useVoiceMeter(meter);
   return (
     <div data-assistant-voice className="flex min-w-0 flex-1 items-center gap-2 px-1" aria-live="polite">
       <div role="img" aria-label="マイクの音の大きさ" className="flex h-8 min-w-0 flex-1 items-center justify-end gap-[2px] overflow-hidden">
