@@ -588,3 +588,50 @@ def test_run_turn_waits_for_a_background_subagent_and_keeps_the_follow_up(monkey
     assert "".join(text) == "レビューを依頼しました。\n\nレビュー結果: 問題なし"
     assert tools[-1]["status"] == "completed" and tools[-1]["ended_at"] >= tools[-1]["started_at"]
     assert "background" in [s["phase"] for s in states] or any("裏のエージェント" in s["detail"] for s in states)
+
+
+def _background_case(sequence_tail, monkeypatch, tmp_path, active=None):
+    from app.integrations.opencode import chat_server
+
+    sid, child = "ses_parent", "ses_child1"
+    head = [{"type": "session.execution.started", "data": {"sessionID": sid}},
+            {"type": "session.tool.input.started", "data": {"sessionID": sid, "id": "c1", "name": "subagent"}},
+            {"type": "session.tool.success", "data": {"sessionID": sid, "id": "c1", "content": [
+                {"type": "text", "text": f"working in the background (sessionID: {child})."}]}}]
+    calls: list = []
+    _fake_events(monkeypatch, head + sequence_tail(sid, child), calls)
+    monkeypatch.setattr(chat_server, "FOLLOW_UP_SECONDS", 0.2)
+    monkeypatch.setattr(chat_server, "BACKGROUND_CHECK_SECONDS", 0.0)
+    text, tools = [], []
+
+    async def keep(target, item):
+        target.append(json.loads(json.dumps(item)) if isinstance(item, dict) else item)
+
+    async def noop(_):
+        return None
+
+    result = asyncio.run(asyncio.wait_for(chat_server.run_turn(
+        _server(tmp_path), sid, "x", on_text=lambda d: keep(text, d), on_reasoning=noop,
+        on_tool=lambda t: keep(tools, t), on_permission=noop), 5))
+    return result, "".join(text), tools, calls
+
+
+def test_the_follow_up_window_starts_when_the_parent_turn_ends(monkeypatch, tmp_path):
+    """子が先に終わり親がその後も動いていても、親の終わりから続きを待つ（レビュー指摘）。"""
+    def tail(sid, child):
+        return [{"type": "session.execution.succeeded", "data": {"sessionID": child}},
+                {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "途中"}},
+                {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+                {"type": "session.execution.started", "data": {"sessionID": sid}},
+                {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "結果"}},
+                {"type": "session.execution.succeeded", "data": {"sessionID": sid}}]
+    result, text, _, _ = _background_case(tail, monkeypatch, tmp_path)
+    assert result["status"] == "succeeded" and text == "途中\n\n結果"
+
+
+def test_a_failed_parent_stops_background_children(monkeypatch, tmp_path):
+    def tail(sid, child):
+        return [{"type": "session.execution.failed", "data": {"sessionID": sid, "error": {"message": "x"}}}]
+    result, _, tools, calls = _background_case(tail, monkeypatch, tmp_path)
+    assert result["status"] == "failed" and tools[-1]["status"] == "failed"
+    assert ("POST", "/api/session/ses_child1/interrupt", {}) in calls

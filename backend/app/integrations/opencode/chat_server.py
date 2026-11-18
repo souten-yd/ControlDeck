@@ -419,7 +419,9 @@ async def _session_active(server: Server, session_id: str) -> bool:
 
 
 AGENTS = ("build", "plan")
-FOLLOW_UP_SECONDS = 20.0   # 裏の子が終わってから、親が続きを始めるまで待つ長さ
+FOLLOW_UP_SECONDS = 20.0   # 親のターンが終わってから、裏の子の結果で続きを始めるまで待つ長さ
+BACKGROUND_CHECK_SECONDS = 15.0   # イベントを取りこぼしても止まらないよう、裏の子の状態を確かめる間隔
+BACKGROUND_MAX_SECONDS = 4 * 3600.0   # 裏の子を待つ上限
 _BACKGROUND_RE = re.compile(r"working in the background \(sessionID:\s*(ses_[A-Za-z0-9]+)\)")
 
 
@@ -489,7 +491,11 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     # 裏で動く子エージェント（レビューなど）。親のターンは依頼した時点で一度終わり、子が終わると親が続きを動かす。
     # 親の 1 回目の終わりで聞くのをやめると、続き（レビューの結果）が画面に届かなかった（2026-11-18 本番）
     background: dict[str, str] = {}     # 子のセッション ID → 道具の ID
-    follow_up_until = 0.0               # 子が終わった後、親が続きを始めるのを待つ期限
+    follow_up_until = 0.0               # 親のターンの後、結果を受けた続きが始まるのを待つ期限
+    follow_up_due = False               # 親がまだ受け取っていない子の完了がある
+    ended_children: set[str] = set()    # 道具の結果より先に終わった子
+    background_since = 0.0
+    last_check = 0.0
     parent_running = False
     resumed = False
     needs_break = False
@@ -512,6 +518,48 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     def finished_waiting() -> bool:
         return not background and not parent_running and time.monotonic() >= follow_up_until
 
+    async def child_ended(child: str, kind: str) -> None:
+        nonlocal follow_up_due, follow_up_until
+        tool = tools.get(background.pop(child, ""), None)
+        if tool is not None:
+            ok = kind.endswith("succeeded")
+            tool["status"] = "completed" if ok else "failed"
+            tool["output"] = "裏のエージェントが終わりました" if ok else "裏のエージェントが途中で止まりました"
+            tool["ended_at"] = time.time()
+            await on_tool(tool)
+        follow_up_due = True
+        if not parent_running:
+            follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS
+            if not background:
+                await status("waiting", "裏のエージェントの結果を受け取っています", force=True)
+
+    async def reconcile() -> None:
+        """イベントを取りこぼしても、実際に動いているセッションから状態を合わせる。"""
+        nonlocal parent_running, follow_up_until, last_check
+        last_check = time.monotonic()
+        try:
+            active = json.dumps(await _call(server, "GET", "/api/session/active"))
+        except ChatServerError:
+            return
+        for child in list(background):
+            if child not in active:
+                await child_ended(child, "session.execution.succeeded")
+        was_running, parent_running = parent_running, session_id in active
+        if was_running and not parent_running and follow_up_due:
+            follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS
+
+    async def stop_children(reason: str) -> None:
+        for child, tool_id in list(background.items()):
+            try:
+                await interrupt(server, child)
+            except ChatServerError:
+                logger.warning("裏のエージェントの中断を伝えられませんでした")
+            tool = tools.get(tool_id)
+            if tool is not None:
+                tool.update(status="failed", output=reason, ended_at=time.time())
+                await on_tool(tool)
+        background.clear()
+
     try:
         await asyncio.wait_for(ready.wait(), timeout=15)
         # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
@@ -520,11 +568,20 @@ async def run_turn(server: Server, session_id: str, text: str, *,
         parent_running = True
         await status("waiting", "モデルの応答を待っています", force=True)
         while True:
-            waiting_background = not parent_running and (background or follow_up_until)
+            waiting_background = not parent_running and bool(background or follow_up_until)
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=2.0 if waiting_background else TOUCH_SECONDS)
             except asyncio.TimeoutError:
                 event = {"type": "__tick"}
+            waiting_background = not parent_running and bool(background or follow_up_until)
+            if waiting_background and event.get("type") != "__reconnected":
+                if time.monotonic() - last_check >= BACKGROUND_CHECK_SECONDS:
+                    await reconcile()
+                if finished_waiting():
+                    return {"status": "succeeded", "error": ""}
+                if background and time.monotonic() - background_since > BACKGROUND_MAX_SECONDS:
+                    await stop_children("待ち時間の上限で止めました")
+                    return {"status": "succeeded", "error": ""}
             if time.monotonic() - last_touch >= TOUCH_SECONDS:
                 last_touch = time.monotonic()
                 await asyncio.to_thread(touch, server)   # 長い作業や許可待ちの間に掃除されないように
@@ -532,29 +589,26 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 return {"status": "failed", "error": "OpenCode のイベントが途切れました"}
             kind = str(event.get("type") or "")
             if kind == "__reconnected":
-                if not await _session_active(server, session_id):
+                was_running = parent_running
+                await reconcile()
+                if was_running and not parent_running:
+                    resumed = True
+                if finished_waiting():
                     return {"status": "succeeded", "error": ""}  # 切れている間に終わっていた
                 continue
             if kind == "__tick":
-                if waiting_background and finished_waiting():
-                    return {"status": "succeeded", "error": ""}
                 continue
             data = event.get("data") if isinstance(event.get("data"), dict) else {}
             sid = data.get("sessionID")
             if kind == "session.created" and data.get("parentID") in family and data.get("id"):
                 family.add(str(data["id"]))
                 continue
-            if sid in background and kind in ("session.execution.succeeded", "session.execution.failed",
-                                              "session.execution.interrupted"):
-                tool = tools.get(background.pop(str(sid)), None)
-                if tool is not None:
-                    tool["status"] = "failed" if kind.endswith("failed") else "completed"
-                    tool["output"] = "裏のエージェントが終わりました"
-                    tool["ended_at"] = time.time()
-                    await on_tool(tool)
-                follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS
-                if not parent_running and not background:
-                    await status("waiting", "裏のエージェントの結果を受け取っています", force=True)
+            if sid != session_id and sid in family and kind in ("session.execution.succeeded", "session.execution.failed",
+                                                                "session.execution.interrupted"):
+                if sid in background:
+                    await child_ended(str(sid), kind)
+                else:
+                    ended_children.add(str(sid))
                 continue
             if kind.startswith("permission."):
                 if sid not in family:
@@ -562,7 +616,7 @@ async def run_turn(server: Server, session_id: str, text: str, *,
             elif sid not in (None, session_id):
                 continue  # 子エージェントの本文・道具は段階 2 で出す
             if kind == "session.execution.started":
-                parent_running, follow_up_until = True, 0.0
+                parent_running, follow_up_until, follow_up_due = True, 0.0, False
                 needs_break = resumed
                 await status("waiting", "モデルの応答を待っています", force=True)
             elif kind == "session.step.started":
@@ -598,8 +652,12 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 if kind.endswith("failed"):
                     tool["output"] = str((data.get("error") or {}).get("message") or "失敗しました")
                 child = _background_child(tool) if kind.endswith("success") else None
-                if child and child in family:
+                if child and child in ended_children:
+                    follow_up_due = True                # 結果の知らせより先に終わっていた
+                elif child:
+                    family.add(child)
                     background[child] = tool["id"]
+                    background_since = background_since or time.monotonic()
                     tool["status"] = "running"          # 裏で動いている間は実行中のまま見せる
                     tool.pop("ended_at", None)
                 await on_tool(tool)
@@ -615,21 +673,24 @@ async def run_turn(server: Server, session_id: str, text: str, *,
             elif kind == "session.execution.succeeded":
                 parent_running = False
                 resumed = True
+                if follow_up_due:                       # 結果を受けた続きは、親が終わってから始まる
+                    follow_up_until = time.monotonic() + FOLLOW_UP_SECONDS
                 if finished_waiting():
                     return {"status": "succeeded", "error": ""}
                 await status("background", f"裏のエージェント {len(background)} 件の完了を待っています", force=True)
             elif kind == "session.execution.interrupted":
+                await stop_children("親の作業を止めたので止めました")
                 return {"status": "interrupted", "error": ""}
             elif kind == "session.execution.failed":
                 error = data.get("error") if isinstance(data.get("error"), dict) else {}
+                await stop_children("親の作業が失敗したので止めました")
                 return {"status": "failed", "error": str(error.get("message") or "OpenCode の実行に失敗しました")[:300]}
     except asyncio.CancelledError:
         try:
             await asyncio.shield(interrupt(server, session_id))
-            for child in list(background):
-                await asyncio.shield(interrupt(server, child))
         except ChatServerError:
             logger.warning("OpenCode の中断を伝えられませんでした")
+        await asyncio.shield(stop_children("止めました"))
         raise
     except asyncio.TimeoutError as exc:
         raise ChatServerError("OpenCode のイベントにつながりませんでした") from exc

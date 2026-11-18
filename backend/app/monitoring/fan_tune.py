@@ -275,7 +275,10 @@ def _advance(now, device, sensors, core, model, tracker, step) -> float | None:
             _tune.hold = held if held is not None else _tune.hold
             return _tune.hold
         fan_control.save_model(device["bdf"], model)
-        found = fan_core.tune(model, core, sensors, device["power_cap_w"] or power or 200.0)
+        from app.monitoring import fan_plant
+
+        found = fan_core.tune(model, core, sensors, device["power_cap_w"] or power or 200.0,
+                              plant=fan_plant.load(device["bdf"]))
         _tune.result = {"pid_kp": found["kp"], "pid_ti": found["ti"], "smoothing_s": found["smoothing_s"],
                         "margin_c": core.margin_c, "simulated": found["simulated"]}
         _start_verify(now)

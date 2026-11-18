@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 from statistics import median
 
 from app.monitoring.fan_pid import (
-    COLD_ERROR_LIMIT_C, HOTSPOT_FF_LAG_S, LOOP_DEAD_TIME_S, ThermalModel, clamp, simc_gains,
+    COLD_ERROR_LIMIT_C, HIGH_EXPONENT_MAX, HOTSPOT_FF_LAG_S, LOW_EXPONENT_MIN, LOOP_DEAD_TIME_S, ThermalModel, clamp,
+    simc_gains,
 )
 
 # 平滑の内訳（なめらかさ S 秒に対する比）。根拠は R9700 実測（docs/design-amd-smart-fan.md）
@@ -44,6 +45,27 @@ IDLE_HEAT_W = 30.0
 IDLE_FALLBACK_W = 30.0
 # 目標より冷えすぎで、回転を下げている途中でもないときに上乗せを減らす速さ（通常の比）
 COLD_DECAY_SHARE = 0.1
+# 負荷がかかっている間の回転の床 = 先読み ＋ マイナスの上乗せ（＋ 跳ね上がりの上乗せ）。LLM の負荷は軽い局面（生成）
+# と重い局面（読み込み）を行き来する。軽い局面で目標より冷えると、比例の項が回転を先読みより大きく下げ、重い局面が
+# 来ると追いつかずに上限へ届いた（R9700 本番 2026-11-18 14:26: 負荷中に 52→35%、10 秒後に緊急）。マイナスの上乗せ
+# （先読みの多すぎる分を覚えたもの）は床にも効かせる（効かせないと先読みの多すぎを直せない。レビュー指摘）。
+# 床まではすぐ上げる（電力の急変への先読み）
+# 床に効かせるマイナスの上乗せの上限（%）
+FLOOR_NEGATIVE_I_MAX = 5.0
+# （電力の跳ね上がりに一定の % を足す案は採らなかった: 下の「重い局面への余白」があれば緊急は 0 回のまま、足すと
+#  一定の全力で目標より冷やしすぎた。模擬 2026-11-18）
+# 上限の判定に使う直近の読みの中央値の幅（秒）。周期 3 秒で 3 回分だった
+EMERGENCY_WINDOW_S = 9.0
+# 重い局面の先読み: hotspot は電力が上がると 3 秒以内に「ダイの係数 × 電力の差」だけ跳ね、その瞬間は回転では防げない
+# （模型 2026-11-18: 154→223 W で 85.8→94.8°C）。今の温度に、直近 PEAK_WINDOW_S 秒の最大電力へ戻ったときの跳ねを足し、
+# 目標 ＋ PREDICT_ON_C に届く見込みなら、最大電力でも目標温度を保てる回転まで先に上げて保つ（目標 − PREDICT_OFF_C を
+# 下回るまで）。hotspot の読みは 1 秒だけ +3〜+7°C 跳ねるので、上限ぎりぎりで判断すると遅い。それでも超えるなら PI が微調整する。利用者の案（2026-11-18「全力に戻しても間に合わないという結果が
+# 出た場合は 90 度で制御可能な回転数まで早めに上げ、それでもオーバーするようであれば微調整」）。
+# 温度の誤差には足さない（足すと上乗せが一時的な余白を外気温の分として覚えた。レビュー指摘）。電力は 3 回の中央値で、
+# 1 回だけの跳ね（254 W など）を最大電力と見ない
+PEAK_WINDOW_S = 180.0
+PREDICT_ON_C = -4.0
+PREDICT_OFF_C = 6.0
 
 
 def sensor_kind(sensor: dict) -> str:
@@ -96,12 +118,15 @@ class Step:
     i_term: float
     emergency: bool
     pv_c: dict[str, float]
+    floor: float = 0.0       # 負荷中の床（先読み＋マイナスの上乗せ）。休み中は 0
+    reserve_c: float = 0.0   # 重い局面への余白（hotspot を熱いとみなした分、°C）
 
     def as_dict(self) -> dict:
         return {"output_percent": round(self.percent, 1), "mode": self.mode, "governing_sensor": self.governing,
                 "error_c": round(self.error_c, 2), "feedforward_percent": round(self.feedforward, 1),
                 "p_percent": round(self.p_term, 1), "i_percent": round(self.i_term, 1),
-                "emergency": self.emergency, "pv_c": {k: round(v, 1) for k, v in self.pv_c.items()}}
+                "emergency": self.emergency, "pv_c": {k: round(v, 1) for k, v in self.pv_c.items()},
+                "floor_percent": round(self.floor, 1), "reserve_c": round(self.reserve_c, 1)}
 
 
 class Controller:
@@ -117,6 +142,10 @@ class Controller:
         self.emergency_active = False
         self.t = 0.0
         self.integral_loaded = False
+        self.peaks: deque = deque()
+        self.recent_power: deque = deque(maxlen=3)
+        self.reserve_c = 0.0
+        self.prepared = False
 
     def reset(self, start_percent: float | None = None) -> None:
         self.__init__()
@@ -153,7 +182,7 @@ class Controller:
             if sid not in targets:
                 continue
             value = float(sensor["value_c"])
-            window = self.raw.setdefault(sid, deque(maxlen=3))
+            window = self.raw.setdefault(sid, deque(maxlen=max(3, round(EMERGENCY_WINDOW_S / max(dt, 0.1)))))
             window.append(value)
             recent = median(window)   # 上限・目標・平滑の 3 つとも同じ値で判断する
             # 上限の判定は直近 3 回（9 秒）の中央値。hotspot は全力が続いていても 1 秒だけ +3〜+7°C 跳ねる
@@ -201,15 +230,44 @@ class Controller:
         frozen = idle or emergency
         rate = settings.kp / max(1.0, settings.ti) * e * dt
         if not frozen and error < -COLD_ERROR_LIMIT_C:
-            # 下げている途中 = 出している回転が、いま欲しい回転（最低〜最大に収めた値）より高い
-            wanted_now = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
-            descending = self.out is not None and self.out > wanted_now + 0.5
-            rate = 0.0 if descending else rate * COLD_DECAY_SHARE
+            rate *= COLD_DECAY_SHARE
         if not frozen and rate < 0 and self.integral <= 0 and ff + p_term + self.integral <= settings.min_percent:
             rate = 0.0   # 最低回転で止まっているのに、上乗せをマイナスへ膨らませない（次の負荷で遅れる）
+        if not frozen and rate < 0 and self.out is not None \
+                and self.out > max(ff + p_term + self.integral, settings.min_percent) + 0.5:
+            # 冷えているのが自分の回転のせいなら減らさない: 回転をゆっくり下げている途中（緊急の最大回転の後など）。
+            # 減らすと上乗せが −20% まで張り付き、「冷える → 減らす → 上限 → 最大回転」を繰り返した（模擬 2026-11-18）
+            rate = 0.0
         if not frozen:
             self.integral = clamp(self.integral + rate, *INTEGRAL_RANGE)
         wanted = clamp(ff + p_term + self.integral, settings.min_percent, settings.max_percent)
+        loaded = power_w is not None and not idle
+        floor = clamp(ff + max(min(self.integral, 0.0), -FLOOR_NEGATIVE_I_MAX), settings.min_percent, settings.max_percent) if loaded else 0.0
+        self.reserve_c = 0.0
+        if power_w is not None:
+            self.recent_power.append(float(power_w))
+            steady_w = median(self.recent_power)
+            self.peaks.append((self.t, steady_w))
+            while self.peaks and self.peaks[0][0] < self.t - PEAK_WINDOW_S:
+                self.peaks.popleft()
+            peak_w = max(w for _, w in self.peaks)
+            jump = (model.hotspot_jump_c_per_w if model is not None and model.hotspot_jump_c_per_w else HOTSPOT_JUMP_C_PER_W)
+            hot = next((x for x in sensors if sensor_kind(x) == "junction" and x["id"] in pv), None)
+            if loaded and hot is not None:
+                self.reserve_c = max(0.0, jump * (peak_w - steady_w))
+                predicted = pv[hot["id"]] + self.reserve_c
+                target = targets[hot["id"]]
+                if predicted >= target + PREDICT_ON_C:
+                    self.prepared = True
+                elif predicted < target - PREDICT_OFF_C:
+                    self.prepared = False
+                if self.prepared:
+                    heat_peak = max(0.0, peak_w - (idle_power if known_idle else 0.0))
+                    ready = self.feedforward(model, settings, sensors, heat_peak) + self.integral
+                    floor = max(floor, clamp(ready, settings.min_percent, settings.max_percent))
+            elif not loaded:
+                self.prepared = False
+        wanted = max(wanted, floor)
 
         if emergency:
             out = settings.max_percent
@@ -221,6 +279,7 @@ class Controller:
             up = span / (s * UP_SHARE) * dt
             down = span / (s * DOWN_SHARE) * dt
             out = min(wanted, self.out + up) if wanted > self.out else max(wanted, self.out - down)
+            out = max(out, floor)   # 床まではすぐ上げる（休み中の床は 0）
         v = ff + p_term + self.integral
         if not frozen and out < v:
             # 逆算型のワインドアップ防止: 上げが追いつかない・最大で頭打ちのときだけ、実際に出した値へ寄せる。
@@ -231,7 +290,7 @@ class Controller:
         if model is not None:
             model.integral_percent = self.integral
         self.out = out
-        return Step(out, "pid", governing, error, ff, p_term, self.integral, emergency, pv)
+        return Step(out, "pid", governing, error, ff, p_term, self.integral, emergency, pv, floor, self.reserve_c)
 
 
 # ---- 模擬（熱モデルから温度を計算する） ----
@@ -263,6 +322,12 @@ class Plant:
             (f0, r0), (f1, r1) = pts[-2], pts[-1]
         else:
             (f0, r0), (f1, r1) = next((a, b) for a, b in zip(pts, pts[1:]) if a[0] <= fan <= b[0])
+        if fan < pts[0][0] or fan > pts[-1][0]:
+            # 範囲の外はべき乗（fan_for と同じ延ばし方。直線では低い回転の放熱の悪さを小さく見る）
+            r_edge, f_edge = (r0, f0) if fan < pts[0][0] else (r1, f1)
+            b = math.log(max(r0, 1e-9) / max(r1, 1e-9)) / math.log(max(f1, 1e-6) / max(f0, 1e-6)) if f1 > f0 and r1 < r0 else 0.0
+            b = max(b, LOW_EXPONENT_MIN) if fan < pts[0][0] else min(b, HIGH_EXPONENT_MAX)
+            return r_edge * (max(fan, 5.0) / f_edge) ** (-b) if b > 0 else r_edge
         r = r0 + (fan - f0) * (r1 - r0) / max(1e-6, f1 - f0)
         return max(0.2 * min(r0, r1), r)
 
@@ -355,12 +420,102 @@ def pid_gains(model: ThermalModel) -> tuple[float, float]:
     return kp, round(min(600.0, max(15.0, model.tau_s * 1.6)), 1)
 
 
-def tune(model: ThermalModel, base: CoreSettings, sensors: list[dict], full_w: float) -> dict:
-    """熱モデルから PID の効き具合を決め、模擬の試験の結果を添える（参考。値の選択には使わない:
-    模擬の hotspot は電力が入った瞬間に跳ねるだけで、実機の約 1 分かけた上昇を再現しないため）。"""
+def fan_kinds() -> tuple[str, str, str]:
+    return ("junction", "mem", "edge")
+
+
+def optimize_gains(plant, model: ThermalModel, base: CoreSettings, sensor_ids: dict[str, str] | None = None) -> dict:
+    """実機に当てはめた 2 段の模型（fan_plant）で PID の効き具合を選ぶ。熱モデルからの値（pid_gains）を中心に
+    Kp・Ti を 0.8〜1.25 倍で試し、LLM らしい負荷・休みから全力・外気温 +10°C で緊急の最大回転が 0 回のものの
+    うち、負荷中の温度の揺れが一番小さいもの。どれも 0 回にならなければ回数が一番少ないもの。"""
+    from app.monitoring import fan_plant
+
+    kp0, ti0 = pid_gains(model)
+    loads = [(fan_plant.llm_load(1), 4.0, 3.0), (fan_plant.llm_load(2), 4.0, 3.0),
+             ([plant.idle_w + 8] * 300 + [210.0] * 600, 10.0, 0.0)]
+    tried = []
+    for kf in (0.8, 1.0, 1.25):
+        for tf in (0.8, 1.0, 1.25):
+            trial = CoreSettings(**{**base.__dict__, "kp": round(kp0 * kf, 2), "ti": round(ti0 * tf, 1)})
+            results = [simulate_plant(plant, model, trial, power, dt=3.0, ambient_add=amb, ambient_ramp=ramp, seed=i + 1,
+                                      sensor_ids=sensor_ids)
+                       for i, (power, amb, ramp) in enumerate(loads)]
+            tried.append({"kp": trial.kp, "ti": trial.ti, "emergencies": sum(r["emergencies"] for r in results),
+                          "spread_c": round(max(r["spread_c"] for r in results), 2),
+                          "peak_c": max(r["peak_c"] for r in results),
+                          "centre": kf == 1.0 and tf == 1.0})
+    # 揺れの差が 0.25°C 未満なら差が無いとみなし、熱モデルからの値（中心）を選ぶ（模擬の揺らぎで選ばない）
+    fewest = min(t["emergencies"] for t in tried)
+    safe = [t for t in tried if t["emergencies"] == fewest]
+    calm = min(t["spread_c"] for t in safe)
+    close = [t for t in safe if t["spread_c"] < calm + 0.25]
+    best = next((t for t in close if t["centre"]), None) or min(close, key=lambda t: t["spread_c"])
+    return {"kp": best["kp"], "ti": best["ti"], "tried": tried, "plant": plant.summary()}
+
+
+def tune(model: ThermalModel, base: CoreSettings, sensors: list[dict], full_w: float, plant=None) -> dict:
+    """熱モデルから PID の効き具合を決め、模擬の試験の結果を添える。実機に当てはめた 2 段の模型（plant）があれば、
+    それで候補を試して選ぶ（2026-11-18 利用者「熱モデルをプロジェクトに書き込んでファン制御の最適化に使えるように」）。
+    無ければ熱モデルからの値のまま（簡単な模型の hotspot は実機の約 1 分かけた上昇を再現しないため、選択には使わない）。"""
     kp, ti = pid_gains(model)
+    if plant is not None:
+        ids = {sensor_kind(x): x["id"] for x in sensors}
+        chosen = optimize_gains(plant, model, base, ids if set(fan_kinds()) <= set(ids) else None)
+        kp, ti = chosen["kp"], chosen["ti"]
     trial = CoreSettings(**{**base.__dict__, "kp": kp, "ti": ti})
     metrics = evaluate(model, trial, sensors, full_w)
-    return {"kp": kp, "ti": ti, "smoothing_s": base.smoothing_s,
-            "simulated": {name: {"peak_c": m["peak_c"], "fan_mean": m["fan_mean"],
-                                 "emergency_steps": m["emergency_steps"]} for name, m in metrics.items()}}
+    out = {"kp": kp, "ti": ti, "smoothing_s": base.smoothing_s,
+           "simulated": {name: {"peak_c": m["peak_c"], "fan_mean": m["fan_mean"],
+                                "emergency_steps": m["emergency_steps"]} for name, m in metrics.items()}}
+    if plant is not None:
+        out["optimized"] = chosen
+    return out
+
+
+# ---- 実機に当てはめた 2 段の模型で制御を模擬する（自動調整の最適化・テスト） ----
+
+def simulate_plant(plant, model: ThermalModel, settings: CoreSettings, power: list[float], *,
+                   dt: float = 1.0, ambient_add: float = 0.0, ambient_ramp: float = 0.0, seed: int = 3,
+                   warm_up: bool = True, sensor_ids: dict[str, str] | None = None) -> dict:
+    """plant は fan_plant.PlantModel。power は 1 秒刻み。制御は dt 秒ごと（本番の周期）。hotspot の読みには
+    実機の記録の 1 秒の跳ね（+3〜+7°C）を足す。返り値: 緊急の最大回転の回数（制御の回数）・最高・負荷中の平均と揺れ。"""
+    import random
+
+    from app.monitoring.fan_plant import TwoStage
+
+    ids = sensor_ids or plant.data.get("sensor_ids") or {"junction": "temp2", "mem": "temp3", "edge": "temp1"}
+    model = ThermalModel.from_json(model.to_json())   # 模擬で本物の上乗せを書き換えない・試行どうしを独立にする
+    sensors = [{"id": ids[kind], "kind": kind} for kind in ("junction", "mem", "edge")]
+    rnd = random.Random(seed)
+    noise = plant.noise
+    twin = TwoStage(plant, ambient_add)
+    ctl = Controller()
+    out = settings.min_percent
+    every = max(1, round(dt))
+
+    def read(pw: float) -> list[dict]:
+        values = {kind: twin.T[kind] + (rnd.choice(noise) if kind == "junction" and pw > 120 else rnd.gauss(0, 0.3))
+                  for kind in ("junction", "mem", "edge")}
+        return [{**s, "value_c": round(values[s["kind"]])} for s in sensors]
+
+    if warm_up:   # 全力で温めてから休む（上乗せが育った本番に近い状態）
+        for i, pw in enumerate([210.0] * 900 + [plant.idle_w + 8] * 120):
+            twin.step(out, pw)
+            if i % every == 0:
+                out = ctl.step(read(pw), pw, float(every), settings, model).percent
+    emergencies, peak, loaded = 0, 0.0, []
+    n = max(1, len(power))
+    for i, pw in enumerate(power):
+        twin.add = ambient_add + ambient_ramp * i / n
+        twin.step(out, pw)
+        if i % every:
+            continue
+        step = ctl.step(read(pw), pw, float(every), settings, model)
+        out = step.percent
+        emergencies += int(step.emergency)
+        peak = max(peak, twin.T["junction"])
+        if pw > 120 and i > 300:
+            loaded.append(twin.T["junction"])
+    mean = sum(loaded) / len(loaded) if loaded else 0.0
+    spread = (sum((x - mean) ** 2 for x in loaded) / len(loaded)) ** 0.5 if loaded else 0.0
+    return {"emergencies": emergencies, "peak_c": round(peak, 1), "mean_c": round(mean, 1), "spread_c": round(spread, 2)}

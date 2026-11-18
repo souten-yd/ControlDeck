@@ -30,7 +30,7 @@ logger = logging.getLogger("control_deck.fan_log")
 KEEP_DAYS = 2
 # 1 分の行の列。温度は種類で持つ（hot=hotspot、mem=VRAM、edge=GPU 本体）。lo/hi はその 1 分の最低・最高
 FIELDS = ("t", "n", "p", "p_lo", "p_hi", "edge", "hot", "hot_hi", "mem", "mem_hi", "rpm", "rpm_hi",
-          "pct", "pct_lo", "pct_hi", "ff", "i", "err_hi", "over_s", "dev", "emerg", "tune")
+          "pct", "pct_lo", "pct_hi", "ff", "i", "err_hi", "over_s", "dev", "emerg", "tune", "floor", "rsv")
 KIND_COLUMN = {"edge": "edge", "junction": "hot", "mem": "mem"}
 DEVIATION_C = 2.0
 DEVIATION_SECONDS = 60.0
@@ -56,6 +56,8 @@ def _write(row: dict) -> None:
         with _lock:
             path = _file(datetime.fromtimestamp(row["t"]))
             new = not path.exists()
+            if not new:
+                _upgrade_header(path)
             with path.open("a", encoding="utf-8", newline="") as stream:
                 writer = csv.DictWriter(stream, fieldnames=FIELDS, extrasaction="ignore")
                 if new:
@@ -63,6 +65,23 @@ def _write(row: dict) -> None:
                 writer.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in FIELDS})
     except OSError:
         logger.debug("ファン制御の記録を書けません", exc_info=True)
+
+
+def _upgrade_header(path: Path) -> None:
+    """見出しが古い（列が少ない）ファイルを、今の見出しで書き直す（足した列がずれないように）。"""
+    with path.open(encoding="utf-8", newline="") as stream:
+        header = stream.readline().strip()
+    if header == ",".join(FIELDS):
+        return
+    with path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k, "") or "" for k in FIELDS})
+    tmp.replace(path)
 
 
 class Recorder:
@@ -80,7 +99,7 @@ class Recorder:
 
     def add(self, t: float, *, temps: dict[str, float | None], targets: dict[str, float], power_w: float | None,
             rpm: float | None, percent: float, ff: float, integral: float, error_c: float,
-            emergency: bool, tuning: bool) -> None:
+            emergency: bool, tuning: bool, floor: float = 0.0, reserve_c: float = 0.0) -> None:
         minute = int(t // 60)
         if self.minute is not None and minute != self.minute:
             self.flush()
@@ -99,7 +118,8 @@ class Recorder:
             self.over_since, self.counted = None, False
         self.last_t = t
         self.samples.append({"temps": temps, "power_w": power_w, "rpm": rpm, "percent": percent, "ff": ff,
-                             "i": integral, "err": error_c, "emergency": emergency, "tuning": tuning})
+                             "i": integral, "err": error_c, "emergency": emergency, "tuning": tuning,
+                             "floor": floor, "rsv": reserve_c})
 
     def flush(self) -> dict | None:
         if not self.samples or self.minute is None:
@@ -126,7 +146,8 @@ class Recorder:
         row.update(pct=mean(pcts), pct_lo=min(pcts, default=None), pct_hi=max(pcts, default=None))
         row.update(ff=mean(col(lambda x: x["ff"])), i=round(s[-1]["i"], 1),
                    err_hi=round(max(x["err"] for x in s), 1), over_s=round(self.over_s), dev=self.dev,
-                   emerg=sum(1 for x in s if x["emergency"]), tune=int(any(x["tuning"] for x in s)))
+                   emerg=sum(1 for x in s if x["emergency"]), tune=int(any(x["tuning"] for x in s)),
+                   floor=mean(col(lambda x: x.get("floor")), 0) or None, rsv=mean(col(lambda x: x.get("rsv")), 0) or None)
         for key in ("p_lo", "p_hi", "rpm_hi"):
             if row[key] is not None:
                 row[key] = round(row[key])
@@ -279,3 +300,59 @@ def refit(rows: list[dict], model, sensor_ids: dict[str, str], power_cap_w: floa
             changes["gain_c_per_percent"] = model.gain_c_per_percent
     model.tuned = {**(model.tuned or {}), "refit_at": round(time.time()), "points": len(model.points)}
     return changes
+
+
+# ---- 1 秒ごとの記録（熱の模型を当てはめ直すため。直近 RAW_KEEP_HOURS 時間だけ） ----
+# 2026-11-18 利用者「熱モデルもプロジェクトに書き込んで最適化に使えるようにし、更新したら新しいものに」。
+# 模型の当てはめ（fan_plant.fit）にはダイの速い跳ね（1 秒未満）が見える粒度が要る。1 時間で約 0.25 MB
+
+RAW_FIELDS = ("t", "fan", "power", "junction", "mem", "edge", "rpm")
+RAW_KEEP_HOURS = 2
+
+
+def _raw_file(t: float) -> Path:
+    return _root() / f"fanraw-{datetime.fromtimestamp(t):%Y%m%d%H}.csv"
+
+
+def add_raw(t: float, *, fan: float | None, power: float | None, temps: dict[str, float | None],
+            rpm: float | None) -> None:
+    try:
+        with _lock:
+            path = _raw_file(t)
+            new = not path.exists()
+            with path.open("a", encoding="utf-8", newline="") as stream:
+                writer = csv.writer(stream)
+                if new:
+                    writer.writerow(RAW_FIELDS)
+                writer.writerow([round(t, 1), "" if fan is None else round(fan, 1), "" if power is None else power,
+                                 *("" if temps.get(k) is None else temps[k] for k in ("junction", "mem", "edge")),
+                                 "" if rpm is None else rpm])
+            if new:
+                cutoff = t - RAW_KEEP_HOURS * 3600 - 3600
+                for old in _root().glob("fanraw-*.csv"):
+                    try:
+                        if datetime.strptime(old.stem.split("-", 1)[1], "%Y%m%d%H").timestamp() < cutoff:
+                            old.unlink()
+                    except (ValueError, OSError):
+                        continue
+    except OSError:
+        logger.debug("ファン制御の 1 秒ごとの記録を書けません", exc_info=True)
+
+
+def read_raw(since: float = 0.0) -> list[dict]:
+    """1 秒ごとの記録（古い順）。fan_plant.fit の形 {t, fan, power, temps: {kind: °C}} で返す。"""
+    out: list[dict] = []
+    for path in sorted(_root().glob("fanraw-*.csv")):
+        try:
+            with path.open(encoding="utf-8", newline="") as stream:
+                for raw in csv.DictReader(stream):
+                    values = {k: _num(raw.get(k, "")) for k in RAW_FIELDS}
+                    if values["t"] is None or values["t"] < since or values["fan"] is None or values["power"] is None:
+                        continue
+                    temps = {k: values[k] for k in ("junction", "mem", "edge")}
+                    if any(v is None for v in temps.values()):
+                        continue
+                    out.append({"t": values["t"], "fan": values["fan"], "power": values["power"], "temps": temps})
+        except OSError:
+            continue
+    return out

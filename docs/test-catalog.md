@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 171 ファイル、1504 テスト（目的の未記入 93 ファイル）
+- backend: 172 ファイル、1516 テスト（目的の未記入 93 ファイル）
 - E2E: 83 spec、156 テスト
 
 ## backend（backend/tests）
@@ -862,12 +862,27 @@
 - `test_pid_asymmetric_pv_filter_retains_cooling_dips_without_slowing_rise`
 - `test_pid_ema_does_not_change_raw_median_safety_input`
 - `test_ceiling_firmware_backstop_respects_hardware_range`
+- `test_production_model_feedforward_is_not_starved_below_the_measured_range` — 本番の熱モデル（50〜70% だけ測った点）で、軽い局面の先読みが少なすぎないこと。
+
+### backend/tests/test_fan_plant.py
+
+目的: 熱の模型（2 段）をプロジェクトに持ち、最適化に使い、本番の 1 秒ごとの記録から当てはめ直せること。 目的: 2026-11-18 利用者「熱モデルもプロジェクトに書き込んでファン制御の最適化に使えるようにし、更新したら新しい ものに更新することとして」「ファンの制御周期が遅い気がする」。
+
+- `test_the_r9700_model_is_packaged_and_chosen_by_pci_id`
+- `test_fit_recovers_a_known_plant_from_one_second_samples`
+- `test_raw_log_round_trip_and_keeps_two_hours`
+- `test_minute_log_with_an_old_header_is_upgraded_before_appending` — 列（floor・rsv）を足したので、今日の古い見出しのファイルに足すと列がずれていた。書き直してから足す。
+- `test_tune_optimizes_gains_on_the_plant_and_keeps_the_centre_when_differences_are_noise`
+- `test_a_predicted_overshoot_raises_the_fan_to_the_peak_power_level_without_teaching_the_integral` — 全力に戻ると間に合わないと予測したら、最大電力で目標を保てる回転まで先に上げる（利用者の案 2026-11-18）。
+- `test_refit_uses_the_longest_run_and_checks_on_held_out_data`
 
 ### backend/tests/test_fan_two_stage.py
 
-目的: 実機の記録に当てはめた 2 段の熱の模型で、ファン制御がマージン 5°C で緊急の最大回転に入らないことを確かめる。 目的: 2026-11-18 利用者「温度がオーバーした」「模擬で確かめてマージン 5 度でゲイン調整できると良い」。 本番（v0.68）では、負荷が止まると回転を急に下げ、再開で 95°C に届いて緊急の最大回転に入り、その後に上乗せが 膨らんで回り続けた。hotspot の読みは全力中でも 1 秒だけ +3〜+7°C 跳ねる。 fan_core の簡単な模型（瞬間の跳ね＋1 段）は直す前の版でも最高 90.7°C で本番を再現できなかったので、 本番の 1 秒ごとの記録に「放熱板（遅い・回転で冷え方が変わる）＋ダイ（速い）」の模型を当てはめた （hotspot の誤差 1.3°C。tests/fixtures/fan_r9700_two_stage.json）。この模型と実際の揺れの分布で、直す前の版は 本番と同じく最高 98°C・緊急 5 回を再現し、直した版は 0 回。 - 記録した実際の電力の流れ・全力と 20〜60 秒の休みの繰り返し・休みから全力を、外気温そのまま／+10°C で流す - 上乗せは本番と同じく育った状態から（全力 15 分の慣らし） - 緊急の最大回転 0 回、全力中の平均が目標 90°C の ±2.5°C
+目的: 実機に当てはめた 2 段の熱の模型（app/monitoring/plant_models/amd-r9700.json）で、ファン制御が緊急の最大回転に 入らないことを確かめる。 目的: 2026-11-18 利用者「温度がオーバーした」「模擬で確かめてマージン 5 度でゲイン調整できると良い」 「またファンがオーバースピードした。運転中も室温が微妙に上がるのと、電力負荷が急変した際はフィードフォワードを」 「熱モデルもプロジェクトに書き込んでファン制御の最適化に使えるように」。 - 記録した実際の電力の流れ・全力と休みの繰り返し・休みから全力を、外気温そのまま／+10°C で流す - LLM らしい負荷（軽い局面と重い局面を行き来する。14:26 の本番はこの形で、負荷中に回転を下げすぎた） - 上乗せは本番と同じく育った状態から（全力 15 分の慣らし）。制御は本番と同じ 3 秒ごと
 
 - `test_margin_five_holds_without_emergency_on_the_fitted_r9700_model`
+- `test_llm_like_load_holds_margin_five_without_emergency` — 軽い局面と重い局面を行き来する負荷で、マージン 5°C・外気温 +4°C から運転中に +3°C でも緊急の最大回転に
+- `test_a_hotter_gpu_holds_margin_six_under_llm_load` — 模型より熱くなりやすい GPU（ダイ ×1.3・放熱 ×1.15）でも、マージン 6°C なら入らない（本番の今の設定）。
 
 ### backend/tests/test_feature_boot_restore.py
 
@@ -1488,6 +1503,8 @@
 - `test_run_turn_switches_to_the_plan_agent`
 - `test_switch_agent_is_checked_by_reading_the_session_back` — v2 は知らない名前でも 204 を返す（実測）。読み直して切り替わっていなければ止める（レビュー指摘）。
 - `test_run_turn_waits_for_a_background_subagent_and_keeps_the_follow_up` — 裏のレビュー: 親のターンが一度終わっても聞き続け、子が終わった後の親の続き（結果）を受け取る（2026-11-18 本番）。
+- `test_the_follow_up_window_starts_when_the_parent_turn_ends` — 子が先に終わり親がその後も動いていても、親の終わりから続きを待つ（レビュー指摘）。
+- `test_a_failed_parent_stops_background_children`
 
 ### backend/tests/test_opencode_chat_timeline.py
 

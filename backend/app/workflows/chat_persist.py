@@ -1007,10 +1007,30 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await maybe_ckpt()
 
         async def on_status(item: dict) -> None:
+            _latest_stats[assistant_id] = {"type": "stats", "phase": item["phase"], "detail": item.get("detail", ""),
+                                           "tok_per_sec": item.get("tok_per_sec", 0), "gen_tokens": item.get("gen_tokens", 0),
+                                           "prompt_tokens": None, "context_max": None}
             job.log("stats", phase=item["phase"], detail=item.get("detail", ""), tok_per_sec=item.get("tok_per_sec", 0),
                     gen_tokens=item.get("gen_tokens", 0), prompt_tokens=None, context_max=None)
 
-        todo_state: dict[str, dict] = {}
+        def _previous_todos() -> dict[str, dict]:
+            """前の回答のリストの時刻を引き継ぐ（続きのターンで完了時刻が今に書き換わらないように）。"""
+            db = SessionLocal()
+            try:
+                rows = db.execute(select(ChatMessage).where(
+                    ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant", ChatMessage.id != assistant_id,
+                ).order_by(ChatMessage.created_at.desc()).limit(5)).scalars().all()
+                for row in rows:
+                    items = json.loads(row.meta_json or "{}").get("todos")
+                    if items:
+                        return {str(t.get("content")): dict(t) for t in items if isinstance(t, dict)}
+            except ValueError:
+                pass
+            finally:
+                db.close()
+            return {}
+
+        todo_state: dict[str, dict] = await asyncio.to_thread(_previous_todos)
 
         async def on_todos(items: list) -> None:
             """アクションリスト（todowrite）。始まった・終わった時刻を覚えて画面へ出す。"""
@@ -1030,6 +1050,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 if status == "completed":
                     row.setdefault("started_at", now)
                     row.setdefault("completed_at", now)
+                else:
+                    row.pop("completed_at", None)     # やり直しになった
                 out.append(dict(row))
             buf["meta"]["todos"] = out
             job.log("todos", todos=out)
@@ -1593,10 +1615,18 @@ def quick_title(text: str) -> str:
     return (line[:28] + "…" if len(line) > 28 else line) or "新しい会話"
 
 
-async def _refine_title(conv_id: str, base_url: str, model: str) -> None:
-    """最初の回答の後で、会話の内容から短い題名を作る（失敗しても最初の題名のまま）。"""
+async def _refine_title(conv_id: str, base_url: str, model: str, mode: str = "chat") -> None:
+    """最初の回答の後で、会話の内容から短い題名を作る（失敗しても最初の題名のまま）。
+    今動いたモデルで作る（別のモデルを GPU へ載せ替えない）。送信待ちがあれば作らない（そちらを先に）。"""
+    if mode == "code":
+        from app.integrations.opencode import provider as opencode_provider
+
+        settings = await asyncio.to_thread(opencode_provider.get_settings)
+        base_url, model = str(settings["base_url"]), str(settings["model"])
     db = SessionLocal()
     try:
+        if _queued(db, conv_id):
+            return
         conv = db.get(Conversation, conv_id)
         users = db.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv_id, ChatMessage.role == "user")
                            .order_by(ChatMessage.created_at)).scalars().all()
@@ -1801,11 +1831,15 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")
     async def run(j: jobs.Job) -> dict:
-        result = await _run_chat_job(j, assistant_id, conv_id, history, params)
+        try:
+            result = await _run_chat_job(j, assistant_id, conv_id, history, params)
+        finally:
+            _latest_stats.pop(assistant_id, None)
         # 正常に終わったら、送信待ちの要望を送る（止めた・失敗したときは送らずに保留する）
         _after_turn(conv_id, assistant_id, j)
         # 題名はジョブの外で（送信待ちの自動送信を遅らせない）
-        task = asyncio.get_running_loop().create_task(_refine_title(conv_id, params["base_url"], params["model"]))
+        task = asyncio.get_running_loop().create_task(
+            _refine_title(conv_id, params["base_url"], params["model"], params.get("mode", "chat")))
         _queue_tasks.add(task)
         task.add_done_callback(_queue_tasks.discard)
         return result
@@ -1827,6 +1861,7 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
 # まとめて読ませる）。止めた・失敗したときは送らずに保留し、利用者が「今すぐ送る」で送る。
 
 QUEUE_LIMIT = 20
+_latest_stats: dict[str, dict] = {}   # 生成中の回答のいまの段階（開き直したときに出す）
 _queue_locks: dict[str, asyncio.Lock] = {}
 _queue_tasks: set[asyncio.Task] = set()
 
@@ -2123,6 +2158,8 @@ async def stream_message(websocket: WebSocket, message_id: str):
     if has_saved:
         await websocket.send_text(json.dumps({"type": "snapshot", "content": saved_content, "thinking": saved_thinking,
                                               "timeline": saved_timeline}))
+    if message_id in _latest_stats:     # 開き直しても、いまの段階をすぐ出す
+        await websocket.send_text(json.dumps(_latest_stats[message_id], ensure_ascii=False))
 
     job = jobs.get(job_id) if job_id else None
     if job is None:

@@ -454,7 +454,11 @@ export default function AssistantChat() {
 
   /** 永続チャット: assistant メッセージの生成を購読する（切断してもサーバーは継続）。
    * 対象メッセージ（messageId 一致）へ delta/thinking を書き込む。 */
-  const streamMessage = (messageId: string) =>
+  const streamMessage = (messageId: string) => {
+    setGenStats(null);   // 前の回答の「完了」を残さない（段階はサーバーからすぐ届く）
+    return streamMessageInner(messageId);
+  };
+  const streamMessageInner = (messageId: string) =>
     new Promise<void>((resolve) => {
       const patchMsg = (fn: (m: Msg) => Msg) =>
         setMessages((prev) => prev.map((m) => (m.messageId === messageId ? fn(m) : m)));
@@ -1173,7 +1177,9 @@ export default function AssistantChat() {
       if (!buildContinues) setBusy(false);
       // 題名（最初の発言から付く）と並び順（更新日時）を履歴へ反映する。内容から作る題名は回答の少し後に届く
       qc.invalidateQueries({ queryKey: ["chat-conversations"] });
-      window.setTimeout(() => qc.invalidateQueries({ queryKey: ["chat-conversations"] }), 12_000);
+      for (const wait of [12_000, 30_000, 75_000]) {
+        window.setTimeout(() => qc.invalidateQueries({ queryKey: ["chat-conversations"] }), wait);
+      }
     }
   };
 
@@ -1397,6 +1403,7 @@ export default function AssistantChat() {
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
   // プランは OpenCode を使う場面でだけ効く（チャット・調査では関係ない）
   const planActive = opencodeAvailable && codeAgent === "plan";
+  const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
@@ -1649,8 +1656,9 @@ export default function AssistantChat() {
           data-assistant-messages
           className="min-h-0 min-w-0 flex-1 touch-pan-y space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-5 [-webkit-overflow-scrolling:touch] sm:px-5"
         >
-          <TodoFloat todos={[...messages].reverse().find((m) => m.todos?.length)?.todos}
-            active={busy || messages[messages.length - 1]?.todos !== undefined} />
+          {/* いまの回答のリストだけ。動いている間か、終わっていない項目があるときに出す */}
+          <TodoFloat todos={latestAssistant?.todos}
+            active={busy || Boolean(latestAssistant?.todos?.some((t) => t.status !== "completed" && t.status !== "cancelled"))} />
           {messages.length === 0 && (
             <div data-assistant-empty className="mx-auto max-w-md pt-[12vh] text-center">
               <p aria-hidden className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-accent-50 text-2xl text-accent-600 dark:bg-accent-600/15 dark:text-accent-300">{modeChoice === "auto" ? "✦" : currentMode.icon}</p>
