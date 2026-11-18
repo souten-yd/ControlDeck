@@ -242,7 +242,8 @@ export default function AssistantChat() {
   const qc = useQueryClient();
 
   const saved = useRef(loadSettings()).current;
-  const [modeChoice, setModeChoice] = useState<AssistantModeChoice>("auto");
+  const [modeChoiceState, setModeChoice] = useState<AssistantModeChoice>("auto");
+  const modeChoice = modeChoiceState;
   // 「調査」の深さ。自動は依頼の中身から Web / Web+論文 / Deep / 論文 を選ぶ
   const [researchDepth, setResearchDepth] = useState<ResearchDepth>("auto");
   const [messages, setMessages] = useState<Msg[]>([]); // 会話本文は DB から復元
@@ -623,6 +624,7 @@ export default function AssistantChat() {
     setConversationTitle(NEW_CHAT_TITLE);
     setMessages([]);
     setAttachments([]); // 前の会話の添付を持ち越さない
+    setCodeAgent("build"); // プランは会話ごと（新しい会話へ持ち越さない）
     setResolvedDecision(null);
     setGenStats(null);
     setHistoryOpen(false);
@@ -927,18 +929,24 @@ export default function AssistantChat() {
   });
   const permissionMode: PermissionMode = permissionModeData?.mode ?? "auto";
   const canChangePermissionMode = can("settings.manage");
+  const permissionChainRef = useRef<Promise<void>>(Promise.resolve());
   const changePermissionMode = async (mode: PermissionMode) => {
     if (!canChangePermissionMode || mode === permissionMode) return;
     // 先に画面を変える（返事を待つと、Shift+Tab を続けて押したときに古い状態から数えて同じ所へ戻っていた）
-    const previous = permissionMode;
     qc.setQueryData(["opencode-permission-mode"], { mode });
-    try {
-      await api("/chat/opencode/permission-mode", { method: "PUT", json: { mode } });
-      show(`権限: ${PERMISSION_MODES.find((m) => m.id === mode)?.label}（次の操作から）`);
-    } catch (e) {
-      qc.setQueryData(["opencode-permission-mode"], { mode: previous });
-      show(e instanceof Error ? e.message : "権限モードを変えられませんでした", "error");
-    }
+    // 送るのは 1 つずつ順に（続けて押すと、先に押した方が後で届いてサーバーと画面が食い違っていた。レビュー指摘）
+    const run = permissionChainRef.current.then(async () => {
+      try {
+        await api("/chat/opencode/permission-mode", { method: "PUT", json: { mode } });
+        show(`権限: ${PERMISSION_MODES.find((m) => m.id === mode)?.label}（次の操作から）`);
+      } catch (e) {
+        show(e instanceof Error ? e.message : "権限モードを変えられませんでした", "error");
+        // 失敗したらサーバーの値に合わせ直す（手元の古い値へ戻さない）
+        await qc.invalidateQueries({ queryKey: ["opencode-permission-mode"] });
+      }
+    });
+    permissionChainRef.current = run;
+    await run;
   };
   // OpenCode のエージェント: ビルド（作る・直す）／プラン（計画だけ。ファイルも状態も変えない）。
   // 2026-11-18 利用者「プランの切り替えを追加し、プランの際はビルドモードではないことが明確にわかること」
@@ -986,8 +994,10 @@ export default function AssistantChat() {
     }
   };
 
-  const send = async (providedText?: string, agentOverride?: "build" | "plan") => {
+  const send = async (providedText?: string, agentOverride?: "build" | "plan", modeOverride?: AssistantModeChoice) => {
     const agent = agentOverride ?? codeAgent;
+    // 「このプランで作る」は OpenCode に決め打ちで送る（機能をチャットなどに変えていても）
+    const modeChoice = modeOverride ?? modeChoiceState;
     const readyImages = attachments.filter((a) => a.kind === "image" && a.status === "ready");
     const readyArchives = attachments.filter((a) => a.kind === "archive" && a.status === "ready");
     if (attachments.some((a) => a.status === "uploading")) {
@@ -1655,7 +1665,7 @@ export default function AssistantChat() {
                 }}
                 onAnswerPermission={answerPermission}
                 onBuildFromPlan={!busy && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
-                  ? () => { setCodeAgent("build"); void send("このプランで実装してください。", "build"); } : undefined}
+                  ? () => { setCodeAgent("build"); setModeChoice("code"); void send("このプランで実装してください。", "build", "code"); } : undefined}
                 editing={!!m.messageId && editingId === m.messageId}
                 actionsDisabled={busy}
                 onAction={(action) => void onMessageAction(m, action)}

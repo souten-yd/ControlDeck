@@ -188,7 +188,8 @@ def test_run_turn_streams_text_tools_and_permissions(monkeypatch, tmp_path):
     assert result == {"status": "succeeded", "error": ""}
     # 毎回エージェントをそろえてから送る（既定はビルド）
     assert calls[0] == ("POST", f"/api/session/{sid}/agent", {"agent": "build"})
-    assert calls[1] == ("POST", f"/api/session/{sid}/prompt", {"text": "片付けて"})
+    assert calls[1] == ("GET", f"/api/session/{sid}", None)          # 切り替わったかを読み直す
+    assert calls[2] == ("POST", f"/api/session/{sid}/prompt", {"text": "片付けて"})
     assert "".join(text) == "## 結果\n完了" and thinking == ["考える"]
     assert tools[-1]["status"] == "completed" and tools[-1]["input"] == {"command": "rm -rf build"}
     assert perms[0]["status"] == "pending" and perms[0]["save"] == ["rm *"] and perms[1]["status"] == "once"
@@ -463,28 +464,36 @@ def test_japanese_project_directory_is_sent_url_encoded(tmp_path):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node が無い")
 def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
-    """プラン（plan エージェント）では何も変えない: 編集・書き込みは止め、シェルは読むだけを通し、
-    ほかは止める。ControlDeck の道具は確認。権限が Auto でも確認でも同じ。
-    2026-11-18 利用者「プランの際はビルドモードではないことが明確にわかること」。"""
+    """プラン（plan エージェント）では何も変えない。2026-11-18 利用者「プランの際はビルドモードではないことが明確に」。
+    レビュー指摘（同日）: 規則で allow に決まったもの（ビルドで「いつも許可」）・子のエージェント・書ける読むだけ風の
+    コマンド（fd -x・uniq IN OUT・rg --pre）も止める。確認モード・箱の外では読むだけのコマンドも確認する。
+    エージェント名が無くても、ControlDeck が書いたプランのセッション一覧で判断する。"""
     results = {}
     for mode in ("auto", "ask"):
         mode_file = tmp_path / f"{mode}.json"
-        mode_file.write_text(json.dumps({"mode": mode}))
+        mode_file.write_text(json.dumps({"mode": mode, "plan_sessions": ["ses_plan"]}))
         script = f"""
           import plugin from {json.dumps((PLUGIN / "index.mjs").as_uri())};
           const hooks = {{}};
           await plugin.setup({{ permission: {{ hook: async (name, fn) => {{ hooks[name] = fn; }} }} }});
           const out = {{}};
-          const cases = [["edit", ["a.py"]], ["write", ["b.py"]], ["shell", ["ls -la"]], ["shell", ["git status && git diff"]],
-                         ["shell", ["rg foo | head"]], ["shell", ["npm run build"]], ["shell", ["git commit -m x"]],
-                         ["shell", ["mkdir x"]], ["shell", ["python -m pytest -q"]], ["shell", ["rm -rf build"]],
-                         ["execute", ["sculpt"]], ["webfetch", ["https://x"]]];
-          for (const [action, resources] of cases) {{
-            const event = {{ action, resources, effect: "ask", agent: "plan" }};
+          const cases = [["edit", ["a.py"], "ask"], ["write", ["b.py"], "allow"], ["shell", ["ls -la"], "ask"],
+                         ["shell", ["git status && git diff"], "ask"], ["shell", ["rg foo | head"], "ask"],
+                         ["shell", ["npm run build"], "ask"], ["shell", ["git commit -m x"], "ask"], ["shell", ["mkdir x"], "ask"],
+                         ["shell", ["python -m pytest -q"], "ask"], ["shell", ["rm -rf build"], "allow"],
+                         ["shell", ["fd . -x touch {{}}"], "ask"], ["shell", ["uniq a.txt src/app.py"], "ask"],
+                         ["shell", ["rg --pre ./x.sh foo"], "ask"], ["subagent", ["developer"], "allow"],
+                         ["execute", ["sculpt"], "allow"], ["webfetch", ["https://x"], "ask"], ["shell", ["systemctl stop x"], "deny"]];
+          for (const [action, resources, effect] of cases) {{
+            const event = {{ action, resources, effect, agent: "plan", sessionID: "ses_x" }};
             hooks.evaluate(event);
             out[action + ":" + resources[0]] = event.effect;
           }}
-          const build = {{ action: "edit", resources: ["a.py"], effect: "ask", agent: "build" }};
+          // エージェント名が無くても、プランのセッション一覧で止める
+          const bySession = {{ action: "edit", resources: ["a.py"], effect: "allow", sessionID: "ses_plan" }};
+          hooks.evaluate(bySession);
+          out.bySession = bySession.effect;
+          const build = {{ action: "edit", resources: ["a.py"], effect: "ask", agent: "build", sessionID: "ses_b" }};
           hooks.evaluate(build);
           out.build = build.effect;
           console.log(JSON.stringify(out));
@@ -494,12 +503,17 @@ def test_plan_agent_changes_nothing_even_in_auto_mode(tmp_path):
                                 timeout=30, check=True)
         results[mode] = json.loads(result.stdout)
     for mode, out in results.items():
-        assert out["edit:a.py"] == "deny" and out["write:b.py"] == "deny", mode
-        for read in ("ls -la", "git status && git diff", "rg foo | head"):
-            assert out[f"shell:{read}"] == "allow", (mode, read)
-        for change in ("npm run build", "git commit -m x", "mkdir x", "python -m pytest -q", "rm -rf build"):
+        assert out["edit:a.py"] == "deny" and out["write:b.py"] == "deny", mode       # allow で決まった書き込みも止める
+        for change in ("npm run build", "git commit -m x", "mkdir x", "python -m pytest -q", "rm -rf build",
+                       "fd . -x touch {}", "uniq a.txt src/app.py", "rg --pre ./x.sh foo"):
             assert out[f"shell:{change}"] == "deny", (mode, change)
+        assert out["subagent:developer"] == "deny", mode
         assert out["execute:sculpt"] == "ask" and out["webfetch:https://x"] == "ask", mode
+        assert out["shell:systemctl stop x"] == "deny", mode                            # 禁止は緩めない
+        assert out["bySession"] == "deny", mode
+    for read in ("ls -la", "git status && git diff", "rg foo | head"):
+        assert results["auto"][f"shell:{read}"] == "allow", read
+        assert results["ask"][f"shell:{read}"] == "ask", read                          # 確認モードでは緩めない
     assert results["auto"]["build"] == "allow" and results["ask"]["build"] == "ask"
 
 
@@ -517,3 +531,21 @@ def test_run_turn_switches_to_the_plan_agent(monkeypatch, tmp_path):
                                               on_tool=noop, on_permission=noop, agent="plan"))
     assert result["status"] == "succeeded"
     assert calls[0] == ("POST", f"/api/session/{sid}/agent", {"agent": "plan"})
+    # 権限プラグインへ、このセッションがプランだと知らせる（エージェント名が無くても止められるように）
+    assert json.loads(Path(_server(tmp_path).permission_file).read_text())["plan_sessions"] == [sid]
+
+
+def test_switch_agent_is_checked_by_reading_the_session_back(monkeypatch, tmp_path):
+    """v2 は知らない名前でも 204 を返す（実測）。読み直して切り替わっていなければ止める（レビュー指摘）。"""
+    from app.integrations.opencode import chat_server
+
+    async def fake_call(server, method, path, body=None):
+        return {"agent": "build"} if method == "GET" else {}
+
+    monkeypatch.setattr(chat_server, "_call", fake_call)
+    import pytest as _pytest
+    with _pytest.raises(chat_server.ChatServerError):
+        asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_1", "plan"))
+    asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_1", "build"))
+    with _pytest.raises(chat_server.ChatServerError):
+        asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_1", "yolo"))

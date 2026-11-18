@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 171 ファイル、1501 テスト（目的の未記入 93 ファイル）
+- backend: 171 ファイル、1502 テスト（目的の未記入 93 ファイル）
 - E2E: 82 spec、155 テスト
 
 ## backend（backend/tests）
@@ -1484,8 +1484,9 @@
 - `test_running_servers_are_not_reaped`
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`
 - `test_japanese_project_directory_is_sent_url_encoded` — 日本語のプロジェクト名でも、ヘッダーを送れる（ASCII だけ）。OpenCode は decodeURIComponent で戻す。
-- `test_plan_agent_changes_nothing_even_in_auto_mode` — プラン（plan エージェント）では何も変えない: 編集・書き込みは止め、シェルは読むだけを通し、
+- `test_plan_agent_changes_nothing_even_in_auto_mode` — プラン（plan エージェント）では何も変えない。2026-11-18 利用者「プランの際はビルドモードではないことが明確に」。
 - `test_run_turn_switches_to_the_plan_agent`
+- `test_switch_agent_is_checked_by_reading_the_session_back` — v2 は知らない名前でも 204 を返す（実測）。読み直して切り替わっていなければ止める（レビュー指摘）。
 
 ### backend/tests/test_opencode_chat_timeline.py
 

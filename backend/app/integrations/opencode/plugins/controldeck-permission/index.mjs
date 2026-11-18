@@ -13,21 +13,26 @@ import { readFileSync, statSync } from "node:fs";
 const FILE = process.env.CONTROLDECK_PERMISSION_FILE || "";
 // 箱の外（host）で動くときは境界が無いので、Auto でもコマンドは自動にしない
 const HOST = process.env.CONTROLDECK_ISOLATION === "host";
-let cache = { mtime: -1, mode: "auto" };
+let cache = { mtime: -1, mode: "auto", plan: new Set() };
 
-export function currentMode() {
-  if (!FILE) return "auto";
+function readState() {
+  if (!FILE) return { mode: "auto", plan: new Set() };
   try {
     const mtime = statSync(FILE).mtimeMs;
     if (mtime !== cache.mtime) {
-      const mode = JSON.parse(readFileSync(FILE, "utf8")).mode;
-      cache = { mtime, mode: mode === "ask" ? "ask" : "auto" };
+      const data = JSON.parse(readFileSync(FILE, "utf8"));
+      cache = { mtime, mode: data.mode === "ask" ? "ask" : "auto",
+        plan: new Set(Array.isArray(data.plan_sessions) ? data.plan_sessions.map(String) : []) };
     }
   } catch {
     // 読めなければ安全側（確認）に倒す
-    return "ask";
+    return { mode: "ask", plan: cache.plan };
   }
-  return cache.mode;
+  return cache;
+}
+
+export function currentMode() {
+  return readState().mode;
 }
 
 // 危ない形（どれか 1 つでも含めば確認）。消す・上書きする・外へ出す・権限や状態を変える。
@@ -60,12 +65,26 @@ const DANGEROUS = [
   /(^|[\s;&|(])git\s+-c\s/,
 ];
 
-// 自動でよい形（全体がこれだけで出来ていること）。読むだけ・テスト・ビルド・整形。
+// 読むだけの形（何も書かない・ほかのプログラムを動かさない）。プランで通してよいのはこれだけ。
+// fd -x・rg --pre・uniq IN OUT・tree -o・file -C のように書いたり実行したりできるものは入れない（レビュー指摘 2026-11-18）
+const READ_ONLY_HEAD = new Set([
+  "ls", "cat", "head", "tail", "wc", "pwd", "echo", "grep", "rg", "find", "stat", "du", "df", "which", "date",
+  "diff", "cmp", "cut", "tr", "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum",
+  "true", "test", "[", "cd",
+]);
+const READ_ONLY_COMMANDS = [/^git\s+(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/];
+// 読むだけの形でも、書く・動かす引数があれば読むだけではない
+const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)(--pre|--pre-glob|--exec|--exec-batch|-x|-X|--output|-o|-C|--fix)(\s|=|$)/;
+
+export function isReadOnly(command) {
+  const text = String(command || "").trim();
+  if (!text || judgeShell(text).effect !== "allow" || READ_ONLY_FORBIDDEN_ARGS.test(text)) return false;
+  return splitCommands(text).every((part) => READ_ONLY_HEAD.has(part.split(/\s+/)[0]) || READ_ONLY_COMMANDS.some((p) => p.test(part)));
+}
+
+// 自動でよい形（全体がこれだけで出来ていること）。読むだけに、テスト・ビルド・整形・作業用のフォルダ作りを足したもの
 const SAFE_HEAD = new Set([
-  "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "grep", "rg", "ag", "find", "fd", "tree",
-  "file", "stat", "du", "df", "which", "date", "diff", "cmp", "sort", "uniq", "cut", "tr",
-  "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum", "true", "test", "[",
-  "mkdir", "touch", "cd",
+  ...READ_ONLY_HEAD, "printf", "ag", "fd", "tree", "file", "sort", "uniq", "mkdir", "touch",
 ]);
 const SAFE_COMMANDS = [
   /^git\s+(status|diff|log|show|branch|rev-parse|ls-files|blame|describe|remote\s+-v|add|commit|switch|fetch)(\s|$)/,
@@ -95,38 +114,43 @@ export function judgeShell(command) {
   return { effect: "ask", message: "Auto: 自動で判断できないため確認します" };
 }
 
-// プラン（OpenCode の plan エージェント）で通してよいコマンド: 読むだけ（何も変えない）
-const PLAN_READ_HEAD = new Set([
-  "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "grep", "rg", "ag", "find", "fd", "tree",
-  "file", "stat", "du", "df", "which", "date", "diff", "cmp", "sort", "uniq", "cut", "tr",
-  "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum", "true", "test", "[", "cd",
-]);
-const PLAN_READ_COMMANDS = [/^git\s+(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/];
-
 // プランでは何も変えない（2026-11-18 利用者「プランの際はビルドモードではないことが明確にわかること」）。
-// 編集・書き込みは止め、シェルは読むだけを通し、ほかは止める。ControlDeck の道具（MCP）は確認する。
-// 権限の確認モード（ask）でも同じ（プランで編集を許可させない）。
-export function decidePlan(action, resources) {
+// 規則で allow に決まったもの（ビルドのときに「いつも許可」と答えたものなど）も止める。止めるのは:
+//   編集・書き込み、変更を伴うコマンド、子のエージェント（子はビルドの扱いになり編集できてしまう）。
+// 読むだけのコマンドは、Auto かつ箱の中なら通す。確認モード・箱の外では確認する（プランで確認が緩まないように）。
+// ControlDeck の道具（MCP）と外への取得は確認する。
+export function decidePlan(action, resources, mode = "auto") {
   switch (action) {
     case "edit":
     case "write":
       return { effect: "deny", message: "プラン: 編集しません。直すにはビルドに切り替えてください" };
+    case "subagent":
+    case "task":
+      return { effect: "deny", message: "プラン: 子のエージェントは使いません（ビルドに切り替えると使えます）" };
     case "shell": {
-      const text = (resources || []).map((r) => String(r || "").trim());
-      const readOnly = text.length > 0 && text.every((command) => judgeShell(command).effect === "allow"
-        && splitCommands(command).every((part) => PLAN_READ_HEAD.has(part.split(/\s+/)[0]) || PLAN_READ_COMMANDS.some((p) => p.test(part))));
-      return readOnly ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
-        : { effect: "deny", message: "プラン: 変更を伴うコマンドは実行しません。ビルドに切り替えてください" };
+      const commands = (resources || []).map((r) => String(r || "").trim());
+      if (commands.length === 0 || !commands.every(isReadOnly)) {
+        return { effect: "deny", message: "プラン: 変更を伴うコマンドは実行しません。ビルドに切り替えてください" };
+      }
+      return mode === "auto" && !HOST ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
+        : { effect: "ask", message: "プラン: 読むだけのコマンドです（確認モードのため確認します）" };
     }
     case "execute":
       return { effect: "ask", message: "プラン: ControlDeck の道具は確認します" };
+    case "webfetch":
+      return { effect: "ask", message: "プラン: 外への取得は確認します" };
     default:
       return null;
   }
 }
 
+/** このイベントがプランか: エージェント名、または ControlDeck が書いたプランのセッション一覧 */
+export function isPlanEvent(event, state = readState()) {
+  return event?.agent === "plan" || (event?.sessionID != null && state.plan.has(String(event.sessionID)));
+}
+
 export function decide(mode, action, resources, agent) {
-  if (agent === "plan") return decidePlan(action, resources);
+  if (agent === "plan") return decidePlan(action, resources, mode);
   if (mode !== "auto") return null; // 確認モード: 設定どおり（ask）
   switch (action) {
     case "edit":
@@ -149,8 +173,19 @@ export default {
   id: "controldeck.permission",
   async setup(ctx) {
     await ctx.permission.hook("evaluate", (event) => {
-      if (event.effect !== "ask") return; // allow / deny の規則で決まったものは触らない
-      const verdict = decide(currentMode(), event.action, event.resources, event.agent);
+      if (event.effect === "deny") return; // 禁止は緩めない
+      const state = readState();
+      if (isPlanEvent(event, state)) {
+        // プランは allow で決まったものも見直す（止めるだけ。ask を allow にするのは読むだけのコマンドだけ）
+        const verdict = decidePlan(event.action, event.resources, state.mode);
+        if (!verdict) return;
+        if (event.effect === "allow" && verdict.effect === "allow") return;
+        event.effect = verdict.effect;
+        event.message = verdict.message;
+        return;
+      }
+      if (event.effect !== "ask") return; // ビルド: allow で決まったものは触らない
+      const verdict = decide(state.mode, event.action, event.resources, event.agent);
       if (!verdict) return;
       event.effect = verdict.effect;
       event.message = verdict.message;

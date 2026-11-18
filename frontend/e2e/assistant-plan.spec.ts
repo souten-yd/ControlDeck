@@ -84,6 +84,8 @@ for (const width of [320, 1280]) {
     await expect(shell.locator("[data-plan-answer]")).toContainText("ファイルは変えていません");
     const build = shell.locator("[data-build-from-plan]");
     await expect(build).toBeVisible();
+    // 機能をチャットに変えていても、「このプランで作る」は OpenCode で送る（レビュー指摘）
+    await shell.locator('[data-composer-pill="mode"]').getByRole("button", { name: /外す/ }).click().catch(() => undefined);
     await build.click();
     await expect.poll(() => sent.length).toBe(2);
     expect(sent[1]).toMatchObject({ mode: "code", code_agent: "build", content: "このプランで実装してください。" });
