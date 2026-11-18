@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.config import data_dir
 
@@ -20,9 +20,21 @@ class ChatDefaults(BaseModel):
 
 
 class DeepResearchSettings(BaseModel):
+    # True: 根拠の量とレポートの長さを、使うモデルのコンテキスト長から決める（context_budget）。
+    # False: 下の 2 つの固定値を使う（2026-11-18 から既定は True）
+    auto_from_context: bool = True
     evidence_context_chars: int = Field(default=90000, ge=12000, le=500000)
     max_report_tokens: int = Field(default=32768, ge=8192, le=262144)
     timeout_seconds: int = Field(default=1800, ge=300, le=7200)
+
+    @model_validator(mode="before")
+    @classmethod
+    def keep_custom_values(cls, data):
+        """この項目が無かった頃に、根拠の量かレポートの長さを手で変えていたなら、自動にしない（上書きしない）。"""
+        if isinstance(data, dict) and "auto_from_context" not in data and (
+                data.get("evidence_context_chars", 90000) != 90000 or data.get("max_report_tokens", 32768) != 32768):
+            return {**data, "auto_from_context": False}
+        return data
 
 
 class ModelLibrary(BaseModel):
@@ -263,6 +275,7 @@ async def environment() -> dict:
     from app.models_mgmt import amd_gpu, llama, ollama, strata, strata_gateway
 
     policy = get_policy()
+    windows = await asyncio.to_thread(_compaction_windows)
     detected = llama.detect_backends()
     installed = set(llama.installed_backends())
     ollama_status = await ollama.status()
@@ -341,7 +354,9 @@ async def environment() -> dict:
         "platform": "Linux", "gpu": "AMD" if detected.get("rocm") else "GPU",
         "runtimes": runtimes, "policy": policy.model_dump(), "amd_gpu": gpu_caps,
         "startup_models": await startup_models(),
-        "compaction_windows": await asyncio.to_thread(_compaction_windows),
+        "compaction_windows": windows,
+        "context_budgets": _context_budgets(windows),
+
         "addon_gpu_state": _addon_gpu_state(),
     }
 
@@ -370,6 +385,13 @@ def _compaction_windows() -> list[dict]:
             out.append({"alias": str(item.get("alias") or ""), "runtime": str(item.get("runtime") or ""),
                         "name": str(item.get("display_name") or item.get("alias") or ""), "window": window})
     return out
+
+
+def _context_budgets(windows: list[dict]) -> list[dict]:
+    """モデルごとに、コンテキスト長から決まる各機能の量（モデル画面の一覧）。"""
+    from app.models_mgmt import context_budget
+
+    return [{**row, **context_budget.for_window(row["window"]).as_dict()} for row in windows]
 
 
 def normalize_gpu_profile(policy: RuntimePolicy) -> RuntimePolicy:

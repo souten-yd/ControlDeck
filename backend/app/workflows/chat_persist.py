@@ -737,6 +737,81 @@ def language_guard(history: list[dict], user_query: str) -> list[dict]:
     return history
 
 
+HANDOFF_MODE_LABEL = {"chat": "チャット", "web": "調査（Web）", "academic": "調査（論文）", "research": "調査",
+                      "deep": "調査（Deep Research）", "auto": "チャット"}
+
+
+def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int) -> tuple[str, int]:
+    """OpenCode へ引き継ぐ、前回の OpenCode の回答より後の会話（チャット・調査の結果と出典）。
+
+    2026-11-18 利用者の依頼「チャットで始めた会話の結果を、同じ会話の中で OpenCode に引き継ぎたい」
+    「OpenCode で開発している中で調査を入れ、その結果を開発に反映したい」。OpenCode には毎回その発言しか
+    渡していなかったので、間に挟んだチャットや調査を OpenCode は知らなかった。
+    量は limit_chars まで（context_budget.handoff_chars）。超えたら古いほうから落とす（新しい結論を残す）。
+    返り値は (本文, 引き継いだ発言の数)。引き継ぐものが無ければ ("", 0)。
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv_id)
+                          .order_by(ChatMessage.created_at)).scalars().all()
+    finally:
+        db.close()
+    start = 0
+    for index, row in enumerate(rows):
+        if row.role != "assistant":
+            continue
+        try:
+            meta = json.loads(row.meta_json or "{}")
+        except json.JSONDecodeError:
+            meta = {}
+        # OpenCode のセッションが一度でも受け取った発言までは引き継がない（止めた・失敗した回も、
+        # その依頼は同じセッションが見ている。二重に渡さない）
+        if meta.get("mode") == "code" and meta.get("opencode_session") and row.status != "generating":
+            start = index + 1
+    blocks: list[str] = []
+    for row in rows[start:]:
+        if row.id == current_user_id or row.status in ("generating", "failed", "canceled"):
+            continue
+        content = (row.content or "").strip()
+        if not content:
+            continue
+        if row.role == "user":
+            blocks.append(f"### 利用者\n{content}")
+            continue
+        try:
+            meta = json.loads(row.meta_json or "{}")
+        except json.JSONDecodeError:
+            meta = {}
+        mode = str(meta.get("mode") or "chat")
+        if mode == "code":
+            continue
+        lines = [f"### アシスタント（{HANDOFF_MODE_LABEL.get(mode, mode)}）", content]
+        sources = [x for x in (meta.get("sources") or []) if isinstance(x, dict) and x.get("url")]
+        if sources:
+            lines.append("出典:")
+            lines += [f"- [{x.get('reference_id', '')}] {x.get('title', '')} {x.get('url', '')}".replace("[] ", "")
+                      for x in sources[:40]]
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return "", 0
+    head = "## これまでの会話（この会話で OpenCode の前に話した内容・調べた結果。依頼の前提として使ってください）\n\n"
+    note = "（古い {} 件は量の上限のため省略）\n\n"
+    budget = max(200, limit_chars - len(head) - len(note) - 8)   # 見出しと省略の注記も上限に数える
+    kept: list[str] = []
+    used = 0
+    for block in reversed(blocks):
+        cost = len(block) + (2 if kept else 0)            # 区切りの空行
+        if used + cost > budget:
+            if not kept:   # 最新の 1 つだけでも入れる（末尾を残す）
+                kept.append("…（前略）\n" + block[-max(100, budget - 10):])
+            break
+        kept.append(block)
+        used += cost
+    kept.reverse()
+    omitted = len(blocks) - len(kept)
+    return head + (note.format(omitted) if omitted else "") + "\n\n".join(kept), len(kept)
+
+
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         history: list[dict], params: dict) -> dict:
     """サーバー側で検索/生成し、assistant メッセージへ部分出力を保存する（全モード対応）。"""
@@ -857,6 +932,17 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             session_id = await asyncio.to_thread(_last_code_session)
             if not (session_id and await chat_server.session_exists(server, session_id)):
                 session_id = await chat_server.create_session(server, query[:60])
+            # 前回の OpenCode の回答より後のチャット・調査を、今回の依頼の前に付けて渡す
+            from app.models_mgmt import context_budget
+
+            budget = context_budget.for_model(str(settings["base_url"]), str(settings.get("model") or ""))
+            handoff, handoff_count = await asyncio.to_thread(
+                handoff_context, conv_id, params.get("user_message_id"), budget.handoff_chars)
+            if handoff:
+                query = f"{handoff}\n\n## 今回の依頼\n{query}"
+                buf["meta"]["handoff"] = {"messages": handoff_count, "chars": len(handoff)}
+                job.log("progress", phase="handoff", label=f"この会話の {handoff_count} 件を OpenCode に引き継ぎます",
+                        iteration=0, details={"chars": len(handoff)})
             buf["meta"].update({"opencode_session": session_id, "project_path": str(project),
                                 "server_key": server.key,
                                 "permission_mode": await asyncio.to_thread(chat_server.get_mode, server)})
@@ -951,11 +1037,14 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                  if m.get("role") == "user" and isinstance(m.get("content"), str)), "",
             )
             if question and rag.collection_exists(collection):
-                found = await rag.search(collection=collection, question=question, top_k=4)
+                from app.models_mgmt import context_budget
+
+                budget = context_budget.for_model(base_url, model)
+                found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k)
                 if found.get("context"):
                     history = [{"role": "system", "content":
                                 "この会話に添付・収集された資料の関連抜粋です。回答の根拠に使ってください:\n\n"
-                                + str(found["context"])[:12_000]}, *history]
+                                + str(found["context"])[:budget.rag_chars]}, *history]
         except Exception:
             pass  # 資料検索の失敗は通常チャットへフォールバック
 
@@ -1118,7 +1207,9 @@ async def _server_search(
                        rag_collection=conversation_collection(conv_id),
                        local_project_path=params.get("code_project_path", ""))
     if mode == "web":
-        results = await cr._web_results(sb, query, 8)
+        from app.models_mgmt import context_budget
+
+        results = await cr._web_results(sb, query, context_budget.for_model(params["base_url"], params["model"]).search_pages)
         raw_sources = [{
             "title": r.get("title", ""), "url": r.get("url", ""),
             "snippet": r.get("snippet", ""), "source": r.get("source", "web"), "kind": "page",
@@ -1187,6 +1278,10 @@ async def _server_research(
             steps=[ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)],
             decided_by="fallback",
         )
+    from app.models_mgmt import context_budget
+
+    budget = context_budget.for_model(params["base_url"], params["model"])
+    max_calls, snippet_chars = budget.investigate_calls, budget.snippet_chars
     max_iterations = min(max(plan.max_iterations, 1), 5)
     pending = list(plan.steps) or [ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)]
     sources: list[dict] = []
@@ -1208,7 +1303,7 @@ async def _server_research(
         pending = []
         for step in current:
             step_key = (step.tool, step.query.strip().lower())
-            if calls >= 8 or step_key in seen_steps:
+            if calls >= max_calls or step_key in seen_steps:
                 continue
             seen_steps.add(step_key)
             calls += 1
@@ -1225,7 +1320,7 @@ async def _server_research(
                 source = {
                     "title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
                     "source": str(result.get("source") or step.tool),
-                    "snippet": str(result.get("snippet") or result.get("abstract") or "")[:700],
+                    "snippet": str(result.get("snippet") or result.get("abstract") or "")[:snippet_chars],
                     "kind": "paper" if step.tool == "academic" else "page",
                 }
                 key = _source_key(source)
@@ -1233,9 +1328,9 @@ async def _server_research(
                     continue
                 seen_sources.add(key)
                 sources.append(source)
-                snippet = str(result.get("snippet") or result.get("abstract") or "")[:700]
+                snippet = str(result.get("snippet") or result.get("abstract") or "")[:snippet_chars]
                 evidence.append(f"{source['title']}\n{snippet}\n{source['url']}")
-        if iteration >= max_iterations or calls >= 8:
+        if iteration >= max_iterations or calls >= max_calls:
             break
         progress("evaluate", "収集結果の不足を評価中", iteration=iteration)
         assessment = await evaluate(query, "\n\n".join(evidence), params["base_url"], params["model"])
@@ -1372,6 +1467,8 @@ async def send_message(
               "attachments": body.attachments,
               "code_project": body.code_project,
               "code_project_path": body.code_project_path,
+              # OpenCode への引き継ぎで、今回の発言そのものを重ねて入れないため
+              "user_message_id": user_msg.id,
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")

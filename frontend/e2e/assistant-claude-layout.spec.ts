@@ -215,39 +215,47 @@ for (const width of [1280, 320]) {
     await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
     await page.goto("/assistant");
     const shell = page.locator("[data-assistant-shell]");
-    const chip = shell.locator("[data-assistant-mode-chip]");
-    await expect(chip.locator("[data-mode-label]")).toHaveText("自動");
-    await expect(shell.getByLabel("処理モード", { exact: true })).toHaveCount(0); // 旧 select
-    const chipBox = (await chip.boundingBox())!;
-    expect(chipBox.height).toBeGreaterThanOrEqual(44);
+    // 添付・機能・権限は左下の＋に 1 つにまとめた（2026-11-18 利用者の依頼: 並べると煩雑）
+    const plus = shell.locator("[data-assistant-plus]");
+    const detected = shell.locator("[data-mode-detected]");
+    const modePill = shell.locator('[data-composer-pill="mode"]');
+    await expect(detected).toContainText("自動");
+    await expect(shell.getByRole("button", { name: /ファイルを添付/ })).toHaveCount(0);   // 単独のクリップは無い
+    const plusBox = (await plus.boundingBox())!;
+    expect(plusBox.height).toBeGreaterThanOrEqual(44);
+    expect(plusBox.width).toBeGreaterThanOrEqual(44);
 
-    // 自動判定は入力に合わせて札の表示が変わる
+    // 自動判定は入力に合わせて表示が変わる
     const textarea = shell.locator("[data-assistant-input]");
     await textarea.fill("最新のGPUニュースを検索して");
-    await expect(chip.locator("[data-mode-detected]")).toContainText("Web Search");
+    await expect(detected).toContainText("Web Search");
     await textarea.fill("");
 
-    await chip.click();
-    const menu = page.getByRole("menu", { name: "処理モード" });
+    await plus.click();
+    const menu = page.getByRole("menu", { name: "添付・機能・権限" });
     await expect(menu).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: /ファイルを添付/ })).toBeVisible();
     // 検索系は「調査」1 つにまとめた（2026-11-17: 利用者「検索を改修したはずだがこの部分は変わらないのか」）
     for (const id of ["auto", "chat", "investigate", "gen", "run", "code"]) {
-      await expect(menu.locator(`[data-mode-option="${id}"]`)).toBeVisible();
+      await expect(menu.locator(`[data-mode-option="${id}"]`)).toBeAttached();
     }
     for (const id of ["web", "academic", "deep", "research"]) {
       await expect(menu.locator(`[data-mode-option="${id}"]`)).toHaveCount(0);
     }
-    await expect(menu.getByRole("menuitemradio", { name: /自動判定/ })).toHaveAttribute("aria-checked", "true");
+    await expect(menu.locator('[data-mode-option="auto"]')).toHaveAttribute("aria-checked", "true");
+    // OpenCode が使えるなら、機能の判定に関係なく権限を選べる（以前は OpenCode の判定中だけ出て、消えた）
+    await expect(menu.getByRole("group", { name: "OpenCode の権限" }).locator('[data-permission-option="auto"]')).toHaveAttribute("aria-checked", "true");
     const menuBox = (await menu.boundingBox())!;
     expect(menuBox.x).toBeGreaterThanOrEqual(0);
     expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(width);
     expect(menuBox.y).toBeGreaterThanOrEqual(0);
-    expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(chipBox.y);
-    const optionBox = (await menu.locator('[data-mode-option="investigate"]').boundingBox())!;
-    expect(optionBox.height).toBeGreaterThanOrEqual(44);
-    await menu.locator('[data-mode-option="investigate"]').click();
+    expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(plusBox.y);
+    const option = menu.locator('[data-mode-option="investigate"]');
+    await option.scrollIntoViewIfNeeded();
+    expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await option.click();
     await expect(menu).toHaveCount(0);
-    await expect(chip.locator("[data-mode-label]")).toHaveText("調査");
+    await expect(modePill.locator("[data-pill-label]")).toHaveText("調査");
     // 深さは入力欄の下。「深い」を選んで送ると Deep Research になる
     const depth = shell.getByLabel("調べる深さ");
     await expect(depth).toHaveValue("auto");
@@ -255,24 +263,27 @@ for (const width of [1280, 320]) {
     await textarea.fill("SSD の寿命について");
     await shell.getByRole("button", { name: "送信" }).click();
     await expect.poll(() => calls).toContain("mode:deep");
+    // 札の × で自動判定に戻る
+    await modePill.getByRole("button", { name: /外す/ }).click();
+    await expect(modePill).toHaveCount(0);
+    await expect(detected).toBeVisible();
 
     // Escape で閉じる
-    await chip.click();
+    await plus.click();
     await expect(menu).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
 
-    // OpenCode を選ぶと、権限モードの札が入力欄のすぐ下に出る
-    await chip.click();
+    // OpenCode を選ぶと、権限の札が＋の隣に出る。押すと切り替わる
+    await plus.click();
     await menu.locator('[data-mode-option="code"]').click();
-    await expect(chip.locator("[data-mode-label]")).toHaveText("OpenCode");
-    const permission = shell.locator("[data-assistant-composer-status]").getByRole("button", { name: /auto/i });
-    await expect(permission).toBeVisible();
+    await expect(modePill.locator("[data-pill-label]")).toHaveText("OpenCode");
+    const permissionPill = shell.locator('[data-composer-pill="permission"]');
+    await expect(permissionPill.locator("[data-pill-label]")).toHaveText("Auto");
     await expect(shell.getByPlaceholder("プロジェクト名（例: my-app）")).toBeVisible();
 
-    // 添付と音声のボタンは残す
-    for (const name of [/ファイルを添付/, "音声で入力", "送信"]) {
-      const box = (await shell.getByRole("button", { name }).boundingBox())!;
+    for (const name of ["添付・機能・権限", "音声で入力", "送信"]) {
+      const box = (await shell.getByRole("button", { name, exact: true }).boundingBox())!;
       expect(box.width).toBeGreaterThanOrEqual(44);
       expect(box.height).toBeGreaterThanOrEqual(44);
       expect(box.x + box.width).toBeLessThanOrEqual(width);
@@ -280,6 +291,41 @@ for (const width of [1280, 320]) {
     await noOverflow(page, width);
   });
 }
+
+test("a chat can be handed off to OpenCode from the plus menu in the same conversation", async ({ page }) => {
+  // 2026-11-18 利用者の依頼: チャットで始めた会話の結果を、同じ会話の中で OpenCode に引き継ぐ
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 320, height: 700 });
+  await login(page);
+  const calls = await mockChat(page);
+  await page.route(/\/api\/v1\/meta$/, async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+    return route.fulfill({ response, json: meta });
+  });
+  await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [{ name: "app", path: "/CodeDEV/app", git: true }] } }));
+  await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "today1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
+
+  await shell.locator("[data-assistant-plus]").click();
+  const menu = page.getByRole("menu", { name: "添付・機能・権限" });
+  const handoff = menu.locator('[data-plus-action="handoff"]');
+  await expect(handoff).toContainText("この会話を OpenCode に引き継ぐ");
+  expect((await handoff.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await handoff.click();
+  await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toHaveText("OpenCode");
+  await expect(shell.locator("[data-assistant-input]")).toHaveValue("ここまでの会話の内容をもとに実装してください。");
+  await expect(shell.locator('[data-composer-pill="permission"]')).toBeVisible();
+  // OpenCode に切り替えた後は、引き継ぎの操作は出さない
+  await shell.locator("[data-assistant-plus]").click();
+  await expect(menu.locator('[data-plus-action="handoff"]')).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  expect(calls.filter((c) => c.startsWith("send:"))).toHaveLength(0);
+});
 
 test("failed and canceled answers show their status, the error and a retry", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");

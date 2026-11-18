@@ -49,22 +49,24 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await expect(dialog.locator("[data-assistant-topbar] select")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "会話の履歴" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "音声で入力" })).toBeVisible();
-  const chip = dialog.locator("[data-assistant-mode-chip]");
+  const plus = dialog.locator("[data-assistant-plus]");
+  const detected = dialog.locator("[data-mode-detected]");
+  const modePill = dialog.locator('[data-composer-pill="mode"] [data-pill-label]');
   const pickMode = async (id: string) => {
-    await chip.click();
-    await page.getByRole("menu", { name: "処理モード" }).locator(`[data-mode-option="${id}"]`).click();
+    await plus.click();
+    await page.getByRole("menu", { name: "添付・機能・権限" }).locator(`[data-mode-option="${id}"]`).click();
   };
-  await expect(chip.locator("[data-mode-label]")).toHaveText("自動");
+  await expect(detected).toContainText("自動");
   const textarea = dialog.locator("textarea");
   await expect(textarea).toBeVisible();
   await textarea.fill("最新のGPUニュースを検索して");
-  await expect(chip.locator("[data-mode-detected]")).toContainText("Web Search");
+  await expect(detected).toContainText("Web Search");
   await pickMode("investigate");
-  await expect(chip.locator("[data-mode-label]")).toHaveText("調査");
+  await expect(modePill).toHaveText("調査");
   await dialog.getByLabel("調べる深さ").selectOption("academic");
   await pickMode("auto");
   await textarea.fill("20ノードのワークフローを作って");
-  await expect(chip.locator("[data-mode-detected]")).toContainText("Generate Flow");
+  await expect(detected).toContainText("Generate Flow");
   await pickMode("investigate");
   await dialog.getByLabel("調べる深さ").selectOption("deep");
   await dialog.getByRole("button", { name: "AI設定を開く" }).click();
@@ -90,7 +92,7 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
       mic: rect('[aria-label="音声で入力"]'),
       menu: rect('[data-assistant-shell] [aria-label="メニューを開く"]'),
       history: rect("[data-assistant-history-button]"),
-      chip: rect("[data-assistant-mode-chip]"),
+      chip: rect("[data-assistant-plus]"),
       send: rect('[data-assistant-shell] [aria-label="送信"]'),
       topbar: rect("[data-assistant-topbar]"),
       messagesOverscroll: getComputedStyle(document.querySelector("[data-assistant-messages]")!).overscrollBehaviorY,

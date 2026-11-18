@@ -319,11 +319,21 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
     body.base_url, body.model = resolve_target(body.base_url, body.model)
     context_state = await runtime_policy.prepare_deep_research_context(body.base_url, body.model)
     request_context = context_state.get("request_context_tokens")
+    evidence, report = settings.evidence_context_chars, settings.max_report_tokens
+    budget = None
+    if settings.auto_from_context:
+        from app.models_mgmt import context_budget
+
+        # Deep Research 専用の CTX に切り替えたなら、その窓で決める
+        budget = (context_budget.for_window(int(request_context)) if request_context
+                  else context_budget.for_model(body.base_url, body.model))
+        evidence, report = budget.research_evidence_chars, budget.research_report_tokens
     presets = {
-        "quick": (2, 8, 30_000, 8_192),
-        "standard": (3, 16, 60_000, 16_384),
-        "deep": (4, 24, settings.evidence_context_chars, settings.max_report_tokens),
-        "exhaustive": (6, 36, min(300_000, settings.evidence_context_chars * 2), min(131_072, settings.max_report_tokens * 2)),
+        "quick": (2, 8, min(30_000, evidence), min(8_192, report)),
+        "standard": (3, 16, min(60_000, evidence), min(16_384, report)),
+        "deep": (4, 24, evidence, report),
+        "exhaustive": (6, 36, budget.exhaustive_evidence_chars if budget else min(300_000, evidence * 2),
+                       budget.exhaustive_report_tokens if budget else min(131_072, report * 2)),
     }
     preset = presets.get(body.depth, presets["deep"])
     max_rounds = body.max_rounds or preset[0]
@@ -331,9 +341,13 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
     evidence_chars = body.max_evidence_chars or preset[2]
     report_tokens = body.max_report_tokens or preset[3]
     requested_sources = body.source_types or ["web", "academic", "github", "direct"]
+    if budget is not None:
+        context_state = {**context_state, "budget_window": budget.window, "budget_known": budget.known,
+                         "evidence_chars": evidence_chars, "report_tokens": report_tokens}
     if progress:
         progress(
-            "context", f"Deep Research CTX: {context_state.get('reason') or '未適用'}", 0,
+            "context", f"Deep Research CTX: {context_state.get('reason') or '未適用'}"
+            + (f"・根拠 {evidence_chars:,} 文字・レポート {report_tokens:,} トークン（窓 {budget.window:,}）" if budget else ""), 0,
             {"context_profile": context_state},
         )
 
@@ -379,6 +393,7 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
             body.query, complete=complete, web_search=web_search, academic_search=academic_search,
             specialized_search=specialized_search, page_fetch=_page_text, progress=progress,
             max_rounds=max_rounds, max_search_calls=max_search_calls,
+            max_sources=budget.research_max_sources if budget else 36,
             max_evidence_chars=evidence_chars, max_report_tokens=report_tokens,
             requested_source_types=requested_sources,
         )

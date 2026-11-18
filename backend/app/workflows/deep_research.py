@@ -383,6 +383,7 @@ async def run_deep_research(
     max_evidence_chars: int = 90_000, max_report_tokens: int = 32_768,
     requested_source_types: list[str] | None = None,
     initial_sources: list[dict] | None = None,
+    max_sources: int = 36,
 ) -> dict:
     def emit(phase: str, label: str, round_number: int = 0, **details: Any) -> None:
         if progress:
@@ -530,7 +531,7 @@ async def run_deep_research(
 
     if not source_by_key:
         raise RuntimeError("Deep Researchで根拠を取得できませんでした")
-    selected = _select_evidence(list(source_by_key.values()))
+    selected = _select_evidence(list(source_by_key.values()), max_sources=max_sources)
     emit("synthesize", f"{len(selected)}件の根拠からレポートを統合", rounds)
     report, metrics = await _synthesize(
         query, plan, selected, assessment, coverage_limits, complete,

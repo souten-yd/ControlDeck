@@ -2,7 +2,7 @@
  *
  * OpenCode v2 のサーバー（opencode serve）から流れてくる道具の実行と許可の問い合わせを、
  * Claude Code のように 1 行ずつ出す。携帯で押しやすいよう、押せる所は高さ 44px（h-11）以上にする。 */
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 export interface OpenCodeTool {
   id: string;
@@ -194,68 +194,3 @@ export function OpenCodeActivity({ tools, permissions, onAnswer }: {
 }
 
 /** 入力欄の下の権限モードの札。タップで選ぶ（携帯）、Shift+Tab で切り替え（PC は入力欄側で扱う）。 */
-export function PermissionModeChip({ mode, editable, onChange }: {
-  mode: PermissionMode; editable: boolean; onChange: (mode: PermissionMode) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  // 入力欄の枠（overflow-hidden）に切られないよう、メニューは画面に固定して札の上に出す
-  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
-    };
-    window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [open]);
-  const toggle = () => {
-    if (!editable) return;
-    const rect = button.current?.getBoundingClientRect();
-    if (rect) {
-      const width = Math.min(288, window.innerWidth - 32);
-      setPos({ left: Math.max(16, Math.min(rect.left, window.innerWidth - width - 16)), bottom: window.innerHeight - rect.top + 8 });
-    }
-    setOpen((v) => !v);
-  };
-  const current = PERMISSION_MODES.find((m) => m.id === mode) ?? PERMISSION_MODES[0];
-  return (
-    <div ref={ref} className="relative flex h-full shrink-0 items-center">
-      <button ref={button} type="button" onClick={toggle} aria-haspopup="listbox" aria-expanded={open}
-        title={editable ? `権限: ${current.label}（タップで切替・PC は Shift+Tab）` : `権限: ${current.label}（変更は管理者）`}
-        className={`relative -ml-2 flex h-full min-w-11 items-center gap-1.5 px-2 font-mono after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']  text-[11px] font-semibold leading-none focus:outline-none focus-visible:underline ${
-          mode === "auto" ? "text-accent-600 dark:text-accent-400" : "text-amber-600 dark:text-amber-400"
-        } ${editable ? "hover:brightness-110" : "cursor-default opacity-80"}`}>
-        <span aria-hidden className="tracking-[-0.2em]">{current.icon}</span>
-        <span className="lowercase">{current.label}</span>
-        {editable && <span aria-hidden className="hidden font-normal text-zinc-400 sm:inline dark:text-zinc-500">（shift+tab で切替）</span>}
-      </button>
-      {open && pos && (
-        <ul role="listbox" aria-label="権限モード" style={{ left: pos.left, bottom: pos.bottom }}
-          className="fixed z-[100] w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white p-1 shadow-xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/50">
-          <li aria-hidden className="px-2 pb-1 pt-1.5 font-mono text-[10px] font-semibold tracking-wider text-zinc-400 dark:text-zinc-500">権限モード</li>
-          {PERMISSION_MODES.map((option) => {
-            const selected = option.id === mode;
-            return (
-              <li key={option.id}>
-                <button type="button" role="option" aria-selected={selected}
-                  onClick={() => { onChange(option.id); setOpen(false); }}
-                  className={`flex min-h-12 w-full items-start gap-2 rounded-md px-2 py-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/50 ${
-                    selected ? "bg-zinc-100 dark:bg-white/[0.07]" : "hover:bg-zinc-50 dark:hover:bg-white/[0.04]"
-                  }`}>
-                  <span aria-hidden className={`w-6 shrink-0 pt-0.5 text-center font-mono text-xs font-semibold tracking-[-0.2em] ${option.id === "auto" ? "text-accent-600 dark:text-accent-400" : "text-amber-600 dark:text-amber-400"}`}>{option.icon}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-mono text-[13px] font-semibold lowercase text-zinc-900 dark:text-zinc-50">{option.label}</span>
-                    <span className="mt-0.5 block text-[11px] leading-snug text-zinc-500 dark:text-zinc-400">{option.hint}</span>
-                  </span>
-                  <span aria-hidden className="w-4 shrink-0 pt-0.5 text-center font-mono text-xs text-accent-600 dark:text-accent-400">{selected ? "✓" : ""}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
