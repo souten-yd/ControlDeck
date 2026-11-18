@@ -59,12 +59,14 @@ test("assistant input stays flush in standalone iPhone viewports", async ({ page
   await expect(textarea).toBeVisible();
   await textarea.fill("最新のGPUニュースを検索して");
   await expect(chip.locator("[data-mode-detected]")).toContainText("Web Search");
-  await pickMode("academic");
-  await expect(chip.locator("[data-mode-label]")).toHaveText("Academic");
+  await pickMode("investigate");
+  await expect(chip.locator("[data-mode-label]")).toHaveText("調査");
+  await dialog.getByLabel("調べる深さ").selectOption("academic");
   await pickMode("auto");
   await textarea.fill("20ノードのワークフローを作って");
   await expect(chip.locator("[data-mode-detected]")).toContainText("Generate Flow");
-  await pickMode("deep");
+  await pickMode("investigate");
+  await dialog.getByLabel("調べる深さ").selectOption("deep");
   await dialog.getByRole("button", { name: "AI設定を開く" }).click();
   await expect(dialog.getByText("Deep Research 検索深度")).toBeVisible();
   await expect(dialog.getByText("添付PDF・文書は会話RAGから再利用します。", { exact: false })).toBeVisible();

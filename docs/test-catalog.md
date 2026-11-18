@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 165 ファイル、1449 テスト（目的の未記入 93 ファイル）
+- backend: 165 ファイル、1452 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、138 テスト
 
 ## backend（backend/tests）
@@ -643,6 +643,8 @@
 - `test_sources_without_urls_deduplicate_by_title_not_root_path`
 - `test_local_project_adapter_excludes_secrets_dependencies_and_symlinks`
 - `test_workflow_deep_node_uses_shared_assistant_engine`
+- `test_claim_check_flags_sentences_their_sources_do_not_support` — 引用先の本文に支えられていない文・出典に無い数値を見つける（2026-11-17: 引用は番号の形式しか見ていなかった）。
+- `test_synthesize_rewrites_weak_claims_once_and_keeps_the_better_report` — 弱い文があれば一度だけ直させ、弱い文が減ったときだけ採る。残りは末尾に並べる。
 
 ### backend/tests/test_dev_sandbox.py
 
@@ -1417,6 +1419,7 @@
 - `test_run_turn_passes_child_permissions_and_survives_a_reconnect`
 - `test_running_servers_are_not_reaped`
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`
+- `test_japanese_project_directory_is_sent_url_encoded` — 日本語のプロジェクト名でも、ヘッダーを送れる（ASCII だけ）。OpenCode は decodeURIComponent で戻す。
 
 ### backend/tests/test_opencode_dev_tools.py
 

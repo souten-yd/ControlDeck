@@ -8,6 +8,23 @@
 - 推移のグラフの下段を回転数（rpm）に。
 - 検証: `tests/test_fan_core.py`・`test_fan_control.py`・`test_fan_log.py`（新規）、実機の比較（docs/design-amd-smart-fan.md）、`npm run build`。E2E と実画面は下記。
 
+## 2026-11-18 OpenCode: 日本語のプロジェクト名で回答が作れない（UnicodeEncodeError）
+
+- プロジェクト「コンバータシム」で OpenCode が「処理に失敗しました（UnicodeEncodeError）」。OpenCode の server へ送るヘッダー `x-opencode-directory` にプロジェクトのパスをそのまま入れていて、日本語が入ると HTTP のヘッダー（ASCII だけ）を作る前に落ちていた。
+- OpenCode 自身と同じく URL エンコードして送る（server 側は decodeURIComponent で戻す。v2 本体で確認）。ASCII だけのパスは今までと同じ値。
+- 検証: `tests/test_opencode_chat_server.py`（既存のファイルに 1 件）、backend 全体。
+
+## 2026-11-17 AI アシスタント: 検索系の機能を「調査」1 つにまとめる（検索の統合 その 2）
+
+- 機能の選択欄に Web Search・Academic・Deep Research・Research が並んでいた（#423 は自動判定の振り分けだけ）。「🔎 調査」1 つにし、深さ（自動・速い＝Web・標準＝Web と論文・深い＝Deep Research のレポート・論文だけ）を入力欄の下で選ぶ。
+- 深さが自動のときはサーバーの振り分け（/chat/route）で決め、対話と判定されたら少なくとも Web を調べる。機能の「自動判定」は従来どおり 4 つのどれかへ振り分ける。
+- 検証（sandbox `invest`）: E2E `assistant-claude-layout`（メニューに調査があり検索系 4 つが無い・深いを選んで送ると deep）・`assistant-mobile`（配置。音声入力の箇所は既知の失敗）、`npm run build`。
+## 2026-11-17 Deep Research: 引用の中身を確かめる（検索の統合 その 3）
+
+- これまでの引用の確かめは「番号が実在するか」「段落に引用があるか」の形式だけだった。`workflows/claim_check.py` で、引用の付いた文ごとに、文の語（日本語は 2 字組・英数字は単語）と数値が引用先の本文にどれだけ出てくるかを測る（LLM を使わない）。一致 15% 未満か、出典に無い数値を含む文を「支えが弱い」とする。
+- 弱い文があれば、その文だけを一度 LLM に直させ、弱い文が減ったときだけ採る。残ったものはレポートの末尾「根拠の確認が弱い主張」に並べる。進み具合の表示に「出典の支え N%（弱い主張 M 件）」。
+- 検証（sandbox `cite`）: `tests/test_deep_research.py`（既存のファイルに観点を足した）、backend 全体 1696 件。
+
 ## 2026-11-17 Maya: 登録したモデル（DS-XS など）の個別設定
 
 - これまで設定画面は最初のモデル（GLM-5.3-Flash · Maya-S）だけで、後から登録した DS-XS などは何も変えられなかった。個別設定のシートに設定欄を足した（`maya_s.instance_settings` / `save_instance_settings`、`GET/PUT /api/v1/features/maya-s/models/{alias}/settings`、監査）。
