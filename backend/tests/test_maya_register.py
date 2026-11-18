@@ -390,3 +390,74 @@ def test_registered_model_settings_write_the_engine_config(engine, admin_client=
         maya_s.save_instance_settings("maya-deepseek-xs", {"context": 65536})
     with pytest.raises(maya_s.MayaError):
         maya_s.instance_settings("maya-s")                      # 最初のモデルは従来の設定画面
+
+
+def test_deepseek_vision_is_detected_from_the_pack_and_can_be_switched(engine, tmp_path):
+    """DeepSeek（maya-ds4）は pack に vision tower が入っていて --vision off でなければ画像を読む（Maya #416）。
+    以前は GLM の見方（config の "vision"）だけで、画像を読めても「読めない」扱いだった（2026-11-18、
+    ゲートウェイの画像の解析が断り、モデル画面に印が出なかった）。個別設定で入／切できる。tower が無ければ入にできない。"""
+    pack = tmp_path / "maya-ds4"
+    pack.mkdir()
+    (pack / "ds4.txt").write_text("vision.num_hidden_layers 32\n")
+    (engine.source / "maya-ds4-hip.json").write_text(json.dumps({
+        "exe": "/x/build-hip/maya-ds4", "args": ["--pack", str(pack), "--vision", "off", "--max-context", "65536"]}))
+    rows = maya_s._registry() + [{"alias": "maya-deepseek-xs", "setup_id": "deepseek-maya-xs", "family": "deepseek",
+                                  "tier": "Maya-XS", "config": "maya-ds4-hip.json", "port": 8100, "size_gb": 282.4}]
+    maya_s._save_registry(rows)
+    config = engine.source / "maya-ds4-hip.json"
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is False          # --vision off
+    s = maya_s.instance_settings("maya-deepseek-xs")
+    assert s["vision"] == "off" and s["vision_available"] is True
+    maya_s.save_instance_settings("maya-deepseek-xs", {"vision": "on"})
+    assert "--vision" not in json.loads(config.read_text())["args"]           # 既定（読む）に戻す
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is True
+    maya_s.save_instance_settings("maya-deepseek-xs", {"vision": "off"})
+    args = json.loads(config.read_text())["args"]
+    assert args[args.index("--vision") + 1] == "off"
+    # tower が入っていない pack では入にできない
+    (pack / "ds4.txt").write_text("layers 61\n")
+    assert maya_s.instance_settings("maya-deepseek-xs")["vision_available"] is False
+    with pytest.raises(maya_s.MayaError, match="vision tower"):
+        maya_s.save_instance_settings("maya-deepseek-xs", {"vision": "on"})
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is False
+
+
+def test_vision_flag_is_written_only_when_chosen_and_a_refusal_saves_nothing(engine, tmp_path):
+    """レビュー指摘（2026-11-18）: tower の無いモデルでほかの項目を保存すると --vision off まで書いていた
+    （あとで tower を入れても切のまま残る）。断るときは起動の設定も保存しない。相対の --pack はエンジンの作業フォルダから。"""
+    work = tmp_path / "engine-cwd"
+    (work / "packs" / "ds4").mkdir(parents=True)
+    (work / "packs" / "ds4" / "ds4.txt").write_text("layers 61\n")          # tower 無し
+    config = engine.source / "maya-ds4-hip.json"
+    config.write_text(json.dumps({"exe": "/x/maya-ds4", "cwd": str(work),
+                                  "args": ["--pack", "packs/ds4", "--max-context", "65536"]}))
+    rows = maya_s._registry() + [{"alias": "maya-deepseek-xs", "setup_id": "deepseek-maya-xs", "family": "deepseek",
+                                  "tier": "Maya-XS", "config": "maya-ds4-hip.json", "port": 8100, "size_gb": 282.4}]
+    maya_s._save_registry(rows)
+    maya_s.save_instance_settings("maya-deepseek-xs", {"cpu_threads": 8})
+    assert "--vision" not in json.loads(config.read_text())["args"]
+    before = (engine.root / "runtimes" / "maya-s" / "settings.json")
+    saved_before = before.read_text() if before.exists() else ""
+    with pytest.raises(maya_s.MayaError):
+        maya_s.save_instance_settings("maya-deepseek-xs", {"auto_start": True, "vision": "on"})
+    assert (before.read_text() if before.exists() else "") == saved_before   # 起動の設定も書いていない
+    # tower を入れた（設定し直し）→ 相対の pack でも読めると分かり、切のまま残っていない
+    (work / "packs" / "ds4" / "ds4.txt").write_text("vision.num_hidden_layers 32\n")
+    assert maya_s.get_instance("maya-deepseek-xs")["vision"] is True
+    assert maya_s.instance_settings("maya-deepseek-xs")["vision"] == "on"
+
+
+def test_selftest_warns_when_the_running_engine_and_the_vision_judgement_disagree(monkeypatch):
+    """同じ食い違い（エンジンは読めるのに判定は読めない）が起きたら、自己診断で気付けるように。"""
+    import httpx
+
+    from app.diagnostics import selftest
+
+    monkeypatch.setattr(maya_s, "list_instances", lambda: [{"alias": "maya-deepseek-xs", "port": 8101,
+                                                            "loaded": True, "vision": False}])
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: SimpleNamespace(json=lambda: {"images": True}))
+    status, text = selftest._maya_vision()
+    assert status == "warn" and "maya-deepseek-xs" in text
+    monkeypatch.setattr(maya_s, "list_instances", lambda: [{"alias": "maya-deepseek-xs", "port": 8101,
+                                                            "loaded": True, "vision": True}])
+    assert selftest._maya_vision()[0] is True

@@ -156,10 +156,17 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
     if runtime == "maya-s":
         from app.models_mgmt import maya_s
         alias = await asyncio.to_thread(maya_s.running_alias)
-        if not (await maya_s.health(alias))["ok"]:
+        state = await maya_s.health(alias)
+        if not state["ok"]:
             raise AITargetUnavailable("Mayaのテキストモデルを明示的に起動してください")
         instance = await asyncio.to_thread(maya_s.get_instance, alias)
-        if capability == "vision.analyze" and not instance.get("vision"):
+        # 動いているエンジンが答えた images を正とする（設定ファイルを変えても、起動し直すまで変わらない）
+        reads_images = state.get("images") if isinstance(state.get("images"), bool) else instance.get("vision")
+        if capability == "vision.analyze" and not reads_images:
+            if instance.get("vision_switched_off"):
+                raise AITargetUnavailable("このモデルは画像の読み取りを切にしています（モデルの個別設定で入にして起動し直してください）")
+            if instance.get("vision"):
+                raise AITargetUnavailable("設定で画像の読み取りを入にしたあと、まだ起動し直していません（停止して起動してください）")
             raise AITargetUnavailable("Mayaの画像入力が設定されていません（再セットアップで有効になります）")
         return AITarget(base_url=instance["base_url"], model=instance["alias"], gateway_managed=True)
     if runtime == "ollama":

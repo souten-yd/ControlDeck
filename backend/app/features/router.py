@@ -311,6 +311,8 @@ class MayaInstanceSettingsBody(BaseModel):
     mmap_experts: Literal["auto", "on", "off"] | None = None
     ssd_cache: str | None = Field(default=None, pattern=r"^(off|auto|[1-9][0-9]{0,3})$")
     prefill_chunk: int | None = Field(default=None, ge=0, le=65536)
+    # 画像の読み取り（vision tower を入れたモデルだけ on にできる）
+    vision: Literal["on", "off"] | None = None
 
 
 @router.get("/maya-s/models/{alias}/settings")
