@@ -2480,7 +2480,7 @@
 
 - message menu forks, deletes and edits (${width}px)
 - attachment chip shows upload progress
-- the menu of the last message opens above the composer and its items can be pressed
+- the menu of the last message stays above the composer and its items can be pressed (${width}px)
 
 ### frontend/e2e/assistant-mobile.spec.ts
 
