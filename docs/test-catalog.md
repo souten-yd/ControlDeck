@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 170 ファイル、1486 テスト（目的の未記入 93 ファイル）
-- E2E: 79 spec、148 テスト
+- backend: 170 ファイル、1488 テスト（目的の未記入 93 ファイル）
+- E2E: 80 spec、150 テスト
 
 ## backend（backend/tests）
 
@@ -1311,6 +1311,8 @@
 - `test_glm_maya_s_from_the_sheet_comes_back_as_the_first_model`
 - `test_registered_model_settings_write_the_engine_config` — 登録したモデル（DS-XS）の個別設定（2026-11-17 の依頼: 設定が一切無い）。エンジンの args・config へ書き、
 - `test_deepseek_vision_is_detected_from_the_pack_and_can_be_switched` — DeepSeek（maya-ds4）は pack に vision tower が入っていて --vision off でなければ画像を読む（Maya #416）。
+- `test_vision_flag_is_written_only_when_chosen_and_a_refusal_saves_nothing` — レビュー指摘（2026-11-18）: tower の無いモデルでほかの項目を保存すると --vision off まで書いていた
+- `test_selftest_warns_when_the_running_engine_and_the_vision_judgement_disagree` — 同じ食い違い（エンジンは読めるのに判定は読めない）が起きたら、自己診断で気付けるように。
 
 ### backend/tests/test_maya_s_addon.py
 
@@ -2586,6 +2588,13 @@
 目的: **未記入**
 
 - never renders application log secrets at mobile or desktop widths
+
+### frontend/e2e/maya-ds4-vision.spec.ts
+
+目的: 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。 画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。 根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」 「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。
+
+- DS-XS shows the vision badge and its read-images switch at ${width}px
+- a DeepSeek model without the vision tower cannot switch images on
 
 ### frontend/e2e/maya-register.spec.ts
 

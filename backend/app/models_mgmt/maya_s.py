@@ -622,7 +622,8 @@ async def health(alias: str = _ALIAS) -> dict:
                 isinstance(m, dict) and m.get("status", {}).get("value") == "loaded"
                 for m in (data if isinstance(data, list) else [])
             )
-            return {"ok": loaded, "status_code": 200}
+            # 動いているエンジンが実際に画像を読めるか（設定ファイルではなく、起動したときに読み込んだもの）
+            return {"ok": loaded, "status_code": 200, "images": state.get("images")}
     except (httpx.HTTPError, ValueError):
         return {"ok": False, "status_code": None}
 
@@ -663,17 +664,30 @@ def _config_context(config: Path) -> int:
         return 0
 
 
-def _ds4_pack_has_vision(args: list) -> bool:
-    """DeepSeek（maya-ds4）: pack に vision tower が入っているか（Maya の ds4_pack_has_vision と同じ見方: ds4.txt）。"""
-    pack = _flag(args, "--pack")
+def _ds4_pack_has_vision(cfg: dict) -> bool:
+    """DeepSeek（maya-ds4）: pack に vision tower が入っているか（Maya の ds4_pack_has_vision と同じ見方: ds4.txt）。
+    相対の --pack はエンジンの作業フォルダ（config の cwd、無ければ Maya のソース）から見る。"""
+    pack = _flag(list(cfg.get("args") or []), "--pack")
+    if not pack:
+        return False
+    path = Path(pack)
+    if not path.is_absolute():
+        path = Path(str(cfg.get("cwd") or source())) / path
     try:
-        return bool(pack) and any(line.startswith("vision.num_hidden_layers ") for line in
-                                  (Path(pack) / "ds4.txt").read_text(encoding="utf-8", errors="replace").splitlines())
+        return any(line.startswith("vision.num_hidden_layers ") for line in
+                   (path / "ds4.txt").read_text(encoding="utf-8", errors="replace").splitlines())
     except OSError:
         return False
 
 
-def _config_vision(config: Path | None) -> bool:
+def _read_config(config: Path | str | None) -> dict:
+    try:
+        return json.loads(Path(config).read_text(encoding="utf-8")) if config else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _config_vision(config: Path | None, family: str = "") -> bool:
     """Maya が画像を読めるか。GLM は config の "vision"（画像エンコーダー）で、DeepSeek（maya-ds4）は pack に
     vision tower が入っていて `--vision off` でないとき（engine が tower を自分で動かす。Maya #416）。
     以前は GLM の見方だけで、DeepSeek は画像を読めても「読めない」扱いだった（2026-11-18）。"""
@@ -684,8 +698,8 @@ def _config_vision(config: Path | None) -> bool:
     if isinstance(cfg.get("vision"), dict):
         return True
     args = list(cfg.get("args") or [])
-    if Path(str(cfg.get("exe") or "")).name.startswith("maya-ds4"):
-        return _flag(args, "--vision") != "off" and _ds4_pack_has_vision(args)
+    if family == "deepseek" or (not family and Path(str(cfg.get("exe") or "")).name.startswith("maya-ds4")):
+        return _flag(args, "--vision") != "off" and _ds4_pack_has_vision(cfg)
     return False
 
 
@@ -705,7 +719,10 @@ def get_instance(alias: str) -> dict:
             "port": int(record["port"]), "base_url": f"http://127.0.0.1:{record['port']}/v1",
             "loaded": _running(alias), "model_path": str(record.get("model_dir") or ""),
             "ctx_size": _config_context(record["config"]), "configured": True, "n_parallel": 1,
-            "vision": _config_vision(record["config"]), "family": record["family"], "tier": record["tier"],
+            "vision": _config_vision(record["config"], record["family"]), "family": record["family"], "tier": record["tier"],
+            # 画像の部品はあるが設定で切にしている（ゲートウェイが断るときの案内に使う）
+            "vision_switched_off": record["family"] == "deepseek" and not _config_vision(record["config"], record["family"])
+            and _ds4_pack_has_vision(_read_config(record["config"])),
             "size_gb": record.get("size_gb"), "display_name": display_name(record),
             "update_available": bool(record.get("update_available")), "update_gb": record.get("update_gb") or 0,
             "setup_id": record["setup_id"], "folder": str(_row_folder(record) or "")}
@@ -755,6 +772,7 @@ def instance_settings(alias: str) -> dict:
         "running": _running(alias),
     }
     if record["family"] == "deepseek":
+        has_tower = _ds4_pack_has_vision(cfg)
         out.update({
             "dspark": _flag(args, "--dspark") or "on",
             "cpu_threads": int(_flag(args, "--cpu-threads") or 0),
@@ -763,8 +781,8 @@ def instance_settings(alias: str) -> dict:
             "ssd_cache": _flag(args, "--ssd-cache") or "off",
             "prefill_chunk": int(_flag(args, "--prefill-chunk") or 0),
             # 画像の読み取り。vision tower を pack に入れたときだけ選べる（入れるのは Maya の設定し直し）
-            "vision_available": _ds4_pack_has_vision(args),
-            "vision": "off" if _flag(args, "--vision") == "off" or not _ds4_pack_has_vision(args) else "on",
+            "vision_available": has_tower,
+            "vision": "off" if _flag(args, "--vision") == "off" or not has_tower else "on",
         })
     return out
 
@@ -776,6 +794,9 @@ def save_instance_settings(alias: str, values: dict) -> dict:
     if record is None or record["legacy"]:
         raise MayaError("登録したモデルが見つかりません")
     current = instance_settings(alias)
+    # 何かを書く前に確かめる（断ったのに起動の設定だけ保存される、を防ぐ）
+    if values.get("vision") == "on" and not current.get("vision_available"):
+        raise MayaError("このモデルには画像の部品（vision tower）が入っていません。Maya の設定し直しで入れてください")
     changed = {k for k, v in values.items() if k in current and current[k] != v}
     lifecycle = {k: values[k] for k in LIFECYCLE_KEYS if k in values and values[k] != current[k]}
     if lifecycle:
@@ -807,10 +828,10 @@ def save_instance_settings(alias: str, values: dict) -> dict:
         _set_flag(args, "--mmap-experts", None if v["mmap_experts"] == "auto" else str(v["mmap_experts"]))
         _set_flag(args, "--ssd-cache", None if str(v["ssd_cache"]) == "off" else str(v["ssd_cache"]))
         _set_flag(args, "--prefill-chunk", str(int(v["prefill_chunk"])) if int(v["prefill_chunk"]) > 0 else None)
-        if str(v.get("vision")) == "on" and not _ds4_pack_has_vision(args):
-            raise MayaError("このモデルには画像の部品（vision tower）が入っていません。Maya の設定し直しで入れてください")
-        # 既定（付けない）で読む。切るときだけ --vision off（pack に tower が無ければ付けても同じ）
-        _set_flag(args, "--vision", "off" if str(v.get("vision")) == "off" else None)
+        # 入／切を選んだときだけ書く。ほかの項目の保存で、tower が無いための「off」を書き込まない
+        # （書くと、あとで tower を入れても切のまま残る。レビュー指摘 2026-11-18）
+        if "vision" in values:
+            _set_flag(args, "--vision", "off" if str(values["vision"]) == "off" else None)
     cfg["args"] = args
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")

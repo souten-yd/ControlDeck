@@ -134,13 +134,40 @@ def _opencode_box():
     return True, text
 
 
+def _maya_vision():
+    """動いている Maya が画像を読めるかと、ControlDeck の判定（設定ファイル）が合っているか。
+    2026-11-18: DeepSeek の画像を「読めない」と判定し続け、ゲートウェイの画像の解析が断っていた（気付かれずに残った）。"""
+
+
+    import httpx
+
+    from app.models_mgmt import maya_s
+
+    rows = []
+    for instance in maya_s.list_instances():
+        if not instance.get("loaded"):
+            continue
+        try:
+            state = httpx.get(f"http://127.0.0.1:{instance['port']}/health", timeout=3, trust_env=False).json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        engine = state.get("images")
+        if isinstance(engine, bool) and engine != bool(instance.get("vision")):
+            rows.append(f"{instance['alias']}: エンジン {'読める' if engine else '読めない'}・判定 {'読める' if instance.get('vision') else '読めない'}")
+
+    if rows:
+        return "warn", "画像の読み取りが食い違っています（起動し直すと揃います。揃わなければ不具合）: " + "、".join(rows)
+    return True, "動いている Maya の画像の読み取りと判定は一致"
+
+
 # 目標超えがこの回数を超えたら警告（全力の始まりの 1 回ずつは起こりうるので、数回までは許す）
 DEVIATION_WARN = 3
 
 
 CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモリ", _memory), ("応答（event loop）", _event_loop),
           ("常駐サービス", _failed_units), ("ローカル LLM", _llms), ("画面の build", _frontend),
-          ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan), ("OpenCode の箱", _opencode_box)]
+          ("必要なコマンド", _tools), ("メトリクス収集", _collector), ("ファン制御", _fan), ("OpenCode の箱", _opencode_box),
+          ("Maya の画像の読み取り", _maya_vision)]
 
 
 _latest: dict | None = None

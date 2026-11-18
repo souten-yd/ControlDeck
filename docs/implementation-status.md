@@ -4,7 +4,8 @@
 
 - DS-XS に vision tower を入れた（Maya の設定し直し、DeepSeek の checkpoint の shard 1 と config.json、約 0.97 GB）。ところが ControlDeck は GLM の見方（config の `vision`）でしか判定しておらず、DeepSeek は画像を読めても「読めない」扱いだった（ゲートウェイの画像の解析が断る、モデル画面に印が出ない）。
 - DeepSeek（maya-ds4）は pack に vision tower が入っていて `--vision off` でなければ画像を読む、と判定する（Maya の ds4_pack_has_vision と同じ見方）。個別設定に「画像の読み取り」の入／切を足した（tower が無いモデルでは選べない・入にできない）。
-- 検証: `tests/test_maya_register.py`（既存のファイルに 1 件）、全体 1694 件、E2E `maya-register`、本番の DS-XS の設定で判定が「読める」になることを読み取りで確かめた。個別設定の画面の入／切は E2E 未作成（型チェックとビルドのみ）。
+- レビューの指摘（9 件）を直した: 入／切を選んだときだけ `--vision` を書く（ほかの項目の保存で切を書き込まない）、断るときは何も保存しない、DeepSeek かどうかは登録の family で見る、相対の `--pack` はエンジンの作業フォルダから、ds4.txt は 1 回だけ読む、ゲートウェイは動いているエンジンの `images` を正とし、切にしているだけなら設定の入／切へ案内する、自己診断「Maya の画像の読み取り」（エンジンと判定の食い違い）、入／切は閉じない「画像の読み取り（vision）」のグループに出す。
+- 検証: `tests/test_maya_register.py`（既存のファイルに 3 件）、全体、E2E `maya-ds4-vision`（新規 3 件・320px と 1280px）、本番の DS-XS で判定が「読める」・自己診断が一致になることを読み取りで確かめた。
 
 ## 2026-11-18 AI アシスタントの OpenCode: 思考を操作の前後で分ける・作業フォルダを会話で続ける・箱ごとの /tmp
 

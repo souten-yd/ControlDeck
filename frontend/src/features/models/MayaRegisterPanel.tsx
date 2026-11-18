@@ -317,8 +317,8 @@ function MayaInstanceSettingsForm({ alias, title }: { alias: string; title: stri
       </div>
       <span className="text-[11px] text-zinc-500">要求が値を指定しないときに使います。モデルカードの推奨は 1.0 / 1.0 です。</span>
     </SettingsGroup>
-    {ds && <SettingsGroup title="性能（DeepSeek）" description="エンジン maya-ds4 の起動オプション" collapsible defaultOpen={false}>
-      <label className="block text-xs">画像の読み取り（vision）
+    {ds && <SettingsGroup title="画像の読み取り（vision）" description="画像を読むかどうか（変えたら起動し直すと効きます）">
+      <label className="block text-xs">読み取り
         <select aria-label={`${title} 画像の読み取り`} value={draft.vision ?? "off"} disabled={locked || !draft.vision_available}
           onChange={(e) => set("vision", e.target.value as "on" | "off")} className={`mt-1 ${settingField}`}>
           <option value="on">読む</option><option value="off">読まない（文字だけ）</option>
@@ -329,6 +329,8 @@ function MayaInstanceSettingsForm({ alias, title }: { alias: string; title: stri
             : "画像の部品（vision tower）が入っていません。Maya の設定し直しで入れると選べます。"}
         </span>
       </label>
+    </SettingsGroup>}
+    {ds && <SettingsGroup title="性能（DeepSeek）" description="エンジン maya-ds4 の起動オプション" collapsible defaultOpen={false}>
       <label className="block text-xs">下書き（DSpark・投機デコード）
         <select aria-label={`${title} 下書き`} value={draft.dspark} disabled={locked}
           onChange={(e) => set("dspark", e.target.value as "on" | "off")} className={`mt-1 ${settingField}`}>
