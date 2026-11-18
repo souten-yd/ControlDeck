@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 172 ファイル、1518 テスト（目的の未記入 93 ファイル）
-- E2E: 83 spec、156 テスト
+- backend: 172 ファイル、1519 テスト（目的の未記入 93 ファイル）
+- E2E: 83 spec、157 テスト
 
 ## backend（backend/tests）
 
@@ -1521,6 +1521,7 @@
 - `test_selftest_checks_the_project_box_isolation` — 箱の /tmp が専用で、CodeDEV が覆われているかを自己診断で確かめる（同じことが起きたら気付けるように）。
 - `test_plan_is_passed_to_opencode_and_recorded_on_the_answer` — プランで送ると、OpenCode に plan のエージェントで渡り、回答に印が残る（画面が「プラン」と出す）。
 - `test_a_conversation_is_titled_when_it_starts_and_todos_keep_their_times`
+- `test_chat_after_opencode_is_told_it_has_no_tools_and_tool_text_is_reported` — OpenCode の後のチャットには道具が無いと伝える。文字だけの呼び出しは自己診断で分かる（2026-11-18 本番）。
 
 ### backend/tests/test_opencode_dev_tools.py
 
@@ -2503,7 +2504,7 @@
 - a question that only mentions web apps stays in chat
 - in an OpenCode conversation, asking to look something up and apply it researches first
 - in an OpenCode conversation, an ordinary request stays with OpenCode
-- in an OpenCode conversation, a plain question is answered in chat
+- in an OpenCode conversation, a plain question stays in OpenCode
 - in an OpenCode conversation, an image goes to the chat that can see it
 - a long thinking trace opens from its heading and closes by tapping inside it at ${width}px
 - an OpenCode answer shows thinking split around its tools and reopening keeps the work folder
@@ -2541,6 +2542,7 @@
 
 - plan is clearly shown, sent as plan and can be built afterwards (${width}px)
 - the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
+- a question during an OpenCode conversation stays in OpenCode
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 

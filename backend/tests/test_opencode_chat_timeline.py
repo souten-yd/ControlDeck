@@ -248,3 +248,36 @@ def test_a_conversation_is_titled_when_it_starts_and_todos_keep_their_times(admi
     assert [t["status"] for t in todos] == ["completed", "in_progress", "pending"]
     assert todos[0]["completed_at"] and todos[1]["started_at"] and "completed_at" not in todos[1]
     assert not final["meta"]["tools"]                                # 道具の行には出さない
+
+
+
+def test_chat_after_opencode_is_told_it_has_no_tools_and_tool_text_is_reported(admin_client, monkeypatch, tmp_path):
+    """OpenCode の後のチャットには道具が無いと伝える。文字だけの呼び出しは自己診断で分かる（2026-11-18 本番）。"""
+    from app.database import SessionLocal
+    from app.diagnostics import selftest
+    from app.models import ChatMessage
+    from app.workflows import chat_persist
+
+    seen = []
+
+    async def fake_job(job, assistant_id, conv_id, history, params):
+        seen.append(history)
+        db = SessionLocal()
+        row = db.get(ChatMessage, assistant_id)
+        row.content, row.status = "<tool_call><function=exec>", "completed"
+        db.commit()
+        db.close()
+        return {}
+
+    monkeypatch.setattr(chat_persist, "_run_chat_job", fake_job)
+    conv = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    db = SessionLocal()
+    db.add(ChatMessage(id="codeanswer" + conv[:16], conversation_id=conv, role="assistant", content="済",
+                       status="completed", meta_json='{"mode": "code"}'))
+    db.commit()
+    db.close()
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv}/send", headers=CSRF_HEADERS,
+                          json={"content": "質問", "mode": "chat", "model": "test"})
+    _wait_done(admin_client, conv, r.json()["assistant_message_id"])
+    assert any("<tool_call>" in str(m["content"]) for m in seen[0] if m["role"] == "system")
+    assert selftest._chat_tool_text()[0] == "warn"
