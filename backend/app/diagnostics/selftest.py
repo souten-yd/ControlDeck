@@ -167,7 +167,10 @@ def _voice_input():
     from app.workflows import asr
 
     if asr.last_fallback:
-        return "warn", f"Haas-ja が失敗し whisper で動きました: {asr.last_fallback}"
+        how = "whisper で動きました" if asr.fallback_worked else "文字にできませんでした"
+        return "warn", f"Haas-ja が失敗し、{how}: {asr.last_fallback}"
+    if asr.last_install_error:
+        return "warn", f"Haas-ja を導入できず whisper で動いています: {asr.last_install_error}"
     if not asr.is_ready():
         return True, "音声入力は未導入（初回に導入します）"
     return True, f"音声入力のエンジン: {'Haas-ja' if asr.haas_ready() else 'whisper（Haas-ja は未導入）'}"

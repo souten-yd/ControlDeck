@@ -111,5 +111,5 @@ def test_haas_is_used_when_installed_and_whisper_is_the_fallback(admin_client, m
 
     monkeypatch.setattr(asr, "_transcribe_haas", broken)
     second = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
-    assert second["text"] == "控えの結果" and asr.last_fallback.startswith("RuntimeError")
-    asr.last_fallback = ""
+    assert second["text"] == "控えの結果" and asr.last_fallback.startswith("RuntimeError") and asr.fallback_worked
+    asr.last_fallback, asr.fallback_worked = "", False

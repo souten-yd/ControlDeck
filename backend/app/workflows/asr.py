@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -52,7 +53,11 @@ HAAS_FILES = {
 }
 HAAS_THREADS = 4
 _haas_gate = asyncio.Semaphore(1)     # 1 回 約 0.86 GiB。同時に動かさない
-last_fallback = ""                    # Haas が失敗して whisper に回った理由（自己診断）
+last_fallback = ""                    # Haas が失敗した理由（自己診断）
+fallback_worked = False               # そのとき whisper で文字にできたか
+last_install_error = ""               # 裏の導入に失敗した理由
+_install_retry_at = 0.0               # 裏の導入を次に試してよい時刻（失敗を繰り返さない）
+INSTALL_RETRY_SECONDS = 6 * 3600.0
 
 
 def runtime_root() -> Path:
@@ -116,6 +121,7 @@ def is_ready() -> bool:
 
 def status() -> dict:
     active = jobs.get(_install_job_id) if _install_job_id else None
+    haas = haas_ready()
     state = "ready" if is_ready() else (
         "installing" if active and active.status in ("queued", "running") else "missing"
     )
@@ -124,13 +130,15 @@ def status() -> dict:
         "ready": state == "ready",
         "installing": state == "installing",
         "job_id": active.id if active and active.status in ("queued", "running") else None,
-        "runtime": "sherpa-onnx 2.0.1" if haas_ready() else f"whisper.cpp {WHISPER_VERSION}",
-        "model": "Haas-ja-v1.0" if haas_ready() else MODEL_NAME,
-        "engine": "haas" if haas_ready() else "whisper",
-        # whisper で使えるが Haas がまだ無い: 裏で導入する（待たせない）
-        "upgrade_available": state == "ready" and not haas_ready(),
-        "model_bytes": model_path().stat().st_size if model_path().is_file() else 0,
-        "storage": str(haas_root() if haas_ready() else runtime_root()),
+        "runtime": "sherpa-onnx 2.0.1" if haas else f"whisper.cpp {WHISPER_VERSION}",
+        "model": "Haas-ja-v1.0" if haas else MODEL_NAME,
+        "engine": "haas" if haas else "whisper",
+        # whisper で使えるが Haas がまだ無い: 裏で導入する（待たせない。失敗したらしばらく試さない）
+        "upgrade_available": state == "ready" and not haas and time.time() >= _install_retry_at,
+        "install_error": last_install_error,
+        "model_bytes": sum(size for size, _ in HAAS_FILES.values()) if haas
+        else model_path().stat().st_size if model_path().is_file() else 0,
+        "storage": str(haas_root() if haas else runtime_root()),
         "reusable": is_ready(),
     }
 
@@ -160,13 +168,17 @@ async def _download(url: str, target: Path, size: int, sha256: str, root: Path, 
     digest = hashlib.sha256()
     received = 0
     try:
-        async with httpx.AsyncClient(timeout=None, follow_redirects=True, headers={"User-Agent": "ControlDeck"}) as client:
+        timeout = httpx.Timeout(30.0, read=60.0)   # 止まった接続で導入（と本番の自動更新）を待たせ続けない
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ControlDeck"}) as client:
             async with client.stream("GET", url) as response:
                 response.raise_for_status()
                 with part.open("wb") as stream:
+                    def store(data: bytes) -> None:
+                        stream.write(data)
+                        digest.update(data)
+
                     async for chunk in response.aiter_bytes(1024 * 1024):
-                        stream.write(chunk)
-                        digest.update(chunk)
+                        await asyncio.to_thread(store, chunk)
                         received += len(chunk)
                         on_chunk(len(chunk))
         if received != size or digest.hexdigest() != sha256:
@@ -184,6 +196,7 @@ async def install_haas(job: jobs.Job) -> None:
     wanted = ",".join(HAAS_PACKAGES)
     if not (haas_python().is_file() and marker.is_file() and marker.read_text().strip() == wanted):
         job.set_progress("音声認識の実行環境を準備中", 0, 2)
+        marker.unlink(missing_ok=True)   # 作り直しに失敗したら「準備できた」に見せない
         await _run(job, sys.executable, "-m", "venv", "--clear", str(root / "venv"), cwd=root, timeout=180)
         await _run(job, str(haas_python()), "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
                    *HAAS_PACKAGES, cwd=root, timeout=900)
@@ -207,14 +220,18 @@ async def install_haas(job: jobs.Job) -> None:
 
 
 async def install(job: jobs.Job) -> dict:
-    """音声認識（Haas-ja）を導入する。失敗しても whisper が使えるなら、これまでどおり whisper で続ける。"""
+    """音声認識（Haas-ja）を導入する。入れられなければ whisper を控えとして使う（無ければ導入する）。"""
+    global last_install_error, _install_retry_at
     if not haas_ready():
         try:
             await install_haas(job)
+            last_install_error = ""
         except Exception as exc:  # noqa: BLE001
+            last_install_error = f"{type(exc).__name__}: {exc}"[:300]
+            _install_retry_at = time.time() + INSTALL_RETRY_SECONDS
+            job.log(f"Haas-ja を導入できませんでした: {last_install_error}")
             if not whisper_ready():
-                raise
-            job.log(f"Haas-ja を導入できませんでした。whisper のまま使います: {exc}"[:500])
+                await install_whisper(job)
     job.set_progress("ASRを利用できます", 1, 1)
     if not is_ready():
         raise RuntimeError("ASR導入後の検証に失敗しました")
@@ -263,28 +280,15 @@ async def install_whisper(job: jobs.Job) -> dict:
 
     if not model.is_file() or model.stat().st_size != MODEL_BYTES:
         model.parent.mkdir(parents=True, exist_ok=True)
-        part = _inside(model.with_suffix(".bin.part"), root)
-        part.unlink(missing_ok=True)
-        digest = hashlib.sha256()
         received = 0
+
+        def advance(count: int) -> None:
+            nonlocal received
+            received += count
+            job.set_progress("音声認識モデルを取得中", received, MODEL_BYTES)
+
         job.set_progress("音声認識モデルを取得中", 2, 3)
-        try:
-            async with httpx.AsyncClient(timeout=None, follow_redirects=True,
-                                         headers={"User-Agent": "ControlDeck"}) as client:
-                async with client.stream("GET", MODEL_URL) as response:
-                    response.raise_for_status()
-                    with part.open("wb") as target:
-                        async for chunk in response.aiter_bytes(1024 * 1024):
-                            target.write(chunk)
-                            digest.update(chunk)
-                            received += len(chunk)
-                            job.set_progress("音声認識モデルを取得中", received, MODEL_BYTES)
-            if received != MODEL_BYTES or digest.hexdigest() != MODEL_SHA256:
-                raise RuntimeError("音声認識モデルのサイズまたはSHA-256が一致しません")
-            part.replace(model)
-        except BaseException:
-            part.unlink(missing_ok=True)
-            raise
+        await _download(MODEL_URL, model, MODEL_BYTES, MODEL_SHA256, root, advance)
 
     job.set_progress("ASRを利用できます", 3, 3)
     if not whisper_ready():
@@ -301,9 +305,11 @@ async def _transcribe_haas(wav: Path, cwd: Path) -> str:
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
         except TimeoutError:
-            process.kill()
-            await process.wait()
             raise RuntimeError("音声認識が時間内に完了しませんでした")
+        finally:
+            if process.returncode is None:   # 時間切れ・取り消しでも残さない（同時に 1 つを守る）
+                process.kill()
+                await process.wait()
     if process.returncode != 0:
         raise RuntimeError(stderr.decode("utf-8", errors="replace")[-300:] or "Haas-ja が失敗しました")
     return str(json.loads(stdout.decode("utf-8").strip().splitlines()[-1]).get("text") or "").strip()
@@ -323,8 +329,8 @@ async def install_job(request: Request, user: User = Depends(require_permission(
     job = jobs.create("asr.install", "音声入力モデルを導入", install,
                       owner_user_id=user.id, priority=-5)
     _install_job_id = job.id
-    audit.record(db, "asr.install", user=user, resource_type="runtime", resource_id=WHISPER_VERSION,
-                 request=request, metadata={"job_id": job.id, "model": MODEL_NAME})
+    audit.record(db, "asr.install", user=user, resource_type="runtime", resource_id="Haas-ja-v1.0",
+                 request=request, metadata={"job_id": job.id, "model": "Haas-ja-v1.0", "revision": HAAS_REPO.rsplit("/", 1)[-1]})
     return {"job_id": job.id, "reused": False}
 
 
@@ -397,17 +403,17 @@ async def transcribe(
             logger.warning("ASR audio conversion failed: %s", diagnostics)
             raise HTTPException(status_code=422, detail="音声を変換できませんでした")
         if haas_ready():
-            global last_fallback
+            global last_fallback, fallback_worked
             try:
                 text = await _transcribe_haas(wav, request_dir)
-                last_fallback = ""
+                last_fallback, fallback_worked = "", False
                 if not text:
                     raise HTTPException(status_code=422, detail="音声を認識できませんでした")
                 return {"text": text, "language": "ja", "model": "Haas-ja-v1.0"}
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001 - whisper があれば入力を止めない
-                last_fallback = f"{type(exc).__name__}: {exc}"[:300]
+                last_fallback, fallback_worked = f"{type(exc).__name__}: {exc}"[:300], False
                 logger.warning("Haas-ja に失敗しました: %s", last_fallback)
                 if not whisper_ready():
                     raise HTTPException(status_code=502, detail="音声認識に失敗しました") from exc
@@ -423,6 +429,7 @@ async def transcribe(
         text = transcript_file.read_text(encoding="utf-8", errors="replace").strip()
         if not text or text in ("[BLANK_AUDIO]", "[無音]"):
             raise HTTPException(status_code=422, detail="音声を認識できませんでした")
+        fallback_worked = bool(last_fallback)
         return {"text": text, "language": "ja", "model": MODEL_NAME}
     finally:
         await audio.close()
