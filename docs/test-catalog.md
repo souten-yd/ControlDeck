@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 172 ファイル、1520 テスト（目的の未記入 93 ファイル）
-- E2E: 83 spec、159 テスト
+- backend: 173 ファイル、1525 テスト（目的の未記入 93 ファイル）
+- E2E: 83 spec、160 テスト
 
 ## backend（backend/tests）
 
@@ -1513,6 +1513,7 @@
 目的: AI アシスタントの OpenCode: 思考・道具・本文を届いた順に記録する／作業フォルダを会話で続ける／箱ごとの /tmp。 目的: 2026-11-18 利用者の依頼。 - 「思考が全部 1 つの窓に入っている。Bash などの操作の前後で分かれるはず」→ 届いた順の並び（timeline）を記録する （思考・本文は文字の位置、道具は ID）。画面はそれで思考を道具の前後に分けて出す - 「AI アシスタントを開き直すと作業フォルダの設定が外れる」→ 指定が空なら、その会話で最後に OpenCode が 動いたプロジェクトで続ける - 「proto1〜3 が Project Lab に無い」→ 箱の /tmp は全部の箱で共有されていた。プロジェクトごとに別の、 箱の外に残る場所へつなぐ
 
 - `test_thinking_tools_and_text_are_recorded_in_arrival_order`
+- `test_changing_the_project_starts_a_new_session_and_hands_over` — 2026-11-18 本番: mokei を選んでも conv のセッションのまま、箱の中の空の conv で作業していた。
 - `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
 - `test_a_deleted_last_project_is_not_reopened`
@@ -1641,6 +1642,15 @@
 - `test_symlink_escape_rejected`
 - `test_prefix_sibling_rejected`
 - `test_secret_masking`
+
+### backend/tests/test_pdf_import.py
+
+目的: 添付 PDF: 文字の復元・原本とページ画像の保存・OpenCode のプロジェクトへ安全に置くこと。 根拠: 2026-11-18 本番「PDF を添付したが全く読まれていない」。文字が /uni30E6… のまま登録され、原本も無かった。
+
+- `test_glyph_names_become_text`
+- `test_same_pdf_is_kept_once_and_summarised_for_research`
+- `test_pages_are_placed_in_the_project_once`
+- `test_links_in_the_project_are_not_followed` — プロジェクトはモデルが書ける。リンクを置かれても箱の外へ書かない。
 
 ### backend/tests/test_plugin_sdk.py
 
@@ -2544,6 +2554,7 @@
 
 - plan is clearly shown, sent as plan and can be built afterwards (${width}px)
 - the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
+- research with plan goes to OpenCode: investigate first, then plan
 - the plus menu stays on a short screen, scrolls inside and follows the arrow keys
 - a question during an OpenCode conversation stays in OpenCode
 

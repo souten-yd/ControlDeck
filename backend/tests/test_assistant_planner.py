@@ -45,7 +45,7 @@ def test_invalid_llm_plan_falls_back_to_chat(monkeypatch):
 def test_route_api_returns_validated_plan(admin_client, monkeypatch):
     import app.workflows.assistant_planner as planner
 
-    async def fake_decide(content, base_url, model):
+    async def fake_decide(content, base_url, model, api_key="", context=""):
         return planner.AssistantPlan(mode="web", reason="現在情報", decided_by="llm")
 
     monkeypatch.setattr(planner, "decide", fake_decide)

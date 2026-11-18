@@ -16,7 +16,7 @@ def test_research_for_code_returns_evidence_and_keeps_the_opencode_answer(monkey
     import app.workflows.chat_persist as cp
     from app.workflows import assistant_planner
 
-    async def fake_decide(query, base_url, model, api_key=""):
+    async def fake_decide(query, base_url, model, api_key="", context=""):
         return assistant_planner.AssistantPlan(mode="web", reason="t", steps=[
             assistant_planner.ResearchStep(tool="web", query="sqlite wal")], decided_by="rule")
 

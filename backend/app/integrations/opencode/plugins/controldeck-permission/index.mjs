@@ -74,15 +74,25 @@ const READ_ONLY_HEAD = new Set([
   "diff", "cmp", "cut", "tr", "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum",
   "true", "test", "[", "cd",
 ]);
-// git は読むだけに見えても、リポジトリの設定（core.fsmonitor・diff.external）のプログラムを動かす。プランでは確認する
-const GIT_READ = /^git\s+(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/;
+// git は読むだけに見えても、リポジトリの設定（core.fsmonitor・diff.external）のプログラムを動かしうる。
+// 確認モードと箱の外では確認し、Auto の箱の中は通す（2026-11-18 利用者「箱の中は許可不要」。止めると作業が途切れた）
+const GIT_READ = /^git\s+(-C\s+\S+\s+)?((status|diff|log|show|rev-parse|ls-files|blame|describe)(\s|$)|remote\s+-v$)/;
+// 版を見るだけ（プログラムは動くが何も変えない）
+const VERSION_ONLY = /^(node|python3?|npm|pnpm|yarn|bun|git|rg|uname)\s+(--version|-v|-V)$/;
 // rg --pre は別のプログラムを動かす（grep -C・find -o のような読むための引数は止めない）
-const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)--pre(-glob)?(\s|=|$)/;
+const READ_ONLY_FORBIDDEN_ARGS = /(^|\s)(--pre(-glob)?|--ext-diff|--textconv)(\s|=|$)/;
+
+// 捨てるだけの出力先（2>/dev/null・2>&1）は何も書かない。これで読むだけのコマンドが「変更」扱いになっていた
+// （2026-11-18 本番: `ls -la x 2>/dev/null | head` がプランで止まり、書き込もうとしているように見えた）
+// 決まった形だけを外し、残った > や <>・単独の &（裏で別のコマンドを動かす）は読むだけと認めない
+const DISCARD_OUTPUT = /(^|\s)([12]?>{1,2}\s*\/dev\/null|2>&1|1>&2)(?=\s|;|\||&&|$)/g;
 
 export function isReadOnly(command) {
-  const text = String(command || "").trim();
-  if (!text || judgeShell(text).effect !== "allow" || READ_ONLY_FORBIDDEN_ARGS.test(text)) return false;
-  return splitCommands(text).every((part) => READ_ONLY_HEAD.has(part.split(/\s+/)[0]) || GIT_READ.test(part));
+  const text = String(command || "").replace(DISCARD_OUTPUT, "$1").trim();
+  if (!text || DANGEROUS.some((pattern) => pattern.test(text)) || READ_ONLY_FORBIDDEN_ARGS.test(text)) return false;
+  if (/>/.test(text) || /&/.test(text.replace(/&&/g, ""))) return false;
+  return splitCommands(text).every((part) => READ_ONLY_HEAD.has(part.split(/\s+/)[0])
+    || GIT_READ.test(part) || VERSION_ONLY.test(part));
 }
 
 // 自動でよい形（全体がこれだけで出来ていること）。読むだけに、テスト・ビルド・整形・作業用のフォルダ作りを足したもの
@@ -120,8 +130,8 @@ export function judgeShell(command) {
 // プランでは何も変えない（2026-11-18 利用者「プランの際はビルドモードではないことが明確にわかること」）。
 // 規則で allow に決まったもの（ビルドのときに「いつも許可」と答えたものなど）も止める。止めるのは:
 //   編集・書き込み、変更を伴うコマンド、子のエージェント（子はビルドの扱いになり編集できてしまう）。
-// 読むだけのコマンドは、Auto かつ箱の中なら通す。確認モード・箱の外では確認する（プランで確認が緩まないように）。
-// ControlDeck の道具（MCP）と外への取得は確認する。
+// 読むだけのコマンドと Web の取得は、Auto かつ箱の中なら通す。確認モード・箱の外では確認する（プランで確認が緩まないように）。
+// ControlDeck の道具（MCP）は確認する。
 export function decidePlan(action, resources, mode = "auto") {
   switch (action) {
     case "edit":
@@ -133,16 +143,17 @@ export function decidePlan(action, resources, mode = "auto") {
     case "shell": {
       const commands = (resources || []).map((r) => String(r || "").trim());
       if (commands.length === 0 || !commands.every(isReadOnly)) {
-        return { effect: "deny", message: "プラン: 変更を伴うコマンドは実行しません。ビルドに切り替えてください" };
+        return { effect: "deny", message: "プラン: 読むだけと確認できないコマンドは実行しません（何も変更していません）。read・grep・glob で調べてください" };
       }
-      const usesGit = commands.some((command) => splitCommands(command).some((part) => GIT_READ.test(part)));
-      return mode === "auto" && !HOST && !usesGit ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
+      return mode === "auto" && !HOST ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
         : { effect: "ask", message: "プラン: 読むだけのコマンドです（確認モードのため確認します）" };
     }
     case "execute":
       return { effect: "ask", message: "プラン: ControlDeck の道具は確認します" };
     case "webfetch":
-      return { effect: "ask", message: "プラン: 外への取得は確認します" };
+      // 調べた結果で計画するので、Auto の箱の中では読みに行ける
+      return mode === "auto" && !HOST ? { effect: "allow", message: "プラン: Web を読むだけ" }
+        : { effect: "ask", message: "プラン: 外への取得は確認します" };
     default:
       return null;
   }

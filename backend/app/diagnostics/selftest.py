@@ -80,7 +80,7 @@ def _frontend():
 
 
 def _tools():
-    missing = [tool for tool in ("tmux", "podman", "journalctl", "git") if not shutil.which(tool)]
+    missing = [tool for tool in ("tmux", "podman", "journalctl", "git", "pdftoppm") if not shutil.which(tool)]
     return (not missing) or "warn", "そろっています" if not missing else "見つからない: " + ", ".join(missing)
 
 

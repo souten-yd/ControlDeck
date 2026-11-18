@@ -95,6 +95,61 @@ def test_thinking_tools_and_text_are_recorded_in_arrival_order(admin_client, mon
     assert thinking[0:5] == "まず見る。" and thinking[5:14] == "a.py を直す。"
 
 
+def test_changing_the_project_starts_a_new_session_and_hands_over(admin_client, monkeypatch, tmp_path):
+    """2026-11-18 本番: mokei を選んでも conv のセッションのまま、箱の中の空の conv で作業していた。"""
+    import io
+
+    from pypdf import PdfWriter
+
+    from app.integrations.opencode import chat_server
+
+    _fake_opencode(monkeypatch, tmp_path, [])
+    first, second = tmp_path / "conv", tmp_path / "mokei"
+    first.mkdir()
+    second.mkdir()
+    created: list[str] = []
+    turns: list[tuple[str, str]] = []
+
+    async def resolve(name="", path=""):
+        return tmp_path / name
+
+    async def exists(srv, sid):
+        return True
+
+    async def create(srv, title):
+        created.append(f"ses_{len(created)}")
+        return created[-1]
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        turns.append((sid, text))
+        await on_text("前の回答です。")
+        return {"status": "succeeded", "error": ""}
+
+    monkeypatch.setattr(chat_server, "resolve_project", resolve)
+    monkeypatch.setattr(chat_server, "session_exists", exists)
+    monkeypatch.setattr(chat_server, "create_session", create)
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=100)
+    pdf = io.BytesIO()
+    writer.write(pdf)
+    uploaded = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/attachments", headers=CSRF_HEADERS,
+                                 files={"file": ("Plan15.pdf", pdf.getvalue(), "application/pdf")})
+    assert uploaded.status_code == 201 and uploaded.json()["pages"] == 1 and uploaded.json()["note"]   # 画像だけでも受ける
+    for project, text in (("conv", "作って"), ("conv", "続けて"), ("mokei", "こちらで"), ("conv", "戻って")):
+        r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                              json={"content": text, "mode": "code", "model": "test", "code_project": project,
+                                    "code_agent": "plan"})
+        final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+        assert final["status"] == "completed", final["error"]
+    assert [sid for sid, _ in turns] == ["ses_0", "ses_0", "ses_1", "ses_0"]     # フォルダごとにセッションを続ける
+    assert "## 添付された PDF" in turns[0][1] and "## 添付された PDF" not in turns[1][1]
+    moved = turns[2][1]
+    assert "今回の作業フォルダは" in moved and "前の回答です。" in moved and "## 添付された PDF" in moved and "## プラン" in moved
+    assert list((second / ".controldeck/attachments").iterdir())
+
+
 def test_timeline_offsets_use_the_browsers_character_positions():
     """絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。"""
     from app.workflows.chat_persist import _utf16_len
