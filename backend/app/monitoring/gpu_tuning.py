@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +27,8 @@ XFX_SUBSYSTEM = ("0x1eae", "0x9801")
 ITEMS = {"core": ("OD_SCLK_OFFSET", "SCLK_OFFSET", "MHz"), "voltage": ("OD_VDDGFX_OFFSET", "VDDGFX_OFFSET", "mV")}
 PRESET = {"id": "xfx-r9700-test", "label": "XFX R9700 試験設定（−500 MHz / −25 mV）", "core": -500, "voltage": -25}
 _sudo_cache: tuple[float, bool] = (0.0, False)
+_write_lock = threading.Lock()       # 読む・書く・確かめるを 1 組にする
+logger = logging.getLogger(__name__)
 
 
 class GpuTuningError(Exception):
@@ -50,6 +55,16 @@ def _read(path: Path) -> str:
         return path.read_text(encoding="ascii").strip()
     except (OSError, UnicodeDecodeError):
         return ""
+
+
+def _read_od(node: Path) -> str:
+    """OverDrive の読み取り。無い（未対応）と読めない（一時的な失敗）を分ける。"""
+    try:
+        return node.read_text(encoding="ascii")
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GpuTuningError("read", "GPU の設定を読み取れませんでした。少し待ってからもう一度お試しください") from exc
 
 
 def find_target() -> Path | None:
@@ -96,8 +111,11 @@ def _load_previous() -> dict:
 def _save_previous(previous: dict) -> None:
     path = data_dir() / STATE_FILE
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"boot_id": _boot_id(), "previous": previous}), encoding="utf-8")
-    tmp.replace(path)
+    try:
+        tmp.write_text(json.dumps({"boot_id": _boot_id(), "previous": previous}), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:      # GPU には適用済み。適用の結果は変えない
+        logger.warning("GPU 設定の復元用の値を保存できませんでした: %s", exc)
 
 
 def helper_ready() -> bool:
@@ -121,7 +139,10 @@ def status() -> dict:
     if device is None:
         return {"available": False, "message": "対象の Radeon AI PRO R9700 が見つかりません", "preset": PRESET}
     node = device / "pp_od_clk_voltage"
-    text = _read(node)
+    try:
+        text = _read_od(node)
+    except GpuTuningError as exc:
+        return {"available": False, "message": exc.message, "bdf": device.name, "preset": PRESET}
     items = parse_od(text)
     subsystem = (_read(device / "subsystem_vendor").lower(), _read(device / "subsystem_device").lower())
     message = "" if text else "ドライバが OverDrive を公開していません（amdgpu.ppfeaturemask を確認してください）"
@@ -133,7 +154,8 @@ def _run_helper(bdf: str, core: int | None, voltage: int | None) -> None:
     argv = ["sudo", "-n", str(HELPER), "gpu-od", "apply", bdf,
             "keep" if core is None else str(core), "keep" if voltage is None else str(voltage)]
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False,
+                                env={**os.environ, "LC_ALL": "C"})   # sudo の文言で権限不足を見分ける
     except (OSError, subprocess.SubprocessError) as exc:
         raise GpuTuningError("failed", f"書き込みを実行できませんでした: {type(exc).__name__}") from exc
     if result.returncode == 0:
@@ -163,7 +185,7 @@ def _apply(values: dict) -> tuple[dict, dict]:
     if device is None:
         raise GpuTuningError("unsupported", "対象の Radeon AI PRO R9700 が見つかりません")
     node = device / "pp_od_clk_voltage"
-    before = parse_od(_read(node))
+    before = parse_od(_read_od(node))
     _checked(values, before)
     changed = {key: value for key, value in values.items() if before[key]["current"] != value}
     if not changed:
@@ -171,18 +193,24 @@ def _apply(values: dict) -> tuple[dict, dict]:
     try:
         _run_helper(device.name, changed.get("core"), changed.get("voltage"))
     except GpuTuningError as exc:
-        after = parse_od(_read(node))
-        states = "、".join(f"{ITEMS[k][1]} {after[k]['current']} {after[k]['unit']}" for k in after if after[k]["supported"])
+        try:
+            after = parse_od(_read_od(node))
+            states = "、".join(f"{ITEMS[k][1]} {after[k]['current']} {after[k]['unit']}" for k in after if after[k]["supported"])
+        except GpuTuningError:
+            states = "読み取れません"
         raise GpuTuningError(exc.code, f"{exc.message}（最後に確認できた値: {states}）") from exc
-    after = parse_od(_read(node))
+    after = parse_od(_read_od(node))
     wrong = [key for key, value in changed.items() if after[key]["current"] != value]
     if wrong:   # helper は成功と言ったのに読み戻しが合わない
-        restore = {key: before[key]["current"] for key in changed}
+        back = {key: before[key]["current"] for key in changed}
         try:
-            _run_helper(device.name, restore.get("core"), restore.get("voltage"))
+            _run_helper(device.name, back.get("core"), back.get("voltage"))
+            now = parse_od(_read_od(node))
+            restored = all(now[key]["current"] == value for key, value in back.items())
         except GpuTuningError:
-            pass
-        raise GpuTuningError("verify", "ドライバから読み戻した値が指定と違うため、適用前の値へ戻しました")
+            restored = False
+        raise GpuTuningError("verify", "読み戻した値が指定と違うため、適用前の値へ戻しました" if restored
+                             else "読み戻した値が指定と違い、適用前の値へ戻せたことも確認できませんでした。GPU の状態を確認してください")
     return before, changed
 
 
@@ -190,17 +218,23 @@ def apply(core: int | None, voltage: int | None) -> dict:
     values = {key: value for key, value in (("core", core), ("voltage", voltage)) if value is not None}
     if not values:
         raise GpuTuningError("range", "変更する値を指定してください")
-    before, changed = _apply(values)
-    if changed:
-        _save_previous({key: before[key]["current"] for key in changed})
+    with _write_lock:
+        before, changed = _apply(values)
+        if changed:
+            # 戻す先は、この起動で最初に変える前の値（段階的に試しても元へ戻れるように）
+            previous = _load_previous()
+            for key in changed:
+                previous.setdefault(key, before[key]["current"])
+            _save_previous({key: value for key, value in previous.items() if parse_od(_read_od(find_target() / "pp_od_clk_voltage"))[key]["current"] != value})
     return status()
 
 
 def restore() -> dict:
-    """直前の適用で変えた項目だけを、適用前の値へ戻す（全体のリセットは使わない）。"""
-    previous = _load_previous()
-    if not previous:
-        raise GpuTuningError("nothing", "戻せる変更はありません")
-    _apply({key: int(value) for key, value in previous.items()})
-    _save_previous({})
+    """変更した項目だけを、最初の値へ戻す（全体のリセットは使わない）。"""
+    with _write_lock:
+        previous = _load_previous()
+        if not previous:
+            raise GpuTuningError("nothing", "戻せる変更はありません")
+        _apply({key: int(value) for key, value in previous.items()})
+        _save_previous({})
     return status()

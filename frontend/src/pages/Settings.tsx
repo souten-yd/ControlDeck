@@ -91,7 +91,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     allowed: (can) => can("settings.manage") },
   { id: "gpu", label: "GPU 設定", summary: "発熱を抑えるクロック・電圧と、電力・静音",
     icon: IconChip, keywords: ["GPU", "クロック", "周波数", "電圧", "アンダーボルト", "電力", "静音", "VRAM", "R9700", "ホットスポット"],
-    allowed: (can) => can("settings.manage") },
+    allowed: (can) => can("settings.manage") || can("workflows.edit") },
   { id: "hardware", label: "温度管理", summary: "GPUのファン制御と温度",
     icon: IconChip, keywords: ["ファン", "温度", "GPU", "R9700", "回転数", "PID", "カーブ"],
     allowed: (can) => can("settings.manage") },

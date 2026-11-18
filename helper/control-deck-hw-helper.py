@@ -6,12 +6,14 @@ serviceだけを、固定コマンドと厳格な値検証で操作する。任�
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PCI_ROOT = Path("/sys/bus/pci/devices").resolve()
@@ -306,6 +308,27 @@ def control_zero_rpm(action: str, bdf: str) -> None:
     print(json.dumps({"ok": True, "action": action, "bdf": bdf.lower()}))
 
 
+OD_LOCK = Path("/run/lock/control-deck-gpu-od.lock")
+
+
+def with_od_lock(action) -> None:
+    """OverDrive の下書きと確定を、ファンカーブの更新と混ぜない（確定 c は下書き全部を送る）。"""
+    fd = os.open(OD_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        deadline = time.monotonic() + 6
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    fail("別のGPU設定の更新が終わっていません")
+                time.sleep(0.05)
+        action()
+    finally:
+        os.close(fd)
+
+
 OD_DEVICES = {"0x7551"}   # Radeon AI PRO R9700 だけ
 OD_ITEMS = {"core": ("OD_SCLK_OFFSET", "SCLK_OFFSET", "s"), "voltage": ("OD_VDDGFX_OFFSET", "VDDGFX_OFFSET", "vo")}
 OD_VALUE_RE = re.compile(r"^-?\d{1,5}$")
@@ -379,7 +402,9 @@ def control_gpu_od(bdf: str, core_text: str, voltage_text: str) -> None:
         return
     try:
         od_commit(node, {key: before[key]["current"] for key in values})
-        restored = "適用前の値へ戻しました"
+        current = od_parse(od_read(node))
+        same = all(current.get(key, {}).get("current") == before[key]["current"] for key in values)
+        restored = "適用前の値へ戻しました" if same else "適用前の値へ戻せたことを確認できませんでした"
     except OSError:
         restored = "適用前の値へ戻せませんでした"
     od_fail("failed", f"{reason}。{restored}")
@@ -453,16 +478,16 @@ def main() -> None:
         control_system_service(sys.argv[2], sys.argv[3])
         return
     if len(sys.argv) == 6 and sys.argv[1] == "gpu-od" and sys.argv[2] == "apply":
-        control_gpu_od(sys.argv[3], sys.argv[4], sys.argv[5])
+        with_od_lock(lambda: control_gpu_od(sys.argv[3], sys.argv[4], sys.argv[5]))
         return
     if len(sys.argv) == 4 and sys.argv[1] == "fan-zero-rpm":
-        control_zero_rpm(sys.argv[2], sys.argv[3])
+        with_od_lock(lambda: control_zero_rpm(sys.argv[2], sys.argv[3]))
         return
     if len(sys.argv) == 5 and sys.argv[1] == "fan-curve" and sys.argv[2] == "apply":
-        control_fan_curve("apply", sys.argv[3], sys.argv[4])
+        with_od_lock(lambda: control_fan_curve("apply", sys.argv[3], sys.argv[4]))
         return
     if len(sys.argv) == 4 and sys.argv[1] == "fan-curve" and sys.argv[2] == "reset":
-        control_fan_curve("reset", sys.argv[3])
+        with_od_lock(lambda: control_fan_curve("reset", sys.argv[3]))
         return
     fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | fan-zero-rpm allow|deny BDF | system-service ACTION ID")
 

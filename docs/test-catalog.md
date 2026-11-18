@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 174 ファイル、1535 テスト（目的の未記入 93 ファイル）
+- backend: 174 ファイル、1537 テスト（目的の未記入 93 ファイル）
 - E2E: 84 spec、163 テスト
 
 ## backend（backend/tests）
@@ -1037,6 +1037,8 @@
 - `test_the_preset_applies_both_offsets_and_never_sends_a_reset_or_other_settings`
 - `test_out_of_range_and_unsupported_are_reported_separately`
 - `test_a_failed_write_restores_the_values_before_it`
+- `test_only_the_changed_item_is_restored`
+- `test_a_read_failure_is_not_reported_as_missing_support`
 - `test_previous_values_do_not_survive_a_reboot`
 - `test_api_requires_an_admin_and_maps_errors`
 

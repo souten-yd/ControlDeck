@@ -1348,7 +1348,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <ModelLibraryPanel />
       </SettingsGroup>
       <SheetActions>
-        <button onClick={() => savePolicy.mutate(policy)} disabled={savePolicy.isPending} className={primaryButton}>{savePolicy.isPending ? "保存中…" : "保存"}</button>
+        <button onClick={() => savePolicy.mutate(withoutGpuSettings(policy))} disabled={savePolicy.isPending} className={primaryButton}>{savePolicy.isPending ? "保存中…" : "保存"}</button>
       </SheetActions>
       </div>
     </BottomSheet>
@@ -1364,6 +1364,12 @@ function Row({ k, v }: { k: string; v: string }) {
     </div>
   );
 }
+/** GPU の電力・静音は設定の「GPU 設定」で変える。ここから古い値で上書きしない */
+function withoutGpuSettings(policy: RuntimePolicy): Partial<RuntimePolicy> {
+  const { amd_gpu: _gpu, ...rest } = policy;
+  return rest;
+}
+
 function L({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block"><span className="mb-1 block text-xs font-medium text-zinc-500">{label}</span>{children}</label>;
 }

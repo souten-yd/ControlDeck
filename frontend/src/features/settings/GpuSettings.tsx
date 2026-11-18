@@ -92,7 +92,10 @@ function TuningPanel() {
         </div>
         {!data.helper_ready && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">書き込みの権限がまだありません。サーバーで <code>./deck.sh service</code> を実行してください。</p>}
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={secondaryButtonClass} onClick={() => { setCore(String(data.preset.core)); setVoltage(String(data.preset.voltage)); }}>{data.preset.label}</button>
+          {data.xfx && <button type="button" className={secondaryButtonClass} onClick={() => {
+            if (data.items?.core.supported) setCore(String(data.preset.core));
+            if (data.items?.voltage.supported) setVoltage(String(data.preset.voltage));
+          }}>{data.preset.label}</button>}
           <button type="button" className={primaryButtonClass} disabled={!canApply} onClick={() => setConfirming(true)}>適用</button>
           {previous.length > 0 && <button type="button" className={secondaryButtonClass} disabled={!canManage || !data.helper_ready || restore.isPending} onClick={() => restore.mutate()}>適用前の値に戻す</button>}
         </div>
@@ -140,7 +143,8 @@ function PowerPanel() {
 }
 
 export function GpuSettings() {
-  return <div className="space-y-4"><TuningPanel /><PowerPanel /></div>;
+  const can = useAuth((s) => s.can);
+  return <div className="space-y-4">{can("system.view") && <TuningPanel />}{can("workflows.edit") && <PowerPanel />}</div>;
 }
 
 function AmdGpuProfilePanel({ env, gpu, onChange }: {

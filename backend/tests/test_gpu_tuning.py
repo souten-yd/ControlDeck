@@ -135,14 +135,14 @@ def test_core_and_voltage_change_independently_and_restore_only_what_changed(gpu
     gt.apply(-100, None)
     assert gpu.commands == ["s -100", "c"] and (gpu.core, gpu.voltage) == (-100, 0)
     gt.apply(-200, None)
-    assert gt.status()["previous"] == {"core": -100}
+    assert gt.status()["previous"] == {"core": 0}                      # 段階的に試しても最初の値へ戻れる
     gpu.commands.clear()
     state = gt.apply(None, -25)
     assert gpu.commands == ["vo -25", "c"] and state["items"]["voltage"]["current"] == -25
-    assert state["previous"] == {"voltage": 0}                         # 前回変えた周波数は戻す対象に入らない
+    assert state["previous"] == {"core": 0, "voltage": 0}
     gpu.commands.clear()
     state = gt.restore()
-    assert gpu.commands == ["vo 0", "c"] and (gpu.core, gpu.voltage) == (-200, 0) and state["previous"] == {}
+    assert gpu.commands == ["s 0", "vo 0", "c"] and (gpu.core, gpu.voltage) == (0, 0) and state["previous"] == {}
     with pytest.raises(gt.GpuTuningError) as caught:
         gt.restore()
     assert caught.value.code == "nothing"
@@ -184,6 +184,22 @@ def test_a_failed_write_restores_the_values_before_it(gpu, capsys):
     assert "最後に確認できた値" in caught.value.message and "-100" in caught.value.message
     detail = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert detail["code"] == "failed" and "戻しました" in detail["error"]
+
+
+def test_only_the_changed_item_is_restored(gpu):
+    gt.apply(None, -25)
+    gpu.commands.clear()
+    gt.restore()
+    assert gpu.commands == ["vo 0", "c"]
+
+
+def test_a_read_failure_is_not_reported_as_missing_support(gpu, monkeypatch):
+    def broken(_node):
+        raise gt.GpuTuningError("read", "GPU の設定を読み取れませんでした")
+
+    monkeypatch.setattr(gt, "_read_od", broken)
+    state = gt.status()
+    assert state["available"] is False and "読み取れません" in state["message"]
 
 
 def test_previous_values_do_not_survive_a_reboot(gpu):
