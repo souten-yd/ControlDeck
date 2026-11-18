@@ -4,6 +4,30 @@
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
+test("an action list that was not updated says so", async ({ page, context }) => {
+  // 2026-11-18 利用者「一番上がまだ走っている。実際はもっと進んでいるように見える」。本番はモデルが最初の 1 回しか更新していなかった
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  const now = Date.now() / 1000;
+  const tools = Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, name: "edit", status: "completed", input: { path: "a.ts" }, output: "", started_at: now - 60 + i }));
+  await page.route(/\/api\/v1\/chat\/conversations\/s1\/messages$/, (route) => route.fulfill({ json: {
+    conversation: { id: "s1", title: "古いリスト" },
+    messages: [{ id: "u", role: "user", content: "作って", thinking: "", status: "completed", job_id: null, model: "", error: "", meta: {}, created_at: "2026-11-18T00:00:00Z" },
+      { id: "a", role: "assistant", content: "", thinking: "", status: "generating", job_id: "j", model: "", error: "", created_at: "2026-11-18T00:00:01Z",
+        meta: { mode: "code", tools, timeline: tools.map((t) => ({ k: "u", id: t.id })),
+          todos: [{ content: "雛形を作る", status: "in_progress", started_at: now - 600, updated_at: now - 600 }, { content: "検証する", status: "pending", updated_at: now - 600 }] } }],
+  } }));
+  await page.route(/\/api\/v1\/chat\/conversations\/s1\/queue$/, (route) => route.fulfill({ json: { items: [], generating_message_id: "a", held: false } }));
+  await page.routeWebSocket(/\/chat\/messages\/a\/stream/, () => undefined);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "s1"));
+  await page.goto("/assistant");
+  const list = page.locator("[data-assistant-todos]");
+  await expect(list).toContainText("未更新 · その後 12 操作");
+  await list.getByRole("button").click();
+  await expect(list.locator("[data-todo-stale]")).toContainText("実際はこの表示より進んでいる可能性");
+});
+
 for (const width of [320, 1280]) {
   test(`changes open as a diff and the latest turn can be reverted (${width}px)`, async ({ page, context }) => {
     // 2026-11-18 利用者の依頼: OpenCode の差分・取り消しを AI アシスタントから使えるように

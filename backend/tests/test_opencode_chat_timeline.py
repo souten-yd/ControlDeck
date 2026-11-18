@@ -253,6 +253,49 @@ def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypa
     assert admin_client.get(f"{base}/queue").json()["items"] == []
 
 
+def test_a_stale_action_list_gets_a_reminder_and_updates_reset_the_count(admin_client, monkeypatch, tmp_path):
+    """本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。"""
+    import asyncio
+
+    from app.integrations.opencode import chat_server
+    from app.workflows import chat_persist
+
+    _fake_opencode(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(chat_persist, "TODO_NUDGE_TOOLS", 3)
+    told: list[str] = []
+
+    async def steer(srv, sid, text):
+        told.append(text)
+
+    async def tool(on_tool, index):
+        await on_tool({"id": f"c{index}", "name": "edit", "status": "completed", "input": {}, "output": ""})
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        todos = [{"content": "作る", "status": "in_progress"}, {"content": "試す", "status": "pending"}]
+        await on_tool({"id": "t1", "name": "todowrite", "status": "completed", "input": {"todos": todos}})
+        for index in range(2):
+            await tool(on_tool, index)
+        await on_tool({"id": "t2", "name": "todowrite", "status": "completed", "input": {"todos": todos}})   # 更新で数え直す
+        for index in range(2, 4):
+            await tool(on_tool, index)
+        await asyncio.sleep(0)
+        assert told == []
+        await tool(on_tool, 4)
+        await asyncio.sleep(0.01)
+        await on_text("できました")
+        return {"status": "succeeded", "error": ""}
+
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    monkeypatch.setattr(chat_server, "steer_turn", steer)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                          json={"content": "作って", "mode": "code", "model": "test", "code_project": "demo"})
+    final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+    assert final["status"] == "completed", final["error"]
+    assert len(told) == 1 and "todowrite" in told[0]
+    assert all(row["updated_at"] for row in final["meta"]["todos"])
+
+
 def test_timeline_offsets_use_the_browsers_character_positions():
     """絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。"""
     from app.workflows.chat_persist import _utf16_len

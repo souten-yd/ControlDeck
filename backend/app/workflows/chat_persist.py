@@ -819,6 +819,11 @@ class OpenCodePermissionBody(BaseModel):
 
 # 動いている OpenCode の回へ、送信待ちの要望を今すぐ伝える口（発言 ID → 関数）
 _steer_targets: dict[str, Any] = {}
+# アクションリストが古いまま作業が進んだら、更新を促す（2026-11-18 本番: 91 回の操作の間、最初の 1 回しか更新されなかった）
+TODO_NUDGE_TOOLS = 20
+TODO_NUDGE_MAX = 3
+TODO_NUDGE_TEXT = ("（ControlDeck からの自動の確認です）アクションリストが古いままです。終わった項目を completed、"
+                   "いま進めている項目を in_progress にして todowrite で更新し、そのまま作業を続けてください。返事は要りません。")
 _reverting: set[str] = set()          # 取り消し中の会話（その間は OpenCode へ送らない）
 MAX_CHANGE_FILES = 200
 MAX_PATCH_CHARS = 200_000
@@ -1251,10 +1256,14 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             return {}
 
         todo_state: dict[str, dict] = await asyncio.to_thread(_previous_todos)
+        todo_tools_seen: set[str] = set()     # 最後の更新の後に終わった道具
+        todo_nudges = {"sent": 0, "send": None}
+        background_nudges: set[asyncio.Task] = set()
 
         async def on_todos(items: list) -> None:
             """アクションリスト（todowrite）。始まった・終わった時刻を覚えて画面へ出す。"""
             now = time.time()
+            todo_tools_seen.clear()
             out = []
             for item in items:
                 if not isinstance(item, dict):
@@ -1265,6 +1274,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 status = str(item.get("status") or "pending")
                 row = todo_state.setdefault(text, {"content": text})
                 row["status"] = status
+                row["updated_at"] = now               # 画面が「古いまま」を見分ける
                 if status == "in_progress":
                     row.setdefault("started_at", now)
                 if status == "completed":
@@ -1291,6 +1301,16 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             else:
                 entry.update(tool)
             job.log("tool", tool=dict(tool))
+            if tool.get("status") in ("completed", "failed") and any(
+                    row.get("status") in ("pending", "in_progress") for row in buf["meta"].get("todos") or []):
+                todo_tools_seen.add(str(tool["id"]))
+                send = todo_nudges["send"]
+                if send and len(todo_tools_seen) >= TODO_NUDGE_TOOLS and todo_nudges["sent"] < TODO_NUDGE_MAX:
+                    todo_nudges["sent"] += 1
+                    todo_tools_seen.clear()
+                    task = asyncio.create_task(send())
+                    background_nudges.add(task)
+                    task.add_done_callback(background_nudges.discard)
             await asyncio.to_thread(checkpoint)
 
         async def on_permission(item: dict) -> None:
@@ -1411,6 +1431,13 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
                     logger.warning("OpenCode の変更を確かめられませんでした: %s", type(exc).__name__)
 
+            async def nudge_todos() -> None:
+                try:
+                    await chat_server.steer_turn(server, session_id, TODO_NUDGE_TEXT)
+                except chat_server.ChatServerError as exc:
+                    logger.info("アクションリストの更新を促せませんでした: %s", exc)
+
+            todo_nudges["send"] = nudge_todos
             _steer_targets[assistant_id] = steer
             try:
                 result = await chat_server.run_turn(server, session_id, query, on_text=on_text,

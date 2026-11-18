@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 173 ファイル、1528 テスト（目的の未記入 93 ファイル）
-- E2E: 83 spec、162 テスト
+- backend: 173 ファイル、1529 テスト（目的の未記入 93 ファイル）
+- E2E: 83 spec、163 テスト
 
 ## backend（backend/tests）
 
@@ -1517,6 +1517,7 @@
 - `test_the_chosen_mode_is_kept_on_the_sent_message` — 別の端末や開き直しでも、機能の固定を送った発言から戻せる。
 - `test_changes_are_recorded_and_the_latest_turn_can_be_reverted` — 回答ごとの変更・差分・取り消し。取り消せるのは最新の回だけ。
 - `test_a_queued_request_can_be_told_to_the_running_turn` — 送信待ちを作業中の OpenCode へ伝えると、回答の並びに残り、送信待ちから消える。
+- `test_a_stale_action_list_gets_a_reminder_and_updates_reset_the_count` — 本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。
 - `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
 - `test_a_deleted_last_project_is_not_reopened`
@@ -2548,6 +2549,7 @@
 
 目的: 目的: OpenCode の作業中に、段階（プリフィル・思考・道具など）と時間が入力欄の下に出ること。アクションリストはある ときだけ浮かび、タップで作業中・完了・時刻が見えること。道具を開くと開始・終了の時刻が見えること。 根拠: 2026-11-18 利用者「ずっと応答待ちと記載されている」「いつ終わるのかわからん」「項目の詳細に時間があれば」。
 
+- an action list that was not updated says so
 - changes open as a diff and the latest turn can be reverted (${width}px)
 - text stays between the work steps and steps share one card (${width}px)
 - progress, action list and tool times are shown (${width}px)
