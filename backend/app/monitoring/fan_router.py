@@ -30,17 +30,31 @@ def get_fan_history(since: float = 0.0, user: User = Depends(require_permission(
 
 class AutoTuneRequest(BaseModel):
     action: Literal["start", "cancel"]
+    # 調整に使う LLM（未指定なら登録済みの最初の LLM）。止まっていれば起動してから始める
+    llm: str | None = Field(default=None, max_length=120)
 
 
 @router.post("/autotune")
-def post_fan_autotune(
+async def post_fan_autotune(
     body: AutoTuneRequest,
     request: Request,
     user: User = Depends(require_permission("settings.manage")),
     db=Depends(get_db),
 ):
+    """自動調整: LLM に同じ文言で長文を書かせ続けて、熱モデルと PID の効き具合を決める（30〜90 分）。"""
+    from app.models_mgmt import local_llm
+    from app.monitoring import fan_tune
+
+    if body.action == "cancel":
+        return fan_tune.cancel()
     try:
-        result = fan_control.autotune(body.action)
+        llm = fan_tune.choose_llm(body.llm)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not await local_llm.ensure_ready(llm["alias"]):
+        raise HTTPException(status_code=422, detail=f"{llm['alias']} を起動できませんでした")
+    try:
+        result = fan_tune.start(llm)
     except fan_control.FanControlError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, "system.fan_control.autotune", user=user, request=request,
@@ -48,37 +62,28 @@ def post_fan_autotune(
     return result
 
 
-class PresetBody(BaseModel):
-    label: str = Field(min_length=1, max_length=60)
-    description: str = Field(default="", max_length=200)
-    settings: fan_control.FanSettings
+@router.get("/log-summary")
+def get_fan_log_summary(hours: float = 24.0, user: User = Depends(require_permission("system.view"))):
+    """診断の記録（1 分ごと）から、目標を超えた回数・緊急の最大回転の回数など。"""
+    return fan_control.log_summary(max(1.0, min(hours, 48.0)))
 
 
-@router.post("/presets", status_code=201)
-def add_fan_preset(body: PresetBody, request: Request,
-                   user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
-    """画面で調整中の設定を、名前を付けたプリセットとして保存する（GPU の設定は変えない）。"""
+@router.post("/refit")
+def post_fan_refit(
+    request: Request,
+    user: User = Depends(require_permission("settings.manage")),
+    db=Depends(get_db),
+):
+    """記録から作り直す: 直近 2 日の記録で熱モデルと PID の効き具合を作り直す（数秒、GPU は使わない）。"""
     try:
-        preset = fan_control.add_user_preset(body.label, body.description, body.settings)
-    except fan_control.FanControlError as exc:
+        result = fan_control.refit_from_log()
+    except (fan_control.FanControlError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    audit.record(db, "system.fan_preset.add", user=user, request=request, resource_type="fan-preset",
-                 resource_id=preset["id"], metadata={"label": preset["label"]})
-    return preset
-
-
-@router.delete("/presets/{preset_id}", status_code=204)
-def delete_fan_preset(preset_id: str, request: Request,
-                      user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
-    """利用者のプリセットだけ消せる（組み込みのものは消せない）。"""
-    if not preset_id.startswith("user-"):
-        raise HTTPException(status_code=422, detail="組み込みのプリセットは削除できません")
-    try:
-        fan_control.delete_user_preset(preset_id)
-    except fan_control.FanControlError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    audit.record(db, "system.fan_preset.delete", user=user, request=request, resource_type="fan-preset",
-                 resource_id=preset_id)
+    audit.record(db, "system.fan_control.refit", user=user, request=request,
+                 resource_type="amd-gpu", resource_id="active",
+                 metadata={"pid_kp": result["pid_kp"], "pid_ti": result["pid_ti"],
+                           "points": result["changes"]["points"]})
+    return result
 
 
 @router.put("")
@@ -95,11 +100,8 @@ def put_fan_control(
     audit.record(
         db, "system.fan_control", user=user, request=request,
         resource_type="amd-gpu", resource_id=body.bdf or "auto",
-        metadata={"enabled": body.enabled, "targets_c": body.targets_c,
-                  "min_percent": body.min_percent, "allow_zero_rpm": body.allow_zero_rpm,
-                  "startup_mode": body.startup_mode,
-                  "control_mode": body.control_mode,
-                  "temperature_margin_c": body.temperature_margin_c,
-                  "warm_rate_percent_per_min": body.warm_rate_percent_per_min},
+        metadata={"enabled": body.enabled, "limits_c": body.limits_c,
+                  "margin_c": body.margin_c, "min_percent": body.min_percent,
+                  "smoothing_s": body.smoothing_s, "startup_mode": body.startup_mode},
     )
     return result
