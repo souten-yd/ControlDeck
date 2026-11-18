@@ -20,6 +20,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -453,6 +455,8 @@ class SendBody(BaseModel):
     code_project_path: str = Field(default="", max_length=4096)
     # OpenCode に渡す前に、ControlDeck の調査（Web・論文）で調べて結果を付ける（「調べて反映して」）
     code_research: bool = False
+    # OpenCode のエージェント: build（作る・直す）／plan（計画だけ。編集もコマンドの変更もしない）
+    code_agent: Literal["build", "plan"] = "build"
 
 
 # ---- 添付（画像=VLM入力 / 文書=会話別RAGコレクション登録） ----
@@ -1085,12 +1089,13 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 job.log("progress", phase="handoff", label=f"この会話の {handoff_count} 件を OpenCode に引き継ぎます",
                         iteration=0, details={"chars": len(handoff)})
             buf["meta"].update({"opencode_session": session_id, "project_path": str(project),
-                                "server_key": server.key,
+                                "server_key": server.key, "agent": params.get("code_agent", "build"),
                                 "permission_mode": await asyncio.to_thread(chat_server.get_mode, server)})
             await asyncio.to_thread(checkpoint)
             result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
                                                 on_reasoning=on_reasoning, on_tool=on_tool,
-                                                on_permission=on_permission)
+                                                on_permission=on_permission,
+                                                agent=params.get("code_agent", "build"))
         except asyncio.CancelledError:
             expire_pending()
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
@@ -1706,6 +1711,7 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
               # OpenCode のプロジェクトへ展開する圧縮ファイル
               "archives": sent_archives,
               "code_research": body.code_research and body.mode == "code",
+              "code_agent": body.code_agent if body.mode == "code" else "build",
               "plan": body.plan.model_dump() if body.plan is not None else None}
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")

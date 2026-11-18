@@ -95,7 +95,38 @@ export function judgeShell(command) {
   return { effect: "ask", message: "Auto: 自動で判断できないため確認します" };
 }
 
-export function decide(mode, action, resources) {
+// プラン（OpenCode の plan エージェント）で通してよいコマンド: 読むだけ（何も変えない）
+const PLAN_READ_HEAD = new Set([
+  "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "grep", "rg", "ag", "find", "fd", "tree",
+  "file", "stat", "du", "df", "which", "date", "diff", "cmp", "sort", "uniq", "cut", "tr",
+  "jq", "basename", "dirname", "realpath", "readlink", "sha256sum", "md5sum", "true", "test", "[", "cd",
+]);
+const PLAN_READ_COMMANDS = [/^git\s+(status|diff|log|show|rev-parse|ls-files|blame|describe|remote\s+-v)(\s|$)/];
+
+// プランでは何も変えない（2026-11-18 利用者「プランの際はビルドモードではないことが明確にわかること」）。
+// 編集・書き込みは止め、シェルは読むだけを通し、ほかは止める。ControlDeck の道具（MCP）は確認する。
+// 権限の確認モード（ask）でも同じ（プランで編集を許可させない）。
+export function decidePlan(action, resources) {
+  switch (action) {
+    case "edit":
+    case "write":
+      return { effect: "deny", message: "プラン: 編集しません。直すにはビルドに切り替えてください" };
+    case "shell": {
+      const text = (resources || []).map((r) => String(r || "").trim());
+      const readOnly = text.length > 0 && text.every((command) => judgeShell(command).effect === "allow"
+        && splitCommands(command).every((part) => PLAN_READ_HEAD.has(part.split(/\s+/)[0]) || PLAN_READ_COMMANDS.some((p) => p.test(part))));
+      return readOnly ? { effect: "allow", message: "プラン: 読むだけのコマンド" }
+        : { effect: "deny", message: "プラン: 変更を伴うコマンドは実行しません。ビルドに切り替えてください" };
+    }
+    case "execute":
+      return { effect: "ask", message: "プラン: ControlDeck の道具は確認します" };
+    default:
+      return null;
+  }
+}
+
+export function decide(mode, action, resources, agent) {
+  if (agent === "plan") return decidePlan(action, resources);
   if (mode !== "auto") return null; // 確認モード: 設定どおり（ask）
   switch (action) {
     case "edit":
@@ -119,7 +150,7 @@ export default {
   async setup(ctx) {
     await ctx.permission.hook("evaluate", (event) => {
       if (event.effect !== "ask") return; // allow / deny の規則で決まったものは触らない
-      const verdict = decide(currentMode(), event.action, event.resources);
+      const verdict = decide(currentMode(), event.action, event.resources, event.agent);
       if (!verdict) return;
       event.effect = verdict.effect;
       event.message = verdict.message;

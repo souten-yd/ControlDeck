@@ -15,6 +15,9 @@ from pathlib import Path
 from tests.conftest import CSRF_HEADERS
 
 
+AGENTS: list[str] = []   # 偽の OpenCode が受け取ったエージェント
+
+
 def _server(tmp_path):
     from app.integrations.opencode import chat_server
 
@@ -45,7 +48,8 @@ def _fake_opencode(monkeypatch, tmp_path, resolved: list):
     async def fake_ready(url):
         return None
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build"):
+        AGENTS.append(agent)
         await on_reasoning("まず")
         await on_reasoning("見る。")
         await on_tool({"id": "call_1", "name": "shell", "status": "running", "input": {"command": "ls"}, "output": ""})
@@ -200,3 +204,19 @@ def test_selftest_checks_the_project_box_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(provider, "_sibling_projects", lambda project: [])   # 覆いが外れた
     ok, text = selftest._opencode_box()
     assert ok is False and "別のプロジェクト" in text
+
+
+def test_plan_is_passed_to_opencode_and_recorded_on_the_answer(admin_client, monkeypatch, tmp_path):
+    """プランで送ると、OpenCode に plan のエージェントで渡り、回答に印が残る（画面が「プラン」と出す）。"""
+    resolved: list = []
+    _fake_opencode(monkeypatch, tmp_path, resolved)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                          json={"content": "計画して", "mode": "code", "model": "test", "code_project": "demo",
+                                "code_agent": "plan"})
+    final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+    assert AGENTS[-1] == "plan" and final["meta"]["agent"] == "plan"
+    bad = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                            json={"content": "x", "mode": "code", "model": "test", "code_project": "demo",
+                                  "code_agent": "yolo"})
+    assert bad.status_code == 422

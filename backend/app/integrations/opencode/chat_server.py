@@ -386,10 +386,21 @@ async def _session_active(server: Server, session_id: str) -> bool:
     return session_id in json.dumps(active)
 
 
+AGENTS = ("build", "plan")
+
+
+async def switch_agent(server: Server, session_id: str, agent: str) -> None:
+    """このセッションのエージェントを切り替える（build＝作る・直す、plan＝計画だけで何も変えない）。"""
+    if agent not in AGENTS:
+        raise ChatServerError(f"未対応のエージェントです: {agent}")
+    if await _call(server, "POST", f"/api/session/{session_id}/agent", {"agent": agent}) is None:
+        raise ChatServerError(f"OpenCode に {agent} のエージェントがありません")
+
+
 async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
-                   on_tool: Callback, on_permission: Callback) -> dict:
+                   on_tool: Callback, on_permission: Callback, agent: str = "build") -> dict:
     """1 回分の発言を送り、終わるまでイベントを呼び出し元へ渡す。中断されたら OpenCode も止める。
 
     子エージェント（このセッションから作られた別セッション）の許可の問い合わせも渡す
@@ -424,6 +435,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     last_touch = time.monotonic()
     try:
         await asyncio.wait_for(ready.wait(), timeout=15)
+        # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
+        await switch_agent(server, session_id, agent)
         await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
         while True:
             try:

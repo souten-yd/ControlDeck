@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 171 ファイル、1498 テスト（目的の未記入 93 ファイル）
-- E2E: 81 spec、153 テスト
+- backend: 171 ファイル、1501 テスト（目的の未記入 93 ファイル）
+- E2E: 82 spec、155 テスト
 
 ## backend（backend/tests）
 
@@ -1484,6 +1484,8 @@
 - `test_running_servers_are_not_reaped`
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`
 - `test_japanese_project_directory_is_sent_url_encoded` — 日本語のプロジェクト名でも、ヘッダーを送れる（ASCII だけ）。OpenCode は decodeURIComponent で戻す。
+- `test_plan_agent_changes_nothing_even_in_auto_mode` — プラン（plan エージェント）では何も変えない: 編集・書き込みは止め、シェルは読むだけを通し、
+- `test_run_turn_switches_to_the_plan_agent`
 
 ### backend/tests/test_opencode_chat_timeline.py
 
@@ -1496,6 +1498,7 @@
 - `test_other_projects_are_hidden_inside_a_project_box` — 箱の中で CodeDEV を空の場所で覆い、このプロジェクトだけをつなぐ。前に開いた別のプロジェクトの
 - `test_deleting_a_project_removes_its_box_tmp`
 - `test_selftest_checks_the_project_box_isolation` — 箱の /tmp が専用で、CodeDEV が覆われているかを自己診断で確かめる（同じことが起きたら気付けるように）。
+- `test_plan_is_passed_to_opencode_and_recorded_on_the_answer` — プランで送ると、OpenCode に plan のエージェントで渡り、回答に印が残る（画面が「プラン」と出す）。
 
 ### backend/tests/test_opencode_dev_tools.py
 
@@ -2503,6 +2506,13 @@
 
 - assistant input stays flush in standalone iPhone viewports
 - shows compact conversation references and inserts one into the prompt
+
+### frontend/e2e/assistant-plan.spec.ts
+
+目的: 目的: OpenCode のプラン（計画だけで何も変えない）とビルドを切り替えられ、プラン中はビルドでないことがはっきり分かること。 Shift+Tab は Auto → 確認 → プラン → Auto。プラン中は入力欄の上に帯・札「プラン」・枠の色・案内文。 プランで送ると code_agent=plan が渡り、回答に「プラン」の印と「このプランで作る」が出て、押すとビルドで送る。 根拠: 2026-11-18 利用者「プランの切り替えを追加し、プランの際はビルドモードではないことが明確にわかること」。 API と WebSocket は模擬する（OpenCode と LLM を動かさない）。
+
+- plan is clearly shown, sent as plan and can be built afterwards (${width}px)
+- the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 

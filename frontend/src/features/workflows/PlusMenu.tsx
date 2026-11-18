@@ -20,7 +20,7 @@ const ICON = "grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 te
 const HEADING = "px-2.5 pb-1 pt-2 text-[10px] font-semibold tracking-wider text-zinc-400 dark:text-zinc-500";
 
 export function PlusMenu({
-  disabled, onAttach, attachDisabled, mode, modeOptions, detectedLabel, routing, onModeChange, permission, actions = [],
+  disabled, onAttach, attachDisabled, mode, modeOptions, detectedLabel, routing, onModeChange, permission, agent, actions = [],
 }: {
   disabled?: boolean;
   onAttach: () => void;
@@ -33,6 +33,8 @@ export function PlusMenu({
   onModeChange: (id: string) => void;
   /** OpenCode が使えるときだけ */
   permission?: { mode: PermissionMode; editable: boolean; onChange: (mode: PermissionMode) => void } | null;
+  /** OpenCode のエージェント（ビルド／プラン） */
+  agent?: { mode: "build" | "plan"; onChange: (mode: "build" | "plan") => void } | null;
   /** 会話の引き継ぎなど、そのときだけ出す操作 */
   actions?: PlusAction[];
 }) {
@@ -149,6 +151,30 @@ export function PlusMenu({
             })}
           </div>
 
+          {agent && (
+            <>
+              <div role="separator" className="mx-2 my-1 border-t border-zinc-100 dark:border-zinc-800" />
+              <div role="group" aria-label="OpenCode のモード">
+                <p aria-hidden className={HEADING}>OpenCode のモード（PC は Shift+Tab でも切替）</p>
+                {([["build", "🛠️", "ビルド", "作る・直す（ファイルを編集し、コマンドを実行する）"],
+                  ["plan", "📋", "プラン", "計画だけ。ファイルの編集や変更を伴うコマンドはしない"]] as const).map(([id, icon, label, hint]) => {
+                  const selected = agent.mode === id;
+                  return (
+                    <button key={id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-agent-option={id}
+                      onClick={() => { agent.onChange(id); close(); }}
+                      className={`${ROW} ${selected ? (id === "plan" ? "bg-sky-50 dark:bg-sky-950/40" : "bg-zinc-100 dark:bg-white/[0.07]") : "hover:bg-zinc-50 dark:hover:bg-white/[0.04]"}`}>
+                      <span aria-hidden className={ICON}>{icon}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-50">{label}</span>
+                        <span className="mt-0.5 block text-[11px] leading-snug text-zinc-500 dark:text-zinc-400">{hint}</span>
+                      </span>
+                      <span aria-hidden className="w-4 shrink-0 text-center text-sm text-accent-600 dark:text-accent-400">{selected ? "✓" : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
           {permission && (
             <>
               <div role="separator" className="mx-2 my-1 border-t border-zinc-100 dark:border-zinc-800" />
@@ -182,12 +208,14 @@ export function PlusMenu({
 
 /** ＋の隣に出す小さな札（既定から変えた機能・OpenCode の権限）。押すと＋のメニューと同じ選択を外す/切り替える。 */
 export function ComposerPill({ icon, label, title, tone = "accent", onClick, onClear, kind }: {
-  icon: ReactNode; label: string; title: string; tone?: "accent" | "amber";
+  icon: ReactNode; label: string; title: string; tone?: "accent" | "amber" | "plan";
   onClick?: () => void; onClear?: () => void;
   /** E2E と画面の計測用（data-composer-pill） */
   kind: string;
 }) {
-  const color = tone === "accent"
+  const color = tone === "plan"
+    ? "border-sky-400 bg-sky-100 text-sky-800 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-100"
+    : tone === "accent"
     ? "border-accent-500/40 bg-accent-50 text-accent-700 dark:border-accent-500/40 dark:bg-accent-600/15 dark:text-accent-300"
     : "border-amber-500/40 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300";
   return (
