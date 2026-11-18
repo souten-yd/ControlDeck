@@ -4,6 +4,44 @@ export type AssistantModeChoice = "auto" | "investigate" | AssistantMode;
 export type ResearchDepth = "auto" | "web" | "research" | "deep" | "academic";
 export const SEARCH_MODES: AssistantMode[] = ["web", "academic", "research", "deep"];
 
+/** 会話ごとに覚える選択。2026-11-18 利用者「固定している場合は変わって欲しくない。開き直すと外れないか」。
+ *  「自動」は毎回判定し、機能を選んだときだけ固定する。固定は送信や判定では変えない。 */
+export interface ConversationPrefs { choice: AssistantModeChoice; depth: ResearchDepth; agent: "build" | "plan" }
+const LS_PREFS = "cd-chat-conversation-prefs";
+const MAX_REMEMBERED = 200;
+const CHOICES: AssistantModeChoice[] = ["auto", "investigate", "chat", "gen", "run", "code"];
+const DEPTHS: ResearchDepth[] = ["auto", "web", "research", "deep", "academic"];
+
+export const validChoice = (value: unknown): AssistantModeChoice | undefined =>
+  CHOICES.includes(value as AssistantModeChoice) ? value as AssistantModeChoice : undefined;
+export const validDepth = (value: unknown): ResearchDepth | undefined =>
+  DEPTHS.includes(value as ResearchDepth) ? value as ResearchDepth : undefined;
+
+function allPrefs(): Record<string, ConversationPrefs> {
+  try {
+    const value = JSON.parse(localStorage.getItem(LS_PREFS) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+export function readConversationPrefs(id: string): Partial<ConversationPrefs> {
+  const saved = allPrefs()[id];
+  return saved ? { choice: validChoice(saved.choice), depth: validDepth(saved.depth),
+    agent: saved.agent === "plan" || saved.agent === "build" ? saved.agent : undefined } : {};
+}
+
+export function writeConversationPrefs(id: string, prefs: ConversationPrefs): void {
+  try {
+    const { [id]: _previous, ...rest } = allPrefs();
+    const entries = [...Object.entries(rest), [id, prefs] as const].slice(-MAX_REMEMBERED);
+    localStorage.setItem(LS_PREFS, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // 保存できない環境でも、送った発言の記録から戻せる
+  }
+}
+
 export interface ModeDecision {
   mode: AssistantMode;
   reason: string;

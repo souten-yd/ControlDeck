@@ -456,6 +456,9 @@ class SendBody(BaseModel):
     code_project_path: str = Field(default="", max_length=4096)
     # OpenCode に渡す前に、ControlDeck の調査（Web・論文）で調べて結果を付ける（「調べて反映して」）
     code_research: bool = False
+    # 画面の機能の選択（自動・固定）と調査の深さ。会話を開き直したときに戻す
+    mode_choice: str = Field(default="", max_length=16)
+    research_depth: str = Field(default="", max_length=16)
     code_research_depth: str = Field(default="auto", max_length=16)   # 調査の深さ（web・academic なら絞る）
     # OpenCode のエージェント: build（作る・直す）／plan（計画だけ。編集もコマンドの変更もしない）
     code_agent: Literal["build", "plan"] = "build"
@@ -1924,6 +1927,10 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     if sent_archives and body.mode != "code":
         raise HTTPException(status_code=422, detail="圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください")
     user_meta: dict = {}
+    if body.mode_choice:
+        user_meta["mode_choice"] = body.mode_choice
+    if body.research_depth:
+        user_meta["research_depth"] = body.research_depth
     if sent_images:
         # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
         user_meta["attachments"] = sent_images

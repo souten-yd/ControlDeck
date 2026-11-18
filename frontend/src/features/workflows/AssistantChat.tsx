@@ -18,7 +18,7 @@ import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/she
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
-import { detectAssistantMode, SEARCH_MODES, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ResearchDepth } from "./assistantMode";
+import { detectAssistantMode, readConversationPrefs, SEARCH_MODES, validChoice, validDepth, wantsResearch, writeConversationPrefs, type AssistantMode as Mode, type AssistantModeChoice, type ConversationPrefs, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
@@ -131,7 +131,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { mode?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+  meta?: { mode?: string; mode_choice?: string; research_depth?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
@@ -340,7 +340,7 @@ export default function AssistantChat() {
         const fetchedAt = performance.now();
         const restored = data.messages.map((m) => restoreMessage(id, m));
         if (restored.length > 0) setMessages(restored);
-        restoreCodeProject(data.messages);
+        restoreCodeProject(data.messages, id);
         // 診断: 開いてから会話が描かれるまで（2 フレーム後＝描画が済んだ時点）を送る
         requestAnimationFrame(() => requestAnimationFrame(() => {
           const renderedAt = performance.now();
@@ -442,7 +442,10 @@ export default function AssistantChat() {
   const inCodeConversation = lastCodeIndex >= 0;
   const pendingHandoff = messages.slice(lastCodeIndex + 1).some((m) => m.role === "assistant" && !m.streaming && m.content.trim());
   const conversationContext = { inCodeConversation, hasAnswers: pendingHandoff };
-  const autoDecision = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
+  const archiveWaiting = attachments.some((a) => a.kind === "archive" && a.status === "ready");
+  const autoDecision = archiveWaiting && opencodeAvailable
+    ? { mode: "code" as const, reason: "圧縮ファイルを OpenCode のプロジェクトへ展開" }
+    : detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
   const displayedDecision = input.trim() ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
     : modeChoice === "investigate"
@@ -578,9 +581,15 @@ export default function AssistantChat() {
 
   /** 会話の作業フォルダを戻す: 最後の OpenCode の回答が動いたプロジェクト。2026-11-18 利用者
    *  「AI アシスタントを閉じて戻ると作業フォルダの設定が外れる」。画面の中だけで覚えていたので、既定の新規作成に戻っていた。 */
-  const restoreCodeProject = (rows: PersistMsg[]) => {
+  const restoreCodeProject = (rows: PersistMsg[], conversationId: string) => {
     const last = [...rows].reverse().find((m) => m.role === "assistant" && m.meta?.mode === "code" && m.meta?.project_path);
-    setCodeAgent(last?.meta?.agent === "plan" ? "plan" : "build");
+    // 機能の固定・調査の深さ・プランは会話ごとに戻す（この端末の選択 → 送った発言の記録の順）
+    const saved = readConversationPrefs(conversationId);
+    const sent = [...rows].reverse().find((m) => m.role === "user" && m.meta?.mode_choice)?.meta;
+    setModeChoice(saved.choice ?? validChoice(sent?.mode_choice) ?? "auto");
+    setResearchDepth(saved.depth ?? validDepth(sent?.research_depth) ?? "auto");
+    returnChoiceRef.current = null;
+    setCodeAgent(saved.agent ?? (last?.meta?.agent === "plan" ? "plan" : "build"));
     const path = last?.meta?.project_path;
     if (!path) return;
     const name = path.split("/").pop() ?? "";
@@ -619,7 +628,7 @@ export default function AssistantChat() {
     setConvId(id);
     setConversationTitle(data.conversation.title);
     setMessages(restored);
-    restoreCodeProject(data.messages);
+    restoreCodeProject(data.messages, id);
     const generating = data.messages.find((message) => message.role === "assistant" && message.status === "generating");
     if (generating) {
       setBusy(true);
@@ -801,6 +810,7 @@ export default function AssistantChat() {
     if (convIdRef.current) return convIdRef.current;
     const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
     localStorage.setItem(LS_CONV, c.id);
+    writeConversationPrefs(c.id, { choice: modeChoice, depth: researchDepth, agent: codeAgent });
     convIdRef.current = c.id;
     setConvId(c.id);
     qc.invalidateQueries({ queryKey: ["chat-conversations"] });
@@ -847,8 +857,10 @@ export default function AssistantChat() {
         if (data.kind === "document") show(data.note || `「${data.name}」を会話の資料として登録しました（${data.chunks ?? 0}チャンク）`);
         if (data.kind === "archive") {
           // 圧縮ファイルは OpenCode がプロジェクトへ展開して使う（2026-11-18 利用者の依頼）
-          setModeChoice("code");
-          show(`「${data.name}」（${data.files ?? 0} ファイル）は、送ると OpenCode のプロジェクトへ展開します`);
+          // 固定している機能は変えない（自動なら、送るときに OpenCode へ回す）
+          show(modeChoice === "auto" || modeChoice === "code"
+            ? `「${data.name}」（${data.files ?? 0} ファイル）は、送ると OpenCode のプロジェクトへ展開します`
+            : `「${data.name}」を展開するには、＋から OpenCode か自動判定を選んでください`);
         }
       } catch (e) {
         if (preview) URL.revokeObjectURL(preview);
@@ -964,9 +976,20 @@ export default function AssistantChat() {
   // 2026-11-18 利用者「プランの切り替えを追加し、プランの際はビルドモードではないことが明確にわかること」
   const [codeAgent, setCodeAgent] = useState<"build" | "plan">("build");
   const planFromCycleRef = useRef(false);
+  // 「調べて OpenCode に渡す」は 1 回だけ調査にして、送ったら元の選択へ戻す
+  const returnChoiceRef = useRef<AssistantModeChoice | null>(null);
+  const rememberPrefs = (next: Partial<ConversationPrefs>) => {
+    if (convIdRef.current) writeConversationPrefs(convIdRef.current, { choice: modeChoice, depth: researchDepth, agent: codeAgent, ...next });
+  };
+  const chooseMode = (choice: AssistantModeChoice) => {
+    returnChoiceRef.current = null;
+    setModeChoice(choice);
+    rememberPrefs({ choice });
+  };
   const changeCodeAgent = (agent: "build" | "plan") => {
     if (agent === codeAgent) return;
     setCodeAgent(agent);
+    rememberPrefs({ agent });
     show(agent === "plan" ? "プラン: 計画だけを立てます（ファイルは変えません）" : "ビルド: 作る・直すに戻しました");
   };
   // Shift+Tab と札: Auto → 確認 → プラン → Auto（Claude Code と同じ並び）。権限を変えられない人はビルド ⇄ プラン
@@ -1029,7 +1052,7 @@ export default function AssistantChat() {
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
     let researchFirst = choice === "auto" ? Boolean(decision.research)
       : choice === "code" ? wantsResearch(text) : false;
-    let selectedMode: Mode = choice === "auto" ? decision.mode
+    let selectedMode: Mode = choice === "auto" ? (readyArchives.length > 0 && opencodeAvailable ? "code" : decision.mode)
       : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
     // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）
     const planFromResearch = () => agent === "plan" && opencodeAvailable && readyImages.length === 0;
@@ -1060,6 +1083,10 @@ export default function AssistantChat() {
       show("OpenCodeのプロジェクトを指定してください（新規名の入力・既存の選択・📁フォルダ）", "error");
       return;
     }
+    if (choice === "investigate" && returnChoiceRef.current) {
+      setModeChoice(returnChoiceRef.current);
+      returnChoiceRef.current = null;
+    }
     if (busy) {
       // 生成中は送信待ちへ（サーバーが持ち、回答が終わったら送る。2026-11-18 利用者の依頼）
       if (selectedMode === "gen" || selectedMode === "run") {
@@ -1073,10 +1100,10 @@ export default function AssistantChat() {
       if (hold) deferredQueueRef.current = true;
       const json = selectedMode === "code"
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-          attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent }
+          attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, mode_choice: choice, research_depth: researchDepth }
         : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
           searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
-          code_project_path: deepSources.includes("local_code") ? deepProjectPath : "" };
+          code_project_path: deepSources.includes("local_code") ? deepProjectPath : "", mode_choice: choice, research_depth: researchDepth };
       try {
         await api(`/chat/conversations/${cid}/queue`, { method: "POST", json: { ...json, hold } });
         setInput("");
@@ -1129,6 +1156,7 @@ export default function AssistantChat() {
             engine, searxng_url: searxngUrl, attachments: imageIds,
             deep_depth: deepDepth, deep_sources: deepSources,
             code_project_path: deepSources.includes("local_code") ? deepProjectPath : "",
+            mode_choice: choice, research_depth: researchDepth,
           },
         });
         setAttachments([]);
@@ -1148,17 +1176,16 @@ export default function AssistantChat() {
         const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-            attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent },
+            attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, mode_choice: choice, research_depth: researchDepth },
         });
         setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
         qc.invalidateQueries({ queryKey: ["chat-conversations"] });
-        // 新規作成したプロジェクトを以後の既定として維持し、モードもOpenCodeのまま継続する
+        // 新規作成したプロジェクトを以後の既定として維持する（機能の選択は変えない）
         if (codeProject === "__new__" && codeProjectName) {
           setCodeProject(codeProjectName);
           setCodeNewName("");
         }
-        if (choice !== "investigate") setModeChoice("code");   // 「調査」を選んでいるなら次も調査のまま
         if (res.user_message_id) setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
           persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code", agent });
@@ -1426,7 +1453,7 @@ export default function AssistantChat() {
       id: "handoff", icon: <IconTerminal />, label: "この会話を OpenCode に引き継ぐ",
       hint: "ここまでのチャット・調査の結果（出典つき）を前提に、同じ会話で OpenCode が作業します",
       onSelect: () => {
-        setModeChoice("code");
+        chooseMode("code");
         if (!input.trim()) setInput("ここまでの会話の内容をもとに実装してください。");
         window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 50);
       },
@@ -1437,6 +1464,7 @@ export default function AssistantChat() {
       id: "investigate-for-code", icon: <IconSearch />, label: "調べて OpenCode に渡す",
       hint: "いったん調査に切り替えます。調べた結果は、次に OpenCode へ送るときに自動で引き継がれます",
       onSelect: () => {
+        returnChoiceRef.current = modeChoice;
         setModeChoice("investigate");
         show("調査の結果は、次に OpenCode で送るときに引き継がれます");
         window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 50);
@@ -1703,7 +1731,7 @@ export default function AssistantChat() {
                 }}
                 onAnswerPermission={answerPermission}
                 onBuildFromPlan={!busy && !hasContent && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
-                  ? () => { setCodeAgent("build"); setModeChoice("code"); void send("このプランで実装してください。", "build", "code"); } : undefined}
+                  ? () => { setCodeAgent("build"); rememberPrefs({ agent: "build" }); void send("このプランで実装してください。", "build", "code"); } : undefined}
                 editing={!!m.messageId && editingId === m.messageId}
                 actionsDisabled={busy}
                 onAction={(action) => void onMessageAction(m, action)}
@@ -1907,7 +1935,7 @@ export default function AssistantChat() {
                 modeOptions={modeOptions}
                 detectedLabel={currentMode.label}
                 routing={routing}
-                onModeChange={(id) => setModeChoice(id as AssistantModeChoice)}
+                onModeChange={(id) => chooseMode(id as AssistantModeChoice)}
                 permission={opencodeAvailable ? { mode: permissionMode, editable: canChangePermissionMode, onChange: (m) => void changePermissionMode(m) } : null}
                 agent={opencodeAvailable ? { mode: codeAgent, onChange: changeCodeAgent } : null}
                 actions={plusActions}
@@ -1920,7 +1948,7 @@ export default function AssistantChat() {
                 ) : (
                   <ComposerPill icon={modeOptions.find((o) => o.id === modeChoice)?.icon ?? "✦"}
                     label={modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}
-                    title="機能（＋で変更）" kind="mode" onClear={() => setModeChoice("auto")} />
+                    title="機能（＋で変更）" kind="mode" onClear={() => chooseMode("auto")} />
                 )}
                 {planActive ? (
                   <ComposerPill icon="📋" label="プラン" tone="plan"
@@ -1973,7 +2001,7 @@ export default function AssistantChat() {
             {showDepth && (
               <label className="flex shrink-0 items-center gap-1">
                 <span>深さ</span>
-                <select aria-label="調べる深さ" value={researchDepth} onChange={(e) => setResearchDepth(e.target.value as ResearchDepth)}
+                <select aria-label="調べる深さ" value={researchDepth} onChange={(e) => { const depth = e.target.value as ResearchDepth; setResearchDepth(depth); rememberPrefs({ depth }); }}
                   className="h-7 rounded-lg border border-zinc-300 bg-white px-1.5 text-[11px] text-zinc-700 outline-none focus:border-accent-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
                   <option value="auto">自動{researchDepth === "auto" && displayedDecision && SEARCH_MODES.includes(displayedDecision.mode) ? `（${MODES.find((m) => m.id === displayedDecision.mode)?.label}）` : ""}</option>
                   <option value="web">速い（Web）</option>
