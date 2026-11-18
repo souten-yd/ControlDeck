@@ -15,11 +15,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import signal
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
 from collections import Counter
 from pathlib import Path, PurePosixPath
@@ -33,6 +36,18 @@ TREE_LINES = 200
 SUFFIXES = (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz", ".tar", ".zip", ".7z", ".rar")
 # 展開後に要らないもの（OpenCode に読ませない）
 SKIP_NAMES = {"__MACOSX", ".DS_Store", "Thumbs.db", "desktop.ini"}
+SUPPORTED_ZIP = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA}
+
+
+def _tree_bytes(root: Path) -> int:
+    total = 0
+    for current, _dirs, names in os.walk(root, followlinks=False):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(current, name)).st_size
+            except OSError:
+                continue
+    return total
 
 
 class ArchiveError(ValueError):
@@ -58,11 +73,17 @@ def _check_name(name: str) -> str | None:
 
 
 def _seven_zip() -> str:
-    for name in ("7z", "7za", "7zz"):
+    """7-Zip 21 以降だけを使う。21 以降は外を指す危ないリンク（絶対パス・..）を既定で作らない（-snld が無い限り）。
+    旧版の p7zip（16.02）はリンクを作り、展開中にリンクの先へ書けてしまうので使わない（レビュー指摘 2026-11-18）。"""
+    for name in ("7zz", "7z"):
         path = shutil.which(name)
-        if path:
+        if not path:
+            continue
+        banner = subprocess.run([path], capture_output=True, text=True, timeout=30, check=False).stdout
+        match = re.search(r"7-Zip (?:\[\d+\] )?(\d+)\.(\d+)", banner)
+        if match and "p7zip" not in banner and int(match.group(1)) >= 21:
             return path
-    raise ArchiveError("7z と RAR の展開には 7z コマンドが要ります（p7zip / 7zip を入れてください）")
+    raise ArchiveError("7z と RAR の展開には 7-Zip 21 以降が要ります（パッケージ 7zip）")
 
 
 def _list_7z(path: Path) -> list[tuple[str, int, bool, bool]]:
@@ -82,7 +103,9 @@ def _list_7z(path: Path) -> list[tuple[str, int, bool, bool]]:
                 attrs = block.get("Attributes", "")
                 mode = attrs.split()[-1] if " " in attrs else ""
                 is_dir = attrs.startswith("D") or block.get("Folder") == "+"
-                special = bool(mode) and mode[0] not in ("-", "d")   # l=リンク, c/b/p/s=特殊
+                # l=リンク, c/b/p/s=特殊。Windows で作った RAR などは mode が無いので、リンクの項目でも見る
+                special = (bool(mode) and mode[0] not in ("-", "d")) or any(
+                    block.get(key) for key in ("Symbolic Link", "Hard Link", "Link"))
                 if block.get("Encrypted") == "+":
                     raise ArchiveError("パスワード付きの圧縮ファイルは展開できません")
                 entries.append((block["Path"], int(block.get("Size") or 0), is_dir, special))
@@ -101,6 +124,8 @@ def _entries(path: Path, suffix: str) -> list[tuple[str, int, bool, bool]]:
                 for info in archive.infolist():
                     if info.flag_bits & 0x1:
                         raise ArchiveError("パスワード付きの圧縮ファイルは展開できません")
+                    if info.compress_type not in SUPPORTED_ZIP:
+                        raise ArchiveError("この ZIP の圧縮方式（Deflate64 など）には対応していません。7z で圧縮し直してください")
                     # Unix で作った ZIP だけ種類のビットを見る（0 = 種類の情報なし = 通常のファイル）
                     kind = stat.S_IFMT(info.external_attr >> 16) if info.create_system == 3 else 0
                     special = kind not in (0, stat.S_IFREG, stat.S_IFDIR)
@@ -167,10 +192,33 @@ def _extract_to(path: Path, suffix: str, tmp: Path) -> None:
                     _copy_limited(source, target, budget)
         return
     if suffix in (".7z", ".rar"):
-        result = subprocess.run([_seven_zip(), "x", "-y", "-bd", "-p", f"-o{tmp}", str(path)],
-                                capture_output=True, text=True, timeout=SEVEN_ZIP_TIMEOUT, check=False)
-        if result.returncode not in (0, 1):   # 1 = 警告（読めない属性など）
-            raise ArchiveError(f"展開に失敗しました: {(result.stderr or result.stdout).strip()[-200:]}")
+        # 7z コマンドは書いた量を数えられないので、1 ファイルの上限（prlimit）をかけ、展開中も合計を見張る
+        # （宣言を偽った 7z・RAR がディスクを埋めないように。レビュー指摘 2026-11-18）
+        argv = [_seven_zip(), "x", "-y", "-bd", "-p", f"-o{tmp}", str(path)]
+        prlimit = shutil.which("prlimit")
+        if prlimit:
+            argv = [prlimit, f"--fsize={MAX_TOTAL_BYTES}", "--", *argv]
+        errors = tempfile.TemporaryFile(mode="w+")   # PIPE だと出力が多いときに詰まる
+        process = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=errors, text=True)
+        started = time.monotonic()
+        try:
+            while process.poll() is None:
+                if _tree_bytes(tmp) > MAX_TOTAL_BYTES:
+                    raise ArchiveError(f"展開後が大きすぎます（{MAX_TOTAL_BYTES / 2**30:g} GiB まで）")
+                if time.monotonic() - started > SEVEN_ZIP_TIMEOUT:
+                    raise ArchiveError("展開に時間がかかりすぎました")
+                time.sleep(0.2)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=30)
+        errors.seek(0)
+        error = errors.read()[-200:]
+        errors.close()
+        if process.returncode == -signal.SIGXFSZ or "too large" in error.lower():   # 1 ファイルの上限（prlimit）
+            raise ArchiveError(f"展開後が大きすぎます（{MAX_TOTAL_BYTES / 2**30:g} GiB まで）")
+        if process.returncode not in (0, 1):   # 1 = 警告（読めない属性など）
+            raise ArchiveError(f"展開に失敗しました: {error.strip()}")
         return
     with tarfile.open(path) as archive:
         for member in archive.getmembers():
@@ -250,25 +298,38 @@ def extract_into_project(path: Path, name: str, project: Path) -> dict:
     project.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".import-", dir=project, ignore_cleanup_errors=True) as tmp_name:
         tmp = Path(tmp_name)
-        _extract_to(path, suffix, tmp)
+        try:
+            _extract_to(path, suffix, tmp)
+        except ArchiveError:
+            raise
+        except (OSError, NotImplementedError, zipfile.BadZipFile, tarfile.TarError, EOFError) as exc:
+            # 同じ名前のファイルとフォルダ、壊れた圧縮など（そのまま出すと「OpenCode の処理に失敗」になる）
+            raise ArchiveError(f"展開できません（{type(exc).__name__}: {str(exc)[:160]}）") from exc
         _sanitize_tree(tmp)
         top = _single_top(tmp)
+        # 展開したファイルの一覧は、移す前に展開したものだけから作る（.git など既存のものを数えない）
+        extracted = sorted(p.relative_to(top) for p in top.rglob("*") if p.is_file())
         if _is_empty_project(project) and not any((project / p.name).exists() for p in top.iterdir()):
             dest = project
             for item in list(top.iterdir()):
                 shutil.move(str(item), str(dest / item.name))
         else:
-            dest = _unique(project / "imports" / _folder_name(name))
+            imports = project / "imports"
+            # 移す前に確かめる: imports がリンクなら外へ出られる
+            if imports.is_symlink() or (imports.exists() and not imports.resolve().is_relative_to(project)):
+                raise ArchiveError("imports フォルダがプロジェクトの外を指しています")
+            dest = _unique(imports / _folder_name(name))
+            if not dest.parent.resolve().is_relative_to(project) and dest.parent.exists():
+                raise ArchiveError("展開先がプロジェクトの外です")
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(top), str(dest))
-    if not dest.resolve().is_relative_to(project):
-        raise ArchiveError("展開先がプロジェクトの外です")
-    files = sorted(p for p in dest.rglob("*") if p.is_file() and not p.relative_to(dest).parts[0].startswith(".import-"))
+            os.chmod(dest, 0o755)   # 一時フォルダ（0700）のまま残さない
     rel = dest.relative_to(project).as_posix() or "."
-    tree = [p.relative_to(project).as_posix() for p in files[:TREE_LINES]]
-    languages = Counter(p.suffix.lower() or "(拡張子なし)" for p in files).most_common(8)
-    return {"relative": rel, "files": len(files), "bytes": sum(p.stat().st_size for p in files),
-            "tree": tree, "more": max(0, len(files) - TREE_LINES), "languages": languages}
+    files = [(dest / p) for p in extracted]
+    tree = [(Path(rel) / p).as_posix() if rel != "." else p.as_posix() for p in extracted[:TREE_LINES]]
+    languages = Counter(p.suffix.lower() or "(拡張子なし)" for p in extracted).most_common(8)
+    return {"relative": rel, "files": len(extracted), "bytes": sum(p.stat().st_size for p in files if p.exists()),
+            "tree": tree, "more": max(0, len(extracted) - TREE_LINES), "languages": languages}
 
 
 def prompt_note(name: str, result: dict) -> str:

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 168 ファイル、1503 テスト（目的の未記入 93 ファイル）
+- backend: 168 ファイル、1507 テスト（目的の未記入 93 ファイル）
 - E2E: 79 spec、138 テスト
 
 ## backend（backend/tests）
@@ -435,6 +435,10 @@
 - `test_dangerous_entries_are_rejected_before_extracting`
 - `test_a_bomb_that_lies_about_its_size_stops_while_writing`
 - `test_upload_accepts_archives_and_send_requires_opencode`
+- `test_file_list_counts_only_what_was_extracted_not_git` — 新しいプロジェクトの git init の中身（.git/hooks など）を、展開したファイルとして数えない（レビュー指摘）。
+- `test_7z_with_a_link_is_rejected_and_a_lying_7z_is_stopped_while_extracting`
+- `test_imports_link_and_broken_layout_are_reported_as_archive_errors`
+- `test_canceled_archive_is_deleted`
 
 ### backend/tests/test_assistant_planner.py
 

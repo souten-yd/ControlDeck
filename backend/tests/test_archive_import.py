@@ -125,3 +125,68 @@ def test_upload_accepts_archives_and_send_requires_opencode(admin_client, tmp_pa
     sent = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
                              json={"content": "見て", "model": "test", "mode": "chat", "attachments": [body["id"]]})
     assert sent.status_code == 422 and "OpenCode" in sent.json()["detail"]
+
+
+def test_file_list_counts_only_what_was_extracted_not_git(tmp_path):
+    """新しいプロジェクトの git init の中身（.git/hooks など）を、展開したファイルとして数えない（レビュー指摘）。"""
+    project = tmp_path / "proj"
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    result = ai.extract_into_project(_zip(tmp_path / "app.zip", SOURCE), "app.zip", project)
+    assert result["relative"] == "." and result["files"] == 3
+    assert not any(line.startswith(".git") for line in result["tree"])
+
+
+@pytest.mark.skipif(shutil.which("7z") is None, reason="7z が無い")
+def test_7z_with_a_link_is_rejected_and_a_lying_7z_is_stopped_while_extracting(tmp_path, monkeypatch):
+    src = tmp_path / "d"
+    src.mkdir()
+    (src / "evil").symlink_to("/etc")
+    (src / "ok.txt").write_text("hi")
+    subprocess.run(["7z", "a", "-snl", str(tmp_path / "l.7z"), str(src)], check=True, capture_output=True)
+    with pytest.raises(ai.ArchiveError, match="リンク"):
+        ai.inspect(tmp_path / "l.7z", "l.7z")
+    big = tmp_path / "big"
+    big.mkdir()
+    (big / "big.bin").write_bytes(b"0" * (3 * 1024 * 1024))
+    subprocess.run(["7z", "a", str(tmp_path / "b.7z"), str(big)], check=True, capture_output=True)
+    monkeypatch.setattr(ai, "MAX_TOTAL_BYTES", 1024 * 1024)
+    monkeypatch.setattr(ai, "inspect", lambda path, name: {"files": 1, "bytes": 1})   # 宣言を偽った場合
+    project = tmp_path / "proj"
+    project.mkdir()
+    with pytest.raises(ai.ArchiveError, match="大きすぎ"):
+        ai.extract_into_project(tmp_path / "b.7z", "b.7z", project)
+    assert list(project.iterdir()) == []
+
+
+def test_imports_link_and_broken_layout_are_reported_as_archive_errors(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "main.py").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (project / "imports").symlink_to(outside)
+    with pytest.raises(ai.ArchiveError, match="外"):
+        ai.extract_into_project(_zip(tmp_path / "a.zip", SOURCE), "a.zip", project)
+    assert list(outside.iterdir()) == []
+    # 同じ名前のファイルとフォルダ → 分かる言葉で（NotADirectoryError のまま出さない）
+    clash = _zip(tmp_path / "c.zip", {"src": b"file", "src/a.py": b"x"})
+    project2 = tmp_path / "p2"
+    project2.mkdir()
+    with pytest.raises(ai.ArchiveError, match="展開できません"):
+        ai.extract_into_project(clash, "c.zip", project2)
+
+
+def test_canceled_archive_is_deleted(admin_client):
+    from tests.conftest import CSRF_HEADERS
+
+    from app.workflows.chat_persist import _archive_path
+
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w") as z:
+        z.writestr("run.py", "print(1)")
+    archive_id = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/attachments", headers=CSRF_HEADERS,
+                                   files={"file": ("t.zip", data.getvalue(), "application/zip")}).json()["id"]
+    assert _archive_path(conv_id, archive_id).is_file()
+    r = admin_client.delete(f"/api/v1/chat/conversations/{conv_id}/attachments/{archive_id}", headers=CSRF_HEADERS)
+    assert r.status_code == 204 and not _archive_path(conv_id, archive_id).exists()

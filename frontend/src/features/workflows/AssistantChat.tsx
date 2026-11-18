@@ -73,6 +73,7 @@ const IMAGE_ONLY_PROMPT = "添付した画像を見てください。";
 const ARCHIVE_ONLY_PROMPT = "添付した圧縮ファイルの中身を確認して、構成と内容を説明してください。";
 /** 圧縮ファイルの名前（サーバーの archive_import.SUFFIXES と同じ） */
 const ARCHIVE_RE = /\.(zip|7z|rar|tar|tgz|tbz2|txz|tar\.gz|tar\.bz2|tar\.xz)$/i;
+const ARCHIVE_MAX_BYTES = 200 * 1024 * 1024;
 
 /** hint は空の会話に出す説明、short は機能メニューの一行。 */
 const MODES: { id: Mode; icon: string; label: string; hint: string; short: string; needsEdit?: boolean }[] = [
@@ -730,6 +731,11 @@ export default function AssistantChat() {
       const isArchive = ARCHIVE_RE.test(file.name);
       if (isArchive && !opencodeAvailable) {
         show("圧縮ファイルは OpenCode で展開して使います（OpenCode が使えません）", "error");
+        continue;
+      }
+      if (isArchive && file.size > ARCHIVE_MAX_BYTES) {
+        // サーバーは受け取り終えてから断るので、送る前に止める（大きいものを送り切らない）
+        show(`圧縮ファイルは ${ARCHIVE_MAX_BYTES / 2 ** 20} MiB 以内にしてください`, "error");
         continue;
       }
       // 貼り付けた画像は名前が「image.png」だけになりがち。時刻で見分けられるようにする。
@@ -1525,7 +1531,11 @@ export default function AssistantChat() {
                   ) : a.kind === "archive" ? (
                     <>
                       <span className="text-[10px] text-zinc-500">{a.files ?? 0} ファイル・送ると展開</span>
-                      <button type="button" onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                      <button type="button" onClick={() => {
+                        setAttachments((prev) => prev.filter((x) => x.id !== a.id));
+                        // サーバーに置いた圧縮ファイル（最大 200 MiB）も消す
+                        if (convIdRef.current) void api(`/chat/conversations/${convIdRef.current}/attachments/${a.id}`, { method: "DELETE" }).catch(() => {});
+                      }}
                         aria-label={`${a.name}を取り消す`} className="grid h-5 w-5 place-items-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">×</button>
                     </>
                   ) : (
@@ -1537,7 +1547,7 @@ export default function AssistantChat() {
             </div>
           )}
           <input ref={fileInputRef} type="file" multiple className="hidden"
-            accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql,.zip,.7z,.rar,.tar,.gz,.tgz,.bz2,.tbz2,.xz,.txz"
+            accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.sh,.html,.css,.toml,.sql,.zip,.7z,.rar,.tar,.tgz,.tar.gz,.tbz2,.tar.bz2,.txz,.tar.xz"
             onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attachFiles(picked); }} />
           {/* 入力カード（上が本文、下が道具の行: 添付・機能・音声・送信）。状態は
               カードの下に固定高で置き、表示が変わっても入力位置を動かさない。 */}
