@@ -2092,8 +2092,10 @@ async def dispatch_queue(conv_id: str) -> dict | None:
                         if a not in attachments:
                             attachments.append(a)
                 try:
+                    # 画面の選択は、待っている間に変わることがあるので記録しない（古い選択で上書きしない）
                     body = SendBody.model_validate({**first, "content": "\n\n".join(i.content for i in group),
-                                                    "attachments": attachments})
+                                                    "attachments": attachments, "mode_choice": "",
+                                                    "research_depth": "", "agent_choice": ""})
                     result = await _start_send(db, conv, body, conv.owner_user_id)
                 except Exception as e:  # noqa: BLE001 - 送れないまとまりは印を付けて次へ
                     db.rollback()

@@ -18,7 +18,8 @@ export const validDepth = (value: unknown): ResearchDepth | undefined =>
   DEPTHS.includes(value as ResearchDepth) ? value as ResearchDepth : undefined;
 
 type PrefField = keyof ConversationPrefs;
-type SavedPrefs = Partial<ConversationPrefs> & { at?: Partial<Record<PrefField, number>> };
+/** seen: この端末が選択を決めた時点で見えていた最後の発言（"*" は分岐のように「いまの選択が正」） */
+type SavedPrefs = Partial<ConversationPrefs> & { seen?: string };
 
 function allPrefs(): Record<string, SavedPrefs> {
   try {
@@ -30,24 +31,27 @@ function allPrefs(): Record<string, SavedPrefs> {
 }
 
 /** 変えた項目だけを覚える（読み込み前の既定値で、他の項目を上書きしない） */
-export function updateConversationPrefs(id: string, changed: Partial<ConversationPrefs>): void {
+export function updateConversationPrefs(id: string, changed: Partial<ConversationPrefs>, seen?: string): void {
   try {
     const { [id]: previous = {}, ...rest } = allPrefs();
-    const now = Date.now();
-    const at = { ...previous.at, ...Object.fromEntries(Object.keys(changed).map((key) => [key, now])) };
-    const entries = [...Object.entries(rest), [id, { ...previous, ...changed, at }] as const].slice(-MAX_REMEMBERED);
+    const next: SavedPrefs = { ...previous, ...changed, ...(seen ? { seen } : {}) };
+    const entries = [...Object.entries(rest), [id, next] as const].slice(-MAX_REMEMBERED);
     localStorage.setItem(LS_PREFS, JSON.stringify(Object.fromEntries(entries)));
   } catch {
     // 保存できない環境でも、送った発言の記録から戻せる
   }
 }
 
-/** この端末の選択と、送った発言の記録のうち新しいほうを項目ごとに使う（別の端末で変えた分も戻る） */
-export function resolveConversationPrefs(id: string, sent: Partial<ConversationPrefs>, sentAt: number): Partial<ConversationPrefs> {
+/** 発言の順で新旧を決める（端末とサーバーの時計は比べない）。この端末が見ていない新しい発言があれば
+ *  別の端末の選択を使い、そうでなければこの端末の選択を使う。 */
+export function resolveConversationPrefs(id: string, sent: Partial<ConversationPrefs>, sentId: string,
+  orderedIds: string[]): Partial<ConversationPrefs> {
   const saved = allPrefs()[id] ?? {};
+  const localIsCurrent = saved.seen === "*" || !sentId
+    || (saved.seen !== undefined && orderedIds.indexOf(saved.seen) >= orderedIds.indexOf(sentId));
   const pick = <K extends PrefField>(field: K): ConversationPrefs[K] | undefined => {
     const local = saved[field] as ConversationPrefs[K] | undefined;
-    return local !== undefined && (sent[field] === undefined || (saved.at?.[field] ?? 0) >= sentAt) ? local : sent[field];
+    return localIsCurrent ? local ?? sent[field] : sent[field] ?? local;
   };
   const agent = pick("agent");
   return { choice: validChoice(pick("choice")), depth: validDepth(pick("depth")),
