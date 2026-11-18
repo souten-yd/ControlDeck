@@ -95,6 +95,14 @@ def test_thinking_tools_and_text_are_recorded_in_arrival_order(admin_client, mon
     assert thinking[0:5] == "まず見る。" and thinking[5:14] == "a.py を直す。"
 
 
+def test_timeline_offsets_use_the_browsers_character_positions():
+    """絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。"""
+    from app.workflows.chat_persist import _utf16_len
+
+    assert _utf16_len("直しました") == 5
+    assert _utf16_len("🎉a") == 3
+
+
 def test_an_empty_project_continues_in_the_conversations_last_project(admin_client, monkeypatch, tmp_path):
     from app.integrations.opencode import provider
 

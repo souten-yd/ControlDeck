@@ -61,6 +61,7 @@ function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: num
 }
 import {
   OpenCodeActivity, PERMISSION_MODES,
+  CODE_STEPS_CARD, ToolRow,
   type OpenCodePermission, type OpenCodeTool, type PermissionMode,
 } from "./OpenCodeActivity";
 
@@ -526,7 +527,8 @@ export default function AssistantChat() {
               // 道具が届くのは OpenCode だけ。準備中に開き直した発言はまだ印が無いので、ここで付ける。
               // それまでの思考は 1 つのまとまりとして並びの先頭に置く
               const base = m.timeline?.length ? m.timeline
-                : m.thinking ? [{ k: "t" as const, from: 0, to: m.thinking.length }] : [];
+                : [...(m.thinking ? [{ k: "t" as const, from: 0, to: m.thinking.length }] : []),
+                  ...(m.content ? [{ k: "x" as const, from: 0, to: m.content.length }] : [])];
               return { ...m, answeredBy: "code", tools: known ? tools.map((t) => (t.id === tool.id ? { ...t, ...tool } : t)) : [...tools, tool],
                 timeline: known ? (m.timeline ?? base) : [...base, { k: "u", id: tool.id }] };
             });
@@ -2051,7 +2053,7 @@ function GenStatsBadge({ stats, busy }: {
  *  考え始めたら 1 回だけ自動で開き、回答が始まったら自動で閉じる（利用者が触っていれば、どちらもしない）。
  *  閉じたら会話の欄の中だけをスクロールして見出しの位置まで戻す（iPhone の外側の画面は動かさない）。
  *  欄の中のタップは、ダブルクリックや文字の選択の途中では閉じない（コピーできるように）。 */
-function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) {
+function ThinkingBlock({ text, thinking, flat = false }: { text: string; thinking: boolean; /** 作業のカードの 1 行として出す */ flat?: boolean }) {
   const [open, setOpen] = useState(thinking);
   const touched = useRef(false);
   const autoOpened = useRef(thinking);
@@ -2085,9 +2087,9 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
     else setOpen(true);
   };
   return (
-    <div data-thinking className="rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70">
+    <div data-thinking className={flat ? "px-3 py-0.5" : "rounded-lg bg-zinc-100/70 px-2.5 py-1.5 dark:bg-zinc-800/70"}>
       <button ref={head} type="button" aria-expanded={open} onClick={toggle}
-        className="flex min-h-8 w-full items-center gap-1 text-left text-[11px] font-medium text-zinc-500 focus:outline-none focus-visible:underline">
+        className="flex min-h-9 w-full items-center gap-1 text-left text-xs font-medium text-zinc-600 focus:outline-none focus-visible:underline dark:text-zinc-400">
         <span aria-hidden className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
         💭 思考プロセス{thinking ? "（考え中…）" : ""}
       </button>
@@ -2103,7 +2105,7 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
               if (!window.getSelection()?.toString()) close();
             }, 280);
           }}
-          className="mt-1 cursor-pointer whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          className="mb-1.5 mt-0.5 cursor-pointer whitespace-pre-wrap text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
           {text}
         </p>
       )}
@@ -2111,36 +2113,69 @@ function ThinkingBlock({ text, thinking }: { text: string; thinking: boolean }) 
   );
 }
 
-/** OpenCode の回答を届いた順に並べる。続けて実行した道具は 1 つの枠、思考はまとまりごとに別の窓。
- *  本文はこれまでどおり下に出す（引用・コピーなどの扱いを変えない）。許可の確認は最後にまとめて出す。 */
-function CodeTimeline({ msg, onAnswer }: {
-  msg: Msg; onAnswer: (requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
+/** 作業の間に置ける本文の終わりの位置（0 は置けない）。古い記録は位置が合わないので従来どおり下にまとめる。
+ *  後ろに残る分（許可されなかった旨など、並びに載らない追記）は呼び出し側が下に出す。
+ *  コードの囲みが区切りをまたぐと、別々に表示して崩れるので、まとめて出す。 */
+function inlineTextEnd(msg: Msg): number {
+  const segments = msg.timeline ?? [];
+  let at = 0;
+  for (const [i, seg] of segments.entries()) {
+    if (seg.k !== "x") continue;
+    if (seg.from !== at || seg.to > msg.content.length) return 0;
+    const fences = msg.content.slice(seg.from, seg.to).match(/^ {0,3}(```|~~~)/gm)?.length ?? 0;
+    if (i < segments.length - 1 && fences % 2 === 1) return 0;
+    at = seg.to;
+  }
+  return at;
+}
+
+/** OpenCode の回答を届いた順に並べる。続く思考と道具は 1 枚のカードに、本文は作業の前後の位置に出す
+ *  （2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。段階ごとの文が 1 段落につながっていた）。
+ *  許可の確認は最後に出す。 */
+function CodeTimeline({ msg, textEnd, onAnswer }: {
+  msg: Msg; textEnd: number; onAnswer: (requestId: string, decision: "once" | "always" | "reject") => Promise<void>;
 }) {
   const segments = msg.timeline ?? [];
   const tools = new Map((msg.tools ?? []).map((t) => [t.id, t]));
   const thinking = msg.thinking ?? "";
   const lastThinking = segments.reduce((last, seg, i) => (seg.k === "t" ? i : last), -1);
   const blocks: ReactNode[] = [];
-  let group: OpenCodeTool[] = [];
-  const flushGroup = (key: string) => {
-    if (group.length) blocks.push(<OpenCodeActivity key={key} tools={group} permissions={[]} onAnswer={onAnswer} />);
-    group = [];
+  let steps: ReactNode[] = [];
+  let stepsFrom = 0;   // カードの鍵は最初の項目の位置（本文が続いても作り直さず、開いた行を保つ）
+  const addStep = (i: number, step: ReactNode) => {
+    if (!steps.length) stepsFrom = i;
+    steps.push(step);
+  };
+  const flushSteps = () => {
+    if (steps.length) blocks.push(<div key={`steps-${stepsFrom}`} data-code-steps className={CODE_STEPS_CARD}>{steps}</div>);
+    steps = [];
   };
   segments.forEach((seg, i) => {
     if (seg.k === "u") {
       const tool = tools.get(seg.id);
-      if (tool) group.push(tool);
+      if (tool) addStep(i, <ToolRow key={tool.id} tool={tool} />);
       return;
     }
-    if (seg.k !== "t") return;
-    flushGroup(`tools-${i}`);
+    if (seg.k === "x") {
+      const text = msg.content.slice(seg.from, seg.to);
+      if (!textEnd || !text.trim()) return;
+      flushSteps();
+      blocks.push(
+        <div key={`text-${i}`} data-code-text>
+          <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{text}</p>}>
+            <MarkdownMessage text={text} />
+          </Suspense>
+        </div>,
+      );
+      return;
+    }
     const text = thinking.slice(seg.from, seg.to);
     if (!text.trim()) return;
     // 考えている途中なのは、最後の思考で、その後ろに道具も本文も無いときだけ
     const active = Boolean(msg.streaming) && i === lastThinking && i === segments.length - 1;
-    blocks.push(<ThinkingBlock key={`think-${i}`} text={text} thinking={active} />);
+    addStep(i, <ThinkingBlock key={`think-${i}`} text={text} thinking={active} flat />);
   });
-  flushGroup("tools-end");
+  flushSteps();
   // 並びに載っていない道具（古い記録・途中から購読）も落とさない
   const listed = new Set(segments.flatMap((seg) => (seg.k === "u" ? [seg.id] : [])));
   const rest = (msg.tools ?? []).filter((t) => !listed.has(t.id));
@@ -2226,6 +2261,8 @@ function MessageBubble({
   }
   const unsettled = !msg.streaming && (msg.persistStatus === "failed" || msg.persistStatus === "canceled" || msg.persistStatus === "interrupted")
     ? msg.persistStatus : null;
+  const textEnd = msg.timeline?.length && msg.messageId ? inlineTextEnd(msg) : 0;
+  const restText = msg.content.slice(textEnd);
   const assistantActions: MessageAction[] = (msg.messageId && !msg.streaming ? ["copy", "fork", "delete"] as MessageAction[] : ["copy"] as MessageAction[])
     .filter((action) => action !== "copy" || !!msg.content);
   return (
@@ -2287,7 +2324,7 @@ function MessageBubble({
         )}
         {msg.timeline?.length && msg.messageId ? (
           // OpenCode: 届いた順に「思考 → 道具 → 思考 → …」。思考はひとまとまりごとに別の窓
-          <CodeTimeline msg={msg} onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
+          <CodeTimeline msg={msg} textEnd={textEnd} onAnswer={(requestId, decision) => onAnswerPermission(msg.messageId!, requestId, decision)} />
         ) : (
           <>
             {/* OpenCode: 道具の実行と許可の確認（タップで出力を開く・許可はボタンで答える） */}
@@ -2308,14 +2345,16 @@ function MessageBubble({
             ))}
           </p>
         )}
-        {msg.content && (
+        {restText && (
           <div>
-            <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>}>
-              <MarkdownMessage text={msg.content} />
+            <Suspense fallback={<p className="whitespace-pre-wrap leading-relaxed">{restText}</p>}>
+              <MarkdownMessage text={restText} />
             </Suspense>
             {msg.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent-500 align-middle" />}
           </div>
         )}
+        {/* 本文を作業の間に出した後も、続いていることが分かるように（道具の後で長く考えている間など） */}
+        {msg.streaming && msg.content && !restText && <span aria-hidden data-streaming-cursor className="block h-3.5 w-1.5 animate-pulse bg-accent-500" />}
 
         {/* 失敗・停止・中断: 本文が無くても、何が起きたかと理由を必ず出す。 */}
         {unsettled && <UnsettledNotice status={unsettled} error={msg.error} partial={!!msg.content} onRetry={onRetry} />}

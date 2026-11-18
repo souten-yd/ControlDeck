@@ -599,6 +599,15 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 700 }
     await page.goto("/assistant");
     await applySafeArea();
     await expect(page.locator("html")).toHaveClass(/pwa-standalone/);
+    // iOS 26 の上端のぼかし対策: 不透明で全幅の帯が上端にあり、押された判定を受ける
+    const strip = await page.locator("[data-status-strip]").evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return { top: r.top, width: r.width, height: r.height, position: style.position, background: style.backgroundColor, hit: document.elementFromPoint(innerWidth / 2, 1) === el };
+    });
+    expect(strip).toMatchObject({ top: 0, width: viewport.width, position: "fixed", hit: true });
+    expect(strip.height).toBe(SAFE_TOP);
+    expect(strip.background).not.toMatch(/rgba\(.*, 0\)|transparent/);
     const shell = page.locator("[data-assistant-shell]");
     await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
 

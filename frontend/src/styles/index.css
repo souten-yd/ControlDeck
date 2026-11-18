@@ -231,6 +231,13 @@ label:has([data-snippet-code]) + p code {
   font-weight: 600;
 }
 
+/* iOS 26 の上端のぼかし対策（layouts/shell.tsx の StatusBarStrip）。押された判定を受ける必要がある。
+   Safe Area が 0 なら高さも 0（上の行のボタンを塞がない）。 */
+html.pwa-standalone [data-status-strip] {
+  display: block;
+  height: var(--cd-safe-area-top);
+}
+
 /* Safe Area */
 .safe-bottom {
   padding-bottom: var(--cd-safe-area-bottom);
