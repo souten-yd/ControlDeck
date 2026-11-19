@@ -267,7 +267,7 @@ for (const width of [1280, 320]) {
     await shell.getByRole("button", { name: "送信" }).click();
     await expect.poll(() => calls).toContain("mode:deep");
     // 札の × で自動判定に戻る
-    await modePill.getByRole("button", { name: /外す/ }).click();
+    await modePill.getByRole("button").click();                                 // 札はタップで外れる（× は無い）
     await expect(modePill).toHaveCount(0);
     await expect(detected).toBeVisible();
 
@@ -317,7 +317,7 @@ test("a chat can be handed off to OpenCode from the plus menu in the same conver
   await shell.locator("[data-assistant-plus]").click();
   const menu = page.getByRole("menu", { name: "添付・機能・権限" });
   const handoff = menu.locator('[data-plus-action="handoff"]');
-  await expect(handoff).toContainText("この会話を OpenCode に引き継ぐ");
+  await expect(handoff).toContainText("OpenCode に引き継ぐ");
   expect((await handoff.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await handoff.click();
   await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toHaveText("OpenCode");

@@ -1315,16 +1315,31 @@ export default function AssistantChat() {
   const replyStartedRef = useRef(false);
   const lastSpokenRef = useRef<string | undefined>(undefined);
   const setTalkPhase = (next: TalkPhase) => { talkRef.current = next; setTalk(next); };
+  const setReadAloud = (next: boolean) => {
+    ttsReplyRef.current = next;
+    setTtsReply(next);
+    try { localStorage.setItem(LS_TTS_REPLY, next ? "1" : "0"); } catch { /* 保存できなくても今は使える */ }
+  };
   const toggleTtsReply = () => {
     const next = !ttsReply;
     if (next) tts.unlock(); else tts.stop();
-    setTtsReply(next);
-    try { localStorage.setItem(LS_TTS_REPLY, next ? "1" : "0"); } catch { /* 保存できなくても今は使える */ }
-    show(next ? "回答を読み上げます" : "読み上げをやめました");
+    setReadAloud(next);
   };
+  // 開き直したとき（読み上げは入ったまま）、iPhone は操作の中で一度鳴らすまで声を出せない。最初の操作で鳴らしておく
+  useEffect(() => {
+    const prime = () => { if (ttsReplyRef.current) tts.unlock(); };
+    window.addEventListener("pointerdown", prime, { capture: true, once: true });
+    window.addEventListener("keydown", prime, { capture: true, once: true });
+    return () => {
+      window.removeEventListener("pointerdown", prime, { capture: true });
+      window.removeEventListener("keydown", prime, { capture: true });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const startTalk = () => {
     if (talkRef.current !== "off" || asr.active) return;
     tts.unlock();   // 操作の中で一度鳴らす（iPhone で後から読み上げられるように）
+    if (!ttsReplyRef.current) setReadAloud(true);   // 会話は声で返すのが既定
     turnRef.current = "";
     setTalkPhase("starting");
     void asr.start();
@@ -1336,8 +1351,11 @@ export default function AssistantChat() {
     asr.cancel();
   };
   const speakThenListen = async (reply: string) => {
-    setTalkPhase("speaking");
-    if (reply.trim()) await tts.speak(reply);
+    // 会話モードでも読み上げは右下のボタンで切り替えられる（切っていれば文字だけで返す）
+    if (ttsReplyRef.current && reply.trim()) {
+      setTalkPhase("speaking");
+      await tts.speak(reply);
+    }
     if (talkRef.current === "off") return;
     asr.resume();
     setTalkPhase("listening");
@@ -1618,30 +1636,20 @@ export default function AssistantChat() {
   const currentPermission = PERMISSION_MODES.find((m) => m.id === permissionMode) ?? PERMISSION_MODES[0];
   // プランは OpenCode を使う場面でだけ効く（チャット・調査では関係ない）
   const planActive = opencodeAvailable && codeAgent === "plan";
-  const planIgnored = planActive && effectiveMode !== "code";   // Chat などを固定している
-  const lastProjectPath = [...messages].reverse().find((m) => m.projectPath)?.projectPath ?? "";
-  const planFolder = codeProject === "__folder__" ? codeFolderPath
-    : codeProject === "__new__" ? (codeNewName.trim() || lastProjectPath.split("/").pop() || "") : codeProject;
   const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const latestCodeTurnId = [...messages].reverse().find((m) => m.role === "assistant" && m.answeredBy === "code" && m.messageId)?.messageId;
   const canSteer = busy && Boolean(latestAssistant?.streaming && latestAssistant.messageId && latestAssistant.answeredBy === "code");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [
     {
-      id: "tts-reply", icon: "🔊", label: ttsReply ? "読み上げをやめる" : "回答を読み上げる（TTS 返答）",
-      hint: ttsReply ? "回答の読み上げを止めます" : "回答が終わったら主要な文言を声で読みます。コード・表・URL は読みません",
-      onSelect: toggleTtsReply,
-    },
-    {
-      id: "talk", icon: "🗣", label: "会話モード",
-      hint: "話して少し黙ると送信し、回答を声で返します。停止を押すまで交互に続きます",
+      id: "talk", icon: "🗣", label: "会話モード", hint: "声で話して、声で聞く",
       disabled: busy || asr.active || asr.phase === "installing", onSelect: startTalk,
     },
   ];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
     plusActions.push({
-      id: "handoff", icon: <IconTerminal />, label: "この会話を OpenCode に引き継ぐ",
-      hint: "ここまでのチャット・調査の結果（出典つき）を前提に、同じ会話で OpenCode が作業します",
+      id: "handoff", icon: <IconTerminal />, label: "OpenCode に引き継ぐ",
+      hint: "この会話をもとに作業",
       onSelect: () => {
         chooseMode("code");
         if (!input.trim()) setInput("ここまでの会話の内容をもとに実装してください。");
@@ -1652,7 +1660,7 @@ export default function AssistantChat() {
   if (opencodeAvailable && inCodeConversation && effectiveMode === "code" && modeChoice !== "investigate") {
     plusActions.push({
       id: "investigate-for-code", icon: <IconSearch />, label: "調べて OpenCode に渡す",
-      hint: "いったん調査に切り替えます。調べた結果は、次に OpenCode へ送るときに自動で引き継がれます",
+      hint: "調べた結果を次の作業へ",
       onSelect: () => {
         returnChoiceRef.current = storedChoice;
         setModeChoice("investigate");
@@ -2065,16 +2073,6 @@ export default function AssistantChat() {
             onChange={(e) => { const picked = Array.from(e.target.files ?? []); e.target.value = ""; void attachFiles(picked); }} />
           {/* 入力カード（上が本文、下が道具の行: 添付・機能・音声・送信）。状態は
               カードの下に固定高で置き、表示が変わっても入力位置を動かさない。 */}
-          {planActive && (
-            /* プラン中はビルドではないことを、入力欄の真上ではっきり出す */
-            <div data-plan-banner role="status"
-              className="mb-2 flex w-full min-w-0 items-center gap-2 rounded-2xl border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-100">
-              <span aria-hidden className="text-base">📋</span>
-              <span className="min-w-0 flex-1 leading-snug"><b>プラン</b> — {planIgnored ? "いまは OpenCode を使わない機能なので、プランは使われません。" : modeChoice === "investigate" ? "調べた結果をもとに計画します。" : "計画だけを立てます。"}{!planIgnored && <span data-plan-target> 作業フォルダ: {planFolder || "未選択（下で選んでください）"}。</span>}ファイルの編集や変更を伴うコマンドはしません。</span>
-              <button type="button" onClick={() => changeCodeAgent("build")}
-                className="min-h-9 shrink-0 rounded-lg border border-sky-300 bg-white px-2.5 text-xs font-semibold text-sky-800 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900 dark:text-sky-100 dark:hover:bg-sky-800 [@media(pointer:coarse)]:min-h-11">ビルドに切り替える</button>
-            </div>
-          )}
           <div data-assistant-input-card data-agent={planActive ? "plan" : "build"} className={`w-full min-w-0 rounded-3xl border bg-white shadow-sm transition dark:bg-zinc-900 ${planActive
             ? "border-sky-400 ring-2 ring-sky-400/20 dark:border-sky-600"
             : "border-zinc-200 focus-within:border-accent-500/70 focus-within:ring-2 focus-within:ring-accent-500/15 dark:border-zinc-700"}`}>
@@ -2103,7 +2101,7 @@ export default function AssistantChat() {
               }}
               rows={1}
               placeholder={
-                planActive ? "プラン: 何を計画しますか（ファイルは変えません）"
+                planActive ? "プラン: 何を計画しますか"
                 : effectiveMode === "gen"
                   ? "作りたいワークフローを日本語で説明..."
                   : effectiveMode === "run"
@@ -2128,6 +2126,7 @@ export default function AssistantChat() {
                     <button type="button" onClick={() => tts.stop()} aria-label="読み上げを飛ばして話す" title="読み上げを飛ばして話す"
                       className="min-h-11 shrink-0 rounded-full px-3 text-xs font-medium text-zinc-600 hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:text-zinc-300 dark:hover:bg-zinc-800">飛ばす</button>
                   )}
+                  <SpeakerToggle on={ttsReply} speaking={tts.speaking} onToggle={toggleTtsReply} />
                   <button type="button" onClick={stopTalk} aria-label="会話モードを止める" title="会話モードを止める"
                     className="flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-zinc-900 px-4 text-sm font-medium text-white shadow-sm transition hover:bg-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
                     <IconStop className="text-base" />停止
@@ -2165,11 +2164,12 @@ export default function AssistantChat() {
                 ) : (
                   <ComposerPill icon={modeOptions.find((o) => o.id === modeChoice)?.icon ?? "✦"}
                     label={modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}
-                    title="機能（＋で変更）" kind="mode" onClear={() => { if (returnChoiceRef.current) finishOneShot(); else chooseMode("auto"); }} />
+                    title={`機能: ${modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}（タップで自動に戻す）`} kind="mode"
+                    onClick={() => { if (returnChoiceRef.current) finishOneShot(); else chooseMode("auto"); }} />
                 )}
                 {planActive ? (
                   <ComposerPill icon="📋" label="プラン" tone="plan"
-                    title="プラン: 計画だけ。ファイルの編集・変更を伴うコマンドはしません（押すと切替・PC は Shift+Tab）"
+                    title="プラン（タップでビルドに戻す・PC は Shift+Tab）"
                     kind="plan" onClick={cyclePermissionMode} />
                 ) : showPermissionPill && (
                   <ComposerPill icon={<span className="font-mono tracking-[-0.2em]">{currentPermission.icon}</span>}
@@ -2177,12 +2177,8 @@ export default function AssistantChat() {
                     title={canChangePermissionMode ? `OpenCode の権限: ${currentPermission.label}（押すと切替・PC は Shift+Tab）` : `OpenCode: ビルド（押すとプランへ）`}
                     kind="permission" onClick={cyclePermissionMode} />
                 )}
-                {ttsReply && (
-                  <ComposerPill icon="🔊" label={tts.speaking ? "読み上げ中" : "読み上げ"} tone="accent" kind="tts-reply" compact
-                    title={tts.speaking ? "いまの読み上げを止める" : "TTS 返答: 回答を声で読みます（× でやめる）"}
-                    onClick={() => tts.stop()} onClear={toggleTtsReply} />
-                )}
               </div>
+              <SpeakerToggle on={ttsReply} speaking={tts.speaking} onToggle={toggleTtsReply} />
               <button
                 type="button"
                 onClick={startVoice}
@@ -2818,5 +2814,17 @@ function QualityBadge({ q }: { q: Quality }) {
         </ul>
       </details>
     </div>
+  );
+}
+
+/** 回答の読み上げ（TTS 返答）の切り替え。入力欄の右下に置く（2026-11-19 利用者「＋の中ではなく右下に。会話モードでも変えたい」） */
+function SpeakerToggle({ on, speaking, onToggle }: { on: boolean; speaking: boolean; onToggle: () => void }) {
+  const label = on ? "回答の読み上げをやめる" : "回答を読み上げる";
+  return (
+    <button type="button" onClick={onToggle} aria-pressed={on} aria-label={label} title={label} data-speaker-toggle={on ? "on" : "off"}
+      className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 ${on
+        ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-300" : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"}`}>
+      <span aria-hidden className={speaking ? "animate-pulse" : undefined}>{on ? "🔊" : "🔈"}</span>
+    </button>
   );
 }

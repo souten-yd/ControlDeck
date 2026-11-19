@@ -19,6 +19,9 @@ test("speakable text keeps the main words and drops code, tables, links and sour
   const long = speakableText("あ".repeat(50) + "。".repeat(1) + "い".repeat(2000), 100);
   expect(long.endsWith("続きは画面をご覧ください。")).toBe(true);
   expect(speechChunks("一。二。三。")).toEqual(["一。二。三。"]);
+  // 絵文字とその後ろの見えない文字、英字の出典の印は読まない（2026-11-19 本番: 「☀️」で合成が失敗した）
+  expect(speakableText("いいお天気ですね☀️ 家族👨‍👩‍👧で。きているそうです [RK]。言ってます [RB][RC]。資料（[R1]〜[RA]）を検索"))
+    .toBe("いいお天気ですね 家族で。きているそうです。言ってます。資料を検索。");
   expect(speechChunks(`${"長".repeat(70)}。${"次".repeat(70)}。`)[0]).toBe(`${"長".repeat(70)}。`);
 });
 
@@ -100,13 +103,15 @@ for (const width of [320, 1280]) {
     await fakeMicrophone(page);
     await establishSession(page, context);
     await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.removeItem("cd-assistant-tts-reply"); });
-    const state = await mockChat(page, ["明日の天気は？", "ありがとう。"]);
+    const transcriptsLeft = ["明日の天気は？", "ありがとう。"];
+    const state = await mockChat(page, transcriptsLeft);
     await page.goto("/assistant");
     const shell = page.locator("[data-assistant-shell]");
     await shell.getByRole("button", { name: "添付・機能・権限" }).click();
     await page.locator('[data-plus-action="talk"]').click();
     const phase = shell.locator("[data-talk-phase]");
     await expect(phase).toHaveAttribute("data-talk-phase", "listening");
+    await expect(shell.locator("[data-speaker-toggle]")).toHaveAttribute("data-speaker-toggle", "on");   // 会話は声で返す
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await page.screenshot({ path: `${process.env.CONTROL_DECK_E2E_SHOTS ?? "/tmp"}/talk-listening-${width}.png` });
 
@@ -128,6 +133,18 @@ for (const width of [320, 1280]) {
     await expect(phase).toHaveAttribute("data-talk-phase", "listening", { timeout: 10_000 });
     expect(state.spoken.join("")).toContain("回答2です。");
 
+    // 会話中に読み上げを切ると、文字だけで返してすぐ聞き直す（2026-11-19 利用者「会話モードの時にも変えたい」）
+    await shell.locator("[data-speaker-toggle]").click();
+    const spokenBefore = state.spoken.length;
+    transcriptsLeft.push("もう一つ。");
+    await tone(page, true);
+    await page.waitForTimeout(1700);
+    await tone(page, false);
+    await expect.poll(() => state.sent.length).toBe(3);
+    await expect(shell.getByText("回答3です。").first()).toBeVisible();
+    await expect(phase).toHaveAttribute("data-talk-phase", "listening");
+    expect(state.spoken.length).toBe(spokenBefore);
+
     // 停止で終わる（マイクのボタンに戻る）
     await shell.getByRole("button", { name: "会話モードを止める" }).click();
     await expect(phase).toHaveCount(0);
@@ -143,15 +160,16 @@ test("TTS reply mode reads the finished answer and is remembered", async ({ page
   const state = await mockChat(page, []);
   await page.goto("/assistant");
   const shell = page.locator("[data-assistant-shell]");
-  await shell.getByRole("button", { name: "添付・機能・権限" }).click();
-  await page.locator('[data-plus-action="tts-reply"]').click();
-  const pill = shell.locator('[data-composer-pill="tts-reply"]');
-  await expect(pill).toBeVisible();
+  // 読み上げは入力欄の右下のボタンで切り替える（＋の中ではない。2026-11-19 利用者の依頼）
+  const speaker = shell.locator("[data-speaker-toggle]");
+  await expect(speaker).toHaveAttribute("data-speaker-toggle", "off");
+  await speaker.click();
+  await expect(speaker).toHaveAttribute("data-speaker-toggle", "on");
   await shell.locator("[data-assistant-input]").fill("こんにちは");
   await shell.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => state.spoken.join("")).toBe("回答1です。コードは画面に表示しています。");
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
   await page.screenshot({ path: `${process.env.CONTROL_DECK_E2E_SHOTS ?? "/tmp"}/tts-reply-320.png` });
   await page.reload();
-  await expect(shell.locator('[data-composer-pill="tts-reply"]')).toBeVisible();
+  await expect(shell.locator("[data-speaker-toggle]")).toHaveAttribute("data-speaker-toggle", "on");
 });
