@@ -448,6 +448,8 @@ class SendBody(BaseModel):
     )
     system: str = "あなたは Control Deck の AI アシスタントです。日本語で簡潔に答えてください。"
     thinking: str | None = None  # off / auto / on。省略時はruntime共通設定。
+    # 会話モード（声）で送った発言の回答傾向（voice_style.STYLES）。空なら通常の文字の会話
+    voice_style: str = Field(default="", max_length=24)
     # 画像添付（/attachments でアップロード済みのID）。VLM有効モデルで画像入力に使う
     attachments: list[str] = Field(default_factory=list, max_length=8)
     # OpenCodeチャット実行（mode=code）用のCodeDEVプロジェクト名
@@ -1570,6 +1572,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await asyncio.to_thread(checkpoint)
     history = chat_compaction.strip_private(history)
     history = language_guard(history, user_query)
+    from app.workflows.voice_style import voice_guard
+
+    history = voice_guard(history, str(params.get("voice_style") or ""))
 
     try:
         runtime_request = RuntimeChatRequest(
@@ -2119,7 +2124,9 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
               "engine": body.engine, "searxng_url": body.searxng_url,
               "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,
               # 未指定ならモデル個別設定へ委ねる（共通設定で一律に縛らない）
-              "thinking": body.thinking or "",
+              # 会話モードは待たせないため、思考を指定していなければ切る（声の会話で数十秒黙らない）
+              "thinking": body.thinking or ("off" if body.voice_style and body.mode != "code" else ""),
+              "voice_style": body.voice_style if body.mode != "code" else "",
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "attachments": body.attachments,
               "code_project": body.code_project,

@@ -243,6 +243,8 @@ const LS_TTS_REPLY = "cd-assistant-tts-reply"; // TTS 返答（回答を読み�
 /** 会話モードの段階。話し終わりは、最後の声から TALK_TURN_END_MS 黙ったとき */
 type TalkPhase = "off" | "starting" | "listening" | "thinking" | "speaking";
 const TALK_TURN_END_MS = 1200;
+/** 会話モードの回答傾向（backend の voice_style.STYLES）。選ぶ画面は未実装で、端末に保存した値か既定（フレンドリー） */
+const voiceStyle = () => { try { return localStorage.getItem("cd-assistant-voice-style") || "friendly"; } catch { return "friendly"; } };
 
 function loadSettings() {
   try {
@@ -1162,7 +1164,7 @@ export default function AssistantChat() {
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
           attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, ...sentPrefs }
         : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
-          searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
+          searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "", ...sentPrefs };
       try {
         await api(`/chat/conversations/${cid}/queue`, { method: "POST", json: { ...json, hold } });
@@ -1209,7 +1211,7 @@ export default function AssistantChat() {
           json: {
             content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model,
             engine, searxng_url: searxngUrl, attachments: imageIds,
-            deep_depth: deepDepth, deep_sources: deepSources,
+            deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
             code_project_path: deepSources.includes("local_code") ? deepProjectPath : "",
             ...sentPrefs,
           },

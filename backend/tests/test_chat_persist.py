@@ -485,3 +485,20 @@ def test_japanese_questions_get_a_final_language_instruction():
     assert guarded[-1]["role"] == "user" and guarded[-1]["content"].startswith("トランプ大統領の近況を調査して")
     assert "日本語" in guarded[-1]["content"] and history[-1]["content"] == "トランプ大統領の近況を調査して"  # 元は変えない
     assert language_guard(history, "What is new with Trump?") == history     # かなの無い質問には足さない
+
+
+def test_voice_conversation_gets_spoken_rules_and_the_chosen_style(admin_client):
+    """会話モードの発言には、話し言葉の決まり（絵文字・箇条書きなし、短く、相手の言語で）と選んだ回答傾向を最後に足す。
+    文字の会話には足さない。会話モードは思考を切って待たせない（2026-11-19 利用者「会話モードに即した回答に。回答傾向を選べるように」）。"""
+    from app.workflows.chat_persist import SendBody
+    from app.workflows.voice_style import STYLES, voice_guard
+
+    history = [{"role": "system", "content": "s"}, {"role": "user", "content": "明日の天気は？"}]
+    assert voice_guard(history, "") == history
+    spoken = voice_guard(history, "teacher")[-1]["content"]
+    assert spoken.startswith("明日の天気は？") and "絵文字" in spoken and "箇条書き" in spoken and "英語で話されたら英語で" in spoken
+    assert STYLES["teacher"][1] in spoken and history[-1]["content"] == "明日の天気は？"
+    assert STYLES["friendly"][1] in voice_guard(history, "unknown")[-1]["content"]   # 知らない傾向は既定
+    image = [{"role": "user", "content": [{"type": "text", "text": "これは何？"}, {"type": "image_url", "image_url": {"url": "x"}}]}]
+    assert "絵文字" in voice_guard(image, "polite")[-1]["content"][0]["text"]
+    assert SendBody(content="x", voice_style="friendly").voice_style == "friendly"
