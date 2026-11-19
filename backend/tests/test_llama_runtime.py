@@ -395,6 +395,8 @@ def test_unit_content_role_embedding_and_reranker(monkeypatch, tmp_path):
     assert '"--n-gpu-layers" "auto"' in rerank_unit and '"--fit" "on"' in rerank_unit
     # 起動の失敗が続いたら諦める（2026-11-16〜17: VRAM の取り合いで 2 日に 51 回起動し直した）
     assert "StartLimitBurst=5" in rerank_unit
+    # reranker は flash-attn を入れる（切ると R9700 で 15 文書の並べ替えが 18.5 秒、入れると 1.2 秒。2026-11-20 実測）
+    assert '"--flash-attn" "on"' in rerank_unit and '"--flash-attn" "off"' in embed_unit
 
 
 def test_find_role_instance(monkeypatch, tmp_path):

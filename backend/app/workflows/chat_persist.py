@@ -1000,6 +1000,11 @@ _KANA = re.compile(r"[\u3040-\u30ff]")
 
 
 CHAT_RERANK_BUDGET_S = 3.0
+# 資料を全部入れる上限（文字）。約 1 万トークン。読み込みは R9700 で約 3 秒（使い回せればほぼ 0）
+CHAT_MATERIALS_ALL_CHARS = 32_000
+# 並べ替えの点数の下限。実測（2026-11-20、天気の検索資料 15 件）: 挨拶 0.21・「ありがとう」0.003・無関係 0.001、
+# 天気の質問 0.93・「さっきの番組表」0.47
+CHAT_MIN_RERANK_SCORE = 0.3
 
 
 def language_guard(history: list[dict], user_query: str) -> list[dict]:
@@ -1523,16 +1528,24 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 from app.models_mgmt import context_budget
 
                 budget = context_budget.for_model(base_url, model)
-                # 探している間も画面に出す（何もしていないように見せない）
-                job.log("stats", phase="retrieve", detail="会話の資料を探しています", tok_per_sec=0, gen_tokens=0,
-                        prompt_tokens=None, context_max=None)
-                # 再ランクは 3 秒まで。それ以上は検索の順のまま答え始める（2026-11-20 本番: CPU で 22.6 秒かかっていた）
-                found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k,
-                                         rerank_budget_s=CHAT_RERANK_BUDGET_S)
-                if found.get("context"):
-                    history = [{"role": "system", "content":
-                                "この会話に添付・収集された資料の関連抜粋です。回答の根拠に使ってください:\n\n"
-                                + str(found["context"])[:budget.rag_chars]}, *history]
+                # 小さい資料は探さず全部入れる（並べ替えも埋め込みも使わない。2026-11-20 利用者の依頼と実測）
+                materials = await asyncio.to_thread(
+                    rag.collection_materials, collection, min(budget.rag_chars, CHAT_MATERIALS_ALL_CHARS))
+                if materials:
+                    note = ("この会話でこれまでに添付・収集した資料です。今の発言に関係するときだけ根拠に使い、"
+                            "関係しなければ触れないでください:\n\n" + materials)
+                else:
+                    # 大きい資料: 探して並べ替え、点数の低いものは入れない。並べ替えは 3 秒まで
+                    job.log("stats", phase="retrieve", detail="会話の資料を探しています", tok_per_sec=0, gen_tokens=0,
+                            prompt_tokens=None, context_max=None)
+                    found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k,
+                                             rerank_budget_s=CHAT_RERANK_BUDGET_S, min_rerank_score=CHAT_MIN_RERANK_SCORE)
+                    note = ("この会話に添付・収集された資料のうち、今の発言に関係する抜粋です。回答の根拠に使ってください:\n\n"
+                            + str(found["context"])[:budget.rag_chars]) if found.get("context") else ""
+                if note:
+                    # 最初の指示（system）の直後に置く。毎回同じ位置・同じ内容なら、モデルが前回の読み込みを使い回せる
+                    head = 1 if history and history[0].get("role") == "system" else 0
+                    history = [*history[:head], {"role": "system", "content": note}, *history[head:]]
         except Exception:
             pass  # 資料検索の失敗は通常チャットへフォールバック
 
