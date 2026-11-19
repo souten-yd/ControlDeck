@@ -458,8 +458,10 @@ def list_collections() -> list[dict]:
 
 
 def _graph_path(collection: str) -> Path:
+    from app.knowledge import storage
+
     _check_name(collection)
-    return data_dir() / "knowledge" / "graphs" / f"{collection}.sqlite3"
+    return storage.graphs_dir() / f"{collection}.sqlite3"
 
 
 def graph_db(collection: str) -> sqlite3.Connection:

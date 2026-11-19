@@ -252,12 +252,12 @@ def _copy_rdh_assets(conn: sqlite3.Connection, rdh_doc: int, name: str, doc_id: 
     for pdf in conn.execute("SELECT * FROM document_pdfs WHERE doc_id=?", (rdh_doc,)).fetchall():
         original = conn.execute("SELECT content FROM source_pdfs WHERE sha256=?", (pdf["source_sha256"],)).fetchone()
         if original is not None:
-            digest = store.put_blob(ref.shard, bytes(original[0]), "application/pdf")
+            digest = store.put_blob(ref.shard, bytes(original[0]), "application/pdf", role="original")
             if digest != pdf["source_sha256"]:
                 raise store.KnowledgeError("原本 PDF のハッシュが一致しません")
             assets.append((digest, "original", 0, {}))
         extraction = (pdf["extraction"] or "").encode("utf-8")
-        digest = store.put_blob(ref.shard, extraction, "application/json")
+        digest = store.put_blob(ref.shard, extraction, "application/json", role="extraction")
         assets.append((digest, "extraction", 0, {"extraction_sha256": pdf["extraction_sha256"]}))
     for image in conn.execute("SELECT i.image_id, i.sha256, b.content FROM document_pdf_images i "
                               "JOIN pdf_image_blobs b ON b.sha256=i.sha256 WHERE i.doc_id=? ORDER BY i.image_id",
@@ -265,10 +265,10 @@ def _copy_rdh_assets(conn: sqlite3.Connection, rdh_doc: int, name: str, doc_id: 
         content = bytes(image["content"])
         mime = "image/png" if content[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg" if content[:2] == b"\xff\xd8" \
             else "application/octet-stream"
-        digest = store.put_blob(ref.shard, content, mime)
+        digest = store.put_blob(ref.shard, content, mime, role="figure")
         if digest != image["sha256"]:
             raise store.KnowledgeError("画像のハッシュが一致しません")
-        assets.append((digest, "image", int(image["image_id"]), {}))
+        assets.append((digest, "figure", int(image["image_id"]), {"source": "pdf_embedded_raster"}))
     dst = store.connect(ref.shard)
     try:
         for digest, role, ord_, meta in assets:

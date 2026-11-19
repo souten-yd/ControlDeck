@@ -11,7 +11,8 @@ ResearchDataHub と PatentBuddy を ControlDeck へ統合するための正本�
   キャッシュはそれを見て作り直す。
 - 機密区分 sensitivity: confidential（既定）/ public。外部（クラウド）LLM 向けの横断検索では
   confidential を返さない（アイデアの流出防止。policy は search_all を参照）。
-- 原本・図などの大きなファイルは blobs/sha256 にハッシュ名で置き、DB には参照だけを持つ。
+- 原本・図などの大きなファイルは blobs/sha256 にハッシュ名で置き、DB には参照と保存先（location）だけを持つ。
+- どの保存先（この PC・NAS など）に何を置くかは app.knowledge.storage の設定で決める。
 
 同期関数だけを持つ。async から呼ぶときは asyncio.to_thread を使うこと（AGENTS.md 絶対ルール 9）。
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -29,8 +31,7 @@ from typing import Iterable
 
 import numpy as np
 
-from app.config import data_dir
-from app.knowledge import textproc
+from app.knowledge import storage, textproc
 
 SHARDS = ("general", "patents", "standards")
 SENSITIVITY = ("confidential", "public")
@@ -63,7 +64,8 @@ CREATE TABLE IF NOT EXISTS vectors(
   chunk_id INTEGER PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vec BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_vectors_model ON vectors(model);
 CREATE TABLE IF NOT EXISTS blobs(
-  sha256 TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes INTEGER NOT NULL, relpath TEXT NOT NULL, created REAL NOT NULL);
+  sha256 TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes INTEGER NOT NULL, relpath TEXT NOT NULL, created REAL NOT NULL,
+  location TEXT NOT NULL DEFAULT 'local', role TEXT NOT NULL DEFAULT 'original');
 CREATE TABLE IF NOT EXISTS document_assets(
   id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL, sha256 TEXT NOT NULL, role TEXT NOT NULL,
   ord INTEGER NOT NULL DEFAULT 0, meta TEXT NOT NULL DEFAULT '{}');
@@ -92,16 +94,13 @@ class CollectionRef:
     config: dict
 
 
-def root() -> Path:
-    path = data_dir() / "knowledge"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def shard_path(shard: str) -> Path:
     if shard not in SHARDS:
         raise KnowledgeError(f"不正な分野: {shard}")
-    return root() / f"{shard}.sqlite3"
+    try:
+        return storage.db_path(shard)
+    except storage.StorageError as exc:
+        raise KnowledgeError(str(exc)) from exc
 
 
 _schema_ready: set[str] = set()
@@ -462,38 +461,77 @@ def material_rows(name: str) -> list[tuple[int, str, str | None, str]]:
 
 # ---- 原本・図（ハッシュ名のファイル） ----
 
-def blob_dir() -> Path:
-    path = root() / "blobs"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def _write_blob_file(directory: Path, digest: str, content: bytes) -> None:
+    path = directory / digest[:2] / digest
+    if path.exists() and path.stat().st_size == len(content):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    with tmp.open("wb") as fh:
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
+    tmp.replace(path)
 
 
-def put_blob(shard: str, content: bytes, mime: str) -> str:
+def put_blob(shard: str, content: bytes, mime: str, role: str = "original") -> str:
+    """役割（original / figure / extraction …）に応じた保存先へ置く。
+
+    設定の保存先が使えない（NAS が外れている）ときは「この PC」に置き、location に記録する。
+    後で ./deck.sh knowledge-storage relocate で設定どおりの場所へ移す。
+    """
     digest = hashlib.sha256(content).hexdigest()
-    rel = f"{digest[:2]}/{digest}"
-    path = blob_dir() / rel
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".part")
-        tmp.write_bytes(content)
-        tmp.replace(path)
+    wanted = storage.blob_target_for(role)
+    location = wanted
+    try:
+        directory = storage.blob_dir(wanted)
+    except storage.StorageUnavailable:
+        location, directory = storage.LOCAL, storage.blob_dir(storage.LOCAL)
+    _write_blob_file(directory, digest, content)
     conn = connect(shard)
     try:
-        conn.execute("INSERT OR IGNORE INTO blobs(sha256, mime, bytes, relpath, created) VALUES(?,?,?,?,?)",
-                     (digest, mime, len(content), rel, _now()))
+        conn.execute("INSERT OR IGNORE INTO blobs(sha256, mime, bytes, relpath, created, location, role) "
+                     "VALUES(?,?,?,?,?,?,?)", (digest, mime, len(content), f"{digest[:2]}/{digest}", _now(), location, role))
         conn.commit()
     finally:
         conn.close()
     return digest
 
 
-def blob_path(sha256: str) -> Path:
+def blob_info(sha256: str) -> tuple[str, sqlite3.Row] | None:
     if not SHA256_RE.match(sha256 or ""):
         raise KnowledgeError("不正なハッシュ")
-    path = (blob_dir() / sha256[:2] / sha256).resolve()
-    if blob_dir().resolve() not in path.parents:
-        raise KnowledgeError("不正なパス")
-    return path
+    for shard in SHARDS:
+        if not shard_path(shard).exists():
+            continue
+        conn = connect(shard)
+        try:
+            row = conn.execute("SELECT * FROM blobs WHERE sha256=?", (sha256,)).fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            return shard, row
+    return None
+
+
+def blob_path(sha256: str) -> Path:
+    """読み出し用のパス。記録された保存先が使えなければバックアップ先の写しを探す。"""
+    info = blob_info(sha256)
+    if info is None:
+        raise KnowledgeError("ファイルがありません")
+    _, row = info
+    candidates = [row["location"], *[t for t in storage.backup_targets() if t != row["location"]]]
+    for name in candidates:
+        try:
+            directory = storage.blob_dir(name).resolve()
+        except storage.StorageError:
+            continue
+        path = (directory / sha256[:2] / sha256).resolve()
+        if directory not in path.parents:
+            raise KnowledgeError("不正なパス")
+        if path.exists():
+            return path
+    raise KnowledgeError("ファイルの保存先を使えません（NAS が外れていないか確認）")
 
 
 # ---- 検索 ----
@@ -675,9 +713,11 @@ def stats() -> dict:
             continue
         conn = connect(shard)
         try:
-            out[shard] = {"exists": True, "bytes": path.stat().st_size,
+            out[shard] = {"exists": True, "bytes": path.stat().st_size, "target": storage.db_target(shard),
                           **{t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                             for t in ("collections", "documents", "chunks", "vectors", "blobs")}}
+                             for t in ("collections", "documents", "chunks", "vectors", "blobs")},
+                          "blob_bytes_by_location": {r[0]: int(r[1]) for r in conn.execute(
+                              "SELECT location, SUM(bytes) FROM blobs GROUP BY location")}}
         finally:
             conn.close()
     return out
