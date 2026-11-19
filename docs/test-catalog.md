@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 175 ファイル、1552 テスト（目的の未記入 93 ファイル）
+- backend: 175 ファイル、1553 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、170 テスト
 
 ## backend（backend/tests）
@@ -1787,6 +1787,7 @@
 - `test_db_query_sqlite_path_must_be_in_root`
 - `test_workflow_api_accepts_rag_db_nodes`
 - `test_chat_rerank_gives_up_after_its_budget_and_keeps_search_order` — 会話の回答前の再ランクは上限（3 秒）で打ち切り、検索の順のまま返す。打ち切りは自己診断に出る。
+- `test_small_conversation_materials_are_given_whole_without_search` — 会話の資料が小さければ探さずに全部、文書の順で渡す（並べ替えも埋め込みも使わない）。保存時に入っていた
 
 ### backend/tests/test_ratelimit.py
 

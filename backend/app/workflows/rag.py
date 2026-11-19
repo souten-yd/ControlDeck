@@ -292,9 +292,58 @@ def _fts_query(question: str) -> str:
     return " OR ".join(f'"{t}"' for t in terms[:32])
 
 
+# 検索結果を資料として保存するときに先頭へ入っていた回答の指示文。資料として渡すときは除く
+_INSTRUCTION_HEAD = re.compile(r"^以下の検索結果を根拠に[^\n]*\n(?:[^\n]*\n)*?\n")
+
+
+def strip_instruction(text: str) -> str:
+    return _INSTRUCTION_HEAD.sub("", text, count=1)
+
+
+def collection_materials(collection: str, max_chars: int) -> str | None:
+    """会話の資料をすべて、文書の順・断片の順で 1 つの文にする（探さない）。max_chars を超えるなら None。
+
+    2026-11-20 利用者「毎回会話ごとにデータを調査するのか。資料を全部入れるのもありか。速度は速めに」。
+    会話の資料は 45 会話中 41 が 4.9 万文字以内（中央値 3,800 文字）だった。小さい資料は探さず全部入れる:
+    埋め込みも並べ替えも要らず、毎回同じ内容・同じ位置なので、モデルが前回の読み込みを使い回せる。"""
+    if not collection_exists(collection):
+        return None
+    conn = _db(collection)
+    try:
+        rows = conn.execute(
+            "SELECT c.doc_id, c.text, c.parent, d.source FROM chunks c LEFT JOIN documents d ON d.id = c.doc_id "
+            "ORDER BY c.doc_id, c.idx").fetchall()
+    finally:
+        conn.close()
+    parts: list[str] = []
+    seen_parents: set[str] = set()
+    current = None
+    size = 0
+    for doc_id, text, parent, source in rows:
+        piece = parent or text
+        if parent:
+            if parent in seen_parents:
+                continue
+            seen_parents.add(parent)
+        piece = strip_instruction(piece).strip()
+        if not piece:
+            continue
+        if doc_id != current:
+            current = doc_id
+            header = f"\n### 資料 {doc_id}" + (f"（{source}）" if source else "")
+            parts.append(header)
+            size += len(header)
+        parts.append(piece)
+        size += len(piece)
+        if size > max_chars:
+            return None
+    return "\n".join(parts).strip() or None
+
+
 async def search(
     collection: str, question: str, top_k: int, api_key: str = "",
     mode_override: str | None = None, rerank_budget_s: float | None = None,
+    min_rerank_score: float | None = None,
 ) -> dict:
     if not collection_exists(collection):
         raise RagError(f"コレクションが存在しません: {collection}")
@@ -387,7 +436,10 @@ async def search(
         conn.close()
 
     reranked = await _maybe_rerank(question, matches, top_k, budget_s=rerank_budget_s)
-    context = "\n\n---\n\n".join(m["context"] for m in reranked)
+    if min_rerank_score is not None and any("rerank_score" in m for m in reranked):
+        # 並べ替えの点数が低いもの（関係の薄いもの）は入れない。挨拶なら何も入らない
+        reranked = [m for m in reranked if m.get("rerank_score", 0.0) >= min_rerank_score]
+    context = "\n\n---\n\n".join(strip_instruction(m["context"]) for m in reranked)
     return {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
             "reranked": len(reranked) != len(matches) or any("rerank_score" in m for m in reranked)}
 

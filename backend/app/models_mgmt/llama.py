@@ -1415,7 +1415,10 @@ def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) ->
     if cache_ram > 0:
         args += ["--cache-ram", str(cache_ram)]
     # b10001 以降は --flash-attn が on|off|auto の値必須（旧フラグ形式はエラーで即終了する）
-    args += ["--flash-attn", "on" if inst.get("flash_attn") else "off"]
+    # reranker は flash-attn を入れる。切ると R9700 で 15 文書の並べ替えが 18.5 秒、入れると 1.2 秒（点数は同じ。
+    # 2026-11-20 実測）。全体の既定（off）は導入時のまま意図なく残っていたもので、会話の回答を 20 秒以上待たせていた
+    flash = bool(inst.get("flash_attn")) or str(inst.get("role", "")) == "reranker"
+    args += ["--flash-attn", "on" if flash else "off"]
     # 共有KV。無効時は各slotへ ctx_size/n_parallel を固定割当てする。
     args += ["--kv-unified" if inst.get("kv_unified", True) else "--no-kv-unified"]
     # 空き容量を観測して受け入れを制御するため常時有効化する（読み取り専用）。
