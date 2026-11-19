@@ -3,7 +3,7 @@
 LLM でチャンクから (主語, 関係, 目的語) のトリプルを抽出してグラフ化し、
 クエリの起点エンティティから隣接ノードを辿って関連事実を文脈に加える。
 
-- グラフは各コレクション DB の triples テーブルに保存
+- グラフはコレクションごとの別ファイル（data_dir/knowledge/graphs/{collection}.sqlite3）の triples に保存
 - 抽出は OpenAI 互換 Chat Completions（Ollama 等）を使用
 - graph_search: 起点エンティティ一致 → 1〜2ホップ近傍のトリプルを文脈化
 """
@@ -105,14 +105,15 @@ async def build_graph(collection: str, base_url: str, model: str, api_key: str,
     await llama.ensure_ready_by_base_url(base_url)
     if not rag.collection_exists(collection):
         raise rag.RagError(f"コレクションが存在しません: {collection}")
-    conn = rag._db(collection)
+    rows = await asyncio.to_thread(rag.chunk_rows, collection)
+    conn = rag.graph_db(collection)
     try:
         _ensure_tables(conn)
         # 親があれば親、なければチャンクを対象に重複排除
-        rows = conn.execute("SELECT id, text, parent FROM chunks").fetchall()
         seen: set[str] = set()
         units: list[tuple[int, str]] = []
-        for cid, text, parent in rows:
+        for row in rows:
+            cid, text, parent = row["id"], row["text"], row["parent"]
             unit = parent or text
             if unit in seen:
                 continue
@@ -145,7 +146,7 @@ async def build_graph(collection: str, base_url: str, model: str, api_key: str,
 
 
 def graph_stats(collection: str, sample: int = 30) -> dict:
-    conn = rag._db(collection)
+    conn = rag.graph_db(collection)
     try:
         _ensure_tables(conn)
         count = conn.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
@@ -170,7 +171,7 @@ def _terms(question: str) -> list[str]:
 
 def graph_facts(collection: str, question: str, hops: int = 1, limit: int = 30) -> list[dict]:
     """クエリ語に一致するエンティティを起点に近傍トリプルを収集する。"""
-    conn = rag._db(collection)
+    conn = rag.graph_db(collection)
     try:
         _ensure_tables(conn)
         terms = _terms(question)

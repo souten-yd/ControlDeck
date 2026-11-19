@@ -59,10 +59,14 @@ def test_rag_build_and_query(monkeypatch):
 
 
 def test_rag_invalid_collection():
-    from app.workflows.rag import _db
+    """コレクション名でパスを抜けられないこと（保存先・グラフのファイル名に使うため）。"""
+    from app.workflows import rag
 
-    with pytest.raises(ValueError):
-        _db("../evil")
+    for call in (lambda: rag.create_collection("../evil"), lambda: rag.graph_db("../evil"),
+                 lambda: rag.list_documents("a/b")):
+        with pytest.raises(ValueError):
+            call()
+    assert rag.collection_exists("../evil") is False
 
 
 def test_db_query_sqlite(monkeypatch):

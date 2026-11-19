@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-11-19 統合ナレッジストア（PatentBuddy・ResearchDataHub の統合 K-PR1）
+
+- 利用者「すべて ControlDeck に統合する。PatentBuddy・ResearchDataHub のデータを回収し、使わなくなったリポジトリを閉じる」「DB は分けるが ControlDeck からは意識しない」「横断検索したい。守りたいのはアイデアの流出」。計画の正本は `docs/PLAN-knowledge-platform.md`。
+- `backend/app/knowledge/`: 分野別 SQLite（general / patents / standards）、日本語 2-gram の全文検索（ResearchDataHub から移植。2 文字の語も当たる）、RAM 上の行列によるベクトル検索、RRF、機密区分（confidential / public）と cloud 向け横断検索の除外、原本・図のハッシュ名保存。
+- `rag.py` は窓口だけにし、関数と戻り値の形を保った。直したこと: 2,000 チャンクで黙って切り詰める（埋め込みは 64 件ずつ送る）、検索のたびに全件を読み 1 件ずつ計算する、async の中の同期 SQLite。GraphRAG の三つ組はコレクションごとの別ファイル。
+- 旧 `data/rag/*.db` はコレクションを初めて使うときに取り込む（旧ファイルは書き換えない・消さない。消したコレクションは復活しない）。`./deck.sh knowledge-migrate [--apply]` で一括取り込みと ResearchDataHub の取り込み（patents 分野、原本 PDF・図・ローカル AI の要約は未確認の推論として）。
+- 規格の利用判定（`standards_license.py`）と根拠 `docs/standards-license-policy.md` を ResearchDataHub から移した。
+- 検証: `tests/test_knowledge_store.py`（13）、`tests/test_standards_license.py`（15）、既存の RAG・会話・Deep Research・ワークフローのテスト。本番データの複製で取り込みのリハーサル（45 コレクション・158 文書・1,144 チャンク、旧ファイル不変）。100k チャンクで warm のベクトル検索 15.5 ms（旧方式 431 ms）。
+- 未実施: 本番への取り込み（Release 後に行う）、画面の変更なし（Knowledge 画面の分野・機密区分の表示は K-PR2/3）。
+
+
 ## 2026-11-21 通知が端末に届いたかを確かめられるようにする
 
 - 利用者「通知が届いていない気がする」。
