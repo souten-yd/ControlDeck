@@ -243,6 +243,18 @@ const LS_TTS_REPLY = "cd-assistant-tts-reply"; // TTS 返答（回答を読み�
 /** 会話モードの段階。話し終わりは、最後の声から TALK_TURN_END_MS 黙ったとき */
 type TalkPhase = "off" | "starting" | "listening" | "thinking" | "speaking";
 const TALK_TURN_END_MS = 1200;
+/** 会話モードの回答傾向（backend の voice_style.STYLES と同じ並び）。AI 設定で選び、端末に保存する。
+ *  2026-11-19 利用者「会話モードの回答傾向を複数から選べるように。モデル選択のところで設定したい」 */
+const LS_VOICE_STYLE = "cd-assistant-voice-style";
+const VOICE_STYLES: [string, string][] = [
+  ["friendly", "フレンドリー"], ["polite", "丁寧"], ["concise", "簡潔"], ["teacher", "英会話の先生"], ["listener", "聞き役"],
+];
+const voiceStyle = () => {
+  try {
+    const saved = localStorage.getItem(LS_VOICE_STYLE) || "";
+    return VOICE_STYLES.some(([id]) => id === saved) ? saved : "friendly";
+  } catch { return "friendly"; }
+};
 
 function loadSettings() {
   try {
@@ -271,6 +283,11 @@ export default function AssistantChat() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [talkStyle, setTalkStyle] = useState(voiceStyle);
+  const chooseTalkStyle = (id: string) => {
+    setTalkStyle(id);
+    try { localStorage.setItem(LS_VOICE_STYLE, id); } catch { /* 保存できなくても今は使える */ }
+  };
   const [baseUrl, setBaseUrl] = useState<string>(saved.baseUrl || "http://127.0.0.1:11434/v1");
   const [model, setModel] = useState<string>(saved.model || "");
   // ⚙️で選択中runtimeのendpoint（最後に追従した値）。変わったら手動選択より優先して切り替える。
@@ -1162,7 +1179,7 @@ export default function AssistantChat() {
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
           attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, ...sentPrefs }
         : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
-          searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources,
+          searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "", ...sentPrefs };
       try {
         await api(`/chat/conversations/${cid}/queue`, { method: "POST", json: { ...json, hold } });
@@ -1209,7 +1226,7 @@ export default function AssistantChat() {
           json: {
             content: text, mode: selectedMode, plan: selectedPlan, base_url: baseUrl, model,
             engine, searxng_url: searxngUrl, attachments: imageIds,
-            deep_depth: deepDepth, deep_sources: deepSources,
+            deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
             code_project_path: deepSources.includes("local_code") ? deepProjectPath : "",
             ...sentPrefs,
           },
@@ -1850,6 +1867,13 @@ export default function AssistantChat() {
                   外部へ送信: 会話・添付・検索や道具の結果が {externalSelected.label.replace(/^外部｜/, "").split(" / ")[0]} へ送られます。秘密の情報を扱う会話ではローカルのモデルを選んでください。
                 </span>
               )}
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-zinc-500">会話モードの回答傾向</span>
+              <select value={talkStyle} onChange={(e) => chooseTalkStyle(e.target.value)} aria-label="会話モードの回答傾向"
+                className="w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-base dark:border-zinc-700 dark:bg-zinc-900 sm:text-sm">
+                {VOICE_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+              </select>
             </label>
             {effectiveMode === "deep" && (
               <div className="space-y-2 sm:col-span-2">

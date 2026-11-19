@@ -56,7 +56,7 @@ function silentWav(): Buffer {
 }
 
 async function mockChat(page: Page, transcripts: string[]) {
-  const state = { sent: [] as string[], spoken: [] as string[], transcribed: 0, messages: [] as object[] };
+  const state = { sent: [] as string[], styles: [] as string[], spoken: [] as string[], transcribed: 0, messages: [] as object[] };
   let turn = 0;
   await page.route("**/api/v1/chat/asr/status", (route) => route.fulfill({ json: { ready: true, installing: false, job_id: null } }));
   await page.route("**/api/v1/chat/asr/transcribe", (route) => {
@@ -72,8 +72,9 @@ async function mockChat(page: Page, transcripts: string[]) {
   await page.route(/\/api\/v1\/chat\/conversations\/v1\/queue$/, (route) =>
     route.fulfill({ json: { items: [], generating_message_id: null, held: false } }));
   await page.route(/\/api\/v1\/chat\/conversations\/v1\/send$/, (route) => {
-    const body = route.request().postDataJSON() as { content: string };
+    const body = route.request().postDataJSON() as { content: string; voice_style?: string };
     state.sent.push(body.content);
+    state.styles.push(body.voice_style ?? "");
     turn += 1;
     return route.fulfill({ json: { assistant_message_id: `a${turn}`, user_message_id: `u${turn}` } });
   });
@@ -102,7 +103,7 @@ for (const width of [320, 1280]) {
     await page.setViewportSize({ width, height: 800 });
     await fakeMicrophone(page);
     await establishSession(page, context);
-    await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.removeItem("cd-assistant-tts-reply"); });
+    await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.removeItem("cd-assistant-tts-reply"); localStorage.removeItem("cd-assistant-voice-style"); });
     const transcriptsLeft = ["明日の天気は？", "ありがとう。"];
     const state = await mockChat(page, transcriptsLeft);
     await page.goto("/assistant");
@@ -120,16 +121,22 @@ for (const width of [320, 1280]) {
     await page.waitForTimeout(1700);
     await tone(page, false);
     await expect.poll(() => state.sent).toEqual(["明日の天気は？"]);
+    // 会話モードの発言には回答傾向を付けて送る（既定はフレンドリー。2026-11-19 利用者の依頼）
+    expect(state.styles).toEqual(["friendly"]);
     await expect.poll(() => state.spoken.join("")).toContain("回答1です。");
     expect(state.spoken.join("")).not.toMatch(/出典|https|code\(\)/);
     await expect(phase).toHaveAttribute("data-talk-phase", "listening", { timeout: 10_000 });
     await expect(shell.getByText("回答1です。").first()).toBeVisible();
 
-    // 2 回目: 交互に続く
+    // 2 回目: AI 設定で回答傾向を変えると、次の発言から使う
+    await shell.getByRole("button", { name: "AI設定を開く" }).click();
+    await shell.getByLabel("会話モードの回答傾向").selectOption("teacher");
+    await shell.getByRole("button", { name: "AI設定を閉じる" }).click();
     await tone(page, true);
     await page.waitForTimeout(1700);
     await tone(page, false);
     await expect.poll(() => state.sent).toEqual(["明日の天気は？", "ありがとう。"]);
+    expect(state.styles).toEqual(["friendly", "teacher"]);
     await expect(phase).toHaveAttribute("data-talk-phase", "listening", { timeout: 10_000 });
     expect(state.spoken.join("")).toContain("回答2です。");
 
@@ -168,6 +175,7 @@ test("TTS reply mode reads the finished answer and is remembered", async ({ page
   await shell.locator("[data-assistant-input]").fill("こんにちは");
   await shell.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => state.spoken.join("")).toBe("回答1です。コードは画面に表示しています。");
+  expect(state.styles).toEqual([""]);   // 文字で送った発言は会話モードの決まりを付けない
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
   await page.screenshot({ path: `${process.env.CONTROL_DECK_E2E_SHOTS ?? "/tmp"}/tts-reply-320.png` });
   await page.reload();

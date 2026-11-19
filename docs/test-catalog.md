@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 175 ファイル、1550 テスト（目的の未記入 93 ファイル）
+- backend: 175 ファイル、1551 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、169 テスト
 
 ## backend（backend/tests）
@@ -535,6 +535,7 @@
 - `test_stale_generating_message_can_be_deleted` — 再起動でジョブが消え「generating」のまま残った発言も消せる・分岐できる。
 - `test_archive_hides_from_list_and_restores` — 会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。
 - `test_japanese_questions_get_a_final_language_instruction` — 日本語の質問には、生成の直前に「日本語で」を足す（2026-11-17: DS-XS が検索資料に引かれて中国語で答えた）。
+- `test_voice_conversation_gets_spoken_rules_and_the_chosen_style` — 会話モードの発言には、話し言葉の決まり（絵文字・箇条書きなし、短く、相手の言語で）と選んだ回答傾向を最後に足す。
 
 ### backend/tests/test_chat_queue.py
 
