@@ -53,7 +53,29 @@ HAAS_FILES = {
     "NOTICE": (783, "279784164ddd8a16f0b42aff954d34bc10485c0064a96c7a852419d95eca5cad"),
 }
 HAAS_THREADS = 4
-_haas_gate = asyncio.Semaphore(1)     # 1 回 約 0.86 GiB。同時に動かさない
+_haas_gate = asyncio.Semaphore(1)     # 1 回 約 0.86〜1.5 GiB。同時に動かさない
+
+# 英語の ASR（2026-11-19 利用者「英会話をしたいので英語の入力を受け付ける ASR を選定して導入評価」）。
+# Parakeet TDT 0.6B v2（int8・sherpa-onnx）。LibriSpeech 73 文で WER 3.1%（雑音 10 dB 3.3%、人の声の雑音 5.5%）、
+# RTF 0.022、読み込み 0.9 秒、RSS 1.5 GB、句読点つき、CC-BY-4.0。候補 5 つの比較は docs/speech-input-filter.md。
+PARAKEET_VERSION = "v2"
+PARAKEET_REPO = ("https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/"
+                 "84b478d541cdbf0c296a7ab5f1e20a6f8f998114")
+PARAKEET_FILES = {
+    "decoder.int8.onnx": (7257753, "4d097bae3bac5c96018d5293ba39f1b657296102b142affda40378f38b020f41"),
+    "encoder.int8.onnx": (652282309, "92a10bd9c23936ea0566c29f963bc57c2a5df4261b6a8921c39abea66557ca8b"),
+    "joiner.int8.onnx": (1739080, "77a29f3e5ac7d37074e0af465391b80f314015d5b97f0f90c6c7767f1d56f428"),
+    "tokens.txt": (9384, "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"),
+}
+# 入力フィルターの資材（どの ASR でも使う）。声の判定（Silero VAD v5）と、任意の雑音除去（GTCRN）
+FILTER_FILES = {
+    "silero_vad_v5.onnx": (2313101, "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
+                           "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad_v5.onnx"),
+    "gtcrn_simple.onnx": (535638, "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534",
+                          "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"),
+}
+ENGINE_LANGUAGE = {"haas": "ja", "parakeet-en": "en"}
+gate_counts = {"passed": 0, "no_speech": 0, "too_quiet": 0}   # 入力フィルターで捨てた区切り（起動してから）
 last_fallback = ""                    # Haas が失敗した理由（自己診断）
 fallback_worked = False               # そのとき whisper で文字にできたか
 last_install_error = ""               # 裏の導入に失敗した理由
@@ -111,13 +133,53 @@ def haas_ready() -> bool:
         return False
 
 
+def parakeet_root() -> Path:
+    root = (data_dir() / "runtimes" / "asr-parakeet-en" / PARAKEET_VERSION).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def filter_root() -> Path:
+    root = (data_dir() / "runtimes" / "asr-filter" / "v1").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def sherpa_ready() -> bool:
+    """sherpa-onnx の専用 venv（Haas と Parakeet と入力フィルターで共用）"""
+    try:
+        return haas_python().is_file() and (haas_root() / "venv-ready").read_text().strip() == ",".join(HAAS_PACKAGES)
+    except OSError:
+        return False
+
+
+def parakeet_ready() -> bool:
+    root = parakeet_root()
+    try:
+        return sherpa_ready() and all((root / "model" / name).stat().st_size == size for name, (size, _) in PARAKEET_FILES.items())
+    except OSError:
+        return False
+
+
+def filter_ready() -> bool:
+    root = filter_root()
+    try:
+        return sherpa_ready() and all((root / name).stat().st_size == size for name, (size, _, _) in FILTER_FILES.items())
+    except OSError:
+        return False
+
+
 def whisper_ready() -> bool:
     model = model_path()
     return _binary_ready() and model.is_file() and model.stat().st_size == MODEL_BYTES
 
 
 def is_ready() -> bool:
-    return haas_ready() or whisper_ready()
+    return haas_ready() or whisper_ready() or parakeet_ready()
+
+
+def engine_ready(engine: str) -> bool:
+    return {"haas": haas_ready, "whisper": whisper_ready, "parakeet-en": parakeet_ready}[engine]()
 
 
 def selected_engine() -> str:
@@ -127,41 +189,53 @@ def selected_engine() -> str:
     return settings.selected("asr")
 
 
-def engine_order() -> list[str]:
-    """試す順。選んだエンジンが使えれば先頭、もう一方は失敗したときの控え（入っていれば）。
+def whisper_language() -> str:
+    from app.speech import settings
 
-    選んだものが未導入なら、入っている方で動かす（音声入力を止めない）。"""
+    return settings.selected("whisper_language")
+
+
+def engine_order() -> list[str]:
+    """試す順。選んだエンジンが使えれば先頭、同じ言語を聞けるエンジンを失敗したときの控えにする（入っていれば）。
+
+    選んだものが未導入なら、同じ言語を聞ける入っている方で動かす（音声入力を止めない）。英語を選んで日本語の
+    エンジンへ回すと意味の無い文字になるので、言語の違うエンジンには回さない。どれも無ければ空。"""
     chosen = selected_engine()
-    other = "whisper" if chosen == "haas" else "haas"
-    ready = {"haas": haas_ready(), "whisper": whisper_ready()}
-    if not ready[chosen]:
-        return [other]
-    return [chosen, other] if ready[other] else [chosen]
+    if chosen == "whisper":
+        language = whisper_language()
+        candidates = ["whisper"] + (["parakeet-en"] if language == "en" else ["haas"] if language == "ja" else [])
+    else:
+        candidates = [chosen, "whisper"]
+    return [engine for engine in candidates if engine_ready(engine)]
 
 
 def status() -> dict:
     active = jobs.get(_install_job_id) if _install_job_id else None
-    haas = engine_order()[0] == "haas" if is_ready() else False
-    state = "ready" if is_ready() else (
+    order = engine_order()
+    engine = order[0] if order else ""
+    state = "ready" if order else (
         "installing" if active and active.status in ("queued", "running") else "missing"
     )
+    chosen = selected_engine()
+    labels = {"haas": ("sherpa-onnx 2.0.1", "Haas-ja-v1.0"), "parakeet-en": ("sherpa-onnx 2.0.1", "Parakeet-TDT-0.6B-v2"),
+              "whisper": (f"whisper.cpp {WHISPER_VERSION}", MODEL_NAME), "": ("", "")}
     return {
         "state": state,
         "ready": state == "ready",
         "installing": state == "installing",
         "job_id": active.id if active and active.status in ("queued", "running") else None,
-        "runtime": "sherpa-onnx 2.0.1" if haas else f"whisper.cpp {WHISPER_VERSION}",
-        "model": "Haas-ja-v1.0" if haas else MODEL_NAME,
-        "engine": "haas" if haas else "whisper",
-        # whisper で使えるが Haas がまだ無い: 裏で導入する（待たせない。失敗したらしばらく試さない）
-        "upgrade_available": (state == "ready" and not haas_ready() and selected_engine() == "haas"
-                              and time.time() >= _install_retry_at),
-        "selected": selected_engine(),
+        "runtime": labels[engine][0],
+        "model": labels[engine][1],
+        "engine": engine,
+        "language": ENGINE_LANGUAGE.get(engine, whisper_language() if engine == "whisper" else ""),
+        # 選んだエンジンか入力フィルターがまだ無い: 裏で導入する（待たせない。失敗したらしばらく試さない）
+        "upgrade_available": (state == "ready" and time.time() >= _install_retry_at
+                              and ((chosen != "whisper" and not engine_ready(chosen)) or not filter_ready())),
+        "selected": chosen,
         "install_error": last_install_error,
-        "model_bytes": sum(size for size, _ in HAAS_FILES.values()) if haas
-        else model_path().stat().st_size if model_path().is_file() else 0,
-        "storage": str(haas_root() if haas else runtime_root()),
-        "reusable": is_ready(),
+        "filter_ready": filter_ready(),
+        "gate": dict(gate_counts),
+        "reusable": state == "ready",
     }
 
 
@@ -211,8 +285,8 @@ async def _download(url: str, target: Path, size: int, sha256: str, root: Path, 
         raise
 
 
-async def install_haas(job: jobs.Job) -> None:
-    """Haas-ja（版固定のモデル・ハッシュ照合）と専用の venv を導入する。"""
+async def ensure_sherpa(job: jobs.Job) -> None:
+    """sherpa-onnx の専用 venv（Haas・Parakeet・入力フィルターで共用）。"""
     root = haas_root()
     marker = root / "venv-ready"
     wanted = ",".join(HAAS_PACKAGES)
@@ -223,6 +297,46 @@ async def install_haas(job: jobs.Job) -> None:
         await _run(job, str(haas_python()), "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
                    *HAAS_PACKAGES, cwd=root, timeout=900)
         marker.write_text(wanted + "\n", encoding="utf-8")
+
+
+async def _fetch_files(job: jobs.Job, label: str, base: str, files: dict, target_dir: Path, root: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    total = sum(item[0] for item in files.values())
+    done = 0
+
+    def advance(count: int) -> None:
+        nonlocal done
+        done += count
+        job.set_progress(label, done, total)
+
+    for name, item in files.items():
+        size, sha256 = item[0], item[1]
+        url = item[2] if len(item) > 2 else f"{base}/{name}"
+        target = _inside(target_dir / name, root)
+        if target.is_file() and target.stat().st_size == size:
+            advance(size)
+            continue
+        await _download(url, target, size, sha256, root, advance)
+
+
+async def install_filter(job: jobs.Job) -> None:
+    """入力フィルターの資材（Silero VAD v5・GTCRN。合わせて 2.8 MB、版とハッシュを固定）。"""
+    await ensure_sherpa(job)
+    await _fetch_files(job, "入力フィルターを取得中", "", FILTER_FILES, filter_root(), filter_root())
+
+
+async def install_parakeet(job: jobs.Job) -> None:
+    """英語の ASR（Parakeet TDT 0.6B v2、約 0.66 GB、版とハッシュを固定）。"""
+    await ensure_sherpa(job)
+    root = parakeet_root()
+    await _fetch_files(job, "英語の音声認識モデルを取得中", PARAKEET_REPO, PARAKEET_FILES, root / "model", root)
+    await install_filter(job)
+
+
+async def install_haas(job: jobs.Job) -> None:
+    """Haas-ja（版固定のモデル・ハッシュ照合）と専用の venv を導入する。"""
+    await ensure_sherpa(job)
+    root = haas_root()
     model = root / "model"
     model.mkdir(parents=True, exist_ok=True)
     total = sum(size for size, _ in HAAS_FILES.values())
@@ -239,12 +353,22 @@ async def install_haas(job: jobs.Job) -> None:
             advance(size)
             continue
         await _download(f"{HAAS_REPO}/{name}", target, size, sha256, root, advance)
+    await install_filter(job)
 
 
 async def install(job: jobs.Job) -> dict:
-    """音声認識（Haas-ja）を導入する。入れられなければ whisper を控えとして使う（無ければ導入する）。"""
+    """選んだ音声認識（既定は Haas-ja、英語は Parakeet）と入力フィルターを導入する。
+    入れられなければ whisper を控えとして使う（無ければ導入する）。"""
     global last_install_error, _install_retry_at
-    if not haas_ready():
+    chosen = selected_engine()
+    if chosen == "parakeet-en" and not parakeet_ready():
+        try:
+            await install_parakeet(job)
+        except Exception as exc:  # noqa: BLE001
+            last_install_error = f"{type(exc).__name__}: {exc}"[:300]
+            _install_retry_at = time.time() + INSTALL_RETRY_SECONDS
+            raise
+    elif chosen != "parakeet-en" and not haas_ready():
         try:
             await install_haas(job)
             last_install_error = ""
@@ -254,6 +378,13 @@ async def install(job: jobs.Job) -> dict:
             job.log(f"Haas-ja を導入できませんでした: {last_install_error}")
             if not whisper_ready():
                 await install_whisper(job)
+    if sherpa_ready() and not filter_ready():
+        try:
+            await install_filter(job)
+        except Exception as exc:  # noqa: BLE001 - フィルターが無くても認識はできる
+            last_install_error = f"{type(exc).__name__}: {exc}"[:300]
+            _install_retry_at = time.time() + INSTALL_RETRY_SECONDS
+            job.log(f"入力フィルターを導入できませんでした: {last_install_error}")
     job.set_progress("ASRを利用できます", 1, 1)
     if not is_ready():
         raise RuntimeError("ASR導入後の検証に失敗しました")
@@ -318,14 +449,39 @@ async def install_whisper(job: jobs.Job) -> dict:
     return status()
 
 
-async def _transcribe_haas(wav: Path, cwd: Path) -> str:
-    worker = Path(__file__).with_name("asr_haas_worker.py")
+def _sherpa_request(engine: str | None, wav: Path) -> dict:
+    """worker への指示。入力フィルターの設定（Models の TTS / ASR）を載せる。"""
+    from app.speech import settings
+
+    flt = settings.input_filter()
+    use = bool(flt["enabled"]) and filter_ready()
+    model = None
+    if engine == "haas":
+        base = haas_root() / "model"
+        model = {"encoder": str(base / "encoder.quantized.onnx"), "decoder": str(base / "decoder.onnx"),
+                 "joiner": str(base / "joiner.onnx"), "tokens": str(base / "tokens.txt"), "feature_dim": 128}
+    elif engine == "parakeet-en":
+        base = parakeet_root() / "model"
+        model = {"encoder": str(base / "encoder.int8.onnx"), "decoder": str(base / "decoder.int8.onnx"),
+                 "joiner": str(base / "joiner.int8.onnx"), "tokens": str(base / "tokens.txt")}
+    return {
+        "audio": str(wav), "threads": HAAS_THREADS, "model": model,
+        "vad": {"model": str(filter_root() / "silero_vad_v5.onnx"), "threshold": flt["vad_threshold"],
+                "min_speech_ms": flt["min_speech_ms"]} if use and flt["vad"] else None,
+        "denoise": {"model": str(filter_root() / "gtcrn_simple.onnx")} if use and flt["denoise"] == "gtcrn" else None,
+        "min_level_db": float(flt["min_level_db"]) if use else -120.0,
+    }
+
+
+async def _run_sherpa(engine: str | None, wav: Path, cwd: Path) -> dict:
+    worker = Path(__file__).with_name("asr_sherpa_worker.py")
+    request = json.dumps(_sherpa_request(engine, wav)).encode("utf-8")
     async with _haas_gate:
         process = await asyncio.create_subprocess_exec(
-            str(haas_python()), "-I", str(worker), str(haas_root() / "model"), str(wav), str(HAAS_THREADS),
-            cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            str(haas_python()), "-I", str(worker), cwd=str(cwd),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
+            stdout, stderr = await asyncio.wait_for(process.communicate(request), timeout=90)
         except TimeoutError:
             raise RuntimeError("音声認識が時間内に完了しませんでした")
         finally:
@@ -333,8 +489,18 @@ async def _transcribe_haas(wav: Path, cwd: Path) -> str:
                 process.kill()
                 await process.wait()
     if process.returncode != 0:
-        raise RuntimeError(stderr.decode("utf-8", errors="replace")[-300:] or "Haas-ja が失敗しました")
-    return str(json.loads(stdout.decode("utf-8").strip().splitlines()[-1]).get("text") or "").strip()
+        raise RuntimeError(stderr.decode("utf-8", errors="replace")[-300:] or "音声認識が失敗しました")
+    result = json.loads(stdout.decode("utf-8").strip().splitlines()[-1])
+    rejected = result.get("rejected")
+    gate_counts[rejected if rejected in gate_counts else "passed"] += 1
+    if rejected:
+        # 声の無い・小さすぎる区切り。文字にしない（雑音から「うん。」などを作って送らない）
+        raise HTTPException(status_code=422, detail="音声を認識できませんでした")
+    return result
+
+
+async def _transcribe_sherpa(engine: str, wav: Path, cwd: Path) -> str:
+    return str((await _run_sherpa(engine, wav, cwd)).get("text") or "").strip()
 
 
 @router.get("/status")
@@ -397,15 +563,17 @@ def clean_transcript(text: str) -> str:
 
 
 async def _transcribe_with(engine: str, wav: Path, request_dir: Path, output: Path) -> str:
-    """1 つのエンジンで文字にする。認識できない（無音など）は 422、エンジンの失敗は例外。"""
-    if engine == "haas":
-        text = clean_transcript(await _transcribe_haas(wav, request_dir))
+    """1 つのエンジンで文字にする。認識できない（無音など・フィルターで捨てた）は 422、エンジンの失敗は例外。"""
+    if engine in ("haas", "parakeet-en"):
+        text = clean_transcript(await _transcribe_sherpa(engine, wav, request_dir))
         if not text:
             raise HTTPException(status_code=422, detail="音声を認識できませんでした")
         return text
+    if sherpa_ready() and filter_ready():
+        await _run_sherpa(None, wav, request_dir)   # whisper の前に門だけ通す（whisper は雑音から文を作りやすい）
     code, diagnostics = await _exec_capture(
         str(binary_path()), "-m", str(model_path()), "-f", str(wav),
-        "-l", "ja", "-nt", "-np", "-otxt", "-of", str(output), *speed_args(wav.stat().st_size),
+        "-l", whisper_language(), "-nt", "-np", "-otxt", "-of", str(output), *speed_args(wav.stat().st_size),
         cwd=request_dir, timeout=120,
     )
     transcript_file = output.with_suffix(".txt")
@@ -448,9 +616,14 @@ async def transcribe(
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise HTTPException(status_code=503, detail="音声変換に必要なffmpegがありません")
+        from app.speech import settings
+
+        flt = settings.input_filter()
+        # 低い音（うなり・空調）のカット。入力フィルターの詳細で選んだときだけ
+        shaping = ["-af", "highpass=f=80"] if flt["enabled"] and flt["highpass"] else []
         code, diagnostics = await _exec_capture(
             ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(source), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav),
+            "-i", str(source), *shaping, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav),
             cwd=request_dir, timeout=45,
         )
         if code != 0 or not wav.is_file():
@@ -458,6 +631,8 @@ async def transcribe(
             raise HTTPException(status_code=422, detail="音声を変換できませんでした")
         global last_fallback, fallback_worked
         order = engine_order()
+        if not order:
+            raise HTTPException(status_code=409, detail="選んだ音声認識が未導入です（Models の TTS / ASR から導入）")
         for index, engine in enumerate(order):
             try:
                 text = await _transcribe_with(engine, wav, request_dir, output)
@@ -473,7 +648,9 @@ async def transcribe(
                 last_fallback, fallback_worked = "", False
             else:
                 fallback_worked = True
-            return {"text": text, "language": "ja", "model": "Haas-ja-v1.0" if engine == "haas" else MODEL_NAME}
+            models = {"haas": "Haas-ja-v1.0", "parakeet-en": "Parakeet-TDT-0.6B-v2", "whisper": MODEL_NAME}
+            language = ENGINE_LANGUAGE.get(engine, whisper_language())
+            return {"text": text, "language": language, "model": models[engine]}
         raise HTTPException(status_code=502, detail="音声認識に失敗しました")
     finally:
         await audio.close()

@@ -27,18 +27,28 @@ def _asr_engine(engine: str) -> dict:
         return {
             "id": "haas", "name": "Haas-ja v1.0", "kind": "asr", "ready": ready, "installed": ready,
             "installing": installing, "job_id": job.id if installing and job else None,
-            "runtime": "sherpa-onnx 2.0.1（CPU）", "model": "Haas-ja-v1.0（量子化）",
+            "runtime": "sherpa-onnx 2.0.1（CPU）", "model": "Haas-ja-v1.0（量子化）", "language": "ja",
             "model_bytes": sum(size for size, _ in asr.HAAS_FILES.values()), "storage": str(asr.haas_root()),
-            "summary": "日本語専用。whisper より約 8 倍速く、句読点も付く（既定）",
+            "summary": "日本語。whisper より約 8 倍速く、句読点も付く（既定）",
             "error": asr.last_install_error if not ready else "",
+        }
+    if engine == "parakeet-en":
+        ready = asr.parakeet_ready()
+        return {
+            "id": "parakeet-en", "name": "Parakeet TDT 0.6B v2", "kind": "asr", "ready": ready, "installed": ready,
+            "installing": installing, "job_id": job.id if installing and job else None,
+            "runtime": "sherpa-onnx 2.0.1（CPU）", "model": "nvidia/parakeet-tdt-0.6b-v2（int8）", "language": "en",
+            "model_bytes": sum(size for size, _ in asr.PARAKEET_FILES.values()), "storage": str(asr.parakeet_root()),
+            "summary": "英語。英会話向け。実音声で単語の誤り 3%、雑音にも強い（CC-BY-4.0）",
+            "error": "",
         }
     ready = asr.whisper_ready()
     return {
         "id": "whisper", "name": f"whisper.cpp {asr.MODEL_NAME}", "kind": "asr", "ready": ready, "installed": ready,
         "installing": installing, "job_id": job.id if installing and job else None,
-        "runtime": f"whisper.cpp {asr.WHISPER_VERSION}（CPU）", "model": asr.MODEL_NAME,
+        "runtime": f"whisper.cpp {asr.WHISPER_VERSION}（CPU）", "model": asr.MODEL_NAME, "language": asr.whisper_language(),
         "model_bytes": asr.MODEL_BYTES, "storage": str(asr.runtime_root()),
-        "summary": "多言語。導入時にソースからビルドする（git と cmake が要る）",
+        "summary": "多言語（日本語・英語・自動）。遅い。導入時にソースからビルドする（git と cmake が要る）",
         "error": "",
     }
 
@@ -48,8 +58,10 @@ def engines() -> dict:
     tts["summary"] = "31 言語の多言語 TTS。CPU で実時間の十数倍速。上流は開発終了のため保管庫から導入する"
     return {
         "selected": settings.load(),
-        "engines": [_asr_engine("haas"), _asr_engine("whisper"), tts],
-        "active_asr": asr.engine_order()[0] if asr.is_ready() else None,
+        "engines": [_asr_engine("haas"), _asr_engine("parakeet-en"), _asr_engine("whisper"), tts],
+        "active_asr": (asr.engine_order() or [None])[0],
+        "filter": {"ready": asr.filter_ready(), "gate": dict(asr.gate_counts),
+                   "presets": settings.FILTER_PRESETS, "ranges": settings.FILTER_RANGES},
     }
 
 
@@ -64,13 +76,21 @@ class EngineSelection(BaseModel):
     tts: Literal[settings.TTS_ENGINES] | None = None  # type: ignore[valid-type]
     tts_voice: Literal[settings.TTS_VOICES] | None = None  # type: ignore[valid-type]
     tts_speed: float | None = Field(default=None, ge=settings.SPEED_RANGE[0], le=settings.SPEED_RANGE[1])
+    tts_steps: int | None = Field(default=None, ge=2, le=32)
+    tts_language: Literal[settings.TTS_LANGUAGES] | None = None  # type: ignore[valid-type]
+    whisper_language: Literal[settings.WHISPER_LANGUAGES] | None = None  # type: ignore[valid-type]
+    # 入力フィルター: 変える項目だけ送る（プリセットを選ぶとその値に揃う。細かい値を変えるとカスタム）
+    input_filter: dict[str, object] | None = None
 
 
 @router.put("/engines")
 def select_engines(body: EngineSelection, request: Request,
                    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
     values = {kind: value for kind, value in body.model_dump().items() if value is not None}
-    selected = settings.save(values)
+    try:
+        selected = settings.save(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit.record(db, "speech.engines.select", user=user, resource_type="settings", resource_id="speech-engines",
                  request=request, metadata=values)
     return engines() | {"selected": selected}
@@ -81,7 +101,7 @@ async def install_engine(engine_id: str, request: Request,
                          user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
     if engine_id == supertonic.ENGINE_ID:
         job = supertonic.start_install_job(user.id)
-    elif engine_id in ("haas", "whisper"):
+    elif engine_id in ("haas", "whisper", "parakeet-en"):
         current = jobs.get(_asr_jobs[engine_id]) if engine_id in _asr_jobs else None
         if current and current.status in ("queued", "running"):
             return {"job_id": current.id, "reused": True}
@@ -91,11 +111,15 @@ async def install_engine(engine_id: str, request: Request,
                 await asr.install_haas(job)
                 if not asr.haas_ready():
                     raise RuntimeError("Haas-ja の導入後の確認に失敗しました")
+            elif engine_id == "parakeet-en":
+                await asr.install_parakeet(job)
+                if not asr.parakeet_ready():
+                    raise RuntimeError("Parakeet の導入後の確認に失敗しました")
             else:
                 await asr.install_whisper(job)
             return _asr_engine(engine_id)
 
-        label = "Haas-ja（ASR）" if engine_id == "haas" else "whisper.cpp（ASR）"
+        label = {"haas": "Haas-ja（ASR）", "parakeet-en": "Parakeet（英語 ASR）", "whisper": "whisper.cpp（ASR）"}[engine_id]
         job = jobs.create("speech.install", f"{label}を導入", run, owner_user_id=user.id, priority=-5)
         _asr_jobs[engine_id] = job.id
     else:
@@ -112,7 +136,7 @@ class SpeechRequest(BaseModel):
     voice: Literal[supertonic.VOICES] | None = None  # type: ignore[valid-type]
     lang: Literal[supertonic.LANGUAGES] = "ja"  # type: ignore[valid-type]
     speed: float | None = Field(default=None, ge=0.7, le=2.0)
-    steps: int = Field(default=8, ge=1, le=32)
+    steps: int | None = Field(default=None, ge=1, le=32)
 
 
 @router.post("/tts")
@@ -123,9 +147,11 @@ async def text_to_speech(body: SpeechRequest, user: User = Depends(require_permi
     if engine != supertonic.ENGINE_ID or not supertonic.ready():
         raise HTTPException(status_code=409, detail="TTS エンジンが未導入です（Models の TTS / ASR から導入）")
     try:
-        audio = await supertonic.synthesize(body.text, voice=body.voice or str(chosen["tts_voice"]), lang=body.lang,
+        # 読む言語: 設定で固定していればそれ、自動なら呼ぶ側の判定（文字に日本語があれば ja）
+        lang = str(chosen["tts_language"]) if chosen["tts_language"] != "auto" else body.lang
+        audio = await supertonic.synthesize(body.text, voice=body.voice or str(chosen["tts_voice"]), lang=lang,
                                             speed=body.speed if body.speed is not None else float(chosen["tts_speed"]),
-                                            steps=body.steps)
+                                            steps=body.steps if body.steps is not None else int(chosen["tts_steps"]))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except supertonic.SupertonicError as exc:

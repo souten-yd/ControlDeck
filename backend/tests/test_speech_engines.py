@@ -112,6 +112,10 @@ def test_feature_is_a_speech_engine_without_update_or_reload(admin_client, speec
 
     monkeypatch.setattr(supertonic, "ready", lambda: True)
     assert registry.status("supertonic-3")["enabled"] is True
+    # 1 回の合成の失敗は導入の壊れとして出さない（2026-11-19 本番: 「修復が必要」と出て再導入を促した）
+    monkeypatch.setattr(supertonic, "last_error", "ValueError: Found 1 unsupported character(s)")
+    item = registry.status("supertonic-3")
+    assert item["health"] == "healthy" and item["error"] == ""
     with pytest.raises(registry.FeatureError, match="更新はありません"):
         registry.update("supertonic-3")
     response = admin_client.post("/api/v1/features/supertonic-3/disable", headers=CSRF_HEADERS)
@@ -146,8 +150,10 @@ def test_tts_returns_wav_and_validates_input(admin_client, speech_data, monkeypa
 def test_engine_list_has_both_asr_and_tts(admin_client, speech_data):
     body = admin_client.get("/api/v1/speech/engines").json()
     assert {engine["id"]: engine["kind"] for engine in body["engines"]} == {
-        "haas": "asr", "whisper": "asr", "supertonic-3": "tts"}
-    assert body["selected"] == {"asr": "haas", "tts": "supertonic-3", "tts_voice": "F1", "tts_speed": 1.05}
+        "haas": "asr", "parakeet-en": "asr", "whisper": "asr", "supertonic-3": "tts"}
+    assert {k: body["selected"][k] for k in ("asr", "tts", "tts_voice", "tts_speed")} == {
+        "asr": "haas", "tts": "supertonic-3", "tts_voice": "F1", "tts_speed": 1.05}
+    assert body["selected"]["input_filter"]["preset"] == "recommended" and body["selected"]["input_filter"]["vad"] is True
 
 
 def test_synthesis_rejects_out_of_range_before_starting_a_process(speech_data):
@@ -157,3 +163,25 @@ def test_synthesis_rejects_out_of_range_before_starting_a_process(speech_data):
         asyncio.run(supertonic.synthesize("x" * (supertonic.MAX_TEXT_CHARS + 1)))
     with pytest.raises(ValueError):
         asyncio.run(supertonic.synthesize("こんにちは", speed=5.0))
+
+
+def test_input_filter_presets_and_custom_values(admin_client, speech_data):
+    """入力フィルター: 初めは推奨。プリセットを選ぶとその値に揃い、細かい値を変えるとカスタムになる。範囲外は受け取らない。
+    古い設定ファイル（フィルターの項目が無い・足りない）でも既定で補う（2026-11-19 利用者「有効無効と詳細を変えられ、
+    初めはプリセットで推奨の設定に」）。"""
+    from app.speech import settings
+
+    put = lambda body: admin_client.put("/api/v1/speech/engines", json=body, headers=CSRF_HEADERS)
+    noisy = put({"input_filter": {"preset": "noisy"}}).json()["selected"]["input_filter"]
+    assert noisy["vad_threshold"] == 0.6 and noisy["highpass"] is True and noisy["preset"] == "noisy"
+    custom = put({"input_filter": {"min_speech_ms": 600}}).json()["selected"]["input_filter"]
+    assert custom["preset"] == "custom" and custom["min_speech_ms"] == 600 and custom["vad_threshold"] == 0.6
+    back = put({"input_filter": {"preset": "recommended"}}).json()["selected"]["input_filter"]
+    assert back == {"enabled": True, "preset": "recommended", **settings.FILTER_PRESETS["recommended"]}
+    assert put({"input_filter": {"vad_threshold": 5}}).status_code == 422
+    assert put({"input_filter": {"unknown": 1}}).status_code == 422
+    assert put({"whisper_language": "en", "tts_steps": 12, "tts_language": "en"}).status_code == 200
+    (speech_data / "speech-engines.json").write_text(json.dumps({"asr": "parakeet-en", "input_filter": {"enabled": False}}))
+    loaded = settings.load()
+    assert loaded["asr"] == "parakeet-en" and loaded["input_filter"]["enabled"] is False
+    assert loaded["input_filter"]["vad_threshold"] == 0.5
