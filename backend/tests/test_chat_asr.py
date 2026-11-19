@@ -101,7 +101,7 @@ def test_haas_is_used_when_installed_and_whisper_is_the_fallback(admin_client, m
         Path(args[args.index("-of") + 1] + ".txt").write_text("控えの結果", encoding="utf-8")
         return 0, ""
 
-    async def haas(engine, wav, cwd):
+    async def haas(engine, wav, cwd, meta=None):
         return "こんにちは。"
 
     monkeypatch.setattr(asr, "_exec_capture", fake_exec)
@@ -110,7 +110,7 @@ def test_haas_is_used_when_installed_and_whisper_is_the_fallback(admin_client, m
     first = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
     assert first == {"text": "こんにちは。", "language": "ja", "model": "Haas-ja-v1.0"}
 
-    async def broken(engine, wav, cwd):
+    async def broken(engine, wav, cwd, meta=None):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(asr, "_transcribe_sherpa", broken)
@@ -150,7 +150,7 @@ def test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back(admin_
         Path(args[args.index("-of") + 1] + ".txt").write_text("whisper の結果", encoding="utf-8")
         return 0, ""
 
-    async def haas(engine, wav, cwd):
+    async def haas(engine, wav, cwd, meta=None):
         return "Haas の結果"
 
     monkeypatch.setattr(asr, "_exec_capture", fake_exec)
@@ -241,3 +241,44 @@ def test_filter_rejects_segments_without_speech_and_does_not_fall_back(admin_cli
     # フィルターを切ると門も雑音除去も渡さない
     settings.save({"input_filter": {"enabled": False}})
     assert asr._sherpa_request("haas", tmp_path / "a.wav")["vad"] is None
+
+
+def test_auto_ja_en_routes_each_segment_by_detected_language(admin_client, monkeypatch, tmp_path):
+    """日英自動: 区切りごとに言語を判定し、日本語は Haas、英語は Parakeet に渡す。応答の言語・モデルも判定に従う。
+    控えは日英を聞ける whisper（自動判定）だけ（2026-11-19 利用者「日本語と英語が交互に来るときは」）。"""
+    from app.speech import settings
+    from app.workflows import asr
+
+    monkeypatch.setattr(settings, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "data_dir", lambda: tmp_path)
+    for name in ("haas_ready", "parakeet_ready", "lid_ready"):
+        monkeypatch.setattr(asr, name, lambda: True)
+    monkeypatch.setattr(asr, "whisper_ready", lambda: True)
+    settings.save({"asr": "auto-ja-en"})
+    assert asr.engine_order() == ["auto-ja-en"]                 # whisper が日本語固定なら控えにしない
+    settings.save({"whisper_language": "auto"})
+    assert asr.engine_order() == ["auto-ja-en", "whisper"]
+    request = asr._sherpa_request("auto-ja-en", tmp_path / "a.wav")
+    assert request["model"] is None and set(request["route"]) == {"lid", "ja", "en"}
+    assert request["route"]["ja"]["feature_dim"] == 128 and "parakeet" in request["route"]["en"]["encoder"]
+
+    monkeypatch.setattr(asr.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    async def fake_exec(*args, cwd, timeout):
+        Path(args[-1]).write_bytes(b"RIFF")
+        return 0, ""
+
+    spoken = iter([("Can you help me?", "en"), ("宿題を手伝って。", "ja")])
+
+    async def routed(engine, wav, cwd, meta=None):
+        text, language = next(spoken)
+        meta["language"] = language
+        return text
+
+    monkeypatch.setattr(asr, "_exec_capture", fake_exec)
+    monkeypatch.setattr(asr, "_transcribe_sherpa", routed)
+    files = {"audio": ("a.webm", b"x", "audio/webm")}
+    first = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
+    second = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
+    assert first == {"text": "Can you help me?", "language": "en", "model": "Parakeet-TDT-0.6B-v2"}
+    assert second == {"text": "宿題を手伝って。", "language": "ja", "model": "Haas-ja-v1.0"}

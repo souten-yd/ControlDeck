@@ -167,7 +167,7 @@ def _voice_input():
     from app.speech import settings
     from app.workflows import asr
 
-    names = {"haas": "Haas-ja", "whisper": "whisper", "parakeet-en": "Parakeet（英語）"}
+    names = {"haas": "Haas-ja", "whisper": "whisper", "parakeet-en": "Parakeet（英語）", "auto-ja-en": "日英自動"}
     chosen = names[asr.selected_engine()]
     if asr.last_fallback:
         how = "控えのエンジンで動きました" if asr.fallback_worked else "文字にできませんでした"
