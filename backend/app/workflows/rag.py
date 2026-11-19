@@ -21,8 +21,12 @@ from pathlib import Path
 import httpx
 import numpy as np
 
+import logging
+
 from app.config import data_dir
 from app.workflows import chunkers
+
+logger = logging.getLogger("control_deck.rag")
 
 COLLECTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -290,7 +294,7 @@ def _fts_query(question: str) -> str:
 
 async def search(
     collection: str, question: str, top_k: int, api_key: str = "",
-    mode_override: str | None = None,
+    mode_override: str | None = None, rerank_budget_s: float | None = None,
 ) -> dict:
     if not collection_exists(collection):
         raise RagError(f"コレクションが存在しません: {collection}")
@@ -382,19 +386,43 @@ async def search(
     finally:
         conn.close()
 
-    reranked = await _maybe_rerank(question, matches, top_k)
+    reranked = await _maybe_rerank(question, matches, top_k, budget_s=rerank_budget_s)
     context = "\n\n---\n\n".join(m["context"] for m in reranked)
     return {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
             "reranked": len(reranked) != len(matches) or any("rerank_score" in m for m in reranked)}
 
 
-async def _maybe_rerank(question: str, matches: list[dict], top_k: int) -> list[dict]:
+# 再ランクの記録（自己診断）。2026-11-20 本番: GPU を他のモデルが使い切っていると reranker が CPU で動き、
+# AI アシスタントの挨拶 1 つで再ランクに 22.6 秒かかり、思考が始まるまで 23 秒待たせていた
+rerank_stats = {"calls": 0, "timeouts": 0, "last_seconds": 0.0, "slowest_seconds": 0.0}
+
+
+async def _maybe_rerank(question: str, matches: list[dict], top_k: int, *, budget_s: float | None = None) -> list[dict]:
     """role=reranker のllama instance（Qwen3-Reranker等）が登録済みなら /v1/rerank で
-    上位top_kを選び直す。未登録・停止起動失敗・APIエラー時は先頭top_kへフォールバック。"""
+    上位top_kを選び直す。未登録・停止起動失敗・APIエラー時は先頭top_kへフォールバック。
+
+    budget_s を渡すと、起動待ちも含めてその秒数で打ち切り、検索の順のまま返す（会話を待たせない）。"""
+    if budget_s is None:
+        return await _rerank(question, matches, top_k)
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(_rerank(question, matches, top_k), timeout=budget_s)
+    except TimeoutError:
+        rerank_stats["timeouts"] += 1
+        logger.warning("再ランクが %.1f 秒で終わらないため検索の順で続けます（%d 件）", budget_s, len(matches))
+        return matches[:top_k]
+    finally:
+        elapsed = time.monotonic() - started
+        rerank_stats["last_seconds"] = round(elapsed, 2)
+        rerank_stats["slowest_seconds"] = max(rerank_stats["slowest_seconds"], round(elapsed, 2))
+
+
+async def _rerank(question: str, matches: list[dict], top_k: int) -> list[dict]:
     from app.models_mgmt import llama
 
     if len(matches) <= top_k or llama.find_role_instance("reranker") is None:
         return matches[:top_k]
+    rerank_stats["calls"] += 1
     base = await llama.ensure_role_ready("reranker")
     if base is None:
         return matches[:top_k]

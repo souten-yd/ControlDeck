@@ -13,17 +13,28 @@
  * 切り替えには短い説明を添える（指の端末は title を読めない）。上端はステータスバーに重ねない。 */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { IconPaperclip, IconPlus } from "../../components/icons";
+import { IconChat, IconPaperclip, IconPlay, IconPlus, IconSearch, IconSettings, IconSparkle, IconTerminal } from "../../components/icons";
 import { AUTO_MODE_OPTION, type ModeOption } from "./ModeChip";
 import { PERMISSION_MODES, type PermissionMode } from "./OpenCodeActivity";
+
+/** 機能のアイコン。＋のタイルと入力欄の札は線のアイコンでそろえる（2026-11-20 利用者「スタイリッシュに」）。
+ *  回答の見出しなど他の場所の絵文字はそのまま */
+const MODE_ICONS: Record<string, (p: { className?: string }) => ReactNode> = {
+  auto: IconSparkle, chat: IconChat, investigate: IconSearch, gen: IconSettings, run: IconPlay, code: IconTerminal,
+};
+export function modeIcon(id: string, fallback: ReactNode): ReactNode {
+  const Icon = MODE_ICONS[id];
+  return Icon ? <Icon /> : fallback;
+}
 
 export interface PlusAction { id: string; icon: ReactNode; label: string; hint: string; disabled?: boolean; onSelect: () => void }
 
 const FOCUS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/50 disabled:opacity-40";
-const ROW = `flex h-11 w-full items-center gap-2.5 rounded-xl px-2 text-left hover:bg-zinc-50 dark:hover:bg-white/[0.04] ${FOCUS}`;
-const ICON = "grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-zinc-100 text-sm dark:bg-zinc-800";
-const HEADING = "flex min-w-0 items-baseline gap-2 px-2 pb-1 pt-1.5 text-[10px] font-semibold tracking-wider text-zinc-400 dark:text-zinc-500";
-const SEPARATOR = "mx-2 my-1 border-t border-zinc-100 dark:border-zinc-800";
+// 行はどれも「アイコン・名前・その下に短い説明」で揃える（2026-11-20 利用者「添付の説明が右にずれている。他と合わせて」）
+const ROW = `flex h-12 w-full items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-zinc-100 dark:hover:bg-white/[0.06] ${FOCUS}`;
+const ICON = "grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-[17px] text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300";
+const HEADING = "flex min-w-0 items-baseline gap-2 px-2 pb-1.5 pt-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400";
+const SEPARATOR = "mx-1 my-1.5 border-t border-zinc-100 dark:border-white/[0.06]";
 /** 選択中の色。メニューと入力欄の札で揃える */
 const TONE = {
   plan: "border-sky-400 bg-sky-100 text-sky-800 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-100",
@@ -163,20 +174,16 @@ export function PlusMenu({
       </button>
       {open && pos && createPortal(
         <div ref={menu} role="menu" aria-label="添付・機能・権限" style={{ left: pos.left, bottom: pos.bottom, maxHeight: pos.maxHeight }}
-          className="fixed z-[100] w-[min(21rem,calc(100vw-1.5rem))] touch-pan-y overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-2xl shadow-black/10 dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/50">
-          <button type="button" role="menuitem" data-plus-item disabled={attachDisabled} title="画像は VLM へ、コード・文書・PDF は会話の資料へ"
-            onClick={() => { close(false); onAttach(); }} className={ROW}>
-            <span aria-hidden className={ICON}><IconPaperclip /></span>
-            <span className="shrink-0 text-sm font-medium text-zinc-900 dark:text-zinc-50">ファイルを添付</span>
-            <span className="min-w-0 flex-1 truncate text-right text-[11px] text-zinc-500 dark:text-zinc-400">画像・コード・文書・PDF</span>
-          </button>
-          {actions.map((action) => (
-            <button key={action.id} type="button" role="menuitem" data-plus-item data-plus-action={action.id} disabled={action.disabled} title={action.hint}
-              onClick={() => { close(false); action.onSelect(); }} className={`${ROW} h-12`}>
+          className="fixed z-[100] w-[min(21rem,calc(100vw-1.5rem))] touch-pan-y overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200/80 bg-white/95 p-1.5 shadow-xl shadow-black/10 backdrop-blur-xl dark:border-white/10 dark:bg-zinc-900/95 dark:shadow-black/60">
+          {[{ id: "attach", icon: <IconPaperclip />, label: "ファイルを添付", hint: "画像・コード・文書・PDF", disabled: attachDisabled,
+            title: "画像は VLM へ、コード・文書・PDF は会話の資料へ", onSelect: onAttach }, ...actions].map((action) => (
+            <button key={action.id} type="button" role="menuitem" data-plus-item data-plus-action={action.id} disabled={action.disabled}
+              title={"title" in action ? action.title : action.hint}
+              onClick={() => { close(false); action.onSelect(); }} className={ROW}>
               <span aria-hidden className={ICON}>{action.icon}</span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium leading-tight text-zinc-900 dark:text-zinc-50">{action.label}</span>
-                <span className="block truncate text-[11px] leading-tight text-zinc-500 dark:text-zinc-400">{action.hint}</span>
+                <span className="block truncate text-sm font-medium leading-5 text-zinc-900 dark:text-zinc-50">{action.label}</span>
+                <span className="block truncate text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">{action.hint}</span>
               </span>
             </button>
           ))}
@@ -185,7 +192,7 @@ export function PlusMenu({
           <div role="group" aria-label="機能">
             <p aria-hidden className={HEADING}>
               <span className="shrink-0">機能</span>
-              <span className="min-w-0 flex-1 truncate text-right font-normal tracking-normal">{modeHint}</span>
+              <span className="min-w-0 flex-1 truncate text-right text-[10px] font-normal text-zinc-400 dark:text-zinc-500">{modeHint}</span>
             </p>
             <div className="grid grid-cols-3 gap-1">
               {modes.map((option) => {
@@ -194,7 +201,7 @@ export function PlusMenu({
                   <button key={option.id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-mode-option={option.id}
                     title={option.id === "auto" ? autoHint : option.hint} onClick={() => { onModeChange(option.id); close(); }}
                     className={`flex h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl border px-1 ${FOCUS} ${selected ? TONE.accent : UNSELECTED}`}>
-                    <span aria-hidden className="text-sm leading-none">{option.icon}</span>
+                    <span aria-hidden className="text-base leading-none">{modeIcon(option.id, option.icon)}</span>
                     <span className="block max-w-full truncate text-[11px] font-medium leading-tight">{option.label}</span>
                   </button>
                 );
@@ -206,7 +213,7 @@ export function PlusMenu({
             <>
               <div role="separator" className={SEPARATOR} />
               <div role="group" aria-label="OpenCode のモード">
-                <p aria-hidden className={HEADING}>OpenCode のモード<span className="hidden font-normal tracking-normal sm:inline">Shift+Tab でも切替</span></p>
+                <p aria-hidden className={HEADING}>OpenCode のモード<span className="ml-auto hidden text-[10px] font-normal text-zinc-400 sm:inline">Shift+Tab でも切替</span></p>
                 <div className="grid grid-cols-2 gap-1">
                   {AGENT_MODES.map(([id, icon, label, hint, note]) => {
                     const selected = agent.mode === id;
@@ -230,8 +237,8 @@ export function PlusMenu({
                 <p aria-hidden className={HEADING}>
                   OpenCode の権限
                   {permission.editable
-                    ? <span className="hidden font-normal tracking-normal sm:inline">Shift+Tab でも切替</span>
-                    : <span className="font-normal tracking-normal">変更は管理者</span>}
+                    ? <span className="ml-auto hidden text-[10px] font-normal text-zinc-400 sm:inline">Shift+Tab でも切替</span>
+                    : <span className="ml-auto text-[10px] font-normal text-zinc-400">変更は管理者</span>}
                 </p>
                 <div className="grid grid-cols-2 gap-1">
                   {PERMISSION_MODES.map((option) => {
