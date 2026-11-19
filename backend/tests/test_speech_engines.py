@@ -133,6 +133,12 @@ def test_tts_returns_wav_and_validates_input(admin_client, speech_data, monkeypa
     response = admin_client.post("/api/v1/speech/tts", json={"text": "こんにちは", "voice": "M2"}, headers=CSRF_HEADERS)
     assert response.status_code == 200 and response.headers["content-type"] == "audio/wav"
     assert response.content.startswith(b"RIFF") and calls == [("こんにちは", "M2", "ja", 1.05, 8)]
+    # 声・速さを省くと、Models の TTS で選んだ既定を使う（AI アシスタントの読み上げ）
+    saved = admin_client.put("/api/v1/speech/engines", json={"tts_voice": "M4", "tts_speed": 1.3}, headers=CSRF_HEADERS)
+    assert saved.status_code == 200 and saved.json()["selected"]["tts_voice"] == "M4"
+    admin_client.post("/api/v1/speech/tts", json={"text": "やあ"}, headers=CSRF_HEADERS)
+    assert calls[-1] == ("やあ", "M4", "ja", 1.3, 8)
+    assert admin_client.put("/api/v1/speech/engines", json={"tts_speed": 9}, headers=CSRF_HEADERS).status_code == 422
     bad = admin_client.post("/api/v1/speech/tts", json={"text": "x", "voice": "../etc"}, headers=CSRF_HEADERS)
     assert bad.status_code == 422
 
@@ -141,7 +147,7 @@ def test_engine_list_has_both_asr_and_tts(admin_client, speech_data):
     body = admin_client.get("/api/v1/speech/engines").json()
     assert {engine["id"]: engine["kind"] for engine in body["engines"]} == {
         "haas": "asr", "whisper": "asr", "supertonic-3": "tts"}
-    assert body["selected"] == {"asr": "haas", "tts": "supertonic-3"}
+    assert body["selected"] == {"asr": "haas", "tts": "supertonic-3", "tts_voice": "F1", "tts_speed": 1.05}
 
 
 def test_synthesis_rejects_out_of_range_before_starting_a_process(speech_data):

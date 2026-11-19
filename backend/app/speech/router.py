@@ -62,6 +62,8 @@ class EngineSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     asr: Literal[settings.ASR_ENGINES] | None = None  # type: ignore[valid-type]
     tts: Literal[settings.TTS_ENGINES] | None = None  # type: ignore[valid-type]
+    tts_voice: Literal[settings.TTS_VOICES] | None = None  # type: ignore[valid-type]
+    tts_speed: float | None = Field(default=None, ge=settings.SPEED_RANGE[0], le=settings.SPEED_RANGE[1])
 
 
 @router.put("/engines")
@@ -106,21 +108,24 @@ async def install_engine(engine_id: str, request: Request,
 class SpeechRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=supertonic.MAX_TEXT_CHARS)
-    voice: Literal[supertonic.VOICES] = "F1"  # type: ignore[valid-type]
+    # 省略すると Models の TTS で選んだ既定の声・速さ
+    voice: Literal[supertonic.VOICES] | None = None  # type: ignore[valid-type]
     lang: Literal[supertonic.LANGUAGES] = "ja"  # type: ignore[valid-type]
-    speed: float = Field(default=1.05, ge=0.7, le=2.0)
+    speed: float | None = Field(default=None, ge=0.7, le=2.0)
     steps: int = Field(default=8, ge=1, le=32)
 
 
 @router.post("/tts")
 async def text_to_speech(body: SpeechRequest, user: User = Depends(require_permission("workflows.run"))):
     """選んだ TTS エンジンで WAV を返す。"""
-    engine = settings.selected("tts")
+    chosen = settings.load()
+    engine = str(chosen["tts"])
     if engine != supertonic.ENGINE_ID or not supertonic.ready():
         raise HTTPException(status_code=409, detail="TTS エンジンが未導入です（Models の TTS / ASR から導入）")
     try:
-        audio = await supertonic.synthesize(body.text, voice=body.voice, lang=body.lang,
-                                            speed=body.speed, steps=body.steps)
+        audio = await supertonic.synthesize(body.text, voice=body.voice or str(chosen["tts_voice"]), lang=body.lang,
+                                            speed=body.speed if body.speed is not None else float(chosen["tts_speed"]),
+                                            steps=body.steps)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except supertonic.SupertonicError as exc:

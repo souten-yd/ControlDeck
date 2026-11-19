@@ -540,7 +540,7 @@ export default function ModelsPage() {
         value={tab}
         onChange={(id) => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
         tabs={[["llm", "LLM / VLM"], ["embed", "Embed / Reranker", "Embed"], ["speech", "TTS / ASR"],
-          ...(can("settings.manage") ? [["frontier", "フロンティア（外部）", "フロンティア"]] as const : [])] as const}
+          ...(can("settings.manage") ? [["frontier", "Frontier"]] as const : [])] as const}
       />
       {tab === "llm" && (
       <p className="mb-3 px-0.5 text-xs leading-relaxed text-zinc-500">

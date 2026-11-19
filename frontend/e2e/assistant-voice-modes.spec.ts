@@ -1,0 +1,157 @@
+// 目的: AI アシスタントの TTS 返答（回答の主要な文言を声で読む）と会話モード（話して黙ると送り、回答を読み、
+//       また聞く。停止まで交互に続く）。読む文言からコード・表・URL・出典を除くこと。読み上げ中はマイクの音を
+//       送らないこと。320px と PC 幅ではみ出さないこと。
+// 根拠: 2026-11-19 利用者「TTS 返答モードではチャットの主要な文言を音声で回答」「会話モードは一定の入力停止を
+//       検知して LLM が回答し、停止ボタンを押すまで交互に会話が続く」。
+//       API・WebSocket・マイク・音声合成は模擬する（LLM・音声認識・TTS を動かさない）。
+import { expect, test, type Page } from "@playwright/test";
+import { establishSession, hasSession } from "./support/session";
+import { speakableText, speechChunks } from "../src/features/workflows/speakable";
+
+test("speakable text keeps the main words and drops code, tables, links and sources", () => {
+  const spoken = speakableText([
+    "## 結論", "明日は**晴れ**です [1]。", "- 最高気温は 20 度", "",
+    "```python", "print('x')", "```", "| 日 | 天気 |", "|---|---|", "| 月 | 晴 |",
+    "詳しくは [気象庁](https://www.jma.go.jp/) を見てください https://example.com", "",
+    "## 出典", "[1] https://example.com/weather",
+  ].join("\n"));
+  expect(spoken).toBe("結論。明日は晴れです。最高気温は 20 度。コードは画面に表示しています。表は画面に表示しています。詳しくは 気象庁 を見てください。");
+  const long = speakableText("あ".repeat(50) + "。".repeat(1) + "い".repeat(2000), 100);
+  expect(long.endsWith("続きは画面をご覧ください。")).toBe(true);
+  expect(speechChunks("一。二。三。")).toEqual(["一。二。三。"]);
+  expect(speechChunks(`${"長".repeat(70)}。${"次".repeat(70)}。`)[0]).toBe(`${"長".repeat(70)}。`);
+});
+
+/** マイクの代わり: window.__tone(true/false) で音を出したり止めたりする */
+async function fakeMicrophone(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __tone: (on: boolean) => void };
+    let gain: GainNode | null = null;
+    w.__tone = (on) => { if (gain) gain.gain.value = on ? 0.5 : 0; };
+    navigator.mediaDevices.getUserMedia = async () => {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      gain = ctx.createGain();
+      gain.gain.value = 0;
+      const dest = ctx.createMediaStreamDestination();
+      osc.connect(gain).connect(dest);
+      osc.start();
+      return dest.stream;
+    };
+  });
+}
+
+/** 0.3 秒の無音 WAV（模擬の TTS が返す） */
+function silentWav(): Buffer {
+  const samples = 13230;
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write("RIFF", 0); buffer.writeUInt32LE(36 + samples * 2, 4); buffer.write("WAVEfmt ", 8);
+  buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(44100, 24); buffer.writeUInt32LE(88200, 28); buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36); buffer.writeUInt32LE(samples * 2, 40);
+  return buffer;
+}
+
+async function mockChat(page: Page, transcripts: string[]) {
+  const state = { sent: [] as string[], spoken: [] as string[], transcribed: 0, messages: [] as object[] };
+  let turn = 0;
+  await page.route("**/api/v1/chat/asr/status", (route) => route.fulfill({ json: { ready: true, installing: false, job_id: null } }));
+  await page.route("**/api/v1/chat/asr/transcribe", (route) => {
+    state.transcribed += 1;
+    const text = transcripts.shift();
+    return text ? route.fulfill({ json: { text } }) : route.fulfill({ status: 422, json: { detail: "音声を認識できませんでした" } });
+  });
+  await page.route("**/api/v1/chat/route", (route) => route.fulfill({ json: { mode: "chat", reason: "", steps: [], max_iterations: 1, decided_by: "rule" } }));
+  await page.route(/\/api\/v1\/chat\/conversations$/, (route) => route.request().method() === "POST"
+    ? route.fulfill({ status: 201, json: { id: "v1", title: "" } }) : route.fallback());
+  await page.route(/\/api\/v1\/chat\/conversations\/v1\/messages$/, (route) =>
+    route.fulfill({ json: { conversation: { id: "v1", title: "音声" }, messages: state.messages } }));
+  await page.route(/\/api\/v1\/chat\/conversations\/v1\/queue$/, (route) =>
+    route.fulfill({ json: { items: [], generating_message_id: null, held: false } }));
+  await page.route(/\/api\/v1\/chat\/conversations\/v1\/send$/, (route) => {
+    const body = route.request().postDataJSON() as { content: string };
+    state.sent.push(body.content);
+    turn += 1;
+    return route.fulfill({ json: { assistant_message_id: `a${turn}`, user_message_id: `u${turn}` } });
+  });
+  await page.routeWebSocket(/\/chat\/messages\/[^/]+\/stream/, (ws) => {
+    const n = Number(ws.url().split("/").slice(-2)[0].slice(1));
+    ws.send(JSON.stringify({ type: "snapshot", content: "", thinking: "" }));
+    setTimeout(() => {
+      ws.send(JSON.stringify({ type: "delta", content: `回答${n}です。\n\`\`\`\ncode()\n\`\`\`\n## 出典\n[1] https://example.com` }));
+      ws.send(JSON.stringify({ type: "done", status: "completed" }));
+      void ws.close();   // サーバーも done の後に閉じる（chat_persist の stream）
+    }, 200);
+  });
+  await page.route("**/api/v1/speech/tts", (route) => {
+    state.spoken.push((route.request().postDataJSON() as { text: string }).text);
+    return route.fulfill({ body: silentWav(), contentType: "audio/wav" });
+  });
+  return state;
+}
+
+const tone = (page: Page, on: boolean) => page.evaluate((value) => (window as unknown as { __tone: (on: boolean) => void }).__tone(value), on);
+
+for (const width of [320, 1280]) {
+  test(`conversation mode sends after a pause, speaks the reply and listens again until stopped (${width}px)`, async ({ page, context }) => {
+    test.skip(!hasSession(), "E2E credentials required");
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width, height: 800 });
+    await fakeMicrophone(page);
+    await establishSession(page, context);
+    await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.removeItem("cd-assistant-tts-reply"); });
+    const state = await mockChat(page, ["明日の天気は？", "ありがとう。"]);
+    await page.goto("/assistant");
+    const shell = page.locator("[data-assistant-shell]");
+    await shell.getByRole("button", { name: "添付・機能・権限" }).click();
+    await page.locator('[data-plus-action="talk"]').click();
+    const phase = shell.locator("[data-talk-phase]");
+    await expect(phase).toHaveAttribute("data-talk-phase", "listening");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+    await page.screenshot({ path: `${process.env.CONTROL_DECK_E2E_SHOTS ?? "/tmp"}/talk-listening-${width}.png` });
+
+    // 1 回目: 話して黙る → 送る → 回答を読む（コードと出典は読まない）→ また聞く
+    await tone(page, true);
+    await page.waitForTimeout(1700);
+    await tone(page, false);
+    await expect.poll(() => state.sent).toEqual(["明日の天気は？"]);
+    await expect.poll(() => state.spoken.join("")).toContain("回答1です。");
+    expect(state.spoken.join("")).not.toMatch(/出典|https|code\(\)/);
+    await expect(phase).toHaveAttribute("data-talk-phase", "listening", { timeout: 10_000 });
+    await expect(shell.getByText("回答1です。").first()).toBeVisible();
+
+    // 2 回目: 交互に続く
+    await tone(page, true);
+    await page.waitForTimeout(1700);
+    await tone(page, false);
+    await expect.poll(() => state.sent).toEqual(["明日の天気は？", "ありがとう。"]);
+    await expect(phase).toHaveAttribute("data-talk-phase", "listening", { timeout: 10_000 });
+    expect(state.spoken.join("")).toContain("回答2です。");
+
+    // 停止で終わる（マイクのボタンに戻る）
+    await shell.getByRole("button", { name: "会話モードを止める" }).click();
+    await expect(phase).toHaveCount(0);
+    await expect(shell.getByRole("button", { name: "音声で入力" })).toBeVisible();
+  });
+}
+
+test("TTS reply mode reads the finished answer and is remembered", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await establishSession(page, context);
+  await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.removeItem("cd-assistant-tts-reply"); });
+  const state = await mockChat(page, []);
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await shell.getByRole("button", { name: "添付・機能・権限" }).click();
+  await page.locator('[data-plus-action="tts-reply"]').click();
+  const pill = shell.locator('[data-composer-pill="tts-reply"]');
+  await expect(pill).toBeVisible();
+  await shell.locator("[data-assistant-input]").fill("こんにちは");
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => state.spoken.join("")).toBe("回答1です。コードは画面に表示しています。");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+  await page.screenshot({ path: `${process.env.CONTROL_DECK_E2E_SHOTS ?? "/tmp"}/tts-reply-320.png` });
+  await page.reload();
+  await expect(shell.locator('[data-composer-pill="tts-reply"]')).toBeVisible();
+});

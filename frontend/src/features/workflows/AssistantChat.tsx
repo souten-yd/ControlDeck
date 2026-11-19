@@ -20,6 +20,7 @@ import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, resolveConversationPrefs, SEARCH_MODES, updateConversationPrefs, validChoice, validDepth, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ConversationPrefs, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
+import { useAssistantTts } from "./useAssistantTts";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
 import { OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
@@ -237,6 +238,10 @@ function readHistoryCollapsed(): boolean {
   }
 }
 const LS_CONV = "cd-chat-conversation"; // 永続チャットの会話 ID（本文は DB に保存）
+const LS_TTS_REPLY = "cd-assistant-tts-reply"; // TTS 返答（回答を読み上げる）を端末ごとに覚える
+/** 会話モードの段階。話し終わりは、最後の声から TALK_TURN_END_MS 黙ったとき */
+type TalkPhase = "off" | "starting" | "listening" | "thinking" | "speaking";
+const TALK_TURN_END_MS = 1200;
 
 function loadSettings() {
   try {
@@ -1284,14 +1289,59 @@ export default function AssistantChat() {
   };
 
   // 音声入力: 話の区切りごとに入力欄へ足す（送信はしない）。✕ で取り消すと、始めた時の文に戻す
+  // 会話モードの間は入力欄ではなく、その回の発言（turnRef）へ足す
   const voiceBaseRef = useRef("");
+  const joinSpoken = (prev: string, text: string) =>
+    prev + (prev && /[A-Za-z0-9.,!?]$/.test(prev) && /^[A-Za-z0-9]/.test(text) ? " " : "") + text;
   const asr = useAssistantAsr({
-    onText: (text) => setInput((prev) => {
-      const sep = prev && /[A-Za-z0-9.,!?]$/.test(prev) && /^[A-Za-z0-9]/.test(text) ? " " : "";
-      return prev + sep + text;
-    }),
+    onText: (text) => {
+      if (talkRef.current !== "off") turnRef.current = joinSpoken(turnRef.current, text);
+      else setInput((prev) => joinSpoken(prev, text));
+    },
     onError: (message) => show(message, "error"),
   });
+
+  // ---- TTS 返答と会話モード（2026-11-19 利用者の依頼） ----
+  // TTS 返答: 回答が終わったら主要な文言を声で読む（コード・表・URL・出典は読まない）。端末ごとに覚える
+  // 会話モード: 話して黙る（TALK_TURN_END_MS）と送信 → 回答を読む → また聞く、を停止まで続ける。
+  //   回答待ち・読み上げの間はマイクを止める（自分の声を拾って送らない）
+  const tts = useAssistantTts({ onError: (message) => show(message, "error") });
+  const [ttsReply, setTtsReply] = useState(() => { try { return localStorage.getItem(LS_TTS_REPLY) === "1"; } catch { return false; } });
+  const ttsReplyRef = useRef(ttsReply);
+  ttsReplyRef.current = ttsReply;
+  const [talk, setTalk] = useState<TalkPhase>("off");
+  const talkRef = useRef<TalkPhase>("off");
+  const turnRef = useRef("");
+  const replyStartedRef = useRef(false);
+  const lastSpokenRef = useRef<string | undefined>(undefined);
+  const setTalkPhase = (next: TalkPhase) => { talkRef.current = next; setTalk(next); };
+  const toggleTtsReply = () => {
+    const next = !ttsReply;
+    if (next) tts.unlock(); else tts.stop();
+    setTtsReply(next);
+    try { localStorage.setItem(LS_TTS_REPLY, next ? "1" : "0"); } catch { /* 保存できなくても今は使える */ }
+    show(next ? "回答を読み上げます" : "読み上げをやめました");
+  };
+  const startTalk = () => {
+    if (talkRef.current !== "off" || asr.active) return;
+    tts.unlock();   // 操作の中で一度鳴らす（iPhone で後から読み上げられるように）
+    turnRef.current = "";
+    setTalkPhase("starting");
+    void asr.start();
+  };
+  const stopTalk = () => {
+    setTalkPhase("off");
+    turnRef.current = "";
+    tts.stop();
+    asr.cancel();
+  };
+  const speakThenListen = async (reply: string) => {
+    setTalkPhase("speaking");
+    if (reply.trim()) await tts.speak(reply);
+    if (talkRef.current === "off") return;
+    asr.resume();
+    setTalkPhase("listening");
+  };
   const startVoice = () => {
     voiceBaseRef.current = input;
     void asr.start();
@@ -1300,6 +1350,68 @@ export default function AssistantChat() {
     asr.cancel();
     setInput(voiceBaseRef.current);
   };
+
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  // 会話モード: マイクの準備ができたら聞き始める。マイクが止まったら（60 分・失敗）会話も終える
+  useEffect(() => {
+    if (talk === "starting" && asr.phase === "listening") setTalkPhase("listening");
+    else if (talk !== "off" && (asr.phase === "error" || (talk !== "starting" && asr.phase === "idle"))) stopTalk();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asr.phase, talk]);
+  // 会話モード: 話し終わり（文字にし終えて、黙って TALK_TURN_END_MS）を見て送る
+  useEffect(() => {
+    if (talk !== "listening") return;
+    const timer = window.setInterval(() => {
+      const text = turnRef.current.trim();
+      if (!text || !asr.settled() || asr.quietMs() < TALK_TURN_END_MS) return;
+      turnRef.current = "";
+      asr.pause();
+      replyStartedRef.current = false;
+      setTalkPhase("thinking");
+      void sendRef.current(text).finally(() => {
+        // 送れなかった（入力の検査で止まった等）: 回答は来ないので、また聞く
+        if (talkRef.current === "thinking" && !replyStartedRef.current) {
+          asr.resume();
+          setTalkPhase("listening");
+        }
+      });
+    }, 200);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [talk]);
+  // 回答が終わったら読む（会話モードは読み終えてから聞き直す）
+  const prevBusyRef = useRef(busy);
+  useEffect(() => {
+    const was = prevBusyRef.current;
+    prevBusyRef.current = busy;
+    if (busy && !was) {
+      if (talkRef.current === "thinking") replyStartedRef.current = true;
+      else if (talkRef.current === "off") tts.stop();   // 次を送ったら前の読み上げは止める
+      return;
+    }
+    if (busy || !was) return;
+    const latest = [...messagesRef.current].reverse().find((m) => m.role === "assistant");
+    const reply = latest && !latest.streaming ? latest.content : "";
+    if (talkRef.current === "thinking") {
+      void speakThenListen(reply);
+    } else if (talkRef.current === "off" && ttsReplyRef.current && reply.trim() && latest?.messageId !== lastSpokenRef.current) {
+      lastSpokenRef.current = latest?.messageId;
+      void tts.speak(reply);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+  // 会話を切り替えたら、読み上げと会話モードを止める（最初の発言で会話が作られたときは止めない）
+  const prevConvRef = useRef(convId);
+  useEffect(() => {
+    const previous = prevConvRef.current;
+    prevConvRef.current = convId;
+    if (!previous || previous === convId) return;
+    if (talkRef.current !== "off") stopTalk(); else tts.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId]);
 
   // ---- 送信待ちの要望（生成中に送ったもの。サーバーが持ち、回答が終わったら送る） ----
   type QueueState = { items: QueuedItem[]; generating_message_id: string | null; held: boolean };
@@ -1492,7 +1604,7 @@ export default function AssistantChat() {
   const externalOptions = modelOptions.filter((o) => o.external);
   const externalSelected = externalOptions.find((o) => o.base === baseUrl && o.model === model);
   const hasContent = Boolean(input.trim()) || attachments.some((a) => (a.kind === "image" || a.kind === "archive") && a.status === "ready");
-  const showComposerStatus = asr.phase === "installing" || asr.active || busy || genStats !== null;
+  const showComposerStatus = talk !== "off" || asr.phase === "installing" || asr.active || busy || genStats !== null;
 
   // 検索系（Web・論文・Deep Research・Research）は「調査」1 つにまとめ、深さは入力欄の下で選ぶ
   const modeOptions = MODES
@@ -1514,7 +1626,18 @@ export default function AssistantChat() {
   const latestCodeTurnId = [...messages].reverse().find((m) => m.role === "assistant" && m.answeredBy === "code" && m.messageId)?.messageId;
   const canSteer = busy && Boolean(latestAssistant?.streaming && latestAssistant.messageId && latestAssistant.answeredBy === "code");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
-  const plusActions: PlusAction[] = [];
+  const plusActions: PlusAction[] = [
+    {
+      id: "tts-reply", icon: "🔊", label: ttsReply ? "読み上げをやめる" : "回答を読み上げる（TTS 返答）",
+      hint: ttsReply ? "回答の読み上げを止めます" : "回答が終わったら主要な文言を声で読みます。コード・表・URL は読みません",
+      onSelect: toggleTtsReply,
+    },
+    {
+      id: "talk", icon: "🗣", label: "会話モード",
+      hint: "話して少し黙ると送信し、回答を声で返します。停止を押すまで交互に続きます",
+      disabled: busy || asr.active || asr.phase === "installing", onSelect: startTalk,
+    },
+  ];
   if (opencodeAvailable && pendingHandoff && effectiveMode !== "code") {
     plusActions.push({
       id: "handoff", icon: <IconTerminal />, label: "この会話を OpenCode に引き継ぐ",
@@ -1990,7 +2113,27 @@ export default function AssistantChat() {
               className="block max-h-40 w-full min-w-0 resize-none border-0 bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 outline-none placeholder:text-zinc-400 sm:text-[15px]"
             />
             <div data-assistant-input-row className="flex w-full min-w-0 items-center gap-1 p-1.5">
-              {asr.active ? (
+              {talk !== "off" ? (
+                <>
+                  {/* 会話モード: 聞く → 考える → 話す を停止まで繰り返す */}
+                  <span data-talk-phase={talk} className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg ${talk === "listening" ? "bg-emerald-50 dark:bg-emerald-950/40" : "bg-zinc-100 dark:bg-zinc-800"}`} aria-hidden>
+                    {talk === "speaking" ? "🔊" : talk === "thinking" ? "💭" : "🗣"}
+                  </span>
+                  {talk === "listening"
+                    ? <VoiceWave meter={asr.meter} pending={asr.pending} finishing={false} />
+                    : <span className="min-w-0 flex-1 truncate px-1 text-sm text-zinc-600 dark:text-zinc-300">
+                      {talk === "starting" ? "マイクを準備しています…" : talk === "thinking" ? "回答を待っています…" : "回答を読み上げています"}
+                    </span>}
+                  {talk === "speaking" && (
+                    <button type="button" onClick={() => tts.stop()} aria-label="読み上げを飛ばして話す" title="読み上げを飛ばして話す"
+                      className="min-h-11 shrink-0 rounded-full px-3 text-xs font-medium text-zinc-600 hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:text-zinc-300 dark:hover:bg-zinc-800">飛ばす</button>
+                  )}
+                  <button type="button" onClick={stopTalk} aria-label="会話モードを止める" title="会話モードを止める"
+                    className="flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-zinc-900 px-4 text-sm font-medium text-white shadow-sm transition hover:bg-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
+                    <IconStop className="text-base" />停止
+                  </button>
+                </>
+              ) : asr.active ? (
                 <>
                   {/* 聞いている間（Claude のように波形と時間を出す）。✕ は取り消し（この回の文字を戻す）、✓ は終わり */}
                   <button type="button" onClick={cancelVoice} aria-label="音声入力を取り消す" title="取り消す（この回に入れた文字を戻す）"
@@ -2033,6 +2176,11 @@ export default function AssistantChat() {
                     label={currentPermission.label} tone={permissionMode === "auto" ? "accent" : "amber"}
                     title={canChangePermissionMode ? `OpenCode の権限: ${currentPermission.label}（押すと切替・PC は Shift+Tab）` : `OpenCode: ビルド（押すとプランへ）`}
                     kind="permission" onClick={cyclePermissionMode} />
+                )}
+                {ttsReply && (
+                  <ComposerPill icon="🔊" label={tts.speaking ? "読み上げ中" : "読み上げ"} tone="accent" kind="tts-reply" compact
+                    title={tts.speaking ? "いまの読み上げを止める" : "TTS 返答: 回答を声で読みます（× でやめる）"}
+                    onClick={() => tts.stop()} onClear={toggleTtsReply} />
                 )}
               </div>
               <button
@@ -2085,7 +2233,10 @@ export default function AssistantChat() {
                 </select>
               </label>
             )}
-            {showComposerStatus ? (asr.phase === "installing" || asr.active ? (
+            {showComposerStatus ? (talk !== "off" ? (
+              <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…"
+                : talk === "listening" ? "会話モード: 話し終えて少し黙ると送ります · 停止で終わる" : talk === "thinking" ? "会話モード: 回答を待っています" : "会話モード: 読み上げ中（飛ばすとすぐ話せます）"}</span>
+            ) : asr.phase === "installing" || asr.active ? (
               <span className="min-w-0 truncate">{asr.phase === "installing" ? "初回の音声入力モデルを導入中…" : asr.phase === "permission" ? "マイクの許可を待っています…"
                 : asr.listening ? "話した区切りごとに入力欄へ入れます · ✓ で終わる（最長 60 分）" : "残りを文字にしています…"}</span>
             ) : (

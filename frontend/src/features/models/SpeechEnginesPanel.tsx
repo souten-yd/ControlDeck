@@ -4,7 +4,7 @@
  * 各 TTS / ASR の利用するエンジンを選択できるように」。 */
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getSpeechEngines, installSpeechEngine, selectSpeechEngine, synthesizeSpeech, type SpeechEngine, type SpeechKind } from "../../api/speech";
+import { getSpeechEngines, installSpeechEngine, saveSpeechDefaults, selectSpeechEngine, synthesizeSpeech, type SpeechEngine, type SpeechKind } from "../../api/speech";
 import { useAuth, useToasts } from "../../stores";
 import { Skeleton } from "../../components/ui";
 
@@ -82,7 +82,7 @@ export function SpeechEnginesPanel() {
               ))}
             </div>
             {kind === "tts" && engines.some((e) => e.id === chosen && e.ready) && (
-              <TryTts engine={engines.find((e) => e.id === chosen)!} />
+              <TryTts engine={engines.find((e) => e.id === chosen)!} defaults={data.selected} canSave={manage} />
             )}
           </section>
         );
@@ -137,12 +137,23 @@ function EngineRow({ engine, chosen, canInstall, starting, onInstall }: {
   );
 }
 
-function TryTts({ engine }: { engine: SpeechEngine }) {
+/** 試し聞き。声と速さは既定（AI アシスタントの読み上げ・会話モードが使う）として保存する */
+function TryTts({ engine, defaults, canSave }: {
+  engine: SpeechEngine; defaults: { tts_voice: string; tts_speed: number }; canSave: boolean;
+}) {
   const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
   const [text, setText] = useState("こんにちは。今日は良い天気ですね。");
-  const [voice, setVoice] = useState(engine.voices?.[0] ?? "F1");
+  const [voice, setVoice] = useState(defaults.tts_voice);
   const [lang, setLang] = useState("ja");
-  const [speed, setSpeed] = useState(1.05);
+  const [speed, setSpeed] = useState(defaults.tts_speed);
+  const changed = voice !== defaults.tts_voice || speed !== defaults.tts_speed;
+  const saveDefaults = async () => {
+    try {
+      qc.setQueryData(["speech-engines"], await saveSpeechDefaults({ tts_voice: voice, tts_speed: speed }));
+      show("読み上げの既定の声・速さにしました");
+    } catch (e) { show(e instanceof Error ? e.message : "保存できませんでした", "error"); }
+  };
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -160,7 +171,8 @@ function TryTts({ engine }: { engine: SpeechEngine }) {
   const field = "min-h-10 min-w-0 rounded-xl border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-950";
   return (
     <div className="mt-3 space-y-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-      <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">試し聞き</p>
+      <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">試し聞きと既定の声</p>
+      <p className="text-[11px] text-zinc-500">AI アシスタントの読み上げ（TTS 返答・会話モード）は、ここで保存した声と速さを使います。</p>
       <textarea value={text} onChange={(event) => setText(event.target.value)} rows={2} maxLength={5000}
         aria-label="読み上げる文" className={`${field} w-full py-2`} />
       <div className="flex flex-wrap items-center gap-2">
@@ -181,6 +193,12 @@ function TryTts({ engine }: { engine: SpeechEngine }) {
           {working ? "作成中…" : "再生"}
         </button>
       </div>
+      {canSave && changed && (
+        <button type="button" onClick={() => void saveDefaults()}
+          className="min-h-10 rounded-xl border border-zinc-300 px-3 text-xs font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+          この声・速さを既定にする
+        </button>
+      )}
       {audioUrl && <audio ref={audioRef} controls src={audioUrl} className="w-full" />}
     </div>
   );
