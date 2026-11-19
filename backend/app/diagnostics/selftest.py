@@ -163,22 +163,33 @@ def _opencode_background():
 
 
 def _voice_input():
-    """音声入力: 選んだエンジンで動いているか、失敗して控えへ回っていないか。"""
+    """音声入力: 選んだエンジンで動いているか、失敗して控えへ回っていないか、入力フィルターが働いているか。"""
+    from app.speech import settings
     from app.workflows import asr
 
-    names = {"haas": "Haas-ja", "whisper": "whisper"}
+    names = {"haas": "Haas-ja", "whisper": "whisper", "parakeet-en": "Parakeet（英語）"}
     chosen = names[asr.selected_engine()]
     if asr.last_fallback:
         how = "控えのエンジンで動きました" if asr.fallback_worked else "文字にできませんでした"
         return "warn", f"音声認識が失敗し、{how}: {asr.last_fallback}"
     if asr.last_install_error:
-        return "warn", f"Haas-ja を導入できず whisper で動いています: {asr.last_install_error}"
+        return "warn", f"音声認識・入力フィルターを導入できませんでした: {asr.last_install_error}"
     if not asr.is_ready():
         return True, "音声入力は未導入（初回に導入します）"
-    active = names[asr.engine_order()[0]]
+    order = asr.engine_order()
+    if not order:
+        return "warn", f"選んだ {chosen} が未導入で、同じ言語を聞けるエンジンもありません（Models の TTS / ASR から導入）"
+    active = names[order[0]]
     if active != chosen:
         return "warn", f"選んだ {chosen} が未導入のため {active} で動いています（Models の TTS / ASR から導入）"
-    return True, f"音声入力のエンジン: {active}"
+    flt = settings.input_filter()
+    if flt["enabled"] and flt["vad"] and not asr.filter_ready():
+        return "warn", f"音声入力のエンジン: {active}。入力フィルター（声の判定）が未導入で、雑音も文字にします（次の音声入力で導入）"
+    gate = asr.gate_counts
+    dropped = gate["no_speech"] + gate["too_quiet"]
+    return True, (f"音声入力のエンジン: {active}。入力フィルター: " + ("切" if not flt["enabled"] else
+                  f"{flt['preset']}（起動後 {gate['passed']} 区切りを通し、声の無い {gate['no_speech']}・小さすぎる {gate['too_quiet']} を捨てた）"
+                  if dropped or gate["passed"] else f"{flt['preset']}"))
 
 
 def _speech_output():

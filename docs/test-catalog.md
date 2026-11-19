@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 175 ファイル、1546 テスト（目的の未記入 93 ファイル）
-- E2E: 85 spec、166 テスト
+- backend: 175 ファイル、1549 テスト（目的の未記入 93 ファイル）
+- E2E: 86 spec、169 テスト
 
 ## backend（backend/tests）
 
@@ -510,6 +510,8 @@
 - `test_haas_is_used_when_installed_and_whisper_is_the_fallback` — 既定は Haas-ja。失敗しても whisper があれば音声入力を止めない（2026-11-18 利用者の依頼で採用）。
 - `test_repeated_phrases_are_collapsed_and_short_segments_keep_enough_context` — 短い区切りで whisper が同じ言葉を繰り返した（2026-11-18 本番の画面・手元の音声で再現）。
 - `test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back` — Models の TTS / ASR で選んだ ASR を先に使う。選んだものが未導入なら入っている方で動かす
+- `test_english_choice_never_falls_back_to_a_japanese_engine` — 英語（Parakeet）を選んだら、日本語専用の Haas へは回さない（英語を片仮名の意味の無い文にして送らない）。
+- `test_filter_rejects_segments_without_speech_and_does_not_fall_back` — 入力フィルター（Silero VAD）で声が無いとされた区切りは文字にせず、控えのエンジンにも回さない。
 
 ### backend/tests/test_chat_persist.py
 
@@ -2075,6 +2077,7 @@
 - `test_tts_returns_wav_and_validates_input`
 - `test_engine_list_has_both_asr_and_tts`
 - `test_synthesis_rejects_out_of_range_before_starting_a_process`
+- `test_input_filter_presets_and_custom_values` — 入力フィルター: 初めは推奨。プリセットを選ぶとその値に揃い、細かい値を変えるとカスタムになる。範囲外は受け取らない。
 
 ### backend/tests/test_strata_gateway.py
 
@@ -2598,6 +2601,14 @@
 
 - requests sent during a run wait, can be edited, removed and restored, then arrive (${width}px)
 - voice input shows a waveform, keeps listening through silence and types each phrase (${width}px)
+
+### frontend/e2e/assistant-voice-modes.spec.ts
+
+目的: 目的: AI アシスタントの TTS 返答（回答の主要な文言を声で読む）と会話モード（話して黙ると送り、回答を読み、 また聞く。停止まで交互に続く）。読む文言からコード・表・URL・出典を除くこと。読み上げ中はマイクの音を 送らないこと。320px と PC 幅ではみ出さないこと。 根拠: 2026-11-19 利用者「TTS 返答モードではチャットの主要な文言を音声で回答」「会話モードは一定の入力停止を 検知して LLM が回答し、停止ボタンを押すまで交互に会話が続く」。 API・WebSocket・マイク・音声合成は模擬する（LLM・音声認識・TTS を動かさない）。
+
+- speakable text keeps the main words and drops code, tables, links and sources
+- conversation mode sends after a pause, speaks the reply and listens again until stopped (${width}px)
+- TTS reply mode reads the finished answer and is remembered
 
 ### frontend/e2e/background-return.spec.ts
 

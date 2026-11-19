@@ -10,6 +10,7 @@ def test_asr_status_reports_reusable_runtime(admin_client, monkeypatch, tmp_path
 
     monkeypatch.setattr(asr, "runtime_root", lambda: tmp_path)
     monkeypatch.setattr(asr, "is_ready", lambda: True)
+    monkeypatch.setattr(asr, "haas_ready", lambda: True)   # 状態は選んだエンジンが使えるかで決まる
     response = admin_client.get("/api/v1/chat/asr/status")
     assert response.status_code == 200
     assert response.json()["state"] == "ready"
@@ -45,6 +46,9 @@ def test_asr_transcribe_converts_and_cleans_temp(admin_client, monkeypatch, tmp_
     binary.write_text("binary")
     model.write_text("model")
     monkeypatch.setattr(asr, "is_ready", lambda: True)
+    monkeypatch.setattr(asr, "whisper_ready", lambda: True)
+    monkeypatch.setattr(asr, "haas_ready", lambda: False)
+    monkeypatch.setattr(asr, "filter_ready", lambda: False)
     monkeypatch.setattr(asr, "binary_path", lambda: binary)
     monkeypatch.setattr(asr, "model_path", lambda: model)
     monkeypatch.setattr(asr, "data_dir", lambda: data)
@@ -97,19 +101,19 @@ def test_haas_is_used_when_installed_and_whisper_is_the_fallback(admin_client, m
         Path(args[args.index("-of") + 1] + ".txt").write_text("控えの結果", encoding="utf-8")
         return 0, ""
 
-    async def haas(wav, cwd):
+    async def haas(engine, wav, cwd):
         return "こんにちは。"
 
     monkeypatch.setattr(asr, "_exec_capture", fake_exec)
-    monkeypatch.setattr(asr, "_transcribe_haas", haas)
+    monkeypatch.setattr(asr, "_transcribe_sherpa", haas)
     files = {"audio": ("a.webm", b"x", "audio/webm")}
     first = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
     assert first == {"text": "こんにちは。", "language": "ja", "model": "Haas-ja-v1.0"}
 
-    async def broken(wav, cwd):
+    async def broken(engine, wav, cwd):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(asr, "_transcribe_haas", broken)
+    monkeypatch.setattr(asr, "_transcribe_sherpa", broken)
     second = admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()
     assert second["text"] == "控えの結果" and asr.last_fallback.startswith("RuntimeError") and asr.fallback_worked
     asr.last_fallback, asr.fallback_worked = "", False
@@ -146,11 +150,11 @@ def test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back(admin_
         Path(args[args.index("-of") + 1] + ".txt").write_text("whisper の結果", encoding="utf-8")
         return 0, ""
 
-    async def haas(wav, cwd):
+    async def haas(engine, wav, cwd):
         return "Haas の結果"
 
     monkeypatch.setattr(asr, "_exec_capture", fake_exec)
-    monkeypatch.setattr(asr, "_transcribe_haas", haas)
+    monkeypatch.setattr(asr, "_transcribe_sherpa", haas)
     files = {"audio": ("a.webm", b"x", "audio/webm")}
 
     selected = admin_client.put("/api/v1/speech/engines", json={"asr": "whisper"}, headers=CSRF_HEADERS)
@@ -165,3 +169,75 @@ def test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back(admin_
     assert admin_client.put("/api/v1/speech/engines", json={"asr": "unknown"}, headers=CSRF_HEADERS).status_code == 422
     (tmp_path / "speech-engines.json").write_text("{broken", encoding="utf-8")
     assert settings.load() == settings.DEFAULTS
+
+
+def test_english_choice_never_falls_back_to_a_japanese_engine(admin_client, monkeypatch, tmp_path):
+    """英語（Parakeet）を選んだら、日本語専用の Haas へは回さない（英語を片仮名の意味の無い文にして送らない）。
+    whisper を英語にしていれば控えにする（2026-11-19 利用者「英会話をしたい」）。"""
+    from app.speech import settings
+    from app.workflows import asr
+
+    monkeypatch.setattr(settings, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "haas_ready", lambda: True)
+    monkeypatch.setattr(asr, "parakeet_ready", lambda: False)
+    monkeypatch.setattr(asr, "whisper_ready", lambda: False)
+    settings.save({"asr": "parakeet-en"})
+    assert asr.engine_order() == []
+    monkeypatch.setattr(asr.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    async def fake_exec(*args, cwd, timeout):
+        Path(args[-1]).write_bytes(b"RIFF")
+        return 0, ""
+
+    monkeypatch.setattr(asr, "_exec_capture", fake_exec)
+    files = {"audio": ("a.webm", b"x", "audio/webm")}
+    assert admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).status_code == 409
+
+    monkeypatch.setattr(asr, "whisper_ready", lambda: True)
+    assert asr.engine_order() == ["whisper"]
+    monkeypatch.setattr(asr, "parakeet_ready", lambda: True)
+    assert asr.engine_order() == ["parakeet-en", "whisper"]
+    settings.save({"asr": "whisper", "whisper_language": "en"})
+    assert asr.engine_order() == ["whisper", "parakeet-en"]
+    settings.save({"whisper_language": "auto"})
+    assert asr.engine_order() == ["whisper"]
+
+
+def test_filter_rejects_segments_without_speech_and_does_not_fall_back(admin_client, monkeypatch, tmp_path):
+    """入力フィルター（Silero VAD）で声が無いとされた区切りは文字にせず、控えのエンジンにも回さない。
+    根拠: 2026-11-19 実測で Haas-ja は雑音だけの 96 本中 37 本に「うん。」「音楽」を出した（会話モードでそのまま送られる）。"""
+    import json as jsonlib
+
+    from app.speech import settings
+    from app.workflows import asr
+
+    monkeypatch.setattr(settings, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "filter_ready", lambda: True)
+    sent = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, data):
+            sent.append(jsonlib.loads(data))
+            return jsonlib.dumps({"text": "", "rejected": "no_speech", "speech_sec": 0.0, "level_db": -31.0}).encode(), b""
+
+    async def fake_spawn(*args, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(asr.asyncio, "create_subprocess_exec", fake_spawn)
+    before = asr.gate_counts["no_speech"]
+    try:
+        asyncio.run(asr._run_sherpa("haas", tmp_path / "a.wav", tmp_path))
+        raise AssertionError("捨てるはず")
+    except asr.HTTPException as exc:
+        assert exc.status_code == 422
+    assert asr.gate_counts["no_speech"] == before + 1
+    # 推奨の設定が worker に渡る（VAD 0.5・250 ms、雑音除去なし、音量の門なし）
+    assert sent[0]["vad"]["threshold"] == 0.5 and sent[0]["vad"]["min_speech_ms"] == 250
+    assert sent[0]["denoise"] is None and sent[0]["min_level_db"] == -90.0
+    # フィルターを切ると門も雑音除去も渡さない
+    settings.save({"input_filter": {"enabled": False}})
+    assert asr._sherpa_request("haas", tmp_path / "a.wav")["vad"] is None

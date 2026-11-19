@@ -4,15 +4,13 @@
  * 各 TTS / ASR の利用するエンジンを選択できるように」。 */
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getSpeechEngines, installSpeechEngine, saveSpeechDefaults, selectSpeechEngine, synthesizeSpeech, type SpeechEngine, type SpeechKind } from "../../api/speech";
+import { getSpeechEngines, installSpeechEngine, saveSpeechSettings, selectSpeechEngine, synthesizeSpeech,
+  type InputFilter, type SpeechEngine, type SpeechEngines, type SpeechKind, type SpeechSettings } from "../../api/speech";
+import { Toggle } from "./formControls";
 import { useAuth, useToasts } from "../../stores";
 import { Skeleton } from "../../components/ui";
 
 const KIND_LABEL: Record<SpeechKind, string> = { asr: "ASR（音声認識）", tts: "TTS（音声合成）" };
-const LANG_LABEL: Record<string, string> = {
-  ja: "日本語", en: "英語", ko: "韓国語", zh: "中国語", fr: "フランス語", de: "ドイツ語", es: "スペイン語",
-  it: "イタリア語", pt: "ポルトガル語", ru: "ロシア語", vi: "ベトナム語", id: "インドネシア語", na: "自動（言語を問わない）",
-};
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 
 export function SpeechEnginesPanel() {
@@ -36,6 +34,12 @@ export function SpeechEnginesPanel() {
       qc.setQueryData(["speech-engines"], next);
       show(`${KIND_LABEL[kind]} を ${data.engines.find((e) => e.id === engine)?.name ?? engine} にしました`);
     } catch (e) { show(e instanceof Error ? e.message : "切り替えに失敗しました", "error"); }
+  };
+  const save = async (values: Parameters<typeof saveSpeechSettings>[0], message = "保存しました") => {
+    try {
+      qc.setQueryData(["speech-engines"], await saveSpeechSettings(values));
+      show(message);
+    } catch (e) { show(e instanceof Error ? e.message : "保存できませんでした", "error"); }
   };
   const install = async (engine: SpeechEngine) => {
     setBusy(engine.id);
@@ -70,6 +74,11 @@ export function SpeechEnginesPanel() {
                 </select>
               </label>
             </div>
+            {kind === "asr" && !active && engines.some((e) => e.ready) && (
+              <p className="mb-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                選んだエンジンが未導入です。言語の違うエンジンでは代わりに聞きません。導入してください。
+              </p>
+            )}
             {active && active !== chosen && (
               <p className="mb-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
                 選んだエンジンが未導入のため、{engines.find((e) => e.id === active)?.name} で動いています。
@@ -81,9 +90,10 @@ export function SpeechEnginesPanel() {
                   starting={busy === engine.id} onInstall={() => void install(engine)} />
               ))}
             </div>
-            {kind === "tts" && engines.some((e) => e.id === chosen && e.ready) && (
-              <TryTts engine={engines.find((e) => e.id === chosen)!} defaults={data.selected} canSave={manage} />
-            )}
+            {/* 選んだエンジンに対応する設定だけを出す（2026-11-19 利用者の依頼） */}
+            {kind === "asr"
+              ? <AsrSettings chosen={chosen} data={data} canEdit={manage} save={save} />
+              : <TtsSettings engine={engines.find((e) => e.id === chosen)} settings={data.selected} canEdit={manage} save={save} />}
           </section>
         );
       })}
@@ -137,69 +147,192 @@ function EngineRow({ engine, chosen, canInstall, starting, onInstall }: {
   );
 }
 
-/** 試し聞き。声と速さは既定（AI アシスタントの読み上げ・会話モードが使う）として保存する */
-function TryTts({ engine, defaults, canSave }: {
-  engine: SpeechEngine; defaults: { tts_voice: string; tts_speed: number }; canSave: boolean;
+type Save = (values: Parameters<typeof saveSpeechSettings>[0], message?: string) => Promise<void>;
+const fieldClass = "min-h-10 min-w-0 rounded-xl border border-zinc-300 bg-white px-2 text-sm text-zinc-900 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100";
+const boxClass = "mt-3 space-y-3 border-t border-zinc-100 pt-3 dark:border-zinc-800";
+
+/** 数の入力。打っている途中では送らず、離れたとき・Enter で範囲に収めて保存する */
+function NumberField({ label, hint, value, min, max, step, disabled, onCommit, suffix }: {
+  label: string; hint?: string; value: number; min: number; max: number; step: number; disabled?: boolean;
+  onCommit: (value: number) => void; suffix?: string;
+}) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const commit = () => {
+    const parsed = Number(text);
+    const next = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : value;
+    setText(String(next));
+    if (next !== value) onCommit(next);
+  };
+  return (
+    <label className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+      <span className="min-w-0 flex-1">{label}{hint && <span className="block text-[11px] text-zinc-400">{hint}</span>}</span>
+      <span className="flex shrink-0 items-center gap-1">
+        <input type="number" inputMode="decimal" value={text} min={min} max={max} step={step} disabled={disabled} aria-label={label}
+          onChange={(event) => setText(event.target.value)} onBlur={commit}
+          onKeyDown={(event) => { if (event.key === "Enter") commit(); }}
+          className={`${fieldClass} num w-24 text-right`} />
+        {suffix && <span className="text-[11px] text-zinc-400">{suffix}</span>}
+      </span>
+    </label>
+  );
+}
+
+const ASR_LANGUAGE: Record<string, string> = { haas: "日本語（固定）", "parakeet-en": "英語（固定）" };
+
+function AsrSettings({ chosen, data, canEdit, save }: { chosen: string; data: SpeechEngines; canEdit: boolean; save: Save }) {
+  const name = data.engines.find((e) => e.id === chosen)?.name ?? chosen;
+  return (
+    <div className={boxClass}>
+      <div>
+        <p className="mb-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">{name} の設定</p>
+        {chosen === "whisper" ? (
+          <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+            <span className="flex-1">聞く言語</span>
+            <select value={data.selected.whisper_language} disabled={!canEdit} aria-label="whisper の聞く言語"
+              onChange={(event) => void save({ whisper_language: event.target.value as SpeechSettings["whisper_language"] })} className={fieldClass}>
+              <option value="ja">日本語</option><option value="en">英語</option><option value="auto">自動判定</option>
+            </select>
+          </label>
+        ) : (
+          <p className="text-xs text-zinc-500">聞く言語: {ASR_LANGUAGE[chosen] ?? "-"}</p>
+        )}
+      </div>
+      <InputFilterSettings filter={data.selected.input_filter} meta={data.filter} canEdit={canEdit}
+        onChange={(change, message) => save({ input_filter: change }, message)} />
+    </div>
+  );
+}
+
+const PRESET_LABEL: Record<InputFilter["preset"], string> = { recommended: "推奨", noisy: "騒がしい場所", quiet: "静かな部屋・小さな声", custom: "カスタム" };
+
+/** 音声入力のフィルター。2026-11-19 利用者「音が小さい・ノイズが大きい場合を除去するフィルター。有効無効と詳細を変えられ、
+ *  初めは推奨のプリセット」。推奨の中身は実測で決めた（docs/speech-input-filter.md） */
+function InputFilterSettings({ filter, meta, canEdit, onChange }: {
+  filter: InputFilter; meta: SpeechEngines["filter"]; canEdit: boolean;
+  onChange: (change: Partial<InputFilter>, message?: string) => Promise<void>;
+}) {
+  const off = !canEdit || !filter.enabled;
+  const gate = meta.gate;
+  const dropped = gate.no_speech + gate.too_quiet;
+  return (
+    <div data-input-filter className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <Toggle label="入力フィルター" value={filter.enabled} disabled={!canEdit}
+        hint="雑音・物音だけの区切りを捨てる"
+        onChange={(value) => void onChange({ enabled: value }, value ? "入力フィルターを有効にしました" : "入力フィルターを切りました")} />
+      {!meta.ready && filter.enabled && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-300">未導入です。次に音声入力を使うと自動で入ります（2.8 MB）。</p>
+      )}
+      {(gate.passed > 0 || dropped > 0) && (
+        <p className="num text-[11px] text-zinc-500">起動してから {gate.passed} 区切りを通し、声の無い {gate.no_speech}・小さすぎる {gate.too_quiet} を捨てました。</p>
+      )}
+      <div role="radiogroup" aria-label="入力フィルターのプリセット" className="flex flex-wrap gap-1.5">
+        {(["recommended", "noisy", "quiet"] as const).map((preset) => (
+          <button key={preset} type="button" role="radio" aria-checked={filter.preset === preset} disabled={off}
+            onClick={() => void onChange({ preset }, `${PRESET_LABEL[preset]}にしました`)}
+            className={`min-h-10 rounded-xl border px-3 text-xs disabled:opacity-50 ${filter.preset === preset
+              ? "border-accent-500 bg-accent-50 font-medium text-accent-700 dark:bg-accent-600/15 dark:text-accent-300" : "border-zinc-300 dark:border-zinc-700"}`}>
+            {PRESET_LABEL[preset]}
+          </button>
+        ))}
+        {filter.preset === "custom" && <span className="self-center rounded-lg bg-zinc-100 px-2 py-1 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">カスタム</span>}
+      </div>
+      <details className="group">
+        <summary className="flex min-h-9 cursor-pointer list-none items-center text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
+          <span className="mr-1 transition-transform group-open:rotate-90">›</span>詳細な設定
+        </summary>
+        <div className="mt-2 space-y-2.5">
+          <Toggle label="声の判定（Silero VAD）" value={filter.vad} disabled={off}
+            hint="声の無い区切りを捨てる"
+            onChange={(value) => void onChange({ vad: value })} />
+          <NumberField label="声の判定の厳しさ" hint="大きいほど雑音に強い（推奨 0.5）" value={filter.vad_threshold}
+            min={0.1} max={0.95} step={0.05} disabled={off || !filter.vad} onCommit={(v) => void onChange({ vad_threshold: v })} />
+          <NumberField label="声とみなす最短の長さ" hint="短い物音・咳を捨てる" value={filter.min_speech_ms}
+            min={0} max={3000} step={50} suffix="ms" disabled={off || !filter.vad} onCommit={(v) => void onChange({ min_speech_ms: v })} />
+          <NumberField label="音量の下限" hint="-90 で使わない"
+            value={filter.min_level_db} min={-90} max={-10} step={1} suffix="dB" disabled={off} onCommit={(v) => void onChange({ min_level_db: v })} />
+          <label className="flex flex-wrap items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+            <span className="min-w-0 flex-1">雑音除去<span className="block text-[11px] text-zinc-400">日本語のみ効果あり</span></span>
+            <select value={filter.denoise} disabled={off} aria-label="雑音除去" className={fieldClass}
+              onChange={(event) => void onChange({ denoise: event.target.value as InputFilter["denoise"] })}>
+              <option value="off">使わない</option><option value="gtcrn">GTCRN</option>
+            </select>
+          </label>
+          <Toggle label="低い音のカット（80 Hz 以下）" hint="空調・うなり" value={filter.highpass} disabled={off}
+            onChange={(value) => void onChange({ highpass: value })} />
+          <NumberField label="マイクの感度（声とみなす音量）" hint="小さいほど小さな声も拾う（推奨 0.02）" value={filter.mic_sensitivity}
+            min={0.002} max={0.2} step={0.002} disabled={!canEdit} onCommit={(v) => void onChange({ mic_sensitivity: v })} />
+          <NumberField label="話し終わりの待ち時間（会話モード）" hint="黙ってから送るまで" value={filter.turn_end_ms}
+            min={500} max={5000} step={100} suffix="ms" disabled={!canEdit} onCommit={(v) => void onChange({ turn_end_ms: v })} />
+          <Toggle label="ブラウザの雑音抑制・エコー除去" hint="エコー除去など" value={filter.browser_processing} disabled={!canEdit}
+            onChange={(value) => void onChange({ browser_processing: value })} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+const STEPS_LABEL: Record<number, string> = { 4: "速い", 8: "標準", 16: "高品質" };
+
+/** TTS の設定と試し聞き。ここで選んだ声・速さ・品質・言語を AI アシスタントの読み上げも使う */
+function TtsSettings({ engine, settings, canEdit, save }: {
+  engine: SpeechEngine | undefined; settings: SpeechSettings; canEdit: boolean; save: Save;
 }) {
   const show = useToasts((s) => s.show);
-  const qc = useQueryClient();
   const [text, setText] = useState("こんにちは。今日は良い天気ですね。");
-  const [voice, setVoice] = useState(defaults.tts_voice);
-  const [lang, setLang] = useState("ja");
-  const [speed, setSpeed] = useState(defaults.tts_speed);
-  const changed = voice !== defaults.tts_voice || speed !== defaults.tts_speed;
-  const saveDefaults = async () => {
-    try {
-      qc.setQueryData(["speech-engines"], await saveSpeechDefaults({ tts_voice: voice, tts_speed: speed }));
-      show("読み上げの既定の声・速さにしました");
-    } catch (e) { show(e instanceof Error ? e.message : "保存できませんでした", "error"); }
-  };
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
-
+  if (!engine) return null;
   const speak = async () => {
     setWorking(true);
     try {
-      const blob = await synthesizeSpeech({ text, voice, lang, speed });
+      const lang = settings.tts_language !== "auto" ? settings.tts_language : /[぀-ヿ㐀-鿿]/.test(text) ? "ja" : "en";
+      const blob = await synthesizeSpeech({ text, lang });
       setAudioUrl(URL.createObjectURL(blob));
       window.setTimeout(() => void audioRef.current?.play().catch(() => undefined), 0);
     } catch (e) { show(e instanceof Error ? e.message : "音声を作れませんでした", "error"); }
     finally { setWorking(false); }
   };
-  const field = "min-h-10 min-w-0 rounded-xl border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-950";
+  const row = "flex flex-wrap items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300";
   return (
-    <div className="mt-3 space-y-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-      <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">試し聞きと既定の声</p>
-      <p className="text-[11px] text-zinc-500">AI アシスタントの読み上げ（TTS 返答・会話モード）は、ここで保存した声と速さを使います。</p>
-      <textarea value={text} onChange={(event) => setText(event.target.value)} rows={2} maxLength={5000}
-        aria-label="読み上げる文" className={`${field} w-full py-2`} />
-      <div className="flex flex-wrap items-center gap-2">
-        <select value={voice} onChange={(event) => setVoice(event.target.value)} aria-label="声" className={field}>
+    <div className={boxClass}>
+      <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">{engine.name} の設定</p>
+      <p className="text-[11px] text-zinc-500">アシスタントの読み上げにも使います。</p>
+      <label className={row}><span className="flex-1">声</span>
+        <select value={settings.tts_voice} disabled={!canEdit} aria-label="声" className={fieldClass}
+          onChange={(event) => void save({ tts_voice: event.target.value })}>
           {(engine.voices ?? []).map((v) => <option key={v} value={v}>{v.startsWith("F") ? `女性 ${v.slice(1)}` : `男性 ${v.slice(1)}`}</option>)}
         </select>
-        <select value={lang} onChange={(event) => setLang(event.target.value)} aria-label="言語" className={`${field} max-w-[10rem]`}>
-          {(engine.languages ?? ["ja"]).map((l) => <option key={l} value={l}>{LANG_LABEL[l] ?? l}</option>)}
+      </label>
+      <NumberField label="速さ" value={settings.tts_speed} min={0.7} max={2} step={0.05} disabled={!canEdit} onCommit={(v) => void save({ tts_speed: v })} />
+      <label className={row}><span className="flex-1">品質<span className="block text-[11px] text-zinc-400">高いほど遅い</span></span>
+        <select value={settings.tts_steps} disabled={!canEdit} aria-label="品質" className={fieldClass}
+          onChange={(event) => void save({ tts_steps: Number(event.target.value) })}>
+          {[4, 8, 16].map((n) => <option key={n} value={n}>{STEPS_LABEL[n]}（{n}）</option>)}
         </select>
-        <label className="flex items-center gap-1 text-xs text-zinc-500">
-          速さ
-          <input type="number" min={0.7} max={2} step={0.05} value={speed} aria-label="速さ"
-            onChange={(event) => setSpeed(Math.min(2, Math.max(0.7, Number(event.target.value) || 1.05)))}
-            className={`${field} num w-20`} />
-        </label>
-        <button type="button" onClick={() => void speak()} disabled={working || !text.trim()}
-          className="ml-auto min-h-10 rounded-xl bg-accent-600 px-4 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-          {working ? "作成中…" : "再生"}
-        </button>
-      </div>
-      {canSave && changed && (
-        <button type="button" onClick={() => void saveDefaults()}
-          className="min-h-10 rounded-xl border border-zinc-300 px-3 text-xs font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-          この声・速さを既定にする
-        </button>
+      </label>
+      <label className={row}><span className="flex-1">読む言語</span>
+        <select value={settings.tts_language} disabled={!canEdit} aria-label="読む言語" className={fieldClass}
+          onChange={(event) => void save({ tts_language: event.target.value as SpeechSettings["tts_language"] })}>
+          <option value="auto">自動</option><option value="ja">日本語</option><option value="en">英語</option>
+        </select>
+      </label>
+      {engine.ready && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">試し聞き</p>
+          <textarea value={text} onChange={(event) => setText(event.target.value)} rows={2} maxLength={5000}
+            aria-label="読み上げる文" className={`${fieldClass} w-full py-2`} />
+          <div className="flex justify-end">
+            <button type="button" onClick={() => void speak()} disabled={working || !text.trim()}
+              className="min-h-10 rounded-xl bg-accent-600 px-4 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+              {working ? "作成中…" : "再生"}
+            </button>
+          </div>
+          {audioUrl && <audio ref={audioRef} controls src={audioUrl} className="w-full" />}
+        </div>
       )}
-      {audioUrl && <audio ref={audioRef} controls src={audioUrl} className="w-full" />}
     </div>
   );
 }

@@ -17,6 +17,7 @@ interface JobStatus { status: string; error?: string }
 
 export const WAVE_BARS = 48;
 const TICK_MS = 50;
+/** 声とみなす音量の既定（Models の TTS / ASR → 入力フィルターの「マイクの感度」で変える） */
 const VOICE_RMS = 0.02;
 const PAUSE_MS = 700;
 const SOFT_CUT_MS = 12_000;
@@ -43,7 +44,15 @@ export function useVoiceMeter(store: VoiceMeterStore): VoiceMeter {
   return useSyncExternalStore(store.subscribe, store.get);
 }
 
-export function useAssistantAsr({ onText, onError }: {
+export interface MicOptions {
+  /** 声とみなす音量（RMS）。小さいほど小さな声で区切りが始まる */
+  micSensitivity?: number;
+  /** ブラウザの雑音抑制・エコー除去・自動音量 */
+  browserProcessing?: boolean;
+}
+
+export function useAssistantAsr({ onText, onError, options }: {
+  options?: MicOptions;
   /** 区切りの文字が届いたとき（古い順） */
   onText: (text: string) => void;
   onError: (message: string) => void;
@@ -71,6 +80,8 @@ export function useAssistantAsr({ onText, onError }: {
   onTextRef.current = onText;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const release = () => {
     cutRef.current = null;
@@ -156,7 +167,10 @@ export function useAssistantAsr({ onText, onError }: {
       if (session !== sessionRef.current) return;   // 取り消された
       setPhase("permission");
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: (() => {
+          const browser = optionsRef.current?.browserProcessing ?? true;
+          return { channelCount: 1, echoCancellation: browser, noiseSuppression: browser, autoGainControl: browser };
+        })(),
       });
       if (session !== sessionRef.current) { stream.getTracks().forEach((t) => t.stop()); return; }
       streamRef.current = stream;
@@ -209,7 +223,7 @@ export function useAssistantAsr({ onText, onError }: {
         bars.shift();
         bars.push(Math.min(1, rms * 9));
         meter.set({ levels: [...bars], elapsedMs: now - startedAt });
-        if (rms >= VOICE_RMS && !pausedRef.current) {
+        if (rms >= (optionsRef.current?.micSensitivity ?? VOICE_RMS) && !pausedRef.current) {
           if (!current.state.voiced) spokeAt = now;
           current.state.voiced = true;
           lastVoiceAt = now;

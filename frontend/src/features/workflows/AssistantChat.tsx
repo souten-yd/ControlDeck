@@ -21,6 +21,7 @@ import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, resolveConversationPrefs, SEARCH_MODES, updateConversationPrefs, validChoice, validDepth, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ConversationPrefs, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { useAssistantTts } from "./useAssistantTts";
+import { getSpeechEngines } from "../../api/speech";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
 import { OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
@@ -1293,7 +1294,14 @@ export default function AssistantChat() {
   const voiceBaseRef = useRef("");
   const joinSpoken = (prev: string, text: string) =>
     prev + (prev && /[A-Za-z0-9.,!?]$/.test(prev) && /^[A-Za-z0-9]/.test(text) ? " " : "") + text;
+  // 入力フィルター（Models の TTS / ASR）のうち、マイク側の設定。読めなければ既定
+  const { data: speechSettings } = useQuery({ queryKey: ["speech-engines"], queryFn: getSpeechEngines, staleTime: 60_000 });
+  const micFilter = speechSettings?.selected.input_filter;
+  const turnEndMs = micFilter?.turn_end_ms ?? TALK_TURN_END_MS;
+  const turnEndRef = useRef(turnEndMs);
+  turnEndRef.current = turnEndMs;
   const asr = useAssistantAsr({
+    options: { micSensitivity: micFilter?.mic_sensitivity, browserProcessing: micFilter?.browser_processing },
     onText: (text) => {
       if (talkRef.current !== "off") turnRef.current = joinSpoken(turnRef.current, text);
       else setInput((prev) => joinSpoken(prev, text));
@@ -1384,7 +1392,7 @@ export default function AssistantChat() {
     if (talk !== "listening") return;
     const timer = window.setInterval(() => {
       const text = turnRef.current.trim();
-      if (!text || !asr.settled() || asr.quietMs() < TALK_TURN_END_MS) return;
+      if (!text || !asr.settled() || asr.quietMs() < turnEndRef.current) return;
       turnRef.current = "";
       asr.pause();
       replyStartedRef.current = false;
