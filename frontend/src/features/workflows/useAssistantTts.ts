@@ -41,6 +41,7 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
   /** 利用者の操作の中で呼ぶ（iPhone で後から鳴らせるようにする） */
   const unlock = useCallback(() => {
     const audio = element();
+    if (!audio.paused) return;   // 読み上げ中は邪魔しない（もう鳴らせる状態）
     const url = silentWav();
     audio.src = url;
     void audio.play().catch(() => undefined).finally(() => URL.revokeObjectURL(url));

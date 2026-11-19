@@ -261,28 +261,22 @@ export function PlusMenu({
 }
 
 /** ＋の隣に出す小さな札（既定から変えた機能・OpenCode の権限）。押すと＋のメニューと同じ選択を外す/切り替える。 */
-export function ComposerPill({ icon, label, title, tone = "accent", onClick, onClear, kind, compact = false }: {
+/** 入力欄の札。アイコンだけを出し（2026-11-19 利用者「文字はなし、×も不要、タップしたら消える」）、
+ *  名前は読み上げとツールチップに残す。タップの動作は呼ぶ側が決める（外す・切り替える）。 */
+export function ComposerPill({ icon, label, title, tone = "accent", onClick, kind }: {
   icon: ReactNode; label: string; title: string; tone?: "accent" | "amber" | "plan";
-  /** 狭い幅（380px 未満）では文字を出さずアイコンだけにする */
-  compact?: boolean;
-  onClick?: () => void; onClear?: () => void;
+  onClick?: () => void;
   /** E2E と画面の計測用（data-composer-pill） */
   kind: string;
 }) {
   const color = TONE[tone];
   return (
-    <span data-composer-pill={kind} className={`flex h-9 min-w-0 shrink items-center rounded-full border text-xs font-medium ${color}`}>
+    <span data-composer-pill={kind} className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm ${color}`}>
       <button type="button" onClick={onClick} title={title} aria-label={title}
-        className="flex h-11 min-w-0 items-center gap-1.5 pl-3 pr-2 focus:outline-none focus-visible:underline">
-        <span aria-hidden className="shrink-0 leading-none">{icon}</span>
-        <span data-pill-label className={`min-w-0 truncate ${compact ? "max-[379px]:hidden" : ""}`}>{label}</span>
+        className="grid h-11 w-11 place-items-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40">
+        <span aria-hidden className="leading-none">{icon}</span>
+        <span data-pill-label className="sr-only">{label}</span>
       </button>
-      {onClear && (
-        <button type="button" onClick={onClear} aria-label={`${label} を外す（自動判定に戻す）`} title="外す"
-          className="grid h-11 w-8 shrink-0 place-items-center rounded-r-full opacity-70 hover:opacity-100 focus:outline-none focus-visible:underline">
-          ×
-        </button>
-      )}
     </span>
   );
 }

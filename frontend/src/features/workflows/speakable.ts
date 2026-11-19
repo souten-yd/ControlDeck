@@ -30,7 +30,10 @@ export function speakableText(markdown: string, maxChars = MAX_SPOKEN_CHARS): st
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")              // 画像
     .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, "$1")         // リンクは文字だけ
     .replace(/https?:\/\/\S+/g, "")                      // むき出しの URL
-    .replace(/\[\d+(?:[,\s-]+\d+)*\]/g, "")              // 出典の番号 [1] [2, 3]
+    .replace(/\[R?[A-Z0-9]{1,3}\](?:\s*[〜~,、-]\s*\[R?[A-Z0-9]{1,3}\])*/g, "")   // 出典の印 [1] [RK] [R1]〜[RA]
+    .replace(/[（(]\s*[）)]/g, "")                         // 印を消して空になった括弧
+    // 絵文字と、その後ろに付く見えない文字（異体字セレクタ・結合子）。Supertonic は読めず失敗する（2026-11-19 本番）
+    .replace(/[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\uFE0E\uFE0F\u200D\u20E3]/gu, "")
     .replace(/<[^>]+>/g, "")                             // HTML
     .replace(/`([^`]*)`/g, "$1")
     .replace(/^\s{0,3}#{1,6}\s+/gm, "")                  // 見出し

@@ -60,7 +60,7 @@ for (const width of [320, 1280]) {
     const input = shell.locator("[data-assistant-input]");
     const card = shell.locator("[data-assistant-input-card]");
     await expect(card).toHaveAttribute("data-agent", "build");
-    await expect(shell.locator("[data-plan-banner]")).toHaveCount(0);
+    await expect(shell.locator('[data-composer-pill="plan"]')).toHaveCount(0);
 
     // Shift+Tab: Auto → 確認 → プラン
     await input.focus();
@@ -68,9 +68,7 @@ for (const width of [320, 1280]) {
     await expect.poll(() => modes).toEqual(["ask"]);
     await expect(shell.locator('[data-composer-pill="permission"]')).toContainText("確認");   // 画面に出てから次を押す
     await input.press("Shift+Tab");
-    const banner = shell.locator("[data-plan-banner]");
-    await expect(banner).toBeVisible();
-    await expect(banner).toContainText("計画だけを立てます");
+    // プランの説明欄は出さない（2026-11-19 利用者「ごちゃごちゃしている。説明はいらない」）。枠の色・📋 の札・案内文で分かる
     await expect(shell.locator('[data-composer-pill="plan"]')).toContainText("プラン");
     await expect(shell.locator('[data-composer-pill="permission"]')).toHaveCount(0);
     await expect(card).toHaveAttribute("data-agent", "plan");
@@ -91,7 +89,6 @@ for (const width of [320, 1280]) {
     await expect.poll(() => sent.length).toBe(2);
     expect(sent[1]).toMatchObject({ mode: "code", code_agent: "build", content: "このプランで実装してください。" });
     await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toHaveText("Chat");   // 固定は変えない
-    await expect(banner).toHaveCount(0);
     await expect(card).toHaveAttribute("data-agent", "build");
   });
 }
@@ -107,15 +104,16 @@ test("the plus menu switches between build and plan, and Shift+Tab leaves plan b
   await expect(shell.getByText("作りました")).toBeVisible();
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-agent-option="plan"]').click();
-  await expect(shell.locator("[data-plan-banner]")).toBeVisible();
+  const card = shell.locator("[data-assistant-input-card]");
+  await expect(card).toHaveAttribute("data-agent", "plan");
   await shell.locator("[data-assistant-input]").press("Shift+Tab");      // プラン → ビルド（Auto のまま）
-  await expect(shell.locator("[data-plan-banner]")).toHaveCount(0);
+  await expect(card).toHaveAttribute("data-agent", "build");
   await expect(shell.locator('[data-composer-pill="permission"]')).toContainText("Auto");
   expect(modes).toEqual([]);                                             // もともと Auto なので送り直さない
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-agent-option="plan"]').click();
-  await shell.locator("[data-plan-banner]").getByRole("button", { name: "ビルドに切り替える" }).click();
-  await expect(shell.locator("[data-plan-banner]")).toHaveCount(0);
+  await shell.locator('[data-composer-pill="plan"] button').click();      // 札をタップするとビルドに戻る
+  await expect(card).toHaveAttribute("data-agent", "build");
 });
 
 
@@ -165,10 +163,9 @@ test("research with plan goes to OpenCode: investigate first, then plan", async 
   await page.locator('[data-agent-option="plan"]').click();
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-mode-option="investigate"]').click();
-  await expect(shell.locator("[data-plan-banner]")).toContainText("調べた結果をもとに計画します");
   // 書き込み先が分かり、選べる（2026-11-18 利用者「プロジェクトを選べない。どこに書き込まれるのか」）
   await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toBeVisible();
-  await expect(shell.locator("[data-plan-target]")).toContainText("app");
+  await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toHaveValue("app");
   const input = shell.locator("[data-assistant-input]");
   await input.fill("Plan15 の作り方を検討して");
   await input.press("Enter");
