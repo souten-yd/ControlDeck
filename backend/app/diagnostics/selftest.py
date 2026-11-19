@@ -192,6 +192,21 @@ def _voice_input():
                   if dropped or gate["passed"] else f"{flt['preset']}"))
 
 
+def _chat_rerank():
+    """会話の資料の再ランク: 時間切れで打ち切っていないか（GPU が埋まって reranker が CPU で遅いと起きる）。
+
+    2026-11-20 本番: Radiance が VRAM を使い切っていて reranker が CPU で動き、挨拶 1 つで 22.6 秒待たせていた。"""
+    from app.workflows import rag
+
+    stats = rag.rerank_stats
+    if stats["timeouts"]:
+        return "warn", (f"会話の資料の再ランクが {stats['timeouts']} 回、時間切れで打ち切られました（最長 {stats['slowest_seconds']} 秒）。"
+                        "GPU が他のモデルで埋まっていると reranker が CPU で遅くなります")
+    if not stats["calls"]:
+        return True, "会話の資料の再ランクはまだ使われていません"
+    return True, f"会話の資料の再ランク: 起動してから {stats['calls']} 回、最長 {stats['slowest_seconds']} 秒"
+
+
 def _speech_output():
     """音声合成（Supertonic 3）: 合成が失敗していないか、保管庫（上流は開発終了）が欠けていないか。
 
@@ -341,7 +356,8 @@ CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモ�
           ("OpenCode のアクションリスト", _opencode_todos),
           ("OpenCode の裏のエージェント", _opencode_background),
           ("音声入力", _voice_input),
-          ("音声合成", _speech_output)]
+          ("音声合成", _speech_output),
+          ("会話の資料の再ランク", _chat_rerank)]
 
 
 _latest: dict | None = None

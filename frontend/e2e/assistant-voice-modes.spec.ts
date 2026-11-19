@@ -181,3 +181,31 @@ test("TTS reply mode reads the finished answer and is remembered", async ({ page
   await page.reload();
   await expect(shell.locator("[data-speaker-toggle]")).toHaveAttribute("data-speaker-toggle", "on");
 });
+
+test("a reply is read once by the tab that sent it, not by another tab watching the same chat", async ({ page, context }) => {
+  // 2026-11-20 本番「読み上げが行われるときと行われないときがある」: 1 つの回答に接続が 3〜4 本（別のタブ・購読し直し）。
+  // 生成中かどうかの切り替わりで判定していたため、購読し直しで始まった読み上げを止めていた
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.setItem("cd-assistant-tts-reply", "1"); });
+  const state = await mockChat(page, []);
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await shell.locator("[data-assistant-input]").fill("こんにちは");
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => state.spoken.length).toBeGreaterThan(0);
+
+  // 裏のタブ: 同じ会話を開くと、生成中の回答を購読し直す。表に出ていないので読まない
+  const other = await context.newPage();
+  await other.addInitScript(() => Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" }));
+  const otherState = await mockChat(other, []);
+  otherState.messages.push(
+    { id: "u1", role: "user", content: "こんにちは", thinking: "", status: "completed", job_id: null, model: "", error: "", meta: {}, created_at: "2026-11-20T00:00:00Z" },
+    { id: "a1", role: "assistant", content: "", thinking: "", status: "generating", job_id: "j1", model: "", error: "", meta: {}, created_at: "2026-11-20T00:00:01Z" });
+  await other.goto("/assistant");
+  await expect(other.locator("[data-assistant-shell]").getByText("回答1です。").first()).toBeVisible();
+  await other.waitForTimeout(800);
+  expect(otherState.spoken).toEqual([]);
+  expect(state.spoken.join("")).toBe("回答1です。コードは画面に表示しています。");   // 送ったタブは 1 回だけ
+});

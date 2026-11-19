@@ -13,7 +13,7 @@ import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
-import { IconChip, IconMic, IconSearch, IconSend, IconStop, IconTerminal } from "../../components/icons";
+import { IconChip, IconConversation, IconMic, IconSparkle, IconSearch, IconSend, IconSpeaker, IconSpeakerOff, IconStop, IconTerminal } from "../../components/icons";
 import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/shell";
 import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
@@ -33,7 +33,7 @@ import {
   ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
   type ConversationSummary,
 } from "./ConversationHistory";
-import { ComposerPill, PlusMenu, type PlusAction } from "./PlusMenu";
+import { ComposerPill, PlusMenu, modeIcon, type PlusAction } from "./PlusMenu";
 
 /** 進み具合の取れるアップロード（fetch では送信の進捗が取れない）。 */
 function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: number) => void): Promise<{ ok: boolean; status: number; body: unknown }> {
@@ -1114,6 +1114,7 @@ export default function AssistantChat() {
   };
 
   const send = async (providedText?: string, agentOverride?: "build" | "plan", modeOverride?: AssistantModeChoice) => {
+    if (talkRef.current === "off") tts.stop();   // 次を送ったら前の読み上げは止める（利用者の操作のときだけ）
     const agent = agentOverride ?? codeAgent;
     // 「このプランで作る」は OpenCode に決め打ちで送る（機能をチャットなどに変えていても）
     const choice = modeOverride ?? modeChoice;
@@ -1242,6 +1243,7 @@ export default function AssistantChat() {
           selectedMode === "deep" ? "🔬 Deep サーチ中...（サーバー側で継続）" :
           selectedMode === "research" ? "🧭 調査計画に沿って複数ソースを確認中..." :
           selectedMode === "web" || selectedMode === "academic" ? "🔎 検索中...（サーバー側で継続）" : "";
+        ownRepliesRef.current.add(res.assistant_message_id);
         append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "code") {
@@ -1268,6 +1270,7 @@ export default function AssistantChat() {
           updateConversationPrefs(cid, {}, res.user_message_id);   // この送信より後の選択を正とする
           setMessages((prev) => prev.map((m) => (m === userMsg ? { ...m, messageId: res.user_message_id } : m)));
         }
+        ownRepliesRef.current.add(res.assistant_message_id);
         append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
           persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code", agent });
         await streamMessage(res.assistant_message_id);
@@ -1425,27 +1428,31 @@ export default function AssistantChat() {
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [talk]);
-  // 回答が終わったら読む（会話モードは読み終えてから聞き直す）
-  const prevBusyRef = useRef(busy);
+  // 回答が流れ終わったら読む（会話モードは読み終えてから聞き直す）。
+  // 「生成中かどうか（busy）」の切り替わりでは判定しない: 回答の直後に送信待ちの確認が同じ回答を購読し直すと busy が
+  // 一瞬立ち、始まった読み上げを止めていた（2026-11-20 本番「読み上げが行われるときと行われないときがある」。
+  // 読まれなかった 4 回はどれも 1 つの回答に接続が 3〜4 回）。回答ごとに「流れていた → 終わった」を見て 1 回だけ読む。
+  const streamingSeenRef = useRef(new Set<string>());
+  const ownRepliesRef = useRef(new Set<string>());   // このタブから送って始まった回答
   useEffect(() => {
-    const was = prevBusyRef.current;
-    prevBusyRef.current = busy;
-    if (busy && !was) {
-      if (talkRef.current === "thinking") replyStartedRef.current = true;
-      else if (talkRef.current === "off") tts.stop();   // 次を送ったら前の読み上げは止める
-      return;
-    }
-    if (busy || !was) return;
-    const latest = [...messagesRef.current].reverse().find((m) => m.role === "assistant");
-    const reply = latest && !latest.streaming ? latest.content : "";
-    if (talkRef.current === "thinking") {
-      void speakThenListen(reply);
-    } else if (talkRef.current === "off" && ttsReplyRef.current && reply.trim() && latest?.messageId !== lastSpokenRef.current) {
-      lastSpokenRef.current = latest?.messageId;
-      void tts.speak(reply);
+    for (const message of messages) {
+      if (message.role !== "assistant" || !message.messageId) continue;
+      if (message.streaming) {
+        streamingSeenRef.current.add(message.messageId);
+        if (talkRef.current === "thinking") replyStartedRef.current = true;
+        continue;
+      }
+      if (!streamingSeenRef.current.delete(message.messageId)) continue;   // この画面で流れていた回答だけ
+      if (lastSpokenRef.current === message.messageId) continue;          // 購読し直しても 2 度読まない
+      // 同じ会話を別のタブ・PWA でも開いていると、そちらも同じ回答を購読する。読むのはこのタブから送った回答か、
+      // 表に出ているタブだけ（裏のタブは iPhone では鳴らせず、表のタブの読み上げとぶつかる）
+      if (!ownRepliesRef.current.has(message.messageId) && document.visibilityState !== "visible") continue;
+      lastSpokenRef.current = message.messageId;
+      if (talkRef.current === "thinking") void speakThenListen(message.content);
+      else if (talkRef.current === "off" && ttsReplyRef.current && message.content.trim()) void tts.speak(message.content);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy]);
+  }, [messages]);
   // 会話を切り替えたら、読み上げと会話モードを止める（最初の発言で会話が作られたときは止めない）
   const prevConvRef = useRef(convId);
   useEffect(() => {
@@ -1667,7 +1674,7 @@ export default function AssistantChat() {
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
   const plusActions: PlusAction[] = [
     {
-      id: "talk", icon: "🗣", label: "会話モード", hint: "声で話して、声で聞く",
+      id: "talk", icon: <IconConversation />, label: "会話モード", hint: "声で話して、声で聞く",
       disabled: busy || asr.active || asr.phase === "installing", onSelect: startTalk,
     },
   ];
@@ -2147,7 +2154,7 @@ export default function AssistantChat() {
                 <>
                   {/* 会話モード: 聞く → 考える → 話す を停止まで繰り返す */}
                   <span data-talk-phase={talk} className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg ${talk === "listening" ? "bg-emerald-50 dark:bg-emerald-950/40" : "bg-zinc-100 dark:bg-zinc-800"}`} aria-hidden>
-                    {talk === "speaking" ? "🔊" : talk === "thinking" ? "💭" : "🗣"}
+                    {talk === "speaking" ? <IconSpeaker /> : talk === "thinking" ? <span className="animate-pulse">…</span> : <IconMic />}
                   </span>
                   {talk === "listening"
                     ? <VoiceWave meter={asr.meter} pending={asr.pending} finishing={false} />
@@ -2191,10 +2198,10 @@ export default function AssistantChat() {
               <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
                 {modeChoice === "auto" ? (
                   <span data-mode-detected aria-live="polite" className="min-w-0 truncate px-1 text-xs text-zinc-500 dark:text-zinc-400">
-                    <span aria-hidden>✦ </span>自動 · {routing ? "計画中…" : currentMode.label}
+                    <IconSparkle aria-hidden className="mr-1 inline align-[-2px]" />自動 · {routing ? "計画中…" : currentMode.label}
                   </span>
                 ) : (
-                  <ComposerPill icon={modeOptions.find((o) => o.id === modeChoice)?.icon ?? "✦"}
+                  <ComposerPill icon={modeIcon(modeChoice, modeOptions.find((o) => o.id === modeChoice)?.icon ?? "✦")}
                     label={modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}
                     title={`機能: ${modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}（タップで自動に戻す）`} kind="mode"
                     onClick={() => { if (returnChoiceRef.current) finishOneShot(); else chooseMode("auto"); }} />
@@ -2294,7 +2301,7 @@ function fmtTok(n: number): string {
 /** 生成統計の左下表示: 思考状態 / tok/s / コンテキスト使用量。
  * ヒント文と同じ行高に収まる枠なしのプレーン表示（入力欄の位置を動かさない）。 */
 const PHASE_LABEL: Record<string, string> = {
-  loading: "モデル準備中", waiting: "応答待ち", prefill: "プリフィル中", thinking: "思考中", answer: "生成中", answering: "生成中",
+  loading: "モデル準備中", waiting: "応答待ち", retrieve: "資料を検索中", prefill: "プリフィル中", thinking: "思考中", answer: "生成中", answering: "生成中",
   tool: "道具を実行中", background: "裏のエージェント作業中", retry: "再試行待ち", code: "OpenCode 実行中",
 };
 
@@ -2855,8 +2862,9 @@ function SpeakerToggle({ on, speaking, onToggle }: { on: boolean; speaking: bool
   return (
     <button type="button" onClick={onToggle} aria-pressed={on} aria-label={label} title={label} data-speaker-toggle={on ? "on" : "off"}
       className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 ${on
-        ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-300" : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"}`}>
-      <span aria-hidden className={speaking ? "animate-pulse" : undefined}>{on ? "🔊" : "🔈"}</span>
+        ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-300" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"}`}>
+      {/* マイク（IconMic）と同じ線のアイコンにする（以前は絵文字で系統が違った。2026-11-20 利用者の依頼） */}
+      {on ? <IconSpeaker className={speaking ? "animate-pulse" : undefined} /> : <IconSpeakerOff />}
     </button>
   );
 }

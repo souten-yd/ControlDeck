@@ -103,3 +103,30 @@ def test_workflow_api_accepts_rag_db_nodes(admin_client):
     r = admin_client.post("/api/v1/workflows", json={"name": "rag-db", "definition": definition}, headers=CSRF_HEADERS)
     assert r.status_code == 201, r.text
     admin_client.delete(f"/api/v1/workflows/{r.json()['id']}", headers=CSRF_HEADERS)
+
+
+def test_chat_rerank_gives_up_after_its_budget_and_keeps_search_order(monkeypatch):
+    """会話の回答前の再ランクは上限（3 秒）で打ち切り、検索の順のまま返す。打ち切りは自己診断に出る。
+    根拠: 2026-11-20 本番。GPU が埋まり reranker が CPU で動き、挨拶 1 つで思考の開始まで 23 秒（再ランク 22.6 秒）待たせた。"""
+    import asyncio
+
+    from app.diagnostics import selftest
+    from app.workflows import rag
+
+    async def slow(question, matches, top_k):
+        await asyncio.sleep(5)
+        return list(reversed(matches))[:top_k]
+
+    monkeypatch.setattr(rag, "_rerank", slow)
+    monkeypatch.setattr(rag, "rerank_stats", {"calls": 1, "timeouts": 0, "last_seconds": 0.0, "slowest_seconds": 0.0})
+    matches = [{"text": str(i), "context": str(i)} for i in range(8)]
+    picked = asyncio.run(rag._maybe_rerank("こんにちは", matches, 2, budget_s=0.05))
+    assert [m["text"] for m in picked] == ["0", "1"]
+    assert rag.rerank_stats["timeouts"] == 1 and rag.rerank_stats["last_seconds"] < 1
+    assert selftest._chat_rerank()[0] == "warn"
+    # 上限を渡さない呼び出し（Workflow の RAG ノードなど）は今まで通り待つ
+    async def quick(question, matches, top_k):
+        return list(reversed(matches))[:top_k]
+
+    monkeypatch.setattr(rag, "_rerank", quick)
+    assert [m["text"] for m in asyncio.run(rag._maybe_rerank("q", matches, 2))] == ["7", "6"]

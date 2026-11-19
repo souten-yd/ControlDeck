@@ -242,6 +242,38 @@ export const IconMic = (p: SVGProps<SVGSVGElement>) => (
     <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
   </Icon>
 );
+/** 読み上げ（スピーカー）。マイクと同じ線の太さ・角の丸めで揃える（2026-11-20 利用者「マイクに合わせて」） */
+export const IconSpeaker = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+    <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+  </Icon>
+);
+export const IconSpeakerOff = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+    <path d="m16 9.5 5 5M21 9.5l-5 5" />
+  </Icon>
+);
+/** 自動（きらめき）。AI アシスタントの「自動判定」 */
+export const IconSparkle = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M12 3.5 13.8 9a2 2 0 0 0 1.2 1.2l5.5 1.8-5.5 1.8a2 2 0 0 0-1.2 1.2L12 20.5 10.2 15A2 2 0 0 0 9 13.8L3.5 12 9 10.2A2 2 0 0 0 10.2 9z" />
+  </Icon>
+);
+/** チャット（吹き出し 1 つ） */
+export const IconChat = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M20 12.5a7.5 7.5 0 0 1-11 6.6L4 20.5l1.4-4.3A7.5 7.5 0 1 1 20 12.5z" />
+  </Icon>
+);
+/** 会話（吹き出し 2 つ）。会話モード */
+export const IconConversation = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M14 9.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v4.5a2 2 0 0 0 2 2h1V14l2.8-2.5H12a2 2 0 0 0 2-2z" />
+    <path d="M17 8.5h2a2 2 0 0 1 2 2V15a2 2 0 0 1-2 2h-1v2.5L15.2 17H12a2 2 0 0 1-2-2v-.5" />
+  </Icon>
+);
 export const IconSend = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="m3 11 18-8-8 18-2.5-7.5z" />

@@ -999,6 +999,9 @@ async def route_message(
 _KANA = re.compile(r"[\u3040-\u30ff]")
 
 
+CHAT_RERANK_BUDGET_S = 3.0
+
+
 def language_guard(history: list[dict], user_query: str) -> list[dict]:
     """日本語の質問には日本語で答えさせる。
 
@@ -1520,7 +1523,12 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 from app.models_mgmt import context_budget
 
                 budget = context_budget.for_model(base_url, model)
-                found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k)
+                # 探している間も画面に出す（何もしていないように見せない）
+                job.log("stats", phase="retrieve", detail="会話の資料を探しています", tok_per_sec=0, gen_tokens=0,
+                        prompt_tokens=None, context_max=None)
+                # 再ランクは 3 秒まで。それ以上は検索の順のまま答え始める（2026-11-20 本番: CPU で 22.6 秒かかっていた）
+                found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k,
+                                         rerank_budget_s=CHAT_RERANK_BUDGET_S)
                 if found.get("context"):
                     history = [{"role": "system", "content":
                                 "この会話に添付・収集された資料の関連抜粋です。回答の根拠に使ってください:\n\n"
