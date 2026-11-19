@@ -178,7 +178,7 @@ function NumberField({ label, hint, value, min, max, step, disabled, onCommit, s
   );
 }
 
-const ASR_LANGUAGE: Record<string, string> = { haas: "日本語（固定）", "parakeet-en": "英語（固定）" };
+const ASR_LANGUAGE: Record<string, string> = { haas: "日本語（固定）", "parakeet-en": "英語（固定）", "auto-ja-en": "日本語・英語（区切りごとに自動判定）" };
 
 function AsrSettings({ chosen, data, canEdit, save }: { chosen: string; data: SpeechEngines; canEdit: boolean; save: Save }) {
   const name = data.engines.find((e) => e.id === chosen)?.name ?? chosen;

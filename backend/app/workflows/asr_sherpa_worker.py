@@ -3,9 +3,10 @@
 専用の venv の python -I で動かす（本体へ読み込まない）。標準入力に JSON:
   {"audio": path, "threads": n,
    "model": {"encoder", "decoder", "joiner", "tokens", "feature_dim"?} | null,   # null は門だけ（whisper の前に使う）
+   "route": {"lid": {"encoder", "decoder"}, "ja": model, "en": model} | null,   # 日英の自動: 言語を判定して渡す
    "vad": {"model", "threshold", "min_speech_ms"} | null,
    "denoise": {"model"} | null, "min_level_db": float}
-標準出力の最後の行に JSON: {"text", "rejected": null|"too_quiet"|"no_speech", "speech_sec", "level_db"}
+標準出力の最後の行に JSON: {"text", "rejected": null|"too_quiet"|"no_speech", "speech_sec", "level_db", "language"?}
 
 門（2026-11-19 実測、docs/speech-input-filter.md）: Haas-ja は雑音だけの区切りにも「うん。」「音楽」などを出す。
 Silero VAD v5 は雑音 96 本をすべて声なし、話した声 1062 区切りをすべて声ありとした。声の無い区切りは文字にしない。"""
@@ -53,6 +54,17 @@ def denoise(x: np.ndarray, model: str, threads: int) -> np.ndarray:
     return np.asarray(out.samples, dtype=np.float32)
 
 
+def detect_language(x: np.ndarray, lid: dict, threads: int) -> str:
+    """Whisper tiny で言語を判定し、英語なら en、それ以外は ja（利用者は日本語話者。中国語・韓国語の誤判定も日本語へ）。"""
+    config = sherpa_onnx.SpokenLanguageIdentificationConfig(
+        whisper=sherpa_onnx.SpokenLanguageIdentificationWhisperConfig(encoder=lid["encoder"], decoder=lid["decoder"]),
+        num_threads=threads)
+    identifier = sherpa_onnx.SpokenLanguageIdentification(config)
+    stream = identifier.create_stream()
+    stream.accept_waveform(16000, x)
+    return "en" if identifier.compute(stream) == "en" else "ja"
+
+
 def main() -> None:
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     with wave.open(request["audio"]) as source:
@@ -65,6 +77,10 @@ def main() -> None:
         if result["speech_sec"] * 1000 < float(request["vad"]["min_speech_ms"]):
             result["rejected"] = "no_speech"
     model = request.get("model")
+    route = request.get("route")
+    if result["rejected"] is None and route:
+        result["language"] = detect_language(x, route["lid"], int(request["threads"]))
+        model = route[result["language"]]
     if result["rejected"] is None and model:
         if request.get("denoise"):
             x = denoise(x, request["denoise"]["model"], int(request["threads"]))

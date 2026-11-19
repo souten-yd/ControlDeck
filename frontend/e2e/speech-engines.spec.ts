@@ -36,6 +36,8 @@ for (const width of [320, 1280]) {
 
     // 英語の ASR が並び、選んだ ASR に対応する設定と入力フィルター（初めは推奨）が出る（2026-11-19 利用者の依頼）
     await expect(page.locator("span", { hasText: /^Parakeet TDT 0\.6B v2$/ })).toBeVisible();
+    // 日英を区切りごとに聞き分ける ASR（2026-11-19 利用者「日本語と英語が交互に来るときは」）
+    await expect(page.locator("span", { hasText: /^日英自動（Haas-ja \/ Parakeet）$/ })).toBeVisible();
     const filter = page.locator("[data-input-filter]");
     if (width === 320) await expect(filter.getByRole("radio", { name: "推奨" })).toHaveAttribute("aria-checked", "true");   // 初めは推奨
     const savedPreset = page.waitForResponse((r) => r.url().endsWith("/speech/engines") && r.request().method() === "PUT");

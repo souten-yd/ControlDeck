@@ -42,6 +42,17 @@ def _asr_engine(engine: str) -> dict:
             "summary": "英語。英会話向け。実音声で単語の誤り 3%、雑音にも強い（CC-BY-4.0）",
             "error": "",
         }
+    if engine == "auto-ja-en":
+        ready = asr.auto_ready()
+        return {
+            "id": "auto-ja-en", "name": "日英自動（Haas-ja / Parakeet）", "kind": "asr", "ready": ready, "installed": ready,
+            "installing": installing, "job_id": job.id if installing and job else None,
+            "runtime": "sherpa-onnx 2.0.1（CPU）", "model": "Whisper tiny で言語判定 → Haas-ja / Parakeet", "language": "ja+en",
+            "model_bytes": sum(size for size, _ in asr.LID_FILES.values()) + sum(size for size, _ in asr.HAAS_FILES.values())
+            + sum(size for size, _ in asr.PARAKEET_FILES.values()), "storage": str(asr.lid_root()),
+            "summary": "日本語と英語を区切りごとに自動で聞き分ける。文の中の英単語はカタカナになる",
+            "error": "",
+        }
     ready = asr.whisper_ready()
     return {
         "id": "whisper", "name": f"whisper.cpp {asr.MODEL_NAME}", "kind": "asr", "ready": ready, "installed": ready,
@@ -58,7 +69,7 @@ def engines() -> dict:
     tts["summary"] = "31 言語の多言語 TTS。CPU で実時間の十数倍速。上流は開発終了のため保管庫から導入する"
     return {
         "selected": settings.load(),
-        "engines": [_asr_engine("haas"), _asr_engine("parakeet-en"), _asr_engine("whisper"), tts],
+        "engines": [_asr_engine("haas"), _asr_engine("parakeet-en"), _asr_engine("auto-ja-en"), _asr_engine("whisper"), tts],
         "active_asr": (asr.engine_order() or [None])[0],
         "filter": {"ready": asr.filter_ready(), "gate": dict(asr.gate_counts),
                    "presets": settings.FILTER_PRESETS, "ranges": settings.FILTER_RANGES},
@@ -101,7 +112,7 @@ async def install_engine(engine_id: str, request: Request,
                          user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
     if engine_id == supertonic.ENGINE_ID:
         job = supertonic.start_install_job(user.id)
-    elif engine_id in ("haas", "whisper", "parakeet-en"):
+    elif engine_id in ("haas", "whisper", "parakeet-en", "auto-ja-en"):
         current = jobs.get(_asr_jobs[engine_id]) if engine_id in _asr_jobs else None
         if current and current.status in ("queued", "running"):
             return {"job_id": current.id, "reused": True}
@@ -111,6 +122,10 @@ async def install_engine(engine_id: str, request: Request,
                 await asr.install_haas(job)
                 if not asr.haas_ready():
                     raise RuntimeError("Haas-ja の導入後の確認に失敗しました")
+            elif engine_id == "auto-ja-en":
+                await asr.install_auto(job)
+                if not asr.auto_ready():
+                    raise RuntimeError("日英自動の導入後の確認に失敗しました")
             elif engine_id == "parakeet-en":
                 await asr.install_parakeet(job)
                 if not asr.parakeet_ready():
@@ -119,7 +134,8 @@ async def install_engine(engine_id: str, request: Request,
                 await asr.install_whisper(job)
             return _asr_engine(engine_id)
 
-        label = {"haas": "Haas-ja（ASR）", "parakeet-en": "Parakeet（英語 ASR）", "whisper": "whisper.cpp（ASR）"}[engine_id]
+        label = {"haas": "Haas-ja（ASR）", "parakeet-en": "Parakeet（英語 ASR）", "auto-ja-en": "日英自動（ASR）",
+                 "whisper": "whisper.cpp（ASR）"}[engine_id]
         job = jobs.create("speech.install", f"{label}を導入", run, owner_user_id=user.id, priority=-5)
         _asr_jobs[engine_id] = job.id
     else:

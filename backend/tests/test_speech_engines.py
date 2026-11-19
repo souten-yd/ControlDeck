@@ -150,7 +150,7 @@ def test_tts_returns_wav_and_validates_input(admin_client, speech_data, monkeypa
 def test_engine_list_has_both_asr_and_tts(admin_client, speech_data):
     body = admin_client.get("/api/v1/speech/engines").json()
     assert {engine["id"]: engine["kind"] for engine in body["engines"]} == {
-        "haas": "asr", "parakeet-en": "asr", "whisper": "asr", "supertonic-3": "tts"}
+        "haas": "asr", "parakeet-en": "asr", "auto-ja-en": "asr", "whisper": "asr", "supertonic-3": "tts"}
     assert {k: body["selected"][k] for k in ("asr", "tts", "tts_voice", "tts_speed")} == {
         "asr": "haas", "tts": "supertonic-3", "tts_voice": "F1", "tts_speed": 1.05}
     assert body["selected"]["input_filter"]["preset"] == "recommended" and body["selected"]["input_filter"]["vad"] is True

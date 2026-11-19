@@ -18,7 +18,7 @@ from app.config import data_dir
 
 logger = logging.getLogger("control_deck.speech")
 
-ASR_ENGINES = ("haas", "parakeet-en", "whisper")
+ASR_ENGINES = ("haas", "parakeet-en", "auto-ja-en", "whisper")
 TTS_ENGINES = ("supertonic-3",)
 TTS_VOICES = ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5")
 SPEED_RANGE = (0.7, 2.0)

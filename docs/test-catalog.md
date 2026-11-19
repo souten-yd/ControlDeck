@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 175 ファイル、1549 テスト（目的の未記入 93 ファイル）
+- backend: 175 ファイル、1550 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、169 テスト
 
 ## backend（backend/tests）
@@ -512,6 +512,7 @@
 - `test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back` — Models の TTS / ASR で選んだ ASR を先に使う。選んだものが未導入なら入っている方で動かす
 - `test_english_choice_never_falls_back_to_a_japanese_engine` — 英語（Parakeet）を選んだら、日本語専用の Haas へは回さない（英語を片仮名の意味の無い文にして送らない）。
 - `test_filter_rejects_segments_without_speech_and_does_not_fall_back` — 入力フィルター（Silero VAD）で声が無いとされた区切りは文字にせず、控えのエンジンにも回さない。
+- `test_auto_ja_en_routes_each_segment_by_detected_language` — 日英自動: 区切りごとに言語を判定し、日本語は Haas、英語は Parakeet に渡す。応答の言語・モデルも判定に従う。
 
 ### backend/tests/test_chat_persist.py
 

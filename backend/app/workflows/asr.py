@@ -74,7 +74,16 @@ FILTER_FILES = {
     "gtcrn_simple.onnx": (535638, "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534",
                           "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"),
 }
-ENGINE_LANGUAGE = {"haas": "ja", "parakeet-en": "en"}
+# 日英の自動（2026-11-19 利用者「日本語と英語が混ざる・交互に来るときは」）。区切りごとに Whisper tiny で言語を判定し、
+# 日本語は Haas、英語は Parakeet に渡す。実測（docs/speech-input-filter.md）: 判定は英語 146/146・日本語 198/200、
+# 誤りは日本語（放送）6.2%・英語 3.1% と専用のエンジンと同じ。日英を 1 つで聞く Qwen3-ASR（放送の日本語 43%、韓国語の文や
+# 無い文を作った）・Whisper turbo（19%、4 倍遅い）・SenseVoice（86%）より良い。1 つの文の中の英単語はカタカナになる。
+LID_REPO = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny/resolve/65176e2deb88badc814a94058666cadccc29b61c"
+LID_FILES = {
+    "tiny-encoder.int8.onnx": (12937772, "d24fb083ae3b1041fc24e97971d60e280c9342201fbb67b0ab428a8b4a51a434"),
+    "tiny-decoder.int8.onnx": (89855401, "d2fece8dd42771f1df975c6c0445770d0c292bf7547c2cae04a6c0cc57540925"),
+}
+ENGINE_LANGUAGE = {"haas": "ja", "parakeet-en": "en", "auto-ja-en": "ja+en"}
 gate_counts = {"passed": 0, "no_speech": 0, "too_quiet": 0}   # 入力フィルターで捨てた区切り（起動してから）
 last_fallback = ""                    # Haas が失敗した理由（自己診断）
 fallback_worked = False               # そのとき whisper で文字にできたか
@@ -169,17 +178,36 @@ def filter_ready() -> bool:
         return False
 
 
+def lid_root() -> Path:
+    root = (data_dir() / "runtimes" / "asr-lid" / "whisper-tiny").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def lid_ready() -> bool:
+    root = lid_root()
+    try:
+        return sherpa_ready() and all((root / name).stat().st_size == size for name, (size, _) in LID_FILES.items())
+    except OSError:
+        return False
+
+
+def auto_ready() -> bool:
+    """日英の自動: 言語判定と、日本語・英語の両方のエンジンがそろっている"""
+    return lid_ready() and haas_ready() and parakeet_ready()
+
+
 def whisper_ready() -> bool:
     model = model_path()
     return _binary_ready() and model.is_file() and model.stat().st_size == MODEL_BYTES
 
 
 def is_ready() -> bool:
-    return haas_ready() or whisper_ready() or parakeet_ready()
+    return haas_ready() or whisper_ready() or parakeet_ready() or auto_ready()
 
 
 def engine_ready(engine: str) -> bool:
-    return {"haas": haas_ready, "whisper": whisper_ready, "parakeet-en": parakeet_ready}[engine]()
+    return {"haas": haas_ready, "whisper": whisper_ready, "parakeet-en": parakeet_ready, "auto-ja-en": auto_ready}[engine]()
 
 
 def selected_engine() -> str:
@@ -203,7 +231,10 @@ def engine_order() -> list[str]:
     chosen = selected_engine()
     if chosen == "whisper":
         language = whisper_language()
-        candidates = ["whisper"] + (["parakeet-en"] if language == "en" else ["haas"] if language == "ja" else [])
+        candidates = ["whisper"] + (["parakeet-en"] if language == "en" else ["haas"] if language == "ja" else ["auto-ja-en"])
+    elif chosen == "auto-ja-en":
+        # 日英を聞けるのは whisper の自動判定だけ。日本語・英語だけのエンジンには回さない
+        candidates = ["auto-ja-en"] + (["whisper"] if whisper_language() == "auto" else [])
     else:
         candidates = [chosen, "whisper"]
     return [engine for engine in candidates if engine_ready(engine)]
@@ -218,6 +249,7 @@ def status() -> dict:
     )
     chosen = selected_engine()
     labels = {"haas": ("sherpa-onnx 2.0.1", "Haas-ja-v1.0"), "parakeet-en": ("sherpa-onnx 2.0.1", "Parakeet-TDT-0.6B-v2"),
+              "auto-ja-en": ("sherpa-onnx 2.0.1", "Whisper-tiny LID + Haas-ja / Parakeet"),
               "whisper": (f"whisper.cpp {WHISPER_VERSION}", MODEL_NAME), "": ("", "")}
     return {
         "state": state,
@@ -333,6 +365,15 @@ async def install_parakeet(job: jobs.Job) -> None:
     await install_filter(job)
 
 
+async def install_auto(job: jobs.Job) -> None:
+    """日英の自動（言語判定 Whisper tiny 0.1 GB＋Haas＋Parakeet）。"""
+    if not haas_ready():
+        await install_haas(job)
+    if not parakeet_ready():
+        await install_parakeet(job)
+    await _fetch_files(job, "言語判定モデルを取得中", LID_REPO, LID_FILES, lid_root(), lid_root())
+
+
 async def install_haas(job: jobs.Job) -> None:
     """Haas-ja（版固定のモデル・ハッシュ照合）と専用の venv を導入する。"""
     await ensure_sherpa(job)
@@ -361,14 +402,21 @@ async def install(job: jobs.Job) -> dict:
     入れられなければ whisper を控えとして使う（無ければ導入する）。"""
     global last_install_error, _install_retry_at
     chosen = selected_engine()
-    if chosen == "parakeet-en" and not parakeet_ready():
+    if chosen == "auto-ja-en" and not auto_ready():
+        try:
+            await install_auto(job)
+        except Exception as exc:  # noqa: BLE001
+            last_install_error = f"{type(exc).__name__}: {exc}"[:300]
+            _install_retry_at = time.time() + INSTALL_RETRY_SECONDS
+            raise
+    elif chosen == "parakeet-en" and not parakeet_ready():
         try:
             await install_parakeet(job)
         except Exception as exc:  # noqa: BLE001
             last_install_error = f"{type(exc).__name__}: {exc}"[:300]
             _install_retry_at = time.time() + INSTALL_RETRY_SECONDS
             raise
-    elif chosen != "parakeet-en" and not haas_ready():
+    elif chosen not in ("parakeet-en", "auto-ja-en") and not haas_ready():
         try:
             await install_haas(job)
             last_install_error = ""
@@ -455,17 +503,19 @@ def _sherpa_request(engine: str | None, wav: Path) -> dict:
 
     flt = settings.input_filter()
     use = bool(flt["enabled"]) and filter_ready()
-    model = None
-    if engine == "haas":
-        base = haas_root() / "model"
-        model = {"encoder": str(base / "encoder.quantized.onnx"), "decoder": str(base / "decoder.onnx"),
-                 "joiner": str(base / "joiner.onnx"), "tokens": str(base / "tokens.txt"), "feature_dim": 128}
-    elif engine == "parakeet-en":
-        base = parakeet_root() / "model"
-        model = {"encoder": str(base / "encoder.int8.onnx"), "decoder": str(base / "decoder.int8.onnx"),
-                 "joiner": str(base / "joiner.int8.onnx"), "tokens": str(base / "tokens.txt")}
+    haas_base, parakeet_base = haas_root() / "model", parakeet_root() / "model"
+    models = {
+        "haas": {"encoder": str(haas_base / "encoder.quantized.onnx"), "decoder": str(haas_base / "decoder.onnx"),
+                 "joiner": str(haas_base / "joiner.onnx"), "tokens": str(haas_base / "tokens.txt"), "feature_dim": 128},
+        "parakeet-en": {"encoder": str(parakeet_base / "encoder.int8.onnx"), "decoder": str(parakeet_base / "decoder.int8.onnx"),
+                        "joiner": str(parakeet_base / "joiner.int8.onnx"), "tokens": str(parakeet_base / "tokens.txt")},
+    }
+    route = None
+    if engine == "auto-ja-en":
+        route = {"lid": {"encoder": str(lid_root() / "tiny-encoder.int8.onnx"), "decoder": str(lid_root() / "tiny-decoder.int8.onnx")},
+                 "ja": models["haas"], "en": models["parakeet-en"]}
     return {
-        "audio": str(wav), "threads": HAAS_THREADS, "model": model,
+        "audio": str(wav), "threads": HAAS_THREADS, "model": models.get(engine or ""), "route": route,
         "vad": {"model": str(filter_root() / "silero_vad_v5.onnx"), "threshold": flt["vad_threshold"],
                 "min_speech_ms": flt["min_speech_ms"]} if use and flt["vad"] else None,
         "denoise": {"model": str(filter_root() / "gtcrn_simple.onnx")} if use and flt["denoise"] == "gtcrn" else None,
@@ -499,8 +549,11 @@ async def _run_sherpa(engine: str | None, wav: Path, cwd: Path) -> dict:
     return result
 
 
-async def _transcribe_sherpa(engine: str, wav: Path, cwd: Path) -> str:
-    return str((await _run_sherpa(engine, wav, cwd)).get("text") or "").strip()
+async def _transcribe_sherpa(engine: str, wav: Path, cwd: Path, meta: dict | None = None) -> str:
+    result = await _run_sherpa(engine, wav, cwd)
+    if meta is not None and result.get("language"):
+        meta["language"] = result["language"]   # 日英の自動で判定した言語
+    return str(result.get("text") or "").strip()
 
 
 @router.get("/status")
@@ -562,10 +615,10 @@ def clean_transcript(text: str) -> str:
     return _REPEATED_PHRASE.sub(r"\1", text.strip()).strip()
 
 
-async def _transcribe_with(engine: str, wav: Path, request_dir: Path, output: Path) -> str:
+async def _transcribe_with(engine: str, wav: Path, request_dir: Path, output: Path, meta: dict | None = None) -> str:
     """1 つのエンジンで文字にする。認識できない（無音など・フィルターで捨てた）は 422、エンジンの失敗は例外。"""
-    if engine in ("haas", "parakeet-en"):
-        text = clean_transcript(await _transcribe_sherpa(engine, wav, request_dir))
+    if engine in ("haas", "parakeet-en", "auto-ja-en"):
+        text = clean_transcript(await _transcribe_sherpa(engine, wav, request_dir, meta))
         if not text:
             raise HTTPException(status_code=422, detail="音声を認識できませんでした")
         return text
@@ -634,8 +687,9 @@ async def transcribe(
         if not order:
             raise HTTPException(status_code=409, detail="選んだ音声認識が未導入です（Models の TTS / ASR から導入）")
         for index, engine in enumerate(order):
+            meta: dict = {}
             try:
-                text = await _transcribe_with(engine, wav, request_dir, output)
+                text = await _transcribe_with(engine, wav, request_dir, output, meta)
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001 - 控えがあれば入力を止めない
@@ -648,8 +702,9 @@ async def transcribe(
                 last_fallback, fallback_worked = "", False
             else:
                 fallback_worked = True
-            models = {"haas": "Haas-ja-v1.0", "parakeet-en": "Parakeet-TDT-0.6B-v2", "whisper": MODEL_NAME}
-            language = ENGINE_LANGUAGE.get(engine, whisper_language())
+            models = {"haas": "Haas-ja-v1.0", "parakeet-en": "Parakeet-TDT-0.6B-v2", "whisper": MODEL_NAME,
+                      "auto-ja-en": "Haas-ja-v1.0" if meta.get("language") != "en" else "Parakeet-TDT-0.6B-v2"}
+            language = meta.get("language") or ENGINE_LANGUAGE.get(engine, whisper_language())
             return {"text": text, "language": language, "model": models[engine]}
         raise HTTPException(status_code=502, detail="音声認識に失敗しました")
     finally:
