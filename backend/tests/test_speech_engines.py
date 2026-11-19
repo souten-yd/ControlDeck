@@ -112,6 +112,10 @@ def test_feature_is_a_speech_engine_without_update_or_reload(admin_client, speec
 
     monkeypatch.setattr(supertonic, "ready", lambda: True)
     assert registry.status("supertonic-3")["enabled"] is True
+    # 1 回の合成の失敗は導入の壊れとして出さない（2026-11-19 本番: 「修復が必要」と出て再導入を促した）
+    monkeypatch.setattr(supertonic, "last_error", "ValueError: Found 1 unsupported character(s)")
+    item = registry.status("supertonic-3")
+    assert item["health"] == "healthy" and item["error"] == ""
     with pytest.raises(registry.FeatureError, match="更新はありません"):
         registry.update("supertonic-3")
     response = admin_client.post("/api/v1/features/supertonic-3/disable", headers=CSRF_HEADERS)

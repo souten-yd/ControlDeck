@@ -373,7 +373,9 @@ def _speech_engine_status(feature_id: str, spec: dict) -> dict:
 
     detail = supertonic.status()
     archive = detail["archive"]
-    error = detail["error"] or (archive["error"] if detail["installed"] else "")
+    # 導入の健全性は「入っているか・保管庫が揃っているか」で見る。1 回の合成の失敗（読めない文字など）は導入の壊れではない
+    # ので出さない（2026-11-19 本番: ☀️ の読み上げ失敗で「修復が必要」と出て再導入を促していた）。合成の失敗は自己診断に出す
+    error = archive["error"] if detail["installed"] else ""
     return {
         "id": feature_id,
         "name": spec["name"],
@@ -392,7 +394,7 @@ def _speech_engine_status(feature_id: str, spec: dict) -> dict:
         "enabled": bool(detail["installed"]),
         "requested_enabled": True,
         "version": "1.3.1" if detail["installed"] else "",
-        "health": "healthy" if detail["installed"] and not detail["error"] else (
+        "health": "healthy" if detail["installed"] and not error else (
             "error" if detail["installed"] else "not-installed"),
         "error": error if detail["installed"] else "",
         "executable": str(supertonic.python_path()) if detail["installed"] else "",
