@@ -61,6 +61,14 @@ async def install_job(
     options = {"backends": body.backends} if body.backends is not None else {}
 
     async def run(job: jobs.Job) -> dict:
+        if kind == "speech-engine":
+            from app.speech import supertonic
+
+            try:
+                await supertonic.install(job)
+            except supertonic.SupertonicError as exc:
+                raise RuntimeError(str(exc)) from exc
+            return registry.status(feature_id)
         if kind == "gpu-runtime":
             job.set_progress("リリース資材を取得中", 0, 1)
             try:
@@ -143,7 +151,7 @@ def apply_action(
                  resource_id=feature_id, request=request)
     # Add-on v2 registry is revision-driven; legacy route-gated features need reload.
     # GPUランタイムはルートを登録しないため再読み込みは要らない。
-    needs_reload = registry.FEATURES[feature_id]["kind"] not in ("release-bundle", "gpu-runtime")
+    needs_reload = registry.FEATURES[feature_id]["kind"] not in ("release-bundle", "gpu-runtime", "speech-engine")
     return {**state, "requires_reload": needs_reload and action in ("enable", "disable", "uninstall")}
 
 

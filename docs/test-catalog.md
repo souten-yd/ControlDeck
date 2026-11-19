@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 174 ファイル、1539 テスト（目的の未記入 93 ファイル）
-- E2E: 84 spec、164 テスト
+- backend: 175 ファイル、1546 テスト（目的の未記入 93 ファイル）
+- E2E: 85 spec、166 テスト
 
 ## backend（backend/tests）
 
@@ -509,6 +509,7 @@
 - `test_asr_transcribe_rejects_non_audio`
 - `test_haas_is_used_when_installed_and_whisper_is_the_fallback` — 既定は Haas-ja。失敗しても whisper があれば音声入力を止めない（2026-11-18 利用者の依頼で採用）。
 - `test_repeated_phrases_are_collapsed_and_short_segments_keep_enough_context` — 短い区切りで whisper が同じ言葉を繰り返した（2026-11-18 本番の画面・手元の音声で再現）。
+- `test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back` — Models の TTS / ASR で選んだ ASR を先に使う。選んだものが未導入なら入っている方で動かす
 
 ### backend/tests/test_chat_persist.py
 
@@ -2064,6 +2065,17 @@
 - `test_the_runtime_config_only_carries_enabled_skills`
 - `test_external_subpaths_exist_in_the_pinned_tree` — 取り出す場所を間違えると、導入そのものが失敗する。
 
+### backend/tests/test_speech_engines.py
+
+目的: Supertonic 3（TTS）の保管庫・導入・合成と、機能追加の「音声エンジン」の扱いを守る。 根拠: 2026-11-19 利用者「Supertonic 3 を TTS として使いたい。開発中止・サポート終了で更新も消去もありうるので、 リポジトリを丸ごとアーカイブとして ControlDeck に保存し、機能追加から導入できるように。導入時は音声モデルも」。 - 保管庫は一度取ったものを取り直さない（上流が消えた・書き換えられた後に失わない） - アンインストールで消すのは実行環境だけで、保管庫は残す - 機能追加では「更新」が無く、導入＝利用可能（有効化・再読み込みを求めない） 実際の取得・合成は外部と重い計算なのでここでは模擬し、実機の確認は PR に記録する。
+
+- `test_archive_keeps_what_it_has_and_fetches_only_missing`
+- `test_uninstall_removes_runtime_but_keeps_archive`
+- `test_feature_is_a_speech_engine_without_update_or_reload`
+- `test_tts_returns_wav_and_validates_input`
+- `test_engine_list_has_both_asr_and_tts`
+- `test_synthesis_rejects_out_of_range_before_starting_a_process`
+
 ### backend/tests/test_strata_gateway.py
 
 目的: Strata must not download a model or alter the active runtime by default.
@@ -2807,6 +2819,13 @@
 目的: **未記入**
 
 - runtime startup preferences can be selected and saved at ${width}px
+
+### frontend/e2e/speech-engines.spec.ts
+
+目的: Models の「TTS / ASR」タブと、設定の機能追加の「音声（TTS / ASR）」。 目的: ASR と TTS が 1 つのタブに並び、使うエンジンを選べ、320px でも横にはみ出さないこと。 Supertonic 3 が導入済みなら、試し聞きで本物の WAV が返ること。 根拠: 2026-11-19 利用者「TTS と ASR は同じ項目として追加。各 TTS / ASR の利用するエンジンを選択できるように」。 */
+
+- TTS / ASR tab lists engines and switches them at ${width}px
+- Supertonic 3 is offered under 音声 in the feature list
 
 ### frontend/e2e/strata-memory-settings.spec.ts
 

@@ -120,9 +120,28 @@ def is_ready() -> bool:
     return haas_ready() or whisper_ready()
 
 
+def selected_engine() -> str:
+    """Models の「TTS / ASR」で選んだ ASR（2026-11-19 利用者「利用するエンジンを選択できるように」）。"""
+    from app.speech import settings
+
+    return settings.selected("asr")
+
+
+def engine_order() -> list[str]:
+    """試す順。選んだエンジンが使えれば先頭、もう一方は失敗したときの控え（入っていれば）。
+
+    選んだものが未導入なら、入っている方で動かす（音声入力を止めない）。"""
+    chosen = selected_engine()
+    other = "whisper" if chosen == "haas" else "haas"
+    ready = {"haas": haas_ready(), "whisper": whisper_ready()}
+    if not ready[chosen]:
+        return [other]
+    return [chosen, other] if ready[other] else [chosen]
+
+
 def status() -> dict:
     active = jobs.get(_install_job_id) if _install_job_id else None
-    haas = haas_ready()
+    haas = engine_order()[0] == "haas" if is_ready() else False
     state = "ready" if is_ready() else (
         "installing" if active and active.status in ("queued", "running") else "missing"
     )
@@ -135,7 +154,9 @@ def status() -> dict:
         "model": "Haas-ja-v1.0" if haas else MODEL_NAME,
         "engine": "haas" if haas else "whisper",
         # whisper で使えるが Haas がまだ無い: 裏で導入する（待たせない。失敗したらしばらく試さない）
-        "upgrade_available": state == "ready" and not haas and time.time() >= _install_retry_at,
+        "upgrade_available": (state == "ready" and not haas_ready() and selected_engine() == "haas"
+                              and time.time() >= _install_retry_at),
+        "selected": selected_engine(),
         "install_error": last_install_error,
         "model_bytes": sum(size for size, _ in HAAS_FILES.values()) if haas
         else model_path().stat().st_size if model_path().is_file() else 0,
@@ -375,6 +396,28 @@ def clean_transcript(text: str) -> str:
     return _REPEATED_PHRASE.sub(r"\1", text.strip()).strip()
 
 
+async def _transcribe_with(engine: str, wav: Path, request_dir: Path, output: Path) -> str:
+    """1 つのエンジンで文字にする。認識できない（無音など）は 422、エンジンの失敗は例外。"""
+    if engine == "haas":
+        text = clean_transcript(await _transcribe_haas(wav, request_dir))
+        if not text:
+            raise HTTPException(status_code=422, detail="音声を認識できませんでした")
+        return text
+    code, diagnostics = await _exec_capture(
+        str(binary_path()), "-m", str(model_path()), "-f", str(wav),
+        "-l", "ja", "-nt", "-np", "-otxt", "-of", str(output), *speed_args(wav.stat().st_size),
+        cwd=request_dir, timeout=120,
+    )
+    transcript_file = output.with_suffix(".txt")
+    if code != 0 or not transcript_file.is_file():
+        logger.warning("ASR transcription failed: %s", diagnostics)
+        raise RuntimeError(f"whisper が終了コード {code} で失敗しました")
+    text = clean_transcript(transcript_file.read_text(encoding="utf-8", errors="replace"))
+    if not text or text in ("[BLANK_AUDIO]", "[無音]") or text in _WHISPER_PHANTOMS:
+        raise HTTPException(status_code=422, detail="音声を認識できませんでした")
+    return text
+
+
 @router.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
@@ -413,35 +456,25 @@ async def transcribe(
         if code != 0 or not wav.is_file():
             logger.warning("ASR audio conversion failed: %s", diagnostics)
             raise HTTPException(status_code=422, detail="音声を変換できませんでした")
-        if haas_ready():
-            global last_fallback, fallback_worked
+        global last_fallback, fallback_worked
+        order = engine_order()
+        for index, engine in enumerate(order):
             try:
-                text = clean_transcript(await _transcribe_haas(wav, request_dir))
-                last_fallback, fallback_worked = "", False
-                if not text:
-                    raise HTTPException(status_code=422, detail="音声を認識できませんでした")
-                return {"text": text, "language": "ja", "model": "Haas-ja-v1.0"}
+                text = await _transcribe_with(engine, wav, request_dir, output)
             except HTTPException:
                 raise
-            except Exception as exc:  # noqa: BLE001 - whisper があれば入力を止めない
+            except Exception as exc:  # noqa: BLE001 - 控えがあれば入力を止めない
                 last_fallback, fallback_worked = f"{type(exc).__name__}: {exc}"[:300], False
-                logger.warning("Haas-ja に失敗しました: %s", last_fallback)
-                if not whisper_ready():
+                logger.warning("%s に失敗しました: %s", engine, last_fallback)
+                if index == len(order) - 1:
                     raise HTTPException(status_code=502, detail="音声認識に失敗しました") from exc
-        code, diagnostics = await _exec_capture(
-            str(binary_path()), "-m", str(model_path()), "-f", str(wav),
-            "-l", "ja", "-nt", "-np", "-otxt", "-of", str(output), *speed_args(wav.stat().st_size),
-            cwd=request_dir, timeout=120,
-        )
-        transcript_file = output.with_suffix(".txt")
-        if code != 0 or not transcript_file.is_file():
-            logger.warning("ASR transcription failed: %s", diagnostics)
-            raise HTTPException(status_code=502, detail="音声認識に失敗しました")
-        text = clean_transcript(transcript_file.read_text(encoding="utf-8", errors="replace"))
-        if not text or text in ("[BLANK_AUDIO]", "[無音]") or text in _WHISPER_PHANTOMS:
-            raise HTTPException(status_code=422, detail="音声を認識できませんでした")
-        fallback_worked = bool(last_fallback)
-        return {"text": text, "language": "ja", "model": MODEL_NAME}
+                continue
+            if index == 0:
+                last_fallback, fallback_worked = "", False
+            else:
+                fallback_worked = True
+            return {"text": text, "language": "ja", "model": "Haas-ja-v1.0" if engine == "haas" else MODEL_NAME}
+        raise HTTPException(status_code=502, detail="音声認識に失敗しました")
     finally:
         await audio.close()
         shutil.rmtree(request_dir, ignore_errors=True)

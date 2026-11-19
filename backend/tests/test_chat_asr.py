@@ -125,3 +125,43 @@ def test_repeated_phrases_are_collapsed_and_short_segments_keep_enough_context()
     assert asr.clean_transcript("はいはい、わかりました") == "はいはい、わかりました"
     args = asr.speed_args(44 + 32000 * 3)
     assert int(args[args.index("-ac") + 1]) >= 768
+
+
+def test_selected_asr_engine_is_tried_first_and_missing_choice_falls_back(admin_client, monkeypatch, tmp_path):
+    """Models の TTS / ASR で選んだ ASR を先に使う。選んだものが未導入なら入っている方で動かす
+    （2026-11-19 利用者「利用するエンジンを選択できるように」）。"""
+    from app.speech import settings
+    from app.workflows import asr
+
+    monkeypatch.setattr(settings, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(asr, "haas_ready", lambda: True)
+    monkeypatch.setattr(asr, "whisper_ready", lambda: True)
+    monkeypatch.setattr(asr.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    async def fake_exec(*args, cwd, timeout):
+        if "ffmpeg" in args[0]:
+            Path(args[args.index("-c:a") + 2]).write_bytes(b"RIFF")
+            return 0, ""
+        Path(args[args.index("-of") + 1] + ".txt").write_text("whisper の結果", encoding="utf-8")
+        return 0, ""
+
+    async def haas(wav, cwd):
+        return "Haas の結果"
+
+    monkeypatch.setattr(asr, "_exec_capture", fake_exec)
+    monkeypatch.setattr(asr, "_transcribe_haas", haas)
+    files = {"audio": ("a.webm", b"x", "audio/webm")}
+
+    selected = admin_client.put("/api/v1/speech/engines", json={"asr": "whisper"}, headers=CSRF_HEADERS)
+    assert selected.status_code == 200 and selected.json()["selected"]["asr"] == "whisper"
+    assert asr.engine_order() == ["whisper", "haas"]
+    assert admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()["model"] == "large-v3-turbo"
+
+    monkeypatch.setattr(asr, "whisper_ready", lambda: False)
+    assert asr.engine_order() == ["haas"]
+    assert admin_client.post("/api/v1/chat/asr/transcribe", files=files, headers=CSRF_HEADERS).json()["model"] == "Haas-ja-v1.0"
+
+    assert admin_client.put("/api/v1/speech/engines", json={"asr": "unknown"}, headers=CSRF_HEADERS).status_code == 422
+    (tmp_path / "speech-engines.json").write_text("{broken", encoding="utf-8")
+    assert settings.load() == settings.DEFAULTS

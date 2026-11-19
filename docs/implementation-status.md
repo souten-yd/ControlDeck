@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-19 Models: TTS / ASR タブと Supertonic 3（TTS）
+
+- 利用者「Supertonic 3 を TTS として使いたい。開発中止・サポート終了で更新も消去もありうるので、リポジトリを丸ごと保存し、機能追加から導入できるように。導入時は音声モデルも。Models に TTS と ASR を同じ項目で。各エンジンを選べるように」。
+- 上流は 2026-11-19 時点で archived（`supertone-inc/supertonic` → `supertone-oss-archive`）。導入時に `data/archives/supertonic-3/` へ丸ごと保管する: ソース 3 本の `git --mirror`（全ブランチ・タグ・PR 参照）、重みの全 38 ファイル（`supertone-oss-archive/supertonic-3@aafc6e32`、サイズと SHA-256 を照合）、SDK（supertonic 1.3.1 の wheel・sdist）と実行に要る wheel、`MANIFEST.json`。一度取ったものは取り直さないので、上流が消えた後もオフラインで導入できる。アンインストールで消すのは venv だけ。
+- 設定 → 機能追加に「音声（TTS / ASR）」の分類と、新しい種類 `speech-engine`（導入＝利用可能、更新なし、再読み込みなし）。
+- Models に「TTS / ASR」タブ。ASR（Haas-ja / whisper.cpp）と TTS（Supertonic 3）を並べ、使うエンジンを選ぶ（`data/speech-engines.json`、`PUT /speech/engines`）。ASR は選んだものを先に使い、未導入・失敗なら入っている方へ回る。TTS は試し聞きできる（`POST /speech/tts`、WAV）。
+- 診断: 自己診断に「音声合成」（合成の失敗、保管庫の欠け）。「音声入力」は選んだエンジンと実際に動いているエンジンの違いも出す。
+- 実測（CPU 4 スレッド）: 日本語 6.5 秒の音声を API 往復 0.79 秒、最大 RSS 約 0.5 GB。合成した音声を Haas-ja で聞き戻して原文どおり。本番 data に保管庫を作成済み（479 MB、git fsck 問題なし・全ファイルの SHA-256 一致）。
+- 検証: `tests/test_speech_engines.py`、`tests/test_chat_asr.py`（選択）、E2E `speech-engines`（320px / 1280px、隔離インスタンスで本物の合成）。
+
 ## 2026-11-18 設定: GPU 設定（クロック・電圧オフセット）
 
 - 設定に「GPU 設定」を追加し、Models の共通設定にあった電力・静音を移した。「ハードウェア」は「温度管理」に改名し、「AI モデル」「OpenCode」の移動ボタンを消した。

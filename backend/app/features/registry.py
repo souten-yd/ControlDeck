@@ -145,6 +145,17 @@ FEATURES: dict[str, dict] = {
         "repo": "Niko1221/Strata",
         "summary": "公式Strata Terminalを管理領域へ導入。モデル取得・起動は任意操作、既存ランタイムは変更しません",
     },
+    # 音声エンジン。実体・保管庫は app.speech が持つ。使うエンジンの選択は Models の「TTS / ASR」。
+    # 上流（Supertone）は 2026 に開発・サポートを終えたので、導入時にソース・重み・wheel を
+    # data/archives/supertonic-3 へ丸ごと保管し、そこから入れる（2026-11-19 利用者の依頼）。
+    "supertonic-3": {
+        "name": "Supertonic 3（TTS・音声合成）",
+        "kind": "speech-engine",
+        "executable": "python",
+        "route_gated": False,
+        "repo": "supertone-oss-archive/supertonic",
+        "summary": "31 言語の音声合成（CPU）。導入時に音声モデルも入れ、ソース一式を保管庫へ保存する。使うかは Models の TTS / ASR で選ぶ",
+    },
 }
 
 
@@ -153,6 +164,7 @@ CATEGORIES = {
     "opencode": "OpenCode（開発）",
     "runtime": "LLM ランタイム（GPU）",
     "addon": "拡張アプリ",
+    "speech": "音声（TTS / ASR）",
     "tools": "その他の道具",
 }
 
@@ -168,6 +180,8 @@ def category(feature_id: str) -> str:
         return "runtime"
     if kind == "release-bundle":
         return "addon"
+    if kind == "speech-engine":
+        return "speech"
     return "tools"
 
 
@@ -294,6 +308,10 @@ def mcp_entry(feature_id: str) -> Path | None:
 
 def executable(feature_id: str) -> Path | None:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "speech-engine":
+        from app.speech import supertonic
+
+        return supertonic.python_path() if supertonic.ready() else None
     if spec["kind"] == "gpu-runtime":
         # PATH 上の同名バイナリを拾わない。ControlDeck が導入した実体だけを扱う。
         managed = _managed_executable(feature_id)
@@ -349,10 +367,45 @@ def _gpu_runtime_status(feature_id: str, spec: dict) -> dict:
     }
 
 
+def _speech_engine_status(feature_id: str, spec: dict) -> dict:
+    """音声エンジンは app.speech の状態を正とする（導入＝利用可能。有効化の一手間を求めない）。"""
+    from app.speech import supertonic
+
+    detail = supertonic.status()
+    archive = detail["archive"]
+    error = detail["error"] or (archive["error"] if detail["installed"] else "")
+    return {
+        "id": feature_id,
+        "name": spec["name"],
+        "summary": spec["summary"],
+        "kind": spec["kind"],
+        "category": category(feature_id),
+        "route_gated": False,
+        "requires": "",
+        "preview": False,
+        "requires_installed": True,
+        "repo": str(spec.get("repo", "")),
+        "available": True,
+        "installed": bool(detail["installed"]),
+        # 上流が終わっているので「更新」は無い。管理導入ではあるが更新ボタンは出さない（画面側で kind を見る）
+        "managed": bool(detail["installed"]),
+        "enabled": bool(detail["installed"]),
+        "requested_enabled": True,
+        "version": "1.3.1" if detail["installed"] else "",
+        "health": "healthy" if detail["installed"] and not detail["error"] else (
+            "error" if detail["installed"] else "not-installed"),
+        "error": error if detail["installed"] else "",
+        "executable": str(supertonic.python_path()) if detail["installed"] else "",
+        "archive": archive,
+    }
+
+
 def status(feature_id: str) -> dict:
     spec = FEATURES[_known(feature_id)]
     if spec["kind"] == "gpu-runtime":
         return _gpu_runtime_status(feature_id, spec)
+    if spec["kind"] == "speech-engine":
+        return _speech_engine_status(feature_id, spec)
     state = _read_state().get(feature_id, {})
     binary = executable(feature_id)
     managed = _managed_executable(feature_id).is_file()
@@ -526,8 +579,8 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
 
 def install(feature_id: str) -> dict:
     name = FEATURES[_known(feature_id)]["name"]
-    if FEATURES[feature_id]["kind"] == "gpu-runtime":
-        # 取得がネットワークI/Oのため、routerがasyncのまま gpu_runtime を直接呼ぶ。
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
+        # 取得がネットワークI/Oのため、routerがasyncのまま gpu_runtime / speech を直接呼ぶ。
         raise FeatureError(f"{name}の導入は非同期ジョブから実行してください")
     required = FEATURES[feature_id].get("requires")
     if required and not status(required)["installed"]:
@@ -567,6 +620,8 @@ def update(feature_id: str) -> dict:
     name = FEATURES[_known(feature_id)]["name"]
     if FEATURES[feature_id]["kind"] == "gpu-runtime":
         raise FeatureError(f"{name}の更新は非同期ジョブから実行してください")
+    if FEATURES[feature_id]["kind"] == "speech-engine":
+        raise FeatureError(f"{name}は開発が終了しているため更新はありません（保管庫の版を使います）")
     if not _managed_executable(feature_id).is_file():
         raise FeatureError(f"Control Deckが導入した{name}のみ更新できます")
     previous = status(feature_id)["version"]
@@ -586,7 +641,7 @@ def update(feature_id: str) -> dict:
 
 def enable(feature_id: str) -> dict:
     current = status(feature_id)
-    if FEATURES[feature_id]["kind"] == "gpu-runtime":
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         # route_gated ではないので導入＝有効。切り替えるべき状態を持たない。
         return current
     if FEATURES[feature_id]["kind"] == "release-bundle" and current["installed"]:
@@ -649,7 +704,7 @@ def restore_enabled_services() -> None:
 
 def disable(feature_id: str) -> dict:
     _known(feature_id)
-    if FEATURES[feature_id]["kind"] == "gpu-runtime":
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         return status(feature_id)
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
@@ -666,6 +721,11 @@ def disable(feature_id: str) -> dict:
 
 def uninstall(feature_id: str) -> dict:
     disable(feature_id)
+    if FEATURES[_known(feature_id)]["kind"] == "speech-engine":
+        from app.speech import supertonic
+
+        supertonic.uninstall()   # 実行環境だけ。保管庫は残す
+        return status(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "gpu-runtime":
         from app.features import gpu_runtime
 
