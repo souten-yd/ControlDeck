@@ -54,6 +54,11 @@ export function useAssistantAsr({ onText, onError }: {
   const meter = meterRef.current;
   const resetMeter = () => meter.set({ levels: Array(WAVE_BARS).fill(0), elapsedMs: 0 });
   const [pending, setPending] = useState(0);
+  const pendingRef = useRef(0);
+  // 会話モード: 読み上げ・回答待ちの間は聞かない（自分の声を拾わない）。最後に声がした時刻で話し終わりを見る
+  const pausedRef = useRef(false);
+  const lastVoiceRef = useRef(0);
+  const cutRef = useRef<((keep: boolean) => void) | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -68,6 +73,9 @@ export function useAssistantAsr({ onText, onError }: {
   onErrorRef.current = onError;
 
   const release = () => {
+    cutRef.current = null;
+    pausedRef.current = false;
+    lastVoiceRef.current = 0;
     window.clearInterval(timerRef.current);
     timerRef.current = 0;
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -81,6 +89,7 @@ export function useAssistantAsr({ onText, onError }: {
   /** 区切りを 1 つ文字にする（順番を守るため、前の区切りが終わってから） */
   const transcribe = (blob: Blob, session: number) => {
     setPending((n) => n + 1);
+    pendingRef.current += 1;
     chainRef.current = chainRef.current.then(async () => {
       try {
         if (session !== sessionRef.current) return;
@@ -95,6 +104,7 @@ export function useAssistantAsr({ onText, onError }: {
         if (session === sessionRef.current && message && !message.includes("認識できません")) onErrorRef.current(message);
       } finally {
         setPending((n) => Math.max(0, n - 1));
+        pendingRef.current = Math.max(0, pendingRef.current - 1);
       }
     });
   };
@@ -176,11 +186,16 @@ export function useAssistantAsr({ onText, onError }: {
       setPhase("listening");
       const cut = () => {
         const previous = current;
+        if (pausedRef.current) previous.state.keep = false;
         current = newRecorder(stream, session);   // 先に次を録り始める（切れ目を落とさない）
         recorderRef.current = current.recorder;
         previous.recorder.stop();
         segmentAt = performance.now();
         spokeAt = 0;
+      };
+      cutRef.current = (keep: boolean) => {
+        if (!keep) current.state.keep = false;
+        cut();
       };
       timerRef.current = window.setInterval(() => {
         analyser.getByteTimeDomainData(samples);
@@ -194,10 +209,11 @@ export function useAssistantAsr({ onText, onError }: {
         bars.shift();
         bars.push(Math.min(1, rms * 9));
         meter.set({ levels: [...bars], elapsedMs: now - startedAt });
-        if (rms >= VOICE_RMS) {
+        if (rms >= VOICE_RMS && !pausedRef.current) {
           if (!current.state.voiced) spokeAt = now;
           current.state.voiced = true;
           lastVoiceAt = now;
+          lastVoiceRef.current = now;
         }
         const length = current.state.voiced ? now - spokeAt : now - segmentAt;
         const quiet = now - lastVoiceAt;
@@ -256,6 +272,21 @@ export function useAssistantAsr({ onText, onError }: {
     release();
   }, []);
 
-  return { phase, meter, pending, start, finish, cancel,
+  /** 会話モード: 聞くのを止める（録っている途中の音は捨てる）／再開する */
+  const pause = () => {
+    pausedRef.current = true;
+    cutRef.current?.(false);
+  };
+  const resume = () => {
+    cutRef.current?.(false);   // 止めている間に録れた音（読み上げの声）を捨ててから聞き直す
+    lastVoiceRef.current = 0;
+    pausedRef.current = false;
+  };
+  /** 最後に声がしてからの時間（ミリ秒）。まだ話していなければ Infinity */
+  const quietMs = () => (lastVoiceRef.current ? performance.now() - lastVoiceRef.current : Infinity);
+  /** 文字にしている途中の区切りが無い */
+  const settled = () => pendingRef.current === 0;
+
+  return { phase, meter, pending, start, finish, cancel, pause, resume, quietMs, settled,
     listening: phase === "listening", active: phase === "listening" || phase === "finishing" || phase === "permission" };
 }

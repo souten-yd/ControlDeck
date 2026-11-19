@@ -163,17 +163,42 @@ def _opencode_background():
 
 
 def _voice_input():
-    """音声入力: どのエンジンか、Haas-ja が失敗して控えへ回っていないか。"""
+    """音声入力: 選んだエンジンで動いているか、失敗して控えへ回っていないか。"""
     from app.workflows import asr
 
+    names = {"haas": "Haas-ja", "whisper": "whisper"}
+    chosen = names[asr.selected_engine()]
     if asr.last_fallback:
-        how = "whisper で動きました" if asr.fallback_worked else "文字にできませんでした"
-        return "warn", f"Haas-ja が失敗し、{how}: {asr.last_fallback}"
+        how = "控えのエンジンで動きました" if asr.fallback_worked else "文字にできませんでした"
+        return "warn", f"音声認識が失敗し、{how}: {asr.last_fallback}"
     if asr.last_install_error:
         return "warn", f"Haas-ja を導入できず whisper で動いています: {asr.last_install_error}"
     if not asr.is_ready():
         return True, "音声入力は未導入（初回に導入します）"
-    return True, f"音声入力のエンジン: {'Haas-ja' if asr.haas_ready() else 'whisper（Haas-ja は未導入）'}"
+    active = names[asr.engine_order()[0]]
+    if active != chosen:
+        return "warn", f"選んだ {chosen} が未導入のため {active} で動いています（Models の TTS / ASR から導入）"
+    return True, f"音声入力のエンジン: {active}"
+
+
+def _speech_output():
+    """音声合成（Supertonic 3）: 合成が失敗していないか、保管庫（上流は開発終了）が欠けていないか。
+
+    保管庫は上流が消えた後の唯一の入手元なので、欠けたら気づけるようにする（2026-11-19）。サイズだけを見る（常駐で軽い）。"""
+    from app.speech import supertonic
+
+    if not supertonic.ready():
+        archive = supertonic.archive_status()
+        if archive["model_files"]:
+            return True, f"Supertonic 3 は未導入（保管庫に重み {archive['model_files']}/{archive['model_files_total']}）"
+        return True, "音声合成（Supertonic 3）は未導入"
+    if supertonic.last_error:
+        return "warn", f"Supertonic 3 の合成が失敗しました: {supertonic.last_error}"
+    archive = supertonic.archive_status()
+    if not archive["complete"]:
+        missing = ", ".join(archive["missing"][:5]) or ", ".join(k for k, v in archive["git"].items() if not v)
+        return "warn", f"Supertonic 3 の保管庫が欠けています（{missing}）。設定の機能追加から再導入すると取り直します"
+    return True, f"音声合成: Supertonic 3（保管庫 {archive['path']} は揃っています）"
 
 
 def _chat_tool_text():
@@ -304,7 +329,8 @@ CHECKS = [("データベース", _database), ("ディスク", _disk), ("メモ�
           ("道具の呼び出しの文字", _chat_tool_text),
           ("OpenCode のアクションリスト", _opencode_todos),
           ("OpenCode の裏のエージェント", _opencode_background),
-          ("音声入力", _voice_input)]
+          ("音声入力", _voice_input),
+          ("音声合成", _speech_output)]
 
 
 _latest: dict | None = None

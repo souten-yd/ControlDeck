@@ -657,12 +657,13 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
   ["opencode", "OpenCode（開発）", "OpenCode 本体と、そこで使う拡張・道具（レビュー、UI 検証、文書の参照など）"],
   ["runtime", "LLM ランタイム（GPU）", "ローカル LLM を動かす推論エンジン。モデルの登録と切り替えは Models で行います"],
   ["addon", "拡張アプリ", "画像・音・特許などのアプリ。導入すると左のメニューに並びます"],
+  ["speech", "音声（TTS / ASR）", "音声合成と音声認識のエンジン。使うエンジンの選択と試し聞きは Models の TTS / ASR で行います"],
   ["tools", "その他の道具", "アプリの書き出しなど、特定の機能で使う道具"],
 ];
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp"; route_gated: boolean;
+  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -1199,7 +1200,15 @@ function AddonsSection() {
                           {addon.id === "maya-s" && <MayaSPanel addon={addon} />}
                           {OPENCODE_SETUP_KEYS[addon.id] && <OpenCodeFeatureSetup featureId={addon.id} />}
                           <div className="flex flex-wrap gap-1.5">
-                            {addon.managed && !hasUpdate && (
+                            {/* 音声エンジン（Supertonic 3）は上流が開発終了。更新は無く、保管庫の版を使う */}
+                            {addon.kind === "speech-engine" && (
+                              <p className="text-[11px] text-zinc-500">
+                                開発が終了しているため更新はありません。使うエンジンの選択と試し聞きは{" "}
+                                <Link to="/models?tab=speech" className="text-accent-600 underline dark:text-accent-400">Models の TTS / ASR</Link>。
+                                アンインストールしても保管庫（ソース・重み）は残ります。
+                              </p>
+                            )}
+                            {addon.managed && !hasUpdate && addon.kind !== "speech-engine" && (
                               <button onClick={() => void update(addon)} disabled={busy}
                                 title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>

@@ -261,8 +261,10 @@ export function PlusMenu({
 }
 
 /** ＋の隣に出す小さな札（既定から変えた機能・OpenCode の権限）。押すと＋のメニューと同じ選択を外す/切り替える。 */
-export function ComposerPill({ icon, label, title, tone = "accent", onClick, onClear, kind }: {
+export function ComposerPill({ icon, label, title, tone = "accent", onClick, onClear, kind, compact = false }: {
   icon: ReactNode; label: string; title: string; tone?: "accent" | "amber" | "plan";
+  /** 狭い幅（380px 未満）では文字を出さずアイコンだけにする */
+  compact?: boolean;
   onClick?: () => void; onClear?: () => void;
   /** E2E と画面の計測用（data-composer-pill） */
   kind: string;
@@ -273,7 +275,7 @@ export function ComposerPill({ icon, label, title, tone = "accent", onClick, onC
       <button type="button" onClick={onClick} title={title} aria-label={title}
         className="flex h-11 min-w-0 items-center gap-1.5 pl-3 pr-2 focus:outline-none focus-visible:underline">
         <span aria-hidden className="shrink-0 leading-none">{icon}</span>
-        <span data-pill-label className="min-w-0 truncate">{label}</span>
+        <span data-pill-label className={`min-w-0 truncate ${compact ? "max-[379px]:hidden" : ""}`}>{label}</span>
       </button>
       {onClear && (
         <button type="button" onClick={onClear} aria-label={`${label} を外す（自動判定に戻す）`} title="外す"

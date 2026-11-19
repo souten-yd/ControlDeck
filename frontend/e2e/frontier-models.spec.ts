@@ -16,7 +16,7 @@ test("キーを保存して有効にし、モデルを選び、確認のうえ�
   await page.goto("/models");
 
   // ローカルのモデルとは別のタブ。開くと「送信されない」と言い切る。
-  await page.getByRole("button", { name: "フロンティア（外部）" }).click();
+  await page.getByRole("button", { name: "Frontier" }).click();
   await expect(page).toHaveURL(/tab=frontier/);
   // タブの中はフロンティアモデルだけなので、ページ全体を範囲にする。
   const group = page.locator("body");

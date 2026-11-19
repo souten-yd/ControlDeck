@@ -294,6 +294,7 @@ from app.workflows.samplebook import router as samplebook_router  # noqa: E402
 from app.workflows.hooks_router import router as hooks_router  # noqa: E402
 from app.workflows.chat_persist import router as chat_persist_router  # noqa: E402
 from app.workflows.asr import router as chat_asr_router  # noqa: E402
+from app.speech.router import router as speech_router  # noqa: E402
 from app.jobs.router import router as jobs_router  # noqa: E402
 from app.models_mgmt.gateway import router as llm_gateway_router
 from app.models_mgmt.router import router as models_router  # noqa: E402
@@ -343,6 +344,7 @@ app.include_router(knowledge_router, prefix=API)
 app.include_router(chat_router, prefix=API)
 app.include_router(chat_persist_router, prefix=API)
 app.include_router(chat_asr_router, prefix=API)
+app.include_router(speech_router, prefix=API)
 app.include_router(hooks_router, prefix=API)
 app.include_router(jobs_router, prefix=API)
 app.include_router(models_router, prefix=API)

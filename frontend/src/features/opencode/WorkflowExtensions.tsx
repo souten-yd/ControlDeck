@@ -111,7 +111,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
         )}
         {stale && (
           <p role="note" className="mt-1 rounded-lg bg-zinc-50 px-2 py-1.5 text-[11px] leading-relaxed text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
-            この外部モデルはいま使えないため、セッションと同じモデルで動きます（Models → フロンティア（外部）で、モデルと OpenCode からの送信を確かめてください）。
+            この外部モデルはいま使えないため、セッションと同じモデルで動きます（Models → Frontierで、モデルと OpenCode からの送信を確かめてください）。
           </p>
         )}
       </div>
@@ -168,7 +168,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
       {value.cloud_blocked && (
         <p className="rounded-xl bg-zinc-50 px-3 py-2 text-[11px] leading-relaxed text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
           外部のモデル（OpenRouter など）をレビュー・相談・開発担当に使うには、
-          <Link to="/models?tab=frontier" className="text-accent-600 underline dark:text-accent-400">Models → フロンティア（外部）</Link>
+          <Link to="/models?tab=frontier" className="text-accent-600 underline dark:text-accent-400">Models → Frontier</Link>
           で「OpenCode」からの外部への送信を許可します。
         </p>
       )}

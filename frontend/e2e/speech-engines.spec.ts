@@ -1,0 +1,60 @@
+/** Models の「TTS / ASR」タブと、設定の機能追加の「音声（TTS / ASR）」。
+ *
+ * 目的: ASR と TTS が 1 つのタブに並び、使うエンジンを選べ、320px でも横にはみ出さないこと。
+ * Supertonic 3 が導入済みなら、試し聞きで本物の WAV が返ること。
+ * 根拠: 2026-11-19 利用者「TTS と ASR は同じ項目として追加。各 TTS / ASR の利用するエンジンを選択できるように」。 */
+import { expect, test } from "@playwright/test";
+import { establishSession } from "./support/session";
+
+const shots = process.env.CONTROL_DECK_E2E_SHOTS ?? "/tmp";
+
+for (const width of [320, 1280]) {
+  test(`TTS / ASR tab lists engines and switches them at ${width}px`, async ({ page, context }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await establishSession(page, context);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto("/models?tab=speech");
+    await expect(page.getByRole("heading", { name: "ASR（音声認識）" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "TTS（音声合成）" })).toBeVisible();
+    await expect(page.locator("span", { hasText: /^Supertonic 3$/ })).toBeVisible();
+    await expect(page.locator("span", { hasText: /^Haas-ja v1\.0$/ })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `${shots}/speech-tab-${width}.png`, fullPage: true });
+
+    const asr = page.getByLabel("ASR（音声認識）で使うエンジン");
+    const before = await asr.inputValue();
+    const other = before === "haas" ? "whisper" : "haas";
+    const saved = page.waitForResponse((r) => r.url().endsWith("/speech/engines") && r.request().method() === "PUT");
+    await asr.selectOption(other);
+    expect((await saved).ok()).toBe(true);
+    await page.reload();
+    await expect(page.getByLabel("ASR（音声認識）で使うエンジン")).toHaveValue(other);
+    await page.getByLabel("ASR（音声認識）で使うエンジン").selectOption(before);
+
+    const engines = await (await page.request.get("/api/v1/speech/engines")).json();
+    if (engines.engines.some((e: { id: string; ready: boolean }) => e.id === "supertonic-3" && e.ready)) {
+      const spoken = page.waitForResponse((r) => r.url().endsWith("/speech/tts"));
+      await page.getByRole("button", { name: "再生", exact: true }).click();
+      const response = await spoken;
+      expect(response.status()).toBe(200);
+      expect(response.headers()["content-type"]).toBe("audio/wav");
+      await expect(page.locator("audio")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `${shots}/speech-tab-played-${width}.png`, fullPage: true });
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+test("Supertonic 3 is offered under 音声 in the feature list", async ({ page, context }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await establishSession(page, context);
+  await page.goto("/settings/features");
+  const row = page.locator("#feature-supertonic-3");
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+  await expect(page.getByRole("heading", { name: /音声（TTS \/ ASR）/ })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await row.screenshot({ path: `${shots}/speech-feature-320.png` });
+});

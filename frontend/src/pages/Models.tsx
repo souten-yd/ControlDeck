@@ -15,6 +15,7 @@ import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { SpeechEnginesPanel } from "../features/models/SpeechEnginesPanel";
 import { FrontierModelsGroup } from "../features/models/FrontierModelsPanel";
 import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
 import { MayaSDetailSheet, useMayaStatus } from "../features/models/MayaSModelPanel";
@@ -315,9 +316,9 @@ export default function ModelsPage() {
   const show = useToasts((s) => s.show);
   const can = useAuth((s) => s.can);
   const [params, setParams] = useSearchParams();
-  // TTS / ASR は SonicForge（拡張アプリ）が持つ。以前の ?tab=tts は LLM / VLM へ。
-  const requestedTab = params.get("tab") ?? "llm";
-  const tab = (["llm", "embed", "frontier"].includes(requestedTab) ? requestedTab : "llm") as "llm" | "embed" | "frontier";
+  // TTS / ASR は ControlDeck 本体のエンジン（2026-11-19 利用者の依頼で 1 つのタブにまとめた）。以前の ?tab=tts もここへ。
+  const requestedTab = params.get("tab") === "tts" ? "speech" : (params.get("tab") ?? "llm");
+  const tab = (["llm", "embed", "speech", "frontier"].includes(requestedTab) ? requestedTab : "llm") as "llm" | "embed" | "speech" | "frontier";
   const [pulling, setPulling] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
@@ -527,7 +528,7 @@ export default function ModelsPage() {
       <PageHeader title="Models" actions={can("workflows.edit") && <>
           <IconButton label="LLM 共通設定" onClick={() => setSettingsOpen(true)}><IconSettings /></IconButton>
           {/* ローカルのモデルを足す操作。外部（フロンティア）のタブでは使わない。 */}
-          {tab !== "frontier" && (
+          {tab !== "frontier" && tab !== "speech" && (
             <IconButton variant="primary" label={isLocal ? "モデル登録" : "モデル取得"}
               onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)}><IconPlus /></IconButton>
           )}
@@ -538,8 +539,8 @@ export default function ModelsPage() {
         className="mb-3"
         value={tab}
         onChange={(id) => setParams(id === "llm" ? {} : { tab: id }, { replace: true })}
-        tabs={[["llm", "LLM / VLM"], ["embed", "Embed / Reranker"],
-          ...(can("settings.manage") ? [["frontier", "フロンティア（外部）", "フロンティア"]] as const : [])] as const}
+        tabs={[["llm", "LLM / VLM"], ["embed", "Embed / Reranker", "Embed"], ["speech", "TTS / ASR"],
+          ...(can("settings.manage") ? [["frontier", "Frontier"]] as const : [])] as const}
       />
       {tab === "llm" && (
       <p className="mb-3 px-0.5 text-xs leading-relaxed text-zinc-500">
@@ -555,6 +556,7 @@ export default function ModelsPage() {
       <ActiveModelJobs />
       {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
       {tab === "embed" && <EmbedRerankPanel />}
+      {tab === "speech" && <SpeechEnginesPanel />}
       {tab === "frontier" && can("settings.manage") && <FrontierModelsGroup />}
       {tab === "llm" && (<>
       {!isLocal && status && !status.available ? (
@@ -2105,7 +2107,6 @@ function EmbedRerankPanel() {
   );
 }
 
-/** TTS タブ（今後対応のプレースホルダー）。 */
 /** Register only models explicitly requested by the user. */
 function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
