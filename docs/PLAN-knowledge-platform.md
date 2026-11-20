@@ -124,7 +124,8 @@ ResearchDataHub と PatentBuddy の main は同じ `qnaplibrary` パッケージ
 | K-PR1 | 統合ストア・旧 RAG/ResearchDataHub の取り込み・規格の判定（PR #473） |
 | K-PR3 | **前倒しで実装**（2026-11-21、同じ PR #473）。Patent 画面（/patents）、`backend/app/patents/`、PatentBuddy Add-on の撤去 |
 | K-PR6 の一部 | 保存先・保存対象・バックアップの設定（`app/knowledge/storage.py`・`backup.py`、`./deck.sh knowledge-storage`）。設定画面と定時バックアップは未着手 |
-| K-PR2・4・5・7 | 未着手 |
+| R2（2026-11-21） | 文書単位の RAG（全文か骨格）・書誌の関係・規格の画面・PDF の取り込み（ページ・OCR・図・VLM）・アシスタントの道具・音声ヒアリング。詳細は `HANDOFF-knowledge-platform.md` §6 |
+| K-PR5・7 | 未着手（公的データの取得、知識エッセンス） |
 
 ## 9. 未決事項（利用者に確認）
 

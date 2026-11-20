@@ -116,3 +116,16 @@ def references(body: str, own: list[Identifier], limit: int = 500) -> list[Ident
     """本文に出てくる参照。自分の識別子は除く。"""
     mine = {(i.scheme, i.value) for i in own}
     return [i for i in extract(body or "") if (i.scheme, i.value) not in mine][:limit]
+
+
+_TITLE = re.compile(r"【発明の名称】\s*([^\n【]{2,80})")
+
+
+def head_identifiers(body: str, chars: int = 400) -> list[Identifier]:
+    """題名に番号が無いとき（PDF のファイル名など）、本文の冒頭（公報の 1 ページ目の見出し）の番号を自分の番号とみなす。"""
+    return extract((body or "")[:chars])
+
+
+def invention_title(body: str) -> str:
+    m = _TITLE.search(_norm(body or "")[:20000])
+    return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""

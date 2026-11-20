@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 183 ファイル、1647 テスト（目的の未記入 93 ファイル）
-- E2E: 90 spec、187 テスト
+- backend: 184 ファイル、1655 テスト（目的の未記入 93 ファイル）
+- E2E: 92 spec、189 テスト
 
 ## backend（backend/tests）
 
@@ -1125,6 +1125,19 @@
 目的: **未記入**
 
 - `test_cancelled_stream_joins_update_and_disconnect_waiters`
+
+### backend/tests/test_knowledge_documents.py
+
+目的: 文書を単位にした RAG（書誌の関係・全文か骨格・規格・PDF・AI アシスタントの道具）。 目的: - 特許・規格は文書を単位に探し、入るなら全文、入らなければ骨格（要約・請求項・適用範囲・引用規格）と該当箇所を 元の順で渡すこと。reranker の上位 k 件で文書の中身を削らないこと。 - 公報番号・規格番号で書誌の関係（引用する・引用される・別の版）を結び、検索で 1 hop 広げること。 - 規格は条項で分割し、番号で引け、利用判定で本文の保存・AI 利用を止めること。旧版を現行にしないこと。 - PDF からページの文章・図のページの画像・原本を保存し、ページを locator に持つこと。 - AI アシスタントの道具は、cloud のモデルへ機密・AI 利用の許されない規格を渡さないこと。 根拠: 2026-11-21 利用者「特許・規格は書誌全体が関係する。上位何件に絞れない。コンテキストが十分なら全文を入れて回答」 「PDF から画像・文章・波形グラフ・表を抽出して記録し、体系的に引き出す規格検索」。docs/research-patent-standards-rag.md。
+
+- `test_bibliographic_links_and_one_hop_expansion`
+- `test_whole_documents_when_they_fit_else_outline_with_all_claims`
+- `test_cloud_consumers_get_no_confidential_or_prohibited_documents`
+- `test_standards_are_split_by_clause_and_gated_by_license`
+- `test_new_edition_supersedes_the_current_one`
+- `test_pdf_pages_figures_and_original_are_kept`
+- `test_assistant_tool_respects_the_consumer`
+- `test_knowledge_api_find_document_and_asset`
 
 ### backend/tests/test_knowledge_storage.py
 
@@ -2858,6 +2871,12 @@
 
 - GPU settings apply only on request (${width}px)
 
+### frontend/e2e/knowledge.spec.ts
+
+目的: Knowledge: 探す・資料・規格のタブ。規格は入手経路から保存・AI 利用の判定を見せ、購入品は番号と題名だけで登録する。 根拠: 2026-11-21 利用者「規格検索の RAG」「利用者が知らなくていい情報は隠し、必要なら開けるように」。 */
+
+- Knowledge: 規格を登録して番号で探す（${width}px）
+
 ### frontend/e2e/llama-runtime-settings.spec.ts
 
 目的: **未記入**
@@ -2942,6 +2961,12 @@
 目的: **未記入**
 
 - changes password and revokes the current session without viewport overflow
+
+### frontend/e2e/patents.spec.ts
+
+目的: Patent（特許調査・検討）画面。案件の作成 → 概要 → 期限 → 請求項 → AI 支援を、PC 幅と 320px で通す。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。Patent 機能をつけて」。 検証用インスタンスにはローカルのモデルが無いので、AI 支援は「外部へ送らない」案内が出ることを確かめる。 */
+
+- Patent: 案件を作って期限と請求項を扱う（${width}px）
 
 ### frontend/e2e/persistent-login.spec.ts
 

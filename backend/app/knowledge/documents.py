@@ -101,7 +101,8 @@ def document_text(ref: str) -> str:
 
 
 _CLAIMS_HEAD = re.compile(r"【特許請求の範囲】|【請求項\s*[1１]】|^\s*(?:What is claimed is|Claims)\s*:?\s*$", re.M | re.I)
-_ABSTRACT_HEAD = re.compile(r"【要約】|【課題】|^\s*Abstract\s*$", re.M | re.I)
+_ABSTRACT_HEAD = re.compile(r"【要約】|^\s*Abstract\s*$", re.M | re.I)
+_ABSTRACT_END = re.compile(r"【選択図】|【特許請求の範囲】|【発明の詳細な説明】|【技術分野】|【書誌事項】")
 _SECTION_END = re.compile(r"\n【(?!請求項)[^】]{1,12}】")
 
 
@@ -111,7 +112,7 @@ def _section(text: str, head: re.Pattern, limit: int) -> str:
         return ""
     start = m.start()
     tail = text[m.end():]
-    end = _SECTION_END.search(tail)
+    end = _ABSTRACT_END.search(tail) if head is _ABSTRACT_HEAD else _SECTION_END.search(tail)
     if head is _CLAIMS_HEAD:
         end = re.search(r"\n【(?!請求項)(?!特許請求)[^】]{1,12}】", tail)
     return text[start:m.end() + (end.start() if end else len(tail))][:limit].strip()

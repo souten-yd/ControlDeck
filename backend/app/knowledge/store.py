@@ -325,6 +325,8 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
     from app.knowledge import biblio
 
     own = identifiers if identifiers is not None else biblio.own_identifiers(title, ext_id or "", source)
+    if identifiers is None and not own and body:
+        own = biblio.head_identifiers(body)
     refs = biblio.references(body if body is not None else "\n".join(c.text for c in chunks), own)
     level = sensitivity or ref.sensitivity
     if level not in SENSITIVITY:

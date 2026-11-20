@@ -125,7 +125,8 @@ def search(question: str, *, include_superseded: bool = False, limit: int = 20) 
                     "edition": std.get("edition", ""), "status": std.get("status", "unknown"), "exact": doc["relation"] == "exact",
                     "clauses": [{"clause": h["locator"].get("clause", ""), "heading": h["locator"].get("heading", ""),
                                  "page": h["locator"].get("page"), "snippet": documents.snippet(h["text"], question)}
-                                for h in doc["hits"][:5]]})
+                                for h in doc["hits"][:8] if h["locator"].get("kind") != "metadata"][:5],
+                    "fulltext": full["meta"].get("license", {}).get("storage") == "shared_server"})
     return out
 
 

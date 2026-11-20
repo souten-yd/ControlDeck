@@ -10,6 +10,9 @@ import {
 } from "../components/ui";
 import { IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { useAssistantAsr, useVoiceMeter } from "../features/workflows/useAssistantAsr";
+import { RELATION_LABEL } from "../api/knowledge";
+import { DocumentSheet } from "../features/knowledge/DocumentSheet";
 
 const MarkdownMessage = lazy(() => import("../features/workflows/MarkdownMessage"));
 
@@ -18,9 +21,10 @@ const card = "rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:bor
 const DATA_FIELDS: [string, string][] = [
   ["field", "技術分野"], ["problem", "課題"], ["solution", "解決手段（構成）"], ["effect", "効果"], ["embodiment", "実施例"],
 ];
-type Tab = "summary" | "deadlines" | "claims" | "refs" | "assist";
+type Tab = "summary" | "hearing" | "deadlines" | "claims" | "refs" | "assist";
 const TABS: ReadonlyArray<readonly [Tab, string, string?]> = [
-  ["summary", "概要"], ["deadlines", "期限"], ["claims", "請求項"], ["refs", "文献"], ["assist", "AI 支援", "AI"],
+  ["summary", "概要"], ["hearing", "ヒアリング", "話す"], ["claims", "請求項", "請求"], ["refs", "文献"],
+  ["deadlines", "期限"], ["assist", "AI 支援", "AI"],
 ];
 
 function errorText(e: unknown) {
@@ -138,6 +142,7 @@ function CaseSheet({ id, meta, onClose }: { id: number; meta: PatentMeta; onClos
       {!c ? <Skeleton className="h-40" /> : (
         <>
           {tab === "summary" && <SummaryTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
+          {tab === "hearing" && <HearingTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} onOpenAssist={() => setTab("assist")} />}
           {tab === "deadlines" && <DeadlinesTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
           {tab === "claims" && <ClaimsTab c={c} editable={editable} onSaved={set} onError={fail} />}
           {tab === "refs" && <RefsTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
@@ -321,6 +326,7 @@ function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [category, setCategory] = useState("A");
   const [manual, setManual] = useState("");
+  const [openDoc, setOpenDoc] = useState<string | null>(null);
   const search = useMutation({ mutationFn: () => patentsApi.search(query), onSuccess: (r) => setHits(r.results), onError });
   const add = useMutation({
     mutationFn: (body: { ref?: string; doc_ref?: string; relevance?: string }) => patentsApi.addRef(c.id, { ...body, category }),
@@ -335,7 +341,7 @@ function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {
         {c.refs.length === 0 ? <p className="text-sm text-zinc-500">まだありません。</p> : (
           <ul className="space-y-2">
             {c.refs.map((r) => (
-              <li key={r.id} className="flex items-start gap-2 text-sm">
+              <li key={r.id} className="flex items-start gap-2 text-sm" onClick={() => r.doc_ref && setOpenDoc(r.doc_ref)}>
                 <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-accent-600/15 text-xs font-bold text-accent-700 dark:text-accent-300"
                   title={meta.ref_categories[r.category]}>{r.category}</span>
                 <span className="min-w-0 flex-1"><span className="block truncate">{r.ref || r.doc_ref}</span>
@@ -363,8 +369,10 @@ function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {
             {hits.map((h) => (
               <li key={h.chunk_ref} className="rounded-xl border border-zinc-200 p-3 text-xs dark:border-zinc-800">
                 <div className="flex items-start gap-2">
-                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{h.title || h.doc_ref}</span>
-                    <span className="text-zinc-500">{h.collection}{h.sensitivity === "public" ? " · 公開" : ""}</span></span>
+                  <button className="min-w-0 flex-1 text-left" onClick={() => setOpenDoc(h.doc_ref)}>
+                    <span className="block truncate text-sm font-medium">{h.title || h.doc_ref}</span>
+                    {h.relation && RELATION_LABEL[h.relation] && <span className="text-zinc-500">{RELATION_LABEL[h.relation]}</span>}
+                  </button>
                   {editable && (
                     <button className="shrink-0 rounded-lg px-2 py-1 text-accent-700 hover:bg-accent-600/10 dark:text-accent-300"
                       onClick={() => add.mutate({ doc_ref: h.doc_ref, ref: h.title, relevance: h.snippet.slice(0, 200) })}>{category} で追加</button>
@@ -382,7 +390,77 @@ function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {
           <button className={secondaryButtonClass} disabled={!manual.trim() || add.isPending}>追加</button>
         </form>
       )}
+      {openDoc && <DocumentSheet docRef={openDoc} onClose={() => setOpenDoc(null)} />}
     </div>
+  );
+}
+
+/** 発明を話して記録する。区切りごとに文字にして記録へ足し（途中で閉じても残る）、ローカル AI が本質・構成要件・請求項案に整理する。 */
+function HearingTab({ c, meta, editable, onSaved, onError, onOpenAssist }: TabProps & { onOpenAssist: () => void }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const [draft, setDraft] = useState(String(c.data.hearing ?? ""));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { if (!editing) setDraft(String(c.data.hearing ?? "")); }, [c.data.hearing, editing]);
+  const append = useMutation({ mutationFn: (text: string) => patentsApi.appendHearing(c.id, text), onSuccess: onSaved, onError });
+  const replace = useMutation({
+    mutationFn: () => patentsApi.appendHearing(c.id, draft, true),
+    onSuccess: (next) => { onSaved(next); setEditing(false); show("保存しました"); }, onError,
+  });
+  const asr = useAssistantAsr({ onText: (text) => append.mutate(text), onError: (m) => show(m, "error") });
+  const analyze = useMutation({
+    mutationFn: () => patentsApi.assist(c.id, "hearing", ""),
+    onSuccess: () => { show("ローカルの AI が整理しています（AI 支援のタブに出ます）"); qc.invalidateQueries({ queryKey: ["patent", c.id] }); onOpenAssist(); },
+    onError,
+  });
+  const latest = c.assists.find((a) => a.task === "hearing");
+  const chars = String(c.data.hearing ?? "").length;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-zinc-600 dark:text-zinc-300">発明について自由に話してください（何を困っていたか、どう解決したか、なぜ効くか、例や数値）。
+        話の切れ目ごとに文字にして記録に足します。長く話しても大丈夫です。</p>
+      {editable && (
+        <div className="flex flex-wrap items-center gap-2">
+          {asr.active ? (
+            <>
+              <button className={primaryButtonClass} onClick={() => asr.finish()}>話し終える</button>
+              <button className={secondaryButtonClass} onClick={() => asr.cancel()}>やめる</button>
+              <Elapsed meter={asr.meter} />
+            </>
+          ) : (
+            <button className={primaryButtonClass} onClick={() => void asr.start()} disabled={asr.phase === "installing"}>
+              {asr.phase === "installing" ? "音声入力を準備しています…" : "話して記録する"}
+            </button>
+          )}
+          {asr.pending > 0 && <span className="text-xs text-zinc-500">文字にしています…</span>}
+        </div>
+      )}
+      <textarea className={`${input} min-h-48 text-sm`} value={draft} readOnly={!editable}
+        onChange={(e) => { setDraft(e.target.value); setEditing(true); }}
+        placeholder="話した内容がここに入ります。手で書き足したり直したりもできます。" />
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="num flex-1 text-xs text-zinc-500">{chars.toLocaleString()} 文字</span>
+        {editable && editing && <button className={secondaryButtonClass} onClick={() => replace.mutate()} disabled={replace.isPending}>直した内容を保存</button>}
+        {editable && (
+          <button className={primaryButtonClass} disabled={!meta.local_ai_available || chars < 20 || editing || analyze.isPending}
+            onClick={() => analyze.mutate()}>AI で本質と請求項に整理</button>
+        )}
+      </div>
+      {!meta.local_ai_available && <p className="text-xs text-zinc-500">整理はローカル専用のモデルで行います（いまは使えません）。記録はできます。</p>}
+      {latest && <p className="text-xs text-zinc-500">前回の整理: {STATUS_LABEL[latest.status] ?? latest.status}（AI 支援のタブで見られます）</p>}
+    </div>
+  );
+}
+
+function Elapsed({ meter }: { meter: Parameters<typeof useVoiceMeter>[0] }) {
+  const { elapsedMs, levels } = useVoiceMeter(meter);
+  const level = Math.min(1, (levels[levels.length - 1] ?? 0) * 8);
+  const s = Math.floor(elapsedMs / 1000);
+  return (
+    <span className="flex items-center gap-2 text-xs text-zinc-500" aria-live="polite">
+      <span className="h-2 w-16 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700"><span className="block h-full bg-accent-600 transition-[width]" style={{ width: `${level * 100}%` }} /></span>
+      <span className="num">{Math.floor(s / 60)}:{String(s % 60).padStart(2, "0")}</span>
+    </span>
   );
 }
 
@@ -441,9 +519,12 @@ function AssistTab({ c, meta, editable, onSaved, onError }: TabProps) {
                   <Suspense fallback={<Skeleton className="h-16" />}><MarkdownMessage text={a.answer} /></Suspense>
                 </div>
                 {a.evidence.length > 0 && (
-                  <ol className="mt-2 list-decimal space-y-0.5 pl-5 text-xs text-zinc-500">
-                    {a.evidence.map((e, i) => <li key={i}>{e.title || e.doc_ref}（{e.collection}）</li>)}
-                  </ol>
+                  <details className="mt-2 text-xs text-zinc-500">
+                    <summary className="cursor-pointer">根拠にした文書（{a.evidence.length}）</summary>
+                    <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+                      {a.evidence.map((e, i) => <li key={i}>{e.title || e.doc_ref}</li>)}
+                    </ol>
+                  </details>
                 )}
                 {editable && (
                   <div className="mt-2 flex gap-2">

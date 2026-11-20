@@ -23,6 +23,12 @@ for (const width of [1280, 320]) {
     await sheet.getByRole("button", { name: "保存", exact: true }).click();
     await expect(page.getByText("保存しました")).toBeVisible();
 
+    await sheet.getByRole("button", { name: "ヒアリング" }).click();
+    await expect(sheet.getByRole("button", { name: "話して記録する" })).toBeVisible();
+    await sheet.getByPlaceholder("話した内容がここに入ります。手で書き足したり直したりもできます。").fill("インバータの損失を減らしたい。ゲートの駆動を工夫した。");
+    await sheet.getByRole("button", { name: "直した内容を保存" }).click();
+    await expect(sheet.getByText("文字", { exact: false }).first()).toBeVisible();
+
     await sheet.getByRole("button", { name: "期限" }).click();
     await sheet.locator('input[type="date"]').fill("2026-01-31");
     await sheet.getByRole("button", { name: "出来事を記録" }).click();

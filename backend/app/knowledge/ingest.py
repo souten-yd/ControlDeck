@@ -125,6 +125,13 @@ async def ingest_pdf(collection: str, path: Path, *, title: str = "", sensitivit
                 if text:
                     described[page] = text
     body = extracted.text if store_fulltext else ""
+    if not title and body:
+        # 公報なら「番号 発明の名称」を題名にする（ファイル名より分かりやすい）
+        from app.knowledge import biblio
+
+        head = biblio.head_identifiers(body)
+        name = biblio.invention_title(body)
+        title = " ".join(x for x in ((head[0].raw if head else ""), name) if x)
     if store_fulltext:
         chunks = clause_chunks(body) if clauses else paragraph_chunks(body)
         for page, text in described.items():

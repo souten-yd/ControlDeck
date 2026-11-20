@@ -36,7 +36,7 @@ export interface PatentMeta {
 }
 export interface SearchHit {
   doc_ref: string; chunk_ref: string; collection: string; title: string; source: string; url: string;
-  score: number; snippet: string; sensitivity: string;
+  score: number; snippet: string; sensitivity: string; relation?: string;
 }
 export interface ClaimChart {
   claim_no: number; claim: string;
@@ -55,6 +55,8 @@ export const patentsApi = {
     api<CaseDetail>(`/patents/cases/${id}/events`, { method: "POST", json: body }),
   removeEvent: (id: number, eventId: number) => api<CaseDetail>(`/patents/cases/${id}/events/${eventId}`, { method: "DELETE" }),
   saveClaims: (id: number, text: string) => api<CaseDetail>(`/patents/cases/${id}/claims`, { method: "POST", json: { text } }),
+  appendHearing: (id: number, text: string, replace = false) =>
+    api<CaseDetail>(`/patents/cases/${id}/hearing`, { method: "POST", json: { text, replace } }),
   addRef: (id: number, body: { ref?: string; doc_ref?: string; category: string; relevance?: string }) =>
     api<CaseDetail>(`/patents/cases/${id}/refs`, { method: "POST", json: body }),
   removeRef: (id: number, refId: number) => api<CaseDetail>(`/patents/cases/${id}/refs/${refId}`, { method: "DELETE" }),
