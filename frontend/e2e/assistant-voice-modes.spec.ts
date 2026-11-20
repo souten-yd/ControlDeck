@@ -233,6 +233,8 @@ test("a streaming answer is cut at sentence ends and every part is read once", (
   const long = nextSpoken(`${"あ".repeat(800)}。${"い".repeat(800)}。`, "", false);
   expect(long.capped).toBe(true);
   expect(long.text.endsWith("続きは画面をご覧ください。")).toBe(true);
+  // 上限でも文の途中では切らない（2026-11-20 実測: 「ため息を続きは画面…」）
+  expect(long.text).toBe(`${"あ".repeat(800)}。続きは画面をご覧ください。`);
 });
 
 test("TTS reply mode starts reading while the answer is still being written", async ({ page, context }) => {
@@ -289,7 +291,7 @@ test("leading and trailing silence of each synthesized piece is cut so pieces jo
   expect(voicedRange(new Float32Array(rate), rate)).toEqual([0, 0]);   // 全部が無音なら鳴らさない
 });
 
-test("a long answer is played in order with only a short pause between pieces", async ({ page, context }) => {
+test("a long answer is played in order with a sentence-sized pause between pieces", async ({ page, context }) => {
   // 鳴らした音の予約（AudioBufferSourceNode.start）を記録し、前の終わりから次の始まりまでの間を測る
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
@@ -326,8 +328,9 @@ test("a long answer is played in order with only a short pause between pieces", 
   expect(starts.length).toBe(state.spoken.length);
   for (let i = 1; i < starts.length; i++) {
     const gap = starts[i].when - (starts[i - 1].when + starts[i - 1].dur);
-    expect(gap).toBeGreaterThanOrEqual(0);              // 重ならない
-    expect(gap).toBeLessThan(0.25);                     // 前は無音 0.4＋0.4 秒と鳴らし直しで約 1 秒空いていた
+    // 文の間と同じだけ空ける（Supertonic 3 が 1 つの音声の中で空ける 0.3 秒）。前は無音 0.4＋0.4 秒と鳴らし直しで約 1 秒
+    expect(gap).toBeGreaterThan(0.25);
+    expect(gap).toBeLessThan(0.4);
   }
 });
 

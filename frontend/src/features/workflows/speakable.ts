@@ -126,7 +126,8 @@ export function nextSpoken(markdown: string, queued: string, done: boolean): { t
   if (next.length > MAX_SPOKEN_CHARS) {
     const room = rest.slice(0, Math.max(0, MAX_SPOKEN_CHARS - start));
     const end = Math.max(room.lastIndexOf("。"), room.lastIndexOf("！"), room.lastIndexOf("？"), room.lastIndexOf(". "));
-    const head = end >= 0 ? room.slice(0, end + 1) : room;
+    // 文の途中では切らない（2026-11-20 実測: 「ため息を続きは画面…」）。文の終わりが無ければ、ここまでで終える
+    const head = end >= 0 ? room.slice(0, end + 1) : "";
     return { text: `${head}続きは画面をご覧ください。`, queued: next, capped: true };
   }
   return { text: rest, queued: next, capped: false };

@@ -2655,7 +2655,7 @@
 - a streaming answer is cut at sentence ends and every part is read once
 - TTS reply mode starts reading while the answer is still being written
 - leading and trailing silence of each synthesized piece is cut so pieces join without gaps
-- a long answer is played in order with only a short pause between pieces
+- a long answer is played in order with a sentence-sized pause between pieces
 - after reading aloud, the microphone still opens on an iPhone-like audio session
 - a streamed answer with markdown is read without skipping or reading symbols
 - turning reading off mid-answer silences it, and the rest of the stream does not restart it
