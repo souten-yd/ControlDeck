@@ -15,6 +15,7 @@ import { MobileNavigationSettings } from "../features/settings/MobileNavigationS
 import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
+import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
@@ -1158,6 +1159,7 @@ function AddonsSection() {
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="sr-only">オプション機能</h2>
       <p className="mb-3 text-xs text-zinc-500">導入はユーザー領域へのインストールで、パスワードは不要です。</p>
+      <FeatureAutoUpdate busy={busy} />
       <div className="space-y-5">
         {groups.filter(([, , items]) => items.length > 0).map(([title, description, items]) => (
           <div key={title}>
