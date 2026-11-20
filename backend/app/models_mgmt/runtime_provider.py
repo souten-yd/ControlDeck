@@ -648,6 +648,9 @@ class RadianceRuntimeProvider(OpenAICompatibleRuntimeProvider):
     """
 
     kind = "radiance"
+    # 2026-11-20 実機（Qwen3.8-27B Radiance、ControlDeck のゲートウェイ経由）で、挨拶・お礼・計算では呼ばず、
+    # 「さっき調べた番組表で夜 9 時は？」では「神奈川 地上波 番組表 夜 9時」で探して答えるのを確かめた
+    tools_verified = True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)

@@ -99,7 +99,7 @@ interface Quality { score: number; label: string; breakdown: Record<string, numb
 interface GenData { name: string; definition: { nodes: { id: string; type: string; name?: string }[]; edges: unknown[] }; valid: boolean; warnings: string[]; goal: string; quality?: Quality }
 interface BuildState { lines: string[]; status: string; workflowId?: number; done: boolean; quality?: Quality }
 interface ResearchStep { tool: "web" | "academic"; query: string }
-interface AssistantPlan { mode: "chat" | "web" | "academic" | "deep" | "research"; reason: string; steps: ResearchStep[]; max_iterations: number; decided_by: "rule" | "llm" | "fallback" }
+interface AssistantPlan { mode: "chat" | "web" | "academic" | "deep" | "research"; reason: string; steps: ResearchStep[]; max_iterations: number; decided_by: "rule" | "llm" | "fallback" | "tools" }
 interface ResearchProgress { phase: string; label: string; iteration: number; details?: Record<string, unknown> }
 interface DeepResearchResult {
   rounds: number;

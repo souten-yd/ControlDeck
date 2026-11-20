@@ -976,10 +976,14 @@ class RouteBody(BaseModel):
 async def route_message(
     body: RouteBody, user: User = Depends(require_permission("workflows.run")),
 ):
-    """明確な依頼はルール、曖昧な依頼はLLMで構造化判定する。"""
-    from app.workflows.assistant_planner import decide
+    """明確な依頼はルール、曖昧な依頼はLLMで構造化判定する。
 
-    from app.models_mgmt.runtime_provider import resolve_target
+    道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
+    Web 検索・資料の検索はモデルが要ると判断したときに道具で行う（2026-11-20 利用者「Claude と同じ方法で」）。"""
+    from app.workflows import chat_tools
+    from app.workflows.assistant_planner import AssistantPlan, decide, rule_plan
+
+    from app.models_mgmt.runtime_provider import provider_for_base_url, resolve_target
 
     def brief() -> str:
         if not body.conversation_id:
@@ -993,6 +997,12 @@ async def route_message(
         return _document_brief(body.conversation_id) if allowed else ""
 
     base_url, model = resolve_target(body.base_url, body.model)
+    if getattr(provider_for_base_url(base_url), "tools_verified", False) and chat_tools.supported(base_url, model):
+        immediate = rule_plan(body.content)
+        if immediate is not None:
+            return immediate.model_dump()
+        return AssistantPlan(mode="chat", reason="対話（調べる必要があればモデルが Web 検索・資料の検索を使う）",
+                             decided_by="tools").model_dump()
     return (await decide(body.content, base_url, model, context=await asyncio.to_thread(brief))).model_dump()
 
 
@@ -1721,7 +1731,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 temperature=None,
                 max_tokens=max_output_tokens, thinking=think, reasoning_effort=think_spec.reasoning_effort,
                 disable_thinking=think is False, keep_alive=_keep_alive(),
-                tools=[chat_tools.TOOL_SEARCH_MATERIALS] if with_tools else None,
+                tools=tool_defs if with_tools and tool_defs else None,
             )
         # 生成統計（フェーズ / tok/s / コンテキスト使用量）。1チャンク≒1トークンとして
         # 直近4秒窓で速度を算出し、usage chunk到着時に実測値へ置き換える。
@@ -1744,8 +1754,31 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         messages = list(history)
         tool_log: list[dict] = []
         rounds = 0
+        # 機能の選択が「自動」なら、Web 検索もモデルが要ると判断したときに呼ぶ（送信前の機能の判定を省く）
+        web_tool = (mode == "chat" and str(params.get("mode_choice") or "") == "auto"
+                    and getattr(provider, "tools_verified", False) and chat_tools.supported(base_url, model))
+
+        async def web_search(query: str) -> list[tuple[dict, dict]]:
+            from app.models_mgmt import context_budget
+            from app.workflows import chat_router as cr
+
+            sb = cr.SearchBody(query=query, mode="web", engine=params.get("engine", "searxng"),
+                               searxng_url=params.get("searxng_url", ""), base_url=base_url, model=model)
+            results = await cr._web_results(sb, query, context_budget.for_model(base_url, model).search_pages)
+            raw = [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", ""),
+                    "source": r.get("source", "web"), "kind": "page"} for r in results]
+            registered = await asyncio.to_thread(_register_conversation_sources, conv_id, raw)
+            return list(zip(registered, results))
+
+        web_sources: list[dict] = []
         while True:
-            with_tools = material_tool is not None and rounds < chat_tools.MAX_ROUNDS
+            tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
+                [chat_tools.TOOL_WEB_SEARCH] if web_tool else [])
+            with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
+            last = bool(tool_defs) and rounds >= chat_tools.MAX_ROUNDS
+            if last:
+                # 上限に達した: 道具のやり取りを普通の資料にまとめ、道具なしで答えさせる（chat_tools.flatten_for_final）
+                messages = chat_tools.flatten_for_final(messages)
             calls: list[dict] = []
             round_content = ""
             try:
@@ -1760,9 +1793,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 chat_tools.mark_unsupported(base_url, model)
                 messages = await _materials_without_tools(messages, material_tool, job)
                 material_tool = None
+                web_tool = False
                 continue
-            if not calls:
-                break
+            if not calls or last:
+                break   # 最後の回にまだ呼ぼうとしても、それ以上は実行しない
             rounds += 1
             messages.append({"role": "assistant", "content": round_content or None,
                              "tool_calls": [{"id": c["id"], "type": "function",
@@ -1770,24 +1804,41 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                                             for c in calls]})
             for call in calls:
                 query = str(chat_tools.arguments_of(call).get("query") or "")[:80]
-                job.log("stats", phase="retrieve", detail=f"資料を探しています: {query}" if query else "資料を探しています",
-                        tok_per_sec=0, gen_tokens=0, prompt_tokens=None, context_max=None)
-                result, record = await chat_tools.run(call, collection=material_tool["collection"],
-                                                      top_k=material_tool["top_k"], max_chars=material_tool["max_chars"])
+                if call["name"] == chat_tools.WEB_SEARCH and web_tool:
+                    job.log("stats", phase="retrieve", detail=f"Web を検索しています: {query}", tok_per_sec=0,
+                            gen_tokens=0, prompt_tokens=None, context_max=None)
+                    from app.models_mgmt import context_budget
+
+                    result, record, found = await chat_tools.run_web(
+                        call, search=web_search, max_chars=context_budget.for_model(base_url, model).rag_chars)
+                    if found:
+                        web_sources.extend(found)
+                        buf["meta"]["sources"] = web_sources
+                        job.log("sources", sources=web_sources)
+                elif material_tool is not None:
+                    job.log("stats", phase="retrieve", detail=f"資料を探しています: {query}" if query else "資料を探しています",
+                            tok_per_sec=0, gen_tokens=0, prompt_tokens=None, context_max=None)
+                    result, record = await chat_tools.run(call, collection=material_tool["collection"],
+                                                          top_k=material_tool["top_k"], max_chars=material_tool["max_chars"])
+                else:
+                    result, record = f"使えない道具です: {call['name']}", {"name": call["name"], "error": "unavailable"}
                 tool_log.append(record)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
             buf["meta"]["tools"] = tool_log
             await asyncio.to_thread(checkpoint)
         if stats.get("probe") is not None:
             await stats["probe"]
+        if tool_log:
+            buf["content"] = chat_tools.strip_tool_markup(buf["content"])
         emit_stats(final=True)
         await asyncio.to_thread(checkpoint, True, "completed")
         # 調査系モードは最終回答と参照文献一覧も会話コレクションへ保存し、後続の
         # 質問・別会話からの再利用（RAG検索）に使えるようにする
-        if mode in ("web", "academic", "research"):
+        if mode in ("web", "academic", "research") or web_sources:
             source_hint = user_query[:60] if user_query else mode
             try:
-                await register_chat_document(conv_id, buf["content"], f"{mode}回答: {source_hint}")
+                await register_chat_document(conv_id, buf["content"],
+                                             f"{'web' if web_sources else mode}回答: {source_hint}")
                 sources = (buf.get("meta") or {}).get("sources") or []
                 if sources:
                     lines = [
@@ -2264,7 +2315,7 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
     # ゲートウェイ宛なら実エンドポイントへ解決してからjobへ渡す。以降のcontext上限・
     # thinking・容量待ちはすべてモデル個別設定を引くため、解決済みの値が要る。
     body.base_url, body.model = resolve_target(body.base_url, body.model)
-    params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
+    params = {"base_url": body.base_url, "model": body.model, "mode": body.mode, "mode_choice": body.mode_choice,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,
               # 未指定ならモデル個別設定へ委ねる（共通設定で一律に縛らない）

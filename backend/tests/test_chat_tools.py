@@ -137,6 +137,7 @@ def test_models_without_tools_fall_back_to_the_keyword_rule(monkeypatch):
 
 
 def _setup_job(conv, msg):
+    """会話と回答の行を作る。ID は他のテストと重ならないよう tt- を付ける（DB はテスト全体で共有）。"""
     from app.database import SessionLocal
     from app.models import ChatMessage, Conversation
 
@@ -191,7 +192,7 @@ def test_chat_job_lets_the_model_search_materials_then_answers(client, monkeypat
     from app.models_mgmt.runtime_provider import RuntimeChunk
     from app.workflows import chat_tools
 
-    _setup_job("cvt", "amt")
+    _setup_job("tt-cvt", "tt-amt")
     searched, requests = [], []
 
     class Provider:
@@ -210,7 +211,7 @@ def test_chat_job_lets_the_model_search_materials_then_answers(client, monkeypat
 
     monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Provider())
     _large_materials(monkeypatch, cp, searched)
-    job = _run_job(cp, "cvt", "amt", [{"role": "user", "content": "さっきの番組表で 21 時は？"}])
+    job = _run_job(cp, "tt-cvt", "tt-amt", [{"role": "user", "content": "さっきの番組表で 21 時は？"}])
     assert job.status == "succeeded", job.error
     assert searched == ["神奈川 番組表 21時"]                       # 前もっては探さず、モデルの検索語で 1 回だけ
     assert requests[0].tools and any(chat_tools.SEARCH_MATERIALS in str(m.get("content")) for m in requests[0].messages)
@@ -222,7 +223,7 @@ def test_chat_job_lets_the_model_search_materials_then_answers(client, monkeypat
 
     db = SessionLocal()
     try:
-        message = db.get(ChatMessage, "amt")
+        message = db.get(ChatMessage, "tt-amt")
         assert message.content == "21 時はニュースウオッチ9 です。" and message.status == "completed"
     finally:
         db.close()
@@ -234,7 +235,7 @@ def test_chat_job_falls_back_when_the_model_cannot_use_tools(client, monkeypatch
     from app.models_mgmt.runtime_provider import RuntimeChunk, ToolsUnsupported
     from app.workflows import chat_tools
 
-    _setup_job("cvu", "amu")
+    _setup_job("tt-cvu", "tt-amu")
     searched, requests = [], []
 
     class Provider:
@@ -253,7 +254,7 @@ def test_chat_job_falls_back_when_the_model_cannot_use_tools(client, monkeypatch
     _large_materials(monkeypatch, cp, searched)
     chat_tools._unsupported.discard(("http://127.0.0.1:9/v1", "m"))
     try:
-        job = _run_job(cp, "cvu", "amu", [{"role": "user", "content": "さっき調べた番組表の内容を教えて"}])
+        job = _run_job(cp, "tt-cvu", "tt-amu", [{"role": "user", "content": "さっき調べた番組表の内容を教えて"}])
         assert job.status == "succeeded", job.error
         assert [bool(r.tools) for r in requests] == [True, False]
         assert searched == ["さっき調べた番組表の内容を教えて"]          # 従来の方式（発言そのもの）で探した
@@ -264,15 +265,15 @@ def test_chat_job_falls_back_when_the_model_cannot_use_tools(client, monkeypatch
 
 
 def test_unverified_runtimes_keep_the_keyword_rule(client, monkeypatch):
-    """道具を確かめていない runtime（Radiance・Strata など）には道具を渡さず、従来どおり言い方の判定で探す。
+    """道具を確かめていない runtime（Strata・Maya・外部など）には道具を渡さず、従来どおり言い方の判定で探す。
     黙って道具を無視する runtime に渡すと、大きい資料を一度も探さなくなるため。"""
     import app.workflows.chat_persist as cp
     from app.models_mgmt import runtime_provider as rp
     from app.models_mgmt.runtime_provider import RuntimeChunk
 
-    assert rp.LlamaCppRuntimeProvider.tools_verified and not rp.RadianceRuntimeProvider.tools_verified
+    assert rp.LlamaCppRuntimeProvider.tools_verified and rp.RadianceRuntimeProvider.tools_verified
     assert not rp.StrataRuntimeProvider.tools_verified and not rp.OpenAICompatibleRuntimeProvider.tools_verified
-    _setup_job("cvv", "amv")
+    _setup_job("tt-cvv", "tt-amv")
     searched, requests = [], []
 
     class Provider:
@@ -285,6 +286,136 @@ def test_unverified_runtimes_keep_the_keyword_rule(client, monkeypatch):
 
     monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Provider())
     _large_materials(monkeypatch, cp, searched)
-    job = _run_job(cp, "cvv", "amv", [{"role": "user", "content": "さっき調べた番組表の内容を教えて"}])
+    job = _run_job(cp, "tt-cvv", "tt-amv", [{"role": "user", "content": "さっき調べた番組表の内容を教えて"}])
     assert job.status == "succeeded", job.error
     assert [bool(r.tools) for r in requests] == [False] and searched == ["さっき調べた番組表の内容を教えて"]
+
+
+def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monkeypatch):
+    """機能の選択が「自動」なら Web 検索も道具で渡す。呼ばれたら検索して出典を登録し、[R番号] 付きの結果を渡す。
+    回答は Web 検索の回答として会話の資料へ保存する（後の質問で探せるように）。"""
+    import app.workflows.chat_persist as cp
+    from app.models_mgmt.runtime_provider import RuntimeChunk
+    from app.workflows import chat_router as cr
+    from app.workflows import chat_tools, rag
+
+    _setup_job("tt-cvw", "tt-amw")
+    requests, saved = [], []
+
+    class Provider:
+        tools_verified = True
+
+        async def stream_chat(self, request, request_id=None):
+            requests.append(request)
+            if len(requests) == 1:
+                yield RuntimeChunk("tool_call", tool_calls=[{"id": "w1", "name": chat_tools.WEB_SEARCH,
+                                                            "arguments": '{"query": "横浜 天気 明日"}'}])
+            else:
+                yield RuntimeChunk("content", content="明日は晴れです [R1]。")
+
+        async def cancel(self, request_id):
+            return False
+
+    async def web_results(sb, query, pages):
+        assert query == "横浜 天気 明日"
+        return [{"title": "横浜の天気", "url": "https://example.invalid/w", "snippet": "明日は晴れ"}]
+
+    async def register(conv, text, source):
+        saved.append(source)
+
+    async def fake_ctx(base_url, model):
+        return 32768
+
+    monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Provider())
+    monkeypatch.setattr(cr, "_web_results", web_results)
+    monkeypatch.setattr(cp, "register_chat_document", register)
+    monkeypatch.setattr(cp, "_context_max", fake_ctx)
+    monkeypatch.setattr(rag, "collection_exists", lambda name: False)
+    from app.jobs import service as jobs
+
+    async def scenario():
+        job = jobs.create("chat.completion", "t", lambda j: cp._run_chat_job(
+            j, "tt-amw", "tt-cvw", [{"role": "user", "content": "明日の横浜の天気は？"}],
+            {"base_url": "http://127.0.0.1:9/v1", "model": "m", "mode": "chat", "mode_choice": "auto",
+             "thinking": "off", "max_output_tokens": 128}))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if job.status not in ("queued", "running"):
+                break
+        return job
+
+    job = asyncio.run(scenario())
+    assert job.status == "succeeded", job.error
+    assert [t["function"]["name"] for t in requests[0].tools] == [chat_tools.WEB_SEARCH]   # 資料が無いので Web だけ
+    tool_msg = [m for m in requests[1].messages if m.get("role") == "tool"][0]["content"]
+    assert "横浜の天気" in tool_msg and "[R" in tool_msg
+    events = [e for e in job.events if e.get("message") == "sources"]
+    assert events and events[-1]["sources"][0]["url"] == "https://example.invalid/w"
+    assert saved and saved[0].startswith("web回答")
+    # 「自動」以外（対話を選んだ）では Web の道具を渡さない
+    requests.clear()
+    _setup_job("tt-cvx", "tt-amx")
+
+    async def scenario2():
+        job = jobs.create("chat.completion", "t", lambda j: cp._run_chat_job(
+            j, "tt-amx", "tt-cvx", [{"role": "user", "content": "明日の横浜の天気は？"}],
+            {"base_url": "http://127.0.0.1:9/v1", "model": "m", "mode": "chat", "mode_choice": "chat",
+             "thinking": "off", "max_output_tokens": 128}))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if job.status not in ("queued", "running"):
+                break
+        return job
+
+    class Plain(Provider):
+        async def stream_chat(self, request, request_id=None):
+            requests.append(request)
+            yield RuntimeChunk("content", content="答え")
+
+    monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Plain())
+    assert asyncio.run(scenario2()).status == "succeeded" and requests[0].tools is None
+
+
+def test_route_skips_the_llm_decision_for_tool_capable_models(admin_client, monkeypatch):
+    """道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
+    調べるかはモデルが道具で決める。明らかな依頼（論文・Deep）はルールで即決のまま。使えないモデルは従来どおり LLM で判定。"""
+    from app.workflows import assistant_planner
+    from tests.conftest import CSRF_HEADERS
+
+    called = []
+
+    async def decide(*args, **kwargs):
+        called.append(args[0])
+        return assistant_planner.AssistantPlan(mode="web", reason="LLM", decided_by="llm")
+
+    class Verified:
+        tools_verified = True
+
+    monkeypatch.setattr(assistant_planner, "decide", decide)
+    monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Verified())
+    monkeypatch.setattr("app.models_mgmt.runtime_provider.resolve_target", lambda base, model: (base, model))
+    body = {"content": "この前の続きで、もう少し教えて", "base_url": "http://127.0.0.1:9/v1", "model": "m"}
+    r = admin_client.post("/api/v1/chat/route", json=body, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["mode"] == "chat" and r.json()["decided_by"] == "tools" and not called
+    r = admin_client.post("/api/v1/chat/route", json={**body, "content": "この分野の論文を探して"}, headers=CSRF_HEADERS)
+    assert r.json()["mode"] == "academic" and r.json()["decided_by"] == "rule"
+    monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: object())
+    r = admin_client.post("/api/v1/chat/route", json=body, headers=CSRF_HEADERS)
+    assert r.json()["decided_by"] == "llm" and called
+
+
+def test_final_round_turns_tool_exchanges_into_plain_notes():
+    """上限まで呼んだ後の最後の回: 道具のやり取りを普通の資料にまとめる。残したままだと Radiance が 3 回中 2 回、
+    呼び出しを本文に書いた（まとめると 5 回中 5 回とも本文で答えた。2026-11-20）。本文に残った呼び出しは除く。"""
+    from app.workflows import chat_tools
+
+    msgs = [{"role": "system", "content": "指示"}, {"role": "user", "content": "今週末の映画は？"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c", "type": "function",
+                                                                 "function": {"name": "web_search", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c", "content": "[R1] 11月21日公開 ボトムズ"}]
+    out = chat_tools.flatten_for_final(msgs)
+    assert [m["role"] for m in out] == ["system", "system", "user"]
+    assert "ボトムズ" in out[1]["content"] and chat_tools.FINAL_ROUND_NOTE in out[1]["content"]
+    assert chat_tools.strip_tool_markup("答え<tool_call> <function=web_search> </function> </tool_call>") == "答え"
+    assert chat_tools.strip_tool_markup("<tool_call> <function=web_search>") == ""
+    assert chat_tools.strip_tool_markup("普通の答え") == "普通の答え"

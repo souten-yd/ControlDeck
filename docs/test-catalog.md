@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1565 テスト（目的の未記入 93 ファイル）
+- backend: 176 ファイル、1568 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、171 テスト
 
 ## backend（backend/tests）
@@ -570,7 +570,10 @@
 - `test_models_without_tools_fall_back_to_the_keyword_rule` — 道具を受け付けないモデルでは、道具の案内を外し、従来どおり発言が資料を指すときだけ探して抜粋を入れる。
 - `test_chat_job_lets_the_model_search_materials_then_answers` — 大きい資料の会話: 道具を渡し、モデルが呼んだら探して結果を渡し、続きを生成する。前もっては探さない。
 - `test_chat_job_falls_back_when_the_model_cannot_use_tools` — tools を受け付けないモデル: 覚えて、言い方の判定で探して道具なしで生成し直す。次の発言からは最初から道具を渡さない。
-- `test_unverified_runtimes_keep_the_keyword_rule` — 道具を確かめていない runtime（Radiance・Strata など）には道具を渡さず、従来どおり言い方の判定で探す。
+- `test_unverified_runtimes_keep_the_keyword_rule` — 道具を確かめていない runtime（Strata・Maya・外部など）には道具を渡さず、従来どおり言い方の判定で探す。
+- `test_auto_mode_lets_the_model_search_the_web_and_cites_sources` — 機能の選択が「自動」なら Web 検索も道具で渡す。呼ばれたら検索して出典を登録し、[R番号] 付きの結果を渡す。
+- `test_route_skips_the_llm_decision_for_tool_capable_models` — 道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
+- `test_final_round_turns_tool_exchanges_into_plain_notes` — 上限まで呼んだ後の最後の回: 道具のやり取りを普通の資料にまとめる。残したままだと Radiance が 3 回中 2 回、
 
 ### backend/tests/test_chatflow.py
 
