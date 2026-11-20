@@ -285,3 +285,46 @@ test("in auto, when the model hands the work to OpenCode the answer becomes an O
   await expect(shell.getByText("OpenCode に任せます。")).toHaveCount(0);   // 引き継ぐ前の本文は消す
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
 });
+
+test("with OpenCode chosen, an attached image is sent to OpenCode, and a model that cannot read images says so", async ({ page, context }) => {
+  // 2026-11-20 利用者「VLM を使う予定なので OpenCode にそのまま渡すのがいい。VLM が使えないものはモデルの判定で分かるので、
+  // 使えませんと示して」。以前は画面が「画像は OpenCode に渡せません」と止めていた
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  let canRead = true;
+  await page.route(/\/api\/v1\/chat\/conversations\/p1\/attachments$/, (route) => route.fulfill({
+    status: 201, json: { kind: "image", id: "0123456789abcdef.png", name: "shot.png" } }));
+  await page.route(/\/api\/v1\/chat\/conversations\/p1\/send$/, (route) => {
+    sent.push(route.request().postDataJSON() as Record<string, unknown>);
+    return canRead
+      ? route.fulfill({ status: 201, json: { user_message_id: "u9", assistant_message_id: "a9", job_id: "j9", status: "generating" } })
+      : route.fulfill({ status: 422, json: { detail: "OpenCode のモデル（Maya DS-XS）は画像を読めません。画像を読めるモデルに切り替えるか、＋から Chat を選んでください" } });
+  });
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="code"]').click();
+  const attach = () => shell.locator('input[type="file"]').setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: Buffer.from("x") });
+  await attach();
+  const input = shell.locator("[data-assistant-input]");
+  await input.fill("この画面のずれを直して");
+  await input.press("Enter");
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ mode: "code", attachments: ["0123456789abcdef.png"] });
+  await expect(page.getByText("画像は OpenCode に渡せません")).toHaveCount(0);
+  // 読めないモデル: サーバーの判定をそのまま見せる
+  canRead = false;
+  await expect(shell.getByRole("button", { name: "送信" })).toBeVisible();
+  await page.waitForTimeout(400);
+  await attach();
+  await input.fill("これも見て");
+  await input.press("Enter");
+  await expect(page.getByText("画像を読めません").first()).toBeVisible();
+  await expect(input).toHaveValue("これも見て");                          // 送れていない発言は入力へ戻す
+  await expect(shell.locator(":not(textarea)", { hasText: /^これも見て$/ })).toHaveCount(0);   // 吹き出しは残さない
+  await expect(shell.getByText("shot.png")).toBeVisible();                 // 画像も付いたまま（Chat を選べば送れる）
+});

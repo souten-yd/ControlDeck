@@ -517,7 +517,8 @@ def test_hand_off_without_a_project_asks_the_user_to_choose_one(monkeypatch):
 
 
 def test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice(monkeypatch):
-    """OpenCode が無効・画像つき（OpenCode は画像を見られない）・声の会話では渡さない。"""
+    """OpenCode が無効・声の会話では渡さない。画像つきは、OpenCode のモデルが画像を読めないときだけ渡さない
+    （2026-11-20: OpenCode は画像を発言に添付して読めるモデルへ渡す。読めないモデルへ任せると画像が消える）。"""
     import app.workflows.chat_persist as cp
     from app.features import registry
     from app.workflows import chat_tools
@@ -529,6 +530,7 @@ def test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice(m
     assert _auto_job(cp, "tt-cvq", "tt-amq", [{"role": "user", "content": "x"}]).status == "succeeded"
     assert chat_tools.HAND_OFF_OPENCODE not in [t["function"]["name"] for t in requests[0].tools]
     monkeypatch.setattr(registry, "is_enabled", lambda feature: True)
+    monkeypatch.setattr(cp, "opencode_image_problem", lambda: "OpenCode のモデル（x）は画像を読めません")
     for i, extra in enumerate([{"voice_style": "friendly"}, {"attachments": ["0123456789abcdef.png"]}]):
         requests.clear()
         _setup_job(f"tt-cvr{i}", f"tt-amr{i}")
@@ -538,3 +540,9 @@ def test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice(m
     _setup_job("tt-cvs", "tt-ams")
     assert _auto_job(cp, "tt-cvs", "tt-ams", [{"role": "user", "content": "x"}]).status == "succeeded"
     assert chat_tools.HAND_OFF_OPENCODE in [t["function"]["name"] for t in requests[0].tools]   # 有効なら渡す
+    monkeypatch.setattr(cp, "opencode_image_problem", lambda: "")   # 画像を読めるモデルなら、画像つきでも任せられる
+    requests.clear()
+    _setup_job("tt-cvi", "tt-ami")
+    assert _auto_job(cp, "tt-cvi", "tt-ami", [{"role": "user", "content": "x"}],
+                     {"attachments": ["0123456789abcdef.png"]}).status == "succeeded"
+    assert chat_tools.HAND_OFF_OPENCODE in [t["function"]["name"] for t in (requests[0].tools or [])]

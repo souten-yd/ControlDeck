@@ -470,3 +470,60 @@ def test_chat_after_opencode_is_told_it_has_no_tools_and_tool_text_is_reported(a
     _wait_done(admin_client, conv, r.json()["assistant_message_id"])
     assert any("<tool_call>" in str(m["content"]) for m in seen[0] if m["role"] == "system")
     assert selftest._chat_tool_text()[0] == "warn"
+
+
+def test_attached_images_are_given_to_opencode_when_its_model_reads_images(admin_client, monkeypatch, tmp_path):
+    """AI アシスタントで添付した画像を、OpenCode の発言に data: の URI で付ける（OpenCode が画像を読めるモデルへ渡す）。
+    OpenCode のモデルが画像を読めなければ、送る前にそう知らせる（送信も送信待ちも 422）。
+    根拠: 2026-11-20 利用者「VLM を使う予定なので OpenCode にそのまま渡すのがいい。VLM が使えないものはモデルの判定で
+    分かるので、使えませんと示して」。OpenCode v2 は prompt の files（data: URI）を受け付け、画像を読めるモデルへ渡す。"""
+    import app.workflows.chat_persist as cp
+    from app.integrations.opencode import chat_server
+    from app.models_mgmt import gateway
+
+    resolved: list = []
+    _fake_opencode(monkeypatch, tmp_path, resolved)
+    got: list = []
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, files=None):
+        got.append(files)
+        await on_text("見ました。")
+        return {"status": "succeeded", "error": ""}
+
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    image_id = "0123456789abcdef.png"
+    folder = cp._attachment_dir(conv_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / image_id).write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    monkeypatch.setattr(gateway, "target_sees_images", lambda base, model: (True, "qwen-flash-next"))
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
+                          json={"content": "この画面を直して", "mode": "code", "model": "test", "code_project": "demo",
+                                "attachments": [image_id]})
+    assert r.status_code == 201, r.text
+    final = _wait_done(admin_client, conv_id, r.json()["assistant_message_id"])
+    assert final["content"] == "見ました。" and final["meta"]["images"] == 1
+    assert got[-1] == [{"uri": "data:image/png;base64,iVBORw0KGgpmYWtl", "name": image_id}]
+    # 読めないモデル: 送る前に知らせる。送信待ちに入れるときも同じ
+    monkeypatch.setattr(gateway, "target_sees_images", lambda base, model: (False, "Maya DS-XS"))
+    for path, extra in [("send", {}), ("queue", {"hold": True})]:
+        bad = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/{path}", headers=CSRF_HEADERS,
+                                json={"content": "見て", "mode": "code", "model": "test", "code_project": "demo",
+                                      "attachments": [image_id], **extra})
+        assert bad.status_code == 422 and "Maya DS-XS" in bad.json()["detail"] and "画像を読めません" in bad.json()["detail"]
+    # 分からない（外部のモデルなど）ときは送ってみる
+    monkeypatch.setattr(gateway, "target_sees_images", lambda base, model: (None, "x"))
+    assert cp.opencode_image_problem() == ""
+
+
+def test_image_reading_is_judged_like_the_models_tab():
+    """画像を読めるかは Models の表示と同じ: llama.cpp は mmproj、Strata は vision が off でない、Radiance は常に、Maya は vision。"""
+    from app.models_mgmt import gateway
+
+    assert gateway.instance_sees_images({"runtime": "llama.cpp", "mmproj_path": "/m/mmproj.gguf"})
+    assert not gateway.instance_sees_images({"runtime": "llama.cpp", "mmproj_path": None})
+    assert gateway.instance_sees_images({"runtime": "strata", "vision": "gpu"})
+    assert not gateway.instance_sees_images({"runtime": "strata", "vision": "off"})
+    assert gateway.instance_sees_images({"runtime": "radiance"})
+    assert not gateway.instance_sees_images({"runtime": "maya-s", "vision": False})
+    assert gateway.target_sees_images("http://example.invalid/v1", "m") == (None, "m")   # 外部の接続先は分からない

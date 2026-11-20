@@ -199,6 +199,31 @@ def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
     return f"http://127.0.0.1:{port}/v1", upstream_id
 
 
+def instance_sees_images(instance: dict) -> bool:
+    """このインスタンスが画像を読めるか（Models の「画像」表示と同じ判定。provider_adapters）。"""
+    runtime = str(instance.get("runtime") or "")
+    if runtime == "llama.cpp" or instance.get("mmproj_path"):
+        return bool(instance.get("mmproj_path"))
+    if runtime == "strata":
+        return str(instance.get("vision") or "on") != "off"
+    if runtime == "radiance":
+        return True   # 公開されている Qwen3.8-27B の .rad は視覚の塔を含む
+    return bool(instance.get("vision"))
+
+
+def target_sees_images(base: str, model: str) -> tuple[bool | None, str]:
+    """(base_url, model) の転送先が画像を読めるかと、その名前。外部のモデルなど分からなければ None。
+
+    2026-11-20 利用者「VLM が使えないものはモデルの判定で分かるので、使えませんと示して」。"""
+    if not is_gateway_url(base) or str(model or "").startswith("cloud:"):
+        return None, str(model or "")
+    try:
+        instance = resolve_instance(model)
+    except Exception:  # noqa: BLE001 - 登録が無いなどは「分からない」
+        return None, str(model or "")
+    return instance_sees_images(instance), str(instance.get("display_name") or instance.get("alias") or model)
+
+
 # クライアント側のtimeoutより長く待たないよう、既定は控えめにする。
 CAPACITY_TIMEOUT_SECONDS = 300
 
