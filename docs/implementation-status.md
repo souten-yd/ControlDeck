@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-20 OpenCode は明示的に選ぶ・読み上げを生成中から・声の性別で話し方
+
+- 利用者「Mac の M5・M6 チップはローカル LLM としてどうですか、と聞いたら勝手に OpenCode が開いた。OpenCode は明示的に選ぶ必要があるように」。
+  「自動」の判定（`assistantMode.detectAssistantMode`）は OpenCode を選ばない。以前は作業の語（実装して・直して・作って など）、OpenCode で作業中の会話（以後の発言はすべて OpenCode）、圧縮ファイルの添付、OpenCode のプラン指定で自動的に OpenCode へ回していた。プランは＋か Shift+Tab で選ぶ明示の指定なので、自動・調査と組み合わせても OpenCode で計画する（調査を選んでいれば先に調べ、その結果で計画する。利用者「プランと検索を選んだら、検索結果でプランを立てる作りか」）。OpenCode を選んでいれば質問も OpenCode で答える（前と同じ）。
+- 読み上げのボタンの点滅をやめた（利用者「チカチカしてやめて」）。読み上げ中かは `data-speaking` で分かる。
+- 会話モードの話し方を、Models の TTS で選んだ声の性別に合わせる（`voice_style.GENDER_RULES`。F1〜F5 は女性、M1〜M5 は男性）。TTS の設定に「性別」（女性・男性）を足し、声の一覧をその性別に絞る。声と話し方がずれないよう、別の設定は持たない。
+- 読み上げを生成中から始める（`useAssistantTts.feed`、`speakable.nextSpoken`）。文の終わりまで流れてきた分を順に合成し、鳴らしている間に次を作る。生成（毎秒数十文字）は読み上げ（毎秒 8 文字前後）より速いので途切れない。会話モードは読み終えてから聞き直す。上限（1,200 文字）で「続きは画面」。
+- 検証: `tests/test_chat_persist.py`（声の性別の決まり）、E2E `assistant-voice-modes`（生成が終わる前に最初の文を合成する・重なり抜けが無い・点滅しない）・`assistant-plan`・`assistant-claude-layout`（自動では OpenCode を選ばない。OpenCode の会話でも同じ。プラン＋自動・プラン＋調査は OpenCode）・`speech-engines`・`assistant-queue-voice`。
+
 ## 2026-11-20 LLM の高速化の設定を見直す（llama.cpp・Radiance・Maya）・補助の起動順
 
 - 利用者「LLM を載せた後、reranker と埋め込みは必ず起動する必要はない。起動するなら reranker が先、埋め込みが後。LLM を載せるときだけ一度下ろす」「llama・Radiance・Maya も高速化の設定があれば入れて」。

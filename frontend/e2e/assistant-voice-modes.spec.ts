@@ -6,7 +6,7 @@
 //       API・WebSocket・マイク・音声合成は模擬する（LLM・音声認識・TTS を動かさない）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
-import { speakableText, speechChunks } from "../src/features/workflows/speakable";
+import { nextSpoken, speakableText, speechChunks, stablePrefix } from "../src/features/workflows/speakable";
 
 test("speakable text keeps the main words and drops code, tables, links and sources", () => {
   const spoken = speakableText([
@@ -208,4 +208,68 @@ test("a reply is read once by the tab that sent it, not by another tab watching 
   await other.waitForTimeout(800);
   expect(otherState.spoken).toEqual([]);
   expect(state.spoken.join("")).toBe("回答1です。コードは画面に表示しています。");   // 送ったタブは 1 回だけ
+});
+
+
+test("a streaming answer is cut at sentence ends and every part is read once", () => {
+  // 2026-11-20 利用者「長文だと生成し終えるまで何も再生されずテンポが悪い。途切れないよう順次再生して」
+  expect(stablePrefix("一文目です。二文目の途")).toBe("一文目です。");
+  expect(stablePrefix("まだ文の途中")).toBe("");
+  const parts: string[] = [];
+  let queued = 0;
+  const stream = ["一文目", "一文目です。二", "一文目です。二文目です。\n```py\nprint(", "一文目です。二文目です。\n```py\nprint(1)\n```\n三文目"];
+  for (const text of stream) {
+    const next = nextSpoken(text, queued, false);
+    queued = next.queued;
+    if (next.text) parts.push(next.text);
+  }
+  const last = nextSpoken(stream[stream.length - 1], queued, true);
+  parts.push(last.text);
+  // 生成中に読んだ分と最後に読んだ分をつなぐと、終わってから全部を読んだときと同じ（重ならず、抜けない）
+  expect(parts.join("")).toBe(speakableText(stream[stream.length - 1]));
+  expect(parts[0]).toBe("一文目です。");
+  // 長い回答は上限で「続きは画面」で終える
+  const long = nextSpoken(`${"あ".repeat(800)}。${"い".repeat(800)}。`, 0, false);
+  expect(long.capped).toBe(true);
+  expect(long.text.endsWith("続きは画面をご覧ください。")).toBe(true);
+});
+
+test("TTS reply mode starts reading while the answer is still being written", async ({ page, context }) => {
+  // 生成中に文の終わりまで来た分から合成・再生を始める。読み上げのボタンは点滅させない（2026-11-20 利用者「チカチカ」）
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.setItem("cd-assistant-tts-reply", "1"); });
+  const state = await mockChat(page, []);
+  const timeline: string[] = [];
+  await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => undefined);
+  const again = await mockChat(page, []);
+  await page.routeWebSocket(/\/chat\/messages\/[^/]+\/stream/, (ws) => {
+    ws.send(JSON.stringify({ type: "snapshot", content: "", thinking: "" }));
+    setTimeout(() => ws.send(JSON.stringify({ type: "delta", content: "最初の文です。二つ目の" })), 150);
+    setTimeout(() => ws.send(JSON.stringify({ type: "delta", content: "文です。" })), 1500);
+    setTimeout(() => {
+      timeline.push("done");
+      ws.send(JSON.stringify({ type: "delta", content: "最後の文です。" }));
+      ws.send(JSON.stringify({ type: "done", status: "completed" }));
+      void ws.close();
+    }, 3000);
+  });
+  await page.route("**/api/v1/speech/tts", (route) => {
+    const text = (route.request().postDataJSON() as { text: string }).text;
+    timeline.push(`tts:${text}`);
+    again.spoken.push(text);
+    return route.fulfill({ body: silentWav(), contentType: "audio/wav" });
+  });
+  void state;
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await shell.locator("[data-assistant-input]").fill("こんにちは");
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => timeline.includes("done")).toBe(true);
+  await expect.poll(() => again.spoken.join("")).toBe("最初の文です。二つ目の文です。最後の文です。");
+  expect(timeline[0]).toBe("tts:最初の文です。");             // 生成が終わる前に読み始めている
+  expect(timeline.indexOf("tts:最初の文です。")).toBeLessThan(timeline.indexOf("done"));
+  const icon = shell.locator("[data-speaker-toggle] svg").first();
+  await expect(icon).not.toHaveClass(/animate-pulse/);
 });

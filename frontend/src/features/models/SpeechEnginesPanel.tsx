@@ -322,10 +322,31 @@ function TtsSettings({ engine, settings, canEdit, save }: {
     <div className={boxClass}>
       <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">{engine.name} の設定</p>
       <p className="text-[11px] text-zinc-500">アシスタントの読み上げにも使います。</p>
+      {/* 性別を選ぶと声をその性別に絞り、会話モードの話し方（一人称・語尾）もその性別に合わせる
+          （2026-11-20 利用者「女性の声なのに男っぽい話し方をした。男性・女性を選べるように」） */}
+      <div className={row}>
+        <span className="flex-1">性別<span className="block text-[11px] text-zinc-400">会話モードの話し方もこれに合わせます</span></span>
+        <div role="group" aria-label="声の性別" className="inline-flex rounded-xl bg-zinc-100 p-0.5 dark:bg-zinc-800" data-voice-gender>
+          {([["F", "女性"], ["M", "男性"]] as const).map(([prefix, label]) => {
+            const selected = settings.tts_voice.startsWith(prefix);
+            const first = (engine.voices ?? []).find((v) => v.startsWith(prefix));
+            return (
+              <button key={prefix} type="button" aria-pressed={selected} disabled={!canEdit || selected || !first}
+                onClick={() => first && void save({ tts_voice: first })}
+                className={`min-h-9 rounded-lg px-4 text-xs font-medium ${selected
+                  ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-white" : "text-zinc-500"}`}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <label className={row}><span className="flex-1">声</span>
         <select value={settings.tts_voice} disabled={!canEdit} aria-label="声" className={fieldClass}
           onChange={(event) => void save({ tts_voice: event.target.value })}>
-          {(engine.voices ?? []).map((v) => <option key={v} value={v}>{v.startsWith("F") ? `女性 ${v.slice(1)}` : `男性 ${v.slice(1)}`}</option>)}
+          {(engine.voices ?? []).filter((v) => v[0] === settings.tts_voice[0]).map((v) => (
+            <option key={v} value={v}>{v.startsWith("F") ? `女性 ${v.slice(1)}` : `男性 ${v.slice(1)}`}</option>
+          ))}
         </select>
       </label>
       <NumberField label="速さ" value={settings.tts_speed} min={0.7} max={2} step={0.05} disabled={!canEdit} onCommit={(v) => void save({ tts_speed: v })} />

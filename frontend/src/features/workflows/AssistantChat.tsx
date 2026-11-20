@@ -478,13 +478,13 @@ export default function AssistantChat() {
   const archiveWaiting = attachments.some((a) => a.kind === "archive" && a.status === "ready");
   // プランは OpenCode の機能。プラン中は、調査は「調べて計画」、自動のチャットも OpenCode の計画として扱う。
   // 2026-11-18 利用者「調査とプランを選べるが、プロジェクトを選べない。どこに書き込まれるのか」
+  // OpenCode は明示的に選んだときだけ（2026-11-20 利用者）。プランは＋か Shift+Tab で選ぶ明示の指定なので、
+  // 調査・自動と組み合わせても効く（調べた結果で OpenCode が計画する）。語や会話の流れでは OpenCode へ回さない
   const plansInOpenCode = codeAgent === "plan" && opencodeAvailable && !attachments.some((a) => a.kind === "image");
   const detected = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
-  const autoDecision = archiveWaiting && opencodeAvailable
-    ? { mode: "code" as const, reason: "圧縮ファイルを OpenCode のプロジェクトへ展開" }
-    : plansInOpenCode && (detected.mode === "chat" || SEARCH_MODES.includes(detected.mode))
-      ? { mode: "code" as const, research: SEARCH_MODES.includes(detected.mode), reason: "プランは OpenCode で作ります" }
-      : detected;
+  const autoDecision = plansInOpenCode && (detected.mode === "chat" || SEARCH_MODES.includes(detected.mode))
+    ? { mode: "code" as const, research: SEARCH_MODES.includes(detected.mode), reason: "プランは OpenCode で作ります" }
+    : detected;
   const displayedDecision = input.trim() || archiveWaiting ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
     : modeChoice === "investigate"
@@ -1134,13 +1134,14 @@ export default function AssistantChat() {
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
     let researchFirst = choice === "auto" ? Boolean(decision.research)
       : choice === "code" ? wantsResearch(text) : false;
-    let selectedMode: Mode = choice === "auto" ? (readyArchives.length > 0 && opencodeAvailable ? "code" : decision.mode)
+    let selectedMode: Mode = choice === "auto" ? decision.mode
       : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
-    // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）
+    // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）。
+    // 調査を選んでいる・自動で調査と判定した → 先に調べて OpenCode のプランへ。自動のチャット → OpenCode のプランへ
     if (planInOpenCode && (SEARCH_MODES.includes(selectedMode) || (choice === "auto" && selectedMode === "chat"))) {
       researchFirst = SEARCH_MODES.includes(selectedMode);
       selectedMode = "code";
-    }
+    } else if (planInOpenCode && choice === "code" && SEARCH_MODES.includes(decision.mode)) researchFirst = true;
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
     if (selectedMode === "run" && selectedRunTarget === "") {
@@ -1378,11 +1379,13 @@ export default function AssistantChat() {
     tts.stop();
     asr.cancel();
   };
-  const speakThenListen = async (reply: string) => {
-    // 会話モードでも読み上げは右下のボタンで切り替えられる（切っていれば文字だけで返す）
+  const speakThenListen = async (reply: string, id?: string) => {
+    // 会話モードでも読み上げは右下のボタンで切り替えられる（切っていれば文字だけで返す）。
+    // 生成中から読み始めていれば（tts.feed）、それを読み終えるまで待つ
     if (ttsReplyRef.current && reply.trim()) {
       setTalkPhase("speaking");
-      await tts.speak(reply);
+      if (id) await tts.finished(id);
+      else await tts.speak(reply);
     }
     if (talkRef.current === "off") return;
     asr.resume();
@@ -1440,6 +1443,12 @@ export default function AssistantChat() {
       if (message.streaming) {
         streamingSeenRef.current.add(message.messageId);
         if (talkRef.current === "thinking") replyStartedRef.current = true;
+        // 生成中から読み始める（文の終わりまで流れてきた分を順に）。2026-11-20 利用者「生成し終えるまで再生されず
+        // テンポが悪い」。読むのは会話モードか読み上げを入れているときで、このタブから送った回答か表に出ているタブだけ
+        const speakNow = ttsReplyRef.current && (talkRef.current === "thinking" || talkRef.current === "off")
+          && (ownRepliesRef.current.has(message.messageId) || document.visibilityState === "visible")
+          && lastSpokenRef.current !== message.messageId;
+        if (speakNow && message.content) tts.feed(message.messageId, message.content, false);
         continue;
       }
       if (!streamingSeenRef.current.delete(message.messageId)) continue;   // この画面で流れていた回答だけ
@@ -1448,8 +1457,9 @@ export default function AssistantChat() {
       // 表に出ているタブだけ（裏のタブは iPhone では鳴らせず、表のタブの読み上げとぶつかる）
       if (!ownRepliesRef.current.has(message.messageId) && document.visibilityState !== "visible") continue;
       lastSpokenRef.current = message.messageId;
-      if (talkRef.current === "thinking") void speakThenListen(message.content);
-      else if (talkRef.current === "off" && ttsReplyRef.current && message.content.trim()) void tts.speak(message.content);
+      // 生成中に読み始めていれば残りを読み切る（読み始めていなければ、ここから全部を読む）
+      if (ttsReplyRef.current && message.content.trim()) tts.feed(message.messageId, message.content, true);
+      if (talkRef.current === "thinking") void speakThenListen(message.content, message.messageId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
@@ -2860,11 +2870,12 @@ function QualityBadge({ q }: { q: Quality }) {
 function SpeakerToggle({ on, speaking, onToggle }: { on: boolean; speaking: boolean; onToggle: () => void }) {
   const label = on ? "回答の読み上げをやめる" : "回答を読み上げる";
   return (
-    <button type="button" onClick={onToggle} aria-pressed={on} aria-label={label} title={label} data-speaker-toggle={on ? "on" : "off"}
+    <button type="button" onClick={onToggle} aria-pressed={on} aria-label={label} title={label} data-speaker-toggle={on ? "on" : "off"} data-speaking={speaking ? "true" : "false"}
       className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 ${on
         ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-300" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"}`}>
       {/* マイク（IconMic）と同じ線のアイコンにする（以前は絵文字で系統が違った。2026-11-20 利用者の依頼） */}
-      {on ? <IconSpeaker className={speaking ? "animate-pulse" : undefined} /> : <IconSpeakerOff />}
+      {/* 読み上げ中も点滅させない（2026-11-20 利用者「チカチカしてやめてほしい」）。読み上げ中かは data-speaking で分かる */}
+      {on ? <IconSpeaker /> : <IconSpeakerOff />}
     </button>
   );
 }

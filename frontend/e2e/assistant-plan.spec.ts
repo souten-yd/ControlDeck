@@ -132,9 +132,10 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
   await input.fill("続きを直して");
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
-  expect(sent[0]).toMatchObject({ mode: "code", mode_choice: "auto" });
-  await expect(shell.getByText("画面を分ける")).toBeVisible();
-  await expect(pill).toHaveCount(0);                                     // OpenCode で答えても自動のまま
+  // 自動では OpenCode を選ばない（2026-11-20 利用者「OpenCode は明示的に選ぶ必要があるように」）
+  expect(sent[0]).toMatchObject({ mode_choice: "auto" });
+  expect(sent[0].mode).not.toBe("code");
+  await expect(pill).toHaveCount(0);                                     // 自動のまま
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-mode-option="chat"]').click();
   await expect(pill).toHaveText("Chat");
@@ -150,7 +151,9 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
 });
 
 test("research with plan goes to OpenCode: investigate first, then plan", async ({ page, context }) => {
-  // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」
+  // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」。
+  // 2026-11-20 利用者「プランと検索を選んだら、検索の結果でプランを立てて OpenCode を実行する作りか。OpenCode へ自動で
+  // 遷移しないだけだと不具合が出そう」: プランは明示の指定なので、調査と組み合わせても OpenCode で計画する
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
   await establishSession(page, context);
@@ -171,6 +174,31 @@ test("research with plan goes to OpenCode: investigate first, then plan", async 
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ mode: "code", code_research: true, code_agent: "plan" });
+});
+
+test("plan with auto plans in OpenCode, and leaving plan stops going to OpenCode", async ({ page, context }) => {
+  // 2026-11-20: 自動の判定は OpenCode を選ばないが、プランを選んでいれば自動のままでも OpenCode で計画する（プランは明示の指定）
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-agent-option="plan"]').click();
+  const input = shell.locator("[data-assistant-input]");
+  await input.fill("ログイン画面の作り直しを考えて");
+  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");
+  await input.press("Enter");
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ mode: "code", code_agent: "plan", mode_choice: "auto" });
+  expect(Boolean(sent[0].code_research)).toBe(false);
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-agent-option="build"]').click();
+  await input.fill("ログイン画面の作り直しを考えて");
+  await expect(shell.locator("[data-mode-detected]")).not.toContainText("OpenCode");   // プランを外せば自動では回さない
 });
 
 test("the plus menu stays on a short screen, scrolls inside and follows the arrow keys", async ({ page, context }) => {
@@ -202,8 +230,9 @@ test("the plus menu stays on a short screen, scrolls inside and follows the arro
   await expect(menu.locator('[data-mode-option="run"]')).toBeFocused();    // 真下のタイル
 });
 
-test("a question during an OpenCode conversation stays in OpenCode", async ({ page, context }) => {
-  // 2026-11-18 本番: 「〜できるか？」がチャットへ回り、道具の無いモデルが <tool_call> を文字で書いた
+test("with OpenCode chosen, a question stays in OpenCode", async ({ page, context }) => {
+  // 2026-11-18 本番: 「〜できるか？」がチャットへ回り、道具の無いモデルが <tool_call> を文字で書いた。
+  // 2026-11-20: OpenCode は明示的に選んだときだけ。選んでいれば質問も OpenCode で答える
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
   await establishSession(page, context);
@@ -213,8 +242,9 @@ test("a question during an OpenCode conversation stays in OpenCode", async ({ pa
   const shell = page.locator("[data-assistant-shell]");
   await expect(shell.getByText("作りました")).toBeVisible();
   const input = shell.locator("[data-assistant-input]");
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="code"]').click();
   await input.fill("3レベルインバータの波形をシミュレートできるか？");
-  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ mode: "code", code_project: "app" });

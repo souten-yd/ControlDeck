@@ -502,3 +502,21 @@ def test_voice_conversation_gets_spoken_rules_and_the_chosen_style(admin_client)
     image = [{"role": "user", "content": [{"type": "text", "text": "これは何？"}, {"type": "image_url", "image_url": {"url": "x"}}]}]
     assert "絵文字" in voice_guard(image, "polite")[-1]["content"][0]["text"]
     assert SendBody(content="x", voice_style="friendly").voice_style == "friendly"
+
+
+def test_voice_conversation_speaks_as_the_chosen_voice_gender(monkeypatch):
+    """会話モードの話し方を、Models の TTS で選んだ声の性別に合わせる（F1〜F5 は女性、M1〜M5 は男性）。
+    根拠: 2026-11-20 利用者「女性の声なのに男っぽい話し方をすることがあった。選んだ性別を会話の傾向に効かせて」。"""
+    from app.speech import settings
+    from app.workflows import voice_style
+
+    history = [{"role": "user", "content": "こんにちは"}]
+    monkeypatch.setattr(settings, "load", lambda: {"tts_voice": "F3"})
+    female = voice_style.voice_guard(history, "friendly")[-1]["content"]
+    assert voice_style.GENDER_RULES["female"] in female and "「俺」" in female
+    monkeypatch.setattr(settings, "load", lambda: {"tts_voice": "M2"})
+    male = voice_style.voice_guard(history, "friendly")[-1]["content"]
+    assert voice_style.GENDER_RULES["male"] in male and voice_style.GENDER_RULES["female"] not in male
+    assert voice_style.voice_guard(history, "") == history                       # 文字の会話には足さない
+    monkeypatch.setattr(settings, "load", lambda: (_ for _ in ()).throw(OSError("x")))
+    assert "話し手は" not in voice_style.voice_guard(history, "friendly")[-1]["content"]   # 読めなければ足さない

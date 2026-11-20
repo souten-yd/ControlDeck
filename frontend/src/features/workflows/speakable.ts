@@ -75,3 +75,26 @@ export function speechChunks(text: string, first = 80, rest = 300): string[] {
 export function speechLang(text: string): "ja" | "en" {
   return /[぀-ヿ㐀-鿿]/.test(text) ? "ja" : "en";
 }
+
+/** 生成中の Markdown を、読み上げに回してよい所（最後の文の終わり・改行）までで切る */
+export function stablePrefix(markdown: string): string {
+  const end = Math.max(...["。", "！", "？", "!", "?", "\n"].map((mark) => markdown.lastIndexOf(mark)));
+  return end < 0 ? "" : markdown.slice(0, end + 1);
+}
+
+/** 読み上げる文のうち、まだ回していない続き。生成中は文の終わりまで。上限を超えたら「続きは画面」で終える */
+export function nextSpoken(markdown: string, queued: number, done: boolean): { text: string; queued: number; capped: boolean } {
+  const spoken = speakableText(done ? markdown : stablePrefix(markdown), Number.POSITIVE_INFINITY);
+  let rest = spoken.slice(queued);
+  if (!done) {
+    const end = Math.max(...["。", "！", "？", "!", "?", ".", "」", "』"].map((mark) => rest.lastIndexOf(mark)));
+    rest = end < 0 ? "" : rest.slice(0, end + 1);
+  }
+  if (queued + rest.length > MAX_SPOKEN_CHARS) {
+    const room = rest.slice(0, Math.max(0, MAX_SPOKEN_CHARS - queued));
+    const end = Math.max(room.lastIndexOf("。"), room.lastIndexOf("！"), room.lastIndexOf("？"), room.lastIndexOf(". "));
+    const head = end >= 0 ? room.slice(0, end + 1) : room;
+    return { text: `${head}続きは画面をご覧ください。`, queued: queued + rest.length, capped: true };
+  }
+  return { text: rest, queued: queued + rest.length, capped: false };
+}
