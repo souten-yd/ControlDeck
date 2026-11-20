@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useApps, useOverview } from "../api/hooks";
-import { useAuth, useMetrics } from "../stores";
+import { METRICS_GAP_MS, useAuth, useMetrics } from "../stores";
 import { formatBps, formatPercent, formatUptime } from "../lib/format";
 import { Skeleton, Sparkline, StatusBadge } from "../components/ui";
 import type { MetricsSnapshot } from "../types";
@@ -46,14 +46,28 @@ export default function DashboardPage() {
   const { data: overview, isLoading } = useOverview();
   const { data: apps } = useApps();
   // グラフはサーバー側保持の履歴でシードし、ブラウザを閉じていた間も空白にしない
-  const { data: seeded, isFetching: historyFetching } = useQuery({
-    queryKey: ["metrics-history", historyMinutes],
+  // 閉じていた間（受け取りが途切れた間）は、途切れるたびに読み直して埋める（stores の gapEpoch）
+  const gapEpoch = useMetrics((s) => s.gapEpoch);
+  const { data: seeded, isFetching: historyFetching, refetch: refetchHistory } = useQuery({
+    queryKey: ["metrics-history", historyMinutes, gapEpoch],
+    placeholderData: keepPreviousData,
     queryFn: () => api<HistoryResponse>(`/system/metrics/history?minutes=${historyMinutes}`),
     enabled: can("system.view"),
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
   const firstLiveTs = history[0]?.timestamp ?? "";
+  // Home を離れていた間も受け取りは続くが、手元に残るのは直近 120 点（4 分）だけ。前に読んだ履歴の終わりと
+  // 手元の最初の点の間が空いていたら読み直す（同じ理由で何度も読まないよう 30 秒に 1 回まで）
+  const lastSeedTs = seeded?.resolution === "raw" ? seeded.samples[seeded.samples.length - 1]?.timestamp ?? "" : "";
+  const refetchedAt = useRef(0);
+  useEffect(() => {
+    if (!lastSeedTs || !firstLiveTs || historyFetching) return;
+    if (Date.parse(firstLiveTs) - Date.parse(lastSeedTs) <= METRICS_GAP_MS) return;
+    if (Date.now() - refetchedAt.current < 30_000) return;
+    refetchedAt.current = Date.now();
+    void refetchHistory();
+  }, [lastSeedTs, firstLiveTs, historyFetching, refetchHistory]);
   const seedSamples = (seeded?.samples ?? []).filter((s) => !firstLiveTs || s.timestamp < firstLiveTs);
   const cpuValues = [...seedSamples.map((s) => s.cpu_percent), ...history.map((h) => h.cpu.percent)];
   const ramValues = [...seedSamples.map((s) => s.memory_percent), ...history.map((h) => h.memory.percent)];

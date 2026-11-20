@@ -16,11 +16,12 @@ import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
+import { ExperienceSettings } from "../features/settings/ExperienceSettings";
 import { UpdateHistoryList } from "../features/settings/UpdateHistory";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
-import { IconBell, IconChevronRight, IconChip, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
+import { IconBell, IconChevronRight, IconChip, IconMenu, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
@@ -67,7 +68,7 @@ export default function SettingsPage() {
   return <SettingsLayout />;
 }
 
-type SectionId = "account" | "users" | "appearance" | "notifications" | "features" | "gpu" | "hardware" | "system";
+type SectionId = "account" | "users" | "appearance" | "experience" | "notifications" | "features" | "gpu" | "hardware" | "system";
 type Can = (permission: string) => boolean;
 
 interface SettingsSectionDef {
@@ -87,6 +88,9 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     allowed: () => true },
   { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・モバイルの下部メニュー",
     icon: IconPalette, keywords: ["テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル"],
+    allowed: () => true },
+  { id: "experience", label: "操作性", summary: "フリックでメニュー・画面を消さない・題名で先頭へ",
+    icon: IconMenu, keywords: ["フリック", "スワイプ", "メニュー", "ジェスチャー", "画面", "スリープ", "消灯", "読み上げ", "先頭", "スクロール", "便利"],
     allowed: () => true },
   { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、拡張機能、推奨スキル",
     icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "PatentBuddy", "スキル", "manifest"],
@@ -206,6 +210,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
   switch (id) {
     case "account": return <><AccountSection /><SessionsSection /></>;
     case "appearance": return <><AppearanceSection /><MobileNavigationSettings /></>;
+    case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
     case "gpu": return <GpuSettings />;
     case "hardware": return <FanControlSettings />;

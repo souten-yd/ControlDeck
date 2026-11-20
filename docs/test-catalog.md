@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 177 ファイル、1592 テスト（目的の未記入 93 ファイル）
-- E2E: 88 spec、182 テスト
+- E2E: 89 spec、185 テスト
 
 ## backend（backend/tests）
 
@@ -3000,6 +3000,14 @@
 目的: 目的: 本体の自動更新が動いたことに気づけること。何から何へ更新するのかを Release の名前で出すこと。 - 設定 → 更新とバックアップに履歴（時刻・自動/手動・版・成否）と、待っている理由が出る - 自動で更新した後、次に画面を開いたら一度だけ知らせ、もう一度開いても出さない 320px でも横にはみ出さない。 根拠: 2026-11-20 利用者「自動更新が動いていない気がする。気づいてないだけ？」。実際は自動 38 回動いていたが、 通知先が無く画面にも出ないので気づけなかった。API は模擬する。
 
 - update history and one-time auto update notice (${width}px)
+
+### frontend/e2e/ux-swipe-and-metrics-gap.spec.ts
+
+目的: 目的: - 携帯幅で、左から右へのフリックでメニューが開き、右から左で閉じる。設定 → 操作性で切ると働かない。 縦のスクロール・横にスクロールできる所（設定のカテゴリの並び）で始めた指では開かない。 - 題名を押すと本文の先頭へ戻る。 - ホームのグラフ: 受け取りが途切れたら（画面を閉じていた間）、サーバーの履歴を読み直して埋める。 根拠: 2026-11-20 利用者「左から右へフリックでメニューを出し、右から左で閉じたい。オンオフは設定で」 「ブラウザを閉じてまた開くと、閉じていた間のグラフが更新されない」。
+
+- flick opens and closes the menu, and can be turned off
+- tapping the title scrolls back to the top
+- home graph reloads server history after the stream was interrupted
 
 ### frontend/e2e/vram-margin.spec.ts
 

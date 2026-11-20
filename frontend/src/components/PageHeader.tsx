@@ -30,7 +30,7 @@ export function PageHeader({ title, description, actions, leading, className = "
         {slot && createPortal(
           <>
             {leading}
-            <h1 className="min-w-0 flex-1 truncate text-lg font-semibold leading-7 tracking-tight">{title}</h1>
+            <h1 data-tap-to-top className="min-w-0 flex-1 truncate text-lg font-semibold leading-7 tracking-tight">{title}</h1>
             {actions && <div className="flex shrink-0 items-center justify-end gap-2">{actions}</div>}
           </>,
           slot,

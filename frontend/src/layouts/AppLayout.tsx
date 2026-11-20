@@ -5,6 +5,8 @@ import { api, ApiError } from "../api/client";
 import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
+import { useNavSwipe } from "../hooks/useNavSwipe";
+import { useUxPrefs } from "../stores/uxPrefs";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   addonIcon,
@@ -162,6 +164,20 @@ export default function AppLayout() {
   const ownsTopBar = location.pathname === "/assistant" || /^\/workflows\/[^/]+$/.test(location.pathname);
 
   useMetricsStream(can("system.view") && !enrollmentPending);
+  // 上の行の題名を押すと、いま見ている所の先頭へ戻る（設定 → 操作性で切り替え）
+  const tapTitleToTop = useUxPrefs((s) => s.tapTitleToTop);
+  useEffect(() => {
+    if (!tapTitleToTop) return;
+    const onClick = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest("[data-tap-to-top]")) return;
+      scrollCurrentToTop();
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, [tapTitleToTop]);
+  // 左から右へのフリックでメニューを開き、右から左で閉じる（設定 → 操作性で切り替え）
+  const swipeNav = useUxPrefs((s) => s.swipeNav);
+  useNavSwipe({ enabled: swipeNav, open: drawerOpen, onOpen: () => setDrawerOpen(true), onClose: () => setDrawerOpen(false) });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -308,7 +324,7 @@ export default function AppLayout() {
                   （エディタ・拡張機能など）は、殻が「いまどこか」だけを出す。 */}
               <div ref={setHeaderSlot} data-shell-header-slot className="flex min-w-0 flex-1 items-center gap-2 pl-1 empty:hidden" />
               {headerCount === 0 && (
-                <h1 data-shell-title className="min-w-0 flex-1 truncate pl-1 text-lg font-semibold leading-7 tracking-tight">{currentTitle}</h1>
+                <h1 data-shell-title data-tap-to-top className="min-w-0 flex-1 truncate pl-1 text-lg font-semibold leading-7 tracking-tight">{currentTitle}</h1>
               )}
               <div className="flex shrink-0 items-center gap-2">
                 {/* L2 の承認待ち。どの画面でも見え、新しい依頼はポップアップで開く。 */}
@@ -336,7 +352,7 @@ export default function AppLayout() {
         {/* overflow-x-hidden: リロード直後等に幅超過要素があってもページ全体を横に広げない */}
         {/* 下端の Safe Area（ホームバー）に中身が潜らないよう余白を取る。AI アシスタントは
             入力欄の側で自分の余白を取る（assistant-composer-safe）ので除く。 */}
-        <main className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain ${location.pathname === "/assistant" ? "" : "safe-bottom"}`}>
+        <main data-shell-main className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain ${location.pathname === "/assistant" ? "" : "safe-bottom"}`}>
           {/* 1 画面の例外で全体を白くしない。path が変われば境界も解除する。 */}
           <ErrorBoundary resetKey={location.pathname}>
             <Outlet />
@@ -578,6 +594,19 @@ const DRAWER_FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled])
 
 /** 携帯のドロワー。左から滑り込み、背景を暗くする。
  *  閉じ方は、外側を押す・左へ払う・Escape・☰。開いている間は Tab をこの中に留める。 */
+/** 本文（main）が下へ動いていればそこを、そうでなければ中で一番下へ動いている一覧・本文を先頭へ戻す。 */
+function scrollCurrentToTop() {
+  const main = document.querySelector<HTMLElement>("[data-shell-main]");
+  if (!main) return;
+  let target: HTMLElement | null = main.scrollTop > 0 ? main : null;
+  if (!target) {
+    for (const el of main.querySelectorAll<HTMLElement>("*")) {
+      if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight && (!target || el.scrollTop > target.scrollTop)) target = el;
+    }
+  }
+  target?.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
 function NavDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
   const [shown, setShown] = useState(false);
