@@ -113,7 +113,17 @@ Web profileではcommand argv内の`{host}`を`127.0.0.1`、`{port}`を空きloo
 
 `/project-view/{run_id}/{path}`は、runが実行中であり、systemdの`MainPID`またはその子processが割当portをTCP LISTENしている場合だけ`127.0.0.1`へproxyする。任意host/portの指定、終了runへの接続、別processが偶然使用するportへの接続を拒否する。requestのCookie、Authorization、CSRF tokenを上流へ転送せず、応答のSet-Cookieも破棄する。request bodyは16MiB、接続/読取timeoutを制限し、redirectと絶対path resourceはrun prefixを維持する。
 
-iframeは`allow-same-origin`を付けないsandboxとし、script、form、downloadだけを明示許可する。これにより未信頼の開発成果物がControlDeck parent DOMやsessionへ到達することを防ぐ。別originを必要とする高度なWebSocket/CORSアプリは、専用preview originを導入する後続Phaseの対象とする。
+iframeは`allow-same-origin`を付けないsandboxとし、script、form、downloadだけを明示許可する。これにより未信頼の開発成果物がControlDeck parent DOMやsessionへ到達することを防ぐ。
+
+#### 鍵付きの入口と WebSocket（2026-11-21）
+
+sandbox の中のページは生まれが `null` になり、Cookie を送れず、`Referrer-Policy: same-origin` のため Referer も付かない。実測では、Vite の dev server は module script が CORS で 1 本も読めず、HMR はサイトの根元 `ws://host/` へ繋ぎに来て 403 だった。そこで:
+
+- `previewUrl` は `/project-view/r/{run_id}/{token}/`。token は run ごとの HMAC（`security.crypto.keyed_digest`、DB に控えを持たない）で、run が動いていて割当 port を LISTEN している間だけ通す。Cookie は受け取らず、応答に `Access-Control-Allow-Origin: *` を付ける（中のページの module script・fetch のため。ControlDeck の資格情報はこの入口に無いので漏れない）。
+- 同じ接頭辞で WebSocket を受け、上流の `ws://127.0.0.1:{port}` へ双方向に中継する。サブプロトコル（Vite は `vite-hmr`。無いと握手に応じない）は上流が選んだものを返す。文字・binary・close code を通す。Cookie・Origin は渡さず、Host は接続先（Vite の Host 検査を通る）。ping/pong は区間ごとに返るので中継しない。上限は 16MiB。
+- command の `{base}` は鍵付きの接頭辞に置き換わり（`CONTROL_DECK_PREVIEW_BASE` にも入る）、`{base}` を含む run は接頭辞を付けたまま上流へ送る。Vite は `--base {base}` を渡すと、資産も HMR も同じ接頭辞へ来るので設定ゼロで動く。記録（`command_json`）には `{base}` のまま残し、鍵は書かない。run のログには dev server が出す URL として鍵が出る（ログを読める人は preview を開ける人と同じ）。
+- 例: `"command": ["npx", "vite", "--port", "{port}", "--host", "{host}", "--strictPort", "--base", "{base}"]`
+- `{base}` を使わない dev server で絶対 path の資産を読むものは、sandbox の中では読めない（前と同じ）。Cookie の入口 `/project-view/{run_id}/` は残している。
 
 ## 4.1 プロジェクトの削除
 

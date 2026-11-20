@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 177 ファイル、1592 テスト（目的の未記入 93 ファイル）
-- E2E: 89 spec、185 テスト
+- backend: 179 ファイル、1608 テスト（目的の未記入 93 ファイル）
+- E2E: 90 spec、187 テスト
 
 ## backend（backend/tests）
 
@@ -1795,6 +1795,16 @@
 - `test_republish_refuses_when_nothing_is_published`
 - `test_republish_refuses_an_unreadable_record` — 記録が壊れていたら黙って既定へ倒さない。public で出す事故を作らない。
 
+### backend/tests/test_project_view_websocket.py
+
+目的: Project Lab の preview の鍵の入口と、WebSocket（HMR）の中継。 目的: - preview は sandbox の iframe（生まれが null）で開くので Cookie を送れない。URL の run ごとの鍵で通し、 鍵が違う・終わった run は通さない。ControlDeck の Cookie・Origin は上流へ渡さない。 - WebSocket は上流と双方向に中継し、サブプロトコル（Vite の vite-hmr）・文字・binary・close code を通す。 - command に {base} を渡した run は、接頭辞を付けたまま上流へ送る（Vite の --base で HMR が同じ接頭辞へ来る）。 根拠: 2026-11-21 実測。前の preview では、sandbox の中の Vite は module script が CORS で 1 本も読めず、 HMR はサイトの根元 ws://host/ へ繋ぎに来て 403 だった。
+
+- `test_websocket_relays_messages_subprotocol_and_close`
+- `test_websocket_rejects_wrong_token_and_finished_run`
+- `test_websocket_keeps_prefix_when_command_has_base`
+- `test_token_http_route_needs_no_cookie_and_allows_null_origin`
+- `test_launch_fills_base_but_does_not_record_the_token` — {base} は run の番号が決まってから埋める。記録（command_json）には鍵を残さない。
+
 ### backend/tests/test_radiance_runtime.py
 
 目的: Radiance runtime: registration, launch command, lifecycle and routing.
@@ -2312,6 +2322,22 @@
 - `test_the_health_check_does_not_share_the_default_executor` — 共有プールが埋まっても確認は動く。
 - `test_a_slow_check_does_not_kill_the_process` — 確認が返らないだけで落とさない。この loop が動けている＝生きている。
 - `test_an_unhealthy_answer_still_stops_the_ping` — 本当に駄目なときは従来どおり黙り、systemd の再起動へ委ねる。
+
+### backend/tests/test_web_push.py
+
+目的: Web Push（端末への通知）。 目的: - 暗号化（RFC 8291 aes128gcm）が規格の例と 1 バイト違わず一致し、受け手の鍵で復号できる。 - VAPID（RFC 8292）の JWT が公開鍵で検証でき、aud は push service の origin、sub は https。 - 端末が渡す endpoint は既知の push service だけ受ける（内側の URL へ POST させない）。 - 404・410 の端末は消す。届いたら最後に届いた時刻を残す。endpoint は一覧に出さない。 - Project Run が終わったら起動した人へ送る。取り消しでは送らない。同じ終わりは 1 回だけ。 - 通知チャンネル push は、監視を見られる人（system.view）の端末へ送る。 - VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、自動更新にも気づけなかった。
+
+- `test_encryption_matches_rfc8291_example`
+- `test_encryption_round_trips_with_a_fresh_receiver`
+- `test_vapid_token_verifies_with_the_public_key`
+- `test_vapid_token_is_reused_for_an_hour_or_more` — Apple は JWT を 1 時間に 1 回より頻繁に作り直さないよう求める。期限の 1 時間前までは使い回す。
+- `test_only_known_push_services_are_accepted`
+- `test_subscription_api_rejects_internal_endpoints_and_hides_secrets`
+- `test_send_removes_gone_devices_and_records_success`
+- `test_send_refuses_offsite_urls_in_payload`
+- `test_finished_run_notifies_its_starter_once_and_not_on_cancel`
+- `test_push_channel_sends_to_monitoring_viewers`
+- `test_push_channel_needs_no_url`
 
 ### backend/tests/test_workflow_artifacts.py
 
@@ -3014,6 +3040,13 @@
 目的: **未記入**
 
 - common VRAM margin persists at ${width}px
+
+### frontend/e2e/web-push.spec.ts
+
+目的: 目的: - 設定 → 通知 の「この端末で受け取る」で、ブラウザの購読をサーバーへ登録し、一覧に端末が出る。止めると消える。 - Service Worker が push を受けたら通知を出し、押したら中の url（実行結果など）を開く。 push service は外にあるので、購読は差し替え、push は Chromium の DevTools から直接 Service Worker へ届ける。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、何も届いていなかった。
+
+- subscribes this device, shows it, and the service worker shows pushed notifications
+- opening a notification link selects the run in Project Lab
 
 ### frontend/e2e/workflow-business-event.spec.ts
 

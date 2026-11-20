@@ -1,7 +1,7 @@
 /* Ubuntu Control Deck Service Worker
  * 方針: アプリシェル（HTML/JS/CSS/アイコン）のみをキャッシュしオフライン起動を可能にする。
  * API レスポンス・ログ・ファイル内容など機密になりうるデータは一切キャッシュしない。 */
-const CACHE = "control-deck-shell-v21";
+const CACHE = "control-deck-shell-v22";
 const SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -62,4 +62,42 @@ self.addEventListener("fetch", (event) => {
 
   // その他の静的ファイル: cache-first
   event.respondWith(caches.match(req).then((hit) => hit || fetch(req)));
+});
+
+
+/* Web Push（設定 → 通知 → この端末で受け取る）。
+ * サーバーは RFC 8291 で暗号化した JSON（title・body・url・tag）を送る。iOS は届いたら必ず
+ * 表示しないと購読を外すので、中身が読めなくても何かを出す。通知への返信はできない（iOS）ので、
+ * タップしたらその画面（会話・実行結果）を開く、までを 1 本の導線にする。 */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data ? event.data.text() : "" }; }
+  const title = typeof data.title === "string" && data.title ? data.title : "ControlDeck";
+  const url = typeof data.url === "string" && data.url.startsWith("/") && !data.url.startsWith("//") ? data.url : "/";
+  event.waitUntil(self.registration.showNotification(title, {
+    body: typeof data.body === "string" ? data.body : "",
+    tag: typeof data.tag === "string" ? data.tag : undefined,
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    data: { url },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || "/", self.location.origin);
+  if (target.origin !== self.location.origin) return;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    // 開いている ControlDeck があれば、それをその画面へ移して前に出す
+    for (const client of windows) {
+      if (new URL(client.url).origin !== self.location.origin) continue;
+      try {
+        await client.focus();
+        if ("navigate" in client) await client.navigate(target.href);
+        return;
+      } catch { /* 移せなければ新しく開く */ }
+    }
+    await self.clients.openWindow(target.href);
+  })());
 });

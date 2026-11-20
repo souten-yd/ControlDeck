@@ -10,7 +10,12 @@
  * - 横にスクロールできる所（タブの並び・表・コード）、入力欄、ターミナル、キャンバス、
  *   data-no-nav-swipe を付けた所で始めた指は使わない
  * 開いているときは暗い所で始めた指を見る。ドロワー自身の引き戻しは NavDrawer が持つ。
- * オンオフは 設定 → 操作性（stores/uxPrefs の swipeNav）。切ると端の「戻る」「進む」も元に戻る。 */
+ * オンオフは 設定 → 操作性（stores/uxPrefs の swipeNav）。切ると端の「戻る」「進む」も元に戻る。
+ *
+ * 2026-11-21 調査: ホーム画面の Web アプリで端の「戻る」を止める標準の手段（manifest・CSS）は無い。
+ * 端の touchstart を止めるのが知られている唯一の回避策で、慣性スクロールが続いている間に端から引くと
+ * iOS 側が先に取って戻ってしまう（W3C manifest の issue、2025-05 の報告。WebKit 側の制限）。
+ * overscroll-behavior-x は Safari では効かない（WebKit Bugzilla）。 */
 import { useEffect, useRef } from "react";
 
 const EDGE_PX = 20;

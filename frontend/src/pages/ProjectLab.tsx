@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../stores";
 import {
   projectLabApi,
@@ -83,6 +84,19 @@ export default function ProjectLabPage() {
   // 外部CDNの読み込みは既定で遮断し、利用者が明示的に許可したファイルだけ通す。
   const [externalAllowed, setExternalAllowed] = useState<Record<string, boolean>>({});
   const [openRun, setOpenRun] = useState<number | null>(null);
+  // 通知から開いたとき（/project-lab?project=…&run=…）は、その project の実行結果を開く。
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const linkedProject = searchParams.get("project");
+    if (!linkedProject) return;
+    const linkedRun = Number(searchParams.get("run"));
+    setProjectId(linkedProject);
+    if (Number.isInteger(linkedRun) && linkedRun > 0) {
+      setOpenRun(linkedRun);
+      setSheet("runs");
+    }
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
   // 取り消せない操作なので、確認を挟む。対象は選択中のプロジェクト。
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
 

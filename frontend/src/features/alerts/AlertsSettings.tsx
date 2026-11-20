@@ -4,6 +4,7 @@ import { api } from "../../api/client";
 import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
 import type { ManagedApp } from "../../types";
+import { PushDevices } from "./PushDevices";
 
 interface Channel {
   id: number;
@@ -52,6 +53,7 @@ export function AlertsSettings() {
   const canEdit = useAuth((s) => s.can)("settings.manage");
   return (
     <>
+      <PushDevices />
       <ChannelsSection canEdit={canEdit} />
       <RulesSection canEdit={canEdit} />
     </>
@@ -126,6 +128,7 @@ function ChannelForm({ onClose }: { onClose: () => void }) {
   const [fromAddress, setFromAddress] = useState("");
   const [toAddresses, setToAddresses] = useState("");
   const isEmail = type === "email";
+  const isPush = type === "push";
   const create = useMutation({
     mutationFn: () => api("/alert-channels", {
       method: "POST",
@@ -139,7 +142,7 @@ function ChannelForm({ onClose }: { onClose: () => void }) {
         smtp_password: smtpPassword,
         from_address: fromAddress,
         to_addresses: toAddresses.split(",").map((value) => value.trim()).filter(Boolean),
-      } : { name, channel_type: type, url },
+      } : isPush ? { name, channel_type: type } : { name, channel_type: type, url },
     }),
     onSuccess: () => { show("追加しました"); qc.invalidateQueries({ queryKey: ["alert-channels"] }); onClose(); },
     onError: (e) => show(e instanceof Error ? e.message : "追加に失敗しました", "error"),
@@ -154,7 +157,11 @@ function ChannelForm({ onClose }: { onClose: () => void }) {
           <option value="slack">Slack</option>
           <option value="webhook">汎用 Webhook</option>
           <option value="email">メール (SMTP)</option>
+          <option value="push">この ControlDeck の通知（端末へ）</option>
         </select>
+        {isPush && (
+          <p className="text-xs text-zinc-500">宛先は要りません。上の「この端末で受け取る」を押した端末すべて（監視を見られる人の端末）へ送ります。</p>
+        )}
         {isEmail ? (
           <>
             <div className="grid grid-cols-[1fr_7rem] gap-2">
@@ -185,10 +192,10 @@ function ChannelForm({ onClose }: { onClose: () => void }) {
               <input value={toAddresses} onChange={(e) => setToAddresses(e.target.value)} placeholder="admin@example.com" className={`${input} mt-1`} autoCapitalize="none" />
             </label>
           </>
-        ) : (
+        ) : isPush ? null : (
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Webhook URL" className={`${input} font-mono text-xs`} />
         )}
-        <button onClick={() => create.mutate()} disabled={!name || (isEmail ? !smtpHost || !fromAddress || !toAddresses : !url) || create.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        <button onClick={() => create.mutate()} disabled={!name || (isEmail ? !smtpHost || !fromAddress || !toAddresses : !isPush && !url) || create.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           追加
         </button>
       </div>

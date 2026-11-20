@@ -53,3 +53,15 @@ def is_secret_key(name: str) -> bool:
 def mask_env(env: dict[str, str]) -> dict[str, str]:
     """表示・ログ用に秘密らしき値をマスクする。"""
     return {k: ("••••••" if is_secret_key(k) else v) for k, v in env.items()}
+
+
+def keyed_digest(purpose: str, message: str, *, length: int = 32) -> str:
+    """data_dir の鍵から作る、推測できない固定の印（hex）。
+
+    同じ purpose と message なら何度でも同じ値になるので、DB に控えを持たずに照合できる。
+    鍵そのものは外へ出ない（HMAC-SHA256）。"""
+    import hashlib
+    import hmac
+
+    key = hashlib.sha256(b"control-deck-keyed-digest:" + _fernet()._signing_key).digest()  # noqa: SLF001
+    return hmac.new(key, f"{purpose}\x00{message}".encode(), hashlib.sha256).hexdigest()[:length]
