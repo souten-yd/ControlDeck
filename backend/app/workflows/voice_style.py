@@ -26,17 +26,39 @@ STYLES: dict[str, tuple[str, str]] = {
 }
 DEFAULT_STYLE = "friendly"
 
+# 読み上げる声の性別に話し方を合わせる。2026-11-20 利用者「会話モードで女性の声なのに男っぽい話し方をすることがあった。
+# 男性・女性を選べるようにし、選んだ性別を会話の傾向に効かせて」。性別は Models の TTS で選んだ声で決まる
+# （Supertonic 3 の F1〜F5 は女性、M1〜M5 は男性）。声と話し方がずれないよう、別の設定を持たない
+GENDER_RULES = {
+    "female": "話し手は女性です。女性の話し手として自然な言葉づかいにする（一人称は「私」）。"
+              "「俺」「僕」「〜だぜ」「〜だろ」「〜じゃねえ」など男性的な言い回しは使わない。",
+    "male": "話し手は男性です。男性の話し手として自然な言葉づかいにする（一人称は「僕」か「私」）。"
+            "「あたし」「〜だわ」「〜かしら」「〜なのよ」など女性的な言い回しは使わない。",
+}
 
-def voice_note(style: str) -> str:
+
+def voice_gender() -> str | None:
+    """Models の TTS で選んだ声の性別（female / male）。読めなければ None（決まりを足さない）。"""
+    try:
+        from app.speech import settings
+
+        voice = str(settings.load().get("tts_voice") or "")
+    except Exception:  # noqa: BLE001 - 設定が読めなくても会話は止めない
+        return None
+    return {"F": "female", "M": "male"}.get(voice[:1])
+
+
+def voice_note(style: str, gender: str | None = None) -> str:
     label_hint = STYLES.get(style) or STYLES[DEFAULT_STYLE]
-    return f"\n\n（{SPOKEN_RULES}話し方: {label_hint[1]}）"
+    gender_rule = GENDER_RULES.get(gender or "", "")
+    return f"\n\n（{SPOKEN_RULES}話し方: {label_hint[1]}{gender_rule}）"
 
 
 def voice_guard(history: list[dict], style: str) -> list[dict]:
     """会話モードの発言なら、最後の利用者の発言に決まりと傾向を書き添える。会話モードでなければそのまま。"""
     if not style:
         return history
-    note = voice_note(style)
+    note = voice_note(style, voice_gender())
     for index in range(len(history) - 1, -1, -1):
         message = history[index]
         if message.get("role") != "user":

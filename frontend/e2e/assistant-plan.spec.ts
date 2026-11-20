@@ -132,9 +132,10 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
   await input.fill("続きを直して");
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
-  expect(sent[0]).toMatchObject({ mode: "code", mode_choice: "auto" });
-  await expect(shell.getByText("画面を分ける")).toBeVisible();
-  await expect(pill).toHaveCount(0);                                     // OpenCode で答えても自動のまま
+  // 自動では OpenCode を選ばない（2026-11-20 利用者「OpenCode は明示的に選ぶ必要があるように」）
+  expect(sent[0]).toMatchObject({ mode_choice: "auto" });
+  expect(sent[0].mode).not.toBe("code");
+  await expect(pill).toHaveCount(0);                                     // 自動のまま
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-mode-option="chat"]').click();
   await expect(pill).toHaveText("Chat");
@@ -149,8 +150,9 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
   await expect(pill).toHaveCount(0);                                     // 新しい会話は自動から
 });
 
-test("research with plan goes to OpenCode: investigate first, then plan", async ({ page, context }) => {
-  // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」
+test("choosing plan selects OpenCode, and asking to research makes it investigate first, then plan", async ({ page, context }) => {
+  // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」。
+  // 2026-11-20: プランは OpenCode の機能なので、選ぶと OpenCode を明示的に選んだことになる（自動では OpenCode へ回さない）
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
   await establishSession(page, context);
@@ -161,13 +163,12 @@ test("research with plan goes to OpenCode: investigate first, then plan", async 
   await expect(shell.getByText("作りました")).toBeVisible();
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-agent-option="plan"]').click();
-  await shell.locator("[data-assistant-plus]").click();
-  await page.locator('[data-mode-option="investigate"]').click();
+  await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toContainText("OpenCode");
   // 書き込み先が分かり、選べる（2026-11-18 利用者「プロジェクトを選べない。どこに書き込まれるのか」）
   await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toBeVisible();
   await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toHaveValue("app");
   const input = shell.locator("[data-assistant-input]");
-  await input.fill("Plan15 の作り方を検討して");
+  await input.fill("最新の情報を調べて Plan15 の作り方を検討して");
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ mode: "code", code_research: true, code_agent: "plan" });
@@ -202,8 +203,9 @@ test("the plus menu stays on a short screen, scrolls inside and follows the arro
   await expect(menu.locator('[data-mode-option="run"]')).toBeFocused();    // 真下のタイル
 });
 
-test("a question during an OpenCode conversation stays in OpenCode", async ({ page, context }) => {
-  // 2026-11-18 本番: 「〜できるか？」がチャットへ回り、道具の無いモデルが <tool_call> を文字で書いた
+test("with OpenCode chosen, a question stays in OpenCode", async ({ page, context }) => {
+  // 2026-11-18 本番: 「〜できるか？」がチャットへ回り、道具の無いモデルが <tool_call> を文字で書いた。
+  // 2026-11-20: OpenCode は明示的に選んだときだけ。選んでいれば質問も OpenCode で答える
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
   await establishSession(page, context);
@@ -213,8 +215,9 @@ test("a question during an OpenCode conversation stays in OpenCode", async ({ pa
   const shell = page.locator("[data-assistant-shell]");
   await expect(shell.getByText("作りました")).toBeVisible();
   const input = shell.locator("[data-assistant-input]");
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="code"]').click();
   await input.fill("3レベルインバータの波形をシミュレートできるか？");
-  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ mode: "code", code_project: "app" });

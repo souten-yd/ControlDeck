@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1578 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、171 テスト
+- backend: 176 ファイル、1579 テスト（目的の未記入 93 ファイル）
+- E2E: 86 spec、172 テスト
 
 ## backend（backend/tests）
 
@@ -536,6 +536,7 @@
 - `test_archive_hides_from_list_and_restores` — 会話のアーカイブ（2026-11-17 の依頼: 履歴を左右のスワイプでアーカイブか削除）。消さずに一覧から外し、戻せる。
 - `test_japanese_questions_get_a_final_language_instruction` — 日本語の質問には、生成の直前に「日本語で」を足す（2026-11-17: DS-XS が検索資料に引かれて中国語で答えた）。
 - `test_voice_conversation_gets_spoken_rules_and_the_chosen_style` — 会話モードの発言には、話し言葉の決まり（絵文字・箇条書きなし、短く、相手の言語で）と選んだ回答傾向を最後に足す。
+- `test_voice_conversation_speaks_as_the_chosen_voice_gender` — 会話モードの話し方を、Models の TTS で選んだ声の性別に合わせる（F1〜F5 は女性、M1〜M5 は男性）。
 
 ### backend/tests/test_chat_queue.py
 
@@ -2578,12 +2579,11 @@
 - history list: groups, search, open, rename, delete, new chat (${width}px)
 - mode chip menu in the composer (${width}px)
 - a chat can be handed off to OpenCode from the plus menu in the same conversation
-- an archive is attached for OpenCode, switches to OpenCode and is sent with the message
-- a chat answer is handed to OpenCode by just asking to implement it
+- an archive is attached for OpenCode and is sent once OpenCode is chosen
+- auto never hands work to OpenCode by itself, even when asked to implement it
 - a question that only mentions web apps stays in chat
-- in an OpenCode conversation, asking to look something up and apply it researches first
-- in an OpenCode conversation, an ordinary request stays with OpenCode
-- in an OpenCode conversation, a plain question stays in OpenCode
+- in an OpenCode conversation, auto still does not choose OpenCode (1)
+- in an OpenCode conversation, auto still does not choose OpenCode (2)
 - in an OpenCode conversation, an image goes to the chat that can see it
 - a long thinking trace opens from its heading and closes by tapping inside it at ${width}px
 - an OpenCode answer shows thinking split around its tools and reopening keeps the work folder
@@ -2625,9 +2625,9 @@
 - plan is clearly shown, sent as plan and can be built afterwards (${width}px)
 - the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
 - auto stays auto, and a fixed mode survives reopening per conversation
-- research with plan goes to OpenCode: investigate first, then plan
+- choosing plan selects OpenCode, and asking to research makes it investigate first, then plan
 - the plus menu stays on a short screen, scrolls inside and follows the arrow keys
-- a question during an OpenCode conversation stays in OpenCode
+- with OpenCode chosen, a question stays in OpenCode
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 
@@ -2644,6 +2644,8 @@
 - conversation mode sends after a pause, speaks the reply and listens again until stopped (${width}px)
 - TTS reply mode reads the finished answer and is remembered
 - a reply is read once by the tab that sent it, not by another tab watching the same chat
+- a streaming answer is cut at sentence ends and every part is read once
+- TTS reply mode starts reading while the answer is still being written
 
 ### frontend/e2e/background-return.spec.ts
 

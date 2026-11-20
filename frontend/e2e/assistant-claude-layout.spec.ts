@@ -330,8 +330,9 @@ test("a chat can be handed off to OpenCode from the plus menu in the same conver
   expect(calls.filter((c) => c.startsWith("send:"))).toHaveLength(0);
 });
 
-test("an archive is attached for OpenCode, switches to OpenCode and is sent with the message", async ({ page }) => {
-  // 2026-11-18 利用者の依頼: ZIP・RAR などを添付して、OpenCode のプロジェクトへ展開して使う
+test("an archive is attached for OpenCode and is sent once OpenCode is chosen", async ({ page }) => {
+  // 2026-11-18 利用者の依頼: ZIP・RAR などを添付して、OpenCode のプロジェクトへ展開して使う。
+  // 2026-11-20 利用者「OpenCode は明示的に選ぶ必要があるように」: 自動では OpenCode へ回さず、選ぶよう知らせる
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   await page.setViewportSize({ width: 320, height: 700 });
   await login(page);
@@ -357,8 +358,12 @@ test("an archive is attached for OpenCode, switches to OpenCode and is sent with
   await expect(shell.getByText("今日の献立の相談の回答")).toBeVisible();
   await shell.locator('input[type="file"]').setInputFiles({ name: "tool.zip", mimeType: "application/zip", buffer: Buffer.from("PK") });
   await expect(shell.getByText("12 ファイル・送ると展開")).toBeVisible();
-  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");    // 自動のまま OpenCode へ回す
-  await expect(shell.locator('[data-composer-pill="mode"]')).toHaveCount(0);
+  await expect(shell.locator("[data-mode-detected]")).not.toContainText("OpenCode");   // 自動では OpenCode へ回さない
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("＋から OpenCode を選んでください")).toBeVisible();
+  expect(sent).toBeNull();
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="code"]').click();
   // 文字を打たなくても送れる（中身の説明を頼む）
   await shell.getByRole("combobox").first().selectOption("app").catch(() => {});
   await shell.getByRole("button", { name: "送信" }).click();
@@ -414,12 +419,13 @@ async function sendWithAutoRouting(page: Page, { code, text, image = false }: { 
   return { sent: state.sent!, detected };
 }
 
-test("a chat answer is handed to OpenCode by just asking to implement it", async ({ page }) => {
+test("auto never hands work to OpenCode by itself, even when asked to implement it", async ({ page }) => {
+  // 2026-11-20 利用者「Mac の M5・M6 チップはローカル LLM としてどうですか、と聞いたら勝手に OpenCode が開いた。
+  // OpenCode は明示的に選ぶ必要があるように」。作業の語があっても自動では OpenCode を選ばない
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
   const { sent, detected } = await sendWithAutoRouting(page, { code: false, text: "これを実装して" });
-  expect(detected).toContain("OpenCode");
-  expect(sent.mode).toBe("code");
-  expect(Boolean(sent.code_research)).toBe(false);
+  expect(detected).not.toContain("OpenCode");
+  expect(sent.mode).not.toBe("code");
 });
 
 test("a question that only mentions web apps stays in chat", async ({ page }) => {
@@ -428,26 +434,20 @@ test("a question that only mentions web apps stays in chat", async ({ page }) =>
   expect(sent.mode).not.toBe("code");
 });
 
-test("in an OpenCode conversation, asking to look something up and apply it researches first", async ({ page }) => {
+test("in an OpenCode conversation, auto still does not choose OpenCode (1)", async ({ page }) => {
+  // 以前は OpenCode が作業した会話では、自動でも OpenCode のまま続けていた。今は OpenCode を選んだときだけ
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
-  const { sent, detected } = await sendWithAutoRouting(page, { code: true, text: "最新の SQLite の WAL の仕様を調べて反映して" });
-  expect(detected).toContain("OpenCode");
-  expect(sent.mode).toBe("code");
-  expect(sent.code_research).toBe(true);
+  const { sent, detected } = await sendWithAutoRouting(page, { code: true, text: "Mac の新しい M5、M6 チップを積んだやつはローカル LLM としてどうですか" });
+  expect(detected).not.toContain("OpenCode");
+  expect(sent.mode).not.toBe("code");
 });
 
-test("in an OpenCode conversation, an ordinary request stays with OpenCode", async ({ page }) => {
+test("in an OpenCode conversation, auto still does not choose OpenCode (2)", async ({ page }) => {
+  // 以前は OpenCode が作業した会話では、自動でも OpenCode のまま続けていた。今は OpenCode を選んだときだけ
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
-  const { sent } = await sendWithAutoRouting(page, { code: true, text: "テストも足しておいて" });
-  expect(sent.mode).toBe("code");
-  expect(Boolean(sent.code_research)).toBe(false);
-});
-
-test("in an OpenCode conversation, a plain question stays in OpenCode", async ({ page }) => {
-  // 2026-11-18 本番: チャットへ回すと道具が無く、モデルが <tool_call> を文字で書いた。チャットは＋で選ぶ
-  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
-  const { sent } = await sendWithAutoRouting(page, { code: true, text: "ありがとう、ところで WAL って何?" });
-  expect(sent.mode).toBe("code");
+  const { sent, detected } = await sendWithAutoRouting(page, { code: true, text: "テストも足しておいて" });
+  expect(detected).not.toContain("OpenCode");
+  expect(sent.mode).not.toBe("code");
 });
 
 test("in an OpenCode conversation, an image goes to the chat that can see it", async ({ page }) => {
