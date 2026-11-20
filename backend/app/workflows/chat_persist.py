@@ -976,10 +976,14 @@ class RouteBody(BaseModel):
 async def route_message(
     body: RouteBody, user: User = Depends(require_permission("workflows.run")),
 ):
-    """明確な依頼はルール、曖昧な依頼はLLMで構造化判定する。"""
-    from app.workflows.assistant_planner import decide
+    """明確な依頼はルール、曖昧な依頼はLLMで構造化判定する。
 
-    from app.models_mgmt.runtime_provider import resolve_target
+    道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
+    Web 検索・資料の検索はモデルが要ると判断したときに道具で行う（2026-11-20 利用者「Claude と同じ方法で」）。"""
+    from app.workflows import chat_tools
+    from app.workflows.assistant_planner import AssistantPlan, decide, rule_plan
+
+    from app.models_mgmt.runtime_provider import provider_for_base_url, resolve_target
 
     def brief() -> str:
         if not body.conversation_id:
@@ -993,6 +997,12 @@ async def route_message(
         return _document_brief(body.conversation_id) if allowed else ""
 
     base_url, model = resolve_target(body.base_url, body.model)
+    if getattr(provider_for_base_url(base_url), "tools_verified", False) and chat_tools.supported(base_url, model):
+        immediate = rule_plan(body.content)
+        if immediate is not None:
+            return immediate.model_dump()
+        return AssistantPlan(mode="chat", reason="対話（調べる必要があればモデルが Web 検索・資料の検索を使う）",
+                             decided_by="tools").model_dump()
     return (await decide(body.content, base_url, model, context=await asyncio.to_thread(brief))).model_dump()
 
 
@@ -1168,6 +1178,73 @@ def handoff_context(conv_id: str, current_user_id: str | None, limit_chars: int,
     return head + (note.format(omitted) if omitted else "") + "\n\n".join(kept), len(kept)
 
 
+async def _stream_round(provider, runtime_request, request_id: str, buf: dict, stats: dict, job, maybe_ckpt,
+                        emit_stats, base_url: str):
+    """生成 1 回分を流し、思考・本文を buf とジョブへ書き、統計を更新する。道具の呼び出しはそのまま上へ返す。"""
+    async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
+        if chunk.type == "usage":
+            usage = chunk.usage or {}
+            if usage.get("prompt_tokens"):
+                stats["prompt_tokens"] = int(usage["prompt_tokens"])
+            if usage.get("completion_tokens"):
+                stats["gen_tokens"] = int(usage["completion_tokens"])
+            continue
+        if chunk.type == "tool_call":
+            yield chunk
+            continue
+        if chunk.type == "thinking":
+            buf["thinking"] += chunk.content
+            job.log("thinking", delta=chunk.content)
+            stats["phase"] = "thinking"
+        elif chunk.type == "content":
+            buf["content"] += chunk.content
+            job.log("delta", delta=chunk.content)
+            stats["phase"] = "answer"
+            await maybe_ckpt()
+        now = asyncio.get_event_loop().time()
+        if not stats["start"]:
+            stats["start"] = now
+            # llama.cppは処理中slotから実測プロンプトトークン数を並行取得する
+            async def fill_prompt() -> None:
+                stats["prompt_tokens"] = await _prompt_tokens_probe(base_url) or stats["prompt_tokens"]
+            stats["probe"] = asyncio.get_event_loop().create_task(fill_prompt())
+        stats["gen_tokens"] += 1
+        stats["recent"].append(now)
+        if len(stats["recent"]) > 512:
+            del stats["recent"][:256]
+        if now - stats["last_emit"] >= 1.0:
+            stats["last_emit"] = now
+            emit_stats()
+        yield chunk
+
+
+async def _materials_without_tools(messages: list[dict], material_tool: dict | None, job) -> list[dict]:
+    """道具を呼べないモデル: 従来どおり、発言が資料を指すときだけ探して抜粋を文脈に入れる（#478 の方式）。"""
+    from app.workflows import chat_tools, rag
+
+    if material_tool is None:
+        return messages
+    said = material_tool["said"]
+    # 道具の案内（materials_note）を外す
+    kept = [m for m in messages if not (m.get("role") == "system" and chat_tools.SEARCH_MATERIALS in str(m.get("content")))]
+    if not said or not needs_materials(said[-1]):
+        return kept
+    job.log("stats", phase="retrieve", detail="会話の資料を探しています", tok_per_sec=0, gen_tokens=0,
+            prompt_tokens=None, context_max=None)
+    try:
+        found = await rag.search(collection=material_tool["collection"], question=said[-1], top_k=material_tool["top_k"],
+                                 rerank_budget_s=CHAT_RERANK_BUDGET_S, min_rerank_score=CHAT_MIN_RERANK_SCORE,
+                                 rerank_query=rerank_query_with_topic(said))
+    except Exception:  # noqa: BLE001 - 資料検索の失敗は通常チャットへ
+        return kept
+    if not found.get("context"):
+        return kept
+    note = ("この会話に添付・収集された資料のうち、今の発言に関係する抜粋です。回答の根拠に使ってください:\n\n"
+            + str(found["context"])[:material_tool["max_chars"]])
+    head = 1 if kept and kept[0].get("role") == "system" else 0
+    return [*kept[:head], {"role": "system", "content": note}, *kept[head:]]
+
+
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         history: list[dict], params: dict) -> dict:
     """サーバー側で検索/生成し、assistant メッセージへ部分出力を保存する（全モード対応）。"""
@@ -1176,7 +1253,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     mode = params.get("mode", "chat")
     thinking_mode = str(params.get("thinking") or "")
     max_output_tokens = int(params["max_output_tokens"])
-    from app.models_mgmt.runtime_provider import RuntimeChatRequest, provider_for_base_url
+    from app.models_mgmt.runtime_provider import RuntimeChatRequest, ToolsUnsupported, provider_for_base_url
+    from app.workflows import chat_tools
     think_spec = resolve_think(base_url, model, thinking_mode or None)
     think = think_spec.ollama_think
     # 元のユーザー発話（検索モードではhistoryが差し替わるため先に控える）
@@ -1549,7 +1627,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await asyncio.to_thread(checkpoint, True, "failed", f"{type(e).__name__}: {e}")
             raise
 
-    # 会話コレクション（📎添付・過去の検索資料・レポート）があれば、関連抜粋を文脈に加える
+    # 会話コレクション（📎添付・過去の検索資料・レポート）があれば、関連抜粋を文脈に加える。
+    # 大きい資料は、道具を呼べるモデルには検索の道具を渡し、モデル自身が要るときに探す（chat_tools）
+    material_tool: dict | None = None
     if mode == "chat":
         try:
             from app.workflows import rag
@@ -1568,6 +1648,11 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 if materials:
                     note = ("この会話でこれまでに添付・収集した資料です。今の発言に関係するときだけ根拠に使い、"
                             "関係しなければ触れないでください:\n\n" + materials)
+                elif getattr(provider, "tools_verified", False) and chat_tools.supported(base_url, model):
+                    # 大きい資料: 探すかどうか・何で探すかはモデルが決める（Claude と同じ）。ここでは探さない
+                    material_tool = {"collection": collection, "top_k": budget.rag_top_k, "max_chars": budget.rag_chars,
+                                     "said": said}
+                    note = chat_tools.materials_note(await asyncio.to_thread(rag.collection_size_chars, collection))
                 elif not needs_materials(question):
                     # 大きい資料でも、資料を指していない発言では探さない（前の会話の流れで答える）。2026-11-20 利用者
                     # 「毎回チェックする必要はない。Claude と同じ方法で」。Claude も資料が文脈に収まらないときは、
@@ -1638,20 +1723,21 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     history = voice_guard(history, str(params.get("voice_style") or ""))
 
     try:
-        runtime_request = RuntimeChatRequest(
-            client="assistant",
-            base_url=base_url, model=model, messages=history,
-            # 会話はモデル側の推奨サンプリングに任せる（一律 0.4 だと思考モデルの推奨 0.6〜1.0 から外れる）。
-            temperature=None,
-            max_tokens=max_output_tokens, thinking=think, reasoning_effort=think_spec.reasoning_effort,
-            disable_thinking=think is False, keep_alive=_keep_alive(),
-        )
+        def runtime_request_for(messages: list[dict], with_tools: bool) -> RuntimeChatRequest:
+            return RuntimeChatRequest(
+                client="assistant",
+                base_url=base_url, model=model, messages=messages,
+                # 会話はモデル側の推奨サンプリングに任せる（一律 0.4 だと思考モデルの推奨 0.6〜1.0 から外れる）。
+                temperature=None,
+                max_tokens=max_output_tokens, thinking=think, reasoning_effort=think_spec.reasoning_effort,
+                disable_thinking=think is False, keep_alive=_keep_alive(),
+                tools=tool_defs if with_tools and tool_defs else None,
+            )
         # 生成統計（フェーズ / tok/s / コンテキスト使用量）。1チャンク≒1トークンとして
         # 直近4秒窓で速度を算出し、usage chunk到着時に実測値へ置き換える。
         stats = {"phase": "", "gen_tokens": 0, "prompt_tokens": None,
                  "context_max": await _context_max(base_url, model),
                  "start": 0.0, "last_emit": 0.0, "recent": []}
-        prompt_probe: asyncio.Task | None = None
 
         def emit_stats(final: bool = False) -> None:
             now = asyncio.get_event_loop().time()
@@ -1664,47 +1750,95 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
 
         job.log("stats", phase="prefill", detail="モデルの準備とプロンプトの読み込み", tok_per_sec=0, gen_tokens=0,
                 prompt_tokens=None, context_max=stats["context_max"])
-        async for chunk in provider.stream_chat(runtime_request, request_id=request_id):
-            if chunk.type == "usage":
-                usage = chunk.usage or {}
-                if usage.get("prompt_tokens"):
-                    stats["prompt_tokens"] = int(usage["prompt_tokens"])
-                if usage.get("completion_tokens"):
-                    stats["gen_tokens"] = int(usage["completion_tokens"])
+        # 道具を呼んだら実行して結果を渡し、続きを生成する（MAX_ROUNDS 回まで。最後の回は道具を渡さない）
+        messages = list(history)
+        tool_log: list[dict] = []
+        rounds = 0
+        # 機能の選択が「自動」なら、Web 検索もモデルが要ると判断したときに呼ぶ（送信前の機能の判定を省く）
+        web_tool = (mode == "chat" and str(params.get("mode_choice") or "") == "auto"
+                    and getattr(provider, "tools_verified", False) and chat_tools.supported(base_url, model))
+
+        async def web_search(query: str) -> list[tuple[dict, dict]]:
+            from app.models_mgmt import context_budget
+            from app.workflows import chat_router as cr
+
+            sb = cr.SearchBody(query=query, mode="web", engine=params.get("engine", "searxng"),
+                               searxng_url=params.get("searxng_url", ""), base_url=base_url, model=model)
+            results = await cr._web_results(sb, query, context_budget.for_model(base_url, model).search_pages)
+            raw = [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", ""),
+                    "source": r.get("source", "web"), "kind": "page"} for r in results]
+            registered = await asyncio.to_thread(_register_conversation_sources, conv_id, raw)
+            return list(zip(registered, results))
+
+        web_sources: list[dict] = []
+        while True:
+            tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
+                [chat_tools.TOOL_WEB_SEARCH] if web_tool else [])
+            with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
+            last = bool(tool_defs) and rounds >= chat_tools.MAX_ROUNDS
+            if last:
+                # 上限に達した: 道具のやり取りを普通の資料にまとめ、道具なしで答えさせる（chat_tools.flatten_for_final）
+                messages = chat_tools.flatten_for_final(messages)
+            calls: list[dict] = []
+            round_content = ""
+            try:
+                async for chunk in _stream_round(provider, runtime_request_for(messages, with_tools), request_id,
+                                                 buf, stats, job, maybe_ckpt, emit_stats, base_url):
+                    if chunk.type == "tool_call":
+                        calls = chunk.tool_calls
+                    elif chunk.type == "content":
+                        round_content += chunk.content
+            except ToolsUnsupported:
+                # このモデル・runtime は道具を受け付けない。覚えて、従来の言い方の判定で探して道具なしで続ける
+                chat_tools.mark_unsupported(base_url, model)
+                messages = await _materials_without_tools(messages, material_tool, job)
+                material_tool = None
+                web_tool = False
                 continue
-            if chunk.type == "thinking":
-                buf["thinking"] += chunk.content
-                job.log("thinking", delta=chunk.content)
-                stats["phase"] = "thinking"
-            elif chunk.type == "content":
-                buf["content"] += chunk.content
-                job.log("delta", delta=chunk.content)
-                stats["phase"] = "answer"
-                await maybe_ckpt()
-            now = asyncio.get_event_loop().time()
-            if not stats["start"]:
-                stats["start"] = now
-                # llama.cppは処理中slotから実測プロンプトトークン数を並行取得する
-                async def fill_prompt() -> None:
-                    stats["prompt_tokens"] = await _prompt_tokens_probe(base_url) or stats["prompt_tokens"]
-                prompt_probe = asyncio.get_event_loop().create_task(fill_prompt())
-            stats["gen_tokens"] += 1
-            stats["recent"].append(now)
-            if len(stats["recent"]) > 512:
-                del stats["recent"][:256]
-            if now - stats["last_emit"] >= 1.0:
-                stats["last_emit"] = now
-                emit_stats()
-        if prompt_probe is not None:
-            await prompt_probe
+            if not calls or last:
+                break   # 最後の回にまだ呼ぼうとしても、それ以上は実行しない
+            rounds += 1
+            messages.append({"role": "assistant", "content": round_content or None,
+                             "tool_calls": [{"id": c["id"], "type": "function",
+                                             "function": {"name": c["name"], "arguments": c["arguments"] or "{}"}}
+                                            for c in calls]})
+            for call in calls:
+                query = str(chat_tools.arguments_of(call).get("query") or "")[:80]
+                if call["name"] == chat_tools.WEB_SEARCH and web_tool:
+                    job.log("stats", phase="retrieve", detail=f"Web を検索しています: {query}", tok_per_sec=0,
+                            gen_tokens=0, prompt_tokens=None, context_max=None)
+                    from app.models_mgmt import context_budget
+
+                    result, record, found = await chat_tools.run_web(
+                        call, search=web_search, max_chars=context_budget.for_model(base_url, model).rag_chars)
+                    if found:
+                        web_sources.extend(found)
+                        buf["meta"]["sources"] = web_sources
+                        job.log("sources", sources=web_sources)
+                elif material_tool is not None:
+                    job.log("stats", phase="retrieve", detail=f"資料を探しています: {query}" if query else "資料を探しています",
+                            tok_per_sec=0, gen_tokens=0, prompt_tokens=None, context_max=None)
+                    result, record = await chat_tools.run(call, collection=material_tool["collection"],
+                                                          top_k=material_tool["top_k"], max_chars=material_tool["max_chars"])
+                else:
+                    result, record = f"使えない道具です: {call['name']}", {"name": call["name"], "error": "unavailable"}
+                tool_log.append(record)
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+            buf["meta"]["tools"] = tool_log
+            await asyncio.to_thread(checkpoint)
+        if stats.get("probe") is not None:
+            await stats["probe"]
+        if tool_log:
+            buf["content"] = chat_tools.strip_tool_markup(buf["content"])
         emit_stats(final=True)
         await asyncio.to_thread(checkpoint, True, "completed")
         # 調査系モードは最終回答と参照文献一覧も会話コレクションへ保存し、後続の
         # 質問・別会話からの再利用（RAG検索）に使えるようにする
-        if mode in ("web", "academic", "research"):
+        if mode in ("web", "academic", "research") or web_sources:
             source_hint = user_query[:60] if user_query else mode
             try:
-                await register_chat_document(conv_id, buf["content"], f"{mode}回答: {source_hint}")
+                await register_chat_document(conv_id, buf["content"],
+                                             f"{'web' if web_sources else mode}回答: {source_hint}")
                 sources = (buf.get("meta") or {}).get("sources") or []
                 if sources:
                     lines = [
@@ -2181,7 +2315,7 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
     # ゲートウェイ宛なら実エンドポイントへ解決してからjobへ渡す。以降のcontext上限・
     # thinking・容量待ちはすべてモデル個別設定を引くため、解決済みの値が要る。
     body.base_url, body.model = resolve_target(body.base_url, body.model)
-    params = {"base_url": body.base_url, "model": body.model, "mode": body.mode,
+    params = {"base_url": body.base_url, "model": body.model, "mode": body.mode, "mode_choice": body.mode_choice,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,
               # 未指定ならモデル個別設定へ委ねる（共通設定で一律に縛らない）

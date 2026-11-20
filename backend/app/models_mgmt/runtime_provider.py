@@ -58,13 +58,21 @@ class RuntimeChatRequest:
     # 既定は許可の対象外（internal → ゲートウェイでは api 扱い）。AI アシスタントの経路だけが
     # 明示的に "assistant" を名乗る。Add-on などが黙ってアシスタントの許可を使わないため。
     client: str = "internal"
+    # モデル自身が呼ぶ道具（OpenAI 互換の tools）。渡したときだけ送る。呼ばれたら "tool_call" の chunk で返す
+    tools: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)
 class RuntimeChunk:
-    type: Literal["content", "thinking", "usage"]
+    type: Literal["content", "thinking", "usage", "tool_call"]
     content: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
+    # type == "tool_call": [{"id", "name", "arguments"（JSON 文字列）}]
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+
+class ToolsUnsupported(RuntimeError):
+    """endpoint が tools 付きの要求を受け付けなかった（道具を呼べないモデル・runtime）。呼び出し側は道具なしで続ける。"""
 
 
 def normalize_openai_base(base_url: str) -> str:
@@ -104,6 +112,9 @@ def response_format_candidates(value: dict[str, Any] | None) -> list[dict[str, A
 
 class LlmRuntimeProvider(ABC):
     kind = "unknown"
+    # 会話で道具（tool calling）を渡してよいか。実機で「呼ぶ・結果を受けて続ける」を確かめた runtime だけ True にする。
+    # 道具を黙って無視する runtime に渡すと、資料を一度も探さなくなるため（2026-11-20）
+    tools_verified = False
 
     def __init__(self) -> None:
         self._active: dict[str, asyncio.Event] = {}
@@ -223,6 +234,9 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
             payload["reasoning_effort"] = request.reasoning_effort
         if request.response_format is not None:
             payload["response_format"] = self._response_format(request.response_format)
+        if request.tools:
+            payload["tools"] = request.tools
+            payload["tool_choice"] = "auto"
         return payload
 
     def _capacity_retries(self) -> int:
@@ -331,7 +345,12 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
                 headers=_request_headers(request),
             ) as response:
                 if response.status_code >= 300:
-                    raise _http_error(request, response.status_code, await response.aread())
+                    body = await response.aread()
+                    if payload.get("tools") and response.status_code in (400, 404, 422, 501):
+                        raise ToolsUnsupported(f"LLM HTTPエラー {response.status_code}")
+                    raise _http_error(request, response.status_code, body)
+                # 道具の呼び出しは断片（index ごとの name / arguments）で流れてくるので、つなげてから返す
+                calls: dict[int, dict[str, Any]] = {}
                 async for line in response.aiter_lines():
                     if cancel_event.is_set():
                         raise GenerationCancelled("生成をキャンセルしました")
@@ -357,12 +376,27 @@ class OpenAICompatibleRuntimeProvider(LlmRuntimeProvider):
                             yield RuntimeChunk("thinking", content=reasoning)
                         if content:
                             yield RuntimeChunk("content", content=content)
+                        for part in delta.get("tool_calls") or []:
+                            if not isinstance(part, dict):
+                                continue
+                            entry = calls.setdefault(int(part.get("index") or 0), {"id": "", "name": "", "arguments": ""})
+                            entry["id"] = str(part.get("id") or entry["id"])
+                            function = part.get("function") or {}
+                            entry["name"] += str(function.get("name") or "")
+                            arguments = function.get("arguments")
+                            entry["arguments"] += arguments if isinstance(arguments, str) else (
+                                json.dumps(arguments, ensure_ascii=False) if arguments else "")
                     if isinstance(usage, dict):
                         yield RuntimeChunk("usage", usage=usage)
+                if calls:
+                    yield RuntimeChunk("tool_call", tool_calls=[
+                        {**calls[i], "id": calls[i]["id"] or f"call_{i}"} for i in sorted(calls) if calls[i]["name"]])
 
 
 class LlamaCppRuntimeProvider(OpenAICompatibleRuntimeProvider):
     kind = "llama.cpp"
+    # 2026-11-20 実機（b12388、jinja 既定、Qwen3-4B-Instruct）で、要るときだけ呼び、結果を受けて答えるのを確かめた
+    tools_verified = True
 
     # モデル読み込み（大型GGUFで数十秒〜数分）を待つ上限
     _READY_TIMEOUT_SECONDS = 240
@@ -431,6 +465,8 @@ class OllamaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         # Ollama native APIはthink無効化とJSON Schema(format)を同時に扱える。
         # OpenAI互換APIでは一部thinking modelがchat_template_kwargsを無視し、推論だけで
         # max_tokensを使い切ってJSONが途中切れになるため、どちらか必要ならnativeを使う。
+        if request.tools:
+            return False   # 道具は OpenAI 互換の口（/v1）で扱う（Ollama も tools と tool_calls の流しに対応）
         return request.thinking is not None or request.response_format is not None or request.context_window is not None
 
     @staticmethod
@@ -612,6 +648,9 @@ class RadianceRuntimeProvider(OpenAICompatibleRuntimeProvider):
     """
 
     kind = "radiance"
+    # 2026-11-20 実機（Qwen3.8-27B Radiance、ControlDeck のゲートウェイ経由）で、挨拶・お礼・計算では呼ばず、
+    # 「さっき調べた番組表で夜 9 時は？」では「神奈川 地上波 番組表 夜 9時」で探して答えるのを確かめた
+    tools_verified = True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)
