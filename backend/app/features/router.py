@@ -46,6 +46,55 @@ def features(user: User = Depends(require_permission("settings.manage"))):
     return list_features()
 
 
+class AutoUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool | None = None
+    time: str | None = Field(default=None, max_length=5)
+
+
+def _auto_update_view() -> dict:
+    from app.features import auto_update
+
+    return {**auto_update.get_settings(), "last": auto_update.get_state(), "running": auto_update.running()}
+
+
+# 固定のパスは /{feature_id}/{action} より先に置く（後ろだと feature_id="auto-update" として扱われる）。
+@router.get("/auto-update")
+def auto_update_settings(user: User = Depends(require_permission("settings.manage"))):
+    """オプション機能の自動更新（1 日 1 回）の設定と、前回の結果。"""
+    return _auto_update_view()
+
+
+@router.put("/auto-update")
+def auto_update_save(body: AutoUpdateBody, request: Request,
+                     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    from app.features import auto_update
+
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        raise HTTPException(status_code=422, detail="enabled か time を指定してください")
+    try:
+        auto_update.save_settings(patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "feature.auto_update_settings", user=user, resource_type="feature",
+                 request=request, metadata=auto_update.get_settings())
+    return _auto_update_view()
+
+
+@router.post("/auto-update/run-jobs", status_code=201)
+def auto_update_run(request: Request, user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    """時刻を待たずに、導入済みのオプション機能をまとめて更新する。"""
+    from app.features import auto_update
+
+    if auto_update.running():
+        raise HTTPException(status_code=409, detail="一括更新はすでに実行中です")
+    job = auto_update.start_job(user.id, trigger="manual")
+    audit.record(db, "feature.auto_update_run", user=user, resource_type="feature",
+                 request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
 @router.post("/{feature_id}/install-jobs", status_code=201)
 async def install_job(
     feature_id: str, request: Request, body: FeatureJobRequest,

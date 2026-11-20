@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1584 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、180 テスト
+- backend: 177 ファイル、1589 テスト（目的の未記入 93 ファイル）
+- E2E: 87 spec、181 テスト
 
 ## backend（backend/tests）
 
@@ -909,6 +909,16 @@
 - `test_margin_five_holds_without_emergency_on_the_fitted_r9700_model`
 - `test_llm_like_load_holds_margin_five_without_emergency` — 軽い局面と重い局面を行き来する負荷で、マージン 5°C・外気温 +4°C から運転中に +3°C でも緊急の最大回転に
 - `test_a_hotter_gpu_holds_margin_six_under_llm_load` — 模型より熱くなりやすい GPU（ダイ ×1.3・放熱 ×1.15）でも、マージン 6°C なら入らない（本番の今の設定）。
+
+### backend/tests/test_feature_auto_update.py
+
+目的: オプション機能の自動更新（1 日 1 回、決めた時刻に）。 目的: 時刻を過ぎたらその日に 1 回だけ、使われていないときに更新すること。対象は ControlDeck が導入した 壊れていない機能だけで、1 つの失敗で残りを止めないこと。根拠: 2026-11-20 利用者の依頼 「オプション機能を 1 日 1 回、時間を決めて自動でバージョンアップ。ボタンと時間設定を付けて」。
+
+- `test_off_by_default_and_time_is_validated`
+- `test_runs_once_a_day_after_the_time`
+- `test_waits_while_in_use`
+- `test_updates_only_managed_healthy_features_and_keeps_going`
+- `test_api_routes_are_not_taken_by_feature_actions` — /features/auto-update は /{feature_id}/{action} に取られない（固定のパスを先に置く）。
 
 ### backend/tests/test_feature_boot_restore.py
 
@@ -2703,6 +2713,12 @@
 - only the PID control is offered and the history shows each temperature and the fan rpm
 - deviations from the log are shown and the controller is rebuilt from the log in one click
 - auto tuning asks for confirmation, then shows its stage and a cancel button
+
+### frontend/e2e/feature-auto-update.spec.ts
+
+目的: 目的: 設定 → 機能と拡張 → オプション機能で、毎日の自動更新のオン・時刻を保存でき、「今すぐすべて更新」で 一括更新の Job が始まり、終わると前回の結果（更新・失敗）が出ること。320px でも横にはみ出さないこと。 根拠: 2026-11-20 利用者「オプション機能を 1 日 1 回ぐらい時間を決めて自動でバージョンアップ。ボタンと時間設定を」。 API は模擬する（実際の更新は走らせない）。
+
+- feature auto update settings and run now (${width}px)
 
 ### frontend/e2e/feature-boot-restore.spec.ts
 
