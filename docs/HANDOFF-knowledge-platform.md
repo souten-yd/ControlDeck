@@ -115,7 +115,7 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 |---|---|---|
 | R3-0 | 両リポジトリの計画の棚卸しと整合性の決まり（計画 §10.1・10.2） | ☑ |
 | R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☑ `knowledge/analysis.py`、コレクションの種類（law・classification）、`agent_mcp` の `control_deck.knowledge_search`（cloud 扱い） |
-| R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ☐ |
+| R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ◐ backend 済み（`knowledge/sources.py`・`patents/watch.py`、保守の周期から `watch.tick()`、テスト `test_patent_watch.py`）。画面（ウォッチの節・取得・鍵の設定）は Patent の作り直しに合わせて |
 | R3-3 | AI クレームチャートの判定 | ☐ |
 | R3-4 | 知識エッセンス（抽出・レビュー） | ☐ |
 | R3-5 | 知識マップ・横断比較・Idea Canvas | ☐ |
@@ -138,6 +138,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: v0.103（#498）を Release・本番へ適用。R3-2 の backend（EPO OPS・USPTO ODP・OpenAlex・RSS・GDELT の取得、検索語の公開確認、ウォッチ、期限の通知は案件名なし）をブランチ `feat/knowledge-r3-2`（worktree `/data1tb/ControlDeck/knowledge-r3-2`）に。全体 1882 passed。SQLite の表の有無を接続ごとに確かめるよう変えた（inode は使い回される）。Patent の画面は Fable が `feat/knowledge-r3`（worktree knowledge-platform）で作業中、終わったら r3-2 に載せて 1 つの PR にする。
 
 - 2026-11-21 Claude: 利用者「特許の開発フローが浮いた窓になっている。ControlDeck と統合した UI/UX に」「グラフで傾向・書誌・請求項・類似特許を見る機能はどうなっているか（Fable を使ってよい）」。確認すると、RDH の集計画面は未移植、PB の 10 種のグラフは ChatGPT の会話内で作った試作で、アプリには無かった。書誌の読み取り（JP 公報の INID、1 ページ目の書誌が画像なら OCR。実公報で出願人・IPC・日付・請求項の数を取得）と分析の API を作った（`patents/analytics.py`、テスト `test_patent_analytics.py`）。画面は Fable の子エージェントに frontend だけを任せた。PR #498（R3-1）はマージ待ち（自動許可の判定で止まった）。
 
