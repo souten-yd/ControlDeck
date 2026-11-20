@@ -71,6 +71,7 @@ def test_failed_health_rolls_back_and_keeps_private_backup(monkeypatch, tmp_path
     calls, states = [], []
     monkeypatch.setattr(self_update, 'REPO_ROOT', tmp_path)
     monkeypatch.setattr(self_update, '_state_path', lambda: tmp_path / 'update.json')
+    monkeypatch.setattr(self_update, '_history_path', lambda: tmp_path / 'history.json')
     monkeypatch.setattr(self_update, '_preflight', lambda: old)
     monkeypatch.setattr(self_update, '_remote_release', lambda: ('ControlDeck_v0.12', new))
     monkeypatch.setattr(self_update, '_write_state', lambda s: states.append(s))
@@ -99,3 +100,27 @@ def test_failed_health_rolls_back_and_keeps_private_backup(monkeypatch, tmp_path
     backup_index = next(i for i, c in enumerate(calls) if 'backup' in c)
     merge_index = calls.index(('merge', '--ff-only', new))
     assert backup_index < merge_index
+    assert [h['phase'] for h in self_update.history()] == ['failed'], '失敗した更新が履歴に残っていない'
+
+
+
+def test_finished_updates_are_kept_in_history(monkeypatch, tmp_path):
+    """終わった更新を、自動か手動か・Release 名つきで新しい順に残す（設定画面と、自動更新の後の知らせが読む）。
+
+    根拠: 2026-11-20 利用者「自動更新が動いていない気がする」。実際は動いていたが、通知先が無く画面にも
+    前回の更新が出ないので気づけなかった。"""
+    monkeypatch.setattr(self_update, '_state_path', lambda: tmp_path / 'update.json')
+    monkeypatch.setattr(self_update, '_history_path', lambda: tmp_path / 'history.json')
+    # 履歴を残し始める前の版から上がった直後は、状態ファイルの 1 回だけ見せる
+    self_update._write_state({'phase': 'succeeded', 'automatic': False, 'release_tag': 'ControlDeck_v0.95',
+                              'old_sha': 'a' * 40, 'new_sha': 'b' * 40, 'finished_at': 100})
+    assert [h['release_tag'] for h in self_update.history()] == ['ControlDeck_v0.95']
+    for tag, automatic, at in (('ControlDeck_v0.96', True, 200), ('ControlDeck_v0.97', False, 300)):
+        self_update._record_history({'phase': 'running', 'automatic': automatic, 'release_tag': tag})
+        self_update._record_history({'phase': 'succeeded', 'automatic': automatic, 'release_tag': tag,
+                                     'old_sha': 'a' * 40, 'new_sha': 'c' * 40, 'finished_at': at})
+    items = self_update.history()
+    assert [(h['release_tag'], h['automatic']) for h in items] == [('ControlDeck_v0.97', False), ('ControlDeck_v0.96', True)]
+    for i in range(40):
+        self_update._record_history({'phase': 'failed', 'error': 'x', 'finished_at': 400 + i})
+    assert len(self_update.history()) == self_update.HISTORY_LIMIT

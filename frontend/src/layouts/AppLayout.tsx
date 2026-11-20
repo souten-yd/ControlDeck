@@ -20,6 +20,7 @@ import {
 import { BottomSheet, ConfirmDialog, Toasts } from "../components/ui";
 import { CommandPalette } from "../components/CommandPalette";
 import { ApprovalsCenter } from "../features/approvals/PendingApprovals";
+import { AutoUpdateNotice } from "../features/settings/UpdateHistory";
 import { Logo } from "../components/Logo";
 import { canAccessNavigationItem, NAV_GROUPS, NAVIGATION } from "../navigation";
 import { useMobileNavigation } from "../stores/mobileNavigation";
@@ -280,7 +281,7 @@ export default function AppLayout() {
       onAccount={openActions}
     />
   );
-  const extras = <ApprovalsCenter />;
+  const extras = <><ApprovalsCenter /><AutoUpdateNotice /></>;
 
   return (
     <ShellContext.Provider value={{ openNav: () => setDrawerOpen(true), navOpen: drawerOpen, extras, headerSlot: ownsTopBar ? null : headerSlot, registerHeader }}>

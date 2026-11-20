@@ -16,6 +16,7 @@ import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
+import { UpdateHistoryList } from "../features/settings/UpdateHistory";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
@@ -535,6 +536,7 @@ interface ControlDeckUpdateStatus {
   remote_sha: string;
   update_available: boolean;
   can_update: boolean;
+  release_tag?: string;
   error: string;
   job?: { phase?: string; step?: string; error?: string; old_sha?: string; new_sha?: string };
 }
@@ -542,7 +544,7 @@ interface ControlDeckUpdateStatus {
 interface AutoUpdateSettings { enabled: boolean; idle_minutes: number; check_interval_minutes: number; busy: string[] }
 
 /** 正式 Release は、使われていない時間に自動で適用する（L1、docs/POLICY-autonomous-development.md）。
- * 手動の「本体を更新」も残す。自動で適用した結果は通知先へ届く。 */
+ * 手動の「本体を更新」も残す。自動で適用した結果は通知先へ届き、履歴（UpdateHistoryList）と次に開いた画面の知らせにも出る。 */
 function ControlDeckUpdateSection() {
   const show = useToasts((state) => state.show);
   const qc = useQueryClient();
@@ -595,7 +597,7 @@ function ControlDeckUpdateSection() {
         <div className="mt-3 space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/40">
           <label className="flex min-h-11 items-center justify-between gap-3">
             <span className="text-xs">使われていない時間に自動で適用する
-              <span className="block text-[11px] text-zinc-500">LLM の推論・OpenCode のセッション・Job・Add-on の生成が無い状態が続いたら適用し、結果を通知します</span>
+              <span className="block text-[11px] text-zinc-500">LLM の推論・OpenCode のセッション・Job・Add-on の生成が無い状態が続いたら適用します。結果は下の履歴と、次に開いた画面の知らせに出ます</span>
             </span>
             <input type="checkbox" checked={auto.data.enabled} onChange={(e) => void saveAuto({ enabled: e.target.checked })}
               aria-label="自動で適用する" className="h-5 w-5 shrink-0" />
@@ -608,9 +610,12 @@ function ControlDeckUpdateSection() {
               </select>
             </label>
           )}
-          {auto.data.enabled && data?.update_available && (
-            <p className="text-[11px] text-zinc-500">
-              {auto.data.busy.length ? `待っています: ${auto.data.busy.join("、")}` : "使われていない状態が続けば適用します"}
+          {auto.data.enabled && (
+            <p className="text-[11px] text-zinc-500" data-auto-update-wait>
+              {!data?.update_available
+                ? `新しい Release は ${auto.data.check_interval_minutes} 分ごとに確認します。見つけたら、使われていない状態が ${auto.data.idle_minutes} 分続いた時点で適用します`
+                : auto.data.busy.length ? `${data.release_tag || "新しい版"} の適用を待っています: ${auto.data.busy.join("、")}`
+                : `${data.release_tag || "新しい版"} は、使われていない状態が ${auto.data.idle_minutes} 分続けば適用します`}
             </p>
           )}
         </div>
@@ -641,6 +646,7 @@ function ControlDeckUpdateSection() {
           {data?.remote_sha && data.current_sha ? "最新です" : `確認できません${data?.error ? `: ${data.error}` : ""}`}
         </p>
       )}
+      <UpdateHistoryList />
       {confirming && <ConfirmDialog
         title="ControlDeck本体を更新しますか？"
         message={`公式Release（${data?.remote_sha?.slice(0, 12) || "不明"}）へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
