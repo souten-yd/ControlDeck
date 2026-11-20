@@ -12,6 +12,7 @@
  * 後から鳴らせないので、モードを入れたときなどに unlock() を呼ぶ。 */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { synthesizeSpeech } from "../../api/speech";
+import { preparePlayback } from "../../lib/audioSession";
 import { nextSpoken, speechChunks, speechLang, voicedRange } from "./speakable";
 
 /** 文の間に空ける時間（無音を削った後） */
@@ -42,9 +43,6 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
   const context = () => {
     if (!ctxRef.current) {
       const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      // iPhone の Web Audio はマナーモードで消える（audio 要素は鳴っていた）。再生用の音として扱わせる（Safari 16.4 以降）
-      const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
-      if (session) { try { session.type = "playback"; } catch { /* 古い Safari */ } }
       ctxRef.current = new Ctor();
     }
     return ctxRef.current;
@@ -78,6 +76,8 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
   }, []);
 
   const playStream = async (stream: Stream, run: number): Promise<boolean> => {
+    // iPhone の Web Audio はマナーモードで消える。マイクを使っていなければ再生用にする（lib/audioSession）
+    preparePlayback();
     const ctx = context();
     if (ctx.state !== "running") await ctx.resume().catch(() => undefined);
     if (ctx.state !== "running") {

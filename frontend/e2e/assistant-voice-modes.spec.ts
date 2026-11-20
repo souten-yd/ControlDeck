@@ -330,3 +330,41 @@ test("a long answer is played in order with only a short pause between pieces", 
     expect(gap).toBeLessThan(0.25);                     // 前は無音 0.4＋0.4 秒と鳴らし直しで約 1 秒空いていた
   }
 });
+
+test("after reading aloud, the microphone still opens on an iPhone-like audio session", async ({ page, context }) => {
+  // 2026-11-20 本番（iPhone）「AudioSession category is not compatible with audio capture.」: 読み上げのために
+  // navigator.audioSession を "playback"（再生専用）にしたまま、音声入力でマイクを開いて失敗した。
+  // 偽の audioSession で iPhone と同じ決まり（再生専用ではマイクを開けない）を再現する
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await fakeMicrophone(page);
+  await page.addInitScript(() => {
+    const w = window as unknown as { __sessionTypes: string[] };
+    w.__sessionTypes = [];
+    let type = "auto";
+    Object.defineProperty(navigator, "audioSession", { configurable: true, value: {
+      get type() { return type; },
+      set type(value: string) { type = value; w.__sessionTypes.push(value); },
+    } });
+    const open = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      if (type === "playback") throw new DOMException("AudioSession category is not compatible with audio capture.", "InvalidStateError");
+      return open(constraints);
+    };
+  });
+  await establishSession(page, context);
+  await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.setItem("cd-assistant-tts-reply", "1"); });
+  const state = await mockChat(page, ["音声で入れた文"]);
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await shell.locator("[data-assistant-input]").fill("こんにちは");
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => state.spoken.length).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sessionTypes: string[] }).__sessionTypes)).toContain("playback");
+  await shell.getByRole("button", { name: "音声で入力" }).click();
+  await expect(shell.getByRole("button", { name: "音声入力を終える" })).toBeVisible();
+  await expect(page.getByText("AudioSession category")).toHaveCount(0);
+  await shell.getByRole("button", { name: "音声入力を取り消す" }).click();
+  const types = await page.evaluate(() => (window as unknown as { __sessionTypes: string[] }).__sessionTypes);
+  expect(types.slice(types.indexOf("playback"))).toEqual(["playback", "play-and-record", "auto"]);   // 閉じたら戻す
+});

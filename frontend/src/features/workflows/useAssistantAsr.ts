@@ -10,6 +10,7 @@
  * - 波形は直近の音の大きさの棒で出す。✕ で取り消すと、この回に足した文字を戻す */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api/client";
+import { beginCapture } from "../../lib/audioSession";
 
 export type AsrPhase = "idle" | "installing" | "permission" | "listening" | "finishing" | "error";
 interface AsrStatus { ready: boolean; installing: boolean; job_id: string | null; upgrade_available?: boolean }
@@ -69,6 +70,7 @@ export function useAssistantAsr({ onText, onError, options }: {
   const lastVoiceRef = useRef(0);
   const cutRef = useRef<((keep: boolean) => void) | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const endCaptureRef = useRef<(() => void) | null>(null);   // iPhone の音声の扱いを戻す（lib/audioSession）
   const contextRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef(0);
@@ -95,6 +97,8 @@ export function useAssistantAsr({ onText, onError, options }: {
     contextRef.current = null;
     void wakeRef.current?.release().catch(() => undefined);
     wakeRef.current = null;
+    endCaptureRef.current?.();
+    endCaptureRef.current = null;
   };
 
   /** 区切りを 1 つ文字にする（順番を守るため、前の区切りが終わってから） */
@@ -166,13 +170,21 @@ export function useAssistantAsr({ onText, onError, options }: {
       await ensureInstalled();
       if (session !== sessionRef.current) return;   // 取り消された
       setPhase("permission");
+      // iPhone: 読み上げで再生専用（playback）にしていると、マイクを開けない。録音できる種類にしてから開く
+      endCaptureRef.current?.();
+      endCaptureRef.current = beginCapture();
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: (() => {
           const browser = optionsRef.current?.browserProcessing ?? true;
           return { channelCount: 1, echoCancellation: browser, noiseSuppression: browser, autoGainControl: browser };
         })(),
       });
-      if (session !== sessionRef.current) { stream.getTracks().forEach((t) => t.stop()); return; }
+      if (session !== sessionRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        endCaptureRef.current?.();
+        endCaptureRef.current = null;
+        return;
+      }
       streamRef.current = stream;
       try {
         // 長く話している間に画面が消えると、マイクも止まる（携帯）
