@@ -3,21 +3,32 @@
 //   縦のスクロール・横にスクロールできる所（設定のカテゴリの並び）で始めた指では開かない。
 // - 題名を押すと本文の先頭へ戻る。
 // - ホームのグラフ: 受け取りが途切れたら（画面を閉じていた間）、サーバーの履歴を読み直して埋める。
+//   v0.98 の後: 真ん中からゆっくり引いても指に付いて開く。左右の端の指は iPhone の「戻る」「進む」にさせない。
 // 根拠: 2026-11-20 利用者「左から右へフリックでメニューを出し、右から左で閉じたい。オンオフは設定で」
+//       v0.98 の後「Claude は真ん中から右へ引いても出る。いまは左端からだと戻る、右端からだと進むになる」
 //       「ブラウザを閉じてまた開くと、閉じていた間のグラフが更新されない」。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
 test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
 
-/** 指 1 本のフリック（touchstart → touchend）。start の位置の要素から始める */
-async function flick(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
-  await page.evaluate(({ from, to }) => {
+/** 指 1 本で引く（touchstart → touchmove を steps 回 → touchend）。start の位置の要素から始める。
+ *  touchstart が止められたか（端で iPhone の「戻る」にさせないため）を返す */
+async function flick(page: Page, from: { x: number; y: number }, to: { x: number; y: number }, opts: { steps?: number; stepMs?: number } = {}) {
+  return page.evaluate(async ({ from, to, steps, stepMs }) => {
     const target = document.elementFromPoint(from.x, from.y) ?? document.body;
     const touch = (x: number, y: number) => new Touch({ identifier: 1, target, clientX: x, clientY: y });
-    target.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(from.x, from.y)], changedTouches: [touch(from.x, from.y)] }));
+    const start = new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch(from.x, from.y)], changedTouches: [touch(from.x, from.y)] });
+    target.dispatchEvent(start);
+    for (let i = 1; i <= steps; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, stepMs));
+      const x = from.x + ((to.x - from.x) * i) / steps;
+      const y = from.y + ((to.y - from.y) * i) / steps;
+      target.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch(x, y)], changedTouches: [touch(x, y)] }));
+    }
     target.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touch(to.x, to.y)] }));
-  }, { from, to });
+    return start.defaultPrevented;
+  }, { from, to, steps: opts.steps ?? 8, stepMs: opts.stepMs ?? 16 });
 }
 
 test("flick opens and closes the menu, and can be turned off", async ({ page, context }) => {
@@ -34,6 +45,26 @@ test("flick opens and closes the menu, and can be turned off", async ({ page, co
   await flick(page, { x: 370, y: 400 }, { x: 150, y: 410 });              // 暗い所で右 → 左
   await expect(drawer).toHaveCount(0);
 
+  // 真ん中からゆっくり引いても開く（離すまで 1 秒以上かけても、引いた量で決める）
+  await flick(page, { x: 180, y: 400 }, { x: 330, y: 410 }, { steps: 20, stepMs: 60 });
+  await expect(drawer).toHaveAttribute("data-state", "open");
+  await flick(page, { x: 370, y: 400 }, { x: 150, y: 410 });
+  await expect(drawer).toHaveCount(0);
+
+  // 少しだけ引いて止めて離したら、開かずに戻る
+  await flick(page, { x: 100, y: 400 }, { x: 140, y: 402 }, { steps: 10, stepMs: 60 });
+  await page.waitForTimeout(700);
+  await expect(drawer).toHaveCount(0);
+
+  // 左端から引いても開く。端の指は止める（iPhone の「戻る」にさせない）
+  expect(await flick(page, { x: 6, y: 400 }, { x: 250, y: 410 })).toBe(true);
+  await expect(drawer).toHaveAttribute("data-state", "open");
+  await flick(page, { x: 370, y: 400 }, { x: 150, y: 410 });
+  await expect(drawer).toHaveCount(0);
+  // 右端も止める（「進む」にさせない）。真ん中の指は止めない（ふつうのスクロール・タップ）
+  expect(await flick(page, { x: 386, y: 400 }, { x: 386, y: 400 }, { steps: 0 })).toBe(true);
+  expect(await flick(page, { x: 180, y: 400 }, { x: 180, y: 400 }, { steps: 0 })).toBe(false);
+
   // 横にスクロールできるカテゴリの並びで始めた指では開かない
   await page.goto("/settings/experience");
   const chips = page.locator("[data-settings-categories]");
@@ -47,6 +78,7 @@ test("flick opens and closes the menu, and can be turned off", async ({ page, co
   const panel = page.locator("[data-experience-settings]");
   await panel.getByLabel("フリックでメニューを開閉").click();
   await expect(panel.getByLabel("フリックでメニューを開閉")).not.toBeChecked();
+  expect(await flick(page, { x: 6, y: 600 }, { x: 260, y: 610 })).toBe(false);   // 切ると端も元どおり
   await flick(page, { x: 60, y: 600 }, { x: 260, y: 610 });
   await page.waitForTimeout(300);
   await expect(drawer).toHaveCount(0);

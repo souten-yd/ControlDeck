@@ -177,7 +177,8 @@ export default function AppLayout() {
   }, [tapTitleToTop]);
   // 左から右へのフリックでメニューを開き、右から左で閉じる（設定 → 操作性で切り替え）
   const swipeNav = useUxPrefs((s) => s.swipeNav);
-  useNavSwipe({ enabled: swipeNav, open: drawerOpen, onOpen: () => setDrawerOpen(true), onClose: () => setDrawerOpen(false) });
+  const [drawerPeek, setDrawerPeek] = useState(false);
+  useNavSwipe({ enabled: swipeNav, open: drawerOpen, onOpen: () => setDrawerOpen(true), onClose: () => setDrawerOpen(false), onPeek: setDrawerPeek });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -361,7 +362,7 @@ export default function AppLayout() {
       </div>
 
       {/* 携帯: 左から出るドロワー */}
-      <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+      <NavDrawer open={drawerOpen} peek={drawerPeek} onClose={() => setDrawerOpen(false)}>
         {navPanel(false, () => setDrawerOpen(false), "メニューを閉じる", true, true)}
       </NavDrawer>
 
@@ -607,7 +608,8 @@ function scrollCurrentToTop() {
   target?.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
 }
 
-function NavDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+/** peek: 閉じた状態から指で引いている間（useNavSwipe が指の位置へ動かす）。置くだけで開いたことにはしない */
+function NavDrawer({ open, peek = false, onClose, children }: { open: boolean; peek?: boolean; onClose: () => void; children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
   const [shown, setShown] = useState(false);
   const [dragX, setDragX] = useState(0);
@@ -617,15 +619,16 @@ function NavDrawer({ open, onClose, children }: { open: boolean; onClose: () => 
   closeRef.current = onClose;
 
   useEffect(() => {
-    if (open) {
+    if (open || peek) {
       setMounted(true);
+      if (!open) setShown(false);
       return;
     }
     setShown(false);
     setDragX(0);
     const timer = window.setTimeout(() => setMounted(false), 220);
     return () => window.clearTimeout(timer);
-  }, [open]);
+  }, [open, peek]);
 
   useEffect(() => {
     if (!mounted || !open) return;
