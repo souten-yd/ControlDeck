@@ -586,11 +586,30 @@ class NotificationChannel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    # discord / slack / webhook / email
+    # discord / slack / webhook / email / push（push は宛先を持たず、購読済みの端末へ送る）
     channel_type: Mapped[str] = mapped_column(String(16))
     url_encrypted: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PushSubscription(Base):
+    """端末ごとの Web Push の宛先（ブラウザの PushSubscription）。
+
+    endpoint と鍵は、知っていれば誰でもその端末へ通知を送れる資格情報なので暗号化して持つ。
+    重複の判定は endpoint の keyed digest で行う（平文の endpoint を索引に置かない）。"""
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    endpoint_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    # {"endpoint": ..., "p256dh": ..., "auth": ...} を Fernet で暗号化した JSON
+    secret_encrypted: Mapped[str] = mapped_column(Text)
+    # VAPID の sub（https://<ControlDeck を開いた host>）。Apple は mailto: か https: でないと拒む
+    subject: Mapped[str] = mapped_column(String(320))
+    label: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AlertRule(Base):

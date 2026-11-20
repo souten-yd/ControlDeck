@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import re
 import shutil
 import socket
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.models import ProjectRun, ProjectRunArtifact
 from app.project_lab import service
+
+logger = logging.getLogger("control_deck.project_lab.runs")
 
 RUNNING_STATES = {"QUEUED", "RUNNING", "CANCELING"}
 TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELED", "TIMED_OUT", "INTERRUPTED"}
@@ -116,6 +120,27 @@ def _allocate_web_port(db: Session) -> int:
     raise ProjectRunError("Web preview用portを割り当てられません")
 
 
+PREVIEW_BASE_PLACEHOLDER = "{base}"
+
+
+def preview_token(row: ProjectRun) -> str:
+    """run ごとの preview の鍵。sandbox の iframe（生まれが null）は Cookie を送れないので、
+    URL の中にこの鍵を入れて認証する。run が動いている間だけ有効（proxy が状態を確かめる）。"""
+    from app.security.crypto import keyed_digest
+
+    return keyed_digest("project-run-preview", f"{row.id}:{row.unit_name}")
+
+
+def preview_base(row: ProjectRun) -> str:
+    """preview の URL の接頭辞。開発サーバーへ {base} として渡すと、HMR も同じ接頭辞で繋ぎに来る。"""
+    return f"/project-view/r/{row.id}/{preview_token(row)}/"
+
+
+def preview_keeps_base(row: ProjectRun) -> bool:
+    """command に {base} を渡した run は、接頭辞を付けたまま上流へ送る（Vite の --base など）。"""
+    return PREVIEW_BASE_PLACEHOLDER in (row.command_json or "")
+
+
 def _command_with_runtime(command: list[str], *, web_port: int | None) -> list[str]:
     if web_port is None:
         return list(command)
@@ -163,12 +188,16 @@ def _launch(
     for key, value in sorted(environment.items()):
         argv.append(f"--setenv={key}={value}")
     if web_port is not None:
+        base = preview_base(row)
         argv.extend([
+            f"--setenv=CONTROL_DECK_PREVIEW_BASE={base}",
             "--setenv=HOST=127.0.0.1", f"--setenv=PORT={web_port}",
             "--setenv=FLASK_RUN_HOST=127.0.0.1", f"--setenv=FLASK_RUN_PORT={web_port}",
             "--setenv=STREAMLIT_SERVER_ADDRESS=127.0.0.1", f"--setenv=STREAMLIT_SERVER_PORT={web_port}",
         ])
-    argv.extend([executable, *command[1:]])
+    # {base} は run の番号が決まってから埋める。記録（command_json）には鍵を残さない。
+    tail = [item.replace(PREVIEW_BASE_PLACEHOLDER, preview_base(row)) for item in command[1:]] if web_port is not None else command[1:]
+    argv.extend([executable, *tail])
     result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
     if result.returncode != 0:
         row.status = "FAILED"
@@ -320,7 +349,68 @@ def refresh_run(db: Session, row: ProjectRun) -> ProjectRun:
     row.finished_at = datetime.now(timezone.utc)
     _finalize_artifacts(db, row)
     db.commit()
+    _announce_finished(row)
     return row
+
+
+_announced: set[int] = set()
+_announced_lock = threading.Lock()
+_FINISHED_LABELS = {
+    "SUCCEEDED": "完了しました", "FAILED": "失敗しました", "TIMED_OUT": "時間切れで止まりました",
+    "INTERRUPTED": "途中で止まりました",
+}
+
+
+def _announce_finished(row: ProjectRun) -> None:
+    """実行が終わったことを、起動した人の端末へ Web Push で知らせる（取り消したときは知らせない）。
+
+    通知をタップすると、その project の実行結果を開く。"""
+    label = _FINISHED_LABELS.get(row.status)
+    if label is None or not row.created_by:
+        return
+    # 画面の読み取りと見張りが同じ終わりを同時に見つけることがある。1 回だけ知らせる。
+    with _announced_lock:
+        if row.id in _announced:
+            return
+        _announced.add(row.id)
+    from urllib.parse import quote
+
+    from app.alerts import webpush
+
+    detail = f"終了コード {row.exit_code}" if row.status == "FAILED" and row.exit_code is not None else ""
+    webpush.send_in_background(
+        title=f"{row.project_name}: {row.profile_id} が{label}",
+        body=detail or f"実行 #{row.id}",
+        url=f"/project-lab?project={quote(row.project_id)}&run={row.id}",
+        tag=f"project-run-{row.id}", user_ids=[row.created_by],
+    )
+
+
+WATCH_INTERVAL_SECONDS = 5
+
+
+async def watch_runs_loop() -> None:
+    """動いている実行の終わりを見つける。画面を閉じていても、終わったら通知を出すため
+    （前は誰かが画面で状態を読むまで、終わったことに気づかなかった）。"""
+    import asyncio
+
+    from app.database import SessionLocal
+
+    def tick() -> None:
+        with SessionLocal() as db:
+            rows = db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all()
+            for row in rows:
+                try:
+                    refresh_run(db, row)
+                except Exception:  # noqa: BLE001 - 1 件の失敗で見張りを止めない
+                    logger.exception("実行 #%s の状態を確かめられません", row.id)
+
+    while True:
+        await asyncio.sleep(WATCH_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(tick)
+        except Exception:  # noqa: BLE001
+            logger.exception("Project Run の見張りが失敗しました")
 
 
 def cancel_run(db: Session, row: ProjectRun) -> ProjectRun:
@@ -365,7 +455,7 @@ def run_out(db: Session, row: ProjectRun, *, include_logs: bool = False) -> dict
         "profileId": row.profile_id, "profileType": row.profile_type, "status": row.status,
         "command": json.loads(row.command_json or "[]"), "environmentNames": json.loads(row.environment_names_json or "[]"),
         "workingDirectory": row.working_directory, "timeoutSeconds": row.timeout_seconds,
-        "previewUrl": f"/project-view/{row.id}/" if row.profile_type == "web" else None,
+        "previewUrl": preview_base(row) if row.profile_type == "web" else None,
         "previewReady": web_preview_ready(row) if row.profile_type == "web" else False,
         "result": row.result, "exitCode": row.exit_code, "error": row.error_redacted,
         "startedAt": row.started_at.isoformat(), "finishedAt": row.finished_at.isoformat() if row.finished_at else None,

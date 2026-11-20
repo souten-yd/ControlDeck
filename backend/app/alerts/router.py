@@ -27,7 +27,7 @@ edit_dep = require_permission("settings.manage")
 # ---- 通知チャンネル ----
 class ChannelBody(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    channel_type: str = Field(pattern="^(discord|slack|webhook|email)$")
+    channel_type: str = Field(pattern="^(discord|slack|webhook|email|push)$")
     url: str = Field(default="", max_length=2048)
     smtp_host: str = Field(default="", max_length=255)
     smtp_port: int = Field(default=587, ge=1, le=65535)
@@ -74,6 +74,8 @@ def _channel_out(ch: NotificationChannel) -> dict:
             settings = json.loads(destination)
             recipients = settings.get("to_addresses", [])
             masked = f"{_masked_email(settings.get('from_address', ''))} → {len(recipients)}件"
+        elif ch.channel_type == "push":
+            masked = "通知を受け取る端末すべて"
         else:
             masked = destination[:24] + "…" if len(destination) > 24 else destination
     except Exception:
@@ -100,9 +102,12 @@ def create_channel(body: ChannelBody, request: Request, user: User = Depends(edi
         )
         if invalid:
             raise HTTPException(status_code=422, detail="メール通知設定を正しく指定してください")
+    elif body.channel_type == "push":
+        pass  # 宛先は持たない（端末ごとの購読へ送る）
     elif not body.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="URL は http(s) で指定してください")
-    destination = _email_destination(body) if body.channel_type == "email" else body.url
+    destination = (_email_destination(body) if body.channel_type == "email"
+                   else "" if body.channel_type == "push" else body.url)
     ch = NotificationChannel(
         name=body.name, channel_type=body.channel_type,
         url_encrypted=encrypt_text(destination), enabled=body.enabled,

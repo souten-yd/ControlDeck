@@ -1,5 +1,55 @@
 # 実装状況
 
+## 2026-11-21 Project Lab の preview で HMR を通す・端末への通知（Web Push）
+
+利用者から渡された 2 つの提案（WS プレビュー、push 通知）を、実測とコードで確かめてから作った。
+
+- **preview の WebSocket（HMR）**
+  - 提案の見立てで合っていたこと：HTTP の proxy しかなく、WebSocket は通らない。認証には Cookie ではない方式が要る。Host を上流のものにする。
+  - 実測で違ったこと：
+    - preview は sandbox の iframe（allow-same-origin なし）なので、中のページの生まれは null になる。Cookie も Referer も付かず、Vite は module script が CORS で 1 本も読めなかった。WS 以前に、HTTP の時点で動いていなかった。
+    - HMR は「preview と同じ接頭辞」ではなく、Vite の base（既定は `/`）へ繋ぎに来た（`ws://host/` で 403）。
+    - サブプロトコル `vite-hmr` を中継しないと、Vite は握手に応じない。
+    - ping は ASGI から見えないので、中継しない（区間ごとに返る）。
+    - `authenticate_websocket` は Cookie と Origin を見るので、null の生まれでは使えない。
+  - sandbox を外す案は採らなかった。外すとプレビューの JS が ControlDeck の API を本人の Cookie で叩ける。
+  - 作ったもの（`project_lab/webview.py`、`runs.preview_*`）：
+    - run ごとの鍵を入れた入口 `/project-view/r/{id}/{token}/`。HTTP と WS の両方を受け、`Access-Control-Allow-Origin: *` を返し、Cookie は受け取らない。
+    - command の `{base}`。Vite の `--base {base}` で、資産と HMR の両方が同じ接頭辞へ来る。
+  - 実測：実際の Vite 5.4 を Project Run として起こし、Project Lab の画面（390px、sandbox のまま）で表示できた。ファイルを書き換えると、HMR で VERSION-1 が VERSION-2 に変わった。
+- **端末への通知（Web Push）**
+  - 提案の見立てで合っていたこと：`notify.py` に `push` を 4 つ目の通知先として足すと、既存のアラートと自動更新がそのまま push で届く。
+  - 提案から変えたこと：
+    - 依存を足さない。pywebpush を使わず、cryptography と httpx で RFC 8291（aes128gcm）と RFC 8292（VAPID）を組んだ。RFC 8291 付録の例と 1 バイト違わず一致する。
+    - endpoint は端末が渡す URL なので、そのままでは内側の任意の URL へ POST させられる（SSRF）。既知の push service（FCM・Mozilla・Apple・Windows）だけ受ける。
+    - VAPID の sub は ControlDeck を開いている https の origin にする。Apple は mailto: か https: 以外を拒む。
+    - 実行の終わりは、前は画面で読むまで分からなかった。見張り（5 秒ごと）を足して、閉じていても通知する。画面と見張りが同時に見つけても、通知は 1 回にする。
+  - 通知の中身：
+    - Project Run の終わりは、起動した人の端末へ送る。取り消したときは送らない。
+    - 通知を押すと `/project-lab?project=…&run=…` が開き、その実行結果を表示する。
+    - 404・410 の端末は消す。endpoint と鍵は暗号化して持ち、一覧には出さない。
+  - iOS は 16.4 以降で、ホーム画面に追加した ControlDeck からだけ受け取れる。返信はできないので、押したらその画面を開くところまでを 1 本の導線にした。
+  - 画面：設定 → 通知 の「この端末への通知」（受け取る・試しに送る・止める・端末の一覧）と、通知チャンネルの種類「この ControlDeck の通知（端末へ）」。
+- **検証**
+  - pytest `test_project_view_websocket`（5 件）が通過。
+    - 中継：文字・binary・サブプロトコル・close code。
+    - 拒否：鍵違い・終わった run は通さず、上流へも繋がない。
+    - 漏らさない：Cookie と Origin は上流へ渡さない。Host は上流のもの。
+    - `{base}`：接頭辞を付けたまま送る。記録に鍵を残さない。
+    - HTTP：`Access-Control-Allow-Origin: *` を返し、Set-Cookie は捨てる。
+    - サブプロトコルと CORS の行を消すと、テストが落ちることも確かめた。
+  - pytest `test_web_push`（10 件）が通過。
+    - RFC 8291 の例との一致と、受け手の側の復号。
+    - VAPID の JWT が公開鍵で検証できる。
+    - SSRF の拒否、410 の端末を消す、届いたら最後に届いた時刻を残す、外への url を出さない。
+    - 実行の終わりで 1 回だけ送り、取り消しでは送らない。
+    - チャンネル push が監視を見られる人の端末へ送る。
+  - E2E `web-push`（2 件）が通過。
+    - 購読して一覧に端末が出て、止めると消える。
+    - DevTools から Service Worker へ push を届け、通知の中身と行き先を確かめた。
+    - 通知の link の印は、読んだら消える。
+- 実機で未確認：iPhone のホーム画面版で受け取れるか、押すと開くか。
+
 ## 2026-11-20 メニューを指で引き出す（v0.98 のフリックの作り直し）
 
 - 利用者（v0.98 の後）「思ったのと違う。Claude は真ん中から右へ引いても、左から右へ引いてもメニューが出る。いまは左端から右へ引くと戻る、右端から左へ引くと進むになる」。

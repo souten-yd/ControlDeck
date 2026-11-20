@@ -14,6 +14,18 @@ logger = logging.getLogger("control_deck.alerts")
 
 
 async def send_notification(channel_type: str, destination: str, title: str, message: str) -> bool:
+    if channel_type == "push":
+        # 宛先を持たない。監視を見られる人（system.view）の、通知を受け取る端末すべてへ送る。
+        from app.alerts import webpush
+
+        try:
+            result = await asyncio.to_thread(
+                webpush.send_to, title=title, body=message, url="/", permission="system.view",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("通知送信失敗 (%s, %s)", channel_type, type(e).__name__)
+            return False
+        return result["sent"] > 0
     if channel_type == "email":
         try:
             settings = json.loads(destination)
