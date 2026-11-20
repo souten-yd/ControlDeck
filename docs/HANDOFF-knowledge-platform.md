@@ -119,7 +119,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | R3-3 | AI クレームチャートの判定 | ☐ |
 | R3-4 | 知識エッセンス（抽出・レビュー） | ☐ |
 | R3-5 | 知識マップ・横断比較・Idea Canvas | ☐ |
-| R3-6 | 集計・一括取り込み/書き出し・保存先の画面・PDF の精度 | ☐ |
+| R3-6 | 集計・一括取り込み/書き出し・保存先の画面・PDF の精度 | ◐ 集計（特許の分析）を前倒し: 書誌の読み取り（1 ページ目の OCR）・`/api/v1/patents/analytics`・類似マップ・案件に近い公報・書誌の手直し。画面は R3-UI |
+| R3-UI | Patent を ControlDeck のページとして作り直す（浮いた窓をやめる）・分析のダッシュボード（年別・出願人・IPC・バブル・ヒートマップ・請求項の数・類似マップ） | ◐ 画面は Fable に任せて作業中（frontend だけ） |
 
 ## 7. 未決事項（利用者に確認すること）
 
@@ -137,6 +138,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: 利用者「特許の開発フローが浮いた窓になっている。ControlDeck と統合した UI/UX に」「グラフで傾向・書誌・請求項・類似特許を見る機能はどうなっているか（Fable を使ってよい）」。確認すると、RDH の集計画面は未移植、PB の 10 種のグラフは ChatGPT の会話内で作った試作で、アプリには無かった。書誌の読み取り（JP 公報の INID、1 ページ目の書誌が画像なら OCR。実公報で出願人・IPC・日付・請求項の数を取得）と分析の API を作った（`patents/analytics.py`、テスト `test_patent_analytics.py`）。画面は Fable の子エージェントに frontend だけを任せた。PR #498（R3-1）はマージ待ち（自動許可の判定で止まった）。
 
 - 2026-11-21 Claude: R3-1。文献ごとの AI 分析（要約・請求項の確認、ローカル専用、原文が変わったら stale として持ち越す）、審査基準・分類辞書のコレクションと AI 支援への引用、MCP のナレッジ検索（cloud 扱い）、資料の作成画面で詳細設定を隠した。全体 1869 passed（落ちた 1 件は既知の不安定なテスト）、E2E knowledge・patents 通過。
 
