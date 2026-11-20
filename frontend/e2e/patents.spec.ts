@@ -9,7 +9,24 @@ import { establishSession, hasSession } from "./support/session";
  *  検証用インスタンスにはローカルのモデルも公報も無いので、AI 支援は「外部へ送らない」案内、分析は空の案内が出ることを確かめ、
  *  グラフの見た目は分析の API の応答を差し替えて撮る。
  *  ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるので、確認のチェックを入れるまで保存・取得できないこと、
- *  鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。 */
+ *  鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。
+ *  AI クレームチャートの判定（R3-3）: 判定の結果（○ △ × ?、引用を確かめられず ? にした行、古い判定の注意）の見え方を、
+ *  判定の一覧の応答を差し替えて確かめる。検証用インスタンスにはローカルのモデルが無いので「判定」は押せないこと。 */
+
+const JUDGED = {
+  id: 1, claim_no: 1, claim_version: 1, doc_ref: "patents:1", doc_title: "JP 2026-000001 A インバータ", status: "succeeded",
+  context_mode: "full", error: "", review_status: "unreviewed", basis: "model_inference", created: 0,
+  stale: ["請求項が新しい版になりました"],
+  rows: [
+    { label: "A", element: "スイッチング素子と、", model_verdict: "○", verdict: "○", quote: "スイッチング素子は窒化ガリウムで構成され",
+      where: "【0010】", reason: "スイッチング素子の記載がある。", quote_verified: true, flag: "", human_verdict: "", human_note: "" },
+    { label: "B", element: "制御部と、", model_verdict: "○", verdict: "?", quote: "制御部はPWM信号で高速に駆動する",
+      where: "", reason: "制御部の記載がある。", quote_verified: false, flag: "引用が原文に見つからないため「?」にしました",
+      human_verdict: "", human_note: "" },
+    { label: "C", element: "冷却器と、を備えるインバータ。", model_verdict: "×", verdict: "×", quote: "", where: "",
+      reason: "冷却器の記載は無い。", quote_verified: false, flag: "", human_verdict: "△", human_note: "図3に放熱板" },
+  ],
+};
 
 async function noHorizontalOverflow(page: Page) {
   const overflow = await page.evaluate(() => {
@@ -179,6 +196,44 @@ for (const width of [1280, 320]) {
     await noHorizontalOverflow(page);
 
     await page.unroute(/\/api\/v1\/patents\/cases\/\d+\/watches$/);
+    await page.getByRole("button", { name: "案件のその他の操作" }).click();
+    await page.getByRole("menuitem", { name: "案件を削除" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "削除する" }).click();
+    await expect(page).toHaveURL(/\/patents$/);
+  });
+
+  test(`Patent: AI クレームチャートの判定の表示（応答を差し替え・${width}px）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height: width === 320 ? 640 : 900 });
+    await establishSession(page, context);
+    await page.route(/\/api\/v1\/patents\/cases\/\d+\/charts$/, (route) =>
+      route.request().method() === "GET" ? route.fulfill({ json: { charts: [JUDGED] } }) : route.continue());
+    await page.goto("/patents");
+    const title = `E2E 判定 ${width}`;
+    await page.getByRole("button", { name: "案件を作成" }).first().click();
+    await page.getByPlaceholder("発明の名称").fill(title);
+    await page.getByRole("button", { name: "作成", exact: true }).click();
+    await expect(page).toHaveURL(/\/patents\/\d+$/);
+    const pane = page.locator('section[aria-labelledby="patent-section-title"]');
+    await page.getByRole("button", { name: "請求項", exact: true }).click();
+    await pane.locator("textarea").first().fill("【請求項１】\nスイッチング素子と、制御部と、冷却器と、を備えるインバータ。");
+    await pane.getByRole("button", { name: "新しい版で保存" }).click();
+    await expect(pane.getByText("AI で判定（構成要件ごとに ○ △ × ?）")).toBeVisible();
+    await expect(pane.getByText("ローカル専用のモデルが使えないため判定できません", { exact: false })).toBeVisible();
+
+    const card = pane.locator("li", { hasText: "請求項 1 × JP 2026-000001 A インバータ" }).first();
+    await expect(card.getByText("モデルの推論 · 未確認")).toBeVisible();
+    await expect(card.getByText("古い判定です: 請求項が新しい版になりました。判定し直してください。")).toBeVisible();
+    await expect(card.getByText("引用を原文で確かめられなかった 1 件を「?」にしました。")).toBeVisible();
+    await expect(card.getByText("引用が原文に見つからないため「?」にしました")).toBeVisible();
+    await expect(card.getByText("人の判定（モデルは ×）")).toBeVisible();
+    await card.getByText("根拠").first().click();
+    await expect(card.getByText("スイッチング素子は窒化ガリウムで構成され")).toBeVisible();
+    await expect(card.getByText("【0010】 · 原文で確認")).toBeVisible();
+    await expect(card.getByRole("combobox", { name: "構成要件 A の判定を直す" })).toBeVisible();
+    await shootWhole(page, `test-results/patents-judge-${width}.png`);
+    await noHorizontalOverflow(page);
+
     await page.getByRole("button", { name: "案件のその他の操作" }).click();
     await page.getByRole("menuitem", { name: "案件を削除" }).click();
     await page.getByRole("alertdialog").getByRole("button", { name: "削除する" }).click();

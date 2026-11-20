@@ -1,7 +1,9 @@
 /** Patent 画面で共通に使う小物（入力の見た目・期限の印・エラー文）。 */
 import type { ReactNode } from "react";
 
-export const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-base sm:text-sm dark:border-zinc-700 dark:bg-zinc-900";
+/** 幅を決めない入力欄（並べて使う select など）。`input` に w-28 などを足しても w-full が勝つので、幅を変えるときはこちら。 */
+export const inputBase = "rounded-xl border border-zinc-300 bg-white px-3 py-2 text-base sm:text-sm dark:border-zinc-700 dark:bg-zinc-900";
+export const input = `w-full ${inputBase}`;
 export const card = "rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900";
 
 export function errorText(e: unknown) {

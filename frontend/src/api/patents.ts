@@ -43,6 +43,16 @@ export interface ClaimChart {
   rows: { element: ClaimElement; query: string; evidence: { doc_ref: string; title: string; collection: string; snippet: string }[] }[];
 }
 
+export type Verdict = "○" | "△" | "×" | "?";
+export interface JudgeRow {
+  label: string; element: string; model_verdict: Verdict; verdict: Verdict; quote: string; where: string; reason: string;
+  quote_verified: boolean; flag: string; human_verdict: Verdict | ""; human_note: string;
+}
+export interface JudgedChart {
+  id: number; claim_no: number; claim_version: number; doc_ref: string; doc_title: string; status: string; rows: JudgeRow[];
+  context_mode: string; error: string; review_status: string; basis: string; stale?: string[]; created: number;
+}
+
 export interface CountRow { key: string; count: number }
 export interface PatentAnalytics {
   documents: number;
@@ -97,6 +107,14 @@ export const patentsApi = {
   search: (query: string) => api<{ results: SearchHit[] }>("/patents/search", { method: "POST", json: { query, limit: 20 } }),
   claimChart: (id: number, claimNo: number) =>
     api<ClaimChart>(`/patents/cases/${id}/claim-chart`, { method: "POST", json: { claim_no: claimNo } }),
+  charts: (id: number) => api<{ charts: JudgedChart[] }>(`/patents/cases/${id}/charts`),
+  judge: (id: number, claimNo: number, docRef: string) =>
+    api<{ chart_id: number; job_id: string }>(`/patents/cases/${id}/charts`, { method: "POST", json: { claim_no: claimNo, doc_ref: docRef } }),
+  setJudgeRow: (id: number, chartId: number, label: string, verdict: string, note = "") =>
+    api<JudgedChart>(`/patents/cases/${id}/charts/${chartId}/rows/${encodeURIComponent(label)}`, { method: "PATCH", json: { verdict, note } }),
+  reviewChart: (id: number, chartId: number, review_status: string) =>
+    api<JudgedChart>(`/patents/cases/${id}/charts/${chartId}/review`, { method: "POST", json: { review_status } }),
+  removeChart: (id: number, chartId: number) => api(`/patents/cases/${id}/charts/${chartId}`, { method: "DELETE" }),
   assist: (id: number, task: string, extra: string) =>
     api<{ assist_id: number; job_id: string }>(`/patents/cases/${id}/assists`, { method: "POST", json: { task, extra } }),
   review: (id: number, assistId: number, review_status: string) =>
