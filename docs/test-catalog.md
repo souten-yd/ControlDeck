@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 176 ファイル、1584 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、178 テスト
+- E2E: 86 spec、180 テスト
 
 ## backend（backend/tests）
 
@@ -2657,6 +2657,8 @@
 - leading and trailing silence of each synthesized piece is cut so pieces join without gaps
 - a long answer is played in order with only a short pause between pieces
 - after reading aloud, the microphone still opens on an iPhone-like audio session
+- a streamed answer with markdown is read without skipping or reading symbols
+- turning reading off mid-answer silences it, and the rest of the stream does not restart it
 
 ### frontend/e2e/background-return.spec.ts
 
