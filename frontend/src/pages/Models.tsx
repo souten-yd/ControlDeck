@@ -16,6 +16,7 @@ import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
 import { SpeechEnginesPanel } from "../features/models/SpeechEnginesPanel";
+import { RetrievalModelsPanel } from "../features/models/RetrievalModelsPanel";
 import { FrontierModelsGroup } from "../features/models/FrontierModelsPanel";
 import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "../features/models/RadiancePanel";
 import { MayaSDetailSheet, useMayaStatus } from "../features/models/MayaSModelPanel";
@@ -2058,6 +2059,8 @@ function EmbedRerankPanel() {
       <p className="text-xs text-zinc-400">
         RAG検索の品質を上げる補助モデルです。RAG利用時に自動ロードされ、アイドルで自動アンロードされます（常駐も選択可）。
       </p>
+      <RetrievalModelsPanel />
+      <p className="pt-2 text-xs font-medium text-zinc-500">GPU（llama.cpp）の埋め込み・reranker</p>
       {llamaSt && !llamaSt.installed && (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-4 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
           llama.cpp が未導入です。LLM/VLMタブの「GGUF登録」→ 導入から先にセットアップしてください。

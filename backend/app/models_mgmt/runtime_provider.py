@@ -585,6 +585,9 @@ class StrataRuntimeProvider(OpenAICompatibleRuntimeProvider):
     """Managed Strata OpenAI-compatible server with explicit first activation."""
 
     kind = "strata"
+    # 2026-11-20 実機（Qwen3.8 Flash Next、ゲートウェイ経由）で、挨拶・計算では呼ばず、番組表は資料と Web で、
+    # 天気は Web で探して答えるのを確かめた。Maya（DS-XS）は挨拶でも資料を探したので、まだ渡さない
+    tools_verified = True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)

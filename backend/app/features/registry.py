@@ -156,24 +156,6 @@ FEATURES: dict[str, dict] = {
         "repo": "supertone-oss-archive/supertonic",
         "summary": "31 言語の音声合成（CPU）。導入時に音声モデルも入れ、ソース一式を保管庫へ保存する。使うかは Models の TTS / ASR で選ぶ",
     },
-    # 検索結果の並べ替え（RAG）。実体は app.workflows.cpu_reranker（タップ 1 つで取得・変換・実行環境まで）。
-    # 導入すると GPU の reranker より優先して使う（2026-11-20 利用者の判断。評価は docs/reranker-evaluation.md）
-    "xsmall-reranker": {
-        "name": "japanese-reranker-xsmall-v2（CPU・速い・おすすめ）",
-        "kind": "retrieval-model",
-        "executable": "python",
-        "route_gated": False,
-        "repo": "hotchpotch/japanese-reranker-xsmall-v2",
-        "summary": "検索結果を CPU で並べ替える。標準の長さの資料 32 件で 0.7〜1.2 秒、ファイル 0.15 GB・RAM 0.7 GB。精度は今の GPU の reranker と同等",
-    },
-    "ruri-reranker": {
-        "name": "ruri-v3-reranker-310m（CPU・高精度）",
-        "kind": "retrieval-model",
-        "executable": "python",
-        "route_gated": False,
-        "repo": "cl-nagoya/ruri-v3-reranker-310m",
-        "summary": "日本語の並べ替えが最も正確（int8）。標準の長さ 32 件で 8〜12 秒と遅いので、両方あるときは Knowledge・Workflow に使う。ファイル 0.73 GB・RAM 2.5 GB",
-    },
 }
 
 
@@ -183,7 +165,6 @@ CATEGORIES = {
     "runtime": "LLM ランタイム（GPU）",
     "addon": "拡張アプリ",
     "speech": "音声（TTS / ASR）",
-    "retrieval": "検索（RAG）",
     "tools": "その他の道具",
 }
 
@@ -201,8 +182,6 @@ def category(feature_id: str) -> str:
         return "addon"
     if kind == "speech-engine":
         return "speech"
-    if kind == "retrieval-model":
-        return "retrieval"
     return "tools"
 
 
@@ -333,10 +312,6 @@ def executable(feature_id: str) -> Path | None:
         from app.speech import supertonic
 
         return supertonic.python_path() if supertonic.ready() else None
-    if spec["kind"] == "retrieval-model":
-        from app.workflows import cpu_reranker
-
-        return cpu_reranker.python_path() if cpu_reranker.ready(feature_id) else None
     if spec["kind"] == "gpu-runtime":
         # PATH 上の同名バイナリを拾わない。ControlDeck が導入した実体だけを扱う。
         managed = _managed_executable(feature_id)
@@ -427,42 +402,8 @@ def _speech_engine_status(feature_id: str, spec: dict) -> dict:
     }
 
 
-def _retrieval_model_status(feature_id: str, spec: dict) -> dict:
-    """CPU の reranker は app.workflows.cpu_reranker の状態を正とする（導入＝利用可能）。"""
-    from app.workflows import cpu_reranker
-
-    detail = cpu_reranker.status(feature_id)
-    installed = bool(detail["installed"])
-    return {
-        "id": feature_id,
-        "name": spec["name"],
-        "summary": spec["summary"],
-        "kind": spec["kind"],
-        "category": category(feature_id),
-        "route_gated": False,
-        "requires": "",
-        "preview": False,
-        "requires_installed": True,
-        "repo": str(spec.get("repo", "")),
-        "available": True,
-        "installed": installed,
-        # 版を固定したモデル。更新ボタンは出さない（画面側で kind を見る）
-        "managed": installed,
-        "enabled": installed,
-        "requested_enabled": True,
-        "version": detail["model"] if installed else "",
-        "health": "healthy" if installed else "not-installed",
-        "error": "",
-        "executable": str(cpu_reranker.python_path()) if installed else "",
-        "retrieval": {k: detail[k] for k in ("runtime", "model_bytes", "storage", "license", "running", "stats",
-                                             "accuracy", "speed", "memory")},
-    }
-
-
 def status(feature_id: str) -> dict:
     spec = FEATURES[_known(feature_id)]
-    if spec["kind"] == "retrieval-model":
-        return _retrieval_model_status(feature_id, spec)
     if spec["kind"] == "gpu-runtime":
         return _gpu_runtime_status(feature_id, spec)
     if spec["kind"] == "speech-engine":
@@ -640,7 +581,7 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
 
 def install(feature_id: str) -> dict:
     name = FEATURES[_known(feature_id)]["name"]
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "retrieval-model"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         # 取得がネットワークI/Oのため、routerがasyncのまま gpu_runtime / speech を直接呼ぶ。
         raise FeatureError(f"{name}の導入は非同期ジョブから実行してください")
     required = FEATURES[feature_id].get("requires")
@@ -683,8 +624,6 @@ def update(feature_id: str) -> dict:
         raise FeatureError(f"{name}の更新は非同期ジョブから実行してください")
     if FEATURES[feature_id]["kind"] == "speech-engine":
         raise FeatureError(f"{name}は開発が終了しているため更新はありません（保管庫の版を使います）")
-    if FEATURES[feature_id]["kind"] == "retrieval-model":
-        raise FeatureError(f"{name}は版を固定しています（入れ直すと保管庫の版を使います）")
     if not _managed_executable(feature_id).is_file():
         raise FeatureError(f"Control Deckが導入した{name}のみ更新できます")
     previous = status(feature_id)["version"]
@@ -704,7 +643,7 @@ def update(feature_id: str) -> dict:
 
 def enable(feature_id: str) -> dict:
     current = status(feature_id)
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "retrieval-model"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         # route_gated ではないので導入＝有効。切り替えるべき状態を持たない。
         return current
     if FEATURES[feature_id]["kind"] == "release-bundle" and current["installed"]:
@@ -767,7 +706,7 @@ def restore_enabled_services() -> None:
 
 def disable(feature_id: str) -> dict:
     _known(feature_id)
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "retrieval-model"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         return status(feature_id)
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
@@ -784,11 +723,6 @@ def disable(feature_id: str) -> dict:
 
 def uninstall(feature_id: str) -> dict:
     disable(feature_id)
-    if FEATURES[_known(feature_id)]["kind"] == "retrieval-model":
-        from app.workflows import cpu_reranker
-
-        cpu_reranker.uninstall(feature_id)   # 取得したファイルと int8 の ONNX（保管庫）は残す
-        return status(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "speech-engine":
         from app.speech import supertonic
 
