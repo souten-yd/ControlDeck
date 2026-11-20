@@ -83,8 +83,11 @@ def auto_update_save(body: AutoUpdateBody, request: Request,
 
 
 @router.post("/auto-update/run-jobs", status_code=201)
-def auto_update_run(request: Request, user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
-    """時刻を待たずに、導入済みのオプション機能をまとめて更新する。"""
+async def auto_update_run(request: Request, user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    """時刻を待たずに、導入済みのオプション機能をまとめて更新する。
+
+    async で定義する: jobs.create はイベントループの上で Job を走らせる。同期関数（スレッドで動く）から呼ぶと
+    「no running event loop」で 500 になる（2026-11-20 本番で発生）。"""
     from app.features import auto_update
 
     if auto_update.running():

@@ -112,7 +112,21 @@ def test_api_routes_are_not_taken_by_feature_actions(admin_client, monkeypatch, 
     r = admin_client.put("/api/v1/features/auto-update", json={"enabled": True, "time": "05:15"}, headers=headers)
     assert r.status_code == 200 and r.json()["time"] == "05:15"
     assert admin_client.put("/api/v1/features/auto-update", json={"time": "5:15"}, headers=headers).status_code == 422
-    monkeypatch.setattr(auto_update, "start_job", lambda *a, **k: type("J", (), {"id": "j1"})())
+    # start_job は差し替えない（本物の jobs.create を通す。差し替えていて「no running event loop」の 500 を見逃した）
+    ran: list[str] = []
+
+    async def fake_run_all(job=None, *, trigger="manual"):
+        ran.append(trigger)
+        return {"results": []}
+
+    monkeypatch.setattr(auto_update, "run_all", fake_run_all)
     monkeypatch.setattr(auto_update, "running", lambda: False)
     r = admin_client.post("/api/v1/features/auto-update/run-jobs", headers=headers)
-    assert r.status_code == 201 and r.json() == {"job_id": "j1"}
+    assert r.status_code == 201, r.text
+    job_id = r.json()["job_id"]
+    import time as _time
+    for _ in range(50):
+        if admin_client.get(f"/api/v1/jobs/{job_id}").json()["status"] == "succeeded":
+            break
+        _time.sleep(0.05)
+    assert ran == ["manual"]
