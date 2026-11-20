@@ -8,7 +8,7 @@
 - 規格の利用可否（保存・AI 利用）の判断: `docs/standards-license-policy.md`
 - 規約の原本: `AGENTS.md`、引き継ぎの入口: `CLAUDE.md`
 
-最終更新: 2026-11-21（Claude, session_01Vr7X7mm3aPQSc8WA3mYwEk）
+最終更新: 2026-11-21 v0.102 を本番へ適用・旧データを取り込み済み（Claude, session_01Vr7X7mm3aPQSc8WA3mYwEk）
 
 ## 1. 目的と利用者の決定（時系列）
 
@@ -33,8 +33,10 @@ ControlDeck 本体は「関門を通せばマージと Release を毎回尋ね�
 
 ## 2. いまの状態（2026-11-21）
 
-- 作業ブランチ: `feat/knowledge-platform`、worktree `/data1tb/ControlDeck/knowledge-platform`、PR **#473**（Ready、未マージ）。
-- 本番: `/data1tb/ControlDeck/app-strata`（main。正式 Release に追従）。**まだ統合の変更は入っていない。**
+- PR **#473** をマージ（`7a5a647`）、**ControlDeck v0.102** として Release（2026-11-21）。worktree `/data1tb/ControlDeck/knowledge-platform` は以後の作業用。
+- 本番: `/data1tb/ControlDeck/app-strata`（main。正式 Release に追従）。**v0.102 を適用済み**（2026-11-21、利用者の指示で設定画面の更新と同じ経路から。監査に記録）。
+- 旧データの取り込み済み（`./deck.sh knowledge-migrate --apply`、2026-11-21）: 旧 RAG 47 コレクション・187 文書・1,213 断片・1,213 ベクトル、ResearchDataHub の公報 1 件（原本・図 14 点はハッシュ一致、注釈 2）。旧 `data/rag/` は不変のまま残し、取り込み前の写しは `data/backups/knowledge-integration-20261121/`。
+- PatentBuddy は起動時に片付いた（`data/features/patent-buddy/.retired`、データは `data/feature-data/patent-buddy` に残る）。
 - 実装済み（PR #473）:
   - `backend/app/knowledge/`: 統合ナレッジストア（分野別 SQLite・2-gram 全文・RAM 行列のベクトル・RRF・機密区分）、旧データの取り込み、保存先の設定・バックアップ、規格の利用判定。
   - `backend/app/workflows/rag.py`: 既存の呼び出し口。中身は store へ。
@@ -105,7 +107,7 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | R2-6 | AI アシスタントからナレッジ横断の検索（道具）。cloud なら機密を除く | ☑ `chat_tools.search_knowledge`（ローカル判定は local-only 契約と同じ） |
 | R2-7 | 発明の音声ヒアリング（長時間の音声 → 文字 → ローカル AI が本質・構成要件・請求項案・追加質問に分解） | ☑ Patent → ヒアリング（話す）。区切りごとに保存、AI 支援「ヒアリングの分析」 |
 | R2-8 | Patent 画面の UX 見直し（詳細を隠す・ControlDeck と統一）と API の実動作確認 | ☑ 文書の表示（DocumentSheet）・根拠は折りたたみ・内部情報は「詳細」。実 PDF（特開2026-116114）で取り込み・番号一致・骨格を確認 |
-| R2-9 | テスト・評価 → マージ → Release → 本番へ反映 → 旧データの取り込み | ◐ テスト済み（全体 1866 passed、落ちた 2 件は既知の不安定なテストで単独では通る）。マージ以降はこれから |
+| R2-9 | テスト・評価 → マージ → Release → 本番へ反映 → 旧データの取り込み | ☑ v0.102、本番適用・取り込み・照合済み |
 
 ## 7. 未決事項（利用者に確認すること）
 
@@ -117,12 +119,14 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 
 ## 8. 外部の状態
 
-- `qnaplibrary.service`（RDH v0.5.10）がこの PC で稼働中。データ `/data1tb/ResearchDataHub/data/library.sqlite3`（公報 PDF 1 件）。取り込み後に止める。
-- `cdapp-feature-patent-buddy.service` が稼働中。統合の Release が入ると起動時に外れる。
+- `qnaplibrary.service`（RDH v0.5.10）がこの PC で稼働中。中身は ControlDeck へ取り込み・照合済み。**最終的に削除する**（利用者合意 2026-11-21）。手順: 停止・無効化（データは残す）→ リポジトリを Archive → データとアプリを削除。削除の前に利用者に確認する。QNAP 上の QnapLibrary に実データがあるかは未確認。
+- `cdapp-feature-patent-buddy.service` は v0.102 で停止・撤去済み。
 - `/data1tb/ResearchDataHub-standards-license`: RDH 側に書いた規格判定のローカルブランチ（未 push）。ControlDeck へ移したので不要。
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: v0.102 を本番へ適用（自動更新が 40 分ほど適用しなかったため、利用者の指示で更新の経路を直接呼んだ）。PatentBuddy の自動撤去を確認。旧データを取り込み、件数とハッシュを照合。起動直後に Add-on の health 取得の失敗が 1 回（撤去の最中、再発なし）。
 
 - 2026-11-21 Claude: 画面（Knowledge の探す・資料の管理・規格の管理、文書の表示、Patent のヒアリング）。E2E `patents`・`knowledge`（1280/320）通過。実 PDF で本文冒頭の番号を自分の番号とする・要約の切り出しを直した。
 
