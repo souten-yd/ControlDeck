@@ -104,8 +104,8 @@ function clock(ms: number): string {
 }
 
 /** 聞いている間の波形（直近の音の大きさの棒）と経過時間 */
-export function VoiceWave({ meter, pending, finishing }: {
-  meter: VoiceMeterStore; pending: number; finishing: boolean;
+export function VoiceWave({ meter, finishing }: {
+  meter: VoiceMeterStore; finishing: boolean;
 }) {
   const { levels, elapsedMs } = useVoiceMeter(meter);
   return (
@@ -117,7 +117,6 @@ export function VoiceWave({ meter, pending, finishing }: {
         ))}
       </div>
       <span className="shrink-0 text-xs tabular-nums text-zinc-500">{clock(elapsedMs)}</span>
-      {pending > 0 && <span className="shrink-0 animate-pulse text-[11px] text-zinc-500">文字に…</span>}
     </div>
   );
 }

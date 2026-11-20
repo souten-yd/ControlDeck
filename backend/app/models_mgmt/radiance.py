@@ -428,6 +428,9 @@ def delete_instance(alias: str) -> dict:
     return {"alias": alias, "config_deleted": True, "model_files_deleted": False}
 
 
+PREFIX_CACHE_MIB = 8192
+
+
 def _config_dir() -> Path:
     return root() / "configs"
 
@@ -457,6 +460,10 @@ def config_yaml(alias: str, cfg: dict) -> str:
         # cut decode from 205 to 50 tok/s, 5.8 GiB (512K) to 32 (2026-11-15).
         lines += ["    placement: layer_offload", f"    host-pool-mib: {OFFLOAD_HOST_POOL_MIB}",
                   f"    flex: {{kv: {{min-tokens: {context}}}}}"]
+    # 会話の KV を VRAM から追い出すとき、ホストの RAM へ写して残す（次のターンで読み直さない）。既定は無し
+    # （"kv tiers: off"）で、VRAM から外れた会話は最初から読み直していた。Radiance が動く間は Strata・Maya は止まり
+    # RAM は空いている（2026-11-20 利用者「高速化の設定があれば入れて」）
+    lines.append(f"    prefix-cache-mib: {PREFIX_CACHE_MIB}")
     if cfg.get("speculative_tokens") is not None:
         lines.append(f"    num-speculative-tokens: {int(cfg['speculative_tokens'])}")
     if cfg.get("reasoning_effort"):

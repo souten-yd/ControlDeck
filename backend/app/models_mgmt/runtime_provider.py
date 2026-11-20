@@ -629,7 +629,9 @@ class MayaRuntimeProvider(OpenAICompatibleRuntimeProvider):
         await super()._prepare(request)
         from app.models_mgmt import maya_s
 
-        alias = await asyncio.to_thread(maya_s.running_alias)
+        # 要求されたモデル（登録名）を起動する。分からなければ動いているもの、それも無ければ最初に登録したもの
+        aliases = [str(item["alias"]) for item in await asyncio.to_thread(maya_s.list_instances)]
+        alias = request.model if request.model in aliases else await asyncio.to_thread(maya_s.running_alias)
         if not await maya_s.ensure_ready(alias):
             raise RuntimeProviderError("Mayaが起動していないか、読み込み中です。Modelsで起動してください")
         port = next((int(item["port"]) for item in await asyncio.to_thread(maya_s.list_instances)

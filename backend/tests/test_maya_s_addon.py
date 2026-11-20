@@ -569,3 +569,39 @@ def test_start_lowers_ondemand_helpers_but_refuses_other_llms(admin_client, monk
     instances.append({"alias": "qwen-27b", "role": "llm", "loaded": True})
     r = admin_client.post("/api/v1/features/maya-s/model/start-jobs", json={"alias": "maya-deepseek-xs"}, headers=headers)
     assert r.status_code == 409 and "qwen-27b" in r.json()["detail"]
+
+
+def test_chat_starts_the_requested_maya_model_when_stopped(monkeypatch):
+    """止まっている Maya を AI チャットから使うと、要求したモデルを起動してから答える（他の runtime と同じ）。
+    根拠: 2026-11-20 本番。DeepSeek（maya-deepseek-xs）だけを登録した環境で、止まっているときに未登録の既定名
+    maya-s を起動しようとして、起動を試みずに「Mayaが起動していないか」で失敗していた。"""
+    import asyncio
+
+    from app.models_mgmt import maya_s
+    from app.models_mgmt import runtime_provider as rp
+
+    records = [{"alias": "maya-deepseek-xs"}]
+    monkeypatch.setattr(maya_s, "_records", lambda: records)
+    monkeypatch.setattr(maya_s, "_running", lambda alias: False)
+    assert maya_s.running_alias() == "maya-deepseek-xs"          # 止まっていても、登録済みのものを返す
+
+    started = []
+
+    async def ensure_ready(alias, **kwargs):
+        started.append(alias)
+        return True
+
+    async def prompt_room(messages, port):
+        return None
+
+    async def none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(rp.LlmRuntimeProvider, "_prepare", lambda self, request: none())
+    monkeypatch.setattr(rp.OpenAICompatibleRuntimeProvider, "_prepare", lambda self, request: none(), raising=False)
+    monkeypatch.setattr(maya_s, "list_instances", lambda: [{"alias": "maya-deepseek-xs", "port": 8101}])
+    monkeypatch.setattr(maya_s, "ensure_ready", ensure_ready)
+    monkeypatch.setattr(maya_s, "prompt_room", prompt_room)
+    request = rp.RuntimeChatRequest("http://127.0.0.1:8101/v1", "maya-deepseek-xs", [{"role": "user", "content": "hi"}])
+    asyncio.run(rp.MayaRuntimeProvider()._prepare(request))
+    assert started == ["maya-deepseek-xs"]

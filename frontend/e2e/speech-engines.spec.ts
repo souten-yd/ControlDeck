@@ -92,11 +92,15 @@ test("CPU rerankers are installed and chosen in Models > Embed / Reranker", asyn
     await page.goto("/models?tab=embed");
     const panel = page.locator("[data-retrieval-models]");
     await expect(panel).toBeVisible();
-    for (const id of ["xsmall-reranker", "ruri-reranker", "ruri-reranker-gpu"]) {
+    // ruri は GPU（fp16）だけ、控えは CPU の xsmall。CPU にするとかなり遅くなるものは CPU / GPU を切り替えない
+    // （2026-11-20 利用者。CPU の ruri は 8〜12 秒、bge-m3 の資料の保存は約 20 倍、Qwen3 4B も遅い）
+    for (const id of ["ruri-reranker-gpu", "xsmall-reranker", "bge-m3", "qwen3-reranker-4b"]) {
       const card = page.locator(`#retrieval-${id}`);
       await expect(card).toBeVisible();
       await expect(card.getByRole("button", { name: "導入" })).toBeVisible();
     }
+    await expect(page.locator("#retrieval-ruri-reranker")).toHaveCount(0);
+    await expect(page.locator("[data-device-toggle]")).toHaveCount(0);
     const chat = panel.locator("select").first();
     await expect(chat).toHaveValue("auto");
     await expect(chat.locator('option[value="xsmall-reranker"]')).toHaveAttribute("disabled", "");   // 未導入

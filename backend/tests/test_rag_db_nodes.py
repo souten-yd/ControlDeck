@@ -279,8 +279,9 @@ def test_cpu_rerankers_are_installed_and_chosen_in_models(admin_client, monkeypa
     (cpu_reranker.runtime_root() / "venv-ready").write_text(",".join(cpu_reranker.RUNTIME_PACKAGES))
     data = admin_client.get("/api/v1/models/retrieval").json()
     assert data["in_use"] == {"chat": "xsmall-reranker", "knowledge": "ruri-reranker"}      # 自動
-    r = admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "ruri-reranker", "knowledge": "none"},
+    r = admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "ruri", "knowledge": "none"},
                          headers=CSRF_HEADERS)
+    # ruri は GPU 版、無ければ CPU 版
     assert r.status_code == 200 and r.json()["in_use"] == {"chat": "ruri-reranker", "knowledge": "none"}
     assert admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "bogus"},
                             headers=CSRF_HEADERS).status_code == 422
@@ -403,3 +404,113 @@ def test_gpu_preset_uninstall_removes_registration_and_file(admin_client, monkey
     r = admin_client.post("/api/v1/models/llama/role-presets/qwen3-reranker-4b/uninstall", headers=CSRF_HEADERS)
     assert r.status_code == 200 and r.json()["gguf_deleted"] and called == [("rerank-qwen3-4b", True)]
     assert admin_client.post("/api/v1/models/llama/role-presets/nope/uninstall", headers=CSRF_HEADERS).status_code == 404
+
+
+def test_gpu_helpers_are_released_before_an_llm_loads(monkeypatch):
+    """LLM を GPU に載せる前に、GPU の補助（GPU の ruri・GPU に載った埋め込み / reranker）を止める。CPU だけのものは止めない。
+    根拠: 2026-11-20 利用者と合意（順番に頼らない方法）。補助は Knowledge の検索・添付の保存・Workflow などで LLM より
+    先に載ることがあり、載ったまま大きな LLM（Maya 31.5 GB・Radiance 31 GB / 34 GB）を起動すると OOM になり得る。"""
+    from app.models_mgmt import large_model_lifecycle as life
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker
+
+    stopped = []
+
+    async def stop_device(device):
+        assert device == "gpu"
+        return ["ruri-reranker-gpu"]
+
+    monkeypatch.setattr(cpu_reranker, "stop_device", stop_device)
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "embed-bge-m3", "role": "embedding", "loaded": True, "n_gpu_layers": 999},
+        {"alias": "embed-cpu", "role": "embedding", "loaded": True, "n_gpu_layers": 0},
+        {"alias": "rerank-qwen3-4b", "role": "reranker", "loaded": False},
+        {"alias": "chat", "role": "llm", "loaded": True},
+    ])
+    monkeypatch.setattr(llama, "stop_instance", lambda alias, **kw: (stopped.append(alias), (True, ""))[1])
+    released = run(life.release_gpu_helpers())
+    assert released == ["ruri-reranker-gpu", "embed-bge-m3"] and stopped == ["embed-bge-m3"]
+
+
+def test_gpu_reranker_starts_before_embedding_and_checks_vram(monkeypatch, tmp_path):
+    """資料の検索では GPU の ruri を埋め込みより先に起動する（ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに
+    合わせて残りを CPU で動かせる）。GPU の ruri は起動前に VRAM の空きを確かめ、足りなければ試さない（CPU の控えへ）。
+    使われなくなったら GPU は 3 分、CPU は 10 分で止める。常駐なら止めない。xsmall は CPU に合わせた公式の int8 を使う。"""
+    from app.workflows import cpu_reranker, rag
+
+    order = []
+
+    async def warm(model_id):
+        order.append(("warm", model_id))
+
+    async def embed(texts, *args, **kwargs):
+        order.append(("embed", texts[0]))
+        return [np.array([1.0, 0.0, 0.0], dtype=np.float32)]
+
+    monkeypatch.setattr(cpu_reranker, "choose", lambda fast: "ruri-reranker-gpu")
+    monkeypatch.setattr(cpu_reranker, "running", lambda model_id: False)
+    monkeypatch.setattr(cpu_reranker, "warm", warm)
+    monkeypatch.setattr(rag, "embed", embed)
+    run(rag._warm_gpu_reranker(fast=True))
+    run(rag.embed(["q"], "", "", ""))
+    assert order == [("warm", "ruri-reranker-gpu"), ("embed", "q")]
+
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(cpu_reranker, "gpu_free_bytes", lambda: 900 * 1024 ** 2)
+    with pytest.raises(cpu_reranker.CpuRerankerError, match="VRAM"):
+        run(cpu_reranker._Worker("ruri-reranker-gpu")._start())
+    assert cpu_reranker.GPU_IDLE_STOP_S == 180 and cpu_reranker.IDLE_STOP_S == 600
+    assert not cpu_reranker.resident("ruri-reranker-gpu")
+    cpu_reranker.set_resident("ruri-reranker-gpu", True)
+    assert cpu_reranker.resident("ruri-reranker-gpu") and cpu_reranker.status("ruri-reranker-gpu")["resident"]
+    name = cpu_reranker.MODELS["xsmall-reranker"]["model_file"]
+    assert name.startswith("onnx/model_qint8_") and cpu_reranker.MODELS["xsmall-reranker"]["files"][name][0] == 37367189
+
+
+
+def test_cpu_llama_helpers_never_touch_the_gpu(monkeypatch, tmp_path):
+    """n_gpu_layers 0（CPU）の llama.cpp には --device none を付ける。付けないと大きな計算を自動で GPU へ回す
+    （2026-11-20 実測: bge-m3 は -ngl 0 だけだと 32 件 1.2 秒で GPU を使っていた。GPU を使わせないと 20.9 秒）。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_help_text_sync", lambda: "--fit-target")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    for layers, expect in ((0, True), (999, False)):
+        monkeypatch.setattr(llama, "get_instance", lambda alias, layers=layers: {
+            **llama.DEFAULT_INSTANCE, "alias": "e", "role": "embedding", "model_path": "/m.gguf", "n_gpu_layers": layers})
+        assert ('"--device" "none"' in llama._unit_content("e", margin_mib=0)) is expect
+
+
+def test_embedding_start_brings_up_the_gpu_reranker_first(monkeypatch):
+    """GPU の埋め込みを載せる前に、GPU の reranker（ruri）を先に載せる。LLM を載せる前は両方を止める。
+    根拠: 2026-11-20 利用者と合意。ruri は全部を GPU に載せないと動かず、bge-m3 は空きに合わせて残りを CPU で動かせる。
+    埋め込みだけを使う場面（添付の保存・調査結果の保存）でも先に場所を取る。補助は使うときだけ載せる（LLM の後に必ず載せはしない）。"""
+    from app.models_mgmt import large_model_lifecycle, llama
+    from app.workflows import cpu_reranker
+
+    calls = []
+
+    async def warm():
+        calls.append("reranker")
+        return "ruri-reranker-gpu"
+
+    async def release():
+        calls.append("release")
+        return []
+
+    async def unhealthy(alias):
+        return {"ok": False}
+
+    async def nothing(alias):
+        return None
+
+    monkeypatch.setattr(cpu_reranker, "warm_gpu_reranker", warm)
+    monkeypatch.setattr(large_model_lifecycle, "release_gpu_helpers", release)
+    monkeypatch.setattr(llama, "health", unhealthy)
+    monkeypatch.setattr(llama, "mark_used_by_base_url", lambda url: None)
+    monkeypatch.setattr(llama, "_reclaim_gpu_before_load", nothing)
+    monkeypatch.setattr(llama, "start_instance", lambda alias: (calls.append(f"start:{alias}"), (False, "test"))[1])
+    for alias, role, layers in (("embed", "embedding", 999), ("embed-cpu", "embedding", 0), ("chat", "llm", 999)):
+        monkeypatch.setattr(llama, "get_instance", lambda a, role=role, layers=layers: {"alias": a, "role": role, "port": 1, "n_gpu_layers": layers})
+        assert run(llama.ensure_ready(alias)) is False
+    assert calls == ["reranker", "start:embed", "start:embed-cpu", "release", "start:chat"]

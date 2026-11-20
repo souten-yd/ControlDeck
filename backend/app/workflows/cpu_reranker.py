@@ -43,25 +43,24 @@ TOKENIZER = (6724873, "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25e
 # path: (bytes, sha256)。2026-11-20 取得・照合
 MODELS: dict[str, dict] = {
     "xsmall-reranker": {
-        "name": "japanese-reranker-xsmall-v2（CPU・軽い）",
+        "name": "japanese-reranker-xsmall-v2（int8・軽い）",
         "repo": "hotchpotch/japanese-reranker-xsmall-v2",
         "revision": "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a",
         "license": "MIT（hotchpotch）",
         "build": "download",
-        "files": {
-            "onnx/model.onnx": (147250318, "4d668ba88cd62107b6d8c0365313ac4d76030873a0ed99dcbfd5c1636f26ada8"),
-            "tokenizer.json": TOKENIZER,
-        },
-        "model_file": "onnx/model.onnx",
-        "runtime_label": "ONNX Runtime 1.32.0（CPU・fp32）",
-        "accuracy": "日本語 0.748（GPU の 4B は 0.743）",
-        "speed": "標準の長さ 32 件で 0.7〜1.2 秒",
-        "memory": "ファイル 0.15 GB・RAM 0.7 GB",
+        # 公式の int8（2026-11-20 利用者の判断）。fp32（0.15 GB）と速さは同じ、精度もほぼ同じ:
+        # 日本語 0.746 / 0.855（fp32 0.748 / 0.881）、英語 0.562 / 0.948（fp32 0.562 / 0.929）。AVX-512 VNNI 向けと AVX2 向けがある
+        "files": None,   # 下の _xsmall_files() で CPU に合わせて決める
+        "model_file": None,
+        "runtime_label": "ONNX Runtime 1.32.0（CPU・int8）",
+        "accuracy": "日本語 0.746（GPU の 4B は 0.743）",
+        "speed": "標準の長さ 32 件で 0.6〜1.2 秒",
+        "memory": "ファイル 0.04 GB・RAM 0.7 GB 未満",
         # 速いので会話でも候補を絞らない
         "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 4, "prefer": "fast", "device": "cpu",
     },
     "ruri-reranker": {
-        "name": "ruri-v3-reranker-310m（CPU・高精度）",
+        "name": "ruri-v3-reranker-310m（int8・高精度）",
         "repo": "cl-nagoya/ruri-v3-reranker-310m",
         "revision": "bb46934ee9ed09f850b9fcff17501b3ef7ddb2b3",
         "license": "Apache-2.0（名古屋大学 cl-nagoya）",
@@ -89,7 +88,7 @@ MODELS: dict[str, dict] = {
     #   int8（CPU 用、0.73 GB）: 32 件 3.15 秒（8.5 倍遅い。int8 の計算が GPU で速くならない）。VRAM 1.35 GB。不採用
     #   一度に並べる件数: 8 件 VRAM 1.52 GB、4 件 1.27 GB（速さ同じ）、2 件 1.15 GB（0.40 秒）→ 4 件
     "ruri-reranker-gpu": {
-        "name": "ruri-v3-reranker-310m（GPU・fp16・おすすめ）",
+        "name": "ruri-v3-reranker-310m（fp16・高精度・速い）",
         "repo": "cl-nagoya/ruri-v3-reranker-310m",
         "revision": "bb46934ee9ed09f850b9fcff17501b3ef7ddb2b3",
         "license": "Apache-2.0（名古屋大学 cl-nagoya）",
@@ -99,13 +98,30 @@ MODELS: dict[str, dict] = {
         "runtime_label": "ONNX Runtime MIGraphX 1.27.1（AMD GPU・fp16）",
         "accuracy": "日本語 0.877（最良）",
         "speed": "標準の長さ 32 件で約 0.4 秒",
-        "memory": "ファイル 0.63 GB・VRAM 約 1.3 GB（使っていなければ 10 分で返す）",
+        "memory": "ファイル 0.63 GB・VRAM 約 1.3 GB（使っていなければ 3 分で返す）",
         "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 4, "prefer": "accurate", "device": "gpu",
         "batch": 4,
     },
 }
 MODELS["ruri-reranker-gpu"]["files"] = MODELS["ruri-reranker"]["files"]
-# 自動のときの優先順。GPU の ruri は精度も速さも最良なので、入っていればどちらにも使う
+
+
+def _xsmall_files() -> tuple[str, dict]:
+    """xsmall の int8 は CPU の命令に合わせた版を使う（AVX-512 VNNI があればそれ、無ければ AVX2）。"""
+    try:
+        flags = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        flags = ""
+    name, sha = (("onnx/model_qint8_avx512_vnni.onnx", "7a4bb85d2149dc863d9e7f741d1ea7977f6d2ee520a03af8896638b4ea95d4b0")
+                 if "avx512_vnni" in flags else
+                 ("onnx/model_qint8_avx2.onnx", "34d4657df53c875f970dbf87e584a21d59e6cfcd9368f9828d69a09ed152168f"))
+    return name, {name: (37367189, sha), "tokenizer.json": TOKENIZER}
+
+
+MODELS["xsmall-reranker"]["model_file"], MODELS["xsmall-reranker"]["files"] = _xsmall_files()
+# 自動のときの優先順。GPU の ruri は精度も速さも最良なので、入っていればどちらにも使う。
+# 2026-11-20 利用者「CPU にするとかなり遅くなるものは CPU / GPU の切り替えを消して」→ ruri は GPU（fp16）だけを
+# 画面に出す（CPU の ruri は 8〜12 秒と遅い）。GPU が使えないときの控えは CPU の xsmall（int8）
 _AUTO_ORDER = {"fast": ("ruri-reranker-gpu", "xsmall-reranker", "ruri-reranker"),
                "accurate": ("ruri-reranker-gpu", "ruri-reranker", "xsmall-reranker")}
 _COMMON_PACKAGES = ("tokenizers==0.23.3", "numpy==2.5.5", "flatbuffers==25.12.19", "packaging==26.3", "protobuf==7.36.2")
@@ -119,7 +135,11 @@ BUILD_PACKAGES = ("transformers==5.23.0", "onnx==1.23.2", "onnxruntime==1.32.0",
 _BUILD_DIRS = {"convert-int8": ("onnx-int8", "model_int8.onnx", "int8"), "convert-fp16": ("onnx-fp16", "model_fp16.onnx", "fp16")}
 THREADS = 8                # 16 スレッドは 8 より遅かった（物理 8 コア）
 MAX_DOCUMENTS = 100
-IDLE_STOP_S = 600          # 使われなければ 10 分で止める
+IDLE_STOP_S = 600          # 使われなければ 10 分で止める（CPU）
+# GPU は 3 分で VRAM を返す（2026-11-20 利用者と合意。大きな LLM の起動に場所を空けるため）
+GPU_IDLE_STOP_S = 180
+# GPU の ruri を起動するのに要る VRAM の空き（実測 1.27 GB＋余裕）。足りなければ GPU は試さず CPU の控えを使う
+GPU_NEED_BYTES = int(1.6 * 1024 ** 3)
 _install_jobs: dict[str, str] = {}
 last_error = ""
 stats = {"calls": 0, "last_seconds": 0.0, "slowest_seconds": 0.0, "starts": 0}
@@ -233,7 +253,9 @@ def pick(fast: bool, *, cpu_only: bool = False) -> str | None:
 # auto: 入っているもの（GPU の ruri → 会話は xsmall・それ以外は CPU の ruri）、無ければ llama.cpp の reranker。
 # gpu: role=reranker の llama.cpp（Qwen3-Reranker-4B など）。none: 並べ替えない（検索の順のまま）
 # （"gpu" は従来の llama.cpp の reranker を指す。GPU の ruri は "ruri-reranker-gpu"）
-CHOICES = ("auto", *MODELS, "gpu", "none")
+# "ruri" は GPU の ruri（入っていなければ CPU の ruri）
+CHOICES = ("auto", "ruri", "xsmall-reranker", "gpu", "none")
+_LEGACY_CHOICES = {"ruri-reranker": "ruri", "ruri-reranker-gpu": "ruri"}   # v0.87〜0.88 の保存値
 _SELECTION_DEFAULT = {"chat": "auto", "knowledge": "auto"}
 
 
@@ -241,12 +263,61 @@ def _selection_path() -> Path:
     return data_dir() / "retrieval-settings.json"
 
 
-def selection() -> dict:
+def _saved() -> dict:
     try:
-        saved = json.loads(_selection_path().read_text(encoding="utf-8"))
+        value = json.loads(_selection_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        saved = {}
-    return {k: (saved.get(k) if saved.get(k) in CHOICES else v) for k, v in _SELECTION_DEFAULT.items()}
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _save(value: dict) -> None:
+    path = _selection_path()
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(path)
+
+
+def selection() -> dict:
+    saved = _saved()
+    result = {}
+    for key, default in _SELECTION_DEFAULT.items():
+        value = _LEGACY_CHOICES.get(saved.get(key), saved.get(key))
+        result[key] = value if value in CHOICES else default
+    return result
+
+
+def resident(model_id: str) -> bool:
+    """常駐（使われなくなっても止めない）。GPU のものも、大きな LLM を起動する前には止める（OOM を防ぐ）。"""
+    return bool((_saved().get("resident") or {}).get(model_id))
+
+
+def set_resident(model_id: str, value: bool) -> None:
+    _spec(model_id)
+    saved = _saved()
+    saved["resident"] = {**(saved.get("resident") or {}), model_id: bool(value)}
+    _save(saved)
+    worker = _workers.get(model_id)
+    if worker is not None and worker.running():
+        if value and worker._idle:
+            worker._idle.cancel()
+            worker._idle = None
+        elif not value:
+            worker._schedule_stop()
+
+
+def gpu_free_bytes() -> int | None:
+    """dGPU（VRAM が一番大きい AMD のカード）の空き。読めなければ None（確かめずに試す）。"""
+    best = None
+    for card in Path("/sys/class/drm").glob("card[0-9]*/device"):
+        try:
+            total = int((card / "mem_info_vram_total").read_text())
+            used = int((card / "mem_info_vram_used").read_text())
+        except (OSError, ValueError):
+            continue
+        if best is None or total > best[0]:
+            best = (total, used)
+    return best[0] - best[1] if best else None
 
 
 def set_selection(values: dict) -> dict:
@@ -255,10 +326,7 @@ def set_selection(values: dict) -> dict:
         if key not in _SELECTION_DEFAULT or value not in CHOICES:
             raise ValueError(f"選べない値です: {key}={value}")
         current[key] = value
-    path = _selection_path()
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(path)
+    _save({**_saved(), **current})
     return current
 
 
@@ -267,6 +335,10 @@ def choose(fast: bool) -> str:
     chosen = selection()["chat" if fast else "knowledge"]
     if chosen in ("gpu", "none"):
         return chosen
+    if chosen == "ruri":
+        for model_id in ("ruri-reranker-gpu", "ruri-reranker"):
+            if ready(model_id):
+                return model_id
     if chosen in MODELS and ready(chosen):
         return chosen
     return pick(fast) or "gpu"
@@ -301,6 +373,7 @@ def status(model_id: str) -> dict:
         "storage": str(archive_root(model_id)),
         "license": spec["license"],
         "running": bool(worker and worker.running()),
+        "resident": resident(model_id),
         "error": last_error,
         "stats": dict(stats),
     }
@@ -498,6 +571,10 @@ class _Worker:
         args = [str(python_path(device)), "-I", str(worker), str(model_path(self.model_id)),
                 str(tokenizer_path(self.model_id)), str(THREADS)]
         if device == "gpu":
+            # VRAM の空きを先に確かめる。足りなければ GPU は試さず、呼び出し側が CPU の控えへ回す（失敗を待つより速い）
+            free = gpu_free_bytes()
+            if free is not None and free < GPU_NEED_BYTES:
+                raise CpuRerankerError(f"VRAM の空きが足りません（{free / 1024 ** 3:.1f} GB）")
             cache = runtime_root(device) / "compiled" / self.model_id
             cache.mkdir(parents=True, exist_ok=True)
             args += ["gpu", str(_spec(self.model_id)["batch"]), str(cache)]
@@ -534,8 +611,19 @@ class _Worker:
     def _schedule_stop(self) -> None:
         if self._idle:
             self._idle.cancel()
+            self._idle = None
+        if resident(self.model_id):
+            return
         loop = asyncio.get_running_loop()
-        self._idle = loop.call_later(IDLE_STOP_S, lambda: asyncio.ensure_future(self._stop_if_idle()))
+        delay = GPU_IDLE_STOP_S if _device(self.model_id) == "gpu" else IDLE_STOP_S
+        self._idle = loop.call_later(delay, lambda: asyncio.ensure_future(self._stop_if_idle()))
+
+    async def warm(self) -> None:
+        """先に起動しておく（中身は動かさない）。"""
+        async with self._lock:
+            if not self.running():
+                self._process = await self._start()
+            self._schedule_stop()
 
     async def _stop_if_idle(self) -> None:
         if not self._lock.locked():
@@ -588,6 +676,50 @@ async def score(query: str, documents: list[str], *, model_id: str, timeout: flo
     stats["slowest_seconds"] = max(stats["slowest_seconds"], elapsed)
     last_error = ""
     return result
+
+
+async def warm(model_id: str) -> None:
+    """worker を先に起動しておく。GPU の ruri は、資料の検索で埋め込み（bge-m3）より先に場所を取るために使う:
+    ruri は全部を GPU に載せないと動かないが、bge-m3 は空いている分だけ載せて残りを CPU で動かせる（2026-11-20 合意）。"""
+    if not ready(model_id):
+        raise CpuRerankerError(f"{_spec(model_id)['name']} が未導入です")
+    await _workers.setdefault(model_id, _Worker(model_id)).warm()
+
+
+async def warm_gpu_reranker() -> str | None:
+    """GPU の reranker（ruri）を使う設定なら、先に起動しておく。起動したモデル ID（既に動いていればそれ）を返す。
+
+    埋め込み（bge-m3）を GPU に載せる前に呼ぶ（2026-11-20 利用者と合意: LLM の後は reranker が先、埋め込みが後）。
+    ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに合わせて残りを CPU で動かせる。先に bge-m3 が場所を取ると、
+    後から ruri が載れず CPU の控えに回る。埋め込みだけを使う場面（添付の保存など）でも先に場所を取る。
+    VRAM が足りなければ載せない（呼び出し側は気にしない）。"""
+    for fast in (True, False):
+        model_id = choose(fast)
+        if model_id in MODELS and MODELS[model_id]["device"] == "gpu":
+            if running(model_id):
+                return model_id
+            try:
+                await warm(model_id)
+                return model_id
+            except CpuRerankerError as exc:
+                logger.info("GPU の reranker を先に起動できませんでした（並べ替えは CPU の控えで行います）: %s", exc)
+                return None
+    return None
+
+
+async def stop_device(device: str) -> list[str]:
+    """その装置（gpu / cpu）で動いている worker を止める。大きな LLM を起動する前に GPU の分を止める（常駐でも止める）。"""
+    stopped = []
+    for model_id, worker in list(_workers.items()):
+        if _device(model_id) == device and worker.running():
+            await worker.stop()
+            stopped.append(model_id)
+    return stopped
+
+
+def running(model_id: str) -> bool:
+    worker = _workers.get(model_id)
+    return bool(worker and worker.running())
 
 
 async def shutdown() -> None:

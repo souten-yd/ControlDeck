@@ -1374,6 +1374,10 @@ def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) ->
         "--host", "127.0.0.1",
         "--port", str(inst.get("port", 8080)),
         "--n-gpu-layers", str(inst.get("n_gpu_layers", 999)),
+        # 層を GPU に載せない指定（CPU で動かす）でも、llama.cpp は大きな行列の計算を自動で GPU へ回す（op offload）。
+        # 2026-11-20 実測: bge-m3 は -ngl 0 だけだと資料 32 件 1.2 秒（GPU を使っていた）、GPU を使わせないと 20.9 秒。
+        # CPU を選んだものは GPU に一切触らせない（VRAM を使わず、LLM の邪魔をしない）
+        *(["--device", "none"] if int(inst.get("n_gpu_layers", 999)) == 0 else []),
         "--ctx-size", str(inst.get("ctx_size", 4096)),
         "--parallel", str(inst.get("n_parallel", 1)),
         "--alias", inst.get("alias", "llama"),
@@ -1417,7 +1421,8 @@ def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) ->
     # b10001 以降は --flash-attn が on|off|auto の値必須（旧フラグ形式はエラーで即終了する）
     # reranker は flash-attn を入れる。切ると R9700 で 15 文書の並べ替えが 18.5 秒、入れると 1.2 秒（点数は同じ。
     # 2026-11-20 実測）。全体の既定（off）は導入時のまま意図なく残っていたもので、会話の回答を 20 秒以上待たせていた
-    flash = bool(inst.get("flash_attn")) or str(inst.get("role", "")) == "reranker"
+    # 埋め込みも入れる: bge-m3 の資料 64 件の保存が 3.80 → 1.34 秒、ベクトルは同じ（コサイン 0.99999 以上。2026-11-20 実測）
+    flash = bool(inst.get("flash_attn")) or str(inst.get("role", "")) in ("reranker", "embedding")
     args += ["--flash-attn", "on" if flash else "off"]
     # 共有KV。無効時は各slotへ ctx_size/n_parallel を固定割当てする。
     args += ["--kv-unified" if inst.get("kv_unified", True) else "--no-kv-unified"]
@@ -1782,6 +1787,16 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
     if (await health(alias)).get("ok"):
         return True
     loop = asyncio.get_running_loop()
+    if str(inst.get("role") or "llm") == "llm":
+        # LLM を載せる前に、GPU の補助（埋め込み・reranker）を止める（OOM を防ぐ。large_model_lifecycle.release_gpu_helpers）
+        from app.models_mgmt import large_model_lifecycle
+
+        await large_model_lifecycle.release_gpu_helpers()
+    elif str(inst.get("role") or "") == "embedding" and int(inst.get("n_gpu_layers", 999)) != 0:
+        # 埋め込みを GPU に載せる前に、GPU の reranker を先に載せる（reranker が先・埋め込みが後。cpu_reranker.warm_gpu_reranker）
+        from app.workflows import cpu_reranker
+
+        await cpu_reranker.warm_gpu_reranker()
     # ここから先は実際に VRAM へ載せる。載せる前に、同じ device を抱えている
     # add-on へ返却を頼む。broker に許可を求めずに載せる作りなので、頼まないと
     # 仕事を終えて場所だけ抱えている相手の上へ重ねて載ることになる。

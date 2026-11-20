@@ -118,6 +118,35 @@ def follow_selection(runtime: str) -> None:
         logger.exception("選択中ランタイムを更新できませんでした")
 
 
+async def release_gpu_helpers() -> list[str]:
+    """LLM を GPU に載せる前に、GPU に載っている補助（埋め込み・reranker）を止める。
+
+    2026-11-20 利用者と合意（「順番に頼らない方法」）: 補助は Knowledge の検索・添付の保存・Workflow・拡張アプリなどで
+    LLM より先に載ることがあり、載ったまま大きな LLM（Maya 31.5 GB・Radiance 31 GB / 34 GB のカード）を起動すると
+    OOM になり得る。補助は使うときに数秒で載り直し、そのとき空きに合わせて載る（bge-m3 は --fit、GPU の ruri は
+    空きが足りなければ CPU の控え）。常駐の指定があっても止める。CPU だけで動く補助（n_gpu_layers 0）は止めない。"""
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker
+
+    released = await cpu_reranker.stop_device("gpu")
+    try:
+        helpers = await asyncio.to_thread(llama.list_instances)
+    except Exception:  # noqa: BLE001 - 補助の一覧が読めなくても LLM の起動は止めない
+        logger.warning("GPU の補助の一覧を読めませんでした", exc_info=True)
+        helpers = []
+    for item in helpers:
+        if str(item.get("role") or "llm") not in ("embedding", "reranker") or not item.get("loaded"):
+            continue
+        if int(item.get("n_gpu_layers", 999)) == 0:
+            continue
+        ok, _reason = await asyncio.to_thread(llama.stop_instance, str(item["alias"]))
+        if ok:
+            released.append(str(item["alias"]))
+    if released:
+        logger.info("LLM を載せる前に GPU の補助を止めました: %s", ", ".join(released))
+    return released
+
+
 async def prepare_switch(alias: str) -> None:
     """Before a stopped model starts on request, free the large model that blocks it.
 
@@ -136,6 +165,7 @@ async def prepare_switch(alias: str) -> None:
         # Small helpers (embedding / reranker) fit beside a large model.
         if str((item or {}).get("role") or "llm") != "llm":
             return
+        await release_gpu_helpers()
         if not await asyncio.to_thread(lambda: bool(_loaded_models())):
             return
         if not await _wait_idle_requests():
@@ -168,6 +198,7 @@ async def release_for(runtime: str) -> None:
     """
     from app.models_mgmt import maya_s, radiance, strata, strata_gateway
 
+    await release_gpu_helpers()
     if runtime != MAYA and maya_s.installed() and await asyncio.to_thread(maya_s.is_running):
         if maya_s.get_settings().get("idle_exclude"):
             raise RuntimeError("Maya-Sが常駐指定で稼働中です")

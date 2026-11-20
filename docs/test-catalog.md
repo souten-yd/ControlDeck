@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1573 テスト（目的の未記入 93 ファイル）
+- backend: 176 ファイル、1578 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、171 テスト
 
 ## backend（backend/tests）
@@ -1426,6 +1426,7 @@
 - `test_resetup_keeps_measured_env_and_turns_pictures_on`
 - `test_vision_requests_reach_maya_once_its_encoder_is_set_up`
 - `test_start_lowers_ondemand_helpers_but_refuses_other_llms` — 資料検索の補助（埋め込み・並べ替え）は Maya の起動を塞がず、先に降ろす。本物の LLM は 409。
+- `test_chat_starts_the_requested_maya_model_when_stopped` — 止まっている Maya を AI チャットから使うと、要求したモデルを起動してから答える（他の runtime と同じ）。
 
 ### backend/tests/test_memory_net_usage.py
 
@@ -1812,6 +1813,10 @@
 - `test_gpu_ruri_is_preferred_and_falls_back_to_cpu` — GPU の ruri（fp16、MIGraphX）が入っていれば、自動では会話にも Knowledge にも使う（精度も速さも最良）。
 - `test_install_endpoint_actually_runs_the_job` — 導入の API はジョブを実際に走らせる。根拠: 2026-11-20 本番 v0.87。同期関数で受けていたためイベントループが無く 500
 - `test_gpu_preset_uninstall_removes_registration_and_file` — GPU の埋め込み・reranker（llama.cpp のプリセット）のアンインストール: 登録を消し、GGUF も消す。
+- `test_gpu_helpers_are_released_before_an_llm_loads` — LLM を GPU に載せる前に、GPU の補助（GPU の ruri・GPU に載った埋め込み / reranker）を止める。CPU だけのものは止めない。
+- `test_gpu_reranker_starts_before_embedding_and_checks_vram` — 資料の検索では GPU の ruri を埋め込みより先に起動する（ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに
+- `test_cpu_llama_helpers_never_touch_the_gpu` — n_gpu_layers 0（CPU）の llama.cpp には --device none を付ける。付けないと大きな計算を自動で GPU へ回す
+- `test_embedding_start_brings_up_the_gpu_reranker_first` — GPU の埋め込みを載せる前に、GPU の reranker（ruri）を先に載せる。LLM を載せる前は両方を止める。
 
 ### backend/tests/test_ratelimit.py
 

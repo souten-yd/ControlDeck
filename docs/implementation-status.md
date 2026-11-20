@@ -1,5 +1,34 @@
 # 実装状況
 
+## 2026-11-20 LLM の高速化の設定を見直す（llama.cpp・Radiance・Maya）・補助の起動順
+
+- 利用者「LLM を載せた後、reranker と埋め込みは必ず起動する必要はない。起動するなら reranker が先、埋め込みが後。LLM を載せるときだけ一度下ろす」「llama・Radiance・Maya も高速化の設定があれば入れて」。
+- 補助の起動順: 補助は使うときだけ載せる（LLM の後に必ず載せはしない）。GPU の埋め込みを載せる前に、GPU の reranker（ruri）を先に載せる（`cpu_reranker.warm_gpu_reranker`、`llama.ensure_ready` の埋め込み）。埋め込みだけを使う場面（添付の保存・調査結果の保存・Knowledge への追加）でも先に場所を取る。LLM を載せる前は両方を止める（前の項）。
+- llama.cpp: 埋め込みにも flash-attn を入れた（bge-m3 の資料 64 件の保存 3.80 → 1.34 秒、ベクトルはコサイン 0.99999 以上で同じなので保存済みの資料はそのまま使える）。reranker は前から on。チャットの LLM は今は llama.cpp に登録が無いので測っていない（新しく登録するときは flash-attn を試す）。
+- Radiance: 投機的デコード（dflash2・深さ 7＋prompt lookup）と VRAM の prefix cache は既定で有効。ホスト RAM の段（`prefix-cache-mib`）は無く、VRAM から外れた会話は最初から読み直していた → 8,192 MiB を設定（Radiance が動く間は Strata・Maya は止まり RAM は空いている）。`--check` で受け付けを確認。KV が 289,648 トークンで max-model-len 327,680 に届かない警告は速さではないので変えない。
+- Maya（DS-XS）: 投機的デコード（dspark＋prompt lookup）は有効。遅さの原因は設定ではなく RAM の量: VRAM に入らない専門家 92.3 GB に対し RAM の空きは約 90 GB で、約 82 GB を先読みし残り約 10 GB はディスクから（1 つ 3.56 ms、RAM の 7 倍）。`--ssd-cache` などはあるが、起動 80 秒×組合せの実測が要るので今回は変えない。
+
+## 2026-11-20 Strata の --ple-io を mmap に（質問の読み込みが長い質問で約 1.9 倍）
+
+- 利用者「Strata は RAM に読んでから VRAM に読む流れで遅い気がする。flash-attn は入っているか」「mmap にしてどう変わるか比べて」。
+- 流れは設計どおり（94 GB の MoE を RAM 55 GB に置き、よく使う専門家 19.6 GB を VRAM にコピー）。注意計算の高速化（matrix cores）は既定で有効。起動約 62 秒（RAM へ 55 GB 約 30 秒・GEMM の準備 14.5 秒）。
+- エンジンのログに「--ple-io direct はこのディスクで遅い（4 KiB の読み出し 52〜58 MB/s）」の警告。同じ起動条件で毎回初めて読む質問を比べた: 約 800 トークン 1.0〜1.1 秒 → 約 1.0 秒（同じ）、約 3,000 トークン 2.1〜2.8 秒 → 1.7〜1.8 秒（約 1.4 倍）、約 2〜2.7 万トークン 1,400 → 2,620 tok/s（約 1.9 倍）。起動時間は同じ（62 → 61 秒）。
+- 本番の `data/runtimes/strata/gateway-models.json` の qwen-flash-next に `engine_settings: {"ple-io": "mmap"}` を入れた（ControlDeck は起動時に --set で渡す）。コードの既定には入れていない（DeepSeek など別のエンジンの家族で使えるか未確認）。表は page cache に載るので、RAM が逼迫すると追い出され、そのときは direct と同じ速さに戻る。
+- VRAM の余白（vram-reserve-mib 3072）は残す。全部載せた後の空き 3.2 GB に埋め込み（約 1.4 GB）と GPU の ruri（約 1.3 GB）が収まる。
+
+## 2026-11-20 GPU の補助は LLM の前に止める・reranker を埋め込みより先に・Embed / Reranker の表示・Maya の自動起動
+
+- 利用者と合意（「順番に頼らない方法」）: 埋め込み・reranker は Knowledge の検索・添付の保存・Workflow・拡張アプリなどで LLM より先に GPU に載ることがあり、載ったまま大きな LLM（Maya 31.5 GB・Radiance 31 GB / 34 GB）を起動すると OOM になり得る。
+  - LLM を GPU に載せる前に、GPU の補助（GPU の ruri・GPU に載った llama.cpp の埋め込み / reranker）を止める（`large_model_lifecycle.release_gpu_helpers`。`release_for`・llama.cpp の LLM の起動・切り替えの前）。常駐でも止める。CPU だけのものは止めない。
+  - 資料の検索では GPU の ruri を埋め込みより先に起動する（ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに合わせて残りを CPU で動かせる）。
+  - GPU の ruri は起動前に VRAM の空き（1.6 GB）を確かめ、足りなければ試さず CPU の控えを使う。使われなければ GPU は 3 分、CPU は 10 分で止める。
+  - 控えの xsmall を公式の int8（AVX-512 VNNI / AVX2）に（0.15 → 0.04 GB、速さ同じ、精度ほぼ同じ）。
+- Embed / Reranker の表示: 「使う reranker」・「埋め込み」・「reranker」に分け、CPU / GPU（ONNX）と GPU（llama.cpp）を同じカード（役割・CPU/GPU・おすすめの印、導入・ロード / アンロード・アンインストール・常駐）にそろえた。常駐は CPU / GPU の reranker にも付けた（`/models/retrieval/cpu/{id}/load|unload|resident`）。
+- CPU / GPU の切り替え: 利用者「モデルのボタンで CPU / GPU を切り替えたい」で一度トグルを付けたが、続けて「CPU にするとかなり遅くなるものは切り替えを消して」。ruri（CPU 8〜12 秒 / GPU 0.4 秒）、bge-m3（資料の保存が約 20 倍遅い）、Qwen3-Reranker-4B（遅い）はどれも該当するので、トグルは付けない。ruri は GPU（fp16）だけを出し、控えは CPU の xsmall（int8、CPU のみ）。llama.cpp で n_gpu_layers 0（CPU）にしたものには `--device none` を付けて GPU に触らせない（-ngl 0 だけだと大きな計算を自動で GPU へ回し VRAM も使っていた。bge-m3 の資料 32 件: GPU を使わせないと 20.9 秒）。
+- 音声入力: 波形の右の「文字に…」を消した（利用者「いらない」）。
+- Maya: 止まっているときに AI チャットで送ると「Mayaが起動していないか」で失敗していた（他の runtime は自動起動する）。DeepSeek（maya-deepseek-xs）だけを登録した環境で、起動する名前に未登録の既定名 maya-s を使い、起動を試みていなかった。要求されたモデル（登録名）を起動するようにし、`running_alias` も登録済みの最初のものを返すようにした。
+- 検証: `tests/test_rag_db_nodes.py`（補助を LLM の前に止める・reranker を先に・VRAM の確認・常駐・xsmall の int8）、`tests/test_maya_s_addon.py`（止まっている Maya を起動する）、backend 全体 1788 passed、E2E `speech-engines`・`assistant-queue-voice`・`assistant-voice-modes`。
+
 ## 2026-11-20 Models: 導入でエラーが一瞬出て「処理中…」が消えない・アンインストール
 
 - 利用者（画面写真）「reranker と埋め込みなのに LLM の画面に出る」「導入を押すと一瞬エラーが出るが、導入されているような感じ。ずっと導入表示が出る」「TTS / ASR と埋め込み・reranker にアンインストールを」。
