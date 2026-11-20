@@ -199,7 +199,8 @@ def _chat_rerank():
     from app.workflows import cpu_reranker, rag
 
     stats = rag.rerank_stats
-    engine = "CPU（ruri-v3-reranker-310m）" if cpu_reranker.ready() else "GPU の reranker（llama.cpp）"
+    picked = cpu_reranker.pick(fast=True)
+    engine = f"CPU（{cpu_reranker.MODELS[picked]['name']}）" if picked else "GPU の reranker（llama.cpp）"
     if cpu_reranker.ready() and cpu_reranker.last_error:
         # 2026-11-20 CPU の reranker を足した。失敗すると並べ替えずに検索の順で入れるので、気づけるようにする
         return "warn", f"CPU の reranker が失敗し、検索の順のまま使いました: {cpu_reranker.last_error}"

@@ -472,30 +472,29 @@ async def _maybe_rerank(question: str, matches: list[dict], top_k: int, *, budge
 
 
 async def _rerank(question: str, matches: list[dict], top_k: int, *, fast: bool = False) -> list[dict]:
-    """CPU の reranker（ruri、導入済みなら優先）か、role=reranker の llama instance で並べ替える。
+    """CPU の reranker（導入済みなら優先）か、role=reranker の llama instance で並べ替える。
 
-    2026-11-20 利用者の判断: 日本語の並べ替えは CPU の ruri-v3-reranker-310m（精度が高く VRAM を使わない）。
-    未導入なら従来の GPU の reranker（Qwen3-Reranker）を使う。
-
-    fast（会話の資料。3 秒まで）: CPU では候補を上位 top_k×2 件・各 256 トークンに絞る。約 800 文字の断片 16 件で
-    1.65 秒（32 件・384 トークンだと 5.7 秒で間に合わない。2026-11-20 実測）。"""
+    2026-11-20 利用者の判断: reranker は GPU に置かず CPU で。軽量・高速を優先（精度は多少落ちてもよい）。
+    fast（会話の資料。3 秒まで）は速いモデル（xsmall）を、それ以外（Knowledge・Workflow）は精度の高いモデル（ruri）を
+    優先する（cpu_reranker.pick）。ruri を会話で使うときは候補を top_k×2 件・各 256 トークンに絞る
+    （約 800 文字 16 件 1.65 秒。32 件・384 だと 5.7 秒で間に合わない）。CPU が未導入なら従来の GPU の reranker。"""
     from app.models_mgmt import llama
     from app.workflows import cpu_reranker
 
     if len(matches) <= top_k:
         return matches[:top_k]
-    if cpu_reranker.ready():
+    model_id = cpu_reranker.pick(fast)
+    if model_id is not None:
         rerank_stats["calls"] += 1
-        pool = matches[:top_k * 2] if fast else matches
+        pool_factor, max_tokens = cpu_reranker.limits(model_id, fast)
+        pool = matches[:top_k * pool_factor]
         try:
-            scores = await cpu_reranker.score(question, [m["text"] for m in pool],
-                                              max_tokens=cpu_reranker.FAST_MAX_TOKENS if fast else cpu_reranker.MAX_TOKENS)
+            scores = await cpu_reranker.score(question, [m["text"] for m in pool], model_id=model_id,
+                                              max_tokens=max_tokens)
         except (cpu_reranker.CpuRerankerError, ValueError):
             return matches[:top_k]
-        matches = pool
-        order = sorted(range(len(matches)), key=lambda i: -scores[i])[:top_k]
-        return [{**matches[i], "rerank_score": round(scores[i], 5), "rerank_engine": cpu_reranker.ENGINE_ID}
-                for i in order]
+        order = sorted(range(len(pool)), key=lambda i: -scores[i])[:top_k]
+        return [{**pool[i], "rerank_score": round(scores[i], 5), "rerank_engine": model_id} for i in order]
     if llama.find_role_instance("reranker") is None:
         return matches[:top_k]
     rerank_stats["calls"] += 1

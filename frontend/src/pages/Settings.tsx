@@ -1211,8 +1211,8 @@ function AddonsSection() {
                             )}
                             {addon.kind === "retrieval-model" && (
                               <p className="text-[11px] text-zinc-500">
-                                導入すると、GPU の reranker の代わりに CPU で並べ替えます（VRAM を使いません）。
-                                版は固定で、アンインストールしても重みと変換済みのモデルは残ります。
+                                導入（タップ 1 つでモデルの取得と準備まで）すると、GPU の reranker の代わりに CPU で並べ替えます（VRAM を使いません）。
+                                両方入れると、会話は速い方、Knowledge・Workflow は高精度の方を使います。版は固定で、アンインストールしても取得したモデルは残ります。
                               </p>
                             )}
                             {addon.managed && !hasUpdate && addon.kind !== "speech-engine" && addon.kind !== "retrieval-model" && (

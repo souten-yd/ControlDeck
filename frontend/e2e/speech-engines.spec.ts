@@ -89,12 +89,17 @@ test("the CPU reranker is offered under 検索（RAG） in the feature list", as
   for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/settings/features");
-    const row = page.locator("#feature-ruri-reranker");
-    await row.scrollIntoViewIfNeeded();
-    await expect(row).toBeVisible();
-    await expect(row).toContainText("ruri-v3-reranker-310m");
+    // 速い xsmall（おすすめ）と高精度の ruri を並べる。どちらもタップ 1 つで導入
+    for (const [id, name] of [["xsmall-reranker", "japanese-reranker-xsmall-v2"], ["ruri-reranker", "ruri-v3-reranker-310m"]]) {
+      const item = page.locator(`#feature-${id}`);
+      await item.scrollIntoViewIfNeeded();
+      await expect(item).toBeVisible();
+      await expect(item).toContainText(name);
+      await expect(item.getByRole("button", { name: "導入" })).toBeVisible();
+      await expect(item.getByRole("button", { name: "更新" })).toHaveCount(0);
+    }
+    const row = page.locator("#feature-xsmall-reranker").locator("..");
     await expect(page.getByRole("heading", { name: /検索（RAG）/ })).toBeVisible();
-    await expect(row.getByRole("button", { name: "更新" })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await row.screenshot({ path: `${shots}/retrieval-feature-${width}.png` });
   }

@@ -156,15 +156,23 @@ FEATURES: dict[str, dict] = {
         "repo": "supertone-oss-archive/supertonic",
         "summary": "31 言語の音声合成（CPU）。導入時に音声モデルも入れ、ソース一式を保管庫へ保存する。使うかは Models の TTS / ASR で選ぶ",
     },
-    # 検索結果の並べ替え（RAG）。実体は app.workflows.cpu_reranker。導入すると GPU の reranker より優先して使う
-    # （2026-11-20 利用者の判断。評価は docs/reranker-evaluation.md）
+    # 検索結果の並べ替え（RAG）。実体は app.workflows.cpu_reranker（タップ 1 つで取得・変換・実行環境まで）。
+    # 導入すると GPU の reranker より優先して使う（2026-11-20 利用者の判断。評価は docs/reranker-evaluation.md）
+    "xsmall-reranker": {
+        "name": "japanese-reranker-xsmall-v2（CPU・速い・おすすめ）",
+        "kind": "retrieval-model",
+        "executable": "python",
+        "route_gated": False,
+        "repo": "hotchpotch/japanese-reranker-xsmall-v2",
+        "summary": "検索結果を CPU で並べ替える。約 800 文字 32 件で 0.6 秒、ファイル 0.15 GB・RAM 0.7 GB。精度は今の GPU の reranker と同等",
+    },
     "ruri-reranker": {
-        "name": "ruri-v3-reranker-310m（CPU・RAG の並べ替え）",
+        "name": "ruri-v3-reranker-310m（CPU・高精度）",
         "kind": "retrieval-model",
         "executable": "python",
         "route_gated": False,
         "repo": "cl-nagoya/ruri-v3-reranker-310m",
-        "summary": "日本語の検索結果を CPU で並べ替える（int8、VRAM を使わない）。導入すると Knowledge と会話の資料の並べ替えに使う",
+        "summary": "日本語の並べ替えが最も正確（int8）。32 件で約 6 秒と遅いので、両方あるときは Knowledge・Workflow に使う。ファイル 0.73 GB・RAM 2.1 GB",
     },
 }
 
@@ -328,7 +336,7 @@ def executable(feature_id: str) -> Path | None:
     if spec["kind"] == "retrieval-model":
         from app.workflows import cpu_reranker
 
-        return cpu_reranker.python_path() if cpu_reranker.ready() else None
+        return cpu_reranker.python_path() if cpu_reranker.ready(feature_id) else None
     if spec["kind"] == "gpu-runtime":
         # PATH 上の同名バイナリを拾わない。ControlDeck が導入した実体だけを扱う。
         managed = _managed_executable(feature_id)
@@ -423,7 +431,7 @@ def _retrieval_model_status(feature_id: str, spec: dict) -> dict:
     """CPU の reranker は app.workflows.cpu_reranker の状態を正とする（導入＝利用可能）。"""
     from app.workflows import cpu_reranker
 
-    detail = cpu_reranker.status()
+    detail = cpu_reranker.status(feature_id)
     installed = bool(detail["installed"])
     return {
         "id": feature_id,
@@ -446,7 +454,8 @@ def _retrieval_model_status(feature_id: str, spec: dict) -> dict:
         "health": "healthy" if installed else "not-installed",
         "error": "",
         "executable": str(cpu_reranker.python_path()) if installed else "",
-        "retrieval": {k: detail[k] for k in ("runtime", "model_bytes", "storage", "license", "running", "stats")},
+        "retrieval": {k: detail[k] for k in ("runtime", "model_bytes", "storage", "license", "running", "stats",
+                                             "accuracy", "speed", "memory")},
     }
 
 
@@ -778,7 +787,7 @@ def uninstall(feature_id: str) -> dict:
     if FEATURES[_known(feature_id)]["kind"] == "retrieval-model":
         from app.workflows import cpu_reranker
 
-        cpu_reranker.uninstall()   # 実行環境だけ。重みと int8 の ONNX（保管庫）は残す
+        cpu_reranker.uninstall(feature_id)   # 取得したファイルと int8 の ONNX（保管庫）は残す
         return status(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "speech-engine":
         from app.speech import supertonic

@@ -65,7 +65,7 @@ async def install_job(
             from app.workflows import cpu_reranker
 
             try:
-                await cpu_reranker.install(job)
+                await cpu_reranker.install(job, feature_id)
             except cpu_reranker.CpuRerankerError as exc:
                 raise RuntimeError(str(exc)) from exc
             return registry.status(feature_id)

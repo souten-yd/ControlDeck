@@ -1,13 +1,14 @@
 # 実装状況
 
-## 2026-11-20 RAG の並べ替えを CPU へ（ruri-v3-reranker-310m・int8）
+## 2026-11-20 RAG の並べ替えを CPU へ（xsmall・ruri をタップ 1 つで）・会話で毎回探さない
 
-- 利用者「提案どおりで問題ない。CPU に入れる形で」「ruri の int8 化はなぜ動かないのか、調べて解決策を」。
-- int8 が動かなかったのは評価の書き方の誤り（CrossEncoder の外側の箱を量子化モデルで差し替え、入力の辞書が `input_ids` に渡っていた）。全部を int8 にすると日本語 JQaRA が 0.877 → 0.834 に落ちる。原因は MLP の出力側（Wo、入力が GeGLU の出力で外れ値が大きい）で、そこだけ fp32 に残すと 0.875（英語も 0.581 で同じ）。採用。
-- 機能追加の新しい区分「検索（RAG）」に `ruri-reranker`。導入: 重み（HF の版と SHA-256 を固定）→ 一時の build venv（PyTorch CPU 等）で ONNX へ書き出し、ONNX Runtime で int8（Wo 以外）→ PyTorch fp32 と点数の順が同じかを確かめる → build venv を消す。重みと int8 の ONNX は `data/archives/ruri-v3-reranker-310m` に残す（入れ直しで変換し直さない）。実行環境は onnxruntime・tokenizers・numpy だけ。worker は使うときに起動して常駐し、10 分使われなければ止める。
-- 導入済みなら RAG の並べ替え（Knowledge・会話の資料・Workflow の RAG ノード）で GPU の reranker より優先する。点数の門（0.3 未満を入れない）は Qwen の点数にだけ使い、ruri では上位の件数で入れる（会話の流れを指す質問に低い点を付けるため）。会話の資料の並べ替えには直前の発言（後ろ 300 字）を質問に添える。
-- 速さ（約 800 文字の断片、8 スレッド）: 会話の資料（3 秒まで）は候補を top_k×2 件・各 256 トークンに絞り 16 件 1.65 秒。Knowledge 等は 32 件・384 トークンで約 5.7 秒。比較: GPU の 4B（flash-attn on）は同じ断片 32 件で 3.8 秒（会話の 3 秒の上限を超えていた）。
-- 検証: `tests/test_rag_db_nodes.py`（CPU を優先・点数で切らない・会話は候補と長さを絞る・失敗は検索の順で返し診断に出す・直前の話題を添える・機能の状態とアンインストールで保管庫を残す）。隔離した data で実際に導入（取得 → 変換 → 確かめ → 並べ替え）。評価は `docs/reranker-evaluation.md`。
+- 利用者「CPU に入れる形で」「ruri の int8 化はなぜ動かないのか」「軽量・高速なら精度は多少落ちてもよい」「他の reranker も含めてタップしたら初期設定とモデルのダウンロードまで」「毎回チェックする必要はない。Claude と同じ方法で」。
+- int8 が動かなかったのは評価の書き方の誤り（CrossEncoder の外側の箱を差し替え、入力の辞書が `input_ids` に渡っていた）。全部 int8 だと JQaRA 0.877 → 0.834、MLP の出力側（Wo）だけ fp32 に残すと 0.875。
+- 遅さの調査: 実装の誤り・二重起動は無い（会話 1 発言で検索 1 回、worker の起動はモデルごとに 1 回）。短い資料での「32 件 1.1 秒」は、実際の断片（約 800 文字＝433 トークン）では計算量が約 4 倍で、ruri は 32 件 8 秒（CPU の計算の上限どおり）。GPU の 4B も同じ断片 32 件で 3.8 秒（会話の 3 秒を超えていた）。本番の 4B は flash-attn on で次に起動する（起動時に設定を書き直すことを確認）。
+- 機能追加「検索（RAG）」: `xsmall-reranker`（japanese-reranker-xsmall-v2、公式 ONNX、0.15 GB・RAM 0.7 GB、800 文字 32 件 0.64 秒、精度は 4B と同等・おすすめ）と `ruri-reranker`（int8、0.73 GB・RAM 2.1 GB、精度最良）。導入はタップ 1 つで取得（版と SHA-256 固定）・ruri は一時の build venv で int8 へ変換し PyTorch と順位一致を確認・実行環境（onnxruntime・tokenizers・numpy、共有）・試しの並べ替えまで。取得・変換したものは `data/archives/` に残す。worker は常駐し 10 分使われなければ止める。
+- 使い分け: 会話（3 秒まで）は xsmall、Knowledge・Workflow は ruri（片方だけならそれ）。ruri を会話で使うときは候補 top_k×2・各 256 トークン。点数の門は Qwen の点数だけ。並べ替えの質問に直前の発言を添える。
+- 会話: 大きい資料でも、発言が資料・前に調べたもの・詳しい内容を指すときだけ探す（挨拶・お礼・雑談では埋め込みも並べ替えも動かない）。小さい資料は従来どおり全部入れる。
+- 検証: `tests/test_rag_db_nodes.py`、E2E `speech-engines`（1280 / 320 で 2 つが並ぶ）、隔離 data で 2 つとも実際に導入（xsmall 19 秒・ruri 154 秒）と並べ替え。評価は `docs/reranker-evaluation.md`。
 
 ## 2026-11-20 AI アシスタント: 会話の資料の使い方を見直す（探さずに全部 / 関係の薄いものは入れない / reranker を速く）
 
