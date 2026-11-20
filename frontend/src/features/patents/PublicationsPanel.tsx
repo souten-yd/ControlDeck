@@ -7,6 +7,7 @@ import { EmptyState, IconButton, secondaryButtonClass } from "../../components/u
 import { IconSearch } from "../../components/icons";
 import { DocumentSheet } from "../knowledge/DocumentSheet";
 import { LiteratureSheet } from "./LiteratureSheet";
+import { FetchSheet, SourceKeysSheet } from "./Sources";
 import { errorText, input } from "./shared";
 
 export function PublicationsPanel({ importing, onImport, onImportClose }: { importing: boolean; onImport: () => void; onImportClose: () => void }) {
@@ -15,6 +16,8 @@ export function PublicationsPanel({ importing, onImport, onImportClose }: { impo
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<FoundDocument[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [keys, setKeys] = useState(false);
   const find = useMutation({
     mutationFn: () => knowledgeApi.find(query.trim(), "patents"),
     onSuccess: (r) => setResults(r.results),
@@ -27,8 +30,15 @@ export function PublicationsPanel({ importing, onImport, onImportClose }: { impo
           placeholder="言葉・公報番号で探す（例: ゲート駆動 損失、特開2026-116114）" />
         <IconButton label="探す" variant="primary" type="submit" disabled={!query.trim() || find.isPending}><IconSearch /></IconButton>
       </form>
-      {can("workflows.edit") && (
-        <button className={`${secondaryButtonClass} w-full sm:w-auto`} onClick={onImport}>公報・論文を取り込む</button>
+      {(can("workflows.edit") || can("settings.manage")) && (
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+          {can("workflows.edit") && <button className={secondaryButtonClass} onClick={onImport}>公報・論文を取り込む</button>}
+          {can("workflows.edit") && <button className={secondaryButtonClass} onClick={() => setFetching(true)}>公開データを取得</button>}
+          {can("settings.manage") && (
+            <button className="col-span-2 min-h-11 rounded-xl px-3 text-sm text-accent-700 hover:bg-accent-600/10 dark:text-accent-300 sm:col-span-1"
+              onClick={() => setKeys(true)}>取得先の設定</button>
+          )}
+        </div>
       )}
       {results === null ? (
         <p className="text-xs text-zinc-500">取り込んだ公報・論文から探します。開くと本文・図・書誌を見られます。</p>
@@ -51,6 +61,8 @@ export function PublicationsPanel({ importing, onImport, onImportClose }: { impo
       )}
       {open && <DocumentSheet docRef={open} onClose={() => setOpen(null)} />}
       {importing && <LiteratureSheet onClose={onImportClose} />}
+      {fetching && <FetchSheet onClose={() => setFetching(false)} />}
+      {keys && <SourceKeysSheet onClose={() => setKeys(false)} />}
     </div>
   );
 }

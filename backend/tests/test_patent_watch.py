@@ -150,3 +150,25 @@ def test_api_refuses_unapproved_queries(admin_client):
     assert r.status_code == 422
     listed = admin_client.get("/api/v1/patents/sources").json()["sources"]
     assert {s["id"] for s in listed} == {"epo", "uspto", "openalex", "rss", "gdelt"}
+
+
+def test_deleting_a_case_removes_its_watches_hits_and_notices(monkeypatch):
+    """案件の番号は使い回される。消した案件のウォッチ・候補・通知の記録が次の案件に出てはいけない（2026-11-21 E2E で発見）。"""
+    from app.patents import store as pstore
+    from app.patents import watch
+
+    case_id = _case_with_claims()
+    w = watch.save_watch(case_id, source="epo", query="ic=H10D", interval_hours=24, approved_public=True)
+    conn = watch.connect()
+    conn.execute("INSERT INTO patent_watch_hits(watch_id, case_id, doc_ref, title, created) VALUES(?,?,?,?,0)",
+                 (w["id"], case_id, "patents:1", "候補"))
+    conn.execute("INSERT INTO patent_notices(key, sent) VALUES(?, 0)", (f"{case_id}:exam_request:2029-01-01:30",))
+    conn.commit()
+    conn.close()
+    pstore.delete_case(case_id)
+    again = pstore.create_case("別の案件")
+    assert again["id"] == case_id                        # 番号が使い回されることの確認
+    assert watch.list_watches(again["id"]) == [] and watch.hits(again["id"]) == []
+    conn = watch.connect()
+    assert conn.execute("SELECT COUNT(*) FROM patent_notices").fetchone()[0] == 0
+    conn.close()

@@ -2,7 +2,8 @@ import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
 /** Knowledge: 探す・資料・規格のタブ。規格は入手経路から保存・AI 利用の判定を見せ、購入品は番号と題名だけで登録する。
- *  根拠: 2026-11-21 利用者「規格検索の RAG」「利用者が知らなくていい情報は隠し、必要なら開けるように」。 */
+ *  「資料の管理」の「作り直し」は、実行する前に何を何件作り直すかを見せる。
+ *  根拠: 2026-11-21 利用者「規格検索の RAG」「利用者が知らなくていい情報は隠し、必要なら開けるように」、同日 R3-2（ナレッジの作り直し）。 */
 for (const width of [1280, 320]) {
   test(`Knowledge: 規格を登録して番号で探す（${width}px）`, async ({ page, context }) => {
     test.skip(!hasSession(), "ログイン情報がありません");
@@ -47,4 +48,11 @@ test("Knowledge: 審査基準のコレクションを作る（詳細設定は既
   await expect(sheet.getByText("チャンク戦略")).toBeHidden();     // 分割の方式は「詳細設定」の中
   await sheet.getByRole("button", { name: "作成", exact: true }).click();
   await expect(page.getByText("guidelines-e2e")).toBeVisible();
+
+  // 作り直しは件数を先に見せる（実行はしない）
+  await page.getByRole("button", { name: "作り直し", exact: true }).click();
+  const rebuild = page.getByRole("dialog");
+  await expect(rebuild.getByText("埋め込みを作り直す")).toBeVisible();
+  await expect(rebuild.getByText(/作り直すものはありません|図表を画像モデルで読み取る/)).toBeVisible();
+  await page.keyboard.press("Escape");
 });

@@ -11,11 +11,12 @@ import { IconChevronLeft, IconDots } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { AssistTab, ClaimsTab, DeadlinesTab, HearingTab, RefsTab, SummaryTab } from "../features/patents/CaseSections";
 import { SimilarSection } from "../features/patents/CaseSimilar";
+import { WatchSection } from "../features/patents/CaseWatch";
 import { DeadlineChip, card, errorText } from "../features/patents/shared";
 
-type Section = "summary" | "hearing" | "claims" | "refs" | "deadlines" | "assist" | "similar";
+type Section = "summary" | "hearing" | "claims" | "refs" | "watch" | "deadlines" | "assist" | "similar";
 const SECTIONS: ReadonlyArray<readonly [Section, string, string?]> = [
-  ["summary", "概要"], ["hearing", "ヒアリング", "話す"], ["claims", "請求項", "請求"], ["refs", "文献"],
+  ["summary", "概要"], ["hearing", "ヒアリング", "話す"], ["claims", "請求項", "請求"], ["refs", "文献"], ["watch", "ウォッチ", "監視"],
   ["deadlines", "期限"], ["assist", "AI 支援", "AI"], ["similar", "分析"],
 ];
 const SECTION_HINT: Record<Section, string> = {
@@ -23,6 +24,7 @@ const SECTION_HINT: Record<Section, string> = {
   hearing: "発明を話して記録し、AI で整理する",
   claims: "請求項の版と構成要件、クレームチャート",
   refs: "先行文献の登録（X/Y/A）と検索",
+  watch: "公開データを定期に検索し、新しい公報を候補に出す",
   deadlines: "出来事の記録と期限の目安",
   assist: "ローカルの AI による下書きと確認",
   similar: "請求項に近い公報（先行文献の候補）",
@@ -101,6 +103,7 @@ export default function PatentCasePage() {
               {section === "hearing" && <HearingTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} onOpenAssist={() => setSection("assist")} />}
               {section === "claims" && <ClaimsTab c={c} editable={editable} onSaved={set} onError={fail} />}
               {section === "refs" && <RefsTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
+              {section === "watch" && <WatchSection c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "deadlines" && <DeadlinesTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "assist" && <AssistTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "similar" && <SimilarSection c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}

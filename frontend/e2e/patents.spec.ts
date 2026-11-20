@@ -7,7 +7,9 @@ import { establishSession, hasSession } from "./support/session";
  *  ウィンドウになっている。コントロールデックと統合してほしい」（案件はシートではなくページで開く・戻るで一覧へ）と
  *  「特許の分析をグラフで（推移・書誌・請求項・類似・バブル）」。
  *  検証用インスタンスにはローカルのモデルも公報も無いので、AI 支援は「外部へ送らない」案内、分析は空の案内が出ることを確かめ、
- *  グラフの見た目は分析の API の応答を差し替えて撮る。 */
+ *  グラフの見た目は分析の API の応答を差し替えて撮る。
+ *  ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるので、確認のチェックを入れるまで保存・取得できないこと、
+ *  鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。 */
 
 async function noHorizontalOverflow(page: Page) {
   const overflow = await page.evaluate(() => {
@@ -134,6 +136,56 @@ for (const width of [1280, 320]) {
   });
 }
 
+for (const width of [1280, 320]) {
+  test(`Patent: ウォッチは確認のチェックが要る（${width}px）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height: width === 320 ? 640 : 900 });
+    await establishSession(page, context);
+    await page.goto("/patents");
+    const title = `E2E ウォッチ ${width}`;
+    await page.getByRole("button", { name: "案件を作成" }).first().click();
+    await page.getByPlaceholder("発明の名称").fill(title);
+    await page.getByRole("button", { name: "作成", exact: true }).click();
+    await expect(page).toHaveURL(/\/patents\/\d+$/);
+    const pane = page.locator('section[aria-labelledby="patent-section-title"]');
+    await page.getByRole("button", { name: "ウォッチ", exact: true }).click();
+    await expect(pane.getByRole("heading", { level: 2, name: "ウォッチ" })).toBeVisible();
+
+    await pane.getByRole("button", { name: "ウォッチを追加" }).click();
+    const sheet = page.getByRole("dialog");
+    await expect(sheet.locator("option", { hasText: "EPO" })).toHaveJSProperty("disabled", true);       // 鍵が未設定
+    await expect(sheet.locator("option", { hasText: "鍵が未設定" }).first()).toBeAttached();
+    await sheet.getByRole("combobox").first().selectOption("openalex");
+    await sheet.getByRole("textbox", { name: "検索語" }).fill(`common mode noise inverter ${width}`);
+    const add = sheet.getByRole("button", { name: "追加", exact: true });
+    await expect(add).toBeDisabled();
+    await sheet.getByLabel(/外部の検索サービスへ送られます/).check();
+    await expect(add).toBeEnabled();
+    // 保存の後の読み直しから、見つかった公報（候補）だけ差し替える。ウォッチの一覧は本物
+    await page.route(/\/api\/v1\/patents\/cases\/\d+\/watches$/, async (route) => {
+      const real = await (await route.fetch()).json();
+      await route.fulfill({ json: { ...real, hits: HITS } });
+    });
+    await add.click();
+    await expect(page.getByText("ウォッチを追加しました")).toBeVisible();
+    await expect(pane.getByText(`common mode noise inverter ${width}`)).toBeVisible();
+    await expect(pane.locator("li", { hasText: `common mode noise inverter ${width}` }).getByText("OpenAlex（論文） · 1 週間ごと")).toBeVisible();
+
+    // 見つかった公報の並び（候補は差し替え。押すと本物の API に無い ID を送るので、見るだけ）
+    await expect(pane.getByText("インバータのコモンモード雑音を抑える回路")).toBeVisible();
+    await expect(pane.getByRole("button", { name: /先行文献に登録/ }).first()).toBeVisible();
+    await expect(pane.getByRole("button", { name: "処理済み（2）" })).toBeVisible();
+    await shootWhole(page, `test-results/patents-watch-${width}.png`);
+    await noHorizontalOverflow(page);
+
+    await page.unroute(/\/api\/v1\/patents\/cases\/\d+\/watches$/);
+    await page.getByRole("button", { name: "案件のその他の操作" }).click();
+    await page.getByRole("menuitem", { name: "案件を削除" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "削除する" }).click();
+    await expect(page).toHaveURL(/\/patents$/);
+  });
+}
+
 test("Patent: 公報が無いときの分析と公報の画面（1280px）", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -144,6 +196,25 @@ test("Patent: 公報が無いときの分析と公報の画面（1280px）", asy
   await page.getByRole("button", { name: "公報", exact: true }).click();
   await expect(page.getByPlaceholder(/公報番号で探す/)).toBeVisible();
   await expect(page.getByRole("button", { name: "公報・論文を取り込む" })).toBeVisible();
+
+  // 公開データの取得も、確認のチェックを入れるまで送れない
+  await page.getByRole("button", { name: "公開データを取得" }).click();
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.locator("option", { hasText: "EPO" })).toHaveJSProperty("disabled", true);
+  await sheet.getByRole("textbox", { name: "検索語" }).fill("power semiconductor");
+  const go = sheet.getByRole("button", { name: "取得する" });
+  await expect(go).toBeDisabled();
+  await sheet.getByLabel(/外部の検索サービスへ送られます/).check();
+  await expect(go).toBeEnabled();
+  await page.keyboard.press("Escape");
+
+  // 鍵の設定: 値は出さず「未設定 / 設定済み」だけ
+  await page.getByRole("button", { name: "取得先の設定" }).click();
+  const keys = page.getByRole("dialog");
+  await expect(keys.getByLabel("EPO Consumer Key")).toHaveAttribute("type", "password");
+  await expect(keys.getByLabel("USPTO API キー")).toBeVisible();
+  await expect(keys.getByText("未設定").first()).toBeVisible();
+  await page.screenshot({ path: "test-results/patents-source-keys-1280.png" });
 });
 
 // ---- 差し替える応答（本物の形: backend/app/patents/analytics.py） ----
@@ -187,3 +258,10 @@ const DOCUMENT = {
     publication_date: "2022-10-14", claims_count: 8, country: "JP", kind: "A", source: "ocr_extract" } },
   identifiers: [], references: [], assets: [], annotations: [], analysis_kinds: {}, related: [],
 };
+const HITS = [
+  { id: 9001, watch_id: 1, doc_ref: "patents:901", title: "インバータのコモンモード雑音を抑える回路", score: 0.82, status: "new", created: 1795000000 },
+  { id: 9002, watch_id: 1, doc_ref: "patents:902", title: "Common-mode noise suppression in multilevel inverters with an extremely long title that must be cut", score: 0.77, status: "new", created: 1794990000 },
+  { id: 9003, watch_id: 1, doc_ref: "patents:903", title: "電力変換装置のゲート駆動", score: 0.7, status: "relevant", created: 1794900000 },
+  { id: 9004, watch_id: 1, doc_ref: "patents:904", title: "モータ駆動装置", score: 0.6, status: "registered", created: 1794800000 },
+  { id: 9005, watch_id: 1, doc_ref: "patents:905", title: "無関係な照明装置", score: 0.3, status: "excluded", created: 1794700000 },
+];

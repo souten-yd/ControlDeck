@@ -35,7 +35,11 @@ export interface StandardInput {
   granted_storage: string | null; granted_ai_use: string | null;
 }
 
+export interface RebuildPlan { retag_ai_answers: number; reembed: number; reingest_pdf: number }
+
 export const knowledgeApi = {
+  rebuildPlan: () => api<RebuildPlan>("/knowledge/rebuild"),
+  rebuild: (describe_figures: boolean) => api<{ job_id: string }>("/knowledge/rebuild", { method: "POST", json: { describe_figures } }),
   find: (query: string, scope: KnowledgeScope) =>
     api<{ results: FoundDocument[] }>("/knowledge/find", { method: "POST", json: { query, scope, limit: 12 } }),
   document: (ref: string) => api<DocumentDetail>(`/knowledge/documents/${encodeURIComponent(ref)}`),
