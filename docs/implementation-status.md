@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-20 iPhone で読み上げの後にマイクを開けない（AudioSession）
+
+- 本番（iPhone、v0.92）: 読み上げの後に音声入力を押すと「AudioSession category is not compatible with audio capture.」。#485 で読み上げをマナーモードでも鳴らすため `navigator.audioSession.type = "playback"`（再生専用）にし、そのままにしていた。再生専用ではマイクを開けない。
+- 対策（`lib/audioSession.ts`）: マイクを開く前に "play-and-record"、閉じたら "auto"。読み上げは、マイクを使っていないときだけ "playback"。会話モード（マイクを開いたまま読む）は "play-and-record" のまま鳴らす。AI アシスタントの音声入力（`useAssistantAsr`）と、Add-on の録音（`EmbeddedAddonView`）の両方。
+- 検証: E2E `assistant-voice-modes`（偽の audioSession で「再生専用ではマイクを開けない」を再現し、読み上げの後に音声入力が始まり、閉じたら auto に戻る）・`assistant-queue-voice`。`addon-v2-embedded` の 1 件は変更前の main でも同じ所で落ちる（偽の Add-on の接続表示を待つ所）。
+- 未確認: iPhone の実機。
+
 ## 2026-11-20 AI アシスタントで添付した画像を OpenCode に渡す（読めないモデルは送る前に知らせる）
 
 - 利用者「OpenCode って画像見られなかったっけ？」「VLM を使う予定なので OpenCode にそのまま渡すのがいい。VLM が使えないものはモデルの判定で分かるので、使えませんと示して」。

@@ -16,6 +16,7 @@ import { BottomSheet } from "../../components/ui";
 import { projectLabApi } from "../../api/projectLab";
 import { ACCENTS, useTheme, useToasts } from "../../stores";
 import { AddonStatusChip, addonStateMessage } from "./AddonStatus";
+import { beginCapture } from "../../lib/audioSession";
 
 interface BridgeRequest {
   id: string;
@@ -126,6 +127,8 @@ interface AudioCaptureState {
   stream: MediaStream;
   context: AudioContext;
   processor: ScriptProcessorNode;
+  /** iPhone の音声の扱いを戻す（lib/audioSession） */
+  endCapture: () => void;
   sequence: number;
   samples: number;
   pending: Float32Array;
@@ -205,6 +208,7 @@ export function EmbeddedAddonView({
     try { capture.processor.disconnect(); } catch { /* すでに外れている */ }
     for (const track of capture.stream.getTracks()) track.stop();
     void capture.context.close().catch(() => undefined);
+    capture.endCapture();
     return capture;
   }, []);
 
@@ -213,11 +217,14 @@ export function EmbeddedAddonView({
   const startAudioCapture = useCallback(async () => {
     if (audioCapture.current) throw new Error("すでに録音しています");
     let stream: MediaStream;
+    // iPhone: 読み上げで再生専用にしていると、マイクを開けない（lib/audioSession）
+    const endCapture = beginCapture();
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
     } catch (reason) {
+      endCapture();
       const name = reason instanceof Error ? reason.name : "";
       throw new Error(name === "NotAllowedError" ? "マイクの利用が許可されていません" : "マイクを開けませんでした");
     }
@@ -228,7 +235,7 @@ export function EmbeddedAddonView({
     const processor = context.createScriptProcessor(4096, 1, 1);
     const recordingId = `rec_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const capture: AudioCaptureState = {
-      recordingId, stream, context, processor,
+      recordingId, stream, context, processor, endCapture,
       sequence: 0, samples: 0, pending: new Float32Array(0),
     };
     processor.onaudioprocess = (event) => {
