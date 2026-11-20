@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 188 ファイル、1674 テスト（目的の未記入 93 ファイル）
+- backend: 188 ファイル、1676 テスト（目的の未記入 93 ファイル）
 - E2E: 92 spec、193 テスト
 
 ## backend（backend/tests）
@@ -1156,6 +1156,8 @@
 - `test_chat_answers_are_saved_as_inference`
 - `test_plan_writes_nothing_and_apply_fixes_answers_and_embeddings`
 - `test_old_patent_pdf_is_reingested_and_case_refs_follow`
+- `test_embedding_input_is_capped_for_the_embedding_server` — llama.cpp の埋め込みは 1 件 512 トークンまで。1200 文字の断片は HTTP 500 で断られた（2026-11-21 本番）。
+- `test_figure_reading_is_planned_but_left_to_the_server` — 図表の読み取りは画像モデル（GPU）を使うので、サーバーの外の CLI では行わず、画面からの作り直しに回す。
 
 ### backend/tests/test_knowledge_storage.py
 

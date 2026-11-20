@@ -38,13 +38,16 @@ def _docs(shard: str) -> list[dict]:
 def plan() -> dict:
     from app.workflows import rag
 
-    retag, reembed, reingest = [], [], []
+    retag, reembed, reingest, describe = [], [], [], []
     for shard in store.SHARDS:
         for d in _docs(shard):
             ref = f"{shard}:{d['id']}"
             if d["basis"] == "source_fact" and ANSWER_TITLE.match(d["title"] or ""):
                 retag.append(ref)
             meta = json.loads(d["meta"] or "{}")
+            pdf = meta.get("pdf") or {}
+            if pdf.get("figure_pages") and not pdf.get("figures_described") and d["ai_use"] != "prohibited":
+                describe.append(ref)
             if d["ckind"] in ("patent", "generic") and "pdf" not in meta:
                 doc = documents.get_document(ref)
                 if any(a["role"] == "original" and a.get("mime") == "application/pdf" for a in doc["assets"]):
@@ -61,7 +64,7 @@ def plan() -> dict:
                 conn.close()
             if row[0] and (row[1] or 0) < row[0]:
                 reembed.append(ref)
-    return {"retag_ai_answers": retag, "reembed": reembed, "reingest_pdf": reingest}
+    return {"retag_ai_answers": retag, "reembed": reembed, "reingest_pdf": reingest, "describe_figures": describe}
 
 
 def _retag(refs: list[str]) -> int:
@@ -106,14 +109,15 @@ async def _reembed(ref: str) -> int:
     return len(rows)
 
 
-async def _reingest(ref: str, describe_figures: bool) -> str:
+async def _reingest(ref: str, describe_figures: bool, force: bool = False) -> str:
     from app.knowledge import ingest
 
     doc = await asyncio.to_thread(documents.get_document, ref)
     original = next(a for a in doc["assets"] if a["role"] == "original")
     path = store.blob_path(original["sha256"])
     result = await ingest.ingest_pdf(doc["collection"], path, title="", ext_id=doc["ext_id"],
-                                     sensitivity=doc["sensitivity"], ai_use=doc["ai_use"], describe_figures=describe_figures)
+                                     sensitivity=doc["sensitivity"], ai_use=doc["ai_use"], describe_figures=describe_figures,
+                                     force=force)
     new_ref = f"{documents.parse_ref(ref)[0]}:{result['doc_id']}"
     if new_ref != ref:
         await asyncio.to_thread(_repoint, ref, new_ref)
@@ -138,7 +142,9 @@ async def apply(*, describe_figures: bool = True, job=None) -> dict:
     todo = await asyncio.to_thread(plan)
     out = {"retagged": await asyncio.to_thread(_retag, todo["retag_ai_answers"]), "reembedded": 0, "reingested": [],
            "errors": []}
-    total = len(todo["reembed"]) + len(todo["reingest_pdf"])
+    # 図表の読み取りは画像モデル（GPU）を使うので、サーバーの中（画面の「作り直し」）でだけ行う
+    describe = todo["describe_figures"] if describe_figures else []
+    total = len(todo["reembed"]) + len(todo["reingest_pdf"]) + len(describe)
     done = 0
     for ref in todo["reingest_pdf"]:
         if job is not None:
@@ -148,7 +154,15 @@ async def apply(*, describe_figures: bool = True, job=None) -> dict:
         except Exception as exc:  # noqa: BLE001 - 1 件の失敗で全体を止めない（結果に残す）
             out["errors"].append({"ref": ref, "error": str(exc)[:200]})
         done += 1
-    for ref in todo["reembed"]:
+    for ref in describe:
+        if job is not None:
+            job.set_progress(f"図表を読み取っています（{done + 1}/{total}）", done, total)
+        try:
+            out.setdefault("described", []).append(await _reingest(ref, True, force=True))
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append({"ref": ref, "error": str(exc)[:200]})
+        done += 1
+    for ref in await asyncio.to_thread(lambda: plan()["reembed"]):
         if job is not None:
             job.set_progress(f"埋め込みを作り直しています（{done + 1}/{total}）", done, total)
         try:
@@ -165,7 +179,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-vlm", action="store_true", help="図表の読み取り（画像モデル）を省く")
     args = parser.parse_args(argv)
     if args.apply:
-        result = asyncio.run(apply(describe_figures=not args.no_vlm))
+        # CLI はサーバーの外で動くので、GPU の順番待ち（broker）を通れない。画像モデルは使わない
+        result = asyncio.run(apply(describe_figures=False))
+        if not args.no_vlm and plan()["describe_figures"]:
+            result["note"] = "図表の読み取りは画面の Knowledge →「資料の管理」→「作り直し」から（GPU の順番待ちはサーバーの中にあるため）"
     else:
         todo = plan()
         result = {k: {"count": len(v), "examples": v[:5]} for k, v in todo.items()}

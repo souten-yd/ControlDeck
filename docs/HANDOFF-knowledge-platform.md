@@ -139,6 +139,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 
 ## 9. 作業記録（新しい順に追記）
 
+- 2026-11-21 Claude: v0.104 を本番へ適用し、`./deck.sh knowledge-rebuild --apply` を実行（利用者の了承済み、事前の写しは `data/backups/knowledge-before-rebuild-20261121/`）。AI の回答 65 件を推論に、公報を原本から作り直し（書誌・ページ・図のページ 12）。ただし埋め込みが「1 件 512 トークンまで」で断られ（日本語 1200 文字の断片）、図表の読み取りは CLI がサーバーの外で GPU の順番待ちを通れず動かなかった。埋め込みに送る文字を 600 で切る・図表の読み取りは画面の「作り直し」（サーバーの中）だけにする修正を入れた。**本番では、作り直しの画面から図表の読み取りを 1 回実行する必要がある。**
+
 - 2026-11-21 Claude: R3-2 の画面と Patent の作り直し（Fable）を合わせた。本番の RAG を調べ、AI の回答 57 件が原文扱い・別の会話の資料が横断検索に混ざる・公報に埋め込みと書誌が無いことを見つけ、会話の資料は会話の中だけ、AI の回答は推論、`./deck.sh knowledge-rebuild`（作り直し）を作った。案件を消してもウォッチ・候補・通知の記録が残り、番号の使い回しで次の案件に出る不具合を直した（Fable が E2E で発見）。結果は日本語で書く決まりを AGENTS.md に追加。全体 1887 passed、E2E 14 passed。
 
 - 2026-11-21 Claude: v0.103（#498）を Release・本番へ適用。R3-2 の backend（EPO OPS・USPTO ODP・OpenAlex・RSS・GDELT の取得、検索語の公開確認、ウォッチ、期限の通知は案件名なし）をブランチ `feat/knowledge-r3-2`（worktree `/data1tb/ControlDeck/knowledge-r3-2`）に。全体 1882 passed。SQLite の表の有無を接続ごとに確かめるよう変えた（inode は使い回される）。Patent の画面は Fable が `feat/knowledge-r3`（worktree knowledge-platform）で作業中、終わったら r3-2 に載せて 1 つの PR にする。

@@ -334,7 +334,7 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
                  url: str = "", ext_id: str | None = None, sha256: str = "", body: str | None = None,
                  sensitivity: str | None = None, basis: str = "source_fact", meta: dict | None = None,
                  model: str = "", replace_collection: bool = False, ai_use: str = "allowed",
-                 identifiers: list | None = None) -> dict:
+                 identifiers: list | None = None, force: bool = False) -> dict:
     """1 文書を 1 トランザクションで登録する。件数の上限で切り詰めない。
 
     同じ ext_id の文書があれば置き換える（冪等な再投入）。sha256 も同じなら何も書かない。
@@ -367,7 +367,7 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
         if ext_id is not None:
             old = conn.execute("SELECT id, sha256 FROM documents WHERE collection_id=? AND ext_id=?",
                                (ref.id, ext_id)).fetchone()
-            if old is not None and sha256 and old["sha256"] == sha256:
+            if old is not None and sha256 and old["sha256"] == sha256 and not force:
                 conn.rollback()
                 return {"doc_id": int(old["id"]), "unchanged": True, "added_chunks": 0}
             if old is not None:

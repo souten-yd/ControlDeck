@@ -32,6 +32,9 @@ logger = logging.getLogger("control_deck.rag")
 
 COLLECTION_RE = store.COLLECTION_RE
 EMBED_BATCH = 64
+# 埋め込みの入力の上限（文字）。llama.cpp の埋め込みは 1 件 512 トークンまで（physical batch）で、
+# 日本語 1200 文字（約 820 トークン）は HTTP 500 で断られた（2026-11-21 本番）。検索・回答に使う本文は切らない
+EMBED_MAX_CHARS = 600
 
 DEFAULT_CONFIG = {
     "embed_base_url": "http://127.0.0.1:11434/v1",
@@ -178,6 +181,7 @@ async def embed(texts: list[str], base_url: str, model: str, api_key: str) -> li
 
 async def _embed_batched(texts: list[str], cfg: dict, api_key: str) -> list[np.ndarray]:
     out: list[np.ndarray] = []
+    texts = [t[:EMBED_MAX_CHARS] for t in texts]
     for start in range(0, len(texts), EMBED_BATCH):
         out.extend(await embed(texts[start:start + EMBED_BATCH], cfg["embed_base_url"], cfg["embed_model"], api_key))
     if len(out) != len(texts):

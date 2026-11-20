@@ -109,7 +109,7 @@ def _progress(job, message: str, done: int, total: int) -> None:
 async def ingest_pdf(collection: str, path: Path, *, title: str = "", sensitivity: str | None = None,
                      ai_use: str = "allowed", clauses: bool = False, describe_figures: bool = True,
                      store_fulltext: bool = True, meta: dict | None = None, ext_id: str | None = None,
-                     identifiers: list | None = None, job=None) -> dict:
+                     identifiers: list | None = None, job=None, force: bool = False) -> dict:
     _progress(job, "PDF を読んでいます", 0, 5)
     data = await asyncio.to_thread(Path(path).read_bytes)
     extracted = await pdf_ingest.extract(Path(path))
@@ -161,7 +161,7 @@ async def ingest_pdf(collection: str, path: Path, *, title: str = "", sensitivit
         store.add_document, collection, chunks, source=Path(path).name, title=title or Path(path).stem,
         ext_id=ext_id or f"pdf:{extracted.sha256}", sha256=extracted.sha256, body=body or None,
         sensitivity=sensitivity, meta={**meta, "pdf": info}, model=model, ai_use=ai_use,
-        identifiers=identifiers)
+        identifiers=identifiers, force=force)
     if result.get("unchanged"):
         _progress(job, "同じ PDF が登録済みです", 5, 5)
         return {**result, "pdf": info}
