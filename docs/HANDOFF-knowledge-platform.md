@@ -97,7 +97,7 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | # | 作業 | 状態 |
 |---|---|---|
 | R2-0 | 本書と引き継ぎの決まり（AGENTS.md） | ☑ |
-| R2-1 | 特許・規格の RAG の方式を Web・コミュニティ・公式で調べて評価し採用（`research-patent-standards-rag.md`） | ☐ |
+| R2-1 | 特許・規格の RAG の方式を Web・コミュニティ・公式で調べて評価し採用（`research-patent-standards-rag.md`） | ☑ 文書単位・全文か骨格・確定した書誌グラフ・節分割・図表の説明 |
 | R2-2 | 文書単位の検索と「全文を入れる」回答（コンテキストの長さに合わせる。入らなければ節単位） | ☐ |
 | R2-3 | 書誌の関係グラフ（引用・引用規格・ファミリー・分類・版の置き換え）と検索での 1 hop 拡張 | ☐ |
 | R2-4 | 規格検索: 規格番号・版の索引、条項単位の分割、利用判定の適用、規格の画面 | ☐ |
@@ -124,5 +124,6 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 
 ## 9. 作業記録（新しい順に追記）
 
+- 2026-11-21 Claude: 方式を調査して採用（research-patent-standards-rag.md）。
 - 2026-11-21 Claude: 本書を作成。R2 を開始。PR #473 に Patent 画面・PatentBuddy 撤去・保存先の設定まで入っている（全体テスト 1859 passed、E2E patents 通過）。
 - 2026-11-19 Claude: 統合ストア・旧データの取り込み・規格の判定・保存先の設定（PR #473）。本番データの複製で取り込みのリハーサル成功。
