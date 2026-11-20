@@ -27,6 +27,8 @@
 
 `docs/POLICY-autonomous-development.md`。L0・L1 は統括（Claude）が関門を通して自動で進め、L2 だけ利用者の承認を得る。区分は `./deck.sh change-class`。
 
+**ControlDeck 本体のマージと正式 Release は、L2 を含めて毎回尋ねない**（2026-11-21 利用者合意、同文書「常設の承認」）。関門を通したらマージ → Release まで進め、何を変えたか・L2 に当たる点・未検証の点を事後に報告する。本番のモデルの停止・再起動、本番データの変更、外部からの取得などは、これまでどおり了承を得る。
+
 ## 開発の進め方（2026-11-15 から）
 
 AI に開発させるときは `./deck.sh sandbox new <名前> --repo <リポジトリ>` で箱を作り、箱の中の OpenCode（`./deck.sh sandbox opencode <名前> [--run 指示]`）とミラー（`mirror-start`）で直して確かめる。本番の ControlDeck は止めない。公開はプレリリースまで、正式化と本番への適用は利用者。
