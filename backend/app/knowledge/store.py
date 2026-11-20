@@ -117,18 +117,19 @@ def connect(shard: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=10000")
-    # ファイルが置き換わった（復元・移動・削除して作り直し）ときに表を作り直せるよう、inode も鍵に含める
-    key = f"{path}:{os.stat(path).st_ino}"
-    if key not in _schema_ready:
+    # 表があるかを毎回確かめる（ファイルの置き換え・作り直しで、覚えた状態が古くなるため。inode は使い回される）
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='identifiers'").fetchone() is None:
         with _schema_lock:
-            if key not in _schema_ready:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.executescript(SCHEMA)
-                _add_missing_columns(conn)
-                conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-                             "tok, tokenize='unicode61 remove_diacritics 0')")
-                conn.commit()
-                _schema_ready.add(key)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(SCHEMA)
+            _add_missing_columns(conn)
+            conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+                         "tok, tokenize='unicode61 remove_diacritics 0')")
+            conn.commit()
+    elif str(path) not in _schema_ready:
+        _add_missing_columns(conn)   # 後から足した列（このプロセスで最初に開いたとき 1 回）
+        conn.commit()
+        _schema_ready.add(str(path))
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 

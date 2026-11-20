@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 
@@ -55,12 +54,9 @@ _ready: set[str] = set()
 
 def connect() -> sqlite3.Connection:
     conn = kstore.connect(SHARD)
-    path = kstore.shard_path(SHARD)
-    key = f"{path}:{os.stat(path).st_ino}"   # 置き換わったファイルでは表を作り直す
-    if key not in _ready:
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='patent_assists'").fetchone() is None:
         conn.executescript(SCHEMA)
         conn.commit()
-        _ready.add(key)
     return conn
 
 
