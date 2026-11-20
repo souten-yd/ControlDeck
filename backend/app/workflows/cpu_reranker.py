@@ -43,7 +43,7 @@ TOKENIZER = (6724873, "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25e
 # path: (bytes, sha256)。2026-11-20 取得・照合
 MODELS: dict[str, dict] = {
     "xsmall-reranker": {
-        "name": "japanese-reranker-xsmall-v2（CPU・速い）",
+        "name": "japanese-reranker-xsmall-v2（CPU・軽い）",
         "repo": "hotchpotch/japanese-reranker-xsmall-v2",
         "revision": "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a",
         "license": "MIT（hotchpotch）",
@@ -89,7 +89,7 @@ MODELS: dict[str, dict] = {
     #   int8（CPU 用、0.73 GB）: 32 件 3.15 秒（8.5 倍遅い。int8 の計算が GPU で速くならない）。VRAM 1.35 GB。不採用
     #   一度に並べる件数: 8 件 VRAM 1.52 GB、4 件 1.27 GB（速さ同じ）、2 件 1.15 GB（0.40 秒）→ 4 件
     "ruri-reranker-gpu": {
-        "name": "ruri-v3-reranker-310m（GPU・高精度・速い）",
+        "name": "ruri-v3-reranker-310m（GPU・fp16・おすすめ）",
         "repo": "cl-nagoya/ruri-v3-reranker-310m",
         "revision": "bb46934ee9ed09f850b9fcff17501b3ef7ddb2b3",
         "license": "Apache-2.0（名古屋大学 cl-nagoya）",

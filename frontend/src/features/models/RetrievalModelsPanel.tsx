@@ -20,16 +20,16 @@ interface RetrievalState {
 interface JobInfo { id: string; status: string; progress: { status?: string; completed?: number | null; total?: number | null }; error: string }
 
 const SHORT: Record<string, string> = {
-  "xsmall-reranker": "xsmall（CPU・速い）",
+  "xsmall-reranker": "xsmall（CPU・軽い）",
   "ruri-reranker": "ruri（CPU・高精度）",
-  "ruri-reranker-gpu": "ruri（GPU・高精度・速い）",
+  "ruri-reranker-gpu": "ruri（GPU・おすすめ）",
   gpu: "llama.cpp の reranker（Qwen3-Reranker-4B など）",
   none: "並べ替えない（検索の順）",
 };
 
 const USES: { key: "chat" | "knowledge"; label: string; hint: string }[] = [
-  { key: "chat", label: "会話の資料", hint: "AI アシスタントの会話で資料を探すとき。速さ優先（おすすめ: ruri の GPU、無ければ xsmall）" },
-  { key: "knowledge", label: "Knowledge・Workflow", hint: "Knowledge の検索と Workflow の RAG。精度優先（おすすめ: ruri の GPU、無ければ CPU の ruri）" },
+  { key: "chat", label: "会話の資料", hint: "AI アシスタントの会話で資料を探すとき（おすすめ: ruri の GPU。GPU が使えないときは xsmall）" },
+  { key: "knowledge", label: "Knowledge・Workflow", hint: "Knowledge の検索と Workflow の RAG（おすすめ: ruri の GPU。GPU が使えないときは CPU の ruri）" },
 ];
 
 /** CPU の reranker（タップ 1 つで導入）と、使う reranker の選択。
